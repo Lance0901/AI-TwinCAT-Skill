@@ -78,10 +78,11 @@ function Add-TcPou {
 
         $newItem = $pouFolder.CreateChild($Name, $subType, '', $declXml)
 
+        $itemPath = try { $newItem.PathName } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name = $Name
             type = $Type
-            path = try { $newItem.PathName } catch { '' }
+            path = $itemPath
         })
     }
     catch {

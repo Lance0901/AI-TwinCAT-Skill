@@ -85,10 +85,11 @@ function Add-TcDut {
         $subType = $dutSubTypes[$DutType]
         $newItem = $plcProject.CreateChild($Name, $subType, '', $declXml)
 
+        $itemPath = try { $newItem.PathName } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name    = $Name
             dutType = $DutType
-            path    = try { $newItem.PathName } catch { '' }
+            path    = $itemPath
         })
     }
     catch {

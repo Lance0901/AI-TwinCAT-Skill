@@ -1,10 +1,19 @@
 function Enter-TcPlcOnline {
     <#
     .SYNOPSIS
-        Logs into the PLC runtime via ITcPlcProject (independent of download).
+        Logs into PLC runtime and downloads program — no dialog popups.
+    .DESCRIPTION
+        Uses ITcSmTreeItem::Login(3) on the PLC Project node.
+        Flag 3 = CompileBeforeLogin(1) + SuppressAllDialogs(2).
+        This triggers Login + Download automatically if no program is loaded.
+    .PARAMETER PlcProjectPath
+        Tree path to PLC project. Default auto-detects from TIPC.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter()]
+        [string]$PlcProjectPath
+    )
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -16,22 +25,35 @@ function Enter-TcPlcOnline {
     }
 
     try {
-        $plcConfig = $sm.LookupTreeItem('TIPC')
-        $plcProjectItem = $plcConfig.Child(1)
-        $plcProject = $plcProjectItem.Object
+        if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
+            # Auto-detect: TIPC → first child → first sub-child (the PLC Project)
+            $tipc = $sm.LookupTreeItem('TIPC')
+            $plcNode = $tipc.Child(1)
+            $plcProject = $plcNode.Child(1)  # e.g., "LoggerPLC Project"
+            $PlcProjectPath = $plcProject.PathName
+        }
+        else {
+            $plcProject = $sm.LookupTreeItem($PlcProjectPath)
+        }
 
-        $plcProject.Login()
+        Write-Verbose "Login to: $PlcProjectPath"
+
+        # Login(3) = CompileBeforeLogin(1) + SuppressAllDialogs(2)
+        # This also triggers Download if runtime has no program
+        $plcProject.Login(3)
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            online = $true
-            message = 'Logged into PLC runtime.'
+            online         = $true
+            plcProjectPath = $PlcProjectPath
+            message        = 'Logged into PLC runtime with program download (no dialogs).'
         })
     }
     catch {
         if ($_.Exception.Message -match 'already') {
             New-TcResult -Success $true -Data ([PSCustomObject]@{
-                online  = $true
-                message = 'Already logged into PLC runtime.'
+                online         = $true
+                plcProjectPath = $PlcProjectPath
+                message        = 'Already logged into PLC runtime.'
             })
         }
         else {

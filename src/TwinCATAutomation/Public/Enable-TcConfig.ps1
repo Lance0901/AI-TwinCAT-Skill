@@ -1,9 +1,13 @@
 function Enable-TcConfig {
     <#
     .SYNOPSIS
-        Activates the TwinCAT configuration on the target system.
+        Activates the TwinCAT configuration and optionally starts TwinCAT into Run mode.
+    .DESCRIPTION
+        Uses ITcSysManager::ActivateConfiguration() to activate, then ADS WriteControl
+        to switch to Run mode (no dialog popups).
     .PARAMETER Force
-        If set, forces a TwinCAT restart if required.
+        If set, switches to Config mode first, activates, then starts Run mode.
+        Full cycle: Config → Activate → Run.
     #>
     [CmdletBinding()]
     param(
@@ -21,24 +25,36 @@ function Enable-TcConfig {
     }
 
     try {
-        # ActivateConfiguration params: force restart mode
-        # 0 = normal, 1 = force restart
-        $restartMode = if ($Force) { 1 } else { 0 }
-        $sm.ActivateConfiguration($restartMode)
+        $restarted = $false
+
+        if ($Force) {
+            # Switch to Config mode first via ADS (no dialog)
+            $result = Set-TcSystemState -State Config
+            if (-not $result.success) {
+                return New-TcResult -Success $false -ErrorMessage "Failed to switch to Config: $($result.error.message)" -ErrorCode 'CONFIG_SWITCH_FAILED'
+            }
+            Start-Sleep -Seconds 2
+        }
+
+        # ActivateConfiguration — saves config to registry
+        $sm.ActivateConfiguration()
+
+        if ($Force) {
+            # Start TwinCAT into Run mode via ADS (no dialog)
+            $result = Set-TcSystemState -State Run
+            if (-not $result.success) {
+                return New-TcResult -Success $false -ErrorMessage "Failed to switch to Run: $($result.error.message)" -ErrorCode 'RUN_SWITCH_FAILED'
+            }
+            $restarted = $true
+        }
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            activated    = $true
-            forceRestart = $Force.IsPresent
+            activated = $true
+            restarted = $restarted
+            message   = if ($restarted) { 'Configuration activated and TwinCAT started (no dialogs).' } else { 'Configuration activated. Call with -Force to restart TwinCAT.' }
         })
     }
     catch {
-        if ($_.Exception.Message -match 'restart') {
-            New-TcResult -Success $false `
-                -ErrorMessage 'Configuration activation requires TwinCAT restart. Use -Force to auto-restart.' `
-                -ErrorCode 'RESTART_REQUIRED'
-        }
-        else {
-            New-TcResult -Success $false -ErrorMessage "Activation failed: $_" -ErrorCode 'ACTIVATION_FAILED'
-        }
+        New-TcResult -Success $false -ErrorMessage "Activation failed: $_" -ErrorCode 'ACTIVATION_FAILED'
     }
 }

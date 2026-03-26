@@ -16,22 +16,17 @@ function Get-TcSymbols {
     }
 
     try {
-        $symbolLoader = $script:TcAdsClient.CreateSymbolInfoLoader()
-        $symbols = $symbolLoader.GetSymbols($false)  # $false = don't get sub-symbols
+        # Use C# helper to bypass PowerShell CLS compatibility issues
+        # (TcAdsSymbol has both 'Datatype' and 'DataType' which PowerShell cannot distinguish)
+        $symbols = [TcAdsHelper]::GetAllSymbols($script:TcAdsClient, $Filter)
 
         $result = @()
         foreach ($sym in $symbols) {
-            $symPath = $sym.Name
-
-            if (-not [string]::IsNullOrWhiteSpace($Filter)) {
-                if ($symPath -notlike $Filter) { continue }
-            }
-
             $result += [PSCustomObject]@{
-                path    = $symPath
-                type    = $sym.Type
-                size    = $sym.Size
-                comment = try { $sym.Comment } catch { '' }
+                path    = $sym['Name']
+                type    = $sym['TypeName']
+                size    = $sym['Size']
+                comment = $sym['Comment']
             }
         }
 

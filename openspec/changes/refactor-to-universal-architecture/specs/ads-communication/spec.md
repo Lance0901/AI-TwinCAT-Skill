@@ -1,15 +1,21 @@
 ## ADDED Requirements
 
 ### Requirement: Connect to ADS runtime
-The system SHALL establish an ADS connection to a TwinCAT runtime using AMS Net ID and port number. The `Connect-TcAds` cmdlet SHALL support local (127.0.0.1.1.1) and remote targets, with default port 851 (PLC Runtime 1).
+The system SHALL establish an ADS connection to a TwinCAT runtime using AMS Net ID and port number. The `Connect-TcAds` cmdlet SHALL support local and remote targets, with default port 851 (PLC Runtime 1).
 
-#### Scenario: Connect to local PLC runtime
-- **WHEN** the user calls `Connect-TcAds` without parameters
-- **THEN** the system connects to `127.0.0.1.1.1:851` and returns `{"success": true, "data": {"amsNetId": "127.0.0.1.1.1", "port": 851, "state": "Run"}}`
+**IMPORTANT:** AmsNetId is target-dependent and changes based on the connected target (local UM Runtime, local kernel-mode, remote CX, etc.). The system MUST NOT hardcode any AmsNetId. When no AmsNetId is specified, the system SHALL attempt to auto-detect it from the active IDE connection (`ITcSysManager` target info) or fall back to requiring the user to specify it.
 
-#### Scenario: Connect to remote PLC runtime
-- **WHEN** the user calls `Connect-TcAds -AmsNetId "192.168.1.100.1.1" -Port 851`
-- **THEN** the system connects to the remote runtime and returns the connection state
+#### Scenario: Connect with auto-detected AmsNetId
+- **WHEN** the user calls `Connect-TcAds` without `-AmsNetId` and an IDE connection is active
+- **THEN** the system resolves the AmsNetId from the current IDE target and connects to port 851, returning `{"success": true, "data": {"amsNetId": "<detected>", "port": 851, "state": "Run"}}`
+
+#### Scenario: Connect with explicit AmsNetId
+- **WHEN** the user calls `Connect-TcAds -AmsNetId "199.4.42.250.1.1" -Port 851`
+- **THEN** the system connects to the specified target and returns the connection state
+
+#### Scenario: No AmsNetId and no IDE connection
+- **WHEN** the user calls `Connect-TcAds` without `-AmsNetId` and no IDE connection is active
+- **THEN** the system returns an error with code `AMS_NETID_REQUIRED` indicating the user must specify `-AmsNetId` or connect to the IDE first
 
 #### Scenario: Runtime not reachable
 - **WHEN** the target ADS route is not reachable

@@ -19,9 +19,12 @@ function Get-TcIoTree {
         param($item, [int]$depth = 0)
         if ($depth -gt 8) { return $null }
 
+        $itemName = try { $item.Name } catch { 'unknown' }
+        $itemPath = try { $item.PathName } catch { '' }
+
         $node = [PSCustomObject]@{
-            name     = try { $item.Name } catch { 'unknown' }
-            path     = try { $item.PathName } catch { '' }
+            name     = $itemName
+            path     = $itemPath
             children = @()
         }
 

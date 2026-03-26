@@ -1,5 +1,16 @@
 ## MODIFIED Requirements
 
+### Requirement: Full deployment lifecycle
+The system SHALL support the complete deployment lifecycle in the correct order: **Build → Activate → Login → Download → Start**. Only after all steps complete will ADS port 851 have PLC symbols available for reading.
+
+#### Scenario: Full deploy-and-run cycle
+- **WHEN** the user calls `Invoke-TcTestCycle` or performs the steps manually
+- **THEN** the system executes: Build → Activate Configuration (enters Run mode) → Login to PLC → Download program → Start PLC → ADS symbols become available on port 851
+
+#### Scenario: ADS before Login/Download
+- **WHEN** the user attempts ADS variable read before Login and Download
+- **THEN** ADS port 851 will return "Target port not found" (error 0x6) because the PLC runtime has no loaded program
+
 ### Requirement: Build PLC project
 The system SHALL build PLC projects using `ITcPlcProject::BuildProject()` and return build results including errors and warnings.
 

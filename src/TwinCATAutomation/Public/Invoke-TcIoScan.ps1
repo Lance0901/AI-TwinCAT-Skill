@@ -27,10 +27,11 @@ function Invoke-TcIoScan {
         for ($i = 1; $i -le $childCount; $i++) {
             try {
                 $device = $ioDevices.Child($i)
+                $devType = try { $device.ItemSubType.ToString() } catch { '' }
                 $devices += [PSCustomObject]@{
                     name = $device.Name
                     path = $device.PathName
-                    type = try { $device.ItemSubType.ToString() } catch { '' }
+                    type = $devType
                 }
             }
             catch { continue }

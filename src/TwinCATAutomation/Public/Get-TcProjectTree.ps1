@@ -20,10 +20,14 @@ function Get-TcProjectTree {
 
         if ($depth -gt 10) { return $null }
 
+        $itemName = try { $item.Name } catch { 'unknown' }
+        $itemPath = try { $item.PathName } catch { '' }
+        $itemType = try { $item.ItemSubType.ToString() } catch { '' }
+
         $node = [PSCustomObject]@{
-            name     = try { $item.Name } catch { 'unknown' }
-            path     = try { $item.PathName } catch { '' }
-            type     = try { $item.ItemSubType.ToString() } catch { '' }
+            name     = $itemName
+            path     = $itemPath
+            type     = $itemType
             children = @()
         }
 

@@ -20,21 +20,27 @@ function Read-TcVariable {
 
         foreach ($varPath in $Path) {
             try {
-                $handle = $script:TcAdsClient.CreateVariableHandle($varPath)
-                $symbolInfo = $script:TcAdsClient.ReadSymbolInfo($varPath)
-                $typeSize = $symbolInfo.Size
-                $typeName = $symbolInfo.Type
+                # Get symbol info via C# helper (bypasses CLS issue)
+                $symInfo = [TcAdsHelper]::GetSymbolInfo($script:TcAdsClient, $varPath)
+                $typeName = $symInfo['TypeName']
+                $typeSize = $symInfo['Size']
 
-                # Read based on common types
+                $handle = $script:TcAdsClient.CreateVariableHandle($varPath)
+
+                # Read based on PLC type
                 $value = $null
                 switch -Regex ($typeName.ToUpper()) {
-                    '^BOOL$' { $value = $script:TcAdsClient.ReadAny($handle, [bool]) }
-                    '^(S?INT|BYTE)$' { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
-                    '^(U?INT|WORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
-                    '^(U?DINT|DWORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int32]) }
-                    '^(U?LINT|LWORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int64]) }
-                    '^REAL$' { $value = $script:TcAdsClient.ReadAny($handle, [float]) }
-                    '^LREAL$' { $value = $script:TcAdsClient.ReadAny($handle, [double]) }
+                    '^BOOL$'           { $value = $script:TcAdsClient.ReadAny($handle, [bool]) }
+                    '^SINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [sbyte]) }
+                    '^USINT$|^BYTE$'   { $value = $script:TcAdsClient.ReadAny($handle, [byte]) }
+                    '^INT$'            { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
+                    '^UINT$|^WORD$'    { $value = $script:TcAdsClient.ReadAny($handle, [uint16]) }
+                    '^DINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [int32]) }
+                    '^UDINT$|^DWORD$'  { $value = $script:TcAdsClient.ReadAny($handle, [uint32]) }
+                    '^LINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [int64]) }
+                    '^ULINT$|^LWORD$'  { $value = $script:TcAdsClient.ReadAny($handle, [uint64]) }
+                    '^REAL$'           { $value = $script:TcAdsClient.ReadAny($handle, [float]) }
+                    '^LREAL$'          { $value = $script:TcAdsClient.ReadAny($handle, [double]) }
                     '^STRING' {
                         $strLen = if ($typeSize -gt 0) { $typeSize } else { 255 }
                         $value = $script:TcAdsClient.ReadAny($handle, [string], @([int]$strLen))

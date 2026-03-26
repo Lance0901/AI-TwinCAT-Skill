@@ -13,11 +13,15 @@ function Get-TcIdeInfo {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
 
+    $ideVersion = try { $script:TcDte.Version } catch { 'unknown' }
+    $ideEdition = try { $script:TcDte.Edition } catch { 'unknown' }
+    $ideSolution = try { $script:TcDte.Solution.FullName } catch { '' }
+
     $data = [PSCustomObject]@{
         progId              = $script:TcProgId
-        version             = try { $script:TcDte.Version } catch { 'unknown' }
-        edition             = try { $script:TcDte.Edition } catch { 'unknown' }
-        solution            = try { $script:TcDte.Solution.FullName } catch { '' }
+        version             = $ideVersion
+        edition             = $ideEdition
+        solution            = $ideSolution
         sysManagerAvailable = ($null -ne $script:TcSysManager)
     }
 

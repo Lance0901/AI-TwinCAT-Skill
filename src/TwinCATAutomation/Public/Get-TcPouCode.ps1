@@ -46,10 +46,12 @@ function Get-TcPouCode {
             return New-TcResult -Success $false -ErrorMessage "POU '$PouName' not found." -ErrorCode 'POU_NOT_FOUND'
         }
 
+        $declText = try { $pouItem.DeclarationText } catch { '' }
+        $implText = try { $pouItem.ImplementationText } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             pou            = $PouName
-            declaration    = try { $pouItem.DeclarationText } catch { '' }
-            implementation = try { $pouItem.ImplementationText } catch { '' }
+            declaration    = $declText
+            implementation = $implText
         })
     }
     catch {

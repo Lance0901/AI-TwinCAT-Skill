@@ -103,10 +103,13 @@ function Connect-TcIde {
     }
     catch { }
 
+    $ideVersion = try { $dte.Version } catch { 'unknown' }
+    $ideSolution = try { $dte.Solution.FullName } catch { '' }
+
     $data = [PSCustomObject]@{
         progId              = $usedProgId
-        version             = try { $dte.Version } catch { 'unknown' }
-        solution            = try { $dte.Solution.FullName } catch { '' }
+        version             = $ideVersion
+        solution            = $ideSolution
         sysManagerAvailable = $sysManagerAvailable
     }
 

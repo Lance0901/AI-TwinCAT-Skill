@@ -24,11 +24,10 @@ function Set-TcPlcState {
 
     try {
         $targetState = $stateMap[$State]
-        $script:TcAdsClient.WriteControl(
-            [TwinCAT.Ads.AdsState]$targetState,
-            0,
-            [byte[]]@()
-        )
+        $newStateInfo = New-Object TwinCAT.Ads.StateInfo
+        $newStateInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], $targetState)
+        $newStateInfo.DeviceState = 0
+        $script:TcAdsClient.WriteControl($newStateInfo)
 
         # Verify new state
         Start-Sleep -Milliseconds 200

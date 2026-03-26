@@ -43,9 +43,10 @@ function Add-TcGvl {
         # GVL sub-type
         $newItem = $plcProject.CreateChild($Name, 615, '', $declXml)
 
+        $itemPath = try { $newItem.PathName } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name = $Name
-            path = try { $newItem.PathName } catch { '' }
+            path = $itemPath
         })
     }
     catch {
