@@ -1,0 +1,111 @@
+{
+  "name": "twincat-automation",
+  "description": "TwinCAT 3 IDE automation and PLC runtime control",
+  "entryPoint": "pwsh Invoke-TwinCATAutomation.ps1",
+  "tools": [
+    {
+      "name": "ConnectIde",
+      "description": "Connect to TwinCAT 3 IDE (XAE Shell or VS2022)",
+      "parameters": {
+        "ProgId": { "type": "string", "description": "COM ProgID", "required": false }
+      }
+    },
+    {
+      "name": "NewProject",
+      "description": "Create new TwinCAT project with PLC and MAIN program",
+      "parameters": {
+        "Name": { "type": "string", "description": "Project name", "required": true },
+        "Path": { "type": "string", "description": "Target directory", "required": false }
+      }
+    },
+    {
+      "name": "OpenProject",
+      "description": "Open existing TwinCAT solution",
+      "parameters": {
+        "Path": { "type": "string", "description": "Path to .sln file", "required": true }
+      }
+    },
+    {
+      "name": "GetProjectTree",
+      "description": "Read full project structure as JSON tree",
+      "parameters": {}
+    },
+    {
+      "name": "AddPou",
+      "description": "Add POU (Program, FunctionBlock, or Function)",
+      "parameters": {
+        "Name": { "type": "string", "required": true },
+        "Type": { "type": "string", "enum": ["Program", "FunctionBlock", "Function"], "required": true },
+        "ReturnType": { "type": "string", "required": false }
+      }
+    },
+    {
+      "name": "WritePouCode",
+      "description": "Write Structured Text code into a POU",
+      "parameters": {
+        "PouName": { "type": "string", "required": true },
+        "Declaration": { "type": "string", "required": false },
+        "Implementation": { "type": "string", "required": false }
+      }
+    },
+    {
+      "name": "BuildProject",
+      "description": "Build PLC project and return results",
+      "parameters": {}
+    },
+    {
+      "name": "EnableConfig",
+      "description": "Activate TwinCAT configuration",
+      "parameters": {
+        "Force": { "type": "boolean", "required": false }
+      }
+    },
+    {
+      "name": "ConnectAds",
+      "description": "Connect to PLC runtime via ADS",
+      "parameters": {
+        "AmsNetId": { "type": "string", "required": false, "default": "127.0.0.1.1.1" },
+        "Port": { "type": "integer", "required": false, "default": 851 }
+      }
+    },
+    {
+      "name": "ReadVariable",
+      "description": "Read PLC variable value by symbol name",
+      "parameters": {
+        "Path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "name": "WriteVariable",
+      "description": "Write value to PLC variable",
+      "parameters": {
+        "Path": { "type": "string", "required": true },
+        "Value": { "type": "any", "required": true }
+      }
+    },
+    {
+      "name": "GetPlcState",
+      "description": "Read current PLC runtime state",
+      "parameters": {}
+    },
+    {
+      "name": "SetPlcState",
+      "description": "Set PLC runtime state (Run/Stop/Reset)",
+      "parameters": {
+        "State": { "type": "string", "enum": ["Run", "Stop", "Reset"], "required": true }
+      }
+    },
+    {
+      "name": "RunTestCycle",
+      "description": "Full Build-Activate-Login-Run-Test-Stop cycle",
+      "parameters": {
+        "TestCases": { "type": "array", "required": true }
+      }
+    },
+    {
+      "name": "ListOperations",
+      "description": "List all available operations",
+      "parameters": {}
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+function Read-TcVariable {
+    <#
+    .SYNOPSIS
+        Reads PLC variable(s) by symbol name via ADS.
+    .PARAMETER Path
+        Variable path(s). Single string or array (e.g., "MAIN.nCounter" or @("MAIN.nCounter","MAIN.bRunning")).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Path
+    )
+
+    try { Assert-TcAdsConnection } catch {
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+
+    try {
+        $results = @()
+
+        foreach ($varPath in $Path) {
+            try {
+                $handle = $script:TcAdsClient.CreateVariableHandle($varPath)
+                $symbolInfo = $script:TcAdsClient.ReadSymbolInfo($varPath)
+                $typeSize = $symbolInfo.Size
+                $typeName = $symbolInfo.Type
+
+                # Read based on common types
+                $value = $null
+                switch -Regex ($typeName.ToUpper()) {
+                    '^BOOL$' { $value = $script:TcAdsClient.ReadAny($handle, [bool]) }
+                    '^(S?INT|BYTE)$' { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
+                    '^(U?INT|WORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
+                    '^(U?DINT|DWORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int32]) }
+                    '^(U?LINT|LWORD)$' { $value = $script:TcAdsClient.ReadAny($handle, [int64]) }
+                    '^REAL$' { $value = $script:TcAdsClient.ReadAny($handle, [float]) }
+                    '^LREAL$' { $value = $script:TcAdsClient.ReadAny($handle, [double]) }
+                    '^STRING' {
+                        $strLen = if ($typeSize -gt 0) { $typeSize } else { 255 }
+                        $value = $script:TcAdsClient.ReadAny($handle, [string], @([int]$strLen))
+                    }
+                    default {
+                        # Read as byte array for structs/unknown types
+                        $buffer = New-Object byte[] $typeSize
+                        $script:TcAdsClient.Read($handle, $buffer)
+                        $value = $buffer
+                    }
+                }
+
+                $script:TcAdsClient.DeleteVariableHandle($handle)
+
+                $results += [PSCustomObject]@{
+                    path  = $varPath
+                    value = $value
+                    type  = $typeName
+                }
+            }
+            catch {
+                $results += [PSCustomObject]@{
+                    path  = $varPath
+                    error = $_.Exception.Message
+                }
+            }
+        }
+
+        if ($Path.Count -eq 1) {
+            if ($results[0].PSObject.Properties['error']) {
+                New-TcResult -Success $false -ErrorMessage $results[0].error -ErrorCode 'SYMBOL_NOT_FOUND'
+            }
+            else {
+                New-TcResult -Success $true -Data $results[0]
+            }
+        }
+        else {
+            New-TcResult -Success $true -Data $results
+        }
+    }
+    catch {
+        New-TcResult -Success $false -ErrorMessage "Failed to read variable: $_" -ErrorCode 'ADS_READ_FAILED'
+    }
+}

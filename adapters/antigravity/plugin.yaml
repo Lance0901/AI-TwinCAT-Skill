@@ -1,0 +1,106 @@
+name: twincat-automation
+description: TwinCAT 3 IDE automation and PLC runtime control via PowerShell
+version: 0.1.0
+author: Lance0901
+
+runtime:
+  command: pwsh
+  args:
+    - Invoke-TwinCATAutomation.ps1
+    - --operation
+    - "{{operation}}"
+    - --params
+    - "{{params_json}}"
+
+actions:
+  - name: ConnectIde
+    description: Connect to TwinCAT 3 IDE
+    parameters:
+      ProgId:
+        type: string
+        required: false
+        description: COM ProgID (default TcXaeShell.DTE.17.0)
+
+  - name: NewProject
+    description: Create new TwinCAT project
+    parameters:
+      Name:
+        type: string
+        required: true
+      Path:
+        type: string
+        required: false
+
+  - name: AddPou
+    description: Add POU to PLC project
+    parameters:
+      Name:
+        type: string
+        required: true
+      Type:
+        type: string
+        enum: [Program, FunctionBlock, Function]
+        required: true
+
+  - name: WritePouCode
+    description: Write Structured Text code into POU
+    parameters:
+      PouName:
+        type: string
+        required: true
+      Declaration:
+        type: string
+        required: false
+      Implementation:
+        type: string
+        required: false
+
+  - name: BuildProject
+    description: Build PLC project
+
+  - name: EnableConfig
+    description: Activate TwinCAT configuration
+
+  - name: ConnectAds
+    description: Connect to PLC runtime via ADS
+    parameters:
+      AmsNetId:
+        type: string
+        default: "127.0.0.1.1.1"
+      Port:
+        type: integer
+        default: 851
+
+  - name: ReadVariable
+    description: Read PLC variable
+    parameters:
+      Path:
+        type: string
+        required: true
+
+  - name: WriteVariable
+    description: Write PLC variable
+    parameters:
+      Path:
+        type: string
+        required: true
+      Value:
+        required: true
+
+  - name: SetPlcState
+    description: Set PLC state (Run/Stop/Reset)
+    parameters:
+      State:
+        type: string
+        enum: [Run, Stop, Reset]
+        required: true
+
+  - name: RunTestCycle
+    description: Full Build-Test cycle
+    parameters:
+      TestCases:
+        type: array
+        required: true
+
+  - name: ListOperations
+    description: List all available operations
