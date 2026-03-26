@@ -1,0 +1,24 @@
+# PowerShell
+*.ps1xml
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vs/
+*.suo
+*.user
+
+# TwinCAT
+_Boot/
+_CompileInfo/
+*.tpzip
+*.tszip
+
+# Node (if any tooling)
+node_modules/
+
+# Environment
+.env
+.env.*
