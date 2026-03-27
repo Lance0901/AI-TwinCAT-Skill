@@ -55,16 +55,31 @@
     },
     {
       "name": "EnableConfig",
-      "description": "Activate TwinCAT configuration",
+      "description": "Activate TwinCAT configuration. Use Force to do full Config->Activate->Run cycle via ADS (no dialogs)",
       "parameters": {
         "Force": { "type": "boolean", "required": false }
       }
     },
     {
-      "name": "ConnectAds",
-      "description": "Connect to PLC runtime via ADS",
+      "name": "EnterPlcOnline",
+      "description": "Login to PLC runtime and download program (no dialogs, uses Login(3) flag)",
       "parameters": {
-        "AmsNetId": { "type": "string", "required": false, "default": "127.0.0.1.1.1" },
+        "PlcProjectPath": { "type": "string", "description": "Tree path to PLC project (auto-detected if omitted)", "required": false }
+      }
+    },
+    {
+      "name": "SetSystemState",
+      "description": "Switch TwinCAT system state via ADS WriteControl (no dialogs)",
+      "parameters": {
+        "State": { "type": "string", "enum": ["Run", "Config"], "required": true },
+        "AmsNetId": { "type": "string", "description": "Auto-detected from IDE if omitted", "required": false }
+      }
+    },
+    {
+      "name": "ConnectAds",
+      "description": "Connect to PLC runtime via ADS. AmsNetId is auto-detected from IDE target if omitted.",
+      "parameters": {
+        "AmsNetId": { "type": "string", "description": "Auto-detected from IDE if omitted", "required": false },
         "Port": { "type": "integer", "required": false, "default": 851 }
       }
     },
@@ -90,7 +105,7 @@
     },
     {
       "name": "SetPlcState",
-      "description": "Set PLC runtime state (Run/Stop/Reset)",
+      "description": "Set PLC runtime state (Run/Stop/Reset) via ADS",
       "parameters": {
         "State": { "type": "string", "enum": ["Run", "Stop", "Reset"], "required": true }
       }

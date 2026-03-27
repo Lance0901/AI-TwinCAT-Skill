@@ -59,14 +59,39 @@ actions:
     description: Build PLC project
 
   - name: EnableConfig
-    description: Activate TwinCAT configuration
+    description: Activate TwinCAT configuration. Use Force for full Config->Activate->Run via ADS (no dialogs)
+    parameters:
+      Force:
+        type: boolean
+        required: false
+
+  - name: EnterPlcOnline
+    description: Login to PLC runtime and download program (no dialogs, Login(3) flag)
+    parameters:
+      PlcProjectPath:
+        type: string
+        required: false
+        description: Tree path to PLC project (auto-detected if omitted)
+
+  - name: SetSystemState
+    description: Switch TwinCAT system state via ADS WriteControl (no dialogs)
+    parameters:
+      State:
+        type: string
+        enum: [Run, Config]
+        required: true
+      AmsNetId:
+        type: string
+        required: false
+        description: Auto-detected from IDE if omitted
 
   - name: ConnectAds
-    description: Connect to PLC runtime via ADS
+    description: Connect to PLC runtime via ADS. AmsNetId auto-detected from IDE target.
     parameters:
       AmsNetId:
         type: string
-        default: "127.0.0.1.1.1"
+        required: false
+        description: Auto-detected from IDE if omitted
       Port:
         type: integer
         default: 851
@@ -88,7 +113,7 @@ actions:
         required: true
 
   - name: SetPlcState
-    description: Set PLC state (Run/Stop/Reset)
+    description: Set PLC state (Run/Stop/Reset) via ADS
     parameters:
       State:
         type: string
