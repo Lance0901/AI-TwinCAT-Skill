@@ -40,9 +40,11 @@ The system SHALL activate the TwinCAT configuration using `ITcSysManager::Activa
 - **WHEN** the user calls `Enable-TcConfig`
 - **THEN** the system calls `ITcSysManager::ActivateConfiguration()` and returns the activation result as JSON
 
-#### Scenario: Activation requires restart
-- **WHEN** the configuration activation requires a TwinCAT restart
-- **THEN** the system returns a warning indicating a restart is needed and includes a `-Force` parameter option to auto-restart
+#### Scenario: Activation with full restart (no dialogs)
+- **WHEN** the user calls `Enable-TcConfig -Force`
+- **THEN** the system executes: Config mode (ADS WriteControl) → ActivateConfiguration() → Run mode (ADS WriteControl), all without dialog popups
+
+**Implementation note (verified 2026-03-27):** `-Force` uses `Set-TcSystemState -State Config` then `$sm.ActivateConfiguration()` then `Set-TcSystemState -State Run`. All state transitions via ADS WriteControl on port 10000 — zero dialogs.
 
 ### Requirement: Download PLC program
 The system SHALL download the compiled PLC program to the target runtime using `ITcPlcProject`.

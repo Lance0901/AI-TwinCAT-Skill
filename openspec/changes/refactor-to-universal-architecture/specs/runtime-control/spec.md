@@ -27,11 +27,13 @@ The system SHALL read the current PLC runtime state. The `Get-TcPlcState` cmdlet
 - **THEN** the system returns `{"success": true, "data": {"state": "Stop", "adsState": 6}}`
 
 ### Requirement: PLC Login and Logout
-The system SHALL provide independent Login and Logout operations for the PLC runtime, separate from the program download.
+The system SHALL provide independent Login and Logout operations for the PLC runtime, separate from the program download. Login MUST suppress all dialog popups for headless automation.
+
+**Implementation note (verified 2026-03-27):** Use `ITcSmTreeItem::Login(3)` on the PLC Project tree item (e.g., `TIPC^LoggerPLC^LoggerPLC Project`). Flag 3 = CompileBeforeLogin(1) + SuppressAllDialogs(2). This also auto-triggers Download if the runtime has no program loaded. Do NOT use `ITcPlcProject::Login()` via `.Object` — the COM interface is unreliable.
 
 #### Scenario: Login to PLC
 - **WHEN** the user calls `Enter-TcPlcOnline`
-- **THEN** the system logs into the PLC runtime via `ITcPlcProject` and returns the online status
+- **THEN** the system logs into the PLC runtime via `ITcSmTreeItem::Login(3)` and returns the online status (no dialog popups)
 
 #### Scenario: Logout from PLC
 - **WHEN** the user calls `Exit-TcPlcOnline`
@@ -42,15 +44,17 @@ The system SHALL provide independent Login and Logout operations for the PLC run
 - **THEN** the system returns success with a note that it was already online
 
 ### Requirement: TwinCAT system state control
-The system SHALL control the TwinCAT system state (Config mode vs Run mode) via `ITcSysManager` or ADS.
+The system SHALL control the TwinCAT system state (Config mode vs Run mode) via ADS WriteControl on port 10000. MUST NOT use `ITcSysManager::StartRestartTwinCAT()` which triggers dialog popups.
+
+**Implementation note (verified 2026-03-27):** Use `TcAdsClient.Connect(amsNetId, 10000)` then `WriteControl` with AdsState=16 (Reconfig) for Config mode, AdsState=2 (Reset) for Run mode. AmsNetId MUST be auto-detected via `ITcSysManager::GetTargetNetId()`.
 
 #### Scenario: Switch to Run mode
 - **WHEN** the user calls `Set-TcSystemState -State Run`
-- **THEN** the system switches TwinCAT to Run mode (equivalent to green TwinCAT icon)
+- **THEN** the system sends ADS WriteControl (AdsState=Reset) to port 10000, switching TwinCAT to Run mode (no dialog)
 
 #### Scenario: Switch to Config mode
 - **WHEN** the user calls `Set-TcSystemState -State Config`
-- **THEN** the system switches TwinCAT to Config mode (equivalent to blue TwinCAT icon)
+- **THEN** the system sends ADS WriteControl (AdsState=Reconfig) to port 10000, switching TwinCAT to Config mode (no dialog)
 
 #### Scenario: Query current system state
 - **WHEN** the user calls `Get-TcSystemState`

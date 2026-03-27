@@ -74,6 +74,18 @@ pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"name":"MyPr
 **Decision**: IDE connection (`Connect-TcIde`) and ADS connection (`Connect-TcAds`) are independent. IDE connection is for design-time operations (edit, build). ADS connection is for runtime operations (read/write variables, state control).
 **Rationale**: They serve different purposes and may target different systems (e.g., develop on local machine, test on remote PLC). Keeping them separate also allows runtime testing without an IDE open (ADS only needs TwinCAT runtime, not XAE).
 
+### 10. Dialog-free lifecycle via ADS WriteControl and Login(3)
+**Decision**: Use ADS `WriteControl` on port 10000 (AdsState=Reconfig/Reset) to switch system state instead of `ITcSysManager::StartRestartTwinCAT()`. Use `ITcSmTreeItem::Login(3)` (flag 3 = CompileBeforeLogin + SuppressAllDialogs) for PLC login and download.
+**Rationale**: `StartRestartTwinCAT()` and `ITcPlcProject::Login()` trigger interactive dialog popups that block headless AI tool automation. ADS WriteControl operates at the protocol level with no UI. Login(3) was discovered via testing — the flag value 3 combines compile-before-login (1) and suppress-all-dialogs (2). Verified 2026-03-27 on UM Runtime.
+
+### 11. Dynamic AmsNetId via GetTargetNetId()
+**Decision**: Never hardcode AmsNetId. Auto-detect from `ITcSysManager::GetTargetNetId()` which returns the AmsNetId of the currently connected target.
+**Rationale**: AmsNetId changes per target — local UM Runtime (`199.4.42.250.1.1`), local kernel-mode (`192.168.x.x.1.1`), remote CX controllers, etc. Hardcoding `127.0.0.1.1.1` (the loopback) fails on UM Runtime. The IDE always knows the correct AmsNetId for the active target.
+
+### 12. Login(3) handles both login and download
+**Decision**: `Enter-TcPlcOnline` calls `Login(3)` on the PLC Project tree item (not `ITcPlcProject.Login()` + `ITcPlcProject.Download()` separately).
+**Rationale**: `Login(3)` on `ITcSmTreeItem` automatically detects whether the runtime has a program loaded and triggers download if needed. The `ITcPlcProject` COM interface obtained via `$treeItem.Object` returns `System.__ComObject` that doesn't always expose `Login`/`Download` methods reliably. Using the tree item's `Login(nFlags)` method is more robust and tested.
+
 ### 9. Test cycle as composable pipeline
 **Decision**: `Invoke-TcTestCycle` orchestrates Build → Activate → Login → Run → Test → Stop as a single command, but each step is also available as an independent cmdlet.
 **Rationale**: AI tools benefit from a single "test everything" command for the common case. But advanced users and edge cases need individual steps (e.g., skip build if already built, keep PLC running after tests).

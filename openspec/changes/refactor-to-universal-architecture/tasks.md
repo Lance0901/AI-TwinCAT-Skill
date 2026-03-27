@@ -91,7 +91,13 @@
 ## 13. Integration Testing
 
 - [ ] 13.1 End-to-end test: Connect → New Project → Add FB → Write Code → Build
-- [ ] 13.2 End-to-end test: Build → Activate → Login → Run → Read Variable → Stop (full test cycle)
+- [x] 13.2 End-to-end test: Build → Activate → Login → Run → Read Variable → Stop (full test cycle)
+  - **Tested 2026-03-27** against real project `Logger-Service` (FB_LoggerServer) on UM Runtime
+  - Target AmsNetId: `199.4.42.250.1.1` (auto-detected via `GetTargetNetId()`)
+  - Full lifecycle passed: Config(ADS) → Activate → Run(ADS) → Login(3) → Start → ADS Read
+  - Variables read: `bStart=False`, `nBurstCount=6`, `nStep=0` — all correct
+  - Zero dialog popups throughout entire cycle
 - [ ] 13.3 Test CLI entry point with all operations including ADS
-- [ ] 13.4 Test Claude Code adapter with actual Claude Code session
+- [x] 13.4 Test Claude Code adapter with actual Claude Code session
+  - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
 - [ ] 13.5 Verify JSON output format consistency across all cmdlets
