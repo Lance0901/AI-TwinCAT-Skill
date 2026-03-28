@@ -23,9 +23,21 @@ The system SHALL connect to a running TwinCAT 3 IDE instance using TwinCAT Autom
 - **WHEN** TwinCAT 3 XAE is not installed on the machine
 - **THEN** the system returns an error with code `TWINCAT_NOT_FOUND` and installation guidance
 
+#### Scenario: Connect with SolutionPath (one-step)
+- **WHEN** the user calls `Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"`
+- **THEN** the system finds or launches an IDE, opens the specified solution, obtains `ITcSysManager`, and returns full connection info including `amsNetId` — all in one call
+
+#### Scenario: Connect with SolutionPath already open
+- **WHEN** the specified solution is already open in a running IDE instance
+- **THEN** the system connects to that instance directly without re-opening the solution
+
+#### Scenario: Smart IDE selection (no SolutionPath)
+- **WHEN** multiple IDE instances are running and no `-SolutionPath` is specified
+- **THEN** the system prefers connecting to an instance that already has a TwinCAT project loaded
+
 #### Scenario: ITcSysManager not available
 - **WHEN** the IDE is connected but no TwinCAT project is loaded (ITcSysManager cannot be obtained)
-- **THEN** the system returns a partial connection (DTE only) with a warning that project-level operations are unavailable until a project is opened
+- **THEN** the system returns a partial connection (DTE only) with a `warning` field containing actionable next steps (e.g., use `-SolutionPath` or call `Open-TcProject`)
 
 ### Requirement: JSON-based communication
 All cmdlets SHALL output results as JSON objects containing at minimum a `success` boolean and either a `data` object or an `error` object with a `message` field and a `code` field.

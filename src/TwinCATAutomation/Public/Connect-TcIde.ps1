@@ -5,13 +5,20 @@ function Connect-TcIde {
     .DESCRIPTION
         Obtains the EnvDTE and ITcSysManager interfaces. Tries XAE Shell first,
         then falls back to VS2022. Launches a new instance if none found.
+        When -SolutionPath is specified, automatically opens the project and
+        obtains ITcSysManager in one step.
     .PARAMETER ProgId
         COM ProgID to connect to. Default: TcXaeShell.DTE.17.0
+    .PARAMETER SolutionPath
+        Path to a .sln file. If specified, the IDE will open this solution
+        automatically after connecting (or connect to an instance already
+        running this solution).
     .PARAMETER NoLaunch
         If set, do not launch a new IDE instance if none is running.
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
+        Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
     #>
     [CmdletBinding()]
     param(
@@ -19,11 +26,21 @@ function Connect-TcIde {
         [string]$ProgId,
 
         [Parameter()]
+        [string]$SolutionPath,
+
+        [Parameter()]
         [switch]$NoLaunch
     )
 
-    $progIds = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
+    # Validate SolutionPath if provided
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
+        if (-not (Test-Path $SolutionPath)) {
+            return New-TcResult -Success $false -ErrorMessage "Solution file not found: $SolutionPath" -ErrorCode 'FILE_NOT_FOUND'
+        }
+        $SolutionPath = (Resolve-Path $SolutionPath).Path
+    }
 
+    $progIds = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
     if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
         $progIds = @($ProgId)
     }
@@ -31,16 +48,79 @@ function Connect-TcIde {
     $dte = $null
     $usedProgId = $null
 
-    # Try to connect to running instance
-    foreach ($pid in $progIds) {
-        $dte = Get-ComObject -ProgId $pid
-        if ($null -ne $dte) {
-            $usedProgId = $pid
-            break
+    # --- Strategy 1: If SolutionPath specified, try to find IDE already running it ---
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
+        foreach ($pid in $progIds) {
+            $candidate = Get-ComObject -ProgId $pid
+            if ($null -ne $candidate) {
+                try {
+                    $openSln = $candidate.Solution.FullName
+                    if ($openSln -eq $SolutionPath) {
+                        $dte = $candidate
+                        $usedProgId = $pid
+                        Write-Verbose "Found IDE already running target solution via $pid"
+                        break
+                    }
+                }
+                catch { }
+            }
         }
     }
 
-    # Launch new instance if not found
+    # --- Strategy 2: Find any running IDE (prefer one with TwinCAT project) ---
+    if ($null -eq $dte) {
+        $dteWithProject = $null
+        $dteWithoutProject = $null
+        $pidWithProject = $null
+        $pidWithoutProject = $null
+
+        foreach ($pid in $progIds) {
+            $candidate = Get-ComObject -ProgId $pid
+            if ($null -ne $candidate) {
+                # Check if this instance has a TwinCAT project loaded
+                $hasTcProject = $false
+                try {
+                    $sol = $candidate.Solution
+                    if ($null -ne $sol -and $sol.Projects.Count -gt 0) {
+                        for ($i = 1; $i -le $sol.Projects.Count; $i++) {
+                            try {
+                                $sm = $sol.Projects.Item($i).Object
+                                if ($null -ne $sm) {
+                                    $hasTcProject = $true
+                                    break
+                                }
+                            }
+                            catch { continue }
+                        }
+                    }
+                }
+                catch { }
+
+                if ($hasTcProject -and $null -eq $dteWithProject) {
+                    $dteWithProject = $candidate
+                    $pidWithProject = $pid
+                }
+                elseif (-not $hasTcProject -and $null -eq $dteWithoutProject) {
+                    $dteWithoutProject = $candidate
+                    $pidWithoutProject = $pid
+                }
+            }
+        }
+
+        # Prefer IDE with TwinCAT project
+        if ($null -ne $dteWithProject) {
+            $dte = $dteWithProject
+            $usedProgId = $pidWithProject
+            Write-Verbose "Connected to IDE with TwinCAT project via $usedProgId"
+        }
+        elseif ($null -ne $dteWithoutProject) {
+            $dte = $dteWithoutProject
+            $usedProgId = $pidWithoutProject
+            Write-Verbose "Connected to IDE (no TwinCAT project) via $usedProgId"
+        }
+    }
+
+    # --- Strategy 3: Launch new instance if not found ---
     if ($null -eq $dte) {
         if ($NoLaunch) {
             return New-TcResult -Success $false -ErrorMessage 'No running TwinCAT IDE instance found.' -ErrorCode 'IDE_NOT_FOUND'
@@ -82,7 +162,22 @@ function Connect-TcIde {
     $script:TcProgId = $usedProgId
     $script:TcIdeConnected = $true
 
-    # Try to obtain ITcSysManager
+    # --- Auto-open solution if -SolutionPath specified and not already open ---
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
+        $currentSln = try { $dte.Solution.FullName } catch { '' }
+        if ($currentSln -ne $SolutionPath) {
+            try {
+                Write-Verbose "Opening solution: $SolutionPath"
+                $dte.Solution.Open($SolutionPath)
+                Start-Sleep -Seconds 2  # Allow solution to fully load
+            }
+            catch {
+                return New-TcResult -Success $false -ErrorMessage "Failed to open solution: $_" -ErrorCode 'PROJECT_OPEN_FAILED'
+            }
+        }
+    }
+
+    # Try to obtain ITcSysManager (force refresh after potential solution open)
     $script:TcSysManager = $null
     $sysManagerAvailable = $false
     try {
@@ -113,8 +208,22 @@ function Connect-TcIde {
         sysManagerAvailable = $sysManagerAvailable
     }
 
-    if (-not $sysManagerAvailable) {
-        $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue 'No TwinCAT project loaded. Project-level operations unavailable until a project is opened.'
+    # Add target info if ITcSysManager is available
+    if ($sysManagerAvailable) {
+        try {
+            $amsNetId = $script:TcSysManager.GetTargetNetId()
+            $data | Add-Member -NotePropertyName 'amsNetId' -NotePropertyValue $amsNetId
+        }
+        catch { }
+    }
+    else {
+        $nextAction = if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
+            "Solution opened but no TwinCAT project found in '$SolutionPath'. Verify the .sln contains a TwinCAT project."
+        }
+        else {
+            'No TwinCAT project loaded. Use Connect-TcIde -SolutionPath "path\to\project.sln" to open a project, or call Open-TcProject.'
+        }
+        $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $nextAction
     }
 
     New-TcResult -Success $true -Data $data

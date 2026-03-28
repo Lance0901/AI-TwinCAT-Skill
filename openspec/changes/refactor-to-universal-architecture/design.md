@@ -86,6 +86,10 @@ pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"name":"MyPr
 **Decision**: `Enter-TcPlcOnline` calls `Login(3)` on the PLC Project tree item (not `ITcPlcProject.Login()` + `ITcPlcProject.Download()` separately).
 **Rationale**: `Login(3)` on `ITcSmTreeItem` automatically detects whether the runtime has a program loaded and triggers download if needed. The `ITcPlcProject` COM interface obtained via `$treeItem.Object` returns `System.__ComObject` that doesn't always expose `Login`/`Download` methods reliably. Using the tree item's `Login(nFlags)` method is more robust and tested.
 
+### 13. Smart IDE connection with -SolutionPath
+**Decision**: `Connect-TcIde` accepts an optional `-SolutionPath` parameter. When specified, it finds or launches an IDE, opens the solution, and obtains ITcSysManager in one call. When not specified, it prefers connecting to an IDE instance that already has a TwinCAT project loaded.
+**Rationale**: AI tools need a single reliable command to establish a full connection. The previous flow required `Connect-TcIde` + `Open-TcProject` as separate steps, and if the wrong IDE instance was selected via ROT, all subsequent operations failed silently. With `-SolutionPath`, the connection is deterministic — the AI tool specifies exactly which project to work with. The return value also includes `amsNetId` when ITcSysManager is available, giving the AI tool all information needed for the full lifecycle in one response.
+
 ### 9. Test cycle as composable pipeline
 **Decision**: `Invoke-TcTestCycle` orchestrates Build → Activate → Login → Run → Test → Stop as a single command, but each step is also available as an independent cmdlet.
 **Rationale**: AI tools benefit from a single "test everything" command for the common case. But advanced users and edge cases need individual steps (e.g., skip build if already built, keep PLC running after tests).

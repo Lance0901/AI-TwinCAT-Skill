@@ -5,11 +5,21 @@ function Get-TcSysManager {
     .DESCRIPTION
         Gets the ITcSysManager interface from the first TwinCAT project in the open solution.
         Returns $null if no TwinCAT project is loaded.
+    .PARAMETER Refresh
+        Force re-scan of solution projects, clearing the cached ITcSysManager.
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter()]
+        [switch]$Refresh
+    )
 
     Assert-TcConnection
+
+    if ($Refresh) {
+        $script:TcSysManager = $null
+        Write-Verbose 'Get-TcSysManager: cache cleared, re-scanning projects.'
+    }
 
     if ($null -ne $script:TcSysManager) {
         return $script:TcSysManager
@@ -18,6 +28,7 @@ function Get-TcSysManager {
     try {
         $solution = $script:TcDte.Solution
         if ($null -eq $solution -or $solution.Projects.Count -eq 0) {
+            Write-Verbose 'Get-TcSysManager: No solution or no projects loaded.'
             return $null
         }
 
@@ -28,6 +39,7 @@ function Get-TcSysManager {
                 $sysManager = $project.Object
                 if ($null -ne $sysManager) {
                     $script:TcSysManager = $sysManager
+                    Write-Verbose "Get-TcSysManager: Found ITcSysManager in project '$($project.Name)'."
                     return $sysManager
                 }
             }
@@ -37,9 +49,11 @@ function Get-TcSysManager {
             }
         }
 
+        Write-Verbose "Get-TcSysManager: Scanned $($solution.Projects.Count) project(s), none have ITcSysManager."
         return $null
     }
     catch {
+        Write-Verbose "Get-TcSysManager: Error scanning projects: $_"
         return $null
     }
 }

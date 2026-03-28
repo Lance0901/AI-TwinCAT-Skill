@@ -88,6 +88,13 @@
 - [x] 12.2 Create `adapters/codex/tools.json` — Codex tool definitions mapping to Invoke-TwinCATAutomation.ps1
 - [x] 12.3 Create `adapters/antigravity/plugin.yaml` — Antigravity plugin definition
 
+## 14. Smart IDE Connection
+
+- [x] 14.1 Update `Connect-TcIde.ps1` — add `-SolutionPath` parameter, smart DTE selection (prefer instance with TwinCAT project), auto-open solution, return `amsNetId` in response
+- [x] 14.2 Update `Get-TcSysManager.ps1` — add `-Refresh` switch, verbose logging
+- [x] 14.3 Update `ide-automation/spec.md` — add SolutionPath and smart selection scenarios
+- [x] 14.4 Update `design.md` — add Decision #13
+
 ## 13. Integration Testing
 
 - [ ] 13.1 End-to-end test: Connect → New Project → Add FB → Write Code → Build
