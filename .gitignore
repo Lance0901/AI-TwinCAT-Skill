@@ -19,6 +19,9 @@ _CompileInfo/
 # Node (if any tooling)
 node_modules/
 
+# Temp/debug scripts
+temp_*.ps1
+
 # Environment
 .env
 .env.*
