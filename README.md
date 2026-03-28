@@ -1,3 +1,5 @@
+[繁體中文](README.zh-TW.md) | English
+
 # AI TwinCAT Skill
 
 A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigravity, etc.) fully automate TwinCAT 3 IDE and PLC runtime — from project creation to live testing — with zero dialog popups.
