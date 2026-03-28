@@ -111,7 +111,9 @@
   - Fixed: Build-TcProject retry for RPC_E_CALL_REJECTED (5 attempts)
   - Fixed: Cache AmsNetId before Activate (COM references stale after restart)
   - Test 1 (Initial state check): **PASSED** — bStart=False, bBusy=False, nBurstCount=6
-  - Test 2 (Trigger bStart): **FAIL** — nStep=0, needs PLC logic investigation
+  - Test 2 (Trigger bStart): initially **FAIL** — nStep=0, root cause: wrote FB VAR_INPUT directly
+  - **Re-tested 2026-03-29**: Changed to write `MAIN.bRunFlowTest` (MAIN-level var), assert `bDone=True` → **PASSED**
+  - Root cause: PLC overwrites FB VAR_INPUT every scan cycle; must write MAIN-level vars that feed into FB calls (Decision #17)
 - [ ] 13.3 Test CLI entry point with all operations including ADS
 - [x] 13.4 Test Claude Code adapter with actual Claude Code session
   - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
@@ -123,4 +125,6 @@
 - [x] 15.2 Invoke-TcTestCycle: reorder steps — ADS Connect must come AFTER Login+Download (port 851 unavailable before download)
 - [x] 15.3 Invoke-TcTestCycle: cache AmsNetId before Activate, don't reconnect IDE (original COM reference survives XAR restart)
 - [x] 15.4 Build-TcProject: add retry loop for RPC_E_CALL_REJECTED with license check guidance
-- [ ] 15.5 Investigate Test 2 failure: Write-TcVariable may not trigger PLC logic correctly, or wait time insufficient
+- [x] 15.5 Investigate Test 2 failure: Write-TcVariable works correctly; root cause is PLC overwriting FB VAR_INPUT each scan cycle
+  - **Resolved 2026-03-29**: Must write MAIN-level variables (not FB inputs) when PLC calls FB with explicit input assignments
+  - Write-TcVariable confirmed working for BOOL, UINT, and other types — ADS protocol write succeeds and persists for standalone VARs

@@ -102,6 +102,10 @@ pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"name":"MyPr
 **Decision**: The correct automated test cycle order is: Build → Activate → Login(3) → Connect ADS → Start PLC → Run Tests. ADS connection MUST come after Login+Download.
 **Rationale**: ADS port 851 does not exist until a PLC program is downloaded to the runtime. If Connect-TcAds is called before Enter-TcPlcOnline, it fails with ADS error 0x6 (target port not found). The AmsNetId must be cached before Activate since GetTargetNetId() may fail on stale COM references.
 
+### 17. ADS writes to FB VAR_INPUT are overwritten by PLC cycle
+**Decision**: When testing PLC function blocks via ADS, write to MAIN-level standalone variables (e.g., `MAIN.bRunFlowTest`) instead of FB inputs (e.g., `MAIN.fbLoggerFlowTest.bStart`). Document this as a best practice for AI-driven PLC testing.
+**Rationale**: If MAIN calls `fb(bStart := someExpr, ...)`, the PLC overwrites the FB's `bStart` every scan cycle. ADS writes to `MAIN.fbLoggerFlowTest.bStart` succeed at the protocol level (no error), but the value is immediately overwritten on the next PLC scan (~1ms). The write *does* appear to persist for <1 cycle in some cases, but it's unreliable. Writing to the MAIN-level variable that feeds the FB input is the correct and reliable approach. Verified 2026-03-29: writing `MAIN.bRunFlowTest` triggers the R_TRIG and FB execution, confirmed by `bDone` transitioning from False to True.
+
 ### 9. Test cycle as composable pipeline
 **Decision**: `Invoke-TcTestCycle` orchestrates Build → Activate → Login → ADS → Start → Test → Stop as a single command, but each step is also available as an independent cmdlet.
 **Rationale**: AI tools benefit from a single "test everything" command for the common case. But advanced users and edge cases need individual steps (e.g., skip build if already built, keep PLC running after tests).
