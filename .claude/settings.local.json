@@ -15,7 +15,8 @@
       "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"Get-ChildItem -Path ''C:\\\\TwinCAT'' -Recurse -Filter ''TwinCAT.Ads.dll'' -ErrorAction SilentlyContinue | Select-Object FullName, Length\")",
       "WebFetch(domain:infosys.beckhoff.com)",
       "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"$dte = [System.Runtime.InteropServices.Marshal]::GetActiveObject\\(''VisualStudio.DTE.17.0''\\); $proj = $dte.Solution.Projects.Item\\(1\\); $sm = $proj.Object; $xml = $sm.ProduceXml\\(\\); $xml.Substring\\(0, [Math]::Min\\(3000, $xml.Length\\)\\)\")",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:/Users/aka09/OneDrive/1000-Projects/2026-AI-TwinCAT-Skill/temp_test.ps1\")"
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:/Users/aka09/OneDrive/1000-Projects/2026-AI-TwinCAT-Skill/temp_test.ps1\")",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:/Users/aka09/OneDrive/1000-Projects/2026-AI-TwinCAT-Skill/temp_test_cycle.ps1\")"
     ]
   }
 }
