@@ -104,7 +104,23 @@
   - Full lifecycle passed: Config(ADS) → Activate → Run(ADS) → Login(3) → Start → ADS Read
   - Variables read: `bStart=False`, `nBurstCount=6`, `nStep=0` — all correct
   - Zero dialog popups throughout entire cycle
+- [x] 13.2b Full automated test cycle: Connect → Build → Activate → Login → Start → ADS → Test assertions
+  - **Tested 2026-03-29** against Logger-Service on UM Runtime via VS2022
+  - Fixed: Enter-TcPlcOnline uses LookupTreeItem with constructed path (Project child hidden after restart)
+  - Fixed: Invoke-TcTestCycle correct order: Build→Activate→Login→ADS→Start (ADS after Login)
+  - Fixed: Build-TcProject retry for RPC_E_CALL_REJECTED (5 attempts)
+  - Fixed: Cache AmsNetId before Activate (COM references stale after restart)
+  - Test 1 (Initial state check): **PASSED** — bStart=False, bBusy=False, nBurstCount=6
+  - Test 2 (Trigger bStart): **FAIL** — nStep=0, needs PLC logic investigation
 - [ ] 13.3 Test CLI entry point with all operations including ADS
 - [x] 13.4 Test Claude Code adapter with actual Claude Code session
   - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
 - [ ] 13.5 Verify JSON output format consistency across all cmdlets
+
+## 15. Bug Fixes from Integration Testing
+
+- [x] 15.1 Enter-TcPlcOnline: use `LookupTreeItem('TIPC^<name>^<name> Project')` instead of child enumeration — Project child hidden after TwinCAT restart but direct lookup still works
+- [x] 15.2 Invoke-TcTestCycle: reorder steps — ADS Connect must come AFTER Login+Download (port 851 unavailable before download)
+- [x] 15.3 Invoke-TcTestCycle: cache AmsNetId before Activate, don't reconnect IDE (original COM reference survives XAR restart)
+- [x] 15.4 Build-TcProject: add retry loop for RPC_E_CALL_REJECTED with license check guidance
+- [ ] 15.5 Investigate Test 2 failure: Write-TcVariable may not trigger PLC logic correctly, or wait time insufficient

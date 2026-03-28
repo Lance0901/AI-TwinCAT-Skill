@@ -90,8 +90,20 @@ pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"name":"MyPr
 **Decision**: `Connect-TcIde` accepts an optional `-SolutionPath` parameter. When specified, it finds or launches an IDE, opens the solution, and obtains ITcSysManager in one call. When not specified, it prefers connecting to an IDE instance that already has a TwinCAT project loaded.
 **Rationale**: AI tools need a single reliable command to establish a full connection. The previous flow required `Connect-TcIde` + `Open-TcProject` as separate steps, and if the wrong IDE instance was selected via ROT, all subsequent operations failed silently. With `-SolutionPath`, the connection is deterministic — the AI tool specifies exactly which project to work with. The return value also includes `amsNetId` when ITcSysManager is available, giving the AI tool all information needed for the full lifecycle in one response.
 
+### 14. LookupTreeItem for Project node after TwinCAT restart
+**Decision**: `Enter-TcPlcOnline` uses `$sm.LookupTreeItem('TIPC^<PlcName>^<PlcName> Project')` with a constructed full path, instead of enumerating children of the PLC node.
+**Rationale**: After TwinCAT restart (Config→Run cycle), the PLC node's child enumeration only returns "Instance" — the "Project" child is hidden. However, `LookupTreeItem` with the full path still resolves the Project node correctly. This is a quirk of the TwinCAT Automation Interface tree after a restart cycle. Verified 2026-03-29.
+
+### 15. Don't reconnect IDE after Activate
+**Decision**: After `Enable-TcConfig -Force` (which restarts XAR), do NOT call `Connect-TcIde` again. The original DTE and ITcSysManager COM references survive the XAR restart because XAE (IDE) remains running.
+**Rationale**: Reconnecting via `Connect-TcIde` after Activate can get a different or stale DTE reference, causing the Project tree to appear incomplete. The original reference, obtained before the restart, maintains full tree visibility including the Project node needed for Login(3). Only XAR restarts — XAE stays alive.
+
+### 16. Correct lifecycle step order
+**Decision**: The correct automated test cycle order is: Build → Activate → Login(3) → Connect ADS → Start PLC → Run Tests. ADS connection MUST come after Login+Download.
+**Rationale**: ADS port 851 does not exist until a PLC program is downloaded to the runtime. If Connect-TcAds is called before Enter-TcPlcOnline, it fails with ADS error 0x6 (target port not found). The AmsNetId must be cached before Activate since GetTargetNetId() may fail on stale COM references.
+
 ### 9. Test cycle as composable pipeline
-**Decision**: `Invoke-TcTestCycle` orchestrates Build → Activate → Login → Run → Test → Stop as a single command, but each step is also available as an independent cmdlet.
+**Decision**: `Invoke-TcTestCycle` orchestrates Build → Activate → Login → ADS → Start → Test → Stop as a single command, but each step is also available as an independent cmdlet.
 **Rationale**: AI tools benefit from a single "test everything" command for the common case. But advanced users and edge cases need individual steps (e.g., skip build if already built, keep PLC running after tests).
 
 ## Risks / Trade-offs
