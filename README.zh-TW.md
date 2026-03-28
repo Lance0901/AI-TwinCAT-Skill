@@ -210,6 +210,18 @@ pwsh ./TwinCATSetup-Codex.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
 
+## Antigravity 安裝
+
+一行指令將 TwinCAT 技能全域安裝到 Google Antigravity：
+
+```powershell
+pwsh ./TwinCATSetup-Antigravity.ps1
+```
+
+檢查先決條件後安裝技能到 `~/.gemini/antigravity/skills/twincat-automation/SKILL.md`。
+
+解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
+
 ## 更新日誌
 
 ### 2026-03-29

@@ -210,6 +210,18 @@ This checks prerequisites (Windows, TwinCAT, ADS DLL, IDE, module) and installs:
 
 To uninstall: `pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
 
+## Antigravity Setup
+
+One command to install the TwinCAT skill globally for Google Antigravity:
+
+```powershell
+pwsh ./TwinCATSetup-Antigravity.ps1
+```
+
+This checks prerequisites and installs the skill to `~/.gemini/antigravity/skills/twincat-automation/SKILL.md`.
+
+To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
+
 ## Changelog
 
 ### 2026-03-29
