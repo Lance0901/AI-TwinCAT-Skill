@@ -182,10 +182,27 @@ All commands return structured JSON:
 - **No dialogs** -- `Enable-TcConfig -Force` uses ADS WriteControl, `Enter-TcPlcOnline` uses `Login(3)`.
 - **Write to MAIN-level vars** when testing FBs -- PLC overwrites `VAR_INPUT` every scan cycle (see Decision #17).
 
+## Codex Setup
+
+One command to install the TwinCAT skill globally for Codex (works in any project after install):
+
+```powershell
+pwsh ./TwinCATSetup-Codex.ps1
+```
+
+This checks prerequisites (Windows, TwinCAT, ADS DLL, IDE, module) and installs:
+- `~/.agents/skills/twincat/SKILL.md` -- Codex skill with full API reference
+- `~/.codex/AGENTS.md` -- global project instructions
+
+To uninstall: `pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
+
 ## Changelog
 
 ### 2026-03-29
 
+- **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
+- **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
+- **.agents/skills/twincat/SKILL.md**: full 34-command API reference as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)

@@ -1,14 +1,27 @@
 <#
 .SYNOPSIS
-    TwinCAT Automation setup check for Codex.
-    Run this after cloning to verify all prerequisites are met.
+    Install TwinCAT Automation skill for Codex.
+    Checks prerequisites, then installs the skill + AGENTS.md to user-level
+    so Codex can use TwinCAT automation in ANY project.
 .EXAMPLE
     pwsh ./TwinCATSetup-Codex.ps1
+.EXAMPLE
+    pwsh ./TwinCATSetup-Codex.ps1 -Uninstall
 #>
+[CmdletBinding()]
+param(
+    [switch]$Uninstall
+)
 
 $ErrorActionPreference = 'Continue'
 $pass = 0
 $fail = 0
+$scriptRoot = $PSScriptRoot
+
+# Paths
+$userSkillDir  = Join-Path $HOME ".agents\skills\twincat"
+$codexHome     = Join-Path $HOME ".codex"
+$codexAgentsMd = Join-Path $codexHome "AGENTS.md"
 
 function Write-Check {
     param([string]$Name, [bool]$Ok, [string]$Detail)
@@ -23,6 +36,32 @@ function Write-Check {
     }
 }
 
+# ─── Uninstall ───
+if ($Uninstall) {
+    Write-Host ""
+    Write-Host "=== Uninstall TwinCAT Skill ===" -ForegroundColor Yellow
+    if (Test-Path $userSkillDir) {
+        Remove-Item $userSkillDir -Recurse -Force
+        Write-Host "  Removed: $userSkillDir" -ForegroundColor Green
+    } else {
+        Write-Host "  Not found: $userSkillDir" -ForegroundColor DarkGray
+    }
+    if (Test-Path $codexAgentsMd) {
+        $content = Get-Content $codexAgentsMd -Raw
+        if ($content -match 'TwinCAT Automation') {
+            Remove-Item $codexAgentsMd -Force
+            Write-Host "  Removed: $codexAgentsMd" -ForegroundColor Green
+        } else {
+            Write-Host "  Skipped: $codexAgentsMd (not ours)" -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ""
+    Write-Host "Uninstall complete." -ForegroundColor Green
+    Write-Host ""
+    return
+}
+
+# ─── Prerequisites Check ───
 Write-Host ""
 Write-Host "=== TwinCAT Automation — Setup Check ===" -ForegroundColor Cyan
 Write-Host ""
@@ -82,7 +121,7 @@ Write-Check "IDE available (VS2022/XAE Shell)" $vsFound $(if ($vsDetail) { "Prog
 # 6. Module import
 Write-Host ""
 Write-Host "--- Module Import ---" -ForegroundColor Cyan
-$modulePath = Join-Path $PSScriptRoot "src\TwinCATAutomation\TwinCATAutomation.psm1"
+$modulePath = Join-Path $scriptRoot "src\TwinCATAutomation\TwinCATAutomation.psm1"
 $moduleOk = $false
 $cmdletCount = 0
 try {
@@ -97,17 +136,88 @@ Write-Check "Module import" $moduleOk "$cmdletCount cmdlets loaded"
 
 # Summary
 Write-Host ""
-Write-Host "=== Summary ===" -ForegroundColor Cyan
+Write-Host "=== Prerequisites ===" -ForegroundColor Cyan
 Write-Host "  Passed: $pass" -ForegroundColor Green
 Write-Host "  Failed: $fail" -ForegroundColor $(if ($fail -gt 0) { "Red" } else { "Green" })
-Write-Host ""
 
-if ($fail -eq 0) {
-    Write-Host "Ready to use! Start with:" -ForegroundColor Green
-    Write-Host '  Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force'
-    Write-Host '  Connect-TcIde -SolutionPath "C:\path\to\your.sln"'
-} else {
+if ($fail -gt 0) {
+    Write-Host ""
     Write-Host "Some checks failed. Please install missing prerequisites." -ForegroundColor Yellow
     Write-Host "See README.md for requirements."
+    Write-Host ""
+    return
 }
+
+# ─── Install to User-Level ───
+Write-Host ""
+Write-Host "=== Install Skill (user-level) ===" -ForegroundColor Cyan
+
+# Resolve absolute path to module (for AGENTS.md import instruction)
+$absModulePath = (Resolve-Path $modulePath).Path
+
+# 1. Copy skill to ~/.agents/skills/twincat/
+if (-not (Test-Path $userSkillDir)) {
+    New-Item -Path $userSkillDir -ItemType Directory -Force | Out-Null
+}
+$srcSkill = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
+Copy-Item $srcSkill -Destination (Join-Path $userSkillDir "SKILL.md") -Force
+Write-Host "  Installed skill: $userSkillDir\SKILL.md" -ForegroundColor Green
+
+# 2. Write ~/.codex/AGENTS.md with absolute module path
+if (-not (Test-Path $codexHome)) {
+    New-Item -Path $codexHome -ItemType Directory -Force | Out-Null
+}
+
+$agentsContent = @"
+# TwinCAT Automation
+
+This machine has the TwinCAT Automation PowerShell module installed.
+To use it in any TwinCAT project, import the module first:
+
+``````powershell
+Import-Module "$absModulePath" -Force
+``````
+
+Then follow the workflow: Connect-TcIde -> Build-TcProject -> Enable-TcConfig -Force -> Enter-TcPlcOnline -> Connect-TcAds -> Set-TcPlcState -State Run -> Read/Write variables.
+
+See the ``twincat`` skill for full command reference.
+
+## Important
+
+- AmsNetId is dynamic — never hardcode. Auto-detected from IDE target.
+- All commands return JSON: {"success": true, "data": {...}} or {"success": false, "error": {...}}
+- No dialogs: Enable-TcConfig -Force uses ADS. Enter-TcPlcOnline uses Login(3).
+- Write MAIN-level vars for FB testing — PLC overwrites VAR_INPUT every scan cycle.
+- Correct order: Build -> Activate -> Login -> ADS -> Start (ADS port 851 needs Login first).
+"@
+
+# Check if existing AGENTS.md belongs to us or to another project
+$shouldWrite = $true
+if (Test-Path $codexAgentsMd) {
+    $existing = Get-Content $codexAgentsMd -Raw
+    if ($existing -notmatch 'TwinCAT Automation') {
+        # Not ours — append instead of overwrite
+        $agentsContent = $existing.TrimEnd() + "`n`n" + $agentsContent
+        Write-Host "  Appended to existing: $codexAgentsMd" -ForegroundColor Green
+    } else {
+        Write-Host "  Updated: $codexAgentsMd" -ForegroundColor Green
+    }
+} else {
+    Write-Host "  Created: $codexAgentsMd" -ForegroundColor Green
+}
+
+if ($shouldWrite) {
+    Set-Content -Path $codexAgentsMd -Value $agentsContent -Encoding UTF8
+}
+
+# Done
+Write-Host ""
+Write-Host "=== Installation Complete ===" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Skill installed to:  $userSkillDir" -ForegroundColor White
+Write-Host "  AGENTS.md written to: $codexAgentsMd" -ForegroundColor White
+Write-Host "  Module path:          $absModulePath" -ForegroundColor White
+Write-Host ""
+Write-Host "  Codex can now use TwinCAT automation in ANY project." -ForegroundColor Green
+Write-Host "  To uninstall: pwsh ./TwinCATSetup-Codex.ps1 -Uninstall" -ForegroundColor DarkGray
 Write-Host ""
