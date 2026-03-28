@@ -184,6 +184,18 @@ adapters/
 - **零對話框** — `Enable-TcConfig -Force` 使用 ADS WriteControl，`Enter-TcPlcOnline` 使用 `Login(3)`。
 - **測試 FB 時寫 MAIN 層級變數** — PLC 每個掃描週期都會覆寫 `VAR_INPUT`（參見 Decision #17）。
 
+## Claude Code 安裝
+
+一行指令將 TwinCAT 技能全域安裝到 Claude Code（安裝後任何專案都可用）：
+
+```powershell
+pwsh ./TwinCATSetup-Claude.ps1
+```
+
+檢查先決條件後安裝技能到 `~/.claude/skills/twincat-automation/SKILL.md`。
+
+解除安裝：`pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
+
 ## Codex 安裝
 
 一行指令將 TwinCAT 技能全域安裝到 Codex（安裝後任何專案都可用）：

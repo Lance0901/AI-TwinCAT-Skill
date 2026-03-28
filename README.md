@@ -184,6 +184,18 @@ All commands return structured JSON:
 - **No dialogs** -- `Enable-TcConfig -Force` uses ADS WriteControl, `Enter-TcPlcOnline` uses `Login(3)`.
 - **Write to MAIN-level vars** when testing FBs -- PLC overwrites `VAR_INPUT` every scan cycle (see Decision #17).
 
+## Claude Code Setup
+
+One command to install the TwinCAT skill globally for Claude Code (works in any project after install):
+
+```powershell
+pwsh ./TwinCATSetup-Claude.ps1
+```
+
+This checks prerequisites and installs the skill to `~/.claude/skills/twincat-automation/SKILL.md`.
+
+To uninstall: `pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
+
 ## Codex Setup
 
 One command to install the TwinCAT skill globally for Codex (works in any project after install):
