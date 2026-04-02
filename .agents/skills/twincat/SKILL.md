@@ -1,5 +1,5 @@
 ---
-name: twincat
+name: TwinCAT-AutomationInterface
 description: Use when the user asks to automate TwinCAT 3 IDE, build or deploy PLC programs, read or write PLC variables via ADS, modify Structured Text code, or run automated PLC tests. Requires Windows with TwinCAT 3 XAE installed.
 ---
 
