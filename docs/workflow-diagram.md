@@ -165,3 +165,63 @@ flowchart TD
     T2 --> CYCLE
     CYCLE --> REPORT["Test Results JSON<br/>passed / failed / details"]
 ```
+
+## 6. AI-Driven Build-Fix-Test Loop
+
+```mermaid
+flowchart TD
+    START([AI receives task:<br/>"Modify PLC code"]) --> EDIT
+
+    EDIT["Write-TcPouCode<br/>Modify ST declaration / implementation"]
+    EDIT --> BUILD["Build-TcProject"]
+    BUILD --> CHECK_BUILD{"Build<br/>succeeded?"}
+
+    CHECK_BUILD -->|"Yes (0 errors)"| DEPLOY
+    CHECK_BUILD -->|"No (errors)"| PARSE
+
+    subgraph FIX_LOOP["Auto-Fix Loop"]
+        PARSE["Parse error messages<br/>from build result JSON"]
+        ANALYZE["AI analyzes errors:<br/>- syntax errors<br/>- type mismatches<br/>- undeclared variables<br/>- missing semicolons"]
+        PATCH["Write-TcPouCode<br/>Apply fix to declaration<br/>and/or implementation"]
+
+        PARSE --> ANALYZE --> PATCH
+    end
+
+    PATCH --> REBUILD["Build-TcProject<br/>(retry)"]
+    REBUILD --> CHECK_RETRY{"Build<br/>succeeded?"}
+    CHECK_RETRY -->|"No (still errors)"| PARSE
+    CHECK_RETRY -->|"Yes"| DEPLOY
+
+    DEPLOY["Enable-TcConfig -Force<br/>Enter-TcPlcOnline<br/>Connect-TcAds<br/>Set-TcPlcState -State Run"]
+
+    DEPLOY --> TEST
+
+    subgraph TEST["Automated Testing"]
+        WRITE_VAR["Write-TcVariable<br/>Set test inputs"]
+        WAIT["Start-Sleep / Watch-TcVariable<br/>Wait for PLC processing"]
+        READ_VAR["Read-TcVariable<br/>Read actual outputs"]
+        ASSERT{"Assertions<br/>pass?"}
+
+        WRITE_VAR --> WAIT --> READ_VAR --> ASSERT
+    end
+
+    ASSERT -->|"Yes"| DONE([All tests passed])
+    ASSERT -->|"No"| DIAG
+
+    subgraph DIAG["Diagnose & Retry"]
+        READ_STATE["Read-TcVariable / Get-TcSymbols<br/>Inspect PLC state"]
+        AI_FIX["AI analyzes failure:<br/>- wrong logic<br/>- timing issue<br/>- variable mapping"]
+        RE_EDIT["Write-TcPouCode<br/>Fix logic"]
+
+        READ_STATE --> AI_FIX --> RE_EDIT
+    end
+
+    RE_EDIT --> STOP_PLC["Set-TcPlcState -State Stop<br/>Exit-TcPlcOnline"]
+    STOP_PLC --> BUILD
+
+    style START fill:#4CAF50,color:#fff
+    style DONE fill:#4CAF50,color:#fff
+    style FIX_LOOP fill:#FFF3E0,stroke:#FF9800
+    style TEST fill:#E3F2FD,stroke:#2196F3
+    style DIAG fill:#FCE4EC,stroke:#E91E63
+```
