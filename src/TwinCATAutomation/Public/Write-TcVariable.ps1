@@ -21,6 +21,11 @@ function Write-TcVariable {
     }
 
     try {
+        # Ensure TcAdsHelper is compiled (needs TwinCAT.Ads.dll loaded first)
+        if ($null -eq ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type) {
+            $null = Find-TcAdsAssembly
+        }
+
         # Get symbol info via C# helper (bypasses CLS issue)
         $symInfo = [TcAdsHelper]::GetSymbolInfo($script:TcAdsClient, $Path)
         $typeName = $symInfo['TypeName']

@@ -16,6 +16,11 @@ function Get-TcSymbols {
     }
 
     try {
+        # Ensure TcAdsHelper is compiled (needs TwinCAT.Ads.dll loaded first)
+        if ($null -eq ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type) {
+            $null = Find-TcAdsAssembly
+        }
+
         # Use C# helper to bypass PowerShell CLS compatibility issues
         # (TcAdsSymbol has both 'Datatype' and 'DataType' which PowerShell cannot distinguish)
         $symbols = [TcAdsHelper]::GetAllSymbols($script:TcAdsClient, $Filter)

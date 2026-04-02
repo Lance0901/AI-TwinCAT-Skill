@@ -16,6 +16,11 @@ function Read-TcVariable {
     }
 
     try {
+        # Ensure TcAdsHelper is compiled (needs TwinCAT.Ads.dll loaded first)
+        if ($null -eq ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type) {
+            $null = Find-TcAdsAssembly
+        }
+
         $results = @()
 
         foreach ($varPath in $Path) {
