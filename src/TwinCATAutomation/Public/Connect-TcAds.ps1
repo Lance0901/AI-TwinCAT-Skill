@@ -21,12 +21,17 @@ function Connect-TcAds {
         [int]$Port = 851
     )
 
-    # Load ADS assembly
+    # Load ADS assembly + compile TcAdsHelper
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
         return New-TcResult -Success $false `
             -ErrorMessage 'TwinCAT.Ads.dll not found. Ensure TwinCAT 3 is installed.' `
             -ErrorCode 'ADS_ASSEMBLY_NOT_FOUND'
+    }
+
+    # Verify TcAdsHelper is available (needed by Get-TcSymbols, Read/Write-TcVariable)
+    if ($null -eq ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type) {
+        Write-Warning "TcAdsHelper could not be compiled. Get-TcSymbols, Read-TcVariable, Write-TcVariable may fail."
     }
 
     # Auto-detect AmsNetId from IDE connection if not specified

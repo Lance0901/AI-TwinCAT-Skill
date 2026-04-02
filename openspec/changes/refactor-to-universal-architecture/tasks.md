@@ -124,7 +124,9 @@
 - [x] 18.1 Add `Find-TcAdsAssembly` guard to `Get-TcSymbols.ps1` before calling `[TcAdsHelper]::GetAllSymbols()`
 - [x] 18.2 Add `Find-TcAdsAssembly` guard to `Read-TcVariable.ps1` before calling `[TcAdsHelper]::GetSymbolInfo()`
 - [x] 18.3 Add `Find-TcAdsAssembly` guard to `Write-TcVariable.ps1` before calling `[TcAdsHelper]::GetSymbolInfo()`
-  - **Root cause**: Only `Connect-TcAds`, `Get-TcSystemState`, `Set-TcSystemState` called `Find-TcAdsAssembly` to compile `TcAdsHelper.cs`. The other three cmdlets assumed it was already loaded, failing with "Unable to find type [TcAdsHelper]" on freshly imported modules.
+- [x] 18.4 Rewrite `Initialize-TcAdsHelper` with 3 fallback strategies: explicit path → loaded assembly Location → assembly name → common installation paths
+- [x] 18.5 Add TcAdsHelper verification warning in `Connect-TcAds` after `Find-TcAdsAssembly`
+  - **Root cause**: `Initialize-TcAdsHelper` silently failed (`Write-Verbose` in catch) when the DLL path was invalid or GAC-loaded assembly had no Location. Three cmdlets also never called `Find-TcAdsAssembly` at all.
 
 ## 17. Multi-Instance IDE Detection via ROT Enumeration (2026-04-02)
 
