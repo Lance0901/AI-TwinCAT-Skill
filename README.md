@@ -192,7 +192,7 @@ One command to install the TwinCAT skill globally for Claude Code (works in any 
 pwsh ./TwinCATSetup-Claude.ps1
 ```
 
-This checks prerequisites and installs the skill to `~/.claude/skills/twincat-automation/SKILL.md`.
+This checks prerequisites and installs the skill + PowerShell module to `~/.claude/skills/twincat-automation/`.
 
 To uninstall: `pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
 
@@ -205,6 +205,7 @@ pwsh ./TwinCATSetup-Codex.ps1
 ```
 
 This checks prerequisites (Windows, TwinCAT, ADS DLL, IDE, module) and installs:
+- `~/.agents/skills/twincat/TwinCATAutomation/` -- PowerShell module (all cmdlets)
 - `~/.agents/skills/twincat/SKILL.md` -- Codex skill with full API reference
 - `~/.codex/AGENTS.md` -- global project instructions
 
@@ -218,11 +219,15 @@ One command to install the TwinCAT skill globally for Google Antigravity:
 pwsh ./TwinCATSetup-Antigravity.ps1
 ```
 
-This checks prerequisites and installs the skill to `~/.gemini/antigravity/skills/twincat-automation/SKILL.md`.
+This checks prerequisites and installs the skill + PowerShell module to `~/.gemini/antigravity/skills/twincat-automation/`.
 
 To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## Changelog
+
+### 2026-04-02
+
+- **Fix setup scripts**: All three installers (Claude, Codex, Antigravity) now copy the full `TwinCATAutomation` PowerShell module alongside SKILL.md. Previously only the skill documentation was installed, so AI tools couldn't find the actual module when running from other projects.
 
 ### 2026-03-29
 

@@ -192,7 +192,7 @@ adapters/
 pwsh ./TwinCATSetup-Claude.ps1
 ```
 
-檢查先決條件後安裝技能到 `~/.claude/skills/twincat-automation/SKILL.md`。
+檢查先決條件後安裝技能 + PowerShell 模組到 `~/.claude/skills/twincat-automation/`。
 
 解除安裝：`pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
 
@@ -205,6 +205,7 @@ pwsh ./TwinCATSetup-Codex.ps1
 ```
 
 會檢查先決條件（Windows、TwinCAT、ADS DLL、IDE、模組）並安裝：
+- `~/.agents/skills/twincat/TwinCATAutomation/` — PowerShell 模組（所有 cmdlet）
 - `~/.agents/skills/twincat/SKILL.md` — Codex 技能，完整 API 參考
 - `~/.codex/AGENTS.md` — 全域專案指引
 
@@ -218,11 +219,15 @@ pwsh ./TwinCATSetup-Codex.ps1
 pwsh ./TwinCATSetup-Antigravity.ps1
 ```
 
-檢查先決條件後安裝技能到 `~/.gemini/antigravity/skills/twincat-automation/SKILL.md`。
+檢查先決條件後安裝技能 + PowerShell 模組到 `~/.gemini/antigravity/skills/twincat-automation/`。
 
 解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## 更新日誌
+
+### 2026-04-02
+
+- **修復安裝腳本**：三個安裝器（Claude、Codex、Antigravity）現在會將完整的 `TwinCATAutomation` PowerShell 模組連同 SKILL.md 一起複製。之前只安裝了技能說明文件，導致 AI 工具在其他專案中找不到實際模組。
 
 ### 2026-03-29
 

@@ -119,6 +119,14 @@
   - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
 - [ ] 13.5 Verify JSON output format consistency across all cmdlets
 
+## 16. Setup Script Fix — Module Deployment (2026-04-02)
+
+- [x] 16.1 Update SKILL.md templates to use `<module-path>` placeholder instead of relative/project-root paths
+- [x] 16.2 Update TwinCATSetup-Claude.ps1 to copy `src/TwinCATAutomation/` into skill directory and replace `<module-path>`
+- [x] 16.3 Update TwinCATSetup-Codex.ps1 to copy module + replace placeholder + fix AGENTS.md path
+- [x] 16.4 Update TwinCATSetup-Antigravity.ps1 to copy module + replace placeholder
+  - **Root cause**: Setup scripts only installed SKILL.md (documentation) but not the actual PowerShell module, so AI tools couldn't execute any cmdlets from other projects
+
 ## 15. Bug Fixes from Integration Testing
 
 - [x] 15.1 Enter-TcPlcOnline: use `LookupTreeItem('TIPC^<name>^<name> Project')` instead of child enumeration — Project child hidden after TwinCAT restart but direct lookup still works
