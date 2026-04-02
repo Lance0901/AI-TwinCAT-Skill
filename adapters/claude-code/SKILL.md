@@ -11,7 +11,7 @@ Control TwinCAT 3 IDE and PLC runtime using the TwinCATAutomation PowerShell mod
 
 Before any operation, import the module:
 ```powershell
-Import-Module "<project-root>/src/TwinCATAutomation/TwinCATAutomation.psm1" -Force
+Import-Module "<module-path>" -Force
 ```
 
 ## Full Lifecycle (Zero Dialogs)

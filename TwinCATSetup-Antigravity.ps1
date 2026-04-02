@@ -141,18 +141,23 @@ if ($fail -gt 0) {
 Write-Host ""
 Write-Host "=== Install Skill (Antigravity user-level) ===" -ForegroundColor Cyan
 
-$absModulePath = (Resolve-Path $modulePath).Path
-$absProjectRoot = (Resolve-Path $scriptRoot).Path
-
-# Copy skill to ~/.gemini/antigravity/skills/twincat-automation/
+# 1. Create skill directory
 if (-not (Test-Path $userSkillDir)) {
     New-Item -Path $userSkillDir -ItemType Directory -Force | Out-Null
 }
 
-# Use the Codex skill (most complete), replace <project-root> placeholder
+# 2. Copy module to skill directory
+$srcModule = Join-Path $scriptRoot "src\TwinCATAutomation"
+$destModule = Join-Path $userSkillDir "TwinCATAutomation"
+if (Test-Path $destModule) { Remove-Item $destModule -Recurse -Force }
+Copy-Item $srcModule -Destination $destModule -Recurse -Force
+$absModulePath = Join-Path $destModule "TwinCATAutomation.psm1"
+Write-Host "  Installed module: $destModule" -ForegroundColor Green
+
+# 3. Copy SKILL.md and replace <module-path> with absolute path
 $srcSkill = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
 $skillContent = Get-Content $srcSkill -Raw
-$skillContent = $skillContent -replace '<project-root>', $absProjectRoot
+$skillContent = $skillContent -replace '<module-path>', $absModulePath
 Set-Content -Path (Join-Path $userSkillDir "SKILL.md") -Value $skillContent -Encoding UTF8
 
 Write-Host "  Installed skill: $userSkillDir\SKILL.md" -ForegroundColor Green

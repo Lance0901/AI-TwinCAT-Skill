@@ -152,15 +152,24 @@ if ($fail -gt 0) {
 Write-Host ""
 Write-Host "=== Install Skill (user-level) ===" -ForegroundColor Cyan
 
-# Resolve absolute path to module (for AGENTS.md import instruction)
-$absModulePath = (Resolve-Path $modulePath).Path
-
-# 1. Copy skill to ~/.agents/skills/twincat/
+# 1. Create skill directory
 if (-not (Test-Path $userSkillDir)) {
     New-Item -Path $userSkillDir -ItemType Directory -Force | Out-Null
 }
+
+# 2. Copy module to skill directory
+$srcModule = Join-Path $scriptRoot "src\TwinCATAutomation"
+$destModule = Join-Path $userSkillDir "TwinCATAutomation"
+if (Test-Path $destModule) { Remove-Item $destModule -Recurse -Force }
+Copy-Item $srcModule -Destination $destModule -Recurse -Force
+$absModulePath = Join-Path $destModule "TwinCATAutomation.psm1"
+Write-Host "  Installed module: $destModule" -ForegroundColor Green
+
+# 3. Copy SKILL.md and replace <module-path> with absolute path
 $srcSkill = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
-Copy-Item $srcSkill -Destination (Join-Path $userSkillDir "SKILL.md") -Force
+$skillContent = Get-Content $srcSkill -Raw
+$skillContent = $skillContent -replace '<module-path>', $absModulePath
+Set-Content -Path (Join-Path $userSkillDir "SKILL.md") -Value $skillContent -Encoding UTF8
 Write-Host "  Installed skill: $userSkillDir\SKILL.md" -ForegroundColor Green
 
 # 2. Write ~/.codex/AGENTS.md with absolute module path

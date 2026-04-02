@@ -10,7 +10,7 @@ Control TwinCAT 3 IDE and PLC runtime using the TwinCATAutomation PowerShell mod
 ## Setup
 
 ```powershell
-Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force
+Import-Module "<module-path>" -Force
 ```
 
 ## Full Lifecycle (Zero Dialogs)
