@@ -48,22 +48,24 @@ function Connect-TcIde {
     $dte = $null
     $usedProgId = $null
 
-    # --- Strategy 1: If SolutionPath specified, try to find IDE already running it ---
+    # --- Enumerate ALL running IDE instances via ROT ---
+    # (Marshal.GetActiveObject only returns ONE per ProgID; ROT enumeration finds ALL)
+    $allDtes = Get-AllComObjects
+    Write-Verbose "ROT enumeration found $($allDtes.Count) DTE instance(s)"
+
+    # --- Strategy 1: If SolutionPath specified, find IDE already running it ---
     if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
-        foreach ($pid in $progIds) {
-            $candidate = Get-ComObject -ProgId $pid
-            if ($null -ne $candidate) {
-                try {
-                    $openSln = $candidate.Solution.FullName
-                    if ($openSln -eq $SolutionPath) {
-                        $dte = $candidate
-                        $usedProgId = $pid
-                        Write-Verbose "Found IDE already running target solution via $pid"
-                        break
-                    }
+        foreach ($candidate in $allDtes) {
+            try {
+                $openSln = $candidate.Solution.FullName
+                if ($openSln -eq $SolutionPath) {
+                    $dte = $candidate
+                    $usedProgId = try { $candidate.RegistryRoot } catch { 'DTE' }
+                    Write-Verbose "Found IDE already running target solution"
+                    break
                 }
-                catch { }
             }
+            catch { }
         }
     }
 
@@ -71,52 +73,58 @@ function Connect-TcIde {
     if ($null -eq $dte) {
         $dteWithProject = $null
         $dteWithoutProject = $null
-        $pidWithProject = $null
-        $pidWithoutProject = $null
 
-        foreach ($pid in $progIds) {
-            $candidate = Get-ComObject -ProgId $pid
-            if ($null -ne $candidate) {
-                # Check if this instance has a TwinCAT project loaded
-                $hasTcProject = $false
-                try {
-                    $sol = $candidate.Solution
-                    if ($null -ne $sol -and $sol.Projects.Count -gt 0) {
-                        for ($i = 1; $i -le $sol.Projects.Count; $i++) {
-                            try {
-                                $sm = $sol.Projects.Item($i).Object
-                                if ($null -ne $sm) {
-                                    $hasTcProject = $true
-                                    break
-                                }
+        foreach ($candidate in $allDtes) {
+            # Check if this instance has a TwinCAT project loaded
+            $hasTcProject = $false
+            try {
+                $sol = $candidate.Solution
+                if ($null -ne $sol -and $sol.Projects.Count -gt 0) {
+                    for ($i = 1; $i -le $sol.Projects.Count; $i++) {
+                        try {
+                            $sm = $sol.Projects.Item($i).Object
+                            if ($null -ne $sm) {
+                                $hasTcProject = $true
+                                break
                             }
-                            catch { continue }
                         }
+                        catch { continue }
                     }
                 }
-                catch { }
+            }
+            catch { }
 
-                if ($hasTcProject -and $null -eq $dteWithProject) {
-                    $dteWithProject = $candidate
-                    $pidWithProject = $pid
-                }
-                elseif (-not $hasTcProject -and $null -eq $dteWithoutProject) {
-                    $dteWithoutProject = $candidate
-                    $pidWithoutProject = $pid
-                }
+            if ($hasTcProject -and $null -eq $dteWithProject) {
+                $dteWithProject = $candidate
+            }
+            elseif (-not $hasTcProject -and $null -eq $dteWithoutProject) {
+                $dteWithoutProject = $candidate
             }
         }
 
         # Prefer IDE with TwinCAT project
         if ($null -ne $dteWithProject) {
             $dte = $dteWithProject
-            $usedProgId = $pidWithProject
-            Write-Verbose "Connected to IDE with TwinCAT project via $usedProgId"
+            $usedProgId = try { $dte.RegistryRoot } catch { 'DTE' }
+            Write-Verbose "Connected to IDE with TwinCAT project"
         }
         elseif ($null -ne $dteWithoutProject) {
             $dte = $dteWithoutProject
-            $usedProgId = $pidWithoutProject
-            Write-Verbose "Connected to IDE (no TwinCAT project) via $usedProgId"
+            $usedProgId = try { $dte.RegistryRoot } catch { 'DTE' }
+            Write-Verbose "Connected to IDE (no TwinCAT project)"
+        }
+    }
+
+    # --- Fallback: try GetActiveObject for specific ProgIDs (if ROT enumeration returned nothing) ---
+    if ($null -eq $dte -and $allDtes.Count -eq 0) {
+        foreach ($pid in $progIds) {
+            $candidate = Get-ComObject -ProgId $pid
+            if ($null -ne $candidate) {
+                $dte = $candidate
+                $usedProgId = $pid
+                Write-Verbose "Fallback: found IDE via GetActiveObject ($pid)"
+                break
+            }
         }
     }
 

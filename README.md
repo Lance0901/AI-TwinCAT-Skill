@@ -228,6 +228,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 ### 2026-04-02
 
 - **Fix setup scripts**: All three installers (Claude, Codex, Antigravity) now copy the full `TwinCATAutomation` PowerShell module alongside SKILL.md. Previously only the skill documentation was installed, so AI tools couldn't find the actual module when running from other projects.
+- **Multi-instance IDE detection**: `Connect-TcIde` now enumerates ALL running VS2022/XAE Shell instances via the Running Object Table (ROT) instead of using `GetActiveObject` which only returns one per ProgID. When multiple IDEs are open, it correctly finds the one with the target solution instead of launching a new instance.
 
 ### 2026-03-29
 

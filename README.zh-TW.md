@@ -228,6 +228,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 ### 2026-04-02
 
 - **修復安裝腳本**：三個安裝器（Claude、Codex、Antigravity）現在會將完整的 `TwinCATAutomation` PowerShell 模組連同 SKILL.md 一起複製。之前只安裝了技能說明文件，導致 AI 工具在其他專案中找不到實際模組。
+- **多實例 IDE 偵測**：`Connect-TcIde` 現在透過 Running Object Table (ROT) 列舉所有運行中的 VS2022/XAE Shell 實例，取代只能回傳一個的 `GetActiveObject`。當多個 IDE 同時開啟時，能正確找到已開啟目標 solution 的實例，避免不必要地啟動新 IDE。
 
 ### 2026-03-29
 

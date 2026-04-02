@@ -119,6 +119,13 @@
   - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
 - [ ] 13.5 Verify JSON output format consistency across all cmdlets
 
+## 17. Multi-Instance IDE Detection via ROT Enumeration (2026-04-02)
+
+- [x] 17.1 Create `ComRotHelper.cs` — C# helper using P/Invoke to enumerate all DTE instances from the Running Object Table
+- [x] 17.2 Create `Get-AllComObjects.ps1` — PowerShell wrapper that loads ComRotHelper and returns all DTE objects
+- [x] 17.3 Update `Connect-TcIde.ps1` — replace `Get-ComObject` (single instance) with `Get-AllComObjects` (all instances) in Strategy 1+2, add GetActiveObject fallback
+  - **Root cause**: `Marshal.GetActiveObject()` only returns ONE instance per ProgID. When multiple VS2022/XAE Shell are running, it may grab the wrong one and launch an unnecessary new IDE.
+
 ## 16. Setup Script Fix — Module Deployment (2026-04-02)
 
 - [x] 16.1 Update SKILL.md templates to use `<module-path>` placeholder instead of relative/project-root paths
