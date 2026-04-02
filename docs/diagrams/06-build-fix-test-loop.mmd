@@ -1,0 +1,55 @@
+flowchart TD
+    START(["AI receives task:\nModify PLC code"]) --> EDIT
+
+    EDIT["Write-TcPouCode\nModify ST code"]
+    EDIT --> BUILD["Build-TcProject"]
+    BUILD --> CHECK_BUILD{"Build\nsucceeded?"}
+
+    CHECK_BUILD -->|"Yes"| DEPLOY
+    CHECK_BUILD -->|"No"| PARSE
+
+    subgraph FIX_LOOP["Auto-Fix Loop"]
+        PARSE["Parse error messages\nfrom build result"]
+        ANALYZE["AI analyzes errors:\nsyntax / type mismatch\nundeclared vars / etc."]
+        PATCH["Write-TcPouCode\nApply fix"]
+
+        PARSE --> ANALYZE --> PATCH
+    end
+
+    PATCH --> REBUILD["Build-TcProject\n(retry)"]
+    REBUILD --> CHECK_RETRY{"Build\nsucceeded?"}
+    CHECK_RETRY -->|"No"| PARSE
+    CHECK_RETRY -->|"Yes"| DEPLOY
+
+    DEPLOY["Enable-TcConfig -Force\nEnter-TcPlcOnline\nConnect-TcAds\nSet-TcPlcState Run"]
+
+    DEPLOY --> TEST
+
+    subgraph TEST["Automated Testing"]
+        WRITE_VAR["Write-TcVariable\nSet test inputs"]
+        WAIT["Wait for PLC\nprocessing"]
+        READ_VAR["Read-TcVariable\nRead outputs"]
+        ASSERT{"Assertions\npass?"}
+
+        WRITE_VAR --> WAIT --> READ_VAR --> ASSERT
+    end
+
+    ASSERT -->|"Yes"| DONE(["All tests passed"])
+    ASSERT -->|"No"| DIAG
+
+    subgraph DIAG["Diagnose & Retry"]
+        READ_STATE["Inspect PLC state\nGet-TcSymbols"]
+        AI_FIX["AI analyzes failure\nwrong logic / timing"]
+        RE_EDIT["Write-TcPouCode\nFix logic"]
+
+        READ_STATE --> AI_FIX --> RE_EDIT
+    end
+
+    RE_EDIT --> STOP_PLC["Stop PLC\nExit-TcPlcOnline"]
+    STOP_PLC --> BUILD
+
+    style START fill:#4CAF50,color:#fff
+    style DONE fill:#4CAF50,color:#fff
+    style FIX_LOOP fill:#FFF3E0,stroke:#FF9800
+    style TEST fill:#E3F2FD,stroke:#2196F3
+    style DIAG fill:#FCE4EC,stroke:#E91E63

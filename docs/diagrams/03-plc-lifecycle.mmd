@@ -1,0 +1,47 @@
+flowchart TD
+    START(["Start"]) --> S1
+
+    S1["1. Connect-TcIde\n-SolutionPath ..."]
+    S1 --> ROT
+
+    subgraph ROT["IDE Discovery via ROT"]
+        ENUM["Enumerate ALL DTE instances\nvia Running Object Table"]
+        MATCH{"Found matching\nsolution?"}
+        TC_PROJ{"Found IDE with\nTwinCAT project?"}
+        LAUNCH["Launch new IDE"]
+
+        ENUM --> MATCH
+        MATCH -->|"Yes"| REUSE(["Reuse existing IDE"])
+        MATCH -->|"No"| TC_PROJ
+        TC_PROJ -->|"Yes"| REUSE
+        TC_PROJ -->|"No"| LAUNCH
+    end
+
+    ROT --> S2["2. Build-TcProject\n(auto-retry)"]
+    S2 --> S3["3. Enable-TcConfig -Force\n(ADS WriteControl)"]
+    S3 --> S4["4. Wait 5s\n(XAR restart)"]
+    S4 --> S5["5. Enter-TcPlcOnline\n(Login 3, no dialog)"]
+    S5 --> S6["6. Connect-TcAds\n(AmsNetId auto)"]
+
+    S6 --> HELPER
+
+    subgraph HELPER["TcAdsHelper Init"]
+        TRY_CS["Try: C# compilation\nwith TwinCAT.Ads.dll"]
+        CS_OK{"OK?"}
+        FB["Fallback:\nReflection-based\n(PS 5.1 + PS 7)"]
+
+        TRY_CS --> CS_OK
+        CS_OK -->|"Yes"| READY(["Helper Ready"])
+        CS_OK -->|"No"| FB --> READY
+    end
+
+    HELPER --> S7["7. Set-TcPlcState Run"]
+    S7 --> S8["8. Read / Write / Watch\nVariables"]
+    S8 --> S9["9. Disconnect"]
+    S9 --> DONE(["Done"])
+
+    style START fill:#4CAF50,color:#fff
+    style DONE fill:#4CAF50,color:#fff
+    style REUSE fill:#2196F3,color:#fff
+    style READY fill:#2196F3,color:#fff
+    style LAUNCH fill:#FF9800,color:#fff

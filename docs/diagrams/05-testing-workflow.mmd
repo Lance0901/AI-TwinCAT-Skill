@@ -1,0 +1,24 @@
+flowchart TD
+    T1["New-TcTestCase\n-Name -Setup -WaitMs\n-Assertions -Teardown"]
+    T2["Invoke-TcTestCycle\n-TestCases @(...)"]
+
+    T1 --> T2
+
+    subgraph CYCLE["Automated Test Cycle"]
+        B["Build"] --> A["Activate"] --> L["Login"]
+        L --> ADS["ADS Connect"] --> RUN["Start PLC"]
+        RUN --> EXEC
+
+        subgraph EXEC["For Each Test Case"]
+            SETUP["Setup:\nWrite variables"]
+            WAIT["Wait:\nSleep / Watch"]
+            ASSERT["Assert:\nCheck values"]
+            TEAR["Teardown:\nReset"]
+            SETUP --> WAIT --> ASSERT --> TEAR
+        end
+
+        EXEC --> STOP["Stop PLC"]
+    end
+
+    T2 --> CYCLE
+    CYCLE --> REPORT["Test Results JSON\npassed / failed / details"]
