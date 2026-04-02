@@ -119,6 +119,13 @@
   - **Tested 2026-03-27** — Claude Code successfully imported module, connected IDE, ran lifecycle
 - [ ] 13.5 Verify JSON output format consistency across all cmdlets
 
+## 18. Fix TcAdsHelper Lazy Loading (2026-04-02)
+
+- [x] 18.1 Add `Find-TcAdsAssembly` guard to `Get-TcSymbols.ps1` before calling `[TcAdsHelper]::GetAllSymbols()`
+- [x] 18.2 Add `Find-TcAdsAssembly` guard to `Read-TcVariable.ps1` before calling `[TcAdsHelper]::GetSymbolInfo()`
+- [x] 18.3 Add `Find-TcAdsAssembly` guard to `Write-TcVariable.ps1` before calling `[TcAdsHelper]::GetSymbolInfo()`
+  - **Root cause**: Only `Connect-TcAds`, `Get-TcSystemState`, `Set-TcSystemState` called `Find-TcAdsAssembly` to compile `TcAdsHelper.cs`. The other three cmdlets assumed it was already loaded, failing with "Unable to find type [TcAdsHelper]" on freshly imported modules.
+
 ## 17. Multi-Instance IDE Detection via ROT Enumeration (2026-04-02)
 
 - [x] 17.1 Create `ComRotHelper.cs` — C# helper using P/Invoke to enumerate all DTE instances from the Running Object Table
