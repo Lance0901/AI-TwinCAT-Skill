@@ -1,0 +1,14 @@
+flowchart LR
+    subgraph State["Module-Scoped State"]
+        DTE["$script:TcDte"]
+        SM["$script:TcSysManager"]
+        CLIENT["$script:TcAdsClient"]
+    end
+
+    CMD["Any Cmdlet"] --> State
+    State --> RESULT
+
+    subgraph RESULT["Unified JSON Output"]
+        OK["success: true\ndata: { ... }"]
+        ERR["success: false\nerror: { message, code }"]
+    end

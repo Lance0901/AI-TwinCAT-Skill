@@ -1,0 +1,11 @@
+flowchart LR
+    subgraph Setup["TwinCATSetup-*.ps1"]
+        CHK["Check 6 Prerequisites\nWindows / PS 5.1+ / TwinCAT 3\nADS DLL / IDE / Module"]
+        CPY["Copy Module + SKILL.md\nto User-Level Directory"]
+        REP["Replace #lt;module-path#gt;\nwith Absolute Path"]
+        CHK --> CPY --> REP
+    end
+
+    REP --> Claude["~/.claude/skills/\ntwincat-automation/"]
+    REP --> Codex["~/.agents/skills/\ntwincat/ + ~/.codex/AGENTS.md"]
+    REP --> Anti["~/.gemini/antigravity/\nskills/twincat-automation/"]

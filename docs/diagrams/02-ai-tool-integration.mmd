@@ -1,0 +1,32 @@
+flowchart TD
+    User(["User Request"]) --> AI
+
+    subgraph AI["AI Tool Layer"]
+        CC["Claude Code"]
+        CX["Codex"]
+        AG["Antigravity"]
+    end
+
+    CC -->|"Import-Module\n(direct)"| MOD
+    CX -->|"Invoke-TwinCATAutomation.ps1\n--operation --params JSON"| CLI
+    AG -->|"Invoke-TwinCATAutomation.ps1\n--operation --params JSON"| CLI
+
+    CLI["CLI Entry Point"] --> MOD
+
+    subgraph MOD["TwinCATAutomation.psm1 (34 cmdlets)"]
+        direction LR
+        IDE["IDE Connection\n3 cmdlets"]
+        PROJ["Project Mgmt\n7 cmdlets"]
+        CODE["PLC Code\n2 cmdlets"]
+        BUILD["Build & Deploy\n5 cmdlets"]
+        ADS_CMD["ADS Comm\n6 cmdlets"]
+        RT["Runtime Control\n4 cmdlets"]
+        IO["I/O Config\n3 cmdlets"]
+        TEST["Testing\n3 cmdlets"]
+    end
+
+    MOD --> COM["COM Interface\n(IDE Automation)"]
+    MOD --> ADS_PROTO["ADS Protocol\n(Runtime R/W)"]
+
+    COM --> TC_IDE["TwinCAT IDE\n(VS2022 / XAE Shell)"]
+    ADS_PROTO --> TC_RT["TwinCAT Runtime\n(XAR / PLC)"]
