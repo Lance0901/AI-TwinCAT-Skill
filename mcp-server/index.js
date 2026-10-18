@@ -119,7 +119,7 @@ async function rememberIde(name, result) {
     };
     lastIde = ide;
     // Main window handle for the modal probe (it excludes the main window by handle and checks
-    // that it is disabled). op:"state" makes no COM call, so this costs milliseconds.
+    // that it is blocked by a modal). op:"state" makes no COM call, so this costs milliseconds.
     try {
       const st = await bridge.call('state');
       const h = st?.success === true ? st.data?.ideMainHwnd : null;

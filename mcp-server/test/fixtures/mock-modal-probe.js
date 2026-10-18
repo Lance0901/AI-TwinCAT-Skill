@@ -9,7 +9,7 @@
 //                              "BADJSON" -> "not json" on stdout, exit 0
 //                              otherwise JSON {title,text[,delayMs]} -> one line
 //                                {title,text,className:'#32770',isModal:true,processId:<pid>,
-//                                 mainWindowEnabled:false,reason:'win32-dialog'}, exit 0;
+//                                 mainWindowBlocked:true,reason:'win32-dialog'}, exit 0;
 //                                with delayMs the line is written delayMs after the trigger was seen
 //                            Without the file the mock idles until killed.
 //   MOCK_PROBE_PID_FILE      process.pid + '\n' is appended on start (tests check the kill)
@@ -53,7 +53,7 @@ function check() {
   } catch {
     return false; // partially written: try again on the next tick
   }
-  const line = JSON.stringify({ title: d.title, text: d.text, className: '#32770', isModal: true, processId: pid, mainWindowEnabled: false, reason: 'win32-dialog' });
+  const line = JSON.stringify({ title: d.title, text: d.text, className: '#32770', isModal: true, processId: pid, mainWindowBlocked: true, reason: 'win32-dialog' });
   const report = () => process.stdout.write(line + '\n', () => process.exit(0));
   if (Number.isFinite(d.delayMs) && d.delayMs > 0) setTimeout(report, d.delayMs);
   else report();
