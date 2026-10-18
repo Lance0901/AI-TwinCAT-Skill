@@ -75,7 +75,9 @@ All variables are read in `lib/config.js`.
 | `TWINCAT_MCP_TOOLS_JSON` | `<mcp-server>/tools.json` | Alternate tool catalog |
 | `TWINCAT_MCP_PROGRESS_INTERVAL_MS` | `10000` | How often `notifications/progress` is sent during a tool call when the client supplied a `progressToken` (see [Client request timeout](#client-request-timeout)) |
 | `TWINCAT_MCP_MODAL_PROBE` | on | `0` / `false` / `off` / `no` disables the modal-dialog probe that watches the IDE during `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`, `RunTestCycle`, `OpenProject`, `ConnectIde` and returns `IDE_MODAL_DIALOG` instead of waiting for `BRIDGE_TIMEOUT` |
-| `TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC` | `5` | Probe scan interval in seconds (1..60); the first scan happens after one interval and a dialog is reported after two consecutive scans with the same title |
+| `TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC` | `5` | Probe scan interval in seconds (1..60); the first scan happens after one interval and a dialog is reported after `TWINCAT_MCP_PROBE_CONFIRM_SCANS` consecutive scans with the same title |
+| `TWINCAT_MCP_PROBE_CONFIRM_SCANS` | `2` | Consecutive scans (1..10) that must see the same kill-worthy dialog before the probe reports it |
+| `TWINCAT_MCP_PROBE_SCAN_SCRIPT` | `<dir of TWINCAT_MODULE_PATH>/Private/Get-TcIdeModalDialog.ps1` | File the probe dot-sources for `$script:TcUiaDialogScan` (the module's UIA dialog scan, single source of truth); the probe exits with an error if it is missing |
 
 Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock bridge in `test/fixtures/`):
 
@@ -84,7 +86,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 | `TWINCAT_MCP_BRIDGE_COMMAND` | Executable to spawn instead of `powershell.exe` |
 | `TWINCAT_MCP_BRIDGE_ARGS` | JSON array of arguments for that executable |
 | `TWINCAT_MCP_PROBE_COMMAND` | Executable to spawn instead of `powershell.exe bridge/modal-probe.ps1` (e.g. `test/fixtures/mock-modal-probe.js`) |
-| `TWINCAT_MCP_PROBE_ARGS` | JSON array of arguments for that executable; `-ProcessId N -IntervalSec S` are appended |
+| `TWINCAT_MCP_PROBE_ARGS` | JSON array of arguments for that executable; the probe argument tail `-ProcessId N -IntervalSec S -ConfirmScans C -ScanScript F [-MainHwnd H] [-MaxLifetimeSec L]` is appended |
 | `TWINCAT_MCP_SKIP_PID_CHECK` | `1` skips the `tasklist` check that `data.lastIde.ideProcessId` is still a live `TcXaeShell.exe` / `devenv.exe` before it is named in a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` hint (mock IDE pids) |
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
@@ -195,16 +197,16 @@ Module error codes and `error.hint` pass through unchanged; the table is in [doc
 | `INVALID_PARAMS` | server / bridge | Unknown parameter, wrong JSON type, missing required parameter, or a `ValidateSet` / `ValidateRange` violation |
 | `UNKNOWN_TOOL` | server | Tool name not in `tools.json` or the composite list |
 | `INVALID_CMDLET` | bridge | Cmdlet not exported by the module (names are never evaluated as script; not reachable through a well-formed `tools.json`) |
-| `BRIDGE_TIMEOUT` | server | Call exceeded its timeout; the PowerShell child was **killed and restarted, all IDE/ADS state is lost**. `data.lastIde` is the last successful `ConnectIde` (`{ideProcessId, selectedBy, solution}`, or `null`) and `data.bridgeRestarted` is `true`; `error.hint` names that IDE (see below) |
+| `BRIDGE_TIMEOUT` | server | Call exceeded its timeout; the PowerShell child was **killed and restarted, all IDE/ADS state is lost**. `data.lastIde` is the last successful `ConnectIde` (`{ideProcessId, selectedBy, solution, ideMainHwnd}`, or `null`) and `data.bridgeRestarted` is `true`; `error.hint` names that IDE (see below) |
 | `BRIDGE_DIED` | server | The child exited while idle or mid-call; the next call restarts it. Same `data.lastIde` / `data.bridgeRestarted` / hint as `BRIDGE_TIMEOUT`. A message ending in `this call was not executed; safe to retry after reconnecting` means the call was still queued (behind a timed-out or crashed call, or during shutdown) and never reached PowerShell |
-| `IDE_MODAL_DIALOG` | server (probe) | Also returned by the module itself when its pre-call check sees a dialog. Server-side variant: the modal-dialog probe saw a dialog in the IDE while `BuildProject` / `EnableConfig` / `PlcLogin` / `SendPlcProgram` / `RunTestCycle` / `OpenProject` / `ConnectIde` was blocked; `message` is `<title> \| <first 200 chars of text>`. The bridge was killed (all IDE/ADS state lost) unless the call was still queued. `data.dialogTitle`, `data.dialogText`, `data.ideProcessId` (the watched pid), `data.lastIde` (snapshot at detection, `null` during `ConnectIde`), `data.bridgeRestarted`; the hint says to dismiss the dialog (or `taskkill` an IDE this server launched, after asking the user), then `ConnectIde` |
+| `IDE_MODAL_DIALOG` | server (probe) | Also returned by the module itself when its pre-call check sees a dialog. Server-side variant: the modal-dialog probe saw a kill-worthy dialog (modal or Win32 `#32770`, IDE main window disabled, no progress bar, same title in two consecutive scans) in the IDE while `BuildProject` / `EnableConfig` / `PlcLogin` / `SendPlcProgram` / `RunTestCycle` / `OpenProject` / `ConnectIde` was blocked (`ConnectIde` to a different `SolutionPath` only logs it, see Known limits); `message` is `<title> \| <first 200 chars of text>`. The bridge was killed (all IDE/ADS state lost) unless the call was still queued. `data.dialogTitle`, `data.dialogText`, `data.ideProcessId` (the watched pid), `data.lastIde` (snapshot at detection, `null` during `ConnectIde`), `data.bridgeRestarted`; the hint says to dismiss the dialog (or `taskkill` an IDE this server launched, after asking the user), then `ConnectIde` |
 | `CANCELLED` | server | The client cancelled the request (`notifications/cancelled`) while the call was still queued; nothing was executed. A call already handed to PowerShell cannot be cancelled and returns its real result |
 | `MODULE_IMPORT_FAILED` | server / bridge | `powershell.exe` could not be spawned, or `Import-Module` of `TWINCAT_MODULE_PATH` failed (check the path and that `powershell.exe` is 5.1) |
 | `INTERNAL_ERROR` | server | Unexpected exception inside the server or a composite step |
 | `NO_RESULT` | bridge | The cmdlet emitted no object with a `success` property |
 | `INVALID_REQUEST` | bridge | Malformed bridge request (not reachable through the MCP server) |
 
-`BRIDGE_TIMEOUT` and `BRIDGE_DIED` keep the identity of the IDE the bridge was talking to, because the restarted bridge no longer knows it (the IDE itself keeps running, usually behind a modal dialog). The server remembers `data.ideProcessId` / `selectedBy` / `solution` of the last successful `ConnectIde` (also when it ran inside `RunLifecycle`), forgets it as soon as a new `ConnectIde` starts and on a successful `DisconnectIde`. Before the pid goes into a hint it is checked with `tasklist`: it must still be a running `TcXaeShell.exe` / `devenv.exe`, otherwise `lastIde` is dropped (`null`) and the generic hint is used, so a recycled pid is never offered for `taskkill`. The hint depends on who opened the IDE:
+`BRIDGE_TIMEOUT` and `BRIDGE_DIED` keep the identity of the IDE the bridge was talking to, because the restarted bridge no longer knows it (the IDE itself keeps running, usually behind a modal dialog). The server remembers `data.ideProcessId` / `selectedBy` / `solution` of the last successful `ConnectIde` (also when it ran inside `RunLifecycle`) plus the IDE main window handle (`ideMainHwnd`, read with one `op:"state"` right after it, used by the modal-dialog probe), forgets it as soon as a new `ConnectIde` starts and on a successful `DisconnectIde`. Before the pid goes into a hint it is checked with `tasklist`: it must still be a running `TcXaeShell.exe` / `devenv.exe` (both the 32-bit and the 64-bit TcXaeShell, ProgId `TcXaeShell.DTE.15.0` / `.17.0`, run as `TcXaeShell.exe`; Visual Studio 2022 is `devenv.exe`), otherwise `lastIde` is dropped (`null`) and the generic hint is used, so a recycled pid is never offered for `taskkill`. The hint depends on who opened the IDE:
 
 | `data.lastIde` | `error.hint` |
 |---|---|
@@ -216,7 +218,7 @@ Module error codes and `error.hint` pass through unchanged; the table is in [doc
 { "success": false,
   "error": { "code": "BRIDGE_TIMEOUT", "message": "Build-TcProject did not finish within 600000 ms; PowerShell bridge killed",
              "hint": "The IDE (pid 18324, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID 18324 /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it." },
-  "data": { "lastIde": { "ideProcessId": 18324, "selectedBy": "launched", "solution": "C:\\path\\to\\MyProject.sln" }, "bridgeRestarted": true } }
+  "data": { "lastIde": { "ideProcessId": 18324, "selectedBy": "launched", "solution": "C:\\path\\to\\MyProject.sln", "ideMainHwnd": 1312048 }, "bridgeRestarted": true } }
 ```
 
 `GetIdeModalDialog` can inspect that IDE before reconnecting: without `ProcessId` it uses `data.lastIde.ideProcessId` whenever the restarted bridge has no pid of its own.
@@ -272,7 +274,9 @@ Log lines never end up inside the result object. The server itself logs to its o
 
 ## Known limits
 
-- A DTE call blocked by a modal dialog still cannot be interrupted, but for `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`, `RunTestCycle`, `OpenProject` and `ConnectIde` (also as `RunLifecycle` steps) the modal-dialog probe detects the dialog (two consecutive 5 s scans must see the same title, so typically 10–15 s after it appears) and returns `IDE_MODAL_DIALOG` with its title and text instead of waiting for the 600 s `BRIDGE_TIMEOUT`; the bridge is killed either way, losing IDE and ADS state. The timeout path remains for tools that are not probed, for calls made before any `ConnectIde` (no IDE pid known), and when UI Automation itself hangs on the dialog. The IDE process survives and the interrupted DTE operation may still complete inside it once the dialog is dismissed (killing PowerShell does not cancel it); `data.lastIde` / `data.ideProcessId` / `error.hint` tell you which pid to inspect or kill. Dialog text is read from UIA `Text` elements, falling back to `Pane` / `Edit` / `Document` elements (Windows 11 message boxes expose the message that way; verified with a `TwinCAT PLC Control` message box); the module's own `Get-TcIdeModalDialog` has no such fallback yet. The list of known dialogs is in [docs/troubleshooting.md](../docs/troubleshooting.md).
+- A DTE call blocked by a modal dialog still cannot be interrupted, but for `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`, `RunTestCycle`, `OpenProject` and `ConnectIde` (also as `RunLifecycle` steps) the modal-dialog probe detects the dialog (two consecutive 5 s scans must see the same title, so typically 10–15 s after it appears; only a modal or Win32 `#32770` window while the IDE main window is disabled counts, progress boxes never do) and returns `IDE_MODAL_DIALOG` with its title and text instead of waiting for the 600 s `BRIDGE_TIMEOUT`; the bridge is killed either way, losing IDE and ADS state. The timeout path remains for tools that are not probed, for calls made before any `ConnectIde` (no IDE pid known), and when UI Automation itself hangs on the dialog. The IDE process survives and the interrupted DTE operation may still complete inside it once the dialog is dismissed (killing PowerShell does not cancel it); `data.lastIde` / `data.ideProcessId` / `error.hint` tell you which pid to inspect or kill. Window selection and dialog text come from the module's own scan (`$script:TcUiaDialogScan` in `src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1`, dot-sourced by the probe), so the probe reads exactly what `Get-TcIdeModalDialog` reads. That scan only sees top-level windows of the IDE process; a dialog owned by the main window (UIA shows it as a child of the main window) is picked up by the probe's own fallback, which reads the title and `Text` elements only (Windows 11 message boxes expose their message differently, so `dialogText` can be empty there). The list of known dialogs is in [docs/troubleshooting.md](../docs/troubleshooting.md).
+- `ConnectIde` with a `SolutionPath` different from `lastIde.solution` may launch a new IDE, so a dialog in the **previous** IDE is only logged (stderr + `warning` notification "... the call was not aborted"), never turned into `IDE_MODAL_DIALOG`; if that `ConnectIde` actually reuses the blocked IDE it ends in `BRIDGE_TIMEOUT`. `NoLaunch`, the same solution, or neither parameter → the call is aborted as usual.
+- The probe cannot outlive the server: its stdin is a pipe from Node that is never written to, and EOF (server gone) makes it exit within ~250 ms; `-MaxLifetimeSec` (call timeout + 60 s) is a second safety net.
 - MCP clients time out long calls on their side (SDK default 60 s); see [Client request timeout](#client-request-timeout).
 - `GetBuildErrors` (and the `errorItems` of `BuildProject`) need an English XAE UI; other languages return `ERRORLIST_UNAVAILABLE`.
 - One PowerShell session, one call at a time: concurrent tool calls are queued FIFO.
@@ -307,8 +311,10 @@ powershell.exe -STA  bridge/bridge.ps1  → Import-Module TwinCATAutomation.psm1
                                            holds DTE / ITcSysManager / TcAdsClient across calls
 
 index.js ── lib/modal-probe.js, only during long DTE calls once an IDE pid is known:
-powershell.exe -STA  bridge/modal-probe.ps1 -ProcessId <IDE pid>   UI Automation scan every 5 s;
-                                           one JSON line on a dialog -> bridge killed, IDE_MODAL_DIALOG
+powershell.exe -STA  bridge/modal-probe.ps1 -ProcessId <IDE pid> -ScanScript <module scan> [-MainHwnd <hwnd>]
+                                           UI Automation scan every 5 s (module's $script:TcUiaDialogScan);
+                                           one JSON line on a kill-worthy dialog -> bridge killed, IDE_MODAL_DIALOG;
+                                           exits by itself when Node's stdin pipe closes
 ```
 
 Composite tools (`lib/composites.js`) chain catalog tools through the same validation and timeout path. The wire protocol between Node and PowerShell, parameter conversion rules and the result/log line format are specified in [PROTOCOL.md](PROTOCOL.md).

@@ -47,7 +47,9 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   `ProcessId` → `INVALID_PARAMS`. When neither `params.ProcessId` nor a stored pid is
   available: `{"success":false,"error":{"code":"NOT_CONNECTED","message":"...","hint":"Run Connect-TcIde first, or pass params.ProcessId."}}`.
 * `state`  → snapshot of module state, no COM calls:
-  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text}}}`.
+  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"ideMainHwnd":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text}}}`
+  (`ideMainHwnd` = module variable `$script:TcIdeMainHwnd`, the IDE main window handle stored by
+  `Connect-TcIde`; `null` when unset, 0 or not a number).
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
 * `shutdown` → child disconnects ADS (ignore errors), releases COM refs via
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
@@ -146,12 +148,15 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   and its real result is returned. Composite tools pass the same signal to every step.
 * `BRIDGE_TIMEOUT` / `BRIDGE_DIED` results are decorated by `index.js` (not by `lib/bridge.js`,
   whose `errorResult` stays pure) with
-  `data.lastIde = {ideProcessId, selectedBy, solution} | null` and `data.bridgeRestarted = true`.
+  `data.lastIde = {ideProcessId, selectedBy, solution, ideMainHwnd} | null` and `data.bridgeRestarted = true`.
   `lastIde` is the `data` of the last successful `ConnectIde` that went through the server
-  (including the step inside `RunLifecycle`); it is cleared when a new `ConnectIde` **starts** (so a
+  (including the step inside `RunLifecycle`); right after that `ConnectIde` the server issues one
+  `op:"state"` (no COM call) and stores `state.ideMainHwnd` as `lastIde.ideMainHwnd` (positive
+  integer or `null`). `lastIde` is cleared when a new `ConnectIde` **starts** (so a
   failed reconnect never points at an older IDE) and by a successful `DisconnectIde`. Before it is
   used in a hint the pid is verified with `tasklist /FI "PID eq N" /FO CSV /NH`: it must be alive and
-  its image name must be `TcXaeShell.exe` or `devenv.exe`, otherwise `lastIde` is forgotten and the
+  its image name must be `TcXaeShell.exe` or `devenv.exe` (both the 32-bit and the 64-bit TcXaeShell
+  are `TcXaeShell.exe`), otherwise `lastIde` is forgotten and the
   generic hint is kept (`TWINCAT_MCP_SKIP_PID_CHECK=1` disables the check for tests with mock pids).
   When `lastIde` is valid the hint names the pid: `selectedBy == "launched"` → kill it with
   `taskkill /PID N /T /F` then `ConnectIde`, with the warning "Unsaved changes in that IDE will be
@@ -162,23 +167,53 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   `RunTestCycle`, `OpenProject` and `ConnectIde` (and therefore the matching steps of
   `RunLifecycle`, which go through the same path) the server starts a second, short-lived process
   next to the call:
-  `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File bridge/modal-probe.ps1 -ProcessId N -IntervalSec 5`.
+  `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File bridge/modal-probe.ps1 -ProcessId N -IntervalSec 5 -ConfirmScans 2 -ScanScript <module>/Private/Get-TcIdeModalDialog.ps1 [-MainHwnd H] -MaxLifetimeSec L`.
+  `-MainHwnd` is `lastIde.ideMainHwnd`, passed only when known (> 0); `-MaxLifetimeSec` is
+  `ceil(call timeout / 1000) + 60`.
   The pid is `lastIde.ideProcessId`; for `ConnectIde` it is the **previous** IDE (captured before
   `lastIde` is cleared), the typical reconnect-after-`BRIDGE_TIMEOUT` case where the dialog is still
   up. No pid known (no `ConnectIde` yet, or after `DisconnectIde`) → no probe. The pid is checked
   with the same `tasklist` liveness test as `lastIde` (in parallel with the call, never delaying
-  it) so a recycled pid is never watched. The probe waits one interval **before** its first scan
-  (the cmdlet's own pre-call `Get-TcIdeModalDialog` check gets to answer cleanly first), then scans
-  every interval with the UI Automation heuristics of `Get-TcIdeModalDialog` (each scan in a fresh
-  STA runspace, abandoned after 4 s if UIA hangs: that is normal while XAE's UI thread is busy
-  building, logged for the first abandoned scan and then every 10th). A dialog is reported only
-  when `ConfirmScans` (default 2) consecutive scans saw the same title, so a transient window never
-  kills the bridge; detection therefore takes about two intervals plus the scan time after the
-  dialog appears. The dialog body is read from UIA `Text` descendants, falling back to `Pane` /
-  `Edit` / `Document` (Windows 11 message boxes), buttons excluded. On a hit it writes exactly one line to stdout,
-  `{"title":"...","text":"...","className":"...","isModal":true,"processId":N}` (non-ASCII escaped
-  as `\uXXXX`), and exits 0; exit 3 = process not found, 2 = unexpected error; diagnostics on stderr.
-  Node then aborts the call: if it is in flight the bridge is **killed exactly like on
+  it) so a recycled pid is never watched.
+  - **ConnectIde policy.** `ConnectIde` probes the previous IDE in **kill** mode (below) only when
+    it will talk to that IDE again: `NoLaunch: true`, or `SolutionPath` equal to
+    `lastIde.solution` (case-insensitive, path-normalised), or neither `SolutionPath` nor
+    `NoLaunch` given. A different `SolutionPath` (a new IDE may be launched) runs the probe in
+    **log-only** mode: a report only writes a server stderr line and a `notifications/message`
+    `warning` ("previous IDE (pid N) shows dialog '<title>' ... the call was not aborted") and the
+    call continues. `ProgId` plays no role. All other probed tools always use kill mode.
+  - **Scan.** The probe dot-sources `-ScanScript` and runs the module's `$script:TcUiaDialogScan`
+    (single source of truth for window selection, the known-title list and text collection; the
+    probe exits 2 if the file is missing or does not define it). It waits one interval **before**
+    its first scan (the cmdlet's own pre-call `Get-TcIdeModalDialog` check gets to answer cleanly
+    first), then scans every interval, each scan in a fresh STA runspace, abandoned after 4 s if
+    UIA hangs (normal while XAE's UI thread is busy building; logged for the first abandoned scan
+    and then every 10th). Abandoned scans are disposed once they finish; while 10 still hang no new
+    scan starts. The module scan only sees top-level windows of the pid; a dialog **owned** by the
+    main window is a UIA child of the main window, so when the main window is disabled and the
+    module scan found nothing the probe also checks the main window's direct `Window` children
+    (title + `Text` descendants).
+  - **Kill rule.** A candidate is kill-worthy only when it is `IsModal` or a Win32 dialog
+    (`#32770`) **and** the IDE main window is disabled (`IsEnabled == false`; main window =
+    `-MainHwnd`, else the pid's top-level non-`#32770` window matching the module's main-title
+    pattern). No main window found → kill-worthy only when `IsModal`. A window with a
+    `ProgressBar` descendant (progress / wait boxes), a title-only match, or an enabled main window
+    is log-only: stderr `debug: dialog '<title>' seen but not kill-worthy (<reason>)`, not counted.
+    A kill-worthy dialog is reported only when `ConfirmScans` (default 2,
+    `TWINCAT_MCP_PROBE_CONFIRM_SCANS`, 1..10) consecutive scans saw the same title; detection
+    therefore takes about two intervals plus the scan time after the dialog appears.
+  - **Output.** On a report it writes exactly one line to stdout,
+    `{"title":"...","text":"...","className":"...","isModal":true,"processId":N,"mainWindowEnabled":false|true|null,"reason":"modal"|"win32-dialog"}`
+    (non-ASCII escaped as `\uXXXX`; `reason` is `win32-dialog` for `#32770`, else `modal`), and
+    exits 0; exit 3 = process not found, 2 = error. stderr lines start with `debug: ` (routine:
+    abandoned scans, confirmation progress, not kill-worthy, stdin closed, lifetime) or `error: `
+    (real failures). `lib/modal-probe.js` routes `debug:` lines to the server's debug output (only
+    with `TWINCAT_MCP_VERBOSE=1`) and everything else, plus non-zero exits and spawn errors, to
+    server stderr + `notifications/message` level `warning`.
+  - **Orphan protection.** The probe's stdin is a pipe that Node keeps open and never writes to;
+    EOF (or any byte) means the parent is gone and the probe exits 0 within ~250 ms (it sleeps in
+    250 ms slices). `-MaxLifetimeSec` (default 7260, clamped 10..86400) is a second safety net.
+  In kill mode Node then aborts the call: if it is in flight the bridge is **killed exactly like on
   `BRIDGE_TIMEOUT`** (calls queued behind it get `BRIDGE_DIED` / not executed), if it is still
   queued it is only removed (the bridge keeps running). The result is
   `{"success":false,"error":{"code":"IDE_MODAL_DIALOG","message":"<title> | <first 200 chars of text>","hint":"..."},"data":{"dialogTitle","dialogText","ideProcessId","lastIde","bridgeRestarted"}}`
@@ -189,12 +224,14 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   operation may still complete inside the IDE once the dialog closes (killing PowerShell does not
   cancel it), and for a dequeued call that the call ahead of it may stay blocked until its own
   timeout. `BRIDGE_*` decoration does not touch this
-  result. The probe is killed (fire-and-forget, `taskkill /T /F` after 1 s) as soon as the call
+  result. A report that arrives after the call finished is ignored (logged). The probe is killed
+  (fire-and-forget, `taskkill /T /F` after 1 s) as soon as the call
   ends and on server shutdown; probe failures (spawn error, crash, garbage on stdout) are only
-  logged (server stderr + `notifications/message` level `warning`) and never affect the call.
+  logged and never affect the call.
   `TWINCAT_MCP_MODAL_PROBE=0` disables it, `TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC` (1..60, default 5)
-  sets the interval; tests replace the spawn with `TWINCAT_MCP_PROBE_COMMAND` /
-  `TWINCAT_MCP_PROBE_ARGS` (`-ProcessId N -IntervalSec S` are appended).
+  sets the interval, `TWINCAT_MCP_PROBE_SCAN_SCRIPT` overrides the scan file; tests replace the
+  spawn with `TWINCAT_MCP_PROBE_COMMAND` / `TWINCAT_MCP_PROBE_ARGS` (the same argument tail
+  `-ProcessId ... -MaxLifetimeSec` is appended).
 * `GetIdeModalDialog` (`op:"modal"`) accepts an optional `ProcessId` (integer ≥ 1) which is passed
   as `params.ProcessId`. Without it, the server first reads `op:"state"`; when the bridge has no
   `ideProcessId` (restarted after `BRIDGE_TIMEOUT` / `BRIDGE_DIED`) but `lastIde` is known, the

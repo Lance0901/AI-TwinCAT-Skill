@@ -182,7 +182,7 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.equal(res.isError, true);
     const body = parse(res);
     assert.equal(body.error.code, 'BRIDGE_TIMEOUT');
-    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln' });
+    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
     assert.equal(body.data.bridgeRestarted, true);
     assert.match(body.error.hint, /4242/);
     assert.match(body.error.hint, /taskkill \/PID 4242 \/T \/F/);
@@ -463,7 +463,7 @@ describe('index.js over stdio (modal probe)', () => {
     assert.equal(body.data.dialogTitle, 'TwinCAT PLC Control');
     assert.equal(body.data.dialogText, PLC_TEXT);
     assert.equal(body.data.ideProcessId, 4242);
-    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln' });
+    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
     assert.equal(body.data.bridgeRestarted, true);
     assert.ok(elapsed < 3500, `probe beat the 4000 ms tool timeout (took ${elapsed} ms)`);
     assert.ok(stderr.some((l) => /modal dialog detected on IDE pid 4242 during BuildProject: TwinCAT PLC Control/.test(l)));
@@ -565,6 +565,109 @@ describe('index.js over stdio (modal probe, extended fixture)', () => {
     const body = parse(await client.callTool({ name: 'BuildProject', arguments: { DelayMs: 400 } }));
     assert.equal(body.success, true, 'not aborted');
     assert.deepEqual(pf.pids(), []);
+    pf.clearTrigger();
+  });
+});
+
+describe('index.js over stdio (modal probe: ConnectIde policy, late hits, probe argv)', () => {
+  let client;
+  let stderr;
+  let dir;
+  let pf;
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'twincat-mcp-probe-pol-'));
+    pf = probeFiles(dir, 'pol');
+    ({ client, stderr } = await startServer(FIXTURE, { ...pf.env, MOCK_PROBE_ECHO: '1' }));
+  });
+  after(async () => {
+    await client?.close();
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  const DIALOG = { title: 'TwinCAT PLC Control', text: 'still up' };
+
+  /** No dialog, ConnectIde to Demo.sln: lastIde = 4242 / launched / Demo.sln / hwnd 16962. */
+  async function connectDemo() {
+    pf.clearTrigger();
+    const r = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'C:\\x\\Demo.sln' } }));
+    assert.equal(r.success, true, JSON.stringify(r));
+  }
+
+  test('lastIde.ideMainHwnd (16962 from op state) and the call timeout reach the probe argv', async () => {
+    await connectDemo();
+    const from = stderr.length;
+    const body = parse(await client.callTool({ name: 'BuildProject', arguments: { DelayMs: 500 } }));
+    assert.equal(body.success, true);
+    const argvLine = () => stderr.slice(from).find((l) => /\[modal-probe\] argv /.test(l));
+    assert.ok(await waitFor(() => argvLine() !== undefined, 2000), stderr.slice(from).join('\n'));
+    const line = argvLine();
+    assert.match(line, /"-MainHwnd","16962"/);
+    assert.match(line, /"-ConfirmScans","2"/);
+    assert.match(line, /"-MaxLifetimeSec","64"/, 'ceil(4000 ms / 1000) + 60');
+    assert.match(line, /"-ScanScript","[^"]*Get-TcIdeModalDialog\.ps1"/);
+  });
+
+  test('ConnectIde to a DIFFERENT solution: probe of the previous IDE is log-only, call not aborted', async () => {
+    await connectDemo();
+    pf.setTrigger(DIALOG);
+    const from = stderr.length;
+    const body = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'C:\\x\\Other.sln', DelayMs: 1500 } }));
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.data.solution, 'C:\\x\\Other.sln');
+    assert.ok(
+      stderr.slice(from).some((l) => /previous IDE \(pid 4242\) shows dialog 'TwinCAT PLC Control'.*not aborted/.test(l)),
+      stderr.slice(from).join('\n')
+    );
+  });
+
+  test('ConnectIde to the SAME solution (case / path normalised) -> IDE_MODAL_DIALOG', async () => {
+    await connectDemo();
+    pf.setTrigger(DIALOG);
+    const body = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'c:\\X\\.\\demo.SLN', DelayMs: 1500 } }));
+    assert.equal(body.error?.code, 'IDE_MODAL_DIALOG', JSON.stringify(body));
+    assert.equal(body.data.ideProcessId, 4242);
+  });
+
+  test('ConnectIde NoLaunch -> IDE_MODAL_DIALOG (kill mode)', async () => {
+    await connectDemo();
+    pf.setTrigger(DIALOG);
+    const body = parse(await client.callTool({ name: 'ConnectIde', arguments: { NoLaunch: true, DelayMs: 1500 } }));
+    assert.equal(body.error?.code, 'IDE_MODAL_DIALOG', JSON.stringify(body));
+  });
+
+  test('ConnectIde without SolutionPath / NoLaunch -> IDE_MODAL_DIALOG (kill mode)', async () => {
+    await connectDemo();
+    pf.setTrigger(DIALOG);
+    const body = parse(await client.callTool({ name: 'ConnectIde', arguments: { DelayMs: 1500 } }));
+    assert.equal(body.error?.code, 'IDE_MODAL_DIALOG', JSON.stringify(body));
+  });
+
+  test('late hit racing the end of the call -> success or IDE_MODAL_DIALOG, never a crash; the server keeps answering', async () => {
+    await connectDemo();
+    pf.setTrigger({ ...DIALOG, delayMs: 1200 });
+    const body = parse(await client.callTool({ name: 'BuildProject', arguments: { DelayMs: 1200 } }));
+    assert.ok(body.success === true || body.error?.code === 'IDE_MODAL_DIALOG', JSON.stringify(body));
+    pf.clearTrigger();
+    const status = parse(await client.callTool({ name: 'GetStatus', arguments: {} }));
+    assert.equal(typeof status.success, 'boolean');
+    assert.ok(!['BRIDGE_TIMEOUT', 'BRIDGE_DIED', 'INTERNAL_ERROR'].includes(status.error?.code), JSON.stringify(status));
+  });
+
+  test('a hit that would come after the call ended: call succeeds, probe killed before it can report', async () => {
+    await connectDemo();
+    pf.clearPids();
+    pf.setTrigger({ ...DIALOG, delayMs: 3000 });
+    const from = stderr.length;
+    const body = parse(await client.callTool({ name: 'BuildProject', arguments: { DelayMs: 300 } }));
+    assert.equal(body.success, true, JSON.stringify(body));
+    const pids = pf.pids();
+    assert.equal(pids.length, 1, 'one probe spawned');
+    assert.ok(await waitFor(() => !alive(pids[0]), 2000), `probe pid ${pids[0]} is dead`);
+    assert.ok(!stderr.slice(from).some((l) => /modal dialog/.test(l)), 'nothing reported');
     pf.clearTrigger();
   });
 });

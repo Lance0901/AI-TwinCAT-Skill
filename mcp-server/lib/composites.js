@@ -2,7 +2,7 @@
 // Each entry: { name, description, inputSchema, annotations, timeoutMs, run(ctx, args) }
 //   ctx.bridge             PowerShellBridge
 //   ctx.callTool(name, a)  runs a catalog tool through the normal path (validation + timeout) -> result object
-//   ctx.lastIde            {ideProcessId, selectedBy, solution} of the last successful ConnectIde, or null
+//   ctx.lastIde            {ideProcessId, selectedBy, solution, ideMainHwnd} of the last successful ConnectIde, or null
 //   ctx.signal             AbortSignal of the MCP request (optional); forwarded to bridge calls
 
 function errorResult(code, message, hint) {
