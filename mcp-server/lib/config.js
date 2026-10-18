@@ -10,10 +10,18 @@
 //   TWINCAT_MCP_SKIP_PID_CHECK "1" -> do not verify with tasklist that data.lastIde.ideProcessId is still a
 //                              live TcXaeShell.exe/devenv.exe before naming it in a BRIDGE_TIMEOUT/BRIDGE_DIED
 //                              hint (tests with a mock IDE pid)
+//   TWINCAT_MCP_MODAL_PROBE    "0"/"false"/"off"/"no" -> disable the modal-dialog probe (default on): during
+//                              BuildProject / EnableConfig / PlcLogin / SendPlcProgram / RunTestCycle /
+//                              OpenProject / ConnectIde a separate powershell.exe (bridge/modal-probe.ps1)
+//                              watches the last known IDE pid and turns a modal dialog into IDE_MODAL_DIALOG
+//                              instead of waiting for BRIDGE_TIMEOUT (lib/modal-probe.js)
+//   TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC  probe scan interval in seconds (default 5, clamped 1..60)
 //
 // Test-only overrides (replace the powershell.exe spawn with any command, e.g. a mock bridge):
 //   TWINCAT_MCP_BRIDGE_COMMAND  executable to spawn instead of powershell.exe
 //   TWINCAT_MCP_BRIDGE_ARGS     JSON array of arguments for that executable
+//   TWINCAT_MCP_PROBE_COMMAND   executable to spawn instead of powershell.exe modal-probe.ps1
+//   TWINCAT_MCP_PROBE_ARGS      JSON array of arguments for that executable (-ProcessId / -IntervalSec appended)
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +30,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const MCP_SERVER_DIR = path.resolve(__dirname, '..');
 export const REPO_ROOT = path.resolve(MCP_SERVER_DIR, '..');
 export const DEFAULT_BRIDGE_SCRIPT = path.join(MCP_SERVER_DIR, 'bridge', 'bridge.ps1');
+export const DEFAULT_PROBE_SCRIPT = path.join(MCP_SERVER_DIR, 'bridge', 'modal-probe.ps1');
 export const DEFAULT_TOOLS_JSON = path.join(MCP_SERVER_DIR, 'tools.json');
 export const DEFAULT_MODULE_PATH = path.join(REPO_ROOT, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1');
 
@@ -36,23 +45,33 @@ function flag(value) {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
-function parseSpawnOverride(env) {
-  const command = env.TWINCAT_MCP_BRIDGE_COMMAND;
+/** Default-on flag: unset/blank -> true; "0"/"false"/"no"/"off" -> false; anything else -> true. */
+function flagDefaultOn(value) {
+  if (value === undefined || value === null || String(value).trim() === '') return true;
+  const v = String(value).trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'no' || v === 'off');
+}
+
+/** `{command, args}` from <prefix>_COMMAND / <prefix>_ARGS (JSON array), or null when no command is set. */
+function parseSpawnOverride(env, prefix = 'TWINCAT_MCP_BRIDGE') {
+  const command = env[`${prefix}_COMMAND`];
   if (!command) return null;
   let args = [];
-  if (env.TWINCAT_MCP_BRIDGE_ARGS) {
+  const rawArgs = env[`${prefix}_ARGS`];
+  if (rawArgs) {
     try {
-      const parsed = JSON.parse(env.TWINCAT_MCP_BRIDGE_ARGS);
+      const parsed = JSON.parse(rawArgs);
       if (!Array.isArray(parsed)) throw new Error('not an array');
       args = parsed.map(String);
     } catch (err) {
-      throw new Error(`TWINCAT_MCP_BRIDGE_ARGS must be a JSON array of strings: ${err.message}`);
+      throw new Error(`${prefix}_ARGS must be a JSON array of strings: ${err.message}`);
     }
   }
   return { command, args };
 }
 
 export const DEFAULT_PROGRESS_INTERVAL_MS = 10000;
+export const DEFAULT_PROBE_INTERVAL_SEC = 5;
 
 // Bounds for the per-call bridge timeout. The upper bound keeps setTimeout below its 2^31-1 ms
 // limit (a larger delay fires immediately in Node), the lower bound stops a client from asking
@@ -75,6 +94,12 @@ export function loadConfig(env = process.env) {
     toolsJsonPath: env.TWINCAT_MCP_TOOLS_JSON || DEFAULT_TOOLS_JSON,
     verbose: flag(env.TWINCAT_MCP_VERBOSE),
     eager: flag(env.TWINCAT_MCP_EAGER),
-    spawnSpec: parseSpawnOverride(env)
+    spawnSpec: parseSpawnOverride(env),
+    modalProbe: {
+      enabled: flagDefaultOn(env.TWINCAT_MCP_MODAL_PROBE),
+      intervalSec: Math.min(60, Math.max(1, positiveInt(env.TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC, DEFAULT_PROBE_INTERVAL_SEC))),
+      spawnSpec: parseSpawnOverride(env, 'TWINCAT_MCP_PROBE'),
+      probeScript: DEFAULT_PROBE_SCRIPT
+    }
   };
 }

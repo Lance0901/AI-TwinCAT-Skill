@@ -9,7 +9,7 @@
       "timeoutMs": 180000,
       "inputSchema": {
         "type": "object",
-        "properties": { "ProgId": { "type": "string" }, "SolutionPath": { "type": "string" }, "NoLaunch": { "type": "boolean" } },
+        "properties": { "ProgId": { "type": "string" }, "SolutionPath": { "type": "string" }, "NoLaunch": { "type": "boolean" }, "DelayMs": { "type": "integer" } },
         "required": [],
         "additionalProperties": false
       }

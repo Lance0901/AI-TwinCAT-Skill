@@ -12,7 +12,8 @@
         "properties": {
           "ProgId": { "type": "string" },
           "SolutionPath": { "type": "string" },
-          "NoLaunch": { "type": "boolean" }
+          "NoLaunch": { "type": "boolean" },
+          "DelayMs": { "type": "integer" }
         },
         "required": [],
         "additionalProperties": false
@@ -39,7 +40,7 @@
       "name": "BuildProject",
       "cmdlet": "Build-TcProject",
       "description": "Build the PLC project. Hang/Crash/Delay are mock-bridge test switches.",
-      "timeoutMs": 2000,
+      "timeoutMs": 4000,
       "inputSchema": {
         "type": "object",
         "properties": {

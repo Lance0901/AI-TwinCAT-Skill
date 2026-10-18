@@ -157,6 +157,44 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   `taskkill /PID N /T /F` then `ConnectIde`, with the warning "Unsaved changes in that IDE will be
   lost; ask the user before killing it."; otherwise → the user opened it, dismiss the dialog then
   `ConnectIde`. Without `lastIde` the generic hint above is kept.
+* **Modal-dialog probe during long calls.** A modal dialog in XAE blocks the DTE call inside the
+  bridge forever, so for `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`,
+  `RunTestCycle`, `OpenProject` and `ConnectIde` (and therefore the matching steps of
+  `RunLifecycle`, which go through the same path) the server starts a second, short-lived process
+  next to the call:
+  `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File bridge/modal-probe.ps1 -ProcessId N -IntervalSec 5`.
+  The pid is `lastIde.ideProcessId`; for `ConnectIde` it is the **previous** IDE (captured before
+  `lastIde` is cleared), the typical reconnect-after-`BRIDGE_TIMEOUT` case where the dialog is still
+  up. No pid known (no `ConnectIde` yet, or after `DisconnectIde`) → no probe. The pid is checked
+  with the same `tasklist` liveness test as `lastIde` (in parallel with the call, never delaying
+  it) so a recycled pid is never watched. The probe waits one interval **before** its first scan
+  (the cmdlet's own pre-call `Get-TcIdeModalDialog` check gets to answer cleanly first), then scans
+  every interval with the UI Automation heuristics of `Get-TcIdeModalDialog` (each scan in a fresh
+  STA runspace, abandoned after 4 s if UIA hangs: that is normal while XAE's UI thread is busy
+  building, logged for the first abandoned scan and then every 10th). A dialog is reported only
+  when `ConfirmScans` (default 2) consecutive scans saw the same title, so a transient window never
+  kills the bridge; detection therefore takes about two intervals plus the scan time after the
+  dialog appears. The dialog body is read from UIA `Text` descendants, falling back to `Pane` /
+  `Edit` / `Document` (Windows 11 message boxes), buttons excluded. On a hit it writes exactly one line to stdout,
+  `{"title":"...","text":"...","className":"...","isModal":true,"processId":N}` (non-ASCII escaped
+  as `\uXXXX`), and exits 0; exit 3 = process not found, 2 = unexpected error; diagnostics on stderr.
+  Node then aborts the call: if it is in flight the bridge is **killed exactly like on
+  `BRIDGE_TIMEOUT`** (calls queued behind it get `BRIDGE_DIED` / not executed), if it is still
+  queued it is only removed (the bridge keeps running). The result is
+  `{"success":false,"error":{"code":"IDE_MODAL_DIALOG","message":"<title> | <first 200 chars of text>","hint":"..."},"data":{"dialogTitle","dialogText","ideProcessId","lastIde","bridgeRestarted"}}`
+  (`message` is just the title when the text is empty; `lastIde` is the snapshot at detection time,
+  `null` during `ConnectIde`; `bridgeRestarted` is `false` for a dequeued call). The hint names the
+  pid: launched by this server → dismiss the dialog or `taskkill /PID N /T /F` (ask the user first),
+  opened by the user → dismiss it; then `ConnectIde`; it also warns that the interrupted DTE
+  operation may still complete inside the IDE once the dialog closes (killing PowerShell does not
+  cancel it), and for a dequeued call that the call ahead of it may stay blocked until its own
+  timeout. `BRIDGE_*` decoration does not touch this
+  result. The probe is killed (fire-and-forget, `taskkill /T /F` after 1 s) as soon as the call
+  ends and on server shutdown; probe failures (spawn error, crash, garbage on stdout) are only
+  logged (server stderr + `notifications/message` level `warning`) and never affect the call.
+  `TWINCAT_MCP_MODAL_PROBE=0` disables it, `TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC` (1..60, default 5)
+  sets the interval; tests replace the spawn with `TWINCAT_MCP_PROBE_COMMAND` /
+  `TWINCAT_MCP_PROBE_ARGS` (`-ProcessId N -IntervalSec S` are appended).
 * `GetIdeModalDialog` (`op:"modal"`) accepts an optional `ProcessId` (integer ≥ 1) which is passed
   as `params.ProcessId`. Without it, the server first reads `op:"state"`; when the bridge has no
   `ideProcessId` (restarted after `BRIDGE_TIMEOUT` / `BRIDGE_DIED`) but `lastIde` is known, the
