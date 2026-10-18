@@ -69,6 +69,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | Microsoft Visual Studio 帳戶設定 | VS2022 未登入時 | 登入一次,或手動關閉視窗 |
 | `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動 | 看 XAE Output / Error List;UmRT 多半是 license 或 I/O 設定問題 |
 | Trial license security code | 7 天 trial 到期或首次啟用 | 需人工輸入驗證碼,模組無法代勞 |
+| `TwinCAT PLC Control`(class `#32770`) | 2026-10-18 經 MCP server 跑 `BuildProject` 時出現一次;成因未定,懷疑 OneDrive 檔案鎖或新啟動的 IDE 第一次 build。標題不在已知清單,靠 `#32770` class 偵測 | DTE 呼叫無限阻塞,等到 `BRIDGE_TIMEOUT`(Build 600 s)才 kill bridge;IDE 本身不會退出,只能 kill 該 IDE(MCP 結果的 `data.lastIde.ideProcessId` / `error.hint` 會給 pid 與 `taskkill` 指令),重新 `ConnectIde` 再 Build |
 
 ## 驗證紀錄 2026-10-18
 

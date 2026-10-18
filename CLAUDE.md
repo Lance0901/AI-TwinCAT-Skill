@@ -8,6 +8,8 @@ This project provides a PowerShell module for automating TwinCAT 3 IDE and PLC r
 Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force
 ```
 
+Or run it as the TcAuto MCP server (tool names = CLI action names, e.g. `ConnectIde`, `BuildProject`, `EnableConfig`, `ReadVariable`): see `docs/setup-mcp.md`.
+
 ## Core Workflow (No Dialogs)
 
 The full PLC lifecycle runs without any dialog popups:
@@ -46,6 +48,7 @@ Read-TcVariable -Path "MAIN.nCounter"
 | Claude Code | `adapters/claude-code/SKILL.md` |
 | Codex | `adapters/codex/tools.json` |
 | Antigravity | `adapters/antigravity/plugin.yaml` |
+| MCP (Claude Desktop / any client) | `mcp-server/README.md` |
 
 ## Available Commands (35)
 

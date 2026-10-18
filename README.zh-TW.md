@@ -221,6 +221,18 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
+## MCP Server 安裝(Claude Desktop / 任何 MCP client)
+
+同一個模組也能以 TcAuto MCP server(stdio)提供:35 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+
+```powershell
+cd mcp-server
+npm install
+npm test          # 不需要 TwinCAT
+```
+
+Claude Code 會自動讀取 repo 的 `.mcp.json`;Claude Desktop 設定見 [docs/setup-mcp.md](docs/setup-mcp.md) 與 [mcp-server/README.md](mcp-server/README.md)。
+
 ## 更新日誌
 
 ### 2026-04-02

@@ -1,0 +1,94 @@
+{
+  "generatedAt": "2026-10-18T00:00:00Z",
+  "moduleVersion": "0.1.0",
+  "tools": [
+    {
+      "name": "ConnectIde",
+      "cmdlet": "Connect-TcIde",
+      "description": "Connect to a running TwinCAT XAE (or launch one).",
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "type": "object",
+        "properties": { "ProgId": { "type": "string" }, "SolutionPath": { "type": "string" }, "NoLaunch": { "type": "boolean" } },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "DisconnectIde",
+      "cmdlet": "Disconnect-TcIde",
+      "description": "Release the IDE.",
+      "timeoutMs": 60000,
+      "inputSchema": { "type": "object", "properties": { "Quit": { "type": "boolean" } }, "required": [], "additionalProperties": false }
+    },
+    {
+      "name": "GetIdeInfo",
+      "cmdlet": "Get-TcIdeInfo",
+      "description": "IDE info.",
+      "timeoutMs": 60000,
+      "inputSchema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
+    },
+    {
+      "name": "BuildProject",
+      "cmdlet": "Build-TcProject",
+      "description": "Build the PLC project.",
+      "timeoutMs": 600000,
+      "inputSchema": {
+        "type": "object",
+        "properties": { "Hang": { "type": "boolean" }, "Crash": { "type": "boolean" }, "DelayMs": { "type": "integer" } },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "EnableConfig",
+      "cmdlet": "Enable-TcConfig",
+      "description": "Activate configuration.",
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "type": "object",
+        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" } },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ConnectAds",
+      "cmdlet": "Connect-TcAds",
+      "description": "Connect ADS.",
+      "timeoutMs": 60000,
+      "inputSchema": {
+        "type": "object",
+        "properties": { "AmsNetId": { "type": "string" }, "Port": { "type": "integer" } },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ReadVariable",
+      "cmdlet": "Read-TcVariable",
+      "description": "Read PLC variables over ADS.",
+      "timeoutMs": 120000,
+      "inputSchema": {
+        "type": "object",
+        "properties": { "Path": { "type": "array", "items": { "type": "string" }, "minItems": 1 } },
+        "required": ["Path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "GetSystemState",
+      "cmdlet": "Get-TcSystemState",
+      "description": "TwinCAT system state.",
+      "timeoutMs": 60000,
+      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" } }, "required": [], "additionalProperties": false }
+    },
+    {
+      "name": "GetPlcState",
+      "cmdlet": "Get-TcPlcState",
+      "description": "PLC state.",
+      "timeoutMs": 60000,
+      "inputSchema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
+    }
+  ]
+}

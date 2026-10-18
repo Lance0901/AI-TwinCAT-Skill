@@ -1,0 +1,22 @@
+{
+  "name": "tcauto-mcp-server",
+  "version": "0.1.0",
+  "description": "TcAuto MCP server for TwinCAT 3 automation - exposes the TwinCATAutomation PowerShell module as MCP tools",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "tcauto-mcp": "index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:integration": "node --test \"test/integration/*.test.js\"",
+    "generate-tools": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Export-ToolSchema.ps1"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1"
+  }
+}

@@ -1,0 +1,978 @@
+{
+    "generatedAt":  "2026-10-18T12:30:06Z",
+    "moduleVersion":  "0.1.0",
+    "tools":  [
+                  {
+                      "name":  "AddDut",
+                      "cmdlet":  "Add-TcDut",
+                      "description":  "Adds a Data Unit Type (STRUCT, ENUM, ALIAS, UNION) to the PLC project.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "DUT name (e.g., ST_MotorData, E_State)."
+                                                                      },
+                                                             "DutType":  {
+                                                                             "type":  "string",
+                                                                             "enum":  [
+                                                                                          "Struct",
+                                                                                          "Enum",
+                                                                                          "Alias",
+                                                                                          "Union"
+                                                                                      ],
+                                                                             "description":  "DUT type: Struct, Enum, Alias, Union."
+                                                                         },
+                                                             "Fields":  {
+                                                                            "type":  "object",
+                                                                            "additionalProperties":  true,
+                                                                            "description":  "Optional object of field declarations (name = type) for Struct/Union (name = value for Enum). Declaration order is not guaranteed (PowerShell hashtable)."
+                                                                        },
+                                                             "AliasType":  {
+                                                                               "type":  "string",
+                                                                               "description":  "Base type for Alias DUT."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "DutType"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddGvl",
+                      "cmdlet":  "Add-TcGvl",
+                      "description":  "Adds a Global Variable List (GVL) to the PLC project.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "GVL name (e.g., GVL_Main)."
+                                                                      },
+                                                             "Variables":  {
+                                                                               "type":  "object",
+                                                                               "additionalProperties":  true,
+                                                                               "description":  "Optional object of variable declarations (name = type). Declaration order is not guaranteed (PowerShell hashtable)."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddLibrary",
+                      "cmdlet":  "Add-TcLibrary",
+                      "description":  "Adds a library reference to the PLC project.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Library name (e.g., Tc2_Standard, Tc3_Module)."
+                                                                      },
+                                                             "Version":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Optional library version. Uses latest if omitted.",
+                                                                             "default":  "*"
+                                                                         }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPou",
+                      "cmdlet":  "Add-TcPou",
+                      "description":  "Adds a POU (Program, Function Block, or Function) to the PLC project.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "POU name (e.g., FB_Motor, FC_Add, MAIN)."
+                                                                      },
+                                                             "Type":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Program",
+                                                                                       "FunctionBlock",
+                                                                                       "Function"
+                                                                                   ],
+                                                                          "description":  "POU type: Program, FunctionBlock, or Function."
+                                                                      },
+                                                             "ReturnType":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Return type for Functions (e.g., INT, BOOL). Ignored for Program/FunctionBlock.",
+                                                                                "default":  "BOOL"
+                                                                            },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Tree path to the PLC project's POUs folder. Auto-detected if omitted."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "Type"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "BuildProject",
+                      "cmdlet":  "Build-TcProject",
+                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems (description/file/line taken from the XAE Error List) instead of guessing; a full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ConnectAds",
+                      "cmdlet":  "Connect-TcAds",
+                      "description":  "Open the ADS connection to the PLC runtime. Leave AmsNetId empty: it is auto-detected from the IDE target and changes per target (local UmRT, remote CX ...), so never hardcode it. Port defaults to 851 (PLC runtime 1). Requires ConnectIde for auto-detection.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "AmsNetId":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Target AmsNetId. Leave empty to auto-detect from the IDE target (recommended; it differs per target)."
+                                                                          },
+                                                             "Port":  {
+                                                                          "type":  "integer",
+                                                                          "description":  "ADS port. Default: 851 (PLC Runtime 1).",
+                                                                          "default":  851
+                                                                      }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ConnectIde",
+                      "cmdlet":  "Connect-TcIde",
+                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId and, when a solution is open, the detected target AmsNetId.",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ProgId":  {
+                                                                            "type":  "string",
+                                                                            "description":  "COM ProgID to connect to / launch. When given, running instances with this ProgID are preferred and only this ProgID is used for launching."
+                                                                        },
+                                                             "SolutionPath":  {
+                                                                                  "type":  "string",
+                                                                                  "description":  "Path to a .sln file. If specified, the IDE will open this solution automatically after connecting (or connect to an instance already running this solution)."
+                                                                              },
+                                                             "NoLaunch":  {
+                                                                              "type":  "boolean",
+                                                                              "description":  "If set, do not launch a new IDE instance if none is running."
+                                                                          }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "DisconnectAds",
+                      "cmdlet":  "Disconnect-TcAds",
+                      "description":  "Close the ADS connection and forget the cached endpoint (disables auto-reconnect).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "DisconnectIde",
+                      "cmdlet":  "Disconnect-TcIde",
+                      "description":  "Release the DTE/COM references held by the bridge. The IDE keeps running unless Quit=true, which closes the solution without saving and quits the IDE (only use on an IDE that ConnectIde launched).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Quit":  {
+                                                                          "type":  "boolean",
+                                                                          "description":  "true = also close the solution (without saving) and quit the IDE."
+                                                                      }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "EnableConfig",
+                      "cmdlet":  "Enable-TcConfig",
+                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Force":  {
+                                                                           "type":  "boolean",
+                                                                           "description":  "true = full lifecycle without dialogs (Config -> Activate -> Run -> Login/Download -> PLC Run)."
+                                                                       },
+                                                             "NoLogin":  {
+                                                                             "type":  "boolean",
+                                                                             "description":  "true = stop after TwinCAT reaches Run; skip PLC login/download/Run."
+                                                                         },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  10,
+                                                                                "maximum":  3600,
+                                                                                "description":  "Overall time limit for the whole -Force cycle (single deadline). Default 120.",
+                                                                                "default":  120
+                                                                            }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetBuildErrors",
+                      "cmdlet":  "Get-TcBuildErrors",
+                      "description":  "Read the compiler messages currently shown in the XAE Error List (errors by default; IncludeWarnings/IncludeMessages add the rest). Needs an English XAE UI (window \"Error List\", button \"N Errors\"); other UI languages return ERRORLIST_UNAVAILABLE.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "IncludeWarnings":  {
+                                                                                     "type":  "boolean",
+                                                                                     "description":  "Also read warning rows (data.warnings)."
+                                                                                 },
+                                                             "IncludeMessages":  {
+                                                                                     "type":  "boolean",
+                                                                                     "description":  "Also read message rows (data.messages)."
+                                                                                 },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  5,
+                                                                                "maximum":  600,
+                                                                                "description":  "Hard limit for the UI Automation scan. Default 30.",
+                                                                                "default":  30
+                                                                            }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetIdeInfo",
+                      "cmdlet":  "Get-TcIdeInfo",
+                      "description":  "Return version, edition, open solution and ITcSysManager availability of the connected IDE. Cheap connectivity check; fails with NOT_CONNECTED before ConnectIde.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetIoTree",
+                      "cmdlet":  "Get-TcIoTree",
+                      "description":  "Reads the current I/O device tree (TIID subtree) and returns as JSON.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetPlcState",
+                      "cmdlet":  "Get-TcPlcState",
+                      "description":  "Read the PLC runtime state (Run/Stop/...) on the connected ADS port.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetPouCode",
+                      "cmdlet":  "Get-TcPouCode",
+                      "description":  "Reads declaration and implementation code from an existing POU.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PouName":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the POU to read."
+                                                                         },
+                                                             "PouPath":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                         }
+                                                         },
+                                          "required":  [
+                                                           "PouName"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetProjectTree",
+                      "cmdlet":  "Get-TcProjectTree",
+                      "description":  "Reads and returns the full TwinCAT project structure as a JSON tree.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetSymbols",
+                      "cmdlet":  "Get-TcSymbols",
+                      "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter). Use it to find exact variable paths before ReadVariable/WriteVariable.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Filter":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Optional wildcard filter (e.g., \"MAIN.*\")."
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetSystemState",
+                      "cmdlet":  "Get-TcSystemState",
+                      "description":  "Read the TwinCAT system state (Run/Config) of a target over ADS port 10000. AmsNetId defaults to 127.0.0.1.1.1 (the local system), which is NOT necessarily your target; pass the AmsNetId reported by ConnectIde/ConnectAds for a remote or UmRT target.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "AmsNetId":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Target AmsNetId. Default 127.0.0.1.1.1 is the local TwinCAT system, which may not be your target.",
+                                                                              "default":  "127.0.0.1.1.1"
+                                                                          }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "IoScan",
+                      "cmdlet":  "Invoke-TcIoScan",
+                      "description":  "Scan the I/O devices (EtherCAT ...) of the target and add them to the I/O tree. Requires the target in Config mode.",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "NewProject",
+                      "cmdlet":  "New-TcProject",
+                      "description":  "Creates a new TwinCAT XAE project with a PLC project and default MAIN program.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Project name."
+                                                                      },
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Directory to create the project in. Defaults to current directory."
+                                                                      }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "NewTestCase",
+                      "cmdlet":  "New-TcTestCase",
+                      "description":  "Build a test case object for RunTest/RunTestCycle. Setup/Teardown are arrays of {Path, Value} writes; Assertions are {Path, Operator, Expected} with Operator one of Equal (default), NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse. Pure data, no IDE/PLC access.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Test case name."
+                                                                      },
+                                                             "Setup":  {
+                                                                           "type":  "array",
+                                                                           "items":  {
+                                                                                         "type":  "object",
+                                                                                         "additionalProperties":  true
+                                                                                     },
+                                                                           "description":  "Writes before the test: array of {\"Path\":\"MAIN.x\",\"Value\":1} (keys Path = PLC symbol path, Value = value to write, converted to the PLC type)."
+                                                                       },
+                                                             "Teardown":  {
+                                                                              "type":  "array",
+                                                                              "items":  {
+                                                                                            "type":  "object",
+                                                                                            "additionalProperties":  true
+                                                                                        },
+                                                                              "description":  "Writes after the test (also run when the test fails): array of {\"Path\":\"MAIN.x\",\"Value\":0} (keys Path, Value)."
+                                                                          },
+                                                             "WaitMs":  {
+                                                                            "type":  "integer",
+                                                                            "description":  "Wait duration in milliseconds before assertions.",
+                                                                            "default":  1000
+                                                                        },
+                                                             "Assertions":  {
+                                                                                "type":  "array",
+                                                                                "items":  {
+                                                                                              "type":  "object",
+                                                                                              "additionalProperties":  true
+                                                                                          },
+                                                                                "description":  "Checks after WaitMs: array of {\"Path\":\"MAIN.y\",\"Operator\":\"Equal\",\"Expected\":1}. Keys: Path (PLC symbol path), Operator (optional, default Equal; one of Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse), Expected (omit for IsTrue/IsFalse). Short forms like \"eq\"/\"gt\" are NOT accepted."
+                                                                            }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "Assertions"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "OpenProject",
+                      "cmdlet":  "Open-TcProject",
+                      "description":  "Open a solution (.sln) in the connected IDE and wait until the TwinCAT project is loaded.",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Path to the .sln or .tsproj file."
+                                                                      }
+                                                         },
+                                          "required":  [
+                                                           "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "PlcLogin",
+                      "cmdlet":  "Enter-TcPlcOnline",
+                      "description":  "Login to the PLC project and download the program in one call (Login flag 3, no dialogs). Use after a successful BuildProject when TwinCAT is already in Run; EnableConfig Force=true already includes this step.",
+                      "timeoutMs":  300000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Tree path to PLC project. Default auto-detects from TIPC."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "PlcLogout",
+                      "cmdlet":  "Exit-TcPlcOnline",
+                      "description":  "Log out of the PLC project (the runtime keeps running).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string"
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ReadVariable",
+                      "cmdlet":  "Read-TcVariable",
+                      "description":  "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. Values are typed by the PLC type (BOOL/INT/REAL/STRING ...; structs come back as byte arrays). Requires ConnectAds (auto-reconnects after EnableConfig).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "array",
+                                                                          "items":  {
+                                                                                        "type":  "string"
+                                                                                    },
+                                                                          "minItems":  1,
+                                                                          "description":  "Array of PLC symbol paths, e.g. [\"MAIN.nCounter\"]. Always an array, also for a single variable."
+                                                                      }
+                                                         },
+                                          "required":  [
+                                                           "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "RunTest",
+                      "cmdlet":  "Invoke-TcTest",
+                      "description":  "Execute one test case created with NewTestCase (setup writes -> wait -> assertions -> teardown writes) against the connected PLC. Requires ConnectAds.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "TestCase":  {
+                                                                              "type":  "object",
+                                                                              "additionalProperties":  true,
+                                                                              "description":  "A test case object as returned by NewTestCase."
+                                                                          }
+                                                         },
+                                          "required":  [
+                                                           "TestCase"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "RunTestCycle",
+                      "cmdlet":  "Invoke-TcTestCycle",
+                      "description":  "Builds, activates (TwinCAT restart) and runs the PLC: changes the running machine. Confirm with the user first. Full automated test cycle: build (unless SkipBuild), activate configuration, login, run every test case from NewTestCase, then stop the PLC (unless KeepRunning). Returns per-test results. Can take many minutes (timeout 900 s).",
+                      "timeoutMs":  900000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "TestCases":  {
+                                                                               "type":  "array",
+                                                                               "items":  {
+                                                                                             "type":  "object",
+                                                                                             "additionalProperties":  true
+                                                                                         },
+                                                                               "description":  "Array of test case objects as returned by NewTestCase."
+                                                                           },
+                                                             "SkipBuild":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Skip the build step (if already built)."
+                                                                           },
+                                                             "KeepRunning":  {
+                                                                                 "type":  "boolean",
+                                                                                 "description":  "Don't stop the PLC after tests complete."
+                                                                             }
+                                                         },
+                                          "required":  [
+                                                           "TestCases"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SendPlcProgram",
+                      "cmdlet":  "Send-TcPlcProgram",
+                      "description":  "Download the compiled PLC program to the target (alias of PlcLogin: Login+Download without dialogs).",
+                      "timeoutMs":  300000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Tree path to PLC project. Default auto-detects from TIPC."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetPlcState",
+                      "cmdlet":  "Set-TcPlcState",
+                      "description":  "Switch the PLC runtime to Run, Stop or Reset and wait for the state. WARNING: on a UmRT (user-mode runtime) target, Reset kills TcSystemServiceUm and you must EnableConfig again. Prefer Run/Stop.",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "State":  {
+                                                                           "type":  "string",
+                                                                           "enum":  [
+                                                                                        "Run",
+                                                                                        "Stop",
+                                                                                        "Reset"
+                                                                                    ],
+                                                                           "description":  "Run, Stop or Reset. Reset kills TcSystemServiceUm on a UmRT target."
+                                                                       },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  1,
+                                                                                "maximum":  3600,
+                                                                                "description":  "Maximum wait for Run/Stop to be reached. Default 30.",
+                                                                                "default":  30
+                                                                            }
+                                                         },
+                                          "required":  [
+                                                           "State"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetSystemState",
+                      "cmdlet":  "Set-TcSystemState",
+                      "description":  "Switch TwinCAT to Run or Config via ADS WriteControl (no StartRestartTwinCAT dialog) and poll until the state is reached. Switching to Config stops the runtime: all outputs go to zero. Does not download the PLC program; EnableConfig Force=true is the usual choice.",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "State":  {
+                                                                           "type":  "string",
+                                                                           "enum":  [
+                                                                                        "Run",
+                                                                                        "Config"
+                                                                                    ],
+                                                                           "description":  "Target state: Run or Config."
+                                                                       },
+                                                             "AmsNetId":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Target AMS Net ID. Auto-detected from IDE if omitted."
+                                                                          },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "description":  "Maximum time to wait for the target state. Default 60.",
+                                                                                "default":  60
+                                                                            }
+                                                         },
+                                          "required":  [
+                                                           "State"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetTarget",
+                      "cmdlet":  "Set-TcTarget",
+                      "description":  "Sets the target system AMS Net ID for deployment.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "AmsNetId":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Target AMS Net ID (e.g., \"127.0.0.1.1.1\" for local)."
+                                                                          }
+                                                         },
+                                          "required":  [
+                                                           "AmsNetId"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetVariableLink",
+                      "cmdlet":  "Set-TcVariableLink",
+                      "description":  "Links a PLC variable to an I/O channel.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcVariable":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "PLC variable path (e.g., \"MAIN.bInput1\")."
+                                                                             },
+                                                             "IoChannel":  {
+                                                                               "type":  "string",
+                                                                               "description":  "I/O channel tree path (e.g., \"TIID^Device 1^Term 1^Channel 1\")."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "PlcVariable",
+                                                           "IoChannel"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "WatchVariable",
+                      "cmdlet":  "Watch-TcVariable",
+                      "description":  "Poll one PLC variable every IntervalMs for DurationMs and return the samples. The condition-based mode (Until) is a PowerShell scriptblock and is NOT available through MCP; use repeated ReadVariable calls instead. Requires ConnectAds.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Variable path to monitor."
+                                                                      },
+                                                             "IntervalMs":  {
+                                                                                "type":  "integer",
+                                                                                "description":  "Polling interval in milliseconds. Default: 100.",
+                                                                                "default":  100
+                                                                            },
+                                                             "DurationMs":  {
+                                                                                "type":  "integer",
+                                                                                "description":  "Total monitoring duration in milliseconds."
+                                                                            },
+                                                             "TimeoutMs":  {
+                                                                               "type":  "integer",
+                                                                               "description":  "Max wait time for condition. Default: 5000.",
+                                                                               "default":  5000
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "WritePouCode",
+                      "cmdlet":  "Write-TcPouCode",
+                      "description":  "Writes declaration and/or implementation code into an existing POU.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PouName":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the POU to write to."
+                                                                         },
+                                                             "Declaration":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Structured Text declaration section (VAR blocks)."
+                                                                             },
+                                                             "Implementation":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Structured Text implementation section (code body)."
+                                                                                },
+                                                             "PouPath":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                         }
+                                                         },
+                                          "required":  [
+                                                           "PouName"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "WriteVariable",
+                      "cmdlet":  "Write-TcVariable",
+                      "description":  "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol (send JSON bool for BOOL, number for numeric types, string for STRING). Requires ConnectAds.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Variable path (e.g., \"MAIN.nSetpoint\")."
+                                                                      },
+                                                             "Value":  {
+                                                                           "description":  "New value; JSON bool, number or string matching the PLC type of the symbol."
+                                                                       }
+                                                         },
+                                          "required":  [
+                                                           "Path",
+                                                           "Value"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  }
+              ]
+}
