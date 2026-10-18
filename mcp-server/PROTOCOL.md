@@ -190,20 +190,26 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
     UIA hangs (normal while XAE's UI thread is busy building; logged for the first abandoned scan
     and then every 10th). Abandoned scans are disposed once they finish; while 10 still hang no new
     scan starts. The module scan only sees top-level windows of the pid; a dialog **owned** by the
-    main window is a UIA child of the main window, so when the main window is disabled and the
-    module scan found nothing the probe also checks the main window's direct `Window` children
-    (title + `Text` descendants).
+    main window is a UIA child of the main window, so when the module scan found nothing the
+    probe also checks the main window's direct `Window` children and takes the first modal /
+    `#32770` one (floating tool windows are owned too and are ignored; Win32 caption + `Text`
+    descendants only).
   - **Kill rule.** A candidate is kill-worthy only when it is `IsModal` or a Win32 dialog
-    (`#32770`) **and** the IDE main window is disabled (`IsEnabled == false`; main window =
-    `-MainHwnd`, else the pid's top-level non-`#32770` window matching the module's main-title
-    pattern). No main window found → kill-worthy only when `IsModal`. A window with a
-    `ProgressBar` descendant (progress / wait boxes), a title-only match, or an enabled main window
+    (`#32770`) **and** the IDE main window is blocked: `IsEnabled == false` (Win32 / WinForms
+    owners), or `WindowPattern.WindowInteractionState == BlockedByModalWindow` (the XAE main window
+    is WPF and keeps `IsEnabled` true behind a modal), or the main window owns a child window that
+    is modal / `#32770` (a pure WPF owner reports neither). Main window = `-MainHwnd`, else
+    `Process.MainWindowHandle`, else the module's title pattern matched against the UIA Name and
+    the Win32 caption. No main window found → kill-worthy only when `IsModal`. A window with a
+    `ProgressBar` descendant (progress / wait boxes), a title-only match, or an unblocked main window
     is log-only: stderr `debug: dialog '<title>' seen but not kill-worthy (<reason>)`, not counted.
     A kill-worthy dialog is reported only when `ConfirmScans` (default 2,
     `TWINCAT_MCP_PROBE_CONFIRM_SCANS`, 1..10) consecutive scans saw the same title; detection
     therefore takes about two intervals plus the scan time after the dialog appears.
-  - **Output.** On a report it writes exactly one line to stdout,
-    `{"title":"...","text":"...","className":"...","isModal":true,"processId":N,"mainWindowEnabled":false|true|null,"reason":"modal"|"win32-dialog"}`
+  - **Output.** `title` is the Win32 caption (the UIA Name of a WPF window is often its content
+    text, e.g. XAE Help > About), cut at 200 chars; when the caption differs from the UIA Name and
+    no text was collected, the Name becomes `text`. On a report it writes exactly one line to stdout,
+    `{"title":"...","text":"...","className":"...","isModal":true,"processId":N,"mainWindowBlocked":true|false|null,"reason":"modal"|"win32-dialog"}`
     (non-ASCII escaped as `\uXXXX`; `reason` is `win32-dialog` for `#32770`, else `modal`), and
     exits 0; exit 3 = process not found, 2 = error. stderr lines start with `debug: ` (routine:
     abandoned scans, confirmation progress, not kill-worthy, stdin closed, lifetime) or `error: `

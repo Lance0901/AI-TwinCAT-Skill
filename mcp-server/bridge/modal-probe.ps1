@@ -5,7 +5,7 @@
 # the call ends. Loop: wait IntervalSec FIRST, then scan the IDE process via UI Automation. When a
 # kill-worthy dialog was seen in ConfirmScans consecutive scans, write exactly ONE line to stdout:
 #   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234,
-#    "mainWindowEnabled":false,"reason":"win32-dialog"}
+#    "mainWindowBlocked":true,"reason":"win32-dialog"}
 # and exit 0. Nothing else is ever written to stdout. stderr lines start with "debug: " (routine
 # diagnostics) or "error: " (real failures).
 # Exit codes: 0 dialog reported / stdin closed / lifetime exceeded, 2 error, 3 process not found.
@@ -13,13 +13,21 @@
 # The scan is the module's $script:TcUiaDialogScan, dot-sourced from -ScanScript
 # (src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1), so window selection, the known-title
 # list and the dialog text heuristics live in one place. This script only adds:
-#   - the kill rule: (IsModal or ClassName '#32770') and the IDE main window disabled. A window
-#     with a ProgressBar, a title-only match or an enabled main window is logged, never reported.
-#     With no main window found, only an IsModal window is reported.
-#   - owned dialogs: UIA exposes a window OWNED by the main window (MessageBox(owner, ...)) as a
-#     child of the main window, not of the desktop, so the module scan (desktop children only)
-#     does not see it. When the main window is disabled and the module scan found nothing, the
-#     main window's direct Window children are checked (title + Text descendants only).
+#   - the kill rule: (IsModal or ClassName '#32770') and the IDE main window BLOCKED: IsEnabled
+#     false (Win32 / WinForms owners), or WindowPattern.WindowInteractionState
+#     BlockedByModalWindow (the XAE main window is WPF: its IsEnabled stays true behind a modal,
+#     verified on a real XAE with Help > About), or an owned child window that is modal / #32770
+#     (a pure WPF owner reports neither of the first two). A window with a ProgressBar, a
+#     title-only match or an unblocked main window is logged, never reported. With no main
+#     window found, only an IsModal window is reported.
+#   - main window lookup: -MainHwnd, else Process.MainWindowHandle, else the module's title
+#     pattern (matched against the UIA Name and the Win32 caption).
+#   - owned dialogs: UIA exposes a window OWNED by the main window (MessageBox(owner, ...),
+#     WPF ShowDialog) as a child of the main window, not of the desktop, so the module scan
+#     (desktop children only) does not see it; the main window's modal / #32770 child windows
+#     are checked instead (title + Text descendants only).
+#   - titles come from the Win32 caption: the UIA Name of a WPF window is often its content
+#     text (XAE Help > About puts the whole About text there); titles are cut at 200 chars.
 #
 # Orphan protection: Node keeps stdin open and never writes to it. EOF (or any byte) on stdin means
 # the parent is gone -> exit 0 within ~250 ms. -MaxLifetimeSec is a second safety net.
@@ -106,83 +114,145 @@ $wrapper = {
     $ae = [System.Windows.Automation.AutomationElement]
     $ct = [System.Windows.Automation.ControlType]
     $scope = [System.Windows.Automation.TreeScope]
+    $wpat = [System.Windows.Automation.WindowPattern]
+
+    # Win32 caption of a window. The UIA Name of a WPF window is often its content text, not its
+    # title (XAE Help > About puts the whole About text there), so the caption is read directly.
+    if (-not ([System.Management.Automation.PSTypeName]'TcProbeNative').Type) {
+        Add-Type -Namespace TcProbe -Name Native -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+'@ -ErrorAction SilentlyContinue
+    }
+    function Get-Caption([long]$h) {
+        if ($h -le 0) { return '' }
+        try {
+            $sb = New-Object System.Text.StringBuilder 1024
+            $null = [TcProbe.Native]::GetWindowText([IntPtr]$h, $sb, $sb.Capacity)
+            return $sb.ToString()
+        }
+        catch { return '' }
+    }
+    function Test-ModalPattern($w) {
+        try {
+            $wp = $null
+            if ($w.TryGetCurrentPattern($wpat::Pattern, [ref]$wp) -and $null -ne $wp) { return [bool]$wp.Current.IsModal }
+        }
+        catch { }
+        return $false
+    }
 
     $scan = [scriptblock]::Create($ScanText)
     $hit = $null
     foreach ($o in @(& $scan $TargetPid $MainHwnd $MaxText)) {
         if ($null -ne $o -and -not [string]::IsNullOrWhiteSpace([string]$o.Title)) { $hit = $o; break }
     }
+    $hitHwnd = [long]0
+    if ($null -ne $hit) { try { $hitHwnd = [long]$hit.Hwnd } catch { $hitHwnd = 0 } }
 
-    # IDE main window: by handle when known, else by the module's main-title pattern.
+    # IDE main window: -MainHwnd, else the process' main window handle (first visible unowned
+    # top-level window, i.e. never an owned dialog), else the module's main-title pattern.
     $main = $null
-    if ($MainHwnd -gt 0) {
+    $mainHandle = [long]$MainHwnd
+    if ($mainHandle -le 0) {
+        try { $mainHandle = [long](Get-Process -Id $TargetPid -ErrorAction Stop).MainWindowHandle } catch { $mainHandle = 0 }
+    }
+    if ($mainHandle -gt 0 -and $mainHandle -ne $hitHwnd) {
         try {
-            $main = $ae::FromHandle([IntPtr]$MainHwnd)
+            $main = $ae::FromHandle([IntPtr]$mainHandle)
             if ($null -ne $main -and [int]$main.Current.ProcessId -ne $TargetPid) { $main = $null }
         }
         catch { $main = $null }
     }
-    elseif (-not [string]::IsNullOrEmpty($MainTitlePattern)) {
+    if ($null -eq $main -and -not [string]::IsNullOrEmpty($MainTitlePattern)) {
         try {
             $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
             foreach ($w in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
                 $c = $null
                 try { $c = $w.Current } catch { continue }
                 if ($c.ControlType -ne $ct::Window -or [string]$c.ClassName -eq '#32770') { continue }
-                if ([string]$c.Name -match $MainTitlePattern) { $main = $w; break }
+                if ([long]$c.NativeWindowHandle -eq $hitHwnd -and $hitHwnd -gt 0) { continue }
+                $cap = Get-Caption ([long]$c.NativeWindowHandle)
+                if ([string]$c.Name -match $MainTitlePattern -or $cap -match $MainTitlePattern) { $main = $w; break }
             }
         }
         catch { $main = $null }
     }
-    $mainEnabled = $null
-    if ($null -ne $main) { try { $mainEnabled = [bool]$main.Current.IsEnabled } catch { $mainEnabled = $null } }
+
+    # Blocked = IsEnabled false (Win32 / WinForms owners), or WindowInteractionState
+    # BlockedByModalWindow (the XAE main window is WPF and keeps IsEnabled true), or an owned
+    # child window that is modal / a Win32 dialog (a pure WPF owner reports neither).
+    $mainBlocked = $null
+    if ($null -ne $main) {
+        try { $mainBlocked = -not [bool]$main.Current.IsEnabled } catch { $mainBlocked = $null }
+        if ($mainBlocked -ne $true) {
+            try {
+                $mwp = $null
+                if ($main.TryGetCurrentPattern($wpat::Pattern, [ref]$mwp) -and $null -ne $mwp) {
+                    if ($mwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow) { $mainBlocked = $true }
+                    elseif ($null -eq $mainBlocked) { $mainBlocked = $false }
+                }
+            }
+            catch { }
+        }
+    }
+
+    # Owned dialog: UIA exposes a window OWNED by the main window as a child of the main window,
+    # not of the desktop, so the module scan (desktop children only) never sees it. Only modal /
+    # #32770 children count; floating tool windows are owned too and must not be reported.
+    $owned = $null
+    if ($null -ne $main) {
+        try {
+            $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Window)
+            foreach ($w in $main.FindAll($scope::Children, $winCond)) {
+                $c = $null
+                try { $c = $w.Current } catch { continue }
+                if ($c.IsOffscreen) { continue }
+                $wm = Test-ModalPattern $w
+                if (-not $wm -and [string]$c.ClassName -ne '#32770') { continue }
+                $owned = @{ Element = $w; Title = [string]$c.Name; ClassName = [string]$c.ClassName; IsModal = $wm; Hwnd = [long]$c.NativeWindowHandle }
+                break
+            }
+        }
+        catch { }
+        if ($null -ne $owned) { $mainBlocked = $true }
+    }
 
     $element = $null
     $title = $null; $text = ''; $className = ''; $isModal = $false; $hwnd = [long]0
     if ($null -ne $hit) {
         $title = [string]$hit.Title; $text = [string]$hit.Text; $className = [string]$hit.ClassName
-        $isModal = [bool]$hit.IsModal; $hwnd = [long]$hit.Hwnd
+        $isModal = [bool]$hit.IsModal; $hwnd = $hitHwnd
         if ($hwnd -gt 0) { try { $element = $ae::FromHandle([IntPtr]$hwnd) } catch { $element = $null } }
     }
-    elseif ($mainEnabled -eq $false) {
-        # Owned dialog: a UIA child of the main window (see the header).
+    elseif ($null -ne $owned) {
+        $element = $owned.Element; $title = $owned.Title; $className = $owned.ClassName
+        $isModal = $owned.IsModal; $hwnd = $owned.Hwnd
         try {
-            $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Window)
-            $pick = $null
-            foreach ($w in $main.FindAll($scope::Children, $winCond)) {
-                $c = $null
-                try { $c = $w.Current } catch { continue }
-                if ([string]::IsNullOrWhiteSpace([string]$c.Name) -or $c.IsOffscreen) { continue }
-                $wm = $false
-                try {
-                    $wp = $null
-                    if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) { $wm = [bool]$wp.Current.IsModal }
-                }
-                catch { }
-                $cand = @{ Element = $w; Title = [string]$c.Name; ClassName = [string]$c.ClassName; IsModal = $wm; Hwnd = [long]$c.NativeWindowHandle }
-                if ($wm -or $cand.ClassName -eq '#32770') { $pick = $cand; break }
-                if ($null -eq $pick) { $pick = $cand }
+            $textCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Text)
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($t in $element.FindAll($scope::Descendants, $textCond)) {
+                $tn = $null
+                try { $tn = [string]$t.Current.Name } catch { $tn = $null }
+                if ([string]::IsNullOrWhiteSpace($tn)) { continue }
+                if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
+                $null = $sb.Append($tn.Trim())
+                if ($sb.Length -ge $MaxText) { break }
             }
-            if ($null -ne $pick) {
-                $element = $pick.Element; $title = $pick.Title; $className = $pick.ClassName
-                $isModal = $pick.IsModal; $hwnd = $pick.Hwnd
-                $textCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Text)
-                $sb = New-Object System.Text.StringBuilder
-                foreach ($t in $element.FindAll($scope::Descendants, $textCond)) {
-                    $tn = $null
-                    try { $tn = [string]$t.Current.Name } catch { $tn = $null }
-                    if ([string]::IsNullOrWhiteSpace($tn)) { continue }
-                    if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
-                    $null = $sb.Append($tn.Trim())
-                    if ($sb.Length -ge $MaxText) { break }
-                }
-                $text = $sb.ToString()
-                if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
-            }
+            $text = $sb.ToString()
         }
         catch { }
     }
+    # Prefer the Win32 caption as title; a WPF window's UIA Name (content text) then becomes the
+    # text when nothing else was collected.
+    $caption = Get-Caption $hwnd
+    if (-not [string]::IsNullOrWhiteSpace($caption) -and $caption.Trim() -ne [string]$title) {
+        if ([string]::IsNullOrWhiteSpace($text) -and -not [string]::IsNullOrWhiteSpace($title)) { $text = [string]$title }
+        $title = $caption.Trim()
+    }
     if ([string]::IsNullOrWhiteSpace($title)) { return }
+    if ($title.Length -gt 200) { $title = $title.Substring(0, 200) }
+    if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
 
     $hasProgress = $false
     if ($null -ne $element) {
@@ -198,8 +268,8 @@ $wrapper = {
     $why = $null
     if ($null -eq $reason) { $why = 'title match only, not modal and not #32770' }
     elseif ($hasProgress) { $why = 'contains a progress bar' }
-    elseif ($mainEnabled -eq $true) { $why = 'IDE main window is enabled' }
-    elseif ($null -eq $mainEnabled -and -not $isModal) { $why = 'IDE main window not found and the window is not modal' }
+    elseif ($mainBlocked -eq $false) { $why = 'IDE main window is not blocked by a modal window' }
+    elseif ($null -eq $mainBlocked -and -not $isModal) { $why = 'IDE main window not found and the window is not modal' }
 
     [PSCustomObject]@{
         Title             = $title
@@ -207,7 +277,7 @@ $wrapper = {
         ClassName         = $className
         IsModal           = $isModal
         Hwnd              = $hwnd
-        MainWindowEnabled = $mainEnabled
+        MainWindowBlocked = $mainBlocked
         Reason            = $reason
         KillWorthy        = ($null -eq $why)
         NotKillWorthyWhy  = $why
@@ -355,15 +425,15 @@ try {
             Write-ProbeDebug "dialog '$title' seen ($streak/$ConfirmScans), waiting for confirmation"
             continue
         }
-        $mwe = $null
-        if ($null -ne $hit.MainWindowEnabled) { $mwe = [bool]$hit.MainWindowEnabled }
+        $mwb = $null
+        if ($null -ne $hit.MainWindowBlocked) { $mwb = [bool]$hit.MainWindowBlocked }
         $line = [ordered]@{
             title             = $title
             text              = [string]$hit.Text
             className         = [string]$hit.ClassName
             isModal           = [bool]$hit.IsModal
             processId         = $ProcessId
-            mainWindowEnabled = $mwe
+            mainWindowBlocked = $mwb
             reason            = [string]$hit.Reason
         } | ConvertTo-Json -Compress
         # Escape non-ASCII as \uXXXX: the console code page is not UTF-8, Node reads UTF-8.

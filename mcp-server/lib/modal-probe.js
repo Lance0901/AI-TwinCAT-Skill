@@ -2,7 +2,7 @@
 // process while the bridge is blocked inside a long DTE call. A modal dialog in XAE ("Assertion
 // Failed", "TwinCAT PLC Control", license prompt, ...) blocks the synchronous COM call forever; the
 // probe sees it via UI Automation from outside and reports it as one JSON line on stdout:
-//   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234,"mainWindowEnabled":false,"reason":"win32-dialog"}
+//   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234,"mainWindowBlocked":true,"reason":"win32-dialog"}
 // index.js then kills the bridge (lib/bridge.js abortCall) and returns IDE_MODAL_DIALOG instead of
 // waiting for the tools.json timeout (BRIDGE_TIMEOUT). See PROTOCOL.md "Modal-dialog probe".
 //
@@ -72,7 +72,7 @@ export class ModalProbe {
    * @param {string} [opts.probeScript]
    * @param {{command:string,args:string[]}|null} [opts.spawnSpec]  test override
    * @param {object} [opts.env]               extra environment (merged over process.env)
-   * @param {(dialog:{title:string,text:string,className:any,isModal:any,processId:any,mainWindowEnabled:any,reason:any})=>void} [opts.onDialog]
+   * @param {(dialog:{title:string,text:string,className:any,isModal:any,processId:any,mainWindowBlocked:any,reason:any})=>void} [opts.onDialog]
    * @param {(message:string)=>void} [opts.onError]
    * @param {(message:string)=>void} [opts.onDebug]
    */
@@ -176,7 +176,7 @@ export class ModalProbe {
       className: msg.className ?? null,
       isModal: msg.isModal ?? null,
       processId: msg.processId ?? null,
-      mainWindowEnabled: typeof msg.mainWindowEnabled === 'boolean' ? msg.mainWindowEnabled : null,
+      mainWindowBlocked: typeof msg.mainWindowBlocked === 'boolean' ? msg.mainWindowBlocked : null,
       reason: typeof msg.reason === 'string' ? msg.reason : null
     };
     this._safe(() => this.onDialog(dialog));

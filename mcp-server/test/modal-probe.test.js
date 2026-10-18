@@ -19,6 +19,7 @@ const MOCK_BRIDGE = path.join(__dirname, 'fixtures', 'mock-bridge.js');
 const REAL_PROBE = path.join(__dirname, '..', 'bridge', 'modal-probe.ps1');
 const PROBE_PARENT = path.join(__dirname, 'fixtures', 'probe-parent.js');
 const HOST_WINDOW = path.join(__dirname, 'fixtures', 'host-window.ps1');
+const HOST_WINDOW_WPF = path.join(__dirname, 'fixtures', 'host-window-wpf.ps1');
 const isWin = process.platform === 'win32';
 
 function alive(pid) {
@@ -153,7 +154,7 @@ describe('lib/modal-probe.js', () => {
     await exited;
     await waitFor(() => dialogs.length > 0, 1000);
     assert.equal(dialogs.length, 1);
-    assert.deepEqual(dialogs[0], { title: 'Assertion Failed', text: 'boom', className: '#32770', isModal: true, processId: 4242, mainWindowEnabled: false, reason: 'win32-dialog' });
+    assert.deepEqual(dialogs[0], { title: 'Assertion Failed', text: 'boom', className: '#32770', isModal: true, processId: 4242, mainWindowBlocked: true, reason: 'win32-dialog' });
     assert.deepEqual(errors, []);
     assert.equal(probe.running, false);
   });
@@ -309,8 +310,8 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
     });
 
     /** Start the fixture and resolve once it printed `waitLine`. */
-    async function startHost(args, waitLine) {
-      const child = spawn(defaultPowershellPath(), ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', HOST_WINDOW, ...args, '-LifetimeSec', '60'], {
+    async function startHost(args, waitLine, script = HOST_WINDOW) {
+      const child = spawn(defaultPowershellPath(), ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', script, ...args, '-LifetimeSec', '60'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true
       });
@@ -346,7 +347,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       host.kill();
     });
 
-    test('MessageBox owned by the form (form disabled) -> reported: TwinCAT PLC Control, mainWindowEnabled false, win32-dialog', async () => {
+    test('MessageBox owned by the form (form disabled) -> reported: TwinCAT PLC Control, mainWindowBlocked true, win32-dialog', async () => {
       const host = await startHost(['-ShowMessageBox'], 'dialog');
       const t0 = Date.now();
       const { probe, dialogs, debug, errors } = watch(host.pid);
@@ -357,11 +358,42 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       assert.ok(seen, `reported (debug: ${JSON.stringify(debug)}, errors: ${JSON.stringify(errors)})`);
       assert.equal(dialogs.length, 1);
       assert.equal(dialogs[0].title, 'TwinCAT PLC Control');
-      assert.equal(dialogs[0].mainWindowEnabled, false);
+      assert.equal(dialogs[0].mainWindowBlocked, true);
       assert.equal(dialogs[0].reason, 'win32-dialog');
       assert.equal(dialogs[0].className, '#32770');
       assert.equal(dialogs[0].processId, host.pid);
       assert.ok(debug.some((d) => /seen \(1\/2\)/.test(d)), 'confirmation took two scans');
+      assert.ok(elapsed < 8000, `took ${elapsed} ms`);
+    });
+
+    // The XAE main window is WPF: behind a modal its IsEnabled stays true and only
+    // WindowInteractionState says BlockedByModalWindow. The WPF fixture reproduces that.
+    test('WPF main window only -> no report within 3 s', async () => {
+      const host = await startHost([], 'ready', HOST_WINDOW_WPF);
+      const { probe, dialogs, debug, errors } = watch(host.pid);
+      await new Promise((r) => setTimeout(r, 3000));
+      assert.deepEqual(dialogs, []);
+      assert.equal(probe.running, true, JSON.stringify({ debug, errors }));
+      probe.stop();
+      host.kill();
+    });
+
+    test('WPF modal owned by a WPF main window (owner IsEnabled stays true, state Running) -> reported via the owned modal child: modal, mainWindowBlocked true, caption as title', async () => {
+      const host = await startHost(['-ShowModal'], 'dialog', HOST_WINDOW_WPF);
+      const t0 = Date.now();
+      const { probe, dialogs, debug, errors } = watch(host.pid);
+      const seen = await waitFor(() => dialogs.length > 0, 8000);
+      const elapsed = Date.now() - t0;
+      probe.stop();
+      host.kill();
+      assert.ok(seen, `reported (debug: ${JSON.stringify(debug)}, errors: ${JSON.stringify(errors)})`);
+      assert.equal(dialogs.length, 1);
+      assert.equal(dialogs[0].title, 'TwinCAT PLC Control');
+      assert.equal(dialogs[0].mainWindowBlocked, true);
+      assert.equal(dialogs[0].isModal, true);
+      assert.equal(dialogs[0].reason, 'modal');
+      assert.equal(dialogs[0].processId, host.pid);
+      assert.match(dialogs[0].text, /Internal error in the PLC compiler \(probe test, WPF\)/, 'WPF UIA Name (content text) becomes the text');
       assert.ok(elapsed < 8000, `took ${elapsed} ms`);
     });
   });
