@@ -5,96 +5,96 @@ description: Control TwinCAT 3 IDE, manage PLC projects, build and deploy progra
 
 # TwinCAT Automation Skill
 
-Control TwinCAT 3 IDE and PLC runtime using the TwinCATAutomation PowerShell module.
+用 TwinCATAutomation PowerShell 模組控制 TwinCAT 3 IDE(XAE)與 PLC runtime。全程無 dialog。
 
 ## Setup
 
-Before any operation, import the module:
+任何操作前先匯入模組:
 ```powershell
 Import-Module "<module-path>" -Force
 ```
 
-## Full Lifecycle (Zero Dialogs)
+## Full Lifecycle(零 dialog、零 Start-Sleep)
 
 ```powershell
-# 1. Connect (one-step with -SolutionPath)
+# 1. 連 IDE + 開 solution(多實例時依 -SolutionPath 挑;data.candidates[] 列出全部)
 $r = Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
-$amsNetId = $r.data.amsNetId
 
-# 2. Build
+# 2. Build(失敗回 BUILD_FAILED;data.errorItems[] 是 Error List 的錯誤明細:code/description/file/line)
 Build-TcProject
 
-# 3. Activate (Config -> Run via ADS, no dialogs)
+# 3. Activate 一步到位:Config -> Activate -> 等系統 Run -> Login+Download -> 等 851 -> PLC Run -> 等 851 Run
+#    已包含 Enter-TcPlcOnline 與 Set-TcPlcState Run,不要再加 Start-Sleep
 Enable-TcConfig -Force
 
-# 4. Wait for TwinCAT restart
-Start-Sleep -Seconds 5
+# 4. 連 ADS(AmsNetId 從 IDE target 自動偵測)
+Connect-TcAds
 
-# 5. Login + Download (Login(3), no dialogs)
-Enter-TcPlcOnline
-
-# 6. Connect ADS (AFTER Login — port 851 needs program downloaded first)
-Connect-TcAds -AmsNetId $amsNetId
-
-# 7. Start PLC
-Set-TcPlcState -State Run
-
-# 8. Read/Write
+# 5. 讀寫
 Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
 
-## All Commands (34)
+`Enable-TcConfig -Force` 細節:
 
-### IDE Connection
-- `Connect-TcIde [-SolutionPath <path>] [-ProgId <com>]` — Connect to IDE. With -SolutionPath: finds/launches IDE, opens solution, returns amsNetId
-- `Disconnect-TcIde` — Disconnect from IDE
-- `Get-TcIdeInfo` — Get IDE version, solution path, connection status
+| 項目 | 說明 |
+|---|---|
+| 流程 | Config → ActivateConfiguration → 等 port 10000 = Run → `Enter-TcPlcOnline`(download)→ 等 port 851 可達 → PLC Run → 等 851 = Run |
+| PLC Run | 模組 ADS session 正好是 `<netId>:851` 才用 `Set-TcPlcState Run`;否則(例如 `Connect-TcAds -Port 10000` 或別台 NetId)用暫時的 851 client 送 Run,不動原 session |
+| `-NoLogin` | 跳過 download / PLC Run;只等 851 最多 10 秒(有 boot project 才會出現),沒有也不算失敗(step detail `skipped (no PLC port, -NoLogin)`)。之後依下方手動順序 |
+| `-TimeoutSec` | 整個流程的總上限(單一 deadline),預設 120;每步等待用剩餘時間,超過 deadline 還沒開始的步驟回 `CYCLE_TIMEOUT` |
+| data | `steps[]`(每步結果)、`plcState`、`loggedIn`、`reconnected`(之前有 ADS 連線時自動重連;PLC Run 時已自動重連則 reconnect 步驟記 `already reconnected in step 6`) |
+| 之後 | 若 Activate 前已 `Connect-TcAds`,不用手動重連;`Read/Write/Watch-TcVariable`、`Get/Set-TcPlcState` 也會自動重連,data 有 `reconnected` |
 
-### Project Management
-- `New-TcProject -Name <name> [-Path <dir>]` — Create new project with PLC and MAIN
-- `Open-TcProject -Path <sln>` — Open existing solution
-- `Get-TcProjectTree` — Get project tree as JSON
-- `Add-TcPou -Name <name> -Type <Program|FunctionBlock|Function> [-ReturnType <t>]` — Add POU
-- `Add-TcGvl -Name <name> [-Variables @{var=type}]` — Add GVL
-- `Add-TcDut -Name <name> -DutType <Struct|Enum|Alias|Union>` — Add DUT
-- `Add-TcLibrary -Name <lib>` — Add library reference
+不想一步到位時的手動順序(每步都有 gating,不需 sleep):
+```powershell
+Enable-TcConfig -Force -NoLogin     # 系統 Run 後才返回
+Enter-TcPlcOnline                   # Login(3) + download,之後 port 851 才存在
+Connect-TcAds                       # 先連 ADS,Set-TcPlcState 沒連線會回 NOT_CONNECTED
+Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_TIMEOUT);PLC 未下載回 PLC_NOT_LOADED
+```
 
-### PLC Code
-- `Get-TcPouCode -PouName <name> [-PouPath <treePath>]` — Read declaration + implementation
-- `Write-TcPouCode -PouName <name> [-PouPath <treePath>] [-Declaration <text>] [-Implementation <text>]` — Write code to POU
+## Cmdlet 清單(35)
 
-### Build & Deploy
-- `Build-TcProject` — Build (auto-retry on RPC_E_CALL_REJECTED)
-- `Enable-TcConfig [-Force]` — Activate config. -Force = ADS WriteControl (no dialogs)
-- `Enter-TcPlcOnline [-PlcProjectPath <path>]` — Login + Download via Login(3) (no dialogs)
-- `Exit-TcPlcOnline` — Logout from PLC
-- `Send-TcPlcProgram` — Upload program to PLC
-- `Set-TcTarget -AmsNetId <id>` — Set target system
+**清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
-### ADS Communication
-- `Connect-TcAds [-AmsNetId <id>] [-Port <851>]` — Connect ADS. AmsNetId auto-detected if omitted
-- `Disconnect-TcAds` — Disconnect ADS
-- `Read-TcVariable -Path <varPath>` — Read variable by symbol path
-- `Write-TcVariable -Path <varPath> -Value <val>` — Write variable (BOOL, INT, UINT, DINT, REAL, LREAL, STRING)
-- `Watch-TcVariable -Path <varPath> -IntervalMs <ms> [-Condition <script>] [-TimeoutMs <ms>]` — Monitor with condition
-- `Get-TcSymbols [-Filter <wildcard>]` — List symbols (e.g. "MAIN.*")
-
-### Runtime Control
-- `Set-TcPlcState -State <Run|Stop|Reset>` — Set PLC state via ADS
-- `Get-TcPlcState` — Read PLC state
-- `Set-TcSystemState -State <Run|Config> [-AmsNetId <id>]` — Set system state (no dialogs)
-- `Get-TcSystemState [-AmsNetId <id>]` — Read system state
-
-### I/O Configuration
-- `Invoke-TcIoScan` — Scan for EtherCAT devices
-- `Get-TcIoTree` — Read I/O device tree
-- `Set-TcVariableLink -Variable <v> -Channel <c>` — Link PLC variable to I/O channel
-
-### Testing
-- `New-TcTestCase -Name <name> [-Setup @(...)] [-WaitMs <ms>] -Assertions @(...) [-Teardown @(...)]` — Define test case
-- `Invoke-TcTest -TestCase <tc>` — Run single test
-- `Invoke-TcTestCycle -TestCases @(...) [-SkipBuild] [-KeepRunning]` — Full Build->Deploy->Test->Stop cycle
+| Cmdlet | 用途 |
+|---|---|
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 會開/選 solution 並回 `amsNetId`、`candidates[]` |
+| `Disconnect-TcIde` | 釋放 IDE COM 參考 |
+| `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
+| `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
+| `Open-TcProject -Path <sln>` | 開既有 solution |
+| `Get-TcProjectTree` | 專案樹 JSON |
+| `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>]` | 新增 POU |
+| `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL |
+| `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union>` | 新增 DUT |
+| `Add-TcLibrary -Name <lib>` | 加 library 參考 |
+| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation |
+| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼 |
+| `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
+| `Get-TcIoTree` | I/O 裝置樹 |
+| `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
+| `Build-TcProject` | Build(COM busy 自動重試);data:`errors`(Error List 錯誤數)、`failedProjects`(LastBuildInfo)、`errorItems[]`(severity/code/description/project/file/line/column) |
+| `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`(含 `-IncludeWarnings` → `warnings[]`、`-IncludeMessages` → `messages[]`)、`truncated`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
+| `Set-TcTarget -AmsNetId <id>` | 設定 target system |
+| `Enable-TcConfig [-Force] [-NoLogin] [-TimeoutSec <n>]` | Activate;-Force = 完整 Config→Run→Login→PLC Run,-TimeoutSec 為總上限 |
+| `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
+| `Connect-TcAds [-AmsNetId <id>] [-Port 851]` | 連 ADS;data 有 `adsBackend` |
+| `Disconnect-TcAds` | 斷 ADS |
+| `Read-TcVariable -Path <sym>` | 讀變數(自動重連) |
+| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL/INT/UINT/DINT/UDINT/REAL/LREAL/STRING(自動重連) |
+| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Condition <sb>] [-TimeoutMs <ms>]` | 輪詢直到條件成立(自動重連) |
+| `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"` |
+| `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
+| `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
+| `Enter-TcPlcOnline [-PlcProjectPath <p>]` | Login(3) + download,無 dialog |
+| `Exit-TcPlcOnline` | Logout |
+| `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000) |
+| `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>]` | 設系統狀態,輪詢到目標才返回 |
+| `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
+| `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
+| `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating |
 
 ## Testing Example
 
@@ -115,20 +115,93 @@ $test2 = New-TcTestCase -Name "Trigger and verify" `
 Invoke-TcTestCycle -TestCases @($test1, $test2)
 ```
 
-Assertion operators: `Equal`, `GreaterThan`, `LessThan`, `IsTrue`, `IsFalse`
+Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 
 ## Output Format
 
-All commands return JSON:
+所有 cmdlet 回 JSON。失敗時 `error.hint` 為可選欄位,有就照它做:
 ```json
-{"success": true, "data": {"path": "MAIN.nCounter", "value": 42, "type": "UDINT"}}
-{"success": false, "error": {"message": "Build failed", "code": "BUILD_FAILED"}}
+{"success": true, "data": {"path": "MAIN.nCounter", "value": 42, "type": "UDINT", "reconnected": false}}
+{"success": false, "error": {"message": "...", "code": "ADS_PORT_NOT_FOUND", "hint": "PLC runtime port 851 不存在:..."}}
 ```
 
-## Critical Rules
+## Troubleshooting
 
-1. **AmsNetId is dynamic** — never hardcode. Auto-detected from IDE target.
-2. **Lifecycle order matters**: Build -> Activate -> Login -> ADS Connect -> Start (ADS port 851 only exists after Login+Download)
-3. **Don't reconnect IDE after Activate** — original COM reference survives TwinCAT XAR restart.
-4. **Write MAIN-level vars for FB testing** — PLC overwrites FB `VAR_INPUT` every scan cycle.
-5. **Use -PouPath for Get/Write-TcPouCode** — format: `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`
+先看 `error.code`,再看 `error.hint`。詳細版:`docs/troubleshooting.md`。
+
+| error.code | 根因 | 下一步 |
+|---|---|---|
+| `IDE_BUSY` | XAE 被 modal dialog / license 視窗擋住,COM 回 RPC_E_CALL_REJECTED(0x80010001)或 RETRYLATER(0x8001010A);模組已重試 1/2/4/8/16s 仍失敗 | 關掉 XAE 的 dialog,重跑同一個 cmdlet;不用重新 `Connect-TcIde` |
+| `IDE_MODAL_DIALOG` | XAE/VS 有 modal 視窗(Assertion Failed、VS 帳戶設定、Target system reports a fatal error、trial license security code…)。這類視窗讓 DTE 呼叫**無限阻塞**(不是回 0x80010001),模組在 Build / Activate / Login / Solution.Open 前用 UI Automation 先檢查,有就直接回這個 code,`data.dialogTitle` / `dialogText` 是視窗內容 | 手動關閉 dialog 後重跑同一個 cmdlet;關不掉就 kill IDE(`Stop-Process -Id <data.ideProcessId>`)後重新 `Connect-TcIde`。模組不會自動關任何視窗;**已經被 modal 卡住的呼叫無法中斷**(見「已知 modal dialog」) |
+| `IDE_TIMEOUT` | DTE 呼叫超過 `Invoke-TcComRetry -TimeoutSec`(預設 120 s,Build 600 s,Activate/Login 300 s)才失敗返回;通常是 IDE 被 dialog 卡住或長操作 | 看 XAE 畫面有沒有 dialog;必要時 kill IDE 後重新 `Connect-TcIde` |
+| `NOT_CONNECTED` | 沒 `Connect-TcAds`,或 `Enable-TcConfig` 重啟後自動重連也失敗 | `Connect-TcAds`;剛 Activate 的話先 `Get-TcSystemState` 確認 Run |
+| `ADS_PORT_NOT_FOUND` | port 851 不存在:程式尚未下載或 PLC 未啟動(ADS 0x6) | `Enter-TcPlcOnline` → `Set-TcPlcState -State Run`,或直接 `Enable-TcConfig -Force` |
+| `ADS_TARGET_NOT_FOUND` | AmsNetId 無回應:TwinCAT 正在重啟,或 NetId 錯(ADS 0x7) | 等 `Get-TcSystemState` 回 Run 再 `Connect-TcAds`;NetId 用 `Connect-TcIde` 回的值 |
+| `ADS_SYMBOL_NOT_FOUND` | 符號不存在:新程式尚未下載,或路徑拼錯(ADS 0x710) | `Get-TcSymbols -Filter "MAIN.*"` 確認;必要時 `Enter-TcPlcOnline` |
+| `SYMBOL_NOT_FOUND` | `Read-TcVariable` 單一路徑讀不到(沿用舊 code,hint 同 `ADS_SYMBOL_NOT_FOUND`) | 同上 |
+| `ADS_INVALID_STATE` | PLC 狀態不允許此操作,例如系統在 Config 模式就叫 PLC Run(ADS 0x712) | 順序 `Enable-TcConfig` → `Enter-TcPlcOnline` → `Set-TcPlcState Run` |
+| `ADS_TIMEOUT` | ADS 逾時:目標忙碌或網路問題(ADS 0x745) | 稍後重試;`Get-TcSystemState` 看目標是否活著 |
+| `PLC_NOT_LOADED` | `Set-TcPlcState Run` 時 PLC 內沒有程式(未 download;port 851 不存在,含自動重連時才發現的情況) | 先 `Enter-TcPlcOnline` 再 Run,或用 `Enable-TcConfig -Force` |
+| `PLC_RUN_TIMEOUT` | 已送 Run,但 851 在時限內沒進 Run | `Get-TcPlcState` 看狀態;Error/Stop 時查 PLC 例外或 build 錯誤,重新 `Enter-TcPlcOnline` |
+| `CYCLE_TIMEOUT` | `Enable-TcConfig -Force` 的 `-TimeoutSec` 總預算在某步開始前用完 | 看 `data.steps[]` 卡在哪步;加大 `-TimeoutSec` |
+| `AMS_NETID_REQUIRED` | 沒有 IDE 連線可推 AmsNetId,又沒給 `-AmsNetId` | `Connect-TcIde -SolutionPath <sln>`,AmsNetId 自動偵測 |
+| `PROJECT_OPEN_TIMEOUT` | Solution 在時限內沒載完:.sln 不含 TwinCAT 專案,或 XAE 被 dialog 擋 | 關 dialog,重跑 `Connect-TcIde -SolutionPath <sln>` |
+| `SYSTEM_STATE_TIMEOUT` | `Set-TcSystemState` 輪詢逾時,系統沒切到目標狀態 | `Get-TcSystemState` 看目前狀態;檢查 XAE / TwinCAT System Service 錯誤;UmRT 可能要重啟 `TcSystemServiceUm`。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認 |
+| `BUILD_FAILED` | 編譯錯誤(`data.failedProjects` > 0);`error.message` 含前 3 筆錯誤摘要,`data.errorItems[]` 是 Error List 全部錯誤(code/description/project/file/line) | 看 `data.errorItems`,修 code 後 `Build-TcProject`;不要在沒改東西的情況下重跑。若 `data.errorListError` = `ERRORLIST_UNAVAILABLE`,`errors` 退回 LastBuildInfo,改手動看 Error List |
+| `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
+| `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
+| `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
+| `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
+| `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
+| `LOGIN_FAILED` | Login(3) 失敗:系統在 Config、build 沒過、或 license dialog | `Get-TcSystemState` 需為 Run;`Build-TcProject` 成功;關 dialog |
+| `ADS_CONNECT_FAILED` | ADS client 連不上 | 確認 AmsNetId / route;`Get-TcSystemState` |
+| `ADS_ASSEMBLY_NOT_FOUND` | 找不到 TwinCAT.Ads.dll | 確認 TwinCAT XAE 安裝;`Connect-TcAds` 的 `data.adsBackend` 看用了哪個 DLL |
+| `TYPE_MISMATCH` | `Write-TcVariable` 值型別與 symbol 不符 | `Get-TcSymbols` 看 type,轉型後再寫 |
+| `ACTIVATION_FAILED` | ActivateConfiguration COM 失敗:專案有錯、target 沒 license、或 dialog | Build 成功、IDE 無 dialog 後重跑;看 `data.steps[]` 停在哪一步 |
+
+## 環境
+
+| IDE | ProgID | 備註 |
+|---|---|---|
+| 32-bit XAE Shell | `TcXaeShell.DTE.15.0` | 4024 原生;4026 安裝也會一併裝,常見於 UmRT 本機開發 |
+| 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | 4026 安裝一併裝 |
+| VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | 4026 安裝一併裝(需本機已有 VS2022) |
+
+- TwinCAT 3.1.4026 的安裝會**同時**裝上面三種 IDE,三者的 XAE 版本相同;4024 專案可在 4026 XAE 開啟。ADS DLL 在 4024 為 TwinCAT 安裝目錄下的 TwinCAT.Ads.dll,4026 為 package 內的版本(`Connect-TcAds` 的 `data.adsBackend` 會顯示實際載入的)。
+- Automation Interface(ITcSysManager、EnvDTE)三者相同;差別只在 IDE 抓取(ProgID)與 ADS DLL。
+- `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;指定 `-ProgId` 可鎖定。自行啟動 IDE 時會輪詢到 DTE 就緒(最長 60 s)才返回,失敗會回收孤兒程序並回 `IDE_LAUNCH_FAILED`;`data.ideProcessId` 是連上的 IDE pid。
+- `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
+- 換 target(本機 UmRT ↔ 遠端 CX、或換 IDE)後要重新 `Connect-TcIde`,AmsNetId 會變。
+
+### 已知 modal dialog
+
+這些視窗會讓 DTE 呼叫無限阻塞;模組只偵測(`IDE_MODAL_DIALOG`)不自動關閉。
+
+| 視窗 | 何時出現 | 解法 |
+|---|---|---|
+| `Assertion Failed: Abort=Quit, Retry=Debug, Ignore=Continue` | Build 時 CODESYS 優化器處理 visu 元素的內部錯誤(NullReference / DivideByZero),**間歇性**:反覆開關 solution 後、或全新專案第一次全編譯都可能出;Clean 無效,清 `_CompileInfo` 也不保證 | 這個 modal 會讓 DTE 呼叫無限阻塞,只能 `Stop-Process` 該 IDE,重開 solution 再 Build(通常第二次就過)。Build 前 `Get-TcIdeModalDialog` 會偵測到並回 `IDE_MODAL_DIALOG` |
+| Microsoft Visual Studio 帳戶設定 | VS2022 未登入時 | 登入一次,或手動關閉視窗 |
+| `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動 | 看 XAE Output / Error List;UmRT 多半是 license 或 I/O 設定問題 |
+| Trial license security code | 7 天 trial 到期或首次啟用 | 需人工輸入驗證碼,模組無法代勞 |
+
+### 驗證紀錄 2026-10-18
+
+環境:TwinCAT 3.1.4026.22 + 本機 UmRT(199.5.42.250.1.1)。
+
+| 組 | 專案 | IDE | 結果 |
+|---|---|---|---|
+| A | 4024.71 專案 | 32-bit XAE Shell(`TcXaeShell.DTE.15.0`) | 完整 lifecycle 通過(Connect → Build → Enable-TcConfig -Force → Connect-TcAds → 讀寫 → Logout) |
+| B | 4026.24 Robust 專案 | VS2022(`VisualStudio.DTE.17.0`) | Activate 後 target 回 `Target system reports a fatal error`,未通過(原因待查) |
+
+## 重要注意
+
+1. **AmsNetId 是動態的**:不要寫死,從 `Connect-TcIde` 的 `data.amsNetId` 或 `Connect-TcAds` 自動偵測取得。
+2. **Lifecycle 順序**:Build → `Enable-TcConfig -Force`(含 Login + PLC Run)→ `Connect-TcAds` → Read/Write/Test。port 851 只在 download 後存在。
+3. **Activate 後不要重連 IDE**:原 COM 參考在 TwinCAT XAR 重啟後仍有效;ADS 則會自動重連(看 `reconnected`)。
+4. **測 FB 時寫 MAIN 層級變數**:PLC 每個 scan 都會覆寫 FB 的 `VAR_INPUT`,ADS 寫進去馬上被蓋掉;在 MAIN 宣告獨立變數餵給 FB。
+5. **`Get/Write-TcPouCode` 用 `-PouPath`**:格式 `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`。
+6. **UmRT 假 Run**:本機 UmRT 跑約 30 分鐘後 task 可能停止循環但 ADS 仍顯示 Run;驗證時讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就是停了,重啟 `TcSystemServiceUm` 後重做 `Enable-TcConfig -Force`。
+7. **UmRT 不要 Reset**:對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm`,要手動重啟 service;要清狀態改用 Stop → `Enter-TcPlcOnline` 重新 download。
+8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
+9. **重新 download 後 index offset 會變**:不要快取 symbol 的 indexGroup/indexOffset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp`。
+10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。

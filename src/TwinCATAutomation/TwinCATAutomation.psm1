@@ -6,8 +6,18 @@ $script:TcDte = $null
 $script:TcSysManager = $null
 $script:TcAdsClient = $null
 $script:TcAdsConnected = $false
+$script:TcAdsAmsNetId = $null      # cached for auto-reconnect (Ensure-TcAdsConnection)
+$script:TcAdsPort = 0              # cached for auto-reconnect (Ensure-TcAdsConnection)
+$script:TcAdsReconnected = $false  # set by Ensure-TcAdsConnection when it had to reconnect
 $script:TcIdeConnected = $false
 $script:TcProgId = $null
+$script:TcIdeProcessId = $null     # pid of the connected IDE (Connect-TcIde); used by Get-TcIdeModalDialog
+$script:TcIdeMainHwnd = 0          # main window handle of the connected IDE (excluded from dialog scans)
+$script:TcLastModalDialog = $null  # last dialog seen by the Invoke-TcComRetry watchdog: @{ Title; Text }
+$script:TcAdsAssemblyPath = $null        # TwinCAT.Ads.dll actually loaded (Find-TcAdsAssembly)
+$script:TcAdsAssemblyVersion = $null     # its FileVersion
+$script:TcAdsAssemblyCandidates = $null  # cached candidate list (Get-TcAdsAssemblyCandidates)
+$script:TcAdsHelperMode = $null          # 'compiled' | 'reflection' (Initialize-TcAdsHelper)
 
 # Import private functions
 $privatePath = Join-Path $PSScriptRoot 'Private'

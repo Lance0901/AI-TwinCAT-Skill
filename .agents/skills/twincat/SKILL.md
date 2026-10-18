@@ -72,7 +72,8 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ### Build & Deploy
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `Build-TcProject` | | Build project (auto-retry on RPC_E_CALL_REJECTED) |
+| `Build-TcProject` | | Build project (auto-retry on RPC_E_CALL_REJECTED); `data.errorItems[]` = Error List errors (description/file/line) |
+| `Get-TcBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | Read the XAE Error List via UI Automation (counts + rows) |
 | `Enable-TcConfig` | `[-Force]` | Activate config. -Force = ADS WriteControl (no dialogs) |
 | `Enter-TcPlcOnline` | `[-PlcProjectPath <p>]` | Login + Download via Login(3) (no dialogs) |
 | `Exit-TcPlcOnline` | | Logout from PLC |

@@ -1,0 +1,218 @@
+# UI Automation scan that runs INSIDE a separate runspace (see Get-TcIdeModalDialog and
+# the watchdog in Invoke-TcComRetry). It must be self-contained: no module functions,
+# no $script: state. Arguments: target process id, main window handle (0 = unknown),
+# max text length. Emits one PSCustomObject @{ Title; Text; ClassName; IsModal; Hwnd }
+# for the first dialog found, or nothing.
+#
+# Heuristics (a modal dialog blocks every DTE call, so this must be cheap and safe):
+#   - only top-level windows of the IDE process (TreeScope Children + ProcessIdProperty)
+#   - the main window is excluded by handle when known, otherwise by title
+#     ("<solution> - TcXaeShell", "<solution> - Microsoft Visual Studio", with an
+#     optional " (Administrator)" suffix)
+#   - windows reporting WindowPattern.IsModal win; otherwise a Win32 dialog (#32770)
+#     or a title matching the known dialogs (Assertion Failed, account settings,
+#     fatal error, license security code) is accepted; floating tool windows are not.
+$script:TcUiaDialogScan = {
+    param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText)
+
+    Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+    Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+
+    $ae = [System.Windows.Automation.AutomationElement]
+    $root = $ae::RootElement
+    $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
+    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCond)
+    if ($null -eq $windows -or $windows.Count -eq 0) { return }
+
+    $mainTitlePattern = '(^|\s-\s)(TcXaeShell|Microsoft Visual Studio)(\s+\(.+\))?$'
+    # ASCII only (file has no BOM): localized titles are caught by IsModal / #32770.
+    $knownDialogPattern = '(?i)Assertion Failed|Account Settings|fatal error|Security Code|License|Lizenz|TwinCAT XAE|Microsoft Visual Studio'
+
+    $modalHit = $null
+    $fallbackHit = $null
+    foreach ($w in $windows) {
+        $cur = $null
+        try { $cur = $w.Current } catch { continue }
+        $name = [string]$cur.Name
+        $className = [string]$cur.ClassName
+        $hwnd = [long]$cur.NativeWindowHandle
+        if ($cur.ControlType -ne [System.Windows.Automation.ControlType]::Window) { continue }
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        if ($MainHwnd -ne 0 -and $hwnd -eq $MainHwnd) { continue }
+        if ($MainHwnd -eq 0 -and $name -match $mainTitlePattern -and $className -ne '#32770') { continue }
+        if ($cur.IsOffscreen) { continue }
+
+        $isModal = $false
+        try {
+            $wp = $null
+            if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {
+                $isModal = [bool]$wp.Current.IsModal
+            }
+        }
+        catch { }
+
+        $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = $hwnd }
+        if ($isModal) { $modalHit = $hit; break }
+        if ($null -eq $fallbackHit -and ($className -eq '#32770' -or $name -match $knownDialogPattern)) { $fallbackHit = $hit }
+    }
+
+    $chosen = $modalHit
+    if ($null -eq $chosen) { $chosen = $fallbackHit }
+    if ($null -eq $chosen) { return }
+
+    # Collect visible text of the dialog (first $MaxText chars).
+    $text = ''
+    try {
+        $textCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+        $texts = $chosen.Element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond)
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($t in $texts) {
+            $tn = $null
+            try { $tn = [string]$t.Current.Name } catch { $tn = $null }
+            if ([string]::IsNullOrWhiteSpace($tn)) { continue }
+            if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
+            $null = $sb.Append($tn.Trim())
+            if ($sb.Length -ge $MaxText) { break }
+        }
+        $text = $sb.ToString()
+        if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
+    }
+    catch { }
+
+    [PSCustomObject]@{
+        Title     = $chosen.Title
+        Text      = $text
+        ClassName = $chosen.ClassName
+        IsModal   = $chosen.IsModal
+        Hwnd      = $chosen.Hwnd
+    }
+}
+
+function Get-TcIdeModalDialog {
+    <#
+    .SYNOPSIS
+        Detects a modal dialog (Assertion Failed, VS account settings, fatal error,
+        license prompt ...) in the connected IDE process via UI Automation.
+    .DESCRIPTION
+        Lists the top-level windows of the IDE process (default: $script:TcIdeProcessId
+        stored by Connect-TcIde), excludes the main window and returns the first
+        window that looks like a dialog as @{ Title; Text } (Text = visible text,
+        at most 500 chars). Returns $null when the pid is unknown, the process does
+        not exist, no dialog is open, or the scan does not finish within -TimeoutSec.
+
+        The UI Automation calls run in a separate runspace with a hard timeout:
+        while a modal dialog is up, UIA itself can block on the IDE's message loop.
+        This function never throws.
+    .PARAMETER ProcessId
+        IDE process id. Default: $script:TcIdeProcessId.
+    .PARAMETER TimeoutSec
+        Maximum time for the UIA scan. Default 5.
+    .OUTPUTS
+        Hashtable @{ Title = [string]; Text = [string] } or $null.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [int]$ProcessId = 0,
+
+        [Parameter()]
+        [ValidateRange(1, 60)]
+        [int]$TimeoutSec = 5
+    )
+
+    if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) {
+        try { $ProcessId = [int]$script:TcIdeProcessId } catch { $ProcessId = 0 }
+    }
+    if ($ProcessId -le 0) { return $null }
+
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $proc) {
+        Write-Verbose "Get-TcIdeModalDialog: process $ProcessId not found."
+        return $null
+    }
+
+    $mainHwnd = [long]0
+    if ($null -ne $script:TcIdeMainHwnd -and $ProcessId -eq $script:TcIdeProcessId) {
+        try { $mainHwnd = [long]$script:TcIdeMainHwnd } catch { $mainHwnd = 0 }
+    }
+
+    $ps = $null
+    $rs = $null
+    try {
+        $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+        $rs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
+        $rs.Open()
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $rs
+        $null = $ps.AddScript($script:TcUiaDialogScan.ToString()).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500)
+        $handle = $ps.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) {
+            Write-Verbose "Get-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s."
+            # Do not block on Stop(): the scan thread may be stuck inside UIA. Leave it to die.
+            try { $null = $ps.BeginStop($null, $null) } catch { }
+            $ps = $null
+            $rs = $null
+            return $null
+        }
+        $out = $ps.EndInvoke($handle)
+        if ($ps.Streams.Error.Count -gt 0) {
+            Write-Verbose "Get-TcIdeModalDialog: scan error: $($ps.Streams.Error[0])"
+        }
+        if ($null -eq $out -or $out.Count -eq 0) { return $null }
+        $first = $out[0]
+        if ($null -eq $first) { return $null }
+        $title = [string]$first.Title
+        if ([string]::IsNullOrWhiteSpace($title)) { return $null }
+        return @{
+            Title = $title
+            Text  = [string]$first.Text
+        }
+    }
+    catch {
+        Write-Verbose "Get-TcIdeModalDialog: $($_.Exception.Message)"
+        return $null
+    }
+    finally {
+        if ($null -ne $ps) { try { $ps.Dispose() } catch { } }
+        if ($null -ne $rs) { try { $rs.Dispose() } catch { } }
+    }
+}
+
+function New-TcModalDialogResult {
+    <#
+    .SYNOPSIS
+        Builds the failed result (code IDE_MODAL_DIALOG) for a detected dialog.
+    .PARAMETER Dialog
+        Hashtable from Get-TcIdeModalDialog (@{ Title; Text }).
+    .PARAMETER Operation
+        Name of the operation that was NOT attempted, for the message.
+    .PARAMETER Data
+        Optional extra data; dialogTitle / dialogText are always added.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Dialog,
+
+        [Parameter()]
+        [string]$Operation = 'COM call',
+
+        [Parameter()]
+        [object]$Data
+    )
+
+    $title = [string]$Dialog.Title
+    $text = [string]$Dialog.Text
+    $short = if ($text.Length -gt 200) { $text.Substring(0, 200) } else { $text }
+
+    if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+    $Data | Add-Member -NotePropertyName 'dialogTitle' -NotePropertyValue $title -Force
+    $Data | Add-Member -NotePropertyName 'dialogText' -NotePropertyValue $text -Force
+
+    New-TcResult -Success $false `
+        -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog: $title | $short" `
+        -ErrorCode 'IDE_MODAL_DIALOG' `
+        -Hint (Get-TcErrorHint -Code 'IDE_MODAL_DIALOG') `
+        -Data $Data
+}

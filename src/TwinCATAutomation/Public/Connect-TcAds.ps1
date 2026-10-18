@@ -7,6 +7,10 @@ function Connect-TcAds {
         and changes based on the connected target (local UM Runtime, remote CX, etc.).
         When no AmsNetId is specified, the system auto-detects it from the active IDE
         connection via ITcSysManager.GetTargetNetId().
+        The AmsNetId/Port are cached so that Ensure-TcAdsConnection can transparently
+        reconnect after a TwinCAT restart.
+        data.adsBackend reports which TwinCAT.Ads.dll was loaded (path, version) and
+        whether the symbol helper is the compiled C# version or the reflection fallback.
     .PARAMETER AmsNetId
         Target AMS Net ID. If omitted, auto-detected from active IDE connection.
     .PARAMETER Port
@@ -38,7 +42,7 @@ function Connect-TcAds {
     if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
         if ($null -ne $script:TcSysManager) {
             try {
-                $AmsNetId = $script:TcSysManager.GetTargetNetId()
+                $AmsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $script:TcSysManager.GetTargetNetId() }
                 Write-Verbose "Auto-detected AmsNetId from IDE: $AmsNetId"
             }
             catch {
@@ -49,34 +53,30 @@ function Connect-TcAds {
         if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
             return New-TcResult -Success $false `
                 -ErrorMessage 'AmsNetId not specified and could not be auto-detected. Connect to IDE first (Connect-TcIde) or specify -AmsNetId.' `
-                -ErrorCode 'AMS_NETID_REQUIRED'
+                -ErrorCode 'AMS_NETID_REQUIRED' `
+                -Hint (Get-TcErrorHint -Code 'AMS_NETID_REQUIRED')
         }
     }
 
+    $adsBackend = [PSCustomObject]@{
+        path    = $script:TcAdsAssemblyPath
+        version = $script:TcAdsAssemblyVersion
+        mode    = if ([string]::IsNullOrWhiteSpace($script:TcAdsHelperMode)) { $null } else { $script:TcAdsHelperMode }
+    }
+
     try {
-        # Disconnect existing if any
-        if ($null -ne $script:TcAdsClient) {
-            try { $script:TcAdsClient.Dispose() } catch { }
-        }
-
-        $client = New-Object TwinCAT.Ads.TcAdsClient
-        $client.Connect($AmsNetId, $Port)
-
-        # Verify connection by reading state
-        $stateInfo = $client.ReadState()
-        $adsState = $stateInfo.AdsState
-
-        $script:TcAdsClient = $client
-        $script:TcAdsConnected = $true
+        $adsState = Connect-TcAdsSession -AmsNetId $AmsNetId -Port $Port
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            amsNetId = $AmsNetId
-            port     = $Port
-            state    = $adsState.ToString()
+            amsNetId   = $AmsNetId
+            port       = $Port
+            state      = $adsState
+            adsBackend = $adsBackend
         })
     }
     catch {
         $script:TcAdsConnected = $false
-        New-TcResult -Success $false -ErrorMessage "ADS connection failed: $_" -ErrorCode 'ADS_CONNECT_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'ADS_CONNECT_FAILED' -MessagePrefix 'ADS connection failed' -Port $Port `
+            -Data ([PSCustomObject]@{ amsNetId = $AmsNetId; port = $Port; adsBackend = $adsBackend })
     }
 }

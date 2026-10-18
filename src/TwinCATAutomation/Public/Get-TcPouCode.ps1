@@ -26,28 +26,32 @@ function Get-TcPouCode {
     }
 
     try {
-        $pouItem = $null
-        if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
-            $pouItem = $sm.LookupTreeItem($PouPath)
-        }
-        else {
-            $plcConfig = $sm.LookupTreeItem('TIPC')
-            $plcProject = $plcConfig.Child(1)
-            $pouFolder = $plcProject.LookupChild('POUs')
-            if ($null -ne $pouFolder) {
-                $pouItem = $pouFolder.LookupChild($PouName)
+        # Find the POU (all COM calls wrapped in Invoke-TcComRetry)
+        $pouItem = Invoke-TcComRetry -OperationName "Lookup POU $PouName" -ScriptBlock {
+            $item = $null
+            if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
+                $item = $sm.LookupTreeItem($PouPath)
             }
-            if ($null -eq $pouItem) {
-                $pouItem = $plcProject.LookupChild($PouName)
+            else {
+                $plcConfig = $sm.LookupTreeItem('TIPC')
+                $plcProject = $plcConfig.Child(1)
+                $pouFolder = $plcProject.LookupChild('POUs')
+                if ($null -ne $pouFolder) {
+                    $item = $pouFolder.LookupChild($PouName)
+                }
+                if ($null -eq $item) {
+                    $item = $plcProject.LookupChild($PouName)
+                }
             }
+            Write-Output -NoEnumerate $item
         }
 
         if ($null -eq $pouItem) {
             return New-TcResult -Success $false -ErrorMessage "POU '$PouName' not found." -ErrorCode 'POU_NOT_FOUND'
         }
 
-        $declText = try { $pouItem.DeclarationText } catch { '' }
-        $implText = try { $pouItem.ImplementationText } catch { '' }
+        $declText = try { Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $pouItem.DeclarationText } } catch { '' }
+        $implText = try { Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             pou            = $PouName
             declaration    = $declText
@@ -55,6 +59,6 @@ function Get-TcPouCode {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to read POU code: $_" -ErrorCode 'POU_READ_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_READ_FAILED' -MessagePrefix 'Failed to read POU code'
     }
 }

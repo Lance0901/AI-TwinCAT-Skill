@@ -25,3 +25,6 @@ temp_*.ps1
 # Environment
 .env
 .env.*
+
+# Integration test logs
+tests/Integration/logs/

@@ -11,8 +11,8 @@ function Get-TcSymbols {
         [string]$Filter
     )
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $reconnected = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     try {
@@ -35,9 +35,12 @@ function Get-TcSymbols {
             }
         }
 
+        # NOTE: data stays an array (consumers iterate it directly), so the
+        # 'reconnected' flag is not added here; $reconnected is still evaluated
+        # so Ensure-TcAdsConnection can heal the session before enumeration.
         New-TcResult -Success $true -Data $result
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to enumerate symbols: $_" -ErrorCode 'SYMBOL_ENUM_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYMBOL_ENUM_FAILED' -MessagePrefix 'Failed to enumerate symbols'
     }
 }

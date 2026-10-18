@@ -10,7 +10,23 @@ function Initialize-TcAdsHelper {
     #>
     param([string]$AdsAssemblyPath)
 
-    if ($null -ne ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type) { return }
+    $existingType = ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type
+    if ($null -ne $existingType) {
+        # Type survives Import-Module -Force (same AppDomain); recover the backend mode
+        # from its signature: compiled helper takes TcAdsClient, reflection helper takes object.
+        if ([string]::IsNullOrWhiteSpace($script:TcAdsHelperMode)) {
+            $script:TcAdsHelperMode = 'reflection'
+            try {
+                $m = $existingType.GetMethod('GetSymbolInfo')
+                if ($null -ne $m) {
+                    $p0 = $m.GetParameters()[0].ParameterType.FullName
+                    if ($p0 -eq 'TwinCAT.Ads.TcAdsClient') { $script:TcAdsHelperMode = 'compiled' }
+                }
+            }
+            catch { }
+        }
+        return
+    }
 
     $csFile = Join-Path $PSScriptRoot 'TcAdsHelper.cs'
     $csCode = $null
@@ -37,13 +53,9 @@ function Initialize-TcAdsHelper {
         }
     }
 
-    # Common installation paths
-    @(
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll',
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v160\TwinCAT.Ads.dll',
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v150\TwinCAT.Ads.dll'
-    ) | ForEach-Object {
-        if ((Test-Path $_) -and $dllPaths -notcontains $_) { $dllPaths += $_ }
+    # Common installation paths (4024 + 4026 layouts, plus bounded recursive search)
+    foreach ($candidate in (Get-TcAdsAssemblyCandidates)) {
+        if ($dllPaths -notcontains $candidate) { $dllPaths += $candidate }
     }
 
     # Try C# compilation with each DLL path
@@ -52,6 +64,7 @@ function Initialize-TcAdsHelper {
             try {
                 Add-Type -TypeDefinition $csCode -ReferencedAssemblies @($dll) -ErrorAction Stop
                 Write-Verbose "TcAdsHelper compiled with: $dll"
+                $script:TcAdsHelperMode = 'compiled'
                 return
             }
             catch {
@@ -63,6 +76,7 @@ function Initialize-TcAdsHelper {
         try {
             Add-Type -TypeDefinition $csCode -ReferencedAssemblies @('TwinCAT.Ads') -ErrorAction Stop
             Write-Verbose "TcAdsHelper compiled with assembly name reference"
+            $script:TcAdsHelperMode = 'compiled'
             return
         }
         catch {
@@ -214,16 +228,138 @@ public static class TcAdsHelper
     try {
         Add-Type -TypeDefinition $fallbackCode -ErrorAction Stop
         Write-Verbose "TcAdsHelper fallback (reflection-based) compiled successfully"
+        $script:TcAdsHelperMode = 'reflection'
     }
     catch {
         Write-Warning "Failed to compile TcAdsHelper fallback: $_"
+        $script:TcAdsHelperMode = $null
     }
+}
+
+function Get-TcAdsFileVersion {
+    <#
+    .SYNOPSIS
+        Returns the FileVersion of a DLL as [version], or $null when unreadable.
+    #>
+    param([string]$Path)
+    try {
+        $fv = (Get-Item -LiteralPath $Path -ErrorAction Stop).VersionInfo.FileVersion
+        if ([string]::IsNullOrWhiteSpace($fv)) { return $null }
+        # FileVersion may carry a suffix ("4.3.32.0 built by ..."); keep the numeric head.
+        if ($fv -match '^\s*(\d+(\.\d+){1,3})') { return [version]$Matches[1] }
+        return $null
+    }
+    catch { return $null }
+}
+
+function Test-TcAdsAssemblyCompatible {
+    <#
+    .SYNOPSIS
+        $true when the DLL exposes the 4.x API (TwinCAT.Ads.TcAdsClient) this module uses.
+    .DESCRIPTION
+        TwinCAT.Ads 6.x/7.x (shipped with some Functions, e.g. TE1010, TF6420 server)
+        replaced TcAdsClient with AdsClient and targets .NET Core; loading one of those
+        would make New-Object TwinCAT.Ads.TcAdsClient fail. Unknown versions are accepted.
+    #>
+    param([string]$Path)
+    $v = Get-TcAdsFileVersion -Path $Path
+    if ($null -eq $v) { return $true }
+    return ($v.Major -lt 6)
+}
+
+function Get-TcAdsAssemblyCandidates {
+    <#
+    .SYNOPSIS
+        Returns existing TwinCAT.Ads.dll paths in priority order (4024 + 4026 layouts).
+    .DESCRIPTION
+        1. Well-known paths: 32-bit Program Files (4024), 64-bit Program Files and
+           v180 (4026), $env:TWINCAT3DIR, C:\TwinCAT\3.1.
+        2. Bounded recursive search (-Depth 3) under <TWINCAT3DIR>\Components and the
+           Program Files Components folders, highest FileVersion first.
+        Only API-compatible (< 6.0) DLLs are returned. Result is cached per session.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if ($null -ne $script:TcAdsAssemblyCandidates) { return $script:TcAdsAssemblyCandidates }
+
+    $tcDir = $env:TWINCAT3DIR
+    $wellKnown = @(
+        # 4024 (32-bit XAE, 32-bit Program Files)
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v160\TwinCAT.Ads.dll'
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v150\TwinCAT.Ads.dll'
+        # 4026 (64-bit Program Files / v180)
+        'C:\Program Files\Beckhoff\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v180\TwinCAT.Ads.dll'
+        'C:\Program Files\Beckhoff\TwinCAT\3.1\Components\Base\v180\TwinCAT.Ads.dll'
+    )
+    if (-not [string]::IsNullOrWhiteSpace($tcDir)) {
+        $wellKnown += (Join-Path $tcDir 'Components\Base\v170\TwinCAT.Ads.dll')
+        $wellKnown += (Join-Path $tcDir 'Components\Base\v180\TwinCAT.Ads.dll')
+    }
+    $wellKnown += @(
+        'C:\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\TcDocGen\TwinCAT.Ads.dll'
+        'C:\Program Files (x86)\Beckhoff\TwinCAT\Functions\TE1010-Realtime-Monitor\TwinCAT.Ads.dll'
+    )
+
+    $result = @()
+    foreach ($p in $wellKnown) {
+        if (-not (Test-Path -LiteralPath $p)) { continue }
+        $full = [IO.Path]::GetFullPath($p)
+        if ($result -contains $full) { continue }
+        if (-not (Test-TcAdsAssemblyCompatible -Path $full)) {
+            Write-Verbose "Get-TcAdsAssemblyCandidates: skipping $full (TwinCAT.Ads >= 6.x, no TcAdsClient)"
+            continue
+        }
+        $result += $full
+    }
+
+    # Last resort: bounded recursive search, highest compatible version first
+    $searchRoots = @()
+    if (-not [string]::IsNullOrWhiteSpace($tcDir)) { $searchRoots += (Join-Path $tcDir 'Components') }
+    $searchRoots += 'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components'
+    $searchRoots += 'C:\Program Files\Beckhoff\TwinCAT\3.1\Components'
+    $seenRoots = @()
+    $found = @()
+    foreach ($root in $searchRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\')
+        if ($seenRoots -contains $rootFull) { continue }
+        $seenRoots += $rootFull
+        try {
+            $hits = Get-ChildItem -LiteralPath $rootFull -Recurse -Depth 3 -Filter 'TwinCAT.Ads.dll' -File -ErrorAction SilentlyContinue
+            foreach ($h in $hits) {
+                if ($result -contains $h.FullName) { continue }
+                if (-not (Test-TcAdsAssemblyCompatible -Path $h.FullName)) { continue }
+                $v = Get-TcAdsFileVersion -Path $h.FullName
+                if ($null -eq $v) { $v = [version]'0.0' }
+                $found += [PSCustomObject]@{ Path = $h.FullName; Version = $v }
+            }
+        }
+        catch {
+            Write-Verbose "Get-TcAdsAssemblyCandidates: search under $rootFull failed: $_"
+        }
+    }
+    foreach ($f in ($found | Sort-Object -Property Version -Descending)) {
+        if ($result -notcontains $f.Path) { $result += $f.Path }
+    }
+
+    $script:TcAdsAssemblyCandidates = $result
+    return $result
 }
 
 function Find-TcAdsAssembly {
     <#
     .SYNOPSIS
         Locates and loads TwinCAT.Ads.dll from TwinCAT installation paths.
+    .DESCRIPTION
+        Candidate order: already-loaded assembly, well-known 4024/4026 paths,
+        $env:TWINCAT3DIR, bounded recursive search (highest 4.x version), GAC.
+        Records the DLL actually in use in $script:TcAdsAssemblyPath /
+        $script:TcAdsAssemblyVersion; Initialize-TcAdsHelper records the helper
+        backend in $script:TcAdsHelperMode ('compiled' | 'reflection').
     .OUTPUTS
         $true if loaded successfully, $false otherwise.
     #>
@@ -233,44 +369,61 @@ function Find-TcAdsAssembly {
     # Check if already loaded
     $loaded = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object {
         $_.GetName().Name -eq 'TwinCAT.Ads'
-    }
+    } | Select-Object -First 1
     if ($loaded) {
-        Initialize-TcAdsHelper $loaded.Location
+        $loc = try { $loaded.Location } catch { '' }
+        Set-TcAdsAssemblyInfo -Path $loc -Assembly $loaded
+        Initialize-TcAdsHelper $loc
         return $true
     }
 
-    # Search paths in priority order (v170 = VS2022 matching DLL first)
-    $searchPaths = @(
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v160\TwinCAT.Ads.dll'
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v150\TwinCAT.Ads.dll'
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\TcDocGen\TwinCAT.Ads.dll'
-        'C:\Program Files (x86)\Beckhoff\TwinCAT\Functions\TE1010-Realtime-Monitor\TwinCAT.Ads.dll'
-    )
-
-    foreach ($dllPath in $searchPaths) {
-        if (Test-Path $dllPath) {
-            try {
-                $asm = [System.Reflection.Assembly]::LoadFrom($dllPath)
-                Initialize-TcAdsHelper $dllPath
-                return $true
-            }
-            catch {
-                continue
-            }
+    foreach ($dllPath in (Get-TcAdsAssemblyCandidates)) {
+        try {
+            $asm = [System.Reflection.Assembly]::LoadFrom($dllPath)
+            Set-TcAdsAssemblyInfo -Path $dllPath -Assembly $asm
+            Write-Verbose "Find-TcAdsAssembly: loaded $dllPath (v$($script:TcAdsAssemblyVersion))"
+            Initialize-TcAdsHelper $dllPath
+            return $true
+        }
+        catch {
+            Write-Verbose "Find-TcAdsAssembly: LoadFrom($dllPath) failed: $_"
+            continue
         }
     }
 
     # Fallback: try loading from GAC
     try {
         [System.Reflection.Assembly]::LoadWithPartialName('TwinCAT.Ads') | Out-Null
-        $check = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'TwinCAT.Ads' }
+        $check = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'TwinCAT.Ads' } | Select-Object -First 1
         if ($check) {
-            Initialize-TcAdsHelper $check.Location
+            $loc = try { $check.Location } catch { '' }
+            Set-TcAdsAssemblyInfo -Path $loc -Assembly $check
+            Initialize-TcAdsHelper $loc
             return $true
         }
     }
     catch { }
 
     return $false
+}
+
+function Set-TcAdsAssemblyInfo {
+    <#
+    .SYNOPSIS
+        Stores the loaded TwinCAT.Ads.dll path/version in module state.
+    #>
+    param(
+        [string]$Path,
+        [object]$Assembly
+    )
+    $script:TcAdsAssemblyPath = if ([string]::IsNullOrWhiteSpace($Path)) { $null } else { $Path }
+    $ver = $null
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path)) {
+        $v = Get-TcAdsFileVersion -Path $Path
+        if ($null -ne $v) { $ver = $v.ToString() }
+    }
+    if ($null -eq $ver -and $null -ne $Assembly) {
+        try { $ver = $Assembly.GetName().Version.ToString() } catch { }
+    }
+    $script:TcAdsAssemblyVersion = $ver
 }

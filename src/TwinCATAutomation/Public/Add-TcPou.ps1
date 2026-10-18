@@ -44,18 +44,22 @@ function Add-TcPou {
     }
 
     try {
-        # Find POUs folder
-        if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
-            # Auto-detect: look under TIPC for first PLC project
-            $plcConfig = $sm.LookupTreeItem('TIPC')
-            $plcProject = $plcConfig.Child(1)
-            $pouFolder = $plcProject.LookupChild('POUs')
-            if ($null -eq $pouFolder) {
-                $pouFolder = $plcProject
+        # Find POUs folder (COM calls wrapped in Invoke-TcComRetry)
+        $pouFolder = Invoke-TcComRetry -OperationName 'Lookup POUs folder' -ScriptBlock {
+            $folder = $null
+            if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
+                # Auto-detect: look under TIPC for first PLC project
+                $plcConfig = $sm.LookupTreeItem('TIPC')
+                $plcProject = $plcConfig.Child(1)
+                $folder = $plcProject.LookupChild('POUs')
+                if ($null -eq $folder) {
+                    $folder = $plcProject
+                }
             }
-        }
-        else {
-            $pouFolder = $sm.LookupTreeItem($PlcProjectPath)
+            else {
+                $folder = $sm.LookupTreeItem($PlcProjectPath)
+            }
+            Write-Output -NoEnumerate $folder
         }
 
         $subType = $pouSubTypes[$Type]
@@ -76,9 +80,9 @@ function Add-TcPou {
         }
         $declXml += "]]></Declaration>"
 
-        $newItem = $pouFolder.CreateChild($Name, $subType, '', $declXml)
+        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $pouFolder.CreateChild($Name, $subType, '', $declXml) }
 
-        $itemPath = try { $newItem.PathName } catch { '' }
+        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name = $Name
             type = $Type
@@ -86,6 +90,6 @@ function Add-TcPou {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to add POU: $_" -ErrorCode 'POU_CREATE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_CREATE_FAILED' -MessagePrefix 'Failed to add POU'
     }
 }

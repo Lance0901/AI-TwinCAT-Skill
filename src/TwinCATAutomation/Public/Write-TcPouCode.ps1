@@ -36,22 +36,25 @@ function Write-TcPouCode {
     }
 
     try {
-        # Find the POU
-        $pouItem = $null
-        if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
-            $pouItem = $sm.LookupTreeItem($PouPath)
-        }
-        else {
-            # Search under TIPC
-            $plcConfig = $sm.LookupTreeItem('TIPC')
-            $plcProject = $plcConfig.Child(1)
-            $pouFolder = $plcProject.LookupChild('POUs')
-            if ($null -ne $pouFolder) {
-                $pouItem = $pouFolder.LookupChild($PouName)
+        # Find the POU (all COM calls wrapped in Invoke-TcComRetry)
+        $pouItem = Invoke-TcComRetry -OperationName "Lookup POU $PouName" -ScriptBlock {
+            $item = $null
+            if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
+                $item = $sm.LookupTreeItem($PouPath)
             }
-            if ($null -eq $pouItem) {
-                $pouItem = $plcProject.LookupChild($PouName)
+            else {
+                # Search under TIPC
+                $plcConfig = $sm.LookupTreeItem('TIPC')
+                $plcProject = $plcConfig.Child(1)
+                $pouFolder = $plcProject.LookupChild('POUs')
+                if ($null -ne $pouFolder) {
+                    $item = $pouFolder.LookupChild($PouName)
+                }
+                if ($null -eq $item) {
+                    $item = $plcProject.LookupChild($PouName)
+                }
             }
+            Write-Output -NoEnumerate $item
         }
 
         if ($null -eq $pouItem) {
@@ -61,12 +64,12 @@ function Write-TcPouCode {
         $updated = @()
 
         if (-not [string]::IsNullOrWhiteSpace($Declaration)) {
-            $pouItem.DeclarationText = $Declaration
+            Invoke-TcComRetry -OperationName 'Set DeclarationText' -ScriptBlock { $pouItem.DeclarationText = $Declaration } | Out-Null
             $updated += 'declaration'
         }
 
         if (-not [string]::IsNullOrWhiteSpace($Implementation)) {
-            $pouItem.ImplementationText = $Implementation
+            Invoke-TcComRetry -OperationName 'Set ImplementationText' -ScriptBlock { $pouItem.ImplementationText = $Implementation } | Out-Null
             $updated += 'implementation'
         }
 
@@ -76,6 +79,6 @@ function Write-TcPouCode {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to write POU code: $_" -ErrorCode 'POU_WRITE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_WRITE_FAILED' -MessagePrefix 'Failed to write POU code'
     }
 }

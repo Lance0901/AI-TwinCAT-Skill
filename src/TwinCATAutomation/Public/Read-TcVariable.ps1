@@ -11,8 +11,8 @@ function Read-TcVariable {
         [string[]]$Path
     )
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $reconnected = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     try {
@@ -22,6 +22,7 @@ function Read-TcVariable {
         }
 
         $results = @()
+        $lastErrorRecord = $null
 
         foreach ($varPath in $Path) {
             try {
@@ -61,22 +62,31 @@ function Read-TcVariable {
                 $script:TcAdsClient.DeleteVariableHandle($handle)
 
                 $results += [PSCustomObject]@{
-                    path  = $varPath
-                    value = $value
-                    type  = $typeName
+                    path        = $varPath
+                    value       = $value
+                    type        = $typeName
+                    reconnected = $reconnected
                 }
             }
             catch {
-                $results += [PSCustomObject]@{
+                $lastErrorRecord = $_
+                $entry = [PSCustomObject]@{
                     path  = $varPath
                     error = $_.Exception.Message
                 }
+                $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
+                if ($null -ne $mapped) {
+                    $entry | Add-Member -NotePropertyName 'code' -NotePropertyValue $mapped.Code
+                    $entry | Add-Member -NotePropertyName 'hint' -NotePropertyValue $mapped.Hint
+                }
+                $results += $entry
             }
         }
 
         if ($Path.Count -eq 1) {
             if ($results[0].PSObject.Properties['error']) {
-                New-TcResult -Success $false -ErrorMessage $results[0].error -ErrorCode 'SYMBOL_NOT_FOUND'
+                # Keep the historical code SYMBOL_NOT_FOUND; only the hint comes from ADS_SYMBOL_NOT_FOUND
+                New-TcAdsErrorResult -ErrorRecord $lastErrorRecord -DefaultCode 'SYMBOL_NOT_FOUND' -CodeAliases @{ ADS_SYMBOL_NOT_FOUND = 'SYMBOL_NOT_FOUND' }
             }
             else {
                 New-TcResult -Success $true -Data $results[0]
@@ -87,6 +97,6 @@ function Read-TcVariable {
         }
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to read variable: $_" -ErrorCode 'ADS_READ_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'ADS_READ_FAILED' -MessagePrefix 'Failed to read variable'
     }
 }
