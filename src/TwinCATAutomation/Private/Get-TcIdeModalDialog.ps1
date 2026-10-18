@@ -12,11 +12,14 @@
 #   - windows reporting WindowPattern.IsModal win; otherwise a Win32 dialog (#32770)
 #     or a title matching the known dialogs (Assertion Failed, account settings,
 #     fatal error, license security code) is accepted; floating tool windows are not.
-#   - a dialog OWNED by the main window (MessageBox(owner, ...)) is a UIA child of the main
-#     window, not of the desktop: when nothing was found at top level and the main window
-#     is blocked (IsEnabled false, or WindowInteractionState BlockedByModalWindow - the WPF
-#     XAE main window stays IsEnabled while modal), its direct Window children are checked
-#     with the same rules.
+#   - a dialog OWNED by the main window (MessageBox(owner, ...), Help.About) is a UIA child
+#     of the main window, not of the desktop: when nothing was found at top level, the main
+#     window's direct Window children are checked. IsModal / #32770 children always count;
+#     a known title or any other owned window only while the main window is blocked
+#     (IsEnabled false, or WindowInteractionState BlockedByModalWindow - the WPF XAE main
+#     window stays IsEnabled while modal).
+#   - the title is the Win32 caption (GetWindowText) when it differs from the UIA Name (a
+#     WPF window's Name can be its content text), cut at 200 chars.
 #   - the dialog text is read from Text descendants; when there are none (Win11 message
 #     boxes expose the body as Pane/Static and the buttons as Pane/Button) it falls back
 #     to Pane / Edit / Document descendants, skipping buttons and the title.
@@ -33,6 +36,25 @@ $script:TcUiaDialogScan = {
     $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
     $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCond)
     if ($null -eq $windows -or $windows.Count -eq 0) { return }
+
+    # Win32 caption of a window (GetWindowText). The UIA Name of a WPF window can be its
+    # content text instead of its title, so the caption is used where the title matters.
+    # The P/Invoke type is compiled once per process and only when first needed.
+    function Get-TcScanCaption([long]$h) {
+        if ($h -le 0) { return '' }
+        try {
+            if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanNative').Type) {
+                Add-Type -Namespace TcAutomation -Name UiaScanNative -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+'@ -ErrorAction Stop
+            }
+            $csb = New-Object System.Text.StringBuilder 1024
+            $null = [TcAutomation.UiaScanNative]::GetWindowText([IntPtr]$h, $csb, $csb.Capacity)
+            return $csb.ToString().Trim()
+        }
+        catch { return '' }
+    }
 
     $mainTitlePattern = '(^|\s-\s)(TcXaeShell|Microsoft Visual Studio)(\s+\(.+\))?$'
     # ASCII only (file has no BOM): localized titles are caught by IsModal / #32770.
@@ -73,13 +95,28 @@ $script:TcUiaDialogScan = {
     $chosen = $modalHit
     if ($null -eq $chosen) { $chosen = $fallbackHit }
 
+    if ($null -eq $mainEl -and $MainHwnd -eq 0) {
+        # No main window by UIA Name: a WPF main window may expose its content text as Name,
+        # so try the Win32 caption against the main-title pattern.
+        foreach ($w in $windows) {
+            $cur = $null
+            try { $cur = $w.Current } catch { continue }
+            if ($cur.ControlType -ne [System.Windows.Automation.ControlType]::Window -or [string]$cur.ClassName -eq '#32770') { continue }
+            if ((Get-TcScanCaption ([long]$cur.NativeWindowHandle)) -match $mainTitlePattern) { $mainEl = $w; break }
+        }
+    }
+
     if ($null -eq $chosen) {
         # Owned dialog: UIA puts a window OWNED by the main window (MessageBox(owner, ...), VS
         # Help.About, Tools.Options) under the main window, not under the desktop, so the loop
-        # above never sees it. The owner is blocked while such a dialog is up. A WinForms owner
-        # reports IsEnabled = false; the WPF XAE main window keeps IsEnabled = true (UIA shows the
-        # WPF property, not the Win32 EnableWindow state) and reports
-        # WindowPattern.WindowInteractionState = BlockedByModalWindow instead. Either counts.
+        # above never sees it. An owned child that is IsModal or a #32770 always counts.
+        # Whether the owner looks blocked depends on the framework: a WinForms owner reports
+        # IsEnabled = false; the WPF XAE main window keeps IsEnabled = true (UIA shows the WPF
+        # property, not the Win32 EnableWindow state) and reports
+        # WindowPattern.WindowInteractionState = BlockedByModalWindow (Help.About on a real
+        # XAE); a plain WPF owner behind ShowDialog() even stays Running. So "blocked" only
+        # widens the match (known title, else any owned window); floating tool windows are
+        # owned too and must not be reported while the owner is free.
         if ($null -eq $mainEl -and $MainHwnd -ne 0) {
             try {
                 $mainEl = $ae::FromHandle([IntPtr]$MainHwnd)
@@ -87,8 +124,8 @@ $script:TcUiaDialogScan = {
             }
             catch { $mainEl = $null }
         }
-        $mainBlocked = $false
         if ($null -ne $mainEl) {
+            $mainBlocked = $false
             try { $mainBlocked = -not [bool]$mainEl.Current.IsEnabled } catch { $mainBlocked = $false }
             if (-not $mainBlocked) {
                 try {
@@ -99,8 +136,6 @@ $script:TcUiaDialogScan = {
                 }
                 catch { }
             }
-        }
-        if ($mainBlocked) {
             try {
                 $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
                 $ownedAny = $null
@@ -119,16 +154,29 @@ $script:TcUiaDialogScan = {
                     }
                     catch { }
                     $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = [long]$cur.NativeWindowHandle }
-                    if ($isModal -or $className -eq '#32770' -or $name -match $knownDialogPattern) { $chosen = $hit; break }
-                    if ($null -eq $ownedAny) { $ownedAny = $hit }
+                    if ($isModal -or $className -eq '#32770') { $chosen = $hit; break }
+                    if ($mainBlocked -and $name -match $knownDialogPattern) { $chosen = $hit; break }
+                    if ($mainBlocked -and $null -eq $ownedAny) { $ownedAny = $hit }
                 }
-                # The owner is disabled, so any remaining owned window is what blocks it.
+                # The owner is blocked, so any remaining owned window is what blocks it.
                 if ($null -eq $chosen) { $chosen = $ownedAny }
             }
             catch { }
         }
     }
     if ($null -eq $chosen) { return }
+
+    # Title: the UIA Name of a WPF window is often its content text, not its caption (XAE
+    # Help.About puts the whole About text there), so the Win32 caption is preferred; the
+    # Name then serves as text when nothing else is collected. Titles are cut at 200 chars.
+    $title = [string]$chosen.Title
+    $nameAsText = ''
+    $caption = Get-TcScanCaption ([long]$chosen.Hwnd)
+    if (-not [string]::IsNullOrWhiteSpace($caption) -and $caption -ne $title) {
+        $nameAsText = $title
+        $title = $caption
+    }
+    if ($title.Length -gt 200) { $title = $title.Substring(0, 200) }
 
     # Collect visible text of the dialog (first $MaxText chars).
     $text = ''
@@ -170,12 +218,13 @@ $script:TcUiaDialogScan = {
             }
         }
         $text = $sb.ToString()
+        if ([string]::IsNullOrWhiteSpace($text)) { $text = $nameAsText }
         if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
     }
     catch { }
 
     [PSCustomObject]@{
-        Title     = $chosen.Title
+        Title     = $title
         Text      = $text
         ClassName = $chosen.ClassName
         IsModal   = $chosen.IsModal
