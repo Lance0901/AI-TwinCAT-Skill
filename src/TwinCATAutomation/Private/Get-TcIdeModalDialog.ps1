@@ -14,7 +14,9 @@
 #     fatal error, license security code) is accepted; floating tool windows are not.
 #   - a dialog OWNED by the main window (MessageBox(owner, ...)) is a UIA child of the main
 #     window, not of the desktop: when nothing was found at top level and the main window
-#     is disabled, its direct Window children are checked with the same rules.
+#     is blocked (IsEnabled false, or WindowInteractionState BlockedByModalWindow - the WPF
+#     XAE main window stays IsEnabled while modal), its direct Window children are checked
+#     with the same rules.
 #   - the dialog text is read from Text descendants; when there are none (Win11 message
 #     boxes expose the body as Pane/Static and the buttons as Pane/Button) it falls back
 #     to Pane / Edit / Document descendants, skipping buttons and the title.
@@ -72,9 +74,12 @@ $script:TcUiaDialogScan = {
     if ($null -eq $chosen) { $chosen = $fallbackHit }
 
     if ($null -eq $chosen) {
-        # Owned dialog: UIA puts a window OWNED by the main window (MessageBox(owner, ...)) under
-        # the main window, not under the desktop, so the loop above never sees it. The owner is
-        # disabled while such a dialog is up, so only a disabled main window is looked into.
+        # Owned dialog: UIA puts a window OWNED by the main window (MessageBox(owner, ...), VS
+        # Help.About, Tools.Options) under the main window, not under the desktop, so the loop
+        # above never sees it. The owner is blocked while such a dialog is up. A WinForms owner
+        # reports IsEnabled = false; the WPF XAE main window keeps IsEnabled = true (UIA shows the
+        # WPF property, not the Win32 EnableWindow state) and reports
+        # WindowPattern.WindowInteractionState = BlockedByModalWindow instead. Either counts.
         if ($null -eq $mainEl -and $MainHwnd -ne 0) {
             try {
                 $mainEl = $ae::FromHandle([IntPtr]$MainHwnd)
@@ -82,9 +87,20 @@ $script:TcUiaDialogScan = {
             }
             catch { $mainEl = $null }
         }
-        $mainEnabled = $true
-        if ($null -ne $mainEl) { try { $mainEnabled = [bool]$mainEl.Current.IsEnabled } catch { $mainEnabled = $true } }
-        if ($null -ne $mainEl -and -not $mainEnabled) {
+        $mainBlocked = $false
+        if ($null -ne $mainEl) {
+            try { $mainBlocked = -not [bool]$mainEl.Current.IsEnabled } catch { $mainBlocked = $false }
+            if (-not $mainBlocked) {
+                try {
+                    $mwp = $null
+                    if ($mainEl.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$mwp) -and $null -ne $mwp) {
+                        $mainBlocked = ($mwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
+                    }
+                }
+                catch { }
+            }
+        }
+        if ($mainBlocked) {
             try {
                 $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
                 $ownedAny = $null
