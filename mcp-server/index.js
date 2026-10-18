@@ -22,20 +22,20 @@ let catalog;
 try {
   catalog = loadToolCatalog(config.toolsJsonPath);
 } catch (err) {
-  console.error(`[twincat-mcp] cannot load tools.json (${config.toolsJsonPath}): ${err.message}`);
-  console.error('[twincat-mcp] run "npm run generate-tools" or set TWINCAT_MCP_TOOLS_JSON');
+  console.error(`[tcauto-mcp] cannot load tools.json (${config.toolsJsonPath}): ${err.message}`);
+  console.error('[tcauto-mcp] run "npm run generate-tools" or set TWINCAT_MCP_TOOLS_JSON');
   process.exit(1);
 }
 
 const compositeMap = new Map(composites.map((c) => [c.name, c]));
 for (const name of compositeMap.keys()) {
-  if (catalog.has(name)) console.error(`[twincat-mcp] composite tool "${name}" shadows a catalog tool of the same name`);
+  if (catalog.has(name)) console.error(`[tcauto-mcp] composite tool "${name}" shadows a catalog tool of the same name`);
 }
 
 // ---------------------------------------------------------------- logging
 
 const server = new Server(
-  { name: 'twincat-automation', version: pkg.version },
+  { name: 'tcauto', version: pkg.version },
   { capabilities: { tools: {}, logging: {} } }
 );
 
@@ -53,7 +53,7 @@ function mapLevel(level) {
 }
 
 function emitLog(level, data) {
-  const params = { level: mapLevel(level), logger: 'twincat', data };
+  const params = { level: mapLevel(level), logger: 'tcauto', data };
   if (!connected) {
     if (pendingLogs.length < MAX_PENDING_LOGS) pendingLogs.push(params);
     return;
@@ -143,7 +143,7 @@ async function decorateBridgeLoss(result) {
   if (!result || result.success === true || !BRIDGE_LOST_CODES.has(result.error?.code)) return result;
   if (result.data && typeof result.data === 'object' && result.data.bridgeRestarted === true) return result;
   if (lastIde?.ideProcessId && !(await isIdeProcessAlive(lastIde.ideProcessId))) {
-    console.error(`[twincat-mcp] lastIde pid ${lastIde.ideProcessId} is not a running XAE/devenv any more; forgetting it`);
+    console.error(`[tcauto-mcp] lastIde pid ${lastIde.ideProcessId} is not a running XAE/devenv any more; forgetting it`);
     lastIde = null;
   }
   const data = { ...(result.data && typeof result.data === 'object' ? result.data : {}), lastIde: lastIde ? { ...lastIde } : null, bridgeRestarted: true };
@@ -229,7 +229,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const result = await callAnyTool(name, args, extra?.signal);
     return toToolResult(await decorateBridgeLoss(result));
   } catch (err) {
-    console.error(`[twincat-mcp] ${name} failed: ${err?.stack ?? err}`);
+    console.error(`[tcauto-mcp] ${name} failed: ${err?.stack ?? err}`);
     return toToolResult(errorResult('INTERNAL_ERROR', `${name}: ${err?.message ?? String(err)}`));
   } finally {
     stopProgress();
@@ -242,7 +242,7 @@ let shuttingDown = false;
 async function shutdown(reason, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.error(`[twincat-mcp] shutting down (${reason})`);
+  console.error(`[tcauto-mcp] shutting down (${reason})`);
   try {
     await bridge.stop();
   } catch {
@@ -261,10 +261,10 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.stdin.on('end', () => shutdown('stdin closed'));
 process.stdin.on('close', () => shutdown('stdin closed'));
 process.on('uncaughtException', (err) => {
-  console.error(`[twincat-mcp] uncaught exception: ${err?.stack ?? err}`);
+  console.error(`[tcauto-mcp] uncaught exception: ${err?.stack ?? err}`);
 });
 process.on('unhandledRejection', (err) => {
-  console.error(`[twincat-mcp] unhandled rejection: ${err?.stack ?? err}`);
+  console.error(`[tcauto-mcp] unhandled rejection: ${err?.stack ?? err}`);
 });
 
 const transport = new StdioServerTransport();
@@ -273,11 +273,11 @@ transport.onclose = () => shutdown('transport closed');
 await server.connect(transport);
 connected = true;
 flushPendingLogs();
-console.error(`[twincat-mcp] ${pkg.name} ${pkg.version}: ${catalog.size} catalog tools + ${composites.length} composite tools (tools.json: ${config.toolsJsonPath})`);
+console.error(`[tcauto-mcp] ${pkg.name} ${pkg.version}: ${catalog.size} catalog tools + ${composites.length} composite tools (tools.json: ${config.toolsJsonPath})`);
 
 if (config.eager) {
   bridge.start().then(
-    (ready) => console.error(`[twincat-mcp] bridge ready (${ready?.cmdlets?.length ?? '?'} cmdlets, PS ${ready?.psVersion ?? '?'})`),
-    (err) => console.error(`[twincat-mcp] eager bridge start failed: ${err.code ?? ''} ${err.message}`)
+    (ready) => console.error(`[tcauto-mcp] bridge ready (${ready?.cmdlets?.length ?? '?'} cmdlets, PS ${ready?.psVersion ?? '?'})`),
+    (err) => console.error(`[tcauto-mcp] eager bridge start failed: ${err.code ?? ''} ${err.message}`)
   );
 }

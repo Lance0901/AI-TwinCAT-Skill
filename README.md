@@ -223,7 +223,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as an MCP server (stdio) exposing all 35 cmdlets plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing all 35 cmdlets plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server

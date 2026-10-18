@@ -1,6 +1,6 @@
 # Bridge protocol (Node ⇄ PowerShell 5.1)
 
-The MCP server (`index.js`) keeps **one** long-lived `powershell.exe` child
+The TcAuto MCP server (`index.js`) keeps **one** long-lived `powershell.exe` child
 (Windows PowerShell 5.1, `-STA -NoProfile -NonInteractive -ExecutionPolicy Bypass
 -File bridge/bridge.ps1 -ModulePath <psm1>`). All tool calls are serialised
 through that child so the module's `$script:` state (DTE, ITcSysManager,
@@ -171,5 +171,5 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   every `TWINCAT_MCP_PROGRESS_INTERVAL_MS` (default 10000) until the call returns. No token → no
   progress notifications. The PowerShell child is not involved.
 * Calls are queued FIFO; the child handles one at a time.
-* Every `log` line → `notifications/message` (`logger: "twincat"`, `level`
+* Every `log` line → `notifications/message` (`logger: "tcauto"`, `level`
   warning/debug/info). Child stderr lines → level `error`.

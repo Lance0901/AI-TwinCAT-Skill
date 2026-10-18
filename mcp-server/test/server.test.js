@@ -51,7 +51,7 @@ describe('index.js over stdio (3-tool fixture)', () => {
 
   test('server info and capabilities', () => {
     const info = client.getServerVersion();
-    assert.equal(info.name, 'twincat-automation');
+    assert.equal(info.name, 'tcauto');
     assert.equal(info.version, '0.1.0');
     const caps = client.getServerCapabilities();
     assert.ok(caps.tools);
@@ -271,7 +271,7 @@ describe('index.js over stdio (extended fixture, composites)', () => {
     assert.equal(body.data.plc.success, true);
 
     await new Promise((r) => setTimeout(r, 100));
-    const warn = logs.find((l) => l.level === 'warning' && l.logger === 'twincat');
+    const warn = logs.find((l) => l.level === 'warning' && l.logger === 'tcauto');
     assert.ok(warn, 'warning log notification received');
     assert.equal(warn.data.message, 'mock: IDE not connected');
     assert.equal(warn.data.cmdlet, 'Get-TcIdeInfo');

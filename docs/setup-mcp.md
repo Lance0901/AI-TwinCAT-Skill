@@ -1,6 +1,6 @@
-# MCP Server Setup
+# TcAuto MCP Setup
 
-Run the `TwinCATAutomation` module as an MCP server so Claude Desktop, Claude Code or any MCP client can call the 35 cmdlets (plus 4 composite tools) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
+Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, Claude Code or any MCP client can call the 35 cmdlets (plus 4 composite tools) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Desktop:
 ```json
 {
   "mcpServers": {
-    "twincat": {
+    "tcauto": {
       "command": "node",
       "args": ["C:\\path\\to\\2026-AI-TwinCAT-Skill\\mcp-server\\index.js"],
       "env": {
@@ -44,7 +44,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json` and restart Claude Desktop:
 The repo root ships `.mcp.json`, so the server is available in any Claude Code session opened in this repo:
 
 ```json
-{ "mcpServers": { "twincat": { "command": "node", "args": ["mcp-server/index.js"] } } }
+{ "mcpServers": { "tcauto": { "command": "node", "args": ["mcp-server/index.js"] } } }
 ```
 
 Two things this relies on:
@@ -55,7 +55,7 @@ Two things this relies on:
 From another project, register it with an absolute path:
 
 ```powershell
-claude mcp add twincat -- node "C:\path\to\2026-AI-TwinCAT-Skill\mcp-server\index.js"
+claude mcp add tcauto -- node "C:\path\to\2026-AI-TwinCAT-Skill\mcp-server\index.js"
 ```
 
 ### Other MCP clients
@@ -85,4 +85,4 @@ That proves Node started, `powershell.exe` spawned and the module imported. Then
 | Client reports a timeout (often around 60 s) on `ConnectIde`, `BuildProject`, `EnableConfig` or `RunLifecycle`, no `error.code` from the server | The MCP client's own request timeout (SDK default 60 s) is shorter than the call; the server keeps running and finishes the call anyway | Claude Code: set `MCP_TOOL_TIMEOUT` in milliseconds (e.g. `MCP_TOOL_TIMEOUT=900000`). SDK clients: pass `onprogress` + `resetTimeoutOnProgress: true` so the server's `notifications/progress` (every 10 s) keeps the request alive. Claude Desktop: not configurable as of this writing; use the fine-grained tools instead of `RunLifecycle` and check `GetStatus` afterwards. Details: [mcp-server/README.md](../mcp-server/README.md#client-request-timeout) |
 | Any other `error.code` | Module error, passed through unchanged | Follow `error.hint`; code table in [troubleshooting.md](troubleshooting.md) |
 
-Claude Desktop writes the server's stderr to `%APPDATA%\Claude\logs\mcp-server-twincat.log`. Set `TWINCAT_MCP_VERBOSE=1` in the config `env` to also get `Write-Verbose` output from the module as `debug` log notifications.
+Claude Desktop writes the server's stderr to `%APPDATA%\Claude\logs\mcp-server-tcauto.log`. Set `TWINCAT_MCP_VERBOSE=1` in the config `env` to also get `Write-Verbose` output from the module as `debug` log notifications.
