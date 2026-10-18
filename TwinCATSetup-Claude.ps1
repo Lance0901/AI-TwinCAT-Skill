@@ -3,14 +3,24 @@
     Install TwinCAT Automation skill for Claude Code.
     Checks prerequisites, then installs the skill to user-level
     so Claude Code can use TwinCAT automation in ANY project.
+.PARAMETER Uninstall
+    Remove the user-level skill directory.
+.PARAMETER Verify
+    Read-only. Compare the repo's adapters/claude-code/SKILL.md (after <module-path>
+    substitution) and src/TwinCATAutomation against the installed copy under
+    ~/.claude/skills/twincat-automation by SHA256. Prints match / mismatch and the
+    differing file names. Exit code 0 = match, 1 = mismatch or not installed.
 .EXAMPLE
     pwsh ./TwinCATSetup-Claude.ps1
 .EXAMPLE
     pwsh ./TwinCATSetup-Claude.ps1 -Uninstall
+.EXAMPLE
+    pwsh ./TwinCATSetup-Claude.ps1 -Verify
 #>
 [CmdletBinding()]
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Verify
 )
 
 $ErrorActionPreference = 'Continue'
@@ -20,6 +30,47 @@ $scriptRoot = $PSScriptRoot
 
 # Paths
 $userSkillDir = Join-Path $HOME ".claude\skills\twincat-automation"
+$srcModule    = Join-Path $scriptRoot "src\TwinCATAutomation"
+$srcSkill     = Join-Path $scriptRoot "adapters\claude-code\SKILL.md"
+$destModule   = Join-Path $userSkillDir "TwinCATAutomation"
+$destSkill    = Join-Path $userSkillDir "SKILL.md"
+$absModulePath = Join-Path $destModule "TwinCATAutomation.psm1"
+
+# UTF-8 without BOM. Windows PowerShell 5.1's Set-Content -Encoding UTF8 writes a BOM,
+# and Get-Content without -Encoding reads BOM-less files as ANSI, so use .NET directly.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Read-Utf8File {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
+function Write-Utf8File {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Get-RenderedSkillContent {
+    # SKILL.md as it should appear after install: only <module-path> is substituted.
+    # The frontmatter name is taken verbatim from the repo file.
+    $content = Read-Utf8File $srcSkill
+    # String.Replace, not -replace: the path must be inserted literally (no regex substitution tokens).
+    return $content.Replace('<module-path>', $absModulePath)
+}
+
+function Get-StringSha256 {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $utf8NoBom.GetBytes($Text)
+        return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '')
+    } finally { $sha.Dispose() }
+}
+
+function Get-FileSha256 {
+    param([string]$Path)
+    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+}
 
 function Write-Check {
     param([string]$Name, [bool]$Ok, [string]$Detail)
@@ -48,6 +99,102 @@ if ($Uninstall) {
     Write-Host "Uninstall complete." -ForegroundColor Green
     Write-Host ""
     return
+}
+
+# --- Verify (read-only) ---
+if ($Verify) {
+    Write-Host ""
+    Write-Host "=== Verify TwinCAT Skill (Claude Code) ===" -ForegroundColor Cyan
+    Write-Host "  Repo:      $scriptRoot" -ForegroundColor DarkGray
+    Write-Host "  Installed: $userSkillDir" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $mismatches = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-Path $userSkillDir)) {
+        Write-Host "  [MISMATCH] Skill not installed: $userSkillDir" -ForegroundColor Red
+        Write-Host ""
+        exit 1
+    }
+
+    # 1. SKILL.md (repo content with <module-path> substituted vs installed file)
+    if (-not (Test-Path $srcSkill)) {
+        Write-Host "  [MISMATCH] Repo SKILL.md missing: $srcSkill" -ForegroundColor Red
+        $mismatches.Add('SKILL.md (repo file missing)')
+    }
+    elseif (-not (Test-Path $destSkill)) {
+        Write-Host "  [MISMATCH] SKILL.md not installed" -ForegroundColor Red
+        $mismatches.Add('SKILL.md (not installed)')
+    }
+    else {
+        $expectedHash = Get-StringSha256 (Get-RenderedSkillContent)
+        $actualHash   = Get-StringSha256 (Read-Utf8File $destSkill)
+        if ($expectedHash -eq $actualHash) {
+            Write-Host "  [MATCH]    SKILL.md  $expectedHash" -ForegroundColor Green
+        } else {
+            Write-Host "  [MISMATCH] SKILL.md" -ForegroundColor Red
+            Write-Host "             expected $expectedHash" -ForegroundColor Yellow
+            Write-Host "             actual   $actualHash" -ForegroundColor Yellow
+            $mismatches.Add('SKILL.md')
+        }
+        $installedBytes = [System.IO.File]::ReadAllBytes($destSkill)
+        if ($installedBytes.Length -ge 3 -and $installedBytes[0] -eq 0xEF -and $installedBytes[1] -eq 0xBB -and $installedBytes[2] -eq 0xBF) {
+            Write-Host "  [WARN]     Installed SKILL.md has a UTF-8 BOM (written by an older installer)" -ForegroundColor Yellow
+        }
+    }
+
+    # 2. Module directory (file-by-file SHA256)
+    if (-not (Test-Path $destModule)) {
+        Write-Host "  [MISMATCH] Module not installed: $destModule" -ForegroundColor Red
+        $mismatches.Add('TwinCATAutomation/ (not installed)')
+    }
+    else {
+        $srcFiles = Get-ChildItem -Path $srcModule -Recurse -File
+        $dstFiles = Get-ChildItem -Path $destModule -Recurse -File
+        $srcMap = @{}
+        foreach ($f in $srcFiles) { $srcMap[$f.FullName.Substring($srcModule.Length).TrimStart('\', '/')] = $f.FullName }
+        $dstMap = @{}
+        foreach ($f in $dstFiles) { $dstMap[$f.FullName.Substring($destModule.Length).TrimStart('\', '/')] = $f.FullName }
+
+        $moduleOk = $true
+        foreach ($rel in ($srcMap.Keys | Sort-Object)) {
+            if (-not $dstMap.ContainsKey($rel)) {
+                Write-Host "  [MISMATCH] TwinCATAutomation\$rel  (missing in install)" -ForegroundColor Red
+                $mismatches.Add("TwinCATAutomation\$rel (missing)")
+                $moduleOk = $false
+                continue
+            }
+            if ((Get-FileSha256 $srcMap[$rel]) -ne (Get-FileSha256 $dstMap[$rel])) {
+                Write-Host "  [MISMATCH] TwinCATAutomation\$rel  (content differs)" -ForegroundColor Red
+                $mismatches.Add("TwinCATAutomation\$rel (differs)")
+                $moduleOk = $false
+            }
+        }
+        foreach ($rel in ($dstMap.Keys | Sort-Object)) {
+            if (-not $srcMap.ContainsKey($rel)) {
+                Write-Host "  [MISMATCH] TwinCATAutomation\$rel  (extra in install)" -ForegroundColor Red
+                $mismatches.Add("TwinCATAutomation\$rel (extra)")
+                $moduleOk = $false
+            }
+        }
+        if ($moduleOk) {
+            Write-Host "  [MATCH]    TwinCATAutomation\ ($($srcMap.Count) files)" -ForegroundColor Green
+        }
+    }
+
+    Write-Host ""
+    if ($mismatches.Count -eq 0) {
+        Write-Host "Result: match" -ForegroundColor Green
+        Write-Host ""
+        exit 0
+    } else {
+        Write-Host "Result: mismatch ($($mismatches.Count) item(s))" -ForegroundColor Red
+        foreach ($m in $mismatches) { Write-Host "  - $m" -ForegroundColor Yellow }
+        Write-Host ""
+        Write-Host "Run 'pwsh ./TwinCATSetup-Claude.ps1' to reinstall." -ForegroundColor DarkGray
+        Write-Host ""
+        exit 1
+    }
 }
 
 # --- Prerequisites Check ---
@@ -94,10 +241,12 @@ foreach ($root in $adsDllSearchRoots) {
 Write-Check "TwinCAT.Ads.dll" ($null -ne $adsFound) $(if ($adsFound) { $adsFound } else { "Required for ADS communication" })
 
 # 5. Visual Studio / TwinCAT XAE Shell
+#    4024 32-bit XAE Shell = TcXaeShell.DTE.15.0, 4026 XAE Shell = TcXaeShell.DTE.17.0,
+#    4026 + VS2022 = VisualStudio.DTE.17.0
 $vsFound = $false
 $vsDetail = ""
 try {
-    $dteProgIds = @("VisualStudio.DTE.17.0", "VisualStudio.DTE.16.0", "TcXaeShell.DTE.15.0")
+    $dteProgIds = @("TcXaeShell.DTE.15.0", "TcXaeShell.DTE.17.0", "VisualStudio.DTE.17.0", "VisualStudio.DTE.16.0")
     foreach ($progId in $dteProgIds) {
         try {
             $type = [System.Type]::GetTypeFromProgID($progId)
@@ -105,12 +254,12 @@ try {
         } catch {}
     }
 } catch {}
-Write-Check "IDE available (VS2022/XAE Shell)" $vsFound $(if ($vsDetail) { "ProgID: $vsDetail" } else { "No compatible IDE found" })
+Write-Check "IDE available (XAE Shell / VS2022)" $vsFound $(if ($vsDetail) { "ProgID: $vsDetail" } else { "No compatible IDE found" })
 
 # 6. Module import
 Write-Host ""
 Write-Host "--- Module Import ---" -ForegroundColor Cyan
-$modulePath = Join-Path $scriptRoot "src\TwinCATAutomation\TwinCATAutomation.psm1"
+$modulePath = Join-Path $srcModule "TwinCATAutomation.psm1"
 $moduleOk = $false
 $cmdletCount = 0
 try {
@@ -147,20 +296,15 @@ if (-not (Test-Path $userSkillDir)) {
 }
 
 # 2. Copy module to skill directory
-$srcModule = Join-Path $scriptRoot "src\TwinCATAutomation"
-$destModule = Join-Path $userSkillDir "TwinCATAutomation"
 if (Test-Path $destModule) { Remove-Item $destModule -Recurse -Force }
 Copy-Item $srcModule -Destination $destModule -Recurse -Force
-$absModulePath = Join-Path $destModule "TwinCATAutomation.psm1"
 Write-Host "  Installed module: $destModule" -ForegroundColor Green
 
-# 3. Copy SKILL.md and replace <module-path> with absolute path
-$srcSkill = Join-Path $scriptRoot "adapters\claude-code\SKILL.md"
-$skillContent = Get-Content $srcSkill -Raw
-$skillContent = $skillContent -replace '<module-path>', $absModulePath
-Set-Content -Path (Join-Path $userSkillDir "SKILL.md") -Value $skillContent -Encoding UTF8
+# 3. Copy SKILL.md, replace <module-path> with absolute path, write UTF-8 without BOM.
+#    The frontmatter name is whatever the repo SKILL.md says; nothing is hardcoded here.
+Write-Utf8File -Path $destSkill -Content (Get-RenderedSkillContent)
 
-Write-Host "  Installed skill: $userSkillDir\SKILL.md" -ForegroundColor Green
+Write-Host "  Installed skill: $destSkill" -ForegroundColor Green
 Write-Host "  Module path:     $absModulePath" -ForegroundColor White
 
 # Done
@@ -170,5 +314,6 @@ Write-Host ""
 Write-Host "  Claude Code can now use TwinCAT automation in ANY project." -ForegroundColor Green
 Write-Host "  Just ask Claude: 'Connect to TwinCAT and build the project'" -ForegroundColor White
 Write-Host ""
+Write-Host "  To verify:    pwsh ./TwinCATSetup-Claude.ps1 -Verify" -ForegroundColor DarkGray
 Write-Host "  To uninstall: pwsh ./TwinCATSetup-Claude.ps1 -Uninstall" -ForegroundColor DarkGray
 Write-Host ""

@@ -32,22 +32,19 @@ Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 # 2. Build
 Build-TcProject
 
-# 3. Activate + Run (Config mode -> Run mode via ADS, zero dialogs)
+# 3. Activate, one step (Config -> Activate -> wait Run -> Login+Download -> PLC Run, zero dialogs)
+#    Already includes Enter-TcPlcOnline and Set-TcPlcState Run; every step polls, no Start-Sleep
 Enable-TcConfig -Force
 
-# 4. Login + Download program (Login(3) suppresses all dialogs)
-Enter-TcPlcOnline
-
-# 5. Connect ADS (AmsNetId auto-detected from IDE)
+# 4. Connect ADS (AmsNetId auto-detected from IDE)
 Connect-TcAds
 
-# 6. Start PLC
-Set-TcPlcState -State Run
-
-# 7. Read/Write variables
+# 5. Read/Write variables
 Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
+
+Something failed? See [docs/troubleshooting.md](docs/troubleshooting.md) — error code table (`error.code` / `error.hint`), correct lifecycle order, environment matrix, known limits. Hardware-in-the-loop checks live in [tests/Integration](tests/Integration/README.md).
 
 ### Automated Testing
 

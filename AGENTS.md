@@ -24,22 +24,19 @@ Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 # 2. Build
 Build-TcProject
 
-# 3. Activate + Start (Config -> Activate -> Run, all via ADS)
+# 3. Activate, one step: Config -> Activate -> wait Run -> Login+Download -> wait port 851 -> PLC Run
+#    Already includes Enter-TcPlcOnline and Set-TcPlcState Run. No Start-Sleep needed.
 Enable-TcConfig -Force
 
-# 4. Login + Download program (Login(3) suppresses all dialogs)
-Enter-TcPlcOnline
-
-# 5. Connect ADS (AmsNetId auto-detected from IDE target)
+# 4. Connect ADS (AmsNetId auto-detected from IDE target)
 Connect-TcAds
 
-# 6. Start PLC
-Set-TcPlcState -State Run
-
-# 7. Read/Write variables
+# 5. Read/Write variables
 Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
+
+Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, environment matrix). `error.hint`, when present, is the suggested next action.
 
 ## Important Notes
 

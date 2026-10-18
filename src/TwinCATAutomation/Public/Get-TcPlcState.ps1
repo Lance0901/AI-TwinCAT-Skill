@@ -6,8 +6,8 @@ function Get-TcPlcState {
     [CmdletBinding()]
     param()
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $reconnected = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     try {
@@ -41,9 +41,10 @@ function Get-TcPlcState {
             state       = $stateName
             adsState    = [int]$adsState
             deviceState = $deviceState
+            reconnected = $reconnected
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to read PLC state: $_" -ErrorCode 'STATE_READ_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_READ_FAILED' -MessagePrefix 'Failed to read PLC state'
     }
 }

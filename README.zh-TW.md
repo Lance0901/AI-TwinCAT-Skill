@@ -32,22 +32,19 @@ Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 # 2. 建置
 Build-TcProject
 
-# 3. 啟動 + 運行（Config -> Run，透過 ADS，零對話框）
+# 3. 一步啟動（Config -> Activate -> 等系統 Run -> Login+Download -> PLC Run，零對話框）
+#    已包含 Enter-TcPlcOnline 與 Set-TcPlcState Run；每步輪詢到位，不需要 Start-Sleep
 Enable-TcConfig -Force
 
-# 4. 登入 + 下載程式（Login(3) 抑制所有對話框）
-Enter-TcPlcOnline
-
-# 5. 連接 ADS（AmsNetId 從 IDE 自動偵測）
+# 4. 連接 ADS（AmsNetId 從 IDE 自動偵測）
 Connect-TcAds
 
-# 6. 啟動 PLC
-Set-TcPlcState -State Run
-
-# 7. 讀寫變數
+# 5. 讀寫變數
 Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
+
+出錯了？看 [docs/troubleshooting.md](docs/troubleshooting.md) — 錯誤碼表（`error.code` / `error.hint`）、Lifecycle 正確順序、環境矩陣、已知限制。需要真機的驗證腳本在 [tests/Integration](tests/Integration/README.md)。
 
 ### 自動化測試
 

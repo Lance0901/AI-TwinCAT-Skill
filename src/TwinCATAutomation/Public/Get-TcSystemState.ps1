@@ -33,6 +33,6 @@ function Get-TcSystemState {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to read system state: $_" -ErrorCode 'SYSTEM_STATE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_FAILED' -MessagePrefix 'Failed to read system state'
     }
 }

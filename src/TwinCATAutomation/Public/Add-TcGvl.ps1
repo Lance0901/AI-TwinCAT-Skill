@@ -26,8 +26,10 @@ function Add-TcGvl {
     }
 
     try {
-        $plcConfig = $sm.LookupTreeItem('TIPC')
-        $plcProject = $plcConfig.Child(1)
+        $plcProject = Invoke-TcComRetry -OperationName 'Lookup PLC project' -ScriptBlock {
+            $plcConfig = $sm.LookupTreeItem('TIPC')
+            Write-Output -NoEnumerate $plcConfig.Child(1)
+        }
 
         # Build declaration
         $decl = "VAR_GLOBAL`n"
@@ -41,15 +43,15 @@ function Add-TcGvl {
         $declXml = "<Declaration><![CDATA[$decl]]></Declaration>"
 
         # GVL sub-type
-        $newItem = $plcProject.CreateChild($Name, 615, '', $declXml)
+        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $plcProject.CreateChild($Name, 615, '', $declXml) }
 
-        $itemPath = try { $newItem.PathName } catch { '' }
+        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name = $Name
             path = $itemPath
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to add GVL: $_" -ErrorCode 'GVL_CREATE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'GVL_CREATE_FAILED' -MessagePrefix 'Failed to add GVL'
     }
 }

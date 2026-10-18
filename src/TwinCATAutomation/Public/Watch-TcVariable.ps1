@@ -31,8 +31,8 @@ function Watch-TcVariable {
         [int]$TimeoutMs = 5000
     )
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $reconnected = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     try {
@@ -71,6 +71,7 @@ function Watch-TcVariable {
                 finalValue   = if ($samples.Count -gt 0) { $samples[-1].value } else { $null }
                 sampleCount  = $samples.Count
                 samples      = $samples
+                reconnected  = $reconnected
             })
         }
         else {
@@ -94,10 +95,11 @@ function Watch-TcVariable {
                 sampleCount = $samples.Count
                 durationMs  = $duration
                 samples     = $samples
+                reconnected = $reconnected
             })
         }
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Watch failed: $_" -ErrorCode 'WATCH_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'WATCH_FAILED' -MessagePrefix 'Watch failed'
     }
 }

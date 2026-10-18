@@ -19,27 +19,25 @@ Connect-TcIde
 # 2. Build
 Build-TcProject
 
-# 3. Activate + Start (Config → Activate → Run, all via ADS — zero dialogs)
+# 3. Activate, one step: Config → Activate → wait Run → Login+Download → wait port 851 → PLC Run
+#    Already includes Enter-TcPlcOnline and Set-TcPlcState Run. No Start-Sleep needed.
+#    (-NoLogin skips download/Run; -TimeoutSec default 120; data has steps[], plcState, loggedIn, reconnected)
 Enable-TcConfig -Force
 
-# 4. Login + Download program (Login(3) suppresses all dialogs)
-Enter-TcPlcOnline
-
-# 5. Start PLC
-Set-TcPlcState -State Run
-
-# 6. Connect ADS (AmsNetId auto-detected from IDE target)
+# 4. Connect ADS (AmsNetId auto-detected from IDE target)
 Connect-TcAds
 
-# 7. Read/Write variables
+# 5. Read/Write variables (auto-reconnect after a later Enable-TcConfig; data.reconnected tells you)
 Read-TcVariable -Path "MAIN.nCounter"
 ```
 
 ## Important Notes
 
 - **AmsNetId is dynamic** — it changes per target (local UM Runtime, remote CX, etc.). Never hardcode it. `Connect-TcAds` auto-detects from the active IDE connection.
-- **All commands return JSON**: `{"success": true, "data": {...}}` or `{"success": false, "error": {"message": "...", "code": "..."}}`
-- **No dialogs**: `Enable-TcConfig -Force` uses ADS WriteControl (not StartRestartTwinCAT). `Enter-TcPlcOnline` uses `Login(3)` flag.
+- **All commands return JSON**: `{"success": true, "data": {...}}` or `{"success": false, "error": {"message": "...", "code": "...", "hint": "..."}}`. `error.hint` is optional; when present it is the suggested next action.
+- **No dialogs**: `Enable-TcConfig -Force` uses ADS WriteControl (not StartRestartTwinCAT). `Enter-TcPlcOnline` uses `Login(3)` flag. All DTE/COM calls retry 1/2/4/8/16s on RPC busy and return `IDE_BUSY` when exhausted.
+- **No blind waits**: `Set-TcSystemState`, `Enable-TcConfig -Force` and `Invoke-TcTestCycle` poll until the target state is reached. Do not add `Start-Sleep`.
+- **Troubleshooting**: `docs/troubleshooting.md` — error code table, correct lifecycle order, environment matrix, known limits (UmRT fake Run, Reset kills `TcSystemServiceUm`, build messages not readable yet).
 
 ## Tool-Specific Adapters
 

@@ -26,18 +26,19 @@ function Add-TcLibrary {
     }
 
     try {
-        $plcConfig = $sm.LookupTreeItem('TIPC')
-        $plcProject = $plcConfig.Child(1)
-
-        # Get the References node
-        $refs = $plcProject.LookupChild('References')
+        # Get the References node (COM calls wrapped in Invoke-TcComRetry)
+        $refs = Invoke-TcComRetry -OperationName 'Lookup References' -ScriptBlock {
+            $plcConfig = $sm.LookupTreeItem('TIPC')
+            $plcProject = $plcConfig.Child(1)
+            Write-Output -NoEnumerate $plcProject.LookupChild('References')
+        }
         if ($null -eq $refs) {
             return New-TcResult -Success $false -ErrorMessage 'Cannot find References node in PLC project.' -ErrorCode 'REFS_NOT_FOUND'
         }
 
         # Add library reference
         $libRef = "$Name, $Version (Beckhoff Automation GmbH)"
-        $refs.CreateChild($libRef, 0)
+        Invoke-TcComRetry -OperationName "Add library $Name" -ScriptBlock { Write-Output -NoEnumerate $refs.CreateChild($libRef, 0) } | Out-Null
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             library = $Name
@@ -45,6 +46,6 @@ function Add-TcLibrary {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to add library: $_" -ErrorCode 'LIBRARY_ADD_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'LIBRARY_ADD_FAILED' -MessagePrefix 'Failed to add library'
     }
 }

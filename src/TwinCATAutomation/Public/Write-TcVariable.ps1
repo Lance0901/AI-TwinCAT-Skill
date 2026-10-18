@@ -16,8 +16,8 @@ function Write-TcVariable {
         [object]$Value
     )
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $reconnected = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     try {
@@ -59,12 +59,13 @@ function Write-TcVariable {
         $script:TcAdsClient.DeleteVariableHandle($handle)
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            path    = $Path
-            written = $Value
-            type    = $typeName
+            path        = $Path
+            written     = $Value
+            type        = $typeName
+            reconnected = $reconnected
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to write variable: $_" -ErrorCode 'ADS_WRITE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'ADS_WRITE_FAILED' -MessagePrefix 'Failed to write variable'
     }
 }

@@ -2,15 +2,21 @@
 
 ## Installation
 
-1. Copy the adapter Skill to your project:
-   ```bash
-   cp -r adapters/claude-code/.claude/skills/twincat .claude/skills/twincat
-   ```
+Run the installer from the repo root. It checks prerequisites, copies the module and `adapters/claude-code/SKILL.md` (with `<module-path>` substituted) to `~/.claude/skills/twincat-automation/`, written as UTF-8 without BOM:
 
-2. Or symlink if working from this repo:
-   ```bash
-   ln -s $(pwd)/adapters/claude-code/.claude/skills/twincat .claude/skills/twincat
-   ```
+```powershell
+pwsh ./TwinCATSetup-Claude.ps1
+```
+
+Check whether the installed copy still matches the repo (read-only, exit code 0 = match, 1 = mismatch):
+
+```powershell
+pwsh ./TwinCATSetup-Claude.ps1 -Verify
+```
+
+Uninstall: `pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
+
+When something fails, read `docs/troubleshooting.md` first (error code table, lifecycle order, environment matrix).
 
 ## Usage
 

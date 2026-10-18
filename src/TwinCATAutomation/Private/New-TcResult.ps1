@@ -10,6 +10,9 @@ function New-TcResult {
         Error message for failed operations.
     .PARAMETER ErrorCode
         Error code for failed operations.
+    .PARAMETER Hint
+        Optional next-action hint for failed operations. Emitted as error.hint
+        only when non-empty, so the existing JSON shape is unchanged otherwise.
     #>
     [CmdletBinding()]
     param(
@@ -23,7 +26,10 @@ function New-TcResult {
         [string]$ErrorMessage,
 
         [Parameter()]
-        [string]$ErrorCode
+        [string]$ErrorCode,
+
+        [Parameter()]
+        [string]$Hint
     )
 
     if ($Success) {
@@ -33,12 +39,16 @@ function New-TcResult {
         }
     }
     else {
+        $errorObj = [PSCustomObject]@{
+            message = $ErrorMessage
+            code    = $ErrorCode
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Hint)) {
+            $errorObj | Add-Member -NotePropertyName 'hint' -NotePropertyValue $Hint
+        }
         $result = [PSCustomObject]@{
             success = $false
-            error   = [PSCustomObject]@{
-                message = $ErrorMessage
-                code    = $ErrorCode
-            }
+            error   = $errorObj
         }
         if ($null -ne $Data) {
             $result | Add-Member -NotePropertyName 'data' -NotePropertyValue $Data

@@ -11,8 +11,8 @@ function Invoke-TcTest {
         [PSCustomObject]$TestCase
     )
 
-    try { Assert-TcAdsConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    try { $null = Ensure-TcAdsConnection } catch {
+        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
     $startTime = [DateTime]::Now

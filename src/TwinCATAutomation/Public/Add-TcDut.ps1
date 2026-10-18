@@ -44,8 +44,10 @@ function Add-TcDut {
     }
 
     try {
-        $plcConfig = $sm.LookupTreeItem('TIPC')
-        $plcProject = $plcConfig.Child(1)
+        $plcProject = Invoke-TcComRetry -OperationName 'Lookup PLC project' -ScriptBlock {
+            $plcConfig = $sm.LookupTreeItem('TIPC')
+            Write-Output -NoEnumerate $plcConfig.Child(1)
+        }
 
         # Build declaration
         switch ($DutType) {
@@ -83,9 +85,9 @@ function Add-TcDut {
 
         $declXml = "<Declaration><![CDATA[$decl]]></Declaration>"
         $subType = $dutSubTypes[$DutType]
-        $newItem = $plcProject.CreateChild($Name, $subType, '', $declXml)
+        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $plcProject.CreateChild($Name, $subType, '', $declXml) }
 
-        $itemPath = try { $newItem.PathName } catch { '' }
+        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             name    = $Name
             dutType = $DutType
@@ -93,6 +95,6 @@ function Add-TcDut {
         })
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to add DUT: $_" -ErrorCode 'DUT_CREATE_FAILED'
+        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'DUT_CREATE_FAILED' -MessagePrefix 'Failed to add DUT'
     }
 }
