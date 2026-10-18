@@ -50,8 +50,17 @@
     },
     {
       "name": "BuildProject",
-      "description": "Build PLC project and return results",
+      "description": "Build PLC project and return results (data.buildSucceeded, data.codeErrors from the XAE Error List)",
       "parameters": {}
+    },
+    {
+      "name": "GetBuildErrors",
+      "description": "Read the compiler messages shown in the XAE Error List window (UI Automation): counts plus errors[] with code/description/file/line",
+      "parameters": {
+        "IncludeWarnings": { "type": "boolean", "required": false },
+        "IncludeMessages": { "type": "boolean", "required": false },
+        "TimeoutSec": { "type": "integer", "description": "Hard limit for the UI Automation scan (5-600)", "required": false, "default": 30 }
+      }
     },
     {
       "name": "EnableConfig",

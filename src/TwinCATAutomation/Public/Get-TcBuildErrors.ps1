@@ -1,0 +1,159 @@
+function Get-TcBuildErrors {
+    <#
+    .SYNOPSIS
+        Reads the compiler messages shown in the IDE "Error List" window (errors, and
+        optionally warnings / messages) via UI Automation.
+    .DESCRIPTION
+        The TwinCAT PLC compiler does not report through DTE (ErrorList.ErrorItems and
+        OutputWindow stay empty), so the only source is the Error List tool window of
+        the XAE. The window is made visible with View.ErrorList, then a UI Automation
+        scan (separate STA runspace, hard -TimeoutSec) reads
+          - the summary buttons ("9 Errors", "8 Warnings", "0 of 10 Messages") -> counts
+          - every row of the (virtualised) grid, scrolling page by page, de-duplicated
+            on description+project+file+line.
+        Severity is isolated by toggling the summary buttons one at a time (the row icon
+        has no readable name); the original button states are restored afterwards.
+        The TwinCAT error code (Cxxxx / SAxxxx) is parsed from the description when it
+        is part of it; the IDE's own "Code" column is used when that column is shown.
+        Requires the IDE process id stored by Connect-TcIde and a visible Error List
+        (not auto-hidden); otherwise ERRORLIST_UNAVAILABLE is returned.
+    .PARAMETER IncludeWarnings
+        Also read warning rows (data.warnings).
+    .PARAMETER IncludeMessages
+        Also read message rows (data.messages).
+    .PARAMETER TimeoutSec
+        Hard limit for the UI Automation scan. Default 30.
+    .OUTPUTS
+        data.counts      @{ errors; warnings; messages } from the summary buttons
+        data.errors      [ @{ severity; code; description; project; file; line; column } ]
+        data.warnings    same shape, only with -IncludeWarnings
+        data.messages    same shape, only with -IncludeMessages
+        data.truncated   $true when not every row could be read (no ScrollPattern / cap)
+        data.source      'ErrorList(UIA)'
+        data.severityUnknown  $true when the rows could not be assigned a severity (the
+                         filter buttons were not toggleable and more than one is on);
+                         those rows are then in data.unclassified, NOT in data.errors
+        data.unclassified  rows of unknown severity (only when there are any)
+        ERRORLIST_UNAVAILABLE is also returned when the previous scan has not finished
+        yet (timed-out UIA thread still running; $script:TcErrorListScanBusy).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [switch]$IncludeWarnings,
+
+        [Parameter()]
+        [switch]$IncludeMessages,
+
+        [Parameter()]
+        [ValidateRange(5, 600)]
+        [int]$TimeoutSec = 30
+    )
+
+    try { Assert-TcConnection } catch {
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+
+    $idePid = 0
+    if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
+    if ($idePid -le 0) {
+        return New-TcResult -Success $false `
+            -ErrorMessage 'IDE process id unknown (Connect-TcIde could not determine it); the Error List cannot be located.' `
+            -ErrorCode 'NOT_CONNECTED' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED')
+    }
+    if ($null -eq (Get-Process -Id $idePid -ErrorAction SilentlyContinue)) {
+        return New-TcResult -Success $false -ErrorMessage "IDE process $idePid no longer exists." -ErrorCode 'NOT_CONNECTED' `
+            -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED')
+    }
+
+    # A previous scan that timed out may still be stuck inside UIA on its STA thread;
+    # a second scan would compete for the same window (and toggle the same buttons).
+    if ($script:TcErrorListScanBusy) {
+        $stillRunning = Clear-TcUiaAbandonedScans
+        if ($stillRunning -gt 0) {
+            return New-TcResult -Success $false `
+                -ErrorMessage "ERRORLIST_UNAVAILABLE: the previous Error List scan has not finished yet ($stillRunning UIA thread(s) still running after a timeout); retry later or reconnect the IDE." `
+                -ErrorCode 'ERRORLIST_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') `
+                -Data ([PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $true })
+        }
+    }
+
+    # Make sure the tool window is shown (auto-hidden / closed windows are invisible to UIA).
+    try {
+        Invoke-TcComRetry -MaxRetries 2 -OperationName 'View.ErrorList' -TimeoutSec 30 -ScriptBlock {
+            $script:TcDte.ExecuteCommand('View.ErrorList')
+        } | Out-Null
+        Start-Sleep -Milliseconds 300
+    }
+    catch {
+        Write-Verbose "Get-TcBuildErrors: View.ErrorList failed ($($_.Exception.Message)); reading whatever is visible."
+    }
+
+    $timedOut = $false
+    $scanError = $null
+    # @(): a single PSCustomObject has no usable .Count in PS 5.1
+    $out = @(Invoke-TcUiaScan -Script $script:TcUiaErrorListScan -TimeoutSec $TimeoutSec `
+        -Arguments @($idePid, $true, [bool]$IncludeWarnings, [bool]$IncludeMessages, 2000, 150) `
+        -TimedOut ([ref]$timedOut) -ErrorOut ([ref]$scanError))
+
+    $scan = $null
+    if ($out.Count -gt 0) { $scan = $out[$out.Count - 1] }
+
+    if ($timedOut -or $null -eq $scan -or -not $scan.Found) {
+        $why = if ($timedOut) { "UI Automation scan did not finish within $TimeoutSec s" }
+               elseif ($null -ne $scanError) { "UI Automation scan failed: $scanError" }
+               elseif ($null -ne $scan -and $scan.Notes.Count -gt 0) { [string]($scan.Notes -join '; ') }
+               else { 'Error List window not found in the IDE process' }
+        $data = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)' }
+        if ($null -ne $scan) { $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) }
+        return New-TcResult -Success $false -ErrorMessage "ERRORLIST_UNAVAILABLE: $why" -ErrorCode 'ERRORLIST_UNAVAILABLE' `
+            -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') -Data $data
+    }
+
+    $errors = New-Object System.Collections.Generic.List[object]
+    $warnings = New-Object System.Collections.Generic.List[object]
+    $messages = New-Object System.Collections.Generic.List[object]
+    $unclassified = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($scan.Rows)) {
+        $item = ConvertTo-TcErrorListItem -Row $row
+        switch ($item.severity) {
+            'Error'   { $errors.Add($item) }
+            'Warning' { $warnings.Add($item) }
+            'Message' { $messages.Add($item) }
+            default   { $unclassified.Add($item) }   # severity not isolatable: never report as errors
+        }
+    }
+    $severityUnknown = ($unclassified.Count -gt 0 -and ($errors.Count + $warnings.Count + $messages.Count) -eq 0)
+
+    $counts = [PSCustomObject]@{
+        errors   = if ($null -ne $scan.Counts -and $null -ne $scan.Counts.errors) { [int]$scan.Counts.errors } else { $errors.Count }
+        warnings = if ($null -ne $scan.Counts -and $null -ne $scan.Counts.warnings) { [int]$scan.Counts.warnings } else { $null }
+        messages = if ($null -ne $scan.Counts -and $null -ne $scan.Counts.messages) { [int]$scan.Counts.messages } else { $null }
+    }
+
+    # .ToArray(): @(<generic List>) inside a [PSCustomObject]@{} literal fails in PS 5.1
+    # ("argument types incompatible")
+    $data = [PSCustomObject]@{
+        counts    = $counts
+        errors    = $errors.ToArray()
+        truncated = [bool]$scan.Truncated
+        source    = 'ErrorList(UIA)'
+    }
+    if ($IncludeWarnings) { $data | Add-Member -NotePropertyName 'warnings' -NotePropertyValue $warnings.ToArray() }
+    if ($IncludeMessages) { $data | Add-Member -NotePropertyName 'messages' -NotePropertyValue $messages.ToArray() }
+    if (-not $scan.ToggleUsed) {
+        $data | Add-Member -NotePropertyName 'severityIsolated' -NotePropertyValue $false
+    }
+    if ($unclassified.Count -gt 0) {
+        $data | Add-Member -NotePropertyName 'unclassified' -NotePropertyValue $unclassified.ToArray()
+    }
+    if ($severityUnknown) {
+        $data | Add-Member -NotePropertyName 'severityUnknown' -NotePropertyValue $true
+    }
+    if ($VerbosePreference -ne 'SilentlyContinue') {
+        $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes)
+        $data | Add-Member -NotePropertyName 'columns' -NotePropertyValue @($scan.Headers)
+    }
+
+    New-TcResult -Success $true -Data $data
+}

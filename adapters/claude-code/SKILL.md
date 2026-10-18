@@ -20,7 +20,7 @@ Import-Module "<module-path>" -Force
 # 1. 連 IDE + 開 solution(多實例時依 -SolutionPath 挑;data.candidates[] 列出全部)
 $r = Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
-# 2. Build(失敗回 BUILD_FAILED,只有錯誤數;訊息看 IDE Error List)
+# 2. Build(失敗回 BUILD_FAILED;data.errorItems[] 是 Error List 的錯誤明細:code/description/file/line)
 Build-TcProject
 
 # 3. Activate 一步到位:Config -> Activate -> 等系統 Run -> Login+Download -> 等 851 -> PLC Run -> 等 851 Run
@@ -54,7 +54,7 @@ Connect-TcAds                       # 先連 ADS,Set-TcPlcState 沒連線會回 
 Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_TIMEOUT);PLC 未下載回 PLC_NOT_LOADED
 ```
 
-## Cmdlet 清單(34)
+## Cmdlet 清單(35)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -75,7 +75,8 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
-| `Build-TcProject` | Build(COM busy 自動重試) |
+| `Build-TcProject` | Build(COM busy 自動重試);data:`errors`(Error List 錯誤數)、`failedProjects`(LastBuildInfo)、`errorItems[]`(severity/code/description/project/file/line/column) |
+| `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`(含 `-IncludeWarnings` → `warnings[]`、`-IncludeMessages` → `messages[]`)、`truncated`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
 | `Set-TcTarget -AmsNetId <id>` | 設定 target system |
 | `Enable-TcConfig [-Force] [-NoLogin] [-TimeoutSec <n>]` | Activate;-Force = 完整 Config→Run→Login→PLC Run,-TimeoutSec 為總上限 |
 | `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
@@ -146,7 +147,8 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `AMS_NETID_REQUIRED` | 沒有 IDE 連線可推 AmsNetId,又沒給 `-AmsNetId` | `Connect-TcIde -SolutionPath <sln>`,AmsNetId 自動偵測 |
 | `PROJECT_OPEN_TIMEOUT` | Solution 在時限內沒載完:.sln 不含 TwinCAT 專案,或 XAE 被 dialog 擋 | 關 dialog,重跑 `Connect-TcIde -SolutionPath <sln>` |
 | `SYSTEM_STATE_TIMEOUT` | `Set-TcSystemState` 輪詢逾時,系統沒切到目標狀態 | `Get-TcSystemState` 看目前狀態;檢查 XAE / TwinCAT System Service 錯誤;UmRT 可能要重啟 `TcSystemServiceUm`。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認 |
-| `BUILD_FAILED` | 編譯錯誤;data 只有錯誤數,沒有訊息 | 在 IDE Error List 看原因(模組目前讀不到),修 code 後 `Build-TcProject` |
+| `BUILD_FAILED` | 編譯錯誤(`data.failedProjects` > 0);`error.message` 含前 3 筆錯誤摘要,`data.errorItems[]` 是 Error List 全部錯誤(code/description/project/file/line) | 看 `data.errorItems`,修 code 後 `Build-TcProject`;不要在沒改東西的情況下重跑。若 `data.errorListError` = `ERRORLIST_UNAVAILABLE`,`errors` 退回 LastBuildInfo,改手動看 Error List |
+| `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
 | `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
@@ -177,7 +179,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 
 | 視窗 | 何時出現 | 解法 |
 |---|---|---|
-| `Assertion Failed: Abort=Quit, Retry=Debug, Ignore=Continue` | XAE 反覆開關 solution 後,Build 時(2026-10-18 實測:前一輪正常 Quit 後,下一輪 Build 幾乎必出;Clean 無效) | 關掉 IDE,把 PLC 專案目錄下的 `_CompileInfo` 資料夾改名或刪除(IDE 會重建),再開 solution Build。Build 前 `Get-TcIdeModalDialog` 會偵測到並回 `IDE_MODAL_DIALOG` |
+| `Assertion Failed: Abort=Quit, Retry=Debug, Ignore=Continue` | Build 時 CODESYS 優化器處理 visu 元素的內部錯誤(NullReference / DivideByZero),**間歇性**:反覆開關 solution 後、或全新專案第一次全編譯都可能出;Clean 無效,清 `_CompileInfo` 也不保證 | 這個 modal 會讓 DTE 呼叫無限阻塞,只能 `Stop-Process` 該 IDE,重開 solution 再 Build(通常第二次就過)。Build 前 `Get-TcIdeModalDialog` 會偵測到並回 `IDE_MODAL_DIALOG` |
 | Microsoft Visual Studio 帳戶設定 | VS2022 未登入時 | 登入一次,或手動關閉視窗 |
 | `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動 | 看 XAE Output / Error List;UmRT 多半是 license 或 I/O 設定問題 |
 | Trial license security code | 7 天 trial 到期或首次啟用 | 需人工輸入驗證碼,模組無法代勞 |
@@ -200,6 +202,6 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 5. **`Get/Write-TcPouCode` 用 `-PouPath`**:格式 `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`。
 6. **UmRT 假 Run**:本機 UmRT 跑約 30 分鐘後 task 可能停止循環但 ADS 仍顯示 Run;驗證時讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就是停了,重啟 `TcSystemServiceUm` 後重做 `Enable-TcConfig -Force`。
 7. **UmRT 不要 Reset**:對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm`,要手動重啟 service;要清狀態改用 Stop → `Enter-TcPlcOnline` 重新 download。
-8. **Build 失敗只回錯誤數**:錯誤訊息要在 IDE 的 Error List 看(模組讀不到,屬下一階段);不要盲目重跑 Build。
+8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
 9. **重新 download 後 index offset 會變**:不要快取 symbol 的 indexGroup/indexOffset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp`。
 10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。

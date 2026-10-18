@@ -46,7 +46,7 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - **Write MAIN-level vars for FB testing** — PLC overwrites `VAR_INPUT` every scan cycle. Write standalone variables in MAIN that feed into FB calls.
 - **Correct lifecycle order**: Build -> Activate -> Login -> ADS Connect -> Start PLC -> Test (ADS port 851 only exists after Login+Download)
 
-## Available Commands (34)
+## Available Commands (35)
 
 ### Connection
 - `Connect-TcIde [-SolutionPath <path>]` — Connect to IDE
@@ -68,7 +68,8 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - `Get-TcProjectTree` — Get project structure
 
 ### Build & Deploy
-- `Build-TcProject` — Build (auto-retry on RPC busy)
+- `Build-TcProject` — Build (auto-retry on RPC busy); `data.errorItems[]` = Error List errors (description/file/line)
+- `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages]` — Read the XAE Error List via UI Automation
 - `Enable-TcConfig [-Force]` — Activate config via ADS
 - `Enter-TcPlcOnline` — Login + Download (no dialogs)
 - `Exit-TcPlcOnline` — Logout

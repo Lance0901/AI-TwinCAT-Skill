@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 34 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 35 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -80,7 +80,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（34 個）
+## 所有指令（35 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -110,7 +110,8 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### 建置與部署
 | 指令 | 說明 |
 |------|------|
-| `Build-TcProject` | 建置（RPC 忙碌時自動重試） |
+| `Build-TcProject` | 建置（RPC 忙碌時自動重試）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
+| `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
 | `Enter-TcPlcOnline` | 登入 + 下載程式（Login(3)，無對話框） |
 | `Exit-TcPlcOnline` | 登出 PLC |

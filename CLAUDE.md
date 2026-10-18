@@ -16,7 +16,7 @@ The full PLC lifecycle runs without any dialog popups:
 # 1. Connect to IDE
 Connect-TcIde
 
-# 2. Build
+# 2. Build (on BUILD_FAILED see data.errorItems: description/file/line read from the XAE Error List)
 Build-TcProject
 
 # 3. Activate, one step: Config → Activate → wait Run → Login+Download → wait port 851 → PLC Run
@@ -37,7 +37,7 @@ Read-TcVariable -Path "MAIN.nCounter"
 - **All commands return JSON**: `{"success": true, "data": {...}}` or `{"success": false, "error": {"message": "...", "code": "...", "hint": "..."}}`. `error.hint` is optional; when present it is the suggested next action.
 - **No dialogs**: `Enable-TcConfig -Force` uses ADS WriteControl (not StartRestartTwinCAT). `Enter-TcPlcOnline` uses `Login(3)` flag. All DTE/COM calls retry 1/2/4/8/16s on RPC busy and return `IDE_BUSY` when exhausted.
 - **No blind waits**: `Set-TcSystemState`, `Enable-TcConfig -Force` and `Invoke-TcTestCycle` poll until the target state is reached. Do not add `Start-Sleep`.
-- **Troubleshooting**: `docs/troubleshooting.md` — error code table, correct lifecycle order, environment matrix, known limits (UmRT fake Run, Reset kills `TcSystemServiceUm`, build messages not readable yet).
+- **Troubleshooting**: `docs/troubleshooting.md` — error code table, correct lifecycle order, environment matrix, known limits (UmRT fake Run, Reset kills `TcSystemServiceUm`, compiler codes only inferred from Error List text).
 
 ## Tool-Specific Adapters
 
@@ -47,7 +47,7 @@ Read-TcVariable -Path "MAIN.nCounter"
 | Codex | `adapters/codex/tools.json` |
 | Antigravity | `adapters/antigravity/plugin.yaml` |
 
-## Available Commands (34)
+## Available Commands (35)
 
 See `adapters/claude-code/SKILL.md` for the full list with parameters, or run:
 ```powershell

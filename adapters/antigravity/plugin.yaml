@@ -56,7 +56,22 @@ actions:
         required: false
 
   - name: BuildProject
-    description: Build PLC project
+    description: Build PLC project (data.buildSucceeded, data.codeErrors from the XAE Error List)
+
+  - name: GetBuildErrors
+    description: Read the compiler messages of the XAE Error List window (UI Automation)
+    parameters:
+      IncludeWarnings:
+        type: boolean
+        required: false
+      IncludeMessages:
+        type: boolean
+        required: false
+      TimeoutSec:
+        type: integer
+        required: false
+        default: 30
+        description: Hard limit for the UI Automation scan (5-600)
 
   - name: EnableConfig
     description: Activate TwinCAT configuration. Use Force for full Config->Activate->Run via ADS (no dialogs)
