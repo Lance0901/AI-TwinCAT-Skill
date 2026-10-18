@@ -10,9 +10,8 @@
 #
 # The scan heuristics are COPIED from $script:TcUiaDialogScan in
 # src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1 and must be kept in sync with it
-# (difference: the main window is always excluded by title, and the known-dialog title list also
-# contains 'TwinCAT PLC Control', seen on a real machine, and when no Text descendant is found the
-# dialog body is read from Pane / Edit / Document descendants, which Win11 message boxes use).
+# (difference: the main window is always excluded by title, as the probe has no window handle, and
+# the known-dialog title list also contains 'TwinCAT PLC Control', seen on a real machine).
 #
 # Windows PowerShell 5.1, ASCII only, no BOM.
 param(
@@ -108,9 +107,10 @@ $scan = {
             if ($sb.Length -ge $MaxText) { break }
         }
         if ($sb.Length -eq 0) {
-            # Windows 11 message boxes (and some WinForms dialogs) expose the message as a Pane /
-            # Edit / Document, not as Text (Get-TcIdeModalDialog does not do this yet). Buttons,
-            # the title bar and the title itself are skipped so the text stays the message body.
+            # Windows 11 message boxes (#32770, e.g. 'TwinCAT PLC Control') and some WinForms
+            # dialogs expose the message as a Pane (ClassName 'Static') / Edit / Document, not
+            # as Text. Buttons, the title bar and the title itself are skipped so the text
+            # stays the message body.
             $all = $chosen.Element.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
             $bodyTypes = @([System.Windows.Automation.ControlType]::Pane, [System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::Document)
             # Buttons (OK / Abort / Retry ...) are exposed as Pane with ClassName 'Button' on such

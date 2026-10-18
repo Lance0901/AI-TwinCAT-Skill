@@ -12,6 +12,10 @@
 #   - windows reporting WindowPattern.IsModal win; otherwise a Win32 dialog (#32770)
 #     or a title matching the known dialogs (Assertion Failed, account settings,
 #     fatal error, license security code) is accepted; floating tool windows are not.
+#   - the dialog text is read from Text descendants; when there are none (Win11 message
+#     boxes expose the body as Pane/Static and the buttons as Pane/Button) it falls back
+#     to Pane / Edit / Document descendants, skipping buttons and the title.
+# mcp-server/bridge/modal-probe.ps1 carries a copy of this scan: keep the two in sync.
 $script:TcUiaDialogScan = {
     param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText)
 
@@ -73,6 +77,31 @@ $script:TcUiaDialogScan = {
             if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
             $null = $sb.Append($tn.Trim())
             if ($sb.Length -ge $MaxText) { break }
+        }
+        if ($sb.Length -eq 0) {
+            # Windows 11 message boxes (#32770, e.g. 'TwinCAT PLC Control') and some WinForms
+            # dialogs expose the message as a Pane (ClassName 'Static') / Edit / Document, not
+            # as Text. Buttons, the title bar and the title itself are skipped so the text
+            # stays the message body.
+            $all = $chosen.Element.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            $bodyTypes = @([System.Windows.Automation.ControlType]::Pane, [System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::Document)
+            # Buttons (OK / Abort / Retry ...) are exposed as Pane with ClassName 'Button' on such
+            # dialogs; real Button elements are remembered by caption so a wrapping Pane is skipped too.
+            $buttonNames = @{}
+            foreach ($t in $all) {
+                try { if ($t.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $buttonNames[([string]$t.Current.Name).Trim()] = $true } } catch { }
+            }
+            foreach ($t in $all) {
+                $tn = $null
+                $tt = $null
+                $tc = $null
+                try { $tt = $t.Current.ControlType; $tn = [string]$t.Current.Name; $tc = [string]$t.Current.ClassName } catch { continue }
+                if ($bodyTypes -notcontains $tt -or $tc -eq 'Button') { continue }
+                if ([string]::IsNullOrWhiteSpace($tn) -or $tn.Trim() -eq $chosen.Title -or $buttonNames.ContainsKey($tn.Trim())) { continue }
+                if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
+                $null = $sb.Append($tn.Trim())
+                if ($sb.Length -ge $MaxText) { break }
+            }
         }
         $text = $sb.ToString()
         if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
