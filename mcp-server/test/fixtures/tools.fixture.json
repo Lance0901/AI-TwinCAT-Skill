@@ -1,0 +1,55 @@
+{
+  "generatedAt": "2026-10-18T00:00:00Z",
+  "moduleVersion": "0.1.0",
+  "tools": [
+    {
+      "name": "ConnectIde",
+      "cmdlet": "Connect-TcIde",
+      "description": "Connect to a running TwinCAT XAE (or launch one).",
+      "timeoutMs": 180000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ProgId": { "type": "string" },
+          "SolutionPath": { "type": "string" },
+          "NoLaunch": { "type": "boolean" }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ReadVariable",
+      "cmdlet": "Read-TcVariable",
+      "description": "Read PLC variables over ADS.",
+      "timeoutMs": 120000,
+      "annotations": { "readOnlyHint": true },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "Path": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "TimeoutMs": { "type": "integer", "minimum": 1, "maximum": 600000 },
+          "Mode": { "type": "string", "enum": ["Value", "Raw"] }
+        },
+        "required": ["Path"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "BuildProject",
+      "cmdlet": "Build-TcProject",
+      "description": "Build the PLC project. Hang/Crash/Delay are mock-bridge test switches.",
+      "timeoutMs": 2000,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "Hang": { "type": "boolean" },
+          "Crash": { "type": "boolean" },
+          "DelayMs": { "type": "integer" }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

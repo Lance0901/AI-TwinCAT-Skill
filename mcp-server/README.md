@@ -1,0 +1,305 @@
+# TwinCAT Automation MCP server
+
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 35 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
+
+Exposes the `TwinCATAutomation` module (35 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| Windows 10/11 | COM Automation Interface and `TwinCAT.Ads.dll` are Windows-only |
+| Node.js >= 18 | `node --version` |
+| Windows PowerShell 5.1 | `powershell.exe`, **not** `pwsh`. Default path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`; override with `TWINCAT_MCP_POWERSHELL` |
+| TwinCAT 3.1 XAE | Verified on 4026 (32-bit XAE Shell, 64-bit XAE Shell, VS2022 integration); 4024 projects open in a 4026 XAE |
+| Module path | `src/TwinCATAutomation/TwinCATAutomation.psm1`; resolved relative to the server by default, override with `TWINCAT_MODULE_PATH` |
+
+## Install
+
+```powershell
+cd mcp-server
+npm install
+npm test          # unit tests against a mock bridge, no TwinCAT needed
+```
+
+## Configure
+
+### Claude Desktop
+
+`%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "twincat": {
+      "command": "node",
+      "args": ["C:\\path\\to\\2026-AI-TwinCAT-Skill\\mcp-server\\index.js"],
+      "env": {
+        "TWINCAT_MODULE_PATH": "C:\\path\\to\\2026-AI-TwinCAT-Skill\\src\\TwinCATAutomation\\TwinCATAutomation.psm1"
+      }
+    }
+  }
+}
+```
+
+`TWINCAT_MODULE_PATH` can be omitted when the server runs from inside this repo; it then defaults to `../src/TwinCATAutomation/TwinCATAutomation.psm1` relative to `mcp-server/`. Restart Claude Desktop after editing the file.
+
+### Claude Code
+
+Project-level `.mcp.json` at the repo root (already checked in):
+
+```json
+{ "mcpServers": { "twincat": { "command": "node", "args": ["mcp-server/index.js"] } } }
+```
+
+Or register it from the CLI:
+
+```powershell
+claude mcp add twincat -- node mcp-server/index.js
+```
+
+### Any other MCP client
+
+Generic stdio launch: command `node`, argument `<repo>/mcp-server/index.js`, optional `env` from the table below. The server speaks MCP over stdin/stdout and logs only to stderr.
+
+## Environment variables
+
+All variables are read in `lib/config.js`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TWINCAT_MODULE_PATH` | `<repo>/src/TwinCATAutomation/TwinCATAutomation.psm1` | Module imported by the PowerShell bridge |
+| `TWINCAT_MCP_POWERSHELL` | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | PowerShell 5.1 executable to spawn |
+| `TWINCAT_MCP_VERBOSE` | unset | `1` forwards `Write-Verbose` output as `debug` log notifications and echoes bridge stderr to the server's stderr |
+| `TWINCAT_MCP_EAGER` | unset | `1` starts the PowerShell bridge at server start instead of on the first tool call |
+| `TWINCAT_MCP_TOOLS_JSON` | `<mcp-server>/tools.json` | Alternate tool catalog |
+| `TWINCAT_MCP_PROGRESS_INTERVAL_MS` | `10000` | How often `notifications/progress` is sent during a tool call when the client supplied a `progressToken` (see [Client request timeout](#client-request-timeout)) |
+
+Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock bridge in `test/fixtures/`):
+
+| Variable | Purpose |
+|---|---|
+| `TWINCAT_MCP_BRIDGE_COMMAND` | Executable to spawn instead of `powershell.exe` |
+| `TWINCAT_MCP_BRIDGE_ARGS` | JSON array of arguments for that executable |
+| `TWINCAT_MCP_SKIP_PID_CHECK` | `1` skips the `tasklist` check that `data.lastIde.ideProcessId` is still a live `TcXaeShell.exe` / `devenv.exe` before it is named in a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` hint (mock IDE pids) |
+
+Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
+
+## Tools (39)
+
+Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Parameters are the cmdlet parameters, passed as JSON (`switch` → boolean, `string[]` → array, `hashtable` → object; object keys must be non-empty and must not differ only in case, since PowerShell 5.1 cannot convert such JSON). `Timeout` is the per-call limit after which the bridge is killed; for tools with `TimeoutSec` / `TimeoutMs` / `DurationMs` parameters it grows to at least that value plus 30 s, capped at 2 h (schema `minimum` / `maximum` are enforced first).
+
+### Composite tools
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `RunLifecycle` | composite | — | 1500 s | `ConnectIde` → `BuildProject` (unless `SkipBuild`) → `EnableConfig` (`Force`; `NoLogin`, `TimeoutSec` 10..3600 optional) → `ConnectAds`; stops at the first failing step, `data.steps[]` / `data.failedStep` tell where. **Destructive** (`annotations.destructiveHint`): restarts TwinCAT, downloads and starts the PLC program; confirm with the user first |
+| `QuickRead` | composite | `Path` | 120 s | `ReadVariable`; on `NOT_CONNECTED` runs `ConnectAds` (auto-detected AmsNetId) and reads again; `data.connectedOnDemand`. Read-only |
+| `GetStatus` | composite | — | 120 s | Bridge state (IDE/ADS connected, AmsNetId) + `GetIdeInfo` + `GetSystemState` + `GetPlcState`; `NOT_CONNECTED` before `ConnectIde`. Read-only |
+| `GetIdeModalDialog` | composite (module-private `Get-TcIdeModalDialog`) | — | 90 s | Probe the XAE window for a blocking modal dialog; `data.dialog` is `null` or `{title, text}`. Uses the IDE pid from `ConnectIde`; after a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` it falls back to `data.lastIde.ideProcessId`, and `ProcessId` (integer ≥ 1) overrides both. Read-only |
+
+Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools/list` when `tools.json` defines them; the composites above set their own.
+
+### Connection
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `ConnectIde` | `Connect-TcIde` | — | 180 s | Attach to a running XAE / VS (ROT), launch one if none; optional `SolutionPath`, `ProgId`, `NoLaunch`; returns `ideProcessId`, `amsNetId` |
+| `DisconnectIde` | `Disconnect-TcIde` | — | 120 s | Release DTE/COM references; `Quit=true` also closes the IDE (only one that `ConnectIde` launched) |
+| `GetIdeInfo` | `Get-TcIdeInfo` | — | 120 s | IDE version, edition, open solution; cheap connectivity check |
+| `ConnectAds` | `Connect-TcAds` | — | 120 s | Open ADS; `AmsNetId` auto-detected from the IDE target, `Port` default 851 |
+| `DisconnectAds` | `Disconnect-TcAds` | — | 120 s | Close ADS and forget the endpoint (disables auto-reconnect) |
+
+### Project
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `NewProject` | `New-TcProject` | `Name` | 120 s | Create a solution with a PLC project and MAIN |
+| `OpenProject` | `Open-TcProject` | `Path` | 180 s | Open a `.sln` and wait until the TwinCAT project is loaded |
+| `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Full project tree as JSON |
+| `AddPou` | `Add-TcPou` | `Name`, `Type` | 120 s | Add a Program / FunctionBlock / Function |
+| `AddGvl` | `Add-TcGvl` | `Name` | 120 s | Add a Global Variable List |
+| `AddDut` | `Add-TcDut` | `Name`, `DutType` | 120 s | Add a STRUCT / ENUM / ALIAS / UNION |
+| `AddLibrary` | `Add-TcLibrary` | `Name` | 120 s | Add a library reference |
+| `SetTarget` | `Set-TcTarget` | `AmsNetId` | 120 s | Set the target system AmsNetId |
+
+### Code
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `GetPouCode` | `Get-TcPouCode` | `PouName` | 120 s | Read declaration and implementation of a POU (`PouPath` = `TIPC^<Plc>^<Plc> Project^POUs^<Pou>`) |
+| `WritePouCode` | `Write-TcPouCode` | `PouName` | 120 s | Write `Declaration` and/or `Implementation` into a POU |
+
+### Build and deploy
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `BuildProject` | `Build-TcProject` | — | 600 s | Build and wait; on `BUILD_FAILED` read `data.errorItems[]` (description/file/line from the Error List) |
+| `GetBuildErrors` | `Get-TcBuildErrors` | — | 120 s | Read the XAE Error List via UI Automation (`IncludeWarnings`, `IncludeMessages`); English UI only |
+| `EnableConfig` | `Enable-TcConfig` | — | 600 s | Activate without dialogs; `Force=true` runs Config → Activate → Run → Login+Download → PLC Run, `NoLogin=true` stops after system Run; `TimeoutSec` default 120 |
+| `PlcLogin` | `Enter-TcPlcOnline` | — | 300 s | Login(3) + download, no dialogs |
+| `PlcLogout` | `Exit-TcPlcOnline` | — | 120 s | Logout, runtime keeps running |
+| `SendPlcProgram` | `Send-TcPlcProgram` | — | 300 s | Download the compiled program (alias of `PlcLogin`) |
+
+### Runtime
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `GetSystemState` | `Get-TcSystemState` | — | 120 s | TwinCAT Run/Config over port 10000; pass the `AmsNetId` from `ConnectIde` for a non-local target |
+| `SetSystemState` | `Set-TcSystemState` | `State` | 180 s | Switch Run/Config via ADS WriteControl and poll until reached |
+| `GetPlcState` | `Get-TcPlcState` | — | 120 s | PLC runtime state on the connected ADS port |
+| `SetPlcState` | `Set-TcPlcState` | `State` | 180 s | Run / Stop / Reset and wait; **Reset kills `TcSystemServiceUm` on UmRT** |
+
+### ADS variables
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; auto-reconnects after `EnableConfig` (`data.reconnected`) |
+| `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type |
+| `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll every `IntervalMs` for `DurationMs` and return samples (`Until` scriptblock not available over MCP) |
+| `GetSymbols` | `Get-TcSymbols` | — | 120 s | List PLC symbols, optional `Filter` substring |
+
+### I/O
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `IoScan` | `Invoke-TcIoScan` | — | 180 s | Scan EtherCAT devices into the I/O tree (target in Config) |
+| `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
+| `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O channel |
+
+### Testing
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `NewTestCase` | `New-TcTestCase` | `Name`, `Assertions` | 120 s | Build a test case object (`Setup` / `Teardown` writes, `Assertions` `{Path, Operator, Expected}`); no IDE/PLC access |
+| `RunTest` | `Invoke-TcTest` | `TestCase` | 120 s | Run one test case against the connected PLC |
+| `RunTestCycle` | `Invoke-TcTestCycle` | `TestCases` | 900 s | Build → Activate → Login → run all tests → Stop (`SkipBuild`, `KeepRunning`) |
+
+## Result format
+
+Every call returns a `CallToolResult` whose `content[0].text` is the module's raw JSON (`ConvertTo-Json -Depth 10`), `isError = !success`, and `structuredContent` is the same object:
+
+```json
+{ "success": true, "data": { "path": "MAIN.nCounter", "value": 42, "type": "UDINT", "reconnected": false } }
+{ "success": false, "error": { "code": "ADS_PORT_NOT_FOUND", "message": "...", "hint": "..." }, "data": { ... } }
+```
+
+Module error codes and `error.hint` pass through unchanged; the table is in [docs/troubleshooting.md](../docs/troubleshooting.md). Codes added by the server or bridge:
+
+| Code | Source | Meaning / next step |
+|---|---|---|
+| `INVALID_PARAMS` | server / bridge | Unknown parameter, wrong JSON type, missing required parameter, or a `ValidateSet` / `ValidateRange` violation |
+| `UNKNOWN_TOOL` | server | Tool name not in `tools.json` or the composite list |
+| `INVALID_CMDLET` | bridge | Cmdlet not exported by the module (names are never evaluated as script; not reachable through a well-formed `tools.json`) |
+| `BRIDGE_TIMEOUT` | server | Call exceeded its timeout; the PowerShell child was **killed and restarted, all IDE/ADS state is lost**. `data.lastIde` is the last successful `ConnectIde` (`{ideProcessId, selectedBy, solution}`, or `null`) and `data.bridgeRestarted` is `true`; `error.hint` names that IDE (see below) |
+| `BRIDGE_DIED` | server | The child exited while idle or mid-call; the next call restarts it. Same `data.lastIde` / `data.bridgeRestarted` / hint as `BRIDGE_TIMEOUT`. A message ending in `this call was not executed; safe to retry after reconnecting` means the call was still queued (behind a timed-out or crashed call, or during shutdown) and never reached PowerShell |
+| `CANCELLED` | server | The client cancelled the request (`notifications/cancelled`) while the call was still queued; nothing was executed. A call already handed to PowerShell cannot be cancelled and returns its real result |
+| `MODULE_IMPORT_FAILED` | server / bridge | `powershell.exe` could not be spawned, or `Import-Module` of `TWINCAT_MODULE_PATH` failed (check the path and that `powershell.exe` is 5.1) |
+| `INTERNAL_ERROR` | server | Unexpected exception inside the server or a composite step |
+| `NO_RESULT` | bridge | The cmdlet emitted no object with a `success` property |
+| `INVALID_REQUEST` | bridge | Malformed bridge request (not reachable through the MCP server) |
+
+`BRIDGE_TIMEOUT` and `BRIDGE_DIED` keep the identity of the IDE the bridge was talking to, because the restarted bridge no longer knows it (the IDE itself keeps running, usually behind a modal dialog). The server remembers `data.ideProcessId` / `selectedBy` / `solution` of the last successful `ConnectIde` (also when it ran inside `RunLifecycle`), forgets it as soon as a new `ConnectIde` starts and on a successful `DisconnectIde`. Before the pid goes into a hint it is checked with `tasklist`: it must still be a running `TcXaeShell.exe` / `devenv.exe`, otherwise `lastIde` is dropped (`null`) and the generic hint is used, so a recycled pid is never offered for `taskkill`. The hint depends on who opened the IDE:
+
+| `data.lastIde` | `error.hint` |
+|---|---|
+| `selectedBy == "launched"` | `The IDE (pid N, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID N /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.` |
+| any other `selectedBy` | `The IDE (pid N) was opened by the user; check its window for a modal dialog, dismiss it, then ConnectIde again.` |
+| `null` (no `ConnectIde` yet, or the pid is no longer an XAE) | the generic hint: check `GetIdeModalDialog` after `ConnectIde`, then `ConnectIde` again |
+
+```json
+{ "success": false,
+  "error": { "code": "BRIDGE_TIMEOUT", "message": "Build-TcProject did not finish within 600000 ms; PowerShell bridge killed",
+             "hint": "The IDE (pid 18324, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID 18324 /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it." },
+  "data": { "lastIde": { "ideProcessId": 18324, "selectedBy": "launched", "solution": "C:\\path\\to\\MyProject.sln" }, "bridgeRestarted": true } }
+```
+
+`GetIdeModalDialog` can inspect that IDE before reconnecting: without `ProcessId` it uses `data.lastIde.ideProcessId` whenever the restarted bridge has no pid of its own.
+
+## Client request timeout
+
+The server-side timeouts above only bound the PowerShell call. The MCP **client** has its own request timeout, and the MCP SDK default is **60 s**: `ConnectIde` (36–90 s when it has to launch XAE and open a solution), `BuildProject` and `EnableConfig` routinely exceed it, in which case the client reports a timeout while the server happily finishes the call (the next tool call then sees the finished state).
+
+To keep long calls alive the server sends `notifications/progress` every 10 s (`TWINCAT_MCP_PROGRESS_INTERVAL_MS`) **when the client supplied a `progressToken`** in the request (`params._meta.progressToken`); without a token nothing is sent. The notification carries `progress` = elapsed milliseconds (strictly increasing, no `total`) and `message` = `"<tool> running <n>s"`.
+
+Cancelling a request (`notifications/cancelled`) only helps while the call is still waiting in the queue: it is dropped with `CANCELLED`. Once the request has been written to PowerShell it runs to completion (a DTE/ADS call cannot be interrupted) and the result is returned as usual.
+
+| Client | How to survive a long call |
+|---|---|
+| `@modelcontextprotocol/sdk` client | `client.callTool(params, undefined, { onprogress: () => {}, resetTimeoutOnProgress: true, timeout: 900000 })` — `onprogress` makes the SDK attach a `progressToken`, `resetTimeoutOnProgress` restarts the timer on every progress notification |
+| Claude Code | Environment variable `MCP_TOOL_TIMEOUT` in milliseconds, e.g. `MCP_TOOL_TIMEOUT=900000` (set it in the shell that starts `claude`, or in `settings.json` `env`). `MCP_TIMEOUT` is the separate server-startup timeout |
+| Claude Desktop | No per-tool timeout setting is documented as of this writing. If a call is cut off, prefer the fine-grained tools (`ConnectIde`, `BuildProject`, `EnableConfig`, … as separate calls) over `RunLifecycle`, and call `GetStatus` afterwards: the bridge keeps running and finishes the call even when the client stopped waiting |
+
+## Typical session
+
+The tool names below are what Claude calls; each one is an independent MCP tool call and the bridge keeps the state in between.
+
+```
+GetStatus                                  -> NOT_CONNECTED, hint: Run ConnectIde first
+ConnectIde      {"SolutionPath": "C:\\path\\to\\MyProject.sln"}
+GetIdeModalDialog                          -> data.dialog == null (nothing blocking)
+BuildProject                               -> on BUILD_FAILED read data.errorItems
+EnableConfig    {"Force": true}            -> Config -> Activate -> Run -> Login+Download -> PLC Run
+ConnectAds                                 -> AmsNetId auto-detected
+ReadVariable    {"Path": ["MAIN.nCounter"]}
+WriteVariable   {"Path": "MAIN.bEnable", "Value": true}
+```
+
+Or in one call:
+
+```
+RunLifecycle    {"SolutionPath": "C:\\path\\to\\MyProject.sln"}
+QuickRead       {"Path": ["MAIN.nCounter"]}
+```
+
+Do not add waits between calls: `EnableConfig`, `SetSystemState`, `SetPlcState` and `RunTestCycle` poll until the target state is reached.
+
+## Logging
+
+| Module stream | MCP notification |
+|---|---|
+| `Write-Warning` | `notifications/message`, level `warning`, `logger: "twincat"` |
+| `Write-Verbose` / `Write-Debug` | level `debug`, only with `TWINCAT_MCP_VERBOSE=1` |
+| `Write-Information` | level `info` |
+| bridge stderr | level `error` |
+
+Log lines never end up inside the result object. The server itself logs to its own stderr only (Claude Desktop writes it to `%APPDATA%\Claude\logs\mcp-server-twincat.log`).
+
+## Known limits
+
+- A DTE call blocked by a modal dialog cannot be interrupted; it ends in `BRIDGE_TIMEOUT` and the bridge is killed, losing IDE and ADS state. The IDE process survives; `data.lastIde` / `error.hint` tell you which pid to inspect or kill. Check `GetIdeModalDialog` before `BuildProject` / `EnableConfig` when the IDE looks stuck. The list of known dialogs is in [docs/troubleshooting.md](../docs/troubleshooting.md).
+- MCP clients time out long calls on their side (SDK default 60 s); see [Client request timeout](#client-request-timeout).
+- `GetBuildErrors` (and the `errorItems` of `BuildProject`) need an English XAE UI; other languages return `ERRORLIST_UNAVAILABLE`.
+- One PowerShell session, one call at a time: concurrent tool calls are queued FIFO.
+- Cancellation (`notifications/cancelled`) is honoured only for calls still waiting in that queue (`CANCELLED`, nothing executed). A call that has already been sent to PowerShell cannot be interrupted: it runs to the end (build, activation, download included) and its result is returned; cancel it by waiting, not by assuming it stopped.
+- Per-call timeouts are capped at 2 h; `TimeoutSec` / `TimeoutMs` / `DurationMs` beyond the schema `maximum` are rejected with `INVALID_PARAMS`.
+- If the server process is killed (client crash, `taskkill` of `node`) while the bridge is inside a DTE call, that `powershell.exe` becomes an orphan until the call returns (or forever, behind a modal dialog); the next server start spawns a fresh bridge and does not clean the old one up. Look for `powershell.exe ... -File ...\bridge\bridge.ps1` in Task Manager.
+- An XAE that `ConnectIde` launched (`selectedBy: "launched"`) is **not** closed when the server exits; it keeps running with the solution open. Close it with `DisconnectIde {"Quit": true}` before the session ends, or kill the pid from `data.lastIde`.
+- `WatchVariable -Until` and any other `scriptblock` parameter are not exposed.
+- stdio transport only; Streamable HTTP is not provided yet.
+
+## Regenerate tools.json
+
+`tools.json` is generated from the module's cmdlet metadata. After changing a cmdlet's parameters:
+
+```powershell
+npm run generate-tools   # runs scripts/Export-ToolSchema.ps1 with powershell.exe
+npm test
+```
+
+Commit the regenerated `tools.json` together with the module change.
+
+## Architecture
+
+```
+MCP client (Claude Desktop / Claude Code)
+   │ stdio, JSON-RPC
+   ▼
+index.js            tools/list, tools/call, logging; validation + per-call timeout (lib/tools.js)
+   │ lib/bridge.js: newline-delimited JSON on stdin/stdout, FIFO queue, kill+restart on timeout
+   ▼
+powershell.exe -STA  bridge/bridge.ps1  → Import-Module TwinCATAutomation.psm1
+                                           holds DTE / ITcSysManager / TcAdsClient across calls
+```
+
+Composite tools (`lib/composites.js`) chain catalog tools through the same validation and timeout path. The wire protocol between Node and PowerShell, parameter conversion rules and the result/log line format are specified in [PROTOCOL.md](PROTOCOL.md).

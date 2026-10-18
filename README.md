@@ -221,6 +221,18 @@ This checks prerequisites and installs the skill + PowerShell module to `~/.gemi
 
 To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
+## MCP Server Setup (Claude Desktop / any MCP client)
+
+The same module is also available as an MCP server (stdio) exposing all 35 cmdlets plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+
+```powershell
+cd mcp-server
+npm install
+npm test          # no TwinCAT needed
+```
+
+Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [docs/setup-mcp.md](docs/setup-mcp.md) and [mcp-server/README.md](mcp-server/README.md).
+
 ## Changelog
 
 ### 2026-04-02
