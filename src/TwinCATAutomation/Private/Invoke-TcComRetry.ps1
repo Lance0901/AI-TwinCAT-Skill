@@ -74,6 +74,11 @@ function Invoke-TcComRetry {
             $__tcSync = [hashtable]::Synchronized(@{ Stop = $false; Dialog = $null; Error = $null })
             $__tcMainHwnd = [long]0
             if ($null -ne $script:TcIdeMainHwnd) { try { $__tcMainHwnd = [long]$script:TcIdeMainHwnd } catch { $__tcMainHwnd = 0 } }
+            if ($__tcMainHwnd -eq 0) {
+                # DTE.MainWindow.HWnd was 0 at connect time (fresh IDE); ask the process once and remember it.
+                try { $__tcMainHwnd = [long](Get-Process -Id $__tcIdePid -ErrorAction Stop).MainWindowHandle } catch { $__tcMainHwnd = 0 }
+                if ($__tcMainHwnd -ne 0) { $script:TcIdeMainHwnd = $__tcMainHwnd }
+            }
             $__tcWatchRs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
             $__tcWatchRs.ApartmentState = [System.Threading.ApartmentState]::STA
             $__tcWatchRs.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread

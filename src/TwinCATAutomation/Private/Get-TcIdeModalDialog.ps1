@@ -12,10 +12,14 @@
 #   - windows reporting WindowPattern.IsModal win; otherwise a Win32 dialog (#32770)
 #     or a title matching the known dialogs (Assertion Failed, account settings,
 #     fatal error, license security code) is accepted; floating tool windows are not.
+#   - a dialog OWNED by the main window (MessageBox(owner, ...)) is a UIA child of the main
+#     window, not of the desktop: when nothing was found at top level and the main window
+#     is disabled, its direct Window children are checked with the same rules.
 #   - the dialog text is read from Text descendants; when there are none (Win11 message
 #     boxes expose the body as Pane/Static and the buttons as Pane/Button) it falls back
 #     to Pane / Edit / Document descendants, skipping buttons and the title.
-# mcp-server/bridge/modal-probe.ps1 carries a copy of this scan: keep the two in sync.
+# mcp-server/bridge/modal-probe.ps1 dot-sources this file and runs this same scriptblock
+# (-ScanScript), so its parameter list and output shape are a contract.
 $script:TcUiaDialogScan = {
     param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText)
 
@@ -34,6 +38,7 @@ $script:TcUiaDialogScan = {
 
     $modalHit = $null
     $fallbackHit = $null
+    $mainEl = $null
     foreach ($w in $windows) {
         $cur = $null
         try { $cur = $w.Current } catch { continue }
@@ -42,8 +47,11 @@ $script:TcUiaDialogScan = {
         $hwnd = [long]$cur.NativeWindowHandle
         if ($cur.ControlType -ne [System.Windows.Automation.ControlType]::Window) { continue }
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
-        if ($MainHwnd -ne 0 -and $hwnd -eq $MainHwnd) { continue }
-        if ($MainHwnd -eq 0 -and $name -match $mainTitlePattern -and $className -ne '#32770') { continue }
+        if ($MainHwnd -ne 0 -and $hwnd -eq $MainHwnd) { $mainEl = $w; continue }
+        if ($MainHwnd -eq 0 -and $name -match $mainTitlePattern -and $className -ne '#32770') {
+            if ($null -eq $mainEl) { $mainEl = $w }
+            continue
+        }
         if ($cur.IsOffscreen) { continue }
 
         $isModal = $false
@@ -62,6 +70,48 @@ $script:TcUiaDialogScan = {
 
     $chosen = $modalHit
     if ($null -eq $chosen) { $chosen = $fallbackHit }
+
+    if ($null -eq $chosen) {
+        # Owned dialog: UIA puts a window OWNED by the main window (MessageBox(owner, ...)) under
+        # the main window, not under the desktop, so the loop above never sees it. The owner is
+        # disabled while such a dialog is up, so only a disabled main window is looked into.
+        if ($null -eq $mainEl -and $MainHwnd -ne 0) {
+            try {
+                $mainEl = $ae::FromHandle([IntPtr]$MainHwnd)
+                if ($null -ne $mainEl -and [int]$mainEl.Current.ProcessId -ne $TargetPid) { $mainEl = $null }
+            }
+            catch { $mainEl = $null }
+        }
+        $mainEnabled = $true
+        if ($null -ne $mainEl) { try { $mainEnabled = [bool]$mainEl.Current.IsEnabled } catch { $mainEnabled = $true } }
+        if ($null -ne $mainEl -and -not $mainEnabled) {
+            try {
+                $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+                $ownedAny = $null
+                foreach ($w in $mainEl.FindAll([System.Windows.Automation.TreeScope]::Children, $winCond)) {
+                    $cur = $null
+                    try { $cur = $w.Current } catch { continue }
+                    $name = [string]$cur.Name
+                    $className = [string]$cur.ClassName
+                    if ([string]::IsNullOrWhiteSpace($name) -or $cur.IsOffscreen) { continue }
+                    $isModal = $false
+                    try {
+                        $wp = $null
+                        if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {
+                            $isModal = [bool]$wp.Current.IsModal
+                        }
+                    }
+                    catch { }
+                    $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = [long]$cur.NativeWindowHandle }
+                    if ($isModal -or $className -eq '#32770' -or $name -match $knownDialogPattern) { $chosen = $hit; break }
+                    if ($null -eq $ownedAny) { $ownedAny = $hit }
+                }
+                # The owner is disabled, so any remaining owned window is what blocks it.
+                if ($null -eq $chosen) { $chosen = $ownedAny }
+            }
+            catch { }
+        }
+    }
     if ($null -eq $chosen) { return }
 
     # Collect visible text of the dialog (first $MaxText chars).
@@ -163,6 +213,11 @@ function Get-TcIdeModalDialog {
     $mainHwnd = [long]0
     if ($null -ne $script:TcIdeMainHwnd -and $ProcessId -eq $script:TcIdeProcessId) {
         try { $mainHwnd = [long]$script:TcIdeMainHwnd } catch { $mainHwnd = 0 }
+        if ($mainHwnd -eq 0) {
+            # DTE.MainWindow.HWnd is often 0 right after launch; the process knows its main window by now.
+            try { $mainHwnd = [long]$proc.MainWindowHandle } catch { $mainHwnd = 0 }
+            if ($mainHwnd -ne 0) { $script:TcIdeMainHwnd = $mainHwnd }
+        }
     }
 
     $ps = $null
