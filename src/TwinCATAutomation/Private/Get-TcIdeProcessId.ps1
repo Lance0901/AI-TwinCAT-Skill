@@ -86,6 +86,15 @@ public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint process
         }
     }
 
+    # DTE.MainWindow.HWnd is often 0 on a freshly launched IDE; the process itself knows its main window.
+    if ($hwnd -eq 0 -and $procId -gt 0) {
+        try {
+            $p = Get-Process -Id $procId -ErrorAction Stop
+            $hwnd = [long]$p.MainWindowHandle
+        }
+        catch { $hwnd = 0 }
+    }
+
     return @{
         ProcessId = $procId
         MainHwnd  = $hwnd
