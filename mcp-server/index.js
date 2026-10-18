@@ -104,21 +104,52 @@ function listTools() {
 // The bridge loses the IDE pid when it is killed after a BRIDGE_TIMEOUT (a DTE call blocked by a
 // modal dialog). Remember the last successful ConnectIde here so the error can still name the IDE.
 
-/** @type {{ideProcessId:number|null, selectedBy:string|null, solution:string|null}|null} */
+/** @type {{ideProcessId:number|null, selectedBy:string|null, solution:string|null, ideMainHwnd:number|null}|null} */
 let lastIde = null;
 
-function rememberIde(name, result) {
+async function rememberIde(name, result) {
   if (result?.success !== true) return;
   if (name === 'ConnectIde') {
     const d = result.data ?? {};
-    lastIde = {
+    const ide = {
       ideProcessId: Number.isInteger(d.ideProcessId) && d.ideProcessId > 0 ? d.ideProcessId : null,
       selectedBy: typeof d.selectedBy === 'string' ? d.selectedBy : null,
-      solution: typeof d.solution === 'string' && d.solution.length ? d.solution : null
+      solution: typeof d.solution === 'string' && d.solution.length ? d.solution : null,
+      ideMainHwnd: null
     };
+    lastIde = ide;
+    // Main window handle for the modal probe (it excludes the main window by handle and checks
+    // that it is disabled). op:"state" makes no COM call, so this costs milliseconds.
+    try {
+      const st = await bridge.call('state');
+      const h = st?.success === true ? st.data?.ideMainHwnd : null;
+      if (lastIde === ide && Number.isInteger(h) && h > 0) ide.ideMainHwnd = h;
+    } catch {
+      /* the handle is optional */
+    }
   } else if (name === 'DisconnectIde') {
     lastIde = null;
   }
+}
+
+/** Case-insensitive, normalised Windows path for comparing solution paths. */
+function normSolution(p) {
+  if (typeof p !== 'string' || !p.trim()) return null;
+  return path.win32.normalize(p.trim()).replace(/[\\/]+$/, '').toLowerCase();
+}
+
+/**
+ * ConnectIde probes the PREVIOUS IDE. Kill mode (abort with IDE_MODAL_DIALOG) when the call will
+ * talk to that IDE again: NoLaunch, the same SolutionPath, or neither given. A different
+ * SolutionPath may launch a new IDE, so a dialog in the old one is only logged. ProgId is ignored.
+ */
+function connectIdeProbeMode(params, prevIde) {
+  const sol = params?.SolutionPath;
+  const hasSol = typeof sol === 'string' && sol.trim() !== '';
+  if (params?.NoLaunch === true) return 'kill';
+  if (!hasSol) return 'kill';
+  const prev = normSolution(prevIde?.solution);
+  return prev !== null && prev === normSolution(sol) ? 'kill' : 'log';
 }
 
 const BRIDGE_LOST_CODES = new Set(['BRIDGE_TIMEOUT', 'BRIDGE_DIED']);
@@ -200,11 +231,20 @@ function truncate(s, max) {
  * Start a probe for one catalog call when enabled and an IDE pid is known. The pid is checked
  * first (isIdeProcessAlive: a live TcXaeShell.exe / devenv.exe) so a recycled pid of an unrelated
  * process is never watched; the check runs in parallel with the bridge call and never delays it.
+ * opts.mode 'kill' (default) aborts the call on a report, 'log' only logs it (ConnectIde to a
+ * different solution). opts.timeoutMs (the call's timeout) bounds the probe's own lifetime.
  * Returns a handle whose stop() kills the probe (no-op when none was started).
  */
-function startProbeFor(name, tool, token, probePid, prevIde) {
+function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
   const handle = { done: false, probe: null, stop() {} };
   if (!config.modalProbe.enabled || !PROBED_TOOLS.has(name) || !Number.isInteger(probePid) || probePid <= 0) return handle;
+  const mode = opts.mode === 'log' ? 'log' : 'kill';
+
+  const onLogOnly = (dialog) => {
+    const msg = `previous IDE (pid ${probePid}) shows dialog '${dialog.title}' during ${name}; ${name} targets another solution, so the call was not aborted`;
+    console.error(`[tcauto-mcp] ${msg}`);
+    emitLog('warning', { message: msg, tool: name, ideProcessId: probePid, dialogTitle: dialog.title, dialogText: String(dialog.text ?? '') });
+  };
 
   const onDialog = (dialog) => {
     const ideSnapshot = lastIde ? { ...lastIde } : null;
@@ -230,13 +270,18 @@ function startProbeFor(name, tool, token, probePid, prevIde) {
 
   const launch = () => {
     if (handle.done || shuttingDown) return;
+    const mainHwnd = prevIde?.ideProcessId === probePid ? prevIde.ideMainHwnd : null;
     const probe = new ModalProbe({
       pid: probePid,
       intervalSec: config.modalProbe.intervalSec,
+      confirmScans: config.modalProbe.confirmScans,
+      scanScript: config.modalProbe.scanScript,
+      mainHwnd: Number.isInteger(mainHwnd) && mainHwnd > 0 ? mainHwnd : null,
+      maxLifetimeSec: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? Math.ceil(opts.timeoutMs / 1000) + 60 : undefined,
       powershellPath: config.powershellPath,
       probeScript: config.modalProbe.probeScript,
       spawnSpec: config.modalProbe.spawnSpec,
-      onDialog,
+      onDialog: mode === 'log' ? onLogOnly : onDialog,
       onError: (msg) => {
         console.error(`[tcauto-mcp] ${msg}`);
         emitLog('warning', { message: msg, source: 'modal-probe', tool: name });
@@ -286,14 +331,15 @@ async function callCatalogTool(name, args, signal) {
   // BRIDGE_* hint must not point at the IDE of an earlier session.
   if (name === 'ConnectIde') lastIde = null;
   const token = {};
-  const probe = startProbeFor(name, tool, token, probePid, prevIde);
+  const mode = name === 'ConnectIde' ? connectIdeProbeMode(validation.params, prevIde) : 'kill';
+  const probe = startProbeFor(name, tool, token, probePid, prevIde, { mode, timeoutMs });
   let result;
   try {
     result = await bridge.call('call', { cmdlet: tool.cmdlet, params: validation.params, timeoutMs, signal, token });
   } finally {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
-  rememberIde(name, result);
+  await rememberIde(name, result);
   return decorateBridgeLoss(result);
 }
 

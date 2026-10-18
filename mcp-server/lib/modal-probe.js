@@ -2,17 +2,21 @@
 // process while the bridge is blocked inside a long DTE call. A modal dialog in XAE ("Assertion
 // Failed", "TwinCAT PLC Control", license prompt, ...) blocks the synchronous COM call forever; the
 // probe sees it via UI Automation from outside and reports it as one JSON line on stdout:
-//   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234}
+//   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234,"mainWindowEnabled":false,"reason":"win32-dialog"}
 // index.js then kills the bridge (lib/bridge.js abortCall) and returns IDE_MODAL_DIALOG instead of
 // waiting for the tools.json timeout (BRIDGE_TIMEOUT). See PROTOCOL.md "Modal-dialog probe".
 //
 // A probe failure (spawn error, crash, garbage on stdout) is only reported through onError: it never
-// affects the tool call it accompanies.
+// affects the tool call it accompanies. Probe stderr lines starting with "debug:" go to onDebug,
+// all others to onError.
+//
+// Orphan protection: the probe's stdin is a pipe that Node keeps open and never writes to; when this
+// process dies the pipe closes and the probe exits on its own (bridge/modal-probe.ps1).
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, defaultPowershellPath } from './config.js';
+import { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_SCAN_SCRIPT, defaultPowershellPath } from './config.js';
 
-export { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC };
+export { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_SCAN_SCRIPT };
 
 /**
  * Catalog tools that run long DTE calls and get a probe. RunLifecycle is not listed: it is a
@@ -34,11 +38,20 @@ function isAlive(pid) {
 
 /**
  * Command line of the probe. With a spawnSpec override (tests) its args come first and the same
- * -ProcessId / -IntervalSec pair is appended, so a mock parses the same argv as the real script.
+ * argument tail is appended, so a mock parses the same argv as the real script:
+ *   -ProcessId N -IntervalSec S -ConfirmScans C -ScanScript <path> [-MainHwnd H] [-MaxLifetimeSec L]
+ * (-MainHwnd only when a positive handle is known, -MaxLifetimeSec only when given).
  * @returns {{command:string, args:string[]}}
  */
-export function buildProbeSpawnSpec({ powershellPath, probeScript, spawnSpec, pid, intervalSec } = {}) {
-  const tail = ['-ProcessId', String(pid), '-IntervalSec', String(intervalSec ?? DEFAULT_PROBE_INTERVAL_SEC)];
+export function buildProbeSpawnSpec({ powershellPath, probeScript, spawnSpec, pid, intervalSec, confirmScans, scanScript, mainHwnd, maxLifetimeSec } = {}) {
+  const tail = [
+    '-ProcessId', String(pid),
+    '-IntervalSec', String(intervalSec ?? DEFAULT_PROBE_INTERVAL_SEC),
+    '-ConfirmScans', String(confirmScans ?? DEFAULT_PROBE_CONFIRM_SCANS),
+    '-ScanScript', scanScript ?? DEFAULT_SCAN_SCRIPT
+  ];
+  if (Number.isInteger(mainHwnd) && mainHwnd > 0) tail.push('-MainHwnd', String(mainHwnd));
+  if (Number.isInteger(maxLifetimeSec) && maxLifetimeSec > 0) tail.push('-MaxLifetimeSec', String(maxLifetimeSec));
   if (spawnSpec && spawnSpec.command) return { command: spawnSpec.command, args: [...(spawnSpec.args ?? []), ...tail] };
   return {
     command: powershellPath ?? defaultPowershellPath(),
@@ -51,11 +64,15 @@ export class ModalProbe {
    * @param {object} opts
    * @param {number} opts.pid                 IDE process id to watch
    * @param {number} [opts.intervalSec]       scan interval (default 5)
+   * @param {number} [opts.confirmScans]      consecutive kill-worthy scans before a report (default 2)
+   * @param {string} [opts.scanScript]        file defining $script:TcUiaDialogScan (default: the module's)
+   * @param {number|null} [opts.mainHwnd]     IDE main window handle, when known
+   * @param {number} [opts.maxLifetimeSec]    probe exits on its own after this (script default 7260)
    * @param {string} [opts.powershellPath]
    * @param {string} [opts.probeScript]
    * @param {{command:string,args:string[]}|null} [opts.spawnSpec]  test override
    * @param {object} [opts.env]               extra environment (merged over process.env)
-   * @param {(dialog:{title:string,text:string,className:any,isModal:any,processId:any})=>void} [opts.onDialog]
+   * @param {(dialog:{title:string,text:string,className:any,isModal:any,processId:any,mainWindowEnabled:any,reason:any})=>void} [opts.onDialog]
    * @param {(message:string)=>void} [opts.onError]
    * @param {(message:string)=>void} [opts.onDebug]
    */
@@ -90,11 +107,12 @@ export class ModalProbe {
   /** Spawn the probe. Returns this. Never throws. */
   start() {
     if (this.child || this._stopped) return this;
-    const { command, args } = buildProbeSpawnSpec({ ...this.opts, pid: this.opts.pid, intervalSec: this.opts.intervalSec });
+    const { command, args } = buildProbeSpawnSpec(this.opts);
     let child;
     try {
       child = spawn(command, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // stdin piped and never written: its EOF tells the probe that this process is gone
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: { ...process.env, ...(this.opts.env ?? {}) }
       });
@@ -103,6 +121,7 @@ export class ModalProbe {
       return this;
     }
     this.child = child;
+    child.stdin.on('error', () => {}); // EPIPE when the probe exits first
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
 
@@ -114,7 +133,9 @@ export class ModalProbe {
 
     const stderrRl = readline.createInterface({ input: child.stderr, crlfDelay: Infinity });
     stderrRl.on('line', (line) => {
-      if (line.trim()) this._safe(() => this.onError(`[modal-probe] ${line}`));
+      if (!line.trim()) return;
+      if (/^debug:/.test(line)) this._safe(() => this.onDebug(`[modal-probe] ${line}`));
+      else this._safe(() => this.onError(`[modal-probe] ${line}`));
     });
 
     let firstLine = true;
@@ -154,7 +175,9 @@ export class ModalProbe {
       text: String(msg.text ?? ''),
       className: msg.className ?? null,
       isModal: msg.isModal ?? null,
-      processId: msg.processId ?? null
+      processId: msg.processId ?? null,
+      mainWindowEnabled: typeof msg.mainWindowEnabled === 'boolean' ? msg.mainWindowEnabled : null,
+      reason: typeof msg.reason === 'string' ? msg.reason : null
     };
     this._safe(() => this.onDialog(dialog));
     this.stop();

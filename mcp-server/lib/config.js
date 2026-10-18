@@ -16,12 +16,16 @@
 //                              watches the last known IDE pid and turns a modal dialog into IDE_MODAL_DIALOG
 //                              instead of waiting for BRIDGE_TIMEOUT (lib/modal-probe.js)
 //   TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC  probe scan interval in seconds (default 5, clamped 1..60)
+//   TWINCAT_MCP_PROBE_CONFIRM_SCANS  consecutive scans that must see the same kill-worthy dialog before the
+//                              probe reports it (default 2, clamped 1..10)
+//   TWINCAT_MCP_PROBE_SCAN_SCRIPT    file that defines $script:TcUiaDialogScan, dot-sourced by the probe
+//                              (default: <dir of TWINCAT_MODULE_PATH>/Private/Get-TcIdeModalDialog.ps1)
 //
 // Test-only overrides (replace the powershell.exe spawn with any command, e.g. a mock bridge):
 //   TWINCAT_MCP_BRIDGE_COMMAND  executable to spawn instead of powershell.exe
 //   TWINCAT_MCP_BRIDGE_ARGS     JSON array of arguments for that executable
 //   TWINCAT_MCP_PROBE_COMMAND   executable to spawn instead of powershell.exe modal-probe.ps1
-//   TWINCAT_MCP_PROBE_ARGS      JSON array of arguments for that executable (-ProcessId / -IntervalSec appended)
+//   TWINCAT_MCP_PROBE_ARGS      JSON array of arguments for that executable (the probe argument tail is appended)
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -72,6 +76,13 @@ function parseSpawnOverride(env, prefix = 'TWINCAT_MCP_BRIDGE') {
 
 export const DEFAULT_PROGRESS_INTERVAL_MS = 10000;
 export const DEFAULT_PROBE_INTERVAL_SEC = 5;
+export const DEFAULT_PROBE_CONFIRM_SCANS = 2;
+
+/** The module file that defines $script:TcUiaDialogScan, next to the given TwinCATAutomation.psm1. */
+export function scanScriptFor(modulePath) {
+  return path.join(path.dirname(modulePath), 'Private', 'Get-TcIdeModalDialog.ps1');
+}
+export const DEFAULT_SCAN_SCRIPT = scanScriptFor(DEFAULT_MODULE_PATH);
 
 // Bounds for the per-call bridge timeout. The upper bound keeps setTimeout below its 2^31-1 ms
 // limit (a larger delay fires immediately in Node), the lower bound stops a client from asking
@@ -86,9 +97,10 @@ function positiveInt(value, fallback) {
 }
 
 export function loadConfig(env = process.env) {
+  const modulePath = env.TWINCAT_MODULE_PATH || DEFAULT_MODULE_PATH;
   return {
     progressIntervalMs: positiveInt(env.TWINCAT_MCP_PROGRESS_INTERVAL_MS, DEFAULT_PROGRESS_INTERVAL_MS),
-    modulePath: env.TWINCAT_MODULE_PATH || DEFAULT_MODULE_PATH,
+    modulePath,
     powershellPath: defaultPowershellPath(env),
     bridgeScript: DEFAULT_BRIDGE_SCRIPT,
     toolsJsonPath: env.TWINCAT_MCP_TOOLS_JSON || DEFAULT_TOOLS_JSON,
@@ -99,7 +111,9 @@ export function loadConfig(env = process.env) {
       enabled: flagDefaultOn(env.TWINCAT_MCP_MODAL_PROBE),
       intervalSec: Math.min(60, Math.max(1, positiveInt(env.TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC, DEFAULT_PROBE_INTERVAL_SEC))),
       spawnSpec: parseSpawnOverride(env, 'TWINCAT_MCP_PROBE'),
-      probeScript: DEFAULT_PROBE_SCRIPT
+      probeScript: DEFAULT_PROBE_SCRIPT,
+      confirmScans: Math.min(10, Math.max(1, positiveInt(env.TWINCAT_MCP_PROBE_CONFIRM_SCANS, DEFAULT_PROBE_CONFIRM_SCANS))),
+      scanScript: env.TWINCAT_MCP_PROBE_SCAN_SCRIPT || scanScriptFor(modulePath)
     }
   };
 }

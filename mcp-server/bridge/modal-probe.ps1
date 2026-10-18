@@ -2,38 +2,58 @@
 # PowerShell bridge is blocked inside a DTE call (see PROTOCOL.md, "Modal-dialog probe").
 #
 # Started by the Node MCP server (lib/modal-probe.js) next to a long tool call and killed when
-# the call ends. Loop: wait IntervalSec FIRST, then scan the top-level windows of ProcessId via
-# UI Automation. On the first dialog found, write exactly ONE line to stdout:
-#   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234}
-# and exit 0. Nothing else is ever written to stdout; diagnostics go to stderr.
-# Exit codes: 0 dialog reported, 2 unexpected error, 3 process not found.
+# the call ends. Loop: wait IntervalSec FIRST, then scan the IDE process via UI Automation. When a
+# kill-worthy dialog was seen in ConfirmScans consecutive scans, write exactly ONE line to stdout:
+#   {"title":"...","text":"...","className":"...","isModal":true,"processId":1234,
+#    "mainWindowEnabled":false,"reason":"win32-dialog"}
+# and exit 0. Nothing else is ever written to stdout. stderr lines start with "debug: " (routine
+# diagnostics) or "error: " (real failures).
+# Exit codes: 0 dialog reported / stdin closed / lifetime exceeded, 2 error, 3 process not found.
 #
-# The scan heuristics are COPIED from $script:TcUiaDialogScan in
-# src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1 and must be kept in sync with it
-# (difference: the main window is always excluded by title, and the known-dialog title list also
-# contains 'TwinCAT PLC Control', seen on a real machine, and when no Text descendant is found the
-# dialog body is read from Pane / Edit / Document descendants, which Win11 message boxes use).
+# The scan is the module's $script:TcUiaDialogScan, dot-sourced from -ScanScript
+# (src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1), so window selection, the known-title
+# list and the dialog text heuristics live in one place. This script only adds:
+#   - the kill rule: (IsModal or ClassName '#32770') and the IDE main window disabled. A window
+#     with a ProgressBar, a title-only match or an enabled main window is logged, never reported.
+#     With no main window found, only an IsModal window is reported.
+#   - owned dialogs: UIA exposes a window OWNED by the main window (MessageBox(owner, ...)) as a
+#     child of the main window, not of the desktop, so the module scan (desktop children only)
+#     does not see it. When the main window is disabled and the module scan found nothing, the
+#     main window's direct Window children are checked (title + Text descendants only).
+#
+# Orphan protection: Node keeps stdin open and never writes to it. EOF (or any byte) on stdin means
+# the parent is gone -> exit 0 within ~250 ms. -MaxLifetimeSec is a second safety net.
 #
 # Windows PowerShell 5.1, ASCII only, no BOM.
 param(
     [Parameter(Mandatory = $true)]
     [int]$ProcessId,
 
+    [Parameter(Mandatory = $true)]
+    [string]$ScanScript,
+
     [int]$IntervalSec = 5,
 
     [int]$ScanTimeoutSec = 4,
 
-    # A dialog is reported only after this many consecutive scans saw the same title, so a
-    # transient window (progress / wait box) does not get the bridge killed.
+    # A dialog is reported only after this many consecutive scans saw the same kill-worthy title.
     [int]$ConfirmScans = 2,
+
+    # Handle of the IDE main window (state.ideMainHwnd); 0 = unknown (found by title instead).
+    [long]$MainHwnd = 0,
+
+    [int]$MaxLifetimeSec = 7260,
 
     [int]$MaxText = 500
 )
 
 $ErrorActionPreference = 'Stop'
 
+function Write-ProbeDebug([string]$Message) {
+    try { [Console]::Error.WriteLine("debug: $Message") } catch { }
+}
 function Write-ProbeError([string]$Message) {
-    try { [Console]::Error.WriteLine("probe: $Message") } catch { }
+    try { [Console]::Error.WriteLine("error: $Message") } catch { }
 }
 
 if ($ProcessId -le 0) {
@@ -46,106 +66,214 @@ if ($ScanTimeoutSec -lt 1) { $ScanTimeoutSec = 1 }
 if ($ScanTimeoutSec -gt 30) { $ScanTimeoutSec = 30 }
 if ($ConfirmScans -lt 1) { $ConfirmScans = 1 }
 if ($ConfirmScans -gt 10) { $ConfirmScans = 10 }
+if ($MaxLifetimeSec -lt 10) { $MaxLifetimeSec = 10 }
+if ($MaxLifetimeSec -gt 86400) { $MaxLifetimeSec = 86400 }
+if ($MainHwnd -lt 0) { $MainHwnd = 0 }
 if ($MaxText -lt 1) { $MaxText = 500 }
 
-# Self-contained: runs in a fresh STA runspace, no access to this script's variables.
-$scan = {
-    param([int]$TargetPid, [int]$MaxText)
+# --- the module scan (single source of truth) ---
+if ([string]::IsNullOrWhiteSpace($ScanScript) -or -not (Test-Path -LiteralPath $ScanScript -PathType Leaf)) {
+    Write-ProbeError "scan script not found: $ScanScript"
+    exit 2
+}
+try {
+    # Also defines the functions Get-TcIdeModalDialog / New-TcModalDialogResult; the probe never
+    # calls them (they need module state). Only $script:TcUiaDialogScan is used.
+    . $ScanScript
+}
+catch {
+    Write-ProbeError "cannot load scan script ${ScanScript}: $($_.Exception.Message)"
+    exit 2
+}
+if (-not ($script:TcUiaDialogScan -is [scriptblock])) {
+    Write-ProbeError "scan script $ScanScript does not define `$script:TcUiaDialogScan as a scriptblock"
+    exit 2
+}
+$scanText = $script:TcUiaDialogScan.ToString()
+# Main-window title pattern, read from the module scan source (no second copy). Not found ->
+# empty: the main window is then known only by -MainHwnd (fail closed).
+$mainTitlePattern = ''
+$patternMatch = [regex]::Match($scanText, '\$mainTitlePattern\s*=\s*''([^'']+)''')
+if ($patternMatch.Success) { $mainTitlePattern = $patternMatch.Groups[1].Value }
+else { Write-ProbeDebug 'main-title pattern not found in the scan script; main window known only by -MainHwnd' }
+
+# Runs in a fresh STA runspace: no access to this script's variables.
+$wrapper = {
+    param([string]$ScanText, [int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [string]$MainTitlePattern)
 
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
-
     $ae = [System.Windows.Automation.AutomationElement]
-    $root = $ae::RootElement
-    $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCond)
-    if ($null -eq $windows -or $windows.Count -eq 0) { return }
+    $ct = [System.Windows.Automation.ControlType]
+    $scope = [System.Windows.Automation.TreeScope]
 
-    $mainTitlePattern = '(^|\s-\s)(TcXaeShell|Microsoft Visual Studio)(\s+\(.+\))?$'
-    $knownDialogPattern = '(?i)Assertion Failed|Account Settings|fatal error|Security Code|License|Lizenz|TwinCAT XAE|Microsoft Visual Studio|TwinCAT PLC Control'
+    $scan = [scriptblock]::Create($ScanText)
+    $hit = $null
+    foreach ($o in @(& $scan $TargetPid $MainHwnd $MaxText)) {
+        if ($null -ne $o -and -not [string]::IsNullOrWhiteSpace([string]$o.Title)) { $hit = $o; break }
+    }
 
-    $modalHit = $null
-    $fallbackHit = $null
-    foreach ($w in $windows) {
-        $cur = $null
-        try { $cur = $w.Current } catch { continue }
-        $name = [string]$cur.Name
-        $className = [string]$cur.ClassName
-        if ($cur.ControlType -ne [System.Windows.Automation.ControlType]::Window) { continue }
-        if ([string]::IsNullOrWhiteSpace($name)) { continue }
-        if ($name -match $mainTitlePattern -and $className -ne '#32770') { continue }
-        if ($cur.IsOffscreen) { continue }
-
-        $isModal = $false
+    # IDE main window: by handle when known, else by the module's main-title pattern.
+    $main = $null
+    if ($MainHwnd -gt 0) {
         try {
-            $wp = $null
-            if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {
-                $isModal = [bool]$wp.Current.IsModal
+            $main = $ae::FromHandle([IntPtr]$MainHwnd)
+            if ($null -ne $main -and [int]$main.Current.ProcessId -ne $TargetPid) { $main = $null }
+        }
+        catch { $main = $null }
+    }
+    elseif (-not [string]::IsNullOrEmpty($MainTitlePattern)) {
+        try {
+            $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
+            foreach ($w in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+                $c = $null
+                try { $c = $w.Current } catch { continue }
+                if ($c.ControlType -ne $ct::Window -or [string]$c.ClassName -eq '#32770') { continue }
+                if ([string]$c.Name -match $MainTitlePattern) { $main = $w; break }
+            }
+        }
+        catch { $main = $null }
+    }
+    $mainEnabled = $null
+    if ($null -ne $main) { try { $mainEnabled = [bool]$main.Current.IsEnabled } catch { $mainEnabled = $null } }
+
+    $element = $null
+    $title = $null; $text = ''; $className = ''; $isModal = $false; $hwnd = [long]0
+    if ($null -ne $hit) {
+        $title = [string]$hit.Title; $text = [string]$hit.Text; $className = [string]$hit.ClassName
+        $isModal = [bool]$hit.IsModal; $hwnd = [long]$hit.Hwnd
+        if ($hwnd -gt 0) { try { $element = $ae::FromHandle([IntPtr]$hwnd) } catch { $element = $null } }
+    }
+    elseif ($mainEnabled -eq $false) {
+        # Owned dialog: a UIA child of the main window (see the header).
+        try {
+            $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Window)
+            $pick = $null
+            foreach ($w in $main.FindAll($scope::Children, $winCond)) {
+                $c = $null
+                try { $c = $w.Current } catch { continue }
+                if ([string]::IsNullOrWhiteSpace([string]$c.Name) -or $c.IsOffscreen) { continue }
+                $wm = $false
+                try {
+                    $wp = $null
+                    if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) { $wm = [bool]$wp.Current.IsModal }
+                }
+                catch { }
+                $cand = @{ Element = $w; Title = [string]$c.Name; ClassName = [string]$c.ClassName; IsModal = $wm; Hwnd = [long]$c.NativeWindowHandle }
+                if ($wm -or $cand.ClassName -eq '#32770') { $pick = $cand; break }
+                if ($null -eq $pick) { $pick = $cand }
+            }
+            if ($null -ne $pick) {
+                $element = $pick.Element; $title = $pick.Title; $className = $pick.ClassName
+                $isModal = $pick.IsModal; $hwnd = $pick.Hwnd
+                $textCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Text)
+                $sb = New-Object System.Text.StringBuilder
+                foreach ($t in $element.FindAll($scope::Descendants, $textCond)) {
+                    $tn = $null
+                    try { $tn = [string]$t.Current.Name } catch { $tn = $null }
+                    if ([string]::IsNullOrWhiteSpace($tn)) { continue }
+                    if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
+                    $null = $sb.Append($tn.Trim())
+                    if ($sb.Length -ge $MaxText) { break }
+                }
+                $text = $sb.ToString()
+                if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
             }
         }
         catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($title)) { return }
 
-        $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal }
-        if ($isModal) { $modalHit = $hit; break }
-        if ($null -eq $fallbackHit -and ($className -eq '#32770' -or $name -match $knownDialogPattern)) { $fallbackHit = $hit }
+    $hasProgress = $false
+    if ($null -ne $element) {
+        try {
+            $pbCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::ProgressBar)
+            $hasProgress = $null -ne $element.FindFirst($scope::Descendants, $pbCond)
+        }
+        catch { }
     }
 
-    $chosen = $modalHit
-    if ($null -eq $chosen) { $chosen = $fallbackHit }
-    if ($null -eq $chosen) { return }
-
-    $text = ''
-    try {
-        $textCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
-        $texts = $chosen.Element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond)
-        $sb = New-Object System.Text.StringBuilder
-        foreach ($t in $texts) {
-            $tn = $null
-            try { $tn = [string]$t.Current.Name } catch { $tn = $null }
-            if ([string]::IsNullOrWhiteSpace($tn)) { continue }
-            if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
-            $null = $sb.Append($tn.Trim())
-            if ($sb.Length -ge $MaxText) { break }
-        }
-        if ($sb.Length -eq 0) {
-            # Windows 11 message boxes (and some WinForms dialogs) expose the message as a Pane /
-            # Edit / Document, not as Text (Get-TcIdeModalDialog does not do this yet). Buttons,
-            # the title bar and the title itself are skipped so the text stays the message body.
-            $all = $chosen.Element.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-            $bodyTypes = @([System.Windows.Automation.ControlType]::Pane, [System.Windows.Automation.ControlType]::Edit, [System.Windows.Automation.ControlType]::Document)
-            # Buttons (OK / Abort / Retry ...) are exposed as Pane with ClassName 'Button' on such
-            # dialogs; real Button elements are remembered by caption so a wrapping Pane is skipped too.
-            $buttonNames = @{}
-            foreach ($t in $all) {
-                try { if ($t.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $buttonNames[([string]$t.Current.Name).Trim()] = $true } } catch { }
-            }
-            foreach ($t in $all) {
-                $tn = $null
-                $tt = $null
-                $tc = $null
-                try { $tt = $t.Current.ControlType; $tn = [string]$t.Current.Name; $tc = [string]$t.Current.ClassName } catch { continue }
-                if ($bodyTypes -notcontains $tt -or $tc -eq 'Button') { continue }
-                if ([string]::IsNullOrWhiteSpace($tn) -or $tn.Trim() -eq $chosen.Title -or $buttonNames.ContainsKey($tn.Trim())) { continue }
-                if ($sb.Length -gt 0) { $null = $sb.Append(' ') }
-                $null = $sb.Append($tn.Trim())
-                if ($sb.Length -ge $MaxText) { break }
-            }
-        }
-        $text = $sb.ToString()
-        if ($text.Length -gt $MaxText) { $text = $text.Substring(0, $MaxText) }
-    }
-    catch { }
+    $reason = $null
+    if ($className -eq '#32770') { $reason = 'win32-dialog' } elseif ($isModal) { $reason = 'modal' }
+    $why = $null
+    if ($null -eq $reason) { $why = 'title match only, not modal and not #32770' }
+    elseif ($hasProgress) { $why = 'contains a progress bar' }
+    elseif ($mainEnabled -eq $true) { $why = 'IDE main window is enabled' }
+    elseif ($null -eq $mainEnabled -and -not $isModal) { $why = 'IDE main window not found and the window is not modal' }
 
     [PSCustomObject]@{
-        Title     = $chosen.Title
-        Text      = $text
-        ClassName = $chosen.ClassName
-        IsModal   = $chosen.IsModal
+        Title             = $title
+        Text              = $text
+        ClassName         = $className
+        IsModal           = $isModal
+        Hwnd              = $hwnd
+        MainWindowEnabled = $mainEnabled
+        Reason            = $reason
+        KillWorthy        = ($null -eq $why)
+        NotKillWorthyWhy  = $why
     }
 }
-$scanText = $scan.ToString()
+$wrapperText = $wrapper.ToString()
+
+# --- orphan protection ---
+$lifetime = [System.Diagnostics.Stopwatch]::StartNew()
+$stdinTask = $null
+try {
+    $stdin = [Console]::OpenStandardInput()
+    $stdinBuf = New-Object byte[] 1
+    $stdinTask = $stdin.ReadAsync($stdinBuf, 0, 1)
+}
+catch {
+    Write-ProbeDebug "stdin not watched: $($_.Exception.Message)"
+    $stdinTask = $null
+}
+
+function Test-ProbeShouldExit {
+    if ($null -ne $stdinTask -and $stdinTask.IsCompleted) {
+        Write-ProbeDebug 'stdin closed; exiting'
+        exit 0
+    }
+    if ($lifetime.Elapsed.TotalSeconds -ge $MaxLifetimeSec) {
+        Write-ProbeDebug "max lifetime of $MaxLifetimeSec s exceeded; exiting"
+        exit 0
+    }
+}
+
+function Wait-ProbeSliced([int]$Milliseconds) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $Milliseconds) {
+        Test-ProbeShouldExit
+        $left = $Milliseconds - $sw.ElapsedMilliseconds
+        if ($left -gt 250) { $left = 250 }
+        if ($left -gt 0) { Start-Sleep -Milliseconds $left }
+    }
+    Test-ProbeShouldExit
+}
+
+# --- scans ---
+# Scans abandoned after ScanTimeoutSec (UIA stuck on the IDE's busy UI thread) are kept so they can
+# be disposed once they finish; while 10 are still hanging no new scan is started.
+$script:Abandoned = New-Object System.Collections.ArrayList
+$script:AbandonedScans = 0
+
+function Clear-ProbeAbandoned {
+    foreach ($a in @($script:Abandoned)) {
+        $st = $null
+        try { $st = $a.PS.InvocationStateInfo.State } catch { $st = $null }
+        # Stopping = BeginStop waits for the stuck UIA call: still hanging, Dispose() would block.
+        if ($st -eq [System.Management.Automation.PSInvocationState]::Running -or $st -eq [System.Management.Automation.PSInvocationState]::Stopping) { continue }
+        try { $a.PS.Dispose() } catch { }
+        try { $a.RS.Dispose() } catch { }
+        $script:Abandoned.Remove($a)
+    }
+}
 
 function Invoke-ProbeScan {
+    Clear-ProbeAbandoned
+    if ($script:Abandoned.Count -ge 10) {
+        Write-ProbeDebug "$($script:Abandoned.Count) UIA scans still hanging; skipping"
+        return $null
+    }
     $ps = $null
     $rs = $null
     try {
@@ -155,24 +283,32 @@ function Invoke-ProbeScan {
         $rs.Open()
         $ps = [PowerShell]::Create()
         $ps.Runspace = $rs
-        $null = $ps.AddScript($scanText).AddArgument($ProcessId).AddArgument($MaxText)
+        $null = $ps.AddScript($wrapperText).AddArgument($scanText).AddArgument($ProcessId).AddArgument($MainHwnd).AddArgument($MaxText).AddArgument($mainTitlePattern)
         $handle = $ps.BeginInvoke()
-        if (-not $handle.AsyncWaitHandle.WaitOne($ScanTimeoutSec * 1000)) {
+        $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+        $finished = $false
+        while ($true) {
+            if ($handle.AsyncWaitHandle.WaitOne(250)) { $finished = $true; break }
+            if ($deadline.Elapsed.TotalSeconds -ge $ScanTimeoutSec) { break }
+            Test-ProbeShouldExit
+        }
+        if (-not $finished) {
             # Normal while XAE's UI thread is busy (a build keeps it busy for seconds at a time), so
             # the message is written for the first abandoned scan and then only every 10th one.
             $script:AbandonedScans++
             if ($script:AbandonedScans -eq 1 -or ($script:AbandonedScans % 10) -eq 0) {
-                Write-ProbeError "UIA scan of pid $ProcessId did not finish within $ScanTimeoutSec s; abandoned ($script:AbandonedScans so far)"
+                Write-ProbeDebug "UIA scan of pid $ProcessId did not finish within $ScanTimeoutSec s; abandoned ($script:AbandonedScans so far)"
             }
-            # Do not block on Stop(): the scan thread may be stuck inside UIA. Leave it to die.
+            # Do not block on Stop(): the scan thread may be stuck inside UIA. Disposed later.
             try { $null = $ps.BeginStop($null, $null) } catch { }
+            $null = $script:Abandoned.Add([PSCustomObject]@{ PS = $ps; RS = $rs })
             $ps = $null
             $rs = $null
             return $null
         }
         $out = $ps.EndInvoke($handle)
         if ($ps.Streams.Error.Count -gt 0) {
-            Write-ProbeError "scan error: $($ps.Streams.Error[0])"
+            Write-ProbeDebug "scan error: $($ps.Streams.Error[0])"
         }
         if ($null -eq $out -or $out.Count -eq 0) { return $null }
         $first = $out[0]
@@ -186,12 +322,12 @@ function Invoke-ProbeScan {
     }
 }
 
-$script:AbandonedScans = 0
+Write-ProbeDebug "watching pid $ProcessId (interval $IntervalSec s, confirm $ConfirmScans, mainHwnd $MainHwnd, lifetime $MaxLifetimeSec s)"
 $lastTitle = $null
 $streak = 0
 try {
     while ($true) {
-        Start-Sleep -Seconds $IntervalSec
+        Wait-ProbeSliced ($IntervalSec * 1000)
 
         $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
         if ($null -eq $proc) {
@@ -200,31 +336,41 @@ try {
         }
 
         $hit = Invoke-ProbeScan
+        Test-ProbeShouldExit
         if ($null -eq $hit) {
             $lastTitle = $null
             $streak = 0
             continue
         }
         $title = [string]$hit.Title
-        if ($title -eq $lastTitle) { $streak++ } else { $lastTitle = $title; $streak = 1 }
-        if ($streak -lt $ConfirmScans) {
-            Write-ProbeError "dialog '$title' seen ($streak/$ConfirmScans), waiting for confirmation"
+        if (-not [bool]$hit.KillWorthy) {
+            # Not counted toward confirmation.
+            Write-ProbeDebug "dialog '$title' seen but not kill-worthy ($($hit.NotKillWorthyWhy))"
+            $lastTitle = $null
+            $streak = 0
             continue
         }
-        if ($null -ne $hit) {
-            $line = @{
-                title     = [string]$hit.Title
-                text      = [string]$hit.Text
-                className = [string]$hit.ClassName
-                isModal   = [bool]$hit.IsModal
-                processId = $ProcessId
-            } | ConvertTo-Json -Compress
-            # Escape non-ASCII as \uXXXX: the console code page is not UTF-8, Node reads UTF-8.
-            $line = [regex]::Replace($line, '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
-            [Console]::Out.WriteLine($line)
-            [Console]::Out.Flush()
-            exit 0
+        if ($title -eq $lastTitle) { $streak++ } else { $lastTitle = $title; $streak = 1 }
+        if ($streak -lt $ConfirmScans) {
+            Write-ProbeDebug "dialog '$title' seen ($streak/$ConfirmScans), waiting for confirmation"
+            continue
         }
+        $mwe = $null
+        if ($null -ne $hit.MainWindowEnabled) { $mwe = [bool]$hit.MainWindowEnabled }
+        $line = [ordered]@{
+            title             = $title
+            text              = [string]$hit.Text
+            className         = [string]$hit.ClassName
+            isModal           = [bool]$hit.IsModal
+            processId         = $ProcessId
+            mainWindowEnabled = $mwe
+            reason            = [string]$hit.Reason
+        } | ConvertTo-Json -Compress
+        # Escape non-ASCII as \uXXXX: the console code page is not UTF-8, Node reads UTF-8.
+        $line = [regex]::Replace($line, '[^\x00-\x7F]', { param($mm) '\u{0:x4}' -f [int][char]$mm.Value })
+        [Console]::Out.WriteLine($line)
+        [Console]::Out.Flush()
+        exit 0
     }
 }
 catch {

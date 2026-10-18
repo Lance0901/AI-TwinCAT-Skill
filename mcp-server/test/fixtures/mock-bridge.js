@@ -6,7 +6,8 @@
 //   params.DelayMs     delay the answer by N ms
 //   cmdlet Get-TcIdeInfo   writes a warning log line, then NOT_CONNECTED + hint
 //   cmdlet Connect-TcIde   marks the mock IDE as connected (state.ideConnected); returns
-//                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch)
+//                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch);
+//                          op state then reports ideMainHwnd 16962 (0x4242) until Disconnect-TcIde
 //   op modal + params.ProcessId   probes that pid instead of the connected one (data.ideProcessId echoes it)
 //   unparseable request line      answered with {id:null, event:'result', INVALID_REQUEST} like bridge.ps1
 //   env MOCK_BRIDGE_READY_FAIL=1   writes ready ok:false and exits 2
@@ -22,6 +23,7 @@ const CMDLETS = [
 const state = {
   ideConnected: false,
   ideProcessId: 0,
+  ideMainHwnd: 0,
   sysManagerAvailable: false,
   adsConnected: false,
   amsNetId: null,
@@ -63,6 +65,7 @@ function handleCall(req) {
       case 'Connect-TcIde':
         state.ideConnected = true;
         state.ideProcessId = 4242;
+        state.ideMainHwnd = 0x4242;
         state.sysManagerAvailable = true;
         return result(id, {
           success: true,
@@ -78,6 +81,7 @@ function handleCall(req) {
       case 'Disconnect-TcIde':
         state.ideConnected = false;
         state.ideProcessId = 0;
+        state.ideMainHwnd = 0;
         state.sysManagerAvailable = false;
         return result(id, { success: true, data: {} });
       case 'Get-TcIdeInfo':
