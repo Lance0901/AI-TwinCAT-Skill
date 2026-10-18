@@ -310,13 +310,14 @@ export class PowerShellBridge {
   /**
    * Send one request to the child. Resolves to the result object (id/event removed). Never rejects.
    * @param {'call'|'modal'|'state'|'ping'|'shutdown'} op
-   * @param {{cmdlet?:string, params?:object, timeoutMs?:number, signal?:AbortSignal}} [opts]
+   * @param {{cmdlet?:string, params?:object, timeoutMs?:number, signal?:AbortSignal, token?:object}} [opts]
    *   signal: while the call is still queued, an abort removes it from the queue and resolves it with
    *   CANCELLED (nothing was executed). Once the request has been written to PowerShell it cannot be
    *   interrupted: the abort is ignored and the real result is returned when the cmdlet finishes.
+   *   token: any object identifying this call for abortCall() (the modal-dialog probe in index.js).
    */
   call(op = 'call', opts = {}) {
-    const { cmdlet, params, timeoutMs, signal } = opts;
+    const { cmdlet, params, timeoutMs, signal, token } = opts;
     return new Promise((resolve) => {
       const item = {
         id: String(this._nextId++),
@@ -328,7 +329,8 @@ export class PowerShellBridge {
         timer: null,
         signal: signal ?? null,
         onAbort: null,
-        settled: false
+        settled: false,
+        token: token ?? null
       };
       if (signal?.aborted) {
         this._settle(item, errorResult('CANCELLED', CANCELLED_MESSAGE));
@@ -379,13 +381,56 @@ export class PowerShellBridge {
 
   _onTimeout(item) {
     if (this._current !== item) return;
-    const child = this.child;
     const label = item.op === 'call' ? item.cmdlet : `op:${item.op}`;
+    this._killCurrent(
+      item,
+      errorResult('BRIDGE_TIMEOUT', `${label} did not finish within ${item.timeoutMs} ms; PowerShell bridge killed`, HINTS.BRIDGE_TIMEOUT),
+      `${label} timed out`
+    );
+  }
+
+  /**
+   * The call in flight cannot finish (timeout, modal dialog): settle it with `result`, kill the
+   * child (restarted lazily by the next call) and fail the queue with BRIDGE_DIED / not executed.
+   */
+  _killCurrent(item, result, reason) {
+    const child = this.child;
     this._current = null;
-    this._settle(item, errorResult('BRIDGE_TIMEOUT', `${label} did not finish within ${item.timeoutMs} ms; PowerShell bridge killed`, HINTS.BRIDGE_TIMEOUT));
+    clearTimeout(item.timer);
+    this._settle(item, result);
     this._reset();
-    this._failQueue('BRIDGE_DIED', `PowerShell bridge was killed because ${label} timed out; ${NOT_EXECUTED}`);
+    this._failQueue('BRIDGE_DIED', `PowerShell bridge was killed because ${reason}; ${NOT_EXECUTED}`);
     this._killChild(child);
+  }
+
+  /**
+   * Abort the call identified by `token` (passed as opts.token to call()) with the caller's result.
+   * `result` is the result object, or a function `(outcome) => result` when the result depends on
+   * what happens to the call.
+   *   - in flight (written to PowerShell, blocked): settled with the result, the child is killed
+   *     exactly like on BRIDGE_TIMEOUT (queued calls get BRIDGE_DIED / not executed) -> 'killed'
+   *   - still queued: removed and settled, the child is untouched -> 'dequeued'
+   *   - unknown / already finished: no-op -> null
+   * @param {object} token
+   * @param {object|((outcome:'killed'|'dequeued')=>object)} result
+   * @param {string} reason  completes "PowerShell bridge was killed because <reason>"
+   * @returns {'killed'|'dequeued'|null}
+   */
+  abortCall(token, result, reason = 'the call was aborted') {
+    if (token === null || token === undefined) return null;
+    const resolveResult = (outcome) => (typeof result === 'function' ? result(outcome) : result);
+    const current = this._current;
+    if (current && current.token === token && !current.settled) {
+      this._killCurrent(current, resolveResult('killed'), reason);
+      return 'killed';
+    }
+    const idx = this._queue.findIndex((it) => it.token === token);
+    if (idx !== -1) {
+      const [item] = this._queue.splice(idx, 1);
+      this._settle(item, resolveResult('dequeued'));
+      return 'dequeued';
+    }
+    return null;
   }
 
   _handleDeath(child, reason) {

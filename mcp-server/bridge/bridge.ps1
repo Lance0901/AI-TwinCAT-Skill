@@ -652,6 +652,10 @@ function Invoke-OpState {
     $amsNetId = Get-ModuleVar 'TcAdsAmsNetId'
     $adsPort = Get-ModuleVar 'TcAdsPort'
     $lastDialog = Get-ModuleVar 'TcLastModalDialog'
+    $mainHwndVal = Get-ModuleVar 'TcIdeMainHwnd'
+
+    $ideMainHwnd = $null
+    if ($null -ne $mainHwndVal) { try { $h = [long]$mainHwndVal; if ($h -gt 0) { $ideMainHwnd = $h } } catch { $ideMainHwnd = $null } }
 
     $ideProcessId = $null
     if ($null -ne $pidVal) { try { $ideProcessId = [int]$pidVal } catch { $ideProcessId = $null } }
@@ -675,6 +679,7 @@ function Invoke-OpState {
     return New-SuccessResult -Data ([ordered]@{
         ideConnected        = ($null -ne $dte)
         ideProcessId        = $ideProcessId
+        ideMainHwnd         = $ideMainHwnd
         sysManagerAvailable = ($null -ne $sysMan)
         adsConnected        = $adsConnected
         amsNetId            = $amsOut

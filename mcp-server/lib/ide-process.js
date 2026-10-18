@@ -4,6 +4,10 @@
 // unrelated process.
 import { execFile } from 'node:child_process';
 
+// Complete as is (verified with TwinCAT 3.1.4026): the 32-bit shell
+// (C:\Program Files (x86)\Beckhoff\TcXaeShell\Common7\IDE\TcXaeShell.exe, ProgId TcXaeShell.DTE.15.0)
+// and the 64-bit shell (C:\Program Files\Beckhoff\TcXaeShell\Common7\IDE\TcXaeShell.exe, ProgId
+// TcXaeShell.DTE.17.0) are both TcXaeShell.exe; Visual Studio 2022 is devenv.exe.
 export const IDE_IMAGE_NAMES = new Set(['tcxaeshell.exe', 'devenv.exe']);
 
 /** Parse `tasklist /FO CSV /NH` output; returns the image name of the first row, or null. */
