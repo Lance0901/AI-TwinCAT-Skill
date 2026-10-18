@@ -223,7 +223,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 MCP server(stdio)提供:35 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:35 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

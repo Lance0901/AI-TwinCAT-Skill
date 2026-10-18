@@ -8,7 +8,7 @@ This project provides a PowerShell module for automating TwinCAT 3 IDE and PLC r
 Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force
 ```
 
-Or run it as an MCP server (tool names = CLI action names, e.g. `ConnectIde`, `BuildProject`, `EnableConfig`, `ReadVariable`): see `docs/setup-mcp.md`.
+Or run it as the TcAuto MCP server (tool names = CLI action names, e.g. `ConnectIde`, `BuildProject`, `EnableConfig`, `ReadVariable`): see `docs/setup-mcp.md`.
 
 ## Core Workflow (No Dialogs)
 

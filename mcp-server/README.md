@@ -1,4 +1,4 @@
-# TwinCAT Automation MCP server
+# TcAuto MCP
 
 > **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 35 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
 
@@ -31,7 +31,7 @@ npm test          # unit tests against a mock bridge, no TwinCAT needed
 ```json
 {
   "mcpServers": {
-    "twincat": {
+    "tcauto": {
       "command": "node",
       "args": ["C:\\path\\to\\2026-AI-TwinCAT-Skill\\mcp-server\\index.js"],
       "env": {
@@ -49,13 +49,13 @@ npm test          # unit tests against a mock bridge, no TwinCAT needed
 Project-level `.mcp.json` at the repo root (already checked in):
 
 ```json
-{ "mcpServers": { "twincat": { "command": "node", "args": ["mcp-server/index.js"] } } }
+{ "mcpServers": { "tcauto": { "command": "node", "args": ["mcp-server/index.js"] } } }
 ```
 
 Or register it from the CLI:
 
 ```powershell
-claude mcp add twincat -- node mcp-server/index.js
+claude mcp add tcauto -- node mcp-server/index.js
 ```
 
 ### Any other MCP client
@@ -263,12 +263,12 @@ Do not add waits between calls: `EnableConfig`, `SetSystemState`, `SetPlcState` 
 
 | Module stream | MCP notification |
 |---|---|
-| `Write-Warning` | `notifications/message`, level `warning`, `logger: "twincat"` |
+| `Write-Warning` | `notifications/message`, level `warning`, `logger: "tcauto"` |
 | `Write-Verbose` / `Write-Debug` | level `debug`, only with `TWINCAT_MCP_VERBOSE=1` |
 | `Write-Information` | level `info` |
 | bridge stderr | level `error` |
 
-Log lines never end up inside the result object. The server itself logs to its own stderr only (Claude Desktop writes it to `%APPDATA%\Claude\logs\mcp-server-twincat.log`).
+Log lines never end up inside the result object. The server itself logs to its own stderr only (Claude Desktop writes it to `%APPDATA%\Claude\logs\mcp-server-tcauto.log`).
 
 ## Known limits
 
