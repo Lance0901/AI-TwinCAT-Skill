@@ -113,7 +113,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Build-TcProject` | 建置（RPC 忙碌時自動重試）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
-| `Enter-TcPlcOnline` | 登入 + 下載程式（Login(3)，無對話框） |
+| `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
 | `Exit-TcPlcOnline` | 登出 PLC |
 | `Send-TcPlcProgram` | 上傳程式到 PLC |
 
@@ -179,7 +179,7 @@ adapters/
 ## 重要注意事項
 
 - **AmsNetId 是動態的** — 不要寫死。`Connect-TcAds` 會從 IDE 目標自動偵測。
-- **零對話框** — `Enable-TcConfig -Force` 使用 ADS WriteControl，`Enter-TcPlcOnline` 使用 `Login(3)`。
+- **零對話框** — `Enable-TcConfig -Force` 使用 ADS WriteControl，`Connect-TcIde` 開啟全域 `ITcAutomationSettings.SilentMode`（XAE 用預設答案回應提示）。`Enter-TcPlcOnline` 的 Login 旗標**預設不** OR SILENT：空 runtime 實測 `Login(257)` 會跳過建 app 而不是答 Yes；`-SilentFlag` 才加。
 - **測試 FB 時寫 MAIN 層級變數** — PLC 每個掃描週期都會覆寫 `VAR_INPUT`（參見 Decision #17）。
 
 ## Claude Code 安裝
@@ -259,7 +259,7 @@ Claude Code 會自動讀取 repo 的 `.mcp.json`;Claude Desktop 設定見 [docs/
 
 ### 2026-03-27
 
-- **零對話框生命週期**：`Enable-TcConfig -Force`（ADS）、`Enter-TcPlcOnline` 搭配 `Login(3)` — 完整 Build->Activate->Login->Run->Read 循環，零彈窗
+- **零對話框生命週期**：`Enable-TcConfig -Force`（ADS）、`Enter-TcPlcOnline -LoginMode`（提示框由全域 `SilentMode` 處理；2026-10-19 起預設拿掉 `SILENT` 旗標，因 `Login(257)` 會跳過建 app） — 完整 Build->Activate->Login->Run->Read 循環，零彈窗
 - **跨工具適配器**：Claude Code SKILL.md、Codex tools.json、Antigravity plugin.yaml
 - **CLAUDE.md**：AI 工具專案指南
 

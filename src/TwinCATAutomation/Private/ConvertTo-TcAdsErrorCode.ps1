@@ -11,6 +11,7 @@ $script:TcErrorHints = @{
     'IDE_BUSY'             = 'XAE 被 modal dialog 或 license 視窗擋住,關掉後重試'
     'IDE_MODAL_DIALOG'     = 'XAE/VS 有 modal 視窗(例如 Assertion Failed、VS 帳戶設定、Target system reports a fatal error),請手動處理後重試;模組無法自動關閉。若 dialog 關不掉,kill IDE 後重新 Connect-TcIde'
     'IDE_TIMEOUT'          = 'DTE 呼叫超過預期時間才返回:XAE 可能被 dialog 卡住或正在跑長操作;用 Get-TcIdeModalDialog 檢查,必要時 kill IDE 後重新 Connect-TcIde'
+    'IDE_CRASHED'          = 'IDE 行程已消失(可能 OutOfMemory crash;查 Windows 事件 1026、%LOCALAPPDATA%\CrashDumps\TcXaeShell.exe.<pid>.dmp)。重新 Connect-TcIde -SolutionPath ...,再從 Build/Enable-TcConfig 開始'
     'IDE_LAUNCH_FAILED'    = 'IDE 啟動後 60 秒內 DTE 未就緒:確認 XAE 可手動開啟、沒有首次啟動精靈 / 帳戶登入視窗;可改用 -ProgId 指定另一個 IDE,或先手動開好 IDE 再 Connect-TcIde'
     'NOT_CONNECTED'        = '呼叫 Connect-TcAds;若剛做過 Enable-TcConfig,TwinCAT 已重啟,必須重連'
     'AMS_NETID_REQUIRED'   = '先 Connect-TcIde -SolutionPath <sln>,AmsNetId 會自動偵測'
@@ -126,6 +127,9 @@ function ConvertTo-TcAdsErrorCode {
     # also carry the original 0x80010001 text.
     elseif ($text -match 'IDE_MODAL_DIALOG') {
         $code = 'IDE_MODAL_DIALOG'
+    }
+    elseif ($text -match 'IDE_CRASHED') {
+        $code = 'IDE_CRASHED'
     }
     elseif ($text -match 'IDE_TIMEOUT') {
         $code = 'IDE_TIMEOUT'

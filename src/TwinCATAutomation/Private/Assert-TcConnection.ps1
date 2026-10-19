@@ -7,6 +7,7 @@ function Assert-TcConnection {
     param()
 
     if (-not $script:TcIdeConnected -or $null -eq $script:TcDte) {
-        throw "Not connected to TwinCAT IDE. Call Connect-TcIde first."
+        $crashNote = if ($null -ne $script:TcLastIdeCrash) { " (IDE crashed earlier: $($script:TcLastIdeCrash))" } else { '' }
+        throw "Not connected to TwinCAT IDE. Call Connect-TcIde first.$crashNote"
     }
 }

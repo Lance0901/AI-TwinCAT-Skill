@@ -18,6 +18,13 @@ function Invoke-TcComRetry {
           - call failed + dialog seen  -> throws "IDE_MODAL_DIALOG: <Title> | <Text>"
           - call failed + ran longer than -TimeoutSec -> throws "IDE_TIMEOUT: ..."
           - call failed, busy exhausted -> throws "IDE_BUSY: ..."
+          - call failed with RPC_S_CALL_FAILED (0x800706BE) / RPC_S_SERVER_UNAVAILABLE
+            (0x800706BA) / RPC_E_DISCONNECTED (0x80010108) (or busy) and the IDE process
+            no longer exists -> throws "IDE_CRASHED: ..." and resets the module IDE state
+            ($script:TcIdeConnected, TcDte, TcSysManager, TcIdeProcessId, TcAutomationSettings,
+            TcSilentMode, TcSilentModeOriginal) to disconnected; $script:TcLastIdeCrash records
+            "<time> <original message>" for Assert-TcConnection. Only a failing Get-Process
+            counts as "gone" (a throwing HasExited read is treated as alive)
           - call succeeded + dialog seen -> result returned, warning written
         Limitation: a DTE call that is blocked by a modal dialog (e.g. the XAE
         "Assertion Failed" box) does NOT return and cannot be interrupted from here;
@@ -59,6 +66,8 @@ function Invoke-TcComRetry {
 
     $__tcBusyPattern = '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER'
     $__tcBusyHResults = @([int64]0x80010001, [int64]0x8001010A)
+    $__tcDeadRpcPattern = '0x800706BE|0x800706BA|0x80010108|RPC_S_CALL_FAILED|RPC_S_SERVER_UNAVAILABLE|RPC_E_DISCONNECTED'
+    $__tcDeadRpcHResults = @([int64]0x800706BE, [int64]0x800706BA, [int64]0x80010108)
     $__tcDelaySec = 1
     $__tcStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -136,17 +145,51 @@ while (-not $Sync.Stop) {
             catch {
                 # Inspect the whole exception chain (MethodInvocationException wraps COMException)
                 $__tcIsBusy = $false
+                $__tcIsDeadRpc = $false
                 $__tcEx = $_.Exception
                 while ($null -ne $__tcEx) {
-                    if ($__tcEx.Message -match $__tcBusyPattern) { $__tcIsBusy = $true; break }
+                    if ($__tcEx.Message -match $__tcBusyPattern) { $__tcIsBusy = $true }
+                    if ($__tcEx.Message -match $__tcDeadRpcPattern) { $__tcIsDeadRpc = $true }
                     $__tcHr = $__tcEx.PSObject.Properties['HResult']
                     if ($null -ne $__tcHr -and $null -ne $__tcHr.Value) {
                         try {
-                            if ($__tcBusyHResults -contains ([int64]$__tcHr.Value -band 0xFFFFFFFF)) { $__tcIsBusy = $true; break }
+                            $__tcHrVal = ([int64]$__tcHr.Value -band 0xFFFFFFFF)
+                            if ($__tcBusyHResults -contains $__tcHrVal) { $__tcIsBusy = $true }
+                            if ($__tcDeadRpcHResults -contains $__tcHrVal) { $__tcIsDeadRpc = $true }
                         }
                         catch { }
                     }
                     $__tcEx = $__tcEx.InnerException
+                }
+
+                # IDE process gone after an RPC failure -> the XAE crashed (e.g. 32-bit OutOfMemory).
+                if (($__tcIsDeadRpc -or $__tcIsBusy) -and $__tcIdePid -gt 0) {
+                    $__tcIdeGone = $false
+                    # Only "no such process" counts as gone; a HasExited read that throws
+                    # (access denied etc.) leaves the process treated as alive.
+                    $__tcProc = $null
+                    try { $__tcProc = Get-Process -Id $__tcIdePid -ErrorAction Stop }
+                    catch { $__tcIdeGone = $true }
+                    if (-not $__tcIdeGone -and $null -ne $__tcProc) {
+                        try { if ($__tcProc.HasExited) { $__tcIdeGone = $true } } catch { }
+                    }
+                    if ($__tcIdeGone) {
+                        $__tcOrigMsg = $_.Exception.Message
+                        $__tcCrashMsg = [string]$__tcOrigMsg
+                        if ($__tcCrashMsg.Length -gt 200) { $__tcCrashMsg = $__tcCrashMsg.Substring(0, 200) }
+                        $script:TcLastIdeCrash = "$([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')) $__tcCrashMsg"
+                        $script:TcAutomationSettings = $null
+                        $script:TcSilentMode = $false
+                        $script:TcSilentModeOriginal = $null
+                        $script:TcIdeConnected = $false
+                        if ($null -ne $script:TcSysManager) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { } }
+                        if ($null -ne $script:TcDte) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcDte) | Out-Null } catch { } }
+                        $script:TcSysManager = $null
+                        $script:TcDte = $null
+                        $script:TcIdeProcessId = $null
+                        $script:TcIdeMainHwnd = 0
+                        throw "IDE_CRASHED: the IDE process (pid $__tcIdePid) no longer exists after '$OperationName' failed ($([int]$__tcStopwatch.Elapsed.TotalSeconds) s, original error: $__tcOrigMsg). The XAE crashed; module IDE state was reset."
+                    }
                 }
 
                 $__tcDialog = $null

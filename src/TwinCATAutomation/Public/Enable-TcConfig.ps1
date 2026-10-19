@@ -70,7 +70,7 @@ function Enable-TcConfig {
 
     $sm = Get-TcSysManager
     if ($null -eq $sm) {
-        return New-TcResult -Success $false -ErrorMessage 'No TwinCAT project loaded.' -ErrorCode 'NO_PROJECT'
+        return New-TcNoSysManagerResult
     }
 
     # --- cycle state (read by the nested helpers below via dynamic scope) ---
@@ -84,6 +84,7 @@ function Enable-TcConfig {
     $wasConnected = [bool]$script:TcAdsConnected
     $origNetId = $script:TcAdsAmsNetId
     $origPort = $script:TcAdsPort
+    $ideMemoryMB = $null
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -103,7 +104,19 @@ function Enable-TcConfig {
             reconnected = $reconnected
             plcState    = $plcState
             amsNetId    = $netId
+            ideMemoryMB = $ideMemoryMB
             steps       = @($steps.ToArray())
+        }
+    }
+
+    # Reads the IDE working set before Activate (a 32-bit XAE crashes with OutOfMemory
+    # around 1.5 GB in the CODESYS Visu engine). Warns, never fails.
+    function Read-TcIdeMemoryBeforeActivate {
+        $mem = Get-TcIdeMemoryInfo
+        if ($null -eq $mem) { return }
+        Set-Variable -Name ideMemoryMB -Value $mem.MemoryMB -Scope 1
+        if ($mem.Is32Bit -and $mem.MemoryMB -gt 1500) {
+            Write-Warning "Enable-TcConfig: the 32-bit XAE uses $($mem.MemoryMB) MB (limit ~2-4 GB); ActivateConfiguration() may crash it with OutOfMemoryException. Consider Disconnect-TcIde -Quit and a fresh Connect-TcIde first."
         }
     }
 
@@ -152,6 +165,7 @@ function Enable-TcConfig {
     if (-not $Force) {
         $fail = Test-TcStepModalDialog -Name 'activate'
         if ($null -ne $fail) { return $fail }
+        Read-TcIdeMemoryBeforeActivate
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
@@ -161,7 +175,7 @@ function Enable-TcConfig {
         catch {
             Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
             $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
-            $code = if ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
+            $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
             $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
             return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
         }
@@ -213,6 +227,7 @@ function Enable-TcConfig {
     if ($null -ne $fail) { return $fail }
     $fail = Test-TcStepModalDialog -Name 'activate'
     if ($null -ne $fail) { return $fail }
+    Read-TcIdeMemoryBeforeActivate
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
@@ -222,7 +237,7 @@ function Enable-TcConfig {
     catch {
         Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
         $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
-        $code = if ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
+        $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
         $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
         return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
     }
@@ -239,7 +254,7 @@ function Enable-TcConfig {
     $restarted = $true
     Add-TcStepRecord -Name 'set-run' -Ok $true -Watch $sw -Detail "system state $($r.data.currentState)"
 
-    # 4. login (Login(3) = compile + suppress dialogs, downloads when nothing is loaded)
+    # 4. login (Enter-TcPlcOnline -LoginMode Regular: PLC_LOGIN_FLAGS REGULAR = 1, prompts answered by ITcAutomationSettings.SilentMode)
     if (-not $NoLogin) {
         $fail = Test-TcCycleDeadline -Name 'login'
         if ($null -ne $fail) { return $fail }
@@ -248,8 +263,21 @@ function Enable-TcConfig {
         if ($null -ne $fail) { return $fail }
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         # Re-scan the solution: the system restart can leave cached tree items stale.
-        try { $null = Get-TcSysManager -Refresh } catch { }
-        $r = Enter-TcPlcOnline
+        # Only "no project / scan failed" is ignored here; an IDE crash must not be swallowed.
+        try { $null = Get-TcSysManager -Refresh }
+        catch {
+            if ($_.Exception.Message -match 'IDE_CRASHED') {
+                Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail ([string]$_.Exception.Message)
+                return New-TcStepFailure -Message ([string]$_.Exception.Message) -Code 'IDE_CRASHED'
+            }
+        }
+        # REGULAR (1) + global SilentMode: XAE decides (downloads when the runtime has no application,
+        # otherwise attaches). Verified 2026-10-19 on an empty UmRT and on a re-deploy
+        # (lifecycle-smoke 37/37 twice). FORCEDOWNLOAD | SILENT (260) also deployed to the
+        # empty runtime, but on the following cycle ActivateConfiguration() blocked for
+        # 250 s: the 32-bit XAE crashed (OutOfMemoryException in the CODESYS Visu engine,
+        # Windows event 1026), unrelated to the login flag. Regular is used here.
+        $r = Enter-TcPlcOnline -LoginMode Regular
         if (-not $r.success) {
             Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
             return New-TcStepFailureFromResult -Result $r -Prefix 'PLC login/download failed' -DefaultCode 'LOGIN_FAILED'
