@@ -64,33 +64,33 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | 用途 |
 |---|---|
-| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`ownedBySession`(本 session 啟動的 IDE,`-Kill` 允許)、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`ownedBySession`(本 session 啟動的 IDE,`-Kill` 允許)、`candidates[]`、`connectSec`(總耗時)、`launchSec`(只在 launched:啟動到 DTE 可用);連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
 | `Disconnect-TcIde [-Quit] [-Kill]` | 釋放 IDE COM 參考。`-Quit`:先查 modal(有就直接回 `IDE_QUIT_FAILED`,`data.dialog`、`data.quit=false`、`disconnected=false`,不白等 60 s,**連線原封保留**:reload-prompt 就 `Reset-TcSolution` 再 `-Quit`;其他用 `-Quit -Kill` 或 `Stop-Process`),再 `Solution.Close`(不存檔)+ `DTE.Quit`;quit 失敗也回 `IDE_QUIT_FAILED`(`success:false`,`data.ideProcessId` / `quitError`,IDE 還活著)。失敗時模組保留 pid / `selectedBy`,可直接接 `-Quit -Kill`,不用重連。`-Quit -Kill`:quit 不了(modal 或 DTE.Quit 失敗)就 `Stop-Process -Force` 該 IDE 並等它消失(≤10 s,`data.killed=true`;kill 前確認 pid 仍是 TcXaeShell / devenv 且啟動時間相符,否則視為過期 pid、不殺;pid 已不存在回 `alreadyExited=true`);只限本 session 啟動的 IDE(`data.ownedBySession=true`;`Reset-TcSolution` 內部重連後 `selectedBy` 變 solution-match 也照樣允許),否則回 `IDE_NOT_OWNED` 不殺。`-Kill` 不帶 `-Quit` 回 `INVALID_PARAMS` |
 | `Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120]` | 關掉 reload 提示(若正在跳)→ `Documents.CloseAll`(不存檔)→ `Solution.Close` → 同一個 IDE `Solution.Open` → `Connect-TcIde -SolutionPath` 重連(實測約 20~25 s:Open 7~9 s + 重連 12~13 s),讓 XAE 重新從磁碟載入所有專案檔。磁碟直接改 .TcPOU 且該檔開在編輯器時用(見「重要注意」11)。.plcproj 被改寫時 XAE 跳「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」(`reloadTarget=project`):它按 **Yes**(control id 6,語系無關),XAE 自己 reload 專案,只重連 + 探測 `LookupTreeItem('TIPC')`、不 close/reopen(`data.answeredYes=true`、`reopenedSolution=false`),失敗才退回完整流程;其他 modal 會回 `IDE_MODAL_DIALOG`;data 有 `dismissedReloadPrompt`、`reloadTarget`、`answeredYes`、`reopenedSolution`、`ownedBySession`、`closedDocuments`、`sameIde`、`closeSec`、`openSec`、`connectSec`、`totalSec` |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
 | `Open-TcProject -Path <sln>` | 開既有 solution |
-| `Get-TcProjectTree` | 專案樹 JSON |
+| `Get-TcProjectTree [-Depth 4] [-PlcOnly]` | 專案樹 JSON;含 `<Plc> Project` 下 POUs/DUTs/GVLs,節點 `path` 可直接當 `-PouPath`;`-PlcOnly` 只回 TIPC 子樹 |
 | `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>]` | 新增 POU |
 | `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL |
 | `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union>` | 新增 DUT |
 | `Add-TcLibrary -Name <lib>` | 加 library 參考 |
-| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation |
-| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼 |
+| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
+| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND` |
 | `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
 | `Build-TcProject` | Build(COM busy 自動重試);data:`errors`(Error List 錯誤數)、`failedProjects`(LastBuildInfo)、`errorItems[]`(severity/code/description/project/file/line/column) |
-| `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`(含 `-IncludeWarnings` → `warnings[]`、`-IncludeMessages` → `messages[]`)、`truncated`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
+| `Get-TcBuildErrors [-IncludeWarnings:$false] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`、`warnings[]`(`-IncludeWarnings` 預設開,`:$false` 省 1~2 s 的 toggle)、`-IncludeMessages` → `messages[]`、`truncated`;按鈕計數也認 zh-TW 的「N 個錯誤/個警告/則訊息」;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
 | `Set-TcTarget -AmsNetId <id>` | 設定 target system |
 | `Enable-TcConfig [-Force] [-NoLogin] [-TimeoutSec <n>]` | Activate;-Force = 完整 Config→Run→Login→PLC Run,-TimeoutSec 為總上限 |
 | `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
 | `Connect-TcAds [-AmsNetId <id>] [-Port 851]` | 連 ADS;data 有 `adsBackend` |
 | `Disconnect-TcAds` | 斷 ADS |
-| `Read-TcVariable -Path <sym>` | 讀變數(自動重連) |
-| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL/INT/UINT/DINT/UDINT/REAL/LREAL/STRING(自動重連) |
-| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Condition <sb>] [-TimeoutMs <ms>]` | 輪詢直到條件成立(自動重連) |
-| `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"` |
+| `Read-TcVariable -Path <sym>` | 讀變數(自動重連);`value` 依型別轉換,TIME/DATE 類回 IEC 字面(`"T#6s"`)另附 `ms`/`ns`/`unix` 整數、enum 另回 `name`、STRUCT 回 byte 陣列加 `size`(見下「型別對照」) |
+| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL、整數型、REAL/LREAL、STRING、TIME/LTIME/TOD/DATE/DT/LDT(IEC 字面 `T#6s`、`DT#2026-10-20-12:30:00`,整數 ms/ns/秒也收)、enum(整數或成員名);`data.written` 是實際寫入的轉換值(時間類回正規化字面,`T#6000ms` → `T#6s`);STRUCT/ARRAY 回 `TYPE_MISMATCH`(自動重連) |
+| `Watch-TcVariable -Path <sym>[,<sym>] [-IntervalMs 100] [-DurationMs 2000] [-Until "<Path> <op> <value>"] [-UntilTimeoutMs 5000] [-KeepLast <n>]` | 輪詢(自動重連)。`-Until` 字串條件,op 為 `== != > < >= <=`,`<Path>` 必須在 -Path 內,例 `-Until "MAIN.fTarget == 123.5"`:命中立刻回 `untilMet=true`、`untilSample`、`elapsedMs`,逾時 `untilMet=false`;數字比數值、TRUE/FALSE 比布林、其餘不分大小寫比字串。`samples` 只留最後 `-KeepLast` 筆(預設有 Until 20、無 50),`sampleCount` 是總數、`truncated` 表示有丟;單一 path 的 sample 與 Read 同樣轉換(含 `ms`/`ns`/`unix`/`name`),條件值是數字時用該整數比、文字時用 IEC 字面或 enum 成員名比;多個 -Path 時 sample 是 `{timestamp, values{path=value}}` |
+| `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"`;enum 型別多回 `enumValues`(成員名→值) |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
 | `Enter-TcPlcOnline [-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)`:Regular=1、Download=4(full download)、OnlineChange=2,**預設不加 SILENT(256)**;提示框由 `Connect-TcIde` 開的全域 `ITcAutomationSettings.SilentMode` 以預設答案(Yes)處理。`-SilentFlag` 才會 OR 256,但實測旗標 SILENT 的語意是「遇到要問的就跳過不做」:257(REGULAR\|SILENT)在空 runtime 0.5 s 返回、**不建 app 不下載**、851 仍 Invalid,所以不要預設用。`Enable-TcConfig -Force` 的 login 步用 `-LoginMode Regular`(=1,XAE 自行決定是否下載;空 runtime 會建 app 並下載,實測 26 s、lifecycle 37/37);只有 `Send-TcPlcProgram` 用 Download(=4),已登入且 PLC 在跑時再做 full download;260(FORCEDOWNLOAD\|SILENT)實測下載成功,下一輪 Activate 時 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關。**不要用 3**(REGULAR\|FORCEONLINECHANGE 互斥,下載時會 abort)。SilentMode 開啟時,對已在 Run 且程式不一致的 PLC 直接呼叫 `Enter-TcPlcOnline`,XAE 會自動採用 online change/download 提示的預設答案;要明確控制就帶 `-LoginMode Download` 或 `OnlineChange`。`Enable-TcConfig` 不受影響。 |
@@ -100,6 +100,17 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating |
+
+### 型別對照(Read/Write/Watch-TcVariable)
+
+| PLC 型別 | 線上格式 | Read 回傳 | Write 接受 |
+|---|---|---|---|
+| TIME、TOD | UINT32 ms | `value` = `"T#6s"`、`"TOD#12:30:00"` + `ms` 整數 | `T#6s`、`T#1m30s500ms`、`TOD#12:30:00.500`(整數 ms 也收);`written` 回正規化字面 |
+| LTIME、LTOD | UINT64 ns | `value` = `"LTIME#1us"` + `ns` 整數 | `LTIME#…`、`LTOD#…`(整數 ns 也收) |
+| DATE、DT | UINT32 秒(1970 起) | `value` = `"D#2026-10-20"`、`"DT#2026-10-20-12:30:00"` + `unix` 整數 | `D#…`/`DT#…`、ISO 8601(含時區偏移會換成 UTC;整數 UNIX 秒也收) |
+| LDATE、LDT | UINT64 ns(1970 起) | `value` = `"LDT#…"` + `ns` 整數 | `LDT#…`、ISO 8601(整數 ns 也收) |
+| enum | 基底整數(預設 INT) | `value` 整數 + `name`(成員名;拿不到時 null + `hint`) | 整數或成員名(`"READY"`) |
+| STRUCT / ARRAY | raw bytes | `value` byte 陣列 + `size` | 不支援整筆寫(`TYPE_MISMATCH`),改寫個別成員 |
 
 ## Testing Example
 
@@ -158,6 +169,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `BUILD_FAILED` | 編譯錯誤(`data.failedProjects` > 0);`error.message` 含前 3 筆錯誤摘要,`data.errorItems[]` 是 Error List 全部錯誤(code/description/project/file/line) | 看 `data.errorItems`,修 code 後 `Build-TcProject`;不要在沒改東西的情況下重跑。若 `data.errorListError` = `ERRORLIST_UNAVAILABLE`,`errors` 退回 LastBuildInfo,改手動看 Error List |
 | `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
+| `POU_NOT_FOUND` | POU 名稱或 `-PouPath` 在 `<Plc> Project` 下找不到;`error.hint` 列出 `<Plc> Project` 第一層子節點,`data.tried[]` 是試過的路徑 | `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`;格式 `TIPC^<Plc>^<Plc> Project^POUs^<name>` |
 | `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
 | `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
@@ -213,10 +225,11 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 2. **Lifecycle 順序**:Build → `Enable-TcConfig -Force`(含 Login + PLC Run)→ `Connect-TcAds` → Read/Write/Test。port 851 只在 download 後存在。
 3. **Activate 後不要重連 IDE**:原 COM 參考在 TwinCAT XAR 重啟後仍有效;ADS 則會自動重連(看 `reconnected`)。
 4. **測 FB 時寫 MAIN 層級變數**:PLC 每個 scan 都會覆寫 FB 的 `VAR_INPUT`,ADS 寫進去馬上被蓋掉;在 MAIN 宣告獨立變數餵給 FB。
-5. **`Get/Write-TcPouCode` 用 `-PouPath`**:格式 `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`。
+5. **`Get/Write-TcPouCode` 的 `-PouPath` 可省略**:省略會自動找(`POUs` → project 根 → 遞迴搜尋),`data.pouPath`/`resolvedBy` 回報命中位置。4024 與 4026 格式相同:`TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`(DUT 在 `DUTs`、GVL 在 `GVLs`)。找不到看 `POU_NOT_FOUND` 的 hint 或 `Get-TcProjectTree -PlcOnly`。
 6. **UmRT 假 Run**:本機 UmRT 跑約 30 分鐘後 task 可能停止循環但 ADS 仍顯示 Run;驗證時讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就是停了,重啟 `TcSystemServiceUm` 後重做 `Enable-TcConfig -Force`。
 7. **UmRT 不要 Reset**:對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm`,要手動重啟 service;要清狀態改用 Stop → `Enter-TcPlcOnline` 重新 download。
-8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
+8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。Warning 也有內容:`data.warningItems[]`(同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`warnings` 計數不再只是數字。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
 9. **重新 download 後 index offset 會變**:不要快取 symbol 的 indexGroup/indexOffset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp`。
-10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。
+10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。經 MCP server 回傳時,hint 裡的 cmdlet 名已換成 tool 名(`Enter-TcPlcOnline` → `PlcLogin`、`Connect-TcIde -SolutionPath <sln>` → `ConnectIde SolutionPath=<sln>`)。
 11. **直接改磁碟上的 .TcPOU / .plcproj 時**(不經 `Write-TcPouCode`):該檔**沒開**在 XAE 編輯器 → XAE 約 5 s 內自動重載、不跳框,改完等 5 s 再呼叫 DTE;該檔**開著** → 約 1 s 後跳 modal「File has been changed outside the environment. Reload the new file?」,所有 DTE 呼叫阻塞、VS 選項壓不掉,所以改完**立刻** `Reset-TcSolution`:它會先關掉這個提示(WM_CLOSE,`data.dismissedReloadPrompt`)、`Documents.CloseAll`(不存檔,`data.closedDocuments`;XAE 重開 solution 時會還原上次的編輯視窗,不關的話下次改磁碟又跳)、`Solution.Close`、在**同一個** IDE `Solution.Open` 再 `Connect-TcIde -SolutionPath`(solution-match 接回同 pid,`data.sameIde`),實測約 20~25 s。改寫 `.plcproj` 則跳「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」(`reloadTarget = project`),同樣立刻 `Reset-TcSolution`:它對這個提示按 Yes(依 control id,中文 UI 也行),XAE 自己 reload 專案,只重連不 close/reopen,比較快。其他種類的 modal 它只回 `IDE_MODAL_DIALOG`。`Write-TcPouCode` 走 COM 寫進 IDE 的編輯 buffer(磁碟檔案的 mtime/hash **不變**,要到存檔或 Build 的 Save all 才落地),不會跳框,能用就優先用它;要讓磁碟同步就接著 `Build-TcProject`。
+12. **MCP 同回合平行送的 tool call 到達順序不保證**:server 嚴格依到達順序一次執行一個,每個結果的 `data.seq`(遞增)、`startedAt`、`finishedAt` 告訴你實際順序;「寫參數 → 下命令 → 觀察」要分回合,等值用 `WatchVariable` 的 `Until`,不要用長 `DurationMs` 或連發 `ReadVariable`。

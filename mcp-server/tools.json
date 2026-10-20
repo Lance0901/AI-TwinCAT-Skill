@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T04:43:02Z",
+    "generatedAt":  "2026-10-20T05:48:29Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -133,7 +133,7 @@
                                                                             },
                                                              "PlcProjectPath":  {
                                                                                     "type":  "string",
-                                                                                    "description":  "Tree path to the PLC project's POUs folder. Auto-detected if omitted."
+                                                                                    "description":  "Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same on 4024 and 4026). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
                                                                                 }
                                                          },
                                           "required":  [
@@ -146,7 +146,7 @@
                   {
                       "name":  "BuildProject",
                       "cmdlet":  "Build-TcProject",
-                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems (description/file/line taken from the XAE Error List) instead of guessing; a full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
+                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
                       "timeoutMs":  600000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -194,7 +194,7 @@
                   {
                       "name":  "ConnectIde",
                       "cmdlet":  "Connect-TcIde",
-                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId and, when a solution is open, the detected target AmsNetId.",
+                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -306,7 +306,7 @@
                   {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
-                      "description":  "Read the compiler messages currently shown in the XAE Error List (errors by default; IncludeWarnings/IncludeMessages add the rest). Needs an English XAE UI (window \"Error List\", button \"N Errors\"); other UI languages return ERRORLIST_UNAVAILABLE.",
+                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI; other UI languages return ERRORLIST_UNAVAILABLE.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -316,7 +316,7 @@
                                           "properties":  {
                                                              "IncludeWarnings":  {
                                                                                      "type":  "boolean",
-                                                                                     "description":  "Also read warning rows (data.warnings)."
+                                                                                     "description":  "Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA). Also reads warning rows (data.warnings, always present when on, possibly empty)."
                                                                                  },
                                                              "IncludeMessages":  {
                                                                                      "type":  "boolean",
@@ -410,7 +410,7 @@
                                                                          },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
@@ -422,7 +422,7 @@
                   {
                       "name":  "GetProjectTree",
                       "cmdlet":  "Get-TcProjectTree",
-                      "description":  "Reads and returns the full TwinCAT project structure as a JSON tree.",
+                      "description":  "Read the project tree. Every node has name, path, type, itemType, subType and children; path can be passed as-is to GetPouCode / WritePouCode PouPath. type is the item kind from ItemType (Project, Folder, FunctionBlock, Function, Program, Dut, Gvl, Task, References ...) or the numeric ItemType when unknown (itemType / subType are also returned as numbers). The PLC node TIPC^<Plc> also lists \"<Plc> Project\" with its POUs, DUTs and GVLs folders (on 4024 and 4026 the project node is hidden from enumeration and is added by path). Depth (default 4) = levels below each root, enough for TIPC^<Plc>^<Plc> Project^POUs^<POU>; a node at the depth limit that still has children comes back with children=[] and truncated=true. PlcOnly=true returns only the TIPC subtree.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -430,7 +430,17 @@
                       "inputSchema":  {
                                           "type":  "object",
                                           "properties":  {
-
+                                                             "Depth":  {
+                                                                           "type":  "integer",
+                                                                           "minimum":  1,
+                                                                           "maximum":  10,
+                                                                           "description":  "Levels below each root node (1-10, default 4). 4 reaches the POUs: TIPC(0)^<Plc>(1)^<Plc> Project(2)^POUs(3)^<POU>(4). Nodes at the limit that have children return truncated=true.",
+                                                                           "default":  4
+                                                                       },
+                                                             "PlcOnly":  {
+                                                                             "type":  "boolean",
+                                                                             "description":  "true = return only the TIPC (PLC) subtree."
+                                                                         }
                                                          },
                                           "required":  [
 
@@ -441,7 +451,7 @@
                   {
                       "name":  "GetSymbols",
                       "cmdlet":  "Get-TcSymbols",
-                      "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter). Use it to find exact variable paths before ReadVariable/WriteVariable.",
+                      "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter): path, type, size, comment, and for enum types enumValues (member name -> value). Use it to find exact variable paths and types before ReadVariable/WriteVariable.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -665,7 +675,7 @@
                   {
                       "name":  "ReadVariable",
                       "cmdlet":  "Read-TcVariable",
-                      "description":  "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. Values are typed by the PLC type (BOOL/INT/REAL/STRING ...; structs come back as byte arrays). Requires ConnectAds (auto-reconnects after EnableConfig).",
+                      "description":  "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. Each entry has path, value, type: BOOL/integers/REAL/STRING are plain values; TIME/TOD, LTIME/LTOD, DATE/DT, LDATE/LDT return the IEC literal in value (\"T#6s\", \"DT#2026-10-20-12:30:00\") plus the raw integer in ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT) or unix (DATE/DT); enums return the integer in value plus the member name in name; STRUCT/ARRAY return the raw bytes in value plus size. Requires ConnectAds (auto-reconnects after EnableConfig).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -925,7 +935,7 @@
                   {
                       "name":  "WatchVariable",
                       "cmdlet":  "Watch-TcVariable",
-                      "description":  "Poll one PLC variable every IntervalMs for DurationMs and return the samples. The condition-based mode (Until) is a PowerShell scriptblock and is NOT available through MCP; use repeated ReadVariable calls instead. Requires ConnectAds.",
+                      "description":  "Poll one or more PLC variables (Path is an array; every round reads each path in order) every IntervalMs. Without Until it samples for DurationMs (default 2000). With Until it waits for a condition '<Path> <op> <value>' (op: == != > < >= <=, e.g. 'MAIN.fTarget == 123.5' or 'MAIN.bDone == TRUE'; <Path> must be one of Path) and returns as soon as it holds or after UntilTimeoutMs (default 5000): data.untilMet, untilSample, elapsedMs. Numbers compare numerically, TRUE/FALSE as booleans, other values as case-insensitive text; a failed read never satisfies the condition. Only the last KeepLast samples are returned (default 20 with Until, 50 without); sampleCount is the total and truncated tells whether older samples were dropped. Single-path samples are {timestamp, value} plus ms/ns/unix for TIME/DATE types and name for enums (same conversion as ReadVariable; a numeric Until value compares with that raw integer, text with the IEC literal / enum member name), multi-path samples {timestamp, values:{<path>:<value>}}. Use Until instead of a long DurationMs or repeated ReadVariable calls. Requires ConnectAds.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -934,23 +944,41 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "Path":  {
-                                                                          "type":  "string",
-                                                                          "description":  "Variable path to monitor."
+                                                                          "type":  "array",
+                                                                          "items":  {
+                                                                                        "type":  "string"
+                                                                                    },
+                                                                          "minItems":  1,
+                                                                          "description":  "One or more variable paths to monitor, e.g. [\"MAIN.nCounter\"] or [\"MAIN.fActual\",\"MAIN.bDone\"]. Always an array."
                                                                       },
                                                              "IntervalMs":  {
                                                                                 "type":  "integer",
-                                                                                "description":  "Polling interval in milliseconds. Default: 100.",
+                                                                                "description":  "Delay between sampling rounds in milliseconds. Default: 100.",
                                                                                 "default":  100
                                                                             },
                                                              "DurationMs":  {
                                                                                 "type":  "integer",
-                                                                                "description":  "Total monitoring duration in milliseconds."
+                                                                                "description":  "Sampling duration in ms when Until is not given (default 2000)."
                                                                             },
+                                                             "Until":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Stop condition '<Path> <op> <value>' with op one of == != > < >= <=, e.g. 'MAIN.fTarget == 123.5'. <Path> must be in Path (case-insensitive)."
+                                                                       },
+                                                             "UntilTimeoutMs":  {
+                                                                                    "type":  "integer",
+                                                                                    "description":  "Maximum time in ms to wait for Until before returning untilMet=false. Default 5000.",
+                                                                                    "default":  5000
+                                                                                },
                                                              "TimeoutMs":  {
                                                                                "type":  "integer",
-                                                                               "description":  "Max wait time for condition. Default: 5000.",
+                                                                               "description":  "Legacy alias of UntilTimeoutMs; used only when UntilTimeoutMs is not given.",
                                                                                "default":  5000
-                                                                           }
+                                                                           },
+                                                             "KeepLast":  {
+                                                                              "type":  "integer",
+                                                                              "description":  "Number of most recent samples to return. 0 = auto (20 with Until, 50 without). sampleCount still counts every round; truncated=true when older samples were dropped.",
+                                                                              "default":  0
+                                                                          }
                                                          },
                                           "required":  [
                                                            "Path"
@@ -984,7 +1012,7 @@
                                                                                 },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
@@ -996,7 +1024,7 @@
                   {
                       "name":  "WriteVariable",
                       "cmdlet":  "Write-TcVariable",
-                      "description":  "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol (send JSON bool for BOOL, number for numeric types, string for STRING). Requires ConnectAds.",
+                      "description":  "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol: JSON bool for BOOL, number for integer/REAL types, string for STRING; TIME/TOD take an IEC literal (\"T#6s\", \"T#1m30s500ms\", \"TOD#12:30:00\"; integer ms also accepted), LTIME/LTOD \"LTIME#1us\" (or integer ns), DATE/DT \"D#2026-10-20\" / \"DT#2026-10-20-12:30:00\" / ISO 8601 (or integer seconds since 1970), enums an integer or the member name. STRUCT/ARRAY cannot be written as a whole (TYPE_MISMATCH): write their members. data.written is the value actually written: the normalized literal for time types (\"T#6000ms\" -> \"T#6s\", raw integer in ms/ns/unix), the converted number otherwise, plus name for enums. Requires ConnectAds.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -1010,7 +1038,7 @@
                                                                           "description":  "Variable path (e.g., \"MAIN.nSetpoint\")."
                                                                       },
                                                              "Value":  {
-                                                                           "description":  "New value; JSON bool, number or string matching the PLC type of the symbol."
+                                                                           "description":  "New value matching the PLC type of the symbol: JSON bool (BOOL), number (integer/REAL/LREAL), string (STRING). TIME/TOD: \"T#6s\" / \"T#1m30s500ms\" / \"TOD#12:30:00\" (integer ms also accepted); LTIME/LTOD: \"LTIME#1us\" (or integer ns); DATE/DT: \"D#2026-10-20\", \"DT#2026-10-20-12:30:00\" or ISO 8601 (or integer seconds since 1970); LDATE/LDT: \"LDT#...\" (or integer ns); enum: integer or member name (\"READY\")."
                                                                        }
                                                          },
                                           "required":  [

@@ -44,10 +44,9 @@ function Add-TcDut {
     }
 
     try {
-        $plcProject = Invoke-TcComRetry -OperationName 'Lookup PLC project' -ScriptBlock {
-            $plcConfig = $sm.LookupTreeItem('TIPC')
-            Write-Output -NoEnumerate $plcConfig.Child(1)
-        }
+        # TIPC^<Plc>^<Plc> Project^DUTs (falls back to the <Plc> Project node)
+        $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'DUTs'
+        $plcProject = $folderInfo.Item
 
         # Build declaration
         switch ($DutType) {
@@ -89,9 +88,10 @@ function Add-TcDut {
 
         $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name    = $Name
-            dutType = $DutType
-            path    = $itemPath
+            name       = $Name
+            dutType    = $DutType
+            path       = $itemPath
+            folderPath = $folderInfo.Path
         })
     }
     catch {

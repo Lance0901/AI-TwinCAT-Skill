@@ -162,6 +162,9 @@ describe('index.js over stdio (3-tool fixture)', () => {
     const ok = parse(again);
     assert.equal(ok.success, true);
     assert.equal(ok.data.progId, 'Test.DTE');
+    assert.ok(Number.isInteger(ok.data.seq) && ok.data.seq > 0);
+    assert.ok(!Number.isNaN(Date.parse(ok.data.startedAt)));
+    assert.ok(!Number.isNaN(Date.parse(ok.data.finishedAt)));
   });
 
   test('GetIdeModalDialog after ConnectIde -> success, dialog null', async () => {

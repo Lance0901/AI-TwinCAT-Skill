@@ -4,6 +4,9 @@ function Get-TcSymbols {
         Enumerates PLC symbols from the ADS symbol table.
     .PARAMETER Filter
         Optional wildcard filter (e.g., "MAIN.*").
+    .DESCRIPTION
+        Each entry has path, type, size, comment; enum-typed symbols also carry enumValues
+        (member name -> integer value).
     #>
     [CmdletBinding()]
     param(
@@ -25,14 +28,22 @@ function Get-TcSymbols {
         # (TcAdsSymbol has both 'Datatype' and 'DataType' which PowerShell cannot distinguish)
         $symbols = [TcAdsHelper]::GetAllSymbols($script:TcAdsClient, $Filter)
 
+        # Enum types get their member table (name -> value) from the runtime's data type table,
+        # loaded once per ADS session (Get-TcEnumTable); non-enum symbols have no enumValues key.
+        $enumTable = Get-TcEnumTable
         $result = @()
         foreach ($sym in $symbols) {
-            $result += [PSCustomObject]@{
+            $entry = [ordered]@{
                 path    = $sym['Name']
                 type    = $sym['TypeName']
                 size    = $sym['Size']
                 comment = $sym['Comment']
             }
+            if ($enumTable.Count -gt 0) {
+                $enum = Find-TcEnumType -TypeName ([string]$sym['TypeName'])
+                if ($null -ne $enum) { $entry.enumValues = [PSCustomObject]$enum.Values }
+            }
+            $result += [PSCustomObject]$entry
         }
 
         # NOTE: data stays an array (consumers iterate it directly), so the
