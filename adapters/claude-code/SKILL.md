@@ -89,7 +89,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Disconnect-TcAds` | 斷 ADS |
 | `Read-TcVariable -Path <sym>` | 讀變數(自動重連);`value` 依型別轉換,TIME/DATE 類回 IEC 字面(`"T#6s"`)另附 `ms`/`ns`/`unix` 整數、enum 另回 `name`、STRUCT 回 byte 陣列加 `size`(見下「型別對照」) |
 | `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL、整數型、REAL/LREAL、STRING、TIME/LTIME/TOD/DATE/DT/LDT(IEC 字面 `T#6s`、`DT#2026-10-20-12:30:00`,整數 ms/ns/秒也收)、enum(整數或成員名);`data.written` 是實際寫入的轉換值(時間類回正規化字面,`T#6000ms` → `T#6s`);STRUCT/ARRAY 回 `TYPE_MISMATCH`(自動重連) |
-| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Until <sb>] [-DurationMs <ms>] [-TimeoutMs <ms>]` | 輪詢直到條件成立或時間到(自動重連);samples 與 Read 同樣轉換(含 `ms`/`ns`/`unix`/`name`) |
+| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Until <sb>] [-DurationMs <ms>] [-TimeoutMs <ms>]` | 輪詢直到條件成立或時間到(自動重連);samples 與 Read 同樣轉換(含 `ms`/`ns`/`unix`/`name`);`-Until` 的 `$_` 有 `.Value`(字面)、`.Raw`(時間型別的整數)、`.Name`,時間比較用 `{ $_.Raw -ge 5000 }` |
 | `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"`;enum 型別多回 `enumValues`(成員名→值) |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |

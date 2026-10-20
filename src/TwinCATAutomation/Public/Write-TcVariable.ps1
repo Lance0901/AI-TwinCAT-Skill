@@ -84,18 +84,23 @@ function Write-TcVariable {
                         $typed = ConvertTo-TcTypedValue -Value $Value -Type ([string]) -TypeName $typeName
                     }
                     default {
-                        # Enum (or integer alias): the symbol's DataTypeId gives the base integer type
-                        $enum = Find-TcEnumType -TypeName $typeName
-                        $intType = $null
-                        if ($null -ne $enum) { $intType = Get-TcAdsIntegerType -DataTypeId $typeId -BaseTypeName $enum.BaseType -Size $typeSize }
-                        elseif ($script:TcAdsIntegerTypeIds.ContainsKey($typeId)) { $intType = $script:TcAdsIntegerTypeIds[$typeId] }
+                        # Enum (or integer alias): scalar only; ARRAY/POINTER symbols report the element's
+                        # DataTypeId and must not be written as one integer (Resolve-TcAdsScalarIntegerType).
+                        $enum = $null
+                        $intType = Resolve-TcAdsScalarIntegerType -TypeName $typeName -DataTypeId $typeId -Size $typeSize -Enum ([ref]$enum)
                         if ($null -eq $intType) {
                             $hint = Get-TcErrorHint 'TYPE_MISMATCH'
+                            $why = "Write the members of a STRUCT/ARRAY individually."
+                            if ($script:TcAdsEnumCacheError) { $why += " Enum table unavailable: $($script:TcAdsEnumCacheError)" }
                             return New-TcResult -Success $false -ErrorCode 'TYPE_MISMATCH' -Hint $hint `
-                                -ErrorMessage "Unsupported type for write: $typeName (size $typeSize, dataTypeId $typeId). Write the members of a STRUCT/ARRAY individually."
+                                -ErrorMessage "Unsupported type for write: $typeName (size $typeSize, dataTypeId $typeId). $why"
                         }
-                        $v = $Value
-                        if ($null -ne $enum -and $v -is [string] -and $v.Trim() -notmatch '^[+-]?\d+$') {
+                        $v = Unwrap-TcValue $Value
+                        if ($v -is [string] -and $v.Trim() -notmatch '^[+-]?\d+$') {
+                            if ($null -eq $enum) {
+                                $why = if ($script:TcAdsEnumCacheError) { " (enum table unavailable: $($script:TcAdsEnumCacheError))" } else { '' }
+                                throw "'$v' is not a number and $typeName has no known enum members$why."
+                            }
                             $v = Resolve-TcEnumMemberValue -Enum $enum -Name $v
                         }
                         $typed = ConvertTo-TcTypedValue -Value $v -Type $intType -TypeName $typeName

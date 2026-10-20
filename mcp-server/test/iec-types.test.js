@@ -72,14 +72,18 @@ describe('IEC time/date conversion (module private helpers)', { skip: !isWin && 
       ['DT', '2026-10-20T12:30:00+08:00', 1792470600, 'DT#2026-10-20-04:30:00'],
       ['DATE_AND_TIME', '2026-10-20 12:30:00Z', 1792499400, 'DT#2026-10-20-12:30:00'],
       ['DT', 1792495907, 1792495907, 'DT#2026-10-20-11:31:47'],
-      ['LDT', 'LDT#2026-10-20-12:30:00.123456789', '1792499400123456789', 'LDT#2026-10-20-12:30:00.123456789']
+      ['LDT', 'LDT#2026-10-20-12:30:00.123456789', '1792499400123456789', 'LDT#2026-10-20-12:30:00.123456789'],
+      ['TIME', 'WRAPPED:T#6000ms', 6000, 'T#6s'],   // PSObject-wrapped string
+      ['TIME', 'WRAPPED:3000', 3000, 'T#3s']        // PSObject-wrapped number
     ];
     const body = `
 $cases = ConvertFrom-Json -InputObject '${JSON.stringify(cases.map(([t, v]) => ({ t, v }))).replace(/'/g, "''")}'
 $res = @()
 foreach ($c in $cases) {
   $ti = Get-TcIecTimeType -TypeName $c.t
-  $raw = ConvertFrom-TcIecLiteral -Value $c.v -TypeInfo $ti
+  $v = $c.v
+  if ($v -is [string] -and $v.StartsWith('WRAPPED:')) { $inner = $v.Substring(8); if ($inner -match '^\\d+$') { $inner = [int]$inner }; $v = [PSObject]::AsPSObject($inner) }
+  $raw = ConvertFrom-TcIecLiteral -Value $v -TypeInfo $ti
   $res += [PSCustomObject]@{ raw = [string]$raw; text = (Format-TcIecLiteral -Raw $raw -TypeInfo $ti) }
 }
 , $res`;
@@ -101,6 +105,8 @@ foreach ($c in $cases) {
       ['TIME', 99999999999, /out of range for TIME/],
       ['DT', '2026-13-01T00:00:00', /not a valid date/],
       ['TOD', 'TOD#25:00:00', /not a valid time of day/],
+      ['DATE', 'D#1960-01-01', /before 1970-01-01/],
+      ['TIME', '99999999999999999999999', /out of range for TIME/],
       ['TIME', true, /BOOL value/],
       ['TIME', { a: 1 }, /JSON object\/array/]
     ];
@@ -127,7 +133,9 @@ foreach ($c in $cases) {
       ['Single', 1.5, 1.5, 'Single'],
       ['Boolean', 'false', false, 'Boolean'],
       ['Boolean', 1, true, 'Boolean'],
-      ['UInt32', 4294967295, 4294967295, 'UInt32']
+      ['UInt32', 4294967295, 4294967295, 'UInt32'],
+      ['Int16', 'WRAPPED:5', 5, 'Int16'],        // PSObject-wrapped value (pipeline / (Write-Output 5) / 1e3)
+      ['Double', 'WRAPPED:2.5', 2.5, 'Double']
     ];
     const bad = [
       ['Int16', 70000, /out of range for Int16 \(-32768\.\.32767\)/],
@@ -142,7 +150,9 @@ $cases = ConvertFrom-Json -InputObject '${JSON.stringify([...cases, ...bad].map(
 $res = @()
 foreach ($c in $cases) {
   $type = [type]('System.' + $c.t)
-  try { $x = ConvertTo-TcTypedValue -Value $c.v -Type $type -TypeName $c.t; $res += [PSCustomObject]@{ ok = $true; value = $x; type = $x.GetType().Name } }
+  $v = $c.v
+  if ($v -is [string] -and $v.StartsWith('WRAPPED:')) { $v = [PSObject]::AsPSObject([double]::Parse($v.Substring(8), [Globalization.CultureInfo]::InvariantCulture)) }
+  try { $x = ConvertTo-TcTypedValue -Value $v -Type $type -TypeName $c.t; $res += [PSCustomObject]@{ ok = $true; value = $x; type = $x.GetType().Name } }
   catch { $res += [PSCustomObject]@{ ok = $false; error = $_.Exception.Message } }
 }
 , $res`;

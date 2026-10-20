@@ -37,6 +37,7 @@ const client = new Client({ name: 'ads-types-client', version: '0.0.0' }, { capa
 await client.connect(transport);
 
 const rows = [];
+let restore = null;   // { path, value } of the time variable, written back in finally
 async function call(name, args, label) {
   const res = await client.callTool({ name, arguments: args }, undefined, { timeout: 180000 });
   const body = JSON.parse(res.content[0].text);
@@ -53,7 +54,10 @@ async function call(name, args, label) {
 try {
   await call('ConnectAds', netId ? { AmsNetId: netId } : {}, 'ConnectAds');
   const first = await call('ReadVariable', { Path: [timeVar, enumVar, dtVar] }, 'ReadVariable x3');
+  if (!first.success || !Array.isArray(first.data)) throw new Error(`ReadVariable failed: ${JSON.stringify(first.error)}`);
   const orig = first.data.find((e) => e.path === timeVar);
+  if (!orig || orig.error) throw new Error(`${timeVar}: ${orig ? orig.error : 'not in the result'}`);
+  restore = { path: timeVar, value: orig.value };
   console.log(`  ${timeVar} = ${orig.value} (${orig.ms} ms); ${enumVar} = ${first.data[1].value} (${first.data[1].name}); ${dtVar} = ${first.data[2].value}`);
 
   await call('WriteVariable', { Path: timeVar, Value: 'T#2s500ms' }, `WriteVariable ${timeVar} "T#2s500ms"`);
@@ -65,6 +69,7 @@ try {
   await call('WriteVariable', { Path: timeVar, Value: orig.value }, `WriteVariable ${timeVar} restore ${orig.value}`);
   const back = await call('ReadVariable', { Path: [timeVar] }, 'ReadVariable after restore');
   if (back.success && back.data.value !== orig.value) console.log(`  !! restore mismatch: ${back.data.value} != ${orig.value}`);
+  restore = null;
 
   const en = first.data[1];
   await call('WriteVariable', { Path: enumVar, Value: en.value }, `WriteVariable ${enumVar} ${en.value} (same value)`);
@@ -80,6 +85,9 @@ try {
   await call('GetSymbols', { Filter: enumVar }, 'GetSymbols enum');
   await call('DisconnectAds', {}, 'DisconnectAds');
 } finally {
+  if (restore) {
+    try { await call('WriteVariable', { Path: restore.path, Value: restore.value }, `restore ${restore.path} after error`); } catch (e) { console.log(`  !! restore failed: ${e.message}`); }
+  }
   await client.close();
 }
 

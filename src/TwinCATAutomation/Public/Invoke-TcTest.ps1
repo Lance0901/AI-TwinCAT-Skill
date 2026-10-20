@@ -45,11 +45,24 @@ function Invoke-TcTest {
         foreach ($assertion in $TestCase.assertions) {
             $readResult = Read-TcVariable -Path $assertion.Path
             $actual = if ($readResult.success) { $readResult.data.value } else { $null }
-
             $operator = if ($assertion.Operator) { $assertion.Operator } else { 'Equal' }
             $expected = $assertion.Expected
 
-            $passed = Test-TcAssertion -Actual $actual -Operator $operator -Expected $expected
+            $compared = $actual
+            $cmpExpected = $expected
+            if ($readResult.success) {
+                # TIME/DATE types: value is the IEC literal, so compare on the raw integer (ms/ns/unix);
+                # an Expected written as a literal ("T#6s") is converted to the same unit first.
+                $timeType = Get-TcIecTimeType -TypeName $readResult.data.type
+                if ($null -ne $timeType) {
+                    $compared = Get-TcVariableRawValue -Data $readResult.data
+                    if ($expected -is [string] -and $expected.Trim() -notmatch '^[+-]?\d+$') {
+                        try { $cmpExpected = ConvertFrom-TcIecLiteral -Value $expected -TypeInfo $timeType } catch { }
+                    }
+                }
+            }
+
+            $passed = Test-TcAssertion -Actual $compared -Operator $operator -Expected $cmpExpected
 
             if (-not $passed) { $allPassed = $false }
 

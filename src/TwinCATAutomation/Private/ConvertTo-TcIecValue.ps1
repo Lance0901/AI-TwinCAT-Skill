@@ -8,8 +8,6 @@
 #   LDATE, LDT/LDATE_AND_TIME        UINT64  nanoseconds since 1970-01-01
 # Read/Write report these as the IEC literal ("T#6s", "DT#2026-10-20-12:30:00") in value/written and the
 # raw integer in an auxiliary field named by Field: ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT), unix (DATE/DT).
-# Read/Write report these as the IEC literal ("T#6s", "DT#2026-10-20-12:30:00") in value/written and the
-# raw integer in an auxiliary field named by Field: ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT), unix (DATE/DT).
 # Enums are their base integer type (INT by default); member names come from Get-TcEnumTable.
 
 $script:TcIecTimeTypes = @{
@@ -40,6 +38,9 @@ $script:TcIecEpoch = [DateTime]::new(1970, 1, 1, 0, 0, 0, [DateTimeKind]::Unspec
 # ADS data type ids (AdsDatatypeId) -> .NET type, used for enums and integer aliases
 $script:TcAdsIntegerTypeIds = @{
     16 = [sbyte]; 17 = [byte]; 2 = [int16]; 18 = [uint16]; 3 = [int32]; 19 = [uint32]; 20 = [int64]; 21 = [uint64]
+}
+$script:TcIecIntegerTypeSizes = @{
+    'SByte' = 1; 'Byte' = 1; 'Int16' = 2; 'UInt16' = 2; 'Int32' = 4; 'UInt32' = 4; 'Int64' = 8; 'UInt64' = 8
 }
 $script:TcIecIntegerTypeNames = @{
     'SINT' = [sbyte]; 'USINT' = [byte]; 'BYTE' = [byte]; 'INT' = [int16]; 'UINT' = [uint16]; 'WORD' = [uint16]
@@ -78,6 +79,22 @@ function Get-TcAdsIntegerType {
     return $null
 }
 
+function Get-TcIntegerTypeSize {
+    # Byte size of a .NET integer type ([int16] -> 2); 0 when unknown.
+    param([type]$Type)
+    if ($null -eq $Type) { return 0 }
+    if ($script:TcIecIntegerTypeSizes.ContainsKey($Type.Name)) { return $script:TcIecIntegerTypeSizes[$Type.Name] }
+    return 0
+}
+
+function Unwrap-TcValue {
+    # A value that reached a parameter wrapped in a PSObject (pipeline output, (Write-Output 5), 1e3 in
+    # command mode) is unwrapped; plain values come back unchanged. $Value.BaseObject would be $null here.
+    param($Value)
+    if ($Value -is [System.Management.Automation.PSObject]) { return $Value.PSObject.BaseObject }
+    return $Value
+}
+
 function Test-TcJsonContainer {
     # JSON objects / arrays coming through the CLI, the bridge or ConvertFrom-Json.
     param($Value)
@@ -102,9 +119,9 @@ function ConvertTo-TcTypedValue {
     #>
     param($Value, [type]$Type, [string]$TypeName)
 
+    $Value = Unwrap-TcValue $Value
     if ($null -eq $Value) { throw "Value is null; $TypeName needs a value." }
     if (Test-TcJsonContainer $Value) { throw "Value is a JSON object/array; $TypeName needs a scalar." }
-    if ($Value -is [System.Management.Automation.PSObject]) { $Value = $Value.BaseObject }
 
     if ($Type -eq [bool]) {
         if ($Value -is [bool]) { return [bool]$Value }
@@ -158,6 +175,7 @@ function ConvertTo-TcTypedValue {
             if ([double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [Math]::Truncate($d)) {
                 throw "$num is not an integer ($TypeName has no fraction)."
             }
+            if ([Math]::Abs($d) -gt 79228162514264337593543950335) { throw "$num is out of range for $TypeName." }
             $dec = [decimal]$d
         }
         else { $dec = [decimal]$num }
@@ -192,9 +210,9 @@ function ConvertFrom-TcIecLiteral {
     $max = if ($TypeInfo.Bits -eq 64) { [uint64]::MaxValue } else { [uint64][uint32]::MaxValue }
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
 
+    $Value = Unwrap-TcValue $Value
     if ($null -eq $Value) { throw "Value is null; $kind needs a value." }
     if (Test-TcJsonContainer $Value) { throw "Value is a JSON object/array; $kind needs an integer or a literal string." }
-    if ($Value -is [System.Management.Automation.PSObject]) { $Value = $Value.BaseObject }
 
     $rawNs = $null      # [decimal] nanoseconds (duration / tod / dt / date) when parsed from text
     $raw = $null        # [uint64] when given as a number
@@ -203,13 +221,15 @@ function ConvertFrom-TcIecLiteral {
         if ($family -ne 'date' -and $family -ne 'dt') { throw "A DateTime cannot be written to $kind." }
         $dtv = [DateTime]::SpecifyKind($Value, [DateTimeKind]::Unspecified)
         if ($family -eq 'date') { $dtv = $dtv.Date }
+        if ($dtv -lt $script:TcIecEpoch) { throw "$($dtv.ToString('yyyy-MM-dd HH:mm:ss')) is before 1970-01-01; not representable in $kind." }
         $rawNs = [decimal]($dtv - $script:TcIecEpoch).Ticks * 100
     }
     elseif ($Value -is [bool]) { throw "BOOL value $Value cannot be written to $kind." }
     elseif ($Value -is [string]) {
         $s = $Value.Trim()
         if ($s -match '^\+?\d+$') {
-            $raw = [uint64]::Parse($s.TrimStart('+'), $inv)
+            try { $raw = [uint64]::Parse($s.TrimStart('+'), $inv) }
+            catch { throw "'$s' is out of range for $kind (max $max $unit)." }
         }
         else {
             $prefix = $null
@@ -243,6 +263,7 @@ function ConvertFrom-TcIecLiteral {
                 throw "$Value is not an integer; $kind takes whole $unit (or a literal like T#2.5s)."
             }
         }
+        if ($null -ne $d -and [Math]::Abs($d) -gt 79228162514264337593543950335) { throw "$Value is out of range for $kind." }
         $dec = [decimal]$Value
         if ($dec -ne [decimal]::Truncate($dec)) { throw "$Value is not an integer; $kind takes whole $unit (or a literal like T#2.5s)." }
         if ($dec -lt 0) { throw "$Value is negative; $kind is unsigned." }
@@ -317,6 +338,7 @@ function ConvertFrom-TcDateBody {
     }
     try { $d = [DateTime]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], 0, 0, 0, [DateTimeKind]::Unspecified) }
     catch { throw "'$Original' is not a valid date." }
+    if ($d -lt $script:TcIecEpoch) { throw "'$Original' is before 1970-01-01; not representable." }
     return [decimal]($d - $script:TcIecEpoch).Ticks * 100
 }
 

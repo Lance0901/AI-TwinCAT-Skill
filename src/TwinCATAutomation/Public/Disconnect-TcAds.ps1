@@ -19,6 +19,9 @@ function Disconnect-TcAds {
     $script:TcAdsReconnected = $false
     $script:TcAdsEnumCache = $null
     $script:TcAdsEnumCacheError = $null
+    $script:TcAdsEnumCacheVersion = $null
+    $script:TcAdsEnumCacheFailedAt = $null
+    $script:TcAdsEnumIndex = $null
 
     New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'ADS connection closed.' })
 }

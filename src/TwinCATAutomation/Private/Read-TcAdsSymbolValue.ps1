@@ -55,21 +55,19 @@ function Read-TcAdsSymbolValue {
             }
         }
 
-        # Enum or integer alias: the symbol's DataTypeId tells the base integer type
-        $enum = Find-TcEnumType -TypeName $typeName
-        $intType = $null
-        if ($null -ne $enum) { $intType = Get-TcAdsIntegerType -DataTypeId $typeId -BaseTypeName $enum.BaseType -Size $typeSize }
-        elseif ($script:TcAdsIntegerTypeIds.ContainsKey($typeId)) { $intType = $script:TcAdsIntegerTypeIds[$typeId] }
-
+        # Enum or integer alias. The symbol's DataTypeId is the ELEMENT type for arrays/pointers too
+        # (ARRAY [0..7] OF BYTE reports id 17, size 8), so only a scalar whose size matches counts.
+        $enum = $null
+        $intType = Resolve-TcAdsScalarIntegerType -TypeName $typeName -DataTypeId $typeId -Size $typeSize -Enum ([ref]$enum)
         if ($null -ne $intType) {
             $entry.value = $script:TcAdsClient.ReadAny($handle, $intType)
             if ($null -ne $enum) {
                 $entry.name = Get-TcEnumMemberName -Enum $enum -Value $entry.value
                 if ($null -eq $entry.name) {
-                    $entry.hint = "Value $($entry.value) is not a member of $($enum.Name) (members: $(($enum.Values.Keys | ForEach-Object { "$_=$($enum.Values[$_])" }) -join ', '))."
+                    $entry.hint = "Value $($entry.value) is not a member of $($enum.Name) (members: $(Format-TcEnumMembers -Enum $enum))."
                 }
             }
-            elseif ($script:TcAdsEnumCacheError -and ($null -eq $script:TcAdsEnumCache -or $script:TcAdsEnumCache.Count -eq 0)) {
+            elseif ($script:TcAdsEnumCacheError) {
                 # Integer-typed symbol with a non-builtin type name and no enum table: probably an enum we cannot name
                 $entry.name = $null
                 $entry.hint = "Enum member names unavailable: $($script:TcAdsEnumCacheError)"
@@ -77,7 +75,7 @@ function Read-TcAdsSymbolValue {
             return $entry
         }
 
-        # STRUCT / ARRAY / unknown: raw bytes
+        # STRUCT / ARRAY / POINTER / unknown: raw bytes
         $buffer = New-Object byte[] $typeSize
         $null = $script:TcAdsClient.Read($handle, $buffer)
         $entry.value = [int[]]$buffer
@@ -87,4 +85,24 @@ function Read-TcAdsSymbolValue {
     finally {
         try { $script:TcAdsClient.DeleteVariableHandle($handle) } catch { }
     }
+}
+
+function Resolve-TcAdsScalarIntegerType {
+    <#
+    .SYNOPSIS
+        .NET integer type for a non-builtin symbol type that is a scalar enum or integer alias; $null for
+        arrays, pointers, references, structs and anything whose byte size does not match the integer.
+        Sets $Enum.Value to the enum descriptor when the type is an enum.
+    #>
+    param([string]$TypeName, [int]$DataTypeId, [int]$Size, [ref]$Enum)
+    $Enum.Value = $null
+    if ($TypeName.ToUpperInvariant() -match '^(ARRAY|POINTER TO|REFERENCE TO)\b') { return $null }
+    $e = Find-TcEnumType -TypeName $TypeName
+    $intType = $null
+    if ($null -ne $e) { $intType = Get-TcAdsIntegerType -DataTypeId $DataTypeId -BaseTypeName $e.BaseType -Size $Size }
+    elseif ($script:TcAdsIntegerTypeIds.ContainsKey($DataTypeId)) { $intType = $script:TcAdsIntegerTypeIds[$DataTypeId] }
+    if ($null -eq $intType) { return $null }
+    if ((Get-TcIntegerTypeSize -Type $intType) -ne $Size) { return $null }
+    $Enum.Value = $e
+    return $intType
 }

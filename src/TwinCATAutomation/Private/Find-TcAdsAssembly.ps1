@@ -233,15 +233,16 @@ public static class TcAdsHelper
         var clientType = client.GetType();
         var asm = clientType.Assembly;
         var createLoader = clientType.GetMethod("CreateSymbolInfoLoader", System.Type.EmptyTypes);
-        if (createLoader == null) return result;
+        if (createLoader == null) throw new System.NotSupportedException("TcAdsClient.CreateSymbolInfoLoader not found in " + asm.FullName);
         var loader = createLoader.Invoke(client, null);
         var getTypes = loader.GetType().GetMethod("GetDataTypes", new System.Type[] { typeof(bool) });
-        if (getTypes == null) return result;
+        if (getTypes == null) throw new System.NotSupportedException("TcAdsSymbolInfoLoader.GetDataTypes(bool) not found in " + asm.FullName);
         var iDataType = asm.GetType("TwinCAT.TypeSystem.IDataType");
         var iBitSize = asm.GetType("TwinCAT.TypeSystem.IBitSize");
         var iAdsType = asm.GetType("TwinCAT.Ads.ITcAdsDataType");
         var iEnumValue = asm.GetType("TwinCAT.TypeSystem.IEnumValue");
-        if (iDataType == null || iBitSize == null || iAdsType == null || iEnumValue == null) return result;
+        if (iDataType == null || iBitSize == null || iAdsType == null || iEnumValue == null)
+            throw new System.NotSupportedException("TwinCAT.TypeSystem data type interfaces not found in " + asm.FullName);
         var pName = iDataType.GetProperty("Name");
         var pCategory = iDataType.GetProperty("Category");
         var pBase = iAdsType.GetProperty("BaseTypeName");   // TcAdsDataType does not implement IAliasType
@@ -249,6 +250,8 @@ public static class TcAdsHelper
         var pEnumValues = iAdsType.GetProperty("EnumValues");
         var pEvName = iEnumValue.GetProperty("Name");
         var pEvPrim = iEnumValue.GetProperty("Primitive");
+        if (pName == null || pCategory == null || pBase == null || pSize == null || pEnumValues == null || pEvName == null || pEvPrim == null)
+            throw new System.NotSupportedException("TwinCAT.TypeSystem data type properties not found in " + asm.FullName);
 
         var types = (System.Collections.IEnumerable)getTypes.Invoke(loader, new object[] { false });
         foreach (object t in types)

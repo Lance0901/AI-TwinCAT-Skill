@@ -9,7 +9,9 @@ function Watch-TcVariable {
     .PARAMETER DurationMs
         Total monitoring duration in milliseconds.
     .PARAMETER Until
-        ScriptBlock condition to stop monitoring (receives $_ with .Value property).
+        ScriptBlock condition to stop monitoring. $_ has .Value (as Read-TcVariable reports it: the IEC
+        literal for TIME/DATE types), .Raw (the ms/ns/unix integer of a time type, else same as Value) and
+        .Name (enum member name or $null). Compare time types with .Raw: { $_.Raw -ge 5000 }.
     .PARAMETER TimeoutMs
         Max wait time for condition. Default: 5000.
     .NOTES
@@ -54,7 +56,11 @@ function Watch-TcVariable {
                     $samples += $sample
 
                     # Test condition
-                    $testObj = [PSCustomObject]@{ Value = $readResult.data.value }
+                    $testObj = [PSCustomObject]@{
+                        Value = $readResult.data.value
+                        Raw   = Get-TcVariableRawValue -Data $readResult.data
+                        Name  = if ($null -ne $readResult.data.PSObject.Properties['name']) { $readResult.data.name } else { $null }
+                    }
                     if ($Until.InvokeWithContext($null, [psvariable]::new('_', $testObj))) {
                         $conditionMet = $true
                         break
