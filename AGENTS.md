@@ -21,7 +21,8 @@ The full PLC lifecycle runs without any dialog popups:
 # 1. Connect to IDE (auto-opens solution if -SolutionPath given)
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
-# 1b. TwinCAT 4026: solution platform must equal the target platform (local UmRT = 'TwinCAT OS (x64)'), else ACTIVATE_FAILED
+# 1b. TwinCAT 4026 XAE: solution platform must equal the target platform (UmRT = Usermode Runtime = 'TwinCAT OS (x64)'),
+#     else ACTIVATE_FAILED. Without -Platform it is read from the target (TARGETINFO); ADS 0x702 -> PLATFORM_UNKNOWN
 Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
 
 # 2. Build
@@ -84,7 +85,8 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - `Get-TcPlcState` — Read PLC state
 - `Set-TcSystemState -State <Run|Config>` — System state
 - `Get-TcSystemState` — Read system state
-- `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release]` — Set target; `-Platform` activates a solution platform (4026 UmRT: `'TwinCAT OS (x64)'`)
+- `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` — Set target; the solution platform follows the target platform (TARGETINFO, ADS port 200 IG 0x700) or `-Platform` (UmRT: `'TwinCAT OS (x64)'`); unreadable without `-Platform` -> `PLATFORM_UNKNOWN` (NetId already set, `data.targetSet`); `-NoPlatformSwitch` = NetId only
+- `Enable-TcConfig ... [-Platform <name>] [-NoPlatformFix]` — before Activate compares solution vs target platform (or `-Platform`), switches + rebuilds on a mismatch (`PLATFORM_MISMATCH` with `-NoPlatformFix`); neither known -> `data.platformCheck = 'skipped'` + warning
 - `Get-TcIdeInfo` — IDE info
 
 ### ADS Variables

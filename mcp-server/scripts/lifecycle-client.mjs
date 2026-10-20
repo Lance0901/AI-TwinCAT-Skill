@@ -7,7 +7,8 @@
 //
 // --expect-fail <CODE> [--fail-platform <platform>]: run RunLifecycle once first with Platform=<fail-platform>
 //   (omitted = no Platform) and require that error code, e.g. --expect-fail ACTIVATE_FAILED
-//   --fail-platform "TwinCAT RT (x64)" against a 4026 UmRT (target platform TwinCAT OS (x64)).
+//   --fail-platform "TwinCAT RT (x64)" against a UmRT (target platform TwinCAT OS (x64)) that answers TARGETINFO with
+//   ADS 0x702; on a runtime with TARGETINFO EnableConfig fixes the platform itself and this expectation fails.
 // --read <path>: variable to read (default TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount).
 // Env: TWINCAT_MODULE_PATH (psm1 to load; default = this checkout's module), TWINCAT_MCP_POWERSHELL.
 // Exit code = number of failed steps.

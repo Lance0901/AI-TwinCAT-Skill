@@ -16,14 +16,19 @@
 Connect-TcIde -SolutionPath <sln>
       │  回 amsNetId、candidates[]、solutionPlatform / solutionConfiguration
       ▼
-Set-TcTarget -AmsNetId <id> -Platform <name>   (4026:solution platform 要等於 target platform;
-      │                                          本機 UmRT = 'TwinCAT OS (x64)'。4024 不需要)
+Set-TcTarget -AmsNetId <id> [-Platform <name>] (4026 XAE:solution platform 要等於 target platform;
+      │                                          target 有 TARGETINFO 就自動對齊,沒有(ADS 0x702)
+      │                                          要帶 -Platform,只換 NetId 用 -NoPlatformSwitch;
+      │                                          UmRT = 'TwinCAT OS (x64)'。4024 XAE 不檢查)
       ▼
 Build-TcProject
       │  BUILD_FAILED → 看 data.errorItems(Error List 明細);BUILD_TIMEOUT → 看 dialog
       ▼
-Enable-TcConfig -Force            ┐
-  ├─ Set-TcSystemState Config     │
+Enable-TcConfig -Force [-Platform <name>]
+  ├─ platform check(先於 deadline):solution platform vs target(TARGETINFO)/ -Platform
+  │    不一致 → 切換 + Build(steps platform-fix / platform-fix-build;-NoPlatformFix → PLATFORM_MISMATCH)
+  │    兩者都沒有 → platformCheck = skipped + warning,照舊 Activate
+  ├─ Set-TcSystemState Config     ┐
   ├─ ActivateConfiguration        │  每步輪詢到目標才進下一步
   │    LastBuildInfo > 0 → ACTIVATE_FAILED(Check config failed,停在這步)
   ├─ 等 port 10000 = Run          │  失敗回 steps[] 指出停在哪
@@ -46,7 +51,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - Activate 會重啟 TwinCAT XAR,所有既有 ADS 連線失效;IDE 的 COM 參考**不會**失效,不要重連 IDE。
 - 不要用 `Start-Sleep` 猜等待時間;所有等待都已在 cmdlet 內輪詢(`-TimeoutSec` 可調)。
 - `Invoke-TcTestCycle` 內部就是上面的流程,每步同樣 gating。
-- 4026 的 solution platform 在 XAE 載入 solution 時就定了(依 .tsproj 存的 target 是否連得到選),`Set-TcTarget`(`SetTargetNetId`)**不會**事後改 platform;換 target 或 tsproj 的 target 連不到時,一定要加 `-Platform`(`Connect-TcIde` 的 `data.solutionPlatform` 看現在是哪個)。見 `ACTIVATE_FAILED`。
+- 4026 的 solution platform 在 XAE 載入 solution 時就定了(依 .tsproj 存的 target 是否連得到選),`SetTargetNetId` 本身**不會**改 platform。`Set-TcTarget` 設完 NetId 後讀 target 的 TARGETINFO(見「Target platform(TARGETINFO)」),讀得到就自動切 solution platform;讀不到又沒給 `-Platform` → `PLATFORM_UNKNOWN`(NetId 已設好)。目前這台的 UmRT / Windows XAR 都回 0x702,所以換 target 或 tsproj 的 target 連不到時,要加 `-Platform`(或 `Enable-TcConfig -Platform`;`Connect-TcIde` 的 `data.solutionPlatform` 看現在是哪個)。見 `ACTIVATE_FAILED`。
 
 ## 環境矩陣
 
@@ -56,19 +61,19 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | 4026 package | TwinCAT 4026 |
 | VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | 4026 package | TwinCAT 4026(與 64-bit XAE Shell 同一套 XAE;需本機已有 VS2022) |
 
-- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(`TcSystemServiceUm.exe` 檔案版本 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。
+- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(Usermode Runtime;`TcSystemServiceUm.exe` FileVersion 3.1.0.2649 / ProductVersion 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。
 - Automation Interface(`ITcSysManager`、`EnvDTE`)在各組合完全相同;差別只在 IDE 抓取(ProgID)與 ADS DLL 位置。
 - **4026 與 4024 的差異**(2026-10-20/21 B 組實測):
   - 相同:PLC 樹路徑 `TIPC^<plc>^<plc> Project^POUs`(例 `TIPC^Untitled1^Untitled1 Project`);`Login(1)` + `SilentMode`;ADS DLL(GAC `TwinCAT.Ads.dll` 4.3.32.0);三個 host 的 XAE Base extension 都是 3.1.4026.22。
-  - 不同:(1) 4026 在 Activate 時檢查 solution platform 與 target platform 是否一致(4024 不檢查),不一致 → `ACTIVATE_FAILED`;4026 UmRT 要 `TwinCAT OS (x64)`。(2) VS2022 的 `SolutionBuild.Build($true)`(等待)永遠不返回,模組改 `Build($false)` + 輪詢 `BuildState`(`Clean` 同理)。(3) VS2022 的訊息框是 WPF(見「已知 modal dialog」)。(4) zh-TW VS2022 的 Error List 視窗名 `錯誤清單`、預設 scope `目前專案` 會藏其他專案的列,模組自動切到 `整個方案`。
+  - 不同:(1) 4026 在 Activate 時檢查 solution platform 與 target platform 是否一致(4024 不檢查),不一致 → `ACTIVATE_FAILED`;UmRT(Usermode Runtime)要 `TwinCAT OS (x64)`。(2) VS2022 的 `SolutionBuild.Build($true)`(等待)永遠不返回,模組改 `Build($false)` + 輪詢 `BuildState`(`Clean` 同理)。(3) VS2022 的訊息框是 WPF(見「已知 modal dialog」)。(4) zh-TW VS2022 的 Error List 視窗名 `錯誤清單`、預設 scope `目前專案` 會藏其他專案的列,模組自動切到 `整個方案`。
   - VS2022 時間參考:`Connect-TcIde` 自啟 1.5~2.3 s、含開 solution 總計 25~63 s;solution-match 重連 1~1.5 s;`Reset-TcSolution` 8~11 s。
 - 實測紀錄(smoke / MCP / multi-ide 的 B 組結果)見「驗證紀錄」的「B 組 2026-10-20/21」。
-- **4024 專案在 4026 XAE**:4024 的 .sln 把 solution platform `Release|TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 `Build.0`,選 OS (x64) 什麼都不 build;XAE 自動選的是 `TwinCAT OS (ARMT2)`,Build 1.4 s「成功」、Activate 不回 `ACTIVATE_FAILED`,但 851 維持 Invalid(`PLC_NOT_LOADED`)。這種專案要先在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 才能跑在 4026 UmRT。`Set-TcTarget -Platform` 列的是 project-context platform(`availablePlatforms`),所以對這種 sln 要 `TwinCAT OS (x64)` 會回 `PLATFORM_NOT_FOUND`。
+- **4024 專案在 4026 XAE**:4024 的 .sln 把 solution platform `Release|TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 `Build.0`,選 OS (x64) 什麼都不 build;XAE 自動選的是 `TwinCAT OS (ARMT2)`,Build 1.4 s「成功」、Activate 不回 `ACTIVATE_FAILED`,但 851 維持 Invalid(`PLC_NOT_LOADED`)。這種專案要先在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 才能跑在 UmRT(`TwinCAT OS (x64)`)。`Set-TcTarget -Platform` 列的是 project-context platform(`availablePlatforms`),所以對這種 sln 要 `TwinCAT OS (x64)` 會回 `PLATFORM_NOT_FOUND`。
 - `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;多實例時依 `-SolutionPath` 挑:只接已開該 sln 的實例(`data.selectedBy=solution-match`),沒有就啟動新實例(`launched`);別人開的空 IDE 或開著其他 sln 的 IDE 一律不碰,`Disconnect-TcIde -Quit` 也只關自己連上的那個 pid。`data.candidates[]` 列出所有看到的實例,`data.ideProcessId` 是連上的 IDE pid(`Get-TcIdeModalDialog` 只掃這個 pid 的視窗)。真機驗證:`tests/Integration/multi-ide.ps1`。ROT 裡正在關閉的舊實例(讀 `Version` / `Solution` 回 0x800706BA / 0x80004005)會被跳過。
 - `Connect-TcIde` 自行啟動 IDE 時:`CreateInstance` 後**不碰** `MainWindow.Visible`(此時會丟 property not found),改輪詢 `Version` + `Solution`(500 ms,最長 60 s),就緒後設 `UserControl = $true` 讓 IDE 可見且不隨 COM 釋放關閉;逾時則 `Quit()` 並 kill 啟動時刻之後出現的 `TcXaeShell.exe` / `devenv.exe`,回 `IDE_LAUNCH_FAILED`。
 - `Connect-TcAds` 的 `data.adsBackend` 顯示實際載入的 ADS 後端(DLL 路徑 / 反射 fallback)。
 - `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
-- 換 target(本機 UmRT ↔ 遠端 CX)或換 IDE 後要重新 `Connect-TcIde`,AmsNetId 會變;4026 另要 `Set-TcTarget -Platform` 對齊 solution platform。
+- 換 target(本機 UmRT ↔ 遠端 CX)或換 IDE 後要重新 `Connect-TcIde`,AmsNetId 會變;4026 XAE 另要對齊 solution platform(`Set-TcTarget` 讀得到 TARGETINFO 時自動,否則 `-Platform`)。
 - **已知未解**:IDE 被 modal dialog 擋住時,它的 DTE `Version` 讀成空字串,`Connect-TcIde` 把該 ROT 項目當過期實例,帶 `-SolutionPath` 時會**另外啟動第二個 IDE**(VS2022 出現過一次)。重連前先 `Get-TcIdeModalDialog`(MCP `GetIdeModalDialog`)確認 IDE 沒被擋,有 dialog 先處理。
 
 ## 已知 modal dialog
@@ -348,16 +353,36 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### ACTIVATE_FAILED
 
 - **現象**:`Enable-TcConfig`(含 `-Force` 流程,停在 activate 那一步,`data.steps[]` 看得到;`data.solutionPlatform` 是當時的 active solution platform)回 `ACTIVATE_FAILED`。`ActivateConfiguration()` 約 2 s 無例外返回,XAE Output 視窗只有「Check config failed!」,`SolutionBuild.LastBuildInfo` 由 0 變 1;target 上什麼都沒寫(UmRT 的 `Boot\CurrentConfig.xml` 沒更新,只有 `Boot\Plc\Port_851.*`),port 851 維持 Invalid(不經此檢查就會變成 `PLC_NOT_LOADED`)。
-- **為什麼**:4026 在 Activate 時檢查 active solution platform 與 target platform。本機 4026 UmRT_Default 是 user mode 的 TcOsSys,target platform 是 `TwinCAT OS (x64)`;solution platform 卻是 `TwinCAT RT (x64)` 時 XAE 顯示訊息框「Active solution platform 'TwinCAT RT (x64)' differs from current target platform 'TwinCAT OS (x64)'! Adjust solution platform and retry.」。`SilentMode` 開著時框被自動關掉,於是只剩 `LastBuildInfo > 0`(模組據此回這個碼);`SilentMode` 關著時框一直在,`ActivateConfiguration()` 阻塞到框被關(實測 102 s)。
+- **為什麼**:4026 XAE 在 Activate 時檢查 active solution platform 與 target platform。本機 UmRT_Default 是 user mode 的 TcOsSys(Usermode Runtime),target platform 是 `TwinCAT OS (x64)`;solution platform 卻是 `TwinCAT RT (x64)` 時 XAE 顯示訊息框「Active solution platform 'TwinCAT RT (x64)' differs from current target platform 'TwinCAT OS (x64)'! Adjust solution platform and retry.」。`SilentMode` 開著時框被自動關掉,於是只剩 `LastBuildInfo > 0`(模組據此回這個碼);`SilentMode` 關著時框一直在,`ActivateConfiguration()` 阻塞到框被關(實測 102 s)。
 - **platform 怎麼來的**:XAE 載入 solution 時依 .tsproj 存的 target 選 platform。原專案的 target 199.4.42.250.1.1 在這台 PC 連不到 → 選 `TwinCAT RT (x64)`;tsproj target 改成 199.5.42.250.1.1(UmRT)→ 選 `TwinCAT OS (x64)`(只翻 `TargetNetId` + 刪 `.vs` 驗證)。`Set-TcTarget`(`SetTargetNetId`)**不會**事後改 platform。這就是 2026-10-18 B 組「Target system reports a fatal error」的根因(issue #16)。已試過、無影響:`<Settings NonWinCpus/Cpu CpuId>` isolated core、tsproj `TcVersion`、UmRT `TargetFeatures.xml`。
-- **下一步**:`Set-TcTarget -AmsNetId <id> -Platform 'TwinCAT OS (x64)'`(Windows RT target 用 `'TwinCAT RT (x64)'`),再 `Build-TcProject` + `Enable-TcConfig -Force`。MCP:`RunLifecycle` 加 `Platform`,或 `SetTarget` 的 `Platform`。
+- **模組現在先擋**:`Enable-TcConfig` 在 Activate 前比對 solution platform 與 target platform(target 的 TARGETINFO,讀不到時用 `-Platform`),不一致就切換並重新 Build(`platform-fix` / `platform-fix-build`)。所以這個碼現在只會出現在 `data.platformCheck = 'skipped'`(target 不支援 TARGETINFO、又沒給 `-Platform`;`data.warning` 有說明)或其他 Check config 失敗原因。
+- **下一步**:`Enable-TcConfig -Force -Platform 'TwinCAT OS (x64)'`(會自己切換 + Build),或 `Set-TcTarget -AmsNetId <id> -Platform 'TwinCAT OS (x64)'`(Windows RT target 用 `'TwinCAT RT (x64)'`)再 `Build-TcProject` + `Enable-TcConfig -Force`。MCP:`RunLifecycle` 加 `Platform`,或 `SetTarget` / `EnableConfig` 的 `Platform`。
 - **限制**:4024 專案(`TwinCAT OS (ARMT2)` project platform)在這裡**不會**得到 `ACTIVATE_FAILED`,見「環境矩陣」。
+
+### Target platform(TARGETINFO)
+
+- **介面**:InfoSys TC1700/TC170x Usermode Runtime 手冊「Runtime type (ADS)」 https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html :ADS port 200、IndexGroup `0x00000700`(SYSTEMSERVICE_TARGETINFO);IndexOffset `0x4` TARGETINFO_PLATFORM = 字串,XAE 裡選的 platform(Usermode Runtime 與 TwinCAT/BSD 為 `TwinCAT OS (x64)`);IndexOffset `0x2` TARGETINFO_TARGETTYPE = ULONG,1 = Usermode Runtime。這一條出現在手冊 v1.6.1(2026-08);最低支援的 runtime build **未確認**。
+- **模組**:Private `Get-TcTargetPlatform -AmsNetId <id> [-TimeoutMs 2000]` 只讀這個介面(暫時 client,不碰模組 ADS session,永不 throw):回 `targetPlatform`、`isUsermodeRuntime`、`source`(`adsTargetInfo` / `unavailable`)、`adsError`(看到的 ADS 錯誤碼,例 `0x702`、`0x745`)、`detail`。讀不到就是讀不到,**不猜**。
+- **本機實測 2026-10-21**:UmRT 199.5.42.250.1.1(`TcSystemServiceUm.exe` FileVersion 3.1.0.2649 / ProductVersion 3.1.4026.21,TwinCAT 3.1.4026.21~22)與本機 Windows XAR 192.168.50.168.1.1 對 IG 0x700(IO 4 與 IO 2)都回 **0x702**(IndexGroup invalid),Run 狀態下也一樣 → `source = unavailable`;連不到的 199.4.42.250.1.1 → `0x745`,約 2 s 返回。也就是這版 runtime 還沒有 TARGETINFO,自動對齊要等支援它的 runtime;現在請帶 `-Platform`。
+- **用在哪**:`Set-TcTarget`(`data.platformCheck` = `parameter` / `target` / `unknown` / `disabled`)與 `Enable-TcConfig`(`data.platformCheck` = `target` / `parameter` / `skipped`)。
+
+### PLATFORM_UNKNOWN
+
+- **現象**:`Set-TcTarget -AmsNetId <id>`(沒給 `-Platform`、沒給 `-NoPlatformSwitch`)回 `PLATFORM_UNKNOWN`;`data.amsNetId`、`data.targetSet = true`(NetId **已經設好**,不用重做)、`data.platformCheck = 'unknown'`、`data.adsError`(例 `0x702`)、`data.platform`(沒動的 solution platform)。
+- **為什麼**:target 不回 TARGETINFO(見上),模組不猜 platform。
+- **下一步**:重跑 `Set-TcTarget -AmsNetId <id> -Platform '<平台>'`(UmRT / TwinCAT/BSD 為 `'TwinCAT OS (x64)'`,Windows RT 為 `'TwinCAT RT (x64)'`);只想換 NetId 就加 `-NoPlatformSwitch`(`lifecycle-smoke.ps1` 的 `02-set-target`、`login-logout.ps1`、MCP `RunLifecycle` 沒給 `Platform` 時都這樣呼叫)。`Enable-TcConfig` 在同樣情況下**不擋**:`platformCheck = 'skipped'`、Write-Warning + `data.warning`(同一段 hint)。
+
+### PLATFORM_MISMATCH
+
+- **現象**:`Enable-TcConfig -NoPlatformFix` 在 Activate 前回 `PLATFORM_MISMATCH`;`data.steps` 只有一筆 `platform-fix`(ok=false),`data.activated = false`,`data.solutionPlatform` 是沒動的那個,`data.platformCheck` 說比對對象(`target` / `parameter`)。
+- **為什麼**:active solution platform 與 target platform(或 `-Platform`)不同,Activate 必然 Check config failed;`-NoPlatformFix` 要求不要自動切。
+- **下一步**:`Set-TcTarget -AmsNetId <id> -Platform '<platform>'` 再 `Build-TcProject` + `Enable-TcConfig`,或拿掉 `-NoPlatformFix`(預設會切換 + Build,`data.platformFixed = true`)。自動切換失敗回 `PLATFORM_NOT_FOUND`(solution 沒有那個 platform)或 `PLATFORM_SET_FAILED`;切換後的 Build 失敗回 Build 的碼(`BUILD_FAILED` …,step `platform-fix-build` ok=false)。
 
 ### PLATFORM_NOT_FOUND
 
-- **現象**:`Set-TcTarget -Platform <name>` 回 `PLATFORM_NOT_FOUND`;`data.availablePlatforms`(`-Configuration` 那組 SolutionConfiguration 的不重複 platform)、`data.availableConfigurations` 列出現有的,`error.hint` 也列。
-- **為什麼**:名稱拼錯,或 solution 沒有這個 platform。platform 是從每個 SolutionConfiguration 的**第一個 SolutionContexts 項目**的 `PlatformName` 讀的(`SolutionConfiguration.PlatformName` 經 PowerShell COM binder 回空字串),所以列的是 project-context platform。4024 的 .sln 把 solution platform `TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)`,對它要 `TwinCAT OS (x64)` 也是這個碼。
-- **下一步**:用 `availablePlatforms` 的名稱重跑 `Set-TcTarget -AmsNetId <id> -Platform <name>`;4026 UmRT 是 `'TwinCAT OS (x64)'`,Windows RT 是 `'TwinCAT RT (x64)'`;`-Configuration` 預設 `Release`。4024 專案要在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform(見「環境矩陣」)。
+- **現象**:`Set-TcTarget -Platform <name>`(或自動切換到 target 回報 / `Enable-TcConfig -Platform` 的 platform)回 `PLATFORM_NOT_FOUND`;`data.availablePlatforms`(`-Configuration` 那組 SolutionConfiguration 的不重複 platform)、`data.availableConfigurations` 列出現有的,`error.hint` 也列。
+- **為什麼**:名稱拼錯,或 solution 沒有這個 platform。platform 是從每個 SolutionConfiguration 的**第一個 SolutionContexts 項目**的 `PlatformName` 讀的(`SolutionConfiguration.PlatformName` 經 PowerShell COM binder 回空字串),所以列的是 project-context platform。4024 的 .sln 把 solution platform `TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)`,對它要 `TwinCAT OS (x64)` 也是這個碼。platform 是 target 回報的時候,message / hint 會註明「read from the target」。
+- **下一步**:用 `availablePlatforms` 的名稱重跑 `Set-TcTarget -AmsNetId <id> -Platform <name>`;UmRT(Usermode Runtime)是 `'TwinCAT OS (x64)'`,Windows RT 是 `'TwinCAT RT (x64)'`;`-Configuration` 預設 `Release`。4024 專案要在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform(見「環境矩陣」)。
 
 ### PLATFORM_SET_FAILED
 
@@ -366,7 +391,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### 成功時的 Set-TcTarget data
 
-`Set-TcTarget -AmsNetId <id> -Platform <name> [-Configuration Release]` 的 data:`platform`、`configuration`、`platformChanged`(bool)、`previousPlatform`、`availablePlatforms`。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`。MCP `SetTarget` 有 `Platform` / `Configuration` 參數;`RunLifecycle` 有 `Platform`(給了就在 SetTarget 步驟切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId)。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
+`Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`、`platformChanged`(bool);有切換時另有 `configuration`、`previousPlatform`、`availablePlatforms`。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 只給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId;之後 EnableConfig 比對結果相同),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
 
 ## 已知限制
 
@@ -377,7 +402,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | Reset 殺 service | 對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm` | 不要對 UmRT 用 Reset;要清狀態改 Stop → `Enter-TcPlcOnline` 重新 download;真的 Reset 了就手動重啟 service |
 | UmRT crash(`TcSystemServiceUm` 消失,issue #21) | 簽章固定:`TcOsSys.dll` c0000005,offset 0x589534,bucket 1526877736441380629(dump `TcSystemServiceUm.exe.86180.dmp` / `.58132.dmp`)。crash #7 2026-10-20 22:09:40、#8 2026-10-21 00:57:15,兩次都在 6~9 s 前 `Boot\TCNC.bootdata` 被截成 0 bytes;#8 發生在已跑約 1 h 的 UmRT 做 set-config(port 10000 Config)時 | 重啟 `TcSystemServiceUm` 後 `Enable-TcConfig -Force`;根因在 UmRT 側,模組無法避免 |
 | UmRT ADS 0x502「Mailbox is full」 | 2026-10-21 約 01:02 新現象:UmRT process 活著、CPU idle,對 199.5.42.250.1.1 的**每個** ADS 呼叫都回 0x502(本機 TcSysSrv 正常),`Enable-TcConfig` 180 s 後回 `SYSTEM_STATE_TIMEOUT`。先 `Get-TcSystemState -AmsNetId 127.0.0.1.1.1` 對照本機 TcSysSrv 正常、target 不正常即是 | kill 並重啟 `TcSystemServiceUm`,再 `Enable-TcConfig -Force` |
-| 4024 專案跑不到 4026 UmRT | 4024 .sln 的 `Release/TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0;Build「成功」(1.4 s)什麼都沒 build、Activate 無 `ACTIVATE_FAILED`、851 維持 Invalid(`PLC_NOT_LOADED`);`Set-TcTarget -Platform 'TwinCAT OS (x64)'` 回 `PLATFORM_NOT_FOUND` | 在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 再 Build;或把專案升級到 4026 |
+| 4024 專案跑不到 UmRT(4026 XAE) | 4024 .sln 的 `Release/TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0;Build「成功」(1.4 s)什麼都沒 build、Activate 無 `ACTIVATE_FAILED`、851 維持 Invalid(`PLC_NOT_LOADED`);`Set-TcTarget -Platform 'TwinCAT OS (x64)'` 回 `PLATFORM_NOT_FOUND` | 在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 再 Build;或把專案升級到 4026 |
 | 被 modal 擋住的 IDE 會被當過期實例 | IDE 被 modal 擋住時 DTE `Version` 讀空字串,`Connect-TcIde` 當 ROT 過期項目,帶 `-SolutionPath` 會另外啟動第二個 IDE(VS2022 出現過一次,**未修**) | 重連前先 `Get-TcIdeModalDialog` / MCP `GetIdeModalDialog`;有 dialog 先處理;已多開就用 `data.candidates[]` / `Stop-Process` 收掉多的那個 |
 | 重新 download 後 index offset 錯位 | symbol 的 indexGroup/indexOffset 在每次 download 後可能改變;舊 handle 會讀到別的變數 | 不快取 offset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp` 是否變了,變了就重新 `Get-TcSymbols` |
 | UIA 看不到的 dialog 仍會擋 quit | 標題為空等 UIA 掃描抓不到的 modal,`Disconnect-TcIde -Quit` 的事前檢查看不到,`Solution.Close` / `DTE.Quit` 照樣無限阻塞;經 MCP 時會先撞到 `BRIDGE_TIMEOUT`,走不到 `-Kill` | `Stop-Process -Id <data.ideProcessId>`(MCP 結果的 `data.lastIde.ideProcessId`),再重新 `Connect-TcIde` |
@@ -389,5 +414,5 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 `tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。
 
-- `lifecycle-smoke.ps1 -SolutionPlatform '<name>'`:在 Connect 與 Build 之間多一步 `02b-platform`(`Set-TcTarget -Platform`);4026 UmRT 必帶 `'TwinCAT OS (x64)'`(B 組 35/35)。smoke 與 `multi-ide.ps1` 的 Clean 都改成 `Clean($false)` + 輪詢(VS2022 的 wait 版不返回)。
+- `lifecycle-smoke.ps1 -SolutionPlatform '<name>'`:在 Connect 與 Build 之間多一步 `02b-platform`(`Set-TcTarget -Platform`);`02-set-target` 改帶 `-NoPlatformSwitch`(只換 NetId,不會因 `PLATFORM_UNKNOWN` 失敗)。UmRT 必帶 `'TwinCAT OS (x64)'`(B 組 35/35;這台 UmRT 不支援 TARGETINFO)。smoke 與 `multi-ide.ps1` 的 Clean 都改成 `Clean($false)` + 輪詢(VS2022 的 wait 版不返回)。
 - `mcp-server/scripts/lifecycle-client.mjs`(手動,需真 IDE + runtime):經 MCP server 跑 `RunLifecycle` → `GetSystemState` → 兩次 `ReadVariable`(task cycle counter 必須增加)→ `DisconnectIde Quit=true`。參數 `--sln`(必填)、`--progid`(預設 `VisualStudio.DTE.17.0`)、`--netid`、`--platform`、`--read <path>`;`--expect-fail <CODE> [--fail-platform <platform>]` 先跑一次帶 `Platform=<fail-platform>` 的 `RunLifecycle` 並要求該 error code(例 `--expect-fail ACTIVATE_FAILED --fail-platform "TwinCAT RT (x64)"`)。環境變數 `TWINCAT_MODULE_PATH`、`TWINCAT_MCP_POWERSHELL`;exit code = 失敗步驟數。

@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T16:36:57Z",
+    "generatedAt":  "2026-10-20T21:02:44Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -278,7 +278,7 @@
                   {
                       "name":  "EnableConfig",
                       "cmdlet":  "Enable-TcConfig",
-                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: run SetTarget with Platform ('TwinCAT OS (x64)' for a 4026 UmRT) and retry.",
+                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. Before Activate the active solution platform is compared with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700; data.platformCheck='target'), else with Platform when given ('parameter'); on a mismatch the solution platform is switched and the project rebuilt (steps platform-fix, platform-fix-build; data.platformFixed=true; not part of TimeoutSec). NoPlatformFix=true returns PLATFORM_MISMATCH instead, before anything is activated. A target without TARGETINFO (ADS 0x702, e.g. the UmRT of TwinCAT 3.1.4026.21-22) and no Platform: platformCheck='skipped', data.warning set, Activate runs as before. data always has targetPlatform, targetPlatformSource (adsTargetInfo / unavailable), solutionPlatform, platformFixed, platformCheck. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: retry with Platform ('TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target).",
                       "timeoutMs":  600000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -299,9 +299,17 @@
                                                                                 "type":  "integer",
                                                                                 "minimum":  10,
                                                                                 "maximum":  3600,
-                                                                                "description":  "Overall time limit for the whole -Force cycle (single deadline). Default 120.",
+                                                                                "description":  "Overall time limit for the whole -Force cycle (single deadline). Default 120. The platform-fix / platform-fix-build steps run before the deadline starts.",
                                                                                 "default":  120
-                                                                            }
+                                                                            },
+                                                             "NoPlatformFix":  {
+                                                                                   "type":  "boolean",
+                                                                                   "description":  "true = do not switch the solution platform; a mismatch with the target (or Platform) platform returns PLATFORM_MISMATCH before anything is activated."
+                                                                               },
+                                                             "Platform":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Reference platform used only when the target does not report one through TARGETINFO (ADS 0x702): 'TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target. A platform the target reports wins."
+                                                                          }
                                                          },
                                           "required":  [
 
@@ -890,7 +898,7 @@
                   {
                       "name":  "SetTarget",
                       "cmdlet":  "Set-TcTarget",
-                      "description":  "Set the target AmsNetId (ITcSysManager.SetTargetNetId) and, with Platform, activate that solution platform for Configuration (default Release). In TwinCAT 4026 the active solution platform must match the target platform (local UmRT = 'TwinCAT OS (x64)', Windows RT target = 'TwinCAT RT (x64)'), otherwise EnableConfig fails with ACTIVATE_FAILED. Returns data.amsNetId and, with Platform, data.platform / configuration / platformChanged / previousPlatform / availablePlatforms; an unknown platform returns PLATFORM_NOT_FOUND with the available ones.",
+                      "description":  "Set the target AmsNetId (ITcSysManager.SetTargetNetId, always done first: data.amsNetId, data.targetSet=true even when the result is an error) and make the active solution platform follow the target. TwinCAT 4026 XAE requires the active solution platform to match the target platform (Usermode Runtime / UmRT and TwinCAT/BSD = 'TwinCAT OS (x64)', Windows RT target = 'TwinCAT RT (x64)'), otherwise EnableConfig fails with ACTIVATE_FAILED. With Platform that platform is activated for Configuration (default Release; data.platformCheck='parameter'). Without Platform the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) is activated ('target'); not in the solution -> PLATFORM_NOT_FOUND. Target without TARGETINFO (ADS 0x702, data.adsError) and no Platform -> PLATFORM_UNKNOWN (NetId already set; nothing guessed). NoPlatformSwitch=true only sets the NetId ('disabled'). Returns data.platform / platformChanged / targetPlatform / targetPlatformSource and, when a platform was activated, configuration / previousPlatform / availablePlatforms.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -905,13 +913,17 @@
                                                                           },
                                                              "Platform":  {
                                                                               "type":  "string",
-                                                                              "description":  "Solution platform to activate, e.g. 'TwinCAT OS (x64)' or 'TwinCAT RT (x64)'. Omitted: the solution platform is not touched."
+                                                                              "description":  "Solution platform to activate, e.g. 'TwinCAT OS (x64)' (Usermode Runtime / UmRT, TwinCAT/BSD) or 'TwinCAT RT (x64)' (Windows RT). Omit to follow the platform the target reports (TARGETINFO); a target without TARGETINFO then returns PLATFORM_UNKNOWN."
                                                                           },
                                                              "Configuration":  {
                                                                                    "type":  "string",
-                                                                                   "description":  "Solution configuration name used with -Platform. Default 'Release'.",
+                                                                                   "description":  "Solution configuration name. With Platform default Release; for the automatic switch the active configuration.",
                                                                                    "default":  "Release"
-                                                                               }
+                                                                               },
+                                                             "NoPlatformSwitch":  {
+                                                                                      "type":  "boolean",
+                                                                                      "description":  "true = only set the target NetId; never touch the solution platform and never return PLATFORM_UNKNOWN."
+                                                                                  }
                                                          },
                                           "required":  [
                                                            "AmsNetId"

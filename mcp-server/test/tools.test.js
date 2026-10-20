@@ -209,8 +209,8 @@ describe('cmdlet name rewriting in hints', () => {
 
   test('quoted parameter values stay whole (ACTIVATE_FAILED hint)', () => {
     assert.equal(
-      rw("執行 Set-TcTarget -AmsNetId 199.5.42.250.1.1 -Platform 'TwinCAT OS (x64)'(4026 UmRT),再重跑 Build-TcProject"),
-      "執行 SetTarget AmsNetId=199.5.42.250.1.1 Platform='TwinCAT OS (x64)'(4026 UmRT),再重跑 BuildProject"
+      rw("執行 Set-TcTarget -AmsNetId 199.5.42.250.1.1 -Platform 'TwinCAT OS (x64)'(Usermode Runtime / UmRT),再重跑 Build-TcProject"),
+      "執行 SetTarget AmsNetId=199.5.42.250.1.1 Platform='TwinCAT OS (x64)'(Usermode Runtime / UmRT),再重跑 BuildProject"
     );
     assert.equal(rw('Set-TcTarget -Platform "TwinCAT RT (x64)" -Configuration Release'), 'SetTarget Platform="TwinCAT RT (x64)" Configuration=Release');
   });

@@ -6,6 +6,31 @@ function Enable-TcConfig {
     .DESCRIPTION
         Without -Force only ITcSysManager::ActivateConfiguration() is called.
 
+        Before ActivateConfiguration() (both modes) the active solution platform
+        (Get-TcSolutionPlatform) is compared with a reference platform
+        (data.platformCheck):
+          'target'     the platform the IDE target reports through TARGETINFO
+                       (Get-TcTargetPlatform: port 200 IG 0x700, InfoSys "Runtime type (ADS)"
+                       https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html);
+          'parameter'  TARGETINFO not readable, -Platform given: -Platform;
+          'skipped'    TARGETINFO not readable and no -Platform (TcSystemServiceUm.exe
+                       3.1.0.2649 / TwinCAT 3.1.4026.21-22 and the Windows XAR answer ADS
+                       error 0x702): nothing is compared, Activate runs as before, a warning
+                       is written (Write-Warning and data.warning, same hint as
+                       PLATFORM_UNKNOWN). Also used when the solution platform is unreadable.
+        When the reference and the solution platform differ:
+          platform-fix        the solution configuration '<active configuration>|<target
+                              platform>' is activated (same helper as Set-TcTarget); with
+                              -NoPlatformFix PLATFORM_MISMATCH is returned instead and
+                              nothing is activated. Platform missing from the solution ->
+                              PLATFORM_NOT_FOUND, activation failed -> PLATFORM_SET_FAILED.
+          platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
+                              output of the old platform must not be activated; a failing
+                              build stops here with its code (BUILD_FAILED ...).
+        Both steps are recorded in data.steps and are not part of the -TimeoutSec budget.
+        The post-Activate LastBuildInfo check below (ACTIVATE_FAILED) stays in place and
+        still catches a mismatch on the 'skipped' path.
+
         With -Force every step is gated on the previous one and recorded in
         data.steps (@{ step; ok; elapsedMs; detail }). The first failing step stops
         the cycle: the result is success=false with that step's error code + hint and
@@ -41,6 +66,14 @@ function Enable-TcConfig {
         recorded as skipped and the cycle still succeeds (plcState = $null).
     .PARAMETER TimeoutSec
         Overall time limit for the whole -Force cycle (single deadline). Default 120.
+        The platform-fix / platform-fix-build steps run before the deadline starts.
+    .PARAMETER NoPlatformFix
+        Do not switch the solution platform: a known mismatch returns PLATFORM_MISMATCH
+        before anything is activated.
+    .PARAMETER Platform
+        Reference platform used only when the target does not report one through
+        TARGETINFO, e.g. 'TwinCAT OS (x64)' for a Usermode Runtime (UmRT) or TwinCAT/BSD,
+        'TwinCAT RT (x64)' for a Windows RT target. A platform the target reports wins.
     .EXAMPLE
         Enable-TcConfig
         Activate only (TwinCAT keeps its current state).
@@ -54,7 +87,11 @@ function Enable-TcConfig {
     .OUTPUTS
         data: activated, restarted, loggedIn, reconnected, plcState (last AdsState seen
         on port 851), amsNetId, ideMemoryMB, solutionPlatform (active solution platform
-        read before Activate, $null when unreadable), steps[].
+        at Activate time, after an automatic fix; $null when unreadable), targetPlatform
+        ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
+        platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
+        solution platform was switched and rebuilt), warning (only set on the 'skipped'
+        path), steps[].
     #>
     [CmdletBinding()]
     param(
@@ -66,7 +103,13 @@ function Enable-TcConfig {
 
         [Parameter()]
         [ValidateRange(10, 3600)]
-        [int]$TimeoutSec = 120
+        [int]$TimeoutSec = 120,
+
+        [Parameter()]
+        [switch]$NoPlatformFix,
+
+        [Parameter()]
+        [string]$Platform
     )
 
     try { Assert-TcConnection } catch {
@@ -91,6 +134,11 @@ function Enable-TcConfig {
     $origPort = $script:TcAdsPort
     $ideMemoryMB = $null
     $solutionPlatform = $null
+    $targetPlatform = $null
+    $targetPlatformSource = $null
+    $platformFixed = $false
+    $platformCheck = 'skipped'
+    $platformWarning = $null
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -112,6 +160,11 @@ function Enable-TcConfig {
             amsNetId    = $netId
             ideMemoryMB = $ideMemoryMB
             solutionPlatform = $solutionPlatform
+            targetPlatform = $targetPlatform
+            targetPlatformSource = $targetPlatformSource
+            platformFixed = $platformFixed
+            platformCheck = $platformCheck
+            warning     = $platformWarning
             steps       = @($steps.ToArray())
         }
     }
@@ -139,7 +192,8 @@ function Enable-TcConfig {
         $failed = Read-TcLastBuildInfo
         if ($null -eq $failed -or $failed -le 0) { return $null }
         $plat = if ([string]::IsNullOrWhiteSpace($solutionPlatform)) { '<unknown>' } else { $solutionPlatform }
-        $msg = "ActivateConfiguration() returned but XAE reported $failed failed project(s) ('Check config failed!' in the Output window); nothing was written to the target. Most common cause: active solution platform '$plat' does not match the target platform (a 4026 UmRT is 'TwinCAT OS (x64)')."
+        $tgt = if ([string]::IsNullOrWhiteSpace($targetPlatform)) { "not readable from the target; a Usermode Runtime (UmRT) is 'TwinCAT OS (x64)', a Windows RT target 'TwinCAT RT (x64)'" } else { "'$targetPlatform' reported by the target" }
+        $msg = "ActivateConfiguration() returned but XAE reported $failed failed project(s) ('Check config failed!' in the Output window); nothing was written to the target. Most common cause: active solution platform '$plat' does not match the target platform ($tgt)."
         if ($null -ne $FailedBefore) { $msg += " (LastBuildInfo before Activate: $FailedBefore.)" }
         if ($null -ne $dlg) {
             $dlgText = [string]$dlg.Text
@@ -191,6 +245,98 @@ function Enable-TcConfig {
         return $res
     }
 
+    # Before ActivateConfiguration(): TwinCAT 4026 XAE refuses to activate when the active
+    # solution platform differs from the target platform. Reference = TARGETINFO of the
+    # target, else -Platform, else nothing (platformCheck 'skipped' + warning, old
+    # behaviour). On a mismatch: switch the solution platform and rebuild (steps
+    # platform-fix, platform-fix-build), or PLATFORM_MISMATCH with -NoPlatformFix.
+    # Sets solutionPlatform / targetPlatform / targetPlatformSource / platformCheck /
+    # platformWarning / platformFixed of the cmdlet scope. Returns a failure result or $null.
+    function Invoke-TcPlatformCheck {
+        param([string]$TargetNetId)
+        $sol = Get-TcSolutionPlatform
+        Set-Variable -Name solutionPlatform -Value $sol.platform -Scope 1
+        $tp = $null
+        if (-not [string]::IsNullOrWhiteSpace($TargetNetId)) {
+            $tp = Get-TcTargetPlatform -AmsNetId $TargetNetId
+            Set-Variable -Name targetPlatform -Value $tp.targetPlatform -Scope 1
+            Set-Variable -Name targetPlatformSource -Value $tp.source -Scope 1
+        }
+        else {
+            Set-Variable -Name targetPlatformSource -Value 'unavailable' -Scope 1
+        }
+
+        $wanted = $null
+        $srcText = $null
+        if ($null -ne $tp -and -not [string]::IsNullOrWhiteSpace($tp.targetPlatform)) {
+            $wanted = [string]$tp.targetPlatform
+            $srcText = "target $($tp.source)"
+            Set-Variable -Name platformCheck -Value 'target' -Scope 1
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($Platform)) {
+            $wanted = $Platform
+            $srcText = 'parameter -Platform'
+            Set-Variable -Name platformCheck -Value 'parameter' -Scope 1
+        }
+
+        if ($null -eq $wanted -or [string]::IsNullOrWhiteSpace($sol.platform)) {
+            Set-Variable -Name platformCheck -Value 'skipped' -Scope 1
+            $why = if ($null -eq $wanted) {
+                $ads = if ($null -ne $tp -and -not [string]::IsNullOrWhiteSpace($tp.adsError)) { " (ADS $($tp.adsError))" } else { '' }
+                "the target platform is not readable$ads and -Platform was not given"
+            } else { 'the active solution platform is not readable' }
+            $hint = Get-TcErrorHint -Code 'PLATFORM_UNKNOWN'
+            if ($null -ne $hint -and $null -ne $tp -and -not [string]::IsNullOrWhiteSpace($tp.adsError)) { $hint = $hint.Replace('ADS 0x702', "ADS $($tp.adsError)") }
+            $warn = "Enable-TcConfig: solution platform check skipped: $why; activating without it (a mismatch shows up as ACTIVATE_FAILED). $hint"
+            Set-Variable -Name platformWarning -Value $warn -Scope 1
+            Write-Warning $warn
+            return $null
+        }
+        if ([string]$sol.platform -ieq $wanted) { return $null }
+
+        $swFix = [System.Diagnostics.Stopwatch]::StartNew()
+        if ($NoPlatformFix) {
+            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "not done (-NoPlatformFix): solution '$($sol.platform)' <> '$wanted' ($srcText)"
+            $hint = Get-TcErrorHint -Code 'PLATFORM_MISMATCH'
+            $idText = if ([string]::IsNullOrWhiteSpace($TargetNetId)) { '<id>' } else { $TargetNetId }
+            if ($null -ne $hint) { $hint = $hint.Replace('<id>', $idText).Replace('<platform>', $wanted) }
+            return New-TcStepFailure -Message "Active solution platform '$($sol.platform)' differs from '$wanted' ($srcText). ActivateConfiguration() would fail with 'Check config failed!'; nothing was activated (-NoPlatformFix)." -Code 'PLATFORM_MISMATCH' -Hint $hint
+        }
+
+        $conf = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
+        $srcArg = if ($null -ne $tp -and $wanted -eq [string]$tp.targetPlatform) { $srcText } else { $null }
+        $r = Set-TcSolutionPlatform -Platform $wanted -Configuration $conf -PlatformSource $srcArg
+        if (-not $r.success) {
+            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "'$($sol.platform)' -> '$wanted' ($srcText) failed: $([string]$r.error.message)"
+            $code = if ([string]::IsNullOrWhiteSpace([string]$r.error.code)) { 'PLATFORM_SET_FAILED' } else { [string]$r.error.code }
+            $hp = $r.error.PSObject.Properties['hint']
+            $hint = if ($null -ne $hp) { [string]$hp.Value } else { $null }
+            return New-TcStepFailure -Message "Automatic solution platform switch to '$wanted' ($srcText) failed: $([string]$r.error.message)" -Code $code -Hint $hint
+        }
+        Set-Variable -Name solutionPlatform -Value $r.platform -Scope 1
+        Set-Variable -Name platformFixed -Value $true -Scope 1
+        Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$($sol.platform) -> $($r.platform) ($srcText, configuration $($r.configuration))"
+
+        # The PLC output of the old platform must not be activated: same build as Build-TcProject.
+        $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
+        $b = Build-TcProject
+        if (-not $b.success) {
+            Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail ([string]$b.error.message)
+            return New-TcStepFailureFromResult -Result $b -Prefix 'Build after the automatic platform switch failed' -DefaultCode 'BUILD_FAILED'
+        }
+        Add-TcStepRecord -Name 'platform-fix-build' -Ok $true -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s)"
+        return $null
+    }
+
+    # Resolves the IDE target AmsNetId (ITcSysManager.GetTargetNetId, then the ADS session), $null when unknown.
+    function Resolve-TcCycleNetId {
+        $id = $null
+        try { $id = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
+        if ([string]::IsNullOrWhiteSpace($id)) { $id = $script:TcAdsAmsNetId }
+        if ([string]::IsNullOrWhiteSpace($id)) { return $null }
+        return [string]$id
+    }
+
     # Failure of a nested cmdlet result: keep its code + hint
     function New-TcStepFailureFromResult {
         param([object]$Result, [string]$Prefix, [string]$DefaultCode)
@@ -210,10 +356,12 @@ function Enable-TcConfig {
     # Activate only (no -Force): behaviour unchanged
     # ------------------------------------------------------------------
     if (-not $Force) {
+        $netId = Resolve-TcCycleNetId
+        $fail = Invoke-TcPlatformCheck -TargetNetId $netId
+        if ($null -ne $fail) { return $fail }
         $fail = Test-TcStepModalDialog -Name 'activate'
         if ($null -ne $fail) { return $fail }
         Read-TcIdeMemoryBeforeActivate
-        $solutionPlatform = (Get-TcSolutionPlatform).platform
         $failedBefore = Read-TcLastBuildInfo
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
@@ -242,8 +390,9 @@ function Enable-TcConfig {
     # ------------------------------------------------------------------
     # Full gated cycle (-Force)
     # ------------------------------------------------------------------
-    # One overall deadline: each wait gets the remaining budget (min 1 s).
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    # One overall deadline (set after the platform check below): each wait gets the
+    # remaining budget (min 1 s).
+    $deadline = $null
 
     function Get-TcRemainingSec {
         $left = [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
@@ -259,12 +408,14 @@ function Enable-TcConfig {
     }
 
     # Resolve AmsNetId (same source as Set-TcSystemState, then the cached ADS session)
-    try { $netId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
-    if ([string]::IsNullOrWhiteSpace($netId)) { $netId = $script:TcAdsAmsNetId }
+    $netId = Resolve-TcCycleNetId
     if ([string]::IsNullOrWhiteSpace($netId)) {
         return New-TcStepFailure -Message 'AmsNetId could not be determined from the IDE target or a previous Connect-TcAds.' -Code 'AMS_NETID_REQUIRED'
     }
-    $solutionPlatform = (Get-TcSolutionPlatform).platform
+    # Solution platform vs target platform (may switch + rebuild; not part of -TimeoutSec)
+    $fail = Invoke-TcPlatformCheck -TargetNetId $netId
+    if ($null -ne $fail) { return $fail }
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
 
     # 1. set-config
     $fail = Test-TcCycleDeadline -Name 'set-config'

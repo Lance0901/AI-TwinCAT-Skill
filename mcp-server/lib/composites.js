@@ -32,7 +32,7 @@ export const RunLifecycle = {
   description:
     'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
     'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
-    'Pass Platform (e.g. "TwinCAT OS (x64)" for a 4026 UmRT) to activate that solution platform in the SetTarget step: in 4026 a solution platform that differs from the target platform makes EnableConfig fail with ACTIVATE_FAILED. Without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it. ' +
+    'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is given to SetTarget only (EnableConfig then finds the platforms equal); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
     'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error.',
   annotations: { destructiveHint: true, readOnlyHint: false },
@@ -44,7 +44,7 @@ export const RunLifecycle = {
       ProgId: { type: 'string', description: 'Visual Studio / XAE shell ProgId passed to ConnectIde.' },
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
       TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },
-      Platform: { type: 'string', description: 'Solution platform passed to SetTarget (e.g. "TwinCAT OS (x64)" for a 4026 UmRT, "TwinCAT RT (x64)" for a Windows RT target). Omit to keep the active solution platform.' },
+      Platform: { type: 'string', description: 'Optional solution platform passed to SetTarget (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target). Needed only when the target does not report its platform (TARGETINFO, ADS 0x702); omit it and EnableConfig follows the platform the target reports.' },
       SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false).' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
@@ -85,7 +85,10 @@ export const RunLifecycle = {
         return fail(step);
       }
       const setArgs = { AmsNetId: amsNetId };
+      // Without Platform only the NetId is set: SetTarget would otherwise return PLATFORM_UNKNOWN on
+      // runtimes without TARGETINFO; EnableConfig does the platform check (target or skipped + warning).
       if (hasPlatform) setArgs.Platform = args.Platform;
+      else setArgs.NoPlatformSwitch = true;
       step = await timed('SetTarget', () => ctx.callTool('SetTarget', setArgs));
       steps.push(step);
       if (!step.success) return fail(step);

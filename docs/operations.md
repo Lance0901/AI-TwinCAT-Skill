@@ -146,7 +146,7 @@ Builds PLC project (`Build($false)` + `BuildState` polling).
 **Returns:** `{ errors, warnings, messages }`
 
 ### Set-TcTarget / `SetTarget`
-Sets target AMS Net ID and, with `Platform`, the active solution platform. In TwinCAT 4026 the solution platform must equal the target platform (local UmRT = `TwinCAT OS (x64)`, Windows RT target = `TwinCAT RT (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED`; `SetTargetNetId` alone does not change the platform.
+Sets target AMS Net ID (always first: `data.targetSet`) and makes the active solution platform follow the target. In TwinCAT 4026 XAE the solution platform must equal the target platform (UmRT / Usermode Runtime and TwinCAT/BSD = `TwinCAT OS (x64)`, Windows RT target = `TwinCAT RT (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED`; `SetTargetNetId` alone does not change the platform. With `Platform` that platform is activated; without it the platform the target reports through TARGETINFO (ADS port 200, IG 0x700, [InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)) is activated, and a target that answers ADS 0x702 (the runtime of TwinCAT 3.1.4026.21-22) gives `PLATFORM_UNKNOWN`. `NoPlatformSwitch` = NetId only. `Enable-TcConfig` runs the same comparison before Activate (`Platform` as fallback, `NoPlatformFix` -> `PLATFORM_MISMATCH`).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|

@@ -43,7 +43,9 @@ describe('RunLifecycle TargetAmsNetId', () => {
     const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { TargetAmsNetId: '5.1.2.3.1.1', TimeoutSec: 30 } }));
     assert.equal(body.success, true);
     assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds']);
-    assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1' });
+    // NetId only: no PLATFORM_UNKNOWN on runtimes without TARGETINFO, EnableConfig checks the platform
+    assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1', NoPlatformSwitch: true });
+    assert.equal(body.data.steps[3].result.data.params.Platform, undefined);
   });
 
   test('without TargetAmsNetId (or empty): no SetTarget step', async () => {
@@ -84,5 +86,7 @@ describe('RunLifecycle TargetAmsNetId', () => {
     assert.equal(rl.inputSchema.properties.Platform.type, 'string');
     assert.equal(rl.inputSchema.additionalProperties, false);
     assert.match(rl.description, /SetTarget/);
+    assert.match(rl.description, /NoPlatformSwitch/);
+    assert.match(rl.description, /TARGETINFO/);
   });
 });

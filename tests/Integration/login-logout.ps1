@@ -45,7 +45,7 @@ Log "=== login-logout start pid=$PID progId=$ProgId ==="
 
 $c = Step 'connect-ide' { Connect-TcIde -SolutionPath $SolutionPath -ProgId $ProgId }
 if (-not $c.success) { exit 1 }
-$null = Step 'set-target' { Set-TcTarget -AmsNetId $AmsNetId }
+$null = Step 'set-target' { Set-TcTarget -AmsNetId $AmsNetId -NoPlatformSwitch }
 $null = Step 'login-1'    { Enter-TcPlcOnline }
 $x    = Step 'logout'     { Exit-TcPlcOnline }
 $null = Step 'login-2'    { Enter-TcPlcOnline }

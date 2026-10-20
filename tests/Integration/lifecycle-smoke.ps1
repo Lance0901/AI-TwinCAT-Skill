@@ -26,7 +26,7 @@ param(
     # (watched, and closed at the end). Use instead of -PreLaunch.
     [int]$AttachPid = 0,
     # Optional: activate this solution platform right after "set target" (step 02b-platform),
-    # e.g. 'TwinCAT OS (x64)' for a 4026 UmRT.
+    # e.g. 'TwinCAT OS (x64)' for a UmRT (Usermode Runtime). Step 02-set-target uses -NoPlatformSwitch (NetId only).
     [string]$SolutionPlatform
 )
 
@@ -382,7 +382,7 @@ try {
     # the solution opens; later cmdlets resolve the SysManager lazily, so this does not stop the flow.
 
     # 2. Set target
-    $null = Invoke-Step '02-set-target' 'Set-TcTarget' { Set-TcTarget -AmsNetId $AmsNetId }
+    $null = Invoke-Step '02-set-target' 'Set-TcTarget' { Set-TcTarget -AmsNetId $AmsNetId -NoPlatformSwitch }
     if (-not [string]::IsNullOrWhiteSpace($SolutionPlatform)) {
         # 4026: the active solution platform must match the target platform ('TwinCAT OS (x64)'
         # for a local UmRT), otherwise ActivateConfiguration() silently fails (ACTIVATE_FAILED).
