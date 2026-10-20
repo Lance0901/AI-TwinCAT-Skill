@@ -25,6 +25,8 @@ $script:TcErrorHints = @{
     'CYCLE_TIMEOUT'        = 'Enable-TcConfig -Force 的 -TimeoutSec 總預算已用完:看 data.steps 卡在哪一步,加大 -TimeoutSec 或用 Get-TcSystemState / Get-TcPlcState 確認狀態'
     'ERRORLIST_UNAVAILABLE' = 'Error List 視窗讀不到:確認 XAE 視窗可見且 Error List 沒被 auto-hide;可手動 View > Error List 後重試。需要英文 UI(視窗名 ''Error List''、按鈕 ''N Errors''),其他語系的 XAE 讀不到'
     'BUILD_STATUS_UNKNOWN'  = 'Build 結果無法判定:LastBuildInfo 與 Error List 都讀不到,請看 XAE 的 Error List 後再決定;不要把這個結果當成 build 成功'
+    'POU_NOT_FOUND'         = 'POU 不存在或路徑不對:用 Get-TcProjectTree -PlcOnly(預設 -Depth 4)查完整路徑後給 -PouPath。路徑格式(4024/4026 相同)TIPC^<Plc>^<Plc> Project^POUs^<name>;DUT 在 ^DUTs^<name>,GVL 在 ^GVLs^<name>'
+    'PLC_PROJECT_NOT_FOUND' = 'TIPC 下找不到 <Plc> Project 節點:確認 solution 內有 PLC 專案(Get-TcProjectTree -PlcOnly);剛 Activate / 重啟後可重試一次'
 }
 # Compile errors (Build-TcProject, only when the build really failed): generic BUILD_FAILED
 # from a COM exception keeps no hint, so this one is looked up explicitly.
