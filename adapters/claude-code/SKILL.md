@@ -94,8 +94,8 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
 | `Enter-TcPlcOnline [-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)`:Regular=1、Download=4(full download)、OnlineChange=2,**預設不加 SILENT(256)**;提示框由 `Connect-TcIde` 開的全域 `ITcAutomationSettings.SilentMode` 以預設答案(Yes)處理。`-SilentFlag` 才會 OR 256,但實測旗標 SILENT 的語意是「遇到要問的就跳過不做」:257(REGULAR\|SILENT)在空 runtime 0.5 s 返回、**不建 app 不下載**、851 仍 Invalid,所以不要預設用。`Enable-TcConfig -Force` 的 login 步用 `-LoginMode Regular`(=1,XAE 自行決定是否下載;空 runtime 會建 app 並下載,實測 26 s、lifecycle 37/37);只有 `Send-TcPlcProgram` 用 Download(=4),已登入且 PLC 在跑時再做 full download;260(FORCEDOWNLOAD\|SILENT)實測下載成功,下一輪 Activate 時 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關。**不要用 3**(REGULAR\|FORCEONLINECHANGE 互斥,下載時會 abort)。SilentMode 開啟時,對已在 Run 且程式不一致的 PLC 直接呼叫 `Enter-TcPlcOnline`,XAE 會自動採用 online change/download 提示的預設答案;要明確控制就帶 `-LoginMode Download` 或 `OnlineChange`。`Enable-TcConfig` 不受影響。 |
 | `Exit-TcPlcOnline` | Logout |
-| `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000) |
-| `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>]` | 設系統狀態,輪詢到目標才返回 |
+| `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000)。省略 `-AmsNetId` 時依序用 IDE target → ADS session → local `127.0.0.1.1.1`,`data.netIdSource` 回報實際來源(`local` 代表讀的是本機 TcSysSrv,通常不是你的 target) |
+| `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>]` | 設系統狀態,輪詢到目標才返回。省略 `-AmsNetId` 時依序用 IDE target → ADS session,兩者皆無回 `AMS_NETID_REQUIRED`(不 fallback 到 local),`data.netIdSource` 回報來源 |
 | `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating |

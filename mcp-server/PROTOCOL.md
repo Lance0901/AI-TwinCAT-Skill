@@ -246,6 +246,9 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
 * `tools/list` entries carry `annotations` when the catalog entry in tools.json has them; the
   composites set their own (`GetStatus`, `QuickRead`, `GetIdeModalDialog`: `readOnlyHint: true`;
   `RunLifecycle`: `destructiveHint: true, readOnlyHint: false`).
+* `RunLifecycle` steps: `ConnectIde`, `SetTarget` (only when `TargetAmsNetId` is a non-empty string; runs
+  `SetTarget {AmsNetId}` right after `ConnectIde`), `BuildProject` (unless `SkipBuild`), `EnableConfig`,
+  `ConnectAds`. Without `TargetAmsNetId` there is no `SetTarget` step.
 * When the `tools/call` request carries `params._meta.progressToken` (SDK: `extra._meta.progressToken`
   in the request handler), the server sends `notifications/progress`
   `{progressToken, progress: <elapsed milliseconds, strictly increasing>, message: "<tool> running <n>s"}`

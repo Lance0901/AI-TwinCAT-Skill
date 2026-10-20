@@ -99,7 +99,7 @@ Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Paramete
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `RunLifecycle` | composite | — | 1500 s | `ConnectIde` → `BuildProject` (unless `SkipBuild`) → `EnableConfig` (`Force`; `NoLogin`, `TimeoutSec` 10..3600 optional) → `ConnectAds`; stops at the first failing step, `data.steps[]` / `data.failedStep` tell where. **Destructive** (`annotations.destructiveHint`): restarts TwinCAT, downloads and starts the PLC program; confirm with the user first |
+| `RunLifecycle` | composite | — | 1500 s | `ConnectIde` → `SetTarget` (only with `TargetAmsNetId`; without a saved target in the .tsproj, `EnableConfig` otherwise activates on the IDE default local runtime) → `BuildProject` (unless `SkipBuild`) → `EnableConfig` (`Force`; `NoLogin`, `TimeoutSec` 10..3600 optional) → `ConnectAds`; stops at the first failing step, `data.steps[]` / `data.failedStep` tell where. **Destructive** (`annotations.destructiveHint`): restarts TwinCAT, downloads and starts the PLC program; confirm with the user first |
 | `QuickRead` | composite | `Path` | 120 s | `ReadVariable`; on `NOT_CONNECTED` runs `ConnectAds` (auto-detected AmsNetId) and reads again; `data.connectedOnDemand`. Read-only |
 | `GetStatus` | composite | — | 120 s | Bridge state (IDE/ADS connected, AmsNetId) + `GetIdeInfo` + `GetSystemState` + `GetPlcState`; `NOT_CONNECTED` before `ConnectIde`. Read-only |
 | `GetIdeModalDialog` | composite (module-private `Get-TcIdeModalDialog`) | — | 90 s | Probe the XAE window for a blocking modal dialog; `data.dialog` is `null` or `{title, text}`. Uses the IDE pid from `ConnectIde`; after a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` it falls back to `data.lastIde.ideProcessId`, and `ProcessId` (integer ≥ 1) overrides both. Read-only |
@@ -256,8 +256,11 @@ Or in one call:
 
 ```
 RunLifecycle    {"SolutionPath": "C:\\path\\to\\MyProject.sln"}
+RunLifecycle    {"SolutionPath": "C:\\path\\to\\MyProject.sln", "TargetAmsNetId": "199.5.42.250.1.1"}
 QuickRead       {"Path": ["MAIN.nCounter"]}
 ```
+
+Pass `TargetAmsNetId` (second example) when the .tsproj has no saved target or should run on another runtime than the IDE default (UmRT, remote CX); omit it to keep the target the IDE already has.
 
 Do not add waits between calls: `EnableConfig`, `SetSystemState`, `SetPlcState` and `RunTestCycle` poll until the target state is reached.
 

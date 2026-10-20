@@ -6,11 +6,16 @@ function Set-TcSystemState {
         Uses ADS WriteControl on port 10000 to switch system state, then polls
         port 10000 (Wait-TcAdsState) until the requested state is reached instead
         of sleeping a fixed time.
-        AmsNetId is auto-detected from IDE connection if not specified.
+        When -AmsNetId is omitted it is resolved from the IDE target (Connect-TcIde,
+        GetTargetNetId), then from the ADS session (Connect-TcAds). There is NO local
+        fallback: if both are empty AMS_NETID_REQUIRED is returned, because switching
+        the wrong machine's state is destructive. data.netIdSource reports the source
+        ('explicit' / 'ide-target' / 'ads-session').
     .PARAMETER State
         Target state: Run or Config.
     .PARAMETER AmsNetId
-        Target AMS Net ID. Auto-detected from IDE if omitted.
+        Target AMS Net ID. Optional; resolved from the IDE target, then the ADS session.
+        Never falls back to the local system 127.0.0.1.1.1.
     .PARAMETER TimeoutSec
         Maximum time to wait for the target state. Default 60.
     #>
@@ -27,16 +32,25 @@ function Set-TcSystemState {
         [int]$TimeoutSec = 60
     )
 
-    # Auto-detect AmsNetId
+    # Auto-detect AmsNetId: IDE target, then ADS session (never local: destructive)
+    $netIdSource = 'explicit'
     if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
+        $AmsNetId = $null
         $sm = $null
         try { $sm = Get-TcSysManager } catch { Write-Verbose "Set-TcSystemState: no IDE connection ($($_.Exception.Message))" }
         if ($null -ne $sm) {
             try { $AmsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { }
         }
-        if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
+        if (-not [string]::IsNullOrWhiteSpace($AmsNetId)) {
+            $netIdSource = 'ide-target'
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) {
+            $AmsNetId = $script:TcAdsAmsNetId
+            $netIdSource = 'ads-session'
+        }
+        else {
             return New-TcResult -Success $false `
-                -ErrorMessage 'AmsNetId not specified and could not be auto-detected. Connect to IDE first or specify -AmsNetId.' `
+                -ErrorMessage 'AmsNetId not specified and could not be auto-detected (no IDE target, no ADS session). Connect to IDE first or specify -AmsNetId.' `
                 -ErrorCode 'AMS_NETID_REQUIRED' `
                 -Hint (Get-TcErrorHint -Code 'AMS_NETID_REQUIRED')
         }
@@ -93,6 +107,7 @@ function Set-TcSystemState {
             requestedState = $State
             currentState   = $wait.State
             amsNetId       = $AmsNetId
+            netIdSource    = $netIdSource
             elapsedMs      = $wait.ElapsedMs
         }
 
