@@ -25,8 +25,35 @@ function Disconnect-TcIde {
             Invoke-TcComRetry -OperationName 'DTE.Quit' -TimeoutSec 60 -ScriptBlock { $dte.Quit() } | Out-Null
             $quitResult.quit = $true
         }
-        catch { $quitResult.error = (($quitResult.error, "DTE.Quit: $($_.Exception.Message)") -ne $null) -join '; ' }
+        catch {
+            # The IDE drops the RPC connection while it exits, so DTE.Quit() itself usually fails
+            # with a dead-RPC error (or IDE_CRASHED from Invoke-TcComRetry once the process is
+            # gone). That is the expected outcome of a successful quit, not a crash.
+            if ($_.Exception.Message -match 'IDE_CRASHED|0x80010108|0x800706BE|0x800706BA') {
+                $quitResult.quit = $true
+            }
+            else {
+                $quitResult.error = (($quitResult.error, "DTE.Quit: $($_.Exception.Message)") -ne $null) -join '; '
+            }
+        }
     }
+
+    # Restore the SilentMode value Connect-TcIde found, unless the IDE was quit.
+    if (-not $Quit -and $null -ne $script:TcAutomationSettings -and $null -ne $script:TcSilentModeOriginal) {
+        $settingsRestore = $script:TcAutomationSettings
+        $silentRestore = [bool]$script:TcSilentModeOriginal
+        try {
+            Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
+        }
+        catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
+    }
+
+    if ($null -ne $script:TcAutomationSettings) {
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcAutomationSettings) | Out-Null } catch { }
+    }
+    $script:TcAutomationSettings = $null
+    $script:TcSilentMode = $false
+    $script:TcSilentModeOriginal = $null
 
     if ($null -ne $script:TcSysManager) {
         try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }

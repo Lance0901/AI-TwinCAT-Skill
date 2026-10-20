@@ -34,7 +34,7 @@ function Resolve-TcPlcProjectPath {
         }
     }
     catch {
-        if ($_.Exception.Message -match 'IDE_BUSY') { throw }
+        if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED') { throw }
         Write-Verbose "LookupTreeItem('$candidatePath') failed: $_"
     }
 

@@ -3,7 +3,7 @@
     .SYNOPSIS
         Full test cycle: Build -> Activate -> Login -> Start -> Connect ADS -> Execute Tests -> Report -> Stop.
     .DESCRIPTION
-        Correct order: Build → Activate (Config→Run) → Login(3)+Download → Start PLC → Connect ADS → Tests.
+        Correct order: Build → Activate (Config→Run) → Login(1)+Download → Start PLC → Connect ADS → Tests.
         ADS port 851 only becomes available AFTER Login+Download, so Connect ADS must come after Login.
     .PARAMETER TestCases
         Array of test case objects from New-TcTestCase.
@@ -75,7 +75,7 @@
         $cachedAmsNetId = $reconnResult.data.amsNetId
     }
 
-    # Step 3: Login + Download (Login(3) suppresses dialogs, auto-downloads program)
+    # Step 3: Login + Download (Login(1) under SilentMode, auto-downloads program)
     # This makes PLC port 851 available with symbols
     $loginResult = Enter-TcPlcOnline
     $steps += [PSCustomObject]@{ step = 'Login'; success = $loginResult.success }

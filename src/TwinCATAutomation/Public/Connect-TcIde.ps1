@@ -55,6 +55,12 @@ function Connect-TcIde {
         [switch]$NoLaunch
     )
 
+    # Forget the pid / HWND of a previous connection: Invoke-TcComRetry checks that pid after an
+    # RPC failure, and a stale pid (IDE that has since exited) would turn a busy call against the
+    # new instance into a false IDE_CRASHED.
+    $script:TcIdeProcessId = $null
+    $script:TcIdeMainHwnd = 0
+
     # Validate SolutionPath if provided
     $normalizedSolutionPath = $null
     if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
@@ -316,6 +322,32 @@ function Connect-TcIde {
             -Data ([PSCustomObject]@{ progId = $usedProgId; ideProcessId = $ideProcessId; candidates = $candidateSummary })
     }
 
+    # Automation Interface silent mode: ITcAutomationSettings.SilentMode = true makes XAE answer
+    # its own message boxes with the default button instead of blocking. Verified 2026-10-19 on
+    # TwinCAT 3.1.4024 (32-bit XAE): with SilentMode the "Application 'Port_851' does not exist on
+    # device ... create it and proceed with download?" prompt of Login(1) is answered Yes and the
+    # program is downloaded to an empty runtime; without it Login blocks forever.
+    # Done after the pid is known (COM watchdog / crash detection) and the modal check passed.
+    # The original value is kept so Disconnect-TcIde (without -Quit) can restore it.
+    $silentMode = $false
+    $script:TcSilentModeOriginal = $null
+    try {
+        $settings = Invoke-TcComRetry -OperationName 'GetObject TcAutomationSettings' -ScriptBlock { Write-Output -NoEnumerate $dte.GetObject('TcAutomationSettings') }
+        if ($null -ne $settings) {
+            $silentOriginal = $null
+            try { $silentOriginal = [bool](Invoke-TcComRetry -OperationName 'SilentMode read (original)' -ScriptBlock { $settings.SilentMode }) }
+            catch { $silentOriginal = $null; Write-Verbose "SilentMode original value unreadable ($($_.Exception.Message))" }
+            $script:TcSilentModeOriginal = $silentOriginal
+            Invoke-TcComRetry -OperationName 'SilentMode' -ScriptBlock { $settings.SilentMode = $true } | Out-Null
+            $script:TcAutomationSettings = $settings
+            $silentMode = [bool](Invoke-TcComRetry -OperationName 'SilentMode read' -ScriptBlock { $settings.SilentMode })
+        }
+    }
+    catch {
+        Write-Verbose "TcAutomationSettings.SilentMode could not be enabled ($($_.Exception.Message))"
+    }
+    $script:TcSilentMode = $silentMode
+
     # --- Auto-open solution if -SolutionPath specified and not already open ---
     if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
         $currentSln = try { [string]$dte.Solution.FullName } catch { '' }
@@ -378,7 +410,13 @@ function Connect-TcIde {
     $smAttempts = if ($hasProjects -or -not [string]::IsNullOrWhiteSpace($SolutionPath)) { 10 } else { 1 }
     for ($smTry = 1; $smTry -le $smAttempts; $smTry++) {
         $smProbe = $null
-        try { $smProbe = Get-TcSysManager -Refresh } catch { $smProbe = $null }
+        try { $smProbe = Get-TcSysManager -Refresh }
+        catch {
+            if ($_.Exception.Message -match 'IDE_CRASHED') {
+                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'IDE_CRASHED' -MessagePrefix 'Connect-TcIde (ITcSysManager scan)'
+            }
+            $smProbe = $null
+        }
         if ($null -ne $smProbe) {
             $sysManagerAvailable = $true
             break
@@ -399,6 +437,7 @@ function Connect-TcIde {
         sysManagerAvailable = $sysManagerAvailable
         selectedBy          = $selectionReason
         ideProcessId        = $ideProcessId
+        silentMode          = $script:TcSilentMode
         candidates          = $candidateSummary
     }
 

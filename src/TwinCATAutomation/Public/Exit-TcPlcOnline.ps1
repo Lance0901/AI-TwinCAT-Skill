@@ -15,7 +15,7 @@ function Exit-TcPlcOnline {
 
     $sm = Get-TcSysManager
     if ($null -eq $sm) {
-        return New-TcResult -Success $false -ErrorMessage 'No TwinCAT project loaded.' -ErrorCode 'NO_PROJECT'
+        return New-TcNoSysManagerResult
     }
 
     try {
@@ -55,7 +55,7 @@ function Exit-TcPlcOnline {
 
         $loggedOutVia = $null
         $lastErr = $null
-        $fatal = 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_BUSY'
+        $fatal = 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_BUSY|IDE_CRASHED'
         $attempts = @(
             @{ Via = 'plcNode.Logoff';  Run = { $plcNode.Logoff() } },
             @{ Via = 'plcNode.Logout';  Run = { $plcNode.Logout() } },

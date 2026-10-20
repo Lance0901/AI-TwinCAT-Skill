@@ -4,7 +4,7 @@ function Send-TcPlcProgram {
         Downloads the compiled PLC program to the target runtime — no dialog popups.
     .DESCRIPTION
         This is a convenience wrapper around Enter-TcPlcOnline.
-        Login(3) handles both login and download in one call.
+        Enter-TcPlcOnline -LoginMode Download (PLC_LOGIN_FLAGS FORCEDOWNLOAD = 4, prompts answered by SilentMode) does login + full download in one call.
     .PARAMETER PlcProjectPath
         Tree path to PLC project. Default auto-detects from TIPC.
     #>
@@ -14,6 +14,6 @@ function Send-TcPlcProgram {
         [string]$PlcProjectPath
     )
 
-    # Login(3) already handles download, so delegate
-    Enter-TcPlcOnline -PlcProjectPath $PlcProjectPath
+    # FORCEDOWNLOAD (4) handles download; the global SilentMode answers prompts
+    Enter-TcPlcOnline -PlcProjectPath $PlcProjectPath -LoginMode Download   # FORCEDOWNLOAD (4); SilentMode answers prompts
 }

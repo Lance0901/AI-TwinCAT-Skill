@@ -3,9 +3,28 @@
     .SYNOPSIS
         Logs into PLC runtime and downloads program — no dialog popups.
     .DESCRIPTION
-        Uses ITcSmTreeItem::Login(3) on the PLC Project node.
-        Flag 3 = CompileBeforeLogin(1) + SuppressAllDialogs(2).
-        This triggers Login + Download automatically if no program is loaded.
+        Calls ITcPlcIECProject::Login(PLC_LOGIN_FLAGS) on the "<Plc> Project" tree item.
+        PLC_LOGIN_FLAGS (TCatSysManagerLib, TwinCAT 3.1):
+          NONE=0  REGULAR=1  FORCEONLINECHANGE=2  FORCEDOWNLOAD=4
+          FORCECOMPILECODE=16  FORCEGENERATECODE=32  SILENT=256
+        -LoginMode maps to REGULAR / FORCEDOWNLOAD / FORCEONLINECHANGE. SILENT is NOT added
+        by default (-SilentFlag adds it): XAE answers its own prompts (e.g. "Application
+        'Port_851' does not exist on device ... create it and proceed with download?") with
+        the default button through the global ITcAutomationSettings.SilentMode that
+        Connect-TcIde enables, instead of blocking the COM call.
+        Measured 2026-10-19 (TwinCAT 3.1.4024, 32-bit XAE, empty UmRT):
+          Login(3) = REGULAR|FORCEONLINECHANGE -> "Login aborted: Conflicting flag settings
+                     ('Regular' and 0x00000002)"; silently aborted under SilentMode, nothing
+                     downloaded. (The old "3 = compile + suppress dialogs" comment was wrong.)
+          Login(1)/(2)/(4) without SILENT -> blocking "create application?" prompt
+          Login(1) with SilentMode -> login + download OK (851 Invalid -> Stop, 37/37 lifecycle)
+          Login(257) = REGULAR|SILENT -> returned in 0.5 s, nothing created/downloaded
+                     (851 stayed Invalid): the SILENT flag skips the prompt instead of
+                     answering it. Not used by default.
+          Login(260) = FORCEDOWNLOAD|SILENT -> deployed to the empty runtime too; the next
+                     ActivateConfiguration() then took 250 s and failed: the 32-bit XAE crashed
+                     with OutOfMemoryException in the CODESYS Visu engine (Windows event 1026),
+                     unrelated to the flag; Enable-TcConfig uses Regular.
 
         Before Login the IDE is checked for a modal dialog (IDE_MODAL_DIALOG is
         returned instead of issuing a DTE call that would block forever), and the
@@ -14,16 +33,45 @@
         after Login, the program was already loaded (data.downloaded = $false);
         otherwise a download is assumed (data.downloaded = $true). This is a
         best-effort indication only.
+
+        NOTE: with SilentMode on, calling Enter-TcPlcOnline directly against a PLC that is
+        already in Run with a mismatching project lets XAE take its default answer to its own
+        "online change / download" prompt; Enable-TcConfig is not affected (login happens
+        after the restart). Use -LoginMode Download / OnlineChange explicitly when that matters.
     .PARAMETER PlcProjectPath
         Tree path to PLC project. Default auto-detects from TIPC.
+    .PARAMETER LoginMode
+        Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has
+        no program (XAE decides). Download: FORCEDOWNLOAD - always a full download
+        (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE.
+        SILENT (256) is only OR-ed in with -SilentFlag.
     .OUTPUTS
-        data: online, plcProjectPath, message, downloaded, plcStateBefore, plcStateAfter
+        data: online, plcProjectPath, loginMode, loginFlags, message, downloaded,
+              plcStateBefore, plcStateAfter
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
-        [string]$PlcProjectPath
+        [string]$PlcProjectPath,
+
+        [Parameter()]
+        [ValidateSet('Regular', 'Download', 'OnlineChange')]
+        [string]$LoginMode = 'Regular',
+
+        [Parameter()]
+        [switch]$SilentFlag
     )
+
+    # PLC_LOGIN_FLAGS. SILENT (256) is NOT added by default: measured 2026-10-19 on an empty
+    # UmRT, REGULAR|SILENT (257) returned in 0.5 s without creating/downloading the application
+    # (851 stayed Invalid), while REGULAR (1) with the global ITcAutomationSettings.SilentMode
+    # (enabled by Connect-TcIde) answered the "create application?" prompt with Yes and
+    # downloaded. The flag means "skip anything that would ask", the global setting means
+    # "answer with the default button". -SilentFlag adds 256 when that behaviour is wanted.
+    $loginFlagMap = @{ Regular = 1; Download = 4; OnlineChange = 2 }
+    $PLC_LOGIN_FLAGS_SILENT = 256
+    $loginFlags = [int]$loginFlagMap[$LoginMode]
+    if ($SilentFlag) { $loginFlags = $loginFlags -bor $PLC_LOGIN_FLAGS_SILENT }
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -31,7 +79,7 @@
 
     $sm = Get-TcSysManager
     if ($null -eq $sm) {
-        return New-TcResult -Success $false -ErrorMessage 'No TwinCAT project loaded.' -ErrorCode 'NO_PROJECT'
+        return New-TcNoSysManagerResult
     }
 
     # AdsState of port 851 as [int] (Invalid=0 ... Run=5, Stop=6) or $null when unreachable.
@@ -90,7 +138,7 @@
 
         # PLC state before login (best effort; $null = port 851 not reachable = nothing loaded)
         $netId = $null
-        try { $netId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { $netId = $null }
+        try { $netId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { if ($_.Exception.Message -match 'IDE_CRASHED') { throw }; $netId = $null }
         if ([string]::IsNullOrWhiteSpace($netId)) { $netId = $script:TcAdsAmsNetId }
         $stateBefore = Get-TcQuietPlcState -NetId $netId
 
@@ -98,9 +146,13 @@
         # that reliably exposes Login(nFlags) method
         $plcProject = Invoke-TcComRetry -OperationName "LookupTreeItem $PlcProjectPath" -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem($PlcProjectPath) }
 
-        # Login(3) = CompileBeforeLogin(1) + SuppressAllDialogs(2)
-        # This also triggers Download if runtime has no program
-        Invoke-TcComRetry -OperationName 'Login' -TimeoutSec 300 -ScriptBlock { $plcProject.Login(3) } | Out-Null
+        # PLC_LOGIN_FLAGS: <mode> | SILENT. Never REGULAR|FORCEONLINECHANGE (=3): XAE rejects
+        # that combination as conflicting on the download path (see .DESCRIPTION).
+        if (-not $script:TcSilentMode -and -not $SilentFlag) {
+            Write-Warning 'Enter-TcPlcOnline: ITcAutomationSettings.SilentMode is not enabled on this IDE; Login may block on a dialog when the runtime has no application.'
+        }
+        Write-Verbose "Login flags: $loginFlags ($LoginMode$(if ($SilentFlag) { ' | SILENT' }))"
+        Invoke-TcComRetry -OperationName "Login($loginFlags)" -TimeoutSec 300 -ScriptBlock { $plcProject.Login($loginFlags) } | Out-Null
 
         $stateAfter = Get-TcQuietPlcState -NetId $netId
 
@@ -115,6 +167,8 @@
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             online         = $true
             plcProjectPath = $PlcProjectPath
+            loginMode      = $LoginMode
+            loginFlags     = $loginFlags
             message        = $message
             downloaded     = $downloaded
             plcStateBefore = (ConvertTo-TcAdsStateName -State $stateBefore)
@@ -122,12 +176,18 @@
         })
     }
     catch {
-        if ($_.Exception.Message -match 'already' -and $_.Exception.Message -notmatch 'IDE_MODAL_DIALOG|IDE_TIMEOUT') {
+        if ($_.Exception.Message -match '(?i)already\s+(logged\s*in|online)' -and $_.Exception.Message -notmatch 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_CRASHED|IDE_BUSY') {
+            $stateAfterAlready = $null
+            try { $stateAfterAlready = Get-TcQuietPlcState -NetId $netId } catch { $stateAfterAlready = $null }
             New-TcResult -Success $true -Data ([PSCustomObject]@{
                 online         = $true
                 plcProjectPath = $PlcProjectPath
+                loginMode      = $LoginMode
+                loginFlags     = $loginFlags
                 message        = 'Already logged into PLC runtime.'
                 downloaded     = $false
+                plcStateBefore = (ConvertTo-TcAdsStateName -State $stateBefore)
+                plcStateAfter  = (ConvertTo-TcAdsStateName -State $stateAfterAlready)
             })
         }
         else {
