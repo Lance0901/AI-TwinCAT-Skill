@@ -30,7 +30,8 @@ async function timed(name, fn) {
 export const RunLifecycle = {
   name: 'RunLifecycle',
   description:
-    'Full PLC lifecycle in one call: ConnectIde -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
+    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
+    'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
     'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error.',
   annotations: { destructiveHint: true, readOnlyHint: false },
@@ -41,6 +42,7 @@ export const RunLifecycle = {
       SolutionPath: { type: 'string', description: 'Solution (.sln) to open on ConnectIde. Omit to attach to the running XAE.' },
       ProgId: { type: 'string', description: 'Visual Studio / XAE shell ProgId passed to ConnectIde.' },
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
+      TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },
       SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false).' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
@@ -64,6 +66,12 @@ export const RunLifecycle = {
     let step = await timed('ConnectIde', () => ctx.callTool('ConnectIde', connectArgs));
     steps.push(step);
     if (!step.success) return fail(step);
+
+    if (typeof args.TargetAmsNetId === 'string' && args.TargetAmsNetId !== '') {
+      step = await timed('SetTarget', () => ctx.callTool('SetTarget', { AmsNetId: args.TargetAmsNetId }));
+      steps.push(step);
+      if (!step.success) return fail(step);
+    }
 
     if (!args.SkipBuild) {
       step = await timed('BuildProject', () => ctx.callTool('BuildProject', {}));

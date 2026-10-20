@@ -84,6 +84,13 @@
       "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" } }, "required": [], "additionalProperties": false }
     },
     {
+      "name": "SetTarget",
+      "cmdlet": "Set-TcTarget",
+      "description": "Select the target system.",
+      "timeoutMs": 60000,
+      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" } }, "required": ["AmsNetId"], "additionalProperties": false }
+    },
+    {
       "name": "GetPlcState",
       "cmdlet": "Get-TcPlcState",
       "description": "PLC state.",

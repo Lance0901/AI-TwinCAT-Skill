@@ -4,6 +4,7 @@
 //   params.Hang        never answer (used to test timeouts)
 //   params.Crash       process.exit(3) without answering
 //   params.DelayMs     delay the answer by N ms
+//   cmdlet Set-TcTarget    echoes data.params; AmsNetId '0.0.0.0.0.0' fails with TARGET_NOT_FOUND
 //   cmdlet Get-TcIdeInfo   writes a warning log line, then NOT_CONNECTED + hint
 //   cmdlet Connect-TcIde   marks the mock IDE as connected (state.ideConnected); returns
 //                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch);
@@ -17,7 +18,7 @@ import readline from 'node:readline';
 const CMDLETS = [
   'Connect-TcIde', 'Disconnect-TcIde', 'Get-TcIdeInfo', 'Build-TcProject', 'Enable-TcConfig',
   'Connect-TcAds', 'Disconnect-TcAds', 'Read-TcVariable', 'Write-TcVariable',
-  'Get-TcSystemState', 'Get-TcPlcState'
+  'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget'
 ];
 
 const state = {
@@ -110,6 +111,11 @@ function handleCall(req) {
         return result(id, { success: true, data: { plcState: 'Run', params } });
       case 'Get-TcSystemState':
         return result(id, { success: true, data: { state: 'Run', amsNetId: params.AmsNetId ?? null } });
+      case 'Set-TcTarget':
+        if (params.AmsNetId === '0.0.0.0.0.0') {
+          return result(id, { success: false, error: { code: 'TARGET_NOT_FOUND', message: 'mock: unknown target', hint: 'pick a route' } });
+        }
+        return result(id, { success: true, data: { amsNetId: params.AmsNetId, params } });
       case 'Get-TcPlcState':
         return result(id, { success: true, data: { state: 'Run' } });
       default:

@@ -459,7 +459,7 @@
                   {
                       "name":  "GetSystemState",
                       "cmdlet":  "Get-TcSystemState",
-                      "description":  "Read the TwinCAT system state (Run/Config) of a target over ADS port 10000. AmsNetId defaults to 127.0.0.1.1.1 (the local system), which is NOT necessarily your target; pass the AmsNetId reported by ConnectIde/ConnectAds for a remote or UmRT target.",
+                      "description":  "Read the TwinCAT system state (Run/Config) of a target over ADS port 10000. AmsNetId defaults to the IDE target (ConnectIde), then the ADS session (ConnectAds), then the local system 127.0.0.1.1.1; data.amsNetId / data.netIdSource tell which one was used. netIdSource=local means you read the local TwinCAT system, which is usually NOT your target.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -469,8 +469,7 @@
                                           "properties":  {
                                                              "AmsNetId":  {
                                                                               "type":  "string",
-                                                                              "description":  "Target AmsNetId. Default 127.0.0.1.1.1 is the local TwinCAT system, which may not be your target.",
-                                                                              "default":  "127.0.0.1.1.1"
+                                                                              "description":  "Target AmsNetId. Leave empty to use the IDE target, then the ADS session, then the local system 127.0.0.1.1.1 (see data.netIdSource)."
                                                                           }
                                                          },
                                           "required":  [
