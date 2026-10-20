@@ -13,8 +13,9 @@ function Reset-TcSolution {
             write. It blocks every DTE call (IDE_MODAL_DIALOG, data.dialogKind
             'reload-prompt'), the Automation Interface has no reload command and the VS
             option AutoloadExternalChanges does not suppress it. Closing and reopening the
-            solution is the dialog-free way (2026-10-20 reload-experiment: ~9 s on a 4024
-            32-bit XAE, against ~45 s for kill + relaunch).
+            solution is the dialog-free way (2026-10-20, 4024 32-bit XAE: 20-25 s in total,
+            Solution.Open 7-9 s + Connect-TcIde reconnect 12-13 s, against ~45 s for
+            kill + relaunch).
         Write-TcPouCode / Add-TcPou write into the IDE's edit buffer through COM (the file
         on disk is only written when the IDE saves, e.g. before a Build), so they never
         trigger the prompt and never need this.
@@ -30,7 +31,7 @@ function Reset-TcSolution {
              stays open would trigger the prompt again on the next disk edit.
              data.closedDocuments = number of documents that were open.
           3. Solution.Close($false) in Invoke-TcComRetry; the old ITcSysManager is released.
-          4. Solution.Open(<sln>) on the SAME DTE (Invoke-TcComRetry, ~9 s): an IDE with
+          4. Solution.Open(<sln>) on the SAME DTE (Invoke-TcComRetry, 7-9 s): an IDE with
              no solution open is never reused by Connect-TcIde -SolutionPath (it belongs
              to whoever opened it), so the reopen must happen on the instance we hold.
           5. Connect-TcIde -SolutionPath <sln> -ProgId <current> -NoLaunch: picks the same
@@ -54,7 +55,8 @@ function Reset-TcSolution {
         data.closed                Solution.Close returned
         data.closeSec              seconds for CloseAll + Solution.Close
         data.openSec               seconds Solution.Open took
-        data.totalSec              seconds in total
+        data.connectSec            seconds the Connect-TcIde reconnect took
+        data.totalSec              seconds in total (measured 20-25 s)
         data.ideProcessId          IDE pid after the reconnect
         data.previousIdeProcessId  IDE pid before
         data.sameIde               both pids equal
@@ -182,12 +184,14 @@ function Reset-TcSolution {
     # --- 5. reconnect: the instance now has the target solution open -> 'solution-match' ---
     $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
     if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
+    $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
     $connect = Connect-TcIde @connectParams
+    $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
 
     if (-not $connect.success) {
         # Keep the code / hint of Connect-TcIde, say where it happened, and carry its data.
         $err = $connect.error
-        $data = Get-ProgressData -Extra @{ closeSec = $closeSec; openSec = $openSec }
+        $data = Get-ProgressData -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec }
         $dp = $connect.PSObject.Properties['data']
         if ($null -ne $dp -and $null -ne $dp.Value) {
             foreach ($p in $dp.Value.PSObject.Properties) { $data | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force }
@@ -211,6 +215,7 @@ function Reset-TcSolution {
     $data = Get-ProgressData -Extra ([ordered]@{
         closeSec            = $closeSec
         openSec             = $openSec
+        connectSec          = $connectSec
         totalSec            = [math]::Round($sw.Elapsed.TotalSeconds, 1)
         ideProcessId        = $newPid
         sameIde             = $sameIde
