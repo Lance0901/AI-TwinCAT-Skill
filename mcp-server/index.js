@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 import { loadConfig } from './lib/config.js';
 import { PowerShellBridge, errorResult } from './lib/bridge.js';
-import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult } from './lib/tools.js';
+import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
 import { ModalProbe, PROBED_TOOLS } from './lib/modal-probe.js';
@@ -27,6 +27,8 @@ try {
   console.error('[tcauto-mcp] run "npm run generate-tools" or set TWINCAT_MCP_TOOLS_JSON');
   process.exit(1);
 }
+
+const cmdletNames = buildCmdletNameMap(catalog, { 'Get-TcIdeModalDialog': 'GetIdeModalDialog' });
 
 const compositeMap = new Map(composites.map((c) => [c.name, c]));
 for (const name of compositeMap.keys()) {
@@ -400,7 +402,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // extra.signal fires on notifications/cancelled: a call still waiting in the bridge queue is
     // dropped (CANCELLED); one already handed to PowerShell runs to completion.
     const result = await callAnyTool(name, args, extra?.signal);
-    return toToolResult(await decorateBridgeLoss(result));
+    return toToolResult(rewriteResultHints(await decorateBridgeLoss(result), cmdletNames));
   } catch (err) {
     console.error(`[tcauto-mcp] ${name} failed: ${err?.stack ?? err}`);
     return toToolResult(errorResult('INTERNAL_ERROR', `${name}: ${err?.message ?? String(err)}`));

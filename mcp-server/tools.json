@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T05:38:47Z",
+    "generatedAt":  "2026-10-20T05:43:33Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -146,7 +146,7 @@
                   {
                       "name":  "BuildProject",
                       "cmdlet":  "Build-TcProject",
-                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems (description/file/line taken from the XAE Error List) instead of guessing; a full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
+                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
                       "timeoutMs":  600000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -194,7 +194,7 @@
                   {
                       "name":  "ConnectIde",
                       "cmdlet":  "Connect-TcIde",
-                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId and, when a solution is open, the detected target AmsNetId.",
+                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -302,7 +302,7 @@
                   {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
-                      "description":  "Read the compiler messages currently shown in the XAE Error List (errors by default; IncludeWarnings/IncludeMessages add the rest). Needs an English XAE UI (window \"Error List\", button \"N Errors\"); other UI languages return ERRORLIST_UNAVAILABLE.",
+                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI; other UI languages return ERRORLIST_UNAVAILABLE.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -312,7 +312,7 @@
                                           "properties":  {
                                                              "IncludeWarnings":  {
                                                                                      "type":  "boolean",
-                                                                                     "description":  "Also read warning rows (data.warnings)."
+                                                                                     "description":  "Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA). Also reads warning rows (data.warnings, always present when on, possibly empty)."
                                                                                  },
                                                              "IncludeMessages":  {
                                                                                      "type":  "boolean",
@@ -931,7 +931,7 @@
                   {
                       "name":  "WatchVariable",
                       "cmdlet":  "Watch-TcVariable",
-                      "description":  "Poll one PLC variable every IntervalMs for DurationMs and return the samples ({timestamp, value}, plus ms/ns/unix for TIME/DATE types and name for enums, same conversion as ReadVariable). The condition-based mode (Until) is a PowerShell scriptblock and is NOT available through MCP; use repeated ReadVariable calls instead. Requires ConnectAds.",
+                      "description":  "Poll one or more PLC variables (Path is an array; every round reads each path in order) every IntervalMs. Without Until it samples for DurationMs (default 2000). With Until it waits for a condition '<Path> <op> <value>' (op: == != > < >= <=, e.g. 'MAIN.fTarget == 123.5' or 'MAIN.bDone == TRUE'; <Path> must be one of Path) and returns as soon as it holds or after UntilTimeoutMs (default 5000): data.untilMet, untilSample, elapsedMs. Numbers compare numerically, TRUE/FALSE as booleans, other values as case-insensitive text; a failed read never satisfies the condition. Only the last KeepLast samples are returned (default 20 with Until, 50 without); sampleCount is the total and truncated tells whether older samples were dropped. Single-path samples are {timestamp, value} plus ms/ns/unix for TIME/DATE types and name for enums (same conversion as ReadVariable; a numeric Until value compares with that raw integer, text with the IEC literal / enum member name), multi-path samples {timestamp, values:{<path>:<value>}}. Use Until instead of a long DurationMs or repeated ReadVariable calls. Requires ConnectAds.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -940,23 +940,41 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "Path":  {
-                                                                          "type":  "string",
-                                                                          "description":  "Variable path to monitor."
+                                                                          "type":  "array",
+                                                                          "items":  {
+                                                                                        "type":  "string"
+                                                                                    },
+                                                                          "minItems":  1,
+                                                                          "description":  "One or more variable paths to monitor, e.g. [\"MAIN.nCounter\"] or [\"MAIN.fActual\",\"MAIN.bDone\"]. Always an array."
                                                                       },
                                                              "IntervalMs":  {
                                                                                 "type":  "integer",
-                                                                                "description":  "Polling interval in milliseconds. Default: 100.",
+                                                                                "description":  "Delay between sampling rounds in milliseconds. Default: 100.",
                                                                                 "default":  100
                                                                             },
                                                              "DurationMs":  {
                                                                                 "type":  "integer",
-                                                                                "description":  "Total monitoring duration in milliseconds."
+                                                                                "description":  "Sampling duration in ms when Until is not given (default 2000)."
                                                                             },
+                                                             "Until":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Stop condition '<Path> <op> <value>' with op one of == != > < >= <=, e.g. 'MAIN.fTarget == 123.5'. <Path> must be in Path (case-insensitive)."
+                                                                       },
+                                                             "UntilTimeoutMs":  {
+                                                                                    "type":  "integer",
+                                                                                    "description":  "Maximum time in ms to wait for Until before returning untilMet=false. Default 5000.",
+                                                                                    "default":  5000
+                                                                                },
                                                              "TimeoutMs":  {
                                                                                "type":  "integer",
-                                                                               "description":  "Max wait time for condition. Default: 5000.",
+                                                                               "description":  "Legacy alias of UntilTimeoutMs; used only when UntilTimeoutMs is not given.",
                                                                                "default":  5000
-                                                                           }
+                                                                           },
+                                                             "KeepLast":  {
+                                                                              "type":  "integer",
+                                                                              "description":  "Number of most recent samples to return. 0 = auto (20 with Until, 50 without). sampleCount still counts every round; truncated=true when older samples were dropped.",
+                                                                              "default":  0
+                                                                          }
                                                          },
                                           "required":  [
                                                            "Path"

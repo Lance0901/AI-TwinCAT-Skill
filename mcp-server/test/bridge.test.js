@@ -119,6 +119,30 @@ describe('PowerShellBridge', () => {
     assert.equal(r.error.code, 'MODULE_IMPORT_FAILED');
   });
 
+  test('call results carry seq/startedAt/finishedAt in strict serial order', async () => {
+    const { bridge } = makeBridge();
+    bridges.push(bridge);
+    const results = await Promise.all([
+      bridge.call('call', { cmdlet: 'Get-TcPlcState', params: { DelayMs: 150 } }),
+      bridge.call('call', { cmdlet: 'Get-TcPlcState', params: {} }),
+      bridge.call('call', { cmdlet: 'Get-TcPlcState', params: {} })
+    ]);
+    const d = results.map((r) => r.data);
+    for (const x of d) {
+      assert.ok(Number.isInteger(x.seq) && x.seq > 0);
+      assert.ok(Date.parse(x.finishedAt) >= Date.parse(x.startedAt));
+    }
+    assert.equal(d[1].seq, d[0].seq + 1);
+    assert.equal(d[2].seq, d[1].seq + 1);
+    for (let i = 0; i < 2; i++) {
+      assert.ok(Date.parse(d[i + 1].startedAt) >= Date.parse(d[i].finishedAt), `call ${i + 1} started after call ${i} finished`);
+    }
+    assert.ok(Date.parse(d[0].finishedAt) - Date.parse(d[0].startedAt) >= 100, 'first call took the DelayMs');
+    assert.equal(d[0].state, 'Run', 'original data kept');
+    const ping = await bridge.call('ping');
+    assert.deepEqual(ping, { success: true, data: { pong: true } });
+  });
+
   test('FIFO: two calls are answered in order, one at a time', async () => {
     const { bridge } = makeBridge();
     bridges.push(bridge);

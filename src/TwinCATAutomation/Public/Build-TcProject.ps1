@@ -23,12 +23,16 @@
     .OUTPUTS
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN
         data.errors          error count (Error List; fallback: failedProjects)
-        data.warnings        warning count (Error List; 0 when unavailable)
+        data.warnings        warning count (Error List; fallback: warning lines of the build output)
         data.messages        lines of the DTE build output pane (usually empty)
         data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read)
         data.errorItems      [ @{ severity; code; description; project; file; line; column } ]
         data.codeErrors      errorItems without the "Library Manager" items (file like
                              '*Library Manager' and line 0/empty) - the PLC code errors
+        data.warningItems    same shape as errorItems, the warnings of the Error List (@() when it could not be read)
+        data.codeWarnings    warningItems without the "Library Manager" items and without the
+                             rows that have no file (XAE build-summary rows such as "Project
+                             'plc' build ... failed" stay in the Error List as Warning)
         data.errorListError  only when the Error List could not be read (its error code)
     #>
     [CmdletBinding()]
@@ -113,14 +117,17 @@
         $errorCount = if ($null -ne $failedProjects) { $failedProjects } else { 0 }
         $warningCount = @($messages | Where-Object { $_ -match 'warning' }).Count
         $errorItems = @()
+        $warningItems = @()
         $errorListError = $null
         $severityUnknown = $false
         $unclassifiedCount = 0
-        $el = if ($null -ne $failedProjects -and $failedProjects -eq 0) { Get-TcBuildErrors -TimeoutSec 8 } else { Get-TcBuildErrors }
+        $el = if ($null -ne $failedProjects -and $failedProjects -eq 0) { Get-TcBuildErrors -IncludeWarnings -TimeoutSec 8 } else { Get-TcBuildErrors -IncludeWarnings }
         if ($el.success) {
             $errorItems = @($el.data.errors)
             if ($null -ne $el.data.counts.errors) { $errorCount = [int]$el.data.counts.errors } else { $errorCount = $errorItems.Count }
+            if ($null -ne $el.data.PSObject.Properties['warnings']) { $warningItems = @($el.data.warnings) }
             if ($null -ne $el.data.counts.warnings) { $warningCount = [int]$el.data.counts.warnings }
+            elseif ($warningItems.Count -gt 0) { $warningCount = $warningItems.Count }
             if ($null -ne $el.data.PSObject.Properties['severityUnknown']) { $severityUnknown = [bool]$el.data.severityUnknown }
             if ($null -ne $el.data.PSObject.Properties['unclassified']) { $unclassifiedCount = @($el.data.unclassified).Count }
         }
@@ -134,6 +141,10 @@
         # build and never fail it on their own.
         $codeErrors = @($errorItems | Where-Object { -not (Test-TcLibraryManagerItem $_) })
         $libraryManagerCount = $errorItems.Count - $codeErrors.Count
+        # Warnings: also drop rows without a file (the XAE build-summary row "... build for
+        # platform ... failed" is listed as a Warning without project/file/line and survives
+        # the next successful build).
+        $codeWarnings = @($warningItems | Where-Object { -not (Test-TcLibraryManagerItem $_) -and -not [string]::IsNullOrWhiteSpace([string]$_.file) })
 
         # --- success decision: (a) LastBuildInfo, (b) Error List, (c) unknown ---
         $buildSucceeded = $null
@@ -166,6 +177,8 @@
             failedProjects = $failedProjects
             errorItems     = $errorItems
             codeErrors     = $codeErrors
+            warningItems   = $warningItems
+            codeWarnings   = $codeWarnings
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy

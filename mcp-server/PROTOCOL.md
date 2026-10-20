@@ -102,6 +102,13 @@ A `success:false` result without `hint` gets one from the module's
 refers to the IDE, the hint is "Run Connect-TcIde first (ConnectIde).").
 Parameter-binding failures (ValidateSet/ValidateRange violation, missing
 Mandatory) are reported as `INVALID_PARAMS`, not `EXECUTION_ERROR`.
+
+For `op:"call"` the bridge adds execution-order fields to `data` (a new `data` object is
+created when the result has none or it is not an object): `seq` (counter from 1, incremented only
+when the request is really written to PowerShell), `startedAt` and `finishedAt` (ISO 8601). The
+bridge is strictly FIFO and runs one call at a time, so `seq` order = execution order. Timed-out /
+killed calls carry them too; calls that never left the queue (`CANCELLED`, queued `BRIDGE_DIED`)
+and `ping` / `state` / `modal` do not.
 An uncaught exception → `{"success":false,"error":{"code":"EXECUTION_ERROR","message":"<exception message>","hint":"..."}}`;
 if the exception message starts with a known code (`IDE_BUSY`, `IDE_TIMEOUT`,
 `IDE_MODAL_DIALOG`, …) that code is used instead of `EXECUTION_ERROR`.

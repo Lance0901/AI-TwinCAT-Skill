@@ -1,4 +1,4 @@
-# UI Automation scan of the IDE "Error List" tool window. Runs INSIDE a separate STA
+﻿# UI Automation scan of the IDE "Error List" tool window. Runs INSIDE a separate STA
 # runspace (Invoke-TcUiaScan), so it must be self-contained: no module functions, no
 # $script: state. Same pattern as $script:TcUiaDialogScan (Get-TcIdeModalDialog).
 #
@@ -7,7 +7,8 @@
 # Emits ONE PSCustomObject:
 #   Found        - $false when no Error List with a data grid was found in the process
 #   Counts       - @{ errors; warnings; messages } parsed from the summary buttons
-#                  ("9 Errors", "8 Warnings", "0 of 10 Messages": last number = total)
+#                  ("9 Errors", "8 Warnings", "0 of 10 Messages": last number = total;
+#                  counts also parsed from zh-TW button names: "3 個錯誤", "1 個警告", "2 則訊息")
 #   Rows         - [PSCustomObject]@{ severity; description; project; file; line; column; code; raw }
 #   Truncated    - $true when the grid has no ScrollPattern (only visible rows read)
 #                  or MaxRows was hit
@@ -105,9 +106,9 @@ $script:TcUiaErrorListScan = {
     foreach ($b in $buttons) {
         $n = Get-UiaName $b
         $sev = $null
-        if ($n -match '^\s*\d+(\s+of\s+\d+)?\s+Errors?\s*$') { $sev = 'Error' }
-        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s+Warnings?\s*$') { $sev = 'Warning' }
-        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s+Messages?\s*$') { $sev = 'Message' }
+        if ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Errors?|個錯誤|錯誤)\s*$') { $sev = 'Error' }
+        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Warnings?|個警告|警告)\s*$') { $sev = 'Warning' }
+        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Messages?|則訊息|個訊息|訊息)\s*$') { $sev = 'Message' }
         if ($null -eq $sev) { continue }
         $nums = @([regex]::Matches($n, '\d+') | ForEach-Object { [int]$_.Value })
         $total = $nums[$nums.Count - 1]
