@@ -266,8 +266,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TYPE_MISMATCH
 
-- **為什麼**:`Write-TcVariable` 的值型別與 symbol 型別不符(例如對 `UINT` 寫 `-1`、對 `BOOL` 寫字串)。
-- **下一步**:`Get-TcSymbols` 看 type,用對應 PowerShell 型別轉型(`[uint16]0`、`$true`)。
+- **為什麼**:`Write-TcVariable` 無法把值轉成 symbol 的型別(對 `UINT` 寫 `-1` 或 `2.5`、對 `BOOL` 寫 `"yes"`、對 `TIME` 寫 `DT#…`、enum 成員名拼錯),或 symbol 是 STRUCT/ARRAY(不支援整筆寫)。`error.message` 說明原因,`hint` 列出支援型別。
+- **下一步**:`Get-TcSymbols` 看 `type`(enum 會列 `enumValues`);TIME/TOD 給整數 ms 或 `T#5s`、`TOD#12:30:00`,LTIME 給 ns,DATE/DT 給 UNIX 秒、`D#2026-10-20`、`DT#2026-10-20-12:30:00` 或 ISO 8601,enum 給整數或成員名;STRUCT 改寫個別成員(`stPar.fMax`)。`data.written` 是實際寫入的轉換值(數值型回數值),TIME 類另回 `text`、enum 另回 `name`。
 
 ### ACTIVATION_FAILED
 

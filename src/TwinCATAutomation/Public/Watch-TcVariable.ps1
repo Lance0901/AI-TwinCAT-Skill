@@ -12,6 +12,9 @@ function Watch-TcVariable {
         ScriptBlock condition to stop monitoring (receives $_ with .Value property).
     .PARAMETER TimeoutMs
         Max wait time for condition. Default: 5000.
+    .NOTES
+        Samples use the Read-TcVariable conversion: {timestamp, value} plus text (IEC literal) for
+        TIME/DATE types and name (member name) for enums; finalValue stays the scalar value.
     #>
     [CmdletBinding()]
     param(
@@ -47,10 +50,7 @@ function Watch-TcVariable {
             while ([DateTime]::Now -lt $deadline) {
                 $readResult = Read-TcVariable -Path $Path
                 if ($readResult.success) {
-                    $sample = [PSCustomObject]@{
-                        timestamp = [DateTime]::Now.ToString('o')
-                        value     = $readResult.data.value
-                    }
+                    $sample = New-TcWatchSample -Data $readResult.data
                     $samples += $sample
 
                     # Test condition
@@ -82,10 +82,7 @@ function Watch-TcVariable {
             while ([DateTime]::Now -lt $deadline) {
                 $readResult = Read-TcVariable -Path $Path
                 if ($readResult.success) {
-                    $samples += [PSCustomObject]@{
-                        timestamp = [DateTime]::Now.ToString('o')
-                        value     = $readResult.data.value
-                    }
+                    $samples += New-TcWatchSample -Data $readResult.data
                 }
                 Start-Sleep -Milliseconds $IntervalMs
             }

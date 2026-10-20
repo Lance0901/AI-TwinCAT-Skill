@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T02:04:32Z",
+    "generatedAt":  "2026-10-20T04:11:22Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -437,7 +437,7 @@
                   {
                       "name":  "GetSymbols",
                       "cmdlet":  "Get-TcSymbols",
-                      "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter). Use it to find exact variable paths before ReadVariable/WriteVariable.",
+                      "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter): path, type, size, comment, and for enum types enumValues (member name -> value). Use it to find exact variable paths and types before ReadVariable/WriteVariable.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -661,7 +661,7 @@
                   {
                       "name":  "ReadVariable",
                       "cmdlet":  "Read-TcVariable",
-                      "description":  "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. Values are typed by the PLC type (BOOL/INT/REAL/STRING ...; structs come back as byte arrays). Requires ConnectAds (auto-reconnects after EnableConfig).",
+                      "description":  "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. Each entry has path, value, type: BOOL/integers/REAL/STRING are plain values; TIME/TOD (ms), LTIME/LTOD (ns), DATE/DT (seconds since 1970), LDATE/LDT (ns) return the integer in value plus the IEC literal in text (\"T#2s500ms\", \"DT#2026-10-20-12:30:00\"); enums return the integer in value plus the member name in name; STRUCT/ARRAY return the raw bytes in value plus size. Requires ConnectAds (auto-reconnects after EnableConfig).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -853,7 +853,7 @@
                                                                        },
                                                              "AmsNetId":  {
                                                                               "type":  "string",
-                                                                              "description":  "Target AMS Net ID. Auto-detected from IDE if omitted."
+                                                                              "description":  "Target AMS Net ID. Optional; resolved from the IDE target, then the ADS session. Never falls back to the local system 127.0.0.1.1.1."
                                                                           },
                                                              "TimeoutSec":  {
                                                                                 "type":  "integer",
@@ -921,7 +921,7 @@
                   {
                       "name":  "WatchVariable",
                       "cmdlet":  "Watch-TcVariable",
-                      "description":  "Poll one PLC variable every IntervalMs for DurationMs and return the samples. The condition-based mode (Until) is a PowerShell scriptblock and is NOT available through MCP; use repeated ReadVariable calls instead. Requires ConnectAds.",
+                      "description":  "Poll one PLC variable every IntervalMs for DurationMs and return the samples ({timestamp, value}, plus text for TIME/DATE types and name for enums, same conversion as ReadVariable). The condition-based mode (Until) is a PowerShell scriptblock and is NOT available through MCP; use repeated ReadVariable calls instead. Requires ConnectAds.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -992,7 +992,7 @@
                   {
                       "name":  "WriteVariable",
                       "cmdlet":  "Write-TcVariable",
-                      "description":  "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol (send JSON bool for BOOL, number for numeric types, string for STRING). Requires ConnectAds.",
+                      "description":  "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol: JSON bool for BOOL, number for integer/REAL types, string for STRING; TIME/TOD take integer ms or a literal (\"T#1m30s500ms\", \"TOD#12:30:00\"), LTIME/LTOD integer ns or \"LTIME#1us\", DATE/DT integer seconds since 1970 or \"D#2026-10-20\" / \"DT#2026-10-20-12:30:00\" / ISO 8601, enums an integer or the member name. STRUCT/ARRAY cannot be written as a whole (TYPE_MISMATCH): write their members. data.written is the value actually written (converted), plus text (IEC literal) for time types and name for enums. Requires ConnectAds.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -1006,7 +1006,7 @@
                                                                           "description":  "Variable path (e.g., \"MAIN.nSetpoint\")."
                                                                       },
                                                              "Value":  {
-                                                                           "description":  "New value; JSON bool, number or string matching the PLC type of the symbol."
+                                                                           "description":  "New value matching the PLC type of the symbol: JSON bool (BOOL), number (integer/REAL/LREAL), string (STRING). TIME/TOD: integer ms or \"T#5s\" / \"TOD#12:30:00\"; LTIME/LTOD: integer ns or \"LTIME#1us\"; DATE/DT: integer seconds since 1970, \"D#2026-10-20\", \"DT#2026-10-20-12:30:00\" or ISO 8601; LDATE/LDT: integer ns; enum: integer or member name (\"READY\")."
                                                                        }
                                                          },
                                           "required":  [

@@ -87,10 +87,10 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
 | `Connect-TcAds [-AmsNetId <id>] [-Port 851]` | 連 ADS;data 有 `adsBackend` |
 | `Disconnect-TcAds` | 斷 ADS |
-| `Read-TcVariable -Path <sym>` | 讀變數(自動重連) |
-| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL/INT/UINT/DINT/UDINT/REAL/LREAL/STRING(自動重連) |
-| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Condition <sb>] [-TimeoutMs <ms>]` | 輪詢直到條件成立(自動重連) |
-| `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"` |
+| `Read-TcVariable -Path <sym>` | 讀變數(自動重連);`value` 依型別轉換,TIME/DATE 類另回 `text`(IEC 字面)、enum 另回 `name`、STRUCT 回 byte 陣列加 `size`(見下「型別對照」) |
+| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL、整數型、REAL/LREAL、STRING、TIME/LTIME/TOD/DATE/DT/LDT(整數或 `T#5s` 等字面)、enum(整數或成員名);`data.written` 是實際寫入的轉換值;STRUCT/ARRAY 回 `TYPE_MISMATCH`(自動重連) |
+| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Until <sb>] [-DurationMs <ms>] [-TimeoutMs <ms>]` | 輪詢直到條件成立或時間到(自動重連);samples 與 Read 同樣轉換(含 `text`/`name`) |
+| `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"`;enum 型別多回 `enumValues`(成員名→值) |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
 | `Enter-TcPlcOnline [-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)`:Regular=1、Download=4(full download)、OnlineChange=2,**預設不加 SILENT(256)**;提示框由 `Connect-TcIde` 開的全域 `ITcAutomationSettings.SilentMode` 以預設答案(Yes)處理。`-SilentFlag` 才會 OR 256,但實測旗標 SILENT 的語意是「遇到要問的就跳過不做」:257(REGULAR\|SILENT)在空 runtime 0.5 s 返回、**不建 app 不下載**、851 仍 Invalid,所以不要預設用。`Enable-TcConfig -Force` 的 login 步用 `-LoginMode Regular`(=1,XAE 自行決定是否下載;空 runtime 會建 app 並下載,實測 26 s、lifecycle 37/37);只有 `Send-TcPlcProgram` 用 Download(=4),已登入且 PLC 在跑時再做 full download;260(FORCEDOWNLOAD\|SILENT)實測下載成功,下一輪 Activate 時 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關。**不要用 3**(REGULAR\|FORCEONLINECHANGE 互斥,下載時會 abort)。SilentMode 開啟時,對已在 Run 且程式不一致的 PLC 直接呼叫 `Enter-TcPlcOnline`,XAE 會自動採用 online change/download 提示的預設答案;要明確控制就帶 `-LoginMode Download` 或 `OnlineChange`。`Enable-TcConfig` 不受影響。 |
@@ -100,6 +100,17 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating |
+
+### 型別對照(Read/Write/Watch-TcVariable)
+
+| PLC 型別 | 線上格式 | Read 回傳 | Write 接受 |
+|---|---|---|---|
+| TIME、TOD | UINT32 ms | `value` 毫秒 + `text`(`T#2s500ms`、`TOD#12:30:00`) | 整數 ms、`T#1m30s500ms`、`TOD#12:30:00.500`、`"3000"` |
+| LTIME、LTOD | UINT64 ns | `value` ns + `text`(`LTIME#1us`) | 整數 ns、`LTIME#…` |
+| DATE、DT | UINT32 秒(1970 起) | `value` 秒 + `text`(`D#2026-10-20`、`DT#2026-10-20-12:30:00`) | 整數秒、`D#…`/`DT#…`、ISO 8601(含時區偏移會換成 UTC) |
+| LDATE、LDT | UINT64 ns(1970 起) | `value` ns + `text` | 整數 ns、`LDT#…`、ISO 8601 |
+| enum | 基底整數(預設 INT) | `value` 整數 + `name`(成員名;拿不到時 null + `hint`) | 整數或成員名(`"READY"`) |
+| STRUCT / ARRAY | raw bytes | `value` byte 陣列 + `size` | 不支援整筆寫(`TYPE_MISMATCH`),改寫個別成員 |
 
 ## Testing Example
 

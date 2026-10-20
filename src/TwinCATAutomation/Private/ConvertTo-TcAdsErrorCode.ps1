@@ -24,6 +24,7 @@ $script:TcErrorHints = @{
     'PLC_RUN_TIMEOUT'      = 'PLC 未在時限內進入 Run:用 Get-TcPlcState 看目前狀態;若為 Error/Stop,檢查 PLC 例外或 Build 錯誤後重新 Enter-TcPlcOnline'
     'CYCLE_TIMEOUT'        = 'Enable-TcConfig -Force 的 -TimeoutSec 總預算已用完:看 data.steps 卡在哪一步,加大 -TimeoutSec 或用 Get-TcSystemState / Get-TcPlcState 確認狀態'
     'ERRORLIST_UNAVAILABLE' = 'Error List 視窗讀不到:確認 XAE 視窗可見且 Error List 沒被 auto-hide;可手動 View > Error List 後重試。需要英文 UI(視窗名 ''Error List''、按鈕 ''N Errors''),其他語系的 XAE 讀不到'
+    'TYPE_MISMATCH'        = 'Write-TcVariable 依 symbol 型別轉換值。支援:BOOL、SINT/USINT/BYTE/INT/UINT/WORD/DINT/UDINT/DWORD/LINT/ULINT/LWORD(整數)、REAL/LREAL、STRING、TIME/TOD(整數 ms 或 T#1m30s500ms、TOD#12:30:00)、LTIME/LTOD(整數 ns 或 LTIME#…)、DATE/DT(整數 UNIX 秒、D#2026-10-20、DT#2026-10-20-12:30:00 或 ISO 8601)、LDATE/LDT(整數 ns)、enum(整數或成員名)。STRUCT/ARRAY 不能整筆寫,改寫個別成員(例如 stPar.fMax);用 Get-TcSymbols 看 type(enum 會列 enumValues)'
     'BUILD_STATUS_UNKNOWN'  = 'Build 結果無法判定:LastBuildInfo 與 Error List 都讀不到,請看 XAE 的 Error List 後再決定;不要把這個結果當成 build 成功'
 }
 # Compile errors (Build-TcProject, only when the build really failed): generic BUILD_FAILED

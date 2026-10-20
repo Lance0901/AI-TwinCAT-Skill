@@ -24,6 +24,8 @@ $script:TcAdsAssemblyPath = $null        # TwinCAT.Ads.dll actually loaded (Find
 $script:TcAdsAssemblyVersion = $null     # its FileVersion
 $script:TcAdsAssemblyCandidates = $null  # cached candidate list (Get-TcAdsAssemblyCandidates)
 $script:TcAdsHelperMode = $null          # 'compiled' | 'reflection' (Initialize-TcAdsHelper)
+$script:TcAdsEnumCache = $null           # enum type table of the connected runtime (Get-TcEnumTable); cleared on (re)connect
+$script:TcAdsEnumCacheError = $null      # why the enum table could not be read (reported as hint)
 
 # Import private functions
 $privatePath = Join-Path $PSScriptRoot 'Private'

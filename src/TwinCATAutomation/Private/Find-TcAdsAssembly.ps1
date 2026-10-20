@@ -222,6 +222,62 @@ public static class TcAdsHelper
         }
         return result;
     }
+
+    // Enum types (Name, BaseType, Size, Values=[{Name, Value}]) via the symbol info loader,
+    // all through reflection; same shape as the compiled helper. Empty list when the
+    // loader API is missing.
+    public static System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>> GetEnumTypes(
+        object client)
+    {
+        var result = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+        var clientType = client.GetType();
+        var asm = clientType.Assembly;
+        var createLoader = clientType.GetMethod("CreateSymbolInfoLoader", System.Type.EmptyTypes);
+        if (createLoader == null) return result;
+        var loader = createLoader.Invoke(client, null);
+        var getTypes = loader.GetType().GetMethod("GetDataTypes", new System.Type[] { typeof(bool) });
+        if (getTypes == null) return result;
+        var iDataType = asm.GetType("TwinCAT.TypeSystem.IDataType");
+        var iBitSize = asm.GetType("TwinCAT.TypeSystem.IBitSize");
+        var iAdsType = asm.GetType("TwinCAT.Ads.ITcAdsDataType");
+        var iEnumValue = asm.GetType("TwinCAT.TypeSystem.IEnumValue");
+        if (iDataType == null || iBitSize == null || iAdsType == null || iEnumValue == null) return result;
+        var pName = iDataType.GetProperty("Name");
+        var pCategory = iDataType.GetProperty("Category");
+        var pBase = iAdsType.GetProperty("BaseTypeName");   // TcAdsDataType does not implement IAliasType
+        var pSize = iBitSize.GetProperty("Size");
+        var pEnumValues = iAdsType.GetProperty("EnumValues");
+        var pEvName = iEnumValue.GetProperty("Name");
+        var pEvPrim = iEnumValue.GetProperty("Primitive");
+
+        var types = (System.Collections.IEnumerable)getTypes.Invoke(loader, new object[] { false });
+        foreach (object t in types)
+        {
+            var cat = pCategory.GetValue(t, null);
+            if (cat == null || cat.ToString() != "Enum") continue;
+            var values = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object>>();
+            var evs = pEnumValues.GetValue(t, null) as System.Collections.IEnumerable;
+            if (evs != null)
+            {
+                foreach (object ev in evs)
+                {
+                    long v;
+                    try { v = System.Convert.ToInt64(pEvPrim.GetValue(ev, null)); } catch { continue; }
+                    var e = new System.Collections.Generic.Dictionary<string, object>();
+                    e["Name"] = (string)pEvName.GetValue(ev, null);
+                    e["Value"] = v;
+                    values.Add(e);
+                }
+            }
+            var entry = new System.Collections.Generic.Dictionary<string, object>();
+            entry["Name"] = (string)pName.GetValue(t, null);
+            entry["BaseType"] = (string)pBase.GetValue(t, null);
+            entry["Size"] = (int)pSize.GetValue(t, null);
+            entry["Values"] = values;
+            result.Add(entry);
+        }
+        return result;
+    }
 }
 '@
 
