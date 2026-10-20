@@ -52,7 +52,7 @@ try { [Console]::InputEncoding = $utf8NoBom } catch { }
 $OutputEncoding = $utf8NoBom
 $global:OutputEncoding = $utf8NoBom
 
-$script:KnownCodePattern = '^(IDE_BUSY|IDE_TIMEOUT|IDE_MODAL_DIALOG|NOT_CONNECTED|ADS_[A-Z_]+)\b'
+$script:KnownCodePattern = '^(IDE_BUSY|IDE_TIMEOUT|IDE_MODAL_DIALOG|IDE_CRASHED|NOT_CONNECTED|ADS_[A-Z_]+)\b'
 $script:CommonParameters = @(
     'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',
     'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable',

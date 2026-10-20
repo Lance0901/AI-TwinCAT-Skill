@@ -5,6 +5,10 @@ function Get-TcSysManager {
     .DESCRIPTION
         Gets the ITcSysManager interface from the first TwinCAT project in the open solution.
         Returns $null if no TwinCAT project is loaded.
+        Never throws for a crash / busy / modal dialog: it also returns $null then, and
+        records the exception message in $script:TcLastSysManagerError so the caller can
+        report the real cause via New-TcNoSysManagerResult instead of NO_PROJECT. The
+        variable is cleared on every scan that completes without an exception.
     .PARAMETER Refresh
         Force re-scan of solution projects, clearing the cached ITcSysManager.
     #>
@@ -24,6 +28,9 @@ function Get-TcSysManager {
     if ($null -ne $script:TcSysManager) {
         return ,$script:TcSysManager
     }
+
+    # Reset before each scan: a value is only kept when the scan below throws.
+    $script:TcLastSysManagerError = $null
 
     try {
         # All DTE/COM access wrapped in Invoke-TcComRetry (IDE busy -> backoff retry)
@@ -47,8 +54,8 @@ function Get-TcSysManager {
                     }
                 }
                 catch {
-                    # IDE busy must bubble up so the retry wrapper can back off
-                    if ($_.Exception.Message -match '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER') { throw }
+                    # IDE busy / dead RPC must bubble up so the retry wrapper can back off or detect a crash
+                    if ($_.Exception.Message -match '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER|0x800706BE|0x800706BA|0x80010108') { throw }
                     # Not a TwinCAT project, continue
                     continue
                 }
@@ -66,6 +73,10 @@ function Get-TcSysManager {
         return ,$sysManager
     }
     catch {
+        # Never throw (callers do `$sm = Get-TcSysManager` without try, and every cmdlet must
+        # return a {success,error} result). Crash / busy / modal dialog are not "no TwinCAT
+        # project", so keep the message for New-TcNoSysManagerResult to report the real code.
+        $script:TcLastSysManagerError = [string]$_.Exception.Message
         Write-Verbose "Get-TcSysManager: Error scanning projects: $_"
         return $null
     }

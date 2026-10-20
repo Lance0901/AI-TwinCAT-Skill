@@ -53,7 +53,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 不想一步到位時的手動順序(每步都有 gating,不需 sleep):
 ```powershell
 Enable-TcConfig -Force -NoLogin     # 系統 Run 後才返回
-Enter-TcPlcOnline                   # Login(3) + download,之後 port 851 才存在
+Enter-TcPlcOnline                   # Login(REGULAR=1)+ 全域 SilentMode:空 runtime 會建 app 並下載,已有 app 就 attach;之後 port 851 才存在(不要加 SILENT 旗標 257,會跳過建 app)
 Connect-TcAds                       # 先連 ADS,Set-TcPlcState 沒連線會回 NOT_CONNECTED
 Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_TIMEOUT);PLC 未下載回 PLC_NOT_LOADED
 ```
@@ -64,7 +64,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | 用途 |
 |---|---|
-| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 會開/選 solution 並回 `amsNetId`、`candidates[]` |
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 會開/選 solution 並回 `amsNetId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
 | `Disconnect-TcIde` | 釋放 IDE COM 參考 |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
@@ -92,7 +92,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"` |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
-| `Enter-TcPlcOnline [-PlcProjectPath <p>]` | Login(3) + download,無 dialog |
+| `Enter-TcPlcOnline [-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)`:Regular=1、Download=4(full download)、OnlineChange=2,**預設不加 SILENT(256)**;提示框由 `Connect-TcIde` 開的全域 `ITcAutomationSettings.SilentMode` 以預設答案(Yes)處理。`-SilentFlag` 才會 OR 256,但實測旗標 SILENT 的語意是「遇到要問的就跳過不做」:257(REGULAR\|SILENT)在空 runtime 0.5 s 返回、**不建 app 不下載**、851 仍 Invalid,所以不要預設用。`Enable-TcConfig -Force` 的 login 步用 `-LoginMode Regular`(=1,XAE 自行決定是否下載;空 runtime 會建 app 並下載,實測 26 s、lifecycle 37/37);只有 `Send-TcPlcProgram` 用 Download(=4),已登入且 PLC 在跑時再做 full download;260(FORCEDOWNLOAD\|SILENT)實測下載成功,下一輪 Activate 時 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關。**不要用 3**(REGULAR\|FORCEONLINECHANGE 互斥,下載時會 abort)。SilentMode 開啟時,對已在 Run 且程式不一致的 PLC 直接呼叫 `Enter-TcPlcOnline`,XAE 會自動採用 online change/download 提示的預設答案;要明確控制就帶 `-LoginMode Download` 或 `OnlineChange`。`Enable-TcConfig` 不受影響。 |
 | `Exit-TcPlcOnline` | Logout |
 | `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000)。省略 `-AmsNetId` 時依序用 IDE target → ADS session → local `127.0.0.1.1.1`,`data.netIdSource` 回報實際來源(`local` 代表讀的是本機 TcSysSrv,通常不是你的 target) |
 | `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>]` | 設系統狀態,輪詢到目標才返回。省略 `-AmsNetId` 時依序用 IDE target → ADS session,兩者皆無回 `AMS_NETID_REQUIRED`(不 fallback 到 local),`data.netIdSource` 回報來源 |
@@ -137,6 +137,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 |---|---|---|
 | `IDE_BUSY` | XAE 被 modal dialog / license 視窗擋住,COM 回 RPC_E_CALL_REJECTED(0x80010001)或 RETRYLATER(0x8001010A);模組已重試 1/2/4/8/16s 仍失敗 | 關掉 XAE 的 dialog,重跑同一個 cmdlet;不用重新 `Connect-TcIde` |
 | `IDE_MODAL_DIALOG` | XAE/VS 有 modal 視窗(Assertion Failed、VS 帳戶設定、Target system reports a fatal error、trial license security code…)。這類視窗讓 DTE 呼叫**無限阻塞**(不是回 0x80010001),模組在 Build / Activate / Login / Solution.Open 前用 UI Automation 先檢查,有就直接回這個 code,`data.dialogTitle` / `dialogText` 是視窗內容 | 手動關閉 dialog 後重跑同一個 cmdlet;關不掉就 kill IDE(`Stop-Process -Id <data.ideProcessId>`)後重新 `Connect-TcIde`。模組不會自動關任何視窗;**已經被 modal 卡住的呼叫無法中斷**(見「已知 modal dialog」) |
+| `IDE_CRASHED` | RPC 失敗(0x800706BE / 0x800706BA / 0x80010108)且 IDE 行程已不存在:XAE 崩潰(多為 32-bit XAE 於 Activate 時 OutOfMemoryException,Visu 引擎,事件 1026);模組已把 IDE 狀態重設為未連線 | 重新 `Connect-TcIde -SolutionPath ...`,再從 Build / `Enable-TcConfig` 開始;長流程輪次間用 `Disconnect-TcIde -Quit` |
 | `IDE_TIMEOUT` | DTE 呼叫超過 `Invoke-TcComRetry -TimeoutSec`(預設 120 s,Build 600 s,Activate/Login 300 s)才失敗返回;通常是 IDE 被 dialog 卡住或長操作 | 看 XAE 畫面有沒有 dialog;必要時 kill IDE 後重新 `Connect-TcIde` |
 | `NOT_CONNECTED` | 沒 `Connect-TcAds`,或 `Enable-TcConfig` 重啟後自動重連也失敗 | `Connect-TcAds`;剛 Activate 的話先 `Get-TcSystemState` 確認 Run |
 | `ADS_PORT_NOT_FOUND` | port 851 不存在:程式尚未下載或 PLC 未啟動(ADS 0x6) | `Enter-TcPlcOnline` → `Set-TcPlcState -State Run`,或直接 `Enable-TcConfig -Force` |
@@ -157,7 +158,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
 | `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
-| `LOGIN_FAILED` | Login(3) 失敗:系統在 Config、build 沒過、或 license dialog | `Get-TcSystemState` 需為 Run;`Build-TcProject` 成功;關 dialog |
+| `LOGIN_FAILED` | `Login(flags)` 失敗:系統在 Config、build 沒過、license dialog、或旗標互斥(`Conflicting flag settings`= 同時給 REGULAR 與 FORCEONLINECHANGE) | `Get-TcSystemState` 需為 Run;`Build-TcProject` 成功;關 dialog |
 | `ADS_CONNECT_FAILED` | ADS client 連不上 | 確認 AmsNetId / route;`Get-TcSystemState` |
 | `ADS_ASSEMBLY_NOT_FOUND` | 找不到 TwinCAT.Ads.dll | 確認 TwinCAT XAE 安裝;`Connect-TcAds` 的 `data.adsBackend` 看用了哪個 DLL |
 | `TYPE_MISMATCH` | `Write-TcVariable` 值型別與 symbol 不符 | `Get-TcSymbols` 看 type,轉型後再寫 |
@@ -167,11 +168,11 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 
 | IDE | ProgID | 備註 |
 |---|---|---|
-| 32-bit XAE Shell | `TcXaeShell.DTE.15.0` | 4024 原生;4026 安裝也會一併裝,常見於 UmRT 本機開發 |
-| 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | 4026 安裝一併裝 |
-| VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | 4026 安裝一併裝(需本機已有 VS2022) |
+| 32-bit XAE Shell | `TcXaeShell.DTE.15.0` | TwinCAT 4024 |
+| 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | TwinCAT 4026 |
+| VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | TwinCAT 4026(與 64-bit XAE Shell 同一套 XAE;需本機已有 VS2022) |
 
-- TwinCAT 3.1.4026 的安裝會**同時**裝上面三種 IDE,三者的 XAE 版本相同;4024 專案可在 4026 XAE 開啟。ADS DLL 在 4024 為 TwinCAT 安裝目錄下的 TwinCAT.Ads.dll,4026 為 package 內的版本(`Connect-TcAds` 的 `data.adsBackend` 會顯示實際載入的)。
+- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime(`TCATSysSrv` 4026.22、UmRT 4026.21)本機只有一個 UmRT_Default,三種 IDE 共用。 ADS DLL 在 4024 為 TwinCAT 安裝目錄下的 TwinCAT.Ads.dll,4026 為 package 內的版本(`Connect-TcAds` 的 `data.adsBackend` 會顯示實際載入的)。
 - Automation Interface(ITcSysManager、EnvDTE)三者相同;差別只在 IDE 抓取(ProgID)與 ADS DLL。
 - `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;指定 `-ProgId` 可鎖定。自行啟動 IDE 時會輪詢到 DTE 就緒(最長 60 s)才返回,失敗會回收孤兒程序並回 `IDE_LAUNCH_FAILED`;`data.ideProcessId` 是連上的 IDE pid。
 - `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
@@ -187,10 +188,14 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | Microsoft Visual Studio 帳戶設定 | VS2022 未登入時 | 登入一次,或手動關閉視窗 |
 | `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動 | 看 XAE Output / Error List;UmRT 多半是 license 或 I/O 設定問題 |
 | Trial license security code | 7 天 trial 到期或首次啟用 | 需人工輸入驗證碼,模組無法代勞 |
+| `Application 'Port_851' does not exist on device ... create it and proceed with download?` | 空 runtime 上 Login 時全域 `SilentMode` 沒開(例如沒經 `Connect-TcIde` 連線) | `Connect-TcIde` 連上就開 `ITcAutomationSettings.SilentMode`,XAE 自動答 Yes,不應再出現;手動點 Yes 即可。**不要**改用旗標 SILENT(257)壓框:它會跳過建 app,851 仍 Invalid |
+| `Login aborted: Conflicting flag settings` | Login 旗標 3(REGULAR\|FORCEONLINECHANGE 互斥) | 不要用 3;用 `-LoginMode Regular\|Download\|OnlineChange`(1/4/2,不 OR SILENT) |
 
 ### 驗證紀錄 2026-10-18
 
-環境:TwinCAT 3.1.4026.22 + 本機 UmRT(199.5.42.250.1.1)。
+環境:32-bit XAE 4024 + UmRT 4026.21(本機,199.5.42.250.1.1)。
+
+2026-10-19:空 UmRT(沒有 application)情況下,`Enable-TcConfig -Force` 以 `Login(REGULAR)`(=1)+ 全域 `SilentMode` 建立 app 並下載(26 s),lifecycle-smoke 37/37;`-NoLogin` 後直接 `Set-TcPlcState Run` 正確回 `PLC_NOT_LOADED`。同日 23:27 對照:`Login(257)`(REGULAR|SILENT)0.5 s 返回但不建 app、851 仍 Invalid;`Login(260)`(FORCEDOWNLOAD|SILENT)下載 28 s 成功,但下一輪 `ActivateConfiguration()` 耗 250 s 後失敗,實為 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關;`Login(3)` 旗標互斥 abort。
 
 | 組 | 專案 | IDE | 結果 |
 |---|---|---|---|

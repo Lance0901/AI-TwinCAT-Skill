@@ -17,7 +17,7 @@ function Set-TcTarget {
 
     $sm = Get-TcSysManager
     if ($null -eq $sm) {
-        return New-TcResult -Success $false -ErrorMessage 'No TwinCAT project loaded.' -ErrorCode 'NO_PROJECT'
+        return New-TcNoSysManagerResult
     }
 
     try {

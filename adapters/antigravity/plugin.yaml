@@ -81,7 +81,7 @@ actions:
         required: false
 
   - name: EnterPlcOnline
-    description: Login to PLC runtime and download program (no dialogs, Login(3) flag)
+    description: "Login to PLC runtime and download program (no dialogs: prompts handled by the global SilentMode; -LoginMode Regular|Download|OnlineChange = 1/4/2, SILENT flag only with -SilentFlag)"
     parameters:
       PlcProjectPath:
         type: string

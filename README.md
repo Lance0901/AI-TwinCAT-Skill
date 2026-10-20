@@ -113,7 +113,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Build-TcProject` | Build; `data.errorItems[]` lists the Error List errors (description/file/line) (auto-retry on RPC busy) |
 | `Get-TcBuildErrors` | Read the XAE Error List (errors, `-IncludeWarnings`, `-IncludeMessages`) via UI Automation |
 | `Enable-TcConfig` | Activate configuration via ADS (no dialogs with `-Force`) |
-| `Enter-TcPlcOnline` | Login + download program (Login(3), no dialogs) |
+| `Enter-TcPlcOnline` | Login + download program (`-LoginMode Regular|Download|OnlineChange` = 1/4/2; prompts handled by the global `SilentMode`, no `SILENT` flag unless `-SilentFlag`) |
 | `Exit-TcPlcOnline` | Logout from PLC |
 | `Send-TcPlcProgram` | Upload program to PLC |
 
@@ -179,7 +179,7 @@ All commands return structured JSON:
 ## Important Notes
 
 - **AmsNetId is dynamic** -- never hardcode it. `Connect-TcAds` auto-detects from the active IDE target.
-- **No dialogs** -- `Enable-TcConfig -Force` uses ADS WriteControl, `Enter-TcPlcOnline` uses `Login(3)`.
+- **No dialogs** -- `Enable-TcConfig -Force` uses ADS WriteControl, `Connect-TcIde` enables the global `ITcAutomationSettings.SilentMode` (XAE answers prompts with the default). `Enter-TcPlcOnline` does **not** OR the `SILENT` login flag by default: measured on an empty runtime, `Login(257)` skips creating the app instead of answering Yes; `-SilentFlag` opts in.
 - **Write to MAIN-level vars** when testing FBs -- PLC overwrites `VAR_INPUT` every scan cycle (see Decision #17).
 
 ## Claude Code Setup
@@ -259,7 +259,7 @@ Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [doc
 
 ### 2026-03-27
 
-- **Dialog-free lifecycle**: `Enable-TcConfig -Force` (ADS-based), `Enter-TcPlcOnline` with `Login(3)` -- full Build->Activate->Login->Run->Read cycle with zero popups
+- **Dialog-free lifecycle**: `Enable-TcConfig -Force` (ADS-based), `Enter-TcPlcOnline -LoginMode` (prompts handled by global `SilentMode`; 2026-10-19: the `SILENT` login flag was dropped from the default because `Login(257)` skips app creation) -- full Build->Activate->Login->Run->Read cycle with zero popups
 - **Cross-tool adapters**: Claude Code SKILL.md, Codex tools.json, Antigravity plugin.yaml
 - **CLAUDE.md**: Project guide for AI tools
 

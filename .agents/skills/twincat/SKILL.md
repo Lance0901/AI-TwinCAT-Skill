@@ -29,7 +29,7 @@ Enable-TcConfig -Force
 # 4. Wait for TwinCAT restart
 Start-Sleep -Seconds 5
 
-# 5. Login + Download (Login(3), no dialogs)
+# 5. Login + Download (default -LoginMode Regular = flag 1, no SILENT flag; prompts answered by the global SilentMode from Connect-TcIde; creates the app on an empty runtime, attaches when one exists; no dialogs)
 Enter-TcPlcOnline
 
 # 6. Connect ADS (AFTER Login — port 851 needs program downloaded first)
@@ -75,7 +75,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Build-TcProject` | | Build project (auto-retry on RPC_E_CALL_REJECTED); `data.errorItems[]` = Error List errors (description/file/line) |
 | `Get-TcBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | Read the XAE Error List via UI Automation (counts + rows) |
 | `Enable-TcConfig` | `[-Force]` | Activate config. -Force = ADS WriteControl (no dialogs) |
-| `Enter-TcPlcOnline` | `[-PlcProjectPath <p>]` | Login + Download via Login(3) (no dialogs) |
+| `Enter-TcPlcOnline` | `[-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | Login (flags 1/4/2; no SILENT=256 by default -- `Login(257)` skips app creation on an empty runtime, prompts are handled by the global `SilentMode`; `-SilentFlag` opts in; never 3) |
 | `Exit-TcPlcOnline` | | Logout from PLC |
 | `Send-TcPlcProgram` | | Upload program to PLC |
 

@@ -156,3 +156,28 @@ function Stop-TcLaunchedIde {
     }
     return ,$stopped
 }
+
+function Get-TcIdeMemoryInfo {
+    <#
+    .SYNOPSIS
+        Reads the connected IDE's WorkingSet64 (MB) and whether it is a 32-bit process.
+    .DESCRIPTION
+        32-bit when the executable lives under "Program Files (x86)" (TcXaeShell.DTE.15.0).
+        Never throws; returns $null when there is no known IDE pid or it cannot be read.
+    .OUTPUTS
+        PSCustomObject @{ MemoryMB; Is32Bit } or $null.
+    #>
+    [CmdletBinding()]
+    param()
+    if ($null -eq $script:TcIdeProcessId) { return $null }
+    try {
+        $p = Get-Process -Id ([int]$script:TcIdeProcessId) -ErrorAction Stop
+        $is32 = $false
+        $path = $null
+        try { $path = $p.MainModule.FileName } catch { $path = $null }
+        if (-not [string]::IsNullOrWhiteSpace($path) -and $path -match '(?i)\\Program Files \(x86\)\\') { $is32 = $true }
+        elseif ([string]::IsNullOrWhiteSpace($path) -and $script:TcProgId -like 'TcXaeShell.DTE.15*') { $is32 = $true }
+        return [PSCustomObject]@{ MemoryMB = [int][Math]::Round($p.WorkingSet64 / 1MB); Is32Bit = $is32 }
+    }
+    catch { return $null }
+}

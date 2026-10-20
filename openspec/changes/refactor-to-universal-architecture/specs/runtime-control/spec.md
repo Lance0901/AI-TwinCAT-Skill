@@ -29,11 +29,11 @@ The system SHALL read the current PLC runtime state. The `Get-TcPlcState` cmdlet
 ### Requirement: PLC Login and Logout
 The system SHALL provide independent Login and Logout operations for the PLC runtime, separate from the program download. Login MUST suppress all dialog popups for headless automation.
 
-**Implementation note (verified 2026-03-27):** Use `ITcSmTreeItem::Login(3)` on the PLC Project tree item (e.g., `TIPC^LoggerPLC^LoggerPLC Project`). Flag 3 = CompileBeforeLogin(1) + SuppressAllDialogs(2). This also auto-triggers Download if the runtime has no program loaded. Do NOT use `ITcPlcProject::Login()` via `.Object` — the COM interface is unreliable.
+**Implementation note (superseded 2026-10-19):** Use `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)` on the PLC Project tree item with `REGULAR(1)` / `FORCEDOWNLOAD(4)` / `FORCEONLINECHANGE(2)` OR `SILENT(256)`; `Login(3)` (REGULAR|FORCEONLINECHANGE) is rejected by XAE as conflicting when a download is needed and only appeared to work while the runtime already had the application. Original note (2026-03-27): Use `ITcSmTreeItem::Login(3)` on the PLC Project tree item (e.g., `TIPC^LoggerPLC^LoggerPLC Project`). Flag 3 = CompileBeforeLogin(1) + SuppressAllDialogs(2). This also auto-triggers Download if the runtime has no program loaded. Do NOT use `ITcPlcProject::Login()` via `.Object` — the COM interface is unreliable.
 
 #### Scenario: Login to PLC
 - **WHEN** the user calls `Enter-TcPlcOnline`
-- **THEN** the system logs into the PLC runtime via `ITcSmTreeItem::Login(3)` and returns the online status (no dialog popups)
+- **THEN** the system logs into the PLC runtime via `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS_REGULAR | PLC_LOGIN_FLAGS_SILENT)` and returns the online status (no dialog popups)
 
 #### Scenario: Logout from PLC
 - **WHEN** the user calls `Exit-TcPlcOnline`
