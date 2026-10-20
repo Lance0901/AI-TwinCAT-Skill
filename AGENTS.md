@@ -46,11 +46,12 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - **Write MAIN-level vars for FB testing** — PLC overwrites `VAR_INPUT` every scan cycle. Write standalone variables in MAIN that feed into FB calls.
 - **Correct lifecycle order**: Build -> Activate -> Login -> ADS Connect -> Start PLC -> Test (ADS port 851 only exists after Login+Download)
 
-## Available Commands (35)
+## Available Commands (36)
 
 ### Connection
 - `Connect-TcIde [-SolutionPath <path>]` — Connect to IDE
 - `Disconnect-TcIde` — Disconnect from IDE
+- `Reset-TcSolution [-SolutionPath <sln>]` — Dismiss the reload prompt, close all documents, close + reopen the solution on the same IDE so XAE reloads files changed on disk (only needed when the changed .TcPOU is open in an editor)
 - `Connect-TcAds [-AmsNetId <id>]` — Connect ADS (auto-detects AmsNetId)
 - `Disconnect-TcAds` — Disconnect ADS
 

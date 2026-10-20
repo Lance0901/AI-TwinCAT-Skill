@@ -232,6 +232,74 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
     }
 }
 
+# Dialog kinds (result field Kind, data.dialogKind in IDE_MODAL_DIALOG results):
+#   reload-prompt  the VS shell prompt "File has been changed outside the environment. Reload
+#                  the new file?" (VS2022 wording: "... changed outside the source editor. Do you
+#                  want to reload it?"). A file that is open in a document window was changed
+#                  on disk by another tool. 2026-10-20 reload-experiment (4024 32-bit XAE): it
+#                  appears ~1 s after the write, blocks every DTE call, and the VS option
+#                  AutoloadExternalChanges does not suppress it; a file that is NOT open is
+#                  picked up silently within ~5 s. Hint: IDE_MODAL_DIALOG_RELOAD (dismiss it,
+#                  then Reset-TcSolution = Solution.Close + Connect-TcIde reopen).
+#   unknown        everything else (hint IDE_MODAL_DIALOG).
+# ConvertTo-TcAdsErrorCode uses the same pattern on error messages (the watchdog puts the
+# dialog text into its IDE_MODAL_DIALOG exception).
+$script:TcReloadPromptPattern = '(?i)changed outside the (environment|source editor)|Reload the new file|want to reload it'
+
+function Get-TcModalDialogKind {
+    <#
+    .SYNOPSIS
+        Classifies a dialog by its title and text: 'reload-prompt' or 'unknown'.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$Title = '',
+
+        [Parameter()]
+        [string]$Text = ''
+    )
+    if ("$Title $Text" -match $script:TcReloadPromptPattern) { return 'reload-prompt' }
+    return 'unknown'
+}
+
+function Add-TcDialogKind {
+    <#
+    .SYNOPSIS
+        Normalises a dialog record to @{ Title; Text; Kind }, classifying it when Kind is
+        missing (the Invoke-TcComRetry watchdog runspace only produces @{ Title; Text }).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object]$Dialog
+    )
+    if ($null -eq $Dialog) { return $null }
+    $title = ''
+    $text = ''
+    $kind = ''
+    if ($Dialog -is [System.Collections.IDictionary]) {
+        $title = [string]$Dialog['Title']
+        $text = [string]$Dialog['Text']
+        if ($Dialog.Contains('Kind')) { $kind = [string]$Dialog['Kind'] }
+    }
+    else {
+        try { $title = [string]$Dialog.Title } catch { $title = '' }
+        try { $text = [string]$Dialog.Text } catch { $text = '' }
+        $kp = $Dialog.PSObject.Properties['Kind']
+        if ($null -ne $kp) { $kind = [string]$kp.Value }
+    }
+    if ([string]::IsNullOrWhiteSpace($kind)) { $kind = Get-TcModalDialogKind -Title $title -Text $text }
+    $hwnd = [long]0
+    try {
+        if ($Dialog -is [System.Collections.IDictionary]) { if ($Dialog.Contains('Hwnd')) { $hwnd = [long]$Dialog['Hwnd'] } }
+        else { $hp = $Dialog.PSObject.Properties['Hwnd']; if ($null -ne $hp) { $hwnd = [long]$hp.Value } }
+    }
+    catch { $hwnd = 0 }
+    return @{ Title = $title; Text = $text; Kind = $kind; Hwnd = $hwnd }
+}
+
 function Get-TcIdeModalDialog {
     <#
     .SYNOPSIS
@@ -240,8 +308,10 @@ function Get-TcIdeModalDialog {
     .DESCRIPTION
         Lists the top-level windows of the IDE process (default: $script:TcIdeProcessId
         stored by Connect-TcIde), excludes the main window and returns the first
-        window that looks like a dialog as @{ Title; Text } (Text = visible text,
-        at most 500 chars). Returns $null when the pid is unknown, the process does
+        window that looks like a dialog as @{ Title; Text; Kind } (Text = visible text,
+        at most 500 chars; Kind = 'reload-prompt' for the "changed outside the
+        environment / Reload the new file?" prompt, else 'unknown').
+        Returns $null when the pid is unknown, the process does
         not exist, no dialog is open, or the scan does not finish within -TimeoutSec.
 
         The UI Automation calls run in a separate runspace with a hard timeout:
@@ -252,7 +322,8 @@ function Get-TcIdeModalDialog {
     .PARAMETER TimeoutSec
         Maximum time for the UIA scan. Default 5.
     .OUTPUTS
-        Hashtable @{ Title = [string]; Text = [string] } or $null.
+        Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; Hwnd = [long] } or $null
+        (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt).
     #>
     [CmdletBinding()]
     param(
@@ -313,9 +384,14 @@ function Get-TcIdeModalDialog {
         if ($null -eq $first) { return $null }
         $title = [string]$first.Title
         if ([string]::IsNullOrWhiteSpace($title)) { return $null }
+        $text = [string]$first.Text
+        $hwnd = [long]0
+        try { $hwnd = [long]$first.Hwnd } catch { $hwnd = 0 }
         return @{
             Title = $title
-            Text  = [string]$first.Text
+            Text  = $text
+            Kind  = (Get-TcModalDialogKind -Title $title -Text $text)
+            Hwnd  = $hwnd
         }
     }
     catch {
@@ -333,11 +409,13 @@ function New-TcModalDialogResult {
     .SYNOPSIS
         Builds the failed result (code IDE_MODAL_DIALOG) for a detected dialog.
     .PARAMETER Dialog
-        Hashtable from Get-TcIdeModalDialog (@{ Title; Text }).
+        Hashtable from Get-TcIdeModalDialog (@{ Title; Text; Kind }); Kind is derived
+        from Title / Text when missing.
     .PARAMETER Operation
         Name of the operation that was NOT attempted, for the message.
     .PARAMETER Data
-        Optional extra data; dialogTitle / dialogText are always added.
+        Optional extra data; dialogTitle / dialogText / dialogKind are always added.
+        The hint is IDE_MODAL_DIALOG_RELOAD for Kind 'reload-prompt', else IDE_MODAL_DIALOG.
     #>
     [CmdletBinding()]
     param(
@@ -351,17 +429,21 @@ function New-TcModalDialogResult {
         [object]$Data
     )
 
-    $title = [string]$Dialog.Title
-    $text = [string]$Dialog.Text
+    $rec = Add-TcDialogKind -Dialog $Dialog
+    $title = [string]$rec.Title
+    $text = [string]$rec.Text
+    $kind = [string]$rec.Kind
     $short = if ($text.Length -gt 200) { $text.Substring(0, 200) } else { $text }
 
     if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
     $Data | Add-Member -NotePropertyName 'dialogTitle' -NotePropertyValue $title -Force
     $Data | Add-Member -NotePropertyName 'dialogText' -NotePropertyValue $text -Force
+    $Data | Add-Member -NotePropertyName 'dialogKind' -NotePropertyValue $kind -Force
 
+    $hintCode = if ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
     New-TcResult -Success $false `
-        -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog: $title | $short" `
+        -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog ($kind): $title | $short" `
         -ErrorCode 'IDE_MODAL_DIALOG' `
-        -Hint (Get-TcErrorHint -Code 'IDE_MODAL_DIALOG') `
+        -Hint (Get-TcErrorHint -Code $hintCode) `
         -Data $Data
 }

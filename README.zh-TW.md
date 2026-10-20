@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 35 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 36 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -80,13 +80,14 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（35 個）
+## 所有指令（36 個）
 
 ### 連線
 | 指令 | 說明 |
 |------|------|
 | `Connect-TcIde` | 連接 TwinCAT IDE（可用 `-SolutionPath` 一步連接） |
 | `Disconnect-TcIde` | 斷開 IDE 連線 |
+| `Reset-TcSolution` | 關掉 reload 提示、關閉所有文件（不存檔）、在同一個 IDE 關閉再重開 solution（約 20~25 s），讓 XAE 重新載入磁碟上改過的專案檔；只有改過的 `.TcPOU` 開在 XAE 編輯器時才需要（沒開的話 XAE 約 5 s 自動吃到） |
 | `Connect-TcAds` | 連接 ADS（AmsNetId 從 IDE 自動偵測） |
 | `Disconnect-TcAds` | 斷開 ADS 連線 |
 
@@ -223,7 +224,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:35 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:36 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

@@ -9,6 +9,7 @@
         # IDE Connection
         'Connect-TcIde',
         'Disconnect-TcIde',
+        'Reset-TcSolution',
         'Get-TcIdeInfo',
         # Project Management
         'New-TcProject',

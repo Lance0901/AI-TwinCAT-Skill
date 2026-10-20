@@ -63,6 +63,7 @@ function Connect-TcIde {
     # new instance into a false IDE_CRASHED.
     $script:TcIdeProcessId = $null
     $script:TcIdeMainHwnd = 0
+    $script:TcSolutionPath = $null
 
     # Validate SolutionPath if provided
     $normalizedSolutionPath = $null
@@ -441,6 +442,11 @@ function Connect-TcIde {
     }
     if ([string]::IsNullOrWhiteSpace($ideVersion)) { $ideVersion = 'unknown' }
     if ([string]::IsNullOrWhiteSpace($ideSolution) -and -not [string]::IsNullOrWhiteSpace($SolutionPath)) { $ideSolution = $SolutionPath }
+
+    # Remembered for Reset-TcSolution (Solution.Close + reopen); only a solution that is really open.
+    if (-not [string]::IsNullOrWhiteSpace($ideSolution)) {
+        $script:TcSolutionPath = try { [IO.Path]::GetFullPath([string]$ideSolution) } catch { [string]$ideSolution }
+    }
 
     $data = [PSCustomObject]@{
         progId              = $usedProgId
