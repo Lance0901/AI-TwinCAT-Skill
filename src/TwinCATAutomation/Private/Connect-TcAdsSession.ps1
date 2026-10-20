@@ -30,6 +30,12 @@ function Connect-TcAdsSession {
         $script:TcAdsClient = $null
     }
     $script:TcAdsConnected = $false
+    # Enum member table belongs to the program on the target: forget it on every (re)connect
+    $script:TcAdsEnumCache = $null
+    $script:TcAdsEnumCacheError = $null
+    $script:TcAdsEnumCacheVersion = $null
+    $script:TcAdsEnumCacheFailedAt = $null
+    $script:TcAdsEnumIndex = $null
 
     try {
         $client = New-TcAdsClient -AmsNetId $AmsNetId -Port $Port

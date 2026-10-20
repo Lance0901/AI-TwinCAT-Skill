@@ -2,6 +2,13 @@ function Read-TcVariable {
     <#
     .SYNOPSIS
         Reads PLC variable(s) by symbol name via ADS.
+    .DESCRIPTION
+        Every entry has path, value and type. By PLC type:
+          BOOL / integers / REAL / LREAL / STRING    value is the typed scalar
+          TIME/TOD, LTIME/LTOD, DATE/DT, LDATE/LDT  value is the IEC literal ("T#6s", "DT#2026-10-20-12:30:00"); the raw
+                                                    integer is in ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT) or unix (DATE/DT)
+          enum                                      value is the integer, name is the member name (null + hint when unknown)
+          STRUCT / ARRAY / other                    value is the raw byte array (int[]), size is the byte count
     .PARAMETER Path
         Variable path(s). Single string or array (e.g., "MAIN.nCounter" or @("MAIN.nCounter","MAIN.bRunning")).
     #>
@@ -26,47 +33,9 @@ function Read-TcVariable {
 
         foreach ($varPath in $Path) {
             try {
-                # Get symbol info via C# helper (bypasses CLS issue)
-                $symInfo = [TcAdsHelper]::GetSymbolInfo($script:TcAdsClient, $varPath)
-                $typeName = $symInfo['TypeName']
-                $typeSize = $symInfo['Size']
-
-                $handle = $script:TcAdsClient.CreateVariableHandle($varPath)
-
-                # Read based on PLC type
-                $value = $null
-                switch -Regex ($typeName.ToUpper()) {
-                    '^BOOL$'           { $value = $script:TcAdsClient.ReadAny($handle, [bool]) }
-                    '^SINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [sbyte]) }
-                    '^USINT$|^BYTE$'   { $value = $script:TcAdsClient.ReadAny($handle, [byte]) }
-                    '^INT$'            { $value = $script:TcAdsClient.ReadAny($handle, [int16]) }
-                    '^UINT$|^WORD$'    { $value = $script:TcAdsClient.ReadAny($handle, [uint16]) }
-                    '^DINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [int32]) }
-                    '^UDINT$|^DWORD$'  { $value = $script:TcAdsClient.ReadAny($handle, [uint32]) }
-                    '^LINT$'           { $value = $script:TcAdsClient.ReadAny($handle, [int64]) }
-                    '^ULINT$|^LWORD$'  { $value = $script:TcAdsClient.ReadAny($handle, [uint64]) }
-                    '^REAL$'           { $value = $script:TcAdsClient.ReadAny($handle, [float]) }
-                    '^LREAL$'          { $value = $script:TcAdsClient.ReadAny($handle, [double]) }
-                    '^STRING' {
-                        $strLen = if ($typeSize -gt 0) { $typeSize } else { 255 }
-                        $value = $script:TcAdsClient.ReadAny($handle, [string], @([int]$strLen))
-                    }
-                    default {
-                        # Read as byte array for structs/unknown types
-                        $buffer = New-Object byte[] $typeSize
-                        $script:TcAdsClient.Read($handle, $buffer)
-                        $value = $buffer
-                    }
-                }
-
-                $script:TcAdsClient.DeleteVariableHandle($handle)
-
-                $results += [PSCustomObject]@{
-                    path        = $varPath
-                    value       = $value
-                    type        = $typeName
-                    reconnected = $reconnected
-                }
+                $entry = Read-TcAdsSymbolValue -VarPath $varPath
+                $entry.reconnected = $reconnected
+                $results += [PSCustomObject]$entry
             }
             catch {
                 $lastErrorRecord = $_

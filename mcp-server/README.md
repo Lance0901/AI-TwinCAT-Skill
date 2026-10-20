@@ -123,7 +123,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 |---|---|---|---|---|
 | `NewProject` | `New-TcProject` | `Name` | 120 s | Create a solution with a PLC project and MAIN |
 | `OpenProject` | `Open-TcProject` | `Path` | 180 s | Open a `.sln` and wait until the TwinCAT project is loaded |
-| `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Full project tree as JSON |
+| `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Project tree as JSON incl. `<Plc> Project` POUs/DUTs/GVLs; `Depth` (1-10, default 4), `PlcOnly` (TIPC subtree only) |
 | `AddPou` | `Add-TcPou` | `Name`, `Type` | 120 s | Add a Program / FunctionBlock / Function |
 | `AddGvl` | `Add-TcGvl` | `Name` | 120 s | Add a Global Variable List |
 | `AddDut` | `Add-TcDut` | `Name`, `DutType` | 120 s | Add a STRUCT / ENUM / ALIAS / UNION |
@@ -134,8 +134,8 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `GetPouCode` | `Get-TcPouCode` | `PouName` | 120 s | Read declaration and implementation of a POU (`PouPath` = `TIPC^<Plc>^<Plc> Project^POUs^<Pou>`) |
-| `WritePouCode` | `Write-TcPouCode` | `PouName` | 120 s | Write `Declaration` and/or `Implementation` into a POU |
+| `GetPouCode` | `Get-TcPouCode` | `PouName` | 120 s | Read declaration and implementation of a POU (`PouPath` optional, auto-detected; format `TIPC^<Plc>^<Plc> Project^POUs^<Pou>`; `POU_NOT_FOUND` if missing) |
+| `WritePouCode` | `Write-TcPouCode` | `PouName` | 120 s | Write `Declaration` and/or `Implementation` into a POU (`PouPath` optional, auto-detected) |
 
 ### Build and deploy
 
@@ -161,9 +161,9 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; auto-reconnects after `EnableConfig` (`data.reconnected`) |
-| `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type |
-| `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll one or more paths every `IntervalMs` for `DurationMs`, or until `Until` (`"<Path> <op> <value>"`, op `== != > < >= <=`) holds / `UntilTimeoutMs`; only the last `KeepLast` samples are returned |
+| `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; TIME/DATE types return the IEC literal (`"T#6s"`) plus the raw integer in `ms`/`ns`/`unix`, enums the integer plus `name`, STRUCTs raw bytes plus `size`; auto-reconnects after `EnableConfig` (`data.reconnected`) |
+| `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type (TIME/TOD: `"T#6s"` or integer ms, DATE/DT: `"DT#2026-10-20-12:30:00"`/ISO 8601 or seconds, enum: integer or member name); `data.written` is the converted value (normalized literal for time types); STRUCT/ARRAY -> `TYPE_MISMATCH` |
+| `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll one or more paths every `IntervalMs` for `DurationMs`, or until `Until` (`"<Path> <op> <value>"`, op `== != > < >= <=`) holds / `UntilTimeoutMs`; only the last `KeepLast` samples are returned; samples carry the `ReadVariable` conversion (`ms`/`ns`/`unix`, `name`) |
 | `GetSymbols` | `Get-TcSymbols` | — | 120 s | List PLC symbols, optional `Filter` substring |
 
 ### I/O

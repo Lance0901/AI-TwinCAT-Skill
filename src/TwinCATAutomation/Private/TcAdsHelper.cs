@@ -1,4 +1,8 @@
+// CreateSymbolInfoLoader / ITcAdsDataType members are marked [Obsolete] in TwinCAT.Ads 4.3;
+// Add-Type treats warnings as errors, so the warning is disabled for this file.
+#pragma warning disable 618
 using TwinCAT.Ads;
+using TwinCAT.TypeSystem;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,7 +11,7 @@ using System.Text;
 /// <summary>
 /// C# helper to bypass PowerShell CLS compatibility issues with TcAdsSymbol.
 /// TwinCAT.Ads.dll has both 'Datatype' and 'DataType' properties which differ
-/// only in case — PowerShell cannot distinguish them, causing runtime errors.
+/// only in case - PowerShell cannot distinguish them, causing runtime errors.
 /// This helper uses raw ADS protocol reads to get symbol information directly.
 /// </summary>
 public static class TcAdsHelper
@@ -118,6 +122,38 @@ public static class TcAdsHelper
                 { "TypeName", typeName },
                 { "Size", (int)size },
                 { "Comment", comment }
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Enum types of the runtime (data type table via the symbol info loader):
+    /// one entry per enum with Name, BaseType, Size and Values = [{Name, Value(long)}].
+    /// Library enums are qualified ("Tc2_MC2.MC_Direction"). Members whose value does
+    /// not fit a long (ULINT enums above 2^63) are skipped.
+    /// </summary>
+    public static List<Dictionary<string, object>> GetEnumTypes(TcAdsClient client)
+    {
+        var result = new List<Dictionary<string, object>>();
+        var loader = client.CreateSymbolInfoLoader();
+        var types = loader.GetDataTypes(false);
+        foreach (ITcAdsDataType t in types)
+        {
+            if (t.Category != DataTypeCategory.Enum) continue;
+            var values = new List<Dictionary<string, object>>();
+            foreach (IEnumValue ev in t.EnumValues)
+            {
+                long v;
+                try { v = Convert.ToInt64(ev.Primitive); } catch { continue; }
+                values.Add(new Dictionary<string, object> { { "Name", ev.Name }, { "Value", v } });
+            }
+            result.Add(new Dictionary<string, object>
+            {
+                { "Name", t.Name },
+                { "BaseType", t.BaseTypeName },
+                { "Size", t.Size },
+                { "Values", values }
             });
         }
         return result;

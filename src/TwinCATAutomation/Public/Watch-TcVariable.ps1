@@ -66,6 +66,23 @@ function Test-TcWatchCondition {
     return $false
 }
 
+function Get-TcWatchCompareValue {
+    <#
+    .SYNOPSIS
+        Picks the scalar of a Read-TcVariable data object that a -Until <value> is compared with.
+    .DESCRIPTION
+        Numeric <value>: the raw ms/ns/unix integer of a time type (Get-TcVariableRawValue), else value.
+        Other text: the enum member name when the data has one, else value (the IEC literal for time types).
+    #>
+    param($Data, [string]$Expected)
+    $d = 0.0
+    if ([double]::TryParse($Expected, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) {
+        return (Get-TcVariableRawValue -Data $Data)
+    }
+    if ($null -ne $Data.PSObject.Properties['name'] -and -not [string]::IsNullOrEmpty([string]$Data.name)) { return $Data.name }
+    return $Data.value
+}
+
 function Watch-TcVariable {
     <#
     .SYNOPSIS
@@ -86,6 +103,9 @@ function Watch-TcVariable {
         (case-insensitive). Numbers compare numerically (TRUE/FALSE = 1/0), TRUE/FALSE compare
         as booleans (== / != only), anything else compares as case-insensitive text.
         A failed read never satisfies the condition.
+        TIME/DATE types: a numeric <value> is compared with the raw ms/ns/unix integer
+        (e.g. "MAIN.tDelay > 5000"), any other text with the IEC literal ("MAIN.tDelay == T#6s").
+        Enums: a numeric <value> compares with the integer, text with the member name.
     .PARAMETER UntilTimeoutMs
         Maximum time to wait for -Until in milliseconds. Default: 5000 (or -TimeoutMs if only that is given).
     .PARAMETER TimeoutMs
@@ -100,6 +120,9 @@ function Watch-TcVariable {
         finalValues (multiple paths), sampleCount, samples, truncated, keepLast, reconnected }.
         Without -Until: data = { path, sampleCount, durationMs, elapsedMs, samples, truncated, keepLast, reconnected }.
         Invalid -Until returns error code INVALID_PARAMS.
+    .NOTES
+        Samples use the Read-TcVariable conversion: value plus ms/ns/unix (raw integer) for
+        TIME/DATE types (value is the IEC literal) and name (member name) for enums.
     #>
     [CmdletBinding()]
     param(
@@ -173,27 +196,35 @@ function Watch-TcVariable {
 
         while ($sw.ElapsedMilliseconds -lt $limitMs) {
             $values = [ordered]@{}
+            $readData = @{}
             foreach ($p in $Path) {
                 $v = $null
                 $readResult = Read-TcVariable -Path $p
-                if ($readResult -and $readResult.success) { $v = $readResult.data.value }
+                if ($readResult -and $readResult.success) { $v = $readResult.data.value; $readData[$p] = $readResult.data }
                 $values[$p] = $v
             }
             $lastValues = $values
             $ts = [DateTime]::Now.ToString('o')
+            # Single path: the Read-TcVariable conversion (value + ms/ns/unix for time types, name for enums)
             $sample = if ($multi) {
                 [PSCustomObject]@{ timestamp = $ts; values = [PSCustomObject]$values }
+            } elseif ($readData.ContainsKey($Path[0])) {
+                New-TcWatchSample -Data $readData[$Path[0]]
             } else {
-                [PSCustomObject]@{ timestamp = $ts; value = $values[$Path[0]] }
+                [PSCustomObject]@{ timestamp = $ts; value = $null }
             }
             $sampleCount++
             $samples.Add($sample)
             if ($samples.Count -gt $keep) { $samples.RemoveAt(0); $truncated = $true }
 
-            if ($hasUntil -and (Test-TcWatchCondition -Value $values[$untilPath] -Operator $untilOp -Expected $untilValue)) {
-                $untilMet = $true
-                $untilSample = $sample
-                break
+            if ($hasUntil) {
+                $cmpValue = $values[$untilPath]
+                if ($readData.ContainsKey($untilPath)) { $cmpValue = Get-TcWatchCompareValue -Data $readData[$untilPath] -Expected $untilValue }
+                if (Test-TcWatchCondition -Value $cmpValue -Operator $untilOp -Expected $untilValue) {
+                    $untilMet = $true
+                    $untilSample = $sample
+                    break
+                }
             }
             Start-Sleep -Milliseconds $IntervalMs
         }

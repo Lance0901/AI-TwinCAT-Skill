@@ -9,7 +9,9 @@ function Add-TcPou {
     .PARAMETER ReturnType
         Return type for Functions (e.g., INT, BOOL). Ignored for Program/FunctionBlock.
     .PARAMETER PlcProjectPath
-        Tree path to the PLC project's POUs folder. Auto-detected if omitted.
+        Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs
+        (same format on 4024 and 4026). Auto-detected if omitted: <Plc> Project^POUs, or the
+        <Plc> Project node itself when it has no POUs folder (see data.folderPath).
     #>
     [CmdletBinding()]
     param(
@@ -44,23 +46,9 @@ function Add-TcPou {
     }
 
     try {
-        # Find POUs folder (COM calls wrapped in Invoke-TcComRetry)
-        $pouFolder = Invoke-TcComRetry -OperationName 'Lookup POUs folder' -ScriptBlock {
-            $folder = $null
-            if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
-                # Auto-detect: look under TIPC for first PLC project
-                $plcConfig = $sm.LookupTreeItem('TIPC')
-                $plcProject = $plcConfig.Child(1)
-                $folder = $plcProject.LookupChild('POUs')
-                if ($null -eq $folder) {
-                    $folder = $plcProject
-                }
-            }
-            else {
-                $folder = $sm.LookupTreeItem($PlcProjectPath)
-            }
-            Write-Output -NoEnumerate $folder
-        }
+        # Find POUs folder (TIPC^<Plc>^<Plc> Project^POUs on 4024 and 4026)
+        $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'POUs' -ExplicitPath $PlcProjectPath
+        $pouFolder = $folderInfo.Item
 
         $subType = $pouSubTypes[$Type]
 
@@ -84,9 +72,10 @@ function Add-TcPou {
 
         $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name = $Name
-            type = $Type
-            path = $itemPath
+            name       = $Name
+            type       = $Type
+            path       = $itemPath
+            folderPath = $folderInfo.Path
         })
     }
     catch {

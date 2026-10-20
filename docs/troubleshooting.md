@@ -227,6 +227,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:`Open-TcProject` / `Connect-TcIde -SolutionPath` 開 .sln 失敗。路徑錯、檔案損壞、或連到的 IDE 沒有 TwinCAT 整合(例如抓到沒裝 TwinCAT 的 VS)。
 - **下一步**:確認路徑;指定 `-ProgId` 對應正確的 IDE(見環境矩陣)。
 
+### POU_NOT_FOUND
+
+- **現象**:`Get-TcPouCode` / `Write-TcPouCode` 回 `POU_NOT_FOUND`。(`PLC_PROJECT_NOT_FOUND` 是 TIPC 下找不到 `<Plc> Project` 節點,處理方式相同。)
+- **為什麼**:4024 與 4026 的 PLC 樹格式相同:`TIPC^<Plc>^<Plc> Project^POUs^<name>`(DUT 在 `^DUTs^`、GVL 在 `^GVLs^`)。不給 `-PouPath` 時依序試 `<Plc> Project^POUs^<name>`、`<Plc> Project^<name>`,最後遞迴走 project 子樹(深度 4)比對名稱;給了 `-PouPath` 但找不到也會改用名稱自動找。都沒命中才回此碼。
+- **下一步**:`error.message` 列出試過的路徑(`data.tried[]`),`error.hint` 說明格式並列出 `<Plc> Project` 第一層子節點(例如 `POUs, DUTs, GVLs, VISUs`,另見 `data.projectChildren[]`)。用 `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`。與 `POU_READ_FAILED` / `POU_WRITE_FAILED` 不同:後兩者只在 COM 例外(例如讀 DeclarationText 失敗)時回,代表 POU 找到了但存取失敗。
+
 ### POU_CREATE_FAILED
 
 - **為什麼**:`Add-TcPou` 的 `CreateChild` 失敗。HRESULT `0x98510001` 表示 .plcproj 的 `<Compile Include>` 列了某個檔案,但磁碟上沒有(通常是手動刪檔、或 git 沒追蹤到)。
@@ -267,8 +273,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TYPE_MISMATCH
 
-- **為什麼**:`Write-TcVariable` 的值型別與 symbol 型別不符(例如對 `UINT` 寫 `-1`、對 `BOOL` 寫字串)。
-- **下一步**:`Get-TcSymbols` 看 type,用對應 PowerShell 型別轉型(`[uint16]0`、`$true`)。
+- **為什麼**:`Write-TcVariable` 無法把值轉成 symbol 的型別(對 `UINT` 寫 `-1` 或 `2.5`、對 `BOOL` 寫 `"yes"`、對 `TIME` 寫 `DT#…`、enum 成員名拼錯),或 symbol 是 STRUCT/ARRAY(不支援整筆寫)。`error.message` 說明原因,`hint` 列出支援型別。
+- **下一步**:`Get-TcSymbols` 看 `type`(enum 會列 `enumValues`);TIME/TOD 給 IEC 字面 `T#6s`、`T#1m30s500ms`、`TOD#12:30:00`(整數 ms 也收),LTIME 給 `LTIME#1us`(或 ns),DATE/DT 給 `D#2026-10-20`、`DT#2026-10-20-12:30:00` 或 ISO 8601(或 UNIX 秒),enum 給整數或成員名;STRUCT 改寫個別成員(`stPar.fMax`)。`data.written` 是實際寫入的轉換值(數值型回數值;時間類回正規化字面,`T#6000ms` → `T#6s`,另附 `ms`/`ns`/`unix`),enum 另回 `name`。
 
 ### ACTIVATION_FAILED
 
