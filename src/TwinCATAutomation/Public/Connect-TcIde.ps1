@@ -5,17 +5,20 @@ function Connect-TcIde {
     .DESCRIPTION
         Obtains the EnvDTE and ITcSysManager interfaces. Enumerates every DTE
         registered in the ROT (XAE Shell 15.0 / 17.0 and VS2022 alike) and picks one:
-          - with -SolutionPath: the instance that already has that .sln open
-            (path compared case-insensitively after normalisation), otherwise an
-            instance with no solution open, otherwise the first instance;
+          - with -SolutionPath: ONLY the instance that already has that .sln open
+            (path compared case-insensitively after normalisation; selectedBy
+            'solution-match'). An empty IDE or one with another solution is never
+            reused - it belongs to whoever opened it (opening the target there would
+            hijack it and -Quit would close it) - so otherwise a new IDE is launched
+            (selectedBy 'launched');
           - without -SolutionPath: an instance that has a TwinCAT project loaded,
-            otherwise the first instance.
+            otherwise the first instance (busy ones last).
         For every ROT entry DTE.Version and Solution.FullName are read: an instance
         that stays busy (RPC_E_CALL_REJECTED) after a short retry is kept as a
-        last-resort candidate (solution '<busy>'); an instance failing with any other
-        COM error (dead RPC server 0x800706BA, E_FAIL 0x80004005 - typically an IDE
-        that is shutting down) is skipped. Only when no DTE instance is usable a new
-        IDE is launched from the first registered ProgID in TcXaeShell.DTE.15.0
+        last-resort candidate (solution '<busy>', only used without -SolutionPath); an
+        instance failing with any other COM error (dead RPC server 0x800706BA, E_FAIL
+        0x80004005 - typically an IDE that is shutting down) is skipped. When no DTE
+        instance qualifies a new IDE is launched from the first registered ProgID in TcXaeShell.DTE.15.0
         (4024, 32-bit XAE Shell), TcXaeShell.DTE.17.0, VisualStudio.DTE.17.0 (4026 /
         VS2022) - or the single -ProgId given. A launched IDE is polled (500 ms, max
         60 s) until DTE.Version and DTE.Solution are readable, then UserControl is
@@ -174,28 +177,25 @@ function Connect-TcIde {
     $chosen = $null
     if ($pool.Count -gt 0) {
         if ($null -ne $normalizedSolutionPath) {
-            # Strategy 1: instance already running the target solution
+            # With -SolutionPath only the instance that already has THAT solution open is reused.
+            # An empty IDE, one with another solution, or a busy one (solution unknown) belongs to
+            # whoever opened it: opening the target solution there would hijack it, and a later
+            # Disconnect-TcIde -Quit would close it. When no instance matches, a new IDE is
+            # launched (tests/Integration/multi-ide.ps1 covers the three-IDE desktop).
             $chosen = $pool | Where-Object {
                 $_.normalizedSolution -and ([string]::Equals($_.normalizedSolution, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase))
             } | Select-Object -First 1
             if ($null -ne $chosen) { $selectionReason = 'solution-match' }
-
-            # Strategy 2: instance with no solution open
-            if ($null -eq $chosen) {
-                $chosen = $pool | Where-Object { [string]::IsNullOrWhiteSpace($_.solution) } | Select-Object -First 1
-                if ($null -ne $chosen) { $selectionReason = 'no-solution-open' }
-            }
         }
         else {
-            # No SolutionPath: prefer an instance that already has a TwinCAT project
+            # No SolutionPath: prefer an instance that already has a TwinCAT project,
+            # otherwise the first usable instance (busy ones last).
             $chosen = $pool | Where-Object { $_.hasTcProject } | Select-Object -First 1
             if ($null -ne $chosen) { $selectionReason = 'twincat-project-loaded' }
-        }
-
-        # Strategy 3: first usable instance
-        if ($null -eq $chosen) {
-            $chosen = $pool | Select-Object -First 1
-            $selectionReason = if ($chosen.busy) { 'busy-instance' } else { 'first-instance' }
+            if ($null -eq $chosen) {
+                $chosen = $pool | Select-Object -First 1
+                $selectionReason = if ($chosen.busy) { 'busy-instance' } else { 'first-instance' }
+            }
         }
     }
 
@@ -427,8 +427,20 @@ function Connect-TcIde {
         }
     }
 
-    $ideVersion = try { $dte.Version } catch { 'unknown' }
-    $ideSolution = try { $dte.Solution.FullName } catch { '' }
+    # Right after Solution.Open / the project scan the DTE occasionally answers $null for Version
+    # and Solution.FullName although the solution is loaded (multi-ide.ps1 saw solution = null
+    # 128 ms before a ROT read of the same instance returned the path). Retry briefly; when the
+    # solution was opened / matched by -SolutionPath it is reported as that path.
+    $ideVersion = ''
+    $ideSolution = ''
+    for ($readTry = 1; $readTry -le 3; $readTry++) {
+        try { $ideVersion = [string]$dte.Version } catch { $ideVersion = '' }
+        try { $ideSolution = [string]$dte.Solution.FullName } catch { $ideSolution = '' }
+        if (-not [string]::IsNullOrWhiteSpace($ideVersion) -and -not [string]::IsNullOrWhiteSpace($ideSolution)) { break }
+        if ($readTry -lt 3) { Start-Sleep -Milliseconds 300 }
+    }
+    if ([string]::IsNullOrWhiteSpace($ideVersion)) { $ideVersion = 'unknown' }
+    if ([string]::IsNullOrWhiteSpace($ideSolution) -and -not [string]::IsNullOrWhiteSpace($SolutionPath)) { $ideSolution = $SolutionPath }
 
     $data = [PSCustomObject]@{
         progId              = $usedProgId

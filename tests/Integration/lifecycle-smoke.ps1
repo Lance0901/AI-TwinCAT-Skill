@@ -353,11 +353,11 @@ try {
                 if ($own.Count -gt 0) { $inRot = $true; $script:ownIdePid = [int]$own[0]['ProcessId'] }
                 else { Start-Sleep -Milliseconds 500 }
             }
-            # If the user has other IDEs open (possibly with no solution), Connect-TcIde could pick
-            # theirs via 'no-solution-open'. Open the solution in OUR instance first so that
-            # Connect-TcIde selects it by 'solution-match'.
+            # Connect-TcIde -SolutionPath only attaches to an instance that already has the solution
+            # open (an empty IDE is never reused: it could be the user's). Open the solution in OUR
+            # instance first so that Connect-TcIde selects it by 'solution-match'.
             $preOpened = $false
-            if ($inRot -and $script:preIdePids.Count -gt 0) {
+            if ($inRot) {
                 try { $script:keepDte.Solution.Open($SolutionPath) } catch { }
                 $openDeadline = (Get-Date).AddSeconds(180)
                 while ((Get-Date) -lt $openDeadline) {

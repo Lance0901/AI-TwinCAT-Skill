@@ -64,7 +64,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | 用途 |
 |---|---|
-| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 會開/選 solution 並回 `amsNetId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
 | `Disconnect-TcIde` | 釋放 IDE COM 參考 |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
