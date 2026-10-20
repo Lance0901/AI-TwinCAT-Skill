@@ -87,7 +87,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 |---------|-------------|
 | `Connect-TcIde` | Connect to TwinCAT IDE (optional `-SolutionPath` for one-step connect) |
 | `Disconnect-TcIde` | Disconnect from IDE |
-| `Reset-TcSolution` | Close the solution (no save) and reopen it (~9 s) so XAE reloads project files changed on disk; needed only when a changed `.TcPOU` is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
+| `Reset-TcSolution` | Dismiss the reload prompt, close all documents (no save), close + reopen the solution on the same IDE (~10 s) so XAE reloads project files changed on disk; needed only when a changed `.TcPOU` is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
 | `Connect-TcAds` | Connect ADS client (AmsNetId auto-detected from IDE) |
 | `Disconnect-TcAds` | Disconnect ADS client |
 

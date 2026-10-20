@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T00:12:34Z",
+    "generatedAt":  "2026-10-20T01:53:42Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -688,7 +688,7 @@
                   {
                       "name":  "ResetSolution",
                       "cmdlet":  "Reset-TcSolution",
-                      "description":  "Close the open solution without saving and reopen it in the same IDE (Solution.Close + ConnectIde with the same .sln, about 9 s), so XAE reloads every project file from disk. Use right after .TcPOU / .plcproj files were changed ON DISK by another tool while they are open in an XAE editor: otherwise XAE shows the modal \"File has been changed outside the environment. Reload the new file?\" (GetIdeModalDialog kind reload-prompt) and every call blocks. A file that is not open in an editor is picked up automatically within ~5 s and needs no call; WritePouCode goes through COM and never needs it. Discards unsaved editor changes; the ADS connection is kept. Returns IDE_MODAL_DIALOG when a dialog is already up (dismiss it in the IDE first).",
+                      "description":  "Reload every project file from disk: dismisses the reload prompt if it is up (data.dismissedReloadPrompt), closes all documents without saving (data.closedDocuments), Solution.Close, Solution.Open of the same .sln on the same IDE, then ConnectIde again (about 10 s). Use right after .TcPOU / .plcproj files were changed ON DISK by another tool while they are open in an XAE editor: otherwise XAE shows the modal \"File has been changed outside the environment. Reload the new file?\" (GetIdeModalDialog kind reload-prompt) and every call blocks. A file that is not open in an editor is picked up automatically within ~5 s and needs no call; WritePouCode writes the IDE edit buffer through COM and never needs it (the file on disk is only written on save / BuildProject). Any other modal dialog is reported as IDE_MODAL_DIALOG. The ADS connection is kept.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -705,8 +705,8 @@
                                                                                 "type":  "integer",
                                                                                 "minimum":  5,
                                                                                 "maximum":  600,
-                                                                                "description":  "Expected upper bound for Solution.Close in seconds (default 60).",
-                                                                                "default":  60
+                                                                                "description":  "Expected upper bound for each of Documents.CloseAll, Solution.Close and Solution.Open in seconds (default 120).",
+                                                                                "default":  120
                                                                             }
                                                          },
                                           "required":  [

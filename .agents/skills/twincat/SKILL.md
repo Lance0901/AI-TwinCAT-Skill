@@ -50,7 +50,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 |---------|-----------|-------------|
 | `Connect-TcIde` | `[-SolutionPath <path>] [-ProgId <com>]` | Connect to IDE. With -SolutionPath: finds/launches IDE, opens solution, returns amsNetId |
 | `Disconnect-TcIde` | | Disconnect from IDE |
-| `Reset-TcSolution` | `[-SolutionPath <sln>] [-TimeoutSec 60]` | Close (no save) + reopen the solution so XAE reloads project files changed on disk; only needed when the changed .TcPOU is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
+| `Reset-TcSolution` | `[-SolutionPath <sln>] [-TimeoutSec 120]` | Dismiss the reload prompt, close all documents (no save), close + reopen the solution on the same IDE so XAE reloads project files changed on disk; only needed when the changed .TcPOU is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
 | `Get-TcIdeInfo` | | Get IDE version, solution path, connection status |
 
 ### Project Management

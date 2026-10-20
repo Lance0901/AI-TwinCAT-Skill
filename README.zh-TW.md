@@ -87,7 +87,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 |------|------|
 | `Connect-TcIde` | 連接 TwinCAT IDE（可用 `-SolutionPath` 一步連接） |
 | `Disconnect-TcIde` | 斷開 IDE 連線 |
-| `Reset-TcSolution` | 關閉 solution（不存檔）再重開（約 9 s），讓 XAE 重新載入磁碟上改過的專案檔；只有改過的 `.TcPOU` 開在 XAE 編輯器時才需要（沒開的話 XAE 約 5 s 自動吃到） |
+| `Reset-TcSolution` | 關掉 reload 提示、關閉所有文件（不存檔）、在同一個 IDE 關閉再重開 solution（約 10 s），讓 XAE 重新載入磁碟上改過的專案檔；只有改過的 `.TcPOU` 開在 XAE 編輯器時才需要（沒開的話 XAE 約 5 s 自動吃到） |
 | `Connect-TcAds` | 連接 ADS（AmsNetId 從 IDE 自動偵測） |
 | `Disconnect-TcAds` | 斷開 ADS 連線 |
 

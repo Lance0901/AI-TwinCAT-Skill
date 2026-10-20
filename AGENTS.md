@@ -51,7 +51,7 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 ### Connection
 - `Connect-TcIde [-SolutionPath <path>]` — Connect to IDE
 - `Disconnect-TcIde` — Disconnect from IDE
-- `Reset-TcSolution [-SolutionPath <sln>]` — Close (no save) + reopen the solution so XAE reloads files changed on disk (only needed when the changed .TcPOU is open in an editor)
+- `Reset-TcSolution [-SolutionPath <sln>]` — Dismiss the reload prompt, close all documents, close + reopen the solution on the same IDE so XAE reloads files changed on disk (only needed when the changed .TcPOU is open in an editor)
 - `Connect-TcAds [-AmsNetId <id>]` — Connect ADS (auto-detects AmsNetId)
 - `Disconnect-TcAds` — Disconnect ADS
 

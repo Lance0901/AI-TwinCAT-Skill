@@ -44,7 +44,7 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   `params.TimeoutSec` (default 5, clamped to 1..60). Result:
   `{"success":true,"data":{"ideProcessId":<pid actually scanned>,"dialog":null|{"title":"...","text":"...","kind":"reload-prompt"|"unknown"}}}`
   (`kind` `reload-prompt` = the VS "File has been changed outside the environment. Reload the new
-  file?" prompt, a file open in an editor was changed on disk: dismiss it, then `ResetSolution`)
+  file?" prompt, a file open in an editor was changed on disk: `ResetSolution` dismisses it and reopens the solution)
   (`dialog` is `null` also when the pid does not exist). A non-integer / non-positive
   `ProcessId` → `INVALID_PARAMS`. When neither `params.ProcessId` nor a stored pid is
   available: `{"success":false,"error":{"code":"NOT_CONNECTED","message":"...","hint":"Run Connect-TcIde first, or pass params.ProcessId."}}`.

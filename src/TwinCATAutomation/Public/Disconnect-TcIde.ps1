@@ -13,11 +13,20 @@ function Disconnect-TcIde {
     )
 
     $quitResult = $null
-    if ($Quit -and $null -ne $script:TcDte) {
+    if ($Quit -and ($null -eq $script:TcDte -or -not $script:TcIdeConnected)) {
+        # Nothing to quit: never connected, already disconnected, or the IDE state was reset
+        # after IDE_CRASHED. Reported as success with quit = false instead of a COM error text.
+        $quitResult = @{ solutionClosed = $false; quit = $false; error = $null; reason = 'not connected' }
+    }
+    elseif ($Quit) {
         $dte = $script:TcDte
-        $quitResult = @{ solutionClosed = $false; quit = $false; error = $null }
+        $quitResult = @{ solutionClosed = $false; quit = $false; error = $null; reason = $null }
         try {
-            Invoke-TcComRetry -OperationName 'Solution.Close' -TimeoutSec 60 -ScriptBlock { $dte.Solution.Close($false) } | Out-Null
+            Invoke-TcComRetry -OperationName 'Solution.Close' -TimeoutSec 60 -ScriptBlock {
+                $sol = $dte.Solution
+                if ($null -eq $sol) { throw 'DTE.Solution is null (the DTE reference is no longer usable)' }
+                $sol.Close($false)
+            } | Out-Null
             $quitResult.solutionClosed = $true
         }
         catch { $quitResult.error = "Solution.Close: $($_.Exception.Message)" }
@@ -74,12 +83,16 @@ function Disconnect-TcIde {
 
     $data = [PSCustomObject]@{ message = 'Disconnected from TwinCAT IDE.' }
     if ($null -ne $quitResult) {
+        $message = if ($quitResult.quit) { 'Disconnected and IDE quit.' }
+                   elseif ($quitResult.reason -eq 'not connected') { 'Not connected to an IDE; nothing to quit.' }
+                   else { 'Disconnected; IDE quit failed (see quitError).' }
         $data = [PSCustomObject]@{
-            message        = if ($quitResult.quit) { 'Disconnected and IDE quit.' } else { 'Disconnected; IDE quit failed (see quitError).' }
+            message        = $message
             solutionClosed = $quitResult.solutionClosed
             quit           = $quitResult.quit
             quitError      = $quitResult.error
         }
+        if ($null -ne $quitResult.reason) { $data | Add-Member -NotePropertyName 'reason' -NotePropertyValue $quitResult.reason }
     }
     New-TcResult -Success $true -Data $data
 }

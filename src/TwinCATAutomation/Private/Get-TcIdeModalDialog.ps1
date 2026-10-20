@@ -291,7 +291,13 @@ function Add-TcDialogKind {
         if ($null -ne $kp) { $kind = [string]$kp.Value }
     }
     if ([string]::IsNullOrWhiteSpace($kind)) { $kind = Get-TcModalDialogKind -Title $title -Text $text }
-    return @{ Title = $title; Text = $text; Kind = $kind }
+    $hwnd = [long]0
+    try {
+        if ($Dialog -is [System.Collections.IDictionary]) { if ($Dialog.Contains('Hwnd')) { $hwnd = [long]$Dialog['Hwnd'] } }
+        else { $hp = $Dialog.PSObject.Properties['Hwnd']; if ($null -ne $hp) { $hwnd = [long]$hp.Value } }
+    }
+    catch { $hwnd = 0 }
+    return @{ Title = $title; Text = $text; Kind = $kind; Hwnd = $hwnd }
 }
 
 function Get-TcIdeModalDialog {
@@ -316,7 +322,8 @@ function Get-TcIdeModalDialog {
     .PARAMETER TimeoutSec
         Maximum time for the UIA scan. Default 5.
     .OUTPUTS
-        Hashtable @{ Title = [string]; Text = [string]; Kind = [string] } or $null.
+        Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; Hwnd = [long] } or $null
+        (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt).
     #>
     [CmdletBinding()]
     param(
@@ -378,10 +385,13 @@ function Get-TcIdeModalDialog {
         $title = [string]$first.Title
         if ([string]::IsNullOrWhiteSpace($title)) { return $null }
         $text = [string]$first.Text
+        $hwnd = [long]0
+        try { $hwnd = [long]$first.Hwnd } catch { $hwnd = 0 }
         return @{
             Title = $title
             Text  = $text
             Kind  = (Get-TcModalDialogKind -Title $title -Text $text)
+            Hwnd  = $hwnd
         }
     }
     catch {
