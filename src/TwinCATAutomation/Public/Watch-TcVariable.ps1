@@ -9,9 +9,15 @@ function Watch-TcVariable {
     .PARAMETER DurationMs
         Total monitoring duration in milliseconds.
     .PARAMETER Until
-        ScriptBlock condition to stop monitoring (receives $_ with .Value property).
+        ScriptBlock condition to stop monitoring. The pipeline object has Value (as Read-TcVariable
+        reports it, i.e. the IEC literal for TIME and DATE types), Raw (the ms/ns/unix integer of a
+        time type, otherwise the same as Value) and Name (enum member name or null). Compare time
+        types on Raw, e.g. "Raw greater than 5000".
     .PARAMETER TimeoutMs
         Max wait time for condition. Default: 5000.
+    .NOTES
+        Samples use the Read-TcVariable conversion: {timestamp, value} plus ms/ns/unix (raw integer)
+        for TIME/DATE types (value is the IEC literal) and name (member name) for enums.
     #>
     [CmdletBinding()]
     param(
@@ -47,14 +53,15 @@ function Watch-TcVariable {
             while ([DateTime]::Now -lt $deadline) {
                 $readResult = Read-TcVariable -Path $Path
                 if ($readResult.success) {
-                    $sample = [PSCustomObject]@{
-                        timestamp = [DateTime]::Now.ToString('o')
-                        value     = $readResult.data.value
-                    }
+                    $sample = New-TcWatchSample -Data $readResult.data
                     $samples += $sample
 
                     # Test condition
-                    $testObj = [PSCustomObject]@{ Value = $readResult.data.value }
+                    $testObj = [PSCustomObject]@{
+                        Value = $readResult.data.value
+                        Raw   = Get-TcVariableRawValue -Data $readResult.data
+                        Name  = if ($null -ne $readResult.data.PSObject.Properties['name']) { $readResult.data.name } else { $null }
+                    }
                     if ($Until.InvokeWithContext($null, [psvariable]::new('_', $testObj))) {
                         $conditionMet = $true
                         break
@@ -82,10 +89,7 @@ function Watch-TcVariable {
             while ([DateTime]::Now -lt $deadline) {
                 $readResult = Read-TcVariable -Path $Path
                 if ($readResult.success) {
-                    $samples += [PSCustomObject]@{
-                        timestamp = [DateTime]::Now.ToString('o')
-                        value     = $readResult.data.value
-                    }
+                    $samples += New-TcWatchSample -Data $readResult.data
                 }
                 Start-Sleep -Milliseconds $IntervalMs
             }

@@ -161,8 +161,8 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; auto-reconnects after `EnableConfig` (`data.reconnected`) |
-| `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type |
+| `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; TIME/DATE types return the IEC literal (`"T#6s"`) plus the raw integer in `ms`/`ns`/`unix`, enums the integer plus `name`, STRUCTs raw bytes plus `size`; auto-reconnects after `EnableConfig` (`data.reconnected`) |
+| `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type (TIME/TOD: `"T#6s"` or integer ms, DATE/DT: `"DT#2026-10-20-12:30:00"`/ISO 8601 or seconds, enum: integer or member name); `data.written` is the converted value (normalized literal for time types); STRUCT/ARRAY -> `TYPE_MISMATCH` |
 | `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll every `IntervalMs` for `DurationMs` and return samples (`Until` scriptblock not available over MCP) |
 | `GetSymbols` | `Get-TcSymbols` | — | 120 s | List PLC symbols, optional `Filter` substring |
 
