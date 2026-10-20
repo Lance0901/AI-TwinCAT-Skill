@@ -201,7 +201,8 @@ export function buildCmdletNameMap(catalog, extra = {}) {
 
 const CMDLET_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b/g;
 // ` -Param` or ` -Param value` right after a replaced cmdlet name; the value must not be another switch.
-const PARAM_RE = /^\s-([A-Z][A-Za-z]+)(?=\s|$|[,;:()。，；：])(?:\s+(<[^>]+>|[A-Za-z0-9_.\:/][A-Za-z0-9_.\:/-]*))?/;
+// A quoted value ('TwinCAT OS (x64)') is kept whole, quotes included.
+const PARAM_RE = /^\s-([A-Z][A-Za-z]+)(?=\s|$|[,;:()。，；：])(?:\s+('[^']*'|"[^"]*"|<[^>]+>|[A-Za-z0-9_.\:/][A-Za-z0-9_.\:/-]*))?/;
 
 /** Replace PowerShell cmdlet names (and their ` -Param value` tails) in a hint with MCP tool names. */
 export function rewriteHintCmdletNames(hint, nameMap) {

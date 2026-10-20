@@ -367,9 +367,21 @@ try {
     }
 
     # G: build in the target
-    $null = Invoke-Step 'G-clean' 'SolutionBuild.Clean($true)' {
-        & $mod { Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Clean' -ScriptBlock { $script:TcDte.Solution.SolutionBuild.Clean($true) } | Out-Null }
-        [PSCustomObject]@{ success = $true }
+    # Clean($false) + BuildState polling: the synchronous Clean($true) never returns through
+    # out-of-process COM in VS2022 (same reason as Build-TcProject).
+    $null = Invoke-Step 'G-clean' 'SolutionBuild.Clean($false)+poll' {
+        $state = & $mod {
+            $sb = Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Clean' -ScriptBlock { $x = $script:TcDte.Solution.SolutionBuild; $x.Clean($false); Write-Output -NoEnumerate $x }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $st = $null
+            while ($sw.Elapsed.TotalSeconds -lt 120) {
+                try { $st = [int]$sb.BuildState } catch { $st = $null }
+                if ($st -eq 3 -and $sw.Elapsed.TotalSeconds -ge 1) { break }
+                Start-Sleep -Milliseconds 500
+            }
+            $st
+        }
+        [PSCustomObject]@{ success = ($state -eq 3); data = [PSCustomObject]@{ buildState = $state } }
     }
     $null = Invoke-Step 'G-build' 'Build-TcProject' {
         $b = Build-TcProject

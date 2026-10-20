@@ -8,8 +8,18 @@
         Includes license check guidance if IDE remains unresponsive.
         Before the build the IDE is checked for a modal dialog (e.g. the XAE
         "Assertion Failed" box that appears after repeatedly opening/closing a
-        solution): SolutionBuild.Build would then block forever, so IDE_MODAL_DIALOG
+        solution): the build would then never finish, so IDE_MODAL_DIALOG
         is returned instead (data.dialogTitle / dialogText).
+        The build is started asynchronously with SolutionBuild.Build($false) and
+        SolutionBuild.BuildState (EnvDTE vsBuildState: 1 NotStarted, 2 InProgress,
+        3 Done) is polled every ~750 ms. The synchronous Build($true) never returns
+        through out-of-process COM in VS2022 (measured 2026-10-21, XAE 4026.22 in VS2022
+        Community: VS idle, no modal, call hung 13 min) and a synchronous call cannot
+        be aborted; polling works in VS2022 and in the 4024 32-bit TcXaeShell alike.
+        While polling, the IDE is checked for a modal dialog every ~5 s: a dialog
+        during the build means the build is stuck, so IDE_MODAL_DIALOG is returned.
+        When BuildState does not reach Done within -TimeoutSec, BUILD_TIMEOUT is
+        returned (data.buildState / buildSec).
         After the build the Error List window is read with Get-TcBuildErrors (UI
         Automation): data.errors is the number of errors shown there and
         data.errorItems lists them (code / description / project / file / line).
@@ -20,6 +30,9 @@
               (file not like '*Library Manager', line > 0) = BUILD_FAILED;
           (c) when neither is readable: BUILD_STATUS_UNKNOWN (success = false) - look at
               the XAE Error List yourself before deciding.
+    .PARAMETER TimeoutSec
+        Maximum time in seconds to wait for the build to finish (BuildState = Done);
+        BUILD_TIMEOUT after that. Default 600.
     .OUTPUTS
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN
         data.errors          error count (Error List; fallback: failedProjects)
@@ -34,9 +47,14 @@
                              rows that have no file (XAE build-summary rows such as "Project
                              'plc' build ... failed" stay in the Error List as Warning)
         data.errorListError  only when the Error List could not be read (its error code)
+        data.buildSec        seconds from Build($false) until BuildState reported Done
     #>
     [CmdletBinding()]
-    param()
+    param(
+        [Parameter()]
+        [ValidateRange(5, 7200)]
+        [int]$TimeoutSec = 600
+    )
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -55,11 +73,14 @@
     try {
         # Entire build operation wrapped in retry for RPC_E_CALL_REJECTED (IDE busy)
         $solutionBuild = $null
+        $buildWatch = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $solutionBuild = Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Build' -TimeoutSec 600 -ScriptBlock {
+            $solutionBuild = Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Build' -TimeoutSec 60 -ScriptBlock {
                 $solution = $script:TcDte.Solution
                 $sb = $solution.SolutionBuild
-                $sb.Build($true)  # $true = wait for completion
+                # $false = start the build and return at once; completion is polled below.
+                # Build($true) never returns through out-of-process COM in VS2022.
+                $sb.Build($false)
                 Write-Output -NoEnumerate $sb
             }
         }
@@ -73,6 +94,49 @@
             }
             throw
         }
+
+        # --- wait for the build: poll SolutionBuild.BuildState (vsBuildState 3 = Done) ---
+        # Done is only accepted once InProgress (2) / NotStarted (1) was seen or after a 2 s
+        # grace period, so a BuildState still left at Done by the previous build is not taken
+        # for the end of this one. A modal dialog is looked for every ~5 s.
+        $buildState = $null
+        $seenNotDone = $false
+        $nextModalCheckSec = 5.0
+        while ($true) {
+            $state = $null
+            try { $state = [int]$solutionBuild.BuildState }
+            catch {
+                # IDE busy / RPC failure: read again through the retry wrapper (busy retry,
+                # IDE_CRASHED detection); its exceptions end in the outer catch.
+                $state = [int](Invoke-TcComRetry -MaxRetries 3 -OperationName 'SolutionBuild.BuildState' -ScriptBlock { $solutionBuild.BuildState })
+            }
+            $buildState = $state
+            if ($state -ne 3) { $seenNotDone = $true }
+            elseif ($seenNotDone -or $buildWatch.Elapsed.TotalSeconds -ge 2) { break }
+
+            if ($buildWatch.Elapsed.TotalSeconds -ge $nextModalCheckSec) {
+                $nextModalCheckSec = $buildWatch.Elapsed.TotalSeconds + 5
+                $dialog = Get-TcIdeModalDialog
+                if ($null -ne $dialog) {
+                    return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
+                        -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+                }
+            }
+            if ($buildWatch.Elapsed.TotalSeconds -ge $TimeoutSec) {
+                $dialog = Get-TcIdeModalDialog
+                if ($null -ne $dialog) {
+                    return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
+                        -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+                }
+                return New-TcResult -Success $false `
+                    -ErrorMessage "Build did not finish within $TimeoutSec s (SolutionBuild.BuildState = $buildState; 1 NotStarted, 2 InProgress, 3 Done)." `
+                    -ErrorCode 'BUILD_TIMEOUT' -Hint (Get-TcErrorHint -Code 'BUILD_TIMEOUT') `
+                    -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+            }
+            Start-Sleep -Milliseconds 750
+        }
+        $buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1)
+        Write-Verbose "Build-TcProject: BuildState Done after $buildSec s."
 
         # LastBuildInfo = number of projects that failed to build (NOT the error count).
         # $null when it cannot be read: a failed read must never count as "0 failed".
@@ -179,6 +243,7 @@
             codeErrors     = $codeErrors
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
+            buildSec       = $buildSec
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy

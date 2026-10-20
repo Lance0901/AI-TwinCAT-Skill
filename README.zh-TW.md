@@ -29,6 +29,10 @@ Import-Module ./src/TwinCATAutomation/TwinCATAutomation.psm1 -Force
 # 1. 連接 IDE（有需要會自動開啟解決方案）
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
+# 1b. TwinCAT 4026 XAE:solution platform 必須等於 target platform(UmRT = Usermode Runtime = 'TwinCAT OS (x64)'),否則 ACTIVATE_FAILED。
+#     不帶 -Platform 時從 target 的 TARGETINFO 讀;runtime 回 ADS 0x702(例如 TwinCAT 3.1.4026.21~22 的 UmRT)會回 PLATFORM_UNKNOWN,所以帶上(或 Enable-TcConfig -Platform ...)
+Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
+
 # 2. 建置
 Build-TcProject
 
@@ -111,7 +115,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### 建置與部署
 | 指令 | 說明 |
 |------|------|
-| `Build-TcProject` | 建置（RPC 忙碌時自動重試）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
+| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
 | `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
@@ -125,7 +129,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Get-TcPlcState` | 讀取 PLC 狀態 |
 | `Set-TcSystemState` | 設定 TwinCAT 系統狀態（Config/Run） |
 | `Get-TcSystemState` | 讀取系統狀態 |
-| `Set-TcTarget` | 設定目標系統（本機/遠端） |
+| `Set-TcTarget` | 設定目標系統（本機/遠端）；solution platform 跟著 target(TARGETINFO)或 `-Platform`（UmRT：`'TwinCAT OS (x64)'`）；`-NoPlatformSwitch` 只設 NetId |
 | `Get-TcIdeInfo` | 取得 IDE 版本與連線資訊 |
 
 ### ADS 變數
@@ -181,6 +185,7 @@ adapters/
 
 - **AmsNetId 是動態的** — 不要寫死。`Connect-TcAds` 會從 IDE 目標自動偵測。
 - **零對話框** — `Enable-TcConfig -Force` 使用 ADS WriteControl，`Connect-TcIde` 開啟全域 `ITcAutomationSettings.SilentMode`（XAE 用預設答案回應提示）。`Enter-TcPlcOnline` 的 Login 旗標**預設不** OR SILENT：空 runtime 實測 `Login(257)` 會跳過建 app 而不是答 Yes；`-SilentFlag` 才加。
+- **Solution platform（TwinCAT 4026）** — active solution platform 必須等於 target platform（UmRT / Usermode Runtime = `TwinCAT OS (x64)`），否則 `Enable-TcConfig` 回 `ACTIVATE_FAILED`（XAE「Check config failed!」，target 上什麼都沒寫）。XAE 載入 solution 時自己選 platform。`Set-TcTarget` 與 `Enable-TcConfig` 從 target 的 TARGETINFO（ADS port 200、IG 0x700，[InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)）讀 platform 並自動切換（`Enable-TcConfig` 另會重新 Build）；TwinCAT 3.1.4026.21~22 的 runtime 對它回 ADS 0x702，所以要帶 `-Platform 'TwinCAT OS (x64)'`（`Set-TcTarget` 不帶會回 `PLATFORM_UNKNOWN`，`Enable-TcConfig` 警告後照舊 Activate；`-NoPlatformFix` 讓不一致改回 `PLATFORM_MISMATCH`）。MCP：`SetTarget` / `EnableConfig` / `RunLifecycle` 的 `Platform`。見 `docs/troubleshooting.md`。
 - **測試 FB 時寫 MAIN 層級變數** — PLC 每個掃描週期都會覆寫 `VAR_INPUT`（參見 Decision #17）。
 
 ## Claude Code 安裝

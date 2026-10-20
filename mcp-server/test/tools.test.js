@@ -185,7 +185,8 @@ describe('cmdlet name rewriting in hints', () => {
     'Set-TcPlcState': 'SetPlcState',
     'Enable-TcConfig': 'EnableConfig',
     'Disconnect-TcIde': 'DisconnectIde',
-    'Get-TcIdeModalDialog': 'GetIdeModalDialog'
+    'Get-TcIdeModalDialog': 'GetIdeModalDialog',
+    'Set-TcTarget': 'SetTarget'
   });
   const rw = (s) => rewriteHintCmdletNames(s, names);
 
@@ -204,6 +205,14 @@ describe('cmdlet name rewriting in hints', () => {
     assert.equal(rw('Enable-TcConfig -Force'), 'EnableConfig Force=true');
     assert.equal(rw('Disconnect-TcIde -Quit(或 kill IDE)'), 'DisconnectIde Quit=true(或 kill IDE)');
     assert.equal(rw('Foo-TcBar -X 1'), 'Foo-TcBar -X 1');
+  });
+
+  test('quoted parameter values stay whole (ACTIVATE_FAILED hint)', () => {
+    assert.equal(
+      rw("執行 Set-TcTarget -AmsNetId 199.5.42.250.1.1 -Platform 'TwinCAT OS (x64)'(Usermode Runtime / UmRT),再重跑 Build-TcProject"),
+      "執行 SetTarget AmsNetId=199.5.42.250.1.1 Platform='TwinCAT OS (x64)'(Usermode Runtime / UmRT),再重跑 BuildProject"
+    );
+    assert.equal(rw('Set-TcTarget -Platform "TwinCAT RT (x64)" -Configuration Release'), 'SetTarget Platform="TwinCAT RT (x64)" Configuration=Release');
   });
 
   test('real mixed Chinese sentence', () => {

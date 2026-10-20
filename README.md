@@ -29,6 +29,11 @@ Import-Module ./src/TwinCATAutomation/TwinCATAutomation.psm1 -Force
 # 1. Connect to IDE (auto-opens solution if needed)
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
+# 1b. TwinCAT 4026 XAE: the solution platform must equal the target platform (UmRT = Usermode Runtime = 'TwinCAT OS (x64)'),
+#     else ACTIVATE_FAILED. Without -Platform it is read from the target (TARGETINFO); a runtime that answers ADS 0x702
+#     (e.g. the UmRT of TwinCAT 3.1.4026.21-22) returns PLATFORM_UNKNOWN, so pass it (or Enable-TcConfig -Platform ...)
+Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
+
 # 2. Build
 Build-TcProject
 
@@ -111,7 +116,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### Build & Deploy
 | Command | Description |
 |---------|-------------|
-| `Build-TcProject` | Build; `data.errorItems[]` lists the Error List errors (description/file/line) (auto-retry on RPC busy) |
+| `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line) |
 | `Get-TcBuildErrors` | Read the XAE Error List (errors, `-IncludeWarnings`, `-IncludeMessages`) via UI Automation |
 | `Enable-TcConfig` | Activate configuration via ADS (no dialogs with `-Force`) |
 | `Enter-TcPlcOnline` | Login + download program (`-LoginMode Regular|Download|OnlineChange` = 1/4/2; prompts handled by the global `SilentMode`, no `SILENT` flag unless `-SilentFlag`) |
@@ -125,7 +130,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Get-TcPlcState` | Read current PLC state |
 | `Set-TcSystemState` | Set TwinCAT system state (Config/Run) |
 | `Get-TcSystemState` | Read TwinCAT system state |
-| `Set-TcTarget` | Set target system (local/remote) |
+| `Set-TcTarget` | Set target system (local/remote); follows the target platform (TARGETINFO) or `-Platform` (UmRT: `'TwinCAT OS (x64)'`); `-NoPlatformSwitch` = NetId only |
 | `Get-TcIdeInfo` | Get IDE version and connection info |
 
 ### ADS Variables
@@ -181,6 +186,7 @@ All commands return structured JSON:
 
 - **AmsNetId is dynamic** -- never hardcode it. `Connect-TcAds` auto-detects from the active IDE target.
 - **No dialogs** -- `Enable-TcConfig -Force` uses ADS WriteControl, `Connect-TcIde` enables the global `ITcAutomationSettings.SilentMode` (XAE answers prompts with the default). `Enter-TcPlcOnline` does **not** OR the `SILENT` login flag by default: measured on an empty runtime, `Login(257)` skips creating the app instead of answering Yes; `-SilentFlag` opts in.
+- **Solution platform (TwinCAT 4026)** -- the active solution platform must equal the target platform (UmRT / Usermode Runtime = `TwinCAT OS (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED` (XAE "Check config failed!", nothing written to the target). XAE chooses the platform when it loads the solution. `Set-TcTarget` and `Enable-TcConfig` read the target platform through TARGETINFO (ADS port 200, IG 0x700, [InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)) and switch automatically (`Enable-TcConfig` also rebuilds); the runtime of TwinCAT 3.1.4026.21-22 answers ADS 0x702 there, so pass `-Platform 'TwinCAT OS (x64)'` (`Set-TcTarget` returns `PLATFORM_UNKNOWN` without it, `Enable-TcConfig` warns and activates as before; `-NoPlatformFix` turns a mismatch into `PLATFORM_MISMATCH`). MCP: `SetTarget` / `EnableConfig` / `RunLifecycle` `Platform`. See `docs/troubleshooting.md`.
 - **Write to MAIN-level vars** when testing FBs -- PLC overwrites `VAR_INPUT` every scan cycle (see Decision #17).
 
 ## Claude Code Setup

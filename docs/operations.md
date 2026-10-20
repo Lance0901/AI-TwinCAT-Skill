@@ -137,16 +137,24 @@ Links PLC variable to I/O channel.
 ## Build & Deploy
 
 ### Build-TcProject / `BuildProject`
-Builds PLC project.
+Builds PLC project (`Build($false)` + `BuildState` polling).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| TimeoutSec | int | No | 600 | Polling limit; expiry returns `BUILD_TIMEOUT`. A modal dialog during the build returns `IDE_MODAL_DIALOG` |
 
 **Returns:** `{ errors, warnings, messages }`
 
 ### Set-TcTarget / `SetTarget`
-Sets target AMS Net ID.
+Sets target AMS Net ID (always first: `data.targetSet`) and makes the active solution platform follow the target. In TwinCAT 4026 XAE the solution platform must equal the target platform (UmRT / Usermode Runtime and TwinCAT/BSD = `TwinCAT OS (x64)`, Windows RT target = `TwinCAT RT (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED`; `SetTargetNetId` alone does not change the platform. With `Platform` that platform is activated; without it the platform the target reports through TARGETINFO (ADS port 200, IG 0x700, [InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)) is activated, and a target that answers ADS 0x702 (the runtime of TwinCAT 3.1.4026.21-22) gives `PLATFORM_UNKNOWN`. `NoPlatformSwitch` = NetId only. `Enable-TcConfig` runs the same comparison before Activate (`Platform` as fallback, `NoPlatformFix` -> `PLATFORM_MISMATCH`).
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| AmsNetId | string | Yes | Target AMS Net ID |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| AmsNetId | string | Yes | | Target AMS Net ID |
+| Platform | string | No | | Solution platform to activate, e.g. `TwinCAT OS (x64)`; omitted = platform untouched |
+| Configuration | string | No | Release | Solution configuration used with `Platform` |
+
+**Returns (with Platform):** `{ amsNetId, platform, configuration, platformChanged, previousPlatform, availablePlatforms }`; errors `PLATFORM_NOT_FOUND` (hint lists the available platforms), `PLATFORM_SET_FAILED`.
 
 ### Enable-TcConfig / `EnableConfig`
 Activates TwinCAT configuration.

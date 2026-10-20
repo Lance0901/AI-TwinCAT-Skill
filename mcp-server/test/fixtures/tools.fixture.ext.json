@@ -47,7 +47,7 @@
       "timeoutMs": 180000,
       "inputSchema": {
         "type": "object",
-        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" } },
+        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" }, "NoPlatformFix": { "type": "boolean" }, "Platform": { "type": "string" } },
         "required": [],
         "additionalProperties": false
       }
@@ -88,7 +88,7 @@
       "cmdlet": "Set-TcTarget",
       "description": "Select the target system.",
       "timeoutMs": 60000,
-      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" } }, "required": ["AmsNetId"], "additionalProperties": false }
+      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" }, "Platform": { "type": "string" }, "Configuration": { "type": "string" }, "NoPlatformSwitch": { "type": "boolean" } }, "required": ["AmsNetId"], "additionalProperties": false }
     },
     {
       "name": "GetPlcState",

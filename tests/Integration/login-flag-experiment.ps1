@@ -43,7 +43,7 @@ try {
     $c = Connect-TcIde -SolutionPath $SolutionPath -ProgId $ProgId
     L ("connect: " + (J $c))
     if (-not $c.success) { exit 1 }
-    L ("settarget: " + (J (Set-TcTarget -AmsNetId $AmsNetId)))
+    L ("settarget: " + (J (Set-TcTarget -AmsNetId $AmsNetId -NoPlatformSwitch)))
 
     # Automation Interface "silent mode": ITcAutomationSettings via DTE.GetObject("TcAutomationSettings")
     if ($SilentMode -or $SuppressUI) {

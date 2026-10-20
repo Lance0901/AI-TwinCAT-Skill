@@ -11,7 +11,10 @@ param(
 
     [string]$Answer = '',
 
-    [switch]$Classify
+    [switch]$Classify,
+
+    # Pass handle 0 to Close-TcMessageBox (exercises its UI Automation lookup of the VS2022 message box).
+    [switch]$ZeroHwnd
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +38,8 @@ if ($Classify) {
 $dialog = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p -TimeoutSec 10 } $ProcessId
 $send = $null
 if ($null -ne $dialog -and -not [string]::IsNullOrWhiteSpace($Answer)) {
-    $send = & $mod { param($h, $a, $p) Close-TcMessageBox -Hwnd ([IntPtr][long]$h) -Answer $a -ProcessId $p } $dialog.Hwnd $Answer $ProcessId
+    $h = if ($ZeroHwnd) { 0 } else { $dialog.Hwnd }
+    $send = & $mod { param($h, $a, $p) Close-TcMessageBox -Hwnd ([IntPtr][long]$h) -Answer $a -ProcessId $p } $h $Answer $ProcessId
 }
 $buttons = @()
 if ($null -ne $dialog) { $buttons = @(& $mod { param($b) ConvertTo-TcDialogButtonList -Buttons $b } $dialog.Buttons) }
