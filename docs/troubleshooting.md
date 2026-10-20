@@ -371,6 +371,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Set-TcTarget -AmsNetId <id>`(沒給 `-Platform`、沒給 `-NoPlatformSwitch`)回 `PLATFORM_UNKNOWN`;`data.amsNetId`、`data.targetSet = true`(NetId **已經設好**,不用重做)、`data.platformCheck = 'unknown'`、`data.adsError`(例 `0x702`)、`data.platform`(沒動的 solution platform)。
 - **為什麼**:target 不回 TARGETINFO(見上),模組不猜 platform。
 - **下一步**:重跑 `Set-TcTarget -AmsNetId <id> -Platform '<平台>'`(UmRT / TwinCAT/BSD 為 `'TwinCAT OS (x64)'`,Windows RT 為 `'TwinCAT RT (x64)'`);只想換 NetId 就加 `-NoPlatformSwitch`(`lifecycle-smoke.ps1` 的 `02-set-target`、`login-logout.ps1`、MCP `RunLifecycle` 沒給 `Platform` 時都這樣呼叫)。`Enable-TcConfig` 在同樣情況下**不擋**:`platformCheck = 'skipped'`、Write-Warning + `data.warning`(同一段 hint)。
+- **4024 XAE(32-bit `TcXaeShell.DTE.15.0`)不要帶 `-Platform 'TwinCAT OS (x64)'`**:4024 XAE 不檢查 platform,A 組 4024 專案以 `TwinCAT RT (x64)` 在 UmRT 上正常跑(2026-10-21 實測 `Set-TcTarget` 回 `PLATFORM_UNKNOWN`,`-NoPlatformSwitch` 正常);4024 .sln 的 `TwinCAT OS (x64)` 對應 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0,切過去什麼都不編。4024 專案一律用 `-NoPlatformSwitch`,`Enable-TcConfig` 不帶 `-Platform`。
 
 ### PLATFORM_MISMATCH
 
