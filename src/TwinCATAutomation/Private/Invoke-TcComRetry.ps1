@@ -14,8 +14,9 @@ function Invoke-TcComRetry {
         Watchdog: when the IDE process id is known ($script:TcIdeProcessId, set by
         Connect-TcIde) a background runspace scans the IDE for a modal dialog every
         2 s (same UI Automation scan as Get-TcIdeModalDialog). It only records what
-        it sees in $script:TcLastModalDialog (@{ Title; Text; Kind }, Kind from
-        Get-TcModalDialogKind) - it never touches any window.
+        it sees in $script:TcLastModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd;
+        Buttons } via Add-TcDialogKind: Kind from Get-TcModalDialogKind, ReloadTarget 'file' /
+        'project' for a reload prompt) - it never touches any window.
           - call failed + dialog seen  -> throws "IDE_MODAL_DIALOG: <Title> | <Text>"
           - call failed + ran longer than -TimeoutSec -> throws "IDE_TIMEOUT: ..."
           - call failed, busy exhausted -> throws "IDE_BUSY: ..."
@@ -188,6 +189,8 @@ while (-not $Sync.Stop) {
                         $script:TcSysManager = $null
                         $script:TcDte = $null
                         $script:TcIdeProcessId = $null
+                        $script:TcIdeStartTime = $null
+                        $script:TcIdeSelectedBy = $null
                         $script:TcIdeMainHwnd = 0
                         throw "IDE_CRASHED: the IDE process (pid $__tcIdePid) no longer exists after '$OperationName' failed ($([int]$__tcStopwatch.Elapsed.TotalSeconds) s, original error: $__tcOrigMsg). The XAE crashed; module IDE state was reset."
                     }

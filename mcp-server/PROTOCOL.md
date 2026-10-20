@@ -42,14 +42,23 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   `params.ProcessId` (positive integer) selects the IDE process to scan; without it the
   pid stored by `Connect-TcIde` (`$script:TcIdeProcessId`) is used. Optional
   `params.TimeoutSec` (default 5, clamped to 1..60). Result:
-  `{"success":true,"data":{"ideProcessId":<pid actually scanned>,"dialog":null|{"title":"...","text":"...","kind":"reload-prompt"|"unknown"}}}`
+  `{"success":true,"data":{"ideProcessId":<pid actually scanned>,"dialog":null|{"title":"...","text":"...","kind":"reload-prompt"|"unknown","reloadTarget":"file"|"project"|null,"hwnd":int|null,"buttons":[{"id":int,"name":"..."}]}}}`
   (`kind` `reload-prompt` = the VS "File has been changed outside the environment. Reload the new
-  file?" prompt, a file open in an editor was changed on disk: `ResetSolution` dismisses it and reopens the solution)
+  file?" prompt, a file open in an editor was changed on disk (`reloadTarget` `"file"`:
+  `ResetSolution` dismisses it and reopens the solution), or the XAE "The project file ... has
+  been modified outside of TwinCAT XAE. Do you want to reload the project?" prompt, a `.plcproj`
+  was rewritten on disk (`reloadTarget` `"project"`: `ResetSolution` answers Yes and only
+  reconnects); `reloadTarget` is `null` for `unknown`. `buttons` are the Win32 button children
+  of a `#32770` message box by control id (1 OK, 2 Cancel, 6 Yes, 7 No; `name` is the localized
+  caption), empty for other windows; `hwnd` is the dialog window handle. Kind and reloadTarget
+  come from the module's `Add-TcDialogKind`)
   (`dialog` is `null` also when the pid does not exist). A non-integer / non-positive
   `ProcessId` → `INVALID_PARAMS`. When neither `params.ProcessId` nor a stored pid is
   available: `{"success":false,"error":{"code":"NOT_CONNECTED","message":"...","hint":"Run Connect-TcIde first, or pass params.ProcessId."}}`.
 * `state`  → snapshot of module state, no COM calls:
-  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"ideMainHwnd":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text,kind}}}`
+  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"ideMainHwnd":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text,kind,reloadTarget,hwnd,buttons}}}`
+  (`lastModalDialog` = `$script:TcLastModalDialog`, the last dialog the module's COM watchdog saw,
+  same shape as the `modal` op's `dialog`)
   (`ideMainHwnd` = module variable `$script:TcIdeMainHwnd`, the IDE main window handle stored by
   `Connect-TcIde`; `null` when unset, 0 or not a number).
 * `ping`   → `{"success":true,"data":{"pong":true}}`.

@@ -623,15 +623,39 @@ function Invoke-OpModal {
 
     $dialogOut = $null
     if ($null -ne $dialog) {
-        $title = $null; $text = $null; $kind = $null
-        if ($dialog -is [System.Collections.IDictionary]) { $title = $dialog['Title']; $text = $dialog['Text']; $kind = $dialog['Kind'] }
-        else { $title = $dialog.Title; $text = $dialog.Text; try { $kind = $dialog.Kind } catch { $kind = $null } }
-        if ([string]::IsNullOrWhiteSpace([string]$kind)) { $kind = 'unknown' }
         # kind: 'reload-prompt' = VS "File has been changed outside the environment. Reload the new
-        # file?" (a file open in an editor was changed on disk -> ResetSolution), else 'unknown'.
-        $dialogOut = [ordered]@{ title = [string]$title; text = [string]$text; kind = [string]$kind }
+        # file?" (reloadTarget 'file': a file open in an editor was changed on disk) or XAE "The
+        # project file ... has been modified outside of TwinCAT XAE. Do you want to reload the
+        # project?" (reloadTarget 'project': a .plcproj was rewritten) -> ResetSolution; else
+        # 'unknown' (reloadTarget null). Classification is the module's (Add-TcDialogKind).
+        $dialogOut = ConvertTo-BridgeDialog $dialog
     }
     return New-SuccessResult -Data ([ordered]@{ ideProcessId = [int]$ideProcessId; dialog = $dialogOut })
+}
+
+function ConvertTo-BridgeDialog {
+    # Module dialog record (@{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons }, hashtable or
+    # object) -> JSON shape {title, text, kind, reloadTarget, hwnd, buttons[{id, name}]}.
+    # Kind / ReloadTarget are (re)derived by the module's Add-TcDialogKind when missing.
+    param([object]$Dialog)
+    $rec = $null
+    try { $rec = Invoke-InModule { param($d) Add-TcDialogKind -Dialog $d } @(, $Dialog) } catch { $rec = $null }
+    if ($null -eq $rec) {
+        $title = $null; $text = $null; $kind = $null
+        if ($Dialog -is [System.Collections.IDictionary]) { $title = $Dialog['Title']; $text = $Dialog['Text']; $kind = $Dialog['Kind'] }
+        else { try { $title = $Dialog.Title; $text = $Dialog.Text; $kind = $Dialog.Kind } catch { } }
+        if ([string]::IsNullOrWhiteSpace([string]$kind)) { $kind = 'unknown' }
+        return [ordered]@{ title = [string]$title; text = [string]$text; kind = [string]$kind; reloadTarget = $null; hwnd = $null; buttons = @() }
+    }
+    $k = [string]$rec.Kind
+    if ([string]::IsNullOrWhiteSpace($k)) { $k = 'unknown' }
+    $target = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$rec.ReloadTarget)) { $target = [string]$rec.ReloadTarget }
+    $hwndOut = $null
+    try { $hv = [long]$rec.Hwnd; if ($hv -gt 0) { $hwndOut = $hv } } catch { $hwndOut = $null }
+    $buttons = @()
+    try { $buttons = @(Invoke-InModule { param($b) ConvertTo-TcDialogButtonList -Buttons $b } @(, @($rec.Buttons))) } catch { $buttons = @() }
+    return [ordered]@{ title = [string]$rec.Title; text = [string]$rec.Text; kind = $k; reloadTarget = $target; hwnd = $hwndOut; buttons = $buttons }
 }
 
 function Get-RawRequestId {
@@ -670,19 +694,7 @@ function Invoke-OpState {
     if (-not [string]::IsNullOrWhiteSpace([string]$amsNetId)) { $amsOut = [string]$amsNetId }
 
     $dialogOut = $null
-    if ($null -ne $lastDialog) {
-        if ($lastDialog -is [System.Collections.IDictionary]) {
-            $lk = [string]$lastDialog['Kind']
-            if ([string]::IsNullOrWhiteSpace($lk)) { $lk = 'unknown' }
-            $dialogOut = [ordered]@{ title = [string]$lastDialog['Title']; text = [string]$lastDialog['Text']; kind = $lk }
-        }
-        else {
-            $lk = ''
-            try { $lk = [string]$lastDialog.Kind } catch { $lk = '' }
-            if ([string]::IsNullOrWhiteSpace($lk)) { $lk = 'unknown' }
-            $dialogOut = [ordered]@{ title = [string]$lastDialog.Title; text = [string]$lastDialog.Text; kind = $lk }
-        }
-    }
+    if ($null -ne $lastDialog) { $dialogOut = ConvertTo-BridgeDialog $lastDialog }
 
     return New-SuccessResult -Data ([ordered]@{
         ideConnected        = ($null -ne $dte)

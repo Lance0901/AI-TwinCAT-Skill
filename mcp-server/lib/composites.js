@@ -188,9 +188,13 @@ export const GetIdeModalDialog = {
     'Check whether the XAE (Visual Studio shell) window is blocked by a modal dialog, e.g. "Assertion Failed" or a license prompt. ' +
     'Use it before BuildProject / EnableConfig when the IDE seems stuck, and after a BRIDGE_TIMEOUT. Needs an IDE process id: the one from ConnectIde, ' +
     'or (after a bridge restart) the last ConnectIde this server saw, or an explicit ProcessId. ' +
-    'Returns data.dialog = null when nothing is blocking, otherwise {title, text, kind}. kind "reload-prompt" is the VS prompt ' +
-    '"File has been changed outside the environment. Reload the new file?": a file open in an XAE editor was changed on disk; ' +
-    'call ResetSolution (it dismisses the prompt, closes all documents and reopens the solution). Any other dialog is kind "unknown".',
+    'Returns data.dialog = null when nothing is blocking, otherwise {title, text, kind, reloadTarget, hwnd, buttons}. kind "reload-prompt" is ' +
+    'either the VS prompt "File has been changed outside the environment. Reload the new file?" (reloadTarget "file": a file open in an XAE ' +
+    'editor was changed on disk) or the XAE prompt "The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the ' +
+    'project?" (reloadTarget "project": a .plcproj was rewritten on disk). For both call ResetSolution: it answers Yes to the project prompt ' +
+    '(XAE reloads the project, no close / reopen) and dismisses the file prompt, closes all documents and reopens the solution. ' +
+    'Any other dialog is kind "unknown" (reloadTarget null): handle it by hand, or DisconnectIde Quit=true Kill=true for an IDE ConnectIde launched. ' +
+    'buttons = [{id, name}] of a Win32 message box (control id 1 OK, 2 Cancel, 6 Yes, 7 No; name is the localized caption).',
   annotations: { readOnlyHint: true },
   timeoutMs: 90000,
   inputSchema: {
