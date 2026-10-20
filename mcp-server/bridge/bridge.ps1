@@ -623,10 +623,13 @@ function Invoke-OpModal {
 
     $dialogOut = $null
     if ($null -ne $dialog) {
-        $title = $null; $text = $null
-        if ($dialog -is [System.Collections.IDictionary]) { $title = $dialog['Title']; $text = $dialog['Text'] }
-        else { $title = $dialog.Title; $text = $dialog.Text }
-        $dialogOut = [ordered]@{ title = [string]$title; text = [string]$text }
+        $title = $null; $text = $null; $kind = $null
+        if ($dialog -is [System.Collections.IDictionary]) { $title = $dialog['Title']; $text = $dialog['Text']; $kind = $dialog['Kind'] }
+        else { $title = $dialog.Title; $text = $dialog.Text; try { $kind = $dialog.Kind } catch { $kind = $null } }
+        if ([string]::IsNullOrWhiteSpace([string]$kind)) { $kind = 'unknown' }
+        # kind: 'reload-prompt' = VS "File has been changed outside the environment. Reload the new
+        # file?" (a file open in an editor was changed on disk -> ResetSolution), else 'unknown'.
+        $dialogOut = [ordered]@{ title = [string]$title; text = [string]$text; kind = [string]$kind }
     }
     return New-SuccessResult -Data ([ordered]@{ ideProcessId = [int]$ideProcessId; dialog = $dialogOut })
 }
@@ -669,10 +672,15 @@ function Invoke-OpState {
     $dialogOut = $null
     if ($null -ne $lastDialog) {
         if ($lastDialog -is [System.Collections.IDictionary]) {
-            $dialogOut = [ordered]@{ title = [string]$lastDialog['Title']; text = [string]$lastDialog['Text'] }
+            $lk = [string]$lastDialog['Kind']
+            if ([string]::IsNullOrWhiteSpace($lk)) { $lk = 'unknown' }
+            $dialogOut = [ordered]@{ title = [string]$lastDialog['Title']; text = [string]$lastDialog['Text']; kind = $lk }
         }
         else {
-            $dialogOut = [ordered]@{ title = [string]$lastDialog.Title; text = [string]$lastDialog.Text }
+            $lk = ''
+            try { $lk = [string]$lastDialog.Kind } catch { $lk = '' }
+            if ([string]::IsNullOrWhiteSpace($lk)) { $lk = 'unknown' }
+            $dialogOut = [ordered]@{ title = [string]$lastDialog.Title; text = [string]$lastDialog.Text; kind = $lk }
         }
     }
 

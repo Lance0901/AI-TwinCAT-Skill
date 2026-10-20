@@ -22,6 +22,11 @@ function Open-TcProject {
     try {
         $script:TcDte.Solution.Open($Path)
 
+        # Remembered for Reset-TcSolution (Solution.Close + reopen).
+        $openedSln = try { [string]$script:TcDte.Solution.FullName } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($openedSln)) { $openedSln = (Resolve-Path -LiteralPath $Path).Path }
+        $script:TcSolutionPath = try { [IO.Path]::GetFullPath($openedSln) } catch { $openedSln }
+
         # Refresh ITcSysManager
         $script:TcSysManager = $null
         $sm = Get-TcSysManager

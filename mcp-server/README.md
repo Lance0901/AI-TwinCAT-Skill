@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 35 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 36 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
 
-Exposes the `TwinCATAutomation` module (35 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (36 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -102,7 +102,7 @@ Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Paramete
 | `RunLifecycle` | composite | — | 1500 s | `ConnectIde` → `BuildProject` (unless `SkipBuild`) → `EnableConfig` (`Force`; `NoLogin`, `TimeoutSec` 10..3600 optional) → `ConnectAds`; stops at the first failing step, `data.steps[]` / `data.failedStep` tell where. **Destructive** (`annotations.destructiveHint`): restarts TwinCAT, downloads and starts the PLC program; confirm with the user first |
 | `QuickRead` | composite | `Path` | 120 s | `ReadVariable`; on `NOT_CONNECTED` runs `ConnectAds` (auto-detected AmsNetId) and reads again; `data.connectedOnDemand`. Read-only |
 | `GetStatus` | composite | — | 120 s | Bridge state (IDE/ADS connected, AmsNetId) + `GetIdeInfo` + `GetSystemState` + `GetPlcState`; `NOT_CONNECTED` before `ConnectIde`. Read-only |
-| `GetIdeModalDialog` | composite (module-private `Get-TcIdeModalDialog`) | — | 90 s | Probe the XAE window for a blocking modal dialog; `data.dialog` is `null` or `{title, text}`. Uses the IDE pid from `ConnectIde`; after a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` it falls back to `data.lastIde.ideProcessId`, and `ProcessId` (integer ≥ 1) overrides both. Read-only |
+| `GetIdeModalDialog` | composite (module-private `Get-TcIdeModalDialog`) | — | 90 s | Probe the XAE window for a blocking modal dialog; `data.dialog` is `null` or `{title, text, kind}` (`kind` `reload-prompt` = the "File has been changed outside the environment. Reload the new file?" prompt: a file open in an editor was changed on disk, dismiss it then `ResetSolution`; else `unknown`). Uses the IDE pid from `ConnectIde`; after a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` it falls back to `data.lastIde.ideProcessId`, and `ProcessId` (integer ≥ 1) overrides both. Read-only |
 
 Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools/list` when `tools.json` defines them; the composites above set their own.
 
@@ -112,6 +112,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 |---|---|---|---|---|
 | `ConnectIde` | `Connect-TcIde` | — | 180 s | Attach to a running XAE / VS (ROT), launch one if none; optional `SolutionPath`, `ProgId`, `NoLaunch`; returns `ideProcessId`, `amsNetId` |
 | `DisconnectIde` | `Disconnect-TcIde` | — | 120 s | Release DTE/COM references; `Quit=true` also closes the IDE (only one that `ConnectIde` launched) |
+| `ResetSolution` | `Reset-TcSolution` | — | 180 s | `Solution.Close` (no save) + `ConnectIde` with the same `.sln` (~9 s): XAE reloads every project file from disk. Use after `.TcPOU` / `.plcproj` files were changed on disk while open in an XAE editor (otherwise the modal "File has been changed outside the environment" blocks every call); a file not open in an editor is picked up within ~5 s without it. Optional `SolutionPath`, `TimeoutSec`; returns `IDE_MODAL_DIALOG` if a dialog is already up |
 | `GetIdeInfo` | `Get-TcIdeInfo` | — | 120 s | IDE version, edition, open solution; cheap connectivity check |
 | `ConnectAds` | `Connect-TcAds` | — | 120 s | Open ADS; `AmsNetId` auto-detected from the IDE target, `Port` default 851 |
 | `DisconnectAds` | `Disconnect-TcAds` | — | 120 s | Close ADS and forget the endpoint (disables auto-reconnect) |

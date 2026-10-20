@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-18T12:30:06Z",
+    "generatedAt":  "2026-10-20T00:12:34Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -616,7 +616,20 @@
                                                              "PlcProjectPath":  {
                                                                                     "type":  "string",
                                                                                     "description":  "Tree path to PLC project. Default auto-detects from TIPC."
-                                                                                }
+                                                                                },
+                                                             "LoginMode":  {
+                                                                               "type":  "string",
+                                                                               "enum":  [
+                                                                                            "Regular",
+                                                                                            "Download",
+                                                                                            "OnlineChange"
+                                                                                        ],
+                                                                               "description":  "Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has no program (XAE decides). Download: FORCEDOWNLOAD - always a full download (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE. SILENT (256) is only OR-ed in with -SilentFlag.",
+                                                                               "default":  "Regular"
+                                                                           },
+                                                             "SilentFlag":  {
+                                                                                "type":  "boolean"
+                                                                            }
                                                          },
                                           "required":  [
 
@@ -668,6 +681,36 @@
                                                          },
                                           "required":  [
                                                            "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ResetSolution",
+                      "cmdlet":  "Reset-TcSolution",
+                      "description":  "Close the open solution without saving and reopen it in the same IDE (Solution.Close + ConnectIde with the same .sln, about 9 s), so XAE reloads every project file from disk. Use right after .TcPOU / .plcproj files were changed ON DISK by another tool while they are open in an XAE editor: otherwise XAE shows the modal \"File has been changed outside the environment. Reload the new file?\" (GetIdeModalDialog kind reload-prompt) and every call blocks. A file that is not open in an editor is picked up automatically within ~5 s and needs no call; WritePouCode goes through COM and never needs it. Discards unsaved editor changes; the ADS connection is kept. Returns IDE_MODAL_DIALOG when a dialog is already up (dismiss it in the IDE first).",
+                      "timeoutMs":  180000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "SolutionPath":  {
+                                                                                  "type":  "string",
+                                                                                  "description":  ".sln to reopen. Default: the solution ConnectIde / OpenProject opened."
+                                                                              },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  5,
+                                                                                "maximum":  600,
+                                                                                "description":  "Expected upper bound for Solution.Close in seconds (default 60).",
+                                                                                "default":  60
+                                                                            }
+                                                         },
+                                          "required":  [
+
                                                        ],
                                           "additionalProperties":  false
                                       }

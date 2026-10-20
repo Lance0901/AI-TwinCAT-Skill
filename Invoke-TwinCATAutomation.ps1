@@ -32,6 +32,7 @@ $operationMap = @{
     # IDE Connection
     'ConnectIde'      = 'Connect-TcIde'
     'DisconnectIde'   = 'Disconnect-TcIde'
+    'ResetSolution'   = 'Reset-TcSolution'
     'GetIdeInfo'      = 'Get-TcIdeInfo'
     # Project Management
     'NewProject'      = 'New-TcProject'

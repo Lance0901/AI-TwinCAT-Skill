@@ -14,7 +14,8 @@ $script:TcIdeConnected = $false
 $script:TcProgId = $null
 $script:TcIdeProcessId = $null     # pid of the connected IDE (Connect-TcIde); used by Get-TcIdeModalDialog
 $script:TcIdeMainHwnd = 0          # main window handle of the connected IDE (excluded from dialog scans)
-$script:TcLastModalDialog = $null  # last dialog seen by the Invoke-TcComRetry watchdog: @{ Title; Text }
+$script:TcLastModalDialog = $null  # last dialog seen by the Invoke-TcComRetry watchdog: @{ Title; Text; Kind }
+$script:TcSolutionPath = $null     # full path of the .sln opened by Connect-TcIde / Open-TcProject; Reset-TcSolution reopens it
 $script:TcAutomationSettings = $null  # ITcAutomationSettings (DTE.GetObject('TcAutomationSettings')), SilentMode enabled by Connect-TcIde
 $script:TcSilentMode = $false         # whether SilentMode could be enabled on the connected IDE
 $script:TcSilentModeOriginal = $null  # SilentMode value found by Connect-TcIde (restored by Disconnect-TcIde without -Quit); $null = unknown

@@ -57,6 +57,7 @@ $OutPath = [System.IO.Path]::GetFullPath($OutPath)
 $descriptionOverrides = @{
     'ConnectIde'      = 'Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId and, when a solution is open, the detected target AmsNetId.'
     'DisconnectIde'   = 'Release the DTE/COM references held by the bridge. The IDE keeps running unless Quit=true, which closes the solution without saving and quits the IDE (only use on an IDE that ConnectIde launched).'
+    'ResetSolution'   = 'Close the open solution without saving and reopen it in the same IDE (Solution.Close + ConnectIde with the same .sln, about 9 s), so XAE reloads every project file from disk. Use right after .TcPOU / .plcproj files were changed ON DISK by another tool while they are open in an XAE editor: otherwise XAE shows the modal "File has been changed outside the environment. Reload the new file?" (GetIdeModalDialog kind reload-prompt) and every call blocks. A file that is not open in an editor is picked up automatically within ~5 s and needs no call; WritePouCode goes through COM and never needs it. Discards unsaved editor changes; the ADS connection is kept. Returns IDE_MODAL_DIALOG when a dialog is already up (dismiss it in the IDE first).'
     'GetIdeInfo'      = 'Return version, edition, open solution and ITcSysManager availability of the connected IDE. Cheap connectivity check; fails with NOT_CONNECTED before ConnectIde.'
     'BuildProject'    = 'Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems (description/file/line taken from the XAE Error List) instead of guessing; a full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.'
     'GetBuildErrors'  = 'Read the compiler messages currently shown in the XAE Error List (errors by default; IncludeWarnings/IncludeMessages add the rest). Needs an English XAE UI (window "Error List", button "N Errors"); other UI languages return ERRORLIST_UNAVAILABLE.'
@@ -89,6 +90,7 @@ $timeoutOverrides = @{
     'RunTestCycle'   = 900000
     'ConnectIde'     = 180000
     'OpenProject'    = 180000
+    'ResetSolution'  = 180000
     'PlcLogin'       = 300000
     'SendPlcProgram' = 300000
     'SetSystemState' = 180000
@@ -107,7 +109,7 @@ $readOnlyTools = @(
 )
 $destructiveTools = @(
     'EnableConfig', 'SetSystemState', 'SetPlcState', 'WriteVariable', 'RunTest', 'RunTestCycle',
-    'PlcLogin', 'SendPlcProgram', 'IoScan', 'SetTarget', 'DisconnectIde', 'PlcLogout'
+    'PlcLogin', 'SendPlcProgram', 'IoScan', 'SetTarget', 'DisconnectIde', 'PlcLogout', 'ResetSolution'
 )
 
 function Get-ToolAnnotations {
@@ -134,6 +136,8 @@ $paramDescriptionOverrides = @{
     'RunTest.TestCase'        = 'A test case object as returned by NewTestCase.'
     'RunTestCycle.TestCases'  = 'Array of test case objects as returned by NewTestCase.'
     'DisconnectIde.Quit'      = 'true = also close the solution (without saving) and quit the IDE.'
+    'ResetSolution.SolutionPath' = '.sln to reopen. Default: the solution ConnectIde / OpenProject opened.'
+    'ResetSolution.TimeoutSec'   = 'Expected upper bound for Solution.Close in seconds (default 60).'
 }
 
 $commonParameters = @(

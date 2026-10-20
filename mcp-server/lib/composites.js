@@ -180,7 +180,9 @@ export const GetIdeModalDialog = {
     'Check whether the XAE (Visual Studio shell) window is blocked by a modal dialog, e.g. "Assertion Failed" or a license prompt. ' +
     'Use it before BuildProject / EnableConfig when the IDE seems stuck, and after a BRIDGE_TIMEOUT. Needs an IDE process id: the one from ConnectIde, ' +
     'or (after a bridge restart) the last ConnectIde this server saw, or an explicit ProcessId. ' +
-    'Returns data.dialog = null when nothing is blocking, otherwise {title, text}.',
+    'Returns data.dialog = null when nothing is blocking, otherwise {title, text, kind}. kind "reload-prompt" is the VS prompt ' +
+    '"File has been changed outside the environment. Reload the new file?": a file open in an XAE editor was changed on disk; ' +
+    'dismiss it in the IDE (Yes), then ResetSolution. Any other dialog is kind "unknown".',
   annotations: { readOnlyHint: true },
   timeoutMs: 90000,
   inputSchema: {

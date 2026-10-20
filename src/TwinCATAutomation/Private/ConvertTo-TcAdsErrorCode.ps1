@@ -10,6 +10,9 @@ $script:TcErrorHints = @{
     'ADS_TIMEOUT'          = 'ADS 逾時:目標忙碌或網路問題,稍後重試'
     'IDE_BUSY'             = 'XAE 被 modal dialog 或 license 視窗擋住,關掉後重試'
     'IDE_MODAL_DIALOG'     = 'XAE/VS 有 modal 視窗(例如 Assertion Failed、VS 帳戶設定、Target system reports a fatal error),請手動處理後重試;模組無法自動關閉。若 dialog 關不掉,kill IDE 後重新 Connect-TcIde'
+    'IDE_MODAL_DIALOG_RELOAD' = 'XAE 跳「File has been changed outside the environment. Reload the new file?」:開在編輯器裡的檔案(通常是 .TcPOU)被磁碟上的工具改了,DTE 呼叫被擋住。先在 XAE 手動按 Yes(載入磁碟版)關掉 dialog,再 Reset-TcSolution(Solution.Close + Connect-TcIde -SolutionPath 重開,約 9 s)讓 XAE 與磁碟一致;關不掉就 kill IDE 後重新 Connect-TcIde -SolutionPath。之後改磁碟檔案的規則:POU 沒開在編輯器 → 直接改,XAE 約 5 s 自動吃到;開著 → 先關閉該文件或改完立刻 Reset-TcSolution;改用 Write-TcPouCode(走 COM)則不會跳框'
+    'SOLUTION_CLOSE_FAILED' = 'Solution.Close 失敗:用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog;必要時 Disconnect-TcIde -Quit(或 kill IDE)後重新 Connect-TcIde -SolutionPath <sln>'
+    'NO_SOLUTION'          = '沒有開啟的 solution:先 Connect-TcIde -SolutionPath <sln> 或 Open-TcProject -Path <sln>'
     'IDE_TIMEOUT'          = 'DTE 呼叫超過預期時間才返回:XAE 可能被 dialog 卡住或正在跑長操作;用 Get-TcIdeModalDialog 檢查,必要時 kill IDE 後重新 Connect-TcIde'
     'IDE_CRASHED'          = 'IDE 行程已消失(可能 OutOfMemory crash;查 Windows 事件 1026、%LOCALAPPDATA%\CrashDumps\TcXaeShell.exe.<pid>.dmp)。重新 Connect-TcIde -SolutionPath ...,再從 Build/Enable-TcConfig 開始'
     'IDE_LAUNCH_FAILED'    = 'IDE 啟動後 60 秒內 DTE 未就緒:確認 XAE 可手動開啟、沒有首次啟動精靈 / 帳戶登入視窗;可改用 -ProgId 指定另一個 IDE,或先手動開好 IDE 再 Connect-TcIde'
@@ -156,9 +159,22 @@ function ConvertTo-TcAdsErrorCode {
 
     if ($null -eq $code) { return $null }
 
+    $hint = Get-TcErrorHint -Code $code -Port $Port
+    if ($code -eq 'IDE_MODAL_DIALOG') {
+        # The reload prompt ("changed outside the environment") gets its own next-action
+        # hint: either the message carries the dialog text (Invoke-TcComRetry watchdog) or
+        # the last dialog record was classified as reload-prompt.
+        $isReload = $false
+        if ($null -ne $script:TcReloadPromptPattern -and $text -match $script:TcReloadPromptPattern) { $isReload = $true }
+        if (-not $isReload -and $null -ne $script:TcLastModalDialog) {
+            try { $isReload = ([string]$script:TcLastModalDialog.Kind -eq 'reload-prompt') } catch { $isReload = $false }
+        }
+        if ($isReload) { $hint = Get-TcErrorHint -Code 'IDE_MODAL_DIALOG_RELOAD' }
+    }
+
     return @{
         Code    = $code
-        Hint    = (Get-TcErrorHint -Code $code -Port $Port)
+        Hint    = $hint
         Message = $message
     }
 }

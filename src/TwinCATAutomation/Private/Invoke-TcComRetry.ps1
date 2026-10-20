@@ -14,7 +14,8 @@ function Invoke-TcComRetry {
         Watchdog: when the IDE process id is known ($script:TcIdeProcessId, set by
         Connect-TcIde) a background runspace scans the IDE for a modal dialog every
         2 s (same UI Automation scan as Get-TcIdeModalDialog). It only records what
-        it sees in $script:TcLastModalDialog - it never touches any window.
+        it sees in $script:TcLastModalDialog (@{ Title; Text; Kind }, Kind from
+        Get-TcModalDialogKind) - it never touches any window.
           - call failed + dialog seen  -> throws "IDE_MODAL_DIALOG: <Title> | <Text>"
           - call failed + ran longer than -TimeoutSec -> throws "IDE_TIMEOUT: ..."
           - call failed, busy exhausted -> throws "IDE_BUSY: ..."
@@ -136,7 +137,7 @@ while (-not $Sync.Stop) {
                 # unenumerated as well.
                 $__tcResult = & $ScriptBlock
                 if ($null -ne $__tcSync -and $null -ne $__tcSync.Dialog) {
-                    $script:TcLastModalDialog = $__tcSync.Dialog
+                    $script:TcLastModalDialog = Add-TcDialogKind -Dialog $__tcSync.Dialog
                     Write-Warning "Invoke-TcComRetry [$OperationName]: a modal dialog was seen while the call ran ($($__tcSync.Dialog.Title)); the call still returned."
                 }
                 Write-Output -NoEnumerate $__tcResult
@@ -193,7 +194,7 @@ while (-not $Sync.Stop) {
                 }
 
                 $__tcDialog = $null
-                if ($null -ne $__tcSync) { $__tcDialog = $__tcSync.Dialog }
+                if ($null -ne $__tcSync -and $null -ne $__tcSync.Dialog) { $__tcDialog = Add-TcDialogKind -Dialog $__tcSync.Dialog }
                 if ($null -ne $__tcDialog) {
                     $script:TcLastModalDialog = $__tcDialog
                     $__tcText = [string]$__tcDialog.Text
@@ -221,7 +222,7 @@ while (-not $Sync.Stop) {
     finally {
         if ($null -ne $__tcSync) {
             $__tcSync.Stop = $true
-            if ($null -ne $__tcSync.Dialog -and $null -eq $script:TcLastModalDialog) { $script:TcLastModalDialog = $__tcSync.Dialog }
+            if ($null -ne $__tcSync.Dialog -and $null -eq $script:TcLastModalDialog) { $script:TcLastModalDialog = Add-TcDialogKind -Dialog $__tcSync.Dialog }
         }
         if ($null -ne $__tcWatchPs) {
             # Never block on Stop(): a scan stuck inside UIA would hang the caller.

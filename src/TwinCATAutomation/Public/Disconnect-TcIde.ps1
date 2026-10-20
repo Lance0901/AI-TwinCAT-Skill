@@ -67,6 +67,7 @@ function Disconnect-TcIde {
 
     $script:TcIdeConnected = $false
     $script:TcProgId = $null
+    $script:TcSolutionPath = $null
     $script:TcIdeProcessId = $null
     $script:TcIdeMainHwnd = 0
     $script:TcLastModalDialog = $null

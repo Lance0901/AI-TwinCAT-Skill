@@ -42,12 +42,14 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   `params.ProcessId` (positive integer) selects the IDE process to scan; without it the
   pid stored by `Connect-TcIde` (`$script:TcIdeProcessId`) is used. Optional
   `params.TimeoutSec` (default 5, clamped to 1..60). Result:
-  `{"success":true,"data":{"ideProcessId":<pid actually scanned>,"dialog":null|{"title":"...","text":"..."}}}`
+  `{"success":true,"data":{"ideProcessId":<pid actually scanned>,"dialog":null|{"title":"...","text":"...","kind":"reload-prompt"|"unknown"}}}`
+  (`kind` `reload-prompt` = the VS "File has been changed outside the environment. Reload the new
+  file?" prompt, a file open in an editor was changed on disk: dismiss it, then `ResetSolution`)
   (`dialog` is `null` also when the pid does not exist). A non-integer / non-positive
   `ProcessId` → `INVALID_PARAMS`. When neither `params.ProcessId` nor a stored pid is
   available: `{"success":false,"error":{"code":"NOT_CONNECTED","message":"...","hint":"Run Connect-TcIde first, or pass params.ProcessId."}}`.
 * `state`  → snapshot of module state, no COM calls:
-  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"ideMainHwnd":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text}}}`
+  `{"success":true,"data":{"ideConnected":bool,"ideProcessId":int|null,"ideMainHwnd":int|null,"sysManagerAvailable":bool,"adsConnected":bool,"amsNetId":string|null,"adsPort":int|null,"lastModalDialog":null|{title,text,kind}}}`
   (`ideMainHwnd` = module variable `$script:TcIdeMainHwnd`, the IDE main window handle stored by
   `Connect-TcIde`; `null` when unset, 0 or not a number).
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
