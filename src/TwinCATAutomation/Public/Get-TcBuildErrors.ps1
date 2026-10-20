@@ -18,7 +18,8 @@ function Get-TcBuildErrors {
         Requires the IDE process id stored by Connect-TcIde and a visible Error List
         (not auto-hidden); otherwise ERRORLIST_UNAVAILABLE is returned.
     .PARAMETER IncludeWarnings
-        Also read warning rows (data.warnings).
+        Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA).
+        Also reads warning rows (data.warnings, always present when on, possibly empty).
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
@@ -26,7 +27,7 @@ function Get-TcBuildErrors {
     .OUTPUTS
         data.counts      @{ errors; warnings; messages } from the summary buttons
         data.errors      [ @{ severity; code; description; project; file; line; column } ]
-        data.warnings    same shape, only with -IncludeWarnings
+        data.warnings    same shape, present unless -IncludeWarnings:$false (may be empty)
         data.messages    same shape, only with -IncludeMessages
         data.truncated   $true when not every row could be read (no ScrollPattern / cap)
         data.source      'ErrorList(UIA)'
@@ -40,7 +41,7 @@ function Get-TcBuildErrors {
     [CmdletBinding()]
     param(
         [Parameter()]
-        [switch]$IncludeWarnings,
+        [switch]$IncludeWarnings = $true,
 
         [Parameter()]
         [switch]$IncludeMessages,

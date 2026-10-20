@@ -424,7 +424,11 @@ describe('PowerShellBridge.abortCall', () => {
     const outcome = bridge.abortCall(token, (o) => (seen.push(o), mine), "Build-TcProject is blocked by the IDE modal dialog 'Assertion Failed'");
     assert.equal(outcome, 'killed');
     assert.deepEqual(seen, ['killed']);
-    assert.equal(await hung, mine);
+    const killed = await hung;
+    assert.deepEqual(killed.error, mine.error);
+    assert.equal(killed.success, false);
+    assert.equal(killed.data.seq, 1, 'killed call still carries its execution order');
+    assert.ok(Date.parse(killed.data.finishedAt) >= Date.parse(killed.data.startedAt));
     const q = await queued;
     assert.equal(q.error.code, 'BRIDGE_DIED');
     assert.match(q.error.message, /killed because Build-TcProject is blocked by the IDE modal dialog 'Assertion Failed'; this call was not executed/);

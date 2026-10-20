@@ -45,6 +45,8 @@ function Connect-TcIde {
         data.progId       ProgID actually used (parsed from the ROT moniker, else DTE.RegistryRoot)
         data.ideProcessId pid of the connected IDE (0 when it could not be determined)
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }
+        data.connectSec   seconds the whole call took (every successful path)
+        data.launchSec    seconds from starting a new IDE until its DTE answered (only when selectedBy = 'launched')
     #>
     [CmdletBinding()]
     param(
@@ -57,6 +59,9 @@ function Connect-TcIde {
         [Parameter()]
         [switch]$NoLaunch
     )
+
+    $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
+    $launchSec = $null
 
     # Forget the pid / HWND of a previous connection: Invoke-TcComRetry checks that pid after an
     # RPC failure, and a stale pid (IDE that has since exited) would turn a busy call against the
@@ -249,6 +254,7 @@ function Connect-TcIde {
         # found" and leaves an orphan IDE. Poll until Version + Solution are readable
         # (500 ms, max 60 s), then set UserControl so the IDE stays visible and does
         # not close when the COM reference is released.
+        $swLaunch = [System.Diagnostics.Stopwatch]::StartNew()
         $launchTime = [DateTime]::Now
         try {
             Write-Verbose "Launching IDE via ProgID $launchProgId"
@@ -288,6 +294,7 @@ function Connect-TcIde {
                 -ErrorCode 'IDE_LAUNCH_FAILED' -Hint (Get-TcErrorHint -Code 'IDE_LAUNCH_FAILED')
         }
 
+        $launchSec = [math]::Round($swLaunch.Elapsed.TotalSeconds, 1)
         try { $dte.UserControl = $true } catch { Write-Verbose "DTE.UserControl could not be set ($($_.Exception.Message))" }
         try { $dte.SuppressUI = $false } catch { }
         $usedProgId = $launchProgId
@@ -458,6 +465,9 @@ function Connect-TcIde {
         silentMode          = $script:TcSilentMode
         candidates          = $candidateSummary
     }
+    if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
+        $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
+    }
 
     # Add target info if ITcSysManager is available
     if ($sysManagerAvailable) {
@@ -477,5 +487,6 @@ function Connect-TcIde {
         $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $nextAction
     }
 
+    $data | Add-Member -NotePropertyName 'connectSec' -NotePropertyValue ([math]::Round($swTotal.Elapsed.TotalSeconds, 1))
     New-TcResult -Success $true -Data $data
 }

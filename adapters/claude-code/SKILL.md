@@ -64,7 +64,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | 用途 |
 |---|---|
-| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`candidates[]`、`connectSec`(總耗時)、`launchSec`(只在 launched:啟動到 DTE 可用);連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
 | `Disconnect-TcIde` | 釋放 IDE COM 參考 |
 | `Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120]` | 關掉 reload 提示(若正在跳)→ `Documents.CloseAll`(不存檔)→ `Solution.Close` → 同一個 IDE `Solution.Open` → `Connect-TcIde -SolutionPath` 重連(實測約 20~25 s:Open 7~9 s + 重連 12~13 s),讓 XAE 重新從磁碟載入所有專案檔。磁碟直接改 .TcPOU 且該檔開在編輯器時用(見「重要注意」11);其他 modal 會回 `IDE_MODAL_DIALOG`;data 有 `dismissedReloadPrompt`、`closedDocuments`、`sameIde`、`closeSec`、`openSec`、`connectSec`、`totalSec` |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
@@ -81,7 +81,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
 | `Build-TcProject` | Build(COM busy 自動重試);data:`errors`(Error List 錯誤數)、`failedProjects`(LastBuildInfo)、`errorItems[]`(severity/code/description/project/file/line/column) |
-| `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`(含 `-IncludeWarnings` → `warnings[]`、`-IncludeMessages` → `messages[]`)、`truncated`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
+| `Get-TcBuildErrors [-IncludeWarnings:$false] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`、`warnings[]`(`-IncludeWarnings` 預設開,`:$false` 省 1~2 s 的 toggle)、`-IncludeMessages` → `messages[]`、`truncated`;按鈕計數也認 zh-TW 的「N 個錯誤/個警告/則訊息」;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
 | `Set-TcTarget -AmsNetId <id>` | 設定 target system |
 | `Enable-TcConfig [-Force] [-NoLogin] [-TimeoutSec <n>]` | Activate;-Force = 完整 Config→Run→Login→PLC Run,-TimeoutSec 為總上限 |
 | `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
@@ -89,7 +89,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Disconnect-TcAds` | 斷 ADS |
 | `Read-TcVariable -Path <sym>` | 讀變數(自動重連) |
 | `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL/INT/UINT/DINT/UDINT/REAL/LREAL/STRING(自動重連) |
-| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Condition <sb>] [-TimeoutMs <ms>]` | 輪詢直到條件成立(自動重連) |
+| `Watch-TcVariable -Path <sym>[,<sym>] [-IntervalMs 100] [-DurationMs 2000] [-Until "<Path> <op> <value>"] [-UntilTimeoutMs 5000] [-KeepLast <n>]` | 輪詢(自動重連)。`-Until` 字串條件,op 為 `== != > < >= <=`,`<Path>` 必須在 -Path 內,例 `-Until "MAIN.fTarget == 123.5"`:命中立刻回 `untilMet=true`、`untilSample`、`elapsedMs`,逾時 `untilMet=false`;數字比數值、TRUE/FALSE 比布林、其餘不分大小寫比字串。`samples` 只留最後 `-KeepLast` 筆(預設有 Until 20、無 50),`sampleCount` 是總數、`truncated` 表示有丟;多個 -Path 時 sample 是 `{timestamp, values{path=value}}` |
 | `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"` |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
@@ -213,7 +213,8 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 5. **`Get/Write-TcPouCode` 用 `-PouPath`**:格式 `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`。
 6. **UmRT 假 Run**:本機 UmRT 跑約 30 分鐘後 task 可能停止循環但 ADS 仍顯示 Run;驗證時讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就是停了,重啟 `TcSystemServiceUm` 後重做 `Enable-TcConfig -Force`。
 7. **UmRT 不要 Reset**:對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm`,要手動重啟 service;要清狀態改用 Stop → `Enter-TcPlcOnline` 重新 download。
-8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
+8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。Warning 也有內容:`data.warningItems[]`(同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`warnings` 計數不再只是數字。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
 9. **重新 download 後 index offset 會變**:不要快取 symbol 的 indexGroup/indexOffset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp`。
-10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。
+10. **`error.hint` 有就照做**:它是模組對該 code 的建議下一步。經 MCP server 回傳時,hint 裡的 cmdlet 名已換成 tool 名(`Enter-TcPlcOnline` → `PlcLogin`、`Connect-TcIde -SolutionPath <sln>` → `ConnectIde SolutionPath=<sln>`)。
 11. **直接改磁碟上的 .TcPOU / .plcproj 時**(不經 `Write-TcPouCode`):該檔**沒開**在 XAE 編輯器 → XAE 約 5 s 內自動重載、不跳框,改完等 5 s 再呼叫 DTE;該檔**開著** → 約 1 s 後跳 modal「File has been changed outside the environment. Reload the new file?」,所有 DTE 呼叫阻塞、VS 選項壓不掉,所以改完**立刻** `Reset-TcSolution`:它會先關掉這個提示(WM_CLOSE,`data.dismissedReloadPrompt`)、`Documents.CloseAll`(不存檔,`data.closedDocuments`;XAE 重開 solution 時會還原上次的編輯視窗,不關的話下次改磁碟又跳)、`Solution.Close`、在**同一個** IDE `Solution.Open` 再 `Connect-TcIde -SolutionPath`(solution-match 接回同 pid,`data.sameIde`),實測約 20~25 s。其他種類的 modal 它只回 `IDE_MODAL_DIALOG`。`Write-TcPouCode` 走 COM 寫進 IDE 的編輯 buffer(磁碟檔案的 mtime/hash **不變**,要到存檔或 Build 的 Save all 才落地),不會跳框,能用就優先用它;要讓磁碟同步就接著 `Build-TcProject`。
+12. **MCP 同回合平行送的 tool call 到達順序不保證**:server 嚴格依到達順序一次執行一個,每個結果的 `data.seq`(遞增)、`startedAt`、`finishedAt` 告訴你實際順序;「寫參數 → 下命令 → 觀察」要分回合,等值用 `WatchVariable` 的 `Until`,不要用長 `DurationMs` 或連發 `ReadVariable`。

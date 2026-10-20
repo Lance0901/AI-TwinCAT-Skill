@@ -142,7 +142,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
 | `BuildProject` | `Build-TcProject` | — | 600 s | Build and wait; on `BUILD_FAILED` read `data.errorItems[]` (description/file/line from the Error List) |
-| `GetBuildErrors` | `Get-TcBuildErrors` | — | 120 s | Read the XAE Error List via UI Automation (`IncludeWarnings`, `IncludeMessages`); English UI only |
+| `GetBuildErrors` | `Get-TcBuildErrors` | — | 120 s | Read the XAE Error List via UI Automation: `errors[]` and `warnings[]` (`IncludeWarnings` defaults to true), `IncludeMessages` adds `messages[]`; counts also parsed from zh-TW button names |
 | `EnableConfig` | `Enable-TcConfig` | — | 600 s | Activate without dialogs; `Force=true` runs Config → Activate → Run → Login+Download → PLC Run, `NoLogin=true` stops after system Run; `TimeoutSec` default 120 |
 | `PlcLogin` | `Enter-TcPlcOnline` | — | 300 s | Login(3) + download, no dialogs |
 | `PlcLogout` | `Exit-TcPlcOnline` | — | 120 s | Logout, runtime keeps running |
@@ -163,7 +163,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 |---|---|---|---|---|
 | `ReadVariable` | `Read-TcVariable` | `Path` (array) | 120 s | Read one or more symbols; auto-reconnects after `EnableConfig` (`data.reconnected`) |
 | `WriteVariable` | `Write-TcVariable` | `Path`, `Value` | 120 s | Write one symbol; JSON value converted to the PLC type |
-| `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll every `IntervalMs` for `DurationMs` and return samples (`Until` scriptblock not available over MCP) |
+| `WatchVariable` | `Watch-TcVariable` | `Path` | 120 s | Poll one or more paths every `IntervalMs` for `DurationMs`, or until `Until` (`"<Path> <op> <value>"`, op `== != > < >= <=`) holds / `UntilTimeoutMs`; only the last `KeepLast` samples are returned |
 | `GetSymbols` | `Get-TcSymbols` | — | 120 s | List PLC symbols, optional `Filter` substring |
 
 ### I/O
@@ -191,7 +191,9 @@ Every call returns a `CallToolResult` whose `content[0].text` is the module's ra
 { "success": false, "error": { "code": "ADS_PORT_NOT_FOUND", "message": "...", "hint": "..." }, "data": { ... } }
 ```
 
-Module error codes and `error.hint` pass through unchanged; the table is in [docs/troubleshooting.md](../docs/troubleshooting.md). Codes added by the server or bridge:
+Every executed call also gets `data.seq` / `data.startedAt` / `data.finishedAt`. Tool calls sent in parallel in one turn arrive in no guaranteed order; the server runs them one at a time in arrival order, so use `data.seq` to see the real order. PowerShell cmdlet names inside `error.hint` (e.g. `Connect-TcIde -SolutionPath <sln>`) are rewritten to tool names (`ConnectIde SolutionPath=<sln>`) before the result is returned.
+
+Module error codes and `error.hint` pass through (apart from that rewrite); the table is in [docs/troubleshooting.md](../docs/troubleshooting.md). Codes added by the server or bridge:
 
 | Code | Source | Meaning / next step |
 |---|---|---|
@@ -282,13 +284,13 @@ Log lines never end up inside the result object. The server itself logs to its o
 - `ConnectIde` with a `SolutionPath` different from `lastIde.solution` may launch a new IDE, so a dialog in the **previous** IDE is only logged (stderr + `warning` notification "... the call was not aborted"), never turned into `IDE_MODAL_DIALOG`; if that `ConnectIde` actually reuses the blocked IDE it ends in `BRIDGE_TIMEOUT`. `NoLaunch`, the same solution, or neither parameter → the call is aborted as usual.
 - The probe cannot outlive the server: its stdin is a pipe from Node that is never written to, and EOF (server gone) makes it exit within ~250 ms; `-MaxLifetimeSec` (call timeout + 60 s) is a second safety net.
 - MCP clients time out long calls on their side (SDK default 60 s); see [Client request timeout](#client-request-timeout).
-- `GetBuildErrors` (and the `errorItems` of `BuildProject`) need an English XAE UI; other languages return `ERRORLIST_UNAVAILABLE`.
+- `GetBuildErrors` (and the `errorItems` / `warningItems` of `BuildProject`) need the XAE tool window to be named `Error List` (English UI); the summary-button counts are also parsed from zh-TW names, other languages return `ERRORLIST_UNAVAILABLE`.
 - One PowerShell session, one call at a time: concurrent tool calls are queued FIFO.
 - Cancellation (`notifications/cancelled`) is honoured only for calls still waiting in that queue (`CANCELLED`, nothing executed). A call that has already been sent to PowerShell cannot be interrupted: it runs to the end (build, activation, download included) and its result is returned; cancel it by waiting, not by assuming it stopped.
 - Per-call timeouts are capped at 2 h; `TimeoutSec` / `TimeoutMs` / `DurationMs` beyond the schema `maximum` are rejected with `INVALID_PARAMS`.
 - If the server process is killed (client crash, `taskkill` of `node`) while the bridge is inside a DTE call, that `powershell.exe` becomes an orphan until the call returns (or forever, behind a modal dialog); the next server start spawns a fresh bridge and does not clean the old one up. Look for `powershell.exe ... -File ...\bridge\bridge.ps1` in Task Manager.
 - An XAE that `ConnectIde` launched (`selectedBy: "launched"`) is **not** closed when the server exits; it keeps running with the solution open. Close it with `DisconnectIde {"Quit": true}` before the session ends, or kill the pid from `data.lastIde`.
-- `WatchVariable -Until` and any other `scriptblock` parameter are not exposed.
+- `scriptblock` parameters are not exposed (`WatchVariable` `Until` is a string condition since 2026-10-20).
 - stdio transport only; Streamable HTTP is not provided yet.
 
 ## Regenerate tools.json

@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
+import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteHintCmdletNames, rewriteResultHints, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const catalog = loadToolCatalog(path.join(__dirname, 'fixtures', 'tools.fixture.json'));
@@ -144,6 +144,11 @@ describe('computeTimeoutMs', () => {
     assert.equal(computeTimeoutMs({ timeoutMs: 120000 }, { TimeoutMs: 5000 }), 120000);
   });
 
+  test('UntilTimeoutMs counts like TimeoutMs', () => {
+    assert.equal(computeTimeoutMs({ timeoutMs: 120000 }, { UntilTimeoutMs: 200000 }), 230000);
+    assert.equal(computeTimeoutMs({ timeoutMs: 120000 }, { TimeoutMs: 100000, UntilTimeoutMs: 50000, DurationMs: 10000 }), 190000);
+  });
+
   test('result is clamped to [1 s, 2 h] so setTimeout never overflows', () => {
     assert.equal(MIN_CALL_TIMEOUT_MS, 1000);
     assert.equal(MAX_CALL_TIMEOUT_MS, 7_200_000);
@@ -169,5 +174,57 @@ describe('toToolResult', () => {
     const r = toToolResult({ success: false, error: { code: 'X', message: 'm' } });
     assert.equal(r.isError, true);
     assert.match(r.content[0].text, /"code": "X"/);
+  });
+});
+
+describe('cmdlet name rewriting in hints', () => {
+  const names = buildCmdletNameMap(catalog, {
+    'Enter-TcPlcOnline': 'PlcLogin',
+    'Reset-TcSolution': 'ResetSolution',
+    'Connect-TcAds': 'ConnectAds',
+    'Set-TcPlcState': 'SetPlcState',
+    'Enable-TcConfig': 'EnableConfig',
+    'Disconnect-TcIde': 'DisconnectIde',
+    'Get-TcIdeModalDialog': 'GetIdeModalDialog'
+  });
+  const rw = (s) => rewriteHintCmdletNames(s, names);
+
+  test('loadToolCatalog builds byCmdlet', () => {
+    assert.equal(catalog.byCmdlet.get('Connect-TcIde'), 'ConnectIde');
+    assert.equal(names.get('Connect-TcIde'), 'ConnectIde');
+    assert.equal(names.get('Get-TcIdeModalDialog'), 'GetIdeModalDialog');
+  });
+
+  test('plain names, parameters and unknown cmdlets', () => {
+    assert.equal(rw('Enter-TcPlcOnline'), 'PlcLogin');
+    assert.equal(rw('Reset-TcSolution'), 'ResetSolution');
+    assert.equal(rw('呼叫 Connect-TcAds'), '呼叫 ConnectAds');
+    assert.equal(rw('Connect-TcIde -SolutionPath <sln>'), 'ConnectIde SolutionPath=<sln>');
+    assert.equal(rw('Set-TcPlcState -State Run'), 'SetPlcState State=Run');
+    assert.equal(rw('Enable-TcConfig -Force'), 'EnableConfig Force=true');
+    assert.equal(rw('Disconnect-TcIde -Quit(或 kill IDE)'), 'DisconnectIde Quit=true(或 kill IDE)');
+    assert.equal(rw('Foo-TcBar -X 1'), 'Foo-TcBar -X 1');
+  });
+
+  test('real mixed Chinese sentence', () => {
+    assert.equal(
+      rw('PLC runtime port 851 不存在:程式尚未下載或 PLC 未啟動。先 Enter-TcPlcOnline,再 Set-TcPlcState -State Run'),
+      'PLC runtime port 851 不存在:程式尚未下載或 PLC 未啟動。先 PlcLogin,再 SetPlcState State=Run'
+    );
+  });
+
+  test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {
+    const a = { success: false, error: { code: 'X', hint: '呼叫 Connect-TcAds' } };
+    assert.equal(rewriteResultHints(a, names), a);
+    assert.equal(a.error.hint, '呼叫 ConnectAds');
+    const b = { success: false, data: { steps: [{ result: { error: { hint: 'Reset-TcSolution' } } }] } };
+    rewriteResultHints(b, names);
+    assert.equal(b.data.steps[0].result.error.hint, 'ResetSolution');
+    const c = { success: true, data: { hint: 'try Enter-TcPlcOnline' } };
+    rewriteResultHints(c, names);
+    assert.equal(c.data.hint, 'try PlcLogin');
+    assert.equal(rewriteResultHints(null, names), null);
+    assert.equal(rewriteResultHints('Reset-TcSolution', names), 'Reset-TcSolution');
+    assert.deepEqual(rewriteResultHints({ success: true, data: { a: 1 } }, names), { success: true, data: { a: 1 } });
   });
 });

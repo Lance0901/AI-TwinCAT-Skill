@@ -29,6 +29,15 @@ export function errorResult(code, message, hint) {
   return { success: false, error };
 }
 
+/** Add seq/startedAt/finishedAt (execution order) to the data of a result of a dispatched call. */
+function stampOrder(item, result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const order = { seq: item.seq, startedAt: item.startedAt, finishedAt: new Date().toISOString() };
+  const data = result.data;
+  const isObj = data !== null && typeof data === 'object' && !Array.isArray(data);
+  return { ...result, data: isObj ? { ...data, ...order } : order };
+}
+
 class BridgeStartError extends Error {
   constructor(code, message, hint, cause) {
     super(message);
@@ -76,6 +85,7 @@ export class PowerShellBridge {
     this._queue = [];
     this._current = null;
     this._nextId = 1;
+    this._seq = 0; // execution order of op:'call' requests actually written to PowerShell
     this._lastExit = Promise.resolve();
   }
 
@@ -303,6 +313,7 @@ export class PowerShellBridge {
   _settle(item, result) {
     if (item.settled) return;
     item.settled = true;
+    if (item.seq !== undefined && item.op === 'call') result = stampOrder(item, result);
     if (item.signal && item.onAbort) item.signal.removeEventListener('abort', item.onAbort);
     item.resolve(result);
   }
@@ -367,6 +378,10 @@ export class PowerShellBridge {
     }
     const item = this._queue.shift();
     this._current = item;
+    if (item.op === 'call') {
+      item.seq = ++this._seq;
+      item.startedAt = new Date().toISOString();
+    }
     const request = { id: item.id, op: item.op };
     if (item.op === 'call') request.cmdlet = item.cmdlet;
     if (item.params !== undefined) request.params = item.params;
