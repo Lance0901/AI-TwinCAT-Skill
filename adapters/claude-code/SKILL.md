@@ -64,7 +64,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | 用途 |
 |---|---|
-| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 會開/選 solution 並回 `amsNetId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
+| `Connect-TcIde [-SolutionPath <sln>] [-ProgId <id>] [-NoLaunch]` | 連 IDE(ROT 列舉全部實例);給 -SolutionPath 只接已開該 sln 的實例(`selectedBy=solution-match`),否則啟動新實例(`launched`),不會拿別人的空 IDE 來開;回 `amsNetId`、`ideProcessId`、`candidates[]`;連上後會開啟 `ITcAutomationSettings.SilentMode`,`data.silentMode` 回報結果 |
 | `Disconnect-TcIde` | 釋放 IDE COM 參考 |
 | `Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 60]` | `Solution.Close`(不存檔)+ `Connect-TcIde -SolutionPath` 重開同一個 solution(約 9 s),讓 XAE 重新從磁碟載入所有專案檔。磁碟直接改 .TcPOU 且該檔開在編輯器時用(見「重要注意」11);先有 dialog 會回 `IDE_MODAL_DIALOG`;data 有 `sameIde`、`closeSec`、`totalSec` |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
