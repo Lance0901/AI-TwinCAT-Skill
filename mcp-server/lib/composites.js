@@ -30,8 +30,9 @@ async function timed(name, fn) {
 export const RunLifecycle = {
   name: 'RunLifecycle',
   description:
-    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
+    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
     'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
+    'Pass Platform (e.g. "TwinCAT OS (x64)" for a 4026 UmRT) to activate that solution platform in the SetTarget step: in 4026 a solution platform that differs from the target platform makes EnableConfig fail with ACTIVATE_FAILED. Without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it. ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
     'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error.',
   annotations: { destructiveHint: true, readOnlyHint: false },
@@ -43,6 +44,7 @@ export const RunLifecycle = {
       ProgId: { type: 'string', description: 'Visual Studio / XAE shell ProgId passed to ConnectIde.' },
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
       TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },
+      Platform: { type: 'string', description: 'Solution platform passed to SetTarget (e.g. "TwinCAT OS (x64)" for a 4026 UmRT, "TwinCAT RT (x64)" for a Windows RT target). Omit to keep the active solution platform.' },
       SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false).' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
@@ -67,8 +69,24 @@ export const RunLifecycle = {
     steps.push(step);
     if (!step.success) return fail(step);
 
-    if (typeof args.TargetAmsNetId === 'string' && args.TargetAmsNetId !== '') {
-      step = await timed('SetTarget', () => ctx.callTool('SetTarget', { AmsNetId: args.TargetAmsNetId }));
+    const hasTarget = typeof args.TargetAmsNetId === 'string' && args.TargetAmsNetId !== '';
+    const hasPlatform = typeof args.Platform === 'string' && args.Platform !== '';
+    if (hasTarget || hasPlatform) {
+      // SetTarget needs an AmsNetId: without TargetAmsNetId keep the target ConnectIde reported.
+      const amsNetId = hasTarget ? args.TargetAmsNetId : step.result?.data?.amsNetId;
+      if (typeof amsNetId !== 'string' || amsNetId === '') {
+        step = {
+          name: 'SetTarget',
+          success: false,
+          durationMs: 0,
+          result: errorResult('AMS_NETID_REQUIRED', 'Platform was given without TargetAmsNetId and ConnectIde reported no target AmsNetId.', 'Pass TargetAmsNetId together with Platform.')
+        };
+        steps.push(step);
+        return fail(step);
+      }
+      const setArgs = { AmsNetId: amsNetId };
+      if (hasPlatform) setArgs.Platform = args.Platform;
+      step = await timed('SetTarget', () => ctx.callTool('SetTarget', setArgs));
       steps.push(step);
       if (!step.success) return fail(step);
     }

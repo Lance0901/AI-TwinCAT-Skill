@@ -6,6 +6,9 @@
 # Win32 'Button' child windows of a #32770 dialog as @{ Id = <control id>; Name = <caption> }
 # (empty for any other window): the control id (IDOK 1, IDCANCEL 2, IDYES 6, IDNO 7 ...) is
 # what Close-TcMessageBox clicks; the caption is localized (zh-TW XAE: '&Y' style captions).
+# The VS2022 WPF message box (AutomationId 'Microsoft.VisualStudio.MessageBox', checked before
+# every other heuristic) is reported with ClassName 'Microsoft.VisualStudio.MessageBox', Text =
+# its 'Text' element, Buttons = @{ Id = 0; Name; AutomationId } (no Win32 control ids).
 #
 # Heuristics (a modal dialog blocks every DTE call, so this must be cheap and safe):
 #   - only top-level windows of the IDE process (TreeScope Children + ProcessIdProperty)
@@ -99,6 +102,115 @@ public static extern int GetDlgCtrlID(System.IntPtr hWnd);
     $mainTitlePattern = '(^|\s-\s)(TcXaeShell|Microsoft Visual Studio)(\s+\(.+\))?$'
     # ASCII only (file has no BOM): localized titles are caught by IsModal / #32770.
     $knownDialogPattern = '(?i)Assertion Failed|Account Settings|fatal error|Security Code|License|Lizenz|TwinCAT XAE|Microsoft Visual Studio'
+
+    # --- VS2022 WPF message box (checked FIRST) ---
+    # Measured 2026-10-21 (XAE 4026.22 in VS2022 zh-TW, the "Active solution platform ...
+    # differs from current target platform" box): ControlType.Window, ClassName 'Window',
+    # AutomationId 'Microsoft.VisualStudio.MessageBox', Name 'Microsoft Visual Studio'. Found
+    # under the IDE main window element (AutomationId 'VisualStudioMainWindow'), sometimes also
+    # as a top-level window of the process. Children: Image 'Image', Edit (TextBox)
+    # AutomationId 'Text' whose Name and Value are the full message, Button(s) AutomationId
+    # 'OKButton' / 'YesButton' / 'NoButton' / 'CancelButton' with a Text child carrying the
+    # localized caption. The generic branches below would only report the caption ('OK' in the
+    # local language) as text and no buttons: the buttons have no Win32 control id, so they are
+    # listed as @{ Id = 0; Name; AutomationId } (Close-TcMessageBox invokes them through UIA).
+    $vsMbId = 'Microsoft.VisualStudio.MessageBox'
+    $vsMbCond = New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, $vsMbId)
+    $vsMb = $null
+    foreach ($w in $windows) {
+        try {
+            if ([string]$w.Current.AutomationId -eq $vsMbId -and -not $w.Current.IsOffscreen) { $vsMb = $w; break }
+        }
+        catch { }
+    }
+    if ($null -eq $vsMb) {
+        $vsMain = $null
+        if ($MainHwnd -ne 0) {
+            try {
+                $vsMain = $ae::FromHandle([IntPtr]$MainHwnd)
+                if ($null -ne $vsMain -and [int]$vsMain.Current.ProcessId -ne $TargetPid) { $vsMain = $null }
+            }
+            catch { $vsMain = $null }
+        }
+        if ($null -eq $vsMain) {
+            foreach ($w in $windows) {
+                try { if ([string]$w.Current.AutomationId -eq 'VisualStudioMainWindow') { $vsMain = $w; break } } catch { }
+            }
+        }
+        if ($null -ne $vsMain) {
+            try {
+                # Cheap first: children and grandchildren of the main window.
+                $vsMb = $vsMain.FindFirst([System.Windows.Automation.TreeScope]::Children, $vsMbCond)
+                if ($null -eq $vsMb) {
+                    foreach ($ch in $vsMain.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+                        $vsMb = $ch.FindFirst([System.Windows.Automation.TreeScope]::Children, $vsMbCond)
+                        if ($null -ne $vsMb) { break }
+                    }
+                }
+                if ($null -eq $vsMb) {
+                    # Full descendant search only while the main window looks blocked (a full
+                    # search of the VS2022 tree is slow and this scan runs every 2 s).
+                    $vsBlocked = $false
+                    try { $vsBlocked = -not [bool]$vsMain.Current.IsEnabled } catch { }
+                    if (-not $vsBlocked) {
+                        try {
+                            $vwp = $null
+                            if ($vsMain.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$vwp) -and $null -ne $vwp) {
+                                $vsBlocked = ($vwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
+                            }
+                        }
+                        catch { }
+                    }
+                    if ($vsBlocked) { $vsMb = $vsMain.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $vsMbCond) }
+                }
+            }
+            catch { $vsMb = $null }
+        }
+    }
+    if ($null -ne $vsMb) {
+        $mbTitle = ''
+        $mbHwnd = [long]0
+        try { $mbTitle = [string]$vsMb.Current.Name } catch { }
+        try { $mbHwnd = [long]$vsMb.Current.NativeWindowHandle } catch { $mbHwnd = 0 }
+        if ([string]::IsNullOrWhiteSpace($mbTitle)) { $mbTitle = 'Microsoft Visual Studio' }
+        if ($mbTitle.Length -gt 200) { $mbTitle = $mbTitle.Substring(0, 200) }
+        $mbText = ''
+        try {
+            $txtEl = $vsMb.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+                (New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, 'Text')))
+            if ($null -ne $txtEl) {
+                try { $mbText = [string]$txtEl.Current.Name } catch { $mbText = '' }
+                if ([string]::IsNullOrWhiteSpace($mbText)) {
+                    $vp = $null
+                    if ($txtEl.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp) -and $null -ne $vp) { $mbText = [string]$vp.Current.Value }
+                }
+            }
+        }
+        catch { }
+        if ($null -eq $mbText) { $mbText = '' }
+        $mbText = $mbText.Trim()
+        if ($mbText.Length -gt $MaxText) { $mbText = $mbText.Substring(0, $MaxText) }
+        $mbButtons = New-Object System.Collections.ArrayList
+        try {
+            $mbBtnCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+            foreach ($b in $vsMb.FindAll([System.Windows.Automation.TreeScope]::Descendants, $mbBtnCond)) {
+                $bn = ''
+                $ba = ''
+                try { $bn = [string]$b.Current.Name; $ba = [string]$b.Current.AutomationId } catch { continue }
+                $null = $mbButtons.Add(@{ Id = 0; Name = $bn; AutomationId = $ba })
+            }
+        }
+        catch { }
+        # Shown with ShowDialog by VS: always modal (blocks every DTE call).
+        return [PSCustomObject]@{
+            Title     = $mbTitle
+            Text      = $mbText
+            ClassName = $vsMbId
+            IsModal   = $true
+            Hwnd      = $mbHwnd
+            Buttons   = @($mbButtons)
+        }
+    }
 
     $modalHit = $null
     $fallbackHit = $null
@@ -409,12 +521,23 @@ function ConvertTo-TcDialogButtonList {
         if ($null -eq $b) { continue }
         $id = 0
         $name = ''
+        $aid = ''
         try {
-            if ($b -is [System.Collections.IDictionary]) { $id = [int]$b['Id']; $name = [string]$b['Name'] }
-            else { $id = [int]$b.Id; $name = [string]$b.Name }
+            if ($b -is [System.Collections.IDictionary]) {
+                $id = [int]$b['Id']; $name = [string]$b['Name']
+                if ($b.Contains('AutomationId')) { $aid = [string]$b['AutomationId'] }
+            }
+            else {
+                $id = [int]$b.Id; $name = [string]$b.Name
+                $ap = $b.PSObject.Properties['AutomationId']; if ($null -ne $ap) { $aid = [string]$ap.Value }
+            }
         }
         catch { continue }
-        $null = $out.Add([PSCustomObject][ordered]@{ id = $id; name = $name })
+        $rec = [PSCustomObject][ordered]@{ id = $id; name = $name }
+        # VS2022 WPF message box buttons have no control id (id 0): their UIA AutomationId
+        # (OKButton / YesButton / NoButton / CancelButton) is added. #32770 buttons unchanged.
+        if (-not [string]::IsNullOrWhiteSpace($aid)) { $rec | Add-Member -NotePropertyName 'automationId' -NotePropertyValue $aid }
+        $null = $out.Add($rec)
     }
     return $out.ToArray()
 }
@@ -448,7 +571,8 @@ function Get-TcIdeModalDialog {
         Hwnd = [long]; Buttons = @(@{ Id = [int]; Name = [string] }) } or $null
         (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt /
         Close-TcMessageBox. Buttons = Win32 button children of a #32770 message box, by control
-        id: 1 OK, 2 Cancel, 6 Yes, 7 No; empty for other windows).
+        id: 1 OK, 2 Cancel, 6 Yes, 7 No; empty for other windows; for the VS2022 WPF message box
+        @{ Id = 0; Name; AutomationId = 'OKButton' | 'YesButton' | ... }).
     #>
     [CmdletBinding()]
     param(

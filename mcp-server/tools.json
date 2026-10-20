@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T05:48:29Z",
+    "generatedAt":  "2026-10-20T16:36:57Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -146,8 +146,8 @@
                   {
                       "name":  "BuildProject",
                       "cmdlet":  "Build-TcProject",
-                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes (timeout 600 s). Requires ConnectIde with an open solution.",
-                      "timeoutMs":  600000,
+                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes: the build is started asynchronously and SolutionBuild.BuildState is polled (the synchronous VS2022 call never returns); TimeoutSec (default 600) bounds the wait, after which BUILD_TIMEOUT is returned; a modal dialog that appears during the build is returned as IDE_MODAL_DIALOG. Requires ConnectIde with an open solution.",
+                      "timeoutMs":  660000,
                       "annotations":  {
                                           "readOnlyHint":  false,
                                           "destructiveHint":  false
@@ -155,7 +155,13 @@
                       "inputSchema":  {
                                           "type":  "object",
                                           "properties":  {
-
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  5,
+                                                                                "maximum":  7200,
+                                                                                "description":  "Maximum time in seconds to wait for the build to finish (BuildState = Done); BUILD_TIMEOUT after that. Default 600.",
+                                                                                "default":  600
+                                                                            }
                                                          },
                                           "required":  [
 
@@ -272,7 +278,7 @@
                   {
                       "name":  "EnableConfig",
                       "cmdlet":  "Enable-TcConfig",
-                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached.",
+                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: run SetTarget with Platform ('TwinCAT OS (x64)' for a 4026 UmRT) and retry.",
                       "timeoutMs":  600000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -306,7 +312,7 @@
                   {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
-                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI; other UI languages return ERRORLIST_UNAVAILABLE.",
+                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is switched from Current Project / Current Document / Open Documents to Entire Solution before reading (left switched).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -339,7 +345,7 @@
                   {
                       "name":  "GetIdeInfo",
                       "cmdlet":  "Get-TcIdeInfo",
-                      "description":  "Return version, edition, open solution and ITcSysManager availability of the connected IDE. Cheap connectivity check; fails with NOT_CONNECTED before ConnectIde.",
+                      "description":  "Return version, edition, open solution, ITcSysManager availability and the active solution platform / configuration (solutionPlatform, solutionConfiguration; null when unreadable) of the connected IDE. Cheap connectivity check; fails with NOT_CONNECTED before ConnectIde.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -884,7 +890,7 @@
                   {
                       "name":  "SetTarget",
                       "cmdlet":  "Set-TcTarget",
-                      "description":  "Sets the target system AMS Net ID for deployment.",
+                      "description":  "Set the target AmsNetId (ITcSysManager.SetTargetNetId) and, with Platform, activate that solution platform for Configuration (default Release). In TwinCAT 4026 the active solution platform must match the target platform (local UmRT = 'TwinCAT OS (x64)', Windows RT target = 'TwinCAT RT (x64)'), otherwise EnableConfig fails with ACTIVATE_FAILED. Returns data.amsNetId and, with Platform, data.platform / configuration / platformChanged / previousPlatform / availablePlatforms; an unknown platform returns PLATFORM_NOT_FOUND with the available ones.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -896,7 +902,16 @@
                                                              "AmsNetId":  {
                                                                               "type":  "string",
                                                                               "description":  "Target AMS Net ID (e.g., \"127.0.0.1.1.1\" for local)."
-                                                                          }
+                                                                          },
+                                                             "Platform":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Solution platform to activate, e.g. 'TwinCAT OS (x64)' or 'TwinCAT RT (x64)'. Omitted: the solution platform is not touched."
+                                                                          },
+                                                             "Configuration":  {
+                                                                                   "type":  "string",
+                                                                                   "description":  "Solution configuration name used with -Platform. Default 'Release'.",
+                                                                                   "default":  "Release"
+                                                                               }
                                                          },
                                           "required":  [
                                                            "AmsNetId"

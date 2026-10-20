@@ -88,7 +88,7 @@
       "cmdlet": "Set-TcTarget",
       "description": "Select the target system.",
       "timeoutMs": 60000,
-      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" } }, "required": ["AmsNetId"], "additionalProperties": false }
+      "inputSchema": { "type": "object", "properties": { "AmsNetId": { "type": "string" }, "Platform": { "type": "string" }, "Configuration": { "type": "string" } }, "required": ["AmsNetId"], "additionalProperties": false }
     },
     {
       "name": "GetPlcState",

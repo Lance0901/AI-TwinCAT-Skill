@@ -11,7 +11,11 @@ function Enable-TcConfig {
         the cycle: the result is success=false with that step's error code + hint and
         the steps completed so far.
           1. set-config     Set-TcSystemState -State Config (ADS WriteControl, port 10000)
-          2. activate       ActivateConfiguration() (COM, retried when the IDE is busy)
+          2. activate       ActivateConfiguration() (COM, retried when the IDE is busy);
+                            then SolutionBuild.LastBuildInfo is read: > 0 means XAE's
+                            "Check config" failed silently (4026: active solution
+                            platform differs from the target platform) -> ACTIVATE_FAILED
+                            (same check without -Force)
           3. set-run        Set-TcSystemState -State Run  (waits until port 10000 = Run)
           4. login          Enter-TcPlcOnline (Login + download, skipped with -NoLogin)
           5. wait-plc-port  Wait until PLC port 851 answers (= program loaded). With
@@ -49,7 +53,8 @@ function Enable-TcConfig {
         for a boot project on 851 but does not fail when there is none.
     .OUTPUTS
         data: activated, restarted, loggedIn, reconnected, plcState (last AdsState seen
-        on port 851), amsNetId, steps[].
+        on port 851), amsNetId, ideMemoryMB, solutionPlatform (active solution platform
+        read before Activate, $null when unreadable), steps[].
     #>
     [CmdletBinding()]
     param(
@@ -85,6 +90,7 @@ function Enable-TcConfig {
     $origNetId = $script:TcAdsAmsNetId
     $origPort = $script:TcAdsPort
     $ideMemoryMB = $null
+    $solutionPlatform = $null
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -105,8 +111,49 @@ function Enable-TcConfig {
             plcState    = $plcState
             amsNetId    = $netId
             ideMemoryMB = $ideMemoryMB
+            solutionPlatform = $solutionPlatform
             steps       = @($steps.ToArray())
         }
+    }
+
+    # SolutionBuild.LastBuildInfo (number of failed projects), $null when unreadable.
+    function Read-TcLastBuildInfo {
+        try { return [int](Invoke-TcComRetry -MaxRetries 2 -OperationName 'LastBuildInfo' -ScriptBlock { $script:TcDte.Solution.SolutionBuild.LastBuildInfo }) }
+        catch {
+            Write-Verbose "Enable-TcConfig: LastBuildInfo not readable ($($_.Exception.Message))"
+            return $null
+        }
+    }
+
+    # 4026: when XAE's "Check config" fails (typically: active solution platform 'TwinCAT RT
+    # (x64)' differs from the target platform 'TwinCAT OS (x64)' of a UmRT), SilentMode
+    # auto-dismisses the warning box, the Output window only shows 'Check config failed!',
+    # ActivateConfiguration() returns WITHOUT throwing and nothing is written to the target.
+    # The only trace through COM is SolutionBuild.LastBuildInfo > 0 (measured 2026-10-21,
+    # XAE 4026.22 in VS2022). Must run right after ActivateConfiguration(): it captures the
+    # watchdog's $script:TcLastModalDialog before the next Invoke-TcComRetry resets it.
+    # Returns $null when the activation looks good, else @{ Message; Hint }.
+    function Get-TcActivateCheckFailure {
+        param($FailedBefore)
+        $dlg = $script:TcLastModalDialog
+        $failed = Read-TcLastBuildInfo
+        if ($null -eq $failed -or $failed -le 0) { return $null }
+        $plat = if ([string]::IsNullOrWhiteSpace($solutionPlatform)) { '<unknown>' } else { $solutionPlatform }
+        $msg = "ActivateConfiguration() returned but XAE reported $failed failed project(s) ('Check config failed!' in the Output window); nothing was written to the target. Most common cause: active solution platform '$plat' does not match the target platform (a 4026 UmRT is 'TwinCAT OS (x64)')."
+        if ($null -ne $FailedBefore) { $msg += " (LastBuildInfo before Activate: $FailedBefore.)" }
+        if ($null -ne $dlg) {
+            $dlgText = [string]$dlg.Text
+            if ($dlgText.Length -gt 300) { $dlgText = $dlgText.Substring(0, 300) }
+            $msg += " Dialog seen during Activate: $([string]$dlg.Title) | $dlgText"
+        }
+        $id = $netId
+        if ([string]::IsNullOrWhiteSpace($id)) {
+            try { $id = [string]$sm.GetTargetNetId() } catch { $id = $null }
+        }
+        if ([string]::IsNullOrWhiteSpace($id)) { $id = '<id>' }
+        $hint = Get-TcErrorHint -Code 'ACTIVATE_FAILED'
+        if ($null -ne $hint) { $hint = $hint.Replace('<id>', $id) }
+        return @{ Message = $msg; Hint = $hint }
     }
 
     # Reads the IDE working set before Activate (a 32-bit XAE crashes with OutOfMemory
@@ -166,11 +213,11 @@ function Enable-TcConfig {
         $fail = Test-TcStepModalDialog -Name 'activate'
         if ($null -ne $fail) { return $fail }
         Read-TcIdeMemoryBeforeActivate
+        $solutionPlatform = (Get-TcSolutionPlatform).platform
+        $failedBefore = Read-TcLastBuildInfo
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
-            $activated = $true
-            Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
         }
         catch {
             Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
@@ -179,6 +226,13 @@ function Enable-TcConfig {
             $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
             return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
         }
+        $checkFail = Get-TcActivateCheckFailure -FailedBefore $failedBefore
+        if ($null -ne $checkFail) {
+            Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $checkFail.Message
+            return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
+        }
+        $activated = $true
+        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
 
         $data = Get-TcCycleData
         $data | Add-Member -NotePropertyName 'message' -NotePropertyValue 'Configuration activated. Call with -Force to restart TwinCAT, download and start the PLC.'
@@ -210,6 +264,7 @@ function Enable-TcConfig {
     if ([string]::IsNullOrWhiteSpace($netId)) {
         return New-TcStepFailure -Message 'AmsNetId could not be determined from the IDE target or a previous Connect-TcAds.' -Code 'AMS_NETID_REQUIRED'
     }
+    $solutionPlatform = (Get-TcSolutionPlatform).platform
 
     # 1. set-config
     $fail = Test-TcCycleDeadline -Name 'set-config'
@@ -228,11 +283,10 @@ function Enable-TcConfig {
     $fail = Test-TcStepModalDialog -Name 'activate'
     if ($null -ne $fail) { return $fail }
     Read-TcIdeMemoryBeforeActivate
+    $failedBefore = Read-TcLastBuildInfo
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
-        $activated = $true
-        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
     }
     catch {
         Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
@@ -241,6 +295,14 @@ function Enable-TcConfig {
         $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
         return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
     }
+    # Check config failed silently (LastBuildInfo > 0): stop the cycle here like any failing step.
+    $checkFail = Get-TcActivateCheckFailure -FailedBefore $failedBefore
+    if ($null -ne $checkFail) {
+        Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $checkFail.Message
+        return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
+    }
+    $activated = $true
+    Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
 
     # 3. set-run (Set-TcSystemState waits until port 10000 reports Run)
     $fail = Test-TcCycleDeadline -Name 'set-run'

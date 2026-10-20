@@ -17,6 +17,10 @@ function Get-TcBuildErrors {
         is part of it; the IDE's own "Code" column is used when that column is shown.
         Requires the IDE process id stored by Connect-TcIde and a visible Error List
         (not auto-hidden); otherwise ERRORLIST_UNAVAILABLE is returned.
+        English and zh-TW VS2022 UIs are recognised (pane name / count button labels
+        such as "0 / 2" + the localized word; the total is reported). When the VS2022
+        scope filter shows "Current Project" / "Current Document" / "Open Documents",
+        the scan switches it to "Entire Solution" first (leaves it switched).
     .PARAMETER IncludeWarnings
         Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA).
         Also reads warning rows (data.warnings, always present when on, possibly empty).

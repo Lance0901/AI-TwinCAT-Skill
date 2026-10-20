@@ -62,10 +62,26 @@ describe('RunLifecycle TargetAmsNetId', () => {
     assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget']);
   });
 
+  test('with TargetAmsNetId and Platform: SetTarget gets both', async () => {
+    const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { TargetAmsNetId: '5.1.2.3.1.1', Platform: 'TwinCAT OS (x64)', TimeoutSec: 30 } }));
+    assert.equal(body.success, true);
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds']);
+    assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1', Platform: 'TwinCAT OS (x64)' });
+  });
+
+  test('Platform without TargetAmsNetId and no AmsNetId from ConnectIde: AMS_NETID_REQUIRED before BuildProject', async () => {
+    const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { Platform: 'TwinCAT OS (x64)' } }));
+    assert.equal(body.success, false);
+    assert.equal(body.data.failedStep, 'SetTarget');
+    assert.equal(body.error.code, 'AMS_NETID_REQUIRED');
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget']);
+  });
+
   test('tools/list: RunLifecycle schema has TargetAmsNetId (string)', async () => {
     const { tools } = await client.listTools();
     const rl = tools.find((t) => t.name === 'RunLifecycle');
     assert.equal(rl.inputSchema.properties.TargetAmsNetId.type, 'string');
+    assert.equal(rl.inputSchema.properties.Platform.type, 'string');
     assert.equal(rl.inputSchema.additionalProperties, false);
     assert.match(rl.description, /SetTarget/);
   });

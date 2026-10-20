@@ -24,7 +24,10 @@ param(
     [ValidateSet('EnableForce', 'StartRestart')][string]$CycleMode = 'EnableForce',
     # Attach to an IDE this test session launched earlier (pid); it is treated as the own IDE
     # (watched, and closed at the end). Use instead of -PreLaunch.
-    [int]$AttachPid = 0
+    [int]$AttachPid = 0,
+    # Optional: activate this solution platform right after "set target" (step 02b-platform),
+    # e.g. 'TwinCAT OS (x64)' for a 4026 UmRT.
+    [string]$SolutionPlatform
 )
 
 $ErrorActionPreference = 'Continue'
@@ -380,6 +383,11 @@ try {
 
     # 2. Set target
     $null = Invoke-Step '02-set-target' 'Set-TcTarget' { Set-TcTarget -AmsNetId $AmsNetId }
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPlatform)) {
+        # 4026: the active solution platform must match the target platform ('TwinCAT OS (x64)'
+        # for a local UmRT), otherwise ActivateConfiguration() silently fails (ACTIVATE_FAILED).
+        $null = Invoke-Step '02b-platform' 'Set-TcTarget -Platform' { Set-TcTarget -AmsNetId $AmsNetId -Platform $SolutionPlatform } -Note "platform '$SolutionPlatform'"
+    }
     $null = Invoke-Step '02b-verify-target' 'ITcSysManager.GetTargetNetId' {
         $sm = & $mod { $script:TcSysManager }
         [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ targetNetId = $sm.GetTargetNetId() } }
@@ -387,9 +395,21 @@ try {
 
     # 3a. Clean before build (repeated open/close of the solution left the XAE in a state where
     #     Build raised a modal "Assertion Failed" window).
-    $null = Invoke-Step '03a-clean' 'SolutionBuild.Clean($true)' {
-        & $mod { Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Clean' -ScriptBlock { $script:TcDte.Solution.SolutionBuild.Clean($true) } | Out-Null }
-        [PSCustomObject]@{ success = $true }
+    #     Clean($false) + BuildState polling: the synchronous Clean($true) / Build($true) never
+    #     return through out-of-process COM in VS2022 (same reason as Build-TcProject).
+    $null = Invoke-Step '03a-clean' 'SolutionBuild.Clean($false)+poll' {
+        $state = & $mod {
+            $sb = Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Clean' -ScriptBlock { $x = $script:TcDte.Solution.SolutionBuild; $x.Clean($false); Write-Output -NoEnumerate $x }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $st = $null
+            while ($sw.Elapsed.TotalSeconds -lt 120) {
+                try { $st = [int]$sb.BuildState } catch { $st = $null }
+                if ($st -eq 3 -and $sw.Elapsed.TotalSeconds -ge 1) { break }
+                Start-Sleep -Milliseconds 500
+            }
+            $st
+        }
+        [PSCustomObject]@{ success = ($state -eq 3); data = [PSCustomObject]@{ buildState = $state } }
     }
 
     # 3. Build (build output text dropped from the log; only counts kept)

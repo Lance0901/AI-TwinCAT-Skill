@@ -46,6 +46,8 @@ function Connect-TcIde {
         data.ideProcessId pid of the connected IDE (0 when it could not be determined)
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }
         data.connectSec   seconds the whole call took (every successful path)
+        data.solutionPlatform / solutionConfiguration  active solution platform and
+                          configuration ($null when unreadable); see Set-TcTarget -Platform
         data.launchSec    seconds from starting a new IDE until its DTE answered (only when selectedBy = 'launched')
     #>
     [CmdletBinding()]
@@ -481,6 +483,10 @@ function Connect-TcIde {
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }
+    # Active solution platform / configuration ($null when unreadable or no solution).
+    $solPlatform = Get-TcSolutionPlatform
+    $data | Add-Member -NotePropertyName 'solutionPlatform' -NotePropertyValue $solPlatform.platform
+    $data | Add-Member -NotePropertyName 'solutionConfiguration' -NotePropertyValue $solPlatform.configuration
 
     # Add target info if ITcSysManager is available
     if ($sysManagerAvailable) {

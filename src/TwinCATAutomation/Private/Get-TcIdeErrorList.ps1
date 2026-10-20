@@ -7,8 +7,15 @@
 # Emits ONE PSCustomObject:
 #   Found        - $false when no Error List with a data grid was found in the process
 #   Counts       - @{ errors; warnings; messages } parsed from the summary buttons
-#                  ("9 Errors", "8 Warnings", "0 of 10 Messages": last number = total;
-#                  counts also parsed from zh-TW button names: "3 個錯誤", "1 個警告", "2 則訊息")
+#                  ("9 Errors", "8 Warnings", "0 of 10 Messages": second number = total;
+#                  counts also parsed from zh-TW button names: "3 個錯誤", "1 個警告", "2 則訊息",
+#                  and the zh-TW VS2022 "shown / total" form "0 / 2 錯誤", "0 / 1 訊息")
+#
+# zh-TW VS2022 (XAE 4026.22, 2026-10-21): pane Name '錯誤清單' or '錯誤清單 - 目前的專案 (<proj>)'
+# (class GenericPane), grid ControlType.Table ClassName ListView, same English header
+# AutomationIds. The scope ComboBox defaults to '目前專案' (Current Project), which hides
+# the rows of other projects; the scan switches it to '整個方案' (Entire Solution) first
+# (note 'scope switched to entire solution') and leaves it there.
 #   Rows         - [PSCustomObject]@{ severity; description; project; file; line; column; code; raw }
 #   Truncated    - $true when the grid has no ScrollPattern (only visible rows read)
 #                  or MaxRows was hit
@@ -71,15 +78,19 @@ $script:TcUiaErrorListScan = {
         New-Object System.Windows.Automation.OrCondition -ArgumentList (, $conds)
     }
     $gridCond = New-TypeOr @($ct::DataGrid, $ct::List, $ct::Table)
-    $nameCond = New-Object System.Windows.Automation.PropertyCondition($ae::NameProperty, 'Error List')
+    # Pane name: 'Error List' (English XAE / VS) or, in a zh-TW VS2022, '錯誤清單' /
+    # '錯誤清單 - 目前的專案 (<project>)' (the scope filter is appended to the name).
+    $paneNamePattern = '^(Error List|錯誤清單)'
+    $paneCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Pane)
     $pane = $null
     $grid = $null
     foreach ($w in $windows) {
         try { if ($w.Current.ClassName -eq '#32770') { continue } } catch { continue }
         $hits = $null
-        try { $hits = $w.FindAll($scope::Descendants, $nameCond) } catch { continue }
+        try { $hits = $w.FindAll($scope::Descendants, $paneCond) } catch { continue }
         if ($null -eq $hits) { continue }
         foreach ($h in $hits) {
+            if ((Get-UiaName $h) -notmatch $paneNamePattern) { continue }
             $g = $null
             try { $g = $h.FindFirst($scope::Descendants, $gridCond) } catch { $g = $null }
             if ($null -ne $g) {
@@ -94,31 +105,149 @@ $script:TcUiaErrorListScan = {
         if ($null -ne $grid) { break }
     }
     if ($null -eq $grid) {
-        $notes.Add("no 'Error List' element with a data grid found in $($windows.Count) window(s)")
+        $notes.Add("no 'Error List' / '錯誤清單' pane with a data grid found in $($windows.Count) window(s)")
         return [PSCustomObject]@{ Found = $false; Counts = $null; Rows = @(); Truncated = $false; Headers = @(); ToggleUsed = $false; Notes = $notes.ToArray() }
     }
 
-    # --- 3. summary / filter buttons ("9 Errors", "8 Warnings", "0 of 10 Messages") ---
-    $btnCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Button)
-    $buttons = $pane.FindAll($scope::Descendants, $btnCond)
-    $sevButtons = @{}
-    $counts = [ordered]@{ errors = $null; warnings = $null; messages = $null }
-    foreach ($b in $buttons) {
-        $n = Get-UiaName $b
-        $sev = $null
-        if ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Errors?|個錯誤|錯誤)\s*$') { $sev = 'Error' }
-        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Warnings?|個警告|警告)\s*$') { $sev = 'Warning' }
-        elseif ($n -match '^\s*\d+(\s+of\s+\d+)?\s*(Messages?|則訊息|個訊息|訊息)\s*$') { $sev = 'Message' }
-        if ($null -eq $sev) { continue }
-        $nums = @([regex]::Matches($n, '\d+') | ForEach-Object { [int]$_.Value })
-        $total = $nums[$nums.Count - 1]
-        switch ($sev) {
-            'Error'   { $counts.errors = $total }
-            'Warning' { $counts.warnings = $total }
-            'Message' { $counts.messages = $total }
-        }
-        $sevButtons[$sev] = $b
+    # --- 3. summary / filter buttons ---
+    # Labels: "9 Errors", "8 Warnings", "0 of 10 Messages" (XAE), "3 個錯誤", "2 則訊息",
+    # "0 / 2 錯誤", "0 / 1 訊息" (zh-TW VS2022: "shown / total"). Count = the total, i.e.
+    # the second number when two are given. Returns @{ Severity; Count } or $null.
+    function ConvertFrom-CountLabel {
+        param([string]$Label)
+        $m = [regex]::Match($Label, '^\s*(\d+)(?:\s*(?:of|/)\s*(\d+))?\s*(Errors?|個錯誤|錯誤|Warnings?|個警告|警告|Messages?|則訊息|個訊息|訊息)\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $m.Success) { return $null }
+        $word = $m.Groups[3].Value
+        $sevName = 'Message'
+        if ($word -match '^(Errors?|個錯誤|錯誤)$') { $sevName = 'Error' }
+        elseif ($word -match '^(Warnings?|個警告|警告)$') { $sevName = 'Warning' }
+        $num = if ($m.Groups[2].Success) { [int]$m.Groups[2].Value } else { [int]$m.Groups[1].Value }
+        return [PSCustomObject]@{ Severity = $sevName; Count = $num }
     }
+
+    $btnCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Button)
+    function Find-CountButtons {
+        param($Root)
+        $found = @{}
+        $cnt = [ordered]@{ errors = $null; warnings = $null; messages = $null }
+        $all = $null
+        try { $all = $Root.FindAll($scope::Descendants, $btnCond) } catch { $all = $null }
+        if ($null -ne $all) {
+            foreach ($b in $all) {
+                $parsed = ConvertFrom-CountLabel (Get-UiaName $b)
+                if ($null -eq $parsed) { continue }
+                switch ($parsed.Severity) {
+                    'Error'   { $cnt.errors = $parsed.Count }
+                    'Warning' { $cnt.warnings = $parsed.Count }
+                    'Message' { $cnt.messages = $parsed.Count }
+                }
+                $found[$parsed.Severity] = $b
+            }
+        }
+        return [PSCustomObject]@{ Buttons = $found; Counts = $cnt }
+    }
+
+    # The buttons (and the scope ComboBox) live in the tool window's toolbar: under the
+    # matched pane in the XAE, possibly under a parent of it when only the inner content
+    # pane carries the name. Walk up at most two levels.
+    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $toolRoot = $pane
+    $cb = Find-CountButtons $pane
+    if ($cb.Buttons.Count -eq 0) {
+        $up = $pane
+        for ($lvl = 1; $lvl -le 2; $lvl++) {
+            try { $up = $walker.GetParent($up) } catch { $up = $null }
+            if ($null -eq $up) { break }
+            $cbUp = Find-CountButtons $up
+            if ($cbUp.Buttons.Count -gt 0) {
+                $toolRoot = $up
+                $cb = $cbUp
+                $notes.Add("count buttons found $lvl level(s) above the pane")
+                break
+            }
+        }
+    }
+
+    # --- 3b. scope filter: VS2022 defaults the Error List to "Current Project" (目前專案),
+    # hiding the rows of the other projects. Switch the ComboBox to "Entire Solution"
+    # (整個方案) when it shows another scope. Best effort: on any failure the popup is
+    # collapsed and the visible rows are read.
+    $scopeNamePattern = '^(目前專案|目前文件|開啟文件|Current Project|Current Document|Open Documents)$'
+    $listItemCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::ListItem)
+    $scopeItem = $null
+    try {
+        foreach ($li in $toolRoot.FindAll($scope::Descendants, $listItemCond)) {
+            if ((Get-UiaName $li) -match $scopeNamePattern) { $scopeItem = $li; break }
+        }
+    }
+    catch { $scopeItem = $null }
+    if ($null -ne $scopeItem) {
+        $scopeName = Get-UiaName $scopeItem
+        $combo = $null
+        $ecp = $null
+        try {
+            $up = $scopeItem
+            for ($lvl = 1; $lvl -le 4; $lvl++) {
+                $up = $walker.GetParent($up)
+                if ($null -eq $up) { break }
+                if ($up.Current.ControlType -eq $ct::ComboBox) { $combo = $up; break }
+            }
+            if ($null -eq $combo) { throw "no ComboBox above the scope item '$scopeName'" }
+            $ecp = Get-UiaPattern $combo ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if ($null -eq $ecp) { throw 'scope ComboBox has no ExpandCollapsePattern' }
+            $ecp.Expand()
+            Start-Sleep -Milliseconds ([Math]::Max(300, $SettleMs))
+            # The popup can be a separate top-level window of the process: search the
+            # ComboBox first, then every top-level window of the IDE (re-listed).
+            # And/OrCondition(params Condition[]): New-Object needs the array as ONE argument
+            $entireNames = [System.Windows.Automation.Condition[]]@(
+                (New-Object System.Windows.Automation.PropertyCondition($ae::NameProperty, '整個方案')),
+                (New-Object System.Windows.Automation.PropertyCondition($ae::NameProperty, 'Entire Solution')))
+            $entireNameCond = New-Object System.Windows.Automation.OrCondition -ArgumentList (, $entireNames)
+            $entireParts = [System.Windows.Automation.Condition[]]@($listItemCond, $entireNameCond)
+            $entireCond = New-Object System.Windows.Automation.AndCondition -ArgumentList (, $entireParts)
+            $candidates = New-Object System.Collections.Generic.List[object]
+            try { foreach ($c in $combo.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+            $winsNow = $null
+            try { $winsNow = $ae::RootElement.FindAll($scope::Children, $pidCond) } catch { $winsNow = $null }
+            if ($null -ne $winsNow) {
+                foreach ($wn in $winsNow) {
+                    try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+                }
+            }
+            $selected = $false
+            foreach ($c in $candidates) {
+                # Two '整個方案' items exist after expanding; only one supports SelectionItemPattern.
+                $sip = Get-UiaPattern $c ([System.Windows.Automation.SelectionItemPattern]::Pattern)
+                if ($null -eq $sip) { continue }
+                try { $sip.Select(); $selected = $true; break } catch { }
+            }
+            if (-not $selected) { throw "no selectable 'Entire Solution' item among $($candidates.Count) candidate(s)" }
+            Start-Sleep -Milliseconds 1000
+            try {
+                if ($ecp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { $ecp.Collapse() }
+            }
+            catch { }
+            $notes.Add("scope switched to entire solution (was '$scopeName')")
+            # Re-read the grid and the counts for the new scope.
+            $g2 = $null
+            try { $g2 = $pane.FindFirst($scope::Descendants, $gridCond) } catch { $g2 = $null }
+            if ($null -ne $g2) { $grid = $g2 }
+            $cb = Find-CountButtons $toolRoot
+        }
+        catch {
+            $notes.Add("scope switch to entire solution failed (scope '$scopeName'): $($_.Exception.Message); reading the visible rows")
+            if ($null -ne $ecp) {
+                try {
+                    if ($ecp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { $ecp.Collapse() }
+                }
+                catch { }
+            }
+        }
+    }
+
+    $sevButtons = $cb.Buttons
+    $counts = $cb.Counts
     $notes.Add("buttons: errors=$($counts.errors) warnings=$($counts.warnings) messages=$($counts.messages)")
 
     # --- 4. header row -> column ids ---

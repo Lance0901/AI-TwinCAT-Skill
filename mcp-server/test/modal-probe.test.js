@@ -420,6 +420,33 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       }
     });
 
+    // VS2022 WPF message box (AutomationId Microsoft.VisualStudio.MessageBox, TextBox 'Text',
+    // Button 'OKButton', no Win32 control ids), as measured on XAE 4026.22 in VS2022.
+    for (const zeroHwnd of [false, true]) {
+      test(`VS2022 WPF message box: module scan reads title/text/buttons; Close-TcMessageBox -Answer Ok answers via UIA_INVOKE${zeroHwnd ? ' (hwnd 0: found by AutomationId)' : ''}`, async () => {
+        const host = await startHost(['-VsMessageBox'], 'dialog', HOST_WINDOW_WPF);
+        const hostLines = [];
+        readline.createInterface({ input: host.stdout }).on('line', (l) => hostLines.push(l.trim()));
+        try {
+          await new Promise((r) => setTimeout(r, 500));
+          const args = ['-ProcessId', String(host.pid), '-Answer', 'Ok'];
+          if (zeroHwnd) args.push('-ZeroHwnd');
+          const r = await dialogAnswer(args);
+          assert.ok(r.dialog, JSON.stringify(r));
+          assert.equal(r.dialog.title, 'Microsoft Visual Studio');
+          assert.match(r.dialog.text, /^Active solution platform 'TwinCAT RT \(x64\)' differs from current target platform 'TwinCAT OS \(x64\)'/);
+          assert.equal(r.dialog.kind, 'unknown');
+          assert.ok(r.dialog.hwnd > 0, 'native handle of the WPF window');
+          assert.deepEqual(r.dialog.buttons, [{ id: 0, name: 'OK', automationId: 'OKButton' }]);
+          assert.equal(r.send.sent, true, JSON.stringify(r.send));
+          assert.equal(r.send.method, 'UIA_INVOKE');
+          assert.ok(await waitFor(() => hostLines.includes('result Ok'), 5000), `host answered Ok (host: ${JSON.stringify(hostLines)})`);
+        } finally {
+          host.kill();
+        }
+      });
+    }
+
     // The XAE main window is WPF: behind a modal its IsEnabled stays true and only
     // WindowInteractionState says BlockedByModalWindow. The WPF fixture reproduces that.
     test('WPF main window only -> no report within 3 s', async () => {
