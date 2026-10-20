@@ -119,4 +119,4 @@ function Invoke-Operation {
 }
 
 $result = Invoke-Operation -OperationName $Op -ParamsJson $P
-$result | ConvertTo-Json -Depth 10 -Compress
+$result | ConvertTo-Json -Depth 20 -Compress

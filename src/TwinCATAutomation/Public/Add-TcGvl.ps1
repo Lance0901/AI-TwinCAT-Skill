@@ -26,10 +26,9 @@ function Add-TcGvl {
     }
 
     try {
-        $plcProject = Invoke-TcComRetry -OperationName 'Lookup PLC project' -ScriptBlock {
-            $plcConfig = $sm.LookupTreeItem('TIPC')
-            Write-Output -NoEnumerate $plcConfig.Child(1)
-        }
+        # TIPC^<Plc>^<Plc> Project^GVLs (falls back to the <Plc> Project node)
+        $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'GVLs'
+        $plcProject = $folderInfo.Item
 
         # Build declaration
         $decl = "VAR_GLOBAL`n"
@@ -47,8 +46,9 @@ function Add-TcGvl {
 
         $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name = $Name
-            path = $itemPath
+            name       = $Name
+            path       = $itemPath
+            folderPath = $folderInfo.Path
         })
     }
     catch {

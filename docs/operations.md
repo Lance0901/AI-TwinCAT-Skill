@@ -44,7 +44,14 @@ Opens existing .sln file.
 | Path | string | Yes | Path to .sln or .tsproj |
 
 ### Get-TcProjectTree / `GetProjectTree`
-Returns full project structure as JSON tree.
+Returns the project structure as a JSON tree, including the `<Plc> Project` subtree (POUs / DUTs / GVLs / VISUs folders and the nodes under them).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| Depth | integer | No | Levels below each root node, 1-10 (default 4 = down to `TIPC^<Plc>^<Plc> Project^POUs^<POU>`) |
+| PlcOnly | boolean | No | Return only the TIPC subtree (no I/O, Motion, etc.) |
+
+Each node has `name`, `path` (usable directly as `-PouPath`), `type` (from `ItemType`: Project / Folder / FunctionBlock / Function / Program / Dut / Gvl / Task / References …, or the numeric `ItemType` if unknown; on 4024 `ItemSubType` is always 0 for PLC items), `itemType`, `subType`, `children`; nodes that still have children beyond `Depth` get `truncated: true`.
 
 ### Add-TcPou / `AddPou`
 Adds a POU to the PLC project.
@@ -54,6 +61,7 @@ Adds a POU to the PLC project.
 | Name | string | Yes | POU name |
 | Type | string | Yes | Program, FunctionBlock, or Function |
 | ReturnType | string | No | Return type for Functions (default: BOOL) |
+| PlcProjectPath | string | No | Override the target folder (default: `<Plc> Project^POUs`, or the project root if there is no such folder); result has `folderPath` |
 
 ### Add-TcGvl / `AddGvl`
 Adds a Global Variable List.
@@ -91,6 +99,7 @@ Writes code into an existing POU.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | PouName | string | Yes | POU name |
+| PouPath | string | No | Tree path; auto-detected when omitted (`data.pouPath`, `data.resolvedBy`); `POU_NOT_FOUND` if missing |
 | Declaration | string | No | VAR declaration section |
 | Implementation | string | No | Code body |
 

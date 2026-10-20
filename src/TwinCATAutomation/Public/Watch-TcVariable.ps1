@@ -9,9 +9,10 @@ function Watch-TcVariable {
     .PARAMETER DurationMs
         Total monitoring duration in milliseconds.
     .PARAMETER Until
-        ScriptBlock condition to stop monitoring. $_ has .Value (as Read-TcVariable reports it: the IEC
-        literal for TIME/DATE types), .Raw (the ms/ns/unix integer of a time type, else same as Value) and
-        .Name (enum member name or $null). Compare time types with .Raw: { $_.Raw -ge 5000 }.
+        ScriptBlock condition to stop monitoring. The pipeline object has Value (as Read-TcVariable
+        reports it, i.e. the IEC literal for TIME and DATE types), Raw (the ms/ns/unix integer of a
+        time type, otherwise the same as Value) and Name (enum member name or null). Compare time
+        types on Raw, e.g. "Raw greater than 5000".
     .PARAMETER TimeoutMs
         Max wait time for condition. Default: 5000.
     .NOTES

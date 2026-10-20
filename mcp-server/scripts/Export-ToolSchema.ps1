@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Generates mcp-server/tools.json (MCP tool definitions) from the TwinCATAutomation module.
 
@@ -80,6 +80,7 @@ $descriptionOverrides = @{
     'NewTestCase'     = 'Build a test case object for RunTest/RunTestCycle. Setup/Teardown are arrays of {Path, Value} writes; Assertions are {Path, Operator, Expected} with Operator one of Equal (default), NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse. Pure data, no IDE/PLC access.'
     'OpenProject'     = 'Open a solution (.sln) in the connected IDE and wait until the TwinCAT project is loaded.'
     'IoScan'          = 'Scan the I/O devices (EtherCAT ...) of the target and add them to the I/O tree. Requires the target in Config mode.'
+    'GetProjectTree'  = 'Read the project tree. Every node has name, path, type, itemType, subType and children; path can be passed as-is to GetPouCode / WritePouCode PouPath. type is the item kind from ItemType (Project, Folder, FunctionBlock, Function, Program, Dut, Gvl, Task, References ...) or the numeric ItemType when unknown (itemType / subType are also returned as numbers). The PLC node TIPC^<Plc> also lists "<Plc> Project" with its POUs, DUTs and GVLs folders (on 4024 and 4026 the project node is hidden from enumeration and is added by path). Depth (default 4) = levels below each root, enough for TIPC^<Plc>^<Plc> Project^POUs^<POU>; a node at the depth limit that still has children comes back with children=[] and truncated=true. PlcOnly=true returns only the TIPC subtree.'
 }
 
 # Per-tool timeouts in ms (Node side kills and restarts the bridge when exceeded).
@@ -138,6 +139,11 @@ $paramDescriptionOverrides = @{
     'DisconnectIde.Quit'      = 'true = also close the solution (without saving) and quit the IDE.'
     'ResetSolution.SolutionPath' = '.sln to reopen. Default: the solution ConnectIde / OpenProject opened.'
     'ResetSolution.TimeoutSec'   = 'Expected upper bound for each of Documents.CloseAll, Solution.Close and Solution.Open in seconds (default 120).'
+    'GetPouCode.PouPath'      = 'Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths.'
+    'WritePouCode.PouPath'    = 'Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths.'
+    'AddPou.PlcProjectPath'   = 'Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same on 4024 and 4026). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath).'
+    'GetProjectTree.Depth'    = 'Levels below each root node (1-10, default 4). 4 reaches the POUs: TIPC(0)^<Plc>(1)^<Plc> Project(2)^POUs(3)^<POU>(4). Nodes at the limit that have children return truncated=true.'
+    'GetProjectTree.PlcOnly'  = 'true = return only the TIPC (PLC) subtree.'
 }
 
 $commonParameters = @(

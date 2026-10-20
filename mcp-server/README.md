@@ -123,7 +123,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 |---|---|---|---|---|
 | `NewProject` | `New-TcProject` | `Name` | 120 s | Create a solution with a PLC project and MAIN |
 | `OpenProject` | `Open-TcProject` | `Path` | 180 s | Open a `.sln` and wait until the TwinCAT project is loaded |
-| `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Full project tree as JSON |
+| `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Project tree as JSON incl. `<Plc> Project` POUs/DUTs/GVLs; `Depth` (1-10, default 4), `PlcOnly` (TIPC subtree only) |
 | `AddPou` | `Add-TcPou` | `Name`, `Type` | 120 s | Add a Program / FunctionBlock / Function |
 | `AddGvl` | `Add-TcGvl` | `Name` | 120 s | Add a Global Variable List |
 | `AddDut` | `Add-TcDut` | `Name`, `DutType` | 120 s | Add a STRUCT / ENUM / ALIAS / UNION |
@@ -134,8 +134,8 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `GetPouCode` | `Get-TcPouCode` | `PouName` | 120 s | Read declaration and implementation of a POU (`PouPath` = `TIPC^<Plc>^<Plc> Project^POUs^<Pou>`) |
-| `WritePouCode` | `Write-TcPouCode` | `PouName` | 120 s | Write `Declaration` and/or `Implementation` into a POU |
+| `GetPouCode` | `Get-TcPouCode` | `PouName` | 120 s | Read declaration and implementation of a POU (`PouPath` optional, auto-detected; format `TIPC^<Plc>^<Plc> Project^POUs^<Pou>`; `POU_NOT_FOUND` if missing) |
+| `WritePouCode` | `Write-TcPouCode` | `PouName` | 120 s | Write `Declaration` and/or `Implementation` into a POU (`PouPath` optional, auto-detected) |
 
 ### Build and deploy
 

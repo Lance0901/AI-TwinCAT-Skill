@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T04:22:24Z",
+    "generatedAt":  "2026-10-20T05:38:47Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -133,7 +133,7 @@
                                                                             },
                                                              "PlcProjectPath":  {
                                                                                     "type":  "string",
-                                                                                    "description":  "Tree path to the PLC project's POUs folder. Auto-detected if omitted."
+                                                                                    "description":  "Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same on 4024 and 4026). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
                                                                                 }
                                                          },
                                           "required":  [
@@ -406,7 +406,7 @@
                                                                          },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
@@ -418,7 +418,7 @@
                   {
                       "name":  "GetProjectTree",
                       "cmdlet":  "Get-TcProjectTree",
-                      "description":  "Reads and returns the full TwinCAT project structure as a JSON tree.",
+                      "description":  "Read the project tree. Every node has name, path, type, itemType, subType and children; path can be passed as-is to GetPouCode / WritePouCode PouPath. type is the item kind from ItemType (Project, Folder, FunctionBlock, Function, Program, Dut, Gvl, Task, References ...) or the numeric ItemType when unknown (itemType / subType are also returned as numbers). The PLC node TIPC^<Plc> also lists \"<Plc> Project\" with its POUs, DUTs and GVLs folders (on 4024 and 4026 the project node is hidden from enumeration and is added by path). Depth (default 4) = levels below each root, enough for TIPC^<Plc>^<Plc> Project^POUs^<POU>; a node at the depth limit that still has children comes back with children=[] and truncated=true. PlcOnly=true returns only the TIPC subtree.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -426,7 +426,17 @@
                       "inputSchema":  {
                                           "type":  "object",
                                           "properties":  {
-
+                                                             "Depth":  {
+                                                                           "type":  "integer",
+                                                                           "minimum":  1,
+                                                                           "maximum":  10,
+                                                                           "description":  "Levels below each root node (1-10, default 4). 4 reaches the POUs: TIPC(0)^<Plc>(1)^<Plc> Project(2)^POUs(3)^<POU>(4). Nodes at the limit that have children return truncated=true.",
+                                                                           "default":  4
+                                                                       },
+                                                             "PlcOnly":  {
+                                                                             "type":  "boolean",
+                                                                             "description":  "true = return only the TIPC (PLC) subtree."
+                                                                         }
                                                          },
                                           "required":  [
 
@@ -980,7 +990,7 @@
                                                                                 },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path to the POU. Auto-detected from PouName if omitted."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [

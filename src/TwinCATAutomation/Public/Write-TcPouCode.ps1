@@ -9,7 +9,10 @@ function Write-TcPouCode {
     .PARAMETER Implementation
         Structured Text implementation section (code body).
     .PARAMETER PouPath
-        Full tree path to the POU. Auto-detected from PouName if omitted.
+        Full tree path to the POU, e.g. TIPC^<Plc>^<Plc> Project^POUs^<name> (same format on
+        4024 and 4026; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>). If omitted (or not found),
+        the POU is looked up by PouName: POUs folder -> project root -> tree search (depth 4).
+        data.pouPath / data.resolvedBy report which path was used.
     #>
     [CmdletBinding()]
     param(
@@ -36,30 +39,11 @@ function Write-TcPouCode {
     }
 
     try {
-        # Find the POU (all COM calls wrapped in Invoke-TcComRetry)
-        $pouItem = Invoke-TcComRetry -OperationName "Lookup POU $PouName" -ScriptBlock {
-            $item = $null
-            if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
-                $item = $sm.LookupTreeItem($PouPath)
-            }
-            else {
-                # Search under TIPC
-                $plcConfig = $sm.LookupTreeItem('TIPC')
-                $plcProject = $plcConfig.Child(1)
-                $pouFolder = $plcProject.LookupChild('POUs')
-                if ($null -ne $pouFolder) {
-                    $item = $pouFolder.LookupChild($PouName)
-                }
-                if ($null -eq $item) {
-                    $item = $plcProject.LookupChild($PouName)
-                }
-            }
-            Write-Output -NoEnumerate $item
+        $r = Resolve-TcPouPath -SysManager $sm -Name $PouName -PouPath $PouPath
+        if (-not $r.Found) {
+            return New-TcPouNotFoundResult -Name $PouName -Resolution $r
         }
-
-        if ($null -eq $pouItem) {
-            return New-TcResult -Success $false -ErrorMessage "POU '$PouName' not found." -ErrorCode 'POU_NOT_FOUND'
-        }
+        $pouItem = $r.Item
 
         $updated = @()
 
@@ -74,11 +58,16 @@ function Write-TcPouCode {
         }
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            pou     = $PouName
-            updated = $updated
+            pou        = $PouName
+            pouPath    = $r.Path
+            resolvedBy = $r.ResolvedBy
+            updated    = $updated
         })
     }
     catch {
+        if ($_.Exception.Message -like 'PLC_PROJECT_NOT_FOUND*') {
+            return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND')
+        }
         New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_WRITE_FAILED' -MessagePrefix 'Failed to write POU code'
     }
 }
