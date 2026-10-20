@@ -14,14 +14,18 @@
 
 ```
 Connect-TcIde -SolutionPath <sln>
-      │  回 amsNetId、candidates[]
+      │  回 amsNetId、candidates[]、solutionPlatform / solutionConfiguration
+      ▼
+Set-TcTarget -AmsNetId <id> -Platform <name>   (4026:solution platform 要等於 target platform;
+      │                                          本機 UmRT = 'TwinCAT OS (x64)'。4024 不需要)
       ▼
 Build-TcProject
-      │  BUILD_FAILED → 看 data.errorItems(Error List 明細)
+      │  BUILD_FAILED → 看 data.errorItems(Error List 明細);BUILD_TIMEOUT → 看 dialog
       ▼
 Enable-TcConfig -Force            ┐
   ├─ Set-TcSystemState Config     │
   ├─ ActivateConfiguration        │  每步輪詢到目標才進下一步
+  │    LastBuildInfo > 0 → ACTIVATE_FAILED(Check config failed,停在這步)
   ├─ 等 port 10000 = Run          │  失敗回 steps[] 指出停在哪
   ├─ Enter-TcPlcOnline (download) │  (-NoLogin 跳過以下三步)
   ├─ 等 port 851 可達             │
@@ -42,6 +46,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - Activate 會重啟 TwinCAT XAR,所有既有 ADS 連線失效;IDE 的 COM 參考**不會**失效,不要重連 IDE。
 - 不要用 `Start-Sleep` 猜等待時間;所有等待都已在 cmdlet 內輪詢(`-TimeoutSec` 可調)。
 - `Invoke-TcTestCycle` 內部就是上面的流程,每步同樣 gating。
+- 4026 的 solution platform 在 XAE 載入 solution 時就定了(依 .tsproj 存的 target 是否連得到選),`Set-TcTarget`(`SetTargetNetId`)**不會**事後改 platform;換 target 或 tsproj 的 target 連不到時,一定要加 `-Platform`(`Connect-TcIde` 的 `data.solutionPlatform` 看現在是哪個)。見 `ACTIVATE_FAILED`。
 
 ## 環境矩陣
 
@@ -53,28 +58,38 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(`TcSystemServiceUm.exe` 檔案版本 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。
 - Automation Interface(`ITcSysManager`、`EnvDTE`)在各組合完全相同;差別只在 IDE 抓取(ProgID)與 ADS DLL 位置。
+- **4026 與 4024 的差異**(2026-10-20/21 B 組實測):
+  - 相同:PLC 樹路徑 `TIPC^<plc>^<plc> Project^POUs`(例 `TIPC^Untitled1^Untitled1 Project`);`Login(1)` + `SilentMode`;ADS DLL(GAC `TwinCAT.Ads.dll` 4.3.32.0);三個 host 的 XAE Base extension 都是 3.1.4026.22。
+  - 不同:(1) 4026 在 Activate 時檢查 solution platform 與 target platform 是否一致(4024 不檢查),不一致 → `ACTIVATE_FAILED`;4026 UmRT 要 `TwinCAT OS (x64)`。(2) VS2022 的 `SolutionBuild.Build($true)`(等待)永遠不返回,模組改 `Build($false)` + 輪詢 `BuildState`(`Clean` 同理)。(3) VS2022 的訊息框是 WPF(見「已知 modal dialog」)。(4) zh-TW VS2022 的 Error List 視窗名 `錯誤清單`、預設 scope `目前專案` 會藏其他專案的列,模組自動切到 `整個方案`。
+  - VS2022 時間參考:`Connect-TcIde` 自啟 1.5~2.3 s、含開 solution 總計 25~63 s;solution-match 重連 1~1.5 s;`Reset-TcSolution` 8~11 s。
+- 實測紀錄(smoke / MCP / multi-ide 的 B 組結果)見「驗證紀錄」的「B 組 2026-10-20/21」。
+- **4024 專案在 4026 XAE**:4024 的 .sln 把 solution platform `Release|TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 `Build.0`,選 OS (x64) 什麼都不 build;XAE 自動選的是 `TwinCAT OS (ARMT2)`,Build 1.4 s「成功」、Activate 不回 `ACTIVATE_FAILED`,但 851 維持 Invalid(`PLC_NOT_LOADED`)。這種專案要先在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 才能跑在 4026 UmRT。`Set-TcTarget -Platform` 列的是 project-context platform(`availablePlatforms`),所以對這種 sln 要 `TwinCAT OS (x64)` 會回 `PLATFORM_NOT_FOUND`。
 - `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;多實例時依 `-SolutionPath` 挑:只接已開該 sln 的實例(`data.selectedBy=solution-match`),沒有就啟動新實例(`launched`);別人開的空 IDE 或開著其他 sln 的 IDE 一律不碰,`Disconnect-TcIde -Quit` 也只關自己連上的那個 pid。`data.candidates[]` 列出所有看到的實例,`data.ideProcessId` 是連上的 IDE pid(`Get-TcIdeModalDialog` 只掃這個 pid 的視窗)。真機驗證:`tests/Integration/multi-ide.ps1`。ROT 裡正在關閉的舊實例(讀 `Version` / `Solution` 回 0x800706BA / 0x80004005)會被跳過。
 - `Connect-TcIde` 自行啟動 IDE 時:`CreateInstance` 後**不碰** `MainWindow.Visible`(此時會丟 property not found),改輪詢 `Version` + `Solution`(500 ms,最長 60 s),就緒後設 `UserControl = $true` 讓 IDE 可見且不隨 COM 釋放關閉;逾時則 `Quit()` 並 kill 啟動時刻之後出現的 `TcXaeShell.exe` / `devenv.exe`,回 `IDE_LAUNCH_FAILED`。
 - `Connect-TcAds` 的 `data.adsBackend` 顯示實際載入的 ADS 後端(DLL 路徑 / 反射 fallback)。
 - `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
-- 換 target(本機 UmRT ↔ 遠端 CX)或換 IDE 後要重新 `Connect-TcIde`,AmsNetId 會變。
+- 換 target(本機 UmRT ↔ 遠端 CX)或換 IDE 後要重新 `Connect-TcIde`,AmsNetId 會變;4026 另要 `Set-TcTarget -Platform` 對齊 solution platform。
+- **已知未解**:IDE 被 modal dialog 擋住時,它的 DTE `Version` 讀成空字串,`Connect-TcIde` 把該 ROT 項目當過期實例,帶 `-SolutionPath` 時會**另外啟動第二個 IDE**(VS2022 出現過一次)。重連前先 `Get-TcIdeModalDialog`(MCP `GetIdeModalDialog`)確認 IDE 沒被擋,有 dialog 先處理。
 
 ## 已知 modal dialog
 
 與 `IDE_BUSY`(COM 回 0x80010001,可重試)不同,下面這些視窗讓 DTE 呼叫**無限阻塞**、永不返回。模組在 Build / Activate / Login / Solution.Open 之前用 UI Automation(`Get-TcIdeModalDialog`)檢查一次,有就回 `IDE_MODAL_DIALOG`;呼叫進行中另有 watchdog 每 2 s 掃一次,呼叫失敗返回時若看過 dialog 也回 `IDE_MODAL_DIALOG`。模組只偵測,唯一會主動回答的是 reload 提示(`Reset-TcSolution`,見下表);其他已經被卡住的呼叫無法中斷,只能手動關 dialog 或 kill IDE(本 session 啟動的 IDE 可用 `Disconnect-TcIde -Quit -Kill`)。
 
-**中文 UI 的訊息框**:中文 Windows 上 XAE 的訊息框是 Win32 `#32770`,按鈕在 UIA 裡是 `ControlType.Pane`(ClassName `Button`,不是 `ControlType.Button`),Name 是「是(Y)」「否(N)」,AutomationId 是 control id 6 / 7(= `IDYES` / `IDNO`)。比對英文 "Yes" 或 `ControlType.Button` 一定失敗;模組(`Close-TcMessageBox`)只用 control id:`GetDlgItem(hwnd, 6)` + `BM_CLICK`(`SendMessageTimeout`,5 s),找不到按鈕才 post `WM_COMMAND`,語系無關。`Get-TcIdeModalDialog` 的 `Buttons`(MCP `data.dialog.buttons`)列出 `#32770` 的按鈕 `{id, name}`。
+**中文 UI 的訊息框**:中文 Windows 上 XAE 的訊息框是 Win32 `#32770`,按鈕在 UIA 裡是 `ControlType.Pane`(ClassName `Button`,不是 `ControlType.Button`),Name 是「是(Y)」「否(N)」,AutomationId 是 control id 6 / 7(= `IDYES` / `IDNO`)。比對英文 "Yes" 或 `ControlType.Button` 一定失敗;模組(`Close-TcMessageBox`)對 Win32 訊息框只用 control id:`GetDlgItem(hwnd, 6)` + `BM_CLICK`(`SendMessageTimeout`,5 s),找不到按鈕才 post `WM_COMMAND`,語系無關。`Get-TcIdeModalDialog` 的 `Buttons`(MCP `data.dialog.buttons`)列出 `#32770` 的按鈕 `{id, name}`。
+
+**VS2022 的訊息框是 WPF**(AutomationId `Microsoft.VisualStudio.MessageBox`,2026-10-21):內文在 AutomationId `Text` 的元素,按鈕是真的 `ControlType.Button`,AutomationId `OKButton` / `YesButton` / `NoButton` / `CancelButton`,**沒有** Win32 control id。`Get-TcIdeModalDialog` 回完整內文與按鈕(`Buttons[]` 多 `automationId`,MCP `data.dialog.buttons[].automationId`);`Close-TcMessageBox` 沒有 control id 時退到 UI Automation `InvokePattern.Invoke()`(回傳 `Method = UIA_INVOKE`,STA runspace、10 s 逾時),不依賴語系與 hwnd(`-Hwnd 0` 時依 AutomationId 在 IDE 主視窗下找)。所以「只靠 control id 回答」只適用 `#32770`。
 
 | 視窗 | 何時出現 | 解法 |
 |---|---|---|
 | `Assertion Failed: Abort=Quit, Retry=Debug, Ignore=Continue` | Build 時 CODESYS 優化器處理 visu 元素的內部錯誤(NullReference / DivideByZero),**間歇性**:反覆開關 solution 後、或全新專案第一次全編譯都可能出;Clean 無效,清 `_CompileInfo` 也不保證 | 這個 modal 會讓 DTE 呼叫無限阻塞,只能 `Stop-Process` 該 IDE,重開 solution 再 Build(通常第二次就過) |
 | Microsoft Visual Studio 帳戶設定 | VS2022 未登入時 | 登入一次,或手動關閉視窗 |
-| `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動 | 看 XAE Output / Error List;UmRT 多半是 license 或 I/O 設定問題 |
+| `Target system reports a fatal error` | Activate 的設定在 target 上無法啟動。2026-10-18 B 組那次的根因是 **solution platform 錯**(`TwinCAT RT (x64)` 對 UmRT),見 `ACTIVATE_FAILED`;不是 license、isolated core(`<Settings NonWinCpus/Cpu CpuId>`)、tsproj `TcVersion`、UmRT `TargetFeatures.xml`(都試過、無影響) | 先 `Get-TcIdeInfo` 看 `solutionPlatform`,不對就 `Set-TcTarget -Platform`;再看 XAE Output / Error List,UmRT 其次才是 license 或 I/O 設定問題 |
+| `Active solution platform 'TwinCAT RT (x64)' differs from current target platform 'TwinCAT OS (x64)'! Adjust solution platform and retry.`(WPF 訊息框) | 4026 Activate 時 solution platform 與 target platform 不一致。`SilentMode` 關閉時訊息框一直在、`ActivateConfiguration()` 阻塞到框被關(實測 102 s);`SilentMode` 開著(`Connect-TcIde` 預設)時 XAE 自動關框、`ActivateConfiguration()` 約 2 s 無例外返回,Output 只有「Check config failed!」 | `Enable-TcConfig` 以 `LastBuildInfo > 0` 偵測並回 `ACTIVATE_FAILED`;`Set-TcTarget -AmsNetId <id> -Platform 'TwinCAT OS (x64)'` 後重跑 Build + `Enable-TcConfig -Force` |
 | Trial license security code | 7 天 trial 到期或首次啟用 | 需人工輸入驗證碼,模組無法代勞 |
 | `Application 'Port_851' does not exist on device ... create it and proceed with download?` | 空 runtime 上 Login 時全域 `SilentMode` 沒開(例如沒經 `Connect-TcIde` 連線) | `Connect-TcIde` 連上就開 `ITcAutomationSettings.SilentMode`,XAE 自動答 Yes,不應再出現;手動點 Yes 即可。**不要**改用旗標 SILENT(257)壓框:它會跳過建 app,851 仍 Invalid |
 | `Login aborted: Conflicting flag settings` | Login 旗標 3(REGULAR\|FORCEONLINECHANGE 互斥) | 不要用 3;用 `-LoginMode Regular\|Download\|OnlineChange`(1/4/2,不 OR SILENT) |
 | `File has been changed outside the environment. Reload the new file?`(VS2022 寫法 `... changed outside the source editor. Do you want to reload it?`) | 開在編輯器裡的檔案(.TcPOU 等)被磁碟上的工具(AI 編輯器、git checkout、產生器)改了,約 1 s 後出現;VS 選項 `AutoloadExternalChanges` 壓不掉。沒開在編輯器的檔案 XAE 約 5 s 內自動重載、不跳框(2026-10-20 `reload-experiment.ps1`) | `Get-TcIdeModalDialog` 回 `Kind = reload-prompt`(結果 `data.dialogKind`),hint 指向 `Reset-TcSolution`,它會對這個提示送 WM_CLOSE、`Documents.CloseAll`、`Solution.Close`、同一個 IDE `Solution.Open`、`Connect-TcIde` 重連(約 20~25 s);之後改磁碟後立刻 `Reset-TcSolution` 即可。見「磁碟改檔的正確做法」 |
-| `The project file '...\plc.plcproj' has been modified outside of TwinCAT XAE. Do you want to reload the project?` | `.plcproj` 在磁碟上被改寫(產生器每次都重寫,內容相同、只有 mtime 變也會跳);2026-10-20 gantry-watchdog dogfooding | `Get-TcIdeModalDialog` 回 `Kind = reload-prompt`、`ReloadTarget = project`(結果 `data.dialogKind` / `data.dialogReloadTarget`,MCP `data.dialog.reloadTarget`)。直接 `Reset-TcSolution`:它對這個提示按 **Yes**(control id 6,語系無關),XAE 自己 reload 專案,模組只重新 `Connect-TcIde` 並用 `LookupTreeItem('TIPC')` 確認 `ITcSysManager` 可用,不做 close/reopen(`data.answeredYes = true`、`data.reopenedSolution = false`);按 Yes 失敗或探測失敗才退回 WM_CLOSE + close/reopen |
+| `The project file '...\plc.plcproj' has been modified outside of TwinCAT XAE. Do you want to reload the project?` | `.plcproj` 在磁碟上被改寫(產生器每次都重寫,內容相同、只有 mtime 變也會跳);2026-10-20 gantry-watchdog dogfooding | `Get-TcIdeModalDialog` 回 `Kind = reload-prompt`、`ReloadTarget = project`(結果 `data.dialogKind` / `data.dialogReloadTarget`,MCP `data.dialog.reloadTarget`)。直接 `Reset-TcSolution`:它對這個提示按 **Yes**(Win32 框用 control id 6、VS2022 WPF 框用 UIA Invoke `YesButton`,皆語系無關),XAE 自己 reload 專案,模組只重新 `Connect-TcIde` 並用 `LookupTreeItem('TIPC')` 確認 `ITcSysManager` 可用,不做 close/reopen(`data.answeredYes = true`、`data.reopenedSolution = false`);按 Yes 失敗或探測失敗才退回 WM_CLOSE + close/reopen |
 | `TwinCAT PLC Control`(class `#32770`) | 2026-10-18 經 MCP server 跑 `BuildProject` 時出現一次;成因未定,懷疑 OneDrive 檔案鎖或新啟動的 IDE 第一次 build。標題不在已知清單,靠 `#32770` class 偵測 | DTE 呼叫無限阻塞,等到 `BRIDGE_TIMEOUT`(Build 600 s)才 kill bridge;IDE 本身不會退出,只能 kill 該 IDE(MCP 結果的 `data.lastIde.ideProcessId` / `error.hint` 會給 pid 與 `taskkill` 指令),重新 `ConnectIde` 再 Build |
 
 ## 磁碟改檔的正確做法(.TcPOU / .TcGVL / .plcproj 直接改檔案)
@@ -90,7 +105,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 `Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120]` 的步驟:(1) `Get-TcIdeModalDialog`(連續出現的 reload 提示最多處理 5 個):`ReloadTarget = project` 就按 Yes(`Close-TcMessageBox -Answer Yes`,等最多 15 s 消失,`data.answeredYes = true`);`ReloadTarget = file`(或 Yes 失敗的 project 提示)就對該視窗(只接受自己 IDE pid 的)送 WM_CLOSE,等它消失(真機 2 s);兩者都設 `data.dismissedReloadPrompt = true`、`data.reloadTarget`;其他 modal 回 `IDE_MODAL_DIALOG`,因為 `Solution.Close` 也會被擋。只按過 Yes(沒有用 WM_CLOSE 關過檔案提示)時跳過 (2)~(4),直接 (5) 重連並探測 `LookupTreeItem('TIPC')`,成功就回傳(`data.reopenedSolution = false`),探測失敗才繼續 (2)~(5)。(2) `Documents.CloseAll(vsSaveChangesNo)`,`data.closedDocuments`。(3) `Solution.Close($false)`、釋放舊 `ITcSysManager`。(4) 在**同一個** `$dte` 上 `Solution.Open(<sln>)`(真機 7~9 s,`data.openSec`):`Connect-TcIde -SolutionPath` 不會接沒開 solution 的 IDE(那是別人的,見 PR #9),所以必須在手上這個實例重開。(5) `Connect-TcIde -SolutionPath <sln> -ProgId <同一個> -NoLaunch`,以 solution-match 接回同 pid、重取 `ITcSysManager`、重開 SilentMode(真機 12~13 s,`data.connectSec`);`data.sameIde` 回報。全程 `data.totalSec` 實測 22~25 s(2026-10-20 真機 10/10 PASS,含 reload 框跳著時呼叫的情境)。ADS 連線不受影響;`Enable-TcConfig` 後的 PLC 不受影響。solution 路徑由 `Connect-TcIde` / `Open-TcProject` 記住(`$script:TcSolutionPath`),`Disconnect-TcIde` 清掉。中途失敗時 `data.closed` / `data.reopened` 說明做到哪一步。
 
-`Get-TcIdeModalDialog` 的結果現在多 `Kind`(`reload-prompt` / `unknown`)、`ReloadTarget`(`file` / `project` / `$null`)與 `Buttons`,`IDE_MODAL_DIALOG` 結果多 `data.dialogKind` / `data.dialogReloadTarget` / `data.dialogButtons` 與 `data.dialog`(`{title, text, kind, reloadTarget, buttons}`);MCP 的 `GetIdeModalDialog` 回 `data.dialog.kind` / `reloadTarget` / `hwnd` / `buttons`。`reload-prompt` 的 `error.hint` 直接寫這段流程。
+`Get-TcIdeModalDialog` 的結果現在多 `Kind`(`reload-prompt` / `unknown`)、`ReloadTarget`(`file` / `project` / `$null`)與 `Buttons`,`IDE_MODAL_DIALOG` 結果多 `data.dialogKind` / `data.dialogReloadTarget` / `data.dialogButtons` 與 `data.dialog`(`{title, text, kind, reloadTarget, buttons}`);MCP 的 `GetIdeModalDialog` 回 `data.dialog.kind` / `reloadTarget` / `hwnd` / `buttons`。`reload-prompt` 的 `error.hint` 直接寫這段流程。VS2022 WPF 訊息框(見上)的 `Buttons[]` 多 `automationId`,`text` 是完整內文。
 
 ## 驗證紀錄 2026-10-18
 
@@ -99,11 +114,25 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | 組 | 專案 | IDE | 結果 |
 |---|---|---|---|
 | A | 4024.71 專案 | 32-bit XAE Shell(`TcXaeShell.DTE.15.0`) | 完整 lifecycle 通過:Connect-TcIde → Build → Enable-TcConfig -Force → Connect-TcAds → Read/Write → Exit-TcPlcOnline |
-| B | 4026.24 Robust 專案 | VS2022(`VisualStudio.DTE.17.0`) | Activate 後 target 回 `Target system reports a fatal error`(modal),未通過,原因待查 |
+| B | 4026.24 Robust 專案 | VS2022(`VisualStudio.DTE.17.0`) | Activate 後 target 回 `Target system reports a fatal error`(modal),未通過。**根因已查明(issue #16):solution platform 錯**,見下「B 組 2026-10-20/21」與 `ACTIVATE_FAILED` |
 
 2026-10-19:空 UmRT(沒有 application)情況下,`Enable-TcConfig -Force` 以 `Login(REGULAR)`(=1)+ 全域 `SilentMode` 建立 app 並下載(26 s),lifecycle-smoke 37/37;`-NoLogin` 後直接 `Set-TcPlcState Run` 正確回 `PLC_NOT_LOADED`。同日 23:27 對照:`Login(257)`(REGULAR|SILENT)0.5 s 返回但不建 app、851 仍 Invalid;`Login(260)`(FORCEDOWNLOAD|SILENT)下載 28 s 成功,但下一輪 `ActivateConfiguration()` 耗 250 s 後失敗,實為 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關;`Login(3)` 旗標互斥 abort。
 
 這輪驗證修掉的問題:自啟 IDE 的 `MainWindow.Visible` race(留下孤兒 IDE)、ROT 撿到正在關閉的舊實例(`Solution.Open` 回 null)、`sysManagerAvailable` 在 solution 剛開時誤判 false、`Exit-TcPlcOnline` 在重啟後的舊路徑、`ADS_PORT_NOT_FOUND` hint 寫死 851、`Enter-TcPlcOnline` 訊息固定寫 download。
+
+### B 組 2026-10-20/21(4026)
+
+環境:TwinCAT 3.1.4026.22 XAE;專案 RobustSolutionFrameworkDemo 4026.24 的複本(`C:\Temp\RobustDemo-b`),PLC 專案 `Untitled1`;target 本機 UmRT_Default(199.5.42.250.1.1)。原專案在 4026 編不過(`FB_AxisControl.M_CheckAxisInfo` 指派未宣告的 `alarm`,C0046 / C0018),只在複本修;這是專案問題,不是工具問題。
+
+| Run | IDE / ProgId | 結果 | 備註 |
+|---|---|---|---|
+| `lifecycle-smoke.ps1 -SolutionPlatform 'TwinCAT OS (x64)'`(log `tests/Integration/logs/B-vs2022.log`) | VS2022 Community 17.x zh-TW,`VisualStudio.DTE.17.0` | 35/35 PASS,77 s | Connect launch 1.6 s / 總計 30.2 s;Build 9.2 s(build 本身 6 s);Enable -Force 8.4 s;ADS DLL GAC `TwinCAT.Ads.dll` 4.3.32.0(同 4024);無 dialog |
+| 同參數(log `B-xae64.log`) | 64-bit XAE Shell `TcXaeShell.DTE.17.0` | 35/35 PASS(第 3 次跑) | launch 6.8~8.7 s / connect 40~85 s;3 次 Activate 的 `ideMemoryMB` 931/936/935;第 1 次撞 UmRT crash #8、第 2 次撞 UmRT ADS 0x502「Mailbox is full」hang(見「已知限制」),都是 UmRT 側 |
+| MCP `node mcp-server/scripts/lifecycle-client.mjs --expect-fail ACTIVATE_FAILED --fail-platform "TwinCAT RT (x64)" --platform "TwinCAT OS (x64)"` | VS2022 | 7/7 PASS | `RunLifecycle` 用 RT → `ACTIVATE_FAILED` 47 s(含啟動 IDE);用 OS 14.4 s(Connect 0.5 / SetTarget 1.5 / Build 3.8 / Enable 8.4 / ConnectAds 0.05 s);`TaskInfo[1].CycleCount` 319 → 420(1 s);`DisconnectIde Quit`,沒殘留 IDE / bridge |
+| `multi-ide.ps1 -ProgId VisualStudio.DTE.17.0`,target RobustDemo-b;干擾:A = 32-bit XAE 開 TcReloadTest、B = 空 32-bit XAE、C = 空 VS2022 | `VisualStudio.DTE.17.0` | 25/25 PASS | target 是新啟動的(沒接 C)、A 的 modal 不會算到 target、只關 target |
+| platform 切換檢查(直接 PowerShell) | VS2022 | RT → `ACTIVATE_FAILED` 4.7 s;OS → Run 10.9 s;未知 platform → `PLATFORM_NOT_FOUND` | 失敗 Activate 留下的 `LastBuildInfo` 會被下一次成功的 Activate 重設 |
+
+`ACTIVATE_FAILED`(issue #16)根因與驗證細節見該錯誤碼。
 
 ## 錯誤碼
 
@@ -116,7 +145,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### IDE_MODAL_DIALOG
 
 - **現象**:`Build-TcProject`、`Enable-TcConfig`、`Enter-TcPlcOnline`、`Connect-TcIde`、`Reset-TcSolution` 回 `IDE_MODAL_DIALOG`(`Disconnect-TcIde -Quit` 遇到 modal 回的是 `IDE_QUIT_FAILED`,見下),`data.dialogTitle` / `dialogText` 是視窗標題與內文,`data.dialogKind` 是分類:`reload-prompt`(磁碟改檔的 reload 提示,hint 指向 `Reset-TcSolution`,見「磁碟改檔的正確做法」)或 `unknown`;`data.dialogReloadTarget` 區分 `file`(.TcPOU 等開著的檔案,「File has been changed outside the environment」)與 `project`(.plcproj 被改寫,「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」)。
-- **為什麼**:XAE / VS 有 modal 視窗(見「已知 modal dialog」)。這類視窗不會讓 COM 回 `RPC_E_CALL_REJECTED`,而是讓 DTE 呼叫無限阻塞,retry 救不了,所以模組在每個主要 COM 步驟前先用 UI Automation 掃 IDE 程序(`data.ideProcessId`)的頂層視窗。
+- **為什麼**:XAE / VS 有 modal 視窗(見「已知 modal dialog」)。這類視窗不會讓 COM 回 `RPC_E_CALL_REJECTED`,而是讓 DTE 呼叫無限阻塞,retry 救不了,所以模組在每個主要 COM 步驟前先用 UI Automation 掃 IDE 程序(`data.ideProcessId`)的頂層視窗。`Build-TcProject` 輪詢 `BuildState` 期間也每輪掃,build 中跳出的 dialog 回這個碼(不再等到逾時)。
 - **下一步**:先 `Get-TcIdeModalDialog`(MCP `GetIdeModalDialog`)看 `kind`:`reload-prompt`(兩種 target 都算)→ 直接 `Reset-TcSolution`(project 提示按 Yes、檔案提示 WM_CLOSE + close/reopen);其他手動處理 dialog 後重跑同一個 cmdlet,關不掉就 `Disconnect-TcIde -Quit -Kill`(只限本 session 啟動的 IDE)或 `Stop-Process -Id <ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。除了 reload 提示,模組不會自動關閉任何視窗。
 - **限制**:已經被 modal 擋住、正在阻塞中的呼叫無法從模組中斷;偵測靠視窗的 `IsModal` / `#32770` class / 已知標題,偵測不到時仍可能卡住。
 
@@ -197,8 +226,16 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### SYSTEM_STATE_TIMEOUT
 
-- **為什麼**:`Set-TcSystemState` 透過 ADS WriteControl 要求切換後,輪詢 port 10000 在 `-TimeoutSec` 內沒到目標狀態。原因:TwinCAT System Service 報錯(license、config 錯)、UmRT service 掛掉、或 target 無回應。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認。
-- **下一步**:`Get-TcSystemState` 看現在的狀態;看 XAE 的 TwinCAT 圖示、License 節點與 Windows 事件檢視器;UmRT 重啟 `TcSystemServiceUm`。
+- **為什麼**:`Set-TcSystemState` 透過 ADS WriteControl 要求切換後,輪詢 port 10000 在 `-TimeoutSec` 內沒到目標狀態。原因:TwinCAT System Service 報錯(license、config 錯)、UmRT service 掛掉、或 target 無回應。UmRT 還有一種:process 活著、CPU idle,但對 199.5.42.250.1.1 的每個 ADS 呼叫都回 **0x502「Mailbox is full」**(本機 TcSysSrv 正常)→ `Enable-TcConfig` 等 180 s 回 `SYSTEM_STATE_TIMEOUT`(2026-10-21 實測,見「已知限制」)。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認。
+- **下一步**:`Get-TcSystemState` 看現在的狀態;看 XAE 的 TwinCAT 圖示、License 節點與 Windows 事件檢視器;UmRT 重啟 `TcSystemServiceUm`(0x502 的唯一解法;重啟後停在 Config,再 `Enable-TcConfig -Force`)。
+
+  UmRT 重啟指令(process 卡死時先 `Stop-Process` 舊的 `TcSystemServiceUm`;`cmd /c` 執行時 `%TWINCAT3DIR%` 不會展開):
+
+  ```powershell
+  Start-Process "$env:TWINCAT3DIR\Runtimes\bin\TcSystemServiceUm.exe" `
+      -ArgumentList '-t bin -i path -n "UmRT_Default" -c .\3.1' `
+      -WorkingDirectory 'C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\UmRT_Default'
+  ```
 
 ### BUILD_FAILED
 
@@ -212,7 +249,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **`code` 可能是 null**:TcXaeShell 15.0 的 Error List 沒有 Code 欄(右鍵表頭 Show Columns 只有 Severity / Description / Project / Project Rank / Path / File / Line / Column / Source),描述文字也不含 Cxxxx。模組只對幾個常見訊息推回編碼(C0046 `Identifier 'x' not defined`、C0018 `'x' is no valid assignment target`、C0032、C0035、C0037、C0077、C0080;表在 `Private/Get-TcIdeErrorList.ps1` 的 `$script:TcCompilerCodePatterns`),靜態分析訊息 `SAxxxx` 則直接在描述裡。
 - **Build 成功時 `errorItems` 不一定空**:Error List 會留著非 PLC code 的項目。2026-10-18 實測 GantryCylinder 專案 build 成功仍有 7 筆 Error,全部是 `file = plc.Library Manager`、`line = 0` 的「Could not open library '#System_VisuElem3DPath' / '#System_VisuElemTrace' / '#System_VisuElemCamDisplayer' / '#System_VisuElemsAlarm' / '#System_VisuElemsDateTime'(placeholder 無法解析)」與「'#Analyzation' 3.5.2.0 / '#IecSfc' 3.4.2.0 has not been installed」——是機器上缺 visu/分析函式庫,不影響 `failedProjects`。用 `file` 分辨 PLC code 的錯誤。
 - **XAE Build 會先存檔**:VS 的 Save all before build 預設開啟,`Write-TcPouCode` 後 `Build-TcProject` 會把 POU 寫進磁碟;要試錯請用複本。
-- **Warning 也讀得到內容**(2026-10-20):`Build-TcProject` 的 `data.warningItems[]`(與 errorItems 同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`Get-TcBuildErrors` 的 `-IncludeWarnings` 預設開(`-IncludeWarnings:$false` 省 1~2 s 的 toggle)。之前 `warnings=1` 卻沒有項目,就是這個開關沒開。按鈕計數的 regex 也認 zh-TW 的「3 個錯誤 / 1 個警告 / 2 則訊息」,但視窗仍要叫 `Error List` 才找得到。
+- **Warning 也讀得到內容**(2026-10-20):`Build-TcProject` 的 `data.warningItems[]`(與 errorItems 同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`Get-TcBuildErrors` 的 `-IncludeWarnings` 預設開(`-IncludeWarnings:$false` 省 1~2 s 的 toggle)。之前 `warnings=1` 卻沒有項目,就是這個開關沒開。按鈕計數的 regex 也認 zh-TW 的「3 個錯誤 / 1 個警告 / 2 則訊息」。
+- **zh-TW VS2022 也讀得到**(2026-10-21,取代舊註記「需英文 UI」):窗格名 `錯誤清單`(英文 UI 是 `Error List`);摘要按鈕是 `0 / 2 錯誤` 的「顯示 / 總數」形式,取總數;VS2022 的 Error List 預設 scope 是 `目前專案`(Current Project),會藏其他專案的列,模組讀之前先切到 `整個方案`(Entire Solution)。其他語系仍回 `ERRORLIST_UNAVAILABLE`。
 - **Error List 的 UIA 結構(TcXaeShell 15.0,2026-10-18)**,改版時照這個找:
   ```
   Window '<sln> - TcXaeShell'
@@ -231,9 +269,15 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   ```
   severity 圖示讀不出文字,所以模組依序只開一種過濾按鈕(TogglePattern)讀列、讀完還原;每列的欄位用 TableItemPattern 的 header AutomationId 對應;列表用 ScrollPattern 逐頁捲到 `VerticalScrollPercent` 不再變;以 description+project+file+line 去重。
 
+### BUILD_TIMEOUT
+
+- **現象**:`Build-TcProject` 回 `BUILD_TIMEOUT`,`data.buildState` / `data.buildSec` 是逾時時的 `SolutionBuild.BuildState` 與已耗秒數。
+- **為什麼**:VS2022 上 `SolutionBuild.Build($true)`(wait)**永遠不返回**,所以模組改 `Build($false)` 再每輪輪詢 `BuildState`(到 3 = Done)。新增 `-TimeoutSec`(預設 600)是輪詢上限;逾時時 `BuildState` 還沒到 Done。輪詢期間也掃 modal dialog:有就回 `IDE_MODAL_DIALOG`,不會拖到逾時。成功時 `data.buildSec` 是 `Build($false)` 到 Done 的秒數(VS2022 實測 6 s、首次含啟動約 9 s)。
+- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog;看 XAE Output 視窗的 build 進度;大型專案加大 `-TimeoutSec` 重跑 `Build-TcProject`;XAE 沒反應就 kill IDE 後重新 `Connect-TcIde`。smoke / `multi-ide.ps1` 的 `Clean` 同樣是 `Clean($false)` + 輪詢。
+
 ### ERRORLIST_UNAVAILABLE
 
-- **為什麼**:`Get-TcBuildErrors` 的 UI Automation 在 `-TimeoutSec`(預設 30 s)內找不到 Error List(視窗被關閉 / auto-hide、IDE pid 未知、UIA 被 modal dialog 卡住)。模組會先 `View.ErrorList` 把視窗叫出來,但 auto-hide 的視窗仍讀不到。
+- **為什麼**:`Get-TcBuildErrors` 的 UI Automation 在 `-TimeoutSec`(預設 30 s)內找不到 Error List(視窗名要是 `Error List` 或 zh-TW VS2022 的 `錯誤清單`,其他語系找不到;視窗被關閉 / auto-hide、IDE pid 未知、UIA 被 modal dialog 卡住)。模組會先 `View.ErrorList` 把視窗叫出來,但 auto-hide 的視窗仍讀不到。
 - **下一步**:確認 XAE 主視窗可見、Error List 釘住(不是 auto-hide);手動 View > Error List 後重跑;IDE 若有 dialog 先處理(`Get-TcIdeModalDialog`)。`Build-TcProject` 遇到這個情況不會失敗,只把 `data.errorListError` 設為此 code 並讓 `errors` 退回 `failedProjects`。
 
 ### SOLUTION_CLOSE_FAILED / NO_SOLUTION
@@ -299,6 +343,30 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:`ActivateConfiguration()` COM 呼叫失敗。專案有錯誤、target 沒 license、I/O 配置與硬體不符、或跳出 dialog。
 - **下一步**:Build 成功、IDE 無 dialog 後重跑;看 `data.steps[]` 停在哪一步。
+- 與 `ACTIVATE_FAILED` 不同:`ACTIVATION_FAILED` 是 COM 呼叫本身丟例外;`ACTIVATE_FAILED` 是呼叫無例外返回、但 XAE 的 Check config 失敗。
+
+### ACTIVATE_FAILED
+
+- **現象**:`Enable-TcConfig`(含 `-Force` 流程,停在 activate 那一步,`data.steps[]` 看得到;`data.solutionPlatform` 是當時的 active solution platform)回 `ACTIVATE_FAILED`。`ActivateConfiguration()` 約 2 s 無例外返回,XAE Output 視窗只有「Check config failed!」,`SolutionBuild.LastBuildInfo` 由 0 變 1;target 上什麼都沒寫(UmRT 的 `Boot\CurrentConfig.xml` 沒更新,只有 `Boot\Plc\Port_851.*`),port 851 維持 Invalid(不經此檢查就會變成 `PLC_NOT_LOADED`)。
+- **為什麼**:4026 在 Activate 時檢查 active solution platform 與 target platform。本機 4026 UmRT_Default 是 user mode 的 TcOsSys,target platform 是 `TwinCAT OS (x64)`;solution platform 卻是 `TwinCAT RT (x64)` 時 XAE 顯示訊息框「Active solution platform 'TwinCAT RT (x64)' differs from current target platform 'TwinCAT OS (x64)'! Adjust solution platform and retry.」。`SilentMode` 開著時框被自動關掉,於是只剩 `LastBuildInfo > 0`(模組據此回這個碼);`SilentMode` 關著時框一直在,`ActivateConfiguration()` 阻塞到框被關(實測 102 s)。
+- **platform 怎麼來的**:XAE 載入 solution 時依 .tsproj 存的 target 選 platform。原專案的 target 199.4.42.250.1.1 在這台 PC 連不到 → 選 `TwinCAT RT (x64)`;tsproj target 改成 199.5.42.250.1.1(UmRT)→ 選 `TwinCAT OS (x64)`(只翻 `TargetNetId` + 刪 `.vs` 驗證)。`Set-TcTarget`(`SetTargetNetId`)**不會**事後改 platform。這就是 2026-10-18 B 組「Target system reports a fatal error」的根因(issue #16)。已試過、無影響:`<Settings NonWinCpus/Cpu CpuId>` isolated core、tsproj `TcVersion`、UmRT `TargetFeatures.xml`。
+- **下一步**:`Set-TcTarget -AmsNetId <id> -Platform 'TwinCAT OS (x64)'`(Windows RT target 用 `'TwinCAT RT (x64)'`),再 `Build-TcProject` + `Enable-TcConfig -Force`。MCP:`RunLifecycle` 加 `Platform`,或 `SetTarget` 的 `Platform`。
+- **限制**:4024 專案(`TwinCAT OS (ARMT2)` project platform)在這裡**不會**得到 `ACTIVATE_FAILED`,見「環境矩陣」。
+
+### PLATFORM_NOT_FOUND
+
+- **現象**:`Set-TcTarget -Platform <name>` 回 `PLATFORM_NOT_FOUND`;`data.availablePlatforms`(`-Configuration` 那組 SolutionConfiguration 的不重複 platform)、`data.availableConfigurations` 列出現有的,`error.hint` 也列。
+- **為什麼**:名稱拼錯,或 solution 沒有這個 platform。platform 是從每個 SolutionConfiguration 的**第一個 SolutionContexts 項目**的 `PlatformName` 讀的(`SolutionConfiguration.PlatformName` 經 PowerShell COM binder 回空字串),所以列的是 project-context platform。4024 的 .sln 把 solution platform `TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)`,對它要 `TwinCAT OS (x64)` 也是這個碼。
+- **下一步**:用 `availablePlatforms` 的名稱重跑 `Set-TcTarget -AmsNetId <id> -Platform <name>`;4026 UmRT 是 `'TwinCAT OS (x64)'`,Windows RT 是 `'TwinCAT RT (x64)'`;`-Configuration` 預設 `Release`。4024 專案要在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform(見「環境矩陣」)。
+
+### PLATFORM_SET_FAILED
+
+- **為什麼**:`SolutionConfiguration.Activate()` 之後,`SolutionBuild.ActiveConfiguration.SolutionContexts` 讀回的 platform 不是要求的那個(切換沒生效,或 XAE 有 dialog)。
+- **下一步**:`Get-TcIdeInfo` 看 `solutionPlatform`;`Get-TcIdeModalDialog` 檢查 dialog;必要時在 XAE 工具列的 Solution Platforms 下拉手動選,再重跑 `Set-TcTarget -Platform`。
+
+### 成功時的 Set-TcTarget data
+
+`Set-TcTarget -AmsNetId <id> -Platform <name> [-Configuration Release]` 的 data:`platform`、`configuration`、`platformChanged`(bool)、`previousPlatform`、`availablePlatforms`。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`。MCP `SetTarget` 有 `Platform` / `Configuration` 參數;`RunLifecycle` 有 `Platform`(給了就在 SetTarget 步驟切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId)。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
 
 ## 已知限制
 
@@ -307,6 +375,10 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | Build 錯誤沒有編碼 | Error List 沒有 Code 欄,`errorItems[].code` 只對常見訊息推得(C0046 等),其餘 null | 用 description + file + line 判斷;需要編碼時查 InfoSys compiler errors |
 | UmRT 假 Run | 本機 UmRT 跑約 30 分鐘後 task 可能停止循環,但 ADS 仍回 Run | 讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就重啟 `TcSystemServiceUm` 後 `Enable-TcConfig -Force` |
 | Reset 殺 service | 對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm` | 不要對 UmRT 用 Reset;要清狀態改 Stop → `Enter-TcPlcOnline` 重新 download;真的 Reset 了就手動重啟 service |
+| UmRT crash(`TcSystemServiceUm` 消失,issue #21) | 簽章固定:`TcOsSys.dll` c0000005,offset 0x589534,bucket 1526877736441380629(dump `TcSystemServiceUm.exe.86180.dmp` / `.58132.dmp`)。crash #7 2026-10-20 22:09:40、#8 2026-10-21 00:57:15,兩次都在 6~9 s 前 `Boot\TCNC.bootdata` 被截成 0 bytes;#8 發生在已跑約 1 h 的 UmRT 做 set-config(port 10000 Config)時 | 重啟 `TcSystemServiceUm` 後 `Enable-TcConfig -Force`;根因在 UmRT 側,模組無法避免 |
+| UmRT ADS 0x502「Mailbox is full」 | 2026-10-21 約 01:02 新現象:UmRT process 活著、CPU idle,對 199.5.42.250.1.1 的**每個** ADS 呼叫都回 0x502(本機 TcSysSrv 正常),`Enable-TcConfig` 180 s 後回 `SYSTEM_STATE_TIMEOUT`。先 `Get-TcSystemState -AmsNetId 127.0.0.1.1.1` 對照本機 TcSysSrv 正常、target 不正常即是 | kill 並重啟 `TcSystemServiceUm`,再 `Enable-TcConfig -Force` |
+| 4024 專案跑不到 4026 UmRT | 4024 .sln 的 `Release/TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0;Build「成功」(1.4 s)什麼都沒 build、Activate 無 `ACTIVATE_FAILED`、851 維持 Invalid(`PLC_NOT_LOADED`);`Set-TcTarget -Platform 'TwinCAT OS (x64)'` 回 `PLATFORM_NOT_FOUND` | 在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 再 Build;或把專案升級到 4026 |
+| 被 modal 擋住的 IDE 會被當過期實例 | IDE 被 modal 擋住時 DTE `Version` 讀空字串,`Connect-TcIde` 當 ROT 過期項目,帶 `-SolutionPath` 會另外啟動第二個 IDE(VS2022 出現過一次,**未修**) | 重連前先 `Get-TcIdeModalDialog` / MCP `GetIdeModalDialog`;有 dialog 先處理;已多開就用 `data.candidates[]` / `Stop-Process` 收掉多的那個 |
 | 重新 download 後 index offset 錯位 | symbol 的 indexGroup/indexOffset 在每次 download 後可能改變;舊 handle 會讀到別的變數 | 不快取 offset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp` 是否變了,變了就重新 `Get-TcSymbols` |
 | UIA 看不到的 dialog 仍會擋 quit | 標題為空等 UIA 掃描抓不到的 modal,`Disconnect-TcIde -Quit` 的事前檢查看不到,`Solution.Close` / `DTE.Quit` 照樣無限阻塞;經 MCP 時會先撞到 `BRIDGE_TIMEOUT`,走不到 `-Kill` | `Stop-Process -Id <data.ideProcessId>`(MCP 結果的 `data.lastIde.ideProcessId`),再重新 `Connect-TcIde` |
 | FB `VAR_INPUT` 寫不進去 | PLC 每個 scan 覆寫 FB 輸入 | 在 MAIN 宣告獨立變數餵 FB,寫 MAIN 層級變數 |
@@ -316,3 +388,6 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ## 真機驗證腳本
 
 `tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。
+
+- `lifecycle-smoke.ps1 -SolutionPlatform '<name>'`:在 Connect 與 Build 之間多一步 `02b-platform`(`Set-TcTarget -Platform`);4026 UmRT 必帶 `'TwinCAT OS (x64)'`(B 組 35/35)。smoke 與 `multi-ide.ps1` 的 Clean 都改成 `Clean($false)` + 輪詢(VS2022 的 wait 版不返回)。
+- `mcp-server/scripts/lifecycle-client.mjs`(手動,需真 IDE + runtime):經 MCP server 跑 `RunLifecycle` → `GetSystemState` → 兩次 `ReadVariable`(task cycle counter 必須增加)→ `DisconnectIde Quit=true`。參數 `--sln`(必填)、`--progid`(預設 `VisualStudio.DTE.17.0`)、`--netid`、`--platform`、`--read <path>`;`--expect-fail <CODE> [--fail-platform <platform>]` 先跑一次帶 `Platform=<fail-platform>` 的 `RunLifecycle` 並要求該 error code(例 `--expect-fail ACTIVATE_FAILED --fail-platform "TwinCAT RT (x64)"`)。環境變數 `TWINCAT_MODULE_PATH`、`TWINCAT_MCP_POWERSHELL`;exit code = 失敗步驟數。

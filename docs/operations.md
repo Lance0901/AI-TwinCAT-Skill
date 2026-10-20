@@ -137,16 +137,24 @@ Links PLC variable to I/O channel.
 ## Build & Deploy
 
 ### Build-TcProject / `BuildProject`
-Builds PLC project.
+Builds PLC project (`Build($false)` + `BuildState` polling).
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| TimeoutSec | int | No | 600 | Polling limit; expiry returns `BUILD_TIMEOUT`. A modal dialog during the build returns `IDE_MODAL_DIALOG` |
 
 **Returns:** `{ errors, warnings, messages }`
 
 ### Set-TcTarget / `SetTarget`
-Sets target AMS Net ID.
+Sets target AMS Net ID and, with `Platform`, the active solution platform. In TwinCAT 4026 the solution platform must equal the target platform (local UmRT = `TwinCAT OS (x64)`, Windows RT target = `TwinCAT RT (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED`; `SetTargetNetId` alone does not change the platform.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| AmsNetId | string | Yes | Target AMS Net ID |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| AmsNetId | string | Yes | | Target AMS Net ID |
+| Platform | string | No | | Solution platform to activate, e.g. `TwinCAT OS (x64)`; omitted = platform untouched |
+| Configuration | string | No | Release | Solution configuration used with `Platform` |
+
+**Returns (with Platform):** `{ amsNetId, platform, configuration, platformChanged, previousPlatform, availablePlatforms }`; errors `PLATFORM_NOT_FOUND` (hint lists the available platforms), `PLATFORM_SET_FAILED`.
 
 ### Enable-TcConfig / `EnableConfig`
 Activates TwinCAT configuration.

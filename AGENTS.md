@@ -21,6 +21,9 @@ The full PLC lifecycle runs without any dialog popups:
 # 1. Connect to IDE (auto-opens solution if -SolutionPath given)
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
+# 1b. TwinCAT 4026: solution platform must equal the target platform (local UmRT = 'TwinCAT OS (x64)'), else ACTIVATE_FAILED
+Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
+
 # 2. Build
 Build-TcProject
 
@@ -42,7 +45,7 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 
 - **AmsNetId is dynamic** — it changes per target. Never hardcode it. `Connect-TcAds` auto-detects from the active IDE connection.
 - **All commands return JSON**: `{"success": true, "data": {...}}` or `{"success": false, "error": {"message": "...", "code": "..."}}`
-- **No dialogs**: `Enable-TcConfig -Force` uses ADS WriteControl. `Enter-TcPlcOnline` uses `Login(3)` flag.
+- **No dialogs**: `Enable-TcConfig -Force` uses ADS WriteControl. `Connect-TcIde` enables the global `SilentMode`; `Enter-TcPlcOnline` uses `Login(REGULAR=1)` (flag 3 is mutually exclusive and aborts; no `SILENT` flag by default).
 - **Write MAIN-level vars for FB testing** — PLC overwrites `VAR_INPUT` every scan cycle. Write standalone variables in MAIN that feed into FB calls.
 - **Correct lifecycle order**: Build -> Activate -> Login -> ADS Connect -> Start PLC -> Test (ADS port 851 only exists after Login+Download)
 
@@ -69,7 +72,7 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - `Get-TcProjectTree` — Get project structure
 
 ### Build & Deploy
-- `Build-TcProject` — Build (auto-retry on RPC busy); `data.errorItems[]` = Error List errors (description/file/line)
+- `Build-TcProject [-TimeoutSec 600]` — Build (auto-retry on RPC busy; polls `BuildState`, `BUILD_TIMEOUT` on expiry); `data.errorItems[]` = Error List errors (description/file/line), `data.buildSec`
 - `Get-TcBuildErrors [-IncludeWarnings] [-IncludeMessages]` — Read the XAE Error List via UI Automation
 - `Enable-TcConfig [-Force]` — Activate config via ADS
 - `Enter-TcPlcOnline` — Login + Download (no dialogs)
@@ -81,7 +84,7 @@ Errors: see `docs/troubleshooting.md` (error code table, lifecycle order, enviro
 - `Get-TcPlcState` — Read PLC state
 - `Set-TcSystemState -State <Run|Config>` — System state
 - `Get-TcSystemState` — Read system state
-- `Set-TcTarget -AmsNetId <id>` — Set target
+- `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release]` — Set target; `-Platform` activates a solution platform (4026 UmRT: `'TwinCAT OS (x64)'`)
 - `Get-TcIdeInfo` — IDE info
 
 ### ADS Variables
