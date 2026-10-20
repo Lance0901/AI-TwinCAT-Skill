@@ -173,7 +173,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | TwinCAT 4026 |
 | VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | TwinCAT 4026(與 64-bit XAE Shell 同一套 XAE;需本機已有 VS2022) |
 
-- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime(`TCATSysSrv` 4026.22、UmRT 4026.21)本機只有一個 UmRT_Default,三種 IDE 共用。 ADS DLL 在 4024 為 TwinCAT 安裝目錄下的 TwinCAT.Ads.dll,4026 為 package 內的版本(`Connect-TcAds` 的 `data.adsBackend` 會顯示實際載入的)。
+- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(`TcSystemServiceUm.exe` 檔案版本 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。 ADS DLL 在 4024 為 TwinCAT 安裝目錄下的 TwinCAT.Ads.dll,4026 為 package 內的版本(`Connect-TcAds` 的 `data.adsBackend` 會顯示實際載入的)。
 - Automation Interface(ITcSysManager、EnvDTE)三者相同;差別只在 IDE 抓取(ProgID)與 ADS DLL。
 - `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;指定 `-ProgId` 可鎖定。自行啟動 IDE 時會輪詢到 DTE 就緒(最長 60 s)才返回,失敗會回收孤兒程序並回 `IDE_LAUNCH_FAILED`;`data.ideProcessId` 是連上的 IDE pid。
 - `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
@@ -195,7 +195,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 
 ### 驗證紀錄 2026-10-18
 
-環境:32-bit XAE 4024 + UmRT 4026.21(本機,199.5.42.250.1.1)。
+環境:32-bit XAE 4024 + 本機 UmRT_Default(199.5.42.250.1.1)。
 
 2026-10-19:空 UmRT(沒有 application)情況下,`Enable-TcConfig -Force` 以 `Login(REGULAR)`(=1)+ 全域 `SilentMode` 建立 app 並下載(26 s),lifecycle-smoke 37/37;`-NoLogin` 後直接 `Set-TcPlcState Run` 正確回 `PLC_NOT_LOADED`。同日 23:27 對照:`Login(257)`(REGULAR|SILENT)0.5 s 返回但不建 app、851 仍 Invalid;`Login(260)`(FORCEDOWNLOAD|SILENT)下載 28 s 成功,但下一輪 `ActivateConfiguration()` 耗 250 s 後失敗,實為 32-bit XAE OutOfMemory crash(Visu 引擎,事件 1026),與旗標無關;`Login(3)` 旗標互斥 abort。
 
