@@ -1,8 +1,11 @@
 # UI Automation scan that runs INSIDE a separate runspace (see Get-TcIdeModalDialog and
 # the watchdog in Invoke-TcComRetry). It must be self-contained: no module functions,
 # no $script: state. Arguments: target process id, main window handle (0 = unknown),
-# max text length. Emits one PSCustomObject @{ Title; Text; ClassName; IsModal; Hwnd }
-# for the first dialog found, or nothing.
+# max text length. Emits one PSCustomObject @{ Title; Text; ClassName; IsModal; Hwnd; Buttons }
+# for the first dialog found, or nothing. Buttons (added 2026-10-20, additive) lists the
+# Win32 'Button' child windows of a #32770 dialog as @{ Id = <control id>; Name = <caption> }
+# (empty for any other window): the control id (IDOK 1, IDCANCEL 2, IDYES 6, IDNO 7 ...) is
+# what Close-TcMessageBox clicks; the caption is localized (zh-TW XAE: '&Y' style captions).
 #
 # Heuristics (a modal dialog blocks every DTE call, so this must be cheap and safe):
 #   - only top-level windows of the IDE process (TreeScope Children + ProcessIdProperty)
@@ -54,6 +57,43 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
             return $csb.ToString().Trim()
         }
         catch { return '' }
+    }
+
+    # Win32 'Button' children of a #32770 dialog: @(@{ Id; Name }). Language independent by
+    # design: the id is the dialog control id (GetDlgCtrlID), the name only informational.
+    function Get-TcScanButtons([long]$h) {
+        $list = New-Object System.Collections.ArrayList
+        if ($h -le 0) { return ,$list }
+        try {
+            if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanButtonNative').Type) {
+                Add-Type -Namespace TcAutomation -Name UiaScanButtonNative -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern int GetClassName(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern int GetDlgCtrlID(System.IntPtr hWnd);
+'@ -ErrorAction Stop
+            }
+            $native = [TcAutomation.UiaScanButtonNative]
+            $child = $native::GetWindow([IntPtr]$h, 5)   # GW_CHILD
+            $guard = 0
+            while ($child -ne [IntPtr]::Zero -and $guard -lt 64) {
+                $guard++
+                $csb = New-Object System.Text.StringBuilder 256
+                $null = $native::GetClassName($child, $csb, $csb.Capacity)
+                if ($csb.ToString() -eq 'Button') {
+                    $tsb = New-Object System.Text.StringBuilder 256
+                    $null = $native::GetWindowText($child, $tsb, $tsb.Capacity)
+                    $null = $list.Add(@{ Id = [int]$native::GetDlgCtrlID($child); Name = $tsb.ToString() })
+                }
+                $child = $native::GetWindow($child, 2)   # GW_HWNDNEXT
+            }
+        }
+        catch { }
+        return ,$list
     }
 
     $mainTitlePattern = '(^|\s-\s)(TcXaeShell|Microsoft Visual Studio)(\s+\(.+\))?$'
@@ -223,12 +263,16 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
     }
     catch { }
 
+    $buttons = @()
+    if ([string]$chosen.ClassName -eq '#32770') { $btnList = Get-TcScanButtons ([long]$chosen.Hwnd); $buttons = @($btnList) }
+
     [PSCustomObject]@{
         Title     = $title
         Text      = $text
         ClassName = $chosen.ClassName
         IsModal   = $chosen.IsModal
         Hwnd      = $chosen.Hwnd
+        Buttons   = $buttons
     }
 }
 
@@ -241,10 +285,18 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
 #                  AutoloadExternalChanges does not suppress it; a file that is NOT open is
 #                  picked up silently within ~5 s. Hint: IDE_MODAL_DIALOG_RELOAD (dismiss it,
 #                  then Reset-TcSolution = Solution.Close + Connect-TcIde reopen).
-#   unknown        everything else (hint IDE_MODAL_DIALOG).
+#                  ReloadTarget 'file'.
+#                  Also the XAE project prompt "The project file '...\x.plcproj' has been
+#                  modified outside of TwinCAT XAE. Do you want to reload the project?" (a
+#                  .plcproj rewritten on disk, e.g. by a generator, even with identical
+#                  content): same Kind, ReloadTarget 'project'. Reset-TcSolution answers Yes
+#                  to it (Close-TcMessageBox -Answer Yes; XAE reloads the project itself).
+#   unknown        everything else (hint IDE_MODAL_DIALOG), ReloadTarget $null.
 # ConvertTo-TcAdsErrorCode uses the same pattern on error messages (the watchdog puts the
 # dialog text into its IDE_MODAL_DIALOG exception).
-$script:TcReloadPromptPattern = '(?i)changed outside the (environment|source editor)|Reload the new file|want to reload it'
+$script:TcReloadPromptPattern = '(?i)changed outside the (environment|source editor)|Reload the new file|want to reload it|modified outside of TwinCAT XAE|want to reload the project'
+# Subset of the pattern above that identifies the PROJECT (.plcproj) prompt.
+$script:TcReloadProjectPattern = '(?i)modified outside of TwinCAT XAE|want to reload the project'
 
 function Get-TcModalDialogKind {
     <#
@@ -263,11 +315,33 @@ function Get-TcModalDialogKind {
     return 'unknown'
 }
 
+function Get-TcReloadTarget {
+    <#
+    .SYNOPSIS
+        For a reload prompt: 'project' (XAE "project file ... modified outside of TwinCAT
+        XAE. Do you want to reload the project?") or 'file' (VS "File has been changed
+        outside the environment. Reload the new file?"); $null for any other dialog.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [string]$Title = '',
+
+        [Parameter()]
+        [string]$Text = ''
+    )
+    $all = "$Title $Text"
+    if ($all -notmatch $script:TcReloadPromptPattern) { return $null }
+    if ($all -match $script:TcReloadProjectPattern) { return 'project' }
+    return 'file'
+}
+
 function Add-TcDialogKind {
     <#
     .SYNOPSIS
-        Normalises a dialog record to @{ Title; Text; Kind }, classifying it when Kind is
-        missing (the Invoke-TcComRetry watchdog runspace only produces @{ Title; Text }).
+        Normalises a dialog record to @{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons },
+        classifying it when Kind / ReloadTarget are missing (the Invoke-TcComRetry watchdog
+        runspace only produces the raw scan output).
     #>
     [CmdletBinding()]
     param(
@@ -297,7 +371,52 @@ function Add-TcDialogKind {
         else { $hp = $Dialog.PSObject.Properties['Hwnd']; if ($null -ne $hp) { $hwnd = [long]$hp.Value } }
     }
     catch { $hwnd = 0 }
-    return @{ Title = $title; Text = $text; Kind = $kind; Hwnd = $hwnd }
+    $target = $null
+    $buttons = @()
+    try {
+        if ($Dialog -is [System.Collections.IDictionary]) {
+            if ($Dialog.Contains('ReloadTarget')) { $target = $Dialog['ReloadTarget'] }
+            if ($Dialog.Contains('Buttons') -and $null -ne $Dialog['Buttons']) { $buttons = @($Dialog['Buttons']) }
+        }
+        else {
+            $tp = $Dialog.PSObject.Properties['ReloadTarget']; if ($null -ne $tp) { $target = $tp.Value }
+            $bp = $Dialog.PSObject.Properties['Buttons']; if ($null -ne $bp -and $null -ne $bp.Value) { $buttons = @($bp.Value) }
+        }
+    }
+    catch { $target = $null }
+    if ([string]::IsNullOrWhiteSpace([string]$target)) {
+        $target = if ($kind -eq 'reload-prompt') { Get-TcReloadTarget -Title $title -Text $text } else { $null }
+        # Kind 'reload-prompt' given without a matching text (should not happen): assume the file prompt.
+        if ($kind -eq 'reload-prompt' -and $null -eq $target) { $target = 'file' }
+    }
+    return @{ Title = $title; Text = $text; Kind = $kind; ReloadTarget = $target; Hwnd = $hwnd; Buttons = $buttons }
+}
+
+function ConvertTo-TcDialogButtonList {
+    <#
+    .SYNOPSIS
+        Converts scan button records (@{ Id; Name } hashtables or objects) into
+        [PSCustomObject]@{ id; name } for JSON output. Never throws.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object[]]$Buttons
+    )
+    $out = New-Object System.Collections.ArrayList
+    foreach ($b in @($Buttons)) {
+        if ($null -eq $b) { continue }
+        $id = 0
+        $name = ''
+        try {
+            if ($b -is [System.Collections.IDictionary]) { $id = [int]$b['Id']; $name = [string]$b['Name'] }
+            else { $id = [int]$b.Id; $name = [string]$b.Name }
+        }
+        catch { continue }
+        $null = $out.Add([PSCustomObject][ordered]@{ id = $id; name = $name })
+    }
+    return $out.ToArray()
 }
 
 function Get-TcIdeModalDialog {
@@ -308,9 +427,12 @@ function Get-TcIdeModalDialog {
     .DESCRIPTION
         Lists the top-level windows of the IDE process (default: $script:TcIdeProcessId
         stored by Connect-TcIde), excludes the main window and returns the first
-        window that looks like a dialog as @{ Title; Text; Kind } (Text = visible text,
-        at most 500 chars; Kind = 'reload-prompt' for the "changed outside the
-        environment / Reload the new file?" prompt, else 'unknown').
+        window that looks like a dialog as @{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons }
+        (Text = visible text, at most 500 chars; Kind = 'reload-prompt' for the VS
+        "changed outside the environment / Reload the new file?" prompt (ReloadTarget
+        'file') and for the XAE "project file ... modified outside of TwinCAT XAE. Do you
+        want to reload the project?" prompt (ReloadTarget 'project'), else 'unknown' with
+        ReloadTarget $null).
         Returns $null when the pid is unknown, the process does
         not exist, no dialog is open, or the scan does not finish within -TimeoutSec.
 
@@ -322,8 +444,11 @@ function Get-TcIdeModalDialog {
     .PARAMETER TimeoutSec
         Maximum time for the UIA scan. Default 5.
     .OUTPUTS
-        Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; Hwnd = [long] } or $null
-        (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt).
+        Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; ReloadTarget = [string|$null];
+        Hwnd = [long]; Buttons = @(@{ Id = [int]; Name = [string] }) } or $null
+        (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt /
+        Close-TcMessageBox. Buttons = Win32 button children of a #32770 message box, by control
+        id: 1 OK, 2 Cancel, 6 Yes, 7 No; empty for other windows).
     #>
     [CmdletBinding()]
     param(
@@ -387,11 +512,15 @@ function Get-TcIdeModalDialog {
         $text = [string]$first.Text
         $hwnd = [long]0
         try { $hwnd = [long]$first.Hwnd } catch { $hwnd = 0 }
+        $buttons = @()
+        try { $bp = $first.PSObject.Properties['Buttons']; if ($null -ne $bp -and $null -ne $bp.Value) { $buttons = @($bp.Value) } } catch { $buttons = @() }
         return @{
-            Title = $title
-            Text  = $text
-            Kind  = (Get-TcModalDialogKind -Title $title -Text $text)
-            Hwnd  = $hwnd
+            Title        = $title
+            Text         = $text
+            Kind         = (Get-TcModalDialogKind -Title $title -Text $text)
+            ReloadTarget = (Get-TcReloadTarget -Title $title -Text $text)
+            Hwnd         = $hwnd
+            Buttons      = $buttons
         }
     }
     catch {
@@ -414,7 +543,10 @@ function New-TcModalDialogResult {
     .PARAMETER Operation
         Name of the operation that was NOT attempted, for the message.
     .PARAMETER Data
-        Optional extra data; dialogTitle / dialogText / dialogKind are always added.
+        Optional extra data; dialogTitle / dialogText / dialogKind / dialogReloadTarget
+        ('file' | 'project' | $null) / dialogButtons (@{ id; name }) are always added, plus
+        data.dialog = @{ title; text; kind; reloadTarget; buttons } (same shape as the MCP
+        GetIdeModalDialog data.dialog).
         The hint is IDE_MODAL_DIALOG_RELOAD for Kind 'reload-prompt', else IDE_MODAL_DIALOG.
     #>
     [CmdletBinding()]
@@ -439,6 +571,16 @@ function New-TcModalDialogResult {
     $Data | Add-Member -NotePropertyName 'dialogTitle' -NotePropertyValue $title -Force
     $Data | Add-Member -NotePropertyName 'dialogText' -NotePropertyValue $text -Force
     $Data | Add-Member -NotePropertyName 'dialogKind' -NotePropertyValue $kind -Force
+    $Data | Add-Member -NotePropertyName 'dialogReloadTarget' -NotePropertyValue $rec.ReloadTarget -Force
+    $buttonsOut = @(ConvertTo-TcDialogButtonList -Buttons $rec.Buttons)
+    $Data | Add-Member -NotePropertyName 'dialogButtons' -NotePropertyValue $buttonsOut -Force
+    $Data | Add-Member -NotePropertyName 'dialog' -NotePropertyValue ([PSCustomObject][ordered]@{
+            title        = $title
+            text         = $text
+            kind         = $kind
+            reloadTarget = $rec.ReloadTarget
+            buttons      = $buttonsOut
+        }) -Force
 
     $hintCode = if ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
     New-TcResult -Success $false `

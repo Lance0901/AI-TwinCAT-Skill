@@ -20,6 +20,8 @@ const REAL_PROBE = path.join(__dirname, '..', 'bridge', 'modal-probe.ps1');
 const PROBE_PARENT = path.join(__dirname, 'fixtures', 'probe-parent.js');
 const HOST_WINDOW = path.join(__dirname, 'fixtures', 'host-window.ps1');
 const HOST_WINDOW_WPF = path.join(__dirname, 'fixtures', 'host-window-wpf.ps1');
+const DIALOG_ANSWER = path.join(__dirname, 'fixtures', 'dialog-answer.ps1');
+const MODULE_PATH = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
 
 function alive(pid) {
@@ -364,6 +366,58 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       assert.equal(dialogs[0].processId, host.pid);
       assert.ok(debug.some((d) => /seen \(1\/2\)/.test(d)), 'confirmation took two scans');
       assert.ok(elapsed < 8000, `took ${elapsed} ms`);
+    });
+
+    /** Run fixtures/dialog-answer.ps1 (module Get-TcIdeModalDialog / Close-TcMessageBox) and parse its JSON line. */
+    function dialogAnswer(args) {
+      return new Promise((resolve, reject) => {
+        const child = spawn(defaultPowershellPath(), ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', DIALOG_ANSWER, '-ModulePath', MODULE_PATH, ...args], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true
+        });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (d) => (out += d));
+        child.stderr.on('data', (d) => (err += d));
+        const t = setTimeout(() => (child.kill(), reject(new Error(`dialog-answer.ps1 timed out (stderr: ${err})`))), 60000);
+        child.on('close', (code) => {
+          clearTimeout(t);
+          const line = out.split(/\r?\n/).find((l) => l.startsWith('{'));
+          if (code !== 0 || !line) return reject(new Error(`dialog-answer.ps1 exit ${code}: ${out} ${err}`));
+          resolve(JSON.parse(line));
+        });
+      });
+    }
+
+    test('module Get-TcModalDialogKind / Get-TcReloadTarget: TcPOU prompt -> reload-prompt/file, plcproj prompt -> reload-prompt/project, other -> unknown/null', async () => {
+      const r = await dialogAnswer(['-Classify']);
+      assert.deepEqual(r, {
+        file: { kind: 'reload-prompt', reloadTarget: 'file' },
+        project: { kind: 'reload-prompt', reloadTarget: 'project' },
+        other: { kind: 'unknown', reloadTarget: null }
+      });
+    });
+
+    test('plcproj reload prompt (YesNo #32770): module scan -> reload-prompt/project with buttons 6/7; Close-TcMessageBox -Answer Yes clicks IDYES by control id', async () => {
+      const text = String.raw`The project file 'C:\p\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?`;
+      const host = await startHost(['-ShowMessageBox', '-YesNo', '-MessageTitle', 'TwinCAT XAE', '-MessageText', text], 'dialog');
+      const hostLines = [];
+      readline.createInterface({ input: host.stdout }).on('line', (l) => hostLines.push(l.trim()));
+      try {
+        await new Promise((r) => setTimeout(r, 500));
+        const r = await dialogAnswer(['-ProcessId', String(host.pid), '-Answer', 'Yes']);
+        assert.ok(r.dialog, JSON.stringify(r));
+        assert.equal(r.dialog.kind, 'reload-prompt');
+        assert.equal(r.dialog.reloadTarget, 'project');
+        assert.equal(r.dialog.title, 'TwinCAT XAE');
+        assert.ok(r.dialog.text.includes(String.raw`C:\p\plc\plc.plcproj`), `path kept in the text: ${r.dialog.text}`);
+        assert.deepEqual(r.dialog.buttons.map((b) => b.id).sort(), [6, 7], 'IDYES / IDNO by control id');
+        assert.equal(r.send.sent, true, JSON.stringify(r.send));
+        assert.equal(r.send.controlId, 6);
+        assert.ok(await waitFor(() => hostLines.includes('result Yes'), 5000), `host answered Yes (host: ${JSON.stringify(hostLines)})`);
+      } finally {
+        host.kill();
+      }
     });
 
     // The XAE main window is WPF: behind a modal its IsEnabled stays true and only

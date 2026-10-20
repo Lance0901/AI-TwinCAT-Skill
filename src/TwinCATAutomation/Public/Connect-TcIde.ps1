@@ -61,7 +61,13 @@ function Connect-TcIde {
     # Forget the pid / HWND of a previous connection: Invoke-TcComRetry checks that pid after an
     # RPC failure, and a stale pid (IDE that has since exited) would turn a busy call against the
     # new instance into a false IDE_CRASHED.
+    # An IDE this session launched stays 'owned' (Disconnect-TcIde -Kill) when a later
+    # Connect-TcIde (e.g. the Reset-TcSolution reconnect) picks the same process again.
+    $ownedLaunchedPid = 0
+    if ($script:TcIdeSelectedBy -eq 'launched' -and $null -ne $script:TcIdeProcessId) { try { $ownedLaunchedPid = [int]$script:TcIdeProcessId } catch { $ownedLaunchedPid = 0 } }
+    $script:TcIdeSelectedBy = $null
     $script:TcIdeProcessId = $null
+    $script:TcIdeStartTime = $null
     $script:TcIdeMainHwnd = 0
     $script:TcSolutionPath = $null
 
@@ -303,6 +309,8 @@ function Connect-TcIde {
     $script:TcProgId = $usedProgId
     $script:TcIdeConnected = $true
     $script:TcLastModalDialog = $null
+    # Who chose this instance; Disconnect-TcIde -Quit -Kill only kills an IDE this session launched.
+    $script:TcIdeSelectedBy = $selectionReason
 
     # IDE process id + main window handle (for Get-TcIdeModalDialog / the COM watchdog)
     $knownPid = 0
@@ -311,6 +319,10 @@ function Connect-TcIde {
     $script:TcIdeProcessId = if ($ideInfo.ProcessId -gt 0) { [int]$ideInfo.ProcessId } else { $null }
     $script:TcIdeMainHwnd = [long]$ideInfo.MainHwnd
     $ideProcessId = if ($null -ne $script:TcIdeProcessId) { $script:TcIdeProcessId } else { 0 }
+    if ($ownedLaunchedPid -gt 0 -and $ideProcessId -eq $ownedLaunchedPid) { $script:TcIdeSelectedBy = 'launched' }
+    # Start time of that process: Disconnect-TcIde -Kill compares it so a recycled pid is never killed.
+    $script:TcIdeStartTime = $null
+    if ($ideProcessId -gt 0) { try { $script:TcIdeStartTime = (Get-Process -Id $ideProcessId -ErrorAction Stop).StartTime } catch { $script:TcIdeStartTime = $null } }
     Write-Verbose "IDE process id $ideProcessId, main HWND $($ideInfo.MainHwnd)"
 
     $candidateSummary = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
@@ -454,6 +466,7 @@ function Connect-TcIde {
         solution            = $ideSolution
         sysManagerAvailable = $sysManagerAvailable
         selectedBy          = $selectionReason
+        ownedBySession      = ($script:TcIdeSelectedBy -eq 'launched')
         ideProcessId        = $ideProcessId
         silentMode          = $script:TcSilentMode
         candidates          = $candidateSummary

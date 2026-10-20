@@ -3,10 +3,15 @@
 # 'TwinCAT PLC Control' owned by the form is opened once the form is shown, so the form becomes
 # disabled exactly like the XAE main window behind a real modal dialog.
 # Writes "ready" (form shown) and "dialog" (just before the message box opens) to stdout.
+# -MessageText / -MessageTitle change the message box; -YesNo shows Yes / No buttons (like the
+# XAE project reload prompt) and "result <DialogResult>" is written once the box was answered.
 # Closes itself after -LifetimeSec so a test that dies never leaves the window behind.
 # Windows PowerShell 5.1, run with -STA, ASCII only, no BOM.
 param(
     [switch]$ShowMessageBox,
+    [string]$MessageText = 'Internal error in the PLC compiler (probe test).',
+    [string]$MessageTitle = 'TwinCAT PLC Control',
+    [switch]$YesNo,
     [string]$Title = 'Probe Host - TcXaeShell',
     [int]$LifetimeSec = 60
 )
@@ -36,7 +41,14 @@ $form.Add_Shown({
             $this.Stop()
             [Console]::Out.WriteLine('dialog')
             [Console]::Out.Flush()
-            $null = [System.Windows.Forms.MessageBox]::Show($form, 'Internal error in the PLC compiler (probe test).', 'TwinCAT PLC Control')
+            if ($YesNo) {
+                $answer = [System.Windows.Forms.MessageBox]::Show($form, $MessageText, $MessageTitle, [System.Windows.Forms.MessageBoxButtons]::YesNo)
+                [Console]::Out.WriteLine("result $answer")
+                [Console]::Out.Flush()
+            }
+            else {
+                $null = [System.Windows.Forms.MessageBox]::Show($form, $MessageText, $MessageTitle)
+            }
         })
         $t.Start()
     }
