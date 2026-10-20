@@ -105,6 +105,7 @@ Mandatory) are reported as `INVALID_PARAMS`, not `EXECUTION_ERROR`.
 An uncaught exception → `{"success":false,"error":{"code":"EXECUTION_ERROR","message":"<exception message>","hint":"..."}}`;
 if the exception message starts with a known code (`IDE_BUSY`, `IDE_TIMEOUT`,
 `IDE_MODAL_DIALOG`, …) that code is used instead of `EXECUTION_ERROR`.
+Tool-level codes pass through unchanged, e.g. `POU_NOT_FOUND` from `GetPouCode`/`WritePouCode` (POU not under `<Plc> Project`; `data.tried[]`, `data.projectChildren[]`). `GetProjectTree` takes `Depth` (integer 1-10, default 4) and `PlcOnly` (boolean).
 
 Streams 2 (error), 3 (warning), 4 (verbose), 5 (debug), 6 (information) are captured
 with redirection (`2>&1 3>&1 4>&1 5>&1 6>&1`) and emitted as log lines (level

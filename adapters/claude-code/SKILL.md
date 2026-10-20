@@ -70,13 +70,13 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態 |
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
 | `Open-TcProject -Path <sln>` | 開既有 solution |
-| `Get-TcProjectTree` | 專案樹 JSON |
+| `Get-TcProjectTree [-Depth 4] [-PlcOnly]` | 專案樹 JSON;含 `<Plc> Project` 下 POUs/DUTs/GVLs,節點 `path` 可直接當 `-PouPath`;`-PlcOnly` 只回 TIPC 子樹 |
 | `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>]` | 新增 POU |
 | `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL |
 | `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union>` | 新增 DUT |
 | `Add-TcLibrary -Name <lib>` | 加 library 參考 |
-| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation |
-| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼 |
+| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
+| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND` |
 | `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
@@ -156,6 +156,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `BUILD_FAILED` | 編譯錯誤(`data.failedProjects` > 0);`error.message` 含前 3 筆錯誤摘要,`data.errorItems[]` 是 Error List 全部錯誤(code/description/project/file/line) | 看 `data.errorItems`,修 code 後 `Build-TcProject`;不要在沒改東西的情況下重跑。若 `data.errorListError` = `ERRORLIST_UNAVAILABLE`,`errors` 退回 LastBuildInfo,改手動看 Error List |
 | `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
+| `POU_NOT_FOUND` | POU 名稱或 `-PouPath` 在 `<Plc> Project` 下找不到;`error.hint` 列出 `<Plc> Project` 第一層子節點,`data.tried[]` 是試過的路徑 | `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`;格式 `TIPC^<Plc>^<Plc> Project^POUs^<name>` |
 | `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
 | `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
@@ -210,7 +211,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 2. **Lifecycle 順序**:Build → `Enable-TcConfig -Force`(含 Login + PLC Run)→ `Connect-TcAds` → Read/Write/Test。port 851 只在 download 後存在。
 3. **Activate 後不要重連 IDE**:原 COM 參考在 TwinCAT XAR 重啟後仍有效;ADS 則會自動重連(看 `reconnected`)。
 4. **測 FB 時寫 MAIN 層級變數**:PLC 每個 scan 都會覆寫 FB 的 `VAR_INPUT`,ADS 寫進去馬上被蓋掉;在 MAIN 宣告獨立變數餵給 FB。
-5. **`Get/Write-TcPouCode` 用 `-PouPath`**:格式 `TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`。
+5. **`Get/Write-TcPouCode` 的 `-PouPath` 可省略**:省略會自動找(`POUs` → project 根 → 遞迴搜尋),`data.pouPath`/`resolvedBy` 回報命中位置。4024 與 4026 格式相同:`TIPC^<PlcName>^<PlcName> Project^POUs^<PouName>`(DUT 在 `DUTs`、GVL 在 `GVLs`)。找不到看 `POU_NOT_FOUND` 的 hint 或 `Get-TcProjectTree -PlcOnly`。
 6. **UmRT 假 Run**:本機 UmRT 跑約 30 分鐘後 task 可能停止循環但 ADS 仍顯示 Run;驗證時讀 `TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount` 兩次,沒動就是停了,重啟 `TcSystemServiceUm` 後重做 `Enable-TcConfig -Force`。
 7. **UmRT 不要 Reset**:對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm`,要手動重啟 service;要清狀態改用 Stop → `Enter-TcPlcOnline` 重新 download。
 8. **Build 失敗看 `data.errorItems`**:`Build-TcProject` 會用 UI Automation 讀 XAE Error List(`Get-TcBuildErrors`),每筆有 description/file/line;`code`(Cxxxx)是由描述推得,Error List 本身沒有 Code 欄,可能為 null。Build 成功時 `errorItems` 仍可能列出非 PLC code 的項目(例如 Library Manager 的「Could not open library '#System_VisuElem…'」placeholder 錯誤),看 `file` 分辨。注意 XAE 在 Build 前會自動存檔(Save all before build),`Write-TcPouCode` 後 Build 會寫到磁碟。不要盲目重跑 Build。
