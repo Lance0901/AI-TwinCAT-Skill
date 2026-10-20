@@ -5,8 +5,8 @@ function Read-TcVariable {
     .DESCRIPTION
         Every entry has path, value and type. By PLC type:
           BOOL / integers / REAL / LREAL / STRING    value is the typed scalar
-          TIME/TOD (ms), LTIME/LTOD (ns),
-          DATE/DT (s since 1970), LDATE/LDT (ns)    value is the raw integer, text is the IEC literal ("T#2s500ms", "DT#2026-10-20-12:30:00")
+          TIME/TOD, LTIME/LTOD, DATE/DT, LDATE/LDT  value is the IEC literal ("T#6s", "DT#2026-10-20-12:30:00"); the raw
+                                                    integer is in ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT) or unix (DATE/DT)
           enum                                      value is the integer, name is the member name (null + hint when unknown)
           STRUCT / ARRAY / other                    value is the raw byte array (int[]), size is the byte count
     .PARAMETER Path

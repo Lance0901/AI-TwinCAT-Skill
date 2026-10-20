@@ -8,15 +8,16 @@ function Write-TcVariable {
           SINT..ULINT, BYTE..LWORD   integer (JSON number or numeric string; no fraction, range checked)
           REAL/LREAL                 number or numeric string
           STRING                     string
-          TIME/TOD                   integer ms, or literal T#1m30s500ms / TOD#12:30:00.500
-          LTIME/LTOD                 integer ns, or literal LTIME#1us / LTOD#12:30:00.000000001
-          DATE/DT                    integer seconds since 1970, literal D#2026-10-20 / DT#2026-10-20-12:30:00,
-                                     or ISO 8601 (2026-10-20T12:30:00+08:00 is converted to UTC)
-          LDATE/LDT                  integer ns since 1970, or the L-literals / ISO 8601
+          TIME/TOD                   IEC literal T#6s / T#1m30s500ms / TOD#12:30:00.500 (integer ms also accepted)
+          LTIME/LTOD                 LTIME#1us / LTOD#12:30:00.000000001 (integer ns also accepted)
+          DATE/DT                    D#2026-10-20 / DT#2026-10-20-12:30:00 or ISO 8601 (2026-10-20T12:30:00+08:00
+                                     is converted to UTC); integer seconds since 1970 also accepted
+          LDATE/LDT                  the L-literals / ISO 8601 (integer ns since 1970 also accepted)
           enum                       integer, or the member name ("READY")
         STRUCT/ARRAY symbols are not written as a whole (TYPE_MISMATCH); write their members.
-        data.written is the value actually written (converted, not the input echoed);
-        time types add data.text (IEC literal), enums add data.name.
+        data.written is the value actually written (converted, not the input echoed): for time types the
+        normalized IEC literal (T#6000ms -> T#6s) plus the raw integer in data.ms / data.ns / data.unix;
+        enums add data.name.
     .PARAMETER Path
         Variable path (e.g., "MAIN.nSetpoint").
     .PARAMETER Value
@@ -51,7 +52,8 @@ function Write-TcVariable {
         # --- Decide how to convert (no ADS access yet, so a bad value never touches the PLC) ---
         $typed = $null          # value handed to WriteAny
         $written = $null        # value reported back
-        $text = $null           # IEC literal for time types
+        $rawField = $null       # ms / ns / unix for time types
+        $rawValue = $null
         $enumName = $null       # member name for enums
         $strLen = 0
 
@@ -60,8 +62,9 @@ function Write-TcVariable {
             if ($null -ne $timeType) {
                 $raw = ConvertFrom-TcIecLiteral -Value $Value -TypeInfo $timeType
                 $typed = if ($typeSize -ge 8) { [uint64]$raw } else { [uint32]$raw }
-                $written = $typed
-                $text = Format-TcIecLiteral -Raw $raw -TypeInfo $timeType
+                $written = Format-TcIecLiteral -Raw $raw -TypeInfo $timeType
+                $rawField = $timeType.Field
+                $rawValue = $typed
             }
             else {
                 switch -Regex ($upper) {
@@ -123,7 +126,7 @@ function Write-TcVariable {
             written = $written
             type    = $typeName
         }
-        if ($null -ne $text) { $data.text = $text }
+        if ($null -ne $rawField) { $data[$rawField] = $rawValue }
         if ($null -ne $enumName) { $data.name = $enumName }
         $data.reconnected = $reconnected
         New-TcResult -Success $true -Data ([PSCustomObject]$data)

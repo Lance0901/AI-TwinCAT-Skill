@@ -6,10 +6,11 @@ function Read-TcAdsSymbolValue {
     .SYNOPSIS
         Reads one symbol and converts it by PLC type. Returns an [ordered] hashtable:
           path, value, type                      always
-          text                                   TIME/LTIME/TOD/LTOD/DATE/LDATE/DT/LDT: IEC literal ("T#2s500ms")
+          ms / ns / unix                         TIME/TOD (ms), LTIME/LTOD/LDATE/LDT (ns), DATE/DT (unix seconds): the raw
+                                                 integer; value is the IEC literal ("T#6s", "DT#2026-10-20-12:30:00")
           name                                   enum: member name (null when unknown, see hint)
           size                                   STRUCT/ARRAY/unknown: byte count (value is the raw byte array as int[])
-          hint                                   only when a name/text could not be produced
+          hint                                   only when an enum member name could not be produced
         Throws on ADS errors (symbol not found, read failed); the caller maps them.
     .PARAMETER VarPath
         Symbol path.
@@ -30,8 +31,8 @@ function Read-TcAdsSymbolValue {
         if ($null -ne $timeType) {
             $raw = if ($typeSize -ge 8) { [uint64]$script:TcAdsClient.ReadAny($handle, [uint64]) }
                    else { [uint64]$script:TcAdsClient.ReadAny($handle, [uint32]) }
-            $entry.value = if ($typeSize -ge 8) { [uint64]$raw } else { [uint32]$raw }
-            $entry.text = Format-TcIecLiteral -Raw $raw -TypeInfo $timeType
+            $entry.value = Format-TcIecLiteral -Raw $raw -TypeInfo $timeType
+            $entry[$timeType.Field] = if ($typeSize -ge 8) { [uint64]$raw } else { [uint32]$raw }
             return $entry
         }
 

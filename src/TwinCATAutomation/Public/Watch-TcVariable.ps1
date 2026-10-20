@@ -13,8 +13,8 @@ function Watch-TcVariable {
     .PARAMETER TimeoutMs
         Max wait time for condition. Default: 5000.
     .NOTES
-        Samples use the Read-TcVariable conversion: {timestamp, value} plus text (IEC literal) for
-        TIME/DATE types and name (member name) for enums; finalValue stays the scalar value.
+        Samples use the Read-TcVariable conversion: {timestamp, value} plus ms/ns/unix (raw integer)
+        for TIME/DATE types (value is the IEC literal) and name (member name) for enums.
     #>
     [CmdletBinding()]
     param(

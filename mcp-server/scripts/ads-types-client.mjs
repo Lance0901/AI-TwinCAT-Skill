@@ -42,7 +42,7 @@ async function call(name, args, label) {
   const body = JSON.parse(res.content[0].text);
   const d = body.success ? body.data : body.error;
   const summary = body.success
-    ? Object.entries(d).filter(([k]) => ['value', 'text', 'name', 'written', 'type', 'size', 'code', 'sampleCount', 'enumValues'].includes(k))
+    ? Object.entries(d).filter(([k]) => ['value', 'ms', 'ns', 'unix', 'name', 'written', 'type', 'size', 'code', 'sampleCount', 'enumValues'].includes(k))
       .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ')
     : `${d.code}: ${d.message}`;
   rows.push({ step: label || name, ok: body.success, summary });
@@ -54,13 +54,14 @@ try {
   await call('ConnectAds', netId ? { AmsNetId: netId } : {}, 'ConnectAds');
   const first = await call('ReadVariable', { Path: [timeVar, enumVar, dtVar] }, 'ReadVariable x3');
   const orig = first.data.find((e) => e.path === timeVar);
-  console.log(`  ${timeVar} = ${orig.value} (${orig.text}); ${enumVar} = ${first.data[1].value} (${first.data[1].name}); ${dtVar} = ${first.data[2].text}`);
+  console.log(`  ${timeVar} = ${orig.value} (${orig.ms} ms); ${enumVar} = ${first.data[1].value} (${first.data[1].name}); ${dtVar} = ${first.data[2].value}`);
 
   await call('WriteVariable', { Path: timeVar, Value: 'T#2s500ms' }, `WriteVariable ${timeVar} "T#2s500ms"`);
   await call('ReadVariable', { Path: [timeVar] }, 'ReadVariable after literal');
   await call('WriteVariable', { Path: timeVar, Value: 3000 }, `WriteVariable ${timeVar} 3000`);
   await call('ReadVariable', { Path: [timeVar] }, 'ReadVariable after integer');
-  await call('WriteVariable', { Path: timeVar, Value: '3000' }, `WriteVariable ${timeVar} "3000" (string)`);
+  await call('WriteVariable', { Path: timeVar, Value: '3000' }, `WriteVariable ${timeVar} "3000" (numeric string)`);
+  await call('WriteVariable', { Path: timeVar, Value: 'T#6000ms' }, `WriteVariable ${timeVar} "T#6000ms" (normalized to T#6s)`);
   await call('WriteVariable', { Path: timeVar, Value: orig.value }, `WriteVariable ${timeVar} restore ${orig.value}`);
   const back = await call('ReadVariable', { Path: [timeVar] }, 'ReadVariable after restore');
   if (back.success && back.data.value !== orig.value) console.log(`  !! restore mismatch: ${back.data.value} != ${orig.value}`);

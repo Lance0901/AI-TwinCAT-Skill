@@ -87,9 +87,9 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Send-TcPlcProgram` | 上傳程式到 PLC(不 login) |
 | `Connect-TcAds [-AmsNetId <id>] [-Port 851]` | 連 ADS;data 有 `adsBackend` |
 | `Disconnect-TcAds` | 斷 ADS |
-| `Read-TcVariable -Path <sym>` | 讀變數(自動重連);`value` 依型別轉換,TIME/DATE 類另回 `text`(IEC 字面)、enum 另回 `name`、STRUCT 回 byte 陣列加 `size`(見下「型別對照」) |
-| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL、整數型、REAL/LREAL、STRING、TIME/LTIME/TOD/DATE/DT/LDT(整數或 `T#5s` 等字面)、enum(整數或成員名);`data.written` 是實際寫入的轉換值;STRUCT/ARRAY 回 `TYPE_MISMATCH`(自動重連) |
-| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Until <sb>] [-DurationMs <ms>] [-TimeoutMs <ms>]` | 輪詢直到條件成立或時間到(自動重連);samples 與 Read 同樣轉換(含 `text`/`name`) |
+| `Read-TcVariable -Path <sym>` | 讀變數(自動重連);`value` 依型別轉換,TIME/DATE 類回 IEC 字面(`"T#6s"`)另附 `ms`/`ns`/`unix` 整數、enum 另回 `name`、STRUCT 回 byte 陣列加 `size`(見下「型別對照」) |
+| `Write-TcVariable -Path <sym> -Value <v>` | 寫變數:BOOL、整數型、REAL/LREAL、STRING、TIME/LTIME/TOD/DATE/DT/LDT(IEC 字面 `T#6s`、`DT#2026-10-20-12:30:00`,整數 ms/ns/秒也收)、enum(整數或成員名);`data.written` 是實際寫入的轉換值(時間類回正規化字面,`T#6000ms` → `T#6s`);STRUCT/ARRAY 回 `TYPE_MISMATCH`(自動重連) |
+| `Watch-TcVariable -Path <sym> -IntervalMs <ms> [-Until <sb>] [-DurationMs <ms>] [-TimeoutMs <ms>]` | 輪詢直到條件成立或時間到(自動重連);samples 與 Read 同樣轉換(含 `ms`/`ns`/`unix`/`name`) |
 | `Get-TcSymbols [-Filter <wildcard>]` | 列 symbol,例如 `"MAIN.*"`;enum 型別多回 `enumValues`(成員名→值) |
 | `Get-TcPlcState` | PLC 狀態(port 851;自動重連) |
 | `Set-TcPlcState -State <Run\|Stop\|Reset> [-TimeoutSec <n>]` | 設 PLC 狀態,Run/Stop 輪詢到目標(預設 30 秒,Run 逾時回 `PLC_RUN_TIMEOUT`);Reset 對 UmRT 危險(見下) |
@@ -105,10 +105,10 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | PLC 型別 | 線上格式 | Read 回傳 | Write 接受 |
 |---|---|---|---|
-| TIME、TOD | UINT32 ms | `value` 毫秒 + `text`(`T#2s500ms`、`TOD#12:30:00`) | 整數 ms、`T#1m30s500ms`、`TOD#12:30:00.500`、`"3000"` |
-| LTIME、LTOD | UINT64 ns | `value` ns + `text`(`LTIME#1us`) | 整數 ns、`LTIME#…` |
-| DATE、DT | UINT32 秒(1970 起) | `value` 秒 + `text`(`D#2026-10-20`、`DT#2026-10-20-12:30:00`) | 整數秒、`D#…`/`DT#…`、ISO 8601(含時區偏移會換成 UTC) |
-| LDATE、LDT | UINT64 ns(1970 起) | `value` ns + `text` | 整數 ns、`LDT#…`、ISO 8601 |
+| TIME、TOD | UINT32 ms | `value` = `"T#6s"`、`"TOD#12:30:00"` + `ms` 整數 | `T#6s`、`T#1m30s500ms`、`TOD#12:30:00.500`(整數 ms 也收);`written` 回正規化字面 |
+| LTIME、LTOD | UINT64 ns | `value` = `"LTIME#1us"` + `ns` 整數 | `LTIME#…`、`LTOD#…`(整數 ns 也收) |
+| DATE、DT | UINT32 秒(1970 起) | `value` = `"D#2026-10-20"`、`"DT#2026-10-20-12:30:00"` + `unix` 整數 | `D#…`/`DT#…`、ISO 8601(含時區偏移會換成 UTC;整數 UNIX 秒也收) |
+| LDATE、LDT | UINT64 ns(1970 起) | `value` = `"LDT#…"` + `ns` 整數 | `LDT#…`、ISO 8601(整數 ns 也收) |
 | enum | 基底整數(預設 INT) | `value` 整數 + `name`(成員名;拿不到時 null + `hint`) | 整數或成員名(`"READY"`) |
 | STRUCT / ARRAY | raw bytes | `value` byte 陣列 + `size` | 不支援整筆寫(`TYPE_MISMATCH`),改寫個別成員 |
 

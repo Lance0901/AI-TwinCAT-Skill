@@ -6,21 +6,25 @@
 #   DATE, DT/DATE_AND_TIME           UINT32  seconds since 1970-01-01 00:00:00 (no time zone)
 #   LTIME, LTOD/LTIME_OF_DAY         UINT64  nanoseconds
 #   LDATE, LDT/LDATE_AND_TIME        UINT64  nanoseconds since 1970-01-01
+# Read/Write report these as the IEC literal ("T#6s", "DT#2026-10-20-12:30:00") in value/written and the
+# raw integer in an auxiliary field named by Field: ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT), unix (DATE/DT).
+# Read/Write report these as the IEC literal ("T#6s", "DT#2026-10-20-12:30:00") in value/written and the
+# raw integer in an auxiliary field named by Field: ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT), unix (DATE/DT).
 # Enums are their base integer type (INT by default); member names come from Get-TcEnumTable.
 
 $script:TcIecTimeTypes = @{
-    'TIME'           = @{ Kind = 'TIME';  Family = 'duration'; Unit = 'ms'; Bits = 32; Prefix = 'T#' }
-    'LTIME'          = @{ Kind = 'LTIME'; Family = 'duration'; Unit = 'ns'; Bits = 64; Prefix = 'LTIME#' }
-    'TOD'            = @{ Kind = 'TOD';   Family = 'tod';      Unit = 'ms'; Bits = 32; Prefix = 'TOD#' }
-    'TIME_OF_DAY'    = @{ Kind = 'TOD';   Family = 'tod';      Unit = 'ms'; Bits = 32; Prefix = 'TOD#' }
-    'LTOD'           = @{ Kind = 'LTOD';  Family = 'tod';      Unit = 'ns'; Bits = 64; Prefix = 'LTOD#' }
-    'LTIME_OF_DAY'   = @{ Kind = 'LTOD';  Family = 'tod';      Unit = 'ns'; Bits = 64; Prefix = 'LTOD#' }
-    'DATE'           = @{ Kind = 'DATE';  Family = 'date';     Unit = 's';  Bits = 32; Prefix = 'D#' }
-    'LDATE'          = @{ Kind = 'LDATE'; Family = 'date';     Unit = 'ns'; Bits = 64; Prefix = 'LDATE#' }
-    'DT'             = @{ Kind = 'DT';    Family = 'dt';       Unit = 's';  Bits = 32; Prefix = 'DT#' }
-    'DATE_AND_TIME'  = @{ Kind = 'DT';    Family = 'dt';       Unit = 's';  Bits = 32; Prefix = 'DT#' }
-    'LDT'            = @{ Kind = 'LDT';   Family = 'dt';       Unit = 'ns'; Bits = 64; Prefix = 'LDT#' }
-    'LDATE_AND_TIME' = @{ Kind = 'LDT';   Family = 'dt';       Unit = 'ns'; Bits = 64; Prefix = 'LDT#' }
+    'TIME'           = @{ Kind = 'TIME';  Family = 'duration'; Unit = 'ms'; Field = 'ms';   Bits = 32; Prefix = 'T#' }
+    'LTIME'          = @{ Kind = 'LTIME'; Family = 'duration'; Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LTIME#' }
+    'TOD'            = @{ Kind = 'TOD';   Family = 'tod';      Unit = 'ms'; Field = 'ms';   Bits = 32; Prefix = 'TOD#' }
+    'TIME_OF_DAY'    = @{ Kind = 'TOD';   Family = 'tod';      Unit = 'ms'; Field = 'ms';   Bits = 32; Prefix = 'TOD#' }
+    'LTOD'           = @{ Kind = 'LTOD';  Family = 'tod';      Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LTOD#' }
+    'LTIME_OF_DAY'   = @{ Kind = 'LTOD';  Family = 'tod';      Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LTOD#' }
+    'DATE'           = @{ Kind = 'DATE';  Family = 'date';     Unit = 's';  Field = 'unix'; Bits = 32; Prefix = 'D#' }
+    'LDATE'          = @{ Kind = 'LDATE'; Family = 'date';     Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LDATE#' }
+    'DT'             = @{ Kind = 'DT';    Family = 'dt';       Unit = 's';  Field = 'unix'; Bits = 32; Prefix = 'DT#' }
+    'DATE_AND_TIME'  = @{ Kind = 'DT';    Family = 'dt';       Unit = 's';  Field = 'unix'; Bits = 32; Prefix = 'DT#' }
+    'LDT'            = @{ Kind = 'LDT';   Family = 'dt';       Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LDT#' }
+    'LDATE_AND_TIME' = @{ Kind = 'LDT';   Family = 'dt';       Unit = 'ns'; Field = 'ns';   Bits = 64; Prefix = 'LDT#' }
 }
 
 # Literal prefix -> family (what the text after '#' looks like)
@@ -45,7 +49,7 @@ $script:TcIecIntegerTypeNames = @{
 function Get-TcIecTimeType {
     <#
     .SYNOPSIS
-        Returns the time/date descriptor (Kind/Family/Unit/Bits/Prefix) for a PLC type name, or $null.
+        Returns the time/date descriptor (Kind/Family/Unit/Field/Bits/Prefix) for a PLC type name, or $null.
     #>
     param([string]$TypeName)
     if ([string]::IsNullOrWhiteSpace($TypeName)) { return $null }
