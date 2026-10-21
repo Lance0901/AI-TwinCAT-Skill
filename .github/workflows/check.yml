@@ -1,0 +1,25 @@
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    # No TwinCAT on the runner: the module loads no TwinCAT DLL at import (TwinCAT.Ads.dll is
+    # loaded lazily by Find-TcAdsAssembly) and npm test needs no IDE / runtime.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: npm ci
+        working-directory: mcp-server
+        run: npm ci --no-audit --no-fund
+      - name: scripts/check.ps1
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
