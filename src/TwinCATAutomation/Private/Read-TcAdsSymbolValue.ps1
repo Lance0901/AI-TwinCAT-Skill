@@ -75,6 +75,20 @@ function Read-TcAdsSymbolValue {
             return $entry
         }
 
+        # Alias of STRING / BOOL / REAL / LREAL (e.g. T_MaxString, a STRING(255) member typed through a
+        # DUT alias): the type name is not a builtin, so decide by the ADS data type id of the symbol
+        # (ADST_REAL32 4, ADST_REAL64 5, ADST_STRING 30, ADST_BIT 33) when the size fits a scalar.
+        # Arrays keep the element id, hence the ARRAY / POINTER / REFERENCE exclusion (#32 item 6).
+        if ($upper -notmatch '^(ARRAY|POINTER TO|REFERENCE TO)\b') {
+            if ($typeId -eq 30 -and $typeSize -gt 0) {
+                $entry.value = $script:TcAdsClient.ReadAny($handle, [string], @([int]$typeSize))
+                return $entry
+            }
+            if ($typeId -eq 33 -and $typeSize -eq 1) { $entry.value = $script:TcAdsClient.ReadAny($handle, [bool]); return $entry }
+            if ($typeId -eq 4 -and $typeSize -eq 4) { $entry.value = $script:TcAdsClient.ReadAny($handle, [float]); return $entry }
+            if ($typeId -eq 5 -and $typeSize -eq 8) { $entry.value = $script:TcAdsClient.ReadAny($handle, [double]); return $entry }
+        }
+
         # STRUCT / ARRAY / POINTER / unknown: raw bytes
         $buffer = New-Object byte[] $typeSize
         $null = $script:TcAdsClient.Read($handle, $buffer)

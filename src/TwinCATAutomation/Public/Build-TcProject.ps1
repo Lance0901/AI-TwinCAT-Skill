@@ -30,9 +30,6 @@
               (file not like '*Library Manager', line > 0) = BUILD_FAILED;
           (c) when neither is readable: BUILD_STATUS_UNKNOWN (success = false) - look at
               the XAE Error List yourself before deciding.
-    .PARAMETER TimeoutSec
-        Maximum time in seconds to wait for the build to finish (BuildState = Done);
-        BUILD_TIMEOUT after that. Default 600.
     .OUTPUTS
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN
         data.errors          error count (Error List; fallback: failedProjects)
@@ -48,12 +45,47 @@
                              'plc' build ... failed" stay in the Error List as Warning)
         data.errorListError  only when the Error List could not be read (its error code)
         data.buildSec        seconds from Build($false) until BuildState reported Done
+
+        Coverage (#28): a solution Build only builds the projects that have a Build.0 entry
+        for the active solution configuration; a PLC project without it is silently skipped
+        and XAE still says "Build succeeded". Before the build the active solution
+        configuration's SolutionContexts are read through DTE (SolutionBuild.
+        ActiveConfiguration.SolutionContexts; SolutionContext.ShouldBuild "whether the
+        current project is built when the solution configuration associated with this
+        SolutionContext is selected",
+        https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-2013/1a52ztxh(v=vs.120)).
+        Every .plcproj context is one entry of data.projects (the .sln text is not parsed):
+          status  built    ShouldBuild and the build had no failed project
+                  skipped  ShouldBuild = false: not part of the active solution configuration
+                  failed   ShouldBuild and the build failed with an Error List row of this project
+                  unknown  ShouldBuild, the build failed but no row names this project
+        data.skippedProjects (names), data.coverageComplete (every PLC project 'built').
+        Skipped projects without -ExpectedProject: success stays as decided above, plus
+        data.warningCode = PROJECT_SKIPPED_BY_CONFIGURATION, data.warning and Write-Warning.
+        -ExpectedProject <name>: when one of them is skipped the build is not started and
+        PROJECT_SKIPPED_BY_CONFIGURATION is returned (success = false); a name that is no
+        PLC project of the solution returns EXPECTED_PROJECT_NOT_FOUND; one that ends
+        'failed' fails with BUILD_FAILED, one that ends 'unknown' with BUILD_COVERAGE_UNKNOWN.
+        When the contexts cannot be read data.coverageError is set, data.coverageComplete =
+        $false; with -ExpectedProject that is BUILD_COVERAGE_UNKNOWN.
+        Measured 2026-10-21 (4026 + VS2022): SolutionContext.ProjectName is the unique name
+        'RobustSolutionFrameworkDemo\FrameworkUnitTest\FrameworkUnitTest.plcproj'; the
+        PLC name is its file name without extension.
+    .PARAMETER TimeoutSec
+        Maximum time in seconds to wait for the build to finish (BuildState = Done);
+        BUILD_TIMEOUT after that. Default 600.
+    .PARAMETER ExpectedProject
+        PLC project name(s) that must take part in the build (e.g. 'FrameworkUnitTest').
+        Matched against the .plcproj file name (without extension).
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
         [ValidateRange(5, 7200)]
-        [int]$TimeoutSec = 600
+        [int]$TimeoutSec = 600,
+
+        [Parameter()]
+        [string[]]$ExpectedProject
     )
 
     try { Assert-TcConnection } catch {
@@ -68,6 +100,36 @@
     $dialog = Get-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
+    }
+
+    # --- coverage: which PLC projects the active solution configuration builds (#28) ---
+    try { $coverage = Get-TcBuildCoverage }
+    catch { return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build not started (reading SolutionContexts failed)' }
+    $expected = @($ExpectedProject | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
+    if ($expected.Count -gt 0) {
+        $covData = [PSCustomObject]@{
+            projects              = @($coverage.projects)
+            skippedProjects       = @($coverage.projects | Where-Object { $_.status -eq 'skipped' } | ForEach-Object { $_.name })
+            coverageComplete      = $false
+            expectedProjects      = $expected
+            solutionConfiguration = $coverage.configuration
+        }
+        if ($null -ne $coverage.error) {
+            $covData | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
+            return New-TcResult -Success $false -ErrorMessage "Build not started: the project list of the active solution configuration (SolutionContexts) could not be read ($($coverage.error)), so the participation of $($expected -join ', ') cannot be verified." `
+                -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $covData
+        }
+        $missing = @($expected | Where-Object { $null -eq (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_) })
+        if ($missing.Count -gt 0) {
+            $known = ($coverage.projects | ForEach-Object { $_.name }) -join ', '
+            return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($missing -join ', ') not in the solution (PLC projects: $known)." `
+                -ErrorCode 'EXPECTED_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'EXPECTED_PROJECT_NOT_FOUND') -Data $covData
+        }
+        $skippedExpected = @($expected | Where-Object { (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_).status -eq 'skipped' })
+        if ($skippedExpected.Count -gt 0) {
+            return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($skippedExpected -join ', ') are not built by the active solution configuration '$($coverage.configuration)' (no Build.0 entry / 'Build' unticked in Configuration Manager); a solution Build would report success without compiling them." `
+                -ErrorCode 'PROJECT_SKIPPED_BY_CONFIGURATION' -Hint (Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION') -Data $covData
+        }
     }
 
     try {
@@ -233,8 +295,36 @@
             }
         }
 
+        # --- per PLC project status (coverage read before the build) ---
+        $projects = @()
+        foreach ($p in @($coverage.projects)) {
+            $st = $p.status
+            if ($st -ne 'skipped') {
+                if ($buildSucceeded -eq $true) { $st = 'built' }
+                else {
+                    $pattern = "[\\/]$([regex]::Escape($p.name))[\\/]"
+                    $hit = @($codeErrors | Where-Object { [string]$_.project -ieq $p.name -or ([string]$_.file -match $pattern) })
+                    $st = if ($hit.Count -gt 0) { 'failed' } else { 'unknown' }
+                }
+            }
+            $projects += [PSCustomObject]@{
+                name          = $p.name
+                uniqueName    = $p.uniqueName
+                configuration = $p.configuration
+                platform      = $p.platform
+                shouldBuild   = $p.shouldBuild
+                status        = $st
+            }
+        }
+        $skippedProjects = @($projects | Where-Object { $_.status -eq 'skipped' } | ForEach-Object { $_.name })
+        $coverageComplete = ($null -eq $coverage.error) -and ($projects.Count -gt 0) -and (@($projects | Where-Object { $_.status -ne 'built' }).Count -eq 0)
+
         $data = [PSCustomObject]@{
             buildSucceeded = $buildSucceeded
+            projects       = $projects
+            skippedProjects = $skippedProjects
+            coverageComplete = $coverageComplete
+            solutionConfiguration = $coverage.configuration
             errors         = $errorCount
             warnings       = $warningCount
             messages       = $messages
@@ -254,6 +344,18 @@
         if ($severityUnknown) {
             $data | Add-Member -NotePropertyName 'severityUnknown' -NotePropertyValue $true
             $data | Add-Member -NotePropertyName 'unclassified' -NotePropertyValue @($el.data.unclassified)
+        }
+        if ($null -ne $coverage.error) {
+            $data | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
+        }
+        if ($skippedProjects.Count -gt 0) {
+            $warn = "Build-TcProject: PLC project(s) $($skippedProjects -join ', ') are not built by the active solution configuration '$($coverage.configuration)' (PROJECT_SKIPPED_BY_CONFIGURATION); their compiled output is stale. $(Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION')"
+            $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'PROJECT_SKIPPED_BY_CONFIGURATION'
+            $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $warn
+            Write-Warning $warn
+        }
+        if ($expected.Count -gt 0) {
+            $data | Add-Member -NotePropertyName 'expectedProjects' -NotePropertyValue $expected
         }
 
         if ($null -eq $buildSucceeded) {
@@ -289,6 +391,15 @@
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint (Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE') -Data $data
         }
         else {
+            # -ExpectedProject: each one must have been built (skipped was refused before the build)
+            $notBuilt = @($expected | ForEach-Object {
+                $e = Find-TcBuildCoverageEntry -Projects $projects -Name $_
+                if ($null -eq $e -or $e.status -ne 'built') { $_ }
+            })
+            if ($notBuilt.Count -gt 0) {
+                return New-TcResult -Success $false -ErrorMessage "Build finished but expected PLC project(s) $($notBuilt -join ', ') were not confirmed as built (see data.projects)." `
+                    -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $data
+            }
             New-TcResult -Success $true -Data $data
         }
     }

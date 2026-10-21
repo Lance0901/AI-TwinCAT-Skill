@@ -21,8 +21,9 @@ Set-TcTarget -AmsNetId <id> [-Platform <name>] (4026 XAE:solution platform 要�
       │                                          要帶 -Platform,只換 NetId 用 -NoPlatformSwitch;
       │                                          UmRT = 'TwinCAT OS (x64)'。4024 XAE 不檢查)
       ▼
-Build-TcProject
+Build-TcProject [-ExpectedProject <PLC>]
       │  BUILD_FAILED → 看 data.errorItems(Error List 明細);BUILD_TIMEOUT → 看 dialog
+      │  data.projects[] / coverageComplete;PLC project 沒在 Build 清單 → PROJECT_SKIPPED_BY_CONFIGURATION
       ▼
 Enable-TcConfig -Force [-Platform <name>]
   ├─ platform check(先於 deadline):solution platform vs target(TARGETINFO)/ -Platform
@@ -31,11 +32,12 @@ Enable-TcConfig -Force [-Platform <name>]
   ├─ Set-TcSystemState Config     ┐
   ├─ ActivateConfiguration        │  每步輪詢到目標才進下一步
   │    LastBuildInfo > 0 → ACTIVATE_FAILED(Check config failed,停在這步)
-  ├─ 等 port 10000 = Run          │  失敗回 steps[] 指出停在哪
-  ├─ Enter-TcPlcOnline (download) │  (-NoLogin 跳過以下三步)
-  ├─ 等 port 851 可達             │
-  ├─ Set-TcPlcState Run           │
-  ├─ 等 port 851 = Run            │
+  ├─ boot-package                 │  專案 _Boot vs target Boot(SHA-256)→ BOOT_PACKAGE_MISMATCH
+  ├─ 等 port 10000 = Run 且停住   │  失敗回 steps[] 指出停在哪(SYSTEM_STATE_MISMATCH)
+  ├─ 每個 PLC Enter-TcPlcOnline   │  (-NoLogin 跳過 login / Run)
+  ├─ 等各 PLC port 可達           │  851、852…(PLC 節點 <AdsPort>)
+  ├─ 各 PLC Run,等 = Run         │
+  ├─ verify:讀回 10000 + 各 PLC  │  不是 Run / 有 modal → RUNTIME_STATE_MISMATCH
   └─ 若之前有 ADS 連線 → 自動重連 ┘
       ▼
 Connect-TcAds                      (第一次;之後 cmdlet 自動重連)
@@ -47,6 +49,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 規則:
 
+- **整個 lifecycle 在同一個常駐 PowerShell session(或 MCP server)裡跑**。每步開一個新的 `powershell.exe`:行程結束時 COM 參考被釋放,`Connect-TcIde` 啟動的 XAE 會跟著關,後面的 Activate / Login 失去同一個 IDE session(#32)。
+- 多 PLC solution:`Enter-TcPlcOnline` / `Exit-TcPlcOnline` 要帶 `-PlcProjectPath <PLC 名稱>`(否則 `PLC_PROJECT_AMBIGUOUS`);`Enable-TcConfig -Force` 自己處理每個 PLC。
 - port 851 只在 download 後存在;download 前 `Connect-TcAds -Port 851` 必回 `ADS_PORT_NOT_FOUND`。
 - Activate 會重啟 TwinCAT XAR,所有既有 ADS 連線失效;IDE 的 COM 參考**不會**失效,不要重連 IDE。
 - 不要用 `Start-Sleep` 猜等待時間;所有等待都已在 cmdlet 內輪詢(`-TimeoutSec` 可調)。
@@ -138,6 +142,26 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | platform 切換檢查(直接 PowerShell) | VS2022 | RT → `ACTIVATE_FAILED` 4.7 s;OS → Run 10.9 s;未知 platform → `PLATFORM_NOT_FOUND` | 失敗 Activate 留下的 `LastBuildInfo` 會被下一次成功的 Activate 重設 |
 
 `ACTIVATE_FAILED`(issue #16)根因與驗證細節見該錯誤碼。
+
+### #28 / #32 沒成功卻回 success(2026-10-21,4026 + VS2022,本機 UmRT 199.5.42.250.1.1)
+
+測試 solution:`RobustSolutionFrameworkDemo` 複本加第二個 PLC `FrameworkUnitTest`(port 852),`tests/Integration/false-success.ps1`。
+
+| 情境 | 結果 |
+|---|---|
+| 移除 FrameworkUnitTest 的 `Build.0` → `Build-TcProject` | success,`coverageComplete = false`,FrameworkUnitTest `skipped`,`warningCode = PROJECT_SKIPPED_BY_CONFIGURATION` |
+| 同上 `-ExpectedProject FrameworkUnitTest` | `success = false`、`PROJECT_SKIPPED_BY_CONFIGURATION`,沒開始 Build |
+| 同上 `-ExpectedProject Untitled1` | success,`coverageComplete = false` |
+| 多 PLC `Enable-TcConfig -Force` | success:activate 4.0 s(獨立執行緒)、boot-package 6 檔 SHA-256 相同、851 / 852 各自 login + Run、verify 讀回全 Run |
+| `Enter-TcPlcOnline` / `Exit-TcPlcOnline` 不帶路徑 | `PLC_PROJECT_AMBIGUOUS` |
+| `Exit-TcPlcOnline -PlcProjectPath FrameworkUnitTest` | success,`adsPort = 852` |
+| port 852 讀 `MAIN.sAlias`(T_MaxString)、`MAIN.stAddr.port`、`_AppInfo.ProjectName` / `AdsPort`、`_TaskInfo[1].FirstCycle` | 全部是 scalar(alias STRING 依 ADS data type id 解碼) |
+| `Set-TcSystemState Run`(原本 Run) | success,`leftOriginal = true`,`latencyMs = 1411` |
+| `Set-TcSystemState Run`,另一個行程在進 Run 0.8 s 後送 Reconfig(模擬退回 Config) | `SYSTEM_STATE_MISMATCH`,trace `+7ms Run, +772ms Unreachable, +1555ms Config` |
+| target Boot 的 CurrentConfig 換回前一版、保留新 Port_852.app,`Set-TcSystemState Run` | system 進 Run 並停住,但 851 / 852 Invalid:只看 system state 會誤判,`Enable-TcConfig` 的 verify 擋得下 |
+| 鎖住 target `Boot\CurrentConfig.xml` 後 Activate(舊版程式碼) | `ActivateConfiguration()` 掛 17 分鐘;因此加了 `ACTIVATE_TIMEOUT`(mock 測試 `tests/Unit/activate-timeout.ps1` 6/6) |
+| lifecycle-smoke B(VS2022,RobustDemo-b,`TwinCAT OS (x64)`) | 37/37 |
+| lifecycle-smoke A(32-bit XAE 4024,TcFestoNoVisu) | 34/34 |
 
 ## 錯誤碼
 
@@ -241,6 +265,55 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
       -ArgumentList '-t bin -i path -n "UmRT_Default" -c .\3.1' `
       -WorkingDirectory 'C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\UmRT_Default'
   ```
+
+### SYSTEM_STATE_MISMATCH
+
+- **為什麼**:`Set-TcSystemState` 看到 port 10000 到了目標狀態,但接下來 `-SettleSec`(預設 3 s,每 250 ms 取樣)內離開過、或最後讀回不同(`data.stateTrace`、`data.readbackState`)。典型:runtime 進 Run 後因 PLC 啟動失敗退回 Config(#32:port 852 的 application 與 symbol description 不同版,ADS 1809)。以前只要瞬間看到 Run 就回 success。
+- **送出的 AdsState**:Run → `Reset`(2)、Config → `Reconfig`(16),`data.sentAdsState` / `sentAdsStateCode` 回報實際送出的值。[InfoSys TwinCAT.Ads `AdsState`](https://infosys.beckhoff.com/content/1033/tc3_ads.net/9408236299.html):Reset = 2、Run = 5、Config = 15、Reconfig = 16「System should restart in config mode」。哪個值讓 port 10000 重啟進 Run,InfoSys 未記載,實測(2026-10-21 本機 UmRT,`TcSystemServiceUm.exe` 3.1.0.2649):`Run`(5) 回 ADS 0x701「Service is not supported by server」;`Reset`(2) 0.3 s 斷線 → Stop → 1.3 s 到 Run;`Reconfig`(16) → Stop → 1.1 s 到 Config。所以「requestedState = Run、送 Reset」是設計,不是不一致。
+- **下一步**:`Get-TcIdeModalDialog` 看 XAE 有沒有「Target system reports a fatal error」;看 XAE Error List;本機 runtime 比對 Boot package(`Enable-TcConfig -Force` 會自動做,見 `BOOT_PACKAGE_MISMATCH`)。
+- **原狀態 = 目標**(Run → Run 重啟、Config → Config):送出後必須先看到 port 10000 離開該狀態(別的狀態或連不上,每 100 ms 讀,最多 10 s)才開始等目標;看不到就是 `SYSTEM_STATE_MISMATCH`(`data.leftOriginal = false`),不把舊狀態當成重啟完成。data 另有 `originalState`、`finalState`、`reached`、`held`、`latencyMs`。
+- **授權診斷**:`SYSTEM_STATE_TIMEOUT` / `SYSTEM_STATE_MISMATCH` 且狀態是 Config 時,讀 target 的授權伺服器(ADS port 30,[InfoSys AmsPort「R0_LicenseServer 30」](https://infosys.beckhoff.com/content/1033/tc3_ads.net/9408352011.html);同樣的資料 PLC 端用 [FB_GetLicenses](https://infosys.beckhoff.com/content/1031/tcplclib_tc2_utilities/1876715915.html) 讀)。有過期或無效的授權就寫進 `error.hint` 開頭,清單在 `data.licenses`(name / expires / status / valid / expired);讀不到就略過,不會變成新錯誤。index group(0x01010006 有效、0x0101000A 無效、0x0101000C 名稱)InfoSys 未記載,是實測(本機 UmRT:9 個 trial 授權,到期 2026-10-25)。
+
+### RUNTIME_STATE_MISMATCH
+
+- **為什麼**:`Enable-TcConfig -Force` 前面每一步都過了,最後的 `verify` 步驟讀回 port 10000 不是 Run、某個 PLC port(851、852…)不是 Run,或 IDE 有 modal dialog(`data.finalCheck = { systemState, plcs[], dialog, ok }`)。多 PLC solution 以前只看 851,852 起不來也回 success。
+- **data.diagnostics**(Activate 之後任何一步失敗都會附):`dialog`(modal 標題/內文)、`errorList`(XAE Error List 前 10 筆錯誤描述;有 dialog 時不讀)、`bootPackage`(重新比對一次)。
+- **下一步**:看 `diagnostics`;Boot package 不一致見下;dialog 是 fatal error 時看 Error List 的訊息(例如「The loaded symbol description does not match the plc application」)。
+
+### BOOT_PACKAGE_MISMATCH
+
+- **為什麼**:Activate 後專案 `_Boot\<platform>` 與 target Boot 目錄的檔案不一致,代表 Activate 沒把新 configuration 寫到 target,runtime 會用舊 package 啟動。比對 `CurrentConfig.xml`、`CurrentConfig.tszip`、`CurrentConfig\*.tpzip`、`Plc\Port_*.app`(只比本機 package 有的檔;target 多出來的 tpzip 列在 `extraOnTarget`,不算不一致),`data.bootPackage.files[]` 每檔有 local / target 的 `size`、`lastWriteTime`、`sha256`。
+- **只對本機 runtime**:UmRT 依 `%ProgramData%\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\TcRegistry.xml` 的 `AmsNetId`(BIN,`C7052AFA0101` = 199.5.42.250.1.1)找到 `<name>\3.1\Boot`(InfoSys 未記載,實測);本機 XAR 是 `%ProgramData%\Beckhoff\TwinCAT\3.1\Boot`([InfoSys 4026 起的 Boot 目錄](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/4291093003.html),4026 前是 `C:\TwinCAT\3.1\Boot`)。遠端 target `status = unavailable`,不阻擋流程。
+- **實測**(2026-10-21,4026 + VS2022,本機 UmRT):正常 Activate 後 6 個檔(2 個 CurrentConfig、2 個 tpzip、Port_851.app、Port_852.app)SHA-256 全相同。把 target 的 CurrentConfig 三個檔換回前一版、保留新的 Port_852.app 後 `Set-TcSystemState -State Run`:system 照樣進 Run 並停住,但 851 / 852 都是 Invalid(PLC 沒載入)→ 只看 system state 會誤判,`Enable-TcConfig -Force` 由 `verify` 擋下。
+- **下一步**:重跑 `Enable-TcConfig -Force`(Activate 會重寫 Boot);仍不一致時先備份 target Boot 目錄,再把 `_Boot\<platform>` 的上述檔案複製過去並比對 SHA-256。模組只讀不寫,不會自動覆寫 target 檔案。
+
+### ACTIVATE_TIMEOUT
+
+- **為什麼**:`ActivateConfiguration()` 在 `-ActivateTimeoutSec`(預設 180 s;`-Force` 時再受 `-TimeoutSec` 剩餘時間限制)內沒返回。以前這個 COM 呼叫在呼叫端執行緒同步執行,`Invoke-TcComRetry` 的 `-TimeoutSec` 只能在呼叫「失敗返回後」歸類成 `IDE_TIMEOUT`,中斷不了:2026-10-21 實測 target Boot 檔被鎖住時掛了 17 分鐘,VS2022 最後被 Windows 判定沒回應關掉,UmRT 也一起消失。現在 Activate 在另一個 STA runspace 執行(依 IDE pid 從 Running Object Table 取同一個 DTE,`Solution.Projects(i).Object` 取 `ITcSysManager`),主執行緒限時等待、每 2 s 掃 modal;逾時就放棄等待(呼叫本身停不掉,XAE 內部可能還在跑)。
+- **data.activateDiagnostics**:`dialog`(modal 標題/內文)、`ideAlive`、`ideResponding`(Windows 的「沒有回應」)、`runtimeAlive`(本機 UmRT 的 `TcSystemServiceUm.exe` 是否還在;非本機 UmRT 為 null)、`systemState`(port 10000 的 AdsState 或 unreachable)、`elapsedSec`。
+- **下一步**:依診斷處理:dialog → 處理視窗;`ideResponding = false` → `Disconnect-TcIde -Quit -Kill`(本 session 啟動的)後重新 `Connect-TcIde`;`runtimeAlive = false` → 照 `SYSTEM_STATE_TIMEOUT` 的指令重啟 UmRT 後 `Enable-TcConfig -Force`。
+
+### ADS_SYMBOL_VERSION_INVALID(ADS 0x711 / 1809)
+
+- **為什麼**:[InfoSys ADS Return Codes](https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html):0x711 = `ADSERR_DEVICE_SYMBOLVERSIONINVALID`「Invalid symbol version. This can occur due to an online change. Create a new handle.」;Activate 後出現時通常是 PLC application 與 symbol description 不同版(#32)。
+- **下一步**:`Connect-TcAds` 重取 handle;Activate 後才出現就看 `Enable-TcConfig` 的 `data.bootPackage` / `diagnostics`。
+
+### PLC_PROJECT_AMBIGUOUS
+
+- **為什麼**:`Enter-TcPlcOnline` / `Exit-TcPlcOnline` 沒給 `-PlcProjectPath`,solution 卻有多個 PLC project。以前直接拿 `TIPC` 的第一個 child,多 PLC 時登入/登出錯的 PLC(#32)。
+- **下一步**:`-PlcProjectPath FrameworkUnitTest`(PLC 名稱)、`TIPC^FrameworkUnitTest` 或 `TIPC^FrameworkUnitTest^FrameworkUnitTest Project` 都可以;`data.plcProjects` 列出 name / projectPath / adsPort。ADS port 取自 PLC 節點 `ProduceXml` 的 `<AdsPort>`(InfoSys 未記載,實測 851 / 852)。
+
+### PROJECT_SKIPPED_BY_CONFIGURATION
+
+- **為什麼**:solution Build 只編 active solution configuration 裡勾了 Build 的 project(.sln 的 `{guid}.<Config>|<Platform>.Build.0`)。PLC project 少了這行時 XAE 默默跳過、仍顯示 Build succeeded,Port 852 的產物還是舊的(#28)。`Build-TcProject` 在 Build 前讀 DTE `Solution.SolutionBuild.ActiveConfiguration.SolutionContexts`,每個 `.plcproj` 看 `ShouldBuild`([Microsoft Learn: SolutionContext.ShouldBuild](https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-2013/1a52ztxh(v=vs.120))「whether the current project is built when the solution configuration associated with this SolutionContext is selected」),不解析 .sln 文字。
+- **回傳**:`data.projects[]`(name、uniqueName、configuration、platform、shouldBuild、status = `built` / `skipped` / `failed` / `unknown`)、`data.skippedProjects[]`、`data.coverageComplete`(每個 PLC project 都是 built 才是 true)。沒帶 `-ExpectedProject`:success 照 build 結果,另外 `data.warningCode = PROJECT_SKIPPED_BY_CONFIGURATION` + `data.warning`(也會 Write-Warning)。帶 `-ExpectedProject FrameworkUnitTest` 且它被跳過:不開始 Build,直接 `success = false`、這個 code。
+- **solution Build、單一 project Build、compiler coverage 的差別**:solution Build(`Build-TcProject`)= 只編 `ShouldBuild = true` 的 project;單一 project Build(XAE 右鍵 Build / `SolutionBuild.BuildProject`)不受 Build.0 影響;compiler coverage = 這次 Build 實際編到哪些 PLC,看 `data.projects[].status`。
+- **下一步**:XAE Configuration Manager 把該 PLC project 的 Build 勾起來並存檔(會補回 Build.0),再 `Build-TcProject -ExpectedProject <name>`。
+
+### EXPECTED_PROJECT_NOT_FOUND / BUILD_COVERAGE_UNKNOWN
+
+- **EXPECTED_PROJECT_NOT_FOUND**:`-ExpectedProject` 的名稱不是這個 solution 的 PLC project(比對 .plcproj 檔名,不含副檔名;也收 `TIPC^<Plc>`),沒有開始 Build。用 `data.projects` 的 name。
+- **BUILD_COVERAGE_UNKNOWN**:帶了 `-ExpectedProject` 但無法確認它有被編到:SolutionContexts 讀不到(`data.coverageError`),或 Build 結果不是成功、Error List 又沒有那個 project 的列(status `unknown`)。不要當成 Build 成功。
 
 ### BUILD_FAILED
 
@@ -413,7 +486,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ## 真機驗證腳本
 
-`tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。
+`tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。`false-success.ps1`:#28 / #32 的真機情境(少 Build.0、多 PLC readback、nested 讀值、Run 退回 Config);`tests/Unit/activate-timeout.ps1`:Activate deadline 的 mock 測試,不需 IDE。
 
 - `lifecycle-smoke.ps1 -SolutionPlatform '<name>'`:在 Connect 與 Build 之間多一步 `02b-platform`(`Set-TcTarget -Platform`);`02-set-target` 改帶 `-NoPlatformSwitch`(只換 NetId,不會因 `PLATFORM_UNKNOWN` 失敗)。UmRT 必帶 `'TwinCAT OS (x64)'`(B 組 35/35;這台 UmRT 不支援 TARGETINFO)。smoke 與 `multi-ide.ps1` 的 Clean 都改成 `Clean($false)` + 輪詢(VS2022 的 wait 版不返回)。
 - `mcp-server/scripts/lifecycle-client.mjs`(手動,需真 IDE + runtime):經 MCP server 跑 `RunLifecycle` → `GetSystemState` → 兩次 `ReadVariable`(task cycle counter 必須增加)→ `DisconnectIde Quit=true`。參數 `--sln`(必填)、`--progid`(預設 `VisualStudio.DTE.17.0`)、`--netid`、`--platform`、`--read <path>`;`--expect-fail <CODE> [--fail-platform <platform>]` 先跑一次帶 `Platform=<fail-platform>` 的 `RunLifecycle` 並要求該 error code(例 `--expect-fail ACTIVATE_FAILED --fail-platform "TwinCAT RT (x64)"`)。環境變數 `TWINCAT_MODULE_PATH`、`TWINCAT_MCP_POWERSHELL`;exit code = 失敗步驟數。
