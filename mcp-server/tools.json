@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-20T21:22:53Z",
+    "generatedAt":  "2026-10-21T06:54:10Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -146,7 +146,7 @@
                   {
                       "name":  "BuildProject",
                       "cmdlet":  "Build-TcProject",
-                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes: the build is started asynchronously and SolutionBuild.BuildState is polled (the synchronous VS2022 call never returns); TimeoutSec (default 600) bounds the wait, after which BUILD_TIMEOUT is returned; a modal dialog that appears during the build is returned as IDE_MODAL_DIALOG. Requires ConnectIde with an open solution.",
+                      "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.errorItems / data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes: the build is started asynchronously and SolutionBuild.BuildState is polled (the synchronous VS2022 call never returns); TimeoutSec (default 600) bounds the wait, after which BUILD_TIMEOUT is returned; a modal dialog that appears during the build is returned as IDE_MODAL_DIALOG. Requires ConnectIde with an open solution. Coverage: data.projects lists every PLC project (.plcproj) with status built / skipped / failed / unknown (from the active solution configuration, DTE SolutionContext.ShouldBuild), data.skippedProjects and data.coverageComplete. A PLC project that the active solution configuration does not build (no Build.0 in the .sln) is skipped silently by XAE while it still says Build succeeded: the result keeps success but sets data.warningCode=PROJECT_SKIPPED_BY_CONFIGURATION and data.warning. ExpectedProject=[names] makes a skipped project a failure (PROJECT_SKIPPED_BY_CONFIGURATION, build not started), an unknown name EXPECTED_PROJECT_NOT_FOUND; use it whenever a specific PLC (e.g. a unit-test PLC) must be compiled.",
                       "timeoutMs":  660000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -161,7 +161,15 @@
                                                                                 "maximum":  7200,
                                                                                 "description":  "Maximum time in seconds to wait for the build to finish (BuildState = Done); BUILD_TIMEOUT after that. Default 600.",
                                                                                 "default":  600
-                                                                            }
+                                                                            },
+                                                             "ExpectedProject":  {
+                                                                                     "type":  "array",
+                                                                                     "items":  {
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                     "minItems":  1,
+                                                                                     "description":  "PLC project name(s) that must be compiled, e.g. [\"FrameworkUnitTest\"] (the .plcproj file name without extension). Skipped by the active solution configuration -> PROJECT_SKIPPED_BY_CONFIGURATION (build not started); not in the solution -> EXPECTED_PROJECT_NOT_FOUND."
+                                                                                 }
                                                          },
                                           "required":  [
 
@@ -278,7 +286,7 @@
                   {
                       "name":  "EnableConfig",
                       "cmdlet":  "Enable-TcConfig",
-                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. Before Activate the active solution platform is compared with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700; data.platformCheck='target'), else with Platform when given ('parameter'); on a mismatch the solution platform is switched and the project rebuilt (steps platform-fix, platform-fix-build; data.platformFixed=true; not part of TimeoutSec). NoPlatformFix=true returns PLATFORM_MISMATCH instead, before anything is activated. A target without TARGETINFO (ADS 0x702, e.g. the UmRT of TwinCAT 3.1.4026.21-22) and no Platform: platformCheck='skipped', data.warning set, Activate runs as before. data always has targetPlatform, targetPlatformSource (adsTargetInfo / unavailable), solutionPlatform, platformFixed, platformCheck. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: retry with Platform ('TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target).",
+                      "description":  "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. Before Activate the active solution platform is compared with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700; data.platformCheck='target'), else with Platform when given ('parameter'); on a mismatch the solution platform is switched and the project rebuilt (steps platform-fix, platform-fix-build; data.platformFixed=true; not part of TimeoutSec). NoPlatformFix=true returns PLATFORM_MISMATCH instead, before anything is activated. A target without TARGETINFO (ADS 0x702, e.g. the UmRT of TwinCAT 3.1.4026.21-22) and no Platform: platformCheck='skipped', data.warning set, Activate runs as before. data always has targetPlatform, targetPlatformSource (adsTargetInfo / unavailable), solutionPlatform, platformFixed, platformCheck. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: retry with Platform ('TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target). Multi-PLC: every PLC project (or PlcProjectPath) is logged in and started on its own ADS port (851, 852, ...; data.plcs). After Activate the project _Boot package is compared with the Boot folder of a target on this PC (data.bootPackage, BOOT_PACKAGE_MISMATCH). Step verify reads back port 10000 and every PLC port at the end and checks for a modal dialog: anything not Run is RUNTIME_STATE_MISMATCH (data.finalCheck), never success; failures after Activate carry data.diagnostics (dialog, Error List rows, bootPackage).",
                       "timeoutMs":  600000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -309,7 +317,22 @@
                                                              "Platform":  {
                                                                               "type":  "string",
                                                                               "description":  "Reference platform used only when the target does not report one through TARGETINFO (ADS 0x702): 'TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target. A platform the target reports wins."
-                                                                          }
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "array",
+                                                                                    "items":  {
+                                                                                                  "type":  "string"
+                                                                                              },
+                                                                                    "minItems":  1,
+                                                                                    "description":  "PLC project(s) to log in and start, by name ([\"FrameworkUnitTest\"]) or tree path. Default: every PLC project of the solution."
+                                                                                },
+                                                             "ActivateTimeoutSec":  {
+                                                                                        "type":  "integer",
+                                                                                        "minimum":  10,
+                                                                                        "maximum":  3600,
+                                                                                        "description":  "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever.",
+                                                                                        "default":  180
+                                                                                    }
                                                          },
                                           "required":  [
 
@@ -631,7 +654,7 @@
                   {
                       "name":  "PlcLogin",
                       "cmdlet":  "Enter-TcPlcOnline",
-                      "description":  "Login to the PLC project and download the program in one call (Login flag 3, no dialogs). Use after a successful BuildProject when TwinCAT is already in Run; EnableConfig Force=true already includes this step.",
+                      "description":  "Login to the PLC project and download the program in one call (PLC_LOGIN_FLAGS Regular, prompts answered by SilentMode, no dialogs). Use after a successful BuildProject when TwinCAT is already in Run; EnableConfig Force=true already includes this step. With several PLC projects pass PlcProjectPath (PLC name such as FrameworkUnitTest or tree path); without it PLC_PROJECT_AMBIGUOUS is returned instead of logging into the first PLC. data.adsPort is the PLC's ADS port.",
                       "timeoutMs":  300000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -642,7 +665,7 @@
                                           "properties":  {
                                                              "PlcProjectPath":  {
                                                                                     "type":  "string",
-                                                                                    "description":  "Tree path to PLC project. Default auto-detects from TIPC."
+                                                                                    "description":  "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
                                                                                 },
                                                              "LoginMode":  {
                                                                                "type":  "string",
@@ -656,6 +679,13 @@
                                                                            },
                                                              "SilentFlag":  {
                                                                                 "type":  "boolean"
+                                                                            },
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  1,
+                                                                                "maximum":  3600,
+                                                                                "description":  "Expected upper bound of the Login COM call (Invoke-TcComRetry -TimeoutSec), default 300. Enable-TcConfig passes the rest of its overall -TimeoutSec budget.",
+                                                                                "default":  300
                                                                             }
                                                          },
                                           "required":  [
@@ -667,7 +697,7 @@
                   {
                       "name":  "PlcLogout",
                       "cmdlet":  "Exit-TcPlcOnline",
-                      "description":  "Log out of the PLC project (the runtime keeps running).",
+                      "description":  "Log out of the PLC project (the runtime keeps running). With several PLC projects pass PlcProjectPath (PLC name or tree path); without it PLC_PROJECT_AMBIGUOUS. data.plcProjectPath / data.adsPort tell which PLC was logged out.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -677,7 +707,8 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "PlcProjectPath":  {
-                                                                                    "type":  "string"
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
                                                                                 }
                                                          },
                                           "required":  [
@@ -862,7 +893,7 @@
                   {
                       "name":  "SetSystemState",
                       "cmdlet":  "Set-TcSystemState",
-                      "description":  "Switch TwinCAT to Run or Config via ADS WriteControl (no StartRestartTwinCAT dialog) and poll until the state is reached. Switching to Config stops the runtime: all outputs go to zero. Does not download the PLC program; EnableConfig Force=true is the usual choice.",
+                      "description":  "Switch TwinCAT to Run or Config via ADS WriteControl (no StartRestartTwinCAT dialog) and poll until the state is reached. Switching to Config stops the runtime: all outputs go to zero. Does not download the PLC program; EnableConfig Force=true is the usual choice. Run sends AdsState Reset (2) and Config sends Reconfig (16) on port 10000 (data.sentAdsState; Run (5) is refused there with ADS 0x701). After the target state is seen it must hold for SettleSec (default 3 s) and is read back (data.readbackState, data.stateTrace): a runtime that falls back to Config (e.g. ADS 1809 symbol version invalid) returns SYSTEM_STATE_MISMATCH, never success. When the original state equals the target (Run -> Run restart) the system must first be seen leaving it. data: originalState, finalState, reached, held, leftOriginal, latencyMs; when it stays in / falls back to Config the license server (ADS port 30) is read and expired / invalid licenses are put into error.hint and data.licenses.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -887,7 +918,14 @@
                                                                                 "type":  "integer",
                                                                                 "description":  "Maximum time to wait for the target state. Default 60.",
                                                                                 "default":  60
-                                                                            }
+                                                                            },
+                                                             "SettleSec":  {
+                                                                               "type":  "integer",
+                                                                               "minimum":  0,
+                                                                               "maximum":  60,
+                                                                               "description":  "Seconds the reached state must hold before success (sampled every 250 ms, then read back). Default 3; 0 = final readback only.",
+                                                                               "default":  3
+                                                                           }
                                                          },
                                           "required":  [
                                                            "State"

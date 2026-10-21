@@ -2,6 +2,18 @@ function Exit-TcPlcOnline {
     <#
     .SYNOPSIS
         Logs out from the PLC runtime.
+    .DESCRIPTION
+        The PLC is looked up like Enter-TcPlcOnline. -PlcProjectPath accepts the PLC name
+        ('FrameworkUnitTest'), the PLC node path ('TIPC^FrameworkUnitTest') or the project
+        path ('TIPC^FrameworkUnitTest^FrameworkUnitTest Project'). Without it a solution
+        with one PLC uses that PLC; a solution with several PLC projects returns
+        PLC_PROJECT_AMBIGUOUS (the old code took TIPC.Child(1) and logged out of the wrong
+        PLC or failed, #32).
+    .PARAMETER PlcProjectPath
+        PLC name or tree path. Required when the solution has more than one PLC project.
+    .OUTPUTS
+        data: online, plcProjectPath (the project actually logged out), plcName, adsPort
+        (<AdsPort> of the PLC node, $null when unknown), logoutVia, message
     #>
     [CmdletBinding()]
     param(
@@ -21,18 +33,34 @@ function Exit-TcPlcOnline {
     try {
         # Same lookup as Enter-TcPlcOnline: the "<Plc> Project" tree item exposes Logout()
         # directly. The old TIPC.Child(1).Object path returns $null after a TwinCAT restart.
+        $plcList = @(Get-TcPlcProjectList -SysManager $sm)
+        $plcEntry = $null
         if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
             try {
-                $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm
+                $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm -RequireSingle
             }
             catch {
-                if ($_.Exception.Message -match '^PLC_PROJECT_NOT_FOUND') {
+                if ($_.Exception.Message -match '^(PLC_PROJECT_NOT_FOUND|PLC_PROJECT_AMBIGUOUS)') {
+                    $code = $Matches[1]
                     return New-TcResult -Success $false `
-                        -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_NOT_FOUND:\s*', '') `
-                        -ErrorCode 'PLC_PROJECT_NOT_FOUND'
+                        -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_[A-Z_]+:\s*', '') `
+                        -ErrorCode $code -Hint (Get-TcErrorHint -Code $code) `
+                        -Data ([PSCustomObject]@{ plcProjects = $plcList })
                 }
                 throw
             }
+            $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
+        }
+        else {
+            $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
+            if ($null -eq $plcEntry) {
+                return New-TcResult -Success $false `
+                    -ErrorMessage "PLC project '$PlcProjectPath' not found. PLC projects: $(($plcList | ForEach-Object { $_.projectPath }) -join ', ')" `
+                    -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND') `
+                    -Data ([PSCustomObject]@{ plcProjects = $plcList })
+            }
+            # a bare PLC name / node path is turned into the "<Plc> Project" item
+            if ($PlcProjectPath -ieq $plcEntry.name -or $PlcProjectPath -ieq $plcEntry.nodePath) { $PlcProjectPath = $plcEntry.projectPath }
         }
         $plcProject = Invoke-TcComRetry -OperationName "LookupTreeItem $PlcProjectPath" -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem($PlcProjectPath) }
         if ($null -eq $plcProject) {
@@ -85,6 +113,8 @@ function Exit-TcPlcOnline {
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             online         = $false
             plcProjectPath = $PlcProjectPath
+            plcName        = if ($null -ne $plcEntry) { $plcEntry.name } else { $null }
+            adsPort        = if ($null -ne $plcEntry) { $plcEntry.adsPort } else { $null }
             logoutVia      = $loggedOutVia
             message        = 'Logged out from PLC runtime.'
         })

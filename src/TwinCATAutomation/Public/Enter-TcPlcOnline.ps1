@@ -39,15 +39,22 @@
         "online change / download" prompt; Enable-TcConfig is not affected (login happens
         after the restart). Use -LoginMode Download / OnlineChange explicitly when that matters.
     .PARAMETER PlcProjectPath
-        Tree path to PLC project. Default auto-detects from TIPC.
+        PLC name ('FrameworkUnitTest'), PLC node path ('TIPC^FrameworkUnitTest') or project
+        path ('TIPC^FrameworkUnitTest^FrameworkUnitTest Project'). Optional when the solution
+        has one PLC project; with several PLC projects PLC_PROJECT_AMBIGUOUS is returned
+        instead of logging into the first one (#32). The PLC state before/after is read on
+        that PLC's own ADS port (<AdsPort> of the PLC node, 851 when unknown).
     .PARAMETER LoginMode
         Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has
         no program (XAE decides). Download: FORCEDOWNLOAD - always a full download
         (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE.
         SILENT (256) is only OR-ed in with -SilentFlag.
+    .PARAMETER TimeoutSec
+        Expected upper bound of the Login COM call (Invoke-TcComRetry -TimeoutSec), default 300.
+        Enable-TcConfig passes the rest of its overall -TimeoutSec budget.
     .OUTPUTS
-        data: online, plcProjectPath, loginMode, loginFlags, message, downloaded,
-              plcStateBefore, plcStateAfter
+        data: online, plcProjectPath, plcName, adsPort, loginMode, loginFlags, message,
+              downloaded, plcStateBefore, plcStateAfter
     #>
     [CmdletBinding()]
     param(
@@ -59,7 +66,11 @@
         [string]$LoginMode = 'Regular',
 
         [Parameter()]
-        [switch]$SilentFlag
+        [switch]$SilentFlag,
+
+        [Parameter()]
+        [ValidateRange(1, 3600)]
+        [int]$TimeoutSec = 300
     )
 
     # PLC_LOGIN_FLAGS. SILENT (256) is NOT added by default: measured 2026-10-19 on an empty
@@ -84,16 +95,16 @@
 
     # AdsState of port 851 as [int] (Invalid=0 ... Run=5, Stop=6) or $null when unreachable.
     function Get-TcQuietPlcState {
-        param([string]$NetId)
+        param([string]$NetId, [int]$Port = 851)
         if ([string]::IsNullOrWhiteSpace($NetId)) { return $null }
         try {
             if ($script:TcAdsConnected -and $null -ne $script:TcAdsClient -and
-                $script:TcAdsAmsNetId -eq $NetId -and [int]$script:TcAdsPort -eq 851) {
+                $script:TcAdsAmsNetId -eq $NetId -and [int]$script:TcAdsPort -eq $Port) {
                 return [int]$script:TcAdsClient.ReadState().AdsState
             }
             $tmp = $null
             try {
-                $tmp = New-TcAdsClient -AmsNetId $NetId -Port 851
+                $tmp = New-TcAdsClient -AmsNetId $NetId -Port $Port
                 return [int]$tmp.ReadState().AdsState
             }
             finally {
@@ -101,7 +112,7 @@
             }
         }
         catch {
-            Write-Verbose "Enter-TcPlcOnline: port 851 state unreadable ($($_.Exception.Message))"
+            Write-Verbose "Enter-TcPlcOnline: port $Port state unreadable ($($_.Exception.Message))"
             return $null
         }
     }
@@ -113,20 +124,38 @@
     }
 
     try {
+        $plcList = @(Get-TcPlcProjectList -SysManager $sm)
+        $plcEntry = $null
         if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
-            # Auto-detect: TIPC -> first PLC -> "<Plc> Project" (shared with Exit-TcPlcOnline)
+            # Auto-detect: the only PLC -> "<Plc> Project" (shared with Exit-TcPlcOnline);
+            # several PLC projects -> PLC_PROJECT_AMBIGUOUS
             try {
-                $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm
+                $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm -RequireSingle
             }
             catch {
-                if ($_.Exception.Message -match '^PLC_PROJECT_NOT_FOUND') {
+                if ($_.Exception.Message -match '^(PLC_PROJECT_NOT_FOUND|PLC_PROJECT_AMBIGUOUS)') {
+                    $code = $Matches[1]
                     return New-TcResult -Success $false `
-                        -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_NOT_FOUND:\s*', '') `
-                        -ErrorCode 'PLC_PROJECT_NOT_FOUND'
+                        -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_[A-Z_]+:\s*', '') `
+                        -ErrorCode $code -Hint (Get-TcErrorHint -Code $code) `
+                        -Data ([PSCustomObject]@{ plcProjects = $plcList })
                 }
                 throw
             }
+            $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
         }
+        else {
+            $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
+            if ($null -eq $plcEntry) {
+                return New-TcResult -Success $false `
+                    -ErrorMessage "PLC project '$PlcProjectPath' not found. PLC projects: $(($plcList | ForEach-Object { $_.projectPath }) -join ', ')" `
+                    -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND') `
+                    -Data ([PSCustomObject]@{ plcProjects = $plcList })
+            }
+            if ($PlcProjectPath -ieq $plcEntry.name -or $PlcProjectPath -ieq $plcEntry.nodePath) { $PlcProjectPath = $plcEntry.projectPath }
+        }
+        $plcPort = if ($null -ne $plcEntry -and $null -ne $plcEntry.adsPort) { [int]$plcEntry.adsPort } else { 851 }
+        $plcName = if ($null -ne $plcEntry) { $plcEntry.name } else { $null }
 
         Write-Verbose "Login to: $PlcProjectPath"
 
@@ -140,7 +169,7 @@
         $netId = $null
         try { $netId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { if ($_.Exception.Message -match 'IDE_CRASHED') { throw }; $netId = $null }
         if ([string]::IsNullOrWhiteSpace($netId)) { $netId = $script:TcAdsAmsNetId }
-        $stateBefore = Get-TcQuietPlcState -NetId $netId
+        $stateBefore = Get-TcQuietPlcState -NetId $netId -Port $plcPort
 
         # Use LookupTreeItem with full path — this returns an ITcSmTreeItem
         # that reliably exposes Login(nFlags) method
@@ -152,9 +181,9 @@
             Write-Warning 'Enter-TcPlcOnline: ITcAutomationSettings.SilentMode is not enabled on this IDE; Login may block on a dialog when the runtime has no application.'
         }
         Write-Verbose "Login flags: $loginFlags ($LoginMode$(if ($SilentFlag) { ' | SILENT' }))"
-        Invoke-TcComRetry -OperationName "Login($loginFlags)" -TimeoutSec 300 -ScriptBlock { $plcProject.Login($loginFlags) } | Out-Null
+        Invoke-TcComRetry -OperationName "Login($loginFlags)" -TimeoutSec $TimeoutSec -ScriptBlock { $plcProject.Login($loginFlags) } | Out-Null
 
-        $stateAfter = Get-TcQuietPlcState -NetId $netId
+        $stateAfter = Get-TcQuietPlcState -NetId $netId -Port $plcPort
 
         # Run(5) / Stop(6) before AND unchanged after login -> program was already there.
         $downloaded = $true
@@ -167,6 +196,8 @@
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             online         = $true
             plcProjectPath = $PlcProjectPath
+            plcName        = $plcName
+            adsPort        = $plcPort
             loginMode      = $LoginMode
             loginFlags     = $loginFlags
             message        = $message
@@ -178,10 +209,12 @@
     catch {
         if ($_.Exception.Message -match '(?i)already\s+(logged\s*in|online)' -and $_.Exception.Message -notmatch 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_CRASHED|IDE_BUSY') {
             $stateAfterAlready = $null
-            try { $stateAfterAlready = Get-TcQuietPlcState -NetId $netId } catch { $stateAfterAlready = $null }
+            try { $stateAfterAlready = Get-TcQuietPlcState -NetId $netId -Port $plcPort } catch { $stateAfterAlready = $null }
             New-TcResult -Success $true -Data ([PSCustomObject]@{
                 online         = $true
                 plcProjectPath = $PlcProjectPath
+                plcName        = $plcName
+                adsPort        = $plcPort
                 loginMode      = $LoginMode
                 loginFlags     = $loginFlags
                 message        = 'Already logged into PLC runtime.'

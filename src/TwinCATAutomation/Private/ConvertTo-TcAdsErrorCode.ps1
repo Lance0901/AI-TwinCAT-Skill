@@ -35,7 +35,16 @@ $script:TcErrorHints = @{
     'TYPE_MISMATCH'        = 'Write-TcVariable 依 symbol 型別轉換值。支援:BOOL、SINT/USINT/BYTE/INT/UINT/WORD/DINT/UDINT/DWORD/LINT/ULINT/LWORD(整數)、REAL/LREAL、STRING、TIME/TOD(IEC 字面 T#6s、T#1m30s500ms、TOD#12:30:00;整數 ms 也收)、LTIME/LTOD(LTIME#1us;整數 ns 也收)、DATE/DT(D#2026-10-20、DT#2026-10-20-12:30:00 或 ISO 8601;整數 UNIX 秒也收)、LDATE/LDT(LDT#…;整數 ns 也收)、enum(整數或成員名)。STRUCT/ARRAY 不能整筆寫,改寫個別成員(例如 stPar.fMax);用 Get-TcSymbols 看 type(enum 會列 enumValues)'
     'BUILD_STATUS_UNKNOWN'  = 'Build 結果無法判定:LastBuildInfo 與 Error List 都讀不到,請看 XAE 的 Error List 後再決定;不要把這個結果當成 build 成功'
     'POU_NOT_FOUND'         = 'POU 不存在或路徑不對:用 Get-TcProjectTree -PlcOnly(預設 -Depth 4)查完整路徑後給 -PouPath。路徑格式(4024/4026 相同)TIPC^<Plc>^<Plc> Project^POUs^<name>;DUT 在 ^DUTs^<name>,GVL 在 ^GVLs^<name>'
-    'PLC_PROJECT_NOT_FOUND' = 'TIPC 下找不到 <Plc> Project 節點:確認 solution 內有 PLC 專案(Get-TcProjectTree -PlcOnly);剛 Activate / 重啟後可重試一次'
+    'PLC_PROJECT_NOT_FOUND' = 'TIPC 下找不到 <Plc> Project 節點:確認 solution 內有 PLC 專案(Get-TcProjectTree -PlcOnly);剛 Activate / 重啟後可重試一次。-PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑(TIPC^FrameworkUnitTest^FrameworkUnitTest Project),候選見 data.plcProjects'
+    'PLC_PROJECT_AMBIGUOUS' = 'Solution 有多個 PLC project,模組不會替你挑第一個:用 -PlcProjectPath <PLC 名稱或樹路徑> 指定(data.plcProjects 列出 name / projectPath / adsPort)'
+    'PROJECT_SKIPPED_BY_CONFIGURATION' = '這個 PLC project 不在 active solution configuration 的 Build 清單(.sln 沒有 <guid>.<config>|<platform>.Build.0,DTE SolutionContext.ShouldBuild = false),solution Build 會略過它、仍回 Build succeeded,它的編譯產物是舊的。修正:XAE Configuration Manager 把該 project 的 Build 勾起來(或補上 Build.0)並存檔,再重跑 Build-TcProject -ExpectedProject <name>'
+    'EXPECTED_PROJECT_NOT_FOUND' = '-ExpectedProject 給的名稱不是這個 solution 的 PLC project(比對 .plcproj 檔名,不含副檔名);data.projects 列出可用名稱'
+    'BUILD_COVERAGE_UNKNOWN' = '無法確認指定的 PLC project 有參與 Build(SolutionContexts 讀不到,或 Build 失敗時 Error List 沒有該 project 的錯誤):看 data.projects / data.coverageError 與 XAE Error List,不要當成 Build 成功'
+    'SYSTEM_STATE_MISMATCH' = 'TwinCAT 短暫進入要求的狀態後又離開(data.stateTrace):通常是 runtime 啟動失敗退回 Config,例如 PLC 的 symbol description 與 application 不一致(ADS 1809 / 0x711)、license 不足或 Boot 目錄的 CurrentConfig 是舊的。用 Get-TcIdeModalDialog / XAE Error List 看 fatal error,Enable-TcConfig -Force 會回 data.bootPackage 比對 Boot 檔案'
+    'RUNTIME_STATE_MISMATCH' = 'Enable-TcConfig 最後讀回的 system state 或某個 PLC port 不是 Run(data.finalCheck、data.plcs):看 data.diagnostics(modal dialog、Error List、bootPackage);Boot package 不一致時重新 Enable-TcConfig -Force(Activate 會重寫 Boot),仍不一致見 docs/troubleshooting.md「Boot package 不一致」'
+    'BOOT_PACKAGE_MISMATCH' = 'Target 的 Boot 目錄與專案 _Boot\<platform> 的 CurrentConfig.xml / CurrentConfig.tszip / CurrentConfig\*.tpzip / Plc\Port_*.app 不一致(data.bootPackage.files 有 SHA-256 與時間):Activate 沒有把新的 configuration 寫到 target。先重跑 Enable-TcConfig -Force;仍不一致時手動備份 target Boot 目錄後,把 _Boot\<platform> 的這些檔案複製過去再 Activate(模組不會自動覆寫 target 檔案)'
+    'ACTIVATE_TIMEOUT'     = 'ActivateConfiguration() 在 -ActivateTimeoutSec 內沒返回,模組已放棄等待(XAE 內部可能仍在跑)。看 data.activateDiagnostics:dialog 有值 → 處理該視窗(Get-TcIdeModalDialog);ideResponding = false → XAE 卡死,Disconnect-TcIde -Quit -Kill(本 session 啟動的)或手動結束後重新 Connect-TcIde;runtimeAlive = false → UmRT(TcSystemServiceUm)已停,依 docs/troubleshooting.md 重啟後再 Enable-TcConfig -Force;systemState unreachable → target 沒回應'
+    'ADS_SYMBOL_VERSION_INVALID' = 'ADS 0x711(1809) ADSERR_DEVICE_SYMBOLVERSIONINVALID「Invalid symbol version」:PLC 的 symbol description 與 application 版本不同(online change 後或 Boot package 不一致)。重新 Connect-TcAds 取新 handle;若是 Activate 後才出現,檢查 Enable-TcConfig 的 data.bootPackage。出處 https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html'
 }
 # Compile errors (Build-TcProject, only when the build really failed): generic BUILD_FAILED
 # from a COM exception keeps no hint, so this one is looked up explicitly.
@@ -154,6 +163,11 @@ function ConvertTo-TcAdsErrorCode {
     }
     elseif ($text -match '(?i)\b0x0*710\b|symbol\s+not\s+found|symbol\s+could\s+not\s+be\s+found' -or $numericCodes -contains 0x710) {
         $code = 'ADS_SYMBOL_NOT_FOUND'
+    }
+    # 0x711 (1809) ADSERR_DEVICE_SYMBOLVERSIONINVALID "Invalid symbol version"
+    # https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html
+    elseif ($text -match '(?i)\b0x0*711\b|symbol\s*version\s*invalid|invalid\s+symbol\s+version|\b1809\b' -or $numericCodes -contains 0x711) {
+        $code = 'ADS_SYMBOL_VERSION_INVALID'
     }
     elseif ($text -match '(?i)\b0x0*712\b|invalid\s+state' -or $numericCodes -contains 0x712) {
         $code = 'ADS_INVALID_STATE'

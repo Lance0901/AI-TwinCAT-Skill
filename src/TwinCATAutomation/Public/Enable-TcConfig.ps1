@@ -42,17 +42,38 @@ function Enable-TcConfig {
                             platform differs from the target platform) -> ACTIVATE_FAILED
                             (same check without -Force)
           3. set-run        Set-TcSystemState -State Run  (waits until port 10000 = Run)
-          4. login          Enter-TcPlcOnline (Login + download, skipped with -NoLogin)
-          5. wait-plc-port  Wait until PLC port 851 answers (= program loaded). With
-                            -NoLogin only 10 s are spent; no port 851 is then not an
-                            error (step ok, detail 'skipped (no PLC port, -NoLogin)').
-          6. set-plc-run    WriteControl Run on port 851, then wait-plc-run until
-                            851 = Run (skipped with -NoLogin). The module ADS session
-                            is used only when it points at <netId>:851; otherwise a
-                            temporary 851 client sends Run and the session (e.g. port
+          2b. boot-package  The project's _Boot\<platform> package is compared (SHA-256) with
+                            the Boot folder of the target when the target runs on this PC
+                            (Get-TcBootPackageDiff: CurrentConfig.xml, CurrentConfig.tszip,
+                            CurrentConfig\*.tpzip, Plc\Port_*.app). A mismatch means Activate
+                            did not write the new configuration: BOOT_PACKAGE_MISMATCH
+                            (data.bootPackage lists every file with size / time / hash).
+                            Remote targets: data.bootPackage.status = 'unavailable', step ok.
+                            Also done without -Force.
+          4. login          Enter-TcPlcOnline for EVERY PLC project of the solution (or the
+                            ones given with -PlcProjectPath), skipped with -NoLogin
+          5. wait-plc-port  Wait until each PLC's ADS port (<AdsPort> of the PLC node:
+                            851, 852, ...) answers (= program loaded). With -NoLogin only
+                            10 s are spent; no port is then not an error (step ok, detail
+                            'skipped (no PLC port, -NoLogin)').
+          6. set-plc-run    WriteControl Run on each PLC port, then wait-plc-run until the
+                            port = Run (skipped with -NoLogin). The module ADS session
+                            is used only when it points at <netId>:<that port>; otherwise a
+                            temporary client sends Run and the session (e.g. port
                             10000 or another NetId) is left untouched.
+          6b. verify        Final readback: port 10000 must still be Run and every PLC port
+                            Run (-NoLogin: system only), and no modal dialog may be up
+                            (e.g. "Target system reports a fatal error"). Otherwise
+                            RUNTIME_STATE_MISMATCH (data.finalCheck). A runtime can reach
+                            Run and fall back to Config when a PLC fails to start (ADS 1809
+                            "symbol version invalid", #32), so nothing earlier counts as
+                            proof.
           7. reconnect      Re-open the module ADS session if one existed before the
                             restart (skipped when step 6 already auto-reconnected it).
+        When a step after Activate fails (set-run, wait-plc-port, wait-plc-run, verify),
+        data.diagnostics is filled: dialog (modal dialog title/text), errorList (first error
+        rows of the XAE Error List), bootPackage (fresh comparison). A Boot package
+        mismatch turns the code into BOOT_PACKAGE_MISMATCH.
         -TimeoutSec is ONE overall deadline for the whole cycle: every wait gets the
         remaining time (min 1 s), and a step that would start after the deadline
         fails with CYCLE_TIMEOUT.
@@ -70,6 +91,14 @@ function Enable-TcConfig {
     .PARAMETER NoPlatformFix
         Do not switch the solution platform: a known mismatch returns PLATFORM_MISMATCH
         before anything is activated.
+    .PARAMETER ActivateTimeoutSec
+        Deadline of ActivateConfiguration() (default 180; with -Force also bounded by the rest of
+        -TimeoutSec). The call runs on its own thread (Invoke-TcActivateWithDeadline); when it does
+        not return in time ACTIVATE_TIMEOUT is returned with data.activateDiagnostics (dialog,
+        ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever.
+    .PARAMETER PlcProjectPath
+        PLC project(s) to log into and start (name like 'FrameworkUnitTest' or tree path).
+        Default: every PLC project under TIPC.
     .PARAMETER Platform
         Reference platform used only when the target does not report one through
         TARGETINFO, e.g. 'TwinCAT OS (x64)' for a Usermode Runtime (UmRT) or TwinCAT/BSD,
@@ -86,7 +115,10 @@ function Enable-TcConfig {
         for a boot project on 851 but does not fail when there is none.
     .OUTPUTS
         data: activated, restarted, loggedIn, reconnected, plcState (last AdsState seen
-        on port 851), amsNetId, ideMemoryMB, solutionPlatform (active solution platform
+        on the first PLC port, 851 in a one-PLC solution), plcs[] (@{ name; projectPath;
+        adsPort; loggedIn; state }), bootPackage, finalCheck (@{ systemState; plcs;
+        dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
+        ideMemoryMB, solutionPlatform (active solution platform
         at Activate time, after an automatic fix; $null when unreadable), targetPlatform
         ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
         platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
@@ -109,7 +141,14 @@ function Enable-TcConfig {
         [switch]$NoPlatformFix,
 
         [Parameter()]
-        [string]$Platform
+        [string]$Platform,
+
+        [Parameter()]
+        [string[]]$PlcProjectPath,
+
+        [Parameter()]
+        [ValidateRange(10, 3600)]
+        [int]$ActivateTimeoutSec = 180
     )
 
     try { Assert-TcConnection } catch {
@@ -139,6 +178,11 @@ function Enable-TcConfig {
     $platformFixed = $false
     $platformCheck = 'skipped'
     $platformWarning = $null
+    $plcs = @()
+    $skippedPlcs = @()
+    $bootPackage = $null
+    $finalCheck = $null
+    $diagnostics = $null
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -165,8 +209,78 @@ function Enable-TcConfig {
             platformFixed = $platformFixed
             platformCheck = $platformCheck
             warning     = $platformWarning
+            plcs        = @($plcs)
+            skippedPlcs = @($skippedPlcs)
+            bootPackage = $bootPackage
+            finalCheck  = $finalCheck
+            diagnostics = $diagnostics
             steps       = @($steps.ToArray())
         }
+    }
+
+    # Project _Boot\<platform> vs the target's Boot folder (step boot-package). Sets
+    # $bootPackage of the cmdlet scope; returns a failure result on a mismatch, else $null.
+    function Test-TcBootPackage {
+        param([string]$TargetNetId)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $plat = $solutionPlatform
+        if ([string]::IsNullOrWhiteSpace($plat)) { $plat = (Get-TcSolutionPlatform).platform }
+        $bp = $null
+        $ports = @()
+        try { $ports = @(Get-TcPlcProjectList -SysManager $sm | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
+        try { $bp = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $TargetNetId -AdsPorts $ports }
+        catch { Write-Verbose "Enable-TcConfig: boot package check failed ($($_.Exception.Message))" }
+        Set-Variable -Name bootPackage -Value $bp -Scope 1
+        if ($null -eq $bp -or $bp.status -ne 'mismatch') {
+            $why = if ($null -eq $bp) { 'check failed' } elseif ($bp.status -eq 'match') { "$(@($bp.files).Count) file(s) identical ($($bp.targetKind))" } else { "not compared: $($bp.reason)" }
+            Add-TcStepRecord -Name 'boot-package' -Ok $true -Watch $sw -Detail $why
+            return $null
+        }
+        $msg = "Boot package on the target ($($bp.targetDir)) differs from the project package ($($bp.localDir)) after Activate: $($bp.mismatches -join ', '). The target keeps an old configuration; the runtime would start with a stale CurrentConfig (ADS 1809 'symbol version invalid' / 'symbol description does not match')."
+        Add-TcStepRecord -Name 'boot-package' -Ok $false -Watch $sw -Detail $msg
+        return (New-TcStepFailure -Message $msg -Code 'BOOT_PACKAGE_MISMATCH')
+    }
+
+    # Failure of a step after Activate: collect modal dialog, Error List errors and a fresh
+    # Boot package comparison into data.diagnostics; a Boot package mismatch wins as code.
+    function New-TcRuntimeFailure {
+        param([string]$Message, [string]$Code, [string]$Hint)
+        $diag = [ordered]@{ dialog = $null; errorList = @(); errorListError = $null; bootPackage = $null }
+        try {
+            $dlg = Get-TcIdeModalDialog
+            if ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
+        } catch { }
+        if ($null -ne $deadline -and (Get-Date) -ge $deadline) {
+            $diag.errorListError = 'skipped: -TimeoutSec budget exhausted'
+        }
+        elseif ($null -eq $diag.dialog) {
+            try {
+                $el = Get-TcBuildErrors -TimeoutSec 8
+                if ($el.success) { $diag.errorList = @(@($el.data.errors) | Select-Object -First 10 | ForEach-Object { [string]$_.description }) }
+                else { $diag.errorListError = [string]$el.error.code }
+            } catch { $diag.errorListError = $_.Exception.Message }
+        }
+        $plat = $solutionPlatform
+        if ([string]::IsNullOrWhiteSpace($plat)) { try { $plat = (Get-TcSolutionPlatform).platform } catch { } }
+        $ports = @($plcs | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort })
+        try { $diag.bootPackage = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports } catch { }
+        Set-Variable -Name diagnostics -Value ([PSCustomObject]$diag) -Scope 1
+        $extra = @()
+        if ($null -ne $diag.dialog) { $extra += "dialog: $($diag.dialog.title) | $(([string]$diag.dialog.text) -replace '\s+', ' ')" }
+        if (@($diag.errorList).Count -gt 0) { $extra += "Error List: $(@($diag.errorList | Select-Object -First 3) -join ' / ')" }
+        if ($null -ne $diag.bootPackage -and $diag.bootPackage.status -eq 'mismatch') {
+            $extra += "Boot package mismatch: $($diag.bootPackage.mismatches -join ', ')"
+            # IDE_CRASHED / IDE_MODAL_DIALOG say more about what to do next: keep them
+            if ($Code -notin @('IDE_CRASHED', 'IDE_MODAL_DIALOG')) {
+                $Code = 'BOOT_PACKAGE_MISMATCH'
+                $Hint = $null
+            }
+        }
+        elseif (@($diag.errorList | Where-Object { $_ -match '(?i)symbol description does not match|1809|0x711|symbol version' }).Count -gt 0 -and $Code -ne 'IDE_MODAL_DIALOG') {
+            $extra += 'symbol description / application mismatch (ADS 1809)'
+        }
+        if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
+        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint
     }
 
     # SolutionBuild.LastBuildInfo (number of failed projects), $null when unreadable.
@@ -365,14 +479,18 @@ function Enable-TcConfig {
         $failedBefore = Read-TcLastBuildInfo
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
+            Invoke-TcActivateWithDeadline -TimeoutSec $ActivateTimeoutSec -AmsNetId $netId
         }
         catch {
             Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
             $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
-            $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
-            $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
-            return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
+            $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
+            $hint = if ($code -eq 'ACTIVATE_TIMEOUT') { Get-TcErrorHint -Code 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Hint } else { $null }
+            $res = New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
+            if ($code -eq 'ACTIVATE_TIMEOUT' -and $null -ne $script:TcLastActivateDiagnostics) {
+                $res.data | Add-Member -NotePropertyName 'activateDiagnostics' -NotePropertyValue $script:TcLastActivateDiagnostics -Force
+            }
+            return $res
         }
         $checkFail = Get-TcActivateCheckFailure -FailedBefore $failedBefore
         if ($null -ne $checkFail) {
@@ -381,6 +499,8 @@ function Enable-TcConfig {
         }
         $activated = $true
         Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
+        $fail = Test-TcBootPackage -TargetNetId $netId
+        if ($null -ne $fail) { return $fail }
 
         $data = Get-TcCycleData
         $data | Add-Member -NotePropertyName 'message' -NotePropertyValue 'Configuration activated. Call with -Force to restart TwinCAT, download and start the PLC.'
@@ -437,14 +557,18 @@ function Enable-TcConfig {
     $failedBefore = Read-TcLastBuildInfo
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        Invoke-TcComRetry -OperationName 'ActivateConfiguration' -TimeoutSec 300 -ScriptBlock { $sm.ActivateConfiguration() } | Out-Null
+        Invoke-TcActivateWithDeadline -TimeoutSec ([Math]::Min($ActivateTimeoutSec, (Get-TcRemainingSec))) -AmsNetId $netId
     }
     catch {
         Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
         $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
-        $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
-        $hint = if ($null -ne $mapped) { $mapped.Hint } else { $null }
-        return New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
+        $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
+        $hint = if ($code -eq 'ACTIVATE_TIMEOUT') { Get-TcErrorHint -Code 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Hint } else { $null }
+        $res = New-TcStepFailure -Message "Activation failed: $($_.Exception.Message)" -Code $code -Hint $hint
+        if ($code -eq 'ACTIVATE_TIMEOUT' -and $null -ne $script:TcLastActivateDiagnostics) {
+            $res.data | Add-Member -NotePropertyName 'activateDiagnostics' -NotePropertyValue $script:TcLastActivateDiagnostics -Force
+        }
+        return $res
     }
     # Check config failed silently (LastBuildInfo > 0): stop the cycle here like any failing step.
     $checkFail = Get-TcActivateCheckFailure -FailedBefore $failedBefore
@@ -455,6 +579,10 @@ function Enable-TcConfig {
     $activated = $true
     Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
 
+    # 2b. boot-package
+    $fail = Test-TcBootPackage -TargetNetId $netId
+    if ($null -ne $fail) { return $fail }
+
     # 3. set-run (Set-TcSystemState waits until port 10000 reports Run)
     $fail = Test-TcCycleDeadline -Name 'set-run'
     if ($null -ne $fail) { return $fail }
@@ -462,10 +590,56 @@ function Enable-TcConfig {
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
-        return New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Run' -DefaultCode 'RUN_SWITCH_FAILED'
+        $code = if ([string]::IsNullOrWhiteSpace([string]$r.error.code)) { 'RUN_SWITCH_FAILED' } else { [string]$r.error.code }
+        $hp = if ($null -ne $r.error) { $r.error.PSObject.Properties['hint'] } else { $null }
+        return New-TcRuntimeFailure -Message "Failed to switch to Run: $([string]$r.error.message)" -Code $code -Hint $(if ($null -ne $hp) { [string]$hp.Value } else { $null })
     }
     $restarted = $true
-    Add-TcStepRecord -Name 'set-run' -Ok $true -Watch $sw -Detail "system state $($r.data.currentState)"
+    Add-TcStepRecord -Name 'set-run' -Ok $true -Watch $sw -Detail "system state $($r.data.currentState) (sent $($r.data.sentAdsState), held $($r.data.readbackState))"
+
+    # PLC projects of the solution (or -PlcProjectPath): name, tree path, ADS port
+    try { $null = Get-TcSysManager -Refresh }
+    catch {
+        if ($_.Exception.Message -match 'IDE_CRASHED') {
+            return New-TcStepFailure -Message ([string]$_.Exception.Message) -Code 'IDE_CRASHED'
+        }
+    }
+    $allPlcs = @()
+    try { $allPlcs = @(Get-TcPlcProjectList -SysManager (Get-TcSysManager)) }
+    catch {
+        if ($_.Exception.Message -match 'IDE_CRASHED|IDE_MODAL_DIALOG') { return New-TcStepFailureFromResult -Result (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PLC_PROJECT_NOT_FOUND' -MessagePrefix 'Reading the PLC projects failed') -Prefix 'PLC lookup' -DefaultCode 'PLC_PROJECT_NOT_FOUND' }
+        Write-Verbose "Enable-TcConfig: PLC project list not readable ($($_.Exception.Message)); using port 851"
+    }
+    $selected = @()
+    if (@($PlcProjectPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+        foreach ($spec in $PlcProjectPath) {
+            if ([string]::IsNullOrWhiteSpace($spec)) { continue }
+            $hit = Find-TcPlcProject -List $allPlcs -Spec $spec
+            if ($null -eq $hit) {
+                return New-TcStepFailure -Message "PLC project '$spec' not found. PLC projects: $(($allPlcs | ForEach-Object { $_.projectPath }) -join ', ')" -Code 'PLC_PROJECT_NOT_FOUND'
+            }
+            $selected += $hit
+        }
+    }
+    else {
+        # disabled PLC projects (ITcSmTreeItem.Disabled) are not activated: not logged in, not waited for
+        $selected = @($allPlcs | Where-Object { -not $_.disabled })
+        $skippedPlcs = @($allPlcs | Where-Object { $_.disabled } | ForEach-Object { $_.name })
+        if ($skippedPlcs.Count -gt 0) { Write-Verbose "Enable-TcConfig: disabled PLC project(s) skipped: $($skippedPlcs -join ', ')" }
+    }
+    $plcs = @($selected | ForEach-Object {
+        [PSCustomObject]@{
+            name        = $_.name
+            projectPath = $_.projectPath
+            adsPort     = if ($null -ne $_.adsPort) { [int]$_.adsPort } else { 851 }
+            loggedIn    = $false
+            state       = $null
+        }
+    })
+    if ($plcs.Count -eq 0) {
+        # no PLC found under TIPC: keep the old single-PLC behaviour on port 851
+        $plcs = @([PSCustomObject]@{ name = $null; projectPath = $null; adsPort = 851; loggedIn = $false; state = $null })
+    }
 
     # 4. login (Enter-TcPlcOnline -LoginMode Regular: PLC_LOGIN_FLAGS REGULAR = 1, prompts answered by ITcAutomationSettings.SilentMode)
     if (-not $NoLogin) {
@@ -474,126 +648,178 @@ function Enable-TcConfig {
         # e.g. "Target system reports a fatal error" shown by the XAE after Activate
         $fail = Test-TcStepModalDialog -Name 'login'
         if ($null -ne $fail) { return $fail }
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        # Re-scan the solution: the system restart can leave cached tree items stale.
-        # Only "no project / scan failed" is ignored here; an IDE crash must not be swallowed.
-        try { $null = Get-TcSysManager -Refresh }
-        catch {
-            if ($_.Exception.Message -match 'IDE_CRASHED') {
-                Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail ([string]$_.Exception.Message)
-                return New-TcStepFailure -Message ([string]$_.Exception.Message) -Code 'IDE_CRASHED'
-            }
-        }
         # REGULAR (1) + global SilentMode: XAE decides (downloads when the runtime has no application,
         # otherwise attaches). Verified 2026-10-19 on an empty UmRT and on a re-deploy
         # (lifecycle-smoke 37/37 twice). FORCEDOWNLOAD | SILENT (260) also deployed to the
         # empty runtime, but on the following cycle ActivateConfiguration() blocked for
         # 250 s: the 32-bit XAE crashed (OutOfMemoryException in the CODESYS Visu engine,
         # Windows event 1026), unrelated to the login flag. Regular is used here.
-        $r = Enter-TcPlcOnline -LoginMode Regular
-        if (-not $r.success) {
-            Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
-            return New-TcStepFailureFromResult -Result $r -Prefix 'PLC login/download failed' -DefaultCode 'LOGIN_FAILED'
+        # Every PLC project is logged in on its own (multi-PLC solutions, #32).
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $loginDetails = @()
+        foreach ($p in $plcs) {
+            $fail = Test-TcCycleDeadline -Name 'login'
+            if ($null -ne $fail) { return $fail }
+            $tLogin = Get-TcRemainingSec
+            $r = if ($null -ne $p.projectPath) { Enter-TcPlcOnline -LoginMode Regular -PlcProjectPath $p.projectPath -TimeoutSec $tLogin } else { Enter-TcPlcOnline -LoginMode Regular -TimeoutSec $tLogin }
+            if (-not $r.success) {
+                Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail "$($p.name): $([string]$r.error.message)"
+                return New-TcStepFailureFromResult -Result $r -Prefix "PLC login/download of '$($p.name)' (port $($p.adsPort)) failed" -DefaultCode 'LOGIN_FAILED'
+            }
+            $p.loggedIn = $true
+            $loginDetails += "$($p.name):$($p.adsPort) $([string]$r.data.message)"
         }
         $loggedIn = $true
-        Add-TcStepRecord -Name 'login' -Ok $true -Watch $sw -Detail ([string]$r.data.message)
+        Add-TcStepRecord -Name 'login' -Ok $true -Watch $sw -Detail ($loginDetails -join ' | ')
     }
 
-    # 5. wait-plc-port: 851 reachable = program loaded
+    # 5. wait-plc-port: each PLC port reachable = program loaded
     $fail = Test-TcCycleDeadline -Name 'wait-plc-port'
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $tPort = Get-TcRemainingSec
-    if ($NoLogin) {
-        # No download was done: only a boot project can bring 851 up. Short probe, not an error.
-        $tPort = [Math]::Min(10, $tPort)
-    }
-    $wait = Wait-TcAdsState -AmsNetId $netId -Port 851 -TargetState Any -TimeoutSec $tPort
-    $plcState = $wait.State
-    if (-not $wait.Reached) {
+    $portDetails = @()
+    $noPortDetails = @()
+    foreach ($p in $plcs) {
+        $tPort = Get-TcRemainingSec
         if ($NoLogin) {
-            Add-TcStepRecord -Name 'wait-plc-port' -Ok $true -Watch $sw -Detail 'skipped (no PLC port, -NoLogin)'
+            # No download was done: only a boot project can bring the port up. Short probe, not an error.
+            $tPort = [Math]::Min(10, $tPort)
         }
-        else {
-            $detail = "port 851 not reachable within $tPort s"
+        $wait = Wait-TcAdsState -AmsNetId $netId -Port $p.adsPort -TargetState Any -TimeoutSec $tPort
+        $p.state = $wait.State
+        if (-not $wait.Reached) {
+            $detail = "port $($p.adsPort) not reachable within $tPort s"
             if ($wait.LastError) { $detail += " (last error: $($wait.LastError))" }
+            if ($NoLogin) { $noPortDetails += $detail; continue }
             Add-TcStepRecord -Name 'wait-plc-port' -Ok $false -Watch $sw -Detail $detail
-            return New-TcStepFailure -Message "PLC program not loaded: $detail" -Code 'PLC_NOT_LOADED'
+            $plcState = $plcs[0].state
+            return New-TcRuntimeFailure -Message "PLC program '$($p.name)' not loaded: $detail" -Code 'PLC_NOT_LOADED'
         }
+        $portDetails += "port $($p.adsPort) state $($wait.State)"
+    }
+    $plcState = $plcs[0].state
+    if ($portDetails.Count -eq 0 -and $NoLogin) {
+        Add-TcStepRecord -Name 'wait-plc-port' -Ok $true -Watch $sw -Detail 'skipped (no PLC port, -NoLogin)'
     }
     else {
-        Add-TcStepRecord -Name 'wait-plc-port' -Ok $true -Watch $sw -Detail "port 851 state $($wait.State)"
+        $all = @($portDetails) + @($noPortDetails | ForEach-Object { "$_ (-NoLogin)" })
+        Add-TcStepRecord -Name 'wait-plc-port' -Ok $true -Watch $sw -Detail ($all -join ', ')
     }
 
-    # 6. set-plc-run + wait-plc-run
+    # 6. set-plc-run + wait-plc-run, per PLC port
     $reconnectedInStep6 = $false
     if (-not $NoLogin) {
-        $fail = Test-TcCycleDeadline -Name 'set-plc-run'
-        if ($null -ne $fail) { return $fail }
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        foreach ($p in $plcs) {
+            $port = [int]$p.adsPort
+            $fail = Test-TcCycleDeadline -Name 'set-plc-run'
+            if ($null -ne $fail) { return $fail }
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-        # Use the module session only when it targets this NetId on port 851. A session on
-        # port 10000 (or another NetId) would otherwise receive WriteControl Run and
-        # restart TwinCAT itself / start the wrong target.
-        $sessionIsPlc = (-not [string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) -and
-                        ($script:TcAdsPort -eq 851) -and
-                        ($script:TcAdsAmsNetId -eq $netId)
+            # Use the module session only when it targets this NetId on this PLC port. A
+            # session on port 10000 (or another NetId / PLC) would otherwise receive
+            # WriteControl Run and restart TwinCAT itself / start the wrong target.
+            $sessionIsPlc = (-not [string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) -and
+                            ($script:TcAdsPort -eq $port) -and
+                            ($script:TcAdsAmsNetId -eq $netId)
 
-        if ($sessionIsPlc) {
-            $r = Set-TcPlcState -State Run -TimeoutSec (Get-TcRemainingSec)
-            if (-not $r.success) {
-                Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
-                return New-TcStepFailureFromResult -Result $r -Prefix 'Failed to start PLC' -DefaultCode 'STATE_SET_FAILED'
-            }
-            $reconnectedInStep6 = [bool]$script:TcAdsReconnected
-            $note = if ($reconnectedInStep6) { ', module session auto-reconnected' } else { '' }
-            Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via module session ${netId}:851, state $($r.data.currentState)$note"
-        }
-        else {
-            $sessionDesc = if ([string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) { 'none' } else { "$($script:TcAdsAmsNetId):$($script:TcAdsPort)" }
-            $tmpClient = $null
-            try {
-                $tmpClient = New-TcAdsClient -AmsNetId $netId -Port 851
-                $before = $tmpClient.ReadState()
-                if ([int]$before.AdsState -eq 0) {
-                    Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail 'port 851 reports AdsState Invalid (no program)'
-                    return New-TcStepFailure -Message 'PLC runtime reports AdsState Invalid - no PLC program has been downloaded.' -Code 'PLC_NOT_LOADED'
+            if ($sessionIsPlc) {
+                $r = Set-TcPlcState -State Run -TimeoutSec (Get-TcRemainingSec)
+                if (-not $r.success) {
+                    Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail "port ${port}: $([string]$r.error.message)"
+                    return New-TcStepFailureFromResult -Result $r -Prefix "Failed to start PLC '$($p.name)' (port $port)" -DefaultCode 'STATE_SET_FAILED'
                 }
-                if ([int]$before.AdsState -eq 5) {
-                    # Boot project autostart already put the PLC in Run; WriteControl Run would
-                    # answer ADS 0x712 "invalid state".
-                    Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "port 851 already in Run (boot project autostart), WriteControl skipped"
+                $reconnectedInStep6 = $reconnectedInStep6 -or [bool]$script:TcAdsReconnected
+                $note = if ([bool]$script:TcAdsReconnected) { ', module session auto-reconnected' } else { '' }
+                Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via module session ${netId}:${port}, state $($r.data.currentState)$note"
+            }
+            else {
+                $sessionDesc = if ([string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) { 'none' } else { "$($script:TcAdsAmsNetId):$($script:TcAdsPort)" }
+                $tmpClient = $null
+                try {
+                    $tmpClient = New-TcAdsClient -AmsNetId $netId -Port $port
+                    $before = $tmpClient.ReadState()
+                    if ([int]$before.AdsState -eq 0) {
+                        Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail "port $port reports AdsState Invalid (no program)"
+                        return New-TcRuntimeFailure -Message "PLC runtime port $port ('$($p.name)') reports AdsState Invalid - no PLC program has been downloaded." -Code 'PLC_NOT_LOADED'
+                    }
+                    if ([int]$before.AdsState -eq 5) {
+                        # Boot project autostart already put the PLC in Run; WriteControl Run would
+                        # answer ADS 0x712 "invalid state".
+                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "port $port already in Run (boot project autostart), WriteControl skipped"
+                    }
+                    else {
+                        $runInfo = New-Object TwinCAT.Ads.StateInfo
+                        $runInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 5)  # AdsState.Run
+                        $runInfo.DeviceState = 0
+                        $tmpClient.WriteControl($runInfo)
+                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via temporary ${netId}:${port} client (module session '$sessionDesc' untouched)"
+                    }
                 }
-                else {
-                    $runInfo = New-Object TwinCAT.Ads.StateInfo
-                    $runInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 5)  # AdsState.Run
-                    $runInfo.DeviceState = 0
-                    $tmpClient.WriteControl($runInfo)
-                    Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via temporary ${netId}:851 client (module session '$sessionDesc' untouched)"
+                catch {
+                    Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail "Run via temporary ${netId}:${port} client failed: $($_.Exception.Message)"
+                    $err = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_SET_FAILED' -MessagePrefix "WriteControl Run on ${netId}:${port} failed"
+                    $hp = $err.error.PSObject.Properties['hint']
+                    return New-TcRuntimeFailure -Message "Failed to start PLC '$($p.name)': $([string]$err.error.message)" -Code ([string]$err.error.code) -Hint $(if ($null -ne $hp) { [string]$hp.Value } else { $null })
+                }
+                finally {
+                    if ($null -ne $tmpClient) { try { $tmpClient.Dispose() } catch { } }
                 }
             }
-            catch {
-                Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail "Run via temporary ${netId}:851 client failed: $($_.Exception.Message)"
-                $err = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_SET_FAILED' -MessagePrefix "WriteControl Run on ${netId}:851 failed"
-                return New-TcStepFailureFromResult -Result $err -Prefix 'Failed to start PLC' -DefaultCode 'STATE_SET_FAILED'
-            }
-            finally {
-                if ($null -ne $tmpClient) { try { $tmpClient.Dispose() } catch { } }
-            }
-        }
 
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $tPlcRun = Get-TcRemainingSec
-        $wait = Wait-TcAdsState -AmsNetId $netId -Port 851 -TargetState Run -TimeoutSec $tPlcRun
-        $plcState = $wait.State
-        if (-not $wait.Reached) {
-            $detail = "PLC did not reach Run within $tPlcRun s (last state: $($wait.State))"
-            if ($wait.LastError) { $detail += " (last error: $($wait.LastError))" }
-            Add-TcStepRecord -Name 'wait-plc-run' -Ok $false -Watch $sw -Detail $detail
-            return New-TcStepFailure -Message $detail -Code 'PLC_RUN_TIMEOUT'
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $tPlcRun = Get-TcRemainingSec
+            $wait = Wait-TcAdsState -AmsNetId $netId -Port $port -TargetState Run -TimeoutSec $tPlcRun
+            $p.state = $wait.State
+            $plcState = $plcs[0].state
+            if (-not $wait.Reached) {
+                $detail = "PLC '$($p.name)' (port $port) did not reach Run within $tPlcRun s (last state: $($wait.State))"
+                if ($wait.LastError) { $detail += " (last error: $($wait.LastError))" }
+                Add-TcStepRecord -Name 'wait-plc-run' -Ok $false -Watch $sw -Detail $detail
+                return New-TcRuntimeFailure -Message $detail -Code 'PLC_RUN_TIMEOUT'
+            }
+            Add-TcStepRecord -Name 'wait-plc-run' -Ok $true -Watch $sw -Detail "port $port state $($wait.State)"
         }
-        Add-TcStepRecord -Name 'wait-plc-run' -Ok $true -Watch $sw -Detail "port 851 state $($wait.State)"
     }
+
+    # 6b. verify: final readback of the system and every PLC port + modal dialog check
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $sysState = $null
+    $sysErr = $null
+    $probe = $null
+    try {
+        $probe = New-TcAdsClient -AmsNetId $netId -Port 10000
+        $sysState = $probe.ReadState().AdsState.ToString()
+    }
+    catch { $sysErr = $_.Exception.Message }
+    finally { if ($null -ne $probe) { try { $probe.Dispose() } catch { } } }
+    $plcChecks = @()
+    $bad = @()
+    if ($sysState -ne 'Run') { $bad += "system (port 10000) $(if ($sysState) { $sysState } else { "unreachable: $sysErr" })" }
+    foreach ($p in $plcs) {
+        $st = $null
+        $probe = $null
+        try {
+            $probe = New-TcAdsClient -AmsNetId $netId -Port ([int]$p.adsPort)
+            $st = $probe.ReadState().AdsState.ToString()
+        }
+        catch { $st = $null }
+        finally { if ($null -ne $probe) { try { $probe.Dispose() } catch { } } }
+        $p.state = $st
+        $plcChecks += [PSCustomObject]@{ name = $p.name; adsPort = $p.adsPort; state = $st }
+        if (-not $NoLogin -and $st -ne 'Run') { $bad += "PLC '$($p.name)' port $($p.adsPort) $(if ($st) { $st } else { 'unreachable' })" }
+    }
+    $plcState = $plcs[0].state
+    $dlg = $null
+    try { $dlg = Get-TcIdeModalDialog } catch { }
+    $dlgInfo = if ($null -ne $dlg) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
+    if ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
+    $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; ok = ($bad.Count -eq 0) }
+    if ($bad.Count -gt 0) {
+        $detail = "final readback: $($bad -join ', ')"
+        Add-TcStepRecord -Name 'verify' -Ok $false -Watch $sw -Detail $detail
+        return New-TcRuntimeFailure -Message "Cycle steps reported success but the $detail." -Code 'RUNTIME_STATE_MISMATCH'
+    }
+    Add-TcStepRecord -Name 'verify' -Ok $true -Watch $sw -Detail "system Run; $((($plcChecks | ForEach-Object { "port $($_.adsPort) $($_.state)" }) -join ', '))"
 
     # 7. reconnect the module ADS session that existed before the restart
     if ($reconnectedInStep6) {
@@ -616,11 +842,12 @@ function Enable-TcConfig {
     }
 
     $data = Get-TcCycleData
+    $plcText = (($plcs | ForEach-Object { "port $($_.adsPort) $(if ($_.state) { $_.state } else { 'not present' })" }) -join ', ')
     $summary = if ($NoLogin) {
-        if ($null -ne $plcState) { "Configuration activated, TwinCAT restarted, PLC port 851 reachable (state $plcState, no login)." }
-        else { 'Configuration activated, TwinCAT restarted (no login; port 851 not present - no boot project).' }
+        if ($null -ne $plcState) { "Configuration activated, TwinCAT restarted, PLC port(s) reachable ($plcText, no login)." }
+        else { "Configuration activated, TwinCAT restarted (no login; $plcText - no boot project)." }
     }
-    else { "Configuration activated, TwinCAT restarted, program downloaded, PLC state $plcState." }
+    else { "Configuration activated, TwinCAT restarted, program(s) downloaded, PLC state $plcText (verified by readback)." }
     $data | Add-Member -NotePropertyName 'message' -NotePropertyValue $summary
     New-TcResult -Success $true -Data $data
 }
