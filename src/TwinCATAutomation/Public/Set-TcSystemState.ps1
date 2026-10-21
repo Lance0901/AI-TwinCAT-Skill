@@ -1,4 +1,4 @@
-function Set-TcSystemState {
+﻿function Set-TcSystemState {
     <#
     .SYNOPSIS
         Switches TwinCAT system state (Config/Run) via ADS — no dialog popups.

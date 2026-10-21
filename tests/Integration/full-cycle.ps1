@@ -1,4 +1,4 @@
-# Integration: full build -> activate -> login -> ADS -> run -> test cycle.
+﻿# Integration: full build -> activate -> login -> ADS -> run -> test cycle.
 # Problem: end-to-end check of the lifecycle plus Test 2 (trigger flow and check completion),
 #          which was the point where earlier runs failed (bStart overwritten by MAIN).
 # Prerequisites: TwinCAT XAE/IDE open, UmRT running, solution with MAIN.fbLoggerFlowTest

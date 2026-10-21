@@ -7,6 +7,8 @@
       1. parse      Every *.ps1 / *.psm1 under src, tests, scripts, mcp-server/scripts and the
                     repo root parses with the Windows PowerShell 5.1 parser. PowerShell 7 only
                     syntax (??, ?., ternary, ...) is a parse error there, so this also blocks it.
+         encoding   Those files are ASCII or UTF-8 with BOM (5.1 reads BOM-less files in the
+                    ANSI code page, so the parse result would depend on the machine).
       2. cmdlets    The number of cmdlets exported by the module equals the number written in
                     CLAUDE.md "Available Commands (N)", AGENTS.md "Available Commands (N)",
                     README.md "All Commands (N)" and adapters/claude-code/SKILL.md "Cmdlet ... (N)".
@@ -114,6 +116,32 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
+# 1b. encoding: Windows PowerShell 5.1 reads a script without BOM in the ANSI code page of
+#     the machine, so a non-ASCII character (even an em dash in a comment) parses on one PC and
+#     breaks on another (cp1252: the UTF-8 bytes of an em dash end in 0x94, a "smart quote").
+# ---------------------------------------------------------------------------
+try {
+    $noBom = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $psFiles) {
+        $bytes = [System.IO.File]::ReadAllBytes($f)
+        $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+        if ($hasBom) { continue }
+        foreach ($b in $bytes) {
+            if ($b -gt 127) { $noBom.Add((Get-RelativePath $f)); break }
+        }
+    }
+    if ($noBom.Count -eq 0) {
+        Add-CheckResult 'encoding' 'PASS' "$($psFiles.Count) files: ASCII or UTF-8 with BOM"
+    }
+    else {
+        Add-CheckResult 'encoding' 'FAIL' "$($noBom.Count) file(s) with non-ASCII characters but no UTF-8 BOM (save as UTF-8 with BOM, or use ASCII)" $noBom
+    }
+}
+catch {
+    Add-CheckResult 'encoding' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
 # 2. cmdlet count vs documentation
 # ---------------------------------------------------------------------------
 try {
@@ -180,7 +208,8 @@ try {
     )
     $banned = New-Object System.Text.RegularExpressions.Regex(($bannedPatterns -join '|'), 'IgnoreCase')
     # "TcSystemServiceUm.exe file version 3.1.4026.21" / "TcSystemServiceUm.exe <zh-TW: file version> ..."
-    $allowed = New-Object System.Text.RegularExpressions.Regex('TcSystemServiceUm\.exe\s*(file version|檔案版本)', 'IgnoreCase')
+    $zhFileVersion = -join [char[]](0x6A94, 0x6848, 0x7248, 0x672C)   # zh-TW "file version"; this script stays ASCII
+    $allowed = New-Object System.Text.RegularExpressions.Regex("TcSystemServiceUm\.exe\s*(file version|$zhFileVersion)", 'IgnoreCase')
     $selfPath = (Resolve-Path -LiteralPath $PSCommandPath).ProviderPath
     $textFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.md', '.ps1', '.psm1', '.js', '.json', '.yaml', '.yml'))
     $hits = New-Object System.Collections.Generic.List[string]
