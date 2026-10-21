@@ -1,6 +1,6 @@
 # Coding Standards
 
-審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法、cmdlet 數與文件一致、禁用措辭、`tools.json` 同步、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
+審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法與檔案編碼、cmdlet 數與文件一致、禁用措辭、錯誤碼在 troubleshooting 有一節、`tools.json` 同步、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
 
 ## 1. 可能無限阻塞的 COM / DTE 呼叫要有 deadline
 
@@ -28,6 +28,6 @@ solution platform 依 target 回報的平台(TARGETINFO)或使用者明確給的
 
 ## 5. 統一的回傳與 hint
 
-回傳一律 `{success, data}` 或 `{success: false, error: {message, code, hint}}`(`New-TcResult`)。`hint` 寫下一步該呼叫什麼(cmdlet / MCP tool 與參數),不是重述錯誤;新錯誤碼同時在 `docs/troubleshooting.md` 加一節。
+回傳一律 `{success, data}` 或 `{success: false, error: {message, code, hint}}`(`New-TcResult`)。判斷的是 `hint` 的內容:要寫下一步該呼叫什麼(cmdlet / MCP tool 與參數),不是重述錯誤。(每個 hint key 在 `docs/troubleshooting.md` 有沒有一節,由 `scripts/check.ps1` 的 `errorcodes` 檢查。)
 
 正例:`src/TwinCATAutomation/Private/New-TcResult.ps1`、`src/TwinCATAutomation/Private/ConvertTo-TcAdsErrorCode.ps1`(`$script:TcErrorHints`)。

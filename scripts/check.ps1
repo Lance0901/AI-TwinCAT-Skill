@@ -4,34 +4,45 @@
 
 .DESCRIPTION
     Runs, in this order, and prints one PASS / FAIL / SKIP line per check:
-      1. parse      Every *.ps1 / *.psm1 under src, tests, scripts, mcp-server/scripts and the
-                    repo root parses with the Windows PowerShell 5.1 parser. PowerShell 7 only
-                    syntax (??, ?., ternary, ...) is a parse error there, so this also blocks it.
-         encoding   Those files are ASCII or UTF-8 with BOM (5.1 reads BOM-less files in the
-                    ANSI code page, so the parse result would depend on the machine).
-      2. cmdlets    The number of cmdlets exported by the module equals the number written in
-                    CLAUDE.md "Available Commands (N)", AGENTS.md "Available Commands (N)",
-                    README.md "All Commands (N)" and adapters/claude-code/SKILL.md "Cmdlet ... (N)".
-      3. wording    No banned wording in *.md / *.ps1 / *.psm1 / *.js / *.json / *.yaml: a UmRT
-                    has no version of its own (it is the user-mode instance of the local TwinCAT
-                    runtime, there is only one), so "UmRT <40xx>" / "<40xx> UmRT" are rejected.
-                    The file version of TcSystemServiceUm.exe may be written (a line naming
-                    "TcSystemServiceUm.exe" followed by "file version" is allowed).
-      4. tools.json mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
-                    (generatedAt and line endings ignored).
-      5. npm test   mcp-server unit tests (npm ci first when node_modules is missing).
-                    Skipped with -Fast.
-    Exit code 0 when nothing failed, 1 otherwise. SKIP never counts as PASS.
+      parse       Every *.ps1 / *.psm1 / *.psd1 in the repository (except node_modules, .git,
+                  tests/Integration/logs, .claude/worktrees) parses with the Windows PowerShell
+                  5.1 parser. PowerShell 7 only syntax (??, ?., ternary, ...) is a parse error
+                  there, so this also blocks it.
+      encoding    Those files are ASCII or UTF-8 with BOM (5.1 reads BOM-less files in the ANSI
+                  code page, so the parse result would depend on the machine).
+      cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
+                  number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md
+                  "Available Commands (N)", README.md "All Commands (N)" and
+                  adapters/claude-code/SKILL.md "Cmdlet ... (N)".
+      wording     No banned wording in *.md / *.ps1 / *.psm1 / *.psd1 / *.js / *.json / *.yaml:
+                  a UmRT has no version of its own (it is the user-mode instance of the local
+                  TwinCAT runtime, there is only one), so "UmRT 4026", "UmRT (4026)",
+                  "UmRT v4026", "UmRT 3.1.4026", "4026 UmRT" ... are rejected. A hit whose
+                  version is part of a "TcSystemServiceUm.exe file version x.y.z" phrase is
+                  allowed (only that hit, not the whole line).
+      errorcodes  Every key of $script:TcErrorHints (ConvertTo-TcAdsErrorCode.ps1) appears in a
+                  heading of docs/troubleshooting.md.
+      tools.json  mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
+                  (generatedAt and line endings ignored).
+      npm test    mcp-server unit tests (npm ci first when node_modules is missing).
+                  Skipped with -Fast.
+    Exit code 0 when nothing failed, 1 otherwise. SKIP never counts as PASS; with -Strict a
+    SKIP fails the run as well.
+
+    The checks read the WORKING TREE, not the git index.
 
 .PARAMETER Fast
     Skip npm test (used by the pre-commit hook).
+.PARAMETER Strict
+    Treat SKIP as a failure (used by CI).
 
 .EXAMPLE
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Strict
 #>
 [CmdletBinding()]
 param(
-    [switch]$Fast
+    [switch]$Fast,
+    [switch]$Strict
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +52,7 @@ $ProgressPreference = 'SilentlyContinue'
 if ($PSVersionTable.PSEdition -eq 'Core') {
     $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
     if ($Fast) { $argsList += '-Fast' }
+    if ($Strict) { $argsList += '-Strict' }
     & powershell.exe @argsList
     exit $LASTEXITCODE
 }
@@ -86,16 +98,28 @@ function Get-RepoFiles {
     }
 }
 
-# ---------------------------------------------------------------------------
-# 1. parse (Windows PowerShell 5.1 parser)
-# ---------------------------------------------------------------------------
-try {
-    $psFiles = @()
-    foreach ($sub in @('src', 'tests', 'scripts', 'mcp-server\scripts')) {
-        $p = Join-Path $repoRoot $sub
-        if (Test-Path -LiteralPath $p) { $psFiles += @(Get-RepoFiles -Root $p -Extensions @('.ps1', '.psm1')) }
+# Runs a native command with $ErrorActionPreference = 'Continue': under 'Stop' a single
+# stderr line (npm warn, Write-Error of a child script) would throw. Success is judged by the
+# exit code only. Returns @{ Code; Output (string[]) }.
+function Invoke-Native {
+    param([string]$FilePath, [string[]]$Arguments)
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = @(& $FilePath @Arguments 2>&1 | ForEach-Object { "$_" })
+        return @{ Code = $LASTEXITCODE; Output = $out }
     }
-    $psFiles += @([System.IO.Directory]::GetFiles($repoRoot, '*.ps1'))
+    finally {
+        $ErrorActionPreference = $saved
+    }
+}
+
+# ---------------------------------------------------------------------------
+# parse (Windows PowerShell 5.1 parser)
+# ---------------------------------------------------------------------------
+$psFiles = @()
+try {
+    $psFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.ps1', '.psm1', '.psd1') | Sort-Object)
     $parseErrors = New-Object System.Collections.Generic.List[string]
     foreach ($f in $psFiles) {
         $tokens = $null; $errors = $null
@@ -116,9 +140,9 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# 1b. encoding: Windows PowerShell 5.1 reads a script without BOM in the ANSI code page of
-#     the machine, so a non-ASCII character (even an em dash in a comment) parses on one PC and
-#     breaks on another (cp1252: the UTF-8 bytes of an em dash end in 0x94, a "smart quote").
+# encoding: Windows PowerShell 5.1 reads a script without BOM in the ANSI code page of the
+# machine, so a non-ASCII character (even an em dash in a comment) parses on one PC and
+# breaks on another (cp1252: the UTF-8 bytes of an em dash end in 0x94, a "smart quote").
 # ---------------------------------------------------------------------------
 try {
     $noBom = New-Object System.Collections.Generic.List[string]
@@ -142,7 +166,7 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# 2. cmdlet count vs documentation
+# cmdlet count vs documentation
 # ---------------------------------------------------------------------------
 try {
     $docCounts = @(
@@ -163,14 +187,9 @@ try {
     }
 
     if ($null -eq $moduleCount) {
-        # Importing must not depend on TwinCAT (all DLL loading is lazy). Only when TwinCAT is
-        # really absent is the failure reported as SKIP, never as PASS.
-        if ([string]::IsNullOrWhiteSpace($env:TWINCAT3DIR)) {
-            Add-CheckResult 'cmdlets' 'SKIP' "module import failed and no TwinCAT installed (TWINCAT3DIR unset): $importError"
-        }
-        else {
-            Add-CheckResult 'cmdlets' 'FAIL' "module import failed: $importError"
-        }
+        # Importing loads no TwinCAT DLL (TwinCAT.Ads.dll is loaded lazily), so a failed import
+        # is a real defect on any machine, with or without TwinCAT.
+        Add-CheckResult 'cmdlets' 'FAIL' "module import failed: $importError"
     }
     else {
         $mismatch = New-Object System.Collections.Generic.List[string]
@@ -198,28 +217,38 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# 3. banned wording
+# banned wording: a UmRT has no version of its own
 # ---------------------------------------------------------------------------
 try {
+    # Built from char codes so that this script stays ASCII.
+    $fwOpen = [string][char]0xFF08; $fwClose = [string][char]0xFF09
+    $zhFileVersion = -join [char[]](0x6A94, 0x6848, 0x7248, 0x672C)   # zh-TW "file version"
     $bannedPatterns = @(
-        'UmRT\s*40\d\d',
-        '40\d\d\s*UmRT',
-        'a 40\d\d UmRT'
+        # UmRT 4026 / UmRT (4026) / UmRT v4026 / UmRT 3.1.4026 / UmRT-4026
+        "UmRT[\s(\[${fwOpen}_\-]*v?(?:3\.1\.)?40\d\d",
+        # 4026 UmRT / 3.1.4026.21 UmRT / (4026) UmRT / a 4026 UmRT
+        "40\d\d(?:\.\d+)*[)\]$fwClose]?\s*UmRT"
     )
     $banned = New-Object System.Text.RegularExpressions.Regex(($bannedPatterns -join '|'), 'IgnoreCase')
-    # "TcSystemServiceUm.exe file version 3.1.4026.21" / "TcSystemServiceUm.exe <zh-TW: file version> ..."
-    $zhFileVersion = -join [char[]](0x6A94, 0x6848, 0x7248, 0x672C)   # zh-TW "file version"; this script stays ASCII
-    $allowed = New-Object System.Text.RegularExpressions.Regex("TcSystemServiceUm\.exe\s*(file version|$zhFileVersion)", 'IgnoreCase')
+    # The file version of TcSystemServiceUm.exe may be written; a hit is allowed only when it
+    # overlaps such a phrase, e.g. "TcSystemServiceUm.exe file version 3.1.4026.21".
+    $allowed = New-Object System.Text.RegularExpressions.Regex(
+        "TcSystemServiceUm\.exe\s*(?:file\s*version|FileVersion|ProductVersion|$zhFileVersion)\s*v?[\d.]+", 'IgnoreCase')
     $selfPath = (Resolve-Path -LiteralPath $PSCommandPath).ProviderPath
-    $textFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.md', '.ps1', '.psm1', '.js', '.json', '.yaml', '.yml'))
+    $textFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.md', '.ps1', '.psm1', '.psd1', '.js', '.mjs', '.json', '.yaml', '.yml'))
     $hits = New-Object System.Collections.Generic.List[string]
     foreach ($f in $textFiles) {
         if ($f -eq $selfPath) { continue }
         $lines = [System.IO.File]::ReadAllLines($f, $utf8)
         for ($i = 0; $i -lt $lines.Length; $i++) {
-            $m = $banned.Match($lines[$i])
-            if ($m.Success -and -not $allowed.IsMatch($lines[$i])) {
-                $hits.Add(('{0}:{1} "{2}"' -f (Get-RelativePath $f), ($i + 1), $m.Value))
+            $line = $lines[$i]
+            $okSpans = @($allowed.Matches($line))
+            foreach ($m in $banned.Matches($line)) {
+                $covered = $false
+                foreach ($a in $okSpans) {
+                    if ($m.Index -lt ($a.Index + $a.Length) -and $a.Index -lt ($m.Index + $m.Length)) { $covered = $true; break }
+                }
+                if (-not $covered) { $hits.Add(('{0}:{1} "{2}"' -f (Get-RelativePath $f), ($i + 1), $m.Value)) }
             }
         }
     }
@@ -227,8 +256,9 @@ try {
         Add-CheckResult 'wording' 'PASS' "$($textFiles.Count) files, no UmRT version wording"
     }
     else {
+        $n = $hits.Count
         $hits.Add('UmRT has no version of its own (user-mode instance of the local TwinCAT runtime); write the TwinCAT / XAE version or "TcSystemServiceUm.exe file version x.y.z" instead')
-        Add-CheckResult 'wording' 'FAIL' "$($hits.Count - 1) banned wording hit(s)" $hits
+        Add-CheckResult 'wording' 'FAIL' "$n banned wording hit(s)" $hits
     }
 }
 catch {
@@ -236,16 +266,50 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# 4. mcp-server/tools.json in sync with Export-ToolSchema.ps1
+# error codes: every $script:TcErrorHints key has a heading in docs/troubleshooting.md
+# ---------------------------------------------------------------------------
+try {
+    $hintFile = Join-Path $repoRoot 'src\TwinCATAutomation\Private\ConvertTo-TcAdsErrorCode.ps1'
+    $tsFile = Join-Path $repoRoot 'docs\troubleshooting.md'
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($hintFile, [ref]$tokens, [ref]$errors)
+    $keys = New-Object System.Collections.Generic.List[string]
+    $assignments = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)
+    foreach ($as in $assignments) {
+        $left = $as.Left.Extent.Text
+        if ($left -eq '$script:TcErrorHints' -and $as.Right.Expression -is [System.Management.Automation.Language.HashtableAst]) {
+            foreach ($kv in $as.Right.Expression.KeyValuePairs) { $keys.Add($kv.Item1.Extent.Text.Trim("'", '"')) }
+        }
+        elseif ($left -match "^\`$script:TcErrorHints\[\s*['""]([A-Z0-9_]+)['""]\s*\]") {
+            $keys.Add($Matches[1])
+        }
+    }
+    $keys = @($keys | Sort-Object -Unique)
+    if ($keys.Count -eq 0) { throw "no `$script:TcErrorHints keys found in $(Get-RelativePath $hintFile)" }
+    $headings = @([System.IO.File]::ReadAllLines($tsFile, $utf8) | Where-Object { $_ -match '^#{2,4}\s' }) -join "`n"
+    $missing = @($keys | Where-Object { $headings -notmatch ('(?<![A-Z0-9_])' + [regex]::Escape($_) + '(?![A-Z0-9_])') })
+    if ($missing.Count -eq 0) {
+        Add-CheckResult 'errorcodes' 'PASS' "$($keys.Count) hint keys, each has a heading in docs/troubleshooting.md"
+    }
+    else {
+        Add-CheckResult 'errorcodes' 'FAIL' "$($missing.Count) `$script:TcErrorHints key(s) without a docs/troubleshooting.md heading (add a ### section)" $missing
+    }
+}
+catch {
+    Add-CheckResult 'errorcodes' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
+# mcp-server/tools.json in sync with Export-ToolSchema.ps1
 # ---------------------------------------------------------------------------
 try {
     $toolsJson = Join-Path $repoRoot 'mcp-server\tools.json'
     $exportScript = Join-Path $repoRoot 'mcp-server\scripts\Export-ToolSchema.ps1'
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tools-check-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
-        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $exportScript -OutPath $tmp 2>&1
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
-            Add-CheckResult 'tools.json' 'FAIL' "Export-ToolSchema.ps1 failed (exit $LASTEXITCODE)" @($out | ForEach-Object { "$_" } | Select-Object -Last 10)
+        $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $exportScript, '-OutPath', $tmp)
+        if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
+            Add-CheckResult 'tools.json' 'FAIL' "Export-ToolSchema.ps1 failed (exit $($r.Code))" @($r.Output | Select-Object -Last 15)
         }
         else {
             $normalize = {
@@ -278,7 +342,7 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# 5. npm test (mcp-server)
+# npm test (mcp-server)
 # ---------------------------------------------------------------------------
 if ($Fast) {
     Add-CheckResult 'npm test' 'SKIP' '-Fast'
@@ -287,30 +351,35 @@ else {
     $mcpDir = Join-Path $repoRoot 'mcp-server'
     $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
     if (-not $npm) {
-        Add-CheckResult 'npm test' 'FAIL' 'npm not found on PATH (install Node.js >= 18, or run with -Fast)'
+        Add-CheckResult 'npm test' 'FAIL' 'npm not found on PATH (install Node.js >= 21, or run with -Fast)'
     }
     else {
         Push-Location $mcpDir
         try {
-            $ciOut = $null
+            $installed = ''
+            $ok = $true
             if (-not (Test-Path -LiteralPath (Join-Path $mcpDir 'node_modules'))) {
-                $ciOut = & $npm.Source ci --no-audit --no-fund 2>&1
-                if ($LASTEXITCODE -ne 0) { throw ("npm ci failed (exit $LASTEXITCODE): " + (($ciOut | Select-Object -Last 5) -join ' | ')) }
+                $ci = Invoke-Native $npm.Source @('ci', '--no-audit', '--no-fund')
+                if ($ci.Code -ne 0) {
+                    $ok = $false
+                    Add-CheckResult 'npm test' 'FAIL' "npm ci failed (exit $($ci.Code))" @($ci.Output | Select-Object -Last 15)
+                }
+                $installed = ' (after npm ci)'
             }
-            $testOut = @(& $npm.Source test 2>&1 | ForEach-Object { "$_" })
-            $code = $LASTEXITCODE
-            $summary = @($testOut | Where-Object { $_ -match '^# (tests|pass|fail|skipped|todo) \d+' } | ForEach-Object { $_.TrimStart('#', ' ') }) -join ', '
-            $installed = if ($ciOut) { ' (after npm ci)' } else { '' }
-            if ($code -eq 0) {
-                Add-CheckResult 'npm test' 'PASS' "$summary$installed"
-            }
-            else {
-                $failing = @($testOut | Where-Object { $_ -match '^\s*not ok ' } | Select-Object -First 20)
-                Add-CheckResult 'npm test' 'FAIL' "exit $code; $summary" ($failing + @($testOut | Select-Object -Last 15))
+            if ($ok) {
+                $t = Invoke-Native $npm.Source @('test')
+                $summary = @($t.Output | Where-Object { $_ -match '^# (tests|pass|fail|skipped|todo) \d+' } | ForEach-Object { $_.TrimStart('#', ' ') }) -join ', '
+                if ($t.Code -eq 0) {
+                    Add-CheckResult 'npm test' 'PASS' "$summary$installed"
+                }
+                else {
+                    $failing = @($t.Output | Where-Object { $_ -match '^\s*not ok ' } | Select-Object -First 20)
+                    Add-CheckResult 'npm test' 'FAIL' "exit $($t.Code); $summary" ($failing + @('--- last 15 lines ---') + @($t.Output | Select-Object -Last 15))
+                }
             }
         }
         catch {
-            Add-CheckResult 'npm test' 'FAIL' $_.Exception.Message
+            Add-CheckResult 'npm test' 'FAIL' "check crashed: $($_.Exception.Message)"
         }
         finally {
             Pop-Location
@@ -323,9 +392,12 @@ $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
 $passed = @($results | Where-Object { $_.Status -eq 'PASS' })
 $skipped = @($results | Where-Object { $_.Status -eq 'SKIP' })
 Write-Host ''
-$line = "check: $($passed.Count) passed, $($failed.Count) failed, $($skipped.Count) skipped"
-if ($failed.Count -gt 0) {
-    Write-Host "$line -> FAIL ($(@($failed | ForEach-Object { $_.Name }) -join ', '))" -ForegroundColor Red
+$mode = if ($Strict) { ' (strict: SKIP fails)' } else { '' }
+$line = "check: $($passed.Count) passed, $($failed.Count) failed, $($skipped.Count) skipped$mode"
+$bad = @($failed)
+if ($Strict) { $bad += $skipped }
+if ($bad.Count -gt 0) {
+    Write-Host "$line -> FAIL ($(@($bad | ForEach-Object { $_.Name }) -join ', '))" -ForegroundColor Red
     exit 1
 }
 Write-Host "$line -> OK" -ForegroundColor Green

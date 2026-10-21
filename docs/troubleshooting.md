@@ -171,8 +171,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:XAE 正在顯示 modal dialog(license、「專案已修改」、build 確認)或在跑長操作,COM 回 `RPC_E_CALL_REJECTED`(0x80010001)或 `RPC_E_SERVERCALL_RETRYLATER`(0x8001010A)。模組已退避重試 1/2/4/8/16 秒(共約 31 秒)仍被拒。
 - **下一步**:切到 XAE 關掉 dialog,重跑同一個 cmdlet。IDE COM 參考仍有效,不用 `Connect-TcIde`。常見 dialog 來源:license 試用到期提示、Activate 時的「Restart TwinCAT System」(用 `-Force` 走 ADS 就不會出現)。
 
-### IDE_MODAL_DIALOG
+### IDE_MODAL_DIALOG / IDE_MODAL_DIALOG_RELOAD
 
+- **碼與 hint**:錯誤碼都是 `IDE_MODAL_DIALOG`;`IDE_MODAL_DIALOG_RELOAD` 只是 `kind = reload-prompt` 時用的 hint key(`error.hint` 指向 `Reset-TcSolution`)。
 - **現象**:`Build-TcProject`、`Enable-TcConfig`、`Enter-TcPlcOnline`、`Connect-TcIde`、`Reset-TcSolution` 回 `IDE_MODAL_DIALOG`(`Disconnect-TcIde -Quit` 遇到 modal 回的是 `IDE_QUIT_FAILED`,見下),`data.dialogTitle` / `dialogText` 是視窗標題與內文,`data.dialogKind` 是分類:`reload-prompt`(磁碟改檔的 reload 提示,hint 指向 `Reset-TcSolution`,見「磁碟改檔的正確做法」)或 `unknown`;`data.dialogReloadTarget` 區分 `file`(.TcPOU 等開著的檔案,「File has been changed outside the environment」)與 `project`(.plcproj 被改寫,「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」)。
 - **為什麼**:XAE / VS 有 modal 視窗(見「已知 modal dialog」)。這類視窗不會讓 COM 回 `RPC_E_CALL_REJECTED`,而是讓 DTE 呼叫無限阻塞,retry 救不了,所以模組在每個主要 COM 步驟前先用 UI Automation 掃 IDE 程序(`data.ideProcessId`)的頂層視窗。`Build-TcProject` 輪詢 `BuildState` 期間也每輪掃,build 中跳出的 dialog 回這個碼(不再等到逾時)。
 - **下一步**:先 `Get-TcIdeModalDialog`(MCP `GetIdeModalDialog`)看 `kind`:`reload-prompt`(兩種 target 都算)→ 直接 `Reset-TcSolution`(project 提示按 Yes、檔案提示 WM_CLOSE + close/reopen);其他手動處理 dialog 後重跑同一個 cmdlet,關不掉就 `Disconnect-TcIde -Quit -Kill`(只限本 session 啟動的 IDE)或 `Stop-Process -Id <ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。除了 reload 提示,模組不會自動關閉任何視窗。
@@ -192,6 +193,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Disconnect-TcIde -Quit -Kill` 回 `IDE_NOT_OWNED`,`data.ownedBySession = false`(`data.selectedBy` 例如 `solution-match`)。
 - **為什麼**:`-Kill` 只殺本 session 用 `Connect-TcIde` 啟動的 IDE,不殺使用者自己開的 IDE。`Reset-TcSolution` 重連到同一個 pid 時仍算 launched。
 - **下一步**:確定要關就自己 `Stop-Process -Id <data.ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。`data.quitError` 說明 quit 為什麼失敗。再呼叫一次 `-Quit -Kill` 結果不變(仍 `IDE_NOT_OWNED`)。
+
+### IDE_LAUNCH_FAILED
+
+- **現象**:`Connect-TcIde` 找不到可接的 IDE、自己啟動一個,但 60 s 內 DTE 沒有就緒,回 `IDE_LAUNCH_FAILED`(啟動的行程會被收掉,不留孤兒)。
+- **為什麼**:XAE / VS 卡在首次啟動精靈、帳戶登入視窗、license 提示,或該 ProgId 對應的 IDE 沒裝好。
+- **下一步**:手動開一次該 IDE 確認能正常進到主畫面;或改用 `-ProgId` 指定另一個 IDE,或先手動開好 IDE(含 solution)再 `Connect-TcIde -SolutionPath <sln>`。
 
 ### IDE_TIMEOUT
 
@@ -223,8 +230,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **下一步**:等 `Get-TcSystemState` 回 Run 再 `Connect-TcAds`。AmsNetId 一律用 `Connect-TcIde` 回的 `data.amsNetId`,不要手打。
 - **注意**:`Get-TcSystemState` 不帶 `-AmsNetId` 時跟隨 IDE target(其次 ADS session);若 `data.netIdSource` 是 `local`,讀到的是本機 TcSysSrv(`127.0.0.1.1.1`)而非你的 target(例如 UmRT 已 Run 但本機顯示 Config),請先 `Connect-TcIde`。
 
-### ADS_SYMBOL_NOT_FOUND(ADS 0x710)
+### ADS_SYMBOL_NOT_FOUND / SYMBOL_NOT_FOUND(ADS 0x710)
 
+- **碼**:`Read-TcVariable` 把 `ADS_SYMBOL_NOT_FOUND` 回成 `SYMBOL_NOT_FOUND`(相容舊碼),hint 相同。
 - **為什麼**:symbol 路徑在目前 PLC 內不存在。新加的變數還沒 download、路徑大小寫/拼字錯、或 symbol 被 optimizer 拿掉(沒被引用的變數)。
 - **下一步**:`Get-TcSymbols -Filter "MAIN.*"` 列出實際名稱;必要時 Build → `Enter-TcPlcOnline`。
 
@@ -298,6 +306,24 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:[InfoSys ADS Return Codes](https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html):0x711 = `ADSERR_DEVICE_SYMBOLVERSIONINVALID`「Invalid symbol version. This can occur due to an online change. Create a new handle.」;Activate 後出現時通常是 PLC application 與 symbol description 不同版(#32)。
 - **下一步**:`Connect-TcAds` 重取 handle;Activate 後才出現就看 `Enable-TcConfig` 的 `data.bootPackage` / `diagnostics`。
 
+### CYCLE_TIMEOUT
+
+- **現象**:`Enable-TcConfig -Force` 回 `CYCLE_TIMEOUT`,訊息 `exceeded -TimeoutSec N s before step '<step>'`。
+- **為什麼**:`-TimeoutSec`(預設 120 s)是整個 lifecycle 的總預算,每一步開始前檢查剩餘時間;用完就停在那一步之前,不再往下做。
+- **下一步**:看 `data.steps` 卡在哪一步;用 `Get-TcSystemState` / `Get-TcPlcState` 確認目前狀態,加大 `-TimeoutSec` 後重跑 `Enable-TcConfig -Force`。
+
+### PLC_RUN_TIMEOUT
+
+- **現象**:`Set-TcPlcState -State Run`(或 `Enable-TcConfig -Force` 的 PLC Run 步)回 `PLC_RUN_TIMEOUT`(Stop / Reset 對應的是 `STATE_SET_FAILED`)。
+- **為什麼**:送出 Run 後 PLC 在 `-TimeoutSec` 內沒有進入 Run(PLC 例外、程式沒載入、runtime 狀態不對)。
+- **下一步**:`Get-TcPlcState` 看目前狀態;Error / Stop 就檢查 PLC 例外或 Build 錯誤,再 `Enter-TcPlcOnline` 後重試;851 是 Invalid 見 `PLC_NOT_LOADED`。
+
+### PLC_PROJECT_NOT_FOUND
+
+- **現象**:`Enter-TcPlcOnline` / `Exit-TcPlcOnline` / `Get-TcPouCode` / `Write-TcPouCode` / `Enable-TcConfig` 回 `PLC_PROJECT_NOT_FOUND`。
+- **為什麼**:`TIPC` 下找不到 `<Plc> Project` 節點(solution 沒有 PLC 專案、`-PlcProjectPath` 名稱打錯,或剛 Activate / 重啟後樹還沒就緒)。
+- **下一步**:`Get-TcProjectTree -PlcOnly` 確認 PLC 名稱(`data.plcProjects` 列出候選),`-PlcProjectPath` 給 PLC 名稱(`FrameworkUnitTest`)或樹路徑(`TIPC^FrameworkUnitTest^FrameworkUnitTest Project`);剛重啟可重試一次。
+
 ### PLC_PROJECT_AMBIGUOUS
 
 - **為什麼**:`Enter-TcPlcOnline` / `Exit-TcPlcOnline` 沒給 `-PlcProjectPath`,solution 卻有多個 PLC project。以前直接拿 `TIPC` 的第一個 child,多 PLC 時登入/登出錯的 PLC(#32)。
@@ -315,8 +341,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **EXPECTED_PROJECT_NOT_FOUND**:`-ExpectedProject` 的名稱不是這個 solution 的 PLC project(比對 .plcproj 檔名,不含副檔名;也收 `TIPC^<Plc>`),沒有開始 Build。用 `data.projects` 的 name。
 - **BUILD_COVERAGE_UNKNOWN**:帶了 `-ExpectedProject` 但無法確認它有被編到:SolutionContexts 讀不到(`data.coverageError`),或 Build 結果不是成功、Error List 又沒有那個 project 的列(status `unknown`)。不要當成 Build 成功。
 
-### BUILD_FAILED
+### BUILD_FAILED / BUILD_FAILED_COMPILE
 
+- **碼與 hint**:錯誤碼是 `BUILD_FAILED`;`BUILD_FAILED_COMPILE` 是讀到 Error List 錯誤列時用的 hint key(看 `data.errorItems`)。
 - **為什麼**:成功與否依序判定:(a) `SolutionBuild.LastBuildInfo`(= build 失敗的專案數,回在 `data.failedProjects`)讀得到就用它(> 0 = 失敗);(b) 讀不到(`failedProjects = null`)就看 Error List:有任何**非 Library Manager** 的 Error(file 不像 `*Library Manager`、line > 0)就算失敗;(c) 兩者都讀不到 → `BUILD_STATUS_UNKNOWN`(見下)。TwinCAT 的 PLC 編譯訊息**不走** DTE(`ErrorList.ErrorItems.Count` 永遠 0、`OutputWindow.OutputWindowPanes` 空),所以模組用 UI Automation 讀 XAE 的 Error List 視窗(`Get-TcBuildErrors`),`data.errors` 是 Error List 的錯誤數,`data.errorItems[]` 是每筆 `{ severity, code, description, project, file, line, column }`,`data.codeErrors[]` 是其中排除 Library Manager 項目後的 PLC code 錯誤,`data.buildSucceeded` 是判定結果,`error.message` 含 codeErrors 數(括號補 Library Manager 數)與前 3 筆摘要。
 - **下一步**:看 `data.codeErrors`(file + line 直接指到 POU),改 code 後 `Build-TcProject`。不要在沒改東西的情況下重跑 Build。`data.errorListError` 出現時表示 Error List 讀不到(見 `ERRORLIST_UNAVAILABLE`),`errors` 退回 `failedProjects`。
 
@@ -476,7 +503,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | Reset 殺 service | 對 UmRT 送 `Set-TcPlcState -State Reset` 會直接結束 `TcSystemServiceUm` | 不要對 UmRT 用 Reset;要清狀態改 Stop → `Enter-TcPlcOnline` 重新 download;真的 Reset 了就手動重啟 service |
 | UmRT crash(`TcSystemServiceUm` 消失,issue #21) | 簽章固定:`TcOsSys.dll` c0000005,offset 0x589534,bucket 1526877736441380629(dump `TcSystemServiceUm.exe.86180.dmp` / `.58132.dmp`)。crash #7 2026-10-20 22:09:40、#8 2026-10-21 00:57:15,兩次都在 6~9 s 前 `Boot\TCNC.bootdata` 被截成 0 bytes;#8 發生在已跑約 1 h 的 UmRT 做 set-config(port 10000 Config)時 | 重啟 `TcSystemServiceUm` 後 `Enable-TcConfig -Force`;根因在 UmRT 側,模組無法避免 |
 | UmRT ADS 0x502「Mailbox is full」 | 2026-10-21 約 01:02 新現象:UmRT process 活著、CPU idle,對 199.5.42.250.1.1 的**每個** ADS 呼叫都回 0x502(本機 TcSysSrv 正常),`Enable-TcConfig` 180 s 後回 `SYSTEM_STATE_TIMEOUT`。先 `Get-TcSystemState -AmsNetId 127.0.0.1.1.1` 對照本機 TcSysSrv 正常、target 不正常即是 | kill 並重啟 `TcSystemServiceUm`,再 `Enable-TcConfig -Force` |
-| 4024 專案跑不到 UmRT(4026 XAE) | 4024 .sln 的 `Release/TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0;Build「成功」(1.4 s)什麼都沒 build、Activate 無 `ACTIVATE_FAILED`、851 維持 Invalid(`PLC_NOT_LOADED`);`Set-TcTarget -Platform 'TwinCAT OS (x64)'` 回 `PLATFORM_NOT_FOUND` | 在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 再 Build;或把專案升級到 4026 |
+| 4024 專案在 4026 XAE 下跑不到本機 UmRT | 4024 .sln 的 `Release/TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)` 且沒有 Build.0;Build「成功」(1.4 s)什麼都沒 build、Activate 無 `ACTIVATE_FAILED`、851 維持 Invalid(`PLC_NOT_LOADED`);`Set-TcTarget -Platform 'TwinCAT OS (x64)'` 回 `PLATFORM_NOT_FOUND` | 在 Configuration Manager 新增真正的 `TwinCAT OS (x64)` project platform 再 Build;或把專案升級到 4026 |
 | 被 modal 擋住的 IDE 會被當過期實例 | IDE 被 modal 擋住時 DTE `Version` 讀空字串,`Connect-TcIde` 當 ROT 過期項目,帶 `-SolutionPath` 會另外啟動第二個 IDE(VS2022 出現過一次,**未修**) | 重連前先 `Get-TcIdeModalDialog` / MCP `GetIdeModalDialog`;有 dialog 先處理;已多開就用 `data.candidates[]` / `Stop-Process` 收掉多的那個 |
 | 重新 download 後 index offset 錯位 | symbol 的 indexGroup/indexOffset 在每次 download 後可能改變;舊 handle 會讀到別的變數 | 不快取 offset;懷疑錯位時比對 `TwinCAT_SystemInfoVarList._AppInfo.AppTimestamp` 是否變了,變了就重新 `Get-TcSymbols` |
 | UIA 看不到的 dialog 仍會擋 quit | 標題為空等 UIA 掃描抓不到的 modal,`Disconnect-TcIde -Quit` 的事前檢查看不到,`Solution.Close` / `DTE.Quit` 照樣無限阻塞;經 MCP 時會先撞到 `BRIDGE_TIMEOUT`,走不到 `-Kill` | `Stop-Process -Id <data.ideProcessId>`(MCP 結果的 `data.lastIde.ideProcessId`),再重新 `Connect-TcIde` |
