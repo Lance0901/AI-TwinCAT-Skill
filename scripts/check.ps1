@@ -82,6 +82,17 @@ function Get-RepoFiles {
     param([string]$Root, [string[]]$Extensions)
     $excludedNames = @('node_modules', '.git', '.vs')
     $excludedRel = @('tests/Integration/logs', '.claude/worktrees')
+    # Skip files git ignores (local temp_*.ps1, logs): CI never sees them, and the pre-commit hook
+    # must not block a commit because of an untracked scratch file. Tracked and new (untracked,
+    # not ignored) files are still checked.
+    $keep = $null
+    try {
+        $listed = @(& git -C $Root ls-files --cached --others --exclude-standard 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $listed.Count -gt 0) {
+            $keep = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($l in $listed) { [void]$keep.Add(($l -replace '\\', '/')) }
+        }
+    } catch { $keep = $null }
     $stack = New-Object System.Collections.Generic.Stack[string]
     $stack.Push($Root)
     while ($stack.Count -gt 0) {
@@ -93,7 +104,9 @@ function Get-RepoFiles {
             $stack.Push($d)
         }
         foreach ($f in [System.IO.Directory]::GetFiles($dir)) {
-            if ($Extensions -contains [System.IO.Path]::GetExtension($f).ToLowerInvariant()) { $f }
+            if ($Extensions -notcontains [System.IO.Path]::GetExtension($f).ToLowerInvariant()) { continue }
+            if ($null -ne $keep -and -not $keep.Contains((Get-RelativePath $f))) { continue }
+            $f
         }
     }
 }
