@@ -18,12 +18,25 @@ function Enable-TcConfig {
                        error 0x702): nothing is compared, Activate runs as before, a warning
                        is written (Write-Warning and data.warning, same hint as
                        PLATFORM_UNKNOWN). Also used when the solution platform is unreadable.
-        When the reference and the solution platform differ:
+        The check passes only when the active solution platform AND the project platform of
+        the .tsproj under it (Get-TcSolutionPlatform projectPlatform; only the solution
+        platform is compared when it is unreadable) equal the reference: a solution platform
+        name can map to a project platform with another name (solution 'TwinCAT OS (x64)'
+        -> project 'TwinCAT OS (ARMT2)').
+        When they differ:
           platform-fix        the solution configuration '<active configuration>|<target
                               platform>' is activated (same helper as Set-TcTarget); with
                               -NoPlatformFix PLATFORM_MISMATCH is returned instead and
-                              nothing is activated. Platform missing from the solution ->
-                              PLATFORM_NOT_FOUND, activation failed -> PLATFORM_SET_FAILED.
+                              nothing is activated. With -NoPlatformFix it is
+                              PLATFORM_PROJECT_MISMATCH instead (data.platformMap,
+                              requestedProjectPlatform; nothing switched) when the solution
+                              platform name already matches but its .tsproj is built for another
+                              project platform, or when the .tsproj under '<configuration>|<wanted>'
+                              is (read-only look-up with Get-TcSolutionConfigurations; unreadable
+                              -> PLATFORM_MISMATCH): a switch cannot fix either. Platform missing from the solution ->
+                              PLATFORM_NOT_FOUND; its .tsproj built for another project
+                              platform -> PLATFORM_PROJECT_MISMATCH (nothing switched,
+                              data.platformMap); activation failed -> PLATFORM_SET_FAILED.
           platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
                               output of the old platform must not be activated; a failing
                               build stops here with its code (BUILD_FAILED ...).
@@ -119,7 +132,11 @@ function Enable-TcConfig {
         adsPort; loggedIn; state }), bootPackage, finalCheck (@{ systemState; plcs;
         dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
         ideMemoryMB, solutionPlatform (active solution platform
-        at Activate time, after an automatic fix; $null when unreadable), targetPlatform
+        at Activate time, after an automatic fix; $null when unreadable), projectPlatform
+        (project platform of the ACTIVE .tsproj; $null without .tsproj), platformMap and
+        requestedProjectPlatform (only after a failed platform-fix: solution platform ->
+        project platforms; .tsproj project platform under the requested solution platform),
+        targetPlatform
         ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
         platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
         solution platform was switched and rebuilt), warning (only set on the 'skipped'
@@ -173,6 +190,9 @@ function Enable-TcConfig {
     $origPort = $script:TcAdsPort
     $ideMemoryMB = $null
     $solutionPlatform = $null
+    $projectPlatform = $null
+    $requestedProjectPlatform = $null
+    $platformMap = $null
     $targetPlatform = $null
     $targetPlatformSource = $null
     $platformFixed = $false
@@ -204,6 +224,9 @@ function Enable-TcConfig {
             amsNetId    = $netId
             ideMemoryMB = $ideMemoryMB
             solutionPlatform = $solutionPlatform
+            projectPlatform = $projectPlatform
+            requestedProjectPlatform = $requestedProjectPlatform
+            platformMap = $platformMap
             targetPlatform = $targetPlatform
             targetPlatformSource = $targetPlatformSource
             platformFixed = $platformFixed
@@ -223,8 +246,10 @@ function Enable-TcConfig {
     function Test-TcBootPackage {
         param([string]$TargetNetId)
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $plat = $solutionPlatform
-        if ([string]::IsNullOrWhiteSpace($plat)) { $plat = (Get-TcSolutionPlatform).platform }
+        # _Boot\<platform>: the project platform first (what the old SolutionContexts reading returned).
+        $plat = $projectPlatform
+        if ([string]::IsNullOrWhiteSpace($plat)) { $plat = $solutionPlatform }
+        if ([string]::IsNullOrWhiteSpace($plat)) { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } }
         $bp = $null
         $ports = @()
         try { $ports = @(Get-TcPlcProjectList -SysManager $sm | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
@@ -260,8 +285,9 @@ function Enable-TcConfig {
                 else { $diag.errorListError = [string]$el.error.code }
             } catch { $diag.errorListError = $_.Exception.Message }
         }
-        $plat = $solutionPlatform
-        if ([string]::IsNullOrWhiteSpace($plat)) { try { $plat = (Get-TcSolutionPlatform).platform } catch { } }
+        $plat = $projectPlatform
+        if ([string]::IsNullOrWhiteSpace($plat)) { $plat = $solutionPlatform }
+        if ([string]::IsNullOrWhiteSpace($plat)) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
         $ports = @($plcs | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort })
         try { $diag.bootPackage = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports } catch { }
         Set-Variable -Name diagnostics -Value ([PSCustomObject]$diag) -Scope 1
@@ -359,8 +385,9 @@ function Enable-TcConfig {
         return $res
     }
 
-    # Before ActivateConfiguration(): TwinCAT 4026 XAE refuses to activate when the active
-    # solution platform differs from the target platform. Reference = TARGETINFO of the
+    # Before ActivateConfiguration(): XAE refuses to activate when the active solution
+    # platform differs from the target platform (measured on 4026 XAE: ACTIVATE_FAILED);
+    # the target decides the platform. Reference = TARGETINFO of the
     # target, else -Platform, else nothing (platformCheck 'skipped' + warning, old
     # behaviour). On a mismatch: switch the solution platform and rebuild (steps
     # platform-fix, platform-fix-build), or PLATFORM_MISMATCH with -NoPlatformFix.
@@ -370,6 +397,7 @@ function Enable-TcConfig {
         param([string]$TargetNetId)
         $sol = Get-TcSolutionPlatform
         Set-Variable -Name solutionPlatform -Value $sol.platform -Scope 1
+        Set-Variable -Name projectPlatform -Value $sol.projectPlatform -Scope 1
         $tp = $null
         if (-not [string]::IsNullOrWhiteSpace($TargetNetId)) {
             $tp = Get-TcTargetPlatform -AmsNetId $TargetNetId
@@ -406,30 +434,67 @@ function Enable-TcConfig {
             Write-Warning $warn
             return $null
         }
-        if ([string]$sol.platform -ieq $wanted) { return $null }
+        # Both must match: the solution platform name and the project platform the .tsproj is
+        # built for under it (unreadable project platform: only the solution platform counts).
+        $projOk = [string]::IsNullOrWhiteSpace([string]$sol.projectPlatform) -or ([string]$sol.projectPlatform -ieq $wanted)
+        if (([string]$sol.platform -ieq $wanted) -and $projOk) { return $null }
+        $solText = if ([string]::IsNullOrWhiteSpace([string]$sol.projectPlatform) -or ([string]$sol.projectPlatform -ieq [string]$sol.platform)) { "'$($sol.platform)'" } else { "'$($sol.platform)' (project platform '$($sol.projectPlatform)')" }
 
         $swFix = [System.Diagnostics.Stopwatch]::StartNew()
         if ($NoPlatformFix) {
-            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "not done (-NoPlatformFix): solution '$($sol.platform)' <> '$wanted' ($srcText)"
-            $hint = Get-TcErrorHint -Code 'PLATFORM_MISMATCH'
+            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "not done (-NoPlatformFix): solution $solText <> '$wanted' ($srcText)"
             $idText = if ([string]::IsNullOrWhiteSpace($TargetNetId)) { '<id>' } else { $TargetNetId }
+            if ([string]$sol.platform -ieq $wanted) {
+                # Same solution platform name, other project platform: switching cannot help
+                # (Set-TcTarget -Platform would return the same), the project settings must change.
+                $hint = Get-TcErrorHint -Code 'PLATFORM_PROJECT_MISMATCH'
+                if ($null -ne $hint) { $hint = $hint.Replace('<id>', $idText).Replace('<platform>', $wanted) }
+                Set-Variable -Name requestedProjectPlatform -Value $sol.projectPlatform -Scope 1
+                return New-TcStepFailure -Message "Active solution platform '$($sol.platform)' has the target's name ($srcText) but its .tsproj is built for project platform '$($sol.projectPlatform)'. Activating would not build for a '$wanted' target; nothing was activated (-NoPlatformFix)." -Code 'PLATFORM_PROJECT_MISMATCH' -Hint $hint
+            }
+            # Read-only look at '<configuration>|<wanted>': when its .tsproj is built for another
+            # project platform, Set-TcTarget -Platform would only return PLATFORM_PROJECT_MISMATCH,
+            # so say that now. Unreadable -> the plain PLATFORM_MISMATCH below.
+            $confNow = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
+            try {
+                $res = Resolve-TcPlatformTarget -Configs @(Get-TcSolutionConfigurations) -Platform $wanted -Configuration $confNow
+                if (@($res.Candidates).Count -gt 0) {
+                    $pc = Test-TcCandidateProjects -Candidates $res.Candidates -Platform $wanted
+                    if ($pc.ProjectCheck -eq 'mismatch') {
+                        $e = New-TcProjectMismatchError -SameConfig $res.SameConfig -Platform $wanted -Configuration $confNow -BadText $pc.BadText
+                        Set-Variable -Name requestedProjectPlatform -Value $pc.RequestedProjectPlatform -Scope 1
+                        Set-Variable -Name platformMap -Value $res.PlatformMap -Scope 1
+                        $h = ([string]$e.hint).Replace('<id>', $idText)
+                        return New-TcStepFailure -Message "Active solution platform $solText differs from '$wanted' ($srcText), and switching would not help: $([string]$e.message) (-NoPlatformFix: nothing was activated.)" -Code 'PLATFORM_PROJECT_MISMATCH' -Hint $h
+                    }
+                }
+            }
+            catch { Write-Verbose "Enable-TcConfig: project platform look-up skipped ($($_.Exception.Message))" }
+            $hint = Get-TcErrorHint -Code 'PLATFORM_MISMATCH'
             if ($null -ne $hint) { $hint = $hint.Replace('<id>', $idText).Replace('<platform>', $wanted) }
-            return New-TcStepFailure -Message "Active solution platform '$($sol.platform)' differs from '$wanted' ($srcText). ActivateConfiguration() would fail with 'Check config failed!'; nothing was activated (-NoPlatformFix)." -Code 'PLATFORM_MISMATCH' -Hint $hint
+            return New-TcStepFailure -Message "Active solution platform $solText differs from '$wanted' ($srcText). ActivateConfiguration() would fail with 'Check config failed!'; nothing was activated (-NoPlatformFix)." -Code 'PLATFORM_MISMATCH' -Hint $hint
         }
 
         $conf = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
         $srcArg = if ($null -ne $tp -and $wanted -eq [string]$tp.targetPlatform) { $srcText } else { $null }
         $r = Set-TcSolutionPlatform -Platform $wanted -Configuration $conf -PlatformSource $srcArg
         if (-not $r.success) {
-            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "'$($sol.platform)' -> '$wanted' ($srcText) failed: $([string]$r.error.message)"
+            Set-Variable -Name platformMap -Value $r.platformMap -Scope 1
+            # projectPlatform stays the ACTIVE one (unchanged / restored); the one under the
+            # requested solution platform goes to requestedProjectPlatform.
+            if (-not [string]::IsNullOrWhiteSpace([string]$r.projectPlatform)) { Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1 }
+            Set-Variable -Name requestedProjectPlatform -Value $r.requestedProjectPlatform -Scope 1
+            Add-TcStepRecord -Name 'platform-fix' -Ok $false -Watch $swFix -Detail "$solText -> '$wanted' ($srcText) failed: $([string]$r.error.message)"
             $code = if ([string]::IsNullOrWhiteSpace([string]$r.error.code)) { 'PLATFORM_SET_FAILED' } else { [string]$r.error.code }
             $hp = $r.error.PSObject.Properties['hint']
             $hint = if ($null -ne $hp) { [string]$hp.Value } else { $null }
+            if ($null -ne $hint) { $hint = $hint.Replace('<id>', $(if ([string]::IsNullOrWhiteSpace($TargetNetId)) { '<id>' } else { $TargetNetId })) }
             return New-TcStepFailure -Message "Automatic solution platform switch to '$wanted' ($srcText) failed: $([string]$r.error.message)" -Code $code -Hint $hint
         }
         Set-Variable -Name solutionPlatform -Value $r.platform -Scope 1
+        Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1
         Set-Variable -Name platformFixed -Value $true -Scope 1
-        Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$($sol.platform) -> $($r.platform) ($srcText, configuration $($r.configuration))"
+        Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$solText -> $($r.platform) (project platform $($r.projectPlatform); $srcText, configuration $($r.configuration))"
 
         # The PLC output of the old platform must not be activated: same build as Build-TcProject.
         $swBuild = [System.Diagnostics.Stopwatch]::StartNew()

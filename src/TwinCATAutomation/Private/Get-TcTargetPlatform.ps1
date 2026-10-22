@@ -5,8 +5,9 @@ function Get-TcTargetPlatform {
         from the documented TARGETINFO interface, so the solution platform can follow the
         target. Never throws, never guesses.
     .DESCRIPTION
-        TwinCAT 4026 XAE refuses to activate when the active solution platform differs from
-        the target platform ("Check config failed!", see Enable-TcConfig ACTIVATE_FAILED).
+        The target decides the platform: when the active solution platform differs from the
+        target platform, XAE refuses to activate ("Check config failed!", see Enable-TcConfig
+        ACTIVATE_FAILED; measured 2026-10-21 on 4026 XAE, an observation, not a version rule).
         Beckhoff InfoSys, TC1700/TC170x Usermode Runtime manual, "Runtime type (ADS)":
         https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html
           ADS port 200, IndexGroup 0x00000700 (SYSTEMSERVICE_TARGETINFO):

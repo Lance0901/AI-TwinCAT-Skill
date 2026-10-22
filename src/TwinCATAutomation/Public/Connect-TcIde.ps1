@@ -48,6 +48,9 @@ function Connect-TcIde {
         data.connectSec   seconds the whole call took (every successful path)
         data.solutionPlatform / solutionConfiguration  active solution platform and
                           configuration ($null when unreadable); see Set-TcTarget -Platform
+        data.projectPlatform  project platform the .tsproj is built for under the active
+                          solution platform (may differ from solutionPlatform, e.g. solution
+                          'TwinCAT OS (x64)' -> project 'TwinCAT OS (ARMT2)')
         data.launchSec    seconds from starting a new IDE until its DTE answered (only when selectedBy = 'launched')
     #>
     [CmdletBinding()]
@@ -487,6 +490,7 @@ function Connect-TcIde {
     $solPlatform = Get-TcSolutionPlatform
     $data | Add-Member -NotePropertyName 'solutionPlatform' -NotePropertyValue $solPlatform.platform
     $data | Add-Member -NotePropertyName 'solutionConfiguration' -NotePropertyValue $solPlatform.configuration
+    $data | Add-Member -NotePropertyName 'projectPlatform' -NotePropertyValue $solPlatform.projectPlatform
 
     # Add target info if ITcSysManager is available
     if ($sysManagerAvailable) {
