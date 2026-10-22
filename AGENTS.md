@@ -6,7 +6,8 @@ PowerShell module for automating the TwinCAT 3 IDE and PLC runtime, for **Codex*
 
 ```powershell
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"   # 1. connect (opens the solution)
-# 1b. TwinCAT 4026 XAE: solution platform must equal the target platform (UmRT = 'TwinCAT OS (x64)'), else ACTIVATE_FAILED.
+# 1b. The target decides the platform: solution platform must equal it (UmRT = 'TwinCAT OS (x64)'), else ACTIVATE_FAILED;
+#     a solution platform whose .tsproj maps to another project platform -> PLATFORM_PROJECT_MISMATCH (nothing switched).
 #     Without -Platform it is read from the target (TARGETINFO); ADS 0x702 -> PLATFORM_UNKNOWN. -NoPlatformSwitch = NetId only.
 Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
 Build-TcProject                   # 2. BUILD_FAILED -> data.errorItems (description/file/line)
