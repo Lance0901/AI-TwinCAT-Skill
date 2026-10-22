@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install TwinCAT Automation skill for Codex.
     Checks prerequisites, then installs the skill + AGENTS.md to user-level

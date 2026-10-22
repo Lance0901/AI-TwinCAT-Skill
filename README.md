@@ -240,6 +240,10 @@ npm test          # no TwinCAT needed
 
 Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [docs/setup-mcp.md](docs/setup-mcp.md) and [mcp-server/README.md](mcp-server/README.md).
 
+## Development
+
+Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit hook then runs `scripts/check.ps1 -Fast` (PS 5.1 parse and file encoding, cmdlet count vs docs, banned wording, error codes documented, `tools.json` in sync; it reads the working tree, not the index); run `scripts/check.ps1` (adds `npm test`) before a PR, CI runs it with `-Strict` (SKIP fails) on `windows-latest`. Review rules: [CODING_STANDARDS.md](CODING_STANDARDS.md).
+
 ## Changelog
 
 ### 2026-04-02

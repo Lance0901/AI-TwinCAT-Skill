@@ -1,4 +1,4 @@
-# Integration: lifecycle smoke test against a real runtime (UmRT / local XAR).
+﻿# Integration: lifecycle smoke test against a real runtime (UmRT / local XAR).
 # Steps: Connect IDE -> set target -> Build -> Enable-TcConfig -Force -> ADS -> state/symbols/read
 #        -> P0-2 auto-reconnect after re-activate -> P0-5 error codes -> P0-3 -NoLogin guard
 #        -> restore PLC Run -> close IDE without saving.

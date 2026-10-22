@@ -1,4 +1,4 @@
-function Initialize-TcAdsHelper {
+﻿function Initialize-TcAdsHelper {
     <#
     .SYNOPSIS
         Compiles the C# ADS helper, or falls back to a pure-PowerShell implementation.

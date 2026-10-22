@@ -1,4 +1,4 @@
-function Send-TcPlcProgram {
+﻿function Send-TcPlcProgram {
     <#
     .SYNOPSIS
         Downloads the compiled PLC program to the target runtime — no dialog popups.
