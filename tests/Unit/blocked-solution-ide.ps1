@@ -24,7 +24,7 @@ $global:FakeIde = @{}
 & $mod {
     function script:Get-Process {
         [CmdletBinding()] param([int]$Id)
-        if ($global:FakeIde.ContainsKey($Id)) { return [PSCustomObject]@{ Id = $Id; MainWindowTitle = $global:FakeIde[$Id].Title; MainWindowHandle = [IntPtr]::Zero; StartTime = [DateTime]'2026-01-01T00:00:00' } }
+        if ($global:FakeIde.ContainsKey($Id)) { return [PSCustomObject]@{ Id = $Id; MainWindowTitle = $global:FakeIde[$Id].Title; MainWindowHandle = [IntPtr]::Zero; StartTime = $(if ($global:FakeIde[$Id].Start) { [DateTime]$global:FakeIde[$Id].Start } else { [DateTime]'2026-01-01T00:00:00' }) } }
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
     function script:Get-TcIdeModalDialog {
@@ -65,7 +65,7 @@ $reloadOther = @{ Title = 'TcXaeShell'; Text = "The project file 'C:\Elsewhere\D
 try {
     # --- Find-TcBlockedSolutionIde ---
     $global:FakeIde = @{
-        101 = @{ Title = 'Other - TcXaeShell'; Dialog = $reload }        # path inside wins over the title
+        101 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload }         # dialog path inside: strong
         102 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }           # busy, title only
         103 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reloadOther }    # same name, other folder
         104 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }           # unreadable, no dialog: shutting down
@@ -115,9 +115,9 @@ try {
     Set-Rot @(@{ Pid = 501; Mode = 'unreadable' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'connect-shutting-down' (-not $r.success -and $r.error.code -eq 'IDE_NOT_FOUND') "code=$($r.error.code)"
-    # --- session record of this very process (busy, title of another name, no dialog) -> strong, attached ---
+    # --- session record of this very process (busy, consistent title, no dialog) -> strong, attached ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
-    $global:FakeIde = @{ 601 = @{ Title = 'Renamed - TcXaeShell'; Dialog = $null }; 602 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    $global:FakeIde = @{ 601 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }; 602 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
     & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Demo.sln' } $sln
     Set-Rot @(@{ Pid = 602; Mode = 'busy' }, @{ Pid = 601; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
@@ -143,12 +143,64 @@ try {
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -LaunchIfBlocked
     Check 'connect-weak-launchifblocked' (-not $r.success -and $r.error.code -eq 'TWINCAT_NOT_FOUND') "code=$($r.error.code)"
 
-    # --- module-state: the IDE this module was connected to, same solution (no record, other title) ---
-    & $mod { param($s) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 801; $script:TcSolutionPath = $s } $sln
-    $global:FakeIde = @{ 801 = @{ Title = 'Something - TcXaeShell'; Dialog = $null } }
+    # --- module-state: the IDE this module was connected to (pid + start time), same solution, no record ---
+    & $mod { param($s) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 801; $script:TcIdeStartTime = [DateTime]'2026-01-01T00:00:00'; $script:TcSolutionPath = $s } $sln
+    $global:FakeIde = @{ 801 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
     Set-Rot @(@{ Pid = 801; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+
     Check 'connect-module-state' (-not $r.success -and $r.error.code -eq 'IDE_BUSY' -and $r.data.matchedBy -eq 'module-state' -and $r.data.attached) "code=$($r.error.code) by=$($r.data.matchedBy)"
+    # --- pid reuse: same pid as the previous connection but another start time -> not module-state ---
+    & $mod { param($s) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 811; $script:TcIdeStartTime = [DateTime]'2025-06-01T00:00:00'; $script:TcSolutionPath = $s } $sln
+    $global:FakeIde = @{ 811 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    Set-Rot @(@{ Pid = 811; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'connect-pid-reuse' (-not $r.success -and $r.data.matchedBy -eq 'window-title' -and -not $r.data.attached) "by=$($r.data.matchedBy) attached=$($r.data.attached)"
+
+    # --- S1: a failed / weak Connect-TcIde leaves no connection to the previous IDE ---
+    $st = & $mod { $ok = $true; try { Assert-TcConnection } catch { $ok = $false }; [PSCustomObject]@{ ok = $ok; dte = $script:TcDte; pid = $script:TcIdeProcessId } }
+    Check 'weak-clears-connection' (-not $st.ok -and $null -eq $st.dte -and $null -eq $st.pid) "assert=$($st.ok) pid=$($st.pid)"
+    & $mod { $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 999 }
+    $global:FakeIde = @{}
+    Set-Rot @()
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    $st = & $mod { $ok = $true; try { Assert-TcConnection } catch { $ok = $false }; $ok }
+    Check 'notfound-clears-connection' ($r.error.code -eq 'IDE_NOT_FOUND' -and -not $st) "code=$($r.error.code) assert=$st"
+
+    # --- B1: record says THIS solution, but the IDE now shows another one -> not attached ---
+    $global:FakeIde = @{
+        901 = @{ Title = 'Other - TcXaeShell'; Dialog = $null }      # record same, title contradicts
+        902 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reloadOther } # record same, dialog names files elsewhere
+    }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 901 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 902 -Solution $s } $sln
+    foreach ($bpid in 901, 902) {
+        Set-Rot @(@{ Pid = $bpid; Mode = 'busy' })
+        $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+        $conn = & $mod { $script:TcIdeConnected }
+        Check "record-contradicted-$bpid" (-not $r.success -and $r.data.ideProcessId -eq $bpid -and $r.data.matchedBy -eq 'session-record' -and -not $r.data.attached -and $r.data.notAttachedReason -and -not $conn -and $r.error.message -match 'IDE_BLOCKED_SAME_NAME') "attached=$($r.data.attached) reason=$($r.data.notAttachedReason)"
+    }
+
+    # --- N1: two IDEs with strong evidence -> neither attached, both listed ---
+    $global:FakeIde = @{ 911 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload }; 912 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
+    Set-Rot @(@{ Pid = 911; Mode = 'unreadable' }, @{ Pid = 912; Mode = 'unreadable' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'two-strong-none-attached' (-not $r.success -and -not $r.data.attached -and @($r.data.blockedCandidates).Count -eq 2 -and -not (& $mod { $script:TcIdeConnected })) "attached=$($r.data.attached) n=$(@($r.data.blockedCandidates).Count)"
+
+    # --- S3: two paths in one dialog text are not glued together ---
+    $paths = @(& $mod { param($x) Get-TcDialogProjectPaths -Text $x } "Copy from C:\TwinCAT\3.1\Boot to '$slnDir\Demo\plc\plc.plcproj' failed; see D:\Logs\x.tsproj")
+    Check 'paths-not-glued' ($paths.Count -eq 2 -and $paths[0] -eq "$slnDir\Demo\plc\plc.plcproj" -and $paths[1] -eq 'D:\Logs\x.tsproj') "paths=$($paths -join ' | ')"
+    $global:FakeIde = @{ 921 = @{ Title = 'Demo - TcXaeShell'; Dialog = @{ Title = 'x'; Text = "Copy from C:\TwinCAT\3.1\Boot to '$slnDir\Demo\plc\plc.plcproj' failed"; Hwnd = 0; Buttons = @() } } }
+    $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s } @([PSCustomObject]@{ pid = 921; busy = $true }) $sln)
+    Check 'two-paths-inside' ($hits.Count -eq 1 -and $hits[0].MatchedBy -eq 'dialog-path' -and $hits[0].Strong) "hits=$(@($hits | ForEach-Object { "$($_.MatchedBy):$($_.Strong)" }) -join ',')"
+
+    # --- after an attach, Disconnect-TcIde -Quit acts on THAT pid only (modal up -> IDE_QUIT_FAILED, nothing quit) ---
+    $global:FakeIde = @{ 931 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
+    Set-Rot @(@{ Pid = 931; Mode = 'unreadable' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:QuitCalled = $false
+    & $mod { $script:TcDte | Add-Member -MemberType ScriptMethod -Name Quit -Value { $global:QuitCalled = $true } -Force }
+    $q = Disconnect-TcIde -Quit
+    Check 'attached-quit-targets-pid' ($r.data.attached -and -not $q.success -and $q.error.code -eq 'IDE_QUIT_FAILED' -and $q.data.ideProcessId -eq 931 -and -not $global:QuitCalled) "code=$($q.error.code) pid=$($q.data.ideProcessId) quit=$global:QuitCalled"
 }
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }

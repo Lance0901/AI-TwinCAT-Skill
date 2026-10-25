@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-25T09:52:06Z",
+    "generatedAt":  "2026-10-25T10:13:23Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -180,7 +180,7 @@
                   {
                       "name":  "CleanProject",
                       "cmdlet":  "Clear-TcProject",
-                      "description":  "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: right after ConnectIde the XAE can answer null for Solution / SolutionBuild for a moment, this tool waits for them (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG; SolutionBuild.LastBuildInfo > 0 after the clean returns CLEAN_FAILED (data.failedProjects). data: buildState, failedProjects, cleanSec, nullReads.",
+                      "description":  "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: issue #18 once hit a null-valued expression on Solution / SolutionBuild right after ConnectIde (cause not confirmed); this tool waits for them and counts the null answers (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG. Readback SolutionBuild.LastBuildInfo: 0 -> data.cleanVerified=true; unreadable -> success with data.warningCode=CLEAN_UNVERIFIED; > 0 with only unresolved-library Error List rows (<plc>.Library Manager, no line) -> success with data.warningCode=LIBRARY_UNRESOLVED and cleanVerified=false (a later BuildProject success may not have compiled the PLC code, #45); any other error -> CLEAN_FAILED (data.errorItems). data: buildState, failedProjects, cleanVerified, cleanSec, nullReads, warningCode, warning, errorItems.",
                       "timeoutMs":  330000,
                       "annotations":  {
                                           "readOnlyHint":  false,

@@ -16,8 +16,9 @@ function Clear-TcProject {
              2026-10-25 (nullReads 0), so the poll is a guard plus a record if it happens again.
              Still $null after 15 s: CLEAN_FAILED. Solution.IsOpen false: NO_SOLUTION.
           3. SolutionBuild.Clean($false) starts the clean and returns at once (Invoke-TcComRetry
-             for RPC_E_CALL_REJECTED). The synchronous Clean($true) is not used: like Build($true)
-             it does not return through out-of-process COM in VS2022 (see Build-TcProject).
+             for RPC_E_CALL_REJECTED). The synchronous Clean($true) is not used: Build($true) does
+             not return through out-of-process COM in VS2022 (measured, see Build-TcProject) and
+             Clean($true) is assumed to behave the same (inferred, Clean($true) not measured).
              SolutionBuild.Clean / BuildState (vsBuildState 1 NotStarted, 2 InProgress, 3 Done):
              https://learn.microsoft.com/en-us/dotnet/api/envdte.solutionbuild.clean and
              https://learn.microsoft.com/en-us/dotnet/api/envdte.vsbuildstate
@@ -26,9 +27,15 @@ function Clear-TcProject {
              (IDE_MODAL_DIALOG). Not Done within -TimeoutSec: CLEAN_TIMEOUT.
           5. Readback: success only with BuildState = 3 and SolutionBuild.LastBuildInfo (number
              of projects that failed, https://learn.microsoft.com/en-us/dotnet/api/envdte.solutionbuild.lastbuildinfo)
-             = 0 (or unreadable: data.failedProjects $null). > 0: the Error List is read (Get-TcBuildErrors,
-             data.errorItems); only unresolved-library rows ('<plc>.Library Manager', no line) -> success
-             with data.warning; anything else (or an unreadable Error List) -> CLEAN_FAILED.
+             = 0 -> success, data.cleanVerified = $true. Not fully verified, success with
+             data.cleanVerified = $false + data.warningCode + data.warning:
+               - LastBuildInfo unreadable: warningCode CLEAN_UNVERIFIED (data.failedProjects $null);
+               - LastBuildInfo > 0 and every Error List error (Get-TcBuildErrors, data.errorItems)
+                 is an unresolved library (Test-TcLibraryManagerItem: '<plc>.Library Manager', no
+                 line): warningCode LIBRARY_UNRESOLVED. A library that cannot be resolved can keep
+                 the PLC code from being compiled while a later Build-TcProject still reports
+                 success (#45), so treat that Build result as unverified too.
+             LastBuildInfo > 0 with any other error, or an unreadable Error List: CLEAN_FAILED.
     .PARAMETER TimeoutSec
         Maximum time in seconds for the clean (BuildState = Done). Default 300.
     .EXAMPLE
@@ -39,8 +46,9 @@ function Clear-TcProject {
         data.failedProjects  SolutionBuild.LastBuildInfo after the clean ($null when unreadable)
         data.cleanSec        seconds from Clean($false) until Done
         data.nullReads       $null answers for DTE.Solution / SolutionBuild before the clean started
+        data.cleanVerified   $true only when LastBuildInfo read back 0
         data.errorItems      Error List errors, only when failedProjects > 0
-        data.warning         only unresolved-library errors were reported (see step 5)
+        data.warningCode / warning   LIBRARY_UNRESOLVED or CLEAN_UNVERIFIED (see step 5)
         Errors: NOT_CONNECTED, NO_SOLUTION, IDE_MODAL_DIALOG, IDE_BUSY / IDE_CRASHED (COM),
         CLEAN_TIMEOUT, CLEAN_FAILED.
     #>
@@ -109,6 +117,8 @@ function Clear-TcProject {
         while ($true) {
             $state = [int](Invoke-TcComRetry -MaxRetries 3 -OperationName 'SolutionBuild.BuildState' -ScriptBlock { $sb.BuildState })
             if ($state -ne 3) { $seenNotDone = $true }
+            # Done is only taken once a not-Done state was seen or after 1 s: right after
+            # Clean($false) BuildState can still be the Done of the previous build / clean.
             elseif ($seenNotDone -or $watch.Elapsed.TotalSeconds -ge 1) { break }
 
             if ($watch.Elapsed.TotalSeconds -ge $nextModalCheckSec -or $watch.Elapsed.TotalSeconds -ge $TimeoutSec) {
@@ -142,33 +152,44 @@ function Clear-TcProject {
 
     # --- 5. readback ---
     $failed = $null
-    try { $failed = [int](Invoke-TcComRetry -MaxRetries 2 -OperationName 'SolutionBuild.LastBuildInfo' -ScriptBlock { $sb.LastBuildInfo }) }
+    try {
+        $raw = Invoke-TcComRetry -MaxRetries 2 -OperationName 'SolutionBuild.LastBuildInfo' -ScriptBlock { $sb.LastBuildInfo }
+        if ($null -ne $raw) { $failed = [int]$raw }   # [int]$null would read as 0 = verified
+    }
     catch { $failed = $null; Write-Verbose "Clear-TcProject: LastBuildInfo unreadable ($($_.Exception.Message))" }
 
     $data = [PSCustomObject]@{
         buildState     = $state
         failedProjects = $failed
+        cleanVerified  = ($null -ne $failed -and $failed -eq 0)
         cleanSec       = $cleanSec
         nullReads      = $nullReads
     }
-    if ($null -ne $failed -and $failed -gt 0) {
+    if ($null -eq $failed) {
+        $warn = 'Clean reached BuildState Done, but SolutionBuild.LastBuildInfo could not be read: whether a project failed to clean is unknown.'
+        $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'CLEAN_UNVERIFIED'
+        $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $warn
+        Write-Warning $warn
+    }
+    elseif ($failed -gt 0) {
         # Which errors? A PLC project whose libraries cannot be resolved fails the clean with
         # Error List rows "Could not open library ..." in '<plc>.Library Manager' (no line), e.g.
         # the Festo copy without its Visu libraries: LastBuildInfo = 1 on the first clean after
         # the solution was opened, 0 after a build (measured 2026-10-25, 4024 32-bit XAE Shell;
-        # 4026 VS2022 RobustDemo: 0). Those are library-resolution errors of the project, not of
-        # the clean (Build-TcProject treats them the same way); anything else is CLEAN_FAILED.
+        # 4026 VS2022 RobustDemo: 0). That is reported as LIBRARY_UNRESOLVED, not as a clean
+        # that worked; anything else is CLEAN_FAILED.
         $errList = Get-TcBuildErrors -TimeoutSec 30
         $items = @()
         if ($errList.success) { $items = @($errList.data.errors) }
         $data | Add-Member -NotePropertyName 'errorItems' -NotePropertyValue $items
-        $libraryOnly = $errList.success -and $items.Count -gt 0 -and @($items | Where-Object { -not ($_.file -like '*Library Manager' -and ($null -eq $_.line -or [int]$_.line -le 0)) }).Count -eq 0
+        $libraryOnly = $errList.success -and $items.Count -gt 0 -and @($items | Where-Object { -not (Test-TcLibraryManagerItem -Item $_) }).Count -eq 0
         if (-not $libraryOnly) {
             if (-not $errList.success) { $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errList.error.code }
             return New-TcResult -Success $false -ErrorMessage "Clean finished but $failed project(s) failed (SolutionBuild.LastBuildInfo)." `
                 -ErrorCode 'CLEAN_FAILED' -Hint (Get-TcErrorHint -Code 'CLEAN_FAILED') -Data $data
         }
-        $warn = "Clean reported $failed failed project(s), but every Error List error is an unresolved library ('<plc>.Library Manager', no line): $($items.Count) item(s) in data.errorItems. Install / fix the libraries if Build-TcProject needs them."
+        $warn = "Clean reported $failed failed project(s); every Error List error is an unresolved library ('<plc>.Library Manager', no line; $($items.Count) item(s) in data.errorItems). The clean is not verified, and a following Build-TcProject may report success without compiling the PLC code (#45): fix / install the libraries before relying on it."
+        $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'LIBRARY_UNRESOLVED'
         $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $warn
         Write-Warning $warn
     }

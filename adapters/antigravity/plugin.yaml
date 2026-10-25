@@ -59,7 +59,7 @@ actions:
     description: Build PLC project (data.buildSucceeded, data.codeErrors from the XAE Error List)
 
   - name: CleanProject
-    description: Clean the solution and wait until SolutionBuild.BuildState is Done (CLEAN_TIMEOUT / CLEAN_FAILED)
+    description: Clean the solution and wait until SolutionBuild.BuildState is Done (CLEAN_TIMEOUT / CLEAN_FAILED; data.cleanVerified, data.warningCode LIBRARY_UNRESOLVED / CLEAN_UNVERIFIED)
     parameters:
       TimeoutSec:
         type: integer

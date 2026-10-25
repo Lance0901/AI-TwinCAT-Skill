@@ -29,7 +29,9 @@ function Test-TcIdeRecordAlive {
     param([Parameter(Mandatory)][object]$Record)
     try {
         $p = Get-Process -Id ([int]$Record.pid) -ErrorAction Stop
-        return ($p.StartTime.ToString('o') -eq [string]$Record.startTime)
+        # Compare as DateTime: pwsh 7 ConvertFrom-Json turns the ISO string into a DateTime itself.
+        $recStart = if ($Record.startTime -is [DateTime]) { [DateTime]$Record.startTime } else { [DateTime]::Parse([string]$Record.startTime, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind) }
+        return ($p.StartTime.ToUniversalTime() -eq $recStart.ToUniversalTime())
     }
     catch { return $false }
 }
@@ -53,7 +55,8 @@ function Save-TcIdeSolutionRecord {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $tmp = "$path.$PID.tmp"
         Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($keep) -Depth 3) -Encoding UTF8
-        Move-Item -LiteralPath $tmp -Destination $path -Force
+        try { Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop }
+        catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
     }
     catch { Write-Verbose "IDE solution record not saved ($($_.Exception.Message))" }
 }

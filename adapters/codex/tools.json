@@ -55,7 +55,7 @@
     },
     {
       "name": "CleanProject",
-      "description": "Clean the solution (Build > Clean) and wait until SolutionBuild.BuildState is Done; CLEAN_TIMEOUT / CLEAN_FAILED",
+      "description": "Clean the solution (Build > Clean) and wait until SolutionBuild.BuildState is Done; CLEAN_TIMEOUT / CLEAN_FAILED; data.cleanVerified, data.warningCode LIBRARY_UNRESOLVED (only unresolved libraries; a later Build success may be false, #45) / CLEAN_UNVERIFIED",
       "parameters": {
         "TimeoutSec": { "type": "integer", "description": "Maximum seconds for the clean (5-3600)", "required": false, "default": 300 }
       }

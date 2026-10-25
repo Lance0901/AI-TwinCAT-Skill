@@ -124,8 +124,13 @@ function Close-Ide {
     $note = ''
     # Never quit an IDE that is not ours: Connect-TcIde can hold an IDE that was already open
     # (solution-match / solution-blocked, #29), e.g. another agent's copy of the same solution.
+    # Ours = the pid PreLaunch / -AttachPid recorded, or an IDE the module itself launched
+    # (selectedBy launched / ownedBySession). "Not in preIdePids" is not enough: another agent
+    # may have started an IDE during the run.
     $modPid = & $mod { $script:TcIdeProcessId }
-    if ($null -ne $dte -and ($null -eq $modPid -or ($script:ownIdePid -and [int]$modPid -ne $script:ownIdePid) -or (-not $script:ownIdePid -and $script:preIdePids -contains [int]$modPid))) {
+    $modLaunched = [bool](& $mod { $script:TcIdeSelectedBy -eq 'launched' })
+    $isOurs = ($null -ne $modPid) -and ((($script:ownIdePid) -and [int]$modPid -eq $script:ownIdePid) -or $modLaunched)
+    if ($null -ne $dte -and -not $isOurs) {
         $note += "module IDE pid '$modPid' is not proven to be this run's IDE, not closed; "
         $dte = $null
     }
@@ -364,8 +369,12 @@ try {
             # Wait until OUR new IDE process (not one the user already had open) is in the ROT
             $inRot = $false
             while ($ready -and (Get-Date) -lt $deadline -and -not $inRot) {
-                $own = @(& $mod { Get-AllComObjects -IncludeDisplayName } | Where-Object { $_['ProcessId'] -and ($script:preIdePids -notcontains [int]$_['ProcessId']) })
-                if ($own.Count -gt 0) { $inRot = $true; $script:ownIdePid = [int]$own[0]['ProcessId'] }
+                # The pid of THE instance we created (its main window), not just any new ROT entry:
+                # another agent may launch an IDE at the same time.
+                $kpid = 0
+                try { $kpid = [int](& $mod { param($d, $p) (Get-TcIdeProcessId -Dte $d -ProgId $p).ProcessId } $script:keepDte $ProgId) } catch { $kpid = 0 }
+                $own = @(& $mod { Get-AllComObjects -IncludeDisplayName } | Where-Object { $_['ProcessId'] -and [int]$_['ProcessId'] -eq $kpid })
+                if ($kpid -gt 0 -and $own.Count -gt 0) { $inRot = $true; $script:ownIdePid = $kpid }
                 else { Start-Sleep -Milliseconds 500 }
             }
             # Connect-TcIde -SolutionPath only attaches to an instance that already has the solution

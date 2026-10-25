@@ -74,7 +74,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | Command | Parameters | Description |
 |---------|-----------|-------------|
 | `Build-TcProject` | | Build project (auto-retry on RPC_E_CALL_REJECTED); `data.errorItems[]` = Error List errors (description/file/line) |
-| `Clear-TcProject` | `[-TimeoutSec 300]` | Clean the solution: `Clean($false)` + `BuildState` polling (`CLEAN_TIMEOUT`), waits out `$null` Solution / SolutionBuild right after a connect (`data.nullReads`), `CLEAN_FAILED` when `LastBuildInfo` > 0 |
+| `Clear-TcProject` | `[-TimeoutSec 300]` | Clean the solution: `Clean($false)` + `BuildState` polling (`CLEAN_TIMEOUT`), waits out a `$null` Solution / SolutionBuild (`data.nullReads`; #18, cause not confirmed); `LastBuildInfo` > 0 with only unresolved libraries -> success + `data.warningCode = LIBRARY_UNRESOLVED` (`cleanVerified = false`), other errors -> `CLEAN_FAILED`, unreadable -> `CLEAN_UNVERIFIED` warning |
 | `Get-TcBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | Read the XAE Error List via UI Automation (counts + rows) |
 | `Enable-TcConfig` | `[-Force]` | Activate config. -Force = ADS WriteControl (no dialogs) |
 | `Enter-TcPlcOnline` | `[-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | Login (flags 1/4/2; no SILENT=256 by default -- `Login(257)` skips app creation on an empty runtime, prompts are handled by the global `SilentMode`; `-SilentFlag` opts in; never 3) |
