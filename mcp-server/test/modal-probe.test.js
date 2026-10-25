@@ -434,7 +434,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
         assert.deepEqual(r.dialog.buttons.map((b) => b.id).sort(), [6, 7], 'IDYES / IDNO by control id');
         assert.equal(r.send.sent, true, JSON.stringify(r.send));
         assert.equal(r.send.controlId, 6);
-        assert.ok(await waitFor(() => hostLines.includes('result Yes'), 5000), `host answered Yes (host: ${JSON.stringify(hostLines)})`);
+        assert.ok(await waitFor(() => hostLines.includes('result Yes'), 15000), `host answered Yes (host: ${JSON.stringify(hostLines)})`);
       } finally {
         host.kill();
       }
@@ -460,7 +460,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
           assert.deepEqual(r.dialog.buttons, [{ id: 0, name: 'OK', automationId: 'OKButton' }]);
           assert.equal(r.send.sent, true, JSON.stringify(r.send));
           assert.equal(r.send.method, 'UIA_INVOKE');
-          assert.ok(await waitFor(() => hostLines.includes('result Ok'), 5000), `host answered Ok (host: ${JSON.stringify(hostLines)})`);
+          assert.ok(await waitFor(() => hostLines.includes('result Ok'), 15000), `host answered Ok (host: ${JSON.stringify(hostLines)})`);
         } finally {
           host.kill();
         }

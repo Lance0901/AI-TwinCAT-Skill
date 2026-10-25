@@ -3,9 +3,10 @@
 // List access is mocked (fixtures/build-module/TwinCATAutomation.psm1, rows in
 // fixtures/build-error-list.json), so what is asserted is what an MCP client receives after the
 // bridge serialised the result.
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -17,7 +18,7 @@ const TOOLS_JSON = path.join(__dirname, '..', 'tools.json');
 const FIXTURE_MODULE = path.join(__dirname, 'fixtures', 'build-module', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
 
-async function startServer(scenario) {
+async function startServer(scenario, extraEnv = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [INDEX],
@@ -26,7 +27,8 @@ async function startServer(scenario) {
       TWINCAT_MODULE_PATH: FIXTURE_MODULE,
       TWINCAT_MCP_TOOLS_JSON: TOOLS_JSON,
       TWINCAT_MCP_MODAL_PROBE: '0',
-      TCAUTO_TEST_BUILD_SCENARIO: scenario
+      TCAUTO_TEST_BUILD_SCENARIO: scenario,
+      ...extraEnv
     },
     stderr: 'pipe'
   });
@@ -35,15 +37,24 @@ async function startServer(scenario) {
   return client;
 }
 
+// One server for all BuildProject scenarios; the scenario is switched through a file the fixture
+// reads at every build (fewer parallel powershell.exe next to the timing-sensitive probe tests).
+let shared = null;
+let scenarioFile = null;
 async function build(scenario, args = {}) {
-  const client = await startServer(scenario);
-  try {
-    const res = await client.callTool({ name: 'BuildProject', arguments: args });
-    return { res, body: JSON.parse(res.content[0].text) };
-  } finally {
-    await client.close();
+  if (!shared) {
+    scenarioFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-build-')), 'scenario.txt');
+    fs.writeFileSync(scenarioFile, scenario);
+    shared = await startServer(scenario, { TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile });
   }
+  fs.writeFileSync(scenarioFile, scenario);
+  const res = await shared.callTool({ name: 'BuildProject', arguments: args });
+  return { res, body: JSON.parse(res.content[0].text) };
 }
+after(async () => {
+  if (shared) await shared.close();
+  if (scenarioFile) fs.rmSync(path.dirname(scenarioFile), { recursive: true, force: true });
+});
 
 test('tools.json BuildProject description names the #23 / #45 fields and the AllowUnresolvedLibrary input', () => {
   const tools = JSON.parse(fs.readFileSync(TOOLS_JSON, 'utf8'));

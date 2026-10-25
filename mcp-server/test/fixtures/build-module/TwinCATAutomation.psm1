@@ -3,7 +3,10 @@
 # the REAL bridge (test/build-result.test.js, issues #23 / #45). Loaded by bridge.ps1 as
 # TWINCAT_MODULE_PATH; the file name keeps the module name 'TwinCATAutomation' the bridge expects.
 #
-# Scenario (env TCAUTO_TEST_BUILD_SCENARIO); Error List row sets from build-error-list.json.
+# Scenario: the content of the file named by env TCAUTO_TEST_BUILD_SCENARIO_FILE, read at every
+# Build-TcProject (one server serves many scenarios: fewer powershell.exe in parallel with the
+# timing-sensitive modal-probe tests), else env TCAUTO_TEST_BUILD_SCENARIO.
+# Error List row sets from build-error-list.json.
 # lbi = SolutionBuild.LastBuildInfo; 'unreadable' is no int, so the [int] cast in Build-TcProject
 # throws like an unreadable COM property.
 #   clean                  lbi 0, no rows
@@ -43,8 +46,14 @@ $script:FixtureScenarios = @{
     'unlocated-code'        = @{ Lbi = 0; Sets = @('unlocated') }
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
 }
-$script:Fixture = $script:FixtureScenarios[$script:FixtureScenario]
-if ($null -eq $script:Fixture) { throw "unknown TCAUTO_TEST_BUILD_SCENARIO '$($script:FixtureScenario)'" }
+function Get-FixtureScenario {
+    $name = $script:FixtureScenario
+    $file = $env:TCAUTO_TEST_BUILD_SCENARIO_FILE
+    if (-not [string]::IsNullOrWhiteSpace($file) -and (Test-Path -LiteralPath $file)) { $name = (Get-Content -Raw -LiteralPath $file).Trim() }
+    $sc = $script:FixtureScenarios[$name]
+    if ($null -eq $sc) { throw "unknown fixture scenario '$name'" }
+    $sc
+}
 
 $script:TcSolutionPath = 'C:\Demo\Demo.sln'
 $script:FixturePlatform = 'TwinCAT RT (x64)'
@@ -67,7 +76,7 @@ function Get-TcBuildCoverage {
         name = 'plc'; uniqueName = 'Demo\plc\plc.plcproj'; configuration = 'Release'
         platform = 'TwinCAT RT (x64)'; shouldBuild = $true; status = 'pending'
     })
-    if ($script:Fixture.Skipped) {
+    if ((Get-FixtureScenario).Skipped) {
         $projects += [PSCustomObject]@{
             name = 'plc2'; uniqueName = 'Demo\plc2\plc2.plcproj'; configuration = 'Release'
             platform = 'TwinCAT RT (x64)'; shouldBuild = $false; status = 'skipped'
@@ -79,11 +88,12 @@ function Get-TcBuildCoverage {
 function Get-TcBuildErrors {
     [CmdletBinding()]
     param([switch]$IncludeWarnings, [int]$TimeoutSec = 30)
-    if ($script:Fixture.ErrorListFails) {
+    $sc = Get-FixtureScenario
+    if ($sc.ErrorListFails) {
         return New-TcResult -Success $false -ErrorMessage 'Error List window not found (fixture)' -ErrorCode 'ERRORLIST_UNAVAILABLE'
     }
     $rows = @()
-    foreach ($set in $script:Fixture.Sets) { $rows += @($script:FixtureRows.$set) }
+    foreach ($set in $sc.Sets) { $rows += @($script:FixtureRows.$set) }
     $errors = @($rows | ForEach-Object { [PSCustomObject]@{
         severity = 'Error'; code = $_.code; description = $_.description; project = $_.project
         file = $_.file; line = $_.line; column = $_.column
@@ -129,7 +139,7 @@ $sb | Add-Member -MemberType ScriptProperty -Name BuildState -Value {
     $script:FixtureBuildPolls++
     if ($script:FixtureBuildPolls -le 1) { 2 } else { 3 }
 }
-$sb | Add-Member -MemberType ScriptProperty -Name LastBuildInfo -Value { $script:Fixture.Lbi }
+$sb | Add-Member -MemberType ScriptProperty -Name LastBuildInfo -Value { (Get-FixtureScenario).Lbi }
 $script:TcDte = [PSCustomObject]@{ Solution = [PSCustomObject]@{ SolutionBuild = $sb }; ToolWindows = $null }
 
 Export-ModuleMember -Function $publicNames
