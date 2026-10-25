@@ -27,7 +27,12 @@ param(
     [int]$AttachPid = 0,
     # Optional: activate this solution platform right after "set target" (step 02b-platform),
     # e.g. 'TwinCAT OS (x64)' for a UmRT (Usermode Runtime). Step 02-set-target uses -NoPlatformSwitch (NetId only).
-    [string]$SolutionPlatform
+    [string]$SolutionPlatform,
+    # Stop after 03b (Connect, target, Clean, Build): no Activate. For runs where the runtime must not
+    # be activated (e.g. no valid license: a failing Activate pops 'Target system reports a fatal
+    # error' in EVERY XAE connected to the target, other sessions included; measured 2026-10-25,
+    # 4024 32-bit XAE Shell and 4026 VS2022 on the local UmRT).
+    [switch]$StopAfterBuild
 )
 
 $ErrorActionPreference = 'Continue'
@@ -116,8 +121,15 @@ function Test-Abort {
 function Close-Ide {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $dte = & $mod { $script:TcDte }
-    if ($null -eq $dte) { $dte = $script:keepDte }
     $note = ''
+    # Never quit an IDE that is not ours: Connect-TcIde can hold an IDE that was already open
+    # (solution-match / solution-blocked, #29), e.g. another agent's copy of the same solution.
+    $modPid = & $mod { $script:TcIdeProcessId }
+    if ($null -ne $dte -and ($null -eq $modPid -or ($script:ownIdePid -and [int]$modPid -ne $script:ownIdePid) -or (-not $script:ownIdePid -and $script:preIdePids -contains [int]$modPid))) {
+        $note += "module IDE pid '$modPid' is not proven to be this run's IDE, not closed; "
+        $dte = $null
+    }
+    if ($null -eq $dte) { $dte = $script:keepDte }
     if ($script:ownIdePid) {
         $titles = @([SmokeWin]::Titles($script:ownIdePid))
         Write-StepLog -Step '11y-ide-windows' -Cmdlet 'EnumWindows(own IDE pid)' -ElapsedMs 0 -Pass $true -Result ([PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ pid = $script:ownIdePid; titles = $titles } }) -Note 'visible top-level windows before close (dialogs show up here)'
@@ -395,28 +407,17 @@ try {
 
     # 3a. Clean before build (repeated open/close of the solution left the XAE in a state where
     #     Build raised a modal "Assertion Failed" window).
-    #     Clean($false) + BuildState polling: the synchronous Clean($true) / Build($true) never
-    #     return through out-of-process COM in VS2022 (same reason as Build-TcProject).
-    $null = Invoke-Step '03a-clean' 'SolutionBuild.Clean($false)+poll' {
-        $state = & $mod {
-            $sb = Invoke-TcComRetry -MaxRetries 5 -OperationName 'SolutionBuild.Clean' -ScriptBlock { $x = $script:TcDte.Solution.SolutionBuild; $x.Clean($false); Write-Output -NoEnumerate $x }
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            $st = $null
-            while ($sw.Elapsed.TotalSeconds -lt 120) {
-                try { $st = [int]$sb.BuildState } catch { $st = $null }
-                if ($st -eq 3 -and $sw.Elapsed.TotalSeconds -ge 1) { break }
-                Start-Sleep -Milliseconds 500
-            }
-            $st
-        }
-        [PSCustomObject]@{ success = ($state -eq 3); data = [PSCustomObject]@{ buildState = $state } }
-    }
+    #     Public cmdlet (#18): the old inline $script:TcDte.Solution.SolutionBuild.Clean() hit a
+    #     $null Solution / SolutionBuild right after Connect-TcIde; Clear-TcProject polls them
+    #     (data.nullReads) and then waits for BuildState = Done.
+    $null = Invoke-Step '03a-clean' 'Clear-TcProject' { Clear-TcProject -TimeoutSec 120 }
 
     # 3. Build (build output text dropped from the log; only counts kept)
     $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }
     Write-ErrorList '03b-errorlist-after-build'
     if (Test-Abort $r '03') { return }
     if (-not $r.success) { return }
+    if ($StopAfterBuild) { return }
 
     # 4. Activate full cycle
     if ($CycleMode -eq 'EnableForce') {

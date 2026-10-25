@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 36 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 37 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
 
-Exposes the `TwinCATAutomation` module (36 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (37 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -142,6 +142,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
 | `BuildProject` | `Build-TcProject` | — | 600 s | Build and wait (`Build($false)` + `BuildState` polling, `TimeoutSec` default 600 -> `BUILD_TIMEOUT`; `data.buildSec`); on `BUILD_FAILED` read `data.errorItems[]` (description/file/line from the Error List) |
+| `CleanProject` | `Clear-TcProject` | — | 300 s | Clean the solution and wait (`Clean($false)` + `BuildState` polling, `TimeoutSec` default 300 -> `CLEAN_TIMEOUT`); `data.nullReads` counts `$null` answers for `Solution` / `SolutionBuild` before the clean (4024 right after `ConnectIde`); `LastBuildInfo` > 0 -> `CLEAN_FAILED` |
 | `GetBuildErrors` | `Get-TcBuildErrors` | — | 120 s | Read the XAE Error List via UI Automation: `errors[]` and `warnings[]` (`IncludeWarnings` defaults to true), `IncludeMessages` adds `messages[]`; counts also parsed from zh-TW button names |
 | `EnableConfig` | `Enable-TcConfig` | — | 600 s | Activate without dialogs; `Force=true` runs Config → Activate → Run → Login+Download → PLC Run, `NoLogin=true` stops after system Run; `TimeoutSec` default 120; before Activate the solution platform is compared with the target platform (TARGETINFO) or `Platform` and switched + rebuilt on a mismatch (steps `platform-fix` / `platform-fix-build`, `data.platformFixed`), `NoPlatformFix=true` returns `PLATFORM_MISMATCH` instead; neither known -> `data.platformCheck` = `skipped` + `data.warning`; `ACTIVATE_FAILED` when XAE's Check config failed (`LastBuildInfo > 0`, usually a solution platform that differs from the target platform: pass `Platform`) |
 | `PlcLogin` | `Enter-TcPlcOnline` | — | 300 s | Login(3) + download, no dialogs |

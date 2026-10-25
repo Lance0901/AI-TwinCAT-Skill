@@ -51,6 +51,7 @@ $operationMap = @{
     'SetVariableLink' = 'Set-TcVariableLink'
     # Build & Deploy
     'BuildProject'    = 'Build-TcProject'
+    'CleanProject'    = 'Clear-TcProject'
     'GetBuildErrors'  = 'Get-TcBuildErrors'
     'SetTarget'       = 'Set-TcTarget'
     'EnableConfig'    = 'Enable-TcConfig'

@@ -10,7 +10,19 @@ function Connect-TcIde {
             'solution-match'). An empty IDE or one with another solution is never
             reused - it belongs to whoever opened it (opening the target there would
             hijack it and -Quit would close it) - so otherwise a new IDE is launched
-            (selectedBy 'launched');
+            (selectedBy 'launched'). Exception (#29): an instance whose DTE is blocked (busy
+            RPC_E_CALL_REJECTED, or an empty Version with a modal dialog up) is checked without
+            COM (Find-TcBlockedSolutionIde): a session record of that process with this
+            solution, or a dialog text naming a path inside the solution folder, is strong
+            evidence - nothing is launched, the instance is attached (selectedBy
+            'solution-blocked', ITcSysManager $null, data.attached = true) and Get-TcIdeModalDialog
+            / Reset-TcSolution work on it right away; a main window title starting with the
+            solution name is weak evidence (same-named copies look alike) - nothing is launched
+            and nothing is attached (data.attached = false). Either way IDE_MODAL_DIALOG (dialog
+            found; data.dialog, ideProcessId, rotDisplayName, windowTitle, matchedBy, probe) or
+            IDE_BUSY (no dialog) is returned; after the dialog is closed the same Connect-TcIde
+            call connects normally. Every successful connect with a solution writes the session
+            record (Save-TcIdeSolutionRecord);
           - without -SolutionPath: an instance that has a TwinCAT project loaded,
             otherwise the first instance (busy ones last).
         For every ROT entry DTE.Version and Solution.FullName are read: an instance
@@ -37,6 +49,11 @@ function Connect-TcIde {
         running this solution).
     .PARAMETER NoLaunch
         If set, do not launch a new IDE instance if none is running.
+    .PARAMETER LaunchIfBlocked
+        With -SolutionPath: ignore a blocked IDE that matches only by window title
+        (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and
+        go on as if it were not there (launch unless -NoLaunch). A blocked IDE recognised by
+        strong evidence (module-state, session-record, dialog-path) is still reported.
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
@@ -62,7 +79,10 @@ function Connect-TcIde {
         [string]$SolutionPath,
 
         [Parameter()]
-        [switch]$NoLaunch
+        [switch]$NoLaunch,
+
+        [Parameter()]
+        [switch]$LaunchIfBlocked
     )
 
     $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
@@ -75,6 +95,11 @@ function Connect-TcIde {
     # Connect-TcIde (e.g. the Reset-TcSolution reconnect) picks the same process again.
     $ownedLaunchedPid = 0
     if ($script:TcIdeSelectedBy -eq 'launched' -and $null -ne $script:TcIdeProcessId) { try { $ownedLaunchedPid = [int]$script:TcIdeProcessId } catch { $ownedLaunchedPid = 0 } }
+    # Also kept for #29: the IDE this module was connected to and its solution
+    # (Find-TcBlockedSolutionIde 'module-state': recognises our own blocked IDE without file I/O).
+    $previousIdePid = 0
+    if ($null -ne $script:TcIdeProcessId) { try { $previousIdePid = [int]$script:TcIdeProcessId } catch { $previousIdePid = 0 } }
+    $previousSolution = [string]$script:TcSolutionPath
     $script:TcIdeSelectedBy = $null
     $script:TcIdeProcessId = $null
     $script:TcIdeStartTime = $null
@@ -116,6 +141,7 @@ function Connect-TcIde {
     #   (0x800706BA) or E_FAIL (0x80004005); picking it makes Solution.Open return null.
     $readyCandidates = @()
     $busyCandidates = @()
+    $unreadableCandidates = @()
     foreach ($entry in $rotEntries) {
         $obj = $entry['Object']
         if ($null -eq $obj) { continue }
@@ -139,6 +165,19 @@ function Connect-TcIde {
             }
             else {
                 Write-Verbose "Skipping DTE '$($entry['DisplayName'])': Version/Solution unreadable, probably shutting down ($($_.Exception.Message))"
+                # #29: an IDE showing a modal dialog can also answer an EMPTY DTE.Version instead of
+                # RPC_E_CALL_REJECTED (measured 2026-10-25, 4024 32-bit XAE Shell with the XAE
+                # "project file ... modified outside of TwinCAT XAE" prompt up). Kept aside: it only
+                # counts as the blocked owner of -SolutionPath when a modal dialog is found in it.
+                $unreadableCandidates += [PSCustomObject]@{
+                    progId      = $entry['ProgId']
+                    solution    = '<unreadable>'
+                    pid         = $entry['ProcessId']
+                    busy        = $false
+                    unreadable  = $true
+                    displayName = [string]$entry['DisplayName']
+                    Object      = $obj
+                }
                 continue
             }
         }
@@ -177,6 +216,7 @@ function Connect-TcIde {
             hasTcProject       = $hasTcProject
             normalizedSolution = $normalizedSolution
             busy               = $isBusy
+            displayName        = [string]$entry['DisplayName']
             Object             = $obj
         }
         if ($isBusy) { $busyCandidates += $candidate } else { $readyCandidates += $candidate }
@@ -220,6 +260,85 @@ function Connect-TcIde {
         $dte = $chosen.Object
         $usedProgId = $chosen.progId
         Write-Verbose "Connected to DTE pid=$($chosen.pid) progId=$usedProgId solution='$($chosen.solution)' ($selectionReason)"
+    }
+
+    # --- #29: the IDE that has -SolutionPath open may be blocked (modal dialog / busy) ---
+    # Its DTE answered RPC_E_CALL_REJECTED or an empty Version, so it never matched above.
+    # Launching a second IDE for the same .sln (or, with -NoLaunch, answering IDE_NOT_FOUND) would
+    # be wrong: identify it without COM (Find-TcBlockedSolutionIde) and report it instead.
+    #  - strong evidence (session record of this very process, or a dialog path inside the
+    #    solution folder): the blocked instance is ATTACHED (module state points at it,
+    #    ITcSysManager stays $null) so that Get-TcIdeModalDialog and Reset-TcSolution can act on
+    #    it right away;
+    #  - weak evidence (window title = solution name only, could be a same-named copy elsewhere):
+    #    nothing is launched and nothing is attached - another agent's IDE must never become ours
+    #    (a later Disconnect-TcIde -Quit would close it).
+    if ($null -eq $chosen -and $null -ne $normalizedSolutionPath) {
+        $busyPool = @($pool | Where-Object { $_.busy })
+        $unreadablePool = @($unreadableCandidates)
+        if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
+            $unreadableMatching = @($unreadablePool | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
+            if ($unreadableMatching.Count -gt 0) { $unreadablePool = $unreadableMatching }
+        }
+        $busyPool = @($busyPool) + @($unreadablePool)
+        if ($busyPool.Count -gt 0) {
+            $blocked = @(Find-TcBlockedSolutionIde -Candidates $busyPool -SolutionPath $normalizedSolutionPath -PreviousProcessId $previousIdePid -PreviousSolution $previousSolution)
+            # -LaunchIfBlocked: the caller knows the title-only match is someone else's IDE.
+            if ($LaunchIfBlocked) { $blocked = @($blocked | Where-Object { $_.Strong }) }
+            if ($blocked.Count -gt 0) {
+                $hit = $blocked[0]
+                $bc = $hit.Candidate
+                $blockedPid = [int]$bc.pid
+                $attach = [bool]$hit.Strong
+                if ($attach) {
+                    $script:TcDte = $bc.Object
+                    $script:TcProgId = $bc.progId
+                    $script:TcIdeConnected = $true
+                    $script:TcSysManager = $null
+                    # SilentMode belongs to the IDE it was set on; the next successful connect sets it again.
+                    if ($null -ne $script:TcAutomationSettings) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcAutomationSettings) | Out-Null } catch { } }
+                    $script:TcAutomationSettings = $null
+                    $script:TcSilentMode = $false
+                    $script:TcSilentModeOriginal = $null
+                    $script:TcLastModalDialog = $hit.Dialog
+                    $script:TcSolutionPath = $normalizedSolutionPath
+                    $script:TcIdeProcessId = $blockedPid
+                    $script:TcIdeSelectedBy = if ($ownedLaunchedPid -gt 0 -and $blockedPid -eq $ownedLaunchedPid) { 'launched' } else { 'solution-blocked' }
+                    $script:TcIdeMainHwnd = 0
+                    try { $p = Get-Process -Id $blockedPid -ErrorAction Stop; $script:TcIdeMainHwnd = [long]$p.MainWindowHandle; $script:TcIdeStartTime = $p.StartTime } catch { $script:TcIdeStartTime = $null }
+                }
+
+                $evidence = if ($attach) { "has the solution open, matched by $($hit.MatchedBy)" } else { "may have the solution open (window title '$($hit.WindowTitle)' only: could also be a same-named solution in another folder; not attached)" }
+                $blockedData = [PSCustomObject]@{
+                    progId            = $bc.progId
+                    ideProcessId      = $blockedPid
+                    rotDisplayName    = $bc.displayName
+                    windowTitle       = $hit.WindowTitle
+                    matchedBy         = $hit.MatchedBy
+                    probe             = $(if ($bc.busy) { 'busy (RPC_E_CALL_REJECTED after 3 attempts)' } else { 'unreadable (DTE.Version empty)' })
+                    attached          = $attach
+                    ownedBySession    = ($attach -and $script:TcIdeSelectedBy -eq 'launched')
+                    launched          = $false
+                    solution          = $normalizedSolutionPath
+                    blockedCandidates = @($blocked | ForEach-Object { [PSCustomObject]@{ pid = $_.Candidate.pid; progId = $_.Candidate.progId; windowTitle = $_.WindowTitle; matchedBy = $_.MatchedBy; dialogTitle = $(if ($null -ne $_.Dialog) { $_.Dialog.Title } else { $null }) } })
+                    candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
+                    connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+                }
+                if (-not $attach) {
+                    $weakText = if ($null -ne $hit.Dialog) { "shows the modal dialog '$($hit.Dialog.Title)'" } else { 'rejects every DTE call (RPC_E_CALL_REJECTED) and no modal dialog was found' }
+                    $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $hit.Dialog
+                    return New-TcResult -Success $false `
+                        -ErrorMessage "IDE_BLOCKED_SAME_NAME: the IDE pid $blockedPid $evidence and $weakText. No second IDE was launched and nothing was attached." `
+                        -ErrorCode $(if ($null -ne $hit.Dialog) { 'IDE_MODAL_DIALOG' } else { 'IDE_BUSY' }) -Hint (Get-TcErrorHint -Code 'IDE_BLOCKED_SAME_NAME') -Data $blockedData
+                }
+                if ($null -ne $hit.Dialog) {
+                    return New-TcModalDialogResult -Dialog $hit.Dialog -Operation "Connect-TcIde -SolutionPath (IDE pid $blockedPid $evidence; no second IDE launched)" -Data $blockedData
+                }
+                return New-TcResult -Success $false `
+                    -ErrorMessage "IDE_BUSY: the IDE pid $blockedPid $evidence, but it rejects every DTE call (RPC_E_CALL_REJECTED 0x80010001 after 3 attempts) and no modal dialog was found. No second IDE was launched." `
+                    -ErrorCode 'IDE_BUSY' -Hint (Get-TcErrorHint -Code 'IDE_BUSY') -Data $blockedData
+            }
+        }
     }
 
     # --- Fallback: try GetActiveObject for specific ProgIDs (if ROT enumeration returned nothing) ---
@@ -470,6 +589,9 @@ function Connect-TcIde {
     # Remembered for Reset-TcSolution (Solution.Close + reopen); only a solution that is really open.
     if (-not [string]::IsNullOrWhiteSpace($ideSolution)) {
         $script:TcSolutionPath = try { [IO.Path]::GetFullPath([string]$ideSolution) } catch { [string]$ideSolution }
+        # Remembered across processes: a later Connect-TcIde can recognise this IDE while a modal
+        # dialog blocks its DTE (#29, Find-TcBlockedSolutionIde 'session-record').
+        if ($ideProcessId -gt 0) { Save-TcIdeSolutionRecord -ProcessId $ideProcessId -Solution $script:TcSolutionPath }
     }
 
     $data = [PSCustomObject]@{

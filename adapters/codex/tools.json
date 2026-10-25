@@ -54,6 +54,13 @@
       "parameters": {}
     },
     {
+      "name": "CleanProject",
+      "description": "Clean the solution (Build > Clean) and wait until SolutionBuild.BuildState is Done; CLEAN_TIMEOUT / CLEAN_FAILED",
+      "parameters": {
+        "TimeoutSec": { "type": "integer", "description": "Maximum seconds for the clean (5-3600)", "required": false, "default": 300 }
+      }
+    },
+    {
       "name": "GetBuildErrors",
       "description": "Read the compiler messages shown in the XAE Error List window (UI Automation): counts plus errors[] with code/description/file/line",
       "parameters": {
