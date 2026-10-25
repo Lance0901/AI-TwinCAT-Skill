@@ -363,7 +363,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### BUILD_REQUIRED
 
 - **為什麼**:solution platform 切換過(`Set-TcTarget -Platform`、`Enable-TcConfig` 的自動 platform-fix,或一次失敗且還原不回去的切換),之後還沒有一次**完整成功**的 `Build-TcProject`(沒有 project 被 `PROJECT_SKIPPED_BY_CONFIGURATION` 跳過),編譯產物可能還是舊平台的(推論,未實測)。`Enable-TcConfig` 在 Activate 之前檢查,拒絕啟用(`data.steps` 的 `build-required` 步驟寫切換的時間、前後平台與 .sln)。典型情境:platform-fix 後的 platform-fix-build 停在 `LIBRARY_UNRESOLVED`,平台已切換,再跑一次 `Enable-TcConfig` 會發現平台一致、不再 build,若不擋就會 Activate 舊平台的產物。
-- **狀態存成檔案**(不是模組變數,`Import-Module -Force`、CLI 每次一個 process、MCP bridge 重啟都不會弄丟):`%TEMP%\TwinCATAutomation\build-required.json`(測試用 `TCAUTO_STATE_DIR` 改目錄),每個 .sln 一筆,key 是正規化的完整路徑(小寫)。切換時寫入,完整成功的 `Build-TcProject` 刪掉該 .sln 的那筆(檔案空了就刪檔)。保守規則:切換當下不知道 .sln 路徑 → 記在 `<unknown>`,對所有 .sln 都擋;`Enable-TcConfig` 時不知道 .sln 路徑 → 有任何一筆就擋;檔案讀不到(格式壞了)→ 擋,下一次完整成功的 build 會重寫它。實作:`Private/Set-TcBuildRequired.ps1`。
+- **狀態存成檔案,而且 fail-closed**(實作:`Private/Set-TcBuildRequired.ps1`):`%TEMP%\TwinCATAutomation\build-required.json`(測試用 `TCAUTO_STATE_DIR` 改目錄),每個 .sln 一筆,key 是正規化的完整路徑(小寫,可含非 ASCII,檔案是 UTF-8)。不是模組變數:`Import-Module -Force`、CLI 每次一個 process、MCP bridge 重啟都不會弄丟。切換時寫入,完整成功的 `Build-TcProject` 刪掉該 .sln 的那筆(檔案空了就刪檔)。
+  - 讀-改-寫用 named mutex(`Local\TwinCATAutomation.BuildRequired.<狀態目錄的 hash>`,逾時 3 s)保護;檔案用 `[IO.File]::Replace` 換掉(不會有「沒有檔案」的空窗),失敗會短暫重試並清掉 `.tmp`。
+  - 每一筆也同時記在模組的記憶體裡;檔案寫不進去(別的 process 或防毒開著它)或拿不到鎖時,這個 process 仍然擋,`Set-TcTarget` / `Enable-TcConfig` 的 `data.warning` 寫明「只記在這個 process」。拿不到鎖時 `Enable-TcConfig` 直接擋。
+  - 保守規則:切換當下不知道 .sln 路徑 → 記在 `<unknown>`,對所有 .sln 都擋(任何一次完整成功的 build 會清掉它:它只會來自不知道自己 .sln 的 session,通常接著 build 的就是同一個 solution;留到手動才清會永久擋住其他 solution);`Enable-TcConfig` 時不知道 .sln 路徑 → 有任何一筆就擋;檔案壞掉(JSON 讀不出來)→ 改名成 `build-required.json.corrupt-<時間>` 留存,換成一筆 `<corrupt>`,對所有 .sln 都擋,build 成功也**不會**清掉它(壞掉的檔可能有別的 solution 的記錄)。
+- **手動解除**:刪掉 `%TEMP%\TwinCATAutomation\build-required.json`,或只刪掉該 .sln(或 `<corrupt>`)那一筆。只在你確定編譯產物對應目前的 solution platform 時才這樣做,例如:PLC 專案被刻意設成不 build(Configuration Manager 沒勾 Build,所以每次 build 都有 `PROJECT_SKIPPED_BY_CONFIGURATION`、永遠不算完整成功),而它的產物已經用別的方式為目前平台建好;或 `<corrupt>` 之後已經把每個 solution 都 build 過一次。不確定時就跑一次完整的 `Build-TcProject`。
 - **下一步**:`Build-TcProject` 完整成功(缺 library 時先安裝;使用者確定接受才加 `-AllowUnresolvedLibrary`;有 project 被跳過時先在 Configuration Manager 勾回 Build)後再 `Enable-TcConfig`。`Enable-TcConfig -AllowUnresolvedLibrary` 只影響它自己做的 platform-fix-build,解不開已經記下的 BUILD_REQUIRED。
 
 ### BUILD_STATUS_UNKNOWN

@@ -159,6 +159,12 @@ function Set-TcTarget {
     $data | Add-Member -NotePropertyName 'platformMatchedBy' -NotePropertyValue $sw.platformMatchedBy
     $data | Add-Member -NotePropertyName 'platformMap' -NotePropertyValue $sw.platformMap
     if ($null -ne $sw.restored) { $data | Add-Member -NotePropertyName 'restored' -NotePropertyValue $sw.restored }
+    $swp = $sw.PSObject.Properties['stateWarning']
+    if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
+        $prev = $data.PSObject.Properties['warning']
+        $text = if ($null -ne $prev -and -not [string]::IsNullOrWhiteSpace([string]$prev.Value)) { "$([string]$prev.Value) $([string]$swp.Value)" } else { [string]$swp.Value }
+        $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $text -Force
+    }
     if (-not $sw.success) {
         $err = $sw.error
         if ([string]$err.code -eq 'PLATFORM_NOT_FOUND') {

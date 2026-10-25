@@ -500,6 +500,11 @@ function Enable-TcConfig {
         Set-Variable -Name solutionPlatform -Value $r.platform -Scope 1
         Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1
         Set-Variable -Name platformFixed -Value $true -Scope 1
+        $swp = $r.PSObject.Properties['stateWarning']
+        if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
+            # BUILD_REQUIRED only in memory (state file not writable): reported, still enforced here
+            Set-Variable -Name platformWarning -Value ([string]$swp.Value) -Scope 1
+        }
         Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$solText -> $($r.platform) (project platform $($r.projectPlatform); $srcText, configuration $($r.configuration))"
 
         # The PLC output of the old platform must not be activated: same build as Build-TcProject.

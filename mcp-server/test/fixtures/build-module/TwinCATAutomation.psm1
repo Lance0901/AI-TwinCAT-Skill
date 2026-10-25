@@ -122,8 +122,8 @@ function Set-TcSolutionPlatform {
     param([string]$Platform, [string]$Configuration, [string]$PlatformSource)
     $before = $script:FixturePlatform
     $script:FixturePlatform = $Platform
-    Set-TcBuildRequired -Reason "solution platform switched from 'Release|$before' to 'Release|$Platform'"
-    [PSCustomObject]@{ success = $true; error = $null; configuration = 'Release'; previousPlatform = $before; platform = $Platform; platformChanged = $true; projectPlatform = $Platform }
+    $w = Set-TcBuildRequired -Reason "solution platform switched from 'Release|$before' to 'Release|$Platform'"
+    [PSCustomObject]@{ success = $true; error = $null; configuration = 'Release'; previousPlatform = $before; platform = $Platform; platformChanged = $true; projectPlatform = $Platform; stateWarning = $w }
 }
 function Set-TcSystemState {
     param([string]$State, [string]$AmsNetId, [int]$TimeoutSec)

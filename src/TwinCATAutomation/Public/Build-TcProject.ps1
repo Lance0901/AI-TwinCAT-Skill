@@ -482,7 +482,7 @@
             }
             # the build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED);
             # a skipped PLC project may still have the output of the previous platform (inferred, not measured)
-            if ($skippedProjects.Count -eq 0) { Clear-TcBuildRequired }
+            if ($skippedProjects.Count -eq 0) { $null = Clear-TcBuildRequired }
             New-TcResult -Success $true -Data $data
         }
     }

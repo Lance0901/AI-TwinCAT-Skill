@@ -19,9 +19,26 @@ const FIXTURE_MODULE = path.join(__dirname, 'fixtures', 'build-module', 'TwinCAT
 const isWin = process.platform === 'win32';
 
 // Every server gets its own BUILD_REQUIRED state directory unless the test passes one.
+const stateDirs = [];
 function newStateDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-'));
+  stateDirs.push(dir);
+  return dir;
 }
+after(async () => {
+  // the shared BuildProject server is closed first (its after hook is registered below)
+  if (shared) {
+    await shared.close();
+    shared = null;
+  }
+  for (const dir of stateDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* a bridge that is still exiting may hold the file; it is a temp dir */
+    }
+  }
+});
 
 async function startServer(scenario, extraEnv = {}) {
   const transport = new StdioClientTransport({
