@@ -55,8 +55,9 @@
         read (codeVerified = $null) or lists a code row without a line number (a row the
         category rules do not recognise, e.g. a Library Manager row in another UI language) keeps
         success = true with data.warningCode = CODE_NOT_VERIFIED.
-        A successful result also clears the "build required after a platform switch" state that
-        Enable-TcConfig checks before activating (BUILD_REQUIRED).
+        A complete success (no PLC project skipped by the configuration) also clears the "build
+        required after a platform switch" state that Enable-TcConfig checks before activating
+        (BUILD_REQUIRED, a state file per solution: Private/Set-TcBuildRequired.ps1).
         data.errors          number of CODE errors (errorItems with category 'code'); Library
                              Manager rows are not counted (fallback when the Error List is not
                              readable: failedProjects)
@@ -479,8 +480,9 @@
                 return New-TcResult -Success $false -ErrorMessage "Build finished but expected PLC project(s) $($notBuilt -join ', ') were not confirmed as built (see data.projects)." `
                     -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $data
             }
-            # the build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED)
-            $script:TcBuildRequired = $null
+            # the build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED);
+            # a skipped PLC project may still have the output of the previous platform (inferred, not measured)
+            if ($skippedProjects.Count -eq 0) { Clear-TcBuildRequired }
             New-TcResult -Success $true -Data $data
         }
     }

@@ -18,7 +18,6 @@ $script:TcIdeStartTime = $null     # StartTime of the TcIdeProcessId process (Co
 $script:TcIdeSelectedBy = $null    # Connect-TcIde data.selectedBy ('launched' | 'solution-match' | ...); Disconnect-TcIde -Kill only kills 'launched'
 $script:TcLastModalDialog = $null  # last dialog seen by the Invoke-TcComRetry watchdog: @{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons }
 $script:TcSolutionPath = $null     # full path of the .sln opened by Connect-TcIde / Open-TcProject; Reset-TcSolution reopens it
-$script:TcBuildRequired = $null    # @{ Solution; Reason; At } after Set-TcSolutionPlatform switched the platform; cleared by a successful Build-TcProject; Enable-TcConfig refuses to activate while set (BUILD_REQUIRED)
 $script:TcAutomationSettings = $null  # ITcAutomationSettings (DTE.GetObject('TcAutomationSettings')), SilentMode enabled by Connect-TcIde
 $script:TcSilentMode = $false         # whether SilentMode could be enabled on the connected IDE
 $script:TcSilentModeOriginal = $null  # SilentMode value found by Connect-TcIde (restored by Disconnect-TcIde without -Quit); $null = unknown

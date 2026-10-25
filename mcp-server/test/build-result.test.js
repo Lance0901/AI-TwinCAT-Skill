@@ -18,6 +18,11 @@ const TOOLS_JSON = path.join(__dirname, '..', 'tools.json');
 const FIXTURE_MODULE = path.join(__dirname, 'fixtures', 'build-module', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
 
+// Every server gets its own BUILD_REQUIRED state directory unless the test passes one.
+function newStateDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-'));
+}
+
 async function startServer(scenario, extraEnv = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -28,6 +33,7 @@ async function startServer(scenario, extraEnv = {}) {
       TWINCAT_MCP_TOOLS_JSON: TOOLS_JSON,
       TWINCAT_MCP_MODAL_PROBE: '0',
       TCAUTO_TEST_BUILD_SCENARIO: scenario,
+      TCAUTO_STATE_DIR: extraEnv.TCAUTO_STATE_DIR ?? newStateDir(),
       ...extraEnv
     },
     stderr: 'pipe'
@@ -206,7 +212,8 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
 
 describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRESOLVED (#45)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
   test('switch + LIBRARY_UNRESOLVED, then BUILD_REQUIRED until a build succeeds, then the activation is attempted', async () => {
-    const client = await startServer('library-only');
+    const stateDir = newStateDir();
+    const client = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir });
     const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
     try {
       // 1. target says TwinCAT OS (x64), solution is TwinCAT RT (x64): platform-fix, then the build fails
@@ -214,7 +221,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(first.success, false);
       assert.equal(first.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(first.error));
       assert.match(first.error.message, /platform switch to 'TwinCAT OS \(x64\)' failed \(the solution platform stays switched/);
-      assert.match(first.error.hint, /BuildProject must succeed before EnableConfig activates again.*EnableConfig AllowUnresolvedLibrary=true\)/);
+      assert.match(first.error.hint, /BuildProject must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
       assert.deepEqual(first.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
 
       // 2. platforms are equal now, so no rebuild would happen: refused instead of activating old output
@@ -222,6 +229,16 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(second.error.code, 'BUILD_REQUIRED', JSON.stringify(second.error));
       assert.match(second.error.message, /switched from 'Release\|TwinCAT RT \(x64\)' to 'Release\|TwinCAT OS \(x64\)'/);
       assert.ok(!second.data.steps.some((s) => s.step === 'set-config'), 'nothing activated');
+      assert.ok(fs.existsSync(path.join(stateDir, 'build-required.json')), 'state is a file');
+
+      // 2b. the state survives a new server / bridge / module import (already switched platform)
+      const other = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_PLATFORM: 'TwinCAT OS (x64)' });
+      try {
+        const again = JSON.parse((await other.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        assert.equal(again.error.code, 'BUILD_REQUIRED', JSON.stringify(again.error));
+      } finally {
+        await other.close();
+      }
 
       // 3. an accepted build clears it; EnableConfig then gets to set-config (mock runtime fails there)
       const build = await call('BuildProject', { AllowUnresolvedLibrary: true });
@@ -229,6 +246,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       const third = await call('EnableConfig', { Force: true });
       assert.equal(third.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(third.error));
       assert.ok(third.data.steps.some((s) => s.step === 'set-config'));
+      assert.ok(!fs.existsSync(path.join(stateDir, 'build-required.json')), 'state file removed after the complete build');
     } finally {
       await client.close();
     }
@@ -243,6 +261,23 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(r.error.code, 'LIBRARY_UNRESOLVED');
       assert.match(r.error.hint, /Library Manager/);
       assert.match(r.error.hint, /BuildProject AllowUnresolvedLibrary=true and then RunLifecycle SkipBuild=true/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a build with a PLC project skipped by the configuration does not clear BUILD_REQUIRED', async () => {
+    const client = await startServer('skipped');
+    try {
+      // the platform-fix-build succeeds, but plc2 is skipped: its output is still the old platform's
+      const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
+      assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+      const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
+      assert.equal(b.success, true);
+      assert.equal(b.data.warningCode, 'PROJECT_SKIPPED_BY_CONFIGURATION');
+      const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      assert.equal(again.error.code, 'BUILD_REQUIRED');
     } finally {
       await client.close();
     }

@@ -11,6 +11,9 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if (-not $Ok) { $script:fail++ }
 }
 
+# BUILD_REQUIRED state file of this run (never the real %TEMP%\TwinCATAutomation one).
+$env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::NewGuid().ToString('N'))
+
 # No modal-dialog watchdog in Invoke-TcComRetry (no IDE process).
 & $mod { $script:TcIdeProcessId = $null }
 
@@ -149,6 +152,48 @@ try {
     Check 'set-failed-code' ($r.error.code -eq 'PLATFORM_SET_FAILED') "$($r.error.code): $($r.error.message)"
     Check 'set-failed-restored' ($r.restored -eq $true -and $r.projectPlatform -eq $RT -and $r.platform -eq $RT -and ($global:MockState.Activations -join ',') -eq '2,3' -and $global:MockState.Active -eq 3) "restored=$($r.restored) activations: $($global:MockState.Activations -join ',')"
 
+    # --- BUILD_REQUIRED state (#45 / PR #44): the real Set-TcSolutionPlatform writes the file ---
+    $stateFile = Join-Path $env:TCAUTO_STATE_DIR 'build-required.json'
+    & $mod { $script:TcSolutionPath = 'C:\Demo\Unit.sln' }
+    Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+    # restored switch (d above, again): nothing changed -> no entry
+    New-MockDte -Rows $robust -Active 3 -Broken @(2)
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'br-restored-no-entry' ($r.restored -eq $true -and -not (Test-Path -LiteralPath $stateFile)) "restored=$($r.restored) file=$(Test-Path -LiteralPath $stateFile)"
+    # switch lands on another configuration (Debug|RT) AND the restore throws -> platformChanged, entry written
+    New-MockDte -Rows $robust -Active 3
+    $global:MockCfgs[2] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); $global:MockState.Active = 1 }
+    $global:MockCfgs[3] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); throw 'restore boom (mock)' }
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-restore-failed-entry' (-not $r.success -and $r.restored -eq $false -and $r.platformChanged -and $null -ne $req -and $req.reason -match 'could not be undone' -and $req.solution -eq 'C:\Demo\Unit.sln') "success=$($r.success) restored=$($r.restored) changed=$($r.platformChanged) req=$($req | ConvertTo-Json -Compress)"
+    # the entry is a file: a fresh module import (Import-Module -Force) still sees it
+    Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
+    $mod = Get-Module TwinCATAutomation
+    & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\DEMO\unit.sln' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-survives-reimport' ($null -ne $req -and $req.reason -match 'could not be undone') "req=$($req | ConvertTo-Json -Compress)"
+    # other solution: not blocked; no solution known: blocked (conservative)
+    & $mod { $script:TcSolutionPath = 'C:\Other\Other.sln' }
+    Check 'br-other-solution-free' ($null -eq (& $mod { Get-TcBuildRequired })) 'entry of another solution applied'
+    & $mod { $script:TcSolutionPath = $null }
+    Check 'br-unknown-solution-blocked' ($null -ne (& $mod { Get-TcBuildRequired })) 'no solution path but nothing blocks'
+    # successful switch records too, one entry per solution; Clear-TcBuildRequired removes only its own
+    & $mod { $script:TcSolutionPath = 'C:\Other\Other.sln' }
+    New-MockDte -Rows $robust -Active 3
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $keys = @((Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json).PSObject.Properties.Name)
+    Check 'br-two-entries' ($r.success -and $keys.Count -eq 2 -and $keys -contains 'c:\demo\unit.sln' -and $keys -contains 'c:\other\other.sln') "keys: $($keys -join ', ')"
+    & $mod { Clear-TcBuildRequired }
+    $keys = @((Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json).PSObject.Properties.Name)
+    Check 'br-clear-own' (($keys -join ',') -eq 'c:\demo\unit.sln') "keys: $($keys -join ', ')"
+    # unreadable state file blocks
+    Set-Content -LiteralPath $stateFile -Value '{ not json' -Encoding ASCII
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-unreadable-blocks' ($null -ne $req -and $req.reason -match 'not readable') "req=$($req | ConvertTo-Json -Compress)"
+    Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+    & $mod { $script:TcSolutionPath = $null }
+
     # --- PLATFORM_NOT_FOUND lists solution platform names ---
     New-MockDte -Rows $festo -Active 4 -Folder 'TwinCAT_Festo'
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64-E)' -PlatformSource 'target (adsTargetInfo)' }
@@ -261,6 +306,8 @@ finally {
     & $mod { $script:TcDte = $null }
     foreach ($f in $script:tempFiles) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
     Remove-Variable -Name MockState, MockCfgs -Scope Global -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"

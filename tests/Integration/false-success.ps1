@@ -5,7 +5,9 @@
     [string]$NetId = '199.5.42.250.1.1',
     [string]$FwGuid = 'B7598CF7-8B30-4C49-8EFB-69ED4671CC91',
     [Parameter(Mandatory)][string]$LogPath,
-    [int]$DeadlineMin = 45
+    [int]$DeadlineMin = 45,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
 )
 # Integration: "no false success" scenarios for #28 / #32 against a real runtime (local UmRT).
 #   1. FrameworkUnitTest without Build.0 in the .sln -> Build-TcProject warning / -ExpectedProject failure

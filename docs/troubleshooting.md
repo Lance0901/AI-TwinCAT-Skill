@@ -362,8 +362,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### BUILD_REQUIRED
 
-- **為什麼**:solution platform 切換過(`Set-TcTarget -Platform`,或 `Enable-TcConfig` 的自動 platform-fix),之後還沒有一次成功的 `Build-TcProject`,編譯產物還是舊平台的。`Enable-TcConfig` 在 Activate 之前檢查,拒絕啟用(`data.steps` 的 `build-required` 步驟寫切換的時間與前後平台)。典型情境:platform-fix 後的 platform-fix-build 停在 `LIBRARY_UNRESOLVED`,平台已切換,再跑一次 `Enable-TcConfig` 會發現平台一致、不再 build,若不擋就會 Activate 舊平台的產物。狀態存在模組裡(只對同一個 .sln),成功的 `Build-TcProject` 會清掉。
-- **下一步**:`Build-TcProject`(缺 library 時先安裝;使用者確定接受才加 `-AllowUnresolvedLibrary`)成功後再 `Enable-TcConfig`。
+- **為什麼**:solution platform 切換過(`Set-TcTarget -Platform`、`Enable-TcConfig` 的自動 platform-fix,或一次失敗且還原不回去的切換),之後還沒有一次**完整成功**的 `Build-TcProject`(沒有 project 被 `PROJECT_SKIPPED_BY_CONFIGURATION` 跳過),編譯產物可能還是舊平台的(推論,未實測)。`Enable-TcConfig` 在 Activate 之前檢查,拒絕啟用(`data.steps` 的 `build-required` 步驟寫切換的時間、前後平台與 .sln)。典型情境:platform-fix 後的 platform-fix-build 停在 `LIBRARY_UNRESOLVED`,平台已切換,再跑一次 `Enable-TcConfig` 會發現平台一致、不再 build,若不擋就會 Activate 舊平台的產物。
+- **狀態存成檔案**(不是模組變數,`Import-Module -Force`、CLI 每次一個 process、MCP bridge 重啟都不會弄丟):`%TEMP%\TwinCATAutomation\build-required.json`(測試用 `TCAUTO_STATE_DIR` 改目錄),每個 .sln 一筆,key 是正規化的完整路徑(小寫)。切換時寫入,完整成功的 `Build-TcProject` 刪掉該 .sln 的那筆(檔案空了就刪檔)。保守規則:切換當下不知道 .sln 路徑 → 記在 `<unknown>`,對所有 .sln 都擋;`Enable-TcConfig` 時不知道 .sln 路徑 → 有任何一筆就擋;檔案讀不到(格式壞了)→ 擋,下一次完整成功的 build 會重寫它。實作:`Private/Set-TcBuildRequired.ps1`。
+- **下一步**:`Build-TcProject` 完整成功(缺 library 時先安裝;使用者確定接受才加 `-AllowUnresolvedLibrary`;有 project 被跳過時先在 Configuration Manager 勾回 Build)後再 `Enable-TcConfig`。`Enable-TcConfig -AllowUnresolvedLibrary` 只影響它自己做的 platform-fix-build,解不開已經記下的 BUILD_REQUIRED。
 
 ### BUILD_STATUS_UNKNOWN
 

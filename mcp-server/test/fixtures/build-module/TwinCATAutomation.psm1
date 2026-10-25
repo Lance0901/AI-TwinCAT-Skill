@@ -19,9 +19,11 @@
 #   other-row              lbi 1, library + a build-summary row without file
 #   unlocated-code         lbi 0, one code row with a file but line 0
 #   skipped-library        lbi 0, library rows; a second PLC project is skipped by the configuration
-# Enable-TcConfig: the solution platform starts as 'TwinCAT RT (x64)', the target reports
-# 'TwinCAT OS (x64)' (so the first call switches + rebuilds); Set-TcSystemState fails with
-# FIXTURE_NO_RUNTIME, which marks "got past the build / platform checks".
+#   skipped                lbi 0, no rows; a second PLC project is skipped by the configuration
+# Enable-TcConfig: the solution platform starts as env TCAUTO_TEST_PLATFORM (default
+# 'TwinCAT RT (x64)'), the target reports 'TwinCAT OS (x64)' (so the first call switches +
+# rebuilds); Set-TcSystemState fails with FIXTURE_NO_RUNTIME, which marks "got past the build /
+# platform checks". The BUILD_REQUIRED state file goes to env TCAUTO_STATE_DIR (set by the test).
 #
 # Windows PowerShell 5.1, ASCII only.
 
@@ -45,6 +47,7 @@ $script:FixtureScenarios = @{
     'other-row'             = @{ Lbi = 1; Sets = @('library', 'other') }
     'unlocated-code'        = @{ Lbi = 0; Sets = @('unlocated') }
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
+    'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
 }
 function Get-FixtureScenario {
     $name = $script:FixtureScenario
@@ -56,7 +59,7 @@ function Get-FixtureScenario {
 }
 
 $script:TcSolutionPath = 'C:\Demo\Demo.sln'
-$script:FixturePlatform = 'TwinCAT RT (x64)'
+$script:FixturePlatform = if ([string]::IsNullOrWhiteSpace($env:TCAUTO_TEST_PLATFORM)) { 'TwinCAT RT (x64)' } else { $env:TCAUTO_TEST_PLATFORM }
 
 function Assert-TcConnection { }
 # RunLifecycle starts with ConnectIde: no IDE here.
@@ -106,8 +109,8 @@ function Get-TcBuildErrors {
 }
 
 # Platform (Enable-TcConfig platform check / platform-fix). The real Set-TcSolutionPlatform needs
-# DTE solution configurations; this mock switches the fixture platform and records the pending
-# build exactly as the real one does after a switch ($script:TcBuildRequired).
+# DTE solution configurations (covered by tests/Unit/platform-project-mismatch.ps1); this mock
+# switches the fixture platform and records the pending build through the real Set-TcBuildRequired.
 function Get-TcSolutionPlatform {
     [PSCustomObject]@{ platform = $script:FixturePlatform; configuration = 'Release'; projectPlatform = $script:FixturePlatform; source = 'ActiveConfig' }
 }
@@ -119,11 +122,7 @@ function Set-TcSolutionPlatform {
     param([string]$Platform, [string]$Configuration, [string]$PlatformSource)
     $before = $script:FixturePlatform
     $script:FixturePlatform = $Platform
-    $script:TcBuildRequired = [PSCustomObject]@{
-        Solution = $script:TcSolutionPath
-        Reason   = "solution platform switched from 'Release|$before' to 'Release|$Platform'"
-        At       = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    }
+    Set-TcBuildRequired -Reason "solution platform switched from 'Release|$before' to 'Release|$Platform'"
     [PSCustomObject]@{ success = $true; error = $null; configuration = 'Release'; previousPlatform = $before; platform = $Platform; platformChanged = $true; projectPlatform = $Platform }
 }
 function Set-TcSystemState {

@@ -510,7 +510,7 @@ function Enable-TcConfig {
             # The platform IS switched now: running Enable-TcConfig again would find the platforms
             # equal and skip this build, so the module keeps BUILD_REQUIRED until a build succeeds.
             $f = New-TcStepFailureFromResult -Result $b -Prefix "Build after the automatic platform switch to '$($r.platform)' failed (the solution platform stays switched; Enable-TcConfig refuses to activate until Build-TcProject succeeds)" -DefaultCode 'BUILD_FAILED'
-            $platHint = "The solution platform was switched to '$($r.platform)'. Build-TcProject must succeed before Enable-TcConfig activates again (with unresolved libraries: install them; only if the user accepts that the code may not be compiled: Build-TcProject -AllowUnresolvedLibrary, or Enable-TcConfig -AllowUnresolvedLibrary). $([string]$f.error.hint)".TrimEnd()
+            $platHint = "The solution platform was switched to '$($r.platform)'. Build-TcProject must succeed before Enable-TcConfig activates again (with unresolved libraries: install them; only if the user accepts that the code may not be compiled: Build-TcProject -AllowUnresolvedLibrary). $([string]$f.error.hint)".TrimEnd()
             $f.error | Add-Member -NotePropertyName 'hint' -NotePropertyValue $platHint -Force
             return $f
         }
@@ -528,13 +528,14 @@ function Enable-TcConfig {
     }
 
     # A platform switch (Set-TcTarget / platform-fix) without a successful build since then:
-    # the PLC output of the previous platform must not be activated. Returns a failure or $null.
+    # the PLC output may still be that of the previous platform (inferred, not measured). Returns a failure or $null.
     function Test-TcBuildRequired {
-        $req = $script:TcBuildRequired
+        $req = Get-TcBuildRequired
         if ($null -eq $req) { return $null }
-        if (-not ([string]$req.Solution -ieq [string]$script:TcSolutionPath)) { return $null }
-        Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.Reason) at $($req.At); no successful Build-TcProject since"
-        return New-TcStepFailure -Message "Not activated: the $($req.Reason) at $($req.At) and no Build-TcProject has succeeded since; the compiled PLC output belongs to the previous platform." -Code 'BUILD_REQUIRED'
+        $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }
+        $sln = if ([string]::IsNullOrWhiteSpace([string]$req.solution)) { 'unknown solution' } else { [string]$req.solution }
+        Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject success since"
+        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject success since; the compiled PLC output may still be that of the previous platform." -Code 'BUILD_REQUIRED'
     }
 
     # Failure of a nested cmdlet result: keep its code + hint

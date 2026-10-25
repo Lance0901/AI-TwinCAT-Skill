@@ -236,6 +236,11 @@
             catch { $restoredOk = $false }
         }
         $out.restored = $restoredOk
+        if ($out.platformChanged) {
+            # switch failed AND the previous configuration could not be restored: the active
+            # platform is not the one the last build was made for
+            Set-TcBuildRequired -Reason "solution platform left at '$($out.platform)' (was '$($before.configuration)|$($before.platform)') after a failed switch to '$Configuration|$Platform' that could not be undone"
+        }
         $restoreText = if ($restoredOk) { " The previous configuration '$($before.configuration)|$($before.platform)' was re-activated." } else { ' The previous configuration could not be restored.' }
         if ($null -ne $activateError) {
             $hp = $activateError.PSObject.Properties['hint']
@@ -255,13 +260,10 @@
     }
     if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
     if ($out.platformChanged) {
-        # The compiled output still belongs to the previous platform: Enable-TcConfig refuses to
-        # activate until a Build-TcProject succeeds (BUILD_REQUIRED).
-        $script:TcBuildRequired = [PSCustomObject]@{
-            Solution = $script:TcSolutionPath
-            Reason   = "solution platform switched from '$($before.configuration)|$($before.platform)' to '$($out.configuration)|$($out.platform)'"
-            At       = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-        }
+        # The compiled output may still belong to the previous platform (inferred, not
+        # measured): Enable-TcConfig refuses to activate until a complete Build-TcProject
+        # success (BUILD_REQUIRED, state file: Private/Set-TcBuildRequired.ps1).
+        Set-TcBuildRequired -Reason "solution platform switched from '$($before.configuration)|$($before.platform)' to '$($out.configuration)|$($out.platform)'"
     }
     $out.success = $true
     return $out
