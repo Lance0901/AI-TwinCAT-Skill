@@ -53,7 +53,18 @@ $script:TcUiaMessageBoxAnswer = {
     if ($null -eq $box) {
         $vsMbCond = New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, $vsMbId)
         $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-        $windows = $ae::RootElement.FindAll($scope::Children, $pidCond)
+        # The pid's top-level windows through the modal scan's EnumWindows helper when it is
+        # loaded (it is after any Get-TcIdeModalDialog in this process): RootElement.FindAll
+        # stalls ~3 s on unresponsive windows of other processes (#24, Get-TcIdeModalDialog.ps1).
+        if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
+            $windows = New-Object System.Collections.ArrayList
+            foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+                try { $we = $ae::FromHandle($wh); if ($null -ne $we) { $null = $windows.Add($we) } } catch { }
+            }
+        }
+        else {
+            $windows = $ae::RootElement.FindAll($scope::Children, $pidCond)
+        }
         $main = $null
         foreach ($w in $windows) {
             try {
