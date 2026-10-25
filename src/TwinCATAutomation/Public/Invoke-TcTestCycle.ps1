@@ -11,6 +11,9 @@
         Skip the build step (if already built).
     .PARAMETER KeepRunning
         Don't stop the PLC after tests complete.
+    .PARAMETER AllowUnresolvedLibrary
+        Passed to Build-TcProject and Enable-TcConfig: accept a build whose Error List shows
+        unresolved libraries (LIBRARY_UNRESOLVED) as success.
     #>
     [CmdletBinding()]
     param(
@@ -21,7 +24,10 @@
         [switch]$SkipBuild,
 
         [Parameter()]
-        [switch]$KeepRunning
+        [switch]$KeepRunning,
+
+        [Parameter()]
+        [switch]$AllowUnresolvedLibrary
     )
 
     $cycleStart = [DateTime]::Now
@@ -35,27 +41,42 @@
 
     # Step 1: Build
     if (-not $SkipBuild) {
-        $buildResult = Build-TcProject
+        $buildResult = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         $steps += [PSCustomObject]@{ step = 'Build'; success = $buildResult.success }
 
         if (-not $buildResult.success) {
-            return New-TcResult -Success $false `
-                -ErrorMessage "Build failed: $($buildResult.error.message)" `
-                -ErrorCode 'BUILD_FAILED' `
-                -Data ([PSCustomObject]@{
-                    steps      = $steps
+            # keep the Build error code + hint (LIBRARY_UNRESOLVED, BUILD_TIMEOUT, ...)
+            $code = if ([string]::IsNullOrWhiteSpace([string]$buildResult.error.code)) { 'BUILD_FAILED' } else { [string]$buildResult.error.code }
+            $hp = $buildResult.error.PSObject.Properties['hint']
+            $buildHint = if ($null -ne $hp -and -not [string]::IsNullOrWhiteSpace([string]$hp.Value)) { [string]$hp.Value } else { Get-TcErrorHint -Code $code }
+            $params = @{
+                Success      = $false
+                ErrorMessage = "Build failed: $($buildResult.error.message)"
+                ErrorCode    = $code
+                Data         = ([PSCustomObject]@{
+                    steps       = $steps
                     buildErrors = $buildResult.data
                 })
+            }
+            if (-not [string]::IsNullOrWhiteSpace($buildHint)) { $params['Hint'] = $buildHint }
+            return New-TcResult @params
         }
     }
 
     # Step 2: Activate Configuration (Config → Activate → Run via ADS, no dialogs)
-    $activateResult = Enable-TcConfig -Force
+    $activateResult = Enable-TcConfig -Force -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
     $steps += [PSCustomObject]@{ step = 'Activate'; success = $activateResult.success }
     if (-not $activateResult.success) {
-        return New-TcResult -Success $false `
-            -ErrorMessage "Activation failed: $($activateResult.error.message)" `
-            -ErrorCode 'ACTIVATION_FAILED' -Data ([PSCustomObject]@{ steps = $steps })
+        # code stays ACTIVATION_FAILED; the Enable-TcConfig code (e.g. BUILD_REQUIRED) is in the message, its hint is kept
+        $ahp = $activateResult.error.PSObject.Properties['hint']
+        $aParams = @{
+            Success      = $false
+            ErrorMessage = "Activation failed ($([string]$activateResult.error.code)): $($activateResult.error.message)"
+            ErrorCode    = 'ACTIVATION_FAILED'
+            Data         = ([PSCustomObject]@{ steps = $steps })
+        }
+        if ($null -ne $ahp -and -not [string]::IsNullOrWhiteSpace([string]$ahp.Value)) { $aParams['Hint'] = [string]$ahp.Value }
+        return New-TcResult @aParams
     }
 
     # Step 2.5: Reconnect IDE (Activate restarts TwinCAT, COM references become stale)

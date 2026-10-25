@@ -367,12 +367,12 @@ function Initialize-ProbeWarmup {
         }
     }
     $compileMs = $sw.ElapsedMilliseconds
-    # One scan of this process (no windows: the scan stops after its first FindAll) pays the
+    # One scan of this process (no windows of its own, -MainHwnd 0: the IDE handle belongs to another pid) pays the
     # remaining first-use cost (UIA client start-up in this process, compiling the scan
     # scriptblocks). Measured 2026-10-25 against fixtures/host-window.ps1 with 16 busy
-    # powershell.exe on 16 logical CPUs: first real scan 3587 ms without it, 625 ms with it.
+    # powershell.exe on 16 logical CPUs: first real scan 3587 ms without it, 625 ms with it (measured before the EnumWindows change).
     $sw.Restart()
-    $null = Invoke-ProbeScan -TargetPid $PID
+    $null = Invoke-ProbeScan -TargetPid $PID -TargetMainHwnd 0
     Write-ProbeDebug "warm-up: UIA loaded, $compiled helper type(s) compiled in $compileMs ms, warm-up scan $($sw.ElapsedMilliseconds) ms"
 }
 
@@ -396,7 +396,7 @@ function Clear-ProbeAbandoned {
 }
 
 function Invoke-ProbeScan {
-    param([int]$TargetPid = $ProcessId)
+    param([int]$TargetPid = $ProcessId, [long]$TargetMainHwnd = $MainHwnd)
     Clear-ProbeAbandoned
     if ($script:Abandoned.Count -ge 10) {
         Write-ProbeDebug "$($script:Abandoned.Count) UIA scans still hanging; skipping"
@@ -411,7 +411,7 @@ function Invoke-ProbeScan {
         $rs.Open()
         $ps = [PowerShell]::Create()
         $ps.Runspace = $rs
-        $null = $ps.AddScript($wrapperText).AddArgument($scanText).AddArgument($TargetPid).AddArgument($MainHwnd).AddArgument($MaxText).AddArgument($mainTitlePattern)
+        $null = $ps.AddScript($wrapperText).AddArgument($scanText).AddArgument($TargetPid).AddArgument($TargetMainHwnd).AddArgument($MaxText).AddArgument($mainTitlePattern)
         $handle = $ps.BeginInvoke()
         $deadline = [System.Diagnostics.Stopwatch]::StartNew()
         $finished = $false

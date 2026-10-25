@@ -5,7 +5,11 @@
 #          and MAIN.bRunFlowTest.
 # Assumption: Activate restarts TwinCAT; the original IDE COM reference survives (no reconnect).
 
-param([string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln')
+param(
+    [string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln',
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
+)
 
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force
 
@@ -43,7 +47,7 @@ Write-Host "Test 2 defined: $($test2.name)"
 # Step 3: Build
 Write-Host ""
 Write-Host "=== Step 3: Build ==="
-$buildResult = Build-TcProject
+$buildResult = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
 Write-Host "Build: $($buildResult.success) errors=$($buildResult.data.errors)"
 if (-not $buildResult.success) { Write-Host "BUILD FAILED: $($buildResult.error.message)"; exit 1 }
 

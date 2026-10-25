@@ -578,9 +578,29 @@ function Test-TcLibraryManagerItem {
 }
 
 # Library-resolution messages listed without a code location. Measured 2026-10-18 (TcXaeShell
-# 15.0, GantryCylinder project): "Could not open library '#System_VisuElemTrace' ..." rows with
-# file 'plc.Library Manager' and line 0; see docs/troubleshooting.md "BUILD_FAILED".
-$script:TcLibraryErrorPattern = '(?i)\bCould not open library\b'
+# 15.0, GantryCylinder project, English UI): "Could not open library '#System_VisuElemTrace' ..."
+# and "Library '#IecSfc' 3.4.2.0 has not been installed" rows with file 'plc.Library Manager' and
+# line 0; see docs/troubleshooting.md "BUILD_FAILED". Other UI languages are not measured.
+$script:TcLibraryErrorPattern = '(?i)\bCould not open library\b|\bhas not been installed\b'
+
+function Add-TcBuildWarning {
+    <#
+    .SYNOPSIS
+        Adds a warning to a Build-TcProject result: data.warningCodes[] (all, in order),
+        data.warningCode / data.warning (the first one) and Write-Warning.
+    #>
+    [CmdletBinding()]
+    param([object]$Data, [string]$Code, [string]$Text)
+    if ($null -eq $Data.PSObject.Properties['warningCodes']) {
+        $Data | Add-Member -NotePropertyName 'warningCodes' -NotePropertyValue @()
+    }
+    $Data.warningCodes = @($Data.warningCodes) + $Code
+    if ($null -eq $Data.PSObject.Properties['warningCode']) {
+        $Data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue $Code
+        $Data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $Text
+    }
+    Write-Warning $Text
+}
 
 function Get-TcErrorItemCategory {
     <#

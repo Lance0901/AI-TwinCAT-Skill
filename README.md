@@ -116,7 +116,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### Build & Deploy
 | Command | Description |
 |---------|-------------|
-| `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line) |
+| `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line/category); `data.errors` counts code errors only (#23, no longer the Library Manager rows); unresolved libraries -> `LIBRARY_UNRESOLVED` unless `-AllowUnresolvedLibrary` (#45) |
 | `Get-TcBuildErrors` | Read the XAE Error List (errors, `-IncludeWarnings`, `-IncludeMessages`) via UI Automation |
 | `Enable-TcConfig` | Activate configuration via ADS (no dialogs with `-Force`) |
 | `Enter-TcPlcOnline` | Login + download program (`-LoginMode Regular|Download|OnlineChange` = 1/4/2; prompts handled by the global `SilentMode`, no `SILENT` flag unless `-SilentFlag`) |

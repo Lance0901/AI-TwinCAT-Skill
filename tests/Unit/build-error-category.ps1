@@ -19,6 +19,7 @@ $cases = @(
     @{ Name = '"Could not open library" without file / line'; Item = [PSCustomObject]@{ description = "Could not open library 'Tc2_Foo'"; project = 'plc'; file = ''; line = $null }; Want = 'library' }
     @{ Name = '"Could not open library" text in a POU row with a line stays code'; Item = [PSCustomObject]@{ description = "Could not open library 'x'"; project = 'plc'; file = 'C:\p\MAIN.TcPOU'; line = 3 }; Want = 'code' }
     @{ Name = 'Library Manager row WITH a line is not a library row'; Item = [PSCustomObject]@{ description = 'x'; project = 'plc'; file = 'plc.Library Manager'; line = 4 }; Want = 'code' }
+    @{ Name = '"has not been installed" without file / line'; Item = [PSCustomObject]@{ description = "Library 'Tc3_Foo' 1.0.0.0 has not been installed"; project = 'plc'; file = ''; line = $null }; Want = 'library' }
     @{ Name = 'no file (build-summary row)'; Item = [PSCustomObject]@{ description = "Build of project 'plc' failed"; project = ''; file = ''; line = $null }; Want = 'other' }
     @{ Name = 'null item'; Item = $null; Want = 'other' }
 )

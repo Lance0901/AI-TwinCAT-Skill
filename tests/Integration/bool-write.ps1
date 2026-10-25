@@ -5,7 +5,11 @@
 #          MAIN.fbLoggerFlowTest (adjust paths below / -SolutionPath).
 # Assumption: the FB input is overwritten by MAIN every PLC scan, so writes may not stick.
 
-param([string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln')
+param(
+    [string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln',
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
+)
 
 # Diagnostic: BOOL write methods comparison
 # Test different approaches to writing BOOL values via ADS
@@ -16,7 +20,7 @@ Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutom
 Write-Host "=== Connect & Start ==="
 $r = Connect-TcIde -SolutionPath $SolutionPath
 $amsNetId = $r.data.amsNetId
-Build-TcProject | Out-Null
+Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary | Out-Null
 Enable-TcConfig -Force | Out-Null
 Start-Sleep -Seconds 5
 Enter-TcPlcOnline | Out-Null

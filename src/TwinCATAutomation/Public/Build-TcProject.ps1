@@ -33,9 +33,14 @@
     .OUTPUTS
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN,
                              or LIBRARY_UNRESOLVED (below)
-        data.codeVerified    $true when the Error List was read and lists no library error, so a
-                             successful build also proves the PLC code was compiled; $false when
-                             library errors are listed; $null when the Error List is not readable
+        data.codeVerified    $true when the Error List was read, lists no library error and no
+                             code row without a line number, so a successful build also proves
+                             the PLC code was compiled; $false otherwise; $null when the Error
+                             List is not readable
+        data.warningCodes    every warning code of a successful result, in this order:
+                             PROJECT_SKIPPED_BY_CONFIGURATION, LIBRARY_UNRESOLVED (only with
+                             -AllowUnresolvedLibrary), CODE_NOT_VERIFIED; data.warningCode is the
+                             first of them, data.warning its text (Write-Warning for each)
 
         Unresolved libraries (#45): with library errors in the Error List the PLC code may not
         have been compiled at all. Measured 2026-10-25 (TcXaeShell 4024, TwinCAT_Festo copy with
@@ -44,7 +49,14 @@
         build that would succeed but lists library errors returns LIBRARY_UNRESOLVED (success =
         false, buildSucceeded = $null, codeVerified = $false). -AllowUnresolvedLibrary keeps
         success = true instead, with data.warningCode = LIBRARY_UNRESOLVED (unless
-        PROJECT_SKIPPED_BY_CONFIGURATION is already set) and data.libraryWarning.
+        PROJECT_SKIPPED_BY_CONFIGURATION is already set) and data.libraryWarning; data.projects
+        then still says 'built' (the build result), codeVerified = $false says the code is not proven.
+        Not verified otherwise (CODE_NOT_VERIFIED): a successful build whose Error List could not be
+        read (codeVerified = $null) or lists a code row without a line number (a row the
+        category rules do not recognise, e.g. a Library Manager row in another UI language) keeps
+        success = true with data.warningCode = CODE_NOT_VERIFIED.
+        A successful result also clears the "build required after a platform switch" state that
+        Enable-TcConfig checks before activating (BUILD_REQUIRED).
         data.errors          number of CODE errors (errorItems with category 'code'); Library
                              Manager rows are not counted (fallback when the Error List is not
                              readable: failedProjects)
@@ -334,9 +346,14 @@
         }
 
         # --- unresolved libraries (#45): a "successful" build may not have compiled the code ---
+        # A code row without a line number is not a located compiler message: it may be a
+        # library row in a UI language the category rules do not know (zh-TW file name of the
+        # Library Manager not measured), so it does not count as proof that the code compiled.
+        $unlocatedCode = @($codeErrors | Where-Object { $n = 0; -not ([int]::TryParse(([string]$_.line).Trim(), [ref]$n) -and $n -gt 0) })
         $codeVerified = $null
-        if ($null -eq $errorListError) { $codeVerified = ($libraryErrorItems.Count -eq 0) }
-        $libraryUnresolved = ($buildSucceeded -eq $true) -and ($codeVerified -eq $false)
+        if ($null -eq $errorListError) { $codeVerified = ($libraryErrorItems.Count -eq 0) -and ($unlocatedCode.Count -eq 0) }
+        $libraryUnresolved = ($buildSucceeded -eq $true) -and ($libraryErrorItems.Count -gt 0)
+        $codeNotVerified = ($buildSucceeded -eq $true) -and -not $libraryUnresolved -and ($codeVerified -ne $true)
         if ($libraryUnresolved -and -not $AllowUnresolvedLibrary) { $buildSucceeded = $null }
 
         # --- per PLC project status (coverage read before the build) ---
@@ -397,9 +414,7 @@
         }
         if ($skippedProjects.Count -gt 0) {
             $warn = "Build-TcProject: PLC project(s) $($skippedProjects -join ', ') are not built by the active solution configuration '$($coverage.configuration)' (PROJECT_SKIPPED_BY_CONFIGURATION); their compiled output is stale. $(Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION')"
-            $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'PROJECT_SKIPPED_BY_CONFIGURATION'
-            $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $warn
-            Write-Warning $warn
+            Add-TcBuildWarning -Data $data -Code 'PROJECT_SKIPPED_BY_CONFIGURATION' -Text $warn
         }
         if ($expected.Count -gt 0) {
             $data | Add-Member -NotePropertyName 'expectedProjects' -NotePropertyValue $expected
@@ -414,11 +429,12 @@
         if ($libraryUnresolved) {
             $libWarn = "Build-TcProject: $($libraryErrorItems.Count) unresolved library error(s); the PLC code may not have been compiled (LIBRARY_UNRESOLVED, accepted by -AllowUnresolvedLibrary). $libNames"
             $data | Add-Member -NotePropertyName 'libraryWarning' -NotePropertyValue $libWarn
-            if ($null -eq $data.PSObject.Properties['warningCode']) {
-                $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'LIBRARY_UNRESOLVED'
-                $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $libWarn
-            }
-            Write-Warning $libWarn
+            Add-TcBuildWarning -Data $data -Code 'LIBRARY_UNRESOLVED' -Text $libWarn
+        }
+        if ($codeNotVerified) {
+            $why = if ($null -ne $errorListError) { "the Error List could not be read ($errorListError)" }
+                   else { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
+            Add-TcBuildWarning -Data $data -Code 'CODE_NOT_VERIFIED' -Text "Build-TcProject: build reported success but $why, so it is not confirmed that the PLC code was compiled (CODE_NOT_VERIFIED). $(Get-TcErrorHint -Code 'CODE_NOT_VERIFIED')"
         }
 
         if ($null -eq $buildSucceeded) {
@@ -463,6 +479,8 @@
                 return New-TcResult -Success $false -ErrorMessage "Build finished but expected PLC project(s) $($notBuilt -join ', ') were not confirmed as built (see data.projects)." `
                     -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $data
             }
+            # the build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED)
+            $script:TcBuildRequired = $null
             New-TcResult -Success $true -Data $data
         }
     }

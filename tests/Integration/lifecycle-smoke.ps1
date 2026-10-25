@@ -27,7 +27,9 @@ param(
     [int]$AttachPid = 0,
     # Optional: activate this solution platform right after "set target" (step 02b-platform),
     # e.g. 'TwinCAT OS (x64)' for a UmRT (Usermode Runtime). Step 02-set-target uses -NoPlatformSwitch (NetId only).
-    [string]$SolutionPlatform
+    [string]$SolutionPlatform,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
 )
 
 $ErrorActionPreference = 'Continue'
@@ -413,7 +415,7 @@ try {
     }
 
     # 3. Build (build output text dropped from the log; only counts kept)
-    $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }
+    $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }
     Write-ErrorList '03b-errorlist-after-build'
     if (Test-Abort $r '03') { return }
     if (-not $r.success) { return }

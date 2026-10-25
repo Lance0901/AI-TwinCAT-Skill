@@ -350,15 +350,27 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LIBRARY_UNRESOLVED
 
+- **`data.errors` 語意變更(#23,breaking)**:`errors` 不再含 Library Manager 列,只算 code error;library 列在 `libraryErrors` / `libraryErrorItems[]`。分類只認英文 UI 的 file `*Library Manager`(無 line)與訊息「Could not open library」/「has not been installed」(2026-10-18 英文 XAE 實測);**zh-TW 等其他語系的 Library Manager file 名稱與訊息未實測**:那些列會被分成 `code`,但沒有行號,所以 `codeVerified = false` 並回 `CODE_NOT_VERIFIED`(見下),不會被當成驗證過的成功。
+
 - **為什麼**:Error List 有 library 錯誤(`data.libraryErrorItems[]`:Library Manager 的「Could not open library」placeholder 無法解析、「has not been installed」),而 build 本來會判成功。這時 PLC 程式碼可能根本沒被編譯:**實測 2026-10-25**(TcXaeShell 4024,TwinCAT_Festo 複本,缺 7 個 library,#45)在 POU 裡寫未宣告的識別字,Build 仍是 `LastBuildInfo = 0`、Error List 沒有 C0046;同樣的改法在沒有缺 lib 的專案上是 `BUILD_FAILED` + C0046。所以 `Build-TcProject` 不再把它當成功:`success = false`、`data.buildSucceeded = null`、`data.codeVerified = false`、`data.projects[].status = unknown`。`data.codeVerified = true` 表示 Error List 讀得到且沒有 library 錯誤。
-- **下一步**:在 XAE 的 Library Manager 安裝缺的 library(名稱 / 版本在 `data.libraryErrorItems[].description`),再 `Build-TcProject`。使用者確定要接受「程式碼可能沒編譯」時才用 `Build-TcProject -AllowUnresolvedLibrary`(MCP:`BuildProject` `AllowUnresolvedLibrary: true`):回 success,`data.warningCode = LIBRARY_UNRESOLVED`(已有 `PROJECT_SKIPPED_BY_CONFIGURATION` 時保留那個)+ `data.libraryWarning`。有 code error 時照常是 `BUILD_FAILED`。
+- **下一步**:在 XAE 的 Library Manager 安裝缺的 library(名稱 / 版本在 `data.libraryErrorItems[].description`),再 `Build-TcProject`。使用者確定要接受「程式碼可能沒編譯」時才用 `Build-TcProject -AllowUnresolvedLibrary`(MCP:`BuildProject` `AllowUnresolvedLibrary: true`):回 success,`data.warningCodes[]` 含 `LIBRARY_UNRESOLVED`(`data.warningCode` 是第一個,`PROJECT_SKIPPED_BY_CONFIGURATION` 排前面)+ `data.libraryWarning`;這時 `data.projects[].status` 仍是 `built`(build 的結果),程式碼沒被證實有編譯由 `codeVerified = false` 表示。有 code error 時照常是 `BUILD_FAILED`。`Enable-TcConfig` / `Invoke-TcTestCycle` / MCP `RunLifecycle` 也有 `-AllowUnresolvedLibrary`(傳給它們內部的 Build);MCP 也可先 `BuildProject AllowUnresolvedLibrary=true` 再 `RunLifecycle SkipBuild=true`。
+
+### CODE_NOT_VERIFIED
+
+- **為什麼**:`Build-TcProject` 判定成功,但沒辦法證明 PLC 程式碼有被編譯:Error List 讀不到(`data.errorListError`,例如 `ERRORLIST_UNAVAILABLE`;`codeVerified = null`、`libraryErrors = null`,`errors` 退回 `failedProjects`),或 Error List 有「有 file、沒有行號」的 code 列(`codeVerified = false`;可能是分類規則不認得的語系的 Library Manager 列)。這是 warning,不是錯誤:`success = true`,`data.warningCodes[]` 含 `CODE_NOT_VERIFIED`,`data.warning` 說明原因。
+- **下一步**:看 XAE 的 Error List;Error List 讀不到時照 `ERRORLIST_UNAVAILABLE` 處理後重跑 `Build-TcProject`。在確認之前不要把它當成「程式沒問題」。
+
+### BUILD_REQUIRED
+
+- **為什麼**:solution platform 切換過(`Set-TcTarget -Platform`,或 `Enable-TcConfig` 的自動 platform-fix),之後還沒有一次成功的 `Build-TcProject`,編譯產物還是舊平台的。`Enable-TcConfig` 在 Activate 之前檢查,拒絕啟用(`data.steps` 的 `build-required` 步驟寫切換的時間與前後平台)。典型情境:platform-fix 後的 platform-fix-build 停在 `LIBRARY_UNRESOLVED`,平台已切換,再跑一次 `Enable-TcConfig` 會發現平台一致、不再 build,若不擋就會 Activate 舊平台的產物。狀態存在模組裡(只對同一個 .sln),成功的 `Build-TcProject` 會清掉。
+- **下一步**:`Build-TcProject`(缺 library 時先安裝;使用者確定接受才加 `-AllowUnresolvedLibrary`)成功後再 `Enable-TcConfig`。
 
 ### BUILD_STATUS_UNKNOWN
 
 - **為什麼**:`Build-TcProject` 的 build 呼叫有返回,但 `LastBuildInfo` 讀不到(COM 例外),而 Error List 也讀不到(或讀到的列 severity 無法判定:`data.severityUnknown`),所以無法判定 build 是成功還是失敗。`success = false`、`data.buildSucceeded = null`。以前這種情況會被當成 `failedProjects = 0` 回 success,現在不會。
 - **下一步**:看 XAE 的 Error List 後再決定;處理 IDE 的 dialog(`Get-TcIdeModalDialog`)或讓 Error List 可見後重跑 `Build-TcProject`(或單獨 `Get-TcBuildErrors`)。
 - **`code` 可能是 null**:TcXaeShell 15.0 的 Error List 沒有 Code 欄(右鍵表頭 Show Columns 只有 Severity / Description / Project / Project Rank / Path / File / Line / Column / Source),描述文字也不含 Cxxxx。模組只對幾個常見訊息推回編碼(C0046 `Identifier 'x' not defined`、C0018 `'x' is no valid assignment target`、C0032、C0035、C0037、C0077、C0080;表在 `Private/Get-TcIdeErrorList.ps1` 的 `$script:TcCompilerCodePatterns`),靜態分析訊息 `SAxxxx` 則直接在描述裡。
-- **Build 成功時 `errorItems` 不一定空**:Error List 會留著非 PLC code 的項目。2026-10-18 實測 GantryCylinder 專案 build 成功仍有 7 筆 Error,全部是 `file = plc.Library Manager`、`line = 0` 的「Could not open library '#System_VisuElem3DPath' / '#System_VisuElemTrace' / '#System_VisuElemCamDisplayer' / '#System_VisuElemsAlarm' / '#System_VisuElemsDateTime'(placeholder 無法解析)」與「'#Analyzation' 3.5.2.0 / '#IecSfc' 3.4.2.0 has not been installed」——是機器上缺 visu/分析函式庫,不影響 `failedProjects`,但**影響程式碼有沒有被編譯**(見 `LIBRARY_UNRESOLVED`,#45)。這些列的 `category` 是 `library`,只算進 `libraryErrors`(#23 以前算進 `errors`)。
+- **Build 成功時 `errorItems` 不一定空**:Error List 會留著非 PLC code 的項目。2026-10-18 實測 GantryCylinder 專案 build 成功仍有 7 筆 Error,全部是 `file = plc.Library Manager`、`line = 0` 的「Could not open library '#System_VisuElem3DPath' / '#System_VisuElemTrace' / '#System_VisuElemCamDisplayer' / '#System_VisuElemsAlarm' / '#System_VisuElemsDateTime'(placeholder 無法解析)」與「'#Analyzation' 3.5.2.0 / '#IecSfc' 3.4.2.0 has not been installed」——是機器上缺 visu/分析函式庫,不影響 `failedProjects`,但**可能影響程式碼有沒有被編譯**(4024 Festo 實測 2026-10-25;4026 GantryCylinder 未驗證,#45;見 `LIBRARY_UNRESOLVED`)。這些列的 `category` 是 `library`,只算進 `libraryErrors`(#23 以前算進 `errors`)。
 - **XAE Build 會先存檔**:VS 的 Save all before build 預設開啟,`Write-TcPouCode` 後 `Build-TcProject` 會把 POU 寫進磁碟;要試錯請用複本。
 - **Warning 也讀得到內容**(2026-10-20):`Build-TcProject` 的 `data.warningItems[]`(與 errorItems 同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`Get-TcBuildErrors` 的 `-IncludeWarnings` 預設開(`-IncludeWarnings:$false` 省 1~2 s 的 toggle)。之前 `warnings=1` 卻沒有項目,就是這個開關沒開。按鈕計數的 regex 也認 zh-TW 的「3 個錯誤 / 1 個警告 / 2 則訊息」。
 - **zh-TW VS2022 也讀得到**(2026-10-21,取代舊註記「需英文 UI」):窗格名 `錯誤清單`(英文 UI 是 `Error List`);摘要按鈕是 `0 / 2 錯誤` 的「顯示 / 總數」形式,取總數;VS2022 的 Error List 預設 scope 是 `目前專案`(Current Project),會藏其他專案的列,模組讀之前先切到 `整個方案`(Entire Solution)。其他語系仍回 `ERRORLIST_UNAVAILABLE`。

@@ -254,6 +254,15 @@
         return $out
     }
     if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
+    if ($out.platformChanged) {
+        # The compiled output still belongs to the previous platform: Enable-TcConfig refuses to
+        # activate until a Build-TcProject succeeds (BUILD_REQUIRED).
+        $script:TcBuildRequired = [PSCustomObject]@{
+            Solution = $script:TcSolutionPath
+            Reason   = "solution platform switched from '$($before.configuration)|$($before.platform)' to '$($out.configuration)|$($out.platform)'"
+            At       = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        }
+    }
     $out.success = $true
     return $out
 }

@@ -28,7 +28,9 @@ param(
     [string]$DevenvExe = '',
     [string]$LogPath = (Join-Path $PSScriptRoot 'logs\multi-ide.log'),
     [int]$DeadlineSec = 900,
-    [switch]$SkipVs
+    [switch]$SkipVs,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
 )
 
 $ErrorActionPreference = 'Continue'
@@ -384,7 +386,7 @@ try {
         [PSCustomObject]@{ success = ($state -eq 3); data = [PSCustomObject]@{ buildState = $state } }
     }
     $null = Invoke-Step 'G-build' 'Build-TcProject' {
-        $b = Build-TcProject
+        $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }
         $b
     } { param($x) $x.success -and $x.data.buildSucceeded -eq $true }

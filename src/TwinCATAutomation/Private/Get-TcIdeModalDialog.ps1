@@ -44,7 +44,7 @@ $script:TcUiaDialogScan = {
     # process does not answer: measured 2026-10-25 (Windows 11, fixtures/host-window.ps1 while
     # npm test ran): FindAll 25-50 ms with stalls of ~3000 ms every few seconds, EnumWindows +
     # FromHandle 1-17 ms throughout (#24). Invisible windows, and windows owned by a visible
-    # window, are skipped as on the UIA desktop level (UIA lists those under their owner). A
+    # window, are skipped as on the UIA desktop level (UIA lists those under their owner; measured, not documented: the MessageBox(owner) of fixtures/host-window.ps1 is a UIA child of its form, see mcp-server/bridge/modal-probe.ps1). A
     # window whose owner is hidden is kept: skipping every owned window lost the main windows
     # of fixtures/host-window.ps1 and host-window-wpf.ps1 (measured 2026-10-25).
     if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {

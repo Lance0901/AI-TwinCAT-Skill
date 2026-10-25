@@ -115,7 +115,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### 建置與部署
 | 指令 | 說明 |
 |------|------|
-| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
+| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line/category）；`data.errors` 只算 code error（#23，不再含 Library Manager 列）；缺 library 回 `LIBRARY_UNRESOLVED`，除非 `-AllowUnresolvedLibrary`（#45） |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
 | `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
