@@ -58,6 +58,7 @@ function Add-TcGvl {
             declaration = $created.Declaration
             duplicateCheckScope        = $created.DuplicateCheckScope
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
+            duplicateCheckNote         = $created.DuplicateCheckNote
         })
     }
     catch {

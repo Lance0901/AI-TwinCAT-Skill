@@ -37,7 +37,7 @@ function New-TcPlcObject {
         From step 3 on the object has been created and stays in the tree: the messages say so
         and name the way out (Write-TcPouCode -PouPath <path> to correct it, or delete it in XAE).
         Returns @{ Item; Path; ItemType; Declaration; Language; DuplicateCheckScope;
-        DuplicateCheckSkippedNodes } or @{ ModalDialog }.
+        DuplicateCheckSkippedNodes; DuplicateCheckNote } or @{ ModalDialog }.
     .PARAMETER SysManager
         ITcSysManager object (from Get-TcSysManager).
     .PARAMETER ParentPath
@@ -160,7 +160,7 @@ function New-TcPlcObject {
 
     return @{
         Item = $item; Path = $path; ItemType = $itemType; Declaration = $decl; Language = $kind.Language
-        DuplicateCheckScope = $conflict.Scope; DuplicateCheckSkippedNodes = $conflict.Skipped
+        DuplicateCheckScope = $conflict.Scope; DuplicateCheckSkippedNodes = $conflict.Skipped; DuplicateCheckNote = $conflict.Note
     }
 }
 
@@ -169,20 +169,25 @@ function Find-TcPlcNameConflict {
     .SYNOPSIS
         Lists the top-level PLC objects named -Name in the <Plc> Project that contains -ParentPath.
     .DESCRIPTION
-        The project node is the part of -ParentPath up to the first segment ending in " Project"
-        (TIPC^<Plc>^<Plc> Project^POUs -> TIPC^<Plc>^<Plc> Project); without such a segment
-        -ParentPath itself is walked. So a second PLC in the solution is checked on its own,
-        never against the first one.
+        The project node is the part of -ParentPath up to the first segment that equals the
+        previous segment + " Project" (TIPC^<Plc>^<Plc> Project^POUs -> TIPC^<Plc>^<Plc> Project;
+        a PLC named "Machine Project" gives TIPC^Machine Project^Machine Project Project). So a
+        second PLC in the solution is checked on its own, never against the first one. Without
+        such a segment nothing is walked and Scope is 'folder' (only the target path is checked).
         Walk: the project node and every PLC folder (ItemType 601) below it; children of POUs,
         DUTs etc. (methods, actions, properties, accessors) are not visited. A hit is a child
         whose Name equals -Name (case-insensitive, as IEC identifiers) and whose ItemType is a
         top-level object (602-607, 615, 618, 623); every hit is returned, not only the first.
         A node that cannot be read is counted in Skipped (the check is fail-open for it; Add-*
-        report it as data.duplicateCheckSkippedNodes). When more than -MaxNodes nodes would be
-        visited the walk stops and Scope is 'folder': only the target path is checked.
+        report it as data.duplicateCheckSkippedNodes). RPC busy (0x80010001 RPC_E_CALL_REJECTED,
+        0x8001010A RPC_E_SERVERCALL_RETRYLATER) and IDE_* errors are not skipped but rethrown, so
+        Invoke-TcComRetry retries the walk. When more than -MaxNodes nodes would be visited the
+        walk stops and Scope is 'folder': the hits found so far still count, the rest of the
+        project is not checked (Note says so).
         Measured cost: see docs/troubleshooting.md "POU_CREATE_FAILED".
         IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT are rethrown.
-        Returns @{ Hits = [string[]] paths; Scope = 'project' | 'folder'; Visited; Skipped; ProjectPath }.
+        Returns @{ Hits = [string[]] paths; Scope = 'project' | 'folder'; Visited; Skipped;
+        ProjectPath; Note } (Note is $null for Scope 'project').
     #>
     [CmdletBinding()]
     param(
@@ -202,10 +207,16 @@ function Find-TcPlcNameConflict {
     $sm = $SysManager
     $ideErrorPattern = 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT'
     $segments = $ParentPath -split '\^'
-    $projPath = $ParentPath
-    for ($i = 0; $i -lt $segments.Count; $i++) {
-        if ($segments[$i] -match ' Project$') { $projPath = ($segments[0..$i] -join '^'); break }
+    $projPath = $null
+    for ($i = 1; $i -lt $segments.Count; $i++) {
+        if ($segments[$i] -ieq ($segments[$i - 1] + ' Project')) { $projPath = ($segments[0..$i] -join '^'); break }
     }
+    if ($null -eq $projPath) {
+        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = 0; Skipped = 0; ProjectPath = $null
+            Note = "'$ParentPath' is not below a '<Plc>^<Plc> Project' node: only the target path was checked for the name." }
+    }
+    # RPC busy / IDE_* inside the walk: rethrow so Invoke-TcComRetry retries (or reports) the walk
+    $retryPattern = '0x80010001|0x8001010A|RPC_E_CALL_REJECTED|RPC_E_SERVERCALL_RETRYLATER|' + $ideErrorPattern
     $topLevel = @(602, 603, 604, 605, 606, 607, 615, 618, 623)
 
     $walk = $null
@@ -220,7 +231,11 @@ function Find-TcPlcNameConflict {
             while ($__queue.Count -gt 0 -and -not $__over) {
                 $__node = $__queue.Dequeue()
                 $__cnt = 0
-                try { $__cnt = [int]$__node.ChildCount } catch { $__skipped++; continue }
+                try { $__cnt = [int]$__node.ChildCount }
+                catch {
+                    if ($_.Exception.ToString() -match $retryPattern) { throw }
+                    $__skipped++; continue
+                }
                 for ($__j = 1; $__j -le $__cnt; $__j++) {
                     $__visited++
                     if ($__visited -gt $MaxNodes) { $__over = $true; break }
@@ -231,7 +246,10 @@ function Find-TcPlcNameConflict {
                         if ($__t -eq 601) { $__queue.Enqueue($__c); continue }
                         if ($topLevel -contains $__t -and $__n -ieq $Name) { $__hits.Add([string]$__c.PathName) }
                     }
-                    catch { $__skipped++ }
+                    catch {
+                        if ($_.Exception.ToString() -match $retryPattern) { throw }
+                        $__skipped++
+                    }
                 }
             }
             @{ Hits = [string[]]$__hits.ToArray(); Visited = $__visited; Skipped = $__skipped; Over = $__over }
@@ -240,10 +258,13 @@ function Find-TcPlcNameConflict {
     catch {
         if ($_.Exception.Message -match $ideErrorPattern) { throw }
         # project node not readable: fall back to the target folder only
-        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = 0; Skipped = 1; ProjectPath = $projPath }
+        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = 0; Skipped = 1; ProjectPath = $projPath
+            Note = "'$projPath' could not be walked ($($_.Exception.Message)): only the target path was checked for the name." }
     }
     if ($walk.Over) {
-        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath }
+        $note = "More than $MaxNodes nodes below '$projPath': the name check stopped there, objects further on were not checked (only the target path for sure)."
+        Write-Warning $note
+        return @{ Hits = [string[]]$walk.Hits; Scope = 'folder'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath; Note = $note }
     }
-    return @{ Hits = [string[]]$walk.Hits; Scope = 'project'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath }
+    return @{ Hits = [string[]]$walk.Hits; Scope = 'project'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath; Note = $null }
 }

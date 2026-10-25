@@ -89,6 +89,7 @@ function Add-TcPou {
             declaration = $created.Declaration
             duplicateCheckScope        = $created.DuplicateCheckScope
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
+            duplicateCheckNote         = $created.DuplicateCheckNote
         })
     }
     catch {

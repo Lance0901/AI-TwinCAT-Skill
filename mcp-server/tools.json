@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-25T10:12:23Z",
+    "generatedAt":  "2026-10-25T10:23:58Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -442,7 +442,8 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "PouName":  {
-                                                                             "type":  "string"
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the POU to read."
                                                                          },
                                                              "PouPath":  {
                                                                              "type":  "string",
@@ -677,7 +678,8 @@
                                                                                "default":  "Regular"
                                                                            },
                                                              "SilentFlag":  {
-                                                                                "type":  "boolean"
+                                                                                "type":  "boolean",
+                                                                                "description":  "OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags. Off by default: prompts are answered by the global ITcAutomationSettings.SilentMode that Connect-TcIde enables."
                                                                             },
                                                              "TimeoutSec":  {
                                                                                 "type":  "integer",
@@ -945,7 +947,8 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "AmsNetId":  {
-                                                                              "type":  "string"
+                                                                              "type":  "string",
+                                                                              "description":  "Target AMS Net ID (e.g., \"127.0.0.1.1.1\" for local)."
                                                                           },
                                                              "Platform":  {
                                                                               "type":  "string",

@@ -227,6 +227,39 @@ $global:MockMode = 'normal'
 $r = Add-TcPou -Name FB_A -Type FunctionBlock -PlcProjectPath "$P^POUs"
 Check 'Add-TcPou existing -> POU_CREATE_FAILED exists' ((-not $r.success) -and $r.error.code -eq 'POU_CREATE_FAILED' -and $r.error.message -like '*exists:*') ($r | ConvertTo-Json -Compress)
 
+# --- name check: PLC called "Machine Project", path without a Project node, node limit, RPC busy
+$PM = 'TIPC^Machine Project^Machine Project Project'
+$null = New-MockItem $PM 601 ''
+$null = New-MockItem "$PM^POUs" 601 '' -Folder
+$null = New-MockItem "$PM^GVLs" 601 '' -Folder
+$null = New-MockItem "$PM^GVLs^GVL_M" 615 "VAR_GLOBAL`nEND_VAR"
+$e = Get-Err { & $mod { param($s, $p) New-TcPlcObject -SysManager $s -ParentPath "$p^POUs" -Name GVL_M -SubType 606 } $sm $PM }
+Check 'PLC named "Machine Project": project node found, same name in GVLs -> exists' ($e -like "exists:*Machine Project Project^GVLs^GVL_M*") $e
+$r = & $mod { param($s, $p) Find-TcPlcNameConflict -SysManager $s -ParentPath "$p^POUs" -Name 'NOPE' } $sm $PM
+Check 'PLC named "Machine Project": walks <Plc> Project, scope project' ($r.Scope -eq 'project' -and $r.ProjectPath -eq $PM -and $r.Visited -ge 3) ($r | ConvertTo-Json -Compress)
+$null = New-MockItem 'TIPC^Other^POUs' 601 '' -Folder
+$c = & $mod { param($s) New-TcPlcObject -SysManager $s -ParentPath 'TIPC^Other^POUs' -Name ST_O -SubType 606 } $sm
+Check 'path without a <Plc> Project node -> DuplicateCheckScope folder + note' ($c.DuplicateCheckScope -eq 'folder' -and $c.DuplicateCheckNote -and $c.Path -eq 'TIPC^Other^POUs^ST_O') ($c.DuplicateCheckNote)
+$P3 = 'TIPC^p3^p3 Project'
+$null = New-MockItem $P3 601 ''
+$null = New-MockItem "$P3^POUs" 601 '' -Folder
+foreach ($n in 'A1', 'B_HIT', 'C1', 'C2', 'C3') { $null = New-MockItem "$P3^POUs^$n" 606 'TYPE x END_TYPE' }
+$r = & $mod { param($s, $p) Find-TcPlcNameConflict -SysManager $s -ParentPath "$p^POUs" -Name 'B_HIT' -MaxNodes 3 -WarningAction SilentlyContinue } $sm $P3
+Check 'node limit: hits found before the limit are kept, scope folder + note' ($r.Scope -eq 'folder' -and @($r.Hits) -contains "$P3^POUs^B_HIT" -and $r.Note) ($r | ConvertTo-Json -Compress)
+$e = Get-Err { & $mod { param($s, $p) New-TcPlcObject -SysManager $s -ParentPath "$p^POUs" -Name B_HIT -SubType 606 -MaxNodes 3 -WarningAction SilentlyContinue } $sm $P3 }
+Check 'node limit: a hit still blocks (exists)' ($e -like 'exists:*B_HIT*') $e
+$P4 = 'TIPC^p4^p4 Project'
+$null = New-MockItem $P4 601 ''
+$null = New-MockItem "$P4^POUs" 601 '' -Folder
+$null = New-MockItem "$P4^POUs^Z1" 606 'TYPE x END_TYPE'
+$p4f = $global:MockTree["$P4^POUs"]
+$p4f | Add-Member -Force -MemberType ScriptMethod -Name Child -Value { param($i) throw 'item read failed (mock)' }
+$r = & $mod { param($s, $p) Find-TcPlcNameConflict -SysManager $s -ParentPath "$p^POUs" -Name 'Z1' } $sm $P4
+Check 'unreadable node -> counted in Skipped (fail-open)' ($r.Scope -eq 'project' -and $r.Skipped -ge 1 -and @($r.Hits).Count -eq 0) ($r | ConvertTo-Json -Compress)
+$p4f | Add-Member -Force -MemberType ScriptMethod -Name Child -Value { param($i) throw 'Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))' }
+$e = Get-Err { & $mod { param($s, $p) Find-TcPlcNameConflict -SysManager $s -ParentPath "$p^POUs" -Name 'Z1' } $sm $P4 }
+Check 'RPC busy inside the walk is not skipped (rethrown / retried)' ($null -ne $e) $e
+
 $global:MockMode = 'badreturn'
 $r = Add-TcPou -Name F_BR -Type Function -ReturnType INT -PlcProjectPath "$P^POUs"
 Check 'Add-TcPou Function, header has another return type -> POU_CREATE_FAILED declare' ((-not $r.success) -and $r.error.code -eq 'POU_CREATE_FAILED' -and $r.error.message -like '*declare:*does not match*') ($r | ConvertTo-Json -Compress)
