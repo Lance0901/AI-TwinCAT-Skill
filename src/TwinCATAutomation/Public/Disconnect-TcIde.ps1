@@ -70,7 +70,9 @@ function Disconnect-TcIde {
     $ideProcessId = 0
     if ($null -ne $script:TcIdeProcessId) { try { $ideProcessId = [int]$script:TcIdeProcessId } catch { $ideProcessId = 0 } }
     $selectedBy = $script:TcIdeSelectedBy
-    $ownedBySession = ($selectedBy -eq 'launched')
+    # Owned = launched by this module: selectedBy, or the per-process list that survives a failed
+    # / later Connect-TcIde (pid + start time, Add-TcLaunchedIde).
+    $ownedBySession = ($selectedBy -eq 'launched') -or ($null -ne $script:TcIdeProcessId -and (Test-TcLaunchedIde -ProcessId ([int]$script:TcIdeProcessId)))
 
     function New-QuitData {
         param([hashtable]$QuitResult, [object]$Dialog, [bool]$Disconnected)
@@ -164,6 +166,8 @@ function Disconnect-TcIde {
         $silentRestore = [bool]$script:TcSilentModeOriginal
         try {
             Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
+            # Restored: the next connect reads the (now original) value again.
+            if ($null -ne $script:TcIdeProcessId) { Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }
         }
         catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
     }

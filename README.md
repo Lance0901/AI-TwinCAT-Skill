@@ -117,7 +117,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | Command | Description |
 |---------|-------------|
 | `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line) |
-| `Clear-TcProject` | Clean the solution (`Clean($false)` + `BuildState` polling, `-TimeoutSec` default 300 -> `CLEAN_TIMEOUT`); waits while the DTE answers `$null` for `Solution` / `SolutionBuild` (`data.nullReads`; #18, cause not confirmed); unresolved libraries only -> success with `data.warningCode = LIBRARY_UNRESOLVED`, other errors -> `CLEAN_FAILED` |
+| `Clear-TcProject` | Clean the solution (`Clean($false)` + `BuildState` polling, `-TimeoutSec` default 300 -> `CLEAN_TIMEOUT`); waits while the DTE answers `$null` for `Solution` / `SolutionBuild` (`data.nullReads`; #18, cause not confirmed); unresolved libraries only -> `LIBRARY_UNRESOLVED` (`-AllowUnresolvedLibrary`: success + `data.warningCode`), LastBuildInfo unreadable -> `CLEAN_UNVERIFIED`, other errors -> `CLEAN_FAILED` |
 | `Get-TcBuildErrors` | Read the XAE Error List (errors, `-IncludeWarnings`, `-IncludeMessages`) via UI Automation |
 | `Enable-TcConfig` | Activate configuration via ADS (no dialogs with `-Force`) |
 | `Enter-TcPlcOnline` | Login + download program (`-LoginMode Regular|Download|OnlineChange` = 1/4/2; prompts handled by the global `SilentMode`, no `SILENT` flag unless `-SilentFlag`) |

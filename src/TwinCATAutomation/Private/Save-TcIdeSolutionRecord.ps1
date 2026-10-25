@@ -77,3 +77,58 @@ function Get-TcIdeSolutionRecord {
     catch { Write-Verbose "IDE solution record lookup failed ($($_.Exception.Message))" }
     $null
 }
+
+# --- per-process module state (kept across Connect-TcIde calls, never across processes) ---
+# Key = "<pid>|<start time 'o'>", so a recycled pid never matches.
+function Get-TcIdeProcessKey {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    try { return "$ProcessId|$((Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o'))" }
+    catch { return $null }
+}
+
+function Add-TcLaunchedIde {
+    <#
+    .SYNOPSIS
+        Remembers that this module launched IDE process -ProcessId (Disconnect-TcIde -Kill is
+        allowed for it), independent of $script:TcIdeSelectedBy, which a later Connect-TcIde resets.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -eq $key) { return }
+    if ($null -eq $script:TcLaunchedIdes) { $script:TcLaunchedIdes = @{} }
+    $script:TcLaunchedIdes[$key] = $true
+}
+
+function Test-TcLaunchedIde {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($null -eq $script:TcLaunchedIdes) { return $false }
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    ($null -ne $key -and $script:TcLaunchedIdes.ContainsKey($key))
+}
+
+function Get-TcIdeSilentOriginal {
+    <#
+    .SYNOPSIS
+        The ITcAutomationSettings.SilentMode value IDE process -ProcessId had before this module
+        first set it, or $null when not known.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($null -eq $script:TcSilentOriginals) { return $null }
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -eq $key -or -not $script:TcSilentOriginals.ContainsKey($key)) { return $null }
+    [bool]$script:TcSilentOriginals[$key]
+}
+
+function Set-TcIdeSilentOriginal {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId, [Parameter()][AllowNull()][object]$Value)
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -eq $key) { return }
+    if ($null -eq $script:TcSilentOriginals) { $script:TcSilentOriginals = @{} }
+    if ($null -eq $Value) { $script:TcSilentOriginals.Remove($key) } else { $script:TcSilentOriginals[$key] = [bool]$Value }
+}

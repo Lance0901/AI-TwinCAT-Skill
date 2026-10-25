@@ -48,8 +48,11 @@ try {
 
     Set-MockDte -LastBuildInfo 1
     $global:Mock.ErrorList = [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ errors = @($libRow, $libRow) } }
-    $r = Clear-TcProject -TimeoutSec 30 -WarningAction SilentlyContinue
-    Check 'library-only' ($r.success -and -not $r.data.cleanVerified -and $r.data.warningCode -eq 'LIBRARY_UNRESOLVED' -and $r.data.warning -match '#45' -and @($r.data.errorItems).Count -eq 2) "success=$($r.success) code=$($r.data.warningCode)"
+    $r = Clear-TcProject -TimeoutSec 30
+    Check 'library-only-fails' (-not $r.success -and $r.error.code -eq 'LIBRARY_UNRESOLVED' -and $r.error.hint -match 'AllowUnresolvedLibrary' -and @($r.data.libraryErrorItems).Count -eq 2 -and -not $r.data.cleanVerified) "code=$($r.error.code)"
+    Set-MockDte -LastBuildInfo 1
+    $r = Clear-TcProject -TimeoutSec 30 -AllowUnresolvedLibrary -WarningAction SilentlyContinue
+    Check 'library-only-allowed' ($r.success -and -not $r.data.cleanVerified -and $r.data.warningCode -eq 'LIBRARY_UNRESOLVED' -and $r.data.warning -match '#45') "success=$($r.success) code=$($r.data.warningCode)"
 
     Set-MockDte -LastBuildInfo 1
     $global:Mock.ErrorList = [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ errors = @($libRow, $codeRow) } }
@@ -65,11 +68,11 @@ try {
     $global:Mock.LastBuildInfoThrows = $true
     $r = Clear-TcProject -TimeoutSec 30 -WarningAction SilentlyContinue
     $global:Mock.LastBuildInfoThrows = $false
-    Check 'lastbuildinfo-unreadable' ($r.success -and -not $r.data.cleanVerified -and $null -eq $r.data.failedProjects -and $r.data.warningCode -eq 'CLEAN_UNVERIFIED') "success=$($r.success) code=$($r.data.warningCode)"
+    Check 'lastbuildinfo-unreadable' (-not $r.success -and $r.error.code -eq 'CLEAN_UNVERIFIED' -and $null -eq $r.data.failedProjects -and -not $r.data.cleanVerified) "code=$($r.error.code)"
 
     Set-MockDte -LastBuildInfo $null
-    $r = Clear-TcProject -TimeoutSec 30 -WarningAction SilentlyContinue
-    Check 'lastbuildinfo-null' ($r.success -and -not $r.data.cleanVerified -and $r.data.warningCode -eq 'CLEAN_UNVERIFIED') "verified=$($r.data.cleanVerified) code=$($r.data.warningCode)"
+    $r = Clear-TcProject -TimeoutSec 30 -AllowUnresolvedLibrary
+    Check 'lastbuildinfo-null-fails-even-allowed' (-not $r.success -and $r.error.code -eq 'CLEAN_UNVERIFIED') "code=$($r.error.code)"
 
     Set-MockDte -NeverDone
     $r = Clear-TcProject -TimeoutSec 5

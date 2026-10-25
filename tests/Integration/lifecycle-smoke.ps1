@@ -32,7 +32,11 @@ param(
     # be activated (e.g. no valid license: a failing Activate pops 'Target system reports a fatal
     # error' in EVERY XAE connected to the target, other sessions included; measured 2026-10-25,
     # 4024 32-bit XAE Shell and 4026 VS2022 on the local UmRT).
-    [switch]$StopAfterBuild
+    [switch]$StopAfterBuild,
+    # Pass -AllowUnresolvedLibrary to Clear-TcProject (03a): for a project copy that is known to miss
+    # libraries (A group: the Festo copy without its Visu libraries), see troubleshooting
+    # 'CLEAN_LIBRARY_UNRESOLVED'.
+    [switch]$AllowUnresolvedLibrary
 )
 
 $ErrorActionPreference = 'Continue'
@@ -419,7 +423,7 @@ try {
     #     Public cmdlet (#18): the old inline $script:TcDte.Solution.SolutionBuild.Clean() hit a
     #     $null Solution / SolutionBuild right after Connect-TcIde; Clear-TcProject polls them
     #     (data.nullReads) and then waits for BuildState = Done.
-    $null = Invoke-Step '03a-clean' 'Clear-TcProject' { Clear-TcProject -TimeoutSec 120 }
+    $null = Invoke-Step '03a-clean' 'Clear-TcProject' { Clear-TcProject -TimeoutSec 120 -AllowUnresolvedLibrary:$AllowUnresolvedLibrary }
 
     # 3. Build (build output text dropped from the log; only counts kept)
     $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }

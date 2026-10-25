@@ -201,6 +201,48 @@ try {
     & $mod { $script:TcDte | Add-Member -MemberType ScriptMethod -Name Quit -Value { $global:QuitCalled = $true } -Force }
     $q = Disconnect-TcIde -Quit
     Check 'attached-quit-targets-pid' ($r.data.attached -and -not $q.success -and $q.error.code -eq 'IDE_QUIT_FAILED' -and $q.data.ideProcessId -eq 931 -and -not $global:QuitCalled) "code=$($q.error.code) pid=$($q.data.ideProcessId) quit=$global:QuitCalled"
+    # --- F1: record says THIS solution, but no current fact (title empty, no dialog) -> not attached ---
+    $global:FakeIde = @{ 941 = @{ Title = ''; Dialog = $null } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 941 -Solution $s } $sln
+    Set-Rot @(@{ Pid = 941; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'record-no-current-fact' (-not $r.success -and $r.data.matchedBy -eq 'session-record' -and -not $r.data.attached -and $r.data.notAttachedReason -match 'no current evidence') "attached=$($r.data.attached) reason=$($r.data.notAttachedReason)"
+
+    # --- F2: module-state says this solution, the session record says another -> contradiction ---
+    $global:FakeIde = @{ 951 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 951 -Solution 'C:\Elsewhere\Other.sln'; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 951; $script:TcIdeStartTime = [DateTime]'2026-01-01T00:00:00'; $script:TcSolutionPath = $s } $sln
+    Set-Rot @(@{ Pid = 951; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'module-vs-record' (-not $r.success -and $r.data.matchedBy -eq 'module-state' -and -not $r.data.attached -and $r.data.notAttachedReason -match 'session record') "attached=$($r.data.attached) reason=$($r.data.notAttachedReason)"
+
+    # --- ownership survives a failed Connect-TcIde: a launched IDE is attached as 'launched' later ---
+    $global:FakeIde = @{ 961 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
+    & $mod { Add-TcLaunchedIde -ProcessId 961 }
+    Set-Rot @()
+    $null = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch      # IDE_NOT_FOUND, selectedBy cleared
+    Set-Rot @(@{ Pid = 961; Mode = 'unreadable' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'ownership-kept' ($r.data.attached -and $r.data.ownedBySession -and (& $mod { $script:TcIdeSelectedBy }) -eq 'launched') "attached=$($r.data.attached) owned=$($r.data.ownedBySession)"
+
+    # --- SilentMode original is kept per process across a Connect-TcIde that clears the state ---
+    & $mod { Set-TcIdeSilentOriginal -ProcessId 961 -Value $false }
+    Set-Rot @()
+    $null = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    $orig = & $mod { Get-TcIdeSilentOriginal -ProcessId 961 }
+    $global:FakeIde[961].Start = '2026-02-02T00:00:00'   # pid recycled: other start time
+    $origRecycled = & $mod { Get-TcIdeSilentOriginal -ProcessId 961 }
+    Check 'silent-original-kept' ($orig -eq $false -and $null -ne $orig -and $null -eq $origRecycled) "orig=$orig recycled=$origRecycled"
+
+    # --- Reset-TcSolution refuses when the IDE has another solution open than the module expects ---
+    $global:FakeIde = @{ 971 = @{ Title = 'Other - TcXaeShell'; Dialog = $null } }
+    $global:ClosedSolution = $false
+    $fakeSol = [PSCustomObject]@{ FullName = 'C:\Elsewhere\Other.sln' }
+    $fakeSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
+    $fakeDocs = [PSCustomObject]@{ Count = 0 }
+    $fakeDocs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:ClosedSolution = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $fakeSol $fakeDocs
+    $r = Reset-TcSolution -TimeoutSec 10
+    Check 'reset-mismatch-refused' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and -not $global:ClosedSolution -and $r.data.openSolution -eq 'C:\Elsewhere\Other.sln') "code=$($r.error.code) closed=$global:ClosedSolution"
 }
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }

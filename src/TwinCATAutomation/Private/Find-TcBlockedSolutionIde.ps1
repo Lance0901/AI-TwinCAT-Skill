@@ -22,9 +22,10 @@ function Find-TcBlockedSolutionIde {
             VS2022). Same-named copies in other folders look alike (measured 2026-10-25), so a
             title alone is weak.
         A record / module state can be stale (the solution was switched in the GUI), so it only
-        counts as STRONG when nothing contradicts it: a dialog naming project files elsewhere
-        ('outside') or a non-empty title that does not start with the solution name makes it
-        weak. dialog-path is strong unless the title contradicts it. Weak matches are reported
+        counts as STRONG when nothing contradicts it AND a current fact agrees (title starts with
+        the solution name, or a dialog path inside the folder): a dialog naming project files
+        elsewhere ('outside'), a title that does not start with the solution name, a record of
+        another solution, or no current fact at all (empty title, no dialog path) makes it weak. dialog-path is strong unless the title contradicts it. Weak matches are reported
         but never attached by Connect-TcIde.
         A candidate without a known pid is skipped; an unreadable (empty Version, not busy)
         candidate without a dialog is skipped too (most likely an IDE shutting down).
@@ -114,6 +115,13 @@ function Find-TcBlockedSolutionIde {
         $strong = $false
         if ($moduleSame -or $recordVerdict -eq 'same') {
             $matchedBy = if ($moduleSame) { 'module-state' } else { 'session-record' }
+            # The record of the other kind says another solution: contradiction too.
+            if ($null -eq $contradiction -and $recordVerdict -eq 'other') { $contradiction = "the session record says '$recorded'" }
+            # Strong only with a CURRENT fact that agrees (title or dialog path): a record /
+            # module state alone may be stale (the solution was switched in the GUI).
+            if ($null -eq $contradiction -and $titleState -ne 'match' -and $pathVerdict -ne 'inside') {
+                $contradiction = 'no current evidence (window title empty, no dialog path) confirms the recorded solution'
+            }
             $strong = ($null -eq $contradiction)
         }
         elseif ($recordVerdict -eq 'other') {

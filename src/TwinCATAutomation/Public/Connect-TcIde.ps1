@@ -96,10 +96,9 @@ function Connect-TcIde {
     # Forget the pid / HWND of a previous connection: Invoke-TcComRetry checks that pid after an
     # RPC failure, and a stale pid (IDE that has since exited) would turn a busy call against the
     # new instance into a false IDE_CRASHED.
-    # An IDE this session launched stays 'owned' (Disconnect-TcIde -Kill) when a later
-    # Connect-TcIde (e.g. the Reset-TcSolution reconnect) picks the same process again.
-    $ownedLaunchedPid = 0
-    if ($script:TcIdeSelectedBy -eq 'launched' -and $null -ne $script:TcIdeProcessId) { try { $ownedLaunchedPid = [int]$script:TcIdeProcessId } catch { $ownedLaunchedPid = 0 } }
+    # An IDE this session launched stays 'owned' (Disconnect-TcIde -Kill) whatever a later
+    # Connect-TcIde (a failed one included) finds: Add-TcLaunchedIde / Test-TcLaunchedIde keep the
+    # pid + start time of every IDE this module launched, independent of TcIdeSelectedBy.
     # Also kept for #29: the IDE this module was connected to and its solution
     # (Find-TcBlockedSolutionIde 'module-state': recognises our own blocked IDE without file I/O).
     $previousIdePid = 0
@@ -118,6 +117,9 @@ function Connect-TcIde {
     $script:TcDte = $null
     $script:TcIdeConnected = $false
     $script:TcSysManager = $null
+    # The settings RCW is not released here: Reset-TcSolution restores it when its reconnect
+    # fails. The SilentMode ORIGINAL value of that IDE is not lost: Connect-TcIde keeps it per
+    # process (Get-TcIdeSilentOriginal) and reuses it the next time it connects to that process.
     $script:TcAutomationSettings = $null
     $script:TcSilentMode = $false
     $script:TcSilentModeOriginal = $null
@@ -316,7 +318,7 @@ function Connect-TcIde {
                     $script:TcLastModalDialog = $hit.Dialog
                     $script:TcSolutionPath = $normalizedSolutionPath
                     $script:TcIdeProcessId = $blockedPid
-                    $script:TcIdeSelectedBy = if ($ownedLaunchedPid -gt 0 -and $blockedPid -eq $ownedLaunchedPid) { 'launched' } else { 'solution-blocked' }
+                    $script:TcIdeSelectedBy = if (Test-TcLaunchedIde -ProcessId $blockedPid) { 'launched' } else { 'solution-blocked' }
                     $script:TcIdeMainHwnd = 0
                     try { $p = Get-Process -Id $blockedPid -ErrorAction Stop; $script:TcIdeMainHwnd = [long]$p.MainWindowHandle; $script:TcIdeStartTime = $p.StartTime } catch { $script:TcIdeStartTime = $null }
                 }
@@ -465,7 +467,8 @@ function Connect-TcIde {
     $script:TcIdeProcessId = if ($ideInfo.ProcessId -gt 0) { [int]$ideInfo.ProcessId } else { $null }
     $script:TcIdeMainHwnd = [long]$ideInfo.MainHwnd
     $ideProcessId = if ($null -ne $script:TcIdeProcessId) { $script:TcIdeProcessId } else { 0 }
-    if ($ownedLaunchedPid -gt 0 -and $ideProcessId -eq $ownedLaunchedPid) { $script:TcIdeSelectedBy = 'launched' }
+    if ($selectionReason -eq 'launched' -and $ideProcessId -gt 0) { Add-TcLaunchedIde -ProcessId $ideProcessId }
+    if ($ideProcessId -gt 0 -and (Test-TcLaunchedIde -ProcessId $ideProcessId)) { $script:TcIdeSelectedBy = 'launched' }
     # Start time of that process: Disconnect-TcIde -Kill compares it so a recycled pid is never killed.
     $script:TcIdeStartTime = $null
     if ($ideProcessId -gt 0) { try { $script:TcIdeStartTime = (Get-Process -Id $ideProcessId -ErrorAction Stop).StartTime } catch { $script:TcIdeStartTime = $null } }
@@ -493,9 +496,14 @@ function Connect-TcIde {
     try {
         $settings = Invoke-TcComRetry -OperationName 'GetObject TcAutomationSettings' -ScriptBlock { Write-Output -NoEnumerate $dte.GetObject('TcAutomationSettings') }
         if ($null -ne $settings) {
-            $silentOriginal = $null
-            try { $silentOriginal = [bool](Invoke-TcComRetry -OperationName 'SilentMode read (original)' -ScriptBlock { $settings.SilentMode }) }
-            catch { $silentOriginal = $null; Write-Verbose "SilentMode original value unreadable ($($_.Exception.Message))" }
+            # The original is read once per IDE process: on a later connect the IDE already shows
+            # the SilentMode = true we set, so the remembered value is used instead.
+            $silentOriginal = Get-TcIdeSilentOriginal -ProcessId $ideProcessId
+            if ($null -eq $silentOriginal) {
+                try { $silentOriginal = [bool](Invoke-TcComRetry -OperationName 'SilentMode read (original)' -ScriptBlock { $settings.SilentMode }) }
+                catch { $silentOriginal = $null; Write-Verbose "SilentMode original value unreadable ($($_.Exception.Message))" }
+                if ($null -ne $silentOriginal -and $ideProcessId -gt 0) { Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $silentOriginal }
+            }
             $script:TcSilentModeOriginal = $silentOriginal
             Invoke-TcComRetry -OperationName 'SilentMode' -ScriptBlock { $settings.SilentMode = $true } | Out-Null
             $script:TcAutomationSettings = $settings
@@ -556,6 +564,9 @@ function Connect-TcIde {
                     -ErrorCode 'PROJECT_OPEN_TIMEOUT' `
                     -Hint (Get-TcErrorHint -Code 'PROJECT_OPEN_TIMEOUT')
             }
+            # The IDE has this solution open from now on: record it right away (#29), so a later
+            # Connect-TcIde recognises it even if the steps below fail or a dialog comes up.
+            if ($ideProcessId -gt 0) { Save-TcIdeSolutionRecord -ProcessId $ideProcessId -Solution $normalizedSolutionPath }
         }
     }
 
