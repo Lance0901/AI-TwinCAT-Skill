@@ -31,7 +31,20 @@
           (c) when neither is readable: BUILD_STATUS_UNKNOWN (success = false) - look at
               the XAE Error List yourself before deciding.
     .OUTPUTS
-        data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN
+        data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN,
+                             or LIBRARY_UNRESOLVED (below)
+        data.codeVerified    $true when the Error List was read and lists no library error, so a
+                             successful build also proves the PLC code was compiled; $false when
+                             library errors are listed; $null when the Error List is not readable
+
+        Unresolved libraries (#45): with library errors in the Error List the PLC code may not
+        have been compiled at all. Measured 2026-10-25 (TcXaeShell 4024, TwinCAT_Festo copy with
+        7 unresolved libraries): an undeclared identifier gave no C0046 and LastBuildInfo 0, while
+        the same edit in a project without missing libraries gave BUILD_FAILED + C0046. So a
+        build that would succeed but lists library errors returns LIBRARY_UNRESOLVED (success =
+        false, buildSucceeded = $null, codeVerified = $false). -AllowUnresolvedLibrary keeps
+        success = true instead, with data.warningCode = LIBRARY_UNRESOLVED (unless
+        PROJECT_SKIPPED_BY_CONFIGURATION is already set) and data.libraryWarning.
         data.errors          number of CODE errors (errorItems with category 'code'); Library
                              Manager rows are not counted (fallback when the Error List is not
                              readable: failedProjects)
@@ -85,6 +98,10 @@
     .PARAMETER ExpectedProject
         PLC project name(s) that must take part in the build (e.g. 'FrameworkUnitTest').
         Matched against the .plcproj file name (without extension).
+    .PARAMETER AllowUnresolvedLibrary
+        Accept a build whose Error List shows unresolved libraries (missing / not installed)
+        as success, with data.warningCode = LIBRARY_UNRESOLVED and codeVerified = $false.
+        Without it such a build returns LIBRARY_UNRESOLVED (see above).
     #>
     [CmdletBinding()]
     param(
@@ -93,7 +110,10 @@
         [int]$TimeoutSec = 600,
 
         [Parameter()]
-        [string[]]$ExpectedProject
+        [string[]]$ExpectedProject,
+
+        [Parameter()]
+        [switch]$AllowUnresolvedLibrary
     )
 
     try { Assert-TcConnection } catch {
@@ -313,6 +333,12 @@
             }
         }
 
+        # --- unresolved libraries (#45): a "successful" build may not have compiled the code ---
+        $codeVerified = $null
+        if ($null -eq $errorListError) { $codeVerified = ($libraryErrorItems.Count -eq 0) }
+        $libraryUnresolved = ($buildSucceeded -eq $true) -and ($codeVerified -eq $false)
+        if ($libraryUnresolved -and -not $AllowUnresolvedLibrary) { $buildSucceeded = $null }
+
         # --- per PLC project status (coverage read before the build) ---
         $projects = @()
         foreach ($p in @($coverage.projects)) {
@@ -354,6 +380,7 @@
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
             buildSec       = $buildSec
+            codeVerified   = $codeVerified
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
@@ -376,6 +403,22 @@
         }
         if ($expected.Count -gt 0) {
             $data | Add-Member -NotePropertyName 'expectedProjects' -NotePropertyValue $expected
+        }
+
+        $libNames = @($libraryErrorItems | Select-Object -First 3 | ForEach-Object { [string]$_.description }) -join '; '
+        if ($libraryErrorItems.Count -gt 3) { $libNames += " ... (+$($libraryErrorItems.Count - 3) more)" }
+        if ($libraryUnresolved -and -not $AllowUnresolvedLibrary) {
+            return New-TcResult -Success $false -ErrorMessage "Build not verified: the Error List shows $($libraryErrorItems.Count) unresolved library error(s), so the PLC code may not have been compiled (no code error would be reported). $libNames" `
+                -ErrorCode 'LIBRARY_UNRESOLVED' -Hint (Get-TcErrorHint -Code 'LIBRARY_UNRESOLVED') -Data $data
+        }
+        if ($libraryUnresolved) {
+            $libWarn = "Build-TcProject: $($libraryErrorItems.Count) unresolved library error(s); the PLC code may not have been compiled (LIBRARY_UNRESOLVED, accepted by -AllowUnresolvedLibrary). $libNames"
+            $data | Add-Member -NotePropertyName 'libraryWarning' -NotePropertyValue $libWarn
+            if ($null -eq $data.PSObject.Properties['warningCode']) {
+                $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'LIBRARY_UNRESOLVED'
+                $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $libWarn
+            }
+            Write-Warning $libWarn
         }
 
         if ($null -eq $buildSucceeded) {

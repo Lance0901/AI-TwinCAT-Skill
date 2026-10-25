@@ -4,7 +4,9 @@
 # name keeps the module name 'TwinCATAutomation' the bridge expects.
 #
 # Scenario (env TCAUTO_TEST_BUILD_SCENARIO), Error List rows from build-error-list.json:
-#   library-only  LastBuildInfo 0, the 7 Library Manager rows (TwinCAT_Festo / GantryCylinder shape)
+#   clean         LastBuildInfo 0, no Error List rows
+#   library-only  LastBuildInfo 0, the 7 Library Manager rows (TwinCAT_Festo / GantryCylinder shape;
+#                 on 4024 Festo the code is then not compiled at all, #45)
 #   c0046         LastBuildInfo 1, the same 7 rows plus one C0046 code error in MAIN
 #   no-lbi        LastBuildInfo not readable, the C0046 rows (decided by the Error List)
 #
@@ -38,8 +40,9 @@ function Get-TcBuildCoverage {
 function Get-TcBuildErrors {
     [CmdletBinding()]
     param([switch]$IncludeWarnings, [int]$TimeoutSec = 30)
-    $rows = @($script:FixtureRows.library)
-    if ($script:FixtureScenario -ne 'library-only') { $rows += @($script:FixtureRows.code) }
+    $rows = @()
+    if ($script:FixtureScenario -ne 'clean') { $rows += @($script:FixtureRows.library) }
+    if ($script:FixtureScenario -notin @('library-only', 'clean')) { $rows += @($script:FixtureRows.code) }
     $errors = @($rows | ForEach-Object { [PSCustomObject]@{
         severity = 'Error'; code = $_.code; description = $_.description; project = $_.project
         file = $_.file; line = $_.line; column = $_.column
@@ -62,6 +65,7 @@ $sb | Add-Member -MemberType ScriptProperty -Name BuildState -Value {
 $sb | Add-Member -MemberType ScriptProperty -Name LastBuildInfo -Value {
     switch ($script:FixtureScenario) {
         'library-only' { 0 }
+        'clean' { 0 }
         # not an int: the [int] cast in Build-TcProject throws, like an unreadable COM property
         'no-lbi' { 'unreadable' }
         default { 1 }

@@ -35,33 +35,52 @@ async function startServer(scenario) {
   return client;
 }
 
-async function build(scenario) {
+async function build(scenario, args = {}) {
   const client = await startServer(scenario);
   try {
-    const res = await client.callTool({ name: 'BuildProject', arguments: {} });
+    const res = await client.callTool({ name: 'BuildProject', arguments: args });
     return { res, body: JSON.parse(res.content[0].text) };
   } finally {
     await client.close();
   }
 }
 
-test('tools.json BuildProject description names the #23 fields', () => {
+test('tools.json BuildProject description names the #23 / #45 fields and the AllowUnresolvedLibrary input', () => {
   const tools = JSON.parse(fs.readFileSync(TOOLS_JSON, 'utf8'));
   const list = Array.isArray(tools) ? tools : tools.tools;
   const bp = list.find((t) => t.name === 'BuildProject');
-  for (const field of ['data.errors', 'data.libraryErrors', 'data.libraryErrorItems', 'category', 'decidedBy']) {
+  for (const field of ['data.errors', 'data.libraryErrors', 'data.libraryErrorItems', 'category', 'decidedBy', 'LIBRARY_UNRESOLVED', 'codeVerified']) {
     assert.ok(bp.description.includes(field), `BuildProject description mentions ${field}`);
   }
+  assert.equal(bp.inputSchema.properties.AllowUnresolvedLibrary.type, 'boolean');
 });
 
 describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
-  test('library rows only (TwinCAT_Festo shape): success, errors 0, libraryErrors 7, every row category library', async () => {
-    const { res, body } = await build('library-only');
+  test('no Error List rows: success, errors 0, libraryErrors 0, codeVerified true', async () => {
+    const { res, body } = await build('clean');
     assert.notEqual(res.isError, true, JSON.stringify(body));
     assert.equal(body.success, true);
+    assert.equal(body.data.buildSucceeded, true);
+    assert.equal(body.data.errors, 0);
+    assert.equal(body.data.libraryErrors, 0);
+    assert.equal(body.data.codeVerified, true);
+    assert.equal(body.data.warningCode, undefined);
+  });
+
+  test('library rows only (TwinCAT_Festo shape, #45): LIBRARY_UNRESOLVED, not a success; errors 0, libraryErrors 7, every row category library', async () => {
+    const { res, body } = await build('library-only');
+    assert.equal(res.isError, true, JSON.stringify(body));
+    assert.equal(body.success, false);
+    assert.equal(body.error.code, 'LIBRARY_UNRESOLVED');
+    assert.match(body.error.message, /7 unresolved library error\(s\), so the PLC code may not have been compiled/);
+    assert.match(body.error.hint, /Library Manager/);
     const d = body.data;
-    assert.equal(d.buildSucceeded, true);
+    assert.equal(d.buildSucceeded, null, 'never true while the code may not have been compiled');
+    assert.equal(d.codeVerified, false);
+    assert.equal(d.failedProjects, 0);
     assert.equal(d.decidedBy, 'LastBuildInfo');
+    assert.equal(d.projects[0].status, 'unknown');
+    assert.equal(d.coverageComplete, false);
     assert.equal(d.errors, 0, 'Library Manager rows are not code errors');
     assert.equal(d.libraryErrors, 7);
     assert.equal(d.libraryErrorItems.length, 7);
@@ -70,6 +89,18 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.deepEqual(d.codeErrors, []);
     assert.equal(d.libraryErrorItems[0].file, 'plc.Library Manager');
     assert.match(d.libraryErrorItems[0].description, /Could not open library/);
+  });
+
+  test('library rows only + AllowUnresolvedLibrary: success with warningCode LIBRARY_UNRESOLVED, codeVerified false', async () => {
+    const { res, body } = await build('library-only', { AllowUnresolvedLibrary: true });
+    assert.notEqual(res.isError, true, JSON.stringify(body));
+    assert.equal(body.success, true);
+    assert.equal(body.data.buildSucceeded, true);
+    assert.equal(body.data.codeVerified, false);
+    assert.equal(body.data.warningCode, 'LIBRARY_UNRESOLVED');
+    assert.match(body.data.libraryWarning, /may not have been compiled/);
+    assert.equal(body.data.errors, 0);
+    assert.equal(body.data.libraryErrors, 7);
   });
 
   test('plus one C0046: BUILD_FAILED, errors 1, libraryErrors 7, the C0046 row category code', async () => {

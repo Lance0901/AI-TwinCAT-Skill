@@ -38,10 +38,49 @@ $script:TcUiaDialogScan = {
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
 
     $ae = [System.Windows.Automation.AutomationElement]
-    $root = $ae::RootElement
-    $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $pidCond)
-    if ($null -eq $windows -or $windows.Count -eq 0) { return }
+    # Top-level windows of the pid: EnumWindows + GetWindowThreadProcessId (no window messages),
+    # then AutomationElement.FromHandle per window. RootElement.FindAll(Children, ProcessId)
+    # queries every top-level window on the desktop and stalls when a window of ANY other
+    # process does not answer: measured 2026-10-25 (Windows 11, fixtures/host-window.ps1 while
+    # npm test ran): FindAll 25-50 ms with stalls of ~3000 ms every few seconds, EnumWindows +
+    # FromHandle 1-17 ms throughout (#24). Invisible windows, and windows owned by a visible
+    # window, are skipped as on the UIA desktop level (UIA lists those under their owner). A
+    # window whose owner is hidden is kept: skipping every owned window lost the main windows
+    # of fixtures/host-window.ps1 and host-window-wpf.ps1 (measured 2026-10-25).
+    if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
+        Add-Type -Namespace TcAutomation -Name UiaScanWindows -MemberDefinition @'
+public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool EnumWindows(EnumProc callback, System.IntPtr lParam);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsWindowVisible(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint targetPid) {
+    var list = new System.Collections.Generic.List<System.IntPtr>();
+    EnumWindows(delegate (System.IntPtr h, System.IntPtr l) {
+        uint p;
+        GetWindowThreadProcessId(h, out p);
+        if (p != targetPid || !IsWindowVisible(h)) { return true; }
+        System.IntPtr owner = GetWindow(h, 4);  // GW_OWNER
+        if (owner == System.IntPtr.Zero || !IsWindowVisible(owner)) { list.Add(h); }
+        return true;
+    }, System.IntPtr.Zero);
+    return list;
+}
+'@ -ErrorAction Stop
+    }
+    $windows = New-Object System.Collections.ArrayList
+    foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+        try {
+            $we = $ae::FromHandle($wh)
+            if ($null -ne $we) { $null = $windows.Add($we) }
+        }
+        catch { }
+    }
+    if ($windows.Count -eq 0) { return }
 
     # Win32 caption of a window (GetWindowText). The UIA Name of a WPF window can be its
     # content text instead of its title, so the caption is used where the title matters.

@@ -167,8 +167,12 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
     }
     if ($null -eq $main -and -not [string]::IsNullOrEmpty($MainTitlePattern)) {
         try {
-            $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-            foreach ($w in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+            # The module scan's window list (EnumWindows, compiled by the scan above), not
+            # RootElement.FindAll: that stalls on any unresponsive window of another process (#24).
+            foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+                $w = $null
+                try { $w = $ae::FromHandle($wh) } catch { continue }
+                if ($null -eq $w) { continue }
                 $c = $null
                 try { $c = $w.Current } catch { continue }
                 if ($c.ControlType -ne $ct::Window -or [string]$c.ClassName -eq '#32770') { continue }
@@ -331,6 +335,8 @@ function Wait-ProbeSliced([int]$Milliseconds) {
 # compiled types belong to the AppDomain, so doing it once here, before the first interval, lets
 # every runspace scan skip it (each Add-Type is guarded by a type check).
 # The Add-Type commands are taken from the scan sources themselves (no second copy).
+# The other cause of slow scans (RootElement.FindAll stalling ~3 s on any unresponsive window of
+# another process) is handled in the module scan, which lists the pid's windows via EnumWindows.
 function Initialize-ProbeWarmup {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
