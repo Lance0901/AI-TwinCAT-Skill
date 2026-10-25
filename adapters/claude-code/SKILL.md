@@ -86,7 +86,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
 | `Open-TcProject -Path <sln>` | 開既有 solution |
 | `Get-TcProjectTree [-Depth 4] [-PlcOnly]` | 專案樹 JSON;含 `<Plc> Project` 下 POUs/DUTs/GVLs,節點 `path` 可直接當 `-PouPath`;`-PlcOnly` 只回 TIPC 子樹 |
-| `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>] [-PlcProjectPath <folder>]` | 新增 ST POU 並讀回(`data.path`、`objectKind`、`itemType` 602/603/604、讀回的 `language`、`declaration`);專案內同名已在回 `POU_CREATE_FAILED`(帶 path),XAE 有 dialog 回 `IDE_MODAL_DIALOG` |
+| `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>] [-PlcProjectPath <folder>]` | 新增 ST POU 並讀回(`data.path`、`objectKind`、`itemType` 602/603/604、讀回的 `language`、`declaration`);同一個 PLC project 內已有同名頂層物件回 `POU_CREATE_FAILED`(帶 path;`data.duplicateCheckScope`),XAE 有 dialog 回 `IDE_MODAL_DIALOG` |
 | `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL,寫入 `VAR_GLOBAL` 並讀回比對(`itemType` 615);失敗 `GVL_CREATE_FAILED` |
 | `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union> [-Fields @{..}] [-AliasType <t>]` | 新增 DUT,寫入 `TYPE ... END_TYPE` 並讀回比對(`itemType` 606/605/607/623);失敗 `DUT_CREATE_FAILED` |
 | `Add-TcLibrary -Name <lib>` | 加 library 參考 |

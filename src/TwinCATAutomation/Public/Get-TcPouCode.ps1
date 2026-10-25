@@ -18,9 +18,11 @@ function Get-TcPouCode {
                                implementation is a string ('' when empty, implementationReadable
                                true); implementationReadable false = the POU has an
                                implementation part that did not come back as text
-                               (implementation $null; also how a failing property get ends up,
-                               since Windows PowerShell turns a throwing getter into $null). A
-                               COM call that throws returns POU_READ_FAILED.
+                               (implementation $null). A property read that fails shows up as
+                               null / implementationReadable=false: Windows PowerShell returned
+                               $null for a throwing getter (measured 2026-10-25, PS 5.1.26100,
+                               .NET property; the COM adapter is not verified). A COM call that
+                               throws, or a declaration that reads null, returns POU_READ_FAILED.
         data.language          ST / LD / FBD / SFC / CFC / IL ... (ITcSmTreeItem.Language), $null for
                                DUT / GVL / ITF. For LD / FBD the implementation is XAE's XML
                                (<NWL><XmlArchive>...), not ST text (measured 2026-10-25 on 4024 and 4026).
@@ -54,6 +56,14 @@ function Get-TcPouCode {
         # has no implementation part, so implementation = $null means "none", not "read failed"
         $kind = Get-TcPlcObjectKind -Item $pouItem
         $declText = Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $pouItem.DeclarationText }
+        # every PLC object has a declaration (an action has none: ItemType 608 reads $null,
+        # measured 2026-10-25 on 4024 and 4026); $null otherwise means the read failed
+        if ($null -eq $declText -and $kind.ObjectKind -ne 'ACTION') {
+            return New-TcResult -Success $false -ErrorCode 'POU_READ_FAILED' `
+                -ErrorMessage "Failed to read POU code: DeclarationText of '$($r.Path)' ($($kind.ObjectKind)) came back empty (null)." `
+                -Hint (Get-TcErrorHint -Code 'POU_READ_FAILED') `
+                -Data ([PSCustomObject]@{ pou = $PouName; pouPath = $r.Path; objectKind = $kind.ObjectKind })
+        }
         $hasImpl = $kind.HasImplementation
         $implText = $null
         $implReadable = $null
@@ -66,7 +76,7 @@ function Get-TcPouCode {
             }
             # an empty ST body reads '' (measured 2026-10-25 on 4024 and 4026); $null on an object
             # that has an implementation part means it could not be read as text
-            $implReadable = ($null -ne $implText)
+            if ($hasImpl) { $implReadable = ($null -ne $implText) } else { $implReadable = $null }
         }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             pou                    = $PouName

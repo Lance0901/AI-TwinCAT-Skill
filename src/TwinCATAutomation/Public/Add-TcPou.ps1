@@ -66,7 +66,8 @@ function Add-TcPou {
         $declPattern = $null
         if ($Type -eq 'Function') {
             [string[]]$vInfo = @([string]$iecLanguageSt, $ReturnType)
-            # read back: the header XAE writes is "FUNCTION <name> :<type>" (measured 2026-10-25)
+            # read back: the header XAE writes is "FUNCTION <name> :<type>" (measured 2026-10-25,
+            # 4024 TcXaeShell.DTE.15.0 and 4026 VisualStudio.DTE.17.0)
             $declPattern = '(?im)^\s*FUNCTION\s+' + [regex]::Escape($Name) + '\s*:\s*' + [regex]::Escape($ReturnType) + '(?![A-Za-z0-9_])'
         }
 
@@ -86,6 +87,8 @@ function Add-TcPou {
             itemType    = $created.ItemType
             language    = $created.Language
             declaration = $created.Declaration
+            duplicateCheckScope        = $created.DuplicateCheckScope
+            duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
         })
     }
     catch {

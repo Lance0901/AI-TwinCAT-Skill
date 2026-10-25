@@ -16,8 +16,9 @@ function Get-TcPlcObjectKind {
                  615 GVL (4024, 4026), 618 interface (4024, 4026), 610 interface method (4026),
                  611 property (4024, 4026; the property itself, its Get / Set accessors are child
                  items and CreateChild 611 creates none)
-        Inferred, not measured: 612 interface property (false), 613 / 614 property get / set and
-        616 transition (true). For an unknown ItemType HasImplementation is $null.
+        Not measured: 612 interface property, 613 / 614 property get / set, 616 transition:
+        HasImplementation is $null for them (as for an unknown ItemType), so Get-TcPouCode /
+        Write-TcPouCode read ImplementationText to decide.
         Language: ITcSmTreeItem.Language of a POU / method / action, mapped through the
         TCatSysManagerLib IECLANGUAGETYPES enum (ST = 1, FBD = 4, LD = 6 ...; values read by
         reflection from the TCatSysManagerLib 3.4.0.0 interop assembly, 2026-10-25). The property
@@ -79,15 +80,15 @@ function Get-TcPlcObjectKind {
         609 = @('METHOD', $null, $true)
         610 = @('ITF_METHOD', $null, $false)
         611 = @('PROPERTY', $null, $false)
-        612 = @('ITF_PROPERTY', $null, $false)
-        613 = @('PROPERTY_GET', $null, $true)
-        614 = @('PROPERTY_SET', $null, $true)
-        616 = @('TRANSITION', $null, $true)
+        612 = @('ITF_PROPERTY', $null, $null)
+        613 = @('PROPERTY_GET', $null, $null)
+        614 = @('PROPERTY_SET', $null, $null)
+        616 = @('TRANSITION', $null, $null)
         601 = @('FOLDER', $null, $false)
     }
     if ($table.ContainsKey($ItemType)) {
         $e = $table[$ItemType]
-        return @{ ObjectKind = $e[0]; ItemType = $ItemType; ItemTypeName = $typeName; PouType = $e[1]; HasImplementation = [bool]$e[2]; Language = $language }
+        return @{ ObjectKind = $e[0]; ItemType = $ItemType; ItemTypeName = $typeName; PouType = $e[1]; HasImplementation = $e[2]; Language = $language }
     }
     return @{ ObjectKind = 'UNKNOWN'; ItemType = $ItemType; ItemTypeName = $typeName; PouType = $null; HasImplementation = $null; Language = $language }
 }
@@ -108,6 +109,8 @@ function ConvertTo-TcIecLanguageName {
         $Value
     )
     if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { return $null }
+    # an enum value (e.g. TCatSysManagerLib.IECLANGUAGETYPES) is compared by its number
+    if ($Value -is [System.Enum]) { $Value = [int]$Value }
     $n = 0
     if (-not [int]::TryParse([string]$Value, [ref]$n)) { return [string]$Value }
     $names = @{ 1 = 'ST'; 2 = 'IL'; 3 = 'SFC'; 4 = 'FBD'; 5 = 'CFC'; 6 = 'LD'; 7 = 'UMLCD'; 8 = 'UMLSC'; 9 = 'UMLAD' }

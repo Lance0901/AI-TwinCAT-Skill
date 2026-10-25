@@ -17,8 +17,21 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 $P = 'TIPC^plc^plc Project'
 $global:MockTree = @{}
 $global:MockCreateCalls = @()
-$global:MockMode = 'normal'   # normal | noregister | wrongtype | tamper
-function New-MockItem([string]$Path, [int]$ItemType, [string]$Decl, [switch]$Impl, [switch]$Folder, $Language = $null) {
+$global:MockMode = 'normal'   # normal | noregister | wrongtype | tamper | badreturn
+# ChildCount / Child(i) computed from $global:MockTree (direct children by path), for the name-conflict walk
+function Add-MockNav($o) {
+    $o | Add-Member -Force -MemberType ScriptProperty -Name ChildCount -Value {
+        $pre = "$($this.PathName)^"
+        @($global:MockTree.Keys | Where-Object { $_.StartsWith($pre) -and -not $_.Substring($pre.Length).Contains('^') }).Count
+    }
+    $o | Add-Member -Force -MemberType ScriptMethod -Name Child -Value {
+        param($i)
+        $pre = "$($this.PathName)^"
+        $keys = @($global:MockTree.Keys | Where-Object { $_.StartsWith($pre) -and -not $_.Substring($pre.Length).Contains('^') } | Sort-Object)
+        $global:MockTree[$keys[$i - 1]]
+    }
+}
+function New-MockItem([string]$Path, [int]$ItemType, $Decl, [switch]$Impl, [switch]$Folder, $Language = $null) {
     $o = [PSCustomObject]@{ PathName = $Path; Name = ($Path -split '\^')[-1]; ItemType = $ItemType; ItemSubType = 0; ItemSubTypeName = "TYPE_$ItemType"; DeclarationText = $Decl; Language = $Language }
     if ($Impl) { $o | Add-Member -NotePropertyName ImplementationText -NotePropertyValue '' }
     if ($Folder) {
@@ -28,17 +41,20 @@ function New-MockItem([string]$Path, [int]$ItemType, [string]$Decl, [switch]$Imp
             if ($subType -eq 610) { throw "Creating the child type 'TREEITEMTYPE_PLCITFMETH' is not possible on parent node type 'TREEITEMTYPE_PLCFOLDER'" }
             $lang = $null
             if ($subType -in 602, 603, 604) { $lang = if ($vInfo -is [array]) { [int]$vInfo[0] } else { [int]$vInfo } }
-            $header = switch ($subType) { 603 { "FUNCTION $name :$($vInfo[1])`nVAR_INPUT`nEND_VAR" } 604 { "FUNCTION_BLOCK $name" } 602 { "PROGRAM $name" } default { 'default' } }
+            $ret = $null; if ($subType -eq 603) { $ret = if ($global:MockMode -eq 'badreturn') { 'BOOL' } else { $vInfo[1] } }
+            $header = switch ($subType) { 603 { "FUNCTION $name :$ret`nVAR_INPUT`nEND_VAR" } 604 { "FUNCTION_BLOCK $name" } 602 { "PROGRAM $name" } default { 'default' } }
             $type = if ($global:MockMode -eq 'wrongtype') { 610 } else { $subType }
             $child = [PSCustomObject]@{ PathName = "$($this.PathName)^$name"; Name = $name; ItemType = $type; ItemSubType = 0; ItemSubTypeName = ''; Language = $lang; Stored = $header }
             # tamper: the declaration written is not what reads back
             $child | Add-Member -MemberType ScriptProperty -Name DeclarationText -Value { $this.Stored } -SecondValue {
                 param($v) if ($global:MockMode -eq 'tamper') { $this.Stored = "$v`n(* changed *)" } else { $this.Stored = $v }
             }
+            Add-MockNav $child
             if ($global:MockMode -ne 'noregister') { $global:MockTree["$($this.PathName)^$name"] = $child }
             $child
         }
     }
+    Add-MockNav $o
     $global:MockTree[$Path] = $o
     $o
 }
@@ -53,7 +69,21 @@ $null = New-MockItem "$P^POUs^MAIN" 602 'PROGRAM MAIN' -Impl -Language 1
 $null = New-MockItem "$P^DUTs^ST_X" 606 "TYPE ST_X :`nSTRUCT`nEND_STRUCT`nEND_TYPE"
 $null = New-MockItem "$P^GVLs^GVL_X" 615 "VAR_GLOBAL`nEND_VAR"
 $null = New-MockItem "$P^POUs^I_X" 618 'INTERFACE I_X'
+$null = New-MockItem "$P^GVLs" 601 '' -Folder
+$null = New-MockItem "$P^POUs^FB_P" 604 'FUNCTION_BLOCK FB_P' -Impl -Language 1
 $null = New-MockItem "$P^POUs^FB_P^P_Val" 611 'PROPERTY P_Val : INT'
+$null = New-MockItem "$P^POUs^FB_P^M_Same" 609 'METHOD M_Same' -Impl -Language 1   # method name, not a conflict
+$null = New-MockItem "$P^POUs^Sub" 601 ''                                          # nested folder
+$null = New-MockItem "$P^POUs^Sub^ST_DEEP" 606 'TYPE ST_DEEP : STRUCT END_STRUCT END_TYPE'
+$null = New-MockItem "$P^POUs^P_NODECL" 602 $null -Impl -Language 1                 # declaration reads null
+$null = New-MockItem "$P^POUs^ITFP" 612 'PROPERTY ITFP : INT'                        # 612: not measured
+# second PLC: names are checked per PLC project
+$P2 = 'TIPC^plc2^plc2 Project'
+$null = New-MockItem $P2 601 ''
+$null = New-MockItem "$P2^POUs" 601 '' -Folder
+$null = New-MockItem "$P2^GVLs" 601 '' -Folder
+$null = New-MockItem "$P2^GVLs^GVL_P2" 615 "VAR_GLOBAL`nEND_VAR"
+$null = New-MockItem "$P^POUs^ST_ONLY1" 606 'TYPE ST_ONLY1 : STRUCT END_STRUCT END_TYPE'
 $null = New-MockItem "$P^POUs^ST_DUP" 606 'TYPE ST_DUP : STRUCT END_STRUCT END_TYPE'
 $null = New-MockItem "$P^POUs^X_UNK" 9999 'X'                      # unknown kind, no implementation
 $null = New-MockItem "$P^POUs^Y_UNK" 9998 'Y' -Impl                # unknown kind with implementation
@@ -89,6 +119,10 @@ foreach ($t in @(@(605, 'DUT', 'Enum'), @(606, 'DUT', 'Struct'), @(607, 'DUT', '
     $k = & $mod { param($n) Get-TcPlcObjectKind -ItemType $n } $t[0]
     Check "kind $($t[0])" ($k.ObjectKind -eq $t[1] -and $k.PouType -eq $t[2] -and $k.HasImplementation -eq $false) ($k | ConvertTo-Json -Compress)
 }
+foreach ($n in 612, 613, 614, 616) {
+    $k = & $mod { param($x) Get-TcPlcObjectKind -ItemType $x } $n
+    Check "kind $n (not measured) -> HasImplementation null" ($null -eq $k.HasImplementation -and $k.ObjectKind -ne 'UNKNOWN') ($k | ConvertTo-Json -Compress)
+}
 $k = & $mod { Get-TcPlcObjectKind -ItemType 9999 }
 Check 'kind unknown' ($k.ObjectKind -eq 'UNKNOWN' -and $null -eq $k.HasImplementation) ($k | ConvertTo-Json -Compress)
 $names = & $mod { @(ConvertTo-TcIecLanguageName -Value 1; ConvertTo-TcIecLanguageName -Value 6; ConvertTo-TcIecLanguageName -Value 4; ConvertTo-TcIecLanguageName -Value $null) }
@@ -104,11 +138,14 @@ Check 'Get GVL' ($r.success -and $r.data.objectKind -eq 'GVL' -and $r.data.hasIm
 $r = Get-TcPouCode -PouName FB_LD -PouPath "$P^POUs^FB_LD"
 Check 'Get POU, implementation not text -> implementationReadable false' ($r.success -and $r.data.hasImplementation -eq $true -and $r.data.implementationReadable -eq $false -and $r.data.language -eq 'LD') ($r | ConvertTo-Json -Compress)
 $r = Get-TcPouCode -PouName FB_BAD -PouPath "$P^POUs^FB_BAD"
-# PowerShell 5.1 turns a throwing property getter into $null (non-strict mode), so the failure surfaces
-# as implementationReadable=false; if it does throw, the catch returns POU_READ_FAILED. Never ''.
-$okThrow = (-not $r.success) -and $r.error.code -eq 'POU_READ_FAILED'
+# PowerShell 5.1 returned $null for the throwing .NET getter (measured 2026-10-25, PS 5.1.26100), so the
+# failure shows as implementationReadable=false with implementation null, never ''.
 $okNull = $r.success -and $r.data.implementationReadable -eq $false -and $null -eq $r.data.implementation
-Check 'Get POU, ImplementationText throws -> not masked as empty' ($okThrow -or $okNull) ($r | ConvertTo-Json -Compress)
+Check 'Get POU, ImplementationText getter throws -> implementationReadable false' $okNull ($r | ConvertTo-Json -Compress)
+$r = Get-TcPouCode -PouName P_NODECL -PouPath "$P^POUs^P_NODECL"
+Check 'Get POU, declaration reads null -> POU_READ_FAILED' ((-not $r.success) -and $r.error.code -eq 'POU_READ_FAILED' -and $r.error.hint) ($r | ConvertTo-Json -Compress)
+$r = Get-TcPouCode -PouName ITFP -PouPath "$P^POUs^ITFP"
+Check 'Get 612 (not measured): probed, no implementation -> hasImplementation false, implementationReadable null' ($r.success -and $r.data.hasImplementation -eq $false -and $null -eq $r.data.implementationReadable) ($r | ConvertTo-Json -Compress)
 $r = Get-TcPouCode -PouName X_UNK -PouPath "$P^POUs^X_UNK"
 Check 'Get UNKNOWN without implementation' ($r.success -and $r.data.objectKind -eq 'UNKNOWN' -and $r.data.hasImplementation -eq $false) ($r | ConvertTo-Json -Compress)
 
@@ -145,6 +182,16 @@ $e = Get-Err { New-Obj DUTs ST_X 606 }
 Check 'create existing (same folder) -> exists' ($e -like 'exists:*ST_X*') $e
 $e = Get-Err { New-Obj DUTs ST_DUP 606 }
 Check 'create existing (other folder) -> exists with its path' ($e -like "exists:*$P^POUs^ST_DUP*") $e
+$e = Get-Err { New-Obj DUTs ST_DEEP 606 }
+Check 'create existing in a nested folder -> exists' ($e -like "exists:*POUs^Sub^ST_DEEP*") $e
+$c = New-Obj DUTs M_Same 606
+Check 'same name as a method -> no conflict' ($c.Path -eq "$P^DUTs^M_Same" -and $c.DuplicateCheckScope -eq 'project') ($c.DuplicateCheckScope)
+$c = & $mod { param($s, $p) New-TcPlcObject -SysManager $s -ParentPath "$p^POUs" -Name ST_ONLY1 -SubType 606 } $sm $P2
+Check 'second PLC: a name only in PLC 1 is allowed' ($c.Path -eq "$P2^POUs^ST_ONLY1") ($c.Path)
+$e = Get-Err { & $mod { param($s, $p) New-TcPlcObject -SysManager $s -ParentPath "$p^POUs" -Name GVL_P2 -SubType 606 } $sm $P2 }
+Check 'second PLC: same name in another folder of PLC 2 -> exists' ($e -like "exists:*plc2 Project^GVLs^GVL_P2*") $e
+$c = & $mod { param($s, $p) New-TcPlcObject -SysManager $s -ParentPath "$p^DUTs" -Name ST_LIM -SubType 606 -MaxNodes 2 } $sm $P
+Check 'node limit -> DuplicateCheckScope folder' ($c.DuplicateCheckScope -eq 'folder' -and $c.Path -eq "$P^DUTs^ST_LIM") ($c.DuplicateCheckScope)
 $e = Get-Err { New-Obj DUTs ST_Y 610 }
 Check 'CreateChild error passed on' ($e -like '*TREEITEMTYPE_PLCITFMETH*') $e
 $global:MockMode = 'noregister'
@@ -179,6 +226,21 @@ Check 'Add-TcDut declare failure -> DUT_CREATE_FAILED + hint' ((-not $r.success)
 $global:MockMode = 'normal'
 $r = Add-TcPou -Name FB_A -Type FunctionBlock -PlcProjectPath "$P^POUs"
 Check 'Add-TcPou existing -> POU_CREATE_FAILED exists' ((-not $r.success) -and $r.error.code -eq 'POU_CREATE_FAILED' -and $r.error.message -like '*exists:*') ($r | ConvertTo-Json -Compress)
+
+$global:MockMode = 'badreturn'
+$r = Add-TcPou -Name F_BR -Type Function -ReturnType INT -PlcProjectPath "$P^POUs"
+Check 'Add-TcPou Function, header has another return type -> POU_CREATE_FAILED declare' ((-not $r.success) -and $r.error.code -eq 'POU_CREATE_FAILED' -and $r.error.message -like '*declare:*does not match*') ($r | ConvertTo-Json -Compress)
+$global:MockMode = 'normal'
+$r = Add-TcPou -Name FB_OK -Type FunctionBlock -PlcProjectPath "$P^POUs"
+Check 'Add-TcPou data has duplicateCheckScope project' ($r.success -and $r.data.duplicateCheckScope -eq 'project' -and $r.data.duplicateCheckSkippedNodes -eq 0) ($r | ConvertTo-Json -Compress)
+
+# modal dialog: CreateChild must not be called
+$origDialog = & $mod { ${function:Get-TcIdeModalDialog} }
+& $mod { Set-Item -Path function:script:Get-TcIdeModalDialog -Value { @{ Title = 'TcXaeShell'; Text = 'mock dialog'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() } } }
+$calls = $global:MockCreateCalls.Count
+$r = Add-TcDut -Name ST_MOD -DutType Struct
+Check 'modal dialog -> IDE_MODAL_DIALOG, CreateChild not called' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:MockCreateCalls.Count -eq $calls -and -not $global:MockTree.ContainsKey("$P^DUTs^ST_MOD")) ($r | ConvertTo-Json -Compress)
+& $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f } $origDialog
 
 "failed: $fail"
 exit $fail

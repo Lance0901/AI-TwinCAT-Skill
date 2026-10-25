@@ -56,6 +56,8 @@ function Add-TcGvl {
             objectKind  = $kind.ObjectKind
             itemType    = $created.ItemType
             declaration = $created.Declaration
+            duplicateCheckScope        = $created.DuplicateCheckScope
+            duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
         })
     }
     catch {

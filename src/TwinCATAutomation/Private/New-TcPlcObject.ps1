@@ -14,8 +14,11 @@ function New-TcPlcObject {
         <Plc> Project node. vInfo is passed through unchanged (see Add-TcPou / Add-TcDut /
         Add-TcGvl).
         Steps; each failure throws a message that starts with the step name:
-          1. exists    no object with -Name in the PLC project (Resolve-TcPouPath: POUs folder,
-                       project root, tree search) and none at "<ParentPath>^<Name>"
+          1. exists    nothing at "<ParentPath>^<Name>", and no top-level PLC object with -Name
+                       in the <Plc> Project that contains -ParentPath (Find-TcPlcNameConflict:
+                       POU / DUT / GVL / ITF in any folder; methods, actions, properties and
+                       folders do not count). Above -MaxNodes tree nodes only the target path is
+                       checked (DuplicateCheckScope 'folder' instead of 'project').
           -  dialog    a modal dialog in the IDE (Get-TcIdeModalDialog): returns
                        @{ ModalDialog = <dialog> } without calling CreateChild; the caller returns
                        New-TcModalDialogResult (IDE_MODAL_DIALOG), as Build-TcProject does.
@@ -33,7 +36,8 @@ function New-TcPlcObject {
                        -DeclarationPattern: the declaration read back matches the regex
         From step 3 on the object has been created and stays in the tree: the messages say so
         and name the way out (Write-TcPouCode -PouPath <path> to correct it, or delete it in XAE).
-        Returns @{ Item; Path; ItemType; Declaration; Language } or @{ ModalDialog }.
+        Returns @{ Item; Path; ItemType; Declaration; Language; DuplicateCheckScope;
+        DuplicateCheckSkippedNodes } or @{ ModalDialog }.
     .PARAMETER SysManager
         ITcSysManager object (from Get-TcSysManager).
     .PARAMETER ParentPath
@@ -50,6 +54,8 @@ function New-TcPlcObject {
         Optional regex the declaration read back must match (e.g. the return type of a Function).
     .PARAMETER ExpectedLanguage
         Optional language name (ST, LD ...) the new object must report.
+    .PARAMETER MaxNodes
+        Node limit of the project-wide name check (default 3000).
     #>
     [CmdletBinding()]
     param(
@@ -76,7 +82,11 @@ function New-TcPlcObject {
         [string]$DeclarationPattern,
 
         [Parameter()]
-        [string]$ExpectedLanguage
+        [string]$ExpectedLanguage,
+
+        [Parameter()]
+        [ValidateRange(1, 100000)]
+        [int]$MaxNodes = 3000
     )
 
     $sm = $SysManager
@@ -84,15 +94,11 @@ function New-TcPlcObject {
     $path = "$ParentPath^$Name"
     $stays = "The object was created and stays in the tree: correct it with Write-TcPouCode -PouPath '$path', or delete it in XAE before creating it again."
 
-    # 1. exists: same name anywhere in the PLC project, then the target path itself
-    $found = $null
-    try { $found = Resolve-TcPouPath -SysManager $sm -Name $Name }
-    catch {
-        if ($_.Exception.Message -match $ideErrorPattern) { throw }
-        $found = $null
-    }
-    if ($null -ne $found -and $found.Found) {
-        throw "exists: an object named '$Name' already exists at '$($found.Path)'. Pick another name, or change it with Write-TcPouCode -PouPath '$($found.Path)'."
+    # 1. exists: the target path itself, then the same name in the PLC project of -ParentPath
+    $conflict = Find-TcPlcNameConflict -SysManager $sm -ParentPath $ParentPath -Name $Name -MaxNodes $MaxNodes
+    if ($conflict.Hits.Count -gt 0) {
+        $first = $conflict.Hits[0]
+        throw "exists: an object named '$Name' already exists at '$($conflict.Hits -join "', '")'. Pick another name, or change it with Write-TcPouCode -PouPath '$first'."
     }
     $existing = $null
     try { $existing = Invoke-TcComRetry -OperationName "LookupTreeItem $path" -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem($path) } }
@@ -152,5 +158,92 @@ function New-TcPlcObject {
         throw "declare: '$path' was created but its declaration does not match '$DeclarationPattern' (read back: $decl). $stays"
     }
 
-    return @{ Item = $item; Path = $path; ItemType = $itemType; Declaration = $decl; Language = $kind.Language }
+    return @{
+        Item = $item; Path = $path; ItemType = $itemType; Declaration = $decl; Language = $kind.Language
+        DuplicateCheckScope = $conflict.Scope; DuplicateCheckSkippedNodes = $conflict.Skipped
+    }
+}
+
+function Find-TcPlcNameConflict {
+    <#
+    .SYNOPSIS
+        Lists the top-level PLC objects named -Name in the <Plc> Project that contains -ParentPath.
+    .DESCRIPTION
+        The project node is the part of -ParentPath up to the first segment ending in " Project"
+        (TIPC^<Plc>^<Plc> Project^POUs -> TIPC^<Plc>^<Plc> Project); without such a segment
+        -ParentPath itself is walked. So a second PLC in the solution is checked on its own,
+        never against the first one.
+        Walk: the project node and every PLC folder (ItemType 601) below it; children of POUs,
+        DUTs etc. (methods, actions, properties, accessors) are not visited. A hit is a child
+        whose Name equals -Name (case-insensitive, as IEC identifiers) and whose ItemType is a
+        top-level object (602-607, 615, 618, 623); every hit is returned, not only the first.
+        A node that cannot be read is counted in Skipped (the check is fail-open for it; Add-*
+        report it as data.duplicateCheckSkippedNodes). When more than -MaxNodes nodes would be
+        visited the walk stops and Scope is 'folder': only the target path is checked.
+        Measured cost: see docs/troubleshooting.md "POU_CREATE_FAILED".
+        IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT are rethrown.
+        Returns @{ Hits = [string[]] paths; Scope = 'project' | 'folder'; Visited; Skipped; ProjectPath }.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        $SysManager,
+
+        [Parameter(Mandatory)]
+        [string]$ParentPath,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter()]
+        [int]$MaxNodes = 3000
+    )
+
+    $sm = $SysManager
+    $ideErrorPattern = 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT'
+    $segments = $ParentPath -split '\^'
+    $projPath = $ParentPath
+    for ($i = 0; $i -lt $segments.Count; $i++) {
+        if ($segments[$i] -match ' Project$') { $projPath = ($segments[0..$i] -join '^'); break }
+    }
+    $topLevel = @(602, 603, 604, 605, 606, 607, 615, 618, 623)
+
+    $walk = $null
+    try {
+        $walk = Invoke-TcComRetry -OperationName "Name check below $projPath" -ScriptBlock {
+            $__hits = New-Object System.Collections.Generic.List[string]
+            $__visited = 0
+            $__skipped = 0
+            $__over = $false
+            $__queue = New-Object System.Collections.Queue
+            $__queue.Enqueue($sm.LookupTreeItem($projPath))
+            while ($__queue.Count -gt 0 -and -not $__over) {
+                $__node = $__queue.Dequeue()
+                $__cnt = 0
+                try { $__cnt = [int]$__node.ChildCount } catch { $__skipped++; continue }
+                for ($__j = 1; $__j -le $__cnt; $__j++) {
+                    $__visited++
+                    if ($__visited -gt $MaxNodes) { $__over = $true; break }
+                    try {
+                        $__c = $__node.Child($__j)
+                        $__t = [int]$__c.ItemType
+                        $__n = [string]$__c.Name
+                        if ($__t -eq 601) { $__queue.Enqueue($__c); continue }
+                        if ($topLevel -contains $__t -and $__n -ieq $Name) { $__hits.Add([string]$__c.PathName) }
+                    }
+                    catch { $__skipped++ }
+                }
+            }
+            @{ Hits = [string[]]$__hits.ToArray(); Visited = $__visited; Skipped = $__skipped; Over = $__over }
+        }
+    }
+    catch {
+        if ($_.Exception.Message -match $ideErrorPattern) { throw }
+        # project node not readable: fall back to the target folder only
+        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = 0; Skipped = 1; ProjectPath = $projPath }
+    }
+    if ($walk.Over) {
+        return @{ Hits = [string[]]@(); Scope = 'folder'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath }
+    }
+    return @{ Hits = [string[]]$walk.Hits; Scope = 'project'; Visited = $walk.Visited; Skipped = $walk.Skipped; ProjectPath = $projPath }
 }
