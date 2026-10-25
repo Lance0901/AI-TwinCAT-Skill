@@ -8,7 +8,7 @@
     "tcauto-mcp": "index.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node index.js",

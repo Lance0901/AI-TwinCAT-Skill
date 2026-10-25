@@ -277,6 +277,7 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
       pid: probePid,
       intervalSec: config.modalProbe.intervalSec,
       confirmScans: config.modalProbe.confirmScans,
+      scanTimeoutSec: config.modalProbe.scanTimeoutSec,
       scanScript: config.modalProbe.scanScript,
       mainHwnd: Number.isInteger(mainHwnd) && mainHwnd > 0 ? mainHwnd : null,
       maxLifetimeSec: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? Math.ceil(opts.timeoutMs / 1000) + 60 : undefined,

@@ -14,9 +14,9 @@
 // process dies the pipe closes and the probe exits on its own (bridge/modal-probe.ps1).
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_SCAN_SCRIPT, defaultPowershellPath } from './config.js';
+import { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_SCAN_SCRIPT, defaultPowershellPath } from './config.js';
 
-export { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_SCAN_SCRIPT };
+export { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM_SCANS, DEFAULT_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_SCAN_SCRIPT };
 
 /**
  * Catalog tools that run long DTE calls and get a probe. RunLifecycle is not listed: it is a
@@ -39,11 +39,12 @@ function isAlive(pid) {
 /**
  * Command line of the probe. With a spawnSpec override (tests) its args come first and the same
  * argument tail is appended, so a mock parses the same argv as the real script:
- *   -ProcessId N -IntervalSec S -ConfirmScans C -ScanScript <path> [-MainHwnd H] [-MaxLifetimeSec L]
- * (-MainHwnd only when a positive handle is known, -MaxLifetimeSec only when given).
+ *   -ProcessId N -IntervalSec S -ConfirmScans C -ScanScript <path> [-MainHwnd H] [-MaxLifetimeSec L] [-ScanTimeoutSec T]
+ * (-MainHwnd only when a positive handle is known, -MaxLifetimeSec / -ScanTimeoutSec only when given;
+ * the script's own -ScanTimeoutSec default is DEFAULT_PROBE_SCAN_TIMEOUT_SEC).
  * @returns {{command:string, args:string[]}}
  */
-export function buildProbeSpawnSpec({ powershellPath, probeScript, spawnSpec, pid, intervalSec, confirmScans, scanScript, mainHwnd, maxLifetimeSec } = {}) {
+export function buildProbeSpawnSpec({ powershellPath, probeScript, spawnSpec, pid, intervalSec, confirmScans, scanScript, mainHwnd, maxLifetimeSec, scanTimeoutSec } = {}) {
   const tail = [
     '-ProcessId', String(pid),
     '-IntervalSec', String(intervalSec ?? DEFAULT_PROBE_INTERVAL_SEC),
@@ -52,6 +53,7 @@ export function buildProbeSpawnSpec({ powershellPath, probeScript, spawnSpec, pi
   ];
   if (Number.isInteger(mainHwnd) && mainHwnd > 0) tail.push('-MainHwnd', String(mainHwnd));
   if (Number.isInteger(maxLifetimeSec) && maxLifetimeSec > 0) tail.push('-MaxLifetimeSec', String(maxLifetimeSec));
+  if (Number.isInteger(scanTimeoutSec) && scanTimeoutSec > 0) tail.push('-ScanTimeoutSec', String(scanTimeoutSec));
   if (spawnSpec && spawnSpec.command) return { command: spawnSpec.command, args: [...(spawnSpec.args ?? []), ...tail] };
   return {
     command: powershellPath ?? defaultPowershellPath(),
@@ -68,6 +70,7 @@ export class ModalProbe {
    * @param {string} [opts.scanScript]        file defining $script:TcUiaDialogScan (default: the module's)
    * @param {number|null} [opts.mainHwnd]     IDE main window handle, when known
    * @param {number} [opts.maxLifetimeSec]    probe exits on its own after this (script default 7260)
+   * @param {number} [opts.scanTimeoutSec]    one UIA scan is abandoned after this (script default 4)
    * @param {string} [opts.powershellPath]
    * @param {string} [opts.probeScript]
    * @param {{command:string,args:string[]}|null} [opts.spawnSpec]  test override

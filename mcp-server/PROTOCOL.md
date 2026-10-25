@@ -203,10 +203,12 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
     call continues. `ProgId` plays no role. All other probed tools always use kill mode.
   - **Scan.** The probe dot-sources `-ScanScript` and runs the module's `$script:TcUiaDialogScan`
     (single source of truth for window selection, the known-title list and text collection; the
-    probe exits 2 if the file is missing or does not define it). It waits one interval **before**
+    probe exits 2 if the file is missing or does not define it). Before that interval it warms up once (#24): loads the UIA assemblies, compiles the
+    P/Invoke helper types of the scan sources and runs one scan of its own pid, so the first real
+    scan does not pay that one-time cost inside its timeout. It waits one interval **before**
     its first scan (the cmdlet's own pre-call `Get-TcIdeModalDialog` check gets to answer cleanly
-    first), then scans every interval, each scan in a fresh STA runspace, abandoned after 4 s if
-    UIA hangs (normal while XAE's UI thread is busy building; logged for the first abandoned scan
+    first), then scans every interval, each scan in a fresh STA runspace, abandoned after 4 s
+    (`TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC`, 1..30) if UIA hangs (normal while XAE's UI thread is busy building; logged for the first abandoned scan
     and then every 10th). Abandoned scans are disposed once they finish; while 10 still hang no new
     scan starts. The module scan only sees top-level windows of the pid; a dialog **owned** by the
     main window is a UIA child of the main window, so when the module scan found nothing the

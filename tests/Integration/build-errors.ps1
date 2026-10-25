@@ -164,7 +164,7 @@ function Invoke-Main {
         param($r)
         (-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $r.data.buildSucceeded -eq $false -and @($r.data.codeErrors).Count -gt 0
     }
-    Write-Host "  buildSucceeded=$($b1.data.buildSucceeded) decidedBy=$($b1.data.decidedBy) errors=$($b1.data.errors) failedProjects=$($b1.data.failedProjects) warnings=$($b1.data.warnings) errorItems=$(@($b1.data.errorItems).Count) codeErrors=$(@($b1.data.codeErrors).Count)"
+    Write-Host "  buildSucceeded=$($b1.data.buildSucceeded) decidedBy=$($b1.data.decidedBy) errors=$($b1.data.errors) libraryErrors=$($b1.data.libraryErrors) failedProjects=$($b1.data.failedProjects) warnings=$($b1.data.warnings) errorItems=$(@($b1.data.errorItems).Count) codeErrors=$(@($b1.data.codeErrors).Count)"
     Write-Host "  message: $($b1.error.message)"
     $hit = @($b1.data.codeErrors | Where-Object { $_.file -like "*$PouName*" -and $null -ne $_.line -and $_.line -gt 0 })
     $c0046 = @($hit | Where-Object { $_.code -eq 'C0046' })
@@ -191,7 +191,7 @@ function Invoke-Main {
     $b2 = Invoke-Step -Step '7-build-ok' -Cmdlet 'Build-TcProject' -Block { Build-TcProject } -Check {
         param($r) $r.success -and $r.data.buildSucceeded -eq $true -and @($r.data.codeErrors).Count -eq 0
     }
-    Write-Host "  buildSucceeded=$($b2.data.buildSucceeded) decidedBy=$($b2.data.decidedBy) errors=$($b2.data.errors) failedProjects=$($b2.data.failedProjects) errorItems=$(@($b2.data.errorItems).Count) codeErrors=$(@($b2.data.codeErrors).Count)"
+    Write-Host "  buildSucceeded=$($b2.data.buildSucceeded) decidedBy=$($b2.data.decidedBy) errors=$($b2.data.errors) libraryErrors=$($b2.data.libraryErrors) failedProjects=$($b2.data.failedProjects) errorItems=$(@($b2.data.errorItems).Count) codeErrors=$(@($b2.data.codeErrors).Count)"
     @($b2.data.errorItems) | ForEach-Object {
         $leftover = "  leftover: [" + $_.file + "] " + $_.description
         Write-Host $leftover

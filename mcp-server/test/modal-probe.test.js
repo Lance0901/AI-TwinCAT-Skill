@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { ModalProbe, PROBED_TOOLS, buildProbeSpawnSpec, DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_SCAN_SCRIPT } from '../lib/modal-probe.js';
+import { ModalProbe, PROBED_TOOLS, buildProbeSpawnSpec, DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_SCAN_SCRIPT } from '../lib/modal-probe.js';
 import { PowerShellBridge, errorResult } from '../lib/bridge.js';
 import { loadConfig, defaultPowershellPath, scanScriptFor } from '../lib/config.js';
 
@@ -23,6 +23,10 @@ const HOST_WINDOW_WPF = path.join(__dirname, 'fixtures', 'host-window-wpf.ps1');
 const DIALOG_ANSWER = path.join(__dirname, 'fixtures', 'dialog-answer.ps1');
 const MODULE_PATH = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
+// Real probe against a fixture window, interval 1 s, 2 confirming scans: powershell start-up +
+// warm-up + 2 x (interval + scan). About 4-5 s on an idle machine; the other test files run in
+// parallel and spawn powershell.exe too, which roughly doubles it (#24: the old 8 s was too tight).
+const REPORT_WITHIN_MS = 20000;
 
 function alive(pid) {
   try {
@@ -100,6 +104,9 @@ describe('lib/modal-probe.js', () => {
     assert.deepEqual(fallback.args.slice(-8), ['-ProcessId', '9', '-IntervalSec', '5', '-ConfirmScans', '2', '-ScanScript', DEFAULT_SCAN_SCRIPT]);
     assert.ok(!fallback.args.includes('-MainHwnd'), 'no -MainHwnd for an unknown (0) handle');
     assert.ok(!fallback.args.includes('-MaxLifetimeSec'));
+    assert.ok(!fallback.args.includes('-ScanTimeoutSec'), 'script default unless given');
+    const st = buildProbeSpawnSpec({ pid: 9, scanTimeoutSec: 10 });
+    assert.deepEqual(st.args.slice(-2), ['-ScanTimeoutSec', '10']);
     assert.match(DEFAULT_SCAN_SCRIPT, /src[\\/]TwinCATAutomation[\\/]Private[\\/]Get-TcIdeModalDialog\.ps1$/);
     assert.ok(fs.existsSync(DEFAULT_SCAN_SCRIPT), 'default scan script exists');
   });
@@ -121,6 +128,16 @@ describe('lib/modal-probe.js', () => {
     assert.deepEqual(ovr.modalProbe.spawnSpec, { command: 'node', args: ['a.js'] });
     assert.equal(ovr.spawnSpec, null, 'bridge override untouched');
     assert.throws(() => loadConfig({ TWINCAT_MCP_PROBE_COMMAND: 'node', TWINCAT_MCP_PROBE_ARGS: '{}' }), /TWINCAT_MCP_PROBE_ARGS must be a JSON array/);
+  });
+
+  test('config: TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC (default 4, clamp 1..30)', () => {
+    const st = (v) => loadConfig({ TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC: v }).modalProbe.scanTimeoutSec;
+    assert.equal(DEFAULT_PROBE_SCAN_TIMEOUT_SEC, 4);
+    assert.equal(loadConfig({}).modalProbe.scanTimeoutSec, 4);
+    assert.equal(st('10'), 10);
+    assert.equal(st('99'), 30);
+    assert.equal(st('0'), 4, 'not positive -> default');
+    assert.equal(st('x'), 4);
   });
 
   test('config: TWINCAT_MCP_PROBE_CONFIRM_SCANS (default 2, clamp 1..10) and TWINCAT_MCP_PROBE_SCAN_SCRIPT', () => {
@@ -258,7 +275,8 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
     const debug = [];
     const probe = new ModalProbe({ pid: process.pid, intervalSec: 60, onDebug: (m) => debug.push(m) });
     probe.start();
-    assert.ok(await waitFor(() => debug.some((d) => /watching pid/.test(d)), 20000), 'probe started');
+    // after the warm-up (#24): the probe is then in its sliced interval wait
+    assert.ok(await waitFor(() => debug.some((d) => /warm-up: /.test(d)), 20000), `probe warmed up (${JSON.stringify(debug)})`);
     const closed = new Promise((r) => probe.child.once('close', r));
     const t0 = Date.now();
     probe.child.stdin.end();
@@ -334,7 +352,8 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       const dialogs = [];
       const debug = [];
       const errors = [];
-      const probe = new ModalProbe({ pid, intervalSec: 1, scanScript: DEFAULT_SCAN_SCRIPT, onDialog: (d) => dialogs.push(d), onDebug: (m) => debug.push(m), onError: (m) => errors.push(m) });
+      // scanTimeoutSec 10 (#24): a scan slowed down by the parallel test files is not abandoned
+      const probe = new ModalProbe({ pid, intervalSec: 1, scanTimeoutSec: 10, scanScript: DEFAULT_SCAN_SCRIPT, onDialog: (d) => dialogs.push(d), onDebug: (m) => debug.push(m), onError: (m) => errors.push(m) });
       probe.start();
       return { probe, dialogs, debug, errors };
     }
@@ -353,7 +372,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       const host = await startHost(['-ShowMessageBox'], 'dialog');
       const t0 = Date.now();
       const { probe, dialogs, debug, errors } = watch(host.pid);
-      const seen = await waitFor(() => dialogs.length > 0, 8000);
+      const seen = await waitFor(() => dialogs.length > 0, REPORT_WITHIN_MS);
       const elapsed = Date.now() - t0;
       probe.stop();
       host.kill();
@@ -365,7 +384,8 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       assert.equal(dialogs[0].className, '#32770');
       assert.equal(dialogs[0].processId, host.pid);
       assert.ok(debug.some((d) => /seen \(1\/2\)/.test(d)), 'confirmation took two scans');
-      assert.ok(elapsed < 8000, `took ${elapsed} ms`);
+      assert.ok(debug.some((d) => /warm-up: UIA loaded, [1-9]\d* helper type\(s\) compiled/.test(d)), `warm-up compiled the helper types first: ${JSON.stringify(debug)}`);
+      assert.ok(elapsed < REPORT_WITHIN_MS, `took ${elapsed} ms`);
     });
 
     /** Run fixtures/dialog-answer.ps1 (module Get-TcIdeModalDialog / Close-TcMessageBox) and parse its JSON line. */
@@ -463,7 +483,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       const host = await startHost(['-ShowModal'], 'dialog', HOST_WINDOW_WPF);
       const t0 = Date.now();
       const { probe, dialogs, debug, errors } = watch(host.pid);
-      const seen = await waitFor(() => dialogs.length > 0, 8000);
+      const seen = await waitFor(() => dialogs.length > 0, REPORT_WITHIN_MS);
       const elapsed = Date.now() - t0;
       probe.stop();
       host.kill();
@@ -475,7 +495,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       assert.equal(dialogs[0].reason, 'modal');
       assert.equal(dialogs[0].processId, host.pid);
       assert.match(dialogs[0].text, /Internal error in the PLC compiler \(probe test, WPF\)/, 'WPF UIA Name (content text) becomes the text');
-      assert.ok(elapsed < 8000, `took ${elapsed} ms`);
+      assert.ok(elapsed < REPORT_WITHIN_MS, `took ${elapsed} ms`);
     });
   });
 });

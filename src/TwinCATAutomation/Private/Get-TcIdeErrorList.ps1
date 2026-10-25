@@ -577,6 +577,36 @@ function Test-TcLibraryManagerItem {
     return $true
 }
 
+# Library-resolution messages listed without a code location. Measured 2026-10-18 (TcXaeShell
+# 15.0, GantryCylinder project): "Could not open library '#System_VisuElemTrace' ..." rows with
+# file 'plc.Library Manager' and line 0; see docs/troubleshooting.md "BUILD_FAILED".
+$script:TcLibraryErrorPattern = '(?i)\bCould not open library\b'
+
+function Get-TcErrorItemCategory {
+    <#
+    .SYNOPSIS
+        Category of one Error List item (#23):
+          library  a Library Manager row (Test-TcLibraryManagerItem: file like
+                   '*Library Manager', no line) or a "Could not open library" message
+                   without a line number - a missing / unresolved library, not a code error
+          code     any other row with a file - a PLC code error the compiler located
+          other    rows without a file (e.g. XAE build-summary rows)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Item
+    )
+    if ($null -eq $Item) { return 'other' }
+    if (Test-TcLibraryManagerItem $Item) { return 'library' }
+    $n = 0
+    $hasLine = [int]::TryParse(([string]$Item.line).Trim(), [ref]$n) -and $n -gt 0
+    if (-not $hasLine -and ([string]$Item.description) -match $script:TcLibraryErrorPattern) { return 'library' }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Item.file)) { return 'code' }
+    return 'other'
+}
+
 # Abandoned UIA scans (timed out; the STA thread may still be stuck inside UIA).
 # Invoke-TcUiaScan parks them here with BeginStop issued; Clear-TcUiaAbandonedScans
 # disposes the ones that have since stopped. $script:TcErrorListScanBusy stays $true

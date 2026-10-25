@@ -21,8 +21,8 @@
         When BuildState does not reach Done within -TimeoutSec, BUILD_TIMEOUT is
         returned (data.buildState / buildSec).
         After the build the Error List window is read with Get-TcBuildErrors (UI
-        Automation): data.errors is the number of errors shown there and
-        data.errorItems lists them (code / description / project / file / line).
+        Automation): data.errorItems lists every error shown there (code / description /
+        project / file / line / category) and data.errors counts only the code errors (#23).
         Success is decided in this order:
           (a) SolutionBuild.LastBuildInfo (= number of projects that failed to build,
               data.failedProjects) when it could be read: > 0 = BUILD_FAILED;
@@ -32,13 +32,21 @@
               the XAE Error List yourself before deciding.
     .OUTPUTS
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN
-        data.errors          error count (Error List; fallback: failedProjects)
+        data.errors          number of CODE errors (errorItems with category 'code'); Library
+                             Manager rows are not counted (fallback when the Error List is not
+                             readable: failedProjects)
+        data.libraryErrors   number of library errors (category 'library'; $null when the Error
+                             List is not readable) - missing / unresolved libraries, they do not
+                             decide buildSucceeded
+        data.libraryErrorItems  errorItems with category 'library'
         data.warnings        warning count (Error List; fallback: warning lines of the build output)
         data.messages        lines of the DTE build output pane (usually empty)
         data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read)
-        data.errorItems      [ @{ severity; code; description; project; file; line; column } ]
-        data.codeErrors      errorItems without the "Library Manager" items (file like
-                             '*Library Manager' and line 0/empty) - the PLC code errors
+        data.errorItems      [ @{ severity; code; description; project; file; line; column; category } ]
+                             all errors of the Error List; category (Get-TcErrorItemCategory):
+                             code (has a file), library (file like '*Library Manager' with no
+                             line, or "Could not open library" without a line), other (no file)
+        data.codeErrors      errorItems with category 'code' - the PLC code errors
         data.warningItems    same shape as errorItems, the warnings of the Error List (@() when it could not be read)
         data.codeWarnings    warningItems without the "Library Manager" items and without the
                              rows that have no file (XAE build-summary rows such as "Project
@@ -262,11 +270,21 @@
             Write-Verbose "Build-TcProject: Error List not readable ($($el.error.message)); errors falls back to LastBuildInfo."
         }
 
-        # "Library Manager" items (file like '*Library Manager', no line) are missing /
-        # unresolved libraries, not PLC code errors; they stay listed after a successful
-        # build and never fail it on their own.
-        $codeErrors = @($errorItems | Where-Object { -not (Test-TcLibraryManagerItem $_) })
-        $libraryManagerCount = $errorItems.Count - $codeErrors.Count
+        # Category per item (#23): "Library Manager" rows are missing / unresolved libraries,
+        # not PLC code errors; they stay listed after a successful build and never fail it on
+        # their own, so data.errors counts the code errors only.
+        foreach ($item in $errorItems) {
+            $item | Add-Member -NotePropertyName 'category' -NotePropertyValue (Get-TcErrorItemCategory $item) -Force
+        }
+        $codeErrors = @($errorItems | Where-Object { $_.category -eq 'code' })
+        $libraryErrorItems = @($errorItems | Where-Object { $_.category -eq 'library' })
+        # code + other: what the failure summary and the per-project status look at
+        $nonLibraryErrors = @($errorItems | Where-Object { $_.category -ne 'library' })
+        $libraryErrorCount = $null
+        if ($null -eq $errorListError) {
+            $errorCount = $codeErrors.Count
+            $libraryErrorCount = $libraryErrorItems.Count
+        }
         # Warnings: also drop rows without a file (the XAE build-summary row "... build for
         # platform ... failed" is listed as a Warning without project/file/line and survives
         # the next successful build).
@@ -280,7 +298,7 @@
             $decidedBy = 'LastBuildInfo'
         }
         elseif ($null -eq $errorListError) {
-            $realErrors = @($codeErrors | Where-Object { $_.file -notlike '*Library Manager' -and $null -ne $_.line -and $_.line -gt 0 })
+            $realErrors = @($codeErrors | Where-Object { $null -ne $_.line -and $_.line -gt 0 })
             if ($realErrors.Count -gt 0) {
                 $buildSucceeded = $false
                 $decidedBy = 'ErrorList'
@@ -303,7 +321,7 @@
                 if ($buildSucceeded -eq $true) { $st = 'built' }
                 else {
                     $pattern = "[\\/]$([regex]::Escape($p.name))[\\/]"
-                    $hit = @($codeErrors | Where-Object { [string]$_.project -ieq $p.name -or ([string]$_.file -match $pattern) })
+                    $hit = @($nonLibraryErrors | Where-Object { [string]$_.project -ieq $p.name -or ([string]$_.file -match $pattern) })
                     $st = if ($hit.Count -gt 0) { 'failed' } else { 'unknown' }
                 }
             }
@@ -326,11 +344,13 @@
             coverageComplete = $coverageComplete
             solutionConfiguration = $coverage.configuration
             errors         = $errorCount
+            libraryErrors  = $libraryErrorCount
             warnings       = $warningCount
             messages       = $messages
             failedProjects = $failedProjects
             errorItems     = $errorItems
             codeErrors     = $codeErrors
+            libraryErrorItems = $libraryErrorItems
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
             buildSec       = $buildSec
@@ -366,10 +386,10 @@
         }
         elseif (-not $buildSucceeded) {
             $summary = "Build failed: $($codeErrors.Count) code error(s)"
-            if ($libraryManagerCount -gt 0) { $summary += " (+$libraryManagerCount Library Manager)" }
-            if ($codeErrors.Count -gt 0) {
+            if ($libraryErrorItems.Count -gt 0) { $summary += " (+$($libraryErrorItems.Count) library)" }
+            if ($nonLibraryErrors.Count -gt 0) {
                 $parts = @()
-                foreach ($item in @($codeErrors | Select-Object -First 3)) {
+                foreach ($item in @($nonLibraryErrors | Select-Object -First 3)) {
                     $loc = ''
                     if (-not [string]::IsNullOrWhiteSpace($item.file)) {
                         $loc = [IO.Path]::GetFileNameWithoutExtension([string]$item.file)
@@ -380,7 +400,7 @@
                     $parts += "$codeText$($item.description)$loc"
                 }
                 $summary += '. ' + ($parts -join '; ')
-                if ($codeErrors.Count -gt 3) { $summary += " ... (+$($codeErrors.Count - 3) more)" }
+                if ($nonLibraryErrors.Count -gt 3) { $summary += " ... (+$($nonLibraryErrors.Count - 3) more)" }
             }
             elseif ($null -ne $errorListError) {
                 $summary += " ($failedProjects project(s) failed; Error List not readable: $errorListError)"
