@@ -47,6 +47,7 @@ $global:FakeIde = @{}
             $o = (Get-Variable -Name obj -Scope 1 -ValueOnly)
             if ($o.PSObject.Properties['Busy'] -and $o.Busy) { throw "IDE_BUSY: '$OperationName' failed after $MaxRetries attempts - the IDE rejected the call (RPC_E_CALL_REJECTED 0x80010001)." }
         }
+        if ($OperationName -eq 'Solution.FullName (guard)' -and $global:GuardThrows) { throw 'RPC_E_SERVERCALL_RETRYLATER (mock: XAE busy after the reload)' }
         & $script:UnitOrigComRetry @PSBoundParameters
     }
 }
@@ -118,7 +119,7 @@ try {
     # --- session record of this very process (busy, consistent title, no dialog) -> strong, attached ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
     $global:FakeIde = @{ 601 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }; 602 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
-    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Demo.sln' } $sln
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Other.sln' } $sln   # not a same-named Demo.sln: that would make the title useless (same-name-elsewhere-weak)
     Set-Rot @(@{ Pid = 602; Mode = 'busy' }, @{ Pid = 601; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'connect-record-strong' (-not $r.success -and $r.error.code -eq 'IDE_BUSY' -and $r.data.ideProcessId -eq 601 -and $r.data.matchedBy -eq 'session-record' -and $r.data.attached) "code=$($r.error.code) pid=$($r.data.ideProcessId) by=$($r.data.matchedBy)"
@@ -243,6 +244,36 @@ try {
     & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $fakeSol $fakeDocs
     $r = Reset-TcSolution -TimeoutSec 10
     Check 'reset-mismatch-refused' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and -not $global:ClosedSolution -and $r.data.openSolution -eq 'C:\Elsewhere\Other.sln') "code=$($r.error.code) closed=$global:ClosedSolution"
+    # --- blocker: guard read keeps failing -> RESET_SOLUTION_UNVERIFIED, nothing closed ---
+    $global:ClosedSolution = $false
+    $okSol = [PSCustomObject]@{ FullName = $sln }
+    $okSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $okSol $fakeDocs
+    $global:GuardThrows = $true
+    $r = Reset-TcSolution -TimeoutSec 5
+    $global:GuardThrows = $false
+    Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
+
+    # --- should-fix 2: a same-named .sln known open elsewhere -> the title does not corroborate a record ---
+    $global:FakeIde = @{ 981 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 981 -Solution $s } $sln
+    $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s -KnownSolutions @('C:\Elsewhere\Demo.sln') } @([PSCustomObject]@{ pid = 981; busy = $true }) $sln)
+    Check 'same-name-elsewhere-weak' ($hits.Count -eq 1 -and -not $hits[0].Strong -and $null -eq $hits[0].CorroboratedBy -and $hits[0].Contradiction -match 'same-named') "strong=$($hits[0].Strong) why=$($hits[0].Contradiction)"
+    $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s } @([PSCustomObject]@{ pid = 981; busy = $true }) $sln)
+    Check 'record-title-corroborated' ($hits.Count -eq 1 -and $hits[0].Strong -and $hits[0].CorroboratedBy -eq 'window-title') "strong=$($hits[0].Strong) by=$($hits[0].CorroboratedBy)"
+
+    # --- nit: weak match on an IDE this session launched -> IDE_BLOCKED_OWN hint, no -LaunchIfBlocked advice ---
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }
+    $global:FakeIde = @{ 991 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { Add-TcLaunchedIde -ProcessId 991 }
+    Set-Rot @(@{ Pid = 991; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    Check 'weak-own-ide-hint' (-not $r.data.attached -and $r.data.launchedBySession -and $r.error.hint -match 'Stop-Process' -and $r.error.hint -match 'launchedBySession = true') "launched=$($r.data.launchedBySession) hint=$($r.error.hint.Substring(0, 30))"
+
+    # --- nit: unreadable SilentMode original is remembered as 'unknown', never as true ---
+    & $mod { Set-TcIdeSilentOriginal -ProcessId 991 -Value 'unknown' }
+    $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 991 }
+    Check 'silent-unknown' ($so -is [string] -and $so -eq 'unknown') "value=$so"
 }
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }

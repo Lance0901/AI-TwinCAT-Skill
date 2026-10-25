@@ -114,14 +114,16 @@ function Get-TcIdeSilentOriginal {
     <#
     .SYNOPSIS
         The ITcAutomationSettings.SilentMode value IDE process -ProcessId had before this module
-        first set it, or $null when not known.
+        first set it, 'unknown' when it could not be read then, or $null when not recorded.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
     if ($null -eq $script:TcSilentOriginals) { return $null }
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
     if ($null -eq $key -or -not $script:TcSilentOriginals.ContainsKey($key)) { return $null }
-    [bool]$script:TcSilentOriginals[$key]
+    $v = $script:TcSilentOriginals[$key]
+    if ($v -is [string]) { return [string]$v }   # 'unknown': the original could not be read
+    [bool]$v
 }
 
 function Set-TcIdeSilentOriginal {
@@ -130,5 +132,7 @@ function Set-TcIdeSilentOriginal {
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
     if ($null -eq $key) { return }
     if ($null -eq $script:TcSilentOriginals) { $script:TcSilentOriginals = @{} }
-    if ($null -eq $Value) { $script:TcSilentOriginals.Remove($key) } else { $script:TcSilentOriginals[$key] = [bool]$Value }
+    if ($null -eq $Value) { $script:TcSilentOriginals.Remove($key) }
+    elseif ($Value -is [string]) { $script:TcSilentOriginals[$key] = 'unknown' }
+    else { $script:TcSilentOriginals[$key] = [bool]$Value }
 }

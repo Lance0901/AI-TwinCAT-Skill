@@ -22,11 +22,17 @@ function Find-TcBlockedSolutionIde {
             VS2022). Same-named copies in other folders look alike (measured 2026-10-25), so a
             title alone is weak.
         A record / module state can be stale (the solution was switched in the GUI), so it only
-        counts as STRONG when nothing contradicts it AND a current fact agrees (title starts with
-        the solution name, or a dialog path inside the folder): a dialog naming project files
-        elsewhere ('outside'), a title that does not start with the solution name, a record of
-        another solution, or no current fact at all (empty title, no dialog path) makes it weak. dialog-path is strong unless the title contradicts it. Weak matches are reported
-        but never attached by Connect-TcIde.
+        counts as STRONG when nothing contradicts it AND a current fact agrees (CorroboratedBy):
+        a dialog path inside the folder, or a title that starts with the solution name while no
+        same-named .sln is known to be open elsewhere (-KnownSolutions: readable ROT candidates,
+        live session records). A dialog naming project files elsewhere ('outside'), a title
+        that does not start with the solution name, a record of another solution, or no
+        current fact at all (empty title, no dialog path) makes it weak. dialog-path is strong
+        unless the title contradicts it. Weak matches are reported but never attached by
+        Connect-TcIde.
+        Residual risk: a title is the only corroboration when the dialog has no path; a
+        same-named .sln in another folder that is open but NOT known (no ROT entry readable, no
+        record, e.g. opened by hand in an IDE that is blocked as well) cannot be told apart.
         A candidate without a known pid is skipped; an unreadable (empty Version, not busy)
         candidate without a dialog is skipped too (most likely an IDE shutting down).
         Limits: 8.3 short names and UNC paths in the dialog text are compared as text after
@@ -40,10 +46,13 @@ function Find-TcBlockedSolutionIde {
         Upper bound of each UI Automation scan. Default 5.
     .PARAMETER PreviousProcessId / PreviousStartTime / PreviousSolution
         The IDE the module was connected to before this Connect-TcIde (0 / $null = none).
+    .PARAMETER KnownSolutions
+        Solutions known to be open in other IDEs (readable ROT candidates).
     .OUTPUTS
         One PSCustomObject per matching candidate:
         @{ Candidate; Dialog; MatchedBy ('module-state' | 'session-record' | 'dialog-path' |
-        'window-title'); Strong ([bool]); Contradiction ([string] or $null); WindowTitle },
+        'window-title'); Strong ([bool]); Contradiction ([string] or $null); CorroboratedBy
+        ('dialog-path' | 'window-title' | $null); WindowTitle },
         strong matches first.
     #>
     [CmdletBinding()]
@@ -65,12 +74,22 @@ function Find-TcBlockedSolutionIde {
         [object]$PreviousStartTime,
 
         [Parameter()]
-        [string]$PreviousSolution
+        [string]$PreviousSolution,
+
+        [Parameter()]
+        [string[]]$KnownSolutions = @()
     )
 
     $slnName = [IO.Path]::GetFileNameWithoutExtension($SolutionPath)
     $slnDir = [IO.Path]::GetDirectoryName($SolutionPath).TrimEnd('\') + '\'
     $titlePattern = '^' + [regex]::Escape($slnName) + '(\s|$)'
+    # A same-named .sln in another folder that is known to be open (readable ROT candidates,
+    # live session records): then a window title cannot tell the two apart and never corroborates.
+    $known = @($KnownSolutions) + @(Read-TcIdeSolutionRecords | Where-Object { Test-TcIdeRecordAlive -Record $_ } | ForEach-Object { [string]$_.solution })
+    $sameNameElsewhere = @($known | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            [string]::Equals([IO.Path]::GetFileNameWithoutExtension($_), $slnName, [StringComparison]::OrdinalIgnoreCase) -and
+            -not [string]::Equals($_, $SolutionPath, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -Unique
 
     $hits = @()
     foreach ($c in @($Candidates)) {
@@ -107,6 +126,10 @@ function Find-TcBlockedSolutionIde {
             }
         }
 
+        # What CURRENT fact supports the match: a dialog path inside the folder, or the title
+        # (only when no same-named solution is known to be open elsewhere).
+        $titleCorroborates = ($titleState -eq 'match' -and @($sameNameElsewhere).Count -eq 0)
+        $corroboratedBy = if ($pathVerdict -eq 'inside') { 'dialog-path' } elseif ($titleCorroborates) { 'window-title' } else { $null }
         $contradiction = $null
         if ($pathVerdict -eq 'outside') { $contradiction = 'the dialog names project files outside the solution folder' }
         elseif ($titleState -eq 'mismatch') { $contradiction = "the window title '$title' does not start with '$slnName'" }
@@ -119,8 +142,8 @@ function Find-TcBlockedSolutionIde {
             if ($null -eq $contradiction -and $recordVerdict -eq 'other') { $contradiction = "the session record says '$recorded'" }
             # Strong only with a CURRENT fact that agrees (title or dialog path): a record /
             # module state alone may be stale (the solution was switched in the GUI).
-            if ($null -eq $contradiction -and $titleState -ne 'match' -and $pathVerdict -ne 'inside') {
-                $contradiction = 'no current evidence (window title empty, no dialog path) confirms the recorded solution'
+            if ($null -eq $contradiction -and $null -eq $corroboratedBy) {
+                $contradiction = if ($titleState -eq 'match') { "the window title cannot confirm it: a same-named solution is open elsewhere ($(@($sameNameElsewhere) -join ', '))" } else { 'no current evidence (window title empty, no dialog path) confirms the recorded solution' }
             }
             $strong = ($null -eq $contradiction)
         }
@@ -146,7 +169,8 @@ function Find-TcBlockedSolutionIde {
             Dialog        = $dialog
             MatchedBy     = $matchedBy
             Strong        = $strong
-            Contradiction = $(if ($strong) { $null } else { $contradiction })
+            Contradiction  = $(if ($strong) { $null } else { $contradiction })
+            CorroboratedBy = $corroboratedBy
             WindowTitle   = $title
         }
     }

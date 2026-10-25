@@ -284,11 +284,12 @@ function Connect-TcIde {
     # Its DTE answered RPC_E_CALL_REJECTED or an empty Version, so it never matched above.
     # Launching a second IDE for the same .sln (or, with -NoLaunch, answering IDE_NOT_FOUND) would
     # be wrong: identify it without COM (Find-TcBlockedSolutionIde) and report it instead.
-    #  - strong evidence (session record of this very process, or a dialog path inside the
-    #    solution folder): the blocked instance is ATTACHED (module state points at it,
-    #    ITcSysManager stays $null) so that Get-TcIdeModalDialog and Reset-TcSolution can act on
-    #    it right away;
-    #  - weak evidence (window title = solution name only, could be a same-named copy elsewhere):
+    #  - strong evidence: module-state / session-record corroborated by a current fact (a title
+    #    that starts with the solution name while no same-named .sln is known elsewhere, or a
+    #    dialog path inside the folder) and not contradicted, or an uncontradicted dialog-path.
+    #    The blocked instance is ATTACHED (module state points at it, ITcSysManager stays $null)
+    #    so that Get-TcIdeModalDialog and Reset-TcSolution can act on it right away;
+    #  - weak / contradicted / ambiguous evidence (title only, stale record, two strong IDEs):
     #    nothing is launched and nothing is attached - another agent's IDE must never become ours
     #    (a later Disconnect-TcIde -Quit would close it).
     if ($null -eq $chosen -and $null -ne $normalizedSolutionPath) {
@@ -300,7 +301,7 @@ function Connect-TcIde {
         }
         $busyPool = @($busyPool) + @($unreadablePool)
         if ($busyPool.Count -gt 0) {
-            $blocked = @(Find-TcBlockedSolutionIde -Candidates $busyPool -SolutionPath $normalizedSolutionPath -PreviousProcessId $previousIdePid -PreviousStartTime $previousIdeStart -PreviousSolution $previousSolution)
+            $blocked = @(Find-TcBlockedSolutionIde -Candidates $busyPool -SolutionPath $normalizedSolutionPath -PreviousProcessId $previousIdePid -PreviousStartTime $previousIdeStart -PreviousSolution $previousSolution -KnownSolutions @($readyCandidates | ForEach-Object { $_.normalizedSolution } | Where-Object { $_ }))
             # -LaunchIfBlocked: the caller knows the title-only match is someone else's IDE.
             if ($LaunchIfBlocked) { $blocked = @($blocked | Where-Object { $_.Strong }) }
             if ($blocked.Count -gt 0) {
@@ -334,10 +335,12 @@ function Connect-TcIde {
                     probe             = $(if ($bc.busy) { 'busy (RPC_E_CALL_REJECTED after 3 attempts)' } else { 'unreadable (DTE.Version empty)' })
                     attached          = $attach
                     notAttachedReason = $(if ($attach) { $null } else { $whyNot })
+                    corroboratedBy    = $hit.CorroboratedBy
+                    launchedBySession = (Test-TcLaunchedIde -ProcessId $blockedPid)
                     ownedBySession    = ($attach -and $script:TcIdeSelectedBy -eq 'launched')
                     launched          = $false
                     solution          = $normalizedSolutionPath
-                    blockedCandidates = @($blocked | ForEach-Object { [PSCustomObject]@{ pid = $_.Candidate.pid; progId = $_.Candidate.progId; windowTitle = $_.WindowTitle; matchedBy = $_.MatchedBy; strong = [bool]$_.Strong; contradiction = $_.Contradiction; dialogTitle = $(if ($null -ne $_.Dialog) { $_.Dialog.Title } else { $null }) } })
+                    blockedCandidates = @($blocked | ForEach-Object { [PSCustomObject]@{ pid = $_.Candidate.pid; progId = $_.Candidate.progId; windowTitle = $_.WindowTitle; matchedBy = $_.MatchedBy; strong = [bool]$_.Strong; contradiction = $_.Contradiction; corroboratedBy = $_.CorroboratedBy; dialogTitle = $(if ($null -ne $_.Dialog) { $_.Dialog.Title } else { $null }) } })
                     candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
                     connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
                 }
@@ -346,7 +349,7 @@ function Connect-TcIde {
                     $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $hit.Dialog
                     return New-TcResult -Success $false `
                         -ErrorMessage "IDE_BLOCKED_SAME_NAME (weak / ambiguous evidence): the IDE pid $blockedPid $evidence and $weakText. No second IDE was launched and nothing was attached." `
-                        -ErrorCode $(if ($null -ne $hit.Dialog) { 'IDE_MODAL_DIALOG' } else { 'IDE_BUSY' }) -Hint (Get-TcErrorHint -Code 'IDE_BLOCKED_SAME_NAME') -Data $blockedData
+                        -ErrorCode $(if ($null -ne $hit.Dialog) { 'IDE_MODAL_DIALOG' } else { 'IDE_BUSY' }) -Hint (Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })) -Data $blockedData
                 }
                 if ($null -ne $hit.Dialog) {
                     return New-TcModalDialogResult -Dialog $hit.Dialog -Operation "Connect-TcIde -SolutionPath (IDE pid $blockedPid $evidence; no second IDE launched)" -Data $blockedData
@@ -498,11 +501,14 @@ function Connect-TcIde {
         if ($null -ne $settings) {
             # The original is read once per IDE process: on a later connect the IDE already shows
             # the SilentMode = true we set, so the remembered value is used instead.
+            # An original that could not be read is remembered as 'unknown': after we set true,
+            # a later read would wrongly take that true for the original (then nothing is restored).
             $silentOriginal = Get-TcIdeSilentOriginal -ProcessId $ideProcessId
-            if ($null -eq $silentOriginal) {
+            if ($silentOriginal -is [string]) { $silentOriginal = $null }   # 'unknown'
+            elseif ($null -eq $silentOriginal) {
                 try { $silentOriginal = [bool](Invoke-TcComRetry -OperationName 'SilentMode read (original)' -ScriptBlock { $settings.SilentMode }) }
                 catch { $silentOriginal = $null; Write-Verbose "SilentMode original value unreadable ($($_.Exception.Message))" }
-                if ($null -ne $silentOriginal -and $ideProcessId -gt 0) { Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $silentOriginal }
+                if ($ideProcessId -gt 0) { Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $(if ($null -eq $silentOriginal) { 'unknown' } else { $silentOriginal }) }
             }
             $script:TcSilentModeOriginal = $silentOriginal
             Invoke-TcComRetry -OperationName 'SilentMode' -ScriptBlock { $settings.SilentMode = $true } | Out-Null
