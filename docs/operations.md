@@ -63,7 +63,7 @@ Adds a POU to the PLC project.
 | ReturnType | string | No | Return type for Functions (default: BOOL) |
 | PlcProjectPath | string | No | Override the target folder (default: `<Plc> Project^POUs`, or the project root if there is no such folder); result has `folderPath` |
 
-Language ST. Created with `ITcSmTreeItem::CreateChild` (sub type 602 / 603 / 604) and read back. **Returns:** `{ name, type, path, folderPath, objectKind, itemType, language, declaration }`; an existing name -> `POU_CREATE_FAILED` (`exists:`).
+Language ST. Created with `ITcSmTreeItem::CreateChild` (sub type 602 / 603 / 604) and read back (ItemType, `Language` = ST, a Function header with `: <ReturnType>`). **Returns:** `{ name, type, path, folderPath, objectKind, itemType, language, declaration }`; a name that exists anywhere in the PLC project -> `POU_CREATE_FAILED` (`exists:` with its path); a modal dialog in XAE -> `IDE_MODAL_DIALOG`, nothing created.
 
 ### Add-TcGvl / `AddGvl`
 Adds a Global Variable List.
@@ -117,7 +117,7 @@ Reads code from a POU.
 | PouName | string | Yes | POU / DUT / GVL name |
 | PouPath | string | No | Tree path; auto-detected when omitted |
 
-**Returns:** `{ pou, pouPath, resolvedBy, objectKind, pouType, itemType, itemTypeName, hasImplementation, declaration, implementation }`. `objectKind` = POU / DUT / GVL / ITF / METHOD / ... (from ItemType); `hasImplementation=false` (DUT, GVL, ITF) -> `implementation` is null because the object has none. A failed read is `POU_READ_FAILED`.
+**Returns:** `{ pou, pouPath, resolvedBy, objectKind, pouType, itemType, itemTypeName, language, hasImplementation, implementationReadable, declaration, implementation }`. `implementationReadable=false`: the POU has an implementation part that did not come back as text. `objectKind` = POU / DUT / GVL / ITF / METHOD / ... (from ItemType); `hasImplementation=false` (DUT, GVL, ITF) -> `implementation` is null because the object has none. A failed read is `POU_READ_FAILED`.
 
 ---
 

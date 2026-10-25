@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-25T09:22:04Z",
+    "generatedAt":  "2026-10-25T09:56:44Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -104,7 +104,7 @@
                   {
                       "name":  "AddPou",
                       "cmdlet":  "Add-TcPou",
-                      "description":  "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), declaration (default header written by XAE). Then fill it with WritePouCode. A name that already exists -> POU_CREATE_FAILED (nothing created; error.hint says what to do).",
+                      "description":  "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), language (read back from the new item, must be ST), declaration (default header written by XAE; a Function header must contain : ReturnType). Then fill it with WritePouCode. A name that already exists anywhere in the PLC project -> POU_CREATE_FAILED with its path (nothing created); a failed readback names the step and that the object stays in the tree (error.hint says what to do). A modal dialog in XAE -> IDE_MODAL_DIALOG before anything is created.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -433,7 +433,7 @@
                   {
                       "name":  "GetPouCode",
                       "cmdlet":  "Get-TcPouCode",
-                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.hasImplementation, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF): implementation is null because the object has no implementation part, the whole source is in declaration. A POU always returns an implementation string (empty when there is no code). A read that fails returns POU_READ_FAILED, never null.",
+                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws returns POU_READ_FAILED.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -1053,7 +1053,7 @@
                   {
                       "name":  "WritePouCode",
                       "cmdlet":  "Write-TcPouCode",
-                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile.",
+                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,

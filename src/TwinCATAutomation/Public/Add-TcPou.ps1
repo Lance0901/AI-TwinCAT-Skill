@@ -38,8 +38,10 @@ function Add-TcPou {
         return New-TcNoSysManagerResult
     }
 
-    # CreateChild sub types (InfoSys "ITcSmTreeItem Item Types":
-    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html)
+    # Sub types = the ItemType values of InfoSys "ITcSmTreeItem Item Types"
+    # (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html); the
+    # CreateChild page confirms 603 / 604 as CreateChild sub types, 602 is measured (2026-10-25,
+    # 4024 TcXaeShell.DTE.15.0 and 4026 VisualStudio.DTE.17.0).
     $pouSubTypes = @{
         'Program'       = 602   # TREEITEMTYPE_PLCPOUPROG
         'Function'      = 603   # TREEITEMTYPE_PLCPOUFUNC
@@ -49,9 +51,9 @@ function Add-TcPou {
     # { language, return type } (InfoSys ITcSmTreeItem::CreateChild,
     # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html; that
     # page lists 604 and 603, 602 takes the same integer - measured 2026-10-25 on 4024 and 4026).
-    # IECLANGUAGE_ST = 1 (TCatSysManagerLib 3.4.0.0 interop enum IECLANGUAGETYPES; 6 is LD).
-    # A declaration string as vInfo is parsed as a language name and fails with
-    # "Requested value '...' was not found" (E_FAIL, measured 2026-10-25 on 4024).
+    # IECLANGUAGE_ST = 1: TCatSysManagerLib 3.4.0.0 interop enum IECLANGUAGETYPES, read by
+    # reflection 2026-10-25 (6 is LD). A declaration string as vInfo is parsed as a language
+    # name and fails with "Requested value '...' was not found" (E_FAIL, measured 2026-10-25 on 4024).
     $iecLanguageSt = 1
 
     try {
@@ -61,9 +63,18 @@ function Add-TcPou {
         $subType = $pouSubTypes[$Type]
         # assigned in the branches: an if-expression would unroll the array into object[]
         $vInfo = $iecLanguageSt
-        if ($Type -eq 'Function') { [string[]]$vInfo = @([string]$iecLanguageSt, $ReturnType) }
+        $declPattern = $null
+        if ($Type -eq 'Function') {
+            [string[]]$vInfo = @([string]$iecLanguageSt, $ReturnType)
+            # read back: the header XAE writes is "FUNCTION <name> :<type>" (measured 2026-10-25)
+            $declPattern = '(?im)^\s*FUNCTION\s+' + [regex]::Escape($Name) + '\s*:\s*' + [regex]::Escape($ReturnType) + '(?![A-Za-z0-9_])'
+        }
 
-        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo
+        # the language is read back from the new item (ITcSmTreeItem.Language) and must be ST
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo -ExpectedLanguage 'ST' -DeclarationPattern $declPattern
+        if ($created.ContainsKey('ModalDialog')) {
+            return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
+        }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
@@ -73,7 +84,7 @@ function Add-TcPou {
             folderPath  = $folderInfo.Path
             objectKind  = $kind.ObjectKind
             itemType    = $created.ItemType
-            language    = 'ST'
+            language    = $created.Language
             declaration = $created.Declaration
         })
     }

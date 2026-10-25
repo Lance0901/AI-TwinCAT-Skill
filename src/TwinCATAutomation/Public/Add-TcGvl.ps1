@@ -38,11 +38,15 @@ function Add-TcGvl {
         }
         $decl += "END_VAR"
 
-        # 615 = TREEITEMTYPE_PLCGVL (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html).
+        # 615 = TREEITEMTYPE_PLCGVL, ItemType value from https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html
+        # (used as CreateChild sub type: measured 2026-10-25 on 4024 and 4026).
         # Created without vInfo, then the declaration is written and read back. A string vInfo
         # is stored verbatim as declaration: the old '<Declaration><![CDATA[...]]>' wrapper ended
         # up in the GVL source (measured 2026-10-25 on 4024).
         $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType 615 -Declaration $decl
+        if ($created.ContainsKey('ModalDialog')) {
+            return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
+        }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{

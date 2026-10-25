@@ -28,7 +28,7 @@ describe('tools.json (generated catalog)', () => {
   // #22: GetPouCode tells "no implementation part" (DUT / GVL / ITF) apart from a failed read.
   test('GetPouCode describes objectKind / hasImplementation / implementation null', () => {
     const desc = catalog.get('GetPouCode').description;
-    for (const word of ['objectKind', 'hasImplementation', 'DUT', 'GVL', 'POU_READ_FAILED']) {
+    for (const word of ['objectKind', 'hasImplementation', 'implementationReadable', 'data.language', 'DUT', 'GVL', 'POU_READ_FAILED']) {
       assert.ok(desc.includes(word), `GetPouCode description lacks ${word}: ${desc}`);
     }
     assert.match(desc, /hasImplementation=false[^.]*implementation is null/);
@@ -45,7 +45,7 @@ describe('tools.json (generated catalog)', () => {
   // #17: AddPou / AddDut / AddGvl report what they created and how a failure is reported.
   test('AddPou / AddDut / AddGvl describe objectKind, itemType and their *_CREATE_FAILED code', () => {
     const expect = {
-      AddPou: ['objectKind', '604 FunctionBlock', 'POU_CREATE_FAILED'],
+      AddPou: ['objectKind', '604 FunctionBlock', 'language', 'POU_CREATE_FAILED', 'IDE_MODAL_DIALOG'],
       AddDut: ['objectKind', '606 Struct', '623 Alias', 'DUT_CREATE_FAILED'],
       AddGvl: ['objectKind', '615', 'GVL_CREATE_FAILED'],
     };

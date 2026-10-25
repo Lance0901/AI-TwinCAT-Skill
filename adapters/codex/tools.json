@@ -32,7 +32,7 @@
     },
     {
       "name": "AddPou",
-      "description": "Add POU (Program, FunctionBlock, or Function)",
+      "description": "Add a Structured Text POU (Program, FunctionBlock or Function) and read it back (data.path, objectKind, itemType, language, declaration); an existing name -> POU_CREATE_FAILED",
       "parameters": {
         "Name": { "type": "string", "required": true },
         "Type": { "type": "string", "enum": ["Program", "FunctionBlock", "Function"], "required": true },

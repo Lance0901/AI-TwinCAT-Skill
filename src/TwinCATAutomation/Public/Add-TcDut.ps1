@@ -36,8 +36,10 @@ function Add-TcDut {
         return New-TcNoSysManagerResult
     }
 
-    # CreateChild sub types (InfoSys "ITcSmTreeItem Item Types":
-    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html).
+    # Sub types = the ItemType values of InfoSys "ITcSmTreeItem Item Types"
+    # (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html); using
+    # them as CreateChild sub types for DUTs is measured (2026-10-25, 4024 TcXaeShell.DTE.15.0
+    # and 4026 VisualStudio.DTE.17.0), the CreateChild page only names 603 / 604.
     # 610-613 (used before #17) are interface method / property types: XAE answers
     # "Creating the child type 'TREEITEMTYPE_PLCITFMETH' is not possible on parent node type
     # 'TREEITEMTYPE_PLCFOLDER'" (E_FAIL, measured 2026-10-25 on 4024).
@@ -70,7 +72,9 @@ function Add-TcDut {
                     $decl += ($entries -join ",`n") + "`n"
                 }
                 else {
-                    # an ENUM needs at least one member to compile; same placeholder XAE writes
+                    # an ENUM needs at least one member to compile; same placeholder XAE writes for
+                    # CreateChild 605 without vInfo ("enum_member := 0", measured 2026-10-25 on 4024
+                    # TcXaeShell.DTE.15.0)
                     $decl += "    enum_member := 0`n"
                 }
                 $decl += ");`nEND_TYPE"
@@ -98,6 +102,9 @@ function Add-TcDut {
         $vInfo = $null
         if ($DutType -eq 'Alias') { $vInfo = $baseType }
         $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $dutSubTypes[$DutType] -VInfo $vInfo -Declaration $decl
+        if ($created.ContainsKey('ModalDialog')) {
+            return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
+        }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{

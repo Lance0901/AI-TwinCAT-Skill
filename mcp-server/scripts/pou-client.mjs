@@ -59,7 +59,7 @@ try {
   if (!c.success) throw new Error('ConnectIde failed');
   if (netId) await call('SetTarget', { AmsNetId: netId, NoPlatformSwitch: true }, `SetTarget ${netId} NoPlatformSwitch`);
 
-  await call('AddPou', { Name: `FB_${s}`, Type: 'FunctionBlock' }, `AddPou FB_${s}`, (b) => b.success && b.data.objectKind === 'POU' && b.data.itemType === 604);
+  await call('AddPou', { Name: `FB_${s}`, Type: 'FunctionBlock' }, `AddPou FB_${s}`, (b) => b.success && b.data.objectKind === 'POU' && b.data.itemType === 604 && b.data.language === 'ST');
   await call('AddPou', { Name: `PRG_${s}`, Type: 'Program' }, `AddPou PRG_${s}`, (b) => b.success && b.data.itemType === 602);
   await call('AddPou', { Name: `F_${s}`, Type: 'Function', ReturnType: 'INT' }, `AddPou F_${s}`, (b) => b.success && b.data.itemType === 603 && /:\s*INT/.test(b.data.declaration));
   await call('AddDut', { Name: `ST_${s}`, DutType: 'Struct', Fields: { nA: 'INT', bB: 'BOOL' } }, `AddDut ST_${s}`, (b) => b.success && b.data.objectKind === 'DUT' && b.data.itemType === 606);
@@ -68,8 +68,10 @@ try {
   await call('AddDut', { Name: `A_${s}`, DutType: 'Alias', AliasType: 'DINT' }, `AddDut A_${s}`, (b) => b.success && b.data.itemType === 623);
   await call('AddGvl', { Name: `GVL_${s}`, Variables: { gnX: 'INT' } }, `AddGvl GVL_${s}`, (b) => b.success && b.data.objectKind === 'GVL' && /gnX : INT/.test(b.data.declaration) && !/CDATA/.test(b.data.declaration));
   await call('AddDut', { Name: `ST_${s}`, DutType: 'Struct' }, `AddDut ST_${s} again (expect DUT_CREATE_FAILED)`, (b) => failsWith('DUT_CREATE_FAILED')(b) && Boolean(b.error.hint));
+  await call('AddGvl', { Name: `FB_${s}` }, `AddGvl FB_${s}: name used by the FB (expect GVL_CREATE_FAILED with its path)`,
+    (b) => failsWith('GVL_CREATE_FAILED')(b) && String(b.error.message).includes(`POUs^FB_${s}`));
 
-  await call('GetPouCode', { PouName: `FB_${s}` }, `GetPouCode FB_${s}`, (b) => b.success && b.data.objectKind === 'POU' && b.data.hasImplementation === true && typeof b.data.implementation === 'string');
+  await call('GetPouCode', { PouName: `FB_${s}` }, `GetPouCode FB_${s}`, (b) => b.success && b.data.objectKind === 'POU' && b.data.hasImplementation === true && b.data.implementationReadable === true && b.data.language === 'ST' && typeof b.data.implementation === 'string');
   await call('GetPouCode', { PouName: `ST_${s}` }, `GetPouCode ST_${s}`, (b) => b.success && b.data.objectKind === 'DUT' && b.data.pouType === 'Struct' && b.data.hasImplementation === false && b.data.implementation === null);
   await call('GetPouCode', { PouName: `GVL_${s}` }, `GetPouCode GVL_${s}`, (b) => b.success && b.data.objectKind === 'GVL' && b.data.hasImplementation === false && b.data.implementation === null);
 

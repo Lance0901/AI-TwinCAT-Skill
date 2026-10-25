@@ -14,8 +14,16 @@ function Get-TcPouCode {
                                (from ItemType, see Get-TcPlcObjectKind); data.pouType Program /
                                Function / FunctionBlock (POU) or Struct / Enum / Union / Alias (DUT)
         data.hasImplementation false for DUT / GVL / ITF: implementation is then $null (the object
-                               has none). For a POU implementation is a string ('' when empty).
-                               A failed read returns POU_READ_FAILED, never implementation=$null.
+                               has none) and implementationReadable is $null. For a POU
+                               implementation is a string ('' when empty, implementationReadable
+                               true); implementationReadable false = the POU has an
+                               implementation part that did not come back as text
+                               (implementation $null; also how a failing property get ends up,
+                               since Windows PowerShell turns a throwing getter into $null). A
+                               COM call that throws returns POU_READ_FAILED.
+        data.language          ST / LD / FBD / SFC / CFC / IL ... (ITcSmTreeItem.Language), $null for
+                               DUT / GVL / ITF. For LD / FBD the implementation is XAE's XML
+                               (<NWL><XmlArchive>...), not ST text (measured 2026-10-25 on 4024 and 4026).
     #>
     [CmdletBinding()]
     param(
@@ -48,33 +56,31 @@ function Get-TcPouCode {
         $declText = Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $pouItem.DeclarationText }
         $hasImpl = $kind.HasImplementation
         $implText = $null
+        $implReadable = $null
         if ($hasImpl -ne $false) {
+            $implText = Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText }
             if ($null -eq $hasImpl) {
-                # unknown ItemType: has an implementation when the property can be read (an item
-                # without ImplementationText gives $null through late binding: master returned
-                # implementation=null for a DUT, measured 2026-10-25 on 4024)
-                try { $implText = Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText }; $hasImpl = ($null -ne $implText) }
-                catch {
-                    if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
-                    $hasImpl = $false; $implText = $null
-                }
+                # unknown ItemType: an item without ImplementationText gives $null through late
+                # binding (as DUT / GVL / ITF do, measured 2026-10-25 on 4024 and 4026)
+                $hasImpl = ($null -ne $implText)
             }
-            else {
-                $implText = Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText }
-                if ($null -eq $implText) { $implText = '' }
-            }
+            # an empty ST body reads '' (measured 2026-10-25 on 4024 and 4026); $null on an object
+            # that has an implementation part means it could not be read as text
+            $implReadable = ($null -ne $implText)
         }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            pou               = $PouName
-            pouPath           = $r.Path
-            resolvedBy        = $r.ResolvedBy
-            objectKind        = $kind.ObjectKind
-            pouType           = $kind.PouType
-            itemType          = $kind.ItemType
-            itemTypeName      = $kind.ItemTypeName
-            hasImplementation = $hasImpl
-            declaration       = $declText
-            implementation    = $implText
+            pou                    = $PouName
+            pouPath                = $r.Path
+            resolvedBy             = $r.ResolvedBy
+            objectKind             = $kind.ObjectKind
+            pouType                = $kind.PouType
+            itemType               = $kind.ItemType
+            itemTypeName           = $kind.ItemTypeName
+            language               = $kind.Language
+            hasImplementation      = $hasImpl
+            implementationReadable = $implReadable
+            declaration            = $declText
+            implementation         = $implText
         })
     }
     catch {
