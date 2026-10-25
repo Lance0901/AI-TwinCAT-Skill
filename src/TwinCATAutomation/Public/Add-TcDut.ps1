@@ -36,17 +36,21 @@ function Add-TcDut {
         return New-TcNoSysManagerResult
     }
 
+    # CreateChild sub types (InfoSys "ITcSmTreeItem Item Types":
+    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html).
+    # 610-613 (used before #17) are interface method / property types: XAE answers
+    # "Creating the child type 'TREEITEMTYPE_PLCITFMETH' is not possible on parent node type
+    # 'TREEITEMTYPE_PLCFOLDER'" (E_FAIL, measured 2026-10-25 on 4024).
     $dutSubTypes = @{
-        'Struct' = 610
-        'Enum'   = 611
-        'Alias'  = 612
-        'Union'  = 613
+        'Enum'   = 605   # TREEITEMTYPE_PLCDUTENUM
+        'Struct' = 606   # TREEITEMTYPE_PLCDUTSTRUCT
+        'Union'  = 607   # TREEITEMTYPE_PLCDUTUNION
+        'Alias'  = 623   # TREEITEMTYPE_PLCDUTALIAS
     }
 
     try {
         # TIPC^<Plc>^<Plc> Project^DUTs (falls back to the <Plc> Project node)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'DUTs'
-        $plcProject = $folderInfo.Item
 
         # Build declaration
         switch ($DutType) {
@@ -65,6 +69,10 @@ function Add-TcDut {
                     $entries = $Fields.GetEnumerator() | ForEach-Object { "    $($_.Key) := $($_.Value)" }
                     $decl += ($entries -join ",`n") + "`n"
                 }
+                else {
+                    # an ENUM needs at least one member to compile; same placeholder XAE writes
+                    $decl += "    enum_member := 0`n"
+                }
                 $decl += ");`nEND_TYPE"
             }
             'Alias' {
@@ -82,16 +90,24 @@ function Add-TcDut {
             }
         }
 
-        $declXml = "<Declaration><![CDATA[$decl]]></Declaration>"
-        $subType = $dutSubTypes[$DutType]
-        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $plcProject.CreateChild($Name, $subType, '', $declXml) }
+        # created without vInfo (XAE writes its default declaration), then the declaration is
+        # written and read back by New-TcPlcObject (CreateChild documents no vInfo for DUTs:
+        # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html)
+        # Exception: an alias needs its base type as vInfo, without it XAE answers "Base class
+        # not specified! Parameter name: baseClass" (measured 2026-10-25 on 4024).
+        $vInfo = $null
+        if ($DutType -eq 'Alias') { $vInfo = $baseType }
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $dutSubTypes[$DutType] -VInfo $vInfo -Declaration $decl
+        $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name       = $Name
-            dutType    = $DutType
-            path       = $itemPath
-            folderPath = $folderInfo.Path
+            name        = $Name
+            dutType     = $DutType
+            path        = $created.Path
+            folderPath  = $folderInfo.Path
+            objectKind  = $kind.ObjectKind
+            itemType    = $created.ItemType
+            declaration = $created.Declaration
         })
     }
     catch {

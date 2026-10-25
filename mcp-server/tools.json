@@ -1,11 +1,11 @@
 {
-    "generatedAt":  "2026-10-22T02:35:07Z",
+    "generatedAt":  "2026-10-25T09:22:04Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
                       "name":  "AddDut",
                       "cmdlet":  "Add-TcDut",
-                      "description":  "Adds a Data Unit Type (STRUCT, ENUM, ALIAS, UNION) to the PLC project.",
+                      "description":  "Create a DUT (Struct / Enum / Union / Alias) in <Plc> Project^DUTs, write its declaration (TYPE ... END_TYPE from Fields / AliasType; an Enum without Fields gets enum_member := 0) and read it back. data: path, objectKind (DUT), itemType (605 Enum / 606 Struct / 607 Union / 623 Alias), declaration. A name that already exists or a declaration that reads back different -> DUT_CREATE_FAILED. Change it later with WritePouCode Declaration only (a DUT has no implementation).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -48,7 +48,7 @@
                   {
                       "name":  "AddGvl",
                       "cmdlet":  "Add-TcGvl",
-                      "description":  "Adds a Global Variable List (GVL) to the PLC project.",
+                      "description":  "Create a GVL in <Plc> Project^GVLs, write VAR_GLOBAL ... END_VAR from Variables and read it back. data: path, objectKind (GVL), itemType 615, declaration. A name that already exists or a declaration that reads back different -> GVL_CREATE_FAILED. Change it later with WritePouCode Declaration only (a GVL has no implementation).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -104,7 +104,7 @@
                   {
                       "name":  "AddPou",
                       "cmdlet":  "Add-TcPou",
-                      "description":  "Adds a POU (Program, Function Block, or Function) to the PLC project.",
+                      "description":  "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), declaration (default header written by XAE). Then fill it with WritePouCode. A name that already exists -> POU_CREATE_FAILED (nothing created; error.hint says what to do).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -433,7 +433,7 @@
                   {
                       "name":  "GetPouCode",
                       "cmdlet":  "Get-TcPouCode",
-                      "description":  "Reads declaration and implementation code from an existing POU.",
+                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.hasImplementation, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF): implementation is null because the object has no implementation part, the whole source is in declaration. A POU always returns an implementation string (empty when there is no code). A read that fails returns POU_READ_FAILED, never null.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -1053,7 +1053,7 @@
                   {
                       "name":  "WritePouCode",
                       "cmdlet":  "Write-TcPouCode",
-                      "description":  "Writes declaration and/or implementation code into an existing POU.",
+                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,

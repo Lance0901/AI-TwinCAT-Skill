@@ -38,44 +38,43 @@ function Add-TcPou {
         return New-TcNoSysManagerResult
     }
 
-    # POU sub-type values for ITcSmTreeItem::CreateChild
+    # CreateChild sub types (InfoSys "ITcSmTreeItem Item Types":
+    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html)
     $pouSubTypes = @{
-        'Program'       = 604   # CYCLIC_PRG
-        'FunctionBlock' = 602   # FUNCTION_BLOCK
-        'Function'      = 603   # FUNCTION
+        'Program'       = 602   # TREEITEMTYPE_PLCPOUPROG
+        'Function'      = 603   # TREEITEMTYPE_PLCPOUFUNC
+        'FunctionBlock' = 604   # TREEITEMTYPE_PLCPOUFB
     }
+    # vInfo = IEC language as integer (IECLANGUAGETYPES); a Function takes string[2]
+    # { language, return type } (InfoSys ITcSmTreeItem::CreateChild,
+    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html; that
+    # page lists 604 and 603, 602 takes the same integer - measured 2026-10-25 on 4024 and 4026).
+    # IECLANGUAGE_ST = 1 (TCatSysManagerLib 3.4.0.0 interop enum IECLANGUAGETYPES; 6 is LD).
+    # A declaration string as vInfo is parsed as a language name and fails with
+    # "Requested value '...' was not found" (E_FAIL, measured 2026-10-25 on 4024).
+    $iecLanguageSt = 1
 
     try {
         # Find POUs folder (TIPC^<Plc>^<Plc> Project^POUs on 4024 and 4026)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'POUs' -ExplicitPath $PlcProjectPath
-        $pouFolder = $folderInfo.Item
 
         $subType = $pouSubTypes[$Type]
+        # assigned in the branches: an if-expression would unroll the array into object[]
+        $vInfo = $iecLanguageSt
+        if ($Type -eq 'Function') { [string[]]$vInfo = @([string]$iecLanguageSt, $ReturnType) }
 
-        # Build XML declaration for the POU
-        $langId = 'st'  # Structured Text
-        $declXml = "<Declaration><![CDATA["
-        switch ($Type) {
-            'Program' {
-                $declXml += "PROGRAM $Name`nVAR`nEND_VAR"
-            }
-            'FunctionBlock' {
-                $declXml += "FUNCTION_BLOCK $Name`nVAR_INPUT`nEND_VAR`nVAR_OUTPUT`nEND_VAR`nVAR`nEND_VAR"
-            }
-            'Function' {
-                $declXml += "FUNCTION $Name : $ReturnType`nVAR_INPUT`nEND_VAR`nVAR`nEND_VAR"
-            }
-        }
-        $declXml += "]]></Declaration>"
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo
+        $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $pouFolder.CreateChild($Name, $subType, '', $declXml) }
-
-        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name       = $Name
-            type       = $Type
-            path       = $itemPath
-            folderPath = $folderInfo.Path
+            name        = $Name
+            type        = $Type
+            path        = $created.Path
+            folderPath  = $folderInfo.Path
+            objectKind  = $kind.ObjectKind
+            itemType    = $created.ItemType
+            language    = 'ST'
+            declaration = $created.Declaration
         })
     }
     catch {

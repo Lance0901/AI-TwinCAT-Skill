@@ -24,4 +24,36 @@ describe('tools.json (generated catalog)', () => {
       assert.ok(desc.includes('TIPC^'), `${name}.PouPath description: ${desc}`);
     }
   });
+
+  // #22: GetPouCode tells "no implementation part" (DUT / GVL / ITF) apart from a failed read.
+  test('GetPouCode describes objectKind / hasImplementation / implementation null', () => {
+    const desc = catalog.get('GetPouCode').description;
+    for (const word of ['objectKind', 'hasImplementation', 'DUT', 'GVL', 'POU_READ_FAILED']) {
+      assert.ok(desc.includes(word), `GetPouCode description lacks ${word}: ${desc}`);
+    }
+    assert.match(desc, /hasImplementation=false[^.]*implementation is null/);
+  });
+
+  test('WritePouCode: Implementation on a DUT / GVL is INVALID_PARAMS', () => {
+    const tool = catalog.get('WritePouCode');
+    assert.match(tool.description, /DUT \/ GVL[^.]*INVALID_PARAMS/);
+    assert.ok(tool.description.includes('objectKind'));
+    assert.ok(tool.inputSchema.properties.Implementation, 'WritePouCode keeps the Implementation parameter');
+    assert.ok(tool.inputSchema.properties.Declaration, 'WritePouCode keeps the Declaration parameter');
+  });
+
+  // #17: AddPou / AddDut / AddGvl report what they created and how a failure is reported.
+  test('AddPou / AddDut / AddGvl describe objectKind, itemType and their *_CREATE_FAILED code', () => {
+    const expect = {
+      AddPou: ['objectKind', '604 FunctionBlock', 'POU_CREATE_FAILED'],
+      AddDut: ['objectKind', '606 Struct', '623 Alias', 'DUT_CREATE_FAILED'],
+      AddGvl: ['objectKind', '615', 'GVL_CREATE_FAILED'],
+    };
+    for (const [name, words] of Object.entries(expect)) {
+      const desc = catalog.get(name).description;
+      for (const word of words) assert.ok(desc.includes(word), `${name} description lacks ${word}: ${desc}`);
+    }
+    assert.deepEqual(catalog.get('AddDut').inputSchema.properties.DutType.enum, ['Struct', 'Enum', 'Alias', 'Union']);
+    assert.deepEqual(catalog.get('AddPou').inputSchema.properties.Type.enum, ['Program', 'FunctionBlock', 'Function']);
+  });
 });

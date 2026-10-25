@@ -28,7 +28,6 @@ function Add-TcGvl {
     try {
         # TIPC^<Plc>^<Plc> Project^GVLs (falls back to the <Plc> Project node)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'GVLs'
-        $plcProject = $folderInfo.Item
 
         # Build declaration
         $decl = "VAR_GLOBAL`n"
@@ -39,16 +38,20 @@ function Add-TcGvl {
         }
         $decl += "END_VAR"
 
-        $declXml = "<Declaration><![CDATA[$decl]]></Declaration>"
+        # 615 = TREEITEMTYPE_PLCGVL (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html).
+        # Created without vInfo, then the declaration is written and read back. A string vInfo
+        # is stored verbatim as declaration: the old '<Declaration><![CDATA[...]]>' wrapper ended
+        # up in the GVL source (measured 2026-10-25 on 4024).
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType 615 -Declaration $decl
+        $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        # GVL sub-type
-        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $plcProject.CreateChild($Name, 615, '', $declXml) }
-
-        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name       = $Name
-            path       = $itemPath
-            folderPath = $folderInfo.Path
+            name        = $Name
+            path        = $created.Path
+            folderPath  = $folderInfo.Path
+            objectKind  = $kind.ObjectKind
+            itemType    = $created.ItemType
+            declaration = $created.Declaration
         })
     }
     catch {
