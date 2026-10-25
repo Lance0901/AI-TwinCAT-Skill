@@ -27,10 +27,17 @@ function Set-TcTarget {
           'disabled'   -NoPlatformSwitch: only the NetId is set, the solution platform is not
                        touched (data.targetPlatform still reported).
         Shared switch code: Private Set-TcSolutionPlatform (also used by Enable-TcConfig).
-        In TwinCAT 4026 XAE the active solution platform must match the target platform,
-        otherwise ActivateConfiguration() silently fails ('Check config failed!' in the
-        Output window, nothing written to the target): a Usermode Runtime (UmRT, TcOsSys
-        in user mode) is 'TwinCAT OS (x64)', a Windows RT target 'TwinCAT RT (x64)'.
+        The platform is decided by the target, not by the XAE version: a Usermode Runtime
+        (UmRT, TcOsSys in user mode) or TwinCAT/BSD is 'TwinCAT OS (x64)', a Windows RT
+        target 'TwinCAT RT (x64)', a CX ARM target the matching ARM platform. When the
+        active solution platform does not match the target, ActivateConfiguration() fails
+        ('Check config failed!' in the Output window, measured on 4026 XAE; ACTIVATE_FAILED).
+        A solution platform name can map to a project platform with another name (solution
+        'Release|TwinCAT OS (x64)' -> .tsproj 'TwinCAT OS (ARMT2)'): before switching, the
+        project platform of the .tsproj under the chosen solution platform is checked; a
+        mismatch switches nothing and returns PLATFORM_PROJECT_MISMATCH (data.platformMap).
+        InfoSys "Setting the TwinCAT target platform":
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html
     .PARAMETER AmsNetId
         Target AMS Net ID (e.g., "127.0.0.1.1.1" for local).
     .PARAMETER Platform
@@ -48,11 +55,18 @@ function Set-TcTarget {
         data.platformCheck ('parameter' | 'target' | 'unknown' | 'disabled'),
         data.targetPlatform ($null when not readable), data.targetPlatformSource
         ('adsTargetInfo' | 'unavailable'), data.adsError (e.g. '0x702'),
-        data.platform (active solution platform afterwards), data.platformChanged (bool).
+        data.platform (active solution platform afterwards), data.projectPlatform (project
+        platform of the ACTIVE .tsproj afterwards; $null without .tsproj), data.platformChanged (bool).
+        After a switch attempt also data.requestedProjectPlatform (project platform of the
+        .tsproj under the requested solution platform).
         When a platform was activated also data.configuration, data.previousPlatform,
-        data.availablePlatforms (distinct platforms of that configuration).
+        data.availablePlatforms (solution platform names of that configuration),
+        data.projectCheck ('ok' | 'mismatch' | 'no-tsproj'), data.platformMatchedBy,
+        data.platformMap (solution platform -> @{ solutionPlatform; projectPlatforms =
+        @(@{ project; platform; shouldBuild }) }), data.restored (after PLATFORM_SET_FAILED).
         Errors: PLATFORM_UNKNOWN, PLATFORM_NOT_FOUND (data.availablePlatforms,
-        data.availableConfigurations), PLATFORM_SET_FAILED.
+        data.availableConfigurations), PLATFORM_PROJECT_MISMATCH (data.platformMap,
+        data.requestedProjectPlatform; nothing switched), PLATFORM_SET_FAILED (data.restored).
     .EXAMPLE
         Set-TcTarget -AmsNetId 199.5.42.250.1.1 -Platform 'TwinCAT OS (x64)'
         Local UmRT, platform given explicitly (works on runtimes without TARGETINFO).
@@ -109,7 +123,9 @@ function Set-TcTarget {
 
     if ($check -eq 'disabled' -or $check -eq 'unknown') {
         # Solution platform untouched.
-        $data | Add-Member -NotePropertyName 'platform' -NotePropertyValue (Get-TcSolutionPlatform).platform
+        $cur = Get-TcSolutionPlatform
+        $data | Add-Member -NotePropertyName 'platform' -NotePropertyValue $cur.platform
+        $data | Add-Member -NotePropertyName 'projectPlatform' -NotePropertyValue $cur.projectPlatform
         $data | Add-Member -NotePropertyName 'platformChanged' -NotePropertyValue $false
         if ($check -eq 'disabled') { return New-TcResult -Success $true -Data $data }
         $hint = Get-TcErrorHint -Code 'PLATFORM_UNKNOWN'
@@ -136,7 +152,13 @@ function Set-TcTarget {
     $data | Add-Member -NotePropertyName 'previousPlatform' -NotePropertyValue $sw.previousPlatform
     $data | Add-Member -NotePropertyName 'availablePlatforms' -NotePropertyValue $sw.availablePlatforms
     $data | Add-Member -NotePropertyName 'platform' -NotePropertyValue $sw.platform
+    $data | Add-Member -NotePropertyName 'projectPlatform' -NotePropertyValue $sw.projectPlatform
+    $data | Add-Member -NotePropertyName 'requestedProjectPlatform' -NotePropertyValue $sw.requestedProjectPlatform
     $data | Add-Member -NotePropertyName 'platformChanged' -NotePropertyValue $sw.platformChanged
+    $data | Add-Member -NotePropertyName 'projectCheck' -NotePropertyValue $sw.projectCheck
+    $data | Add-Member -NotePropertyName 'platformMatchedBy' -NotePropertyValue $sw.platformMatchedBy
+    $data | Add-Member -NotePropertyName 'platformMap' -NotePropertyValue $sw.platformMap
+    if ($null -ne $sw.restored) { $data | Add-Member -NotePropertyName 'restored' -NotePropertyValue $sw.restored }
     if (-not $sw.success) {
         $err = $sw.error
         if ([string]$err.code -eq 'PLATFORM_NOT_FOUND') {
@@ -144,7 +166,7 @@ function Set-TcTarget {
         }
         $params = @{ Success = $false; ErrorMessage = [string]$err.message; ErrorCode = [string]$err.code; Data = $data }
         $hp = $err.PSObject.Properties['hint']
-        if ($null -ne $hp -and -not [string]::IsNullOrWhiteSpace([string]$hp.Value)) { $params['Hint'] = [string]$hp.Value }
+        if ($null -ne $hp -and -not [string]::IsNullOrWhiteSpace([string]$hp.Value)) { $params['Hint'] = ([string]$hp.Value).Replace('<id>', $AmsNetId) }
         return New-TcResult @params
     }
 

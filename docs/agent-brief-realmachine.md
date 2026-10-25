@@ -4,7 +4,7 @@
 
 ## 環境
 
-- **A 組(4024)**:32-bit XAE Shell,`Connect-TcIde -ProgId TcXaeShell.DTE.15.0`。4024 XAE 不檢查 solution platform,維持專案原本的 platform(`Set-TcTarget -NoPlatformSwitch`,不帶 `-Platform`)。(實測 2026-10-21,見 troubleshooting「PLATFORM_UNKNOWN」與「環境矩陣」)
+- **A 組(4024)**:32-bit XAE Shell,`Connect-TcIde -ProgId TcXaeShell.DTE.15.0`。A 組 Festo 專案沒有真正的 `TwinCAT OS (x64)` project platform(solution `Release|TwinCAT OS (x64)` 對到 project platform `TwinCAT OS (ARMT2)`),對 UmRT 指定 `-Platform 'TwinCAT OS (x64)'` 會回 `PLATFORM_PROJECT_MISMATCH`;要在 UmRT 跑就照專案目前的平台用 `Set-TcTarget -NoPlatformSwitch`(不帶 `-Platform`)。這是專案設定的限制,不是 XAE 版本的規則。(實測 2026-10-21 / 2026-10-22,見 troubleshooting「PLATFORM_PROJECT_MISMATCH」與「環境矩陣」)
 - **B 組(4026)**:`VisualStudio.DTE.17.0`(VS2022)或 `TcXaeShell.DTE.17.0`(64-bit XAE Shell),兩者是同一套 XAE。對本機 UmRT 用 solution platform `TwinCAT OS (x64)`(`Set-TcTarget -Platform 'TwinCAT OS (x64)'`)。UmRT 的 platform 見 [InfoSys: Usermode Runtime, Runtime type (ADS)](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html);4026 XAE 在 platform 不符時回 `ACTIVATE_FAILED`(實測 2026-10-21,見 troubleshooting「ACTIVATE_FAILED」)。
 - **UmRT** 是本機 TwinCAT runtime 的 user-mode 實例,只有一個,A / B 組共用。AmsNetId `199.5.42.250.1.1` 是**本機 UmRT_Default 測試環境專用**的值(AmsNetId 依機器而定,換機器要重查,模組的 `Connect-TcAds` 會自動偵測)。UmRT 沒有自己的版本號;要寫版本就寫 TwinCAT / XAE 版本,或寫 `TcSystemServiceUm.exe` 的檔案版本。
 
