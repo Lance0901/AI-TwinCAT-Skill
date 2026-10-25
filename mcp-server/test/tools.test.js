@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteHintCmdletNames, rewriteResultHints, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
+import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, buildBooleanParamMap, rewriteHintCmdletNames, rewriteResultHints, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const catalog = loadToolCatalog(path.join(__dirname, 'fixtures', 'tools.fixture.json'));
@@ -188,7 +188,8 @@ describe('cmdlet name rewriting in hints', () => {
     'Get-TcIdeModalDialog': 'GetIdeModalDialog',
     'Set-TcTarget': 'SetTarget'
   });
-  const rw = (s) => rewriteHintCmdletNames(s, names);
+  const switches = buildBooleanParamMap(catalog);
+  const rw = (s) => rewriteHintCmdletNames(s, names, switches);
 
   test('loadToolCatalog builds byCmdlet', () => {
     assert.equal(catalog.byCmdlet.get('Connect-TcIde'), 'ConnectIde');
@@ -220,6 +221,29 @@ describe('cmdlet name rewriting in hints', () => {
       rw('PLC runtime port 851 不存在:程式尚未下載或 PLC 未啟動。先 Enter-TcPlcOnline,再 Set-TcPlcState -State Run'),
       'PLC runtime port 851 不存在:程式尚未下載或 PLC 未啟動。先 PlcLogin,再 SetPlcState State=Run'
     );
+  });
+
+  test('a switch does not swallow the word after it (#53)', () => {
+    assert.equal(
+      rw('Build-TcProject -AllowUnresolvedLibrary if the user accepts'),
+      'BuildProject AllowUnresolvedLibrary=true if the user accepts'
+    );
+    assert.equal(
+      rw('Build-TcProject -AllowUnresolvedLibrary / Enable-TcConfig -Version 1.0'),
+      'BuildProject AllowUnresolvedLibrary=true / EnableConfig Version=1.0'
+    );
+    assert.equal(
+      rw('Build-TcProject -Hang 需要使用者同意後繼續'),
+      'BuildProject Hang=true 需要使用者同意後繼續'
+    );
+  });
+
+  test('a parameter with a value still consumes it', () => {
+    assert.equal(
+      rw('Connect-TcIde -SolutionPath MySln.sln -NoLaunch'),
+      'ConnectIde SolutionPath=MySln.sln NoLaunch=true'
+    );
+    assert.equal(rw('Read-TcVariable -Path PLC1.MAIN.x -Mode Raw'), 'ReadVariable Path=PLC1.MAIN.x Mode=Raw');
   });
 
   test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {
