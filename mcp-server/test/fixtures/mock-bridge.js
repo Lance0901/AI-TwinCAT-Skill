@@ -5,6 +5,11 @@
 //   params.Crash       process.exit(3) without answering
 //   params.DelayMs     delay the answer by N ms
 //   cmdlet Set-TcTarget    echoes data.params; AmsNetId '0.0.0.0.0.0' fails with TARGET_NOT_FOUND
+//   cmdlet Read-TcVariable shape of the real cmdlet: one Path -> data {path, value, type}; several -> data
+//                          is an ARRAY of entries; a path containing 'Missing' is {path, error, code
+//                          SYMBOL_NOT_FOUND} in the array, a SYMBOL_NOT_FOUND failure when it is the only path
+//   cmdlet Get-TcSymbols   data is an ARRAY of {path, type, size, comment} whose path contains Filter
+//                          (without '*'); requires Connect-TcAds (#57)
 //   cmdlet Get-TcIdeInfo   writes a warning log line, then NOT_CONNECTED + hint
 //   cmdlet Connect-TcIde   marks the mock IDE as connected (state.ideConnected); returns
 //                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch);
@@ -18,7 +23,14 @@ import readline from 'node:readline';
 const CMDLETS = [
   'Connect-TcIde', 'Disconnect-TcIde', 'Get-TcIdeInfo', 'Build-TcProject', 'Enable-TcConfig',
   'Connect-TcAds', 'Disconnect-TcAds', 'Read-TcVariable', 'Write-TcVariable',
-  'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget'
+  'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget', 'Get-TcSymbols'
+];
+
+const SYMBOLS = [
+  { path: 'MAIN.nCounter', type: 'INT', size: 2, comment: '' },
+  { path: 'MAIN.bRun', type: 'BOOL', size: 1, comment: 'run flag' },
+  { path: 'MAIN.fSpeed', type: 'LREAL', size: 8, comment: '' },
+  { path: 'GVL.nMode', type: 'E_Mode', size: 2, comment: '', enumValues: { Idle: 0, Auto: 1 } }
 ];
 
 const state = {
@@ -101,9 +113,23 @@ function handleCall(req) {
           return result(id, { success: false, error: { code: 'NOT_CONNECTED', message: 'ADS not connected', hint: 'Run Connect-TcAds first' } });
         }
         const paths = Array.isArray(params.Path) ? params.Path : [params.Path];
-        const values = {};
-        for (const p of paths) values[p] = 0;
-        return result(id, { success: true, data: { values } });
+        const entries = paths.map((p) =>
+          /Missing/.test(p)
+            ? { path: p, error: `Symbol '${p}' not found`, code: 'SYMBOL_NOT_FOUND', hint: 'Check the path with GetSymbols' }
+            : { path: p, value: 0, type: 'INT', reconnected: false }
+        );
+        if (entries.length === 1) {
+          if (entries[0].error) return result(id, { success: false, error: { code: 'SYMBOL_NOT_FOUND', message: entries[0].error, hint: entries[0].hint } });
+          return result(id, { success: true, data: entries[0] });
+        }
+        return result(id, { success: true, data: entries });
+      }
+      case 'Get-TcSymbols': {
+        if (!state.adsConnected) {
+          return result(id, { success: false, error: { code: 'NOT_CONNECTED', message: 'ADS not connected', hint: 'Run Connect-TcAds first' } });
+        }
+        const f = typeof params.Filter === 'string' ? params.Filter.replace(/\*/g, '') : '';
+        return result(id, { success: true, data: SYMBOLS.filter((s) => s.path.includes(f)) });
       }
       case 'Build-TcProject':
         return result(id, { success: true, data: { errors: 0, warnings: 0, params } });

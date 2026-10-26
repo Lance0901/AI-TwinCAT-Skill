@@ -321,14 +321,61 @@ describe('index.js over stdio (extended fixture, composites)', () => {
     const res = await client.callTool({ name: 'QuickRead', arguments: { Path: ['MAIN.a', 'MAIN.b'] } });
     assert.equal(res.isError, false);
     const body = parse(res);
-    assert.equal(body.data.connectedOnDemand, true);
-    assert.deepEqual(body.data.values, { 'MAIN.a': 0, 'MAIN.b': 0 });
+    // several paths: data stays the array of entries (#57), connectedOnDemand at the top level
+    assert.equal(body.connectedOnDemand, true);
+    assert.ok(Array.isArray(body.data), JSON.stringify(body));
+    assert.deepEqual(body.data.map((e) => [e.path, e.value]), [['MAIN.a', 0], ['MAIN.b', 0]]);
+    assert.ok(Number.isInteger(body.order.seq), 'execution order at the top level');
 
     const second = parse(await client.callTool({ name: 'QuickRead', arguments: { Path: ['MAIN.a'] } }));
-    assert.equal(second.data.connectedOnDemand, false);
+    assert.equal(second.data.connectedOnDemand, false, 'one path: data is an object, also carries it');
+    assert.equal(second.connectedOnDemand, false);
+    assert.equal(second.data.path, 'MAIN.a');
 
     const bad = await client.callTool({ name: 'QuickRead', arguments: {} });
     assert.equal(parse(bad).error.code, 'INVALID_PARAMS');
+  });
+
+  // #57: stampOrder used to replace array data with {seq, startedAt, finishedAt}: success, no content.
+  test('GetSymbols: array data reaches the client with every element, order at the top level', async () => {
+    const res = await client.callTool({ name: 'GetSymbols', arguments: { Filter: 'MAIN*' } });
+    assert.equal(res.isError, false);
+    const body = parse(res);
+    assert.equal(body.success, true);
+    assert.ok(Array.isArray(body.data), `data must stay an array: ${JSON.stringify(body)}`);
+    assert.deepEqual(body.data.map((s) => s.path), ['MAIN.nCounter', 'MAIN.bRun', 'MAIN.fSpeed']);
+    assert.deepEqual(body.data[1], { path: 'MAIN.bRun', type: 'BOOL', size: 1, comment: 'run flag' });
+    assert.ok(Number.isInteger(body.order.seq) && body.order.seq > 0);
+    assert.ok(!Number.isNaN(Date.parse(body.order.startedAt)));
+    assert.ok(!Number.isNaN(Date.parse(body.order.finishedAt)));
+    assert.deepEqual(res.structuredContent.data, body.data, 'structuredContent carries the same array');
+
+    const all = parse(await client.callTool({ name: 'GetSymbols', arguments: {} }));
+    assert.equal(all.data.length, 4);
+    assert.deepEqual(all.data[3].enumValues, { Idle: 0, Auto: 1 });
+    const none = parse(await client.callTool({ name: 'GetSymbols', arguments: { Filter: 'NoSuch' } }));
+    assert.deepEqual(none.data, [], 'no match is an empty array, not an object with only seq');
+  });
+
+  test('ReadVariable with several paths: array data with every entry; a missing path is an entry with its error', async () => {
+    const res = await client.callTool({
+      name: 'ReadVariable',
+      arguments: { Path: ['TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount', 'MAIN.nMissing'] }
+    });
+    const body = parse(res);
+    assert.equal(body.success, true);
+    assert.ok(Array.isArray(body.data), `data must stay an array: ${JSON.stringify(body)}`);
+    assert.equal(body.data.length, 2);
+    assert.deepEqual(body.data[0], { path: 'TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount', value: 0, type: 'INT', reconnected: false });
+    assert.equal(body.data[1].path, 'MAIN.nMissing');
+    assert.equal(body.data[1].code, 'SYMBOL_NOT_FOUND');
+    assert.match(body.data[1].error, /not found/);
+    assert.ok(Number.isInteger(body.order.seq));
+    assert.equal(body.data.seq, undefined, 'nothing is merged into an array');
+
+    const single = parse(await client.callTool({ name: 'ReadVariable', arguments: { Path: ['MAIN.nCounter'] } }));
+    assert.equal(single.data.path, 'MAIN.nCounter');
+    assert.equal(single.data.seq, single.order.seq, 'object data keeps data.seq (compatible)');
   });
 });
 

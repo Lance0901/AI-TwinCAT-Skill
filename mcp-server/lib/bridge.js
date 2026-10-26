@@ -29,13 +29,26 @@ export function errorResult(code, message, hint) {
   return { success: false, error };
 }
 
-/** Add seq/startedAt/finishedAt (execution order) to the data of a result of a dispatched call. */
-function stampOrder(item, result) {
+/**
+ * Add the execution order (seq/startedAt/finishedAt) to the result of a dispatched call (#57).
+ * Always as result.order; also merged into data when data is a plain object (the historical
+ * data.seq) and as data when the result has no data at all. Any other data (an array such as
+ * GetSymbols / multi-path ReadVariable / GetProjectTree, a scalar, null) is returned unchanged:
+ * replacing it would turn a list into an empty success.
+ */
+export function stampOrder(item, result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   const order = { seq: item.seq, startedAt: item.startedAt, finishedAt: new Date().toISOString() };
+  const out = { ...result, order };
   const data = result.data;
-  const isObj = data !== null && typeof data === 'object' && !Array.isArray(data);
-  return { ...result, data: isObj ? { ...data, ...order } : order };
+  if (data === undefined) out.data = { ...order };
+  else if (isPlainObject(data)) out.data = { ...data, ...order };
+  return out;
+}
+
+/** true for a non-null, non-array object (a JSON object). */
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 class BridgeStartError extends Error {

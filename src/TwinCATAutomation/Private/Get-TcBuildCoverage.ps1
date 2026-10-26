@@ -14,7 +14,8 @@ function Get-TcBuildCoverage {
         projects are not PLC projects). Measured 2026-10-21 on 4026 + VS2022: the PLC
         projects of a TwinCAT solution are listed as their own contexts next to the .tsproj.
     .OUTPUTS
-        @{ configuration = '<name>|<platform>' or $null; error = $null or message;
+        @{ configuration = '<name>|<solution platform>', '<name>' when the solution platform is
+           not readable here, or $null; error = $null or message;
            projects = @( @{ name; uniqueName; configuration; platform; shouldBuild; status } ) }
         status is 'skipped' when ShouldBuild is false, else 'pending' (decided after the build).
     #>
@@ -46,11 +47,20 @@ function Get-TcBuildCoverage {
     }
 
     $projects = @()
-    $platform = $null
     foreach ($r in @($rows)) {
-        if ($r.Kind -eq 'config') { $result.configuration = $r.Name; continue }
+        if ($r.Kind -eq 'config') {
+            # SolutionConfiguration2.PlatformName is the SOLUTION platform; it is empty through the
+            # PowerShell COM binder in VS2022 (measured 4026 + VS2022), then only the name is kept.
+            # The platform of the PLC contexts is NOT used for the label: that is the project
+            # platform ('TwinCAT OS (ARMT2)' under solution 'TwinCAT OS (x64)', #58).
+            # Build-TcProject reports the solution configuration from Get-TcSolutionPlatform.
+            $result.configuration = $r.Name
+            if (-not [string]::IsNullOrWhiteSpace($r.Name) -and -not [string]::IsNullOrWhiteSpace($r.Platform)) {
+                $result.configuration = "$($r.Name)|$($r.Platform)"
+            }
+            continue
+        }
         if ($r.ProjectName -notmatch '(?i)\.plcproj$') { continue }
-        if ([string]::IsNullOrWhiteSpace($platform)) { $platform = $r.Platform }
         $projects += [PSCustomObject]@{
             name          = [IO.Path]::GetFileNameWithoutExtension($r.ProjectName)
             uniqueName    = $r.ProjectName
@@ -59,11 +69,6 @@ function Get-TcBuildCoverage {
             shouldBuild   = $r.ShouldBuild
             status        = if ($r.ShouldBuild) { 'pending' } else { 'skipped' }
         }
-    }
-    # SolutionConfiguration2.PlatformName is empty on some hosts (measured 4026 + VS2022):
-    # the platform of the PLC contexts is used for the 'Release|<platform>' label.
-    if (-not [string]::IsNullOrWhiteSpace($result.configuration) -and -not [string]::IsNullOrWhiteSpace($platform)) {
-        $result.configuration = "$($result.configuration)|$platform"
     }
     $result.projects = $projects
     return $result

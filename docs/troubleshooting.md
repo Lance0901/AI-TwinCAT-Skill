@@ -348,6 +348,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:solution Build 只編 active solution configuration 裡勾了 Build 的 project(.sln 的 `{guid}.<Config>|<Platform>.Build.0`)。PLC project 少了這行時 XAE 默默跳過、仍顯示 Build succeeded,Port 852 的產物還是舊的(#28)。`Build-TcProject` 在 Build 前讀 DTE `Solution.SolutionBuild.ActiveConfiguration.SolutionContexts`,每個 `.plcproj` 看 `ShouldBuild`([Microsoft Learn: SolutionContext.ShouldBuild](https://learn.microsoft.com/en-us/previous-versions/visualstudio/visual-studio-2013/1a52ztxh(v=vs.120))「whether the current project is built when the solution configuration associated with this SolutionContext is selected」),不解析 .sln 文字。
 - **回傳**:`data.projects[]`(name、uniqueName、configuration、platform、shouldBuild、status = `built` / `skipped` / `failed` / `unknown`)、`data.skippedProjects[]`、`data.coverageComplete`(每個 PLC project 都是 built 才是 true)。沒帶 `-ExpectedProject`:success 照 build 結果,另外 `data.warningCode = PROJECT_SKIPPED_BY_CONFIGURATION` + `data.warning`(也會 Write-Warning)。帶 `-ExpectedProject FrameworkUnitTest` 且它被跳過:不開始 Build,直接 `success = false`、這個 code。
+- **有 project 被跳過時 `codeVerified` 不是 true(#58)**:被跳過的 PLC 程式碼沒有被編譯,Error List 乾淨也證明不了它,所以 `data.codeVerified = false`,`data.warningCodes` 是 `["PROJECT_SKIPPED_BY_CONFIGURATION", "CODE_NOT_VERIFIED"]`(全部被跳過 = 這次沒有編譯任何 PLC 程式碼,`data.warning` 的 CODE_NOT_VERIFIED 文字會寫 all skipped)。solution 裡沒有 PLC project 也是 `codeVerified = false`;PLC project 清單讀不到(`data.coverageError`)是 `codeVerified = null`。
+- **`data.solutionConfiguration` 是 solution platform(#58)**:`'<Configuration>|<solution platform>'`,讀法同 `Get-TcIdeInfo`(`Solution.Properties('ActiveConfig')`),`data.solutionPlatform` 等於 `Get-TcIdeInfo` 的 `solutionPlatform`,`data.projectPlatform` 是其下 .tsproj 的 project platform;每個 PLC project 的 project platform 在 `data.projects[].platform`。以前這欄用 PLC context 的 platform 拼,會顯示 project platform(實測 2026-10-26,VisualStudio.DTE.17.0,TwinCAT_Festo 4026 複本:solution `Release|TwinCAT OS (x64)` 被顯示成 `Release|TwinCAT OS (ARMT2)`)。
 - **solution Build、單一 project Build、compiler coverage 的差別**:solution Build(`Build-TcProject`)= 只編 `ShouldBuild = true` 的 project;單一 project Build(XAE 右鍵 Build / `SolutionBuild.BuildProject`)不受 Build.0 影響;compiler coverage = 這次 Build 實際編到哪些 PLC,看 `data.projects[].status`。
 - **下一步**:XAE Configuration Manager 把該 PLC project 的 Build 勾起來並存檔(會補回 Build.0),再 `Build-TcProject -ExpectedProject <name>`。
 
@@ -371,8 +373,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### CODE_NOT_VERIFIED
 
-- **為什麼**:`Build-TcProject` 判定成功,但沒辦法證明 PLC 程式碼有被編譯:Error List 讀不到(`data.errorListError`,例如 `ERRORLIST_UNAVAILABLE`;`codeVerified = null`、`libraryErrors = null`,`errors` 退回 `failedProjects`),或 Error List 有「有 file、沒有行號」的 code 列(`codeVerified = false`;可能是分類規則不認得的語系的 Library Manager 列)。這是 warning,不是錯誤:`success = true`,`data.warningCodes[]` 含 `CODE_NOT_VERIFIED`,`data.warning` 說明原因。
-- **下一步**:看 XAE 的 Error List;Error List 讀不到時照 `ERRORLIST_UNAVAILABLE` 處理後重跑 `Build-TcProject`。在確認之前不要把它當成「程式沒問題」。
+- **為什麼**:`Build-TcProject` 判定成功,但沒辦法證明 PLC 程式碼有被編譯:Error List 讀不到(`data.errorListError`,例如 `ERRORLIST_UNAVAILABLE`;`codeVerified = null`、`libraryErrors = null`,`errors` 退回 `failedProjects`),或 Error List 有「有 file、沒有行號」的 code 列(`codeVerified = false`;可能是分類規則不認得的語系的 Library Manager 列),或有 PLC project 被 active solution configuration 跳過(`codeVerified = false`,排在 `PROJECT_SKIPPED_BY_CONFIGURATION` 之後,#58;見上一節)。這是 warning,不是錯誤:`success = true`,`data.warningCodes[]` 含 `CODE_NOT_VERIFIED`,`data.warning` 說明原因。
+- **下一步**:看 XAE 的 Error List;Error List 讀不到時照 `ERRORLIST_UNAVAILABLE` 處理後重跑 `Build-TcProject`;project 被跳過時照 `PROJECT_SKIPPED_BY_CONFIGURATION` 處理。在確認之前不要把它當成「程式沒問題」。
 
 ### BUILD_REQUIRED
 
@@ -604,7 +606,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | UIA 看不到的 dialog 仍會擋 quit | 標題為空等 UIA 掃描抓不到的 modal,`Disconnect-TcIde -Quit` 的事前檢查看不到,`Solution.Close` / `DTE.Quit` 照樣無限阻塞;經 MCP 時會先撞到 `BRIDGE_TIMEOUT`,走不到 `-Kill` | `Stop-Process -Id <data.ideProcessId>`(MCP 結果的 `data.lastIde.ideProcessId`),再重新 `Connect-TcIde` |
 | FB `VAR_INPUT` 寫不進去 | PLC 每個 scan 覆寫 FB 輸入 | 在 MAIN 宣告獨立變數餵 FB,寫 MAIN 層級變數 |
 | `Watch-TcVariable` 的 `samples` 被截短 | 預設只回最後 `-KeepLast` 筆(有 `-Until` 20、沒有 50),免得 50 筆 × 多變數塞爆 AI context;`sampleCount` 仍是總數,`truncated=true` 表示有丟 | 要全部就給大一點的 `-KeepLast`;等某個值用 `-Until "<Path> <op> <value>"`(`== != > < >= <=`,`<Path>` 要在 -Path 內,否則 `INVALID_PARAMS`),命中立刻返回 `untilMet=true` / `untilSample` / `elapsedMs` |
-| MCP 同回合平行 tool call 順序 | client 平行送出的 call 到達 server 的順序不保證;bridge 嚴格 FIFO 一次執行一個,但 FIFO 的順序 = 到達順序 | 看每個結果 `data.seq` / `startedAt` / `finishedAt` 判斷實際順序;有因果的步驟(寫參數 → 下命令 → 觀察)分回合送 |
+| MCP 同回合平行 tool call 順序 | client 平行送出的 call 到達 server 的順序不保證;bridge 嚴格 FIFO 一次執行一個,但 FIFO 的順序 = 到達順序 | 看每個結果的 `order.seq` / `order.startedAt` / `order.finishedAt` 判斷實際順序(data 是物件時 `data.seq` 等也有;data 是陣列時只在 `order`,#57);有因果的步驟(寫參數 → 下命令 → 觀察)分回合送 |
 
 ## 真機驗證腳本
 

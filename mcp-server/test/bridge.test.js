@@ -2,7 +2,7 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PowerShellBridge, errorResult, HINTS, CANCELLED_MESSAGE } from '../lib/bridge.js';
+import { PowerShellBridge, errorResult, HINTS, CANCELLED_MESSAGE, stampOrder } from '../lib/bridge.js';
 import { MAX_CALL_TIMEOUT_MS } from '../lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -331,5 +331,53 @@ describe('PowerShellBridge', () => {
     bridge._onLine('this is not json');
     assert.ok(stderr.some((l) => /non-JSON stdout line/.test(l)));
     assert.equal((await bridge.call('ping')).success, true);
+  });
+});
+
+// #57: stampOrder must never drop data that is not a plain object.
+describe('stampOrder (execution order on a result)', () => {
+  const item = { seq: 7, startedAt: '2026-10-26T00:00:00.000Z' };
+  const check = (r) => {
+    assert.equal(r.order.seq, 7);
+    assert.equal(r.order.startedAt, item.startedAt);
+    assert.ok(!Number.isNaN(Date.parse(r.order.finishedAt)));
+  };
+
+  test('array data is kept element for element (GetSymbols / multi-path ReadVariable)', () => {
+    const data = [{ path: 'MAIN.a', value: 1 }, { path: 'MAIN.b', error: 'not found', code: 'SYMBOL_NOT_FOUND' }];
+    const r = stampOrder(item, { success: true, data });
+    assert.ok(Array.isArray(r.data));
+    assert.deepEqual(r.data, data);
+    check(r);
+  });
+
+  test('empty array, scalar and null data are kept as they are', () => {
+    for (const data of [[], 0, 42, 'text', false, true, null]) {
+      const r = stampOrder(item, { success: true, data });
+      assert.deepEqual(r.data, data, `data ${JSON.stringify(data)} kept`);
+      check(r);
+    }
+  });
+
+  test('object data gets seq/startedAt/finishedAt merged in as before, plus order', () => {
+    const r = stampOrder(item, { success: true, data: { state: 'Run' } });
+    assert.equal(r.data.state, 'Run');
+    assert.equal(r.data.seq, 7);
+    assert.equal(r.data.startedAt, item.startedAt);
+    assert.equal(r.data.finishedAt, r.order.finishedAt);
+    check(r);
+  });
+
+  test('a result without data (error) gets data = the order fields, as before', () => {
+    const r = stampOrder(item, { success: false, error: { code: 'X', message: 'm' } });
+    assert.equal(r.data.seq, 7);
+    assert.equal(r.error.code, 'X');
+    check(r);
+  });
+
+  test('the input result is not mutated', () => {
+    const input = { success: true, data: { a: 1 } };
+    stampOrder(item, input);
+    assert.deepEqual(input, { success: true, data: { a: 1 } });
   });
 });

@@ -34,9 +34,18 @@
         data.buildSucceeded  $true / $false (the decision above); $null = BUILD_STATUS_UNKNOWN,
                              or LIBRARY_UNRESOLVED (below)
         data.codeVerified    $true when the Error List was read, lists no library error and no
-                             code row without a line number, so a successful build also proves
-                             the PLC code was compiled; $false otherwise; $null when the Error
-                             List is not readable
+                             code row without a line number, and every PLC project of the active
+                             solution configuration took part in the build, so a successful build
+                             also proves the PLC code was compiled; $false otherwise (also when a
+                             PLC project was skipped by the configuration or the solution has no
+                             PLC project, #58); $null when the Error List or the PLC project list
+                             (coverageError) is not readable
+        data.solutionConfiguration  '<configuration>|<solution platform>' of the active solution
+                             configuration, read like Get-TcIdeInfo (Solution.Properties
+                             ('ActiveConfig')); data.solutionPlatform is its platform (same value
+                             as Get-TcIdeInfo data.solutionPlatform) and data.projectPlatform the
+                             project platform of the .tsproj under it (#58). The platform of each
+                             PLC project is in data.projects[].platform.
         data.warningCodes    every warning code of a successful result, in this order:
                              PROJECT_SKIPPED_BY_CONFIGURATION, LIBRARY_UNRESOLVED (only with
                              -AllowUnresolvedLibrary), CODE_NOT_VERIFIED; data.warningCode is the
@@ -53,8 +62,10 @@
         then still says 'built' (the build result), codeVerified = $false says the code is not proven.
         Not verified otherwise (CODE_NOT_VERIFIED): a successful build whose Error List could not be
         read (codeVerified = $null) or lists a code row without a line number (a row the
-        category rules do not recognise, e.g. a Library Manager row in another UI language) keeps
-        success = true with data.warningCode = CODE_NOT_VERIFIED.
+        category rules do not recognise, e.g. a Library Manager row in another UI language), or
+        in which a PLC project was skipped by the configuration (all of them: no PLC code was
+        compiled at all) keeps success = true with data.warningCodes containing CODE_NOT_VERIFIED
+        (after PROJECT_SKIPPED_BY_CONFIGURATION, #58).
         A complete success (no PLC project skipped by the configuration) also clears the "build
         required after a platform switch" state that Enable-TcConfig checks before activating
         (BUILD_REQUIRED, a state file per solution: Private/Set-TcBuildRequired.ps1).
@@ -146,6 +157,16 @@
     # --- coverage: which PLC projects the active solution configuration builds (#28) ---
     try { $coverage = Get-TcBuildCoverage }
     catch { return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build not started (reading SolutionContexts failed)' }
+    # Solution configuration of the result (#58): the same reading as Get-TcIdeInfo / Connect-TcIde
+    # data.solutionPlatform (Get-TcSolutionPlatform, DTE Solution.Properties('ActiveConfig')), not
+    # the platform of the PLC project contexts, which is the PROJECT platform (solution
+    # 'TwinCAT OS (x64)' -> project 'TwinCAT OS (ARMT2)', measured 2026-10-26, VisualStudio.DTE.17.0,
+    # TwinCAT_Festo 4026 copy). Get-TcBuildCoverage's label is only the fallback.
+    $solPlat = Get-TcSolutionPlatform
+    $solutionConfiguration = $coverage.configuration
+    if (-not [string]::IsNullOrWhiteSpace([string]$solPlat.configuration) -and -not [string]::IsNullOrWhiteSpace([string]$solPlat.platform)) {
+        $solutionConfiguration = "$($solPlat.configuration)|$($solPlat.platform)"
+    }
     $expected = @($ExpectedProject | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
     if ($expected.Count -gt 0) {
         $covData = [PSCustomObject]@{
@@ -153,7 +174,9 @@
             skippedProjects       = @($coverage.projects | Where-Object { $_.status -eq 'skipped' } | ForEach-Object { $_.name })
             coverageComplete      = $false
             expectedProjects      = $expected
-            solutionConfiguration = $coverage.configuration
+            solutionConfiguration = $solutionConfiguration
+            solutionPlatform      = $solPlat.platform
+            projectPlatform       = $solPlat.projectPlatform
         }
         if ($null -ne $coverage.error) {
             $covData | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
@@ -168,7 +191,7 @@
         }
         $skippedExpected = @($expected | Where-Object { (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_).status -eq 'skipped' })
         if ($skippedExpected.Count -gt 0) {
-            return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($skippedExpected -join ', ') are not built by the active solution configuration '$($coverage.configuration)' (no Build.0 entry / 'Build' unticked in Configuration Manager); a solution Build would report success without compiling them." `
+            return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($skippedExpected -join ', ') are not built by the active solution configuration '$solutionConfiguration' (no Build.0 entry / 'Build' unticked in Configuration Manager); a solution Build would report success without compiling them." `
                 -ErrorCode 'PROJECT_SKIPPED_BY_CONFIGURATION' -Hint (Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION') -Data $covData
         }
     }
@@ -354,7 +377,6 @@
         $codeVerified = $null
         if ($null -eq $errorListError) { $codeVerified = ($libraryErrorItems.Count -eq 0) -and ($unlocatedCode.Count -eq 0) }
         $libraryUnresolved = ($buildSucceeded -eq $true) -and ($libraryErrorItems.Count -gt 0)
-        $codeNotVerified = ($buildSucceeded -eq $true) -and -not $libraryUnresolved -and ($codeVerified -ne $true)
         if ($libraryUnresolved -and -not $AllowUnresolvedLibrary) { $buildSucceeded = $null }
 
         # --- per PLC project status (coverage read before the build) ---
@@ -381,12 +403,38 @@
         $skippedProjects = @($projects | Where-Object { $_.status -eq 'skipped' } | ForEach-Object { $_.name })
         $coverageComplete = ($null -eq $coverage.error) -and ($projects.Count -gt 0) -and (@($projects | Where-Object { $_.status -ne 'built' }).Count -eq 0)
 
+        # --- coverage decides codeVerified too (#58) ---
+        # A clean Error List only proves the code of the PLC projects that were compiled. With a
+        # PLC project skipped by the configuration (XAE still says Build succeeded, its output is
+        # stale) or no PLC project in the solution, codeVerified is never true: $false. When the
+        # project list could not be read (coverageError) it is unknown: $null.
+        $coverageWhy = $null
+        if ($codeVerified -eq $true) {
+            if ($null -ne $coverage.error) {
+                $codeVerified = $null
+                $coverageWhy = "the PLC project list of the active solution configuration could not be read ($($coverage.error))"
+            }
+            elseif ($projects.Count -eq 0) {
+                $codeVerified = $false
+                $coverageWhy = 'the solution has no PLC project (.plcproj) in the active solution configuration'
+            }
+            elseif ($skippedProjects.Count -gt 0) {
+                $codeVerified = $false
+                $builtCount = @($projects | Where-Object { $_.status -eq 'built' }).Count
+                $coverageWhy = if ($builtCount -eq 0) { "no PLC project was compiled (all skipped by the active solution configuration: $($skippedProjects -join ', '))" }
+                               else { "PLC project(s) $($skippedProjects -join ', ') were skipped by the active solution configuration" }
+            }
+        }
+        $codeNotVerified = ($buildSucceeded -eq $true) -and -not $libraryUnresolved -and ($codeVerified -ne $true)
+
         $data = [PSCustomObject]@{
             buildSucceeded = $buildSucceeded
             projects       = $projects
             skippedProjects = $skippedProjects
             coverageComplete = $coverageComplete
-            solutionConfiguration = $coverage.configuration
+            solutionConfiguration = $solutionConfiguration
+            solutionPlatform = $solPlat.platform
+            projectPlatform  = $solPlat.projectPlatform
             errors         = $errorCount
             libraryErrors  = $libraryErrorCount
             warnings       = $warningCount
@@ -414,7 +462,7 @@
             $data | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
         }
         if ($skippedProjects.Count -gt 0) {
-            $warn = "Build-TcProject: PLC project(s) $($skippedProjects -join ', ') are not built by the active solution configuration '$($coverage.configuration)' (PROJECT_SKIPPED_BY_CONFIGURATION); their compiled output is stale. $(Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION')"
+            $warn = "Build-TcProject: PLC project(s) $($skippedProjects -join ', ') are not built by the active solution configuration '$solutionConfiguration' (PROJECT_SKIPPED_BY_CONFIGURATION); their compiled output is stale. $(Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION')"
             Add-TcBuildWarning -Data $data -Code 'PROJECT_SKIPPED_BY_CONFIGURATION' -Text $warn
         }
         if ($expected.Count -gt 0) {
@@ -434,7 +482,8 @@
         }
         if ($codeNotVerified) {
             $why = if ($null -ne $errorListError) { "the Error List could not be read ($errorListError)" }
-                   else { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
+                   elseif ($unlocatedCode.Count -gt 0) { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
+                   else { $coverageWhy }
             Add-TcBuildWarning -Data $data -Code 'CODE_NOT_VERIFIED' -Text "Build-TcProject: build reported success but $why, so it is not confirmed that the PLC code was compiled (CODE_NOT_VERIFIED). $(Get-TcErrorHint -Code 'CODE_NOT_VERIFIED')"
         }
 

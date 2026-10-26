@@ -112,9 +112,12 @@ refers to the IDE, the hint is "Run Connect-TcIde first (ConnectIde).").
 Parameter-binding failures (ValidateSet/ValidateRange violation, missing
 Mandatory) are reported as `INVALID_PARAMS`, not `EXECUTION_ERROR`.
 
-For `op:"call"` the bridge adds execution-order fields to `data` (a new `data` object is
-created when the result has none or it is not an object): `seq` (counter from 1, incremented only
-when the request is really written to PowerShell), `startedAt` and `finishedAt` (ISO 8601). The
+For `op:"call"` the bridge adds the execution order as a top-level `order` object
+`{seq, startedAt, finishedAt}`: `seq` (counter from 1, incremented only when the request is really
+written to PowerShell), `startedAt` and `finishedAt` (ISO 8601). The same three fields are also
+merged into `data` when `data` is an object (the historical `data.seq`), and become `data` when the
+result has none. Any other `data` is left exactly as the cmdlet returned it (#57): an array
+(`GetSymbols`, `ReadVariable` with several paths, `GetProjectTree`), a scalar or `null`. The
 bridge is strictly FIFO and runs one call at a time, so `seq` order = execution order. Timed-out /
 killed calls carry them too; calls that never left the queue (`CANCELLED`, queued `BRIDGE_DIED`)
 and `ping` / `state` / `modal` do not.

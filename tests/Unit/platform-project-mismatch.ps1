@@ -103,6 +103,13 @@ try {
     Check 'get-solution-platform' ($s.platform -eq $OS -and $s.configuration -eq 'Release' -and $s.platformSource -eq 'ActiveConfig') ($s | ConvertTo-Json -Compress)
     Check 'get-project-platform' ($s.projectPlatform -eq $ARMT2) "$($s.projectPlatform)"
 
+    # --- (e2) Get-TcBuildCoverage label (#58): solution platform, never the PLC context's project platform ---
+    $cov = & $mod { Get-TcBuildCoverage }
+    Check 'coverage-label-solution-platform' ($cov.configuration -eq "Release|$OS" -and @($cov.projects | Where-Object { $_.status -eq 'skipped' -and $_.platform -eq $ARMT2 }).Count -eq 1) "$($cov.configuration) / $(($cov.projects | ForEach-Object { "$($_.name):$($_.platform):$($_.status)" }) -join ',')"
+    New-MockDte -Rows $festo -Active 3 -Folder 'TwinCAT_Festo' -NoPlatformName
+    $cov = & $mod { Get-TcBuildCoverage }
+    Check 'coverage-label-vs2022-no-project-platform' ($cov.configuration -eq 'Release') "$($cov.configuration)"
+
     # --- (b) RobustDemo: every solution platform = project platform, RT -> OS ---
     $robust = @(
         @{ Name = 'Debug'; Sol = $OS; Proj = $OS; SB = $true }
