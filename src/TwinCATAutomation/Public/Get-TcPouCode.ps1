@@ -9,6 +9,24 @@ function Get-TcPouCode {
         4024 and 4026; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>). If omitted (or not found),
         the POU is looked up by PouName: POUs folder -> project root -> tree search (depth 4).
         data.pouPath / data.resolvedBy report which path was used.
+    .OUTPUTS
+        data.objectKind        POU | DUT | GVL | ITF | METHOD | ACTION | PROPERTY | ... | UNKNOWN
+                               (from ItemType, see Get-TcPlcObjectKind); data.pouType Program /
+                               Function / FunctionBlock (POU) or Struct / Enum / Union / Alias (DUT)
+        data.hasImplementation false for DUT / GVL / ITF: implementation is then $null (the object
+                               has none) and implementationReadable is $null. For a POU
+                               implementation is a string ('' when empty, implementationReadable
+                               true); implementationReadable false = the POU has an
+                               implementation part that did not come back as text
+                               (implementation $null). A property read that fails shows up as
+                               null / implementationReadable=false: Windows PowerShell returned
+                               $null for a throwing getter (measured 2026-10-25, PS 5.1.26100,
+                               on a property of a compiled class; the COM adapter is not
+                               verified). A COM call that throws, or a declaration that reads
+                               null, returns POU_READ_FAILED.
+        data.language          ST / LD / FBD / SFC / CFC / IL ... (ITcSmTreeItem.Language), $null for
+                               DUT / GVL / ITF. For LD / FBD the implementation is XAE's XML
+                               (<NWL><XmlArchive>...), not ST text (measured 2026-10-25 on 4024 and 4026).
     #>
     [CmdletBinding()]
     param(
@@ -35,14 +53,48 @@ function Get-TcPouCode {
         }
         $pouItem = $r.Item
 
-        $declText = try { Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $pouItem.DeclarationText } } catch { '' }
-        $implText = try { Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText } } catch { '' }
+        # objectKind / hasImplementation from ItemType (Get-TcPlcObjectKind): a DUT / GVL / ITF
+        # has no implementation part, so implementation = $null means "none", not "read failed"
+        $kind = Get-TcPlcObjectKind -Item $pouItem
+        $declText = Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $pouItem.DeclarationText }
+        # a declaration that reads $null is a failed read for the measured types (POU, DUT, GVL,
+        # ITF, method, ITF method, property all return one; an action has none: ItemType 608
+        # reads $null, measured 2026-10-25 on 4024 and 4026). 612-616 are not measured: a
+        # transition (616) may have no declaration like an action, so it is let through too;
+        # measured 2026-10-25 on 4024 and 4026); $null otherwise means the read failed
+        if ($null -eq $declText -and $kind.ObjectKind -notin @('ACTION', 'TRANSITION')) {
+            return New-TcResult -Success $false -ErrorCode 'POU_READ_FAILED' `
+                -ErrorMessage "Failed to read POU code: DeclarationText of '$($r.Path)' ($($kind.ObjectKind)) came back empty (null)." `
+                -Hint (Get-TcErrorHint -Code 'POU_READ_FAILED') `
+                -Data ([PSCustomObject]@{ pou = $PouName; pouPath = $r.Path; objectKind = $kind.ObjectKind })
+        }
+        $hasImpl = $kind.HasImplementation
+        $implText = $null
+        $implReadable = $null
+        if ($hasImpl -ne $false) {
+            $implText = Invoke-TcComRetry -OperationName 'Get ImplementationText' -ScriptBlock { $pouItem.ImplementationText }
+            if ($null -eq $hasImpl) {
+                # unknown ItemType: an item without ImplementationText gives $null through late
+                # binding (as DUT / GVL / ITF do, measured 2026-10-25 on 4024 and 4026)
+                $hasImpl = ($null -ne $implText)
+            }
+            # an empty ST body reads '' (measured 2026-10-25 on 4024 and 4026); $null on an object
+            # that has an implementation part means it could not be read as text
+            if ($hasImpl) { $implReadable = ($null -ne $implText) } else { $implReadable = $null }
+        }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            pou            = $PouName
-            pouPath        = $r.Path
-            resolvedBy     = $r.ResolvedBy
-            declaration    = $declText
-            implementation = $implText
+            pou                    = $PouName
+            pouPath                = $r.Path
+            resolvedBy             = $r.ResolvedBy
+            objectKind             = $kind.ObjectKind
+            pouType                = $kind.PouType
+            itemType               = $kind.ItemType
+            itemTypeName           = $kind.ItemTypeName
+            language               = $kind.Language
+            hasImplementation      = $hasImpl
+            implementationReadable = $implReadable
+            declaration            = $declText
+            implementation         = $implText
         })
     }
     catch {

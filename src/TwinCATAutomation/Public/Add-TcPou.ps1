@@ -38,44 +38,58 @@ function Add-TcPou {
         return New-TcNoSysManagerResult
     }
 
-    # POU sub-type values for ITcSmTreeItem::CreateChild
+    # Sub types = the ItemType values of InfoSys "ITcSmTreeItem Item Types"
+    # (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html); the
+    # CreateChild page confirms 603 / 604 as CreateChild sub types, 602 is measured (2026-10-25,
+    # 4024 TcXaeShell.DTE.15.0 and 4026 VisualStudio.DTE.17.0).
     $pouSubTypes = @{
-        'Program'       = 604   # CYCLIC_PRG
-        'FunctionBlock' = 602   # FUNCTION_BLOCK
-        'Function'      = 603   # FUNCTION
+        'Program'       = 602   # TREEITEMTYPE_PLCPOUPROG
+        'Function'      = 603   # TREEITEMTYPE_PLCPOUFUNC
+        'FunctionBlock' = 604   # TREEITEMTYPE_PLCPOUFB
     }
+    # vInfo = IEC language as integer (IECLANGUAGETYPES); a Function takes string[2]
+    # { language, return type } (InfoSys ITcSmTreeItem::CreateChild,
+    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html; that
+    # page lists 604 and 603, 602 takes the same integer - measured 2026-10-25 on 4024 and 4026).
+    # IECLANGUAGE_ST = 1: TCatSysManagerLib 3.4.0.0 interop enum IECLANGUAGETYPES, read by
+    # reflection 2026-10-25 (6 is LD). A declaration string as vInfo is parsed as a language
+    # name and fails with "Requested value '...' was not found" (E_FAIL, measured 2026-10-25 on 4024).
+    $iecLanguageSt = 1
 
     try {
         # Find POUs folder (TIPC^<Plc>^<Plc> Project^POUs on 4024 and 4026)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'POUs' -ExplicitPath $PlcProjectPath
-        $pouFolder = $folderInfo.Item
 
         $subType = $pouSubTypes[$Type]
-
-        # Build XML declaration for the POU
-        $langId = 'st'  # Structured Text
-        $declXml = "<Declaration><![CDATA["
-        switch ($Type) {
-            'Program' {
-                $declXml += "PROGRAM $Name`nVAR`nEND_VAR"
-            }
-            'FunctionBlock' {
-                $declXml += "FUNCTION_BLOCK $Name`nVAR_INPUT`nEND_VAR`nVAR_OUTPUT`nEND_VAR`nVAR`nEND_VAR"
-            }
-            'Function' {
-                $declXml += "FUNCTION $Name : $ReturnType`nVAR_INPUT`nEND_VAR`nVAR`nEND_VAR"
-            }
+        # assigned in the branches: an if-expression would unroll the array into object[]
+        $vInfo = $iecLanguageSt
+        $declPattern = $null
+        if ($Type -eq 'Function') {
+            [string[]]$vInfo = @([string]$iecLanguageSt, $ReturnType)
+            # read back: the header XAE writes is "FUNCTION <name> :<type>" (measured 2026-10-25,
+            # 4024 TcXaeShell.DTE.15.0 and 4026 VisualStudio.DTE.17.0)
+            $declPattern = '(?im)^\s*FUNCTION\s+' + [regex]::Escape($Name) + '\s*:\s*' + [regex]::Escape($ReturnType) + '(?![A-Za-z0-9_])'
         }
-        $declXml += "]]></Declaration>"
 
-        $newItem = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $pouFolder.CreateChild($Name, $subType, '', $declXml) }
+        # the language is read back from the new item (ITcSmTreeItem.Language) and must be ST
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo -ExpectedLanguage 'ST' -DeclarationPattern $declPattern
+        if ($created.ContainsKey('ModalDialog')) {
+            return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
+        }
+        $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        $itemPath = try { Invoke-TcComRetry -OperationName 'PathName' -ScriptBlock { $newItem.PathName } } catch { '' }
         New-TcResult -Success $true -Data ([PSCustomObject]@{
-            name       = $Name
-            type       = $Type
-            path       = $itemPath
-            folderPath = $folderInfo.Path
+            name        = $Name
+            type        = $Type
+            path        = $created.Path
+            folderPath  = $folderInfo.Path
+            objectKind  = $kind.ObjectKind
+            itemType    = $created.ItemType
+            language    = $created.Language
+            declaration = $created.Declaration
+            duplicateCheckScope        = $created.DuplicateCheckScope
+            duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
+            duplicateCheckNote         = $created.DuplicateCheckNote
         })
     }
     catch {
