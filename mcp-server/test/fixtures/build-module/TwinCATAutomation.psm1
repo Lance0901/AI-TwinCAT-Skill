@@ -18,6 +18,7 @@
 #   errorlist-unavailable  lbi 0, Get-TcBuildErrors fails with ERRORLIST_UNAVAILABLE
 #   other-row              lbi 1, library + a build-summary row without file
 #   unlocated-code         lbi 0, one code row with a file but line 0
+#   library-unlocated      lbi 0, the library rows + that code row without a line (#56 point 2)
 #   skipped-library        lbi 0, library rows; a second PLC project is skipped by the configuration
 #   skipped                lbi 0, no rows; a second PLC project is skipped by the configuration
 #   all-skipped            lbi 0, no rows; the only PLC project is skipped (#58, TwinCAT_Festo shape:
@@ -34,6 +35,8 @@
 # 'TwinCAT RT (x64)'), the target reports 'TwinCAT OS (x64)' (so the first call switches +
 # rebuilds); Set-TcSystemState fails with FIXTURE_NO_RUNTIME, which marks "got past the build /
 # platform checks". The BUILD_REQUIRED state file goes to env TCAUTO_STATE_DIR (set by the test).
+# PlcLogin: the real Enter-TcPlcOnline; only its BUILD_REQUIRED refusal (before any COM call) is
+# reachable here, a login that gets past it fails on the mock SysManager.
 #
 # Windows PowerShell 5.1, ASCII only.
 
@@ -69,6 +72,7 @@ $script:FixtureScenarios = @{
     'errorlist-unavailable' = @{ Lbi = 0; Sets = @(); ErrorListFails = $true }
     'other-row'             = @{ Lbi = 1; Sets = @('library', 'other') }
     'unlocated-code'        = @{ Lbi = 0; Sets = @('unlocated') }
+    'library-unlocated'     = @{ Lbi = 0; Sets = @('library', 'unlocated') }
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
     'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
     'all-skipped'           = @{ Lbi = 0; Sets = @(); AllSkipped = $true; ProjectPlatform = 'TwinCAT OS (ARMT2)' }

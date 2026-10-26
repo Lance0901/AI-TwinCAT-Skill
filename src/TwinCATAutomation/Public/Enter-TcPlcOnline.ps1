@@ -34,6 +34,15 @@
         otherwise a download is assumed (data.downloaded = $true). This is a
         best-effort indication only.
 
+        BUILD_REQUIRED (#56): every LoginMode is refused while the BUILD_REQUIRED state of the
+        solution has an entry (a solution platform switch or a Build-TcProject that was not a
+        complete success, with no complete Build-TcProject since; same state as Enable-TcConfig,
+        Private/Set-TcBuildRequired.ps1). XAE compiles before Login / Download by itself
+        (InfoSys "Command Login" https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html,
+        "Command Download" https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531438987.html),
+        but that compile is not checked by the module. A solution never built through the
+        module has no entry and is not refused (known limit).
+
         NOTE: with SilentMode on, calling Enter-TcPlcOnline directly against a PLC that is
         already in Run with a mismatching project lets XAE take its default answer to its own
         "online change / download" prompt; Enable-TcConfig is not affected (login happens
@@ -94,6 +103,23 @@
     $sm = Get-TcSysManager
     if ($null -eq $sm) {
         return New-TcNoSysManagerResult
+    }
+
+    # BUILD_REQUIRED (#56 point 1): same state as Enable-TcConfig. XAE compiles by itself before
+    # a login or download when the project changed (InfoSys "Command Login",
+    # https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html; "Command Download",
+    # https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531438987.html), but nobody checks
+    # that compile here (with unresolved libraries it reports no code error, #45) and under
+    # SilentMode XAE's own "log in without loading?" question on compile errors is answered with
+    # its default. Every LoginMode is refused: Regular downloads too when XAE decides to.
+    $req = Get-TcBuildRequired
+    if ($null -ne $req) {
+        $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }
+        $sln = if ([string]::IsNullOrWhiteSpace([string]$req.solution)) { 'unknown solution' } else { [string]$req.solution }
+        return New-TcResult -Success $false `
+            -ErrorMessage "Not logged in (LoginMode $LoginMode): $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req)." `
+            -ErrorCode 'BUILD_REQUIRED' -Hint (Get-TcErrorHint -Code 'BUILD_REQUIRED') `
+            -Data ([PSCustomObject]@{ online = $false; loginMode = $LoginMode; buildRequired = $req })
     }
 
     # AdsState of port 851 as [int] (Invalid=0 ... Run=5, Stop=6) or $null when unreachable.

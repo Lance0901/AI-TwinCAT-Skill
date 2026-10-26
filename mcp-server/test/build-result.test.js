@@ -205,6 +205,16 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.match(body.data.warning, /1 code row\(s\) without a line number/);
   });
 
+  test('library rows + a code row without a line + AllowUnresolvedLibrary: warningCodes LIBRARY_UNRESOLVED then CODE_NOT_VERIFIED (#56)', async () => {
+    const { body } = await build('library-unlocated', { AllowUnresolvedLibrary: true });
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.deepEqual(body.data.warningCodes, ['LIBRARY_UNRESOLVED', 'CODE_NOT_VERIFIED']);
+    assert.equal(body.data.warningCode, 'LIBRARY_UNRESOLVED');
+    assert.equal(body.data.codeVerified, false);
+    assert.equal(body.data.completeBuild, false, 'the AllowUnresolvedLibrary exception never covers an unlocated code row');
+    assert.match(body.data.buildRequired, /completeBuild=false, warningCodes=\[LIBRARY_UNRESOLVED, CODE_NOT_VERIFIED\]/);
+  });
+
   test('build-summary row without file: category other, not counted in errors, shown in the failure message', async () => {
     const { body } = await build('other-row');
     assert.equal(body.error.code, 'BUILD_FAILED');
@@ -446,6 +456,154 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.deepEqual(r.data.steps.slice(0, 2).map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true]]);
     } finally {
       await client.close();
+    }
+  });
+});
+
+// #56 point 5: a build that was not a complete success is remembered per solution (no platform
+// switch involved: the fixture platform already equals the target's), so EnableConfig and PlcLogin
+// refuse until a complete build. Measured case: 4024 Festo, LIBRARY_UNRESOLVED, then EnableConfig
+// Force=true activated, downloaded and returned success without a warning (2026-10-26).
+describe('BUILD_REQUIRED after a build that was not a complete success (#56)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
+  async function serverWithoutSwitch(scenario, extraEnv = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-b56-'));
+    stateDirs.push(dir);
+    const scenarioFile = path.join(dir, 'scenario.txt');
+    fs.writeFileSync(scenarioFile, scenario);
+    const stateDir = extraEnv.TCAUTO_STATE_DIR ?? path.join(dir, 'state');
+    const client = await startServer(scenario, {
+      TCAUTO_TEST_PLATFORM: 'TwinCAT OS (x64)',
+      TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile,
+      ...extraEnv,
+      TCAUTO_STATE_DIR: stateDir
+    });
+    const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
+    return { client, call, stateDir };
+  }
+
+  test('never built through BuildProject: EnableConfig is not refused (known limit, Activate compiles)', async () => {
+    const s = await serverWithoutSwitch('library-only');
+    try {
+      const r = await s.call('EnableConfig', { Force: true });
+      assert.equal(r.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(r.error));
+      assert.equal(r.data.platformFixed, false);
+    } finally {
+      await s.client.close();
+    }
+  });
+
+  test('LIBRARY_UNRESOLVED, then EnableConfig and PlcLogin refuse (also in a new bridge) until a complete build', async () => {
+    const s = await serverWithoutSwitch('library-only');
+    try {
+      const b = await s.call('BuildProject');
+      assert.equal(b.error.code, 'LIBRARY_UNRESOLVED');
+      assert.match(b.data.buildRequired, /LIBRARY_UNRESOLVED, 7 unresolved library error\(s\)/);
+      assert.ok(fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'state is a file');
+
+      const e = await s.call('EnableConfig', { Force: true });
+      assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
+      assert.match(e.error.message, /LIBRARY_UNRESOLVED/);
+      assert.match(e.error.message, /did not prove that the PLC code was compiled/);
+      assert.doesNotMatch(e.error.message, /previous platform/);
+      assert.ok(!e.data.steps.some((st) => st.step === 'set-config'), 'nothing activated');
+      assert.match(e.error.hint, /#56/);
+
+      // AllowUnresolvedLibrary on EnableConfig alone does not lift it (no platform-fix build here; #61 not widened)
+      const ea = await s.call('EnableConfig', { Force: true, AllowUnresolvedLibrary: true });
+      assert.equal(ea.error.code, 'BUILD_REQUIRED', JSON.stringify(ea.error));
+
+      for (const LoginMode of ['Regular', 'Download', 'OnlineChange']) {
+        const l = await s.call('PlcLogin', { LoginMode });
+        assert.equal(l.error.code, 'BUILD_REQUIRED', `${LoginMode}: ${JSON.stringify(l.error)}`);
+        assert.match(l.error.message, new RegExp(`Not logged in \\(LoginMode ${LoginMode}\\)`));
+      }
+      const sp = await s.call('SendPlcProgram');
+      assert.equal(sp.error.code, 'BUILD_REQUIRED', JSON.stringify(sp.error));
+
+      const other = await serverWithoutSwitch('library-only', { TCAUTO_STATE_DIR: s.stateDir });
+      try {
+        const again = await other.call('EnableConfig', { Force: true });
+        assert.equal(again.error.code, 'BUILD_REQUIRED', 'survives a bridge restart');
+      } finally {
+        await other.client.close();
+      }
+
+      const ok = await s.call('BuildProject', { AllowUnresolvedLibrary: true });
+      assert.equal(ok.success, true);
+      assert.equal(ok.data.completeBuild, true);
+      const after = await s.call('EnableConfig', { Force: true });
+      assert.equal(after.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(after.error));
+      assert.ok(!fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'state removed by the complete build');
+    } finally {
+      await s.client.close();
+    }
+  });
+
+  const unverified = {
+    c0046: /BUILD_FAILED/,
+    'no-lbi-library': /LIBRARY_UNRESOLVED/,
+    'errorlist-unavailable': /success with completeBuild=false, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    skipped: /success with completeBuild=false, warningCodes=\[PROJECT_SKIPPED_BY_CONFIGURATION, CODE_NOT_VERIFIED\]/
+  };
+  for (const scenario of Object.keys(unverified)) {
+    test(`${scenario}: recorded, EnableConfig refuses`, async () => {
+      const s = await serverWithoutSwitch(scenario);
+      try {
+        const b = await s.call('BuildProject');
+        assert.match(b.data.buildRequired, unverified[scenario]);
+        const e = await s.call('EnableConfig', { Force: true });
+        assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
+        assert.match(e.error.message, unverified[scenario]);
+      } finally {
+        await s.client.close();
+      }
+    });
+  }
+
+  test('solution without PLC project: a successful build records nothing', async () => {
+    const s = await serverWithoutSwitch('no-plc');
+    try {
+      const b = await s.call('BuildProject');
+      assert.equal(b.success, true);
+      assert.equal(b.data.completeBuild, false);
+      assert.equal(b.data.buildRequired, undefined);
+      const e = await s.call('EnableConfig', { Force: true });
+      assert.equal(e.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(e.error));
+    } finally {
+      await s.client.close();
+    }
+  });
+
+  // PR #44 review nit: data.warning / data.stateWarning end to end when the state cannot be written
+  test('state directory not writable: warnings reach the MCP client, the entry still blocks in that bridge', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-ro-'));
+    stateDirs.push(dir);
+    const blocker = path.join(dir, 'a-file');
+    fs.writeFileSync(blocker, 'not a directory');
+    const unwritable = path.join(blocker, 'state'); // a directory below a file cannot be created
+
+    // a. platform switch (fixture default RT -> target OS): EnableConfig data.warning
+    const a = await startServer('library-only', { TCAUTO_STATE_DIR: unwritable });
+    try {
+      const r = JSON.parse((await a.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      assert.equal(r.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(r.error));
+      assert.match(r.data.warning, /BUILD_REQUIRED was recorded in this process only/);
+      const again = JSON.parse((await a.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      assert.equal(again.error.code, 'BUILD_REQUIRED', 'in-memory entry still enforced');
+    } finally {
+      await a.close();
+    }
+
+    // b. unverified build without switch: BuildProject data.stateWarning, PlcLogin refused in that bridge
+    const b = await serverWithoutSwitch('library-only', { TCAUTO_STATE_DIR: unwritable });
+    try {
+      const r = await b.call('BuildProject');
+      assert.equal(r.error.code, 'LIBRARY_UNRESOLVED');
+      assert.match(r.data.stateWarning, /BUILD_REQUIRED was recorded in this process only/);
+      const l = await b.call('PlcLogin', { LoginMode: 'Download' });
+      assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
+    } finally {
+      await b.client.close();
     }
   });
 });

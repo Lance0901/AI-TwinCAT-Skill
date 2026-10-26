@@ -4,7 +4,11 @@
 # Prerequisites: TwinCAT XAE/IDE open, UmRT running, solution with MAIN.fbLoggerFlowTest.
 # Assumption: write MAIN-level (standalone) variables instead of FB VAR_INPUT.
 
-param([string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln')
+param(
+    [string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln',
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56).
+    [switch]$AllowUnresolvedLibrary
+)
 
 # Verify: Can ADS write stick on a non-input variable?
 # If nBurstCount write sticks but bStart doesn't, it proves the PLC is overwriting bStart each cycle
@@ -15,7 +19,7 @@ Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutom
 Write-Host "=== Connect & Start ==="
 Connect-TcIde -SolutionPath $SolutionPath | Out-Null
 $amsNetId = (Connect-TcIde -SolutionPath $SolutionPath).data.amsNetId
-Build-TcProject | Out-Null
+Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary | Out-Null
 Enable-TcConfig -Force | Out-Null
 Start-Sleep -Seconds 5
 Enter-TcPlcOnline | Out-Null

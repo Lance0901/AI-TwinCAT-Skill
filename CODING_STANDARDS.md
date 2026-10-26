@@ -1,6 +1,6 @@
 # Coding Standards
 
-審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法與檔案編碼、cmdlet 數與文件一致、禁用措辭、錯誤碼在 troubleshooting 有一節、`tools.json` 同步、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
+審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法與檔案編碼、cmdlet 數與文件一致、禁用措辭、錯誤碼在 troubleshooting 有一節、`tools.json` 同步、`tests/Unit/*.ps1`、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
 
 ## 1. 可能無限阻塞的 COM / DTE 呼叫要有 deadline
 
