@@ -289,6 +289,7 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.equal(body.data.solutionConfiguration, 'Release|TwinCAT RT (x64)');
     assert.equal(body.data.solutionPlatform, 'TwinCAT RT (x64)');
     assert.equal(body.data.platformSource, 'ActiveConfig');
+    assert.equal(body.data.completeBuild, true);
     assert.equal(body.data.warningCodes, undefined);
   });
 });
@@ -341,7 +342,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(first.success, false);
       assert.equal(first.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(first.error));
       assert.match(first.error.message, /platform switch to 'TwinCAT OS \(x64\)' failed \(the solution platform stays switched/);
-      assert.match(first.error.hint, /BuildProject must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
+      assert.match(first.error.hint, /A complete BuildProject \(data\.completeBuild = true: coverageComplete and codeVerified = true, or the AllowUnresolvedLibrary switch with library errors only\) must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
       assert.deepEqual(first.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
 
       // 2. platforms are equal now, so no rebuild would happen: refused instead of activating old output
@@ -404,19 +405,33 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
   });
 
   // A successful build that proves nothing about the PLC code must not clear BUILD_REQUIRED either.
-  for (const scenario of ['coverage-error', 'errorlist-unavailable', 'unlocated-code']) {
-    test(`a successful build with ${scenario} (codeVerified not true) does not clear BUILD_REQUIRED`, async () => {
+  // The BUILD_REQUIRED message and the platform-fix-build step say why the build did not count.
+  const verdict = {
+    'coverage-error': /completeBuild=false, codeVerified=null, coverageComplete=false, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'errorlist-unavailable': /completeBuild=false, codeVerified=null, coverageComplete=true, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'unlocated-code': /completeBuild=false, codeVerified=false, coverageComplete=true, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'no-plc': /completeBuild=false, codeVerified=false, coverageComplete=false, warningCodes=\[CODE_NOT_VERIFIED\]/
+  };
+  for (const scenario of Object.keys(verdict)) {
+    test(`a successful build with ${scenario} (codeVerified not true) does not clear BUILD_REQUIRED and says why`, async () => {
       const client = await startServer(scenario);
       try {
         const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
         assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
         assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+        assert.match(r.data.steps[1].detail, verdict[scenario], 'platform-fix-build detail');
+        assert.match(r.error.message, /did not count as complete/);
+        assert.match(r.error.message, verdict[scenario]);
+        assert.match(r.error.hint, /data\.completeBuild = true/);
+        assert.match(r.error.hint, /build-required\.json/, 'hint names the manual release');
         const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
         assert.equal(b.success, true);
         assert.notEqual(b.data.codeVerified, true);
+        assert.equal(b.data.completeBuild, false);
         assert.ok(b.data.warningCodes.includes('CODE_NOT_VERIFIED'));
         const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
         assert.equal(again.error.code, 'BUILD_REQUIRED');
+        assert.match(again.error.message, verdict[scenario], 'a separate BuildProject is reported too');
       } finally {
         await client.close();
       }

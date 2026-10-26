@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-26T14:51:54Z",
+    "generatedAt":  "2026-10-26T15:08:47Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -354,7 +354,7 @@
                                                                                },
                                                              "AllowUnresolvedLibrary":  {
                                                                                             "type":  "boolean",
-                                                                                            "description":  "Passed to the build that follows an automatic platform switch: accept unresolved libraries (LIBRARY_UNRESOLVED) as success. After a platform switch EnableConfig refuses to activate (BUILD_REQUIRED) until a BuildProject has succeeded."
+                                                                                            "description":  "Passed to the build that follows an automatic platform switch: accept unresolved libraries (LIBRARY_UNRESOLVED) as success. After a platform switch EnableConfig refuses to activate (BUILD_REQUIRED) until a complete BuildProject (data.completeBuild=true: coverageComplete and codeVerified=true, or AllowUnresolvedLibrary with library errors only); the BUILD_REQUIRED message says why the last build did not count."
                                                                                         },
                                                              "Platform":  {
                                                                               "type":  "string",

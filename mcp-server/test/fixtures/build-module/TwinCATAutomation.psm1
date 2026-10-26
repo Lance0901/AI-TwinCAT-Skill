@@ -25,6 +25,7 @@
 #                          'TwinCAT OS (ARMT2)', the coverage label carries the project platform
 #                          like the old Get-TcBuildCoverage did)
 #   coverage-error         lbi 0, no rows; the PLC project list (SolutionContexts) is not readable
+#   no-plc                 lbi 0, no rows; the solution has no .plcproj (I/O / NC only)
 #   context-platform       lbi 0, no rows; Get-TcSolutionPlatform only has platformSource 'context'
 #                          (its platform is the project platform 'TwinCAT OS (ARMT2)')
 # GetSymbols / ReadVariable (#57): the real Get-TcSymbols / Read-TcVariable on a fixture symbol
@@ -49,7 +50,7 @@ $stateEnd = $realPsm1Text.IndexOf('# Import private functions')
 if ($stateEnd -lt 0) { throw 'fixture: state block marker not found in TwinCATAutomation.psm1' }
 # Self-check: every module-level $script: assignment must be inside that block, else the fixture
 # would silently miss state that a later change to the real .psm1 adds after the marker.
-foreach ($m in [regex]::Matches($realPsm1Text, '(?m)^\$script:\w+\s*=')) {
+foreach ($m in [regex]::Matches($realPsm1Text, '(?m)^\s*(\[[^\]]+\]\s*)?\$script:\w+\s*[+\-]?=')) {
     if ($m.Index -ge $stateEnd) { throw "fixture: '$($m.Value.Trim())' in TwinCATAutomation.psm1 is after the state block marker; move it before '# Import private functions'" }
 }
 . ([scriptblock]::Create($realPsm1Text.Substring(0, $stateEnd)))
@@ -72,6 +73,7 @@ $script:FixtureScenarios = @{
     'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
     'all-skipped'           = @{ Lbi = 0; Sets = @(); AllSkipped = $true; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
     'coverage-error'        = @{ Lbi = 0; Sets = @(); CoverageError = 'SolutionContexts not readable (fixture)' }
+    'no-plc'                = @{ Lbi = 0; Sets = @(); NoPlc = $true }
     'context-platform'      = @{ Lbi = 0; Sets = @(); PlatformSource = 'context'; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
 }
 function Get-FixtureScenario {
@@ -102,6 +104,7 @@ function Get-TcIdeModalDialog { $null }
 function Get-TcBuildCoverage {
     $sc = Get-FixtureScenario
     if ($sc.CoverageError) { return @{ configuration = $null; error = $sc.CoverageError; projects = @() } }
+    if ($sc.NoPlc) { return @{ configuration = 'Release'; error = $null; projects = @() } }
     if ($sc.AllSkipped) {
         $projects = @([PSCustomObject]@{
             name = 'plc'; uniqueName = 'Demo\plc\plc.plcproj'; configuration = 'Release'

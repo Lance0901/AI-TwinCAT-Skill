@@ -76,7 +76,8 @@
         a platform switch" state that Enable-TcConfig checks before activating (BUILD_REQUIRED, a
         state file per solution: Private/Set-TcBuildRequired.ps1). A skipped PLC project, an
         unreadable project list or Error List, a code row without a line number or a solution
-        without PLC project does not clear it.
+        without PLC project does not clear it. data.completeBuild (successful results only) says
+        whether this build counted as complete.
         data.errors          number of CODE errors (errorItems with category 'code'); Library
                              Manager rows are not counted (fallback when the Error List is not
                              readable: failedProjects)
@@ -161,6 +162,9 @@
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
+
+    # set again only by a successful build (Enable-TcConfig BUILD_REQUIRED message)
+    $script:TcLastBuildVerdict = $null
 
     # --- coverage: which PLC projects the active solution configuration builds (#28) ---
     try { $coverage = Get-TcBuildCoverage }
@@ -550,8 +554,22 @@
             # may still have the output of the previous platform (inferred, not measured). The one
             # accepted exception is the documented #45 path: -AllowUnresolvedLibrary with only
             # library rows (codeVerified = $false because of them, Error List read, no unlocated row).
+            # ($null -eq $errorListError) and ($unlocatedCode.Count -eq 0) are a deliberate guard:
+            # $libraryUnresolved already implies a read Error List today, but the exception must
+            # never cover an unreadable Error List or unlocated code rows if that ever changes.
             $acceptedLibrary = $libraryUnresolved -and $AllowUnresolvedLibrary -and ($null -eq $errorListError) -and ($unlocatedCode.Count -eq 0)
-            if ($coverageComplete -and (($codeVerified -eq $true) -or $acceptedLibrary)) { $null = Clear-TcBuildRequired }
+            $completeBuild = [bool]($coverageComplete -and (($codeVerified -eq $true) -or $acceptedLibrary))
+            $data | Add-Member -NotePropertyName 'completeBuild' -NotePropertyValue $completeBuild
+            if ($completeBuild) { $null = Clear-TcBuildRequired }
+            # Why a successful build did not count, for the BUILD_REQUIRED message of Enable-TcConfig
+            $script:TcLastBuildVerdict = [PSCustomObject]@{
+                solution         = [string]$script:TcSolutionPath
+                at               = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                completeBuild    = $completeBuild
+                codeVerified     = $codeVerified
+                coverageComplete = $coverageComplete
+                warningCodes     = @($(if ($null -ne $data.PSObject.Properties['warningCodes']) { $data.warningCodes } else { @() }))
+            }
             New-TcResult -Success $true -Data $data
         }
     }
