@@ -115,7 +115,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### 建置與部署
 | 指令 | 說明 |
 |------|------|
-| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line） |
+| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line/category）；`data.errors` 只算 code error（#23，不再含 Library Manager 列）；缺 library 回 `LIBRARY_UNRESOLVED`，除非 `-AllowUnresolvedLibrary`（#45） |
 | `Clear-TcProject` | Clean 整個 solution（`Clean($false)` + 輪詢 `BuildState`，`-TimeoutSec` 預設 300，逾時 `CLEAN_TIMEOUT`）；DTE 回 `$null` 的 `Solution` / `SolutionBuild` 會先等它出現（`data.nullReads`；#18，原因未確認）；只有 library 解析失敗時回 `LIBRARY_UNRESOLVED`（`-AllowUnresolvedLibrary` 才放行成 success + `data.warningCode`），LastBuildInfo 讀不到 `CLEAN_UNVERIFIED`，其他錯誤 `CLEAN_FAILED` |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |

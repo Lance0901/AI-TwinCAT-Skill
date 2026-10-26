@@ -2,7 +2,11 @@
 # Problem: need to locate variables that are not FB inputs (and so not overwritten each scan).
 # Prerequisites: TwinCAT XAE/IDE open, UmRT running, a solution with a MAIN program.
 
-param([string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln')
+param(
+    [string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln',
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
+)
 
 # List MAIN-level symbols to find writable standalone variables
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force
@@ -10,7 +14,7 @@ Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutom
 
 Connect-TcIde -SolutionPath $SolutionPath | Out-Null
 $amsNetId = (Connect-TcIde -SolutionPath $SolutionPath).data.amsNetId
-Build-TcProject | Out-Null
+Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary | Out-Null
 Enable-TcConfig -Force | Out-Null
 Start-Sleep -Seconds 5
 Enter-TcPlcOnline | Out-Null

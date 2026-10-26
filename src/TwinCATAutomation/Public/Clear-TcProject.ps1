@@ -33,9 +33,11 @@ function Clear-TcProject {
              LIBRARY_UNRESOLVED of PR #44):
                - LastBuildInfo unreadable: CLEAN_UNVERIFIED (success = false, always).
                - LastBuildInfo > 0 and every Error List error (Get-TcBuildErrors, data.errorItems /
-                 libraryErrorItems) is an unresolved library (Test-TcLibraryManagerItem: '<plc>.Library
-                 Manager', no line): LIBRARY_UNRESOLVED (success = false). With
-                 -AllowUnresolvedLibrary: success with data.cleanVerified = $false, data.warningCode =
+                 libraryErrorItems) is an unresolved library (category 'library' of
+                 Get-TcErrorItemCategory, the same rule Build-TcProject uses: '<plc>.Library Manager'
+                 with no line, or a "Could not open library" row without a line): LIBRARY_UNRESOLVED
+                 (success = false). With -AllowUnresolvedLibrary: success with data.cleanVerified =
+                 $false, data.warningCodes = @('LIBRARY_UNRESOLVED'), data.warningCode =
                  LIBRARY_UNRESOLVED and data.warning. An unresolved library can keep the PLC code from
                  being compiled while a later Build reports success (#45, measured 2026-10-25, 4024
                  32-bit XAE Shell), so a following Build-TcProject result is not verified either.
@@ -55,8 +57,10 @@ function Clear-TcProject {
         data.cleanSec        seconds from Clean($false) until Done
         data.nullReads       $null answers for DTE.Solution / SolutionBuild before the clean started
         data.cleanVerified   $true only when LastBuildInfo read back 0
-        data.errorItems      Error List errors, only when failedProjects > 0
-        data.warningCode / warning   LIBRARY_UNRESOLVED (only with -AllowUnresolvedLibrary)
+        data.errorItems      Error List errors (with category code|library|other, as in
+                             Build-TcProject), only when failedProjects > 0
+        data.warningCodes / warningCode / warning   LIBRARY_UNRESOLVED (only with
+                             -AllowUnresolvedLibrary; same shape as Build-TcProject)
         Errors: NOT_CONNECTED, NO_SOLUTION, IDE_MODAL_DIALOG, IDE_BUSY / IDE_CRASHED (COM),
         CLEAN_TIMEOUT, CLEAN_FAILED, CLEAN_UNVERIFIED, LIBRARY_UNRESOLVED.
     #>
@@ -192,8 +196,12 @@ function Clear-TcProject {
         $errList = Get-TcBuildErrors -TimeoutSec 30
         $items = @()
         if ($errList.success) { $items = @($errList.data.errors) }
+        # Same classification as Build-TcProject (#23 / #44): category code|library|other.
+        foreach ($item in $items) {
+            $item | Add-Member -NotePropertyName 'category' -NotePropertyValue (Get-TcErrorItemCategory $item) -Force
+        }
         $data | Add-Member -NotePropertyName 'errorItems' -NotePropertyValue $items
-        $libraryOnly = $errList.success -and $items.Count -gt 0 -and @($items | Where-Object { -not (Test-TcLibraryManagerItem -Item $_) }).Count -eq 0
+        $libraryOnly = $errList.success -and $items.Count -gt 0 -and @($items | Where-Object { $_.category -ne 'library' }).Count -eq 0
         if (-not $libraryOnly) {
             if (-not $errList.success) { $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errList.error.code }
             return New-TcResult -Success $false -ErrorMessage "Clean finished but $failed project(s) failed (SolutionBuild.LastBuildInfo)." `
@@ -206,9 +214,7 @@ function Clear-TcProject {
                 -ErrorCode 'LIBRARY_UNRESOLVED' -Hint (Get-TcErrorHint -Code 'CLEAN_LIBRARY_UNRESOLVED') -Data $data
         }
         $warn = "$libText Accepted by -AllowUnresolvedLibrary; fix / install the libraries before relying on it."
-        $data | Add-Member -NotePropertyName 'warningCode' -NotePropertyValue 'LIBRARY_UNRESOLVED'
-        $data | Add-Member -NotePropertyName 'warning' -NotePropertyValue $warn
-        Write-Warning $warn
+        Add-TcBuildWarning -Data $data -Code 'LIBRARY_UNRESOLVED' -Text $warn
     }
     New-TcResult -Success $true -Data $data
 }

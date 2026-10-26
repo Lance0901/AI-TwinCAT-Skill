@@ -18,6 +18,8 @@
 //   TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC  probe scan interval in seconds (default 5, clamped 1..60)
 //   TWINCAT_MCP_PROBE_CONFIRM_SCANS  consecutive scans that must see the same kill-worthy dialog before the
 //                              probe reports it (default 2, clamped 1..10)
+//   TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC  seconds after which one UIA scan of the probe is abandoned
+//                              (default 4, clamped 1..30)
 //   TWINCAT_MCP_PROBE_SCAN_SCRIPT    file that defines $script:TcUiaDialogScan, dot-sourced by the probe
 //                              (default: <dir of TWINCAT_MODULE_PATH>/Private/Get-TcIdeModalDialog.ps1)
 //
@@ -77,6 +79,7 @@ function parseSpawnOverride(env, prefix = 'TWINCAT_MCP_BRIDGE') {
 export const DEFAULT_PROGRESS_INTERVAL_MS = 10000;
 export const DEFAULT_PROBE_INTERVAL_SEC = 5;
 export const DEFAULT_PROBE_CONFIRM_SCANS = 2;
+export const DEFAULT_PROBE_SCAN_TIMEOUT_SEC = 4;
 
 /** The module file that defines $script:TcUiaDialogScan, next to the given TwinCATAutomation.psm1. */
 export function scanScriptFor(modulePath) {
@@ -113,6 +116,7 @@ export function loadConfig(env = process.env) {
       spawnSpec: parseSpawnOverride(env, 'TWINCAT_MCP_PROBE'),
       probeScript: DEFAULT_PROBE_SCRIPT,
       confirmScans: Math.min(10, Math.max(1, positiveInt(env.TWINCAT_MCP_PROBE_CONFIRM_SCANS, DEFAULT_PROBE_CONFIRM_SCANS))),
+      scanTimeoutSec: Math.min(30, Math.max(1, positiveInt(env.TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_PROBE_SCAN_TIMEOUT_SEC))),
       scanScript: env.TWINCAT_MCP_PROBE_SCAN_SCRIPT || scanScriptFor(modulePath)
     }
   };

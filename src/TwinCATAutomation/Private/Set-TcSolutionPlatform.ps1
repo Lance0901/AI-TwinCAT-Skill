@@ -94,6 +94,7 @@
         platformMatchedBy        = $null
         platformMap              = $null
         restored                 = $null
+        stateWarning             = $null   # BUILD_REQUIRED kept in memory only (Set-TcBuildRequired)
         availablePlatforms       = @()
         availableConfigurations  = @()
     }
@@ -236,6 +237,11 @@
             catch { $restoredOk = $false }
         }
         $out.restored = $restoredOk
+        if ($out.platformChanged) {
+            # switch failed AND the previous configuration could not be restored: the active
+            # platform is not the one the last build was made for
+            $out.stateWarning = Set-TcBuildRequired -Reason "solution platform left at '$($out.platform)' (was '$($before.configuration)|$($before.platform)') after a failed switch to '$Configuration|$Platform' that could not be undone"
+        }
         $restoreText = if ($restoredOk) { " The previous configuration '$($before.configuration)|$($before.platform)' was re-activated." } else { ' The previous configuration could not be restored.' }
         if ($null -ne $activateError) {
             $hp = $activateError.PSObject.Properties['hint']
@@ -254,6 +260,12 @@
         return $out
     }
     if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
+    if ($out.platformChanged) {
+        # The compiled output may still belong to the previous platform (inferred, not
+        # measured): Enable-TcConfig refuses to activate until a complete Build-TcProject
+        # success (BUILD_REQUIRED, state file: Private/Set-TcBuildRequired.ps1).
+        $out.stateWarning = Set-TcBuildRequired -Reason "solution platform switched from '$($before.configuration)|$($before.platform)' to '$($out.configuration)|$($out.platform)'"
+    }
     $out.success = $true
     return $out
 }

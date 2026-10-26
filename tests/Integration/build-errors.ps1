@@ -35,7 +35,9 @@ param(
     # Delete <plc>\_CompileInfo next to the solution before opening it (avoids stale-state asserts).
     [switch]$CleanCompileInfo,
     # Required: acknowledges that the POU file of the solution is modified on disk (and restored).
-    [switch]$IUnderstandThisModifiesTheProject
+    [switch]$IUnderstandThisModifiesTheProject,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
 )
 
 if (-not $IUnderstandThisModifiesTheProject) {
@@ -159,18 +161,22 @@ function Invoke-Main {
     }
     if (-not $w.success) { Write-Host "ABORT: inject failed"; return 1 }
 
-    # 4. build -> BUILD_FAILED, buildSucceeded=false, codeErrors with file/line
+    # 4. build -> BUILD_FAILED, buildSucceeded=false, codeErrors with file/line. With unresolved
+    #    libraries (libraryErrors > 0) the code may not be compiled at all (#45): LIBRARY_UNRESOLVED
+    #    also passes (no -AllowUnresolvedLibrary here: the real result is what is checked).
     $b1 = Invoke-Step -Step '4-build-fail' -Cmdlet 'Build-TcProject' -Block { Build-TcProject } -Check {
         param($r)
-        (-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $r.data.buildSucceeded -eq $false -and @($r.data.codeErrors).Count -gt 0
+        ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $r.data.buildSucceeded -eq $false -and @($r.data.codeErrors).Count -gt 0) -or
+        ((-not $r.success) -and $r.error.code -eq 'LIBRARY_UNRESOLVED' -and $r.data.libraryErrors -gt 0)
     }
-    Write-Host "  buildSucceeded=$($b1.data.buildSucceeded) decidedBy=$($b1.data.decidedBy) errors=$($b1.data.errors) failedProjects=$($b1.data.failedProjects) warnings=$($b1.data.warnings) errorItems=$(@($b1.data.errorItems).Count) codeErrors=$(@($b1.data.codeErrors).Count)"
+    $notCompiled = ((-not $b1.success) -and $b1.error.code -eq 'LIBRARY_UNRESOLVED')
+    Write-Host "  buildSucceeded=$($b1.data.buildSucceeded) decidedBy=$($b1.data.decidedBy) errors=$($b1.data.errors) libraryErrors=$($b1.data.libraryErrors) failedProjects=$($b1.data.failedProjects) warnings=$($b1.data.warnings) errorItems=$(@($b1.data.errorItems).Count) codeErrors=$(@($b1.data.codeErrors).Count)"
     Write-Host "  message: $($b1.error.message)"
     $hit = @($b1.data.codeErrors | Where-Object { $_.file -like "*$PouName*" -and $null -ne $_.line -and $_.line -gt 0 })
     $c0046 = @($hit | Where-Object { $_.code -eq 'C0046' })
-    Write-StepLog -Step '4b-codeErrors-check' -Cmdlet 'Build-TcProject' -ElapsedMs 0 -Pass ($hit.Count -gt 0 -and $c0046.Count -gt 0) `
+    Write-StepLog -Step '4b-codeErrors-check' -Cmdlet 'Build-TcProject' -ElapsedMs 0 -Pass ($notCompiled -or ($hit.Count -gt 0 -and $c0046.Count -gt 0)) `
         -Result ([PSCustomObject]@{ success = ($hit.Count -gt 0); data = [PSCustomObject]@{ pouHits = $hit; c0046 = $c0046.Count; first3 = @($b1.data.codeErrors | Select-Object -First 3) } }) `
-        -Note "codeErrors with file~$PouName and a line: $($hit.Count); with code C0046: $($c0046.Count)"
+        -Note "codeErrors with file~$PouName and a line: $($hit.Count); with code C0046: $($c0046.Count)$(if ($notCompiled) { '; LIBRARY_UNRESOLVED: code not compiled (#45), not checked' })"
     @($b1.data.codeErrors) | Select-Object -First 3 | ForEach-Object {
         $itemJson = $_ | ConvertTo-Json -Compress
         Write-Host "  codeError: $itemJson"
@@ -188,10 +194,13 @@ function Invoke-Main {
     $null = Invoke-Step -Step '6-restore' -Cmdlet 'Write-TcPouCode' -Block { Write-TcPouCode -PouName $PouName -PouPath $PouPath -Implementation $origImpl }
 
     # 7. build again -> success, codeErrors empty; whatever is still listed is Library Manager items
-    $b2 = Invoke-Step -Step '7-build-ok' -Cmdlet 'Build-TcProject' -Block { Build-TcProject } -Check {
-        param($r) $r.success -and $r.data.buildSucceeded -eq $true -and @($r.data.codeErrors).Count -eq 0
+    #    (LIBRARY_UNRESOLVED without -AllowUnresolvedLibrary)
+    $b2 = Invoke-Step -Step '7-build-ok' -Cmdlet 'Build-TcProject' -Block { Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary } -Check {
+        param($r)
+        ($r.success -and $r.data.buildSucceeded -eq $true -and @($r.data.codeErrors).Count -eq 0) -or
+        ((-not $r.success) -and $r.error.code -eq 'LIBRARY_UNRESOLVED' -and @($r.data.codeErrors).Count -eq 0)
     }
-    Write-Host "  buildSucceeded=$($b2.data.buildSucceeded) decidedBy=$($b2.data.decidedBy) errors=$($b2.data.errors) failedProjects=$($b2.data.failedProjects) errorItems=$(@($b2.data.errorItems).Count) codeErrors=$(@($b2.data.codeErrors).Count)"
+    Write-Host "  buildSucceeded=$($b2.data.buildSucceeded) decidedBy=$($b2.data.decidedBy) errors=$($b2.data.errors) libraryErrors=$($b2.data.libraryErrors) failedProjects=$($b2.data.failedProjects) errorItems=$(@($b2.data.errorItems).Count) codeErrors=$(@($b2.data.codeErrors).Count)"
     @($b2.data.errorItems) | ForEach-Object {
         $leftover = "  leftover: [" + $_.file + "] " + $_.description
         Write-Host $leftover

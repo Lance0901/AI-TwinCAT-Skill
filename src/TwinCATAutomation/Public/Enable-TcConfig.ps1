@@ -101,6 +101,9 @@ function Enable-TcConfig {
     .PARAMETER TimeoutSec
         Overall time limit for the whole -Force cycle (single deadline). Default 120.
         The platform-fix / platform-fix-build steps run before the deadline starts.
+    .PARAMETER AllowUnresolvedLibrary
+        Passed to the platform-fix-build (Build-TcProject -AllowUnresolvedLibrary): accept a
+        build whose Error List shows unresolved libraries (LIBRARY_UNRESOLVED) as success.
     .PARAMETER NoPlatformFix
         Do not switch the solution platform: a known mismatch returns PLATFORM_MISMATCH
         before anything is activated.
@@ -156,6 +159,9 @@ function Enable-TcConfig {
 
         [Parameter()]
         [switch]$NoPlatformFix,
+
+        [Parameter()]
+        [switch]$AllowUnresolvedLibrary,
 
         [Parameter()]
         [string]$Platform,
@@ -494,14 +500,24 @@ function Enable-TcConfig {
         Set-Variable -Name solutionPlatform -Value $r.platform -Scope 1
         Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1
         Set-Variable -Name platformFixed -Value $true -Scope 1
+        $swp = $r.PSObject.Properties['stateWarning']
+        if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
+            # BUILD_REQUIRED only in memory (state file not writable): reported, still enforced here
+            Set-Variable -Name platformWarning -Value ([string]$swp.Value) -Scope 1
+        }
         Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$solText -> $($r.platform) (project platform $($r.projectPlatform); $srcText, configuration $($r.configuration))"
 
         # The PLC output of the old platform must not be activated: same build as Build-TcProject.
         $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
-        $b = Build-TcProject
+        $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         if (-not $b.success) {
             Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail ([string]$b.error.message)
-            return New-TcStepFailureFromResult -Result $b -Prefix 'Build after the automatic platform switch failed' -DefaultCode 'BUILD_FAILED'
+            # The platform IS switched now: running Enable-TcConfig again would find the platforms
+            # equal and skip this build, so the module keeps BUILD_REQUIRED until a build succeeds.
+            $f = New-TcStepFailureFromResult -Result $b -Prefix "Build after the automatic platform switch to '$($r.platform)' failed (the solution platform stays switched; Enable-TcConfig refuses to activate until Build-TcProject succeeds)" -DefaultCode 'BUILD_FAILED'
+            $platHint = "The solution platform was switched to '$($r.platform)'. Build-TcProject must succeed before Enable-TcConfig activates again (with unresolved libraries: install them; only if the user accepts that the code may not be compiled: Build-TcProject -AllowUnresolvedLibrary). $([string]$f.error.hint)".TrimEnd()
+            $f.error | Add-Member -NotePropertyName 'hint' -NotePropertyValue $platHint -Force
+            return $f
         }
         Add-TcStepRecord -Name 'platform-fix-build' -Ok $true -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s)"
         return $null
@@ -514,6 +530,17 @@ function Enable-TcConfig {
         if ([string]::IsNullOrWhiteSpace($id)) { $id = $script:TcAdsAmsNetId }
         if ([string]::IsNullOrWhiteSpace($id)) { return $null }
         return [string]$id
+    }
+
+    # A platform switch (Set-TcTarget / platform-fix) without a successful build since then:
+    # the PLC output may still be that of the previous platform (inferred, not measured). Returns a failure or $null.
+    function Test-TcBuildRequired {
+        $req = Get-TcBuildRequired
+        if ($null -eq $req) { return $null }
+        $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }
+        $sln = if ([string]::IsNullOrWhiteSpace([string]$req.solution)) { 'unknown solution' } else { [string]$req.solution }
+        Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject success since"
+        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject success since; the compiled PLC output may still be that of the previous platform." -Code 'BUILD_REQUIRED'
     }
 
     # Failure of a nested cmdlet result: keep its code + hint
@@ -537,6 +564,8 @@ function Enable-TcConfig {
     if (-not $Force) {
         $netId = Resolve-TcCycleNetId
         $fail = Invoke-TcPlatformCheck -TargetNetId $netId
+        if ($null -ne $fail) { return $fail }
+        $fail = Test-TcBuildRequired
         if ($null -ne $fail) { return $fail }
         $fail = Test-TcStepModalDialog -Name 'activate'
         if ($null -ne $fail) { return $fail }
@@ -599,6 +628,8 @@ function Enable-TcConfig {
     }
     # Solution platform vs target platform (may switch + rebuild; not part of -TimeoutSec)
     $fail = Invoke-TcPlatformCheck -TargetNetId $netId
+    if ($null -ne $fail) { return $fail }
+    $fail = Test-TcBuildRequired
     if ($null -ne $fail) { return $fail }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
 

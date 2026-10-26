@@ -5,7 +5,9 @@
     [string]$NetId = '199.5.42.250.1.1',
     [string]$FwGuid = 'B7598CF7-8B30-4C49-8EFB-69ED4671CC91',
     [Parameter(Mandatory)][string]$LogPath,
-    [int]$DeadlineMin = 45
+    [int]$DeadlineMin = 45,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    [switch]$AllowUnresolvedLibrary
 )
 # Integration: "no false success" scenarios for #28 / #32 against a real runtime (local UmRT).
 #   1. FrameworkUnitTest without Build.0 in the .sln -> Build-TcProject warning / -ExpectedProject failure
@@ -72,12 +74,12 @@ try {
     Set-FwBuild0 $false
     if (Open-Ide) {
         Check-Deadline
-        $b = Build-TcProject
+        $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         $fw = @($b.data.projects | Where-Object { $_.name -eq 'FrameworkUnitTest' })[0]
         Log 'skip-build' $b 'success, coverageComplete=false, FrameworkUnitTest skipped, warningCode PROJECT_SKIPPED_BY_CONFIGURATION' ($b.data.coverageComplete -eq $false -and $fw.status -eq 'skipped' -and $b.data.warningCode -eq 'PROJECT_SKIPPED_BY_CONFIGURATION')
-        $b = Build-TcProject -ExpectedProject FrameworkUnitTest
+        $b = Build-TcProject -ExpectedProject FrameworkUnitTest -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         Log 'skip-build-expected' $b 'success=false PROJECT_SKIPPED_BY_CONFIGURATION' ((-not $b.success) -and $b.error.code -eq 'PROJECT_SKIPPED_BY_CONFIGURATION')
-        $b = Build-TcProject -ExpectedProject Untitled1
+        $b = Build-TcProject -ExpectedProject Untitled1 -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         Log 'skip-build-expected-other' $b 'success (Untitled1 built), coverageComplete=false' ($b.success -and $b.data.coverageComplete -eq $false)
         Close-Ide
     }
@@ -89,7 +91,7 @@ try {
     if (Open-Ide) {
         $w = Write-FwMain 'v3'
         Log 'v3-write' $w 'success' $w.success
-        $b = Build-TcProject -ExpectedProject FrameworkUnitTest, Untitled1
+        $b = Build-TcProject -ExpectedProject FrameworkUnitTest, Untitled1 -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         Log 'v3-build' $b 'success coverageComplete' ($b.success -and $b.data.coverageComplete)
         Check-Deadline
         $e = Enable-TcConfig -Force -TimeoutSec 240 -ActivateTimeoutSec 150

@@ -53,6 +53,14 @@ try {
     Set-MockDte -LastBuildInfo 1
     $r = Clear-TcProject -TimeoutSec 30 -AllowUnresolvedLibrary -WarningAction SilentlyContinue
     Check 'library-only-allowed' ($r.success -and -not $r.data.cleanVerified -and $r.data.warningCode -eq 'LIBRARY_UNRESOLVED' -and $r.data.warning -match '#45') "success=$($r.success) code=$($r.data.warningCode)"
+    # Same result shape and classification as Build-TcProject (#44): warningCodes[], errorItems[].category.
+    Check 'library-only-allowed-shape' ((@($r.data.warningCodes) -join ',') -eq 'LIBRARY_UNRESOLVED' -and @($r.data.errorItems | Where-Object { $_.category -eq 'library' }).Count -eq 2) "warningCodes=$(@($r.data.warningCodes) -join ',')"
+    Set-MockDte -LastBuildInfo 1
+    $msgRow = [PSCustomObject]@{ severity = 'Error'; code = $null; description = "Could not open library '#System_VisuElemTrace'."; project = 'plc'; file = ''; line = 0 }
+    $global:Mock.ErrorList = [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ errors = @($libRow, $msgRow) } }
+    $r = Clear-TcProject -TimeoutSec 30
+    Check 'library-message-row' (-not $r.success -and $r.error.code -eq 'LIBRARY_UNRESOLVED') "code=$($r.error.code)"
+    $global:Mock.ErrorList = [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ errors = @($libRow, $libRow) } }
 
     Set-MockDte -LastBuildInfo 1
     $global:Mock.ErrorList = [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ errors = @($libRow, $codeRow) } }

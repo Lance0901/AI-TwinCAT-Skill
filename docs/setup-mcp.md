@@ -5,7 +5,7 @@ Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, C
 ## Prerequisites
 
 - Windows 10/11 with TwinCAT 3.1 XAE (verified on 4026)
-- Node.js >= 18 (`node --version`)
+- Node.js >= 22 (`node --version`; 18 and 20 are end-of-life, CI tests 22 and 24)
 - Windows PowerShell 5.1 at `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` (`pwsh` is not used)
 - This repo cloned locally; the module stays at `src/TwinCATAutomation/TwinCATAutomation.psm1`
 

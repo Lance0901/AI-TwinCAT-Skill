@@ -403,7 +403,7 @@ else {
     $mcpDir = Join-Path $repoRoot 'mcp-server'
     $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
     if (-not $npm) {
-        Add-CheckResult 'npm test' 'FAIL' 'npm not found on PATH (install Node.js >= 21, or run with -Fast)'
+        Add-CheckResult 'npm test' 'FAIL' 'npm not found on PATH (install Node.js >= 22 (package.json engines), or run with -Fast)'
     }
     else {
         Push-Location $mcpDir

@@ -9,7 +9,7 @@ Exposes the `TwinCATAutomation` module (37 cmdlets) plus 4 composite tools over 
 | Requirement | Notes |
 |---|---|
 | Windows 10/11 | COM Automation Interface and `TwinCAT.Ads.dll` are Windows-only |
-| Node.js >= 18 | `node --version` |
+| Node.js >= 22 | `node --version`. The version CI runs `npm test` on (22 and 24); Node 18 and 20 are end-of-life (https://nodejs.org/en/about/previous-releases), and `npm test` needs >= 21 for the glob in `node --test` |
 | Windows PowerShell 5.1 | `powershell.exe`, **not** `pwsh`. Default path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`; override with `TWINCAT_MCP_POWERSHELL` |
 | TwinCAT 3.1 XAE | Verified on 4026 (32-bit XAE Shell, 64-bit XAE Shell, VS2022 integration); 4024 projects open in a 4026 XAE |
 | Module path | `src/TwinCATAutomation/TwinCATAutomation.psm1`; resolved relative to the server by default, override with `TWINCAT_MODULE_PATH` |
@@ -77,6 +77,7 @@ All variables are read in `lib/config.js`.
 | `TWINCAT_MCP_MODAL_PROBE` | on | `0` / `false` / `off` / `no` disables the modal-dialog probe that watches the IDE during `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`, `RunTestCycle`, `OpenProject`, `ConnectIde` and returns `IDE_MODAL_DIALOG` instead of waiting for `BRIDGE_TIMEOUT` |
 | `TWINCAT_MCP_MODAL_PROBE_INTERVAL_SEC` | `5` | Probe scan interval in seconds (1..60); the first scan happens after one interval and a dialog is reported after `TWINCAT_MCP_PROBE_CONFIRM_SCANS` consecutive scans with the same title |
 | `TWINCAT_MCP_PROBE_CONFIRM_SCANS` | `2` | Consecutive scans (1..10) that must see the same kill-worthy dialog before the probe reports it |
+| `TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC` | `4` | Seconds (1..30) after which one probe scan is abandoned (UIA stuck on a busy XAE UI thread); an abandoned scan only delays detection by one interval |
 | `TWINCAT_MCP_PROBE_SCAN_SCRIPT` | `<dir of TWINCAT_MODULE_PATH>/Private/Get-TcIdeModalDialog.ps1` | File the probe dot-sources for `$script:TcUiaDialogScan` (the module's UIA dialog scan, single source of truth); the probe exits with an error if it is missing |
 
 Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock bridge in `test/fixtures/`):
@@ -86,7 +87,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 | `TWINCAT_MCP_BRIDGE_COMMAND` | Executable to spawn instead of `powershell.exe` |
 | `TWINCAT_MCP_BRIDGE_ARGS` | JSON array of arguments for that executable |
 | `TWINCAT_MCP_PROBE_COMMAND` | Executable to spawn instead of `powershell.exe bridge/modal-probe.ps1` (e.g. `test/fixtures/mock-modal-probe.js`) |
-| `TWINCAT_MCP_PROBE_ARGS` | JSON array of arguments for that executable; the probe argument tail `-ProcessId N -IntervalSec S -ConfirmScans C -ScanScript F [-MainHwnd H] [-MaxLifetimeSec L]` is appended |
+| `TWINCAT_MCP_PROBE_ARGS` | JSON array of arguments for that executable; the probe argument tail `-ProcessId N -IntervalSec S -ConfirmScans C -ScanScript F [-MainHwnd H] [-MaxLifetimeSec L] [-ScanTimeoutSec T]` is appended |
 | `TWINCAT_MCP_SKIP_PID_CHECK` | `1` skips the `tasklist` check that `data.lastIde.ideProcessId` is still a live `TcXaeShell.exe` / `devenv.exe` before it is named in a `BRIDGE_TIMEOUT` / `BRIDGE_DIED` hint (mock IDE pids) |
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
@@ -141,7 +142,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `BuildProject` | `Build-TcProject` | — | 600 s | Build and wait (`Build($false)` + `BuildState` polling, `TimeoutSec` default 600 -> `BUILD_TIMEOUT`; `data.buildSec`); on `BUILD_FAILED` read `data.errorItems[]` (description/file/line from the Error List) |
+| `BuildProject` | `Build-TcProject` | — | 600 s | Build and wait (`Build($false)` + `BuildState` polling, `TimeoutSec` default 600 -> `BUILD_TIMEOUT`; `data.buildSec`); on `BUILD_FAILED` read `data.codeErrors[]` (description/file/line from the Error List); `data.errors` counts code errors only (#23, breaking: no longer the Library Manager rows), unresolved libraries -> `LIBRARY_UNRESOLVED` unless `AllowUnresolvedLibrary` (#45), `data.codeVerified` / `CODE_NOT_VERIFIED` |
 | `CleanProject` | `Clear-TcProject` | — | 300 s | Clean the solution and wait (`Clean($false)` + `BuildState` polling, `TimeoutSec` default 300 -> `CLEAN_TIMEOUT`); `data.nullReads` counts `$null` answers for `Solution` / `SolutionBuild` before the clean (#18 once hit a null-valued expression there, cause not confirmed); `LastBuildInfo` 0 -> success, `data.cleanVerified=true`; unreadable -> `CLEAN_UNVERIFIED`; > 0 with only unresolved-library Error List rows -> `LIBRARY_UNRESOLVED` (`data.libraryErrorItems`; a later `BuildProject` success may be false, #45), with `AllowUnresolvedLibrary=true` success + `warningCode=LIBRARY_UNRESOLVED`, `cleanVerified=false`; any other error -> `CLEAN_FAILED` (`data.errorItems`) |
 | `GetBuildErrors` | `Get-TcBuildErrors` | — | 120 s | Read the XAE Error List via UI Automation: `errors[]` and `warnings[]` (`IncludeWarnings` defaults to true), `IncludeMessages` adds `messages[]`; counts also parsed from zh-TW button names |
 | `EnableConfig` | `Enable-TcConfig` | — | 600 s | Activate without dialogs; `Force=true` runs Config → Activate → Run → Login+Download → PLC Run, `NoLogin=true` stops after system Run; `TimeoutSec` default 120; before Activate the solution platform is compared with the target platform (TARGETINFO) or `Platform` and switched + rebuilt on a mismatch (steps `platform-fix` / `platform-fix-build`, `data.platformFixed`), `NoPlatformFix=true` returns `PLATFORM_MISMATCH` instead; neither known -> `data.platformCheck` = `skipped` + `data.warning`; `ACTIVATE_FAILED` when XAE's Check config failed (`LastBuildInfo > 0`, usually a solution platform that differs from the target platform: pass `Platform`) |

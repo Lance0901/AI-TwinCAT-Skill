@@ -11,6 +11,9 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if (-not $Ok) { $script:fail++ }
 }
 
+# BUILD_REQUIRED state file of this run (never the real %TEMP%\TwinCATAutomation one).
+$env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::NewGuid().ToString('N'))
+
 # No modal-dialog watchdog in Invoke-TcComRetry (no IDE process).
 & $mod { $script:TcIdeProcessId = $null }
 
@@ -149,6 +152,88 @@ try {
     Check 'set-failed-code' ($r.error.code -eq 'PLATFORM_SET_FAILED') "$($r.error.code): $($r.error.message)"
     Check 'set-failed-restored' ($r.restored -eq $true -and $r.projectPlatform -eq $RT -and $r.platform -eq $RT -and ($global:MockState.Activations -join ',') -eq '2,3' -and $global:MockState.Active -eq 3) "restored=$($r.restored) activations: $($global:MockState.Activations -join ',')"
 
+    # --- BUILD_REQUIRED state (#45 / PR #44): the real Set-TcSolutionPlatform writes the file ---
+    $stateFile = Join-Path $env:TCAUTO_STATE_DIR 'build-required.json'
+    & $mod { $script:TcSolutionPath = 'C:\Demo\Unit.sln' }
+    Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+    # restored switch (d above, again): nothing changed -> no entry
+    New-MockDte -Rows $robust -Active 3 -Broken @(2)
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'br-restored-no-entry' ($r.restored -eq $true -and -not (Test-Path -LiteralPath $stateFile)) "restored=$($r.restored) file=$(Test-Path -LiteralPath $stateFile)"
+    # switch lands on another configuration (Debug|RT) AND the restore throws -> platformChanged, entry written
+    New-MockDte -Rows $robust -Active 3
+    $global:MockCfgs[2] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); $global:MockState.Active = 1 }
+    $global:MockCfgs[3] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); throw 'restore boom (mock)' }
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-restore-failed-entry' (-not $r.success -and $r.restored -eq $false -and $r.platformChanged -and $null -ne $req -and $req.reason -match 'could not be undone' -and $req.solution -eq 'C:\Demo\Unit.sln') "success=$($r.success) restored=$($r.restored) changed=$($r.platformChanged) req=$($req | ConvertTo-Json -Compress)"
+    # the entry is a file: a fresh module import (Import-Module -Force) still sees it
+    Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
+    $mod = Get-Module TwinCATAutomation
+    & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\DEMO\unit.sln' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-survives-reimport' ($null -ne $req -and $req.reason -match 'could not be undone') "req=$($req | ConvertTo-Json -Compress)"
+    # other solution: not blocked; no solution known: blocked (conservative)
+    & $mod { $script:TcSolutionPath = 'C:\Other\Other.sln' }
+    Check 'br-other-solution-free' ($null -eq (& $mod { Get-TcBuildRequired })) 'entry of another solution applied'
+    & $mod { $script:TcSolutionPath = $null }
+    Check 'br-unknown-solution-blocked' ($null -ne (& $mod { Get-TcBuildRequired })) 'no solution path but nothing blocks'
+    # successful switch records too, one entry per solution; Clear-TcBuildRequired removes only its own
+    & $mod { $script:TcSolutionPath = 'C:\Other\Other.sln' }
+    New-MockDte -Rows $robust -Active 3
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $keys = @((Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json).PSObject.Properties.Name)
+    Check 'br-two-entries' ($r.success -and $keys.Count -eq 2 -and $keys -contains 'c:\demo\unit.sln' -and $keys -contains 'c:\other\other.sln') "keys: $($keys -join ', ') success=$($r.success) changed=$($r.platformChanged) warn=$($r.stateWarning) err=$($r.error.message)"
+    & $mod { Clear-TcBuildRequired }
+    $keys = @((Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json).PSObject.Properties.Name)
+    Check 'br-clear-own' (($keys -join ',') -eq 'c:\demo\unit.sln') "keys: $($keys -join ', ')"
+    # corrupt state file: kept as .corrupt-<time>, replaced by a '<corrupt>' entry that blocks
+    # every solution; a complete build (Clear) does not remove it
+    Set-Content -LiteralPath $stateFile -Value '{ not json' -Encoding ASCII
+    $req = & $mod { Get-TcBuildRequired }
+    $kept = @(Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'build-required.json.corrupt-*')
+    Check 'br-corrupt-blocks' ($null -ne $req -and $req.reason -match 'could not be read' -and $kept.Count -eq 1 -and (Get-Content -Raw -LiteralPath $kept[0].FullName).Trim() -eq '{ not json') "req=$($req | ConvertTo-Json -Compress) kept=$($kept.Count)"
+    $null = & $mod { Clear-TcBuildRequired }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-corrupt-survives-clear' ($null -ne $req -and $req.reason -match 'could not be read' -and (Test-Path -LiteralPath $stateFile)) "req=$($req | ConvertTo-Json -Compress)"
+    & $mod { $script:TcSolutionPath = 'C:\Other\Andere.sln' }
+    Check 'br-corrupt-blocks-all' ($null -ne (& $mod { Get-TcBuildRequired })) 'other solution not blocked by <corrupt>'
+    Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
+
+    # non-ASCII solution path: key and file round-trip (UTF-8)
+    $uni = 'C:\' + [char]0x6574 + [char]0x7406 + '\Demo.sln'
+    & $mod { param($p) $script:TcSolutionPath = $p } $uni
+    $w = & $mod { Set-TcBuildRequired -Reason 'unit non-ascii' }
+    Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
+    $mod = Get-Module TwinCATAutomation
+    & $mod { param($p) $script:TcIdeProcessId = $null; $script:TcSolutionPath = $p } $uni
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-non-ascii-key' ($null -eq $w -and $null -ne $req -and $req.reason -eq 'unit non-ascii' -and $req.solution -eq $uni) "w=$w req=$($req | ConvertTo-Json -Compress)"
+    $null = & $mod { Clear-TcBuildRequired }
+    Check 'br-non-ascii-cleared' (-not (Test-Path -LiteralPath $stateFile) -and $null -eq (& $mod { Get-TcBuildRequired })) "file=$(Test-Path -LiteralPath $stateFile)"
+
+    # lock held by another process: Get blocks (fail-closed), Set keeps the entry in memory + warning
+    $dirLower = (Split-Path -Parent $stateFile).ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA1]::Create()
+    $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($dirLower))[0..7] | ForEach-Object { $_.ToString('x2') })
+    $ready = Join-Path $env:TCAUTO_STATE_DIR 'holder.ready'
+    $holder = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-Command',
+        "`$m = New-Object System.Threading.Mutex(`$false, 'Local\TwinCATAutomation.BuildRequired.$hash'); `$null = `$m.WaitOne(); Set-Content -LiteralPath '$ready' -Value 1; Start-Sleep -Seconds 20")
+    $t0 = Get-Date
+    while (-not (Test-Path -LiteralPath $ready) -and ((Get-Date) - $t0).TotalSeconds -lt 20) { Start-Sleep -Milliseconds 100 }
+    & $mod { $script:TcBuildRequiredLockTimeoutMs = 300; $script:TcSolutionPath = 'C:\Demo\Lock.sln' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-lock-get-blocks' ((Test-Path -LiteralPath $ready) -and $null -ne $req -and $req.reason -match 'could not be checked') "req=$($req | ConvertTo-Json -Compress)"
+    $w = & $mod { Set-TcBuildRequired -Reason 'unit lock' }
+    Check 'br-lock-set-warns' ($w -match 'this process only' -and -not (Test-Path -LiteralPath $stateFile)) "w=$w"
+    Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+    $null = $holder.WaitForExit(5000)
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-lock-memory-entry' ($null -ne $req -and $req.reason -eq 'unit lock') "req=$($req | ConvertTo-Json -Compress)"
+    $null = & $mod { Clear-TcBuildRequired; $script:TcBuildRequiredLockTimeoutMs = 3000 }
+    Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+    & $mod { $script:TcSolutionPath = $null }
+
     # --- PLATFORM_NOT_FOUND lists solution platform names ---
     New-MockDte -Rows $festo -Active 4 -Folder 'TwinCAT_Festo'
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64-E)' -PlatformSource 'target (adsTargetInfo)' }
@@ -256,11 +341,31 @@ try {
     New-MockDte -Rows $robust -Active 3
     $r = & $mod { Enable-TcConfig -NoPlatformFix -WarningAction SilentlyContinue }
     Check 'enable-nofix-mismatch' (-not $r.success -and $r.error.code -eq 'PLATFORM_MISMATCH' -and $global:MockState.Activations.Count -eq 0) "code=$($r.error.code)"
+
+    # --- state file not writable (held open with FileShare.Read, like a reader / virus scanner):
+    # the switch reports stateWarning, no .tmp is left, Enable-TcConfig still refuses (in-memory entry)
+    $stateFile = Join-Path $env:TCAUTO_STATE_DIR 'build-required.json'
+    & $mod { $script:TcSolutionPath = 'C:\Other\Other.sln'; $null = Set-TcBuildRequired -Reason 'unit other' }
+    & $mod { $script:TcSolutionPath = 'C:\Demo\Held.sln' }
+    $fs = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        New-MockDte -Rows $robust -Active 3
+        $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' -WarningAction SilentlyContinue }
+        $tmpLeft = @(Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter '*.tmp')
+        Check 'br-held-switch-warns' ($r.success -and $r.stateWarning -match 'this process only' -and $tmpLeft.Count -eq 0) "success=$($r.success) stateWarning=$($r.stateWarning) tmp=$($tmpLeft.Count)"
+        $onDisk = (Get-Content -Raw -LiteralPath $stateFile) -match 'held\.sln'
+        $r = & $mod { Enable-TcConfig -NoPlatformFix -WarningAction SilentlyContinue }
+        Check 'br-held-enable-blocked' (-not $onDisk -and -not $r.success -and $r.error.code -eq 'BUILD_REQUIRED' -and -not $r.data.activated) "onDisk=$onDisk code=$($r.error.code) msg=$($r.error.message)"
+    }
+    finally { $fs.Dispose() }
+    $null = & $mod { Clear-TcBuildRequired }
 }
 finally {
     & $mod { $script:TcDte = $null }
     foreach ($f in $script:tempFiles) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
     Remove-Variable -Name MockState, MockCfgs -Scope Global -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"

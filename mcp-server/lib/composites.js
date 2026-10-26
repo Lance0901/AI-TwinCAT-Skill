@@ -34,7 +34,8 @@ export const RunLifecycle = {
     'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
     'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is given to SetTarget only (EnableConfig then finds the platforms equal); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
-    'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error.',
+    'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error. ' +
+    'A project with unresolved libraries stops at BuildProject with LIBRARY_UNRESOLVED (the PLC code may not have been compiled): install the libraries, or, when the user accepts that, pass AllowUnresolvedLibrary=true (or run BuildProject AllowUnresolvedLibrary=true first and then RunLifecycle SkipBuild=true).',
   annotations: { destructiveHint: true, readOnlyHint: false },
   timeoutMs: 1500000,
   inputSchema: {
@@ -45,7 +46,8 @@ export const RunLifecycle = {
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
       TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },
       Platform: { type: 'string', description: 'Optional solution platform passed to SetTarget (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target). Needed only when the target does not report its platform (TARGETINFO, ADS 0x702); omit it and EnableConfig follows the platform the target reports.' },
-      SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false).' },
+      SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false). After a solution platform switch EnableConfig still refuses to activate (BUILD_REQUIRED) until a BuildProject has succeeded.' },
+      AllowUnresolvedLibrary: { type: 'boolean', description: 'Passed to BuildProject and EnableConfig: accept a build whose Error List shows unresolved libraries (LIBRARY_UNRESOLVED) as success. Only when the user accepts that the PLC code may not have been compiled.' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
     },
@@ -95,13 +97,22 @@ export const RunLifecycle = {
     }
 
     if (!args.SkipBuild) {
-      step = await timed('BuildProject', () => ctx.callTool('BuildProject', {}));
+      const buildArgs = args.AllowUnresolvedLibrary ? { AllowUnresolvedLibrary: true } : {};
+      step = await timed('BuildProject', () => ctx.callTool('BuildProject', buildArgs));
       steps.push(step);
-      if (!step.success) return fail(step);
+      if (!step.success) {
+        const out = fail(step);
+        if (out.error?.code === 'LIBRARY_UNRESOLVED') {
+          const extra = 'RunLifecycle: install the missing libraries, or (only when the user accepts that the code may not have been compiled) RunLifecycle AllowUnresolvedLibrary=true, or BuildProject AllowUnresolvedLibrary=true and then RunLifecycle SkipBuild=true.';
+          out.error = { ...out.error, hint: out.error.hint ? `${out.error.hint} ${extra}` : extra };
+        }
+        return out;
+      }
     }
 
     const enableArgs = { Force: true, TimeoutSec: args.TimeoutSec ?? 120 };
     if (args.NoLogin !== undefined) enableArgs.NoLogin = args.NoLogin;
+    if (args.AllowUnresolvedLibrary) enableArgs.AllowUnresolvedLibrary = true;
     step = await timed('EnableConfig', () => ctx.callTool('EnableConfig', enableArgs));
     steps.push(step);
     if (!step.success) return fail(step);

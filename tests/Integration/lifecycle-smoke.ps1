@@ -33,9 +33,9 @@ param(
     # error' in EVERY XAE connected to the target, other sessions included; measured 2026-10-25,
     # 4024 32-bit XAE Shell and 4026 VS2022 on the local UmRT).
     [switch]$StopAfterBuild,
-    # Pass -AllowUnresolvedLibrary to Clear-TcProject (03a): for a project copy that is known to miss
-    # libraries (A group: the Festo copy without its Visu libraries), see troubleshooting
-    # 'CLEAN_LIBRARY_UNRESOLVED'.
+    # Pass -AllowUnresolvedLibrary to Clear-TcProject (03a) and Build-TcProject (03): accept
+    # LIBRARY_UNRESOLVED for a project copy that is known to miss libraries (A group: the Festo copy
+    # without its Visu libraries, #45), see troubleshooting 'CLEAN_LIBRARY_UNRESOLVED' / 'LIBRARY_UNRESOLVED'.
     [switch]$AllowUnresolvedLibrary
 )
 
@@ -426,7 +426,7 @@ try {
     $null = Invoke-Step '03a-clean' 'Clear-TcProject' { Clear-TcProject -TimeoutSec 120 -AllowUnresolvedLibrary:$AllowUnresolvedLibrary }
 
     # 3. Build (build output text dropped from the log; only counts kept)
-    $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }
+    $r = Invoke-Step '03-build' 'Build-TcProject' { $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary; if ($b.data -and $b.data.PSObject.Properties['messages']) { $b.data.PSObject.Properties.Remove('messages') }; $b }
     Write-ErrorList '03b-errorlist-after-build'
     if (Test-Abort $r '03') { return }
     if (-not $r.success) { return }

@@ -42,6 +42,7 @@ param(
 
     [int]$IntervalSec = 5,
 
+    # A scan still running after this is abandoned (TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC, 1..30).
     [int]$ScanTimeoutSec = 4,
 
     # A dialog is reported only after this many consecutive scans saw the same kill-worthy title.
@@ -118,7 +119,7 @@ $wrapper = {
 
     # Win32 caption of a window. The UIA Name of a WPF window is often its content text, not its
     # title (XAE Help > About puts the whole About text there), so the caption is read directly.
-    if (-not ([System.Management.Automation.PSTypeName]'TcProbeNative').Type) {
+    if (-not ([System.Management.Automation.PSTypeName]'TcProbe.Native').Type) {
         Add-Type -Namespace TcProbe -Name Native -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
 public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
@@ -166,8 +167,12 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
     }
     if ($null -eq $main -and -not [string]::IsNullOrEmpty($MainTitlePattern)) {
         try {
-            $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-            foreach ($w in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+            # The module scan's window list (EnumWindows, compiled by the scan above), not
+            # RootElement.FindAll: that stalls on any unresponsive window of another process (#24).
+            foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+                $w = $null
+                try { $w = $ae::FromHandle($wh) } catch { continue }
+                if ($null -eq $w) { continue }
                 $c = $null
                 try { $c = $w.Current } catch { continue }
                 if ($c.ControlType -ne $ct::Window -or [string]$c.ClassName -eq '#32770') { continue }
@@ -320,11 +325,63 @@ function Wait-ProbeSliced([int]$Milliseconds) {
     Test-ProbeShouldExit
 }
 
+# --- warm-up (#24) ---
+# The first scan that finds a window used to pay the one-time cost of loading the UIA assemblies
+# and compiling the P/Invoke helper types (each Add-Type -MemberDefinition runs the C# compiler;
+# up to three of them) inside its ScanTimeoutSec budget. On a loaded machine that scan was
+# abandoned, so a dialog was confirmed one interval later than planned (seen in npm test,
+# 2026-10-20 / 2026-10-25: "did not finish within 4 s; abandoned (1 so far)" as the only scan
+# result; under CPU load the first scan took several times as long as the next ones). Assemblies and
+# compiled types belong to the AppDomain, so doing it once here, before the first interval, lets
+# every runspace scan skip it (each Add-Type is guarded by a type check).
+# The Add-Type commands are taken from the scan sources themselves (no second copy).
+# The other cause of slow scans (RootElement.FindAll stalling ~3 s on any unresponsive window of
+# another process) is handled in the module scan, which lists the pid's windows via EnumWindows.
+function Initialize-ProbeWarmup {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+        Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+    }
+    catch {
+        Write-ProbeDebug "warm-up: UIA assemblies not loaded: $($_.Exception.Message)"
+        return
+    }
+    $compiled = 0
+    foreach ($text in @($scanText, $wrapperText)) {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$parseErrors)
+        $cmds = $ast.FindAll({
+            param($a)
+            ($a -is [System.Management.Automation.Language.CommandAst]) -and $a.GetCommandName() -eq 'Add-Type' -and
+            @($a.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] -and $_.ParameterName -eq 'MemberDefinition' }).Count -gt 0
+        }, $true)
+        foreach ($c in $cmds) {
+            try {
+                $null = & ([scriptblock]::Create($c.Extent.Text))
+                $compiled++
+            }
+            catch { Write-ProbeDebug "warm-up: Add-Type failed: $($_.Exception.Message)" }
+            Test-ProbeShouldExit
+        }
+    }
+    $compileMs = $sw.ElapsedMilliseconds
+    # One scan of this process (no windows of its own, -MainHwnd 0: the IDE handle belongs to another pid) pays the
+    # remaining first-use cost (UIA client start-up in this process, compiling the scan
+    # scriptblocks). Measured 2026-10-25 against fixtures/host-window.ps1 with 16 busy
+    # powershell.exe on 16 logical CPUs: first real scan 3587 ms without it, 625 ms with it (measured before the EnumWindows change).
+    $sw.Restart()
+    $null = Invoke-ProbeScan -TargetPid $PID -TargetMainHwnd 0
+    Write-ProbeDebug "warm-up: UIA loaded, $compiled helper type(s) compiled in $compileMs ms, warm-up scan $($sw.ElapsedMilliseconds) ms"
+}
+
 # --- scans ---
 # Scans abandoned after ScanTimeoutSec (UIA stuck on the IDE's busy UI thread) are kept so they can
 # be disposed once they finish; while 10 are still hanging no new scan is started.
 $script:Abandoned = New-Object System.Collections.ArrayList
 $script:AbandonedScans = 0
+$script:FinishedScans = 0
 
 function Clear-ProbeAbandoned {
     foreach ($a in @($script:Abandoned)) {
@@ -339,6 +396,7 @@ function Clear-ProbeAbandoned {
 }
 
 function Invoke-ProbeScan {
+    param([int]$TargetPid = $ProcessId, [long]$TargetMainHwnd = $MainHwnd)
     Clear-ProbeAbandoned
     if ($script:Abandoned.Count -ge 10) {
         Write-ProbeDebug "$($script:Abandoned.Count) UIA scans still hanging; skipping"
@@ -353,7 +411,7 @@ function Invoke-ProbeScan {
         $rs.Open()
         $ps = [PowerShell]::Create()
         $ps.Runspace = $rs
-        $null = $ps.AddScript($wrapperText).AddArgument($scanText).AddArgument($ProcessId).AddArgument($MainHwnd).AddArgument($MaxText).AddArgument($mainTitlePattern)
+        $null = $ps.AddScript($wrapperText).AddArgument($scanText).AddArgument($TargetPid).AddArgument($TargetMainHwnd).AddArgument($MaxText).AddArgument($mainTitlePattern)
         $handle = $ps.BeginInvoke()
         $deadline = [System.Diagnostics.Stopwatch]::StartNew()
         $finished = $false
@@ -367,7 +425,7 @@ function Invoke-ProbeScan {
             # the message is written for the first abandoned scan and then only every 10th one.
             $script:AbandonedScans++
             if ($script:AbandonedScans -eq 1 -or ($script:AbandonedScans % 10) -eq 0) {
-                Write-ProbeDebug "UIA scan of pid $ProcessId did not finish within $ScanTimeoutSec s; abandoned ($script:AbandonedScans so far)"
+                Write-ProbeDebug "UIA scan of pid $TargetPid did not finish within $ScanTimeoutSec s; abandoned ($script:AbandonedScans so far)"
             }
             # Do not block on Stop(): the scan thread may be stuck inside UIA. Disposed later.
             try { $null = $ps.BeginStop($null, $null) } catch { }
@@ -377,6 +435,10 @@ function Invoke-ProbeScan {
             return $null
         }
         $out = $ps.EndInvoke($handle)
+        if ($TargetPid -eq $ProcessId) {
+            $script:FinishedScans++
+            if ($script:FinishedScans -eq 1) { Write-ProbeDebug "first UIA scan finished in $($deadline.ElapsedMilliseconds) ms" }
+        }
         if ($ps.Streams.Error.Count -gt 0) {
             Write-ProbeDebug "scan error: $($ps.Streams.Error[0])"
         }
@@ -392,7 +454,8 @@ function Invoke-ProbeScan {
     }
 }
 
-Write-ProbeDebug "watching pid $ProcessId (interval $IntervalSec s, confirm $ConfirmScans, mainHwnd $MainHwnd, lifetime $MaxLifetimeSec s)"
+Write-ProbeDebug "watching pid $ProcessId (interval $IntervalSec s, confirm $ConfirmScans, scan timeout $ScanTimeoutSec s, mainHwnd $MainHwnd, lifetime $MaxLifetimeSec s)"
+Initialize-ProbeWarmup
 $lastTitle = $null
 $streak = 0
 try {

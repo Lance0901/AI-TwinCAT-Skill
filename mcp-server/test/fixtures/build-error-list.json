@@ -1,0 +1,21 @@
+{
+  "_comment": "Error List rows as Get-TcBuildErrors returns them. library: the 7 Library Manager rows measured 2026-10-18 after a successful build (TcXaeShell 15.0, GantryCylinder; docs/troubleshooting.md BUILD_FAILED). code: one injected C0046 (tests/Integration/build-errors.ps1). other: a build-summary row without file. unlocated: a code row with a file but line 0 (made up: a Library Manager row in a UI language the category rules do not know).",
+  "library": [
+    { "code": null, "description": "Could not open library '#System_VisuElem3DPath' (placeholder could not be resolved)", "project": "plc", "file": "plc.Library Manager", "line": 0, "column": null },
+    { "code": null, "description": "Could not open library '#System_VisuElemTrace' (placeholder could not be resolved)", "project": "plc", "file": "plc.Library Manager", "line": 0, "column": null },
+    { "code": null, "description": "Could not open library '#System_VisuElemCamDisplayer' (placeholder could not be resolved)", "project": "plc", "file": "plc.Library Manager", "line": 0, "column": null },
+    { "code": null, "description": "Could not open library '#System_VisuElemsAlarm' (placeholder could not be resolved)", "project": "plc", "file": "plc.Library Manager", "line": 0, "column": null },
+    { "code": null, "description": "Could not open library '#System_VisuElemsDateTime' (placeholder could not be resolved)", "project": "plc", "file": "plc.Library Manager", "line": 0, "column": null },
+    { "code": null, "description": "Library '#Analyzation' 3.5.2.0 has not been installed", "project": "plc", "file": "plc.Library Manager", "line": null, "column": null },
+    { "code": null, "description": "Library '#IecSfc' 3.4.2.0 has not been installed", "project": "plc", "file": "plc.Library Manager", "line": null, "column": null }
+  ],
+  "code": [
+    { "code": "C0046", "description": "Identifier 'nUndefinedVar' not defined", "project": "plc", "file": "C:\\Demo\\plc\\POUs\\MAIN.TcPOU", "line": 12, "column": 5 }
+  ],
+  "other": [
+    { "code": null, "description": "Build of project 'plc' failed", "project": "", "file": "", "line": null, "column": null }
+  ],
+  "unlocated": [
+    { "code": null, "description": "Bibliothek konnte nicht geoeffnet werden", "project": "plc", "file": "plc.Bibliotheksverwalter", "line": 0, "column": null }
+  ]
+}
