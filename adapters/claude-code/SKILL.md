@@ -86,12 +86,12 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN |
 | `Open-TcProject -Path <sln>` | 開既有 solution |
 | `Get-TcProjectTree [-Depth 4] [-PlcOnly]` | 專案樹 JSON;含 `<Plc> Project` 下 POUs/DUTs/GVLs,節點 `path` 可直接當 `-PouPath`;`-PlcOnly` 只回 TIPC 子樹 |
-| `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>]` | 新增 POU |
-| `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL |
-| `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union>` | 新增 DUT |
+| `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>] [-PlcProjectPath <folder>]` | 新增 ST POU 並讀回(`data.path`、`objectKind`、`itemType` 602/603/604、讀回的 `language`、`declaration`);同一個 PLC project 內已有同名頂層物件回 `POU_CREATE_FAILED`(帶 path;`data.duplicateCheckScope`),XAE 有 dialog 回 `IDE_MODAL_DIALOG` |
+| `Add-TcGvl -Name <n> [-Variables @{var=type}]` | 新增 GVL,寫入 `VAR_GLOBAL` 並讀回比對(`itemType` 615);失敗 `GVL_CREATE_FAILED` |
+| `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union> [-Fields @{..}] [-AliasType <t>]` | 新增 DUT,寫入 `TYPE ... END_TYPE` 並讀回比對(`itemType` 606/605/607/623);失敗 `DUT_CREATE_FAILED` |
 | `Add-TcLibrary -Name <lib>` | 加 library 參考 |
-| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU declaration + implementation;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
-| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫 POU 程式碼;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND` |
+| `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU / DUT / GVL 的 declaration + implementation;`data.objectKind`(POU/DUT/GVL/ITF/…)、`language`、`hasImplementation`:DUT/GVL/ITF 為 false,`implementation=null` 表示「沒有實作段」;POU 讀不成文字時 `implementationReadable=false`,COM 例外回 `POU_READ_FAILED`;LD/FBD 的 implementation 是 XML;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
+| `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫程式碼(`data.objectKind`);DUT/GVL/ITF 只收 `-Declaration`,給 `-Implementation` 回 `INVALID_PARAMS`、什麼都不寫;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND` |
 | `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
@@ -194,7 +194,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
 | `POU_NOT_FOUND` | POU 名稱或 `-PouPath` 在 `<Plc> Project` 下找不到;`error.hint` 列出 `<Plc> Project` 第一層子節點,`data.tried[]` 是試過的路徑 | `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`;格式 `TIPC^<Plc>^<Plc> Project^POUs^<name>` |
-| `POU_CREATE_FAILED` | 0x98510001 = .plcproj 列了檔案但磁碟缺檔 | 從 .plcproj 移除缺檔的 `<Compile Include>`,或補回檔案;重開 solution |
+| `POU_CREATE_FAILED` / `DUT_CREATE_FAILED` / `GVL_CREATE_FAILED` | `error.message` 標出步驟:`exists`(專案內同名已在,帶 path)、`lookup`/`kind`/`language`/`declare`(物件已建立、留在樹上,讀回不符);0x98510001 = .plcproj 列了檔案但磁碟缺檔 | `exists` 換名或 `Write-TcPouCode -PouPath`;父節點錯就 `Get-TcProjectTree -PlcOnly` 後給 `-PlcProjectPath`;缺檔從 .plcproj 移除 `<Compile Include>` 或補回,`Reset-TcSolution` |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
 | `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
 | `LOGIN_FAILED` | `Login(flags)` 失敗:系統在 Config、build 沒過、license dialog、或旗標互斥(`Conflicting flag settings`= 同時給 REGULAR 與 FORCEONLINECHANGE) | `Get-TcSystemState` 需為 Run;`Build-TcProject` 成功;關 dialog |

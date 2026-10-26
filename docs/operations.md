@@ -63,6 +63,8 @@ Adds a POU to the PLC project.
 | ReturnType | string | No | Return type for Functions (default: BOOL) |
 | PlcProjectPath | string | No | Override the target folder (default: `<Plc> Project^POUs`, or the project root if there is no such folder); result has `folderPath` |
 
+Language ST. Created with `ITcSmTreeItem::CreateChild` (sub type 602 / 603 / 604) and read back (ItemType, `Language` = ST, a Function header with `: <ReturnType>`). **Returns:** `{ name, type, path, folderPath, objectKind, itemType, language, declaration }`; a name that exists anywhere in the PLC project -> `POU_CREATE_FAILED` (`exists:` with its path); a modal dialog in XAE -> `IDE_MODAL_DIALOG`, nothing created.
+
 ### Add-TcGvl / `AddGvl`
 Adds a Global Variable List.
 
@@ -70,6 +72,8 @@ Adds a Global Variable List.
 |-----------|------|----------|-------------|
 | Name | string | Yes | GVL name |
 | Variables | hashtable | No | Variable declarations (name = type) |
+
+Created (sub type 615), then `VAR_GLOBAL ... END_VAR` is written and read back. **Returns:** `{ name, path, folderPath, objectKind, itemType, declaration }`; failure `GVL_CREATE_FAILED`.
 
 ### Add-TcDut / `AddDut`
 Adds a Data Unit Type.
@@ -80,6 +84,8 @@ Adds a Data Unit Type.
 | DutType | string | Yes | Struct, Enum, Alias, or Union |
 | Fields | hashtable | No | Field declarations |
 | AliasType | string | No | Base type for Alias |
+
+Created (sub type 606 Struct / 605 Enum / 607 Union / 623 Alias), then `TYPE ... END_TYPE` is written and read back (an Enum without Fields gets `enum_member := 0`). **Returns:** `{ name, dutType, path, folderPath, objectKind, itemType, declaration }`; failure `DUT_CREATE_FAILED`.
 
 ### Add-TcLibrary / `AddLibrary`
 Adds a library reference.
@@ -101,16 +107,17 @@ Writes code into an existing POU.
 | PouName | string | Yes | POU name |
 | PouPath | string | No | Tree path; auto-detected when omitted (`data.pouPath`, `data.resolvedBy`); `POU_NOT_FOUND` if missing |
 | Declaration | string | No | VAR declaration section |
-| Implementation | string | No | Code body |
+| Implementation | string | No | Code body. DUT / GVL / ITF have none: `INVALID_PARAMS`, nothing written |
 
 ### Get-TcPouCode / `GetPouCode`
 Reads code from a POU.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| PouName | string | Yes | POU name |
+| PouName | string | Yes | POU / DUT / GVL name |
+| PouPath | string | No | Tree path; auto-detected when omitted |
 
-**Returns:** `{ pou, declaration, implementation }`
+**Returns:** `{ pou, pouPath, resolvedBy, objectKind, pouType, itemType, itemTypeName, language, hasImplementation, implementationReadable, declaration, implementation }`. `implementationReadable=false`: the POU has an implementation part that did not come back as text. `objectKind` = POU / DUT / GVL / ITF / METHOD / ... (from ItemType); `hasImplementation=false` (DUT, GVL, ITF) -> `implementation` is null because the object has none. A failed read is `POU_READ_FAILED`.
 
 ---
 

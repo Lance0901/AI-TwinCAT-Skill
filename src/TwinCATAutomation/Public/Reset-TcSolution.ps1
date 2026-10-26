@@ -58,7 +58,7 @@ function Reset-TcSolution {
              data.sameIde tells whether the previous IDE pid was reused.
         The ADS connection is not touched. No dialog, no Start-Sleep beyond the polls.
     .PARAMETER SolutionPath
-        .sln to reopen. Default: the solution Connect-TcIde / Open-TcProject opened
+        Solution file (.sln) to reopen. Default: the solution Connect-TcIde / Open-TcProject opened
         ($script:TcSolutionPath), else the solution currently open in the IDE.
     .PARAMETER TimeoutSec
         Expected upper bound for each of Documents.CloseAll, Solution.Close and

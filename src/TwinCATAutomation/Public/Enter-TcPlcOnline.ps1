@@ -49,6 +49,9 @@
         no program (XAE decides). Download: FORCEDOWNLOAD - always a full download
         (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE.
         SILENT (256) is only OR-ed in with -SilentFlag.
+    .PARAMETER SilentFlag
+        OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags. Off by default: prompts are
+        answered by the global ITcAutomationSettings.SilentMode that Connect-TcIde enables.
     .PARAMETER TimeoutSec
         Expected upper bound of the Login COM call (Invoke-TcComRetry -TimeoutSec), default 300.
         Enable-TcConfig passes the rest of its overall -TimeoutSec budget.
