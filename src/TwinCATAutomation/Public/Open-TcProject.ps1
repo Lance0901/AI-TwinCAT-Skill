@@ -26,6 +26,9 @@ function Open-TcProject {
         $openedSln = try { [string]$script:TcDte.Solution.FullName } catch { '' }
         if ([string]::IsNullOrWhiteSpace($openedSln)) { $openedSln = (Resolve-Path -LiteralPath $Path).Path }
         $script:TcSolutionPath = try { [IO.Path]::GetFullPath($openedSln) } catch { $openedSln }
+        # The IDE now has ANOTHER solution: update the #29 session record, or a later
+        # Connect-TcIde would take this IDE for the previous solution while it is blocked.
+        if ($null -ne $script:TcIdeProcessId) { Save-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) -Solution $script:TcSolutionPath }
 
         # Refresh ITcSysManager
         $script:TcSysManager = $null

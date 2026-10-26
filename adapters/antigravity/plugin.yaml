@@ -58,6 +58,17 @@ actions:
   - name: BuildProject
     description: Build PLC project (data.buildSucceeded, data.codeErrors from the XAE Error List)
 
+  - name: CleanProject
+    description: Clean the solution and wait until SolutionBuild.BuildState is Done (CLEAN_TIMEOUT / CLEAN_FAILED / CLEAN_UNVERIFIED / LIBRARY_UNRESOLVED; data.cleanVerified)
+    parameters:
+      TimeoutSec:
+        type: integer
+        required: false
+        default: 300
+      AllowUnresolvedLibrary:
+        type: boolean
+        required: false
+
   - name: GetBuildErrors
     description: Read the compiler messages of the XAE Error List window (UI Automation)
     parameters:

@@ -170,7 +170,20 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:任何走 COM 的 cmdlet(Build、Add-TcPou、Enter-TcPlcOnline…)回 `IDE_BUSY`。
 - **為什麼**:XAE 正在顯示 modal dialog(license、「專案已修改」、build 確認)或在跑長操作,COM 回 `RPC_E_CALL_REJECTED`(0x80010001)或 `RPC_E_SERVERCALL_RETRYLATER`(0x8001010A)。模組已退避重試 1/2/4/8/16 秒(共約 31 秒)仍被拒。
-- **下一步**:切到 XAE 關掉 dialog,重跑同一個 cmdlet。IDE COM 參考仍有效,不用 `Connect-TcIde`。常見 dialog 來源:license 試用到期提示、Activate 時的「Restart TwinCAT System」(用 `-Force` 走 ADS 就不會出現)。
+- **下一步**:先 `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`(MCP `GetIdeModalDialog ProcessId=...`)看是哪個視窗(`reload-prompt` → `Reset-TcSolution`),切到 XAE 關掉 dialog,重跑同一個 cmdlet。IDE COM 參考仍有效,不用 `Connect-TcIde`。常見 dialog 來源:license 試用到期提示、Activate 時的「Restart TwinCAT System」(用 `-Force` 走 ADS 就不會出現)。
+- **`Connect-TcIde -SolutionPath` 回 `IDE_BUSY`(#29)**:開著這個 sln 的 IDE 被認出來(證據見「IDE_MODAL_DIALOG」的 #29 條目),但它拒絕 DTE 呼叫而且 UI Automation 找不到 dialog。強證據(`module-state` / `session-record` / `dialog-path`)時,沒有 dialog 也會回 `IDE_BUSY` 並 attach(`data.attached = true`);只有標題、證據矛盾、或兩個 IDE 都符合時不 attach(hint `IDE_BLOCKED_SAME_NAME`,見該節)。兩種情況都**不另開 IDE**(有沒有 `-NoLaunch` 都一樣),`data.ideProcessId` / `rotDisplayName` / `windowTitle` / `matchedBy` / `probe` / `notAttachedReason` 說明判斷依據。等它忙完(或關掉 dialog)再重跑同一個 `Connect-TcIde`;確定那不是你的 IDE 就加 `-LaunchIfBlocked` 另開。
+
+### IDE_BLOCKED_SAME_NAME
+
+- **碼與 hint**:hint key;錯誤碼是 `IDE_MODAL_DIALOG`(有 dialog)或 `IDE_BUSY`(沒有 dialog),`error.message` 以 `IDE_BLOCKED_SAME_NAME:` 開頭,`data.attached = false`。
+- **為什麼(#29)**:`Connect-TcIde -SolutionPath` 找不到開著這個 .sln 的可讀 IDE,有個被擋住的 IDE 可能開著它,但證據不夠或互相矛盾(`data.notAttachedReason`):只有主視窗標題同名、session record / module-state 與標題或 dialog 路徑矛盾,或兩個 IDE 都有強證據(見「IDE_MODAL_DIALOG」的 #29 條目)。可能就是你的 IDE,也可能是別處的同名複本(實測 2026-10-25,4024 32-bit XAE Shell:別的 agent 的 `C:\Temp\Pou-A\TwinCAT_Festo.sln` 被 runtime 的 fatal error 擋住時就這樣)。模組不另開 IDE、也不 attach。
+- **下一步**:是你的 → 關掉 `data.dialog`(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`)後重跑同一個 `Connect-TcIde`;確定不是你的 → `Connect-TcIde -SolutionPath <sln> -LaunchIfBlocked`(MCP `ConnectIde LaunchIfBlocked=true`)另開一個。
+
+### IDE_BLOCKED_OWN
+
+- **碼與 hint**:hint key;錯誤碼是 `IDE_MODAL_DIALOG` 或 `IDE_BUSY`,情況同「IDE_BLOCKED_SAME_NAME」,但 `data.launchedBySession = true`:被擋住的 IDE 是本 session 啟動的。
+- **為什麼**:那很可能就是你的 IDE,只是證據不夠 attach;`-LaunchIfBlocked` 會再開一個 IDE 開同一個 .sln,所以這個 hint 不建議它。
+- **下一步**:處理 `data.dialog`(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`)後重跑同一個 `Connect-TcIde`;卡死就 `Stop-Process -Id <data.ideProcessId>`(只限本 session 啟動的)再重新 `Connect-TcIde`。
 
 ### IDE_MODAL_DIALOG / IDE_MODAL_DIALOG_RELOAD
 
@@ -179,6 +192,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:XAE / VS 有 modal 視窗(見「已知 modal dialog」)。這類視窗不會讓 COM 回 `RPC_E_CALL_REJECTED`,而是讓 DTE 呼叫無限阻塞,retry 救不了,所以模組在每個主要 COM 步驟前先用 UI Automation 掃 IDE 程序(`data.ideProcessId`)的頂層視窗。`Build-TcProject` 輪詢 `BuildState` 期間也每輪掃,build 中跳出的 dialog 回這個碼(不再等到逾時)。
 - **下一步**:先 `Get-TcIdeModalDialog`(MCP `GetIdeModalDialog`)看 `kind`:`reload-prompt`(兩種 target 都算)→ 直接 `Reset-TcSolution`(project 提示按 Yes、檔案提示 WM_CLOSE + close/reopen);其他手動處理 dialog 後重跑同一個 cmdlet,關不掉就 `Disconnect-TcIde -Quit -Kill`(只限本 session 啟動的 IDE)或 `Stop-Process -Id <ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。除了 reload 提示,模組不會自動關閉任何視窗。
 - **限制**:已經被 modal 擋住、正在阻塞中的呼叫無法從模組中斷;偵測靠視窗的 `IsModal` / `#32770` class / 已知標題,偵測不到時仍可能卡住。
+- **`Connect-TcIde -SolutionPath` 遇到被 modal 擋住的 IDE(#29)**:以前 ROT 探測讀不到被擋住那個 IDE 的 solution,就把它跳過:帶 `-NoLaunch` 回 `IDE_NOT_FOUND`(更舊的版本回 `PROJECT_OPEN_FAILED` null-valued expression),不帶就**再開一個 IDE** 開同一個 .sln。實測 2026-10-25(4024 32-bit XAE Shell,磁碟改寫 `plc.plcproj` 觸發 XAE「The project file ... has been modified outside of TwinCAT XAE」):被擋住時 `DTE.Version` 回**空字串**(不是 `RPC_E_CALL_REJECTED`)。現在對讀不到(忙碌或回空值)、pid 已知的 ROT 項目不呼叫 COM,module-state / session-record 必須**沒有矛盾、而且有當下事實佐證**(標題以 solution 名稱開頭,或 dialog 路徑在資料夾內)才算強證據;依序看四種證據:(0) 模組自己上一次連的就是這個行程且是同一個 .sln(`module-state`);(1) session record:先前任何一次 `Connect-TcIde` 成功連上同一個行程(pid + 啟動時間)並開著這個 .sln(`%LOCALAPPDATA%\TwinCATAutomation\ide-solutions.json`,每次帶 solution 連線成功就寫;記錄是別的 .sln 就排除),`matchedBy = session-record`;(2) UI Automation 掃到的 dialog 內文路徑落在 .sln 資料夾內(`dialog-path`;路徑都在別處就排除);(3) 主視窗標題以 solution 名稱開頭(`window-title`,弱證據)。符合就回 `IDE_MODAL_DIALOG`(`data.ideProcessId`、`rotDisplayName`、`windowTitle`、`matchedBy`、`probe`、`attached`、`data.dialog`),**不另開 IDE**。(0)(1) 要有當下事實佐證(`data.corroboratedBy`:`dialog-path`,或標題以 solution 名稱開頭且沒有已知的同名 .sln 開在別處時的 `window-title`)且沒有矛盾,或是沒有矛盾的 (2),才 attach:模組連線同時指向該 IDE(`attached = true`),接著 `Get-TcIdeModalDialog` / `Reset-TcSolution` 可以直接用(reload 提示 → `Reset-TcSolution` 按 Yes 後自己重連);只有 (3) 時不 attach(`attached = false`,理由見「IDE_BUSY」);關掉 dialog 後重跑同一個 `Connect-TcIde` 就是 `solution-match`。只回空值而沒有 dialog 的 IDE 視為正在關閉,照舊跳過。 **證據互相矛盾時不 attach**:session record / module-state 可能過期(例如在 GUI 換開別的 solution),所以 dialog 內文的專案檔都在別處,或標題非空卻不以 solution 名稱開頭時,降成弱證據;`Open-TcProject` / `New-TcProject` 換 solution 時也會更新 record。module-state 比對 pid **和**啟動時間(pid 重用不算)。兩個以上 IDE 都有強證據時一個都不 attach(`data.blockedCandidates` 全列)。失敗的 `Connect-TcIde` 不會留下上一個 IDE 的連線(`TcDte` 等一律清掉),所以 hint 叫你接 `Reset-TcSolution` 時只會作用在 attach 的那個 IDE。限制:dialog 內文的路徑以文字比對(`GetFullPath` 後),8.3 短檔名與 UNC 路徑不會展開,可能比不出 `inside`。殘留風險:dialog 沒有路徑時只剩標題能佐證;已知(ROT 讀得到、或有 session record)的同名 .sln 開在別處時標題不算佐證,但若同名的另一份是在同樣被擋住、沒有記錄的 IDE 裡(例如使用者手動開的),標題分不出兩者,record 仍可能被標題佐證而 attach。
 
 ### IDE_QUIT_FAILED
 
@@ -401,7 +415,45 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Build-TcProject` 回 `BUILD_TIMEOUT`,`data.buildState` / `data.buildSec` 是逾時時的 `SolutionBuild.BuildState` 與已耗秒數。
 - **為什麼**:VS2022 上 `SolutionBuild.Build($true)`(wait)**永遠不返回**,所以模組改 `Build($false)` 再每輪輪詢 `BuildState`(到 3 = Done)。新增 `-TimeoutSec`(預設 600)是輪詢上限;逾時時 `BuildState` 還沒到 Done。輪詢期間也掃 modal dialog:有就回 `IDE_MODAL_DIALOG`,不會拖到逾時。成功時 `data.buildSec` 是 `Build($false)` 到 Done 的秒數(VS2022 實測 6 s、首次含啟動約 9 s)。
-- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog;看 XAE Output 視窗的 build 進度;大型專案加大 `-TimeoutSec` 重跑 `Build-TcProject`;XAE 沒反應就 kill IDE 後重新 `Connect-TcIde`。smoke / `multi-ide.ps1` 的 `Clean` 同樣是 `Clean($false)` + 輪詢。
+- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog;看 XAE Output 視窗的 build 進度;大型專案加大 `-TimeoutSec` 重跑 `Build-TcProject`;XAE 沒反應就 kill IDE 後重新 `Connect-TcIde`。`Clear-TcProject` 與 `multi-ide.ps1` 的 `Clean` 同樣是 `Clean($false)` + 輪詢。
+
+### CLEAN_TIMEOUT
+
+- **現象**:`Clear-TcProject` 回 `CLEAN_TIMEOUT`,`data.buildState` / `data.cleanSec` 是逾時時的 `SolutionBuild.BuildState` 與已耗秒數。
+- **為什麼**:`Clean($false)` 之後 `BuildState` 在 `-TimeoutSec`(預設 300)內沒到 3 = Done([vsBuildState](https://learn.microsoft.com/en-us/dotnet/api/envdte.vsbuildstate))。輪詢期間每 ~5 s 掃一次 modal,有 dialog 會回 `IDE_MODAL_DIALOG`,不會拖到逾時。
+- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog;沒有就加大 `-TimeoutSec` 重跑 `Clear-TcProject`;XAE 沒反應就 kill IDE 後重新 `Connect-TcIde -SolutionPath <sln>`。
+
+### CLEAN_UNVERIFIED
+
+- **現象**:`Clear-TcProject` 回 `CLEAN_UNVERIFIED`:`BuildState` 到了 Done,但 `SolutionBuild.LastBuildInfo` 讀不到(`data.failedProjects = $null`)。
+- **為什麼**:Clean 是否成功只能從 `LastBuildInfo`(失敗的 project 數)確認;讀不到就不回 success(CODING_STANDARDS 2),沒有參數可以放行。
+- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog,重跑 `Clear-TcProject`;仍讀不到就 `Reset-TcSolution` 後再試。
+
+### CLEAN_LIBRARY_UNRESOLVED
+
+- **碼與 hint**:hint key;錯誤碼是 `LIBRARY_UNRESOLVED`(`Clear-TcProject`,與 PR #44 的 `Build-TcProject` 同名同規則)。
+- **現象**:Clean 回報有 project 失敗(`LastBuildInfo` > 0),Error List 的錯誤全是「Could not open library ...」(file `<plc>.Library Manager`、沒有行號,`data.libraryErrorItems`)。
+- **為什麼**:library 解析不到時 PLC 程式碼可能根本沒編譯、Build 卻照樣回 success(#45,實測 2026-10-25,4024 32-bit XAE Shell,去掉 Visu library 的 Festo 複本),所以預設回失敗。
+- **下一步**:在 XAE Library Manager 安裝缺的 library 後重跑;確定要接受(例如刻意缺 library 的測試複本)才用 `Clear-TcProject -AllowUnresolvedLibrary`(MCP `CleanProject AllowUnresolvedLibrary=true`):success,但 `data.cleanVerified = false`、`data.warningCode = LIBRARY_UNRESOLVED`。
+
+### RESET_SOLUTION_MISMATCH
+
+- **現象**:`Reset-TcSolution` 沒有動作,`data.openSolution` 與 `data.expectedSolution` 不同。
+- **為什麼(#29)**:`Connect-TcIde` 可能依 session record 等證據 attach 了一個被擋住的 IDE;關掉 dialog 後讀得到的 `Solution.FullName` 若不是模組以為的 solution(模組最後連到 / 開啟的那個;沒有就用 `-SolutionPath`),關閉它會動到別人的工作,所以在 `Documents.CloseAll` / `Solution.Close` 之前就停下。`-SolutionPath` 指定另一個 .sln(換開)不算不一致:比對的是 IDE 目前開的與模組預期的。
+- **下一步**:`Connect-TcIde -SolutionPath <你的 sln>` 連到正確的 IDE(找不到就加 `-LaunchIfBlocked`),再 `Reset-TcSolution`。
+
+### RESET_SOLUTION_UNVERIFIED
+
+- **現象**:`Reset-TcSolution` 沒有動作(什麼都沒關),`data.guardError` 是最後一次讀 `Solution.FullName` 的錯誤,`data.guardSec` 是等了多久。
+- **為什麼(#29)**:關閉前的防呆(見「RESET_SOLUTION_MISMATCH」)要先讀到 IDE 目前開的 solution 才能比對;在 `-TimeoutSec` 內每 500 ms 重讀,一直丟例外或回 `$null`(例如 reload 後 XAE 還在忙)就 fail-closed,不關沒有比對過的 solution。讀回空字串(沒有開著的 solution)才放行。
+- **下一步**:`Get-TcIdeModalDialog -ProcessId <data.previousIdeProcessId>` 看有沒有 dialog 並處理;等 XAE 不忙後重跑 `Reset-TcSolution`(可加大 `-TimeoutSec`);仍讀不到就 `Connect-TcIde -SolutionPath <sln>` 重新連線再試。
+
+### CLEAN_FAILED
+
+- **現象**:`Clear-TcProject` 回 `CLEAN_FAILED`:`data.failedProjects` > 0(Clean 完 `SolutionBuild.LastBuildInfo`,[失敗的 project 數](https://learn.microsoft.com/en-us/dotnet/api/envdte.solutionbuild.lastbuildinfo)),或 DTE 的 `Solution` / `SolutionBuild` 連續 15 s 都是 `$null`(`data.nullReads`),或 `Clean` / `BuildState` 的 COM 呼叫失敗。
+- **為什麼(#18)**:lifecycle-smoke 的 `03a-clean` 以前在模組 scope 直接呼叫 `$script:TcDte.Solution.SolutionBuild.Clean(...)`,兩次在 `Connect-TcIde` 成功後 0.2 s 內丟「不可在值為 Null 的運算式上呼叫方法」(實測 2026-10-19、2026-10-20,4024 32-bit XAE Shell,log `A-login1-silentmode-final.log`、`master-1717e3e-run2.log`)。哪一段是 `$null`(`$script:TcDte`、`Solution` 或 `SolutionBuild`)log 沒記,**原因未確認**:同一秒的 `02b-verify-target` 用的是 `$script:TcSysManager`,不能證明 `TcDte` 非 null;較可能是剛開好 solution 的 XAE 短暫回 `$null`(`Connect-TcIde` 最後重讀 `Version` / `Solution.FullName` 也看過空值,實測,見其註解)。改用 `Clear-TcProject` 之後 2026-10-25 連跑 A 組(4024)、B 組(4026 VS2022)各 3 輪,`03a` 6/6 PASS,`data.nullReads` 全是 0(沒有重現)。`Clear-TcProject` 先輪詢到 `Solution` / `SolutionBuild` 都有值才 Clean,`$null` 有出現時 `data.nullReads` 會記下次數,再發生就能定位。
+- **Library Manager 錯誤**:`LastBuildInfo` > 0 而 Error List 全是 library 解析失敗時回 `LIBRARY_UNRESOLVED`(見「CLEAN_LIBRARY_UNRESOLVED」),`-AllowUnresolvedLibrary` 才放行成 success + `warningCode`;`LastBuildInfo` 讀不到回 `CLEAN_UNVERIFIED`。實測 2026-10-25,4024 32-bit XAE Shell:去掉 Visu library 的 Festo 複本開好 solution 後第一次 Clean `LastBuildInfo = 1`,Error List 7 筆都是這種;Build 後再 Clean 是 0;4026 VS2022 RobustDemo 一律 0。其他錯誤、或 Error List 讀不到,是 `CLEAN_FAILED`。
+- **下一步**:看 XAE Output 視窗;剛 `Connect-TcIde` 完就再跑一次 `Clear-TcProject`,仍失敗就 `Reset-TcSolution` 後再試。腳本不要再直接用模組內部的 `$script:TcDte` 做 Clean。
 
 ### ERRORLIST_UNAVAILABLE
 
@@ -416,18 +468,28 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### PROJECT_OPEN_FAILED
 
 - **為什麼**:`Open-TcProject` / `Connect-TcIde -SolutionPath` 開 .sln 失敗。路徑錯、檔案損壞、或連到的 IDE 沒有 TwinCAT 整合(例如抓到沒裝 TwinCAT 的 VS)。
-- **下一步**:確認路徑;指定 `-ProgId` 對應正確的 IDE(見環境矩陣)。
+- **下一步**:確認路徑;指定 `-ProgId` 對應正確的 IDE(見環境矩陣)。開著這個 .sln 的 IDE 被 modal 擋住時現在回 `IDE_MODAL_DIALOG` / `IDE_BUSY`,不再是這個碼(#29,見「IDE_MODAL_DIALOG」)。
 
 ### POU_NOT_FOUND
 
 - **現象**:`Get-TcPouCode` / `Write-TcPouCode` 回 `POU_NOT_FOUND`。(`PLC_PROJECT_NOT_FOUND` 是 TIPC 下找不到 `<Plc> Project` 節點,處理方式相同。)
 - **為什麼**:4024 與 4026 的 PLC 樹格式相同:`TIPC^<Plc>^<Plc> Project^POUs^<name>`(DUT 在 `^DUTs^`、GVL 在 `^GVLs^`)。不給 `-PouPath` 時依序試 `<Plc> Project^POUs^<name>`、`<Plc> Project^<name>`,最後遞迴走 project 子樹(深度 4)比對名稱;給了 `-PouPath` 但找不到也會改用名稱自動找。都沒命中才回此碼。
 - **下一步**:`error.message` 列出試過的路徑(`data.tried[]`),`error.hint` 說明格式並列出 `<Plc> Project` 第一層子節點(例如 `POUs, DUTs, GVLs, VISUs`,另見 `data.projectChildren[]`)。用 `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`。與 `POU_READ_FAILED` / `POU_WRITE_FAILED` 不同:後兩者只在 COM 例外(例如讀 DeclarationText 失敗)時回,代表 POU 找到了但存取失敗。
+- **DUT / GVL 的讀寫語意**(#22):`Get-TcPouCode` 回 `data.objectKind`(POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY …,由樹節點的 `ItemType` 判斷,數值見 [InfoSys「ITcSmTreeItem Item Types」](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html);PLC 物件的 `ItemSubType` 一律是 0,`ItemSubTypeName` 是 `TREEITEMTYPE_*` 名稱,實測 2026-10-25 4024 / 4026)、`data.language`(`ITcSmTreeItem.Language`:ST 1 / FBD 4 / LD 6 …,DUT / GVL / ITF 為 null,實測同上)、`data.hasImplementation`、`data.implementationReadable`。`hasImplementation` 實測過的(2026-10-25,讀 `ImplementationText`):有實作段 = POU 602 / 603 / 604(4024、4026)、action 608(4024、4026)、method 609(4026,空的 ST 本體讀回 `''`);沒有 = DUT 605 / 606(4024、4026)、union 607 / alias 623(4026)、GVL 615、interface 618(4024、4026)、interface method 610(4026)、property 611(4024、4026,`CreateChild 611` 不會建 Get / Set 子項)。interface property 612、property get / set 613 / 614、transition 616 未實測:`hasImplementation` 先當未知,讀 `ImplementationText` 決定(和未知 ItemType 一樣)。沒有實作段時 `implementation=null`、`implementationReadable=null`,整份原始碼在 `declaration`。有實作段卻讀回 null 時 `implementationReadable=false`,沒有實作段時 `implementationReadable=null`。屬性讀取失敗會以 null / `implementationReadable=false` 呈現:Windows PowerShell 對丟例外的 getter 回 `$null`(實測 2026-10-25,PS 5.1.26100,.NET property;COM adapter 未驗)。declaration 讀回 null 回 `POU_READ_FAILED`(action 608 例外,它本來就沒有 declaration,實測 2026-10-25 4024 / 4026;未實測的 transition 616 也放行);LD / FBD 的 `implementation` 是 XAE 的 XML(`<NWL><XmlArchive>…`),不是 ST 文字(實測 2026-10-25 4024 / 4026)。COM 呼叫本身丟例外回 `POU_READ_FAILED`。`Write-TcPouCode` 對沒有實作段的物件給 `-Implementation` 回 `INVALID_PARAMS`、什麼都不寫(ItemType 未知時先讀 `ImplementationText`,null 就同樣擋下),只給 `-Declaration`(完整的 `TYPE ... END_TYPE` / `VAR_GLOBAL ... END_VAR`);property 的 hint 指向 `<path>^Get` / `^Set`。
 
-### POU_CREATE_FAILED
+### POU_READ_FAILED
 
-- **為什麼**:`Add-TcPou` 的 `CreateChild` 失敗。HRESULT `0x98510001` 表示 .plcproj 的 `<Compile Include>` 列了某個檔案,但磁碟上沒有(通常是手動刪檔、或 git 沒追蹤到)。
-- **下一步**:從 .plcproj 移除缺檔的項目或補回檔案,重開 solution 後再 `Add-TcPou`。
+- **現象**:`Get-TcPouCode` 找到了物件,但讀不出內容:COM 呼叫丟例外,或 `DeclarationText` 讀回 null。實測過的類型(POU、DUT、GVL、ITF、method、ITF method、property)都有 declaration;action 608 沒有(實測 2026-10-25),612-616 未實測,其中 transition 616 比照 action 放行,不回此碼。和 `POU_NOT_FOUND` 不同,物件存在。
+- **下一步**:`Get-TcIdeModalDialog` 看 XAE 有沒有 dialog;沒有就重試 `Get-TcPouCode -PouPath <path>`,仍失敗就 `Reset-TcSolution` 後再讀。
+
+### POU_CREATE_FAILED / DUT_CREATE_FAILED / GVL_CREATE_FAILED
+
+- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` 回失敗。`error.message` 在 `Failed to add ...:` 後標出失敗步驟:`exists:`(目標 PLC project 裡已有同名的頂層物件,訊息帶它的 path;什麼都沒建)、`lookup:`(`CreateChild` 回來了但目標路徑讀不到)、`kind:`(新物件的 ItemType 不對)、`language:`(POU 讀回的語言不是 ST)、`declare:`(寫入 / 讀回 declaration 失敗或內容不同;Function 讀回的 header 沒有 `: <ReturnType>`)。從 `lookup` 起物件已經建立、留在樹上,訊息會說明;沒標步驟就是 `CreateChild` 本身的 XAE 訊息。IDE 有 modal dialog 時不呼叫 `CreateChild`,直接回 `IDE_MODAL_DIALOG`(同 `Build-TcProject`)。
+- **怎麼建**:`ITcSmTreeItem::CreateChild(name, subType, '', vInfo)`,父節點是 PLC folder(`TIPC^<Plc>^<Plc> Project^POUs` / `^DUTs` / `^GVLs`,4024 與 4026 相同)。subType 用 [InfoSys「ITcSmTreeItem Item Types」](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html) 頁的 ItemType 值:Program 602、Function 603、Function block 604、DUT enum 605 / struct 606 / union 607 / alias 623、GVL 615;[InfoSys `ITcSmTreeItem::CreateChild`](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html) 頁確認 603 / 604 也是 CreateChild 的 sub type,其餘實測(2026-10-25,4024 / 4026)。vInfo 依 CreateChild 頁:FB = IEC 語言整數,Function = string[2] {語言, 回傳型別};Program 也吃同一個整數(實測 2026-10-25,4024 / 4026)。`IECLANGUAGE_ST` = 1(TCatSysManagerLib 3.4.0.0 interop 的 `IECLANGUAGETYPES`,reflection 讀出,2026-10-25;6 是 LD)。DUT / GVL 不帶 vInfo 建立,再寫 `DeclarationText` 並讀回比對;alias 例外,vInfo 要給基底型別。成功只在讀回新物件(ItemType 相符、POU 語言是 ST、Function header 含回傳型別、DUT / GVL declaration 相符)之後才回。
+- **同名檢查(`exists`)**:目標路徑本身,加上目標所在的 `<Plc> Project`(父路徑中第一個「等於前一段 + ` Project`」的段,所以 PLC 名稱本身以 ` Project` 結尾也對;多 PLC 的 solution 只查自己那個 PLC)裡所有 PLC folder(ItemType 601,含巢狀)的直接子項。父路徑不在 `<Plc> Project` 底下時只查目標路徑,`data.duplicateCheckScope = folder`,`data.duplicateCheckNote` 說明原因。只有頂層物件算衝突:POU 602 / 603 / 604、DUT 605 / 606 / 607 / 623、GVL 615、ITF 618;method、action、property、accessor 與資料夾同名不算,也不往 POU 底下走。名稱比對不分大小寫,所有命中都列在訊息裡。讀不到的節點計入 `data.duplicateCheckSkippedNodes`(對它不擋,fail-open);RPC busy(0x80010001 / 0x8001010A)與 IDE_* 不算讀不到,會整段重試(`Invoke-TcComRetry`),仍失敗回 `IDE_BUSY` 等。節點超過 3000 個就停止走樹:已找到的同名仍會擋下(`exists`),其餘部分沒查,`data.duplicateCheckScope = folder`(正常是 `project`)、`data.duplicateCheckNote` 說明,另有 PowerShell warning。耗時(實測 2026-10-25,target 127.0.0.1.1.1):TwinCAT_Festo 4024 複本 47 個節點,第一次 587 ms、之後 84 / 150 ms;RobustDemo 4026 複本 63 個節點,446 / 68 / 61 ms(第一次含 COM 暖機)。約 1-1.5 ms 一個節點,3000 個約 3-5 s。
+- **#17 之前為什麼失敗**(實測 2026-10-25,4024 TcXaeShell.DTE.15.0;修正後的呼叫在 4026 VisualStudio.DTE.17.0 也驗過):HRESULT 都是 `0x80004005`(E_FAIL),原因在訊息裡。POU:vInfo 傳了 `<Declaration><![CDATA[...]]>` 字串,XAE 把它當語言名稱解析,回「Requested value '<Declaration>...' was not found.」;而且 Program / FB 的 subType 對調(604 = FB,602 = Program)。DUT:用了 610-613,那是 interface method / property,回「Creating the child type 'TREEITEMTYPE_PLCITFMETH' is not possible on parent node type 'TREEITEMTYPE_PLCFOLDER' (SubType mismatch)」。GVL:615 正確所以「成功」,但字串 vInfo 被原樣當成 declaration,`<Declaration><![CDATA[` 外殼留在 GVL 原始碼裡,Build 才會壞。alias 不給 vInfo 回「Base class not specified! Parameter name: baseClass」。
+- **下一步**:`exists` → 換 `-Name`,或用 `Write-TcPouCode -PouPath <訊息裡的 path>` 改既有的。「not possible on parent node type」→ 父節點不是 PLC folder,`Get-TcProjectTree -PlcOnly` 查 `<Plc> Project^POUs` 的 path 後給 `Add-TcPou -PlcProjectPath`。`0x98510001` → .plcproj 的 `<Compile Include>` 列了磁碟上沒有的檔案,從 .plcproj 移除或補回檔案,`Reset-TcSolution` 後再試。`lookup` → 物件可能建在別的路徑,`Get-TcProjectTree -PlcOnly` 找到後用 `Write-TcPouCode` 修正或在 XAE 刪掉。`kind` / `language` / `declare` → 物件已建立、留在樹上:用 `Get-TcPouCode -PouPath <path>` 看內容,以 `Write-TcPouCode -PouPath <path>` 修正,或在 XAE 刪掉後再 Add(同名會被 `exists` 擋下)。`IDE_MODAL_DIALOG` → 先處理 dialog(`Get-TcIdeModalDialog`),什麼都沒建。
+- **驗證**:`mcp-server/scripts/pou-client.mjs` 經 MCP server 跑 Add* / GetPouCode / WritePouCode / BuildProject(含一次注入未宣告識別字、預期 `BUILD_FAILED` 的對照)。2026-10-25 在全新 4024 專案(Standard PLC Template,TcVersion 3.1.4024.71)與 4026 RobustDemo 複本都全數通過(最後一輪 26/26,含同名跨資料夾的 `exists` 檢查;target 設為 127.0.0.1.1.1,沒有 Activate)。TwinCAT_Festo(4024)複本缺 library 時 PLC 程式碼不會被編譯,Build 仍回 success,不能拿來驗證(#45)。
 
 ### LOGOUT_FAILED
 
@@ -546,7 +608,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ## 真機驗證腳本
 
-`tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。`false-success.ps1`:#28 / #32 的真機情境(少 Build.0、多 PLC readback、nested 讀值、Run 退回 Config);`tests/Unit/activate-timeout.ps1`:Activate deadline 的 mock 測試,不需 IDE。`tests/Unit/platform-project-mismatch.ps1`:solution platform / project platform 檢查(`PLATFORM_PROJECT_MISMATCH`、.sln index 對應、讀回失敗還原)的 mock 測試,不需 IDE。
+`tests/Integration/` 的手動腳本需要真實環境:`bool-write.ps1`、`write-verify.ps1`、`list-symbols.ps1`、`full-cycle.ps1`、`lifecycle-smoke.ps1`、`login-logout.ps1`、`build-errors.ps1`(注入 C0046 錯誤驗證 `Build-TcProject` 的 `errorItems`,只對複本跑)、`reload-experiment.ps1`(磁碟改 .TcPOU 的 reload 行為,S0a/S0b/S2a/S2b/S3/S3b 六種情境,只對複本跑)。用法見 `tests/Integration/README.md`。`false-success.ps1`:#28 / #32 的真機情境(少 Build.0、多 PLC readback、nested 讀值、Run 退回 Config);`tests/Unit/activate-timeout.ps1`:Activate deadline 的 mock 測試,不需 IDE。`tests/Unit/blocked-solution-ide.ps1`:`Connect-TcIde -SolutionPath` 遇到被擋住的 IDE(#29:session record / dialog 路徑 / 視窗標題、attach 與否、證據矛盾、pid 重用、失敗不留舊連線、不另開 IDE)的 mock 測試,不需 IDE。`tests/Unit/clear-project.ps1`:`Clear-TcProject` 讀回(`cleanVerified`、`LIBRARY_UNRESOLVED` 與 `-AllowUnresolvedLibrary`、`CLEAN_UNVERIFIED`、`CLEAN_FAILED`、`CLEAN_TIMEOUT`、`nullReads` 逾時)的 mock 測試,不需 IDE。`tests/Unit/platform-project-mismatch.ps1`:solution platform / project platform 檢查(`PLATFORM_PROJECT_MISMATCH`、.sln index 對應、讀回失敗還原)的 mock 測試,不需 IDE。
 
+- `lifecycle-smoke.ps1 -AllowUnresolvedLibrary`:`03a` 的 `Clear-TcProject` 帶 `-AllowUnresolvedLibrary`,給已知缺 library 的複本用(A 組 Festo NoVisu,見「CLEAN_LIBRARY_UNRESOLVED」)。
+- `lifecycle-smoke.ps1 -StopAfterBuild`:只跑到 `03b`(Connect、target、`Clear-TcProject`、Build),不 Activate。runtime 不能 Activate 時用(例如 license 過期:Activate 失敗的「Target system reports a fatal error」會跳到**所有**連這個 target 的 XAE,別的 session 的也會,實測 2026-10-25,4024 32-bit XAE Shell 與 4026 VS2022 同時連本機 UmRT)。
 - `lifecycle-smoke.ps1 -SolutionPlatform '<name>'`:在 Connect 與 Build 之間多一步 `02b-platform`(`Set-TcTarget -Platform`);`02-set-target` 改帶 `-NoPlatformSwitch`(只換 NetId,不會因 `PLATFORM_UNKNOWN` 失敗)。UmRT 必帶 `'TwinCAT OS (x64)'`(B 組 35/35;這台 UmRT 不支援 TARGETINFO)。smoke 與 `multi-ide.ps1` 的 Clean 都改成 `Clean($false)` + 輪詢(VS2022 的 wait 版不返回)。
 - `mcp-server/scripts/lifecycle-client.mjs`(手動,需真 IDE + runtime):經 MCP server 跑 `RunLifecycle` → `GetSystemState` → 兩次 `ReadVariable`(task cycle counter 必須增加)→ `DisconnectIde Quit=true`。參數 `--sln`(必填)、`--progid`(預設 `VisualStudio.DTE.17.0`)、`--netid`、`--platform`、`--read <path>`;`--expect-fail <CODE> [--fail-platform <platform>]` 先跑一次帶 `Platform=<fail-platform>` 的 `RunLifecycle` 並要求該 error code(例 `--expect-fail ACTIVATE_FAILED --fail-platform "TwinCAT RT (x64)"`)。環境變數 `TWINCAT_MODULE_PATH`、`TWINCAT_MCP_POWERSHELL`;exit code = 失敗步驟數。

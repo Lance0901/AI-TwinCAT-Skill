@@ -58,7 +58,7 @@ function Set-TcTarget {
         data.platform (active solution platform afterwards), data.projectPlatform (project
         platform of the ACTIVE .tsproj afterwards; $null without .tsproj), data.platformChanged (bool).
         After a switch attempt also data.requestedProjectPlatform (project platform of the
-        .tsproj under the requested solution platform).
+        TwinCAT project (.tsproj) under the requested solution platform).
         When a platform was activated also data.configuration, data.previousPlatform,
         data.availablePlatforms (solution platform names of that configuration),
         data.projectCheck ('ok' | 'mismatch' | 'no-tsproj'), data.platformMatchedBy,

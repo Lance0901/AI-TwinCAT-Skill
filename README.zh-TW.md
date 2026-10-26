@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 36 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 37 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -84,7 +84,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（36 個）
+## 所有指令（37 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -116,6 +116,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | 指令 | 說明 |
 |------|------|
 | `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line/category）；`data.errors` 只算 code error（#23，不再含 Library Manager 列）；缺 library 回 `LIBRARY_UNRESOLVED`，除非 `-AllowUnresolvedLibrary`（#45） |
+| `Clear-TcProject` | Clean 整個 solution（`Clean($false)` + 輪詢 `BuildState`，`-TimeoutSec` 預設 300，逾時 `CLEAN_TIMEOUT`）；DTE 回 `$null` 的 `Solution` / `SolutionBuild` 會先等它出現（`data.nullReads`；#18，原因未確認）；只有 library 解析失敗時回 `LIBRARY_UNRESOLVED`（`-AllowUnresolvedLibrary` 才放行成 success + `data.warningCode`），LastBuildInfo 讀不到 `CLEAN_UNVERIFIED`，其他錯誤 `CLEAN_FAILED` |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
 | `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
@@ -229,7 +230,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:36 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:37 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

@@ -20,6 +20,11 @@
                   "UmRT v4026", "UmRT 3.1.4026", "4026 UmRT" ... are rejected. A hit whose
                   version is part of a "TcSystemServiceUm.exe file version x.y.z" phrase is
                   allowed (only that hit, not the whole line).
+      help        Every exported cmdlet has comment-based help that PowerShell can read: a
+                  non-empty Synopsis (not the generated syntax line) and a description for each
+                  of its parameters. A help line that starts with "." (e.g. ".sln to reopen")
+                  is read as an unknown keyword and silently drops the whole help block; the
+                  MCP tool descriptions in tools.json come from this help.
       errorcodes  Every key of $script:TcErrorHints (ConvertTo-TcAdsErrorCode.ps1) appears in a
                   heading of docs/troubleshooting.md.
       tools.json  mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
@@ -276,6 +281,40 @@ try {
 }
 catch {
     Add-CheckResult 'wording' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
+# help: every exported cmdlet has readable comment-based help (Synopsis + parameter descriptions)
+# ---------------------------------------------------------------------------
+try {
+    $helpModule = Import-Module (Join-Path $repoRoot 'src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -PassThru -DisableNameChecking -ErrorAction Stop
+    $common = @([System.Management.Automation.PSCmdlet]::CommonParameters) + @([System.Management.Automation.PSCmdlet]::OptionalCommonParameters)
+    $helpProblems = New-Object System.Collections.Generic.List[string]
+    $helpCommands = @(Get-Command -Module $helpModule.Name -CommandType Function)
+    foreach ($cmd in $helpCommands) {
+        $help = Get-Help $cmd.Name -Full -ErrorAction Stop
+        $synopsis = ([string]$help.Synopsis).Trim()
+        # without readable help, Get-Help puts the syntax line ("Name [-Param] ...") into Synopsis
+        if ([string]::IsNullOrWhiteSpace($synopsis) -or $synopsis.StartsWith($cmd.Name)) {
+            $helpProblems.Add("$($cmd.Name): no readable comment-based help (Synopsis empty; a help line starting with '.' breaks the whole block)")
+            continue
+        }
+        foreach ($pn in @($cmd.Parameters.Keys | Where-Object { $common -notcontains $_ })) {
+            $ph = @($help.parameters.parameter) | Where-Object { $_.name -eq $pn } | Select-Object -First 1
+            $desc = if ($null -ne $ph) { (@($ph.description) | ForEach-Object { $_.Text }) -join '' } else { '' }
+            if ([string]::IsNullOrWhiteSpace($desc)) { $helpProblems.Add("$($cmd.Name) -$($pn): no .PARAMETER description") }
+        }
+    }
+    Remove-Module $helpModule.Name -Force -ErrorAction SilentlyContinue
+    if ($helpProblems.Count -eq 0) {
+        Add-CheckResult 'help' 'PASS' "$($helpCommands.Count) cmdlets, each with a Synopsis and parameter descriptions"
+    }
+    else {
+        Add-CheckResult 'help' 'FAIL' "$($helpProblems.Count) comment-based help problem(s)" $helpProblems
+    }
+}
+catch {
+    Add-CheckResult 'help' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
 # ---------------------------------------------------------------------------

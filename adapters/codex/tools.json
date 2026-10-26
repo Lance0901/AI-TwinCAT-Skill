@@ -32,7 +32,7 @@
     },
     {
       "name": "AddPou",
-      "description": "Add POU (Program, FunctionBlock, or Function)",
+      "description": "Add a Structured Text POU (Program, FunctionBlock or Function) and read it back (data.path, objectKind, itemType, language, declaration); an existing name -> POU_CREATE_FAILED",
       "parameters": {
         "Name": { "type": "string", "required": true },
         "Type": { "type": "string", "enum": ["Program", "FunctionBlock", "Function"], "required": true },
@@ -41,7 +41,7 @@
     },
     {
       "name": "WritePouCode",
-      "description": "Write Structured Text code into a POU",
+      "description": "Write Structured Text code into a POU, DUT or GVL (DUT / GVL: Declaration only, Implementation -> INVALID_PARAMS)",
       "parameters": {
         "PouName": { "type": "string", "required": true },
         "Declaration": { "type": "string", "required": false },
@@ -52,6 +52,14 @@
       "name": "BuildProject",
       "description": "Build PLC project and return results (data.buildSucceeded, data.codeErrors from the XAE Error List)",
       "parameters": {}
+    },
+    {
+      "name": "CleanProject",
+      "description": "Clean the solution (Build > Clean) and wait until SolutionBuild.BuildState is Done; CLEAN_TIMEOUT / CLEAN_FAILED; LIBRARY_UNRESOLVED when only unresolved libraries failed (a later Build success may be false, #45; AllowUnresolvedLibrary accepts it with data.warningCode); CLEAN_UNVERIFIED when LastBuildInfo is unreadable; data.cleanVerified",
+      "parameters": {
+        "TimeoutSec": { "type": "integer", "description": "Maximum seconds for the clean (5-3600)", "required": false, "default": 300 },
+        "AllowUnresolvedLibrary": { "type": "boolean", "description": "Accept a clean whose only errors are unresolved libraries (success + data.warningCode LIBRARY_UNRESOLVED, cleanVerified=false)", "required": false }
+      }
     },
     {
       "name": "GetBuildErrors",

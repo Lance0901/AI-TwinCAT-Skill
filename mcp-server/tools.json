@@ -1,11 +1,11 @@
 {
-    "generatedAt":  "2026-10-25T10:59:54Z",
+    "generatedAt":  "2026-10-26T13:48:46Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
                       "name":  "AddDut",
                       "cmdlet":  "Add-TcDut",
-                      "description":  "Adds a Data Unit Type (STRUCT, ENUM, ALIAS, UNION) to the PLC project.",
+                      "description":  "Create a DUT (Struct / Enum / Union / Alias) in <Plc> Project^DUTs, write its declaration (TYPE ... END_TYPE from Fields / AliasType; an Enum without Fields gets enum_member := 0) and read it back. data: path, objectKind (DUT), itemType (605 Enum / 606 Struct / 607 Union / 623 Alias), declaration. A name that already exists or a declaration that reads back different -> DUT_CREATE_FAILED. Change it later with WritePouCode Declaration only (a DUT has no implementation).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -48,7 +48,7 @@
                   {
                       "name":  "AddGvl",
                       "cmdlet":  "Add-TcGvl",
-                      "description":  "Adds a Global Variable List (GVL) to the PLC project.",
+                      "description":  "Create a GVL in <Plc> Project^GVLs, write VAR_GLOBAL ... END_VAR from Variables and read it back. data: path, objectKind (GVL), itemType 615, declaration. A name that already exists or a declaration that reads back different -> GVL_CREATE_FAILED. Change it later with WritePouCode Declaration only (a GVL has no implementation).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -104,7 +104,7 @@
                   {
                       "name":  "AddPou",
                       "cmdlet":  "Add-TcPou",
-                      "description":  "Adds a POU (Program, Function Block, or Function) to the PLC project.",
+                      "description":  "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), language (read back from the new item, must be ST), declaration (default header written by XAE; a Function header must contain : ReturnType). Then fill it with WritePouCode. A POU / DUT / GVL / ITF with the same name anywhere in the same PLC project -> POU_CREATE_FAILED with its path (nothing created; data.duplicateCheckScope = project, or folder when the project has more than 3000 nodes); a failed readback names the step and that the object stays in the tree (error.hint says what to do). A modal dialog in XAE -> IDE_MODAL_DIALOG before anything is created.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -182,6 +182,36 @@
                                       }
                   },
                   {
+                      "name":  "CleanProject",
+                      "cmdlet":  "Clear-TcProject",
+                      "description":  "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: issue #18 once hit a null-valued expression on Solution / SolutionBuild right after ConnectIde (cause not confirmed); this tool waits for them and counts the null answers (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG. Readback SolutionBuild.LastBuildInfo: 0 -> success, data.cleanVerified=true; unreadable -> CLEAN_UNVERIFIED (always a failure); > 0 with only unresolved-library Error List rows (<plc>.Library Manager, no line) -> LIBRARY_UNRESOLVED (data.libraryErrorItems; a later BuildProject success may not have compiled the PLC code, #45), or with AllowUnresolvedLibrary=true success with data.warningCode=LIBRARY_UNRESOLVED and cleanVerified=false; any other error -> CLEAN_FAILED (data.errorItems). data: buildState, failedProjects, cleanVerified, cleanSec, nullReads, errorItems.",
+                      "timeoutMs":  330000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  5,
+                                                                                "maximum":  3600,
+                                                                                "description":  "Maximum time in seconds for the clean (BuildState = Done). Default 300.",
+                                                                                "default":  300
+                                                                            },
+                                                             "AllowUnresolvedLibrary":  {
+                                                                                            "type":  "boolean",
+                                                                                            "description":  "Accept a clean whose only errors are unresolved libraries ('<plc>.Library Manager'): success with data.warningCode = LIBRARY_UNRESOLVED and data.cleanVerified = $false instead of the LIBRARY_UNRESOLVED error. Use only for a project known to miss libraries."
+                                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "ConnectAds",
                       "cmdlet":  "Connect-TcAds",
                       "description":  "Open the ADS connection to the PLC runtime. Leave AmsNetId empty: it is auto-detected from the IDE target and changes per target (local UmRT, remote CX ...), so never hardcode it. Port defaults to 851 (PLC runtime 1). Requires ConnectIde for auto-detection.",
@@ -212,7 +242,7 @@
                   {
                       "name":  "ConnectIde",
                       "cmdlet":  "Connect-TcIde",
-                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId.",
+                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId. When the IDE that has SolutionPath open is blocked by a modal dialog or busy (its DTE answers RPC_E_CALL_REJECTED or an empty Version), it is recognised without COM and IDE_MODAL_DIALOG (or IDE_BUSY without a dialog) is returned with data.ideProcessId, data.dialog, data.matchedBy and data.attached; no second IDE is launched. matchedBy module-state (the IDE this server was connected to), session-record (an earlier ConnectIde saw this process with this solution) or dialog-path (the dialog names a file in the solution folder) attach that IDE (attached=true): GetIdeModalDialog / ResetSolution work on it right away. window-title (title = solution name only; may be a same-named copy elsewhere) does not attach (attached=false); when that IDE is not yours, LaunchIfBlocked=true ignores it and launches. After the dialog is closed the same ConnectIde call connects to it.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -232,7 +262,11 @@
                                                              "NoLaunch":  {
                                                                               "type":  "boolean",
                                                                               "description":  "If set, do not launch a new IDE instance if none is running."
-                                                                          }
+                                                                          },
+                                                             "LaunchIfBlocked":  {
+                                                                                     "type":  "boolean",
+                                                                                     "description":  "With -SolutionPath: ignore a blocked IDE that matches only by window title (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and go on as if it were not there (launch unless -NoLaunch). A blocked IDE recognised by strong evidence (module-state, session-record, dialog-path) is still reported."
+                                                                                 }
                                                          },
                                           "required":  [
 
@@ -441,7 +475,7 @@
                   {
                       "name":  "GetPouCode",
                       "cmdlet":  "Get-TcPouCode",
-                      "description":  "Reads declaration and implementation code from an existing POU.",
+                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -686,7 +720,8 @@
                                                                                "default":  "Regular"
                                                                            },
                                                              "SilentFlag":  {
-                                                                                "type":  "boolean"
+                                                                                "type":  "boolean",
+                                                                                "description":  "OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags. Off by default: prompts are answered by the global ITcAutomationSettings.SilentMode that Connect-TcIde enables."
                                                                             },
                                                              "TimeoutSec":  {
                                                                                 "type":  "integer",
@@ -958,7 +993,8 @@
                                           "type":  "object",
                                           "properties":  {
                                                              "AmsNetId":  {
-                                                                              "type":  "string"
+                                                                              "type":  "string",
+                                                                              "description":  "Target AMS Net ID (e.g., \"127.0.0.1.1.1\" for local)."
                                                                           },
                                                              "Platform":  {
                                                                               "type":  "string",
@@ -1065,7 +1101,7 @@
                   {
                       "name":  "WritePouCode",
                       "cmdlet":  "Write-TcPouCode",
-                      "description":  "Writes declaration and/or implementation code into an existing POU.",
+                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
