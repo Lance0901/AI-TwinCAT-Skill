@@ -560,6 +560,31 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
     });
   }
 
+  // review S1: a build that was started but never finished is recorded as well
+  const started = {
+    'build-timeout': { args: { TimeoutSec: 5 }, code: 'BUILD_TIMEOUT', why: /\(BUILD_TIMEOUT\)/ },
+    'build-modal': { args: { TimeoutSec: 60 }, code: 'IDE_MODAL_DIALOG', why: /IDE_MODAL_DIALOG during the build/ },
+    'build-throws': { args: {}, code: 'BUILD_FAILED', why: /BUILD_FAILED, exception during the build/ }
+  };
+  for (const scenario of Object.keys(started)) {
+    test(`${scenario}: the started build is recorded, EnableConfig and PlcLogin refuse`, async () => {
+      const s = await serverWithoutSwitch(scenario);
+      try {
+        const b = await s.call('BuildProject', started[scenario].args);
+        assert.equal(b.success, false, JSON.stringify(b));
+        if (started[scenario].code) assert.equal(b.error.code, started[scenario].code, JSON.stringify(b.error));
+        assert.match(b.data.buildRequired, started[scenario].why, JSON.stringify(b.data));
+        const e = await s.call('EnableConfig', { Force: true });
+        assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
+        assert.match(e.error.message, started[scenario].why);
+        const l = await s.call('PlcLogin', { LoginMode: 'Download' });
+        assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
+      } finally {
+        await s.client.close();
+      }
+    });
+  }
+
   test('solution without PLC project: a successful build records nothing', async () => {
     const s = await serverWithoutSwitch('no-plc');
     try {

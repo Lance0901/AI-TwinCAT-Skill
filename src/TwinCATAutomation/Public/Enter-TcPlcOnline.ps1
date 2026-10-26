@@ -109,15 +109,24 @@
     # a login or download when the project changed (InfoSys "Command Login",
     # https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html; "Command Download",
     # https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531438987.html), but nobody checks
-    # that compile here (with unresolved libraries it reports no code error, #45) and under
-    # SilentMode XAE's own "log in without loading?" question on compile errors is answered with
-    # its default. Every LoginMode is refused: Regular downloads too when XAE decides to.
+    # that compile here (with unresolved libraries it reports no code error, #45). Under
+    # SilentMode XAE's own "log in without loading?" question on compile errors is presumably
+    # answered with its default button (inferred, not measured). Every LoginMode is refused:
+    # Regular downloads too when XAE decides to.
     $req = Get-TcBuildRequired
     if ($null -ne $req) {
         $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }
         $sln = if ([string]::IsNullOrWhiteSpace([string]$req.solution)) { 'unknown solution' } else { [string]$req.solution }
+        $kp = $req.PSObject.Properties['kind']
+        $msg = if ($null -ne $kp -and [string]$kp.Value -eq 'state-unreadable') {
+            # lock timeout / unreadable file: fail-closed, but not because of a build (review N2)
+            "Not logged in (LoginMode $LoginMode): STATE UNREADABLE - $($req.reason); the BUILD_REQUIRED state file could not be checked, so the login is refused (fail-closed). This is not a build problem: retry, or see docs/troubleshooting.md BUILD_REQUIRED (lock / state file)."
+        }
+        else {
+            "Not logged in (LoginMode $LoginMode): $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req)."
+        }
         return New-TcResult -Success $false `
-            -ErrorMessage "Not logged in (LoginMode $LoginMode): $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req)." `
+            -ErrorMessage $msg `
             -ErrorCode 'BUILD_REQUIRED' -Hint (Get-TcErrorHint -Code 'BUILD_REQUIRED') `
             -Data ([PSCustomObject]@{ online = $false; loginMode = $LoginMode; buildRequired = $req })
     }

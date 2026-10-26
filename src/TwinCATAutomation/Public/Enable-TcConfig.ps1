@@ -521,8 +521,12 @@ function Enable-TcConfig {
         $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
         $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
         $bsw = if ($null -ne $b.data) { $b.data.PSObject.Properties['stateWarning'] } else { $null }
-        if ($null -ne $bsw -and -not [string]::IsNullOrWhiteSpace([string]$bsw.Value) -and [string]::IsNullOrWhiteSpace($platformWarning)) {
-            Set-Variable -Name platformWarning -Value ([string]$bsw.Value) -Scope 1
+        if ($null -ne $bsw -and -not [string]::IsNullOrWhiteSpace([string]$bsw.Value)) {
+            # keep both: the switch's and the build's state warning (review N6)
+            $joined = if ([string]::IsNullOrWhiteSpace($platformWarning)) { [string]$bsw.Value }
+                      elseif ($platformWarning -eq [string]$bsw.Value) { $platformWarning }
+                      else { "$platformWarning | $([string]$bsw.Value)" }
+            Set-Variable -Name platformWarning -Value $joined -Scope 1
         }
         if (-not $b.success) {
             Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail ([string]$b.error.message)

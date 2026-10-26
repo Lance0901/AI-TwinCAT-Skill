@@ -34,7 +34,10 @@
 #     'Local\TwinCATAutomation.BuildRequired' for the default directory (a fixed name: %TEMP% may
 #     be spelled with 8.3 short names in one process and long names in another), and
 #     'Local\TwinCATAutomation.BuildRequired.<hash of the full TCAUTO_STATE_DIR path>' when the
-#     directory is overridden (tests; GetFullPath only, 8.3 names there are not expanded).
+#     directory is overridden (tests; full path with 8.3 names expanded, Get-TcLongPath).
+#     A process WITH TCAUTO_STATE_DIR and one WITHOUT it use DIFFERENT mutexes even when the
+#     variable points at the default %TEMP%\TwinCATAutomation directory: do not mix the two
+#     for one state directory.
 #     A 'Local\' mutex only serialises processes of the SAME logon session; a process in another
 #     session (another user, a service in session 0) is not locked out: the file replace stays
 #     atomic, but a concurrent read-modify-write from there can lose one update.
@@ -49,8 +52,10 @@
 #     is removed only by hand (it may have held entries of other solutions); when that replace
 #     fails the unreadable file stays as it is and every Get blocks (lock/read failure). See
 #     docs/troubleshooting.md "BUILD_REQUIRED".
-# Keys: one entry per solution (full path, lower case; may contain non-ASCII characters, the file
-# is UTF-8). A record while no solution path is known goes to '<unknown>', which blocks every
+# Keys: one entry per solution (full path with 8.3 short names expanded through GetLongPathName
+# on the longest existing ancestor, lower case; may contain non-ASCII characters, the file is
+# UTF-8). Connect-TcIde keeps the path the user gave, so 'C:\Users\RUNNER~1\x\Demo.sln' and the
+# long spelling must give the same key, else a refusal would fail open (#56 review S3). A record while no solution path is known goes to '<unknown>', which blocks every
 # solution; Enable-TcConfig / Enter-TcPlcOnline without a known solution path are blocked by any
 # entry. '<unknown>' is removed by any complete Build-TcProject success, whatever solution is
 # open: the trade-off accepted here, because '<unknown>' can only come from a session that never
@@ -76,20 +81,63 @@ function Get-TcBuildRequiredFile {
 function Get-TcBuildRequiredMutexName {
     $dir = $env:TCAUTO_STATE_DIR
     if ([string]::IsNullOrWhiteSpace($dir)) { return 'Local\TwinCATAutomation.BuildRequired' }
-    $full = $dir.Trim()
-    try { $full = [IO.Path]::GetFullPath($full) } catch { }
-    $full = $full.TrimEnd('\', '/').ToLowerInvariant()
+    $full = (Get-TcLongPath $dir).TrimEnd('\', '/').ToLowerInvariant()
     $sha = [Security.Cryptography.SHA1]::Create()
     try { $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full))[0..7] | ForEach-Object { $_.ToString('x2') }) }
     finally { $sha.Dispose() }
     "Local\TwinCATAutomation.BuildRequired.$hash"
 }
 
+# Win32 GetLongPathName (kernel32): expands 8.3 short names (C:\Users\RUNNER~1\...). Only works
+# for a path that exists; Get-TcLongPath applies it to the longest existing ancestor.
+if ($null -eq ([System.Management.Automation.PSTypeName]'TwinCATAutomation.TcLongPathNative').Type) {
+    Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+using System.Text;
+namespace TwinCATAutomation {
+    public static class TcLongPathNative {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint size);
+        public static string Get(string p) {
+            var sb = new StringBuilder(1024);
+            uint n = GetLongPathName(p, sb, (uint)sb.Capacity);
+            if (n > sb.Capacity) { sb = new StringBuilder((int)n); n = GetLongPathName(p, sb, (uint)sb.Capacity); }
+            return (n > 0 && n <= sb.Capacity) ? sb.ToString() : null;
+        }
+    }
+}
+'@
+}
+
+# Full path with every 8.3 short name expanded (#56 review S3: Connect-TcIde stores the path the
+# user gave, which may be a short name, and the same .sln must map to one key). The longest
+# existing ancestor is expanded and the rest appended; nothing exists -> GetFullPath only.
+function Get-TcLongPath {
+    param([string]$Path)
+    $full = $Path.Trim()
+    try { $full = [IO.Path]::GetFullPath($full) } catch { return $full }
+    $cur = $full.TrimEnd('\', '/')
+    $rest = ''
+    while (-not [string]::IsNullOrEmpty($cur)) {
+        if ([IO.File]::Exists($cur) -or [IO.Directory]::Exists($cur)) {
+            $long = $null
+            try { $long = [TwinCATAutomation.TcLongPathNative]::Get($cur) } catch { $long = $null }
+            if ([string]::IsNullOrEmpty($long)) { return $full }
+            return ($long.TrimEnd('\') + $rest)
+        }
+        $parent = [IO.Path]::GetDirectoryName($cur)
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $cur) { break }
+        $rest = '\' + [IO.Path]::GetFileName($cur) + $rest
+        $cur = $parent.TrimEnd('\')
+        if ($cur.Length -eq 2 -and $cur[1] -eq ':') { $cur += '\' }
+    }
+    return $full
+}
+
 function ConvertTo-TcSolutionKey {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $script:TcUnknownSolutionKey }
-    $p = $Path.Trim()
-    try { $p = [IO.Path]::GetFullPath($p) } catch { }
+    $p = Get-TcLongPath $Path
     return $p.TrimEnd('\', '/').ToLowerInvariant()
 }
 

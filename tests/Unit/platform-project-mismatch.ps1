@@ -245,6 +245,38 @@ try {
     $null = & $mod { Clear-TcBuildRequired; $script:TcSolutionPath = $null }
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
 
+    # 8.3 short names (#56 review S3): Connect-TcIde keeps the path the user gave; a short and a
+    # long spelling of one .sln must hit the same entry, both ways, also for a .sln that does not
+    # exist (yet) in an existing folder. Needs 8.3 name generation on the volume (on in CI).
+    $longDir = Join-Path $env:TCAUTO_STATE_DIR 'Long Solution Folder Name'
+    $null = New-Item -ItemType Directory -Force -Path $longDir
+    $longSln = Join-Path $longDir 'Demo Long Name.sln'
+    Set-Content -LiteralPath $longSln -Value 'x' -Encoding ASCII
+    $fso = New-Object -ComObject Scripting.FileSystemObject
+    $shortSln = $fso.GetFile($longSln).ShortPath
+    $shortDir = $fso.GetFolder($longDir).ShortPath
+    if ($shortSln -eq $longSln -or $shortDir -eq $longDir) {
+        Write-Host "SKIP br-83-* (no 8.3 names on this volume: $shortSln)"
+    }
+    else {
+        $pairs = @(
+            @{ Name = 'short-then-long'; Write = $shortSln; Read = $longSln },
+            @{ Name = 'long-then-short'; Write = $longSln; Read = $shortSln },
+            @{ Name = 'missing-file'; Write = (Join-Path $shortDir 'NotYet.sln'); Read = (Join-Path $longDir 'NotYet.sln') }
+        )
+        foreach ($p in $pairs) {
+            & $mod { param($w) $script:TcSolutionPath = $w; $null = Set-TcBuildRequired -Kind 'unverified-build' -Reason 'unit 8.3' } $p.Write
+            $req = & $mod { param($r) $script:TcSolutionPath = $r; Get-TcBuildRequired } $p.Read
+            Check "br-83-$($p.Name)" ($null -ne $req -and $req.reason -eq 'unit 8.3') "write=$($p.Write) read=$($p.Read) req=$($req | ConvertTo-Json -Compress)"
+            $null = & $mod { Clear-TcBuildRequired }
+            $req = & $mod { param($w) $script:TcSolutionPath = $w; Get-TcBuildRequired } $p.Write
+            Check "br-83-$($p.Name)-cleared" ($null -eq $req) "clear through the other spelling left $($req | ConvertTo-Json -Compress)"
+        }
+    }
+    & $mod { $script:TcSolutionPath = $null }
+    Remove-Item -LiteralPath $longDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
+
     # non-ASCII solution path: key and file round-trip (UTF-8)
     $uni = 'C:\' + [char]0x6574 + [char]0x7406 + '\Demo.sln'
     & $mod { param($p) $script:TcSolutionPath = $p } $uni
@@ -446,4 +478,4 @@ finally {
 }
 
 "failed: $fail"
-exit $fail
+exit [Math]::Min($fail, 255)

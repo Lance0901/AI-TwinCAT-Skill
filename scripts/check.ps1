@@ -423,9 +423,14 @@ else {
             $null = $p.Handle
             try {
                 $done = $p.WaitForExit($unitTimeoutMs)
-                if (-not $done) { try { $p.Kill() } catch { } }
-                $p.WaitForExit()
+                $killed = $true
+                if (-not $done) {
+                    try { $p.Kill() } catch { }
+                    # bounded: a process that does not die after Kill must not hang the check
+                    $killed = $p.WaitForExit(10000)
+                }
                 $code = if ($done) { $p.ExitCode } else { -1 }
+                if (-not $killed) { $unitLines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
                 $out = @()
                 foreach ($f in @($outFile, $errFile)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
                 # "failed: N" is printed by most of them; exit 0 is what counts

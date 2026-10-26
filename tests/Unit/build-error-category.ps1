@@ -27,4 +27,4 @@ foreach ($c in $cases) {
     $got = & $mod { param($i) Get-TcErrorItemCategory -Item $i } $c.Item
     Check $c.Name ($got -eq $c.Want) "want $($c.Want), got $got"
 }
-exit $fail
+exit [Math]::Min($fail, 255)

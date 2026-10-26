@@ -19,6 +19,12 @@
 #   other-row              lbi 1, library + a build-summary row without file
 #   unlocated-code         lbi 0, one code row with a file but line 0
 #   library-unlocated      lbi 0, the library rows + that code row without a line (#56 point 2)
+#   build-timeout          BuildState stays InProgress (call with TimeoutSec 5 -> BUILD_TIMEOUT)
+#   build-modal            BuildState stays InProgress and a modal dialog shows up once the build
+#                          was started (IDE_MODAL_DIALOG at the ~5 s modal check)
+#   build-throws           SolutionBuild.Build() throws a non-busy error (outer catch of Build-TcProject)
+#   (the last three: #56 review S1, a started build that never finished is recorded too)
+# Get-TcPlcProjectList: no PLC child for no-plc, one 'plc' child otherwise (TIPC tree, #56 N1).
 #   skipped-library        lbi 0, library rows; a second PLC project is skipped by the configuration
 #   skipped                lbi 0, no rows; a second PLC project is skipped by the configuration
 #   all-skipped            lbi 0, no rows; the only PLC project is skipped (#58, TwinCAT_Festo shape:
@@ -73,6 +79,9 @@ $script:FixtureScenarios = @{
     'other-row'             = @{ Lbi = 1; Sets = @('library', 'other') }
     'unlocated-code'        = @{ Lbi = 0; Sets = @('unlocated') }
     'library-unlocated'     = @{ Lbi = 0; Sets = @('library', 'unlocated') }
+    'build-timeout'         = @{ Lbi = 0; Sets = @(); BuildState = 'stuck' }
+    'build-modal'           = @{ Lbi = 0; Sets = @(); BuildState = 'stuck'; ModalWhileBuilding = $true }
+    'build-throws'          = @{ Lbi = 0; Sets = @(); BuildState = 'throws' }
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
     'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
     'all-skipped'           = @{ Lbi = 0; Sets = @(); AllSkipped = $true; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
@@ -104,7 +113,18 @@ function Get-TcSysManager {
     $sm | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { '127.0.0.1.1.1' }
     $sm
 }
-function Get-TcIdeModalDialog { $null }
+$script:FixtureBuilding = $false
+function Get-TcIdeModalDialog {
+    if ($script:FixtureBuilding -and (Get-FixtureScenario).ModalWhileBuilding) {
+        return @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (fixture)'; Kind = 'unknown'; Hwnd = 0; Buttons = @() }
+    }
+    $null
+}
+function Get-TcPlcProjectList {
+    param($SysManager)
+    if ((Get-FixtureScenario).NoPlc) { return @() }
+    @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false })
+}
 function Get-TcBuildCoverage {
     $sc = Get-FixtureScenario
     if ($sc.CoverageError) { return @{ configuration = $null; error = $sc.CoverageError; projects = @() } }
@@ -220,10 +240,19 @@ function Set-TcSystemState {
 # DTE: Build($false) returns at once; BuildState reports InProgress once, then Done.
 $script:FixtureBuildPolls = 0
 $sb = [PSCustomObject]@{ Mock = $true }
-$sb | Add-Member -MemberType ScriptMethod -Name Build -Value { param($wait) $script:FixtureBuildPolls = 0 }
+# 'throws': the Build call itself fails with a non-busy COM error (a throwing ScriptProperty getter
+# would read as $null in PowerShell and the poll would run into BUILD_TIMEOUT instead).
+$sb | Add-Member -MemberType ScriptMethod -Name Build -Value {
+    param($wait)
+    $script:FixtureBuildPolls = 0
+    $script:FixtureBuilding = $true
+    if ((Get-FixtureScenario).BuildState -eq 'throws') { $script:FixtureBuilding = $false; throw 'Build failed inside XAE (fixture)' }
+}
 $sb | Add-Member -MemberType ScriptProperty -Name BuildState -Value {
     $script:FixtureBuildPolls++
-    if ($script:FixtureBuildPolls -le 1) { 2 } else { 3 }
+    $mode = (Get-FixtureScenario).BuildState
+    if ($mode -eq 'stuck') { return 2 }
+    if ($script:FixtureBuildPolls -le 1) { 2 } else { $script:FixtureBuilding = $false; 3 }
 }
 $sb | Add-Member -MemberType ScriptProperty -Name LastBuildInfo -Value { (Get-FixtureScenario).Lbi }
 $script:TcDte = [PSCustomObject]@{ Solution = [PSCustomObject]@{ SolutionBuild = $sb }; ToolWindows = $null }

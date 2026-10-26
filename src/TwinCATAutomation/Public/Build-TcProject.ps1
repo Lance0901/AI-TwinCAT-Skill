@@ -80,15 +80,18 @@
         without PLC project does not clear it. data.completeBuild (successful results only) says
         whether this build counted as complete.
         A build that finished WITHOUT a complete success (#56) - LIBRARY_UNRESOLVED, BUILD_FAILED,
-        BUILD_STATUS_UNKNOWN, BUILD_COVERAGE_UNKNOWN after the build, or success with
-        completeBuild = $false - records the same state (kind 'unverified-build'), so that
+        BUILD_STATUS_UNKNOWN, BUILD_COVERAGE_UNKNOWN after the build, success with
+        completeBuild = $false, and a started build that never finished (BUILD_TIMEOUT,
+        IDE_MODAL_DIALOG during the build, an exception during the build) - records the same state (kind 'unverified-build'), so that
         Enable-TcConfig and Enter-TcPlcOnline refuse with BUILD_REQUIRED until a complete build:
         Activate and Login compile by themselves, but nothing checks that compile (measured
         2026-10-26, TcXaeShell 4024, TwinCAT_Festo copy, local UmRT: Enable-TcConfig -Force after
         a LIBRARY_UNRESOLVED build activated and returned success without a warning). data.buildRequired
         is the recorded reason, data.stateWarning is set when the state file could not be
         written (the entry then lives in this process only). Not recorded for a solution
-        without PLC project (there is no PLC code to verify).
+        without PLC project (SolutionContexts and the TIPC tree both list none: there is no
+        PLC code to verify), nor when the build was never started (checks before the build,
+        IDE_BUSY on Build($false)).
         data.warningCodes with accepted library rows AND a code row without a line number:
         LIBRARY_UNRESOLVED, then CODE_NOT_VERIFIED (both, #56).
         data.errors          number of CODE errors (errorItems with category 'code'); Library
@@ -227,6 +230,38 @@
         }
     }
 
+    # #56: a build that was started and did not end in a complete success is remembered per
+    # solution (Set-TcBuildRequired -Kind unverified-build), so a later Enable-TcConfig / PLC
+    # login does not use output that nobody verified: LIBRARY_UNRESOLVED, BUILD_FAILED,
+    # BUILD_STATUS_UNKNOWN, BUILD_COVERAGE_UNKNOWN after the build, success with completeBuild =
+    # $false, and also BUILD_TIMEOUT, IDE_MODAL_DIALOG during the build and any exception after
+    # the build was asked to start (outer catch). Not recorded: the checks before the build
+    # (nothing changed) and IDE_BUSY when Build($false) itself was rejected. Not for a solution
+    # without PLC project - the coverage list (SolutionContexts) read without error AND the TIPC
+    # tree has no PLC child (Get-TcPlcProjectList; unreadable -> recorded): there is no PLC code
+    # to verify, and such a solution can never reach completeBuild, so the entry could only be
+    # removed by hand.
+    $noPlcChecked = $false
+    $noPlcProject = $false
+    $recordUnverified = {
+        param([string]$What, [object]$Target)
+        if (-not $noPlcChecked) {
+            $noPlc = ($null -eq $coverage.error) -and (@($coverage.projects).Count -eq 0)
+            if ($noPlc) {
+                try { $noPlc = (@(Get-TcPlcProjectList -SysManager $sm).Count -eq 0) } catch { $noPlc = $false }
+            }
+            Set-Variable -Name noPlcProject -Value $noPlc -Scope 1
+            Set-Variable -Name noPlcChecked -Value $true -Scope 1
+        }
+        if ($noPlcProject) { return }
+        $reason = "the last Build-TcProject ($What) did not prove that the PLC code was compiled"
+        $sw = Set-TcBuildRequired -Kind 'unverified-build' -Reason $reason
+        if ($null -ne $Target) {
+            $Target | Add-Member -NotePropertyName 'buildRequired' -NotePropertyValue $reason -Force
+            if (-not [string]::IsNullOrWhiteSpace([string]$sw)) { $Target | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$sw) -Force }
+        }
+    }
+
     try {
         # Entire build operation wrapped in retry for RPC_E_CALL_REJECTED (IDE busy)
         $solutionBuild = $null
@@ -275,20 +310,26 @@
                 $nextModalCheckSec = $buildWatch.Elapsed.TotalSeconds + 5
                 $dialog = Get-TcIdeModalDialog
                 if ($null -ne $dialog) {
-                    return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
+                    $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+                    & $recordUnverified 'IDE_MODAL_DIALOG during the build' $res.data
+                    return $res
                 }
             }
             if ($buildWatch.Elapsed.TotalSeconds -ge $TimeoutSec) {
                 $dialog = Get-TcIdeModalDialog
                 if ($null -ne $dialog) {
-                    return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
+                    $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+                    & $recordUnverified 'IDE_MODAL_DIALOG during the build' $res.data
+                    return $res
                 }
+                $toData = [PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) }
+                & $recordUnverified 'BUILD_TIMEOUT' $toData
                 return New-TcResult -Success $false `
                     -ErrorMessage "Build did not finish within $TimeoutSec s (SolutionBuild.BuildState = $buildState; 1 NotStarted, 2 InProgress, 3 Done)." `
                     -ErrorCode 'BUILD_TIMEOUT' -Hint (Get-TcErrorHint -Code 'BUILD_TIMEOUT') `
-                    -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
+                    -Data $toData
             }
             Start-Sleep -Milliseconds 750
         }
@@ -504,25 +545,10 @@
             $data | Add-Member -NotePropertyName 'expectedProjects' -NotePropertyValue $expected
         }
 
-        # #56: a build that finished without a complete success is remembered per solution
-        # (Set-TcBuildRequired -Kind unverified-build), so a later Enable-TcConfig / PLC login
-        # does not use output that nobody verified. Not for a solution without PLC project
-        # (project list read, no .plcproj): there is no PLC code to verify, and such a solution
-        # can never reach completeBuild, so the entry could only be removed by hand.
-        $noPlcProject = ($null -eq $coverage.error) -and ($projects.Count -eq 0)
-        $recordUnverified = {
-            param([string]$What)
-            if ($noPlcProject) { return }
-            $reason = "the last Build-TcProject ($What) did not prove that the PLC code was compiled"
-            $sw = Set-TcBuildRequired -Kind 'unverified-build' -Reason $reason
-            $data | Add-Member -NotePropertyName 'buildRequired' -NotePropertyValue $reason -Force
-            if (-not [string]::IsNullOrWhiteSpace([string]$sw)) { $data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$sw) -Force }
-        }
-
         $libNames = @($libraryErrorItems | Select-Object -First 3 | ForEach-Object { [string]$_.description }) -join '; '
         if ($libraryErrorItems.Count -gt 3) { $libNames += " ... (+$($libraryErrorItems.Count - 3) more)" }
         if ($libraryUnresolved -and -not $AllowUnresolvedLibrary) {
-            & $recordUnverified "LIBRARY_UNRESOLVED, $($libraryErrorItems.Count) unresolved library error(s)"
+            & $recordUnverified "LIBRARY_UNRESOLVED, $($libraryErrorItems.Count) unresolved library error(s)" $data
             return New-TcResult -Success $false -ErrorMessage "Build not verified: the Error List shows $($libraryErrorItems.Count) unresolved library error(s), so the PLC code may not have been compiled (no code error would be reported). $libNames" `
                 -ErrorCode 'LIBRARY_UNRESOLVED' -Hint (Get-TcErrorHint -Code 'LIBRARY_UNRESOLVED') -Data $data
         }
@@ -541,7 +567,7 @@
         if ($null -eq $buildSucceeded) {
             $why = if ($null -ne $errorListError) { "LastBuildInfo not readable and Error List not readable ($errorListError)" }
                    else { "LastBuildInfo not readable and the Error List rows ($unclassifiedCount) have no usable severity" }
-            & $recordUnverified 'BUILD_STATUS_UNKNOWN'
+            & $recordUnverified 'BUILD_STATUS_UNKNOWN' $data
             New-TcResult -Success $false -ErrorMessage "Build result could not be determined: $why." `
                 -ErrorCode 'BUILD_STATUS_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_STATUS_UNKNOWN') -Data $data
         }
@@ -569,7 +595,7 @@
             elseif ($null -ne $failedProjects) {
                 $summary += " ($failedProjects project(s) failed; no code error listed in the Error List)"
             }
-            & $recordUnverified 'BUILD_FAILED'
+            & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint (Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE') -Data $data
         }
         else {
@@ -579,7 +605,7 @@
                 if ($null -eq $e -or $e.status -ne 'built') { $_ }
             })
             if ($notBuilt.Count -gt 0) {
-                & $recordUnverified 'BUILD_COVERAGE_UNKNOWN'
+                & $recordUnverified 'BUILD_COVERAGE_UNKNOWN' $data
                 return New-TcResult -Success $false -ErrorMessage "Build finished but expected PLC project(s) $($notBuilt -join ', ') were not confirmed as built (see data.projects)." `
                     -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $data
             }
@@ -601,7 +627,7 @@
             }
             else {
                 $wcText = @($(if ($null -ne $data.PSObject.Properties['warningCodes']) { $data.warningCodes } else { @() })) -join ', '
-                & $recordUnverified "success with completeBuild=false, warningCodes=[$wcText]"
+                & $recordUnverified "success with completeBuild=false, warningCodes=[$wcText]" $data
             }
             # Why a successful build did not count, for the BUILD_REQUIRED message of Enable-TcConfig
             $script:TcLastBuildVerdict = [PSCustomObject]@{
@@ -620,6 +646,10 @@
         if ($null -ne $script:TcLastModalDialog) {
             $errData = [PSCustomObject]@{ dialogTitle = [string]$script:TcLastModalDialog.Title; dialogText = [string]$script:TcLastModalDialog.Text }
         }
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build failed' -Data $errData
+        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build failed' -Data $errData
+        if ($null -eq $res.data) { $res | Add-Member -NotePropertyName 'data' -NotePropertyValue ([PSCustomObject]@{}) -Force }
+        $code = if ($null -ne $res.error) { [string]$res.error.code } else { 'BUILD_FAILED' }
+        try { & $recordUnverified "$code, exception during the build" $res.data } catch { Write-Verbose "Build-TcProject: BUILD_REQUIRED not recorded ($($_.Exception.Message))" }
+        $res
     }
 }
