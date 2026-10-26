@@ -24,6 +24,9 @@
 #                          solution platform = the fixture platform, project platform
 #                          'TwinCAT OS (ARMT2)', the coverage label carries the project platform
 #                          like the old Get-TcBuildCoverage did)
+#   coverage-error         lbi 0, no rows; the PLC project list (SolutionContexts) is not readable
+#   context-platform       lbi 0, no rows; Get-TcSolutionPlatform only has platformSource 'context'
+#                          (its platform is the project platform 'TwinCAT OS (ARMT2)')
 # GetSymbols / ReadVariable (#57): the real Get-TcSymbols / Read-TcVariable on a fixture symbol
 # table (TcAdsHelper type defined here, no ADS); a path containing 'Missing' is not found.
 # Enable-TcConfig: the solution platform starts as env TCAUTO_TEST_PLATFORM (default
@@ -37,11 +40,18 @@
 # dot-sourced explicitly below (they are .ps1, so dot-sourcing them is safe).
 $realRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\src\TwinCATAutomation')).ProviderPath
 # NEVER invoke the .psm1 path ('. x.psm1' / '& x.psm1'): PowerShell 5.1 runs only .ps1 as a script
-# and hands any other file to the shell, which opens it in Notepad on the user's desktop. The
-# $script: state block (everything before '# Import private functions') is read as text instead.
+# and hands any other file to the shell, which opens it in Notepad on the user's desktop
+# (measured 2026-10-26, Windows PowerShell 5.1: dot-sourcing the .psm1 from this fixture opened
+# it in Notepad on every build-result.test.js run). The $script: state block (everything before
+# '# Import private functions') is read as text instead.
 $realPsm1Text = Get-Content -Raw -LiteralPath (Join-Path $realRoot 'TwinCATAutomation.psm1')
 $stateEnd = $realPsm1Text.IndexOf('# Import private functions')
 if ($stateEnd -lt 0) { throw 'fixture: state block marker not found in TwinCATAutomation.psm1' }
+# Self-check: every module-level $script: assignment must be inside that block, else the fixture
+# would silently miss state that a later change to the real .psm1 adds after the marker.
+foreach ($m in [regex]::Matches($realPsm1Text, '(?m)^\$script:\w+\s*=')) {
+    if ($m.Index -ge $stateEnd) { throw "fixture: '$($m.Value.Trim())' in TwinCATAutomation.psm1 is after the state block marker; move it before '# Import private functions'" }
+}
 . ([scriptblock]::Create($realPsm1Text.Substring(0, $stateEnd)))
 foreach ($f in @(Get-ChildItem -Path (Join-Path $realRoot 'Private'), (Join-Path $realRoot 'Public') -Filter '*.ps1' -Recurse)) { . $f.FullName }
 $publicNames = @(Get-ChildItem -Path (Join-Path $realRoot 'Public') -Filter '*.ps1' -Recurse | ForEach-Object { $_.BaseName })
@@ -61,6 +71,8 @@ $script:FixtureScenarios = @{
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
     'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
     'all-skipped'           = @{ Lbi = 0; Sets = @(); AllSkipped = $true; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
+    'coverage-error'        = @{ Lbi = 0; Sets = @(); CoverageError = 'SolutionContexts not readable (fixture)' }
+    'context-platform'      = @{ Lbi = 0; Sets = @(); PlatformSource = 'context'; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
 }
 function Get-FixtureScenario {
     $name = $script:FixtureScenario
@@ -89,6 +101,7 @@ function Get-TcSysManager {
 function Get-TcIdeModalDialog { $null }
 function Get-TcBuildCoverage {
     $sc = Get-FixtureScenario
+    if ($sc.CoverageError) { return @{ configuration = $null; error = $sc.CoverageError; projects = @() } }
     if ($sc.AllSkipped) {
         $projects = @([PSCustomObject]@{
             name = 'plc'; uniqueName = 'Demo\plc\plc.plcproj'; configuration = 'Release'
@@ -133,13 +146,18 @@ function Get-TcBuildErrors {
 # DTE solution configurations (covered by tests/Unit/platform-project-mismatch.ps1); this mock
 # switches the fixture platform and records the pending build through the real Set-TcBuildRequired.
 function Get-TcSolutionPlatform {
+    # Scenario from the file only (EnableConfig tests run without one and keep the defaults).
     $projPlat = $script:FixturePlatform
+    $plat = $script:FixturePlatform
+    $source = 'ActiveConfig'
     $file = $env:TCAUTO_TEST_BUILD_SCENARIO_FILE
     if (-not [string]::IsNullOrWhiteSpace($file) -and (Test-Path -LiteralPath $file)) {
         $sc = $script:FixtureScenarios[(Get-Content -Raw -LiteralPath $file).Trim()]
         if ($null -ne $sc -and $sc.ProjectPlatform) { $projPlat = $sc.ProjectPlatform }
+        # 'context': the real Get-TcSolutionPlatform's last resort returns a context's PROJECT platform
+        if ($null -ne $sc -and $sc.PlatformSource) { $source = $sc.PlatformSource; if ($source -eq 'context') { $plat = $projPlat } }
     }
-    [PSCustomObject]@{ platform = $script:FixturePlatform; configuration = 'Release'; projectPlatform = $projPlat; source = 'ActiveConfig' }
+    [PSCustomObject]@{ platform = $plat; configuration = 'Release'; projectPlatform = $projPlat; platformSource = $source }
 }
 
 # ADS for GetSymbols / ReadVariable (#57). Ensure-TcAdsConnection: "connected, no reconnect".

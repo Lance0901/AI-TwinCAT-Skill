@@ -264,12 +264,31 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.deepEqual(body.data.projects.map((p) => [p.name, p.status]), [['plc', 'built'], ['plc2', 'skipped']]);
   });
 
+  test('PLC project list not readable (coverageError): codeVerified null, CODE_NOT_VERIFIED', async () => {
+    const { body } = await build('coverage-error');
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.data.codeVerified, null);
+    assert.equal(body.data.coverageComplete, false);
+    assert.match(body.data.coverageError, /not readable/);
+    assert.deepEqual(body.data.warningCodes, ['CODE_NOT_VERIFIED']);
+    assert.match(body.data.warning, /PLC project list of the active solution configuration could not be read/);
+  });
+
+  test("solution platform only from a SolutionContext (platformSource 'context'): solutionConfiguration is the name only", async () => {
+    const { body } = await build('context-platform');
+    assert.equal(body.success, true);
+    assert.equal(body.data.platformSource, 'context');
+    assert.equal(body.data.solutionConfiguration, 'Release', 'no project platform appended');
+    assert.equal(body.data.codeVerified, true);
+  });
+
   test('complete build: codeVerified stays true, solutionConfiguration / solutionPlatform from the solution', async () => {
     const { body } = await build('clean');
     assert.equal(body.data.codeVerified, true);
     assert.equal(body.data.coverageComplete, true);
     assert.equal(body.data.solutionConfiguration, 'Release|TwinCAT RT (x64)');
     assert.equal(body.data.solutionPlatform, 'TwinCAT RT (x64)');
+    assert.equal(body.data.platformSource, 'ActiveConfig');
     assert.equal(body.data.warningCodes, undefined);
   });
 });
@@ -383,6 +402,26 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       await client.close();
     }
   });
+
+  // A successful build that proves nothing about the PLC code must not clear BUILD_REQUIRED either.
+  for (const scenario of ['coverage-error', 'errorlist-unavailable', 'unlocated-code']) {
+    test(`a successful build with ${scenario} (codeVerified not true) does not clear BUILD_REQUIRED`, async () => {
+      const client = await startServer(scenario);
+      try {
+        const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
+        assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+        const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
+        assert.equal(b.success, true);
+        assert.notEqual(b.data.codeVerified, true);
+        assert.ok(b.data.warningCodes.includes('CODE_NOT_VERIFIED'));
+        const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        assert.equal(again.error.code, 'BUILD_REQUIRED');
+      } finally {
+        await client.close();
+      }
+    });
+  }
 
   test('EnableConfig AllowUnresolvedLibrary: the platform-fix-build accepts the library rows', async () => {
     const client = await startServer('library-only');

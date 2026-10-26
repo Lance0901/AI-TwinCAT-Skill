@@ -146,11 +146,12 @@ export const QuickRead = {
     const readArgs = { Path: args.Path };
     // #57: an array data (several paths) must stay an array; spreading it into an object would
     // turn the entries into "0"/"1" keys. connectedOnDemand goes to the top level in every case.
+    // Same rule as stampOrder in bridge.js: only a missing data is created, null stays null.
     const decorate = (result, connectedOnDemand) => {
       const out = { ...result, connectedOnDemand };
       const d = result.data;
-      if (d === undefined || d === null) out.data = { connectedOnDemand };
-      else if (typeof d === 'object' && !Array.isArray(d)) out.data = { ...d, connectedOnDemand };
+      if (d === undefined) out.data = { connectedOnDemand };
+      else if (d !== null && typeof d === 'object' && !Array.isArray(d)) out.data = { ...d, connectedOnDemand };
       return out;
     };
 

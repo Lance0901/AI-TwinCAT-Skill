@@ -5,6 +5,29 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { QuickRead } from '../lib/composites.js';
+
+// #57: QuickRead adds connectedOnDemand without changing the shape of data (same rule as stampOrder).
+describe('QuickRead data shape (no bridge)', () => {
+  const run = (data) => QuickRead.run({ callTool: async () => (data === undefined ? { success: true } : { success: true, data }) }, { Path: ['MAIN.a', 'MAIN.b'] });
+
+  test('array data stays an array, connectedOnDemand at the top level', async () => {
+    const r = await run([{ path: 'MAIN.a', value: 1 }, { path: 'MAIN.b', error: 'x', code: 'SYMBOL_NOT_FOUND' }]);
+    assert.ok(Array.isArray(r.data));
+    assert.equal(r.data.length, 2);
+    assert.equal(r.connectedOnDemand, false);
+  });
+
+  test('null data stays null; missing data becomes {connectedOnDemand}; object data gets it merged', async () => {
+    const n = await run(null);
+    assert.equal(n.data, null);
+    assert.equal(n.connectedOnDemand, false);
+    const u = await run(undefined);
+    assert.deepEqual(u.data, { connectedOnDemand: false });
+    const o = await run({ path: 'MAIN.a', value: 1 });
+    assert.deepEqual(o.data, { path: 'MAIN.a', value: 1, connectedOnDemand: false });
+  });
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', 'index.js');

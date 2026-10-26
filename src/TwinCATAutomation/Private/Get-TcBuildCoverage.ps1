@@ -49,8 +49,11 @@ function Get-TcBuildCoverage {
     $projects = @()
     foreach ($r in @($rows)) {
         if ($r.Kind -eq 'config') {
-            # SolutionConfiguration2.PlatformName is the SOLUTION platform; it is empty through the
-            # PowerShell COM binder in VS2022 (measured 4026 + VS2022), then only the name is kept.
+            # SolutionConfiguration2.PlatformName is the SOLUTION platform
+            # (https://learn.microsoft.com/en-us/dotnet/api/envdte80.solutionconfiguration2?view=visualstudiosdk-2022);
+            # it is non-empty in TcXaeShell.DTE.15.0 and $null through the PowerShell COM binder in
+            # VisualStudio.DTE.17.0 (VS2022) (measured 2026-10-22, TwinCAT 3.1.4026.22, same reading
+            # as Get-TcSolutionPlatform 'PlatformName'); then only the name is kept.
             # The platform of the PLC contexts is NOT used for the label: that is the project
             # platform ('TwinCAT OS (ARMT2)' under solution 'TwinCAT OS (x64)', #58).
             # Build-TcProject reports the solution configuration from Get-TcSolutionPlatform.

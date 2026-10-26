@@ -39,13 +39,18 @@
                              also proves the PLC code was compiled; $false otherwise (also when a
                              PLC project was skipped by the configuration or the solution has no
                              PLC project, #58); $null when the Error List or the PLC project list
-                             (coverageError) is not readable
+                             (coverageError) is not readable. This applies to BUILD_FAILED results
+                             too (a failed build with a skipped PLC project has codeVerified $false)
         data.solutionConfiguration  '<configuration>|<solution platform>' of the active solution
                              configuration, read like Get-TcIdeInfo (Solution.Properties
                              ('ActiveConfig')); data.solutionPlatform is its platform (same value
                              as Get-TcIdeInfo data.solutionPlatform) and data.projectPlatform the
                              project platform of the .tsproj under it (#58). The platform of each
-                             PLC project is in data.projects[].platform.
+                             PLC project is in data.projects[].platform. data.platformSource is
+                             how the solution platform was read (Get-TcSolutionPlatform:
+                             ActiveConfig | PlatformName | context); with 'context' (a project
+                             platform, last resort) solutionConfiguration is only the
+                             configuration name.
         data.warningCodes    every warning code of a successful result, in this order:
                              PROJECT_SKIPPED_BY_CONFIGURATION, LIBRARY_UNRESOLVED (only with
                              -AllowUnresolvedLibrary), CODE_NOT_VERIFIED; data.warningCode is the
@@ -66,9 +71,12 @@
         in which a PLC project was skipped by the configuration (all of them: no PLC code was
         compiled at all) keeps success = true with data.warningCodes containing CODE_NOT_VERIFIED
         (after PROJECT_SKIPPED_BY_CONFIGURATION, #58).
-        A complete success (no PLC project skipped by the configuration) also clears the "build
-        required after a platform switch" state that Enable-TcConfig checks before activating
-        (BUILD_REQUIRED, a state file per solution: Private/Set-TcBuildRequired.ps1).
+        A complete success (coverageComplete and codeVerified = $true; or the accepted
+        -AllowUnresolvedLibrary case with only library rows) also clears the "build required after
+        a platform switch" state that Enable-TcConfig checks before activating (BUILD_REQUIRED, a
+        state file per solution: Private/Set-TcBuildRequired.ps1). A skipped PLC project, an
+        unreadable project list or Error List, a code row without a line number or a solution
+        without PLC project does not clear it.
         data.errors          number of CODE errors (errorItems with category 'code'); Library
                              Manager rows are not counted (fallback when the Error List is not
                              readable: failedProjects)
@@ -162,10 +170,15 @@
     # the platform of the PLC project contexts, which is the PROJECT platform (solution
     # 'TwinCAT OS (x64)' -> project 'TwinCAT OS (ARMT2)', measured 2026-10-26, VisualStudio.DTE.17.0,
     # TwinCAT_Festo 4026 copy). Get-TcBuildCoverage's label is only the fallback.
+    # platformSource 'context' means Get-TcSolutionPlatform fell back to a SolutionContext, i.e. a
+    # PROJECT platform: then only the configuration name is reported (data.platformSource says why).
     $solPlat = Get-TcSolutionPlatform
     $solutionConfiguration = $coverage.configuration
-    if (-not [string]::IsNullOrWhiteSpace([string]$solPlat.configuration) -and -not [string]::IsNullOrWhiteSpace([string]$solPlat.platform)) {
-        $solutionConfiguration = "$($solPlat.configuration)|$($solPlat.platform)"
+    if (-not [string]::IsNullOrWhiteSpace([string]$solPlat.configuration)) {
+        if ([string]$solPlat.platformSource -ne 'context' -and -not [string]::IsNullOrWhiteSpace([string]$solPlat.platform)) {
+            $solutionConfiguration = "$($solPlat.configuration)|$($solPlat.platform)"
+        }
+        else { $solutionConfiguration = [string]$solPlat.configuration }
     }
     $expected = @($ExpectedProject | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
     if ($expected.Count -gt 0) {
@@ -177,6 +190,7 @@
             solutionConfiguration = $solutionConfiguration
             solutionPlatform      = $solPlat.platform
             projectPlatform       = $solPlat.projectPlatform
+            platformSource        = $solPlat.platformSource
         }
         if ($null -ne $coverage.error) {
             $covData | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
@@ -435,6 +449,7 @@
             solutionConfiguration = $solutionConfiguration
             solutionPlatform = $solPlat.platform
             projectPlatform  = $solPlat.projectPlatform
+            platformSource   = $solPlat.platformSource
             errors         = $errorCount
             libraryErrors  = $libraryErrorCount
             warnings       = $warningCount
@@ -529,9 +544,14 @@
                 return New-TcResult -Success $false -ErrorMessage "Build finished but expected PLC project(s) $($notBuilt -join ', ') were not confirmed as built (see data.projects)." `
                     -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') -Data $data
             }
-            # the build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED);
-            # a skipped PLC project may still have the output of the previous platform (inferred, not measured)
-            if ($skippedProjects.Count -eq 0) { $null = Clear-TcBuildRequired }
+            # The build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED) must
+            # prove that every PLC project was compiled: coverageComplete (none skipped, the project
+            # list was read, the solution has PLC projects) and codeVerified. A skipped PLC project
+            # may still have the output of the previous platform (inferred, not measured). The one
+            # accepted exception is the documented #45 path: -AllowUnresolvedLibrary with only
+            # library rows (codeVerified = $false because of them, Error List read, no unlocated row).
+            $acceptedLibrary = $libraryUnresolved -and $AllowUnresolvedLibrary -and ($null -eq $errorListError) -and ($unlocatedCode.Count -eq 0)
+            if ($coverageComplete -and (($codeVerified -eq $true) -or $acceptedLibrary)) { $null = Clear-TcBuildRequired }
             New-TcResult -Success $true -Data $data
         }
     }
