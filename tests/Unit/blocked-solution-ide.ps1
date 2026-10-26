@@ -14,6 +14,24 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 
 $slnDir = Join-Path $env:TEMP ("tcauto-unit-{0}" -f [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $slnDir | Out-Null
+# GitHub's windows runner has TEMP = C:\Users\RUNNER~1\... (8.3 short name) while the module
+# compares the long form it reads back (#43: this script failed only in CI). Use the long path.
+if ($null -eq ([System.Management.Automation.PSTypeName]'TcUnitLongPath').Type) {
+    Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+using System.Text;
+public static class TcUnitLongPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint size);
+    public static string Get(string p) {
+        var sb = new StringBuilder(1024);
+        uint n = GetLongPathName(p, sb, (uint)sb.Capacity);
+        return (n > 0 && n < sb.Capacity) ? sb.ToString() : p;
+    }
+}
+'@
+}
+$slnDir = [TcUnitLongPath]::Get($slnDir)
 $origLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $slnDir   # session records go to the temp folder
 $sln = Join-Path $slnDir 'Demo.sln'
