@@ -31,6 +31,7 @@ $script:TcAdsEnumCacheError = $null      # why the enum table could not be read 
 $script:TcAdsEnumCacheVersion = $null    # ADS symbol version (0xF008) the cached table belongs to
 $script:TcAdsEnumCacheFailedAt = $null   # UTC time of the last failed load (10 s cool-down before retry)
 $script:TcAdsEnumIndex = $null           # @{ Full = name -> desc (case-insensitive); Short = unqualified name -> [desc] }
+$script:TcLastBuildVerdict = $null       # last SUCCESSFUL Build-TcProject: solution, at, completeBuild, codeVerified, coverageComplete, warningCodes (BUILD_REQUIRED message)
 
 # Import private functions
 $privatePath = Join-Path $PSScriptRoot 'Private'

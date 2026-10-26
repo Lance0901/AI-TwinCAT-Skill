@@ -513,13 +513,16 @@ function Enable-TcConfig {
         if (-not $b.success) {
             Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail ([string]$b.error.message)
             # The platform IS switched now: running Enable-TcConfig again would find the platforms
-            # equal and skip this build, so the module keeps BUILD_REQUIRED until a build succeeds.
-            $f = New-TcStepFailureFromResult -Result $b -Prefix "Build after the automatic platform switch to '$($r.platform)' failed (the solution platform stays switched; Enable-TcConfig refuses to activate until Build-TcProject succeeds)" -DefaultCode 'BUILD_FAILED'
-            $platHint = "The solution platform was switched to '$($r.platform)'. Build-TcProject must succeed before Enable-TcConfig activates again (with unresolved libraries: install them; only if the user accepts that the code may not be compiled: Build-TcProject -AllowUnresolvedLibrary). $([string]$f.error.hint)".TrimEnd()
+            # equal and skip this build, so the module keeps BUILD_REQUIRED until a COMPLETE build
+            # (Build-TcProject data.completeBuild: coverageComplete and codeVerified = $true, or
+            # -AllowUnresolvedLibrary with library rows only).
+            $f = New-TcStepFailureFromResult -Result $b -Prefix "Build after the automatic platform switch to '$($r.platform)' failed (the solution platform stays switched; Enable-TcConfig refuses to activate until a complete Build-TcProject)" -DefaultCode 'BUILD_FAILED'
+            $platHint = "The solution platform was switched to '$($r.platform)'. A complete Build-TcProject (data.completeBuild = true: coverageComplete and codeVerified = true, or the AllowUnresolvedLibrary switch with library errors only) must succeed before Enable-TcConfig activates again (with unresolved libraries: install them; only if the user accepts that the code may not be compiled: Build-TcProject -AllowUnresolvedLibrary). $([string]$f.error.hint)".TrimEnd()
             $f.error | Add-Member -NotePropertyName 'hint' -NotePropertyValue $platHint -Force
             return $f
         }
-        Add-TcStepRecord -Name 'platform-fix-build' -Ok $true -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s)"
+        $verdict = Format-TcBuildVerdict -Data $b.data
+        Add-TcStepRecord -Name 'platform-fix-build' -Ok $true -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s); $verdict"
         return $null
     }
 
@@ -539,8 +542,26 @@ function Enable-TcConfig {
         if ($null -eq $req) { return $null }
         $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }
         $sln = if ([string]::IsNullOrWhiteSpace([string]$req.solution)) { 'unknown solution' } else { [string]$req.solution }
-        Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject success since"
-        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject success since; the compiled PLC output may still be that of the previous platform." -Code 'BUILD_REQUIRED'
+        # Why the last successful build of this session did not count (complete = coverageComplete
+        # and codeVerified = true, or -AllowUnresolvedLibrary with library rows only).
+        $last = ''
+        $lv = $script:TcLastBuildVerdict
+        if ($null -ne $lv -and -not $lv.completeBuild) {
+            $last = " The last successful Build-TcProject ($($lv.at)) did not count as complete: $(Format-TcBuildVerdict -Data $lv)."
+        }
+        Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject since.$last"
+        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject since; the compiled PLC output may still be that of the previous platform.$last" -Code 'BUILD_REQUIRED'
+    }
+
+    # "completeBuild=..., codeVerified=..., coverageComplete=..., warningCodes=[...]" of a
+    # Build-TcProject result data / $script:TcLastBuildVerdict.
+    function Format-TcBuildVerdict {
+        param([object]$Data)
+        $fmt = { param($v) if ($null -eq $v) { 'null' } else { ([string]$v).ToLowerInvariant() } }
+        $wc = @()
+        if ($null -ne $Data.PSObject.Properties['warningCodes']) { $wc = @($Data.warningCodes) }
+        $cb = if ($null -ne $Data.PSObject.Properties['completeBuild']) { $Data.completeBuild } else { $null }
+        "completeBuild=$(& $fmt $cb), codeVerified=$(& $fmt $Data.codeVerified), coverageComplete=$(& $fmt $Data.coverageComplete), warningCodes=[$($wc -join ', ')]"
     }
 
     # Failure of a nested cmdlet result: keep its code + hint

@@ -62,7 +62,8 @@ function Read-TcVariable {
             }
         }
         else {
-            New-TcResult -Success $true -Data $results
+            # (,$results): keep data an array (New-TcResult unrolls -Data, #57)
+            New-TcResult -Success $true -Data (,$results)
         }
     }
     catch {

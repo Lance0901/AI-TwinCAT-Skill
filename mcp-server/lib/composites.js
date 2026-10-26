@@ -46,7 +46,7 @@ export const RunLifecycle = {
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
       TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },
       Platform: { type: 'string', description: 'Optional solution platform passed to SetTarget (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target). Needed only when the target does not report its platform (TARGETINFO, ADS 0x702); omit it and EnableConfig follows the platform the target reports.' },
-      SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false). After a solution platform switch EnableConfig still refuses to activate (BUILD_REQUIRED) until a BuildProject has succeeded.' },
+      SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false). After a solution platform switch EnableConfig still refuses to activate (BUILD_REQUIRED) until a complete BuildProject (data.completeBuild=true).' },
       AllowUnresolvedLibrary: { type: 'boolean', description: 'Passed to BuildProject and EnableConfig: accept a build whose Error List shows unresolved libraries (LIBRARY_UNRESOLVED) as success. Only when the user accepts that the PLC code may not have been compiled.' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
@@ -129,7 +129,7 @@ export const QuickRead = {
   name: 'QuickRead',
   description:
     'Read one or more PLC variables, connecting ADS on demand: calls ReadVariable and, if ADS is not connected yet, runs ConnectAds (AmsNetId/Port optional, auto-detected from the IDE target) and reads again. ' +
-    'Returns the ReadVariable result with data.connectedOnDemand telling whether a connection was made.',
+    'Returns the ReadVariable result plus connectedOnDemand (whether a connection was made): always at the top level of the result, and also as data.connectedOnDemand when data is an object (one Path). With several paths data stays the array of per-path entries (each {path, value, type} or {path, error, code}).',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
   inputSchema: {
@@ -144,9 +144,14 @@ export const QuickRead = {
   },
   async run(ctx, args) {
     const readArgs = { Path: args.Path };
+    // #57: an array data (several paths) must stay an array; spreading it into an object would
+    // turn the entries into "0"/"1" keys. connectedOnDemand goes to the top level in every case.
+    // Same rule as stampOrder in bridge.js: only a missing data is created, null stays null.
     const decorate = (result, connectedOnDemand) => {
-      const out = { ...result };
-      out.data = { ...(result.data && typeof result.data === 'object' ? result.data : {}), connectedOnDemand };
+      const out = { ...result, connectedOnDemand };
+      const d = result.data;
+      if (d === undefined) out.data = { connectedOnDemand };
+      else if (d !== null && typeof d === 'object' && !Array.isArray(d)) out.data = { ...d, connectedOnDemand };
       return out;
     };
 

@@ -49,7 +49,9 @@ function Get-TcSymbols {
         # NOTE: data stays an array (consumers iterate it directly), so the
         # 'reconnected' flag is not added here; $reconnected is still evaluated
         # so Ensure-TcAdsConnection can heal the session before enumeration.
-        New-TcResult -Success $true -Data $result
+        # (,$result): New-TcResult unrolls its -Data, so without the wrapper 0 symbols became {}
+        # and 1 symbol a bare object instead of [] / [symbol] (#57).
+        New-TcResult -Success $true -Data (,$result)
     }
     catch {
         New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYMBOL_ENUM_FAILED' -MessagePrefix 'Failed to enumerate symbols'

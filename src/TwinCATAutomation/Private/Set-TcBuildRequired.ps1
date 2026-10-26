@@ -1,6 +1,7 @@
 # "Build required after a platform switch" (BUILD_REQUIRED, #45 / PR #44 review).
 # Set-TcSolutionPlatform records an entry whenever the active solution platform changed;
-# Build-TcProject removes it after a complete success (no skipped PLC project); Enable-TcConfig
+# Build-TcProject removes it after a complete success (data.completeBuild: coverageComplete and
+# codeVerified = $true, or -AllowUnresolvedLibrary with library rows only); Enable-TcConfig
 # refuses to activate while an entry applies.
 #
 # Where the state lives - fail-closed everywhere:

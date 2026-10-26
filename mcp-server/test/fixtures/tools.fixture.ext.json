@@ -96,6 +96,14 @@
       "description": "PLC state.",
       "timeoutMs": 60000,
       "inputSchema": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }
+    },
+    {
+      "name": "GetSymbols",
+      "cmdlet": "Get-TcSymbols",
+      "description": "List PLC symbols (data is an array).",
+      "timeoutMs": 120000,
+      "annotations": { "readOnlyHint": true },
+      "inputSchema": { "type": "object", "properties": { "Filter": { "type": "string" } }, "required": [], "additionalProperties": false }
     }
   ]
 }

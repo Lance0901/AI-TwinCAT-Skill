@@ -71,7 +71,12 @@ async function build(scenario, args = {}) {
     shared = await startServer(scenario, { TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile });
   }
   fs.writeFileSync(scenarioFile, scenario);
-  const res = await shared.callTool({ name: 'BuildProject', arguments: args });
+  return callShared('BuildProject', args);
+}
+/** Any tool on the shared server (started by the first build()). */
+async function callShared(name, args = {}) {
+  if (!shared) await build('clean');
+  const res = await shared.callTool({ name, arguments: args });
   return { res, body: JSON.parse(res.content[0].text) };
 }
 after(async () => {
@@ -225,6 +230,105 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.equal(body.error.code, 'LIBRARY_UNRESOLVED');
     assert.deepEqual(body.data.expectedProjects, ['plc']);
   });
+
+  // #58: TwinCAT_Festo on VS2022, Release|TwinCAT OS (x64) -> project TwinCAT OS (ARMT2), ShouldBuild false
+  test('every PLC project skipped: codeVerified false, warningCodes add CODE_NOT_VERIFIED, solution (not project) platform', async () => {
+    const { res, body } = await build('all-skipped');
+    assert.notEqual(res.isError, true, JSON.stringify(body));
+    assert.equal(body.success, true, 'XAE says Build succeeded; the warnings carry the gap');
+    const d = body.data;
+    assert.equal(d.codeVerified, false, 'no PLC code was compiled, so it is not verified');
+    assert.deepEqual(d.warningCodes, ['PROJECT_SKIPPED_BY_CONFIGURATION', 'CODE_NOT_VERIFIED']);
+    assert.equal(d.warningCode, 'PROJECT_SKIPPED_BY_CONFIGURATION');
+    assert.equal(d.coverageComplete, false);
+    assert.deepEqual(d.skippedProjects, ['plc']);
+    assert.equal(d.projects[0].status, 'skipped');
+    assert.equal(d.projects[0].platform, 'TwinCAT OS (ARMT2)', 'project platform stays per project');
+
+    const ide = (await callShared('GetIdeInfo')).body;
+    assert.equal(ide.success, true, JSON.stringify(ide));
+    assert.equal(d.solutionPlatform, ide.data.solutionPlatform, 'same reading as GetIdeInfo');
+    assert.equal(d.solutionConfiguration, `${ide.data.solutionConfiguration}|${ide.data.solutionPlatform}`);
+    assert.equal(d.solutionConfiguration, 'Release|TwinCAT RT (x64)');
+    assert.doesNotMatch(d.solutionConfiguration, /ARMT2/, 'not the project platform');
+    assert.equal(d.projectPlatform, 'TwinCAT OS (ARMT2)');
+    assert.equal(d.projectPlatform, ide.data.projectPlatform);
+    assert.match(d.warning, /active solution configuration 'Release\|TwinCAT RT \(x64\)'/);
+  });
+
+  test('one of two PLC projects skipped: codeVerified false and CODE_NOT_VERIFIED as well', async () => {
+    const { body } = await build('skipped');
+    assert.equal(body.success, true);
+    assert.equal(body.data.codeVerified, false);
+    assert.deepEqual(body.data.warningCodes, ['PROJECT_SKIPPED_BY_CONFIGURATION', 'CODE_NOT_VERIFIED']);
+    assert.deepEqual(body.data.projects.map((p) => [p.name, p.status]), [['plc', 'built'], ['plc2', 'skipped']]);
+  });
+
+  test('PLC project list not readable (coverageError): codeVerified null, CODE_NOT_VERIFIED', async () => {
+    const { body } = await build('coverage-error');
+    assert.equal(body.success, true, JSON.stringify(body));
+    assert.equal(body.data.codeVerified, null);
+    assert.equal(body.data.coverageComplete, false);
+    assert.match(body.data.coverageError, /not readable/);
+    assert.deepEqual(body.data.warningCodes, ['CODE_NOT_VERIFIED']);
+    assert.match(body.data.warning, /PLC project list of the active solution configuration could not be read/);
+  });
+
+  test("solution platform only from a SolutionContext (platformSource 'context'): solutionConfiguration is the name only", async () => {
+    const { body } = await build('context-platform');
+    assert.equal(body.success, true);
+    assert.equal(body.data.platformSource, 'context');
+    assert.equal(body.data.solutionConfiguration, 'Release', 'no project platform appended');
+    assert.equal(body.data.codeVerified, true);
+  });
+
+  test('complete build: codeVerified stays true, solutionConfiguration / solutionPlatform from the solution', async () => {
+    const { body } = await build('clean');
+    assert.equal(body.data.codeVerified, true);
+    assert.equal(body.data.coverageComplete, true);
+    assert.equal(body.data.solutionConfiguration, 'Release|TwinCAT RT (x64)');
+    assert.equal(body.data.solutionPlatform, 'TwinCAT RT (x64)');
+    assert.equal(body.data.platformSource, 'ActiveConfig');
+    assert.equal(body.data.completeBuild, true);
+    assert.equal(body.data.warningCodes, undefined);
+  });
+});
+
+// #57 through the real bridge.ps1 and the real Get-TcSymbols / Read-TcVariable (ADS mocked in the
+// fixture module): array data must reach the client element for element.
+describe('array data through the real bridge (GetSymbols / ReadVariable, #57)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
+  test('GetSymbols returns every symbol as an array, also for one match and for none', async () => {
+    const many = (await callShared('GetSymbols', { Filter: 'MAIN*' })).body;
+    assert.equal(many.success, true, JSON.stringify(many));
+    assert.ok(Array.isArray(many.data), `data must be an array: ${JSON.stringify(many)}`);
+    assert.deepEqual(many.data.map((s) => s.path), ['MAIN.nCounter', 'MAIN.bRun', 'MAIN.fSpeed']);
+    assert.deepEqual(many.data[1], { path: 'MAIN.bRun', type: 'BOOL', size: 1, comment: 'run flag' });
+    assert.ok(Number.isInteger(many.order.seq) && many.order.seq > 0, 'execution order at the top level');
+
+    const one = (await callShared('GetSymbols', { Filter: 'GVL' })).body;
+    assert.ok(Array.isArray(one.data), `one match is still an array: ${JSON.stringify(one)}`);
+    assert.deepEqual(one.data.map((s) => s.path), ['GVL.nMode']);
+
+    const none = (await callShared('GetSymbols', { Filter: 'NoSuchSymbol' })).body;
+    assert.equal(none.success, true);
+    assert.deepEqual(none.data, [], `no match is an empty array: ${JSON.stringify(none)}`);
+  });
+
+  test('ReadVariable with several paths returns every entry; the missing one carries its error', async () => {
+    const r = (await callShared('ReadVariable', { Path: ['MAIN.nCounter', 'MAIN.nMissing'] })).body;
+    assert.equal(r.success, true, JSON.stringify(r));
+    assert.ok(Array.isArray(r.data), `data must be an array: ${JSON.stringify(r)}`);
+    assert.equal(r.data.length, 2);
+    assert.equal(r.data[0].path, 'MAIN.nCounter');
+    assert.equal(r.data[0].value, 7);
+    assert.equal(r.data[1].path, 'MAIN.nMissing');
+    assert.match(r.data[1].error, /not found/);
+    assert.ok(Number.isInteger(r.order.seq));
+
+    const single = (await callShared('ReadVariable', { Path: ['MAIN.nCounter'] })).body;
+    assert.equal(single.data.path, 'MAIN.nCounter', 'one path: data is the entry object');
+    assert.equal(single.data.seq, single.order.seq);
+  });
 });
 
 describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRESOLVED (#45)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
@@ -238,7 +342,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(first.success, false);
       assert.equal(first.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(first.error));
       assert.match(first.error.message, /platform switch to 'TwinCAT OS \(x64\)' failed \(the solution platform stays switched/);
-      assert.match(first.error.hint, /BuildProject must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
+      assert.match(first.error.hint, /A complete BuildProject \(data\.completeBuild = true: coverageComplete and codeVerified = true, or the AllowUnresolvedLibrary switch with library errors only\) must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
       assert.deepEqual(first.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
 
       // 2. platforms are equal now, so no rebuild would happen: refused instead of activating old output
@@ -299,6 +403,40 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       await client.close();
     }
   });
+
+  // A successful build that proves nothing about the PLC code must not clear BUILD_REQUIRED either.
+  // The BUILD_REQUIRED message and the platform-fix-build step say why the build did not count.
+  const verdict = {
+    'coverage-error': /completeBuild=false, codeVerified=null, coverageComplete=false, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'errorlist-unavailable': /completeBuild=false, codeVerified=null, coverageComplete=true, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'unlocated-code': /completeBuild=false, codeVerified=false, coverageComplete=true, warningCodes=\[CODE_NOT_VERIFIED\]/,
+    'no-plc': /completeBuild=false, codeVerified=false, coverageComplete=false, warningCodes=\[CODE_NOT_VERIFIED\]/
+  };
+  for (const scenario of Object.keys(verdict)) {
+    test(`a successful build with ${scenario} (codeVerified not true) does not clear BUILD_REQUIRED and says why`, async () => {
+      const client = await startServer(scenario);
+      try {
+        const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
+        assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+        assert.match(r.data.steps[1].detail, verdict[scenario], 'platform-fix-build detail');
+        assert.match(r.error.message, /did not count as complete/);
+        assert.match(r.error.message, verdict[scenario]);
+        assert.match(r.error.hint, /data\.completeBuild = true/);
+        assert.match(r.error.hint, /build-required\.json/, 'hint names the manual release');
+        const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
+        assert.equal(b.success, true);
+        assert.notEqual(b.data.codeVerified, true);
+        assert.equal(b.data.completeBuild, false);
+        assert.ok(b.data.warningCodes.includes('CODE_NOT_VERIFIED'));
+        const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        assert.equal(again.error.code, 'BUILD_REQUIRED');
+        assert.match(again.error.message, verdict[scenario], 'a separate BuildProject is reported too');
+      } finally {
+        await client.close();
+      }
+    });
+  }
 
   test('EnableConfig AllowUnresolvedLibrary: the platform-fix-build accepts the library rows', async () => {
     const client = await startServer('library-only');
