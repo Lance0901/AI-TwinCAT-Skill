@@ -28,6 +28,7 @@
         'Set-TcVariableLink',
         # Build & Deploy
         'Build-TcProject',
+        'Clear-TcProject',
         'Get-TcBuildErrors',
         'Set-TcTarget',
         'Enable-TcConfig',

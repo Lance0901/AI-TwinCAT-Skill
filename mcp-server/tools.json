@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-25T10:23:58Z",
+    "generatedAt":  "2026-10-26T13:36:49Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -178,6 +178,36 @@
                                       }
                   },
                   {
+                      "name":  "CleanProject",
+                      "cmdlet":  "Clear-TcProject",
+                      "description":  "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: issue #18 once hit a null-valued expression on Solution / SolutionBuild right after ConnectIde (cause not confirmed); this tool waits for them and counts the null answers (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG. Readback SolutionBuild.LastBuildInfo: 0 -> success, data.cleanVerified=true; unreadable -> CLEAN_UNVERIFIED (always a failure); > 0 with only unresolved-library Error List rows (<plc>.Library Manager, no line) -> LIBRARY_UNRESOLVED (data.libraryErrorItems; a later BuildProject success may not have compiled the PLC code, #45), or with AllowUnresolvedLibrary=true success with data.warningCode=LIBRARY_UNRESOLVED and cleanVerified=false; any other error -> CLEAN_FAILED (data.errorItems). data: buildState, failedProjects, cleanVerified, cleanSec, nullReads, errorItems.",
+                      "timeoutMs":  330000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "TimeoutSec":  {
+                                                                                "type":  "integer",
+                                                                                "minimum":  5,
+                                                                                "maximum":  3600,
+                                                                                "description":  "Maximum time in seconds for the clean (BuildState = Done). Default 300.",
+                                                                                "default":  300
+                                                                            },
+                                                             "AllowUnresolvedLibrary":  {
+                                                                                            "type":  "boolean",
+                                                                                            "description":  "Accept a clean whose only errors are unresolved libraries ('<plc>.Library Manager'): success with data.warningCode = LIBRARY_UNRESOLVED and data.cleanVerified = $false instead of the LIBRARY_UNRESOLVED error. Use only for a project known to miss libraries."
+                                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "ConnectAds",
                       "cmdlet":  "Connect-TcAds",
                       "description":  "Open the ADS connection to the PLC runtime. Leave AmsNetId empty: it is auto-detected from the IDE target and changes per target (local UmRT, remote CX ...), so never hardcode it. Port defaults to 851 (PLC runtime 1). Requires ConnectIde for auto-detection.",
@@ -208,7 +238,7 @@
                   {
                       "name":  "ConnectIde",
                       "cmdlet":  "Connect-TcIde",
-                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId.",
+                      "description":  "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId. When the IDE that has SolutionPath open is blocked by a modal dialog or busy (its DTE answers RPC_E_CALL_REJECTED or an empty Version), it is recognised without COM and IDE_MODAL_DIALOG (or IDE_BUSY without a dialog) is returned with data.ideProcessId, data.dialog, data.matchedBy and data.attached; no second IDE is launched. matchedBy module-state (the IDE this server was connected to), session-record (an earlier ConnectIde saw this process with this solution) or dialog-path (the dialog names a file in the solution folder) attach that IDE (attached=true): GetIdeModalDialog / ResetSolution work on it right away. window-title (title = solution name only; may be a same-named copy elsewhere) does not attach (attached=false); when that IDE is not yours, LaunchIfBlocked=true ignores it and launches. After the dialog is closed the same ConnectIde call connects to it.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -228,7 +258,11 @@
                                                              "NoLaunch":  {
                                                                               "type":  "boolean",
                                                                               "description":  "If set, do not launch a new IDE instance if none is running."
-                                                                          }
+                                                                          },
+                                                             "LaunchIfBlocked":  {
+                                                                                     "type":  "boolean",
+                                                                                     "description":  "With -SolutionPath: ignore a blocked IDE that matches only by window title (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and go on as if it were not there (launch unless -NoLaunch). A blocked IDE recognised by strong evidence (module-state, session-record, dialog-path) is still reported."
+                                                                                 }
                                                          },
                                           "required":  [
 

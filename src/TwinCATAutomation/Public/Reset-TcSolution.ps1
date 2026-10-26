@@ -91,7 +91,9 @@ function Reset-TcSolution {
                                    as reported by Connect-TcIde
         data.ownedBySession        this session launched the IDE (Disconnect-TcIde -Kill is
                                    allowed), even though selectedBy now says solution-match
-        Errors: NOT_CONNECTED, NO_SOLUTION, FILE_NOT_FOUND, IDE_MODAL_DIALOG,
+        Errors: NOT_CONNECTED, NO_SOLUTION, FILE_NOT_FOUND, IDE_MODAL_DIALOG, RESET_SOLUTION_MISMATCH
+        (the IDE has another solution open than the module expected; nothing closed, #29),
+        RESET_SOLUTION_UNVERIFIED (the open solution could not be read to compare; nothing closed),
         SOLUTION_CLOSE_FAILED, PROJECT_OPEN_FAILED (or IDE_BUSY / IDE_TIMEOUT /
         IDE_CRASHED from the COM calls), and any Connect-TcIde error code when the
         reconnect fails (data.closed / data.reopened say how far it got).
@@ -321,6 +323,45 @@ function Reset-TcSolution {
         }
     }
 
+    # --- guard (#29): never close a solution the module did not expect in this IDE ---
+    # Connect-TcIde can attach a blocked IDE on evidence such as a session record; when the IDE
+    # turns out to have ANOTHER solution open than the module believes, closing it would hit
+    # someone else's work. Expected = the solution the module connected / opened (else $path).
+    $expected = if (-not [string]::IsNullOrWhiteSpace($script:TcSolutionPath)) { [string]$script:TcSolutionPath } else { $path }
+    # Fail closed: poll until Solution.FullName can be read (busy after a reload, $null for a
+    # moment), up to -TimeoutSec. Never readable -> RESET_SOLUTION_UNVERIFIED, nothing closed.
+    # '' (no solution open) is a valid answer and lets the reset go on.
+    $openNow = $null
+    $guardRead = $false
+    $guardError = $null
+    $guardSw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try {
+            $raw = Invoke-TcComRetry -MaxRetries 1 -OperationName 'Solution.FullName (guard)' -ScriptBlock { $gSol = $dte.Solution; if ($null -eq $gSol) { $null } else { $gSol.FullName } }
+            if ($null -ne $raw) { $openNow = [string]$raw; $guardRead = $true; break }
+            $guardError = 'Solution / Solution.FullName answered $null'
+        }
+        catch { $guardError = $_.Exception.Message }
+        if ($guardSw.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $guardRead) {
+        return New-TcResult -Success $false `
+            -ErrorMessage "Reset-TcSolution not attempted: Solution.FullName of the IDE (pid $previousPid) could not be read within $TimeoutSec s ($guardError), so the open solution could not be compared with '$expected'. Nothing was closed." `
+            -ErrorCode 'RESET_SOLUTION_UNVERIFIED' -Hint (Get-TcErrorHint -Code 'RESET_SOLUTION_UNVERIFIED') `
+            -Data (Get-ProgressData -Extra @{ expectedSolution = $expected; guardError = $guardError; guardSec = [math]::Round($guardSw.Elapsed.TotalSeconds, 1) })
+    }
+    if (-not [string]::IsNullOrWhiteSpace($openNow)) {
+        $openNorm = try { [IO.Path]::GetFullPath($openNow) } catch { $openNow }
+        $expNorm = try { [IO.Path]::GetFullPath($expected) } catch { $expected }
+        if (-not [string]::Equals($openNorm, $expNorm, [StringComparison]::OrdinalIgnoreCase)) {
+            return New-TcResult -Success $false `
+                -ErrorMessage "Reset-TcSolution not attempted: the IDE (pid $previousPid) has '$openNorm' open, not '$expNorm' that the module expected. Nothing was closed." `
+                -ErrorCode 'RESET_SOLUTION_MISMATCH' -Hint (Get-TcErrorHint -Code 'RESET_SOLUTION_MISMATCH') `
+                -Data (Get-ProgressData -Extra @{ openSolution = $openNorm; expectedSolution = $expNorm })
+        }
+    }
+
     $closeSw = [System.Diagnostics.Stopwatch]::StartNew()
 
     # --- 2. close every document (vsSaveChangesNo = 2) ---
@@ -366,6 +407,10 @@ function Reset-TcSolution {
     }
     $progress.reopened = $true
     $progress.reopenedSolution = $true
+    # The IDE has $path open now (maybe another .sln than before): keep the #29 record current
+    # even if the reconnect below fails.
+    $script:TcSolutionPath = $path
+    if ($previousPid -gt 0) { Save-TcIdeSolutionRecord -ProcessId $previousPid -Solution $path }
     $openSec = [math]::Round($openSw.Elapsed.TotalSeconds, 1)
 
     # --- 5. reconnect: the instance now has the target solution open -> 'solution-match' ---

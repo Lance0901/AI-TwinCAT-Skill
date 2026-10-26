@@ -45,6 +45,9 @@ function New-TcProject {
 
         # Save solution
         $solution.SaveAs($slnFile)
+        # The IDE now has this new solution: module state and the #29 session record follow it.
+        $script:TcSolutionPath = try { [IO.Path]::GetFullPath($slnFile) } catch { $slnFile }
+        if ($null -ne $script:TcIdeProcessId) { Save-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) -Solution $script:TcSolutionPath }
 
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             solution   = $slnFile

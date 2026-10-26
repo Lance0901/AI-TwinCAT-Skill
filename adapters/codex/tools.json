@@ -54,6 +54,14 @@
       "parameters": {}
     },
     {
+      "name": "CleanProject",
+      "description": "Clean the solution (Build > Clean) and wait until SolutionBuild.BuildState is Done; CLEAN_TIMEOUT / CLEAN_FAILED; LIBRARY_UNRESOLVED when only unresolved libraries failed (a later Build success may be false, #45; AllowUnresolvedLibrary accepts it with data.warningCode); CLEAN_UNVERIFIED when LastBuildInfo is unreadable; data.cleanVerified",
+      "parameters": {
+        "TimeoutSec": { "type": "integer", "description": "Maximum seconds for the clean (5-3600)", "required": false, "default": 300 },
+        "AllowUnresolvedLibrary": { "type": "boolean", "description": "Accept a clean whose only errors are unresolved libraries (success + data.warningCode LIBRARY_UNRESOLVED, cleanVerified=false)", "required": false }
+      }
+    },
+    {
       "name": "GetBuildErrors",
       "description": "Read the compiler messages shown in the XAE Error List window (UI Automation): counts plus errors[] with code/description/file/line",
       "parameters": {
