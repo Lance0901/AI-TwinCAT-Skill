@@ -478,7 +478,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       TCAUTO_STATE_DIR: stateDir
     });
     const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
-    return { client, call, stateDir };
+    return { client, call, stateDir, scenarioFile };
   }
 
   test('never built through BuildProject: EnableConfig is not refused (known limit, Activate compiles)', async () => {
@@ -539,64 +539,59 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
     }
   });
 
-  const unverified = {
-    c0046: /BUILD_FAILED/,
-    'no-lbi-library': /LIBRARY_UNRESOLVED/,
-    'errorlist-unavailable': /success with completeBuild=false, warningCodes=\[CODE_NOT_VERIFIED\]/,
-    skipped: /success with completeBuild=false, warningCodes=\[PROJECT_SKIPPED_BY_CONFIGURATION, CODE_NOT_VERIFIED\]/
-  };
-  for (const scenario of Object.keys(unverified)) {
-    test(`${scenario}: recorded, EnableConfig refuses`, async () => {
-      const s = await serverWithoutSwitch(scenario);
-      try {
-        const b = await s.call('BuildProject');
-        assert.match(b.data.buildRequired, unverified[scenario]);
-        const e = await s.call('EnableConfig', { Force: true });
-        assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
-        assert.match(e.error.message, unverified[scenario]);
-      } finally {
-        await s.client.close();
-      }
-    });
+  // One server for the scenarios below (fewer powershell.exe next to the timing-sensitive
+  // modal-probe / server tests): the scenario is switched through the file, and a 'clean' build
+  // (complete) clears the entry before the next scenario.
+  let shared56 = null;
+  async function s56(scenario) {
+    if (!shared56) shared56 = await serverWithoutSwitch(scenario);
+    fs.writeFileSync(shared56.scenarioFile, scenario);
+    return shared56;
   }
+  async function clearWithCleanBuild() {
+    const s = await s56('clean');
+    const ok = await s.call('BuildProject');
+    assert.equal(ok.data.completeBuild, true, JSON.stringify(ok));
+    assert.ok(!fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'cleared by the complete build');
+  }
+  after(async () => {
+    if (shared56) await shared56.client.close();
+  });
 
-  // review S1: a build that was started but never finished is recorded as well
-  const started = {
+  const unverified = {
+    c0046: { why: /BUILD_FAILED/ },
+    'no-lbi-library': { why: /LIBRARY_UNRESOLVED/ },
+    'errorlist-unavailable': { why: /success with completeBuild=false, warningCodes=\[CODE_NOT_VERIFIED\]/ },
+    skipped: { why: /success with completeBuild=false, warningCodes=\[PROJECT_SKIPPED_BY_CONFIGURATION, CODE_NOT_VERIFIED\]/ },
+    // review S1: a build that was started but never finished is recorded as well
     'build-timeout': { args: { TimeoutSec: 5 }, code: 'BUILD_TIMEOUT', why: /\(BUILD_TIMEOUT\)/ },
     'build-modal': { args: { TimeoutSec: 60 }, code: 'IDE_MODAL_DIALOG', why: /IDE_MODAL_DIALOG during the build/ },
-    'build-throws': { args: {}, code: 'BUILD_FAILED', why: /BUILD_FAILED, exception during the build/ }
+    'build-throws': { code: 'BUILD_FAILED', why: /BUILD_FAILED, exception during the build/ }
   };
-  for (const scenario of Object.keys(started)) {
-    test(`${scenario}: the started build is recorded, EnableConfig and PlcLogin refuse`, async () => {
-      const s = await serverWithoutSwitch(scenario);
-      try {
-        const b = await s.call('BuildProject', started[scenario].args);
-        assert.equal(b.success, false, JSON.stringify(b));
-        if (started[scenario].code) assert.equal(b.error.code, started[scenario].code, JSON.stringify(b.error));
-        assert.match(b.data.buildRequired, started[scenario].why, JSON.stringify(b.data));
-        const e = await s.call('EnableConfig', { Force: true });
-        assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
-        assert.match(e.error.message, started[scenario].why);
-        const l = await s.call('PlcLogin', { LoginMode: 'Download' });
-        assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
-      } finally {
-        await s.client.close();
-      }
+  for (const scenario of Object.keys(unverified)) {
+    test(`${scenario}: recorded, EnableConfig and PlcLogin refuse until a complete build`, async () => {
+      const c = unverified[scenario];
+      const s = await s56(scenario);
+      const b = await s.call('BuildProject', c.args ?? {});
+      if (c.code) assert.equal(b.error?.code, c.code, JSON.stringify(b));
+      assert.match(b.data.buildRequired, c.why, JSON.stringify(b.data));
+      const e = await s.call('EnableConfig', { Force: true });
+      assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
+      assert.match(e.error.message, c.why);
+      const l = await s.call('PlcLogin', { LoginMode: 'Download' });
+      assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
+      await clearWithCleanBuild();
     });
   }
 
   test('solution without PLC project: a successful build records nothing', async () => {
-    const s = await serverWithoutSwitch('no-plc');
-    try {
-      const b = await s.call('BuildProject');
-      assert.equal(b.success, true);
-      assert.equal(b.data.completeBuild, false);
-      assert.equal(b.data.buildRequired, undefined);
-      const e = await s.call('EnableConfig', { Force: true });
-      assert.equal(e.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(e.error));
-    } finally {
-      await s.client.close();
-    }
+    const s = await s56('no-plc');
+    const b = await s.call('BuildProject');
+    assert.equal(b.success, true);
+    assert.equal(b.data.completeBuild, false);
+    assert.equal(b.data.buildRequired, undefined);
+    const e = await s.call('EnableConfig', { Force: true });
+    assert.equal(e.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(e.error));
   });
 
   // PR #44 review nit: data.warning / data.stateWarning end to end when the state cannot be written
