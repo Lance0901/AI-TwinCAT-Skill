@@ -10,6 +10,12 @@ function Add-TcDut {
         Optional hashtable of field declarations (name = type) for Struct/Union.
     .PARAMETER AliasType
         Base type for Alias DUT.
+    .NOTES
+        BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
+        lookup / kind / language / declare step on, or CreateChild itself failing) the solution
+        is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
+        Enter-TcPlcOnline refuse until a complete Build-TcProject. data.buildRequired /
+        data.stateWarning as in Build-TcProject. A failure before CreateChild records nothing.
     #>
     [CmdletBinding()]
     param(
@@ -50,6 +56,7 @@ function Add-TcDut {
         'Alias'  = 623   # TREEITEMTYPE_PLCDUTALIAS
     }
 
+    $createProgress = @{}   # CreateCalled: set by New-TcPlcObject (#65)
     try {
         # TIPC^<Plc>^<Plc> Project^DUTs (falls back to the <Plc> Project node)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'DUTs'
@@ -101,13 +108,13 @@ function Add-TcDut {
         # not specified! Parameter name: baseClass" (measured 2026-10-25 on 4024).
         $vInfo = $null
         if ($DutType -eq 'Alias') { $vInfo = $baseType }
-        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $dutSubTypes[$DutType] -VInfo $vInfo -Declaration $decl
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $dutSubTypes[$DutType] -VInfo $vInfo -Declaration $decl -Progress $createProgress
         if ($created.ContainsKey('ModalDialog')) {
             return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
         }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             dutType     = $DutType
             path        = $created.Path
@@ -119,8 +126,12 @@ function Add-TcDut {
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
         })
+        Register-TcCodeChange -Result $ok -Change "Add-TcDut $Name"
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'DUT_CREATE_FAILED' -MessagePrefix 'Failed to add DUT'
+        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'DUT_CREATE_FAILED' -MessagePrefix 'Failed to add DUT'
+        # conservative (#65): CreateChild was called, the object may exist in the tree
+        if ($createProgress['CreateCalled']) { return Register-TcCodeChange -Result $res -Change "Add-TcDut $Name [failed after CreateChild]" }
+        $res
     }
 }

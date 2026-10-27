@@ -35,13 +35,15 @@
         best-effort indication only.
 
         BUILD_REQUIRED (#56): every LoginMode is refused while the BUILD_REQUIRED state of the
-        solution has an entry (a solution platform switch or a Build-TcProject that was not a
-        complete success, with no complete Build-TcProject since; same state as Enable-TcConfig,
+        solution has an entry (a solution platform switch, a Build-TcProject that was not a
+        complete success, or (#65) a cmdlet that changed the PLC code / project such as
+        Write-TcPouCode or Add-TcPou, with no complete Build-TcProject since; error.hint names
+        the recorded kinds and cmdlets; same state as Enable-TcConfig,
         Private/Set-TcBuildRequired.ps1). XAE compiles before Login / Download by itself
         (InfoSys "Command Login" https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html,
         "Command Download" https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531438987.html),
-        but that compile is not checked by the module. A solution never built through the
-        module has no entry and is not refused (known limit).
+        but that compile is not checked by the module. A solution never built or changed
+        through the module has no entry and is not refused (known limit).
 
         NOTE: with SilentMode on, calling Enter-TcPlcOnline directly against a PLC that is
         already in Run with a mismatching project lets XAE take its default answer to its own
@@ -127,7 +129,7 @@
         }
         return New-TcResult -Success $false `
             -ErrorMessage $msg `
-            -ErrorCode 'BUILD_REQUIRED' -Hint (Get-TcErrorHint -Code 'BUILD_REQUIRED') `
+            -ErrorCode 'BUILD_REQUIRED' -Hint (Get-TcBuildRequiredHint -Entry $req) `
             -Data ([PSCustomObject]@{ online = $false; loginMode = $LoginMode; buildRequired = $req })
     }
 

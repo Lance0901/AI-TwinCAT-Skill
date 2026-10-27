@@ -228,7 +228,8 @@ try {
     $null = & $mod { Set-TcBuildRequired -Kind 'unverified-build' -Reason 'unit unverified' }
     $req = & $mod { Get-TcBuildRequired }
     $cons = & $mod { param($e) Get-TcBuildRequiredConsequence -Entry $e } $req
-    Check 'br-kinds-both' ($req.reason -eq 'unit switch; and unit unverified' -and $req.kind -eq 'unverified-build' -and $cons -match 'previous platform' -and $cons -match 'did not prove') "req=$($req | ConvertTo-Json -Compress) cons=$cons"
+    # kind = the first of TcBuildRequiredKinds the entry has (#65), not the newest one
+    Check 'br-kinds-both' ($req.reason -eq 'unit switch; and unit unverified' -and $req.kind -eq 'platform-switch' -and $cons -match 'previous platform' -and $cons -match 'did not prove') "req=$($req | ConvertTo-Json -Compress) cons=$cons"
     Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
     $mod = Get-Module TwinCATAutomation
     & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\Demo\Kinds.sln' }

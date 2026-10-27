@@ -6,6 +6,12 @@ function New-TcProject {
         Project name.
     .PARAMETER Path
         Directory to create the project in. Defaults to current directory.
+    .NOTES
+        BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
+        (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
+        never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
+        Build-TcProject. A failure records nothing: the module still points at the previous
+        solution, and an entry for it would block a solution this call did not change.
     #>
     [CmdletBinding()]
     param(
@@ -49,12 +55,13 @@ function New-TcProject {
         $script:TcSolutionPath = try { [IO.Path]::GetFullPath($slnFile) } catch { $slnFile }
         if ($null -ne $script:TcIdeProcessId) { Save-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) -Solution $script:TcSolutionPath }
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             solution   = $slnFile
             project    = $Name
             plcProject = "$Name" + '_Plc'
             path       = $solutionPath
         })
+        Register-TcCodeChange -Result $ok -Change "New-TcProject $Name"
     }
     catch {
         New-TcResult -Success $false -ErrorMessage "Failed to create project: $_" -ErrorCode 'PROJECT_CREATE_FAILED'

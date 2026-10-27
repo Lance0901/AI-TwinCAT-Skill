@@ -6,6 +6,12 @@ function Add-TcGvl {
         GVL name (e.g., GVL_Main).
     .PARAMETER Variables
         Optional hashtable of variable declarations (name = type).
+    .NOTES
+        BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
+        lookup / kind / language / declare step on, or CreateChild itself failing) the solution
+        is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
+        Enter-TcPlcOnline refuse until a complete Build-TcProject. data.buildRequired /
+        data.stateWarning as in Build-TcProject. A failure before CreateChild records nothing.
     #>
     [CmdletBinding()]
     param(
@@ -25,6 +31,7 @@ function Add-TcGvl {
         return New-TcNoSysManagerResult
     }
 
+    $createProgress = @{}   # CreateCalled: set by New-TcPlcObject (#65)
     try {
         # TIPC^<Plc>^<Plc> Project^GVLs (falls back to the <Plc> Project node)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'GVLs'
@@ -43,13 +50,13 @@ function Add-TcGvl {
         # Created without vInfo, then the declaration is written and read back. A string vInfo
         # is stored verbatim as declaration: the old '<Declaration><![CDATA[...]]>' wrapper ended
         # up in the GVL source (measured 2026-10-25 on 4024).
-        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType 615 -Declaration $decl
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType 615 -Declaration $decl -Progress $createProgress
         if ($created.ContainsKey('ModalDialog')) {
             return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
         }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             path        = $created.Path
             folderPath  = $folderInfo.Path
@@ -60,8 +67,12 @@ function Add-TcGvl {
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
         })
+        Register-TcCodeChange -Result $ok -Change "Add-TcGvl $Name"
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'GVL_CREATE_FAILED' -MessagePrefix 'Failed to add GVL'
+        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'GVL_CREATE_FAILED' -MessagePrefix 'Failed to add GVL'
+        # conservative (#65): CreateChild was called, the object may exist in the tree
+        if ($createProgress['CreateCalled']) { return Register-TcCodeChange -Result $res -Change "Add-TcGvl $Name [failed after CreateChild]" }
+        $res
     }
 }

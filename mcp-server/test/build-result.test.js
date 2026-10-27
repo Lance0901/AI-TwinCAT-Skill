@@ -594,6 +594,81 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
     assert.equal(e.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(e.error));
   });
 
+  // #65: a code change after the last complete build is remembered as well (kind code-changed),
+  // so EnableConfig / PlcLogin do not let Activate / Login compile it unchecked.
+  test('#65 WritePouCode after a complete build: EnableConfig and PlcLogin refuse (code-changed, also in a new bridge) until a complete build', async () => {
+    const s = await serverWithoutSwitch('clean');
+    const write = { PouName: 'MAIN', PouPath: 'TIPC^plc^plc Project^POUs^MAIN', Implementation: 'n := n + 1;' };
+    try {
+      const b = await s.call('BuildProject');
+      assert.equal(b.data.completeBuild, true, JSON.stringify(b));
+      const free = await s.call('EnableConfig', { Force: true });
+      assert.equal(free.error.code, 'FIXTURE_NO_RUNTIME', 'not refused right after a complete build');
+
+      const w = await s.call('WritePouCode', write);
+      assert.equal(w.success, true, JSON.stringify(w));
+      assert.deepEqual(w.data.updated, ['implementation']);
+      assert.equal(w.data.buildRequired, 'PLC code changed by Write-TcPouCode MAIN [implementation]');
+      assert.equal(w.data.stateWarning, undefined);
+      assert.ok(fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'state is a file');
+
+      const e = await s.call('EnableConfig', { Force: true });
+      assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
+      assert.match(e.error.message, /PLC code changed by Write-TcPouCode MAIN \[implementation\]/);
+      assert.match(e.error.message, /changed after the last complete build.*#65/);
+      // hints reach the client with MCP tool names (Write-TcPouCode -> WritePouCode, lib/tools.js)
+      assert.match(e.error.hint, /^Recorded: code-changed \(PLC code changed by WritePouCode MAIN \[implementation\]\)\. Run BuildProject until data\.completeBuild = true/);
+      assert.ok(!e.data.steps.some((st) => st.step === 'set-config'), 'nothing activated');
+      for (const LoginMode of ['Regular', 'Download', 'OnlineChange']) {
+        const l = await s.call('PlcLogin', { LoginMode });
+        assert.equal(l.error.code, 'BUILD_REQUIRED', `${LoginMode}: ${JSON.stringify(l.error)}`);
+        assert.match(l.error.message, /PLC code changed by Write-TcPouCode MAIN/);
+        assert.match(l.error.hint, /code-changed/);
+      }
+
+      const other = await serverWithoutSwitch('clean', { TCAUTO_STATE_DIR: s.stateDir });
+      try {
+        const again = await other.call('PlcLogin', { LoginMode: 'Download' });
+        assert.equal(again.error.code, 'BUILD_REQUIRED', 'survives a bridge restart');
+        assert.match(again.error.message, /Write-TcPouCode MAIN/);
+      } finally {
+        await other.client.close();
+      }
+
+      // a build that is not complete keeps the change and adds unverified-build (kind order kept)
+      fs.writeFileSync(s.scenarioFile, 'library-only');
+      const lib = await s.call('BuildProject');
+      assert.equal(lib.error.code, 'LIBRARY_UNRESOLVED');
+      const both = await s.call('EnableConfig', { Force: true });
+      assert.equal(both.error.code, 'BUILD_REQUIRED');
+      assert.match(both.error.message, /LIBRARY_UNRESOLVED.*; and PLC code changed by Write-TcPouCode MAIN/);
+      assert.match(both.error.hint, /^Recorded: unverified-build \(.*\); code-changed \(/);
+
+      fs.writeFileSync(s.scenarioFile, 'clean');
+      const ok = await s.call('BuildProject');
+      assert.equal(ok.data.completeBuild, true, JSON.stringify(ok));
+      const after = await s.call('EnableConfig', { Force: true });
+      assert.equal(after.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(after.error));
+      assert.ok(!fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'state removed by the complete build');
+    } finally {
+      await s.client.close();
+    }
+  });
+
+  test('#65 WritePouCode that writes nothing (INVALID_PARAMS / not found) records nothing', async () => {
+    const s = await serverWithoutSwitch('clean');
+    try {
+      const nf = await s.call('WritePouCode', { PouName: 'NOPE', PouPath: 'TIPC^plc^plc Project^POUs^NOPE', Implementation: 'x := 1;' });
+      assert.equal(nf.success, false, JSON.stringify(nf));
+      assert.equal(nf.data?.buildRequired, undefined);
+      assert.ok(!fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'nothing recorded');
+      const e = await s.call('EnableConfig', { Force: true });
+      assert.equal(e.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(e.error));
+    } finally {
+      await s.client.close();
+    }
+  });
+
   // PR #44 review nit: data.warning / data.stateWarning end to end when the state cannot be written
   test('state directory not writable: warnings reach the MCP client, the entry still blocks in that bridge', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-ro-'));
@@ -624,6 +699,19 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
     } finally {
       await b.client.close();
+    }
+
+    // c. code change (#65): WritePouCode data.stateWarning, PlcLogin refused in that bridge
+    const c = await serverWithoutSwitch('clean', { TCAUTO_STATE_DIR: unwritable });
+    try {
+      const w = await c.call('WritePouCode', { PouName: 'MAIN', PouPath: 'TIPC^plc^plc Project^POUs^MAIN', Implementation: 'n := 2;' });
+      assert.equal(w.success, true, JSON.stringify(w));
+      assert.match(w.data.buildRequired, /Write-TcPouCode MAIN/);
+      assert.match(w.data.stateWarning, /BUILD_REQUIRED was recorded in this process only/);
+      const l = await c.call('PlcLogin', { LoginMode: 'Download' });
+      assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));
+    } finally {
+      await c.client.close();
     }
   });
 });

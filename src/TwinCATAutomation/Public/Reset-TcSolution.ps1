@@ -97,6 +97,13 @@ function Reset-TcSolution {
         SOLUTION_CLOSE_FAILED, PROJECT_OPEN_FAILED (or IDE_BUSY / IDE_TIMEOUT /
         IDE_CRASHED from the COM calls), and any Connect-TcIde error code when the
         reconnect fails (data.closed / data.reopened say how far it got).
+        BUILD_REQUIRED (#65): once XAE reloaded project files (success on either path, or a
+        failed reconnect after Solution.Open) the solution is recorded as 'code-changed'
+        (Register-TcCodeChange; data.buildRequired / data.stateWarning): this cmdlet is the
+        way to pick up files changed ON DISK, which the module cannot see, so Enable-TcConfig
+        and Enter-TcPlcOnline refuse until a complete Build-TcProject. A disk edit that XAE
+        reloads by itself (file not open in an editor, no Reset-TcSolution) is not recorded
+        (known limit, docs/troubleshooting.md BUILD_REQUIRED).
     #>
     [CmdletBinding()]
     param(
@@ -310,7 +317,8 @@ function Reset-TcSolution {
                 if ($null -ne $tipc) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tipc) | Out-Null } catch { } }
             }
             if ($null -eq $probeError) {
-                return New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Extra ([ordered]@{ connectSec = $connectSec }) -Total $sw)
+                $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Extra ([ordered]@{ connectSec = $connectSec }) -Total $sw)
+                return Register-TcCodeChange -Result $ok -Change "Reset-TcSolution $([IO.Path]::GetFileName([string]$script:TcSolutionPath)) (project reloaded from disk)"
             }
         }
         Write-Verbose "Reset-TcSolution: reconnect after the Yes reload failed ($probeError); doing the full close / reopen."
@@ -420,13 +428,16 @@ function Reset-TcSolution {
     $connect = Connect-TcIde @connectParams
     $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
 
+    $resetChange = "Reset-TcSolution $([IO.Path]::GetFileName([string]$path)) (solution reopened from disk)"
     if (-not $connect.success) {
-        return New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
+        $failed = New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
+        return Register-TcCodeChange -Result $failed -Change $resetChange
     }
 
-    New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Total $sw -Extra ([ordered]@{
+    $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Total $sw -Extra ([ordered]@{
         closeSec   = $closeSec
         openSec    = $openSec
         connectSec = $connectSec
     }))
+    Register-TcCodeChange -Result $ok -Change $resetChange
 }

@@ -56,6 +56,9 @@ function New-TcPlcObject {
         Optional language name (ST, LD ...) the new object must report.
     .PARAMETER MaxNodes
         Node limit of the project-wide name check (default 3000).
+    .PARAMETER Progress
+        Optional hashtable; CreateCalled = $true is set right before CreateChild, so a caller
+        whose call failed knows whether the PLC project may have changed (#65 BUILD_REQUIRED).
     #>
     [CmdletBinding()]
     param(
@@ -86,7 +89,10 @@ function New-TcPlcObject {
 
         [Parameter()]
         [ValidateRange(1, 100000)]
-        [int]$MaxNodes = 3000
+        [int]$MaxNodes = 3000,
+
+        [Parameter()]
+        [hashtable]$Progress
     )
 
     $sm = $SysManager
@@ -116,6 +122,7 @@ function New-TcPlcObject {
 
     # 2. create
     $vi = $VInfo
+    if ($null -ne $Progress) { $Progress['CreateCalled'] = $true }
     $null = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $parent.CreateChild($Name, $SubType, '', $vi) }
 
     # 3. lookup
