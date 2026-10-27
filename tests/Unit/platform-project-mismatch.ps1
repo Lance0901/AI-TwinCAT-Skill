@@ -207,6 +207,76 @@ try {
     Check 'br-corrupt-blocks-all' ($null -ne (& $mod { Get-TcBuildRequired })) 'other solution not blocked by <corrupt>'
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
 
+    # corrupt file that cannot be replaced (#56 / PR #44 nit): [IO.File]::Replace(tmp, file, kept)
+    # fails as one step -> the unreadable file stays untouched, no .corrupt-* / .tmp, Get blocks
+    Set-Content -LiteralPath $stateFile -Value '{ still not json' -Encoding ASCII
+    $fs = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $req = & $mod { Get-TcBuildRequired }
+        # -Filter 'x.json.*' would also match x.json itself (Win32 wildcard rules)
+        $left = @(Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR | Where-Object { $_.Name -like 'build-required.json.?*' })
+        Check 'br-corrupt-replace-fails-closed' ($null -ne $req -and $req.reason -match 'could not be checked' -and $left.Count -eq 0) "req=$($req | ConvertTo-Json -Compress) left=$(($left | ForEach-Object { $_.Name }) -join ',')"
+    }
+    finally { $fs.Dispose() }
+    Check 'br-corrupt-kept-as-is' ((Get-Content -Raw -LiteralPath $stateFile).Trim() -eq '{ still not json') 'unreadable file changed'
+    Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
+
+    # kinds (#56): a platform switch and an unverified build of the same solution keep both reasons;
+    # an entry written before #56 (no kind / reasons) reads as platform-switch; Clear removes all
+    & $mod { $script:TcSolutionPath = 'C:\Demo\Kinds.sln' }
+    $null = & $mod { Set-TcBuildRequired -Reason 'unit switch' }
+    $null = & $mod { Set-TcBuildRequired -Kind 'unverified-build' -Reason 'unit unverified' }
+    $req = & $mod { Get-TcBuildRequired }
+    $cons = & $mod { param($e) Get-TcBuildRequiredConsequence -Entry $e } $req
+    Check 'br-kinds-both' ($req.reason -eq 'unit switch; and unit unverified' -and $req.kind -eq 'unverified-build' -and $cons -match 'previous platform' -and $cons -match 'did not prove') "req=$($req | ConvertTo-Json -Compress) cons=$cons"
+    Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
+    $mod = Get-Module TwinCATAutomation
+    & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\Demo\Kinds.sln' }
+    $req = & $mod { Get-TcBuildRequired }
+    Check 'br-kinds-file' ($req.reason -eq 'unit switch; and unit unverified') "req=$($req | ConvertTo-Json -Compress)"
+    $null = & $mod { Clear-TcBuildRequired }
+    Check 'br-kinds-cleared' ($null -eq (& $mod { Get-TcBuildRequired })) 'entry left after Clear'
+    $legacy = '{ "c:\\demo\\kinds.sln": { "solution": "C:\\Demo\\Kinds.sln", "reason": "old switch", "at": "2026-10-25 10:00:00" } }'
+    [IO.File]::WriteAllText($stateFile, $legacy)
+    $null = & $mod { Set-TcBuildRequired -Kind 'unverified-build' -Reason 'new build' }
+    $req = & $mod { Get-TcBuildRequired }
+    $cons = & $mod { param($e) Get-TcBuildRequiredConsequence -Entry $e } $req
+    Check 'br-kinds-legacy' ($req.reason -eq 'old switch; and new build' -and $cons -match 'previous platform') "req=$($req | ConvertTo-Json -Compress)"
+    $null = & $mod { Clear-TcBuildRequired; $script:TcSolutionPath = $null }
+    Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
+
+    # 8.3 short names (#56 review S3): Connect-TcIde keeps the path the user gave; a short and a
+    # long spelling of one .sln must hit the same entry, both ways, also for a .sln that does not
+    # exist (yet) in an existing folder. Needs 8.3 name generation on the volume (on in CI).
+    $longDir = Join-Path $env:TCAUTO_STATE_DIR 'Long Solution Folder Name'
+    $null = New-Item -ItemType Directory -Force -Path $longDir
+    $longSln = Join-Path $longDir 'Demo Long Name.sln'
+    Set-Content -LiteralPath $longSln -Value 'x' -Encoding ASCII
+    $fso = New-Object -ComObject Scripting.FileSystemObject
+    $shortSln = $fso.GetFile($longSln).ShortPath
+    $shortDir = $fso.GetFolder($longDir).ShortPath
+    if ($shortSln -eq $longSln -or $shortDir -eq $longDir) {
+        Write-Host "SKIP br-83-* (no 8.3 names on this volume: $shortSln)"
+    }
+    else {
+        $pairs = @(
+            @{ Name = 'short-then-long'; Write = $shortSln; Read = $longSln },
+            @{ Name = 'long-then-short'; Write = $longSln; Read = $shortSln },
+            @{ Name = 'missing-file'; Write = (Join-Path $shortDir 'NotYet.sln'); Read = (Join-Path $longDir 'NotYet.sln') }
+        )
+        foreach ($p in $pairs) {
+            & $mod { param($w) $script:TcSolutionPath = $w; $null = Set-TcBuildRequired -Kind 'unverified-build' -Reason 'unit 8.3' } $p.Write
+            $req = & $mod { param($r) $script:TcSolutionPath = $r; Get-TcBuildRequired } $p.Read
+            Check "br-83-$($p.Name)" ($null -ne $req -and $req.reason -eq 'unit 8.3') "write=$($p.Write) read=$($p.Read) req=$($req | ConvertTo-Json -Compress)"
+            $null = & $mod { Clear-TcBuildRequired }
+            $req = & $mod { param($w) $script:TcSolutionPath = $w; Get-TcBuildRequired } $p.Write
+            Check "br-83-$($p.Name)-cleared" ($null -eq $req) "clear through the other spelling left $($req | ConvertTo-Json -Compress)"
+        }
+    }
+    & $mod { $script:TcSolutionPath = $null }
+    Remove-Item -LiteralPath $longDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
+
     # non-ASCII solution path: key and file round-trip (UTF-8)
     $uni = 'C:\' + [char]0x6574 + [char]0x7406 + '\Demo.sln'
     & $mod { param($p) $script:TcSolutionPath = $p } $uni
@@ -220,21 +290,41 @@ try {
     Check 'br-non-ascii-cleared' (-not (Test-Path -LiteralPath $stateFile) -and $null -eq (& $mod { Get-TcBuildRequired })) "file=$(Test-Path -LiteralPath $stateFile)"
 
     # lock held by another process: Get blocks (fail-closed), Set keeps the entry in memory + warning
-    $dirLower = (Split-Path -Parent $stateFile).ToLowerInvariant()
-    $sha = [Security.Cryptography.SHA1]::Create()
-    $hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($dirLower))[0..7] | ForEach-Object { $_.ToString('x2') })
+    # mutex name (#56): fixed without TCAUTO_STATE_DIR, else a hash of the full path (a relative
+    # spelling of the same directory gives the same name)
+    $mutexName = & $mod { Get-TcBuildRequiredMutexName }
+    $savedDir = $env:TCAUTO_STATE_DIR
+    try {
+        Remove-Item Env:\TCAUTO_STATE_DIR
+        $fixedName = & $mod { Get-TcBuildRequiredMutexName }
+        Push-Location (Split-Path -Parent $savedDir)
+        try {
+            $env:TCAUTO_STATE_DIR = '.\' + (Split-Path -Leaf $savedDir) + '\'
+            [IO.Directory]::SetCurrentDirectory((Get-Location).ProviderPath)
+            $relName = & $mod { Get-TcBuildRequiredMutexName }
+        }
+        finally { Pop-Location; [IO.Directory]::SetCurrentDirectory((Get-Location).ProviderPath) }
+    }
+    finally { $env:TCAUTO_STATE_DIR = $savedDir }
+    Check 'br-mutex-fixed-default' ($fixedName -eq 'Local\TwinCATAutomation.BuildRequired') "$fixedName"
+    Check 'br-mutex-normalized' ($relName -eq $mutexName -and $mutexName -match '^Local\\TwinCATAutomation\.BuildRequired\.[0-9a-f]{16}$') "rel=$relName full=$mutexName"
+
     $ready = Join-Path $env:TCAUTO_STATE_DIR 'holder.ready'
     $holder = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-Command',
-        "`$m = New-Object System.Threading.Mutex(`$false, 'Local\TwinCATAutomation.BuildRequired.$hash'); `$null = `$m.WaitOne(); Set-Content -LiteralPath '$ready' -Value 1; Start-Sleep -Seconds 20")
-    $t0 = Get-Date
-    while (-not (Test-Path -LiteralPath $ready) -and ((Get-Date) - $t0).TotalSeconds -lt 20) { Start-Sleep -Milliseconds 100 }
-    & $mod { $script:TcBuildRequiredLockTimeoutMs = 300; $script:TcSolutionPath = 'C:\Demo\Lock.sln' }
-    $req = & $mod { Get-TcBuildRequired }
-    Check 'br-lock-get-blocks' ((Test-Path -LiteralPath $ready) -and $null -ne $req -and $req.reason -match 'could not be checked') "req=$($req | ConvertTo-Json -Compress)"
-    $w = & $mod { Set-TcBuildRequired -Reason 'unit lock' }
-    Check 'br-lock-set-warns' ($w -match 'this process only' -and -not (Test-Path -LiteralPath $stateFile)) "w=$w"
-    Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
-    $null = $holder.WaitForExit(5000)
+        "`$m = New-Object System.Threading.Mutex(`$false, '$mutexName'); `$null = `$m.WaitOne(); Set-Content -LiteralPath '$ready' -Value 1; Start-Sleep -Seconds 20")
+    try {
+        $t0 = Get-Date
+        while (-not (Test-Path -LiteralPath $ready) -and ((Get-Date) - $t0).TotalSeconds -lt 20) { Start-Sleep -Milliseconds 100 }
+        & $mod { $script:TcBuildRequiredLockTimeoutMs = 300; $script:TcSolutionPath = 'C:\Demo\Lock.sln' }
+        $req = & $mod { Get-TcBuildRequired }
+        Check 'br-lock-get-blocks' ((Test-Path -LiteralPath $ready) -and $null -ne $req -and $req.reason -match 'could not be checked') "req=$($req | ConvertTo-Json -Compress)"
+        $w = & $mod { Set-TcBuildRequired -Reason 'unit lock' }
+        Check 'br-lock-set-warns' ($w -match 'this process only' -and -not (Test-Path -LiteralPath $stateFile)) "w=$w"
+    }
+    finally {
+        Stop-Process -Id $holder.Id -Force -ErrorAction SilentlyContinue
+        $null = $holder.WaitForExit(5000)
+    }
     $req = & $mod { Get-TcBuildRequired }
     Check 'br-lock-memory-entry' ($null -ne $req -and $req.reason -eq 'unit lock') "req=$($req | ConvertTo-Json -Compress)"
     $null = & $mod { Clear-TcBuildRequired; $script:TcBuildRequiredLockTimeoutMs = 3000 }
@@ -366,6 +456,18 @@ try {
     }
     finally { $fs.Dispose() }
     $null = & $mod { Clear-TcBuildRequired }
+
+    # --- #56 point 1: Enter-TcPlcOnline refuses every LoginMode while BUILD_REQUIRED applies,
+    # before any COM call (Get-TcPlcProjectList would throw on this mock SysManager)
+    & $mod { $script:TcSolutionPath = 'C:\Demo\Login.sln'; $null = Set-TcBuildRequired -Kind 'unverified-build' -Reason 'unit login' -WarningAction SilentlyContinue }
+    foreach ($mode in @('Regular', 'Download', 'OnlineChange')) {
+        $r = & $mod { param($m) Enter-TcPlcOnline -LoginMode $m -WarningAction SilentlyContinue } $mode
+        Check "login-build-required-$mode" (-not $r.success -and $r.error.code -eq 'BUILD_REQUIRED' -and $r.error.message -match 'unit login' -and $r.error.message -match 'did not prove' -and $r.data.online -eq $false -and $r.error.hint -match 'Enter-TcPlcOnline') "code=$($r.error.code) msg=$($r.error.message)"
+    }
+    $null = & $mod { Clear-TcBuildRequired }
+    $r = & $mod { Enter-TcPlcOnline -LoginMode Download -WarningAction SilentlyContinue }
+    Check 'login-no-entry-passes-gate' ($r.error.code -ne 'BUILD_REQUIRED') "code=$($r.error.code) msg=$($r.error.message)"
+    & $mod { $script:TcSolutionPath = $null }
 }
 finally {
     & $mod { $script:TcDte = $null }
@@ -376,4 +478,4 @@ finally {
 }
 
 "failed: $fail"
-exit $fail
+exit [Math]::Min($fail, 255)

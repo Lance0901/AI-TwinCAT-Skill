@@ -29,6 +29,9 @@
                   heading of docs/troubleshooting.md.
       tools.json  mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
                   (generatedAt and line endings ignored).
+      unit        every tests/Unit/*.ps1 in its own powershell.exe (no IDE / runtime needed):
+                  PASS when each exits 0 (and its "failed: N" line, if any, says 0); a script
+                  that runs longer than 300 s is killed and fails. Skipped with -Fast (#43).
       npm test    mcp-server unit tests (npm ci first when node_modules is missing).
                   Skipped with -Fast.
     Exit code 0 when nothing failed, 1 otherwise. SKIP never counts as PASS; with -Strict a
@@ -37,7 +40,7 @@
     The checks read the WORKING TREE, not the git index.
 
 .PARAMETER Fast
-    Skip npm test (used by the pre-commit hook).
+    Skip unit and npm test (used by the pre-commit hook).
 .PARAMETER Strict
     Treat SKIP as a failure (used by CI).
 
@@ -391,6 +394,74 @@ try {
 }
 catch {
     Add-CheckResult 'tools.json' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
+# unit: tests/Unit/*.ps1 (no IDE / runtime; exit code = number of failed checks, #43)
+# ---------------------------------------------------------------------------
+if ($Fast) {
+    Add-CheckResult 'unit' 'SKIP' '-Fast'
+}
+else {
+    try {
+        $unitFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tests\Unit') -Filter '*.ps1' | Sort-Object Name)
+        if ($unitFiles.Count -eq 0) { throw 'no tests/Unit/*.ps1 found' }
+        $unitTimeoutMs = 300000
+        $unitFailed = New-Object System.Collections.Generic.List[string]
+        $unitLines = New-Object System.Collections.Generic.List[string]
+        foreach ($uf in $unitFiles) {
+            # Own process per file (each imports the module with its own mocks). Output goes to
+            # files: reading redirected pipes synchronously can dead-lock on a full buffer.
+            $outFile = Join-Path ([IO.Path]::GetTempPath()) ("unit-{0}.out" -f [guid]::NewGuid().ToString('N'))
+            $errFile = "$outFile.err"
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $p = Start-Process -FilePath 'powershell.exe' -PassThru -NoNewWindow -WorkingDirectory $repoRoot `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($uf.FullName)`"")
+            # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
+            # Start-Process -PassThru object reads back as $null after the exit.
+            $null = $p.Handle
+            try {
+                $done = $p.WaitForExit($unitTimeoutMs)
+                $killed = $true
+                if (-not $done) {
+                    try { $p.Kill() } catch { }
+                    # bounded: a process that does not die after Kill must not hang the check
+                    $killed = $p.WaitForExit(10000)
+                }
+                $code = if ($done) { $p.ExitCode } else { -1 }
+                if (-not $killed) { $unitLines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
+                $out = @()
+                foreach ($f in @($outFile, $errFile)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
+                # "failed: N" is printed by most of them; exit 0 is what counts
+                $failLine = @($out | Where-Object { $_ -match '^failed:\s*\d+' } | Select-Object -Last 1)
+                $secs = [int]$sw.Elapsed.TotalSeconds
+                if ($code -eq 0 -and -not ($failLine.Count -gt 0 -and $failLine[0] -notmatch '^failed:\s*0\s*$')) {
+                    $unitLines.Add("$($uf.Name): ok ($secs s)")
+                }
+                else {
+                    $why = if (-not $done) { "timeout after $($unitTimeoutMs / 1000) s" } else { "exit $code" }
+                    $unitFailed.Add($uf.Name)
+                    $unitLines.Add("$($uf.Name): $why ($secs s)")
+                    foreach ($l in @($out | Where-Object { $_ -match '^\s*FAIL\b' } | Select-Object -First 10)) { $unitLines.Add("  $l") }
+                    foreach ($l in @($out | Select-Object -Last 5)) { $unitLines.Add("  | $l") }
+                }
+            }
+            finally {
+                $p.Dispose()
+                Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($unitFailed.Count -eq 0) {
+            Add-CheckResult 'unit' 'PASS' "$($unitFiles.Count) tests/Unit scripts, exit 0" @($unitLines)
+        }
+        else {
+            Add-CheckResult 'unit' 'FAIL' "$($unitFailed.Count) of $($unitFiles.Count) tests/Unit scripts failed: $($unitFailed -join ', ')" @($unitLines)
+        }
+    }
+    catch {
+        Add-CheckResult 'unit' 'FAIL' "check crashed: $($_.Exception.Message)"
+    }
 }
 
 # ---------------------------------------------------------------------------

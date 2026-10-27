@@ -20,7 +20,9 @@ param(
     [string]$Symbol = 'MAIN_GantryCylinder.Acc',
     [string]$LogPath = '',
     [switch]$SilentMode,
-    [switch]$SuppressUI
+    [switch]$SuppressUI,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56).
+    [switch]$AllowUnresolvedLibrary
 )
 
 # $PSScriptRoot is empty inside param() defaults on PS 5.1 -File, so resolve here.
@@ -65,7 +67,7 @@ try {
             }
         } ([bool]$SilentMode) ([bool]$SuppressUI) ${function:L}
     }
-    $b = Build-TcProject
+    $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
     L ("build: success=$($b.success) codeErrors=$(@($b.data.codeErrors).Count)")
     $e = Enable-TcConfig -Force -NoLogin -TimeoutSec 120
     L ("enable-nologin: success=$($e.success) steps=" + ((@($e.data.steps) | ForEach-Object { "$($_.step):$($_.ok)" }) -join ','))

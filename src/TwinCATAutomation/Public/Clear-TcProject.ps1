@@ -59,6 +59,8 @@ function Clear-TcProject {
         data.cleanVerified   $true only when LastBuildInfo read back 0
         data.errorItems      Error List errors (with category code|library|other, as in
                              Build-TcProject), only when failedProjects > 0
+        data.libraryErrorItems  the library rows (LIBRARY_UNRESOLVED results)
+        Clean does not touch the BUILD_REQUIRED state (#56): neither records nor clears it.
         data.warningCodes / warningCode / warning   LIBRARY_UNRESOLVED (only with
                              -AllowUnresolvedLibrary; same shape as Build-TcProject)
         Errors: NOT_CONNECTED, NO_SOLUTION, IDE_MODAL_DIALOG, IDE_BUSY / IDE_CRASHED (COM),

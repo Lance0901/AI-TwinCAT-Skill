@@ -96,4 +96,4 @@ finally {
 }
 
 "failed: $fail"
-exit $fail
+exit [Math]::Min($fail, 255)

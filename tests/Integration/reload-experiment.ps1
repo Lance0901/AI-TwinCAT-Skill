@@ -45,7 +45,11 @@ param(
     [string]$PouPath,
     [string]$LogPath,
     [int]$ObserveSec = 15,
-    [switch]$IUnderstandThisModifiesTheProject
+    [switch]$IUnderstandThisModifiesTheProject,
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing
+    # libraries, #45 / #56). The C0046 check (3.) is then weak: with missing libraries XAE may not
+    # compile the code at all (tests/Integration/README.md).
+    [switch]$AllowUnresolvedLibrary
 )
 
 if (-not $IUnderstandThisModifiesTheProject) {
@@ -471,7 +475,7 @@ function Invoke-Judgement {
     $res.diskHasLineBeforeBuild = Test-DiskHasLine
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Write-Host "  [$Phase] Build-TcProject"
-    $b = Build-TcProject
+    $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
     $res.assertPressedSoFar = @($script:wd.hits)
     $res.buildMs = [int]$sw.ElapsedMilliseconds
     $res.buildSucceeded = $b.data.buildSucceeded

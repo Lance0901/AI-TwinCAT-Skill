@@ -276,4 +276,4 @@ Check 'modal dialog -> IDE_MODAL_DIALOG, CreateChild not called' ((-not $r.succe
 & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f } $origDialog
 
 "failed: $fail"
-exit $fail
+exit [Math]::Min($fail, 255)

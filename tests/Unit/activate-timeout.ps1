@@ -42,4 +42,4 @@ try { & $mod { Invoke-TcActivateWithDeadline -TimeoutSec 10 -ActivateScript 'thr
 Check 'ide-crashed' ($msg -match '^IDE_CRASHED') "$msg"
 
 "failed: $fail"
-exit $fail
+exit [Math]::Min($fail, 255)

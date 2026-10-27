@@ -101,9 +101,18 @@
     $loginResult = Enter-TcPlcOnline
     $steps += [PSCustomObject]@{ step = 'Login'; success = $loginResult.success }
     if (-not $loginResult.success) {
-        return New-TcResult -Success $false `
-            -ErrorMessage "Login failed: $($loginResult.error.message)" `
-            -ErrorCode 'LOGIN_FAILED' -Data ([PSCustomObject]@{ steps = $steps })
+        # keep the Enter-TcPlcOnline error code + hint (BUILD_REQUIRED, PLC_PROJECT_AMBIGUOUS, ...), like the Build step
+        $lcode = if ([string]::IsNullOrWhiteSpace([string]$loginResult.error.code)) { 'LOGIN_FAILED' } else { [string]$loginResult.error.code }
+        $lhp = $loginResult.error.PSObject.Properties['hint']
+        $loginHint = if ($null -ne $lhp -and -not [string]::IsNullOrWhiteSpace([string]$lhp.Value)) { [string]$lhp.Value } else { Get-TcErrorHint -Code $lcode }
+        $lParams = @{
+            Success      = $false
+            ErrorMessage = "Login failed: $($loginResult.error.message)"
+            ErrorCode    = $lcode
+            Data         = ([PSCustomObject]@{ steps = $steps })
+        }
+        if (-not [string]::IsNullOrWhiteSpace($loginHint)) { $lParams['Hint'] = $loginHint }
+        return New-TcResult @lParams
     }
 
     # Step 4: Wait for PLC runtime port 851 to become reachable after Login+Download

@@ -74,10 +74,10 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | Command | Parameters | Description |
 |---------|-----------|-------------|
 | `Build-TcProject` | | Build project (auto-retry on RPC_E_CALL_REJECTED); `data.errorItems[]` = Error List errors (description/file/line) |
-| `Clear-TcProject` | `[-TimeoutSec 300] [-AllowUnresolvedLibrary]` | Clean the solution: `Clean($false)` + `BuildState` polling (`CLEAN_TIMEOUT`), waits out a `$null` Solution / SolutionBuild (`data.nullReads`; #18, cause not confirmed); `LastBuildInfo` > 0 with only unresolved libraries -> `LIBRARY_UNRESOLVED` (`-AllowUnresolvedLibrary`: success + `data.warningCode`, `cleanVerified = false`), other errors -> `CLEAN_FAILED`, unreadable -> `CLEAN_UNVERIFIED` |
+| `Clear-TcProject` | `[-TimeoutSec 300] [-AllowUnresolvedLibrary]` | Clean the solution: `Clean($false)` + `BuildState` polling (`CLEAN_TIMEOUT`), waits out a `$null` Solution / SolutionBuild (`data.nullReads`; #18, cause not confirmed); `LastBuildInfo` > 0 with only unresolved libraries -> `LIBRARY_UNRESOLVED` (`-AllowUnresolvedLibrary`: success + `data.warningCode`, `cleanVerified = false`), other errors -> `CLEAN_FAILED`, unreadable -> `CLEAN_UNVERIFIED`; same classifier as `Build-TcProject`: `data.errorItems[].category`, `data.warningCodes[]` |
 | `Get-TcBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec 30]` | Read the XAE Error List via UI Automation (counts + rows) |
 | `Enable-TcConfig` | `[-Force]` | Activate config. -Force = ADS WriteControl (no dialogs) |
-| `Enter-TcPlcOnline` | `[-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | Login (flags 1/4/2; no SILENT=256 by default -- `Login(257)` skips app creation on an empty runtime, prompts are handled by the global `SilentMode`; `-SilentFlag` opts in; never 3) |
+| `Enter-TcPlcOnline` | `[-PlcProjectPath <p>] [-LoginMode Regular\|Download\|OnlineChange] [-SilentFlag]` | Login (flags 1/4/2; no SILENT=256 by default -- `Login(257)` skips app creation on an empty runtime, prompts are handled by the global `SilentMode`; `-SilentFlag` opts in; never 3). Refused with `BUILD_REQUIRED` (every LoginMode) after a platform switch or a `Build-TcProject` that was not a complete success, until a complete build (#56) |
 | `Exit-TcPlcOnline` | | Logout from PLC |
 | `Send-TcPlcProgram` | | Upload program to PLC |
 

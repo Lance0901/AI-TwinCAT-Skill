@@ -43,6 +43,14 @@ function Enable-TcConfig {
         Both steps are recorded in data.steps and are not part of the -TimeoutSec budget.
         The post-Activate LastBuildInfo check below (ACTIVATE_FAILED) stays in place and
         still catches a mismatch on the 'skipped' path.
+        After the platform check (both modes) nothing is activated while the BUILD_REQUIRED
+        state of the solution has an entry (Private/Set-TcBuildRequired.ps1): a solution
+        platform switch, or (#56) a Build-TcProject that finished without a complete success
+        (LIBRARY_UNRESOLVED, BUILD_FAILED, BUILD_STATUS_UNKNOWN, success with completeBuild =
+        false), with no complete Build-TcProject since. -AllowUnresolvedLibrary does not lift
+        that entry by itself; only a build does (the platform-fix-build, or a separate
+        Build-TcProject). A solution never built through the module has no entry: Activate
+        compiles it without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
 
         With -Force every step is gated on the previous one and recorded in
         data.steps (@{ step; ok; elapsedMs; detail }). The first failing step stops
@@ -484,6 +492,13 @@ function Enable-TcConfig {
         $conf = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
         $srcArg = if ($null -ne $tp -and $wanted -eq [string]$tp.targetPlatform) { $srcText } else { $null }
         $r = Set-TcSolutionPlatform -Platform $wanted -Configuration $conf -PlatformSource $srcArg
+        $swp = $r.PSObject.Properties['stateWarning']
+        if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
+            # BUILD_REQUIRED only in memory (state file not writable): reported on the success AND
+            # the failure path (a failed switch that could not be undone records it too), still
+            # enforced in this process
+            Set-Variable -Name platformWarning -Value ([string]$swp.Value) -Scope 1
+        }
         if (-not $r.success) {
             Set-Variable -Name platformMap -Value $r.platformMap -Scope 1
             # projectPlatform stays the ACTIVE one (unchanged / restored); the one under the
@@ -500,16 +515,19 @@ function Enable-TcConfig {
         Set-Variable -Name solutionPlatform -Value $r.platform -Scope 1
         Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1
         Set-Variable -Name platformFixed -Value $true -Scope 1
-        $swp = $r.PSObject.Properties['stateWarning']
-        if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
-            # BUILD_REQUIRED only in memory (state file not writable): reported, still enforced here
-            Set-Variable -Name platformWarning -Value ([string]$swp.Value) -Scope 1
-        }
         Add-TcStepRecord -Name 'platform-fix' -Ok $true -Watch $swFix -Detail "$solText -> $($r.platform) (project platform $($r.projectPlatform); $srcText, configuration $($r.configuration))"
 
         # The PLC output of the old platform must not be activated: same build as Build-TcProject.
         $swBuild = [System.Diagnostics.Stopwatch]::StartNew()
         $b = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
+        $bsw = if ($null -ne $b.data) { $b.data.PSObject.Properties['stateWarning'] } else { $null }
+        if ($null -ne $bsw -and -not [string]::IsNullOrWhiteSpace([string]$bsw.Value)) {
+            # keep both: the switch's and the build's state warning (review N6)
+            $joined = if ([string]::IsNullOrWhiteSpace($platformWarning)) { [string]$bsw.Value }
+                      elseif ($platformWarning -eq [string]$bsw.Value) { $platformWarning }
+                      else { "$platformWarning | $([string]$bsw.Value)" }
+            Set-Variable -Name platformWarning -Value $joined -Scope 1
+        }
         if (-not $b.success) {
             Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail ([string]$b.error.message)
             # The platform IS switched now: running Enable-TcConfig again would find the platforms
@@ -535,8 +553,13 @@ function Enable-TcConfig {
         return [string]$id
     }
 
-    # A platform switch (Set-TcTarget / platform-fix) without a successful build since then:
-    # the PLC output may still be that of the previous platform (inferred, not measured). Returns a failure or $null.
+    # A platform switch (Set-TcTarget / platform-fix) or a build that was not a complete success
+    # (#56), without a complete build since then. Platform switch: the PLC output may still be
+    # that of the previous platform (inferred, not measured). Unverified build: Activate would
+    # compile again without anybody checking the result (measured 2026-10-26, TcXaeShell 4024,
+    # TwinCAT_Festo copy, local UmRT: activated + success after LIBRARY_UNRESOLVED). A solution
+    # never built through the module has no entry and is not refused (known limit). Returns a
+    # failure or $null.
     function Test-TcBuildRequired {
         $req = Get-TcBuildRequired
         if ($null -eq $req) { return $null }
@@ -550,7 +573,7 @@ function Enable-TcConfig {
             $last = " The last successful Build-TcProject ($($lv.at)) did not count as complete: $(Format-TcBuildVerdict -Data $lv)."
         }
         Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject since.$last"
-        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject since; the compiled PLC output may still be that of the previous platform.$last" -Code 'BUILD_REQUIRED'
+        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req).$last" -Code 'BUILD_REQUIRED'
     }
 
     # "completeBuild=..., codeVerified=..., coverageComplete=..., warningCodes=[...]" of a
