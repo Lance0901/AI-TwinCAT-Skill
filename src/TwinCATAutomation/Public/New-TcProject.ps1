@@ -12,7 +12,8 @@ function New-TcProject {
         never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
         Build-TcProject. A failure after Solution.Create returned: the IDE now holds the new,
         unsaved and never built solution (and $script:TcSysManager may already be its project)
-        while its .sln path is not known for sure, so $script:TcSolutionPath is set to $null and
+        while its .sln path is not known for sure, so $script:TcSolutionPath is set to $null, the
+        #29 session record of the IDE process is removed (Remove-TcIdeSolutionRecord), and
         code-changed is recorded under '<unknown>' (blocks every solution until a complete
         Build-TcProject; data.buildRequired / data.stateWarning). A failure before or in
         Solution.Create records nothing and leaves $script:TcSolutionPath unchanged.
@@ -74,6 +75,8 @@ function New-TcProject {
         if ($solutionCreated) {
             # the module must not keep the previous .sln as key while the IDE holds another solution
             $script:TcSolutionPath = $null
+            # and the #29 session record must not keep saying this IDE has the old solution
+            if ($null -ne $script:TcIdeProcessId) { Remove-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) }
             return Register-TcCodeChange -Result $res -Change "New-TcProject $Name [failed after Solution.Create]"
         }
         $res

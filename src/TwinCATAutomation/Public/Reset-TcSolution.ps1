@@ -98,7 +98,9 @@ function Reset-TcSolution {
         IDE_CRASHED from the COM calls), and any Connect-TcIde error code when the
         reconnect fails (data.closed / data.reopened say how far it got).
         BUILD_REQUIRED (#65): once XAE may hold project files reloaded from disk the solution
-        ($path, the .sln this call reopens) is recorded as 'code-changed' (Register-TcCodeChange;
+        ($path, the .sln this call reopens; after a Yes reload ALSO the solution the IDE had open
+        - the module's solution path at the start, or the one RESET_SOLUTION_MISMATCH read -
+        when that is another .sln) is recorded as 'code-changed' (Register-TcCodeChange;
         data.buildRequired / data.stateWarning): success on either path; every failure after a
         project reload prompt was answered Yes (data.answeredYes: modal dialog, reload prompt
         handling, reconnect, solution check, Documents.CloseAll, Solution.Close, Solution.Open);
@@ -216,11 +218,21 @@ function Reset-TcSolution {
     # #65: a failure AFTER XAE reloaded the project from disk (answeredYes) is recorded as
     # code-changed for $path (the files XAE now holds may differ from the last complete build);
     # -Always for a failure that may have left the solution half open (Solution.Open).
+    # The Yes reload happened in the solution the IDE had open, i.e. the module's
+    # $script:TcSolutionPath at the start (Enable-TcConfig / Enter-TcPlcOnline check that key),
+    # which differs from $path when -SolutionPath names another .sln: both keys are recorded.
     $leaf = [IO.Path]::GetFileName([string]$path)
+    $startSolution = [string]$script:TcSolutionPath
     function Complete-TcResetFailure {
-        param([object]$Result, [string]$Step, [switch]$Always)
+        param([object]$Result, [string]$Step, [switch]$Always, [string]$ReloadedSolution)
         if ($progress.answeredYes) {
-            return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leaf (project reloaded from disk, then $Step failed)"
+            $change = "Reset-TcSolution $leaf (project reloaded from disk, then $Step failed)"
+            $out = Register-TcCodeChange -Result $Result -SolutionPath $path -Change $change
+            $reloaded = if (-not [string]::IsNullOrWhiteSpace($ReloadedSolution)) { $ReloadedSolution } else { $startSolution }
+            if (-not [string]::IsNullOrWhiteSpace($reloaded) -and (ConvertTo-TcSolutionKey $reloaded) -ne (ConvertTo-TcSolutionKey $path)) {
+                $out = Register-TcCodeChange -Result $out -SolutionPath $reloaded -Change $change
+            }
+            return $out
         }
         if ($Always) {
             return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leaf ($Step failed, solution may be half open)"
@@ -383,7 +395,7 @@ function Reset-TcSolution {
         $openNorm = try { [IO.Path]::GetFullPath($openNow) } catch { $openNow }
         $expNorm = try { [IO.Path]::GetFullPath($expected) } catch { $expected }
         if (-not [string]::Equals($openNorm, $expNorm, [StringComparison]::OrdinalIgnoreCase)) {
-            return Complete-TcResetFailure -Step 'solution check' -Result (New-TcResult -Success $false `
+            return Complete-TcResetFailure -Step 'solution check' -ReloadedSolution $openNorm -Result (New-TcResult -Success $false `
                 -ErrorMessage "Reset-TcSolution not attempted: the IDE (pid $previousPid) has '$openNorm' open, not '$expNorm' that the module expected. Nothing was closed." `
                 -ErrorCode 'RESET_SOLUTION_MISMATCH' -Hint (Get-TcErrorHint -Code 'RESET_SOLUTION_MISMATCH') `
                 -Data (Get-ProgressData -Extra @{ openSolution = $openNorm; expectedSolution = $expNorm }))

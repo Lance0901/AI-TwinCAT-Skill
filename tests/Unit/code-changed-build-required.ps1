@@ -177,8 +177,16 @@ Reset-State
 # path becomes unknown and the change is recorded under '<unknown>' (blocks every solution)
 $solution | Add-Member -Force -MemberType ScriptMethod -Name Create -Value { param($a, $b) }
 $solution | Add-Member -Force -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) throw 'template failed (mock)' }
-& $mod { $script:TcSolutionPath = 'C:\Old\Old.sln' }
+# #29 session record of this "IDE" (our own pid, alive) in a temp LOCALAPPDATA: it must be removed
+$savedLocal = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = Join-Path $stateRoot 'localappdata'
+& $mod { param($p) $script:TcSolutionPath = 'C:\Old\Old.sln'; $script:TcIdeProcessId = $p; Save-TcIdeSolutionRecord -ProcessId $p -Solution 'C:\Old\Old.sln' } $PID
+$recBefore = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
 $r = New-TcProject -Name NewDemo3 -Path $stateRoot
+$recAfter = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
+$env:LOCALAPPDATA = $savedLocal
+& $mod { $script:TcIdeProcessId = $null }
+Check 'New-TcProject failure after Solution.Create -> #29 session record of the IDE removed' ($recBefore -eq 'C:\Old\Old.sln' -and $null -eq $recAfter) "before=$recBefore after=$recAfter"
 $json = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
 $solNow = & $mod { $script:TcSolutionPath }
 Check 'New-TcProject failure after Solution.Create -> path unknown, <unknown> recorded' ((-not $r.success) -and $null -eq $solNow -and $r.data.buildRequired -eq 'PLC code changed by New-TcProject NewDemo3 [failed after Solution.Create]' -and @($json.PSObject.Properties.Name) -contains '<unknown>') (($r | ConvertTo-Json -Compress) + ' ' + ($json | ConvertTo-Json -Compress -Depth 4))
@@ -245,6 +253,25 @@ $r = Start-Reset -Dialogs @() -Mode @{ OpenThrows = $true }
 Check 'Reset: Solution.Open fails -> PROJECT_OPEN_FAILED, recorded (half open)' ((-not $r.success) -and $r.error.code -eq 'PROJECT_OPEN_FAILED' -and $r.data.buildRequired -like '*Solution.Open failed, solution may be half open)' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
 $r = Start-Reset -Dialogs @() -Mode @{}
 Check 'Reset: reopened, reconnect fails -> recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_NOT_FOUND' -and $r.data.buildRequired -like '*Demo.sln (solution reopened from disk)' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+# PR #71 re-review: -SolutionPath names another .sln than the one the IDE had open; the Yes reload
+# happened in the open one, so both keys are recorded (Enable-TcConfig checks the module's key)
+$otherSln = Join-Path $stateRoot 'Other\Other.sln'
+$null = New-Item -ItemType Directory -Path (Split-Path -Parent $otherSln) -Force
+Set-Content -LiteralPath $otherSln -Value '' -Encoding ASCII
+function Get-StateKeys { if (Test-Path -LiteralPath $stateFile) { @((Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json).PSObject.Properties.Name) } else { @() } }
+$keySln = & $mod { param($p) ConvertTo-TcSolutionKey $p } $sln
+$keyOther = & $mod { param($p) ConvertTo-TcSolutionKey $p } $otherSln
+Reset-State
+$global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg); $global:DlgQueue.Enqueue($otherDlg)
+$global:ResetMode = @{}
+& $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+$r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
+$keys = Get-StateKeys
+Check 'Reset -SolutionPath other, Yes then modal -> both the open and the requested .sln recorded' ((-not $r.success) -and $keys -contains $keySln -and $keys -contains $keyOther) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
+# MISMATCH after a Yes reload: the solution the IDE reports is recorded as well
+$r = Start-Reset -Dialogs @($reloadDlg) -Mode @{ FullName = $otherSln }
+$keys = Get-StateKeys
+Check 'Reset Yes, then RESET_SOLUTION_MISMATCH -> requested and open (.sln read back) recorded' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and $keys -contains $keySln -and $keys -contains $keyOther) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
 & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
 Reset-State
 
