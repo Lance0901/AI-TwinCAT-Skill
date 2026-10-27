@@ -48,7 +48,7 @@ $res2 = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ message 
 $out = Register 'Write-TcPouCode FB_X [write failed]' $res2
 Check 'failure result without data gets data.buildRequired' ($out.data.buildRequired -like '*FB_X*' -and $out.error.code -eq 'POU_WRITE_FAILED') ($out | ConvertTo-Json -Compress)
 $e = Get-Entry
-Check 'entry lists both changes in order' ((Get-Reasons $e)['code-changed'] -eq 'PLC code changed by Write-TcPouCode MAIN [implementation], Write-TcPouCode FB_X [write failed]') ($e | ConvertTo-Json -Compress)
+Check 'entry lists both changes in order' ((Get-Reasons $e)['code-changed'] -eq 'PLC code changed by Write-TcPouCode MAIN [implementation] | Write-TcPouCode FB_X [write failed]') ($e | ConvertTo-Json -Compress)
 
 # --- a code-changed does not hide a more serious kind (#65 point 4)
 Reset-State
@@ -71,12 +71,12 @@ Check 'consequence names all three kinds' ($cons -like '*previous platform*' -an
 Reset-State
 foreach ($i in 1..10) { $null = Register "Write-TcPouCode P$i [implementation]" }
 $cc = (Get-Reasons (Get-Entry))['code-changed']
-Check 'cap: (+2 earlier) and P3..P10' ($cc -like 'PLC code changed by (+2 earlier), Write-TcPouCode P3 *' -and $cc -like '*P10 `[implementation`]' -and $cc -notlike '*P1 *' -and $cc -notlike '*P2 *') $cc
+Check 'cap: (+2 earlier) and P3..P10' ($cc -like 'PLC code changed by (+2 earlier) | Write-TcPouCode P3 *' -and $cc -like '*P10 `[implementation`]' -and $cc -notlike '*P1 *' -and $cc -notlike '*P2 *') $cc
 $again = & $mod { param($t) Join-TcCodeChangedReason -Older $t -Newer $t } $cc
 Check 'join of the same text is stable' ($again -eq $cc) $again
 $null = Register 'Write-TcPouCode P5 [implementation]'
 $cc2 = (Get-Reasons (Get-Entry))['code-changed']
-Check 'a repeated change moves to the end, not listed twice' ($cc2 -like '*P10 `[implementation`], Write-TcPouCode P5 `[implementation`]' -and ([regex]::Matches($cc2, 'P5 ')).Count -eq 1) $cc2
+Check 'a repeated change moves to the end, not listed twice' ($cc2 -like '*P10 `[implementation`] | Write-TcPouCode P5 `[implementation`]' -and ([regex]::Matches($cc2, 'P5 ')).Count -eq 1) $cc2
 
 # --- Enter-TcPlcOnline refuses with code-changed in message and hint
 Reset-State
@@ -171,6 +171,82 @@ Reset-State
 $solution | Add-Member -Force -MemberType ScriptMethod -Name Create -Value { param($a, $b) throw 'create failed (mock)' }
 $r = New-TcProject -Name NewDemo2 -Path $stateRoot
 Check 'New-TcProject failure -> nothing recorded' ((-not $r.success) -and $null -eq (Get-Entry) -and -not (Test-Path -LiteralPath $stateFile)) ($r | ConvertTo-Json -Compress)
+
+Reset-State
+# failure AFTER Solution.Create (PR #71 review): the IDE holds the new solution, so the module's
+# path becomes unknown and the change is recorded under '<unknown>' (blocks every solution)
+$solution | Add-Member -Force -MemberType ScriptMethod -Name Create -Value { param($a, $b) }
+$solution | Add-Member -Force -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) throw 'template failed (mock)' }
+& $mod { $script:TcSolutionPath = 'C:\Old\Old.sln' }
+$r = New-TcProject -Name NewDemo3 -Path $stateRoot
+$json = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
+$solNow = & $mod { $script:TcSolutionPath }
+Check 'New-TcProject failure after Solution.Create -> path unknown, <unknown> recorded' ((-not $r.success) -and $null -eq $solNow -and $r.data.buildRequired -eq 'PLC code changed by New-TcProject NewDemo3 [failed after Solution.Create]' -and @($json.PSObject.Properties.Name) -contains '<unknown>') (($r | ConvertTo-Json -Compress) + ' ' + ($json | ConvertTo-Json -Compress -Depth 4))
+Set-Sln 'C:\Old\Old.sln'
+Check 'and it blocks the previous solution too' ((Get-Reasons (Get-Entry))['code-changed'] -like '*NewDemo3*') ''
+Reset-State
+
+# --- separator (PR #71 review): a name with ', ' is not split, '|' in a change is replaced
+Set-Sln $sln
+$null = Register 'Reset-TcSolution A, B.sln (project reloaded from disk)'
+$null = Register 'Write-TcPouCode X|Y [implementation]'
+$null = Register 'Reset-TcSolution A, B.sln (project reloaded from disk)'
+$cc = (Get-Reasons (Get-Entry))['code-changed']
+Check "', ' inside a name kept, '|' replaced, repeated change listed once" ($cc -eq 'PLC code changed by Write-TcPouCode X/Y [implementation] | Reset-TcSolution A, B.sln (project reloaded from disk)') $cc
+Reset-State
+
+# --- Register-TcCodeChange when Set-TcBuildRequired throws: '<unknown>' in memory, warning
+$origSet = & $mod { ${function:Set-TcBuildRequired} }
+& $mod { Set-Item -Path function:script:Set-TcBuildRequired -Value { throw 'state broken (mock)' } }
+$out = Register 'Add-TcPou FB_Z' ([PSCustomObject]@{ success = $true; data = [PSCustomObject]@{} })
+& $mod { param($f) Set-Item -Path function:script:Set-TcBuildRequired -Value $f } $origSet
+$mem = & $mod { $script:TcBuildRequiredLocal['<unknown>'] }
+Check 'Set-TcBuildRequired throws -> <unknown> memory entry + stateWarning' ($out.data.stateWarning -like "*kept in this process only as '<unknown>'*" -and $mem.reasons.'code-changed' -like '*Add-TcPou FB_Z' -and (Get-Reasons (Get-Entry))['code-changed'] -like '*FB_Z') ($out | ConvertTo-Json -Compress)
+Reset-State
+
+# --- Reset-TcSolution (PR #71 review): failures after XAE reloaded the project from disk record
+$global:DlgQueue = New-Object System.Collections.Queue
+$global:ResetMode = @{}
+$reloadDlg = @{ Title = 'TcXaeShell'; Text = 'The project file has been modified outside'; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 0; Buttons = @() }
+$otherDlg = @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() }
+$sol = [PSCustomObject]@{ Mock = $true }
+$sol | Add-Member -MemberType ScriptProperty -Name FullName -Value { if ($global:ResetMode.FullName) { $global:ResetMode.FullName } else { $global:ResetSln } }
+$sol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) if ($global:ResetMode.CloseThrows) { throw 'close failed (mock)' } }
+$sol | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) if ($global:ResetMode.OpenThrows) { throw 'open failed (mock)' } }
+$docs = [PSCustomObject]@{ Count = 1 }
+$docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) if ($global:ResetMode.CloseAllThrows) { throw 'closeall failed (mock)' } }
+$resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
+$global:ResetSln = $sln
+$origFns = & $mod { @{ Dlg = ${function:Get-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
+& $mod {
+    Set-Item -Path function:script:Get-TcIdeModalDialog -Value { param($ProcessId) if ($global:DlgQueue.Count -gt 0) { $global:DlgQueue.Dequeue() } else { $null } }
+    Set-Item -Path function:script:Close-TcReloadPrompt -Value { param($Dialog, $Answer, $TimeoutSec) @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock' } }
+    Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ message = 'no IDE (mock)'; code = 'IDE_NOT_FOUND' } } }
+}
+function Start-Reset {
+    param([object[]]$Dialogs, [hashtable]$Mode)
+    Reset-State
+    $global:DlgQueue.Clear(); foreach ($d in $Dialogs) { $global:DlgQueue.Enqueue($d) }
+    $global:ResetMode = $Mode
+    & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+    Reset-TcSolution -TimeoutSec 5
+}
+$r = Start-Reset -Dialogs @($reloadDlg, $otherDlg) -Mode @{}
+Check 'Reset: Yes answered, then another modal -> IDE_MODAL_DIALOG, recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.buildRequired -like '*Reset-TcSolution Demo.sln (project reloaded from disk, then modal dialog check failed)' -and (Get-Reasons (Get-Entry))['code-changed'] -like '*Demo.sln*') ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @($otherDlg) -Mode @{}
+Check 'Reset: modal without a reload -> nothing recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $null -eq $r.data.PSObject.Properties['buildRequired'] -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @() -Mode @{ FullName = 'C:\Other\Other.sln' }
+Check 'Reset: RESET_SOLUTION_MISMATCH without a reload -> nothing recorded' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @($reloadDlg) -Mode @{ CloseAllThrows = $true }
+Check 'Reset: Yes answered, reconnect failed, Documents.CloseAll fails -> recorded' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_CLOSE_FAILED' -and $r.data.answeredYes -eq $true -and $r.data.buildRequired -like '*then Documents.CloseAll failed)' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @() -Mode @{ CloseAllThrows = $true }
+Check 'Reset: Documents.CloseAll fails without a reload -> nothing recorded' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_CLOSE_FAILED' -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @() -Mode @{ OpenThrows = $true }
+Check 'Reset: Solution.Open fails -> PROJECT_OPEN_FAILED, recorded (half open)' ((-not $r.success) -and $r.error.code -eq 'PROJECT_OPEN_FAILED' -and $r.data.buildRequired -like '*Solution.Open failed, solution may be half open)' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+$r = Start-Reset -Dialogs @() -Mode @{}
+Check 'Reset: reopened, reconnect fails -> recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_NOT_FOUND' -and $r.data.buildRequired -like '*Demo.sln (solution reopened from disk)' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress -Depth 3)
+& $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
+Reset-State
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue

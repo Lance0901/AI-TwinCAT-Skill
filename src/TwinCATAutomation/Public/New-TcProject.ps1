@@ -10,8 +10,12 @@ function New-TcProject {
         BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
         (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
         never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
-        Build-TcProject. A failure records nothing: the module still points at the previous
-        solution, and an entry for it would block a solution this call did not change.
+        Build-TcProject. A failure after Solution.Create returned: the IDE now holds the new,
+        unsaved and never built solution (and $script:TcSysManager may already be its project)
+        while its .sln path is not known for sure, so $script:TcSolutionPath is set to $null and
+        code-changed is recorded under '<unknown>' (blocks every solution until a complete
+        Build-TcProject; data.buildRequired / data.stateWarning). A failure before or in
+        Solution.Create records nothing and leaves $script:TcSolutionPath unchanged.
     #>
     [CmdletBinding()]
     param(
@@ -26,6 +30,7 @@ function New-TcProject {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
 
+    $solutionCreated = $false   # #65: the IDE holds the new solution from here on
     try {
         $solutionPath = Join-Path $Path $Name
         if (-not (Test-Path $solutionPath)) {
@@ -35,6 +40,7 @@ function New-TcProject {
         $slnFile = Join-Path $solutionPath "$Name.sln"
         $solution = $script:TcDte.Solution
         $solution.Create($solutionPath, "$Name.sln")
+        $solutionCreated = $true
 
         # Add TwinCAT XAE project
         # TwinCAT project template GUID
@@ -64,6 +70,12 @@ function New-TcProject {
         Register-TcCodeChange -Result $ok -Change "New-TcProject $Name"
     }
     catch {
-        New-TcResult -Success $false -ErrorMessage "Failed to create project: $_" -ErrorCode 'PROJECT_CREATE_FAILED'
+        $res = New-TcResult -Success $false -ErrorMessage "Failed to create project: $_" -ErrorCode 'PROJECT_CREATE_FAILED'
+        if ($solutionCreated) {
+            # the module must not keep the previous .sln as key while the IDE holds another solution
+            $script:TcSolutionPath = $null
+            return Register-TcCodeChange -Result $res -Change "New-TcProject $Name [failed after Solution.Create]"
+        }
+        $res
     }
 }

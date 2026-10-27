@@ -46,6 +46,10 @@ function Write-TcPouCode {
         return New-TcNoSysManagerResult
     }
 
+    # #65: set right before a setter is called (the edit buffer may change even when it throws)
+    $writeStarted = $false
+    $updated = @()
+    $changeName = "Write-TcPouCode $PouName"
     try {
         $r = Resolve-TcPouPath -SysManager $sm -Name $PouName -PouPath $PouPath
         if (-not $r.Found) {
@@ -85,11 +89,6 @@ function Write-TcPouCode {
                 })
         }
 
-        $updated = @()
-        # #65: from here on the edit buffer may change (also when a setter fails half way)
-        $changeName = "Write-TcPouCode $PouName"
-        $writeStarted = $false
-
         if (-not [string]::IsNullOrWhiteSpace($Declaration)) {
             $writeStarted = $true
             Invoke-TcComRetry -OperationName 'Set DeclarationText' -ScriptBlock { $pouItem.DeclarationText = $Declaration } | Out-Null
@@ -116,7 +115,8 @@ function Write-TcPouCode {
         if ($writeStarted) {
             # conservative (#65): a setter that threw may still have changed the edit buffer
             $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_WRITE_FAILED' -MessagePrefix 'Failed to write POU code'
-            return Register-TcCodeChange -Result $res -Change "$changeName [write failed]"
+            # the parts that were written, then 'write failed' ([declaration+write failed])
+            return Register-TcCodeChange -Result $res -Change "$changeName [$(@($updated + 'write failed') -join '+')]"
         }
         if ($_.Exception.Message -like 'PLC_PROJECT_NOT_FOUND*') {
             return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND')
