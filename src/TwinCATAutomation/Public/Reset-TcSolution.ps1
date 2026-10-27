@@ -98,9 +98,9 @@ function Reset-TcSolution {
         IDE_CRASHED from the COM calls), and any Connect-TcIde error code when the
         reconnect fails (data.closed / data.reopened say how far it got).
         BUILD_REQUIRED (#65): once XAE may hold project files reloaded from disk the solution
-        ($path, the .sln this call reopens; after a Yes reload ALSO the solution the IDE had open
-        - the module's solution path at the start, or the one RESET_SOLUTION_MISMATCH read -
-        when that is another .sln) is recorded as 'code-changed' (Register-TcCodeChange;
+        ($path, the .sln this call reopens; after a Yes reload - success or failure - ALSO the
+        module's solution path at the start and the one RESET_SOLUTION_MISMATCH read, every
+        distinct one of them) is recorded as 'code-changed' (Register-TcCodeChange;
         data.buildRequired / data.stateWarning): success on either path; every failure after a
         project reload prompt was answered Yes (data.answeredYes: modal dialog, reload prompt
         handling, reconnect, solution check, Documents.CloseAll, Solution.Close, Solution.Open);
@@ -220,19 +220,29 @@ function Reset-TcSolution {
     # -Always for a failure that may have left the solution half open (Solution.Open).
     # The Yes reload happened in the solution the IDE had open, i.e. the module's
     # $script:TcSolutionPath at the start (Enable-TcConfig / Enter-TcPlcOnline check that key),
-    # which differs from $path when -SolutionPath names another .sln: both keys are recorded.
+    # or the solution the IDE reports (RESET_SOLUTION_MISMATCH). Which one XAE really reloaded is
+    # not known for sure, so after a Yes reload EVERY candidate is recorded: $path, the start
+    # solution and the reported one (empty ones dropped, one record per solution key).
     $leaf = [IO.Path]::GetFileName([string]$path)
     $startSolution = [string]$script:TcSolutionPath
+    function Register-TcResetChange {
+        param([object]$Result, [string]$Change, [string[]]$Solutions)
+        $seen = @{}
+        $out = $Result
+        foreach ($s in $Solutions) {
+            if ([string]::IsNullOrWhiteSpace($s)) { continue }
+            $k = ConvertTo-TcSolutionKey $s
+            if ($seen.ContainsKey($k)) { continue }
+            $seen[$k] = $true
+            $out = Register-TcCodeChange -Result $out -SolutionPath $s -Change $Change
+        }
+        $out
+    }
     function Complete-TcResetFailure {
         param([object]$Result, [string]$Step, [switch]$Always, [string]$ReloadedSolution)
         if ($progress.answeredYes) {
             $change = "Reset-TcSolution $leaf (project reloaded from disk, then $Step failed)"
-            $out = Register-TcCodeChange -Result $Result -SolutionPath $path -Change $change
-            $reloaded = if (-not [string]::IsNullOrWhiteSpace($ReloadedSolution)) { $ReloadedSolution } else { $startSolution }
-            if (-not [string]::IsNullOrWhiteSpace($reloaded) -and (ConvertTo-TcSolutionKey $reloaded) -ne (ConvertTo-TcSolutionKey $path)) {
-                $out = Register-TcCodeChange -Result $out -SolutionPath $reloaded -Change $change
-            }
-            return $out
+            return Register-TcResetChange -Result $Result -Change $change -Solutions @($path, $startSolution, $ReloadedSolution)
         }
         if ($Always) {
             return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leaf ($Step failed, solution may be half open)"
@@ -350,7 +360,7 @@ function Reset-TcSolution {
             }
             if ($null -eq $probeError) {
                 $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Extra ([ordered]@{ connectSec = $connectSec }) -Total $sw)
-                return Register-TcCodeChange -Result $ok -Change "Reset-TcSolution $([IO.Path]::GetFileName([string]$script:TcSolutionPath)) (project reloaded from disk)"
+                return Register-TcResetChange -Result $ok -Change "Reset-TcSolution $leaf (project reloaded from disk)" -Solutions @([string]$script:TcSolutionPath, $path, $startSolution)
             }
         }
         Write-Verbose "Reset-TcSolution: reconnect after the Yes reload failed ($probeError); doing the full close / reopen."

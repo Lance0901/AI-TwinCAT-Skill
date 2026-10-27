@@ -179,14 +179,29 @@ $solution | Add-Member -Force -MemberType ScriptMethod -Name Create -Value { par
 $solution | Add-Member -Force -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) throw 'template failed (mock)' }
 # #29 session record of this "IDE" (our own pid, alive) in a temp LOCALAPPDATA: it must be removed
 $savedLocal = $env:LOCALAPPDATA
-$env:LOCALAPPDATA = Join-Path $stateRoot 'localappdata'
-& $mod { param($p) $script:TcSolutionPath = 'C:\Old\Old.sln'; $script:TcIdeProcessId = $p; Save-TcIdeSolutionRecord -ProcessId $p -Solution 'C:\Old\Old.sln' } $PID
-$recBefore = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
-$r = New-TcProject -Name NewDemo3 -Path $stateRoot
-$recAfter = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
-$env:LOCALAPPDATA = $savedLocal
-& $mod { $script:TcIdeProcessId = $null }
-Check 'New-TcProject failure after Solution.Create -> #29 session record of the IDE removed' ($recBefore -eq 'C:\Old\Old.sln' -and $null -eq $recAfter) "before=$recBefore after=$recAfter"
+$helper = $null
+try {
+    $env:LOCALAPPDATA = Join-Path $stateRoot 'localappdata'
+    # a second live process whose record must survive (pid + start time of a running process)
+    $helper = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 120' -WindowStyle Hidden -PassThru
+    & $mod { param($p, $h) $script:TcSolutionPath = 'C:\Old\Old.sln'; $script:TcIdeProcessId = $p; Save-TcIdeSolutionRecord -ProcessId $h -Solution 'C:\Keep\Keep.sln'; Save-TcIdeSolutionRecord -ProcessId $p -Solution 'C:\Old\Old.sln' } $PID $helper.Id
+    $recBefore = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
+    $r = New-TcProject -Name NewDemo3 -Path $stateRoot
+    $recAfter = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $PID
+    $recOther = & $mod { param($p) Get-TcIdeSolutionRecord -ProcessId $p } $helper.Id
+    Check 'New-TcProject failure after Solution.Create -> #29 session record of the IDE removed, other live record kept' ($recBefore -eq 'C:\Old\Old.sln' -and $null -eq $recAfter -and $recOther -eq 'C:\Keep\Keep.sln') "before=$recBefore after=$recAfter other=$recOther"
+    # an unreadable record file is left exactly as it is
+    $recFile = & $mod { Get-TcIdeSolutionRecordPath }
+    Set-Content -LiteralPath $recFile -Value '{ not json' -Encoding ASCII
+    $rawBefore = Get-Content -Raw -LiteralPath $recFile
+    & $mod { param($p) Remove-TcIdeSolutionRecord -ProcessId $p } $PID
+    Check 'Remove-TcIdeSolutionRecord on a corrupt record file leaves it unchanged' ((Get-Content -Raw -LiteralPath $recFile) -eq $rawBefore) ''
+}
+finally {
+    $env:LOCALAPPDATA = $savedLocal
+    if ($null -ne $helper) { Stop-Process -Id $helper.Id -Force -ErrorAction SilentlyContinue }
+    & $mod { $script:TcIdeProcessId = $null }
+}
 $json = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json
 $solNow = & $mod { $script:TcSolutionPath }
 Check 'New-TcProject failure after Solution.Create -> path unknown, <unknown> recorded' ((-not $r.success) -and $null -eq $solNow -and $r.data.buildRequired -eq 'PLC code changed by New-TcProject NewDemo3 [failed after Solution.Create]' -and @($json.PSObject.Properties.Name) -contains '<unknown>') (($r | ConvertTo-Json -Compress) + ' ' + ($json | ConvertTo-Json -Compress -Depth 4))
@@ -272,6 +287,33 @@ Check 'Reset -SolutionPath other, Yes then modal -> both the open and the reques
 $r = Start-Reset -Dialogs @($reloadDlg) -Mode @{ FullName = $otherSln }
 $keys = Get-StateKeys
 Check 'Reset Yes, then RESET_SOLUTION_MISMATCH -> requested and open (.sln read back) recorded' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and $keys -contains $keySln -and $keys -contains $keyOther) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
+# PR #71 third review: three different solutions - module path A ($sln), -SolutionPath P
+# ($otherSln), IDE reports B: after a Yes reload all three are recorded
+$thirdSln = Join-Path $stateRoot 'Third\Third.sln'
+$null = New-Item -ItemType Directory -Path (Split-Path -Parent $thirdSln) -Force
+Set-Content -LiteralPath $thirdSln -Value '' -Encoding ASCII
+$keyThird = & $mod { param($p) ConvertTo-TcSolutionKey $p } $thirdSln
+Reset-State
+$global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg)
+$global:ResetMode = @{ FullName = $thirdSln }
+& $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+$r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
+$keys = Get-StateKeys
+Check 'Reset Yes, A / P / B all different, MISMATCH -> all three recorded' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_MISMATCH' -and $keys -contains $keySln -and $keys -contains $keyOther -and $keys -contains $keyThird -and $keys.Count -eq 3) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
+# Yes-only success with -SolutionPath P while the module had A: both recorded
+$okSm = [PSCustomObject]@{ Mock = $true }
+$okSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) [PSCustomObject]@{ Name = 'TIPC' } }
+$global:OkSm = $okSm
+$connOrig = & $mod { ${function:Connect-TcIde} }
+& $mod { Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } } }
+Reset-State
+$global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg)
+$global:ResetMode = @{ FullName = $otherSln }
+& $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+$r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
+$keys = Get-StateKeys
+Check 'Reset Yes-only success with -SolutionPath P (module had A) -> both recorded' ($r.success -and $r.data.answeredYes -eq $true -and $keys -contains $keySln -and $keys -contains $keyOther -and $keys.Count -eq 2) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
+& $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig
 & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
 Reset-State
 
