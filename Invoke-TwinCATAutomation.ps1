@@ -9,7 +9,8 @@
 .PARAMETER Params
     JSON string of parameters to pass to the operation.
 .EXAMPLE
-    pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"name":"MyProject","path":"C:\\Projects"}'
+    pwsh Invoke-TwinCATAutomation.ps1 --operation ConnectIde --params '{"SolutionPath":"C:\\Projects\\MyProject\\MyProject.sln"}'
+    (NewProject only works on an IDE with no solution open, otherwise SOLUTION_ALREADY_OPEN, #70.)
 #>
 param(
     [Parameter(Mandatory = $false)]

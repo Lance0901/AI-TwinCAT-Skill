@@ -559,8 +559,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### SOLUTION_ALREADY_OPEN
 
-- **現象**(#70):`New-TcProject` 發現 IDE 已開著 solution(`DTE.Solution.IsOpen` 或 `FullName` 非空;讀不到也當成開著,fail-closed),直接拒絕,沒有呼叫 `Solution.Create`。`data.openSolution` 是目前的 solution(讀不到時為 null)。
-- **為什麼**:`Solution.Create` 會關掉目前的 solution,未存的改動會丟掉(#70 記錄的風險,未實測;fail-closed 就是為了不去試);`New-TcProject` 的 template 路徑本身也還沒修(#70),所以 MCP 暫時不提供 `NewProject` tool,只保留 cmdlet。
+- **現象**(#70):`New-TcProject` 發現 IDE 已開著 solution(`DTE.Solution.IsOpen` 或 `FullName` 非空;讀不到也當成開著,fail-closed;IDE 回 RPC busy 時改回 `IDE_BUSY`),直接拒絕,沒有呼叫 `Solution.Create`。`data.openSolution` 是目前的 solution(讀不到時為 null)。
+- **為什麼**:`Solution.Create` 會不經提示關掉目前的 solution,未存的改動會丟掉(實測 2026-10-28,見 #70:TwinCAT 3.1.4026.22 XAE in VS2022 與 4024 32-bit XAE Shell,registered tcauto,兩者呼叫後 `GetIdeInfo` 的 solution 都變成空字串);`New-TcProject` 的 template 路徑本身也還沒修(#70),所以 MCP 暫時不提供 `NewProject` tool,只保留 cmdlet。
 - **下一步**:在 #70 修好之前,建議在 XAE 手動建立新專案,再 `Connect-TcIde -SolutionPath <新 .sln>` 接上。一定要用 `New-TcProject` 時,先在 XAE 存好並關掉目前的 solution(IDE 不開任何 solution)再呼叫。
 
 ### LOGOUT_FAILED

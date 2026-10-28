@@ -201,6 +201,29 @@ foreach ($v in $vals.items) {
     assert.ok(out.every((o) => o.same === true), 'values must pass through untouched');
   });
 
+  test('[object] parameters keep a JSON array an array, also with one or zero elements (Fields / Variables)', () => {
+    const script = `
+$ErrorActionPreference = 'Stop'
+${conversionSection()}
+$p = ConvertFrom-Json -InputObject '{"one":[{"name":"bReady","type":"BOOL"}],"two":[{"name":"a","type":"INT"},{"name":"b","type":"INT"}],"none":[]}'
+$res = @()
+foreach ($k in 'one', 'two', 'none') {
+  $splat = @{}
+  $splat['Fields'] = ConvertTo-BridgeValue -TargetType ([object]) -Value $p.$k -Name 'Fields'
+  $x = $splat['Fields']
+  $res += [PSCustomObject]@{ key = $k; isArray = ($x -is [System.Collections.IList]); count = @($x).Count; first = $(if (@($x).Count -gt 0) { @($x)[0].name } else { '' }) }
+}
+[Console]::Out.Write(($res | ConvertTo-Json -Compress))
+[Console]::Out.Write("\`n")
+`;
+    const out = runPs(script);
+    assert.deepEqual(out, [
+      { key: 'one', isArray: true, count: 1, first: 'bReady' },
+      { key: 'two', isArray: true, count: 2, first: 'a' },
+      { key: 'none', isArray: true, count: 0, first: '' }
+    ]);
+  });
+
   test('numeric parameters still reject numeric strings (conversion belongs to the cmdlet, not the bridge)', () => {
     const script = `
 $ErrorActionPreference = 'Stop'

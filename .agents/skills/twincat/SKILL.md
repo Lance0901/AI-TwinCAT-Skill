@@ -56,12 +56,12 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ### Project Management
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `New-TcProject` | `-Name <name> [-Path <dir>]` | Create new TwinCAT project with PLC and MAIN |
+| `New-TcProject` | `-Name <name> [-Path <dir>]` | Create new TwinCAT project with PLC and MAIN. Only on an IDE with no solution open, otherwise `SOLUTION_ALREADY_OPEN` and nothing is created; not offered on MCP (#70) |
 | `Open-TcProject` | `-Path <sln>` | Open existing .sln file |
 | `Get-TcProjectTree` | | Get full project tree as JSON |
 | `Add-TcPou` | `-Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>]` | Add POU |
-| `Add-TcGvl` | `-Name <n> [-Variables @{var=type}]` | Add Global Variable List |
-| `Add-TcDut` | `-Name <n> -DutType <Struct\|Enum\|Alias\|Union>` | Add Data Unit Type |
+| `Add-TcGvl` | `-Name <n> [-Variables @(@{name='nA';type='INT';init='3'}, @{name='bB';type='BOOL'})]` (or `[ordered]@{nA='INT'; bB='BOOL'}`; a plain `@{}` with more than one member is refused, #47) | Add Global Variable List, members in input order |
+| `Add-TcDut` | `-Name <n> -DutType <Struct\|Enum\|Alias\|Union> [-Fields <same forms as -Variables; Enum: name / value>]` | Add Data Unit Type, members in input order |
 | `Add-TcLibrary` | `-Name <lib>` | Add library reference |
 
 ### PLC Code

@@ -68,9 +68,18 @@
 - **繞過**:冷啟動後第一次拿到 `null` 時再呼叫一次 `GetIdeModalDialog`;仍有疑慮就看 XAE 視窗。
 - **Issue**:[#42](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/42)
 
+## Activate / Runtime
+
+### UmRT 在 Activate(set-config)階段偶發 crash(#21)
+
+- **現象**:`EnableConfig` 進行到 Activate 的 set-config 階段時,本機 UmRT 的 `TcSystemServiceUm` 偶發 crash(實測 2026-10-28 18:19,`TcSystemServiceUm` 3.1.0.2649,faulting module `TcOsSys.dll`,exception code 0xc0000005)。
+- **影響**:模組等不到目標狀態,回 `SYSTEM_STATE_TIMEOUT`,**不會假成功**;但這次 Activate 沒有完成,PLC 不在 Run。
+- **繞過**:照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`,再重跑 `EnableConfig Force=true`。
+- **Issue**:[#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21)
+
 ## 真機驗證範圍(實測 2026-10-28)
 
-主流程 `ConnectIde` → `SetTarget` → `BuildProject` → `EnableConfig` → `ReadVariable` / `WriteVariable`,加上 `WritePouCode`、`AddPou` / `AddDut` / `AddGvl`、`ResetSolution`,在 **4024 XAE(32-bit XAE Shell)、4026 XAE(64-bit XAE Shell)、VS2022** 三個 IDE 搭配**本機 UmRT** 用 registered tcauto MCP 跑過(環境與步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md))。其他 tool 近期沒有在真機上跑過,視為 **beta / 未驗證**:能用,但結果請多一層確認,有問題請開 issue。
+下表「已實測」欄的 20 個 tool 在 2026-10-28 用 registered tcauto MCP 對**本機 UmRT** 實際跑過:主流程 `ConnectIde` → `SetTarget` → `BuildProject` → `EnableConfig` → `ConnectAds` → `ReadVariable` / `WriteVariable` / `QuickRead`,加上 `GetPouCode` / `WritePouCode`、`AddPou` / `AddDut` / `AddGvl`、`ResetSolution`、`GetBuildErrors`、`GetStatus`、`PlcLogin`、`GetProjectTree`、`GetSymbols`、`DisconnectIde`,IDE 為 **4024 XAE(32-bit XAE Shell)、4026 XAE(64-bit XAE Shell)、VS2022**(環境與步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md))。其他 tool 近期沒有在真機上跑過,視為 **beta / 未驗證**:能用,但結果請多一層確認,有問題請開 issue。
 
 下表依 `mcp-server/tools.json`(36 個 cmdlet tool)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)列出全部 MCP tool:
 
@@ -79,28 +88,22 @@
 | `ConnectIde` | `AddLibrary`(已知失敗,#80) |
 | `SetTarget` | `CleanProject` |
 | `BuildProject` | `DisconnectAds` |
-| `EnableConfig` | `GetBuildErrors` |
-| `ConnectAds` | `GetIdeInfo` |
-| `ReadVariable` | `GetIoTree` |
-| `WriteVariable` | `GetPlcState` |
-| `WritePouCode` | `GetProjectTree` |
-| `GetPouCode` | `GetSymbols` |
-| `AddPou` | `GetSystemState` |
-| `AddDut` | `IoScan` |
-| `AddGvl` | `NewTestCase` |
-| `ResetSolution` | `OpenProject` |
-| `DisconnectIde` | `PlcLogin` |
-| | `PlcLogout` |
-| | `RunTest` |
-| | `RunTestCycle` |
-| | `SendPlcProgram` |
-| | `SetPlcState` |
-| | `SetSystemState` |
-| | `SetVariableLink` |
-| | `WatchVariable` |
-| | `RunLifecycle`(複合) |
-| | `QuickRead`(複合) |
-| | `GetStatus`(複合) |
-| | `GetIdeModalDialog`(複合) |
+| `EnableConfig` | `GetIdeInfo` |
+| `ConnectAds` | `GetIoTree` |
+| `ReadVariable` | `GetPlcState` |
+| `WriteVariable` | `GetSystemState` |
+| `QuickRead`(複合) | `IoScan` |
+| `GetPouCode` | `NewTestCase` |
+| `WritePouCode` | `OpenProject` |
+| `AddPou` | `PlcLogout` |
+| `AddDut` | `RunTest` |
+| `AddGvl` | `RunTestCycle` |
+| `ResetSolution` | `SendPlcProgram` |
+| `DisconnectIde` | `SetPlcState` |
+| `GetBuildErrors` | `SetSystemState` |
+| `GetStatus`(複合) | `SetVariableLink` |
+| `PlcLogin` | `WatchVariable` |
+| `GetProjectTree` | `RunLifecycle`(複合) |
+| `GetSymbols` | `GetIdeModalDialog`(複合) |
 
-`NewProject` 不在 MCP 上(見上方 #70)。`ConnectAds`、`GetPouCode`、`DisconnectIde` 是主流程與 Add* 驗證時一起跑到的(`ConnectAds` 見 agent-brief 的 4024 / 4026 紀錄,`GetPouCode` 用來讀回 Add* 的結果,`DisconnectIde Quit=true` 用來關閉測試啟動的 IDE)。
+`NewProject` 不在 MCP 上(見上方 #70)。

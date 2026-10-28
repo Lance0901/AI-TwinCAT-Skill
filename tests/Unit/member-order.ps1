@@ -41,6 +41,41 @@ foreach ($case in @(
     Check "invalid: $($case[0])" ($null -ne $r.Error) "$($r.Error)"
 }
 
+# --- single map: one entry vs name = type map (a one-element MCP array that arrived unrolled
+#     used to become "name : bReady; type : BOOL;" with success)
+$r = & $mod { ConvertTo-TcMemberList -InputObject ('{"name":"bReady","type":"BOOL"}' | ConvertFrom-Json) -Kind Var -ParameterName Fields }
+Check 'single PSCustomObject entry -> one member' ($null -eq $r.Error -and (& $names $r) -eq 'bReady' -and $r.Members[0].Type -eq 'BOOL') ($r | ConvertTo-Json -Compress -Depth 4)
+$r = & $mod { ConvertTo-TcMemberList -InputObject @{ name = 'nCnt'; type = 'INT'; init = '3' } -Kind Var -ParameterName Variables }
+Check 'single hashtable entry -> one member' ($null -eq $r.Error -and (& $names $r) -eq 'nCnt' -and $r.Members[0].Init -eq '3') ($r | ConvertTo-Json -Compress -Depth 4)
+$r = & $mod { ConvertTo-TcMemberList -InputObject ('{"Name":"eOnly","Value":0}' | ConvertFrom-Json) -Kind Enum -ParameterName Fields }
+Check 'single enum entry (keys case-insensitive) -> one member' ($null -eq $r.Error -and (& $names $r) -eq 'eOnly' -and $r.Members[0].Value -eq '0') ($r | ConvertTo-Json -Compress -Depth 4)
+$r = & $mod { ConvertTo-TcMemberList -InputObject ([ordered]@{ name = 'a'; type = 'INT' }) -Kind Var -ParameterName Fields }
+Check '[ordered] entry -> one member' ($null -eq $r.Error -and (& $names $r) -eq 'a' -and $r.Members[0].Type -eq 'INT') ($r | ConvertTo-Json -Compress -Depth 4)
+foreach ($case in @(
+        @('reserved key + other key', ('{"name":"a","typ":"INT"}' | ConvertFrom-Json), 'Var'),
+        @('type without name', ('{"type":"INT","nX":"BOOL"}' | ConvertFrom-Json), 'Var'),
+        @('name=type map with member "value"', @{ value = 'INT' }, 'Var'),
+        @('enum entry with type key', ('{"name":"eA","type":"INT"}' | ConvertFrom-Json), 'Enum'))) {
+    $r = & $mod { param($x, $k) ConvertTo-TcMemberList -InputObject $x -Kind $k -ParameterName Fields } $case[1] $case[2]
+    Check "ambiguous single map -> error: $($case[0])" ($null -ne $r.Error -and $r.Members.Count -eq 0) "$($r.Error)"
+}
+
+# --- string literals: ';' / '//' inside a string are allowed, outside refused
+$r = & $mod { ConvertTo-TcMemberList -InputObject @(@{ name = 'sUrl'; type = 'STRING'; init = "'http://a;b'" }, @{ name = 'wsT'; type = 'WSTRING'; init = '"x;(*y"' }, @{ name = 'sQ'; type = 'STRING'; init = "'it`$'s;'" }) -Kind Var -ParameterName Variables }
+Check 'init ; inside string literal accepted' ($null -eq $r.Error -and (& $names $r) -eq 'sUrl,wsT,sQ') "$($r.Error)"
+foreach ($case in @(
+        @('init ; outside string', @{ name = 'a'; type = 'STRING'; init = "'x'; b : INT" }),
+        @('init unterminated string with ;', @{ name = 'a'; type = 'STRING'; init = "'x;" }),
+        @('init // outside string', @{ name = 'a'; type = 'INT'; init = '3 // c' }),
+        @('type with //', @{ name = 'a'; type = 'INT // c' }),
+        @('type with (*', @{ name = 'a'; type = 'INT (* c *)' }))) {
+    $in = @(, $case[1])
+    $r = & $mod { param($x) ConvertTo-TcMemberList -InputObject $x -Kind Var -ParameterName Fields } $in
+    Check "invalid: $($case[0])" ($null -ne $r.Error) "$($r.Error)"
+}
+$order = & $mod { Get-TcDeclarationMemberOrder -Declaration "VAR_GLOBAL`n    sUrl : STRING := 'http://a;b'; // it's`n    (* don't *) nX : INT;`n    wsT : WSTRING := `"a;{b}(*`";`n    sQ : STRING := 'it`$'s;';`nEND_VAR" -Kind Var }
+Check 'parse masks string literals before comments' (($order -join ',') -eq 'sUrl,nX,wsT,sQ') ($order -join ',')
+
 # --- Format / parse round trip
 $m = & $mod { (ConvertTo-TcMemberList -InputObject @(@{ name = 'zLast'; type = 'BOOL'; init = 'TRUE'; comment = 'last' }, @{ name = 'aFirst'; type = 'STRING(20)' }) -Kind Var -ParameterName F).Members }
 $lines = & $mod { param($x) Format-TcMemberDeclaration -Members $x -Kind Var } @($m)
@@ -111,6 +146,15 @@ $bad | Add-Member -MemberType ScriptMethod -Name Create -Value { param($a, $b) $
 & $mod { param($s) $script:TcDte = [PSCustomObject]@{ Solution = $s } } $bad
 $r = New-TcProject -Name NewOne -Path $env:TEMP
 Check 'New-TcProject IsOpen unreadable solution state -> fail-closed' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_ALREADY_OPEN' -and -not $global:CreateCalled) ($r | ConvertTo-Json -Compress -Depth 4)
+# RPC busy: a throwing PowerShell / .NET property getter reads as $null here (no exception), so the
+# busy case is simulated at Invoke-TcComRetry, which throws "IDE_BUSY: ..." once its retries ran out.
+& $mod { param($s) $script:TcDte = [PSCustomObject]@{ Solution = $s }; $script:OrigComRetry = ${function:Invoke-TcComRetry}
+    ${function:script:Invoke-TcComRetry} = { param([int]$MaxRetries, [string]$OperationName, [scriptblock]$ScriptBlock)
+        if ($OperationName -eq 'Solution.FullName') { throw "IDE_BUSY: $OperationName rejected by the IDE (RPC_E_CALL_REJECTED 0x80010001)" }
+        & $ScriptBlock } } $sol
+$r = New-TcProject -Name NewOne -Path $env:TEMP
+& $mod { ${function:script:Invoke-TcComRetry} = $script:OrigComRetry }
+Check 'New-TcProject RPC busy -> IDE_BUSY (not SOLUTION_ALREADY_OPEN), no Solution.Create' ((-not $r.success) -and $r.error.code -eq 'IDE_BUSY' -and $r.error.hint -and $null -eq $r.data.openSolution -and -not $global:CreateCalled) ($r | ConvertTo-Json -Compress -Depth 4)
 & $mod { $script:TcDte = [PSCustomObject]@{ Solution = $null } }
 $r = New-TcProject -Name NewOne -Path $env:TEMP
 Check 'New-TcProject without Solution object -> fail-closed' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_ALREADY_OPEN') ($r | ConvertTo-Json -Compress -Depth 4)

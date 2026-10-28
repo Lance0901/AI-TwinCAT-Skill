@@ -8,10 +8,11 @@ function New-TcProject {
         Directory to create the project in. Defaults to current directory.
     .NOTES
         Fail-closed (#70): when the IDE already has a solution open (DTE Solution.IsOpen, or a
-        non-empty Solution.FullName; a read that fails counts as open) the call returns
-        SOLUTION_ALREADY_OPEN (data.openSolution) and Solution.Create is never called:
-        Solution.Create closes the open solution and its unsaved changes would be lost (risk
-        recorded in #70, not measured). The template path of AddFromTemplate is not fixed yet
+        non-empty Solution.FullName; a read that fails counts as open, an RPC-busy IDE gives
+        IDE_BUSY) the call returns SOLUTION_ALREADY_OPEN (data.openSolution) and
+        Solution.Create is never called: Solution.Create closes the open solution without a
+        warning, its unsaved changes are lost (measured 2026-10-28, #70: TwinCAT 3.1.4026.22
+        XAE in VS2022 and 4024 32-bit XAE Shell, registered tcauto). The template path of AddFromTemplate is not fixed yet
         (#70), so the MCP server does not offer NewProject for now; the cmdlet stays.
         BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
         (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
@@ -43,14 +44,22 @@ function New-TcProject {
     $openSolution = $null
     $isOpen = $true
     try {
-        $sol = $script:TcDte.Solution
+        # Invoke-TcComRetry: an IDE that rejects the call (RPC busy) is IDE_BUSY, not an open solution
+        $sol = Invoke-TcComRetry -MaxRetries 3 -OperationName 'DTE.Solution' -ScriptBlock { Write-Output -NoEnumerate $script:TcDte.Solution }
         if ($null -ne $sol) {
-            $openSolution = [string]$sol.FullName
-            $rawIsOpen = $sol.IsOpen
+            $openSolution = [string](Invoke-TcComRetry -MaxRetries 3 -OperationName 'Solution.FullName' -ScriptBlock { [string]$sol.FullName })
+            $rawIsOpen = Invoke-TcComRetry -MaxRetries 3 -OperationName 'Solution.IsOpen' -ScriptBlock { $sol.IsOpen }
             $isOpen = (-not ($rawIsOpen -is [bool] -and $rawIsOpen -eq $false)) -or -not [string]::IsNullOrWhiteSpace($openSolution)
         }
     }
     catch {
+        $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
+        if ($null -ne $mapped -and $mapped.Code -match '^IDE_(BUSY|CRASHED|TIMEOUT|MODAL_DIALOG)$') {
+            # nothing was created; the caller retries once the IDE answers
+            return New-TcResult -Success $false -ErrorCode $mapped.Code -Hint $mapped.Hint `
+                -ErrorMessage "New-TcProject could not read whether a solution is open: $($mapped.Message)" `
+                -Data ([PSCustomObject]@{ openSolution = $null; created = $false })
+        }
         $isOpen = $true   # fail-closed: unknown counts as open
         $openSolution = $null
     }

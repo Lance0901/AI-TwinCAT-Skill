@@ -22,7 +22,7 @@ actions:
         description: COM ProgID (default TcXaeShell.DTE.17.0)
 
   - name: NewProject
-    description: Create new TwinCAT project
+    description: "Create new TwinCAT project. #70: only on an IDE with no solution open (otherwise SOLUTION_ALREADY_OPEN, nothing created); not offered on the MCP server"
     parameters:
       Name:
         type: string

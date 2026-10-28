@@ -9,12 +9,17 @@ function ConvertTo-TcMemberList {
               Var  (Struct / Union / GVL): name, type, init (optional), comment (optional)
               Enum                       : name, value (optional), comment (optional)
             (this is the MCP format: a JSON array keeps its order through the bridge)
+          * a single entry object (hashtable / PSCustomObject with a 'name' key and only the
+            keys above): one member
           * an [ordered]@{} (OrderedDictionary) or a single PSCustomObject: name = type
             (Enum: name = value); both keep their insertion order
           * a plain [hashtable] with at most one member (order cannot matter)
         A plain [hashtable] with more than one member is refused: its enumeration order is the
         hash order, not the input order (#47: STRUCT / GVL / ENUM members came out reordered
-        while the call returned success). Nothing is guessed.
+        while the call returned success). A single map that is neither a clean entry nor a
+        name = type map (a reserved key name / type / init / value / comment next to other keys)
+        is refused as ambiguous: a one-element MCP array that reached here unrolled produced
+        "name : bReady; type : BOOL;" with success. Nothing is guessed.
         Returns @{ Members = List[object] of [PSCustomObject]@{ Name; Type; Init; Value; Comment };
         Error = $null or the INVALID_PARAMS message }.
     #>
@@ -49,18 +54,46 @@ function ConvertTo-TcMemberList {
         else { $entries.Add([PSCustomObject]@{ Name = $n; Type = $null; Init = $null; Value = $v; Comment = $null }) }
     }
 
-    if ($InputObject -is [System.Collections.Specialized.OrderedDictionary]) {
-        foreach ($k in $InputObject.Keys) { & $addPair ([string]$k) $InputObject[$k] }
-    }
-    elseif ($InputObject -is [System.Collections.IDictionary]) {
-        if ($InputObject.Count -gt 1) {
-            $result.Error = "-$ParameterName is a hashtable with $($InputObject.Count) members: a hashtable does not keep the input order, so the declaration order would be the hash order (#47). Pass an array ($example) or an [ordered]@{} instead."
-            return $result
-        }
-        foreach ($k in $InputObject.Keys) { & $addPair ([string]$k) $InputObject[$k] }
+    # A single map (not in an array): one entry object, or a name = type (Enum: name = value) map.
+    $reservedKeys = @('name', 'type', 'init', 'value', 'comment')
+    $mapPairs = $null
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        $mapPairs = [System.Collections.Generic.List[object]]::new()
+        foreach ($k in $InputObject.Keys) { $mapPairs.Add(@([string]$k, $InputObject[$k])) }
     }
     elseif ($InputObject -is [System.Management.Automation.PSCustomObject]) {
-        foreach ($p in $InputObject.PSObject.Properties) { & $addPair $p.Name $p.Value }
+        $mapPairs = [System.Collections.Generic.List[object]]::new()
+        foreach ($p in $InputObject.PSObject.Properties) { $mapPairs.Add(@($p.Name, $p.Value)) }
+    }
+    if ($null -ne $mapPairs) {
+        $lowerKeys = @(foreach ($pair in $mapPairs) { ([string]$pair[0]).ToLowerInvariant() })
+        $unknown = @($lowerKeys | Where-Object { $allowedKeys -notcontains $_ })
+        $reserved = @($lowerKeys | Where-Object { $reservedKeys -contains $_ })
+        if (($lowerKeys -contains 'name') -and $unknown.Count -eq 0) {
+            # one entry, e.g. @{ name = 'bReady'; type = 'BOOL' }
+            $map = @{}
+            foreach ($pair in $mapPairs) { $map[([string]$pair[0]).ToLowerInvariant()] = $pair[1] }
+            $entries.Add([PSCustomObject]@{
+                Name    = $map['name']
+                Type    = $map['type']
+                Init    = $map['init']
+                Value   = $map['value']
+                Comment = $map['comment']
+            })
+        }
+        elseif ($reserved.Count -gt 0) {
+            $second = if ($Kind -eq 'Var') { 'type' } else { 'value' }
+            $result.Error = "-$ParameterName is a single object with the key(s) '$($reserved -join "', '")': it is neither one entry (keys $($allowedKeys -join ', '); 'name' required) nor a name = $second map (whose member names cannot be $($reservedKeys -join ' / ')). Pass an array of entries instead, e.g. $example."
+            return $result
+        }
+        elseif (($InputObject -is [System.Collections.IDictionary]) -and
+            -not ($InputObject -is [System.Collections.Specialized.OrderedDictionary]) -and $mapPairs.Count -gt 1) {
+            $result.Error = "-$ParameterName is a hashtable with $($mapPairs.Count) members: a hashtable does not keep the input order, so the declaration order would be the hash order (#47). Pass an array ($example) or an [ordered]@{} instead."
+            return $result
+        }
+        else {
+            foreach ($pair in $mapPairs) { & $addPair ([string]$pair[0]) $pair[1] }
+        }
     }
     elseif (($InputObject -is [System.Collections.IList]) -and -not ($InputObject -is [string])) {
         $i = 0
@@ -116,14 +149,16 @@ function ConvertTo-TcMemberList {
         $type = $null; $init = $null; $value = $null; $comment = $null
         if ($Kind -eq 'Var') {
             $type = if ($null -eq $e.Type) { '' } else { ([string]$e.Type).Trim() }
-            if ($type -eq '' -or $type -match '[;\r\n]') {
-                $result.Error = "$label ('$name') needs a type without ';' or line breaks, e.g. INT or STRING(20)."
+            if ($type -eq '' -or $type -match '[;\r\n]' -or $type.Contains('//') -or $type.Contains('(*')) {
+                $result.Error = "$label ('$name') needs a type without ';', '//', '(*' or line breaks, e.g. INT or STRING(20)."
                 return $result
             }
             if ($null -ne $e.Init -and ([string]$e.Init).Trim() -ne '') {
                 $init = ([string]$e.Init).Trim()
-                if ($init -match '[;\r\n]') {
-                    $result.Error = "$label ('$name') init must not contain ';' or line breaks."
+                # ';' and comment marks are fine inside a string literal (STRING := 'abc;')
+                $initCode = Hide-TcStringLiteral -Text $init
+                if ($init -match '[\r\n]' -or $initCode.Contains(';') -or $initCode.Contains('//') -or $initCode.Contains('(*')) {
+                    $result.Error = "$label ('$name') init must not contain line breaks, or ';', '//', '(*' outside a string literal."
                     return $result
                 }
             }
@@ -148,6 +183,22 @@ function ConvertTo-TcMemberList {
         $i++
     }
     return $result
+}
+
+$script:TcStringLiteralPattern = "'(?:\$[^\r\n]|[^'`$\r\n])*'|`"(?:\$[^\r\n]|[^`"`$\r\n])*`""
+
+function Hide-TcStringLiteral {
+    <#
+    .SYNOPSIS
+        Replaces every IEC string literal ('...' STRING, "..." WSTRING; '$' escapes such as $'
+        stay inside) with an empty literal of the same quote, so that ';' and comment marks
+        inside a string are not taken for code. An unterminated quote is left as it is.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    return [regex]::Replace($Text, $script:TcStringLiteralPattern, {
+            param($m) if ($m.Value[0] -eq [char]39) { "''" } else { '""' } })
 }
 
 function Format-TcMemberDeclaration {
@@ -192,7 +243,7 @@ function Get-TcDeclarationMemberOrder {
     .SYNOPSIS
         Parses the member names of a DUT / GVL declaration in declaration order (#47 readback).
     .DESCRIPTION
-        Comments ((* *), //) and pragmas ({ }) are removed first.
+        Comments ((* *), //) and pragmas ({ }) are removed and string literals masked first.
         Var : the body between STRUCT / UNION / VAR_GLOBAL and END_STRUCT / END_UNION / END_VAR,
               split at ';'; each statement contributes the names before its ':'
               ("a, b : INT" gives a, b).
@@ -213,9 +264,15 @@ function Get-TcDeclarationMemberOrder {
     $names = [System.Collections.Generic.List[string]]::new()
     if ([string]::IsNullOrEmpty($Declaration)) { return , $names.ToArray() }
 
-    $text = [regex]::Replace($Declaration, '\(\*.*?\*\)', ' ', 'Singleline')
-    $text = [regex]::Replace($text, '//[^\r\n]*', ' ')
-    $text = [regex]::Replace($text, '\{[^}]*\}', ' ', 'Singleline')
+    # One left-to-right scan, first match wins at each position: a string literal
+    # ('http://a;b') is masked to '' before its '//' / ';' could count, and a quote inside a
+    # comment does not start a string. Comment / pragma -> ' ', string -> empty literal.
+    $text = [regex]::Replace($Declaration,
+        ('\(\*.*?\*\)|//[^\r\n]*|\{[^}]*\}|' + $script:TcStringLiteralPattern), {
+            param($m)
+            $c = $m.Value[0]
+            if ($c -eq [char]39) { "''" } elseif ($c -eq [char]34) { '""' } else { ' ' }
+        }, 'Singleline')
 
     if ($Kind -eq 'Var') {
         $m = [regex]::Match($text, '(?is)\b(?:STRUCT|UNION|VAR_GLOBAL(?:[ \t]+(?:CONSTANT|PERSISTENT|RETAIN))*)\b(?<body>.*?)\bEND_(?:STRUCT|UNION|VAR)\b')

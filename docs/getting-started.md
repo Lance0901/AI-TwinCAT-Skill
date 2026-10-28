@@ -35,7 +35,9 @@ $result | ConvertTo-Json
 ## Create Your First Project
 
 ```powershell
-# Create project
+# Create project (#70: only on an IDE with no solution open, otherwise SOLUTION_ALREADY_OPEN
+# and nothing is created; not offered on the MCP server). Alternative: create the project in
+# XAE, then Connect-TcIde -SolutionPath "C:\TcProjects\TestProject\TestProject.sln"
 New-TcProject -Name "TestProject" -Path "C:\TcProjects"
 
 # Add a Function Block
@@ -86,5 +88,5 @@ Invoke-TcTestCycle -TestCases @($test)
 ```bash
 pwsh Invoke-TwinCATAutomation.ps1 --operation ListOperations
 pwsh Invoke-TwinCATAutomation.ps1 --operation ConnectIde
-pwsh Invoke-TwinCATAutomation.ps1 --operation NewProject --params '{"Name":"MyProject"}'
+pwsh Invoke-TwinCATAutomation.ps1 --operation BuildProject
 ```
