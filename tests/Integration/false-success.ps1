@@ -6,7 +6,7 @@
     [string]$FwGuid = 'B7598CF7-8B30-4C49-8EFB-69ED4671CC91',
     [Parameter(Mandatory)][string]$LogPath,
     [int]$DeadlineMin = 45,
-    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).  Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
     [switch]$AllowUnresolvedLibrary
 )
 # Integration: "no false success" scenarios for #28 / #32 against a real runtime (local UmRT).

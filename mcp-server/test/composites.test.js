@@ -71,12 +71,10 @@ describe('RunLifecycle TargetAmsNetId', () => {
     assert.equal(body.data.steps[3].result.data.params.Platform, undefined);
   });
 
-  test('AllowUnresolvedLibrary is passed to BuildProject and EnableConfig only when true (#45)', async () => {
-    const on = parse(await client.callTool({ name: 'RunLifecycle', arguments: { AllowUnresolvedLibrary: true } }));
-    assert.equal(on.success, true);
-    const byName = Object.fromEntries(on.data.steps.map((s) => [s.name, s]));
-    assert.equal(byName.BuildProject.result.data.params.AllowUnresolvedLibrary, true);
-    assert.equal(byName.EnableConfig.result.data.params.AllowUnresolvedLibrary, true);
+  test('RunLifecycle has no AllowUnresolvedLibrary and never passes it on (#61)', async () => {
+    const tools = await client.listTools();
+    const rl = tools.tools.find((t) => t.name === 'RunLifecycle');
+    assert.equal(rl.inputSchema.properties.AllowUnresolvedLibrary, undefined);
     const off = parse(await client.callTool({ name: 'RunLifecycle', arguments: {} }));
     const offBy = Object.fromEntries(off.data.steps.map((s) => [s.name, s]));
     assert.equal(offBy.BuildProject.result.data.params.AllowUnresolvedLibrary, undefined);

@@ -140,6 +140,9 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.match(body.data.libraryWarning, /may not have been compiled/);
     assert.equal(body.data.errors, 0);
     assert.equal(body.data.libraryErrors, 7);
+    // #61: accepted, but never a complete build - BUILD_REQUIRED stays recorded
+    assert.equal(body.data.completeBuild, false);
+    assert.match(body.data.buildRequired, /completeBuild=false, warningCodes=\[LIBRARY_UNRESOLVED\]/);
   });
 
   test('plus one C0046: BUILD_FAILED, errors 1, libraryErrors 7, the C0046 row category code', async () => {
@@ -211,7 +214,7 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.deepEqual(body.data.warningCodes, ['LIBRARY_UNRESOLVED', 'CODE_NOT_VERIFIED']);
     assert.equal(body.data.warningCode, 'LIBRARY_UNRESOLVED');
     assert.equal(body.data.codeVerified, false);
-    assert.equal(body.data.completeBuild, false, 'the AllowUnresolvedLibrary exception never covers an unlocated code row');
+    assert.equal(body.data.completeBuild, false, 'an AllowUnresolvedLibrary build is never complete (#61)');
     assert.match(body.data.buildRequired, /completeBuild=false, warningCodes=\[LIBRARY_UNRESOLVED, CODE_NOT_VERIFIED\]/);
   });
 
@@ -344,7 +347,9 @@ describe('array data through the real bridge (GetSymbols / ReadVariable, #57)', 
 describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRESOLVED (#45)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
   test('switch + LIBRARY_UNRESOLVED, then BUILD_REQUIRED until a build succeeds, then the activation is attempted', async () => {
     const stateDir = newStateDir();
-    const client = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir });
+    const scenarioFile = path.join(newStateDir(), 'scenario.txt');
+    fs.writeFileSync(scenarioFile, 'library-only');
+    const client = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile });
     const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
     try {
       // 1. target says TwinCAT OS (x64), solution is TwinCAT RT (x64): platform-fix, then the build fails
@@ -352,7 +357,8 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(first.success, false);
       assert.equal(first.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(first.error));
       assert.match(first.error.message, /platform switch to 'TwinCAT OS \(x64\)' failed \(the solution platform stays switched/);
-      assert.match(first.error.hint, /A complete BuildProject \(data\.completeBuild = true: coverageComplete and codeVerified = true, or the AllowUnresolvedLibrary switch with library errors only\) must succeed before EnableConfig activates again.*: BuildProject AllowUnresolvedLibrary=true\)/);
+      assert.match(first.error.hint, /A complete BuildProject \(data\.completeBuild = true: coverageComplete and codeVerified = true\) must succeed before EnableConfig activates again \(with unresolved libraries: install them/);
+      assert.doesNotMatch(first.error.hint, /BuildProject AllowUnresolvedLibrary=true\)/);
       assert.deepEqual(first.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
 
       // 2. platforms are equal now, so no rebuild would happen: refused instead of activating old output
@@ -371,9 +377,20 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
         await other.close();
       }
 
-      // 3. an accepted build clears it; EnableConfig then gets to set-config (mock runtime fails there)
-      const build = await call('BuildProject', { AllowUnresolvedLibrary: true });
+      // 3. an accepted AllowUnresolvedLibrary build does NOT clear it (#61): still nothing activated
+      const accepted = await call('BuildProject', { AllowUnresolvedLibrary: true });
+      assert.equal(accepted.success, true);
+      assert.equal(accepted.data.completeBuild, false);
+      const still = await call('EnableConfig', { Force: true });
+      assert.equal(still.error.code, 'BUILD_REQUIRED', JSON.stringify(still.error));
+      assert.ok(!still.data.steps.some((s) => s.step === 'set-config'), 'nothing activated after the accepted build');
+      assert.ok(fs.existsSync(path.join(stateDir, 'build-required.json')), 'state kept after the accepted build');
+
+      // 4. a complete build (libraries installed) clears it; EnableConfig then gets to set-config (mock runtime fails there)
+      fs.writeFileSync(scenarioFile, 'clean');
+      const build = await call('BuildProject');
       assert.equal(build.success, true);
+      assert.equal(build.data.completeBuild, true);
       const third = await call('EnableConfig', { Force: true });
       assert.equal(third.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(third.error));
       assert.ok(third.data.steps.some((s) => s.step === 'set-config'));
@@ -383,7 +400,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
     }
   });
 
-  test('RunLifecycle stops at BuildProject LIBRARY_UNRESOLVED with the AllowUnresolvedLibrary / SkipBuild hint', async () => {
+  test('RunLifecycle stops at BuildProject LIBRARY_UNRESOLVED with the install-the-library hint (#61)', async () => {
     const client = await startServer('library-only');
     try {
       const r = JSON.parse((await client.callTool({ name: 'RunLifecycle', arguments: {} })).content[0].text);
@@ -391,7 +408,8 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       assert.equal(r.data.failedStep, 'BuildProject');
       assert.equal(r.error.code, 'LIBRARY_UNRESOLVED');
       assert.match(r.error.hint, /Library Manager/);
-      assert.match(r.error.hint, /BuildProject AllowUnresolvedLibrary=true and then RunLifecycle SkipBuild=true/);
+      assert.match(r.error.hint, /a build with unresolved libraries is never activated \(#61\)/);
+      assert.doesNotMatch(r.error.hint, /RunLifecycle AllowUnresolvedLibrary=true/);
     } finally {
       await client.close();
     }
@@ -403,7 +421,8 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       // the platform-fix-build succeeds, but plc2 is skipped: its output is still the old platform's
       const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
       assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
-      assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+      // #61: the incomplete platform-fix-build itself stops the cycle, before set-config
+      assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
       const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
       assert.equal(b.success, true);
       assert.equal(b.data.warningCode, 'PROJECT_SKIPPED_BY_CONFIGURATION');
@@ -428,9 +447,10 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       try {
         const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
         assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
-        assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true], ['build-required', false]]);
+        // #61: the incomplete platform-fix-build stops the cycle itself (BUILD_REQUIRED, before set-config)
+        assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
         assert.match(r.data.steps[1].detail, verdict[scenario], 'platform-fix-build detail');
-        assert.match(r.error.message, /did not count as complete/);
+        assert.match(r.error.message, /did not prove that the PLC code was compiled \(codeVerified=/);
         assert.match(r.error.message, verdict[scenario]);
         assert.match(r.error.hint, /data\.completeBuild = true/);
         assert.match(r.error.hint, /build-required\.json/, 'hint names the manual release');
@@ -448,14 +468,12 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
     });
   }
 
-  test('EnableConfig AllowUnresolvedLibrary: the platform-fix-build accepts the library rows', async () => {
-    const client = await startServer('library-only');
-    try {
-      const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true, AllowUnresolvedLibrary: true } })).content[0].text);
-      assert.equal(r.error.code, 'FIXTURE_NO_RUNTIME', JSON.stringify(r.error));
-      assert.deepEqual(r.data.steps.slice(0, 2).map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', true]]);
-    } finally {
-      await client.close();
+  test('EnableConfig and RunTestCycle have no AllowUnresolvedLibrary input (#61)', () => {
+    const tools = JSON.parse(fs.readFileSync(TOOLS_JSON, 'utf8'));
+    const list = Array.isArray(tools) ? tools : tools.tools;
+    for (const name of ['EnableConfig', 'RunTestCycle']) {
+      const t = list.find((x) => x.name === name);
+      assert.equal(t.inputSchema.properties.AllowUnresolvedLibrary, undefined, name);
     }
   });
 });
@@ -508,10 +526,6 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       assert.ok(!e.data.steps.some((st) => st.step === 'set-config'), 'nothing activated');
       assert.match(e.error.hint, /#56/);
 
-      // AllowUnresolvedLibrary on EnableConfig alone does not lift it (no platform-fix build here; #61 not widened)
-      const ea = await s.call('EnableConfig', { Force: true, AllowUnresolvedLibrary: true });
-      assert.equal(ea.error.code, 'BUILD_REQUIRED', JSON.stringify(ea.error));
-
       for (const LoginMode of ['Regular', 'Download', 'OnlineChange']) {
         const l = await s.call('PlcLogin', { LoginMode });
         assert.equal(l.error.code, 'BUILD_REQUIRED', `${LoginMode}: ${JSON.stringify(l.error)}`);
@@ -528,7 +542,19 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
         await other.client.close();
       }
 
-      const ok = await s.call('BuildProject', { AllowUnresolvedLibrary: true });
+      // #61: an accepted AllowUnresolvedLibrary build is not complete - EnableConfig / PlcLogin still refuse
+      const acc = await s.call('BuildProject', { AllowUnresolvedLibrary: true });
+      assert.equal(acc.success, true);
+      assert.equal(acc.data.warningCode, 'LIBRARY_UNRESOLVED');
+      assert.equal(acc.data.completeBuild, false);
+      const ea = await s.call('EnableConfig', { Force: true });
+      assert.equal(ea.error.code, 'BUILD_REQUIRED', JSON.stringify(ea.error));
+      assert.ok(!ea.data.steps.some((st) => st.step === 'set-config'), 'nothing activated');
+      const la = await s.call('PlcLogin', { LoginMode: 'Download' });
+      assert.equal(la.error.code, 'BUILD_REQUIRED', JSON.stringify(la.error));
+
+      fs.writeFileSync(s.scenarioFile, 'clean');
+      const ok = await s.call('BuildProject');
       assert.equal(ok.success, true);
       assert.equal(ok.data.completeBuild, true);
       const after = await s.call('EnableConfig', { Force: true });

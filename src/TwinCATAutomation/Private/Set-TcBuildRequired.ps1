@@ -3,8 +3,8 @@
 #   platform-switch   Set-TcSolutionPlatform: the active solution platform changed (the compiled
 #                     output may still be that of the previous platform; inferred, not measured)
 #   unverified-build  Build-TcProject (#56): the last build of this solution finished without a
-#                     complete success - LIBRARY_UNRESOLVED (without -AllowUnresolvedLibrary),
-#                     BUILD_FAILED, BUILD_STATUS_UNKNOWN, BUILD_COVERAGE_UNKNOWN after the build,
+#                     complete success - LIBRARY_UNRESOLVED (also when accepted with
+#                     -AllowUnresolvedLibrary, #61), BUILD_FAILED, BUILD_STATUS_UNKNOWN, BUILD_COVERAGE_UNKNOWN after the build,
 #                     or success with data.completeBuild = $false. Activate and Login compile by
 #                     themselves (InfoSys "Command Login":
 #                     https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html), but
@@ -23,7 +23,7 @@
 # $script:TcBuildRequiredKinds that it has, so a later code-changed never hides a platform switch
 # or an unverified build.
 # Build-TcProject removes the whole entry after a complete success (data.completeBuild:
-# coverageComplete and codeVerified = $true, or -AllowUnresolvedLibrary with library rows only);
+# coverageComplete and codeVerified = $true; never a build accepted with -AllowUnresolvedLibrary, #61);
 # Enable-TcConfig (before Activate) and Enter-TcPlcOnline (before Login) refuse while an entry
 # applies. A solution that was never built or changed through the module has no entry: Activate /
 # Login then compile without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).

@@ -11,9 +11,10 @@
         Skip the build step (if already built).
     .PARAMETER KeepRunning
         Don't stop the PLC after tests complete.
-    .PARAMETER AllowUnresolvedLibrary
-        Passed to Build-TcProject and Enable-TcConfig: accept a build whose Error List shows
-        unresolved libraries (LIBRARY_UNRESOLVED) as success.
+    .NOTES
+        No -AllowUnresolvedLibrary (#61): a build that does not prove the PLC code was compiled
+        (codeVerified not true, e.g. unresolved libraries) is never activated, so the cycle
+        stops at Build (LIBRARY_UNRESOLVED) or at Activate (BUILD_REQUIRED).
     #>
     [CmdletBinding()]
     param(
@@ -24,10 +25,7 @@
         [switch]$SkipBuild,
 
         [Parameter()]
-        [switch]$KeepRunning,
-
-        [Parameter()]
-        [switch]$AllowUnresolvedLibrary
+        [switch]$KeepRunning
     )
 
     $cycleStart = [DateTime]::Now
@@ -41,7 +39,7 @@
 
     # Step 1: Build
     if (-not $SkipBuild) {
-        $buildResult = Build-TcProject -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
+        $buildResult = Build-TcProject
         $steps += [PSCustomObject]@{ step = 'Build'; success = $buildResult.success }
 
         if (-not $buildResult.success) {
@@ -64,7 +62,7 @@
     }
 
     # Step 2: Activate Configuration (Config → Activate → Run via ADS, no dialogs)
-    $activateResult = Enable-TcConfig -Force -AllowUnresolvedLibrary:$AllowUnresolvedLibrary
+    $activateResult = Enable-TcConfig -Force
     $steps += [PSCustomObject]@{ step = 'Activate'; success = $activateResult.success }
     if (-not $activateResult.success) {
         # code stays ACTIVATION_FAILED; the Enable-TcConfig code (e.g. BUILD_REQUIRED) is in the message, its hint is kept
