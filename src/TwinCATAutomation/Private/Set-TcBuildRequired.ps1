@@ -12,11 +12,21 @@
 #                     copy with 7 unresolved libraries, local UmRT): Enable-TcConfig -Force after a
 #                     LIBRARY_UNRESOLVED build activated, downloaded and returned success without a
 #                     warning (#56 point 5).
+#   code-changed      (#65) a cmdlet changed the PLC code or the PLC project in the IDE after the
+#                     last complete build: Write-TcPouCode, Add-TcPou, Add-TcDut, Add-TcGvl,
+#                     Add-TcLibrary, New-TcProject, Reset-TcSolution (reloaded from disk). Activate
+#                     and Login would compile that change without a check (same InfoSys page).
+#                     Recorded through Register-TcCodeChange; the reason lists which cmdlet
+#                     changed which object ('PLC code changed by Write-TcPouCode MAIN [...] | ...',
+#                     the last $script:TcCodeChangedMaxItems changes, older ones counted).
+# The kinds of one entry are kept side by side (reasons); the entry's 'kind' is the first of
+# $script:TcBuildRequiredKinds that it has, so a later code-changed never hides a platform switch
+# or an unverified build.
 # Build-TcProject removes the whole entry after a complete success (data.completeBuild:
 # coverageComplete and codeVerified = $true, or -AllowUnresolvedLibrary with library rows only);
 # Enable-TcConfig (before Activate) and Enter-TcPlcOnline (before Login) refuse while an entry
-# applies. A solution that was never built through the module has no entry: Activate / Login then
-# compile without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
+# applies. A solution that was never built or changed through the module has no entry: Activate /
+# Login then compile without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
 #
 # Where the state lives - fail-closed everywhere:
 #   - a FILE, so it survives Import-Module -Force, one-process-per-call CLI use and a restarted
@@ -68,8 +78,12 @@ $script:TcUnknownSolutionKey = '<unknown>'
 $script:TcCorruptStateKey = '<corrupt>'
 $script:TcBuildRequiredLocal = @{}
 $script:TcBuildRequiredLockTimeoutMs = 3000
-# Order in which the reasons of one entry are reported.
-$script:TcBuildRequiredKinds = @('platform-switch', 'unverified-build')
+# Order in which the reasons of one entry are reported; the first one an entry has is its 'kind'.
+$script:TcBuildRequiredKinds = @('platform-switch', 'unverified-build', 'code-changed')
+# code-changed reason: at most this many changes are listed, older ones are counted (#65).
+$script:TcCodeChangedPrefix = 'PLC code changed by '
+$script:TcCodeChangedMaxItems = 8
+$script:TcCodeChangedSeparator = ' | '
 
 function Get-TcBuildRequiredFile {
     $dir = $env:TCAUTO_STATE_DIR
@@ -177,16 +191,50 @@ function New-TcBuildRequiredEntry {
     }
 }
 
-# $Newer wins per kind; solution / kind / at from $Newer.
+# Two code-changed reasons as one: every change once (a repeated one moves to the end), the
+# last $script:TcCodeChangedMaxItems listed, the dropped ones counted as '(+N earlier)'.
+# Merging the same entry twice (file + memory copy) gives the same text. The changes are
+# separated by ' | ' ($script:TcCodeChangedSeparator): '|' cannot appear in a Windows file name
+# or an IEC identifier, and Register-TcCodeChange replaces any '|' in a change text, so a name
+# such as 'A, B.sln' is never split. N is approximate: when the two texts were capped
+# separately the larger count is kept (dropped changes cannot be compared), so N may be low.
+function Join-TcCodeChangedReason {
+    param([string]$Older, [string]$Newer)
+    $items = New-Object System.Collections.Generic.List[string]
+    $earlier = 0
+    foreach ($t in @($Older, $Newer)) {
+        if ([string]::IsNullOrWhiteSpace($t)) { continue }
+        $body = if ($t.StartsWith($script:TcCodeChangedPrefix)) { $t.Substring($script:TcCodeChangedPrefix.Length) } else { $t }
+        foreach ($part in ($body -split [regex]::Escape($script:TcCodeChangedSeparator))) {
+            $part = $part.Trim()
+            if ($part -match '^\(\+(\d+) earlier\)$') { $earlier = [Math]::Max($earlier, [int]$Matches[1]); continue }
+            if ([string]::IsNullOrWhiteSpace($part)) { continue }
+            $null = $items.Remove($part)
+            $items.Add($part)
+        }
+    }
+    while ($items.Count -gt $script:TcCodeChangedMaxItems) { $items.RemoveAt(0); $earlier++ }
+    $sep = $script:TcCodeChangedSeparator
+    $head = if ($earlier -gt 0) { "(+$earlier earlier)$sep" } else { '' }
+    "$($script:TcCodeChangedPrefix)$head$($items -join $sep)"
+}
+
+# $Newer wins per kind (code-changed: both lists joined); solution / at from $Newer; kind = the
+# first of $script:TcBuildRequiredKinds the merged entry has (#65: a code-changed does not hide
+# a platform-switch / unverified-build).
 function Merge-TcBuildRequiredEntry {
     param([object]$Older, [object]$Newer)
     if ($null -eq $Older) { return $Newer }
     if ($null -eq $Newer) { return $Older }
     $r = Get-TcBuildRequiredReasons $Older
     $n = Get-TcBuildRequiredReasons $Newer
-    foreach ($k in $n.Keys) { $r[$k] = $n[$k] }
+    foreach ($k in $n.Keys) {
+        if ($k -eq 'code-changed' -and $r.Contains($k)) { $r[$k] = Join-TcCodeChangedReason -Older $r[$k] -Newer $n[$k] }
+        else { $r[$k] = $n[$k] }
+    }
     $kp = $Newer.PSObject.Properties['kind']
     $kind = if ($null -ne $kp) { [string]$kp.Value } else { 'platform-switch' }
+    foreach ($k in $script:TcBuildRequiredKinds) { if ($r.Contains($k)) { $kind = $k; break } }
     $sol = if (-not [string]::IsNullOrWhiteSpace([string]$Newer.solution)) { [string]$Newer.solution } else { [string]$Older.solution }
     New-TcBuildRequiredEntry -Solution $sol -Reasons $r -Kind $kind -At ([string]$Newer.at)
 }
@@ -276,20 +324,25 @@ function Set-TcBuildRequired {
     .SYNOPSIS
         Records that the current solution ($script:TcSolutionPath) needs a complete
         Build-TcProject success before Enable-TcConfig activates or Enter-TcPlcOnline logs in.
-        -Kind: platform-switch (default, Set-TcSolutionPlatform) or unverified-build
-        (Build-TcProject, #56); the reasons of both kinds are kept side by side. Never throws:
+        -Kind: platform-switch (default, Set-TcSolutionPlatform), unverified-build
+        (Build-TcProject, #56) or code-changed (Register-TcCodeChange, #65); the reasons of
+        every kind are kept side by side. Never throws:
         returns $null, or a warning text when only the in-memory record could be kept (the
         file could not be locked or written).
+        -SolutionPath: record for this .sln instead of $script:TcSolutionPath (Reset-TcSolution
+        failing after it closed the module's solution and while it was opening -SolutionPath).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Reason,
-        [ValidateSet('platform-switch', 'unverified-build')][string]$Kind = 'platform-switch'
+        [ValidateSet('platform-switch', 'unverified-build', 'code-changed')][string]$Kind = 'platform-switch',
+        [string]$SolutionPath
     )
-    $key = ConvertTo-TcSolutionKey $script:TcSolutionPath
+    $sln = if ($PSBoundParameters.ContainsKey('SolutionPath')) { $SolutionPath } else { [string]$script:TcSolutionPath }
+    $key = ConvertTo-TcSolutionKey $sln
     $reasons = [ordered]@{}
     $reasons[$Kind] = $Reason
-    $new = New-TcBuildRequiredEntry -Solution ([string]$script:TcSolutionPath) -Reasons $reasons -Kind $Kind -At ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+    $new = New-TcBuildRequiredEntry -Solution ([string]$sln) -Reasons $reasons -Kind $Kind -At ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
     $script:TcBuildRequiredLocal[$key] = Merge-TcBuildRequiredEntry -Older $script:TcBuildRequiredLocal[$key] -Newer $new
     $r = Invoke-TcBuildRequiredLocked -Body {
         $st = Read-TcBuildRequiredState
@@ -361,6 +414,68 @@ function Get-TcBuildRequiredConsequence {
     $parts = @()
     if ($kinds -contains 'platform-switch') { $parts += 'the compiled PLC output may still be that of the previous platform' }
     if ($kinds -contains 'unverified-build') { $parts += 'the last build did not prove that the PLC code was compiled (an Activate or Login would compile again without anybody checking the result, #56)' }
+    if ($kinds -contains 'code-changed') { $parts += 'the PLC code or project was changed after the last complete build (an Activate or Login would compile that change without anybody checking the result, #65)' }
     if ($parts.Count -eq 0) { $parts += 'the state of the compiled PLC output is not known' }
     $parts -join '; '
+}
+
+# Hint for a BUILD_REQUIRED refusal: the recorded kinds with their reasons (which cmdlet changed
+# what, #65), then the general hint (Get-TcErrorHint BUILD_REQUIRED).
+function Get-TcBuildRequiredHint {
+    param([object]$Entry)
+    $reasons = Get-TcBuildRequiredReasons $Entry
+    $recorded = @($reasons.Keys | ForEach-Object { "$_ ($($reasons[$_]))" }) -join '; '
+    $general = Get-TcErrorHint -Code 'BUILD_REQUIRED'
+    # lock / read failure: not a build problem (Enter-TcPlcOnline says so in its message)
+    $kp = if ($null -ne $Entry) { $Entry.PSObject.Properties['kind'] } else { $null }
+    if ($null -ne $kp -and [string]$kp.Value -eq 'state-unreadable') { return $general }
+    if ([string]::IsNullOrWhiteSpace($recorded)) { return $general }
+    "Recorded: $recorded. Run Build-TcProject until data.completeBuild = true, then retry. $general".TrimEnd()
+}
+
+function Register-TcCodeChange {
+    <#
+    .SYNOPSIS
+        #65: records BUILD_REQUIRED kind 'code-changed' for the current solution
+        ($script:TcSolutionPath, '<unknown>' when not known: same keys as every other kind)
+        after a cmdlet changed the PLC code / project in the IDE ($Change = '<cmdlet> <object>',
+        e.g. 'Write-TcPouCode MAIN [implementation]'), and adds data.buildRequired (the recorded
+        reason) and, when the state file could not be written, data.stateWarning to $Result
+        (same fields as Build-TcProject). Returns $Result. Never throws: a failed write keeps the
+        in-memory entry (Set-TcBuildRequired) and is reported in data.stateWarning, it never
+        turns into "nothing recorded": should Set-TcBuildRequired itself throw, a '<unknown>'
+        entry (blocks every solution) is put into the in-memory state directly.
+        '|' in $Change is replaced by '/' (it separates the changes in the reason).
+        -SolutionPath: passed to Set-TcBuildRequired (record for that .sln).
+    #>
+    [CmdletBinding()]
+    param([object]$Result, [Parameter(Mandatory)][string]$Change, [string]$SolutionPath)
+    $reason = "$($script:TcCodeChangedPrefix)$($Change.Replace('|', '/'))"
+    $sw = $null
+    try {
+        $p = @{ Kind = 'code-changed'; Reason = $reason; WarningAction = 'SilentlyContinue' }
+        if ($PSBoundParameters.ContainsKey('SolutionPath')) { $p['SolutionPath'] = $SolutionPath }
+        $sw = Set-TcBuildRequired @p
+    }
+    catch {
+        $why = $_.Exception.Message
+        $key = $script:TcUnknownSolutionKey
+        $plain = [PSCustomObject]@{
+            solution = ''; kind = 'code-changed'; reason = $reason
+            reasons = [PSCustomObject]@{ 'code-changed' = $reason }; at = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        }
+        try { $script:TcBuildRequiredLocal[$key] = Merge-TcBuildRequiredEntry -Older $script:TcBuildRequiredLocal[$key] -Newer $plain }
+        catch { if ($null -eq $script:TcBuildRequiredLocal[$key]) { $script:TcBuildRequiredLocal[$key] = $plain } }
+        $sw = "BUILD_REQUIRED could not be recorded for this solution ($why); kept in this process only as '<unknown>' (blocks every solution); run Build-TcProject before Enable-TcConfig or a PLC login."
+    }
+    if ($null -eq $Result) { return $Result }
+    $data = $null
+    $dp = $Result.PSObject.Properties['data']
+    if ($null -ne $dp) { $data = $dp.Value }
+    if ($data -is [System.Collections.IDictionary]) { $data = [PSCustomObject]$data }
+    if ($null -eq $data) { $data = [PSCustomObject]@{} }
+    $data | Add-Member -NotePropertyName 'buildRequired' -NotePropertyValue $reason -Force
+    if (-not [string]::IsNullOrWhiteSpace([string]$sw)) { $data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$sw) -Force }
+    $Result | Add-Member -NotePropertyName 'data' -NotePropertyValue $data -Force
+    return $Result
 }

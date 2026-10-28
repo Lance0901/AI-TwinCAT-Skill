@@ -50,15 +50,38 @@ function Save-TcIdeSolutionRecord {
         $start = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToString('o')
         $keep = @(Read-TcIdeSolutionRecords | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_) })
         $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $start; solution = $Solution }
-        $path = Get-TcIdeSolutionRecordPath
-        $dir = Split-Path -Parent $path
-        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        $tmp = "$path.$PID.tmp"
-        Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($keep) -Depth 3) -Encoding UTF8
-        try { Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop }
-        catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
+        Write-TcIdeSolutionRecords -Records $keep
     }
     catch { Write-Verbose "IDE solution record not saved ($($_.Exception.Message))" }
+}
+
+# Replaces the record file with -Records (tmp + move). Throws on failure (callers are best effort).
+function Write-TcIdeSolutionRecords {
+    [CmdletBinding()]
+    param([object[]]$Records)
+    $path = Get-TcIdeSolutionRecordPath
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = "$path.$PID.tmp"
+    Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($Records) -Depth 3) -Encoding UTF8
+    try { Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop }
+    catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
+}
+
+function Remove-TcIdeSolutionRecord {
+    <#
+    .SYNOPSIS
+        Forgets the solution of IDE process -ProcessId (it has a solution whose path is not
+        known, e.g. New-TcProject failed after Solution.Create). Best effort, never throws.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    try {
+        $all = @(Read-TcIdeSolutionRecords)
+        if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
+        Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_) })
+    }
+    catch { Write-Verbose "IDE solution record not removed ($($_.Exception.Message))" }
 }
 
 function Get-TcIdeSolutionRecord {

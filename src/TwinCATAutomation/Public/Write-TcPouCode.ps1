@@ -16,6 +16,11 @@ function Write-TcPouCode {
         A DUT / GVL / ITF / property (data.objectKind) has only a declaration: -Implementation on
         one of them returns INVALID_PARAMS and nothing is written (for an UNKNOWN ItemType
         ImplementationText is read first; $null counts as "no implementation part").
+    .NOTES
+        BUILD_REQUIRED (#65): once a text was written (also when a write then failed half way)
+        the solution is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
+        Enter-TcPlcOnline refuse until a complete Build-TcProject. data.buildRequired is the
+        recorded reason, data.stateWarning is set when the state file could not be written.
     #>
     [CmdletBinding()]
     param(
@@ -41,6 +46,10 @@ function Write-TcPouCode {
         return New-TcNoSysManagerResult
     }
 
+    # #65: set right before a setter is called (the edit buffer may change even when it throws)
+    $writeStarted = $false
+    $updated = @()
+    $changeName = "Write-TcPouCode $PouName"
     try {
         $r = Resolve-TcPouPath -SysManager $sm -Name $PouName -PouPath $PouPath
         if (-not $r.Found) {
@@ -80,27 +89,35 @@ function Write-TcPouCode {
                 })
         }
 
-        $updated = @()
-
         if (-not [string]::IsNullOrWhiteSpace($Declaration)) {
+            $writeStarted = $true
             Invoke-TcComRetry -OperationName 'Set DeclarationText' -ScriptBlock { $pouItem.DeclarationText = $Declaration } | Out-Null
             $updated += 'declaration'
         }
 
         if (-not [string]::IsNullOrWhiteSpace($Implementation)) {
+            $writeStarted = $true
             Invoke-TcComRetry -OperationName 'Set ImplementationText' -ScriptBlock { $pouItem.ImplementationText = $Implementation } | Out-Null
             $updated += 'implementation'
         }
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             pou        = $PouName
             pouPath    = $r.Path
             resolvedBy = $r.ResolvedBy
             objectKind = $kind.ObjectKind
             updated    = $updated
         })
+        if ($updated.Count -eq 0) { return $ok }   # neither text given: nothing written
+        Register-TcCodeChange -Result $ok -Change "$changeName [$($updated -join '+')]"
     }
     catch {
+        if ($writeStarted) {
+            # conservative (#65): a setter that threw may still have changed the edit buffer
+            $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_WRITE_FAILED' -MessagePrefix 'Failed to write POU code'
+            # the parts that were written, then 'write failed' ([declaration+write failed])
+            return Register-TcCodeChange -Result $res -Change "$changeName [$(@($updated + 'write failed') -join '+')]"
+        }
         if ($_.Exception.Message -like 'PLC_PROJECT_NOT_FOUND*') {
             return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND')
         }

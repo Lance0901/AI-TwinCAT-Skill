@@ -5,6 +5,8 @@
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/plc-object-kind.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
+# Write / Add record BUILD_REQUIRED code-changed (#65): never into the real %TEMP% state file
+$env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::NewGuid().ToString('N'))
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
@@ -110,7 +112,10 @@ $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
     if (-not $global:MockTree.ContainsKey($path)) { throw "Item not found: $path" }
     $global:MockTree[$path]
 }
-& $mod { param($s) $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcSysManager = $s } $sm
+& $mod { param($s) $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcSysManager = $s; $script:TcSolutionPath = 'C:\Demo\Unit.sln' } $sm
+# #65: the BUILD_REQUIRED entry of the mock solution (code-changed reason) and a reset of it
+function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
+function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
 
 # --- Get-TcPlcObjectKind
 $k = & $mod { Get-TcPlcObjectKind -ItemType 604 }
@@ -168,6 +173,26 @@ Check 'Write DUT decl' ($r.success -and $r.data.objectKind -eq 'DUT' -and @($r.d
 $r = Write-TcPouCode -PouName MAIN -PouPath "$P^POUs^MAIN" -Implementation 'n := n + 1;'
 Check 'Write POU impl' ($r.success -and @($r.data.updated) -contains 'implementation' -and $global:MockTree["$P^POUs^MAIN"].ImplementationText -eq 'n := n + 1;') ($r | ConvertTo-Json -Compress)
 
+# --- #65: Write-TcPouCode records BUILD_REQUIRED code-changed (only when something was written)
+Reset-BuildRequired
+$r = Write-TcPouCode -PouName GVL_X -PouPath "$P^GVLs^GVL_X" -Implementation 'x := 1;'
+Check '#65 INVALID_PARAMS (nothing written) -> nothing recorded' ((-not $r.success) -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.PSObject.Properties['buildRequired']) ($r | ConvertTo-Json -Compress)
+$r = Write-TcPouCode -PouName MAIN -PouPath "$P^POUs^MAIN"
+Check '#65 neither text given -> success, nothing recorded' ($r.success -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.PSObject.Properties['buildRequired']) ($r | ConvertTo-Json -Compress)
+$r = Write-TcPouCode -PouName MAIN -PouPath "$P^POUs^MAIN" -Implementation 'n := n + 2;'
+Check '#65 Write success -> data.buildRequired names cmdlet + POU, no stateWarning' ($r.success -and $r.data.buildRequired -eq 'PLC code changed by Write-TcPouCode MAIN [implementation]' -and $null -eq $r.data.PSObject.Properties['stateWarning']) ($r | ConvertTo-Json -Compress)
+$r = Write-TcPouCode -PouName ST_X -PouPath "$P^DUTs^ST_X" -Declaration "TYPE ST_X :`nSTRUCT`n b : INT;`nEND_STRUCT`nEND_TYPE"
+$cc = Get-CodeChanged
+Check '#65 second write: both changes listed in the entry' ($cc -eq 'PLC code changed by Write-TcPouCode MAIN [implementation] | Write-TcPouCode ST_X [declaration]') "$cc"
+$null = New-MockItem "$P^POUs^FB_RO" 604 'FUNCTION_BLOCK FB_RO' -Language 1
+$global:MockTree["$P^POUs^FB_RO"] | Add-Member -MemberType ScriptProperty -Name ImplementationText -Value { '' } -SecondValue { param($v) throw 'write rejected (mock)' }
+Reset-BuildRequired
+$r = Write-TcPouCode -PouName FB_RO -PouPath "$P^POUs^FB_RO" -Implementation 'x := 1;'
+Check '#65 setter throws -> failure, still recorded (conservative)' ((-not $r.success) -and $r.data.buildRequired -eq 'PLC code changed by Write-TcPouCode FB_RO [write failed]' -and (Get-CodeChanged) -like '*FB_RO*') ($r | ConvertTo-Json -Compress)
+$r = Write-TcPouCode -PouName FB_RO -PouPath "$P^POUs^FB_RO" -Declaration 'FUNCTION_BLOCK FB_RO' -Implementation 'x := 2;'
+Check '#65 declaration written, implementation setter throws -> [declaration+write failed]' ((-not $r.success) -and $r.data.buildRequired -eq 'PLC code changed by Write-TcPouCode FB_RO [declaration+write failed]') ($r | ConvertTo-Json -Compress)
+Reset-BuildRequired
+
 # --- New-TcPlcObject
 function New-Obj([string]$Folder, [string]$Name, [int]$Sub, $VInfo = $null, [string]$Decl, [string]$Lang) {
     & $mod { param($s, $p, $n, $t, $v, $d, $l) New-TcPlcObject -SysManager $s -ParentPath $p -Name $n -SubType $t -VInfo $v -Declaration $d -ExpectedLanguage $l } $sm "$P^$Folder" $Name $Sub $VInfo $Decl $Lang
@@ -223,9 +248,16 @@ Check 'Add-TcDut Struct: subtype 606, no vInfo' ($r.success -and $global:MockCre
 $global:MockMode = 'tamper'
 $r = Add-TcDut -Name ST_T -DutType Struct
 Check 'Add-TcDut declare failure -> DUT_CREATE_FAILED + hint' ((-not $r.success) -and $r.error.code -eq 'DUT_CREATE_FAILED' -and $r.error.message -like '*declare:*' -and $r.error.hint) ($r | ConvertTo-Json -Compress)
+Check '#65 Add-TcDut failure after CreateChild (declare) -> recorded' ($r.data.buildRequired -eq 'PLC code changed by Add-TcDut ST_T [failed after CreateChild]') ($r | ConvertTo-Json -Compress)
 $global:MockMode = 'normal'
+$cc = Get-CodeChanged
+Check '#65 Add-TcPou / Add-TcDut successes recorded' ($cc -like '*Add-TcPou F_A*' -and $cc -like '*Add-TcPou FB_A*' -and $cc -like '*Add-TcDut A_A*' -and $cc -like '*Add-TcDut ST_A*') "$cc"
+$r = Add-TcGvl -Name GVL_N
+Check '#65 Add-TcGvl success -> data.buildRequired' ($r.success -and $r.data.buildRequired -eq 'PLC code changed by Add-TcGvl GVL_N') ($r | ConvertTo-Json -Compress)
+Reset-BuildRequired
 $r = Add-TcPou -Name FB_A -Type FunctionBlock -PlcProjectPath "$P^POUs"
 Check 'Add-TcPou existing -> POU_CREATE_FAILED exists' ((-not $r.success) -and $r.error.code -eq 'POU_CREATE_FAILED' -and $r.error.message -like '*exists:*') ($r | ConvertTo-Json -Compress)
+Check '#65 Add-TcPou exists (before CreateChild) -> nothing recorded' ($null -eq (Get-CodeChanged)) "$(Get-CodeChanged)"
 
 # --- name check: PLC called "Machine Project", path without a Project node, node limit, RPC busy
 $PM = 'TIPC^Machine Project^Machine Project Project'
@@ -274,6 +306,12 @@ $calls = $global:MockCreateCalls.Count
 $r = Add-TcDut -Name ST_MOD -DutType Struct
 Check 'modal dialog -> IDE_MODAL_DIALOG, CreateChild not called' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:MockCreateCalls.Count -eq $calls -and -not $global:MockTree.ContainsKey("$P^DUTs^ST_MOD")) ($r | ConvertTo-Json -Compress)
 & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f } $origDialog
+Reset-BuildRequired
+$null = & $mod { param($r) Register-TcCodeChange -Result $r -Change 'x' } $null
+Check '#65 Register-TcCodeChange with $null result: recorded, returns null' ((Get-CodeChanged) -eq 'PLC code changed by x') "$(Get-CodeChanged)"
+Reset-BuildRequired
 
+Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue
 "failed: $fail"
 exit [Math]::Min($fail, 255)

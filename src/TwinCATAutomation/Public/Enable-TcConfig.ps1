@@ -47,10 +47,14 @@ function Enable-TcConfig {
         state of the solution has an entry (Private/Set-TcBuildRequired.ps1): a solution
         platform switch, or (#56) a Build-TcProject that finished without a complete success
         (LIBRARY_UNRESOLVED, BUILD_FAILED, BUILD_STATUS_UNKNOWN, success with completeBuild =
-        false), with no complete Build-TcProject since. -AllowUnresolvedLibrary does not lift
+        false), or (#65) a change of the PLC code / project by Write-TcPouCode, Add-TcPou,
+        Add-TcDut, Add-TcGvl, Add-TcLibrary, New-TcProject or Reset-TcSolution, with no complete
+        Build-TcProject since; error.hint starts with the recorded kinds and reasons
+        ('Recorded: code-changed (PLC code changed by Write-TcPouCode MAIN [...])').
+        -AllowUnresolvedLibrary does not lift
         that entry by itself; only a build does (the platform-fix-build, or a separate
-        Build-TcProject). A solution never built through the module has no entry: Activate
-        compiles it without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
+        Build-TcProject). A solution never built or changed through the module has no entry:
+        Activate compiles it without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
 
         With -Force every step is gated on the previous one and recorded in
         data.steps (@{ step; ok; elapsedMs; detail }). The first failing step stops
@@ -557,8 +561,10 @@ function Enable-TcConfig {
     # (#56), without a complete build since then. Platform switch: the PLC output may still be
     # that of the previous platform (inferred, not measured). Unverified build: Activate would
     # compile again without anybody checking the result (measured 2026-10-26, TcXaeShell 4024,
-    # TwinCAT_Festo copy, local UmRT: activated + success after LIBRARY_UNRESOLVED). A solution
-    # never built through the module has no entry and is not refused (known limit). Returns a
+    # TwinCAT_Festo copy, local UmRT: activated + success after LIBRARY_UNRESOLVED). Code changed
+    # (#65, Write-TcPouCode / Add-TcPou / ...): Activate would compile the change unchecked. The
+    # hint names the recorded kinds and cmdlets (Get-TcBuildRequiredHint). A solution never built
+    # or changed through the module has no entry and is not refused (known limit). Returns a
     # failure or $null.
     function Test-TcBuildRequired {
         $req = Get-TcBuildRequired
@@ -573,7 +579,7 @@ function Enable-TcConfig {
             $last = " The last successful Build-TcProject ($($lv.at)) did not count as complete: $(Format-TcBuildVerdict -Data $lv)."
         }
         Add-TcStepRecord -Name 'build-required' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "$($req.reason)$at ($sln); no complete Build-TcProject since.$last"
-        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req).$last" -Code 'BUILD_REQUIRED'
+        return New-TcStepFailure -Message "Not activated: $($req.reason)$at ($sln) and no complete Build-TcProject since; $(Get-TcBuildRequiredConsequence -Entry $req).$last" -Code 'BUILD_REQUIRED' -Hint (Get-TcBuildRequiredHint -Entry $req)
     }
 
     # "completeBuild=..., codeVerified=..., coverageComplete=..., warningCodes=[...]" of a

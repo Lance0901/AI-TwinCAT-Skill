@@ -43,6 +43,9 @@
 # platform checks". The BUILD_REQUIRED state file goes to env TCAUTO_STATE_DIR (set by the test).
 # PlcLogin: the real Enter-TcPlcOnline; only its BUILD_REQUIRED refusal (before any COM call) is
 # reachable here, a login that gets past it fails on the mock SysManager.
+# WritePouCode (#65): the real Write-TcPouCode on one mock item, 'TIPC^plc^plc Project^POUs^MAIN'
+# (ItemType 602, declaration + implementation); LookupTreeItem of any other path throws. A
+# successful write records BUILD_REQUIRED kind code-changed through the real Set-TcBuildRequired.
 #
 # Windows PowerShell 5.1, ASCII only.
 
@@ -108,9 +111,19 @@ function Connect-TcIde {
     param([string]$ProgId, [string]$SolutionPath, [switch]$NoLaunch)
     New-TcResult -Success $true -Data ([PSCustomObject]@{ amsNetId = '127.0.0.1.1.1'; solution = $script:TcSolutionPath })
 }
+$script:FixtureMainPath = 'TIPC^plc^plc Project^POUs^MAIN'
+$script:FixtureMain = [PSCustomObject]@{
+    PathName = $script:FixtureMainPath; Name = 'MAIN'; ItemType = 602; ItemSubType = 0; ItemSubTypeName = 'TREEITEMTYPE_PLCPOUPROG'
+    Language = 1; DeclarationText = "PROGRAM MAIN`nVAR`n    n : INT;`nEND_VAR"; ImplementationText = ''
+}
 function Get-TcSysManager {
     $sm = [PSCustomObject]@{ Mock = $true }
     $sm | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { '127.0.0.1.1.1' }
+    $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
+        param($path)
+        if ($path -eq $script:FixtureMainPath) { return $script:FixtureMain }
+        throw "Item not found: $path (fixture)"
+    }
     $sm
 }
 $script:FixtureBuilding = $false

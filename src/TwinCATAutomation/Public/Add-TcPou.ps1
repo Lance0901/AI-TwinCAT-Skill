@@ -12,6 +12,12 @@ function Add-TcPou {
         Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs
         (same format on 4024 and 4026). Auto-detected if omitted: <Plc> Project^POUs, or the
         <Plc> Project node itself when it has no POUs folder (see data.folderPath).
+    .NOTES
+        BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
+        lookup / kind / language / declare step on, or CreateChild itself failing) the solution
+        is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
+        Enter-TcPlcOnline refuse until a complete Build-TcProject. data.buildRequired /
+        data.stateWarning as in Build-TcProject. A failure before CreateChild records nothing.
     #>
     [CmdletBinding()]
     param(
@@ -56,6 +62,7 @@ function Add-TcPou {
     # name and fails with "Requested value '...' was not found" (E_FAIL, measured 2026-10-25 on 4024).
     $iecLanguageSt = 1
 
+    $createProgress = @{}   # CreateCalled: set by New-TcPlcObject (#65)
     try {
         # Find POUs folder (TIPC^<Plc>^<Plc> Project^POUs on 4024 and 4026)
         $folderInfo = Resolve-TcPlcProjectFolder -SysManager $sm -FolderName 'POUs' -ExplicitPath $PlcProjectPath
@@ -72,13 +79,13 @@ function Add-TcPou {
         }
 
         # the language is read back from the new item (ITcSmTreeItem.Language) and must be ST
-        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo -ExpectedLanguage 'ST' -DeclarationPattern $declPattern
+        $created = New-TcPlcObject -SysManager $sm -ParentPath $folderInfo.Path -Name $Name -SubType $subType -VInfo $vInfo -ExpectedLanguage 'ST' -DeclarationPattern $declPattern -Progress $createProgress
         if ($created.ContainsKey('ModalDialog')) {
             return New-TcModalDialogResult -Dialog $created.ModalDialog -Operation "CreateChild $Name"
         }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             type        = $Type
             path        = $created.Path
@@ -91,8 +98,12 @@ function Add-TcPou {
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
         })
+        Register-TcCodeChange -Result $ok -Change "Add-TcPou $Name"
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_CREATE_FAILED' -MessagePrefix 'Failed to add POU'
+        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_CREATE_FAILED' -MessagePrefix 'Failed to add POU'
+        # conservative (#65): CreateChild was called, the object may exist in the tree
+        if ($createProgress['CreateCalled']) { return Register-TcCodeChange -Result $res -Change "Add-TcPou $Name [failed after CreateChild]" }
+        $res
     }
 }
