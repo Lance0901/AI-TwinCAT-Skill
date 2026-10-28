@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-28T15:32:02Z",
+    "generatedAt":  "2026-10-28T15:43:58Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -658,7 +658,7 @@
                   {
                       "name":  "NewTestCase",
                       "cmdlet":  "New-TcTestCase",
-                      "description":  "Build a test case object for RunTest/RunTestCycle. Setup/Teardown are arrays of {Path, Value} writes; Assertions are {Path, Operator, Expected} with Operator one of Equal (default), NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse. Pure data, no IDE/PLC access.",
+                      "description":  "Build a test case object for RunTest/RunTestCycle. Setup/Teardown are arrays of {Path, Value} writes; Assertions are {Path, Operator, Expected} with Operator one of Equal (default), NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse. WaitUntil (preferred) = array of {Path, Operator, Expected} polled until all hold (WaitTimeoutMs, default 5000); on timeout RunTest reports Fail with waitTimedOut, lastValues, waitMs. WaitMs is a deprecated fixed blind wait. Pure data, no IDE/PLC access.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -686,9 +686,22 @@
                                                                                         },
                                                                               "description":  "Writes after the test (also run when the test fails): array of {\"Path\":\"MAIN.x\",\"Value\":0} (keys Path, Value)."
                                                                           },
+                                                             "WaitUntil":  {
+                                                                               "type":  "array",
+                                                                               "items":  {
+                                                                                             "type":  "object",
+                                                                                             "additionalProperties":  true
+                                                                                         },
+                                                                               "description":  "Conditions to poll before the assertions (replaces WaitMs): array of {\"Path\":\"MAIN.bDone\",\"Operator\":\"IsTrue\"} (same keys and Operator set as Assertions; Expected omitted for IsTrue/IsFalse). All conditions must hold in the same 100 ms sampling round; assertions then run immediately. Not met within WaitTimeoutMs: the test case is Fail with waitTimedOut=true, lastValues, waitMs. Invalid entries: INVALID_PARAMS."
+                                                                           },
+                                                             "WaitTimeoutMs":  {
+                                                                                   "type":  "integer",
+                                                                                   "description":  "Maximum time in ms to poll WaitUntil (1..600000, default 5000). Only used with WaitUntil.",
+                                                                                   "default":  5000
+                                                                               },
                                                              "WaitMs":  {
                                                                             "type":  "integer",
-                                                                            "description":  "Wait duration in milliseconds before assertions.",
+                                                                            "description":  "DEPRECATED: fixed blind wait in ms before the assertions (default 1000), ignored when WaitUntil is given. Use WaitUntil.",
                                                                             "default":  1000
                                                                         },
                                                              "Assertions":  {
@@ -697,7 +710,7 @@
                                                                                               "type":  "object",
                                                                                               "additionalProperties":  true
                                                                                           },
-                                                                                "description":  "Checks after WaitMs: array of {\"Path\":\"MAIN.y\",\"Operator\":\"Equal\",\"Expected\":1}. Keys: Path (PLC symbol path), Operator (optional, default Equal; one of Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse), Expected (omit for IsTrue/IsFalse). Short forms like \"eq\"/\"gt\" are NOT accepted."
+                                                                                "description":  "Checks after WaitUntil (or the deprecated WaitMs): array of {\"Path\":\"MAIN.y\",\"Operator\":\"Equal\",\"Expected\":1}. Keys: Path (PLC symbol path), Operator (optional, default Equal; one of Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse), Expected (omit for IsTrue/IsFalse). Short forms like \"eq\"/\"gt\" are NOT accepted."
                                                                             }
                                                          },
                                           "required":  [

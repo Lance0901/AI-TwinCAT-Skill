@@ -75,7 +75,7 @@ Connect-TcAds
 # Define a test
 $test = New-TcTestCase -Name "Counter increments" `
     -Setup @(@{Path="MAIN.fbCounter.bEnable"; Value=$true}) `
-    -WaitMs 2000 `
+    -WaitUntil @{Path="MAIN.fbCounter.nCount"; Operator="GreaterThan"; Expected=0} `
     -Assertions @(@{Path="MAIN.fbCounter.nCount"; Operator="GreaterThan"; Expected=0}) `
     -Teardown @(@{Path="MAIN.fbCounter.bEnable"; Value=$false})
 

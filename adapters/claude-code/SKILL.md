@@ -116,7 +116,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Exit-TcPlcOnline [-PlcProjectPath <p>]` | Logout(4026 是 `Logoff()`)。查找方式同 `Enter-TcPlcOnline`:多 PLC 沒給路徑 → `PLC_PROJECT_AMBIGUOUS`;data 回實際登出的 `plcProjectPath`、`plcName`、`adsPort` |
 | `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000)。省略 `-AmsNetId` 時依序用 IDE target → ADS session → local `127.0.0.1.1.1`,`data.netIdSource` 回報實際來源(`local` 代表讀的是本機 TcSysSrv,通常不是你的 target) |
 | `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>] [-SettleSec 3]` | 設系統狀態,輪詢到目標才返回。省略 `-AmsNetId` 時依序用 IDE target → ADS session,兩者皆無回 `AMS_NETID_REQUIRED`(不 fallback 到 local),`data.netIdSource` 回報來源。送出的 AdsState:Run → `Reset`(2)、Config → `Reconfig`(16)(`data.sentAdsState` / `sentAdsStateCode`;port 10000 收 `Run`(5) 回 ADS 0x701,實測)。到達目標後再取樣 `-SettleSec` 秒並讀回(`data.readbackState`、`stateTrace`),中途離開目標(例如進 Run 又退回 Config)→ `SYSTEM_STATE_MISMATCH`,不回 success。原狀態 = 目標(Run → Run 重啟)時必須先看到離開(其他狀態或斷線)才算到達,看不到也回 `SYSTEM_STATE_MISMATCH`。data 另有 `originalState`、`finalState`、`reached`、`held`、`leftOriginal`、`latencyMs`;停在 / 退回 Config 時讀授權伺服器(ADS port 30),有過期 / 無效授權就寫進 `error.hint` 與 `data.licenses`(讀不到就略過) |
-| `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
+| `New-TcTestCase -Name <n> [-Setup @()] [-WaitUntil @(@{Path;Operator;Expected}) [-WaitTimeoutMs 5000]] -Assertions @() [-Teardown @()]` | 定義測試。`-WaitUntil` 輪詢到條件成立才跑 assertions(逾時 → 該 case Fail,結果帶 `waitTimedOut` / `lastValues` / `waitMs`);`-WaitMs` 是固定盲等,**不建議使用**(deprecated) |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating;codeVerified 不是 true 的 build 不會被 Activate(#61) |
 
@@ -141,7 +141,7 @@ $test1 = New-TcTestCase -Name "Initial state" -Assertions @(
 
 $test2 = New-TcTestCase -Name "Trigger and verify" `
     -Setup @( @{ Path = "MAIN.bStart"; Value = $true } ) `
-    -WaitMs 2000 `
+    -WaitUntil @{ Path = "MAIN.bDone"; Operator = "IsTrue" } -WaitTimeoutMs 5000 `
     -Assertions @(
         @{ Path = "MAIN.bDone"; Operator = "IsTrue"; Expected = $null }
     ) `
@@ -150,7 +150,7 @@ $test2 = New-TcTestCase -Name "Trigger and verify" `
 Invoke-TcTestCycle -TestCases @($test1, $test2)
 ```
 
-Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
+Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`LessThan`、`GreaterThanOrEqual`、`LessThanOrEqual`、`Contains`、`IsTrue`、`IsFalse`。`-WaitUntil` 的每個條件用同一組 key(`Path`、`Operator`、`Expected`),多個條件要在同一輪取樣(100 ms)同時成立;格式錯誤回 `INVALID_PARAMS`。MCP 呼叫 `NewTestCase`:`{"Name":"t","WaitUntil":[{"Path":"MAIN.bDone","Operator":"IsTrue"}],"WaitTimeoutMs":5000,"Assertions":[...]}`。
 
 ## Output Format
 

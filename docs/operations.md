@@ -272,7 +272,9 @@ Defines a test case.
 | Name | string | Yes | Test name |
 | Setup | hashtable[] | No | Setup variable writes |
 | Teardown | hashtable[] | No | Teardown variable writes |
-| WaitMs | int | No | Wait before assertions (default: 1000) |
+| WaitUntil | hashtable[] | No | Conditions polled before the assertions: `@{Path; Operator; Expected}` (assertion operators). Met: assertions run at once; not met within WaitTimeoutMs: the test is Fail with `waitTimedOut`, `lastValues`, `waitMs`. Invalid: `INVALID_PARAMS` |
+| WaitTimeoutMs | int | No | Max poll time for WaitUntil (default: 5000) |
+| WaitMs | int | No | DEPRECATED fixed blind wait before assertions (default: 1000), ignored with WaitUntil. Use WaitUntil |
 | Assertions | hashtable[] | Yes | Assertions with Path, Operator, Expected |
 
 Supported operators: `Equal`, `NotEqual`, `GreaterThan`, `LessThan`, `GreaterThanOrEqual`, `LessThanOrEqual`, `Contains`, `IsTrue`, `IsFalse`

@@ -709,6 +709,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | UIA 看不到的 dialog 仍會擋 quit | 標題為空等 UIA 掃描抓不到的 modal,`Disconnect-TcIde -Quit` 的事前檢查看不到,`Solution.Close` / `DTE.Quit` 照樣無限阻塞;經 MCP 時會先撞到 `BRIDGE_TIMEOUT`,走不到 `-Kill` | `Stop-Process -Id <data.ideProcessId>`(MCP 結果的 `data.lastIde.ideProcessId`),再重新 `Connect-TcIde` |
 | FB `VAR_INPUT` 寫不進去 | PLC 每個 scan 覆寫 FB 輸入 | 在 MAIN 宣告獨立變數餵 FB,寫 MAIN 層級變數 |
 | `Watch-TcVariable` 的 `samples` 被截短 | 預設只回最後 `-KeepLast` 筆(有 `-Until` 20、沒有 50),免得 50 筆 × 多變數塞爆 AI context;`sampleCount` 仍是總數,`truncated=true` 表示有丟 | 要全部就給大一點的 `-KeepLast`;等某個值用 `-Until "<Path> <op> <value>"`(`== != > < >= <=`,`<Path>` 要在 -Path 內,否則 `INVALID_PARAMS`),命中立刻返回 `untilMet=true` / `untilSample` / `elapsedMs` |
+| `New-TcTestCase` / `Invoke-TcTest` 的 `-WaitMs` 是固定盲等 | 不建議使用(deprecated):不管 PLC 多快都等滿,太短又會誤判 | 改用 `-WaitUntil @{Path;Operator;Expected}` + `-WaitTimeoutMs`(預設 5000):條件成立立刻跑 assertions;逾時該 case 判 Fail,結果 `waitTimedOut=true`、`lastValues`(最後讀到的值)、`waitMs`(實際等待)。`WaitUntil` 格式錯(未知 key / Operator、缺 Path 或 Expected、`WaitTimeoutMs` 不在 1..600000)回 `INVALID_PARAMS`,不寫任何 setup |
 | MCP 同回合平行 tool call 順序 | client 平行送出的 call 到達 server 的順序不保證;bridge 嚴格 FIFO 一次執行一個,但 FIFO 的順序 = 到達順序 | 看每個結果的 `order.seq` / `order.startedAt` / `order.finishedAt` 判斷實際順序(data 是物件時 `data.seq` 等也有;data 是陣列時只在 `order`,#57);有因果的步驟(寫參數 → 下命令 → 觀察)分回合送 |
 
 ## 真機驗證腳本
