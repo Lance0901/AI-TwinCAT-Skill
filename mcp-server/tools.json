@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-28T15:43:58Z",
+    "generatedAt":  "2026-10-28T15:53:29Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -766,7 +766,7 @@
                                                                                             "Download",
                                                                                             "OnlineChange"
                                                                                         ],
-                                                                               "description":  "Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has no program (XAE decides). Download: FORCEDOWNLOAD - always a full download (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE. SILENT (256) is only OR-ed in with -SilentFlag.",
+                                                                               "description":  "Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has no program (XAE decides). Download: FORCEDOWNLOAD (used by Send-TcPlcProgram); measured 2026-10-28 (4026 VS2022, UmRT): with code unchanged since the running program XAE does not download (data.downloaded = $false, _AppInfo.AppTimestamp unchanged); after a code change it downloads and the PLC is left in Stop. OnlineChange: FORCEONLINECHANGE. SILENT (256) is only OR-ed in with -SilentFlag.",
                                                                                "default":  "Regular"
                                                                            },
                                                              "SilentFlag":  {
@@ -964,7 +964,7 @@
                   {
                       "name":  "SendPlcProgram",
                       "cmdlet":  "Send-TcPlcProgram",
-                      "description":  "Download the compiled PLC program to the target (alias of PlcLogin: Login+Download without dialogs). Refused with BUILD_REQUIRED like PlcLogin.",
+                      "description":  "Download the compiled PLC program to the target (alias of PlcLogin LoginMode=Download: Login+Download without dialogs). Refused with BUILD_REQUIRED like PlcLogin. When the code is unchanged since the running program XAE skips the download: data.downloaded=false (measured 2026-10-28, _AppInfo.AppTimestamp unchanged). After a real download the PLC is left in Stop (data.plcStateAfter): SetPlcState State=Run to start it.",
                       "timeoutMs":  300000,
                       "annotations":  {
                                           "readOnlyHint":  false,
