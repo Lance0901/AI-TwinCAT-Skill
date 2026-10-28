@@ -32,9 +32,12 @@
 7. **背景監看**:真機測試期間在背景跑 `tests/Integration/Watch-Runtime.ps1`。它每秒記一筆 UmRT 狀態:pid 集合、port 10000 AdsState、`TCNC.bootdata` 大小;pid 集合變化或 bootdata 變成 0 byte 時,會多記一行 `event`。`-DurationSec` 設成整體 deadline 的秒數,並記下 pid;收尾時只停這個 pid。回報時附上 log 路徑與 event 行:
 
    ```powershell
+   # 不加 -ExecutionPolicy Bypass(CurrentUser 是 RemoteSigned,本機腳本可直接跑)。
+   # repo 路徑含空白:PS 5.1 的 -ArgumentList 不會自動加引號,所以要用絕對路徑並自己包雙引號
+   $script = Join-Path $PWD 'tests\Integration\Watch-Runtime.ps1'
+   $log    = Join-Path $PWD 'tests\Integration\logs\runtime-watch.jsonl'
    $watch = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile',
-       '-ExecutionPolicy','Bypass','-File','tests\Integration\Watch-Runtime.ps1',
-       '-LogPath','tests\Integration\logs\runtime-watch.jsonl','-DurationSec','<整體 deadline 秒>'
+       '-File', "`"$script`"", '-LogPath', "`"$log`"", '-DurationSec', '<整體 deadline 秒>'
    # ... 測試 ...
    Stop-Process -Id $watch.Id -ErrorAction SilentlyContinue   # 只停自己啟動的 watcher
    ```

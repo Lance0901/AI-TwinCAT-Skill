@@ -16,9 +16,11 @@
 
     Run it in the background for the whole test, bounded by the overall deadline, and stop
     only the pid you started:
+        # absolute, quoted paths: the repo path has spaces and PS 5.1 -ArgumentList does not quote
+        $script = Join-Path $PWD 'tests\Integration\Watch-Runtime.ps1'
+        $log    = Join-Path $PWD 'tests\Integration\logs\runtime-watch.jsonl'
         $watch = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile',
-            '-ExecutionPolicy','Bypass','-File','tests\Integration\Watch-Runtime.ps1',
-            '-LogPath','tests\Integration\logs\runtime-watch.jsonl','-DurationSec','3600'
+            '-File', "`"$script`"", '-LogPath', "`"$log`"", '-DurationSec', '3600'
         ...
         Stop-Process -Id $watch.Id -ErrorAction SilentlyContinue
 
