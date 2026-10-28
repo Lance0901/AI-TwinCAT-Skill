@@ -185,7 +185,7 @@ function Watch-TcVariable {
     }
 
     try {
-        $samples = New-Object 'System.Collections.Generic.List[object]'
+        $samples = [System.Collections.Generic.List[object]]::new()
         $sampleCount = 0
         $truncated = $false
         $untilMet = $false

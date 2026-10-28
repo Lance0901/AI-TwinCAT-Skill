@@ -228,7 +228,7 @@ function Reset-TcSolution {
     function Register-TcResetChange {
         param([object]$Result, [string]$Change, [string[]]$Solutions)
         $seen = @{}
-        $warnings = New-Object System.Collections.Generic.List[string]
+        $warnings = [System.Collections.Generic.List[string]]::new()
         $out = $Result
         foreach ($s in $Solutions) {
             if ([string]::IsNullOrWhiteSpace($s)) { continue }

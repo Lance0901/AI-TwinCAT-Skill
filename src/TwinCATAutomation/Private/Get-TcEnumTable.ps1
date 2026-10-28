@@ -42,8 +42,8 @@ function Get-TcEnumTable {
     }
 
     $table = @{}
-    $full = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
-    $short = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
+    $full = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
+    $short = [System.Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
     try {
         if ($null -eq $script:TcAdsClient) { throw 'ADS session not connected.' }
         $helper = ([System.Management.Automation.PSTypeName]'TcAdsHelper').Type

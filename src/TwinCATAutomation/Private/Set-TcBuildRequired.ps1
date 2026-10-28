@@ -200,7 +200,7 @@ function New-TcBuildRequiredEntry {
 # separately the larger count is kept (dropped changes cannot be compared), so N may be low.
 function Join-TcCodeChangedReason {
     param([string]$Older, [string]$Newer)
-    $items = New-Object System.Collections.Generic.List[string]
+    $items = [System.Collections.Generic.List[string]]::new()
     $earlier = 0
     foreach ($t in @($Older, $Newer)) {
         if ([string]::IsNullOrWhiteSpace($t)) { continue }
