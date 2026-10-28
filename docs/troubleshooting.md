@@ -550,6 +550,19 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **下一步**:`exists` → 換 `-Name`,或用 `Write-TcPouCode -PouPath <訊息裡的 path>` 改既有的。「not possible on parent node type」→ 父節點不是 PLC folder,`Get-TcProjectTree -PlcOnly` 查 `<Plc> Project^POUs` 的 path 後給 `Add-TcPou -PlcProjectPath`。`0x98510001` → .plcproj 的 `<Compile Include>` 列了磁碟上沒有的檔案,從 .plcproj 移除或補回檔案,`Reset-TcSolution` 後再試。`lookup` → 物件可能建在別的路徑,`Get-TcProjectTree -PlcOnly` 找到後用 `Write-TcPouCode` 修正或在 XAE 刪掉。`kind` / `language` / `declare` → 物件已建立、留在樹上:用 `Get-TcPouCode -PouPath <path>` 看內容,以 `Write-TcPouCode -PouPath <path>` 修正,或在 XAE 刪掉後再 Add(同名會被 `exists` 擋下)。`IDE_MODAL_DIALOG` → 先處理 dialog(`Get-TcIdeModalDialog`),什麼都沒建。
 - **驗證**:`mcp-server/scripts/pou-client.mjs` 經 MCP server 跑 Add* / GetPouCode / WritePouCode / BuildProject(含一次注入未宣告識別字、預期 `BUILD_FAILED` 的對照)。2026-10-25 在全新 4024 專案(Standard PLC Template,TcVersion 3.1.4024.71)與 4026 RobustDemo 複本都全數通過(最後一輪 26/26,含同名跨資料夾的 `exists` 檢查;target 設為 127.0.0.1.1.1,沒有 Activate)。TwinCAT_Festo(4024)複本缺 library 時 PLC 程式碼不會被編譯,Build 仍回 success,不能拿來驗證(#45)。
 
+### MEMBER_ORDER_MISMATCH
+
+- **現象**(#47):`Add-TcDut`(Struct / Union / Enum)或 `Add-TcGvl` 建立物件並存檔後,讀回 XAE 的 declaration、解析出的成員順序(`data.actualOrder`)與輸入順序(`data.expectedOrder`)不同。物件已經在樹上、也存進 .plcproj,並記成 `code-changed`(`BUILD_REQUIRED`)。成功時 `data.memberOrder` 是讀回的順序。
+- **為什麼要檢查**:#47 之前成員參數是 `[hashtable]`,PowerShell hashtable 的列舉順序是雜湊順序,STRUCT / GVL / ENUM 成員順序與輸入不同卻回 success(實測 2026-10-28,4026 VS2022 + 本機 UmRT,registered tcauto)。STRUCT 成員順序決定記憶體配置。
+- **輸入格式**:成員一律有序:MCP 用陣列 `Fields` / `Variables` = `[{"name":"bStart","type":"BOOL","init":"TRUE","comment":"..."}, ...]`,Enum 為 `[{"name":"eIdle","value":0}, ...]`;PowerShell 另可用 `[ordered]@{ bStart = 'BOOL' }`。一般 `[hashtable]` 超過一個成員 → `INVALID_PARAMS`(不猜順序,什麼都沒建);只有一個成員的 hashtable 可接受。舊的 MCP object 格式(`{"bStart":"BOOL",...}`)已移除,JSON schema 驗證直接回 `INVALID_PARAMS`(JS 的 object key 順序對整數型 key 也不保證)。
+- **下一步**:`Write-TcPouCode -PouPath <data.path> -Declaration <正確順序>` 改寫,`Get-TcPouCode` 確認,再 `Build-TcProject`。
+
+### SOLUTION_ALREADY_OPEN
+
+- **現象**(#70):`New-TcProject` 發現 IDE 已開著 solution(`DTE.Solution.IsOpen` 或 `FullName` 非空;讀不到也當成開著,fail-closed),直接拒絕,沒有呼叫 `Solution.Create`。`data.openSolution` 是目前的 solution(讀不到時為 null)。
+- **為什麼**:`Solution.Create` 會關掉目前的 solution,未存的改動會丟掉(#70 記錄的風險,未實測;fail-closed 就是為了不去試);`New-TcProject` 的 template 路徑本身也還沒修(#70),所以 MCP 暫時不提供 `NewProject` tool,只保留 cmdlet。
+- **下一步**:在 #70 修好之前,建議在 XAE 手動建立新專案,再 `Connect-TcIde -SolutionPath <新 .sln>` 接上。一定要用 `New-TcProject` 時,先在 XAE 存好並關掉目前的 solution(IDE 不開任何 solution)再呼叫。
+
 ### LOGOUT_FAILED
 
 - **為什麼**:Logoff COM 呼叫失敗:PLC 不在 online(已 logout)、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**,不是 `Logout()`;`Login / Logoff / Start / Stop / Reset` 由 `TIPC^<Plc>` 與 `<Plc> Project` 節點透過 IDispatch 提供,而兩個節點的 `.Object` 都是 null(2026-10-18 以 `Get-Member` 實測)。`Exit-TcPlcOnline` 依序試 `plcNode.Logoff`、`plcNode.Logout`、`treeItem.Logoff`、`treeItem.Logout`,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object.Logout()` 因此永遠失敗。
@@ -649,6 +662,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`(solution platform)、`projectPlatform`(操作後 active 的 .tsproj project platform,沒有 .tsproj 為 null)、`platformChanged`(bool);有切換時另有 `requestedProjectPlatform`、 `configuration`、`previousPlatform`、`availablePlatforms`、`projectCheck`(`ok` / `mismatch` / `no-tsproj`)、`platformMatchedBy`、`platformMap`。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`projectPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`;自動切換失敗時加 `platformMap`、`requestedProjectPlatform`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`、`projectPlatform`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 只給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId;之後 EnableConfig 比對結果相同),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
 
 ## 已知限制
+
+使用者向的已知限制清單(現象、影響、繞過方式、issue)與真機驗證範圍:[known-limitations.md](known-limitations.md)。
 
 | 限制 | 說明 | 繞法 |
 |---|---|---|

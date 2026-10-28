@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組的 37 個 cmdlet 加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 37 個 cmdlet 中的 36 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (37 cmdlets) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (36 of its 37 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -120,14 +120,15 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 ### Project
 
+`NewProject` (`New-TcProject`) is temporarily not offered over MCP (#70: empty template path, and `Solution.Create` would close the open solution); create the project in XAE and use `ConnectIde SolutionPath=...`. See [docs/known-limitations.md](../docs/known-limitations.md).
+
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `NewProject` | `New-TcProject` | `Name` | 120 s | Create a solution with a PLC project and MAIN |
 | `OpenProject` | `Open-TcProject` | `Path` | 180 s | Open a `.sln` and wait until the TwinCAT project is loaded |
 | `GetProjectTree` | `Get-TcProjectTree` | — | 120 s | Project tree as JSON incl. `<Plc> Project` POUs/DUTs/GVLs; `Depth` (1-10, default 4), `PlcOnly` (TIPC subtree only) |
 | `AddPou` | `Add-TcPou` | `Name`, `Type` | 120 s | Add a Program / FunctionBlock / Function |
-| `AddGvl` | `Add-TcGvl` | `Name` | 120 s | Add a Global Variable List |
-| `AddDut` | `Add-TcDut` | `Name`, `DutType` | 120 s | Add a STRUCT / ENUM / ALIAS / UNION |
+| `AddGvl` | `Add-TcGvl` | `Name` | 120 s | Add a Global Variable List; `Variables` is an array in declaration order `[{"name":"bStart","type":"BOOL"}]`, the order read back is verified (`MEMBER_ORDER_MISMATCH`, #47) |
+| `AddDut` | `Add-TcDut` | `Name`, `DutType` | 120 s | Add a STRUCT / ENUM / ALIAS / UNION; `Fields` is an array in declaration order (Struct / Union `[{"name":"bStart","type":"BOOL"}]`, Enum `[{"name":"eIdle","value":0}]`), the order read back is verified (`MEMBER_ORDER_MISMATCH`, #47) |
 | `AddLibrary` | `Add-TcLibrary` | `Name` | 120 s | Add a library reference |
 | `SetTarget` | `Set-TcTarget` | `AmsNetId` | 120 s | Set the target system AmsNetId (always first: `data.targetSet=true`, also in an error result) and make the solution platform follow the target: `Platform` (e.g. `"TwinCAT OS (x64)"` for a UmRT / Usermode Runtime or TwinCAT/BSD, `"TwinCAT RT (x64)"` for a Windows RT target) with `Configuration` (default `Release`) activates that solution platform (`data.platformCheck` = `parameter`); without it the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) is activated (`target`), or `PLATFORM_UNKNOWN` when the target answers ADS 0x702 / is unreachable (`unknown`, `data.adsError`); `NoPlatformSwitch=true` only sets the NetId (`disabled`). data: `platform` / `platformChanged` / `targetPlatform` / `targetPlatformSource` and, after a switch, `configuration` / `previousPlatform` / `availablePlatforms`; `PLATFORM_NOT_FOUND` (lists the available solution platforms) / `PLATFORM_PROJECT_MISMATCH` (the .tsproj under that solution platform is built for another project platform; nothing switched, `data.platformMap`) / `PLATFORM_SET_FAILED` (`data.restored`). `SetTargetNetId` alone never changes the platform |
 

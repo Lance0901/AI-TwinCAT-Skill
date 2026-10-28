@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadToolCatalog } from '../lib/tools.js';
+import { loadToolCatalog, validateParams } from '../lib/tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The real, generated catalog (npm run generate-tools), not the fixture.
@@ -55,5 +55,30 @@ describe('tools.json (generated catalog)', () => {
     }
     assert.deepEqual(catalog.get('AddDut').inputSchema.properties.DutType.enum, ['Struct', 'Enum', 'Alias', 'Union']);
     assert.deepEqual(catalog.get('AddPou').inputSchema.properties.Type.enum, ['Program', 'FunctionBlock', 'Function']);
+  });
+
+  // #47: members are an ordered array; the old object form (key order lost) is rejected.
+  test('AddDut.Fields / AddGvl.Variables are arrays; an object is INVALID_PARAMS', () => {
+    for (const [tool, param] of [['AddDut', 'Fields'], ['AddGvl', 'Variables']]) {
+      const t = catalog.get(tool);
+      const schema = t.inputSchema.properties[param];
+      assert.equal(schema.type, 'array', `${tool}.${param} type`);
+      assert.equal(schema.items.type, 'object');
+      assert.ok(schema.items.required.includes('name'));
+      assert.ok(t.description.includes('MEMBER_ORDER_MISMATCH'), `${tool} description names MEMBER_ORDER_MISMATCH`);
+      const base = tool === 'AddDut' ? { Name: 'ST_X', DutType: 'Struct' } : { Name: 'GVL_X' };
+      const bad = validateParams(t, { ...base, [param]: { zLast: 'BOOL', aFirst: 'INT' } });
+      assert.equal(bad.ok, false);
+      assert.equal(bad.error.code, 'INVALID_PARAMS');
+      const members = [{ name: 'zLast', type: 'BOOL' }, { name: 'aFirst', type: 'INT' }, { name: 'mMid', type: 'LREAL' }];
+      const good = validateParams(t, { ...base, [param]: members });
+      assert.equal(good.ok, true, JSON.stringify(good.error));
+      assert.deepEqual(good.params[param].map((m) => m.name), ['zLast', 'aFirst', 'mMid'], 'order kept');
+    }
+  });
+
+  // #70: NewProject is not offered over MCP (the cmdlet New-TcProject stays).
+  test('NewProject is not in the MCP catalog', () => {
+    assert.equal(catalog.get('NewProject'), undefined);
   });
 });

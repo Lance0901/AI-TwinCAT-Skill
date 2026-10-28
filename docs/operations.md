@@ -27,7 +27,7 @@ Returns IDE instance information.
 ## Project Management
 
 ### New-TcProject / `NewProject`
-Creates new TwinCAT solution with PLC project.
+Creates new TwinCAT solution with PLC project. **Not offered over MCP for now (#70)**; refused with `SOLUTION_ALREADY_OPEN` while the IDE has a solution open (`Solution.Create` is not called). See [known-limitations.md](known-limitations.md).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -71,9 +71,9 @@ Adds a Global Variable List.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | Name | string | Yes | GVL name |
-| Variables | hashtable | No | Variable declarations (name = type) |
+| Variables | object | No | Variables in declaration order: array of `@{ name; type; init?; comment? }` (MCP: JSON array) or `[ordered]@{ name = type }`; a plain hashtable with more than one member is `INVALID_PARAMS` (#47) |
 
-Created (sub type 615), then `VAR_GLOBAL ... END_VAR` is written and read back. **Returns:** `{ name, path, folderPath, objectKind, itemType, declaration }`; failure `GVL_CREATE_FAILED`.
+Created (sub type 615), then `VAR_GLOBAL ... END_VAR` is written and read back; the variable order read back must equal the input order, else `MEMBER_ORDER_MISMATCH` (#47). **Returns:** `{ name, path, folderPath, objectKind, itemType, declaration, memberOrder }`; failure `GVL_CREATE_FAILED`.
 
 ### Add-TcDut / `AddDut`
 Adds a Data Unit Type.
@@ -82,7 +82,7 @@ Adds a Data Unit Type.
 |-----------|------|----------|-------------|
 | Name | string | Yes | DUT name |
 | DutType | string | Yes | Struct, Enum, Alias, or Union |
-| Fields | hashtable | No | Field declarations |
+| Fields | object | No | Members in declaration order: Struct / Union array of `@{ name; type; init?; comment? }`, Enum array of `@{ name; value?; comment? }` (MCP: JSON array), or `[ordered]@{}`; a plain hashtable with more than one member is `INVALID_PARAMS` (#47) |
 | AliasType | string | No | Base type for Alias |
 
 Created (sub type 606 Struct / 605 Enum / 607 Union / 623 Alias), then `TYPE ... END_TYPE` is written and read back (an Enum without Fields gets `enum_member := 0`). **Returns:** `{ name, dutType, path, folderPath, objectKind, itemType, declaration }`; failure `DUT_CREATE_FAILED`.

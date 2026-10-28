@@ -73,7 +73,7 @@ and converts the JSON value before splatting:
 | target type | JSON value | conversion |
 |---|---|---|
 | `switch` | bool | `[switch]$value` |
-| `hashtable` | object | recursive PSCustomObject → `[hashtable]`. Key order is **NOT** guaranteed (`[hashtable]` parameters lose it), so e.g. `AddDut.Fields` / `AddGvl.Variables` declaration order is not fixed. |
+| `hashtable` | object | recursive PSCustomObject → `[hashtable]`. Key order is **NOT** guaranteed (`[hashtable]` parameters lose it). Ordered input therefore uses an array: `AddDut.Fields` / `AddGvl.Variables` are `[object]` parameters that receive the JSON array as-is (#47). |
 | `hashtable[]` | array of object | each element → `[hashtable]` |
 | `PSCustomObject` / `PSCustomObject[]` | object / array | passed as-is from `ConvertFrom-Json` |
 | `string[]` | string or array | `[string[]]@(...)` |

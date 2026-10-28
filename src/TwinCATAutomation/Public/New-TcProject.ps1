@@ -7,6 +7,12 @@ function New-TcProject {
     .PARAMETER Path
         Directory to create the project in. Defaults to current directory.
     .NOTES
+        Fail-closed (#70): when the IDE already has a solution open (DTE Solution.IsOpen, or a
+        non-empty Solution.FullName; a read that fails counts as open) the call returns
+        SOLUTION_ALREADY_OPEN (data.openSolution) and Solution.Create is never called:
+        Solution.Create closes the open solution and its unsaved changes would be lost (risk
+        recorded in #70, not measured). The template path of AddFromTemplate is not fixed yet
+        (#70), so the MCP server does not offer NewProject for now; the cmdlet stays.
         BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
         (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
         never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
@@ -29,6 +35,30 @@ function New-TcProject {
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+
+    # #70: never replace an open solution (Solution.Create would close it)
+    # Only an explicit IsOpen = false with an empty FullName counts as "no solution"; anything
+    # unreadable (no Solution object, IsOpen not a bool, a COM exception) counts as open.
+    $openSolution = $null
+    $isOpen = $true
+    try {
+        $sol = $script:TcDte.Solution
+        if ($null -ne $sol) {
+            $openSolution = [string]$sol.FullName
+            $rawIsOpen = $sol.IsOpen
+            $isOpen = (-not ($rawIsOpen -is [bool] -and $rawIsOpen -eq $false)) -or -not [string]::IsNullOrWhiteSpace($openSolution)
+        }
+    }
+    catch {
+        $isOpen = $true   # fail-closed: unknown counts as open
+        $openSolution = $null
+    }
+    if ($isOpen) {
+        if ([string]::IsNullOrWhiteSpace($openSolution)) { $openSolution = $null }
+        return New-TcResult -Success $false -ErrorCode 'SOLUTION_ALREADY_OPEN' -Hint $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] `
+            -ErrorMessage "The IDE has a solution open ($(if ($openSolution) { $openSolution } else { 'unknown' })); New-TcProject did not call Solution.Create, which would close it (#70)." `
+            -Data ([PSCustomObject]@{ openSolution = $openSolution; created = $false })
     }
 
     $solutionCreated = $false   # #65: the IDE holds the new solution from here on

@@ -70,6 +70,10 @@ $script:TcErrorHints = @{
 $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / description / file / line);修正後重跑 Build-TcProject'
 # Legacy code kept by Read-TcVariable for a missing symbol: same hint as ADS_SYMBOL_NOT_FOUND
 $script:TcErrorHints['SYMBOL_NOT_FOUND'] = $script:TcErrorHints['ADS_SYMBOL_NOT_FOUND']
+# #47: Add-TcDut / Add-TcGvl read back a member order that differs from the input order
+$script:TcErrorHints['MEMBER_ORDER_MISMATCH'] = 'DUT / GVL 已建立並存檔,但讀回的成員順序(data.actualOrder)與輸入(data.expectedOrder)不同:用 Write-TcPouCode -PouPath <data.path> -Declaration <依正確順序的 declaration> 改寫,再 Get-TcPouCode 確認後 Build-TcProject;不要沿用這個順序(STRUCT 記憶體配置會不同)'
+# #70: New-TcProject refuses while the IDE has a solution open (Solution.Create would close it)
+$script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.openSolution),New-TcProject 不會建立:Solution.Create 會關掉目前的 solution 並丟掉未存的改動(#70)。建議在 XAE 手動建立新專案後用 Connect-TcIde -SolutionPath <新 .sln> 接上;要用 New-TcProject 就先在 XAE 存好、關掉目前的 solution 再呼叫。NewProject 目前不在 MCP 提供'
 
 function Get-TcErrorHint {
     <#
