@@ -26,6 +26,7 @@
         'Invoke-TcIoScan',
         'Get-TcIoTree',
         'Set-TcVariableLink',
+        'Remove-TcVariableLink',
         # Build & Deploy
         'Build-TcProject',
         'Clear-TcProject',

@@ -563,6 +563,29 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:`Solution.Create` 會不經提示關掉目前的 solution,未存的改動會丟掉(實測 2026-10-28,見 #70:TwinCAT 3.1.4026.22 XAE in VS2022 與 4024 32-bit XAE Shell,registered tcauto,兩者呼叫後 `GetIdeInfo` 的 solution 都變成空字串);`New-TcProject` 的 template 路徑本身也還沒修(#70),所以 MCP 暫時不提供 `NewProject` tool,只保留 cmdlet。
 - **下一步**:在 #70 修好之前,建議在 XAE 手動建立新專案,再 `Connect-TcIde -SolutionPath <新 .sln>` 接上。一定要用 `New-TcProject` 時,先在 XAE 存好並關掉目前的 solution(IDE 不開任何 solution)再呼叫。
 
+### IO_SCAN_REQUIRES_CONFIG / IO_SCAN_FAILED / IO_SCAN_VERIFY_FAILED
+
+- **現象**:`Invoke-TcIoScan` 先讀 system state(ADS port 10000),不是 Config 就回 `IO_SCAN_REQUIRES_CONFIG`(`data.state`),沒有掃描。`IO_SCAN_FAILED` = `ProduceXml(false)` / `CreateChild` / `ConsumeXml` 丟例外;`IO_SCAN_VERIFY_FAILED` = `-Apply` 建立的 device 讀回 I/O tree 時找不到。
+- **為什麼**:TE1000 v1.7.0 §6.6.2「Performing a device scan」(p.247)的 Requirements 寫 TwinCAT 要在 Config mode;scan 是在 `TIID` 呼叫 `ProduceXml(false)`,找到的裝置在 `TreeItem/DeviceGrpDef/FoundDevices/Device`。手冊沒寫 Run mode 的行為:實測 2026-10-28(4026 XAE in VS2022,本機 UmRT,自建 client)Run mode 下 `ProduceXml(false)` 不丟錯、立即回空的 `FoundDevices`,看起來像「沒有裝置」,所以模組先檢查狀態。舊版呼叫的 `ProduceScan()` 在手冊裡不存在(`IO_SCAN_FAILED`「未包含名為 'ProduceScan' 的方法」)。
+- **下一步**:`Set-TcSystemState -State Config` 後重跑;預設只回 `data.devices`,不改 tree,要加進 tree 用 `-Apply`(CreateChild + AddressInfo + ScanBoxes,依 §6.6.2)。沒有裝置時回 success、`devices = @()` 加 `data.warning`。本機 UmRT 切 Config 可能觸發 #21 crash(見「已知限制」)。
+
+### TREEITEM_NOT_FOUND
+
+- **現象**:`Set-TcVariableLink` / `Remove-TcVariableLink` 呼叫前用 `LookupTreeItem` 檢查兩端;找不到就回這個碼,`data.missingEnd` 與 hint 指出是 `PlcVariable` 還是 `IoChannel`。
+- **為什麼**:`LinkVariables` 要完整 tree path(TE1000 v1.7.0 §5.1.1.2,p.38:"The full path name is required")。`MAIN.bIn` 這種 PLC symbol 名稱不是 tree path。`TSM_E_ITEMNOTFOUND` 的數值手冊沒寫,實測 2026-10-28 是 `0x98510001`(4026 XAE in VS2022,訊息 `Item '...' not found`)。
+- **下一步**:PLC 端 `TIPC^<Plc>^<Plc> Instance^PlcTask Inputs^MAIN.bIn`(`AT %I*` / `%Q*` 變數,要先 Build 才出現);I/O 端到 variable 那層,例如 `TIID^<Device>^<Box>^<Term>^Channel 1^Input`。用 `Get-TcIoTree` 查 I/O 路徑。
+
+### LINK_INVALID_ITEM_TYPE / LINK_TYPE_MISMATCH / LINK_FAILED / UNLINK_FAILED
+
+- **為什麼**:TE1000 §5.1.1.2(p.38)列出 `LinkVariables` 的錯誤:`TSM_E_INVALIDITEMTYPE`(有一端不是 variable)→ `LINK_INVALID_ITEM_TYPE`;`TSM_E_MISMATCHINGITEMS`(型別 / 大小不相容)→ `LINK_TYPE_MISMATCH`。這兩個的數值手冊沒寫,模組用 HRESULT 名稱或訊息文字判斷;都不符時回 `LINK_FAILED`(Unlink 是 `UNLINK_FAILED`)。
+- **下一步**:I/O 端給 `^Channel 1^Input` 而不是 `^Channel 1`;兩端型別大小要相同。
+
+### LINK_VERIFY_FAILED
+
+- **現象**:`LinkVariables` / `UnlinkVariables` 有返回,但 `ProduceMappingInfo()` 讀回的 mapping 沒有這條 link(或刪除後還在,`data.remainingLinks`),或 mapping 讀不到。
+- **為什麼**:不讀回就回 `linked = true` 是假成功(#28 / #32)。`ProduceMappingInfo` 出處:TE1000 §5.1.3.4(p.45);XML 是 `<VarLinks><OwnerA Name><OwnerB Name><Link VarA VarB/>`,VarA / VarB 是相對 Owner 的路徑(§6.3.14,p.218)。
+- **下一步**:在 XAE 看該變數的 link,或重跑一次;不要當成功。
+
 ### LOGOUT_FAILED
 
 - **為什麼**:Logoff COM 呼叫失敗:PLC 不在 online(已 logout)、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**,不是 `Logout()`;`Login / Logoff / Start / Stop / Reset` 由 `TIPC^<Plc>` 與 `<Plc> Project` 節點透過 IDispatch 提供,而兩個節點的 `.Object` 都是 null(2026-10-18 以 `Get-Member` 實測)。`Exit-TcPlcOnline` 依序試 `plcNode.Logoff`、`plcNode.Logout`、`treeItem.Logoff`、`treeItem.Logout`,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object.Logout()` 因此永遠失敗。

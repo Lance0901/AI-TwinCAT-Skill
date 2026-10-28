@@ -75,7 +75,7 @@ Connect-TcAds                       # 先連 ADS,Set-TcPlcState 沒連線會回 
 Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_TIMEOUT);PLC 未下載回 PLC_NOT_LOADED
 ```
 
-## Cmdlet 清單(37)
+## Cmdlet 清單(38)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -94,9 +94,10 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Add-TcLibrary -Name <lib>` | 加 library 參考;存 .plcproj 並讀回有該 library reference 才 success(`data.projectSaved`,否則 `PROJECT_SAVE_FAILED`) |
 | `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU / DUT / GVL 的 declaration + implementation;`data.objectKind`(POU/DUT/GVL/ITF/…)、`language`、`hasImplementation`:DUT/GVL/ITF 為 false,`implementation=null` 表示「沒有實作段」;POU 讀不成文字時 `implementationReadable=false`,COM 例外回 `POU_READ_FAILED`;LD/FBD 的 implementation 是 XML;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
 | `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫程式碼(`data.objectKind`);DUT/GVL/ITF 只收 `-Declaration`,給 `-Implementation` 回 `INVALID_PARAMS`、什麼都不寫;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND`。有寫入就記 `BUILD_REQUIRED` code-changed(#65,`data.buildRequired`;`Add-TcPou`/`Add-TcDut`/`Add-TcGvl`/`Add-TcLibrary` 同理):Activate / Login 前要再一次完整 `Build-TcProject` |
-| `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
+| `Invoke-TcIoScan [-Apply]` | 掃 I/O 裝置(需 Config mode;預設只回結果,`-Apply` 才加進 tree) |
 | `Get-TcIoTree` | I/O 裝置樹 |
-| `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
+| `Set-TcVariableLink -PlcVariable <tree path> -IoChannel <tree path>` | PLC 變數連 I/O 變數(完整 tree path,如 `TIPC^P^P Instance^PlcTask Inputs^MAIN.bIn`、`TIID^...^Channel 1^Input`;讀回確認) |
+| `Remove-TcVariableLink -PlcVariable <tree path> [-IoChannel <tree path>]` | 移除 link(不給 -IoChannel 移除該變數全部 link;讀回確認) |
 | `Build-TcProject [-TimeoutSec 600] [-ExpectedProject <names>] [-AllowUnresolvedLibrary]` | Build(COM busy 自動重試):`Build($false)` + 輪詢 `BuildState`(VS2022 的 `Build($true)` 不返回),逾時回 `BUILD_TIMEOUT`,輪詢中跳出 modal 回 `IDE_MODAL_DIALOG`;data:`errors`(只算 code error,#23)、`libraryErrors` / `libraryErrorItems[]`(Library Manager 的缺 library 項;有這些項時程式碼可能沒被編譯 → `LIBRARY_UNRESOLVED`,#45)、`codeVerified`、`failedProjects`(LastBuildInfo)、`decidedBy`、`errorItems[]`(severity/code/description/project/file/line/column/category = code\|library\|other)、`codeErrors[]`、`buildSec`;coverage(#28):`projects[]`(每個 .plcproj:name/uniqueName/configuration/platform/shouldBuild/status = built\|skipped\|failed\|unknown,來源 DTE `SolutionBuild.ActiveConfiguration.SolutionContexts` 的 `ShouldBuild`,不解析 .sln)、`skippedProjects[]`、`coverageComplete`;有 skipped 時仍 success 但 `warningCode = PROJECT_SKIPPED_BY_CONFIGURATION` + `warning`;`-ExpectedProject` 指定的被跳過 → 不 Build 直接回 `PROJECT_SKIPPED_BY_CONFIGURATION`,名稱不存在 → `EXPECTED_PROJECT_NOT_FOUND` |
 | `Clear-TcProject [-TimeoutSec 300] [-AllowUnresolvedLibrary]` | Clean(Build > Clean Solution):先查 modal(`IDE_MODAL_DIALOG`),等 DTE 的 `Solution` / `SolutionBuild` 不再是 `$null`(#18 曾出現 null-valued expression,原因未確認;這裡會等並記 `data.nullReads`,上限 15 s → `CLEAN_FAILED`),`Clean($false)` + 輪詢 `BuildState` 到 Done(`CLEAN_TIMEOUT`),讀回 `LastBuildInfo`:0 → success、`cleanVerified=true`;讀不到 → `CLEAN_UNVERIFIED`(失敗);> 0 且 Error List 全是 Library Manager 的 library 解析失敗 → `LIBRARY_UNRESOLVED`(失敗,`data.libraryErrorItems`;之後 Build 的 success 可能是假的,#45),加 `-AllowUnresolvedLibrary` 才回 success + `warningCode=LIBRARY_UNRESOLVED`、`cleanVerified=false`;其他 → `CLEAN_FAILED`(`data.errorItems`);data:`buildState`、`failedProjects`、`cleanVerified`、`cleanSec`、`nullReads`;與 `Build-TcProject` 同一個分類器:`data.errorItems[].category`(code / library / other)、`data.warningCodes[]` / `warningCode` / `warning`(同 Build 的格式)。Clean 不寫也不清 BUILD_REQUIRED。不要自己用 `$script:TcDte` 做 Clean(#18) |
 | `Get-TcBuildErrors [-IncludeWarnings:$false] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`、`warnings[]`(`-IncludeWarnings` 預設開,`:$false` 省 1~2 s 的 toggle)、`-IncludeMessages` → `messages[]`、`truncated`;按鈕計數也認 zh-TW 的「N 個錯誤/個警告/則訊息」與 VS2022 的 `0 / 2 錯誤`(取總數);視窗名 `Error List` 或 `錯誤清單`(zh-TW VS2022 可用),VS2022 的 scope 會先切到 `整個方案`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |

@@ -124,20 +124,23 @@ Reads code from a POU.
 ## I/O Configuration
 
 ### Invoke-TcIoScan / `IoScan`
-Triggers EtherCAT device scan.
+Scans I/O devices with `ProduceXml(false)` on `TIID` (TE1000 v1.7.0 6.6.2). Requires Config mode (else `IO_SCAN_REQUIRES_CONFIG`). `-Apply` adds the found devices (CreateChild + AddressInfo + ScanBoxes) and reads them back (`IO_SCAN_VERIFY_FAILED`).
 
-**Returns:** `{ devices: [{ name, path, type }] }`
+**Returns:** `{ devices: [{ index, name, itemSubType, addressInfo, path, created }], applied, scanMs, state, warning? }`
 
 ### Get-TcIoTree / `GetIoTree`
 Reads I/O device tree.
 
 ### Set-TcVariableLink / `SetVariableLink`
-Links PLC variable to I/O channel.
+Links a PLC variable to an I/O variable with `ITcSysManager.LinkVariables` (TE1000 5.1.1.2), then reads `ProduceMappingInfo` back: `linked=true` only if the link is there (else `LINK_VERIFY_FAILED`). Missing path: `TREEITEM_NOT_FOUND` with `data.missingEnd`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| PlcVariable | string | Yes | PLC variable path |
-| IoChannel | string | Yes | I/O channel tree path |
+| PlcVariable | string | Yes | Full tree path, e.g. `TIPC^P^P Instance^PlcTask Inputs^MAIN.bIn` |
+| IoChannel | string | Yes | Full tree path of the I/O variable, e.g. `TIID^EtherCAT Master^Term 1 (EK1100)^Term 2 (EL1004)^Channel 1^Input` |
+
+### Remove-TcVariableLink / `RemoveVariableLink`
+`ITcSysManager.UnlinkVariables` (TE1000 5.1.1.8) plus `ProduceMappingInfo` readback (`removed`, `wasLinked`). Without `-IoChannel` all links of `-PlcVariable` are removed.
 
 ---
 

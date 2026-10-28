@@ -103,9 +103,10 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ### I/O Configuration
 | Command | Parameters | Description |
 |---------|-----------|-------------|
-| `Invoke-TcIoScan` | | Scan for EtherCAT devices |
+| `Invoke-TcIoScan` | `[-Apply]` | Scan I/O devices (Config mode; -Apply adds them to the tree) |
 | `Get-TcIoTree` | | Read I/O device tree |
-| `Set-TcVariableLink` | `-Variable <v> -Channel <c>` | Link PLC variable to I/O channel |
+| `Set-TcVariableLink` | `-PlcVariable <tree path> -IoChannel <tree path>` | Link PLC variable to I/O variable (verified) |
+| `Remove-TcVariableLink` | `-PlcVariable <tree path> [-IoChannel <tree path>]` | Remove a variable link (verified) |
 
 ### Testing
 | Command | Parameters | Description |

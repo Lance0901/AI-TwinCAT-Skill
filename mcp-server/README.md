@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 37 個 cmdlet 中的 36 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 38 個 cmdlet 中的 37 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (36 of its 37 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (37 of its 38 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -173,9 +173,10 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `IoScan` | `Invoke-TcIoScan` | — | 180 s | Scan EtherCAT devices into the I/O tree (target in Config) |
+| `IoScan` | `Invoke-TcIoScan` | `Apply` | 180 s | Scan I/O devices (target in Config, else IO_SCAN_REQUIRES_CONFIG); Apply=true adds them to the I/O tree |
 | `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
-| `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O channel |
+| `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O variable (full tree paths; verified via ProduceMappingInfo) |
+| `RemoveVariableLink` | `Remove-TcVariableLink` | `PlcVariable` | 120 s | Remove a variable link (verified via ProduceMappingInfo) |
 
 ### Testing
 

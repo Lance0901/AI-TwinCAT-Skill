@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-28T10:03:08Z",
+    "generatedAt":  "2026-10-28T14:57:24Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -626,7 +626,7 @@
                   {
                       "name":  "IoScan",
                       "cmdlet":  "Invoke-TcIoScan",
-                      "description":  "Scan the I/O devices (EtherCAT ...) of the target and add them to the I/O tree. Requires the target in Config mode.",
+                      "description":  "Scan the I/O devices of the target (ProduceXml(false) on TIID, TE1000 6.6.2). Requires the target in Config mode, otherwise IO_SCAN_REQUIRES_CONFIG. Default: only returns data.devices, the I/O tree is not changed; Apply=true adds them (CreateChild + AddressInfo + ScanBoxes) and reads them back. No device found: success, devices=[] and data.warning.",
                       "timeoutMs":  180000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -635,7 +635,10 @@
                       "inputSchema":  {
                                           "type":  "object",
                                           "properties":  {
-
+                                                             "Apply":  {
+                                                                           "type":  "boolean",
+                                                                           "description":  "Add the found devices to the I/O tree (CreateChild + AddressInfo + ScanBoxes) and read them back."
+                                                                       }
                                                          },
                                           "required":  [
 
@@ -807,6 +810,34 @@
                                                          },
                                           "required":  [
                                                            "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "RemoveVariableLink",
+                      "cmdlet":  "Remove-TcVariableLink",
+                      "description":  "Removes the link between a PLC variable and an I/O variable (ITcSysManager.UnlinkVariables) and reads the mapping back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcVariable":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Full tree path of the PLC variable, e.g. \"TIPC^MyPlc^MyPlc Instance^PlcTask Inputs^MAIN.bIn\"."
+                                                                             },
+                                                             "IoChannel":  {
+                                                                               "type":  "string",
+                                                                               "description":  "Full tree path of the I/O variable. Omit to remove all links of -PlcVariable.",
+                                                                               "default":  ""
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "PlcVariable"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1048,7 +1079,7 @@
                   {
                       "name":  "SetVariableLink",
                       "cmdlet":  "Set-TcVariableLink",
-                      "description":  "Links a PLC variable to an I/O channel.",
+                      "description":  "Links a PLC variable to an I/O variable (ITcSysManager.LinkVariables) and reads the mapping back.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -1059,11 +1090,11 @@
                                           "properties":  {
                                                              "PlcVariable":  {
                                                                                  "type":  "string",
-                                                                                 "description":  "PLC variable path (e.g., \"MAIN.bInput1\")."
+                                                                                 "description":  "Full tree path of the PLC variable, e.g. \"TIPC^MyPlc^MyPlc Instance^PlcTask Inputs^MAIN.bIn\"."
                                                                              },
                                                              "IoChannel":  {
                                                                                "type":  "string",
-                                                                               "description":  "I/O channel tree path (e.g., \"TIID^Device 1^Term 1^Channel 1\")."
+                                                                               "description":  "Full tree path of the I/O variable, e.g. \"TIID^EtherCAT Master^Term 1 (EK1100)^Term 2 (EL1004)^Channel 1^Input\"."
                                                                            }
                                                          },
                                           "required":  [

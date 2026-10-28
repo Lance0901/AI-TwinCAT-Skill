@@ -76,6 +76,17 @@ $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] = 'DUT / GVL 已建立並存檔,�
 # a warning (實測 2026-10-28, #70: 4026.22 XAE in VS2022 / 4024 32-bit XAE Shell, registered tcauto)
 $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.openSolution),New-TcProject 不會建立:Solution.Create 會關掉目前的 solution 並丟掉未存的改動(#70)。建議在 XAE 手動建立新專案後用 Connect-TcIde -SolutionPath <新 .sln> 接上;要用 New-TcProject 就先在 XAE 存好、關掉目前的 solution 再呼叫。NewProject 目前不在 MCP 提供'
 
+# task 1.3 (complete-automation-interface): I/O scan and variable link (TE1000 v1.7.0 6.6.2, 5.1.1.2, 5.1.1.8, 5.1.3.4)
+$script:TcErrorHints['IO_SCAN_REQUIRES_CONFIG'] = 'I/O scan 需要 TwinCAT 在 Config mode(TE1000 6.6.2 Requirements);data.state 是目前狀態。先 Set-TcSystemState -State Config 再重跑 Invoke-TcIoScan(本機 UmRT 切 Config 可能 crash,#21,見 troubleshooting「已知限制」);掃完用 Enable-TcConfig -Force 回 Run'
+$script:TcErrorHints['IO_SCAN_FAILED'] = 'TIID.ProduceXml(false) / CreateChild / ConsumeXml 失敗:確認 target 在 Config、硬體已接上並上電、遠端 target 已 Set-TcTarget;用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog'
+$script:TcErrorHints['IO_SCAN_VERIFY_FAILED'] = '-Apply 建立的 device 讀回 I/O tree 時找不到(data.devices[].path):用 Get-TcIoTree 看實際內容,不要把這次掃描當成成功'
+$script:TcErrorHints['TREEITEM_NOT_FOUND'] = 'LookupTreeItem 找不到這個路徑(TSM_E_ITEMNOTFOUND,0x98510001)。兩端都要完整 tree path,用 ^ 分隔:PLC 端 TIPC^<Plc>^<Plc> Instance^PlcTask Inputs^MAIN.bIn(AT %I* 變數,要先 Build),I/O 端到 variable 那層,例如 TIID^<Device>^<Box>^<Term>^Channel 1^Input。用 Get-TcIoTree / Get-TcProjectTree 查路徑'
+$script:TcErrorHints['LINK_INVALID_ITEM_TYPE'] = 'TSM_E_INVALIDITEMTYPE:至少一端不是 variable(例如給了 Channel 節點而不是 Channel 1^Input)。兩端都要指到變數'
+$script:TcErrorHints['LINK_TYPE_MISMATCH'] = 'TSM_E_MISMATCHINGITEMS:兩個變數的型別或大小不相容(例如 PLC INT 對 BOOL input)。改 PLC 變數型別,或連到相同大小的 I/O 變數'
+$script:TcErrorHints['LINK_FAILED'] = 'LinkVariables 失敗，原因不在已知 TSM_E_* 內:看 error.message,用 Get-TcIdeModalDialog 檢查 dialog;確認兩端都是完整 tree path 的變數'
+$script:TcErrorHints['UNLINK_FAILED'] = 'UnlinkVariables 失敗：看 error.message,用 Get-TcIdeModalDialog 檢查 dialog;確認兩端都是完整 tree path 的變數'
+$script:TcErrorHints['LINK_VERIFY_FAILED'] = 'Link / Unlink 呼叫有返回，但 ProduceMappingInfo 讀回的 mapping 不符(data.remainingLinks,或讀不到 mapping):不要當成功。到 XAE 看該變數的 link,或重跑一次'
+
 function Get-TcErrorHint {
     <#
     .SYNOPSIS
