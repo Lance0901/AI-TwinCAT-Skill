@@ -11,6 +11,9 @@ function Add-TcDut {
     .PARAMETER AliasType
         Base type for Alias DUT.
     .NOTES
+        Project file (#76): after the readback the project file is saved and the .plcproj is
+        read back from disk (as Add-TcPou): success only with a <Compile Include> for
+        <Name>.TcDUT (data.projectSaved), otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*).
         BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
         lookup / kind / language / declare step on, or CreateChild itself failing) the solution
         is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
@@ -114,6 +117,10 @@ function Add-TcDut {
         }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
+        # #76: save the project file and read the new <Compile Include> back from disk
+        $save = Invoke-TcPlcObjectSave -ObjectPath $created.Path -ExpectFile "$Name.TcDUT" -What "DUT '$Name'"
+        if ($null -ne $save.Error) { return Register-TcCodeChange -Result $save.Error -Change "Add-TcDut $Name [created, project file not saved]" }
+
         $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             dutType     = $DutType
@@ -125,6 +132,7 @@ function Add-TcDut {
             duplicateCheckScope        = $created.DuplicateCheckScope
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
+            projectSaved               = $save.Saved
         })
         Register-TcCodeChange -Result $ok -Change "Add-TcDut $Name"
     }

@@ -13,6 +13,14 @@ function Add-TcPou {
         (same format on 4024 and 4026). Auto-detected if omitted: <Plc> Project^POUs, or the
         <Plc> Project node itself when it has no POUs folder (see data.folderPath).
     .NOTES
+        Project file (#76): CreateChild writes the new .TcPOU at once but changes the .plcproj
+        only in XAE memory. After the readback the project file is saved (Save-TcPlcProject:
+        DTE Project.Save of the .tsproj, which writes the .tsproj and its .plcproj and no editor
+        document) and the .plcproj is read back from disk: success only when it has a
+        <Compile Include> for <Name>.TcPOU (data.projectSaved: plc, tsproj, plcproj, savedFiles,
+        verifiedFiles, saveSec). Otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*),
+        data.objectPath / createdInMemory / savedToDisk = false: the POU exists only in XAE memory
+        (closing the solution without saving would drop it).
         BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
         lookup / kind / language / declare step on, or CreateChild itself failing) the solution
         is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
@@ -85,6 +93,11 @@ function Add-TcPou {
         }
         $kind = Get-TcPlcObjectKind -ItemType $created.ItemType
 
+        # #76: CreateChild only changes the .plcproj in XAE memory; save the project file and
+        # read the new <Compile Include> back from disk before reporting success.
+        $save = Invoke-TcPlcObjectSave -ObjectPath $created.Path -ExpectFile "$Name.TcPOU" -What "POU '$Name'"
+        if ($null -ne $save.Error) { return Register-TcCodeChange -Result $save.Error -Change "Add-TcPou $Name [created, project file not saved]" }
+
         $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             type        = $Type
@@ -97,6 +110,7 @@ function Add-TcPou {
             duplicateCheckScope        = $created.DuplicateCheckScope
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
+            projectSaved               = $save.Saved
         })
         Register-TcCodeChange -Result $ok -Change "Add-TcPou $Name"
     }

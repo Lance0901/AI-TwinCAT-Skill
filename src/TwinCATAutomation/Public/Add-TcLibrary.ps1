@@ -7,6 +7,11 @@ function Add-TcLibrary {
     .PARAMETER Version
         Optional library version. Uses latest if omitted.
     .NOTES
+        Project file (#76): the library reference is stored in the .plcproj, which CreateChild
+        only changes in XAE memory. The project file is saved (Save-TcPlcProject) and read back
+        from disk: success only when it lists a library reference named -Name
+        (PlaceholderReference / LibraryReference Include, Namespace or DefaultResolution;
+        data.projectSaved), otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*).
         BUILD_REQUIRED (#65): after CreateChild on the References node was called (success, or
         CreateChild failing) the solution is recorded as 'code-changed' (Register-TcCodeChange):
         Enable-TcConfig and Enter-TcPlcOnline refuse until a complete Build-TcProject.
@@ -47,9 +52,15 @@ function Add-TcLibrary {
         $createCalled = $true   # #65: the References may change from here on
         Invoke-TcComRetry -OperationName "Add library $Name" -ScriptBlock { Write-Output -NoEnumerate $refs.CreateChild($libRef, 0) } | Out-Null
 
+        # #76: the reference lives in the .plcproj; save it and read it back from disk
+        $refsPath = [string](Invoke-TcComRetry -OperationName 'References.PathName' -ScriptBlock { [string]$refs.PathName })
+        $save = Invoke-TcPlcObjectSave -ObjectPath $refsPath -ExpectLibrary $Name -What "Library reference '$Name'"
+        if ($null -ne $save.Error) { return Register-TcCodeChange -Result $save.Error -Change "Add-TcLibrary $Name (version $Version) [added, project file not saved]" }
+
         $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
-            library = $Name
-            version = $Version
+            library      = $Name
+            version      = $Version
+            projectSaved = $save.Saved
         })
         Register-TcCodeChange -Result $ok -Change "Add-TcLibrary $Name (version $Version)"
     }

@@ -22,9 +22,11 @@ function Reset-TcSolution {
             you want to reload the project?" (Kind 'reload-prompt', reloadTarget 'project').
             This one is answered Yes: XAE reloads the project itself, so no close / reopen
             is needed.
-        Write-TcPouCode / Add-TcPou write into the IDE's edit buffer through COM (the file
-        on disk is only written when the IDE saves, e.g. before a Build), so they never
-        trigger the prompt and never need this.
+        Write-TcPouCode / Add-TcPou write through COM, so they never trigger the prompt and
+        never need this. Add-TcPou / Add-TcDut / Add-TcGvl / Add-TcLibrary save the project file
+        (.plcproj) themselves (#76); a new object whose .plcproj entry was never saved (e.g.
+        created in the XAE GUI or through raw COM) would be dropped by Solution.Close, which is
+        what step 1b guards against.
 
         Steps:
           1. Get-TcIdeModalDialog, repeated while reload prompts keep coming (at most 5):
@@ -44,6 +46,21 @@ function Reset-TcSolution {
           LookupTreeItem('TIPC'). If Connect-TcIde fails (the previous connection state is
           restored) or the probe fails, the full path below runs on the old DTE
           (data.yesPathError says why).
+          1b. unsaved project structure (#76; skipped with -DiscardProjectChanges): DTE
+             Project.Saved / IsDirty do not report an unsaved CreateChild (measured 2026-10-28,
+             4026 VisualStudio.DTE.17.0), so Get-TcUnsavedPlcObject compares the top-level PLC
+             objects in XAE (POU / DUT / GVL / ITF) with the <Compile Include>
+             list of each PLC's .plcproj on disk (data.projectCheck: per PLC missingOnDisk,
+             extraOnDisk, complete).
+             - objects missing on disk only: Save-TcPlcProject (DTE Project.Save of the .tsproj:
+               writes the .tsproj and .plcproj, no editor document) and the .plcproj is read back;
+               data.savedProjects lists what was saved. Save / readback failure ->
+               PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG), nothing closed.
+             - objects missing on disk AND the .plcproj on disk lists objects XAE does not have
+               (or the comparison was incomplete): the file was changed on disk as well, saving
+               would overwrite it -> PROJECT_UNSAVED_CHANGES, nothing closed.
+             Unsaved library references, tasks or I/O changes are not detected (known limit).
+             Editor documents are never saved: the point of the reset is to drop them.
           2. Documents.CloseAll(vsSaveChangesNo): XAE restores the document windows of
              the last session when a solution is (re)opened, so a changed .TcPOU that
              stays open would trigger the prompt again on the next disk edit.
@@ -63,6 +80,10 @@ function Reset-TcSolution {
     .PARAMETER TimeoutSec
         Expected upper bound for each of Documents.CloseAll, Solution.Close and
         Solution.Open (Invoke-TcComRetry -TimeoutSec). Default 120.
+    .PARAMETER DiscardProjectChanges
+        Skip step 1b: close without saving even when PLC objects in XAE are missing from
+        the .plcproj on disk (they are dropped). Use after PROJECT_UNSAVED_CHANGES when the disk
+        version is the one to keep.
     .EXAMPLE
         # AI changed MAIN.TcPOU on disk while it was open in an XAE editor:
         Reset-TcSolution
@@ -78,6 +99,11 @@ function Reset-TcSolution {
         data.answeredYes           the project reload prompt was answered Yes (our click was sent)
         data.reopenedSolution      Solution.Close + Solution.Open were done (false on the
                                    Yes-only path)
+        data.projectCheck          step 1b: checked, plcs[] (plc, plcproj, missingOnDisk,
+                                   extraOnDisk, complete, visited), visited, sec; or checked =
+                                   false + reason ($null on the Yes-only path)
+        data.savedProjects         project files saved by step 1b: plc, plcproj, tsproj,
+                                   savedFiles, savedObjects, saveSec (empty when none needed it)
         data.closedDocuments       documents closed before Solution.Close
         data.closed                Solution.Close returned
         data.closeSec              seconds for CloseAll + Solution.Close
@@ -94,6 +120,7 @@ function Reset-TcSolution {
         Errors: NOT_CONNECTED, NO_SOLUTION, FILE_NOT_FOUND, IDE_MODAL_DIALOG, RESET_SOLUTION_MISMATCH
         (the IDE has another solution open than the module expected; nothing closed, #29),
         RESET_SOLUTION_UNVERIFIED (the open solution could not be read to compare; nothing closed),
+        PROJECT_SAVE_FAILED / PROJECT_UNSAVED_CHANGES (step 1b, nothing closed),
         SOLUTION_CLOSE_FAILED, PROJECT_OPEN_FAILED (or IDE_BUSY / IDE_TIMEOUT /
         IDE_CRASHED from the COM calls), and any Connect-TcIde error code when the
         reconnect fails (data.closed / data.reopened say how far it got).
@@ -119,7 +146,10 @@ function Reset-TcSolution {
 
         [Parameter()]
         [ValidateRange(5, 600)]
-        [int]$TimeoutSec = 120
+        [int]$TimeoutSec = 120,
+
+        [Parameter()]
+        [switch]$DiscardProjectChanges
     )
 
     try { Assert-TcConnection } catch {
@@ -417,6 +447,56 @@ function Reset-TcSolution {
                 -ErrorMessage "Reset-TcSolution not attempted: the IDE (pid $previousPid) has '$openNorm' open, not '$expNorm' that the module expected. Nothing was closed." `
                 -ErrorCode 'RESET_SOLUTION_MISMATCH' -Hint (Get-TcErrorHint -Code 'RESET_SOLUTION_MISMATCH') `
                 -Data (Get-ProgressData -Extra @{ openSolution = $openNorm; expectedSolution = $expNorm }))
+        }
+    }
+
+    # --- 1b. unsaved project structure (#76): save only the project files, never editor documents ---
+    $progress['projectCheck'] = $null
+    $progress['savedProjects'] = @()
+    if ($DiscardProjectChanges) {
+        $progress.projectCheck = [PSCustomObject]@{ checked = $false; reason = 'DiscardProjectChanges' }
+    }
+    else {
+        $checkSm = Get-TcSysManager
+        if ($null -eq $checkSm) {
+            $progress.projectCheck = [PSCustomObject]@{ checked = $false; reason = 'no ITcSysManager (no TwinCAT project in the solution)' }
+        }
+        else {
+            $unsaved = $null
+            try { $unsaved = Get-TcUnsavedPlcObject -SysManager $checkSm }
+            catch {
+                return Complete-TcResetFailure -Step 'project check' -Result (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_SAVE_FAILED' -MessagePrefix 'Reset-TcSolution not attempted: comparing the PLC objects in XAE with the .plcproj on disk failed, nothing was closed' -Data (Get-ProgressData))
+            }
+            $plcInfo = @($unsaved.Plcs | ForEach-Object {
+                [PSCustomObject]@{ plc = $_.plc; plcproj = $_.plcproj; missingOnDisk = @($_.missingOnDisk | ForEach-Object { $_.file }); extraOnDisk = @($_.extraOnDisk); complete = $_.complete; visited = $_.visited }
+            })
+            $progress.projectCheck = [PSCustomObject]@{ checked = $true; plcs = $plcInfo; visited = $unsaved.Visited; sec = $unsaved.Sec }
+            $toSave = @($unsaved.Plcs | Where-Object { @($_.missingOnDisk).Count -gt 0 })
+            $conflicts = @($toSave | Where-Object { @($_.extraOnDisk).Count -gt 0 -or -not $_.complete })
+            if ($conflicts.Count -gt 0) {
+                $c = $conflicts[0]
+                return Complete-TcResetFailure -Step 'project check' -Result (New-TcResult -Success $false -ErrorCode 'PROJECT_UNSAVED_CHANGES' -Hint (Get-TcErrorHint -Code 'PROJECT_UNSAVED_CHANGES') -Data (Get-ProgressData) `
+                    -ErrorMessage ("Reset-TcSolution not attempted: PLC '$($c.plc)' has objects in XAE that '$($c.plcproj)' on disk does not list ($((@($c.missingOnDisk | ForEach-Object { $_.file })) -join ', ')), " +
+                        $(if (@($c.extraOnDisk).Count -gt 0) { "and the file on disk lists objects XAE does not have ($(@($c.extraOnDisk) -join ', ')): it was changed on disk too." } else { 'and the comparison is incomplete (nodes skipped or over the limit).' }) +
+                        ' Saving would overwrite the disk changes, closing would drop the XAE ones. Nothing was closed.'))
+            }
+            $saved = [System.Collections.Generic.List[object]]::new()
+            foreach ($p in $toSave) {
+                $files = @($p.missingOnDisk | ForEach-Object { $_.file })
+                try {
+                    $s = Save-TcPlcProject -PlcName $p.plc -ExpectFile $files
+                    if ($s.Contains('ModalDialog')) {
+                        $progress.savedProjects = $saved.ToArray()
+                        return Complete-TcResetFailure -Step 'project save' -Result (New-TcModalDialogResult -Dialog $s.ModalDialog -Operation "Reset-TcSolution (saving the project file of PLC '$($p.plc)' before closing; nothing closed)" -Data (Get-ProgressData))
+                    }
+                    $saved.Add([PSCustomObject]@{ plc = $p.plc; plcproj = $s.plcproj; tsproj = $s.tsproj; savedFiles = $s.savedFiles; savedObjects = $files; saveSec = $s.saveSec })
+                }
+                catch {
+                    $progress.savedProjects = $saved.ToArray()
+                    return Complete-TcResetFailure -Step 'project save' -Result (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_SAVE_FAILED' -MessagePrefix "Reset-TcSolution not attempted: PLC '$($p.plc)' has unsaved objects ($($files -join ', ')) and saving its project file failed, nothing was closed" -Data (Get-ProgressData))
+                }
+            }
+            $progress.savedProjects = $saved.ToArray()
         }
     }
 

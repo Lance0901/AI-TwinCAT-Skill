@@ -119,7 +119,18 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | `.plcproj` 被改寫(產生器、git checkout) | 跳 modal「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」(`reload-prompt`、`ReloadTarget = project`),內容相同也會跳 | 改完**立刻** `Reset-TcSolution`:它對 project 提示按 Yes,XAE 自己 reload 專案,只重連不 close/reopen,比檔案提示的流程快(`data.answeredYes = true`、`data.reopenedSolution = false`);若同時還有 .TcPOU 的檔案提示,它會接著關掉並走完整 close/reopen |
 | `Project.UnloadProject` / `ReloadProject` | 回「not available」、`GetItem` 為 null | 不可行,Automation Interface 沒有 reload 命令 |
 
-`Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120]` 的步驟:(1) `Get-TcIdeModalDialog`(連續出現的 reload 提示最多處理 5 個):`ReloadTarget = project` 就按 Yes(`Close-TcMessageBox -Answer Yes`,等最多 15 s 消失,`data.answeredYes = true`);`ReloadTarget = file`(或 Yes 失敗的 project 提示)就對該視窗(只接受自己 IDE pid 的)送 WM_CLOSE,等它消失(真機 2 s);兩者都設 `data.dismissedReloadPrompt = true`、`data.reloadTarget`;其他 modal 回 `IDE_MODAL_DIALOG`,因為 `Solution.Close` 也會被擋。只按過 Yes(沒有用 WM_CLOSE 關過檔案提示)時跳過 (2)~(4),直接 (5) 重連並探測 `LookupTreeItem('TIPC')`,成功就回傳(`data.reopenedSolution = false`),探測失敗才繼續 (2)~(5)。(2) `Documents.CloseAll(vsSaveChangesNo)`,`data.closedDocuments`。(3) `Solution.Close($false)`、釋放舊 `ITcSysManager`。(4) 在**同一個** `$dte` 上 `Solution.Open(<sln>)`(真機 7~9 s,`data.openSec`):`Connect-TcIde -SolutionPath` 不會接沒開 solution 的 IDE(那是別人的,見 PR #9),所以必須在手上這個實例重開。(5) `Connect-TcIde -SolutionPath <sln> -ProgId <同一個> -NoLaunch`,以 solution-match 接回同 pid、重取 `ITcSysManager`、重開 SilentMode(真機 12~13 s,`data.connectSec`);`data.sameIde` 回報。全程 `data.totalSec` 實測 22~25 s(2026-10-20 真機 10/10 PASS,含 reload 框跳著時呼叫的情境)。ADS 連線不受影響;`Enable-TcConfig` 後的 PLC 不受影響。solution 路徑由 `Connect-TcIde` / `Open-TcProject` 記住(`$script:TcSolutionPath`),`Disconnect-TcIde` 清掉。中途失敗時 `data.closed` / `data.reopened` 說明做到哪一步。
+**新物件與 .plcproj(#76)**:`CreateChild` 建的 POU / DUT / GVL 會立刻寫出自己的 .TcPOU / .TcDUT / .TcGVL,但 `.plcproj`(新物件的 `<Compile Include>`;新增 library 的 `<LibraryReference>` 也是)只改在 XAE 記憶體,要等存檔(或 Build)才落地;`Reset-TcSolution` 的 `Solution.Close($false)` 之後重開,新物件就從專案消失(實測 2026-10-28,4026 VisualStudio.DTE.17.0,`C:\Temp\Verify-repro-axis`)。現在 `Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好後會只存專案檔,並從磁碟讀回 .plcproj 確認有新項目才回 success(`data.projectSaved`,失敗見「PROJECT_SAVE_FAILED」);`Reset-TcSolution` 關閉前也會比對(見下方步驟 (1b))。存檔用的 API(實測 2026-10-28,4026 VisualStudio.DTE.17.0):
+
+| 候選 | 結果 |
+|---|---|
+| DTE `Project.Save()`(.tsproj 那個 project;[InfoSys「Accessing TwinCAT configuration」](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html) 範例用來存專案) | 寫出 .tsproj 與巢狀的 .plcproj(新 `<Compile Include>` 出現),約 0.1-0.2 s;IDE 裡未存的文字文件**沒有**被存。採用 |
+| `ITcSysManager.SaveConfiguration(<tsproj>)` | 丟例外「SaveConfiguration only supported in Automation Legacy Mode!. Please use standard DTE. Solution features for Project persistance instead!」 |
+| DTE `File.SaveAll` | 也會存 .plcproj,但同時把 IDE 裡未存的文件寫到磁碟。不用 |
+| DTE `Project.Saved` / `IsDirty`、`Solution.Saved` / `IsDirty` | 未存的 `CreateChild` 之後仍是 True / False,不能拿來判斷 dirty;巢狀 PLC project 也不在 `Project.ProjectItems` 裡 |
+
+`Project.Save()` 會不會順便寫出 PLC editor 裡未存的 POU 內容沒驗到(不經 GUI 做不出 dirty 的 PLC editor buffer)。
+
+`Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120]` 的步驟:(1) `Get-TcIdeModalDialog`(連續出現的 reload 提示最多處理 5 個):`ReloadTarget = project` 就按 Yes(`Close-TcMessageBox -Answer Yes`,等最多 15 s 消失,`data.answeredYes = true`);`ReloadTarget = file`(或 Yes 失敗的 project 提示)就對該視窗(只接受自己 IDE pid 的)送 WM_CLOSE,等它消失(真機 2 s);兩者都設 `data.dismissedReloadPrompt = true`、`data.reloadTarget`;其他 modal 回 `IDE_MODAL_DIALOG`,因為 `Solution.Close` 也會被擋。只按過 Yes(沒有用 WM_CLOSE 關過檔案提示)時跳過 (2)~(4),直接 (5) 重連並探測 `LookupTreeItem('TIPC')`,成功就回傳(`data.reopenedSolution = false`),探測失敗才繼續 (2)~(5)。(1b)(#76,`-DiscardProjectChanges` 跳過)比對每個 PLC 在 XAE 裡的頂層物件(POU / DUT / GVL / ITF)與磁碟 .plcproj 的 `<Compile Include>`(`data.projectCheck`):只有 XAE 多出物件 → 只存專案檔(DTE `Project.Save()`,不存 editor 文件)並讀回,`data.savedProjects` 列出存了什麼,失敗回 `PROJECT_SAVE_FAILED`、不關 solution;磁碟 .plcproj 也多出 XAE 沒有的物件(或比對不完整)→ `PROJECT_UNSAVED_CHANGES`、不關 solution。未存的 library reference / task / I/O 變更偵測不到。(2) `Documents.CloseAll(vsSaveChangesNo)`,`data.closedDocuments`。(3) `Solution.Close($false)`、釋放舊 `ITcSysManager`。(4) 在**同一個** `$dte` 上 `Solution.Open(<sln>)`(真機 7~9 s,`data.openSec`):`Connect-TcIde -SolutionPath` 不會接沒開 solution 的 IDE(那是別人的,見 PR #9),所以必須在手上這個實例重開。(5) `Connect-TcIde -SolutionPath <sln> -ProgId <同一個> -NoLaunch`,以 solution-match 接回同 pid、重取 `ITcSysManager`、重開 SilentMode(真機 12~13 s,`data.connectSec`);`data.sameIde` 回報。全程 `data.totalSec` 實測 22~25 s(2026-10-20 真機 10/10 PASS,含 reload 框跳著時呼叫的情境)。ADS 連線不受影響;`Enable-TcConfig` 後的 PLC 不受影響。solution 路徑由 `Connect-TcIde` / `Open-TcProject` 記住(`$script:TcSolutionPath`),`Disconnect-TcIde` 清掉。中途失敗時 `data.closed` / `data.reopened` 說明做到哪一步。
 
 `Get-TcIdeModalDialog` 的結果現在多 `Kind`(`reload-prompt` / `unknown`)、`ReloadTarget`(`file` / `project` / `$null`)與 `Buttons`,`IDE_MODAL_DIALOG` 結果多 `data.dialogKind` / `data.dialogReloadTarget` / `data.dialogButtons` 與 `data.dialog`(`{title, text, kind, reloadTarget, buttons}`);MCP 的 `GetIdeModalDialog` 回 `data.dialog.kind` / `reloadTarget` / `hwnd` / `buttons`。`reload-prompt` 的 `error.hint` 直接寫這段流程。VS2022 WPF 訊息框(見上)的 `Buttons[]` 多 `automationId`,`text` 是完整內文。
 
@@ -491,6 +502,18 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Reset-TcSolution` 回 `SOLUTION_CLOSE_FAILED`(`Solution.Close` COM 呼叫失敗;被 dialog 擋住時是 `IDE_MODAL_DIALOG` / `IDE_BUSY`)或 `NO_SOLUTION`(沒有開啟的 solution、也沒給 `-SolutionPath`)。
 - **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog;`NO_SOLUTION` 就 `Connect-TcIde -SolutionPath <sln>`。關掉之後重開失敗時,結果保留 `Connect-TcIde` 的 code / hint,`data.closed = true` 表示 solution 已關、要自己重連。
+
+### PROJECT_SAVE_FAILED
+
+- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>` / library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。`Reset-TcSolution` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。
+- **為什麼(#76)**:`CreateChild` 只改 XAE 記憶體裡的 .plcproj,不存就關 solution(`Reset-TcSolution -DiscardProjectChanges`、`Disconnect-TcIde -Quit`)物件會消失,所以讀回不到不能回 success。存檔用 DTE `Project.Save()`(見「磁碟改檔的正確做法」的比較表)。
+- **下一步**:不要 `-DiscardProjectChanges`;`Get-TcIdeModalDialog` 看有沒有 dialog,確認 .plcproj 不是唯讀 / 被鎖,再 `Reset-TcSolution`(會先只存專案檔)或 `Build-TcProject`(build 前 XAE 會存檔),之後用 `Get-TcProjectTree -PlcOnly` 確認物件還在。
+
+### PROJECT_UNSAVED_CHANGES
+
+- **現象**:`Reset-TcSolution` 沒有關 solution:某個 PLC 在 XAE 裡有 .plcproj 沒列的物件(`data.projectCheck.plcs[].missingOnDisk`),同時磁碟上的 .plcproj 也列了 XAE 沒有的物件(`extraOnDisk`),或比對不完整(`complete = false`)。
+- **為什麼(#76)**:兩邊都改過:存檔會蓋掉磁碟的改動,直接關掉會丟掉 XAE 的物件,模組不替你選。
+- **下一步**:要磁碟版本 → `Reset-TcSolution -DiscardProjectChanges`;要 XAE 版本 → `Build-TcProject`(會存檔)後再 `Reset-TcSolution`。
 
 ### PROJECT_OPEN_FAILED
 
