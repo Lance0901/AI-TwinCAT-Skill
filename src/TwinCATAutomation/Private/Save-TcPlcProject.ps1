@@ -68,9 +68,10 @@ function Get-TcPlcProjectFile {
         an Independent Project File",
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842602763.html): InfoSys
         does not say where the .xti lies nor what PrjFilePath is relative to there. Not verified
-        (no such project here): when no .tsproj lists the PLC, every *.xti below the .tsproj folder
-        is searched for the same element and PrjFilePath is tried relative to the .tsproj folder,
-        then to the .xti folder; only an existing .plcproj is accepted (ResolvedVia 'xti').
+        (no such project here): when no .tsproj lists the PLC, only <tsproj folder>\_Config\PLC\*.xti
+        (not recursive) is searched for the same element and PrjFilePath is tried relative to the
+        .tsproj folder, then to the .xti folder; only an existing .plcproj is accepted (ResolvedVia
+        'xti'). More than one candidate throws "save: locate: ..." (no guessing).
         Several .tsproj listing the same PLC name: the first is used and Warning says so.
         Throws "save: locate: ..." when nothing matches (a .tsproj that cannot be read is named).
         Returns @{ DteProject; TsProjFile; PlcProjFile; UniqueName; ResolvedVia ('tsproj' | 'xti');
@@ -114,10 +115,13 @@ function Get-TcPlcProjectFile {
     }
     if ($found.Count -eq 0) {
         # Independent project file (.xti): best effort, see .DESCRIPTION (not verified).
+        # Only <tsproj folder>\_Config\PLC\*.xti (no recursive search); several candidates -> throw.
         foreach ($p in @($projects)) {
             if (-not (Test-Path -LiteralPath $p.FullName)) { continue }
             $tsDir = [IO.Path]::GetDirectoryName($p.FullName)
-            foreach ($xti in @(Get-ChildItem -LiteralPath $tsDir -Recurse -Filter '*.xti' -File -ErrorAction SilentlyContinue)) {
+            $xtiDir = Join-Path $tsDir '_Config\PLC'
+            if (-not (Test-Path -LiteralPath $xtiDir -PathType Container)) { continue }
+            foreach ($xti in @(Get-ChildItem -LiteralPath $xtiDir -Filter '*.xti' -File -ErrorAction SilentlyContinue)) {
                 $xml = New-Object System.Xml.XmlDocument
                 try { $xml.Load($xti.FullName) } catch { $problems.Add("'$($xti.FullName)' could not be read ($($_.Exception.Message))"); continue }
                 foreach ($node in @($xml.SelectNodes('//Project[@PrjFilePath]'))) {
@@ -134,6 +138,10 @@ function Get-TcPlcProjectFile {
                     }
                 }
             }
+        }
+        if ($found.Count -gt 1) {
+            $cands = @($found | ForEach-Object { $_.PlcProjFile }) -join ', '
+            throw "save: locate: PLC '$PlcName' is not listed in a .tsproj and $($found.Count) independent project file candidates (_Config\PLC\*.xti) match it ($cands); not guessing which one to use."
         }
     }
     if ($found.Count -eq 0) {
@@ -213,14 +221,17 @@ function Invoke-TcProjectSaveWithDeadline {
         in a separate STA runspace on its own reference to the SAME IDE (DTE from the Running
         Object Table by the IDE pid, "!<ProgId>:<pid>", ComRotHelper); the project is the one of
         Solution.Projects whose FullName is -TsProjFile. RPC_E_CALL_REJECTED is retried inside the
-        runspace (every 500 ms) until the deadline. The caller waits at most -TimeoutSec and looks
+        runspace (every 500 ms) until 1 s before the deadline and never after the caller set the
+        shared cancel flag (on timeout), so no retried Save() starts after PROJECT_SAVE_TIMEOUT.
+        The caller waits at most -TimeoutSec and looks
         for a modal dialog every 2 s ($script:TcLastModalDialog; never touches a window).
         On timeout the background call is abandoned (it cannot be cancelled; the IDE keeps
         working on it) and "PROJECT_SAVE_TIMEOUT: ..." is thrown; diagnostics in
         $script:TcLastProjectSaveDiagnostics: dialog (Title/Text), ideAlive, ideResponding,
         readOnlyFiles (-TsProjFile / -PlcProjFile with the ReadOnly attribute), elapsedSec.
         Errors of the call: IDE_CRASHED when the IDE process is gone, IDE_MODAL_DIALOG when a
-        dialog was seen, otherwise "save: Project.Save of '<tsproj>' failed (<message>)".
+        dialog is still up when the call returned (scanned again then; a dialog that is gone is
+        only mentioned), otherwise "save: Project.Save of '<tsproj>' failed (<message>)".
     .PARAMETER TsProjFile
         Full path of the .tsproj (DTE Project.FullName).
     .PARAMETER PlcProjFile
@@ -229,7 +240,7 @@ function Invoke-TcProjectSaveWithDeadline {
         Deadline for the call.
     .PARAMETER SaveScript
         Test hook: script text run in the background runspace instead of the real save
-        (param($DtePid, $TsProj)); used by tests/Unit/project-save.ps1.
+        (param($DtePid, $TsProj, $DeadlineSec, $Cancel)); used by tests/Unit/project-save.ps1.
     #>
     [CmdletBinding()]
     param(
@@ -245,7 +256,7 @@ function Invoke-TcProjectSaveWithDeadline {
     if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
 
     $realScript = @'
-param($DtePid, $TsProj, $DeadlineSec)
+param($DtePid, $TsProj, $DeadlineSec, $Cancel)
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 $entry = $null
 foreach ($e in [ComRotHelper]::GetAllDteInstances()) {
@@ -265,12 +276,14 @@ while ($true) {
             if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals([IO.Path]::GetFullPath($full), $want, [StringComparison]::OrdinalIgnoreCase)) { $proj = $p; break }
         }
         if ($null -eq $proj) { throw "no project of the solution has FullName '$want'" }
+        # the caller gave up (PROJECT_SAVE_TIMEOUT reported): never start a save after that
+        if ($null -ne $Cancel -and $Cancel['Cancel']) { throw 'cancelled: the caller reported PROJECT_SAVE_TIMEOUT' }
         $proj.Save()
         'done'
         return
     }
     catch {
-        if ($_.Exception.ToString() -match '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER' -and $sw.Elapsed.TotalSeconds -lt $DeadlineSec) { Start-Sleep -Milliseconds 500; continue }
+        if ($_.Exception.ToString() -match '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER' -and $sw.Elapsed.TotalSeconds -lt $DeadlineSec -and -not ($null -ne $Cancel -and $Cancel['Cancel'])) { Start-Sleep -Milliseconds 500; continue }
         throw
     }
 }
@@ -287,7 +300,12 @@ while ($true) {
     $rs.Open()
     $ps = [PowerShell]::Create()
     $ps.Runspace = $rs
-    $null = $ps.AddScript($scriptText).AddArgument($idePid).AddArgument($TsProjFile).AddArgument($TimeoutSec)
+    # The background retry stops 1 s before the caller's deadline and on the shared cancel flag,
+    # so no retried Save() starts after PROJECT_SAVE_TIMEOUT was reported (a Save() already
+    # running when the deadline passes cannot be stopped; the message says so).
+    $cancel = [hashtable]::Synchronized(@{ Cancel = $false })
+    $retryDeadline = [Math]::Max(0, $TimeoutSec - 1)
+    $null = $ps.AddScript($scriptText).AddArgument($idePid).AddArgument($TsProjFile).AddArgument($retryDeadline).AddArgument($cancel)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $async = $ps.BeginInvoke()
     $nextScan = 2.0
@@ -322,17 +340,25 @@ while ($true) {
                     $script:TcIdeProcessId = $null
                     throw "IDE_CRASHED: the IDE process (pid $idePid) no longer exists after 'Project.Save' failed ($([int]$sw.Elapsed.TotalSeconds) s, original error: $msg). The XAE crashed; module IDE state was reset."
                 }
-                if ($null -ne $script:TcLastModalDialog) {
-                    $t = [string]$script:TcLastModalDialog.Text
+                # A dialog seen during the call may be gone by now: scan again, only a dialog that
+                # is still up makes it IDE_MODAL_DIALOG.
+                $seen = $script:TcLastModalDialog
+                $dlgNow = $null
+                try { $dlgNow = Get-TcIdeModalDialog } catch { $dlgNow = $null }
+                $script:TcLastModalDialog = $dlgNow
+                if ($null -ne $dlgNow) {
+                    $t = [string]$dlgNow.Text
                     if ($t.Length -gt 200) { $t = $t.Substring(0, 200) }
-                    throw "IDE_MODAL_DIALOG: $($script:TcLastModalDialog.Title) | $t (operation 'Project.Save', original error: $msg)"
+                    throw "IDE_MODAL_DIALOG: $($dlgNow.Title) | $t (operation 'Project.Save', original error: $msg)"
                 }
-                throw "save: Project.Save of '$TsProjFile' failed ($msg)."
+                $seenNote = if ($null -ne $seen) { "; a dialog '$($seen.Title)' was up during the call and is gone now" } else { '' }
+                throw "save: Project.Save of '$TsProjFile' failed ($msg)$seenNote."
             }
             return
         }
 
-        # --- deadline passed: collect diagnostics, abandon the call ---
+        # --- deadline passed: stop the background retries, collect diagnostics, abandon the call ---
+        $cancel['Cancel'] = $true
         $diag = [ordered]@{ dialog = $null; ideAlive = $null; ideResponding = $null; readOnlyFiles = @(); elapsedSec = [int]$sw.Elapsed.TotalSeconds }
         try {
             $dlg = Get-TcIdeModalDialog
@@ -511,8 +537,8 @@ function Get-TcUnsavedPlcObject {
         (Get-TcPlcProjectContent) is compared with that list:
           missingOnDisk  objects in XAE memory without a <Compile Include> (by file name):
                          name, path, file, relativePath, fileExists (the object file is on disk
-                         at relativePath or anywhere below the .plcproj folder; false = it was
-                         deleted on disk)
+                         at relativePath below the .plcproj folder; a file of the same name in
+                         another folder does not count; false = it was deleted on disk)
           extraOnDisk    <Compile Include> .TcPOU/.TcDUT/.TcGVL/.TcIO entries whose file name is
                          no object file of the walk. Folder names are not used; a node of an
                          ItemType without a known extension (e.g. a type not in the table) with
@@ -613,8 +639,8 @@ function Get-TcUnsavedPlcObject {
             $null = $modelFiles.Add($leaf)
             if ($content.CompileLeaf.Contains($leaf)) { continue }
             $rel = Get-TcPlcObjectRelativeFile -TreePath ([string]$o.Path) -Extension ([string]$o.Ext)
-            $exists = Test-Path -LiteralPath (Join-Path $plcDir $rel)
-            if (-not $exists) { $exists = $null -ne (Get-ChildItem -LiteralPath $plcDir -Recurse -Filter $leaf -File -ErrorAction SilentlyContinue | Select-Object -First 1) }
+            # Only the file at relativePath counts: a file with the same name elsewhere is another object.
+            $exists = Test-Path -LiteralPath (Join-Path $plcDir $rel) -PathType Leaf
             $missing.Add([PSCustomObject]@{ name = [string]$o.Name; path = [string]$o.Path; file = $leaf; relativePath = $rel; fileExists = [bool]$exists })
         }
         $extra = @($content.Compile | Where-Object {

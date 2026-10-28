@@ -174,6 +174,17 @@ try {
     # S1: PLC only in an independent project file (.xti)
     $f = & $mod { Get-TcPlcProjectFile -PlcName 'PlcX' }
     Check 'locate-xti' ($f.PlcProjFile -eq $plcprojX -and $f.ResolvedVia -eq 'xti' -and $f.Warning -match 'not verified') "plcproj=$($f.PlcProjFile) via=$($f.ResolvedVia)"
+    # S1 (review): two _Config\PLC\*.xti candidates -> error, no guessing; an .xti elsewhere is not searched
+    foreach ($n in 'PlcY1', 'PlcY2') {
+        Set-Content -LiteralPath (Join-Path $root "Sys\_Config\PLC\$n.xti") -Encoding utf8 -Value '<?xml version="1.0"?><TcSmItem><Project GUID="{4}" Name="PlcY" PrjFilePath="..\..\PlcX\PlcX.plcproj"/></TcSmItem>'
+    }
+    $msg = $null
+    try { $null = & $mod { Get-TcPlcProjectFile -PlcName 'PlcY' } } catch { $msg = $_.Exception.Message }
+    Check 'locate-xti-ambiguous' ($msg -match '^save: locate:' -and $msg -match '2 independent project file candidates') "$msg"
+    Set-Content -LiteralPath (Join-Path $root 'Sys\PlcX\PlcZ.xti') -Encoding utf8 -Value '<?xml version="1.0"?><TcSmItem><Project GUID="{5}" Name="PlcZ" PrjFilePath="PlcX.plcproj"/></TcSmItem>'
+    $msg = $null
+    try { $null = & $mod { Get-TcPlcProjectFile -PlcName 'PlcZ' } } catch { $msg = $_.Exception.Message }
+    Check 'locate-xti-not-recursive' ($msg -match '^save: locate: no \.tsproj') "$msg"
 
     # --- Get-TcUnsavedPlcObject (S3 / S4 / N2) on a mock tree ---
     $global:Tree = @{}
@@ -211,6 +222,8 @@ try {
     $global:Tree['TIPC^Plc3^Plc3 Project'] = $global:Tree[$P2]   # Plc3: tree readable, but no .tsproj lists it
     Write-Plcproj -Compile @('POUs\MAIN.TcPOU', 'POUs\fb_case.TcPOU', 'DUTs\ST_A.TcDUT', 'POUs\FB_Gone.TcPOU', 'POUs\Sub.TcPOU', 'Visu1.TcPOU', 'POUs\Notes.txt')
     Set-Content -LiteralPath (Join-Path $root 'Sys\Plc\POUs\Sub\FB_Deep.TcPOU') -Value 'x' -Encoding ascii
+    # S2 (review): a file of the same name in another folder is not the object file
+    Set-Content -LiteralPath (Join-Path $root 'Sys\Plc\DUTs\FB_NoFile.TcPOU') -Value 'x' -Encoding ascii
     $u = & $mod { param($s) Get-TcUnsavedPlcObject -SysManager $s } $mockSm
     $p1 = $u.Plcs | Where-Object { $_.plc -eq 'Plc' }
     $p2 = $u.Plcs | Where-Object { $_.plc -eq 'Plc2' }
@@ -243,7 +256,7 @@ try {
     function Set-Unsaved([string[]]$Missing, [string[]]$Extra = @(), [bool]$Complete = $true, [bool]$FileExists = $true, [bool]$Checked = $true) {
         $global:Mock.Unsaved = @{ Visited = 10; Sec = 0.1; Plcs = @([ordered]@{ plc = 'Plc'; projectPath = 'TIPC^Plc^Plc Project'; checked = $Checked; reason = $(if ($Complete) { $null } else { 'incomplete: mock' }); plcproj = $plcproj; tsproj = $tsproj; warning = $null
             missingOnDisk = @($Missing | ForEach-Object { [PSCustomObject]@{ name = $_; path = "TIPC^Plc^Plc Project^POUs^$_"; file = "$_.TcPOU"; relativePath = "POUs\$_.TcPOU"; fileExists = $FileExists } }); extraOnDisk = [string[]]$Extra; complete = $Complete; visited = 10; skipped = 0 }) }
-        $global:Mock.Closed = $false; $global:Mock.GuardSave = $null; $global:Mock.GuardSaveThrows = $false; $global:Mock.Dialog = $null
+        $global:Mock.Closed = $false; $global:Mock.Opened = $false; $global:Mock.GuardSave = $null; $global:Mock.GuardSaveThrows = $false; $global:Mock.Dialog = $null
     }
 
     Set-Unsaved -Missing @('FB_Guard')
@@ -262,9 +275,24 @@ try {
     $r = Reset-TcSolution -SaveProjectChanges
     Check 'reset-save-refused-extra' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and $r.error.message -match 'FB_Disk') "code=$($r.error.code)"
 
+    # M1 (review): only extraOnDisk -> the reopen loads the disk version, XAE loses nothing: not blocked
     Set-Unsaved -Missing @() -Extra @('POUs\FB_Disk.TcPOU')
     $r = Reset-TcSolution
-    Check 'reset-extra-only-no-switch' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and -not $global:Mock.Closed) "code=$($r.error.code)"
+    Check 'reset-extra-only-not-blocking' ($r.success -and $global:Mock.Closed -and $global:Mock.Opened -and $null -eq $global:Mock.GuardSave -and (@($r.data.projectCheck.plcs[0].extraOnDisk) -join ',') -eq 'POUs\FB_Disk.TcPOU') "success=$($r.success) closed=$($global:Mock.Closed) err=$($r.error.message)"
+
+    # M2 (review): Project.Save writes every .plcproj of the .tsproj -> another PLC of the same .tsproj
+    # that could not be compared refuses the save
+    Set-Unsaved -Missing @('FB_Guard')
+    $global:Mock.Unsaved.Plcs += [ordered]@{ plc = 'Plc2'; projectPath = 'TIPC^Plc2^Plc2 Project'; checked = $false; reason = 'project file not compared: mock'; plcproj = $plcproj2; tsproj = $tsproj; warning = $null
+        missingOnDisk = @(); extraOnDisk = [string[]]@(); complete = $false; visited = 3; skipped = 0 }
+    $r = Reset-TcSolution -SaveProjectChanges
+    Check 'reset-save-refused-sibling-unchecked' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and @($r.data.saveRefused | Where-Object { $_.plc -eq 'Plc2' -and $_.reason -match 'same \.tsproj' }).Count -eq 1) "code=$($r.error.code) refused=$($r.data.saveRefused | ConvertTo-Json -Compress)"
+    # the same PLC in another .tsproj does not block
+    Set-Unsaved -Missing @('FB_Guard')
+    $global:Mock.Unsaved.Plcs += [ordered]@{ plc = 'Plc2'; projectPath = 'TIPC^Plc2^Plc2 Project'; checked = $true; reason = $null; plcproj = $plcproj2; tsproj = $tsproj2; warning = $null
+        missingOnDisk = @(); extraOnDisk = [string[]]@('GVLs\GVL_Disk.TcGVL'); complete = $true; visited = 3; skipped = 0 }
+    $r = Reset-TcSolution -SaveProjectChanges
+    Check 'reset-save-other-tsproj-ok' ($r.success -and $global:Mock.Closed -and (@($global:Mock.GuardSave) -join ',') -eq 'POUs\FB_Guard.TcPOU') "success=$($r.success) err=$($r.error.message)"
 
     Set-Unsaved -Missing @('FB_Guard') -Complete $false
     $r = Reset-TcSolution -SaveProjectChanges
@@ -273,7 +301,7 @@ try {
     Set-Unsaved -Missing @('FB_Guard')
     $global:Mock.Dialog = [PSCustomObject]@{ Kind = 'reload-prompt'; ReloadTarget = 'file'; Title = 'Microsoft Visual Studio'; Text = 'File has been changed outside the environment. Reload the new file?' }
     $r = Reset-TcSolution -SaveProjectChanges
-    Check 'reset-save-refused-reload' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $r.data.dismissedReloadPrompt -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and $r.error.message -match 'reload prompt') "code=$($r.error.code) dismissed=$($r.data.dismissedReloadPrompt)"
+    Check 'reset-save-refused-reload' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $r.data.dismissedReloadPrompt -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and $r.error.message -match 'reload prompt' -and @($r.data.saveRefused)[0].plc -eq '*') "code=$($r.error.code) dismissed=$($r.data.dismissedReloadPrompt)"
 
     Set-Unsaved -Missing @()
     $r = Reset-TcSolution
