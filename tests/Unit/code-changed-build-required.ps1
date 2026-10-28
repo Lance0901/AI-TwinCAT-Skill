@@ -9,9 +9,14 @@
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
 $stateRoot = Join-Path $env:TEMP ("tcauto-unit-cc-{0}" -f [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $stateRoot -Force
 $env:TCAUTO_STATE_DIR = Join-Path $stateRoot 'state'
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
+# GitHub's windows runner has TEMP = C:\Users\RUNNER~1\... (8.3 short name, #43): the state
+# keys are long paths (GetLongPathName), so the paths this test builds and compares are long too.
+$stateRoot = & $mod { param($p) Get-TcLongPath $p } $stateRoot
+$env:TCAUTO_STATE_DIR = Join-Path $stateRoot 'state'
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if ($Detail.Length -gt 400) { $Detail = $Detail.Substring(0, 400) }
@@ -49,6 +54,16 @@ $out = Register 'Write-TcPouCode FB_X [write failed]' $res2
 Check 'failure result without data gets data.buildRequired' ($out.data.buildRequired -like '*FB_X*' -and $out.error.code -eq 'POU_WRITE_FAILED') ($out | ConvertTo-Json -Compress)
 $e = Get-Entry
 Check 'entry lists both changes in order' ((Get-Reasons $e)['code-changed'] -eq 'PLC code changed by Write-TcPouCode MAIN [implementation] | Write-TcPouCode FB_X [write failed]') ($e | ConvertTo-Json -Compress)
+
+# --- an 8.3 spelling of the solution (CI TEMP, #43) records the same key as the long one
+$shortSln = (& cmd.exe /c "for %I in (`"$sln`") do @echo %~sI" | Select-Object -First 1)
+if (-not [string]::IsNullOrWhiteSpace($shortSln)) { $shortSln = $shortSln.Trim() }
+Reset-State
+Set-Sln $shortSln
+$null = Register 'Write-TcPouCode MAIN [implementation]'
+Set-Sln $sln
+Check '8.3 solution path -> same entry as the long path' ((Get-Reasons (Get-Entry))['code-changed'] -like '*Write-TcPouCode MAIN*') "short=$shortSln"
+Reset-State
 
 # --- a code-changed does not hide a more serious kind (#65 point 4)
 Reset-State
