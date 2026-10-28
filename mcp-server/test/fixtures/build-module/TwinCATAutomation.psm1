@@ -224,7 +224,7 @@ public static class TcAdsHelper {
 }
 '@
     foreach ($s in $script:FixtureSymbols) {
-        $d = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+        $d = [System.Collections.Generic.Dictionary[string,object]]::new()
         foreach ($k in $s.Keys) { $d[$k] = $s[$k] }
         [TcAdsHelper]::Symbols.Add($d)
     }

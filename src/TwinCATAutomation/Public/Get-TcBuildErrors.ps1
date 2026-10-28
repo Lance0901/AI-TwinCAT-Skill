@@ -41,6 +41,8 @@ function Get-TcBuildErrors {
         data.unclassified  rows of unknown severity (only when there are any)
         ERRORLIST_UNAVAILABLE is also returned when the previous scan has not finished
         yet (timed-out UIA thread still running; $script:TcErrorListScanBusy).
+        data.scanMayBeRunning    $true (with scanBusy = $false) when a dropped leftover scan may still be running:
+                         this call starts no new scan (ERRORLIST_UNAVAILABLE), the next call scans (#75)
         data.scanCleanupWarning  set when leftover timed-out scans could not be inspected /
                          disposed and were dropped instead (#75); on success and failure results
     #>
@@ -86,6 +88,17 @@ function Get-TcBuildErrors {
                 -ErrorMessage "ERRORLIST_UNAVAILABLE: the previous Error List scan has not finished yet ($stillRunning UIA thread(s) still running after a timeout); retry later or reconnect the IDE." `
                 -ErrorCode 'ERRORLIST_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') `
                 -Data $busyData
+        }
+        if ($script:TcUiaCleanupMayBeRunning) {
+            # A dropped entry may still be running its UIA thread. Scanning now could race it for
+            # the filter buttons and read a list with the Errors filter off (errors = 0 on a failed
+            # build, a false success). Refuse this call; the next one scans (#75).
+            $mayData = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $false; scanMayBeRunning = $true }
+            if ($null -ne $cleanupWarning) { $mayData | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
+            return New-TcResult -Success $false `
+                -ErrorMessage 'ERRORLIST_UNAVAILABLE: a leftover Error List scan from an earlier timeout was dropped and its UIA thread may still be running; no new scan was started in this call. Retry.' `
+                -ErrorCode 'ERRORLIST_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') `
+                -Data $mayData
         }
     }
 

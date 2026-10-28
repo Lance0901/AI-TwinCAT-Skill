@@ -484,7 +484,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:`Get-TcBuildErrors` 的 UI Automation 在 `-TimeoutSec`(預設 30 s)內找不到 Error List(視窗名要是 `Error List` 或 zh-TW VS2022 的 `錯誤清單`,其他語系找不到;視窗被關閉 / auto-hide、IDE pid 未知、UIA 被 modal dialog 卡住)。模組會先 `View.ErrorList` 把視窗叫出來,但 auto-hide 的視窗仍讀不到。
 - **下一步**:確認 XAE 主視窗可見、Error List 釘住(不是 auto-hide);手動 View > Error List 後重跑;IDE 若有 dialog 先處理(`Get-TcIdeModalDialog`)。`Build-TcProject` 遇到這個情況不會失敗,只把 `data.errorListError` 設為此 code 並讓 `errors` 退回 `failedProjects`。
-- **逾時之後**:逾時的 scan 會被停下並在下一次 `Get-TcBuildErrors` / `Build-TcProject` 時清掉;thread 還沒停時回本 code 加 `data.scanBusy = true`,停了就照常掃描。#75 之前清理本身在 PS 5.1.26100 丟 `ArgumentException`(「引數類型不相容」),一次逾時就讓同一個 bridge / PowerShell session 的 Build 與 Error List 永久失敗,只能重啟;現在清不掉的項目會被丟棄並在 `Get-TcBuildErrors` 的 `data.scanCleanupWarning` 註明,不會再卡住。
+- **逾時之後**:逾時的 scan 會被停下並在下一次 `Get-TcBuildErrors` / `Build-TcProject` 時清掉;thread 還沒停時回本 code 加 `data.scanBusy = true`,停了就照常掃描。#75 之前清理本身會丟 `ArgumentException`(「引數類型不相容」;實測 2026-10-28,PS 5.1.26100.9711:`New-Object` 建的 `List[object]` 被 `@()` 包住會丟,不是整個 5.1.26100 都會),一次逾時就讓同一個 bridge / PowerShell session 的 Build 與 Error List 永久失敗,只能重啟;現在清不掉的項目會被丟棄並在 `Get-TcBuildErrors` / `Build-TcProject` 的 `data.scanCleanupWarning` 註明,不會再卡住。
+- **丟棄的 scan 可能還在跑**:被丟棄的項目若狀態讀不到、或整個清單走不了而被重設,舊 UIA thread 可能還在動 Errors / Warnings / Messages 篩選按鈕。這種情況下**該次呼叫不開新 scan**,回本 code,`data.scanBusy = false`、`data.scanMayBeRunning = true` 並帶 `data.scanCleanupWarning`;`Build-TcProject` 把 `scanCleanupWarning` 帶進自己的 `data`、`errorListError = ERRORLIST_UNAVAILABLE`、`codeVerified = null`(不會算成 verified,#61)。再呼叫一次才照常掃描。殘餘風險:被丟棄的舊 thread 已不再追蹤,第二次呼叫時它若仍在跑,還是可能跟新 scan 搶篩選按鈕(要 UIA thread 卡死、連清理本身也失敗才會發生,且只會出現在已拒絕過一次之後);無法在不追蹤的情況下確認它停了。
 
 ### SOLUTION_CLOSE_FAILED / NO_SOLUTION
 

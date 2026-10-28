@@ -114,6 +114,8 @@
                              rows that have no file (XAE build-summary rows such as "Project
                              'plc' build ... failed" stay in the Error List as Warning)
         data.errorListError  only when the Error List could not be read (its error code)
+        data.scanCleanupWarning  only when Get-TcBuildErrors dropped leftover timed-out UIA scans (#75); when one may still
+                             be running the Error List is not read in that call (errorListError = ERRORLIST_UNAVAILABLE, codeVerified = $null)
         data.buildSec        seconds from Build($false) until BuildState reported Done
 
         Coverage (#28): a solution Build only builds the projects that have a Build.0 entry
@@ -532,6 +534,13 @@
         }
         if ($null -ne $errorListError) {
             $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errorListError
+        }
+        # Leftover timed-out Error List scans that were dropped (#75); on a failed read it also
+        # explains ERRORLIST_UNAVAILABLE (codeVerified stays $null then).
+        $elScanWarning = $null
+        if ($null -ne $el.data -and $null -ne $el.data.PSObject.Properties['scanCleanupWarning']) { $elScanWarning = [string]$el.data.scanCleanupWarning }
+        if ($null -ne $elScanWarning) {
+            $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $elScanWarning
         }
         if ($severityUnknown) {
             $data | Add-Member -NotePropertyName 'severityUnknown' -NotePropertyValue $true

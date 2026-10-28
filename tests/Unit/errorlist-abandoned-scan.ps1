@@ -13,6 +13,17 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if (-not $Ok) { $script:fail++ }
 }
 
+# Probe: does this host reproduce #75 (measured 2026-10-28, PS 5.1.26100.9711: @() around a
+# non-empty List[object] built with New-Object throws ArgumentException)?
+$reproduces = $false
+try {
+    $probe = New-Object System.Collections.Generic.List[object]
+    $probe.Add(1)
+    $null = @($probe)
+}
+catch { $reproduces = $true }
+"host reproduces #75: {0} (PowerShell {1})" -f $(if ($reproduces) { 'yes' } else { 'no' }), $PSVersionTable.PSVersion
+
 # A finished (Completed) PowerShell/Runspace pair, shaped like Invoke-TcUiaScan parks it.
 function New-StoppedEntry {
     $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
@@ -58,6 +69,23 @@ $s = Get-ScanState
 Check 'Clear: broken entry does not throw' ($null -eq $threw) "$threw"
 Check 'Clear: broken entry dropped, busy cleared' ((-not $s.busy) -and $s.count -eq 0) "busy=$($s.busy) count=$($s.count)"
 Check 'Clear: broken entry reported' ([string]$s.warning -match '#75') "$($s.warning)"
+Check 'Clear: unreadable state => may be running' ((& $mod { $script:TcUiaCleanupMayBeRunning }) -eq $true) ''
+
+# 2b. state read as Completed but both Dispose calls fail: each is tried on its own, dropped,
+#     reported, and NOT treated as possibly running (the thread is known to be stopped)
+$script:disposeCalls = 0
+$psFake = [PSCustomObject]@{ InvocationStateInfo = [PSCustomObject]@{ State = [System.Management.Automation.PSInvocationState]::Completed } }
+$rsFake = [PSCustomObject]@{}
+$psFake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:disposeCalls++; throw 'ps dispose failed' }
+$rsFake | Add-Member -MemberType ScriptMethod -Name Dispose -Value { $script:disposeCalls++; throw 'rs dispose failed' }
+Set-Abandoned @([PSCustomObject]@{ PowerShell = $psFake; Runspace = $rsFake; Started = 'disposefail' })
+$threw = $null
+try { $left = & $mod { Clear-TcUiaAbandonedScans } } catch { $threw = $_.Exception.Message }
+$s = Get-ScanState
+Check 'Clear: dispose failure does not throw' ($null -eq $threw) "$threw"
+Check 'Clear: both Dispose calls attempted' ($script:disposeCalls -eq 2) "calls=$($script:disposeCalls)"
+Check 'Clear: dispose failure dropped, busy cleared, reported' ((-not $s.busy) -and $s.count -eq 0 -and [string]$s.warning -match '#75') "busy=$($s.busy) count=$($s.count) warning=$($s.warning)"
+Check 'Clear: dispose failure is not "may be running"' ((& $mod { $script:TcUiaCleanupMayBeRunning }) -eq $false) ''
 
 # 3. a list that cannot be walked is reset and reported
 Set-Abandoned @() -NullList
@@ -67,6 +95,7 @@ $s = Get-ScanState
 Check 'Clear: unwalkable list does not throw' ($null -eq $threw) "$threw"
 Check 'Clear: unwalkable list reset, busy cleared' ((-not $s.busy) -and $s.count -eq 0) "busy=$($s.busy) count=$($s.count)"
 Check 'Clear: unwalkable list reported' ([string]$s.warning -match 'reset') "$($s.warning)"
+Check 'Clear: unwalkable list => may be running' ((& $mod { $script:TcUiaCleanupMayBeRunning }) -eq $true) ''
 
 # 4. Get-TcBuildErrors after a timed-out scan: runs the next scan instead of throwing
 & $mod {
@@ -92,10 +121,68 @@ foreach ($n in 1..2) {
 }
 Check 'Get-TcBuildErrors: scan ran each time' ($global:UiaScanCalls -eq 2) "calls=$($global:UiaScanCalls)"
 
-# 5. leftover entry that cannot be disposed: scan still runs, warning visible in data
+# 5. dropped entry whose thread is known to be stopped (dispose failed): scan still runs, warning visible
+$before = $global:UiaScanCalls
+$script:disposeCalls = 0
+Set-Abandoned @([PSCustomObject]@{ PowerShell = $psFake; Runspace = $rsFake; Started = 'disposefail' })
+$r = Get-TcBuildErrors -TimeoutSec 5
+Check 'Get-TcBuildErrors: scan ran after a dispose failure' ($r.success -and $global:UiaScanCalls -eq $before + 1) "calls=$($global:UiaScanCalls) before=$before"
+Check 'Get-TcBuildErrors: data.scanCleanupWarning after a dropped entry' ($r.success -and [string]$r.data.scanCleanupWarning -match '#75') "$($r.data.scanCleanupWarning)"
+
+# 6. dropped entry that MAY STILL BE RUNNING (state unreadable): this call starts no scan
+#    (it could race the old thread for the filter buttons => errors = 0 => false success);
+#    the next call scans
+$before = $global:UiaScanCalls
 Set-Abandoned @([PSCustomObject]@{ PowerShell = $null; Runspace = $null; Started = 'broken' })
 $r = Get-TcBuildErrors -TimeoutSec 5
-Check 'Get-TcBuildErrors: data.scanCleanupWarning after a dropped entry' ($r.success -and [string]$r.data.scanCleanupWarning -match '#75') "$($r.data.scanCleanupWarning)"
+Check 'may-be-running: ERRORLIST_UNAVAILABLE, not success' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE') "$($r.error.code)"
+Check 'may-be-running: no scan started' ($global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
+Check 'may-be-running: data.scanBusy false, scanMayBeRunning true, warning present' ($r.data.scanBusy -eq $false -and $r.data.scanMayBeRunning -eq $true -and [string]$r.data.scanCleanupWarning -match '#75') ($r.data | ConvertTo-Json -Compress)
+$r = Get-TcBuildErrors -TimeoutSec 5
+Check 'may-be-running: next call scans normally' ($r.success -and $global:UiaScanCalls -eq $before + 1 -and $null -eq $r.data.PSObject.Properties['scanCleanupWarning']) "calls=$($global:UiaScanCalls) before=$before"
+# same for a list that cannot be walked
+$before = $global:UiaScanCalls
+Set-Abandoned @() -NullList
+$r = Get-TcBuildErrors -TimeoutSec 5
+Check 'may-be-running (list reset): no scan, ERRORLIST_UNAVAILABLE' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
+$r = Get-TcBuildErrors -TimeoutSec 5
+Check 'may-be-running (list reset): next call scans' ($r.success -and $global:UiaScanCalls -eq $before + 1) "calls=$($global:UiaScanCalls) before=$before"
+
+# 7. an entry that is really still running (Start-Sleep 30): stays tracked, no scan, scanBusy true
+$live = [powershell]::Create()
+try {
+    $null = $live.AddScript('Start-Sleep 30')
+    $handle = $live.BeginInvoke()
+    $liveRs = $live.Runspace
+    # BeginInvoke opens the runspace asynchronously: wait until the script is really running
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((($liveRs.RunspaceStateInfo.State -ne 'Opened') -or ($live.InvocationStateInfo.State -ne 'Running')) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    $before = $global:UiaScanCalls
+    Set-Abandoned @([PSCustomObject]@{ PowerShell = $live; Runspace = $liveRs; Started = 'live' })
+    $threw = $null
+    try { $left = & $mod { Clear-TcUiaAbandonedScans } } catch { $threw = $_.Exception.Message }
+    $s = Get-ScanState
+    Check 'running entry: Clear does not throw' ($null -eq $threw) "$threw"
+    Check 'running entry: Clear returns 1' ($left -eq 1) "got $left"
+    Check 'running entry: busy stays true, still tracked' ($s.busy -eq $true -and $s.count -eq 1) "busy=$($s.busy) count=$($s.count)"
+    Check 'running entry: runspace still Opened' ($liveRs.RunspaceStateInfo.State -eq 'Opened') "$($liveRs.RunspaceStateInfo.State)"
+    $r = Get-TcBuildErrors -TimeoutSec 5
+    Check 'running entry: ERRORLIST_UNAVAILABLE with data.scanBusy' ((-not $r.success) -and $r.error.code -eq 'ERRORLIST_UNAVAILABLE' -and $r.data.scanBusy -eq $true) ($r | ConvertTo-Json -Depth 4 -Compress)
+    Check 'running entry: no scan started' ($global:UiaScanCalls -eq $before) "calls=$($global:UiaScanCalls) before=$before"
+    $live.Stop()
+    $left = & $mod { Clear-TcUiaAbandonedScans }
+    $s = Get-ScanState
+    Check 'running entry: after Stop(), Clear returns 0' ($left -eq 0) "got $left"
+    Check 'running entry: after Stop(), busy cleared, runspace closed' ((-not $s.busy) -and $s.count -eq 0 -and $liveRs.RunspaceStateInfo.State -eq 'Closed') "busy=$($s.busy) count=$($s.count) rs=$($liveRs.RunspaceStateInfo.State)"
+}
+finally {
+    # never leave a runspace behind
+    try { if ($live.InvocationStateInfo.State -eq 'Running') { $live.Stop() } } catch { }
+    try { $live.Dispose() } catch { }
+    try { if ($null -ne $liveRs) { $liveRs.Dispose() } } catch { }
+    foreach ($e in @(& $mod { $script:TcUiaAbandonedScans.ToArray() })) { try { $e.PowerShell.Dispose() } catch { }; try { $e.Runspace.Dispose() } catch { } }
+    & $mod { $script:TcUiaAbandonedScans = [System.Collections.Generic.List[object]]::new(); $script:TcErrorListScanBusy = $false }
+}
 
 & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null }
 "failed: $fail"

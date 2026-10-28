@@ -636,6 +636,14 @@ $script:TcErrorListScanBusy = $false
 # Set by Clear-TcUiaAbandonedScans when it had to drop entries it could not handle;
 # Get-TcBuildErrors reports it as data.scanCleanupWarning (#75).
 $script:TcUiaCleanupWarning = $null
+# Set by Clear-TcUiaAbandonedScans when a dropped entry may still be running (its state could
+# not be read, or the whole list was reset). Get-TcBuildErrors then does NOT start a new scan in
+# that call (ERRORLIST_UNAVAILABLE): a second scan would race the old thread for the
+# Errors / Warnings / Messages filter buttons and could read a list with the Errors filter off,
+# i.e. errors = 0 on a failed build (false success, CODING_STANDARDS section 2). The next call scans
+# normally: the old thread is no longer tracked then, so a residual race remains possible but
+# only after one call has already been refused (#75).
+$script:TcUiaCleanupMayBeRunning = $false
 
 function Clear-TcUiaAbandonedScans {
     <#
@@ -647,36 +655,51 @@ function Clear-TcUiaAbandonedScans {
         read or that fails to dispose is dropped (not retried on every call), and if the
         list itself cannot be walked it is reset. Either case is written to Write-Verbose
         and kept in $script:TcUiaCleanupWarning for the caller to report.
+        $script:TcUiaCleanupMayBeRunning is $true when a dropped entry may still be running
+        (state unreadable / list reset); a dispose failure after the state was read as stopped
+        does not set it.
     #>
     [CmdletBinding()]
     param()
     $script:TcUiaCleanupWarning = $null
+    $script:TcUiaCleanupMayBeRunning = $false
     $still = [System.Collections.Generic.List[object]]::new()
     $dropped = 0
     try {
         # .ToArray(), not @(): @() on a List[object] built with New-Object threw
         # ArgumentException in PS 5.1.26100 and left this function stuck forever (#75).
         foreach ($entry in $script:TcUiaAbandonedScans.ToArray()) {
+            $running = $false
             try {
                 $state = $entry.PowerShell.InvocationStateInfo.State
+                if ($null -eq $state) { throw 'InvocationStateInfo.State is not available' }
                 $running = ($state -eq [System.Management.Automation.PSInvocationState]::Running -or
                             $state -eq [System.Management.Automation.PSInvocationState]::Stopping -or
                             $state -eq [System.Management.Automation.PSInvocationState]::NotStarted)
-                if ($running) { $still.Add($entry); continue }
-                $entry.PowerShell.Dispose()
-                $entry.Runspace.Dispose()
-                Write-Verbose "Clear-TcUiaAbandonedScans: disposed scan started $($entry.Started)."
             }
             catch {
+                # State unknown: the thread may still be inside UIA.
                 $dropped++
-                Write-Verbose "Clear-TcUiaAbandonedScans: dropped scan started $($entry.Started) ($($_.Exception.Message))."
+                $script:TcUiaCleanupMayBeRunning = $true
+                Write-Verbose "Clear-TcUiaAbandonedScans: dropped scan started $($entry.Started), state unreadable ($($_.Exception.Message))."
+                continue
             }
+            if ($running) { $still.Add($entry); continue }
+            # Stopped: dispose each part on its own so one failure does not skip the other.
+            $failed = $false
+            try { $entry.PowerShell.Dispose() }
+            catch { $failed = $true; Write-Verbose "Clear-TcUiaAbandonedScans: PowerShell.Dispose failed ($($_.Exception.Message))." }
+            try { $entry.Runspace.Dispose() }
+            catch { $failed = $true; Write-Verbose "Clear-TcUiaAbandonedScans: Runspace.Dispose failed ($($_.Exception.Message))." }
+            if ($failed) { $dropped++ }
+            else { Write-Verbose "Clear-TcUiaAbandonedScans: disposed scan started $($entry.Started)." }
         }
         if ($dropped -gt 0) {
             $script:TcUiaCleanupWarning = "$dropped abandoned Error List scan(s) could not be inspected or disposed and were dropped (#75)."
         }
     }
     catch {
+        $script:TcUiaCleanupMayBeRunning = $true
         $script:TcUiaCleanupWarning = "abandoned Error List scan list could not be walked and was reset; a timed-out UIA thread may still be running ($($_.Exception.Message)) (#75)."
         Write-Verbose "Clear-TcUiaAbandonedScans: $script:TcUiaCleanupWarning"
     }
@@ -686,7 +709,6 @@ function Clear-TcUiaAbandonedScans {
     }
     return $still.Count
 }
-
 function Invoke-TcUiaScan {
     <#
     .SYNOPSIS

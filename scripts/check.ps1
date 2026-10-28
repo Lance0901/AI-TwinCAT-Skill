@@ -10,9 +10,9 @@
                   there, so this also blocks it.
       encoding    Those files are ASCII or UTF-8 with BOM (5.1 reads BOM-less files in the ANSI
                   code page, so the parse result would depend on the machine).
-      generics    No "New-Object System.Collections.Generic.*" in src/ and mcp-server/ *.ps1:
-                  @() on a New-Object List[object] throws ArgumentException in Windows
-                  PowerShell 5.1.26100; use [System.Collections.Generic.List[...]]::new() (#75).
+      generics    No New-Object of a System.Collections.Generic.* type in src/ and mcp-server/ *.ps1 / *.psm1
+                  (AST based; "New-Object $type" is rejected too). Measured 2026-10-28, PS 5.1.26100.9711:
+                  @() on a New-Object List[object] throws ArgumentException; use [System.Collections.Generic.List[...]]::new() (#75).
       cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
                   number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md
                   "Available Commands (N)", README.md "All Commands (N)" and
@@ -142,12 +142,13 @@ function Invoke-Native {
 # parse (Windows PowerShell 5.1 parser)
 # ---------------------------------------------------------------------------
 $psFiles = @()
+$parsedAsts = @{}
 try {
     $psFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.ps1', '.psm1', '.psd1') | Sort-Object)
     $parseErrors = New-Object System.Collections.Generic.List[string]
     foreach ($f in $psFiles) {
         $tokens = $null; $errors = $null
-        [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errors)
+        $parsedAsts[$f] = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errors)
         foreach ($e in $errors) {
             $parseErrors.Add(('{0}:{1} {2}' -f (Get-RelativePath $f), $e.Extent.StartLineNumber, $e.Message))
         }
@@ -190,27 +191,63 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# generics: no New-Object System.Collections.Generic.* in src/ and mcp-server/ (#75).
-# In Windows PowerShell 5.1.26100, @() on a List[object] built with New-Object throws
-# ArgumentException ("Argument types do not match"); [List[object]]::new() does not.
+# generics: no New-Object for System.Collections.Generic.* in src/ and mcp-server/ *.ps1 / *.psm1
+# (#75). Measured 2026-10-28, Windows PowerShell 5.1.26100.9711: @() around a List[object]
+# built with New-Object throws ArgumentException ("Argument types do not match");
+# [List[object]]::new() does not. AST based: only real New-Object commands are looked at
+# (comments and strings that merely mention the name never hit). Every argument of the command
+# is checked for "Collections.Generic." (-TypeName:, -Type, 'System.' omitted, ("..."),
+# -ArgumentList first, backtick continuation); in a file with
+# "using namespace System.Collections.Generic" the bare names (List[..], Dictionary[..], ...)
+# are rejected too; "New-Object $type" cannot be checked and is rejected as well.
 # ---------------------------------------------------------------------------
 try {
-    $genericPattern = New-Object System.Text.RegularExpressions.Regex('New-Object\s+(-TypeName\s+)?[''"]?System\.Collections\.Generic\.', 'IgnoreCase')
+    $genericPattern = New-Object System.Text.RegularExpressions.Regex('Collections\.Generic\.', 'IgnoreCase')
+    $genericBarePattern = New-Object System.Text.RegularExpressions.Regex('(^|[^\w.])(List|Dictionary|HashSet|Queue|Stack|SortedDictionary|SortedList|SortedSet|LinkedList|KeyValuePair|SynchronizedCollection)\s*\[', 'IgnoreCase')
     $genericHits = [System.Collections.Generic.List[string]]::new()
-    $genericFiles = @($psFiles | Where-Object { (Get-RelativePath $_) -match '^(src|mcp-server)/' -and $_ -like '*.ps1' })
+    $genericFiles = @($psFiles | Where-Object { (Get-RelativePath $_) -match '^(src|mcp-server)/' -and ($_ -like '*.ps1' -or $_ -like '*.psm1') })
     foreach ($f in $genericFiles) {
-        $lines = [System.IO.File]::ReadAllLines($f, $utf8)
-        for ($i = 0; $i -lt $lines.Length; $i++) {
-            if ($genericPattern.IsMatch($lines[$i])) { $genericHits.Add(('{0}:{1} {2}' -f (Get-RelativePath $f), ($i + 1), $lines[$i].Trim())) }
+        $ast = $parsedAsts[$f]
+        if ($null -eq $ast) { continue }
+        $usesGenericNs = $false
+        foreach ($u in @($ast.UsingStatements)) {
+            if ($u.UsingStatementKind -eq 'Namespace' -and [string]$u.Name.Value -eq 'System.Collections.Generic') { $usesGenericNs = $true }
+        }
+        $commands = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'New-Object' }, $true)
+        foreach ($cmd in $commands) {
+            $typeArg = $null
+            $positional = 0
+            $allText = New-Object System.Text.StringBuilder
+            $els = @($cmd.CommandElements)
+            for ($i = 1; $i -lt $els.Count; $i++) {
+                $el = $els[$i]
+                [void]$allText.Append(' ').Append($el.Extent.Text)
+                if ($el -is [System.Management.Automation.Language.CommandParameterAst]) {
+                    $value = $el.Argument
+                    if ($null -eq $value -and ($i + 1) -lt $els.Count) { $i++; $value = $els[$i]; [void]$allText.Append(' ').Append($value.Extent.Text) }
+                    if ($el.ParameterName.Length -gt 0 -and 'TypeName'.StartsWith($el.ParameterName, [System.StringComparison]::OrdinalIgnoreCase)) { $typeArg = $value }
+                }
+                else {
+                    if ($positional -eq 0 -and $null -eq $typeArg) { $typeArg = $el }
+                    $positional++
+                }
+            }
+            $text = $allText.ToString()
+            $dynamic = ($typeArg -is [System.Management.Automation.Language.VariableExpressionAst])
+            $typeText = if ($null -ne $typeArg) { $typeArg.Extent.Text } else { '' }
+            if ($genericPattern.IsMatch($text) -or ($usesGenericNs -and $genericBarePattern.IsMatch($typeText)) -or $dynamic) {
+                $why = if ($dynamic) { ' (type is a variable: cannot be checked, rewrite)' } else { '' }
+                $genericHits.Add(('{0}:{1} {2}{3}' -f (Get-RelativePath $f), $cmd.Extent.StartLineNumber, ($cmd.Extent.Text -replace '\s+', ' ').Trim(), $why))
+            }
         }
     }
     if ($genericHits.Count -eq 0) {
-        Add-CheckResult 'generics' 'PASS' "$($genericFiles.Count) src/ + mcp-server/ .ps1 files, no New-Object System.Collections.Generic.*"
+        Add-CheckResult 'generics' 'PASS' "$($genericFiles.Count) src/ + mcp-server/ .ps1/.psm1 files, no New-Object of a System.Collections.Generic type"
     }
     else {
         $n = $genericHits.Count
-        $genericHits.Add('use [System.Collections.Generic.List[object]]::new() instead: @() on a New-Object List[object] throws ArgumentException in Windows PowerShell 5.1.26100 and broke Get-TcBuildErrors permanently (#75)')
-        Add-CheckResult 'generics' 'FAIL' "$n New-Object System.Collections.Generic.* hit(s)" $genericHits
+        $genericHits.Add('use [System.Collections.Generic.List[object]]::new() instead: measured 2026-10-28 (PS 5.1.26100.9711), @() around a New-Object List[object] throws ArgumentException and broke Get-TcBuildErrors permanently (#75)')
+        Add-CheckResult 'generics' 'FAIL' "$n New-Object generic collection hit(s)" $genericHits
     }
 }
 catch {
