@@ -49,7 +49,7 @@ Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
 
-Something failed? See [docs/troubleshooting.md](docs/troubleshooting.md) — error code table (`error.code` / `error.hint`), correct lifecycle order, environment matrix, known limits. Hardware-in-the-loop checks live in [tests/Integration](tests/Integration/README.md).
+Something failed? See [docs/known-limitations.md](docs/known-limitations.md) (known issues, workarounds, real-hardware coverage) and [docs/troubleshooting.md](docs/troubleshooting.md) — error code table (`error.code` / `error.hint`), correct lifecycle order, environment matrix, known limits. Hardware-in-the-loop checks live in [tests/Integration](tests/Integration/README.md).
 
 ### Automated Testing
 
@@ -231,7 +231,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as the TcAuto MCP server (stdio) exposing all 37 cmdlets plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing 36 of the 37 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server

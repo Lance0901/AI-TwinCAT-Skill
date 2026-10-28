@@ -16,13 +16,14 @@ All operations are exposed as tools that Codex can invoke. Each tool maps to `In
 Example tool invocation:
 ```json
 {
-  "operation": "NewProject",
+  "operation": "ConnectIde",
   "params": {
-    "Name": "MyProject",
-    "Path": "C:\\Projects"
+    "SolutionPath": "C:\\Projects\\MyProject\\MyProject.sln"
   }
 }
 ```
+
+`NewProject` only works on an IDE with no solution open; otherwise it returns `SOLUTION_ALREADY_OPEN` and creates nothing (#70). Create the project in XAE and connect with `ConnectIde` as above.
 
 ## Available Tools
 

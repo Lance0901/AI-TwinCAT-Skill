@@ -5,8 +5,18 @@ function Add-TcGvl {
     .PARAMETER Name
         GVL name (e.g., GVL_Main).
     .PARAMETER Variables
-        Optional hashtable of variable declarations (name = type).
+        Optional variables, in declaration order (#47): an array of
+        @{ name; type; init (optional); comment (optional) } entries, e.g.
+        @(@{ name = 'bStart'; type = 'BOOL' }, @{ name = 'nCount'; type = 'INT'; init = '0' }),
+        or [ordered]@{ bStart = 'BOOL'; nCount = 'INT' }. A plain hashtable with more than one
+        member is INVALID_PARAMS (a hashtable does not keep the input order); a single-member
+        hashtable is accepted.
     .NOTES
+        Member order (#47): after the project file is saved the declaration read back from XAE is
+        parsed (Get-TcDeclarationMemberOrder) and its variable order compared with the input order
+        (case-insensitive): any difference is MEMBER_ORDER_MISMATCH (data.expectedOrder,
+        data.actualOrder, data.declaration; the GVL exists and is recorded code-changed), never
+        success. On success data.memberOrder lists the variables read back.
         Project file (#76): after the readback the project file is saved and the .plcproj is
         read back from disk (as Add-TcPou): success only with a <Compile Include> for
         <folders>\<Name>.TcGVL (relative path; data.projectSaved), otherwise PROJECT_SAVE_FAILED
@@ -26,8 +36,16 @@ function Add-TcGvl {
         [string]$Name,
 
         [Parameter()]
-        [hashtable]$Variables
+        [object]$Variables
     )
+
+    # #47: ordered member input, checked before anything touches the IDE
+    $conv = ConvertTo-TcMemberList -InputObject $Variables -Kind 'Var' -ParameterName 'Variables'
+    if ($null -ne $conv.Error) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -ErrorMessage $conv.Error `
+            -Hint 'Pass Variables as an array in declaration order: [{"name":"bStart","type":"BOOL"},{"name":"nCount","type":"INT","init":"0"}] (PowerShell: an array of hashtables or [ordered]@{}); nothing was created.'
+    }
+    $memberList = @($conv.Members)
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -45,11 +63,7 @@ function Add-TcGvl {
 
         # Build declaration
         $decl = "VAR_GLOBAL`n"
-        if ($Variables) {
-            foreach ($var in $Variables.GetEnumerator()) {
-                $decl += "    $($var.Key) : $($var.Value);`n"
-            }
-        }
+        foreach ($line in (Format-TcMemberDeclaration -Members $memberList -Kind 'Var')) { $decl += "$line`n" }
         $decl += "END_VAR"
 
         # 615 = TREEITEMTYPE_PLCGVL, ItemType value from https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html
@@ -67,6 +81,15 @@ function Add-TcGvl {
         $save = Invoke-TcPlcObjectSave -ObjectPath $created.Path -ExpectFile "$Name.TcGVL" -What "GVL '$Name'"
         if ($null -ne $save.Error) { return Register-TcCodeChange -Result $save.Error -Change "Add-TcGvl $Name [created, project file not saved]" }
 
+        # #47: the variable order read back must be the input order
+        $order = Test-TcMemberOrder -Members $memberList -Declaration $created.Declaration -Kind 'Var'
+        if (-not $order.Ok) {
+            $bad = New-TcResult -Success $false -ErrorCode 'MEMBER_ORDER_MISMATCH' -Hint $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] `
+                -ErrorMessage "GVL '$Name' was created, but the variable order read back ($($order.Actual -join ', ')) differs from the input order ($($order.Expected -join ', '))." `
+                -Data ([PSCustomObject]@{ name = $Name; path = $created.Path; expectedOrder = $order.Expected; actualOrder = $order.Actual; declaration = $created.Declaration; projectSaved = $save.Saved })
+            return Register-TcCodeChange -Result $bad -Change "Add-TcGvl $Name [member order mismatch]"
+        }
+
         $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             path        = $created.Path
@@ -78,6 +101,7 @@ function Add-TcGvl {
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
             projectSaved               = $save.Saved
+            memberOrder                = $order.Actual
         })
         Register-TcCodeChange -Result $ok -Change "Add-TcGvl $Name"
     }

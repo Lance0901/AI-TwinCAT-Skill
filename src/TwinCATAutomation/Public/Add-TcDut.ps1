@@ -7,10 +7,21 @@ function Add-TcDut {
     .PARAMETER DutType
         DUT type: Struct, Enum, Alias, Union.
     .PARAMETER Fields
-        Optional hashtable of field declarations (name = type) for Struct/Union.
+        Optional members, in declaration order (#47). Struct / Union: an array of
+        @{ name; type; init (optional); comment (optional) } entries, e.g.
+        @(@{ name = 'bStart'; type = 'BOOL' }, @{ name = 'nCount'; type = 'INT'; init = '0' }),
+        or [ordered]@{ bStart = 'BOOL'; nCount = 'INT' }. Enum: an array of
+        @{ name; value (optional); comment (optional) } entries, or [ordered]@{ eIdle = 0; eRun = 1 }.
+        A plain hashtable with more than one member is INVALID_PARAMS (a hashtable does not keep
+        the input order); a single-member hashtable is accepted.
     .PARAMETER AliasType
         Base type for Alias DUT.
     .NOTES
+        Member order (#47): after the project file is saved the declaration read back from XAE is
+        parsed (Get-TcDeclarationMemberOrder) and its member order compared with the input order
+        (case-insensitive): any difference is MEMBER_ORDER_MISMATCH (data.expectedOrder,
+        data.actualOrder, data.declaration; the DUT exists and is recorded code-changed), never
+        success. On success data.memberOrder lists the members read back.
         Project file (#76): after the readback the project file is saved and the .plcproj is
         read back from disk (as Add-TcPou): success only with a <Compile Include> for
         <folders>\<Name>.TcDUT (relative path; data.projectSaved), otherwise PROJECT_SAVE_FAILED
@@ -34,11 +45,23 @@ function Add-TcDut {
         [string]$DutType,
 
         [Parameter()]
-        [hashtable]$Fields,
+        [object]$Fields,
 
         [Parameter()]
         [string]$AliasType
     )
+
+    # #47: ordered member input, checked before anything touches the IDE
+    $memberKind = if ($DutType -eq 'Enum') { 'Enum' } else { 'Var' }
+    $memberList = @()
+    if ($DutType -ne 'Alias') {
+        $conv = ConvertTo-TcMemberList -InputObject $Fields -Kind $memberKind -ParameterName 'Fields'
+        if ($null -ne $conv.Error) {
+            return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -ErrorMessage $conv.Error `
+                -Hint 'Pass Fields as an array in declaration order: Struct / Union [{"name":"bStart","type":"BOOL"},{"name":"nCount","type":"INT","init":"0"}], Enum [{"name":"eIdle","value":0},{"name":"eRun","value":1}] (PowerShell: an array of hashtables or [ordered]@{}); nothing was created.'
+        }
+        $memberList = @($conv.Members)
+    }
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -72,18 +95,13 @@ function Add-TcDut {
         switch ($DutType) {
             'Struct' {
                 $decl = "TYPE $Name :`nSTRUCT`n"
-                if ($Fields) {
-                    foreach ($f in $Fields.GetEnumerator()) {
-                        $decl += "    $($f.Key) : $($f.Value);`n"
-                    }
-                }
+                foreach ($line in (Format-TcMemberDeclaration -Members $memberList -Kind 'Var')) { $decl += "$line`n" }
                 $decl += "END_STRUCT`nEND_TYPE"
             }
             'Enum' {
                 $decl = "TYPE $Name :`n(`n"
-                if ($Fields) {
-                    $entries = $Fields.GetEnumerator() | ForEach-Object { "    $($_.Key) := $($_.Value)" }
-                    $decl += ($entries -join ",`n") + "`n"
+                if ($memberList.Count -gt 0) {
+                    $decl += ((Format-TcMemberDeclaration -Members $memberList -Kind 'Enum') -join "`n") + "`n"
                 }
                 else {
                     # an ENUM needs at least one member to compile; same placeholder XAE writes for
@@ -99,11 +117,7 @@ function Add-TcDut {
             }
             'Union' {
                 $decl = "TYPE $Name :`nUNION`n"
-                if ($Fields) {
-                    foreach ($f in $Fields.GetEnumerator()) {
-                        $decl += "    $($f.Key) : $($f.Value);`n"
-                    }
-                }
+                foreach ($line in (Format-TcMemberDeclaration -Members $memberList -Kind 'Var')) { $decl += "$line`n" }
                 $decl += "END_UNION`nEND_TYPE"
             }
         }
@@ -125,6 +139,15 @@ function Add-TcDut {
         $save = Invoke-TcPlcObjectSave -ObjectPath $created.Path -ExpectFile "$Name.TcDUT" -What "DUT '$Name'"
         if ($null -ne $save.Error) { return Register-TcCodeChange -Result $save.Error -Change "Add-TcDut $Name [created, project file not saved]" }
 
+        # #47: the member order read back must be the input order
+        $order = Test-TcMemberOrder -Members $memberList -Declaration $created.Declaration -Kind $memberKind
+        if (-not $order.Ok) {
+            $bad = New-TcResult -Success $false -ErrorCode 'MEMBER_ORDER_MISMATCH' -Hint $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] `
+                -ErrorMessage "DUT '$Name' was created, but the member order read back ($($order.Actual -join ', ')) differs from the input order ($($order.Expected -join ', '))." `
+                -Data ([PSCustomObject]@{ name = $Name; path = $created.Path; expectedOrder = $order.Expected; actualOrder = $order.Actual; declaration = $created.Declaration; projectSaved = $save.Saved })
+            return Register-TcCodeChange -Result $bad -Change "Add-TcDut $Name [member order mismatch]"
+        }
+
         $ok = New-TcResult -Success $true -Data ([PSCustomObject]@{
             name        = $Name
             dutType     = $DutType
@@ -137,6 +160,7 @@ function Add-TcDut {
             duplicateCheckSkippedNodes = $created.DuplicateCheckSkippedNodes
             duplicateCheckNote         = $created.DuplicateCheckNote
             projectSaved               = $save.Saved
+            memberOrder                = $order.Actual
         })
         Register-TcCodeChange -Result $ok -Change "Add-TcDut $Name"
     }

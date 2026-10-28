@@ -435,6 +435,10 @@ function ConvertTo-BridgeValue {
     }
 
     if ($tn -eq 'System.Object') {
+        # A JSON array stays an array: a bare 'return $Value' lets PowerShell unroll it, so a
+        # one-element array ([{"name":"bReady","type":"BOOL"}]) reached Add-TcDut -Fields as the
+        # single PSCustomObject and was read as a name=type map.
+        if (Test-IsJsonArray $Value) { return , $Value }
         return $Value
     }
 

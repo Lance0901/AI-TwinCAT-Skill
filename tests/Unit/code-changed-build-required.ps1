@@ -173,7 +173,8 @@ $newPlc = [PSCustomObject]@{ Mock = $true }
 $newPlc | Add-Member -MemberType ScriptMethod -Name CreateChild -Value { param($a, $b, $c, $d) [PSCustomObject]@{ Name = $a } }
 $newSm = [PSCustomObject]@{ Mock = $true }
 $newSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) $newPlc }.GetNewClosure()
-$solution = [PSCustomObject]@{ Mock = $true }
+# #70: an IDE without an open solution (New-TcProject refuses otherwise, SOLUTION_ALREADY_OPEN)
+$solution = [PSCustomObject]@{ Mock = $true; IsOpen = $false; FullName = '' }
 $solution | Add-Member -MemberType ScriptMethod -Name Create -Value { param($a, $b) }
 $solution | Add-Member -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) [PSCustomObject]@{ Object = $newSm } }.GetNewClosure()
 $solution | Add-Member -MemberType ScriptMethod -Name SaveAs -Value { param($a) Set-Content -LiteralPath $a -Value '' -Encoding ASCII }
