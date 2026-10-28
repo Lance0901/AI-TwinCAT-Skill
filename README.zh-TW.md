@@ -48,7 +48,7 @@ Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
 
-出錯了？看 [docs/troubleshooting.md](docs/troubleshooting.md) — 錯誤碼表（`error.code` / `error.hint`）、Lifecycle 正確順序、環境矩陣、已知限制。需要真機的驗證腳本在 [tests/Integration](tests/Integration/README.md)。
+出錯了？先看 [docs/known-limitations.md](docs/known-limitations.md)(已知問題、繞過方式、真機驗證範圍)與 [docs/troubleshooting.md](docs/troubleshooting.md) — 錯誤碼表（`error.code` / `error.hint`）、Lifecycle 正確順序、環境矩陣、已知限制。需要真機的驗證腳本在 [tests/Integration](tests/Integration/README.md)。
 
 ### 自動化測試
 
@@ -230,7 +230,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:37 個 cmdlet 加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:37 個 cmdlet 中的 36 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server
