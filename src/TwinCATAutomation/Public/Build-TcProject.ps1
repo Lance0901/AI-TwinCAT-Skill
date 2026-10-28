@@ -72,8 +72,8 @@
         in which a PLC project was skipped by the configuration (all of them: no PLC code was
         compiled at all) keeps success = true with data.warningCodes containing CODE_NOT_VERIFIED
         (after PROJECT_SKIPPED_BY_CONFIGURATION, #58).
-        A complete success (coverageComplete and codeVerified = $true; or the accepted
-        -AllowUnresolvedLibrary case with only library rows) also clears the "build required after
+        A complete success (coverageComplete and codeVerified = $true - never a build accepted with
+        -AllowUnresolvedLibrary, #61) also clears the "build required after
         a platform switch" state that Enable-TcConfig checks before activating (BUILD_REQUIRED, a
         state file per solution: Private/Set-TcBuildRequired.ps1). A skipped PLC project, an
         unreadable project list or Error List, a code row without a line number or a solution
@@ -150,7 +150,10 @@
     .PARAMETER AllowUnresolvedLibrary
         Accept a build whose Error List shows unresolved libraries (missing / not installed)
         as success, with data.warningCode = LIBRARY_UNRESOLVED and codeVerified = $false.
-        Without it such a build returns LIBRARY_UNRESOLVED (see above).
+        Without it such a build returns LIBRARY_UNRESOLVED (see above). The accepted build is
+        never complete (data.completeBuild = $false, #61): it records BUILD_REQUIRED
+        (unverified-build), so Enable-TcConfig and Enter-TcPlcOnline still refuse until the
+        library is installed and a complete Build-TcProject succeeds.
     #>
     [CmdletBinding()]
     param(
@@ -553,7 +556,7 @@
                 -ErrorCode 'LIBRARY_UNRESOLVED' -Hint (Get-TcErrorHint -Code 'LIBRARY_UNRESOLVED') -Data $data
         }
         if ($libraryUnresolved) {
-            $libWarn = "Build-TcProject: $($libraryErrorItems.Count) unresolved library error(s); the PLC code may not have been compiled (LIBRARY_UNRESOLVED, accepted by -AllowUnresolvedLibrary). $libNames"
+            $libWarn = "Build-TcProject: $($libraryErrorItems.Count) unresolved library error(s); the PLC code may not have been compiled (LIBRARY_UNRESOLVED, accepted by -AllowUnresolvedLibrary; not a complete build, so Enable-TcConfig / Enter-TcPlcOnline refuse with BUILD_REQUIRED until the library is installed and the build is complete). $libNames"
             $data | Add-Member -NotePropertyName 'libraryWarning' -NotePropertyValue $libWarn
             Add-TcBuildWarning -Data $data -Code 'LIBRARY_UNRESOLVED' -Text $libWarn
         }
@@ -612,14 +615,13 @@
             # The build that Enable-TcConfig waits for after a platform switch (BUILD_REQUIRED) must
             # prove that every PLC project was compiled: coverageComplete (none skipped, the project
             # list was read, the solution has PLC projects) and codeVerified. A skipped PLC project
-            # may still have the output of the previous platform (inferred, not measured). The one
-            # accepted exception is the documented #45 path: -AllowUnresolvedLibrary with only
-            # library rows (codeVerified = $false because of them, Error List read, no unlocated row).
-            # ($null -eq $errorListError) and ($unlocatedCode.Count -eq 0) are a deliberate guard:
-            # $libraryUnresolved already implies a read Error List today, but the exception must
-            # never cover an unreadable Error List or unlocated code rows if that ever changes.
-            $acceptedLibrary = $libraryUnresolved -and $AllowUnresolvedLibrary -and ($null -eq $errorListError) -and ($unlocatedCode.Count -eq 0)
-            $completeBuild = [bool]($coverageComplete -and (($codeVerified -eq $true) -or $acceptedLibrary))
+            # may still have the output of the previous platform (inferred, not measured). There is
+            # no exception (#61): a build accepted with -AllowUnresolvedLibrary has codeVerified =
+            # $false, so it is NOT complete and records 'unverified-build' below - otherwise the
+            # platform-fix-build of Enable-TcConfig cleared BUILD_REQUIRED and activated, downloaded
+            # and started code nobody had proven compiled (measured 2026-10-28, TcXaeShell 4024,
+            # BFH-1650 copy with an injected unresolved library, local UmRT).
+            $completeBuild = [bool]($coverageComplete -and ($codeVerified -eq $true))
             $data | Add-Member -NotePropertyName 'completeBuild' -NotePropertyValue $completeBuild
             if ($completeBuild) {
                 $cw = Clear-TcBuildRequired

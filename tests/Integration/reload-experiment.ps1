@@ -49,6 +49,8 @@ param(
     # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing
     # libraries, #45 / #56). The C0046 check (3.) is then weak: with missing libraries XAE may not
     # compile the code at all (tests/Integration/README.md).
+    # Since #61 that build is never complete (completeBuild=false): a later Enable-TcConfig / login still refuses with
+    # BUILD_REQUIRED, so Activate needs the libraries installed first.
     [switch]$AllowUnresolvedLibrary
 )
 

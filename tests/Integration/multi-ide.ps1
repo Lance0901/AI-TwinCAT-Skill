@@ -29,7 +29,7 @@ param(
     [string]$LogPath = (Join-Path $PSScriptRoot 'logs\multi-ide.log'),
     [int]$DeadlineSec = 900,
     [switch]$SkipVs,
-    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45). Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
     [switch]$AllowUnresolvedLibrary
 )
 

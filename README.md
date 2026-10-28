@@ -116,7 +116,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ### Build & Deploy
 | Command | Description |
 |---------|-------------|
-| `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line/category); `data.errors` counts code errors only (#23, no longer the Library Manager rows); unresolved libraries -> `LIBRARY_UNRESOLVED` unless `-AllowUnresolvedLibrary` (#45) |
+| `Build-TcProject` | Build (auto-retry on RPC busy; polls `BuildState`, `-TimeoutSec` default 600 -> `BUILD_TIMEOUT`); `data.errorItems[]` lists the Error List errors (description/file/line/category); `data.errors` counts code errors only (#23, no longer the Library Manager rows); unresolved libraries -> `LIBRARY_UNRESOLVED` unless `-AllowUnresolvedLibrary` (#45; such a build is never complete, so Activate / Login stay refused, #61) |
 | `Clear-TcProject` | Clean the solution (`Clean($false)` + `BuildState` polling, `-TimeoutSec` default 300 -> `CLEAN_TIMEOUT`); waits while the DTE answers `$null` for `Solution` / `SolutionBuild` (`data.nullReads`; #18, cause not confirmed); unresolved libraries only -> `LIBRARY_UNRESOLVED` (`-AllowUnresolvedLibrary`: success + `data.warningCode`), LastBuildInfo unreadable -> `CLEAN_UNVERIFIED`, other errors -> `CLEAN_FAILED` |
 | `Get-TcBuildErrors` | Read the XAE Error List (errors, `-IncludeWarnings`, `-IncludeMessages`) via UI Automation |
 | `Enable-TcConfig` | Activate configuration via ADS (no dialogs with `-Force`) |

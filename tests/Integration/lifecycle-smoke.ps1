@@ -36,6 +36,8 @@ param(
     # Pass -AllowUnresolvedLibrary to Clear-TcProject (03a) and Build-TcProject (03): accept
     # LIBRARY_UNRESOLVED for a project copy that is known to miss libraries (A group: the Festo copy
     # without its Visu libraries, #45), see troubleshooting 'CLEAN_LIBRARY_UNRESOLVED' / 'LIBRARY_UNRESOLVED'.
+    # Since #61 that build is never complete (completeBuild=false): a later Enable-TcConfig / login still refuses with
+    # BUILD_REQUIRED, so with this flag only -StopAfterBuild is meaningful (04-enable-force always returns BUILD_REQUIRED).
     [switch]$AllowUnresolvedLibrary
 )
 

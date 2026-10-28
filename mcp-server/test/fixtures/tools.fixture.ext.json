@@ -47,7 +47,7 @@
       "timeoutMs": 180000,
       "inputSchema": {
         "type": "object",
-        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" }, "NoPlatformFix": { "type": "boolean" }, "Platform": { "type": "string" }, "AllowUnresolvedLibrary": { "type": "boolean" } },
+        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" }, "NoPlatformFix": { "type": "boolean" }, "Platform": { "type": "string" } },
         "required": [],
         "additionalProperties": false
       }
