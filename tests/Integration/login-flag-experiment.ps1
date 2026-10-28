@@ -21,7 +21,7 @@ param(
     [string]$LogPath = '',
     [switch]$SilentMode,
     [switch]$SuppressUI,
-    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56).  Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56). Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
     [switch]$AllowUnresolvedLibrary
 )
 

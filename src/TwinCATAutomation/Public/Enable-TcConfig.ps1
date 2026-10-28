@@ -56,8 +56,10 @@ function Enable-TcConfig {
         ('Recorded: code-changed (PLC code changed by Write-TcPouCode MAIN [...])').
         Only a complete build lifts that entry (the platform-fix-build, or a separate
         Build-TcProject, with data.completeBuild = true: coverageComplete and codeVerified =
-        true). Code that is not verified (codeVerified not true, e.g. unresolved libraries) is
-        never activated, downloaded or started (#61; there is no -AllowUnresolvedLibrary here).
+        true). After a build the module recorded as not verified (codeVerified not true, e.g.
+        unresolved libraries) nothing is activated, downloaded or started until a complete build
+        (#61; there is no -AllowUnresolvedLibrary here; solutions never built through the module
+        are not covered, see the next sentence).
         A solution never built or changed through the module has no entry:
         Activate compiles it without a check (known limit, docs/troubleshooting.md BUILD_REQUIRED).
 
@@ -551,8 +553,19 @@ function Enable-TcConfig {
             Add-TcStepRecord -Name 'platform-fix-build' -Ok $false -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s) but is not complete; $verdict"
             $wcs = @($(if ($null -ne $b.data.PSObject.Properties['warningCodes']) { $b.data.warningCodes } else { @() }))
             $cv = if ($null -eq $b.data.codeVerified) { 'null' } else { ([string]$b.data.codeVerified).ToLowerInvariant() }
-            $msg = "Not activated: the build after the automatic platform switch to '$($r.platform)' succeeded but did not prove that the PLC code was compiled (codeVerified=$cv, warningCodes=[$($wcs -join ', ')]; $verdict). Unverified code is never activated, downloaded or started (#61)."
-            $hint = "Fix what made the build incomplete - with LIBRARY_UNRESOLVED install the missing library (data.libraryErrorItems of Build-TcProject) in the XAE Library Manager first - then run Build-TcProject until data.completeBuild = true and retry Enable-TcConfig. $(Get-TcErrorHint -Code 'BUILD_REQUIRED')".TrimEnd()
+            $msg = "Not activated: the build after the automatic platform switch to '$($r.platform)' succeeded but did not prove that the PLC code was compiled (codeVerified=$cv, warningCodes=[$($wcs -join ', ')]; $verdict). A build that is not complete (#61) is not activated, downloaded or started."
+            # next step per cause (warningCodes / codeVerified / coverageComplete), then the general BUILD_REQUIRED hint
+            $covp = $b.data.PSObject.Properties['coverageComplete']
+            $nextSteps = @()
+            if ($wcs -contains 'LIBRARY_UNRESOLVED') { $nextSteps += 'install the missing library (data.libraryErrorItems of Build-TcProject) in the XAE Library Manager first' }
+            if ($wcs -contains 'PROJECT_SKIPPED_BY_CONFIGURATION') { $nextSteps += 'a PLC project was skipped by the active solution configuration (data.skippedProjects): tick Build for it in the Configuration Manager' }
+            if ($wcs -contains 'CODE_NOT_VERIFIED') {
+                if ($null -eq $b.data.codeVerified) { $nextSteps += 'the Error List could not be read (data.errorListError of Build-TcProject): make it readable (Error List window open, English or zh-TW UI), then build again' }
+                elseif ($wcs -notcontains 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $null -ne $covp -and $covp.Value -ne $true) { $nextSteps += 'the solution has no PLC project that took part in the build: add one or build a solution with a PLC project' }
+                else { $nextSteps += 'the Error List has code rows without a file/line (data.errorItems): fix or clear them' }
+            }
+            if ($nextSteps.Count -eq 0) { $nextSteps += 'read data.warningCodes / data.codeVerified / data.coverageComplete of Build-TcProject and fix what made the build incomplete' }
+            $hint = "$(($nextSteps | ForEach-Object { $_.Substring(0,1).ToUpperInvariant() + $_.Substring(1) }) -join '; '). Then run Build-TcProject until data.completeBuild = true and retry Enable-TcConfig. $(Get-TcErrorHint -Code 'BUILD_REQUIRED')".TrimEnd()
             return New-TcStepFailure -Message $msg -Code 'BUILD_REQUIRED' -Hint $hint
         }
         Add-TcStepRecord -Name 'platform-fix-build' -Ok $true -Watch $swBuild -Detail "Build-TcProject after the platform switch succeeded ($($b.data.buildSec) s); $verdict"

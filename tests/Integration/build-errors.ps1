@@ -36,7 +36,7 @@ param(
     [switch]$CleanCompileInfo,
     # Required: acknowledges that the POU file of the solution is modified on disk (and restored).
     [switch]$IUnderstandThisModifiesTheProject,
-    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45).  Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45). Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
     [switch]$AllowUnresolvedLibrary
 )
 

@@ -6,7 +6,7 @@
 
 param(
     [string]$SolutionPath = 'C:\Users\aka09\OneDrive\1000-Projects\2026-FB_Logger_V3\Logger-Service\Logger-Service.sln',
-    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56).  Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
+    # Pass -AllowUnresolvedLibrary to Build-TcProject: accept LIBRARY_UNRESOLVED (project with missing libraries, #45 / #56). Since #61 that build is never complete: a later Enable-TcConfig / login still refuses with BUILD_REQUIRED.
     [switch]$AllowUnresolvedLibrary
 )
 
