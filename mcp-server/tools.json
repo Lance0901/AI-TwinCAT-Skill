@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-28T14:57:24Z",
+    "generatedAt":  "2026-10-28T15:32:02Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -132,7 +132,7 @@
                   {
                       "name":  "AddLibrary",
                       "cmdlet":  "Add-TcLibrary",
-                      "description":  "Add a library reference to the PLC project (References node). BUILD_REQUIRED (#65): the added reference (also when CreateChild failed) records kind code-changed for the open solution (data.buildRequired names the tool and the library; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): the reference is stored in the .plcproj, which is saved (DTE Project.Save of the .tsproj, deadline: PROJECT_SAVE_TIMEOUT) and read back from disk: success only when it lists a library reference named Name (data.projectSaved); otherwise PROJECT_SAVE_FAILED or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified.",
+                      "description":  "Add a library reference to the PLC project: ITcPlcLibraryManager.AddLibrary(Name, Version, Vendor) on TIPC^<Plc>^<Plc> Project^References (TE1000 6.5.14). Version * = newest installed (.plcproj gets LibraryReference Include=\"<name>,newest,<vendor>\"). Already referenced (also as placeholder #<name>): success with data.alreadyPresent=true, nothing added, no BUILD_REQUIRED. Not installed: LIBRARY_ADD_FAILED with data.notInstalled=true and an install hint; nothing is saved, the .plcproj is unchanged. Several PLC projects: pass PlcProjectPath (else PLC_PROJECT_AMBIGUOUS). BUILD_REQUIRED (#65): the added reference (also when AddLibrary failed for another reason) records kind code-changed for the open solution (data.buildRequired names the tool and the library; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): the reference is stored in the .plcproj, which is saved (DTE Project.Save of the .tsproj, deadline: PROJECT_SAVE_TIMEOUT) and read back from disk: success only when it lists a library reference named Name (data.projectSaved); otherwise PROJECT_SAVE_FAILED or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -147,9 +147,18 @@
                                                                       },
                                                              "Version":  {
                                                                              "type":  "string",
-                                                                             "description":  "Optional library version. Uses latest if omitted.",
+                                                                             "description":  "Library version. Default '*' = newest installed (the manual sample uses '*'; the project file then gets <LibraryReference Include=\"<name>,newest,<vendor>\">, measured).",
                                                                              "default":  "*"
-                                                                         }
+                                                                         },
+                                                             "Vendor":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Distributor / company. Default 'Beckhoff Automation GmbH'.",
+                                                                            "default":  "Beckhoff Automation GmbH"
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
+                                                                                }
                                                          },
                                           "required":  [
                                                            "Name"

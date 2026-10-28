@@ -88,12 +88,14 @@ Adds a Data Unit Type.
 Created (sub type 606 Struct / 605 Enum / 607 Union / 623 Alias), then `TYPE ... END_TYPE` is written and read back (an Enum without Fields gets `enum_member := 0`). **Returns:** `{ name, dutType, path, folderPath, objectKind, itemType, declaration }`; failure `DUT_CREATE_FAILED`.
 
 ### Add-TcLibrary / `AddLibrary`
-Adds a library reference.
+Adds a library reference with `ITcPlcLibraryManager.AddLibrary` on `TIPC^<Plc>^<Plc> Project^References` (TE1000 v1.7.0 §6.5.14, p.241-243; §5.25.1.10, p.118), then saves and reads back the .plcproj (#76). Already referenced (also as placeholder `#<name>`) -> success, `data.alreadyPresent = true`. Not installed -> `LIBRARY_ADD_FAILED`, `data.notInstalled = true`, .plcproj unchanged.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | Name | string | Yes | Library name (e.g., Tc2_Standard) |
-| Version | string | No | Version (default: *) |
+| Version | string | No | Version (default: `*` = newest installed) |
+| Vendor | string | No | Distributor (default: Beckhoff Automation GmbH) |
+| PlcProjectPath | string | No | PLC name or tree path; required with several PLC projects |
 
 ---
 

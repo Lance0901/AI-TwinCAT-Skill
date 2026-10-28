@@ -22,13 +22,6 @@
 
 ## 專案 / 程式碼
 
-### AddLibrary 用 CreateChild 失敗(0x98510001)(#80)
-
-- **現象**:`AddLibrary` 透過 `CreateChild` 加 library reference 時回 HRESULT `0x98510001`,library 沒有加進去。
-- **影響**:無法用 tool 加 library;需要該 library 的程式 Build 會失敗或回 `LIBRARY_UNRESOLVED`。
-- **繞過**:暫時請在 XAE 的 Library Manager **手動**加 library,存檔後 `ResetSolution`,再 `BuildProject`。
-- **Issue**:[#80](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/80)
-
 ### NewProject:MCP 暫時下架(#70)
 
 - **現象**:`New-TcProject` 給 `AddFromTemplate` 的 template 路徑是空字串,建專案的流程沒有對照 InfoSys 驗證;而且 `Solution.Create` 會關掉 IDE 目前開著的 solution(未存的改動會丟掉,#70 記錄的風險)。
@@ -85,7 +78,7 @@
 
 | 已實測(2026-10-28,本機 UmRT,registered tcauto) | 未實測(beta / 未驗證) |
 |---|---|
-| `ConnectIde` | `AddLibrary`(已知失敗,#80) |
+| `ConnectIde` | `AddLibrary`(#80 已改用 ITcPlcLibraryManager.AddLibrary;自建 client 實測 2026-10-28 4024 / 4026 PASS,待 registered tcauto 複測) |
 | `SetTarget` | `CleanProject` |
 | `BuildProject` | `DisconnectAds` |
 | `EnableConfig` | `GetIdeInfo` |

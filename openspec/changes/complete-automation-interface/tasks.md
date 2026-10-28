@@ -3,7 +3,7 @@
 - [ ] 1.1 查 TE1000 手冊與 InfoSys,確認 `ProduceScan` / `ScanDevices`、`LinkTo` / `LinkVariables` 的正確 API,附上出處
 - [ ] 1.2 在 UmRT 用 registered tcauto 實測現有 `IoScan`、`SetVariableLink`,記錄實際行為
 - [ ] 1.3 依 1.1 和 1.2 的結果修 `Invoke-TcIoScan`、`Set-TcVariableLink`,包括讀回驗證和 `TREEITEM_NOT_FOUND`
-- [ ] 1.4 `Add-TcLibrary` 改用 `ITcPlcLibraryManager.AddLibrary`,保留存檔與讀回驗證;在 4024 和 4026 各實測一次(#80)
+- [x] 1.4 `Add-TcLibrary` 改用 `ITcPlcLibraryManager.AddLibrary`,保留存檔與讀回驗證;在 4024 和 4026 各實測一次(#80)
 - [ ] 1.5 `New-TcTestCase` 新增 `WaitUntil`,`Invoke-TcTest` 改成輪詢;`WaitMs` 在 help 標為不建議使用;補單元測試
 - [ ] 1.6 實測剩下未實測的 tool:CleanProject、DisconnectAds、GetIdeInfo、GetIoTree、GetPlcState、GetSystemState、OpenProject、PlcLogout、SendPlcProgram、SetPlcState、SetSystemState、WatchVariable、GetIdeModalDialog
 - [ ] 1.7 實測 composite 和測試框架:RunLifecycle、NewTestCase、RunTest、RunTestCycle
