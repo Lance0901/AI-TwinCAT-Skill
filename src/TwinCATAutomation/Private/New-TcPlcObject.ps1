@@ -229,7 +229,7 @@ function Find-TcPlcNameConflict {
     $walk = $null
     try {
         $walk = Invoke-TcComRetry -OperationName "Name check below $projPath" -ScriptBlock {
-            $__hits = New-Object System.Collections.Generic.List[string]
+            $__hits = [System.Collections.Generic.List[string]]::new()
             $__visited = 0
             $__skipped = 0
             $__over = $false

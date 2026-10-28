@@ -44,7 +44,7 @@ $script:TcUiaErrorListScan = {
     $ae = [System.Windows.Automation.AutomationElement]
     $ct = [System.Windows.Automation.ControlType]
     $scope = [System.Windows.Automation.TreeScope]
-    $notes = New-Object System.Collections.Generic.List[string]
+    $notes = [System.Collections.Generic.List[string]]::new()
 
     function Get-UiaName {
         param($el)
@@ -206,7 +206,7 @@ $script:TcUiaErrorListScan = {
             $entireNameCond = New-Object System.Windows.Automation.OrCondition -ArgumentList (, $entireNames)
             $entireParts = [System.Windows.Automation.Condition[]]@($listItemCond, $entireNameCond)
             $entireCond = New-Object System.Windows.Automation.AndCondition -ArgumentList (, $entireParts)
-            $candidates = New-Object System.Collections.Generic.List[object]
+            $candidates = [System.Collections.Generic.List[object]]::new()
             try { foreach ($c in $combo.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
             $winsNow = $null
             try { $winsNow = $ae::RootElement.FindAll($scope::Children, $pidCond) } catch { $winsNow = $null }
@@ -251,7 +251,7 @@ $script:TcUiaErrorListScan = {
     $notes.Add("buttons: errors=$($counts.errors) warnings=$($counts.warnings) messages=$($counts.messages)")
 
     # --- 4. header row -> column ids ---
-    $headerIds = New-Object System.Collections.Generic.List[string]
+    $headerIds = [System.Collections.Generic.List[string]]::new()
     $headerCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::HeaderItem)
     $headerItems = $grid.FindAll($scope::Descendants, $headerCond)
     foreach ($hi in $headerItems) {
@@ -413,7 +413,7 @@ $script:TcUiaErrorListScan = {
     if ($WantWarnings) { $wanted += 'Warning' }
     if ($WantMessages) { $wanted += 'Message' }
 
-    $rowsOut = New-Object System.Collections.Generic.List[object]
+    $rowsOut = [System.Collections.Generic.List[object]]::new()
     $truncatedAny = $false
     $toggleUsed = $false
     $original = @{}
@@ -631,34 +631,59 @@ function Get-TcErrorItemCategory {
 # Invoke-TcUiaScan parks them here with BeginStop issued; Clear-TcUiaAbandonedScans
 # disposes the ones that have since stopped. $script:TcErrorListScanBusy stays $true
 # while any of them is still running.
-$script:TcUiaAbandonedScans = New-Object System.Collections.Generic.List[object]
+$script:TcUiaAbandonedScans = [System.Collections.Generic.List[object]]::new()
 $script:TcErrorListScanBusy = $false
+# Set by Clear-TcUiaAbandonedScans when it had to drop entries it could not handle;
+# Get-TcBuildErrors reports it as data.scanCleanupWarning (#75).
+$script:TcUiaCleanupWarning = $null
 
 function Clear-TcUiaAbandonedScans {
     <#
     .SYNOPSIS
         Disposes timed-out UIA scan runspaces that have stopped since; returns the number
         still running (and keeps $script:TcErrorListScanBusy in sync).
+    .DESCRIPTION
+        Never leaves the list or the busy flag stuck (#75): an entry whose state cannot be
+        read or that fails to dispose is dropped (not retried on every call), and if the
+        list itself cannot be walked it is reset. Either case is written to Write-Verbose
+        and kept in $script:TcUiaCleanupWarning for the caller to report.
     #>
     [CmdletBinding()]
     param()
-    $still = New-Object System.Collections.Generic.List[object]
-    foreach ($entry in @($script:TcUiaAbandonedScans)) {
-        $running = $false
-        try {
-            $state = $entry.PowerShell.InvocationStateInfo.State
-            $running = ($state -eq [System.Management.Automation.PSInvocationState]::Running -or
-                        $state -eq [System.Management.Automation.PSInvocationState]::Stopping -or
-                        $state -eq [System.Management.Automation.PSInvocationState]::NotStarted)
+    $script:TcUiaCleanupWarning = $null
+    $still = [System.Collections.Generic.List[object]]::new()
+    $dropped = 0
+    try {
+        # .ToArray(), not @(): @() on a List[object] built with New-Object threw
+        # ArgumentException in PS 5.1.26100 and left this function stuck forever (#75).
+        foreach ($entry in $script:TcUiaAbandonedScans.ToArray()) {
+            try {
+                $state = $entry.PowerShell.InvocationStateInfo.State
+                $running = ($state -eq [System.Management.Automation.PSInvocationState]::Running -or
+                            $state -eq [System.Management.Automation.PSInvocationState]::Stopping -or
+                            $state -eq [System.Management.Automation.PSInvocationState]::NotStarted)
+                if ($running) { $still.Add($entry); continue }
+                $entry.PowerShell.Dispose()
+                $entry.Runspace.Dispose()
+                Write-Verbose "Clear-TcUiaAbandonedScans: disposed scan started $($entry.Started)."
+            }
+            catch {
+                $dropped++
+                Write-Verbose "Clear-TcUiaAbandonedScans: dropped scan started $($entry.Started) ($($_.Exception.Message))."
+            }
         }
-        catch { $running = $false }
-        if ($running) { $still.Add($entry); continue }
-        try { $entry.PowerShell.Dispose() } catch { }
-        try { $entry.Runspace.Dispose() } catch { }
-        Write-Verbose "Clear-TcUiaAbandonedScans: disposed scan started $($entry.Started)."
+        if ($dropped -gt 0) {
+            $script:TcUiaCleanupWarning = "$dropped abandoned Error List scan(s) could not be inspected or disposed and were dropped (#75)."
+        }
     }
-    $script:TcUiaAbandonedScans = $still
-    $script:TcErrorListScanBusy = ($still.Count -gt 0)
+    catch {
+        $script:TcUiaCleanupWarning = "abandoned Error List scan list could not be walked and was reset; a timed-out UIA thread may still be running ($($_.Exception.Message)) (#75)."
+        Write-Verbose "Clear-TcUiaAbandonedScans: $script:TcUiaCleanupWarning"
+    }
+    finally {
+        $script:TcUiaAbandonedScans = $still
+        $script:TcErrorListScanBusy = ($still.Count -gt 0)
+    }
     return $still.Count
 }
 

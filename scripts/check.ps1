@@ -10,6 +10,9 @@
                   there, so this also blocks it.
       encoding    Those files are ASCII or UTF-8 with BOM (5.1 reads BOM-less files in the ANSI
                   code page, so the parse result would depend on the machine).
+      generics    No "New-Object System.Collections.Generic.*" in src/ and mcp-server/ *.ps1:
+                  @() on a New-Object List[object] throws ArgumentException in Windows
+                  PowerShell 5.1.26100; use [System.Collections.Generic.List[...]]::new() (#75).
       cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
                   number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md
                   "Available Commands (N)", README.md "All Commands (N)" and
@@ -69,7 +72,7 @@ $scriptDir = Split-Path -Parent $PSCommandPath
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDir '..')).ProviderPath
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
-$results = New-Object System.Collections.Generic.List[object]
+$results = [System.Collections.Generic.List[object]]::new()
 function Add-CheckResult {
     param([string]$Name, [ValidateSet('PASS', 'FAIL', 'SKIP')][string]$Status, [string]$Detail, [string[]]$Lines)
     $results.Add([pscustomobject]@{ Name = $Name; Status = $Status; Detail = $Detail })
@@ -184,6 +187,34 @@ try {
 }
 catch {
     Add-CheckResult 'encoding' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
+# generics: no New-Object System.Collections.Generic.* in src/ and mcp-server/ (#75).
+# In Windows PowerShell 5.1.26100, @() on a List[object] built with New-Object throws
+# ArgumentException ("Argument types do not match"); [List[object]]::new() does not.
+# ---------------------------------------------------------------------------
+try {
+    $genericPattern = New-Object System.Text.RegularExpressions.Regex('New-Object\s+(-TypeName\s+)?[''"]?System\.Collections\.Generic\.', 'IgnoreCase')
+    $genericHits = [System.Collections.Generic.List[string]]::new()
+    $genericFiles = @($psFiles | Where-Object { (Get-RelativePath $_) -match '^(src|mcp-server)/' -and $_ -like '*.ps1' })
+    foreach ($f in $genericFiles) {
+        $lines = [System.IO.File]::ReadAllLines($f, $utf8)
+        for ($i = 0; $i -lt $lines.Length; $i++) {
+            if ($genericPattern.IsMatch($lines[$i])) { $genericHits.Add(('{0}:{1} {2}' -f (Get-RelativePath $f), ($i + 1), $lines[$i].Trim())) }
+        }
+    }
+    if ($genericHits.Count -eq 0) {
+        Add-CheckResult 'generics' 'PASS' "$($genericFiles.Count) src/ + mcp-server/ .ps1 files, no New-Object System.Collections.Generic.*"
+    }
+    else {
+        $n = $genericHits.Count
+        $genericHits.Add('use [System.Collections.Generic.List[object]]::new() instead: @() on a New-Object List[object] throws ArgumentException in Windows PowerShell 5.1.26100 and broke Get-TcBuildErrors permanently (#75)')
+        Add-CheckResult 'generics' 'FAIL' "$n New-Object System.Collections.Generic.* hit(s)" $genericHits
+    }
+}
+catch {
+    Add-CheckResult 'generics' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
 # ---------------------------------------------------------------------------

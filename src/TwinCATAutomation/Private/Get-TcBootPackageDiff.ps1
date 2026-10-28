@@ -130,7 +130,7 @@ function Get-TcBootPackageDiff {
     $res.targetKind = $target.Kind
     if (-not (Test-Path $target.Dir)) { $res.reason = "target Boot folder $($target.Dir) does not exist"; return $res }
 
-    $rel = New-Object System.Collections.Generic.List[string]
+    $rel = [System.Collections.Generic.List[string]]::new()
     foreach ($f in 'CurrentConfig.xml', 'CurrentConfig.tszip') { $rel.Add($f) }
     # Only the files of the local package are compared; files that exist only on the target
     # (e.g. the package of a PLC removed from the solution) are listed in extraOnTarget.

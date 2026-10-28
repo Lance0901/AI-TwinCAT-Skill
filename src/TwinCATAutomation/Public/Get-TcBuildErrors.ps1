@@ -41,6 +41,8 @@ function Get-TcBuildErrors {
         data.unclassified  rows of unknown severity (only when there are any)
         ERRORLIST_UNAVAILABLE is also returned when the previous scan has not finished
         yet (timed-out UIA thread still running; $script:TcErrorListScanBusy).
+        data.scanCleanupWarning  set when leftover timed-out scans could not be inspected /
+                         disposed and were dropped instead (#75); on success and failure results
     #>
     [CmdletBinding()]
     param(
@@ -73,13 +75,17 @@ function Get-TcBuildErrors {
 
     # A previous scan that timed out may still be stuck inside UIA on its STA thread;
     # a second scan would compete for the same window (and toggle the same buttons).
+    $cleanupWarning = $null
     if ($script:TcErrorListScanBusy) {
         $stillRunning = Clear-TcUiaAbandonedScans
+        $cleanupWarning = $script:TcUiaCleanupWarning
         if ($stillRunning -gt 0) {
+            $busyData = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $true }
+            if ($null -ne $cleanupWarning) { $busyData | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
             return New-TcResult -Success $false `
                 -ErrorMessage "ERRORLIST_UNAVAILABLE: the previous Error List scan has not finished yet ($stillRunning UIA thread(s) still running after a timeout); retry later or reconnect the IDE." `
                 -ErrorCode 'ERRORLIST_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') `
-                -Data ([PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)'; scanBusy = $true })
+                -Data $busyData
         }
     }
 
@@ -111,14 +117,15 @@ function Get-TcBuildErrors {
                else { 'Error List window not found in the IDE process' }
         $data = [PSCustomObject]@{ ideProcessId = $idePid; source = 'ErrorList(UIA)' }
         if ($null -ne $scan) { $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) }
+        if ($null -ne $cleanupWarning) { $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning }
         return New-TcResult -Success $false -ErrorMessage "ERRORLIST_UNAVAILABLE: $why" -ErrorCode 'ERRORLIST_UNAVAILABLE' `
             -Hint (Get-TcErrorHint -Code 'ERRORLIST_UNAVAILABLE') -Data $data
     }
 
-    $errors = New-Object System.Collections.Generic.List[object]
-    $warnings = New-Object System.Collections.Generic.List[object]
-    $messages = New-Object System.Collections.Generic.List[object]
-    $unclassified = New-Object System.Collections.Generic.List[object]
+    $errors = [System.Collections.Generic.List[object]]::new()
+    $warnings = [System.Collections.Generic.List[object]]::new()
+    $messages = [System.Collections.Generic.List[object]]::new()
+    $unclassified = [System.Collections.Generic.List[object]]::new()
     foreach ($row in @($scan.Rows)) {
         $item = ConvertTo-TcErrorListItem -Row $row
         switch ($item.severity) {
@@ -154,6 +161,9 @@ function Get-TcBuildErrors {
     }
     if ($severityUnknown) {
         $data | Add-Member -NotePropertyName 'severityUnknown' -NotePropertyValue $true
+    }
+    if ($null -ne $cleanupWarning) {
+        $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning
     }
     if ($VerbosePreference -ne 'SilentlyContinue') {
         $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes)

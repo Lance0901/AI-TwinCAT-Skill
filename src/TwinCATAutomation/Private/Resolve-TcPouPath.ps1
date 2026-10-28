@@ -51,7 +51,7 @@
         Tried           = [string[]]@()
         ProjectChildren = [string[]]@()
     }
-    $tried = New-Object System.Collections.Generic.List[string]
+    $tried = [System.Collections.Generic.List[string]]::new()
 
     # 1. explicit path
     if (-not [string]::IsNullOrWhiteSpace($PouPath)) {
@@ -113,13 +113,13 @@
     # 4. tree search below the project node (one COM round trip set)
     $search = Invoke-TcComRetry -OperationName "Search tree for $Name" -ScriptBlock {
         $__root = $sm.LookupTreeItem($projPath)
-        $__names = New-Object System.Collections.Generic.List[string]
+        $__names = [System.Collections.Generic.List[string]]::new()
         $__hit = $null
         $__hitPath = $null
 
         $__rootCount = 0
         try { $__rootCount = [int]$__root.ChildCount } catch { $__rootCount = 0 }
-        $__level1 = New-Object System.Collections.Generic.List[object]
+        $__level1 = [System.Collections.Generic.List[object]]::new()
         for ($__i = 1; $__i -le $__rootCount; $__i++) {
             try {
                 $__c = $__root.Child($__i)
