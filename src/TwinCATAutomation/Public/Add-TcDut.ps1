@@ -13,7 +13,11 @@ function Add-TcDut {
     .NOTES
         Project file (#76): after the readback the project file is saved and the .plcproj is
         read back from disk (as Add-TcPou): success only with a <Compile Include> for
-        <Name>.TcDUT (data.projectSaved), otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*).
+        <folders>\<Name>.TcDUT (relative path; data.projectSaved), otherwise PROJECT_SAVE_FAILED
+        (or PROJECT_SAVE_TIMEOUT / IDE_MODAL_DIALOG / IDE_*). What else Project.Save writes
+        (measured 2026-10-28, 4026 VisualStudio.DTE.17.0): a dirty plain text document was NOT
+        saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was
+        NOT verified.
         BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
         lookup / kind / language / declare step on, or CreateChild itself failing) the solution
         is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and

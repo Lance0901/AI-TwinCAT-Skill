@@ -11,7 +11,10 @@ function Add-TcLibrary {
         only changes in XAE memory. The project file is saved (Save-TcPlcProject) and read back
         from disk: success only when it lists a library reference named -Name
         (PlaceholderReference / LibraryReference Include, Namespace or DefaultResolution;
-        data.projectSaved), otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*).
+        data.projectSaved), otherwise PROJECT_SAVE_FAILED (or PROJECT_SAVE_TIMEOUT /
+        IDE_MODAL_DIALOG / IDE_*). What else Project.Save writes (measured 2026-10-28, 4026
+        VisualStudio.DTE.17.0): a dirty plain text document was NOT saved; whether unsaved content
+        of a PLC editor (a POU edited in the GUI) is written was NOT verified.
         BUILD_REQUIRED (#65): after CreateChild on the References node was called (success, or
         CreateChild failing) the solution is recorded as 'code-changed' (Register-TcCodeChange):
         Enable-TcConfig and Enter-TcPlcOnline refuse until a complete Build-TcProject.

@@ -15,10 +15,14 @@ function Add-TcPou {
     .NOTES
         Project file (#76): CreateChild writes the new .TcPOU at once but changes the .plcproj
         only in XAE memory. After the readback the project file is saved (Save-TcPlcProject:
-        DTE Project.Save of the .tsproj, which writes the .tsproj and its .plcproj and no editor
-        document) and the .plcproj is read back from disk: success only when it has a
-        <Compile Include> for <Name>.TcPOU (data.projectSaved: plc, tsproj, plcproj, savedFiles,
-        verifiedFiles, saveSec). Otherwise PROJECT_SAVE_FAILED (or IDE_MODAL_DIALOG / IDE_*),
+        DTE Project.Save of the .tsproj, deadline -> PROJECT_SAVE_TIMEOUT) and the .plcproj is
+        read back from disk: success only when it has a <Compile Include> with the object's
+        relative path (<folders>\<Name>.TcPOU, e.g. POUs\FB_Motor.TcPOU; data.projectSaved: plc,
+        tsproj, plcproj, savedFiles, verifiedFiles [file, preExisting], plcprojChanged,
+        lastWriteBefore / lastWriteAfter, saveSec, warning). What else Project.Save writes
+        (measured 2026-10-28, 4026 VisualStudio.DTE.17.0): a dirty plain text document was NOT
+        saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was
+        NOT verified. Otherwise PROJECT_SAVE_FAILED (or PROJECT_SAVE_TIMEOUT / IDE_MODAL_DIALOG / IDE_*),
         data.objectPath / createdInMemory / savedToDisk = false: the POU exists only in XAE memory
         (closing the solution without saving would drop it).
         BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
