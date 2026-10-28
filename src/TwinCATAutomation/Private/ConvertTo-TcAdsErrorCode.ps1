@@ -21,6 +21,9 @@ $script:TcErrorHints = @{
     'IDE_MODAL_DIALOG_RELOAD' = 'XAE 跳「File has been changed outside the environment. Reload the new file?」:開在編輯器裡的檔案(通常是 .TcPOU)被磁碟上的工具改了,DTE 呼叫被擋住;.plcproj 被改寫(內容相同也算)則跳「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」,同樣算 reload-prompt(reloadTarget = project)。直接呼叫 Reset-TcSolution:project 提示它會按 Yes(依 control id,語系無關)讓 XAE 自己 reload 專案再重連,不必 close/reopen;檔案提示它會關掉提示(WM_CLOSE)、關閉所有文件、Solution.Close 後在同一個 IDE 重開 solution 並重連(約 20~25 s);關不掉就在 XAE 按 Yes,或 kill IDE 後重新 Connect-TcIde -SolutionPath <sln>。之後改磁碟檔案的規則:POU 沒開在編輯器 → 直接改,XAE 約 5 s 自動吃到;開著 → 改完立刻 Reset-TcSolution(它會順便關掉編輯器,之後就不會再跳);改用 Write-TcPouCode(走 COM 寫 IDE 編輯 buffer,存檔或 Build 時才落地)則不會跳框'
     'IDE_QUIT_FAILED'      = 'IDE 沒有被關掉,行程仍在(pid 見 data.ideProcessId):(a) 被 modal dialog 擋住(data.dialog,quit 沒有嘗試,data.disconnected = false:連線完整保留):kind = reload-prompt → Reset-TcSolution 處理後再 Disconnect-TcIde -Quit;其他 dialog → 本 session 啟動的 IDE(data.ownedBySession = true)用 Disconnect-TcIde -Quit -Kill,否則手動 Stop-Process -Id <data.ideProcessId>。(b) DTE.Quit 失敗(data.quitError,COM 參考已釋放但 pid 有保留):data.ownedBySession = true 就直接接 Disconnect-TcIde -Quit -Kill(不用重連);否則手動 Stop-Process -Id <data.ideProcessId>。不要以為 IDE 已經關掉,下一次 Connect-TcIde 會黏回同一個被擋住的 IDE'
     'IDE_NOT_OWNED'        = '這個 IDE 不是本 session 啟動的(data.selectedBy 不是 launched,例如 solution-match),模組不會 kill 使用者自己開的 IDE。確定要關就自己 Stop-Process -Id <data.ideProcessId>,再重新 Connect-TcIde'
+    'PROJECT_SAVE_FAILED'   = '專案檔(.plcproj / .tsproj)沒存到磁碟或讀回沒有新項目:物件(data.objectPath)只在 XAE 記憶體裡,關 solution 不存檔(Reset-TcSolution -DiscardProjectChanges、Disconnect-TcIde -Quit)就會消失。第一步：先 Get-TcIdeModalDialog 看有沒有 dialog(有就處理),確認 .plcproj / .tsproj 不是唯讀 / 被鎖，再重跑同一個 Add-* 會回 *_CREATE_FAILED(exists),所以改跑 Reset-TcSolution -SaveProjectChanges(只存專案檔並讀回;磁碟也被改過時會拒絕)。第二步(仍失敗):請使用者在 XAE 手動存該 PLC 專案;或 Build-TcProject,但注意 Build 會一併存 editor buffer(可能蓋掉磁碟上的 .TcPOU 改動;實測 2026-10-28 .plcproj 的最後寫入時間 = 第一次 Build,#76)。最後 Get-TcProjectTree -PlcOnly 確認物件還在'
+    'PROJECT_SAVE_TIMEOUT'  = 'DTE Project.Save() 在期限內沒返回(模組已放棄等待，XAE 內部可能仍在跑),專案檔可能沒存。看 data.saveDiagnostics:dialog 有值 → Get-TcIdeModalDialog 看內容並處理(模組不會替你按);readOnlyFiles 有值 → 解除 .plcproj / .tsproj 的唯讀屬性後 Reset-TcSolution -SaveProjectChanges;ideResponding = false → XAE 卡死,Disconnect-TcIde -Quit -Kill(只限本 session 啟動的)後重新 Connect-TcIde,未存的物件會遺失'
+    'PROJECT_UNSAVED_CHANGES' = 'Reset-TcSolution 沒關 solution:XAE 記憶體有、磁碟 .plcproj 沒列的 PLC 物件(data.projectCheck.plcs[].missingOnDisk;只有 extraOnDisk = 磁碟有、XAE 沒有時不擋，重開就載入磁碟版本),模組分不出是「XAE 建了沒存」還是「有人在磁碟上刪 / 改了」,所以不替你選。三條路:(1) 保留 XAE 版本 → Reset-TcSolution -SaveProjectChanges(MCP:ResetSolution SaveProjectChanges=true;只存專案檔);但 data.saveRefused 有值時(處理過 reload 提示、物件檔在磁碟上不存在，或同一個 .tsproj 的任一 PLC 沒比對到 / 比對不完整 / extraOnDisk 非空;Project.Save 會寫整個 .tsproj 底下所有 .plcproj)它會拒絕存，表示磁碟被改過。(2) 以磁碟為準 → Reset-TcSolution -DiscardProjectChanges(丟掉 XAE 的版本)。(3) 兩邊都要 → 先在磁碟上補回需要的檔案 / <Compile Include>,再走 (1) 或 (2)。不要用 Build-TcProject 解:Build 會一併存 editor buffer,可能蓋掉磁碟上的 .TcPOU 改動'
     'SOLUTION_CLOSE_FAILED' = 'Solution.Close 失敗:用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog;必要時 Disconnect-TcIde -Quit(或 kill IDE)後重新 Connect-TcIde -SolutionPath <sln>'
     'NO_SOLUTION'          = '沒有開啟的 solution:先 Connect-TcIde -SolutionPath <sln> 或 Open-TcProject -Path <sln>'
     'IDE_TIMEOUT'          = 'DTE 呼叫超過預期時間才返回:XAE 可能被 dialog 卡住或正在跑長操作;用 Get-TcIdeModalDialog 檢查,必要時 kill IDE 後重新 Connect-TcIde'
@@ -161,6 +164,10 @@ function ConvertTo-TcAdsErrorCode {
     # carries the underlying ADS error from a failed auto-reconnect attempt.
     if ($text -match '(?i)Not connected to TwinCAT ADS') {
         $code = 'NOT_CONNECTED'
+    }
+    # Thrown by Invoke-TcProjectSaveWithDeadline; before the TIMEOUT / time out patterns below.
+    elseif ($text -match 'PROJECT_SAVE_TIMEOUT') {
+        $code = 'PROJECT_SAVE_TIMEOUT'
     }
     # Thrown by Invoke-TcComRetry; checked before IDE_BUSY because their messages
     # also carry the original 0x80010001 text.

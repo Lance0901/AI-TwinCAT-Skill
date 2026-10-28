@@ -113,6 +113,8 @@ $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
     $global:MockTree[$path]
 }
 & $mod { param($s) $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcSysManager = $s; $script:TcSolutionPath = 'C:\Demo\Unit.sln' } $sm
+# #76: the project file save after Add-* is covered by tests/Unit/project-save.ps1; stubbed here (no .tsproj on disk)
+& $mod { function script:Invoke-TcPlcObjectSave { [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string]$What) @{ Saved = [PSCustomObject]@{ plcproj = 'mock.plcproj'; verifiedFiles = @($ExpectFile) }; Error = $null } } }
 # #65: the BUILD_REQUIRED entry of the mock solution (code-changed reason) and a reset of it
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }

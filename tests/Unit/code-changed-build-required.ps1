@@ -33,6 +33,8 @@ function Get-Entry { & $mod { Get-TcBuildRequired } }
 function Get-Reasons($e) { & $mod { param($x) Get-TcBuildRequiredReasons $x } $e }
 function Reset-State {
     & $mod { $script:TcBuildRequiredLocal = @{} }
+# #76: the project file save after Add-* is covered by tests/Unit/project-save.ps1; stubbed here (no .tsproj on disk)
+& $mod { function script:Invoke-TcPlcObjectSave { [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string]$What) @{ Saved = [PSCustomObject]@{ plcproj = 'mock.plcproj'; verifiedFiles = @($ExpectFile) }; Error = $null } } }
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
 }
 function Register([string]$Change, $Result = $null) { & $mod { param($r, $c) Register-TcCodeChange -Result $r -Change $c } $Result $Change }
