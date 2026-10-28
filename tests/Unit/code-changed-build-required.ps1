@@ -305,15 +305,30 @@ $okSm = [PSCustomObject]@{ Mock = $true }
 $okSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) [PSCustomObject]@{ Name = 'TIPC' } }
 $global:OkSm = $okSm
 $connOrig = & $mod { ${function:Connect-TcIde} }
-& $mod { Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } } }
-Reset-State
-$global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg)
-$global:ResetMode = @{ FullName = $otherSln }
-& $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
-$r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
-$keys = Get-StateKeys
-Check 'Reset Yes-only success with -SolutionPath P (module had A) -> both recorded' ($r.success -and $r.data.answeredYes -eq $true -and $keys -contains $keySln -and $keys -contains $keyOther -and $keys.Count -eq 2) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
-& $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig
+try {
+    & $mod { Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } } }
+    Reset-State
+    $global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg)
+    $global:ResetMode = @{ FullName = $otherSln }
+    & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+    $r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
+    $keys = Get-StateKeys
+    Check 'Reset Yes-only success with -SolutionPath P (module had A) -> both recorded' ($r.success -and $r.data.answeredYes -eq $true -and $keys -contains $keySln -and $keys -contains $keyOther -and $keys.Count -eq 2) (($keys -join ', ') + ' ' + ($r | ConvertTo-Json -Compress -Depth 2))
+    # every state warning of the records is kept (Register-TcResetChange joins them with '; ')
+    $origSet2 = & $mod { ${function:Set-TcBuildRequired} }
+    try {
+        & $mod { Set-Item -Path function:script:Set-TcBuildRequired -Value { param($Reason, $Kind, $SolutionPath) "warn for $([IO.Path]::GetFileName($SolutionPath))" } }
+        Reset-State
+        $global:DlgQueue.Clear(); $global:DlgQueue.Enqueue($reloadDlg)
+        & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $sln
+        $r = Reset-TcSolution -SolutionPath $otherSln -TimeoutSec 5
+        Check 'Reset with two records -> both state warnings joined' ($r.data.stateWarning -eq 'warn for Other.sln; warn for Demo.sln') "$($r.data.stateWarning)"
+    }
+    finally { & $mod { param($f) Set-Item -Path function:script:Set-TcBuildRequired -Value $f } $origSet2 }
+}
+finally {
+    & $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig
+}
 & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
 Reset-State
 

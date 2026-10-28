@@ -228,14 +228,22 @@ function Reset-TcSolution {
     function Register-TcResetChange {
         param([object]$Result, [string]$Change, [string[]]$Solutions)
         $seen = @{}
+        $warnings = New-Object System.Collections.Generic.List[string]
         $out = $Result
         foreach ($s in $Solutions) {
             if ([string]::IsNullOrWhiteSpace($s)) { continue }
             $k = ConvertTo-TcSolutionKey $s
             if ($seen.ContainsKey($k)) { continue }
             $seen[$k] = $true
+            # each call may set data.stateWarning: clear it first, collect every one
+            if ($null -ne $out -and $null -ne $out.PSObject.Properties['data'] -and $null -ne $out.data -and $out.data -isnot [System.Collections.IDictionary]) {
+                $out.data.PSObject.Properties.Remove('stateWarning')
+            }
             $out = Register-TcCodeChange -Result $out -SolutionPath $s -Change $Change
+            $wp = $out.data.PSObject.Properties['stateWarning']
+            if ($null -ne $wp -and -not [string]::IsNullOrWhiteSpace([string]$wp.Value) -and -not $warnings.Contains([string]$wp.Value)) { $warnings.Add([string]$wp.Value) }
         }
+        if ($null -ne $out -and $warnings.Count -gt 0) { $out.data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ($warnings -join '; ') -Force }
         $out
     }
     function Complete-TcResetFailure {
