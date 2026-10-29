@@ -199,13 +199,30 @@ export function buildCmdletNameMap(catalog, extra = {}) {
   return map;
 }
 
+/** tool name -> Set of its boolean (switch) parameters, from inputSchema. */
+export function buildBooleanParamMap(catalog) {
+  const map = new Map();
+  for (const [name, tool] of catalog ?? []) {
+    const properties = tool?.inputSchema?.properties ?? {};
+    const switches = new Set(
+      Object.entries(properties)
+        .filter(([, schema]) => schema?.type === 'boolean')
+        .map(([param]) => param),
+    );
+    if (switches.size > 0) map.set(name, switches);
+  }
+  return map;
+}
+
 const CMDLET_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b/g;
 // ` -Param` or ` -Param value` right after a replaced cmdlet name; the value must not be another switch.
 // A quoted value ('TwinCAT OS (x64)') is kept whole, quotes included.
 const PARAM_RE = /^\s-([A-Z][A-Za-z]+)(?=\s|$|[,;:()。，；：])(?:\s+('[^']*'|"[^"]*"|<[^>]+>|[A-Za-z0-9_.\:/][A-Za-z0-9_.\:/-]*))?/;
+// The parameter name alone, for a switch that must not swallow the next word.
+const PARAM_NAME_RE = /^\s-([A-Z][A-Za-z]+)(?=\s|$|[,;:()。，；：])/;
 
 /** Replace PowerShell cmdlet names (and their ` -Param value` tails) in a hint with MCP tool names. */
-export function rewriteHintCmdletNames(hint, nameMap) {
+export function rewriteHintCmdletNames(hint, nameMap, boolParams) {
   if (typeof hint !== 'string' || !nameMap) return hint;
   let out = '';
   let last = 0;
@@ -219,6 +236,14 @@ export function rewriteHintCmdletNames(hint, nameMap) {
     for (;;) {
       const pm = PARAM_RE.exec(hint.slice(end));
       if (!pm) break;
+      if (boolParams?.get(tool)?.has(pm[1])) {
+        // A switch takes no value: the word after it belongs to the sentence
+        // ("-AllowUnresolvedLibrary if the user accepts" is not a value).
+        const nameOnly = PARAM_NAME_RE.exec(hint.slice(end));
+        out += ` ${pm[1]}=true`;
+        end += nameOnly[0].length;
+        continue;
+      }
       out += ` ${pm[1]}=${pm[2] ?? 'true'}`;
       end += pm[0].length;
     }
@@ -229,15 +254,15 @@ export function rewriteHintCmdletNames(hint, nameMap) {
 }
 
 /** Rewrite error.hint / data.hint strings anywhere in a result (depth <= 8), in place. */
-export function rewriteResultHints(result, nameMap, depth = 0) {
+export function rewriteResultHints(result, nameMap, boolParams, depth = 0) {
   if (result === null || typeof result !== 'object' || depth > 8) return result;
   if (Array.isArray(result)) {
-    for (const item of result) rewriteResultHints(item, nameMap, depth + 1);
+    for (const item of result) rewriteResultHints(item, nameMap, boolParams, depth + 1);
     return result;
   }
   const err = result.error;
-  if (err && typeof err === 'object' && typeof err.hint === 'string') err.hint = rewriteHintCmdletNames(err.hint, nameMap);
-  if (typeof result.hint === 'string' && depth > 0) result.hint = rewriteHintCmdletNames(result.hint, nameMap);
-  for (const v of Object.values(result)) rewriteResultHints(v, nameMap, depth + 1);
+  if (err && typeof err === 'object' && typeof err.hint === 'string') err.hint = rewriteHintCmdletNames(err.hint, nameMap, boolParams);
+  if (typeof result.hint === 'string' && depth > 0) result.hint = rewriteHintCmdletNames(result.hint, nameMap, boolParams);
+  for (const v of Object.values(result)) rewriteResultHints(v, nameMap, boolParams, depth + 1);
   return result;
 }
