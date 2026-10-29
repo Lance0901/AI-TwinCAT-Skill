@@ -70,33 +70,84 @@
 - **繞過**:照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`,再重跑 `EnableConfig Force=true`。
 - **Issue**:[#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21)
 
-## 真機驗證範圍(實測 2026-10-28)
+### UmRT 第二種 crash 簽名:ntdll.dll stack overflow(#21)
 
-下表「已實測」欄的 20 個 tool 在 2026-10-28 用 registered tcauto MCP 對**本機 UmRT** 實際跑過:主流程 `ConnectIde` → `SetTarget` → `BuildProject` → `EnableConfig` → `ConnectAds` → `ReadVariable` / `WriteVariable` / `QuickRead`,加上 `GetPouCode` / `WritePouCode`、`AddPou` / `AddDut` / `AddGvl`、`ResetSolution`、`GetBuildErrors`、`GetStatus`、`PlcLogin`、`GetProjectTree`、`GetSymbols`、`DisconnectIde`,IDE 為 **4024 XAE(32-bit XAE Shell)、4026 XAE(64-bit XAE Shell)、VS2022**(環境與步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md))。其他 tool 近期沒有在真機上跑過,視為 **beta / 未驗證**:能用,但結果請多一層確認,有問題請開 issue。
+- **現象**:`EnableConfig` 的 set-config 階段,`TcSystemServiceUm` 3.1.0.2649 崩潰,faulting module `ntdll.dll`,exception code 0xc00000fd(stack overflow),offset 0x1cfa8(實測 2026-10-29 11:57,4026 VS2022,本機 UmRT)。前兆是 `TCNC.bootdata` 先變成 0 bytes。和上一條 `TcOsSys.dll` 0xc0000005 是不同簽名。
+- **影響**:同上,target 消失,等不到目標狀態(模組現在偵測到 runtime 消失會提早回 `RUNTIME_CRASHED`,但這條路徑只有單元測試,見下方「未實測」)。
+- **繞過**:同上,照「UmRT 復原」重啟 `TcSystemServiceUm` 後重跑 `EnableConfig Force=true`。
+- **Issue**:追蹤在 [#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21),補充說明見 [issuecomment-6487701546](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21#issuecomment-6487701546)
 
-下表依 `mcp-server/tools.json`(36 個 cmdlet tool)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)列出全部 MCP tool:
+### PLC login 中不能新增物件(`PLC_LOGGED_IN`)
 
-| 已實測(2026-10-28,本機 UmRT,registered tcauto) | 未實測(beta / 未驗證) |
+- **現象**:PLC 處於 login 狀態時,`AddPou` / `AddGvl` / `AddDut` 會被 XAE 拒絕(「Cannot add an object because it affects a device you are currently logged into」),模組回 `PLC_LOGGED_IN`,不會建立任何物件,也不記 BUILD_REQUIRED(實測 2026-10-29,4026 VS2022,registered tcauto)。`AddLibrary` 在 login 中可以成功(實測 2026-10-29)。
+- **影響**:`EnableConfig Force` 和 `RunTestCycle` 結束時 PLC 都停在 login,接著直接 `AddPou` 等會失敗。
+- **繞過**:先 `PlcLogout`,再新增物件;新增完 `BuildProject` 再 `EnableConfig`。
+
+## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-29)
+
+MCP 共 **41 個 tool**:`mcp-server/tools.json` 37 個(用 node 讀 `tools.json` 實際數,2026-10-29)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+
+測試方式分兩種,下表分開標示:
+
+- **registered tcauto**:用已註冊的 `mcp__tcauto__*` MCP 呼叫,對**本機 UmRT** 實際跑。
+- **自建 client**:subagent 自己寫的 MCP client,只當輔助證據,不算 registered 驗證。
+
+環境:**4026 VS2022**(`VisualStudio.DTE.17.0`)、**4026 XAE**(64-bit XAE Shell)、**4024 XAE**(32-bit XAE Shell `TcXaeShell.DTE.15.0`)。步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md),逐項紀錄見 [verification/phase0.md](../openspec/changes/complete-automation-interface/verification/phase0.md)。
+
+### 已實測(registered tcauto,39 個)
+
+| tool | 日期 | 環境 | 備註 |
+|---|---|---|---|
+| `ConnectIde` | 2026-10-28、10-29 | 4024 XAE、4026 XAE、4026 VS2022 | |
+| `SetTarget` | 2026-10-28、10-29 | 4024 XAE(NoPlatformSwitch)、4026 VS2022 | |
+| `BuildProject` | 2026-10-28、10-29 | 4024 XAE、4026 XAE、4026 VS2022 | |
+| `EnableConfig` | 2026-10-28、10-29 | 4024 XAE、4026 VS2022 | 9~10 步全 success;set-config 偶發 UmRT crash,見上方 #21 |
+| `ConnectAds` | 2026-10-28、10-29 | 4026 VS2022 | |
+| `ReadVariable` | 2026-10-28 | 4026 VS2022 | |
+| `WriteVariable` | 2026-10-28 | 4026 VS2022 | |
+| `GetPouCode` | 2026-10-28 | 4026 VS2022 | |
+| `WritePouCode` | 2026-10-28、10-29 | 4026 VS2022 | |
+| `AddPou` | 2026-10-28、10-29 | 4026 VS2022 | login 中回 `PLC_LOGGED_IN`(10-29) |
+| `AddDut` | 2026-10-28、10-29 | 4026 VS2022 | login 中回 `PLC_LOGGED_IN`(10-29) |
+| `AddGvl` | 2026-10-28、10-29 | 4026 VS2022 | login 中回 `PLC_LOGGED_IN`;logout 後成功 |
+| `AddLibrary` | 2026-10-28、10-29 | 4026 VS2022(registered);4024 XAE(10-29 registered,10-28 自建 client) | 成功 / 不存在(`LIBRARY_ADD_FAILED`)/ 重複(`alreadyPresent`)三條路徑 |
+| `ResetSolution` | 2026-10-28 | 4026 VS2022 | |
+| `DisconnectIde` | 2026-10-28、10-29 | 4024 XAE、4026 VS2022 | |
+| `GetBuildErrors` | 2026-10-28 | 4026 VS2022 | |
+| `PlcLogin` | 2026-10-28 | 4026 VS2022 | |
+| `PlcLogout` | 2026-10-28、10-29 | 4026 VS2022 | logoutVia treeItem.Logoff |
+| `GetProjectTree` | 2026-10-28 | 4026 VS2022 | |
+| `GetSymbols` | 2026-10-28 | 4026 VS2022 | |
+| `GetIdeInfo` | 2026-10-28 | 4026 VS2022 | |
+| `OpenProject` | 2026-10-28 | 4026 VS2022 | 重開同一個 sln,約 6.8 s |
+| `CleanProject` | 2026-10-28 | 4026 VS2022 | cleanVerified=true |
+| `GetIoTree` | 2026-10-28 | 4026 VS2022 | 該專案 TIID 底下沒有子節點 |
+| `GetSystemState` | 2026-10-28 | 4026 VS2022 | |
+| `GetPlcState` | 2026-10-28 | 4026 VS2022 | |
+| `SetPlcState` | 2026-10-28 | 4026 VS2022 | Stop -> Run |
+| `SetSystemState` | 2026-10-28 | 4026 VS2022 | Config、Run->Run 重啟 |
+| `DisconnectAds` | 2026-10-28 | 4026 VS2022 | 之後 `ReadVariable` 回 NOT_CONNECTED |
+| `WatchVariable` | 2026-10-28 | 4026 VS2022 | 取樣與 Until |
+| `SendPlcProgram` | 2026-10-28 | 4026 VS2022 | 程式碼沒改時不下載(downloaded=false),下載後 PLC 停在 Stop |
+| `IoScan` | 2026-10-28、10-29 | 4026 VS2022、4024 XAE | Run 模式回 `IO_SCAN_REQUIRES_CONFIG`;Config 模式沒有裝置時 devices=[] 帶 warning |
+| `NewTestCase` | 2026-10-29 | 4026 VS2022、4024 XAE | WaitUntil 與只用 WaitMs(回傳帶 warning)都測過 |
+| `RunTest` | 2026-10-29 | 4026 VS2022、4024 XAE | Pass / Fail / WaitUntil 逾時;WaitMs-only 結果帶 warning |
+| `RunTestCycle` | 2026-10-29 | 4026 VS2022 | 結束後 PLC 在 Stop |
+| `RunLifecycle`(複合) | 2026-10-29 | 4026 VS2022 | 帶 Platform,5 步全 success,`data.warning` 為 null |
+| `QuickRead`(複合) | 2026-10-28 | 4026 VS2022 | |
+| `GetStatus`(複合) | 2026-10-28 | 4026 VS2022 | |
+| `GetIdeModalDialog`(複合) | 2026-10-28 | 4026 VS2022 | dialog=null |
+
+### 部分實測(失敗路徑 registered,成功路徑只有自建 client)
+
+| tool | 狀態 |
 |---|---|
-| `ConnectIde` | `AddLibrary`(#80 已改用 ITcPlcLibraryManager.AddLibrary;自建 client 實測 2026-10-28 4024 / 4026 PASS,待 registered tcauto 複測) |
-| `SetTarget` | `CleanProject` |
-| `BuildProject` | `DisconnectAds` |
-| `EnableConfig` | `GetIdeInfo` |
-| `ConnectAds` | `GetIoTree` |
-| `ReadVariable` | `GetPlcState` |
-| `WriteVariable` | `GetSystemState` |
-| `QuickRead`(複合) | `IoScan` |
-| `GetPouCode` | `NewTestCase` |
-| `WritePouCode` | `OpenProject` |
-| `AddPou` | `PlcLogout` |
-| `AddDut` | `RunTest` |
-| `AddGvl` | `RunTestCycle` |
-| `ResetSolution` | `SendPlcProgram` |
-| `DisconnectIde` | `SetPlcState` |
-| `GetBuildErrors` | `SetSystemState` |
-| `GetStatus`(複合) | `SetVariableLink` |
-| `PlcLogin` | `WatchVariable` |
-| `GetProjectTree` | `RunLifecycle`(複合) |
-| `GetSymbols` | `GetIdeModalDialog`(複合) |
+| `SetVariableLink` | registered tcauto 2026-10-28(4026 VS2022)只測了 PLC 路徑錯 -> `TREEITEM_NOT_FOUND`。**成功路徑只有自建 client 測過**(離線 EK1100 + EL1004),registered 還沒測,要等第 1 期 `CreateChild` 才能建離線 I/O |
+| `RemoveVariableLink` | 新 tool。registered tcauto 2026-10-29(4026 VS2022)只測了 `TREEITEM_NOT_FOUND`(`missingEnd` PlcVariable)。**成功路徑只有自建 client 測過**,同上等 `CreateChild` |
 
-`NewProject` 不在 MCP 上(見上方 #70)。
+### 未實測 / 只有單元測試
+
+- **`RUNTIME_CRASHED` 提早退出**(`EnableConfig` / `SetSystemState` 偵測到 target 消失就提早回):只有單元測試(`tests/Unit/runtime-crashed.ps1`)。真機要等 UmRT 自然 crash 才能驗證,不能故意 `Stop-Process TcSystemServiceUm` 模擬。
+- **`NewTestCase` 給 `WaitUntil` 時回傳不帶 `waitMs`**:只有單元測試。
+- **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
+- **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。
