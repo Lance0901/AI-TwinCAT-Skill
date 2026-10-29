@@ -29,6 +29,11 @@
         state is sampled for -SettleSec and read back once more (data.readbackState,
         data.stateTrace); any sample that differs returns SYSTEM_STATE_MISMATCH
         (success = false) instead of success.
+
+        When the target is the local Usermode Runtime and its TcSystemServiceUm process
+        disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
+        returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
+        data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
     .PARAMETER State
         Target state: Run or Config.
     .PARAMETER AmsNetId
@@ -159,10 +164,28 @@
 
         # Poll port 10000 until the target state is reached (replaces fixed sleep)
         $remaining = [int][Math]::Max(1, [Math]::Ceiling($TimeoutSec - $requestWatch.Elapsed.TotalSeconds))
-        $wait = Wait-TcAdsState -AmsNetId $AmsNetId -Port 10000 -TargetState $State -TimeoutSec $remaining
+        # -DetectRuntimeCrash: a local UmRT whose TcSystemServiceUm vanished and that answers ADS 0x7
+        # for >= 10 s ends the wait early with RUNTIME_CRASHED (Wait-TcAdsState .DESCRIPTION);
+        # remote targets / no UmRT process at the start: unchanged, wait until -TimeoutSec.
+        $wait = Wait-TcAdsState -AmsNetId $AmsNetId -Port 10000 -TargetState $State -TimeoutSec $remaining -DetectRuntimeCrash
         $data.currentState = $wait.State
         $data.finalState = $wait.State
         $data.elapsedMs = [int]$requestWatch.ElapsedMilliseconds
+
+        if ($wait.RuntimeCrashed) {
+            $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $stateBefore }
+            $pidText = (@($wait.ServicePidAtStart) | ForEach-Object { [string]$_ }) -join ', '
+            $data | Add-Member -NotePropertyName 'lastError' -NotePropertyValue $wait.LastError
+            $data | Add-Member -NotePropertyName 'lastState' -NotePropertyValue $seen
+            $data | Add-Member -NotePropertyName 'servicePidAtStart' -NotePropertyValue @($wait.ServicePidAtStart)
+            $data | Add-Member -NotePropertyName 'runtimeName' -NotePropertyValue $wait.RuntimeName
+            $data | Add-Member -NotePropertyName 'unreachableMs' -NotePropertyValue $wait.UnreachableMs
+            return New-TcResult -Success $false `
+                -ErrorMessage "The local UmRT '$($wait.RuntimeName)' disappeared while waiting for '$State': TcSystemServiceUm (pid $pidText at the start) no longer exists and port 10000 answered ADS 0x7 for $([int]($wait.UnreachableMs / 1000)) s (last state seen: $seen; last error: $($wait.LastError)). Stopped waiting after $([int]($requestWatch.ElapsedMilliseconds / 1000)) s instead of -TimeoutSec $TimeoutSec s." `
+                -ErrorCode 'RUNTIME_CRASHED' `
+                -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
+                -Data $data
+        }
 
         if (-not $wait.Reached) {
             $detail = if ($wait.LastError) { " Last error: $($wait.LastError)" } else { '' }

@@ -273,8 +273,8 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
 * `RunLifecycle` steps: `ConnectIde`, `SetTarget` (only when `TargetAmsNetId` and/or `Platform` is a non-empty
   string; runs right after `ConnectIde` as `SetTarget {AmsNetId, Platform}` with `Platform`, or
   `SetTarget {AmsNetId, NoPlatformSwitch: true}` without it; `AmsNetId` falls back to the one `ConnectIde`
-  reported), `BuildProject` (unless `SkipBuild`), `EnableConfig` (no `Platform`: it checks the target platform
-  itself), `ConnectAds`. Without `TargetAmsNetId` and `Platform` there is no `SetTarget` step.
+  reported), `BuildProject` (unless `SkipBuild`), `EnableConfig` (gets the same `Platform` when one was given, so it adds no
+  "-Platform was not given" warning; without `Platform` it checks the target platform itself), `ConnectAds`. Without `TargetAmsNetId` and `Platform` there is no `SetTarget` step.
 * When the `tools/call` request carries `params._meta.progressToken` (SDK: `extra._meta.progressToken`
   in the request handler), the server sends `notifications/progress`
   `{progressToken, progress: <elapsed milliseconds, strictly increasing>, message: "<tool> running <n>s"}`

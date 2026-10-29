@@ -88,12 +88,14 @@ Adds a Data Unit Type.
 Created (sub type 606 Struct / 605 Enum / 607 Union / 623 Alias), then `TYPE ... END_TYPE` is written and read back (an Enum without Fields gets `enum_member := 0`). **Returns:** `{ name, dutType, path, folderPath, objectKind, itemType, declaration }`; failure `DUT_CREATE_FAILED`.
 
 ### Add-TcLibrary / `AddLibrary`
-Adds a library reference.
+Adds a library reference with `ITcPlcLibraryManager.AddLibrary` on `TIPC^<Plc>^<Plc> Project^References` (TE1000 v1.7.0 §6.5.14, p.241-243; §5.25.1.10, p.118), then saves and reads back the .plcproj (#76). Already referenced (also as placeholder `#<name>`) -> success, `data.alreadyPresent = true`. Not installed -> `LIBRARY_ADD_FAILED`, `data.notInstalled = true`, .plcproj unchanged.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | Name | string | Yes | Library name (e.g., Tc2_Standard) |
-| Version | string | No | Version (default: *) |
+| Version | string | No | Version (default: `*` = newest installed) |
+| Vendor | string | No | Distributor (default: Beckhoff Automation GmbH) |
+| PlcProjectPath | string | No | PLC name or tree path; required with several PLC projects |
 
 ---
 
@@ -124,20 +126,23 @@ Reads code from a POU.
 ## I/O Configuration
 
 ### Invoke-TcIoScan / `IoScan`
-Triggers EtherCAT device scan.
+Scans I/O devices with `ProduceXml(false)` on `TIID` (TE1000 v1.7.0 6.6.2). Requires Config mode (else `IO_SCAN_REQUIRES_CONFIG`). `-Apply` adds the found devices (CreateChild + AddressInfo + ScanBoxes) and reads them back (`IO_SCAN_VERIFY_FAILED`).
 
-**Returns:** `{ devices: [{ name, path, type }] }`
+**Returns:** `{ devices: [{ index, name, itemSubType, addressInfo, path, created }], applied, scanMs, state, warning? }`
 
 ### Get-TcIoTree / `GetIoTree`
 Reads I/O device tree.
 
 ### Set-TcVariableLink / `SetVariableLink`
-Links PLC variable to I/O channel.
+Links a PLC variable to an I/O variable with `ITcSysManager.LinkVariables` (TE1000 5.1.1.2), then reads `ProduceMappingInfo` back: `linked=true` only if the link is there (else `LINK_VERIFY_FAILED`). Missing path: `TREEITEM_NOT_FOUND` with `data.missingEnd`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| PlcVariable | string | Yes | PLC variable path |
-| IoChannel | string | Yes | I/O channel tree path |
+| PlcVariable | string | Yes | Full tree path, e.g. `TIPC^P^P Instance^PlcTask Inputs^MAIN.bIn` |
+| IoChannel | string | Yes | Full tree path of the I/O variable, e.g. `TIID^EtherCAT Master^Term 1 (EK1100)^Term 2 (EL1004)^Channel 1^Input` |
+
+### Remove-TcVariableLink / `RemoveVariableLink`
+`ITcSysManager.UnlinkVariables` (TE1000 5.1.1.8) plus `ProduceMappingInfo` readback (`removed`, `wasLinked`). Without `-IoChannel` all links of `-PlcVariable` are removed.
 
 ---
 
@@ -267,7 +272,9 @@ Defines a test case.
 | Name | string | Yes | Test name |
 | Setup | hashtable[] | No | Setup variable writes |
 | Teardown | hashtable[] | No | Teardown variable writes |
-| WaitMs | int | No | Wait before assertions (default: 1000) |
+| WaitUntil | hashtable[] | No | Conditions polled before the assertions: `@{Path; Operator; Expected}` (assertion operators). Met: assertions run at once; not met within WaitTimeoutMs: the test is Fail with `waitTimedOut`, `lastValues`, `waitMs`. Invalid: `INVALID_PARAMS` |
+| WaitTimeoutMs | int | No | Max poll time for WaitUntil (default: 5000) |
+| WaitMs | int | No | DEPRECATED fixed blind wait before assertions (default: 1000), ignored with WaitUntil. Use WaitUntil |
 | Assertions | hashtable[] | Yes | Assertions with Path, Operator, Expected |
 
 Supported operators: `Equal`, `NotEqual`, `GreaterThan`, `LessThan`, `GreaterThanOrEqual`, `LessThanOrEqual`, `Contains`, `IsTrue`, `IsFalse`

@@ -30,10 +30,15 @@ function Add-TcDut {
         saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was
         NOT verified.
         BUILD_REQUIRED (#65): after CreateChild was called (success, or a failure from the
-        lookup / kind / language / declare step on, or CreateChild itself failing) the solution
+        lookup / kind / language / declare step on, or CreateChild failing with an IDE_* busy /
+        crash / modal / timeout error) the solution
         is recorded as 'code-changed' (Register-TcCodeChange): Enable-TcConfig and
         Enter-TcPlcOnline refuse until a complete Build-TcProject. data.buildRequired /
-        data.stateWarning as in Build-TcProject. A failure before CreateChild records nothing.
+        data.stateWarning as in Build-TcProject. A failure before CreateChild, or an error
+        returned by CreateChild itself (XAE refused it, nothing created), records nothing.
+        PLC_LOGGED_IN: XAE refuses CreateChild while the PLC is logged in ("... affects a device
+        you are currently logged into", measured 2026-10-29, 4026 XAE in VS2022): call
+        Exit-TcPlcOnline first, then add the object again.
     #>
     [CmdletBinding()]
     param(
@@ -166,8 +171,9 @@ function Add-TcDut {
     }
     catch {
         $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'DUT_CREATE_FAILED' -MessagePrefix 'Failed to add DUT'
-        # conservative (#65): CreateChild was called, the object may exist in the tree
-        if ($createProgress['CreateCalled']) { return Register-TcCodeChange -Result $res -Change "Add-TcDut $Name [failed after CreateChild]" }
+        # conservative (#65): CreateChild was called, the object may exist in the tree; not when
+        # CreateChild itself returned an error (CreateFailed: XAE refused, e.g. PLC_LOGGED_IN, task 1.8)
+        if ($createProgress['CreateCalled'] -and -not $createProgress['CreateFailed']) { return Register-TcCodeChange -Result $res -Change "Add-TcDut $Name [failed after CreateChild]" }
         $res
     }
 }

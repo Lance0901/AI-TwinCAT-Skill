@@ -85,7 +85,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## All Commands (37)
+## All Commands (38)
 
 ### Connection
 | Command | Description |
@@ -147,7 +147,8 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 |---------|-------------|
 | `Invoke-TcIoScan` | Scan for EtherCAT devices |
 | `Get-TcIoTree` | Read I/O device tree |
-| `Set-TcVariableLink` | Link PLC variable to I/O channel |
+| `Set-TcVariableLink` | Link PLC variable to I/O variable (full tree paths, verified via ProduceMappingInfo) |
+| `Remove-TcVariableLink` | Remove a PLC / I/O variable link (verified via ProduceMappingInfo) |
 
 ### Testing
 | Command | Description |
@@ -161,7 +162,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # Core PowerShell module (tool-agnostic)
   TwinCATAutomation.psm1        # Module loader
-  Public/                       # 37 exported cmdlets
+  Public/                       # 38 exported cmdlets
   Private/                      # Internal helpers (COM, ADS, assertions)
 Invoke-TwinCATAutomation.ps1    # Unified CLI entry point (JSON in/out)
 adapters/
@@ -231,7 +232,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as the TcAuto MCP server (stdio) exposing 36 of the 37 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing 37 of the 38 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server
@@ -257,7 +258,7 @@ Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit 
 
 - **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
 - **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
-- **.agents/skills/twincat/SKILL.md**: full 37-command API reference as Codex skill
+- **.agents/skills/twincat/SKILL.md**: full 38-command API reference as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)

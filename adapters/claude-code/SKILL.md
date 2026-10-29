@@ -75,7 +75,7 @@ Connect-TcAds                       # 先連 ADS,Set-TcPlcState 沒連線會回 
 Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_TIMEOUT);PLC 未下載回 PLC_NOT_LOADED
 ```
 
-## Cmdlet 清單(37)
+## Cmdlet 清單(38)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -91,12 +91,13 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Add-TcPou -Name <n> -Type <Program\|FunctionBlock\|Function> [-ReturnType <t>] [-PlcProjectPath <folder>]` | 新增 ST POU 並讀回(`data.path`、`objectKind`、`itemType` 602/603/604、讀回的 `language`、`declaration`);同一個 PLC project 內已有同名頂層物件回 `POU_CREATE_FAILED`(帶 path;`data.duplicateCheckScope`),XAE 有 dialog 回 `IDE_MODAL_DIALOG`。建好後只存專案檔(.tsproj + .plcproj,DTE `Project.Save`,有 deadline → `PROJECT_SAVE_TIMEOUT`)並從磁碟讀回 .plcproj,有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)才 success(`data.projectSaved`,`verifiedFiles[].preExisting`、`plcprojChanged`;#76,`Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 同理),否則 `PROJECT_SAVE_FAILED`(物件只在 XAE 記憶體)。實測 2026-10-28:一般文字文件不會被存;PLC editor 中未存的 POU 內容是否會被寫出未驗證 |
 | `Add-TcGvl -Name <n> [-Variables @(@{name='bA';type='BOOL'}, ...) \| [ordered]@{..}]` | 新增 GVL,寫入 `VAR_GLOBAL` 並讀回比對(`itemType` 615);成員依輸入順序,讀回順序不同回 `MEMBER_ORDER_MISMATCH`(#47),一般 hashtable 多於 1 個成員回 `INVALID_PARAMS`;失敗 `GVL_CREATE_FAILED` |
 | `Add-TcDut -Name <n> -DutType <Struct\|Enum\|Alias\|Union> [-Fields @(@{name;type;init;comment}, ...) \| [ordered]@{..}] [-AliasType <t>]` | 新增 DUT,寫入 `TYPE ... END_TYPE` 並讀回比對(`itemType` 606/605/607/623);Enum 的 Fields 為 `@{name;value}`;成員依輸入順序,讀回順序不同回 `MEMBER_ORDER_MISMATCH`(#47),一般 hashtable 多於 1 個成員回 `INVALID_PARAMS`;失敗 `DUT_CREATE_FAILED` |
-| `Add-TcLibrary -Name <lib>` | 加 library 參考;存 .plcproj 並讀回有該 library reference 才 success(`data.projectSaved`,否則 `PROJECT_SAVE_FAILED`) |
+| `Add-TcLibrary -Name <lib> [-Version *] [-Vendor <v>] [-PlcProjectPath <plc>]` | 用 `ITcPlcLibraryManager.AddLibrary` 加 library 參考;存 .plcproj 並讀回有該 library reference 才 success(`data.projectSaved`,否則 `PROJECT_SAVE_FAILED`)。已有同名 reference(含 placeholder `#<name>`)→ success、`data.alreadyPresent=true`;沒安裝 → `LIBRARY_ADD_FAILED`、`data.notInstalled=true`,.plcproj 不變 |
 | `Get-TcPouCode -PouName <n> [-PouPath <treePath>]` | 讀 POU / DUT / GVL 的 declaration + implementation;`data.objectKind`(POU/DUT/GVL/ITF/…)、`language`、`hasImplementation`:DUT/GVL/ITF 為 false,`implementation=null` 表示「沒有實作段」;POU 讀不成文字時 `implementationReadable=false`,COM 例外回 `POU_READ_FAILED`;LD/FBD 的 implementation 是 XML;省略 `-PouPath` 會自動找(`data.pouPath`/`resolvedBy`),找不到回 `POU_NOT_FOUND` |
 | `Write-TcPouCode -PouName <n> [-PouPath <treePath>] [-Declaration <st>] [-Implementation <st>]` | 寫程式碼(`data.objectKind`);DUT/GVL/ITF 只收 `-Declaration`,給 `-Implementation` 回 `INVALID_PARAMS`、什麼都不寫;省略 `-PouPath` 會自動找(同 Get),找不到回 `POU_NOT_FOUND`。有寫入就記 `BUILD_REQUIRED` code-changed(#65,`data.buildRequired`;`Add-TcPou`/`Add-TcDut`/`Add-TcGvl`/`Add-TcLibrary` 同理):Activate / Login 前要再一次完整 `Build-TcProject` |
-| `Invoke-TcIoScan` | 掃 EtherCAT 裝置 |
+| `Invoke-TcIoScan [-Apply]` | 掃 I/O 裝置(需 Config mode;預設只回結果,`-Apply` 才加進 tree) |
 | `Get-TcIoTree` | I/O 裝置樹 |
-| `Set-TcVariableLink -Variable <v> -Channel <c>` | PLC 變數連 I/O channel |
+| `Set-TcVariableLink -PlcVariable <tree path> -IoChannel <tree path>` | PLC 變數連 I/O 變數(完整 tree path,如 `TIPC^P^P Instance^PlcTask Inputs^MAIN.bIn`、`TIID^...^Channel 1^Input`;讀回確認) |
+| `Remove-TcVariableLink -PlcVariable <tree path> [-IoChannel <tree path>]` | 移除 link(不給 -IoChannel 移除該變數全部 link;讀回確認) |
 | `Build-TcProject [-TimeoutSec 600] [-ExpectedProject <names>] [-AllowUnresolvedLibrary]` | Build(COM busy 自動重試):`Build($false)` + 輪詢 `BuildState`(VS2022 的 `Build($true)` 不返回),逾時回 `BUILD_TIMEOUT`,輪詢中跳出 modal 回 `IDE_MODAL_DIALOG`;data:`errors`(只算 code error,#23)、`libraryErrors` / `libraryErrorItems[]`(Library Manager 的缺 library 項;有這些項時程式碼可能沒被編譯 → `LIBRARY_UNRESOLVED`,#45)、`codeVerified`、`failedProjects`(LastBuildInfo)、`decidedBy`、`errorItems[]`(severity/code/description/project/file/line/column/category = code\|library\|other)、`codeErrors[]`、`buildSec`;coverage(#28):`projects[]`(每個 .plcproj:name/uniqueName/configuration/platform/shouldBuild/status = built\|skipped\|failed\|unknown,來源 DTE `SolutionBuild.ActiveConfiguration.SolutionContexts` 的 `ShouldBuild`,不解析 .sln)、`skippedProjects[]`、`coverageComplete`;有 skipped 時仍 success 但 `warningCode = PROJECT_SKIPPED_BY_CONFIGURATION` + `warning`;`-ExpectedProject` 指定的被跳過 → 不 Build 直接回 `PROJECT_SKIPPED_BY_CONFIGURATION`,名稱不存在 → `EXPECTED_PROJECT_NOT_FOUND` |
 | `Clear-TcProject [-TimeoutSec 300] [-AllowUnresolvedLibrary]` | Clean(Build > Clean Solution):先查 modal(`IDE_MODAL_DIALOG`),等 DTE 的 `Solution` / `SolutionBuild` 不再是 `$null`(#18 曾出現 null-valued expression,原因未確認;這裡會等並記 `data.nullReads`,上限 15 s → `CLEAN_FAILED`),`Clean($false)` + 輪詢 `BuildState` 到 Done(`CLEAN_TIMEOUT`),讀回 `LastBuildInfo`:0 → success、`cleanVerified=true`;讀不到 → `CLEAN_UNVERIFIED`(失敗);> 0 且 Error List 全是 Library Manager 的 library 解析失敗 → `LIBRARY_UNRESOLVED`(失敗,`data.libraryErrorItems`;之後 Build 的 success 可能是假的,#45),加 `-AllowUnresolvedLibrary` 才回 success + `warningCode=LIBRARY_UNRESOLVED`、`cleanVerified=false`;其他 → `CLEAN_FAILED`(`data.errorItems`);data:`buildState`、`failedProjects`、`cleanVerified`、`cleanSec`、`nullReads`;與 `Build-TcProject` 同一個分類器:`data.errorItems[].category`(code / library / other)、`data.warningCodes[]` / `warningCode` / `warning`(同 Build 的格式)。Clean 不寫也不清 BUILD_REQUIRED。不要自己用 `$script:TcDte` 做 Clean(#18) |
 | `Get-TcBuildErrors [-IncludeWarnings:$false] [-IncludeMessages] [-TimeoutSec 30]` | 用 UI Automation 讀 XAE Error List:`counts{errors,warnings,messages}`、`errors[]`、`warnings[]`(`-IncludeWarnings` 預設開,`:$false` 省 1~2 s 的 toggle)、`-IncludeMessages` → `messages[]`、`truncated`;按鈕計數也認 zh-TW 的「N 個錯誤/個警告/則訊息」與 VS2022 的 `0 / 2 錯誤`(取總數);視窗名 `Error List` 或 `錯誤清單`(zh-TW VS2022 可用),VS2022 的 scope 會先切到 `整個方案`;`code` 由描述推得(Error List 沒有 Code 欄),可能為 null |
@@ -115,7 +116,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Exit-TcPlcOnline [-PlcProjectPath <p>]` | Logout(4026 是 `Logoff()`)。查找方式同 `Enter-TcPlcOnline`:多 PLC 沒給路徑 → `PLC_PROJECT_AMBIGUOUS`;data 回實際登出的 `plcProjectPath`、`plcName`、`adsPort` |
 | `Get-TcSystemState [-AmsNetId <id>]` | 系統狀態(port 10000)。省略 `-AmsNetId` 時依序用 IDE target → ADS session → local `127.0.0.1.1.1`,`data.netIdSource` 回報實際來源(`local` 代表讀的是本機 TcSysSrv,通常不是你的 target) |
 | `Set-TcSystemState -State <Run\|Config> [-AmsNetId <id>] [-TimeoutSec <n>] [-SettleSec 3]` | 設系統狀態,輪詢到目標才返回。省略 `-AmsNetId` 時依序用 IDE target → ADS session,兩者皆無回 `AMS_NETID_REQUIRED`(不 fallback 到 local),`data.netIdSource` 回報來源。送出的 AdsState:Run → `Reset`(2)、Config → `Reconfig`(16)(`data.sentAdsState` / `sentAdsStateCode`;port 10000 收 `Run`(5) 回 ADS 0x701,實測)。到達目標後再取樣 `-SettleSec` 秒並讀回(`data.readbackState`、`stateTrace`),中途離開目標(例如進 Run 又退回 Config)→ `SYSTEM_STATE_MISMATCH`,不回 success。原狀態 = 目標(Run → Run 重啟)時必須先看到離開(其他狀態或斷線)才算到達,看不到也回 `SYSTEM_STATE_MISMATCH`。data 另有 `originalState`、`finalState`、`reached`、`held`、`leftOriginal`、`latencyMs`;停在 / 退回 Config 時讀授權伺服器(ADS port 30),有過期 / 無效授權就寫進 `error.hint` 與 `data.licenses`(讀不到就略過) |
-| `New-TcTestCase -Name <n> [-Setup @()] [-WaitMs <ms>] -Assertions @() [-Teardown @()]` | 定義測試 |
+| `New-TcTestCase -Name <n> [-Setup @()] [-WaitUntil @(@{Path;Operator;Expected}) [-WaitTimeoutMs 5000]] -Assertions @() [-Teardown @()]` | 定義測試。`-WaitUntil` 輪詢到條件成立才跑 assertions(逾時 → 該 case Fail,結果帶 `waitTimedOut` / `lastValues` / `waitMs`);`-WaitMs` 是固定盲等,**不建議使用**(deprecated) |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating;codeVerified 不是 true 的 build 不會被 Activate(#61) |
 
@@ -140,7 +141,7 @@ $test1 = New-TcTestCase -Name "Initial state" -Assertions @(
 
 $test2 = New-TcTestCase -Name "Trigger and verify" `
     -Setup @( @{ Path = "MAIN.bStart"; Value = $true } ) `
-    -WaitMs 2000 `
+    -WaitUntil @{ Path = "MAIN.bDone"; Operator = "IsTrue" } -WaitTimeoutMs 5000 `
     -Assertions @(
         @{ Path = "MAIN.bDone"; Operator = "IsTrue"; Expected = $null }
     ) `
@@ -149,7 +150,7 @@ $test2 = New-TcTestCase -Name "Trigger and verify" `
 Invoke-TcTestCycle -TestCases @($test1, $test2)
 ```
 
-Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
+Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`LessThan`、`GreaterThanOrEqual`、`LessThanOrEqual`、`Contains`、`IsTrue`、`IsFalse`。`-WaitUntil` 的每個條件用同一組 key(`Path`、`Operator`、`Expected`),多個條件要在同一輪取樣(100 ms)同時成立;格式錯誤回 `INVALID_PARAMS`。MCP 呼叫 `NewTestCase`:`{"Name":"t","WaitUntil":[{"Path":"MAIN.bDone","Operator":"IsTrue"}],"WaitTimeoutMs":5000,"Assertions":[...]}`。
 
 ## Output Format
 
@@ -192,9 +193,11 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `EXPECTED_PROJECT_NOT_FOUND` / `BUILD_COVERAGE_UNKNOWN` | `-ExpectedProject` 名稱不是 solution 的 PLC project / 無法確認它有被編到(SolutionContexts 讀不到,或 Build 失敗但 Error List 沒有該 project 的列) | 用 `data.projects` 的名稱;看 XAE Error List |
 | `PLC_PROJECT_AMBIGUOUS` | `Enter-TcPlcOnline` / `Exit-TcPlcOnline` 沒給 `-PlcProjectPath`,solution 卻有多個 PLC project | 帶 `-PlcProjectPath <PLC 名稱>`(`data.plcProjects` 列 name/projectPath/adsPort) |
 | `SYSTEM_STATE_TIMEOUT` | `Set-TcSystemState` 輪詢逾時,系統沒切到目標狀態 | `Get-TcSystemState` 看目前狀態;檢查 XAE / TwinCAT System Service 錯誤;UmRT 可能要重啟 `TcSystemServiceUm`。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認 |
+| `RUNTIME_CRASHED` | `Set-TcSystemState`(含 `Enable-TcConfig -Force` 的 set-config / set-run)等待中，本機 UmRT 的 `TcSystemServiceUm` 行程消失:開始時有行程且 target 是本機 UmRT,之後行程不在、port 10000 連續回 ADS 0x7 超過 10 s,提早回(不等 `-TimeoutSec`);`data.lastError` / `lastState` / `servicePidAtStart`(`Enable-TcConfig` 在 `data.runtimeCrash`)。遠端 target 不偵測 | 重啟 `TcSystemServiceUm`(指令見 troubleshooting「SYSTEM_STATE_TIMEOUT」),再 `Enable-TcConfig -Force`;crash 簽名對照「已知限制」#21 |
 | `CODE_NOT_VERIFIED` | `Build-TcProject` 成功但無法證明程式碼有編譯(Error List 讀不到,或有沒有行號的 code 列):success + `data.warningCodes[]`。順序:`PROJECT_SKIPPED_BY_CONFIGURATION`、`LIBRARY_UNRESOLVED`(加 `-AllowUnresolvedLibrary` 時)、`CODE_NOT_VERIFIED`;library 錯誤與沒行號的 code 列同時出現時兩個都在(#56),`warningCode` 是第一個 | 看 XAE Error List;`ERRORLIST_UNAVAILABLE` 處理後重跑 Build |
 | `BUILD_REQUIRED` | `Enable-TcConfig` / `Enter-TcPlcOnline`:solution platform 切換後，或上一次 `Build-TcProject` 不是完整成功(`LIBRARY_UNRESOLVED`、`BUILD_FAILED`、`BUILD_STATUS_UNKNOWN`、success 但 `completeBuild=false`;#56,`data.buildRequired`)之後，或程式碼 / 專案被 `Write-TcPouCode`、`Add-TcPou`、`Add-TcDut`、`Add-TcGvl`、`Add-TcLibrary`、`New-TcProject`、`Reset-TcSolution` 改過之後(code-changed,#65;這些 cmdlet 的結果有 `data.buildRequired`,狀態檔寫不進去時 `data.stateWarning`;hint 開頭 `Recorded:` 寫哪個 cmdlet 改了哪個物件),還沒有完整成功的 Build:產物可能還是舊平台的(推論,未實測)、程式碼沒被證實有編譯或改過的程式碼還沒編譯，拒絕 Activate / Login;狀態存成檔案(每個 .sln 一筆)。從沒透過模組 build 或改過的 solution 不擋(已知範圍) | `Build-TcProject` 完整成功(`data.completeBuild = true`:`coverageComplete` 且 `codeVerified = true`;`-AllowUnresolvedLibrary` 的 build 不算,#61;缺 lib 先安裝，有 project 被跳過先勾回 Build)後再 `Enable-TcConfig`;message 會寫上一次 build 為什麼不算。沒有 `.plcproj` / PLC 刻意不 build 的 solution 永遠不會完整成功：確認產物對應目前平台後手動刪 `%TEMP%\TwinCATAutomation\build-required.json` 該筆 |
 | `LIBRARY_UNRESOLVED` | `Build-TcProject`:Error List 有 library 錯誤(缺 / 未安裝的 lib),build 本來會判成功,但程式碼可能沒被編譯;`data.buildSucceeded = null`、`data.codeVerified = false` | 先在 XAE Library Manager 安裝 `data.libraryErrorItems` 列的 lib 再 Build;`-AllowUnresolvedLibrary` 只讓這次 build 回 success + `warningCode = LIBRARY_UNRESOLVED`,`completeBuild = false`、BUILD_REQUIRED 保留,之後 Activate / Login 仍被擋(#61) |
+| `LIBRARY_ADD_FAILED` | `Add-TcLibrary`:`data.notInstalled=true` = library 沒安裝(AddLibrary 回 TSM_E_ITEMNOTFOUND 0x98510001),.plcproj 沒被修改;其他 = AddLibrary 的原始錯誤 | 在 XAE PLC > Library Repository 安裝後重跑;已有同名 reference 不是錯誤(success + `data.alreadyPresent`) |
 | `BUILD_FAILED` | 編譯錯誤(`data.failedProjects` > 0);`error.message` 含前 3 筆錯誤摘要,`data.errorItems[]` 是 Error List 全部錯誤(code/description/project/file/line) | 看 `data.codeErrors`(`errorItems[]` 中 `category = code` 的列),修 code 後 `Build-TcProject`;不要在沒改東西的情況下重跑。若 `data.errorListError` = `ERRORLIST_UNAVAILABLE`,`errors` 退回 LastBuildInfo,改手動看 Error List |
 | `BUILD_TIMEOUT` | Build 在 `-TimeoutSec`(預設 600)內 `SolutionBuild.BuildState` 沒到 Done(3);VS2022 的 `Build($true)` 不返回,所以改輪詢。`data.buildState` / `buildSec` | `Get-TcIdeModalDialog` 檢查 dialog、看 XAE Output 的 build 進度;大型專案加大 `-TimeoutSec` 重跑;XAE 沒反應就 kill IDE 後重新 `Connect-TcIde` |
 | `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
@@ -204,6 +207,7 @@ Assertion operators:`Equal`、`GreaterThan`、`LessThan`、`IsTrue`、`IsFalse`
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
 | `POU_NOT_FOUND` | POU 名稱或 `-PouPath` 在 `<Plc> Project` 下找不到;`error.hint` 列出 `<Plc> Project` 第一層子節點,`data.tried[]` 是試過的路徑 | `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`;格式 `TIPC^<Plc>^<Plc> Project^POUs^<name>` |
 | `POU_CREATE_FAILED` / `DUT_CREATE_FAILED` / `GVL_CREATE_FAILED` | `error.message` 標出步驟:`exists`(專案內同名已在,帶 path)、`lookup`/`kind`/`language`/`declare`(物件已建立、留在樹上,讀回不符);0x98510001 = .plcproj 列了檔案但磁碟缺檔 | `exists` 換名或 `Write-TcPouCode -PouPath`;父節點錯就 `Get-TcProjectTree -PlcOnly` 後給 `-PlcProjectPath`;缺檔從 .plcproj 移除 `<Compile Include>` 或補回,`Reset-TcSolution` |
+| `PLC_LOGGED_IN` | `Add-TcPou` / `Add-TcDut` / `Add-TcGvl` 時 PLC 還在 login,XAE 拒絕 `CreateChild`(「Cannot add an object because it affects a device you are currently logged into」,英文關鍵字比對，實測 2026-10-29 4026 VS2022);什麼都沒建，不記 `BUILD_REQUIRED` | 先 `Exit-TcPlcOnline`(MCP `PlcLogout`)再重試 |
 | `LOGOUT_FAILED` | Logoff COM 呼叫失敗:PLC 未 login、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**(不是 `Logout()`),`Exit-TcPlcOnline` 依序試 `TIPC^<Plc>` 節點與 `<Plc> Project` 節點的 Logoff/Logout,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object` 在 4026 永遠是 null,已不用 | `Get-TcPlcState` 確認;關 dialog 重試;重啟後直接重跑即可,不用重連 IDE |
 | `NO_PROJECT` | 已連 IDE 但沒載入 TwinCAT 專案 | `Open-TcProject -Path <sln>` 或 `Connect-TcIde -SolutionPath <sln>` |
 | `LOGIN_FAILED` | `Login(flags)` 失敗:系統在 Config、build 沒過、license dialog、或旗標互斥(`Conflicting flag settings`= 同時給 REGULAR 與 FORCEONLINECHANGE) | `Get-TcSystemState` 需為 Run;`Build-TcProject` 成功;關 dialog |

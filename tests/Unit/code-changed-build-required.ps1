@@ -147,25 +147,48 @@ Check 'unwritable: memory entry blocks after the directory is fine again' ((Get-
 Reset-State
 
 # --- Add-TcLibrary on a mock References node
+# (#80) ITcPlcLibraryManager.AddLibrary on the References node TIPC^P^P Project^References
 $global:LibMode = 'ok'
+$global:LibCalls = [System.Collections.Generic.List[string]]::new()
+$global:LibSaves = 0
+& $mod {
+    function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'P'; nodePath = 'TIPC^P'; projectPath = 'TIPC^P^P Project'; adsPort = 851 }) }
+    function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^P^P Project' }
+    function script:Invoke-TcPlcObjectSave { [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string]$What) $global:LibSaves++; @{ Saved = [PSCustomObject]@{ plcproj = 'mock.plcproj'; verifiedLibraries = @($ExpectLibrary) }; Error = $null } }
+}
 $refs = [PSCustomObject]@{ Mock = $true }
-$refs | Add-Member -MemberType ScriptMethod -Name CreateChild -Value { param($n, $t) if ($global:LibMode -eq 'throw') { throw 'library not found (mock)' }; [PSCustomObject]@{ Name = $n } }
-$proj = [PSCustomObject]@{ Mock = $true }
-$proj | Add-Member -MemberType ScriptMethod -Name LookupChild -Value { param($n) if ($global:LibMode -eq 'norefs') { return $null }; $refs }.GetNewClosure()
-$tipc = [PSCustomObject]@{ Mock = $true }
-$tipc | Add-Member -MemberType ScriptMethod -Name Child -Value { param($i) $proj }.GetNewClosure()
+$refs | Add-Member -MemberType ScriptProperty -Name References -Value { if ($global:LibMode -eq 'present') { @([PSCustomObject]@{ Name = '#Tc2_Standard' }, [PSCustomObject]@{ Name = 'Tc2_DataExchange' }) } else { @([PSCustomObject]@{ Name = '#Tc2_System' }) } }
+$refs | Add-Member -MemberType ScriptMethod -Name AddLibrary -Value { param($n, $v, $c)
+    $global:LibCalls.Add("$n|$v|$c")
+    switch ($global:LibMode) {
+        'notfound' { throw [System.Runtime.InteropServices.COMException]::new("""Managed Library '$n, * (Beckhoff Automation GmbH)' not found! (ITcPlcLibraryManager:AddLibrary", [int]0x98510001) }
+        'contained' { throw [System.ArgumentException]::new("Managed Library '$n, * (Beckhoff Automation GmbH)' already contained!", 'libItem') }
+        'other' { throw 'unexpected failure (mock)' }
+    }
+}
 $smLib = [PSCustomObject]@{ Mock = $true }
-$smLib | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) $tipc }.GetNewClosure()
+$smLib | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) if ($global:LibMode -eq 'norefs') { return $null }; if ($p -eq 'TIPC^P^P Project^References') { return $refs }; throw "unexpected path $p" }.GetNewClosure()
 & $mod { param($s) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcSysManager = $s } $smLib
-$r = Add-TcLibrary -Name Tc2_Standard
-Check 'Add-TcLibrary success -> recorded' ($r.success -and $r.data.buildRequired -eq 'PLC code changed by Add-TcLibrary Tc2_Standard (version *)') ($r | ConvertTo-Json -Compress)
+$r = Add-TcLibrary -Name Tc2_DataExchange
+Check 'Add-TcLibrary success -> AddLibrary(name, *, Beckhoff), saved, recorded' ($r.success -and $global:LibCalls[-1] -eq 'Tc2_DataExchange|*|Beckhoff Automation GmbH' -and $global:LibSaves -eq 1 -and $r.data.alreadyPresent -eq $false -and $r.data.referencesPath -eq 'TIPC^P^P Project^References' -and $r.data.buildRequired -eq 'PLC code changed by Add-TcLibrary Tc2_DataExchange (version *)') ($r | ConvertTo-Json -Compress)
 Reset-State
 $global:LibMode = 'norefs'
 $r = Add-TcLibrary -Name Tc2_Standard
-Check 'Add-TcLibrary REFS_NOT_FOUND (before CreateChild) -> nothing recorded' ((-not $r.success) -and $r.error.code -eq 'REFS_NOT_FOUND' -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress)
-$global:LibMode = 'throw'
+Check 'Add-TcLibrary REFS_NOT_FOUND (before AddLibrary) -> nothing recorded' ((-not $r.success) -and $r.error.code -eq 'REFS_NOT_FOUND' -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress)
+$global:LibMode = 'notfound'; $global:LibSaves = 0
 $r = Add-TcLibrary -Name Tc3_Missing -Version '3.3.0.0'
-Check 'Add-TcLibrary CreateChild throws -> failure, recorded (conservative)' ((-not $r.success) -and $r.data.buildRequired -eq 'PLC code changed by Add-TcLibrary Tc3_Missing (version 3.3.0.0) [failed after CreateChild]' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress)
+Check 'Add-TcLibrary not installed -> LIBRARY_ADD_FAILED notInstalled, hint, no save, nothing recorded' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_ADD_FAILED' -and $r.data.notInstalled -eq $true -and $r.error.hint -like '*Tc3_Missing*TSM_E_ITEMNOTFOUND*' -and $global:LibSaves -eq 0 -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress)
+$global:LibMode = 'present'; $global:LibCalls.Clear(); $global:LibSaves = 0
+$r = Add-TcLibrary -Name Tc2_DataExchange
+Check 'Add-TcLibrary already referenced -> success alreadyPresent, AddLibrary not called, saved+verified, nothing recorded' ($r.success -and $r.data.alreadyPresent -eq $true -and $r.data.existingReference -eq 'Tc2_DataExchange' -and $global:LibCalls.Count -eq 0 -and $r.data.projectSaved.plcproj -eq 'mock.plcproj' -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress)
+$r = Add-TcLibrary -Name Tc2_Standard
+Check 'Add-TcLibrary placeholder #name counts as already referenced' ($r.success -and $r.data.alreadyPresent -eq $true -and $r.data.existingReference -eq '#Tc2_Standard') ($r | ConvertTo-Json -Compress)
+$global:LibMode = 'contained'
+$r = Add-TcLibrary -Name Tc2_Other
+Check 'Add-TcLibrary ArgumentException already contained -> success alreadyPresent, nothing recorded' ($r.success -and $r.data.alreadyPresent -eq $true -and $null -eq (Get-Entry)) ($r | ConvertTo-Json -Compress)
+$global:LibMode = 'other'
+$r = Add-TcLibrary -Name Tc3_X -Version '3.3.0.0'
+Check 'Add-TcLibrary AddLibrary other failure -> LIBRARY_ADD_FAILED, recorded (conservative)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_ADD_FAILED' -and $r.data.buildRequired -eq 'PLC code changed by Add-TcLibrary Tc3_X (version 3.3.0.0) [failed after AddLibrary]' -and $null -ne (Get-Entry)) ($r | ConvertTo-Json -Compress)
 Reset-State
 
 # --- New-TcProject on a mock DTE: the NEW solution is recorded

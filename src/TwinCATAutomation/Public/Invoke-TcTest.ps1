@@ -1,7 +1,11 @@
 function Invoke-TcTest {
     <#
     .SYNOPSIS
-        Executes a single test case: setup -> wait -> assert -> teardown.
+        Executes a single test case: setup -> wait (poll WaitUntil, or legacy fixed WaitMs) -> assert -> teardown.
+        With WaitUntil the assertions run as soon as the conditions hold; on timeout the test case is Fail
+        with waitTimedOut=true, lastValues and waitMs (time actually waited).
+        A test case that waits with the deprecated WaitMs (no WaitUntil, waitMs > 0) gets
+        data.warning (the test case's own warning from New-TcTestCase, or the same text).
     .PARAMETER TestCase
         A test case object from New-TcTestCase.
     #>
@@ -15,8 +19,22 @@ function Invoke-TcTest {
         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
     }
 
+    # Validate WaitUntil before any write (a hand-built test case may skip New-TcTestCase)
+    $wuProp = $TestCase.PSObject.Properties['waitUntil']
+    if ($null -ne $wuProp -and $null -ne $wuProp.Value) {
+        $wtp = $TestCase.PSObject.Properties['waitTimeoutMs']
+        $wtv = if ($null -ne $wtp) { $wtp.Value } else { $null }
+        $wuErr = Test-TcWaitUntilSpec -WaitUntil $wuProp.Value -WaitTimeoutMs $wtv
+        if ($null -ne $wuErr) {
+            return New-TcResult -Success $false -ErrorMessage $wuErr -ErrorCode 'INVALID_PARAMS' `
+                -Hint 'Example: -WaitUntil @{Path="MAIN.bDone";Operator="IsTrue"} -WaitTimeoutMs 5000'
+        }
+    }
+
     $startTime = [DateTime]::Now
     $testName = $TestCase.name
+    # WaitMs deprecation (task 1.8): data.warning on every result of a WaitMs test case
+    $waitWarning = Get-TcWaitMsWarning -TestCase $TestCase
 
     try {
         # Setup: write initial values
@@ -24,17 +42,29 @@ function Invoke-TcTest {
             foreach ($action in $TestCase.setup) {
                 $writeResult = Write-TcVariable -Path $action.Path -Value $action.Value
                 if (-not $writeResult.success) {
-                    return New-TcResult -Success $true -Data ([PSCustomObject]@{
+                    $err = [ordered]@{
                         name   = $testName
                         result = 'Error'
                         reason = "Setup failed: $($writeResult.error.message)"
-                    })
+                    }
+                    if ($null -ne $waitWarning) { $err['warning'] = $waitWarning }
+                    return New-TcResult -Success $true -Data ([PSCustomObject]$err)
                 }
             }
         }
 
-        # Wait
-        if ($TestCase.waitMs -gt 0) {
+        # Wait: poll the WaitUntil conditions (no blind sleep); legacy waitMs is a fixed sleep
+        $waitUntilProp = $TestCase.PSObject.Properties['waitUntil']
+        $waitUntil = if ($null -ne $waitUntilProp) { $waitUntilProp.Value } else { $null }
+        $hasWaitUntil = $null -ne $waitUntil -and @($waitUntil).Count -gt 0
+        $waitInfo = $null
+        $waitTimeout = 5000
+        if ($hasWaitUntil) {
+            $wtProp = $TestCase.PSObject.Properties['waitTimeoutMs']
+            if ($null -ne $wtProp -and $null -ne $wtProp.Value) { $waitTimeout = [int]$wtProp.Value }
+            $waitInfo = Wait-TcTestCondition -WaitUntil $waitUntil -TimeoutMs $waitTimeout
+        }
+        elseif ($TestCase.waitMs -gt 0) {
             Start-Sleep -Milliseconds $TestCase.waitMs
         }
 
@@ -42,44 +72,15 @@ function Invoke-TcTest {
         $assertionResults = @()
         $allPassed = $true
 
-        foreach ($assertion in $TestCase.assertions) {
-            $readResult = Read-TcVariable -Path $assertion.Path
-            $actual = if ($readResult.success) { $readResult.data.value } else { $null }
-            $operator = if ($assertion.Operator) { $assertion.Operator } else { 'Equal' }
-            $expected = $assertion.Expected
-
-            $compared = $actual
-            $cmpExpected = $expected
-            if ($readResult.success) {
-                # TIME/DATE types: value is the IEC literal, so compare on the raw integer (ms/ns/unix);
-                # an Expected written as a literal ("T#6s") is converted to the same unit first.
-                $timeType = Get-TcIecTimeType -TypeName $readResult.data.type
-                if ($null -ne $timeType) {
-                    $compared = Get-TcVariableRawValue -Data $readResult.data
-                    if ($expected -is [string] -and $expected.Trim() -notmatch '^[+-]?\d+$') {
-                        try { $cmpExpected = ConvertFrom-TcIecLiteral -Value $expected -TypeInfo $timeType } catch { }
-                    }
-                }
-            }
-
-            $passed = Test-TcAssertion -Actual $compared -Operator $operator -Expected $cmpExpected
-
-            if (-not $passed) { $allPassed = $false }
-
-            $expectedStr = switch ($operator) {
-                'GreaterThan' { ">$expected" }
-                'LessThan' { "<$expected" }
-                'IsTrue' { 'TRUE' }
-                'IsFalse' { 'FALSE' }
-                default { "$expected" }
-            }
-
-            $assertionResults += [PSCustomObject]@{
-                path     = $assertion.Path
-                actual   = $actual
-                expected = $expectedStr
-                operator = $operator
-                pass     = $passed
+        if ($null -ne $waitInfo -and -not $waitInfo.met) {
+            # Condition never held: the test case fails; assertions are not evaluated
+            $allPassed = $false
+        }
+        else {
+            foreach ($assertion in $TestCase.assertions) {
+                $outcome = Get-TcAssertionOutcome -Assertion $assertion
+                if (-not $outcome.pass) { $allPassed = $false }
+                $assertionResults += $outcome
             }
         }
 
@@ -92,12 +93,22 @@ function Invoke-TcTest {
 
         $elapsed = ([DateTime]::Now - $startTime).TotalMilliseconds
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $data = [ordered]@{
             name       = $testName
             result     = if ($allPassed) { 'Pass' } else { 'Fail' }
             durationMs = [math]::Round($elapsed)
             assertions = $assertionResults
-        })
+        }
+        if ($null -ne $waitInfo) {
+            $data['waitMs'] = $waitInfo.waitMs
+            $data['waitTimedOut'] = (-not $waitInfo.met)
+            if (-not $waitInfo.met) {
+                $data['lastValues'] = $waitInfo.lastValues
+                $data['reason'] = "WaitUntil not met within $waitTimeout ms"
+            }
+        }
+        if ($null -ne $waitWarning) { $data['warning'] = $waitWarning }
+        New-TcResult -Success $true -Data ([PSCustomObject]$data)
     }
     catch {
         # Attempt teardown even on error

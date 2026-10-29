@@ -57,8 +57,10 @@
         that PLC's own ADS port (<AdsPort> of the PLC node, 851 when unknown).
     .PARAMETER LoginMode
         Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has
-        no program (XAE decides). Download: FORCEDOWNLOAD - always a full download
-        (used by Send-TcPlcProgram). OnlineChange: FORCEONLINECHANGE.
+        no program (XAE decides). Download: FORCEDOWNLOAD (used by Send-TcPlcProgram); measured
+        2026-10-28 (4026 VS2022, UmRT): with code unchanged since the running program XAE does
+        not download (data.downloaded = $false, _AppInfo.AppTimestamp unchanged); after a code
+        change it downloads and the PLC is left in Stop. OnlineChange: FORCEONLINECHANGE.
         SILENT (256) is only OR-ed in with -SilentFlag.
     .PARAMETER SilentFlag
         OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags. Off by default: prompts are

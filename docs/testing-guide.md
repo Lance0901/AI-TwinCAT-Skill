@@ -14,7 +14,7 @@ $test = New-TcTestCase -Name "Motor starts when enabled" `
     -Setup @(
         @{Path="GVL.bMotorEnable"; Value=$true}
     ) `
-    -WaitMs 1000 `
+    -WaitUntil @{Path="GVL.bMotorRunning"; Operator="IsTrue"} `
     -Assertions @(
         @{Path="GVL.bMotorRunning"; Operator="IsTrue"},
         @{Path="GVL.nMotorSpeed"; Operator="GreaterThan"; Expected=0}
@@ -53,8 +53,8 @@ $result | ConvertTo-Json -Depth 5
 ```powershell
 # Define multiple tests
 $tests = @(
-    (New-TcTestCase -Name "Test 1" -WaitMs 500 -Assertions @(@{Path="MAIN.x"; Operator="IsTrue"})),
-    (New-TcTestCase -Name "Test 2" -WaitMs 500 -Assertions @(@{Path="MAIN.n"; Operator="Equal"; Expected=10}))
+    (New-TcTestCase -Name "Test 1" -WaitUntil @{Path="MAIN.x"; Operator="IsTrue"} -Assertions @(@{Path="MAIN.x"; Operator="IsTrue"})),
+    (New-TcTestCase -Name "Test 2" -WaitUntil @{Path="MAIN.n"; Operator="Equal"; Expected=10} -Assertions @(@{Path="MAIN.n"; Operator="Equal"; Expected=10}))
 )
 
 # Full cycle: Build -> Activate -> Login -> Run -> Test -> Stop

@@ -59,6 +59,11 @@ function New-TcPlcObject {
     .PARAMETER Progress
         Optional hashtable; CreateCalled = $true is set right before CreateChild, so a caller
         whose call failed knows whether the PLC project may have changed (#65 BUILD_REQUIRED).
+        CreateFailed = $true is set when CreateChild itself returned an error (not an IDE_*
+        busy / crash / modal / timeout classification): XAE refused the call, nothing was
+        created, so the caller records no BUILD_REQUIRED (task 1.8). When that error is XAE's
+        "... affects a device you are currently logged into" the exception is rethrown as
+        "PLC_LOGGED_IN: ..." (ConvertTo-TcAdsErrorCode -> PLC_LOGGED_IN).
     #>
     [CmdletBinding()]
     param(
@@ -123,7 +128,27 @@ function New-TcPlcObject {
     # 2. create
     $vi = $VInfo
     if ($null -ne $Progress) { $Progress['CreateCalled'] = $true }
-    $null = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $parent.CreateChild($Name, $SubType, '', $vi) }
+    try {
+        $null = Invoke-TcComRetry -OperationName "CreateChild $Name" -ScriptBlock { Write-Output -NoEnumerate $parent.CreateChild($Name, $SubType, '', $vi) }
+    }
+    catch {
+        $msg = [string]$_.Exception.Message
+        # IDE_* (busy / crashed / modal / timeout): the call may have run inside XAE, so the
+        # caller stays conservative (#65). A plain error returned by CreateChild itself means
+        # XAE refused it: nothing was created (CreateFailed, no BUILD_REQUIRED record).
+        if ($msg -notmatch $ideErrorPattern) {
+            if ($null -ne $Progress) { $Progress['CreateFailed'] = $true }
+            # XAE refuses to add objects while the PLC is logged in: "Cannot add an object because
+            # it affects a device you are currently logged into" (measured 2026-10-29, 4026 XAE in
+            # VS2022 VisualStudio.DTE.17.0, Add-TcGvl after Enable-TcConfig -Force left the PLC
+            # logged in; phase0-1.7 finding 4). Matched on English key words; a localized XAE may
+            # word it differently and then stays *_CREATE_FAILED.
+            if ($msg -match $script:TcPlcLoggedInPattern) {
+                throw "PLC_LOGGED_IN: XAE refused to add '$Name' because the PLC is logged in (nothing was created). Original error: $msg"
+            }
+        }
+        throw
+    }
 
     # 3. lookup
     $item = $null

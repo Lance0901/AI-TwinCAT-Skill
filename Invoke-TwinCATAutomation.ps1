@@ -50,6 +50,7 @@ $operationMap = @{
     'IoScan'          = 'Invoke-TcIoScan'
     'GetIoTree'       = 'Get-TcIoTree'
     'SetVariableLink' = 'Set-TcVariableLink'
+    'RemoveVariableLink' = 'Remove-TcVariableLink'
     # Build & Deploy
     'BuildProject'    = 'Build-TcProject'
     'CleanProject'    = 'Clear-TcProject'
