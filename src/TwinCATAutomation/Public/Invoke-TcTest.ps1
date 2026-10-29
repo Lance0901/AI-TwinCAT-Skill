@@ -4,6 +4,8 @@ function Invoke-TcTest {
         Executes a single test case: setup -> wait (poll WaitUntil, or legacy fixed WaitMs) -> assert -> teardown.
         With WaitUntil the assertions run as soon as the conditions hold; on timeout the test case is Fail
         with waitTimedOut=true, lastValues and waitMs (time actually waited).
+        A test case that waits with the deprecated WaitMs (no WaitUntil, waitMs > 0) gets
+        data.warning (the test case's own warning from New-TcTestCase, or the same text).
     .PARAMETER TestCase
         A test case object from New-TcTestCase.
     #>
@@ -31,6 +33,8 @@ function Invoke-TcTest {
 
     $startTime = [DateTime]::Now
     $testName = $TestCase.name
+    # WaitMs deprecation (task 1.8): data.warning on every result of a WaitMs test case
+    $waitWarning = Get-TcWaitMsWarning -TestCase $TestCase
 
     try {
         # Setup: write initial values
@@ -38,11 +42,13 @@ function Invoke-TcTest {
             foreach ($action in $TestCase.setup) {
                 $writeResult = Write-TcVariable -Path $action.Path -Value $action.Value
                 if (-not $writeResult.success) {
-                    return New-TcResult -Success $true -Data ([PSCustomObject]@{
+                    $err = [ordered]@{
                         name   = $testName
                         result = 'Error'
                         reason = "Setup failed: $($writeResult.error.message)"
-                    })
+                    }
+                    if ($null -ne $waitWarning) { $err['warning'] = $waitWarning }
+                    return New-TcResult -Success $true -Data ([PSCustomObject]$err)
                 }
             }
         }
@@ -101,6 +107,7 @@ function Invoke-TcTest {
                 $data['reason'] = "WaitUntil not met within $waitTimeout ms"
             }
         }
+        if ($null -ne $waitWarning) { $data['warning'] = $waitWarning }
         New-TcResult -Success $true -Data ([PSCustomObject]$data)
     }
     catch {

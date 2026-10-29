@@ -74,3 +74,34 @@ function Wait-TcTestCondition {
         lastValues = [PSCustomObject]$last
     }
 }
+
+# WaitMs deprecation text (task 1.8, phase0-1.7 finding 3): shown at run time, not only in the help.
+$script:TcWaitMsDeprecatedWarning = 'WaitMs is deprecated (a fixed blind wait that cannot tell a slow PLC from a failure): use WaitUntil (New-TcTestCase -WaitUntil @{ Path = ''MAIN.bDone''; Operator = ''IsTrue'' } -WaitTimeoutMs 5000; MCP NewTestCase WaitUntil=[{"Path":"MAIN.bDone","Operator":"IsTrue"}]).'
+
+function Get-TcWaitMsWarning {
+    <#
+    .SYNOPSIS
+        The WaitMs deprecation warning for a test case that waits with WaitMs, else $null.
+    .DESCRIPTION
+        A test case without WaitUntil (null or empty) and with waitMs > 0 uses the deprecated fixed
+        wait. The test case's own 'warning' (New-TcTestCase) is returned when present, so a hand-built
+        test case gets the same text. waitMs 0 (no wait at all): $null. A WaitUntil test case: only
+        its own 'warning' (New-TcTestCase with an explicit -WaitMs that is ignored), else $null.
+    .PARAMETER TestCase
+        Test case object (New-TcTestCase or hand-built / from JSON).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$TestCase)
+    if ($null -eq $TestCase) { return $null }
+    $own = $TestCase.PSObject.Properties['warning']
+    $ownText = if ($null -ne $own -and -not [string]::IsNullOrWhiteSpace([string]$own.Value)) { [string]$own.Value } else { $null }
+    $wu = $TestCase.PSObject.Properties['waitUntil']
+    # WaitUntil test case: only its own warning (New-TcTestCase: "-WaitMs ... is ignored")
+    if ($null -ne $wu -and $null -ne $wu.Value -and @($wu.Value).Count -gt 0) { return $ownText }
+    $wm = $TestCase.PSObject.Properties['waitMs']
+    $waitMs = 0
+    if ($null -ne $wm -and $null -ne $wm.Value) { try { $waitMs = [int]$wm.Value } catch { $waitMs = 0 } }
+    if ($waitMs -le 0) { return $null }
+    if ($null -ne $ownText) { return $ownText }
+    return $script:TcWaitMsDeprecatedWarning
+}

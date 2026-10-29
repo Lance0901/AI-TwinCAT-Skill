@@ -102,6 +102,10 @@ describe('RunLifecycle TargetAmsNetId', () => {
     assert.equal(body.success, true);
     assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds']);
     assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1', Platform: 'TwinCAT OS (x64)' });
+    // task 1.8: EnableConfig gets the same Platform (no "-Platform was not given" warning)
+    assert.equal(body.data.steps[3].name, 'EnableConfig');
+    assert.equal(body.data.steps[3].result.data.params.Platform, 'TwinCAT OS (x64)');
+    assert.equal(body.data.steps[3].result.data.params.Force, true);
   });
 
   test('Platform without TargetAmsNetId and no AmsNetId from ConnectIde: AMS_NETID_REQUIRED before BuildProject', async () => {

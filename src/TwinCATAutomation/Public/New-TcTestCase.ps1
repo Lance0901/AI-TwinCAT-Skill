@@ -25,6 +25,9 @@ function New-TcTestCase {
         Array of hashtables with Path, Operator, and Expected.
     .OUTPUTS
         The test case object; invalid -WaitUntil / -WaitTimeoutMs returns an INVALID_PARAMS error result.
+        Without -WaitUntil it has waitMs and, when waitMs > 0, a 'warning' that WaitMs is deprecated
+        (Invoke-TcTest / Invoke-TcTestCycle pass it on in their results). With -WaitUntil there is
+        no waitMs; an explicit -WaitMs is kept as waitMsIgnored with a 'warning'.
     #>
     [CmdletBinding()]
     param(
@@ -65,11 +68,20 @@ function New-TcTestCase {
         name       = $Name
         setup      = $Setup
         teardown   = $Teardown
-        waitMs     = $WaitMs
     }
     if ($PSBoundParameters.ContainsKey('WaitUntil')) {
+        # no waitMs: the default 1000 would read as a wait that never happens (task 1.8);
+        # an explicit -WaitMs is reported as waitMsIgnored
         $tc['waitUntil'] = $WaitUntil
         $tc['waitTimeoutMs'] = $WaitTimeoutMs
+        if ($PSBoundParameters.ContainsKey('WaitMs')) {
+            $tc['waitMsIgnored'] = $WaitMs
+            $tc['warning'] = "WaitMs ($WaitMs) is ignored because WaitUntil is given; WaitMs is deprecated, drop it."
+        }
+    }
+    else {
+        $tc['waitMs'] = $WaitMs
+        if ($WaitMs -gt 0) { $tc['warning'] = $script:TcWaitMsDeprecatedWarning }
     }
     $tc['assertions'] = $Assertions
     [PSCustomObject]$tc

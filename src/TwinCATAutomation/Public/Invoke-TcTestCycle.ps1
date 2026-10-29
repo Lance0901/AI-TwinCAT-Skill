@@ -15,6 +15,11 @@
         No -AllowUnresolvedLibrary (#61): a build that does not prove the PLC code was compiled
         (codeVerified not true, e.g. unresolved libraries) is never activated, so the cycle
         stops at Build (LIBRARY_UNRESOLVED) or at Activate (BUILD_REQUIRED).
+        A failing Activate returns ACTIVATION_FAILED (the Enable-TcConfig code is in the message),
+        except RUNTIME_CRASHED (local UmRT process gone), which is returned as it is with
+        data.runtimeCrash.
+        Test cases that wait with the deprecated WaitMs: each result has data.warning (as
+        Invoke-TcTest) and the report lists them in data.warnings ("<name>: <warning>").
     #>
     [CmdletBinding()]
     param(
@@ -65,13 +70,19 @@
     $activateResult = Enable-TcConfig -Force
     $steps += [PSCustomObject]@{ step = 'Activate'; success = $activateResult.success }
     if (-not $activateResult.success) {
-        # code stays ACTIVATION_FAILED; the Enable-TcConfig code (e.g. BUILD_REQUIRED) is in the message, its hint is kept
+        # code stays ACTIVATION_FAILED; the Enable-TcConfig code (e.g. BUILD_REQUIRED) is in the message, its hint is kept.
+        # Exception RUNTIME_CRASHED (local UmRT gone, task 1.8): passed on as it is, with data.runtimeCrash.
         $ahp = $activateResult.error.PSObject.Properties['hint']
+        $aCode = [string]$activateResult.error.code
+        $aData = [PSCustomObject]@{ steps = $steps }
+        if ($aCode -eq 'RUNTIME_CRASHED' -and $null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['runtimeCrash']) {
+            $aData | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $activateResult.data.runtimeCrash
+        }
         $aParams = @{
             Success      = $false
-            ErrorMessage = "Activation failed ($([string]$activateResult.error.code)): $($activateResult.error.message)"
-            ErrorCode    = 'ACTIVATION_FAILED'
-            Data         = ([PSCustomObject]@{ steps = $steps })
+            ErrorMessage = "Activation failed ($aCode): $($activateResult.error.message)"
+            ErrorCode    = $(if ($aCode -eq 'RUNTIME_CRASHED') { 'RUNTIME_CRASHED' } else { 'ACTIVATION_FAILED' })
+            Data         = $aData
         }
         if ($null -ne $ahp -and -not [string]::IsNullOrWhiteSpace([string]$ahp.Value)) { $aParams['Hint'] = [string]$ahp.Value }
         return New-TcResult @aParams
@@ -164,14 +175,20 @@
             if ($result.data.result -eq 'Pass') { $passed++ } else { $failed++ }
         }
         else {
-            $testResults += [PSCustomObject]@{
+            $errEntry = [PSCustomObject]@{
                 name   = $tc.name
                 result = 'Error'
                 reason = $result.error.message
             }
+            $tw = Get-TcWaitMsWarning -TestCase $tc
+            if ($null -ne $tw) { $errEntry | Add-Member -NotePropertyName 'warning' -NotePropertyValue $tw }
+            $testResults += $errEntry
             $failed++
         }
     }
+    # WaitMs deprecation (task 1.8): each result carries its own warning; the report lists them once
+    $warnings = @($testResults | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['warning'] -and -not [string]::IsNullOrWhiteSpace([string]$_.warning) } |
+        ForEach-Object { "$($_.name): $($_.warning)" })
 
     # Step 8: Stop PLC (unless KeepRunning)
     if (-not $KeepRunning) {
@@ -191,6 +208,7 @@
         steps      = $steps
         results    = $testResults
     }
+    if ($warnings.Count -gt 0) { $report | Add-Member -NotePropertyName 'warnings' -NotePropertyValue $warnings }
 
     New-TcResult -Success ($failed -eq 0) -Data $report
 }

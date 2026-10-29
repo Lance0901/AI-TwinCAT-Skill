@@ -86,6 +86,13 @@ $script:TcErrorHints['LINK_INVALID_ITEM_TYPE'] = 'TSM_E_INVALIDITEMTYPE:至少�
 $script:TcErrorHints['LINK_TYPE_MISMATCH'] = 'TSM_E_MISMATCHINGITEMS:兩個變數的型別或大小不相容(例如 PLC INT 對 BOOL input)。改 PLC 變數型別,或連到相同大小的 I/O 變數'
 $script:TcErrorHints['LINK_FAILED'] = 'LinkVariables 失敗，原因不在已知 TSM_E_* 內:看 error.message,用 Get-TcIdeModalDialog 檢查 dialog;確認兩端都是完整 tree path 的變數'
 $script:TcErrorHints['UNLINK_FAILED'] = 'UnlinkVariables 失敗：看 error.message,用 Get-TcIdeModalDialog 檢查 dialog;確認兩端都是完整 tree path 的變數'
+# task 1.8 (complete-automation-interface, phase0-1.7 findings 2 and 4)
+# RUNTIME_CRASHED: Set-TcSystemState / Wait-TcAdsState -DetectRuntimeCrash, local UmRT only
+$script:TcErrorHints['RUNTIME_CRASHED'] = '本機 UmRT(TcSystemServiceUm)在等待狀態切換時消失：開始等待時的行程(data.servicePidAtStart)已不在，且 port 10000 連續回 ADS 0x7 超過 10 s。重試同一步沒有用，先重啟 UmRT:行程已不在就直接啟動 TcSystemServiceUm(指令見 docs/troubleshooting.md「SYSTEM_STATE_TIMEOUT」的 UmRT 重啟指令;還有殘留行程才先 Stop-Process),重啟後 runtime 停在 Config,再 Enable-TcConfig -Force(MCP:EnableConfig Force=true)。crash 簽名(Windows 事件 1000 的 faulting module / exception、%LOCALAPPDATA%\CrashDumps\TcSystemServiceUm.exe.<pid>.dmp)對照 docs/troubleshooting.md「已知限制」的 UmRT crash(#21);簽名不同就記下 dump 開 issue'
+# PLC_LOGGED_IN: XAE refuses CreateChild while logged in ("Cannot add an object because it affects a
+# device you are currently logged into", measured 2026-10-29, 4026 XAE in VS2022). English key words only.
+$script:TcPlcLoggedInPattern = '(?i)affects\s+a\s+device\s+you\s+are\s+currently\s+logged\s+in|cannot\s+add\s+an\s+object\b.*\blogged\s+in'
+$script:TcErrorHints['PLC_LOGGED_IN'] = 'PLC 正在 login(online)中,XAE 不允許新增物件，什麼都沒建立。先 PlcLogout(Exit-TcPlcOnline)再重試同一個 Add-TcPou / Add-TcDut / Add-TcGvl(MCP:PlcLogout 後重跑 AddPou / AddDut / AddGvl);Enable-TcConfig -Force 與 Invoke-TcTestCycle 結束時會保持 login。新增後 Build-TcProject,再 Enable-TcConfig -Force 或 Enter-TcPlcOnline 下載'
 $script:TcErrorHints['LINK_VERIFY_FAILED'] = 'Link / Unlink 呼叫有返回，但 ProduceMappingInfo 讀回的 mapping 不符(data.remainingLinks,或讀不到 mapping):不要當成功。到 XAE 看該變數的 link,或重跑一次'
 
 function Get-TcErrorHint {
@@ -186,6 +193,10 @@ function ConvertTo-TcAdsErrorCode {
     elseif ($text -match 'PROJECT_SAVE_TIMEOUT') {
         $code = 'PROJECT_SAVE_TIMEOUT'
     }
+    # Thrown by New-TcPlcObject when XAE refused CreateChild while the PLC is logged in (task 1.8)
+    elseif ($text -match '\bPLC_LOGGED_IN:') {
+        $code = 'PLC_LOGGED_IN'
+    }
     # Thrown by Invoke-TcComRetry; checked before IDE_BUSY because their messages
     # also carry the original 0x80010001 text.
     elseif ($text -match 'IDE_MODAL_DIALOG') {
@@ -196,6 +207,10 @@ function ConvertTo-TcAdsErrorCode {
     }
     elseif ($text -match 'IDE_TIMEOUT') {
         $code = 'IDE_TIMEOUT'
+    }
+    # The raw XAE text (not wrapped by New-TcPlcObject), after the IDE_* classifications
+    elseif ($text -match $script:TcPlcLoggedInPattern) {
+        $code = 'PLC_LOGGED_IN'
     }
     elseif ($text -match '(?i)0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER|IDE_BUSY' -or
         $numericCodes -contains 0x80010001 -or $numericCodes -contains 0x8001010A) {

@@ -74,6 +74,9 @@ function Enable-TcConfig {
                             platform differs from the target platform) -> ACTIVATE_FAILED
                             (same check without -Force)
           3. set-run        Set-TcSystemState -State Run  (waits until port 10000 = Run)
+                            set-config / set-run: RUNTIME_CRASHED of Set-TcSystemState (local
+                            UmRT process gone, ADS 0x7) is returned with its code and hint,
+                            its data in data.runtimeCrash
           2b. boot-package  The project's _Boot\<platform> package is compared (SHA-256) with
                             the Boot folder of the target when the target runs on this PC
                             (Get-TcBootPackageDiff: CurrentConfig.xml, CurrentConfig.tszip,
@@ -632,6 +635,15 @@ function Enable-TcConfig {
         New-TcStepFailure -Message "${Prefix}: $msg" -Code $code -Hint $hint
     }
 
+    # RUNTIME_CRASHED from Set-TcSystemState: its crash data (lastError, lastState,
+    # servicePidAtStart, runtimeName, unreachableMs) goes to data.runtimeCrash unchanged.
+    function Add-TcRuntimeCrashData {
+        param([object]$Result, [object]$StateResult)
+        if ($null -eq $StateResult -or $null -eq $StateResult.error -or [string]$StateResult.error.code -ne 'RUNTIME_CRASHED') { return }
+        if ($null -eq $Result.data) { return }
+        $Result.data | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $StateResult.data -Force
+    }
+
     # ------------------------------------------------------------------
     # Activate only (no -Force): behaviour unchanged
     # ------------------------------------------------------------------
@@ -714,7 +726,9 @@ function Enable-TcConfig {
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-config' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
-        return New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Config' -DefaultCode 'CONFIG_SWITCH_FAILED'
+        $res = New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Config' -DefaultCode 'CONFIG_SWITCH_FAILED'
+        Add-TcRuntimeCrashData -Result $res -StateResult $r
+        return $res
     }
     Add-TcStepRecord -Name 'set-config' -Ok $true -Watch $sw -Detail "system state $($r.data.currentState)"
 
@@ -760,6 +774,13 @@ function Enable-TcConfig {
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
+        if ([string]$r.error.code -eq 'RUNTIME_CRASHED') {
+            # the runtime is gone: no Error List / Boot package diagnostics (they would only add
+            # time and could rewrite the code), pass code + hint + crash data on as they are
+            $res = New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Run' -DefaultCode 'RUNTIME_CRASHED'
+            Add-TcRuntimeCrashData -Result $res -StateResult $r
+            return $res
+        }
         $code = if ([string]::IsNullOrWhiteSpace([string]$r.error.code)) { 'RUN_SWITCH_FAILED' } else { [string]$r.error.code }
         $hp = if ($null -ne $r.error) { $r.error.PSObject.Properties['hint'] } else { $null }
         return New-TcRuntimeFailure -Message "Failed to switch to Run: $([string]$r.error.message)" -Code $code -Hint $(if ($null -ne $hp) { [string]$hp.Value } else { $null })
