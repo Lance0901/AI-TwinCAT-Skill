@@ -8,7 +8,7 @@
 - [x] 1.6 實測剩下未實測的 tool:CleanProject、DisconnectAds、GetIdeInfo、GetIoTree、GetPlcState、GetSystemState、OpenProject、PlcLogout、SendPlcProgram、SetPlcState、SetSystemState、WatchVariable、GetIdeModalDialog
 - [x] 1.7 實測 composite 和測試框架:RunLifecycle、NewTestCase、RunTest、RunTestCycle
 - [x] 1.8 1.6 和 1.7 發現的問題：會擋住本期的就修，其他開 issue
-- [ ] 1.9 更新 known-limitations 實測清單(合計等於 tool 總數);跑兩個 host 的 smoke test;發 v0.2.0-beta
+- [x] 1.9 更新 known-limitations 實測清單(合計等於 tool 總數);跑兩個 host 的 smoke test;發 v0.2.0-beta
 
 ## 2. 第 1 期：通用 tree 操作(→ v0.3.0-beta)
 
