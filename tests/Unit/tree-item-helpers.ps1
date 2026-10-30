@@ -168,6 +168,70 @@ try {
     $eq = & $mod { @((Test-TcXmlValueEqual -Expected '40000' -Actual ' 40000 '), (Test-TcXmlValueEqual -Expected '#x1E' -Actual '#x1e'), (Test-TcXmlValueEqual -Expected '1.0' -Actual '1'), (Test-TcXmlValueEqual -Expected '1' -Actual '2'), (Test-TcXmlValueEqual -Expected 'abc' -Actual '0')) }
     Check 'value-equal' ($eq[0] -and $eq[1] -and $eq[2] -and -not $eq[3] -and -not $eq[4]) ($eq -join ',')
 
+    # --- review item 9: ordinal first, numbers only when both sides parse, #x prefix case-insensitive ---
+    $eq = & $mod { @(
+            (Test-TcXmlValueEqual -Expected 'abc' -Actual 'ABC'),
+            (Test-TcXmlValueEqual -Expected 'TRUE' -Actual 'true'),
+            (Test-TcXmlValueEqual -Expected '#X1E' -Actual '#x1e'),
+            (Test-TcXmlValueEqual -Expected '#x1E' -Actual '30'),
+            (Test-TcXmlValueEqual -Expected '1e3' -Actual '1000'),
+            (Test-TcXmlValueEqual -Expected 'PlcTask' -Actual 'plctask'),
+            (Test-TcXmlValueEqual -Expected '#xZZ' -Actual '#xzz'),
+            (Test-TcXmlValueEqual -Expected '' -Actual '  ')) }
+    Check 'value-equal-text-case-sensitive' (-not $eq[0] -and -not $eq[1] -and -not $eq[5]) ($eq -join ',')
+    Check 'value-equal-hex-prefix-case-insensitive' ($eq[2] -and $eq[3]) ($eq -join ',')
+    Check 'value-equal-numeric-only-when-both-parse' ($eq[4] -and -not $eq[6] -and $eq[7]) ($eq -join ',')
+
+    # --- review item 1: structure mismatch (fragment leaf = element with children now; mixed text) ---
+    foreach ($case in @(
+            @('empty-element', '<TreeItem><TaskDef/></TreeItem>', 'TreeItem/TaskDef'),
+            @('text-on-parent', '<TreeItem><TaskDef>123</TaskDef></TreeItem>', 'TreeItem/TaskDef'),
+            @('empty-cpus', '<TreeItem><TaskDef><CPUs/></TaskDef></TreeItem>', 'TreeItem/TaskDef/CPUs'))) {
+        $f = & $mod { ConvertFrom-TcTreeItemFragment -Xml $args[0] } $case[1]
+        $cmp = & $mod { Compare-TcTreeItemFragment -Leaves $args[0] -CurrentXml $args[1] } $f.Leaves $taskXml
+        Check "compare-structure-mismatch-$($case[0])" (@($cmp.StructureMismatch) -contains $case[2] -and @($cmp.Changes).Count -eq 0) ($cmp | ConvertTo-Json -Depth 4 -Compress)
+    }
+    $f = & $mod { ConvertFrom-TcTreeItemFragment -Xml '<TreeItem><TaskDef>123<CycleTime>40000</CycleTime></TaskDef></TreeItem>' }
+    Check 'frag-mixed-content-structure-mismatch' ($f.Reason -eq 'structure-mismatch' -and @($f.Paths) -contains 'TreeItem/TaskDef') ($f.Error)
+
+    # --- review item 3a: repeated count must equal the current XML ---
+    foreach ($case in @(@('fewer', '<TreeItem><TaskDef><CPUs><CPU>5</CPU></CPUs></TaskDef></TreeItem>', 1), @('more', '<TreeItem><TaskDef><CPUs><CPU>5</CPU><CPU>6</CPU><CPU>7</CPU></CPUs></TaskDef></TreeItem>', 3))) {
+        $f = & $mod { ConvertFrom-TcTreeItemFragment -Xml $args[0] } $case[1]
+        $cmp = & $mod { Compare-TcTreeItemFragment -Leaves $args[0] -CurrentXml $args[1] } $f.Leaves $taskXml
+        $rc = @($cmp.RepeatedCountMismatch)
+        Check "compare-repeated-count-$($case[0])" ($rc.Count -eq 1 -and $rc[0].path -eq 'TreeItem/TaskDef/CPUs/CPU' -and $rc[0].fragmentCount -eq $case[2] -and $rc[0].currentCount -eq 2 -and @($cmp.Changes).Count -eq 0) ($rc | ConvertTo-Json -Compress)
+    }
+
+    # --- review item 4: attributes are refused ---
+    foreach ($x in '<TreeItem><TaskDef><CycleTime unit="100ns">40000</CycleTime></TaskDef></TreeItem>', '<TreeItem xmlns="urn:x"><TaskDef><CycleTime>40000</CycleTime></TaskDef></TreeItem>') {
+        $f = & $mod { ConvertFrom-TcTreeItemFragment -Xml $args[0] } $x
+        Check "frag-attributes-$(@($f.Paths)[0])" ($f.Reason -eq 'attributes-not-supported' -and @($f.Paths).Count -eq 1 -and $null -eq $f.Leaves) $f.Error
+    }
+
+    # --- review item 3b: whole-XML comparison ---
+    $before = '<TreeItem a="1"><X>1</X><Y>2</Y><L><I>1</I><I>2</I></L><TcModuleInstance><Context><C>1</C></Context></TcModuleInstance></TreeItem>'
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[0] -ExcludePaths @() } $before)
+    Check 'full-compare-identical' ($full.Count -eq 0) ($full | ConvertTo-Json -Compress)
+    $after = '<TreeItem a="2"><X>9</X><Y>3</Y><L><I>1</I></L><Z>new</Z><TcModuleInstance><Context><C>7</C></Context></TcModuleInstance></TreeItem>'
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -ExcludePaths @('TreeItem/X') } $before $after)
+    $byPath = @{}; foreach ($u in $full) { $byPath[$u.path] = $u.kind }
+    Check 'full-compare-changes-outside-fragment' ($byPath['TreeItem/Y'] -eq 'changed' -and $byPath['TreeItem/@a'] -eq 'changed' -and $byPath['TreeItem/Z'] -eq 'added' -and $byPath['TreeItem/L/I[1]'] -eq 'removed' -and $byPath['TreeItem/L/I'] -eq 'added') ($full | ConvertTo-Json -Compress)
+    Check 'full-compare-excludes-fragment-and-derived' (-not $byPath.ContainsKey('TreeItem/X') -and @($full | Where-Object { $_.path -like '*Context*' }).Count -eq 0) ($full | ConvertTo-Json -Compress)
+    $parentBefore = '<TreeItem><Name>TIRT</Name><Children><Child>A</Child></Children></TreeItem>'
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $parentBefore '<TreeItem><Name>TIRT</Name><Children><Child>New</Child><Child>A</Child></Children></TreeItem>')
+    Check 'full-compare-additions-only-insert-ok' ($full.Count -eq 0) ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $parentBefore '<TreeItem><Name>TIRT2</Name><Children><Child>A</Child><Child>New</Child></Children></TreeItem>')
+    Check 'full-compare-additions-only-change-flagged' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/Name' -and $full[0].kind -eq 'removed' -and $full[0].after -eq 'TIRT2') ($full | ConvertTo-Json -Compress)
+
+    # --- extra: one pass-through list (PLC_LOGGED_IN included), used by the backup and the error result ---
+    $codes = & $mod { $script:TcTreeItemPassThroughCodes }
+    $mapped = & $mod { (Get-TcTreeItemPassThroughError -ErrorRecord 'Cannot add an object because it affects a device you are currently logged into').Code }
+    Check 'passthrough-list-plc-logged-in' (@($codes) -contains 'PLC_LOGGED_IN' -and @($codes) -contains 'IDE_BUSY' -and $mapped -eq 'PLC_LOGGED_IN') (@($codes) -join ',')
+
+    # --- review item 6: file path checks never throw ---
+    $fp = & $mod { @('C:\', 'C:\a<b.xti', 'C:\a|b.xti', 'C:\dir\', 'rel.xti', 'C:\Temp\ok.xti') | ForEach-Object { $r = Test-TcTreeItemFilePath -FilePath $_; if ($null -eq $r) { 'ok' } else { $r.Reason } } }
+    Check 'filepath-invalid' ($fp[0] -eq 'invalid-path' -and $fp[1] -eq 'invalid-path' -and $fp[2] -eq 'invalid-path' -and $fp[3] -eq 'invalid-path' -and $fp[4] -eq 'not-absolute' -and $fp[5] -eq 'ok') ($fp -join ',')
+
     # --- 2.2 known-field rules ---
     foreach ($case in @(@('0', $true), @('-10000', $true), @('abc', $true), @('12.5', $true), @('40000', $false), @('12345', $false))) {
         $leaves = & $mod { @((ConvertFrom-TcTreeItemFragment -Xml "<TreeItem><TaskDef><CycleTime>$($args[0])</CycleTime></TaskDef></TreeItem>").Leaves) } $case[0]

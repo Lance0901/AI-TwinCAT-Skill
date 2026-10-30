@@ -32,7 +32,12 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
     $n = [PSCustomObject]@{ Name = $name; PathName = $Path; ItemType = $ItemType; ItemSubType = 0; ItemSubTypeName = 'TREEITEMTYPE_MOCK'; Xml = $Xml; Kids = [System.Collections.ArrayList]::new() }
     $n | Add-Member ScriptProperty ChildCount { $this.Kids.Count }
     $n | Add-Member ScriptMethod Child { param($i) $global:T.Nodes[$this.Kids[$i - 1]] }
-    $n | Add-Member ScriptMethod ProduceXml { param($rec) $this.Xml }
+    $n | Add-Member ScriptMethod ProduceXml {
+        param($rec)
+        $global:T.Produce.Add("$($this.PathName)|$rec") | Out-Null
+        if ($rec -and $null -ne $global:T.ProduceRecThrows) { throw $global:T.ProduceRecThrows }
+        $this.Xml
+    }
     $n | Add-Member ScriptMethod ConsumeXml {
         param($x)
         $global:T.Mods.Add("ConsumeXml $($this.PathName)") | Out-Null
@@ -55,6 +60,7 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
                 }
             }
         }
+        if ($global:T.ConsumeMode -eq 'sideeffect') { $pr = $doc.SelectSingleNode('TreeItem/TaskDef/Priority'); if ($null -ne $pr) { $pr.InnerText = '99' } }
         $this.Xml = $doc.OuterXml
     }
     $n | Add-Member ScriptMethod CreateChild {
@@ -62,9 +68,12 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         $global:T.Mods.Add("CreateChild $($this.PathName)^$name/$sub/$before/$vinfo") | Out-Null
         switch ($global:T.CreateMode) {
             'throw' { throw [System.Runtime.InteropServices.COMException]::new('Not implemented', -2147467263) }
+            'loggedin' { throw [System.Runtime.InteropServices.COMException]::new('Cannot add an object because it affects a device you are currently logged into.', -2147467259) }
             'vanish' { return [PSCustomObject]@{ Name = $name; PathName = "$($this.PathName)^$name" } }
         }
         $finalName = if ($global:T.CreateMode -eq 'rename') { "$name (1)" } else { $name }
+        if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
+        if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$name</Child></TreeItem>") }
         $c = Add-MockNode "$($this.PathName)^$finalName"
         Write-Output -NoEnumerate $c
     }
@@ -89,6 +98,8 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         $global:T.Mods.Add("ImportChild $($this.PathName)|$file|$before|$reconnect|$name") | Out-Null
         if ($global:T.ImportMode -eq 'throw') { throw [System.Runtime.InteropServices.COMException]::new('E_FAIL', -2147467259) }
         $nm = if ([string]::IsNullOrEmpty($name)) { 'Imported' } else { $name }
+        if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
+        if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$nm</Child></TreeItem>") }
         $c = Add-MockNode "$($this.PathName)^$nm"
         if ($global:T.ImportMode -eq 'nullreturn') { return $null }
         Write-Output -NoEnumerate $c
@@ -110,6 +121,7 @@ function Reset-Mock {
     $global:T.Lookups = [System.Collections.ArrayList]::new()
     $global:T.ConsumeMode = 'apply'; $global:T.CreateMode = 'ok'; $global:T.DeleteMode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.ImportMode = 'ok'
     $global:T.LookupThrows = $null
+    $global:T.Produce = [System.Collections.ArrayList]::new(); $global:T.ProduceRecThrows = $null; $global:T.ParentMode = 'none'; $global:T.Dialog = $null
     foreach ($r in 'TIRT', 'TIPC', 'TIID') { $null = Add-MockNode $r }
     $null = Add-MockNode 'TIRT^PlcTask' 19 $taskXml
     $null = Add-MockNode 'TIPC^P' 56
@@ -132,6 +144,7 @@ Reset-Mock
     $script:TcSolutionPath = $args[0]
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:T.Sm }
+    function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:T.Dialog }
 } $sln
 function Backups { @(Get-ChildItem -LiteralPath (Join-Path $work '.tcauto-backup') -Recurse -File -ErrorAction SilentlyContinue) }
 
@@ -265,9 +278,9 @@ try {
     $global:T.DeleteMode = 'noop'
     $res = Remove-TcTreeItem -Path 'TIRT^Task 3' -ConfirmName 'Task 3' -DryRun $false
     Check 'delete-still-exists-verify-failed' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.verified -eq $false) ($res | ConvertTo-Json -Depth 5 -Compress)
-    $global:T.DeleteMode = 'throw'; $global:T.ExportMode = 'throw'
+    $global:T.DeleteMode = 'throw'
     $res = Remove-TcTreeItem -Path 'TIRT^Task 3' -ConfirmName 'Task 3' -DryRun $false
-    Check 'delete-xae-refused' ($res.error.code -eq 'TREEITEM_DELETE_FAILED' -and (@($res.data.warnings) -join ' ') -match 'ExportChild backup failed') ($res | ConvertTo-Json -Depth 5 -Compress)
+    Check 'delete-xae-refused' ($res.error.code -eq 'TREEITEM_DELETE_FAILED' -and (Test-Path -LiteralPath $res.data.exportPath)) ($res | ConvertTo-Json -Depth 5 -Compress)
 
     # --- 2.6 ExportChild / ImportChild ---
     Reset-Mock
@@ -301,6 +314,172 @@ try {
     $global:T.ImportMode = 'throw'
     $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xti -Name 'Another' -DryRun $false
     Check 'import-xae-refused' ($res.error.code -eq 'TREEITEM_IMPORT_FAILED') $res.error.message
+
+    # === code review of tasks 2.2-2.7 (one block per review item) ===
+    function Json($o) { $o | ConvertTo-Json -Depth 6 -Compress }
+    # 1. structure mismatch: refused before anything is sent
+    Reset-Mock
+    $i = 0
+    foreach ($x in '<TreeItem><TaskDef/></TreeItem>', '<TreeItem><TaskDef>123</TaskDef></TreeItem>', '<TreeItem><TaskDef>123<CycleTime>40000</CycleTime></TaskDef></TreeItem>') {
+        $i++
+        $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml $x -DryRun $false
+        Check "review1-structure-mismatch-$i" ($res.error.code -eq 'XML_MERGE_FAILED' -and $res.data.reason -eq 'structure-mismatch' -and @($res.data.structurePaths) -contains 'TreeItem/TaskDef' -and $global:T.Mods.Count -eq 0 -and (Backups).Count -eq 0 -and $global:T.Nodes['TIRT^PlcTask'].Xml -eq $taskXml) (Json $res)
+    }
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TaskDef/></TreeItem>'
+    Check 'review1-structure-mismatch-dryrun' ($res.error.code -eq 'XML_MERGE_FAILED' -and $res.data.reason -eq 'structure-mismatch') (Json $res)
+
+    # 2. derived fields only: refused (nothing could be read back)
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TcModuleInstance><Module><Context><CycleTime>5</CycleTime></Context></Module></TcModuleInstance></TreeItem>' -DryRun $false
+    Check 'review2-derived-only' ($res.error.code -eq 'XML_MERGE_FAILED' -and $res.data.reason -eq 'derived-only' -and @($res.data.derivedPaths) -contains 'TreeItem/TcModuleInstance/Module/Context/CycleTime' -and $global:T.Mods.Count -eq 0 -and (Backups).Count -eq 0 -and $res.error.hint -match 'TaskDef/CycleTime') (Json $res)
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TaskDef><CycleTime>40000</CycleTime></TaskDef><TcModuleInstance><Module><Context><CycleTime>4000000</CycleTime></Context></Module></TcModuleInstance></TreeItem>' -DryRun $false
+    Check 'review2-derived-with-source-ok' ($res.success -and $res.data.verified -and (@($res.data.warnings) -join ' ') -match 'not read back' -and @($res.data.skippedDerived).Count -eq 1) (Json $res)
+
+    # 3a. repeated element count differs: refused
+    Reset-Mock
+    foreach ($x in '<TreeItem><TaskDef><CPUs><CPU>5</CPU></CPUs></TaskDef></TreeItem>', '<TreeItem><TaskDef><CPUs><CPU>5</CPU><CPU>6</CPU><CPU>7</CPU></CPUs></TaskDef></TreeItem>') {
+        $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml $x -DryRun $false
+        $rc = @($res.data.repeatedCountMismatches)
+        Check "review3a-repeated-count-$(([xml]$x).TreeItem.TaskDef.CPUs.CPU.Count)" ($res.error.code -eq 'XML_MERGE_FAILED' -and $res.data.reason -eq 'repeated-count-mismatch' -and $rc.Count -eq 1 -and $rc[0].currentCount -eq 2 -and $global:T.Mods.Count -eq 0) (Json $res)
+    }
+    # same count: accepted (dry-run; the mock's merge does not handle repeated elements)
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TaskDef><CPUs><CPU>0</CPU><CPU>3</CPU></CPUs></TaskDef></TreeItem>'
+    Check 'review3a-repeated-same-count-ok' ($res.success -and $res.data.changedCount -eq 1 -and @($res.data.changes | Where-Object { $_.changed })[0].path -eq 'TreeItem/TaskDef/CPUs/CPU[2]') (Json $res)
+
+    # 3b. whole-XML check after the write: a field outside the fragment changed
+    Reset-Mock
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml $frag -DryRun $false
+    Check 'review3b-clean-write-no-unexpected' ($res.success -and $null -eq $res.data.PSObject.Properties['unexpectedChanges']) (Json $res)
+    Reset-Mock
+    $global:T.ConsumeMode = 'sideeffect'
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml $frag -DryRun $false
+    $u = @($res.data.unexpectedChanges)
+    Check 'review3b-side-effect-verify-failed' (-not $res.success -and $res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.verified -eq $false -and $u.Count -eq 1 -and $u[0].path -eq 'TreeItem/TaskDef/Priority' -and $u[0].kind -eq 'changed' -and $u[0].before -eq '20' -and $u[0].after -eq '99' -and $null -eq $res.data.PSObject.Properties['mismatches']) (Json $res)
+    Reset-Mock
+    $global:T.ParentMode = 'change'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task P' -DryRun $false
+    Check 'review3b-create-parent-changed' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.parentUnchanged -eq $false -and $res.data.verified -eq $false -and @($res.data.unexpectedChanges)[0].path -eq 'TreeItem/ItemName' -and $global:T.Nodes.ContainsKey('TIRT^Task P')) (Json $res)
+    $global:T.ParentMode = 'add'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task Q' -DryRun $false
+    Check 'review3b-create-parent-addition-ok' ($res.success -and $res.data.verified -and $res.data.parentUnchanged -eq $true) (Json $res)
+    $xti = Join-Path $work 'review.xti'
+    Set-Content -LiteralPath $xti -Value '<TreeItem/>' -Encoding ASCII
+    $global:T.ParentMode = 'change'
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xti -Name 'Imp P' -DryRun $false
+    Check 'review3b-import-parent-changed' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.parentUnchanged -eq $false -and @($res.data.unexpectedChanges).Count -ge 1) (Json $res)
+    $global:T.ParentMode = 'add'
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xti -Name 'Imp Q' -DryRun $false
+    Check 'review3b-import-parent-addition-ok' ($res.success -and $res.data.parentUnchanged -eq $true) (Json $res)
+
+    # 4. attributes: refused, hint says only element values are supported
+    Reset-Mock
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TaskDef><CycleTime unit="100ns">40000</CycleTime></TaskDef></TreeItem>' -DryRun $false
+    Check 'review4-attributes-not-supported' ($res.error.code -eq 'XML_MERGE_FAILED' -and $res.data.reason -eq 'attributes-not-supported' -and @($res.data.attributePaths) -contains 'TreeItem/TaskDef/CycleTime/@unit' -and $res.error.hint -match 'element' -and $global:T.Mods.Count -eq 0) (Json $res)
+
+    # 5. DeleteChild backup: export required, -AllowNoExport, recursive ProduceXml
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Task 5' 19
+    $global:T.ExportMode = 'throw'
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 5' -ConfirmName 'Task 5' -DryRun $false
+    Check 'review5-export-failed-no-delete' ($res.error.code -eq 'TREEITEM_BACKUP_FAILED' -and $res.data.reason -eq 'export-failed' -and $global:T.Nodes.ContainsKey('TIRT^Task 5') -and @($global:T.Mods | Where-Object { $_ -like 'DeleteChild*' }).Count -eq 0) (Json $res)
+    $global:T.ExportMode = 'nofile'
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 5' -ConfirmName 'Task 5' -DryRun $false
+    Check 'review5-export-missing-no-delete' ($res.error.code -eq 'TREEITEM_BACKUP_FAILED' -and $res.data.reason -eq 'export-missing' -and $global:T.Nodes.ContainsKey('TIRT^Task 5') -and $global:T.Mods.Count -eq 0) (Json $res)
+    $global:T.ExportMode = 'throw'
+    $global:T.Produce.Clear()
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 5' -ConfirmName 'Task 5' -DryRun $false -AllowNoExport
+    Check 'review5-allow-no-export-deletes-with-warning' ($res.success -and $res.data.verified -and -not $global:T.Nodes.ContainsKey('TIRT^Task 5') -and (@($res.data.warnings) -join ' ') -match 'AllowNoExport' -and $res.data.allowNoExport -eq $true) (Json $res)
+    Check 'review5-backup-recursive' (@($global:T.Produce) -contains 'TIRT^Task 5|True') (@($global:T.Produce) -join ';')
+
+    # 6. invalid file paths: TREEITEM_EXPORT_FAILED / TREEITEM_IMPORT_FAILED invalid-path, no EXECUTION_ERROR
+    Reset-Mock
+    foreach ($p in 'C:\', 'C:\a<b.xti', 'C:\a|b.xti') {
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath $p
+        Check "review6-export-invalid-path-$p" ($res.error.code -eq 'TREEITEM_EXPORT_FAILED' -and $res.data.reason -eq 'invalid-path' -and $global:T.Exports.Count -eq 0) (Json $res)
+        $res = Import-TcTreeItem -Path 'TIRT' -FilePath $p -DryRun $false
+        Check "review6-import-invalid-path-$p" ($res.error.code -eq 'TREEITEM_IMPORT_FAILED' -and $res.data.reason -eq 'invalid-path' -and $global:T.Mods.Count -eq 0) (Json $res)
+    }
+
+    # 7. a modal dialog is checked right before every synchronous modifying COM call
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Task 7' 19
+    $global:T.Dialog = @{ Title = 'Mock dialog'; Text = 'Mock text'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() }
+    $xti7 = Join-Path $work 'review7.xti'
+    Set-Content -LiteralPath $xti7 -Value '<TreeItem/>' -Encoding ASCII
+    $r7 = @(
+        @('consume', (Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml $frag -DryRun $false)),
+        @('create', (New-TcTreeItem -Path 'TIRT' -Name 'Task D' -DryRun $false)),
+        @('delete', (Remove-TcTreeItem -Path 'TIRT^Task 7' -ConfirmName 'Task 7' -DryRun $false)),
+        @('export', (Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'review7-out.xti'))),
+        @('import', (Import-TcTreeItem -Path 'TIRT' -FilePath $xti7 -Name 'Imp D' -DryRun $false)))
+    foreach ($c in $r7) { Check "review7-dialog-before-$($c[0])" ($c[1].error.code -eq 'IDE_MODAL_DIALOG') (Json $c[1]) }
+    Check 'review7-dialog-nothing-called' ($global:T.Mods.Count -eq 0 -and $global:T.Exports.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 7') -and $global:T.Nodes['TIRT^PlcTask'].Xml -eq $taskXml) "mods=$($global:T.Mods -join ';') exports=$($global:T.Exports -join ';')"
+    $global:T.Dialog = $null
+    $comments = @('Set-TcTreeItemXml', 'New-TcTreeItem', 'Remove-TcTreeItem', 'Export-TcTreeItem', 'Import-TcTreeItem') | ForEach-Object {
+        $src = Get-Content -LiteralPath (Join-Path $PSScriptRoot "..\..\src\TwinCATAutomation\Public\$_.ps1") -Raw
+        [regex]::Matches($src, 'No deadline \(CODING_STANDARDS\.md section 1\)').Count
+    }
+    Check 'review7-no-deadline-comment-per-call' ($comments[0] -ge 1 -and $comments[1] -ge 1 -and $comments[2] -ge 2 -and $comments[3] -ge 1 -and $comments[4] -ge 1) ($comments -join ',')
+
+    # 8. PLC_LOGGED_IN: hint = PlcLogout, then rerun the same tool (named)
+    Reset-Mock
+    $global:T.CreateMode = 'loggedin'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task L' -DryRun $false
+    Check 'review8-plc-logged-in-hint' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'PlcLogout' -and $res.error.hint.Contains("CreateChild 'TIRT^Task L'") -and $res.error.hint -notmatch 'AddPou') (Json $res)
+    $global:T.CreateMode = 'ok'
+    # extra: the backup step rethrows PLC_LOGGED_IN (same pass-through list) instead of TREEITEM_BACKUP_FAILED
+    $null = Add-MockNode 'TIRT^Task 8' 19
+    $global:T.Mods.Clear()
+    $global:T.ProduceRecThrows = 'Cannot add an object because it affects a device you are currently logged into.'
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 8' -ConfirmName 'Task 8' -DryRun $false
+    Check 'review-extra-backup-passthrough-plc-logged-in' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'PlcLogout' -and $global:T.Nodes.ContainsKey('TIRT^Task 8') -and $global:T.Mods.Count -eq 0) (Json $res)
+    $global:T.ProduceRecThrows = $null
+
+    # 9. value comparison: see tree-item-helpers.ps1 value-equal-*; here a case-only change is a real change
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Named' 19 '<TreeItem><ItemName>Named</ItemName><TaskDef><Comment>abc</Comment></TaskDef></TreeItem>'
+    $res = Set-TcTreeItemXml -Path 'TIRT^Named' -Xml '<TreeItem><TaskDef><Comment>ABC</Comment></TaskDef></TreeItem>'
+    Check 'review9-case-change-counts' ($res.success -and $res.data.changedCount -eq 1) (Json $res)
+
+    # 10. -Before beyond the truncated child list is looked up directly
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Second' 19
+    & $mod { $script:TcTreeItemMaxChildNames = 1 }
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task B' -Before 'Second'
+    Check 'review10-create-before-beyond-list' ($res.success -and @($res.data.currentChildren) -notcontains 'Second') (Json $res)
+    $xti10 = Join-Path $work 'review10.xti'
+    Set-Content -LiteralPath $xti10 -Value '<TreeItem/>' -Encoding ASCII
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xti10 -Before 'Second'
+    Check 'review10-import-before-beyond-list' ($res.success) (Json $res)
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xti10 -Before 'Nope'
+    Check 'review10-import-before-missing' ($res.error.code -eq 'TREEITEM_NOT_FOUND') (Json $res)
+    & $mod { $script:TcTreeItemMaxChildNames = 200 }
+
+    # extra: DeleteChild checks the item's own parent against the parent derived from -Path
+    Reset-Mock
+    $odd = Add-MockNode 'TIRT^Odd' 19
+    $odd.PathName = 'TIID^Odd'
+    $res = Remove-TcTreeItem -Path 'TIRT^Odd' -ConfirmName 'Odd'
+    Check 'review-extra-parent-mismatch-dryrun' ($res.error.code -eq 'TREEITEM_DELETE_FAILED' -and $res.data.reason -eq 'parent-mismatch' -and $res.data.itemParentPath -eq 'TIID') (Json $res)
+    $res = Remove-TcTreeItem -Path 'TIRT^Odd' -ConfirmName 'Odd' -DryRun $false
+    Check 'review-extra-parent-mismatch-no-delete' ($res.data.reason -eq 'parent-mismatch' -and $global:T.Mods.Count -eq 0 -and $global:T.Exports.Count -eq 0 -and (Backups).Count -eq 0) (Json $res)
+
+    # 11. documentation: cmdlet counts, new reasons and AllowNoExport documented
+    $exported = @($mod.ExportedCommands.Keys).Count
+    $root = Join-Path $PSScriptRoot '..\..'
+    $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw -Encoding UTF8
+    $readmeZh = Get-Content -LiteralPath (Join-Path $root 'README.zh-TW.md') -Raw -Encoding UTF8
+    $nums = @()
+    foreach ($m in [regex]::Matches($readme, 'providing (\d+) cmdlets|# (\d+) exported cmdlets')) { $nums += [int]("$($m.Groups[1].Value)$($m.Groups[2].Value)") }
+    foreach ($m in [regex]::Matches($readmeZh, '(\d+)\s*[^\x00-\x7F]+\s*cmdlet')) { $nums += [int]$m.Groups[1].Value }
+    Check 'review11-readme-cmdlet-counts' ($nums.Count -ge 5 -and @($nums | Where-Object { $_ -ne $exported }).Count -eq 0) "exported=$exported found=$($nums -join ',')"
+    $ts = Get-Content -LiteralPath (Join-Path $root 'docs\troubleshooting.md') -Raw -Encoding UTF8
+    $missingDoc = @('structure-mismatch', 'derived-only', 'repeated-count-mismatch', 'attributes-not-supported', 'invalid-path', 'export-failed', 'export-missing', 'parent-mismatch', 'AllowNoExport', 'unexpectedChanges') | Where-Object { -not $ts.Contains($_) }
+    Check 'review11-troubleshooting-documents-new-reasons' ($missingDoc.Count -eq 0) ($missingDoc -join ', ')
+    $helpText = [string](Get-Help Remove-TcTreeItem -Parameter AllowNoExport | Out-String)
+    Check 'review11-cmdlet-help-allownoexport' ($helpText -match 'ExportChild') $helpText
+    $toolsJson = (Get-Content -LiteralPath (Join-Path $root 'mcp-server\tools.json') -Raw -Encoding UTF8 | ConvertFrom-Json).tools
+    $delTool = @($toolsJson | Where-Object { $_.name -eq 'DeleteChild' })[0]
+    Check 'review11-tools-json-allownoexport' ($delTool.inputSchema.properties.AllowNoExport.type -eq 'boolean' -and $delTool.description -match 'AllowNoExport') (Json $delTool.inputSchema.properties.AllowNoExport)
 
     # --- 2.7 hint table and tools.json ---
     $codes = 'TREEITEM_NOT_FOUND', 'TREEITEM_PATH_INVALID', 'TREEITEM_READ_FAILED', 'TREEITEM_ALREADY_EXISTS', 'TREEITEM_CREATE_FAILED', 'TREEITEM_VERIFY_FAILED',

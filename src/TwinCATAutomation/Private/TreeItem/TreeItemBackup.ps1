@@ -185,7 +185,8 @@ function Invoke-TcTreeItemBackup {
     .DESCRIPTION
         Failed result TREEITEM_BACKUP_FAILED when the solution directory is unknown, ProduceXml fails or
         the backup cannot be written; the caller then modifies nothing. Disk file problems are warnings
-        (Backup.warnings).
+        (Backup.warnings). Errors in $script:TcTreeItemPassThroughCodes (IDE_*, PLC_LOGGED_IN) are
+        rethrown so that they keep their code.
     .PARAMETER Item
         ITcSmTreeItem to back up.
     .PARAMETER Path
@@ -196,6 +197,8 @@ function Invoke-TcTreeItemBackup {
         File name suffix (e.g. 'parent').
     .PARAMETER Xml
         ProduceXml text already read (skips the extra COM call).
+    .PARAMETER Recursive
+        ProduceXml($true): the backup includes the subtree (used before DeleteChild).
     #>
     [CmdletBinding()]
     param(
@@ -203,7 +206,8 @@ function Invoke-TcTreeItemBackup {
         [Parameter(Mandatory)][string]$Path,
         [Parameter()][object]$Data,
         [Parameter()][string]$Tag = '',
-        [Parameter()][AllowNull()][string]$Xml = $null
+        [Parameter()][AllowNull()][string]$Xml = $null,
+        [Parameter()][switch]$Recursive
     )
     $solutionDir = Get-TcTreeItemSolutionDir
     if ($null -eq $solutionDir) {
@@ -212,7 +216,7 @@ function Invoke-TcTreeItemBackup {
                     -Hint (Get-TcErrorHint -Code 'TREEITEM_BACKUP_FAILED')) }
     }
     try {
-        if ([string]::IsNullOrEmpty($Xml)) { $Xml = Get-TcTreeItemXmlText -Item $Item -Path $Path }
+        if ([string]::IsNullOrEmpty($Xml)) { $Xml = Get-TcTreeItemXmlText -Item $Item -Path $Path -Recursive ([bool]$Recursive) }
         $name = try { [string]$Item.Name } catch { Get-TcTreePathLeaf -Path $Path }
         $itemType = try { [int]$Item.ItemType } catch { -1 }
         $disk = Find-TcTreeItemDiskFile -SolutionDir $solutionDir -Path $Path -Name $name -ItemType $itemType
@@ -222,7 +226,8 @@ function Invoke-TcTreeItemBackup {
     }
     catch {
         $m = $_.Exception.Message
-        if ($m -match '^IDE_(MODAL_DIALOG|CRASHED|TIMEOUT|BUSY)') { throw }
+        # Same list as New-TcTreeItemErrorResult: these keep their own code (the caller's catch maps them).
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
         return @{ Backup = $null; Result = (New-TcResult -Success $false -ErrorCode 'TREEITEM_BACKUP_FAILED' -Data $Data `
                     -ErrorMessage "Backup of '$Path' failed, nothing was changed: $m" -Hint (Get-TcErrorHint -Code 'TREEITEM_BACKUP_FAILED')) }
     }

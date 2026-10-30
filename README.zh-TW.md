@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 38 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 45 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -172,7 +172,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 34 個匯出的 cmdlet
+  Public/                       # 45 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/

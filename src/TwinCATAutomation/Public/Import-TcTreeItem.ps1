@@ -8,14 +8,18 @@ function Import-TcTreeItem {
         item as a child, reassigns variable IDs and, when bReconnect is not false, restores mappings.
         Samples: TE1000 v1.7.0 6.3.2 "Using Templates" (p.198-199), e.g. TIID ImportChild(file, "", true,
         "SomeName"). Export a file with Export-TcTreeItem (MCP ExportChild).
-        Checks first (nothing imported on failure): FilePath absolute and exists
-        (TREEITEM_IMPORT_FAILED, data.reason), Path exists (TREEITEM_NOT_FOUND), a child named Name does
-        not exist yet (TREEITEM_ALREADY_EXISTS), Before is an existing child.
+        Checks first (nothing imported on failure): FilePath is a valid absolute file path and exists
+        (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), Path exists
+        (TREEITEM_NOT_FOUND), a child named Name does not exist yet (TREEITEM_ALREADY_EXISTS), Before is
+        an existing child (LookupTreeItem Path^Before).
         DryRun (default true): ImportChild is NOT called; data.dryRun=true, data.currentChildren,
         data.fileSize.
-        DryRun=false: ProduceXml backup of the PARENT (data.backupPath), ImportChild, then the imported
-        item is looked up again (returned item, else Path^Name, else a new child name):
-        data.verified=true, data.importedPath / importedName; not found -> TREEITEM_VERIFY_FAILED.
+        DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
+        is open (nothing imported), ImportChild, then the imported item is looked up again (returned
+        item, else Path^Name, else a new child name) and the parent's ProduceXml read back: it may only
+        have gained entries (data.parentUnchanged). data.verified=true, data.importedPath /
+        importedName; not found, or a parent field changed (data.unexpectedChanges) ->
+        TREEITEM_VERIFY_FAILED.
         XAE refusing the call -> TREEITEM_IMPORT_FAILED. Below TIPC: BUILD_REQUIRED code-changed.
     .PARAMETER Path
         Full tree path of the PARENT, e.g. "TIRT" or "TIID". No wildcards.
@@ -54,18 +58,24 @@ function Import-TcTreeItem {
     )
 
     $data = [PSCustomObject]@{ path = $Path; filePath = $FilePath; before = $Before; reconnect = $Reconnect; name = $Name; dryRun = $DryRun }
-    $reason = $null
-    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not [System.IO.Path]::IsPathRooted($FilePath)) { $reason = 'not-absolute' }
-    elseif (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { $reason = 'file-missing' }
-    if ($null -ne $reason) {
-        $data | Add-Member -NotePropertyName reason -NotePropertyValue $reason
-        $msg = if ($reason -eq 'not-absolute') { "-FilePath must be an absolute path (got '$FilePath')" } else { "'$FilePath' does not exist" }
-        return New-TcResult -Success $false -ErrorCode 'TREEITEM_IMPORT_FAILED' -Data $data -ErrorMessage "$msg; nothing was imported." -Hint (Get-TcErrorHint -Code 'TREEITEM_IMPORT_FAILED')
+    # Path checks inside try: an invalid path must become TREEITEM_IMPORT_FAILED invalid-path, not an
+    # EXECUTION_ERROR thrown by Test-Path / Get-Item.
+    $bad = $null
+    $size = [long]0
+    try {
+        $bad = Test-TcTreeItemFilePath -FilePath $FilePath
+        if ($null -eq $bad -and -not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { $bad = @{ Reason = 'file-missing'; Message = "'$FilePath' does not exist" } }
+        if ($null -eq $bad) { $size = [long](Get-Item -LiteralPath $FilePath -ErrorAction Stop).Length }
+    }
+    catch { $bad = @{ Reason = 'invalid-path'; Message = "-FilePath '$FilePath' cannot be checked: $($_.Exception.Message)" } }
+    if ($null -ne $bad) {
+        $data | Add-Member -NotePropertyName reason -NotePropertyValue $bad.Reason
+        return New-TcResult -Success $false -ErrorCode 'TREEITEM_IMPORT_FAILED' -Data $data -ErrorMessage "$($bad.Message); nothing was imported." -Hint (Get-TcErrorHint -Code 'TREEITEM_IMPORT_FAILED')
     }
     if ($Name.Contains('^')) {
         return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-Name must not contain '^' (got '$Name')."
     }
-    $data | Add-Member -NotePropertyName fileSize -NotePropertyValue ([long](Get-Item -LiteralPath $FilePath).Length)
+    $data | Add-Member -NotePropertyName fileSize -NotePropertyValue $size
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
@@ -86,7 +96,8 @@ function Import-TcTreeItem {
                     -ErrorMessage "'$Path^$Name' already exists; nothing was imported." -Hint (Get-TcErrorHint -Code 'TREEITEM_ALREADY_EXISTS')
             }
         }
-        if (-not [string]::IsNullOrEmpty($Before) -and ($childrenBefore -notcontains $Before)) {
+        # -Before is looked up directly: currentChildren is cut at $script:TcTreeItemMaxChildNames.
+        if (-not [string]::IsNullOrEmpty($Before) -and $null -eq (Find-TcTreeItemNoThrow -SysManager $sm -Path "$Path^$Before")) {
             $list = if ($childrenBefore.Count -gt 0) { ($childrenBefore | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_NOT_FOUND' -Data $data `
                 -ErrorMessage "-Before '$Before' is not a child of '$Path'; nothing was imported." `
@@ -96,14 +107,20 @@ function Import-TcTreeItem {
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         $stage = 'backup'
-        $bk = Invoke-TcTreeItemBackup -Item $parent -Path $Path -Data $data -Tag 'parent'
+        $parentBefore = Get-TcTreeItemXmlText -Item $parent -Path $Path
+        $bk = Invoke-TcTreeItemBackup -Item $parent -Path $Path -Data $data -Tag 'parent' -Xml $parentBefore
         if ($null -ne $bk.Result) { return $bk.Result }
         Add-TcBackupToData -Data $data -Backup $bk.Backup
 
         $stage = 'import'
         $isPlc = Test-TcTreePathIsPlc -Path $Path
         $imported = $null
+        $dlg = Get-TcTreeItemDialogResult -Operation "ImportChild '$FilePath' into '$Path'" -Data $data
+        if ($null -ne $dlg) { return $dlg }
         try {
+            # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
+            # dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode
+            # (XAE answers prompts with the default). ImportChild is not timed yet (task 2.8).
             $imported = Invoke-TcComRetry -OperationName "ImportChild $Path" -ScriptBlock {
                 Write-Output -NoEnumerate $parent.ImportChild($FilePath, $Before, $Reconnect, $Name)
             }
@@ -143,7 +160,8 @@ function Import-TcTreeItem {
             if (-not [string]::IsNullOrEmpty($Name) -and $s.name -cne $Name) {
                 $data.warnings = @(@($data.warnings) + @("XAE named the imported item '$($s.name)', not '$Name'"))
             }
-            $res = New-TcResult -Success $true -Data $data
+            $res = Test-TcTreeItemParentUnchanged -Parent $parent -Path $Path -BeforeXml $parentBefore -Data $data -Operation 'ImportChild'
+            if ($null -eq $res) { $res = New-TcResult -Success $true -Data $data }
         }
         if ($isPlc) { $res = Register-TcCodeChange -Result $res -Change "Import-TcTreeItem $Path" }
         return $res

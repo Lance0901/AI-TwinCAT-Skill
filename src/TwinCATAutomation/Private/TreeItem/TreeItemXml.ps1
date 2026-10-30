@@ -9,8 +9,17 @@
 #   - values are not validated (CycleTime 0 / negative / text accepted) -> $script:TcTreeItemFieldRules;
 #   - derived fields change with the target field (TcModuleInstance ... Context, ParameterValues) ->
 #     excluded from the readback comparison.
-# Repeated sibling elements (same name) are matched by position ([n], 1-based); how XAE merges a
-# fragment with fewer repeated elements than the current XML is NOT measured.
+# NOT measured, therefore refused before anything is sent (XML_MERGE_FAILED, data.reason):
+#   - attributes in the fragment (attributes-not-supported): only element values are sent;
+#   - a fragment leaf that is an element with child elements in the current XML, or text next to
+#     child elements in the fragment (structure-mismatch);
+#   - repeated sibling elements (same name) whose number differs from the current XML
+#     (repeated-count-mismatch): how XAE merges fewer / more repeated elements is unknown;
+#   - a fragment whose changed leaves are all derived fields (derived-only): nothing could be read back.
+# After a write every leaf of the whole ProduceXml (attributes included) outside the fragment and not
+# derived must be unchanged (Compare-TcTreeItemXmlFull; TREEITEM_VERIFY_FAILED data.unexpectedChanges).
+# XmlNode members are read through get_Name() / get_ChildNodes() / ...: the PowerShell XML adapter lets a
+# child element shadow a property ($el.Name is the text of a child <Name>, $el.Value of a child <Value>).
 
 # Known-field value rules. Extend by adding an entry: Path = leaf path without position indexes
 # (case-insensitive), Validate = scriptblock param($value) returning $null (ok) or the reason.
@@ -31,48 +40,71 @@ $script:TcTreeItemFieldRules = @(
     }
 )
 
+function Test-TcXmlPathDerived {
+    <#
+    .SYNOPSIS
+        True when the element names (root excluded) lie below a TcModuleInstance element inside
+        Context or ParameterValues (fields XAE recomputes, measured 2026-10-30 task 2.1).
+    .PARAMETER Names
+        Element names from below the root down to the leaf.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowEmptyCollection()][string[]]$Names)
+    $list = @($Names)
+    $mi = [array]::IndexOf([string[]]$list, 'TcModuleInstance')
+    if ($mi -lt 0) { return $false }
+    for ($k = $mi + 1; $k -lt $list.Count; $k++) { if ($list[$k] -eq 'Context' -or $list[$k] -eq 'ParameterValues') { return $true } }
+    return $false
+}
+
 function Get-TcXmlLeafList {
     <#
     .SYNOPSIS
-        Leaf elements below an XML element: { path; key; segments; value; derived }.
+        Leaf elements below an XML element: { path; key; segments; value; derived; isAttribute }.
     .DESCRIPTION
-        A leaf is an element without child elements (attributes are not compared). path is the
-        element path from the root ('TreeItem/TaskDef/CycleTime'); a segment gets a 1-based [n] when
-        its parent has more than one child element with that name ('CPU[2]'). key is path without
-        indexes (used for $script:TcTreeItemFieldRules). segments = @(@{ name; index }) without the
-        root. derived = the leaf lies below a TcModuleInstance element inside Context or
-        ParameterValues (recomputed by XAE, excluded from the readback comparison).
+        A leaf is an element without child elements. path is the element path from the root
+        ('TreeItem/TaskDef/CycleTime'); a segment gets a 1-based [n] when its parent has more than one
+        child element with that name ('CPU[2]'). key is path without indexes (used for
+        $script:TcTreeItemFieldRules). segments = @(@{ name; index; count }) without the root (count =
+        number of sibling elements with that name in the parent). derived = the leaf lies below a
+        TcModuleInstance element inside Context or ParameterValues (recomputed by XAE, excluded from
+        the readback comparison). With -IncludeAttributes every attribute of every element (root
+        included) is listed too, as '<element path>/@<name>' (isAttribute = $true); used by the
+        whole-XML comparison after a write.
     .PARAMETER Root
         Root XmlElement (the fragment's TreeItem).
+    .PARAMETER IncludeAttributes
+        Also list attributes.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][System.Xml.XmlElement]$Root)
+    param([Parameter(Mandatory)][System.Xml.XmlElement]$Root, [switch]$IncludeAttributes)
     $list = [System.Collections.Generic.List[object]]::new()
     $stack = [System.Collections.Generic.Stack[object]]::new()
-    $stack.Push(@{ Node = $Root; Path = $Root.Name; Key = $Root.Name; Segments = @() })
+    $stack.Push(@{ Node = $Root; Path = $Root.get_Name(); Key = $Root.get_Name(); Segments = @() })
     while ($stack.Count -gt 0) {
         $cur = $stack.Pop()
-        $kids = @($cur.Node.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::Element })
+        $names = @($cur.Segments | ForEach-Object { $_.name })
+        $derived = Test-TcXmlPathDerived -Names $names
+        if ($IncludeAttributes -and $null -ne $cur.Node.get_Attributes()) {
+            foreach ($a in $cur.Node.get_Attributes()) {
+                $list.Add([PSCustomObject]@{ path = "$($cur.Path)/@$($a.get_Name())"; key = "$($cur.Key)/@$($a.get_Name())"; segments = $cur.Segments; value = [string]$a.get_Value(); derived = $derived; isAttribute = $true })
+            }
+        }
+        $kids = @($cur.Node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element })
         if ($kids.Count -eq 0) {
             if ($cur.Segments.Count -eq 0) { continue }   # the root itself
-            $names = @($cur.Segments | ForEach-Object { $_.name })
-            $derived = $false
-            $mi = [array]::IndexOf([string[]]$names, 'TcModuleInstance')
-            if ($mi -ge 0) {
-                for ($k = $mi + 1; $k -lt $names.Count; $k++) { if ($names[$k] -eq 'Context' -or $names[$k] -eq 'ParameterValues') { $derived = $true } }
-            }
-            $list.Add([PSCustomObject]@{ path = $cur.Path; key = $cur.Key; segments = $cur.Segments; value = [string]$cur.Node.InnerText; derived = $derived })
+            $list.Add([PSCustomObject]@{ path = $cur.Path; key = $cur.Key; segments = $cur.Segments; value = [string]$cur.Node.get_InnerText(); derived = $derived; isAttribute = $false })
             continue
         }
         $counts = @{}
-        foreach ($k in $kids) { if ($counts.ContainsKey($k.Name)) { $counts[$k.Name]++ } else { $counts[$k.Name] = 1 } }
+        foreach ($k in $kids) { if ($counts.ContainsKey($k.get_Name())) { $counts[$k.get_Name()]++ } else { $counts[$k.get_Name()] = 1 } }
         $seen = @{}
         $ordered = [System.Collections.Generic.List[object]]::new()
         foreach ($k in $kids) {
-            if ($seen.ContainsKey($k.Name)) { $seen[$k.Name]++ } else { $seen[$k.Name] = 1 }
-            $idx = $seen[$k.Name]
-            $seg = if ($counts[$k.Name] -gt 1) { "$($k.Name)[$idx]" } else { $k.Name }
-            $ordered.Add(@{ Node = $k; Path = "$($cur.Path)/$seg"; Key = "$($cur.Key)/$($k.Name)"; Segments = @($cur.Segments + @(@{ name = $k.Name; index = $idx })) })
+            if ($seen.ContainsKey($k.get_Name())) { $seen[$k.get_Name()]++ } else { $seen[$k.get_Name()] = 1 }
+            $idx = $seen[$k.get_Name()]
+            $seg = if ($counts[$k.get_Name()] -gt 1) { "$($k.get_Name())[$idx]" } else { $k.get_Name() }
+            $ordered.Add(@{ Node = $k; Path = "$($cur.Path)/$seg"; Key = "$($cur.Key)/$($k.get_Name())"; Segments = @($cur.Segments + @(@{ name = $k.get_Name(); index = $idx; count = $counts[$k.get_Name()] })) })
         }
         # Stack: push in reverse so leaves come out in document order.
         for ($j = $ordered.Count - 1; $j -ge 0; $j--) { $stack.Push($ordered[$j]) }
@@ -95,8 +127,8 @@ function Find-TcXmlElementBySegments {
     foreach ($s in @($Segments)) {
         $n = 0
         $next = $null
-        foreach ($c in $node.ChildNodes) {
-            if ($c.NodeType -ne [System.Xml.XmlNodeType]::Element -or $c.Name -ne $s.name) { continue }
+        foreach ($c in $node.get_ChildNodes()) {
+            if ($c.get_NodeType() -ne [System.Xml.XmlNodeType]::Element -or $c.get_Name() -ne $s.name) { continue }
             $n++
             if ($n -eq [int]$s.index) { $next = $c; break }
         }
@@ -106,30 +138,66 @@ function Find-TcXmlElementBySegments {
     return $node
 }
 
+function Get-TcXmlMixedContentPathList {
+    <#
+    .SYNOPSIS
+        Paths of elements below -Root that have child elements AND non-blank text (e.g.
+        <TaskDef>123<CycleTime>1</CycleTime></TaskDef>): such text cannot be matched to a leaf.
+    .PARAMETER Root
+        Root XmlElement.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Xml.XmlElement]$Root)
+    $out = [System.Collections.Generic.List[string]]::new()
+    $stack = [System.Collections.Generic.Stack[object]]::new()
+    $stack.Push(@{ Node = $Root; Path = $Root.get_Name() })
+    while ($stack.Count -gt 0) {
+        $cur = $stack.Pop()
+        $kids = @($cur.Node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element })
+        if ($kids.Count -eq 0) { continue }
+        $text = @($cur.Node.get_ChildNodes() | Where-Object { ($_.get_NodeType() -eq [System.Xml.XmlNodeType]::Text -or $_.get_NodeType() -eq [System.Xml.XmlNodeType]::CDATA) -and -not [string]::IsNullOrWhiteSpace($_.get_Value()) })
+        if ($text.Count -gt 0) { $out.Add([string]$cur.Path) }
+        foreach ($k in $kids) { $stack.Push(@{ Node = $k; Path = "$($cur.Path)/$($k.get_Name())" }) }
+    }
+    return $out.ToArray()
+}
+
 function ConvertFrom-TcTreeItemFragment {
     <#
     .SYNOPSIS
-        Parses a ConsumeXml fragment: @{ Doc; Leaves; Error; Reason }.
+        Parses a ConsumeXml fragment: @{ Doc; Leaves; Error; Reason; Paths }.
     .DESCRIPTION
         Error / Reason are set (Doc / Leaves $null) when the XML does not parse ('syntax'), the root is
-        not <TreeItem> ('root'; XAE would return E_FAIL "No TreeItem found.", task 2.1) or it has no
-        leaf element ('empty').
+        not <TreeItem> ('root'; XAE would return E_FAIL "No TreeItem found.", task 2.1), it has no
+        leaf element ('empty'), any element carries an attribute ('attributes-not-supported', Paths =
+        the attribute paths; how XAE merges attributes is not measured) or an element has text next to
+        child elements ('structure-mismatch', Paths = those elements).
     .PARAMETER Xml
         The fragment, e.g. <TreeItem><TaskDef><CycleTime>40000</CycleTime></TaskDef></TreeItem>.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Xml)
-    if ([string]::IsNullOrWhiteSpace($Xml)) { return @{ Doc = $null; Leaves = $null; Reason = 'empty'; Error = 'the XML fragment is empty' } }
+    if ([string]::IsNullOrWhiteSpace($Xml)) { return @{ Doc = $null; Leaves = $null; Reason = 'empty'; Error = 'the XML fragment is empty'; Paths = @() } }
     $doc = New-Object System.Xml.XmlDocument
     try { $doc.LoadXml($Xml) }
-    catch { return @{ Doc = $null; Leaves = $null; Reason = 'syntax'; Error = "the XML fragment does not parse: $($_.Exception.Message)" } }
-    if ($null -eq $doc.DocumentElement -or $doc.DocumentElement.Name -ne 'TreeItem') {
-        $rootName = if ($null -ne $doc.DocumentElement) { $doc.DocumentElement.Name } else { '' }
-        return @{ Doc = $null; Leaves = $null; Reason = 'root'; Error = "the root element must be <TreeItem> (as in ProduceXml), got <$rootName>" }
+    catch { return @{ Doc = $null; Leaves = $null; Reason = 'syntax'; Error = "the XML fragment does not parse: $($_.Exception.Message)"; Paths = @() } }
+    if ($null -eq $doc.DocumentElement -or $doc.DocumentElement.get_Name() -ne 'TreeItem') {
+        $rootName = if ($null -ne $doc.DocumentElement) { $doc.DocumentElement.get_Name() } else { '' }
+        return @{ Doc = $null; Leaves = $null; Reason = 'root'; Error = "the root element must be <TreeItem> (as in ProduceXml), got <$rootName>"; Paths = @() }
+    }
+    $attrs = @(Get-TcXmlLeafList -Root $doc.DocumentElement -IncludeAttributes | Where-Object { $_.isAttribute } | ForEach-Object { $_.path })
+    if ($attrs.Count -gt 0) {
+        return @{ Doc = $null; Leaves = $null; Reason = 'attributes-not-supported'; Paths = $attrs
+            Error = "the fragment has XML attributes ($($attrs -join ', ')); only element values are supported (how XAE merges attributes is not measured)" }
+    }
+    $mixed = @(Get-TcXmlMixedContentPathList -Root $doc.DocumentElement)
+    if ($mixed.Count -gt 0) {
+        return @{ Doc = $null; Leaves = $null; Reason = 'structure-mismatch'; Paths = $mixed
+            Error = "the fragment has text next to child elements in $($mixed -join ', '); a value belongs in a leaf element only" }
     }
     $leaves = @(Get-TcXmlLeafList -Root $doc.DocumentElement)
-    if ($leaves.Count -eq 0) { return @{ Doc = $null; Leaves = $null; Reason = 'empty'; Error = 'the fragment has no element below <TreeItem>; nothing to write' } }
-    return @{ Doc = $doc; Leaves = $leaves; Reason = $null; Error = $null }
+    if ($leaves.Count -eq 0) { return @{ Doc = $null; Leaves = $null; Reason = 'empty'; Error = 'the fragment has no element below <TreeItem>; nothing to write'; Paths = @() } }
+    return @{ Doc = $doc; Leaves = $leaves; Reason = $null; Error = $null; Paths = @() }
 }
 
 function Test-TcTreeItemFieldValues {
@@ -153,11 +221,40 @@ function Test-TcTreeItemFieldValues {
     return $bad.ToArray()
 }
 
+function ConvertTo-TcXmlNumber {
+    <#
+    .SYNOPSIS
+        A trimmed XML value as [decimal], or $null.
+    .DESCRIPTION
+        Accepted: a decimal number (invariant culture; sign, decimal point and exponent allowed) or
+        '#x' + hexadecimal digits (prefix case-insensitive; XAE writes ParameterValues that way, e.g.
+        #x1e8480, measured 2026-10-30 task 2.1).
+    .PARAMETER Value
+        Trimmed value.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return $null }
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    if ($Value.Length -gt 2 -and $Value.StartsWith('#x', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $h = [uint64]0
+        if ([uint64]::TryParse($Value.Substring(2), [System.Globalization.NumberStyles]::AllowHexSpecifier, $inv, [ref]$h)) { return [decimal]$h }
+        return $null
+    }
+    $d = [decimal]0
+    if ([decimal]::TryParse($Value, [System.Globalization.NumberStyles]::Float, $inv, [ref]$d)) { return $d }
+    return $null
+}
+
 function Test-TcXmlValueEqual {
     <#
     .SYNOPSIS
-        Compares an expected and a read-back leaf value: trimmed, case-insensitive, and numerically when
-        both parse as decimal numbers (40000 == 40000.0).
+        Compares an expected and a read-back leaf value.
+    .DESCRIPTION
+        Both trimmed, then compared ordinally (case-sensitive). Only when that differs and BOTH sides
+        parse as numbers (ConvertTo-TcXmlNumber: decimal, or '#x' hex with a case-insensitive prefix
+        and hex digits) are the numbers compared (40000 == 40000.0, #x1E == #X1e == 30). Any other
+        text is case-sensitive ('abc' != 'ABC', 'TRUE' != 'true').
     .PARAMETER Expected
         Value from the fragment.
     .PARAMETER Actual
@@ -167,24 +264,30 @@ function Test-TcXmlValueEqual {
     param([AllowNull()][AllowEmptyString()][string]$Expected, [AllowNull()][AllowEmptyString()][string]$Actual)
     $e = ([string]$Expected).Trim()
     $a = ([string]$Actual).Trim()
-    if ([string]::Equals($e, $a, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
-    $inv = [System.Globalization.CultureInfo]::InvariantCulture
-    $de = [decimal]0; $da = [decimal]0
-    if ([decimal]::TryParse($e, [System.Globalization.NumberStyles]::Float, $inv, [ref]$de) -and
-        [decimal]::TryParse($a, [System.Globalization.NumberStyles]::Float, $inv, [ref]$da)) { return ($de -eq $da) }
-    return $false
+    if ([string]::Equals($e, $a, [System.StringComparison]::Ordinal)) { return $true }
+    $ne = ConvertTo-TcXmlNumber -Value $e
+    if ($null -eq $ne) { return $false }
+    $na = ConvertTo-TcXmlNumber -Value $a
+    if ($null -eq $na) { return $false }
+    return ($ne -eq $na)
 }
 
 function Compare-TcTreeItemFragment {
     <#
     .SYNOPSIS
         Compares every fragment leaf with an XML of the tree item:
-        @{ Missing = @(paths); Changes = @(@{ path; current; planned; changed; derived }) ; Mismatches = @(...) }.
+        @{ Missing; StructureMismatch; RepeatedCountMismatch; Changes; Mismatches }.
     .DESCRIPTION
         Missing: leaf paths that do not exist in -CurrentXml (ConsumeXml would ignore them silently).
-        Changes: one entry per existing leaf, current = value in -CurrentXml, planned = fragment value,
+        StructureMismatch: fragment leaves whose element has child elements in -CurrentXml (e.g.
+        <TreeItem><TaskDef/></TreeItem> or <TaskDef>123</TaskDef>); comparing InnerText there is
+        meaningless and how XAE merges it is not measured.
+        RepeatedCountMismatch: @{ path; fragmentCount; currentCount } for elements whose number of
+        same-name siblings differs between the fragment and -CurrentXml (one CPU in the fragment, two
+        now); how XAE merges that is not measured.
+        Changes: one entry per matched leaf, current = value in -CurrentXml, planned = fragment value,
         changed = they differ (Test-TcXmlValueEqual). Mismatches: entries with changed = $true that
-        are not derived; used for the readback check (compare against the read-back XML: a mismatch
+        are not derived; used for the readback check (compared against the read-back XML a mismatch
         means the write did not take effect).
     .PARAMETER Leaves
         Output of Get-TcXmlLeafList for the fragment.
@@ -197,16 +300,196 @@ function Compare-TcTreeItemFragment {
     $doc = New-Object System.Xml.XmlDocument
     $doc.LoadXml($CurrentXml)
     $missing = [System.Collections.Generic.List[string]]::new()
+    $structure = [System.Collections.Generic.List[string]]::new()
+    $repeated = [System.Collections.Generic.List[object]]::new()
+    $repeatedSeen = @{}
     $changes = [System.Collections.Generic.List[object]]::new()
     $mismatches = [System.Collections.Generic.List[object]]::new()
     foreach ($l in $Leaves) {
-        $node = Find-TcXmlElementBySegments -Root $doc.DocumentElement -Segments @($l.segments)
-        if ($null -eq $node) { $missing.Add([string]$l.path); continue }
-        $cur = [string]$node.InnerText
+        # Walk segment by segment: the number of same-name siblings must match at every level.
+        $node = $doc.DocumentElement
+        $prefix = $node.get_Name()
+        $broken = $false
+        foreach ($s in @($l.segments)) {
+            $same = @($node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element -and $_.get_Name() -eq $s.name })
+            $fc = if ($null -ne $s.count) { [int]$s.count } else { 1 }
+            if ($same.Count -gt 0 -and $same.Count -ne $fc) {
+                $rp = "$prefix/$($s.name)"
+                if (-not $repeatedSeen.ContainsKey($rp)) {
+                    $repeatedSeen[$rp] = $true
+                    $repeated.Add([PSCustomObject]@{ path = $rp; fragmentCount = $fc; currentCount = $same.Count })
+                }
+                $broken = $true
+                break
+            }
+            if ($same.Count -eq 0 -or [int]$s.index -gt $same.Count) { $missing.Add([string]$l.path); $broken = $true; break }
+            $node = $same[[int]$s.index - 1]
+            $prefix = if ($fc -gt 1) { "$prefix/$($s.name)[$($s.index)]" } else { "$prefix/$($s.name)" }
+        }
+        if ($broken) { continue }
+        $hasKids = @($node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element }).Count -gt 0
+        if ($hasKids) { $structure.Add([string]$l.path); continue }
+        $cur = [string]$node.get_InnerText()
         $changed = -not (Test-TcXmlValueEqual -Expected $l.value -Actual $cur)
         $entry = [PSCustomObject]@{ path = $l.path; current = $cur; planned = $l.value; changed = $changed; derived = [bool]$l.derived }
         $changes.Add($entry)
         if ($changed -and -not $l.derived) { $mismatches.Add([PSCustomObject]@{ path = $l.path; expected = $l.value; actual = $cur }) }
     }
-    return @{ Missing = $missing.ToArray(); Changes = $changes.ToArray(); Mismatches = $mismatches.ToArray() }
+    return @{
+        Missing               = $missing.ToArray()
+        StructureMismatch     = $structure.ToArray()
+        RepeatedCountMismatch = $repeated.ToArray()
+        Changes               = $changes.ToArray()
+        Mismatches            = $mismatches.ToArray()
+    }
+}
+
+function Compare-TcTreeItemXmlFull {
+    <#
+    .SYNOPSIS
+        Whole-XML comparison of a tree item before and after a write: @(@{ path; kind; before; after }).
+    .DESCRIPTION
+        Both XMLs are flattened (Get-TcXmlLeafList -IncludeAttributes: element leaves and attributes).
+        Leaves whose path is in -ExcludePaths (the fragment) and derived leaves (TcModuleInstance
+        Context / ParameterValues) are skipped. Every other difference is returned:
+          default (Set-TcTreeItemXml): by indexed path; kind 'changed' (value differs,
+            Test-TcXmlValueEqual), 'removed' (only before), 'added' (only after). A different number of
+            repeated elements shows up as removed / added paths.
+          -AdditionsOnly (parent of CreateChild / ImportChild): by index-free key, as multisets; every
+            value before must still be there after (else kind 'removed', after = the values now under
+            that key); extra values after are allowed (the new child may be listed in the parent, and
+            an insert with -Before shifts the [n] indexes).
+        Throws when either XML is empty or does not parse.
+    .PARAMETER BeforeXml
+        ProduceXml before the write.
+    .PARAMETER AfterXml
+        ProduceXml after the write.
+    .PARAMETER ExcludePaths
+        Leaf paths not compared (the fragment's leaves).
+    .PARAMETER AdditionsOnly
+        Allow additions only (parent check).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$BeforeXml,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$AfterXml,
+        [Parameter()][AllowEmptyCollection()][string[]]$ExcludePaths = @(),
+        [switch]$AdditionsOnly
+    )
+    if ([string]::IsNullOrWhiteSpace($BeforeXml) -or [string]::IsNullOrWhiteSpace($AfterXml)) { throw 'ProduceXml returned no XML' }
+    $db = New-Object System.Xml.XmlDocument
+    $db.LoadXml($BeforeXml)
+    $da = New-Object System.Xml.XmlDocument
+    $da.LoadXml($AfterXml)
+    $skip = @{}
+    foreach ($p in @($ExcludePaths)) { if (-not [string]::IsNullOrEmpty($p)) { $skip[$p] = $true } }
+    $lb = @(Get-TcXmlLeafList -Root $db.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $skip.ContainsKey($_.path) })
+    $la = @(Get-TcXmlLeafList -Root $da.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $skip.ContainsKey($_.path) })
+    $out = [System.Collections.Generic.List[object]]::new()
+    if ($AdditionsOnly) {
+        $after = @{}
+        foreach ($l in $la) {
+            if (-not $after.ContainsKey($l.key)) { $after[$l.key] = [System.Collections.Generic.List[string]]::new() }
+            $after[$l.key].Add([string]$l.value)
+        }
+        foreach ($l in $lb) {
+            # plain assignment: an if-expression would unroll the List
+            $vals = $null
+            if ($after.ContainsKey($l.key)) { $vals = $after[$l.key] }
+            $hit = -1
+            if ($null -ne $vals) { for ($i = 0; $i -lt $vals.Count; $i++) { if (Test-TcXmlValueEqual -Expected $l.value -Actual $vals[$i]) { $hit = $i; break } } }
+            if ($hit -ge 0) { $vals.RemoveAt($hit); continue }
+            $now = if ($null -ne $vals -and $vals.Count -gt 0) { ($vals.ToArray()) -join ' | ' } else { $null }
+            $out.Add([PSCustomObject]@{ path = $l.path; kind = 'removed'; before = $l.value; after = $now })
+        }
+        return $out.ToArray()
+    }
+    $mb = [ordered]@{}
+    foreach ($l in $lb) { $mb[$l.path] = [string]$l.value }
+    $ma = [ordered]@{}
+    foreach ($l in $la) { $ma[$l.path] = [string]$l.value }
+    foreach ($k in $mb.Keys) {
+        if (-not $ma.Contains($k)) { $out.Add([PSCustomObject]@{ path = $k; kind = 'removed'; before = $mb[$k]; after = $null }); continue }
+        if (-not (Test-TcXmlValueEqual -Expected $mb[$k] -Actual $ma[$k])) { $out.Add([PSCustomObject]@{ path = $k; kind = 'changed'; before = $mb[$k]; after = $ma[$k] }) }
+    }
+    foreach ($k in $ma.Keys) {
+        if (-not $mb.Contains($k)) { $out.Add([PSCustomObject]@{ path = $k; kind = 'added'; before = $null; after = $ma[$k] }) }
+    }
+    return $out.ToArray()
+}
+
+function New-TcXmlMergeFailedResult {
+    <#
+    .SYNOPSIS
+        XML_MERGE_FAILED result with data.reason; the hint is $script:TcXmlMergeReasonHints[reason]
+        when there is one, else the central XML_MERGE_FAILED hint.
+    .PARAMETER Reason
+        data.reason.
+    .PARAMETER Message
+        error.message (", nothing was written." is appended).
+    .PARAMETER Data
+        Data object (reason is added).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Reason, [Parameter(Mandatory)][string]$Message, [Parameter()][object]$Data)
+    if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+    $Data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force
+    $hint = $null
+    if ($null -ne $script:TcXmlMergeReasonHints -and $script:TcXmlMergeReasonHints.ContainsKey($Reason)) { $hint = $script:TcXmlMergeReasonHints[$Reason] }
+    if ([string]::IsNullOrWhiteSpace($hint)) { $hint = Get-TcErrorHint -Code 'XML_MERGE_FAILED' }
+    New-TcResult -Success $false -ErrorCode 'XML_MERGE_FAILED' -Data $Data -ErrorMessage "$Message; nothing was written." -Hint $hint
+}
+
+function Test-TcTreeItemParentUnchanged {
+    <#
+    .SYNOPSIS
+        After CreateChild / ImportChild: the parent's ProduceXml may only have gained entries.
+        Returns $null when that holds, else a TREEITEM_VERIFY_FAILED result.
+    .DESCRIPTION
+        Reads the parent's ProduceXml again and compares it with -BeforeXml
+        (Compare-TcTreeItemXmlFull -AdditionsOnly: every non-derived leaf / attribute value before must
+        still be there; extra values are allowed). Sets data.parentUnchanged; on a difference
+        data.verified = false and data.unexpectedChanges. A read-back error is TREEITEM_VERIFY_FAILED too
+        (codes of $script:TcTreeItemPassThroughCodes are rethrown).
+    .PARAMETER Parent
+        Parent ITcSmTreeItem.
+    .PARAMETER Path
+        Parent path.
+    .PARAMETER BeforeXml
+        Parent ProduceXml read before the call.
+    .PARAMETER Data
+        Data object of the cmdlet.
+    .PARAMETER Operation
+        'CreateChild' / 'ImportChild' (message).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Parent,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$BeforeXml,
+        [Parameter(Mandatory)][object]$Data,
+        [Parameter(Mandatory)][string]$Operation
+    )
+    $unexpected = $null
+    $why = $null
+    try {
+        $afterXml = Get-TcTreeItemXmlText -Item $Parent -Path $Path
+        $unexpected = @(Compare-TcTreeItemXmlFull -BeforeXml $BeforeXml -AfterXml $afterXml -AdditionsOnly)
+    }
+    catch {
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+        $why = $_.Exception.Message
+    }
+    $ok = ($null -eq $why -and @($unexpected).Count -eq 0)
+    $Data | Add-Member -NotePropertyName parentUnchanged -NotePropertyValue $ok -Force
+    if ($ok) { return $null }
+    $Data | Add-Member -NotePropertyName verified -NotePropertyValue $false -Force
+    if ($null -ne $why) {
+        $msg = "$Operation returned and the new item exists, but the ProduceXml of the parent '$Path' could not be read back: $why"
+    }
+    else {
+        $Data | Add-Member -NotePropertyName unexpectedChanges -NotePropertyValue @($unexpected) -Force
+        $msg = "$Operation returned and the new item exists, but fields of the parent '$Path' changed (only additions are expected): " + ((@($unexpected) | ForEach-Object { "$($_.path) '$($_.before)' -> '$($_.after)'" }) -join '; ')
+    }
+    New-TcResult -Success $false -ErrorCode 'TREEITEM_VERIFY_FAILED' -Data $Data -ErrorMessage $msg -Hint (Get-TcErrorHint -Code 'TREEITEM_VERIFY_FAILED')
 }

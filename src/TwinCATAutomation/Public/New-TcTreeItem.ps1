@@ -10,13 +10,15 @@ function New-TcTreeItem {
         complete public list, only use values documented in the manual or InfoSys.
         Checks first (nothing created on failure): Path exists (TREEITEM_NOT_FOUND with the nearest
         parent in error.hint), no child with Name exists (TREEITEM_ALREADY_EXISTS), Before is an
-        existing child (TREEITEM_NOT_FOUND).
+        existing child (LookupTreeItem Path^Before; TREEITEM_NOT_FOUND).
         DryRun (default true): CreateChild is NOT called; data.dryRun=true, data.plannedPath,
         data.currentChildren.
-        DryRun=false: ProduceXml backup of the PARENT (data.backupPath), CreateChild, then the new item
-        is looked up again: data.verified=true, data.createdPath / createdName / itemType / subType.
-        XAE refusing the call -> TREEITEM_CREATE_FAILED; returned but not found afterwards ->
-        TREEITEM_VERIFY_FAILED. XAE may give the child another name than requested: data.createdName
+        DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
+        is open (nothing created), CreateChild, then the new item is looked up again and the parent's
+        ProduceXml read back: it may only have gained entries (data.parentUnchanged).
+        data.verified=true, data.createdPath / createdName / itemType / subType.
+        XAE refusing the call -> TREEITEM_CREATE_FAILED; returned but not found afterwards, or a
+        parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. XAE may give the child another name than requested: data.createdName
         and data.warnings say so. Below TIPC: BUILD_REQUIRED code-changed is recorded.
     .PARAMETER Path
         Full tree path of the PARENT, e.g. "TIRT". No wildcards.
@@ -87,7 +89,8 @@ function New-TcTreeItem {
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_ALREADY_EXISTS' -Data $data `
                 -ErrorMessage "'$plannedPath' already exists; nothing was created." -Hint (Get-TcErrorHint -Code 'TREEITEM_ALREADY_EXISTS')
         }
-        if (-not [string]::IsNullOrEmpty($Before) -and ($children -notcontains $Before)) {
+        # -Before is looked up directly: currentChildren is cut at $script:TcTreeItemMaxChildNames.
+        if (-not [string]::IsNullOrEmpty($Before) -and $null -eq (Find-TcTreeItemNoThrow -SysManager $sm -Path "$Path^$Before")) {
             $list = if ($children.Count -gt 0) { ($children | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_NOT_FOUND' -Data $data `
                 -ErrorMessage "-Before '$Before' is not a child of '$Path'; nothing was created." `
@@ -97,14 +100,21 @@ function New-TcTreeItem {
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         $stage = 'backup'
-        $bk = Invoke-TcTreeItemBackup -Item $parent -Path $Path -Data $data -Tag 'parent'
+        $parentBefore = Get-TcTreeItemXmlText -Item $parent -Path $Path
+        $bk = Invoke-TcTreeItemBackup -Item $parent -Path $Path -Data $data -Tag 'parent' -Xml $parentBefore
         if ($null -ne $bk.Result) { return $bk.Result }
         Add-TcBackupToData -Data $data -Backup $bk.Backup
 
         $stage = 'create'
         $isPlc = Test-TcTreePathIsPlc -Path $Path
         $created = $null
+        $dlg = Get-TcTreeItemDialogResult -Operation "CreateChild '$plannedPath'" -Data $data
+        if ($null -ne $dlg) { return $dlg }
         try {
+            # No deadline (CODING_STANDARDS.md section 1), same as New-TcPlcObject: an open dialog was
+            # ruled out just above, Connect-TcIde turns on ITcAutomationSettings.SilentMode, and
+            # CreateChild returned within 1 s on 4024 and 4026 (measured 2026-10-25 for PLC objects;
+            # other parents (TIRT, TIID) are not timed yet, task 2.8).
             $created = Invoke-TcComRetry -OperationName "CreateChild $plannedPath" -ScriptBlock {
                 Write-Output -NoEnumerate $parent.CreateChild($Name, $SubType, $Before, $VInfo)
             }
@@ -142,7 +152,8 @@ function New-TcTreeItem {
             if ($createdName -cne $Name) {
                 $data.warnings = @(@($data.warnings) + @("XAE named the new child '$createdName', not '$Name'"))
             }
-            $res = New-TcResult -Success $true -Data $data
+            $res = Test-TcTreeItemParentUnchanged -Parent $parent -Path $Path -BeforeXml $parentBefore -Data $data -Operation 'CreateChild'
+            if ($null -eq $res) { $res = New-TcResult -Success $true -Data $data }
         }
         if ($isPlc) { $res = Register-TcCodeChange -Result $res -Change "New-TcTreeItem $createdPath" }
         return $res

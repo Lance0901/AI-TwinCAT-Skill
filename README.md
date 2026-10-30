@@ -6,7 +6,7 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 ## Why
 
-TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 37 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
+TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 45 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
 ## Features
 

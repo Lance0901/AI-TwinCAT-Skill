@@ -285,14 +285,91 @@ function Resolve-TcTreeItem {
     return @{ Item = $item; Result = $null }
 }
 
+# Error codes a tree item cmdlet passes through unchanged (instead of its own default code), and that
+# Invoke-TcTreeItemBackup and the best-effort catches rethrow instead of turning them into a warning.
+$script:TcTreeItemPassThroughCodes = @('IDE_MODAL_DIALOG', 'IDE_CRASHED', 'IDE_TIMEOUT', 'IDE_BUSY', 'PLC_LOGGED_IN')
+
+function Get-TcTreeItemPassThroughError {
+    <#
+    .SYNOPSIS
+        ConvertTo-TcAdsErrorCode result (@{ Code; Hint; Message }) when the error maps to one of
+        $script:TcTreeItemPassThroughCodes, else $null. Never throws.
+    .PARAMETER ErrorRecord
+        ErrorRecord, exception or message.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$ErrorRecord)
+    if ($null -eq $ErrorRecord) { return $null }
+    $mapped = $null
+    try { $mapped = ConvertTo-TcAdsErrorCode -InputObject $ErrorRecord } catch { $mapped = $null }
+    if ($null -ne $mapped -and $script:TcTreeItemPassThroughCodes -contains $mapped.Code) { return $mapped }
+    return $null
+}
+
+function Test-TcTreeItemFilePath {
+    <#
+    .SYNOPSIS
+        Checks the -FilePath of ExportChild / ImportChild without throwing: $null when usable, else
+        @{ Reason = 'not-absolute' | 'invalid-path'; Message }.
+    .DESCRIPTION
+        invalid-path: characters invalid in a path or in a file name (e.g. < > | " * ?), a path that
+        GetFullPath rejects (e.g. a ':' inside a segment), or a path without a file name (a root such
+        as C:\ or a path ending in a separator). Existence is checked by the caller.
+    .PARAMETER FilePath
+        The path to check.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$FilePath)
+    $notAbsolute = @{ Reason = 'not-absolute'; Message = "-FilePath must be an absolute path (got '$FilePath')" }
+    if ([string]::IsNullOrWhiteSpace($FilePath)) { return $notAbsolute }
+    try {
+        if ($FilePath.IndexOfAny([System.IO.Path]::GetInvalidPathChars()) -ge 0) { throw 'it contains characters that are invalid in a path' }
+        if (-not [System.IO.Path]::IsPathRooted($FilePath)) { return $notAbsolute }
+        $full = [System.IO.Path]::GetFullPath($FilePath)
+        $leaf = [System.IO.Path]::GetFileName($full)
+        if ([string]::IsNullOrEmpty($leaf)) { throw 'it has no file name (a root folder, or a path ending in a separator)' }
+        if ($leaf.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) { throw 'the file name contains characters that are invalid in a file name' }
+        if ([string]::IsNullOrEmpty([System.IO.Path]::GetDirectoryName($full))) { throw 'it has no folder' }
+    }
+    catch {
+        return @{ Reason = 'invalid-path'; Message = "-FilePath '$FilePath' is not a valid file path: $($_.Exception.Message)" }
+    }
+    return $null
+}
+
+function Get-TcTreeItemDialogResult {
+    <#
+    .SYNOPSIS
+        IDE_MODAL_DIALOG result when a modal dialog is open in the IDE (Get-TcIdeModalDialog), else $null.
+    .DESCRIPTION
+        Called right before each synchronous modifying COM call of the tree tools (ConsumeXml,
+        CreateChild, DeleteChild, ExportChild, ImportChild), as New-TcPlcObject does before CreateChild:
+        Invoke-TcComRetry only classifies a call after it returned, so a dialog has to be caught
+        before a call that cannot be interrupted (CODING_STANDARDS.md section 1).
+    .PARAMETER Operation
+        The operation that was NOT attempted (message).
+    .PARAMETER Data
+        Data attached to the result.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Operation, [Parameter()][object]$Data)
+    $dialog = Get-TcIdeModalDialog
+    if ($null -eq $dialog) { return $null }
+    $p = @{ Dialog = $dialog; Operation = $Operation }
+    if ($null -ne $Data) { $p['Data'] = $Data }
+    return New-TcModalDialogResult @p
+}
+
 function New-TcTreeItemErrorResult {
     <#
     .SYNOPSIS
         Failed result for an exception thrown inside a tree item cmdlet.
     .DESCRIPTION
+        The codes in $script:TcTreeItemPassThroughCodes are kept (Get-TcTreeItemPassThroughError):
         IDE_MODAL_DIALOG (with the watchdog record: New-TcModalDialogResult) / IDE_CRASHED / IDE_TIMEOUT /
-        IDE_BUSY / PLC_LOGGED_IN are kept (ConvertTo-TcAdsErrorCode); TSM_E_ITEMNOTFOUND becomes
-        TREEITEM_NOT_FOUND; everything else -DefaultCode. Hint from the central table.
+        IDE_BUSY / PLC_LOGGED_IN; TSM_E_ITEMNOTFOUND becomes TREEITEM_NOT_FOUND; everything else
+        -DefaultCode. Hint from the central table; PLC_LOGGED_IN gets $script:TcTreeItemPlcLoggedInHint
+        (PlcLogout, then rerun the same tool, named by -Operation).
     .PARAMETER ErrorRecord
         The caught ErrorRecord.
     .PARAMETER DefaultCode
@@ -311,9 +388,8 @@ function New-TcTreeItemErrorResult {
     )
     $message = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception.Message } else { [string]$ErrorRecord }
     $code = $null
-    $mapped = $null
-    try { $mapped = ConvertTo-TcAdsErrorCode -InputObject $ErrorRecord } catch { $mapped = $null }
-    if ($null -ne $mapped -and @('IDE_MODAL_DIALOG', 'IDE_CRASHED', 'IDE_TIMEOUT', 'IDE_BUSY', 'PLC_LOGGED_IN') -contains $mapped.Code) {
+    $mapped = Get-TcTreeItemPassThroughError -ErrorRecord $ErrorRecord
+    if ($null -ne $mapped) {
         $code = $mapped.Code
         if ($code -eq 'IDE_MODAL_DIALOG' -and $null -ne $script:TcLastModalDialog) {
             $p = @{ Dialog = $script:TcLastModalDialog; Operation = $Operation }
@@ -321,6 +397,8 @@ function New-TcTreeItemErrorResult {
             return New-TcModalDialogResult @p
         }
         $hint = $mapped.Hint
+        # The central PLC_LOGGED_IN hint names Add-TcPou / AddPou; a tree tool reruns itself.
+        if ($code -eq 'PLC_LOGGED_IN') { $hint = ([string]$script:TcTreeItemPlcLoggedInHint).Replace('{operation}', $Operation) }
     }
     else {
         $code = ConvertTo-TcTsmErrorCode -InputObject $ErrorRecord -DefaultCode $DefaultCode
@@ -340,7 +418,7 @@ function Get-TcTreeItemXmlText {
     .PARAMETER Item
         ITcSmTreeItem.
     .PARAMETER Recursive
-        bRecursive argument (default $false, as used by Invoke-TcIoScan).
+        bRecursive argument (default $false, as used by Invoke-TcIoScan; $true includes the subtree).
     .PARAMETER Path
         Path for the operation name only.
     #>
