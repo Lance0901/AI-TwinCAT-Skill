@@ -449,23 +449,34 @@ function Get-TcXtiItemName {
         names the imported item after the file name without extension (registered tcauto measured
         2026-10-30, 4026 VS2022 XAE 3.1.4026.22: Task28.xti -> Task28, renamed to Task28_1 because
         that name existed; phase1-2.8.md issue #4). A literal <Name> (the .xti of a DeleteChild
-        backup) is returned as it is. $null for a .zip (PLC node: not XML), a file that does not parse
-        or a file without that <Name>.
+        backup) is returned as it is. $null for a .zip (PLC node: not XML), a file that does not parse,
+        a file with a DOCTYPE (DtdProcessing Prohibit, no XmlResolver: no entity is ever resolved) or
+        a file without that <Name>.
     .PARAMETER FilePath
         Absolute path of the file to import.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$FilePath)
     if ([System.IO.Path]::GetExtension($FilePath) -ieq '.zip') { return $null }
+    # The file comes from the caller: DTD processing prohibited (a DOCTYPE throws -> $null) and no
+    # resolver, so an external entity can never be read into the name (XXE).
+    $settings = New-Object System.Xml.XmlReaderSettings
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.XmlResolver = $null
+    $reader = $null
     try {
-        $doc = New-Object System.Xml.XmlDocument
-        $doc.Load($FilePath)
+        $reader = [System.Xml.XmlReader]::Create($FilePath, $settings)
+        $doc.Load($reader)
     }
     catch { return $null }
-    if ($null -eq $doc.DocumentElement) { return $null }
-    $first = @($doc.DocumentElement.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element } | Select-Object -First 1)
+    finally { if ($null -ne $reader) { $reader.Dispose() } }
+    $root = $doc.get_DocumentElement()
+    if ($null -eq $root) { return $null }
+    $first = @($root.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element } | Select-Object -First 1)
     if ($first.Count -eq 0) { return $null }
-    $nameEl = @($first[0].get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element -and $_.get_Name() -eq 'Name' } | Select-Object -First 1)
+    $nameEl = @($first[0].get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element -and $_.get_Name() -ceq 'Name' } | Select-Object -First 1)
     if ($nameEl.Count -eq 0) { return $null }
     $n = ([string]$nameEl[0].get_InnerText()).Trim()
     if ($n -eq '__FILENAME__') { $n = [System.IO.Path]::GetFileNameWithoutExtension($FilePath) }

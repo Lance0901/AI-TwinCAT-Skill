@@ -15,7 +15,9 @@ function New-TcTreeItem {
         data.currentChildren.
         DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
         is open (nothing created), CreateChild, then the new item is looked up again and the parent's
-        ProduceXml read back: it may only have gained entries (data.parentUnchanged).
+        ProduceXml read back: it may only have gained entries (data.parentUnchanged; ChildCount +1 is
+        expected), and the child names must be the old ones plus exactly one (data.childrenAfter;
+        skipped with a warning when the list is cut).
         data.verified=true, data.createdPath / createdName / itemType / subType.
         XAE refusing the call -> TREEITEM_CREATE_FAILED; returned but not found afterwards, or a
         parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. XAE may give the child another name than requested: data.createdName
@@ -153,6 +155,7 @@ function New-TcTreeItem {
                 $data.warnings = @(@($data.warnings) + @("XAE named the new child '$createdName', not '$Name'"))
             }
             $res = Test-TcTreeItemParentUnchanged -Parent $parent -Path $Path -BeforeXml $parentBefore -Data $data -Operation 'CreateChild'
+            if ($null -eq $res) { $res = Test-TcTreeItemChildrenAdded -Before $children -After @(Get-TcTreeItemChildNames -Item $parent) -Path $Path -Data $data -Operation 'CreateChild' }
             if ($null -eq $res) { $res = New-TcResult -Success $true -Data $data }
         }
         if ($isPlc) { $res = Register-TcCodeChange -Result $res -Change "New-TcTreeItem $createdPath" }

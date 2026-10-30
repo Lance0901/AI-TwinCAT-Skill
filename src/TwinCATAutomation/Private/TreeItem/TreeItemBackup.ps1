@@ -7,8 +7,10 @@
 
 # Node -> disk file rules. A file is backed up only when exactly ONE file with that name is found below
 # the solution directory (backup folders excluded); none or several -> data.warnings, not copied.
-# Match = scriptblock param($Path, $ItemType) -> bool. WarnIfMissing = $false: no file found is normal
-# for some nodes of that kind, so it is not a warning (several files still are). Extend by adding entries.
+# Match = scriptblock param($Path, $ItemType) -> bool. ReferencedIn = project file patterns: when no file
+# is found, those project files below the solution directory are searched for the file name
+# (case-insensitive); only a referenced but missing file is a warning (a scan error is one too).
+# Several files are always a warning. Extend by adding entries.
 $script:TcTreeItemDiskFileRules = @(
     @{
         Kind      = 'Task'
@@ -17,8 +19,10 @@ $script:TcTreeItemDiskFileRules = @(
         Match     = { param([string]$Path, [int]$ItemType) $Path -match '^TIRT\^[^\^]+$' }
         # A task created directly below TIRT (no PLC project behind it) has no .TcTTO at all: registered
         # tcauto measured 2026-10-30, 4026 VS2022 XAE 3.1.4026.22, CreateChild TIRT SubType 1 then
-        # DeleteChild / search below the solution (phase1-2.8.md issue #3). Nothing on disk to back up.
-        WarnIfMissing = $false
+        # DeleteChild / search below the solution (phase1-2.8.md issue #3). A PLC task's file is listed
+        # in the .plcproj (<Compile Include="PlcTask.TcTTO">, read 2026-10-30 from the 4026 copy
+        # C:\Temp\Verify-4026-axis), so a missing file is a warning only when a project references it.
+        ReferencedIn = @('*.plcproj', '*.tsproj')
     },
     @{
         Kind      = 'PlcPou'
@@ -90,9 +94,10 @@ function Find-TcTreeItemDiskFile {
     .DESCRIPTION
         Only rules that match the node are applied. For each: '<Name><Extension>' searched below
         -SolutionDir (backup folders skipped). Exactly one hit -> Files; several -> a warning (the
-        file is not backed up); none -> a warning unless the rule has WarnIfMissing = $false (Task:
-        a task without a PLC project has no .TcTTO). A node no rule matches returns no file and no
-        warning.
+        file is not backed up); none -> a warning, except for a rule with ReferencedIn (Task): then
+        the warning comes only when a project file (.plcproj / .tsproj) names the file or the scan
+        fails (a task without a PLC project has no .TcTTO and is referenced nowhere). A node no rule
+        matches returns no file and no warning.
     .PARAMETER SolutionDir
         Directory of the .sln.
     .PARAMETER Path
@@ -124,12 +129,52 @@ function Find-TcTreeItemDiskFile {
         catch { $found = @() }
         if ($found.Count -eq 1) { $files.Add($found[0]) }
         elseif ($found.Count -eq 0) {
-            if ($rule.ContainsKey('WarnIfMissing') -and -not $rule.WarnIfMissing) { continue }
+            if ($rule.ContainsKey('ReferencedIn')) {
+                $ref = Test-TcProjectFileReference -SolutionDir $SolutionDir -Patterns @($rule.ReferencedIn) -FileName $fileName
+                if ($null -ne $ref.Error) {
+                    $warnings.Add("$($rule.Kind) node '$Path': no $fileName found below $SolutionDir and the project files could not be checked for it ($($ref.Error)); if it exists it is NOT in the backup")
+                    continue
+                }
+                if (@($ref.Files).Count -eq 0) { continue }
+            }
             $warnings.Add("$($rule.Kind) node '$Path': no $fileName found below $SolutionDir; that disk file is NOT in the backup (XAE may rewrite it when the node changes)")
         }
         else { $warnings.Add("$($rule.Kind) node '$Path': $($found.Count) files named $fileName below $SolutionDir ($($found -join '; ')); none was backed up because the right one cannot be told apart") }
     }
     return @{ Files = $files.ToArray(); Warnings = $warnings.ToArray() }
+}
+
+function Test-TcProjectFileReference {
+    <#
+    .SYNOPSIS
+        Project files below -SolutionDir (backup folders skipped) whose text contains -FileName
+        (case-insensitive): @{ Files = @(paths); Error = $null | message }.
+    .PARAMETER SolutionDir
+        Directory of the .sln.
+    .PARAMETER Patterns
+        File name patterns, e.g. '*.plcproj', '*.tsproj'.
+    .PARAMETER FileName
+        File name to look for, e.g. 'PlcTask.TcTTO'.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SolutionDir,
+        [Parameter(Mandatory)][string[]]$Patterns,
+        [Parameter(Mandatory)][string]$FileName
+    )
+    $hits = [System.Collections.Generic.List[string]]::new()
+    try {
+        foreach ($pat in $Patterns) {
+            $files = @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -File -Filter $pat -ErrorAction Stop |
+                Where-Object { $_.FullName -notmatch '\\\.tcauto-backup\\' })
+            foreach ($f in $files) {
+                $text = [System.IO.File]::ReadAllText($f.FullName)
+                if ($text.IndexOf($FileName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $hits.Add($f.FullName) }
+            }
+        }
+    }
+    catch { return @{ Files = $hits.ToArray(); Error = $_.Exception.Message } }
+    return @{ Files = $hits.ToArray(); Error = $null }
 }
 
 function New-TcTreeItemBackup {

@@ -279,6 +279,16 @@ try {
     Check 'diskfile-task-ambiguous-still-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match '2 files') ($d.Warnings -join ' | ')
     Remove-Item -LiteralPath (Join-Path $work 'Plc3') -Recurse -Force
     $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIPC^P^P Project^POUs^NoPou' -Name 'NoPou' -ItemType 604 } $work
+    # review: a missing .TcTTO is a warning only when a .plcproj / .tsproj references it (case-insensitive)
+    $null = New-Item -ItemType Directory -Path (Join-Path $work 'PlcRef') -Force
+    Set-Content -LiteralPath (Join-Path $work 'PlcRef\PlcRef.plcproj') -Value '<Project><ItemGroup><Compile Include="refTASK.tcTTO" /></ItemGroup></Project>' -Encoding ASCII
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^RefTask' -Name 'RefTask' -ItemType 19 } $work
+    Check 'diskfile-task-referenced-missing-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match 'RefTask.TcTTO' -and $d.Warnings[0] -match 'NOT in the backup') ($d.Warnings -join ' | ')
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^Unref' -Name 'Unref' -ItemType 19 } $work
+    Check 'diskfile-task-unreferenced-no-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 0) ($d.Warnings -join ' | ')
+    Remove-Item -LiteralPath (Join-Path $work 'PlcRef') -Recurse -Force
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^Gone' -Name 'Gone' -ItemType 19 } (Join-Path $work 'no-such-dir')
+    Check 'diskfile-task-scan-failed-warning' (@($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match 'could not be checked') ($d.Warnings -join ' | ')
     Check 'diskfile-pou-none-still-warning' (@($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match 'NOT in the backup') ($d.Warnings -join ' | ')
     $null = New-Item -ItemType Directory -Path (Join-Path $work 'Plc2') -Force
     Set-Content -LiteralPath (Join-Path $work 'Plc2\MAIN.TcPOU') -Value 'x' -Encoding ASCII
@@ -300,6 +310,16 @@ try {
     Set-Content -LiteralPath (Join-Path $xd 'noname.xti') -Value '<TcSmItem><Task Id="6"/></TcSmItem>' -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $xd 'Folder.zip') -Value 'PK' -Encoding ASCII
     $names = & $mod { param($d) @('Task28.xti', 'TIRT_Task28.xti', 'bad.xti', 'noname.xti', 'Folder.zip', 'missing.xti') | ForEach-Object { $n = Get-TcXtiItemName -FilePath (Join-Path $d $_); if ($null -eq $n) { '<null>' } else { $n } } } $xd
+    # review: XXE - a DOCTYPE (internal or external entity) gives $null, the entity is never resolved
+    $secret = Join-Path $xd 'secret.txt'
+    Set-Content -LiteralPath $secret -Value 'TOPSECRET42' -Encoding ASCII
+    $uri = ([System.Uri]$secret).AbsoluteUri
+    Set-Content -LiteralPath (Join-Path $xd 'xxe.xti') -Value "<?xml version=`"1.0`"?><!DOCTYPE TcSmItem [<!ENTITY x SYSTEM `"$uri`">]><TcSmItem><Task><Name>&x;</Name></Task></TcSmItem>" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'dtd.xti') -Value '<?xml version="1.0"?><!DOCTYPE TcSmItem [<!ENTITY y "Inner">]><TcSmItem><Task><Name>&y;</Name></Task></TcSmItem>' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'lower.xti') -Value '<TcSmItem><Task><name>Lower</name></Task></TcSmItem>' -Encoding ASCII
+    $xxe = & $mod { param($d) @('xxe.xti', 'dtd.xti', 'lower.xti') | ForEach-Object { $n = Get-TcXtiItemName -FilePath (Join-Path $d $_); if ($null -eq $n) { '<null>' } else { $n } } } $xd
+    Check 'xti-item-name-xxe-null' ($xxe[0] -eq '<null>' -and ($xxe -join ',') -notmatch 'TOPSECRET' -and $xxe[1] -eq '<null>') ($xxe -join ',')
+    Check 'xti-item-name-case-sensitive' ($xxe[2] -eq '<null>') ($xxe -join ',')
     Check 'xti-item-name' ($names[0] -eq 'Task28' -and $names[1] -eq 'Task28' -and $names[2] -eq '<null>' -and $names[3] -eq '<null>' -and $names[4] -eq '<null>' -and $names[5] -eq '<null>') ($names -join ',')
     Remove-Item -LiteralPath (Join-Path $work '.tcauto-backup') -Recurse -Force
 

@@ -222,6 +222,26 @@ describe('cmdlet name rewriting in hints', () => {
     );
   });
 
+  // Tree tool hints name the cmdlet only; the rewrite turns it into the tool name (phase1-2.8.md #5:
+  // "LookupTreeItem (Get-TcTreeItem)" used to become "LookupTreeItem (LookupTreeItem)").
+  test('tree tool hints: cmdlet names become tool names, nothing doubled', () => {
+    // the real tools.json: these cmdlets are not all in the fixture
+    const real = buildCmdletNameMap(loadToolCatalog(path.join(__dirname, '..', 'tools.json')));
+    const rw = (s) => rewriteHintCmdletNames(s, real);
+    assert.equal(
+      rw("'TIRT^NoSuchTask' not found: nearest existing parent is 'TIRT'. Use Get-TcTreeItem -Path 'TIRT' to browse."),
+      "'TIRT^NoSuchTask' not found: nearest existing parent is 'TIRT'. Use LookupTreeItem Path='TIRT' to browse."
+    );
+    assert.equal(rw('Use Get-TcTreeItem on one of them, or Get-TcProjectTree.'), 'Use LookupTreeItem on one of them, or GetProjectTree.');
+    assert.equal(rw('先用 Get-TcTreeItem 或 Get-TcProjectTree 查到確切路徑再重試'), '先用 LookupTreeItem 或 GetProjectTree 查到確切路徑再重試');
+    assert.equal(rw('先 Exit-TcPlcOnline,再重跑同一個 tool'), '先 PlcLogout,再重跑同一個 tool');
+    assert.equal(
+      rw("rerun Export-TcTreeItem -Path 'TIPC^Plc^Plc Project^POUs' -FilePath 'C:\\Temp\\My Export\\POUs.zip'. Import it again with Import-TcTreeItem (the .zip file)."),
+      "rerun ExportChild Path='TIPC^Plc^Plc Project^POUs' FilePath='C:\\Temp\\My Export\\POUs.zip'. Import it again with ImportChild (the .zip file)."
+    );
+    assert.doesNotMatch(rw('Use Get-TcTreeItem -Path \'TIRT\''), /LookupTreeItem \(LookupTreeItem\)/);
+  });
+
   test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {
     const a = { success: false, error: { code: 'X', hint: '呼叫 Connect-TcAds' } };
     assert.equal(rewriteResultHints(a, names), a);

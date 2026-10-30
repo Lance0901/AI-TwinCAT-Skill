@@ -75,6 +75,7 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
         if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$name</Child></TreeItem>") }
         if ($global:T.ParentMode -match '^count(\d)$') { Step-MockChildCount $this ([int]$Matches[1]) }
+        if ($global:T.ParentMode -eq 'swap') { Invoke-MockChildSwap $this }
         $c = Add-MockNode "$($this.PathName)^$finalName"
         Write-Output -NoEnumerate $c
     }
@@ -106,6 +107,7 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
         if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$nm</Child></TreeItem>") }
         if ($global:T.ParentMode -match '^count(\d)$') { Step-MockChildCount $this ([int]$Matches[1]) }
+        if ($global:T.ParentMode -eq 'swap') { Invoke-MockChildSwap $this }
         $c = Add-MockNode "$($this.PathName)^$nm"
         if ($global:T.ImportMode -eq 'nullreturn') { return $null }
         Write-Output -NoEnumerate $c
@@ -118,6 +120,13 @@ function Step-MockChildCount($Node, [int]$By) {
     $cc = $doc.SelectSingleNode('TreeItem/ChildCount')
     $cc.InnerText = [string]([int]$cc.InnerText + $By)
     $Node.Xml = $doc.OuterXml
+}
+# One old child disappears and an extra one appears: with the new child the net count is +1.
+function Invoke-MockChildSwap($Node) {
+    $old = $Node.Kids[0]
+    $Node.Kids.Remove($old) | Out-Null
+    $global:T.Nodes.Remove($old)
+    $null = Add-MockNode "$($Node.PathName)^Ghost"
 }
 function Add-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
     $n = New-MockNode -Path $Path -ItemType $ItemType -Xml $Xml
@@ -566,7 +575,38 @@ try {
     $zipF = Join-Path $work 'PlcTask.zip'
     Set-Content -LiteralPath $zipF -Value 'PK' -Encoding ASCII
     $res = Import-TcTreeItem -Path 'TIRT' -FilePath $zipF
-    Check 'v28-4-import-zip-no-name-check' ($res.success -and $null -eq $res.data.expectedName) (Json $res)
+    Check 'v28-4-import-zip-no-name-check' ($res.success -and $null -eq $res.data.expectedName -and (@($res.data.warnings) -join ' ') -match '\.zip file does not tell the name.*no name clash check') (Json $res)
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $zipF -Name 'Zip Named'
+    Check 'v28-4-import-zip-with-name-no-warning' ($res.success -and $null -eq $res.data.PSObject.Properties['warnings']) (Json $res)
+
+    # review 3: plc-requires-zip only for a PLC folder (601); other TIPC nodes go to XAE
+    Reset-Mock
+    $res = Export-TcTreeItem -Path 'TIPC^P^P Project^POUs^MAIN' -FilePath (Join-Path $work 'main.xti')
+    Check 'review-3-export-tipc-non-folder-to-xae' ($res.error.code -eq 'TREEITEM_EXPORT_FAILED' -and $null -eq $res.data.PSObject.Properties['reason'] -and $global:T.Exports.Count -eq 1 -and $res.error.message -match 'zip archive') (Json $res)
+    $res = Export-TcTreeItem -Path 'TIPC^P^P Project^POUs' -FilePath (Join-Path $work 'f.xti')
+    Check 'review-3-export-folder-refused-with-itemtype' ($res.data.reason -eq 'plc-requires-zip' -and $res.data.itemType -eq 601 -and $global:T.Exports.Count -eq 1) (Json $res)
+    # review 5: single quotes in Path / FilePath are doubled in the ready-to-run hint
+    $null = Add-MockNode "TIPC^P^P Project^O'Brien" 601
+    $qf = Join-Path $work "o'b.xti"
+    $res = Export-TcTreeItem -Path "TIPC^P^P Project^O'Brien" -FilePath $qf
+    Check 'review-5-hint-quotes-doubled' ($res.data.reason -eq 'plc-requires-zip' -and $res.error.hint.Contains("-Path 'TIPC^P^P Project^O''Brien'") -and $res.error.hint.Contains("-FilePath '" + (Join-Path $work "o''b.zip") + "'")) $res.error.hint
+
+    # review 7: children after CreateChild / ImportChild = old ones + exactly one
+    Reset-Mock
+    $global:T.ParentMode = 'swap'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task S' -DryRun $false
+    Check 'review-7-create-children-swapped-flagged' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.verified -eq $false -and @($res.data.missingChildren) -contains 'PlcTask' -and @($res.data.addedChildren).Count -eq 2) (Json $res)
+    Reset-Mock
+    $global:T.ParentMode = 'swap'
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiC -Name 'Imp S' -DryRun $false
+    Check 'review-7-import-children-swapped-flagged' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and @($res.data.missingChildren) -contains 'PlcTask') (Json $res)
+    Reset-Mock
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task OK' -DryRun $false
+    Check 'review-7-create-children-ok' ($res.success -and @($res.data.childrenAfter).Count -eq 2 -and @($res.data.childrenAfter) -contains 'Task OK') (Json $res)
+    & $mod { $script:TcTreeItemMaxChildNames = 1 }
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task Cut' -DryRun $false
+    Check 'review-7-children-cut-skipped-warning' ($res.success -and (@($res.data.warnings) -join ' ') -match 'cut at 1 names') (Json $res)
+    & $mod { $script:TcTreeItemMaxChildNames = 200 }
 
     # #5 hints name the cmdlet only: the MCP server rewrites it into the tool name ('X (X)' otherwise)
     $dupRe = '\b[A-Z][A-Za-z]+\s?[(\uFF08][A-Z][a-z]+-Tc[A-Za-z]+[)\uFF09]'

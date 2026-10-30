@@ -442,17 +442,72 @@ function Test-TcTreePathIsPlc {
     return ($Path -ieq 'TIPC' -or $Path -like 'TIPC^*')
 }
 
+function Test-TcTreeItemChildrenAdded {
+    <#
+    .SYNOPSIS
+        After CreateChild / ImportChild: the parent's child names must be the old ones plus exactly
+        one new name. Returns $null when that holds (or cannot be checked), else TREEITEM_VERIFY_FAILED.
+    .DESCRIPTION
+        Closes the gap of the ChildCount +1 allowance in Test-TcTreeItemParentUnchanged: a net +1
+        could also be one child removed and two added. Every name of -Before must still be in -After
+        and -After must have exactly one more name (data.childrenAfter; on a failure
+        data.missingChildren / addedChildren). When either list may be cut at
+        $script:TcTreeItemMaxChildNames the check is skipped and data.warnings says so.
+    .PARAMETER Before
+        Child names before the call (Get-TcTreeItemChildNames).
+    .PARAMETER After
+        Child names after the call.
+    .PARAMETER Path
+        Parent path (message).
+    .PARAMETER Data
+        Data object of the cmdlet.
+    .PARAMETER Operation
+        'CreateChild' / 'ImportChild' (message).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()][AllowEmptyCollection()][string[]]$Before = @(),
+        [Parameter()][AllowEmptyCollection()][string[]]$After = @(),
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Data,
+        [Parameter(Mandatory)][string]$Operation
+    )
+    $b = @($Before)
+    $a = @($After)
+    $max = [int]$script:TcTreeItemMaxChildNames
+    if ($b.Count -ge $max -or $a.Count -ge $max) {
+        $wp = $Data.PSObject.Properties['warnings']
+        $old = if ($null -ne $wp -and $null -ne $wp.Value) { @($wp.Value) } else { @() }
+        $Data | Add-Member -NotePropertyName warnings -Force -NotePropertyValue @($old + @("the child list of '$Path' is cut at $max names; the check 'old children kept, exactly one added' was skipped"))
+        return $null
+    }
+    $Data | Add-Member -NotePropertyName childrenAfter -NotePropertyValue $a -Force
+    $missing = @($b | Where-Object { $a -cnotcontains $_ })
+    $added = @($a | Where-Object { $b -cnotcontains $_ })
+    if ($missing.Count -eq 0 -and $added.Count -eq 1 -and $a.Count -eq $b.Count + 1) { return $null }
+    $Data | Add-Member -NotePropertyName verified -NotePropertyValue $false -Force
+    $Data | Add-Member -NotePropertyName missingChildren -NotePropertyValue $missing -Force
+    $Data | Add-Member -NotePropertyName addedChildren -NotePropertyValue $added -Force
+    $msg = "$Operation returned, but the children of '$Path' are not the old ones plus one: $($b.Count) before, $($a.Count) after; missing: " +
+        $(if ($missing.Count -gt 0) { ($missing | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }) + '; added: ' +
+        $(if ($added.Count -gt 0) { ($added | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' })
+    New-TcResult -Success $false -ErrorCode 'TREEITEM_VERIFY_FAILED' -Data $Data -ErrorMessage $msg -Hint (Get-TcErrorHint -Code 'TREEITEM_VERIFY_FAILED')
+}
+
 function Get-TcTreeItemExportExtension {
     <#
     .SYNOPSIS
-        File extension ExportChild needs for a tree path: '.zip' below TIPC (a node inside a PLC
+        File extension of the DeleteChild ExportChild backup: '.zip' below TIPC (a node inside a PLC
         project), else '.xti'.
     .DESCRIPTION
         For a node below TIPC XAE refuses any other file name: "The filename '...xti' doesn't specify
         a zip archive! (ITcSmTreeItem:ExportChild)"; the same node exported to a .zip file and
         imported again with ImportChild (registered tcauto measured 2026-10-30, 4026 VS2022 XAE
-        3.1.4026.22, a PLC folder below TIPC^<Plc>^<Plc> Project; phase1-2.8.md issue #2). TE1000
-        v1.7.0 5.2.1.4 does not mention it.
+        3.1.4026.22, a PLC folder below TIPC^<Plc>^<Plc> Project; phase1-2.8.md issue #2). Measured on
+        a PLC folder only; other TIPC nodes not measured. The backup uses .zip for every TIPC node
+        anyway: a failed export stops DeleteChild (nothing is deleted), so a wrong guess is safe.
+        Export-TcTreeItem refuses a non-.zip name only for a PLC folder (601). TE1000 v1.7.0 5.2.1.4
+        does not mention it.
     .PARAMETER Path
         Full tree path of the node to export.
     #>

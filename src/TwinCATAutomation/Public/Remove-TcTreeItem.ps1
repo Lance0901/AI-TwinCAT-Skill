@@ -16,8 +16,9 @@ function Remove-TcTreeItem {
         data.childCount, data.children.
         DryRun=false: backup first - ProduceXml(recursive) of the item (data.backupPath), its disk file
         when known (data.backupFiles), and an ExportChild file of the item into the same folder
-        (data.exportPath; restore with ImportChild): .zip for a node below TIPC (XAE refuses .xti
-        there, measured 2026-10-30 4026 VS2022), else .xti. When ExportChild fails or its file does
+        (data.exportPath; restore with ImportChild): .zip for every node below TIPC (XAE refuses .xti
+        for a PLC folder, measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not
+        measured, a failed export deletes nothing), else .xti. When ExportChild fails or its file does
         not exist nothing is deleted: TREEITEM_BACKUP_FAILED, data.reason export-failed / export-missing, unless
         AllowNoExport is set (then data.warnings says so). IDE_MODAL_DIALOG when a dialog is open before
         ExportChild or DeleteChild. Then DeleteChild, then LookupTreeItem must no longer find the path:
