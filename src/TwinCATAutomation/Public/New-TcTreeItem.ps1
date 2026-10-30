@@ -1,0 +1,154 @@
+function New-TcTreeItem {
+    <#
+    .SYNOPSIS
+        Creates a child below a tree item (ITcSmTreeItem.CreateChild). Dry-run by default; backs up the parent and reads back.
+    .DESCRIPTION
+        Generic tree tool (MCP CreateChild). Prefer the dedicated tools (AddPou, AddDut, AddGvl,
+        AddLibrary, IoScan) when they cover the object. ITcSmTreeItem::CreateChild(bstrName, nSubType,
+        bstrBefore, vInfo) (TE1000 Automation Interface manual v1.7.0, 5.2.1.2, p.57): not every item
+        supports it (E_NOTIMPL). The meaning of SubType and VInfo depends on the parent; there is no
+        complete public list, only use values documented in the manual or InfoSys.
+        Checks first (nothing created on failure): Path exists (TREEITEM_NOT_FOUND with the nearest
+        parent in error.hint), no child with Name exists (TREEITEM_ALREADY_EXISTS), Before is an
+        existing child (TREEITEM_NOT_FOUND).
+        DryRun (default true): CreateChild is NOT called; data.dryRun=true, data.plannedPath,
+        data.currentChildren.
+        DryRun=false: ProduceXml backup of the PARENT (data.backupPath), CreateChild, then the new item
+        is looked up again: data.verified=true, data.createdPath / createdName / itemType / subType.
+        XAE refusing the call -> TREEITEM_CREATE_FAILED; returned but not found afterwards ->
+        TREEITEM_VERIFY_FAILED. XAE may give the child another name than requested: data.createdName
+        and data.warnings say so. Below TIPC: BUILD_REQUIRED code-changed is recorded.
+    .PARAMETER Path
+        Full tree path of the PARENT, e.g. "TIRT". No wildcards.
+    .PARAMETER Name
+        Name of the new child (no '^').
+    .PARAMETER SubType
+        nSubType of CreateChild (default 0). Depends on the parent; see the examples.
+    .PARAMETER Before
+        Optional name of an existing child before which the new one is inserted (bstrBefore).
+    .PARAMETER VInfo
+        Optional vInfo of CreateChild (string or array, depends on the parent), e.g. "BOOL" for a
+        process image variable, or "EK1100-0000-0017" for an EtherCAT box.
+    .PARAMETER DryRun
+        Default true: only report the plan. false: back up the parent, create, read back.
+    .EXAMPLE
+        New-TcTreeItem -Path 'TIRT' -Name 'Task 2' -SubType 1 -DryRun $false
+        Task without process image (TE1000 v1.7.0 6.3.1 "Creating and handling Tasks", p.196: SubType 0 =
+        with image, 1 = without image).
+    .EXAMPLE
+        New-TcTreeItem -Path 'TIID' -Name 'EtherCAT Master' -SubType 111
+        Dry-run of an EtherCAT master (TE1000 v1.7.0 6.6.1 "Adding EtherCAT devices", p.244: master 111;
+        a box below it uses SubType 9099 with the product revision as VInfo, e.g. "EK1100-0000-0017").
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter()]
+        [int]$SubType = 0,
+
+        [Parameter()]
+        [string]$Before = '',
+
+        [Parameter()]
+        [object]$VInfo,
+
+        [Parameter()]
+        [bool]$DryRun = $true
+    )
+
+    $data = [PSCustomObject]@{ path = $Path; name = $Name; subType = $SubType; before = $Before; dryRun = $DryRun }
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Contains('^')) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-Name must be a non-empty name without '^' (got '$Name')."
+    }
+
+    try { Assert-TcConnection } catch {
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+    $sm = Get-TcSysManager
+    if ($null -eq $sm) { return New-TcNoSysManagerResult }
+
+    $plannedPath = "$Path^$Name"
+    $data | Add-Member -NotePropertyName plannedPath -NotePropertyValue $plannedPath
+    $stage = 'lookup'
+    try {
+        $r = Resolve-TcTreeItem -SysManager $sm -Path $Path -Data $data
+        if ($null -ne $r.Result) { return $r.Result }
+        $parent = $r.Item
+        $children = @(Get-TcTreeItemChildNames -Item $parent)
+        $data | Add-Member -NotePropertyName currentChildren -NotePropertyValue $children
+
+        $existing = Find-TcTreeItemNoThrow -SysManager $sm -Path $plannedPath
+        if ($null -ne $existing) {
+            return New-TcResult -Success $false -ErrorCode 'TREEITEM_ALREADY_EXISTS' -Data $data `
+                -ErrorMessage "'$plannedPath' already exists; nothing was created." -Hint (Get-TcErrorHint -Code 'TREEITEM_ALREADY_EXISTS')
+        }
+        if (-not [string]::IsNullOrEmpty($Before) -and ($children -notcontains $Before)) {
+            $list = if ($children.Count -gt 0) { ($children | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
+            return New-TcResult -Success $false -ErrorCode 'TREEITEM_NOT_FOUND' -Data $data `
+                -ErrorMessage "-Before '$Before' is not a child of '$Path'; nothing was created." `
+                -Hint "-Before must be the name of an existing child of '$Path': $list. Leave it empty to append."
+        }
+
+        if ($DryRun) { return New-TcResult -Success $true -Data $data }
+
+        $stage = 'backup'
+        $bk = Invoke-TcTreeItemBackup -Item $parent -Path $Path -Data $data -Tag 'parent'
+        if ($null -ne $bk.Result) { return $bk.Result }
+        Add-TcBackupToData -Data $data -Backup $bk.Backup
+
+        $stage = 'create'
+        $isPlc = Test-TcTreePathIsPlc -Path $Path
+        $created = $null
+        try {
+            $created = Invoke-TcComRetry -OperationName "CreateChild $plannedPath" -ScriptBlock {
+                Write-Output -NoEnumerate $parent.CreateChild($Name, $SubType, $Before, $VInfo)
+            }
+        }
+        catch {
+            # An error from CreateChild itself: nothing was created (same rule as Add-TcPou, #65); a
+            # wrapped IDE_* error may have happened after XAE created it, so that one is recorded.
+            $res = New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TREEITEM_CREATE_FAILED' -Data $data -Operation "CreateChild '$plannedPath'"
+            if ($isPlc -and $_.Exception.Message -match '^IDE_') { $res = Register-TcCodeChange -Result $res -Change "New-TcTreeItem $plannedPath [failed]" }
+            return $res
+        }
+
+        $stage = 'verify'
+        $createdName = $Name
+        $createdPath = $plannedPath
+        if ($null -ne $created) {
+            $cn = try { [string]$created.Name } catch { '' }
+            $cp = try { [string]$created.PathName } catch { '' }
+            if (-not [string]::IsNullOrWhiteSpace($cn)) { $createdName = $cn }
+            if (-not [string]::IsNullOrWhiteSpace($cp)) { $createdPath = $cp } else { $createdPath = "$Path^$createdName" }
+        }
+        $check = Find-TcTreeItemNoThrow -SysManager $sm -Path $createdPath
+        $data | Add-Member -NotePropertyName createdPath -NotePropertyValue $createdPath
+        $data | Add-Member -NotePropertyName createdName -NotePropertyValue $createdName
+        if ($null -eq $check) {
+            $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
+            $res = New-TcResult -Success $false -ErrorCode 'TREEITEM_VERIFY_FAILED' -Data $data `
+                -ErrorMessage "CreateChild returned, but '$createdPath' is not found when looked up again." -Hint (Get-TcErrorHint -Code 'TREEITEM_VERIFY_FAILED')
+        }
+        else {
+            $s = Get-TcTreeItemSummary -Item $check
+            $data | Add-Member -NotePropertyName itemType -NotePropertyValue $s.itemType
+            $data | Add-Member -NotePropertyName itemSubType -NotePropertyValue $s.subType
+            $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
+            if ($createdName -cne $Name) {
+                $data.warnings = @(@($data.warnings) + @("XAE named the new child '$createdName', not '$Name'"))
+            }
+            $res = New-TcResult -Success $true -Data $data
+        }
+        if ($isPlc) { $res = Register-TcCodeChange -Result $res -Change "New-TcTreeItem $createdPath" }
+        return $res
+    }
+    catch {
+        $code = if ($stage -eq 'create') { 'TREEITEM_CREATE_FAILED' } elseif ($stage -eq 'verify') { 'TREEITEM_VERIFY_FAILED' } else { 'TREEITEM_READ_FAILED' }
+        New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode $code -Data $data -Operation "CreateChild '$plannedPath' ($stage)"
+    }
+}

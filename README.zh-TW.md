@@ -84,7 +84,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（38 個）
+## 所有指令（45 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -148,6 +148,17 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Get-TcIoTree` | 讀取 I/O 裝置樹 |
 | `Set-TcVariableLink` | 連結 PLC 變數到 I/O 變數(完整 tree path,ProduceMappingInfo 讀回確認) |
 | `Remove-TcVariableLink` | 移除 PLC 與 I/O 變數的 link(讀回確認) |
+
+### 通用 tree 操作(先 dry-run,有專用指令就用專用的)
+| 指令 | 說明 |
+|------|------|
+| `Get-TcTreeItem` | LookupTreeItem:一個 tree item 的名稱、類型、子節點(唯讀) |
+| `Get-TcTreeItemXml` | ProduceXml:一個 tree item 的 XML(唯讀) |
+| `New-TcTreeItem` | CreateChild:預設 dry-run;備份父節點、建立、讀回 |
+| `Set-TcTreeItemXml` | ConsumeXml:送 `<TreeItem>` 片段;預設 dry-run,檢查路徑、備份、讀回比對 |
+| `Remove-TcTreeItem` | DeleteChild:要帶 `-ConfirmName`;預設 dry-run;備份(XML + .xti)、讀回 |
+| `Export-TcTreeItem` | ExportChild:把 tree item 匯出成 .xti |
+| `Import-TcTreeItem` | ImportChild:匯入 .xti;預設 dry-run;備份、讀回 |
 
 ### 測試
 | 指令 | 說明 |
@@ -231,7 +242,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:38 個 cmdlet 中的 37 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:45 個 cmdlet 中的 44 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

@@ -27,6 +27,14 @@
         'Get-TcIoTree',
         'Set-TcVariableLink',
         'Remove-TcVariableLink',
+        # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
+        'Get-TcTreeItem',
+        'Get-TcTreeItemXml',
+        'New-TcTreeItem',
+        'Set-TcTreeItemXml',
+        'Remove-TcTreeItem',
+        'Export-TcTreeItem',
+        'Import-TcTreeItem',
         # Build & Deploy
         'Build-TcProject',
         'Clear-TcProject',
