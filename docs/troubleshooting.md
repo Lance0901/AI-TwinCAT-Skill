@@ -599,26 +599,26 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Set-TcVariableLink` / `Remove-TcVariableLink` 呼叫前用 `LookupTreeItem` 檢查兩端;找不到就回這個碼,`data.missingEnd` 與 hint 指出是 `PlcVariable` 還是 `IoChannel`。
 - **為什麼**:`LinkVariables` 要完整 tree path(TE1000 v1.7.0 §5.1.1.2,p.38:"The full path name is required")。`MAIN.bIn` 這種 PLC symbol 名稱不是 tree path。`TSM_E_ITEMNOTFOUND` 的數值手冊沒寫,實測 2026-10-28 是 `0x98510001`(4026 XAE in VS2022,訊息 `Item '...' not found`)。
 - **下一步**:PLC 端 `TIPC^<Plc>^<Plc> Instance^PlcTask Inputs^MAIN.bIn`(`AT %I*` / `%Q*` 變數,要先 Build 才出現);I/O 端到 variable 那層,例如 `TIID^<Device>^<Box>^<Term>^Channel 1^Input`。用 `Get-TcIoTree` 查 I/O 路徑。
-- **通用 tree tool**(`LookupTreeItem` / `ProduceXml` / `CreateChild` / `ConsumeXml` / `DeleteChild` / `ExportChild` / `ImportChild`,cmdlet `Get-TcTreeItem` 等):找不到時往上找最接近的上層路徑,`error.hint` 和 `data.nearestPath` / `data.nearestChildren` 列出它和它的子節點名稱;連第一段都不存在時列出解析得到的頂層節點(TIPC、TIID、TIRC、TIRS、TIRT、TINC 中存在的)。照 hint 改路徑,或對 `nearestPath` 呼叫 `LookupTreeItem` 往下查。
+- **通用 tree tool**(`LookupTreeItem` / `ProduceXml` / `CreateChild` / `ConsumeXml` / `DeleteChild` / `ExportChild` / `ImportChild`,cmdlet `Get-TcTreeItem` 等):找不到時往上找最接近的上層路徑,`error.hint` 和 `data.nearestPath` / `data.nearestChildren` 列出它和它的子節點名稱;連第一段都不存在時列出解析得到的頂層節點(TIPC、TIID、TIRC、TIRS、TIRT、TINC 中存在的)。照 hint 改路徑,或對 `nearestPath` 呼叫 `LookupTreeItem` 往下查。hint 裡只寫 cmdlet 名稱(`Get-TcTreeItem -Path '...'`),MCP server 會換成 tool 名稱(`LookupTreeItem Path='...'`);以前寫成「LookupTreeItem (Get-TcTreeItem)」,替換後變成重複的「LookupTreeItem (LookupTreeItem)」(phase1-2.8 #5)。
 
 ### 通用 tree tool 的防護與備份(第 1 期,未實測)
 
 `LookupTreeItem`(`Get-TcTreeItem`)、`ProduceXml`(`Get-TcTreeItemXml`)、`CreateChild`(`New-TcTreeItem`)、`ConsumeXml`(`Set-TcTreeItemXml`)、`DeleteChild`(`Remove-TcTreeItem`)、`ExportChild`(`Export-TcTreeItem`)、`ImportChild`(`Import-TcTreeItem`)直接對應 `ITcSysManager::LookupTreeItem`(TE1000 v1.7.0 §5.1.1.3,p.38)與 `ITcSmTreeItem` 的方法(§5.2.1.1~5.2.1.8,p.57~61;[TE1000 PDF](https://download.beckhoff.com/download/document/automation/twincat3/TC3_Automation_Interface_EN.pdf))。共用函式在 `src/TwinCATAutomation/Private/TreeItem/`。
 
 - **防護**(design D2):修改類(`CreateChild`、`ConsumeXml`、`DeleteChild`、`ImportChild`)預設 `DryRun=true`,dry-run 不呼叫任何修改 API;`DryRun=false` 先把 `ProduceXml` 備份到 `<solution 目錄>\.tcauto-backup\<yyyyMMdd-HHmmss>\<路徑安全化>.xml`(`data.backupPath`),再修改,再讀回驗證(`data.verified`)。`Path` 必須是完整路徑,不接受 `*` `?`。`DeleteChild` 要帶 `ConfirmName`。MCP 端修改類標 `destructiveHint: true`。
-- **磁碟檔備份**:XAE 改 Task 時會立刻改寫 PLC 專案資料夾裡的 `<task>.TcTTO`(實測 2026-10-30,4026 VS2022,task 2.1,沒有存 solution 也會寫),所以節點對應磁碟檔時一併複製到備份資料夾(`data.backupFiles`)。規則表 `$script:TcTreeItemDiskFileRules`:`TIRT^<task>` → `<task>.TcTTO`;TIPC 底下 ItemType 602/603/604 → `.TcPOU`、606 → `.TcDUT`、615 → `.TcGVL`(檔名慣例,PLC 物件會不會被這些操作改寫未實測)。在 solution 目錄下剛好找到一個同名檔才複製;找不到或有多個就不複製,`data.warnings` 說明。
+- **磁碟檔備份**:XAE 改 Task 時會立刻改寫 PLC 專案資料夾裡的 `<task>.TcTTO`(實測 2026-10-30,4026 VS2022,task 2.1,沒有存 solution 也會寫),所以節點對應磁碟檔時一併複製到備份資料夾(`data.backupFiles`)。規則表 `$script:TcTreeItemDiskFileRules`:`TIRT^<task>` → `<task>.TcTTO`;TIPC 底下 ItemType 602/603/604 → `.TcPOU`、606 → `.TcDUT`、615 → `.TcGVL`(檔名慣例,PLC 物件會不會被這些操作改寫未實測)。在 solution 目錄下剛好找到一個同名檔才複製;有多個就不複製,`data.warnings` 說明;找不到時 `.TcPOU` / `.TcDUT` / `.TcGVL` 也會留 warning,但 Task 不會:`TIRT` 底下直接建立、沒有 PLC 專案的 Task 本來就沒有 `.TcTTO`,磁碟上沒有東西要備份(registered tcauto 實測 2026-10-30 4026 VS2022,phase1-2.8 #3)。
 - **`.tcauto-backup` 資料夾**會留在 solution 目錄裡,模組不會自動清;不要把它加進版本控制。
 - **ConsumeXml 只送片段**(design D3,實測 2026-10-30):XAE 本身就是合併語意,沒列到的欄位保留原值,所以模組直接傳片段,不做整份合併。片段的每個最底層元素路徑都要在目前的 `ProduceXml` 裡找得到(重複的同名元素依位置比對,`CPU[2]`)。讀回比對排除 `TcModuleInstance` 底下的 `Context`、`ParameterValues`(XAE 自己跟著改的衍生欄位,`data.skippedDerived`)。
 - **XAE 行為未實測的片段一律在送出前擋掉**(`XML_MERGE_FAILED`,見該節的 `data.reason`):有 attribute、值放在有子元素的節點上、重複元素數量和目前不同、有變動的欄位全是衍生欄位。不猜 XAE 會怎麼合併。
-- **寫入後全量比對**:`ConsumeXml` 之後把寫入前、寫入後兩份 `ProduceXml` 全部攤平(element 值和 attribute)比對,片段以外、非衍生的欄位有任何差異就回 `TREEITEM_VERIFY_FAILED`(`data.unexpectedChanges`)。`CreateChild` / `ImportChild` 對父節點做同樣的比對,但只允許「多出來」(新子節點可能出現在父節點 XML 裡,`-Before` 插入會讓 `[n]` 位移),原有的值少了或變了就回 `TREEITEM_VERIFY_FAILED`(`data.parentUnchanged=false`)。父節點 `ProduceXml` 會不會因為新增子節點而改別的欄位(例如計數)未實測。
+- **寫入後全量比對**:`ConsumeXml` 之後把寫入前、寫入後兩份 `ProduceXml` 全部攤平(element 值和 attribute)比對,片段以外、非衍生的欄位有任何差異就回 `TREEITEM_VERIFY_FAILED`(`data.unexpectedChanges`)。`CreateChild` / `ImportChild` 對父節點做同樣的比對,但只允許「多出來」(新子節點可能出現在父節點 XML 裡,`-Before` 插入會讓 `[n]` 位移),原有的值少了或變了就回 `TREEITEM_VERIFY_FAILED`(`data.parentUnchanged=false`)。例外:父節點的 `TreeItem/ChildCount` 新增一個子節點後一定 +1(registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,TIRT 與 TIPC 父節點,phase1-2.8 #1),剛好 +1 不算異動,+2 或其他變化仍然回 `TREEITEM_VERIFY_FAILED`(`kind` = `changed`)。其他欄位沒看到變化。
 - **同步 COM 修改呼叫沒有 deadline**(`ConsumeXml`、`CreateChild`、`DeleteChild`、`ExportChild`、`ImportChild`):照 `New-TcPlcObject` 的 `CreateChild` 做法(CODING_STANDARDS §1 的「註解寫明為何不需要」),每次呼叫前先 `Get-TcIdeModalDialog`,有 dialog 就回 `IDE_MODAL_DIALOG`、不呼叫;`Connect-TcIde` 開的 `SilentMode` 讓 XAE 自己用預設值回答提示。這些呼叫的耗時還沒量(task 2.8)。
-- **PLC login 中**:XAE 拒絕時回 `PLC_LOGGED_IN`,`error.hint` 是「先 PlcLogout,再重跑同一個 tool」並帶出失敗的操作。`IDE_MODAL_DIALOG`、`IDE_CRASHED`、`IDE_TIMEOUT`、`IDE_BUSY`、`PLC_LOGGED_IN` 這份清單(`$script:TcTreeItemPassThroughCodes`)在錯誤結果和備份步驟共用,一律保留原碼。
+- **PLC login 中**:XAE 拒絕時回 `PLC_LOGGED_IN`,`error.hint` 是「先 `Exit-TcPlcOnline`(MCP:`PlcLogout`),再重跑同一個 tool」並帶出失敗的操作。`IDE_MODAL_DIALOG`、`IDE_CRASHED`、`IDE_TIMEOUT`、`IDE_BUSY`、`PLC_LOGGED_IN` 這份清單(`$script:TcTreeItemPassThroughCodes`)在錯誤結果和備份步驟共用,一律保留原碼。
 
 ### TREEITEM_PATH_INVALID
 
 - **現象**:通用 tree tool 的 `Path` 是空的、有 `*` / `?`、有空段(開頭 / 結尾的 `^` 或 `^^`),或 `DeleteChild` 指到頂層節點。什麼都沒呼叫。
 - **為什麼**:修改類 tool 只接受單一、明確的節點(design D2),不做 pattern 比對;`DeleteChild` 是父節點的方法(TE1000 §5.2.1.3),頂層節點沒有父節點。
-- **下一步**:用 `LookupTreeItem` 或 `GetProjectTree` 查到完整路徑再重試。
+- **下一步**:用 `LookupTreeItem`(`Get-TcTreeItem`)或 `GetProjectTree`(`Get-TcProjectTree`)查到完整路徑再重試。
 
 ### TREEITEM_READ_FAILED
 
@@ -627,7 +627,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TREEITEM_ALREADY_EXISTS
 
-- **現象**:`CreateChild` 的 `Path^Name`,或 `ImportChild` 帶的 `Name`,已經存在。什麼都沒建立。
+- **現象**:`CreateChild` 的 `Path^Name`,或 `ImportChild` 帶的 `Name`,已經存在。什麼都沒建立。`ImportChild` 沒帶 `Name` 時,模組從 .xti 推出預期名稱(`data.expectedName`:項目的 `<Name>`,`__FILENAME__` 換成檔名去掉副檔名;.zip 推不出來就跳過)做同樣的檢查,dry-run 也會檢查:XAE 遇到撞名會自己改名(`Task28` → `Task28_1`,registered tcauto 實測 2026-10-30 4026 VS2022,phase1-2.8 #4)。實際匯入後名稱和預期不同時寫進 `data.warnings`。
 - **為什麼**:手冊沒寫同名時 XAE 會怎麼做(TE1000 §5.2.1.2 / §5.2.1.6 只列 E_NOTIMPL、E_ACCESSDENIED 等),所以模組先擋,不讓 XAE 自己改名或覆蓋。
 - **下一步**:換名稱;真的要取代就先 `DeleteChild`(先 dry-run)再建。
 
@@ -663,21 +663,21 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TREEITEM_BACKUP_FAILED
 
-- **現象**:修改前的備份沒寫成:模組不知道 solution 路徑,或 `<solution 目錄>\.tcauto-backup` 無法寫入,或備份前的 `ProduceXml` 失敗。什麼都沒改。`DeleteChild`(`Remove-TcTreeItem`)還要求 `ExportChild` 的 `.xti` 備份:`ExportChild` 丟例外(`data.reason` = `export-failed`)或返回了但檔案不存在(`export-missing`)也回這個碼,不刪。備份步驟遇到 `IDE_*` / `PLC_LOGGED_IN` 時回那個碼,不是這個。
-- **為什麼**:`DeleteChild` 刪掉的是整個子樹;`ProduceXml` 備份(`DeleteChild` 前用 recursive,含子樹)只能看,不能用 `ImportChild` 還原,只有 `.xti` 能。
+- **現象**:修改前的備份沒寫成:模組不知道 solution 路徑,或 `<solution 目錄>\.tcauto-backup` 無法寫入,或備份前的 `ProduceXml` 失敗。什麼都沒改。`DeleteChild`(`Remove-TcTreeItem`)還要求 `ExportChild` 的備份(`.xti`;`TIPC` 底下的 PLC 節點用 `.zip`,XAE 對 PLC 節點的 `.xti` 檔名回 "doesn't specify a zip archive",registered tcauto 實測 2026-10-30 4026 VS2022,phase1-2.8 #2):`ExportChild` 丟例外(`data.reason` = `export-failed`)或返回了但檔案不存在(`export-missing`)也回這個碼,不刪。備份步驟遇到 `IDE_*` / `PLC_LOGGED_IN` 時回那個碼,不是這個。
+- **為什麼**:`DeleteChild` 刪掉的是整個子樹;`ProduceXml` 備份(`DeleteChild` 前用 recursive,含子樹)只能看,不能用 `ImportChild` 還原,只有 `.xti` / `.zip` 能。
 - **下一步**:`Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)讓模組記住 solution 路徑,確認目錄可寫,再重試。`export-failed` / `export-missing`:先用 `ExportChild`(`Export-TcTreeItem`)匯出同一個節點找原因;確定只要 `ProduceXml` 備份就夠時,才加 `AllowNoExport=true`(cmdlet:`-AllowNoExport`)重跑,結果的 `data.warnings` 會註明刪除時沒有 `.xti`。
 
 ### TREEITEM_EXPORT_FAILED
 
-- **現象**:`ExportChild` 沒產生檔案。`data.reason`:`not-absolute`、`invalid-path`(路徑有 `< > | " * ?` 等非法字元、`GetFullPath` 不接受,或沒有檔名,例如 `C:\`)、`file-exists`、`folder-missing`(這四個在呼叫 XAE 前就擋,路徑檢查不會變成 `EXECUTION_ERROR`)、`file-not-written`(XAE 返回了但檔案不存在或是空的),或 XAE 丟例外。
-- **為什麼**:TE1000 §5.2.1.4(p.58):目標資料夾必須存在、檔案不能已存在,否則 `E_INVALIDARG`;空路徑的行為手冊只寫「default behavior」,所以模組要求絕對路徑。
-- **下一步**:換一個新的檔名(建議 `.xti`)重試。
+- **現象**:`ExportChild` 沒產生檔案。`data.reason`:`not-absolute`、`invalid-path`(路徑有 `< > | " * ?` 等非法字元、`GetFullPath` 不接受,或沒有檔名,例如 `C:\`)、`plc-requires-zip`(`Path` 在 `TIPC` 底下但 `FilePath` 不是 `.zip`)、`file-exists`、`folder-missing`(這五個在呼叫 XAE 前就擋,路徑檢查不會變成 `EXECUTION_ERROR`)、`file-not-written`(XAE 返回了但檔案不存在或是空的),或 XAE 丟例外。
+- **為什麼**:TE1000 §5.2.1.4(p.58):目標資料夾必須存在、檔案不能已存在,否則 `E_INVALIDARG`;空路徑的行為手冊只寫「default behavior」,所以模組要求絕對路徑。`TIPC` 底下(PLC 專案內)的節點 XAE 只接受 `.zip` 檔名,`.xti` 會回 "The filename '...' doesn't specify a zip archive!";同一節點匯出成 `.zip` 再 `ImportChild` 可以匯回(registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22;TE1000 §5.2.1.4 沒寫)。
+- **下一步**:換一個新的檔名重試:一般節點用 `.xti`,`TIPC` 底下的 PLC 節點用 `.zip`(`plc-requires-zip` 的 hint 直接給出改好的檔名)。
 
 ### TREEITEM_IMPORT_FAILED
 
 - **現象**:`ImportChild` 沒有匯入:`data.reason` 是 `not-absolute` / `invalid-path`(非法字元、沒有檔名,例如 `C:\`)/ `file-missing`,或 XAE 拒絕。
 - **為什麼**:TE1000 §5.2.1.6(p.59):`NTE_NOT_FOUND` = 沒有可匯入的項目,`TSM_E_ITEMNOTFOUND` = `Before` 找不到,`E_FAIL` = XML 載入、類別檢查或插入失敗(細節在 COM 錯誤訊息)。
-- **下一步**:確認檔案是 `ExportChild` 匯出的,`Path` 是能放這種節點的父節點(例如 Task 匯入到 `TIRT`,I/O device 到 `TIID`,§6.3.2)。
+- **下一步**:確認檔案是 `ExportChild` 匯出的(PLC 節點是 `.zip`,實測 2026-10-30 4026 VS2022),`Path` 是能放這種節點的父節點(例如 Task 匯入到 `TIRT`,I/O device 到 `TIID`,§6.3.2)。
 
 ### XML_MERGE_FAILED
 
