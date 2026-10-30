@@ -143,6 +143,7 @@ TIPC 底下：`ExportChild` 給 `.xti` → `TREEITEM_EXPORT_FAILED`(XAE "doesn't
 - **原因(讀 code)**:`Test-TcTreeItemParentUnchanged`(`src/TwinCATAutomation/Private/TreeItem/TreeItemXml.ps1:477`)用 `Compare-TcTreeItemXmlFull -AdditionsOnly` 比父節點，父節點的 `ChildCount` 新增子節點後一定 +1,被當成「原本的值不見了」(kind 也因此標成 `removed`)。
 - **影響**:agent 照 hint 會以為失敗而重試(第二次得到 ALREADY_EXISTS)或去還原;單元測試 mock 沒抓到。
 - **建議**:比對時排除 `TreeItem/ChildCount`(或允許它恰好 +1),並補一個 mock 會讓 ChildCount 變的單元測試。
+- **狀態**:已修(commit 655385b),待 registered 重測。父節點比對允許 `TreeItem/ChildCount` 剛好 +1(`$script:TcTreeItemParentIncrements`),+2 等其他變化仍回 VERIFY_FAILED;before / after 都有值時 kind 改成 `changed`(原本 additions-only 一律標 `removed`)。
 
 ### #2 TIPC 底下的 DeleteChild 預設一定失敗(高)
 
@@ -151,25 +152,29 @@ TIPC 底下：`ExportChild` 給 `.xti` → `TREEITEM_EXPORT_FAILED`(XAE "doesn't
 - **驗證**:同一節點 `ExportChild` 給 `.zip` 檔名 → success(122 B),`ImportChild` 這個 .zip 也能匯回。
 - **影響**:PLC 物件只能靠 `AllowNoExport=true` 刪，而那樣就沒有可 ImportChild 還原的備份。
 - **建議**:DeleteChild 的備份在 TIPC 底下(PLC 專案內的節點)改用 `.zip` 副檔名;ExportChild 的 description / hint 註明 PLC 節點要 `.zip`。出處待查 TE1000(手冊 5.2.1.4 沒寫);目前只有 XAE 錯誤訊息與實測。
+- **狀態**:已修(commit 655385b),待 registered 重測。DeleteChild 備份在 `TIPC^` 底下用 `.zip`;ExportChild 收到 TIPC 路徑 + 非 .zip 先回 `TREEITEM_EXPORT_FAILED` reason `plc-requires-zip`(hint 給 .zip 檔名);help / MCP description / hint 註明 PLC 節點用 .zip。
 
 ### #3 DeleteChild 對沒有 PLC 的 Task 誤報缺 .TcTTO(低)
 
 - **重現**:刪 `TIRT^Task28`(CreateChild 建的獨立 Task)。
 - **實際回傳**:success、verified=true,但 `warnings=["Task node 'TIRT^Task28': no Task28.TcTTO found below C:\\Temp\\Verify-4026-axis; that disk file is NOT in the backup ..."]`。
 - **說明**:`.TcTTO` 只存在於 PLC 專案的 Task 物件;TIRT 的獨立 Task 本來就沒有，這個 warning 是雜訊。建議改成只有找得到 PLC 對應 Task 時才要求 .TcTTO,或降為 info。
+- **狀態**:已修(commit 655385b),待 registered 重測。Task 規則找不到 `.TcTTO` 時不發 warning(找到多個仍然 warning;.TcPOU / .TcDUT / .TcGVL 找不到仍然 warning)。
 
 ### #4 ImportChild 的 Name 空白時沒預測撞名，XAE 自動改名也沒 warning(中)
 
 - **重現**:`ImportChild Path=TIRT FilePath=<Task28.xti> DryRun=false`(Name 留空,`TIRT^Task28` 已存在)。
 - **實際回傳**:dry-run success(沒提到撞名);實寫 `importedPath=TIRT^Task28_1`,`warnings=[]`(另外有 #1 的 VERIFY_FAILED)。
 - **建議**:Name 空白時從 .xti 的 `<Name>`(或 `__FILENAME__` → 檔名)推出名稱做 ALREADY_EXISTS 檢查;或在 `importedName` 和預期不同時加 warning(CreateChild 的 description 已經提到 XAE 可能改名要給 `data.warnings`,ImportChild 沒做)。
+- **狀態**:已修(commit 655385b),待 registered 重測。Name 空白時從 .xti 第一個子元素的 `<Name>` 推出 `data.expectedName`(`__FILENAME__` → 檔名去副檔名;.zip 跳過),dry-run 與實寫都做 ALREADY_EXISTS 檢查;匯入後名稱和預期不同加進 `data.warnings`。
 
 ### #5 hint 文字重複(低)
 
 - `TREEITEM_NOT_FOUND` 的 hint 寫成 "Use LookupTreeItem (LookupTreeItem) -Path ..."、`TREEITEM_PATH_INVALID` 寫 "LookupTreeItem(LookupTreeItem)":MCP 名稱與 cmdlet 名稱替換後變成重複。應該是 "LookupTreeItem (Get-TcTreeItem)"。
+- **狀態**:已修(commit 655385b),待 registered 重測。原因是 MCP server(`mcp-server/lib/tools.js` `rewriteHintCmdletNames`)把 hint 裡的 cmdlet 名稱換成 tool 名稱;hint 改成只寫 cmdlet(`Get-TcTreeItem`、`Get-TcProjectTree`),cmdlet 模式顯示 cmdlet、MCP 模式顯示 `LookupTreeItem`。同樣問題的 `PlcLogout(Exit-TcPlcOnline)`(PLC_LOGGED_IN 兩個 hint)一起改成 `Exit-TcPlcOnline`;單元測試掃全部 hint 不能有「名稱(cmdlet)」。
 
 ### 其他觀察(不算 bug)
 
 - CreateChild 的同名檢查與 XAE 一樣區分大小寫(`task28` dry-run 通過);XAE 實際接不接受只差大小寫的名稱沒有實寫測。
 - ImportChild 會讓 XAE 重新分配 Priority / AmsPort,不保留 .xti 的值;改名匯入後若要相同 Priority,要再用 ConsumeXml 改。
-- `Recursive` 在 Task / PLC folder 上沒有作用;tool description 現在寫「not measured」,可以改成這次的實測結果。
+- `Recursive` 在 Task / PLC folder 上沒有作用;tool description 現在寫「not measured」,可以改成這次的實測結果。→ 已改(commit 655385b)。
