@@ -12,7 +12,7 @@
 
 ## 2. 第 1 期：通用 tree 操作(→ v0.3.0-beta)
 
-- [ ] 2.1 實測 ConsumeXml 是否接受部分 XML,並決定 D3 的實作方式
+- [x] 2.1 實測 ConsumeXml 是否接受部分 XML,並決定 D3 的實作方式
 - [ ] 2.2 新增 `Private/TreeItem/`:路徑解析、備份、XML 合併、讀回比對等共用函式;補單元測試
 - [ ] 2.3 唯讀 tool:`LookupTreeItem`、`ProduceXml`
 - [ ] 2.4 修改 tool:`CreateChild`、`ConsumeXml`,預設 dry-run、要備份、要讀回驗證
