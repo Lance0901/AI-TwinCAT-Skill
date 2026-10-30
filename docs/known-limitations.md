@@ -154,14 +154,14 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 | `LookupTreeItem` | `Get-TcTreeItem` | 已實測。PathName 區分大小寫;找不到時 hint 列出最近的父節點和它的 children |
 | `ProduceXml` | `Get-TcTreeItemXml` | 已實測。`Recursive` 在 Task / PLC folder 上輸出相同(參數說明已改成這個實測結果) |
 | `ConsumeXml` | `Set-TcTreeItemXml` | 已實測。改 `TIRT^PlcTask` CycleTime:`verified=true`、備份含 `.TcTTO`、衍生欄位不誤報;錯誤 XML 全部 `XML_MERGE_FAILED` / `TREEITEM_INVALID_VALUE`,沒寫入 |
-| `ExportChild` | `Export-TcTreeItem` | 已實測。TIPC 底下的 PLC folder 要用 `.zip` 檔名,`.xti` 會被 XAE 拒絕(實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測);模組只對 PLC folder(601)先擋(`plc-requires-zip`,hint 給 `.zip` 檔名,#2 已修,待 registered 重測) |
-| `CreateChild` | `New-TcTreeItem` | **部分實測，有 bug**:節點會建出來，但父節點 `ChildCount` +1 被當成非預期變更，每次都回 `TREEITEM_VERIFY_FAILED`(phase1-2.8 #1;已修:`ChildCount` 剛好 +1 不算異動,待 registered 重測) |
-| `ImportChild` | `Import-TcTreeItem` | **部分實測，有 bug**:同 CreateChild 的 VERIFY_FAILED(#1);Name 空白時 XAE 撞名自動改名(`Task28_1`)沒有 warning(#4;#1、#4 已修:Name 空白時從 .xti 推出名稱做撞名檢查、改名時給 warning,待 registered 重測) |
-| `DeleteChild` | `Remove-TcTreeItem` | **部分實測，有 bug**:TIRT 底下 `verified=true`、有 .xti 備份、沒有 dialog;TIPC 底下預設回 `TREEITEM_BACKUP_FAILED`(備份用 `.xti`,XAE 要 `.zip`,#2),只能 `AllowNoExport=true` 刪(#2 已修:TIPC 底下的備份改用 `.zip`;#3 已修:沒有 PLC 的 Task 不再誤報缺 `.TcTTO`;都待 registered 重測) |
+| `ExportChild` | `Export-TcTreeItem` | 已實測。TIPC 底下的 PLC folder 要用 `.zip` 檔名,`.xti` 會被 XAE 拒絕(實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測);模組只對 PLC folder(601)先擋(`plc-requires-zip`,hint 給 `.zip` 檔名;重測通過)。POU(`TestCam`,602)給 `.xti` 也被 XAE 拒絕、給 `.zip` 成功(重測 2026-10-30 實測) |
+| `CreateChild` | `New-TcTreeItem` | 已實測(重測 2026-10-30):TIRT Task(SubType 1)與 TIPC PLC folder(601)都 `verified=true`、`parentUnchanged=true`、有 `childrenAfter`(#1 修正通過) |
+| `ImportChild` | `Import-TcTreeItem` | 已實測(重測 2026-10-30):改名匯入 `verified=true`;Name 空白且撞名時 dry-run 回 `TREEITEM_ALREADY_EXISTS` 帶 `expectedName`;XAE 用 .xti 寫死的 `<Name>` 當匯入名稱;PLC folder 的 `.zip` 能匯回(#1、#4 修正通過) |
+| `DeleteChild` | `Remove-TcTreeItem` | 已實測(重測 2026-10-30):TIRT 獨立 Task `verified=true`、`.xti` 備份、沒有 `.TcTTO` warning;TIPC PLC folder 預設產生 `.zip` 備份、`verified=true`,該 `.zip` 能用 ImportChild 還原(#2、#3 修正通過) |
 
 沒測到：`PLC_LOGGED_IN`(UmRT 沒在跑，不能 Login)、DeleteChild 的 `parent-mismatch`、ConsumeXml 的 `repeated-count-mismatch`、有 mapping 節點的 `Reconnect`。
 
-合計:已實測 43(39 + 第 1 期 4)+ 部分實測 5(`SetVariableLink`、`RemoveVariableLink` + 第 1 期 3)= 48。
+合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)= 48。
 
 ### 未實測 / 只有單元測試
 
