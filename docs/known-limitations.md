@@ -83,7 +83,7 @@
 - **影響**:`EnableConfig Force` 和 `RunTestCycle` 結束時 PLC 都停在 login,接著直接 `AddPou` 等會失敗。
 - **繞過**:先 `PlcLogout`,再新增物件;新增完 `BuildProject` 再 `EnableConfig`。
 
-## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-29)
+## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-30)
 
 MCP 共 **48 個 tool**:`mcp-server/tools.json` 44 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
@@ -145,21 +145,23 @@ MCP 共 **48 個 tool**:`mcp-server/tools.json` 44 個(2026-10-29 用 node 讀�
 | `SetVariableLink` | registered tcauto 2026-10-28(4026 VS2022)只測了 PLC 路徑錯 -> `TREEITEM_NOT_FOUND`。**成功路徑只有自建 client 測過**(離線 EK1100 + EL1004),registered 還沒測,要等第 1 期 `CreateChild` 才能建離線 I/O |
 | `RemoveVariableLink` | 新 tool。registered tcauto 2026-10-29(4026 VS2022)只測了 `TREEITEM_NOT_FOUND`(`missingEnd` PlcVariable)。**成功路徑只有自建 client 測過**,同上等 `CreateChild` |
 
-### 未實測(等第 1 期 task 2.8,7 個)
+### 第 1 期通用 tree tool(task 2.8,7 個)
 
-第 1 期新增的通用 tree tool,目前只有單元測試(`tests/Unit/tree-item-helpers.ps1`、`tests/Unit/tree-item-tools.ps1`,mock `ITcSysManager`),registered tcauto 還沒跑過。
+registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C:\Temp\Verify-4026-axis`)。逐項紀錄見 [verification/phase1-2.8.md](../openspec/changes/complete-automation-interface/verification/phase1-2.8.md)。
 
 | tool | cmdlet | 狀態 |
 |---|---|---|
-| `LookupTreeItem` | `Get-TcTreeItem` | 未實測(等 2.8) |
-| `ProduceXml` | `Get-TcTreeItemXml` | 未實測(等 2.8) |
-| `CreateChild` | `New-TcTreeItem` | 未實測(等 2.8) |
-| `ConsumeXml` | `Set-TcTreeItemXml` | 未實測(等 2.8);ConsumeXml 本身的合併行為 2.1 用自建 client 實測過 |
-| `DeleteChild` | `Remove-TcTreeItem` | 未實測(等 2.8) |
-| `ExportChild` | `Export-TcTreeItem` | 未實測(等 2.8) |
-| `ImportChild` | `Import-TcTreeItem` | 未實測(等 2.8) |
+| `LookupTreeItem` | `Get-TcTreeItem` | 已實測。PathName 區分大小寫;找不到時 hint 列出最近的父節點和它的 children |
+| `ProduceXml` | `Get-TcTreeItemXml` | 已實測。`Recursive` 在 Task / PLC folder 上輸出相同 |
+| `ConsumeXml` | `Set-TcTreeItemXml` | 已實測。改 `TIRT^PlcTask` CycleTime:`verified=true`、備份含 `.TcTTO`、衍生欄位不誤報;錯誤 XML 全部 `XML_MERGE_FAILED` / `TREEITEM_INVALID_VALUE`,沒寫入 |
+| `ExportChild` | `Export-TcTreeItem` | 已實測。TIPC 底下的節點要用 `.zip` 檔名,`.xti` 會被 XAE 拒絕 |
+| `CreateChild` | `New-TcTreeItem` | **部分實測，有 bug**:節點會建出來，但父節點 `ChildCount` +1 被當成非預期變更，每次都回 `TREEITEM_VERIFY_FAILED`(phase1-2.8 #1) |
+| `ImportChild` | `Import-TcTreeItem` | **部分實測，有 bug**:同 CreateChild 的 VERIFY_FAILED(#1);Name 空白時 XAE 撞名自動改名(`Task28_1`)沒有 warning(#4) |
+| `DeleteChild` | `Remove-TcTreeItem` | **部分實測，有 bug**:TIRT 底下 `verified=true`、有 .xti 備份、沒有 dialog;TIPC 底下預設回 `TREEITEM_BACKUP_FAILED`(備份用 `.xti`,XAE 要 `.zip`,#2),只能 `AllowNoExport=true` 刪 |
 
-合計:已實測 39 + 部分實測 2 + 未實測 7 = 48。
+沒測到：`PLC_LOGGED_IN`(UmRT 沒在跑，不能 Login)、DeleteChild 的 `parent-mismatch`、ConsumeXml 的 `repeated-count-mismatch`、有 mapping 節點的 `Reconnect`。
+
+合計:已實測 43(39 + 第 1 期 4)+ 部分實測 5(`SetVariableLink`、`RemoveVariableLink` + 第 1 期 3)= 48。
 
 ### 未實測 / 只有單元測試
 
