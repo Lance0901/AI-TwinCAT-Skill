@@ -85,7 +85,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-29)
 
-MCP 共 **41 個 tool**:`mcp-server/tools.json` 37 個(用 node 讀 `tools.json` 實際數,2026-10-29)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **48 個 tool**:`mcp-server/tools.json` 44 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -144,6 +144,22 @@ MCP 共 **41 個 tool**:`mcp-server/tools.json` 37 個(用 node 讀 `tools.json`
 |---|---|
 | `SetVariableLink` | registered tcauto 2026-10-28(4026 VS2022)只測了 PLC 路徑錯 -> `TREEITEM_NOT_FOUND`。**成功路徑只有自建 client 測過**(離線 EK1100 + EL1004),registered 還沒測,要等第 1 期 `CreateChild` 才能建離線 I/O |
 | `RemoveVariableLink` | 新 tool。registered tcauto 2026-10-29(4026 VS2022)只測了 `TREEITEM_NOT_FOUND`(`missingEnd` PlcVariable)。**成功路徑只有自建 client 測過**,同上等 `CreateChild` |
+
+### 未實測(等第 1 期 task 2.8,7 個)
+
+第 1 期新增的通用 tree tool,目前只有單元測試(`tests/Unit/tree-item-helpers.ps1`、`tests/Unit/tree-item-tools.ps1`,mock `ITcSysManager`),registered tcauto 還沒跑過。
+
+| tool | cmdlet | 狀態 |
+|---|---|---|
+| `LookupTreeItem` | `Get-TcTreeItem` | 未實測(等 2.8) |
+| `ProduceXml` | `Get-TcTreeItemXml` | 未實測(等 2.8) |
+| `CreateChild` | `New-TcTreeItem` | 未實測(等 2.8) |
+| `ConsumeXml` | `Set-TcTreeItemXml` | 未實測(等 2.8);ConsumeXml 本身的合併行為 2.1 用自建 client 實測過 |
+| `DeleteChild` | `Remove-TcTreeItem` | 未實測(等 2.8) |
+| `ExportChild` | `Export-TcTreeItem` | 未實測(等 2.8) |
+| `ImportChild` | `Import-TcTreeItem` | 未實測(等 2.8) |
+
+合計:已實測 39 + 部分實測 2 + 未實測 7 = 48。
 
 ### 未實測 / 只有單元測試
 
