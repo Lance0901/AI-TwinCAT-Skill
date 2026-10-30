@@ -151,7 +151,7 @@ TIPC 底下：`ExportChild` 給 `.xti` → `TREEITEM_EXPORT_FAILED`(XAE "doesn't
 - **實際回傳**:`TREEITEM_BACKUP_FAILED`,`reason=export-failed`,message "Cannot export child. The filename '...\TIPC_AxisInterface_AxisInterface Project_Tmp28Folder.xti' doesn't specify a zip archive! (ITcSmTreeItem:ExportChild)"。沒刪(防護本身正確)。
 - **驗證**:同一節點 `ExportChild` 給 `.zip` 檔名 → success(122 B),`ImportChild` 這個 .zip 也能匯回。
 - **影響**:PLC 物件只能靠 `AllowNoExport=true` 刪，而那樣就沒有可 ImportChild 還原的備份。
-- **建議**:DeleteChild 的備份在 TIPC 底下(PLC 專案內的節點)改用 `.zip` 副檔名;ExportChild 的 description / hint 註明 PLC 節點要 `.zip`。出處待查 TE1000(手冊 5.2.1.4 沒寫);目前只有 XAE 錯誤訊息與實測。
+- **建議**:DeleteChild 的備份在 TIPC 底下(PLC 專案內的節點)改用 `.zip` 副檔名;ExportChild 的 description / hint 註明 PLC 節點要 `.zip`。出處待查 TE1000(手冊 5.2.1.4 沒寫);目前只有 XAE 錯誤訊息與實測。**範圍**:實測 2026-10-30 僅 PLC folder(`Tmp28Folder`,SubType 601);其他 TIPC 節點未測。
 - **狀態**:已修(commit 655385b),待 registered 重測。DeleteChild 備份在 `TIPC^` 底下用 `.zip`;ExportChild 收到 TIPC 路徑 + 非 .zip 先回 `TREEITEM_EXPORT_FAILED` reason `plc-requires-zip`(hint 給 .zip 檔名);help / MCP description / hint 註明 PLC 節點用 .zip。
 
 ### #3 DeleteChild 對沒有 PLC 的 Task 誤報缺 .TcTTO(低)
@@ -172,6 +172,20 @@ TIPC 底下：`ExportChild` 給 `.xti` → `TREEITEM_EXPORT_FAILED`(XAE "doesn't
 
 - `TREEITEM_NOT_FOUND` 的 hint 寫成 "Use LookupTreeItem (LookupTreeItem) -Path ..."、`TREEITEM_PATH_INVALID` 寫 "LookupTreeItem(LookupTreeItem)":MCP 名稱與 cmdlet 名稱替換後變成重複。應該是 "LookupTreeItem (Get-TcTreeItem)"。
 - **狀態**:已修(commit 655385b),待 registered 重測。原因是 MCP server(`mcp-server/lib/tools.js` `rewriteHintCmdletNames`)把 hint 裡的 cmdlet 名稱換成 tool 名稱;hint 改成只寫 cmdlet(`Get-TcTreeItem`、`Get-TcProjectTree`),cmdlet 模式顯示 cmdlet、MCP 模式顯示 `LookupTreeItem`。同樣問題的 `PlcLogout(Exit-TcPlcOnline)`(PLC_LOGGED_IN 兩個 hint)一起改成 `Exit-TcPlcOnline`;單元測試掃全部 hint 不能有「名稱(cmdlet)」。
+
+### review 修正(reviewer 審 `75c2bcb..1c3e9b9` 後)
+
+都是單元測試與 `scripts/check.ps1` 完整版驗證(mock,沒有碰真機),待 registered 重測。
+
+| 項目 | 修正 | commit |
+|---|---|---|
+| XXE | `Get-TcXtiItemName` 改用 `XmlReader`(`DtdProcessing = Prohibit`、`XmlResolver = $null`,try/finally Dispose);帶 DOCTYPE 的檔案回 `$null`;`get_DocumentElement()`、`<Name>` 用 `-ceq` | 0464094 |
+| #3 範圍太大 | Task 找不到 `.TcTTO` 時掃 solution 目錄下 `.plcproj` / `.tsproj` 是否提到 `<task>.TcTTO`(大小寫不分):有參照 → warning;沒有參照 → 不發;掃描失敗 → warning。PLC Task 在 `.plcproj` 列成 `<Compile Include="PlcTask.TcTTO">`(2026-10-30 讀 4026 副本) | 0464094 |
+| #2 範圍太大 | `plc-requires-zip` 只擋 PLC folder(ItemType 601),其他 TIPC 節點交給 XAE;DeleteChild 備份維持 TIPC 一律 `.zip`(export 失敗就不刪)。出處改成「實測 2026-10-30 僅 PLC folder;其他 TIPC 節點未測」(help、MCP description、hint、troubleshooting、本檔 #2) | 0464094、8950c48 |
+| JS hint 測試 | `mcp-server/test/tools.test.js` 用真的 `tools.json` 測 `rewriteHintCmdletNames`:`Get-TcTreeItem -Path 'TIRT'`、`Get-TcProjectTree`、`Exit-TcPlcOnline`、路徑含空白與 `^` 的 `Export-TcTreeItem` | 0464094 |
+| hint 單引號 | `plc-requires-zip` hint 裡 `$Path` / `$FilePath` 的 `'` 跳脫成 `''` | 0464094 |
+| ImportChild .zip | Name 空白、推不出 `expectedName` 時 `data.warnings` 註明沒有做撞名檢查 | 0464094 |
+| ChildCount 淨值 +1 | CreateChild / ImportChild 成功後比對子節點名稱：原有的都在、剛好多一個(`data.childrenAfter`),否則 `TREEITEM_VERIFY_FAILED`(`data.missingChildren` / `addedChildren`);清單被 `TcTreeItemMaxChildNames` 截斷時跳過並留 warning | 0464094 |
 
 ### 其他觀察(不算 bug)
 
