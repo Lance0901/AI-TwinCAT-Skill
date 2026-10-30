@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-30T03:25:05Z",
+    "generatedAt":  "2026-10-30T06:07:24Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -375,7 +375,7 @@
                   {
                       "name":  "CreateChild",
                       "cmdlet":  "New-TcTreeItem",
-                      "description":  "Generic tree tool that CHANGES the configuration: create a child below Path (ITcSmTreeItem.CreateChild(Name, SubType, Before, VInfo), TE1000 v1.7.0 5.2.1.2). Prefer AddPou / AddDut / AddGvl / AddLibrary / IoScan when they cover the object. SubType / VInfo depend on the parent; only use values documented in TE1000 / InfoSys, e.g. TIRT task SubType 0 = with image, 1 = without image (6.3.1); TIID EtherCAT master 111 (6.6.1). DryRun defaults to true (nothing created; data.plannedPath, data.currentChildren). Checks: parent exists (TREEITEM_NOT_FOUND with nearest parent), no child with Name (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing created), CreateChild, look up again and re-read the parent ProduceXml (it may only gain entries, data.parentUnchanged): data.verified=true, data.createdPath / createdName (XAE may rename: data.warnings); refused -> TREEITEM_CREATE_FAILED, not found afterwards or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
+                      "description":  "Generic tree tool that CHANGES the configuration: create a child below Path (ITcSmTreeItem.CreateChild(Name, SubType, Before, VInfo), TE1000 v1.7.0 5.2.1.2). Prefer AddPou / AddDut / AddGvl / AddLibrary / IoScan when they cover the object. SubType / VInfo depend on the parent; only use values documented in TE1000 / InfoSys, e.g. TIRT task SubType 0 = with image, 1 = without image (6.3.1); TIID EtherCAT master 111 (6.6.1). DryRun defaults to true (nothing created; data.plannedPath, data.currentChildren). Checks: parent exists (TREEITEM_NOT_FOUND with nearest parent), no child with Name (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing created), CreateChild, look up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged): data.verified=true, data.createdPath / createdName (XAE may rename: data.warnings); refused -> TREEITEM_CREATE_FAILED, not found afterwards or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -421,7 +421,7 @@
                   {
                       "name":  "DeleteChild",
                       "cmdlet":  "Remove-TcTreeItem",
-                      "description":  "Generic tree tool that DELETES configuration: delete the tree item at Path (its parent ITcSmTreeItem.DeleteChild(name), TE1000 v1.7.0 5.2.1.3). Prefer a dedicated tool when one exists. Full path only, no wildcards, not a top-level node (TREEITEM_PATH_INVALID). ConfirmName is required and must equal the item name exactly, else TREEITEM_DELETE_NAME_MISMATCH (data.nodeName) and nothing is deleted. The item must report the parent derived from Path, else TREEITEM_DELETE_FAILED data.reason parent-mismatch (nothing deleted). DryRun defaults to true (nothing deleted; data.nodeName, itemType, childCount, children). DryRun=false: backup first (recursive ProduceXml data.backupPath, disk file data.backupFiles, ExportChild .xti data.exportPath for ImportChild). When the ExportChild backup fails or its file is missing nothing is deleted: TREEITEM_BACKUP_FAILED data.reason export-failed / export-missing; AllowNoExport=true deletes anyway with a warning. IDE_MODAL_DIALOG if a dialog is open. Then DeleteChild, then the path must no longer resolve: data.verified=true, else TREEITEM_VERIFY_FAILED; refused -> TREEITEM_DELETE_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
+                      "description":  "Generic tree tool that DELETES configuration: delete the tree item at Path (its parent ITcSmTreeItem.DeleteChild(name), TE1000 v1.7.0 5.2.1.3). Prefer a dedicated tool when one exists. Full path only, no wildcards, not a top-level node (TREEITEM_PATH_INVALID). ConfirmName is required and must equal the item name exactly, else TREEITEM_DELETE_NAME_MISMATCH (data.nodeName) and nothing is deleted. The item must report the parent derived from Path, else TREEITEM_DELETE_FAILED data.reason parent-mismatch (nothing deleted). DryRun defaults to true (nothing deleted; data.nodeName, itemType, childCount, children). DryRun=false: backup first (recursive ProduceXml data.backupPath, disk file data.backupFiles, ExportChild file data.exportPath for ImportChild: .xti, or .zip for a PLC node below TIPC, measured 2026-10-30 4026 VS2022). A task without a PLC project has no .TcTTO; that is not a warning. When the ExportChild backup fails or its file is missing nothing is deleted: TREEITEM_BACKUP_FAILED data.reason export-failed / export-missing; AllowNoExport=true deletes anyway with a warning. IDE_MODAL_DIALOG if a dialog is open. Then DeleteChild, then the path must no longer resolve: data.verified=true, else TREEITEM_VERIFY_FAILED; refused -> TREEITEM_DELETE_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -445,7 +445,7 @@
                                                                         },
                                                              "AllowNoExport":  {
                                                                                    "type":  "boolean",
-                                                                                   "description":  "true = delete even when the ExportChild .xti backup failed or was not written (only the recursive ProduceXml backup remains, ImportChild cannot restore it; data.warnings says so). Default false: TREEITEM_BACKUP_FAILED, nothing deleted."
+                                                                                   "description":  "true = delete even when the ExportChild backup (.xti, .zip below TIPC) failed or was not written (only the recursive ProduceXml backup remains, ImportChild cannot restore it; data.warnings says so). Default false: TREEITEM_BACKUP_FAILED, nothing deleted."
                                                                                }
                                                          },
                                           "required":  [
@@ -562,7 +562,7 @@
                   {
                       "name":  "ExportChild",
                       "cmdlet":  "Export-TcTreeItem",
-                      "description":  "Generic tree tool: export the tree item at Path with its subtree to an .xti file (parent ITcSmTreeItem.ExportChild(name, FilePath), TE1000 v1.7.0 5.2.1.4). Does not change the configuration. FilePath must be an absolute file path (not a root such as C:\\, no < > | \" * ?), its folder must exist and the file must not exist (TREEITEM_EXPORT_FAILED, data.reason not-absolute / invalid-path / folder-missing / file-exists). Success only when the file exists and is not empty (data.exported, data.fileSize). Re-import with ImportChild.",
+                      "description":  "Generic tree tool: export the tree item at Path with its subtree to an .xti file (parent ITcSmTreeItem.ExportChild(name, FilePath), TE1000 v1.7.0 5.2.1.4). Does not change the configuration. A PLC node (Path below TIPC) needs a .zip file name: XAE refuses .xti there (\"doesn't specify a zip archive\", measured 2026-10-30 4026 VS2022), so the module refuses it first (TREEITEM_EXPORT_FAILED data.reason plc-requires-zip, hint with the .zip name). FilePath must be an absolute file path (not a root such as C:\\, no < > | \" * ?), its folder must exist and the file must not exist (TREEITEM_EXPORT_FAILED, data.reason not-absolute / invalid-path / folder-missing / file-exists). Success only when the file exists and is not empty (data.exported, data.fileSize). Re-import with ImportChild.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -577,7 +577,7 @@
                                                                       },
                                                              "FilePath":  {
                                                                               "type":  "string",
-                                                                              "description":  "Absolute path of the .xti file to write; its folder must exist, the file must not."
+                                                                              "description":  "Absolute path of the file to write: .xti, or .zip for a node below TIPC (PLC node; measured 2026-10-30 4026 VS2022). Its folder must exist, the file must not."
                                                                           }
                                                          },
                                           "required":  [
@@ -779,7 +779,7 @@
                   {
                       "name":  "ImportChild",
                       "cmdlet":  "Import-TcTreeItem",
-                      "description":  "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). DryRun defaults to true (nothing imported; data.currentChildren, data.fileSize). Checks: FilePath is a valid absolute file path and exists (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), parent exists, a child named Name does not exist (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing imported), ImportChild, look the imported item up again and re-read the parent ProduceXml (it may only gain entries, data.parentUnchanged): data.verified=true, data.importedPath / importedName; refused -> TREEITEM_IMPORT_FAILED, not found or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
+                      "description":  "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). A PLC node (Path below TIPC) is imported from the .zip file ExportChild wrote (measured 2026-10-30 4026 VS2022). DryRun defaults to true (nothing imported; data.currentChildren, data.fileSize). Checks: FilePath is a valid absolute file path and exists (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), parent exists, a child named Name does not exist (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). Without Name the name is read from the .xti (data.expectedName; __FILENAME__ = file name without extension; null for a .zip) and checked the same way, dry-run included (XAE would rename silently, e.g. Task28 -> Task28_1). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing imported), ImportChild, look the imported item up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged): data.verified=true, data.importedPath / importedName (a name other than Name / expectedName: data.warnings); refused -> TREEITEM_IMPORT_FAILED, not found or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -794,7 +794,7 @@
                                                                       },
                                                              "FilePath":  {
                                                                               "type":  "string",
-                                                                              "description":  "Absolute path of the .xti / XML file to import."
+                                                                              "description":  "Absolute path of the .xti / XML file to import; .zip for a node below TIPC (PLC node, measured 2026-10-30 4026 VS2022)."
                                                                           },
                                                              "Before":  {
                                                                             "type":  "string",
@@ -808,7 +808,7 @@
                                                                            },
                                                              "Name":  {
                                                                           "type":  "string",
-                                                                          "description":  "Optional new name of the imported item (bstrName); empty keeps the name from the file.",
+                                                                          "description":  "Optional new name of the imported item (bstrName); empty keeps the name from the file (data.expectedName, checked for an existing child).",
                                                                           "default":  ""
                                                                       },
                                                              "DryRun":  {
@@ -1048,7 +1048,7 @@
                                                                       },
                                                              "Recursive":  {
                                                                                "type":  "boolean",
-                                                                               "description":  "Passed as bRecursive to ProduceXml (default false). What it adds is not described in the manual excerpt (5.2.1.8); not measured."
+                                                                               "description":  "Passed as bRecursive to ProduceXml (default false). The manual excerpt (5.2.1.8) does not say what it adds. Measured 2026-10-30 (registered tcauto, 4026 VS2022 XAE 3.1.4026.22): no difference on TIRT, a Task (TIRT^PlcTask) and a PLC folder with 3 children; other node types (I/O, NC) not measured."
                                                                            }
                                                          },
                                           "required":  [

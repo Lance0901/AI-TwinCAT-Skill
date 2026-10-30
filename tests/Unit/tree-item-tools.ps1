@@ -74,6 +74,7 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         $finalName = if ($global:T.CreateMode -eq 'rename') { "$name (1)" } else { $name }
         if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
         if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$name</Child></TreeItem>") }
+        if ($global:T.ParentMode -match '^count(\d)$') { Step-MockChildCount $this ([int]$Matches[1]) }
         $c = Add-MockNode "$($this.PathName)^$finalName"
         Write-Output -NoEnumerate $c
     }
@@ -91,6 +92,10 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         $global:T.Exports.Add("$($this.PathName)|$name|$file") | Out-Null
         if ($global:T.ExportMode -eq 'throw') { throw [System.Runtime.InteropServices.COMException]::new('E_INVALIDARG', -2147024809) }
         if ($global:T.ExportMode -eq 'nofile') { return }
+        # XAE refuses a file name other than .zip below TIPC (measured 2026-10-30, phase1-2.8.md #2)
+        if ($this.PathName -like 'TIPC^*' -and [System.IO.Path]::GetExtension($file) -ine '.zip') {
+            throw [System.Runtime.InteropServices.COMException]::new("Cannot export child. The filename '$file' doesn't specify a zip archive! (ITcSmTreeItem:ExportChild)", -2147467259)
+        }
         Set-Content -LiteralPath $file -Value "<TreeItem><ItemName>$name</ItemName></TreeItem>" -Encoding ASCII
     }
     $n | Add-Member ScriptMethod ImportChild {
@@ -100,11 +105,19 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         $nm = if ([string]::IsNullOrEmpty($name)) { 'Imported' } else { $name }
         if ($global:T.ParentMode -eq 'change') { $this.Xml = $this.Xml.Replace('</ItemName>', 'X</ItemName>') }
         if ($global:T.ParentMode -eq 'add') { $this.Xml = $this.Xml.Replace('</TreeItem>', "<Child>$nm</Child></TreeItem>") }
+        if ($global:T.ParentMode -match '^count(\d)$') { Step-MockChildCount $this ([int]$Matches[1]) }
         $c = Add-MockNode "$($this.PathName)^$nm"
         if ($global:T.ImportMode -eq 'nullreturn') { return $null }
         Write-Output -NoEnumerate $c
     }
     $n
+}
+# Parent ProduceXml: TreeItem/ChildCount grows by -By (XAE: +1 per new child, measured 2026-10-30).
+function Step-MockChildCount($Node, [int]$By) {
+    $doc = New-Object System.Xml.XmlDocument; $doc.LoadXml($Node.Xml)
+    $cc = $doc.SelectSingleNode('TreeItem/ChildCount')
+    $cc.InnerText = [string]([int]$cc.InnerText + $By)
+    $Node.Xml = $doc.OuterXml
 }
 function Add-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
     $n = New-MockNode -Path $Path -ItemType $ItemType -Xml $Xml
@@ -273,7 +286,8 @@ try {
     $res = Remove-TcTreeItem -Path 'TIRT^Task 2' -ConfirmName 'Task 2' -DryRun $false
     Check 'delete-ok' ($res.success -and $res.data.verified -and -not $global:T.Nodes.ContainsKey('TIRT^Task 2') -and $global:T.Mods[0] -eq 'DeleteChild TIRT^Task 2') ($res | ConvertTo-Json -Depth 5 -Compress)
     Check 'delete-backup-xml-and-xti' ((Test-Path -LiteralPath $res.data.backupPath) -and $res.data.exportPath -like '*TIRT_Task 2.xti' -and (Test-Path -LiteralPath $res.data.exportPath) -and $global:T.Exports[0] -like 'TIRT|Task 2|*') "$($res.data.backupPath) $($res.data.exportPath)"
-    Check 'delete-task-no-tctto-warning' ((@($res.data.warnings) -join ' ') -match 'Task 2.TcTTO') (@($res.data.warnings) -join ' | ')
+    # phase1-2.8.md #3: a task below TIRT without a PLC project has no .TcTTO; that is no warning
+    Check 'delete-task-without-tctto-no-warning' (@($res.data.warnings).Count -eq 0 -and @($res.data.backupFiles).Count -eq 0) (@($res.data.warnings) -join ' | ')
     $null = Add-MockNode 'TIRT^Task 3' 19
     $global:T.DeleteMode = 'noop'
     $res = Remove-TcTreeItem -Path 'TIRT^Task 3' -ConfirmName 'Task 3' -DryRun $false
@@ -420,18 +434,18 @@ try {
     }
     Check 'review7-no-deadline-comment-per-call' ($comments[0] -ge 1 -and $comments[1] -ge 1 -and $comments[2] -ge 2 -and $comments[3] -ge 1 -and $comments[4] -ge 1) ($comments -join ',')
 
-    # 8. PLC_LOGGED_IN: hint = PlcLogout, then rerun the same tool (named)
+    # 8. PLC_LOGGED_IN: hint = Exit-TcPlcOnline (MCP: PlcLogout), then rerun the same tool (named)
     Reset-Mock
     $global:T.CreateMode = 'loggedin'
     $res = New-TcTreeItem -Path 'TIRT' -Name 'Task L' -DryRun $false
-    Check 'review8-plc-logged-in-hint' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'PlcLogout' -and $res.error.hint.Contains("CreateChild 'TIRT^Task L'") -and $res.error.hint -notmatch 'AddPou') (Json $res)
+    Check 'review8-plc-logged-in-hint' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'Exit-TcPlcOnline' -and $res.error.hint -notmatch 'PlcLogout' -and $res.error.hint.Contains("CreateChild 'TIRT^Task L'") -and $res.error.hint -notmatch 'AddPou') (Json $res)
     $global:T.CreateMode = 'ok'
     # extra: the backup step rethrows PLC_LOGGED_IN (same pass-through list) instead of TREEITEM_BACKUP_FAILED
     $null = Add-MockNode 'TIRT^Task 8' 19
     $global:T.Mods.Clear()
     $global:T.ProduceRecThrows = 'Cannot add an object because it affects a device you are currently logged into.'
     $res = Remove-TcTreeItem -Path 'TIRT^Task 8' -ConfirmName 'Task 8' -DryRun $false
-    Check 'review-extra-backup-passthrough-plc-logged-in' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'PlcLogout' -and $global:T.Nodes.ContainsKey('TIRT^Task 8') -and $global:T.Mods.Count -eq 0) (Json $res)
+    Check 'review-extra-backup-passthrough-plc-logged-in' ($res.error.code -eq 'PLC_LOGGED_IN' -and $res.error.hint -match 'Exit-TcPlcOnline' -and $global:T.Nodes.ContainsKey('TIRT^Task 8') -and $global:T.Mods.Count -eq 0) (Json $res)
     $global:T.ProduceRecThrows = $null
 
     # 9. value comparison: see tree-item-helpers.ps1 value-equal-*; here a case-only change is a real change
@@ -480,6 +494,94 @@ try {
     $toolsJson = (Get-Content -LiteralPath (Join-Path $root 'mcp-server\tools.json') -Raw -Encoding UTF8 | ConvertFrom-Json).tools
     $delTool = @($toolsJson | Where-Object { $_.name -eq 'DeleteChild' })[0]
     Check 'review11-tools-json-allownoexport' ($delTool.inputSchema.properties.AllowNoExport.type -eq 'boolean' -and $delTool.description -match 'AllowNoExport') (Json $delTool.inputSchema.properties.AllowNoExport)
+
+    # === registered tcauto verification 2.8 (phase1-2.8.md "issues found") ===
+    # #1 parent check: TreeItem/ChildCount +1 is the new child, anything else is still a change
+    Reset-Mock
+    $parentXml = '<TreeItem><ItemName>TIRT</ItemName><PathName>TIRT</PathName><ChildCount>1</ChildCount></TreeItem>'
+    $global:T.Nodes['TIRT'].Xml = $parentXml
+    $global:T.ParentMode = 'count1'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task C1' -SubType 1 -DryRun $false
+    Check 'v28-1-create-childcount-plus1-verified' ($res.success -and $res.data.verified -eq $true -and $res.data.parentUnchanged -eq $true -and $null -eq $res.data.PSObject.Properties['unexpectedChanges'] -and ([xml]$global:T.Nodes['TIRT'].Xml).TreeItem.ChildCount -eq '2') (Json $res)
+    $global:T.Nodes['TIRT'].Xml = $parentXml
+    $global:T.ParentMode = 'count2'
+    $res = New-TcTreeItem -Path 'TIRT' -Name 'Task C3' -SubType 1 -DryRun $false
+    $u = @($res.data.unexpectedChanges)
+    Check 'v28-1-create-childcount-plus2-flagged' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $res.data.parentUnchanged -eq $false -and $u.Count -eq 1 -and $u[0].path -eq 'TreeItem/ChildCount' -and $u[0].kind -eq 'changed' -and $u[0].before -eq '1' -and $u[0].after -eq '3') (Json $res)
+    $xtiC = Join-Path $work 'count.xti'
+    Set-Content -LiteralPath $xtiC -Value '<TreeItem/>' -Encoding ASCII
+    $global:T.Nodes['TIRT'].Xml = $parentXml
+    $global:T.ParentMode = 'count1'
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiC -Name 'Imp C1' -DryRun $false
+    Check 'v28-1-import-childcount-plus1-verified' ($res.success -and $res.data.verified -eq $true -and $res.data.parentUnchanged -eq $true) (Json $res)
+    $global:T.Nodes['TIRT'].Xml = $parentXml
+    $global:T.ParentMode = 'count2'
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiC -Name 'Imp C3' -DryRun $false
+    Check 'v28-1-import-childcount-plus2-flagged' ($res.error.code -eq 'TREEITEM_VERIFY_FAILED' -and @($res.data.unexpectedChanges)[0].kind -eq 'changed') (Json $res)
+
+    # #2 PLC nodes (below TIPC) are exported to .zip: DeleteChild backup and ExportChild
+    Reset-Mock
+    $null = Add-MockNode 'TIPC^P^P Project^Tmp' 601
+    $res = Remove-TcTreeItem -Path 'TIPC^P^P Project^Tmp' -ConfirmName 'Tmp' -DryRun $false
+    Check 'v28-2-delete-tipc-zip-backup' ($res.success -and $res.data.verified -and $res.data.exportPath -like '*TIPC_P_P Project_Tmp.zip' -and (Test-Path -LiteralPath $res.data.exportPath) -and -not $global:T.Nodes.ContainsKey('TIPC^P^P Project^Tmp')) (Json $res)
+    $null = Add-MockNode 'TIRT^Task Z' 19
+    $res = Remove-TcTreeItem -Path 'TIRT^Task Z' -ConfirmName 'Task Z' -DryRun $false
+    Check 'v28-2-delete-tirt-still-xti' ($res.success -and $res.data.exportPath -like '*TIRT_Task Z.xti') (Json $res)
+    $global:T.Exports.Clear()
+    $res = Export-TcTreeItem -Path 'TIPC^P^P Project^POUs' -FilePath (Join-Path $work 'pous.xti')
+    Check 'v28-2-export-tipc-xti-refused' ($res.error.code -eq 'TREEITEM_EXPORT_FAILED' -and $res.data.reason -eq 'plc-requires-zip' -and $global:T.Exports.Count -eq 0 -and $res.error.hint.Contains((Join-Path $work 'pous.zip')) -and $res.error.hint -match 'Export-TcTreeItem') (Json $res)
+    $res = Export-TcTreeItem -Path 'TIPC^P^P Project^POUs' -FilePath (Join-Path $work 'pous.zip')
+    Check 'v28-2-export-tipc-zip-ok' ($res.success -and $res.data.exported -and $global:T.Exports.Count -eq 1) (Json $res)
+    $res = Export-TcTreeItem -Path 'TIPC^P^P Project^POUs' -FilePath (Join-Path $work 'POUS2.ZIP')
+    Check 'v28-2-export-tipc-zip-case-insensitive' ($res.success) (Json $res)
+    $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'task.xti')
+    Check 'v28-2-export-tirt-xti-ok' ($res.success) (Json $res)
+    $helpExp = [string](Get-Help Export-TcTreeItem -Parameter FilePath | Out-String)
+    $helpImp = [string](Get-Help Import-TcTreeItem -Parameter FilePath | Out-String)
+    $helpText = "$helpExp $helpImp"
+    Check 'v28-2-help-mentions-zip' (([regex]::Matches($helpText, '\.zip')).Count -ge 2 -and $helpText -match '2026-10-30') $helpText
+    $tj = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\mcp-server\tools.json') -Raw -Encoding UTF8 | ConvertFrom-Json).tools
+    $zipDesc = @($tj | Where-Object { @('ExportChild', 'ImportChild', 'DeleteChild') -contains $_.name } | Where-Object { $_.description -match '\.zip' -and $_.description -match '2026-10-30' })
+    Check 'v28-2-tools-json-mentions-zip' ($zipDesc.Count -eq 3) (@($zipDesc | ForEach-Object { $_.name }) -join ',')
+
+    # #4 ImportChild without Name: the name in the .xti is checked for a clash, a rename is a warning
+    Reset-Mock
+    $xtiF = Join-Path $work 'PlcTask.xti'
+    Set-Content -LiteralPath $xtiF -Value '<?xml version="1.0"?><TcSmItem ClassName="CTaskDef"><Task Id="6"><Name>__FILENAME__</Name></Task></TcSmItem>' -Encoding ASCII
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiF
+    Check 'v28-4-import-filename-clash-dryrun' ($res.error.code -eq 'TREEITEM_ALREADY_EXISTS' -and $res.data.expectedName -eq 'PlcTask' -and $global:T.Mods.Count -eq 0) (Json $res)
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiF -DryRun $false
+    Check 'v28-4-import-filename-clash-write' ($res.error.code -eq 'TREEITEM_ALREADY_EXISTS' -and $global:T.Mods.Count -eq 0 -and (Backups).Count -eq 0) (Json $res)
+    $xtiN = Join-Path $work 'other-file.xti'
+    Set-Content -LiteralPath $xtiN -Value '<TcSmItem><Task Id="6"><Name>Task N</Name></Task></TcSmItem>' -Encoding ASCII
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiN
+    Check 'v28-4-import-literal-name-dryrun-ok' ($res.success -and $res.data.expectedName -eq 'Task N') (Json $res)
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiN -DryRun $false
+    Check 'v28-4-import-renamed-warning' ($res.success -and $res.data.importedName -eq 'Imported' -and (@($res.data.warnings) -join ' ') -match "named the imported item 'Imported', not 'Task N'") (Json $res)
+    $null = Add-MockNode 'TIRT^Task N' 19
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiN
+    Check 'v28-4-import-literal-name-clash' ($res.error.code -eq 'TREEITEM_ALREADY_EXISTS' -and $res.error.message -match 'pass -Name') (Json $res)
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $xtiN -Name 'Task N2'
+    Check 'v28-4-import-name-given-overrides' ($res.success -and $null -eq $res.data.PSObject.Properties['expectedName']) (Json $res)
+    $zipF = Join-Path $work 'PlcTask.zip'
+    Set-Content -LiteralPath $zipF -Value 'PK' -Encoding ASCII
+    $res = Import-TcTreeItem -Path 'TIRT' -FilePath $zipF
+    Check 'v28-4-import-zip-no-name-check' ($res.success -and $null -eq $res.data.expectedName) (Json $res)
+
+    # #5 hints name the cmdlet only: the MCP server rewrites it into the tool name ('X (X)' otherwise)
+    $dupRe = '\b[A-Z][A-Za-z]+\s?[(\uFF08][A-Z][a-z]+-Tc[A-Za-z]+[)\uFF09]'
+    $allHints = @(& $mod { @($script:TcErrorHints.Values) + @($script:TcTreeItemPlcLoggedInHint) + @($script:TcXmlMergeReasonHints.Values) })
+    $dups = @($allHints | Where-Object { $_ -cmatch $dupRe } | ForEach-Object { $Matches[0] })
+    Check 'v28-5-no-tool-and-cmdlet-pair-in-hints' ($allHints.Count -gt 50 -and $dups.Count -eq 0) "hints=$($allHints.Count) $($dups -join ' | ')"
+    $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
+    $res2 = Get-TcTreeItem -Path 'XXXX^Y'
+    Check 'v28-5-not-found-hint-cmdlet-only' ($res.error.hint -match "Use Get-TcTreeItem -Path 'TIRT'" -and $res.error.hint -notmatch 'LookupTreeItem' -and $res2.error.hint -match 'Get-TcTreeItem' -and $res2.error.hint -cnotmatch $dupRe) "$($res.error.hint) || $($res2.error.hint)"
+    $res = Get-TcTreeItem -Path 'TIRT^*'
+    Check 'v28-5-path-invalid-hint-cmdlet-only' ($res.error.hint -match 'Get-TcTreeItem' -and $res.error.hint -cnotmatch $dupRe) $res.error.hint
+
+    # 6. Recursive: the measured result instead of "not measured"
+    $recHelp = [string](Get-Help Get-TcTreeItemXml -Parameter Recursive | Out-String)
+    Check 'v28-6-recursive-help-measured' ($recHelp -notmatch 'excerpt \(5\.2\.1\.8\); not measured' -and $recHelp -match '2026-10-30') $recHelp
 
     # --- 2.7 hint table and tools.json ---
     $codes = 'TREEITEM_NOT_FOUND', 'TREEITEM_PATH_INVALID', 'TREEITEM_READ_FAILED', 'TREEITEM_ALREADY_EXISTS', 'TREEITEM_CREATE_FAILED', 'TREEITEM_VERIFY_FAILED',

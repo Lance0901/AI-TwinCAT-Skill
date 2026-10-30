@@ -221,7 +221,25 @@ try {
     $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $parentBefore '<TreeItem><Name>TIRT</Name><Children><Child>New</Child><Child>A</Child></Children></TreeItem>')
     Check 'full-compare-additions-only-insert-ok' ($full.Count -eq 0) ($full | ConvertTo-Json -Compress)
     $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $parentBefore '<TreeItem><Name>TIRT2</Name><Children><Child>A</Child><Child>New</Child></Children></TreeItem>')
-    Check 'full-compare-additions-only-change-flagged' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/Name' -and $full[0].kind -eq 'removed' -and $full[0].after -eq 'TIRT2') ($full | ConvertTo-Json -Compress)
+    # a value replaced by another one is 'changed' (phase1-2.8.md #1: before and after both set)
+    Check 'full-compare-additions-only-change-flagged' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/Name' -and $full[0].kind -eq 'changed' -and $full[0].before -eq 'TIRT' -and $full[0].after -eq 'TIRT2') ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $parentBefore '<TreeItem><Children><Child>A</Child></Children></TreeItem>')
+    Check 'full-compare-additions-only-gone-is-removed' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/Name' -and $full[0].kind -eq 'removed' -and $null -eq $full[0].after) ($full | ConvertTo-Json -Compress)
+    # phase1-2.8.md #1: TreeItem/ChildCount may grow by exactly the allowed increment
+    $ccBefore = '<TreeItem><ItemName>TIRT</ItemName><ChildCount>1</ChildCount></TreeItem>'
+    $inc = @{ 'TreeItem/ChildCount' = 1 }
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly -AllowedIncrements $args[2] } $ccBefore '<TreeItem><ItemName>TIRT</ItemName><ChildCount>2</ChildCount></TreeItem>' $inc)
+    Check 'full-compare-childcount-plus1-allowed' ($full.Count -eq 0) ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly -AllowedIncrements $args[2] } $ccBefore '<TreeItem><ItemName>TIRT</ItemName><ChildCount>3</ChildCount></TreeItem>' $inc)
+    Check 'full-compare-childcount-plus2-flagged' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/ChildCount' -and $full[0].kind -eq 'changed' -and $full[0].before -eq '1' -and $full[0].after -eq '3') ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly -AllowedIncrements $args[2] } $ccBefore '<TreeItem><ItemName>TIRT</ItemName><ChildCount>0</ChildCount></TreeItem>' $inc)
+    Check 'full-compare-childcount-minus1-flagged' ($full.Count -eq 1 -and $full[0].kind -eq 'changed') ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly } $ccBefore '<TreeItem><ItemName>TIRT</ItemName><ChildCount>2</ChildCount></TreeItem>')
+    Check 'full-compare-childcount-no-allowance-flagged' ($full.Count -eq 1 -and $full[0].kind -eq 'changed') ($full | ConvertTo-Json -Compress)
+    $full = @(& $mod { Compare-TcTreeItemXmlFull -BeforeXml $args[0] -AfterXml $args[1] -AdditionsOnly -AllowedIncrements $args[2] } '<TreeItem><ItemName>1</ItemName></TreeItem>' '<TreeItem><ItemName>2</ItemName></TreeItem>' $inc)
+    Check 'full-compare-increment-only-for-listed-key' ($full.Count -eq 1 -and $full[0].path -eq 'TreeItem/ItemName') ($full | ConvertTo-Json -Compress)
+    $pinc = & $mod { $script:TcTreeItemParentIncrements }
+    Check 'parent-increments-childcount' ($pinc['TreeItem/ChildCount'] -eq 1 -and $pinc.Count -eq 1) ($pinc | ConvertTo-Json -Compress)
 
     # --- extra: one pass-through list (PLC_LOGGED_IN included), used by the backup and the error result ---
     $codes = & $mod { $script:TcTreeItemPassThroughCodes }
@@ -253,7 +271,15 @@ try {
     $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^PlcTask' -Name 'PlcTask' -ItemType 19 } $work
     Check 'diskfile-task-one' (@($d.Files).Count -eq 1 -and $d.Files[0] -like '*Plc1\PlcTask.TcTTO' -and @($d.Warnings).Count -eq 0) (($d.Files + $d.Warnings) -join ' | ')
     $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^Other' -Name 'Other' -ItemType 19 } $work
-    Check 'diskfile-task-none-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match 'NOT in the backup') ($d.Warnings -join ' | ')
+    # phase1-2.8.md #3: a task without a PLC project has no .TcTTO -> no file, no warning
+    Check 'diskfile-task-none-no-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 0) ($d.Warnings -join ' | ')
+    $null = New-Item -ItemType Directory -Path (Join-Path $work 'Plc3') -Force
+    Set-Content -LiteralPath (Join-Path $work 'Plc3\PlcTask.TcTTO') -Value 'z' -Encoding ASCII
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIRT^PlcTask' -Name 'PlcTask' -ItemType 19 } $work
+    Check 'diskfile-task-ambiguous-still-warning' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match '2 files') ($d.Warnings -join ' | ')
+    Remove-Item -LiteralPath (Join-Path $work 'Plc3') -Recurse -Force
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIPC^P^P Project^POUs^NoPou' -Name 'NoPou' -ItemType 604 } $work
+    Check 'diskfile-pou-none-still-warning' (@($d.Warnings).Count -eq 1 -and $d.Warnings[0] -match 'NOT in the backup') ($d.Warnings -join ' | ')
     $null = New-Item -ItemType Directory -Path (Join-Path $work 'Plc2') -Force
     Set-Content -LiteralPath (Join-Path $work 'Plc2\MAIN.TcPOU') -Value 'x' -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $work 'Plc1\MAIN.TcPOU') -Value 'y' -Encoding ASCII
@@ -261,6 +287,20 @@ try {
     Check 'diskfile-ambiguous-warning' (@($d.Files).Count -eq 0 -and $d.Warnings[0] -match '2 files') ($d.Warnings -join ' | ')
     $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIID^Dev' -Name 'Dev' -ItemType 0 } $work
     Check 'diskfile-no-rule' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 0) ''
+
+    # --- phase1-2.8.md #2: ExportChild file extension; #4: name in an .xti ---
+    $ext = & $mod { @((Get-TcTreeItemExportExtension -Path 'TIPC^P^P Project^POUs'), (Get-TcTreeItemExportExtension -Path 'TIRT^PlcTask'), (Get-TcTreeItemExportExtension -Path 'TIID^Dev')) }
+    Check 'export-extension' ($ext[0] -eq '.zip' -and $ext[1] -eq '.xti' -and $ext[2] -eq '.xti') ($ext -join ',')
+    $xd = Join-Path $work 'xti'
+    $null = New-Item -ItemType Directory -Path $xd -Force
+    # ExportChild of TIRT^Task28 / DeleteChild backup, measured 2026-10-30 (4026 VS2022)
+    Set-Content -LiteralPath (Join-Path $xd 'Task28.xti') -Value '<?xml version="1.0"?><TcSmItem TcSmVersion="1.0" ClassName="CTaskDef" SubType="1"><Task Id="6" Priority="1"><Name>__FILENAME__</Name></Task></TcSmItem>' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'TIRT_Task28.xti') -Value '<?xml version="1.0"?><TcSmItem ClassName="CTaskDef"><Task Id="6"><Name>Task28</Name></Task></TcSmItem>' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'bad.xti') -Value '<TcSmItem><Task>' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'noname.xti') -Value '<TcSmItem><Task Id="6"/></TcSmItem>' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $xd 'Folder.zip') -Value 'PK' -Encoding ASCII
+    $names = & $mod { param($d) @('Task28.xti', 'TIRT_Task28.xti', 'bad.xti', 'noname.xti', 'Folder.zip', 'missing.xti') | ForEach-Object { $n = Get-TcXtiItemName -FilePath (Join-Path $d $_); if ($null -eq $n) { '<null>' } else { $n } } } $xd
+    Check 'xti-item-name' ($names[0] -eq 'Task28' -and $names[1] -eq 'Task28' -and $names[2] -eq '<null>' -and $names[3] -eq '<null>' -and $names[4] -eq '<null>' -and $names[5] -eq '<null>') ($names -join ',')
     Remove-Item -LiteralPath (Join-Path $work '.tcauto-backup') -Recurse -Force
 
 }

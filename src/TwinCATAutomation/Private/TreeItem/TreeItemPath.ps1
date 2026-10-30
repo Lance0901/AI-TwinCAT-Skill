@@ -191,10 +191,12 @@ function Format-TcTreeItemNotFoundHint {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Detail)
     $kids = @($Detail.children)
     $list = if ($kids.Count -gt 0) { ($kids | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
+    # Cmdlet names only, never 'Tool (Cmdlet)': the MCP server rewrites each cmdlet name (and its
+    # -Param value) into the tool name, which made 'LookupTreeItem (LookupTreeItem)' (phase1-2.8.md #5).
     if ($null -eq $Detail.nearestPath) {
-        return "'$Path' not found: the first segment '$($Detail.missingSegment)' does not exist. Top-level nodes that resolve: $list. Use LookupTreeItem (Get-TcTreeItem) on one of them, or GetProjectTree."
+        return "'$Path' not found: the first segment '$($Detail.missingSegment)' does not exist. Top-level nodes that resolve: $list. Use Get-TcTreeItem on one of them, or Get-TcProjectTree."
     }
-    return "'$Path' not found: nearest existing parent is '$($Detail.nearestPath)', '$($Detail.missingSegment)' is not one of its children: $list. Use LookupTreeItem (Get-TcTreeItem) -Path '$($Detail.nearestPath)' to browse."
+    return "'$Path' not found: nearest existing parent is '$($Detail.nearestPath)', '$($Detail.missingSegment)' is not one of its children: $list. Use Get-TcTreeItem -Path '$($Detail.nearestPath)' to browse."
 }
 
 function New-TcTreeItemNotFoundResult {
@@ -438,4 +440,24 @@ function Test-TcTreePathIsPlc {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     return ($Path -ieq 'TIPC' -or $Path -like 'TIPC^*')
+}
+
+function Get-TcTreeItemExportExtension {
+    <#
+    .SYNOPSIS
+        File extension ExportChild needs for a tree path: '.zip' below TIPC (a node inside a PLC
+        project), else '.xti'.
+    .DESCRIPTION
+        For a node below TIPC XAE refuses any other file name: "The filename '...xti' doesn't specify
+        a zip archive! (ITcSmTreeItem:ExportChild)"; the same node exported to a .zip file and
+        imported again with ImportChild (registered tcauto measured 2026-10-30, 4026 VS2022 XAE
+        3.1.4026.22, a PLC folder below TIPC^<Plc>^<Plc> Project; phase1-2.8.md issue #2). TE1000
+        v1.7.0 5.2.1.4 does not mention it.
+    .PARAMETER Path
+        Full tree path of the node to export.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -like 'TIPC^*') { return '.zip' }
+    return '.xti'
 }

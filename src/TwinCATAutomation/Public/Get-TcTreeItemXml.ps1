@@ -12,8 +12,10 @@ function Get-TcTreeItemXml {
     .PARAMETER Path
         Full tree path, e.g. "TIRT^PlcTask". No wildcards.
     .PARAMETER Recursive
-        Passed as bRecursive to ProduceXml (default false). What it adds is not described in the manual
-        excerpt (5.2.1.8); not measured.
+        Passed as bRecursive to ProduceXml (default false). The manual excerpt (5.2.1.8) does not say
+        what it adds. Measured 2026-10-30 (registered tcauto, 4026 VS2022 XAE 3.1.4026.22): no difference
+        on TIRT, a Task (TIRT^PlcTask) and a PLC folder with 3 children; other node types (I/O, NC) not
+        measured.
     .EXAMPLE
         Get-TcTreeItemXml -Path 'TIRT^PlcTask'
     #>

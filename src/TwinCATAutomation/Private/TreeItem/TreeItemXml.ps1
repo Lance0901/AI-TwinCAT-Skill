@@ -356,9 +356,12 @@ function Compare-TcTreeItemXmlFull {
             Test-TcXmlValueEqual), 'removed' (only before), 'added' (only after). A different number of
             repeated elements shows up as removed / added paths.
           -AdditionsOnly (parent of CreateChild / ImportChild): by index-free key, as multisets; every
-            value before must still be there after (else kind 'removed', after = the values now under
-            that key); extra values after are allowed (the new child may be listed in the parent, and
-            an insert with -Before shifts the [n] indexes).
+            value before must still be there after; extra values after are allowed (the new child may
+            be listed in the parent, and an insert with -Before shifts the [n] indexes). A value before
+            that is gone is kind 'changed' when the key still has other values after (after = those
+            values, e.g. ChildCount '1' -> '3'), 'removed' when nothing is left under the key.
+            -AllowedIncrements: a key listed there may instead have grown by exactly that number
+            (both values numeric, ConvertTo-TcXmlNumber); any other change of it is still reported.
         Throws when either XML is empty or does not parse.
     .PARAMETER BeforeXml
         ProduceXml before the write.
@@ -368,13 +371,17 @@ function Compare-TcTreeItemXmlFull {
         Leaf paths not compared (the fragment's leaves).
     .PARAMETER AdditionsOnly
         Allow additions only (parent check).
+    .PARAMETER AllowedIncrements
+        With -AdditionsOnly: index-free key -> the exact numeric increase allowed for it, e.g.
+        @{ 'TreeItem/ChildCount' = 1 } (Test-TcTreeItemParentUnchanged).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyString()][string]$BeforeXml,
         [Parameter(Mandatory)][AllowEmptyString()][string]$AfterXml,
         [Parameter()][AllowEmptyCollection()][string[]]$ExcludePaths = @(),
-        [switch]$AdditionsOnly
+        [switch]$AdditionsOnly,
+        [Parameter()][hashtable]$AllowedIncrements = @{}
     )
     if ([string]::IsNullOrWhiteSpace($BeforeXml) -or [string]::IsNullOrWhiteSpace($AfterXml)) { throw 'ProduceXml returned no XML' }
     $db = New-Object System.Xml.XmlDocument
@@ -399,8 +406,21 @@ function Compare-TcTreeItemXmlFull {
             $hit = -1
             if ($null -ne $vals) { for ($i = 0; $i -lt $vals.Count; $i++) { if (Test-TcXmlValueEqual -Expected $l.value -Actual $vals[$i]) { $hit = $i; break } } }
             if ($hit -ge 0) { $vals.RemoveAt($hit); continue }
-            $now = if ($null -ne $vals -and $vals.Count -gt 0) { ($vals.ToArray()) -join ' | ' } else { $null }
-            $out.Add([PSCustomObject]@{ path = $l.path; kind = 'removed'; before = $l.value; after = $now })
+            if ($null -ne $vals -and $null -ne $AllowedIncrements -and $AllowedIncrements.ContainsKey($l.key)) {
+                $nb = ConvertTo-TcXmlNumber -Value ([string]$l.value).Trim()
+                if ($null -ne $nb) {
+                    for ($i = 0; $i -lt $vals.Count; $i++) {
+                        $na = ConvertTo-TcXmlNumber -Value ([string]$vals[$i]).Trim()
+                        if ($null -ne $na -and ($na - $nb) -eq [decimal]$AllowedIncrements[$l.key]) { $hit = $i; break }
+                    }
+                }
+                if ($hit -ge 0) { $vals.RemoveAt($hit); continue }
+            }
+            # The key still has values after: the value changed; nothing left under the key: removed.
+            if ($null -ne $vals -and $vals.Count -gt 0) {
+                $out.Add([PSCustomObject]@{ path = $l.path; kind = 'changed'; before = $l.value; after = (($vals.ToArray()) -join ' | ') })
+            }
+            else { $out.Add([PSCustomObject]@{ path = $l.path; kind = 'removed'; before = $l.value; after = $null }) }
         }
         return $out.ToArray()
     }
@@ -416,6 +436,41 @@ function Compare-TcTreeItemXmlFull {
         if (-not $mb.Contains($k)) { $out.Add([PSCustomObject]@{ path = $k; kind = 'added'; before = $null; after = $ma[$k] }) }
     }
     return $out.ToArray()
+}
+
+function Get-TcXtiItemName {
+    <#
+    .SYNOPSIS
+        Name an ImportChild of -FilePath without bstrName is expected to give the item, or $null when
+        it cannot be told.
+    .DESCRIPTION
+        An .xti written by ExportChild is <TcSmItem><Task ...><Name>...</Name>...: the <Name> child of
+        the first element below the root. ExportChild writes <Name>__FILENAME__</Name> and XAE then
+        names the imported item after the file name without extension (registered tcauto measured
+        2026-10-30, 4026 VS2022 XAE 3.1.4026.22: Task28.xti -> Task28, renamed to Task28_1 because
+        that name existed; phase1-2.8.md issue #4). A literal <Name> (the .xti of a DeleteChild
+        backup) is returned as it is. $null for a .zip (PLC node: not XML), a file that does not parse
+        or a file without that <Name>.
+    .PARAMETER FilePath
+        Absolute path of the file to import.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FilePath)
+    if ([System.IO.Path]::GetExtension($FilePath) -ieq '.zip') { return $null }
+    try {
+        $doc = New-Object System.Xml.XmlDocument
+        $doc.Load($FilePath)
+    }
+    catch { return $null }
+    if ($null -eq $doc.DocumentElement) { return $null }
+    $first = @($doc.DocumentElement.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element } | Select-Object -First 1)
+    if ($first.Count -eq 0) { return $null }
+    $nameEl = @($first[0].get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element -and $_.get_Name() -eq 'Name' } | Select-Object -First 1)
+    if ($nameEl.Count -eq 0) { return $null }
+    $n = ([string]$nameEl[0].get_InnerText()).Trim()
+    if ($n -eq '__FILENAME__') { $n = [System.IO.Path]::GetFileNameWithoutExtension($FilePath) }
+    if ([string]::IsNullOrEmpty($n) -or $n.Contains('^')) { return $null }
+    return $n
 }
 
 function New-TcXmlMergeFailedResult {
@@ -440,6 +495,11 @@ function New-TcXmlMergeFailedResult {
     New-TcResult -Success $false -ErrorCode 'XML_MERGE_FAILED' -Data $Data -ErrorMessage "$Message; nothing was written." -Hint $hint
 }
 
+# Parent fields that grow when CreateChild / ImportChild adds one child: index-free key -> increase.
+# TreeItem/ChildCount +1: registered tcauto measured 2026-10-30, 4026 VS2022 XAE 3.1.4026.22
+# (openspec/changes/complete-automation-interface/verification/phase1-2.8.md issue #1).
+$script:TcTreeItemParentIncrements = @{ 'TreeItem/ChildCount' = 1 }
+
 function Test-TcTreeItemParentUnchanged {
     <#
     .SYNOPSIS
@@ -448,7 +508,9 @@ function Test-TcTreeItemParentUnchanged {
     .DESCRIPTION
         Reads the parent's ProduceXml again and compares it with -BeforeXml
         (Compare-TcTreeItemXmlFull -AdditionsOnly: every non-derived leaf / attribute value before must
-        still be there; extra values are allowed). Sets data.parentUnchanged; on a difference
+        still be there; extra values are allowed). TreeItem/ChildCount may grow by exactly 1: XAE counts
+        the new child there (registered tcauto measured 2026-10-30, 4026 VS2022 XAE 3.1.4026.22, TIRT
+        and TIPC parents, CreateChild and ImportChild; phase1-2.8.md issue #1). Sets data.parentUnchanged; on a difference
         data.verified = false and data.unexpectedChanges. A read-back error is TREEITEM_VERIFY_FAILED too
         (codes of $script:TcTreeItemPassThroughCodes are rethrown).
     .PARAMETER Parent
@@ -474,7 +536,7 @@ function Test-TcTreeItemParentUnchanged {
     $why = $null
     try {
         $afterXml = Get-TcTreeItemXmlText -Item $Parent -Path $Path
-        $unexpected = @(Compare-TcTreeItemXmlFull -BeforeXml $BeforeXml -AfterXml $afterXml -AdditionsOnly)
+        $unexpected = @(Compare-TcTreeItemXmlFull -BeforeXml $BeforeXml -AfterXml $afterXml -AdditionsOnly -AllowedIncrements $script:TcTreeItemParentIncrements)
     }
     catch {
         if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }

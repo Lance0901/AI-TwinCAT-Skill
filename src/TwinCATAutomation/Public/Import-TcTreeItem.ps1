@@ -1,36 +1,44 @@
 function Import-TcTreeItem {
     <#
     .SYNOPSIS
-        Imports an .xti / XML file as a child of a tree item (ITcSmTreeItem.ImportChild). Dry-run by default; backs up the parent and reads back.
+        Imports an .xti / XML file (.zip for a PLC node) as a child of a tree item (ITcSmTreeItem.ImportChild). Dry-run by default; backs up the parent and reads back.
     .DESCRIPTION
         Generic tree tool (MCP ImportChild). ITcSmTreeItem::ImportChild(bstrFile, bstrBefore, bReconnect,
         bstrName) (TE1000 Automation Interface manual v1.7.0, 5.2.1.6, p.59): loads the file, inserts the
         item as a child, reassigns variable IDs and, when bReconnect is not false, restores mappings.
         Samples: TE1000 v1.7.0 6.3.2 "Using Templates" (p.198-199), e.g. TIID ImportChild(file, "", true,
-        "SomeName"). Export a file with Export-TcTreeItem (MCP ExportChild).
+        "SomeName"). Export a file with Export-TcTreeItem (MCP ExportChild). A node below TIPC (PLC
+        node) is exported to and imported from a .zip file (measured 2026-10-30 4026 VS2022: ExportChild
+        refuses .xti there; ImportChild of that .zip worked).
         Checks first (nothing imported on failure): FilePath is a valid absolute file path and exists
         (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), Path exists
         (TREEITEM_NOT_FOUND), a child named Name does not exist yet (TREEITEM_ALREADY_EXISTS), Before is
-        an existing child (LookupTreeItem Path^Before).
+        an existing child (LookupTreeItem Path^Before). Without Name the expected name is read from
+        the .xti file (data.expectedName: the <Name> of the item, __FILENAME__ = the file name without
+        extension, as XAE does; $null for a .zip or a file without it) and checked the same way, in
+        dry-run too (XAE would otherwise rename the item silently, e.g. Task28 -> Task28_1).
         DryRun (default true): ImportChild is NOT called; data.dryRun=true, data.currentChildren,
         data.fileSize.
         DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
         is open (nothing imported), ImportChild, then the imported item is looked up again (returned
         item, else Path^Name, else a new child name) and the parent's ProduceXml read back: it may only
-        have gained entries (data.parentUnchanged). data.verified=true, data.importedPath /
-        importedName; not found, or a parent field changed (data.unexpectedChanges) ->
+        have gained entries (data.parentUnchanged; ChildCount +1 is expected). data.verified=true,
+        data.importedPath / importedName; a name other than Name (or data.expectedName) is listed in
+        data.warnings. Not found, or a parent field changed (data.unexpectedChanges) ->
         TREEITEM_VERIFY_FAILED.
         XAE refusing the call -> TREEITEM_IMPORT_FAILED. Below TIPC: BUILD_REQUIRED code-changed.
     .PARAMETER Path
         Full tree path of the PARENT, e.g. "TIRT" or "TIID". No wildcards.
     .PARAMETER FilePath
-        Absolute path of the .xti / XML file to import.
+        Absolute path of the .xti / XML file to import; .zip for a node below TIPC (PLC node, measured
+        2026-10-30 4026 VS2022).
     .PARAMETER Before
         Optional name of an existing child before which the item is inserted (bstrBefore).
     .PARAMETER Reconnect
         bReconnect (default true): re-establish existing mapping information.
     .PARAMETER Name
-        Optional new name of the imported item (bstrName); empty keeps the name from the file.
+        Optional new name of the imported item (bstrName); empty keeps the name from the file
+        (data.expectedName, checked for an existing child).
     .PARAMETER DryRun
         Default true: only report the plan. false: back up the parent, import, read back.
     .EXAMPLE
@@ -90,10 +98,18 @@ function Import-TcTreeItem {
         $parent = $r.Item
         $childrenBefore = @(Get-TcTreeItemChildNames -Item $parent)
         $data | Add-Member -NotePropertyName currentChildren -NotePropertyValue $childrenBefore
-        if (-not [string]::IsNullOrEmpty($Name)) {
-            if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path "$Path^$Name")) {
+        # Without -Name XAE keeps the name from the file and renames silently on a clash (Task28 ->
+        # Task28_1, measured 2026-10-30): check the name read from the .xti the same way.
+        $expectedName = $Name
+        if ([string]::IsNullOrEmpty($Name)) {
+            $expectedName = Get-TcXtiItemName -FilePath $FilePath
+            $data | Add-Member -NotePropertyName expectedName -NotePropertyValue $expectedName
+        }
+        if (-not [string]::IsNullOrEmpty($expectedName)) {
+            if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path "$Path^$expectedName")) {
+                $how = if ([string]::IsNullOrEmpty($Name)) { " (the name in '$FilePath'; pass -Name to import it under another name)" } else { '' }
                 return New-TcResult -Success $false -ErrorCode 'TREEITEM_ALREADY_EXISTS' -Data $data `
-                    -ErrorMessage "'$Path^$Name' already exists; nothing was imported." -Hint (Get-TcErrorHint -Code 'TREEITEM_ALREADY_EXISTS')
+                    -ErrorMessage "'$Path^$expectedName' already exists$how; nothing was imported." -Hint (Get-TcErrorHint -Code 'TREEITEM_ALREADY_EXISTS')
             }
         }
         # -Before is looked up directly: currentChildren is cut at $script:TcTreeItemMaxChildNames.
@@ -157,8 +173,8 @@ function Import-TcTreeItem {
             $data | Add-Member -NotePropertyName importedName -NotePropertyValue $s.name
             $data | Add-Member -NotePropertyName itemType -NotePropertyValue $s.itemType
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
-            if (-not [string]::IsNullOrEmpty($Name) -and $s.name -cne $Name) {
-                $data.warnings = @(@($data.warnings) + @("XAE named the imported item '$($s.name)', not '$Name'"))
+            if (-not [string]::IsNullOrEmpty($expectedName) -and $s.name -cne $expectedName) {
+                $data.warnings = @(@($data.warnings) + @("XAE named the imported item '$($s.name)', not '$expectedName'"))
             }
             $res = Test-TcTreeItemParentUnchanged -Parent $parent -Path $Path -BeforeXml $parentBefore -Data $data -Operation 'ImportChild'
             if ($null -eq $res) { $res = New-TcResult -Success $true -Data $data }

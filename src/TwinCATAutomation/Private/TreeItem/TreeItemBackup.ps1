@@ -7,13 +7,18 @@
 
 # Node -> disk file rules. A file is backed up only when exactly ONE file with that name is found below
 # the solution directory (backup folders excluded); none or several -> data.warnings, not copied.
-# Match = scriptblock param($Path, $ItemType) -> bool. Extend by adding entries.
+# Match = scriptblock param($Path, $ItemType) -> bool. WarnIfMissing = $false: no file found is normal
+# for some nodes of that kind, so it is not a warning (several files still are). Extend by adding entries.
 $script:TcTreeItemDiskFileRules = @(
     @{
         Kind      = 'Task'
         Extension = '.TcTTO'
         # TIRT^<task>: measured 2026-10-30 (task 2.1), the PLC project folder holds <task>.TcTTO.
         Match     = { param([string]$Path, [int]$ItemType) $Path -match '^TIRT\^[^\^]+$' }
+        # A task created directly below TIRT (no PLC project behind it) has no .TcTTO at all: registered
+        # tcauto measured 2026-10-30, 4026 VS2022 XAE 3.1.4026.22, CreateChild TIRT SubType 1 then
+        # DeleteChild / search below the solution (phase1-2.8.md issue #3). Nothing on disk to back up.
+        WarnIfMissing = $false
     },
     @{
         Kind      = 'PlcPou'
@@ -84,8 +89,10 @@ function Find-TcTreeItemDiskFile {
         Disk files of a tree item per $script:TcTreeItemDiskFileRules: @{ Files = @(paths); Warnings = @() }.
     .DESCRIPTION
         Only rules that match the node are applied. For each: '<Name><Extension>' searched below
-        -SolutionDir (backup folders skipped). Exactly one hit -> Files; none or several -> a warning
-        (the file is not backed up). A node no rule matches returns no file and no warning.
+        -SolutionDir (backup folders skipped). Exactly one hit -> Files; several -> a warning (the
+        file is not backed up); none -> a warning unless the rule has WarnIfMissing = $false (Task:
+        a task without a PLC project has no .TcTTO). A node no rule matches returns no file and no
+        warning.
     .PARAMETER SolutionDir
         Directory of the .sln.
     .PARAMETER Path
@@ -116,7 +123,10 @@ function Find-TcTreeItemDiskFile {
         }
         catch { $found = @() }
         if ($found.Count -eq 1) { $files.Add($found[0]) }
-        elseif ($found.Count -eq 0) { $warnings.Add("$($rule.Kind) node '$Path': no $fileName found below $SolutionDir; that disk file is NOT in the backup (XAE may rewrite it when the node changes)") }
+        elseif ($found.Count -eq 0) {
+            if ($rule.ContainsKey('WarnIfMissing') -and -not $rule.WarnIfMissing) { continue }
+            $warnings.Add("$($rule.Kind) node '$Path': no $fileName found below $SolutionDir; that disk file is NOT in the backup (XAE may rewrite it when the node changes)")
+        }
         else { $warnings.Add("$($rule.Kind) node '$Path': $($found.Count) files named $fileName below $SolutionDir ($($found -join '; ')); none was backed up because the right one cannot be told apart") }
     }
     return @{ Files = $files.ToArray(); Warnings = $warnings.ToArray() }

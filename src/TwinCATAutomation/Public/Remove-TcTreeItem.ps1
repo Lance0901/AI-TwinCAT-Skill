@@ -15,9 +15,10 @@ function Remove-TcTreeItem {
         DryRun (default true): DeleteChild is NOT called; data.dryRun=true, data.nodeName, data.itemType,
         data.childCount, data.children.
         DryRun=false: backup first - ProduceXml(recursive) of the item (data.backupPath), its disk file
-        when known (data.backupFiles), and an ExportChild .xti of the item into the same folder
-        (data.exportPath; restore with ImportChild). When ExportChild fails or its file does not exist
-        nothing is deleted: TREEITEM_BACKUP_FAILED, data.reason export-failed / export-missing, unless
+        when known (data.backupFiles), and an ExportChild file of the item into the same folder
+        (data.exportPath; restore with ImportChild): .zip for a node below TIPC (XAE refuses .xti
+        there, measured 2026-10-30 4026 VS2022), else .xti. When ExportChild fails or its file does
+        not exist nothing is deleted: TREEITEM_BACKUP_FAILED, data.reason export-failed / export-missing, unless
         AllowNoExport is set (then data.warnings says so). IDE_MODAL_DIALOG when a dialog is open before
         ExportChild or DeleteChild. Then DeleteChild, then LookupTreeItem must no longer find the path:
         data.verified=true, else TREEITEM_VERIFY_FAILED. XAE refusing the call -> TREEITEM_DELETE_FAILED.
@@ -29,8 +30,8 @@ function Remove-TcTreeItem {
     .PARAMETER DryRun
         Default true: only report what would be deleted. false: back up, delete, read back.
     .PARAMETER AllowNoExport
-        Delete even when the ExportChild .xti backup failed or was not written (only the ProduceXml
-        backup remains, which ImportChild cannot restore); the result keeps a warning. Default off:
+        Delete even when the ExportChild backup (.xti, or .zip below TIPC) failed or was not written
+        (only the ProduceXml backup remains, which ImportChild cannot restore); the result keeps a warning. Default off:
         TREEITEM_BACKUP_FAILED and nothing deleted.
     .EXAMPLE
         Remove-TcTreeItem -Path 'TIRT^Task 2' -ConfirmName 'Task 2'
@@ -114,7 +115,8 @@ function Remove-TcTreeItem {
         Add-TcBackupToData -Data $data -Backup $bk.Backup
         # Restorable copy of the whole subtree: ExportChild into the backup folder (5.2.1.4: the folder
         # must exist, the file must not). Required: without it nothing is deleted unless -AllowNoExport.
-        $xti = [System.IO.Path]::ChangeExtension($bk.Backup.backupPath, '.xti')
+        # Below TIPC XAE only accepts a .zip file name (Get-TcTreeItemExportExtension, measured 2026-10-30).
+        $exportFile = [System.IO.Path]::ChangeExtension($bk.Backup.backupPath, (Get-TcTreeItemExportExtension -Path $Path))
         $exportProblem = $null
         $exportReason = $null
         $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path' (backup before DeleteChild)" -Data $data
@@ -123,9 +125,9 @@ function Remove-TcTreeItem {
             # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
             # dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode
             # (XAE answers prompts with the default). Not timed yet (task 2.8).
-            Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($nodeName, $xti) } | Out-Null
-            if (Test-Path -LiteralPath $xti -PathType Leaf) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $xti }
-            else { $exportReason = 'export-missing'; $exportProblem = "ExportChild returned but '$xti' does not exist" }
+            Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($nodeName, $exportFile) } | Out-Null
+            if (Test-Path -LiteralPath $exportFile -PathType Leaf) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $exportFile }
+            else { $exportReason = 'export-missing'; $exportProblem = "ExportChild returned but '$exportFile' does not exist" }
         }
         catch {
             if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
