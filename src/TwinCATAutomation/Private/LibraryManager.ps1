@@ -87,7 +87,8 @@ function ConvertTo-TcLibraryInfo {
     .SYNOPSIS
         ITcPlcLibrary (TE1000 5.19) -> @{ libraryName; version; distributor; displayName }, or $null.
     .DESCRIPTION
-        LibraryName, else Name (ScanLibraries entries: Name = LibraryName, measured 2026-10-31).
+        LibraryName, else Name (ScanLibraries entries: Name = LibraryName, measured 2026-10-31 4026 VS2022,
+        self-built client, verification/phase2-probe.md 3.1).
         $null when the object is $null or every field is empty (a visu placeholder has no
         EffectiveResolution, measured 2026-10-31 4026 VS2022).
     .PARAMETER Library
@@ -261,21 +262,21 @@ function Get-TcPlcProjectLibraryEntries {
         (measured 2026-10-31 4026 VS2022 through SaveAsArchive; the References objects look the same before
         and after). Entry: placeholder, defaultResolution, namespace, resolution, resolutionVersion,
         frozen (true when <Resolution> names a version other than '*'). Libraries: <LibraryReference
-        Include> (e.g. 'Tc2_Math,newest,Beckhoff Automation GmbH', measured 2026-10-28): include, name
+        Include> (e.g. 'Tc2_Math,newest,Beckhoff Automation GmbH', measured 2026-10-28 4024 / 4026 with
+        Add-TcLibrary, troubleshooting.md LIBRARY_ADD_FAILED): include, name
         (part before the first comma).
     .PARAMETER Path
         .plcproj path.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
-    $xml = New-Object System.Xml.XmlDocument
-    $xml.Load($Path)
+    $xml = Read-TcXmlFile -Path $Path
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('m', [string]$xml.DocumentElement.NamespaceURI)
     $pre = if ([string]::IsNullOrEmpty([string]$xml.DocumentElement.NamespaceURI)) { '' } else { 'm:' }
     $child = {
         param($node, [string]$localName)
-        foreach ($c in @($node.ChildNodes)) { if ($c.LocalName -eq $localName) { return ([string]$c.InnerText).Trim() } }
+        foreach ($c in @($node.ChildNodes)) { if ($c.get_LocalName() -eq $localName) { return ([string]$c.get_InnerText()).Trim() } }
         $null
     }
     $ph = @{}
@@ -318,10 +319,13 @@ function Test-TcPlcProjectHasLibraryEntry {
         Result of Get-TcPlcProjectLibraryEntries.
     .PARAMETER Name
         Placeholder or library name without '#'.
+    .PARAMETER Kind
+        Placeholder: only placeholders are checked; Library: only LibraryReference; empty: both.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Entries, [Parameter(Mandatory)][string]$Name)
-    if ($Entries.Placeholders.ContainsKey($Name)) { return $true }
+    param([Parameter(Mandatory)]$Entries, [Parameter(Mandatory)][string]$Name, [Parameter()][string]$Kind)
+    if ($Kind -ne 'Library' -and $Entries.Placeholders.ContainsKey($Name)) { return $true }
+    if ($Kind -eq 'Placeholder') { return $false }
     @($Entries.Libraries | Where-Object { $_.name -ieq $Name }).Count -gt 0
 }
 

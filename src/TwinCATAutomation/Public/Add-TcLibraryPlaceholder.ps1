@@ -20,12 +20,16 @@ function Add-TcLibraryPlaceholder {
             "Default Placeholder '...' could not be found!".
         Already present: References is read first; a placeholder '#<Placeholder>' -> success with
         data.alreadyPresent = true, AddPlaceholder is not called, the project file is still saved and
-        read back, no BUILD_REQUIRED (same as Add-TcLibrary). "already contained!" from XAE is mapped to
-        the same result.
-        Failures before anything changed (no BUILD_REQUIRED): LIBRARY_INVALID_ARGUMENT (empty name,
+        read back, no BUILD_REQUIRED (same as Add-TcLibrary). data.libraryName / version / distributor
+        are then the values read from the existing placeholder (its DefaultResolution, else
+        EffectiveResolution) and data.requested holds the parameters; a default library other than
+        -LibraryName adds a warning (nothing is changed). "Placeholder '...' already contained!" from
+        XAE is mapped to the same result.
+        Failures before AddPlaceholder (no BUILD_REQUIRED): LIBRARY_INVALID_ARGUMENT (empty name,
         -Version / -Distributor without -LibraryName), IDE_MODAL_DIALOG (dialog open before
-        AddPlaceholder), PLACEHOLDER_ADD_FAILED with data.reason default-library-not-installed or
-        no-device-placeholder.
+        AddPlaceholder). Errors XAE returned for the call: PLACEHOLDER_ADD_FAILED with data.reason
+        default-library-not-installed ("Default Library '...' not found!") or no-device-placeholder
+        ("Default Placeholder '...' could not be found!").
         Readback after AddPlaceholder: References must list '#<Placeholder>' and, with -LibraryName,
         its effective / default resolution must name that library; then the project file is saved
         (Invoke-TcPlcObjectSave) and the .plcproj read from disk must have a PlaceholderReference /
@@ -44,12 +48,13 @@ function Add-TcLibraryPlaceholder {
         PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC
         project (otherwise PLC_PROJECT_AMBIGUOUS).
     .OUTPUTS
-        data: placeholder, libraryName, version, distributor, referencesPath, alreadyPresent,
+        data: placeholder, libraryName, version, distributor, requested, referencesPath, alreadyPresent,
         reference (References entry read back), projectEntry (.plcproj entry read back), projectSaved.
     .NOTES
-        BUILD_REQUIRED (#65): after AddPlaceholder was called (success, or a failure after the call)
-        the solution is recorded as code-changed (Register-TcCodeChange); alreadyPresent and the
-        failures listed above record nothing.
+        BUILD_REQUIRED (#65): as soon as AddPlaceholder was called (success or any failure, also an
+        error XAE returned, as Add-TcPouMember after CreateChild) the solution is recorded as
+        code-changed (Register-TcCodeChange); only a placeholder found in References before the call
+        and the failures before the call record nothing.
     .EXAMPLE
         Add-TcLibraryPlaceholder -Placeholder Tc2_Math_PH -LibraryName Tc2_Math
     #>
@@ -117,14 +122,18 @@ function Add-TcLibraryPlaceholder {
             }
             catch {
                 $text = Get-TcLibraryErrorText -ErrorRecord $_
-                if ($text -match 'already contained|already included') { $alreadyPresent = $true; $called = $false }
-                elseif ($text -match 'Default Placeholder .* could not be found') {
-                    return New-TcLibraryFailure -Code 'PLACEHOLDER_ADD_FAILED' -Reason 'no-device-placeholder' -Data $data `
+                # complete messages measured 2026-10-31 4026 VS2022 (self-built client, phase2-probe.md 3.1)
+                $own = $null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_)
+                if ($own -and $text -match "Placeholder '[^']*' already contained!") { $alreadyPresent = $true }
+                elseif ($own -and $text -match "Default Placeholder '[^']*' could not be found!") {
+                    $res = New-TcLibraryFailure -Code 'PLACEHOLDER_ADD_FAILED' -Reason 'no-device-placeholder' -Data $data `
                         -Message "AddPlaceholder '$ph' without -LibraryName: XAE found no device placeholder with that name ($text); nothing was added."
+                    return Register-TcCodeChange -Result $res -Change "$change [AddPlaceholder called, refused]"
                 }
-                elseif ($text -match 'Default Library .* not found|0x98510001') {
-                    return New-TcLibraryFailure -Code 'PLACEHOLDER_ADD_FAILED' -Reason 'default-library-not-installed' -Data $data `
+                elseif ($own -and $text -match "Default Library '[^']*' not found!") {
+                    $res = New-TcLibraryFailure -Code 'PLACEHOLDER_ADD_FAILED' -Reason 'default-library-not-installed' -Data $data `
                         -Message "AddPlaceholder '$ph': the default library '$lib' ($Version, $Distributor) is not installed ($text); nothing was added."
+                    return Register-TcCodeChange -Result $res -Change "$change [AddPlaceholder called, refused]"
                 }
                 else { throw }
             }
@@ -135,6 +144,17 @@ function Add-TcLibraryPlaceholder {
         $ref = @($after | Where-Object { $_.isPlaceholder -and [string]$_.placeholderName -ieq $ph }) | Select-Object -First 1
         $data | Add-Member -NotePropertyName alreadyPresent -NotePropertyValue $alreadyPresent
         $data | Add-Member -NotePropertyName reference -NotePropertyValue $ref
+        $data | Add-Member -NotePropertyName requested -NotePropertyValue ([PSCustomObject]@{ libraryName = $data.libraryName; version = $data.version; distributor = $data.distributor })
+        if ($alreadyPresent -and $null -ne $ref) {
+            # report what the existing placeholder really has, not what was asked for
+            $actual = if ($null -ne $ref.defaultResolution) { $ref.defaultResolution } else { $ref.effectiveResolution }
+            $data.libraryName = $(if ($null -ne $actual) { $actual.libraryName } else { $null })
+            $data.version = $(if ($null -ne $actual) { $actual.version } else { $null })
+            $data.distributor = $(if ($null -ne $actual) { $actual.distributor } else { $null })
+            if ($lib -and [string]$data.libraryName -ine $lib) {
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("placeholder '#$ph' already exists with default library '$($data.libraryName)', not '$lib'; it was not changed (remove it with Remove-TcLibraryReference first to re-add it)")
+            }
+        }
         $verifyFail = $null
         if ($null -eq $ref) {
             $verifyFail = @{ Step = 'references'; Message = "AddPlaceholder returned, but References does not list '#$ph'." }
@@ -172,7 +192,7 @@ function Add-TcLibraryPlaceholder {
         }
 
         $ok = New-TcResult -Success $true -Data $data
-        if ($alreadyPresent) { return $ok }
+        if ($alreadyPresent -and -not $called) { return $ok }
         Register-TcCodeChange -Result $ok -Change $change
     }
     catch {

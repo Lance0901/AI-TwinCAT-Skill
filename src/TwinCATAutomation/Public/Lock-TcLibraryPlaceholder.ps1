@@ -18,7 +18,8 @@ function Lock-TcLibraryPlaceholder {
         Exactly one of -Placeholder / -All (LIBRARY_INVALID_ARGUMENT reason target). -Placeholder must
         be a placeholder in References ('#<name>'), else LIBRARY_NOT_FOUND (data.placeholders), a
         library reference of that name -> LIBRARY_INVALID_ARGUMENT reason not-placeholder.
-        DryRun (default true): FreezePlaceholder is NOT called; data.targets[] with placeholder,
+        DryRun (default true): FreezePlaceholder is NOT called; with -All, targets without an
+        EffectiveResolution get a warning first (DryRun=false does not check them); data.targets[] with placeholder,
         effectiveResolution and the current projectResolution / frozen read from the .plcproj on disk.
         DryRun=false: backup of the .plcproj on disk into <solution dir>\.tcauto-backup\<timestamp>\
         (LIBRARY_BACKUP_FAILED = nothing changed), modal dialog check (IDE_MODAL_DIALOG),
@@ -43,8 +44,8 @@ function Lock-TcLibraryPlaceholder {
         data: placeholder, all, dryRun, referencesPath, projectFile, targets[], notFrozen,
         skippedUnresolved, backupPath, backupFiles, warnings, projectSaved.
     .NOTES
-        BUILD_REQUIRED (#65): after FreezePlaceholder was called (success, or a failure after the
-        call) the solution is recorded as code-changed (Register-TcCodeChange).
+        BUILD_REQUIRED (#65): as soon as FreezePlaceholder was called (success or any failure, also
+        "not found" from XAE) the solution is recorded as code-changed (Register-TcCodeChange).
     .EXAMPLE
         Lock-TcLibraryPlaceholder -Placeholder Tc2_Math
     .EXAMPLE
@@ -130,7 +131,14 @@ function Lock-TcLibraryPlaceholder {
         $data | Add-Member -NotePropertyName targets -NotePropertyValue @($targets | ForEach-Object { & $describe $_ $entries })
 
         if ($DryRun) {
-            if ($null -ne $locateError) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the .plcproj could not be read ($locateError); DryRun=false would return LIBRARY_BACKUP_FAILED") }
+            $w = [System.Collections.Generic.List[string]]::new()
+            if ($null -ne $locateError) { $w.Add("the .plcproj could not be read ($locateError); DryRun=false would return LIBRARY_BACKUP_FAILED") }
+            $unresolved = @($targets | Where-Object { $null -eq $_.effectiveResolution } | ForEach-Object { $_.placeholderName })
+            if ($unresolved.Count -gt 0) {
+                $w.Add("no EffectiveResolution (FreezePlaceholder cannot freeze such a placeholder, TE1000 p.244; not measured with -All): $($unresolved -join ', '); DryRun=false does not check them and XAE may refuse the whole call")
+                $data | Add-Member -NotePropertyName skippedUnresolved -NotePropertyValue $unresolved
+            }
+            $data | Add-Member -NotePropertyName warnings -NotePropertyValue $w.ToArray()
             return New-TcResult -Success $true -Data $data
         }
         if ($targets.Count -eq 0) {
@@ -153,8 +161,15 @@ function Lock-TcLibraryPlaceholder {
         }
         catch {
             $text = Get-TcLibraryErrorText -ErrorRecord $_
-            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $text -match 'not found\. Cannot freeze') {
-                return New-TcLibraryFailure -Code 'LIBRARY_NOT_FOUND' -Data $data -Message "FreezePlaceholder '$arg': XAE did not find it ($text); nothing was frozen."
+            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $text -match "Placeholder '[^']*' not found\. Cannot freeze!") {
+                $res = New-TcLibraryFailure -Code 'LIBRARY_NOT_FOUND' -Data $data -Message "FreezePlaceholder '$arg': XAE did not find it ($text); nothing was frozen."
+                return Register-TcCodeChange -Result $res -Change "$change [FreezePlaceholder called, not found]"
+            }
+            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_)) {
+                $unres = @($targets | Where-Object { $null -eq $_.effectiveResolution } | ForEach-Object { $_.placeholderName })
+                $why = if ($unres.Count -gt 0) { " Placeholders without EffectiveResolution: $($unres -join ', ') (TE1000 p.244: FreezePlaceholder returns E_FAIL for such a placeholder; not measured)." } else { '' }
+                $res = New-TcLibraryFailure -Code 'PLACEHOLDER_FREEZE_FAILED' -Data $data -Message "FreezePlaceholder '$arg' failed: $text.$why"
+                return Register-TcCodeChange -Result $res -Change "$change [failed after FreezePlaceholder]"
             }
             throw
         }

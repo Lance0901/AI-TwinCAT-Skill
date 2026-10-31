@@ -33,8 +33,12 @@ function Uninstall-TcLibrary {
         Restore: copy the backed-up folder back to data.repositoryFolder (close XAE first; whether XAE
         picks it up without a rescan is not measured), or install the original .library file again
         with Install-TcLibrary.
-        Then modal dialog check (IDE_MODAL_DIALOG), UninstallLibrary, then ScanLibraries again:
-        the entry must be gone (data.verified), else LIBRARY_VERIFY_FAILED. XAE refusing the call ->
+        Then modal dialog check (IDE_MODAL_DIALOG), UninstallLibrary, then ScanLibraries again: the
+        number of exactly matching entries must have dropped (data.matchesBefore / data.matchesAfter,
+        data.verified), else LIBRARY_VERIFY_FAILED. The same version can be installed in several
+        repositories (ScanLibraries lists every repository): entries left over are a warning, not a
+        failure. When the backed-up folder still exists afterwards, a warning says that the backup may
+        not be the copy that was removed. XAE refusing the call ->
         LIBRARY_UNINSTALL_FAILED (data.reason repository-not-found for an unknown repository; a
         NullReferenceException is reported as it is).
         No BUILD_REQUIRED (the project is not changed).
@@ -54,7 +58,8 @@ function Uninstall-TcLibrary {
         project (the Library Manager lives on its References node).
     .OUTPUTS
         data: libraryName, version, distributor, repository, dryRun, library, candidates,
-        repositoryFolder, repositoryFolderSource, backupPath, backupFileCount, verified.
+        repositoryFolder, repositoryFolderSource, backupPath, backupFileCount, matchesBefore,
+        matchesAfter, verified, warnings.
     .EXAMPLE
         Uninstall-TcLibrary -LibraryName MyLib -Version 1.0.0.0 -Distributor 'My Company'
     #>
@@ -108,6 +113,7 @@ function Uninstall-TcLibrary {
             [string]::Equals([string]$l.version, $Version, [System.StringComparison]::Ordinal) -and
             [string]::Equals([string]$l.distributor, $Distributor, [System.StringComparison]::Ordinal) }
         $before = @(Get-TcInstalledLibraryList -Refs $refs)
+        $matchesBefore = @($before | Where-Object { & $isTarget $_ }).Count
         $hit = @($before | Where-Object { & $isTarget $_ }) | Select-Object -First 1
         if ($null -eq $hit) {
             $data | Add-Member -NotePropertyName candidates -NotePropertyValue @($before | Where-Object { [string]$_.name -ieq $LibraryName } | Sort-Object version)
@@ -137,19 +143,32 @@ function Uninstall-TcLibrary {
         }
         catch {
             $text = Get-TcLibraryErrorText -ErrorRecord $_
-            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $text -match 'Could not find repository') {
+            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $text -match "Could not find repository '[^']*'") {
                 return New-TcLibraryFailure -Code 'LIBRARY_UNINSTALL_FAILED' -Reason 'repository-not-found' -Data $data -Message "UninstallLibrary: repository '$Repository' does not exist ($text); nothing was uninstalled."
+            }
+            if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $_.Exception.ToString() -match 'NullReferenceException') {
+                return New-TcLibraryFailure -Code 'LIBRARY_UNINSTALL_FAILED' -Reason 'null-reference' -Data $data `
+                    -Message "UninstallLibrary threw NullReferenceException ($text). XAE throws it when the library / version is not in that repository (measured 2026-10-31 4026 VS2022, self-built client); ScanLibraries listed it, so it is probably installed in another repository than '$Repository'."
             }
             throw
         }
 
         $after = @(Get-TcInstalledLibraryList -Refs $refs)
-        if (@($after | Where-Object { & $isTarget $_ }).Count -gt 0) {
+        $matchesAfter = @($after | Where-Object { & $isTarget $_ }).Count
+        $data | Add-Member -NotePropertyName matchesBefore -NotePropertyValue $matchesBefore
+        $data | Add-Member -NotePropertyName matchesAfter -NotePropertyValue $matchesAfter
+        if ($matchesAfter -ge $matchesBefore) {
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
             return New-TcLibraryFailure -Code 'LIBRARY_VERIFY_FAILED' -Reason 'still-installed' -Data $data `
-                -Message "UninstallLibrary returned, but ScanLibraries still lists '$LibraryName, $Version ($Distributor)'."
+                -Message "UninstallLibrary returned, but ScanLibraries still lists '$LibraryName, $Version ($Distributor)' $matchesAfter time(s) ($matchesBefore before)."
+        }
+        $warnings = [System.Collections.Generic.List[string]]::new()
+        if ($matchesAfter -gt 0) { $warnings.Add("ScanLibraries still lists '$LibraryName, $Version ($Distributor)' $matchesAfter time(s) (installed in another repository too); only one copy was removed") }
+        if (Test-Path -LiteralPath ([string]$folder.Path)) {
+            $warnings.Add("the backed-up folder '$($folder.Path)' still exists after UninstallLibrary: the backup in data.backupPath may not be the copy that was removed")
         }
         $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
+        $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray()
         New-TcResult -Success $true -Data $data
     }
     catch {

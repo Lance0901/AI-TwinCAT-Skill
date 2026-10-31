@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T09:50:25Z",
+    "generatedAt":  "2026-10-31T10:15:08Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1334,6 +1334,14 @@
                                                              "Name":  {
                                                                           "type":  "string",
                                                                           "description":  "Library or placeholder name, with or without the leading '#' (e.g. Tc2_Math or #Tc2_Math)."
+                                                                      },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Library",
+                                                                                       "Placeholder"
+                                                                                   ],
+                                                                          "description":  "Library or Placeholder: which reference -Name means. Optional; needed only when a library and a placeholder share the name (Placeholder; Library is refused then, see above)."
                                                                       },
                                                              "DryRun":  {
                                                                             "type":  "boolean",

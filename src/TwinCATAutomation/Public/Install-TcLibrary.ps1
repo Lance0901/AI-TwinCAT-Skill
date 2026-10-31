@@ -15,17 +15,18 @@ function Install-TcLibrary {
         bOverwrite = false -> IOException 0x80131620 "Library already exists." (the manual says the
         install is cancelled); unknown repository -> COMException 0x98510001 "Could not find
         repository '...'".
-        Already installed: the name and version of the library are not readable from the file
-        through the Automation Interface, so the pre-check uses the file name: '<name>_<version>.library'
-        (the name XAE SaveAsLibrary wrote, measured 2026-10-31) is looked up in ScanLibraries (name and
-        version, any distributor, any repository) -> LIBRARY_ALREADY_INSTALLED with data.installed,
-        InstallLibrary is not called (data.preCheck = file-name). A file name without that pattern
-        cannot be pre-checked (data.identityFromFileName = $null); "Library already exists." from XAE is
-        then mapped to LIBRARY_ALREADY_INSTALLED (data.preCheck = xae).
+        Already installed: decided by XAE only. "Library already exists." from InstallLibrary ->
+        LIBRARY_ALREADY_INSTALLED (data.preCheck = xae, nothing installed). The name and version of
+        the library are not readable from the file through the Automation Interface, so the file
+        name '<name>_<version>.library' (the name XAE SaveAsLibrary wrote, measured 2026-10-31 4026
+        VS2022, self-built client) is only a hint: in the dry run, a ScanLibraries entry with that name
+        and version (any distributor, any repository) gives data.alreadyInstalled = true,
+        data.installed and a warning; it never blocks DryRun=false (the file may hold another
+        distributor's library).
         Checks before anything is changed: -LibraryPath absolute, an existing file, extension .library
         or .compiled-library; -Repository not empty (LIBRARY_INVALID_ARGUMENT, data.reason).
         DryRun (default true): InstallLibrary is NOT called; data.dryRun, data.identityFromFileName,
-        data.alreadyInstalled ($null when the file name gives no identity), data.installedCount.
+        data.alreadyInstalled (from the file name; $null when it gives no identity), data.installedCount.
         DryRun=false: modal dialog check (IDE_MODAL_DIALOG), InstallLibrary, then ScanLibraries again:
         at least one entry must be new (data.installed), else LIBRARY_VERIFY_FAILED. XAE refusing the
         call -> LIBRARY_INSTALL_FAILED (data.reason repository-not-found for an unknown repository).
@@ -94,22 +95,21 @@ function Install-TcLibrary {
 
         $before = @(Get-TcInstalledLibraryList -Refs $refs)
         $data | Add-Member -NotePropertyName installedCount -NotePropertyValue $before.Count
-        $already = $null
-        if ($null -ne $identity) {
-            $already = @($before | Where-Object { [string]$_.name -ieq $identity.name -and [string]$_.version -eq $identity.version })
-            if ($already.Count -gt 0) {
-                $data | Add-Member -NotePropertyName preCheck -NotePropertyValue 'file-name'
-                $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $true
-                $data | Add-Member -NotePropertyName installed -NotePropertyValue $already
-                return New-TcLibraryFailure -Code 'LIBRARY_ALREADY_INSTALLED' -Data $data `
-                    -Message "$($identity.name) $($identity.version) (from the file name) is already installed ($(@($already | ForEach-Object { $_.displayName }) -join '; ')); nothing was installed."
-            }
-        }
-        $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $(if ($null -ne $identity) { $false } else { $null })
+        $already = @()
+        if ($null -ne $identity) { $already = @($before | Where-Object { [string]$_.name -ieq $identity.name -and [string]$_.version -eq $identity.version }) }
         if ($DryRun) {
-            if ($null -eq $identity) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the file name is not '<name>_<version>.library'; whether it is already installed is only known when XAE installs it") }
+            # file name = a hint for the dry run only; XAE decides on DryRun=false
+            $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $(if ($null -eq $identity) { $null } else { $already.Count -gt 0 })
+            if ($null -eq $identity) {
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the file name is not '<name>_<version>.library'; whether it is already installed is only known when XAE installs it")
+            }
+            elseif ($already.Count -gt 0) {
+                $data | Add-Member -NotePropertyName installed -NotePropertyValue $already
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("ScanLibraries already lists $($identity.name) $($identity.version) (the name / version in the file name): $(@($already | ForEach-Object { $_.displayName }) -join '; '); if the file is that library, DryRun=false returns LIBRARY_ALREADY_INSTALLED (the file name is not proof)")
+            }
             return New-TcResult -Success $true -Data $data
         }
+        $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $null
 
         $dlg = Get-TcTreeItemDialogResult -Operation "InstallLibrary '$LibraryPath'" -Data $data
         if ($null -ne $dlg) { return $dlg }
@@ -121,12 +121,13 @@ function Install-TcLibrary {
         catch {
             $text = Get-TcLibraryErrorText -ErrorRecord $_
             if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_)) {
-                if ($text -match 'Library already exists') {
+                if ($text -match 'Library already exists\.') {
                     $data | Add-Member -NotePropertyName preCheck -NotePropertyValue 'xae' -Force
                     $data.alreadyInstalled = $true
+                    if ($already.Count -gt 0) { $data | Add-Member -NotePropertyName installed -NotePropertyValue $already -Force }
                     return New-TcLibraryFailure -Code 'LIBRARY_ALREADY_INSTALLED' -Data $data -Message "InstallLibrary: XAE reports the library is already installed ($text); nothing was installed."
                 }
-                if ($text -match 'Could not find repository') {
+                if ($text -match "Could not find repository '[^']*'") {
                     return New-TcLibraryFailure -Code 'LIBRARY_INSTALL_FAILED' -Reason 'repository-not-found' -Data $data -Message "InstallLibrary: repository '$Repository' does not exist ($text); nothing was installed."
                 }
             }
@@ -137,6 +138,7 @@ function Install-TcLibrary {
         $known = @{}
         foreach ($l in $before) { $known[(Get-TcLibraryKey -Library $l)] = $true }
         $new = @($after | Where-Object { -not $known.ContainsKey((Get-TcLibraryKey -Library $_)) })
+        $data.alreadyInstalled = $false
         $data | Add-Member -NotePropertyName installed -NotePropertyValue $new -Force
         if ($new.Count -eq 0) {
             return New-TcLibraryFailure -Code 'LIBRARY_VERIFY_FAILED' -Reason 'not-listed' -Data $data `

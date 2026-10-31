@@ -73,6 +73,7 @@ function Reset-Mock {
         [System.IO.File]::WriteAllText((Join-Path $vd 'sub\info.txt'), 'x')
     }
     $global:L.RepoFolder = $null
+    $global:L.InstallAdds = @('NewLib', '2.0.0.0', 'My Co')
     Write-MockPlcProj
     if (Test-Path -LiteralPath (Join-Path $Root '.tcauto-backup')) { Remove-Item -LiteralPath (Join-Path $Root '.tcauto-backup') -Recurse -Force }
     & $mod { param($s) $script:TcSolutionPath = $s } $Sln
@@ -102,11 +103,15 @@ $refs | Add-Member ScriptMethod RemoveReference {
     if ($global:L.Mode -eq 'xaenotfound') { throw [System.Runtime.InteropServices.COMException]::new("Specified library '$n' not found! (ITcPlcLibraryManager:RemoveReference", [int]0x98510001) }
     if ($global:L.Mode -eq 'loggedin') { throw [System.Runtime.InteropServices.COMException]::new('Cannot add an object because it affects a device you are currently logged into.', -2147467259) }
     if ($global:L.Mode -eq 'noremove') { return }
-    $keep = @($global:L.Refs | Where-Object { $_.Name -ne $n -and $_.Name -ne "#$n" })
+    $bare = $n.TrimStart('#')
+    $hasLib = @($global:L.Refs | Where-Object { $_.Name -eq $bare }).Count -gt 0
+    $ph = $n.StartsWith('#') -or -not $hasLib
+    $drop = if ($ph) { "#$bare" } else { $bare }
+    $keep = @($global:L.Refs | Where-Object { $_.Name -ne $drop })
     $global:L.Refs = [System.Collections.ArrayList]::new(); foreach ($k in $keep) { $null = $global:L.Refs.Add($k) }
     if ($global:L.Mode -ne 'memkeep') {
-        $global:L.Mem.Ph.Remove($n)
-        $libs = @($global:L.Mem.Libs | Where-Object { $_.Split(',')[0] -ne $n }); $global:L.Mem.Libs = [System.Collections.ArrayList]::new(); foreach ($l in $libs) { $null = $global:L.Mem.Libs.Add($l) }
+        if ($ph) { $global:L.Mem.Ph.Remove($bare) }
+        else { $libs = @($global:L.Mem.Libs | Where-Object { $_.Split(',')[0] -ne $bare }); $global:L.Mem.Libs = [System.Collections.ArrayList]::new(); foreach ($l in $libs) { $null = $global:L.Mem.Libs.Add($l) } }
     }
 }
 $refs | Add-Member ScriptMethod FreezePlaceholder {
@@ -127,14 +132,19 @@ $refs | Add-Member ScriptMethod InstallLibrary {
         'norepo' { throw [System.Runtime.InteropServices.COMException]::new("Could not find repository '$($args[0])' (ITcPlcLibraryManager:InstallLibrary", [int]0x98510001) }
         'noinstall' { return }
     }
-    $null = $global:L.Scan.Add([PSCustomObject]@{ Name = 'NewLib'; LibraryName = 'NewLib'; Version = '2.0.0.0'; Distributor = 'My Co'; DisplayName = 'NewLib, 2.0.0.0 (My Co)' })
+    $e = $global:L.InstallAdds
+    $null = $global:L.Scan.Add([PSCustomObject]@{ Name = $e[0]; LibraryName = $e[0]; Version = $e[1]; Distributor = $e[2]; DisplayName = "$($e[0]), $($e[1]) ($($e[2]))" })
 }
 $refs | Add-Member ScriptMethod UninstallLibrary {
     Write-Calls 'UninstallLibrary' @args
     if ($global:L.Mode -eq 'nouninstall') { return }
-    $a = $args   # $args inside the Where-Object block would be that block's own
-    $keep = @($global:L.Scan | Where-Object { -not ($_.LibraryName -eq $a[1] -and $_.Version -eq $a[2] -and $_.Distributor -eq $a[3]) })
-    $global:L.Scan = [System.Collections.ArrayList]::new(); foreach ($k in $keep) { $null = $global:L.Scan.Add($k) }
+    if ($global:L.Mode -eq 'nullref') { throw [System.NullReferenceException]::new('Object reference not set to an instance of an object.') }
+    $a = $args   # $args inside a script block would be that block's own
+    for ($i = 0; $i -lt $global:L.Scan.Count; $i++) {
+        $s = $global:L.Scan[$i]
+        if ($s.LibraryName -eq $a[1] -and $s.Version -eq $a[2] -and $s.Distributor -eq $a[3]) { $global:L.Scan.RemoveAt($i); break }
+    }
+    if ($global:L.Mode -eq 'keepfolder') { return }
     # XAE deletes the version folder (measured)
     $vd = Join-Path (Join-Path (Join-Path $global:L.RepoUsed $a[3]) $a[1]) $a[2]
     if (Test-Path -LiteralPath $vd) { Remove-Item -LiteralPath $vd -Recurse -Force }
@@ -213,15 +223,17 @@ try {
     Reset-Mock; Reset-BuildRequired
     foreach ($n in 'Tc2_Standard', '#tc2_standard') {
         $r = Add-TcLibraryPlaceholder -Placeholder $n -LibraryName Tc2_Standard
-        Check "AddPlaceholder '$n' existing -> alreadyPresent, no call, saved, nothing recorded" ($r.success -and $r.data.alreadyPresent -eq $true -and (Get-WriteCalls).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r)
+        Check "AddPlaceholder '$n' existing -> alreadyPresent, no call, saved, nothing recorded, no warning" ($r.success -and $r.data.alreadyPresent -eq $true -and (Get-WriteCalls).Count -eq 0 -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.warnings) (J $r)
     }
+    $r = Add-TcLibraryPlaceholder -Placeholder Tc2_Frozen -LibraryName Tc2_Other -Version 9.9.9.9
+    Check 'AddPlaceholder existing with another default library -> warning, data = values read, requested = parameters (#11)' ($r.success -and $r.data.alreadyPresent -and $r.data.libraryName -eq 'Tc2_Math' -and $r.data.version -eq '*' -and $r.data.requested.libraryName -eq 'Tc2_Other' -and $r.data.requested.version -eq '9.9.9.9' -and @($r.data.warnings | Where-Object { $_ -like '*Tc2_Math*Tc2_Other*' }).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r.data)
     $global:L.Mode = 'contained'
     $r = Add-TcLibraryPlaceholder -Placeholder P_Other -LibraryName Tc2_Math
-    Check 'AddPlaceholder: XAE already contained -> success alreadyPresent, nothing recorded' ($r.success -and $r.data.alreadyPresent -eq $true -and $null -eq (Get-CodeChanged)) "$(J $r)"
+    Check 'AddPlaceholder: XAE already contained -> success alreadyPresent, recorded (AddPlaceholder was called)' ($r.success -and $r.data.alreadyPresent -eq $true -and $null -ne (Get-CodeChanged)) "$(J $r)"
     Reset-Mock; Reset-BuildRequired
     $global:L.Mode = 'nodefault'
     $r = Add-TcLibraryPlaceholder -Placeholder P_X -LibraryName NoSuchLib
-    Check 'AddPlaceholder: default library not installed -> PLACEHOLDER_ADD_FAILED reason, no save, nothing recorded' ((-not $r.success) -and $r.error.code -eq 'PLACEHOLDER_ADD_FAILED' -and $r.data.reason -eq 'default-library-not-installed' -and $global:L.Saves -eq 0 -and $null -eq (Get-CodeChanged) -and $r.error.hint -like '*Install-TcLibrary*') (J $r)
+    Check 'AddPlaceholder: default library not installed -> PLACEHOLDER_ADD_FAILED reason, no save, recorded (called) (#4)' ((-not $r.success) -and $r.error.code -eq 'PLACEHOLDER_ADD_FAILED' -and $r.data.reason -eq 'default-library-not-installed' -and $global:L.Saves -eq 0 -and (Get-CodeChanged) -like '*P_X*called*' -and $r.error.hint -like '*Install-TcLibrary*') (J $r)
     $global:L.Mode = 'nodevice'
     $r = Add-TcLibraryPlaceholder -Placeholder P_Dev
     Check 'AddPlaceholder without -LibraryName: 1-argument call; no device placeholder -> reason no-device-placeholder' ((-not $r.success) -and $r.data.reason -eq 'no-device-placeholder' -and @(Get-WriteCalls)[-1] -eq 'AddPlaceholder|P_Dev|n=1') (@($global:L.Calls) -join ';')
@@ -261,7 +273,7 @@ try {
     }
     $orig = [System.IO.File]::ReadAllText($global:L.PlcProj)
     $r = Remove-TcLibraryReference -Name '#Tc2_Standard' -DryRun $false
-    Check 'Remove placeholder with #: RemoveReference called without #' ($r.success -and @(Get-WriteCalls)[-1] -eq 'RemoveReference|Tc2_Standard') (@($global:L.Calls) -join ';')
+    Check 'Remove placeholder: RemoveReference called with #name (#1)' ($r.success -and @(Get-WriteCalls)[-1] -eq 'RemoveReference|#Tc2_Standard' -and $r.data.removeArgument -eq '#Tc2_Standard' -and $r.data.kind -eq 'Placeholder') (@($global:L.Calls) -join ';')
     $bf = @($r.data.backupFiles)
     Check 'Remove: .plcproj backed up below <sln dir>\.tcauto-backup before the write (byte copy = original)' ($bf.Count -eq 1 -and $bf[0] -like "$Root\.tcauto-backup\*" -and [System.IO.File]::ReadAllText($bf[0]) -eq $orig -and (Test-Path -LiteralPath $r.data.backupPath)) (J $r.data)
     Check 'Remove: verified (References + .plcproj), buildRequired' ($r.data.verified -eq $true -and [System.IO.File]::ReadAllText($global:L.PlcProj) -notmatch 'Include="Tc2_Standard"' -and (Get-CodeChanged) -like '*Remove-TcLibraryReference Tc2_Standard*') (J $r.data)
@@ -280,7 +292,7 @@ try {
     Reset-Mock; Reset-BuildRequired
     $global:L.Mode = 'xaenotfound'
     $r = Remove-TcLibraryReference -Name Tc2_Frozen -DryRun $false
-    Check 'Remove: XAE 0x98510001 not found -> LIBRARY_NOT_FOUND' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_NOT_FOUND') (J $r.error)
+    Check 'Remove: XAE "Specified library ... not found!" -> LIBRARY_NOT_FOUND, recorded (called) (#4)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_NOT_FOUND' -and (Get-CodeChanged) -like '*Tc2_Frozen*not found*') (J $r)
     Reset-Mock; Reset-BuildRequired
     $global:L.Mode = 'loggedin'
     $r = Remove-TcLibraryReference -Name Tc2_Frozen -DryRun $false
@@ -297,6 +309,20 @@ try {
     $null = $global:L.Refs.Add((New-LibRef 'Tc2_Standard' '3.3.3.0' $B))
     $r = Remove-TcLibraryReference -Name Tc2_Standard -DryRun $false
     Check 'Remove: library + placeholder of the same name -> LIBRARY_INVALID_ARGUMENT ambiguous' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INVALID_ARGUMENT' -and $r.data.reason -eq 'ambiguous' -and (Get-WriteCalls).Count -eq 0) (J $r)
+    $r = Remove-TcLibraryReference -Name Tc2_Standard -Kind Library -DryRun $false
+    Check 'Remove -Kind Library with both present -> ambiguous-library-not-measured, no call (#1)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INVALID_ARGUMENT' -and $r.data.reason -eq 'ambiguous-library-not-measured' -and (Get-WriteCalls).Count -eq 0) (J $r)
+    $r = Remove-TcLibraryReference -Name '#Tc2_Standard' -Kind Library
+    Check "Remove '#x' -Kind Library -> kind-conflict" ((-not $r.success) -and $r.data.reason -eq 'kind-conflict') (J $r)
+    $r = Remove-TcLibraryReference -Name '#Tc2_Standard' -DryRun $false
+    $left = @($global:L.Refs | ForEach-Object { $_.Name })
+    Check "Remove '#x' with library x present: RemoveReference('#Tc2_Standard'), library stays, .plcproj checked for the placeholder only (#1)" ($r.success -and @(Get-WriteCalls)[-1] -eq 'RemoveReference|#Tc2_Standard' -and $left -contains 'Tc2_Standard' -and $left -notcontains '#Tc2_Standard' -and $r.data.verified) "$(J $r.data) $($left -join ',')"
+    Reset-Mock
+    $null = $global:L.Refs.Add((New-LibRef 'Tc2_Standard' '3.3.3.0' $B)); $null = $global:L.Mem.Libs.Add("Tc2_Standard,3.3.3.0,$B")
+    $r = Remove-TcLibraryReference -Name Tc2_Standard -Kind Placeholder -DryRun $false
+    Check 'Remove -Kind Placeholder with both present: #name, LibraryReference of the same name does not fail the readback' ($r.success -and @(Get-WriteCalls)[-1] -eq 'RemoveReference|#Tc2_Standard' -and [System.IO.File]::ReadAllText($global:L.PlcProj) -match 'LibraryReference Include="Tc2_Standard,') (J $r.data)
+    Reset-Mock
+    $r = Remove-TcLibraryReference -Name Tc2_Lib -Kind Placeholder
+    Check 'Remove -Kind Placeholder for a library-only name -> LIBRARY_NOT_FOUND' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_NOT_FOUND') (J $r.error)
 
     # ===== Install-TcLibrary
     Reset-Mock; Reset-BuildRequired
@@ -310,8 +336,12 @@ try {
     Check 'Install: wrong extension -> reason extension' ($r.data.reason -eq 'extension') (J $r)
     $r = Install-TcLibrary -LibraryPath (Join-Path $libDir 'Missing_1.0.0.0.library')
     Check 'Install: missing file -> reason missing' ($r.data.reason -eq 'missing') (J $r)
+    $r = Install-TcLibrary -LibraryPath $known
+    Check 'Install dry-run: file name MyLib_1.2.3.4 listed -> success, alreadyInstalled + warning, no call (#2)' ($r.success -and $r.data.alreadyInstalled -eq $true -and @($r.data.installed).Count -eq 1 -and @($r.data.warnings).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r)
+    $global:L.InstallAdds = @('MyLib', '1.2.3.4', 'Other Co')
     $r = Install-TcLibrary -LibraryPath $known -DryRun $false
-    Check 'Install: installed (file name MyLib_1.2.3.4) -> LIBRARY_ALREADY_INSTALLED preCheck file-name, no call' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_ALREADY_INSTALLED' -and $r.data.preCheck -eq 'file-name' -and @($r.data.installed).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r)
+    Check 'Install DryRun=false: same name / version, other distributor -> not blocked, XAE installs, new entry (#2)' ($r.success -and @(Get-WriteCalls)[-1] -like 'InstallLibrary|System|*MyLib_1.2.3.4.library|False' -and @($r.data.installed).Count -eq 1 -and $r.data.installed[0].distributor -eq 'Other Co') (J $r.data)
+    Reset-Mock
     $r = Install-TcLibrary -LibraryPath $newf
     Check 'Install dry-run (default): not installed yet, no call' ($r.success -and $r.data.dryRun -and $r.data.alreadyInstalled -eq $false -and $r.data.identityFromFileName.name -eq 'NewLib' -and (Get-WriteCalls).Count -eq 0) (J $r.data)
     $r = Install-TcLibrary -LibraryPath $newf -DryRun $false
@@ -361,6 +391,29 @@ try {
     $global:L.Mode = 'nouninstall'
     $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
     Check 'Uninstall readback: still listed -> LIBRARY_VERIFY_FAILED still-installed' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERIFY_FAILED' -and $r.data.reason -eq 'still-installed') (J $r)
+    # same version in two repositories: ScanLibraries lists it twice, one call removes one (#3)
+    Reset-Mock
+    $null = $global:L.Scan.Add([PSCustomObject]@{ Name = 'Tc2_Math'; LibraryName = 'Tc2_Math'; Version = '3.5.1.0'; Distributor = $B; DisplayName = "Tc2_Math, 3.5.1.0 ($B)" })
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: same version listed twice, one removed -> success (count dropped 2 -> 1), warning (#3)' ($r.success -and $r.data.matchesBefore -eq 2 -and $r.data.matchesAfter -eq 1 -and $r.data.verified -and @($r.data.warnings | Where-Object { $_ -like '*another repository*' }).Count -eq 1) (J $r.data)
+    Reset-Mock
+    $global:L.Mode = 'keepfolder'
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: backed-up folder still exists afterwards -> success with warning (backup may be another copy) (#3)' ($r.success -and @($r.data.warnings | Where-Object { $_ -like '*may not be the copy*' }).Count -eq 1) (J $r.data)
+    Reset-Mock
+    $global:L.Mode = 'nullref'
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: NullReferenceException -> LIBRARY_UNINSTALL_FAILED reason null-reference, cause in the message, hint = next step (#5)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_UNINSTALL_FAILED' -and $r.data.reason -eq 'null-reference' -and $r.error.message -like '*another repository*' -and $r.error.hint -notlike '*NullReference*' -and $r.error.hint -like '*Get-TcLibraries -Repository*') (J $r.error)
+    Reset-Mock
+    & $mod { function script:Copy-Item { [CmdletBinding()] param([string]$LiteralPath, [string]$Destination, [switch]$Recurse, [switch]$Force) throw 'access denied (mock)' } }
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: Copy-Item fails -> LIBRARY_BACKUP_FAILED, not uninstalled (#3)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_BACKUP_FAILED' -and $r.error.message -like '*access denied*' -and (Get-WriteCalls).Count -eq 0) (J $r.error)
+    & $mod { function script:Copy-Item { [CmdletBinding()] param([string]$LiteralPath, [string]$Destination, [switch]$Recurse, [switch]$Force)
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Recurse -Force
+            Remove-Item -LiteralPath (Join-Path $Destination 'sub\info.txt') -Force } }
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: copy with fewer files -> LIBRARY_BACKUP_FAILED, not uninstalled (#3)' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_BACKUP_FAILED' -and $r.error.message -like '*1 files*2*' -and (Get-WriteCalls).Count -eq 0) (J $r.error)
+    & $mod { Remove-Item -LiteralPath Function:\Copy-Item -ErrorAction SilentlyContinue }
 
     # ===== Lock-TcLibraryPlaceholder
     Reset-Mock; Reset-BuildRequired
@@ -374,6 +427,8 @@ try {
     Check 'Freeze: library reference -> LIBRARY_INVALID_ARGUMENT not-placeholder' ((-not $r.success) -and $r.data.reason -eq 'not-placeholder') (J $r)
     $r = Lock-TcLibraryPlaceholder -Placeholder '#Tc2_Standard'
     Check 'Freeze dry-run (default): target with current .plcproj state, no call, no backup' ($r.success -and $r.data.dryRun -and $r.data.targets[0].placeholder -eq 'Tc2_Standard' -and $r.data.targets[0].frozen -eq $false -and (Get-WriteCalls).Count -eq 0 -and (Get-BackupFiles).Count -eq 0) (J $r.data)
+    $r = Lock-TcLibraryPlaceholder -All
+    Check 'Freeze -All dry-run: placeholder without EffectiveResolution -> warning up front (#10)' ($r.success -and @($r.data.skippedUnresolved) -contains 'VisuPH' -and @($r.data.warnings | Where-Object { $_ -like '*VisuPH*' }).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r.data)
     $r = Lock-TcLibraryPlaceholder -Placeholder '#Tc2_Standard' -DryRun $false
     Check 'Freeze: FreezePlaceholder(name), backup, readback from .plcproj Resolution = fixed version, recorded' ($r.success -and @(Get-WriteCalls)[-1] -eq 'FreezePlaceholder|Tc2_Standard' -and @($r.data.backupFiles).Count -eq 1 -and $r.data.targets[0].frozen -eq $true -and $r.data.targets[0].projectResolution -eq "Tc2_Standard, 3.3.3.0 ($B)" -and (Get-CodeChanged) -like '*Lock-TcLibraryPlaceholder Tc2_Standard*') (J $r.data)
     Reset-Mock; Reset-BuildRequired
@@ -383,6 +438,23 @@ try {
     Reset-Mock; Reset-BuildRequired
     $r = Lock-TcLibraryPlaceholder -All -DryRun $false
     Check 'Freeze -All: FreezePlaceholder(''), resolved placeholders frozen, visu placeholder skipped with warning' ($r.success -and @(Get-WriteCalls)[-1] -eq 'FreezePlaceholder|' -and @($r.data.skippedUnresolved) -contains 'VisuPH' -and @($r.data.notFrozen).Count -eq 0 -and @($r.data.targets | Where-Object { $_.frozen }).Count -eq 2 -and @($r.data.warnings | Where-Object { $_ -like '*VisuPH*' }).Count -eq 1) (J $r.data)
+
+    # ===== XXE: .plcproj with a DOCTYPE is never parsed (#7)
+    Reset-Mock
+    $secret = Join-Path $Root 'secret.txt'; [System.IO.File]::WriteAllText($secret, 'TOPSECRET')
+    $evil = '<?xml version="1.0"?><!DOCTYPE Project [<!ENTITY x SYSTEM "file:///' + $secret.Replace('\', '/') + '">]><Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><ItemGroup><PlaceholderReference Include="P_X"><DefaultResolution>&x;</DefaultResolution></PlaceholderReference></ItemGroup></Project>'
+    [System.IO.File]::WriteAllText($global:L.PlcProj, $evil)
+    $thrown = $null
+    try { $null = & $mod { param($p) Get-TcPlcProjectLibraryEntries -Path $p } $global:L.PlcProj } catch { $thrown = $_.Exception.Message }
+    Check 'XXE: Get-TcPlcProjectLibraryEntries refuses a .plcproj with DOCTYPE' ($null -ne $thrown -and $thrown -match 'DTD|DOCTYPE') "$thrown"
+    $thrown = $null
+    try { $null = & $mod { param($p) Get-TcPlcProjectContent -Path $p } $global:L.PlcProj } catch { $thrown = $_.Exception.Message }
+    Check 'XXE: Get-TcPlcProjectContent (Save-TcPlcProject readback) refuses it too' ($null -ne $thrown) "$thrown"
+    $r = Get-TcLibraries
+    Check 'XXE: Get-TcLibraries -> frozen null + warning, secret never in the result' ($r.success -and $null -eq $r.data.libraries[0].frozen -and @($r.data.warnings).Count -eq 1 -and (J $r) -notmatch 'TOPSECRET') (J $r.data.warnings)
+    [System.IO.File]::WriteAllText((Join-Path $Root 'plc\clean.xml'), '<Project><A/></Project>')
+    $ok = & $mod { param($p) $d = Read-TcXmlFile -Path $p; $d.get_DocumentElement().get_LocalName() } (Join-Path $Root 'plc\clean.xml')
+    Check 'Read-TcXmlFile reads a plain file' ($ok -eq 'Project') "$ok"
 
     # ===== tools.json
     $tj = Join-Path $PSScriptRoot '..\..\mcp-server\tools.json'
