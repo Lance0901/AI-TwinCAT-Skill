@@ -63,6 +63,8 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Add-TcGvl` | `-Name <n> [-Variables @(@{name='nA';type='INT';init='3'}, @{name='bB';type='BOOL'})]` (or `[ordered]@{nA='INT'; bB='BOOL'}`; a plain `@{}` with more than one member is refused, #47) | Add Global Variable List, members in input order |
 | `Add-TcDut` | `-Name <n> -DutType <Struct\|Enum\|Alias\|Union> [-Fields <same forms as -Variables; Enum: name / value>]` | Add Data Unit Type, members in input order |
 | `Add-TcLibrary` | `-Name <lib>` | Add library reference |
+| `Add-TcInterface` | `-Name <n> [-Extends <itf>] [-PlcProjectPath <folder>]` | Add an INTERFACE (Extends as one string) |
+| `Add-TcPouMember` | `-ParentPath <path\|name> -Kind <Method\|Property\|Action\|Get\|Set> [-Name <n>] [-ReturnType <t>] [-Access PUBLIC\|PRIVATE\|PROTECTED\|INTERNAL] [-Language ST]` | Add a method / property / action to a POU or interface, Get / Set to a property; `data.path` is the `-PouPath` of the new member |
 
 ### PLC Code
 | Command | Parameters | Description |
