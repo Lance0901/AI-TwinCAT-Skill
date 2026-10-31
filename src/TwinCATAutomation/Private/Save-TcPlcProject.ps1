@@ -103,8 +103,8 @@ function Get-TcPlcProjectFile {
     $problems = [System.Collections.Generic.List[string]]::new()
     foreach ($p in @($projects)) {
         if (-not (Test-Path -LiteralPath $p.FullName)) { $problems.Add("'$($p.FullName)' not found on disk"); continue }
-        $xml = New-Object System.Xml.XmlDocument
-        try { $xml.Load($p.FullName) } catch { $problems.Add("'$($p.FullName)' could not be read ($($_.Exception.Message))"); continue }
+        $xml = $null
+        try { $xml = Read-TcXmlFile -Path $p.FullName } catch { $problems.Add("'$($p.FullName)' could not be read ($($_.Exception.Message))"); continue }
         foreach ($node in @($xml.SelectNodes('//Project[@PrjFilePath]'))) {
             if ([string]$node.GetAttribute('Name') -ine $PlcName) { continue }
             $rel = [string]$node.GetAttribute('PrjFilePath')
@@ -171,8 +171,7 @@ function Get-TcPlcProjectContent {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    $xml = New-Object System.Xml.XmlDocument
-    $xml.Load($Path)
+    $xml = Read-TcXmlFile -Path $Path
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('m', [string]$xml.DocumentElement.NamespaceURI)
     $pre = if ([string]::IsNullOrEmpty([string]$xml.DocumentElement.NamespaceURI)) { '' } else { 'm:' }
@@ -190,7 +189,7 @@ function Get-TcPlcProjectContent {
         $inc = [string]$n.GetAttribute('Include')
         if (-not [string]::IsNullOrWhiteSpace($inc)) { $null = $libs.Add($inc.Split(',')[0].Trim()) }
         foreach ($child in @($n.ChildNodes)) {
-            if ($child.LocalName -in 'Namespace', 'DefaultResolution', 'Resolution') {
+            if ($child.get_LocalName() -in 'Namespace', 'DefaultResolution', 'Resolution') {
                 $v = ([string]$child.InnerText).Split(',')[0].Trim()
                 if (-not [string]::IsNullOrWhiteSpace($v)) { $null = $libs.Add($v) }
             }
