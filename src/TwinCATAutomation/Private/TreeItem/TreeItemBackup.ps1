@@ -27,7 +27,7 @@ $script:TcTreeItemDiskFileRules = @(
     @{
         Kind      = 'PlcPou'
         Extension = '.TcPOU'
-        # ItemType 602 / 603 / 604 = FB / Function / Program (Get-TcProjectTree table, measured 4024).
+        # ItemType 602 / 603 / 604 = Program / Function / FB (TE1000 v1.7.0 6.5.5).
         Match     = { param([string]$Path, [int]$ItemType) $Path -like 'TIPC^*' -and @(602, 603, 604) -contains $ItemType }
     },
     @{
