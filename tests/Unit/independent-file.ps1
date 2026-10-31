@@ -13,6 +13,8 @@ $fail = 0
 
 $Root = Join-Path $env:TEMP ("tcauto-unit-indep-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path (Join-Path $Root 'Prj') -Force
+# long path names: with an 8.3 TEMP (RUNNER~1 on CI) Get-ChildItem returns the long form
+$Root = & $mod { param($p) Get-TcLongPath $p } $Root
 $Sln = Join-Path $Root 'Ind.sln'
 [System.IO.File]::WriteAllText($Sln, '')
 $TsProj = Join-Path $Root 'Prj\Prj.tsproj'
