@@ -101,7 +101,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-30)
 
-MCP 共 **62 個 tool**:`mcp-server/tools.json` 58 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **63 個 tool**:`mcp-server/tools.json` 59 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,加 task 3.2 的 `GenerateBootProject`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -195,10 +195,11 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 | `UnlinkProgramFromTask` | `Remove-TcTaskProgram` | 未實測(等第 2 期 registered)。同上;650 節點的 ExportChild(.zip)沒測過 |
 | `ExportPlcOpen` | `Export-TcPlcOpen` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/plcopen.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.3);資料夾 selection 的讀回(projectstructure 的 Folder)沒實測 |
 | `ImportPlcOpen` | `Import-TcPlcOpen` | 未實測(等第 2 期 registered)。同上;同名物件在別的資料夾算不算衝突、`<名稱>_1` 已存在時 Rename 的名稱、Replace 前 POU 節點的 ExportChild(.zip)都沒測過 |
+| `GenerateBootProject` | `New-TcBootProject` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/boot-project.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.2);只測 `bActivate=false`,4024 與 64-bit XAE Shell 沒測過 |
 
 `GetPouCode` / `WritePouCode` 的 task 3.6 新行為(`FB_X.M_Run` 點號寫法、`POU_AMBIGUOUS`、654 / 655 回 `POU_MEMBER_UNSUPPORTED`、`Implementation ""` 清空)也只有單元測試，等 3.8 registered 重測;這兩個 tool 本身仍算已實測。
 
-合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)+ 未實測 14(`AddInterface`、`AddPouMember`,task 3.1 的 6 個 Library Manager tool,task 3.7 的 `CheckAllObjects`,task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`)= 62。
+合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)+ 未實測 15(`AddInterface`、`AddPouMember`,task 3.1 的 6 個 Library Manager tool,task 3.7 的 `CheckAllObjects`,task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,task 3.2 的 `GenerateBootProject`)= 63。
 
 ### 未實測 / 只有單元測試
 

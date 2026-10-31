@@ -55,6 +55,7 @@
         'Build-TcProject',
         'Clear-TcProject',
         'Test-TcPlcProject',
+        'New-TcBootProject',
         'Get-TcBuildErrors',
         'Set-TcTarget',
         'Enable-TcConfig',

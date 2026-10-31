@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T11:47:24Z",
+    "generatedAt":  "2026-10-31T11:56:51Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -850,6 +850,29 @@
                                                              "PlcProjectPath":  {
                                                                                     "type":  "string",
                                                                                     "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GenerateBootProject",
+                      "cmdlet":  "New-TcBootProject",
+                      "description":  "Generates the local boot project of a PLC (GenerateBootProject($false) on 'TIPC^<Plc>'): writes _Boot\\<platform>\\Plc\\Port_<port>.* of the project, not the target. SAVES the project files. Reads the boot files back.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>' or 'TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
                                                                                 }
                                                          },
                                           "required":  [

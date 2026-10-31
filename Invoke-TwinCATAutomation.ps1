@@ -79,6 +79,7 @@ $operationMap = @{
     'BuildProject'    = 'Build-TcProject'
     'CleanProject'    = 'Clear-TcProject'
     'CheckAllObjects' = 'Test-TcPlcProject'
+    'GenerateBootProject' = 'New-TcBootProject'
     'GetBuildErrors'  = 'Get-TcBuildErrors'
     'SetTarget'       = 'Set-TcTarget'
     'EnableConfig'    = 'Enable-TcConfig'

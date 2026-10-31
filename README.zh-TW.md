@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 59 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 60 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -84,7 +84,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（59 個）
+## 所有指令（60 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -131,6 +131,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line/category）；`data.errors` 只算 code error（#23，不再含 Library Manager 列）；缺 library 回 `LIBRARY_UNRESOLVED`，除非 `-AllowUnresolvedLibrary`（#45；這種 build 不算完整，Activate / Login 仍被擋，#61） |
 | `Clear-TcProject` | Clean 整個 solution（`Clean($false)` + 輪詢 `BuildState`，`-TimeoutSec` 預設 300，逾時 `CLEAN_TIMEOUT`）；DTE 回 `$null` 的 `Solution` / `SolutionBuild` 會先等它出現（`data.nullReads`；#18，原因未確認）；只有 library 解析失敗時回 `LIBRARY_UNRESOLVED`（`-AllowUnresolvedLibrary` 才放行成 success + `data.warningCode`），LastBuildInfo 讀不到 `CLEAN_UNVERIFIED`，其他錯誤 `CLEAN_FAILED` |
 | `Test-TcPlcProject` | 檢查 PLC 專案的所有物件(`CheckAllObjects`,連 build 不會編譯、沒被引用的物件也檢查);`data.errorItems[]` 格式同 `Build-TcProject`;回 `False` 時 `CHECK_FAILED`;不產生 code,不記也不清 BUILD_REQUIRED |
+| `New-TcBootProject` | 產生本機 boot project(在 `TIPC^<Plc>` 呼叫 `GenerateBootProject($false)`):只寫專案的 `_Boot\<platform>\Plc\Port_<port>.*`,不寫 target;**會存專案檔**;編譯錯誤回 `BOOTPROJECT_FAILED` 加 `data.errorItems`;讀回 boot 檔(`data.bootFiles`) |
 | `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
 | `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
 | `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
@@ -186,7 +187,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 59 個匯出的 cmdlet
+  Public/                       # 60 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/
@@ -256,7 +257,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:59 個 cmdlet 中的 58 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:60 個 cmdlet 中的 59 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

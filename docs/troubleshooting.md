@@ -698,6 +698,26 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`export-failed` / `export-missing` = ExportChild `.zip` 失敗或沒產生;`data.backupObject` 是哪個物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。
 - **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;ExportChild 失敗時用 `Export-TcTreeItem -Path <data.backupObject> -FilePath <新的 .zip>` 試匯出找原因，再重跑;不需要覆蓋時改用 `-Option Rename`。
 
+### Boot project(task 3.2):做法
+
+- **做法**:`New-TcBootProject`(MCP `GenerateBootProject`)在 PLC root `TIPC^<Plc>` 上呼叫 `GenerateBootProject($false)`(TE1000 v1.7.0 §5.17 p.102–103,範例 §6.5.13 p.241)。只在 PLC root 有這個方法，`<Plc> Project` 上沒有(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`phase2-probe.md` 3.2)。`bActivate = $true` 沒實測，不提供;要寫到 target 用 `Build-TcProject` 加 `Enable-TcConfig -Force`。
+- **寫了哪些檔(實測)**:只寫專案的 `<tsproj 目錄>\_Boot\<solution platform>\Plc\Port_<adsPort>.app` / `.autostart` / `.cid` / `.crc` / `.occ` / `.ocm` 和 `Port_<adsPort>_boot.tizip`;`%ProgramData%\Beckhoff\TwinCAT\3.1\Boot` 和 UmRT 的 Boot 目錄都沒變。`_Boot` 裡的 `CurrentConfig.*` 是 Build 寫的，不是它。
+- **它會存檔**:記憶體裡尚未存檔的修改會被寫進 `.plcproj` / `.tsproj`(實測);每次呼叫 `data.warnings` 都會寫。
+- **不用先 Build**:它自己編譯。有編譯錯誤時回 COMException E_FAIL(`0x80004005`),訊息沒有資訊，模組接著讀 Error List(和 `Build-TcProject` 同一套分類)。
+- **讀回**:呼叫前後列出 `Port_<port>.*`,`Port_<port>.app` 要存在且修改時間比呼叫前新;`data.bootFiles` 列出路徑、大小、時間、`updated`。solution platform、ADS port 或 `.tsproj` 推不出來時，改列 solution 目錄底下所有 `_Boot\*\Plc\Port_*`,加 warning。
+- **BUILD_REQUIRED**:不改。Activate 仍然要走 `Build-TcProject`(完整成功才清掉)和 `Enable-TcConfig`;這個呼叫不能證明 build 完整。
+- **BOOT_PACKAGE_MISMATCH**:這裡只產生本機 `_Boot`,不寫 target,所以不影響 Activate 後 `Enable-TcConfig` 做的比對。
+
+### BOOTPROJECT_FAILED
+
+- **現象**:`GenerateBootProject($false)` 丟例外。`data.reason = generate-failed`:多半是編譯錯誤(XAE 回 E_FAIL,訊息沒資訊，實測),`data.errorItems` 是 Error List 上有 file 或 code 的錯誤列(`codeErrors` / `libraryErrorItems` 分開列，沒有 file 也沒有 code 的舊列在 `staleErrorItems`);`data.xaeMessage` / `data.hresult` 是原始例外。`no-method`:這個節點沒有 `GenerateBootProject`。失敗時專案檔仍可能已被存檔(實測：有編譯錯誤時 `.tsproj` 也被改寫)。
+- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `New-TcBootProject`;`errorItems` 是空的就 `Get-TcBuildErrors` 或 `Build-TcProject` 看錯誤。
+
+### BOOTPROJECT_VERIFY_FAILED
+
+- **現象**:`GenerateBootProject` 返回了，但讀回不符。`data.reason = not-updated`:`_Boot\<platform>\Plc\Port_<port>.app` 不存在或沒有比呼叫前新;`boot-dir-unknown`:boot 目錄推不出來(warning 寫原因),solution 目錄底下也找不到變新的 `Port_*` 檔。`data.bootFiles` 是找到的檔案。
+- **下一步**:用 `Get-TcIdeInfo` 確認 `solutionPlatform`,看 `data.bootFiles`;重跑一次，仍沒更新就改用 `Build-TcProject` 加 `Enable-TcConfig -Force`。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。

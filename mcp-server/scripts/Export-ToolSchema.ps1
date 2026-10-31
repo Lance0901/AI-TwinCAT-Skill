@@ -108,6 +108,7 @@ $timeoutOverrides = @{
     'BuildProject'   = 660000
     'CleanProject'   = 330000
     'CheckAllObjects' = 600000
+    'GenerateBootProject' = 600000
     'EnableConfig'   = 600000
     'RunTestCycle'   = 900000
     'ConnectIde'     = 180000

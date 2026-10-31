@@ -158,6 +158,9 @@ $script:TcErrorHints['PLCOPEN_FILE_EXISTS'] = '換一個 -FilePath,或加 -Overw
 $script:TcErrorHints['PLCOPEN_CONFLICT'] = '依 data.conflicts 選一個 -Option 重跑 Import-TcPlcOpen(先 -DryRun $true 看預告):Skip 保留專案裡的物件、Rename 匯入成 <名稱>_1、Replace 整個覆蓋(會刪掉檔案裡沒有的子物件，先看 data.willReplace[].deletedChildren)'
 $script:TcErrorHints['PLCOPEN_VERIFY_FAILED'] = 'Export:看 data.reason(file-not-written / invalid-file / selection-missing)與 data.missingSelections,用 Get-TcProjectTree -PlcOnly 確認名稱後重跑 Export-TcPlcOpen。Import:用 Get-TcProjectTree -PlcOnly 看 data.missing 的物件在不在、data.added 多了哪些;Replace 的原物件備份在 data.backups[].exportPath(.zip,用 Import-TcTreeItem 匯回)'
 $script:TcErrorHints['PLCOPEN_BACKUP_FAILED'] = '確認 solution 路徑已知(Connect-TcIde -SolutionPath <sln> 或 Open-TcProject)且 <solution 目錄>\.tcauto-backup 可寫;data.reason = export-failed / export-missing 時先用 Export-TcTreeItem -Path <data.backupObject> -FilePath <新的 .zip> 試匯出找原因，再重跑 Import-TcPlcOpen -Option Replace -DryRun $false;不想備份就改用 -Option Rename'
+# Boot project (complete-automation-interface task 3.2)
+$script:TcErrorHints['BOOTPROJECT_FAILED'] = '依 data.errorItems 的 file / line 修正程式碼(Get-TcPouCode -PouPath <路徑> 讀、Write-TcPouCode -PouPath <路徑> 改),再重跑 New-TcBootProject;data.errorItems 是空的就用 Get-TcBuildErrors 讀 Error List,或先 Build-TcProject 看錯誤;data.reason = no-method 時改用 Build-TcProject 加 Enable-TcConfig -Force'
+$script:TcErrorHints['BOOTPROJECT_VERIFY_FAILED'] = '用 Get-TcIdeInfo 確認 solutionPlatform,再看 data.bootFiles 列出的檔案;重跑 New-TcBootProject 一次;仍沒更新就改用 Build-TcProject 加 Enable-TcConfig -Force'
 
 function Get-TcErrorHint {
     <#
