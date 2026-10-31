@@ -37,10 +37,15 @@ function Import-TcPlcOpen {
              compared case-insensitively) and data.replaceWarning.
         DryRun (default true): stops after step 3; nothing is written.
         DryRun = false:
-          - Replace: every object that will be replaced is backed up first (Invoke-TcPlcObjectZipBackup:
-            ProduceXml(recursive) and disk file into <solution dir>\.tcauto-backup\<time>\, plus an
-            ExportChild .zip; data.backups). One backup missing -> PLCOPEN_BACKUP_FAILED and
-            PlcOpenImport is not called.
+          - Replace: the objects that will be replaced are backed up first
+            (Invoke-TcPlcOpenReplaceBackup). Required: one PlcOpenExport XML of all of them in
+            <solution dir>\.tcauto-backup\<time>\plcopen-replace.xml; PlcOpenExport includes the
+            whole subtree (measured 2026-10-31, phase2-probe.md 3.3), so
+            Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false restores
+            them with their children (data.backup.restore is that command). Not written, not
+            readable or an object missing -> PLCOPEN_BACKUP_FAILED and PlcOpenImport is not called.
+            Best effort: ProduceXml, disk file and an ExportChild .zip per object
+            (data.backup.zipBackups); a failure there is only a warning.
           - Skip: the disk file of each conflicting object is hashed before and after
             (data.skipped[].unchanged).
           - IDE_MODAL_DIALOG when a dialog is open; then PlcOpenImport. An exception whose message
@@ -51,8 +56,13 @@ function Import-TcPlcOpen {
             each conflicting object is the one object '<name>_<n>' that was not there before
             (data.renamed); Replace reports the children that are really gone
             (data.replaced[].deletedChildren). Missing -> PLCOPEN_VERIFY_FAILED (data.missing).
-            data.added = objects that were not there before. When objects were added, data.warnings
-            says that the .plcproj is written only when the project is saved.
+            data.added = objects that were not there before.
+          - Save: XAE writes the object files at once but the .plcproj only when the project is
+            saved (measured, phase2-probe.md 3.3), so the project file is saved as Add-TcPou does
+            (Invoke-TcPlcObjectSave: DTE Project.Save of the .tsproj, then the .plcproj read back
+            from disk must list a <Compile Include> for every added object; data.projectSaved).
+            A failed save returns its own code (PROJECT_SAVE_FAILED / PROJECT_SAVE_TIMEOUT /
+            IDE_MODAL_DIALOG; data.projectSave) and BUILD_REQUIRED stays recorded.
         BUILD_REQUIRED: recorded (code-changed) as soon as PlcOpenImport was called, also when it
         failed; a request refused before (checks, backup, dialog) records nothing.
         Not verified through the registered MCP server yet (task 3.8).
@@ -185,18 +195,13 @@ function Import-TcPlcOpen {
             return New-TcResult -Success $true -Data $data
         }
 
-        # backups (Replace) / fingerprints (Skip)
-        $backups = [System.Collections.Generic.List[object]]::new()
-        foreach ($w in $willReplace) {
-            $bk = Invoke-TcPlcObjectZipBackup -SysManager $sm -Path $w.existingPath -Data $data
-            if ($null -ne $bk.Result) {
-                $data | Add-Member -NotePropertyName backups -NotePropertyValue $backups.ToArray() -Force
-                return $bk.Result
-            }
-            $backups.Add($bk.Backup)
+        # backup (Replace) / fingerprints (Skip)
+        if ($willReplace.Count -gt 0) {
+            $bk = Invoke-TcPlcOpenReplaceBackup -SysManager $sm -Project $prj -ProjectPath $prjPath -Paths @($willReplace | ForEach-Object { [string]$_.existingPath }) -Data $data
+            if ($null -ne $bk.Result) { return $bk.Result }
+            $data | Add-Member -NotePropertyName backup -NotePropertyValue $bk.Backup
             foreach ($x in @($bk.Backup.warnings)) { $warnings.Add($x) }
         }
-        if ($backups.Count -gt 0) { $data | Add-Member -NotePropertyName backups -NotePropertyValue $backups.ToArray() }
         $solutionDir = Get-TcTreeItemSolutionDir
         $fingerprint = {
             param($c)
@@ -277,7 +282,6 @@ function Import-TcPlcOpen {
                     [PSCustomObject]@{ name = $_.name; path = $_.existingPath; childrenAfter = $kidsAfter; deletedChildren = $gone }
                 })
         }
-        if ($added.Count -gt 0) { $warnings.Add('the new objects are in XAE and their object files are on disk, but the .plcproj lists them only after the project is saved (measured 2026-10-31, phase2-probe.md 3.3); do not close the solution without saving') }
         if ($missing.Count -gt 0) {
             $data | Add-Member -NotePropertyName missing -NotePropertyValue $missing.ToArray()
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
@@ -285,6 +289,22 @@ function Import-TcPlcOpen {
             return (Register-TcCodeChange -Result $res -Change "$change [verify failed]")
         }
         $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
+
+        # save: the .plcproj lists the new objects only after the project is saved (measured)
+        $expect = @($added | ForEach-Object {
+                $ext = Get-TcPlcObjectFileExtension -ItemType ([int]$_.itemType)
+                if ($null -ne $ext) { Get-TcPlcObjectRelativeFile -TreePath $_.path -Extension $ext }
+            })
+        $data | Add-Member -NotePropertyName expectedProjectFiles -NotePropertyValue $expect
+        $save = Invoke-TcPlcObjectSave -ObjectPath $prjPath -ExpectFiles $expect -What "PLCopen import of '$([System.IO.Path]::GetFileName($FilePath))'" -Done 'imported'
+        if ($null -ne $save.Error) {
+            $data | Add-Member -NotePropertyName projectSave -NotePropertyValue $save.Error.data -Force
+            if ($warnings.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force }
+            $res = New-TcResult -Success $false -ErrorCode ([string]$save.Error.error.code) -ErrorMessage ([string]$save.Error.error.message) -Hint ([string]$save.Error.error.hint) -Data $data
+            return (Register-TcCodeChange -Result $res -Change "$change [project not saved]")
+        }
+        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
+        if (-not [string]::IsNullOrWhiteSpace([string]$save.Saved.warning)) { $warnings.Add([string]$save.Saved.warning) }
         if ($warnings.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force }
         return (Register-TcCodeChange -Result (New-TcResult -Success $true -Data $data) -Change $change)
     }

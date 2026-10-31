@@ -194,7 +194,7 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 | `LinkProgramToTask` | `Add-TcTaskProgram` | 未實測(等第 2 期 registered)。同上;PlcTask 的父節點讀回(parent ProduceXml 只能增加)在 650 上沒測過 |
 | `UnlinkProgramFromTask` | `Remove-TcTaskProgram` | 未實測(等第 2 期 registered)。同上;650 節點的 ExportChild(.zip)沒測過 |
 | `ExportPlcOpen` | `Export-TcPlcOpen` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/plcopen.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.3);資料夾 selection 的讀回(projectstructure 的 Folder)沒實測 |
-| `ImportPlcOpen` | `Import-TcPlcOpen` | 未實測(等第 2 期 registered)。同上;同名物件在別的資料夾算不算衝突、`<名稱>_1` 已存在時 Rename 的名稱、Replace 前 POU 節點的 ExportChild(.zip)都沒測過 |
+| `ImportPlcOpen` | `Import-TcPlcOpen` | 未實測(等第 2 期 registered)。同上;`<名稱>_1` 已存在時 Rename 的名稱、Replace 前 POU 節點的 ExportChild(.zip,盡力而為)、匯入後存檔讀回 .plcproj 都沒測過 |
 | `GenerateBootProject` | `New-TcBootProject` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/boot-project.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.2);只測 `bActivate=false`,4024 與 64-bit XAE Shell 沒測過 |
 | `SaveAsLibrary` | `Save-TcPlcLibrary` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/archive.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.4);從沒 build 過的專案會不會跳 dialog 沒測 |
 | `SaveArchive` | `Save-TcArchive` | 未實測(等第 2 期 registered)。同上;Error List 前後比對(新錯誤列 → `ARCHIVE_INCOMPLETE`)只在單元測試驗過;載入 archive 不在範圍內 |
@@ -206,6 +206,8 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 ### 未實測 / 只有單元測試
 
 - **`RUNTIME_CRASHED` 提早退出**(`EnableConfig` / `SetSystemState` 偵測到 target 消失就提早回):只有單元測試(`tests/Unit/runtime-crashed.ps1`)。真機要等 UmRT 自然 crash 才能驗證,不能故意 `Stop-Process TcSystemServiceUm` 模擬。
+- **`ExportPlcOpen` 資料夾 selection 的讀回**:selection 指到資料夾時，讀回靠 PLCopen 檔 ProjectStructure 裡的 `<Folder Name>` 確認;物件 selection 的讀回有依據(實測 2026-10-31),資料夾的沒實測，等 3.8。
+- **`ImportPlcOpen` 不同資料夾的同名物件算不算衝突**:模組是整個 PLC project 比對名稱(不分大小寫、不看資料夾);XAE 對「同名但在別的資料夾」會不會回 Import conflict 沒實測，等 3.8。
 - **`NewTestCase` 給 `WaitUntil` 時回傳不帶 `waitMs`**:只有單元測試。
 - **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
 - **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。

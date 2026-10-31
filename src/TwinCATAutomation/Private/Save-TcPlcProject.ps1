@@ -676,6 +676,9 @@ function Invoke-TcPlcObjectSave {
         File name that must appear as <Compile Include> (e.g. FB_Motor.TcPOU).
     .PARAMETER ExpectLibrary
         Library name that must appear as a library reference.
+    .PARAMETER ExpectFiles
+        More <Compile Include> entries, already as relative paths ('POUs\FB_A.TcPOU'), passed as given
+        (Import-TcPlcOpen: every object the import added).
     .PARAMETER What
         Short text for the messages, e.g. "POU 'FB_Motor'".
     .PARAMETER Done
@@ -692,6 +695,10 @@ function Invoke-TcPlcObjectSave {
 
         [Parameter()]
         [string]$ExpectLibrary,
+
+        [Parameter()]
+        [AllowEmptyCollection()]
+        [string[]]$ExpectFiles = @(),
 
         [Parameter(Mandatory)]
         [string]$What,
@@ -718,6 +725,8 @@ function Invoke-TcPlcObjectSave {
         }
         $saveParams['ExpectFile'] = @($ef)
     }
+    $more = @($ExpectFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($more.Count -gt 0) { $saveParams['ExpectFile'] = @(@($saveParams['ExpectFile'] | Where-Object { $null -ne $_ }) + $more) }
     if (-not [string]::IsNullOrWhiteSpace($ExpectLibrary)) { $saveParams['ExpectLibrary'] = @($ExpectLibrary) }
     try {
         $saved = Save-TcPlcProject @saveParams

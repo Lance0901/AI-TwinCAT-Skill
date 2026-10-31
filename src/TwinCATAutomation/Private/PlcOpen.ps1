@@ -304,3 +304,93 @@ function Get-TcFileSha256 {
     if ([string]::IsNullOrEmpty($Path)) { return $null }
     try { return [string](Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash } catch { return $null }
 }
+
+function Invoke-TcPlcOpenReplaceBackup {
+    <#
+    .SYNOPSIS
+        Backup before PlcOpenImport REPLACE: @{ Result = $null | failed result; Backup }.
+    .DESCRIPTION
+        Required: one PLCopen XML file of every object that will be replaced, written with
+        PlcOpenExport on '<Plc> Project' into <solution dir>\.tcauto-backup\<time>\plcopen-replace.xml
+        (-2, -3 ... when taken). PlcOpenExport includes the whole subtree of each object (measured
+        2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client, phase2-probe.md 3.3), so importing
+        that file again with Import-TcPlcOpen -Option Replace restores the objects with their
+        children. The file must exist and list every object (Read-TcPlcOpenFile); otherwise
+        PLCOPEN_BACKUP_FAILED (data.reason plcopen-backup-failed, data.backupObject) and the caller
+        imports nothing. Solution folder unknown -> PLCOPEN_BACKUP_FAILED reason backup-failed.
+        IDE_MODAL_DIALOG when a dialog is open before the export.
+        Best effort: per object the backup of Invoke-TcPlcObjectZipBackup (ProduceXml, disk file,
+        ExportChild .zip; the .zip of a POU node is not measured); a failure there is only a warning.
+        Backup = { xmlPath; objects; restore (ready-to-run command); zipBackups[]; warnings[] }.
+        IDE_* errors are rethrown.
+    .PARAMETER SysManager
+        ITcSysManager.
+    .PARAMETER Project
+        The '<Plc> Project' tree item.
+    .PARAMETER ProjectPath
+        Its tree path.
+    .PARAMETER Paths
+        Tree paths of the objects that will be replaced.
+    .PARAMETER Data
+        Data object of the cmdlet (reason / backupObject are added on failure).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$SysManager,
+        [Parameter(Mandatory)]$Project,
+        [Parameter(Mandatory)][string]$ProjectPath,
+        [Parameter(Mandatory)][string[]]$Paths,
+        [Parameter(Mandatory)][object]$Data
+    )
+    $fail = {
+        param([string]$Reason, [string]$Message)
+        $Data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force
+        $Data | Add-Member -NotePropertyName backupObject -NotePropertyValue @($Paths) -Force
+        @{ Backup = $null; Result = (New-TcResult -Success $false -ErrorCode 'PLCOPEN_BACKUP_FAILED' -Data $Data -ErrorMessage "$Message; PlcOpenImport was not called, nothing was imported." -Hint (Get-TcErrorHint -Code 'PLCOPEN_BACKUP_FAILED')) }
+    }
+    $solutionDir = Get-TcTreeItemSolutionDir
+    if ($null -eq $solutionDir) { return (& $fail 'backup-failed' 'No solution path is known (Connect-TcIde -SolutionPath / Open-TcProject), the PLCopen backup cannot be written') }
+    $sel = @($Paths | ForEach-Object {
+            if (-not $_.StartsWith("$ProjectPath^", [System.StringComparison]::OrdinalIgnoreCase)) { $_ } else { $_.Substring($ProjectPath.Length + 1) -replace '\^', '.' }
+        })
+    $xml = $null
+    try {
+        $dir = Join-Path (Join-Path $solutionDir $script:TcTreeItemBackupFolder) ((Get-Date).ToString('yyyyMMdd-HHmmss'))
+        if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop }
+        $xml = Join-Path $dir 'plcopen-replace.xml'
+        $n = 1
+        while (Test-Path -LiteralPath $xml) { $n++; $xml = Join-Path $dir "plcopen-replace-$n.xml" }
+    }
+    catch { return (& $fail 'backup-failed' "the backup folder below '$solutionDir' cannot be written ($($_.Exception.Message))") }
+    $dlg = Get-TcTreeItemDialogResult -Operation "PlcOpenExport backup before PlcOpenImport REPLACE" -Data $Data
+    if ($null -ne $dlg) { return @{ Backup = $null; Result = $dlg } }
+    $selString = $sel -join ';'
+    try {
+        # No deadline: same call and reasons as Export-TcPlcOpen (dialog ruled out above, SilentMode,
+        # 145-231 ms measured).
+        Invoke-TcComRetry -OperationName 'PlcOpenExport (backup)' -ScriptBlock { $Project.PlcOpenExport($xml, $selString) } | Out-Null
+    }
+    catch {
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+        return (& $fail 'plcopen-backup-failed' "PlcOpenExport backup of $selString failed ($((Get-TcComErrorInfo -ErrorRecord $_).message))")
+    }
+    $parsed = $null
+    try { $parsed = Read-TcPlcOpenFile -Path $xml }
+    catch { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' was not written or cannot be read ($($_.Exception.Message))") }
+    $names = @($parsed.Objects | ForEach-Object { $_.name })
+    $missing = @($Paths | Where-Object { $leaf = Get-TcTreePathLeaf -Path $_; @($names | Where-Object { $_ -ieq $leaf }).Count -eq 0 })
+    if ($missing.Count -gt 0) { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' lacks $(($missing | ForEach-Object { "'$_'" }) -join ', ')") }
+
+    $zips = [System.Collections.Generic.List[object]]::new()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    foreach ($p in $Paths) {
+        $scratch = [PSCustomObject]@{}
+        $z = Invoke-TcPlcObjectZipBackup -SysManager $SysManager -Path $p -Data $scratch
+        if ($null -ne $z.Result) { $warnings.Add("the extra backup of '$p' (ProduceXml / disk file / ExportChild .zip) was not made: $([string]$z.Result.error.message); the PLCopen backup '$xml' is complete") }
+        else { $zips.Add($z.Backup); foreach ($w in @($z.Backup.warnings)) { $warnings.Add($w) } }
+    }
+    $restore = "Import-TcPlcOpen -FilePath '$($xml.Replace("'", "''"))' -Option Replace -DryRun `$false"
+    return @{ Result = $null; Backup = [PSCustomObject]@{ xmlPath = $xml; objects = @($Paths); restore = $restore
+            restoreNote = "restore the replaced objects with their children: $restore (MCP ImportPlcOpen FilePath=<xmlPath> Option=Replace DryRun=false)"
+            zipBackups = $zips.ToArray(); warnings = $warnings.ToArray() } }
+}

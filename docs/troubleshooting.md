@@ -665,12 +665,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   |---|---|---|
   | `None` | 有衝突就丟例外("Creation of object 'X' failed. Reason: Import conflict!"),什麼都沒匯入 | dry-run 的衝突檢查有衝突就回 `PLCOPEN_CONFLICT`,實寫時不呼叫 XAE |
   | `Skip` | 衝突的物件靜默跳過，不回報 | 匯入後 `data.skipped[]` 列出跳過的物件，並比對它們磁碟檔的 SHA-256(`unchanged`) |
-  | `Replace` | 整個物件覆蓋：檔案裡沒有的子物件會被刪掉(ITF 原本的 property 被刪) | dry-run 的 `data.willReplace[].deletedChildren` 列出會被刪的直接子物件;實寫前先備份每個會被覆蓋的物件，失敗就不匯入(`PLCOPEN_BACKUP_FAILED`);讀回 `data.replaced[].deletedChildren` |
+  | `Replace` | 整個物件覆蓋：檔案裡沒有的子物件會被刪掉(ITF 原本的 property 被刪) | dry-run 的 `data.willReplace[].deletedChildren` 列出會被刪的直接子物件;實寫前先把會被覆蓋的物件匯出成 PLCopen XML 備份，失敗就不匯入(`PLCOPEN_BACKUP_FAILED`);讀回 `data.replaced[].deletedChildren` |
   | `Rename` | 匯入的物件加 `_1` 後綴，原物件不變 | dry-run 預告 `<名稱>_1`(該名稱也存在時加 warning:實際名稱沒測過);讀回在新增的物件裡找 `<名稱>_<n>`(`data.renamed`) |
 
 - **衝突怎麼判斷**:檔案用 `Read-TcXmlFile` 解析(不處理 DTD,防 XXE),列出 POU(`types/pous/pou`)、DUT(`types/dataTypes/dataType`)、ITF(`addData/data/Interface`)、GVL(`globalVars`);再走一次 `<Plc> Project` 和所有 PLC 資料夾，名稱相同(不分大小寫)就算衝突。同名物件在別的資料夾時 XAE 算不算衝突沒實測。超過 3000 個節點時檢查不完整，`data.warnings` 會寫。
-- **REPLACE 的備份**:每個會被覆蓋的物件做和 `Remove-TcTreeItem` 一樣的備份:ProduceXml(recursive)、磁碟檔(`.TcPOU` / `.TcDUT` / `.TcGVL` / `.TcIO`)複製到 `<sln 目錄>\.tcauto-backup\<時間>\`,再 ExportChild 成 `.zip`(`data.backups[].exportPath`,用 `Import-TcTreeItem` 匯回;POU 節點的 ExportChild `.zip` 沒實測過，匯出失敗就不匯入)。
-- **磁碟與存檔**:匯入當下 XAE 就寫物件檔(`.TcPOU` / `.TcIO`),`.plcproj` 要等專案存檔才寫(實測);有新增物件時 `data.warnings` 會提醒，不要沒存檔就關 solution。
+- **REPLACE 的備份**:**必要**的是一份 PLCopen XML:用 `PlcOpenExport` 把所有會被覆蓋的物件匯出到 `<sln 目錄>\.tcauto-backup\<時間>\plcopen-replace.xml`(`data.backup.xmlPath`)。PlcOpenExport 會連子樹一起匯出(實測 2026-10-31),所以還原就是 `Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`(`data.backup.restore` 就是這行指令),物件和子物件都回來。這份檔案沒寫出來、讀不了或少了物件 → `PLCOPEN_BACKUP_FAILED`,不匯入。**盡力而為**的是和 `Remove-TcTreeItem` 一樣的備份:ProduceXml(recursive)、磁碟檔(`.TcPOU` / `.TcDUT` / `.TcGVL` / `.TcIO`)和 ExportChild `.zip`(`data.backup.zipBackups`;POU 節點的 ExportChild `.zip` 沒實測過),失敗只加 warning。
+- **磁碟與存檔**:匯入當下 XAE 就寫物件檔(`.TcPOU` / `.TcIO`),`.plcproj` 要等專案存檔才寫(實測)。所以讀回成功後模組照 `Add-TcPou` 的做法存檔(`Invoke-TcPlcObjectSave`:DTE `Project.Save`,再從磁碟讀回 `.plcproj`,每個新增物件都要有 `<Compile Include>`,`data.expectedProjectFiles` / `data.projectSaved`)。存檔失敗回它自己的碼(`PROJECT_SAVE_FAILED` / `PROJECT_SAVE_TIMEOUT` / `IDE_MODAL_DIALOG`,`data.projectSave`),BUILD_REQUIRED 照樣記。
 - **BUILD_REQUIRED**:`PlcOpenImport` 一呼叫就記 code-changed(成功、失敗、讀回不符都記);呼叫前擋下的不記。`Export-TcPlcOpen` 不改專案，不記。
 
 ### PLCOPEN_FAILED
@@ -691,12 +691,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### PLCOPEN_VERIFY_FAILED
 
 - **現象**:呼叫返回了，但讀回不符。Export:`data.reason` = `file-not-written`(檔案不存在或是空的)、`invalid-file`(不是 PLCopen XML)、`selection-missing`(`data.missingSelections` 的物件 / 資料夾不在檔案裡);有 `-Overwrite` 時舊檔已還原。Import:`data.missing` 的物件匯入後找不到(Rename 時是找不到 `<名稱>_<n>`),`data.added` 是實際新增的物件。
-- **下一步**:用 `Get-TcProjectTree -PlcOnly` 確認專案現況;Replace 的原物件備份在 `data.backups[].exportPath`(`.zip`,用 `Import-TcTreeItem` 匯回)。
+- **下一步**:用 `Get-TcProjectTree -PlcOnly` 確認專案現況;Replace 的原物件要還原就執行 `data.backup.restore`(`Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`)。
 
 ### PLCOPEN_BACKUP_FAILED
 
-- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`export-failed` / `export-missing` = ExportChild `.zip` 失敗或沒產生;`data.backupObject` 是哪個物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。
-- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;ExportChild 失敗時用 `Export-TcTreeItem -Path <data.backupObject> -FilePath <新的 .zip>` 試匯出找原因，再重跑;不需要覆蓋時改用 `-Option Rename`。
+- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`plcopen-backup-failed` = PlcOpenExport 備份失敗、沒寫出來、讀不了或少了物件;`data.backupObject` 是要備份的物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。ExportChild `.zip` 失敗不會走到這裡，只是 warning。
+- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;`plcopen-backup-failed` 時用 `Export-TcPlcOpen -Selection <物件> -FilePath <新的 .xml>` 試匯出找原因，再重跑;不需要覆蓋時改用 `-Option Rename`。
 
 ### Boot project(task 3.2):做法
 

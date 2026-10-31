@@ -120,6 +120,7 @@ function Reset-Mock {
     $global:T.ExportCalls = [System.Collections.ArrayList]::new()
     $global:T.ImportCalls = [System.Collections.ArrayList]::new()
     $global:T.ExportMode = 'ok'; $global:T.ImportMode = 'ok'; $global:T.ExportChildMode = 'ok'; $global:T.Dialog = $null
+    $global:T.Saves = [System.Collections.ArrayList]::new(); $global:T.SaveMode = 'ok'
     $null = Add-MockNode 'TIPC'
     $null = Add-MockNode 'TIPC^plc' 56
     Set-PrjMethods (Add-MockNode $P 600)
@@ -156,6 +157,14 @@ $global:T.Sm = $sm
     function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:T.Dialog }
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
+    # Save-TcPlcProject without DTE: records what the .plcproj readback must contain
+    function script:Save-TcPlcProject {
+        [CmdletBinding()] param([string]$PlcName, [string[]]$ExpectFile = @(), [string[]]$ExpectLibrary = @(), [int]$TimeoutSec = 60)
+        $null = $global:T.Saves.Add("$PlcName|$((@($ExpectFile) | Sort-Object) -join ',')")
+        if ($global:T.SaveMode -eq 'dialog') { return @{ ModalDialog = @{ Title = 'Microsoft Visual Studio'; Text = 'Save?'; Kind = 'unknown' } } }
+        if ($global:T.SaveMode -eq 'missing') { throw "save: Project.Save returned but 'plc.plcproj' read back from disk has no <Compile Include> for $(@($ExpectFile) -join ', ')." }
+        [ordered]@{ plc = $PlcName; plcproj = 'plc.plcproj'; verifiedFiles = @($ExpectFile | ForEach-Object { [PSCustomObject]@{ file = $_; preExisting = $false } }); warning = $null }
+    }
 } $Sln
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
@@ -275,22 +284,45 @@ try {
     $r = Import-TcPlcOpen -FilePath $imp -DryRun $false
     Check 'Import live None with conflict -> PLCOPEN_CONFLICT, XAE not called, nothing recorded' ($r.error.code -eq 'PLCOPEN_CONFLICT' -and $global:T.ImportCalls.Count -eq 0 -and $null -eq (Get-CodeChanged)) "$(J $r.error) | $(Get-CodeChanged)"
 
-    # ===== Import live: Replace backs up first
+    # ===== Import live: Replace backs up first (PLCopen XML required, .zip best effort), then saves
     Reset-Mock; Reset-BuildRequired
     $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
     $order = @($global:T.Order) -join ';'
-    Check 'Import live Replace: ExportChild .zip of both objects before PlcOpenImport 1' ($r.success -and $order -eq "ExportChild $P^POUs^FB_A;ExportChild $P^POUs^ITF_A;PlcOpenImport 1") $order
-    Check 'Import live Replace: backups hold the .zip and the original disk files' (@($r.data.backups).Count -eq 2 -and @($r.data.backups | Where-Object { $_.exportPath -like '*.zip' -and (Test-Path -LiteralPath $_.exportPath) }).Count -eq 2 -and @($r.data.backups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*FB_A.TcPOU' -and ([System.IO.File]::ReadAllText($_)) -match 'FB_A original' }).Count -eq 1 -and @($r.data.backups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*ITF_A.TcIO' }).Count -eq 1) (J $r.data.backups)
+    Check 'Import live Replace: PlcOpenExport backup of both objects, then the .zip backups, then PlcOpenImport 1' ($r.success -and $order -eq "PlcOpenExport POUs.FB_A;POUs.ITF_A;ExportChild $P^POUs^FB_A;ExportChild $P^POUs^ITF_A;PlcOpenImport 1") $order
+    $bx = [string]$r.data.backup.xmlPath
+    Check 'Import live Replace: data.backup.xmlPath is a PLCopen file of both objects in .tcauto-backup' ($bx -like '*\.tcauto-backup\*\plcopen-replace.xml' -and (Test-Path -LiteralPath $bx) -and ([System.IO.File]::ReadAllText($bx)) -match 'FB_A' -and ([System.IO.File]::ReadAllText($bx)) -match 'ITF_A' -and (@($r.data.backup.objects) -join ',') -eq "$P^POUs^FB_A,$P^POUs^ITF_A") (J $r.data.backup)
+    Check 'Import live Replace: data.backup.restore is the Import-TcPlcOpen -Option Replace command' ($r.data.backup.restore -eq "Import-TcPlcOpen -FilePath '$bx' -Option Replace -DryRun `$false" -and $r.data.backup.restoreNote -match 'ImportPlcOpen') "$($r.data.backup.restore)"
+    Check 'Import live Replace: .zip backups hold the export and the original disk files' (@($r.data.backup.zipBackups).Count -eq 2 -and @($r.data.backup.zipBackups | Where-Object { $_.exportPath -like '*.zip' -and (Test-Path -LiteralPath $_.exportPath) }).Count -eq 2 -and @($r.data.backup.zipBackups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*FB_A.TcPOU' -and ([System.IO.File]::ReadAllText($_)) -match 'FB_A original' }).Count -eq 1 -and @($r.data.backup.zipBackups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*ITF_A.TcIO' }).Count -eq 1) (J $r.data.backup.zipBackups)
     $ri = @($r.data.replaced | Where-Object { $_.name -eq 'ITF_A' })[0]
     Check 'Import live Replace: readback reports the children really deleted' ((@($ri.deletedChildren) -join ',') -eq 'P_Cnt,P_Str' -and $r.data.verified -and @($r.data.added | Where-Object { $_.name -eq 'FB_New' }).Count -eq 1) (J $r.data.replaced)
-    Check 'Import live Replace: BUILD_REQUIRED code-changed, .plcproj warning' ((Get-CodeChanged) -match 'Import-TcPlcOpen import\.xml \[Replace\]' -and @($r.data.warnings | Where-Object { $_ -match '\.plcproj lists them only after the project is saved' }).Count -eq 1) "$(Get-CodeChanged)"
+    Check 'Import live Replace: project saved, the .plcproj readback expects the added object with its folder' (@($global:T.Saves).Count -eq 1 -and $global:T.Saves[0] -eq 'plc|POUs\FB_New.TcPOU' -and (@($r.data.expectedProjectFiles) -join ',') -eq 'POUs\FB_New.TcPOU' -and $null -ne $r.data.projectSaved) "$(J $global:T.Saves) $(J $r.data.projectSaved)"
+    Check 'Import live Replace: BUILD_REQUIRED code-changed, no unsaved-.plcproj warning any more' ((Get-CodeChanged) -match 'Import-TcPlcOpen import\.xml \[Replace\]' -and @($r.data.warnings | Where-Object { $_ -match 'only after the project is saved' }).Count -eq 0) "$(Get-CodeChanged)"
+    $r2 = Import-TcPlcOpen -FilePath $bx -Option Replace
+    Check 'Import: the backup file itself previews a Replace of both objects (the restore path)' ($r2.success -and (@($r2.data.willReplace | ForEach-Object { $_.name }) -join ',') -eq 'FB_A,ITF_A') (J $r2.data.willReplace)
 
-    Reset-Mock; Reset-BuildRequired; $global:T.ExportChildMode = 'throw'
+    Reset-Mock; Reset-BuildRequired; $global:T.ExportMode = 'notfound'
     $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
-    Check 'Import live Replace, backup ExportChild fails -> PLCOPEN_BACKUP_FAILED, XAE not called, nothing recorded' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.data.reason -eq 'export-failed' -and $r.data.backupObject -eq "$P^POUs^FB_A" -and $global:T.ImportCalls.Count -eq 0 -and $null -eq (Get-CodeChanged) -and $global:T.Nodes.ContainsKey("$P^POUs^ITF_A^P_Cnt")) "$(J $r.error) | $(Get-CodeChanged)"
+    Check 'Import live Replace, PlcOpenExport backup fails -> PLCOPEN_BACKUP_FAILED, XAE import not called, nothing recorded' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.data.reason -eq 'plcopen-backup-failed' -and (@($r.data.backupObject) -join ',') -eq "$P^POUs^FB_A,$P^POUs^ITF_A" -and $global:T.ImportCalls.Count -eq 0 -and $null -eq (Get-CodeChanged) -and $global:T.Nodes.ContainsKey("$P^POUs^ITF_A^P_Cnt")) "$(J $r.error) | $(Get-CodeChanged)"
+    Reset-Mock; $global:T.ExportMode = 'other'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, PLCopen backup lacks the objects -> PLCOPEN_BACKUP_FAILED, not imported' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.error.message -match 'lacks' -and $global:T.ImportCalls.Count -eq 0) (J $r.error)
+    Reset-Mock; $global:T.ExportMode = 'nofile'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, PLCopen backup not written -> PLCOPEN_BACKUP_FAILED, not imported' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $global:T.ImportCalls.Count -eq 0) (J $r.error)
+    Reset-Mock; $global:T.ExportChildMode = 'throw'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, .zip backup fails -> only a warning, imported (PLCopen backup is there)' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.backup.zipBackups).Count -eq 0 -and @($r.data.warnings | Where-Object { $_ -match 'extra backup' -and $_ -match 'PLCopen backup' }).Count -eq 2) (J $r.data.warnings)
     Reset-Mock; $global:T.ExportChildMode = 'nofile'
     $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
-    Check 'Import live Replace, backup .zip not written -> PLCOPEN_BACKUP_FAILED export-missing' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.data.reason -eq 'export-missing' -and $global:T.ImportCalls.Count -eq 0) (J $r.error)
+    Check 'Import live Replace, .zip not written -> only a warning, imported' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.warnings | Where-Object { $_ -match 'extra backup' }).Count -eq 2) (J $r.data.warnings)
+
+    # ===== Import live: project save fails
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'missing'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Rename -DryRun $false
+    Check 'Import live: .plcproj readback lacks the new objects -> PROJECT_SAVE_FAILED, BUILD_REQUIRED recorded' ($r.error.code -eq 'PROJECT_SAVE_FAILED' -and $r.data.verified -and $null -ne $r.data.projectSave -and (Get-CodeChanged) -match '\[Rename\] \[project not saved\]' -and (@($global:T.Saves) -join ';') -eq 'plc|POUs\FB_A_1.TcPOU,POUs\FB_New.TcPOU,POUs\ITF_A_1.TcIO') "$(J $r.error) | $(Get-CodeChanged) | $(J $global:T.Saves)"
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'dialog'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Rename -DryRun $false
+    Check 'Import live: dialog before the save -> IDE_MODAL_DIALOG, BUILD_REQUIRED recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-CodeChanged) -match 'project not saved') "$(J $r.error) | $(Get-CodeChanged)"
     Reset-Mock; $global:T.Dialog = $dialog
     $r = Import-TcPlcOpen -FilePath $newOnly -DryRun $false
     Check 'Import live modal dialog -> IDE_MODAL_DIALOG, XAE not called' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:T.ImportCalls.Count -eq 0) (J $r.error)

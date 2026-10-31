@@ -24,7 +24,7 @@
 ## 3. 第 2 期:PLC 補齊(→ v0.4.0-beta)
 
 - [ ] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder(已實作，待 3.8 registered 實測)
-- [ ] 3.2 GenerateBootProject,沒有完整 Build 時回 `BUILD_REQUIRED`,並和 `BOOT_PACKAGE_MISMATCH` 對照(已實作，待 3.8 registered 實測)
+- [ ] 3.2 GenerateBootProject 會自己編譯，不需要先 Build(probe 實測);不改 BUILD_REQUIRED,和 BOOT_PACKAGE_MISMATCH 的關係寫在 help(已實作，待 3.8 registered 實測)
 - [ ] 3.3 PLCopen import/export(import 要 dry-run)(已實作，待 3.8 registered 實測)
 - [ ] 3.4 SaveAsLibrary、archive 存取(已實作，待 3.8 registered 實測)
 - [ ] 3.5 Task 建立和 program 連結;用 CycleCount 驗證(已實作，待 3.8 registered 實測)
