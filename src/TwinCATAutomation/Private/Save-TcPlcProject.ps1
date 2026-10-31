@@ -103,8 +103,8 @@ function Get-TcPlcProjectFile {
     $problems = [System.Collections.Generic.List[string]]::new()
     foreach ($p in @($projects)) {
         if (-not (Test-Path -LiteralPath $p.FullName)) { $problems.Add("'$($p.FullName)' not found on disk"); continue }
-        $xml = New-Object System.Xml.XmlDocument
-        try { $xml.Load($p.FullName) } catch { $problems.Add("'$($p.FullName)' could not be read ($($_.Exception.Message))"); continue }
+        $xml = $null
+        try { $xml = Read-TcXmlFile -Path $p.FullName } catch { $problems.Add("'$($p.FullName)' could not be read ($($_.Exception.Message))"); continue }
         foreach ($node in @($xml.SelectNodes('//Project[@PrjFilePath]'))) {
             if ([string]$node.GetAttribute('Name') -ine $PlcName) { continue }
             $rel = [string]$node.GetAttribute('PrjFilePath')
@@ -171,8 +171,7 @@ function Get-TcPlcProjectContent {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    $xml = New-Object System.Xml.XmlDocument
-    $xml.Load($Path)
+    $xml = Read-TcXmlFile -Path $Path
     $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
     $ns.AddNamespace('m', [string]$xml.DocumentElement.NamespaceURI)
     $pre = if ([string]::IsNullOrEmpty([string]$xml.DocumentElement.NamespaceURI)) { '' } else { 'm:' }
@@ -190,7 +189,7 @@ function Get-TcPlcProjectContent {
         $inc = [string]$n.GetAttribute('Include')
         if (-not [string]::IsNullOrWhiteSpace($inc)) { $null = $libs.Add($inc.Split(',')[0].Trim()) }
         foreach ($child in @($n.ChildNodes)) {
-            if ($child.LocalName -in 'Namespace', 'DefaultResolution', 'Resolution') {
+            if ($child.get_LocalName() -in 'Namespace', 'DefaultResolution', 'Resolution') {
                 $v = ([string]$child.InnerText).Split(',')[0].Trim()
                 if (-not [string]::IsNullOrWhiteSpace($v)) { $null = $libs.Add($v) }
             }
@@ -677,8 +676,14 @@ function Invoke-TcPlcObjectSave {
         File name that must appear as <Compile Include> (e.g. FB_Motor.TcPOU).
     .PARAMETER ExpectLibrary
         Library name that must appear as a library reference.
+    .PARAMETER ExpectFiles
+        More <Compile Include> entries, already as relative paths ('POUs\FB_A.TcPOU'), passed as given
+        (Import-TcPlcOpen: every object the import added).
     .PARAMETER What
         Short text for the messages, e.g. "POU 'FB_Motor'".
+    .PARAMETER Done
+        What happened to -What in XAE, for the messages: 'created' (default), or e.g. 'removed' /
+        'changed' for the Library Manager cmdlets.
     #>
     [CmdletBinding()]
     param(
@@ -691,13 +696,20 @@ function Invoke-TcPlcObjectSave {
         [Parameter()]
         [string]$ExpectLibrary,
 
+        [Parameter()]
+        [AllowEmptyCollection()]
+        [string[]]$ExpectFiles = @(),
+
         [Parameter(Mandatory)]
-        [string]$What
+        [string]$What,
+
+        [Parameter()]
+        [string]$Done = 'created'
     )
 
     $plc = Get-TcPlcNameFromPath -TreePath $ObjectPath
     $errData = [PSCustomObject]@{ objectPath = $ObjectPath; plc = $plc; createdInMemory = $true; savedToDisk = $false }
-    $prefix = "$What was created in XAE ('$ObjectPath') but the project file (.plcproj) was not saved, so closing the solution without saving would drop it"
+    $prefix = "$What was $Done in XAE ('$ObjectPath') but the project file (.plcproj) was not saved, so closing the solution without saving would drop it"
     $locateHint = "物件已建在 XAE 記憶體，但模組找不到這個 PLC 的 .plcproj(error.message 說明找過哪些 .tsproj;獨立專案檔 .xti 的位置規則 InfoSys 沒寫，未驗證)。下一步：請使用者在 XAE 的 Solution Explorer 對該 PLC 專案按右鍵 Save(或 File > Save All,會一併存其他未存文件),再 Get-TcProjectTree -PlcOnly 確認物件還在;不要 Reset-TcSolution -DiscardProjectChanges 或 Disconnect-TcIde -Quit(會丟掉這個物件)"
     if ($null -eq $plc) {
         return @{ Saved = $null; Error = (New-TcResult -Success $false -ErrorMessage "${prefix}: '$ObjectPath' is not below TIPC^<Plc>, the PLC project cannot be located." `
@@ -713,11 +725,13 @@ function Invoke-TcPlcObjectSave {
         }
         $saveParams['ExpectFile'] = @($ef)
     }
+    $more = @($ExpectFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($more.Count -gt 0) { $saveParams['ExpectFile'] = @(@($saveParams['ExpectFile'] | Where-Object { $null -ne $_ }) + $more) }
     if (-not [string]::IsNullOrWhiteSpace($ExpectLibrary)) { $saveParams['ExpectLibrary'] = @($ExpectLibrary) }
     try {
         $saved = Save-TcPlcProject @saveParams
         if ($saved.Contains('ModalDialog')) {
-            return @{ Saved = $null; Error = (New-TcModalDialogResult -Dialog $saved.ModalDialog -Operation "Project.Save after creating $What (created in XAE, project file NOT saved)" -Data $errData) }
+            return @{ Saved = $null; Error = (New-TcModalDialogResult -Dialog $saved.ModalDialog -Operation "Project.Save after $What ($Done in XAE, project file NOT saved)" -Data $errData) }
         }
         return @{ Saved = [PSCustomObject]$saved; Error = $null }
     }

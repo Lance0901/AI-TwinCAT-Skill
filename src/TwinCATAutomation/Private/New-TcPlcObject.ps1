@@ -1,7 +1,7 @@
 function New-TcPlcObject {
     <#
     .SYNOPSIS
-        Creates a PLC object (POU / DUT / GVL) below a PLC folder and reads it back.
+        Creates a PLC object (POU / DUT / GVL / ITF, or a member of a POU) and reads it back.
     .DESCRIPTION
         ITcSmTreeItem::CreateChild(name, subType, '', vInfo) on the folder item, InfoSys:
         https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html
@@ -12,13 +12,18 @@ function New-TcPlcObject {
         CreateChild sub types; the others are measured (2026-10-25, 4024 and 4026). The parent
         must be a PLC folder (TREEITEMTYPE_PLCFOLDER, e.g. TIPC^<Plc>^<Plc> Project^POUs) or the
         <Plc> Project node. vInfo is passed through unchanged (see Add-TcPou / Add-TcDut /
-        Add-TcGvl).
+        Add-TcGvl). Add-TcInterface uses sub type 618 below a folder. Add-TcPouMember passes a
+        POU / interface / property as -ParentPath (method 609, ITF method 610, property 611 /
+        ITF property 612, accessor 613 / 614, action 608; TE1000 v1.7.0 6.5.5 p.229-231) with
+        -SkipProjectNameCheck (it checks the children of the parent itself) and, for an action,
+        -NoDeclaration.
         Steps; each failure throws a message that starts with the step name:
           1. exists    nothing at "<ParentPath>^<Name>", and no top-level PLC object with -Name
                        in the <Plc> Project that contains -ParentPath (Find-TcPlcNameConflict:
                        POU / DUT / GVL / ITF in any folder; methods, actions, properties and
                        folders do not count). Above -MaxNodes tree nodes only the target path is
                        checked (DuplicateCheckScope 'folder' instead of 'project').
+                       -SkipProjectNameCheck: only the target path (DuplicateCheckScope 'parent').
           -  dialog    a modal dialog in the IDE (Get-TcIdeModalDialog): returns
                        @{ ModalDialog = <dialog> } without calling CreateChild; the caller returns
                        New-TcModalDialogResult (IDE_MODAL_DIALOG), as Build-TcProject does.
@@ -33,7 +38,9 @@ function New-TcPlcObject {
                        Get-TcPlcObjectKind) equals it
           6. declare   with -Declaration: DeclarationText = Declaration, read back and compared
                        (line endings and trailing white space ignored); with
-                       -DeclarationPattern: the declaration read back matches the regex
+                       -DeclarationPattern: the declaration read back matches the regex.
+                       -NoDeclaration: skipped, DeclarationText is not read (an action has
+                       none, measured 2026-10-31 4026 VS2022, self-built client)
         From step 3 on the object has been created and stays in the tree: the messages say so
         and name the way out (Write-TcPouCode -PouPath <path> to correct it, or delete it in XAE).
         Returns @{ Item; Path; ItemType; Declaration; Language; DuplicateCheckScope;
@@ -54,6 +61,11 @@ function New-TcPlcObject {
         Optional regex the declaration read back must match (e.g. the return type of a Function).
     .PARAMETER ExpectedLanguage
         Optional language name (ST, LD ...) the new object must report.
+    .PARAMETER SkipProjectNameCheck
+        Do not walk the PLC project for a top-level object named -Name; only the target path is
+        checked (members: their names are scoped to the parent, the caller checks its children).
+    .PARAMETER NoDeclaration
+        Do not read or write DeclarationText (actions).
     .PARAMETER MaxNodes
         Node limit of the project-wide name check (default 3000).
     .PARAMETER Progress
@@ -93,6 +105,12 @@ function New-TcPlcObject {
         [string]$ExpectedLanguage,
 
         [Parameter()]
+        [switch]$SkipProjectNameCheck,
+
+        [Parameter()]
+        [switch]$NoDeclaration,
+
+        [Parameter()]
         [ValidateRange(1, 100000)]
         [int]$MaxNodes = 3000,
 
@@ -106,7 +124,8 @@ function New-TcPlcObject {
     $stays = "The object was created and stays in the tree: correct it with Write-TcPouCode -PouPath '$path', or delete it in XAE before creating it again."
 
     # 1. exists: the target path itself, then the same name in the PLC project of -ParentPath
-    $conflict = Find-TcPlcNameConflict -SysManager $sm -ParentPath $ParentPath -Name $Name -MaxNodes $MaxNodes
+    if ($SkipProjectNameCheck) { $conflict = @{ Hits = [string[]]@(); Scope = 'parent'; Skipped = 0; Note = $null } }
+    else { $conflict = Find-TcPlcNameConflict -SysManager $sm -ParentPath $ParentPath -Name $Name -MaxNodes $MaxNodes }
     if ($conflict.Hits.Count -gt 0) {
         $first = $conflict.Hits[0]
         throw "exists: an object named '$Name' already exists at '$($conflict.Hits -join "', '")'. Pick another name, or change it with Write-TcPouCode -PouPath '$first'."
@@ -170,7 +189,8 @@ function New-TcPlcObject {
 
     # 6. declare
     $decl = $null
-    if (-not [string]::IsNullOrWhiteSpace($Declaration)) {
+    if ($NoDeclaration) { $decl = $null }
+    elseif (-not [string]::IsNullOrWhiteSpace($Declaration)) {
         $d = $Declaration
         try {
             Invoke-TcComRetry -OperationName 'Set DeclarationText' -ScriptBlock { $item.DeclarationText = $d } | Out-Null
@@ -186,7 +206,7 @@ function New-TcPlcObject {
         try { $decl = [string](Invoke-TcComRetry -OperationName 'Get DeclarationText' -ScriptBlock { $item.DeclarationText }) }
         catch { throw "declare: '$path' was created but reading its declaration failed ($($_.Exception.Message)). $stays" }
     }
-    if (-not [string]::IsNullOrWhiteSpace($DeclarationPattern) -and $decl -notmatch $DeclarationPattern) {
+    if (-not $NoDeclaration -and -not [string]::IsNullOrWhiteSpace($DeclarationPattern) -and $decl -notmatch $DeclarationPattern) {
         throw "declare: '$path' was created but its declaration does not match '$DeclarationPattern' (read back: $decl). $stays"
     }
 

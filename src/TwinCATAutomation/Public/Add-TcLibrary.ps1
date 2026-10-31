@@ -78,49 +78,14 @@
     $addCalled = $false
     $change = "Add-TcLibrary $Name (version $Version)"
     try {
-        # --- PLC project -> References node path (same lookup as Enter-/Exit-TcPlcOnline)
-        $plcList = @(Get-TcPlcProjectList -SysManager $sm)
-        if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
-            try { $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm -RequireSingle }
-            catch {
-                if ($_.Exception.Message -match '^(PLC_PROJECT_NOT_FOUND|PLC_PROJECT_AMBIGUOUS)') {
-                    $code = $Matches[1]
-                    return New-TcResult -Success $false -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_[A-Z_]+:\s*', '') `
-                        -ErrorCode $code -Hint (Get-TcErrorHint -Code $code) -Data ([PSCustomObject]@{ plcProjects = $plcList })
-                }
-                throw
-            }
-        }
-        else {
-            $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
-            if ($null -eq $plcEntry) {
-                return New-TcResult -Success $false `
-                    -ErrorMessage "PLC project '$PlcProjectPath' not found. PLC projects: $(($plcList | ForEach-Object { $_.projectPath }) -join ', ')" `
-                    -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND') `
-                    -Data ([PSCustomObject]@{ plcProjects = $plcList })
-            }
-            $PlcProjectPath = $plcEntry.projectPath
-        }
-        $refsPath = "$PlcProjectPath^References"
-
-        # The References item is a tree item (enumerable): not returned through Invoke-TcComRetry
-        # (the pipeline would unroll it), looked up directly.
-        $refs = $null
-        try { $refs = $sm.LookupTreeItem($refsPath) }
-        catch {
-            if ((ConvertTo-TcTsmErrorCode -InputObject $_ -DefaultCode 'OTHER') -ne 'TREEITEM_NOT_FOUND') { throw }
-            $refs = $null
-        }
-        if ($null -eq $refs) {
-            return New-TcResult -Success $false -ErrorMessage "Cannot find References node '$refsPath' in PLC project." -ErrorCode 'REFS_NOT_FOUND'
-        }
+        # --- PLC project -> References node (same lookup as Enter-/Exit-TcPlcOnline)
+        $mgr = Resolve-TcLibraryManager -SysManager $sm -PlcProjectPath $PlcProjectPath
+        if ($null -ne $mgr.Result) { return $mgr.Result }
+        $refs = $mgr.Refs
+        $refsPath = $mgr.RefsPath
 
         # --- already referenced? (ITcPlcLibraryManager.References, placeholders are '#<name>')
-        $existing = Invoke-TcComRetry -OperationName 'References names' -ScriptBlock {
-            $__n = [System.Collections.Generic.List[string]]::new()
-            foreach ($__r in $refs.References) { $__n.Add([string]$__r.Name) }
-            Write-Output -NoEnumerate $__n.ToArray()
-        }
+        $existing = Get-TcLibraryReferenceList -Refs $refs -NamesOnly
         $match = @($existing | Where-Object { $_ -ieq $Name -or $_ -ieq "#$Name" }) | Select-Object -First 1
         $alreadyPresent = $null -ne $match
 

@@ -196,48 +196,178 @@ export function toToolResult(result) {
 export function buildCmdletNameMap(catalog, extra = {}) {
   const map = new Map(catalog?.byCmdlet ?? []);
   for (const [k, v] of Object.entries(extra)) map.set(k, v);
+  // Parameter schemas, so a switch (boolean) is written Name=true and never swallows the next word,
+  // and a parameter named outside a cmdlet call (`換一個 -Name`) is recognised (phase2-3.8.md P1).
+  const toolParams = new Map();
+  const anyParam = new Map();
+  if (catalog && typeof catalog[Symbol.iterator] === 'function') {
+    for (const [toolName, tool] of catalog) {
+      const props = tool?.inputSchema?.properties ?? {};
+      toolParams.set(toolName, props);
+      for (const [p, s] of Object.entries(props)) {
+        if (!anyParam.has(p)) anyParam.set(p, []);
+        anyParam.get(p).push(s);
+      }
+    }
+  }
+  map.toolParams = toolParams;
+  map.anyParam = anyParam;
   return map;
 }
 
-const CMDLET_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b/g;
-// ` -Param` or ` -Param value` right after a replaced cmdlet name; the value must not be another switch.
-// A quoted value ('TwinCAT OS (x64)') is kept whole, quotes included.
-const PARAM_RE = /^\s-([A-Z][A-Za-z]+)(?=\s|$|[,;:()。，；：])(?:\s+('[^']*'|"[^"]*"|<[^>]+>|[A-Za-z0-9_.\:/][A-Za-z0-9_.\:/-]*))?/;
+// A cmdlet name, or a parameter named on its own (`-Name`) after a blank, an opening bracket or a separator.
+// The separators include the CJK sentence ends (retest N1: '...重試一次。-PlcProjectPath 可給 ...').
+const TOKEN_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b|(?<=^|[\s(（,，;；:：、/「。！？])-([A-Z][A-Za-z]+)\b/g;
+// `-Param` or `-Param:$false`; the name must end at a blank, a bracket, punctuation or a CJK character.
+const PARAM_NAME_RE = /^-([A-Z][A-Za-z]+)(?::\$(true|false)\b)?(?=$|[\s,;:()（）。，；：、.」！？]|[぀-ヿ㐀-鿿])/;
+const QUOTED = `(?:'[^']*'|"[^"]*")`;
+// The value after the name: $true / $false, one quoted string or a comma-joined list of them
+// ('a','b' = a PowerShell array), a <placeholder>, or a bare word.
+const PARAM_VALUE_RE = new RegExp(
+  `^\\s+(?:\\$(true|false)\\b|(${QUOTED}(?:\\s*,\\s*${QUOTED})*)|(<[^>]+>)|([A-Za-z0-9_\\\\:/^][A-Za-z0-9_.\\\\:/^-]*))`
+);
 
-/** Replace PowerShell cmdlet names (and their ` -Param value` tails) in a hint with MCP tool names. */
+function schemaFlags(schemas) {
+  const list = (schemas ?? []).filter(Boolean);
+  return {
+    known: list.length > 0,
+    isBool: list.length > 0 && list.every((s) => s.type === 'boolean'),
+    isArray: list.some((s) => s.type === 'array'),
+    enumHas: (v) => list.some((s) => Array.isArray(s.enum) && s.enum.includes(v))
+  };
+}
+
+/**
+ * Parse one `-Param [value]` at text[pos] ('-') -> { text, end } or null.
+ * mode 'call': right after a cmdlet name (bare words are values unless the parameter is a switch);
+ * mode 'alone': a parameter named in prose (a bare word is a value only when it is in the enum).
+ */
+function parseParam(text, pos, schemas, mode) {
+  const nm = PARAM_NAME_RE.exec(text.slice(pos));
+  if (!nm) return null;
+  const name = nm[1];
+  const f = schemaFlags(schemas);
+  let end = pos + nm[0].length;
+  if (nm[2] !== undefined) return { text: `${name}=${nm[2]}`, end };
+  const vm = PARAM_VALUE_RE.exec(text.slice(end));
+  if (vm && vm[1] !== undefined) return { text: `${name}=${vm[1]}`, end: end + vm[0].length };
+  if (vm && vm[2] !== undefined && !f.isBool) {
+    const items = vm[2].match(new RegExp(QUOTED, 'g'));
+    // an array parameter is written as a JSON array (what the MCP call takes): 'a','b' -> ["a","b"]
+    const json = (q) => JSON.stringify(q.slice(1, -1));
+    const value = items.length > 1 || f.isArray ? `[${items.map(json).join(',')}]` : items[0];
+    return { text: `${name}=${value}`, end: end + vm[0].length };
+  }
+  if (vm && vm[3] !== undefined && !f.isBool) return { text: `${name}=${vm[3]}`, end: end + vm[0].length };
+  if (vm && vm[4] !== undefined && !f.isBool) {
+    // a sentence-ending '.' is not part of the value
+    let word = vm[4];
+    let len = vm[0].length;
+    if (word.length > 1 && word.endsWith('.')) { word = word.slice(0, -1); len -= 1; }
+    // review S5: an enum value always; after a cmdlet also a path-like or identifier-like word
+    // (^ \ : / . a digit, an upper-case letter or '_': 'TIPC^P', 'C:\x', '1000', 'FastTask'),
+    // never a plain lower-case English word ('-Path and then retry').
+    // In prose (retest N3: 'e.g. -Extends I_Base') the same holds for a word with '_' or a digit
+    // or a path character, but not for a capitalised English word ('-Name Is ...').
+    const valueLike = /[\^\\:/.\d_A-Z]/.test(word) && /[A-Za-z0-9]/.test(word);
+    const aloneValueLike = /[\^\\:/.\d_]/.test(word) && /[A-Za-z0-9]/.test(word);
+    if (f.enumHas(word) || (mode === 'call' && valueLike) || (mode === 'alone' && aloneValueLike)) return { text: `${name}=${word}`, end: end + len };
+  }
+  if (f.isBool) return { text: `${name}=true`, end };
+  if (mode === 'alone') return { text: name, end };
+  // after a cmdlet: an unknown parameter (composite tool) is a switch; a known value parameter needs a value
+  return { text: f.known ? `${name}=<${name}>` : `${name}=true`, end };
+}
+
+/**
+ * Replace PowerShell cmdlet names (and their ` -Param value` tails) in a hint with MCP tool names,
+ * and parameters named on their own (`-Name`) with the MCP spelling. The module writes the
+ * PowerShell form (CLI users read it as is); the MCP server rewrites it here.
+ */
 export function rewriteHintCmdletNames(hint, nameMap) {
   if (typeof hint !== 'string' || !nameMap) return hint;
+  const toolParams = nameMap.toolParams ?? new Map();
+  const anyParam = nameMap.anyParam ?? new Map();
+  // review S5: quoted text ('...' / "..." not inside a word, so "doesn't" is no quote) is a value,
+  // a path or code: a lone '-Name' inside it is left alone.
+  const quoted = [];
+  for (const q of hint.matchAll(/(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])|(?<![A-Za-z0-9])"[^"]*"(?![A-Za-z0-9])/g)) {
+    quoted.push([q.index, q.index + q[0].length]);
+  }
+  const inQuotes = (i) => quoted.some(([a, b]) => i > a && i < b);
+  // a lone '-Name' right after an operator ('x := -Value') or after a path-like word
+  // ('C:\Proj\My -Name dir') is code or part of the path, not a parameter
+  const notAParameter = (i) => {
+    const before = hint.slice(0, i).replace(/\s+$/, '');
+    // ':=', 'x=', '+', '*', or a free-standing '<' / '>' (not the end of a <placeholder>)
+    if (/(:=|[+*]|\S=|(?:^|\s)[<>])$/.test(before)) return true;
+    const prev = /(\S+)$/.exec(before)?.[1] ?? '';
+    return /\\|^[A-Za-z]:/.test(prev) && !/[,;，；。:：]$/.test(prev);
+  };
   let out = '';
   let last = 0;
-  CMDLET_RE.lastIndex = 0;
+  TOKEN_RE.lastIndex = 0;
   let m;
-  while ((m = CMDLET_RE.exec(hint)) !== null) {
-    const tool = nameMap.get(m[1]);
-    if (tool === undefined) continue;
-    out += hint.slice(last, m.index) + tool;
-    let end = m.index + m[1].length;
-    for (;;) {
-      const pm = PARAM_RE.exec(hint.slice(end));
-      if (!pm) break;
-      out += ` ${pm[1]}=${pm[2] ?? 'true'}`;
-      end += pm[0].length;
+  while ((m = TOKEN_RE.exec(hint)) !== null) {
+    if (m[1] !== undefined) {
+      const tool = nameMap.get(m[1]);
+      if (tool === undefined) continue;
+      const props = toolParams.get(tool);
+      out += hint.slice(last, m.index) + tool;
+      let end = m.index + m[1].length;
+      for (;;) {
+        if (!/^\s-/.test(hint.slice(end, end + 2))) break;
+        const name = /^\s-([A-Z][A-Za-z]+)/.exec(hint.slice(end))?.[1];
+        // a known tool: only its own parameters continue the call ('-FilePath C:\My -Name dir' stops)
+        if (props && name && !Object.prototype.hasOwnProperty.call(props, name)) break;
+        const schema = props && name ? [props[name]] : undefined;
+        const pp = parseParam(hint, end + 1, schema, 'call');
+        if (!pp) break;
+        out += ` ${pp.text}`;
+        end = pp.end;
+      }
+      last = end;
+      TOKEN_RE.lastIndex = end;
+    } else {
+      if (!anyParam.has(m[2]) || inQuotes(m.index) || notAParameter(m.index)) continue;
+      const pp = parseParam(hint, m.index, anyParam.get(m[2]), 'alone');
+      if (!pp) continue;
+      out += hint.slice(last, m.index) + pp.text;
+      last = pp.end;
+      TOKEN_RE.lastIndex = pp.end;
     }
-    last = end;
-    CMDLET_RE.lastIndex = end;
   }
   return out + hint.slice(last);
 }
 
-/** Rewrite error.hint / data.hint strings anywhere in a result (depth <= 8), in place. */
+// Result fields whose text names cmdlets for the caller to run (phase2-3.8.md P1). Every string
+// below such a key is rewritten; other fields (code, paths, PLC values) are left alone.
+const REWRITE_KEYS = new Set([
+  'hint', 'message', 'verifyHint', 'warning', 'warnings', 'restore', 'restoreNote', 'how',
+  'buildRequired', 'stateWarning', 'note', 'locateHint'
+]);
+
+function rewriteDeep(value, nameMap, depth) {
+  if (typeof value === 'string') return rewriteHintCmdletNames(value, nameMap);
+  if (value === null || typeof value !== 'object' || depth > 8) return value;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) value[i] = rewriteDeep(value[i], nameMap, depth + 1);
+  } else {
+    for (const k of Object.keys(value)) value[k] = rewriteDeep(value[k], nameMap, depth + 1);
+  }
+  return value;
+}
+
+/** Rewrite hint / message / warning-like strings anywhere in a result (depth <= 8), in place. */
 export function rewriteResultHints(result, nameMap, depth = 0) {
   if (result === null || typeof result !== 'object' || depth > 8) return result;
   if (Array.isArray(result)) {
     for (const item of result) rewriteResultHints(item, nameMap, depth + 1);
     return result;
   }
-  const err = result.error;
-  if (err && typeof err === 'object' && typeof err.hint === 'string') err.hint = rewriteHintCmdletNames(err.hint, nameMap);
-  if (typeof result.hint === 'string' && depth > 0) result.hint = rewriteHintCmdletNames(result.hint, nameMap);
-  for (const v of Object.values(result)) rewriteResultHints(v, nameMap, depth + 1);
+  for (const [k, v] of Object.entries(result)) {
+    if (REWRITE_KEYS.has(k) && (depth > 0 || k !== 'hint')) result[k] = rewriteDeep(v, nameMap, depth + 1);
+    else rewriteResultHints(v, nameMap, depth + 1);
+  }
   return result;
 }

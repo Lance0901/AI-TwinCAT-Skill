@@ -8,9 +8,9 @@ $script:TcPlcItemTypeNames = @{
     57  = 'PlcInstance'          # TIPC^<Plc>^<Plc> Instance
     600 = 'Project'              # TIPC^<Plc>^<Plc> Project
     601 = 'Folder'               # POUs / DUTs / GVLs / Libs / user folders
-    602 = 'FunctionBlock'
+    602 = 'Program'              # TE1000 v1.7.0 6.5.5; measured 4026 2026-10-31 (MAIN, TestCam = PROGRAM)
     603 = 'Function'
-    604 = 'Program'
+    604 = 'FunctionBlock'
     606 = 'Dut'                  # STRUCT / ENUM / ALIAS / UNION (CreateChild 605-607 all yield 606)
     609 = 'Method'
     610 = 'InterfaceMethod'

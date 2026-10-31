@@ -19,6 +19,12 @@ function Get-TcPlcObjectKind {
         Not measured: 612 interface property, 613 / 614 property get / set, 616 transition:
         HasImplementation is $null for them (as for an unknown ItemType), so Get-TcPouCode /
         Write-TcPouCode read ImplementationText to decide.
+        654 / 655 (Get / Set of an interface property, TE1000 v1.7.0 enum 5.46.22): reading
+        DeclarationText of a 654 item crashed VS2022 (measured 2026-10-31 4026 VS2022, self-built
+        client); Get-TcPouCode / Write-TcPouCode refuse them (POU_MEMBER_UNSUPPORTED) after
+        reading only ItemType, so pass -ItemType (not -Item) for them.
+        Measured 2026-10-31 (4026 VS2022, self-built client) for 612 / 613 / 614: Get-TcPouCode
+        reads them (ITF_PROPERTY, PROPERTY_GET / PROPERTY_SET); HasImplementation stays $null.
         Language: ITcSmTreeItem.Language of a POU / method / action, mapped through the
         TCatSysManagerLib IECLANGUAGETYPES enum (ST = 1, FBD = 4, LD = 6 ...; values read by
         reflection from the TCatSysManagerLib 3.4.0.0 interop assembly, 2026-10-25). The property
@@ -84,6 +90,8 @@ function Get-TcPlcObjectKind {
         613 = @('PROPERTY_GET', $null, $null)
         614 = @('PROPERTY_SET', $null, $null)
         616 = @('TRANSITION', $null, $null)
+        654 = @('ITF_PROPERTY_GET', $null, $null)
+        655 = @('ITF_PROPERTY_SET', $null, $null)
         601 = @('FOLDER', $null, $false)
     }
     if ($table.ContainsKey($ItemType)) {

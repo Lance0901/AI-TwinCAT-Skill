@@ -634,13 +634,14 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       const w = await s.call('WritePouCode', write);
       assert.equal(w.success, true, JSON.stringify(w));
       assert.deepEqual(w.data.updated, ['implementation']);
-      assert.equal(w.data.buildRequired, 'PLC code changed by Write-TcPouCode MAIN [implementation]');
+      // data.buildRequired / error.message name MCP tools too (phase2-3.8.md P1)
+      assert.equal(w.data.buildRequired, 'PLC code changed by WritePouCode MAIN [implementation]');
       assert.equal(w.data.stateWarning, undefined);
       assert.ok(fs.existsSync(path.join(s.stateDir, 'build-required.json')), 'state is a file');
 
       const e = await s.call('EnableConfig', { Force: true });
       assert.equal(e.error.code, 'BUILD_REQUIRED', JSON.stringify(e.error));
-      assert.match(e.error.message, /PLC code changed by Write-TcPouCode MAIN \[implementation\]/);
+      assert.match(e.error.message, /PLC code changed by WritePouCode MAIN \[implementation\]/);
       assert.match(e.error.message, /changed after the last complete build.*#65/);
       // hints reach the client with MCP tool names (Write-TcPouCode -> WritePouCode, lib/tools.js)
       assert.match(e.error.hint, /^Recorded: code-changed \(PLC code changed by WritePouCode MAIN \[implementation\]\)\. Run BuildProject until data\.completeBuild = true/);
@@ -648,7 +649,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       for (const LoginMode of ['Regular', 'Download', 'OnlineChange']) {
         const l = await s.call('PlcLogin', { LoginMode });
         assert.equal(l.error.code, 'BUILD_REQUIRED', `${LoginMode}: ${JSON.stringify(l.error)}`);
-        assert.match(l.error.message, /PLC code changed by Write-TcPouCode MAIN/);
+        assert.match(l.error.message, /PLC code changed by WritePouCode MAIN/);
         assert.match(l.error.hint, /code-changed/);
       }
 
@@ -656,7 +657,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       try {
         const again = await other.call('PlcLogin', { LoginMode: 'Download' });
         assert.equal(again.error.code, 'BUILD_REQUIRED', 'survives a bridge restart');
-        assert.match(again.error.message, /Write-TcPouCode MAIN/);
+        assert.match(again.error.message, /WritePouCode MAIN/);
       } finally {
         await other.client.close();
       }
@@ -667,7 +668,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       assert.equal(lib.error.code, 'LIBRARY_UNRESOLVED');
       const both = await s.call('EnableConfig', { Force: true });
       assert.equal(both.error.code, 'BUILD_REQUIRED');
-      assert.match(both.error.message, /LIBRARY_UNRESOLVED.*; and PLC code changed by Write-TcPouCode MAIN/);
+      assert.match(both.error.message, /LIBRARY_UNRESOLVED.*; and PLC code changed by WritePouCode MAIN/);
       assert.match(both.error.hint, /^Recorded: unverified-build \(.*\); code-changed \(/);
 
       fs.writeFileSync(s.scenarioFile, 'clean');
@@ -732,7 +733,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
     try {
       const w = await c.call('WritePouCode', { PouName: 'MAIN', PouPath: 'TIPC^plc^plc Project^POUs^MAIN', Implementation: 'n := 2;' });
       assert.equal(w.success, true, JSON.stringify(w));
-      assert.match(w.data.buildRequired, /Write-TcPouCode MAIN/);
+      assert.match(w.data.buildRequired, /WritePouCode MAIN/);
       assert.match(w.data.stateWarning, /BUILD_REQUIRED was recorded in this process only/);
       const l = await c.call('PlcLogin', { LoginMode: 'Download' });
       assert.equal(l.error.code, 'BUILD_REQUIRED', JSON.stringify(l.error));

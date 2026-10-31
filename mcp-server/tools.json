@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-30T06:34:05Z",
+    "generatedAt":  "2026-10-31T16:56:48Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -130,6 +130,37 @@
                                       }
                   },
                   {
+                      "name":  "AddInterface",
+                      "cmdlet":  "Add-TcInterface",
+                      "description":  "Create an INTERFACE (CreateChild 618, TE1000 v1.7.0 6.5.5) in <Plc> Project^POUs (or PlcProjectPath) and read it back: the declaration must be INTERFACE <Name> (EXTENDS <Extends> when given). Extends is one string (an array is refused by XAE, measured 2026-10-31 4026 VS2022); not an identifier list -> INVALID_PARAMS. Same checks, BUILD_REQUIRED (#65), project file save (#76, .TcIO in the .plcproj) and PLC_LOGGED_IN as AddPou; failure codes POU_CREATE_FAILED (step in the message), PROJECT_SAVE_FAILED / PROJECT_SAVE_TIMEOUT, IDE_MODAL_DIALOG. data: path, folderPath, objectKind (ITF), itemType 618, extends, declaration, projectSaved. Add methods / properties with AddPouMember ParentPath=<data.path>.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Interface name (e.g. I_Motor)."
+                                                                      },
+                                                             "Extends":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Optional interface it extends, as one string (e.g. I_Base; several: 'I_A, I_B' is passed as given, not measured). Must be identifiers separated by commas."
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Tree path of the folder the interface is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same as AddPou PlcProjectPath). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "AddLibrary",
                       "cmdlet":  "Add-TcLibrary",
                       "description":  "Add a library reference to the PLC project: ITcPlcLibraryManager.AddLibrary(Name, Version, Vendor) on TIPC^<Plc>^<Plc> Project^References (TE1000 6.5.14). Version * = newest installed (.plcproj gets LibraryReference Include=\"<name>,newest,<vendor>\"). Already referenced (also as placeholder #<name>): success with data.alreadyPresent=true, nothing added, no BUILD_REQUIRED. Not installed: LIBRARY_ADD_FAILED with data.notInstalled=true and an install hint; nothing is saved, the .plcproj is unchanged. Several PLC projects: pass PlcProjectPath (else PLC_PROJECT_AMBIGUOUS). BUILD_REQUIRED (#65): the added reference (also when AddLibrary failed for another reason) records kind code-changed for the open solution (data.buildRequired names the tool and the library; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): the reference is stored in the .plcproj, which is saved (DTE Project.Save of the .tsproj, deadline: PROJECT_SAVE_TIMEOUT) and read back from disk: success only when it lists a library reference named Name (data.projectSaved); otherwise PROJECT_SAVE_FAILED or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified.",
@@ -162,6 +193,88 @@
                                                          },
                                           "required":  [
                                                            "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPlaceholder",
+                      "cmdlet":  "Add-TcLibraryPlaceholder",
+                      "description":  "Adds a library placeholder to the PLC project (ITcPlcLibraryManager.AddPlaceholder), saves the project file and reads it back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Placeholder":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Placeholder name, with or without the leading '#'."
+                                                                             },
+                                                             "LibraryName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Default library of the placeholder (e.g. Tc2_Math). Empty: one-argument form (device placeholder)."
+                                                                             },
+                                                             "Version":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Default library version; '*' (default) = newest installed. Only with -LibraryName.",
+                                                                             "default":  "*"
+                                                                         },
+                                                             "Distributor":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Distributor of the default library. Default 'Beckhoff Automation GmbH'. Only with -LibraryName.",
+                                                                                 "default":  "Beckhoff Automation GmbH"
+                                                                             },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Placeholder"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPlcTask",
+                      "cmdlet":  "Add-TcPlcTask",
+                      "description":  "Adds a PLC task: a real-time task TIRT^<Name> with CycleTimeUs / Priority plus the PLC task object '<Plc> Project^<Name>' linked to it. Dry-run by default; rolls back what it created when a step fails.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Task name, used for the TIRT task and the PLC task object (e.g. FastTask)."
+                                                                      },
+                                                             "CycleTimeUs":  {
+                                                                                 "type":  "integer",
+                                                                                 "description":  "Cycle time in microseconds (> 0), e.g. 1000 = 1 ms."
+                                                                             },
+                                                             "Priority":  {
+                                                                              "type":  "integer",
+                                                                              "description":  "Optional task priority (TaskDef/Priority); XAE's default is kept when omitted."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create, set, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "CycleTimeUs"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -209,6 +322,67 @@
                                       }
                   },
                   {
+                      "name":  "AddPouMember",
+                      "cmdlet":  "Add-TcPouMember",
+                      "description":  "Add a Method, Property, Action, or a property Get / Set accessor below a PROGRAM / FUNCTION_BLOCK / INTERFACE (Get / Set: below a property) and read it back (CreateChild, TE1000 v1.7.0 6.5.5). ParentPath: full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor; for Get / Set ...^FB_Motor^P_Speed) or a name as for GetPouCode (FB_Motor, FB_Motor.P_Speed). Sub type / vInfo (measured 2026-10-31 4026 VS2022, self-built client): FB / PROGRAM parent Method 609 {language, ReturnType, Access}, Property 611 {language, ReturnType, Access}, Action 608 {language}; INTERFACE parent Method 610 {ReturnType}, Property 612 {ReturnType}; property parent Get 613 / Set 614 {language, Access}. ReturnType is required for a Property, optional for a Method, not allowed for Action / Get / Set; Name is not needed for Get / Set. Access PUBLIC / PRIVATE / PROTECTED / INTERNAL is checked by the module (XAE makes any other value PUBLIC silently) -> POU_MEMBER_INVALID; wrong parent kind, Access / Language on an interface member -> POU_MEMBER_INVALID. Get / Set below an INTERFACE property (654 / 655) -> POU_MEMBER_UNSUPPORTED (reading such an accessor crashed VS2022); Get / Set with Access other than PUBLIC or Language other than ST -> POU_MEMBER_UNSUPPORTED (accessor-not-measured); a Method without ReturnType only with PUBLIC + ST (its language is reported, not checked). Same name below the parent (case-insensitive) -> POU_MEMBER_EXISTS (data.existingPath). Ambiguous parent name -> POU_AMBIGUOUS (data.candidates). Modal dialog -> IDE_MODAL_DIALOG, PLC logged in -> PLC_LOGGED_IN (PlcLogout first); nothing created in these cases. Success only after the new item is found with the expected ItemType and its declaration names the member, access and type (an action has none; method / action language checked). data.path = full tree path of the member: pass it as PouPath to GetPouCode / WritePouCode. A property gets no Get / Set by itself: add them with Kind Get / Set. Failure after CreateChild -> POU_MEMBER_CREATE_FAILED naming the step (the member stays in the tree). BUILD_REQUIRED (#65): a created member records kind code-changed (data.buildRequired). No project file save is needed (the parent .TcPOU is written at once, the .plcproj does not change).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ParentPath":  {
+                                                                                "type":  "string",
+                                                                                "description":  "The POU, interface or property that gets the member: a full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor, ...^FB_Motor^P_Speed for Get / Set) or a name as for Get-TcPouCode -PouName (FB_Motor, FB_Motor.P_Speed). A name several objects carry returns POU_AMBIGUOUS with data.candidates."
+                                                                            },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Method",
+                                                                                       "Property",
+                                                                                       "Action",
+                                                                                       "Get",
+                                                                                       "Set"
+                                                                                   ],
+                                                                          "description":  "Method, Property, Action, Get or Set."
+                                                                      },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Member name (IEC identifier). Not needed for Get / Set: an accessor is always named Get / Set."
+                                                                      },
+                                                             "ReturnType":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Method: return type (optional; none = a method without return type). Property: its type (required). Not allowed for Action / Get / Set."
+                                                                            },
+                                                             "Access":  {
+                                                                            "type":  "string",
+                                                                            "description":  "PUBLIC (default), PRIVATE, PROTECTED or INTERNAL (TE1000 6.5.5 p.231). Anything else returns POU_MEMBER_INVALID. Interface members and actions take none; Get / Set only PUBLIC.",
+                                                                            "default":  "PUBLIC"
+                                                                        },
+                                                             "Language":  {
+                                                                              "type":  "string",
+                                                                              "enum":  [
+                                                                                           "ST",
+                                                                                           "IL",
+                                                                                           "SFC",
+                                                                                           "FBD",
+                                                                                           "CFC",
+                                                                                           "LD"
+                                                                                       ],
+                                                                              "description":  "Implementation language of a method / action / accessor: ST (default), IL, SFC, FBD, CFC or LD.",
+                                                                              "default":  "ST"
+                                                                          }
+                                                         },
+                                          "required":  [
+                                                           "ParentPath",
+                                                           "Kind"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "BuildProject",
                       "cmdlet":  "Build-TcProject",
                       "description":  "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. data.errors counts CODE errors only; missing / unresolved libraries (Library Manager rows such as \"Could not open library\") are counted separately in data.libraryErrors and listed in data.libraryErrorItems. With library errors the PLC code may not have been compiled at all (no code error is then reported), so a build that would otherwise succeed returns LIBRARY_UNRESOLVED (success=false, buildSucceeded=null, codeVerified=false): install the missing libraries in the XAE Library Manager first; AllowUnresolvedLibrary=true accepts it as success with data.warningCode=LIBRARY_UNRESOLVED, but such a build is never complete (data.completeBuild=false) and keeps BUILD_REQUIRED, so EnableConfig / PlcLogin still refuse (#61). data.codeVerified=true means the Error List was read, lists no library error and no code row without a line, and every PLC project took part in the build: a PLC project skipped by the configuration (or none in the solution) gives codeVerified=false and data.warningCodes [PROJECT_SKIPPED_BY_CONFIGURATION, CODE_NOT_VERIFIED] (#58); a success that is not verified that way (Error List unreadable, unlocated code rows) carries data.warningCode=CODE_NOT_VERIFIED. data.warningCodes lists every warning code (data.warningCode is the first). Breaking change (#23): data.errors no longer includes Library Manager rows. data.errorItems keeps every Error List error, each with category code | library | other (other = no file, e.g. a build-summary row). data.decidedBy says what decided buildSucceeded (LastBuildInfo, else ErrorList). Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes: the build is started asynchronously and SolutionBuild.BuildState is polled (the synchronous VS2022 call never returns); TimeoutSec (default 600) bounds the wait, after which BUILD_TIMEOUT is returned; a modal dialog that appears during the build is returned as IDE_MODAL_DIALOG. Requires ConnectIde with an open solution. Coverage: data.projects lists every PLC project (.plcproj) with status built / skipped / failed / unknown (from the active solution configuration, DTE SolutionContext.ShouldBuild), data.skippedProjects and data.coverageComplete. data.solutionConfiguration is '<configuration>|<solution platform>' read like GetIdeInfo (data.solutionPlatform equals GetIdeInfo solutionPlatform), data.projectPlatform the .tsproj project platform, data.platformSource how the solution platform was read (with 'context' solutionConfiguration is the configuration name only); each PLC project's own platform is data.projects[].platform. BUILD_REQUIRED (after a platform switch, or after a build that was not a complete success) is cleared only by a build with coverageComplete=true and codeVerified=true (data.completeBuild=true; never an AllowUnresolvedLibrary build, #61). A build that ends LIBRARY_UNRESOLVED, BUILD_FAILED, BUILD_STATUS_UNKNOWN, BUILD_TIMEOUT or IDE_MODAL_DIALOG after it started, or succeeds with completeBuild=false records BUILD_REQUIRED for the solution (data.buildRequired; data.stateWarning when the state file could not be written), so EnableConfig and PlcLogin refuse until a complete build (#56; not for a solution without PLC project). With accepted library rows and a code row without a line number data.warningCodes has LIBRARY_UNRESOLVED and CODE_NOT_VERIFIED. A PLC project that the active solution configuration does not build (no Build.0 in the .sln) is skipped silently by XAE while it still says Build succeeded: the result keeps success but sets data.warningCode=PROJECT_SKIPPED_BY_CONFIGURATION and data.warning. ExpectedProject=[names] makes a skipped project a failure (PROJECT_SKIPPED_BY_CONFIGURATION, build not started), an unknown name EXPECTED_PROJECT_NOT_FOUND; use it whenever a specific PLC (e.g. a unit-test PLC) must be compiled.",
@@ -239,6 +413,28 @@
                                                                                             "type":  "boolean",
                                                                                             "description":  "Accept a build whose Error List shows unresolved libraries as success (data.warningCode=LIBRARY_UNRESOLVED, codeVerified=false) instead of returning LIBRARY_UNRESOLVED. It is not a complete build (data.completeBuild=false): BUILD_REQUIRED stays recorded and EnableConfig / PlcLogin / RunLifecycle still refuse to activate or download it (#61); install the missing libraries for that."
                                                                                         }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "CheckAllObjects",
+                      "cmdlet":  "Test-TcPlcProject",
+                      "description":  "Checks the syntax of EVERY object of the PLC project (ITcPlcIECProject2.CheckAllObjects), also the ones no build compiles; returns the Error List rows like BuildProject. Generates no code, never changes BUILD_REQUIRED.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
                                                          },
                                           "required":  [
 
@@ -588,6 +784,104 @@
                                       }
                   },
                   {
+                      "name":  "ExportPlcOpen",
+                      "cmdlet":  "Export-TcPlcOpen",
+                      "description":  "Exports PLC objects (or the whole PLC project) to a PLCopen XML file (PlcOpenExport on '<Plc> Project'); does not change the project. Reads the file back and lists its objects.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Selection":  {
+                                                                               "type":  "array",
+                                                                               "items":  {
+                                                                                             "type":  "string"
+                                                                                         },
+                                                                               "minItems":  1,
+                                                                               "description":  "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels; the first level is a folder of the PLC project, e.g. 'AxisInterface.LIB.AxisControl.FB_AxisControl' (the string measured 2026-10-31) or 'POUs.FB_A'. Leading / trailing blanks are trimmed. Empty = the whole PLC project."
+                                                                           },
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the PLCopen XML file to write (e.g. C:\\Temp\\export.xml); its folder must exist."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when the export fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "FreezePlaceholder",
+                      "cmdlet":  "Lock-TcLibraryPlaceholder",
+                      "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj, reads it back and checks the version did not change.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Placeholder":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Placeholder to freeze, with or without the leading '#'. Not together with -All."
+                                                                             },
+                                                             "All":  {
+                                                                         "type":  "boolean",
+                                                                         "description":  "Freeze every placeholder (FreezePlaceholder with an empty name). Not together with -Placeholder."
+                                                                     },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report. false: back up, freeze, save and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GenerateBootProject",
+                      "cmdlet":  "New-TcBootProject",
+                      "description":  "Generates the local boot project of a PLC (GenerateBootProject($false) on 'TIPC^<Plc>'): writes _Boot\\<platform>\\Plc\\Port_<port>.* of the project, not the target. SAVES the project files. Reads the boot files back.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>' or 'TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
                       "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is switched from Current Project / Current Document / Open Documents to Entire Solution before reading (left switched).",
@@ -659,6 +953,36 @@
                                       }
                   },
                   {
+                      "name":  "GetLibraries",
+                      "cmdlet":  "Get-TcLibraries",
+                      "description":  "Lists the library references and placeholders of a PLC project, or with -Repository the libraries installed on this machine.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Repository":  {
+                                                                                "type":  "boolean",
+                                                                                "description":  "List the libraries installed on this machine (ScanLibraries) instead of the project references."
+                                                                            },
+                                                             "Filter":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Wildcard on the name (-like, case-insensitive), e.g. 'Tc2_*'. References: matches name, placeholderName or libraryName. Default: everything."
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS). -Repository needs a PLC project too (the Library Manager lives on its References node)."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "GetPlcState",
                       "cmdlet":  "Get-TcPlcState",
                       "description":  "Read the PLC runtime state (Run/Stop/...) on the connected ADS port.",
@@ -680,7 +1004,7 @@
                   {
                       "name":  "GetPouCode",
                       "cmdlet":  "Get-TcPouCode",
-                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED.",
+                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED. Members: PouPath <POU path>^<member> (accessor ^<property>^Get), or PouName Parent.Member (FB_X.M_Run, FB_X.P_Value.Get; tried after the name as given). A name that several objects carry (M_Run in two FBs) -> POU_AMBIGUOUS with data.candidates (full paths), never the first hit. The Get / Set of an INTERFACE property (ItemType 654 / 655) -> POU_MEMBER_UNSUPPORTED, nothing read (reading it crashed VS2022, measured 2026-10-31 4026 VS2022). An ItemType that cannot be read -> POU_READ_FAILED reason itemtype-unreadable (fail-closed).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -690,11 +1014,11 @@
                                           "properties":  {
                                                              "PouName":  {
                                                                              "type":  "string",
-                                                                             "description":  "Name of the POU to read."
+                                                                             "description":  "Name of the POU to read. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing; becomes <FB_X path>^M_Run)."
                                                                          },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
@@ -825,6 +1149,86 @@
                                       }
                   },
                   {
+                      "name":  "ImportPlcOpen",
+                      "cmdlet":  "Import-TcPlcOpen",
+                      "description":  "Imports a PLCopen XML file into the PLC project (PlcOpenImport on '<Plc> Project'). Dry-run by default: lists the objects of the file, the conflicts with the project and what -Option will do with them.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the PLCopen XML file to import (e.g. written by Export-TcPlcOpen)."
+                                                                          },
+                                                             "Option":  {
+                                                                            "type":  "string",
+                                                                            "enum":  [
+                                                                                         "None",
+                                                                                         "Replace",
+                                                                                         "Rename",
+                                                                                         "Skip"
+                                                                                     ],
+                                                                            "description":  "What happens with an object that already exists: None (default; a conflict fails, nothing is imported), Replace (the existing object is replaced, children the file lacks are deleted; backed up first), Rename (the imported object gets '_1'), Skip (the existing object is kept).",
+                                                                            "default":  "None"
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only parse, compare and report. false: back up (Replace), import, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "InstallLibrary",
+                      "cmdlet":  "Install-TcLibrary",
+                      "description":  "Installs a .library / .compiled-library file into a library repository of this machine (ITcPlcLibraryManager.InstallLibrary). Dry-run by default; reads back with ScanLibraries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "LibraryPath":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Absolute path of the .library or .compiled-library file."
+                                                                             },
+                                                             "Repository":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Repository name. Default 'System' (TE1000 6.5.12).",
+                                                                                "default":  "System"
+                                                                            },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: install and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (the Library Manager lives on its References node)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "LibraryPath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "IoScan",
                       "cmdlet":  "Invoke-TcIoScan",
                       "description":  "Scan the I/O devices of the target (ProduceXml(false) on TIID, TE1000 6.6.2). Requires the target in Config mode, otherwise IO_SCAN_REQUIRES_CONFIG. Default: only returns data.devices, the I/O tree is not changed; Apply=true adds them (CreateChild + AddressInfo + ScanBoxes) and reads them back. No device found: success, devices=[] and data.warning.",
@@ -843,6 +1247,43 @@
                                                          },
                                           "required":  [
 
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "LinkProgramToTask",
+                      "cmdlet":  "Add-TcTaskProgram",
+                      "description":  "Links a PROGRAM to a PLC task (CreateChild 650 below '<Plc> Project^<PlcTask>'). Checks first that the name is an existing PROGRAM, exactly; dry-run by default; backs up the task's .TcTTO and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ProgramName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the PROGRAM, exactly as declared (e.g. MAIN)."
+                                                                             },
+                                                             "PlcTask":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the PLC task below '<Plc> Project' (default PlcTask).",
+                                                                             "default":  "PlcTask"
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: back up, create, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "ProgramName"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1084,6 +1525,46 @@
                                       }
                   },
                   {
+                      "name":  "RemoveReference",
+                      "cmdlet":  "Remove-TcLibraryReference",
+                      "description":  "Removes a library reference or placeholder from the PLC project (ITcPlcLibraryManager.RemoveReference). Dry-run by default; backs up the .plcproj and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Library or placeholder name, with or without the leading '#' (e.g. Tc2_Math or #Tc2_Math)."
+                                                                      },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Library",
+                                                                                       "Placeholder"
+                                                                                   ],
+                                                                          "description":  "Library or Placeholder: which reference -Name means. Optional; needed only when a library and a placeholder share the name (Placeholder; Library is refused then, see above)."
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report what would be removed. false: back up, remove, read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "RemoveVariableLink",
                       "cmdlet":  "Remove-TcVariableLink",
                       "description":  "Removes the link between a PLC variable and an I/O variable (ITcSysManager.UnlinkVariables) and reads the mapping back.",
@@ -1204,6 +1685,73 @@
                                                          },
                                           "required":  [
                                                            "TestCases"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SaveArchive",
+                      "cmdlet":  "Save-TcArchive",
+                      "description":  "Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there. Lists the archive entries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the archive to write: .tnzip for -Kind Solution, .tszip for -Kind Configuration."
+                                                                          },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Solution",
+                                                                                       "Configuration"
+                                                                                   ],
+                                                                          "description":  "Solution (default): the whole solution, .tnzip (ITcArchivePersist). Configuration: the TwinCAT project only, .tszip (ITcSysManager9.SaveAsArchive).",
+                                                                          "default":  "Solution"
+                                                                      },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when saving fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SaveAsLibrary",
+                      "cmdlet":  "Save-TcPlcLibrary",
+                      "description":  "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured 2026-10-31, 4026 VS2022 and 4024 XAE, registered tcauto). Reads the file back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the library file to write, ending in .library or .compiled-library."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when saving fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1374,6 +1922,90 @@
                                       }
                   },
                   {
+                      "name":  "UninstallLibrary",
+                      "cmdlet":  "Uninstall-TcLibrary",
+                      "description":  "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; backs up the version folder; reads back with ScanLibraries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "LibraryName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Library name exactly as ScanLibraries lists it (Get-TcLibraries -Repository), e.g. Tc2_Math."
+                                                                             },
+                                                             "Version":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Exact version, e.g. 3.5.1.0. No '*'."
+                                                                         },
+                                                             "Distributor":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Exact distributor, e.g. Beckhoff Automation GmbH."
+                                                                             },
+                                                             "Repository":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Repository name. Default 'System' (TE1000 6.5.12).",
+                                                                                "default":  "System"
+                                                                            },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: uninstall and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (the Library Manager lives on its References node)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "LibraryName",
+                                                           "Version",
+                                                           "Distributor"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "UnlinkProgramFromTask",
+                      "cmdlet":  "Remove-TcTaskProgram",
+                      "description":  "Removes a program call from a PLC task (DeleteChild of the 650 child of '<Plc> Project^<PlcTask>'). Dry-run by default; backs up the task's .TcTTO and the call (ExportChild .zip) first and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ProgramName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the program call to remove, exactly as listed below the task."
+                                                                             },
+                                                             "PlcTask":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the PLC task below '<Plc> Project' (default PlcTask).",
+                                                                             "default":  "PlcTask"
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report what would be removed. false: back up, remove, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "ProgramName"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "WatchVariable",
                       "cmdlet":  "Watch-TcVariable",
                       "description":  "Poll one or more PLC variables (Path is an array; every round reads each path in order) every IntervalMs. Without Until it samples for DurationMs (default 2000). With Until it waits for a condition '<Path> <op> <value>' (op: == != > < >= <=, e.g. 'MAIN.fTarget == 123.5' or 'MAIN.bDone == TRUE'; <Path> must be one of Path) and returns as soon as it holds or after UntilTimeoutMs (default 5000): data.untilMet, untilSample, elapsedMs. Numbers compare numerically, TRUE/FALSE as booleans, other values as case-insensitive text; a failed read never satisfies the condition. Only the last KeepLast samples are returned (default 20 with Until, 50 without); sampleCount is the total and truncated tells whether older samples were dropped. Single-path samples are {timestamp, value} plus ms/ns/unix for TIME/DATE types and name for enums (same conversion as ReadVariable; a numeric Until value compares with that raw integer, text with the IEC literal / enum member name), multi-path samples {timestamp, values:{<path>:<value>}}. Use Until instead of a long DurationMs or repeated ReadVariable calls. Requires ConnectAds.",
@@ -1430,7 +2062,7 @@
                   {
                       "name":  "WritePouCode",
                       "cmdlet":  "Write-TcPouCode",
-                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile. BUILD_REQUIRED (#65): a write (also one that failed half way) records kind code-changed for the open solution (data.buildRequired names the tool and the object; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true.",
+                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. An action has only an implementation: Declaration on it -> INVALID_PARAMS. Implementation \"\" clears the body (written as ' and read back empty, data.cleared=true; otherwise POU_WRITE_FAILED reason empty-not-applied); Declaration \"\" -> POU_WRITE_FAILED reason empty-not-supported, nothing written. Members and POU_AMBIGUOUS / POU_MEMBER_UNSUPPORTED (ITF property Get / Set) as for GetPouCode. data: pouPath, resolvedBy, objectKind, updated[], cleared. Run BuildProject afterwards to compile. BUILD_REQUIRED (#65): a write records kind code-changed (also a write that failed after a setter was called: the edit buffer may have changed; a request refused before any setter records nothing). An ItemType that cannot be read -> POU_WRITE_FAILED reason itemtype-unreadable, nothing written for the open solution (data.buildRequired names the tool and the object; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -1441,19 +2073,19 @@
                                           "properties":  {
                                                              "PouName":  {
                                                                              "type":  "string",
-                                                                             "description":  "Name of the POU to write to."
+                                                                             "description":  "Name of the POU to write to. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing)."
                                                                          },
                                                              "Declaration":  {
                                                                                  "type":  "string",
-                                                                                 "description":  "Structured Text declaration section (VAR blocks)."
+                                                                                 "description":  "Structured Text declaration section (VAR blocks). An empty / blank -Declaration is refused (POU_WRITE_FAILED, data.reason empty-not-supported): clearing a declaration is not measured."
                                                                              },
                                                              "Implementation":  {
                                                                                     "type":  "string",
-                                                                                    "description":  "Structured Text implementation section (code body)."
+                                                                                    "description":  "Structured Text implementation section (code body). -Implementation '' clears the body: ImplementationText = '' is written and must read back empty (measured 2026-10-31, 4026 VS2022, self-built client: COM ImplementationText = '' on a method reads back '')."
                                                                                 },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [

@@ -19,18 +19,18 @@
 - [x] 2.5 `DeleteChild`,要帶 ConfirmName,不接受 wildcard
 - [x] 2.6 `ExportChild`、`ImportChild`
 - [x] 2.7 新錯誤碼寫進 hint 表和 troubleshooting;tools.json 重新產生，修改類 tool 標 destructiveHint
-- [ ] 2.8 實測：送錯誤的 XML、改一個欄位、匯出後再匯入、刪除時名稱不符;發 v0.3.0-beta
+- [x] 2.8 實測：送錯誤的 XML、改一個欄位、匯出後再匯入、刪除時名稱不符;發 v0.3.0-beta
 
 ## 3. 第 2 期:PLC 補齊(→ v0.4.0-beta)
 
-- [ ] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder
-- [ ] 3.2 GenerateBootProject,沒有完整 Build 時回 `BUILD_REQUIRED`,並和 `BOOT_PACKAGE_MISMATCH` 對照
-- [ ] 3.3 PLCopen import/export(import 要 dry-run)
-- [ ] 3.4 SaveAsLibrary、archive 存取
-- [ ] 3.5 Task 建立和 program 連結;用 CycleCount 驗證
-- [ ] 3.6 Interface,以及 Method、Property、Action;GetPouCode 和 WritePouCode 支援子物件
-- [ ] 3.7 CheckAllObjects,結果格式和 errorItems 一致
-- [ ] 3.8 文件、tools.json、cmdlet 數量同步(check.ps1 要過);兩個 host 實測;發 v0.4.0-beta
+- [x] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.2 GenerateBootProject 會自己編譯，不需要先 Build(probe 實測);不改 BUILD_REQUIRED,和 BOOT_PACKAGE_MISMATCH 的關係寫在 help(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.3 PLCopen import/export(import 要 dry-run)(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.4 SaveAsLibrary、archive 存取(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.5 Task 建立和 program 連結;用 CycleCount 驗證(registered tcauto 離線實測 2026-10-31/11-01;CycleCount 線上驗證未實測：本機 UmRT 的 TcSystemServiceUm 不在，只回 verifyHint,見 docs/known-limitations.md)
+- [x] 3.6 Interface,以及 Method、Property、Action;GetPouCode 和 WritePouCode 支援子物件(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.7 CheckAllObjects,結果格式和 errorItems 一致(registered tcauto 實測 2026-10-31/11-01,4026 VS2022 + 4024 XAE,見 verification/phase2-3.8*.md)
+- [x] 3.8 文件、tools.json、cmdlet 數量同步(check.ps1 要過);兩個 host 實測;發 v0.4.0-beta(發布 v0.4.0-beta 待 merge 後)
 
 ## 4. 第 3 期：系統組態(→ v0.5.0-beta)
 

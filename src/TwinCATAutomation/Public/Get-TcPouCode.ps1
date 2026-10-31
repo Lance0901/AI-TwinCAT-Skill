@@ -3,12 +3,26 @@ function Get-TcPouCode {
     .SYNOPSIS
         Reads declaration and implementation code from an existing POU.
     .PARAMETER PouName
-        Name of the POU to read.
+        Name of the POU to read. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get
+        (tried only after the name as given found nothing; becomes <FB_X path>^M_Run).
     .PARAMETER PouPath
         Full tree path to the POU, e.g. TIPC^<Plc>^<Plc> Project^POUs^<name> (same format on
-        4024 and 4026; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>). If omitted (or not found),
-        the POU is looked up by PouName: POUs folder -> project root -> tree search (depth 4).
-        data.pouPath / data.resolvedBy report which path was used.
+        4024 and 4026; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; a method / property / action
+        ...^<FB>^<member>, an accessor ...^<FB>^<property>^Get). If omitted (or not found),
+        the POU is looked up by PouName: POUs folder -> project root -> tree search (depth 4)
+        -> Parent.Member. data.pouPath / data.resolvedBy report which path was used. A name
+        that several objects carry (M_Run in two function blocks) returns POU_AMBIGUOUS with
+        data.candidates, never the first hit.
+    .NOTES
+        The Get / Set accessor of an INTERFACE property (ItemType 654 / 655) is refused with
+        POU_MEMBER_UNSUPPORTED after reading only its ItemType; an ItemType that cannot be read
+        returns POU_READ_FAILED (data.reason itemtype-unreadable, fail-closed). Reading its DeclarationText
+        crashed VS2022 (measured 2026-10-31, 4026 VS2022, self-built client; see
+        openspec/changes/complete-automation-interface/verification/phase2-probe.md).
+        Members (method, property, accessor, action, interface method / property) are read
+        like a POU (measured 2026-10-31, 4026 VS2022, self-built client): an action has no
+        declaration (data.declaration null), a property and an interface member have no
+        implementation.
     .OUTPUTS
         data.objectKind        POU | DUT | GVL | ITF | METHOD | ACTION | PROPERTY | ... | UNKNOWN
                                (from ItemType, see Get-TcPlcObjectKind); data.pouType Program /
@@ -49,9 +63,23 @@ function Get-TcPouCode {
     try {
         $r = Resolve-TcPouPath -SysManager $sm -Name $PouName -PouPath $PouPath
         if (-not $r.Found) {
+            if ($r.Ambiguous) { return New-TcPouAmbiguousResult -Name $PouName -Resolution $r }
             return New-TcPouNotFoundResult -Name $PouName -Resolution $r
         }
         $pouItem = $r.Item
+
+        # ItemType alone first: nothing else is read from an ITF property accessor (654 / 655)
+        $itemTypeNo = Get-TcTreeItemTypeNumber -Item $pouItem
+        # fail-closed: an unreadable ItemType may be a 654 / 655, so nothing else is read
+        if ($itemTypeNo -eq -1) {
+            return New-TcResult -Success $false -ErrorCode 'POU_READ_FAILED' `
+                -ErrorMessage "ItemType of '$($r.Path)' cannot be read, so its code is not read (it could be an interface property accessor, see POU_MEMBER_UNSUPPORTED). Nothing was read." `
+                -Hint (Get-TcErrorHint -Code 'POU_READ_FAILED') `
+                -Data ([PSCustomObject]@{ pou = $PouName; pouPath = $r.Path; reason = 'itemtype-unreadable' })
+        }
+        if ($script:TcItfAccessorItemTypes -contains $itemTypeNo) {
+            return New-TcItfAccessorUnsupportedResult -Path $r.Path -ItemType $itemTypeNo -Operation 'read' -Pou $PouName
+        }
 
         # objectKind / hasImplementation from ItemType (Get-TcPlcObjectKind): a DUT / GVL / ITF
         # has no implementation part, so implementation = $null means "none", not "read failed"

@@ -23,7 +23,7 @@ function Remove-TcTreeItem {
         AllowNoExport is set (then data.warnings says so). IDE_MODAL_DIALOG when a dialog is open before
         ExportChild or DeleteChild. Then DeleteChild, then LookupTreeItem must no longer find the path:
         data.verified=true, else TREEITEM_VERIFY_FAILED. XAE refusing the call -> TREEITEM_DELETE_FAILED.
-        Below TIPC: BUILD_REQUIRED code-changed.
+        Below TIPC: BUILD_REQUIRED code-changed. data.writeCalled = true once DeleteChild is called.
     .PARAMETER Path
         Full tree path of the item to delete, e.g. "TIRT^Task 2". No wildcards.
     .PARAMETER ConfirmName
@@ -149,6 +149,8 @@ function Remove-TcTreeItem {
         $isPlc = Test-TcTreePathIsPlc -Path $Path
         $dlg = Get-TcTreeItemDialogResult -Operation "DeleteChild '$Path'" -Data $data
         if ($null -ne $dlg) { return $dlg }
+        # data.writeCalled: DeleteChild is about to be called (wrapping cmdlets record BUILD_REQUIRED by it)
+        $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force
         try {
             # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
             # dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode

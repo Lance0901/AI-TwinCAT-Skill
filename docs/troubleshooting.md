@@ -253,6 +253,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:從未 `Connect-TcAds`;或 `Enable-TcConfig` 重啟了 TwinCAT,自動重連也失敗(目標還沒回 Run、或 851 還不存在)。
 - **下一步**:`Get-TcSystemState` 確認 Run → `Connect-TcAds`。若反覆發生,把 `Enable-TcConfig -TimeoutSec` 調大。
 
+### NOT_CONNECTED_IDE
+
+- **現象**:`Export-TcPlcOpen`、`Import-TcPlcOpen`、`New-TcBootProject`、`Save-TcPlcLibrary`、`Save-TcArchive` 回 `NOT_CONNECTED`,hint 是這一節:還沒 `Connect-TcIde`,或 IDE 連線已斷(不是 ADS 的 `NOT_CONNECTED`)。
+- **下一步**:`Connect-TcIde`(要開特定 solution 加 `-SolutionPath <sln>`),再重跑同一個 cmdlet。
+
 ### ADS_PORT_NOT_FOUND(ADS 0x6)
 
 - **為什麼**:PLC runtime port 851 不存在。程式尚未 download(Activate 後 PLC 是空的),或 PLC 專案沒被加進 config。
@@ -524,6 +529,247 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **其他失敗**:`LIBRARY_ADD_FAILED` 加原始訊息;保守起見記 BUILD_REQUIRED(`[failed after AddLibrary]`)。
 - **`-Version '*'`**:預設值,`.plcproj` 寫成 `<LibraryReference Include="<name>,newest,<vendor>">`(實測 2026-10-28,4024 / 4026)。多個 PLC project 時要給 `-PlcProjectPath`,否則 `PLC_PROJECT_AMBIGUOUS`。
 
+### Library Manager(task 3.1):做法與共同規則
+
+- **做法**:`Get-TcLibraries`、`Add-TcLibraryPlaceholder`、`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 都在 `TIPC^<Plc>^<Plc> Project^References` 上呼叫 `ITcPlcLibraryManager`(TE1000 v1.7.0 §5.25.1 p.113-119、§6.5.14 p.241-244,和 `Add-TcLibrary` 同一個節點)。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.1);registered tcauto 還沒驗證(task 3.8)。
+- **placeholder 的欄位**:References 裡 placeholder 的 `Name` 帶 `#`,`LibraryName` / `Version` / `Distributor` 讀到空字串，模組改讀 `PlaceholderName` 和 `EffectiveResolution`(沒有時讀 `DefaultResolution`;visu placeholder 沒有 `EffectiveResolution`)。
+- **frozen 只看得到 .plcproj**:`FreezePlaceholder` 只把 `.plcproj` 的 `<PlaceholderResolution><Resolution>` 從 `<lib>, * (...)` 改成實際版本，References 物件前後看起來一樣(實測 2026-10-31)。所以 `Get-TcLibraries` 的 `frozen` 與 `Lock-TcLibraryPlaceholder` 的讀回都讀**磁碟上**的 .plcproj(Lock 會先存專案)。
+- **dry-run 與備份**:`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 預設 `DryRun=$true`,不呼叫任何寫入 API。改專案的兩個(Remove / Lock)實寫前把磁碟上的 .plcproj 複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles[0]` 是原檔複本，關掉 solution 後覆蓋回去即可還原);只在 XAE 記憶體裡、還沒存的改動不在備份裡。Install / Uninstall 改的是整台機器的 library repository,不記 `BUILD_REQUIRED`;Install 不覆蓋所以不備份,Uninstall 實寫前把該版本的 repository 目錄整個複製到 `<sln 目錄>\.tcauto-backup\<時間>\library-repo\<name>\<version>\`(`data.backupPath`;還原：關掉 XAE 後把目錄複製回 `data.repositoryFolder`,XAE 不重新掃描能不能認得未實測，或用 `Install-TcLibrary` 安裝原始 .library)。目錄位置：先用 `ITcPlcLibraryManager.Repositories` 裡同名 repository 的 Folder(TE1000 §5.22 / §5.23;probe 時回 Count=0),`System` 再用實測路徑 `C:\ProgramData\Beckhoff\TwinCAT\PlcEngineering\Managed Libraries\<Distributor>\<Library>\<Version>`(實測 2026-10-31 4026 VS2022)。
+- **共同防護**:每個寫入呼叫前查 modal dialog(`IDE_MODAL_DIALOG`);`IDE_*` 與 `PLC_LOGGED_IN` 照原碼回傳;改專案的三個(AddPlaceholder / Remove / Lock)和 `Add-TcPouMember` 一致：寫入 API 一呼叫就記 `BUILD_REQUIRED`(code-changed),成功、讀回不符、XAE 回錯(含 not found / 已存在)都記;呼叫之前就擋下的不記。錯誤訊息只比對完整的實測訊息(例如 `Specified library '...' not found!`),不用 `not found` 之類的片段。讀 .plcproj 一律用不處理 DTD 的 XmlReader(`Read-TcXmlFile`,含 DOCTYPE 的檔案直接讀失敗)。
+
+### LIBRARY_READ_FAILED
+
+- **現象**:`Get-TcLibraries` 讀 `References` 或 `ScanLibraries()` 時 COM 例外，什麼都沒改。.plcproj 找不到 / 讀不到不算失敗：仍回 success,`frozen = null`、`data.warnings` 寫原因。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog;多個 PLC project 時加 `-PlcProjectPath`;再重跑 `Get-TcLibraries`。
+
+### LIBRARY_INVALID_ARGUMENT
+
+- **現象**:Library Manager cmdlet 在呼叫 XAE 之前就擋下，什麼都沒改。`data.reason`:`name` / `empty`(名稱空白)、`no-library-name`(`Add-TcLibraryPlaceholder` 給了 `-Version` / `-Distributor` 卻沒給 `-LibraryName`)、`ambiguous`(同名的 library 和 placeholder 同時存在，沒給 `#` 也沒給 `-Kind`)、`ambiguous-library-not-measured`(兩者並存時給了 `-Kind Library`:這時 `RemoveReference('<name>')` 會刪哪一個沒實測，所以不呼叫)、`kind-conflict`(`-Name '#x'` 又給 `-Kind Library`)、`not-placeholder`(`Lock-TcLibraryPlaceholder` 指到 library)、`target`(`-Placeholder` 與 `-All` 都給或都沒給)、`implicit-placeholder`(`-Placeholder` 指到 .plcproj 沒有 `<PlaceholderReference>` 的隱含 placeholder,XAE 不會寫它的 Resolution,實寫前就擋、不記 BUILD_REQUIRED;dry-run 給 warning)、`wildcard`(`Uninstall-TcLibrary` 的值含 `* ? [ ]`)、`path` / `extension` / `missing` / `repository`(`Install-TcLibrary` 的檔案或 repository 名稱)。
+- **下一步**:照 `error.hint` 修正參數;`ambiguous` 要移除 placeholder 就給 `-Name '#<name>'`(或 `-Kind Placeholder`,模組會傳 `#<name>` 給 RemoveReference,實測可刪 placeholder);`ambiguous-library-not-measured` 請使用者在 XAE 的 Library Manager 手動移除 library。
+
+### LIBRARY_NOT_FOUND
+
+- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 要的名稱不在 References(`data.references` / `data.placeholders` 列出現有的),或 XAE 自己回 not found(RemoveReference 的 `0x98510001` "Specified library '...' not found!"、FreezePlaceholder 的 `0x80004005` "Placeholder '...' not found. Cannot freeze!",實測 2026-10-31)。什麼都沒改；XAE 回 not found 時已經呼叫過寫入 API,所以照共同規則記 `BUILD_REQUIRED`。
+- **下一步**:`Get-TcLibraries` 看 `name` / `placeholderName`(placeholder 寫成 `#<name>` 或不帶 `#` 都可以),拼對後重跑。
+
+### LIBRARY_VERIFY_FAILED
+
+- **現象**:寫入呼叫有返回，但讀回不符，不能當成功。`data.step` / `data.reason`:`references`(References 讀回沒有新增 / 還留著)、`library`(placeholder 解析到別的 library)、`project-file`(存檔後磁碟上的 .plcproj 不符)、`not-frozen`(`<Resolution>` 還是 `*`,`data.notFrozen`)、`not-listed`(安裝後 ScanLibraries 沒有新項目)、`still-installed`(解除安裝後 ScanLibraries 裡完全符合的筆數沒有減少；同一版本裝在多個 repository 時，少一筆就算成功，剩下的寫在 `data.warnings`)。
+- **下一步**:`Get-TcLibraries`(repository 的用 `-Repository`)看實際狀態;專案的改動要還原就用 `data.backupFiles`(Remove / Lock)。原因確認後再重跑同一個 cmdlet。
+
+### LIBRARY_BACKUP_FAILED
+
+- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 實寫前的 .plcproj 備份沒寫成(solution 路徑不明、找不到 .plcproj,或 `.tcauto-backup` 不能寫),什麼都沒改。`Uninstall-TcLibrary`:repository 裡該版本的目錄推不出來(`data.repositoryFolder = null`,message 列出試過的路徑)、solution 路徑不明，或複製失敗 / 檔案數不符，沒有解除安裝。
+- **下一步**:`Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)讓模組知道 solution;先用預設的 dry-run 看 `data.projectFile`(Uninstall 看 `data.repositoryFolder`)有值，再 `-DryRun $false`。Uninstall 的目錄推不出來時(repository 不是 `System`、或不在實測路徑),模組不解除安裝；請使用者在 XAE 的 Library Repository 手動處理。
+
+### LIBRARY_REMOVE_FAILED
+
+- **現象**:`RemoveReference` 丟了 not found 以外的例外(或之後的步驟失敗),reference 可能已經移除，所以保守記 `BUILD_REQUIRED`。
+- **下一步**:`Get-TcLibraries` 確認;要還原用 `data.backupFiles`;`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### PLACEHOLDER_ADD_FAILED
+
+- **現象**:`Add-TcLibraryPlaceholder` 失敗。`data.reason = default-library-not-installed`:預設 library 沒有安裝(COMException `0x98510001` "Default Library '...' not found!",沒有建出 placeholder,實測 2026-10-31);`no-device-placeholder`:沒給 `-LibraryName` 時 XAE 找不到同名的 device placeholder(ArgumentException `0x80070057` "Default Placeholder '...' could not be found!",手冊寫 E_INVALIDARG,實測同值)。兩種都已經呼叫過 AddPlaceholder,和 `Add-TcPouMember` 一致記 `BUILD_REQUIRED`。沒有 reason:其他 COM 例外，也記。
+- **已存在不是錯誤**:References 已有 `#<name>`,或 XAE 回 "Placeholder '...' already contained!" → success、`data.alreadyPresent = true`,和 `Add-TcLibrary` 一致。這時 `data.libraryName` / `version` / `distributor` 是既有 placeholder 讀到的值(DefaultResolution,沒有時 EffectiveResolution),`data.requested` 是這次的參數;預設 library 和 `-LibraryName` 不同時加 warning,不會改它。
+- **下一步**:`Get-TcLibraries -Repository` 確認名稱 / 版本 / distributor,沒裝就 `Install-TcLibrary`;沒有 device placeholder 就給 `-LibraryName`。
+
+### PLACEHOLDER_FREEZE_FAILED
+
+- **現象**:`FreezePlaceholder` 丟了 not found 以外的例外。手冊(TE1000 p.244;InfoSys [FreezePlaceholder](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841158667.html))寫 placeholder 沒有 EffectiveResolution 時回 E_FAIL(`Error_PlaceholderNotResoluted_CannotFreeze`);但實測(2026-10-31,4026 VS2022,registered tcauto,`verification/phase2-3.8.md` P2)`-All` 沒有丟例外，反而把沒有 EffectiveResolution 的 visu placeholder 凍結在 DefaultResolution 的版本。`-All` 時這類 placeholder 不做版本比對(`data.skipped[]` reason `no-effective-resolution`,也列在 `data.skippedUnresolved`);`.plcproj` 沒有 `<PlaceholderReference>` 的隱含 placeholder(例如 `Tc3_GlobalTypes`,XAE 不寫它的 Resolution)也跳過(reason `implicit`),不算 `notFrozen`。error.message 會列出沒有 EffectiveResolution 的 placeholder;`data.restore` 寫還原方式。
+- **下一步**:`Get-TcLibraries` 看 `effectiveResolution`,是 null 的先讓它解析得到(安裝 library),或改用 `-Placeholder` 只鎖其他的;要還原就照 `data.restore`:把 `data.backupFiles` 的 `.plcproj` 複製回 `data.projectFile`,再 `Reset-TcSolution`。
+
+### LIBRARY_VERSION_CHANGED
+
+- **現象**:`Lock-TcLibraryPlaceholder` 凍結後，至少一個 placeholder 的 `<Resolution>`(library、版本、distributor)和呼叫前的 EffectiveResolution 不同。實測(2026-10-31,registered tcauto,`verification/phase2-3.8.md` P2):`FreezePlaceholder('')` 把每個 placeholder 凍結在 **DefaultResolution**,不是凍結前的 effective 版本(4026 `#Tc2_System` 3.10.1.0 → 3.9.1.0、`#CBML` 4.0.0.0 (CODESYS) → 3.5.13.0;4024 `VisuDialogs` 3.5.12.0 → 4.8.0.0),和手冊「凍結目前的 EffectiveResolution」不符。模組先對變動的 placeholder 呼叫 `SetEffectiveResolution(placeholder, library, version, distributor)`(InfoSys [SetEffectiveResolution](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html);2026-11-01 registered tcauto 重測：4026 VS2022 釘回 `CBML`、`Tc2_System`,4024 XAE 釘回 `VisuDialogs`,讀回 `<Resolution>` 是凍結前的 effective 版本，`phase2-3.8-retest.md`)釘回原版本、再存檔讀回;仍不同(或 SetEffectiveResolution 丟例外，`pinError`)才回這個碼。比對對象：這次鎖的 placeholder 比凍結前的 EffectiveResolution;**每一個**凍結前就有固定 `<Resolution>` 的 placeholder(包括 `-All` 跳過的、`-Placeholder` 沒指名的)比它原本的 `<Resolution>`(`comparedWith` = `effective` / `resolution-before`)。專案**已經改了並存檔**:`data.versionChanges[]`(placeholder / before / after / comparedWith / pinCalled / pinError)、`data.changed[]`(和備份比，`<Resolution>` 有變的全部 placeholder)、`data.backupFiles`、`data.restore`。dry-run 的 `data.targets[].willFreezeTo` / `versionWillChange` 只是部分預告：只有 `-All` 且 DefaultResolution 有明確版本時才給值(willFreezeTo = 那個版本);DefaultResolution 是 `*` 或沒有、以及單一 `-Placeholder` 時都是 `null`(不知道。2026-11-01 重測：`All` 時 `* (3S)` / `* (System)` 的 `CBML`、`VisuDialogs` 舊預告 false 但實際變了;單一 `Tc2_System` 舊預告 true 但沒變，`phase2-3.8-retest.md` N5)。dry-run 一律加一條 warning:實寫會逐一比對並用 SetEffectiveResolution 釘回。
+- **其他失敗也帶同樣的欄位**:呼叫 FreezePlaceholder 之後的每一種失敗(`LIBRARY_VERIFY_FAILED` not-frozen、`PLACEHOLDER_FREEZE_FAILED`、存檔失敗、例外)都有 `data.changed[]`、`data.restore`、`data.backupFiles`;not-frozen 同時有版本變動時也有 `data.versionChanges[]`。成功時也有 `data.changed[]`。
+- **下一步**:照 `data.restore`:把 `data.backupFiles` 的 `.plcproj` 複製回 `data.projectFile`,再 `Reset-TcSolution`(見「磁碟改檔的正確做法」);`Get-TcLibraries` 確認 `effectiveResolution` 是 `before` 後 `Build-TcProject`。
+
+### LIBRARY_ALREADY_INSTALLED
+
+- **現象**:`Install-TcLibrary -DryRun $false` 什麼都沒裝:XAE 的 InstallLibrary 回 IOException `0x80131620` "Library already exists."(手冊寫會取消安裝，實際是丟例外，實測 2026-10-31 4026 VS2022 自建 client),`data.preCheck = xae`。模組一律 `bOverwrite = false`。
+- **檔名只在 dry-run 參考**:Automation Interface 沒有從 .library 檔讀出名稱 / 版本的方法。dry-run 時，檔名 `<name>_<version>.library`(XAE SaveAsLibrary 產生的格式，實測 2026-10-31)在 ScanLibraries 有同名同版本，就回 `alreadyInstalled = true`、`data.installed` 加 warning;實寫時不拿檔名擋(檔案可能是另一個 distributor 的同名 library),交給 XAE 判斷。
+- **下一步**:直接 `Add-TcLibrary` / `Add-TcLibraryPlaceholder` 把它加進專案;真的要換成新檔，先 `Uninstall-TcLibrary`(先 dry-run)再 `Install-TcLibrary`。
+
+### LIBRARY_NOT_INSTALLED
+
+- **現象**:`Uninstall-TcLibrary` 什麼都沒移除:ScanLibraries 沒有和 `-LibraryName` / `-Version` / `-Distributor` 完全相同(大小寫也要相同)的項目;`data.candidates` 列出同名(不分大小寫)的已安裝版本。
+- **為什麼先查**:XAE 的 `UninstallLibrary` 遇到不存在的 library / 版本丟 NullReferenceException `0x80004003`(實測 2026-10-31),分不出是「不存在」還是別的錯誤。
+- **下一步**:`Get-TcLibraries -Repository -Filter <name>` 查正確的值後重跑。
+
+### LIBRARY_INSTALL_FAILED / LIBRARY_UNINSTALL_FAILED
+
+- **現象**:`InstallLibrary` / `UninstallLibrary` 丟例外。`data.reason = null-reference`(Uninstall):XAE 丟 NullReferenceException,實測是「該 repository 裡沒有這個版本」時的錯誤；模組先用 ScanLibraries 確認過存在，所以多半是它裝在別的 repository。`data.reason = repository-not-found`:`-Repository` 不存在(COMException `0x98510001` "Could not find repository '...'",實測 2026-10-31 InstallLibrary;預設 repository 名稱 `System`,TE1000 §6.5.12)。`Install-TcLibrary` 的 dry-run 先查 repository(`verification/phase2-3.8.md` P8,`data.repositoryCheck` 的 `state` / `readable` / `listed`):`System` 或 `ITcPlcLibraryManager.Repositories` 有列出 → `known`;`Repositories` 有列出別的、沒有這個名稱 → 回這個碼與 reason(`not-found`,和實寫一樣);`Repositories` 一個都沒列(4026 實測 2026-10-31 列出 0 個)或讀不到 → `not-verified`,dry-run 仍 success 並加 warning,實寫時由 XAE 判斷。ScanLibraries 不回報每筆在哪個 repository,所以 `Uninstall-TcLibrary` 的預查證明不了它在 `-Repository` 裡;這時 XAE 可能丟 NullReferenceException。
+- **下一步**:`Get-TcLibraries -Repository` 確認狀態,`Get-TcIdeModalDialog` 檢查 dialog,改正 `-Repository` 後重跑。
+
+### CheckAllObjects(task 3.7):做法與 Build 的差別
+
+- **做法**:`Test-TcPlcProject`(MCP `CheckAllObjects`)在 `TIPC^<Plc>^<Plc> Project` 上 late-bind 呼叫 `ITcPlcIECProject2.CheckAllObjects()`(TE1000 v1.7.0 §5.28.2 p.123-124、§6.5.7 p.233-234),呼叫前先查 modal dialog,之後讀 Error List(和 `Build-TcProject` 共用 `Get-TcErrorListSummary`,`errorItems` 每筆一樣是 `severity / code / description / project / file / line / column / category`)。PLC root `TIPC^<Plc>` 沒有這個方法，只有 `<Plc> Project` 有(實測 2026-10-31 4026 VS2022,自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.7)。
+- **和 Build 的差別**:`Build-TcProject` 只編譯有被引用的物件。沒被引用的 FB 的 method 寫了語法錯(`M_Two := ;`)時，Build 回 success、errors 0;CheckAllObjects 回 `False`,Error List 有 `C0007 Expression expected instead of ';'`(file `FB_P2Probe.TcPOU@M_Two (Impl)`,line 1)(實測 2026-10-31 4026 VS2022,自建 client)。InfoSys 的 PLC 指令 "Check all objects" 也說它檢查所有物件、不產生 code:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531345035.html>。
+- **不碰 BUILD_REQUIRED**:不產生 code、不改檔(實測 2026-10-31:呼叫前後 solution 目錄沒有任何檔案變動，含 `_Boot`、`_CompileInfo`),所以既不記也不清 `BUILD_REQUIRED`。成功也不能取代 `Build-TcProject`:`Enable-TcConfig` / `Enter-TcPlcOnline` 之前還是要完整 build。
+- **Error List 的舊項目**:沒有 file、也沒有 code 的錯誤列會一直留在 Error List(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client:失敗的 archive 留下 `'TwinCAT Measurement' ... Error creating Archive`),不算這次檢查的結果，放在 `data.staleErrorItems`。判斷條件是 **category 為 `other`(沒有 file)而且 code 是空的**;有 code 但沒有 file 的列仍算這次的錯誤，留在 `data.errorItems`。回 `True` 時 `data.errorItems` 一律是空陣列,Error List 上的錯誤列都放 `staleErrorItems` 並加 warning;warning 列照樣在 `data.warningItems` / `codeWarnings`。
+- **沒有 deadline**:CheckAllObjects 是同步呼叫，模組只在呼叫前排除 dialog;probe 每次都在 0.7-2.2 s 內返回(實測 2026-10-31)。MCP tool 的 timeout 是 600 s。
+
+### CHECK_FAILED
+
+- **現象**:`CheckAllObjects()` 回 `False`(`data.passed = false`;語法錯是回 False,不是例外，實測 2026-10-31 4026 VS2022),`data.errorItems` 是 Error List 上除了舊項目(沒有 file 也沒有 code)以外的錯誤列(`codeErrors` / `libraryErrorItems` 分開列),message 列前三筆。`data.passed = null` 加 `data.callError`:CheckAllObjects 丟了例外(手冊 §5.28.2 列 `E_FAIL` `Error_CheckAllObjectsFailed`,probe 沒遇到)或沒回 bool。Error List 讀不到時 `data.errorListError` 有值,message 會寫。
+- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `Test-TcPlcProject`;`errorItems` 是空的就用 `Get-TcBuildErrors` 讀 Error List。file 是 `<task>.TcTTO`、line 0 的列(`C0046` / `C0035` / `C0080` / `C0036`)代表 task 呼叫了不存在或不是 PROGRAM 的物件(實測 2026-10-31,`phase2-probe.md` 3.5),用 `Remove-TcTaskProgram -ProgramName <名稱> -PlcTask <task> -DryRun $false` 拿掉。
+
+### CHECK_UNAVAILABLE
+
+- **現象**:`<Plc> Project` 節點沒有 `CheckAllObjects` 方法(`ITcPlcIECProject2` 不可用;PowerShell 丟 `MethodNotFound`,英文 PowerShell 的訊息是 "does not contain a method named 'CheckAllObjects'",zh-TW 等語系的訊息不同，所以模組看 `FullyQualifiedErrorId = MethodNotFound`,不比對訊息文字)。4024 是否支援還沒實測(task 3.8)。
+- **下一步**:改用 `Build-TcProject`(只編譯有被引用的物件)。
+
+### PLC task 與 program 連結(task 3.5):做法與共同規則
+
+- **做法**:`Add-TcPlcTask`(MCP `AddPlcTask`)、`Add-TcTaskProgram`(`LinkProgramToTask`)、`Remove-TcTaskProgram`(`UnlinkProgramFromTask`)都由通用 tree cmdlet 組成(`New-TcTreeItem`、`Set-TcTreeItemXml`、`Remove-TcTreeItem`),沿用它們的備份、modal dialog 檢查與讀回。三個都預設 `DryRun=$true`。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.5);registered tcauto 還沒驗證(task 3.8),4024 沒測過。
+- **新增 PLC task 要兩個物件**:先 `TIRT` 底下 CreateChild SubType 1(沒有 process image,TE1000 v1.7.0 §6.3.1 p.196),用 ConsumeXml 設 `TaskDef/CycleTime`(單位 100 ns,所以是 `CycleTimeUs * 10`;實測 2026-10-30 task 2.1)和 `Priority`,再在 `<Plc> Project` 底下用**同名** CreateChild 621。XAE 會自己把 `LinkedTask` 接到 `TIRT^<Name>`,並寫出 `<Name>.TcTTO`;TIRT 沒有同名 task 時 XAE 回 E_FAIL "No task '<Name>' found in Realtime-Settings!"(實測)。讀回檢查 TIRT task 的 CycleTime / Priority、PLC task 的 ItemType 621 與 `PlcTaskDef/LinkedTask`。
+- **要存檔**(和 `Add-TcPou` 的 #76 一樣):CreateChild 621 當下只寫出 `<Name>.TcTTO`,`.tsproj` 的 TIRT task 和 `.plcproj` 的 `<Compile Include="<Name>.TcTTO">` 要 Project.Save 才會寫;沒存時 `Reset-TcSolution`(預設與 `-SaveProjectChanges`)都讓 task 消失(實測 2026-10-31 4026 VS2022,registered tcauto,`verification/phase2-3.8.md` P4)。所以 `Add-TcPlcTask` 讀回後存檔，從磁碟讀回 `.plcproj` 有 `<Name>.TcTTO`、`.tsproj` 有 `<Task><Name><Name></Name>` 才 success(`data.projectSaved`);存檔失敗回 `PROJECT_SAVE_FAILED` 等(物件留在 XAE 記憶體，同 `Add-TcPou`),`.tsproj` 沒有 task 回 `TASK_VERIFY_FAILED`(step `save-verify`)。`Add-TcTaskProgram` / `Remove-TcTaskProgram` 不需要存檔:650 的 CreateChild / DeleteChild 當下就改寫磁碟上的 `<task>.TcTTO`(實測 2026-10-31,`phase2-probe.md` 3.5)。
+- **不留半套**:任何一步失敗(或讀回不符、或中途丟例外)就把這次建出來的物件刪掉，路徑優先用通用 cmdlet 回報的 `data.createdPath`(XAE 改了名字時才刪得到),先 PLC task 再 TIRT task,`Remove-TcTreeItem -AllowNoExport`(是剛建的物件)。PLC task 刪不掉時**不刪** TIRT task(PLC task 還連著它),那一筆標 `SKIPPED_DEPENDENT`,message 會寫「先刪 PLC task」。結果寫在 `data.rollback[]` / `data.rolledBack`,`data.steps` 列出每一步(例外路徑也有)。CreateChild 回來的名稱和 `-Name` 不同(大小寫也算)也算失敗。
+- **650 XAE 完全不驗證**:在 PLC task 底下 CreateChild 650 時，同名第二次、大小寫不同、不存在的名稱、FB、GVL XAE 全部照收，當下就寫進 `<task>.TcTTO`,要到 CheckAllObjects / Build 才報 `C0046` / `C0035` / `C0080` / `C0036`(實測 2026-10-31)。所以 `Add-TcTaskProgram` 自己先檢查：用 `Resolve-TcPouPath` 找到物件、`Get-TcPlcObjectKind` 確認 ItemType 602(PROGRAM)、名稱大小寫完全相同、task 底下還沒有同名的呼叫。
+- **備份**:`<Plc> Project^<task>`(621)的磁碟檔是 `<task>.TcTTO`,寫入前複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles` / `data.taskBackupFiles`)。`Remove-TcTaskProgram` 另外用 ExportChild 把那個 650 匯出成 `.zip`(`data.exportPath`;650 節點能不能匯出還沒實測)。匯出失敗但 `.TcTTO` 有備份時照樣刪，並加一條 warning 寫 `.TcTTO` 備份的路徑和還原步驟：把它複製回 task 的 `.TcTTO`,再 `Reset-TcSolution`(**未實測，待 3.8**);`Remove-TcTreeItem` 那句「只剩 ProduceXml 備份」的通用 warning 在這個情境會誤導，所以拿掉。兩種備份都沒有就不刪(`TREEITEM_BACKUP_FAILED`)。
+- **BUILD_REQUIRED**:寫入 API(CreateChild / ConsumeXml / DeleteChild)一呼叫就記(code-changed),成功或失敗都記。判斷依據是通用 cmdlet 在呼叫前一刻設的 `data.writeCalled`;呼叫之前就擋下的(參數、modal dialog、備份失敗、DeleteChild 的 parent-mismatch、呼叫前丟的例外)不記。
+- **CycleCount 要在線上驗**:不在 cmdlet 裡做。`Enable-TcConfig -Force` 之後，用 `Read-TcVariable` 讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName` 找到 n,再讀兩次 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount`,數字要增加。n 是 PLC 自己的 task index(從 1 開始),不是 TIRT 底下的順序(InfoSys PlcTaskSystemInfo:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/714821259.html>)。`Add-TcPlcTask` 成功時 `data.verifyHint` 寫同一件事。陣列順序是不是等於 PLC project 裡 task 物件的順序還沒實測。
+
+### TASK_ALREADY_EXISTS / TASK_ALREADY_EXISTS_TIRT
+
+- **現象**:`Add-TcPlcTask` 的 `-Name` 已經是 `TIRT` 底下的 task 或 `<Plc> Project` 底下的物件(不分大小寫;`data.existingIn` = `TIRT` / `plc`),什麼都沒建。
+- **下一步**:hint 依 `data.existingIn` 分兩種(`TASK_ALREADY_EXISTS_TIRT` 是只有 TIRT 時用的 hint key,錯誤碼仍是 `TASK_ALREADY_EXISTS`)。只有 `TIRT`:沒有可以沿用的 PLC task,換一個 `-Name` 重跑 `Add-TcPlcTask`。含 `plc`:要用那個 PLC task 就直接 `Add-TcTaskProgram -ProgramName <program> -PlcTask <Name>`,要新的 task 就換名稱。
+
+### TASK_NOT_FOUND
+
+- **現象**:`Add-TcTaskProgram` / `Remove-TcTaskProgram` 的 `-PlcTask` 不在 `<Plc> Project` 底下(`data.reason = not-found`),或那個節點不是 PLC task(ItemType 不是 621,`not-a-task`)。`data.plcTasks` 列出該 PLC project 的 PLC task。什麼都沒改。
+- **下一步**:用 `data.plcTasks` 裡的名稱重跑;要新的 task 先 `Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false`。
+
+### TASK_PROGRAM_INVALID
+
+- **現象**:`Add-TcTaskProgram` 在呼叫 XAE 之前擋下，什麼都沒連。`data.reason`:`not-found`(PLC project 裡沒有這個名稱的物件;只有 task 底下同名的 650 不算)、`not-a-program`(是 FB / FUNCTION / GVL 等，`data.objectKind`、`data.itemType`、`data.pouType`)、`case-mismatch`(有這個 PROGRAM,但大小寫不同，`data.actualName`)。XAE 自己不檢查，這些都會被寫進 `.TcTTO`,到 build 才報錯(見上面「做法」)。
+- **下一步**:`not-found` 先 `Add-TcPou -Name <Name> -Type Program`;`not-a-program` 改給 PROGRAM;`case-mismatch` 改用 `-ProgramName <data.actualName>`。再重跑 `Add-TcTaskProgram`。
+
+### TASK_PROGRAM_ALREADY_LINKED
+
+- **現象**:task 底下已經有這個名稱的呼叫(不分大小寫，`data.existingLink`),什麼都沒連。XAE 會照收第二個，program 就每個 cycle 被呼叫兩次(實測 2026-10-31:沒有編譯錯誤)。
+- **下一步**:不用再連;要換 task 先 `Remove-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <舊 task> -DryRun $false`,再 `Add-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <新 task>`。
+
+### TASK_PROGRAM_NOT_LINKED
+
+- **現象**:`Remove-TcTaskProgram` 在 task 底下找不到名稱完全相同(大小寫也要相同)的呼叫;`data.linkedPrograms` 列出現有的，`data.caseMatches` 列出只差大小寫的。什麼都沒刪。
+- **下一步**:用 `data.linkedPrograms` 裡的名稱當 `-ProgramName` 重跑。
+
+### TASK_CREATE_FAILED
+
+- **現象**:`Add-TcPlcTask` 在 `data.step` 失敗:`tirt-create`(TIRT 底下 CreateChild)、`cycle-time`(ConsumeXml 或它的讀回)、`plc-create`(`<Plc> Project` 底下 CreateChild 621)。`data.stepError` 是那一步的原始錯誤，`data.steps` 是每一步的結果。已建的物件已回滾(`data.rollback[]`;`data.rolledBack = false` 表示有東西沒刪掉，message 會寫 `ROLLBACK INCOMPLETE`;PLC task 刪不掉時 TIRT task 標 `SKIPPED_DEPENDENT`,沒有刪)。IDE_* / PLC_LOGGED_IN 保留原碼，不用這個碼。
+- **下一步**:`rolledBack = true`:排除 `stepError` 的原因後重跑 `Add-TcPlcTask`。`false`:**先刪 PLC task**(`data.rollback` 裡 removed = false、code 不是 `SKIPPED_DEPENDENT` 的 path),再刪 `SKIPPED_DEPENDENT` 的 TIRT task,都用 `Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport`,再重跑。
+
+### TASK_VERIFY_FAILED / TASK_VERIFY_FAILED_DISK
+
+- **save-verify 之後的回滾**(`TASK_VERIFY_FAILED_DISK` 是這種情況用的 hint key,錯誤碼仍是 `TASK_VERIFY_FAILED`):失敗前專案已存檔，磁碟上的 `.plcproj` 已列出 `<Name>.TcTTO`。回滾刪掉物件後模組再存一次檔，從磁碟讀回 `.plcproj` 確認已沒有 `<Name>.TcTTO`(`data.diskState`:plcproj、tcttoListed、saved、saveError)。存檔失敗或還列著 → `data.rolledBack = false`,hint 改成：先 `Get-TcProjectTree -PlcOnly` 確認 task 已不在，再 `Reset-TcSolution -SaveProjectChanges` 存回磁碟並確認 `.plcproj`。只有單元測試，未實測。`.tsproj` 用 `<Task File=...>` 把 task 存在獨立檔案時，模組從 `.tsproj` 資料夾或 `_Config` 底下找那個檔案讀回(位置規則未實測)。
+- **現象**:`Add-TcPlcTask` 每一步都返回了，但讀回不符(`data.mismatches`:`TaskDef/CycleTime`、`TaskDef/Priority`、`PLC task ItemType`、`PlcTaskDef/LinkedTask`,或物件找不到;`data.step = save-verify`:專案已存檔，但磁碟上的 `.tsproj` 沒有 `<Task><Name><Name></Name>`,field `.tsproj TIRT task`)。已建的物件已回滾，同 `TASK_CREATE_FAILED`。
+- **下一步**:先看 `data.mismatches`(field / expected / actual);要看完整 XML 用 `Get-TcTreeItemXml -Path <data.tirtTaskPath>` / `<data.plcTaskPath>`。`rolledBack = false` 時照 `TASK_CREATE_FAILED` 的順序(先 PLC task 再 TIRT task)刪掉留下的 path,再重跑 `Add-TcPlcTask`。
+
+### PLCopen XML(task 3.3):做法與共同規則
+
+- **做法**:`Export-TcPlcOpen`(MCP `ExportPlcOpen`)與 `Import-TcPlcOpen`(`ImportPlcOpen`)在 `<Plc> Project` 節點上呼叫 `PlcOpenExport(file, selection)` / `PlcOpenImport(file, option, '', $true)`(TE1000 v1.7.0 §5.20 p.105–108,範例 §6.5.4 p.228–229;`PLCIMPORTOPTIONS` §5.46.7 p.161:NONE 0、REPLACE 1、RENAME 2、SKIP 3)。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.3);registered tcauto 還沒驗證(task 3.8),4024 沒測過。
+- **selection 寫法**:每個 `-Selection` 元素是一個物件或資料夾，資料夾層級用 `.`(`POUs.FB_A`、`LIB.AxisControl.FB_AxisControl`,含空白的資料夾名稱可以),模組用 `;` 串起來交給 XAE;只給名稱(`FB_A`)XAE 也找得到;不給 selection = 整個 project。用 `^` 時 XAE 回 COMException `0x98510008` "Selection '...' not found!",所以模組先擋(`PLCOPEN_FAILED` reason `invalid-selection`)。
+- **子物件不能單獨匯出**:method / property / action / accessor 單獨選時 XAE 回 ArgumentException "Couldn't create ExportObjects"。模組先用 `LookupTreeItem` / `Resolve-TcPouPath` 找到節點、看 ItemType(608–616、654、655),是子物件就回 `PLCOPEN_FAILED` reason `member-selection`,`data.memberSelection.suggestedSelection` 是所屬物件。PlcOpenExport 一定連子樹一起匯出(FB 含 method、property、action)。interface 的 property(沒有 Get / Set 時)不會被匯出，只有 method。
+- **檔案已存在**:XAE 丟 ArgumentException "File '...' already exists!"(原檔不變)。模組先檢查：沒有 `-Overwrite` 回 `PLCOPEN_FILE_EXISTS`;有 `-Overwrite` 時先把舊檔改名成 `<檔名>.bak`(已存在就 `.bak-2`…,`data.previousFile`),匯出或讀回失敗時把新檔改名成 `<檔名>.failed`、舊檔改回原名(`data.restore`)。
+- **Import 的四種 Option(實測)**:
+
+  | Option | XAE 的行為 | 模組怎麼處理 |
+  |---|---|---|
+  | `None` | 有衝突就丟例外("Creation of object 'X' failed. Reason: Import conflict!"),什麼都沒匯入 | dry-run 的衝突檢查有衝突就回 `PLCOPEN_CONFLICT`,實寫時不呼叫 XAE |
+  | `Skip` | 衝突的物件靜默跳過，不回報 | 匯入後 `data.skipped[]` 列出跳過的物件，並比對它們磁碟檔的 SHA-256(`unchanged`);有檔案變了 → `PLCOPEN_VERIFY_FAILED` reason `skip-changed` |
+  | `Replace` | 整個物件覆蓋：檔案裡沒有的子物件會被刪掉(ITF 原本的 property 被刪) | dry-run 的 `data.willReplace[].deletedChildren` 列出會被刪的直接子物件;實寫前先把會被覆蓋的物件匯出成 PLCopen XML 備份，失敗就不匯入(`PLCOPEN_BACKUP_FAILED`);讀回 `data.replaced[].deletedChildren` |
+  | `Rename` | 匯入的物件加 `_1` 後綴，原物件不變 | dry-run 預告 `<名稱>_1`(該名稱也存在時加 warning:實際名稱沒測過);讀回在新增的物件裡找 `<名稱>_<n>`(`data.renamed`) |
+
+- **衝突怎麼判斷**:檔案用 `Read-TcXmlFile` 解析(不處理 DTD,防 XXE),列出 POU(`types/pous/pou`)、DUT(`types/dataTypes/dataType`)、ITF(`addData/data/Interface`)、GVL(`globalVars`);再走一次 `<Plc> Project` 和所有 PLC 資料夾，名稱相同(不分大小寫)就算衝突。同名物件在別的資料夾時 XAE 算不算衝突沒實測。超過 3000 個節點、或有節點讀不到時檢查不完整(`data.indexComplete = false`,`data.warnings` 會寫);這時 `-Option Replace -DryRun $false` 直接回 `PLCOPEN_BACKUP_FAILED` reason `index-incomplete`,不呼叫 PlcOpenImport(要備份的物件可能沒找齊),dry-run 也會加 warning。
+- **REPLACE 的備份**:**必要**的是一份 PLCopen XML:用 `PlcOpenExport` 把所有會被覆蓋的物件匯出到 `<sln 目錄>\.tcauto-backup\<時間>\plcopen-replace.xml`(`data.backup.xmlPath`)。PlcOpenExport 會連子樹一起匯出，**例外是沒有 Get / Set 的 interface property,它不會被匯出**(實測 2026-10-31)。還原用 `Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`(`data.backup.restore` 就是這行指令),只能還原 XML 裡有的部分。這份檔案沒寫出來、讀不了或少了物件 → `PLCOPEN_BACKUP_FAILED`,不匯入。模組會比對每個物件在專案裡的子物件和 XML 的 members:有子物件不在 XML 裡(`data.backup.diskOnly`,例如 ITF 的 property)時，那個物件的 ProduceXml + 磁碟檔備份(`.TcIO` / `.TcPOU`)就變成**必要**,沒做成 → `PLCOPEN_BACKUP_FAILED` reason `disk-backup-failed`。這些子物件只能從磁碟檔副本或 `.zip` 還原:XML 還原後，把 `data.backup.diskOnly[].diskFileCopy` 複製回 `diskFile` 再 `Reset-TcSolution`,或 `Import-TcTreeItem` 匯回 `.zip`(**都未實測**;`data.backup.restoreNote` 有寫)。**盡力而為**的是其他物件的同一套備份和每個物件的 ExportChild `.zip`(`data.backup.objectBackups`;POU 節點的 ExportChild 未實測),失敗只加 warning。Replace 後會比對磁碟檔前後的 hash(`data.replaced[].diskFileChanged`),沒變就加 warning;匯入後新增的物件裡有和衝突物件同名的(在別的資料夾)會列在 `data.conflictsAdded` 並加 warning。
+- **磁碟與存檔**:匯入當下 XAE 就寫物件檔(`.TcPOU` / `.TcIO`),`.plcproj` 要等專案存檔才寫(實測)。所以讀回成功後模組照 `Add-TcPou` 的做法存檔(`Invoke-TcPlcObjectSave`:DTE `Project.Save`,再從磁碟讀回 `.plcproj`,每個新增物件都要有 `<Compile Include>`,`data.expectedProjectFiles` / `data.projectSaved`)。存檔失敗回它自己的碼(`PROJECT_SAVE_FAILED` / `PROJECT_SAVE_TIMEOUT` / `IDE_MODAL_DIALOG`,`data.projectSave`),BUILD_REQUIRED 照樣記。
+- **BUILD_REQUIRED**:`PlcOpenImport` 一呼叫就記 code-changed(成功、失敗、讀回不符都記);呼叫前擋下的不記。`Export-TcPlcOpen` 不改專案，不記。
+
+### PLCOPEN_FAILED
+
+- **現象**:`data.reason`:`invalid-selection`(selection 元素是空的、用了 `^`、元素裡有 `;`、有空層級)、`member-selection`(指到 method / property / action / accessor,`data.memberSelection`)、`selection-not-found`(XAE 回 `0x98510008`)、`invalid-argument`(XAE 丟 ArgumentException)、`export-failed` / `import-failed`(其他例外，`data.xaeMessage`、`data.hresult`)、`not-absolute` / `invalid-path` / `folder-missing` / `file-missing`(路徑)、`invalid-file` / `no-objects`(匯入檔不是 PLCopen XML 或沒有物件)、`overwrite-move-failed`(舊檔改名失敗)。除了 `import-failed`,都沒有改專案。
+- **下一步**:依 `data.reason` 修正後重跑:selection 每個元素一個物件、用 `.` 分層(`-Selection 'POUs.FB_A','DUTs.ST_B'`);member-selection 改成 `data.memberSelection.suggestedSelection`;selection-not-found 用 `Get-TcProjectTree -PlcOnly` 查名稱;其他看 `data.xaeMessage`,用 `Get-TcIdeModalDialog` 檢查 dialog。
+
+### PLCOPEN_FILE_EXISTS
+
+- **現象**:`Export-TcPlcOpen` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕，實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`(舊檔先改名成 `.bak`)。
+
+### PLCOPEN_CONFLICT
+
+- **現象**:`Import-TcPlcOpen -Option None`,檔案裡有物件和專案同名(`data.conflicts`:name、existingPath);dry-run 也回這個碼，實寫時沒有呼叫 XAE。XAE 自己回 "Import conflict!" 時也用這個碼(`data.xaeConflicts`,這時已呼叫 XAE,會記 BUILD_REQUIRED)。
+- **下一步**:依 `data.conflicts` 選 `-Option Skip` / `Rename` / `Replace`,先 `-DryRun $true` 看預告;`Replace` 會刪掉檔案裡沒有的子物件，先看 `data.willReplace[].deletedChildren`。
+
+### PLCOPEN_VERIFY_FAILED
+
+- **現象**:呼叫返回了，但讀回不符。Export:`data.reason` = `file-not-written`(檔案不存在或是空的)、`invalid-file`(不是 PLCopen XML)、`selection-missing`(`data.missingSelections` 的物件 / 資料夾不在檔案裡);有 `-Overwrite` 時舊檔已還原。Import:`data.reason = missing`:`data.missing` 的物件匯入後找不到(Rename 時是找不到 `<名稱>_<n>`),`data.added` 是實際新增的物件;`skip-changed`:`-Option Skip` 但被跳過物件的磁碟檔在匯入期間變了(`data.skipped[].unchanged = false`)。
+- **下一步**:用 `Get-TcProjectTree -PlcOnly` 確認專案現況;Replace 的原物件要還原就執行 `data.backup.restore`(`Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`)。
+
+### PLCOPEN_BACKUP_FAILED
+
+- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`plcopen-backup-failed` = PlcOpenExport 備份失敗、沒寫出來、讀不了或少了物件;`disk-backup-failed` = 物件有 XML 裡沒有的子物件(例如沒有 Get / Set 的 ITF property),但它的磁碟檔備份沒做成;`index-incomplete` = 專案物件索引不完整，要備份的物件可能沒找齊;`data.backupObject` 是要備份的物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。ExportChild `.zip` 失敗不會走到這裡，只是 warning。
+- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;`plcopen-backup-failed` 時用 `Export-TcPlcOpen -Selection <物件> -FilePath <新的 .xml>` 試匯出找原因，再重跑;`disk-backup-failed` 先確認物件的 `.TcIO` / `.TcPOU` 在 solution 目錄底下只有一份;`index-incomplete` 用 `Get-TcProjectTree -PlcOnly` 找出讀不到的資料夾;不需要覆蓋時改用 `-Option Rename`。
+
+### Boot project(task 3.2):做法
+
+- **做法**:`New-TcBootProject`(MCP `GenerateBootProject`)在 PLC root `TIPC^<Plc>` 上呼叫 `GenerateBootProject($false)`(TE1000 v1.7.0 §5.17 p.102–103,範例 §6.5.13 p.241)。只在 PLC root 有這個方法，`<Plc> Project` 上沒有(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`phase2-probe.md` 3.2)。`bActivate = $true` 沒實測，不提供;要寫到 target 用 `Build-TcProject` 加 `Enable-TcConfig -Force`。
+- **寫了哪些檔(實測)**:只寫專案的 `<tsproj 目錄>\_Boot\<solution platform>\Plc\Port_<adsPort>.app` / `.autostart` / `.cid` / `.crc` / `.occ` / `.ocm` 和 `Port_<adsPort>_boot.tizip`;`%ProgramData%\Beckhoff\TwinCAT\3.1\Boot` 和 UmRT 的 Boot 目錄都沒變。`_Boot` 裡的 `CurrentConfig.*` 是 Build 寫的，不是它。
+- **它會存檔**:記憶體裡尚未存檔的修改會被寫進 `.plcproj` / `.tsproj`(實測);每次呼叫 `data.warnings` 都會寫。
+- **不用先 Build**:它自己編譯。有編譯錯誤時回 COMException E_FAIL(`0x80004005`),訊息沒有資訊，模組接著讀 Error List(和 `Build-TcProject` 同一套分類)。
+- **讀回**:呼叫前後列出 `Port_<port>.*`,`Port_<port>.app` 要存在且修改時間比呼叫前新;`data.bootFiles` 列出路徑、大小、時間、`updated`。目錄同時查 solution platform 和 `.tsproj` 的 project platform(`data.bootDirs`;**兩者不同時 XAE 寫哪一個資料夾未實測**,probe 兩者都是 `TwinCAT OS (x64)`),任一個的 `.app` 變新就算。solution platform、ADS port 或 `.tsproj`(含路徑是空的)推不出來時，改列 solution 目錄底下所有 `_Boot\*\Plc\Port_*`,加 warning;這時至少要有一個 `Port_*.app` 變新(只有 `.autostart` 之類變新不算),ADS port 不明時 `data.bootPorts` 列出變新的 `.app` 的 port。失敗時 Error List 裡沒有 severity 的列放在 `data.unclassified`,訊息也會寫。
+- **BUILD_REQUIRED**:不改。Activate 仍然要走 `Build-TcProject`(完整成功才清掉)和 `Enable-TcConfig`;這個呼叫不能證明 build 完整。
+- **BOOT_PACKAGE_MISMATCH**:這裡只產生本機 `_Boot`,不寫 target,所以不影響 Activate 後 `Enable-TcConfig` 做的比對。
+
+### BOOTPROJECT_FAILED
+
+- **現象**:`GenerateBootProject($false)` 丟例外。`data.reason = generate-failed`:多半是編譯錯誤(XAE 回 E_FAIL,訊息沒資訊，實測),`data.errorItems` 是 Error List 上有 file 或 code 的錯誤列(`codeErrors` / `libraryErrorItems` 分開列，沒有 file 也沒有 code 的舊列在 `staleErrorItems`);`data.xaeMessage` / `data.hresult` 是原始例外。`no-method`:這個節點沒有 `GenerateBootProject`。失敗時專案檔仍可能已被存檔(實測：有編譯錯誤時 `.tsproj` 也被改寫)。
+- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `New-TcBootProject`;`errorItems` 是空的就 `Get-TcBuildErrors` 或 `Build-TcProject` 看錯誤。
+
+### BOOTPROJECT_VERIFY_FAILED
+
+- **現象**:`GenerateBootProject` 返回了，但讀回不符。`data.reason = not-updated`:`_Boot\<platform>\Plc\Port_<port>.app` 不存在或沒有比呼叫前新;`boot-dir-unknown`:boot 目錄推不出來(warning 寫原因),solution 目錄底下也找不到變新的 `Port_*` 檔。`data.bootFiles` 是找到的檔案。
+- **下一步**:用 `Get-TcIdeInfo` 確認 `solutionPlatform`,看 `data.bootFiles`;重跑一次，仍沒更新就改用 `Build-TcProject` 加 `Enable-TcConfig -Force`。
+
+### SaveAsLibrary 與 archive(task 3.4):做法
+
+- **Library**:`Save-TcPlcLibrary`(MCP `SaveAsLibrary`)在 `<Plc> Project` 上呼叫 `SaveAsLibrary(path, $false)`(TE1000 v1.7.0 §5.28.1.1 p.123,範例 §6.5.13 p.240),**不安裝**;要安裝用 `Install-TcLibrary -LibraryPath <檔案>`。加密(`SaveAsLibrary2` 的 bEncrypt)不提供：沒有接 software protection / user database 時 XAE 拒絕("No Software-Protection/User-Database is connected ... Cannot save library with encryption!")。`.library` 與 `.compiled-library` 都可以，每次約 5.5–7 s,沒有 dialog(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`phase2-probe.md` 3.4)。**會存 .plcproj**:XAE 記憶體裡還沒存的改動(例如用 `Set-TcTreeItemXml` 暫時改的 project info)在呼叫後就出現在磁碟上的 .plcproj,LastWriteTime 是呼叫時刻(registered tcauto 實測 2026-10-31 4026 VS2022、4024 XAE,`verification/phase2-3.8.md` P7;自建 client 那次只看到 `.~u` 變,因為沒有未存的改動)。回傳 `data.projectSaved`(= `data.projectFileWritten`:呼叫前後 `data.projectFile` 的 LastWriteTime 不同 → true,相同 → false,找不到 .plcproj → null)。從沒 build 過的專案會不會跳 dialog 沒測。
+- **Archive**:`Save-TcArchive`(MCP `SaveArchive`)。`-Kind Solution` 用 `DTE.GetObject("TcArchivePersist").SaveAsArchive(path)` 存 `.tnzip`(§5.44 p.156–157、§6.3.7 p.209);`-Kind Configuration` 用 `ITcSysManager9.SaveAsArchive(path)` 存 `.tszip`(§5.1.8 p.49–50、§6.5.13 p.241)。實測:`.tnzip` 含 `.sln`、TwinCAT 專案放在同名資料夾下，並嘗試包含 Scope 等其他專案;`.tszip` 只有 TwinCAT 專案(`.tsproj` 加 PLC 專案與 `_Libraries`),沒有 `.sln`。兩者都打包 **XAE 記憶體裡的狀態**,不是磁碟上的檔案(還沒存進 `.plcproj` 的物件也在 archive 裡),也都不存檔。只做產生，不做載入(載入會換掉目前的 solution)。
+- **回 S_OK 也可能少東西**:實測 `.tnzip` 少了 `A10_Scope`,`SaveAsArchive` 仍回 S_OK,錯誤只出現在 Error List("'TwinCAT Measurement' (...): Error creating Archive -> ...")。所以模組在呼叫前後各讀一次 Error List,以「code + 描述 + 檔案 + 專案」計數比對(同樣的文字多一次也算新的,沒有 severity 的列也一起算),新出現的錯誤列 → `ARCHIVE_INCOMPLETE`。呼叫後 Error List 被截斷(`data.errorListTruncated`)或有沒有 severity 的列(`data.unclassified`)時，無法確認 → `ARCHIVE_UNVERIFIED`;但新出現的 unclassified 列含 "Error creating Archive" 時回 `ARCHIVE_INCOMPLETE`。這個錯誤列是在 `SaveAsArchive` 返回前同步出現、還是之後非同步出現，**未實測**;模組只在呼叫後立刻讀一次。
+- **讀回**:檔案存在、不是空的、修改時間在這次呼叫之後;用 `System.IO.Compression.ZipFile` 開啟,`data.entries` 列出名稱與大小(最多 200 筆，超過時 `data.entriesTruncated = true`、`data.entryCount` 是總數)。
+- **檔案已存在**:三個 API 都丟 ArgumentException(實測),模組先擋(`LIBRARY_SAVE_FILE_EXISTS` / `ARCHIVE_FILE_EXISTS`);`-Overwrite` 先把舊檔改名成 `<檔名>.bak`,失敗時新檔改名成 `<檔名>.failed`、舊檔改回原名(`data.restore`)。
+- **BUILD_REQUIRED**:兩者都不改專案，不記。
+
+### LIBRARY_SAVE_FILE_EXISTS
+
+- **現象**:`Save-TcPlcLibrary` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕，實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`。
+
+### LIBRARY_SAVE_FAILED
+
+- **現象**:`data.reason`:`extension`(不是 `.library` / `.compiled-library`)、`not-absolute` / `invalid-path` / `folder-missing`、`overwrite-move-failed`、`save-failed`(XAE 丟例外，`data.xaeMessage` / `data.hresult`)、`not-written`(返回了但檔案不存在、是空的或不是這次寫的)。有 `-Overwrite` 時舊檔已還原(`data.restore`)。
+- **下一步**:依 `data.reason` 修正後重跑 `Save-TcPlcLibrary`;`save-failed` 先用 `Get-TcIdeModalDialog` 檢查 dialog。
+
+### ARCHIVE_FILE_EXISTS
+
+- **現象**:`Save-TcArchive` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕 "Archive file already exists!",實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`。
+
+### ARCHIVE_FAILED
+
+- **現象**:`data.reason`:`extension`(`-Kind Solution` 要 `.tnzip`、`Configuration` 要 `.tszip`)、`not-absolute` / `invalid-path` / `folder-missing`、`overwrite-move-failed`、`no-archive-object`(`DTE.GetObject('TcArchivePersist')` 沒回東西)、`save-failed`(XAE 丟例外)、`not-written`、`not-a-zip`(寫出的檔案打不開)。有 `-Overwrite` 時舊檔已還原。
+- **下一步**:依 `data.reason` 修正後重跑 `Save-TcArchive`。
+
+### ARCHIVE_INCOMPLETE
+
+- **現象**:`SaveAsArchive` 回 S_OK、檔案也寫出來了，但 Error List 在呼叫期間多了錯誤列(`data.errorItems`;實測是 Scope 專案 "Error creating Archive")。檔案**保留**(`data.filePath`、`data.entries`),`data.warnings` 寫明不完整。呼叫前的 Error List 讀不到時，只有內容含 "Error creating Archive" 的列會算，舊的同樣錯誤也會被算進來(warning 會寫)。
+- **下一步**:看 `data.errorItems` 是哪個專案;只要 TwinCAT 專案就改用 `-Kind Configuration`(`.tszip`);要完整 solution 就先在 XAE 修好或移除那個專案，再加 `-Overwrite` 重跑。
+
+### ARCHIVE_UNVERIFIED
+
+- **現象**:archive 寫出來了(檔案保留),但呼叫後 Error List 讀不到、被截斷(`data.errorListTruncated`),或有沒有 severity 的列(`data.unclassified`),無法確認有沒有專案沒被打包。
+- **下一步**:確認 XAE 的 Error List 視窗可見，用 `Get-TcBuildErrors` 讀，找 "Error creating Archive" 的列;沒有就可以用這個檔案。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。
@@ -551,7 +797,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### POU_NOT_FOUND
 
 - **現象**:`Get-TcPouCode` / `Write-TcPouCode` 回 `POU_NOT_FOUND`。(`PLC_PROJECT_NOT_FOUND` 是 TIPC 下找不到 `<Plc> Project` 節點,處理方式相同。)
-- **為什麼**:4024 與 4026 的 PLC 樹格式相同:`TIPC^<Plc>^<Plc> Project^POUs^<name>`(DUT 在 `^DUTs^`、GVL 在 `^GVLs^`)。不給 `-PouPath` 時依序試 `<Plc> Project^POUs^<name>`、`<Plc> Project^<name>`,最後遞迴走 project 子樹(深度 4)比對名稱;給了 `-PouPath` 但找不到也會改用名稱自動找。都沒命中才回此碼。
+- **為什麼**:4024 與 4026 的 PLC 樹格式相同:`TIPC^<Plc>^<Plc> Project^POUs^<name>`(DUT 在 `^DUTs^`、GVL 在 `^GVLs^`)。不給 `-PouPath` 時依序試 `<Plc> Project^POUs^<name>`、`<Plc> Project^<name>`,最後遞迴走 project 子樹(深度 4)比對名稱;給了 `-PouPath` 但找不到也會改用名稱自動找。都沒命中才回此碼。子物件(task 3.6):`-PouPath <POU path>^<member>`、accessor `^<property>^Get`;`-PouName` 也接受 `FB_X.M_Run`、`FB_X.P_Value.Get`(先照原字串找，找不到才把 `.` 換成 `^`,因為資料夾名稱可能有 `.`;`-PouPath` 只轉最後一段)。走樹時命中多個(例如兩個 FB 都有 `M_Run`)回 `POU_AMBIGUOUS`,不再靜默取第一個(實測 2026-10-31 4026 VS2022 自建 client 確認舊行為會取第一個)。
 - **下一步**:`error.message` 列出試過的路徑(`data.tried[]`),`error.hint` 說明格式並列出 `<Plc> Project` 第一層子節點(例如 `POUs, DUTs, GVLs, VISUs`,另見 `data.projectChildren[]`)。用 `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`。與 `POU_READ_FAILED` / `POU_WRITE_FAILED` 不同:後兩者只在 COM 例外(例如讀 DeclarationText 失敗)時回,代表 POU 找到了但存取失敗。
 - **DUT / GVL 的讀寫語意**(#22):`Get-TcPouCode` 回 `data.objectKind`(POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY …,由樹節點的 `ItemType` 判斷,數值見 [InfoSys「ITcSmTreeItem Item Types」](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html);PLC 物件的 `ItemSubType` 一律是 0,`ItemSubTypeName` 是 `TREEITEMTYPE_*` 名稱,實測 2026-10-25 4024 / 4026)、`data.language`(`ITcSmTreeItem.Language`:ST 1 / FBD 4 / LD 6 …,DUT / GVL / ITF 為 null,實測同上)、`data.hasImplementation`、`data.implementationReadable`。`hasImplementation` 實測過的(2026-10-25,讀 `ImplementationText`):有實作段 = POU 602 / 603 / 604(4024、4026)、action 608(4024、4026)、method 609(4026,空的 ST 本體讀回 `''`);沒有 = DUT 605 / 606(4024、4026)、union 607 / alias 623(4026)、GVL 615、interface 618(4024、4026)、interface method 610(4026)、property 611(4024、4026,`CreateChild 611` 不會建 Get / Set 子項)。interface property 612、property get / set 613 / 614、transition 616 未實測:`hasImplementation` 先當未知,讀 `ImplementationText` 決定(和未知 ItemType 一樣)。沒有實作段時 `implementation=null`、`implementationReadable=null`,整份原始碼在 `declaration`。有實作段卻讀回 null 時 `implementationReadable=false`,沒有實作段時 `implementationReadable=null`。屬性讀取失敗會以 null / `implementationReadable=false` 呈現:Windows PowerShell 對丟例外的 getter 回 `$null`(實測 2026-10-25,PS 5.1.26100,.NET property;COM adapter 未驗)。declaration 讀回 null 回 `POU_READ_FAILED`(action 608 例外,它本來就沒有 declaration,實測 2026-10-25 4024 / 4026;未實測的 transition 616 也放行);LD / FBD 的 `implementation` 是 XAE 的 XML(`<NWL><XmlArchive>…`),不是 ST 文字(實測 2026-10-25 4024 / 4026)。COM 呼叫本身丟例外回 `POU_READ_FAILED`。`Write-TcPouCode` 對沒有實作段的物件給 `-Implementation` 回 `INVALID_PARAMS`、什麼都不寫(ItemType 未知時先讀 `ImplementationText`,null 就同樣擋下),只給 `-Declaration`(完整的 `TYPE ... END_TYPE` / `VAR_GLOBAL ... END_VAR`);property 的 hint 指向 `<path>^Get` / `^Set`。
 
@@ -562,16 +808,47 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### POU_CREATE_FAILED / DUT_CREATE_FAILED / GVL_CREATE_FAILED
 
-- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` 回失敗。`error.message` 在 `Failed to add ...:` 後標出失敗步驟:`exists:`(目標 PLC project 裡已有同名的頂層物件,訊息帶它的 path;什麼都沒建)、`lookup:`(`CreateChild` 回來了但目標路徑讀不到)、`kind:`(新物件的 ItemType 不對)、`language:`(POU 讀回的語言不是 ST)、`declare:`(寫入 / 讀回 declaration 失敗或內容不同;Function 讀回的 header 沒有 `: <ReturnType>`)。從 `lookup` 起物件已經建立、留在樹上,訊息會說明;沒標步驟就是 `CreateChild` 本身的 XAE 訊息。IDE 有 modal dialog 時不呼叫 `CreateChild`,直接回 `IDE_MODAL_DIALOG`(同 `Build-TcProject`)。
+- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` 回失敗(`Add-TcInterface` 也回 `POU_CREATE_FAILED`,步驟相同;interface 是 CreateChild 618,vInfo `$null` 或 `-Extends` 字串，陣列會被 XAE 拒絕，實測 2026-10-31 4026 VS2022 自建 client)。`error.message` 在 `Failed to add ...:` 後標出失敗步驟:`exists:`(目標 PLC project 裡已有同名的頂層物件,訊息帶它的 path;什麼都沒建)、`lookup:`(`CreateChild` 回來了但目標路徑讀不到)、`kind:`(新物件的 ItemType 不對)、`language:`(POU 讀回的語言不是 ST)、`declare:`(寫入 / 讀回 declaration 失敗或內容不同;Function 讀回的 header 沒有 `: <ReturnType>`)。從 `lookup` 起物件已經建立、留在樹上,訊息會說明;沒標步驟就是 `CreateChild` 本身的 XAE 訊息。IDE 有 modal dialog 時不呼叫 `CreateChild`,直接回 `IDE_MODAL_DIALOG`(同 `Build-TcProject`)。
 - **怎麼建**:`ITcSmTreeItem::CreateChild(name, subType, '', vInfo)`,父節點是 PLC folder(`TIPC^<Plc>^<Plc> Project^POUs` / `^DUTs` / `^GVLs`,4024 與 4026 相同)。subType 用 [InfoSys「ITcSmTreeItem Item Types」](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425810699.html) 頁的 ItemType 值:Program 602、Function 603、Function block 604、DUT enum 605 / struct 606 / union 607 / alias 623、GVL 615;[InfoSys `ITcSmTreeItem::CreateChild`](https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425844363.html) 頁確認 603 / 604 也是 CreateChild 的 sub type,其餘實測(2026-10-25,4024 / 4026)。vInfo 依 CreateChild 頁:FB = IEC 語言整數,Function = string[2] {語言, 回傳型別};Program 也吃同一個整數(實測 2026-10-25,4024 / 4026)。`IECLANGUAGE_ST` = 1(TCatSysManagerLib 3.4.0.0 interop 的 `IECLANGUAGETYPES`,reflection 讀出,2026-10-25;6 是 LD)。DUT / GVL 不帶 vInfo 建立,再寫 `DeclarationText` 並讀回比對;alias 例外,vInfo 要給基底型別。成功只在讀回新物件(ItemType 相符、POU 語言是 ST、Function header 含回傳型別、DUT / GVL declaration 相符)之後才回。
 - **同名檢查(`exists`)**:目標路徑本身,加上目標所在的 `<Plc> Project`(父路徑中第一個「等於前一段 + ` Project`」的段,所以 PLC 名稱本身以 ` Project` 結尾也對;多 PLC 的 solution 只查自己那個 PLC)裡所有 PLC folder(ItemType 601,含巢狀)的直接子項。父路徑不在 `<Plc> Project` 底下時只查目標路徑,`data.duplicateCheckScope = folder`,`data.duplicateCheckNote` 說明原因。只有頂層物件算衝突:POU 602 / 603 / 604、DUT 605 / 606 / 607 / 623、GVL 615、ITF 618;method、action、property、accessor 與資料夾同名不算,也不往 POU 底下走。名稱比對不分大小寫,所有命中都列在訊息裡。讀不到的節點計入 `data.duplicateCheckSkippedNodes`(對它不擋,fail-open);RPC busy(0x80010001 / 0x8001010A)與 IDE_* 不算讀不到,會整段重試(`Invoke-TcComRetry`),仍失敗回 `IDE_BUSY` 等。節點超過 3000 個就停止走樹:已找到的同名仍會擋下(`exists`),其餘部分沒查,`data.duplicateCheckScope = folder`(正常是 `project`)、`data.duplicateCheckNote` 說明,另有 PowerShell warning。耗時(實測 2026-10-25,target 127.0.0.1.1.1):TwinCAT_Festo 4024 複本 47 個節點,第一次 587 ms、之後 84 / 150 ms;RobustDemo 4026 複本 63 個節點,446 / 68 / 61 ms(第一次含 COM 暖機)。約 1-1.5 ms 一個節點,3000 個約 3-5 s。
 - **#17 之前為什麼失敗**(實測 2026-10-25,4024 TcXaeShell.DTE.15.0;修正後的呼叫在 4026 VisualStudio.DTE.17.0 也驗過):HRESULT 都是 `0x80004005`(E_FAIL),原因在訊息裡。POU:vInfo 傳了 `<Declaration><![CDATA[...]]>` 字串,XAE 把它當語言名稱解析,回「Requested value '<Declaration>...' was not found.」;而且 Program / FB 的 subType 對調(604 = FB,602 = Program)。DUT:用了 610-613,那是 interface method / property,回「Creating the child type 'TREEITEMTYPE_PLCITFMETH' is not possible on parent node type 'TREEITEMTYPE_PLCFOLDER' (SubType mismatch)」。GVL:615 正確所以「成功」,但字串 vInfo 被原樣當成 declaration,`<Declaration><![CDATA[` 外殼留在 GVL 原始碼裡,Build 才會壞。alias 不給 vInfo 回「Base class not specified! Parameter name: baseClass」。
 - **下一步**:`exists` → 換 `-Name`,或用 `Write-TcPouCode -PouPath <訊息裡的 path>` 改既有的。「not possible on parent node type」→ 父節點不是 PLC folder,`Get-TcProjectTree -PlcOnly` 查 `<Plc> Project^POUs` 的 path 後給 `Add-TcPou -PlcProjectPath`。`0x98510001` → .plcproj 的 `<Compile Include>` 列了磁碟上沒有的檔案,從 .plcproj 移除或補回檔案,`Reset-TcSolution` 後再試。`lookup` → 物件可能建在別的路徑,`Get-TcProjectTree -PlcOnly` 找到後用 `Write-TcPouCode` 修正或在 XAE 刪掉。`kind` / `language` / `declare` → 物件已建立、留在樹上:用 `Get-TcPouCode -PouPath <path>` 看內容,以 `Write-TcPouCode -PouPath <path>` 修正,或在 XAE 刪掉後再 Add(同名會被 `exists` 擋下)。`IDE_MODAL_DIALOG` → 先處理 dialog(`Get-TcIdeModalDialog`),什麼都沒建。
 - **驗證**:`mcp-server/scripts/pou-client.mjs` 經 MCP server 跑 Add* / GetPouCode / WritePouCode / BuildProject(含一次注入未宣告識別字、預期 `BUILD_FAILED` 的對照)。2026-10-25 在全新 4024 專案(Standard PLC Template,TcVersion 3.1.4024.71)與 4026 RobustDemo 複本都全數通過(最後一輪 26/26,含同名跨資料夾的 `exists` 檢查;target 設為 127.0.0.1.1.1,沒有 Activate)。TwinCAT_Festo(4024)複本缺 library 時 PLC 程式碼不會被編譯,Build 仍回 success,不能拿來驗證(#45)。
 
+### POU_AMBIGUOUS
+
+- **現象**(task 3.6):`Get-TcPouCode` / `Write-TcPouCode` / `Add-TcPouMember` 只給名稱，走 `<Plc> Project` 子樹時有多個物件同名(兩個 FB 都有 `M_Run`、兩個 property 都有 `Get`),回 `POU_AMBIGUOUS`,`data.candidates` 列出每個的完整路徑，什麼都沒讀 / 沒改。以前靜默回第一個(實測 2026-10-31 4026 VS2022 自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.6)。同名的 task reference(ItemType 650,`PlcTask^<POU>`)或資料夾不算第二個候選;ItemType 讀不到的命中仍算候選。名稱有 `.` 時，走樹之前先直接試 `<Plc> Project^POUs^<前半>^<後半>` 和 `<Plc> Project^<前半>^<後半>`。已知限制：命中的項目不再往下找，所以資料夾和它底下的物件同名時只會回傳資料夾。`<Plc> Project^POUs^<name>`、`<Plc> Project^<name>` 直接命中時不走樹，不會回此碼。
+- **下一步**:從 `data.candidates` 選一個當 `-PouPath`(`Add-TcPouMember` 是 `-ParentPath`),或寫 `FB_X.M_Run`(前半段本身同名多個時，只有一個候選底下有這個子物件就用它，否則仍回此碼)。
+
+### POU_MEMBER_INVALID / POU_MEMBER_EXISTS / POU_MEMBER_CREATE_FAILED
+
+- **怎麼建**(task 3.6):`Add-TcPouMember` 在父節點呼叫 `ITcSmTreeItem::CreateChild(name, subType, '', vInfo)`。subType 依 TE1000 v1.7.0 §6.5.5(p.229-231)與 enum §5.46.22:PROGRAM / FB 底下 Method 609、Property 611、Action 608;INTERFACE 底下 Method 610、Property 612;property 底下 Get 613、Set 614。vInfo 一律 `string[]`,第 0 個是 IEC language(`IECLANGUAGETYPES` ST 1、IL 2、SFC 3、FBD 4、CFC 5、LD 6,§5.46.5):Method `{lang, returnType, access}`、Property `{lang, type, access}`、Get / Set `{lang, access}`、Action `{lang}`;610 / 612 只給回傳型別(名稱放進陣列會被接成回傳型別，語法錯)。手冊 §6.5.5 範例的 `{name, returnType}` 會回「Language type not supported!」(以上 vInfo 全部實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`verification/phase2-probe.md` 3.6)。沒有回傳型別的 method 用 vInfo `$null`(實測：宣告 `METHOD M_Null`,沒有 language / access),所以這時只接受 Access PUBLIC + Language ST。Property 不會自動建 Get / Set(實測 2026-10-25、2026-10-31),要另外用 `-Kind Get` / `-Kind Set`。子物件建立時 XAE 當下就寫父物件的 `.TcPOU` / `.TcIO`,`.plcproj` 不變(實測 2026-10-31),所以不存專案檔。
+- **POU_MEMBER_INVALID**:參數或父節點不合法，什麼都沒建(`data.reason`):`name`(不是 IEC 識別字;Get / Set 的名稱固定)、`access`(不是 PUBLIC / PRIVATE / PROTECTED / INTERNAL:XAE 收到其他值會**靜默當成 PUBLIC**,實測 2026-10-31,所以模組先擋;interface 成員和 action 不吃 access)、`language`、`return-type`(Property 必填,Action / Get / Set 不能給)、`parent-kind`(Method / Property / Action 的父節點要是 PROGRAM 或 FB,Method / Property 也可以是 INTERFACE;Get / Set 的父節點要是 property;interface 沒有 action)。
+- **POU_MEMBER_EXISTS**:父節點底下已經有同名子物件(不分大小寫,`data.existingPath`),什麼都沒建。XAE 自己的錯誤是「An object with the name '...' already exists within the corresponding namespace」,重複建 Get 則是「... (SubType mismatch)」,看不出是重複(實測 2026-10-31),所以模組先查。名稱和 FB 內其他子物件不同就能建。
+- **POU_MEMBER_CREATE_FAILED**:CreateChild 被 XAE 拒絕(沒標步驟，什麼都沒建，不記 `BUILD_REQUIRED`),或之後的讀回失敗:`lookup`(找不到新路徑)、`kind`(ItemType 不是 subType)、`language`(method / action 讀回的語言不同)、`declare`(宣告讀回沒有名稱 / access / 型別;action 沒有宣告，不讀)。從 `lookup` 起子物件已建立、留在樹上，記 `BUILD_REQUIRED` code-changed。
+- **下一步**:`POU_MEMBER_INVALID` 照 `error.hint` 改參數重跑;`POU_MEMBER_EXISTS` 換 `-Name` 或 `Write-TcPouCode -PouPath <data.existingPath>`;`POU_MEMBER_CREATE_FAILED` 用 `Get-TcPouCode -PouPath <path>` 看內容，以 `Write-TcPouCode` 修正或在 XAE 刪除後再 `Add-TcPouMember`。
+
+### POU_MEMBER_UNSUPPORTED
+
+- **現象**(task 3.6):模組刻意不碰的物件，什麼都沒建 / 讀 / 寫。`data.reason`:
+  - `itf-property-accessor`:interface property 的 Get / Set(ItemType 654 / 655)。`Add-TcPouMember` 不建立,`Get-TcPouCode` / `Write-TcPouCode` 只讀 ItemType 就回此碼。原因：在 ITF property 底下 `CreateChild('Get', 654, '', $null)` 成功後，讀它的 `DeclarationText` 讓 VS2022 crash 兩次(卡約 48 s 後 RPC `0x800706BA`;事件檢視器 Application 1000:`devenv.exe 17.14.36811.4`,faulting module `KERNELBASE.dll 10.0.26100.9711`,exception code `0xe06d7363`,offset `0x00000000000c408a`)。`ChildCount`、`LookupTreeItem`、`ItemType`、`ProduceXml` 正常。實測 2026-10-31 4026 VS2022 自建 client,細節見 `openspec/changes/complete-automation-interface/verification/phase2-probe.md`。655 沒測到;64-bit XAE Shell、4024 是否一樣未知。
+  - `method-no-return-type`:沒有 `-ReturnType` 的 method 只實測過 vInfo `$null`(Access PUBLIC、Language ST),`{lang, '', access}` 沒測。這時 vInfo 不帶 language,讀回的語言只回報在 `data.language`,不比對。
+  - `accessor-not-measured`:Get / Set 只實測過 vInfo `{'1', 'PUBLIC'}`(實測 2026-10-31 4026 VS2022 自建 client),其他 access 或 language 在 CreateChild 之前就擋。
+  - 走樹解析名稱時，命中的項目先讀 ItemType,是 654 / 655 就用「父路徑 + `^Name`」當路徑，不讀它的 `PathName`(`Resolve-TcPouPath`)。
+- **下一步**:interface property 的 accessor 改在實作該 interface 的 FB 裡建(`Add-TcPouMember -ParentPath <FB path>^<property> -Kind Get`)並讀寫 `<FB path>^<property>^Get`;method 給 `-ReturnType`,或拿掉 `-Access` / `-Language`;accessor 拿掉 `-Access` / `-Language`,之後需要再用 `Write-TcPouCode` 改。
+
+### POU_WRITE_FAILED
+
+- **現象**:`Write-TcPouCode` 沒寫成。`data.reason`:
+  - `empty-not-supported`:`-Declaration ''`(或只有空白)。清空 declaration 沒有實測過，什麼都不寫。以前 `-Implementation ''` / `-Declaration ''` 都回 success、`updated=[]`,實際什麼都沒寫(實測 2026-10-31 4026 VS2022 自建 client)。
+  - `empty-not-applied`:`-Implementation ''` 會真的寫入 `ImplementationText = ''` 並讀回(實測 2026-10-31 4026 VS2022 自建 client:COM `ImplementationText = ''` 讀回空字串),讀回不是空的才回此碼(記 `BUILD_REQUIRED`,因為已經呼叫過 setter)。成功時 `data.cleared = true`。
+  - `itemtype-unreadable`:讀不到目標的 ItemType,無法排除它是 interface property 的 accessor(654 / 655),所以什麼都不寫(fail-closed)。`Get-TcPouCode` 同樣情況回 `POU_READ_FAILED`、同一個 reason。
+  - 沒有 reason:setter 的 COM 例外(檔案唯讀、物件保護、非 ST 物件寫 `ImplementationText` 等，TE1000 §5.29)。setter 已經呼叫過，edit buffer 可能已改，所以照 #65 保守記 `BUILD_REQUIRED`(`[write failed]`,前一段已寫入時 `[declaration+write failed]`)。在呼叫 setter 之前就擋下的(`INVALID_PARAMS`、空的 `-Declaration`、`POU_AMBIGUOUS` 等)不記。
+- **下一步**:給完整的 declaration,或不給 `-Declaration`;`Get-TcPouCode -PouPath <path>` 確認內容;COM 例外先 `Get-TcIdeModalDialog` 看 XAE 有沒有 dialog 再重試。action 沒有 declaration(給 `-Declaration` 回 `INVALID_PARAMS`)。
+
 ### PLC_LOGGED_IN
 
-- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` 時 PLC 還在 login(online)中,XAE 的 `CreateChild` 回「Cannot add an object because it affects a device you are currently logged into」,什麼都沒建立(實測 2026-10-29,4026 XAE in VS2022,`Add-TcGvl` 接在 `Enable-TcConfig -Force` 之後;`tests/Integration/logs/phase0-1.7-results.md` 發現 4。`Add-TcPou` / `Add-TcDut` 走同一個 `CreateChild`,同樣處理，未在真機測)。以前回 `GVL_CREATE_FAILED`,hint 沒提 login,還記了 `BUILD_REQUIRED`。`Enable-TcConfig -Force` 與 `Invoke-TcTestCycle` 結束時都保持 login,所以 lifecycle 之後直接 Add 很常遇到。`Add-TcLibrary` 在 login 中可以成功。
+- **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl`(`Add-TcInterface` / `Add-TcPouMember` 走同一個 `CreateChild`,同樣處理，未在真機測)時 PLC 還在 login(online)中,XAE 的 `CreateChild` 回「Cannot add an object because it affects a device you are currently logged into」,什麼都沒建立(實測 2026-10-29,4026 XAE in VS2022,`Add-TcGvl` 接在 `Enable-TcConfig -Force` 之後;`tests/Integration/logs/phase0-1.7-results.md` 發現 4。`Add-TcPou` / `Add-TcDut` 走同一個 `CreateChild`,同樣處理，未在真機測)。以前回 `GVL_CREATE_FAILED`,hint 沒提 login,還記了 `BUILD_REQUIRED`。`Enable-TcConfig -Force` 與 `Invoke-TcTestCycle` 結束時都保持 login,所以 lifecycle 之後直接 Add 很常遇到。`Add-TcLibrary` 在 login 中可以成功。
 - **判斷**:`New-TcPlcObject` 以英文關鍵字比對 `CreateChild` 的錯誤訊息(`affects a device you are currently logged in`,或 `cannot add an object ... logged in`);在地化的 XAE 若用別的字句，仍回 `*_CREATE_FAILED`。`CreateChild` 本身回錯誤(不是 IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT)時 XAE 已拒絕、沒有建立物件，所以不記 `BUILD_REQUIRED`(沒有 `data.buildRequired`)。
 - **下一步**:先 `Exit-TcPlcOnline`(MCP `PlcLogout`)再重跑同一個 `Add-*`;加完 `Build-TcProject`,再 `Enable-TcConfig -Force` 或 `Enter-TcPlcOnline` 下載。
 

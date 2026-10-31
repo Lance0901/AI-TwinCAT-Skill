@@ -115,7 +115,7 @@ function Reset-Mock {
     $null = Add-MockNode 'TIPC^P' 56
     $null = Add-MockNode 'TIPC^P^P Project' 600
     $null = Add-MockNode 'TIPC^P^P Project^POUs' 601
-    $null = Add-MockNode 'TIPC^P^P Project^POUs^MAIN' 604
+    $null = Add-MockNode 'TIPC^P^P Project^POUs^MAIN' 602
     $sm = New-Object PSObject
     $sm | Add-Member ScriptMethod LookupTreeItem {
         param($p)
@@ -293,7 +293,7 @@ try {
     $null = New-Item -ItemType Directory -Path (Join-Path $work 'Plc2') -Force
     Set-Content -LiteralPath (Join-Path $work 'Plc2\MAIN.TcPOU') -Value 'x' -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $work 'Plc1\MAIN.TcPOU') -Value 'y' -Encoding ASCII
-    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIPC^P^P Project^POUs^MAIN' -Name 'MAIN' -ItemType 604 } $work
+    $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIPC^P^P Project^POUs^MAIN' -Name 'MAIN' -ItemType 602 } $work
     Check 'diskfile-ambiguous-warning' (@($d.Files).Count -eq 0 -and $d.Warnings[0] -match '2 files') ($d.Warnings -join ' | ')
     $d = & $mod { Find-TcTreeItemDiskFile -SolutionDir $args[0] -Path 'TIID^Dev' -Name 'Dev' -ItemType 0 } $work
     Check 'diskfile-no-rule' (@($d.Files).Count -eq 0 -and @($d.Warnings).Count -eq 0) ''

@@ -460,18 +460,9 @@ function Get-TcXtiItemName {
     if ([System.IO.Path]::GetExtension($FilePath) -ieq '.zip') { return $null }
     # The file comes from the caller: DTD processing prohibited (a DOCTYPE throws -> $null) and no
     # resolver, so an external entity can never be read into the name (XXE).
-    $settings = New-Object System.Xml.XmlReaderSettings
-    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
-    $settings.XmlResolver = $null
-    $doc = New-Object System.Xml.XmlDocument
-    $doc.XmlResolver = $null
-    $reader = $null
-    try {
-        $reader = [System.Xml.XmlReader]::Create($FilePath, $settings)
-        $doc.Load($reader)
-    }
+    $doc = $null
+    try { $doc = Read-TcXmlFile -Path $FilePath }
     catch { return $null }
-    finally { if ($null -ne $reader) { $reader.Dispose() } }
     $root = $doc.get_DocumentElement()
     if ($null -eq $root) { return $null }
     $first = @($root.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element } | Select-Object -First 1)

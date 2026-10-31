@@ -43,6 +43,25 @@ $operationMap = @{
     'AddGvl'          = 'Add-TcGvl'
     'AddDut'          = 'Add-TcDut'
     'AddLibrary'      = 'Add-TcLibrary'
+    'AddInterface'    = 'Add-TcInterface'
+    'AddPouMember'    = 'Add-TcPouMember'
+    # Library Manager (the modifying ones except AddPlaceholder default to DryRun)
+    'GetLibraries'    = 'Get-TcLibraries'
+    'AddPlaceholder'  = 'Add-TcLibraryPlaceholder'
+    'RemoveReference' = 'Remove-TcLibraryReference'
+    'InstallLibrary'  = 'Install-TcLibrary'
+    'UninstallLibrary' = 'Uninstall-TcLibrary'
+    'FreezePlaceholder' = 'Lock-TcLibraryPlaceholder'
+    # PLC tasks and program calls (DryRun by default)
+    'AddPlcTask'      = 'Add-TcPlcTask'
+    'LinkProgramToTask' = 'Add-TcTaskProgram'
+    'UnlinkProgramFromTask' = 'Remove-TcTaskProgram'
+    # PLCopen XML (Import defaults to DryRun)
+    'ExportPlcOpen'   = 'Export-TcPlcOpen'
+    'ImportPlcOpen'   = 'Import-TcPlcOpen'
+    # Library file and archives (write a file, the project is not changed)
+    'SaveAsLibrary'   = 'Save-TcPlcLibrary'
+    'SaveArchive'     = 'Save-TcArchive'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'
@@ -62,6 +81,8 @@ $operationMap = @{
     # Build & Deploy
     'BuildProject'    = 'Build-TcProject'
     'CleanProject'    = 'Clear-TcProject'
+    'CheckAllObjects' = 'Test-TcPlcProject'
+    'GenerateBootProject' = 'New-TcBootProject'
     'GetBuildErrors'  = 'Get-TcBuildErrors'
     'SetTarget'       = 'Set-TcTarget'
     'EnableConfig'    = 'Enable-TcConfig'

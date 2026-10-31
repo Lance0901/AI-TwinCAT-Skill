@@ -13,6 +13,7 @@ function New-TcTreeItem {
         existing child (LookupTreeItem Path^Before; TREEITEM_NOT_FOUND).
         DryRun (default true): CreateChild is NOT called; data.dryRun=true, data.plannedPath,
         data.currentChildren.
+        data.writeCalled = true once CreateChild is called (absent when the call was never made).
         DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
         is open (nothing created), CreateChild, then the new item is looked up again and the parent's
         ProduceXml read back: it may only have gained entries (data.parentUnchanged; ChildCount +1 is
@@ -112,6 +113,8 @@ function New-TcTreeItem {
         $created = $null
         $dlg = Get-TcTreeItemDialogResult -Operation "CreateChild '$plannedPath'" -Data $data
         if ($null -ne $dlg) { return $dlg }
+        # data.writeCalled: CreateChild is about to be called (wrapping cmdlets record BUILD_REQUIRED by it)
+        $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force
         try {
             # No deadline (CODING_STANDARDS.md section 1), same as New-TcPlcObject: an open dialog was
             # ruled out just above, Connect-TcIde turns on ITcAutomationSettings.SilentMode, and

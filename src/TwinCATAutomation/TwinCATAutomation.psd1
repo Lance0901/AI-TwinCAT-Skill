@@ -19,6 +19,25 @@
         'Add-TcGvl',
         'Add-TcDut',
         'Add-TcLibrary',
+        'Add-TcInterface',
+        'Add-TcPouMember',
+        # Library Manager (ITcPlcLibraryManager)
+        'Get-TcLibraries',
+        'Add-TcLibraryPlaceholder',
+        'Remove-TcLibraryReference',
+        'Install-TcLibrary',
+        'Uninstall-TcLibrary',
+        'Lock-TcLibraryPlaceholder',
+        # PLC tasks and program calls
+        'Add-TcPlcTask',
+        'Add-TcTaskProgram',
+        'Remove-TcTaskProgram',
+        # PLCopen XML
+        'Export-TcPlcOpen',
+        'Import-TcPlcOpen',
+        # Library file and archives
+        'Save-TcPlcLibrary',
+        'Save-TcArchive',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',
@@ -38,6 +57,8 @@
         # Build & Deploy
         'Build-TcProject',
         'Clear-TcProject',
+        'Test-TcPlcProject',
+        'New-TcBootProject',
         'Get-TcBuildErrors',
         'Set-TcTarget',
         'Enable-TcConfig',

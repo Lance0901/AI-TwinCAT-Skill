@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteHintCmdletNames, rewriteResultHints, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
 
@@ -240,6 +241,202 @@ describe('cmdlet name rewriting in hints', () => {
       "rerun ExportChild Path='TIPC^Plc^Plc Project^POUs' FilePath='C:\\Temp\\My Export\\POUs.zip'. Import it again with ImportChild (the .zip file)."
     );
     assert.doesNotMatch(rw('Use Get-TcTreeItem -Path \'TIRT\''), /LookupTreeItem \(LookupTreeItem\)/);
+  });
+
+  // phase2-3.8.md P1: every row of the table, with the real tools.json (switch vs value parameters).
+  describe('phase2-3.8 P1 rows (real tools.json)', () => {
+    const catalogReal = loadToolCatalog(path.join(__dirname, '..', 'tools.json'));
+    const real = buildCmdletNameMap(catalogReal, { 'Get-TcIdeModalDialog': 'GetIdeModalDialog' });
+    const rw = (s) => rewriteHintCmdletNames(s, real);
+
+    test('AddPouMember parent-kind: a switch does not swallow the next word; a lone -ParentPath', () => {
+      assert.equal(
+        rw('Look the parent up with Get-TcProjectTree -PlcOnly and pass its path as -ParentPath.'),
+        'Look the parent up with GetProjectTree PlcOnly=true and pass its path as ParentPath.'
+      );
+    });
+
+    test('TASK_CREATE_FAILED: -DryRun $false and the -AllowNoExport switch after it', () => {
+      assert.equal(
+        rw('都用 Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport,再重跑 Add-TcPlcTask'),
+        '都用 DeleteChild Path=<path> ConfirmName=<Name> DryRun=false AllowNoExport=true,再重跑 AddPlcTask'
+      );
+    });
+
+    test('TASK_NOT_FOUND / TASK_PROGRAM_ALREADY_LINKED: -DryRun $false and -DryRun:$false', () => {
+      assert.equal(
+        rw('用 data.plcTasks 裡的名稱當 -PlcTask 重跑;要新的 task 先 Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false'),
+        '用 data.plcTasks 裡的名稱當 PlcTask 重跑;要新的 task 先 AddPlcTask Name=<Name> CycleTimeUs=<us> DryRun=false'
+      );
+      assert.equal(
+        rw('先 Remove-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <舊 task> -DryRun $false,再 Add-TcTaskProgram -ProgramName <data.existingLink>'),
+        '先 UnlinkProgramFromTask ProgramName=<data.existingLink> PlcTask=<舊 task> DryRun=false,再 LinkProgramToTask ProgramName=<data.existingLink>'
+      );
+      assert.equal(rw('Add-TcPlcTask -Name FastTask -DryRun:$false'), 'AddPlcTask Name=FastTask DryRun=false');
+      assert.equal(rw('先 -DryRun $true 看預告'), '先 DryRun=true 看預告');
+    });
+
+    test('POU_CREATE_FAILED: a value parameter given without a value never becomes =true', () => {
+      assert.equal(
+        rw('用 Get-TcProjectTree -PlcOnly 找 <Plc> Project^POUs 的 path,當 -PlcProjectPath <path> 重跑同一個 tool;'),
+        '用 GetProjectTree PlcOnly=true 找 <Plc> Project^POUs 的 path,當 PlcProjectPath=<path> 重跑同一個 tool;'
+      );
+      assert.equal(rw('後給 Add-TcPou -PlcProjectPath;0x98510001'), '後給 AddPou PlcProjectPath=<PlcProjectPath>;0x98510001');
+      assert.doesNotMatch(rw('後給 Add-TcPou -PlcProjectPath;'), /PlcProjectPath=true/);
+    });
+
+    test('messages: AddInterface exists, UninstallLibrary wildcard', () => {
+      assert.equal(
+        rw("exists: an object named 'I_A' already exists at 'TIPC^P^P Project^POUs^I_A'. Pick another name, or change it with Write-TcPouCode -PouPath 'TIPC^P^P Project^POUs^I_A'."),
+        "exists: an object named 'I_A' already exists at 'TIPC^P^P Project^POUs^I_A'. Pick another name, or change it with WritePouCode PouPath='TIPC^P^P Project^POUs^I_A'."
+      );
+      assert.equal(
+        rw("-Version '3.*' contains a wildcard; Uninstall-TcLibrary removes exactly one installed version. Nothing was uninstalled."),
+        "Version='3.*' contains a wildcard; UninstallLibrary removes exactly one installed version. Nothing was uninstalled."
+      );
+    });
+
+    test('AddPlcTask verifyHint, UnlinkProgramFromTask warning, ImportPlcOpen restore / how, buildRequired', () => {
+      assert.equal(
+        rw("After Enable-TcConfig -Force, find n with Read-TcVariable -Path 'TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName' (n = task index)"),
+        "After EnableConfig Force=true, find n with ReadVariable Path=[\"TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName\"] (n = task index)"
+      );
+      assert.equal(
+        rw("copy it back over 'C:\\S\\P38Task.TcTTO', then Reset-TcSolution."),
+        "copy it back over 'C:\\S\\P38Task.TcTTO', then ResetSolution."
+      );
+      assert.equal(
+        rw("Import-TcPlcOpen -FilePath 'C:\\S\\.tcauto-backup\\x.xml' -Option Replace -DryRun $false"),
+        "ImportPlcOpen FilePath='C:\\S\\.tcauto-backup\\x.xml' Option=Replace DryRun=false"
+      );
+      assert.equal(
+        rw("after the XML restore, copy 'a' over 'b' and run Reset-TcSolution (not measured); or Import-TcTreeItem of 'c.zip' (not measured)"),
+        "after the XML restore, copy 'a' over 'b' and run ResetSolution (not measured); or ImportChild of 'c.zip' (not measured)"
+      );
+      assert.equal(rw('PLC code changed by Add-TcInterface I_P38Base'), 'PLC code changed by AddInterface I_P38Base');
+    });
+
+    test('lone PowerShell parameters, arrays, enums; switches of the named tool', () => {
+      assert.equal(
+        rw("invalid-selection = -Selection 每個元素一個物件(-Selection 'POUs.FB_A','DUTs.ST_B'),不要用 ^"),
+        "invalid-selection = Selection 每個元素一個物件(Selection=[\"POUs.FB_A\",\"DUTs.ST_B\"]),不要用 ^"
+      );
+      assert.equal(rw("Export-TcPlcOpen -Selection 'POUs.FB_A' -FilePath <x>"), "ExportPlcOpen Selection=[\"POUs.FB_A\"] FilePath=<x>");
+      assert.equal(rw('換一個 -Name;給 -ReturnType,或拿掉 -Access / -Language'), '換一個 Name;給 ReturnType,或拿掉 Access / Language');
+      assert.equal(rw('不需要覆蓋就改用 -Option Rename'), '不需要覆蓋就改用 Option=Rename');
+      assert.equal(rw('換一個 -FilePath,或加 -Overwrite 重跑 Save-TcArchive'), '換一個 FilePath,或加 Overwrite=true 重跑 SaveArchive');
+      assert.equal(rw("Extends: -Extends 'I_Base'"), "Extends: Extends='I_Base'");
+      assert.equal(rw('Get-TcLibraries -Repository 確認'), 'GetLibraries Repository=true 確認');
+      assert.equal(rw('-Kind Library'), 'Kind=Library');
+      // not a known parameter, inside a word, or a number: untouched
+      assert.equal(rw('-NoSuchParam x; a-Name; -1'), '-NoSuchParam x; a-Name; -1');
+    });
+
+    // retest N1 / N3
+    test('retest N1: a parameter after a CJK full stop or before CJK text is rewritten', () => {
+      assert.equal(
+        rw('剛 Activate / 重啟後可重試一次。-PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑'),
+        '剛 Activate / 重啟後可重試一次。PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑'
+      );
+      assert.equal(rw('用 -PouPath。-PouName 也可以'), '用 PouPath。PouName 也可以');
+      assert.equal(rw('加 -Overwrite重跑'), '加 Overwrite=true重跑');
+    });
+
+    test('retest N3: identifier values in prose, JSON arrays, no doubled tool names', () => {
+      assert.equal(
+        rw('Pass the name of the interface to extend, e.g. -Extends I_Base, or leave -Extends out.'),
+        'Pass the name of the interface to extend, e.g. Extends=I_Base, or leave Extends out.'
+      );
+      // ReadVariable Path IS an array parameter ("Always an array, also for a single variable", tools.json;
+      // validateParams refuses a string): written as a JSON array
+      assert.equal(rw("Read-TcVariable -Path 'MAIN.n'"), 'ReadVariable Path=["MAIN.n"]');
+      assert.equal(validateParams(catalogReal.get('ReadVariable'), { Path: ['MAIN.n'] }).ok, true);
+      assert.equal(validateParams(catalogReal.get('ReadVariable'), { Path: 'MAIN.n' }).ok, false);
+      // a string parameter keeps the quoted string
+      assert.equal(rw("Get-TcTreeItem -Path 'TIRT'"), "LookupTreeItem Path='TIRT'");
+    });
+
+    // retest N1: every hint of the module, rewritten, keeps no PowerShell parameter and no doubled name
+    test('sweep: all module hints rewrite cleanly', () => {
+      const src = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation');
+      const texts = [];
+      const table = fs.readFileSync(path.join(src, 'Private', 'ConvertTo-TcAdsErrorCode.ps1'), 'utf8');
+      for (const m of table.matchAll(/(?:\$script:TcErrorHints\['[A-Z_]+'\]|'[A-Z_]+')\s*=\s*'((?:[^']|'')*)'/g)) texts.push(m[1].replace(/''/g, "'"));
+      const walk = (d) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (e.name.endsWith('.ps1')) {
+            for (const m of fs.readFileSync(p, 'utf8').matchAll(/-Hint '((?:[^']|'')*)'/g)) texts.push(m[1].replace(/''/g, "'"));
+          }
+        }
+      };
+      walk(src);
+      assert.ok(texts.length > 100, `found ${texts.length} hints`);
+      const params = new Set(real.anyParam.keys());
+      const problems = [];
+      for (const t of texts) {
+        const out = rw(t);
+        const noQuotes = out.replace(/(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])/g, "''");
+        for (const m of noQuotes.matchAll(/(?<![A-Za-z0-9_\\-])-([A-Z][A-Za-z]+)/g)) {
+          if (params.has(m[1])) problems.push(`-${m[1]} left in: ${out}`);
+        }
+        for (const m of out.matchAll(/\b([A-Z][A-Za-z]+) (?:的|在) \1\b/g)) problems.push(`doubled ${m[1]}: ${out}`);
+      }
+      assert.deepEqual(problems, []);
+    });
+
+    // review S5: what must NOT be rewritten
+    test('counter-examples: code, plain words, quoted text and paths stay as they are', () => {
+      assert.equal(rw('x := -Value'), 'x := -Value');
+      assert.equal(rw('x=-Value; y > -Name'), 'x=-Value; y > -Name');
+      // '=' with blanks around it in prose is no operator
+      assert.equal(rw('invalid-selection = -Selection per object'), 'invalid-selection = Selection per object');
+      assert.equal(rw("set it with 'x := -Value'"), "set it with 'x := -Value'");
+      // a lone parameter followed by a plain word: the word is not its value
+      assert.equal(rw('-Path and then retry'), 'Path and then retry');
+      // after a cmdlet: a lower-case English word is not a value
+      assert.equal(rw('Get-TcTreeItem -Path and then retry'), 'LookupTreeItem Path=<Path> and then retry');
+      // paths with ' -Name' inside, in quotes and outside
+      assert.equal(rw("copy 'C:\\Proj\\My -Name dir\\x.plcproj' back"), "copy 'C:\\Proj\\My -Name dir\\x.plcproj' back");
+      assert.equal(rw('copy C:\\Proj\\My -Name dir\\x.plcproj back'), 'copy C:\\Proj\\My -Name dir\\x.plcproj back');
+      assert.equal(
+        rw("Import-TcPlcOpen -FilePath 'C:\\Proj\\My -Name dir\\a.xml' -Option Replace"),
+        "ImportPlcOpen FilePath='C:\\Proj\\My -Name dir\\a.xml' Option=Replace"
+      );
+      // an unquoted path value: a following -X that is not a parameter of the tool ends the call
+      assert.equal(rw('Export-TcPlcOpen -FilePath C:\\Proj\\My -Name dir\\a.xml'), 'ExportPlcOpen FilePath=C:\\Proj\\My -Name dir\\a.xml');
+      // identifier-like and numeric values after a cmdlet are still values
+      assert.equal(rw('Add-TcPlcTask -Name FastTask -CycleTimeUs 1000'), 'AddPlcTask Name=FastTask CycleTimeUs=1000');
+      assert.equal(rw("Get-TcTreeItem -Path TIPC^P^P Project"), 'LookupTreeItem Path=TIPC^P^P Project');
+      // contractions are no quotes
+      assert.equal(rw("doesn't matter: give -Name"), "doesn't matter: give Name");
+    });
+
+    test('rewriteResultHints covers message, verifyHint, warnings, restore, how, buildRequired', () => {
+      const r = {
+        success: false,
+        error: { code: 'X', message: 'or change it with Write-TcPouCode -PouPath FB_X', hint: '重跑 Add-TcPlcTask -DryRun $false' },
+        data: {
+          verifyHint: 'After Enable-TcConfig -Force',
+          warnings: ['then Reset-TcSolution.'],
+          backup: { restore: 'Import-TcPlcOpen -Option Replace -DryRun $false', diskOnly: [{ how: 'run Reset-TcSolution' }] },
+          buildRequired: 'PLC code changed by Add-TcInterface I_A',
+          code: 'Add-TcPou stays',
+          path: 'C:\\Add-TcPou'
+        }
+      };
+      rewriteResultHints(r, real);
+      assert.equal(r.error.message, 'or change it with WritePouCode PouPath=FB_X');
+      assert.equal(r.error.hint, '重跑 AddPlcTask DryRun=false');
+      assert.equal(r.data.verifyHint, 'After EnableConfig Force=true');
+      assert.deepEqual(r.data.warnings, ['then ResetSolution.']);
+      assert.equal(r.data.backup.restore, 'ImportPlcOpen Option=Replace DryRun=false');
+      assert.equal(r.data.backup.diskOnly[0].how, 'run ResetSolution');
+      assert.equal(r.data.buildRequired, 'PLC code changed by AddInterface I_A');
+      assert.equal(r.data.code, 'Add-TcPou stays');
+      assert.equal(r.data.path, 'C:\\Add-TcPou');
+    });
   });
 
   test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {

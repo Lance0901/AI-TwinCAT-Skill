@@ -381,47 +381,29 @@
         # Error List (UI Automation): the PLC compiler does not report through DTE.
         # A build that is known to have succeeded only needs a short look (leftover
         # Library Manager items); a failed / undecided build gets the default timeout.
-        $errorCount = if ($null -ne $failedProjects) { $failedProjects } else { 0 }
-        $warningCount = @($messages | Where-Object { $_ -match 'warning' }).Count
-        $errorItems = @()
-        $warningItems = @()
-        $errorListError = $null
-        $severityUnknown = $false
-        $unclassifiedCount = 0
-        $el = if ($null -ne $failedProjects -and $failedProjects -eq 0) { Get-TcBuildErrors -IncludeWarnings -TimeoutSec 8 } else { Get-TcBuildErrors -IncludeWarnings }
-        if ($el.success) {
-            $errorItems = @($el.data.errors)
-            if ($null -ne $el.data.counts.errors) { $errorCount = [int]$el.data.counts.errors } else { $errorCount = $errorItems.Count }
-            if ($null -ne $el.data.PSObject.Properties['warnings']) { $warningItems = @($el.data.warnings) }
-            if ($null -ne $el.data.counts.warnings) { $warningCount = [int]$el.data.counts.warnings }
-            elseif ($warningItems.Count -gt 0) { $warningCount = $warningItems.Count }
-            if ($null -ne $el.data.PSObject.Properties['severityUnknown']) { $severityUnknown = [bool]$el.data.severityUnknown }
-            if ($null -ne $el.data.PSObject.Properties['unclassified']) { $unclassifiedCount = @($el.data.unclassified).Count }
+        # Read and classified by Get-TcErrorListSummary (shared with Test-TcPlcProject, task 3.7):
+        # every error row gets a category (#23); "Library Manager" rows are missing / unresolved
+        # libraries, not PLC code errors, so data.errors counts the code errors only.
+        $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
+        $fallbackWarnings = @($messages | Where-Object { $_ -match 'warning' }).Count
+        $elTimeout = if ($null -ne $failedProjects -and $failedProjects -eq 0) { 8 } else { 0 }
+        $els = Get-TcErrorListSummary -TimeoutSec $elTimeout -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
+        $errorItems = $els.errorItems
+        $warningItems = $els.warningItems
+        $errorCount = $els.errorCount
+        $warningCount = $els.warningCount
+        $errorListError = $els.errorListError
+        $severityUnknown = $els.severityUnknown
+        $unclassifiedCount = $els.unclassifiedCount
+        if ($null -ne $errorListError) {
+            Write-Verbose "Build-TcProject: Error List not readable ($($els.errorListMessage)); errors falls back to LastBuildInfo."
         }
-        else {
-            $errorListError = [string]$el.error.code
-            Write-Verbose "Build-TcProject: Error List not readable ($($el.error.message)); errors falls back to LastBuildInfo."
-        }
-
-        # Category per item (#23): "Library Manager" rows are missing / unresolved libraries,
-        # not PLC code errors; they stay listed after a successful build and never fail it on
-        # their own, so data.errors counts the code errors only.
-        foreach ($item in $errorItems) {
-            $item | Add-Member -NotePropertyName 'category' -NotePropertyValue (Get-TcErrorItemCategory $item) -Force
-        }
-        $codeErrors = @($errorItems | Where-Object { $_.category -eq 'code' })
-        $libraryErrorItems = @($errorItems | Where-Object { $_.category -eq 'library' })
+        $codeErrors = $els.codeErrors
+        $libraryErrorItems = $els.libraryErrorItems
         # code + other: what the failure summary and the per-project status look at
-        $nonLibraryErrors = @($errorItems | Where-Object { $_.category -ne 'library' })
-        $libraryErrorCount = $null
-        if ($null -eq $errorListError) {
-            $errorCount = $codeErrors.Count
-            $libraryErrorCount = $libraryErrorItems.Count
-        }
-        # Warnings: also drop rows without a file (the XAE build-summary row "... build for
-        # platform ... failed" is listed as a Warning without project/file/line and survives
-        # the next successful build).
-        $codeWarnings = @($warningItems | Where-Object { -not (Test-TcLibraryManagerItem $_) -and -not [string]::IsNullOrWhiteSpace([string]$_.file) })
+        $nonLibraryErrors = $els.nonLibraryErrors
+        $libraryErrorCount = $els.libraryErrorCount
+        $codeWarnings = $els.codeWarnings
 
         # --- success decision: (a) LastBuildInfo, (b) Error List, (c) unknown ---
         $buildSucceeded = $null
@@ -537,14 +519,13 @@
         }
         # Leftover timed-out Error List scans that were dropped (#75); on a failed read it also
         # explains ERRORLIST_UNAVAILABLE (codeVerified stays $null then).
-        $elScanWarning = $null
-        if ($null -ne $el.data -and $null -ne $el.data.PSObject.Properties['scanCleanupWarning']) { $elScanWarning = [string]$el.data.scanCleanupWarning }
+        $elScanWarning = $els.scanCleanupWarning
         if ($null -ne $elScanWarning) {
             $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $elScanWarning
         }
         if ($severityUnknown) {
             $data | Add-Member -NotePropertyName 'severityUnknown' -NotePropertyValue $true
-            $data | Add-Member -NotePropertyName 'unclassified' -NotePropertyValue @($el.data.unclassified)
+            $data | Add-Member -NotePropertyName 'unclassified' -NotePropertyValue @($els.unclassified)
         }
         if ($null -ne $coverage.error) {
             $data | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error

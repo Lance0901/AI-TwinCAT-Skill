@@ -31,7 +31,8 @@ function Set-TcTreeItemXml {
         whole XML must be unchanged (data.unexpectedChanges: path, kind changed / removed / added,
         before, after). Both hold: data.verified=true; else TREEITEM_VERIFY_FAILED.
         Nothing to change (all values equal): success, data.written=false, no backup.
-        A path below TIPC records BUILD_REQUIRED code-changed (data.buildRequired).
+        A path below TIPC records BUILD_REQUIRED code-changed (data.buildRequired). data.writeCalled =
+        true once ConsumeXml is called.
     .PARAMETER Path
         Full tree path of the item to change, e.g. "TIRT^PlcTask". No wildcards.
     .PARAMETER Xml
@@ -142,6 +143,8 @@ function Set-TcTreeItemXml {
         $data | Add-Member -NotePropertyName written -NotePropertyValue $false
         $dlg = Get-TcTreeItemDialogResult -Operation "ConsumeXml '$Path'" -Data $data
         if ($null -ne $dlg) { return $dlg }
+        # data.writeCalled: ConsumeXml is about to be called (wrapping cmdlets record BUILD_REQUIRED by it)
+        $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force
         try {
             # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
             # dialog was ruled out just above, and Connect-TcIde turns on ITcAutomationSettings.SilentMode
