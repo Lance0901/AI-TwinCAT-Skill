@@ -223,7 +223,7 @@ const QUOTED = `(?:'[^']*'|"[^"]*")`;
 // The value after the name: $true / $false, one quoted string or a comma-joined list of them
 // ('a','b' = a PowerShell array), a <placeholder>, or a bare word.
 const PARAM_VALUE_RE = new RegExp(
-  `^\\s+(?:\\$(true|false)\\b|(${QUOTED}(?:\\s*,\\s*${QUOTED})*)|(<[^>]+>)|([A-Za-z0-9_\\\\:/][A-Za-z0-9_.\\\\:/-]*))`
+  `^\\s+(?:\\$(true|false)\\b|(${QUOTED}(?:\\s*,\\s*${QUOTED})*)|(<[^>]+>)|([A-Za-z0-9_\\\\:/^][A-Za-z0-9_.\\\\:/^-]*))`
 );
 
 function schemaFlags(schemas) {
@@ -261,7 +261,11 @@ function parseParam(text, pos, schemas, mode) {
     let word = vm[4];
     let len = vm[0].length;
     if (word.length > 1 && word.endsWith('.')) { word = word.slice(0, -1); len -= 1; }
-    if (mode === 'call' || f.enumHas(word)) return { text: `${name}=${word}`, end: end + len };
+    // review S5: an enum value always; after a cmdlet also a path-like or identifier-like word
+    // (^ \ : / . a digit, an upper-case letter or '_': 'TIPC^P', 'C:\x', '1000', 'FastTask'),
+    // never a plain lower-case English word ('-Path and then retry').
+    const valueLike = /[\^\\:/.\d_A-Z]/.test(word);
+    if (f.enumHas(word) || (mode === 'call' && valueLike)) return { text: `${name}=${word}`, end: end + len };
   }
   if (f.isBool) return { text: `${name}=true`, end };
   if (mode === 'alone') return { text: name, end };
@@ -278,6 +282,21 @@ export function rewriteHintCmdletNames(hint, nameMap) {
   if (typeof hint !== 'string' || !nameMap) return hint;
   const toolParams = nameMap.toolParams ?? new Map();
   const anyParam = nameMap.anyParam ?? new Map();
+  // review S5: quoted text ('...' / "..." not inside a word, so "doesn't" is no quote) is a value,
+  // a path or code: a lone '-Name' inside it is left alone.
+  const quoted = [];
+  for (const q of hint.matchAll(/(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])|(?<![A-Za-z0-9])"[^"]*"(?![A-Za-z0-9])/g)) {
+    quoted.push([q.index, q.index + q[0].length]);
+  }
+  const inQuotes = (i) => quoted.some(([a, b]) => i > a && i < b);
+  // a lone '-Name' right after an operator ('x := -Value') or after a path-like word
+  // ('C:\Proj\My -Name dir') is code or part of the path, not a parameter
+  const notAParameter = (i) => {
+    const before = hint.slice(0, i).replace(/\s+$/, '');
+    if (/(:=|[+*<>]|\S=)$/.test(before)) return true;
+    const prev = /(\S+)$/.exec(before)?.[1] ?? '';
+    return /\\|^[A-Za-z]:/.test(prev) && !/[,;，；。:：]$/.test(prev);
+  };
   let out = '';
   let last = 0;
   TOKEN_RE.lastIndex = 0;
@@ -292,7 +311,9 @@ export function rewriteHintCmdletNames(hint, nameMap) {
       for (;;) {
         if (!/^\s-/.test(hint.slice(end, end + 2))) break;
         const name = /^\s-([A-Z][A-Za-z]+)/.exec(hint.slice(end))?.[1];
-        const schema = props && name && Object.prototype.hasOwnProperty.call(props, name) ? [props[name]] : props ? [] : undefined;
+        // a known tool: only its own parameters continue the call ('-FilePath C:\My -Name dir' stops)
+        if (props && name && !Object.prototype.hasOwnProperty.call(props, name)) break;
+        const schema = props && name ? [props[name]] : undefined;
         const pp = parseParam(hint, end + 1, schema, 'call');
         if (!pp) break;
         out += ` ${pp.text}`;
@@ -301,7 +322,7 @@ export function rewriteHintCmdletNames(hint, nameMap) {
       last = end;
       TOKEN_RE.lastIndex = end;
     } else {
-      if (!anyParam.has(m[2])) continue;
+      if (!anyParam.has(m[2]) || inQuotes(m.index) || notAParameter(m.index)) continue;
       const pp = parseParam(hint, m.index, anyParam.get(m[2]), 'alone');
       if (!pp) continue;
       out += hint.slice(last, m.index) + pp.text;

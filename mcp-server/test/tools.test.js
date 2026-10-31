@@ -330,10 +330,37 @@ describe('cmdlet name rewriting in hints', () => {
       assert.equal(rw('-NoSuchParam x; a-Name; -1'), '-NoSuchParam x; a-Name; -1');
     });
 
+    // review S5: what must NOT be rewritten
+    test('counter-examples: code, plain words, quoted text and paths stay as they are', () => {
+      assert.equal(rw('x := -Value'), 'x := -Value');
+      assert.equal(rw('x=-Value; y > -Name'), 'x=-Value; y > -Name');
+      // '=' with blanks around it in prose is no operator
+      assert.equal(rw('invalid-selection = -Selection per object'), 'invalid-selection = Selection per object');
+      assert.equal(rw("set it with 'x := -Value'"), "set it with 'x := -Value'");
+      // a lone parameter followed by a plain word: the word is not its value
+      assert.equal(rw('-Path and then retry'), 'Path and then retry');
+      // after a cmdlet: a lower-case English word is not a value
+      assert.equal(rw('Get-TcTreeItem -Path and then retry'), 'LookupTreeItem Path=<Path> and then retry');
+      // paths with ' -Name' inside, in quotes and outside
+      assert.equal(rw("copy 'C:\\Proj\\My -Name dir\\x.plcproj' back"), "copy 'C:\\Proj\\My -Name dir\\x.plcproj' back");
+      assert.equal(rw('copy C:\\Proj\\My -Name dir\\x.plcproj back'), 'copy C:\\Proj\\My -Name dir\\x.plcproj back');
+      assert.equal(
+        rw("Import-TcPlcOpen -FilePath 'C:\\Proj\\My -Name dir\\a.xml' -Option Replace"),
+        "ImportPlcOpen FilePath='C:\\Proj\\My -Name dir\\a.xml' Option=Replace"
+      );
+      // an unquoted path value: a following -X that is not a parameter of the tool ends the call
+      assert.equal(rw('Export-TcPlcOpen -FilePath C:\\Proj\\My -Name dir\\a.xml'), 'ExportPlcOpen FilePath=C:\\Proj\\My -Name dir\\a.xml');
+      // identifier-like and numeric values after a cmdlet are still values
+      assert.equal(rw('Add-TcPlcTask -Name FastTask -CycleTimeUs 1000'), 'AddPlcTask Name=FastTask CycleTimeUs=1000');
+      assert.equal(rw("Get-TcTreeItem -Path TIPC^P^P Project"), 'LookupTreeItem Path=TIPC^P^P Project');
+      // contractions are no quotes
+      assert.equal(rw("doesn't matter: give -Name"), "doesn't matter: give Name");
+    });
+
     test('rewriteResultHints covers message, verifyHint, warnings, restore, how, buildRequired', () => {
       const r = {
         success: false,
-        error: { code: 'X', message: 'or change it with Write-TcPouCode -PouPath x', hint: '重跑 Add-TcPlcTask -DryRun $false' },
+        error: { code: 'X', message: 'or change it with Write-TcPouCode -PouPath FB_X', hint: '重跑 Add-TcPlcTask -DryRun $false' },
         data: {
           verifyHint: 'After Enable-TcConfig -Force',
           warnings: ['then Reset-TcSolution.'],
@@ -344,7 +371,7 @@ describe('cmdlet name rewriting in hints', () => {
         }
       };
       rewriteResultHints(r, real);
-      assert.equal(r.error.message, 'or change it with WritePouCode PouPath=x');
+      assert.equal(r.error.message, 'or change it with WritePouCode PouPath=FB_X');
       assert.equal(r.error.hint, '重跑 AddPlcTask DryRun=false');
       assert.equal(r.data.verifyHint, 'After EnableConfig Force=true');
       assert.deepEqual(r.data.warnings, ['then ResetSolution.']);
