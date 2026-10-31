@@ -19,7 +19,7 @@
 - [x] 2.5 `DeleteChild`,要帶 ConfirmName,不接受 wildcard
 - [x] 2.6 `ExportChild`、`ImportChild`
 - [x] 2.7 新錯誤碼寫進 hint 表和 troubleshooting;tools.json 重新產生，修改類 tool 標 destructiveHint
-- [ ] 2.8 實測：送錯誤的 XML、改一個欄位、匯出後再匯入、刪除時名稱不符;發 v0.3.0-beta
+- [x] 2.8 實測：送錯誤的 XML、改一個欄位、匯出後再匯入、刪除時名稱不符;發 v0.3.0-beta
 
 ## 3. 第 2 期:PLC 補齊(→ v0.4.0-beta)
 
