@@ -65,6 +65,12 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Add-TcLibrary` | `-Name <lib>` | Add library reference |
 | `Add-TcInterface` | `-Name <n> [-Extends <itf>] [-PlcProjectPath <folder>]` | Add an INTERFACE (Extends as one string) |
 | `Add-TcPouMember` | `-ParentPath <path\|name> -Kind <Method\|Property\|Action\|Get\|Set> [-Name <n>] [-ReturnType <t>] [-Access PUBLIC\|PRIVATE\|PROTECTED\|INTERNAL] [-Language ST]` | Add a method / property / action to a POU or interface, Get / Set to a property; `data.path` is the `-PouPath` of the new member |
+| `Get-TcLibraries` | `[-Repository] [-Filter <wildcard>] [-PlcProjectPath <plc>]` | Read-only: references / placeholders (placeholder fields from EffectiveResolution, `frozen` from the .plcproj on disk); `-Repository` = installed libraries (ScanLibraries) |
+| `Add-TcLibraryPlaceholder` | `-Placeholder <n> [-LibraryName <lib>] [-Version *] [-Distributor <d>] [-PlcProjectPath <plc>]` | Add a placeholder; existing -> `alreadyPresent`; read back from References and the saved .plcproj |
+| `Remove-TcLibraryReference` | `-Name <lib\|#placeholder> [-DryRun $true] [-PlcProjectPath <plc>]` | Remove a reference / placeholder; dry-run by default; .plcproj backup; read back; `LIBRARY_NOT_FOUND` |
+| `Install-TcLibrary` | `-LibraryPath <file> [-Repository System] [-DryRun $true]` | Install into the machine-wide repository; dry-run by default; `LIBRARY_ALREADY_INSTALLED`; ScanLibraries readback |
+| `Uninstall-TcLibrary` | `-LibraryName <n> -Version <v> -Distributor <d> [-Repository System] [-DryRun $true]` | Uninstall one exact version (no wildcards); dry-run by default; `LIBRARY_NOT_INSTALLED`; ScanLibraries readback |
+| `Lock-TcLibraryPlaceholder` | `-Placeholder <n> \| -All [-DryRun $true]` | Freeze a placeholder (or all) to its current version; dry-run by default; .plcproj backup; verified from `<PlaceholderResolution>` in the .plcproj |
 
 ### PLC Code
 | Command | Parameters | Description |

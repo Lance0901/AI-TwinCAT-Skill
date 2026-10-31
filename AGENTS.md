@@ -28,6 +28,6 @@ Read-TcVariable -Path "MAIN.nCounter"; Write-TcVariable -Path "MAIN.bEnable" -Va
 - **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).
 - **Real-machine test agents**: shared rules in `docs/agent-brief-realmachine.md`.
 
-## Available Commands (47)
+## Available Commands (53)
 
 Full list with parameters: `.agents/skills/twincat/SKILL.md` (Codex skill), `adapters/claude-code/SKILL.md`, `adapters/codex/tools.json`, or `Get-Command -Module TwinCATAutomation` after importing the module.

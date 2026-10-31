@@ -96,7 +96,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-30)
 
-MCP 共 **50 個 tool**:`mcp-server/tools.json` 46 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **56 個 tool**:`mcp-server/tools.json` 52 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -178,10 +178,16 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 |---|---|---|
 | `AddInterface` | `Add-TcInterface` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/pou-member.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.6) |
 | `AddPouMember` | `Add-TcPouMember` | 未實測(等第 2 期 registered)。同上 |
+| `GetLibraries` | `Get-TcLibraries` | 未實測(等第 2 期 registered)。只有單元測試(`tests/Unit/library-manager.ps1`);設計依據是自建 client 實測 2026-10-31 4026 VS2022(`verification/phase2-probe.md` 3.1) |
+| `AddPlaceholder` | `Add-TcLibraryPlaceholder` | 未實測(等第 2 期 registered)。同上 |
+| `RemoveReference` | `Remove-TcLibraryReference` | 未實測(等第 2 期 registered)。同上 |
+| `InstallLibrary` | `Install-TcLibrary` | 未實測(等第 2 期 registered)。同上;改整台機器的 library repository |
+| `UninstallLibrary` | `Uninstall-TcLibrary` | 未實測(等第 2 期 registered)。同上;改整台機器的 library repository |
+| `FreezePlaceholder` | `Lock-TcLibraryPlaceholder` | 未實測(等第 2 期 registered)。同上;`All=true`(凍結全部)連自建 client 都沒測過 |
 
 `GetPouCode` / `WritePouCode` 的 task 3.6 新行為(`FB_X.M_Run` 點號寫法、`POU_AMBIGUOUS`、654 / 655 回 `POU_MEMBER_UNSUPPORTED`、`Implementation ""` 清空)也只有單元測試，等 3.8 registered 重測;這兩個 tool 本身仍算已實測。
 
-合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)+ 未實測 2(`AddInterface`、`AddPouMember`)= 50。
+合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)+ 未實測 8(`AddInterface`、`AddPouMember`,task 3.1 的 6 個 Library Manager tool)= 56。
 
 ### 未實測 / 只有單元測試
 

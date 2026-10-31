@@ -23,7 +23,7 @@
 
 ## 3. 第 2 期:PLC 補齊(→ v0.4.0-beta)
 
-- [ ] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder
+- [ ] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder(已實作，待 3.8 registered 實測)
 - [ ] 3.2 GenerateBootProject,沒有完整 Build 時回 `BUILD_REQUIRED`,並和 `BOOT_PACKAGE_MISMATCH` 對照
 - [ ] 3.3 PLCopen import/export(import 要 dry-run)
 - [ ] 3.4 SaveAsLibrary、archive 存取
