@@ -45,8 +45,13 @@ function Lock-TcLibraryPlaceholder {
         FreezePlaceholder(name) or FreezePlaceholder('') for -All, save (Invoke-TcPlcObjectSave),
         read back from disk: every checked target must have a <Resolution> with a version other than
         '*' (else LIBRARY_VERIFY_FAILED, data.notFrozen) equal to its effective version (above).
-        Every failure after the call lists data.changed[] (placeholder, before, after: the
-        <Resolution> texts that differ from the backup) and data.restore. XAE refusing the call ->
+        The version check covers every placeholder that had a fixed <Resolution> before the call too
+        (compared with that <Resolution>), not only the targets. Every result after the call lists
+        data.changed[] (placeholder, before, after: the <Resolution> texts that differ from the project file
+        (.plcproj) before the call); every failure after the call also data.restore, data.backupFiles;
+        notFrozen together with changed versions also lists data.versionChanges[]. -Placeholder of a
+        placeholder without <PlaceholderReference> -> LIBRARY_INVALID_ARGUMENT reason
+        implicit-placeholder before the call (no BUILD_REQUIRED). XAE refusing the call ->
         PLACEHOLDER_FREEZE_FAILED (LIBRARY_NOT_FOUND for "not found").
     .PARAMETER Placeholder
         Placeholder to freeze, with or without the leading '#'. Not together with -All.
@@ -191,6 +196,7 @@ function Lock-TcLibraryPlaceholder {
             }
             else { $checked.Add($t) }
         }
+        $singleImplicit = (-not $All) -and $targets.Count -eq 1 -and (& $isImplicit $targets[0])
         $unresolvedNames = @($skipped | Where-Object { $_.reason -eq 'no-effective-resolution' } | ForEach-Object { $_.placeholder })
         $targetInfo = @($targets | ForEach-Object {
                 $d = & $describe $_ $entries
@@ -214,6 +220,7 @@ function Lock-TcLibraryPlaceholder {
             }
             $impl = @($skipped | Where-Object { $_.reason -eq 'implicit' } | ForEach-Object { $_.placeholder })
             if ($impl.Count -gt 0) { $w.Add("no <PlaceholderReference> in the .plcproj, skipped: $($impl -join ', ') (data.skipped)") }
+            if ($singleImplicit) { $w.Add("'#$ph' has no <PlaceholderReference> in the .plcproj (added by XAE itself): XAE writes no <Resolution> for it (measured with -All); DryRun=false refuses it (LIBRARY_INVALID_ARGUMENT reason implicit-placeholder)") }
             $data | Add-Member -NotePropertyName warnings -NotePropertyValue $w.ToArray()
             return New-TcResult -Success $true -Data $data
         }
@@ -222,11 +229,48 @@ function Lock-TcLibraryPlaceholder {
             return New-TcResult -Success $true -Data $data
         }
 
+        if ($singleImplicit) {
+            # XAE writes no <Resolution> for such a placeholder (measured with -All): refused before the call
+            return New-TcLibraryFailure -Code 'LIBRARY_INVALID_ARGUMENT' -Reason 'implicit-placeholder' -Data $data `
+                -Message "'#$ph' has no <PlaceholderReference> in '$projectFile' (XAE added it by itself); XAE does not write a <Resolution> for it (measured 2026-10-31 4026 VS2022 with -All, #Tc3_GlobalTypes). Nothing was frozen."
+        }
+
         $bk = Invoke-TcLibraryProjectBackup -PlcProjFile ([string]$projectFile) -RefsPath $refsPath -Data $data
         if ($null -ne $bk.Result) { return $bk.Result }
         Add-TcBackupToData -Data $data -Backup $bk.Backup
         $backupFile = @($data.backupFiles)[0]
-        $restore = "copy '$backupFile' over '$projectFile', then Reset-TcSolution (docs/troubleshooting.md, editing project files on disk; not measured for this case)"
+        $restore = "copy '$backupFile' over '$projectFile', then Reset-TcSolution (docs/troubleshooting.md, editing project files on disk)"
+
+        # <Resolution> texts that differ from the .plcproj read before the call (every placeholder)
+        $computeChanged = {
+            param($ent)
+            $out = [System.Collections.Generic.List[object]]::new()
+            if ($null -eq $ent) { return , $out.ToArray() }
+            $keys = @(@($ent.Placeholders.Keys) + @(if ($null -ne $entries) { $entries.Placeholders.Keys })) | Sort-Object -Unique
+            foreach ($k in $keys) {
+                $old = if ($null -ne $entries) { $entries.Placeholders[$k] } else { $null }
+                $new = $ent.Placeholders[$k]
+                $oldRes = if ($null -ne $old) { $old.resolution } else { $null }
+                $newRes = if ($null -ne $new) { $new.resolution } else { $null }
+                if ([string]$oldRes -ne [string]$newRes) { $out.Add([PSCustomObject]@{ placeholder = $k; before = $oldRes; after = $newRes }) }
+            }
+            , $out.ToArray()
+        }
+        # Every failure after the call names what changed, the backup and how to restore it.
+        # $ent = the .plcproj read back after a save; $null -> read the file on disk now.
+        $attach = {
+            param($res, $ent)
+            if ($null -eq $ent) { try { $ent = Get-TcPlcProjectLibraryEntries -Path ([string]$projectFile) } catch { $ent = $null } }
+            $d = $res.data
+            if ($null -eq $d) { $d = [PSCustomObject]@{}; $res | Add-Member -NotePropertyName data -NotePropertyValue $d -Force }
+            $d | Add-Member -NotePropertyName changed -NotePropertyValue $(if ($null -ne $ent) { & $computeChanged $ent } else { $null }) -Force
+            $d | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
+            if (-not [object]::ReferenceEquals($d, $data)) {
+                $d | Add-Member -NotePropertyName backupPath -NotePropertyValue $data.backupPath -Force
+                $d | Add-Member -NotePropertyName backupFiles -NotePropertyValue @($data.backupFiles) -Force
+            }
+            $res
+        }
 
         $arg = if ($All) { '' } else { [string]$targets[0].placeholderName }
         $dlg = Get-TcTreeItemDialogResult -Operation "FreezePlaceholder '$arg'" -Data $data
@@ -241,14 +285,13 @@ function Lock-TcLibraryPlaceholder {
             $text = Get-TcLibraryErrorText -ErrorRecord $_
             if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_) -and $text -match "Placeholder '[^']*' not found\. Cannot freeze!") {
                 $res = New-TcLibraryFailure -Code 'LIBRARY_NOT_FOUND' -Data $data -Message "FreezePlaceholder '$arg': XAE did not find it ($text); nothing was frozen."
-                return Register-TcCodeChange -Result $res -Change "$change [FreezePlaceholder called, not found]"
+                return Register-TcCodeChange -Result (& $attach $res $null) -Change "$change [FreezePlaceholder called, not found]"
             }
             if ($null -eq (Get-TcTreeItemPassThroughError -ErrorRecord $_)) {
                 $unres = @($targets | Where-Object { $null -eq $_.effectiveResolution } | ForEach-Object { $_.placeholderName })
                 $why = if ($unres.Count -gt 0) { " Placeholders without EffectiveResolution: $($unres -join ', ') (TE1000 p.244: FreezePlaceholder returns E_FAIL for such a placeholder; not measured)." } else { '' }
-                $data | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
                 $res = New-TcLibraryFailure -Code 'PLACEHOLDER_FREEZE_FAILED' -Data $data -Message "FreezePlaceholder '$arg' failed: $text.$why"
-                return Register-TcCodeChange -Result $res -Change "$change [failed after FreezePlaceholder]"
+                return Register-TcCodeChange -Result (& $attach $res $null) -Change "$change [failed after FreezePlaceholder]"
             }
             throw
         }
@@ -257,22 +300,34 @@ function Lock-TcLibraryPlaceholder {
         $what = "Frozen placeholder '$(if ($All) { '<all>' } else { $arg })'"
         $save = Invoke-TcPlcObjectSave -ObjectPath $refsPath -What $what -Done 'changed'
         if ($null -ne $save.Error) {
-            $data | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
-            return Register-TcCodeChange -Result $save.Error -Change "$change [frozen, project file not saved]"
+            return Register-TcCodeChange -Result (& $attach $save.Error $null) -Change "$change [frozen, project file not saved]"
         }
         $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
         $after = Get-TcPlcProjectLibraryEntries -Path ([string]$save.Saved.plcproj)
 
-        # placeholders whose frozen version is not the effective version read before the call
+        # A placeholder whose version is not the one in effect before the call: the checked targets
+        # are compared with their EffectiveResolution read before the call; EVERY placeholder that had
+        # a fixed <Resolution> before the call (also those -All skips, e.g. a visu placeholder frozen
+        # earlier, or one -Placeholder does not name) is compared with that <Resolution>.
         $versionCheck = {
             param($ent)
-            foreach ($t in $checked) {
-                if ($null -eq $t.effectiveResolution) { continue }
-                $pe = $ent.Placeholders[[string]$t.placeholderName]
-                if ($null -eq $pe -or -not $pe.frozen) { continue }
-                $now = ConvertFrom-TcLibraryResolution -Text $pe.resolution
-                if (-not (& $same $now $t.effectiveResolution)) {
-                    [PSCustomObject]@{ placeholder = $t.placeholderName; before = (& $fmt $t.effectiveResolution); after = $pe.resolution; target = $t.effectiveResolution }
+            $keys = @(@($ent.Placeholders.Keys) + @($checked | ForEach-Object { [string]$_.placeholderName })) | Sort-Object -Unique
+            foreach ($k in $keys) {
+                $pe = $ent.Placeholders[$k]
+                $t = @($checked | Where-Object { [string]$_.placeholderName -ieq $k })[0]
+                $old = if ($null -ne $entries) { $entries.Placeholders[$k] } else { $null }
+                if ($null -ne $t -and $null -ne $t.effectiveResolution) {
+                    if ($null -eq $pe -or -not $pe.frozen) { continue }   # not frozen at all: notFrozen
+                    $target = $t.effectiveResolution; $src = 'effective'
+                }
+                elseif ($null -ne $old -and $old.frozen) {
+                    $target = ConvertFrom-TcLibraryResolution -Text $old.resolution; $src = 'resolution-before'
+                    if ($null -eq $target) { continue }
+                }
+                else { continue }
+                $now = if ($null -ne $pe) { ConvertFrom-TcLibraryResolution -Text $pe.resolution } else { $null }
+                if (-not (& $same $now $target)) {
+                    [PSCustomObject]@{ placeholder = $k; before = (& $fmt $target); after = $(if ($null -ne $pe) { $pe.resolution } else { $null }); target = $target; comparedWith = $src }
                 }
             }
         }
@@ -298,10 +353,11 @@ function Lock-TcLibraryPlaceholder {
                 }
             }
             if ($pinned.Count -gt 0) {
+                $firstAfter = $after
                 $save = Invoke-TcPlcObjectSave -ObjectPath $refsPath -What "$what, pinned back" -Done 'changed'
                 if ($null -ne $save.Error) {
-                    $data | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
-                    return Register-TcCodeChange -Result $save.Error -Change "$change [frozen and pinned, project file not saved]"
+                    # the first save is on disk: changed[] from its readback
+                    return Register-TcCodeChange -Result (& $attach $save.Error $firstAfter) -Change "$change [frozen and pinned, project file not saved]"
                 }
                 $data.projectSaved = $save.Saved
                 $after = Get-TcPlcProjectLibraryEntries -Path ([string]$save.Saved.plcproj)
@@ -319,31 +375,23 @@ function Lock-TcLibraryPlaceholder {
             $s | Add-Member -NotePropertyName projectResolution -NotePropertyValue $(if ($null -ne $pe) { $pe.resolution } else { $null })
         }
         if ($unresolvedNames.Count -gt 0) {
-            $data.warnings = @(@($data.warnings) + @("not version-checked, no EffectiveResolution before the call: $($unresolvedNames -join ', '); data.skipped[].projectResolution is what XAE wrote"))
+            $data.warnings = @(@($data.warnings) + @("no EffectiveResolution before the call: $($unresolvedNames -join ', '); compared only when it had a fixed <Resolution> before; data.skipped[].projectResolution is what XAE wrote"))
         }
-        # what is now different from the backup (for every failure below)
-        $changed = [System.Collections.Generic.List[object]]::new()
-        foreach ($k in @($after.Placeholders.Keys)) {
-            $old = if ($null -ne $entries) { $entries.Placeholders[$k] } else { $null }
-            $oldRes = if ($null -ne $old) { $old.resolution } else { $null }
-            if ([string]$oldRes -ne [string]$after.Placeholders[$k].resolution) {
-                $changed.Add([PSCustomObject]@{ placeholder = $k; before = $oldRes; after = $after.Placeholders[$k].resolution })
-            }
-        }
+        $changed = & $computeChanged $after
+        $data | Add-Member -NotePropertyName changed -NotePropertyValue $changed
+        $vc = @($moved | ForEach-Object {
+                [PSCustomObject]@{ placeholder = $_.placeholder; before = $_.before; after = $_.after; comparedWith = $_.comparedWith
+                    pinCalled = $pinned.Contains([string]$_.placeholder); pinError = $(if ($pinErrors.ContainsKey([string]$_.placeholder)) { $pinErrors[[string]$_.placeholder] } else { $null }) }
+            })
+        if ($vc.Count -gt 0) { $data | Add-Member -NotePropertyName versionChanges -NotePropertyValue $vc }
         if ($notFrozen.Count -gt 0) {
-            $data | Add-Member -NotePropertyName changed -NotePropertyValue $changed.ToArray()
             $data | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
+            $also = if ($vc.Count -gt 0) { "; versions also changed for $(@($vc | ForEach-Object { $_.placeholder }) -join ', ') (data.versionChanges)" } else { '' }
             $res = New-TcLibraryFailure -Code 'LIBRARY_VERIFY_FAILED' -Reason 'not-frozen' -Data $data `
-                -Message "FreezePlaceholder returned, but '$($save.Saved.plcproj)' read back from disk has no fixed version for: $($notFrozen -join ', '). The project WAS changed and saved for $($changed.Count) placeholder(s) (data.changed); the .plcproj before the call is '$backupFile'."
+                -Message "FreezePlaceholder returned, but '$($save.Saved.plcproj)' read back from disk has no fixed version for: $($notFrozen -join ', ')$also. The project WAS changed and saved for $(@($changed).Count) placeholder(s) (data.changed); the .plcproj before the call is '$backupFile'."
             return Register-TcCodeChange -Result $res -Change "$change [readback failed]"
         }
-        if ($moved.Count -gt 0) {
-            $vc = @($moved | ForEach-Object {
-                    [PSCustomObject]@{ placeholder = $_.placeholder; before = $_.before; after = $_.after
-                        pinCalled = $pinned.Contains([string]$_.placeholder); pinError = $(if ($pinErrors.ContainsKey([string]$_.placeholder)) { $pinErrors[[string]$_.placeholder] } else { $null }) }
-                })
-            $data | Add-Member -NotePropertyName versionChanges -NotePropertyValue $vc
-            $data | Add-Member -NotePropertyName changed -NotePropertyValue $changed.ToArray()
+        if ($vc.Count -gt 0) {
             $data | Add-Member -NotePropertyName restore -NotePropertyValue $restore -Force
             $res = New-TcLibraryFailure -Code 'LIBRARY_VERSION_CHANGED' -Data $data `
                 -Message "FreezePlaceholder fixed $($vc.Count) placeholder(s) at another version than the one in effect before the call: $(($vc | ForEach-Object { "$($_.placeholder) '$($_.before)' -> '$($_.after)'" }) -join '; '). The project was saved with these versions; the .plcproj before the call is '$backupFile'."
@@ -353,7 +401,10 @@ function Lock-TcLibraryPlaceholder {
     }
     catch {
         $res = New-TcLibraryErrorResult -ErrorRecord $_ -DefaultCode 'PLACEHOLDER_FREEZE_FAILED' -Data $data -Operation 'Lock-TcLibraryPlaceholder'
-        if ($called) { return Register-TcCodeChange -Result $res -Change "$change [failed after FreezePlaceholder]" }
+        if ($called) {
+            if ($null -ne $attach) { try { $res = & $attach $res $null } catch { } }
+            return Register-TcCodeChange -Result $res -Change "$change [failed after FreezePlaceholder]"
+        }
         $res
     }
 }

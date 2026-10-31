@@ -50,7 +50,7 @@ function Write-MockPlcProj {
 function Write-Calls { $global:L.Calls.Add(($args | ForEach-Object { if ($null -eq $_) { '<null>' } else { [string]$_ } }) -join '|') | Out-Null }
 
 function Reset-Mock {
-    $global:L.Mode = 'ok'; $global:L.Dialog = $null; $global:L.Saves = 0; $global:L.Scans = 0
+    $global:L.Mode = 'ok'; $global:L.Dialog = $null; $global:L.Saves = 0; $global:L.Scans = 0; $global:L.SaveFailAt = 0
     $global:L.Calls = [System.Collections.ArrayList]::new()
     $global:L.Mem = @{ Ph = [ordered]@{}; Libs = [System.Collections.ArrayList]::new() }
     $global:L.Refs = [System.Collections.ArrayList]::new()
@@ -124,9 +124,11 @@ $refs | Add-Member ScriptMethod FreezePlaceholder {
         if (-not $global:L.Mem.Ph.Contains($r.PlaceholderName)) { continue }
         $def = $global:L.Mem.Ph[$r.PlaceholderName].Default
         # 'defaultres': as measured with FreezePlaceholder('') (phase2-3.8.md P2): fixed at the DefaultResolution
-        if ($global:L.Mode -in @('defaultres', 'nopin', 'pinthrow') -and $def -and $def -notmatch ', \* ') {
+        if ($global:L.Mode -in @('defaultres', 'nopin', 'pinthrow', 'partial') -and $def -and $def -notmatch ', \* ') {
             $global:L.Mem.Ph[$r.PlaceholderName].Resolution = $def; continue
         }
+        # 'partial': only the placeholders with a versioned DefaultResolution are written
+        if ($global:L.Mode -eq 'partial') { continue }
         if ($null -eq $r.EffectiveResolution) { continue }
         $e = $r.EffectiveResolution
         $global:L.Mem.Ph[$r.PlaceholderName].Resolution = "$($e.LibraryName), $($e.Version) ($($e.Distributor))"
@@ -190,6 +192,9 @@ $global:L.Sm = $sm
     function script:Invoke-TcPlcObjectSave {
         [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string]$What, [string]$Done)
         $global:L.Saves++
+        if ($global:L.SaveFailAt -and $global:L.Saves -ge $global:L.SaveFailAt) {
+            return @{ Saved = $null; Error = (New-TcResult -Success $false -ErrorCode 'PROJECT_SAVE_FAILED' -ErrorMessage "$What was $Done but not saved (mock)" -Data ([PSCustomObject]@{ objectPath = $ObjectPath; savedToDisk = $false })) }
+        }
         Write-MockPlcProj
         @{ Saved = [PSCustomObject]@{ plcproj = $global:L.PlcProj }; Error = $null }
     }
@@ -506,6 +511,46 @@ try {
     $global:L.Mode = 'nofreeze'
     $r = Lock-TcLibraryPlaceholder -Placeholder Tc2_Standard -DryRun $false
     Check 'P3 not-frozen failure names changed[] and restore' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERIFY_FAILED' -and $null -ne $r.data.PSObject.Properties['changed'] -and $r.data.restore -like '*Reset-TcSolution*') (J $r.data)
+
+    # ===== review B1: a placeholder -All skips that was frozen before must keep its <Resolution>
+    function Set-VisuFrozen {
+        $global:L.Mem.Ph['VisuPH'].Default = 'VisuElems, 2.0.0.0 (System)'
+        $global:L.Mem.Ph['VisuPH'].Resolution = 'VisuElems, 1.0.0.0 (System)'
+        Write-MockPlcProj
+    }
+    Reset-Mock; Reset-BuildRequired; Set-VisuFrozen
+    $global:L.Mode = 'nopin'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    $v = @($r.data.versionChanges | Where-Object { $_.placeholder -eq 'VisuPH' })[0]
+    Check 'B1 Freeze -All: skipped visu placeholder frozen before at 1.0.0.0, moved to DefaultResolution -> LIBRARY_VERSION_CHANGED' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERSION_CHANGED' -and $v.before -eq 'VisuElems, 1.0.0.0 (System)' -and $v.after -eq 'VisuElems, 2.0.0.0 (System)' -and $v.comparedWith -eq 'resolution-before' -and @($r.data.changed | Where-Object { $_.placeholder -eq 'VisuPH' }).Count -eq 1 -and $r.data.restore -like '*Reset-TcSolution*') (J $r.data)
+    Reset-Mock; Reset-BuildRequired; Set-VisuFrozen
+    $global:L.Mode = 'defaultres'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    Check 'B1 Freeze -All: the same placeholder pinned back to its earlier <Resolution> -> success, data.changed on success' ($r.success -and @($r.data.pinned) -contains 'VisuPH' -and @(Get-WriteCalls) -contains 'SetEffectiveResolution|VisuPH|VisuElems|1.0.0.0|System' -and $null -ne $r.data.PSObject.Properties['changed'] -and @($r.data.changed | Where-Object { $_.placeholder -eq 'VisuPH' }).Count -eq 0) (J $r.data)
+    Reset-Mock; Reset-BuildRequired
+    $r = Lock-TcLibraryPlaceholder -Placeholder Tc2_Standard -DryRun $false
+    Check 'B1 success lists data.changed (Tc2_Standard * -> 3.3.3.0)' ($r.success -and @($r.data.changed).Count -eq 1 -and $r.data.changed[0].placeholder -eq 'Tc2_Standard' -and $r.data.changed[0].after -like '*3.3.3.0*') (J $r.data.changed)
+
+    # ===== review S4: every failure after the call carries changed[], restore, backupFiles
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.SaveFailAt = 1
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    Check 'S4 first save fails -> save error with changed, restore, backupFiles' ((-not $r.success) -and $r.error.code -eq 'PROJECT_SAVE_FAILED' -and $null -ne $r.data.PSObject.Properties['changed'] -and $r.data.restore -like '*Reset-TcSolution*' -and @($r.data.backupFiles).Count -eq 1) (J $r.data)
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'defaultres'; $global:L.SaveFailAt = 2
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    Check 'S4 second save (after the pin) fails -> changed[] from the first readback' ((-not $r.success) -and $r.error.code -eq 'PROJECT_SAVE_FAILED' -and @($r.data.changed | Where-Object { $_.placeholder -eq 'Tc2_System' -and $_.after -like '*3.9.1.0*' }).Count -eq 1 -and @($r.data.backupFiles).Count -eq 1) (J $r.data)
+
+    # ===== review N3: -Placeholder of an implicit placeholder; notFrozen together with moved versions
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $r = Lock-TcLibraryPlaceholder -Placeholder Tc3_GlobalTypes
+    Check 'N3 single implicit placeholder dry-run -> warning' ($r.success -and @($r.data.warnings | Where-Object { $_ -like '*Tc3_GlobalTypes*implicit-placeholder*' }).Count -eq 1) (J $r.data.warnings)
+    $r = Lock-TcLibraryPlaceholder -Placeholder Tc3_GlobalTypes -DryRun $false
+    Check 'N3 single implicit placeholder -> LIBRARY_INVALID_ARGUMENT implicit-placeholder before the call, nothing recorded' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INVALID_ARGUMENT' -and $r.data.reason -eq 'implicit-placeholder' -and (Get-WriteCalls).Count -eq 0 -and $null -eq (Get-CodeChanged) -and (Get-BackupFiles).Count -eq 0) (J $r)
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'partial'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    Check 'N3 notFrozen and a moved version together -> LIBRARY_VERIFY_FAILED with versionChanges, no pin' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERIFY_FAILED' -and @($r.data.notFrozen) -contains 'Tc2_Standard' -and @($r.data.versionChanges | Where-Object { $_.placeholder -eq 'Tc2_System' }).Count -eq 1 -and @(Get-WriteCalls | Where-Object { $_ -like 'SetEffectiveResolution*' }).Count -eq 0) (J $r.data)
 
     # ===== XXE: .plcproj with a DOCTYPE is never parsed (#7)
     Reset-Mock
