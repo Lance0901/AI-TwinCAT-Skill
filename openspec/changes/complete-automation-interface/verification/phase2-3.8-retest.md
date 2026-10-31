@@ -165,3 +165,29 @@
 - 結束:兩個 IDE 都用 `DisconnectIde Quit=true` 關閉(4026 pid 114924、4024 pid 15436,`ownedBySession true`),之後沒有任何 `devenv` / `TcXaeShell` 行程。`robocopy <baseline> <副本> /MIR` 還原後逐檔 SHA-256 比對(含隱藏檔，`-Force`):4026 266 / 266、4024 302 / 302,**差異 0**;4026 副本也和 3.8 的 `C:\Temp\Verify-4026-axis-baseline-38\`(266 檔)逐檔相同。那 7 個只有 `-Force` 才列得出的檔是 `.vs\AxisInterface_Type01_Library\` 底下的 `.suo`、`DocumentLayout(.backup).json`、Copilot / FileContentIndex 的 `.db` / `.vsidx`,加上 `A10_Scope\VSSettings\.vsm`。
 - Library repository:2585 項，沒有新增或刪除任何目錄 / library;唯一差異是 XAE 自己的 `Managed Libraries\cache` 檔 LastWriteTime 變了(大小 239,180 B 不變，時間 00:37:54 = 4026 IDE 結束時)。`Rt Test4024` 目錄不存在。使用者原有的 `AxisInterface` 等 library 沒有碰。
 - 開始時本機沒有任何 IDE 行程，沒有 attach 或操作使用者的 IDE。
+
+## N1/N3/N4/N5 修正短測
+
+- 方式:**registered tcauto**(`mcp__tcauto__*`),沒有 `Import-Module`、沒有自建 client。日期 2026-11-01 本地 01:14–01:17(UTC 2026-10-31 17:14–17:17),全程離線(沒有 Activate / Login)。
+- 受測程式碼:HEAD `7149010`(修正 commit `3008f1e` N1/N3、`92c085e` N4、`7149010` N5)。載入確認:本 session 的 MCP server node 行程 pid 86204 啟動於 01:12:08,晚於 HEAD commit 時間 00:56:49;bridge 在第一個呼叫(`ConnectIde`)才啟動。N1 第一個呼叫的 hint 已是新文字(下表)。
+- 環境:4026 = `VisualStudio.DTE.17.0`(VS2022),副本 `C:\Temp\Verify-4026-axis\AxisInterface_Type01_Library.sln`,platform `TwinCAT OS (x64)`。ConnectIde launched pid 65660(connectSec 39.9,`ownedBySession true`)。開始時本機沒有任何 `devenv` / `TcXaeShell` 行程。
+
+| # | 呼叫 | 實際回傳(節錄) | 結果 |
+|---|---|---|---|
+| N1 | `GetLibraries PlcProjectPath=NoSuchPlc` | `PLC_PROJECT_NOT_FOUND`,hint "...確認 solution 內有 PLC 專案(GetProjectTree PlcOnly=true);剛 Activate / 重啟後可重試一次。PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑..." | **通過**(沒有 `-PlcProjectPath`、`-PlcOnly`) |
+| N1 | `GetPouCode PouName=NoSuchPou_N1`(`ConvertTo-TcAdsErrorCode.ps1:52` `POU_NOT_FOUND`;`:57` 是上一列的 `PLC_PROJECT_NOT_FOUND`) | `POU_NOT_FOUND`,hint "...用 GetProjectTree PlcOnly=true(預設 Depth=4)查完整路徑後給 PouPath。... PouName 也接受 FB_X.M_Run、FB_X.P_Value.Get。" | **通過** |
+| N3 | `AddInterface Name=I_N3Probe Extends='1bad; x'` | `INVALID_PARAMS`,"Nothing was created.";hint "Pass the name of the interface to extend, e.g. Extends=I_Base, or leave Extends out." | **通過** |
+| N3 | `AddPlcTask Name=N3Task CycleTimeUs=1000` | dry-run 不回 `verifyHint`(只有實寫成功才加，`Add-TcPlcTask.ps1:293`),所以在副本上實寫一次(`verified true`,`.TcTTO` 寫入，收尾還原)。`verifyHint` "After EnableConfig Force=true, find n with ReadVariable Path=[\"TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName\"] ... and read '...CycleCount' twice" | **通過**(`Path` 是 JSON 陣列;第二個 symbol 是文字裡的名稱，不是參數) |
+| N3 | `InstallLibrary Repository=NoSuchRepo DryRun=false`,檔案用 3.8 重測的 `rt4024.library`(RtLib4024,非使用者 library) | `LIBRARY_INSTALL_FAILED` / `repository-not-found`(0x98510001),"nothing was installed";hint "XAE 的 InstallLibrary 呼叫失敗。data.reason = repository-not-found:Repository 不存在(預設 System);...再用 GetLibraries Repository=true 確認有沒有裝上" | **通過**(沒有「X 的 X」) |
+| N4 | 整專案 `ExportPlcOpen`(不帶 Selection) | `GVL_Motion` `members: []`(JSON 陣列);檔案裡 `GVL_Motion` 有 3 段 `globalVars`。objectCount 71 = 檔案去重(POU 20 + dataType 48 + GVL 3) | **通過** |
+| N5 | `FreezePlaceholder All=true`(dry-run) | `CBML`(effective `Common Behaviour Model, 4.0.0.0`)`willFreezeTo null`、`versionWillChange null`;`BATW_Base`、`Util` 也是 null;warning "willFreezeTo / versionWillChange are only a partial prediction (null = not known). DryRun=false compares every placeholder with the version in effect before the call and pins a changed one back with SetEffectiveResolution ..." 有出現。`Tc2_System` 仍預告 `3.9.1.0` / `true`(3.8 實測過的 All 行為，另有專屬 warning) | **通過** |
+| N5 | `FreezePlaceholder Placeholder=Tc2_System`(dry-run) | `willFreezeTo null`、`versionWillChange null`,同一句 partial-prediction warning | **通過** |
+
+N5 實寫沒有再做(上一輪已驗證 `pinned`)。這一輪沒有新發現。
+
+還原與確認:
+
+- 開始前 `robocopy /MIR` 副本到 `C:\Temp\Verify-4026-axis-baseline-n\`,逐檔 SHA-256(`Get-ChildItem -Force`,含隱藏檔)266 檔。Library repository(`C:\ProgramData\Beckhoff\TwinCAT\PlcEngineering\Managed Libraries`)快照 2585 項。
+- 結束:`DisconnectIde Quit=true`(pid 65660,`ownedBySession true`),之後沒有 `devenv` / `TcXaeShell` 行程。還原前副本變動:`.tsproj` / `.tsproj.bak` / `.plcproj` / 新增 `N3Task.TcTTO`(AddPlcTask 實寫)、3 個 `.tcauto-backup\20261101-0115*` 檔、`.vs\` 的 `.suo` 與 Copilot `.db`。`robocopy <baseline> <副本> /MIR` 後逐檔 SHA-256 比對 266 / 266,**差異 0**。
+- Library repository:2585 項，沒有新增或刪除;唯一差異仍是 XAE 自己的 `Managed Libraries\cache`(239,180 → 283,574 B,LastWriteTime 01:14:22 = ConnectIde 期間，早於 InstallLibrary 呼叫 01:15:37)。使用者原有 library 沒有碰。
+- `%TEMP%\TwinCATAutomation\build-required.json` 裡這個副本 sln 的那一筆留著(AddPlcTask 記錄 code-changed);下次對這份副本 EnableConfig 前要先 BuildProject,這是預期行為。
