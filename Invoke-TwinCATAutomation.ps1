@@ -45,6 +45,13 @@ $operationMap = @{
     'AddLibrary'      = 'Add-TcLibrary'
     'AddInterface'    = 'Add-TcInterface'
     'AddPouMember'    = 'Add-TcPouMember'
+    # Library Manager (the modifying ones except AddPlaceholder default to DryRun)
+    'GetLibraries'    = 'Get-TcLibraries'
+    'AddPlaceholder'  = 'Add-TcLibraryPlaceholder'
+    'RemoveReference' = 'Remove-TcLibraryReference'
+    'InstallLibrary'  = 'Install-TcLibrary'
+    'UninstallLibrary' = 'Uninstall-TcLibrary'
+    'FreezePlaceholder' = 'Lock-TcLibraryPlaceholder'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'

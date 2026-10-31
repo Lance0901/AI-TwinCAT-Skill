@@ -127,13 +127,16 @@ $timeoutOverrides = @{
 $readOnlyTools = @(
     'GetIdeInfo', 'GetProjectTree', 'GetPouCode', 'GetIoTree', 'GetBuildErrors', 'GetSymbols',
     'GetPlcState', 'GetSystemState', 'ReadVariable', 'WatchVariable', 'NewTestCase',
-    'LookupTreeItem', 'ProduceXml'
+    'LookupTreeItem', 'ProduceXml', 'GetLibraries'
 )
 $destructiveTools = @(
     'EnableConfig', 'SetSystemState', 'SetPlcState', 'WriteVariable', 'RunTest', 'RunTestCycle',
     'PlcLogin', 'SendPlcProgram', 'IoScan', 'SetTarget', 'DisconnectIde', 'PlcLogout', 'ResetSolution',
     # Generic tree tools that change / delete configuration (design D2): dry-run by default.
-    'CreateChild', 'ConsumeXml', 'DeleteChild', 'ImportChild'
+    'CreateChild', 'ConsumeXml', 'DeleteChild', 'ImportChild',
+    # Library Manager (task 3.1): remove / freeze change the project, install / uninstall the
+    # library repository of the whole machine; dry-run by default.
+    'RemoveReference', 'InstallLibrary', 'UninstallLibrary', 'FreezePlaceholder'
 )
 
 function Get-ToolAnnotations {

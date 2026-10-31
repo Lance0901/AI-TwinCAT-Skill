@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T09:08:45Z",
+    "generatedAt":  "2026-10-31T09:32:32Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -193,6 +193,47 @@
                                                          },
                                           "required":  [
                                                            "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPlaceholder",
+                      "cmdlet":  "Add-TcLibraryPlaceholder",
+                      "description":  "Adds a library placeholder to the PLC project (ITcPlcLibraryManager.AddPlaceholder), saves the project file and reads it back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Placeholder":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Placeholder name, with or without the leading '#'."
+                                                                             },
+                                                             "LibraryName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Default library of the placeholder (e.g. Tc2_Math). Empty: one-argument form (device placeholder)."
+                                                                             },
+                                                             "Version":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Default library version; '*' (default) = newest installed. Only with -LibraryName.",
+                                                                             "default":  "*"
+                                                                         },
+                                                             "Distributor":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Distributor of the default library. Default 'Beckhoff Automation GmbH'. Only with -LibraryName.",
+                                                                                 "default":  "Beckhoff Automation GmbH"
+                                                                             },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Placeholder"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -680,6 +721,42 @@
                                       }
                   },
                   {
+                      "name":  "FreezePlaceholder",
+                      "cmdlet":  "Lock-TcLibraryPlaceholder",
+                      "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj and reads it back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Placeholder":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Placeholder to freeze, with or without the leading '#'. Not together with -All."
+                                                                             },
+                                                             "All":  {
+                                                                         "type":  "boolean",
+                                                                         "description":  "Freeze every placeholder (FreezePlaceholder with an empty name; not measured). Not together with -Placeholder."
+                                                                     },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report. false: back up, freeze, save and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
                       "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is switched from Current Project / Current Document / Open Documents to Entire Solution before reading (left switched).",
@@ -743,6 +820,36 @@
                                           "type":  "object",
                                           "properties":  {
 
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetLibraries",
+                      "cmdlet":  "Get-TcLibraries",
+                      "description":  "Lists the library references and placeholders of a PLC project, or with -Repository the libraries installed on this machine.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Repository":  {
+                                                                                "type":  "boolean",
+                                                                                "description":  "List the libraries installed on this machine (ScanLibraries) instead of the project references."
+                                                                            },
+                                                             "Filter":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Wildcard on the name (-like, case-insensitive), e.g. 'Tc2_*'. References: matches name, placeholderName or libraryName. Default: everything."
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS). -Repository needs a PLC project too (the Library Manager lives on its References node)."
+                                                                                }
                                                          },
                                           "required":  [
 
@@ -912,6 +1019,43 @@
                                           "required":  [
                                                            "Path",
                                                            "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "InstallLibrary",
+                      "cmdlet":  "Install-TcLibrary",
+                      "description":  "Installs a .library / .compiled-library file into a library repository of this machine (ITcPlcLibraryManager.InstallLibrary). Dry-run by default; reads back with ScanLibraries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "LibraryPath":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Absolute path of the .library or .compiled-library file."
+                                                                             },
+                                                             "Repository":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Repository name. Default 'System' (TE1000 6.5.12).",
+                                                                                "default":  "System"
+                                                                            },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: install and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (the Library Manager lives on its References node)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "LibraryPath"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1171,6 +1315,38 @@
                                                          },
                                           "required":  [
                                                            "Path"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "RemoveReference",
+                      "cmdlet":  "Remove-TcLibraryReference",
+                      "description":  "Removes a library reference or placeholder from the PLC project (ITcPlcLibraryManager.RemoveReference). Dry-run by default; backs up the .plcproj and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Library or placeholder name, with or without the leading '#' (e.g. Tc2_Math or #Tc2_Math)."
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report what would be removed. false: back up, remove, read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Name"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1461,6 +1637,53 @@
                                           "required":  [
                                                            "PlcVariable",
                                                            "IoChannel"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "UninstallLibrary",
+                      "cmdlet":  "Uninstall-TcLibrary",
+                      "description":  "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; reads back with ScanLibraries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "LibraryName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Library name exactly as ScanLibraries lists it (Get-TcLibraries -Repository), e.g. Tc2_Math."
+                                                                             },
+                                                             "Version":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Exact version, e.g. 3.5.1.0. No '*'."
+                                                                         },
+                                                             "Distributor":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Exact distributor, e.g. Beckhoff Automation GmbH."
+                                                                             },
+                                                             "Repository":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Repository name. Default 'System' (TE1000 6.5.12).",
+                                                                                "default":  "System"
+                                                                            },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: uninstall and read back.",
+                                                                            "default":  true
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (the Library Manager lives on its References node)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "LibraryName",
+                                                           "Version",
+                                                           "Distributor"
                                                        ],
                                           "additionalProperties":  false
                                       }
