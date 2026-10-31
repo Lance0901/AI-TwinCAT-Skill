@@ -189,8 +189,12 @@ function Read-TcPlcOpenFile {
         if ($seen.ContainsKey($key)) {
             # same object again (a GVL section, or the same object in types and addData): merge its members
             $o = $seen[$key]
-            $more = @(& $members $node | Where-Object { $mn = $_.name; @($o.members | Where-Object { $_.name -ieq $mn }).Count -eq 0 })
-            if ($more.Count -gt 0) { $o.members = @(@($o.members) + $more) }
+            # $members emits its array as ONE object (', $list'): take it first, then enumerate it.
+            # Piping '& $members' directly passed the empty array itself on, and members became
+            # [ [] ] -> JSON [{"value":[],"Count":0}] for a GVL of several globalVars (retest N4).
+            $found = & $members $node
+            $more = @(@($found) | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['name'] } | Where-Object { $mn = $_.name; @($o.members | Where-Object { $_.name -ieq $mn }).Count -eq 0 })
+            if ($more.Count -gt 0) { $o.members = [object[]]@(@($o.members) + $more) }
             return
         }
         $seen[$key] = [PSCustomObject]@{

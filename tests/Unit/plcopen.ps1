@@ -275,6 +275,16 @@ try {
     $byN = @{}; foreach ($o in @($rd.Objects)) { $byN[$o.name] = $o }
     Check 'P5 whole-project file: objects below addData/data/resource are read (POU, 2 DUT, ITF, 2 GVL)' (@($rd.Objects).Count -eq 6 -and $byN['FB_Axis'].kind -eq 'POU' -and $byN['ST_A'].kind -eq 'DUT' -and $byN['E_B'].kind -eq 'DUT' -and $byN['I_Base'].kind -eq 'ITF') (J $rd.Objects)
     Check 'P5 GVL with 3 sections is one object' (@($rd.Objects | Where-Object { $_.name -eq 'GVL_Motion' }).Count -eq 1 -and $byN['GVL_X'].kind -eq 'GVL') (J $rd.Objects)
+    # retest N4: the members of a GVL of several globalVars serialise as an empty JSON array
+    $gm = $byN['GVL_Motion']
+    $gj = ConvertTo-Json -InputObject $gm -Depth 6 -Compress
+    Check 'N4 GVL of 3 globalVars: members is [] in JSON, not [{"value":[],"Count":0}]' ($gj -match '"members":\[\]' -and $gj -notmatch '"value"' -and @($gm.members).Count -eq 0) $gj
+    # the same POU twice (types and addData) with different members: merged, a flat array
+    $dup = "<?xml version=""1.0"" encoding=""utf-8""?><project $tc6><types><dataTypes /><pous><pou name=""FB_D"" pouType=""functionBlock""><addData><data name=""m""><Method name=""M_A"" /></data></addData></pou></pous></types><addData><data name=""p""><pou name=""FB_D"" pouType=""functionBlock""><addData><data name=""m""><Method name=""M_B"" /></data><data name=""m""><Method name=""M_A"" /></data></addData></pou></data></addData></project>"
+    $df = Join-Path $In 'dup.xml'; [System.IO.File]::WriteAllText($df, $dup)
+    $rdd = & $mod { param($p) Read-TcPlcOpenFile -Path $p } $df
+    $dj = ConvertTo-Json -InputObject @($rdd.Objects) -Depth 6 -Compress
+    Check 'N4 the same POU twice: members merged into one flat array (M_A, M_B)' (@($rdd.Objects).Count -eq 1 -and (@($rdd.Objects[0].members | ForEach-Object { $_.name }) -join ',') -eq 'M_A,M_B' -and $dj -match '"members":\[\{"name":"M_A","kind":"METHOD"\},\{"name":"M_B","kind":"METHOD"\}\]') $dj
     Check 'P5 interface members from <Methods> / <Properties>' ((@($byN['I_Base'].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Do,P_Cnt' -and (@($byN['FB_Axis'].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Run') (J $byN['I_Base'])
     Check 'P5 folder below the project <Object> of the ProjectStructure' ($byN['FB_Axis'].folder -eq 'AxisInterface.LIB' -and $byN['GVL_Motion'].folder -eq 'AxisInterface.GVL' -and $null -eq $byN['GVL_X'].folder) (J $rd.Objects)
     Reset-Mock; $global:T.ExportMode = 'nofolder'
