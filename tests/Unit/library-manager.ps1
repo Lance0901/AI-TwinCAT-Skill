@@ -50,7 +50,7 @@ function Write-MockPlcProj {
 function Write-Calls { $global:L.Calls.Add(($args | ForEach-Object { if ($null -eq $_) { '<null>' } else { [string]$_ } }) -join '|') | Out-Null }
 
 function Reset-Mock {
-    $global:L.Mode = 'ok'; $global:L.Dialog = $null; $global:L.Saves = 0; $global:L.Scans = 0; $global:L.SaveFailAt = 0
+    $global:L.Mode = 'ok'; $global:L.Dialog = $null; $global:L.Saves = 0; $global:L.Scans = 0; $global:L.SaveFailAt = 0; $global:L.RepoThrow = $false
     $global:L.Calls = [System.Collections.ArrayList]::new()
     $global:L.Mem = @{ Ph = [ordered]@{}; Libs = [System.Collections.ArrayList]::new() }
     $global:L.Refs = [System.Collections.ArrayList]::new()
@@ -165,7 +165,7 @@ $refs | Add-Member ScriptMethod UninstallLibrary {
     if (Test-Path -LiteralPath $vd) { Remove-Item -LiteralPath $vd -Recurse -Force }
 }
 # ITcPlcLibraryManager.Repositories: empty in the probe (Count=0); a test sets RepoFolder to return one
-$refs | Add-Member ScriptProperty Repositories { if ($global:L.RepoFolder) { , @([PSCustomObject]@{ Name = 'Custom'; Folder = $global:L.RepoFolder }) } else { , @() } }
+$refs | Add-Member ScriptProperty Repositories { if ($global:L.RepoThrow) { throw [System.Runtime.InteropServices.COMException]::new('Repositories failed (mock)', -2147467259) }; if ($global:L.RepoFolder) { , @([PSCustomObject]@{ Name = 'Custom'; Folder = $global:L.RepoFolder }) } else { , @() } }
 $global:L.RefsNode = $refs
 $global:L.RepoUsed = $RepoRoot
 $sm = New-Object PSObject
@@ -368,15 +368,21 @@ try {
     $global:L.Mode = 'exists'
     $r = Install-TcLibrary -LibraryPath $odd -DryRun $false
     Check 'Install: file name without version, XAE "Library already exists." -> LIBRARY_ALREADY_INSTALLED preCheck xae' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_ALREADY_INSTALLED' -and $r.data.preCheck -eq 'xae' -and $null -eq $r.data.identityFromFileName) (J $r)
-    # P8: the dry run checks the repository: 'System', or a name listed by Repositories
+    # P8 + review S2: three states of the repository check in the dry run
     $global:L.Mode = 'ok'; $wcBefore = (Get-WriteCalls).Count
     $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo
-    Check 'P8 Install dry-run: unknown repository -> LIBRARY_INSTALL_FAILED repository-not-found (as DryRun=false), no call' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INSTALL_FAILED' -and $r.data.reason -eq 'repository-not-found' -and $r.data.repositoryCheck.known -eq $false -and (Get-WriteCalls).Count -eq $wcBefore -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
+    Check 'S2 Install dry-run: Repositories lists none -> not-verified, success with a warning, no call' ($r.success -and $r.data.repositoryCheck.state -eq 'not-verified' -and $r.data.repositoryCheck.readable -eq $true -and @($r.data.warnings | Where-Object { $_ -like "*NoSuchRepo*not verified*listed none*" }).Count -eq 1 -and (Get-WriteCalls).Count -eq $wcBefore) (J $r.data)
+    $global:L.RepoThrow = $true
+    $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo
+    Check 'S2 Install dry-run: Repositories not readable -> not-verified, readable false, warning' ($r.success -and $r.data.repositoryCheck.state -eq 'not-verified' -and $r.data.repositoryCheck.readable -eq $false -and @($r.data.warnings | Where-Object { $_ -like '*could not be read*' }).Count -eq 1) (J $r.data)
+    $global:L.RepoThrow = $false
     $r = Install-TcLibrary -LibraryPath $newf -Repository system
-    Check 'P8 Install dry-run: System (any case) accepted although Repositories lists none' ($r.success -and $r.data.repositoryCheck.known -eq $true -and @($r.data.repositoryCheck.listed).Count -eq 0) (J $r.data)
+    Check 'P8 Install dry-run: System (any case) known although Repositories lists none' ($r.success -and $r.data.repositoryCheck.state -eq 'known' -and @($r.data.repositoryCheck.listed).Count -eq 0) (J $r.data)
     $global:L.RepoFolder = $RepoRoot
     $r = Install-TcLibrary -LibraryPath $newf -Repository custom
-    Check 'P8 Install dry-run: a repository Repositories lists is accepted' ($r.success -and (@($r.data.repositoryCheck.listed) -join ',') -eq 'Custom') (J $r.data)
+    Check 'P8 Install dry-run: a repository Repositories lists is known' ($r.success -and $r.data.repositoryCheck.state -eq 'known' -and (@($r.data.repositoryCheck.listed) -join ',') -eq 'Custom') (J $r.data)
+    $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo
+    Check 'S2 Install dry-run: Repositories lists others, not this one -> LIBRARY_INSTALL_FAILED repository-not-found (as DryRun=false), no call' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INSTALL_FAILED' -and $r.data.reason -eq 'repository-not-found' -and $r.data.repositoryCheck.state -eq 'not-found' -and (Get-WriteCalls).Count -eq $wcBefore -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
     $global:L.RepoFolder = $null
     $global:L.Mode = 'norepo'
     $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo -DryRun $false

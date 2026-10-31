@@ -1,7 +1,7 @@
 function Save-TcPlcLibrary {
     <#
     .SYNOPSIS
-        Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured). Reads the file back.
+        Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured 2026-10-31, 4026 VS2022 and 4024 XAE, registered tcauto). Reads the file back.
     .DESCRIPTION
         API: ITcPlcIECProject.SaveAsLibrary(bstrLibraryPath, bInstall) on the '<Plc> Project' node,
         called with bInstall = false (TE1000 Automation Interface manual v1.7.0, 5.28.1.1 p.123;
@@ -21,8 +21,9 @@ function Save-TcPlcLibrary {
         SaveAsLibrary, with its LastWriteTime at the time of the call (measured 2026-10-31 4026
         VS2022 and 4024 XAE, registered tcauto, verification/phase2-3.8.md P7; the earlier
         self-built probe had seen only the VS '.~u' file change because nothing was unsaved).
-        data.projectSaved = $true says so; data.projectFile / data.projectFileWritten (LastWriteTime
-        of the .plcproj before and after the call; $null when the .plcproj cannot be located).
+        data.projectSaved = data.projectFileWritten: $true when the LastWriteTime of the .plcproj
+        (data.projectFile) changed during the call, $false when it did not, $null when the .plcproj
+        cannot be located.
           - whether it opens a dialog on a project that was never built is not measured.
         Checks before the call (nothing written on failure): FilePath absolute, valid, '.library'
         or '.compiled-library', folder exists (LIBRARY_SAVE_FAILED reason not-absolute /
@@ -143,10 +144,10 @@ function Save-TcPlcLibrary {
             return (& $restoreAndFail 'not-written' "SaveAsLibrary returned, but '$FilePath' $why")
         }
         $data.saved = $true
-        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $true
-        $data | Add-Member -NotePropertyName projectFile -NotePropertyValue $(if ($plcProjFile) { $plcProjFile } else { $null })
         $written = $null
         if ($null -ne $plcProjBefore) { try { $written = ((Get-Item -LiteralPath $plcProjFile).LastWriteTimeUtc -ne $plcProjBefore) } catch { $written = $null } }
+        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $written
+        $data | Add-Member -NotePropertyName projectFile -NotePropertyValue $(if ($plcProjFile) { $plcProjFile } else { $null })
         $data | Add-Member -NotePropertyName projectFileWritten -NotePropertyValue $written
         $data | Add-Member -NotePropertyName fileSize -NotePropertyValue $facts.size
         $data | Add-Member -NotePropertyName lastWriteTime -NotePropertyValue $facts.lastWriteTime

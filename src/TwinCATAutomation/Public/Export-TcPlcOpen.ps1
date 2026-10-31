@@ -40,8 +40,8 @@ function Export-TcPlcOpen {
         file (PLCOPEN_VERIFY_FAILED, data.missingSelections). data.objects: name, kind (POU / DUT /
         ITF / GVL; also the objects of a whole-project export below addData, one GVL per name),
         pouType, folder (from the -Selection path when the file has no Folder for an object selected
-        inside a folder, verification/phase2-3.8.md P5), members (name, kind; interface methods and
-        properties included).
+        inside a folder, verification/phase2-3.8.md P5), members (name, kind; interface methods
+        included, measured; interface <Properties><Property> also listed, not measured).
         The project is not changed and BUILD_REQUIRED is not touched.
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER Selection

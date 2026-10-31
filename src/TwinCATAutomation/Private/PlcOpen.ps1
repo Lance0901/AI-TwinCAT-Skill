@@ -126,9 +126,11 @@ function Read-TcPlcOpenFile {
         verification/phase2-3.8.md P5: 21 pou, 48 dataType, GVL_Motion as 3 globalVars).
         Members: <object>/addData/data/(Method | Property | Action | Transition)[@name], the
         PLCopen pou/actions/action, pou/transitions/transition, and for an INTERFACE
-        Interface/Methods/Method and Interface/Properties/Property (measured 2026-10-31, P5 / P6:
-        I_P38Base had <Methods><Method name="M_Do">, its property without accessors was not in the
-        file). folder: the Folder names around the object in addData/data/ProjectStructure ('.'
+        Interface/Methods/Method (measured 2026-10-31, P5 / P6: I_P38Base had
+        <Methods><Method name="M_Do">) and Interface/Properties/Property (NOT measured: the measured
+        file had an empty <Properties />, its property without accessors was not exported; left out
+        with -ExcludeInterfaceProperties, which Import-TcPlcOpen uses so a property is never assumed
+        to survive a Replace). folder: the Folder names around the object in addData/data/ProjectStructure ('.'
         joined), $null when not listed there (a whole-project export wraps the folders in an
         <Object> for the project itself, measured). Folders: every ProjectStructure Folder name.
         Measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client (phase2-probe.md 3.3): an
@@ -138,9 +140,11 @@ function Read-TcPlcOpenFile {
         Throws when the file cannot be parsed or its root element is not 'project'.
     .PARAMETER Path
         PLCopen XML file.
+    .PARAMETER ExcludeInterfaceProperties
+        Do not list Interface/Properties/Property as members (not measured).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
+    param([Parameter(Mandatory)][string]$Path, [Parameter()][switch]$ExcludeInterfaceProperties)
     $doc = Read-TcXmlFile -Path $Path
     $root = $doc.DocumentElement
     if ($null -eq $root -or $root.LocalName -ne 'project') {
@@ -167,7 +171,8 @@ function Read-TcPlcOpenFile {
         $list = [System.Collections.Generic.List[object]]::new()
         $xp = "./$(& $ln 'addData')/$(& $ln 'data')/*[local-name()='Method' or local-name()='Property' or local-name()='Action' or local-name()='Transition']" +
             " | ./$(& $ln 'actions')/$(& $ln 'action') | ./$(& $ln 'transitions')/$(& $ln 'transition')" +
-            " | ./$(& $ln 'Methods')/$(& $ln 'Method') | ./$(& $ln 'Properties')/$(& $ln 'Property')"
+            " | ./$(& $ln 'Methods')/$(& $ln 'Method')" +
+            $(if ($ExcludeInterfaceProperties) { '' } else { " | ./$(& $ln 'Properties')/$(& $ln 'Property')" })
         foreach ($m in @($node.SelectNodes($xp))) {
             $mn = $m.GetAttribute('name')
             if ([string]::IsNullOrEmpty($mn)) { continue }
@@ -442,7 +447,7 @@ function Invoke-TcPlcOpenReplaceBackup {
         }
     }
     $restore = "Import-TcPlcOpen -FilePath '$($xml.Replace("'", "''"))' -Option Replace -DryRun `$false"
-    $note = "restore the replaced objects: $restore (MCP ImportPlcOpen FilePath=<xmlPath> Option=Replace DryRun=false)"
+    $note = "restore the replaced objects: $restore"
     if ($diskOnly.Count -gt 0) {
         $note += '. NOT in the XML (properties of an interface without Get / Set are not exported, measured 2026-10-31), only in the disk file copy / .zip: ' +
             (($diskOnly | ForEach-Object { "'$($_.path)': $($_.children -join ', ') -> $($_.how)" }) -join '; ')

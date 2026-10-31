@@ -308,6 +308,14 @@ try {
     $wi = @($r.data.willReplace | Where-Object { $_.name -eq 'ITF_A' })[0]
     $wf = @($r.data.willReplace | Where-Object { $_.name -eq 'FB_A' })[0]
     Check 'Import dry-run Replace -> children missing in the file are listed as deleted (ITF properties, FB property)' ($r.success -and (@($wi.deletedChildren) -join ',') -eq 'P_Cnt,P_Str' -and (@($wf.deletedChildren) -join ',') -eq 'P_Value' -and $r.data.replaceWarning -match 'children the file does not have are deleted' -and $r.data.replaceWarning -match 'P_Cnt') (J $r.data.willReplace)
+    # review S3: <Interface><Properties><Property> is not measured -> Import never counts it as kept
+    $impP = Join-Path $In 'import-props.xml'
+    [System.IO.File]::WriteAllText($impP, ([System.IO.File]::ReadAllText($imp) -replace '<Properties />', '<Properties><Property name="P_Cnt" /></Properties>'))
+    $r = Import-TcPlcOpen -FilePath $impP -Option Replace
+    $wi = @($r.data.willReplace | Where-Object { $_.name -eq 'ITF_A' })[0]
+    Check 'S3 Import dry-run Replace: an interface property in <Properties> is still listed as deleted' ($r.success -and (@($wi.deletedChildren) -join ',') -eq 'P_Cnt,P_Str' -and @($wi.fileMembers) -notcontains 'P_Cnt') (J $wi)
+    $rd = & $mod { param($p) Read-TcPlcOpenFile -Path $p } $impP
+    Check 'S3 Read-TcPlcOpenFile (export readback) still lists it' ((@(@($rd.Objects | Where-Object { $_.name -eq 'ITF_A' })[0].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Do,P_Cnt') (J $rd.Objects)
     Check 'Import dry-runs: nothing called, nothing recorded, no backup' ($global:T.ImportCalls.Count -eq 0 -and $null -eq (Get-CodeChanged) -and -not (Test-Path -LiteralPath (Join-Path $Root '.tcauto-backup'))) "$(Get-CodeChanged)"
     $null = Add-MockNode "$P^POUs^FB_A_1" 604
     $r = Import-TcPlcOpen -FilePath $imp -Option Rename
@@ -325,7 +333,7 @@ try {
     Check 'Import live Replace: PlcOpenExport backup of both objects, then the .zip backups, then PlcOpenImport 1' ($r.success -and $order -eq "PlcOpenExport POUs.FB_A;POUs.ITF_A;ExportChild $P^POUs^FB_A;ExportChild $P^POUs^ITF_A;PlcOpenImport 1") $order
     $bx = [string]$r.data.backup.xmlPath
     Check 'Import live Replace: data.backup.xmlPath is a PLCopen file of both objects in .tcauto-backup' ($bx -like '*\.tcauto-backup\*\plcopen-replace.xml' -and (Test-Path -LiteralPath $bx) -and ([System.IO.File]::ReadAllText($bx)) -match 'FB_A' -and ([System.IO.File]::ReadAllText($bx)) -match 'ITF_A' -and (@($r.data.backup.objects) -join ',') -eq "$P^POUs^FB_A,$P^POUs^ITF_A") (J $r.data.backup)
-    Check 'Import live Replace: data.backup.restore is the Import-TcPlcOpen -Option Replace command' ($r.data.backup.restore -eq "Import-TcPlcOpen -FilePath '$bx' -Option Replace -DryRun `$false" -and $r.data.backup.restoreNote -match 'ImportPlcOpen') "$($r.data.backup.restore)"
+    Check 'Import live Replace: data.backup.restore is the Import-TcPlcOpen -Option Replace command' ($r.data.backup.restore -eq "Import-TcPlcOpen -FilePath '$bx' -Option Replace -DryRun `$false" -and $r.data.backup.restoreNote -match 'Import-TcPlcOpen' -and $r.data.backup.restoreNote -notmatch 'MCP ImportPlcOpen') "$($r.data.backup.restore)"
     Check 'Import live Replace: per object ProduceXml, disk file copy and .zip' (@($r.data.backup.objectBackups).Count -eq 2 -and @($r.data.backup.objectBackups | Where-Object { $_.exportPath -like '*.zip' -and (Test-Path -LiteralPath $_.exportPath) -and (Test-Path -LiteralPath $_.produceXmlPath) }).Count -eq 2 -and @($r.data.backup.objectBackups | Where-Object { $_.diskFileCopy -like '*FB_A.TcPOU' -and ([System.IO.File]::ReadAllText($_.diskFileCopy)) -match 'FB_A original' }).Count -eq 1) (J $r.data.backup.objectBackups)
     $do = @($r.data.backup.diskOnly)
     Check 'Import live Replace (B2): ITF properties not in the XML -> diskOnly lists them with the .TcIO copy and how to restore' ($do.Count -eq 1 -and $do[0].path -eq "$P^POUs^ITF_A" -and (@($do[0].children) -join ',') -eq 'P_Cnt,P_Str' -and $do[0].diskFileCopy -like '*ITF_A.TcIO' -and ([System.IO.File]::ReadAllText($do[0].diskFileCopy)) -match 'ITF_A original' -and $do[0].how -match 'Reset-TcSolution' -and $do[0].how -match 'not measured' -and $r.data.backup.restoreNote -match 'P_Cnt, P_Str' -and $r.data.backup.restoreNote -match 'not exported') (J $do)

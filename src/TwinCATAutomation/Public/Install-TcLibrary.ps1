@@ -25,11 +25,12 @@ function Install-TcLibrary {
         distributor's library).
         Checks before anything is changed: -LibraryPath absolute, an existing file, extension .library
         or .compiled-library; -Repository not empty (LIBRARY_INVALID_ARGUMENT, data.reason).
-        DryRun (default true): InstallLibrary is NOT called; the repository must be 'System' or listed
-        by ITcPlcLibraryManager.Repositories, else LIBRARY_INSTALL_FAILED reason repository-not-found,
-        as DryRun=false (data.repositoryCheck: listed, known; phase2-3.8.md P8; Repositories listed
-        nothing on 4026, measured 2026-10-31, so another repository is only accepted when XAE lists
-        it); data.dryRun, data.identityFromFileName,
+        DryRun (default true): InstallLibrary is NOT called; the repository is checked
+        (data.repositoryCheck: state, readable, listed, error; phase2-3.8.md P8): 'System' or a name
+        ITcPlcLibraryManager.Repositories lists -> known; Repositories lists others but not this
+        one -> LIBRARY_INSTALL_FAILED reason repository-not-found, as DryRun=false; Repositories
+        lists none (measured 2026-10-31 4026 VS2022) or cannot be read -> not-verified, success with a
+        warning (DryRun=false lets XAE decide); data.dryRun, data.identityFromFileName,
         data.alreadyInstalled (from the file name; $null when it gives no identity), data.installedCount.
         DryRun=false: modal dialog check (IDE_MODAL_DIALOG), InstallLibrary, then ScanLibraries again:
         at least one entry must be new (data.installed), else LIBRARY_VERIFY_FAILED. XAE refusing the
@@ -102,24 +103,33 @@ function Install-TcLibrary {
         $already = @()
         if ($null -ne $identity) { $already = @($before | Where-Object { [string]$_.name -ieq $identity.name -and [string]$_.version -eq $identity.version }) }
         if ($DryRun) {
-            # phase2-3.8.md P8: the dry run checks the repository too. 'System' is the default repository
-            # (TE1000 6.5.12, measured); any other name must be listed by ITcPlcLibraryManager.Repositories.
-            $repoNames = @(Get-TcLibraryRepositoryNames -Refs $refs)
-            $repoKnown = ($Repository -ieq 'System') -or (@($repoNames | Where-Object { $_ -ieq $Repository }).Count -gt 0)
-            $data | Add-Member -NotePropertyName repositoryCheck -NotePropertyValue ([PSCustomObject]@{ listed = [string[]]$repoNames; known = $repoKnown })
-            if (-not $repoKnown) {
+            # phase2-3.8.md P8 (+ review S2): three states. 'System' (the default repository, TE1000
+            # 6.5.12, measured) or a name Repositories lists -> known; Repositories lists others but not
+            # this one -> repository-not-found, as DryRun=false; Repositories lists none or cannot be
+            # read -> not verified: success with a warning, DryRun=false lets XAE decide.
+            $repo = Get-TcLibraryRepositoryNames -Refs $refs
+            $repoNames = @($repo.Names)
+            $state = if ($Repository -ieq 'System' -or @($repoNames | Where-Object { $_ -ieq $Repository }).Count -gt 0) { 'known' }
+                     elseif ($repo.Readable -and $repoNames.Count -gt 0) { 'not-found' }
+                     else { 'not-verified' }
+            $data | Add-Member -NotePropertyName repositoryCheck -NotePropertyValue ([PSCustomObject]@{ state = $state; readable = [bool]$repo.Readable; listed = [string[]]$repoNames; error = $repo.Error })
+            if ($state -eq 'not-found') {
                 return New-TcLibraryFailure -Code 'LIBRARY_INSTALL_FAILED' -Reason 'repository-not-found' -Data $data `
-                    -Message "Repository '$Repository' is not 'System' (the default repository) and ITcPlcLibraryManager.Repositories lists no repository of that name ($($repoNames.Count) listed; measured 2026-10-31 4026 VS2022: it listed none). DryRun=false would get the same answer from XAE for a repository that does not exist (""Could not find repository"", measured); nothing was installed."
+                    -Message "Repository '$Repository' is not 'System' and ITcPlcLibraryManager.Repositories lists $(($repoNames | ForEach-Object { "'$_'" }) -join ', ') but not it; DryRun=false would fail the same way (""Could not find repository"", measured). Nothing was installed."
             }
+            $repoWarn = if ($state -eq 'not-verified') { "repository '$Repository' not verified: Repositories $(if ($repo.Readable) { 'listed none' } else { "could not be read ($($repo.Error))" }) (it listed none on 4026, measured 2026-10-31); DryRun=false lets XAE decide (LIBRARY_INSTALL_FAILED reason repository-not-found when it does not exist)" } else { $null }
             # file name = a hint for the dry run only; XAE decides on DryRun=false
             $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $(if ($null -eq $identity) { $null } else { $already.Count -gt 0 })
+            $dw = [System.Collections.Generic.List[string]]::new()
+            if ($null -ne $repoWarn) { $dw.Add($repoWarn) }
             if ($null -eq $identity) {
-                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the file name is not '<name>_<version>.library'; whether it is already installed is only known when XAE installs it")
+                $dw.Add("the file name is not '<name>_<version>.library'; whether it is already installed is only known when XAE installs it")
             }
             elseif ($already.Count -gt 0) {
                 $data | Add-Member -NotePropertyName installed -NotePropertyValue $already
-                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("ScanLibraries already lists $($identity.name) $($identity.version) (the name / version in the file name): $(@($already | ForEach-Object { $_.displayName }) -join '; '); if the file is that library, DryRun=false returns LIBRARY_ALREADY_INSTALLED (the file name is not proof)")
+                $dw.Add("ScanLibraries already lists $($identity.name) $($identity.version) (the name / version in the file name): $(@($already | ForEach-Object { $_.displayName }) -join '; '); if the file is that library, DryRun=false returns LIBRARY_ALREADY_INSTALLED (the file name is not proof)")
             }
+            if ($dw.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $dw.ToArray() }
             return New-TcResult -Success $true -Data $data
         }
         $data | Add-Member -NotePropertyName alreadyInstalled -NotePropertyValue $null

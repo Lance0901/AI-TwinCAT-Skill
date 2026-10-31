@@ -247,9 +247,9 @@ try {
 
     # --- interface parent: 610 / 612
     $r = Add-TcPouMember -ParentPath "$P^POUs^ITF_X" -Kind Method -Name M_Do -ReturnType DINT
-    Check 'ITF method: 610 {DINT}' ($r.success -and @($global:T.Creates)[-1] -eq "$P^POUs^ITF_X|M_Do|610|String[]:DINT" -and $r.data.objectKind -eq 'ITF_METHOD') (J $r)
+    Check 'ITF method: 610 {DINT}, access null (N4)' ($r.success -and @($global:T.Creates)[-1] -eq "$P^POUs^ITF_X|M_Do|610|String[]:DINT" -and $r.data.objectKind -eq 'ITF_METHOD' -and $null -eq $r.data.access) (J $r)
     $r = Add-TcPouMember -ParentPath "$P^POUs^ITF_X" -Kind Property -Name P_Two -ReturnType LREAL
-    Check 'ITF property: 612 {LREAL}' ($r.success -and @($global:T.Creates)[-1] -eq "$P^POUs^ITF_X|P_Two|612|String[]:LREAL" -and $r.data.objectKind -eq 'ITF_PROPERTY') (J $r)
+    Check 'ITF property: 612 {LREAL}, access null (N4)' ($r.success -and @($global:T.Creates)[-1] -eq "$P^POUs^ITF_X|P_Two|612|String[]:LREAL" -and $r.data.objectKind -eq 'ITF_PROPERTY' -and $null -eq $r.data.access) (J $r)
     $n = $global:T.Creates.Count
     $r = Add-TcPouMember -ParentPath "$P^POUs^ITF_X^P_Two" -Kind Get
     Check 'Get below ITF property -> POU_MEMBER_UNSUPPORTED, nothing created' ((-not $r.success) -and $r.error.code -eq 'POU_MEMBER_UNSUPPORTED' -and $r.data.reason -eq 'itf-property-accessor' -and $global:T.Creates.Count -eq $n -and $r.error.message -like '*phase2-probe.md*' -and $r.error.hint -notlike '*openspec*') (J $r)

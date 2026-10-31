@@ -115,7 +115,7 @@
 
 - **現象**:tool 說明寫不改專案，實際會把 XAE 記憶體裡還沒存的改動寫進 .plcproj(4026 VS2022、4024 XAE,registered tcauto 實測 2026-10-31)。
 - **繞過**:為了產生 library 暫時改的 project info 等設定，SaveAsLibrary 之後要改回去並再存一次。
-- **模組說明已改**(2026-10-31):cmdlet 說明、`tools.json`、SKILL.md 寫明會存 .plcproj;回傳 `data.projectSaved = true`,`data.projectFile` / `data.projectFileWritten` 是呼叫前後 .plcproj 的 LastWriteTime 比較(找不到 .plcproj 時 null)。行為本身是 XAE 的，模組不擋。
+- **模組說明已改**(2026-10-31):cmdlet 說明、`tools.json`、SKILL.md 寫明會存 .plcproj;回傳 `data.projectSaved`(= `data.projectFileWritten`,呼叫前後 `data.projectFile` 的 LastWriteTime 比較;找不到 .plcproj 時 null)。行為本身是 XAE 的，模組不擋。
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-31)
 

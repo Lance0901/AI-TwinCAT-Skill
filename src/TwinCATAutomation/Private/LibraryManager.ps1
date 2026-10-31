@@ -448,9 +448,14 @@ $script:TcSystemLibraryRepositoryRoot = Join-Path ([string]$env:ProgramData) 'Be
 function Get-TcLibraryRepositoryNames {
     <#
     .SYNOPSIS
-        Names in ITcPlcLibraryManager.Repositories (TE1000 5.22 / 5.23 p.111-112): string[], empty when
-        it lists none or cannot be read (measured 2026-10-31 4026 VS2022: Count=0 although 'System'
-        exists). IDE_* errors are rethrown.
+        ITcPlcLibraryManager.Repositories: @{ Readable; Names = string[]; Error }.
+    .DESCRIPTION
+        Property Repositories (ITcPlcLibRepositories, entries with Name / Folder; InfoSys
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841242379.html, TE1000
+        v1.7.0 5.22 / 5.23 p.111-112). Readable = $false (Error set) when the property is $null or
+        reading it throws; Readable = $true with no Names when it lists none (measured 2026-10-31 4026
+        VS2022, self-built client: Count=0 although the 'System' repository exists). IDE_* errors
+        are rethrown.
     .PARAMETER Refs
         References node.
     #>
@@ -458,22 +463,21 @@ function Get-TcLibraryRepositoryNames {
     param([Parameter(Mandatory)]$Refs)
     $r = $Refs
     try {
-        $names = Invoke-TcComRetry -OperationName 'Repositories' -ScriptBlock {
-            $__out = [System.Collections.Generic.List[string]]::new()
+        $res = Invoke-TcComRetry -OperationName 'Repositories' -ScriptBlock {
             $__all = Get-TcComValue -Object $r -Name 'Repositories'
-            if ($null -ne $__all) {
-                foreach ($__rep in $__all) {
-                    $__n = [string](Get-TcComValue -Object $__rep -Name 'Name')
-                    if (-not [string]::IsNullOrWhiteSpace($__n)) { $__out.Add($__n) }
-                }
+            if ($null -eq $__all) { return @{ Readable = $false; Names = [string[]]@(); Error = 'Repositories is null' } }
+            $__out = [System.Collections.Generic.List[string]]::new()
+            foreach ($__rep in $__all) {
+                $__n = [string](Get-TcComValue -Object $__rep -Name 'Name')
+                if (-not [string]::IsNullOrWhiteSpace($__n)) { $__out.Add($__n) }
             }
-            Write-Output -NoEnumerate $__out.ToArray()
+            @{ Readable = $true; Names = [string[]]$__out.ToArray(); Error = $null }
         }
-        return [string[]]@($names)
+        return $res
     }
     catch {
         if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
-        return [string[]]@()
+        return @{ Readable = $false; Names = [string[]]@(); Error = $_.Exception.Message }
     }
 }
 

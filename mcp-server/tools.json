@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T16:02:03Z",
+    "generatedAt":  "2026-10-31T16:07:52Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1728,7 +1728,7 @@
                   {
                       "name":  "SaveAsLibrary",
                       "cmdlet":  "Save-TcPlcLibrary",
-                      "description":  "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured). Reads the file back.",
+                      "description":  "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured 2026-10-31, 4026 VS2022 and 4024 XAE, registered tcauto). Reads the file back.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,

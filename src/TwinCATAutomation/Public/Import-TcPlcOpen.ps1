@@ -130,7 +130,8 @@ function Import-TcPlcOpen {
     catch { $bad = @{ Reason = 'invalid-path'; Message = "-FilePath '$FilePath' cannot be checked: $($_.Exception.Message)" } }
     if ($null -ne $bad) { return (& $failData 'PLCOPEN_FAILED' $bad.Reason "$($bad.Message); nothing was imported.") }
     $parsed = $null
-    try { $parsed = Read-TcPlcOpenFile -Path $FilePath }
+    # interface properties in the file are not measured: never count them as kept by a Replace
+    try { $parsed = Read-TcPlcOpenFile -Path $FilePath -ExcludeInterfaceProperties }
     catch { return (& $failData 'PLCOPEN_FAILED' 'invalid-file' "'$FilePath' cannot be read as PLCopen XML: $($_.Exception.Message); nothing was imported.") }
     $objects = @($parsed.Objects)
     $data | Add-Member -NotePropertyName objects -NotePropertyValue $objects
