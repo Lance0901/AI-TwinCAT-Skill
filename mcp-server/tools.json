@@ -1,11 +1,11 @@
 {
-    "generatedAt":  "2026-10-31T19:54:38Z",
+    "generatedAt":  "2026-10-31T20:59:18Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
                       "name":  "AddAdsRoute",
                       "cmdlet":  "Add-TcAdsRoute",
-                      "description":  "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). DryRun defaults to true. The password is NEVER a tool input: PasswordEnv names an environment variable of the MCP server process (set it in the server env of your MCP client config); data, errors, logs and backups never contain the password or the XML (masked as ***). AddRoute credentials are protected only by a fixed key on the network (Beckhoff advisory 2017-002): trusted networks only. A route to the same NetId -> ROUTE_ALREADY_EXISTS; TIRR is read back (ROUTE_VERIFY_FAILED). There is no tool to remove a route: the Automation Interface cannot (edit StaticRoutes.xml and restart the TwinCAT service, which also stops a local UmRT; see docs/troubleshooting.md).",
+                      "description":  "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). DryRun defaults to true. The password is NEVER a tool input: PasswordEnv names an environment variable of the MCP server process (Process scope only; the name must be TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX>, anything else is INVALID_PARAMS; set it in the server env of your MCP client config); data, errors, logs and backups never contain the password or the XML (masked as ***). AddRoute credentials are protected only by a fixed key on the network (Beckhoff advisory 2017-002): trusted networks only. A route to the same NetId -> ROUTE_ALREADY_EXISTS; TIRR is read back (ROUTE_VERIFY_FAILED). There is no tool to remove a route: the Automation Interface cannot (edit StaticRoutes.xml and restart the TwinCAT service, which also stops a local UmRT; see docs/troubleshooting.md).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -36,7 +36,7 @@
                                                                           },
                                                              "PasswordEnv":  {
                                                                                  "type":  "string",
-                                                                                 "description":  "Name of the environment variable that holds the password (AddRoute only); the value is never returned."
+                                                                                 "description":  "Name of the environment variable (Process scope) that holds the password, TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (AddRoute only); the value is never returned."
                                                                              },
                                                              "LocalName":  {
                                                                                "type":  "string",
@@ -993,8 +993,8 @@
                       "description":  "Searches the network for ADS targets (TIRR BroadcastSearch, or Search for one IP / host name); only works when the IDE target is the local system. Does not change the configuration.",
                       "timeoutMs":  120000,
                       "annotations":  {
-                                          "readOnlyHint":  false,
-                                          "destructiveHint":  false
+                                          "readOnlyHint":  true,
+                                          "openWorldHint":  true
                                       },
                       "inputSchema":  {
                                           "type":  "object",

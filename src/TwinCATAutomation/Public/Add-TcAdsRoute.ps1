@@ -13,8 +13,9 @@ function Add-TcAdsRoute {
         (a search only works with the local system as target, phase3-probe.md question 23).
         NOT MEASURED (openspec/changes/complete-automation-interface/verification/phase3-probe.md
         questions 24, 25, 27: no second target). Only unit tests; registered verification is task 4.6.
-        Password: only -PasswordEnv (name of an environment variable of THIS process; over MCP set it
-        in the server's env) or -Password as a SecureString (PowerShell only). The plain text exists
+        Password: only -PasswordEnv (name of an environment variable of THIS process, Process scope
+        only, and it must be named TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (upper case, digits,
+        '_'), so no other variable can be read through it; over MCP set it in the server's env) or -Password as a SecureString (PowerShell only). The plain text exists
         only while the XML is built and sent; data, messages, hints, logs and the backup never
         contain it or the XML (passwords are masked as ***; a message from XAE is cleaned with
         Protect-TcSecretText). Credentials sent with AddRoute are protected only by a fixed key
@@ -42,7 +43,7 @@ function Add-TcAdsRoute {
     .PARAMETER UserName
         User on the remote system (AddRoute only).
     .PARAMETER PasswordEnv
-        Name of the environment variable that holds the password (AddRoute only); the value is never returned.
+        Name of the environment variable (Process scope) that holds the password, TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (AddRoute only); the value is never returned.
     .PARAMETER Password
         Password as SecureString (PowerShell only, not offered over MCP).
     .PARAMETER LocalName
@@ -52,7 +53,7 @@ function Add-TcAdsRoute {
     .PARAMETER DryRun
         Default true: only check and report. false: back up, send, read back.
     .EXAMPLE
-        Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TC_ROUTE_PW
+        Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW
     .EXAMPLE
         Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -ProjectRoute -DryRun $false
     #>
@@ -107,11 +108,12 @@ function Add-TcAdsRoute {
     if (-not $ProjectRoute) {
         if ([string]::IsNullOrWhiteSpace($UserName) -or $UserName -match '[\x00-\x1F<>]') { return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage 'AddRoute needs -UserName (the user on the remote system); nothing was sent.' }
         if ($hasEnv -eq $hasSecure) { return New-TcResult -Success $false -ErrorCode 'ROUTE_PASSWORD_MISSING' -Data $data -ErrorMessage 'AddRoute needs exactly one of -PasswordEnv (environment variable name) and -Password (SecureString); nothing was sent.' -Hint (Get-TcErrorHint -Code 'ROUTE_PASSWORD_MISSING') }
-        if ($hasEnv -and $PasswordEnv -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-PasswordEnv must be an environment variable name (got '$PasswordEnv'); nothing was sent." }
+        # review B1: only variables named for this purpose, so -PasswordEnv cannot read any other
+        # secret of the process (PATH-like names, API keys ...)
+        if ($hasEnv -and $PasswordEnv -cnotmatch $script:TcRoutePasswordEnvPattern) { return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-PasswordEnv must be named TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (upper case, digits, '_'; got '$PasswordEnv'); nothing was read or sent." }
         $data | Add-Member -NotePropertyName passwordSource -NotePropertyValue $(if ($hasEnv) { "env:$PasswordEnv" } else { 'SecureString' })
         if ($hasEnv) {
             $probe = [Environment]::GetEnvironmentVariable($PasswordEnv, 'Process')
-            if ([string]::IsNullOrEmpty($probe)) { $probe = [Environment]::GetEnvironmentVariable($PasswordEnv, 'User') }
             $empty = [string]::IsNullOrEmpty($probe)
             $probe = $null
             if ($empty) { return New-TcResult -Success $false -ErrorCode 'ROUTE_PASSWORD_MISSING' -Data $data -ErrorMessage "The environment variable '$PasswordEnv' is empty or not set in this process; nothing was sent." -Hint (Get-TcErrorHint -Code 'ROUTE_PASSWORD_MISSING') }
@@ -161,7 +163,6 @@ function Add-TcAdsRoute {
         if (-not $ProjectRoute) {
             if ($hasEnv) {
                 $plain = [Environment]::GetEnvironmentVariable($PasswordEnv, 'Process')
-                if ([string]::IsNullOrEmpty($plain)) { $plain = [Environment]::GetEnvironmentVariable($PasswordEnv, 'User') }
             }
             else {
                 $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
@@ -171,8 +172,6 @@ function Add-TcAdsRoute {
         }
         $doc = New-Object System.Xml.XmlDocument
         $ti = $doc.AppendChild($doc.CreateElement('TreeItem'))
-        $e = $ti.AppendChild($doc.CreateElement('ItemName')); $e.InnerText = 'Route Settings'
-        $e = $ti.AppendChild($doc.CreateElement('PathName')); $e.InnerText = 'TIRR'
         $cmd = $ti.AppendChild($doc.CreateElement('RoutePrj')).AppendChild($doc.CreateElement($data.command))
         foreach ($k in $fields.Keys) {
             $e = $cmd.AppendChild($doc.CreateElement($k))

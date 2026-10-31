@@ -11,6 +11,9 @@
 #     TargetList/Target (empty in the probe).
 #   - AddRoute / AddProjectRoute were NOT measured (no second target).
 
+# Add-TcAdsRoute -PasswordEnv: only these names are read (review B1), Process scope only.
+$script:TcRoutePasswordEnvPattern = '^TCAUTO_ROUTE_PW(_[A-Z0-9_]+)?$'
+
 function ConvertFrom-TcRoutePrjXml {
     <#
     .SYNOPSIS
@@ -132,7 +135,14 @@ function Read-TcRoutePrj {
 function Protect-TcSecretText {
     <#
     .SYNOPSIS
-        A message with every occurrence of -Secret replaced by *** and passwords in XML masked; an XML fragment (<TreeItem>...) is cut out.
+        A message with every occurrence of -Secret (also XML-escaped) replaced by ***, XML fragments (<TreeItem>, <RoutePrj> ...) cut out and password elements / attributes scrubbed.
+    .DESCRIPTION
+        Used for XAE messages, which may quote the ConsumeXml text: the secret is replaced in its
+        XML-escaped form ([System.Security.SecurityElement]::Escape, e.g. p&amp;w) and as plain text;
+        then <TreeItem>...</TreeItem> and everything from <AddRoute> / <AddProjectRoute> /
+        <RoutePrj> on are replaced by '(omitted)'; then the text of any element whose name holds
+        password / passwd / pwd and the value of any such attribute become ***. Regex based (a
+        message is no XML document). Never throws.
     .PARAMETER Text
         Message.
     .PARAMETER Secret
@@ -141,9 +151,17 @@ function Protect-TcSecretText {
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Text, [Parameter()][AllowNull()][AllowEmptyString()][string]$Secret)
     $t = [string]$Text
-    if (-not [string]::IsNullOrEmpty($Secret) -and $Secret.Length -ge 1) { $t = $t.Replace($Secret, $script:TcPasswordMask) }
-    $t = ConvertTo-TcMaskedXml -Xml $t
-    $t = [regex]::Replace($t, '(?is)<TreeItem>.*?</TreeItem>', '<TreeItem>(omitted)</TreeItem>')
-    $t = [regex]::Replace($t, '(?is)<(AddRoute|AddProjectRoute|RoutePrj)>.*', '<$1>(omitted)')
+    try {
+        if (-not [string]::IsNullOrEmpty($Secret)) {
+            $esc = [System.Security.SecurityElement]::Escape($Secret)
+            if (-not [string]::IsNullOrEmpty($esc) -and $esc -ne $Secret) { $t = $t.Replace($esc, $script:TcPasswordMask) }
+            $t = $t.Replace($Secret, $script:TcPasswordMask)
+        }
+        $t = [regex]::Replace($t, '(?is)<TreeItem>.*?</TreeItem>', '<TreeItem>(omitted)</TreeItem>')
+        $t = [regex]::Replace($t, '(?is)<(AddRoute|AddProjectRoute|RoutePrj)>.*', '<$1>(omitted)')
+        $t = [regex]::Replace($t, '(?is)(<(?<n>[A-Za-z0-9_.:-]*(?:password|passwd|pwd)[A-Za-z0-9_.:-]*)(?:\s[^>]*)?>).*?(</\k<n>\s*>)', '$1***$2')
+        $t = [regex]::Replace($t, '(?i)([A-Za-z0-9_.:-]*(?:password|passwd|pwd)[A-Za-z0-9_.:-]*\s*=\s*)("[^"]*"|''[^'']*'')', '$1"***"')
+    }
+    catch { return $script:TcMaskedText }
     return $t
 }

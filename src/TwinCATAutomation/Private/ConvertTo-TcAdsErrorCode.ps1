@@ -88,7 +88,7 @@ $script:TcErrorHints['TREEITEM_PATH_INVALID'] = 'Path 要是完整 tree path(用
 $script:TcErrorHints['TREEITEM_READ_FAILED'] = 'LookupTreeItem 之後讀節點(Name / Child / ProduceXml)失敗,什麼都沒改:用 Get-TcIdeModalDialog 檢查 XAE 有沒有 dialog,再重跑同一個 tool;一直失敗就用 GetProjectTree 確認節點還在'
 $script:TcErrorHints['TREEITEM_ALREADY_EXISTS'] = '同名的子節點已經存在,什麼都沒建立 / 匯入:換一個 Name,或確定要取代時先 DeleteChild(帶 ConfirmName,先 dry-run)再重試'
 $script:TcErrorHints['TREEITEM_CREATE_FAILED'] = 'CreateChild 被 XAE 拒絕(例如 E_NOTIMPL:這個節點不支援新增子節點;E_ACCESSDENIED:檔案不能編輯),什麼都沒建立(data.backupPath 是父節點的備份)。確認 Path 是父節點、SubType / VInfo 是手冊(TE1000)或 InfoSys 寫的值;有專用 tool(AddPou / AddDut / AddGvl / IoScan)就改用它'
-$script:TcErrorHints['TREEITEM_VERIFY_FAILED'] = '修改呼叫有返回,但讀回不符(data.mismatches 的 expected / actual;data.unexpectedChanges 是片段以外、或父節點裡不該變卻變了的欄位;data.missingChildren / addedChildren 是建立 / 匯入後子節點名稱不是「原有的加一個」;或節點建立後找不到、刪除後還在):不要當成功。看 data.backupPath(寫入前的 ProduceXml)與 data.backupFiles,用 ProduceXml 確認目前內容;要還原就用 ConsumeXml 送回備份裡對應的欄位(先 dry-run),刪錯的節點用 ImportChild 匯入 data.exportPath'
+$script:TcErrorHints['TREEITEM_VERIFY_FAILED'] = '修改呼叫有返回,但讀回不符(data.mismatches 的 expected / actual;data.unexpectedChanges 是片段以外、或父節點裡不該變卻變了的欄位;data.missingChildren / addedChildren 是建立 / 匯入後子節點名稱不是「原有的加一個」;或節點建立後找不到、刪除後還在):不要當成功。看 data.backupPath(寫入前的 ProduceXml)與 data.backupFiles,用 ProduceXml 確認目前內容;要還原就用 ConsumeXml 送回備份裡對應的欄位(先 dry-run),刪錯的節點用 ImportChild 匯入 data.exportPath;備份裡的密碼欄位(password / passwd / pwd)一律是 ***,不能拿來還原密碼，要在 XAE 重新輸入'
 $script:TcErrorHints['TREEITEM_DELETE_NAME_MISMATCH'] = 'ConfirmName 和要刪的節點名稱不一致(data.nodeName,大小寫要相同),什麼都沒刪。先用 LookupTreeItem 確認 Path 指到的就是要刪的節點,再把 ConfirmName 設成 data.nodeName 重試(先 dry-run)'
 $script:TcErrorHints['TREEITEM_DELETE_FAILED'] = 'DeleteChild 被 XAE 拒絕(E_NOTIMPL:父節點不支援刪除;E_ACCESSDENIED:檔案不能編輯),節點還在。data.backupPath / exportPath 是刪除前的備份。用 Get-TcIdeModalDialog 檢查 dialog;有專用 tool 就改用它。data.reason = parent-mismatch:節點回報的 PathName 上層和 Path 推算的父節點不同,沒有呼叫 DeleteChild;用 LookupTreeItem 確認實際路徑(data.itemParentPath)後用那個路徑重跑'
 $script:TcErrorHints['TREEITEM_INVALID_VALUE'] = '片段裡已知欄位的值不合法(data.invalidFields:path / value / rule),什麼都沒寫。XAE 自己不檢查(實測 2026-10-30:TaskDef/CycleTime 給 0、負數、文字都會寫入，文字變 0),所以由模組擋。改成合法的值(CycleTime 是大於 0 的整數，單位 100 ns,20000 = 2 ms)再重試'
@@ -102,6 +102,7 @@ $script:TcXmlMergeReasonHints = @{
     'structure-mismatch'       = '片段裡的最底層元素在目前的 ProduceXml 是有子元素的節點，或片段在有子元素的地方放了文字(data.structurePaths),什麼都沒送。值只能放在最底層元素：先 ProduceXml,把片段往下寫到真正的欄位，例如 <TreeItem><TaskDef><CycleTime>40000</CycleTime></TaskDef></TreeItem>,不要送 <TaskDef/> 或 <TaskDef>123</TaskDef>'
     'repeated-count-mismatch'  = '片段裡同名重複元素的數量和目前的 XML 不同(data.repeatedCountMismatches:path / fragmentCount / currentCount),什麼都沒送;XAE 怎麼合併數量不同的重複元素未實測。先 ProduceXml,把那一組重複元素全部照目前的數量和順序抄進片段，只改要改的值'
     'attributes-not-supported' = '片段裡有 XML attribute(data.attributePaths),什麼都沒送。目前只支援 element 值(XAE 怎麼合併 attribute 未實測):拿掉所有 attribute(包含 xmlns),只送元素和它的文字值'
+    'secret-only'              = '片段裡有變動的欄位全是密碼欄位(名稱含 password / passwd / pwd,data.secretPaths):ProduceXml 一律把它顯示成 ***,寫入後無法讀回驗證，什麼都沒送。密碼請在 XAE 裡直接輸入;片段值是 *** 時更不能送(會把密碼改成 ***)'
     'derived-only'             = '片段裡有變動的欄位全部是衍生欄位(TcModuleInstance 底下的 Context / ParameterValues,data.derivedPaths),XAE 會依來源欄位自己重算，寫入後也無法讀回驗證，什麼都沒送。改送來源欄位，例如改 TaskDef/CycleTime 而不是 Context/CycleTime'
 }
 # PLC_LOGGED_IN raised inside a generic tree tool: {operation} = the operation of New-TcTreeItemErrorResult.
@@ -222,7 +223,7 @@ $script:TcErrorHints['ROUTE_READ_FAILED'] = 'TIRR 的 ProduceXml 讀不到 Route
 $script:TcErrorHints['ROUTE_SEARCH_REQUIRES_LOCAL_TARGET'] = 'XAE 只能從本機系統搜尋(實測 target = UmRT 也不行):先 Set-TcTarget -AmsNetId <本機 system 的 AmsNetId(data.localNetId)> -NoPlatformSwitch,再 Find-TcAdsTarget,做完再 Set-TcTarget 回原本的 target(data.target)'
 $script:TcErrorHints['ROUTE_SEARCH_FAILED'] = '搜尋被 XAE 拒絕:用 Get-TcIdeModalDialog 檢查 dialog,確認 -Search 是 IPv4 或 host name 後重跑 Find-TcAdsTarget'
 $script:TcErrorHints['ROUTE_ALREADY_EXISTS'] = '已經有到這個 NetId 的 route(data.existingRoutes):用 Get-TcAdsRoutes 確認，不需要再加'
-$script:TcErrorHints['ROUTE_PASSWORD_MISSING'] = '先在執行模組的行程設定環境變數(MCP:在 client 設定的 server env 加),再用 Add-TcAdsRoute -PasswordEnv <變數名稱> 重跑;不要把密碼當參數值傳'
+$script:TcErrorHints['ROUTE_PASSWORD_MISSING'] = '先在執行模組的行程設定環境變數(MCP:在 client 設定的 server env 加),變數名稱一定要是 TCAUTO_ROUTE_PW 或 TCAUTO_ROUTE_PW_<後綴>(只讀 Process scope),再用 Add-TcAdsRoute -PasswordEnv TCAUTO_ROUTE_PW 重跑;不要把密碼當參數值傳'
 $script:TcErrorHints['ROUTE_ADD_FAILED'] = 'AddRoute / AddProjectRoute 被 XAE 拒絕(訊息已去掉密碼與 XML):確認遠端 IP / NetId / 帳號，用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcAdsRoutes 看目前的 route'
 $script:TcErrorHints['ROUTE_VERIFY_FAILED'] = '指令有返回但 TIRR 讀回沒有這條 route:不要當成功。用 Get-TcAdsRoutes 看 data.target 的 route 表(TIRR 只顯示目前 target 的),必要時 Set-TcTarget 切到另一端再看'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'

@@ -919,6 +919,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:修改呼叫有返回,但讀回不符:`ConsumeXml` 讀回的值和片段不同(`data.mismatches` 的 `expected` / `actual`),或片段以外的非衍生欄位變了(`data.unexpectedChanges`:`path`、`kind` = `changed` / `removed` / `added`、`before`、`after`;重複元素數量變了會顯示成 removed / added);`CreateChild` / `ImportChild` 之後找不到新節點,或父節點原有的值少了 / 變了(`data.parentUnchanged=false`、`data.unexpectedChanges`,這時新節點已經建立);`DeleteChild` 之後節點還在。`success` 一定是 false。
 - **為什麼**:XAE 對未知元素、錯的路徑會回 S_OK 但什麼都不改(實測 2026-10-30,task 2.1);不讀回就會誤報成功(#28 / #32)。
+- **密碼欄位**:備份與 ProduceXml 裡的密碼欄位都是 `***`(第 3 期 review S5),**不能拿備份還原密碼**,要在 XAE 重新輸入。
 - **下一步**:`ProduceXml` 看目前內容;`data.backupPath` 是寫入前的 XML,`data.backupFiles` 是磁碟檔副本。要還原欄位就把備份裡對應的元素做成片段再 `ConsumeXml`(先 dry-run);刪錯的節點用 `ImportChild` 匯入 `data.exportPath`。
 
 ### TREEITEM_DELETE_NAME_MISMATCH
@@ -963,6 +964,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `attributes-not-supported`:片段有 XML attribute(含 `xmlns`,`data.attributePaths`)。目前只支援 element 值。
   - `structure-mismatch`:片段的最底層元素在目前的 XML 是有子元素的節點,例如 `<TreeItem><TaskDef/></TreeItem>`、`<TaskDef>123</TaskDef>`;或片段在有子元素的元素裡放了文字(`data.structurePaths`)。
   - `repeated-count-mismatch`:同名重複元素的數量和目前的 XML 不同,例如目前有兩個 `CPU`,片段只放一個(`data.repeatedCountMismatches`:`path`、`fragmentCount`、`currentCount`)。
+  - `secret-only`:片段有變動的欄位全是密碼欄位(元素或 attribute 名稱含 `password` / `passwd` / `pwd`,`data.secretPaths`)。所有 ProduceXml 都把密碼遮成 `***`,寫入後無法讀回，片段值是 `***` 也不能當成「沒變」(送出會把密碼改成 `***`),所以不送。片段裡同時有可驗證的欄位時照送，密碼欄位不比對、寫進 `data.warnings` / `data.skippedSecret`,`data.changes` 的值一律是 `***`。
   - `derived-only`:片段有變動的欄位全是 `TcModuleInstance` 底下的 `Context` / `ParameterValues`(`data.derivedPaths`);XAE 會依來源欄位重算,讀回也不比對,所以等於沒驗證。片段裡同時有來源欄位和衍生欄位時照送,`data.warnings` 註明衍生欄位不驗證。
 - **值的比對**(讀回、全量比對):先去頭尾空白做 Ordinal(區分大小寫)比對;不同時,兩邊都能解析成數字才比數值(十進位,或 `#x` 十六進位,前綴不分大小寫,例如 `#x1E` = `#x1e` = `30`);其他文字一律區分大小寫。
 - **為什麼**:實測 2026-10-30(4026 VS2022,task 2.1):根元素錯回 `E_FAIL`「No TreeItem found.」,語法錯回 `E_FAIL`,都不會部分寫入;**未知元素或錯的路徑回 S_OK 但什麼都不改**,呼叫端看不出來,所以模組在送出前先比對路徑。
@@ -1320,7 +1322,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **節點**:`TIRR`(ItemName `Routes`,ItemType 31;TE1000 v1.7.0 §6.3.11 p.211、§6.3.17 p.220–221、§6.4 p.222–225)。ProduceXml 是**目前 target**(`Set-TcTarget`)的 route 表:`RoutePrj/Target`、`ActualRoutes`、`StaticRoutes`(Name、Address、NetId、Type、有時 Flags)、`ProjectRoutes`、`TargetList`(probe 第 22 題)。`Get-TcAdsRoutes`(MCP `GetAdsRoutes`)唯讀。
 - **搜尋**:`Find-TcAdsTarget`(`FindAdsTargets`)送 `BroadcastSearch` 或 `Search`(4020.10 起)。**target 不是本機 system 時 XAE 直接拒絕**(本機 UmRT 也算不是;probe 第 23 題),模組不會自動切 target,回 `ROUTE_SEARCH_REQUIRES_LOCAL_TARGET`。本機時同步約 4.05 s;probe 一台都沒找到，所以空清單不代表網路上沒有 target。
-- **新增**:`Add-TcAdsRoute`(`AddAdsRoute`)送 `AddRoute`(要遠端帳密)或 `-ProjectRoute` 的 `AddProjectRoute`(只寫專案)。**未實測**(沒有第二台 target,probe 第 24、25、27 題)。密碼只收 `-PasswordEnv`(環境變數名稱;MCP 要在 client 設定的 server `env` 裡設)或 PowerShell 的 `SecureString`,回傳、錯誤訊息、hint、log、備份都不含密碼與 XML。AddRoute 的帳密在網路上只用固定 key 保護(Beckhoff Security Advisory 2017-002,CVE-2017-16718),只在可信網路用。只能建未加密的 route(手冊 p.220)。
+- **新增**:`Add-TcAdsRoute`(`AddAdsRoute`)送 `AddRoute`(要遠端帳密)或 `-ProjectRoute` 的 `AddProjectRoute`(只寫專案)。**未實測**(沒有第二台 target,probe 第 24、25、27 題)。密碼只收 `-PasswordEnv`(環境變數名稱，只讀 Process scope,名稱一定要是 `TCAUTO_ROUTE_PW` 或 `TCAUTO_ROUTE_PW_<後綴>`,其他名稱回 `INVALID_PARAMS`,避免拿它讀別的環境變數;MCP 要在 client 設定的 server `env` 裡設)或 PowerShell 的 `SecureString`,回傳、錯誤訊息、hint、log、備份都不含密碼與 XML。AddRoute 的帳密在網路上只用固定 key 保護(Beckhoff Security Advisory 2017-002,CVE-2017-16718),只在可信網路用。只能建未加密的 route(手冊 p.220)。
 - **密碼遮罩**:所有 tree tool 的 ProduceXml(`Get-TcTreeItemXmlText`)、備份檔、錯誤訊息都把 `*Password` / `*Pwd` 元素與 attribute 的值換成 `***`(AddRoute 的 `<Password>` 是明文,TISY 的 `<LogonPassword>`「stored in the project」,手冊 p.220、p.222)。
 - **刪除 route:不支援**。手冊 p.220:「It is not possible to delete items directly via the Automation Interface」,只能改 `StaticRoutes.xml` 再重啟 TwinCAT service——重啟會把本機 UmRT(`TcSystemServiceUm`)一起停掉，所以沒有做成 tool。實際路徑(probe 第 26 題，實測 2026-11-01 本機 TwinCAT 3.1 / Windows 11):
   - XAR(TcSysSrv):`%TWINCAT3DIR%\Target\StaticRoutes.xml` = `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`,一般使用者只有讀(要 admin)。
@@ -1350,7 +1352,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### ROUTE_PASSWORD_MISSING
 
-- **現象**:AddRoute 沒有密碼來源，或 `-PasswordEnv` 指的環境變數在這個行程是空的。
+- **現象**:AddRoute 沒有密碼來源，或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。
 - **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),再 `Add-TcAdsRoute -PasswordEnv <名稱>`;不要把密碼當參數值傳。
 
 ### ROUTE_ADD_FAILED

@@ -6,40 +6,80 @@
 # Element / attribute names whose value is a password: masked as *** in every ProduceXml text the
 # module returns or writes into a backup (research/phase3-api.md "Password": TE1000 v1.7.0 6.3.17
 # p.220 AddRoute <Password>, 6.3.18 p.222 TISY <BootSettings><LogonPassword> "stored in the
-# project"). Whole names only, so e.g. 'Bypass' is not touched.
-$script:TcPasswordNamePattern = '(?:[A-Za-z0-9_.-]*Password[A-Za-z0-9_.-]*|[A-Za-z0-9_.-]*Pwd)'
+# project"). A name containing password / passwd / pwd (any case) counts; 'Bypass' does not.
+$script:TcPasswordNamePattern = '(?i)(password|passwd|pwd)'
 $script:TcPasswordMask = '***'
+$script:TcMaskedText = '(masked)'
+
+function Test-TcSecretName {
+    <#
+    .SYNOPSIS
+        True for an element / attribute (local) name that holds a password (password / passwd / pwd, any case).
+    .PARAMETER Name
+        Name.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Name)
+    return (-not [string]::IsNullOrEmpty($Name) -and $Name -match $script:TcPasswordNamePattern)
+}
 
 function ConvertTo-TcMaskedXml {
     <#
     .SYNOPSIS
-        Replaces the value of every Password / LogonPassword / *Pwd element and attribute in an XML text with ***.
+        Replaces the content of every password element (Password, LogonPassword, Passwd, *Pwd ...) and the value of every such attribute with ***.
     .DESCRIPTION
-        Text based (the XML is not re-serialized, so formatting and the other values stay byte for
-        byte): <XxxPassword ...>value</XxxPassword> -> <XxxPassword ...>***</XxxPassword> (only
-        elements without child elements; an empty element stays empty), and XxxPassword="value"
-        inside a start tag -> XxxPassword="***". Name match is case-insensitive on the whole
-        element / attribute name ($script:TcPasswordNamePattern). Never throws; $null / empty text
-        is returned as it is.
+        The text is parsed as XML (XmlReader with DtdProcessing Prohibit and no resolver: no DTD, no
+        external entity; whitespace kept). Every element whose local name matches
+        $script:TcPasswordNamePattern loses ALL its child nodes (text, CDATA, child elements,
+        comments) and gets the text *** (an empty element stays empty); every matching attribute of
+        any element gets ***. Nothing matched: the text is returned unchanged (byte for byte);
+        otherwise the re-serialized document. A text that does not parse (an error message, a
+        fragment) but contains passw / pwd is replaced as a whole by '(masked)'; other text is
+        returned as it is. Never throws.
     .PARAMETER Xml
         XML text (ProduceXml output, a backup, an error message).
     #>
     [CmdletBinding()]
     param([Parameter()][AllowNull()][AllowEmptyString()][string]$Xml)
     if ([string]::IsNullOrEmpty($Xml)) { return $Xml }
-    if ($Xml -notmatch '(?i)(password|pwd)') { return $Xml }
-    $n = $script:TcPasswordNamePattern
-    $out = $Xml
+    if ($Xml -notmatch '(?i)(passw|pwd)') { return $Xml }
+    $doc = $null
+    $sr = $null
+    $reader = $null
     try {
-        $out = [regex]::Replace($out, "(?is)(<(?<n>(?:[A-Za-z0-9_.-]+:)?$n)(?:\s[^>]*)?>)([^<]+)(</\k<n>\s*>)", {
-                param($m) $m.Groups[1].Value + $script:TcPasswordMask + $m.Groups[3].Value
-            })
-        $out = [regex]::Replace($out, "(?is)(<[A-Za-z_][^<>]*?\s(?:[A-Za-z0-9_.-]+:)?$n\s*=\s*)(""[^""]*""|'[^']*')", {
-                param($m) $m.Groups[1].Value + '"' + $script:TcPasswordMask + '"'
-            })
+        $settings = New-Object System.Xml.XmlReaderSettings
+        $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $doc = New-Object System.Xml.XmlDocument
+        $doc.XmlResolver = $null
+        $doc.PreserveWhitespace = $true
+        $sr = New-Object System.IO.StringReader($Xml)
+        $reader = [System.Xml.XmlReader]::Create($sr, $settings)
+        $doc.Load($reader)
     }
-    catch { return $Xml }
-    return $out
+    catch { return $script:TcMaskedText }
+    finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $sr) { $sr.Dispose() }
+    }
+    $changed = $false
+    try {
+        foreach ($el in @($doc.SelectNodes('//*'))) {
+            foreach ($a in @($el.get_Attributes())) {
+                if (Test-TcSecretName -Name $a.get_LocalName()) { $a.set_Value($script:TcPasswordMask); $changed = $true }
+            }
+            if (Test-TcSecretName -Name $el.get_LocalName()) {
+                if ($el.get_HasChildNodes()) {
+                    while ($el.get_HasChildNodes()) { $null = $el.RemoveChild($el.get_FirstChild()) }
+                    $null = $el.AppendChild($doc.CreateTextNode($script:TcPasswordMask))
+                }
+                $changed = $true
+            }
+        }
+    }
+    catch { return $script:TcMaskedText }
+    if (-not $changed) { return $Xml }
+    return $doc.OuterXml
 }
 
 function Get-TcExceptionHResult {

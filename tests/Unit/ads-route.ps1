@@ -19,7 +19,7 @@ $Sln = Join-Path $Root 'Route.sln'
 [System.IO.File]::WriteAllText($Sln, '')
 [System.IO.File]::WriteAllText((Join-Path $Root 'Prj\Prj.tsproj'), '<TcSmProject/>')
 $Secret = 'Xy7-unit-' + [guid]::NewGuid().ToString('N').Substring(0, 10)
-$env:TCAUTO_UNIT_ROUTE_PW = $Secret
+$env:TCAUTO_ROUTE_PW_UNIT = $Secret
 $Local = '192.168.50.168.1.1'
 
 function New-TirrXml {
@@ -79,6 +79,38 @@ try {
     Check 'backup files are masked too' (-not ([System.IO.File]::ReadAllText($b.backupPath)).Contains($Secret)) $b.backupPath
     $e = & $mod { param($s) (New-TcTreeItemErrorResult -ErrorRecord "ConsumeXml '<TreeItem><Password>$s</Password></TreeItem>' failed" -DefaultCode 'X' -Operation 'op').error.message } $Secret
     Check 'generic error messages are masked' (-not $e.Contains($Secret)) $e
+    # review S3: counter-examples of the reviewer (scratchpad mask.ps1): CDATA, entities, child elements,
+    # comments, Passwd / Pwd, every matching attribute, '>' inside another attribute
+    $cases = @(
+        '<a><Password>s3cret</Password></a>', '<a><password>s3cret</password></a>', '<a><LogonPassword>s3cret</LogonPassword></a>',
+        '<a><Password><![CDATA[s3cret]]></Password></a>', '<a><Password>s3&amp;cret</Password></a>', '<a Password="s3cret" Pwd="s3cret2"/>',
+        '<a Name="x>y" Password="s3cret"/>', '<a><Password><Value>s3cret</Value></Password></a>', '<a><Passwd>s3cret</Passwd></a>',
+        '<a><Password>s3cret<!-- c --></Password></a>', '<a><UserPassword xml:space="preserve">s3cret</UserPassword></a>')
+    foreach ($c in $cases) {
+        $m = & $mod { param($x) ConvertTo-TcMaskedXml -Xml $x } $c
+        Check "S3 mask: $c" (-not ($m -match 's3') -and $m -match '\*\*\*') $m
+    }
+    $m = & $mod { ConvertTo-TcMaskedXml -Xml 'failed: <Password>abc</Pass' }
+    Check 'S3 mask: text that does not parse but holds password -> (masked)' ($m -eq '(masked)') $m
+    $m = & $mod { ConvertTo-TcMaskedXml -Xml 'plain message without secrets' }
+    Check 'S3 mask: other text unchanged' ($m -eq 'plain message without secrets') $m
+    # review S4: the XML-escaped secret is replaced as well
+    $p1 = & $mod { Protect-TcSecretText -Text 'failed: <Password>p&amp;w</Password> Error parsing: TreeItem/RoutePrj/AddRoute' -Secret 'p&w' }
+    $p2 = & $mod { Protect-TcSecretText -Text "ConsumeXml '<TreeItem><RoutePrj><AddRoute><Password>p&amp;w</Password></AddRoute></RoutePrj></TreeItem>' failed" -Secret 'p&w' }
+    $p3 = & $mod { Protect-TcSecretText -Text "value 'p&amp;w' is invalid" -Secret 'p&w' }
+    Check 'S4 Protect-TcSecretText: escaped secret, fragments and password elements scrubbed' (-not ("$p1$p2$p3" -match 'p&amp;w|p&w') -and $p2 -match '\(omitted\)' -and $p3 -eq "value '***' is invalid") "$p1 | $p2 | $p3"
+    # review S5: password fields in the generic ConsumeXml
+    Reset-Mock
+    $r = Set-TcTreeItemXml -Path 'TISY' -Xml '<TreeItem><BootSettings><LogonPassword>new-pw-123</LogonPassword></BootSettings></TreeItem>' -DryRun $false
+    Check 'S5 ConsumeXml only a password field -> XML_MERGE_FAILED secret-only, nothing sent' ($r.error.code -eq 'XML_MERGE_FAILED' -and $r.data.reason -eq 'secret-only' -and @(Get-MockWrites).Count -eq 0 -and -not ((J $r) -match 'new-pw-123')) (J $r)
+    $r = Set-TcTreeItemXml -Path 'TISY' -Xml '<TreeItem><BootSettings><LogonPassword>***</LogonPassword></BootSettings></TreeItem>' -DryRun $false
+    Check 'S5 fragment value *** is not "unchanged" -> secret-only (would set the password to ***)' ($r.error.code -eq 'XML_MERGE_FAILED' -and $r.data.reason -eq 'secret-only' -and @(Get-MockWrites).Count -eq 0) (J $r)
+    $r = Set-TcTreeItemXml -Path 'TISY' -Xml '<TreeItem><BootSettings><AutoLogon>false</AutoLogon><LogonPassword>new-pw-123</LogonPassword></BootSettings></TreeItem>'
+    Check 'S5 dry-run with a password field: data.changes masks both values, warning' ($r.success -and @($r.data.changes | Where-Object { $_.secret -and $_.current -eq '***' -and $_.planned -eq '***' }).Count -eq 1 -and -not ((J $r) -match 'new-pw-123|Xy7-unit') -and @($r.data.warnings | Where-Object { $_ -like '*password fields*' }).Count -eq 1) (J $r.data)
+    $r = Set-TcTreeItemXml -Path 'TISY' -Xml '<TreeItem><BootSettings><AutoLogon>false</AutoLogon><LogonPassword>new-pw-123</LogonPassword></BootSettings></TreeItem>' -DryRun $false
+    Check 'S5 live with a password field: verified on the other fields, password not compared, no secret returned' ($r.success -and $r.data.verified -and @($r.data.skippedSecret) -contains 'TreeItem/BootSettings/LogonPassword' -and -not ((J $r) -match 'new-pw-123|Xy7-unit') -and -not ([System.IO.File]::ReadAllText([string]$r.data.backupPath)).Contains($Secret)) (J $r.data)
+    $hv = & $mod { Get-TcErrorHint -Code 'TREEITEM_VERIFY_FAILED' }
+    Check 'S5 TREEITEM_VERIFY_FAILED hint: backups cannot restore a password' ($hv -match '\*\*\*') $hv
     $r = Get-TcTreeItem -Path 'NOPE^x'
     Check 'TREEITEM_NOT_FOUND root list includes TIRR' ($r.error.code -eq 'TREEITEM_NOT_FOUND' -and @($r.data.nearestChildren) -contains 'TIRR') (J $r.data)
 
@@ -109,21 +141,28 @@ try {
     Reset-Mock; Reset-BuildRequired
     $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator
     Check 'AddAdsRoute without a password source -> ROUTE_PASSWORD_MISSING' ($r.error.code -eq 'ROUTE_PASSWORD_MISSING') (J $r.error)
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_NOT_SET_X
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_NOT_SET_X
     Check 'AddAdsRoute empty environment variable -> ROUTE_PASSWORD_MISSING, hint PasswordEnv' ($r.error.code -eq 'ROUTE_PASSWORD_MISSING' -and $r.error.hint -match 'PasswordEnv') (J $r.error)
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv PATH
+    Check 'B1 AddAdsRoute -PasswordEnv PATH (not TCAUTO_ROUTE_PW*) -> INVALID_PARAMS, nothing read' ($r.error.code -eq 'INVALID_PARAMS' -and $r.error.message -match 'TCAUTO_ROUTE_PW') (J $r.error)
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv tcauto_route_pw_unit
+    Check 'B1 AddAdsRoute -PasswordEnv lower case -> INVALID_PARAMS' ($r.error.code -eq 'INVALID_PARAMS') (J $r.error)
+    $src = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Public\Add-TcAdsRoute.ps1'))
+    Check 'B1 AddAdsRoute reads the Process scope only (no User scope fallback)' (-not ($src -match "GetEnvironmentVariable\([^)]*'User'")) ''
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT
     Check 'AddAdsRoute bad NetId -> INVALID_PARAMS' ($r.error.code -eq 'INVALID_PARAMS') (J $r.error)
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -HostName cx1 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -HostName cx1 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT
     Check 'AddAdsRoute Address and HostName -> INVALID_PARAMS' ($r.error.code -eq 'INVALID_PARAMS') (J $r.error)
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW
-    Check 'AddAdsRoute dry-run: fields with password ***, source env, nothing sent, no secret anywhere' ($r.success -and $r.data.dryRun -and $r.data.fields.Password -eq '***' -and $r.data.passwordSource -eq 'env:TCAUTO_UNIT_ROUTE_PW' -and @(Get-MockWrites).Count -eq 0 -and (Test-NoSecret $r)) (J $r.data)
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW -DryRun $false
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT
+    Check 'AddAdsRoute dry-run: fields with password ***, source env, nothing sent, no secret anywhere' ($r.success -and $r.data.dryRun -and $r.data.fields.Password -eq '***' -and $r.data.passwordSource -eq 'env:TCAUTO_ROUTE_PW_UNIT' -and @(Get-MockWrites).Count -eq 0 -and (Test-NoSecret $r)) (J $r.data)
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT -DryRun $false
+    Check 'S13 AddAdsRoute sends only <RoutePrj> below <TreeItem> (no ItemName / PathName)' ($global:T.LastXml.StartsWith('<TreeItem><RoutePrj><AddRoute>')) ''
     Check 'AddAdsRoute live: AddRoute sent with the real password, route read back, verified' ($r.success -and $r.data.verified -and @($r.data.readback)[0].netId -eq '5.1.2.3.1.1' -and $global:T.LastXml -match "<Password>$([regex]::Escape($Secret))</Password>" -and $global:T.LastXml -match '<RemoteNetId>5.1.2.3.1.1</RemoteNetId>') (J $r.data)
     Check 'AddAdsRoute live: no secret in the result or the backup, no BUILD_REQUIRED (not a project change)' ((Test-NoSecret $r ([string]$r.data.backupPath)) -and (Test-Path -LiteralPath ([string]$r.data.backupPath)) -and $null -eq (Get-CodeChanged)) "$($r.data.backupPath)"
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW -DryRun $false
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT -DryRun $false
     Check 'AddAdsRoute same NetId again -> ROUTE_ALREADY_EXISTS' ($r.error.code -eq 'ROUTE_ALREADY_EXISTS') (J $r.error)
     Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'add-fail'
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW -DryRun $false
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT -DryRun $false
     Check 'AddAdsRoute XAE error quoting XML and password -> ROUTE_ADD_FAILED, message without secret / XML' ($r.error.code -eq 'ROUTE_ADD_FAILED' -and (Test-NoSecret $r) -and $r.error.message -notmatch '<RemoteNetId>') (J $r.error)
     Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'add-noop'
     $sec = ConvertTo-SecureString $Secret -AsPlainText -Force
@@ -135,7 +174,7 @@ try {
     $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -ProjectRoute -DryRun $false
     Check 'AddAdsRoute -ProjectRoute: AddProjectRoute, ProjectRoutes read back, BUILD_REQUIRED' ($r.success -and $global:T.LastXml -match '<AddProjectRoute><Name>CX-1</Name><NetId>5.1.2.3.1.1</NetId><IpAddr>192.168.1.20</IpAddr></AddProjectRoute>' -and (Get-CodeChanged) -match 'Add-TcAdsRoute') (J $r.data)
     Reset-Mock; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
-    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_UNIT_ROUTE_PW -DryRun $false
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT -DryRun $false
     Check 'AddAdsRoute modal dialog -> IDE_MODAL_DIALOG, nothing sent' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and @(Get-MockWrites).Count -eq 0 -and (Test-NoSecret $r)) (J $r.error)
 
     # ===== hints / tools.json
@@ -147,7 +186,8 @@ try {
     $byName = @{}; foreach ($tt in $tools) { $byName[$tt.name] = $tt }
     $tt = $byName['AddAdsRoute']
     Check 'tools.json AddAdsRoute: destructive, DryRun true, PasswordEnv offered, no Password parameter, NOT MEASURED in the description' ($null -ne $tt -and $tt.annotations.destructiveHint -eq $true -and $tt.inputSchema.properties.DryRun.default -eq $true -and $null -ne $tt.inputSchema.properties.PasswordEnv -and $null -eq $tt.inputSchema.properties.Password -and $tt.description -match '^NOT MEASURED') (J $tt.inputSchema.properties.PSObject.Properties.Name)
-    Check 'tools.json GetAdsRoutes read-only, FindAdsTargets present' ($byName['GetAdsRoutes'].annotations.readOnlyHint -eq $true -and $null -ne $byName['FindAdsTargets']) ''
+    Check 'tools.json GetAdsRoutes read-only; N3 FindAdsTargets read-only + openWorld' ($byName['GetAdsRoutes'].annotations.readOnlyHint -eq $true -and $byName['FindAdsTargets'].annotations.readOnlyHint -eq $true -and $byName['FindAdsTargets'].annotations.openWorldHint -eq $true) (J $byName['FindAdsTargets'].annotations)
+    Check 'tools.json AddAdsRoute description names the TCAUTO_ROUTE_PW rule' ($byName['AddAdsRoute'].description -match 'TCAUTO_ROUTE_PW') ''
     Check 'tools.json has no RemoveAdsRoute (not supported)' ($null -eq $byName['RemoveAdsRoute']) ''
 }
 catch {
@@ -155,7 +195,7 @@ catch {
 }
 finally {
     & $mod { $script:TcIdeConnected = $false; $script:TcSolutionPath = $null }
-    Remove-Item Env:\TCAUTO_UNIT_ROUTE_PW -ErrorAction SilentlyContinue
+    Remove-Item Env:\TCAUTO_ROUTE_PW_UNIT -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue
