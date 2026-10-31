@@ -27,6 +27,8 @@ $Sln = Join-Path $Root 'Boot.sln'
 $global:Tsproj = Join-Path $TsDir 'Boot.tsproj'
 [System.IO.File]::WriteAllText($global:Tsproj, '<TcSmProject />')
 $global:BootDir = $BootDir
+# the module reports long path names (TEMP may be spelled with 8.3 short names, e.g. RUNNER~1 on CI)
+$BootDirLong = & $mod { param($p) Get-TcLongPath $p } $BootDir
 
 $global:B = @{}
 function Reset-Mock {
@@ -101,13 +103,25 @@ function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
 $dialog = [PSCustomObject]@{ Title = 'Microsoft Visual Studio'; Text = 'Assertion Failed'; Kind = 'unknown'; Buttons = @('OK') }
 
 try {
+    # ===== CI: the solution folder spelled with 8.3 short names (TEMP = C:\Users\RUNNER~1\... on GitHub)
+    $shortTs = $null
+    try { $shortTs = (New-Object -ComObject Scripting.FileSystemObject).GetFile($global:Tsproj).ShortPath } catch { $shortTs = $null }
+    if ($shortTs -and $shortTs -ne $global:Tsproj) {
+        Reset-Mock; Reset-BuildRequired
+        $saveTs = $global:Tsproj; $global:Tsproj = $shortTs
+        $r = New-TcBootProject
+        $global:Tsproj = $saveTs
+        Check 'Boot: .tsproj given with 8.3 short names -> the updated Port_851.app is found, success, long paths reported' ($r.success -and $r.data.bootDir -eq $BootDirLong -and @($r.data.bootFiles | Where-Object { $_.path -eq (Join-Path $BootDirLong 'Port_851.app') -and $_.updated }).Count -eq 1) (J $r)
+    }
+    else { Check 'Boot: 8.3 short names not available on this volume (check skipped)' $true "$shortTs" }
+
     # ===== success
     Reset-Mock; Reset-BuildRequired
     & $mod { $null = Register-TcCodeChange -Result $null -Change 'Write-TcPouCode MAIN (earlier)' }
     $r = New-TcBootProject
     $app = @($r.data.bootFiles | Where-Object { $_.path -like '*\Port_851.app' })[0]
     Check 'Boot: called once on the PLC root with bActivate false' ($r.success -and $global:B.Calls.Count -eq 1 -and $global:B.Calls[0] -eq 'TIPC^plc|False') (J $global:B.Calls)
-    Check 'Boot: boot folder <tsproj dir>\_Boot\<platform>\Plc, Port_851.app updated, Port_852 not listed' ($r.data.bootDirDerived -and $r.data.bootDir -eq $BootDir -and $app.updated -and $app.size -gt 0 -and @($r.data.bootFiles | Where-Object { $_.path -like '*Port_852*' }).Count -eq 0 -and @($r.data.bootFiles | Where-Object { $_.path -like '*Port_851_boot.tizip' -and $_.updated }).Count -eq 1) (J $r.data.bootFiles)
+    Check 'Boot: boot folder <tsproj dir>\_Boot\<platform>\Plc, Port_851.app updated, Port_852 not listed' ($r.data.bootDirDerived -and $r.data.bootDir -eq $BootDirLong -and $app.updated -and $app.size -gt 0 -and @($r.data.bootFiles | Where-Object { $_.path -like '*Port_852*' }).Count -eq 0 -and @($r.data.bootFiles | Where-Object { $_.path -like '*Port_851_boot.tizip' -and $_.updated }).Count -eq 1) (J $r.data.bootFiles)
     Check 'Boot: data.warnings says it saves the project' (@($r.data.warnings | Where-Object { $_ -match 'saves the project' }).Count -eq 1) (J $r.data.warnings)
     Check 'Boot: BUILD_REQUIRED unchanged (the earlier reason stays, nothing new recorded)' ((Get-CodeChanged) -match 'Write-TcPouCode MAIN \(earlier\)' -and (Get-CodeChanged) -notmatch 'Boot' -and $null -eq $r.data.PSObject.Properties['buildRequired']) "$(Get-CodeChanged)"
     Reset-BuildRequired

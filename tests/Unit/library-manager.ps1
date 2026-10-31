@@ -363,7 +363,7 @@ try {
     $r = Install-TcLibrary -LibraryPath $newf
     Check 'Install dry-run (default): not installed yet, no call' ($r.success -and $r.data.dryRun -and $r.data.alreadyInstalled -eq $false -and $r.data.identityFromFileName.name -eq 'NewLib' -and (Get-WriteCalls).Count -eq 0) (J $r.data)
     $r = Install-TcLibrary -LibraryPath $newf -DryRun $false
-    Check 'Install: InstallLibrary(System, path, false), ScanLibraries readback lists the new entry, nothing recorded' ($r.success -and @(Get-WriteCalls)[-1] -eq "InstallLibrary|System|$newf|False" -and @($r.data.installed).Count -eq 1 -and $r.data.installed[0].name -eq 'NewLib' -and $null -eq (Get-CodeChanged)) "$(J $r.data) $(@($global:L.Calls) -join ';')"
+    Check 'Install: InstallLibrary(System, path, false), ScanLibraries readback lists the new entry, nothing recorded' ($r.success -and @(Get-WriteCalls)[-1] -eq "InstallLibrary|System|$([System.IO.Path]::GetFullPath($newf))|False" -and @($r.data.installed).Count -eq 1 -and $r.data.installed[0].name -eq 'NewLib' -and $null -eq (Get-CodeChanged)) "$(J $r.data) $(@($global:L.Calls) -join ';')"
     Reset-Mock
     $global:L.Mode = 'exists'
     $r = Install-TcLibrary -LibraryPath $odd -DryRun $false

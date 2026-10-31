@@ -53,7 +53,10 @@ function Get-TcBootFileSet {
         catch { $out.Reason = "the .tsproj of PLC '$PlcName' is not found ($($_.Exception.Message))" }
     }
     if ($null -eq $out.Reason) {
-        $boot = Join-Path ([System.IO.Path]::GetDirectoryName($tsproj)) '_Boot'
+        # Long path names everywhere (Get-TcLongPath): a folder spelled with 8.3 short names
+        # (TEMP = C:\Users\RUNNER~1\... on the GitHub runner) came back from Get-ChildItem with the
+        # long names, so the expected Port_<port>.app path never matched a listed file.
+        $boot = Join-Path (Get-TcLongPath ([System.IO.Path]::GetDirectoryName($tsproj))) '_Boot'
         $plats = @($Platform)
         if (-not [string]::IsNullOrWhiteSpace($ProjectPlatform) -and $ProjectPlatform -ne $Platform) { $plats += $ProjectPlatform }
         $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path $boot $_) 'Plc' })
@@ -62,7 +65,7 @@ function Get-TcBootFileSet {
         foreach ($d in $out.Dirs) {
             if (-not (Test-Path -LiteralPath $d -PathType Container)) { continue }
             foreach ($f in @(Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "Port_$AdsPort.*" -or $_.Name -like "Port_$($AdsPort)_*" })) {
-                $out.Files[$f.FullName] = Get-TcOutputFileFacts -Path $f.FullName
+                $out.Files[(Join-Path $d $f.Name)] = Get-TcOutputFileFacts -Path $f.FullName
             }
         }
         return $out
@@ -75,7 +78,7 @@ function Get-TcBootFileSet {
     try {
         foreach ($f in @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -Depth 4 -File -Filter $pattern -ErrorAction SilentlyContinue |
                     Where-Object { $_.FullName -match '\\_Boot\\[^\\]+\\Plc\\[^\\]+$' -and $_.FullName -notmatch '\\\.tcauto-backup\\' })) {
-            $out.Files[$f.FullName] = Get-TcOutputFileFacts -Path $f.FullName
+            $out.Files[(Get-TcLongPath $f.FullName)] = Get-TcOutputFileFacts -Path $f.FullName
         }
     }
     catch { $out.Reason += "; the search below '$SolutionDir' failed ($($_.Exception.Message))" }
