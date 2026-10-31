@@ -37,6 +37,17 @@
 - 參數是 `ProduceXml` 結果的子集，也就是要修改的節點。實作時先把片段合併到目前的 XML,再整份 ConsumeXml。
 - 原因：讓 agent 整份 XML 照抄回寫，容易把沒看懂的欄位改掉。
 - 這點要先在 UmRT 實測確認 ConsumeXml 是否接受部分 XML。如果 Beckhoff 本身就接受部分 XML,就直接傳片段，不做合併。
+- **實測結果(2.1,自建 client,實測 2026-10-30 4026 VS2022 XAE 3.1.4026.18,`TIRT^PlcTask`,離線)**:Beckhoff 本身就是合併語意，所以直接傳片段，不做合併。
+  - 根元素必須是 `<TreeItem>`,路徑照 ProduceXml 的結構，例如 `TreeItem/TaskDef/CycleTime`。TE1000 v1.7.0 §5.2.1.1 寫 "XML document or XML snippet",§6.3.12 有 `<TreeItem><TaskDef><CpuAffinity>` 片段範例。
+  - 片段沒列到的欄位保留原值。只送片段，和送整份但只改一欄，讀回結果完全相同。
+  - **未知元素或錯的路徑會被靜默忽略**:回 S_OK,但什麼都沒改。根元素錯，或 XML 語法錯，回 0x80004005 E_FAIL,不會部分寫入。
+  - **XAE 不驗證值**:CycleTime 給 0、負數、文字，都照收寫入。文字會被轉成 0。
+  - 改 Task 會即時寫回 `.TcTTO`,這時還沒存檔。
+- **對實作的影響**:
+  - 送出前先檢查路徑：片段裡每個最底層元素的路徑，都要在目前的 ProduceXml 找得到。找不到就回 `XML_MERGE_FAILED`,不送出。
+  - 讀回比對時排除衍生欄位(`TcModuleInstance` 的 Context、ParameterValues)。
+  - 已知欄位(例如 CycleTime 必須大於 0)由模組自己驗證值。
+  - D2 的備份除了 ProduceXml,還要包含節點對應的磁碟檔(例如 `.TcTTO`)。
 
 ### D4. 第 0 期先查證再修
 - `ProduceScan` / `LinkTo`:先查 TE1000 手冊和 InfoSys,再在 UmRT 實測。只有確定錯了才改。

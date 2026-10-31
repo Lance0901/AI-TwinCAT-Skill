@@ -39,6 +39,6 @@ Read-TcVariable -Path "MAIN.nCounter"   # 5. auto-reconnects after a later Enabl
 
 Claude Code `adapters/claude-code/SKILL.md` · Codex `adapters/codex/tools.json` · Antigravity `adapters/antigravity/plugin.yaml` · MCP (Claude Desktop / any client) `mcp-server/README.md`
 
-## Available Commands (38)
+## Available Commands (45)
 
 Full list with parameters: `adapters/claude-code/SKILL.md`, or `Get-Command -Module TwinCATAutomation` after importing the module.

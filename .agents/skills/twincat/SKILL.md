@@ -108,6 +108,17 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Set-TcVariableLink` | `-PlcVariable <tree path> -IoChannel <tree path>` | Link PLC variable to I/O variable (verified) |
 | `Remove-TcVariableLink` | `-PlcVariable <tree path> [-IoChannel <tree path>]` | Remove a variable link (verified) |
 
+### Generic Tree Items (dry-run first; prefer the dedicated commands)
+| Command | Parameters | Description |
+|---------|-----------|-------------|
+| `Get-TcTreeItem` | `-Path <tree path>` | LookupTreeItem: name, type, children (read-only) |
+| `Get-TcTreeItemXml` | `-Path <tree path> [-Recursive]` | ProduceXml (read-only) |
+| `New-TcTreeItem` | `-Path <parent> -Name <n> [-SubType <int>] [-Before <child>] [-VInfo <v>] [-DryRun $false]` | CreateChild; DryRun default true; backup + read-back |
+| `Set-TcTreeItemXml` | `-Path <tree path> -Xml '<TreeItem>...</TreeItem>' [-DryRun $false]` | ConsumeXml fragment; DryRun default true; path check, backup, read-back compare |
+| `Remove-TcTreeItem` | `-Path <tree path> -ConfirmName <name> [-DryRun $false]` | DeleteChild; ConfirmName must equal the node name; DryRun default true |
+| `Export-TcTreeItem` | `-Path <tree path> -FilePath <abs .xti>` | ExportChild to a new file; a PLC folder below TIPC (601) needs `.zip` (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured) |
+| `Import-TcTreeItem` | `-Path <parent> -FilePath <abs .xti> [-Name <n>] [-Before <child>] [-Reconnect $false] [-DryRun $false]` | ImportChild (`.zip` for a PLC folder); without `-Name` the name in the .xti is checked for a clash; DryRun default true; backup + read-back |
+
 ### Testing
 | Command | Parameters | Description |
 |---------|-----------|-------------|

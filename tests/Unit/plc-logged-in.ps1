@@ -1,6 +1,6 @@
 # Unit: task 1.8 PLC_LOGGED_IN (phase0-1.7 finding 4): Add-TcPou / Add-TcDut / Add-TcGvl while the PLC is
 # logged in. XAE's CreateChild error "Cannot add an object because it affects a device you are currently
-# logged into" (measured 2026-10-29, 4026 XAE in VS2022) -> PLC_LOGGED_IN with a PlcLogout hint, and an
+# logged into" (measured 2026-10-29, 4026 XAE in VS2022) -> PLC_LOGGED_IN with an Exit-TcPlcOnline (MCP PlcLogout) hint, and an
 # error returned by CreateChild itself records no BUILD_REQUIRED. No IDE: mock ITcSysManager whose
 # folder CreateChild throws; Resolve-TcPlcProjectPath / Get-TcIdeModalDialog / Invoke-TcPlcObjectSave stubbed.
 #   powershell.exe -NoProfile -File tests/Unit/plc-logged-in.ps1
@@ -53,7 +53,8 @@ $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
 $hint = & $mod { Get-TcErrorHint -Code 'PLC_LOGGED_IN' }
-Check 'PLC_LOGGED_IN hint registered and names PlcLogout / Exit-TcPlcOnline' ($hint -match 'PlcLogout' -and $hint -match 'Exit-TcPlcOnline') "$hint"
+# Cmdlet name only: the MCP server rewrites Exit-TcPlcOnline into PlcLogout ('PlcLogout(PlcLogout)' otherwise, phase1-2.8.md #5).
+Check 'PLC_LOGGED_IN hint registered and names Exit-TcPlcOnline (MCP: PlcLogout)' ($hint -match 'Exit-TcPlcOnline' -and $hint -notmatch 'PlcLogout') "$hint"
 
 # --- logged in: all three Add-* -> PLC_LOGGED_IN, hint, nothing recorded
 $global:MockMode = 'loggedin'

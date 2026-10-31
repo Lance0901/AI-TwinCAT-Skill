@@ -8,17 +8,17 @@
 - [x] 1.6 實測剩下未實測的 tool:CleanProject、DisconnectAds、GetIdeInfo、GetIoTree、GetPlcState、GetSystemState、OpenProject、PlcLogout、SendPlcProgram、SetPlcState、SetSystemState、WatchVariable、GetIdeModalDialog
 - [x] 1.7 實測 composite 和測試框架:RunLifecycle、NewTestCase、RunTest、RunTestCycle
 - [x] 1.8 1.6 和 1.7 發現的問題：會擋住本期的就修，其他開 issue
-- [ ] 1.9 更新 known-limitations 實測清單(合計等於 tool 總數);跑兩個 host 的 smoke test;發 v0.2.0-beta
+- [x] 1.9 更新 known-limitations 實測清單(合計等於 tool 總數);跑兩個 host 的 smoke test;發 v0.2.0-beta
 
 ## 2. 第 1 期：通用 tree 操作(→ v0.3.0-beta)
 
-- [ ] 2.1 實測 ConsumeXml 是否接受部分 XML,並決定 D3 的實作方式
-- [ ] 2.2 新增 `Private/TreeItem/`:路徑解析、備份、XML 合併、讀回比對等共用函式;補單元測試
-- [ ] 2.3 唯讀 tool:`LookupTreeItem`、`ProduceXml`
-- [ ] 2.4 修改 tool:`CreateChild`、`ConsumeXml`,預設 dry-run、要備份、要讀回驗證
-- [ ] 2.5 `DeleteChild`,要帶 ConfirmName,不接受 wildcard
-- [ ] 2.6 `ExportChild`、`ImportChild`
-- [ ] 2.7 新錯誤碼寫進 hint 表和 troubleshooting;tools.json 重新產生，修改類 tool 標 destructiveHint
+- [x] 2.1 實測 ConsumeXml 是否接受部分 XML,並決定 D3 的實作方式
+- [x] 2.2 新增 `Private/TreeItem/`:路徑解析、備份、XML 合併、讀回比對等共用函式;補單元測試
+- [x] 2.3 唯讀 tool:`LookupTreeItem`、`ProduceXml`
+- [x] 2.4 修改 tool:`CreateChild`、`ConsumeXml`,預設 dry-run、要備份、要讀回驗證
+- [x] 2.5 `DeleteChild`,要帶 ConfirmName,不接受 wildcard
+- [x] 2.6 `ExportChild`、`ImportChild`
+- [x] 2.7 新錯誤碼寫進 hint 表和 troubleshooting;tools.json 重新產生，修改類 tool 標 destructiveHint
 - [ ] 2.8 實測：送錯誤的 XML、改一個欄位、匯出後再匯入、刪除時名稱不符;發 v0.3.0-beta
 
 ## 3. 第 2 期:PLC 補齊(→ v0.4.0-beta)

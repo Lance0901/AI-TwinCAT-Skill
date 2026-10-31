@@ -83,9 +83,9 @@
 - **影響**:`EnableConfig Force` 和 `RunTestCycle` 結束時 PLC 都停在 login,接著直接 `AddPou` 等會失敗。
 - **繞過**:先 `PlcLogout`,再新增物件;新增完 `BuildProject` 再 `EnableConfig`。
 
-## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-29)
+## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-30)
 
-MCP 共 **41 個 tool**:`mcp-server/tools.json` 37 個(用 node 讀 `tools.json` 實際數,2026-10-29)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **48 個 tool**:`mcp-server/tools.json` 44 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -144,6 +144,24 @@ MCP 共 **41 個 tool**:`mcp-server/tools.json` 37 個(用 node 讀 `tools.json`
 |---|---|
 | `SetVariableLink` | registered tcauto 2026-10-28(4026 VS2022)只測了 PLC 路徑錯 -> `TREEITEM_NOT_FOUND`。**成功路徑只有自建 client 測過**(離線 EK1100 + EL1004),registered 還沒測,要等第 1 期 `CreateChild` 才能建離線 I/O |
 | `RemoveVariableLink` | 新 tool。registered tcauto 2026-10-29(4026 VS2022)只測了 `TREEITEM_NOT_FOUND`(`missingEnd` PlcVariable)。**成功路徑只有自建 client 測過**,同上等 `CreateChild` |
+
+### 第 1 期通用 tree tool(task 2.8,7 個)
+
+registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C:\Temp\Verify-4026-axis`)。逐項紀錄見 [verification/phase1-2.8.md](../openspec/changes/complete-automation-interface/verification/phase1-2.8.md)。
+
+| tool | cmdlet | 狀態 |
+|---|---|---|
+| `LookupTreeItem` | `Get-TcTreeItem` | 已實測。PathName 區分大小寫;找不到時 hint 列出最近的父節點和它的 children |
+| `ProduceXml` | `Get-TcTreeItemXml` | 已實測。`Recursive` 在 Task / PLC folder 上輸出相同(參數說明已改成這個實測結果) |
+| `ConsumeXml` | `Set-TcTreeItemXml` | 已實測。改 `TIRT^PlcTask` CycleTime:`verified=true`、備份含 `.TcTTO`、衍生欄位不誤報;錯誤 XML 全部 `XML_MERGE_FAILED` / `TREEITEM_INVALID_VALUE`,沒寫入 |
+| `ExportChild` | `Export-TcTreeItem` | 已實測。TIPC 底下的 PLC folder 要用 `.zip` 檔名,`.xti` 會被 XAE 拒絕(實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測);模組只對 PLC folder(601)先擋(`plc-requires-zip`,hint 給 `.zip` 檔名;重測通過)。POU(`TestCam`,602)給 `.xti` 也被 XAE 拒絕、給 `.zip` 成功(重測 2026-10-30 實測) |
+| `CreateChild` | `New-TcTreeItem` | 已實測(重測 2026-10-30):TIRT Task(SubType 1)與 TIPC PLC folder(601)都 `verified=true`、`parentUnchanged=true`、有 `childrenAfter`(#1 修正通過) |
+| `ImportChild` | `Import-TcTreeItem` | 已實測(重測 2026-10-30):改名匯入 `verified=true`;Name 空白且撞名時 dry-run 回 `TREEITEM_ALREADY_EXISTS` 帶 `expectedName`;XAE 用 .xti 寫死的 `<Name>` 當匯入名稱;PLC folder 的 `.zip` 能匯回(#1、#4 修正通過) |
+| `DeleteChild` | `Remove-TcTreeItem` | 已實測(重測 2026-10-30):TIRT 獨立 Task `verified=true`、`.xti` 備份、沒有 `.TcTTO` warning;TIPC PLC folder 預設產生 `.zip` 備份、`verified=true`,該 `.zip` 能用 ImportChild 還原(#2、#3 修正通過) |
+
+沒測到：`PLC_LOGGED_IN`(UmRT 沒在跑，不能 Login)、DeleteChild 的 `parent-mismatch`、ConsumeXml 的 `repeated-count-mismatch`、有 mapping 節點的 `Reconnect`。
+
+合計:已實測 46(39 + 第 1 期 7)+ 部分實測 2(`SetVariableLink`、`RemoveVariableLink`)= 48。
 
 ### 未實測 / 只有單元測試
 

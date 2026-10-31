@@ -51,6 +51,14 @@ $operationMap = @{
     'GetIoTree'       = 'Get-TcIoTree'
     'SetVariableLink' = 'Set-TcVariableLink'
     'RemoveVariableLink' = 'Remove-TcVariableLink'
+    # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
+    'LookupTreeItem'  = 'Get-TcTreeItem'
+    'ProduceXml'      = 'Get-TcTreeItemXml'
+    'CreateChild'     = 'New-TcTreeItem'
+    'ConsumeXml'      = 'Set-TcTreeItemXml'
+    'DeleteChild'     = 'Remove-TcTreeItem'
+    'ExportChild'     = 'Export-TcTreeItem'
+    'ImportChild'     = 'Import-TcTreeItem'
     # Build & Deploy
     'BuildProject'    = 'Build-TcProject'
     'CleanProject'    = 'Clear-TcProject'

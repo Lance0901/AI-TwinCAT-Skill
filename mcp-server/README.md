@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 38 個 cmdlet 中的 37 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 45 個 cmdlet 中的 44 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (37 of its 38 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (44 of its 45 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -177,6 +177,20 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
 | `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O variable (full tree paths; verified via ProduceMappingInfo) |
 | `RemoveVariableLink` | `Remove-TcVariableLink` | `PlcVariable` | 120 s | Remove a variable link (verified via ProduceMappingInfo) |
+
+### Generic tree items (not yet verified on a real target, task 2.8)
+
+Prefer the dedicated tools. The modifying ones default to `DryRun=true` and carry `destructiveHint: true`; with `DryRun=false` they back up `ProduceXml` to `<solution dir>\.tcauto-backup\<yyyyMMdd-HHmmss>\` (`data.backupPath`) and read back (`data.verified`).
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `LookupTreeItem` | `Get-TcTreeItem` | `Path` | 120 s | Read-only: name, type, children of one tree item; TREEITEM_NOT_FOUND names the nearest parent |
+| `ProduceXml` | `Get-TcTreeItemXml` | `Path` | 120 s | Read-only: XML description (`data.xml`) |
+| `CreateChild` | `New-TcTreeItem` | `Path`, `Name` | 120 s | Create a child (`SubType`, `Before`, `VInfo`); dry-run by default |
+| `ConsumeXml` | `Set-TcTreeItemXml` | `Path`, `Xml` | 120 s | Write a `<TreeItem>` fragment; every leaf path must exist (XML_MERGE_FAILED); dry-run by default |
+| `DeleteChild` | `Remove-TcTreeItem` | `Path`, `ConfirmName` | 120 s | Delete a tree item; ConfirmName must equal its name (TREEITEM_DELETE_NAME_MISMATCH); dry-run by default |
+| `ExportChild` | `Export-TcTreeItem` | `Path`, `FilePath` | 120 s | Export to a new .xti file |
+| `ImportChild` | `Import-TcTreeItem` | `Path`, `FilePath` | 120 s | Import an .xti file as a child; dry-run by default |
 
 ### Testing
 
