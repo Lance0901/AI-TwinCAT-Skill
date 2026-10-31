@@ -185,7 +185,8 @@ function Add-TcPouMember {
             itemTypeName = $itemTypeName
             objectKind   = $kindInfo.ObjectKind
             language     = $created.Language
-            access       = $spec.Access
+            # an Action has no access specifier (phase2-3.8.md: it used to report 'PUBLIC')
+            access       = $(if ($Kind -eq 'Action') { $null } else { $spec.Access })
             returnType   = $(if ([string]::IsNullOrWhiteSpace($ReturnType)) { $null } else { $ReturnType.Trim() })
             vInfo        = $(if ($null -eq $spec.VInfo) { $null } else { [string[]]$spec.VInfo })
             declaration  = $created.Declaration

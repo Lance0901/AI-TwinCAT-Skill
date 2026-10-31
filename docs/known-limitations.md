@@ -103,16 +103,19 @@
 
 - **現象**:XAE 凍結的版本不一定是目前的 effective 版本:`#Tc2_System` 3.10.1.0 → 3.9.1.0、`#CBML` 4.0.0.0(CODESYS)→ 3.5.13.0(3S)(4026 VS2022);`VisuDialogs` 3.5.12.0 → 4.8.0.0(4024 XAE,回 success、沒有 warning)。模組讀回只檢查不是 `*`,抓不到。XAE 隱含加入、.plcproj 沒有 `<PlaceholderReference>` 的 placeholder(4026 的 `#Tc3_GlobalTypes`)不會被寫，模組回 `LIBRARY_VERIFY_FAILED`,但其他 placeholder 已經改了並存檔(registered tcauto 實測 2026-10-31,細節 [verification/phase2-3.8.md](../openspec/changes/complete-automation-interface/verification/phase2-3.8.md) 7)。
 - **繞過**:不要用 `All=true`;一個一個 `FreezePlaceholder Placeholder=<name>`(單一 freeze 的版本和 effective 相同，實測)。已經跑過 `All` 就用 `data.backupFiles` 的 .plcproj 複製回去再 `ResetSolution`。
+- **模組修正(2026-10-31,只有單元測試，待真機重測)**:凍結後逐一比對 `<Resolution>` 和凍結前的 EffectiveResolution;不同時先用 `SetEffectiveResolution` 釘回(未實測),仍不同回 `LIBRARY_VERSION_CHANGED`(`data.versionChanges[]`、`data.changed[]`、`data.restore`),不再回 success。dry-run 的 `targets[].willFreezeTo` / `versionWillChange` 先預告。`All` 跳過隱含 placeholder 與沒有 EffectiveResolution 的(`data.skipped[]`),不算 `notFrozen`。見 troubleshooting「LIBRARY_VERSION_CHANGED」。
 
 ### `AddPlcTask` 建的 task 沒有存進專案檔
 
 - **現象**:`AddPlcTask` 回 `verified=true`,但 .tsproj / .plcproj 沒有寫(只在 XAE 記憶體);接著 `ResetSolution`(含 `SaveProjectChanges=true`)後 TIRT 與 PLC 底下的新 task 都消失，`ResetSolution` 也沒偵測到(registered tcauto 實測 2026-10-31 4026 VS2022)。
 - **繞過**:AddPlcTask 之後跑一個會存專案檔的 tool(例如 `AddGvl` / `AddPou`,或 `GenerateBootProject`),再確認 .tsproj 有 task 名稱、.plcproj 有 `<Compile Include="<task>.TcTTO">`;在那之前不要 `ResetSolution`。
+- **模組修正(2026-10-31,只有單元測試，待真機重測)**:`AddPlcTask` 讀回後自己存檔(同 `AddPou`),並從磁碟讀回 `.plcproj` 的 `<task>.TcTTO`、`.tsproj` 的 task 名稱才 success(`data.projectSaved`)。`LinkProgramToTask` / `UnlinkProgramFromTask` 不需要:650 當下就改寫 `.TcTTO`(實測)。
 
 ### `SaveAsLibrary` 會存 .plcproj
 
 - **現象**:tool 說明寫不改專案，實際會把 XAE 記憶體裡還沒存的改動寫進 .plcproj(4026 VS2022、4024 XAE,registered tcauto 實測 2026-10-31)。
 - **繞過**:為了產生 library 暫時改的 project info 等設定，SaveAsLibrary 之後要改回去並再存一次。
+- **模組說明已改**(2026-10-31):cmdlet 說明、`tools.json`、SKILL.md 寫明會存 .plcproj;回傳 `data.projectSaved = true`,`data.projectFile` / `data.projectFileWritten` 是呼叫前後 .plcproj 的 LastWriteTime 比較(找不到 .plcproj 時 null)。行為本身是 XAE 的，模組不擋。
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-31)
 

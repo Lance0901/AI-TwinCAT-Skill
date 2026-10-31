@@ -242,6 +242,7 @@ try {
     $global:T.Reads.Clear()
     $r = Add-TcPouMember -ParentPath "$P^POUs^FB_A" -Kind Action -Name A_Reset -Language LD
     Check 'action: 608 {6}, language LD, declaration null' ($r.success -and @($global:T.Creates)[-1] -eq "$P^POUs^FB_A|A_Reset|608|String[]:6" -and $r.data.language -eq 'LD' -and $null -eq $r.data.declaration) (J $r)
+    Check 'action: data.access null (an Action has no access specifier)' ($null -eq $r.data.access -and (J $r.data) -match '"access":null') (J $r.data)
     Check 'action: DeclarationText not read' (@($global:T.Reads | Where-Object { $_ -like 'Decl *A_Reset' }).Count -eq 0) (@($global:T.Reads) -join ' ; ')
 
     # --- interface parent: 610 / 612

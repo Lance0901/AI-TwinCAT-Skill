@@ -70,6 +70,8 @@ $prj | Add-Member ScriptMethod SaveAsLibrary {
         'nowrite' { return }
         'empty' { [System.IO.File]::WriteAllText($path, ''); return }
     }
+    # SaveAsLibrary also saves the .plcproj (measured 2026-10-31, phase2-3.8.md P7)
+    if ($global:A.PlcProj) { [System.IO.File]::WriteAllText($global:A.PlcProj, '<Project><PropertyGroup><Title>saved by SaveAsLibrary</Title></PropertyGroup></Project>') }
     New-MockZip $path 2
 }
 $global:A.Prj = $prj
@@ -118,6 +120,14 @@ try {
     $r = Save-TcPlcLibrary -FilePath $lib
     Check 'Library: SaveAsLibrary(path, False) on <Plc> Project, saved, file read back' ($r.success -and $r.data.saved -and -not $r.data.installed -and $global:A.Calls[0] -eq "SaveAsLibrary|$lib|False" -and $r.data.fileSize -gt 0 -and $r.data.lastWriteTime) (J $r.data)
     Check 'Library: no BUILD_REQUIRED recorded' ($null -eq (Get-CodeChanged)) "$(Get-CodeChanged)"
+    Check 'P7 Library: data.projectSaved true; .plcproj not located -> projectFile / projectFileWritten null' ($r.data.projectSaved -eq $true -and $null -eq $r.data.projectFile -and $null -eq $r.data.projectFileWritten) (J $r.data)
+    $global:A.PlcProj = Join-Path $Root 'plc.plcproj'
+    [System.IO.File]::WriteAllText($global:A.PlcProj, '<Project />')
+    (Get-Item -LiteralPath $global:A.PlcProj).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(-5)
+    & $mod { param($pp) function script:Get-TcPlcProjectFile { [CmdletBinding()] param([string]$PlcName) @{ PlcProjFile = $global:A.PlcProj; TsProjFile = $null } } } $global:A.PlcProj
+    $r = Save-TcPlcLibrary -FilePath (Join-Path $Root 'P7.library')
+    Check 'P7 Library: the .plcproj written by the call -> projectFile, projectFileWritten true' ($r.success -and $r.data.projectSaved -eq $true -and $r.data.projectFile -eq $global:A.PlcProj -and $r.data.projectFileWritten -eq $true) (J $r.data)
+    $global:A.PlcProj = $null
     $r = Save-TcPlcLibrary -FilePath (Join-Path $Root 'My.compiled-library')
     Check 'Library .compiled-library accepted' ($r.success) (J $r.error)
     $n = $global:A.Calls.Count

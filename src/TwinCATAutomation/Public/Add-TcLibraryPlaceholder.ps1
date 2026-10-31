@@ -19,8 +19,10 @@ function Add-TcLibraryPlaceholder {
           - one-argument form without a device placeholder: ArgumentException 0x80070057
             "Default Placeholder '...' could not be found!".
         Already present: References is read first; a placeholder '#<Placeholder>' -> success with
-        data.alreadyPresent = true, AddPlaceholder is not called, the project file is still saved and
-        read back, no BUILD_REQUIRED (same as Add-TcLibrary). data.libraryName / version / distributor
+        data.alreadyPresent = true, AddPlaceholder is not called and the project is NOT saved (nothing
+        was changed, phase2-3.8.md: the save used to run anyway); the .plcproj on disk is only read
+        (data.projectEntry; a warning when the placeholder is not on disk yet), no BUILD_REQUIRED
+        (same as Add-TcLibrary). data.libraryName / version / distributor
         are then the values read from the existing placeholder (its DefaultResolution, else
         EffectiveResolution) and data.requested holds the parameters; a default library other than
         -LibraryName adds a warning (nothing is changed). "Placeholder '...' already contained!" from
@@ -172,8 +174,30 @@ function Add-TcLibraryPlaceholder {
             return $res
         }
 
+        # already present: nothing changed, so nothing to save; only report what the .plcproj on disk has
+        if ($alreadyPresent) {
+            $pe = $null; $pf = $null
+            try {
+                $pf = Get-TcLibraryPlcProjFile -RefsPath $refsPath
+                $pe = (Get-TcPlcProjectLibraryEntries -Path $pf).Placeholders[$ph]
+            }
+            catch {
+                if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+                $pe = $null
+            }
+            $data | Add-Member -NotePropertyName projectFile -NotePropertyValue $pf
+            $data | Add-Member -NotePropertyName projectEntry -NotePropertyValue $pe
+            if ($null -eq $pe) {
+                $w = "placeholder '#$ph' is in References but not in the .plcproj on disk$(if ($pf) { " ('$pf')" } else { ' (not located)' }); the project was not saved"
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @(@($data.PSObject.Properties['warnings'] | Where-Object { $null -ne $_.Value } | ForEach-Object { $_.Value }) + @($w)) -Force
+            }
+            $ok = New-TcResult -Success $true -Data $data
+            if (-not $called) { return $ok }
+            return Register-TcCodeChange -Result $ok -Change "$change [AddPlaceholder called, already contained]"
+        }
+
         # --- project file: save, then read the .plcproj back from disk
-        $what = if ($alreadyPresent) { "Library placeholder '$ph' (already present)" } else { "Library placeholder '$ph'" }
+        $what = "Library placeholder '$ph'"
         $save = Invoke-TcPlcObjectSave -ObjectPath $refsPath -What $what -Done 'added'
         if ($null -ne $save.Error) {
             if ($called) { return Register-TcCodeChange -Result $save.Error -Change "$change [added, project file not saved]" }
@@ -192,7 +216,6 @@ function Add-TcLibraryPlaceholder {
         }
 
         $ok = New-TcResult -Success $true -Data $data
-        if ($alreadyPresent -and -not $called) { return $ok }
         Register-TcCodeChange -Result $ok -Change $change
     }
     catch {

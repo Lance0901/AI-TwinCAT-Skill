@@ -445,6 +445,38 @@ function New-TcLibraryFailure {
 # tried first, but returned Count=0 in the probe.
 $script:TcSystemLibraryRepositoryRoot = Join-Path ([string]$env:ProgramData) 'Beckhoff\TwinCAT\PlcEngineering\Managed Libraries'
 
+function Get-TcLibraryRepositoryNames {
+    <#
+    .SYNOPSIS
+        Names in ITcPlcLibraryManager.Repositories (TE1000 5.22 / 5.23 p.111-112): string[], empty when
+        it lists none or cannot be read (measured 2026-10-31 4026 VS2022: Count=0 although 'System'
+        exists). IDE_* errors are rethrown.
+    .PARAMETER Refs
+        References node.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Refs)
+    $r = $Refs
+    try {
+        $names = Invoke-TcComRetry -OperationName 'Repositories' -ScriptBlock {
+            $__out = [System.Collections.Generic.List[string]]::new()
+            $__all = Get-TcComValue -Object $r -Name 'Repositories'
+            if ($null -ne $__all) {
+                foreach ($__rep in $__all) {
+                    $__n = [string](Get-TcComValue -Object $__rep -Name 'Name')
+                    if (-not [string]::IsNullOrWhiteSpace($__n)) { $__out.Add($__n) }
+                }
+            }
+            Write-Output -NoEnumerate $__out.ToArray()
+        }
+        return [string[]]@($names)
+    }
+    catch {
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+        return [string[]]@()
+    }
+}
+
 function Get-TcLibraryRepositoryVersionFolder {
     <#
     .SYNOPSIS

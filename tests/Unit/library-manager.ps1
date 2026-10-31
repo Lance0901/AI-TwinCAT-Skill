@@ -236,7 +236,7 @@ try {
     Reset-Mock; Reset-BuildRequired
     foreach ($n in 'Tc2_Standard', '#tc2_standard') {
         $r = Add-TcLibraryPlaceholder -Placeholder $n -LibraryName Tc2_Standard
-        Check "AddPlaceholder '$n' existing -> alreadyPresent, no call, saved, nothing recorded, no warning" ($r.success -and $r.data.alreadyPresent -eq $true -and (Get-WriteCalls).Count -eq 0 -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.warnings) (J $r)
+        Check "AddPlaceholder '$n' existing -> alreadyPresent, no call, NOT saved, .plcproj entry read, nothing recorded, no warning" ($r.success -and $r.data.alreadyPresent -eq $true -and $global:L.Saves -eq 0 -and $r.data.projectEntry.placeholder -eq 'Tc2_Standard' -and (Get-WriteCalls).Count -eq 0 -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.warnings) (J $r)
     }
     $r = Add-TcLibraryPlaceholder -Placeholder Tc2_Frozen -LibraryName Tc2_Other -Version 9.9.9.9
     Check 'AddPlaceholder existing with another default library -> warning, data = values read, requested = parameters (#11)' ($r.success -and $r.data.alreadyPresent -and $r.data.libraryName -eq 'Tc2_Math' -and $r.data.version -eq '*' -and $r.data.requested.libraryName -eq 'Tc2_Other' -and $r.data.requested.version -eq '9.9.9.9' -and @($r.data.warnings | Where-Object { $_ -like '*Tc2_Math*Tc2_Other*' }).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r.data)
@@ -363,6 +363,16 @@ try {
     $global:L.Mode = 'exists'
     $r = Install-TcLibrary -LibraryPath $odd -DryRun $false
     Check 'Install: file name without version, XAE "Library already exists." -> LIBRARY_ALREADY_INSTALLED preCheck xae' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_ALREADY_INSTALLED' -and $r.data.preCheck -eq 'xae' -and $null -eq $r.data.identityFromFileName) (J $r)
+    # P8: the dry run checks the repository: 'System', or a name listed by Repositories
+    $global:L.Mode = 'ok'; $wcBefore = (Get-WriteCalls).Count
+    $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo
+    Check 'P8 Install dry-run: unknown repository -> LIBRARY_INSTALL_FAILED repository-not-found (as DryRun=false), no call' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INSTALL_FAILED' -and $r.data.reason -eq 'repository-not-found' -and $r.data.repositoryCheck.known -eq $false -and (Get-WriteCalls).Count -eq $wcBefore -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
+    $r = Install-TcLibrary -LibraryPath $newf -Repository system
+    Check 'P8 Install dry-run: System (any case) accepted although Repositories lists none' ($r.success -and $r.data.repositoryCheck.known -eq $true -and @($r.data.repositoryCheck.listed).Count -eq 0) (J $r.data)
+    $global:L.RepoFolder = $RepoRoot
+    $r = Install-TcLibrary -LibraryPath $newf -Repository custom
+    Check 'P8 Install dry-run: a repository Repositories lists is accepted' ($r.success -and (@($r.data.repositoryCheck.listed) -join ',') -eq 'Custom') (J $r.data)
+    $global:L.RepoFolder = $null
     $global:L.Mode = 'norepo'
     $r = Install-TcLibrary -LibraryPath $newf -Repository NoSuchRepo -DryRun $false
     Check 'Install: unknown repository -> LIBRARY_INSTALL_FAILED reason repository-not-found' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INSTALL_FAILED' -and $r.data.reason -eq 'repository-not-found') (J $r)

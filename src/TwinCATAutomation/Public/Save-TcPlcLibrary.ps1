@@ -1,7 +1,7 @@
 function Save-TcPlcLibrary {
     <#
     .SYNOPSIS
-        Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Does not change the project. Reads the file back.
+        Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured). Reads the file back.
     .DESCRIPTION
         API: ITcPlcIECProject.SaveAsLibrary(bstrLibraryPath, bInstall) on the '<Plc> Project' node,
         called with bInstall = false (TE1000 Automation Interface manual v1.7.0, 5.28.1.1 p.123;
@@ -15,8 +15,14 @@ function Save-TcPlcLibrary {
           - an existing file -> ArgumentException "File '...' already exist. Cannot SaveAsLibrary!";
             another extension -> ArgumentException "... invalid file extension"; a missing folder ->
             DirectoryNotFoundException.
-          - no project file changes (only the VS '.~u' file), no modal dialog. The library takes
-            title / company / version from the project information.
+          - no modal dialog. The library takes title / company / version from the project information.
+        The call SAVES the PLC project file: changes that were only in XAE memory (project
+        information changed with Set-TcTreeItemXml) were in the .plcproj on disk right after
+        SaveAsLibrary, with its LastWriteTime at the time of the call (measured 2026-10-31 4026
+        VS2022 and 4024 XAE, registered tcauto, verification/phase2-3.8.md P7; the earlier
+        self-built probe had seen only the VS '.~u' file change because nothing was unsaved).
+        data.projectSaved = $true says so; data.projectFile / data.projectFileWritten (LastWriteTime
+        of the .plcproj before and after the call; $null when the .plcproj cannot be located).
           - whether it opens a dialog on a project that was never built is not measured.
         Checks before the call (nothing written on failure): FilePath absolute, valid, '.library'
         or '.compiled-library', folder exists (LIBRARY_SAVE_FAILED reason not-absolute /
@@ -28,7 +34,7 @@ function Save-TcPlcLibrary {
         XAE refusing -> LIBRARY_SAVE_FAILED reason save-failed (data.xaeMessage, data.hresult).
         Readback: the file exists, is not empty and was written during this call (LastWriteTimeUtc
         not older than 2 s before the call); else LIBRARY_SAVE_FAILED reason not-written.
-        The project is not changed: BUILD_REQUIRED is not touched.
+        The PLC code is not changed (only saved), so BUILD_REQUIRED is not touched.
         No deadline (CODING_STANDARDS.md section 1): a dialog is ruled out right before the call,
         Connect-TcIde turns on ITcAutomationSettings.SilentMode, the probe calls returned in 5.5-7 s
         without a dialog; the MCP tool timeout bounds it from outside.
@@ -105,6 +111,13 @@ function Save-TcPlcLibrary {
             }
             $data | Add-Member -NotePropertyName previousFile -NotePropertyValue $bak
         }
+        # the .plcproj before the call: SaveAsLibrary writes it (phase2-3.8.md P7)
+        $plcProjFile = $null; $plcProjBefore = $null
+        try {
+            $plcProjFile = [string](Get-TcPlcProjectFile -PlcName (Get-TcPlcNameFromPath -TreePath $prjPath)).PlcProjFile
+            if (Test-Path -LiteralPath $plcProjFile -PathType Leaf) { $plcProjBefore = (Get-Item -LiteralPath $plcProjFile).LastWriteTimeUtc }
+        }
+        catch { $plcProjFile = $null }
         $t0 = (Get-Date).ToUniversalTime()
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
@@ -130,6 +143,11 @@ function Save-TcPlcLibrary {
             return (& $restoreAndFail 'not-written' "SaveAsLibrary returned, but '$FilePath' $why")
         }
         $data.saved = $true
+        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $true
+        $data | Add-Member -NotePropertyName projectFile -NotePropertyValue $(if ($plcProjFile) { $plcProjFile } else { $null })
+        $written = $null
+        if ($null -ne $plcProjBefore) { try { $written = ((Get-Item -LiteralPath $plcProjFile).LastWriteTimeUtc -ne $plcProjBefore) } catch { $written = $null } }
+        $data | Add-Member -NotePropertyName projectFileWritten -NotePropertyValue $written
         $data | Add-Member -NotePropertyName fileSize -NotePropertyValue $facts.size
         $data | Add-Member -NotePropertyName lastWriteTime -NotePropertyValue $facts.lastWriteTime
         New-TcResult -Success $true -Data $data
