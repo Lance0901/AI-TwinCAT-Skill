@@ -19,6 +19,8 @@
         'Add-TcGvl',
         'Add-TcDut',
         'Add-TcLibrary',
+        'Add-TcInterface',
+        'Add-TcPouMember',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',
