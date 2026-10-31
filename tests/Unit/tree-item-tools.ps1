@@ -149,7 +149,7 @@ function Reset-Mock {
     $null = Add-MockNode 'TIPC^P' 56
     $null = Add-MockNode 'TIPC^P^P Project' 600
     $null = Add-MockNode 'TIPC^P^P Project^POUs' 601
-    $null = Add-MockNode 'TIPC^P^P Project^POUs^MAIN' 604
+    $null = Add-MockNode 'TIPC^P^P Project^POUs^MAIN' 602
     $sm = New-Object PSObject
     $sm | Add-Member ScriptMethod LookupTreeItem {
         param($p)
@@ -175,7 +175,7 @@ try {
     $res = Get-TcTreeItem -Path 'TIRT'
     Check 'lookup-ok' ($res.success -and $res.data.childCount -eq 1 -and $res.data.children[0].name -eq 'PlcTask' -and $res.data.children[0].path -eq 'TIRT^PlcTask') ($res | ConvertTo-Json -Depth 5 -Compress)
     $res = Get-TcTreeItem -Path 'TIPC^P^P Project^POUs^MAIN'
-    Check 'lookup-type-name' ($res.success -and $res.data.type -eq 'Program' -and $res.data.itemType -eq 604) ($res | ConvertTo-Json -Depth 5 -Compress)
+    Check 'lookup-type-name' ($res.success -and $res.data.type -eq 'Program' -and $res.data.itemType -eq 602) ($res | ConvertTo-Json -Depth 5 -Compress)
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)
     Check 'lookup-not-found-hint-nearest' ($res.error.hint -match "nearest existing parent is 'TIRT'" -and $res.error.hint -match "'PlcTask'" -and $res.data.nearestPath -eq 'TIRT' -and @($res.data.nearestChildren) -contains 'PlcTask') $res.error.hint
@@ -271,7 +271,7 @@ try {
     $res = New-TcTreeItem -Path 'TIRT' -Name 'Task 6' -DryRun $false
     Check 'create-renamed-warning' ($res.success -and $res.data.createdName -eq 'Task 6 (1)' -and (@($res.data.warnings) -join ' ') -match "named the new child") ($res | ConvertTo-Json -Depth 5 -Compress)
     $global:T.CreateMode = 'ok'
-    $res = New-TcTreeItem -Path 'TIPC^P^P Project^POUs' -Name 'FB_X' -SubType 602 -DryRun $false
+    $res = New-TcTreeItem -Path 'TIPC^P^P Project^POUs' -Name 'FB_X' -SubType 604 -DryRun $false
     Check 'create-tipc-build-required' ($res.success -and -not [string]::IsNullOrEmpty([string]$res.data.buildRequired)) ($res | ConvertTo-Json -Depth 5 -Compress)
 
     # --- 2.5 DeleteChild ---
