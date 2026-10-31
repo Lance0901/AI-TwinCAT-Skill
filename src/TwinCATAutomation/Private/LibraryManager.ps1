@@ -242,7 +242,8 @@ function Get-TcPlcProjectLibraryEntries {
         elements, FreezePlaceholder only changes <Resolution> from '<lib>, * (...)' to the fixed version
         (measured 2026-10-31 4026 VS2022 through SaveAsArchive; the References objects look the same before
         and after). Entry: placeholder, defaultResolution, namespace, resolution, resolutionVersion,
-        frozen (true when <Resolution> names a version other than '*'). Libraries: <LibraryReference
+        frozen (true when <Resolution> names a version other than '*'), declared (true when the
+        .plcproj has a <PlaceholderReference> for it). Libraries: <LibraryReference
         Include> (e.g. 'Tc2_Math,newest,Beckhoff Automation GmbH', measured 2026-10-28 4024 / 4026 with
         Add-TcLibrary, troubleshooting.md LIBRARY_ADD_FAILED): include, name
         (part before the first comma).
@@ -266,14 +267,15 @@ function Get-TcPlcProjectLibraryEntries {
         if ([string]::IsNullOrWhiteSpace($inc)) { continue }
         $ph[$inc] = [PSCustomObject]@{
             placeholder = $inc; defaultResolution = (& $child $n 'DefaultResolution'); namespace = (& $child $n 'Namespace')
-            resolution = $null; resolutionVersion = $null; frozen = $false
+            resolution = $null; resolutionVersion = $null; frozen = $false; declared = $true
         }
     }
     foreach ($n in @($xml.SelectNodes("//${pre}PlaceholderResolution[@Include]", $ns))) {
         $inc = ([string]$n.GetAttribute('Include')).Trim()
         if ([string]::IsNullOrWhiteSpace($inc)) { continue }
         if (-not $ph.ContainsKey($inc)) {
-            $ph[$inc] = [PSCustomObject]@{ placeholder = $inc; defaultResolution = $null; namespace = $null; resolution = $null; resolutionVersion = $null; frozen = $false }
+            # declared = $false: no <PlaceholderReference> (a placeholder XAE adds by itself, e.g. Tc3_GlobalTypes)
+            $ph[$inc] = [PSCustomObject]@{ placeholder = $inc; defaultResolution = $null; namespace = $null; resolution = $null; resolutionVersion = $null; frozen = $false; declared = $false }
         }
         $res = & $child $n 'Resolution'
         $parsed = ConvertFrom-TcLibraryResolution -Text $res

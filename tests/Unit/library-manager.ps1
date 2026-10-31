@@ -120,10 +120,23 @@ $refs | Add-Member ScriptMethod FreezePlaceholder {
     $n = [string]$args[0]
     foreach ($r in @($global:L.Refs | Where-Object { $_.Name -like '#*' })) {
         if ($n -ne '' -and $r.PlaceholderName -ne $n) { continue }
+        # no <PlaceholderReference> (implicit placeholder): XAE writes no Resolution (phase2-3.8.md P3)
+        if (-not $global:L.Mem.Ph.Contains($r.PlaceholderName)) { continue }
+        $def = $global:L.Mem.Ph[$r.PlaceholderName].Default
+        # 'defaultres': as measured with FreezePlaceholder('') (phase2-3.8.md P2): fixed at the DefaultResolution
+        if ($global:L.Mode -in @('defaultres', 'nopin', 'pinthrow') -and $def -and $def -notmatch ', \* ') {
+            $global:L.Mem.Ph[$r.PlaceholderName].Resolution = $def; continue
+        }
         if ($null -eq $r.EffectiveResolution) { continue }
         $e = $r.EffectiveResolution
         $global:L.Mem.Ph[$r.PlaceholderName].Resolution = "$($e.LibraryName), $($e.Version) ($($e.Distributor))"
     }
+}
+$refs | Add-Member ScriptMethod SetEffectiveResolution {
+    Write-Calls 'SetEffectiveResolution' @args
+    if ($global:L.Mode -eq 'nopin') { return }
+    if ($global:L.Mode -eq 'pinthrow') { throw [System.Runtime.InteropServices.COMException]::new("Placeholder '$($args[0])' not found (mock)", -2147467259) }
+    $global:L.Mem.Ph[[string]$args[0]].Resolution = "$($args[1]), $($args[2]) ($($args[3]))"
 }
 $refs | Add-Member ScriptMethod InstallLibrary {
     Write-Calls 'InstallLibrary' @args
@@ -184,7 +197,7 @@ $global:L.Sm = $sm
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
 function Get-BackupFiles { $d = Join-Path $Root '.tcauto-backup'; if (-not (Test-Path -LiteralPath $d)) { return @() }; @(Get-ChildItem -LiteralPath $d -Recurse -File) }
-function Get-WriteCalls { @($global:L.Calls | Where-Object { $_ -match '^(AddPlaceholder|RemoveReference|FreezePlaceholder|InstallLibrary|UninstallLibrary)\|' }) }
+function Get-WriteCalls { @($global:L.Calls | Where-Object { $_ -match '^(AddPlaceholder|RemoveReference|FreezePlaceholder|SetEffectiveResolution|InstallLibrary|UninstallLibrary)\|' }) }
 
 try {
     # ===== pure helpers
@@ -438,6 +451,51 @@ try {
     Reset-Mock; Reset-BuildRequired
     $r = Lock-TcLibraryPlaceholder -All -DryRun $false
     Check 'Freeze -All: FreezePlaceholder(''), resolved placeholders frozen, visu placeholder skipped with warning' ($r.success -and @(Get-WriteCalls)[-1] -eq 'FreezePlaceholder|' -and @($r.data.skippedUnresolved) -contains 'VisuPH' -and @($r.data.notFrozen).Count -eq 0 -and @($r.data.targets | Where-Object { $_.frozen }).Count -eq 2 -and @($r.data.warnings | Where-Object { $_ -like '*VisuPH*' }).Count -eq 1) (J $r.data)
+
+    # ===== phase2-3.8.md P2 / P3: FreezePlaceholder('') fixes at DefaultResolution; implicit placeholder
+    function Add-P2Placeholders {
+        # frozen at 3.10.1.0 while DefaultResolution names 3.9.1.0 (#Tc2_System on 4026, measured)
+        $null = $global:L.Refs.Add((New-PhRef 'Tc2_System' (New-LibInfo 'Tc2_System' '3.10.1.0' $B) (New-LibInfo 'Tc2_System' '3.9.1.0' $B)))
+        Add-MemPh 'Tc2_System' "Tc2_System, 3.9.1.0 ($B)" "Tc2_System, 3.10.1.0 ($B)"
+        # listed in References, no <PlaceholderReference> in the .plcproj (#Tc3_GlobalTypes, measured)
+        $null = $global:L.Refs.Add((New-PhRef 'Tc3_GlobalTypes' (New-LibInfo 'Tc3_GlobalTypes' '3.1.0.0' $B) (New-LibInfo 'Tc3_GlobalTypes' '*' $B)))
+        Write-MockPlcProj
+    }
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $r = Lock-TcLibraryPlaceholder -All
+    $sys = @($r.data.targets | Where-Object { $_.placeholder -eq 'Tc2_System' })[0]
+    $std = @($r.data.targets | Where-Object { $_.placeholder -eq 'Tc2_Standard' })[0]
+    Check 'P2 Freeze -All dry-run: willFreezeTo = DefaultResolution, versionWillChange + warning' ($r.success -and $sys.willFreezeTo -eq "Tc2_System, 3.9.1.0 ($B)" -and $sys.versionWillChange -eq $true -and $std.versionWillChange -eq $false -and $std.willFreezeTo -eq "Tc2_Standard, 3.3.3.0 ($B)" -and @($r.data.warnings | Where-Object { $_ -like "*'Tc2_System'*3.9.1.0*3.10.1.0*" }).Count -eq 1 -and (Get-WriteCalls).Count -eq 0) (J $r.data)
+    Check 'P2 Freeze -All dry-run: visu warning no longer claims XAE cannot freeze it' (@($r.data.warnings | Where-Object { $_ -like '*VisuPH*' -and $_ -notlike '*cannot freeze*' -and $_ -like '*DefaultResolution*' }).Count -eq 1) (J $r.data.warnings)
+    Check 'P3 Freeze -All dry-run: implicit and unresolved placeholders in data.skipped with reasons' (@($r.data.skipped | Where-Object { $_.placeholder -eq 'Tc3_GlobalTypes' -and $_.reason -eq 'implicit' }).Count -eq 1 -and @($r.data.skipped | Where-Object { $_.placeholder -eq 'VisuPH' -and $_.reason -eq 'no-effective-resolution' }).Count -eq 1) (J $r.data.skipped)
+
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'defaultres'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    $wc = @(Get-WriteCalls)
+    Check 'P2 Freeze -All: moved placeholder pinned back with SetEffectiveResolution(name, lib, version, distributor), saved again, success' ($r.success -and $wc[0] -eq 'FreezePlaceholder|' -and $wc[1] -eq "SetEffectiveResolution|Tc2_System|Tc2_System|3.10.1.0|$B" -and $wc.Count -eq 2 -and @($r.data.pinned) -contains 'Tc2_System' -and $global:L.Saves -eq 2 -and [System.IO.File]::ReadAllText($global:L.PlcProj) -match "<Resolution>Tc2_System, 3\.10\.1\.0 \($B\)</Resolution>") "$(J $r) $($wc -join ';')"
+    Check 'P3 Freeze -All: implicit placeholder skipped, not notFrozen' (@($r.data.notFrozen).Count -eq 0 -and @($r.data.skipped | Where-Object { $_.placeholder -eq 'Tc3_GlobalTypes' -and $_.reason -eq 'implicit' }).Count -eq 1) (J $r.data)
+
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'nopin'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    $vc = @($r.data.versionChanges)
+    Check 'P2 Freeze -All: version still moved after the pin -> LIBRARY_VERSION_CHANGED with before / after, hint' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERSION_CHANGED' -and $vc.Count -eq 1 -and $vc[0].placeholder -eq 'Tc2_System' -and $vc[0].before -eq "Tc2_System, 3.10.1.0 ($B)" -and $vc[0].after -eq "Tc2_System, 3.9.1.0 ($B)" -and $vc[0].pinCalled -eq $true -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
+    Check 'P2/P3 partial write: data.changed, backup and restore named, recorded' (@($r.data.changed | Where-Object { $_.placeholder -eq 'Tc2_System' -and $_.after -like '*3.9.1.0*' }).Count -eq 1 -and @($r.data.backupFiles).Count -eq 1 -and $r.data.restore -like "*$(@($r.data.backupFiles)[0])*" -and $r.error.message -like "*$(@($r.data.backupFiles)[0])*" -and (Get-CodeChanged) -like '*version changed*') (J $r.data)
+
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'pinthrow'
+    $r = Lock-TcLibraryPlaceholder -All -DryRun $false
+    Check 'P2 Freeze -All: SetEffectiveResolution throws -> LIBRARY_VERSION_CHANGED with pinError, no second save' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERSION_CHANGED' -and @($r.data.versionChanges)[0].pinError -like '*not found*' -and @($r.data.versionChanges)[0].pinCalled -eq $false -and $global:L.Saves -eq 1) (J $r)
+
+    Reset-Mock; Reset-BuildRequired; Add-P2Placeholders
+    $global:L.Mode = 'nopin'
+    $r = Lock-TcLibraryPlaceholder -Placeholder Tc2_System -DryRun $false
+    Check 'P2 single placeholder: same version check -> LIBRARY_VERSION_CHANGED' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERSION_CHANGED' -and @($r.data.versionChanges)[0].placeholder -eq 'Tc2_System') (J $r)
+    Reset-Mock; Reset-BuildRequired
+    $global:L.Mode = 'nofreeze'
+    $r = Lock-TcLibraryPlaceholder -Placeholder Tc2_Standard -DryRun $false
+    Check 'P3 not-frozen failure names changed[] and restore' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERIFY_FAILED' -and $null -ne $r.data.PSObject.Properties['changed'] -and $r.data.restore -like '*Reset-TcSolution*') (J $r.data)
 
     # ===== XXE: .plcproj with a DOCTYPE is never parsed (#7)
     Reset-Mock

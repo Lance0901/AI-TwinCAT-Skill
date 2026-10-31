@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T12:48:10Z",
+    "generatedAt":  "2026-10-31T15:14:36Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -825,7 +825,7 @@
                   {
                       "name":  "FreezePlaceholder",
                       "cmdlet":  "Lock-TcLibraryPlaceholder",
-                      "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj and reads it back.",
+                      "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj, reads it back and checks the version did not change.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -840,7 +840,7 @@
                                                                              },
                                                              "All":  {
                                                                          "type":  "boolean",
-                                                                         "description":  "Freeze every placeholder (FreezePlaceholder with an empty name; not measured). Not together with -Placeholder."
+                                                                         "description":  "Freeze every placeholder (FreezePlaceholder with an empty name). Not together with -Placeholder."
                                                                      },
                                                              "DryRun":  {
                                                                             "type":  "boolean",

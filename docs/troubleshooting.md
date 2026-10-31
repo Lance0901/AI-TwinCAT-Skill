@@ -575,8 +575,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### PLACEHOLDER_FREEZE_FAILED
 
-- **現象**:`FreezePlaceholder` 丟了 not found 以外的例外。手冊(TE1000 p.244)寫 placeholder 沒有 EffectiveResolution 時回 E_FAIL(`Error_PlaceholderNotResoluted_CannotFreeze`);這一條未實測。`-All` 本身也未實測：沒有 EffectiveResolution 的 placeholder 不列入讀回檢查(`data.skippedUnresolved`);dry-run 時就先列出並加 warning。error.message 會列出沒有 EffectiveResolution 的 placeholder。
+- **現象**:`FreezePlaceholder` 丟了 not found 以外的例外。手冊(TE1000 p.244;InfoSys [FreezePlaceholder](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841158667.html))寫 placeholder 沒有 EffectiveResolution 時回 E_FAIL(`Error_PlaceholderNotResoluted_CannotFreeze`);但實測(2026-10-31,4026 VS2022,registered tcauto,`verification/phase2-3.8.md` P2)`-All` 沒有丟例外，反而把沒有 EffectiveResolution 的 visu placeholder 凍結在 DefaultResolution 的版本。`-All` 時這類 placeholder 不做版本比對(`data.skipped[]` reason `no-effective-resolution`,也列在 `data.skippedUnresolved`);`.plcproj` 沒有 `<PlaceholderReference>` 的隱含 placeholder(例如 `Tc3_GlobalTypes`,XAE 不寫它的 Resolution)也跳過(reason `implicit`),不算 `notFrozen`。error.message 會列出沒有 EffectiveResolution 的 placeholder;`data.restore` 寫還原方式。
 - **下一步**:`Get-TcLibraries` 看 `effectiveResolution`,是 null 的先讓它解析得到(安裝 library),或改用 `-Placeholder` 只鎖其他的;要還原用 `data.backupFiles`。
+
+### LIBRARY_VERSION_CHANGED
+
+- **現象**:`Lock-TcLibraryPlaceholder` 凍結後，至少一個 placeholder 的 `<Resolution>`(library、版本、distributor)和呼叫前的 EffectiveResolution 不同。實測(2026-10-31,registered tcauto,`verification/phase2-3.8.md` P2):`FreezePlaceholder('')` 把每個 placeholder 凍結在 **DefaultResolution**,不是凍結前的 effective 版本(4026 `#Tc2_System` 3.10.1.0 → 3.9.1.0、`#CBML` 4.0.0.0 (CODESYS) → 3.5.13.0;4024 `VisuDialogs` 3.5.12.0 → 4.8.0.0),和手冊「凍結目前的 EffectiveResolution」不符。模組先對變動的 placeholder 呼叫 `SetEffectiveResolution(placeholder, library, version, distributor)`(InfoSys [SetEffectiveResolution](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html);**未實測**)釘回原版本、再存檔讀回;仍不同(或 SetEffectiveResolution 丟例外，`pinError`)才回這個碼。專案**已經改了並存檔**:`data.versionChanges[]`(placeholder / before / after / pinCalled / pinError)、`data.changed[]`(和備份比，`<Resolution>` 有變的全部 placeholder)、`data.backupFiles`、`data.restore`。dry-run 的 `data.targets[].willFreezeTo` / `versionWillChange` 先預告(DefaultResolution 有版本號時就是它，`*` 時是 effective 版本)。
+- **下一步**:要回到凍結前：照 `data.restore` 把備份的 `.plcproj` 複製回去，再 `Reset-TcSolution`(見「磁碟改檔的正確做法」),或在 XAE 的 Library Manager 把 placeholder 設回 `before` 的版本;`Get-TcLibraries` 確認後 `Build-TcProject`。
 
 ### LIBRARY_ALREADY_INSTALLED
 
