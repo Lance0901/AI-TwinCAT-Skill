@@ -48,6 +48,9 @@
         Depth limit of the tree search below the project node. Default 4.
     .PARAMETER NoDotPath
         Internal: skip step 5 (used for the part before the '.').
+    .PARAMETER ProjectPath
+        Optional '<Plc> Project' tree path to search instead of Resolve-TcPlcProjectPath (the first
+        PLC); Add-TcTaskProgram passes the PLC its -PlcProjectPath resolved to.
     #>
     [CmdletBinding()]
     param(
@@ -65,7 +68,10 @@
         [int]$MaxDepth = 4,
 
         [Parameter()]
-        [switch]$NoDotPath
+        [switch]$NoDotPath,
+
+        [Parameter()]
+        [string]$ProjectPath
     )
 
     $sm = $SysManager
@@ -121,7 +127,7 @@
     }
 
     # PLC_PROJECT_NOT_FOUND is thrown from here and passed on to the caller.
-    $projPath = Resolve-TcPlcProjectPath -SysManager $sm
+    $projPath = if ([string]::IsNullOrWhiteSpace($ProjectPath)) { Resolve-TcPlcProjectPath -SysManager $sm } else { $ProjectPath }
     $result.ProjectPath = $projPath
     # ItemType of a found item before anything else: PathName (or code) of an ITF property
     # accessor (654 / 655) is never read (DeclarationText of a 654 crashed VS2022, measured
@@ -250,7 +256,7 @@
         $parts = @($Name -split '\.')
         if (@($parts | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) {
             $rest = ($parts[1..($parts.Count - 1)]) -join '^'
-            $head = Resolve-TcPouPath -SysManager $sm -Name $parts[0] -MaxDepth $MaxDepth -NoDotPath
+            $head = Resolve-TcPouPath -SysManager $sm -Name $parts[0] -MaxDepth $MaxDepth -NoDotPath -ProjectPath $projPath
             $bases = @()
             if ($head.Found) { $bases = @([string]$head.Path) }
             elseif ($head.Ambiguous) { $bases = @($head.Candidates) }

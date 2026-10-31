@@ -25,6 +25,16 @@ $script:TcTreeItemDiskFileRules = @(
         ReferencedIn = @('*.plcproj', '*.tsproj')
     },
     @{
+        Kind      = 'PlcTask'
+        Extension = '.TcTTO'
+        # <Plc> Project^<task> (ItemType 621 TREEITEMTYPE_PLCTASK): XAE rewrites <task>.TcTTO on disk at
+        # once when a program is linked below it (CreateChild 650) or removed (DeleteChild), and writes a
+        # new one for a new PLC task (CreateChild 621); measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18,
+        # self-built client (verification/phase2-probe.md 3.5). Used by the task 3.5 cmdlets.
+        Match     = { param([string]$Path, [int]$ItemType) $Path -like 'TIPC^*' -and $ItemType -eq 621 }
+        ReferencedIn = @('*.plcproj')
+    },
+    @{
         Kind      = 'PlcPou'
         Extension = '.TcPOU'
         # ItemType 602 / 603 / 604 = Program / Function / FB (TE1000 v1.7.0 6.5.5).
