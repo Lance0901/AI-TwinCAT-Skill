@@ -216,9 +216,10 @@ export function buildCmdletNameMap(catalog, extra = {}) {
 }
 
 // A cmdlet name, or a parameter named on its own (`-Name`) after a blank, an opening bracket or a separator.
-const TOKEN_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b|(?<=^|[\s(（,，;；:：、/「])-([A-Z][A-Za-z]+)\b/g;
-// `-Param` or `-Param:$false`; the name must end at a blank, a bracket or punctuation.
-const PARAM_NAME_RE = /^-([A-Z][A-Za-z]+)(?::\$(true|false)\b)?(?=$|[\s,;:()（）。，；：、.])/;
+// The separators include the CJK sentence ends (retest N1: '...重試一次。-PlcProjectPath 可給 ...').
+const TOKEN_RE = /\b([A-Z][a-z]+-Tc[A-Za-z]+)\b|(?<=^|[\s(（,，;；:：、/「。！？])-([A-Z][A-Za-z]+)\b/g;
+// `-Param` or `-Param:$false`; the name must end at a blank, a bracket, punctuation or a CJK character.
+const PARAM_NAME_RE = /^-([A-Z][A-Za-z]+)(?::\$(true|false)\b)?(?=$|[\s,;:()（）。，；：、.」！？]|[぀-ヿ㐀-鿿])/;
 const QUOTED = `(?:'[^']*'|"[^"]*")`;
 // The value after the name: $true / $false, one quoted string or a comma-joined list of them
 // ('a','b' = a PowerShell array), a <placeholder>, or a bare word.
@@ -252,7 +253,9 @@ function parseParam(text, pos, schemas, mode) {
   if (vm && vm[1] !== undefined) return { text: `${name}=${vm[1]}`, end: end + vm[0].length };
   if (vm && vm[2] !== undefined && !f.isBool) {
     const items = vm[2].match(new RegExp(QUOTED, 'g'));
-    const value = items.length > 1 || f.isArray ? `[${items.join(',')}]` : items[0];
+    // an array parameter is written as a JSON array (what the MCP call takes): 'a','b' -> ["a","b"]
+    const json = (q) => JSON.stringify(q.slice(1, -1));
+    const value = items.length > 1 || f.isArray ? `[${items.map(json).join(',')}]` : items[0];
     return { text: `${name}=${value}`, end: end + vm[0].length };
   }
   if (vm && vm[3] !== undefined && !f.isBool) return { text: `${name}=${vm[3]}`, end: end + vm[0].length };
@@ -264,8 +267,11 @@ function parseParam(text, pos, schemas, mode) {
     // review S5: an enum value always; after a cmdlet also a path-like or identifier-like word
     // (^ \ : / . a digit, an upper-case letter or '_': 'TIPC^P', 'C:\x', '1000', 'FastTask'),
     // never a plain lower-case English word ('-Path and then retry').
-    const valueLike = /[\^\\:/.\d_A-Z]/.test(word);
-    if (f.enumHas(word) || (mode === 'call' && valueLike)) return { text: `${name}=${word}`, end: end + len };
+    // In prose (retest N3: 'e.g. -Extends I_Base') the same holds for a word with '_' or a digit
+    // or a path character, but not for a capitalised English word ('-Name Is ...').
+    const valueLike = /[\^\\:/.\d_A-Z]/.test(word) && /[A-Za-z0-9]/.test(word);
+    const aloneValueLike = /[\^\\:/.\d_]/.test(word) && /[A-Za-z0-9]/.test(word);
+    if (f.enumHas(word) || (mode === 'call' && valueLike) || (mode === 'alone' && aloneValueLike)) return { text: `${name}=${word}`, end: end + len };
   }
   if (f.isBool) return { text: `${name}=true`, end };
   if (mode === 'alone') return { text: name, end };
@@ -293,7 +299,8 @@ export function rewriteHintCmdletNames(hint, nameMap) {
   // ('C:\Proj\My -Name dir') is code or part of the path, not a parameter
   const notAParameter = (i) => {
     const before = hint.slice(0, i).replace(/\s+$/, '');
-    if (/(:=|[+*<>]|\S=)$/.test(before)) return true;
+    // ':=', 'x=', '+', '*', or a free-standing '<' / '>' (not the end of a <placeholder>)
+    if (/(:=|[+*]|\S=|(?:^|\s)[<>])$/.test(before)) return true;
     const prev = /(\S+)$/.exec(before)?.[1] ?? '';
     return /\\|^[A-Za-z]:/.test(prev) && !/[,;，；。:：]$/.test(prev);
   };

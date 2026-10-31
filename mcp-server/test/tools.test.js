@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteHintCmdletNames, rewriteResultHints, MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from '../lib/tools.js';
 
@@ -244,7 +245,8 @@ describe('cmdlet name rewriting in hints', () => {
 
   // phase2-3.8.md P1: every row of the table, with the real tools.json (switch vs value parameters).
   describe('phase2-3.8 P1 rows (real tools.json)', () => {
-    const real = buildCmdletNameMap(loadToolCatalog(path.join(__dirname, '..', 'tools.json')), { 'Get-TcIdeModalDialog': 'GetIdeModalDialog' });
+    const catalogReal = loadToolCatalog(path.join(__dirname, '..', 'tools.json'));
+    const real = buildCmdletNameMap(catalogReal, { 'Get-TcIdeModalDialog': 'GetIdeModalDialog' });
     const rw = (s) => rewriteHintCmdletNames(s, real);
 
     test('AddPouMember parent-kind: a switch does not swallow the next word; a lone -ParentPath', () => {
@@ -297,7 +299,7 @@ describe('cmdlet name rewriting in hints', () => {
     test('AddPlcTask verifyHint, UnlinkProgramFromTask warning, ImportPlcOpen restore / how, buildRequired', () => {
       assert.equal(
         rw("After Enable-TcConfig -Force, find n with Read-TcVariable -Path 'TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName' (n = task index)"),
-        "After EnableConfig Force=true, find n with ReadVariable Path=['TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName'] (n = task index)"
+        "After EnableConfig Force=true, find n with ReadVariable Path=[\"TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName\"] (n = task index)"
       );
       assert.equal(
         rw("copy it back over 'C:\\S\\P38Task.TcTTO', then Reset-TcSolution."),
@@ -317,9 +319,9 @@ describe('cmdlet name rewriting in hints', () => {
     test('lone PowerShell parameters, arrays, enums; switches of the named tool', () => {
       assert.equal(
         rw("invalid-selection = -Selection 每個元素一個物件(-Selection 'POUs.FB_A','DUTs.ST_B'),不要用 ^"),
-        "invalid-selection = Selection 每個元素一個物件(Selection=['POUs.FB_A','DUTs.ST_B']),不要用 ^"
+        "invalid-selection = Selection 每個元素一個物件(Selection=[\"POUs.FB_A\",\"DUTs.ST_B\"]),不要用 ^"
       );
-      assert.equal(rw("Export-TcPlcOpen -Selection 'POUs.FB_A' -FilePath <x>"), "ExportPlcOpen Selection=['POUs.FB_A'] FilePath=<x>");
+      assert.equal(rw("Export-TcPlcOpen -Selection 'POUs.FB_A' -FilePath <x>"), "ExportPlcOpen Selection=[\"POUs.FB_A\"] FilePath=<x>");
       assert.equal(rw('換一個 -Name;給 -ReturnType,或拿掉 -Access / -Language'), '換一個 Name;給 ReturnType,或拿掉 Access / Language');
       assert.equal(rw('不需要覆蓋就改用 -Option Rename'), '不需要覆蓋就改用 Option=Rename');
       assert.equal(rw('換一個 -FilePath,或加 -Overwrite 重跑 Save-TcArchive'), '換一個 FilePath,或加 Overwrite=true 重跑 SaveArchive');
@@ -328,6 +330,60 @@ describe('cmdlet name rewriting in hints', () => {
       assert.equal(rw('-Kind Library'), 'Kind=Library');
       // not a known parameter, inside a word, or a number: untouched
       assert.equal(rw('-NoSuchParam x; a-Name; -1'), '-NoSuchParam x; a-Name; -1');
+    });
+
+    // retest N1 / N3
+    test('retest N1: a parameter after a CJK full stop or before CJK text is rewritten', () => {
+      assert.equal(
+        rw('剛 Activate / 重啟後可重試一次。-PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑'),
+        '剛 Activate / 重啟後可重試一次。PlcProjectPath 可給 PLC 名稱(FrameworkUnitTest)或樹路徑'
+      );
+      assert.equal(rw('用 -PouPath。-PouName 也可以'), '用 PouPath。PouName 也可以');
+      assert.equal(rw('加 -Overwrite重跑'), '加 Overwrite=true重跑');
+    });
+
+    test('retest N3: identifier values in prose, JSON arrays, no doubled tool names', () => {
+      assert.equal(
+        rw('Pass the name of the interface to extend, e.g. -Extends I_Base, or leave -Extends out.'),
+        'Pass the name of the interface to extend, e.g. Extends=I_Base, or leave Extends out.'
+      );
+      // ReadVariable Path IS an array parameter ("Always an array, also for a single variable", tools.json;
+      // validateParams refuses a string): written as a JSON array
+      assert.equal(rw("Read-TcVariable -Path 'MAIN.n'"), 'ReadVariable Path=["MAIN.n"]');
+      assert.equal(validateParams(catalogReal.get('ReadVariable'), { Path: ['MAIN.n'] }).ok, true);
+      assert.equal(validateParams(catalogReal.get('ReadVariable'), { Path: 'MAIN.n' }).ok, false);
+      // a string parameter keeps the quoted string
+      assert.equal(rw("Get-TcTreeItem -Path 'TIRT'"), "LookupTreeItem Path='TIRT'");
+    });
+
+    // retest N1: every hint of the module, rewritten, keeps no PowerShell parameter and no doubled name
+    test('sweep: all module hints rewrite cleanly', () => {
+      const src = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation');
+      const texts = [];
+      const table = fs.readFileSync(path.join(src, 'Private', 'ConvertTo-TcAdsErrorCode.ps1'), 'utf8');
+      for (const m of table.matchAll(/(?:\$script:TcErrorHints\['[A-Z_]+'\]|'[A-Z_]+')\s*=\s*'((?:[^']|'')*)'/g)) texts.push(m[1].replace(/''/g, "'"));
+      const walk = (d) => {
+        for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+          const p = path.join(d, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (e.name.endsWith('.ps1')) {
+            for (const m of fs.readFileSync(p, 'utf8').matchAll(/-Hint '((?:[^']|'')*)'/g)) texts.push(m[1].replace(/''/g, "'"));
+          }
+        }
+      };
+      walk(src);
+      assert.ok(texts.length > 100, `found ${texts.length} hints`);
+      const params = new Set(real.anyParam.keys());
+      const problems = [];
+      for (const t of texts) {
+        const out = rw(t);
+        const noQuotes = out.replace(/(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])/g, "''");
+        for (const m of noQuotes.matchAll(/(?<![A-Za-z0-9_\\-])-([A-Z][A-Za-z]+)/g)) {
+          if (params.has(m[1])) problems.push(`-${m[1]} left in: ${out}`);
+        }
+        for (const m of out.matchAll(/\b([A-Z][A-Za-z]+) (?:的|在) \1\b/g)) problems.push(`doubled ${m[1]}: ${out}`);
+      }
+      assert.deepEqual(problems, []);
     });
 
     // review S5: what must NOT be rewritten
