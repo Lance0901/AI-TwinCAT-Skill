@@ -82,7 +82,7 @@ function Set-PrjMethods($n) {
         $objs = @(@($sel -split ';') | Where-Object { $_ } | ForEach-Object {
                 $leaf = ($_ -split '\.')[-1]
                 $node = @($global:T.Nodes.Values | Where-Object { $_.Name -eq $leaf })[0]
-                @{ Name = $leaf; Kind = $(if ($null -ne $node -and $node.ItemType -eq 618) { 'ITF' } else { 'POU' }); Members = @(if ($null -ne $node) { $node.Kids | ForEach-Object { ($_ -split '\^')[-1] } }) }
+                @{ Name = $leaf; Kind = $(if ($null -ne $node -and $node.ItemType -eq 618) { 'ITF' } else { 'POU' }); Members = @(if ($null -ne $node) { $node.Kids | Where-Object { $node.ItemType -ne 618 -or $global:T.Nodes[$_].ItemType -eq 610 } | ForEach-Object { ($_ -split '\^')[-1] } }) }
             })
         [System.IO.File]::WriteAllText($file, (New-PlcOpenXml $objs))
     }
@@ -99,12 +99,16 @@ function Set-PrjMethods($n) {
             $type = if ($o.Kind -eq 'ITF') { 618 } else { 604 }
             $memberType = if ($o.Kind -eq 'ITF') { 610 } else { 609 }
             if ($global:T.Nodes.ContainsKey($path)) {
-                if ([int]$opt -eq 3) { continue }
+                if ([int]$opt -eq 3) {
+                    if ($global:T.ImportMode -eq 'skip-touch') { [System.IO.File]::WriteAllText((Join-Path $global:Root "plc\POUs\$($o.Name)$(if ($o.Kind -eq 'ITF') { '.TcIO' } else { '.TcPOU' })"), 'touched by a skip') }
+                    continue
+                }
                 if ([int]$opt -eq 2) { $path = "$path`_1" }
                 if ([int]$opt -eq 1) {
                     Remove-MockNode $path
                     $f = Join-Path $global:Root "plc\POUs\$($o.Name)$(if ($o.Kind -eq 'ITF') { '.TcIO' } else { '.TcPOU' })"
-                    [System.IO.File]::WriteAllText($f, 'replaced by import')
+                    if ($global:T.ImportMode -ne 'replace-nodisk') { [System.IO.File]::WriteAllText($f, 'replaced by import') }
+                    if ($global:T.ImportMode -eq 'dup') { $null = Add-MockNode "$($global:P)^DUTs^$($o.Name)" $type }
                 }
             }
             $null = Add-MockNode $path $type
@@ -209,7 +213,7 @@ try {
     $fb = @($r.data.objects | Where-Object { $_.name -eq 'FB_A' })[0]
     $itf = @($r.data.objects | Where-Object { $_.name -eq 'ITF_A' })[0]
     Check 'Export: selection joined with ;, success, file read back' ($r.success -and $r.data.exported -and $global:T.ExportCalls[0] -eq 'POUs.FB_A;POUs.ITF_A' -and $r.data.objectCount -eq 2 -and $r.data.fileSize -gt 0) (J $r.data)
-    Check 'Export: data.objects lists kind, folder and members' ($fb.kind -eq 'POU' -and $fb.pouType -eq 'functionBlock' -and $fb.folder -eq 'POUs' -and @($fb.members | ForEach-Object { $_.name }) -contains 'M_Run' -and $itf.kind -eq 'ITF' -and @($itf.members).Count -eq 3) (J $r.data.objects)
+    Check 'Export: data.objects lists kind, folder and members' ($fb.kind -eq 'POU' -and $fb.pouType -eq 'functionBlock' -and $fb.folder -eq 'POUs' -and @($fb.members | ForEach-Object { $_.name }) -contains 'M_Run' -and $itf.kind -eq 'ITF' -and (@($itf.members | ForEach-Object { $_.name }) -join ',') -eq 'M_Do') (J $r.data.objects)
     Check 'Export records no BUILD_REQUIRED' ($null -eq (Get-CodeChanged)) "$(Get-CodeChanged)"
     $r = Export-TcPlcOpen -FilePath (Join-Path $Out 'all.xml')
     Check 'Export without selection: whole project (empty selection string)' ($r.success -and $global:T.ExportCalls[-1] -eq '') (J $r.data)
@@ -292,7 +296,11 @@ try {
     $bx = [string]$r.data.backup.xmlPath
     Check 'Import live Replace: data.backup.xmlPath is a PLCopen file of both objects in .tcauto-backup' ($bx -like '*\.tcauto-backup\*\plcopen-replace.xml' -and (Test-Path -LiteralPath $bx) -and ([System.IO.File]::ReadAllText($bx)) -match 'FB_A' -and ([System.IO.File]::ReadAllText($bx)) -match 'ITF_A' -and (@($r.data.backup.objects) -join ',') -eq "$P^POUs^FB_A,$P^POUs^ITF_A") (J $r.data.backup)
     Check 'Import live Replace: data.backup.restore is the Import-TcPlcOpen -Option Replace command' ($r.data.backup.restore -eq "Import-TcPlcOpen -FilePath '$bx' -Option Replace -DryRun `$false" -and $r.data.backup.restoreNote -match 'ImportPlcOpen') "$($r.data.backup.restore)"
-    Check 'Import live Replace: .zip backups hold the export and the original disk files' (@($r.data.backup.zipBackups).Count -eq 2 -and @($r.data.backup.zipBackups | Where-Object { $_.exportPath -like '*.zip' -and (Test-Path -LiteralPath $_.exportPath) }).Count -eq 2 -and @($r.data.backup.zipBackups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*FB_A.TcPOU' -and ([System.IO.File]::ReadAllText($_)) -match 'FB_A original' }).Count -eq 1 -and @($r.data.backup.zipBackups | ForEach-Object { $_.backupFiles } | Where-Object { $_ -like '*ITF_A.TcIO' }).Count -eq 1) (J $r.data.backup.zipBackups)
+    Check 'Import live Replace: per object ProduceXml, disk file copy and .zip' (@($r.data.backup.objectBackups).Count -eq 2 -and @($r.data.backup.objectBackups | Where-Object { $_.exportPath -like '*.zip' -and (Test-Path -LiteralPath $_.exportPath) -and (Test-Path -LiteralPath $_.produceXmlPath) }).Count -eq 2 -and @($r.data.backup.objectBackups | Where-Object { $_.diskFileCopy -like '*FB_A.TcPOU' -and ([System.IO.File]::ReadAllText($_.diskFileCopy)) -match 'FB_A original' }).Count -eq 1) (J $r.data.backup.objectBackups)
+    $do = @($r.data.backup.diskOnly)
+    Check 'Import live Replace (B2): ITF properties not in the XML -> diskOnly lists them with the .TcIO copy and how to restore' ($do.Count -eq 1 -and $do[0].path -eq "$P^POUs^ITF_A" -and (@($do[0].children) -join ',') -eq 'P_Cnt,P_Str' -and $do[0].diskFileCopy -like '*ITF_A.TcIO' -and ([System.IO.File]::ReadAllText($do[0].diskFileCopy)) -match 'ITF_A original' -and $do[0].how -match 'Reset-TcSolution' -and $do[0].how -match 'not measured' -and $r.data.backup.restoreNote -match 'P_Cnt, P_Str' -and $r.data.backup.restoreNote -match 'not exported') (J $do)
+    $fr = @($r.data.replaced | Where-Object { $_.name -eq 'FB_A' })[0]
+    Check 'Import live Replace (S5): diskFileChanged true when the import rewrote the file' ($fr.diskFileChanged -eq $true -and @($r.data.warnings | Where-Object { $_ -match 'did not change' }).Count -eq 0) (J $r.data.replaced)
     $ri = @($r.data.replaced | Where-Object { $_.name -eq 'ITF_A' })[0]
     Check 'Import live Replace: readback reports the children really deleted' ((@($ri.deletedChildren) -join ',') -eq 'P_Cnt,P_Str' -and $r.data.verified -and @($r.data.added | Where-Object { $_.name -eq 'FB_New' }).Count -eq 1) (J $r.data.replaced)
     Check 'Import live Replace: project saved, the .plcproj readback expects the added object with its folder' (@($global:T.Saves).Count -eq 1 -and $global:T.Saves[0] -eq 'plc|POUs\FB_New.TcPOU' -and (@($r.data.expectedProjectFiles) -join ',') -eq 'POUs\FB_New.TcPOU' -and $null -ne $r.data.projectSaved) "$(J $global:T.Saves) $(J $r.data.projectSaved)"
@@ -311,10 +319,54 @@ try {
     Check 'Import live Replace, PLCopen backup not written -> PLCOPEN_BACKUP_FAILED, not imported' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $global:T.ImportCalls.Count -eq 0) (J $r.error)
     Reset-Mock; $global:T.ExportChildMode = 'throw'
     $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
-    Check 'Import live Replace, .zip backup fails -> only a warning, imported (PLCopen backup is there)' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.backup.zipBackups).Count -eq 0 -and @($r.data.warnings | Where-Object { $_ -match 'extra backup' -and $_ -match 'PLCopen backup' }).Count -eq 2) (J $r.data.warnings)
+    Check 'Import live Replace, .zip backup fails -> only a warning, imported (PLCopen + disk backup are there)' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.backup.objectBackups | Where-Object { $null -ne $_.exportPath }).Count -eq 0 -and @($r.data.warnings | Where-Object { $_ -match 'ExportChild \.zip backup' }).Count -eq 2) (J $r.data.warnings)
     Reset-Mock; $global:T.ExportChildMode = 'nofile'
     $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
-    Check 'Import live Replace, .zip not written -> only a warning, imported' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.warnings | Where-Object { $_ -match 'extra backup' }).Count -eq 2) (J $r.data.warnings)
+    Check 'Import live Replace, .zip not written -> only a warning, imported' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.warnings | Where-Object { $_ -match 'ExportChild \.zip backup' }).Count -eq 2) (J $r.data.warnings)
+
+    # ===== B2: the disk backup of an object with children the XML lacks is required
+    Reset-Mock; Reset-BuildRequired
+    Remove-Item -LiteralPath (Join-Path $Root 'plc\POUs\ITF_A.TcIO') -Force
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace (B2): ITF disk file missing -> PLCOPEN_BACKUP_FAILED disk-backup-failed, not imported' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.data.reason -eq 'disk-backup-failed' -and (@($r.data.backupObject) -join ',') -eq "$P^POUs^ITF_A" -and $r.error.message -match 'P_Cnt' -and $global:T.ImportCalls.Count -eq 0 -and $null -eq (Get-CodeChanged)) "$(J $r.error) | $(Get-CodeChanged)"
+    Reset-Mock
+    Remove-Item -LiteralPath (Join-Path $Root 'plc\POUs\FB_A.TcPOU') -Force
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace (B2): FB disk file missing, XML holds all its children -> imported with a warning' ($r.success -and $global:T.ImportCalls.Count -eq 1 -and @($r.data.warnings | Where-Object { $_ -match 'FB_A\.TcPOU' }).Count -ge 1) (J $r.data.warnings)
+
+    # ===== B1: incomplete index
+    Reset-Mock; Reset-BuildRequired
+    # a folder whose child cannot be read (a ScriptProperty that throws would read as $null, so Child() throws)
+    $global:T.Nodes["$P^DUTs"] | Add-Member ScriptProperty ChildCount { 1 } -Force
+    $global:T.Nodes["$P^DUTs"] | Add-Member ScriptMethod Child { param($i) throw 'mock: child not readable' } -Force
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace
+    Check 'Import dry-run Replace, index incomplete -> indexComplete false and a warning that the real run is refused' ($r.success -and $r.data.indexComplete -eq $false -and @($r.data.warnings | Where-Object { $_ -match 'index-incomplete' }).Count -eq 1) (J $r.data)
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, index incomplete -> PLCOPEN_BACKUP_FAILED index-incomplete, nothing exported or imported' ($r.error.code -eq 'PLCOPEN_BACKUP_FAILED' -and $r.data.reason -eq 'index-incomplete' -and $global:T.Order.Count -eq 0 -and $null -eq (Get-CodeChanged)) "$(J $r.error) | $(J $global:T.Order)"
+    $r = Import-TcPlcOpen -FilePath $imp -Option Rename
+    Check 'Import dry-run Rename, index incomplete -> indexComplete false, no refusal warning' ($r.success -and $r.data.indexComplete -eq $false -and @($r.data.warnings | Where-Object { $_ -match 'index-incomplete' }).Count -eq 0) (J $r.data.warnings)
+
+    # ===== S5: Replace without a disk change, Skip that touched a file, a conflict name added elsewhere
+    Reset-Mock; Reset-BuildRequired; $global:T.ImportMode = 'replace-nodisk'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, disk file unchanged -> diskFileChanged false + warning' ($r.success -and @($r.data.replaced | Where-Object { $_.diskFileChanged -eq $false }).Count -eq 2 -and @($r.data.warnings | Where-Object { $_ -match 'did not change during the import' }).Count -eq 2) (J $r.data.replaced)
+    Reset-Mock; Reset-BuildRequired; $global:T.ImportMode = 'skip-touch'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Skip -DryRun $false
+    Check 'Import live Skip, a skipped file changed -> PLCOPEN_VERIFY_FAILED skip-changed, recorded' ($r.error.code -eq 'PLCOPEN_VERIFY_FAILED' -and $r.data.reason -eq 'skip-changed' -and @($r.data.skipped | Where-Object { $_.unchanged -eq $false }).Count -eq 2 -and (Get-CodeChanged) -match 'verify failed') "$(J $r.error) | $(Get-CodeChanged)"
+    Reset-Mock; Reset-BuildRequired; $global:T.ImportMode = 'dup'
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace -DryRun $false
+    Check 'Import live Replace, a conflict name added in another folder -> data.conflictsAdded + warning' ($r.success -and (@($r.data.conflictsAdded | ForEach-Object { $_.path }) -join ',') -eq "$P^DUTs^FB_A,$P^DUTs^ITF_A" -and @($r.data.warnings | Where-Object { $_ -match 'name of a conflicting object' }).Count -eq 1) (J $r.data.conflictsAdded)
+
+    # ===== N5: nameTaken also looks at the objects of the same file
+    Reset-Mock
+    $twin = Join-Path $In 'twin.xml'
+    [System.IO.File]::WriteAllText($twin, (New-PlcOpenXml @(@{ Name = 'FB_A'; Kind = 'POU'; Members = @() }, @{ Name = 'FB_A_1'; Kind = 'POU'; Members = @() })))
+    $r = Import-TcPlcOpen -FilePath $twin -Option Rename
+    Check 'Import dry-run Rename: <name>_1 in the same file -> nameTaken' (@($r.data.willRename | Where-Object { $_.name -eq 'FB_A' -and $_.nameTaken }).Count -eq 1) (J $r.data.willRename)
+
+    # ===== N2: plannedSteps names the PLCopen backup and the save
+    $r = Import-TcPlcOpen -FilePath $imp -Option Replace
+    Check 'Import dry-run Replace: plannedSteps has the PlcOpenExport XML backup and the save' (@($r.data.plannedSteps | Where-Object { $_ -match 'PlcOpenExport XML backup \(required\)' }).Count -eq 1 -and @($r.data.plannedSteps | Where-Object { $_ -match 'save the project' }).Count -eq 1) (J $r.data.plannedSteps)
 
     # ===== Import live: project save fails
     Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'missing'
@@ -350,6 +402,16 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.ImportMode = 'noop'
     $r = Import-TcPlcOpen -FilePath $newOnly -DryRun $false
     Check 'Import live: object missing afterwards -> PLCOPEN_VERIFY_FAILED, recorded' ($r.error.code -eq 'PLCOPEN_VERIFY_FAILED' -and @($r.data.missing) -contains 'FB_New' -and (Get-CodeChanged) -match 'verify failed') "$(J $r.error) | $(Get-CodeChanged)"
+
+    # ===== N4 / N6
+    Reset-Mock
+    $r = Export-TcPlcOpen -Selection ' POUs.FB_A ' -FilePath (Join-Path $Out 'trim.xml')
+    Check 'Export: selection trimmed before XAE gets it' ($r.success -and $global:T.ExportCalls[-1] -eq 'POUs.FB_A' -and (@($r.data.selection) -join ',') -eq 'POUs.FB_A') (J $global:T.ExportCalls)
+    & $mod { function script:Assert-TcConnection { throw 'Not connected to TwinCAT IDE (mock)' } }
+    $r = Export-TcPlcOpen -Selection 'POUs.FB_A' -FilePath (Join-Path $Out 'nc.xml')
+    $r2 = Import-TcPlcOpen -FilePath $imp
+    & $mod { function script:Assert-TcConnection { } }
+    Check 'NOT_CONNECTED carries the Connect-TcIde hint' ($r.error.code -eq 'NOT_CONNECTED' -and $r.error.hint -match 'Connect-TcIde' -and $r2.error.hint -match 'Connect-TcIde') (J $r.error)
 
     # ===== hints / tools.json
     $codes = @('PLCOPEN_FAILED', 'PLCOPEN_FILE_EXISTS', 'PLCOPEN_CONFLICT', 'PLCOPEN_VERIFY_FAILED', 'PLCOPEN_BACKUP_FAILED')

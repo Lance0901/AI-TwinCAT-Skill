@@ -69,7 +69,7 @@ function Save-TcPlcLibrary {
     }
 
     try { Assert-TcConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED_IDE')
     }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }

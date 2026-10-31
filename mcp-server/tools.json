@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T12:19:05Z",
+    "generatedAt":  "2026-10-31T12:48:10Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -801,7 +801,7 @@
                                                                                              "type":  "string"
                                                                                          },
                                                                                "minItems":  1,
-                                                                               "description":  "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels: 'POUs.FB_A', 'DUTs.ST_B'. Empty = the whole PLC project."
+                                                                               "description":  "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels; the first level is a folder of the PLC project, e.g. 'AxisInterface.LIB.AxisControl.FB_AxisControl' (the string measured 2026-10-31) or 'POUs.FB_A'. Leading / trailing blanks are trimmed. Empty = the whole PLC project."
                                                                            },
                                                              "FilePath":  {
                                                                               "type":  "string",

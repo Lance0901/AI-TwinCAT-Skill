@@ -8,18 +8,26 @@
 function Get-TcBootFileSet {
     <#
     .SYNOPSIS
-        Boot files of one PLC: @{ Dir; Derived; Reason; Files = @{ <full path> = <Get-TcOutputFileFacts> } }.
+        Boot files of one PLC: @{ Dirs = @(paths); Dir; Derived; Reason; Files = @{ <full path> = <Get-TcOutputFileFacts> } }.
     .DESCRIPTION
-        Derived ($true): <folder of the .tsproj that lists the PLC>\_Boot\<Platform>\Plc, files
-        'Port_<AdsPort>.*' and 'Port_<AdsPort>_*' (Port_851_boot.tizip). The .tsproj comes from
-        Get-TcPlcProjectFile (DTE Solution.Projects + the <Project Name=... PrjFilePath=...> element).
-        When the platform, the ADS port or the .tsproj is not known (Reason says which), Derived is
-        $false and every _Boot\*\Plc\Port_* file below -SolutionDir (depth 4, backup folders
-        skipped) is listed instead; Dir is $null then. Never throws.
+        Derived ($true): <folder of the .tsproj that lists the PLC>\_Boot\<platform>\Plc for the
+        solution platform and, when it differs, the project platform (Get-TcSolutionPlatform
+        projectPlatform); files 'Port_<AdsPort>.*' and 'Port_<AdsPort>_*' (Port_851_boot.tizip).
+        The probe had the same solution and project platform ('TwinCAT OS (x64)'); which of the
+        two folders XAE writes when they differ is not measured, so both are listed. Dir is the
+        first of Dirs. The .tsproj comes from Get-TcPlcProjectFile (DTE Solution.Projects + the
+        <Project Name=... PrjFilePath=...> element).
+        When the platform, the ADS port or the .tsproj is not known (Reason says which, also an
+        empty .tsproj path), Derived is $false and every _Boot\*\Plc\Port_* file below
+        -SolutionDir (depth 4, backup folders skipped) is listed instead; Dirs is empty then.
+        Never throws.
     .PARAMETER PlcName
         PLC name (TIPC^<Plc>).
     .PARAMETER Platform
         Active solution platform (Get-TcSolutionPlatform), e.g. 'TwinCAT OS (x64)'.
+    .PARAMETER ProjectPlatform
+        Project platform of the .tsproj under that solution platform (Get-TcSolutionPlatform
+        projectPlatform); $null or the same name adds nothing.
     .PARAMETER AdsPort
         ADS port of the PLC (Get-TcPlcProjectList adsPort), 0 = unknown.
     .PARAMETER SolutionDir
@@ -29,29 +37,37 @@ function Get-TcBootFileSet {
     param(
         [Parameter(Mandatory)][string]$PlcName,
         [Parameter()][AllowNull()][AllowEmptyString()][string]$Platform,
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$ProjectPlatform,
         [Parameter()][int]$AdsPort = 0,
         [Parameter()][AllowNull()][AllowEmptyString()][string]$SolutionDir
     )
-    $out = @{ Dir = $null; Derived = $false; Reason = $null; Files = @{} }
+    $out = @{ Dirs = @(); Dir = $null; Derived = $false; Reason = $null; Files = @{} }
     $tsproj = $null
     if ([string]::IsNullOrWhiteSpace($Platform)) { $out.Reason = 'the solution platform is not known' }
     elseif ($AdsPort -le 0) { $out.Reason = "the ADS port of PLC '$PlcName' is not known" }
     else {
-        try { $tsproj = [string](Get-TcPlcProjectFile -PlcName $PlcName).TsProjFile }
+        try {
+            $tsproj = [string](Get-TcPlcProjectFile -PlcName $PlcName).TsProjFile
+            if ([string]::IsNullOrWhiteSpace($tsproj)) { $out.Reason = "Get-TcPlcProjectFile returned no .tsproj path for PLC '$PlcName'" }
+        }
         catch { $out.Reason = "the .tsproj of PLC '$PlcName' is not found ($($_.Exception.Message))" }
     }
-    if ($null -eq $out.Reason -and -not [string]::IsNullOrWhiteSpace($tsproj)) {
-        $out.Dir = Join-Path (Join-Path (Join-Path ([System.IO.Path]::GetDirectoryName($tsproj)) '_Boot') $Platform) 'Plc'
+    if ($null -eq $out.Reason) {
+        $boot = Join-Path ([System.IO.Path]::GetDirectoryName($tsproj)) '_Boot'
+        $plats = @($Platform)
+        if (-not [string]::IsNullOrWhiteSpace($ProjectPlatform) -and $ProjectPlatform -ne $Platform) { $plats += $ProjectPlatform }
+        $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path $boot $_) 'Plc' })
+        $out.Dir = $out.Dirs[0]
         $out.Derived = $true
-        if (Test-Path -LiteralPath $out.Dir -PathType Container) {
-            foreach ($f in @(Get-ChildItem -LiteralPath $out.Dir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "Port_$AdsPort.*" -or $_.Name -like "Port_$($AdsPort)_*" })) {
+        foreach ($d in $out.Dirs) {
+            if (-not (Test-Path -LiteralPath $d -PathType Container)) { continue }
+            foreach ($f in @(Get-ChildItem -LiteralPath $d -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "Port_$AdsPort.*" -or $_.Name -like "Port_$($AdsPort)_*" })) {
                 $out.Files[$f.FullName] = Get-TcOutputFileFacts -Path $f.FullName
             }
         }
         return $out
     }
     if ([string]::IsNullOrWhiteSpace($SolutionDir) -or -not (Test-Path -LiteralPath $SolutionDir -PathType Container)) {
-        if ($null -eq $out.Reason) { $out.Reason = 'the boot folder cannot be derived' }
         $out.Reason += '; the solution folder is not known either, so no boot file was searched'
         return $out
     }

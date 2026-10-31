@@ -10,6 +10,8 @@
 #   - import options: NONE = exception on a conflict and nothing imported; SKIP = conflicts skipped
 #     silently; REPLACE = the whole object replaced, children the file does not have are deleted
 #     (an ITF lost its properties); RENAME = '_1' appended to the imported object.
+#   - PlcOpenExport includes the subtree of an object, except the properties of an INTERFACE that
+#     have no Get / Set: they are not exported (only the methods are).
 
 $script:TcPlcOpenImportOptions = [ordered]@{ None = 0; Replace = 1; Rename = 2; Skip = 3 }
 # selection that XAE refused with "Selection '...' not found!" (measured, phase2-probe.md 3.3)
@@ -239,57 +241,46 @@ function Get-TcPlcProjectObjectIndex {
     return @{ Objects = @($walk.Objects); Complete = ($null -eq $note); Note = $note }
 }
 
-function Invoke-TcPlcObjectZipBackup {
+function Invoke-TcPlcObjectExportZip {
     <#
     .SYNOPSIS
-        Backup of one PLC object before PlcOpenImport REPLACE overwrites it: @{ Result = $null | failed result; Backup }.
+        ExportChild of one PLC object into -ExportFile (.zip): @{ ExportPath = <path> | $null; Error = $null | message }.
     .DESCRIPTION
-        The same backup Remove-TcTreeItem makes before DeleteChild: ProduceXml(recursive) and the
-        object's disk file (.TcPOU / .TcDUT / .TcGVL / .TcIO, $script:TcTreeItemDiskFileRules) into
-        <solution dir>\.tcauto-backup\<time>\ (Invoke-TcTreeItemBackup), plus an ExportChild of the
-        object into a .zip next to it (a node below TIPC is exported to .zip, Get-TcTreeItemExportExtension;
-        restore with ImportChild). Backup = @{ path; backupPath; exportPath; backupFiles; warnings }.
-        Failed result PLCOPEN_BACKUP_FAILED (data.reason backup-failed / export-failed / export-missing,
-        data.backupObject) when anything is missing: the caller imports nothing then. IDE_MODAL_DIALOG
-        when a dialog is open before ExportChild; IDE_* errors are rethrown.
+        <parent>.ExportChild(<name>, <file>) as Remove-TcTreeItem does before DeleteChild; a node below
+        TIPC is exported to .zip (Get-TcTreeItemExportExtension, measured 2026-10-30 on a PLC folder).
+        ExportChild of a POU / DUT / GVL / ITF node is NOT measured, so the caller treats a failure as
+        a warning only. A modal dialog before the call is reported as an Error (nothing exported).
+        IDE_* errors are rethrown.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER Path
         Tree path of the object.
-    .PARAMETER Data
-        Data object of the cmdlet (reason / backupObject are added on failure).
+    .PARAMETER ExportFile
+        File to write (must not exist).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$SysManager, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Data)
-    $fail = {
-        param([string]$Reason, [string]$Message)
-        $Data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force
-        $Data | Add-Member -NotePropertyName backupObject -NotePropertyValue $Path -Force
-        @{ Backup = $null; Result = (New-TcResult -Success $false -ErrorCode 'PLCOPEN_BACKUP_FAILED' -Data $Data -ErrorMessage "$Message; PlcOpenImport was not called, nothing was imported." -Hint (Get-TcErrorHint -Code 'PLCOPEN_BACKUP_FAILED')) }
-    }
+    param([Parameter(Mandatory)]$SysManager, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$ExportFile)
     $item = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $Path
-    if ($null -eq $item) { return (& $fail 'backup-failed' "backup of '$Path' failed: the object is not found") }
-    $bk = Invoke-TcTreeItemBackup -Item $item -Path $Path -Data ([PSCustomObject]@{}) -Recursive
-    if ($null -ne $bk.Result) { return (& $fail 'backup-failed' ([string]$bk.Result.error.message)) }
+    if ($null -eq $item) { return @{ ExportPath = $null; Error = "'$Path' is not found" } }
     $parentPath = Get-TcTreePathParent -Path $Path
     $parent = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $parentPath
+    if ($null -eq $parent) { return @{ ExportPath = $null; Error = "the parent '$parentPath' is not found" } }
     $name = try { [string]$item.Name } catch { Get-TcTreePathLeaf -Path $Path }
     if ([string]::IsNullOrEmpty($name)) { $name = Get-TcTreePathLeaf -Path $Path }
-    $exportFile = [System.IO.Path]::ChangeExtension($bk.Backup.backupPath, (Get-TcTreeItemExportExtension -Path $Path))
-    if ($null -eq $parent) { return (& $fail 'export-failed' "backup of '$Path' failed: its parent '$parentPath' is not found") }
-    $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path' (backup before PlcOpenImport REPLACE)" -Data $Data
-    if ($null -ne $dlg) { return @{ Backup = $null; Result = $dlg } }
+    $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path' (backup)" -Data ([PSCustomObject]@{})
+    if ($null -ne $dlg) { return @{ ExportPath = $null; Error = [string]$dlg.error.message } }
     try {
         # No deadline (CODING_STANDARDS.md section 1), same as the ExportChild backup of Remove-TcTreeItem:
         # a dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode.
-        Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($name, $exportFile) } | Out-Null
+        # ExportChild of a POU node: not measured.
+        Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($name, $ExportFile) } | Out-Null
     }
     catch {
         if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
-        return (& $fail 'export-failed' "ExportChild backup of '$Path' failed ($($_.Exception.Message))")
+        return @{ ExportPath = $null; Error = "ExportChild failed ($($_.Exception.Message))" }
     }
-    if (-not (Test-Path -LiteralPath $exportFile -PathType Leaf)) { return (& $fail 'export-missing' "ExportChild returned, but the backup '$exportFile' of '$Path' does not exist") }
-    return @{ Result = $null; Backup = [PSCustomObject]@{ path = $Path; backupPath = $bk.Backup.backupPath; exportPath = $exportFile; backupFiles = @($bk.Backup.backupFiles); warnings = @($bk.Backup.warnings) } }
+    if (-not (Test-Path -LiteralPath $ExportFile -PathType Leaf)) { return @{ ExportPath = $null; Error = "ExportChild returned, but '$ExportFile' does not exist" } }
+    return @{ ExportPath = $ExportFile; Error = $null }
 }
 
 function Get-TcFileSha256 {
@@ -310,19 +301,29 @@ function Invoke-TcPlcOpenReplaceBackup {
     .SYNOPSIS
         Backup before PlcOpenImport REPLACE: @{ Result = $null | failed result; Backup }.
     .DESCRIPTION
-        Required: one PLCopen XML file of every object that will be replaced, written with
-        PlcOpenExport on '<Plc> Project' into <solution dir>\.tcauto-backup\<time>\plcopen-replace.xml
-        (-2, -3 ... when taken). PlcOpenExport includes the whole subtree of each object (measured
-        2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client, phase2-probe.md 3.3), so importing
-        that file again with Import-TcPlcOpen -Option Replace restores the objects with their
-        children. The file must exist and list every object (Read-TcPlcOpenFile); otherwise
-        PLCOPEN_BACKUP_FAILED (data.reason plcopen-backup-failed, data.backupObject) and the caller
-        imports nothing. Solution folder unknown -> PLCOPEN_BACKUP_FAILED reason backup-failed.
-        IDE_MODAL_DIALOG when a dialog is open before the export.
-        Best effort: per object the backup of Invoke-TcPlcObjectZipBackup (ProduceXml, disk file,
-        ExportChild .zip; the .zip of a POU node is not measured); a failure there is only a warning.
-        Backup = { xmlPath; objects; restore (ready-to-run command); zipBackups[]; warnings[] }.
-        IDE_* errors are rethrown.
+        1. Required: one PLCopen XML file of every object that will be replaced, written with
+           PlcOpenExport on '<Plc> Project' into <solution dir>\.tcauto-backup\<time>\plcopen-replace.xml
+           (-2, -3 ... when taken). It must exist, parse (Read-TcPlcOpenFile) and list every object;
+           else PLCOPEN_BACKUP_FAILED reason plcopen-backup-failed. PlcOpenExport includes the
+           subtree of each object, EXCEPT the properties of an INTERFACE that have no Get / Set:
+           they are not exported (measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built
+           client, phase2-probe.md 3.3).
+        2. Per object the direct children of the project are compared with the members the XML
+           lists (names, case-insensitive). An object with children missing from the XML
+           (childrenNotInXml) cannot be restored from the XML alone, so for it the ProduceXml
+           (recursive) and disk file backup (Invoke-TcTreeItemBackup; .TcIO / .TcPOU / .TcDUT /
+           .TcGVL) is REQUIRED: no backup or no disk file copied -> PLCOPEN_BACKUP_FAILED reason
+           disk-backup-failed.
+        3. Best effort for every object: that ProduceXml / disk file backup (objects without a gap)
+           and an ExportChild .zip (Invoke-TcPlcObjectExportZip; ExportChild of a POU node is not
+           measured); a failure is only a warning.
+        Restore: Import-TcPlcOpen -FilePath <xmlPath> -Option Replace -DryRun $false (Backup.restore)
+        brings back what the XML holds; Backup.diskOnly lists per object the children that are only
+        in the disk file copy / .zip, with the way back: copy the disk file copy over the original
+        file, then Reset-TcSolution (not measured), or Import-TcTreeItem of the .zip (not measured).
+        Solution folder unknown -> PLCOPEN_BACKUP_FAILED reason backup-failed. IDE_MODAL_DIALOG when
+        a dialog is open before the export. IDE_* errors are rethrown.
+        Backup = { xmlPath; objects; restore; restoreNote; diskOnly[]; objectBackups[]; warnings[] }.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER Project
@@ -343,13 +344,13 @@ function Invoke-TcPlcOpenReplaceBackup {
         [Parameter(Mandatory)][object]$Data
     )
     $fail = {
-        param([string]$Reason, [string]$Message)
+        param([string]$Reason, [string]$Message, $Objects)
         $Data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force
-        $Data | Add-Member -NotePropertyName backupObject -NotePropertyValue @($Paths) -Force
+        $Data | Add-Member -NotePropertyName backupObject -NotePropertyValue @($Objects) -Force
         @{ Backup = $null; Result = (New-TcResult -Success $false -ErrorCode 'PLCOPEN_BACKUP_FAILED' -Data $Data -ErrorMessage "$Message; PlcOpenImport was not called, nothing was imported." -Hint (Get-TcErrorHint -Code 'PLCOPEN_BACKUP_FAILED')) }
     }
     $solutionDir = Get-TcTreeItemSolutionDir
-    if ($null -eq $solutionDir) { return (& $fail 'backup-failed' 'No solution path is known (Connect-TcIde -SolutionPath / Open-TcProject), the PLCopen backup cannot be written') }
+    if ($null -eq $solutionDir) { return (& $fail 'backup-failed' 'No solution path is known (Connect-TcIde -SolutionPath / Open-TcProject), the PLCopen backup cannot be written' $Paths) }
     $sel = @($Paths | ForEach-Object {
             if (-not $_.StartsWith("$ProjectPath^", [System.StringComparison]::OrdinalIgnoreCase)) { $_ } else { $_.Substring($ProjectPath.Length + 1) -replace '\^', '.' }
         })
@@ -361,8 +362,8 @@ function Invoke-TcPlcOpenReplaceBackup {
         $n = 1
         while (Test-Path -LiteralPath $xml) { $n++; $xml = Join-Path $dir "plcopen-replace-$n.xml" }
     }
-    catch { return (& $fail 'backup-failed' "the backup folder below '$solutionDir' cannot be written ($($_.Exception.Message))") }
-    $dlg = Get-TcTreeItemDialogResult -Operation "PlcOpenExport backup before PlcOpenImport REPLACE" -Data $Data
+    catch { return (& $fail 'backup-failed' "the backup folder below '$solutionDir' cannot be written ($($_.Exception.Message))" $Paths) }
+    $dlg = Get-TcTreeItemDialogResult -Operation 'PlcOpenExport backup before PlcOpenImport REPLACE' -Data $Data
     if ($null -ne $dlg) { return @{ Backup = $null; Result = $dlg } }
     $selString = $sel -join ';'
     try {
@@ -372,25 +373,59 @@ function Invoke-TcPlcOpenReplaceBackup {
     }
     catch {
         if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
-        return (& $fail 'plcopen-backup-failed' "PlcOpenExport backup of $selString failed ($((Get-TcComErrorInfo -ErrorRecord $_).message))")
+        return (& $fail 'plcopen-backup-failed' "PlcOpenExport backup of $selString failed ($((Get-TcComErrorInfo -ErrorRecord $_).message))" $Paths)
     }
     $parsed = $null
     try { $parsed = Read-TcPlcOpenFile -Path $xml }
-    catch { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' was not written or cannot be read ($($_.Exception.Message))") }
-    $names = @($parsed.Objects | ForEach-Object { $_.name })
-    $missing = @($Paths | Where-Object { $leaf = Get-TcTreePathLeaf -Path $_; @($names | Where-Object { $_ -ieq $leaf }).Count -eq 0 })
-    if ($missing.Count -gt 0) { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' lacks $(($missing | ForEach-Object { "'$_'" }) -join ', ')") }
+    catch { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' was not written or cannot be read ($($_.Exception.Message))" $Paths) }
+    $xmlObjects = @($parsed.Objects)
+    $missing = @($Paths | Where-Object { $leaf = Get-TcTreePathLeaf -Path $_; @($xmlObjects | Where-Object { $_.name -ieq $leaf }).Count -eq 0 })
+    if ($missing.Count -gt 0) { return (& $fail 'plcopen-backup-failed' "the PLCopen backup '$xml' lacks $(($missing | ForEach-Object { "'$_'" }) -join ', ')" $missing) }
 
-    $zips = [System.Collections.Generic.List[object]]::new()
     $warnings = [System.Collections.Generic.List[string]]::new()
+    $objectBackups = [System.Collections.Generic.List[object]]::new()
+    $diskOnly = [System.Collections.Generic.List[object]]::new()
     foreach ($p in $Paths) {
-        $scratch = [PSCustomObject]@{}
-        $z = Invoke-TcPlcObjectZipBackup -SysManager $SysManager -Path $p -Data $scratch
-        if ($null -ne $z.Result) { $warnings.Add("the extra backup of '$p' (ProduceXml / disk file / ExportChild .zip) was not made: $([string]$z.Result.error.message); the PLCopen backup '$xml' is complete") }
-        else { $zips.Add($z.Backup); foreach ($w in @($z.Backup.warnings)) { $warnings.Add($w) } }
+        $leaf = Get-TcTreePathLeaf -Path $p
+        $item = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p
+        $kids = if ($null -ne $item) { @(Get-TcTreeItemChildNames -Item $item) } else { @() }
+        $xo = @($xmlObjects | Where-Object { $_.name -ieq $leaf })[0]
+        $xmlMembers = @($xo.members | ForEach-Object { $_.name })
+        $gap = @($kids | Where-Object { $k = $_; @($xmlMembers | Where-Object { $_ -ieq $k }).Count -eq 0 })
+        $itemType = if ($null -ne $item) { try { [int]$item.ItemType } catch { -1 } } else { -1 }
+        $disk = Find-TcTreeItemDiskFile -SolutionDir $solutionDir -Path $p -Name $leaf -ItemType $itemType
+        $original = @($disk.Files)[0]
+        $bk = $null
+        if ($null -ne $item) { $bk = Invoke-TcTreeItemBackup -Item $item -Path $p -Data ([PSCustomObject]@{}) -Recursive }
+        $copy = if ($null -ne $bk -and $null -eq $bk.Result) { @($bk.Backup.backupFiles)[0] } else { $null }
+        if ($gap.Count -gt 0 -and ([string]::IsNullOrEmpty($copy) -or [string]::IsNullOrEmpty($original))) {
+            $why = if ($null -eq $item) { 'the object is not found' } elseif ($null -ne $bk -and $null -ne $bk.Result) { [string]$bk.Result.error.message } else { "no disk file of '$p' was found or copied ($(@($disk.Warnings) -join '; '))" }
+            return (& $fail 'disk-backup-failed' "'$p' has children the PLCopen backup does not hold ($($gap -join ', '); the properties of an interface without Get / Set are not exported, measured 2026-10-31), so its disk file backup is required, but it failed: $why" @($p))
+        }
+        if ($null -ne $bk -and $null -ne $bk.Result) { $warnings.Add("the ProduceXml / disk file backup of '$p' failed: $([string]$bk.Result.error.message); the PLCopen backup '$xml' holds it") }
+        if ($null -ne $bk -and $null -eq $bk.Result) { foreach ($w in @($bk.Backup.warnings)) { $warnings.Add($w) } }
+        $zip = $null
+        if ($null -ne $bk -and $null -eq $bk.Result) {
+            $z = Invoke-TcPlcObjectExportZip -SysManager $SysManager -Path $p -ExportFile ([System.IO.Path]::ChangeExtension($bk.Backup.backupPath, (Get-TcTreeItemExportExtension -Path $p)))
+            if ($null -ne $z.Error) { $warnings.Add("the extra ExportChild .zip backup of '$p' was not made: $($z.Error)") } else { $zip = $z.ExportPath }
+        }
+        $objectBackups.Add([PSCustomObject]@{
+                path = $p; produceXmlPath = $(if ($null -ne $bk -and $null -eq $bk.Result) { $bk.Backup.backupPath } else { $null })
+                diskFile = $original; diskFileCopy = $copy; exportPath = $zip; childrenNotInXml = $gap
+            })
+        if ($gap.Count -gt 0) {
+            $diskOnly.Add([PSCustomObject]@{
+                    path = $p; children = $gap; diskFile = $original; diskFileCopy = $copy; exportPath = $zip
+                    how = "after the XML restore, copy '$copy' over '$original' and run Reset-TcSolution (not measured)$(if ($zip) { "; or Import-TcTreeItem of '$zip' (not measured)" } else { '' })"
+                })
+        }
     }
     $restore = "Import-TcPlcOpen -FilePath '$($xml.Replace("'", "''"))' -Option Replace -DryRun `$false"
-    return @{ Result = $null; Backup = [PSCustomObject]@{ xmlPath = $xml; objects = @($Paths); restore = $restore
-            restoreNote = "restore the replaced objects with their children: $restore (MCP ImportPlcOpen FilePath=<xmlPath> Option=Replace DryRun=false)"
-            zipBackups = $zips.ToArray(); warnings = $warnings.ToArray() } }
+    $note = "restore the replaced objects: $restore (MCP ImportPlcOpen FilePath=<xmlPath> Option=Replace DryRun=false)"
+    if ($diskOnly.Count -gt 0) {
+        $note += '. NOT in the XML (properties of an interface without Get / Set are not exported, measured 2026-10-31), only in the disk file copy / .zip: ' +
+            (($diskOnly | ForEach-Object { "'$($_.path)': $($_.children -join ', ') -> $($_.how)" }) -join '; ')
+    }
+    return @{ Result = $null; Backup = [PSCustomObject]@{ xmlPath = $xml; objects = @($Paths); restore = $restore; restoreNote = $note
+            diskOnly = $diskOnly.ToArray(); objectBackups = $objectBackups.ToArray(); warnings = $warnings.ToArray() } }
 }

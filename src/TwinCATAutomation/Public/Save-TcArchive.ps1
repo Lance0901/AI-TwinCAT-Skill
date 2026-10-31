@@ -29,11 +29,17 @@ function Save-TcArchive {
         reason not-a-zip (both: the new file is renamed to '<FilePath>.failed' and the old one put
         back, data.restore). data.entries: name and size of each entry, at most 200 (data.entryCount
         is the total, data.entriesTruncated / data.entriesNote when cut).
-        Error List: an error row that was not there before the call (same code, description, file
-        and project) -> ARCHIVE_INCOMPLETE with data.errorItems; the file is KEPT and data.warnings
-        says it is incomplete. When the baseline could not be read, only rows with the measured text
-        "Error creating Archive" count. When the Error List cannot be read after the call ->
-        ARCHIVE_UNVERIFIED (file kept): completeness cannot be checked.
+        Error List: the rows are counted per code + description + file + project before and after
+        the call (error rows and rows of unknown severity); every row more than before is new
+        (the same text twice counts twice). A new error row -> ARCHIVE_INCOMPLETE with
+        data.errorItems; the file is KEPT and data.warnings says it is incomplete. When the baseline
+        could not be read, only rows with the measured text "Error creating Archive" count. When the
+        Error List cannot be read after the call, or its rows were cut (data.errorListTruncated) or
+        some rows have no severity (data.unclassified) -> ARCHIVE_UNVERIFIED (file kept):
+        completeness cannot be checked; a new unclassified row with "Error creating Archive" is
+        ARCHIVE_INCOMPLETE instead. Whether XAE adds the "Error creating Archive" row before
+        SaveAsArchive returns (synchronously) or later (asynchronously) is not measured; the module
+        reads the Error List once, right after the call.
         Only saving: loading an archive replaces the open solution and is not offered.
         The project is not changed: BUILD_REQUIRED is not touched.
         No deadline (CODING_STANDARDS.md section 1): a dialog is ruled out right before the call,
@@ -79,7 +85,7 @@ function Save-TcArchive {
     }
 
     try { Assert-TcConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED_IDE')
     }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
@@ -105,7 +111,7 @@ function Save-TcArchive {
         if ($null -ne $dlg) { return $dlg }
         $target = $null
         if ($k -eq 'Solution') {
-            if ($null -eq $script:TcDte) { return New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'No DTE: Connect-TcIde first.' }
+            if ($null -eq $script:TcDte) { return New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'No DTE: Connect-TcIde first.' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED_IDE') }
             $dte = $script:TcDte
             $target = Invoke-TcComRetry -OperationName 'GetObject TcArchivePersist' -ScriptBlock { Write-Output -NoEnumerate $dte.GetObject('TcArchivePersist') }
             if ($null -eq $target) {
@@ -120,7 +126,7 @@ function Save-TcArchive {
         $baseline = $null
         if ($null -eq $elBefore.errorListError) {
             $baseline = @{}
-            foreach ($i in @($elBefore.errorItems)) { $baseline[(& $rowKey $i)] = $true }
+            foreach ($i in @(@($elBefore.errorItems) + @($elBefore.unclassified))) { $k0 = & $rowKey $i; $baseline[$k0] = 1 + $(if ($baseline.ContainsKey($k0)) { [int]$baseline[$k0] } else { 0 }) }
         }
 
         if ($Overwrite -and (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
@@ -171,12 +177,33 @@ function Save-TcArchive {
             return New-TcResult -Success $false -ErrorCode 'ARCHIVE_UNVERIFIED' -Data $data `
                 -ErrorMessage "SaveAsArchive wrote '$FilePath' ($($zip.Count) entries), but the Error List could not be read afterwards, so an incomplete archive (reported only there, measured 2026-10-31) cannot be ruled out." -Hint (Get-TcErrorHint -Code 'ARCHIVE_UNVERIFIED')
         }
-        if ($null -ne $baseline) { $new = @($elAfter.errorItems | Where-Object { -not $baseline.ContainsKey((& $rowKey $_)) }) }
+        # count difference: a row more than before is new (S4)
+        $newOf = {
+            param($rows)
+            $seen = @{}
+            $out = [System.Collections.Generic.List[object]]::new()
+            foreach ($i in @($rows)) {
+                $k1 = & $rowKey $i
+                $seen[$k1] = 1 + $(if ($seen.ContainsKey($k1)) { [int]$seen[$k1] } else { 0 })
+                $had = if ($baseline.ContainsKey($k1)) { [int]$baseline[$k1] } else { 0 }
+                if ($seen[$k1] -gt $had) { $out.Add($i) }
+            }
+            , $out.ToArray()
+        }
+        $unclassifiedAfter = @($elAfter.unclassified)
+        if ($null -ne $baseline) {
+            $new = & $newOf @($elAfter.errorItems)
+            $newUnclassified = & $newOf $unclassifiedAfter
+        }
         else {
             $warnings.Add("the Error List could not be read before the call ($($elBefore.errorListError)); only rows with the text 'Error creating Archive' are counted, also older ones")
             # XAE's own English text of the measured failure (phase2-probe.md 3.4)
             $new = @($elAfter.errorItems | Where-Object { ([string]$_.description).Contains('Error creating Archive') })
+            $newUnclassified = $unclassifiedAfter
         }
+        # an unclassified row with the measured text is an incomplete archive, not an unknown one (S3)
+        $archiveRows = @($newUnclassified | Where-Object { ([string]$_.description).Contains('Error creating Archive') })
+        if ($archiveRows.Count -gt 0) { $new = @($new) + $archiveRows }
         if ($new.Count -gt 0) {
             $data | Add-Member -NotePropertyName errorItems -NotePropertyValue $new
             $warnings.Add("the archive '$FilePath' is kept but INCOMPLETE: XAE reported $($new.Count) error(s) while writing it (data.errorItems)")
@@ -184,6 +211,18 @@ function Save-TcArchive {
             $first = (@($new | Select-Object -First 3 | ForEach-Object { [string]$_.description }) -join '; ')
             return New-TcResult -Success $false -ErrorCode 'ARCHIVE_INCOMPLETE' -Data $data `
                 -ErrorMessage "SaveAsArchive returned S_OK and wrote '$FilePath' ($($zip.Count) entries), but the Error List got $($new.Count) new error row(s): $first" -Hint (Get-TcErrorHint -Code 'ARCHIVE_INCOMPLETE')
+        }
+        if ($elAfter.truncated -or $unclassifiedAfter.Count -gt 0) {
+            $data | Add-Member -NotePropertyName errorItems -NotePropertyValue @()
+            $data | Add-Member -NotePropertyName errorListTruncated -NotePropertyValue ([bool]$elAfter.truncated)
+            $data | Add-Member -NotePropertyName unclassified -NotePropertyValue $unclassifiedAfter
+            $why = @()
+            if ($elAfter.truncated) { $why += 'not every Error List row could be read (truncated)' }
+            if ($unclassifiedAfter.Count -gt 0) { $why += "$($unclassifiedAfter.Count) row(s) have no severity (data.unclassified)" }
+            $warnings.Add("the archive file is kept, but its completeness cannot be checked: $($why -join '; ')")
+            $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray()
+            return New-TcResult -Success $false -ErrorCode 'ARCHIVE_UNVERIFIED' -Data $data `
+                -ErrorMessage "SaveAsArchive wrote '$FilePath' ($($zip.Count) entries), but the Error List cannot rule out an incomplete archive: $($why -join '; ')." -Hint (Get-TcErrorHint -Code 'ARCHIVE_UNVERIFIED')
         }
         $data | Add-Member -NotePropertyName errorItems -NotePropertyValue @()
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray()

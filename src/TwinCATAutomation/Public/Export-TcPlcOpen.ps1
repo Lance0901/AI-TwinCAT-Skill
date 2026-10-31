@@ -10,8 +10,9 @@ function Export-TcPlcOpen {
           - selection: '.' between folder levels ('LIB.AxisControl.FB_AxisControl', a folder name
             with a space works), several objects joined with ';', a bare object name works too
             ('FB_P2Probe'); an empty selection exports the whole project.
-          - the subtree is always included: an FB comes with its methods, properties (Get / Set) and
-            actions. A method or accessor alone is refused by XAE ("Couldn't create ExportObjects").
+          - the subtree is included: an FB comes with its methods, properties (Get / Set) and
+            actions; EXCEPT the properties of an INTERFACE without Get / Set, which are not exported
+            (see below). A method or accessor alone is refused by XAE ("Couldn't create ExportObjects").
           - '^' instead of '.' -> COMException 0x98510008 "Selection '...' not found!"; an
             unknown name -> the same error.
           - an existing file -> ArgumentException "File '...' already exists!" (the file is kept);
@@ -41,8 +42,10 @@ function Export-TcPlcOpen {
         The project is not changed and BUILD_REQUIRED is not touched.
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER Selection
-        Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels:
-        'POUs.FB_A', 'DUTs.ST_B'. Empty = the whole PLC project.
+        Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels;
+        the first level is a folder of the PLC project, e.g. 'AxisInterface.LIB.AxisControl.FB_AxisControl'
+        (the string measured 2026-10-31) or 'POUs.FB_A'. Leading / trailing blanks are trimmed. Empty =
+        the whole PLC project.
     .PARAMETER FilePath
         Absolute path of the PLCopen XML file to write (e.g. C:\Temp\export.xml); its folder must exist.
     .PARAMETER PlcProjectPath
@@ -51,7 +54,9 @@ function Export-TcPlcOpen {
     .PARAMETER Overwrite
         Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when the export fails.
     .EXAMPLE
-        Export-TcPlcOpen -Selection 'POUs.FB_Motor','DUTs.ST_Motor' -FilePath 'C:\Temp\motor.xml'
+        Export-TcPlcOpen -Selection 'AxisInterface.LIB.AxisControl.FB_AxisControl' -FilePath 'C:\Temp\axis.xml'
+        The selection string measured 2026-10-31 (4026 VS2022, self-built client); its first level
+        'AxisInterface' is a folder of the PLC project, not the PLC name.
     .EXAMPLE
         Export-TcPlcOpen -FilePath 'C:\Temp\whole-project.xml' -Overwrite
     #>
@@ -71,7 +76,8 @@ function Export-TcPlcOpen {
         [switch]$Overwrite
     )
 
-    $sel = @($Selection | Where-Object { $null -ne $_ })
+    # trimmed before the checks and before XAE gets them
+    $sel = @($Selection | Where-Object { $null -ne $_ } | ForEach-Object { $_.Trim() })
     $data = [PSCustomObject]@{ filePath = $FilePath; selection = $sel; overwrite = [bool]$Overwrite; exported = $false }
     $badSel = Test-TcPlcOpenSelection -Selection $sel
     if ($null -ne $badSel) {
@@ -89,7 +95,7 @@ function Export-TcPlcOpen {
     }
 
     try { Assert-TcConnection } catch {
-        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED_IDE')
     }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }

@@ -208,6 +208,9 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 - **`RUNTIME_CRASHED` 提早退出**(`EnableConfig` / `SetSystemState` 偵測到 target 消失就提早回):只有單元測試(`tests/Unit/runtime-crashed.ps1`)。真機要等 UmRT 自然 crash 才能驗證,不能故意 `Stop-Process TcSystemServiceUm` 模擬。
 - **`ExportPlcOpen` 資料夾 selection 的讀回**:selection 指到資料夾時，讀回靠 PLCopen 檔 ProjectStructure 裡的 `<Folder Name>` 確認;物件 selection 的讀回有依據(實測 2026-10-31),資料夾的沒實測，等 3.8。
 - **`ImportPlcOpen` 不同資料夾的同名物件算不算衝突**:模組是整個 PLC project 比對名稱(不分大小寫、不看資料夾);XAE 對「同名但在別的資料夾」會不會回 Import conflict 沒實測，等 3.8。
+- **`ImportPlcOpen` Replace 的磁碟檔還原**:沒有 Get / Set 的 ITF property 不在 PLCopen 備份裡(實測),只能把磁碟檔副本複製回去再 `Reset-TcSolution`,或 `Import-TcTreeItem` 匯回 `.zip`;兩種都沒實測。
+- **`GenerateBootProject` solution / project platform 不同時的資料夾**:模組兩個 `_Boot\<platform>\Plc` 都查;XAE 實際寫哪一個沒實測(probe 兩者相同)。
+- **`SaveArchive` 的 "Error creating Archive" 列是同步還是非同步出現**:模組只在呼叫後立刻讀一次 Error List;如果 XAE 之後才加這一列，會漏判，沒實測。
 - **`NewTestCase` 給 `WaitUntil` 時回傳不帶 `waitMs`**:只有單元測試。
 - **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
 - **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。

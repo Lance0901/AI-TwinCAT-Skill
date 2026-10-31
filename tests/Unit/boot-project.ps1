@@ -39,7 +39,7 @@ function Reset-Mock {
     }
     $global:B.Mode = 'ok'; $global:B.Calls = [System.Collections.ArrayList]::new(); $global:B.Dialog = $null
     $global:B.Platform = 'TwinCAT OS (x64)'; $global:B.TsprojThrows = $false; $global:B.NoMethod = $false
-    $global:B.Rows = @()
+    $global:B.Rows = @(); $global:B.Unclassified = @(); $global:B.ProjectPlatform = $null; $global:B.AdsPort = 851; $global:B.TsprojEmpty = $false
 }
 function New-Row($code, $desc, $file, $line) {
     [PSCustomObject]@{ severity = 'Error'; code = $code; description = $desc; project = 'plc'; file = $file; line = $line; column = 0 }
@@ -51,6 +51,13 @@ $rootNode | Add-Member ScriptMethod GenerateBootProject {
     switch ($global:B.Mode) {
         'compile' { throw [System.Runtime.InteropServices.COMException]::new('value out of range (mock, localized and meaningless)', -2147467259) }
         'nowrite' { return }
+        'autostart-only' { [System.IO.File]::WriteAllText((Join-Path $global:BootDir 'Port_851.autostart'), 'new'); return }
+        'project-platform' {
+            $d = Join-Path (Split-Path -Parent (Split-Path -Parent $global:BootDir)) "$($global:B.ProjectPlatform)\Plc"
+            $null = New-Item -ItemType Directory -Path $d -Force
+            foreach ($n in 'Port_851.app', 'Port_851.crc') { [System.IO.File]::WriteAllText((Join-Path $d $n), "new $n") }
+            return
+        }
     }
     foreach ($n in 'Port_851.app', 'Port_851.autostart', 'Port_851.crc', 'Port_851_boot.tizip') { [System.IO.File]::WriteAllText((Join-Path $global:BootDir $n), "new $n") }
 }
@@ -72,18 +79,21 @@ $global:B.Sm = $sm
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:B.Sm }
     function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:B.Dialog }
-    function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
+    function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = $global:B.AdsPort }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
-    function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = $global:B.Platform; configuration = 'Release'; projectPlatform = $null; platformSource = 'ActiveConfig' } }
+    function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = $global:B.Platform; configuration = 'Release'; projectPlatform = $global:B.ProjectPlatform; platformSource = 'ActiveConfig' } }
     function script:Get-TcPlcProjectFile {
         [CmdletBinding()] param([string]$PlcName)
         if ($global:B.TsprojThrows) { throw "save: locate: no .tsproj of the open solution lists PLC '$PlcName' (mock)" }
+        if ($global:B.TsprojEmpty) { return @{ TsProjFile = ''; PlcProjFile = 'x.plcproj' } }
         @{ TsProjFile = $global:Tsproj; PlcProjFile = 'x.plcproj' }
     }
     function script:Get-TcBuildErrors {
         [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages)
         $errs = @($global:B.Rows | ForEach-Object { & $_ })
-        [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $errs.Count; warnings = 0; messages = 0 }; errors = $errs; warnings = @() } }
+        $d = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $errs.Count; warnings = 0; messages = 0 }; errors = $errs; warnings = @(); truncated = $false }
+        if (@($global:B.Unclassified).Count -gt 0) { $d | Add-Member -NotePropertyName unclassified -NotePropertyValue @($global:B.Unclassified) }
+        [PSCustomObject]@{ success = $true; data = $d }
     }
 } $Sln
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
@@ -135,6 +145,36 @@ try {
     Reset-Mock; $global:B.TsprojThrows = $true; $global:B.Mode = 'nowrite'
     $r = New-TcBootProject
     Check 'Boot: .tsproj unknown and nothing newer -> BOOTPROJECT_VERIFY_FAILED boot-dir-unknown' ($r.error.code -eq 'BOOTPROJECT_VERIFY_FAILED' -and $r.data.reason -eq 'boot-dir-unknown' -and $r.error.message -match '\.tsproj') (J $r.error)
+
+    # ===== S1: solution platform and project platform differ -> both folders are looked at
+    Reset-Mock; $global:B.ProjectPlatform = 'TwinCAT RT (x64)'; $global:B.Mode = 'project-platform'
+    $r = New-TcBootProject
+    Check 'Boot (S1): .app written in the project platform folder -> success, data.bootDirs has both folders' ($r.success -and @($r.data.bootDirs).Count -eq 2 -and @($r.data.bootDirs)[1] -like '*\_Boot\TwinCAT RT (x64)\Plc' -and @($r.data.bootFiles | Where-Object { $_.path -like '*TwinCAT RT (x64)\Plc\Port_851.app' -and $_.updated }).Count -eq 1 -and $r.data.projectPlatform -eq 'TwinCAT RT (x64)') (J $r.data)
+    Reset-Mock; $global:B.ProjectPlatform = 'TwinCAT OS (x64)'
+    $r = New-TcBootProject
+    Check 'Boot (S1): same project platform -> one folder' ($r.success -and @($r.data.bootDirs).Count -eq 1) (J $r.data.bootDirs)
+
+    # ===== S2: the fallback needs an updated Port_*.app
+    Reset-Mock; $global:B.Platform = $null; $global:B.Mode = 'autostart-only'
+    $r = New-TcBootProject
+    Check 'Boot (S2): fallback, only .autostart newer -> BOOTPROJECT_VERIFY_FAILED boot-dir-unknown' ($r.error.code -eq 'BOOTPROJECT_VERIFY_FAILED' -and $r.data.reason -eq 'boot-dir-unknown' -and @($r.data.bootFiles | Where-Object { $_.path -like '*Port_851.autostart' -and $_.updated }).Count -eq 1) (J $r)
+    Reset-Mock; $global:B.Mode = 'autostart-only'
+    $r = New-TcBootProject
+    Check 'Boot (S2): derived folder, only .autostart newer -> not-updated' ($r.error.code -eq 'BOOTPROJECT_VERIFY_FAILED' -and $r.data.reason -eq 'not-updated') (J $r.error)
+    Reset-Mock; $global:B.AdsPort = $null
+    $r = New-TcBootProject
+    Check 'Boot (S2): ADS port unknown -> fallback, data.bootPorts lists 851 (the updated .app)' ($r.success -and -not $r.data.bootDirDerived -and (@($r.data.bootPorts) -join ',') -eq '851') (J $r.data)
+
+    # ===== S6: rows of unknown severity on a failure
+    Reset-Mock; $global:B.Mode = 'compile'
+    $global:B.Unclassified = @([PSCustomObject]@{ severity = $null; code = 'C0046'; description = "Identifier 'X' not defined"; project = 'plc'; file = 'MAIN.TcPOU'; line = 3; column = 0 })
+    $r = New-TcBootProject
+    Check 'Boot (S6): no error row but unclassified rows -> data.unclassified, message names them' ($r.error.code -eq 'BOOTPROJECT_FAILED' -and @($r.data.unclassified).Count -eq 1 -and $r.error.message -match 'unknown severity' -and $r.error.message -match "Identifier 'X'") "$($r.error.message)"
+
+    # ===== N7: an empty .tsproj path gives a reason
+    Reset-Mock; $global:B.TsprojEmpty = $true
+    $r = New-TcBootProject
+    Check 'Boot (N7): empty TsProjFile -> fallback with a reason in the warning' ($r.success -and -not $r.data.bootDirDerived -and @($r.data.warnings | Where-Object { $_ -match 'returned no \.tsproj path' }).Count -eq 1) (J $r.data.warnings)
 
     # ===== Compare-TcBootFileSet
     $t0 = (Get-Date).ToUniversalTime().AddMinutes(-5); $t1 = (Get-Date).ToUniversalTime()

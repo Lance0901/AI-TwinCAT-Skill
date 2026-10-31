@@ -253,6 +253,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:從未 `Connect-TcAds`;或 `Enable-TcConfig` 重啟了 TwinCAT,自動重連也失敗(目標還沒回 Run、或 851 還不存在)。
 - **下一步**:`Get-TcSystemState` 確認 Run → `Connect-TcAds`。若反覆發生,把 `Enable-TcConfig -TimeoutSec` 調大。
 
+### NOT_CONNECTED_IDE
+
+- **現象**:`Export-TcPlcOpen`、`Import-TcPlcOpen`、`New-TcBootProject`、`Save-TcPlcLibrary`、`Save-TcArchive` 回 `NOT_CONNECTED`,hint 是這一節:還沒 `Connect-TcIde`,或 IDE 連線已斷(不是 ADS 的 `NOT_CONNECTED`)。
+- **下一步**:`Connect-TcIde`(要開特定 solution 加 `-SolutionPath <sln>`),再重跑同一個 cmdlet。
+
 ### ADS_PORT_NOT_FOUND(ADS 0x6)
 
 - **為什麼**:PLC runtime port 851 不存在。程式尚未 download(Activate 後 PLC 是空的),或 PLC 專案沒被加進 config。
@@ -664,12 +669,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   | Option | XAE 的行為 | 模組怎麼處理 |
   |---|---|---|
   | `None` | 有衝突就丟例外("Creation of object 'X' failed. Reason: Import conflict!"),什麼都沒匯入 | dry-run 的衝突檢查有衝突就回 `PLCOPEN_CONFLICT`,實寫時不呼叫 XAE |
-  | `Skip` | 衝突的物件靜默跳過，不回報 | 匯入後 `data.skipped[]` 列出跳過的物件，並比對它們磁碟檔的 SHA-256(`unchanged`) |
+  | `Skip` | 衝突的物件靜默跳過，不回報 | 匯入後 `data.skipped[]` 列出跳過的物件，並比對它們磁碟檔的 SHA-256(`unchanged`);有檔案變了 → `PLCOPEN_VERIFY_FAILED` reason `skip-changed` |
   | `Replace` | 整個物件覆蓋：檔案裡沒有的子物件會被刪掉(ITF 原本的 property 被刪) | dry-run 的 `data.willReplace[].deletedChildren` 列出會被刪的直接子物件;實寫前先把會被覆蓋的物件匯出成 PLCopen XML 備份，失敗就不匯入(`PLCOPEN_BACKUP_FAILED`);讀回 `data.replaced[].deletedChildren` |
   | `Rename` | 匯入的物件加 `_1` 後綴，原物件不變 | dry-run 預告 `<名稱>_1`(該名稱也存在時加 warning:實際名稱沒測過);讀回在新增的物件裡找 `<名稱>_<n>`(`data.renamed`) |
 
-- **衝突怎麼判斷**:檔案用 `Read-TcXmlFile` 解析(不處理 DTD,防 XXE),列出 POU(`types/pous/pou`)、DUT(`types/dataTypes/dataType`)、ITF(`addData/data/Interface`)、GVL(`globalVars`);再走一次 `<Plc> Project` 和所有 PLC 資料夾，名稱相同(不分大小寫)就算衝突。同名物件在別的資料夾時 XAE 算不算衝突沒實測。超過 3000 個節點時檢查不完整，`data.warnings` 會寫。
-- **REPLACE 的備份**:**必要**的是一份 PLCopen XML:用 `PlcOpenExport` 把所有會被覆蓋的物件匯出到 `<sln 目錄>\.tcauto-backup\<時間>\plcopen-replace.xml`(`data.backup.xmlPath`)。PlcOpenExport 會連子樹一起匯出(實測 2026-10-31),所以還原就是 `Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`(`data.backup.restore` 就是這行指令),物件和子物件都回來。這份檔案沒寫出來、讀不了或少了物件 → `PLCOPEN_BACKUP_FAILED`,不匯入。**盡力而為**的是和 `Remove-TcTreeItem` 一樣的備份:ProduceXml(recursive)、磁碟檔(`.TcPOU` / `.TcDUT` / `.TcGVL` / `.TcIO`)和 ExportChild `.zip`(`data.backup.zipBackups`;POU 節點的 ExportChild `.zip` 沒實測過),失敗只加 warning。
+- **衝突怎麼判斷**:檔案用 `Read-TcXmlFile` 解析(不處理 DTD,防 XXE),列出 POU(`types/pous/pou`)、DUT(`types/dataTypes/dataType`)、ITF(`addData/data/Interface`)、GVL(`globalVars`);再走一次 `<Plc> Project` 和所有 PLC 資料夾，名稱相同(不分大小寫)就算衝突。同名物件在別的資料夾時 XAE 算不算衝突沒實測。超過 3000 個節點、或有節點讀不到時檢查不完整(`data.indexComplete = false`,`data.warnings` 會寫);這時 `-Option Replace -DryRun $false` 直接回 `PLCOPEN_BACKUP_FAILED` reason `index-incomplete`,不呼叫 PlcOpenImport(要備份的物件可能沒找齊),dry-run 也會加 warning。
+- **REPLACE 的備份**:**必要**的是一份 PLCopen XML:用 `PlcOpenExport` 把所有會被覆蓋的物件匯出到 `<sln 目錄>\.tcauto-backup\<時間>\plcopen-replace.xml`(`data.backup.xmlPath`)。PlcOpenExport 會連子樹一起匯出，**例外是沒有 Get / Set 的 interface property,它不會被匯出**(實測 2026-10-31)。還原用 `Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`(`data.backup.restore` 就是這行指令),只能還原 XML 裡有的部分。這份檔案沒寫出來、讀不了或少了物件 → `PLCOPEN_BACKUP_FAILED`,不匯入。模組會比對每個物件在專案裡的子物件和 XML 的 members:有子物件不在 XML 裡(`data.backup.diskOnly`,例如 ITF 的 property)時，那個物件的 ProduceXml + 磁碟檔備份(`.TcIO` / `.TcPOU`)就變成**必要**,沒做成 → `PLCOPEN_BACKUP_FAILED` reason `disk-backup-failed`。這些子物件只能從磁碟檔副本或 `.zip` 還原:XML 還原後，把 `data.backup.diskOnly[].diskFileCopy` 複製回 `diskFile` 再 `Reset-TcSolution`,或 `Import-TcTreeItem` 匯回 `.zip`(**都未實測**;`data.backup.restoreNote` 有寫)。**盡力而為**的是其他物件的同一套備份和每個物件的 ExportChild `.zip`(`data.backup.objectBackups`;POU 節點的 ExportChild 未實測),失敗只加 warning。Replace 後會比對磁碟檔前後的 hash(`data.replaced[].diskFileChanged`),沒變就加 warning;匯入後新增的物件裡有和衝突物件同名的(在別的資料夾)會列在 `data.conflictsAdded` 並加 warning。
 - **磁碟與存檔**:匯入當下 XAE 就寫物件檔(`.TcPOU` / `.TcIO`),`.plcproj` 要等專案存檔才寫(實測)。所以讀回成功後模組照 `Add-TcPou` 的做法存檔(`Invoke-TcPlcObjectSave`:DTE `Project.Save`,再從磁碟讀回 `.plcproj`,每個新增物件都要有 `<Compile Include>`,`data.expectedProjectFiles` / `data.projectSaved`)。存檔失敗回它自己的碼(`PROJECT_SAVE_FAILED` / `PROJECT_SAVE_TIMEOUT` / `IDE_MODAL_DIALOG`,`data.projectSave`),BUILD_REQUIRED 照樣記。
 - **BUILD_REQUIRED**:`PlcOpenImport` 一呼叫就記 code-changed(成功、失敗、讀回不符都記);呼叫前擋下的不記。`Export-TcPlcOpen` 不改專案，不記。
 
@@ -690,13 +695,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### PLCOPEN_VERIFY_FAILED
 
-- **現象**:呼叫返回了，但讀回不符。Export:`data.reason` = `file-not-written`(檔案不存在或是空的)、`invalid-file`(不是 PLCopen XML)、`selection-missing`(`data.missingSelections` 的物件 / 資料夾不在檔案裡);有 `-Overwrite` 時舊檔已還原。Import:`data.missing` 的物件匯入後找不到(Rename 時是找不到 `<名稱>_<n>`),`data.added` 是實際新增的物件。
+- **現象**:呼叫返回了，但讀回不符。Export:`data.reason` = `file-not-written`(檔案不存在或是空的)、`invalid-file`(不是 PLCopen XML)、`selection-missing`(`data.missingSelections` 的物件 / 資料夾不在檔案裡);有 `-Overwrite` 時舊檔已還原。Import:`data.reason = missing`:`data.missing` 的物件匯入後找不到(Rename 時是找不到 `<名稱>_<n>`),`data.added` 是實際新增的物件;`skip-changed`:`-Option Skip` 但被跳過物件的磁碟檔在匯入期間變了(`data.skipped[].unchanged = false`)。
 - **下一步**:用 `Get-TcProjectTree -PlcOnly` 確認專案現況;Replace 的原物件要還原就執行 `data.backup.restore`(`Import-TcPlcOpen -FilePath <data.backup.xmlPath> -Option Replace -DryRun $false`)。
 
 ### PLCOPEN_BACKUP_FAILED
 
-- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`plcopen-backup-failed` = PlcOpenExport 備份失敗、沒寫出來、讀不了或少了物件;`data.backupObject` 是要備份的物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。ExportChild `.zip` 失敗不會走到這裡，只是 warning。
-- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;`plcopen-backup-failed` 時用 `Export-TcPlcOpen -Selection <物件> -FilePath <新的 .xml>` 試匯出找原因，再重跑;不需要覆蓋時改用 `-Option Rename`。
+- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`plcopen-backup-failed` = PlcOpenExport 備份失敗、沒寫出來、讀不了或少了物件;`disk-backup-failed` = 物件有 XML 裡沒有的子物件(例如沒有 Get / Set 的 ITF property),但它的磁碟檔備份沒做成;`index-incomplete` = 專案物件索引不完整，要備份的物件可能沒找齊;`data.backupObject` 是要備份的物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。ExportChild `.zip` 失敗不會走到這裡，只是 warning。
+- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;`plcopen-backup-failed` 時用 `Export-TcPlcOpen -Selection <物件> -FilePath <新的 .xml>` 試匯出找原因，再重跑;`disk-backup-failed` 先確認物件的 `.TcIO` / `.TcPOU` 在 solution 目錄底下只有一份;`index-incomplete` 用 `Get-TcProjectTree -PlcOnly` 找出讀不到的資料夾;不需要覆蓋時改用 `-Option Rename`。
 
 ### Boot project(task 3.2):做法
 
@@ -704,7 +709,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **寫了哪些檔(實測)**:只寫專案的 `<tsproj 目錄>\_Boot\<solution platform>\Plc\Port_<adsPort>.app` / `.autostart` / `.cid` / `.crc` / `.occ` / `.ocm` 和 `Port_<adsPort>_boot.tizip`;`%ProgramData%\Beckhoff\TwinCAT\3.1\Boot` 和 UmRT 的 Boot 目錄都沒變。`_Boot` 裡的 `CurrentConfig.*` 是 Build 寫的，不是它。
 - **它會存檔**:記憶體裡尚未存檔的修改會被寫進 `.plcproj` / `.tsproj`(實測);每次呼叫 `data.warnings` 都會寫。
 - **不用先 Build**:它自己編譯。有編譯錯誤時回 COMException E_FAIL(`0x80004005`),訊息沒有資訊，模組接著讀 Error List(和 `Build-TcProject` 同一套分類)。
-- **讀回**:呼叫前後列出 `Port_<port>.*`,`Port_<port>.app` 要存在且修改時間比呼叫前新;`data.bootFiles` 列出路徑、大小、時間、`updated`。solution platform、ADS port 或 `.tsproj` 推不出來時，改列 solution 目錄底下所有 `_Boot\*\Plc\Port_*`,加 warning。
+- **讀回**:呼叫前後列出 `Port_<port>.*`,`Port_<port>.app` 要存在且修改時間比呼叫前新;`data.bootFiles` 列出路徑、大小、時間、`updated`。目錄同時查 solution platform 和 `.tsproj` 的 project platform(`data.bootDirs`;**兩者不同時 XAE 寫哪一個資料夾未實測**,probe 兩者都是 `TwinCAT OS (x64)`),任一個的 `.app` 變新就算。solution platform、ADS port 或 `.tsproj`(含路徑是空的)推不出來時，改列 solution 目錄底下所有 `_Boot\*\Plc\Port_*`,加 warning;這時至少要有一個 `Port_*.app` 變新(只有 `.autostart` 之類變新不算),ADS port 不明時 `data.bootPorts` 列出變新的 `.app` 的 port。失敗時 Error List 裡沒有 severity 的列放在 `data.unclassified`,訊息也會寫。
 - **BUILD_REQUIRED**:不改。Activate 仍然要走 `Build-TcProject`(完整成功才清掉)和 `Enable-TcConfig`;這個呼叫不能證明 build 完整。
 - **BOOT_PACKAGE_MISMATCH**:這裡只產生本機 `_Boot`,不寫 target,所以不影響 Activate 後 `Enable-TcConfig` 做的比對。
 
@@ -722,7 +727,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **Library**:`Save-TcPlcLibrary`(MCP `SaveAsLibrary`)在 `<Plc> Project` 上呼叫 `SaveAsLibrary(path, $false)`(TE1000 v1.7.0 §5.28.1.1 p.123,範例 §6.5.13 p.240),**不安裝**;要安裝用 `Install-TcLibrary -LibraryPath <檔案>`。加密(`SaveAsLibrary2` 的 bEncrypt)不提供：沒有接 software protection / user database 時 XAE 拒絕("No Software-Protection/User-Database is connected ... Cannot save library with encryption!")。`.library` 與 `.compiled-library` 都可以，每次約 5.5–7 s,不改專案檔(只動 VS 的 `.~u`),沒有 dialog(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`phase2-probe.md` 3.4)。從沒 build 過的專案會不會跳 dialog 沒測。
 - **Archive**:`Save-TcArchive`(MCP `SaveArchive`)。`-Kind Solution` 用 `DTE.GetObject("TcArchivePersist").SaveAsArchive(path)` 存 `.tnzip`(§5.44 p.156–157、§6.3.7 p.209);`-Kind Configuration` 用 `ITcSysManager9.SaveAsArchive(path)` 存 `.tszip`(§5.1.8 p.49–50、§6.5.13 p.241)。實測:`.tnzip` 含 `.sln`、TwinCAT 專案放在同名資料夾下，並嘗試包含 Scope 等其他專案;`.tszip` 只有 TwinCAT 專案(`.tsproj` 加 PLC 專案與 `_Libraries`),沒有 `.sln`。兩者都打包 **XAE 記憶體裡的狀態**,不是磁碟上的檔案(還沒存進 `.plcproj` 的物件也在 archive 裡),也都不存檔。只做產生，不做載入(載入會換掉目前的 solution)。
-- **回 S_OK 也可能少東西**:實測 `.tnzip` 少了 `A10_Scope`,`SaveAsArchive` 仍回 S_OK,錯誤只出現在 Error List("'TwinCAT Measurement' (...): Error creating Archive -> ...")。所以模組在呼叫前後各讀一次 Error List,新出現的錯誤列 → `ARCHIVE_INCOMPLETE`。
+- **回 S_OK 也可能少東西**:實測 `.tnzip` 少了 `A10_Scope`,`SaveAsArchive` 仍回 S_OK,錯誤只出現在 Error List("'TwinCAT Measurement' (...): Error creating Archive -> ...")。所以模組在呼叫前後各讀一次 Error List,以「code + 描述 + 檔案 + 專案」計數比對(同樣的文字多一次也算新的,沒有 severity 的列也一起算),新出現的錯誤列 → `ARCHIVE_INCOMPLETE`。呼叫後 Error List 被截斷(`data.errorListTruncated`)或有沒有 severity 的列(`data.unclassified`)時，無法確認 → `ARCHIVE_UNVERIFIED`;但新出現的 unclassified 列含 "Error creating Archive" 時回 `ARCHIVE_INCOMPLETE`。這個錯誤列是在 `SaveAsArchive` 返回前同步出現、還是之後非同步出現，**未實測**;模組只在呼叫後立刻讀一次。
 - **讀回**:檔案存在、不是空的、修改時間在這次呼叫之後;用 `System.IO.Compression.ZipFile` 開啟,`data.entries` 列出名稱與大小(最多 200 筆，超過時 `data.entriesTruncated = true`、`data.entryCount` 是總數)。
 - **檔案已存在**:三個 API 都丟 ArgumentException(實測),模組先擋(`LIBRARY_SAVE_FILE_EXISTS` / `ARCHIVE_FILE_EXISTS`);`-Overwrite` 先把舊檔改名成 `<檔名>.bak`,失敗時新檔改名成 `<檔名>.failed`、舊檔改回原名(`data.restore`)。
 - **BUILD_REQUIRED**:兩者都不改專案，不記。
@@ -754,7 +759,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### ARCHIVE_UNVERIFIED
 
-- **現象**:archive 寫出來了(檔案保留),但呼叫後 Error List 讀不到，無法確認有沒有專案沒被打包。
+- **現象**:archive 寫出來了(檔案保留),但呼叫後 Error List 讀不到、被截斷(`data.errorListTruncated`),或有沒有 severity 的列(`data.unclassified`),無法確認有沒有專案沒被打包。
 - **下一步**:確認 XAE 的 Error List 視窗可見，用 `Get-TcBuildErrors` 讀，找 "Error creating Archive" 的列;沒有就可以用這個檔案。
 
 ### PROJECT_SAVE_FAILED

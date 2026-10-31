@@ -23,6 +23,8 @@ function Get-TcErrorListSummary {
           severityUnknown    rows whose severity could not be isolated (Get-TcBuildErrors)
           unclassifiedCount  number of those rows
           unclassified       those rows
+          truncated          Get-TcBuildErrors data.truncated: not every row could be read ($false when
+                             the Error List was not readable)
           scanCleanupWarning Get-TcBuildErrors data.scanCleanupWarning (#75), else $null
         The code of Build-TcProject before this function existed (complete-automation-interface task
         3.7); Build-TcProject keeps its own success decision.
@@ -47,6 +49,7 @@ function Get-TcErrorListSummary {
     $errorListMessage = $null
     $severityUnknown = $false
     $unclassified = @()
+    $truncated = $false
     $el = if ($TimeoutSec -gt 0) { Get-TcBuildErrors -IncludeWarnings -TimeoutSec $TimeoutSec } else { Get-TcBuildErrors -IncludeWarnings }
     if ($el.success) {
         $errorItems = @($el.data.errors)
@@ -56,6 +59,7 @@ function Get-TcErrorListSummary {
         elseif ($warningItems.Count -gt 0) { $warningCount = $warningItems.Count }
         if ($null -ne $el.data.PSObject.Properties['severityUnknown']) { $severityUnknown = [bool]$el.data.severityUnknown }
         if ($null -ne $el.data.PSObject.Properties['unclassified']) { $unclassified = @($el.data.unclassified) }
+        if ($null -ne $el.data.PSObject.Properties['truncated']) { $truncated = [bool]$el.data.truncated }
     }
     else {
         $errorListError = [string]$el.error.code
@@ -97,6 +101,7 @@ function Get-TcErrorListSummary {
         severityUnknown    = $severityUnknown
         unclassifiedCount  = $unclassified.Count
         unclassified       = $unclassified
+        truncated          = $truncated
         scanCleanupWarning = $scanWarning
     }
 }

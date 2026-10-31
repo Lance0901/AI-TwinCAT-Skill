@@ -41,6 +41,7 @@ function Reset-Mock {
     Get-ChildItem -LiteralPath $Root -File | Where-Object { $_.Name -ne 'Arc.sln' } | Remove-Item -Force
     $global:A.Mode = 'ok'; $global:A.Calls = [System.Collections.ArrayList]::new(); $global:A.Dialog = $null
     $global:A.Rows = @(); $global:A.ElReads = 0; $global:A.ElFail = @(); $global:A.Entries = 3
+    $global:A.Unclassified = @(); $global:A.Truncated = $false
 }
 function New-Row($desc) { [PSCustomObject]@{ severity = 'Error'; code = ''; description = $desc; project = ''; file = ''; line = $null; column = 0 } }
 $scopeRow = "'TwinCAT Measurement' (15:55:10.615): Error creating Archive -> an item with the same key has already been added"
@@ -54,6 +55,9 @@ $writeArchive = {
     }
     New-MockZip $path $global:A.Entries
     if ($global:A.Mode -eq 'scope-error') { $global:A.Rows = @($global:A.Rows) + @((New-Row $global:A.ScopeRow)) }
+    if ($global:A.Mode -eq 'scope-unclassified') { $global:A.Unclassified = @($global:A.Unclassified) + @((New-Row $global:A.ScopeRow)) }
+    if ($global:A.Mode -eq 'other-unclassified') { $global:A.Unclassified = @((New-Row 'some row without a severity')) }
+    if ($global:A.Mode -eq 'truncate') { $global:A.Truncated = $true }
 }
 $global:A.Write = $writeArchive
 $global:A.ScopeRow = $scopeRow
@@ -96,7 +100,9 @@ $global:A.Persist = $persist
         $global:A.ElReads++
         if (@($global:A.ElFail) -contains $global:A.ElReads) { return [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'ERRORLIST_UNAVAILABLE'; message = 'Error List window not found (mock)' } } }
         $errs = @($global:A.Rows | ForEach-Object { [PSCustomObject]@{ severity = $_.severity; code = $_.code; description = $_.description; project = $_.project; file = $_.file; line = $_.line; column = 0 } })
-        [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $errs.Count; warnings = 0; messages = 0 }; errors = $errs; warnings = @() } }
+        $d = [PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $errs.Count; warnings = 0; messages = 0 }; errors = $errs; warnings = @(); truncated = [bool]$global:A.Truncated }
+        if (@($global:A.Unclassified).Count -gt 0) { $d | Add-Member -NotePropertyName unclassified -NotePropertyValue @($global:A.Unclassified | ForEach-Object { [PSCustomObject]@{ severity = $null; code = $_.code; description = $_.description; project = $_.project; file = $_.file; line = $_.line; column = 0 } }) }
+        [PSCustomObject]@{ success = $true; data = $d }
     }
 } $Sln $dte
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
@@ -166,6 +172,35 @@ try {
     Reset-Mock; $global:A.ElFail = @(2)
     $r = Save-TcArchive -FilePath $tn
     Check 'Archive Error List unreadable after the call -> ARCHIVE_UNVERIFIED, file kept' ($r.error.code -eq 'ARCHIVE_UNVERIFIED' -and (Test-Path -LiteralPath $tn) -and $r.data.errorListError -eq 'ERRORLIST_UNAVAILABLE') (J $r.error)
+
+    # ===== S4: the same stale text once before, twice after -> one new row (count difference)
+    Reset-Mock; $global:A.Mode = 'scope-error'; $global:A.Rows = @((New-Row $scopeRow))
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S4): same row once before, twice after -> ARCHIVE_INCOMPLETE with one new row' ($r.error.code -eq 'ARCHIVE_INCOMPLETE' -and @($r.data.errorItems).Count -eq 1) (J $r.data.errorItems)
+
+    # ===== S3: truncated / unclassified rows
+    Reset-Mock; $global:A.Mode = 'truncate'
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S3): Error List truncated after the call -> ARCHIVE_UNVERIFIED, file kept' ($r.error.code -eq 'ARCHIVE_UNVERIFIED' -and $r.data.errorListTruncated -and (Test-Path -LiteralPath $tn)) (J $r.error)
+    Reset-Mock; $global:A.Mode = 'other-unclassified'
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S3): unclassified row without the archive text -> ARCHIVE_UNVERIFIED, data.unclassified' ($r.error.code -eq 'ARCHIVE_UNVERIFIED' -and @($r.data.unclassified).Count -eq 1) (J $r.data)
+    Reset-Mock; $global:A.Mode = 'scope-unclassified'
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S3): unclassified "Error creating Archive" row -> ARCHIVE_INCOMPLETE' ($r.error.code -eq 'ARCHIVE_INCOMPLETE' -and @($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].description -match 'Error creating Archive') (J $r.data.errorItems)
+    Reset-Mock; $global:A.Unclassified = @((New-Row $scopeRow)); $global:A.Mode = 'scope-unclassified'
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S3/S4): stale unclassified archive row once before, twice after -> one new row, INCOMPLETE' ($r.error.code -eq 'ARCHIVE_INCOMPLETE' -and @($r.data.errorItems).Count -eq 1) (J $r.data.errorItems)
+    Reset-Mock; $global:A.Mode = 'ok'
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (S3): nothing truncated, no unclassified -> success' ($r.success) (J $r.error)
+
+    # ===== N6
+    & $mod { function script:Assert-TcConnection { throw 'Not connected to TwinCAT IDE (mock)' } }
+    $r = Save-TcArchive -FilePath (Join-Path $Root 'nc.tnzip')
+    $r2 = Save-TcPlcLibrary -FilePath (Join-Path $Root 'nc.library')
+    & $mod { function script:Assert-TcConnection { } }
+    Check 'NOT_CONNECTED carries the Connect-TcIde hint (archive, library)' ($r.error.code -eq 'NOT_CONNECTED' -and $r.error.hint -match 'Connect-TcIde' -and $r2.error.hint -match 'Connect-TcIde') (J $r.error)
 
     # ===== entries truncated at 200
     Reset-Mock; $global:A.Entries = 250
