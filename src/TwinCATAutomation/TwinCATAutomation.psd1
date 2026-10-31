@@ -35,6 +35,9 @@
         # PLCopen XML
         'Export-TcPlcOpen',
         'Import-TcPlcOpen',
+        # Library file and archives
+        'Save-TcPlcLibrary',
+        'Save-TcArchive',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',

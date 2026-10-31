@@ -161,6 +161,13 @@ $script:TcErrorHints['PLCOPEN_BACKUP_FAILED'] = '確認 solution 路徑已知(Co
 # Boot project (complete-automation-interface task 3.2)
 $script:TcErrorHints['BOOTPROJECT_FAILED'] = '依 data.errorItems 的 file / line 修正程式碼(Get-TcPouCode -PouPath <路徑> 讀、Write-TcPouCode -PouPath <路徑> 改),再重跑 New-TcBootProject;data.errorItems 是空的就用 Get-TcBuildErrors 讀 Error List,或先 Build-TcProject 看錯誤;data.reason = no-method 時改用 Build-TcProject 加 Enable-TcConfig -Force'
 $script:TcErrorHints['BOOTPROJECT_VERIFY_FAILED'] = '用 Get-TcIdeInfo 確認 solutionPlatform,再看 data.bootFiles 列出的檔案;重跑 New-TcBootProject 一次;仍沒更新就改用 Build-TcProject 加 Enable-TcConfig -Force'
+# SaveAsLibrary / archive (complete-automation-interface task 3.4)
+$script:TcErrorHints['LIBRARY_SAVE_FILE_EXISTS'] = '換一個 -FilePath,或加 -Overwrite 重跑 Save-TcPlcLibrary(舊檔會先改名成 <檔名>.bak)'
+$script:TcErrorHints['LIBRARY_SAVE_FAILED'] = '依 data.reason 修正後重跑 Save-TcPlcLibrary:extension = 檔名改成 .library 或 .compiled-library;not-absolute / invalid-path / folder-missing = 給存在資料夾內的絕對路徑;save-failed = 看 data.xaeMessage,用 Get-TcIdeModalDialog 檢查 dialog,必要時先 Build-TcProject;not-written = 確認磁碟空間與資料夾權限;overwrite-move-failed = 確認舊檔沒被鎖住'
+$script:TcErrorHints['ARCHIVE_FILE_EXISTS'] = '換一個 -FilePath,或加 -Overwrite 重跑 Save-TcArchive(舊檔會先改名成 <檔名>.bak)'
+$script:TcErrorHints['ARCHIVE_FAILED'] = '依 data.reason 修正後重跑 Save-TcArchive:extension = -Kind Solution 用 .tnzip、Configuration 用 .tszip;not-absolute / invalid-path / folder-missing = 給存在資料夾內的絕對路徑;save-failed / no-archive-object = 看 data.xaeMessage,用 Get-TcIdeModalDialog 檢查 dialog;not-written / not-a-zip = 確認磁碟空間後重跑;overwrite-move-failed = 確認舊檔沒被鎖住'
+$script:TcErrorHints['ARCHIVE_INCOMPLETE'] = '看 data.errorItems 是哪個專案沒打包進去(例如 Scope 專案);只要 TwinCAT 專案時改用 Save-TcArchive -Kind Configuration -FilePath <.tszip>;要完整的 solution 就先在 XAE 修好或移除那個專案，再 Save-TcArchive -Overwrite 重跑'
+$script:TcErrorHints['ARCHIVE_UNVERIFIED'] = '確認 XAE 的 Error List 視窗可見(View > Error List)後用 Get-TcBuildErrors 讀，找 "Error creating Archive" 的列;沒有就可以用 data.filePath 的檔案，有就照 ARCHIVE_INCOMPLETE 處理'
 
 function Get-TcErrorHint {
     <#

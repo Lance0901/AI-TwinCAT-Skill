@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T11:56:51Z",
+    "generatedAt":  "2026-10-31T12:04:39Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1685,6 +1685,73 @@
                                                          },
                                           "required":  [
                                                            "TestCases"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SaveArchive",
+                      "cmdlet":  "Save-TcArchive",
+                      "description":  "Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there. Lists the archive entries.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the archive to write: .tnzip for -Kind Solution, .tszip for -Kind Configuration."
+                                                                          },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Solution",
+                                                                                       "Configuration"
+                                                                                   ],
+                                                                          "description":  "Solution (default): the whole solution, .tnzip (ITcArchivePersist). Configuration: the TwinCAT project only, .tszip (ITcSysManager9.SaveAsArchive).",
+                                                                          "default":  "Solution"
+                                                                      },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when saving fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SaveAsLibrary",
+                      "cmdlet":  "Save-TcPlcLibrary",
+                      "description":  "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Does not change the project. Reads the file back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the library file to write, ending in .library or .compiled-library."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when saving fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
                                                        ],
                                           "additionalProperties":  false
                                       }

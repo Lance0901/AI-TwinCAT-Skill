@@ -718,6 +718,45 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`GenerateBootProject` 返回了，但讀回不符。`data.reason = not-updated`:`_Boot\<platform>\Plc\Port_<port>.app` 不存在或沒有比呼叫前新;`boot-dir-unknown`:boot 目錄推不出來(warning 寫原因),solution 目錄底下也找不到變新的 `Port_*` 檔。`data.bootFiles` 是找到的檔案。
 - **下一步**:用 `Get-TcIdeInfo` 確認 `solutionPlatform`,看 `data.bootFiles`;重跑一次，仍沒更新就改用 `Build-TcProject` 加 `Enable-TcConfig -Force`。
 
+### SaveAsLibrary 與 archive(task 3.4):做法
+
+- **Library**:`Save-TcPlcLibrary`(MCP `SaveAsLibrary`)在 `<Plc> Project` 上呼叫 `SaveAsLibrary(path, $false)`(TE1000 v1.7.0 §5.28.1.1 p.123,範例 §6.5.13 p.240),**不安裝**;要安裝用 `Install-TcLibrary -LibraryPath <檔案>`。加密(`SaveAsLibrary2` 的 bEncrypt)不提供：沒有接 software protection / user database 時 XAE 拒絕("No Software-Protection/User-Database is connected ... Cannot save library with encryption!")。`.library` 與 `.compiled-library` 都可以，每次約 5.5–7 s,不改專案檔(只動 VS 的 `.~u`),沒有 dialog(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client,`phase2-probe.md` 3.4)。從沒 build 過的專案會不會跳 dialog 沒測。
+- **Archive**:`Save-TcArchive`(MCP `SaveArchive`)。`-Kind Solution` 用 `DTE.GetObject("TcArchivePersist").SaveAsArchive(path)` 存 `.tnzip`(§5.44 p.156–157、§6.3.7 p.209);`-Kind Configuration` 用 `ITcSysManager9.SaveAsArchive(path)` 存 `.tszip`(§5.1.8 p.49–50、§6.5.13 p.241)。實測:`.tnzip` 含 `.sln`、TwinCAT 專案放在同名資料夾下，並嘗試包含 Scope 等其他專案;`.tszip` 只有 TwinCAT 專案(`.tsproj` 加 PLC 專案與 `_Libraries`),沒有 `.sln`。兩者都打包 **XAE 記憶體裡的狀態**,不是磁碟上的檔案(還沒存進 `.plcproj` 的物件也在 archive 裡),也都不存檔。只做產生，不做載入(載入會換掉目前的 solution)。
+- **回 S_OK 也可能少東西**:實測 `.tnzip` 少了 `A10_Scope`,`SaveAsArchive` 仍回 S_OK,錯誤只出現在 Error List("'TwinCAT Measurement' (...): Error creating Archive -> ...")。所以模組在呼叫前後各讀一次 Error List,新出現的錯誤列 → `ARCHIVE_INCOMPLETE`。
+- **讀回**:檔案存在、不是空的、修改時間在這次呼叫之後;用 `System.IO.Compression.ZipFile` 開啟,`data.entries` 列出名稱與大小(最多 200 筆，超過時 `data.entriesTruncated = true`、`data.entryCount` 是總數)。
+- **檔案已存在**:三個 API 都丟 ArgumentException(實測),模組先擋(`LIBRARY_SAVE_FILE_EXISTS` / `ARCHIVE_FILE_EXISTS`);`-Overwrite` 先把舊檔改名成 `<檔名>.bak`,失敗時新檔改名成 `<檔名>.failed`、舊檔改回原名(`data.restore`)。
+- **BUILD_REQUIRED**:兩者都不改專案，不記。
+
+### LIBRARY_SAVE_FILE_EXISTS
+
+- **現象**:`Save-TcPlcLibrary` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕，實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`。
+
+### LIBRARY_SAVE_FAILED
+
+- **現象**:`data.reason`:`extension`(不是 `.library` / `.compiled-library`)、`not-absolute` / `invalid-path` / `folder-missing`、`overwrite-move-failed`、`save-failed`(XAE 丟例外，`data.xaeMessage` / `data.hresult`)、`not-written`(返回了但檔案不存在、是空的或不是這次寫的)。有 `-Overwrite` 時舊檔已還原(`data.restore`)。
+- **下一步**:依 `data.reason` 修正後重跑 `Save-TcPlcLibrary`;`save-failed` 先用 `Get-TcIdeModalDialog` 檢查 dialog。
+
+### ARCHIVE_FILE_EXISTS
+
+- **現象**:`Save-TcArchive` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕 "Archive file already exists!",實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`。
+
+### ARCHIVE_FAILED
+
+- **現象**:`data.reason`:`extension`(`-Kind Solution` 要 `.tnzip`、`Configuration` 要 `.tszip`)、`not-absolute` / `invalid-path` / `folder-missing`、`overwrite-move-failed`、`no-archive-object`(`DTE.GetObject('TcArchivePersist')` 沒回東西)、`save-failed`(XAE 丟例外)、`not-written`、`not-a-zip`(寫出的檔案打不開)。有 `-Overwrite` 時舊檔已還原。
+- **下一步**:依 `data.reason` 修正後重跑 `Save-TcArchive`。
+
+### ARCHIVE_INCOMPLETE
+
+- **現象**:`SaveAsArchive` 回 S_OK、檔案也寫出來了，但 Error List 在呼叫期間多了錯誤列(`data.errorItems`;實測是 Scope 專案 "Error creating Archive")。檔案**保留**(`data.filePath`、`data.entries`),`data.warnings` 寫明不完整。呼叫前的 Error List 讀不到時，只有內容含 "Error creating Archive" 的列會算，舊的同樣錯誤也會被算進來(warning 會寫)。
+- **下一步**:看 `data.errorItems` 是哪個專案;只要 TwinCAT 專案就改用 `-Kind Configuration`(`.tszip`);要完整 solution 就先在 XAE 修好或移除那個專案，再加 `-Overwrite` 重跑。
+
+### ARCHIVE_UNVERIFIED
+
+- **現象**:archive 寫出來了(檔案保留),但呼叫後 Error List 讀不到，無法確認有沒有專案沒被打包。
+- **下一步**:確認 XAE 的 Error List 視窗可見，用 `Get-TcBuildErrors` 讀，找 "Error creating Archive" 的列;沒有就可以用這個檔案。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。

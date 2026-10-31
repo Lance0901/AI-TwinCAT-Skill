@@ -6,7 +6,7 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 ## Why
 
-TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 60 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
+TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 62 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
 ## Features
 
@@ -85,7 +85,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## All Commands (60)
+## All Commands (62)
 
 ### Connection
 | Command | Description |
@@ -118,6 +118,8 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Remove-TcTaskProgram` | Remove a program call from a PLC task (dry-run by default; .TcTTO backup and ExportChild .zip of the call first, read back) |
 | `Export-TcPlcOpen` | Export objects / folders (`-Selection 'POUs.FB_A'`, `.` between folder levels) or the whole PLC project to PLCopen XML; `^` and members alone are refused first; `-Overwrite` keeps the old file as `.bak`; the file is read back (`data.objects`) |
 | `Import-TcPlcOpen` | Import a PLCopen XML file; dry-run by default: `data.conflicts` and what `-Option None\|Replace\|Rename\|Skip` will do (Replace: the children it deletes); Replace backs up first; read back (`data.renamed`, `data.skipped`) |
+| `Save-TcPlcLibrary` | Save the PLC project as `.library` / `.compiled-library` (`SaveAsLibrary(path, $false)`: not installed, use `Install-TcLibrary`; no encryption); `-Overwrite` keeps the old file as `.bak`; file read back |
+| `Save-TcArchive` | Save the solution (`-Kind Solution`, `.tnzip`) or the TwinCAT project (`-Kind Configuration`, `.tszip`) as an archive of the state in XAE memory; reads the Error List because a missing project is only reported there (`ARCHIVE_INCOMPLETE`); `data.entries` (first 200) |
 
 ### Code Operations
 | Command | Description |
@@ -188,7 +190,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # Core PowerShell module (tool-agnostic)
   TwinCATAutomation.psm1        # Module loader
-  Public/                       # 60 exported cmdlets
+  Public/                       # 62 exported cmdlets
   Private/                      # Internal helpers (COM, ADS, assertions)
 Invoke-TwinCATAutomation.ps1    # Unified CLI entry point (JSON in/out)
 adapters/
@@ -258,7 +260,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as the TcAuto MCP server (stdio) exposing 59 of the 60 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing 61 of the 62 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server
@@ -284,7 +286,7 @@ Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit 
 
 - **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
 - **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
-- **.agents/skills/twincat/SKILL.md**: full 60-command API reference as Codex skill
+- **.agents/skills/twincat/SKILL.md**: full 62-command API reference as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)

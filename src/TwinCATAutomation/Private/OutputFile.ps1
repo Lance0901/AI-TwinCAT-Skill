@@ -147,3 +147,31 @@ function Get-TcComErrorInfo {
         message       = $(if ($null -ne $deepest) { [string]$deepest.Message } else { [string]$ErrorRecord })
     }
 }
+
+function Get-TcZipEntryList {
+    <#
+    .SYNOPSIS
+        Entries of a ZIP file: @{ Count; Entries = @({ name; size }); Truncated; Error = $null | message }. Never throws.
+    .DESCRIPTION
+        System.IO.Compression.ZipFile.OpenRead (read only). name = the entry's FullName (path inside
+        the archive), size = its uncompressed Length. At most -Max entries are listed (Truncated =
+        $true when there are more; Count is always the total).
+    .PARAMETER Path
+        ZIP file (.tnzip / .tszip / .library are ZIP files, measured 2026-10-31 phase2-probe.md 3.4).
+    .PARAMETER Max
+        Upper bound of listed entries (default 200).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [Parameter()][int]$Max = 200)
+    $zip = $null
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        $all = @($zip.Entries)
+        $list = [System.Collections.Generic.List[object]]::new()
+        foreach ($e in @($all | Select-Object -First $Max)) { $list.Add([PSCustomObject]@{ name = [string]$e.FullName; size = [long]$e.Length }) }
+        return @{ Count = $all.Count; Entries = $list.ToArray(); Truncated = ($all.Count -gt $Max); Error = $null }
+    }
+    catch { return @{ Count = 0; Entries = @(); Truncated = $false; Error = $_.Exception.Message } }
+    finally { if ($null -ne $zip) { $zip.Dispose() } }
+}

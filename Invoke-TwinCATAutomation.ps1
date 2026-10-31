@@ -59,6 +59,9 @@ $operationMap = @{
     # PLCopen XML (Import defaults to DryRun)
     'ExportPlcOpen'   = 'Export-TcPlcOpen'
     'ImportPlcOpen'   = 'Import-TcPlcOpen'
+    # Library file and archives (write a file, the project is not changed)
+    'SaveAsLibrary'   = 'Save-TcPlcLibrary'
+    'SaveArchive'     = 'Save-TcArchive'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'
