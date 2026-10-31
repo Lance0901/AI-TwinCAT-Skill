@@ -187,6 +187,22 @@ $script:TcErrorHints['NC_AXIS_PARAM_NOT_FOUND'] = '這支軸的 ProduceXml 沒�
 $script:TcErrorHints['NC_AXIS_PARAM_WRITE_FAILED'] = 'ConsumeXml 被 XAE 拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcTreeItemXml -Path <data.axisPath> 確認目前值後重跑;data.backupPath 是寫入前的 XML'
 $script:TcErrorHints['NC_AXIS_PARAM_VERIFY_FAILED'] = '讀回值和要寫的不同(data.mismatches):不要當成功。用 Get-TcTreeItemXml -Path <data.axisPath> 看實際值;要還原就用 data.backupPath 的值再 Set-TcNcAxisParameter(先 dry-run)'
 $script:TcErrorHints['NC_PLC_VARIABLE_NOT_FOUND'] = 'PLC 端找不到 AXIS_REF 的 NcToPlc / PlcToNc:確認 -PlcVariable 是 AXIS_REF 變數(例如 MAIN.axis),先 Build-TcProject 讓它出現在 <task> Inputs / Outputs 底下，再重跑 Connect-TcNcAxisToPlc'
+# Phase 3 task 4.2: TcCOM (Add-TcComModule / Get-, Set-TcComModuleParameter / Set-TcComModuleContext)
+$script:TcErrorHints['TCCOM_MODULE_ALREADY_EXISTS'] = '已有同名的 TcCOM 實例(data.existingModules;XAE 會自動改名成 _ObjN,模組先擋):換一個 -Name 重跑 Add-TcComModule,或直接用現有的實例'
+$script:TcErrorHints['TCCOM_CLASS_NOT_FOUND'] = 'XAE 找不到這個 TcCOM class(0x98510009):確認 GUID / 型別名稱和 TMC 一致，且 module 放在 CustomConfig\Modules 或 TcModuleFolders.xml 列出的資料夾，再重跑 Add-TcComModule'
+$script:TcErrorHints['TCCOM_VERIFY_FAILED'] = '建立後讀回的 class / 型別不符(data.mismatches):看 data.rolledBack;false 時用 Remove-TcTreeItem -Path <data.createdPath> -ConfirmName <data.createdName> -DryRun $false 刪掉再重跑'
+$script:TcErrorHints['TCCOM_MODULE_NOT_FOUND'] = '找不到這個 TcCOM 實例:用 data.modules 的名稱，或 Get-TcTreeItem -Path ''TIRC^TcCOM Objects'' 查到的完整 tree path 當 -Module 重跑'
+$script:TcErrorHints['TCCOM_PARAM_NOT_FOUND'] = '這個 module 沒有這個參數(data.parameters 列出名稱與 id):先 Get-TcComModuleParameter -Module <module> 看清單，再用正確的 -Name / -ParameterId 重跑'
+$script:TcErrorHints['TCCOM_PARAM_INVALID_VALUE'] = '值不符合參數型別或範圍(什麼都沒寫):數字用 . 當小數點、BOOL 用 true / false、STRING 不能超過長度，改正後重跑'
+$script:TcErrorHints['TCCOM_PARAM_UNSUPPORTED_TYPE'] = '這個參數不是基本型別(struct / array),只能讀 rawHex,不能用這個 tool 寫:在 XAE 裡設定，或改寫它的成員參數'
+$script:TcErrorHints['TCCOM_PARAM_SIZE_MISMATCH'] = '送出的大小和參數大小不同(ADS_E_INVALIDSIZE 0x98110705):用 Get-TcComModuleParameter 看 bitSize / paramType,確認型別後重跑'
+$script:TcErrorHints['TCCOM_PARAM_READ_FAILED'] = '讀參數失敗:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Get-TcComModuleParameter;-Online 時先確認 Get-TcSystemState 是 Run'
+$script:TcErrorHints['TCCOM_PARAM_WRITE_FAILED'] = '寫參數被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,Get-TcComModuleParameter 確認目前值後重跑;data.backupPath 是寫入前的備份'
+$script:TcErrorHints['TCCOM_PARAM_VERIFY_FAILED'] = '寫入有返回但讀回的 bytes 不同(data.readbackHex / plannedHex):不要當成功。用 Get-TcComModuleParameter 確認，要還原就把 data.previousHex 對應的值再寫一次(先 dry-run)'
+$script:TcErrorHints['TCCOM_OBJECT_NOT_FOUND'] = 'target 上沒有這個 object(0x9811071D):先 Enable-TcConfig -Force 讓組態 Activate 並 Run,再重跑 -Online'
+$script:TcErrorHints['TCCOM_CONTEXT_INVALID'] = 'context id 或 task 不合法(data.contextIds 是 TMC 的 Context Id,不是 0;task 要是 TIRT / TINC 底下的 task):用 data.contextIds 其中一個當 -ContextId、Get-TcTreeItem 確認 -Task 後重跑'
+$script:TcErrorHints['TCCOM_CONTEXT_WRITE_FAILED'] = 'SetModuleContext 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcComModuleContext;data.backupPath 是寫入前的備份'
+$script:TcErrorHints['TCCOM_CONTEXT_VERIFY_FAILED'] = 'SetModuleContext 有返回但讀回的 task oid 不同(data.readbackOidHex):不要當成功。用 Get-TcTreeItemXml 看 module 的 Contexts,再重跑'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

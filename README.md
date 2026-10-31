@@ -6,7 +6,7 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 ## Why
 
-TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 66 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
+TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 70 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
 ## Features
 
@@ -85,7 +85,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## All Commands (66)
+## All Commands (70)
 
 ### Connection
 | Command | Description |
@@ -174,6 +174,10 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Add-TcNcAxis` | Add an NC axis (simulation axis by default, read back); refuses a duplicate name |
 | `Set-TcNcAxisParameter` | Set max velocity / acceleration / deceleration / jerk / encoder, drive, controller type; validated before, read back after |
 | `Connect-TcNcAxisToPlc` | Link an NC axis to a PLC AXIS_REF (NcToPlc / PlcToNc struct links, verified via ProduceMappingInfo) |
+| `Add-TcComModule` | Create a TcCOM module instance from its class GUID or type name; returns the name XAE gave it |
+| `Get-TcComModuleParameter` | List the parameters of a TcCOM module, or read one (project value, or `-Online` from the running object) |
+| `Set-TcComModuleParameter` | Write one TcCOM parameter (project, or `-Online` running object only); size / range checked, read back |
+| `Set-TcComModuleContext` | Assign a task to a TcCOM module context (TMC Context Id), read back |
 
 ### Generic tree items (dry-run first, prefer the dedicated commands)
 | Command | Description |
@@ -198,7 +202,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # Core PowerShell module (tool-agnostic)
   TwinCATAutomation.psm1        # Module loader
-  Public/                       # 66 exported cmdlets
+  Public/                       # 70 exported cmdlets
   Private/                      # Internal helpers (COM, ADS, assertions)
 Invoke-TwinCATAutomation.ps1    # Unified CLI entry point (JSON in/out)
 adapters/
@@ -268,7 +272,7 @@ To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as the TcAuto MCP server (stdio) exposing 65 of the 66 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing 69 of the 70 cmdlets (`NewProject` is temporarily not offered over MCP, #70) plus 4 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server
@@ -294,7 +298,7 @@ Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit 
 
 - **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
 - **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
-- **.agents/skills/twincat/SKILL.md**: full 66-command API reference as Codex skill
+- **.agents/skills/twincat/SKILL.md**: full 70-command API reference as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)

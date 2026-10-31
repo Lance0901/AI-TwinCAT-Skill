@@ -51,6 +51,11 @@
         'Add-TcNcAxis',
         'Set-TcNcAxisParameter',
         'Connect-TcNcAxisToPlc',
+        # TcCOM modules (phase 3, task 4.2)
+        'Add-TcComModule',
+        'Get-TcComModuleParameter',
+        'Set-TcComModuleParameter',
+        'Set-TcComModuleContext',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',

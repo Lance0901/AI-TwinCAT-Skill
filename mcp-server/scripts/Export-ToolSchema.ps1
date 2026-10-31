@@ -131,7 +131,9 @@ $readOnlyTools = @(
     'GetPlcState', 'GetSystemState', 'ReadVariable', 'WatchVariable', 'NewTestCase',
     'LookupTreeItem', 'ProduceXml', 'GetLibraries',
     # CheckAllObjects (task 3.7) generates no code and changes no file (phase2-probe.md 3.7)
-    'CheckAllObjects'
+    'CheckAllObjects',
+    # TcCOM parameter read (task 4.2): offline from the project, -Online from the running object
+    'GetTcComParameter'
 )
 $destructiveTools = @(
     'EnableConfig', 'SetSystemState', 'SetPlcState', 'WriteVariable', 'RunTest', 'RunTestCycle',
@@ -146,7 +148,8 @@ $destructiveTools = @(
     # PLCopen import (task 3.3): Replace deletes children the file lacks; dry-run by default.
     'ImportPlcOpen',
     # Phase 3 system configuration (tasks 4.1-4.5): change the TwinCAT configuration; dry-run by default.
-    'AddNcTask', 'AddNcAxis', 'SetNcAxisParameter', 'LinkNcAxis'
+    'AddNcTask', 'AddNcAxis', 'SetNcAxisParameter', 'LinkNcAxis',
+    'AddTcComModule', 'SetTcComParameter', 'SetTcComContext'
 )
 
 function Get-ToolAnnotations {

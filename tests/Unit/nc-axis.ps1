@@ -57,9 +57,9 @@ $OnCreate = {
     if ($Parent.PathName -eq 'TINC') {
         if (@($Parent.Kids).Count -gt 0) { throw (New-ComError 'Item already exists!' ([int]0x98510002)) }
         $p = "TINC^$Name SAF"
-        $t = Add-MockNode $p 1
+        $tt = Add-MockNode $p 1
         if ($global:T.Mode -ne 'task-no-axes') { $null = Add-MockNode "$p^Axes" 20 }
-        return $t
+        return $tt
     }
     if ($Parent.PathName -like '*^Axes') {
         if (@(0, 8) -contains [int]$Sub) { throw (New-ComError 'Invalid item sub type' ([int]0x98510003)) }
@@ -245,10 +245,10 @@ try {
         Check "hint $c" (-not [string]::IsNullOrWhiteSpace($h)) "$h"
     }
     $tools = @((Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '..\..\mcp-server\tools.json') | ConvertFrom-Json).tools)
-    $byName = @{}; foreach ($t in $tools) { $byName[$t.name] = $t }
+    $byName = @{}; foreach ($tt in $tools) { $byName[$tt.name] = $tt }
     foreach ($pair in @(@('AddNcTask', 'Add-TcNcTask'), @('AddNcAxis', 'Add-TcNcAxis'), @('SetNcAxisParameter', 'Set-TcNcAxisParameter'), @('LinkNcAxis', 'Connect-TcNcAxisToPlc'))) {
-        $t = $byName[$pair[0]]
-        Check "tools.json $($pair[0]): $($pair[1]), destructive, DryRun default true" ($null -ne $t -and $t.cmdlet -eq $pair[1] -and $t.annotations.destructiveHint -eq $true -and $t.inputSchema.properties.DryRun.default -eq $true) (J $t.annotations)
+        $tt = $byName[$pair[0]]
+        Check "tools.json $($pair[0]): $($pair[1]), destructive, DryRun default true" ($null -ne $tt -and $tt.cmdlet -eq $pair[1] -and $tt.annotations.destructiveHint -eq $true -and $tt.inputSchema.properties.DryRun.default -eq $true) (J $tt.annotations)
     }
     Check 'tools.json AddNcAxis AxisType enum' (@($byName['AddNcAxis'].inputSchema.properties.AxisType.enum) -contains 'Encoder') (J $byName['AddNcAxis'].inputSchema.properties.AxisType)
 }

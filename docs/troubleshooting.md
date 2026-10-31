@@ -1158,6 +1158,89 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:四個端點之一已經 link 到別處(`data.existingLinks`)。`LinkVariables` 對已 link 的變數會怎樣沒有實測，所以模組不送。
 - **下一步**:`Remove-TcVariableLink` 解掉舊的 link,再重跑 `Connect-TcNcAxisToPlc`。
 
+### TcCOM(task 4.2):做法
+
+- **建立**:`Add-TcComModule`(MCP `AddTcComModule`)= `TIRC^TcCOM Objects` 上 `CreateChild(<name>, 0, '', <GUID 或型別名稱>)`(TE1000 v1.7.0 §6.7.1 p.274–275;subType 0 / 1、GUID 有沒有大括號都可以，probe 第 9 題)。XAE 一律改名成 `<name> (<ModuleTypeName>)`,同名時再加 `_ObjN`(4024 第一次就加),都不報錯，所以模組先查同名，名稱和 path 一律從讀回取得(`data.createdPath` / `createdName`)。module 要放在 `CustomConfig\Modules` 或 `Config\Io\TcModuleFolders.xml` 列出的資料夾(手冊 p.274)。TMC 沒寫 `<Licenses>` 不代表 runtime 不檢查授權;probe 只 Activate 過 `TcNtpExternalTimeProvider`(`{7e6d2fda-2d37-4998-a31f-36958d3a2c8a}`,測試前要先把 `ClientEnable` 設 FALSE,否則會連 `ntp.beckhoff-cloud.com`)。
+- **找 module**:tree path,或實例名稱(`ITcModuleManager.Modules.Item(i)`,i 從 0;`foreach` 列舉不到、`LookupModule`(v2)late binding 叫不到、`ClassID` 是空的，probe 第 11 題)加 `TIRC^TcCOM Objects` 的子節點名稱。
+- **參數**:清單和 id(`PTCID`)、`BitSize`、`BaseType` 來自 ProduceXml `Module/Parameters/Parameter`,專案值來自 `ParameterValues/Value`(probe 第 10 題)。離線讀寫 `GetModulePara` / `SetModulePara(pid, byte[])`(大小不符 `0x98110705`);值一律先轉成剛好大小的 bytes 並檢查範圍(enum 依 BitSize 當整數;struct / array 只回 `rawHex`)。離線寫入只改 XAE 記憶體(要存檔才進 `.tsproj` / `.xti`),會記 BUILD_REQUIRED。
+- **Online**:`-Online` 走 `ITcModuleManager.Get/SetOnlineModulePara(oid, pid, ...)`(手冊 §5.31.1.1 p.130:ADS port `AMSPORT_R0_TCOMSERVER` = 10、IG = oid、IO = pid;probe 第 13 題用 raw ADS port 10 讀到相同值)。**online 寫入不改專案**(下次 Activate 就還原),不記 BUILD_REQUIRED;寫入前的 online 值在 `data.previousHex` 和備份檔。
+- **Context**:`Set-TcComModuleContext`(MCP `SetTcComContext`)的 index 是 TMC 的 Context `Id`(NTP 是 1,**不是 0**;probe 第 12 題、手冊 §5.33.2 p.140–141),合法值從 ProduceXml `Module/Contexts/Context/Id` 讀;task oid 是 task ProduceXml 的 `TreeItem/ObjectId`。
+
+### TCCOM_MODULE_ALREADY_EXISTS
+
+- **現象**:`TIRC^TcCOM Objects` 已有 `<Name>` 或 `<Name> (...)` 的子節點(`data.existingModules`)。XAE 會靜默改名成 `<Name>_ObjN`,模組先擋。什麼都沒建。
+- **下一步**:換 `-Name`,或用現有的實例。
+
+### TCCOM_CLASS_NOT_FOUND
+
+- **現象**:XAE 回 `0x98510009 TCOM Module / TCOM Configuration with GUID '%s' not found!`(訊息裡的 `%s` 沒被替換，實測)。
+- **下一步**:確認 GUID / 型別名稱和 TMC 的 `<Module GUID=...>` 一致，module 有裝在 TwinCAT 找得到的資料夾。
+
+### TCCOM_VERIFY_FAILED
+
+- **現象**:實例建好了，但 ProduceXml 的 `Module/@GUID` / `Module/Name` 和要求的不同，或沒有 `TcModuleInstance`(`data.mismatches`)。模組會刪掉它(`data.rolledBack`)。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem -Path <data.createdPath> -ConfirmName <data.createdName> -DryRun $false` 刪掉。
+
+### TCCOM_MODULE_NOT_FOUND
+
+- **現象**:`-Module` 的名稱 / path 找不到，或那個節點不是 TcCOM 實例(ProduceXml 沒有 `TcModuleInstance/Module`)。`data.modules` 是 ModuleManager 的實例名稱。
+- **下一步**:用 `data.modules` 的名稱，或 `Get-TcTreeItem -Path 'TIRC^TcCOM Objects'` 查到的完整 path。
+
+### TCCOM_PARAM_NOT_FOUND
+
+- **現象**:ProduceXml 沒有這個參數名稱 / id(`data.parameters` 列出 `名稱 id`),或 XAE 對 pid 回 E_FAIL(離線)/ `0x98110703`(online)。
+- **下一步**:`Get-TcComModuleParameter -Module <module>` 看清單後重跑。
+
+### TCCOM_PARAM_INVALID_VALUE
+
+- **現象**:值轉不成參數型別，或超出範圍(例如 UINT 70000、DINT `abc`)。什麼都沒寫。XAE 自己對錯值不一定報錯(NC 的 ConsumeXml `abc` 變 0),所以模組擋。
+- **下一步**:數字用 `.` 當小數點、BOOL 用 `true` / `false` / `1` / `0`、STRING 只收可列印 ASCII 且長度要小於參數大小。
+
+### TCCOM_PARAM_UNSUPPORTED_TYPE
+
+- **現象**:參數不是基本型別(struct / array),只能讀 `rawHex`。
+- **下一步**:在 XAE 設定，或改寫它的成員參數(ProduceXml 裡 `ServerPara.bEnable` 這種點號名稱)。
+
+### TCCOM_PARAM_SIZE_MISMATCH
+
+- **現象**:XAE 回 `0x98110705`(ADS_E_INVALIDSIZE):送出的 bytes 和參數大小不同。online 寫入 8-byte scalar 也會這樣(probe 第 13 題),所以模組一律送 bytes。
+- **下一步**:`Get-TcComModuleParameter` 看 `bitSize` / `paramType`,確認 ProduceXml 的 `BitSize` 正確。
+
+### TCCOM_PARAM_READ_FAILED
+
+- **現象**:`GetModulePara` / `GetOnlineModulePara` 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑;`-Online` 時先 `Get-TcSystemState` 確認是 Run。
+
+### TCCOM_PARAM_WRITE_FAILED
+
+- **現象**:`SetModulePara` / `SetOnlineModulePara` 丟了其他例外。`data.backupPath` 是寫入前的備份。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcComModuleParameter` 確認目前值後重跑。
+
+### TCCOM_PARAM_VERIFY_FAILED
+
+- **現象**:寫入有返回，但讀回的 bytes(`data.readbackHex`)和要寫的(`data.plannedHex`)不同。不要當成功。
+- **下一步**:`Get-TcComModuleParameter` 確認;要還原就把 `data.previousHex` 對應的值再寫一次(先 dry-run)。
+
+### TCCOM_OBJECT_NOT_FOUND
+
+- **現象**:`-Online` 時 target 上沒有這個 object(`0x9811071D`):組態沒 Activate、runtime 不在 Run,或 module 是 Activate 之後才加的。
+- **下一步**:`Enable-TcConfig -Force`,再重跑 `-Online`。
+
+### TCCOM_CONTEXT_INVALID
+
+- **現象**:module 沒有 context(例如 TcJobPool)、`-ContextId` 不是 TMC 的 Context Id(`data.contextIds`;0 不是預設)、有多個 context 卻沒給 `-ContextId`、`-Task` 沒有 ObjectId,或 XAE 回 `0x80070057`(index 錯)/ E_FAIL(oid 不是這個 context 合法的 task;實測 axis oid、不存在的 oid 都是 E_FAIL)。
+- **下一步**:用 `data.contextIds` 的值當 `-ContextId`,`-Task` 給 TIRT / TINC 底下的 task。
+
+### TCCOM_CONTEXT_WRITE_FAILED
+
+- **現象**:`SetModuleContext` 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### TCCOM_CONTEXT_VERIFY_FAILED
+
+- **現象**:`SetModuleContext` 有返回，但 `GetModuleContext(id)` 讀回的 oid(`data.readbackOidHex`)不是要設的 task。
+- **下一步**:`Get-TcTreeItemXml` 看 module 的 `Contexts`(`ManualConfig/OTCID`),再重跑。
+
 ## 已知限制
 
 使用者向的已知限制清單(現象、影響、繞過方式、issue)與真機驗證範圍:[known-limitations.md](known-limitations.md)。

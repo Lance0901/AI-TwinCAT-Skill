@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T19:20:27Z",
+    "generatedAt":  "2026-10-31T19:31:36Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -450,6 +450,42 @@
                                           "required":  [
                                                            "ParentPath",
                                                            "Kind"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddTcComModule",
+                      "cmdlet":  "Add-TcComModule",
+                      "description":  "Creates a TcCOM module instance below 'TIRC^TcCOM Objects' from its class GUID or type name and returns the name XAE actually gave it. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Instance name (no '^'); XAE appends ' (<type>)'."
+                                                                      },
+                                                             "ClassId":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Class GUID from the TMC (<Module GUID=...>), with or without braces. Exactly one of ClassId / TypeName."
+                                                                         },
+                                                             "TypeName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Module type name, e.g. TcNtpExternalTimeProvider. Exactly one of ClassId / TypeName."
+                                                                          },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1168,6 +1204,40 @@
                                                          },
                                           "required":  [
 
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetTcComParameter",
+                      "cmdlet":  "Get-TcComModuleParameter",
+                      "description":  "Reads TcCOM module parameters: without -Name / -ParameterId the list from the ProduceXml; with one, its value via GetModulePara (offline) or GetOnlineModulePara (-Online). Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Parameter name (case-insensitive), e.g. PollInterval."
+                                                                      },
+                                                             "ParameterId":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name."
+                                                                             },
+                                                             "Online":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Read the value of the running object on the target (needs Activate + Run) instead of the project value."
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -2054,6 +2124,88 @@
                                                          },
                                           "required":  [
                                                            "AmsNetId"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetTcComContext",
+                      "cmdlet":  "Set-TcComModuleContext",
+                      "description":  "Assigns a task to a context of a TcCOM module (SetModuleContext with the TMC Context Id, not 0) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Task":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Tree path of the task, e.g. TIRT^PlcTask or TINC^NC-Task 1 SAF."
+                                                                      },
+                                                             "ContextId":  {
+                                                                               "type":  "integer",
+                                                                               "description":  "TMC Context Id; default (-1): the only context of the module.",
+                                                                               "default":  -1
+                                                                           },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the plan. false: back up, set, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module",
+                                                           "Task"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetTcComParameter",
+                      "cmdlet":  "Set-TcComModuleParameter",
+                      "description":  "Writes one TcCOM module parameter (SetModulePara into the project, or SetOnlineModulePara with -Online into the running object only) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Parameter name (case-insensitive)."
+                                                                      },
+                                                             "ParameterId":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name."
+                                                                             },
+                                                             "Value":  {
+                                                                           "description":  "New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING."
+                                                                       },
+                                                             "Online":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Write the running object on the target only (needs Activate + Run); the project is not changed."
+                                                                        },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned bytes. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module",
+                                                           "Value"
                                                        ],
                                           "additionalProperties":  false
                                       }

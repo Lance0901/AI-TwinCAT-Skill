@@ -75,6 +75,11 @@ $operationMap = @{
     'AddNcAxis'       = 'Add-TcNcAxis'
     'SetNcAxisParameter' = 'Set-TcNcAxisParameter'
     'LinkNcAxis'      = 'Connect-TcNcAxisToPlc'
+    # TcCOM modules (the modifying ones default to DryRun)
+    'AddTcComModule'  = 'Add-TcComModule'
+    'GetTcComParameter' = 'Get-TcComModuleParameter'
+    'SetTcComParameter' = 'Set-TcComModuleParameter'
+    'SetTcComContext' = 'Set-TcComModuleContext'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'

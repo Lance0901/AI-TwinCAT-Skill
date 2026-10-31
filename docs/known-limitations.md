@@ -121,7 +121,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-31)
 
-MCP 共 **69 個 tool**:`mcp-server/tools.json` 65 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,加 task 3.2 的 `GenerateBootProject`,加 task 3.4 的 `SaveAsLibrary`、`SaveArchive`,加第 3 期 task 4.1 的 `AddNcTask`、`AddNcAxis`、`SetNcAxisParameter`、`LinkNcAxis`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **73 個 tool**:`mcp-server/tools.json` 69 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,加 task 3.2 的 `GenerateBootProject`,加 task 3.4 的 `SaveAsLibrary`、`SaveArchive`,加第 3 期 task 4.1 的 `AddNcTask`、`AddNcAxis`、`SetNcAxisParameter`、`LinkNcAxis`,加 task 4.2 的 `AddTcComModule`、`GetTcComParameter`、`SetTcComParameter`、`SetTcComContext`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -246,3 +246,7 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 | `AddNcAxis` | `Add-TcNcAxis` | 只有單元測試。只有 Continuous 軸在 probe 裡 Activate 過;模擬軸「會不會動」沒測(要有 MC_Power / MC_MoveAbsolute 的測試 POU) |
 | `SetNcAxisParameter` | `Set-TcNcAxisParameter` | 只有單元測試。`Deceleration` / `Jerk` 在 probe 沒寫入過(同一個 `<Dynamic>` 元素);`PvParameter` 對 NC 參數的作用不明，不支援依 variant 設參數 |
 | `LinkNcAxis` | `Connect-TcNcAxisToPlc` | 只有單元測試。已 link 到別處的端點一律拒絕(`NC_AXIS_ALREADY_LINKED`),LinkVariables 對它的行為沒測 |
+| `AddTcComModule` | `Add-TcComModule` | 只有單元測試。授權:只有 `TcNtpExternalTimeProvider` 在 UmRT 上 Activate 過;其他 module 會不會要授權沒測 |
+| `GetTcComParameter` | `Get-TcComModuleParameter` | 只有單元測試。`-Online` 走 ModuleManager(要 IDE),沒有改走 raw ADS port 10 |
+| `SetTcComParameter` | `Set-TcComModuleParameter` | 只有單元測試。enum 只收整數(不收 EnumText);struct / array 不能寫;online 寫入不改專案，下次 Activate 會還原 |
+| `SetTcComContext` | `Set-TcComModuleContext` | 只有單元測試 |
