@@ -304,3 +304,33 @@ function Format-TcPlcTaskRollback {
     }
     return $text
 }
+
+function Test-TcTsProjHasTask {
+    <#
+    .SYNOPSIS
+        Does the .tsproj on disk list the real-time task -Name? @{ Found; Separate; Error }.
+    .DESCRIPTION
+        Add-TcPlcTask readback after the project save (phase2-3.8.md P4): the TIRT task lives in the project file
+        (.tsproj) as <Task ...><Name>..</Name></Task> (measured 2026-10-31 4026 VS2022, registered
+        tcauto: <Name>P38Task</Name> appeared only after a Project.Save). A <Task File="..."> entry is
+        stored in its own file (independent project file, not measured): Separate = $true, not checked.
+        Read with Read-TcXmlFile (no DTD). Name comparison is case-sensitive (XAE keeps the name as given).
+    .PARAMETER Path
+        Path of the .tsproj.
+    .PARAMETER Name
+        Task name.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+    try { $xml = Read-TcXmlFile -Path $Path }
+    catch { return @{ Found = $false; Separate = $false; Error = $_.Exception.Message } }
+    $separate = $false
+    foreach ($t in @($xml.SelectNodes("//*[local-name()='Task']"))) {
+        foreach ($c in @($t.ChildNodes)) {
+            if ($c.get_LocalName() -eq 'Name' -and ([string]$c.get_InnerText()).Trim() -ceq $Name) { return @{ Found = $true; Separate = $false; Error = $null } }
+        }
+        $f = [string]$t.GetAttribute('File')
+        if (-not [string]::IsNullOrWhiteSpace($f) -and [System.IO.Path]::GetFileNameWithoutExtension($f) -ceq $Name) { $separate = $true }
+    }
+    @{ Found = $false; Separate = $separate; Error = $null }
+}

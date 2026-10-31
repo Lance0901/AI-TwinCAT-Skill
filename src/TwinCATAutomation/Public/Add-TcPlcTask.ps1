@@ -17,6 +17,15 @@ function Add-TcPlcTask {
              (measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client).
           4. Readback: TIRT^<Name> exists with TaskDef/CycleTime (and Priority) as requested,
              '<Plc> Project^<Name>' exists with ItemType 621 and PlcTaskDef/LinkedTask = TIRT^<Name>.
+          5. Save (as Add-TcPou, #76): without it the .tsproj / .plcproj kept no trace of the task and
+             ResetSolution dropped it (measured 2026-10-31 4026 VS2022, registered tcauto,
+             verification/phase2-3.8.md P4). Invoke-TcPlcObjectSave (DTE Project.Save), then the project file
+             (.plcproj) read back from disk must list <Compile Include="<Name>.TcTTO"> (else
+             PROJECT_SAVE_FAILED / IDE_MODAL_DIALOG / PROJECT_SAVE_TIMEOUT, objects kept in XAE memory
+             as with Add-TcPou) and the .tsproj a <Task><Name><Name></Name> (else TASK_VERIFY_FAILED
+             step save-verify, rolled back). data.projectSaved.
+             Add-TcTaskProgram / Remove-TcTaskProgram need no save: CreateChild / DeleteChild 650
+             rewrite <task>.TcTTO on disk at once (measured 2026-10-31, phase2-probe.md 3.5).
         Each step uses the generic tree cmdlets with their backup, modal dialog check and readback.
         Checks before anything is created: -Name non-empty without '^'; CycleTimeUs > 0 and at most
         214748364 (INVALID_PARAMS; XAE itself stores 0 and negative values, measured 2026-10-30 4026
@@ -157,7 +166,8 @@ function Add-TcPlcTask {
             "CreateChild TIRT '$Name' SubType 1",
             "ConsumeXml $tirtPath $xml",
             "CreateChild '$prjPath' '$Name' SubType 621 (LinkedTask TIRT^$Name)",
-            'readback')
+            'readback',
+            'Project.Save, read back .plcproj <Compile Include="$Name.TcTTO"> and .tsproj <Task><Name>')
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         $failure = $null
@@ -244,6 +254,33 @@ function Add-TcPlcTask {
                 $data | Add-Member -NotePropertyName mismatches -NotePropertyValue $mism.ToArray()
                 $failure = @{ Step = 'verify'; Code = 'TASK_VERIFY_FAILED'; Inner = $null
                     Message = 'the readback differs: ' + (($mism | ForEach-Object { "$($_.field) expected '$($_.expected)' actual '$($_.actual)'" }) -join '; ') }
+            }
+        }
+
+        # 5. save (phase2-3.8.md P4, as #76 for Add-TcPou): CreateChild 621 writes <Name>.TcTTO at
+        # once, but the TIRT task in the .tsproj and <Compile Include="<Name>.TcTTO"> in the .plcproj
+        # only live in XAE memory until the project is saved (measured 2026-10-31 4026 VS2022,
+        # registered tcauto: ResetSolution dropped the tasks). Save, then read both files back.
+        if ($null -eq $failure) {
+            $save = Invoke-TcPlcObjectSave -ObjectPath $plcPath -ExpectFile "$Name.TcTTO" -What "PLC task '$Name'"
+            & $record 'save' ([PSCustomObject]@{ success = ($null -eq $save.Error); error = $(if ($null -ne $save.Error) { $save.Error.error } else { $null }) })
+            if ($null -ne $save.Error) {
+                # as Add-TcPou: the objects stay in XAE memory, the error says how to save them
+                $res = $save.Error
+                Copy-TcDataFields -From $data -To $res.data -Names @('name', 'cycleTimeUs', 'priority', 'tirtTaskPath', 'plcTaskPath', 'plcProjectPath')
+                $res.data | Add-Member -NotePropertyName steps -NotePropertyValue $steps.ToArray() -Force
+                return Register-TcCodeChange -Result $res -Change "$change [created, project file not saved]"
+            }
+            $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
+            $ts = Test-TcTsProjHasTask -Path ([string]$save.Saved.tsproj) -Name $Name
+            if ($ts.Separate) {
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the .tsproj stores task '$Name' in its own file (<Task File=...>); that file was not checked (not measured)") -Force
+            }
+            elseif (-not $ts.Found) {
+                $why = if ($ts.Error) { "could not be read ($($ts.Error))" } else { 'has no <Task><Name>' + $Name + '</Name>' }
+                $data | Add-Member -NotePropertyName mismatches -NotePropertyValue @([PSCustomObject]@{ field = '.tsproj TIRT task'; expected = $Name; actual = "'$($save.Saved.tsproj)' $why" }) -Force
+                $failure = @{ Step = 'save-verify'; Code = 'TASK_VERIFY_FAILED'; Inner = $null
+                    Message = "the project was saved, but '$($save.Saved.tsproj)' read back from disk $why" }
             }
         }
         $data | Add-Member -NotePropertyName steps -NotePropertyValue $steps.ToArray()

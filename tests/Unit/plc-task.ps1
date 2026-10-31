@@ -112,6 +112,7 @@ function Reset-Mock {
     $global:T.Nodes = @{}   # case-insensitive keys, like LookupTreeItem resolved MAIN for 'main' in this mock
     $global:T.Mods = [System.Collections.ArrayList]::new()
     $global:T.Exports = [System.Collections.ArrayList]::new()
+    $global:T.SaveMode = 'ok'; $global:T.Saves = [System.Collections.ArrayList]::new()
     $global:T.Mode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.Dialog = $null; $global:T.DialogThrows = $false; $global:T.ThrowOnLookup = $null
     $null = Add-MockNode 'TIRT'
     $null = Add-MockNode 'TIRT^PlcTask' 19 (New-TaskXml 'TIRT^PlcTask' '100000' '20')
@@ -144,6 +145,19 @@ $global:T.Sm = $sm
     function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) if ($global:T.DialogThrows) { throw 'IDE_CRASHED: mock dialog scan' }; $global:T.Dialog }
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
+    # Project.Save as XAE does it (phase2-3.8.md P4): the .tsproj gets every TIRT task, unless SaveMode says otherwise
+    function script:Invoke-TcPlcObjectSave {
+        [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string[]]$ExpectFiles, [string]$What, [string]$Done)
+        $null = $global:T.Saves.Add("$ObjectPath|$ExpectFile")
+        if ($global:T.SaveMode -eq 'fail') {
+            return @{ Saved = $null; Error = (New-TcResult -Success $false -ErrorCode 'PROJECT_SAVE_FAILED' -ErrorMessage "$What was created in XAE but the project file was not saved (mock)" -Data ([PSCustomObject]@{ objectPath = $ObjectPath; createdInMemory = $true; savedToDisk = $false })) }
+        }
+        $root = Split-Path -Parent $script:TcSolutionPath
+        $ts = Join-Path $root 'Task.tsproj'
+        $names = if ($global:T.SaveMode -eq 'no-tsproj') { @('PlcTask') } else { @($global:T.Nodes['TIRT'].Kids | ForEach-Object { ($_ -split '\^')[-1] }) }
+        [System.IO.File]::WriteAllText($ts, '<TcSmProject><Project><System><Tasks>' + (($names | ForEach-Object { "<Task Id=`"1`"><Name>$_</Name></Task>" }) -join '') + '</Tasks></System></Project></TcSmProject>')
+        @{ Saved = [PSCustomObject]@{ tsproj = $ts; plcproj = (Join-Path $root 'plc\plc.plcproj'); verifiedFiles = @($ExpectFile) }; Error = $null }
+    }
 } $Sln
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
@@ -165,7 +179,7 @@ try {
     $r = Add-TcPlcTask -Name 'a^b' -CycleTimeUs 1000
     Check 'AddPlcTask name with ^ -> INVALID_PARAMS' ($r.error.code -eq 'INVALID_PARAMS') (J $r.error)
     $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -Priority 10
-    Check 'AddPlcTask dry-run: success, nothing written, CycleTime 10000 in the fragment' ($r.success -and $r.data.dryRun -and (Get-Writes).Count -eq 0 -and $r.data.cycleTime -eq 10000 -and $r.data.xml -eq '<TreeItem><TaskDef><CycleTime>10000</CycleTime><Priority>10</Priority></TaskDef></TreeItem>' -and @($r.data.plannedSteps).Count -eq 4) (J $r.data)
+    Check 'AddPlcTask dry-run: success, nothing written, CycleTime 10000 in the fragment' ($r.success -and $r.data.dryRun -and (Get-Writes).Count -eq 0 -and $r.data.cycleTime -eq 10000 -and $r.data.xml -eq '<TreeItem><TaskDef><CycleTime>10000</CycleTime><Priority>10</Priority></TaskDef></TreeItem>' -and @($r.data.plannedSteps).Count -eq 5) (J $r.data)
     $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000
     Check 'AddPlcTask dry-run without Priority: fragment has CycleTime only' ($r.success -and $r.data.xml -eq '<TreeItem><TaskDef><CycleTime>10000</CycleTime></TaskDef></TreeItem>' -and $null -eq $r.data.priority) (J $r.data)
     Check 'AddPlcTask dry-run records no BUILD_REQUIRED' ($null -eq (Get-CodeChanged)) "$(Get-CodeChanged)"
@@ -182,7 +196,19 @@ try {
     Check 'AddPlcTask live: order TIRT create -> ConsumeXml -> 621 create' ((Get-Writes) -join ';' -eq "CreateChild TIRT^FastTask/1;ConsumeXml TIRT^FastTask;CreateChild $P^FastTask/621") ((Get-Writes) -join ';')
     Check 'AddPlcTask live: verifyHint names _TaskInfo[n].CycleCount' ($r.data.verifyHint -match '_TaskInfo\[n\]\.CycleCount' -and $r.data.verifyHint -match 'not the TIRT order') "$($r.data.verifyHint)"
     Check 'AddPlcTask live: BUILD_REQUIRED code-changed recorded' ((Get-CodeChanged) -match 'Add-TcPlcTask FastTask' -and $r.data.buildRequired -match 'Add-TcPlcTask') "$(Get-CodeChanged)"
-    Check 'AddPlcTask live: steps recorded' (@($r.data.steps).Count -eq 4 -and @($r.data.steps | Where-Object { -not $_.success }).Count -eq 0) (J $r.data.steps)
+    Check 'P4 AddPlcTask live: project saved for <Name>.TcTTO, .tsproj read back' (@($global:T.Saves).Count -eq 1 -and $global:T.Saves[0] -eq "$P^FastTask|FastTask.TcTTO" -and $null -ne $r.data.projectSaved -and @($r.data.steps | Where-Object { $_.step -eq 'save' -and $_.success }).Count -eq 1) "$(J $r.data) $($global:T.Saves -join ';')"
+    Check 'AddPlcTask live: steps recorded' (@($r.data.steps).Count -eq 5 -and @($r.data.steps | Where-Object { -not $_.success }).Count -eq 0) (J $r.data.steps)
+
+    # P4: the save fails -> its error, objects kept in XAE memory (as Add-TcPou), task paths in data, recorded
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'fail'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'P4 AddPlcTask save fails -> PROJECT_SAVE_FAILED, no rollback, plcTaskPath in data, recorded' ((-not $r.success) -and $r.error.code -eq 'PROJECT_SAVE_FAILED' -and $r.data.createdInMemory -eq $true -and $r.data.plcTaskPath -eq "$P^FastTask" -and $global:T.Nodes.ContainsKey("$P^FastTask") -and @(Get-Writes | Where-Object { $_ -like 'DeleteChild*' }).Count -eq 0 -and (Get-CodeChanged) -match 'project file not saved') "$(J $r)"
+    # P4: saved, but the .tsproj on disk has no such task -> TASK_VERIFY_FAILED save-verify, rolled back
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'no-tsproj'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'P4 AddPlcTask .tsproj without the task -> TASK_VERIFY_FAILED step save-verify, rolled back' ((-not $r.success) -and $r.error.code -eq 'TASK_VERIFY_FAILED' -and $r.data.step -eq 'save-verify' -and @($r.data.mismatches | Where-Object { $_.field -eq '.tsproj TIRT task' }).Count -eq 1 -and $r.data.rolledBack -and -not $global:T.Nodes.ContainsKey('TIRT^FastTask')) "$(J $r.data)"
+    $h = & $mod { param($p) Test-TcTsProjHasTask -Path $p -Name 'fasttask' } (Join-Path $Root 'Task.tsproj')
+    Check 'P4 Test-TcTsProjHasTask: case-sensitive name' (-not $h.Found) "$($h | ConvertTo-Json -Compress)"
 
     # ===== Add-TcPlcTask: rollback
     Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'plc-fail'
