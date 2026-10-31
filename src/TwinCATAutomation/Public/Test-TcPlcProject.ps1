@@ -12,8 +12,10 @@ function Test-TcPlcProject {
         generates no code (https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531345035.html).
         API: CheckAllObjects() on the '<Plc> Project' node, late bound (TE1000 Automation Interface
         manual v1.7.0, 5.28.2 p.123-124 and 6.5.7 p.233-234). Only that node has the method: on the
-        PLC root 'TIPC^<Plc>' PowerShell reports "does not contain a method named
-        'CheckAllObjects'" (measured 2026-10-31 4026 VS2022, self-built client).
+        PLC root 'TIPC^<Plc>' PowerShell throws MethodNotFound (English PowerShell: "does not
+        contain a method named 'CheckAllObjects'"; the text is localized, e.g. zh-TW) (measured
+        2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client). The module decides by the
+        error id MethodNotFound, not by the text.
         Steps: the PLC project is resolved (-PlcProjectPath; several PLC projects without it ->
         PLC_PROJECT_AMBIGUOUS), a modal dialog in the IDE returns IDE_MODAL_DIALOG (nothing called),
         then CheckAllObjects(), then the Error List is read (Get-TcBuildErrors -IncludeWarnings, the
@@ -23,20 +25,22 @@ function Test-TcPlcProject {
                    the Error List go to data.staleErrorItems with a warning), warnings in
                    data.warningItems / data.codeWarnings.
           False -> CHECK_FAILED, data.passed = $false, data.errorItems = the error rows of the Error
-                   List that have a file (category code / library, same shape as BuildProject
-                   errorItems), data.codeErrors / data.libraryErrorItems, rows without a file in
-                   data.staleErrorItems. A syntax error gives False, not an exception (measured
-                   2026-10-31 4026 VS2022: C0007 in FB_P2Probe.TcPOU@M_Two (Impl), line 1). Rows
-                   without file and code stay in the Error List from earlier operations (measured:
-                   "'TwinCAT Measurement' ... Error creating Archive" after a failed archive), so
-                   they are not counted as results of this check.
+                   List except the stale ones (same shape as BuildProject errorItems, category
+                   code / library / other), data.codeErrors / data.libraryErrorItems; stale rows
+                   (category other AND no code: no file and no compiler code) in
+                   data.staleErrorItems. A row with a code but no file stays in errorItems. A
+                   syntax error gives False, not an exception (measured 2026-10-31 4026 VS2022 XAE
+                   3.1.4026.18, self-built client: C0007 in FB_P2Probe.TcPOU@M_Two (Impl), line 1).
+                   Rows without file and code stay in the Error List from earlier operations
+                   (measured, same environment: "'TwinCAT Measurement' ... Error creating Archive"
+                   after a failed archive), so they are not counted as results of this check.
           An exception from CheckAllObjects (TE1000 5.28.2 lists E_FAIL Error_CheckAllObjectsFailed;
           not seen in the probe) -> CHECK_FAILED with data.passed = $null and data.callError; the
           method missing -> CHECK_UNAVAILABLE. IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG keep their code.
         When the Error List cannot be read, data.errorListError says why (the result is still
         decided by the return value).
         BUILD_REQUIRED: CheckAllObjects generates no code (InfoSys link above; measured 2026-10-31
-        4026 VS2022: no file of the solution directory changed, _Boot and _CompileInfo included),
+        4026 VS2022 XAE 3.1.4026.18, self-built client: no file of the solution directory changed, _Boot and _CompileInfo included),
         so this cmdlet neither sets nor clears BUILD_REQUIRED and records no code change. A
         successful check does NOT replace Build-TcProject before Enable-TcConfig / Enter-TcPlcOnline.
         Not verified through the registered MCP server yet (task 3.8).
@@ -92,7 +96,11 @@ function Test-TcPlcProject {
         catch {
             if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
             $msg = $_.Exception.Message
-            if ($msg -match "does not contain a method named 'CheckAllObjects'") {
+            # Decided by the error id: the message is localized (zh-TW PowerShell does not say
+            # "does not contain a method named"); the English text is only a fallback.
+            $noMethod = ([string]$_.FullyQualifiedErrorId -eq 'MethodNotFound') -or
+                ($_.Exception -is [System.Management.Automation.MethodException] -and $msg -match "does not contain a method named 'CheckAllObjects'")
+            if ($noMethod) {
                 return New-TcResult -Success $false -ErrorCode 'CHECK_UNAVAILABLE' -Data $data `
                     -ErrorMessage "'$prjPath' has no CheckAllObjects method (ITcPlcIECProject2 not available in this XAE): $msg" `
                     -Hint (Get-TcErrorHint -Code 'CHECK_UNAVAILABLE')
@@ -116,8 +124,10 @@ function Test-TcPlcProject {
         # Error List: a passed check only needs a short look (as a successful Build-TcProject).
         $elTimeout = if ($passed -eq $true) { 8 } else { 0 }
         $els = Get-TcErrorListSummary -TimeoutSec $elTimeout
-        $located = @($els.errorItems | Where-Object { $_.category -ne 'other' })
-        $stale = @($els.errorItems | Where-Object { $_.category -eq 'other' })
+        # stale = left over from earlier operations: no file (category other) AND no compiler code
+        $isStale = { param($i) $i.category -eq 'other' -and [string]::IsNullOrWhiteSpace([string]$i.code) }
+        $located = @($els.errorItems | Where-Object { -not (& $isStale $_) })
+        $stale = @($els.errorItems | Where-Object { & $isStale $_ })
         $warningTexts = @()
         if ($passed -eq $true) {
             $data | Add-Member -NotePropertyName errorItems -NotePropertyValue @()
@@ -156,7 +166,7 @@ function Test-TcPlcProject {
         else {
             $msg = "CheckAllObjects on '$prjPath' returned False"
             if ($null -ne $els.errorListError) { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
-            elseif ($located.Count -eq 0) { $msg += '; the Error List shows no error row with a file' }
+            elseif ($located.Count -eq 0) { $msg += '; the Error List shows no error row except stale ones (no file and no code)' }
             else {
                 $parts = @()
                 foreach ($item in @($located | Select-Object -First 3)) {

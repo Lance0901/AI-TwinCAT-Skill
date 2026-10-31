@@ -27,6 +27,8 @@ $rowSyntax = { New-Row 'C0007' "Expression expected instead of ';'" 'FB_P2Probe.
 $rowTask = { New-Row 'C0046' "Identifier 'NoSuchProg' not defined" 'PlcTask.TcTTO' 0 }
 $rowStale = { New-Row '' "'TwinCAT Measurement' (Scope): Error creating Archive" '' $null }
 $rowLib = { New-Row '' "Library 'Tc3_Foo' 1.0.0.0 has not been installed" 'plc.Library Manager' 0 }
+# a compiler code without a file: category other, but not stale (it has a code)
+$rowCodeNoFile = { New-Row 'C0077' 'Unknown type: FB_Gone' '' $null }
 $warnRow = [PSCustomObject]@{ severity = 'Warning'; code = 'C0373'; description = 'unused variable'; project = 'plc'; file = 'MAIN.TcPOU'; line = 3; column = 0 }
 
 function Reset-Mock {
@@ -101,6 +103,10 @@ try {
     $r = Test-TcPlcProject
     Check 'False with a task row (line 0) and a library row -> both in errorItems, split into codeErrors / libraryErrorItems' ($r.error.code -eq 'CHECK_FAILED' -and @($r.data.errorItems).Count -eq 2 -and @($r.data.codeErrors).Count -eq 1 -and @($r.data.libraryErrorItems).Count -eq 1) (J $r.data)
 
+    Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowCodeNoFile, $rowStale)
+    $r = Test-TcPlcProject
+    Check 'False: a row with a code but no file stays in errorItems; only the no-file no-code row is stale' (@($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].code -eq 'C0077' -and $r.data.errorItems[0].category -eq 'other' -and @($r.data.staleErrorItems).Count -eq 1 -and [string]::IsNullOrEmpty($r.data.staleErrorItems[0].code) -and $r.error.message -match 'C0077') (J $r.data)
+
     # ===== errorItems: the same shape and category rule as Build-TcProject (Get-TcErrorListSummary)
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowTask, $rowLib)
     $r = Test-TcPlcProject
@@ -152,7 +158,7 @@ try {
     Check 'exception -> CHECK_FAILED, passed null, callError' ($r.error.code -eq 'CHECK_FAILED' -and $null -eq $r.data.passed -and $r.data.callError -match 'Error_CheckAllObjectsFailed') (J $r)
     Reset-Mock; $global:C.NoMethod = $true
     $r = Test-TcPlcProject
-    Check 'no CheckAllObjects method -> CHECK_UNAVAILABLE' ($r.error.code -eq 'CHECK_UNAVAILABLE' -and $r.error.hint -match 'Build-TcProject') (J $r.error)
+    Check 'no CheckAllObjects method -> CHECK_UNAVAILABLE (decided by MethodNotFound, any UI language)' ($r.error.code -eq 'CHECK_UNAVAILABLE' -and $r.error.hint -match 'Build-TcProject') "$(J $r.error) uiCulture=$([System.Threading.Thread]::CurrentThread.CurrentUICulture.Name)"
 
     # ===== PLC project resolution
     Reset-Mock
