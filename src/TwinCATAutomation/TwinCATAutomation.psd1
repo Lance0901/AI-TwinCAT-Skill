@@ -56,6 +56,10 @@
         'Get-TcComModuleParameter',
         'Set-TcComModuleParameter',
         'Set-TcComModuleContext',
+        # Project variants (phase 3, task 4.3)
+        'Get-TcProjectVariants',
+        'Set-TcProjectVariantConfig',
+        'Set-TcCurrentVariant',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',

@@ -341,6 +341,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### BOOT_PACKAGE_MISMATCH
 
 - **為什麼**:Activate 後專案 `_Boot\<platform>` 與 target Boot 目錄的檔案不一致,代表 Activate 沒把新 configuration 寫到 target,runtime 會用舊 package 啟動。比對 `CurrentConfig.xml`、`CurrentConfig.tszip`、`CurrentConfig\*.tpzip`、`Plc\Port_*.app`(只比本機 package 有的檔;target 多出來的 tpzip 列在 `extraOnTarget`,不算不一致),`data.bootPackage.files[]` 每檔有 local / target 的 `size`、`lastWriteTime`、`sha256`。
+- **Variant 專案(#89)**:有 current variant 時本機 package 在 `_Boot\<Variant>\<platform>`(XAE 寫到那裡，自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 18 題),模組把它和 `_Boot\<platform>` 都列為候選、取 `CurrentConfig.xml` 最新的(`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時只看 `_Boot\<platform>`);`data.bootPackage.variant` 是比對時的 variant。修正前 variant 專案一律誤報這個碼。
 - **只對本機 runtime**:UmRT 依 `%ProgramData%\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\TcRegistry.xml` 的 `AmsNetId`(BIN,`C7052AFA0101` = 199.5.42.250.1.1)找到 `<name>\3.1\Boot`(InfoSys 未記載,實測);本機 XAR 是 `%ProgramData%\Beckhoff\TwinCAT\3.1\Boot`([InfoSys 4026 起的 Boot 目錄](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/4291093003.html),4026 前是 `C:\TwinCAT\3.1\Boot`)。遠端 target `status = unavailable`,不阻擋流程。
 - **實測**(2026-10-21,4026 + VS2022,本機 UmRT):正常 Activate 後 6 個檔(2 個 CurrentConfig、2 個 tpzip、Port_851.app、Port_852.app)SHA-256 全相同。把 target 的 CurrentConfig 三個檔換回前一版、保留新的 Port_852.app 後 `Set-TcSystemState -State Run`:system 照樣進 Run 並停住,但 851 / 852 都是 Invalid(PLC 沒載入)→ 只看 system state 會誤判,`Enable-TcConfig -Force` 由 `verify` 擋下。
 - **下一步**:重跑 `Enable-TcConfig -Force`(Activate 會重寫 Boot);仍不一致時先備份 target Boot 目錄,再把 `_Boot\<platform>` 的上述檔案複製過去並比對 SHA-256。模組只讀不寫,不會自動覆寫 target 檔案。
@@ -1240,6 +1241,53 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`SetModuleContext` 有返回，但 `GetModuleContext(id)` 讀回的 oid(`data.readbackOidHex`)不是要設的 task。
 - **下一步**:`Get-TcTreeItemXml` 看 module 的 `Contexts`(`ManualConfig/OTCID`),再重跑。
+
+### Variant(task 4.3):做法
+
+- **API**:`ITcSysManager14.CurrentProjectVariant` / `ProjectVariantConfig` / `ProjectVariantItems`(TE1000 v1.7.0 §5.1.13 p.52、§6.12.1 p.296;[InfoSys 8204600715](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/8204600715.html))。variant management 從 4024 起([InfoSys Variant management Concept](https://infosys.beckhoff.com/content/1033/variant_management/6325752587.html));4024.71 的 32-bit XAE Shell 也能 late-bind(probe 第 15 題)。沒有 variant 時 4026 回空字串、4024 的 Config / Items 回 `$null`,`Get-TcProjectVariants`(MCP `GetVariants`)都轉成空陣列。
+- **整份覆蓋**:寫 `ProjectVariantConfig` 會取代整份文件(不合併、不自動加 `[All]`、current 不會被清掉，probe 第 17 題),所以 `Set-TcProjectVariantConfig`(`SetVariantConfig`)讀出 → 增刪 → 用 XmlDocument 組整份 → 寫回 → 讀回比對。移除目前的 variant 會擋(`VARIANT_IS_CURRENT`)。寫前備份舊文件和 `.tsproj`(存檔後 variant 存在 `.tsproj` 的 `<Variants>` 與根元素 `TcProjectVariant` attribute,item 層的設定存在 item 所在的檔，例如 `_Config\NC\NC.xti`,probe 第 18 題)。
+- **切換**:`Set-TcCurrentVariant`(`SwitchVariant`)名稱大小寫敏感;不存在、大小寫錯、`[All]` 在 XAE 都是 E_FAIL,模組先查;`[Group1]` 可以設、`''` 清掉。
+- **Boot 目錄(#89)**:有 current variant 時 XAE 把 boot 包寫到 `_Boot\<Variant>\<Platform>\`(group 是 `_Boot\[Group1]\<Platform>\`;`.tsproj` 有 `<Variants SpecificLocalBootFolder="true">`)。`Enable-TcConfig` 的 boot-package 比對與 `New-TcBootProject` 的 boot 檔讀回都會看這個資料夾(`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時不看),比對取 `CurrentConfig.xml` 最新的那個;修正前一律誤報 `BOOT_PACKAGE_MISMATCH` 並停在 Config(probe 第 18 題實測 target 的 boot 檔 SHA-256 和 `_Boot\Variant1\TwinCAT OS (x64)\` 相同)。
+
+### VARIANT_NOT_SUPPORTED
+
+- **現象**:讀 `CurrentProjectVariant` 丟例外，或讀到 `$null` 而且物件沒有這個成員(late binding 對不存在的名稱回 `$null` 不報錯;4024.71 / 4026.22 實測都回字串)。
+- **下一步**:XAE 要 4024 以上;否則在 XAE 的 Project Variants 工具列手動操作。
+
+### VARIANT_CONFIG_INVALID
+
+- **現象**:`ProjectVariantConfig` 不是 `<ProjectVariants>` 文件，或 XAE 拒絕寫入的文件(E_FAIL,原值不變，probe 第 17 題)。
+- **下一步**:`Get-TcProjectVariants` 看 `data.configXml`。
+
+### VARIANT_ALREADY_EXISTS
+
+- **現象**:`-AddVariant` 的名稱已存在(不分大小寫比對，避免只差大小寫的兩個 variant)。什麼都沒寫。
+- **下一步**:換名稱。
+
+### VARIANT_NOT_FOUND
+
+- **現象**:`-RemoveVariant` / `-Name` 不在 `ProjectVariantConfig`(大小寫要完全相同;只差大小寫時訊息會寫出正確的名稱),group 要寫成 `[Group1]`;或 XAE 對 `CurrentProjectVariant` 回 E_FAIL。
+- **下一步**:用 `data.variants` / `data.groups` 的名稱重跑。
+
+### VARIANT_IS_CURRENT
+
+- **現象**:要移除目前的 variant,或移除後目前的 group 會沒有成員。XAE 不會自己改 current(probe 第 17 題),所以模組擋。
+- **下一步**:`Set-TcCurrentVariant -Name <另一個> -DryRun $false`,再重跑。
+
+### VARIANT_VERIFY_FAILED
+
+- **現象**:寫入後讀回的 variant / group 清單和預期不同(`data.readback` vs `data.after`)。
+- **下一步**:`Get-TcProjectVariants` 確認;還原用 `data.backupPath`(舊文件)。
+
+### VARIANT_SWITCH_FAILED
+
+- **現象**:設了 `CurrentProjectVariant`,讀回卻是別的值(`data.current`)。
+- **下一步**:`Get-TcProjectVariants` 確認後重跑。
+
+### VARIANT_GROUP_ACTIVE
+
+- **現象**:`Enable-TcConfig` 時 current variant 是 group(`[Group1]`)。group 不能 Activate(VM 手冊 v1.4 p.7:不同 variant 的值會變成未定義),XAE 自己不擋(Build / Activate 都會跑，probe 第 18 題),所以模組在任何檢查與 Activate 之前回這個碼，什麼都沒做。
+- **下一步**:`Set-TcCurrentVariant -Name <variant> -DryRun $false`、`Build-TcProject`,再 `Enable-TcConfig -Force`。
 
 ## 已知限制
 

@@ -203,6 +203,15 @@ $script:TcErrorHints['TCCOM_OBJECT_NOT_FOUND'] = 'target 上沒有這個 object(
 $script:TcErrorHints['TCCOM_CONTEXT_INVALID'] = 'context id 或 task 不合法(data.contextIds 是 TMC 的 Context Id,不是 0;task 要是 TIRT / TINC 底下的 task):用 data.contextIds 其中一個當 -ContextId、Get-TcTreeItem 確認 -Task 後重跑'
 $script:TcErrorHints['TCCOM_CONTEXT_WRITE_FAILED'] = 'SetModuleContext 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcComModuleContext;data.backupPath 是寫入前的備份'
 $script:TcErrorHints['TCCOM_CONTEXT_VERIFY_FAILED'] = 'SetModuleContext 有返回但讀回的 task oid 不同(data.readbackOidHex):不要當成功。用 Get-TcTreeItemXml 看 module 的 Contexts,再重跑'
+# Phase 3 task 4.3: project variants (Get-TcProjectVariants / Set-TcProjectVariantConfig / Set-TcCurrentVariant / Enable-TcConfig)
+$script:TcErrorHints['VARIANT_NOT_SUPPORTED'] = '這個 XAE 讀不到 ITcSysManager14 的 variant 屬性(4024.71 / 4026.22 實測可以):更新 XAE 到 4024 以上，或在 XAE 的 Project Variants 工具列手動操作'
+$script:TcErrorHints['VARIANT_CONFIG_INVALID'] = 'ProjectVariantConfig 不是 <ProjectVariants> 文件，或 XAE 拒絕新的文件(E_FAIL,原值不變):用 Get-TcProjectVariants 看 data.configXml,改正後再用 Set-TcProjectVariantConfig(先 dry-run)'
+$script:TcErrorHints['VARIANT_ALREADY_EXISTS'] = '已有同名(不分大小寫)的 variant:換名稱重跑 Set-TcProjectVariantConfig -AddVariant <新名稱>'
+$script:TcErrorHints['VARIANT_NOT_FOUND'] = 'variant / group 名稱不存在(大小寫要完全一樣，group 寫成 [Group1]):用 Get-TcProjectVariants 看 data.variants / data.groups,再用正確名稱重跑'
+$script:TcErrorHints['VARIANT_IS_CURRENT'] = '要移除的是目前的 variant(或目前 group 會沒有成員):先 Set-TcCurrentVariant -Name <另一個 variant> -DryRun $false,再重跑 Set-TcProjectVariantConfig'
+$script:TcErrorHints['VARIANT_VERIFY_FAILED'] = '寫入後讀回的 variant / group 和預期不同(data.readback vs data.after):不要當成功。用 Get-TcProjectVariants 確認;要還原就用 data.backupPath 的內容'
+$script:TcErrorHints['VARIANT_SWITCH_FAILED'] = '切換後讀回的 CurrentProjectVariant 不同(data.current):用 Get-TcProjectVariants 確認，再重跑 Set-TcCurrentVariant'
+$script:TcErrorHints['VARIANT_GROUP_ACTIVE'] = '目前選的是 variant group,group 不能 Activate:先 Set-TcCurrentVariant -Name <variant> -DryRun $false,再 Build-TcProject,然後重跑 Enable-TcConfig'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

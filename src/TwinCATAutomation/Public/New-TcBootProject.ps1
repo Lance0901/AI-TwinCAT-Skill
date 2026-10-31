@@ -32,7 +32,8 @@ function New-TcBootProject {
         Readback: Port_<port>.app must exist and be newer than before the call, else
         BOOTPROJECT_VERIFY_FAILED reason not-updated. The folder is looked up for the solution
         platform and, when it differs, for the project platform of the .tsproj
-        (Get-TcSolutionPlatform projectPlatform; data.bootDirs): which of the two XAE writes when
+        (Get-TcSolutionPlatform projectPlatform; data.bootDirs; with a current project variant
+        _Boot\<Variant>\<platform>\Plc comes first, data.variant, #89): which of the two XAE writes when
         solution and project platform differ is not measured (the probe had both 'TwinCAT OS
         (x64)'), an updated .app in either counts. data.bootFiles: path, size, lastWriteTime,
         updated. When the boot folder cannot be derived (platform, port or .tsproj unknown) the
@@ -94,7 +95,9 @@ function New-TcBootProject {
         $data.platform = $platform
         $data | Add-Member -NotePropertyName projectPlatform -NotePropertyValue $projectPlatform
         $plcName = Get-TcPlcNameFromPath -TreePath $plcPath
-        $before = Get-TcBootFileSet -PlcName $plcName -Platform $platform -ProjectPlatform $projectPlatform -AdsPort $port -SolutionDir (Get-TcTreeItemSolutionDir)
+        $variant = Get-TcCurrentVariantName -SysManager $sm
+        if (-not [string]::IsNullOrWhiteSpace($variant)) { $data | Add-Member -NotePropertyName variant -NotePropertyValue $variant }
+        $before = Get-TcBootFileSet -PlcName $plcName -Platform $platform -ProjectPlatform $projectPlatform -AdsPort $port -SolutionDir (Get-TcTreeItemSolutionDir) -Variant $variant
         $data | Add-Member -NotePropertyName bootDir -NotePropertyValue $before.Dir
         $data | Add-Member -NotePropertyName bootDirs -NotePropertyValue @($before.Dirs)
         $data | Add-Member -NotePropertyName bootDirDerived -NotePropertyValue $before.Derived
@@ -155,7 +158,7 @@ function New-TcBootProject {
         $data | Add-Member -NotePropertyName generateSec -NotePropertyValue ([Math]::Round($sw.Elapsed.TotalSeconds, 2))
 
         # readback
-        $after = Get-TcBootFileSet -PlcName $plcName -Platform $platform -ProjectPlatform $projectPlatform -AdsPort $port -SolutionDir (Get-TcTreeItemSolutionDir)
+        $after = Get-TcBootFileSet -PlcName $plcName -Platform $platform -ProjectPlatform $projectPlatform -AdsPort $port -SolutionDir (Get-TcTreeItemSolutionDir) -Variant $variant
         $files = @(Compare-TcBootFileSet -Before $before.Files -After $after.Files)
         $data | Add-Member -NotePropertyName bootFiles -NotePropertyValue $files
         $updatedApps = @($files | Where-Object { $_.updated -and $null -ne $_.size -and [System.IO.Path]::GetFileName($_.path) -match '^Port_\d+\.app$' })

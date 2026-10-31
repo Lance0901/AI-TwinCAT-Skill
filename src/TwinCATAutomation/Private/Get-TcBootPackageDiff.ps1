@@ -82,6 +82,12 @@ function Get-TcBootPackageDiff {
         Target AMS Net ID.
     .PARAMETER AdsPorts
         ADS ports of the PLC projects of the solution: only Plc\Port_<port>.app of these is compared.
+    .PARAMETER Variant
+        CurrentProjectVariant (#89): XAE writes the package of a variant project to
+        _Boot\<Variant>\<Platform> (measured 2026-11-01 4026 VS2022, self-built client,
+        verification/phase3-probe.md question 18), so that folder is a candidate too
+        (Get-TcVariantBootFolder: not when the .tsproj says SpecificLocalBootFolder="false"); the
+        newest CurrentConfig.xml of the candidates wins. Empty: _Boot\<Platform> only.
     .OUTPUTS
         PSCustomObject @{ status = 'match' | 'mismatch' | 'unavailable'; reason; localDir;
           targetDir; targetKind; mismatches = [names]; files = @( @{ file; match;
@@ -92,13 +98,15 @@ function Get-TcBootPackageDiff {
         [string]$SolutionPath,
         [string]$Platform,
         [Parameter(Mandatory)][string]$AmsNetId,
-        [int[]]$AdsPorts
+        [int[]]$AdsPorts,
+        [string]$Variant
     )
 
     $res = [PSCustomObject]@{
         status     = 'unavailable'
         reason     = $null
         localDir   = $null
+        variant    = $(if ([string]::IsNullOrWhiteSpace($Variant)) { $null } else { $Variant })
         targetDir  = $null
         targetKind = $null
         mismatches = @()
@@ -113,15 +121,21 @@ function Get-TcBootPackageDiff {
     $local = $null
     $cands = @()
     foreach ($b in @(Get-ChildItem -Path $slnDir -Directory -Filter '_Boot' -Recurse -Depth 2 -ErrorAction SilentlyContinue)) {
-        $cand = Join-Path $b.FullName $Platform
-        if (-not (Test-Path $cand)) { continue }
-        if (@(Get-ChildItem -Path $b.Parent.FullName -Filter '*.tsproj' -File -ErrorAction SilentlyContinue).Count -eq 0) { continue }
-        $xml = Join-Path $cand 'CurrentConfig.xml'
-        $t = if (Test-Path $xml) { (Get-Item $xml).LastWriteTimeUtc } else { [DateTime]::MinValue }
-        $cands += [PSCustomObject]@{ Dir = $cand; Time = $t }
+        $tsprojs = @(Get-ChildItem -Path $b.Parent.FullName -Filter '*.tsproj' -File -ErrorAction SilentlyContinue)
+        if ($tsprojs.Count -eq 0) { continue }
+        $dirs = @(Join-Path $b.FullName $Platform)
+        # #89: a variant project writes _Boot\<Variant>\<Platform>
+        $vf = Get-TcVariantBootFolder -Variant $Variant -TsProjFile $tsprojs[0].FullName
+        if ($null -ne $vf) { $dirs = @((Join-Path (Join-Path $b.FullName $vf) $Platform)) + $dirs }
+        foreach ($cand in $dirs) {
+            if (-not (Test-Path -LiteralPath $cand)) { continue }
+            $xml = Join-Path $cand 'CurrentConfig.xml'
+            $t = if (Test-Path -LiteralPath $xml) { (Get-Item -LiteralPath $xml).LastWriteTimeUtc } else { [DateTime]::MinValue }
+            $cands += [PSCustomObject]@{ Dir = $cand; Time = $t }
+        }
     }
     if ($cands.Count -gt 0) { $local = @($cands | Sort-Object Time -Descending)[0].Dir }
-    if ($null -eq $local) { $res.reason = "no _Boot\$Platform folder below $slnDir"; return $res }
+    if ($null -eq $local) { $res.reason = ("no _Boot\$Platform folder below $slnDir" + $(if ([string]::IsNullOrWhiteSpace($Variant)) { '' } else { " (nor _Boot\$Variant\$Platform)" })); return $res }
     $res.localDir = $local
 
     $target = Resolve-TcTargetBootDir -AmsNetId $AmsNetId
@@ -134,7 +148,7 @@ function Get-TcBootPackageDiff {
     foreach ($f in 'CurrentConfig.xml', 'CurrentConfig.tszip') { $rel.Add($f) }
     # Only the files of the local package are compared; files that exist only on the target
     # (e.g. the package of a PLC removed from the solution) are listed in extraOnTarget.
-    foreach ($f in @(Get-ChildItem -Path (Join-Path $local 'CurrentConfig') -Filter '*.tpzip' -File -ErrorAction SilentlyContinue)) {
+    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $local 'CurrentConfig') -Filter '*.tpzip' -File -ErrorAction SilentlyContinue)) {
         $rel.Add("CurrentConfig\$($f.Name)")
     }
     $extra = @()
@@ -143,7 +157,7 @@ function Get-TcBootPackageDiff {
     }
     $res | Add-Member -NotePropertyName 'extraOnTarget' -NotePropertyValue $extra
     # PLC applications that the project builds: only the .app files present in the local package
-    foreach ($f in @(Get-ChildItem -Path (Join-Path $local 'Plc') -Filter 'Port_*.app' -File -ErrorAction SilentlyContinue)) {
+    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $local 'Plc') -Filter 'Port_*.app' -File -ErrorAction SilentlyContinue)) {
         if (@($AdsPorts).Count -gt 0) {
             $mt = [regex]::Match($f.Name, '^Port_(\d+)\.app$')
             if (-not $mt.Success -or @($AdsPorts) -notcontains [int]$mt.Groups[1].Value) { continue }

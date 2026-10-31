@@ -6,6 +6,10 @@ function Enable-TcConfig {
     .DESCRIPTION
         Without -Force only ITcSysManager::ActivateConfiguration() is called.
 
+        A current project variant that is a group ('[Group1]') returns VARIANT_GROUP_ACTIVE before
+        anything is checked or activated (a group cannot be activated, VM manual v1.4 p.7; XAE does
+        not refuse it itself, phase3-probe.md question 18). Switch with Set-TcCurrentVariant first.
+
         Before ActivateConfiguration() (both modes) the active solution platform
         (Get-TcSolutionPlatform) is compared with a reference platform
         (data.platformCheck):
@@ -84,6 +88,9 @@ function Enable-TcConfig {
                             did not write the new configuration: BOOT_PACKAGE_MISMATCH
                             (data.bootPackage lists every file with size / time / hash).
                             Remote targets: data.bootPackage.status = 'unavailable', step ok.
+                            With a current project variant the package is in
+                            _Boot\<Variant>\<platform> (#89, measured 2026-11-01, phase3-probe.md
+                            question 18); that folder is a candidate too, the newest wins.
                             Also done without -Force.
           4. login          Enter-TcPlcOnline for EVERY PLC project of the solution (or the
                             ones given with -PlcProjectPath), skipped with -NoLogin
@@ -199,6 +206,13 @@ function Enable-TcConfig {
         return New-TcNoSysManagerResult
     }
 
+    # VM manual v1.4 p.7: a selected variant group cannot be activated; XAE does not refuse it itself
+    # (measured 2026-11-01 4026 VS2022, self-built client, verification/phase3-probe.md question 18).
+    $variantGroup = Test-TcVariantGroupActive -SysManager $sm
+    if ($null -ne $variantGroup) { return $variantGroup }
+    # #89: a variant project has its boot package in _Boot\<Variant>\<Platform>
+    $currentVariant = Get-TcCurrentVariantName -SysManager $sm
+
     # --- cycle state (read by the nested helpers below via dynamic scope) ---
     $steps = New-Object System.Collections.ArrayList
     $activated = $false
@@ -275,7 +289,7 @@ function Enable-TcConfig {
         $bp = $null
         $ports = @()
         try { $ports = @(Get-TcPlcProjectList -SysManager $sm | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
-        try { $bp = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $TargetNetId -AdsPorts $ports }
+        try { $bp = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $TargetNetId -AdsPorts $ports -Variant $currentVariant }
         catch { Write-Verbose "Enable-TcConfig: boot package check failed ($($_.Exception.Message))" }
         Set-Variable -Name bootPackage -Value $bp -Scope 1
         if ($null -eq $bp -or $bp.status -ne 'mismatch') {
@@ -311,7 +325,7 @@ function Enable-TcConfig {
         if ([string]::IsNullOrWhiteSpace($plat)) { $plat = $solutionPlatform }
         if ([string]::IsNullOrWhiteSpace($plat)) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
         $ports = @($plcs | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort })
-        try { $diag.bootPackage = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports } catch { }
+        try { $diag.bootPackage = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $currentVariant } catch { }
         Set-Variable -Name diagnostics -Value ([PSCustomObject]$diag) -Scope 1
         $extra = @()
         if ($null -ne $diag.dialog) { $extra += "dialog: $($diag.dialog.title) | $(([string]$diag.dialog.text) -replace '\s+', ' ')" }

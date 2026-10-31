@@ -80,6 +80,10 @@ $operationMap = @{
     'GetTcComParameter' = 'Get-TcComModuleParameter'
     'SetTcComParameter' = 'Set-TcComModuleParameter'
     'SetTcComContext' = 'Set-TcComModuleContext'
+    # Project variants (the modifying ones default to DryRun)
+    'GetVariants'     = 'Get-TcProjectVariants'
+    'SetVariantConfig' = 'Set-TcProjectVariantConfig'
+    'SwitchVariant'   = 'Set-TcCurrentVariant'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'

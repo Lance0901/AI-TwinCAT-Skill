@@ -32,6 +32,10 @@ function Get-TcBootFileSet {
         ADS port of the PLC (Get-TcPlcProjectList adsPort), 0 = unknown.
     .PARAMETER SolutionDir
         Folder of the .sln (fallback search).
+    .PARAMETER Variant
+        CurrentProjectVariant (#89): _Boot\<Variant>\<platform>\Plc is listed first (XAE writes a
+        variant project there, measured 2026-11-01 4026 VS2022, verification/phase3-probe.md
+        question 18), unless the .tsproj says SpecificLocalBootFolder="false" (Get-TcVariantBootFolder).
     #>
     [CmdletBinding()]
     param(
@@ -39,7 +43,8 @@ function Get-TcBootFileSet {
         [Parameter()][AllowNull()][AllowEmptyString()][string]$Platform,
         [Parameter()][AllowNull()][AllowEmptyString()][string]$ProjectPlatform,
         [Parameter()][int]$AdsPort = 0,
-        [Parameter()][AllowNull()][AllowEmptyString()][string]$SolutionDir
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$SolutionDir,
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$Variant
     )
     $out = @{ Dirs = @(); Dir = $null; Derived = $false; Reason = $null; Files = @{} }
     $tsproj = $null
@@ -60,6 +65,8 @@ function Get-TcBootFileSet {
         $plats = @($Platform)
         if (-not [string]::IsNullOrWhiteSpace($ProjectPlatform) -and $ProjectPlatform -ne $Platform) { $plats += $ProjectPlatform }
         $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path $boot $_) 'Plc' })
+        $vf = Get-TcVariantBootFolder -Variant $Variant -TsProjFile $tsproj
+        if ($null -ne $vf) { $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path (Join-Path $boot $vf) $_) 'Plc' }) + @($out.Dirs) }
         $out.Dir = $out.Dirs[0]
         $out.Derived = $true
         foreach ($d in $out.Dirs) {

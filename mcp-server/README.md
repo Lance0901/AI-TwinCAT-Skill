@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 70 個 cmdlet 中的 69 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 73 個 cmdlet 中的 72 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (69 of its 70 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (72 of its 73 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -92,7 +92,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
 
-## Tools (73)
+## Tools (76)
 
 Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Parameters are the cmdlet parameters, passed as JSON (`switch` → boolean, `string[]` → array, `hashtable` → object; object keys must be non-empty and must not differ only in case, since PowerShell 5.1 cannot convert such JSON). `Timeout` is the per-call limit after which the bridge is killed; for tools with `TimeoutSec` / `TimeoutMs` / `DurationMs` parameters it grows to at least that value plus 30 s, capped at 2 h (schema `minimum` / `maximum` are enforced first).
 
@@ -209,6 +209,9 @@ All modifying tools here default to `DryRun=true` and carry `destructiveHint: tr
 | `GetTcComParameter` | `Get-TcComModuleParameter` | `Module` | 120 s | Read-only. No `Name` / `ParameterId`: the parameter list of the ProduceXml (name, id, bit size, base type, project value). With one: `GetModulePara` decoded (`value`, `rawHex`); `Online=true`: `GetOnlineModulePara` from the running object (`TCCOM_OBJECT_NOT_FOUND` when not running) |
 | `SetTcComParameter` | `Set-TcComModuleParameter` | `Module`, `Value` | 120 s | Value converted to exactly the parameter size and range checked (`TCCOM_PARAM_INVALID_VALUE`); offline `SetModulePara` (backup, bytes read back, BUILD_REQUIRED); `Online=true`: `SetOnlineModulePara`, the project is NOT changed (restored by the next Activate) |
 | `SetTcComContext` | `Set-TcComModuleContext` | `Module`, `Task` | 120 s | `SetModuleContext` with the TMC Context Id (not 0; legal ids read from the ProduceXml) and the task's ObjectId, read back with `GetModuleContext` (`TCCOM_CONTEXT_INVALID` / `TCCOM_CONTEXT_VERIFY_FAILED`) |
+| `GetVariants` | `Get-TcProjectVariants` | — | 120 s | Read-only: `current`, `currentIsGroup`, `variants[]`, `groups[]`, `configXml`, `itemsXml`; no variants (4024 `$null`, 4026 '') -> empty arrays; `VARIANT_NOT_SUPPORTED` when the properties are missing |
+| `SetVariantConfig` | `Set-TcProjectVariantConfig` | — | 120 s | `AddVariant` / `RemoveVariant` (arrays), optional `Group`; ProjectVariantConfig is replaced as a whole, so it is read, changed, written back in one document and read back; backs up the old document and the .tsproj; removing the current variant -> `VARIANT_IS_CURRENT` |
+| `SwitchVariant` | `Set-TcCurrentVariant` | `Name` | 120 s | Case-sensitive (`VARIANT_NOT_FOUND`); `[Group1]` is accepted but `EnableConfig` then returns `VARIANT_GROUP_ACTIVE`; '' clears it; read back; BUILD_REQUIRED recorded |
 
 ### Generic tree items (not yet verified on a real target, task 2.8)
 

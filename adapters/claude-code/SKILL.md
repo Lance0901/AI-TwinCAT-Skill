@@ -86,7 +86,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(70)
+## Cmdlet 清單(73)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -132,6 +132,9 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Get-TcComModuleParameter -Module <name\|path> [-Name <p> \| -ParameterId <#x...>] [-Online]` | MCP `GetTcComParameter`(唯讀)。不給參數名 → 列出 ProduceXml 的參數(名稱、id、BitSize、BaseType、專案值);給 → `GetModulePara` 解碼(`value`、`rawHex`);`-Online` → `GetOnlineModulePara`(target 要 Run,否則 `TCCOM_OBJECT_NOT_FOUND`)。只有單元測試 |
 | `Set-TcComModuleParameter -Module <m> (-Name <p> \| -ParameterId <id>) -Value <v> [-Online] [-DryRun $true]` | MCP `SetTcComParameter`,**預設 dry-run**。值先轉成剛好大小的 bytes 並檢查範圍(`TCCOM_PARAM_INVALID_VALUE`);離線 `SetModulePara`(備份 ProduceXml、讀回 bytes、記 BUILD_REQUIRED);`-Online` `SetOnlineModulePara` **不改專案**(下次 Activate 還原)。大小不符 → `TCCOM_PARAM_SIZE_MISMATCH`。只有單元測試 |
 | `Set-TcComModuleContext -Module <m> -Task <TIRT^PlcTask> [-ContextId <id>] [-DryRun $true]` | MCP `SetTcComContext`,**預設 dry-run**。index 是 TMC 的 Context Id(不是 0,從 ProduceXml 讀合法值);task oid 取自 task ProduceXml `ObjectId`;讀回 `GetModuleContext`。不合法 → `TCCOM_CONTEXT_INVALID`。只有單元測試 |
+| `Get-TcProjectVariants` | MCP `GetVariants`(唯讀)。`current`、`currentIsGroup`、`variants[]`、`groups[]`、`configXml`、`itemsXml`;沒有 variant 時 4024 的 `$null`、4026 的空字串都回空陣列。讀不到屬性 → `VARIANT_NOT_SUPPORTED`。只有單元測試 |
+| `Set-TcProjectVariantConfig [-AddVariant <n[]>] [-RemoveVariant <n[]>] [-Group <g>] [-DryRun $true]` | MCP `SetVariantConfig`,**預設 dry-run**。`ProjectVariantConfig` 是整份覆蓋(實測)→ 讀出、增刪、整份寫回、讀回比對;寫前備份舊文件與 `.tsproj`。移除目前的 variant → `VARIANT_IS_CURRENT`。只有單元測試 |
+| `Set-TcCurrentVariant -Name <variant\|[group]\|''> [-DryRun $true]` | MCP `SwitchVariant`,**預設 dry-run**。大小寫敏感，不存在 → `VARIANT_NOT_FOUND`;group 可以設，但之後 `Enable-TcConfig` 回 `VARIANT_GROUP_ACTIVE`。記 BUILD_REQUIRED(切換會改 disabled / mapping / 參數)。variant 專案的 boot 包在 `_Boot\<Variant>\<Platform>`(#89 已修)。只有單元測試 |
 | `Get-TcTreeItem -Path <tree path> [-MaxChildren 200]` | **通用**(MCP `LookupTreeItem`,唯讀):一個節點的 name / itemType / subType / type / childCount / children[];找不到回 `TREEITEM_NOT_FOUND`,hint 與 `data.nearestPath` / `nearestChildren` 列最接近的上層和它的子節點;`*` `?` 回 `TREEITEM_PATH_INVALID` |
 | `Get-TcTreeItemXml -Path <tree path> [-Recursive]` | **通用**(MCP `ProduceXml`,唯讀):`data.xml`(根元素 `TreeItem`),做 ConsumeXml 片段時照抄路徑 |
 | `New-TcTreeItem -Path <父節點> -Name <n> [-SubType <int>] [-Before <child>] [-VInfo <v>] [-DryRun $false]` | **通用**(MCP `CreateChild`):預設 dry-run(`data.plannedPath`、`currentChildren`);`-DryRun $false` 備份父節點 ProduceXml → CreateChild → 讀回(`data.verified`、`createdPath`;XAE 改名時 `data.warnings`);同名 → `TREEITEM_ALREADY_EXISTS`;XAE 拒絕 → `TREEITEM_CREATE_FAILED`。SubType 只用手冊有寫的(TIRT Task:0 有 image、1 沒有,TE1000 §6.3.1) |

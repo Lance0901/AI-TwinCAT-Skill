@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 70 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 73 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -177,6 +177,9 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Get-TcComModuleParameter` | 列出 TcCOM module 的參數，或讀一個(專案值，或 `-Online` 讀執行中的 object) |
 | `Set-TcComModuleParameter` | 寫一個 TcCOM 參數(專案，或 `-Online` 只改執行中的 object);檢查大小 / 範圍、讀回 |
 | `Set-TcComModuleContext` | 把 task 指派給 TcCOM module 的 context(TMC Context Id),讀回 |
+| `Get-TcProjectVariants` | 讀專案 variant:current、variants、groups(唯讀) |
+| `Set-TcProjectVariantConfig` | 新增 / 移除 variant(整份覆蓋：讀出、修改、寫回、讀回) |
+| `Set-TcCurrentVariant` | 切換目前的 variant(大小寫敏感;group 可以設但不能 Activate) |
 
 ### 通用 tree 操作(先 dry-run,有專用指令就用專用的)
 | 指令 | 說明 |
@@ -201,7 +204,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 70 個匯出的 cmdlet
+  Public/                       # 73 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/
@@ -271,7 +274,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:70 個 cmdlet 中的 69 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:73 個 cmdlet 中的 72 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

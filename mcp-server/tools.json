@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T19:31:36Z",
+    "generatedAt":  "2026-10-31T19:41:35Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1243,6 +1243,25 @@
                                       }
                   },
                   {
+                      "name":  "GetVariants",
+                      "cmdlet":  "Get-TcProjectVariants",
+                      "description":  "Reads the project variants (CurrentProjectVariant, ProjectVariantConfig, ProjectVariantItems): current, variants[], groups[]. Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "ImportChild",
                       "cmdlet":  "Import-TcTreeItem",
                       "description":  "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). A PLC folder is imported from the .zip file ExportChild wrote (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured). DryRun defaults to true (nothing imported; data.currentChildren, data.fileSize). Checks: FilePath is a valid absolute file path and exists (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), parent exists, a child named Name does not exist (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). Without Name the name is read from the .xti (data.expectedName; __FILENAME__ = file name without extension; null for a .zip, then data.warnings says no clash check was done) and checked the same way, dry-run included (XAE would rename silently, e.g. Task28 -> Task28_1). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing imported), ImportChild, look the imported item up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged) and the child names must be the old ones plus exactly one (data.childrenAfter; skipped with a warning when the list is cut): data.verified=true, data.importedPath / importedName (a name other than Name / expectedName: data.warnings); refused -> TREEITEM_IMPORT_FAILED, not found or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
@@ -2234,6 +2253,78 @@
                                           "required":  [
                                                            "PlcVariable",
                                                            "IoChannel"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetVariantConfig",
+                      "cmdlet":  "Set-TcProjectVariantConfig",
+                      "description":  "Adds or removes project variants: reads ProjectVariantConfig, changes it, writes the WHOLE document back and reads it back. Dry-run by default; backs up the .tsproj first.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "AddVariant":  {
+                                                                                "type":  "array",
+                                                                                "items":  {
+                                                                                              "type":  "string"
+                                                                                          },
+                                                                                "minItems":  1,
+                                                                                "description":  "Variant names to add."
+                                                                            },
+                                                             "RemoveVariant":  {
+                                                                                   "type":  "array",
+                                                                                   "items":  {
+                                                                                                 "type":  "string"
+                                                                                             },
+                                                                                   "minItems":  1,
+                                                                                   "description":  "Variant names to remove (exact case)."
+                                                                               },
+                                                             "Group":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Optional group the added variants join (created when missing)."
+                                                                       },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the new document. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SwitchVariant",
+                      "cmdlet":  "Set-TcCurrentVariant",
+                      "description":  "Switches the current project variant (CurrentProjectVariant; case-sensitive, '[Group]' allowed but not activatable, '' clears it) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Variant name (exact case), '[<group>]', or '' to clear."
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: back up, switch, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
                                                        ],
                                           "additionalProperties":  false
                                       }
