@@ -25,8 +25,9 @@ function Lock-TcLibraryPlaceholder {
         distributor) with the EffectiveResolution read BEFORE the call. A placeholder that moved is
         pinned back with ITcPlcLibraryManager.SetEffectiveResolution(placeholder, library, version,
         distributor) (InfoSys
-        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html; NOT
-        measured), the project saved and read back again; still different (or SetEffectiveResolution
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html; measured
+        2026-11-01 4026 VS2022 / 4024 XAE, registered tcauto, phase2-3.8-retest.md: the <Resolution>
+        was the effective version again), the project saved and read back again; still different (or SetEffectiveResolution
         failing) -> LIBRARY_VERSION_CHANGED with data.versionChanges[] (before / after) and
         data.restore. Never success while a version differs.
         Exactly one of -Placeholder / -All (LIBRARY_INVALID_ARGUMENT reason target). -Placeholder must
@@ -34,9 +35,12 @@ function Lock-TcLibraryPlaceholder {
         library reference of that name -> LIBRARY_INVALID_ARGUMENT reason not-placeholder.
         DryRun (default true): FreezePlaceholder is NOT called; data.targets[] with placeholder,
         effectiveResolution, the current projectResolution / frozen read from the .plcproj on disk,
-        willFreezeTo (DefaultResolution when it names a version, else the effective version) and
-        versionWillChange; a warning for every target whose willFreezeTo differs from the effective
-        version, and for the targets -All skips (data.skipped).
+        willFreezeTo and versionWillChange - set only where measured: with -All and a DefaultResolution
+        that names a version, willFreezeTo is that version and versionWillChange says whether it
+        differs from the effective one; with DefaultResolution '*' / none, and always for
+        -Placeholder, both are $null (not known: retest 2026-11-01, phase2-3.8-retest.md N5); a
+        warning for every target with versionWillChange $true, one that the real run checks and pins,
+        and for the targets -All skips (data.skipped).
         -All skips (data.skipped[] { placeholder; reason; detail }, not counted as notFrozen):
         reason implicit = no <PlaceholderReference> in the .plcproj; reason
         no-effective-resolution = nothing to compare with (also in data.skippedUnresolved).
@@ -153,18 +157,22 @@ function Lock-TcLibraryPlaceholder {
             $null -ne $a -and $null -ne $b -and ([string]$a.libraryName).Trim() -ieq ([string]$b.libraryName).Trim() -and
             ([string]$a.version).Trim() -ieq ([string]$b.version).Trim() -and ([string]$a.distributor).Trim() -ieq ([string]$b.distributor).Trim()
         }
-        # What FreezePlaceholder will fix the placeholder at: its DefaultResolution when that names a
-        # version (measured 2026-10-31 with FreezePlaceholder(''), phase2-3.8.md P2), else the
-        # effective version (DefaultResolution '*', measured 2026-10-31 with one placeholder).
+        # What FreezePlaceholder will fix the placeholder at - only where it is measured (retest N5,
+        # phase2-3.8-retest.md, 2026-11-01 4026 VS2022 / 4024 XAE, registered tcauto):
+        #   -All and a DefaultResolution with a version: that version (2026-10-31: #Tc2_System 3.9.1.0).
+        #   -All and DefaultResolution '*' / none: not known (#CBML, VisuDialogs changed although the
+        #   prediction said they would not) -> $null.
+        #   one placeholder: not known either (#Tc2_System was predicted to move and kept 3.10.1.0) -> $null.
         $predict = {
             param($t, $ent)
+            if (-not $All) { return $null }
             $def = $t.defaultResolution
             if ($null -eq $def -and $null -ne $ent) {
                 $pe = $ent.Placeholders[[string]$t.placeholderName]
                 if ($null -ne $pe) { $def = ConvertFrom-TcLibraryResolution -Text $pe.defaultResolution }
             }
             if ($null -ne $def -and -not [string]::IsNullOrWhiteSpace([string]$def.version) -and [string]$def.version -ne '*') { return $def }
-            $t.effectiveResolution
+            $null
         }
         $describe = {
             param($t, $ent)
@@ -212,8 +220,10 @@ function Lock-TcLibraryPlaceholder {
             $w = [System.Collections.Generic.List[string]]::new()
             if ($null -ne $locateError) { $w.Add("the .plcproj could not be read ($locateError); DryRun=false would return LIBRARY_BACKUP_FAILED") }
             foreach ($ti in @($targetInfo | Where-Object { $_.versionWillChange -eq $true })) {
-                $w.Add("'$($ti.placeholder)': FreezePlaceholder is expected to fix it at its DefaultResolution '$($ti.willFreezeTo)', not at the effective '$(& $fmt $ti.effectiveResolution)' (measured 2026-10-31 with -All); DryRun=false pins it back with SetEffectiveResolution (not measured) and returns LIBRARY_VERSION_CHANGED when the version still differs")
+                $w.Add("'$($ti.placeholder)': FreezePlaceholder('') is expected to fix it at its DefaultResolution '$($ti.willFreezeTo)', not at the effective '$(& $fmt $ti.effectiveResolution)' (measured 2026-10-31 with -All)")
             }
+            # always: the prediction is partial (versionWillChange $null = not known); the real run checks
+            $w.Add("willFreezeTo / versionWillChange are only a partial prediction (null = not known). DryRun=false compares every placeholder with the version in effect before the call and pins a changed one back with SetEffectiveResolution (measured 2026-11-01 4026 VS2022 / 4024 XAE, registered tcauto: CBML, Tc2_System, VisuDialogs pinned); LIBRARY_VERSION_CHANGED when that does not hold")
             if ($unresolvedNames.Count -gt 0) {
                 $w.Add("no EffectiveResolution: $($unresolvedNames -join ', '). XAE froze such a placeholder at its DefaultResolution (measured 2026-10-31 4026 VS2022 with -All); DryRun=false does not version-check them (data.skipped)")
                 $data | Add-Member -NotePropertyName skippedUnresolved -NotePropertyValue $unresolvedNames
@@ -341,7 +351,7 @@ function Lock-TcLibraryPlaceholder {
                 $n = [string]$mv.placeholder
                 try {
                     # SetEffectiveResolution(placeholderName, libName, version, distributor): InfoSys
-                    # https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html (not measured)
+                    # https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21841216267.html (measured 2026-11-01, retest)
                     Invoke-TcComRetry -OperationName "SetEffectiveResolution '$n'" -ScriptBlock {
                         $null = $refs.SetEffectiveResolution($n, [string]$e.libraryName, [string]$e.version, [string]$e.distributor)
                     }
