@@ -70,8 +70,10 @@ function Add-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
             if ($global:T.Mode -eq 'plc-fail') { throw [System.Runtime.InteropServices.COMException]::new("Couldn't create PLC task (mock)", -2147467259) }
             # XAE: needs the TIRT task of the same name (measured)
             if (-not $global:T.Nodes.ContainsKey("TIRT^$cname")) { throw [System.Runtime.InteropServices.COMException]::new("No task '$cname' found in Realtime-Settings!", -2147467259) }
-            $linked = if ($global:T.Mode -eq 'badlink') { 'TIRT^PlcTask' } else { "TIRT^$cname" }
+            $linked = if ($global:T.Mode -eq 'badlink' -or $global:T.Mode -eq 'badlink-nodelete') { 'TIRT^PlcTask' } else { "TIRT^$cname" }
+            if ($global:T.Mode -eq 'rename-plc') { $cp = "$cp (1)" }
             $c = Add-MockNode $cp 621 (New-PlcTaskXml $cp $linked)
+            if ($global:T.Mode -eq 'badlink-nodelete') { $this | Add-Member ScriptMethod DeleteChild { param($n) $global:T.Mods.Add("DeleteChild $($this.PathName)^$n (ignored)") | Out-Null } -Force }
             Write-Output -NoEnumerate $c
             return
         }
@@ -110,7 +112,7 @@ function Reset-Mock {
     $global:T.Nodes = @{}   # case-insensitive keys, like LookupTreeItem resolved MAIN for 'main' in this mock
     $global:T.Mods = [System.Collections.ArrayList]::new()
     $global:T.Exports = [System.Collections.ArrayList]::new()
-    $global:T.Mode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.Dialog = $null
+    $global:T.Mode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.Dialog = $null; $global:T.DialogThrows = $false; $global:T.ThrowOnLookup = $null
     $null = Add-MockNode 'TIRT'
     $null = Add-MockNode 'TIRT^PlcTask' 19 (New-TaskXml 'TIRT^PlcTask' '100000' '20')
     $null = Add-MockNode 'TIPC'
@@ -128,6 +130,7 @@ function Reset-Mock {
 $sm = New-Object PSObject
 $sm | Add-Member ScriptMethod LookupTreeItem {
     param($p)
+    if ($null -ne $global:T.ThrowOnLookup -and $p -eq $global:T.ThrowOnLookup -and $global:T.Nodes.ContainsKey($p)) { throw 'IDE_BUSY: mock lookup rejected' }
     if (-not $global:T.Nodes.ContainsKey($p)) { throw [System.Runtime.InteropServices.COMException]::new("Item '$p' not found", [int]0x98510001) }
     Write-Output -NoEnumerate $global:T.Nodes[$p]
 }
@@ -138,7 +141,7 @@ $global:T.Sm = $sm
     $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcSolutionPath = $s
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:T.Sm }
-    function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:T.Dialog }
+    function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) if ($global:T.DialogThrows) { throw 'IDE_CRASHED: mock dialog scan' }; $global:T.Dialog }
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
 } $Sln
@@ -209,6 +212,36 @@ try {
     }
     Check 'AddPlcTask rollback that fails -> rolledBack false, message says ROLLBACK INCOMPLETE' ($r.error.code -eq 'TASK_CREATE_FAILED' -and -not $r.data.rolledBack -and $r.error.message -match 'ROLLBACK INCOMPLETE' -and $global:T.Nodes.ContainsKey('TIRT^FastTask')) (J $r.data.rollback)
 
+    # S1: a modal dialog before the first CreateChild -> nothing called, nothing recorded
+    Reset-Mock; Reset-BuildRequired; $global:T.Dialog = [PSCustomObject]@{ Title = 'Microsoft Visual Studio'; Text = 'Assertion Failed'; Kind = 'unknown'; Buttons = @('OK') }
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'AddPlcTask modal dialog -> IDE_MODAL_DIALOG, nothing created, BUILD_REQUIRED not recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-Writes).Count -eq 0 -and $null -eq (Get-CodeChanged) -and $null -eq $r.data.PSObject.Properties['buildRequired']) "$(J $r.error) | $(Get-CodeChanged)"
+
+    # S2: XAE renames the PLC task -> failure, the renamed object (data.createdPath) is rolled back
+    Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'rename-plc'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'AddPlcTask PLC task renamed by XAE -> TASK_CREATE_FAILED plc-create, renamed path and TIRT task rolled back' ($r.error.code -eq 'TASK_CREATE_FAILED' -and $r.data.step -eq 'plc-create' -and $r.data.rollback[0].path -eq "$P^FastTask (1)" -and $r.data.rolledBack -and -not $global:T.Nodes.ContainsKey("$P^FastTask (1)") -and -not $global:T.Nodes.ContainsKey('TIRT^FastTask')) (J $r.data.rollback)
+
+    # S3: the PLC task cannot be deleted -> the TIRT task is left, SKIPPED_DEPENDENT
+    Reset-Mock; $global:T.Mode = 'badlink-nodelete'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    $skip = @($r.data.rollback | Where-Object { $_.path -eq 'TIRT^FastTask' })[0]
+    Check 'AddPlcTask PLC task not deletable -> TIRT task SKIPPED_DEPENDENT, not deleted, message says delete the PLC task first' ($r.error.code -eq 'TASK_VERIFY_FAILED' -and -not $r.data.rolledBack -and $skip.code -eq 'SKIPPED_DEPENDENT' -and -not $skip.removed -and $global:T.Nodes.ContainsKey('TIRT^FastTask') -and @(Get-Writes | Where-Object { $_ -like 'DeleteChild TIRT^*' }).Count -eq 0 -and $r.error.message -match 'delete the PLC task first' -and $r.error.hint -match 'SKIPPED_DEPENDENT') "$(J $r.data.rollback) | $($r.error.message)"
+
+    # S5: name only below TIRT -> the TIRT-only hint
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Lonely' 19 (New-TaskXml 'TIRT^Lonely')
+    $r = Add-TcPlcTask -Name Lonely -CycleTimeUs 1000
+    $h = & $mod { Get-TcErrorHint -Code 'TASK_ALREADY_EXISTS_TIRT' }
+    Check 'AddPlcTask name only in TIRT -> TASK_ALREADY_EXISTS with the TIRT-only hint' ($r.error.code -eq 'TASK_ALREADY_EXISTS' -and (@($r.data.existingIn) -join ',') -eq 'TIRT' -and $r.error.hint -eq $h -and $r.error.hint -notmatch 'Add-TcTaskProgram') "$(J $r.error)"
+    $r = Add-TcPlcTask -Name PlcTask -CycleTimeUs 1000
+    Check 'AddPlcTask name in plc -> TASK_ALREADY_EXISTS hint names Add-TcTaskProgram' ($r.error.code -eq 'TASK_ALREADY_EXISTS' -and $r.error.hint -match 'Add-TcTaskProgram') "$(J $r.error)"
+
+    # N5: an exception after the first steps -> data.steps and the rollback are still in the result
+    Reset-Mock; Reset-BuildRequired; $global:T.ThrowOnLookup = "$P^FastTask"
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'AddPlcTask exception path -> data.steps, rollback of the TIRT task, BUILD_REQUIRED recorded' ((-not $r.success) -and @($r.data.steps).Count -eq 3 -and $null -ne $r.data.PSObject.Properties['rollback'] -and @($r.data.rollback | Where-Object { $_.path -eq 'TIRT^FastTask' -and $_.removed }).Count -eq 1 -and (Get-CodeChanged) -match 'Add-TcPlcTask FastTask') "$(J $r)"
+
     # ===== Add-TcTaskProgram
     Reset-Mock; Reset-BuildRequired
     $r = Add-TcTaskProgram -ProgramName PRG_Fast
@@ -242,6 +275,24 @@ try {
     $r = Add-TcTaskProgram -ProgramName PRG_Fast -DryRun $false
     Check 'Link live, modal dialog -> IDE_MODAL_DIALOG, nothing created, nothing recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-Writes).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r.error)
 
+    # S4: the hint names data.existingLink
+    Reset-Mock
+    $r = Add-TcTaskProgram -ProgramName MAIN
+    Check 'Link already linked -> hint uses -ProgramName <data.existingLink>' ($r.error.code -eq 'TASK_PROGRAM_ALREADY_LINKED' -and $r.error.hint -match '-ProgramName <data.existingLink>') "$($r.error.hint)"
+
+    # N3: the name is only linked (650 in two tasks), the program itself is missing -> not-found
+    Reset-Mock
+    $null = Add-MockNode "$P^PlcTask^Ghost" 650
+    $null = Add-MockNode "$P^Task2" 621 (New-PlcTaskXml "$P^Task2" 'TIRT^Task2')
+    $null = Add-MockNode "$P^Task2^Ghost" 650
+    $r = Add-TcTaskProgram -ProgramName Ghost -PlcTask Task2
+    Check 'Link: only program calls of that name (650 x2) -> TASK_PROGRAM_INVALID not-found, not POU_AMBIGUOUS' ($r.error.code -eq 'TASK_PROGRAM_INVALID' -and $r.data.reason -eq 'not-found' -and @($r.data.programCalls).Count -eq 2) (J $r)
+
+    # N2: an exception before CreateChild -> not recorded
+    Reset-Mock; Reset-BuildRequired; $global:T.DialogThrows = $true
+    $r = Add-TcTaskProgram -ProgramName PRG_Fast -DryRun $false
+    Check 'Link: exception before CreateChild -> error, nothing created, BUILD_REQUIRED not recorded' ((-not $r.success) -and (Get-Writes).Count -eq 0 -and $null -eq (Get-CodeChanged)) "$(J $r.error) | $(Get-CodeChanged)"
+
     # ===== Remove-TcTaskProgram
     Reset-Mock; Reset-BuildRequired
     $r = Remove-TcTaskProgram -ProgramName MAIN
@@ -261,7 +312,10 @@ try {
 
     Reset-Mock; $global:T.ExportMode = 'throw'
     $r = Remove-TcTaskProgram -ProgramName MAIN -DryRun $false
-    Check 'Unlink live, ExportChild fails but .TcTTO copied -> removed with a warning' ($r.success -and -not $global:T.Nodes.ContainsKey("$P^PlcTask^MAIN") -and @($r.data.warnings | Where-Object { $_ -match 'ExportChild backup failed' }).Count -ge 1) (J $r.data.warnings)
+    $tto = @($r.data.taskBackupFiles)[0]
+    $w = @($r.data.warnings | Where-Object { $_ -match 'restorable backup is the \.TcTTO copy' })
+    Check 'Unlink live, ExportChild fails but .TcTTO copied -> removed, warning names the .TcTTO copy and the restore (not measured)' ($r.success -and -not $global:T.Nodes.ContainsKey("$P^PlcTask^MAIN") -and $w.Count -eq 1 -and $w[0].Contains([string]$tto) -and $w[0] -match 'Reset-TcSolution' -and $w[0] -match 'not measured yet' -and $w[0] -match 'ExportChild backup failed') (J $r.data.warnings)
+    Check 'Unlink live, ExportChild fails: the misleading generic -AllowNoExport warning is gone' (@($r.data.warnings | Where-Object { $_ -match '-AllowNoExport: deleting with only the ProduceXml' }).Count -eq 0) (J $r.data.warnings)
 
     Reset-Mock; $global:T.ExportMode = 'throw'
     Remove-Item -LiteralPath (Join-Path $Root 'plc\PlcTask.TcTTO') -Force
@@ -272,6 +326,12 @@ try {
     Reset-Mock; $global:T.Mode = 'nodelete'
     $r = Remove-TcTaskProgram -ProgramName MAIN -DryRun $false
     Check 'Unlink live, DeleteChild does nothing -> TREEITEM_VERIFY_FAILED' ($r.error.code -eq 'TREEITEM_VERIFY_FAILED' -and $global:T.Nodes.ContainsKey("$P^PlcTask^MAIN")) (J $r.error)
+
+    # N2: parent-mismatch is refused before DeleteChild -> not recorded
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes["$P^PlcTask^MAIN"].PathName = "$P^OtherTask^MAIN"
+    $r = Remove-TcTaskProgram -ProgramName MAIN -DryRun $false
+    Check 'Unlink: parent-mismatch -> TREEITEM_DELETE_FAILED, nothing deleted, BUILD_REQUIRED not recorded' ($r.error.code -eq 'TREEITEM_DELETE_FAILED' -and @(Get-Writes | Where-Object { $_ -like 'DeleteChild*' }).Count -eq 0 -and $null -eq (Get-CodeChanged)) "$(J $r.error) | $(Get-CodeChanged)"
 
     # ===== backup rule: a PLC task node (621) backs up its .TcTTO
     $d = & $mod { param($root, $p) Find-TcTreeItemDiskFile -SolutionDir $root -Path "$p^PlcTask" -Name 'PlcTask' -ItemType 621 } $Root $P

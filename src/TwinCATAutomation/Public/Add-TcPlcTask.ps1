@@ -10,24 +10,31 @@ function Add-TcPlcTask {
           2. CycleTime / Priority: Set-TcTreeItemXml -Path TIRT^<Name> with
              <TreeItem><TaskDef><CycleTime>..</CycleTime><Priority>..</Priority></TaskDef></TreeItem>;
              CycleTime is in 100 ns units, so CycleTimeUs * 10 (20000 = 2 ms; measured 2026-10-30
-             4026 VS2022, task 2.1). Priority only when given.
+             4026 VS2022 XAE 3.1.4026.18, self-built client, task 2.1). Priority only when given.
           3. '<Plc> Project^<Name>': New-TcTreeItem -Path '<Plc> Project' -SubType 621. XAE links it to
              the TIRT task of the same name by itself (LinkedTask = TIRT^<Name>) and writes <Name>.TcTTO;
-             without that TIRT task XAE refuses: "No task '<Name>' found in Realtime-Settings!" (measured).
+             without that TIRT task XAE refuses: "No task '<Name>' found in Realtime-Settings!"
+             (measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client).
           4. Readback: TIRT^<Name> exists with TaskDef/CycleTime (and Priority) as requested,
              '<Plc> Project^<Name>' exists with ItemType 621 and PlcTaskDef/LinkedTask = TIRT^<Name>.
         Each step uses the generic tree cmdlets with their backup, modal dialog check and readback.
         Checks before anything is created: -Name non-empty without '^'; CycleTimeUs > 0 and at most
-        214748364 (INVALID_PARAMS; XAE itself stores 0 and negative values, measured 2026-10-30);
+        214748364 (INVALID_PARAMS; XAE itself stores 0 and negative values, measured 2026-10-30 4026
+        VS2022 XAE 3.1.4026.18, self-built client, task 2.1);
         no TIRT task and no object below '<Plc> Project' with that name (case-insensitive), else
-        TASK_ALREADY_EXISTS (data.existingIn).
-        A failed step: what this call created is deleted again (Remove-TcTreeItem, PLC task first,
-        -AllowNoExport because it is the object just created); data.step, data.stepError,
-        data.rollback[] (path, removed, code, message), data.rolledBack. Code TASK_CREATE_FAILED
+        TASK_ALREADY_EXISTS (data.existingIn; the hint differs when only TIRT has the name).
+        A failed step: what this call created is deleted again (Remove-TcTreeItem on the path the
+        generic cmdlet reported as created (data.createdPath), PLC task first, -AllowNoExport because
+        it is the object just created); when the PLC task cannot be deleted the TIRT task it is linked
+        to is left alone (rollback code SKIPPED_DEPENDENT: delete the PLC task first). data.step,
+        data.stepError, data.steps, data.rollback[] (path, removed, code, message), data.rolledBack;
+        also on an exception. Code TASK_CREATE_FAILED
         (step tirt-create / cycle-time / plc-create) or TASK_VERIFY_FAILED (step verify);
         IDE_MODAL_DIALOG / IDE_BUSY / IDE_CRASHED / PLC_LOGGED_IN keep their code.
         DryRun (default true): nothing is created; data.plannedSteps, data.xml, data.cycleTime.
-        BUILD_REQUIRED: recorded (code-changed) as soon as the first CreateChild was called.
+        BUILD_REQUIRED: recorded (code-changed) as soon as a CreateChild / ConsumeXml was called
+        (data.writeCalled of the generic cmdlet); a request refused before (modal dialog, checks)
+        records nothing.
         CycleCount is only visible online, so it is not checked here: after Enable-TcConfig -Force,
         read 'TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName' to find n, then
         'TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount' twice with Read-TcVariable; it must
@@ -99,8 +106,15 @@ function Add-TcPlcTask {
     # by this call a moment ago, there is nothing of the user's to keep). Never throws.
     $doRollback = {
         $rb = [System.Collections.Generic.List[object]]::new()
+        $plcLeft = $false
         for ($i = $created.Count - 1; $i -ge 0; $i--) {
             $p = $created[$i]
+            # the TIRT task is still linked from a PLC task that could not be deleted: leave it
+            if ($plcLeft -and $p -like 'TIRT^*') {
+                $rb.Add([PSCustomObject]@{ path = $p; removed = $false; code = 'SKIPPED_DEPENDENT'
+                        message = 'not deleted: the PLC task linked to it is still there; delete the PLC task first, then this TIRT task' })
+                continue
+            }
             $rr = $null
             try { $rr = Remove-TcTreeItem -Path $p -ConfirmName (Get-TcTreePathLeaf -Path $p) -DryRun $false -AllowNoExport }
             catch { $rr = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'TREEITEM_DELETE_FAILED'; message = $_.Exception.Message } } }
@@ -110,6 +124,7 @@ function Add-TcPlcTask {
                     code    = $(if ($rr.success) { $null } else { [string]$rr.error.code })
                     message = $(if ($rr.success) { $null } else { [string]$rr.error.message })
                 })
+            if (-not $rr.success -and $p -notlike 'TIRT^*') { $plcLeft = $true }
         }
         , $rb.ToArray()
     }
@@ -133,8 +148,10 @@ function Add-TcPlcTask {
         if ($existingIn.Count -gt 0) {
             $data | Add-Member -NotePropertyName existingIn -NotePropertyValue $existingIn
             $where = (@($existingIn | ForEach-Object { if ($_ -eq 'TIRT') { "'TIRT'" } else { "'$prjPath'" } })) -join ' and '
+            # Only TIRT: there is no PLC task of that name to reuse, so the hint is "pick another name".
+            $hintKey = if (@($existingIn) -contains 'plc') { 'TASK_ALREADY_EXISTS' } else { 'TASK_ALREADY_EXISTS_TIRT' }
             return New-TcResult -Success $false -ErrorCode 'TASK_ALREADY_EXISTS' -Data $data `
-                -ErrorMessage "A task or object named '$Name' already exists below $where; nothing was created." -Hint (Get-TcErrorHint -Code 'TASK_ALREADY_EXISTS')
+                -ErrorMessage "A task or object named '$Name' already exists below $where; nothing was created." -Hint (Get-TcErrorHint -Code $hintKey)
         }
         $data | Add-Member -NotePropertyName plannedSteps -NotePropertyValue @(
             "CreateChild TIRT '$Name' SubType 1",
@@ -144,24 +161,30 @@ function Add-TcPlcTask {
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         $failure = $null
+        # path a generic cmdlet created: its data.createdPath when it exists, else the planned path
+        $trackCreated = {
+            param($Res, [string]$Planned)
+            $cp = $null
+            if ($null -ne $Res.PSObject.Properties['data'] -and $null -ne $Res.data -and $null -ne $Res.data.PSObject.Properties['createdPath']) { $cp = [string]$Res.data.createdPath }
+            if (-not [string]::IsNullOrWhiteSpace($cp) -and $null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $cp)) { $created.Add($cp) }
+            elseif ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $Planned)) { $created.Add($Planned) }
+        }
         $record = {
             param([string]$Step, $Res)
             $steps.Add([PSCustomObject]@{ step = $Step; success = [bool]$Res.success; code = $(if ($Res.success) { $null } else { [string]$Res.error.code }) })
         }
 
         # 1. TIRT task
-        $called = $true
         $r1 = New-TcTreeItem -Path 'TIRT' -Name $Name -SubType 1 -DryRun $false
         & $record 'tirt-create' $r1
+        $called = $called -or (Test-TcWriteCalled -Result $r1)
+        & $trackCreated $r1 $tirtPath
         if ($r1.success) {
-            $created.Add($tirtPath)
-            if (-not [string]::Equals([string]$r1.data.createdName, $Name, [System.StringComparison]::Ordinal)) {
+            if ([string]$r1.data.createdName -cne $Name) {
                 $failure = @{ Step = 'tirt-create'; Code = 'TASK_CREATE_FAILED'; Message = "XAE named the TIRT task '$($r1.data.createdName)', not '$Name'"; Inner = $r1 }
-                if ($tirtPath -ne [string]$r1.data.createdPath) { $created[$created.Count - 1] = [string]$r1.data.createdPath }
             }
         }
         else {
-            if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $tirtPath)) { $created.Add($tirtPath) }
             $failure = @{ Step = 'tirt-create'; Code = $null; Message = [string]$r1.error.message; Inner = $r1 }
         }
 
@@ -169,6 +192,7 @@ function Add-TcPlcTask {
         if ($null -eq $failure) {
             $r2 = Set-TcTreeItemXml -Path $tirtPath -Xml $xml -DryRun $false
             & $record 'cycle-time' $r2
+            $called = $called -or (Test-TcWriteCalled -Result $r2)
             if (-not $r2.success) { $failure = @{ Step = 'cycle-time'; Code = $null; Message = [string]$r2.error.message; Inner = $r2 } }
         }
 
@@ -176,9 +200,14 @@ function Add-TcPlcTask {
         if ($null -eq $failure) {
             $r3 = New-TcTreeItem -Path $prjPath -Name $Name -SubType $script:TcPlcTaskItemType -DryRun $false
             & $record 'plc-create' $r3
-            if ($r3.success) { $created.Add($plcPath) }
+            $called = $called -or (Test-TcWriteCalled -Result $r3)
+            & $trackCreated $r3 $plcPath
+            if ($r3.success) {
+                if ([string]$r3.data.createdName -cne $Name) {
+                    $failure = @{ Step = 'plc-create'; Code = 'TASK_CREATE_FAILED'; Message = "XAE named the PLC task '$($r3.data.createdName)', not '$Name'"; Inner = $r3 }
+                }
+            }
             else {
-                if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $plcPath)) { $created.Add($plcPath) }
                 $failure = @{ Step = 'plc-create'; Code = $null; Message = [string]$r3.error.message; Inner = $r3 }
             }
         }
@@ -239,19 +268,20 @@ function Add-TcPlcTask {
             $innerCode = if ($null -ne $stepError) { [string]$stepError.code } else { '' }
             $code = if ($script:TcTreeItemPassThroughCodes -contains $innerCode) { $innerCode } else { 'TASK_CREATE_FAILED' }
         }
-        $rbText = if ($rollback.Count -eq 0) { 'nothing had been created' }
-                  elseif ($rolledBack) { 'rolled back: removed ' + (($rollback | ForEach-Object { "'$($_.path)'" }) -join ', ') }
-                  else { 'ROLLBACK INCOMPLETE, still present: ' + ((@($rollback | Where-Object { -not $_.removed }) | ForEach-Object { "'$($_.path)' ($($_.code))" }) -join ', ') }
+        $rbText = Format-TcPlcTaskRollback -Rollback $rollback
         $res = New-TcResult -Success $false -ErrorCode $code -Data $data `
             -ErrorMessage "Add-TcPlcTask stopped at step $($failure.Step): $($failure.Message); $rbText." -Hint (Get-TcErrorHint -Code $code)
-        return Register-TcCodeChange -Result $res -Change "$change [failed at $($failure.Step)]"
+        if ($called) { $res = Register-TcCodeChange -Result $res -Change "$change [failed at $($failure.Step)]" }
+        return $res
     }
     catch {
         $res = New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TASK_CREATE_FAILED' -Data $data -Operation 'Add-TcPlcTask'
+        $res.data | Add-Member -NotePropertyName steps -NotePropertyValue $steps.ToArray() -Force
         if ($created.Count -gt 0) {
             $rb = & $doRollback
             $res.data | Add-Member -NotePropertyName rollback -NotePropertyValue $rb -Force
             $res.data | Add-Member -NotePropertyName rolledBack -NotePropertyValue (@($rb | Where-Object { -not $_.removed }).Count -eq 0) -Force
+            $res.error.message = "$($res.error.message); $(Format-TcPlcTaskRollback -Rollback $rb)"
         }
         if ($called) { $res = Register-TcCodeChange -Result $res -Change "$change [failed]" }
         return $res

@@ -19,7 +19,7 @@ function ConvertTo-TcTaskCycleTime {
         Cycle time in microseconds -> TaskDef/CycleTime value (100 ns units): CycleTimeUs * 10.
     .DESCRIPTION
         TaskDef/CycleTime is in 100 ns units (20000 = 2 ms; measured 2026-10-30 4026 VS2022, task 2.1,
-        verification/phase1-2.1-consumexml.md; ITcTaskModule.CycleTime "in 100 ns", TE1000 v1.7.0
+        XAE 3.1.4026.18, self-built client, verification/phase1-2.1-consumexml.md; ITcTaskModule.CycleTime "in 100 ns", TE1000 v1.7.0
         5.11 p.95-96).
     .PARAMETER CycleTimeUs
         Cycle time in microseconds.
@@ -162,7 +162,7 @@ function Test-TcTaskProgramTarget {
     .SYNOPSIS
         Checks that -ProgramName names a PROGRAM of the PLC project exactly: @{ Result = $null | failed result; Path; Name }.
     .DESCRIPTION
-        XAE's CreateChild 650 accepts any name (measured 2026-10-31 4026 VS2022, self-built client,
+        XAE's CreateChild 650 accepts any name (measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client,
         phase2-probe.md 3.5: same name twice, other case, missing name, FB, GVL all OK; the build then
         fails with C0046 / C0035 / C0080 / C0036 in <task>.TcTTO), so this is checked here.
         Resolve-TcPouPath -ProjectPath finds the object (a 650 program reference of the same name is
@@ -170,7 +170,9 @@ function Test-TcTaskProgramTarget {
           not-found      no object of that name in the PLC project
           not-a-program  the object is not a PROGRAM (ItemType 602); data.objectKind / itemType / pouType
           case-mismatch  a PROGRAM exists, its name differs in case (data.actualName)
-        Several objects of that name -> POU_AMBIGUOUS (New-TcPouAmbiguousResult).
+        Several objects of that name -> POU_AMBIGUOUS (New-TcPouAmbiguousResult), unless every one of
+        them is a program call (650): then not-found.
+        Measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER PlcProjectPath
@@ -194,6 +196,17 @@ function Test-TcTaskProgramTarget {
     }
     $res = Resolve-TcPouPath -SysManager $SysManager -Name $ProgramName -ProjectPath $PlcProjectPath
     if ($res.Ambiguous) {
+        # Several hits that are ALL program calls (650, e.g. the name linked in two tasks while the
+        # program itself is missing): there is no program, so not-found, not POU_AMBIGUOUS.
+        $candTypes = @(@($res.Candidates) | ForEach-Object {
+                $ci = Find-TcTreeItemNoThrow -SysManager $SysManager -Path ([string]$_)
+                if ($null -eq $ci) { -1 } else { try { [int]$ci.ItemType } catch { -1 } }
+            })
+        if ($candTypes.Count -gt 0 -and @($candTypes | Where-Object { $_ -ne $script:TcPlcProgRefItemType }).Count -eq 0) {
+            $Data | Add-Member -NotePropertyName tried -NotePropertyValue @($res.Tried) -Force
+            $Data | Add-Member -NotePropertyName programCalls -NotePropertyValue @($res.Candidates) -Force
+            return (& $fail 'not-found' "No PROGRAM '$ProgramName' in '$PlcProjectPath', only program calls of that name ($(@($res.Candidates) -join '; ')); nothing was linked.")
+        }
         return @{ Result = (New-TcPouAmbiguousResult -Name $ProgramName -Resolution $res); Path = $null; Name = $null }
     }
     $kind = $null
@@ -213,7 +226,7 @@ function Test-TcTaskProgramTarget {
         $what = if ($kind.ObjectKind -eq 'POU' -and $kind.PouType) { $kind.PouType } elseif ($kind.ObjectKind) { $kind.ObjectKind } else { "ItemType $($kind.ItemType)" }
         return (& $fail 'not-a-program' "'$($res.Path)' is a $what, not a PROGRAM (ItemType 602); a task can only call a PROGRAM. Nothing was linked.")
     }
-    if (-not [string]::Equals($actual, $ProgramName, [System.StringComparison]::Ordinal)) {
+    if ($actual -cne $ProgramName) {
         return (& $fail 'case-mismatch' "The PROGRAM is named '$actual', not '$ProgramName' (the name must match exactly, case included); nothing was linked.")
     }
     return @{ Result = $null; Path = [string]$res.Path; Name = $actual }
@@ -248,4 +261,46 @@ function Copy-TcDataFields {
         }
         $To | Add-Member -NotePropertyName $target -NotePropertyValue $p.Value -Force
     }
+}
+
+function Test-TcWriteCalled {
+    <#
+    .SYNOPSIS
+        $true when the generic tree cmdlet that returned -Result called its COM write (data.writeCalled,
+        set right before CreateChild / ConsumeXml / DeleteChild). A request refused before the call
+        (checks, backup, modal dialog, parent-mismatch, an exception before the call) gives $false.
+    .PARAMETER Result
+        Result of New-TcTreeItem / Set-TcTreeItemXml / Remove-TcTreeItem.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][object]$Result)
+    if ($null -eq $Result) { return $false }
+    $dp = $Result.PSObject.Properties['data']
+    if ($null -eq $dp -or $null -eq $dp.Value) { return $false }
+    $w = $dp.Value.PSObject.Properties['writeCalled']
+    return ($null -ne $w -and $w.Value -eq $true)
+}
+
+function Format-TcPlcTaskRollback {
+    <#
+    .SYNOPSIS
+        One sentence about an Add-TcPlcTask rollback (data.rollback[]) for the error message.
+    .DESCRIPTION
+        Nothing created / rolled back (the removed paths) / ROLLBACK INCOMPLETE with the paths still
+        present; a TIRT task skipped because its PLC task could not be deleted (SKIPPED_DEPENDENT) is
+        named with "delete the PLC task first".
+    .PARAMETER Rollback
+        data.rollback[] entries (path, removed, code, message).
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyCollection()][object[]]$Rollback = @())
+    $rb = @($Rollback | Where-Object { $null -ne $_ })
+    if ($rb.Count -eq 0) { return 'nothing had been created' }
+    $left = @($rb | Where-Object { -not $_.removed })
+    if ($left.Count -eq 0) { return 'rolled back: removed ' + (($rb | ForEach-Object { "'$($_.path)'" }) -join ', ') }
+    $text = 'ROLLBACK INCOMPLETE, still present: ' + (($left | ForEach-Object { "'$($_.path)' ($($_.code))" }) -join ', ')
+    if (@($left | Where-Object { $_.code -eq 'SKIPPED_DEPENDENT' }).Count -gt 0) {
+        $text += '; delete the PLC task first, then the TIRT task (SKIPPED_DEPENDENT)'
+    }
+    return $text
 }

@@ -143,13 +143,15 @@ $script:TcErrorHints['LIBRARY_UNINSTALL_FAILED'] = '用 Get-TcLibraries -Reposit
 $script:TcErrorHints['CHECK_FAILED'] = '依 data.errorItems 的 file / line 修正程式碼(Get-TcPouCode -PouPath <路徑> 讀、Write-TcPouCode -PouPath <路徑> 改),再重跑 Test-TcPlcProject;data.errorItems 是空的就用 Get-TcBuildErrors 讀 Error List'
 $script:TcErrorHints['CHECK_UNAVAILABLE'] = '改用 Build-TcProject(它只編譯有被引用的物件)'
 # PLC task and program links (complete-automation-interface task 3.5)
-$script:TcErrorHints['TASK_ALREADY_EXISTS'] = '換一個 -Name 重跑 Add-TcPlcTask;要用既有的 task 就直接 Add-TcTaskProgram -PlcTask <Name>'
+$script:TcErrorHints['TASK_ALREADY_EXISTS'] = '<Plc> Project 底下已有這個名稱:要用這個 PLC task 就直接 Add-TcTaskProgram -ProgramName <program> -PlcTask <Name>;要新的 task 就換一個 -Name 重跑 Add-TcPlcTask'
+# only TIRT has the name (data.existingIn = TIRT): there is no PLC task to reuse
+$script:TcErrorHints['TASK_ALREADY_EXISTS_TIRT'] = '換一個 -Name 重跑 Add-TcPlcTask'
 $script:TcErrorHints['TASK_NOT_FOUND'] = '用 data.plcTasks 裡的名稱當 -PlcTask 重跑;要新的 task 先 Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false'
 $script:TcErrorHints['TASK_PROGRAM_INVALID'] = 'data.reason = not-found:先 Add-TcPou -Name <Name> -Type Program 建 PROGRAM;not-a-program:改給一個 PROGRAM 的名稱;case-mismatch:改用 -ProgramName <data.actualName>。再重跑 Add-TcTaskProgram'
-$script:TcErrorHints['TASK_PROGRAM_ALREADY_LINKED'] = '不用再連;要換 task 先 Remove-TcTaskProgram -ProgramName <Name> -PlcTask <舊 task> -DryRun $false,再 Add-TcTaskProgram -PlcTask <新 task>'
+$script:TcErrorHints['TASK_PROGRAM_ALREADY_LINKED'] = '不用再連;要換 task 先 Remove-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <舊 task> -DryRun $false,再 Add-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <新 task>'
 $script:TcErrorHints['TASK_PROGRAM_NOT_LINKED'] = '用 data.linkedPrograms 裡的名稱(大小寫完全相同)當 -ProgramName 重跑 Remove-TcTaskProgram'
-$script:TcErrorHints['TASK_CREATE_FAILED'] = 'data.rolledBack = true:排除 data.stepError 的原因後重跑 Add-TcPlcTask;false:先對 data.rollback 裡 removed = false 的 path 執行 Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport,再重跑'
-$script:TcErrorHints['TASK_VERIFY_FAILED'] = '用 Get-TcTreeItemXml -Path <data.tirtTaskPath> 和 Get-TcTreeItemXml -Path <data.plcTaskPath> 看實際值(data.mismatches);data.rolledBack = false 時先用 Remove-TcTreeItem 刪掉 data.rollback 裡留下的 path,再重跑 Add-TcPlcTask'
+$script:TcErrorHints['TASK_CREATE_FAILED'] = 'data.rolledBack = true:排除 data.stepError 的原因後重跑 Add-TcPlcTask;false:先刪 PLC task(data.rollback 裡 code 不是 SKIPPED_DEPENDENT、removed = false 的 path),再刪 SKIPPED_DEPENDENT 的 TIRT task,都用 Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport,再重跑 Add-TcPlcTask'
+$script:TcErrorHints['TASK_VERIFY_FAILED'] = '先看 data.mismatches(field / expected / actual);data.rolledBack = false 時先刪 PLC task,再刪 SKIPPED_DEPENDENT 的 TIRT task(Remove-TcTreeItem -Path <data.rollback 留下的 path> -ConfirmName <Name> -DryRun $false -AllowNoExport),再重跑 Add-TcPlcTask'
 
 function Get-TcErrorHint {
     <#

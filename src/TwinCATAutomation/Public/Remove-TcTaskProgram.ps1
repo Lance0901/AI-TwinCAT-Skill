@@ -15,13 +15,17 @@ function Remove-TcTaskProgram {
         DryRun=false: (1) ProduceXml backup of the task plus a copy of its <task>.TcTTO
         (data.taskBackupPath / data.taskBackupFiles); (2) Remove-TcTreeItem -DryRun $false on the call:
         recursive ProduceXml backup of the call and an ExportChild .zip of it (data.exportPath;
-        TE1000 v1.7.0 5.2.1.4; XAE refuses other file names below TIPC, measured 2026-10-30 on a PLC
-        folder; for a 650 node not measured yet). When that export fails and the .TcTTO copy exists,
-        the call is still removed (data.warnings says so; restore by copying the .TcTTO back with the
-        solution closed); without the .TcTTO copy nothing is removed (TREEITEM_BACKUP_FAILED).
+        TE1000 v1.7.0 5.2.1.4; XAE refuses other file names below TIPC, registered tcauto measured
+        2026-10-30 4026 VS2022 XAE 3.1.4026.22 on a PLC folder; for a 650 node not measured yet). When
+        that export fails and the .TcTTO copy exists, the call is still removed and data.warnings names
+        the .TcTTO copy (data.taskBackupFiles) and how to restore it: copy it back over the task's
+        .TcTTO, then Reset-TcSolution (not measured yet, task 3.8). Without the .TcTTO copy nothing is
+        removed (TREEITEM_BACKUP_FAILED).
         IDE_MODAL_DIALOG before each COM write, DeleteChild, then readback: the task must list one
         exact '<ProgramName>' call less (data.linkedPrograms, data.remainingCalls).
-        BUILD_REQUIRED: recorded (code-changed) as soon as DeleteChild was called.
+        BUILD_REQUIRED: recorded (code-changed) as soon as DeleteChild was called (data.writeCalled of
+        Remove-TcTreeItem); a request refused before the call (checks, parent-mismatch, backup, modal
+        dialog) records nothing.
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER ProgramName
         Name of the program call to remove, exactly as listed below the task.
@@ -102,15 +106,35 @@ function Remove-TcTaskProgram {
         if ($null -ne $bk.Result) { return $bk.Result }
         $data | Add-Member -NotePropertyName taskBackupPath -NotePropertyValue $bk.Backup.backupPath
         $data | Add-Member -NotePropertyName taskBackupFiles -NotePropertyValue @($bk.Backup.backupFiles)
-        $haveTto = @($bk.Backup.backupFiles | Where-Object { [string]$_ -like '*.TcTTO' }).Count -gt 0
+        $ttoCopies = @($bk.Backup.backupFiles | Where-Object { [string]$_ -like '*.TcTTO' })
+        $haveTto = $ttoCopies.Count -gt 0
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue @($bk.Backup.warnings) -Force
 
         # (2) backup of the call (ExportChild .zip) + DeleteChild + lookup: Remove-TcTreeItem
         $inner = Remove-TcTreeItem -Path $callPath -ConfirmName $ProgramName -DryRun $false -AllowNoExport:$haveTto
         $innerData = if ($null -ne $inner.PSObject.Properties['data']) { $inner.data } else { $null }
-        Copy-TcDataFields -From $innerData -To $data -Names @('backupPath', 'backupFiles', 'exportPath', 'warnings', 'nodeName', 'itemType')
+        # Remove-TcTreeItem's -AllowNoExport warning says only the ProduceXml backup remains, which is
+        # wrong here (the .TcTTO copy is the restorable one): replaced by a warning of its own.
+        $exportFailed = $haveTto -and $null -ne $innerData -and $null -eq $innerData.PSObject.Properties['exportPath'] -and (Test-TcWriteCalled -Result $inner)
+        $innerWarnings = @()
+        if ($null -ne $innerData -and $null -ne $innerData.PSObject.Properties['warnings']) { $innerWarnings = @($innerData.warnings) }
+        $exportWhy = @($innerWarnings | Where-Object { [string]$_ -match '^ExportChild backup failed|does not exist' }) | Select-Object -First 1
+        $innerWarnings = @($innerWarnings | Where-Object { [string]$_ -notmatch '-AllowNoExport: deleting with only the ProduceXml' })
+        Copy-TcDataFields -From $innerData -To $data -Names @('backupPath', 'backupFiles', 'exportPath', 'nodeName', 'itemType')
+        $data.warnings = @(@($data.warnings) + $innerWarnings)
+        if ($exportFailed) {
+            $why = if ($exportWhy) { ([string]$exportWhy -split '; -AllowNoExport')[0] } else { 'ExportChild of the call wrote no file' }
+            $orig = @()
+            try {
+                $sd = Get-TcTreeItemSolutionDir
+                if ($null -ne $sd) { $orig = @((Find-TcTreeItemDiskFile -SolutionDir $sd -Path $task.Path -Name $PlcTask -ItemType $script:TcPlcTaskItemType).Files) }
+            }
+            catch { $orig = @() }
+            $target = if ($orig.Count -eq 1) { "'$($orig[0])'" } else { "the task's $PlcTask.TcTTO" }
+            $data.warnings = @(@($data.warnings) + @("$why. The call was removed; the restorable backup is the .TcTTO copy $(($ttoCopies | ForEach-Object { "'$_'" }) -join ', ') (data.taskBackupFiles). Restore (not measured yet, task 3.8): copy it back over $target, then Reset-TcSolution."))
+        }
         $code = if ($inner.success) { $null } else { [string]$inner.error.code }
-        $called = $inner.success -or @('TREEITEM_DELETE_FAILED', 'TREEITEM_VERIFY_FAILED') -contains $code -or ($null -ne $innerData -and $null -ne $innerData.PSObject.Properties['buildRequired'])
+        $called = Test-TcWriteCalled -Result $inner
         $after = @(Get-TcTreeItemChildNames -Item $task.Item)
         $exactAfter = @($after | Where-Object { $_ -ceq $ProgramName }).Count
         $data.linkedPrograms = $after

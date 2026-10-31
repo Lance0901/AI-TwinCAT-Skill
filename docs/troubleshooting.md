@@ -595,33 +595,33 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **做法**:`Test-TcPlcProject`(MCP `CheckAllObjects`)在 `TIPC^<Plc>^<Plc> Project` 上 late-bind 呼叫 `ITcPlcIECProject2.CheckAllObjects()`(TE1000 v1.7.0 §5.28.2 p.123-124、§6.5.7 p.233-234),呼叫前先查 modal dialog,之後讀 Error List(和 `Build-TcProject` 共用 `Get-TcErrorListSummary`,`errorItems` 每筆一樣是 `severity / code / description / project / file / line / column / category`)。PLC root `TIPC^<Plc>` 沒有這個方法，只有 `<Plc> Project` 有(實測 2026-10-31 4026 VS2022,自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.7)。
 - **和 Build 的差別**:`Build-TcProject` 只編譯有被引用的物件。沒被引用的 FB 的 method 寫了語法錯(`M_Two := ;`)時，Build 回 success、errors 0;CheckAllObjects 回 `False`,Error List 有 `C0007 Expression expected instead of ';'`(file `FB_P2Probe.TcPOU@M_Two (Impl)`,line 1)(實測 2026-10-31 4026 VS2022,自建 client)。InfoSys 的 PLC 指令 "Check all objects" 也說它檢查所有物件、不產生 code:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531345035.html>。
 - **不碰 BUILD_REQUIRED**:不產生 code、不改檔(實測 2026-10-31:呼叫前後 solution 目錄沒有任何檔案變動，含 `_Boot`、`_CompileInfo`),所以既不記也不清 `BUILD_REQUIRED`。成功也不能取代 `Build-TcProject`:`Enable-TcConfig` / `Enter-TcPlcOnline` 之前還是要完整 build。
-- **Error List 的舊項目**:沒有 file、也沒有 code 的錯誤列會一直留在 Error List(實測：失敗的 archive 留下 `'TwinCAT Measurement' ... Error creating Archive`),不算這次檢查的結果，放在 `data.staleErrorItems`。回 `True` 時 `data.errorItems` 一律是空陣列,Error List 上的錯誤列都放 `staleErrorItems` 並加 warning;warning 列照樣在 `data.warningItems` / `codeWarnings`。
+- **Error List 的舊項目**:沒有 file、也沒有 code 的錯誤列會一直留在 Error List(實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18,自建 client:失敗的 archive 留下 `'TwinCAT Measurement' ... Error creating Archive`),不算這次檢查的結果，放在 `data.staleErrorItems`。判斷條件是 **category 為 `other`(沒有 file)而且 code 是空的**;有 code 但沒有 file 的列仍算這次的錯誤，留在 `data.errorItems`。回 `True` 時 `data.errorItems` 一律是空陣列,Error List 上的錯誤列都放 `staleErrorItems` 並加 warning;warning 列照樣在 `data.warningItems` / `codeWarnings`。
 - **沒有 deadline**:CheckAllObjects 是同步呼叫，模組只在呼叫前排除 dialog;probe 每次都在 0.7-2.2 s 內返回(實測 2026-10-31)。MCP tool 的 timeout 是 600 s。
 
 ### CHECK_FAILED
 
-- **現象**:`CheckAllObjects()` 回 `False`(`data.passed = false`;語法錯是回 False,不是例外，實測 2026-10-31 4026 VS2022),`data.errorItems` 是 Error List 上有 file 的錯誤列(`codeErrors` / `libraryErrorItems` 分開列),message 列前三筆。`data.passed = null` 加 `data.callError`:CheckAllObjects 丟了例外(手冊 §5.28.2 列 `E_FAIL` `Error_CheckAllObjectsFailed`,probe 沒遇到)或沒回 bool。Error List 讀不到時 `data.errorListError` 有值,message 會寫。
+- **現象**:`CheckAllObjects()` 回 `False`(`data.passed = false`;語法錯是回 False,不是例外，實測 2026-10-31 4026 VS2022),`data.errorItems` 是 Error List 上除了舊項目(沒有 file 也沒有 code)以外的錯誤列(`codeErrors` / `libraryErrorItems` 分開列),message 列前三筆。`data.passed = null` 加 `data.callError`:CheckAllObjects 丟了例外(手冊 §5.28.2 列 `E_FAIL` `Error_CheckAllObjectsFailed`,probe 沒遇到)或沒回 bool。Error List 讀不到時 `data.errorListError` 有值,message 會寫。
 - **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `Test-TcPlcProject`;`errorItems` 是空的就用 `Get-TcBuildErrors` 讀 Error List。file 是 `<task>.TcTTO`、line 0 的列(`C0046` / `C0035` / `C0080` / `C0036`)代表 task 呼叫了不存在或不是 PROGRAM 的物件(實測 2026-10-31,`phase2-probe.md` 3.5),用 `Remove-TcTaskProgram -ProgramName <名稱> -PlcTask <task> -DryRun $false` 拿掉。
 
 ### CHECK_UNAVAILABLE
 
-- **現象**:`<Plc> Project` 節點沒有 `CheckAllObjects` 方法(`ITcPlcIECProject2` 不可用;PowerShell "does not contain a method named 'CheckAllObjects'")。4024 是否支援還沒實測(task 3.8)。
+- **現象**:`<Plc> Project` 節點沒有 `CheckAllObjects` 方法(`ITcPlcIECProject2` 不可用;PowerShell 丟 `MethodNotFound`,英文 PowerShell 的訊息是 "does not contain a method named 'CheckAllObjects'",zh-TW 等語系的訊息不同，所以模組看 `FullyQualifiedErrorId = MethodNotFound`,不比對訊息文字)。4024 是否支援還沒實測(task 3.8)。
 - **下一步**:改用 `Build-TcProject`(只編譯有被引用的物件)。
 
 ### PLC task 與 program 連結(task 3.5):做法與共同規則
 
 - **做法**:`Add-TcPlcTask`(MCP `AddPlcTask`)、`Add-TcTaskProgram`(`LinkProgramToTask`)、`Remove-TcTaskProgram`(`UnlinkProgramFromTask`)都由通用 tree cmdlet 組成(`New-TcTreeItem`、`Set-TcTreeItemXml`、`Remove-TcTreeItem`),沿用它們的備份、modal dialog 檢查與讀回。三個都預設 `DryRun=$true`。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.5);registered tcauto 還沒驗證(task 3.8),4024 沒測過。
 - **新增 PLC task 要兩個物件**:先 `TIRT` 底下 CreateChild SubType 1(沒有 process image,TE1000 v1.7.0 §6.3.1 p.196),用 ConsumeXml 設 `TaskDef/CycleTime`(單位 100 ns,所以是 `CycleTimeUs * 10`;實測 2026-10-30 task 2.1)和 `Priority`,再在 `<Plc> Project` 底下用**同名** CreateChild 621。XAE 會自己把 `LinkedTask` 接到 `TIRT^<Name>`,並寫出 `<Name>.TcTTO`;TIRT 沒有同名 task 時 XAE 回 E_FAIL "No task '<Name>' found in Realtime-Settings!"(實測)。讀回檢查 TIRT task 的 CycleTime / Priority、PLC task 的 ItemType 621 與 `PlcTaskDef/LinkedTask`。
-- **不留半套**:任何一步失敗(或讀回不符)就把這次建出來的物件刪掉(先 PLC task 再 TIRT task,`Remove-TcTreeItem -AllowNoExport`:是剛建的物件),結果寫在 `data.rollback[]` / `data.rolledBack`。
+- **不留半套**:任何一步失敗(或讀回不符、或中途丟例外)就把這次建出來的物件刪掉，路徑優先用通用 cmdlet 回報的 `data.createdPath`(XAE 改了名字時才刪得到),先 PLC task 再 TIRT task,`Remove-TcTreeItem -AllowNoExport`(是剛建的物件)。PLC task 刪不掉時**不刪** TIRT task(PLC task 還連著它),那一筆標 `SKIPPED_DEPENDENT`,message 會寫「先刪 PLC task」。結果寫在 `data.rollback[]` / `data.rolledBack`,`data.steps` 列出每一步(例外路徑也有)。CreateChild 回來的名稱和 `-Name` 不同(大小寫也算)也算失敗。
 - **650 XAE 完全不驗證**:在 PLC task 底下 CreateChild 650 時，同名第二次、大小寫不同、不存在的名稱、FB、GVL XAE 全部照收，當下就寫進 `<task>.TcTTO`,要到 CheckAllObjects / Build 才報 `C0046` / `C0035` / `C0080` / `C0036`(實測 2026-10-31)。所以 `Add-TcTaskProgram` 自己先檢查：用 `Resolve-TcPouPath` 找到物件、`Get-TcPlcObjectKind` 確認 ItemType 602(PROGRAM)、名稱大小寫完全相同、task 底下還沒有同名的呼叫。
-- **備份**:`<Plc> Project^<task>`(621)的磁碟檔是 `<task>.TcTTO`,寫入前複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles` / `data.taskBackupFiles`)。`Remove-TcTaskProgram` 另外用 ExportChild 把那個 650 匯出成 `.zip`(`data.exportPath`;650 節點能不能匯出還沒實測):匯出失敗但 `.TcTTO` 有備份時照樣刪(`data.warnings` 會寫),兩者都沒有就不刪(`TREEITEM_BACKUP_FAILED`)。
-- **BUILD_REQUIRED**:寫入 API 一呼叫就記(code-changed),成功或失敗都記;呼叫之前就擋下的不記。
+- **備份**:`<Plc> Project^<task>`(621)的磁碟檔是 `<task>.TcTTO`,寫入前複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles` / `data.taskBackupFiles`)。`Remove-TcTaskProgram` 另外用 ExportChild 把那個 650 匯出成 `.zip`(`data.exportPath`;650 節點能不能匯出還沒實測)。匯出失敗但 `.TcTTO` 有備份時照樣刪，並加一條 warning 寫 `.TcTTO` 備份的路徑和還原步驟：把它複製回 task 的 `.TcTTO`,再 `Reset-TcSolution`(**未實測，待 3.8**);`Remove-TcTreeItem` 那句「只剩 ProduceXml 備份」的通用 warning 在這個情境會誤導，所以拿掉。兩種備份都沒有就不刪(`TREEITEM_BACKUP_FAILED`)。
+- **BUILD_REQUIRED**:寫入 API(CreateChild / ConsumeXml / DeleteChild)一呼叫就記(code-changed),成功或失敗都記。判斷依據是通用 cmdlet 在呼叫前一刻設的 `data.writeCalled`;呼叫之前就擋下的(參數、modal dialog、備份失敗、DeleteChild 的 parent-mismatch、呼叫前丟的例外)不記。
 - **CycleCount 要在線上驗**:不在 cmdlet 裡做。`Enable-TcConfig -Force` 之後，用 `Read-TcVariable` 讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName` 找到 n,再讀兩次 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount`,數字要增加。n 是 PLC 自己的 task index(從 1 開始),不是 TIRT 底下的順序(InfoSys PlcTaskSystemInfo:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/714821259.html>)。`Add-TcPlcTask` 成功時 `data.verifyHint` 寫同一件事。陣列順序是不是等於 PLC project 裡 task 物件的順序還沒實測。
 
-### TASK_ALREADY_EXISTS
+### TASK_ALREADY_EXISTS / TASK_ALREADY_EXISTS_TIRT
 
 - **現象**:`Add-TcPlcTask` 的 `-Name` 已經是 `TIRT` 底下的 task 或 `<Plc> Project` 底下的物件(不分大小寫;`data.existingIn` = `TIRT` / `plc`),什麼都沒建。
-- **下一步**:換一個 `-Name` 重跑;要用既有的 task 就直接 `Add-TcTaskProgram -PlcTask <Name>`。
+- **下一步**:hint 依 `data.existingIn` 分兩種(`TASK_ALREADY_EXISTS_TIRT` 是只有 TIRT 時用的 hint key,錯誤碼仍是 `TASK_ALREADY_EXISTS`)。只有 `TIRT`:沒有可以沿用的 PLC task,換一個 `-Name` 重跑 `Add-TcPlcTask`。含 `plc`:要用那個 PLC task 就直接 `Add-TcTaskProgram -ProgramName <program> -PlcTask <Name>`,要新的 task 就換名稱。
 
 ### TASK_NOT_FOUND
 
@@ -636,7 +636,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### TASK_PROGRAM_ALREADY_LINKED
 
 - **現象**:task 底下已經有這個名稱的呼叫(不分大小寫，`data.existingLink`),什麼都沒連。XAE 會照收第二個，program 就每個 cycle 被呼叫兩次(實測 2026-10-31:沒有編譯錯誤)。
-- **下一步**:不用再連;要換 task 先 `Remove-TcTaskProgram -ProgramName <Name> -PlcTask <舊 task> -DryRun $false`,再 `Add-TcTaskProgram -PlcTask <新 task>`。
+- **下一步**:不用再連;要換 task 先 `Remove-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <舊 task> -DryRun $false`,再 `Add-TcTaskProgram -ProgramName <data.existingLink> -PlcTask <新 task>`。
 
 ### TASK_PROGRAM_NOT_LINKED
 
@@ -645,13 +645,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TASK_CREATE_FAILED
 
-- **現象**:`Add-TcPlcTask` 在 `data.step` 失敗:`tirt-create`(TIRT 底下 CreateChild)、`cycle-time`(ConsumeXml 或它的讀回)、`plc-create`(`<Plc> Project` 底下 CreateChild 621)。`data.stepError` 是那一步的原始錯誤。已建的物件已回滾(`data.rollback[]`;`data.rolledBack = false` 表示有東西沒刪掉，message 會寫 `ROLLBACK INCOMPLETE`)。IDE_* / PLC_LOGGED_IN 保留原碼，不用這個碼。
-- **下一步**:`rolledBack = true`:排除 `stepError` 的原因後重跑 `Add-TcPlcTask`。`false`:先對 `data.rollback` 裡 `removed = false` 的 path 執行 `Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport`,再重跑。
+- **現象**:`Add-TcPlcTask` 在 `data.step` 失敗:`tirt-create`(TIRT 底下 CreateChild)、`cycle-time`(ConsumeXml 或它的讀回)、`plc-create`(`<Plc> Project` 底下 CreateChild 621)。`data.stepError` 是那一步的原始錯誤，`data.steps` 是每一步的結果。已建的物件已回滾(`data.rollback[]`;`data.rolledBack = false` 表示有東西沒刪掉，message 會寫 `ROLLBACK INCOMPLETE`;PLC task 刪不掉時 TIRT task 標 `SKIPPED_DEPENDENT`,沒有刪)。IDE_* / PLC_LOGGED_IN 保留原碼，不用這個碼。
+- **下一步**:`rolledBack = true`:排除 `stepError` 的原因後重跑 `Add-TcPlcTask`。`false`:**先刪 PLC task**(`data.rollback` 裡 removed = false、code 不是 `SKIPPED_DEPENDENT` 的 path),再刪 `SKIPPED_DEPENDENT` 的 TIRT task,都用 `Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport`,再重跑。
 
 ### TASK_VERIFY_FAILED
 
 - **現象**:`Add-TcPlcTask` 每一步都返回了，但讀回不符(`data.mismatches`:`TaskDef/CycleTime`、`TaskDef/Priority`、`PLC task ItemType`、`PlcTaskDef/LinkedTask`,或物件找不到)。已建的物件已回滾，同 `TASK_CREATE_FAILED`。
-- **下一步**:用 `Get-TcTreeItemXml` 看 `data.tirtTaskPath` / `data.plcTaskPath` 的實際值;`rolledBack = false` 時先用 `Remove-TcTreeItem` 刪掉留下的 path,再重跑 `Add-TcPlcTask`。
+- **下一步**:先看 `data.mismatches`(field / expected / actual);要看完整 XML 用 `Get-TcTreeItemXml -Path <data.tirtTaskPath>` / `<data.plcTaskPath>`。`rolledBack = false` 時照 `TASK_CREATE_FAILED` 的順序(先 PLC task 再 TIRT task)刪掉留下的 path,再重跑 `Add-TcPlcTask`。
 
 ### PROJECT_SAVE_FAILED
 

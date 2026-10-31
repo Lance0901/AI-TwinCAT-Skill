@@ -24,7 +24,9 @@ function Add-TcTaskProgram {
         dialog is open (nothing created), CreateChild, then the new child is looked up again and the
         task's children must be the old ones plus this one (TREEITEM_VERIFY_FAILED otherwise); the child
         must be ItemType 650. data.verified = true, data.linkedPrograms = the children afterwards.
-        BUILD_REQUIRED: recorded (code-changed) as soon as CreateChild was called, success or failure.
+        BUILD_REQUIRED: recorded (code-changed) as soon as CreateChild was called, success or failure
+        (data.writeCalled of New-TcTreeItem); a request refused before the call (checks, backup, modal
+        dialog, an exception before CreateChild) records nothing.
         Remove the link with Remove-TcTaskProgram. Run Test-TcPlcProject or Build-TcProject afterwards.
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER ProgramName
@@ -101,7 +103,7 @@ function Add-TcTaskProgram {
         Copy-TcDataFields -From $innerData -To $data -Names @('backupPath', 'backupFiles', 'warnings', 'createdPath', 'itemType', 'parentUnchanged', 'unexpectedChanges', 'missingChildren', 'addedChildren')
         $code = if ($inner.success) { $null } else { [string]$inner.error.code }
         # CreateChild was called: success, or it failed in / after the call (New-TcTreeItem codes)
-        $called = $inner.success -or @('TREEITEM_CREATE_FAILED', 'TREEITEM_VERIFY_FAILED') -contains $code -or ($null -ne $innerData -and $null -ne $innerData.PSObject.Properties['buildRequired'])
+        $called = Test-TcWriteCalled -Result $inner
         if (-not $inner.success) {
             $data | Add-Member -NotePropertyName step -NotePropertyValue 'create' -Force
             $p = @{ Success = $false; ErrorCode = $code; ErrorMessage = "Add-TcTaskProgram: $($inner.error.message)"; Data = $data }
