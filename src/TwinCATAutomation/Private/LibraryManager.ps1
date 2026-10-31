@@ -27,28 +27,9 @@ function Resolve-TcLibraryManager {
         [Parameter()][string]$PlcProjectPath
     )
     $sm = $SysManager
-    $plcList = @(Get-TcPlcProjectList -SysManager $sm)
-    if ([string]::IsNullOrWhiteSpace($PlcProjectPath)) {
-        try { $PlcProjectPath = Resolve-TcPlcProjectPath -SysManager $sm -RequireSingle }
-        catch {
-            if ($_.Exception.Message -match '^(PLC_PROJECT_NOT_FOUND|PLC_PROJECT_AMBIGUOUS)') {
-                $code = $Matches[1]
-                return @{ Result = (New-TcResult -Success $false -ErrorMessage ($_.Exception.Message -replace '^PLC_PROJECT_[A-Z_]+:\s*', '') `
-                            -ErrorCode $code -Hint (Get-TcErrorHint -Code $code) -Data ([PSCustomObject]@{ plcProjects = $plcList })) }
-            }
-            throw
-        }
-    }
-    else {
-        $plcEntry = Find-TcPlcProject -List $plcList -Spec $PlcProjectPath
-        if ($null -eq $plcEntry) {
-            return @{ Result = (New-TcResult -Success $false `
-                        -ErrorMessage "PLC project '$PlcProjectPath' not found. PLC projects: $(($plcList | ForEach-Object { $_.projectPath }) -join ', ')" `
-                        -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND') `
-                        -Data ([PSCustomObject]@{ plcProjects = $plcList })) }
-        }
-        $PlcProjectPath = $plcEntry.projectPath
-    }
+    $spec = Resolve-TcPlcProjectSpec -SysManager $sm -PlcProjectPath $PlcProjectPath
+    if ($null -ne $spec.Result) { return @{ Result = $spec.Result } }
+    $PlcProjectPath = $spec.PlcProjectPath
     $refsPath = "$PlcProjectPath^References"
     $refs = $null
     try { $refs = $sm.LookupTreeItem($refsPath) }
