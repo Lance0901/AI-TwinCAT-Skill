@@ -52,6 +52,10 @@ $operationMap = @{
     'InstallLibrary'  = 'Install-TcLibrary'
     'UninstallLibrary' = 'Uninstall-TcLibrary'
     'FreezePlaceholder' = 'Lock-TcLibraryPlaceholder'
+    # PLC tasks and program calls (DryRun by default)
+    'AddPlcTask'      = 'Add-TcPlcTask'
+    'LinkProgramToTask' = 'Add-TcTaskProgram'
+    'UnlinkProgramFromTask' = 'Remove-TcTaskProgram'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'

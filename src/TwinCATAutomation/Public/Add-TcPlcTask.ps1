@@ -1,0 +1,259 @@
+function Add-TcPlcTask {
+    <#
+    .SYNOPSIS
+        Adds a PLC task: a real-time task TIRT^<Name> with CycleTimeUs / Priority plus the PLC task object '<Plc> Project^<Name>' linked to it. Dry-run by default; rolls back what it created when a step fails.
+    .DESCRIPTION
+        Two objects, created in this order (measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built
+        client, openspec/changes/complete-automation-interface/verification/phase2-probe.md 3.5):
+          1. TIRT^<Name>: New-TcTreeItem -Path TIRT -SubType 1 (task without process image, TE1000
+             Automation Interface manual v1.7.0 6.3.1 p.196).
+          2. CycleTime / Priority: Set-TcTreeItemXml -Path TIRT^<Name> with
+             <TreeItem><TaskDef><CycleTime>..</CycleTime><Priority>..</Priority></TaskDef></TreeItem>;
+             CycleTime is in 100 ns units, so CycleTimeUs * 10 (20000 = 2 ms; measured 2026-10-30
+             4026 VS2022, task 2.1). Priority only when given.
+          3. '<Plc> Project^<Name>': New-TcTreeItem -Path '<Plc> Project' -SubType 621. XAE links it to
+             the TIRT task of the same name by itself (LinkedTask = TIRT^<Name>) and writes <Name>.TcTTO;
+             without that TIRT task XAE refuses: "No task '<Name>' found in Realtime-Settings!" (measured).
+          4. Readback: TIRT^<Name> exists with TaskDef/CycleTime (and Priority) as requested,
+             '<Plc> Project^<Name>' exists with ItemType 621 and PlcTaskDef/LinkedTask = TIRT^<Name>.
+        Each step uses the generic tree cmdlets with their backup, modal dialog check and readback.
+        Checks before anything is created: -Name non-empty without '^'; CycleTimeUs > 0 and at most
+        214748364 (INVALID_PARAMS; XAE itself stores 0 and negative values, measured 2026-10-30);
+        no TIRT task and no object below '<Plc> Project' with that name (case-insensitive), else
+        TASK_ALREADY_EXISTS (data.existingIn).
+        A failed step: what this call created is deleted again (Remove-TcTreeItem, PLC task first,
+        -AllowNoExport because it is the object just created); data.step, data.stepError,
+        data.rollback[] (path, removed, code, message), data.rolledBack. Code TASK_CREATE_FAILED
+        (step tirt-create / cycle-time / plc-create) or TASK_VERIFY_FAILED (step verify);
+        IDE_MODAL_DIALOG / IDE_BUSY / IDE_CRASHED / PLC_LOGGED_IN keep their code.
+        DryRun (default true): nothing is created; data.plannedSteps, data.xml, data.cycleTime.
+        BUILD_REQUIRED: recorded (code-changed) as soon as the first CreateChild was called.
+        CycleCount is only visible online, so it is not checked here: after Enable-TcConfig -Force,
+        read 'TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName' to find n, then
+        'TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount' twice with Read-TcVariable; it must
+        increase. n is the task index inside the PLC (1-based), not the order below TIRT; CycleCount
+        counts the cycles of the underlying system task (InfoSys PlcTaskSystemInfo,
+        https://infosys.beckhoff.com/content/1033/tc3_plc_intro/714821259.html). data.verifyHint says
+        the same in one sentence. Whether a cycle time that is no multiple of the base time is adjusted
+        is not measured. Link a program with Add-TcTaskProgram.
+        Not verified through the registered MCP server yet (task 3.8).
+    .PARAMETER Name
+        Task name, used for the TIRT task and the PLC task object (e.g. FastTask).
+    .PARAMETER CycleTimeUs
+        Cycle time in microseconds (> 0), e.g. 1000 = 1 ms.
+    .PARAMETER Priority
+        Optional task priority (TaskDef/Priority); XAE's default is kept when omitted.
+    .PARAMETER PlcProjectPath
+        PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC
+        project (otherwise PLC_PROJECT_AMBIGUOUS).
+    .PARAMETER DryRun
+        Default true: only check and report the plan. false: create, set, read back.
+    .EXAMPLE
+        Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -Priority 10
+    .EXAMPLE
+        Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [int]$CycleTimeUs,
+
+        [Parameter()]
+        [int]$Priority,
+
+        [Parameter()]
+        [string]$PlcProjectPath,
+
+        [Parameter()]
+        [bool]$DryRun = $true
+    )
+
+    $hasPriority = $PSBoundParameters.ContainsKey('Priority')
+    $data = [PSCustomObject]@{ name = $Name; cycleTimeUs = $CycleTimeUs; priority = $(if ($hasPriority) { $Priority } else { $null }); dryRun = $DryRun }
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Contains('^')) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-Name must be a non-empty name without '^' (got '$Name'); nothing was created."
+    }
+    if ($CycleTimeUs -le 0 -or $CycleTimeUs -gt $script:TcTaskMaxCycleTimeUs) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage "-CycleTimeUs must be between 1 and $($script:TcTaskMaxCycleTimeUs) (got $CycleTimeUs); nothing was created."
+    }
+    $cycleTime = ConvertTo-TcTaskCycleTime -CycleTimeUs $CycleTimeUs
+    $data | Add-Member -NotePropertyName cycleTime -NotePropertyValue $cycleTime
+    $xml = "<TreeItem><TaskDef><CycleTime>$cycleTime</CycleTime>$(if ($hasPriority) { "<Priority>$Priority</Priority>" })</TaskDef></TreeItem>"
+    $data | Add-Member -NotePropertyName xml -NotePropertyValue $xml
+
+    try { Assert-TcConnection } catch {
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+    $sm = Get-TcSysManager
+    if ($null -eq $sm) { return New-TcNoSysManagerResult }
+
+    $change = "Add-TcPlcTask $Name"
+    $called = $false
+    $created = [System.Collections.Generic.List[string]]::new()
+    $steps = [System.Collections.Generic.List[object]]::new()
+    # Rollback: delete what this call created, PLC task first (-AllowNoExport: the object was created
+    # by this call a moment ago, there is nothing of the user's to keep). Never throws.
+    $doRollback = {
+        $rb = [System.Collections.Generic.List[object]]::new()
+        for ($i = $created.Count - 1; $i -ge 0; $i--) {
+            $p = $created[$i]
+            $rr = $null
+            try { $rr = Remove-TcTreeItem -Path $p -ConfirmName (Get-TcTreePathLeaf -Path $p) -DryRun $false -AllowNoExport }
+            catch { $rr = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'TREEITEM_DELETE_FAILED'; message = $_.Exception.Message } } }
+            $rb.Add([PSCustomObject]@{
+                    path    = $p
+                    removed = [bool]$rr.success
+                    code    = $(if ($rr.success) { $null } else { [string]$rr.error.code })
+                    message = $(if ($rr.success) { $null } else { [string]$rr.error.message })
+                })
+        }
+        , $rb.ToArray()
+    }
+    try {
+        $spec = Resolve-TcPlcProjectSpec -SysManager $sm -PlcProjectPath $PlcProjectPath
+        if ($null -ne $spec.Result) { return $spec.Result }
+        $prjPath = $spec.PlcProjectPath
+        $tirtPath = "TIRT^$Name"
+        $plcPath = "$prjPath^$Name"
+        $data | Add-Member -NotePropertyName plcProjectPath -NotePropertyValue $prjPath
+        $data | Add-Member -NotePropertyName tirtTaskPath -NotePropertyValue $tirtPath
+        $data | Add-Member -NotePropertyName plcTaskPath -NotePropertyValue $plcPath
+
+        $existingIn = @()
+        $tirt = Find-TcTreeItemNoThrow -SysManager $sm -Path 'TIRT'
+        $tirtKids = if ($null -ne $tirt) { @(Get-TcTreeItemChildNames -Item $tirt) } else { @() }
+        if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $tirtPath) -or @($tirtKids | Where-Object { $_ -ieq $Name }).Count -gt 0) { $existingIn += 'TIRT' }
+        $prj = Find-TcTreeItemNoThrow -SysManager $sm -Path $prjPath
+        $prjKids = if ($null -ne $prj) { @(Get-TcTreeItemChildNames -Item $prj) } else { @() }
+        if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $plcPath) -or @($prjKids | Where-Object { $_ -ieq $Name }).Count -gt 0) { $existingIn += 'plc' }
+        if ($existingIn.Count -gt 0) {
+            $data | Add-Member -NotePropertyName existingIn -NotePropertyValue $existingIn
+            $where = (@($existingIn | ForEach-Object { if ($_ -eq 'TIRT') { "'TIRT'" } else { "'$prjPath'" } })) -join ' and '
+            return New-TcResult -Success $false -ErrorCode 'TASK_ALREADY_EXISTS' -Data $data `
+                -ErrorMessage "A task or object named '$Name' already exists below $where; nothing was created." -Hint (Get-TcErrorHint -Code 'TASK_ALREADY_EXISTS')
+        }
+        $data | Add-Member -NotePropertyName plannedSteps -NotePropertyValue @(
+            "CreateChild TIRT '$Name' SubType 1",
+            "ConsumeXml $tirtPath $xml",
+            "CreateChild '$prjPath' '$Name' SubType 621 (LinkedTask TIRT^$Name)",
+            'readback')
+        if ($DryRun) { return New-TcResult -Success $true -Data $data }
+
+        $failure = $null
+        $record = {
+            param([string]$Step, $Res)
+            $steps.Add([PSCustomObject]@{ step = $Step; success = [bool]$Res.success; code = $(if ($Res.success) { $null } else { [string]$Res.error.code }) })
+        }
+
+        # 1. TIRT task
+        $called = $true
+        $r1 = New-TcTreeItem -Path 'TIRT' -Name $Name -SubType 1 -DryRun $false
+        & $record 'tirt-create' $r1
+        if ($r1.success) {
+            $created.Add($tirtPath)
+            if (-not [string]::Equals([string]$r1.data.createdName, $Name, [System.StringComparison]::Ordinal)) {
+                $failure = @{ Step = 'tirt-create'; Code = 'TASK_CREATE_FAILED'; Message = "XAE named the TIRT task '$($r1.data.createdName)', not '$Name'"; Inner = $r1 }
+                if ($tirtPath -ne [string]$r1.data.createdPath) { $created[$created.Count - 1] = [string]$r1.data.createdPath }
+            }
+        }
+        else {
+            if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $tirtPath)) { $created.Add($tirtPath) }
+            $failure = @{ Step = 'tirt-create'; Code = $null; Message = [string]$r1.error.message; Inner = $r1 }
+        }
+
+        # 2. CycleTime / Priority
+        if ($null -eq $failure) {
+            $r2 = Set-TcTreeItemXml -Path $tirtPath -Xml $xml -DryRun $false
+            & $record 'cycle-time' $r2
+            if (-not $r2.success) { $failure = @{ Step = 'cycle-time'; Code = $null; Message = [string]$r2.error.message; Inner = $r2 } }
+        }
+
+        # 3. PLC task object (XAE links it to TIRT^<Name>)
+        if ($null -eq $failure) {
+            $r3 = New-TcTreeItem -Path $prjPath -Name $Name -SubType $script:TcPlcTaskItemType -DryRun $false
+            & $record 'plc-create' $r3
+            if ($r3.success) { $created.Add($plcPath) }
+            else {
+                if ($null -ne (Find-TcTreeItemNoThrow -SysManager $sm -Path $plcPath)) { $created.Add($plcPath) }
+                $failure = @{ Step = 'plc-create'; Code = $null; Message = [string]$r3.error.message; Inner = $r3 }
+            }
+        }
+
+        # 4. readback
+        if ($null -eq $failure) {
+            $mism = [System.Collections.Generic.List[object]]::new()
+            $tItem = Find-TcTreeItemNoThrow -SysManager $sm -Path $tirtPath
+            if ($null -eq $tItem) { $mism.Add([PSCustomObject]@{ field = 'TIRT task'; expected = $tirtPath; actual = '(not found)' }) }
+            else {
+                $ct = Get-TcTreeItemXmlValue -Item $tItem -XPath 'TreeItem/TaskDef/CycleTime' -Path $tirtPath
+                $data | Add-Member -NotePropertyName readCycleTime -NotePropertyValue $ct
+                if ([string]$ct -ne [string]$cycleTime) { $mism.Add([PSCustomObject]@{ field = 'TaskDef/CycleTime'; expected = [string]$cycleTime; actual = [string]$ct }) }
+                if ($hasPriority) {
+                    $pr = Get-TcTreeItemXmlValue -Item $tItem -XPath 'TreeItem/TaskDef/Priority' -Path $tirtPath
+                    $data | Add-Member -NotePropertyName readPriority -NotePropertyValue $pr
+                    if ([string]$pr -ne [string]$Priority) { $mism.Add([PSCustomObject]@{ field = 'TaskDef/Priority'; expected = [string]$Priority; actual = [string]$pr }) }
+                }
+            }
+            $pItem = Find-TcTreeItemNoThrow -SysManager $sm -Path $plcPath
+            if ($null -eq $pItem) { $mism.Add([PSCustomObject]@{ field = 'PLC task'; expected = $plcPath; actual = '(not found)' }) }
+            else {
+                $pt = try { [int]$pItem.ItemType } catch { -1 }
+                if ($pt -ne $script:TcPlcTaskItemType) { $mism.Add([PSCustomObject]@{ field = 'PLC task ItemType'; expected = '621'; actual = [string]$pt }) }
+                $lt = Get-TcTreeItemXmlValue -Item $pItem -XPath 'TreeItem/PlcTaskDef/LinkedTask' -Path $plcPath
+                if ([string]::IsNullOrEmpty($lt)) { $lt = try { [string]$pItem.LinkedTask } catch { $null } }
+                $data | Add-Member -NotePropertyName linkedTask -NotePropertyValue $lt
+                if (-not [string]::Equals([string]$lt, $tirtPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $mism.Add([PSCustomObject]@{ field = 'PlcTaskDef/LinkedTask'; expected = $tirtPath; actual = [string]$lt })
+                }
+            }
+            & $record 'verify' ([PSCustomObject]@{ success = ($mism.Count -eq 0); error = [PSCustomObject]@{ code = 'TASK_VERIFY_FAILED' } })
+            if ($mism.Count -gt 0) {
+                $data | Add-Member -NotePropertyName mismatches -NotePropertyValue $mism.ToArray()
+                $failure = @{ Step = 'verify'; Code = 'TASK_VERIFY_FAILED'; Inner = $null
+                    Message = 'the readback differs: ' + (($mism | ForEach-Object { "$($_.field) expected '$($_.expected)' actual '$($_.actual)'" }) -join '; ') }
+            }
+        }
+        $data | Add-Member -NotePropertyName steps -NotePropertyValue $steps.ToArray()
+
+        if ($null -eq $failure) {
+            $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
+            $data | Add-Member -NotePropertyName verifyHint -NotePropertyValue "After Enable-TcConfig -Force, find n with Read-TcVariable -Path 'TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName' (n = task index inside the PLC, not the TIRT order) and read 'TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount' twice: it must increase."
+            return Register-TcCodeChange -Result (New-TcResult -Success $true -Data $data) -Change $change
+        }
+
+        $rollback = & $doRollback
+        $rolledBack = (@($rollback | Where-Object { -not $_.removed }).Count -eq 0)
+        $data | Add-Member -NotePropertyName verified -NotePropertyValue $false -Force
+        $data | Add-Member -NotePropertyName step -NotePropertyValue $failure.Step
+        $stepError = $null
+        if ($null -ne $failure.Inner -and -not $failure.Inner.success) { $stepError = $failure.Inner.error }
+        $data | Add-Member -NotePropertyName stepError -NotePropertyValue $stepError
+        $data | Add-Member -NotePropertyName rollback -NotePropertyValue $rollback
+        $data | Add-Member -NotePropertyName rolledBack -NotePropertyValue $rolledBack
+        $code = $failure.Code
+        if ($null -eq $code) {
+            $innerCode = if ($null -ne $stepError) { [string]$stepError.code } else { '' }
+            $code = if ($script:TcTreeItemPassThroughCodes -contains $innerCode) { $innerCode } else { 'TASK_CREATE_FAILED' }
+        }
+        $rbText = if ($rollback.Count -eq 0) { 'nothing had been created' }
+                  elseif ($rolledBack) { 'rolled back: removed ' + (($rollback | ForEach-Object { "'$($_.path)'" }) -join ', ') }
+                  else { 'ROLLBACK INCOMPLETE, still present: ' + ((@($rollback | Where-Object { -not $_.removed }) | ForEach-Object { "'$($_.path)' ($($_.code))" }) -join ', ') }
+        $res = New-TcResult -Success $false -ErrorCode $code -Data $data `
+            -ErrorMessage "Add-TcPlcTask stopped at step $($failure.Step): $($failure.Message); $rbText." -Hint (Get-TcErrorHint -Code $code)
+        return Register-TcCodeChange -Result $res -Change "$change [failed at $($failure.Step)]"
+    }
+    catch {
+        $res = New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TASK_CREATE_FAILED' -Data $data -Operation 'Add-TcPlcTask'
+        if ($created.Count -gt 0) {
+            $rb = & $doRollback
+            $res.data | Add-Member -NotePropertyName rollback -NotePropertyValue $rb -Force
+            $res.data | Add-Member -NotePropertyName rolledBack -NotePropertyValue (@($rb | Where-Object { -not $_.removed }).Count -eq 0) -Force
+        }
+        if ($called) { $res = Register-TcCodeChange -Result $res -Change "$change [failed]" }
+        return $res
+    }
+}

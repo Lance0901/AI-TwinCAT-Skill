@@ -139,7 +139,9 @@ $destructiveTools = @(
     'CreateChild', 'ConsumeXml', 'DeleteChild', 'ImportChild',
     # Library Manager (task 3.1): remove / freeze change the project, install / uninstall the
     # library repository of the whole machine; dry-run by default.
-    'RemoveReference', 'InstallLibrary', 'UninstallLibrary', 'FreezePlaceholder'
+    'RemoveReference', 'InstallLibrary', 'UninstallLibrary', 'FreezePlaceholder',
+    # PLC task program call removal (task 3.5); dry-run by default.
+    'UnlinkProgramFromTask'
 )
 
 function Get-ToolAnnotations {

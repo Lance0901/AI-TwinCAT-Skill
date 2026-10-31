@@ -601,12 +601,57 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### CHECK_FAILED
 
 - **現象**:`CheckAllObjects()` 回 `False`(`data.passed = false`;語法錯是回 False,不是例外，實測 2026-10-31 4026 VS2022),`data.errorItems` 是 Error List 上有 file 的錯誤列(`codeErrors` / `libraryErrorItems` 分開列),message 列前三筆。`data.passed = null` 加 `data.callError`:CheckAllObjects 丟了例外(手冊 §5.28.2 列 `E_FAIL` `Error_CheckAllObjectsFailed`,probe 沒遇到)或沒回 bool。Error List 讀不到時 `data.errorListError` 有值,message 會寫。
-- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `Test-TcPlcProject`;`errorItems` 是空的就用 `Get-TcBuildErrors` 讀 Error List。file 是 `<task>.TcTTO`、line 0 的列(`C0046` / `C0035` / `C0080` / `C0036`)代表 task 呼叫了不存在或不是 PROGRAM 的物件(實測 2026-10-31,`phase2-probe.md` 3.5),要把那個 program 呼叫從 task 底下拿掉。
+- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `Test-TcPlcProject`;`errorItems` 是空的就用 `Get-TcBuildErrors` 讀 Error List。file 是 `<task>.TcTTO`、line 0 的列(`C0046` / `C0035` / `C0080` / `C0036`)代表 task 呼叫了不存在或不是 PROGRAM 的物件(實測 2026-10-31,`phase2-probe.md` 3.5),用 `Remove-TcTaskProgram -ProgramName <名稱> -PlcTask <task> -DryRun $false` 拿掉。
 
 ### CHECK_UNAVAILABLE
 
 - **現象**:`<Plc> Project` 節點沒有 `CheckAllObjects` 方法(`ITcPlcIECProject2` 不可用;PowerShell "does not contain a method named 'CheckAllObjects'")。4024 是否支援還沒實測(task 3.8)。
 - **下一步**:改用 `Build-TcProject`(只編譯有被引用的物件)。
+
+### PLC task 與 program 連結(task 3.5):做法與共同規則
+
+- **做法**:`Add-TcPlcTask`(MCP `AddPlcTask`)、`Add-TcTaskProgram`(`LinkProgramToTask`)、`Remove-TcTaskProgram`(`UnlinkProgramFromTask`)都由通用 tree cmdlet 組成(`New-TcTreeItem`、`Set-TcTreeItemXml`、`Remove-TcTreeItem`),沿用它們的備份、modal dialog 檢查與讀回。三個都預設 `DryRun=$true`。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.5);registered tcauto 還沒驗證(task 3.8),4024 沒測過。
+- **新增 PLC task 要兩個物件**:先 `TIRT` 底下 CreateChild SubType 1(沒有 process image,TE1000 v1.7.0 §6.3.1 p.196),用 ConsumeXml 設 `TaskDef/CycleTime`(單位 100 ns,所以是 `CycleTimeUs * 10`;實測 2026-10-30 task 2.1)和 `Priority`,再在 `<Plc> Project` 底下用**同名** CreateChild 621。XAE 會自己把 `LinkedTask` 接到 `TIRT^<Name>`,並寫出 `<Name>.TcTTO`;TIRT 沒有同名 task 時 XAE 回 E_FAIL "No task '<Name>' found in Realtime-Settings!"(實測)。讀回檢查 TIRT task 的 CycleTime / Priority、PLC task 的 ItemType 621 與 `PlcTaskDef/LinkedTask`。
+- **不留半套**:任何一步失敗(或讀回不符)就把這次建出來的物件刪掉(先 PLC task 再 TIRT task,`Remove-TcTreeItem -AllowNoExport`:是剛建的物件),結果寫在 `data.rollback[]` / `data.rolledBack`。
+- **650 XAE 完全不驗證**:在 PLC task 底下 CreateChild 650 時，同名第二次、大小寫不同、不存在的名稱、FB、GVL XAE 全部照收，當下就寫進 `<task>.TcTTO`,要到 CheckAllObjects / Build 才報 `C0046` / `C0035` / `C0080` / `C0036`(實測 2026-10-31)。所以 `Add-TcTaskProgram` 自己先檢查：用 `Resolve-TcPouPath` 找到物件、`Get-TcPlcObjectKind` 確認 ItemType 602(PROGRAM)、名稱大小寫完全相同、task 底下還沒有同名的呼叫。
+- **備份**:`<Plc> Project^<task>`(621)的磁碟檔是 `<task>.TcTTO`,寫入前複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles` / `data.taskBackupFiles`)。`Remove-TcTaskProgram` 另外用 ExportChild 把那個 650 匯出成 `.zip`(`data.exportPath`;650 節點能不能匯出還沒實測):匯出失敗但 `.TcTTO` 有備份時照樣刪(`data.warnings` 會寫),兩者都沒有就不刪(`TREEITEM_BACKUP_FAILED`)。
+- **BUILD_REQUIRED**:寫入 API 一呼叫就記(code-changed),成功或失敗都記;呼叫之前就擋下的不記。
+- **CycleCount 要在線上驗**:不在 cmdlet 裡做。`Enable-TcConfig -Force` 之後，用 `Read-TcVariable` 讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].TaskName` 找到 n,再讀兩次 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount`,數字要增加。n 是 PLC 自己的 task index(從 1 開始),不是 TIRT 底下的順序(InfoSys PlcTaskSystemInfo:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/714821259.html>)。`Add-TcPlcTask` 成功時 `data.verifyHint` 寫同一件事。陣列順序是不是等於 PLC project 裡 task 物件的順序還沒實測。
+
+### TASK_ALREADY_EXISTS
+
+- **現象**:`Add-TcPlcTask` 的 `-Name` 已經是 `TIRT` 底下的 task 或 `<Plc> Project` 底下的物件(不分大小寫;`data.existingIn` = `TIRT` / `plc`),什麼都沒建。
+- **下一步**:換一個 `-Name` 重跑;要用既有的 task 就直接 `Add-TcTaskProgram -PlcTask <Name>`。
+
+### TASK_NOT_FOUND
+
+- **現象**:`Add-TcTaskProgram` / `Remove-TcTaskProgram` 的 `-PlcTask` 不在 `<Plc> Project` 底下(`data.reason = not-found`),或那個節點不是 PLC task(ItemType 不是 621,`not-a-task`)。`data.plcTasks` 列出該 PLC project 的 PLC task。什麼都沒改。
+- **下一步**:用 `data.plcTasks` 裡的名稱重跑;要新的 task 先 `Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false`。
+
+### TASK_PROGRAM_INVALID
+
+- **現象**:`Add-TcTaskProgram` 在呼叫 XAE 之前擋下，什麼都沒連。`data.reason`:`not-found`(PLC project 裡沒有這個名稱的物件;只有 task 底下同名的 650 不算)、`not-a-program`(是 FB / FUNCTION / GVL 等，`data.objectKind`、`data.itemType`、`data.pouType`)、`case-mismatch`(有這個 PROGRAM,但大小寫不同，`data.actualName`)。XAE 自己不檢查，這些都會被寫進 `.TcTTO`,到 build 才報錯(見上面「做法」)。
+- **下一步**:`not-found` 先 `Add-TcPou -Name <Name> -Type Program`;`not-a-program` 改給 PROGRAM;`case-mismatch` 改用 `-ProgramName <data.actualName>`。再重跑 `Add-TcTaskProgram`。
+
+### TASK_PROGRAM_ALREADY_LINKED
+
+- **現象**:task 底下已經有這個名稱的呼叫(不分大小寫，`data.existingLink`),什麼都沒連。XAE 會照收第二個，program 就每個 cycle 被呼叫兩次(實測 2026-10-31:沒有編譯錯誤)。
+- **下一步**:不用再連;要換 task 先 `Remove-TcTaskProgram -ProgramName <Name> -PlcTask <舊 task> -DryRun $false`,再 `Add-TcTaskProgram -PlcTask <新 task>`。
+
+### TASK_PROGRAM_NOT_LINKED
+
+- **現象**:`Remove-TcTaskProgram` 在 task 底下找不到名稱完全相同(大小寫也要相同)的呼叫;`data.linkedPrograms` 列出現有的，`data.caseMatches` 列出只差大小寫的。什麼都沒刪。
+- **下一步**:用 `data.linkedPrograms` 裡的名稱當 `-ProgramName` 重跑。
+
+### TASK_CREATE_FAILED
+
+- **現象**:`Add-TcPlcTask` 在 `data.step` 失敗:`tirt-create`(TIRT 底下 CreateChild)、`cycle-time`(ConsumeXml 或它的讀回)、`plc-create`(`<Plc> Project` 底下 CreateChild 621)。`data.stepError` 是那一步的原始錯誤。已建的物件已回滾(`data.rollback[]`;`data.rolledBack = false` 表示有東西沒刪掉，message 會寫 `ROLLBACK INCOMPLETE`)。IDE_* / PLC_LOGGED_IN 保留原碼，不用這個碼。
+- **下一步**:`rolledBack = true`:排除 `stepError` 的原因後重跑 `Add-TcPlcTask`。`false`:先對 `data.rollback` 裡 `removed = false` 的 path 執行 `Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport`,再重跑。
+
+### TASK_VERIFY_FAILED
+
+- **現象**:`Add-TcPlcTask` 每一步都返回了，但讀回不符(`data.mismatches`:`TaskDef/CycleTime`、`TaskDef/Priority`、`PLC task ItemType`、`PlcTaskDef/LinkedTask`,或物件找不到)。已建的物件已回滾，同 `TASK_CREATE_FAILED`。
+- **下一步**:用 `Get-TcTreeItemXml` 看 `data.tirtTaskPath` / `data.plcTaskPath` 的實際值;`rolledBack = false` 時先用 `Remove-TcTreeItem` 刪掉留下的 path,再重跑 `Add-TcPlcTask`。
 
 ### PROJECT_SAVE_FAILED
 

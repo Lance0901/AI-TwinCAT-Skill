@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T10:34:23Z",
+    "generatedAt":  "2026-10-31T10:53:05Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -234,6 +234,47 @@
                                                          },
                                           "required":  [
                                                            "Placeholder"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPlcTask",
+                      "cmdlet":  "Add-TcPlcTask",
+                      "description":  "Adds a PLC task: a real-time task TIRT^<Name> with CycleTimeUs / Priority plus the PLC task object '<Plc> Project^<Name>' linked to it. Dry-run by default; rolls back what it created when a step fails.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Task name, used for the TIRT task and the PLC task object (e.g. FastTask)."
+                                                                      },
+                                                             "CycleTimeUs":  {
+                                                                                 "type":  "integer",
+                                                                                 "description":  "Cycle time in microseconds (> 0), e.g. 1000 = 1 ms."
+                                                                             },
+                                                             "Priority":  {
+                                                                              "type":  "integer",
+                                                                              "description":  "Optional task priority (TaskDef/Priority); XAE's default is kept when omitted."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create, set, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "CycleTimeUs"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1106,6 +1147,43 @@
                                       }
                   },
                   {
+                      "name":  "LinkProgramToTask",
+                      "cmdlet":  "Add-TcTaskProgram",
+                      "description":  "Links a PROGRAM to a PLC task (CreateChild 650 below '<Plc> Project^<PlcTask>'). Checks first that the name is an existing PROGRAM, exactly; dry-run by default; backs up the task's .TcTTO and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ProgramName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the PROGRAM, exactly as declared (e.g. MAIN)."
+                                                                             },
+                                                             "PlcTask":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the PLC task below '<Plc> Project' (default PlcTask).",
+                                                                             "default":  "PlcTask"
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: back up, create, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "ProgramName"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "LookupTreeItem",
                       "cmdlet":  "Get-TcTreeItem",
                       "description":  "Generic tree tool, read-only: look up ONE tree item by its full path (ITcSysManager.LookupTreeItem, TE1000 v1.7.0 5.1.1.3) and return name, itemType, subType, subTypeName, type, childCount and children[] (name, path, itemType, subType, type). Path is the full tree path separated by ^, e.g. TIRT^PlcTask, TIPC^MyPlc^MyPlc Project^POUs, TIID^Device 1 (EtherCAT); wildcards * ? return TREEITEM_PATH_INVALID. A missing path returns TREEITEM_NOT_FOUND whose error.hint and data.nearestPath / nearestChildren name the nearest existing parent and its children. Prefer GetProjectTree / GetIoTree / GetPouCode when they cover the node.",
@@ -1714,6 +1792,43 @@
                                                            "LibraryName",
                                                            "Version",
                                                            "Distributor"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "UnlinkProgramFromTask",
+                      "cmdlet":  "Remove-TcTaskProgram",
+                      "description":  "Removes a program call from a PLC task (DeleteChild of the 650 child of '<Plc> Project^<PlcTask>'). Dry-run by default; backs up the task's .TcTTO and the call (ExportChild .zip) first and reads back.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ProgramName":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the program call to remove, exactly as listed below the task."
+                                                                             },
+                                                             "PlcTask":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Name of the PLC task below '<Plc> Project' (default PlcTask).",
+                                                                             "default":  "PlcTask"
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report what would be removed. false: back up, remove, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "ProgramName"
                                                        ],
                                           "additionalProperties":  false
                                       }

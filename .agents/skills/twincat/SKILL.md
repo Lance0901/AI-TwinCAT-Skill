@@ -71,6 +71,9 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Install-TcLibrary` | `-LibraryPath <file> [-Repository System] [-DryRun $true]` | Install into the machine-wide repository; dry-run by default; `LIBRARY_ALREADY_INSTALLED`; ScanLibraries readback |
 | `Uninstall-TcLibrary` | `-LibraryName <n> -Version <v> -Distributor <d> [-Repository System] [-DryRun $true]` | Uninstall one exact version (no wildcards); dry-run by default; `LIBRARY_NOT_INSTALLED`; backs up the repository version folder first (`LIBRARY_BACKUP_FAILED`); ScanLibraries readback |
 | `Lock-TcLibraryPlaceholder` | `-Placeholder <n> \| -All [-DryRun $true]` | Freeze a placeholder (or all) to its current version; dry-run by default; .plcproj backup; verified from `<PlaceholderResolution>` in the .plcproj |
+| `Add-TcPlcTask` | `-Name <n> -CycleTimeUs <us> [-Priority <p>] [-PlcProjectPath <plc>] [-DryRun $true]` | Add a PLC task: TIRT task (CycleTime = us * 10, 100 ns units) + same-name `<Plc> Project` task (621, LinkedTask set by XAE); dry-run by default; readback; rollback on failure (`data.rollback`); `data.verifyHint` = how to check `_TaskInfo[n].CycleCount` after activation |
+| `Add-TcTaskProgram` | `-ProgramName <p> [-PlcTask PlcTask] [-PlcProjectPath <plc>] [-DryRun $true]` | Link a PROGRAM to a PLC task (CreateChild 650); XAE accepts any name, so the module refuses non-programs / missing / case-mismatch (`TASK_PROGRAM_INVALID`), duplicates (`TASK_PROGRAM_ALREADY_LINKED`), missing task (`TASK_NOT_FOUND`); dry-run by default |
+| `Remove-TcTaskProgram` | `-ProgramName <p> [-PlcTask PlcTask] [-PlcProjectPath <plc>] [-DryRun $true]` | Remove a program call from a PLC task; dry-run by default; .TcTTO backup + ExportChild .zip first; exact name (`TASK_PROGRAM_NOT_LINKED`) |
 
 ### PLC Code
 | Command | Parameters | Description |

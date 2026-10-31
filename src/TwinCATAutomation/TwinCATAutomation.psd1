@@ -28,6 +28,10 @@
         'Install-TcLibrary',
         'Uninstall-TcLibrary',
         'Lock-TcLibraryPlaceholder',
+        # PLC tasks and program calls
+        'Add-TcPlcTask',
+        'Add-TcTaskProgram',
+        'Remove-TcTaskProgram',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',
