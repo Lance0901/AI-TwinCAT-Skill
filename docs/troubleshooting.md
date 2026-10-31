@@ -571,7 +571,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### POU_AMBIGUOUS
 
-- **現象**(task 3.6):`Get-TcPouCode` / `Write-TcPouCode` / `Add-TcPouMember` 只給名稱，走 `<Plc> Project` 子樹時有多個物件同名(兩個 FB 都有 `M_Run`、兩個 property 都有 `Get`),回 `POU_AMBIGUOUS`,`data.candidates` 列出每個的完整路徑，什麼都沒讀 / 沒改。以前靜默回第一個(實測 2026-10-31 4026 VS2022 自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.6)。同名的 task reference(ItemType 650,`PlcTask^<POU>`)或資料夾不算第二個候選。`<Plc> Project^POUs^<name>`、`<Plc> Project^<name>` 直接命中時不走樹，不會回此碼。
+- **現象**(task 3.6):`Get-TcPouCode` / `Write-TcPouCode` / `Add-TcPouMember` 只給名稱，走 `<Plc> Project` 子樹時有多個物件同名(兩個 FB 都有 `M_Run`、兩個 property 都有 `Get`),回 `POU_AMBIGUOUS`,`data.candidates` 列出每個的完整路徑，什麼都沒讀 / 沒改。以前靜默回第一個(實測 2026-10-31 4026 VS2022 自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.6)。同名的 task reference(ItemType 650,`PlcTask^<POU>`)或資料夾不算第二個候選;ItemType 讀不到的命中仍算候選。名稱有 `.` 時，走樹之前先直接試 `<Plc> Project^POUs^<前半>^<後半>` 和 `<Plc> Project^<前半>^<後半>`。已知限制：命中的項目不再往下找，所以資料夾和它底下的物件同名時只會回傳資料夾。`<Plc> Project^POUs^<name>`、`<Plc> Project^<name>` 直接命中時不走樹，不會回此碼。
 - **下一步**:從 `data.candidates` 選一個當 `-PouPath`(`Add-TcPouMember` 是 `-ParentPath`),或寫 `FB_X.M_Run`(前半段本身同名多個時，只有一個候選底下有這個子物件就用它，否則仍回此碼)。
 
 ### POU_MEMBER_INVALID / POU_MEMBER_EXISTS / POU_MEMBER_CREATE_FAILED
@@ -586,15 +586,18 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**(task 3.6):模組刻意不碰的物件，什麼都沒建 / 讀 / 寫。`data.reason`:
   - `itf-property-accessor`:interface property 的 Get / Set(ItemType 654 / 655)。`Add-TcPouMember` 不建立,`Get-TcPouCode` / `Write-TcPouCode` 只讀 ItemType 就回此碼。原因：在 ITF property 底下 `CreateChild('Get', 654, '', $null)` 成功後，讀它的 `DeclarationText` 讓 VS2022 crash 兩次(卡約 48 s 後 RPC `0x800706BA`;事件檢視器 Application 1000:`devenv.exe 17.14.36811.4`,faulting module `KERNELBASE.dll 10.0.26100.9711`,exception code `0xe06d7363`,offset `0x00000000000c408a`)。`ChildCount`、`LookupTreeItem`、`ItemType`、`ProduceXml` 正常。實測 2026-10-31 4026 VS2022 自建 client,細節見 `openspec/changes/complete-automation-interface/verification/phase2-probe.md`。655 沒測到;64-bit XAE Shell、4024 是否一樣未知。
-  - `method-no-return-type`:沒有 `-ReturnType` 的 method 只實測過 vInfo `$null`(Access PUBLIC、Language ST),`{lang, '', access}` 沒測。
-- **下一步**:interface property 的 accessor 改在實作該 interface 的 FB 裡建(`Add-TcPouMember -ParentPath <FB path>^<property> -Kind Get`)並讀寫 `<FB path>^<property>^Get`;method 給 `-ReturnType`,或拿掉 `-Access` / `-Language`。
+  - `method-no-return-type`:沒有 `-ReturnType` 的 method 只實測過 vInfo `$null`(Access PUBLIC、Language ST),`{lang, '', access}` 沒測。這時 vInfo 不帶 language,讀回的語言只回報在 `data.language`,不比對。
+  - `accessor-not-measured`:Get / Set 只實測過 vInfo `{'1', 'PUBLIC'}`(實測 2026-10-31 4026 VS2022 自建 client),其他 access 或 language 在 CreateChild 之前就擋。
+  - 走樹解析名稱時，命中的項目先讀 ItemType,是 654 / 655 就用「父路徑 + `^Name`」當路徑，不讀它的 `PathName`(`Resolve-TcPouPath`)。
+- **下一步**:interface property 的 accessor 改在實作該 interface 的 FB 裡建(`Add-TcPouMember -ParentPath <FB path>^<property> -Kind Get`)並讀寫 `<FB path>^<property>^Get`;method 給 `-ReturnType`,或拿掉 `-Access` / `-Language`;accessor 拿掉 `-Access` / `-Language`,之後需要再用 `Write-TcPouCode` 改。
 
 ### POU_WRITE_FAILED
 
 - **現象**:`Write-TcPouCode` 沒寫成。`data.reason`:
   - `empty-not-supported`:`-Declaration ''`(或只有空白)。清空 declaration 沒有實測過，什麼都不寫。以前 `-Implementation ''` / `-Declaration ''` 都回 success、`updated=[]`,實際什麼都沒寫(實測 2026-10-31 4026 VS2022 自建 client)。
   - `empty-not-applied`:`-Implementation ''` 會真的寫入 `ImplementationText = ''` 並讀回(實測 2026-10-31 4026 VS2022 自建 client:COM `ImplementationText = ''` 讀回空字串),讀回不是空的才回此碼(記 `BUILD_REQUIRED`,因為已經呼叫過 setter)。成功時 `data.cleared = true`。
-  - 沒有 reason:setter 的 COM 例外(檔案唯讀、物件保護、非 ST 物件寫 `ImplementationText` 等，TE1000 §5.29)。XAE 自己回錯誤時什麼都沒寫，不記 `BUILD_REQUIRED`;只有前一段已經寫入(`[declaration+write failed]`)或錯誤是 IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT(呼叫可能已在 XAE 內執行)才記(task 3.6;以前一律記)。
+  - `itemtype-unreadable`:讀不到目標的 ItemType,無法排除它是 interface property 的 accessor(654 / 655),所以什麼都不寫(fail-closed)。`Get-TcPouCode` 同樣情況回 `POU_READ_FAILED`、同一個 reason。
+  - 沒有 reason:setter 的 COM 例外(檔案唯讀、物件保護、非 ST 物件寫 `ImplementationText` 等，TE1000 §5.29)。setter 已經呼叫過，edit buffer 可能已改，所以照 #65 保守記 `BUILD_REQUIRED`(`[write failed]`,前一段已寫入時 `[declaration+write failed]`)。在呼叫 setter 之前就擋下的(`INVALID_PARAMS`、空的 `-Declaration`、`POU_AMBIGUOUS` 等)不記。
 - **下一步**:給完整的 declaration,或不給 `-Declaration`;`Get-TcPouCode -PouPath <path>` 確認內容;COM 例外先 `Get-TcIdeModalDialog` 看 XAE 有沒有 dialog 再重試。action 沒有 declaration(給 `-Declaration` 回 `INVALID_PARAMS`)。
 
 ### PLC_LOGGED_IN

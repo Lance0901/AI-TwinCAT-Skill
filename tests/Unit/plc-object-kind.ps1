@@ -190,8 +190,7 @@ $null = New-MockItem "$P^POUs^FB_RO" 604 'FUNCTION_BLOCK FB_RO' -Language 1
 $global:MockTree["$P^POUs^FB_RO"] | Add-Member -MemberType ScriptProperty -Name ImplementationText -Value { '' } -SecondValue { param($v) throw 'write rejected (mock)' }
 Reset-BuildRequired
 $r = Write-TcPouCode -PouName FB_RO -PouPath "$P^POUs^FB_RO" -Implementation 'x := 1;'
-# task 3.6: a setter that XAE refused itself wrote nothing -> nothing recorded (was recorded before)
-Check '3.6 setter throws (XAE error, nothing written) -> failure, nothing recorded' ((-not $r.success) -and $r.error.code -eq 'POU_WRITE_FAILED' -and ($null -eq $r.data -or $null -eq $r.data.PSObject.Properties['buildRequired']) -and $null -eq (Get-CodeChanged)) ($r | ConvertTo-Json -Compress)
+Check '#65 setter throws -> failure, still recorded (conservative)' ((-not $r.success) -and $r.data.buildRequired -eq 'PLC code changed by Write-TcPouCode FB_RO [write failed]' -and (Get-CodeChanged) -like '*FB_RO*') ($r | ConvertTo-Json -Compress)
 $r = Write-TcPouCode -PouName FB_RO -PouPath "$P^POUs^FB_RO" -Declaration 'FUNCTION_BLOCK FB_RO' -Implementation 'x := 2;'
 Check '#65 declaration written, implementation setter throws -> [declaration+write failed]' ((-not $r.success) -and $r.data.buildRequired -eq 'PLC code changed by Write-TcPouCode FB_RO [declaration+write failed]') ($r | ConvertTo-Json -Compress)
 Reset-BuildRequired

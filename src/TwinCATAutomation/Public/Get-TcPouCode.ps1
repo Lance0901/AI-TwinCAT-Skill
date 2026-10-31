@@ -15,7 +15,8 @@ function Get-TcPouCode {
         data.candidates, never the first hit.
     .NOTES
         The Get / Set accessor of an INTERFACE property (ItemType 654 / 655) is refused with
-        POU_MEMBER_UNSUPPORTED after reading only its ItemType: reading its DeclarationText
+        POU_MEMBER_UNSUPPORTED after reading only its ItemType; an ItemType that cannot be read
+        returns POU_READ_FAILED (data.reason itemtype-unreadable, fail-closed). Reading its DeclarationText
         crashed VS2022 (measured 2026-10-31, 4026 VS2022, self-built client; see
         openspec/changes/complete-automation-interface/verification/phase2-probe.md).
         Members (method, property, accessor, action, interface method / property) are read
@@ -69,6 +70,13 @@ function Get-TcPouCode {
 
         # ItemType alone first: nothing else is read from an ITF property accessor (654 / 655)
         $itemTypeNo = Get-TcTreeItemTypeNumber -Item $pouItem
+        # fail-closed: an unreadable ItemType may be a 654 / 655, so nothing else is read
+        if ($itemTypeNo -eq -1) {
+            return New-TcResult -Success $false -ErrorCode 'POU_READ_FAILED' `
+                -ErrorMessage "ItemType of '$($r.Path)' cannot be read, so its code is not read (it could be an interface property accessor, see POU_MEMBER_UNSUPPORTED). Nothing was read." `
+                -Hint (Get-TcErrorHint -Code 'POU_READ_FAILED') `
+                -Data ([PSCustomObject]@{ pou = $PouName; pouPath = $r.Path; reason = 'itemtype-unreadable' })
+        }
         if ($script:TcItfAccessorItemTypes -contains $itemTypeNo) {
             return New-TcItfAccessorUnsupportedResult -Path $r.Path -ItemType $itemTypeNo -Operation 'read' -Pou $PouName
         }

@@ -28,13 +28,13 @@ function Write-TcPouCode {
         BUILD_REQUIRED (#65): once a text was written the solution is recorded as 'code-changed'
         (Register-TcCodeChange): Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
         Build-TcProject. data.buildRequired is the recorded reason, data.stateWarning is set
-        when the state file could not be written. A write that fails is only recorded when an
-        earlier part was written ([declaration+write failed]) or when the setter failed with
-        IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT (the call may have run inside
-        XAE); a setter that XAE refused with an error of its own wrote nothing and records
-        nothing (task 3.6; the probe saw an action declaration write fail and still record it).
+        when the state file could not be written. Conservative: a write that fails after a
+        setter was called is recorded too ([write failed], [declaration+write failed]), the
+        edit buffer may have changed. Requests refused before any setter (INVALID_PARAMS, empty
+        -Declaration, POU_AMBIGUOUS ...) record nothing.
         The Get / Set accessor of an INTERFACE property (ItemType 654 / 655) is refused with
-        POU_MEMBER_UNSUPPORTED before anything else is read (see Get-TcPouCode).
+        POU_MEMBER_UNSUPPORTED before anything else is read (see Get-TcPouCode); an ItemType that
+        cannot be read returns POU_WRITE_FAILED (data.reason itemtype-unreadable, fail-closed).
     #>
     [CmdletBinding()]
     param(
@@ -84,6 +84,13 @@ function Write-TcPouCode {
         $pouItem = $r.Item
         # ItemType alone first: nothing else is read from an ITF property accessor (654 / 655)
         $itemTypeNo = Get-TcTreeItemTypeNumber -Item $pouItem
+        # fail-closed: an unreadable ItemType may be a 654 / 655, so nothing else is touched
+        if ($itemTypeNo -eq -1) {
+            return New-TcResult -Success $false -ErrorCode 'POU_WRITE_FAILED' `
+                -ErrorMessage "ItemType of '$($r.Path)' cannot be read, so nothing is written (it could be an interface property accessor, see POU_MEMBER_UNSUPPORTED)." `
+                -Hint (Get-TcErrorHint -Code 'POU_WRITE_FAILED') `
+                -Data ([PSCustomObject]@{ pou = $PouName; pouPath = $r.Path; reason = 'itemtype-unreadable'; updated = @() })
+        }
         if ($script:TcItfAccessorItemTypes -contains $itemTypeNo) {
             return New-TcItfAccessorUnsupportedResult -Path $r.Path -ItemType $itemTypeNo -Operation 'written' -Pou $PouName
         }
@@ -167,15 +174,10 @@ function Write-TcPouCode {
     }
     catch {
         if ($writeStarted) {
+            # conservative (#65): a setter that threw may still have changed the edit buffer
             $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'POU_WRITE_FAILED' -MessagePrefix 'Failed to write POU code'
-            # only a part that was written, or an IDE_* failure (the setter may have run inside XAE),
-            # changed the code; an error XAE returned from the setter itself wrote nothing (task 3.6)
-            $ideFailure = $_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT'
-            if ($updated.Count -gt 0 -or $ideFailure) {
-                # the parts that were written, then 'write failed' ([declaration+write failed])
-                return Register-TcCodeChange -Result $res -Change "$changeName [$(@($updated + 'write failed') -join '+')]"
-            }
-            return $res
+            # the parts that were written, then 'write failed' ([declaration+write failed])
+            return Register-TcCodeChange -Result $res -Change "$changeName [$(@($updated + 'write failed') -join '+')]"
         }
         if ($_.Exception.Message -like 'PLC_PROJECT_NOT_FOUND*') {
             return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'PLC_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'PLC_PROJECT_NOT_FOUND')

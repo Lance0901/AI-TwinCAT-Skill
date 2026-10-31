@@ -9,12 +9,19 @@
              (TIPC^..^POUs^FB_X.M_Run -> ...^POUs^FB_X^M_Run)                ResolvedBy = 'explicit-dot'
           2. "<Plc Project>^POUs^<Name>"                                        ResolvedBy = 'pous-folder'
           3. "<Plc Project>^<Name>"                                             ResolvedBy = 'project-root'
+             -Name with a '.' (FB_X.M_Run): also "<Plc Project>^POUs^FB_X^M_Run" and
+             "<Plc Project>^FB_X^M_Run", still before the tree walk           ResolvedBy = 'dot-path'
           4. depth-first search below "<Plc Project>" (ChildCount/Child(i)),
              depth <= -MaxDepth (direct children of the project = depth 1),
              every item whose Name equals -Name (case-insensitive)              ResolvedBy = 'tree-search'
-             One hit: found. Several hits: hits whose ItemType is not a code object (folder,
-             task reference 650 ...) are dropped; one left: found; still several: Ambiguous
-             = $true and Candidates = their paths (POU_AMBIGUOUS, never the first one).
+             One hit: found. Several hits: hits whose ItemType is known and not a code object
+             (folder, task reference 650 ...) are dropped, an unreadable ItemType (-1) stays;
+             one left: found; still several: Ambiguous = $true and Candidates = their paths
+             (POU_AMBIGUOUS, never the first one). A hit is not searched further down: when a
+             folder and an object below it have the same name, only the folder is returned
+             (known limit). Paths are built as <parent>^<Name>; PathName is read only for hits.
+          ITF property accessors (ItemType 654 / 655): ItemType is read first and their PathName
+          is never read (the built path is used); Get-TcPouCode / Write-TcPouCode then refuse them.
           5. -Name with a '.' and still not found (task 3.6): "FB_X.M_Run" / "FB_X.P_Value.Get" ->
              the part before the first '.' is resolved by steps 2-4, the rest is appended with '^'
              (<FB_X path>^M_Run, <FB_X path>^P_Value^Get)                       ResolvedBy = 'dot-path'
@@ -116,26 +123,58 @@
     # PLC_PROJECT_NOT_FOUND is thrown from here and passed on to the caller.
     $projPath = Resolve-TcPlcProjectPath -SysManager $sm
     $result.ProjectPath = $projPath
+    # ItemType of a found item before anything else: PathName (or code) of an ITF property
+    # accessor (654 / 655) is never read (DeclarationText of a 654 crashed VS2022, measured
+    # 2026-10-31 4026 VS2022, self-built client; see Private/PouMember.ps1)
+    $isItfAccessor = {
+        param($__i)
+        $__t = -1
+        try { $__v = Invoke-TcComRetry -OperationName 'ItemType' -ScriptBlock { $__i.ItemType }; if ($null -ne $__v -and -not [string]::IsNullOrWhiteSpace([string]$__v)) { $__t = [int]$__v } }
+        catch {
+            if ($_.Exception.Message -match $ideErrorPattern) { throw }
+            $__t = -1
+        }
+        $script:TcItfAccessorItemTypes -contains $__t
+    }
+    # canonical casing from the item itself (the candidate uses -Name as typed); the built path
+    # for an ITF property accessor
+    $pathOf = {
+        param($__i, [string]$__built)
+        if (& $isItfAccessor $__i) { return $__built }
+        $__c = $null
+        try { $__c = [string]$__i.PathName } catch { $__c = $null }
+        if ([string]::IsNullOrWhiteSpace($__c)) { $__built } else { $__c }
+    }
 
-    # 2./3. direct lookups
-    $candidates = @(
-        @{ Path = "$projPath^POUs^$Name"; By = 'pous-folder' },
-        @{ Path = "$projPath^$Name"; By = 'project-root' }
-    )
+    # 2./3. direct lookups (2b./3b.: Parent.Member as a direct path, before the tree walk)
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    $candidates.Add(@{ Path = "$projPath^POUs^$Name"; By = 'pous-folder' })
+    $candidates.Add(@{ Path = "$projPath^$Name"; By = 'project-root' })
+    $dotParts = @()
+    if (-not $NoDotPath -and $Name.Contains('.')) {
+        $dotParts = @($Name -split '\.')
+        if (@($dotParts | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -eq 0) {
+            $dotted = $dotParts -join '^'
+            $candidates.Add(@{ Path = "$projPath^POUs^$dotted"; By = 'dot-path' })
+            $candidates.Add(@{ Path = "$projPath^$dotted"; By = 'dot-path' })
+        }
+        else { $dotParts = @() }
+    }
     foreach ($cand in $candidates) {
         $candPath = $cand.Path
         $item = & $lookup $candPath
         $tried.Add($candPath)
         if ($null -ne $item) {
-            # canonical casing from the item itself (the candidate uses -Name as typed)
-            $canonical = $null
-            try { $canonical = [string]$item.PathName } catch { $canonical = $null }
-            $p = if ([string]::IsNullOrWhiteSpace($canonical)) { $candPath } else { $canonical }
-            return (& $found $item $p $cand.By)
+            return (& $found $item (& $pathOf $item $candPath) $cand.By)
         }
     }
 
-    # 4. tree search below the project node (one COM round trip set): every hit, not only the first
+    # 4. tree search below the project node (one COM round trip set): every hit, not only the first.
+    # Paths are built as <parent path>^<Name>; PathName is only read for a hit that is not an
+    # ITF property accessor (654 / 655, whose ItemType is read first).
+    # Known limit: a hit is not searched further down, so when a folder and an object below it
+    # have the same name (POUs^FB_X^FB_X), only the folder is returned.
+    $itfAcc = $script:TcItfAccessorItemTypes
     $search = Invoke-TcComRetry -OperationName "Search tree for $Name" -ScriptBlock {
         $__root = $sm.LookupTreeItem($projPath)
         $__names = [System.Collections.Generic.List[string]]::new()
@@ -156,26 +195,29 @@
         # iterative DFS, children pushed in reverse so the first child is visited first
         $__stack = New-Object System.Collections.Stack
         for ($__i = $__level1.Count - 1; $__i -ge 0; $__i--) {
-            $__stack.Push([PSCustomObject]@{ Item = $__level1[$__i]; Depth = 1 })
+            $__stack.Push([PSCustomObject]@{ Item = $__level1[$__i]; Depth = 1; Parent = $projPath })
         }
         while ($__stack.Count -gt 0) {
             $__e = $__stack.Pop()
             $__it = $__e.Item
             $__nm = $null
             try { $__nm = [string]$__it.Name } catch { $__nm = $null }
+            $__built = "$($__e.Parent)^$__nm"
             if ($null -ne $__nm -and $__nm -eq $Name) {
-                $__hp = $null
-                try { $__hp = [string]$__it.PathName } catch { $__hp = $null }
                 $__ht = -1
-                try { $__ht = [int]$__it.ItemType } catch { $__ht = -1 }
+                try { $__hv = $__it.ItemType; if ($null -ne $__hv -and -not [string]::IsNullOrWhiteSpace([string]$__hv)) { $__ht = [int]$__hv } } catch { $__ht = -1 }
+                $__hp = $__built
+                if ($itfAcc -notcontains $__ht) {
+                    try { $__p = [string]$__it.PathName; if (-not [string]::IsNullOrWhiteSpace($__p)) { $__hp = $__p } } catch { $__hp = $__built }
+                }
                 $__hits.Add([PSCustomObject]@{ Item = $__it; Path = $__hp; ItemType = $__ht })
                 continue
             }
-            if ($__e.Depth -ge $MaxDepth) { continue }
+            if ($null -eq $__nm -or $__e.Depth -ge $MaxDepth) { continue }
             $__cnt = 0
             try { $__cnt = [int]$__it.ChildCount } catch { $__cnt = 0 }
             for ($__j = $__cnt; $__j -ge 1; $__j--) {
-                try { $__stack.Push([PSCustomObject]@{ Item = $__it.Child($__j); Depth = ($__e.Depth + 1) }) }
+                try { $__stack.Push([PSCustomObject]@{ Item = $__it.Child($__j); Depth = ($__e.Depth + 1); Parent = $__built }) }
                 catch { continue }
             }
         }
@@ -185,9 +227,10 @@
     $result.ProjectChildren = [string[]]@($search.Names)
     $hits = @($search.Hits)
     if ($hits.Count -gt 1) {
-        # a task reference (650) or folder with the POU's name is not a second candidate
+        # a task reference (650) or folder with the POU's name is not a second candidate; a hit
+        # whose ItemType could not be read (-1) stays a candidate (it may be code)
         $codeTypes = @(602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 618, 623, 654, 655)
-        $code = @($hits | Where-Object { $codeTypes -contains [int]$_.ItemType })
+        $code = @($hits | Where-Object { [int]$_.ItemType -eq -1 -or $codeTypes -contains [int]$_.ItemType })
         if ($code.Count -gt 0) { $hits = $code }
     }
     $tried.Add("$projPath (tree search, depth $MaxDepth)")

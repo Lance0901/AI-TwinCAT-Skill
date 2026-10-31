@@ -22,7 +22,9 @@ function Add-TcPouMember {
         (654 / 655): reading the code of such an accessor crashed VS2022 twice (measured
         2026-10-31, 4026 VS2022, devenv.exe KERNELBASE.dll 0xe06d7363); a method without
         -ReturnType with -Access other than PUBLIC or -Language other than ST (only vInfo $null
-        is measured for it).
+        is measured for it; its language is reported, not checked); a Get / Set accessor with
+        -Access other than PUBLIC or -Language other than ST (only { '1', 'PUBLIC' } is measured,
+        reason accessor-not-measured).
         Checks before CreateChild (nothing created on failure): parameters (POU_MEMBER_INVALID),
         parent found (POU_NOT_FOUND / POU_AMBIGUOUS) and of a fitting kind (POU_MEMBER_INVALID),
         no child of the parent with the same name, case-insensitive (POU_MEMBER_EXISTS: XAE's
@@ -30,7 +32,8 @@ function Add-TcPouMember {
         (IDE_MODAL_DIALOG). After CreateChild the new item is looked up and its ItemType must be
         the sub type; the declaration read back must name the member, its access and its type
         (method / property / ITF method), an accessor's must hold its access, an action has no
-        declaration and is not read; method and action must report -Language. Only then success.
+        declaration and is not read; action and a method with -ReturnType must report -Language
+        (data.language is always the language read back). Only then success.
         A failed readback after CreateChild returns POU_MEMBER_CREATE_FAILED with the step
         (lookup / kind / language / declare) and the member stays in the tree.
         No project save: CreateChild writes the parent's .TcPOU / .TcIO at once and does not
@@ -50,7 +53,7 @@ function Add-TcPouMember {
         (required). Not allowed for Action / Get / Set.
     .PARAMETER Access
         PUBLIC (default), PRIVATE, PROTECTED or INTERNAL (TE1000 6.5.5 p.231). Anything else
-        returns POU_MEMBER_INVALID. Interface members and actions take none.
+        returns POU_MEMBER_INVALID. Interface members and actions take none; Get / Set only PUBLIC.
     .PARAMETER Language
         Implementation language of a method / action / accessor: ST (default), IL, SFC, FBD, CFC or LD.
     .OUTPUTS
@@ -94,12 +97,8 @@ function Add-TcPouMember {
     )
 
     $data = [PSCustomObject]@{ parentPath = $ParentPath; kind = $Kind; name = $Name }
-    # access first (no IDE needed): XAE would turn a wrong value into PUBLIC without an error
-    if ($script:TcPouMemberAccess -notcontains ([string]$Access).Trim().ToUpperInvariant()) {
-        return New-TcResult -Success $false -ErrorCode 'POU_MEMBER_INVALID' -Data ([PSCustomObject]@{ parentPath = $ParentPath; kind = $Kind; name = $Name; reason = 'access'; access = $Access }) `
-            -ErrorMessage "-Access '$Access' is not one of $($script:TcPouMemberAccess -join ', ') (XAE would silently make it PUBLIC). Nothing was created." `
-            -Hint 'Pass -Access PUBLIC, PRIVATE, PROTECTED or INTERNAL (or leave it out for PUBLIC).'
-    }
+    # -Access (XAE would turn a wrong value into PUBLIC without an error) is validated in one
+    # place only: Get-TcPouMemberSpec, before anything is created
 
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'

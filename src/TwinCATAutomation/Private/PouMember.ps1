@@ -34,7 +34,10 @@ function Get-TcPouMemberSpec {
           608 { lang }                       610 { returnType } or $null  612 { type }
         A method without return type is created with vInfo $null (measured: "METHOD M_Null"), which
         carries neither language nor access; { lang, '', access } is not measured, so a method
-        without return type with another -Access or -Language is POU_MEMBER_UNSUPPORTED.
+        without return type with another -Access or -Language is POU_MEMBER_UNSUPPORTED; its
+        language is not checked on readback (vInfo has none). A Get / Set accessor is measured
+        only with { '1', 'PUBLIC' }: other access / language -> POU_MEMBER_UNSUPPORTED
+        (reason accessor-not-measured). This is the only place -Access is validated.
         An interface method / property takes no language and no access (vInfo is only the type).
         Returns @{ Error = $null | @{ Code; Message; Hint; Reason }; SubType; VInfo; ItemName;
         ExpectedLanguage; DeclarationPattern; NoDeclaration; Access; Language }.
@@ -152,7 +155,7 @@ function Get-TcPouMemberSpec {
         }
         612 {
             if ($isAccessor) {
-                return & $fail 'POU_MEMBER_UNSUPPORTED' 'itf-property-accessor' "Get / Set below an interface property (654 / 655) are not supported: reading the code of such an accessor crashed VS2022 (measured 2026-10-31, 4026 VS2022, see $($script:TcPouMemberProbeDoc))." "Not supported because reading such an accessor crashed VS2022 (devenv.exe, KERNELBASE.dll 0xe06d7363; details in $($script:TcPouMemberProbeDoc), 3.6). Leave the interface property without accessors and implement Get / Set in the function block that implements the interface (Add-TcPouMember -ParentPath '<FB path>^<property>' -Kind $Kind)."
+                return & $fail 'POU_MEMBER_UNSUPPORTED' 'itf-property-accessor' "Get / Set below an interface property (654 / 655) are not supported: reading the code of such an accessor crashed VS2022 (devenv.exe, KERNELBASE.dll exception 0xe06d7363; measured 2026-10-31, 4026 VS2022, self-built client, see $($script:TcPouMemberProbeDoc) 3.6)." "Leave the interface property without accessors and implement Get / Set in the function block that implements the interface (Add-TcPouMember -ParentPath '<FB path>^<property>' -Kind $Kind)."
             }
             return & $fail 'POU_MEMBER_INVALID' 'parent-kind' "Below an interface property nothing but Get / Set exists ($where), not a $Kind." 'Pass the interface itself as -ParentPath.'
         }
@@ -185,6 +188,8 @@ function Get-TcPouMemberSpec {
                 if ($acc -ne 'PUBLIC' -or $lang -ne 'ST') {
                     return & $fail 'POU_MEMBER_UNSUPPORTED' 'method-no-return-type' "A method without -ReturnType is only created with Access PUBLIC and Language ST (vInfo null, measured 2026-10-31 4026 VS2022); { language, '', access } is not measured." 'Pass -ReturnType (e.g. BOOL), or omit -Access / -Language; the declaration can be changed afterwards with Write-TcPouCode.'
                 }
+                # vInfo $null carries no language: the language XAE picks is reported (data.language),
+                # not checked (measured: Language 1 for "METHOD M_Null", one sample only)
                 $spec.VInfo = $null
                 $spec.DeclarationPattern = '(?im)^\s*METHOD\s+(PUBLIC\s+)?' + $n + $end
             }
@@ -192,8 +197,8 @@ function Get-TcPouMemberSpec {
                 $spec.VInfo = [string[]]@($langNo, $rt, $acc)
                 # "METHOD PRIVATE M_LangRet : BOOL" (measured 2026-10-31 4026 VS2022)
                 $spec.DeclarationPattern = '(?im)^\s*METHOD\s+' + $accPat + $n + '\s*:\s*' + $t + $end
+                $spec.ExpectedLanguage = $lang
             }
-            $spec.ExpectedLanguage = $lang
         }
         611 {
             $spec.VInfo = [string[]]@($langNo, $rt, $acc)
@@ -201,9 +206,13 @@ function Get-TcPouMemberSpec {
             $spec.DeclarationPattern = '(?im)^\s*PROPERTY\s+' + $accPat + $n + '\s*:\s*' + $t + $end
         }
         { $_ -in 613, 614 } {
+            # only { '1', 'PUBLIC' } is measured (declaration "PUBLIC / VAR / END_VAR", 2026-10-31
+            # 4026 VS2022, self-built client): another access or language is refused before
+            # CreateChild, as for a method without return type
+            if ($acc -ne 'PUBLIC' -or $lang -ne 'ST') {
+                return & $fail 'POU_MEMBER_UNSUPPORTED' 'accessor-not-measured' "A $Kind accessor is only created with Access PUBLIC and Language ST (vInfo { '1', 'PUBLIC' }, measured 2026-10-31 4026 VS2022, self-built client); $acc / $lang is not measured." "Omit -Access / -Language; change the accessor afterwards with Write-TcPouCode -PouPath '<property path>^$Kind' if needed."
+            }
             $spec.VInfo = [string[]]@($langNo, $acc)
-            # declaration "PUBLIC / VAR / END_VAR" (measured 2026-10-31 4026 VS2022 with PUBLIC;
-            # the other access values are not measured)
             $spec.DeclarationPattern = '(?im)^\s*' + [regex]::Escape($acc) + '\s*$'
         }
         608 {
@@ -252,7 +261,13 @@ function Get-TcTreeItemTypeNumber {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Item)
     $it = $Item
-    try { return [int](Invoke-TcComRetry -OperationName 'ItemType' -ScriptBlock { $it.ItemType }) }
+    # a getter that fails can come back as $null instead of an exception (PowerShell swallows
+    # exceptions of property getters, measured 2026-10-25 PS 5.1 on a .NET property): $null is -1 too
+    try {
+        $v = Invoke-TcComRetry -OperationName 'ItemType' -ScriptBlock { $it.ItemType }
+        if ($null -eq $v -or [string]::IsNullOrWhiteSpace([string]$v)) { return -1 }
+        return [int]$v
+    }
     catch {
         if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
         return -1
