@@ -212,6 +212,11 @@ $script:TcErrorHints['VARIANT_IS_CURRENT'] = '要移除的是目前的 variant(�
 $script:TcErrorHints['VARIANT_VERIFY_FAILED'] = '寫入後讀回的 variant / group 和預期不同(data.readback vs data.after):不要當成功。用 Get-TcProjectVariants 確認;要還原就用 data.backupPath 的內容'
 $script:TcErrorHints['VARIANT_SWITCH_FAILED'] = '切換後讀回的 CurrentProjectVariant 不同(data.current):用 Get-TcProjectVariants 確認，再重跑 Set-TcCurrentVariant'
 $script:TcErrorHints['VARIANT_GROUP_ACTIVE'] = '目前選的是 variant group,group 不能 Activate:先 Set-TcCurrentVariant -Name <variant> -DryRun $false,再 Build-TcProject,然後重跑 Enable-TcConfig'
+# Phase 3 task 4.4: independent project file (Set-TcIndependentFile)
+$script:TcErrorHints['INDEPENDENT_FILE_UNSUPPORTED'] = '這個節點不能獨立存檔(XAE 回 S_OK 但讀回不變;實測 PlcTask、Axes、TINC、TIRR 都是):改用它的上層或下層節點，例如 PLC project TIPC^<Plc>、NC 軸、NC task、TcCOM 實例'
+$script:TcErrorHints['INDEPENDENT_FILE_WRITE_FAILED'] = 'SaveInOwnFile 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcIndependentFile;data.backupPath / backupFiles 是改之前的備份'
+$script:TcErrorHints['INDEPENDENT_FILE_SAVE_FAILED'] = '設定已改但專案沒存成(改動還在 XAE 記憶體):用 Get-TcIdeModalDialog 檢查 dialog、確認 .tsproj 不是唯讀，再重跑 Set-TcIndependentFile 同樣的參數(會再存一次)'
+$script:TcErrorHints['INDEPENDENT_FILE_VERIFY_FAILED'] = '讀回值對了但磁碟上的 .xti 不符(data.createdFiles / removedFiles / expectedFile):不要當成功。看 solution 資料夾的 _Config 目錄;要還原就從 data.backupFiles 複製回去再 Reset-TcSolution'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

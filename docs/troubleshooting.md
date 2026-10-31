@@ -1289,6 +1289,33 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Enable-TcConfig` 時 current variant 是 group(`[Group1]`)。group 不能 Activate(VM 手冊 v1.4 p.7:不同 variant 的值會變成未定義),XAE 自己不擋(Build / Activate 都會跑，probe 第 18 題),所以模組在任何檢查與 Activate 之前回這個碼，什麼都沒做。
 - **下一步**:`Set-TcCurrentVariant -Name <variant> -DryRun $false`、`Build-TcProject`,再 `Enable-TcConfig -Force`。
 
+### Independent project file(task 4.4):做法
+
+- `Set-TcIndependentFile`(MCP `SetIndependentFile`)設 `ITcSmTreeItem6.SaveInOwnFile`(TE1000 v1.7.0 §5.2.4 p.62–63、§6.3.9 p.210;[InfoSys 21842602763](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842602763.html))。手冊寫明不支援的 item「setter 什麼都不做、回 S_OK」(p.62),實測 PlcTask、Axes、TINC、TIRR 就是這樣;PLC project、NC 軸、NC task、TcCOM 實例(4024 另有 I/O device)可以(probe 第 20 題)。
+- **setter 當下就寫 `.xti`**(還沒存檔就出現在 `_Config\...`),所以備份(ProduceXml、`.tsproj`、這個 item 現有的 `.xti`)一定在 setter 之前。檔名:`<名稱>.xti`,NC task 是 `_Config\NC\NC.xti`。
+- 之後模組用有 deadline 的 `Project.Save`(`Invoke-TcProjectSaveWithDeadline`)存檔,`.tsproj` 才會改成 `<... File="<x>.xti"/>`;關閉(False)要存檔 XAE 才會刪 `.xti` 和它的 `.bak`。最後比對存檔前後的 `.xti` 清單(`data.createdFiles` / `removedFiles`)。
+- ProduceXml 沒有對應欄位(`Set-TcTreeItemXml` 做不到);PLC project 獨立存檔後它的 mapping 改存到 `_Config\PLC\<Plc>.xti` 的 `<Mappings>`(probe 第 21 題,[InfoSys 7738192779](https://infosys.beckhoff.com/content/1033/tc3_userinterface/7738192779.html))。XAE 自己寫的檔，不需要 `Reset-TcSolution`。
+
+### INDEPENDENT_FILE_UNSUPPORTED
+
+- **現象**:`SaveInOwnFile` 讀不到，或 setter 回 S_OK 但讀回不變(這個 item 不能獨立存檔;`data.readback`)。磁碟沒有變。setter 已呼叫，所以有記 BUILD_REQUIRED。
+- **下一步**:改用可以獨立存檔的節點(PLC project `TIPC^<Plc>`、NC 軸、NC task、TcCOM 實例)。
+
+### INDEPENDENT_FILE_WRITE_FAILED
+
+- **現象**:setter 丟例外。`data.backupPath` / `backupFiles` 是改之前的備份。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,再重跑。
+
+### INDEPENDENT_FILE_SAVE_FAILED
+
+- **現象**:讀回已經是要的值(開啟時 `.xti` 已寫出),但 `Project.Save` 失敗或逾時,`.tsproj` 還沒更新;改動在 XAE 記憶體。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog、確認 `.tsproj` 不是唯讀，再用同樣參數重跑(讀回相同會直接回 `written = false`,這時改用 XAE 的 Save All 或 `Reset-TcSolution -SaveProjectChanges`)。
+
+### INDEPENDENT_FILE_VERIFY_FAILED
+
+- **現象**:讀回對、也存檔了，但磁碟不符：開啟後沒有新的 `.xti` 也找不到 `data.expectedFile`;或關閉後原本的 `.xti` 還在。
+- **下一步**:看 solution 的 `_Config` 目錄;要還原就把 `data.backupFiles` 複製回去再 `Reset-TcSolution`。
+
 ## 已知限制
 
 使用者向的已知限制清單(現象、影響、繞過方式、issue)與真機驗證範圍:[known-limitations.md](known-limitations.md)。

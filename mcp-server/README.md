@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 73 個 cmdlet 中的 72 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 74 個 cmdlet 中的 73 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (72 of its 73 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (73 of its 74 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -92,7 +92,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
 
-## Tools (76)
+## Tools (77)
 
 Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Parameters are the cmdlet parameters, passed as JSON (`switch` → boolean, `string[]` → array, `hashtable` → object; object keys must be non-empty and must not differ only in case, since PowerShell 5.1 cannot convert such JSON). `Timeout` is the per-call limit after which the bridge is killed; for tools with `TimeoutSec` / `TimeoutMs` / `DurationMs` parameters it grows to at least that value plus 30 s, capped at 2 h (schema `minimum` / `maximum` are enforced first).
 
@@ -212,6 +212,7 @@ All modifying tools here default to `DryRun=true` and carry `destructiveHint: tr
 | `GetVariants` | `Get-TcProjectVariants` | — | 120 s | Read-only: `current`, `currentIsGroup`, `variants[]`, `groups[]`, `configXml`, `itemsXml`; no variants (4024 `$null`, 4026 '') -> empty arrays; `VARIANT_NOT_SUPPORTED` when the properties are missing |
 | `SetVariantConfig` | `Set-TcProjectVariantConfig` | — | 120 s | `AddVariant` / `RemoveVariant` (arrays), optional `Group`; ProjectVariantConfig is replaced as a whole, so it is read, changed, written back in one document and read back; backs up the old document and the .tsproj; removing the current variant -> `VARIANT_IS_CURRENT` |
 | `SwitchVariant` | `Set-TcCurrentVariant` | `Name` | 120 s | Case-sensitive (`VARIANT_NOT_FOUND`); `[Group1]` is accepted but `EnableConfig` then returns `VARIANT_GROUP_ACTIVE`; '' clears it; read back; BUILD_REQUIRED recorded |
+| `SetIndependentFile` | `Set-TcIndependentFile` | `Path`, `Enabled` | 120 s | `SaveInOwnFile`: the setter writes the .xti at once, so the backup is made before it; unchanged readback -> `INDEPENDENT_FILE_UNSUPPORTED` (PlcTask, Axes, TINC, TIRR); then a project save with a deadline and the .xti on disk compared before / after (`createdFiles` / `removedFiles`) |
 
 ### Generic tree items (not yet verified on a real target, task 2.8)
 

@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T19:41:35Z",
+    "generatedAt":  "2026-10-31T19:48:27Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1973,6 +1973,39 @@
                                                          },
                                           "required":  [
 
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetIndependentFile",
+                      "cmdlet":  "Set-TcIndependentFile",
+                      "description":  "Turns \"Independent Project File\" (ITcSmTreeItem6.SaveInOwnFile) of a tree item on or off, saves the project and checks the .xti on disk. Dry-run by default; backs up BEFORE the setter (it writes the .xti at once).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Full tree path, e.g. 'TIPC^MyPlc', 'TINC^NC-Task 1 SAF^Axes^Axis 1', 'TIRC^TcCOM Objects^<name> (<type>)'."
+                                                                      },
+                                                             "Enabled":  {
+                                                                             "type":  "boolean",
+                                                                             "description":  "true = store the item in its own .xti, false = back into the parent file."
+                                                                         },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the plan. false: back up, set, save, check the disk.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Path",
+                                                           "Enabled"
                                                        ],
                                           "additionalProperties":  false
                                       }

@@ -151,7 +151,7 @@ $destructiveTools = @(
     # Phase 3 system configuration (tasks 4.1-4.5): change the TwinCAT configuration; dry-run by default.
     'AddNcTask', 'AddNcAxis', 'SetNcAxisParameter', 'LinkNcAxis',
     'AddTcComModule', 'SetTcComParameter', 'SetTcComContext',
-    'SetVariantConfig', 'SwitchVariant'
+    'SetVariantConfig', 'SwitchVariant', 'SetIndependentFile'
 )
 
 function Get-ToolAnnotations {

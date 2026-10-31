@@ -84,6 +84,7 @@ $operationMap = @{
     'GetVariants'     = 'Get-TcProjectVariants'
     'SetVariantConfig' = 'Set-TcProjectVariantConfig'
     'SwitchVariant'   = 'Set-TcCurrentVariant'
+    'SetIndependentFile' = 'Set-TcIndependentFile'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'

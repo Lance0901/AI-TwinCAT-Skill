@@ -60,6 +60,8 @@
         'Get-TcProjectVariants',
         'Set-TcProjectVariantConfig',
         'Set-TcCurrentVariant',
+        # Independent project file (phase 3, task 4.4)
+        'Set-TcIndependentFile',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',
