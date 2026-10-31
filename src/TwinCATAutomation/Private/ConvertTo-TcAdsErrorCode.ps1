@@ -152,6 +152,12 @@ $script:TcErrorHints['TASK_PROGRAM_ALREADY_LINKED'] = '不用再連;要換 task 
 $script:TcErrorHints['TASK_PROGRAM_NOT_LINKED'] = '用 data.linkedPrograms 裡的名稱(大小寫完全相同)當 -ProgramName 重跑 Remove-TcTaskProgram'
 $script:TcErrorHints['TASK_CREATE_FAILED'] = 'data.rolledBack = true:排除 data.stepError 的原因後重跑 Add-TcPlcTask;false:先刪 PLC task(data.rollback 裡 code 不是 SKIPPED_DEPENDENT、removed = false 的 path),再刪 SKIPPED_DEPENDENT 的 TIRT task,都用 Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport,再重跑 Add-TcPlcTask'
 $script:TcErrorHints['TASK_VERIFY_FAILED'] = '先看 data.mismatches(field / expected / actual);data.rolledBack = false 時先刪 PLC task,再刪 SKIPPED_DEPENDENT 的 TIRT task(Remove-TcTreeItem -Path <data.rollback 留下的 path> -ConfirmName <Name> -DryRun $false -AllowNoExport),再重跑 Add-TcPlcTask'
+# PLCopen XML (complete-automation-interface task 3.3)
+$script:TcErrorHints['PLCOPEN_FAILED'] = '依 data.reason 修正後重跑同一個 cmdlet:invalid-selection = -Selection 每個元素一個物件、資料夾層級用 . 分隔(-Selection ''POUs.FB_A'',''DUTs.ST_B''),不要用 ^ 或分號;member-selection = 改成 data.memberSelection.suggestedSelection(method / property / action 只能跟著所屬物件匯出);selection-not-found = 用 Get-TcProjectTree -PlcOnly 查正確的資料夾與名稱;not-absolute / invalid-path / folder-missing / file-missing = 給存在資料夾內的絕對路徑;invalid-file / no-objects = 改給 PLCopen XML 檔(例如 Export-TcPlcOpen 產生的);overwrite-move-failed = 確認舊檔沒被鎖住;import-failed / export-failed / invalid-argument = 看 data.xaeMessage,用 Get-TcIdeModalDialog 檢查 dialog 後重跑'
+$script:TcErrorHints['PLCOPEN_FILE_EXISTS'] = '換一個 -FilePath,或加 -Overwrite 重跑 Export-TcPlcOpen(舊檔會先改名成 <檔名>.bak)'
+$script:TcErrorHints['PLCOPEN_CONFLICT'] = '依 data.conflicts 選一個 -Option 重跑 Import-TcPlcOpen(先 -DryRun $true 看預告):Skip 保留專案裡的物件、Rename 匯入成 <名稱>_1、Replace 整個覆蓋(會刪掉檔案裡沒有的子物件，先看 data.willReplace[].deletedChildren)'
+$script:TcErrorHints['PLCOPEN_VERIFY_FAILED'] = 'Export:看 data.reason(file-not-written / invalid-file / selection-missing)與 data.missingSelections,用 Get-TcProjectTree -PlcOnly 確認名稱後重跑 Export-TcPlcOpen。Import:用 Get-TcProjectTree -PlcOnly 看 data.missing 的物件在不在、data.added 多了哪些;Replace 的原物件備份在 data.backups[].exportPath(.zip,用 Import-TcTreeItem 匯回)'
+$script:TcErrorHints['PLCOPEN_BACKUP_FAILED'] = '確認 solution 路徑已知(Connect-TcIde -SolutionPath <sln> 或 Open-TcProject)且 <solution 目錄>\.tcauto-backup 可寫;data.reason = export-failed / export-missing 時先用 Export-TcTreeItem -Path <data.backupObject> -FilePath <新的 .zip> 試匯出找原因，再重跑 Import-TcPlcOpen -Option Replace -DryRun $false;不想備份就改用 -Option Rename'
 
 function Get-TcErrorHint {
     <#

@@ -32,6 +32,9 @@
         'Add-TcPlcTask',
         'Add-TcTaskProgram',
         'Remove-TcTaskProgram',
+        # PLCopen XML
+        'Export-TcPlcOpen',
+        'Import-TcPlcOpen',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',

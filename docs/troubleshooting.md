@@ -653,6 +653,51 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Add-TcPlcTask` 每一步都返回了，但讀回不符(`data.mismatches`:`TaskDef/CycleTime`、`TaskDef/Priority`、`PLC task ItemType`、`PlcTaskDef/LinkedTask`,或物件找不到)。已建的物件已回滾，同 `TASK_CREATE_FAILED`。
 - **下一步**:先看 `data.mismatches`(field / expected / actual);要看完整 XML 用 `Get-TcTreeItemXml -Path <data.tirtTaskPath>` / `<data.plcTaskPath>`。`rolledBack = false` 時照 `TASK_CREATE_FAILED` 的順序(先 PLC task 再 TIRT task)刪掉留下的 path,再重跑 `Add-TcPlcTask`。
 
+### PLCopen XML(task 3.3):做法與共同規則
+
+- **做法**:`Export-TcPlcOpen`(MCP `ExportPlcOpen`)與 `Import-TcPlcOpen`(`ImportPlcOpen`)在 `<Plc> Project` 節點上呼叫 `PlcOpenExport(file, selection)` / `PlcOpenImport(file, option, '', $true)`(TE1000 v1.7.0 §5.20 p.105–108,範例 §6.5.4 p.228–229;`PLCIMPORTOPTIONS` §5.46.7 p.161:NONE 0、REPLACE 1、RENAME 2、SKIP 3)。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.3);registered tcauto 還沒驗證(task 3.8),4024 沒測過。
+- **selection 寫法**:每個 `-Selection` 元素是一個物件或資料夾，資料夾層級用 `.`(`POUs.FB_A`、`LIB.AxisControl.FB_AxisControl`,含空白的資料夾名稱可以),模組用 `;` 串起來交給 XAE;只給名稱(`FB_A`)XAE 也找得到;不給 selection = 整個 project。用 `^` 時 XAE 回 COMException `0x98510008` "Selection '...' not found!",所以模組先擋(`PLCOPEN_FAILED` reason `invalid-selection`)。
+- **子物件不能單獨匯出**:method / property / action / accessor 單獨選時 XAE 回 ArgumentException "Couldn't create ExportObjects"。模組先用 `LookupTreeItem` / `Resolve-TcPouPath` 找到節點、看 ItemType(608–616、654、655),是子物件就回 `PLCOPEN_FAILED` reason `member-selection`,`data.memberSelection.suggestedSelection` 是所屬物件。PlcOpenExport 一定連子樹一起匯出(FB 含 method、property、action)。interface 的 property(沒有 Get / Set 時)不會被匯出，只有 method。
+- **檔案已存在**:XAE 丟 ArgumentException "File '...' already exists!"(原檔不變)。模組先檢查：沒有 `-Overwrite` 回 `PLCOPEN_FILE_EXISTS`;有 `-Overwrite` 時先把舊檔改名成 `<檔名>.bak`(已存在就 `.bak-2`…,`data.previousFile`),匯出或讀回失敗時把新檔改名成 `<檔名>.failed`、舊檔改回原名(`data.restore`)。
+- **Import 的四種 Option(實測)**:
+
+  | Option | XAE 的行為 | 模組怎麼處理 |
+  |---|---|---|
+  | `None` | 有衝突就丟例外("Creation of object 'X' failed. Reason: Import conflict!"),什麼都沒匯入 | dry-run 的衝突檢查有衝突就回 `PLCOPEN_CONFLICT`,實寫時不呼叫 XAE |
+  | `Skip` | 衝突的物件靜默跳過，不回報 | 匯入後 `data.skipped[]` 列出跳過的物件，並比對它們磁碟檔的 SHA-256(`unchanged`) |
+  | `Replace` | 整個物件覆蓋：檔案裡沒有的子物件會被刪掉(ITF 原本的 property 被刪) | dry-run 的 `data.willReplace[].deletedChildren` 列出會被刪的直接子物件;實寫前先備份每個會被覆蓋的物件，失敗就不匯入(`PLCOPEN_BACKUP_FAILED`);讀回 `data.replaced[].deletedChildren` |
+  | `Rename` | 匯入的物件加 `_1` 後綴，原物件不變 | dry-run 預告 `<名稱>_1`(該名稱也存在時加 warning:實際名稱沒測過);讀回在新增的物件裡找 `<名稱>_<n>`(`data.renamed`) |
+
+- **衝突怎麼判斷**:檔案用 `Read-TcXmlFile` 解析(不處理 DTD,防 XXE),列出 POU(`types/pous/pou`)、DUT(`types/dataTypes/dataType`)、ITF(`addData/data/Interface`)、GVL(`globalVars`);再走一次 `<Plc> Project` 和所有 PLC 資料夾，名稱相同(不分大小寫)就算衝突。同名物件在別的資料夾時 XAE 算不算衝突沒實測。超過 3000 個節點時檢查不完整，`data.warnings` 會寫。
+- **REPLACE 的備份**:每個會被覆蓋的物件做和 `Remove-TcTreeItem` 一樣的備份:ProduceXml(recursive)、磁碟檔(`.TcPOU` / `.TcDUT` / `.TcGVL` / `.TcIO`)複製到 `<sln 目錄>\.tcauto-backup\<時間>\`,再 ExportChild 成 `.zip`(`data.backups[].exportPath`,用 `Import-TcTreeItem` 匯回;POU 節點的 ExportChild `.zip` 沒實測過，匯出失敗就不匯入)。
+- **磁碟與存檔**:匯入當下 XAE 就寫物件檔(`.TcPOU` / `.TcIO`),`.plcproj` 要等專案存檔才寫(實測);有新增物件時 `data.warnings` 會提醒，不要沒存檔就關 solution。
+- **BUILD_REQUIRED**:`PlcOpenImport` 一呼叫就記 code-changed(成功、失敗、讀回不符都記);呼叫前擋下的不記。`Export-TcPlcOpen` 不改專案，不記。
+
+### PLCOPEN_FAILED
+
+- **現象**:`data.reason`:`invalid-selection`(selection 元素是空的、用了 `^`、元素裡有 `;`、有空層級)、`member-selection`(指到 method / property / action / accessor,`data.memberSelection`)、`selection-not-found`(XAE 回 `0x98510008`)、`invalid-argument`(XAE 丟 ArgumentException)、`export-failed` / `import-failed`(其他例外，`data.xaeMessage`、`data.hresult`)、`not-absolute` / `invalid-path` / `folder-missing` / `file-missing`(路徑)、`invalid-file` / `no-objects`(匯入檔不是 PLCopen XML 或沒有物件)、`overwrite-move-failed`(舊檔改名失敗)。除了 `import-failed`,都沒有改專案。
+- **下一步**:依 `data.reason` 修正後重跑:selection 每個元素一個物件、用 `.` 分層(`-Selection 'POUs.FB_A','DUTs.ST_B'`);member-selection 改成 `data.memberSelection.suggestedSelection`;selection-not-found 用 `Get-TcProjectTree -PlcOnly` 查名稱;其他看 `data.xaeMessage`,用 `Get-TcIdeModalDialog` 檢查 dialog。
+
+### PLCOPEN_FILE_EXISTS
+
+- **現象**:`Export-TcPlcOpen` 的 `-FilePath` 已存在，沒加 `-Overwrite`;什麼都沒寫(XAE 本來也會拒絕，實測)。
+- **下一步**:換一個 `-FilePath`,或加 `-Overwrite`(舊檔先改名成 `.bak`)。
+
+### PLCOPEN_CONFLICT
+
+- **現象**:`Import-TcPlcOpen -Option None`,檔案裡有物件和專案同名(`data.conflicts`:name、existingPath);dry-run 也回這個碼，實寫時沒有呼叫 XAE。XAE 自己回 "Import conflict!" 時也用這個碼(`data.xaeConflicts`,這時已呼叫 XAE,會記 BUILD_REQUIRED)。
+- **下一步**:依 `data.conflicts` 選 `-Option Skip` / `Rename` / `Replace`,先 `-DryRun $true` 看預告;`Replace` 會刪掉檔案裡沒有的子物件，先看 `data.willReplace[].deletedChildren`。
+
+### PLCOPEN_VERIFY_FAILED
+
+- **現象**:呼叫返回了，但讀回不符。Export:`data.reason` = `file-not-written`(檔案不存在或是空的)、`invalid-file`(不是 PLCopen XML)、`selection-missing`(`data.missingSelections` 的物件 / 資料夾不在檔案裡);有 `-Overwrite` 時舊檔已還原。Import:`data.missing` 的物件匯入後找不到(Rename 時是找不到 `<名稱>_<n>`),`data.added` 是實際新增的物件。
+- **下一步**:用 `Get-TcProjectTree -PlcOnly` 確認專案現況;Replace 的原物件備份在 `data.backups[].exportPath`(`.zip`,用 `Import-TcTreeItem` 匯回)。
+
+### PLCOPEN_BACKUP_FAILED
+
+- **現象**:`Import-TcPlcOpen -Option Replace` 實寫前的備份沒做成(`data.reason`:`backup-failed` = solution 路徑不明或 `.tcauto-backup` 寫不進去;`export-failed` / `export-missing` = ExportChild `.zip` 失敗或沒產生;`data.backupObject` 是哪個物件),`PlcOpenImport` 沒有呼叫，什麼都沒改。
+- **下一步**:先 `Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)、確認目錄可寫;ExportChild 失敗時用 `Export-TcTreeItem -Path <data.backupObject> -FilePath <新的 .zip>` 試匯出找原因，再重跑;不需要覆蓋時改用 `-Option Rename`。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。

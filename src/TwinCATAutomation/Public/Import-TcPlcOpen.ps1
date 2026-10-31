@@ -1,0 +1,296 @@
+function Import-TcPlcOpen {
+    <#
+    .SYNOPSIS
+        Imports a PLCopen XML file into the PLC project (PlcOpenImport on '<Plc> Project'). Dry-run by default: lists the objects of the file, the conflicts with the project and what -Option will do with them.
+    .DESCRIPTION
+        API: ITcPlcOpenImportExport.PlcOpenImport(bstrFile, options, bstrSelection, bSubTree), called
+        as PlcOpenImport(<file>, <option>, '', $true) on the '<Plc> Project' node (TE1000 Automation
+        Interface manual v1.7.0, 5.20 p.105-108; PLCIMPORTOPTIONS 5.46.7 p.161: NONE 0, REPLACE 1,
+        RENAME 2, SKIP 3; bSubTree = true keeps the folder structure of the file).
+        Behaviour of -Option, measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client
+        (openspec/changes/complete-automation-interface/verification/phase2-probe.md 3.3; a file
+        exported from the same project imported back):
+          None     a conflict throws ("Creation of object 'X' failed. Reason: Import conflict!" per
+                   object) and nothing is imported (no partial import).
+          Skip     conflicting objects are skipped silently; XAE does not say which.
+          Replace  the whole object is replaced: children the file does not have are DELETED (an
+                   interface lost its two properties because the file had only its method).
+          Rename   the imported object gets '_1' appended (FB_X -> FB_X_1), the old one stays.
+        XAE writes the object files (.TcPOU / .TcIO ...) to disk at once; the .plcproj only when the
+        project is saved (same probe; GenerateBootProject saved it later, phase2-probe.md 3.2).
+        No dialog appeared in the probe.
+        Steps:
+          1. FilePath absolute and existing (PLCOPEN_FAILED reason not-absolute / invalid-path /
+             file-missing); the file is parsed with Read-TcXmlFile (no DTD: no XXE); not PLCopen
+             XML or no object -> PLCOPEN_FAILED reason invalid-file / no-objects. data.objects:
+             name, kind (POU / DUT / ITF / GVL), pouType, folder, members.
+          2. The top-level objects of the PLC project are indexed (one walk over the project and
+             its folders, Get-TcPlcProjectObjectIndex) and compared by name (case-insensitive,
+             project-wide; whether XAE also reports a conflict for the same name in another folder
+             is not measured). data.conflicts: name, kind, existingPath, existingItemType.
+             An incomplete index (more than 3000 nodes) is listed in data.warnings.
+          3. Preview per option: None with a conflict -> PLCOPEN_CONFLICT (also in dry-run; real
+             run: XAE is not called). Skip -> data.willSkip. Rename -> data.willRename
+             (expectedName '<name>_1'; nameTaken when that name exists too, the actual name is then
+             not known: not measured). Replace -> data.willReplace with deletedChildren = children
+             of the existing object that the file does not list (direct children only, names
+             compared case-insensitively) and data.replaceWarning.
+        DryRun (default true): stops after step 3; nothing is written.
+        DryRun = false:
+          - Replace: every object that will be replaced is backed up first (Invoke-TcPlcObjectZipBackup:
+            ProduceXml(recursive) and disk file into <solution dir>\.tcauto-backup\<time>\, plus an
+            ExportChild .zip; data.backups). One backup missing -> PLCOPEN_BACKUP_FAILED and
+            PlcOpenImport is not called.
+          - Skip: the disk file of each conflicting object is hashed before and after
+            (data.skipped[].unchanged).
+          - IDE_MODAL_DIALOG when a dialog is open; then PlcOpenImport. An exception whose message
+            names "Reason: Import conflict!" (XAE text, measured) -> PLCOPEN_CONFLICT
+            (data.xaeConflicts); any other -> PLCOPEN_FAILED reason import-failed (data.xaeMessage,
+            data.hresult).
+          - Readback (index again): every object of the file must exist; for Rename the new name of
+            each conflicting object is the one object '<name>_<n>' that was not there before
+            (data.renamed); Replace reports the children that are really gone
+            (data.replaced[].deletedChildren). Missing -> PLCOPEN_VERIFY_FAILED (data.missing).
+            data.added = objects that were not there before. When objects were added, data.warnings
+            says that the .plcproj is written only when the project is saved.
+        BUILD_REQUIRED: recorded (code-changed) as soon as PlcOpenImport was called, also when it
+        failed; a request refused before (checks, backup, dialog) records nothing.
+        Not verified through the registered MCP server yet (task 3.8).
+    .PARAMETER FilePath
+        Absolute path of the PLCopen XML file to import (e.g. written by Export-TcPlcOpen).
+    .PARAMETER Option
+        What happens with an object that already exists: None (default; a conflict fails, nothing
+        is imported), Replace (the existing object is replaced, children the file lacks are deleted;
+        backed up first), Rename (the imported object gets '_1'), Skip (the existing object is kept).
+    .PARAMETER PlcProjectPath
+        PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC
+        project (otherwise PLC_PROJECT_AMBIGUOUS).
+    .PARAMETER DryRun
+        Default true: only parse, compare and report. false: back up (Replace), import, read back.
+    .EXAMPLE
+        Import-TcPlcOpen -FilePath 'C:\Temp\motor.xml'
+    .EXAMPLE
+        Import-TcPlcOpen -FilePath 'C:\Temp\motor.xml' -Option Rename -DryRun $false
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter()]
+        [ValidateSet('None', 'Replace', 'Rename', 'Skip')]
+        [string]$Option = 'None',
+
+        [Parameter()]
+        [string]$PlcProjectPath,
+
+        [Parameter()]
+        [bool]$DryRun = $true
+    )
+
+    $opt = [string]@($script:TcPlcOpenImportOptions.Keys | Where-Object { $_ -ieq $Option })[0]
+    $optValue = [int]$script:TcPlcOpenImportOptions[$opt]
+    $data = [PSCustomObject]@{ filePath = $FilePath; option = $opt; optionValue = $optValue; dryRun = $DryRun }
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $failData = {
+        param([string]$Code, [string]$Reason, [string]$Message)
+        if (-not [string]::IsNullOrEmpty($Reason)) { $data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force }
+        if ($warnings.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force }
+        New-TcResult -Success $false -ErrorCode $Code -Data $data -ErrorMessage $Message -Hint (Get-TcErrorHint -Code $Code)
+    }
+
+    $bad = $null
+    try {
+        $bad = Test-TcTreeItemFilePath -FilePath $FilePath
+        if ($null -eq $bad -and -not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { $bad = @{ Reason = 'file-missing'; Message = "'$FilePath' does not exist" } }
+    }
+    catch { $bad = @{ Reason = 'invalid-path'; Message = "-FilePath '$FilePath' cannot be checked: $($_.Exception.Message)" } }
+    if ($null -ne $bad) { return (& $failData 'PLCOPEN_FAILED' $bad.Reason "$($bad.Message); nothing was imported.") }
+    $parsed = $null
+    try { $parsed = Read-TcPlcOpenFile -Path $FilePath }
+    catch { return (& $failData 'PLCOPEN_FAILED' 'invalid-file' "'$FilePath' cannot be read as PLCopen XML: $($_.Exception.Message); nothing was imported.") }
+    $objects = @($parsed.Objects)
+    $data | Add-Member -NotePropertyName objects -NotePropertyValue $objects
+    if ($objects.Count -eq 0) { return (& $failData 'PLCOPEN_FAILED' 'no-objects' "'$FilePath' holds no POU, DUT, GVL or interface; nothing was imported.") }
+
+    try { Assert-TcConnection } catch {
+        return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
+    }
+    $sm = Get-TcSysManager
+    if ($null -eq $sm) { return New-TcNoSysManagerResult }
+
+    $called = $false
+    $change = "Import-TcPlcOpen $([System.IO.Path]::GetFileName($FilePath)) [$opt]"
+    try {
+        $spec = Resolve-TcPlcProjectSpec -SysManager $sm -PlcProjectPath $PlcProjectPath
+        if ($null -ne $spec.Result) { return $spec.Result }
+        $prjPath = $spec.PlcProjectPath
+        $data | Add-Member -NotePropertyName plcProjectPath -NotePropertyValue $prjPath
+        $r = Resolve-TcTreeItem -SysManager $sm -Path $prjPath -Data $data -ParameterName 'PlcProjectPath'
+        if ($null -ne $r.Result) { return $r.Result }
+        $prj = $r.Item
+
+        # 2. conflicts
+        $before = Get-TcPlcProjectObjectIndex -SysManager $sm -ProjectPath $prjPath
+        if (-not $before.Complete) { $warnings.Add("the conflict check is incomplete: $($before.Note)") }
+        $byName = @{}
+        foreach ($o in @($before.Objects)) { $k = $o.name.ToUpperInvariant(); if (-not $byName.ContainsKey($k)) { $byName[$k] = $o } }
+        $conflicts = [System.Collections.Generic.List[object]]::new()
+        $free = [System.Collections.Generic.List[string]]::new()
+        foreach ($o in $objects) {
+            $hit = $byName[$o.name.ToUpperInvariant()]
+            if ($null -ne $hit) { $conflicts.Add([PSCustomObject]@{ name = $o.name; kind = $o.kind; existingPath = $hit.path; existingItemType = $hit.itemType }) }
+            else { $free.Add($o.name) }
+        }
+        $data | Add-Member -NotePropertyName conflicts -NotePropertyValue $conflicts.ToArray()
+        $data | Add-Member -NotePropertyName willImport -NotePropertyValue $free.ToArray()
+
+        # 3. preview
+        if ($opt -eq 'None' -and $conflicts.Count -gt 0) {
+            return (& $failData 'PLCOPEN_CONFLICT' 'conflict' "$($conflicts.Count) object(s) of '$FilePath' already exist in '$prjPath': $(($conflicts | ForEach-Object { "'$($_.name)' ($($_.existingPath))" }) -join ', '); with -Option None XAE would refuse the whole file (measured 2026-10-31), so PlcOpenImport was not called and nothing was imported.")
+        }
+        $willReplace = @()
+        if ($opt -eq 'Skip') { $data | Add-Member -NotePropertyName willSkip -NotePropertyValue @($conflicts | ForEach-Object { $_.name }) }
+        elseif ($opt -eq 'Rename') {
+            $data | Add-Member -NotePropertyName willRename -NotePropertyValue @($conflicts | ForEach-Object {
+                    $exp = "$($_.name)_1"
+                    $taken = $byName.ContainsKey($exp.ToUpperInvariant())
+                    if ($taken) { $warnings.Add("'$exp' already exists too: the name XAE gives the imported '$($_.name)' is not known (only '_1' was measured)") }
+                    [PSCustomObject]@{ name = $_.name; existingPath = $_.existingPath; expectedName = $exp; nameTaken = $taken }
+                })
+        }
+        elseif ($opt -eq 'Replace') {
+            $willReplace = @($conflicts | ForEach-Object {
+                    $c = $_
+                    $fileObj = @($objects | Where-Object { $_.name -ieq $c.name })[0]
+                    $fileMembers = @($fileObj.members | ForEach-Object { $_.name })
+                    $item = Find-TcTreeItemNoThrow -SysManager $sm -Path $c.existingPath
+                    $kids = if ($null -ne $item) { @(Get-TcTreeItemChildList -Item $item) } else { @() }
+                    $gone = @($kids | Where-Object { $n = $_.name; @($fileMembers | Where-Object { $_ -ieq $n }).Count -eq 0 } | ForEach-Object { $_.name })
+                    [PSCustomObject]@{ name = $c.name; existingPath = $c.existingPath; existingChildren = @($kids | ForEach-Object { $_.name }); fileMembers = $fileMembers; deletedChildren = $gone }
+                })
+            $data | Add-Member -NotePropertyName willReplace -NotePropertyValue $willReplace
+            if ($willReplace.Count -gt 0) {
+                $data | Add-Member -NotePropertyName replaceWarning -NotePropertyValue ('Replace overwrites each object as a whole: children the file does not have are deleted (measured 2026-10-31: an interface lost its properties). Deleted here: ' +
+                    (($willReplace | ForEach-Object { "'$($_.name)': " + $(if (@($_.deletedChildren).Count -gt 0) { (@($_.deletedChildren) -join ', ') } else { '(none)' }) }) -join '; '))
+            }
+        }
+        $planned = [System.Collections.Generic.List[string]]::new()
+        if ($opt -eq 'Replace' -and $willReplace.Count -gt 0) { $planned.Add("backup (ProduceXml + disk file + ExportChild .zip) of $(($willReplace | ForEach-Object { "'$($_.existingPath)'" }) -join ', ')") }
+        $planned.Add("PlcOpenImport '$FilePath' option $opt ($optValue), bSubTree true")
+        $planned.Add('readback (object index)')
+        $data | Add-Member -NotePropertyName plannedSteps -NotePropertyValue $planned.ToArray()
+        if ($DryRun) {
+            if ($warnings.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force }
+            return New-TcResult -Success $true -Data $data
+        }
+
+        # backups (Replace) / fingerprints (Skip)
+        $backups = [System.Collections.Generic.List[object]]::new()
+        foreach ($w in $willReplace) {
+            $bk = Invoke-TcPlcObjectZipBackup -SysManager $sm -Path $w.existingPath -Data $data
+            if ($null -ne $bk.Result) {
+                $data | Add-Member -NotePropertyName backups -NotePropertyValue $backups.ToArray() -Force
+                return $bk.Result
+            }
+            $backups.Add($bk.Backup)
+            foreach ($x in @($bk.Backup.warnings)) { $warnings.Add($x) }
+        }
+        if ($backups.Count -gt 0) { $data | Add-Member -NotePropertyName backups -NotePropertyValue $backups.ToArray() }
+        $solutionDir = Get-TcTreeItemSolutionDir
+        $fingerprint = {
+            param($c)
+            if ($null -eq $solutionDir) { return @{ File = $null; Hash = $null } }
+            $d = Find-TcTreeItemDiskFile -SolutionDir $solutionDir -Path $c.existingPath -Name (Get-TcTreePathLeaf -Path $c.existingPath) -ItemType $c.existingItemType
+            $f = @($d.Files)[0]
+            @{ File = $f; Hash = (Get-TcFileSha256 -Path $f) }
+        }
+        $skipBefore = @{}
+        if ($opt -eq 'Skip') { foreach ($c in $conflicts) { $skipBefore[$c.name] = & $fingerprint $c } }
+
+        $dlg = Get-TcTreeItemDialogResult -Operation "PlcOpenImport '$FilePath'" -Data $data
+        if ($null -ne $dlg) { return $dlg }
+        $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force
+        $called = $true
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            # No deadline (CODING_STANDARDS.md section 1): a dialog was ruled out just above,
+            # Connect-TcIde turns on ITcAutomationSettings.SilentMode, and PlcOpenImport returned in
+            # 6-242 ms without a dialog in every probe call (measured 2026-10-31 4026 VS2022, self-built
+            # client). The MCP tool timeout bounds it from outside.
+            Invoke-TcComRetry -OperationName 'PlcOpenImport' -ScriptBlock { $prj.PlcOpenImport($FilePath, $optValue, '', $true) } | Out-Null
+        }
+        catch {
+            if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+            $info = Get-TcComErrorInfo -ErrorRecord $_
+            $data | Add-Member -NotePropertyName xaeMessage -NotePropertyValue $info.message
+            $data | Add-Member -NotePropertyName hresult -NotePropertyValue $info.hresultHex
+            # XAE's own English text (measured 2026-10-31): "Creation of object 'X' failed. Reason: Import conflict!"
+            $xc = @([regex]::Matches([string]$info.message, "Creation of object '([^']+)' failed\. Reason: Import conflict!") | ForEach-Object { $_.Groups[1].Value })
+            $res = if ($xc.Count -gt 0) {
+                $data | Add-Member -NotePropertyName xaeConflicts -NotePropertyValue $xc
+                & $failData 'PLCOPEN_CONFLICT' 'xae-conflict' "PlcOpenImport refused '$FilePath' with an import conflict for $(($xc | ForEach-Object { "'$_'" }) -join ', '): $($info.message)"
+            }
+            else { & $failData 'PLCOPEN_FAILED' 'import-failed' "PlcOpenImport '$FilePath' (option $opt) failed: $($info.message)" }
+            return (Register-TcCodeChange -Result $res -Change "$change [failed]")
+        }
+        $sw.Stop()
+        $data | Add-Member -NotePropertyName importSec -NotePropertyValue ([Math]::Round($sw.Elapsed.TotalSeconds, 2))
+
+        # readback
+        $after = Get-TcPlcProjectObjectIndex -SysManager $sm -ProjectPath $prjPath
+        if (-not $after.Complete) { $warnings.Add("the readback is incomplete: $($after.Note)") }
+        $beforePaths = @{}
+        foreach ($o in @($before.Objects)) { $beforePaths[$o.path.ToUpperInvariant()] = $true }
+        $added = @($after.Objects | Where-Object { -not $beforePaths.ContainsKey($_.path.ToUpperInvariant()) })
+        $data | Add-Member -NotePropertyName added -NotePropertyValue @($added | ForEach-Object { [PSCustomObject]@{ name = $_.name; path = $_.path; itemType = $_.itemType } })
+        $afterNames = @($after.Objects | ForEach-Object { $_.name })
+        $missing = [System.Collections.Generic.List[string]]::new()
+        foreach ($o in $objects) { if (@($afterNames | Where-Object { $_ -ieq $o.name }).Count -eq 0) { $missing.Add($o.name) } }
+        if ($opt -eq 'Rename') {
+            $renamed = [System.Collections.Generic.List[object]]::new()
+            foreach ($c in $conflicts) {
+                $pat = '^' + [regex]::Escape($c.name) + '_\d+$'
+                $cand = @($added | Where-Object { $_.name -imatch $pat })
+                if ($cand.Count -eq 1) { $renamed.Add([PSCustomObject]@{ name = $c.name; newName = $cand[0].name; path = $cand[0].path }) }
+                else {
+                    $missing.Add("$($c.name) (renamed copy)")
+                    if ($cand.Count -gt 1) { $warnings.Add("several new objects could be the renamed '$($c.name)': $(($cand | ForEach-Object { $_.name }) -join ', ')") }
+                }
+            }
+            $data | Add-Member -NotePropertyName renamed -NotePropertyValue $renamed.ToArray()
+        }
+        elseif ($opt -eq 'Skip') {
+            $data | Add-Member -NotePropertyName skipped -NotePropertyValue @($conflicts | ForEach-Object {
+                    $b = $skipBefore[$_.name]
+                    $hashAfter = Get-TcFileSha256 -Path $b.File
+                    $unchanged = if ($null -eq $b.Hash -or $null -eq $hashAfter) { $null } else { $b.Hash -eq $hashAfter }
+                    if ($unchanged -eq $false) { $warnings.Add("the disk file of skipped '$($_.name)' ($($b.File)) changed during the import") }
+                    [PSCustomObject]@{ name = $_.name; path = $_.existingPath; diskFile = $b.File; unchanged = $unchanged }
+                })
+        }
+        elseif ($opt -eq 'Replace') {
+            $data | Add-Member -NotePropertyName replaced -NotePropertyValue @($willReplace | ForEach-Object {
+                    $item = Find-TcTreeItemNoThrow -SysManager $sm -Path $_.existingPath
+                    $kidsAfter = if ($null -ne $item) { @(Get-TcTreeItemChildNames -Item $item) } else { @() }
+                    $gone = @(@($_.existingChildren) | Where-Object { $n = $_; @($kidsAfter | Where-Object { $_ -ieq $n }).Count -eq 0 })
+                    [PSCustomObject]@{ name = $_.name; path = $_.existingPath; childrenAfter = $kidsAfter; deletedChildren = $gone }
+                })
+        }
+        if ($added.Count -gt 0) { $warnings.Add('the new objects are in XAE and their object files are on disk, but the .plcproj lists them only after the project is saved (measured 2026-10-31, phase2-probe.md 3.3); do not close the solution without saving') }
+        if ($missing.Count -gt 0) {
+            $data | Add-Member -NotePropertyName missing -NotePropertyValue $missing.ToArray()
+            $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
+            $res = & $failData 'PLCOPEN_VERIFY_FAILED' 'missing' "PlcOpenImport returned, but $(($missing | ForEach-Object { "'$_'" }) -join ', ') is not found in '$prjPath' afterwards."
+            return (Register-TcCodeChange -Result $res -Change "$change [verify failed]")
+        }
+        $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
+        if ($warnings.Count -gt 0) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force }
+        return (Register-TcCodeChange -Result (New-TcResult -Success $true -Data $data) -Change $change)
+    }
+    catch {
+        $res = New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'PLCOPEN_FAILED' -Data $data -Operation 'Import-TcPlcOpen'
+        if ($called) { $res = Register-TcCodeChange -Result $res -Change "$change [failed]" }
+        return $res
+    }
+}

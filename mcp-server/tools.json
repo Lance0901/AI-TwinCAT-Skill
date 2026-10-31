@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T11:21:35Z",
+    "generatedAt":  "2026-10-31T11:47:24Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -784,6 +784,45 @@
                                       }
                   },
                   {
+                      "name":  "ExportPlcOpen",
+                      "cmdlet":  "Export-TcPlcOpen",
+                      "description":  "Exports PLC objects (or the whole PLC project) to a PLCopen XML file (PlcOpenExport on '<Plc> Project'); does not change the project. Reads the file back and lists its objects.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Selection":  {
+                                                                               "type":  "array",
+                                                                               "items":  {
+                                                                                             "type":  "string"
+                                                                                         },
+                                                                               "minItems":  1,
+                                                                               "description":  "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels: 'POUs.FB_A', 'DUTs.ST_B'. Empty = the whole PLC project."
+                                                                           },
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the PLCopen XML file to write (e.g. C:\\Temp\\export.xml); its folder must exist."
+                                                                          },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "Overwrite":  {
+                                                                               "type":  "boolean",
+                                                                               "description":  "Replace an existing file: it is renamed to '<FilePath>.bak' first and put back when the export fails."
+                                                                           }
+                                                         },
+                                          "required":  [
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "FreezePlaceholder",
                       "cmdlet":  "Lock-TcLibraryPlaceholder",
                       "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj and reads it back.",
@@ -1081,6 +1120,49 @@
                                                          },
                                           "required":  [
                                                            "Path",
+                                                           "FilePath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ImportPlcOpen",
+                      "cmdlet":  "Import-TcPlcOpen",
+                      "description":  "Imports a PLCopen XML file into the PLC project (PlcOpenImport on '<Plc> Project'). Dry-run by default: lists the objects of the file, the conflicts with the project and what -Option will do with them.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "FilePath":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Absolute path of the PLCopen XML file to import (e.g. written by Export-TcPlcOpen)."
+                                                                          },
+                                                             "Option":  {
+                                                                            "type":  "string",
+                                                                            "enum":  [
+                                                                                         "None",
+                                                                                         "Replace",
+                                                                                         "Rename",
+                                                                                         "Skip"
+                                                                                     ],
+                                                                            "description":  "What happens with an object that already exists: None (default; a conflict fails, nothing is imported), Replace (the existing object is replaced, children the file lacks are deleted; backed up first), Rename (the imported object gets '_1'), Skip (the existing object is kept).",
+                                                                            "default":  "None"
+                                                                        },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only parse, compare and report. false: back up (Replace), import, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
                                                            "FilePath"
                                                        ],
                                           "additionalProperties":  false

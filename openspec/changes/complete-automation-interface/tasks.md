@@ -25,7 +25,7 @@
 
 - [ ] 3.1 Library Manager:GetLibraries、AddPlaceholder、RemoveReference、Install/Uninstall、FreezePlaceholder(已實作，待 3.8 registered 實測)
 - [ ] 3.2 GenerateBootProject,沒有完整 Build 時回 `BUILD_REQUIRED`,並和 `BOOT_PACKAGE_MISMATCH` 對照
-- [ ] 3.3 PLCopen import/export(import 要 dry-run)
+- [ ] 3.3 PLCopen import/export(import 要 dry-run)(已實作，待 3.8 registered 實測)
 - [ ] 3.4 SaveAsLibrary、archive 存取
 - [ ] 3.5 Task 建立和 program 連結;用 CycleCount 驗證(已實作，待 3.8 registered 實測)
 - [ ] 3.6 Interface,以及 Method、Property、Action;GetPouCode 和 WritePouCode 支援子物件(已實作，待 3.8 registered 實測)

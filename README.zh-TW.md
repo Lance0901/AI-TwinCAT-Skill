@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 57 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 59 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -84,7 +84,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（57 個）
+## 所有指令（59 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -115,6 +115,8 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Add-TcPlcTask` | 新增 PLC task:TIRT task(`-CycleTimeUs`、`-Priority`)加 `<Plc> Project` 底下連到它的 task 物件;預設 dry-run,讀回驗證，中途失敗會回滾(`TASK_CREATE_FAILED` / `TASK_VERIFY_FAILED`) |
 | `Add-TcTaskProgram` | 把 PROGRAM 掛到 PLC task(CreateChild 650);XAE 什麼名稱都收，模組先檢查(`TASK_PROGRAM_INVALID` not-found / not-a-program / case-mismatch、`TASK_PROGRAM_ALREADY_LINKED`、`TASK_NOT_FOUND`);預設 dry-run,備份 .TcTTO |
 | `Remove-TcTaskProgram` | 把 program 呼叫從 PLC task 拿掉(預設 dry-run;先備份 .TcTTO 並把該呼叫 ExportChild 成 .zip,讀回確認) |
+| `Export-TcPlcOpen` | 把物件 / 資料夾(`-Selection 'POUs.FB_A'`,資料夾層級用 `.`)或整個 PLC project 匯出成 PLCopen XML;`^` 和單獨的子物件先擋下;`-Overwrite` 把舊檔留成 `.bak`;讀回檔案(`data.objects`) |
+| `Import-TcPlcOpen` | 匯入 PLCopen XML;預設 dry-run:列出 `data.conflicts` 與 `-Option None\|Replace\|Rename\|Skip` 會怎麼處理(Replace 會刪掉哪些子物件);Replace 先備份;讀回(`data.renamed`、`data.skipped`) |
 
 ### 程式碼操作
 | 指令 | 說明 |
@@ -184,7 +186,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 57 個匯出的 cmdlet
+  Public/                       # 59 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/
@@ -254,7 +256,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:57 個 cmdlet 中的 56 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:59 個 cmdlet 中的 58 個(`NewProject` 暫時不在 MCP 提供,#70)加 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

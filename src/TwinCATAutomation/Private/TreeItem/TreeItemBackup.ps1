@@ -43,7 +43,16 @@ $script:TcTreeItemDiskFileRules = @(
     @{
         Kind      = 'PlcDut'
         Extension = '.TcDUT'
-        Match     = { param([string]$Path, [int]$ItemType) $Path -like 'TIPC^*' -and $ItemType -eq 606 }
+        # 605 / 606 / 607 / 623 = enum / struct / union / alias, all stored as .TcDUT
+        # (Get-TcPlcObjectFileExtension, measured 2026-10-28).
+        Match     = { param([string]$Path, [int]$ItemType) $Path -like 'TIPC^*' -and @(605, 606, 607, 623) -contains $ItemType }
+    },
+    @{
+        Kind      = 'PlcItf'
+        Extension = '.TcIO'
+        # 618 interface: PlcOpenImport REPLACE rewrote ITF_P2Probe.TcIO on disk at once (measured
+        # 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client, verification/phase2-probe.md 3.3).
+        Match     = { param([string]$Path, [int]$ItemType) $Path -like 'TIPC^*' -and $ItemType -eq 618 }
     },
     @{
         Kind      = 'PlcGvl'

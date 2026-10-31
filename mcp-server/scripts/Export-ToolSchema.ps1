@@ -141,7 +141,9 @@ $destructiveTools = @(
     # library repository of the whole machine; dry-run by default.
     'RemoveReference', 'InstallLibrary', 'UninstallLibrary', 'FreezePlaceholder',
     # PLC task program call removal (task 3.5); dry-run by default.
-    'UnlinkProgramFromTask'
+    'UnlinkProgramFromTask',
+    # PLCopen import (task 3.3): Replace deletes children the file lacks; dry-run by default.
+    'ImportPlcOpen'
 )
 
 function Get-ToolAnnotations {

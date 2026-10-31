@@ -56,6 +56,9 @@ $operationMap = @{
     'AddPlcTask'      = 'Add-TcPlcTask'
     'LinkProgramToTask' = 'Add-TcTaskProgram'
     'UnlinkProgramFromTask' = 'Remove-TcTaskProgram'
+    # PLCopen XML (Import defaults to DryRun)
+    'ExportPlcOpen'   = 'Export-TcPlcOpen'
+    'ImportPlcOpen'   = 'Import-TcPlcOpen'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'
