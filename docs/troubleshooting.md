@@ -1325,9 +1325,14 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:讀回已經是要的值(開啟時 `.xti` 已寫出),但 `Project.Save` 失敗或逾時,`.tsproj` 還沒更新;改動在 XAE 記憶體。
 - **下一步**:`Get-TcIdeModalDialog` 檢查 dialog、確認 `.tsproj` 不是唯讀，再用同樣參數重跑(讀回相同會直接回 `written = false`,這時改用 XAE 的 Save All 或 `Reset-TcSolution -SaveProjectChanges`)。
 
+### INDEPENDENT_FILE_TSPROJ_AMBIGUOUS
+
+- **現象**:solution 資料夾底下(深度 3,`.tcauto-backup` 除外)的 `.tsproj` 不是剛好一個(`data.tsprojFiles`)。設定之後要存檔，不知道存哪一個，所以在備份與 setter 之前就停下(review S12),什麼都沒改。
+- **下一步**:把多餘的 `.tsproj` 移出 solution 資料夾後重跑，或在 XAE 手動勾選。
+
 ### INDEPENDENT_FILE_VERIFY_FAILED
 
-- **現象**:讀回對、也存檔了，但磁碟不符：開啟後沒有新的 `.xti` 也找不到 `data.expectedFile`;或關閉後原本的 `.xti` 還在。
+- **現象**:讀回對、也存檔了，但磁碟不符：開啟後 `_Config` 底下的 `data.expectedFile` 不是新寫出、大小 / LastWriteTime 也沒變(別的新 `.xti` 或原本就在、沒動過的同名檔都不算;`data.writtenFiles`);或關閉後原本的 `.xti` 還在。
 - **下一步**:看 solution 的 `_Config` 目錄;要還原就把 `data.backupFiles` 複製回去再 `Reset-TcSolution`。
 
 ### ADS route(task 4.5):做法

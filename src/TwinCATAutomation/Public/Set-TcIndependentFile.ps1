@@ -13,14 +13,16 @@ function Set-TcIndependentFile {
         the .xti at once (before any save); False + Project.Save deletes it. The ProduceXml has no
         field for it.
         Steps: getter (already the requested value: success, data.written = false); .xti snapshot of
-        the solution folder; DryRun stops here (data.expectedFile, data.existingFiles).
+        the solution folder; exactly one .tsproj below the solution folder (it is saved afterwards;
+        else INDEPENDENT_FILE_TSPROJ_AMBIGUOUS, nothing changed); DryRun stops here
+        (data.expectedFile, data.existingFiles, data.tsproj).
         DryRun=false: backup (ProduceXml, the .tsproj and the item's existing .xti; data.backupPath /
         backupFiles) BEFORE the setter, IDE_MODAL_DIALOG check, setter, getter read back - unchanged
         -> INDEPENDENT_FILE_UNSUPPORTED (XAE ignored it; nothing changed); then Project.Save with a
         deadline (Invoke-TcProjectSaveWithDeadline, so the .tsproj references / embeds the item;
         failure -> INDEPENDENT_FILE_SAVE_FAILED, the change stays in XAE memory), then the disk:
-        on: a .xti that was not there before, or the expected '<name>.xti' ('NC.xti' for the NC task),
-        must exist (data.createdFiles); off: the expected .xti found before must be gone
+        on: the expected '<name>.xti' ('NC.xti' for the NC task) below a _Config folder must be new or
+        rewritten (size / LastWriteTime changed; data.writtenFiles); off: the expected .xti found before must be gone
         (data.removedFiles; XAE also deletes its .bak). Otherwise INDEPENDENT_FILE_VERIFY_FAILED.
         Not needed afterwards: Reset-TcSolution (XAE wrote the files itself). The PLC mappings move
         into the PLC .xti when the PLC project is independent (InfoSys
@@ -83,11 +85,19 @@ function Set-TcIndependentFile {
         $existing = @($before.Keys | Where-Object { [System.IO.Path]::GetFileName($_) -ieq $expected } | Sort-Object)
         $data | Add-Member -NotePropertyName expectedFile -NotePropertyValue $expected
         $data | Add-Member -NotePropertyName existingFiles -NotePropertyValue $existing
+        # review S12: the project is saved after the setter, so the .tsproj must be known BEFORE anything changes
+        $tsList = Find-TcSolutionTsProjFile -SolutionDir $solutionDir
+        $data | Add-Member -NotePropertyName tsproj -NotePropertyValue $tsList.Single
+        if ($null -eq $tsList.Single) {
+            $data | Add-Member -NotePropertyName tsprojFiles -NotePropertyValue @($tsList.Files)
+            return New-TcResult -Success $false -ErrorCode 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -Data $data `
+                -ErrorMessage "$(@($tsList.Files).Count) .tsproj files below the solution folder; the one to save after the change is not known. Nothing was changed." -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS')
+        }
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         # backup BEFORE the setter: setting True writes the .xti at once (phase3-probe.md question 20)
         $xml = Get-TcTreeItemXmlText -Item $item -Path $Path
-        $bk = New-TcConfigBackup -Label $Path -Text $xml -DiskFiles (@((Find-TcSolutionTsProjFile -SolutionDir $solutionDir).Files) + $existing) -Data $data
+        $bk = New-TcConfigBackup -Label $Path -Text $xml -DiskFiles (@($tsList.Single) + $existing) -Data $data
         if ($null -ne $bk.Result) { return $bk.Result }
         Add-TcBackupToData -Data $data -Backup $bk.Backup
         $dlg = Get-TcTreeItemDialogResult -Operation "SaveInOwnFile = $Enabled '$Path'" -Data $data
@@ -110,7 +120,7 @@ function Set-TcIndependentFile {
                 -ErrorMessage "XAE accepted SaveInOwnFile = $Enabled on '$Path' but reads back '$now': this item cannot be stored in its own file (TE1000 5.2.4: the setter does nothing and returns S_OK)." -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_UNSUPPORTED')
             return Register-TcCodeChange -Result $res -Change "$change [unsupported]"
         }
-        $save = Invoke-TcIndependentFileSave
+        $save = Invoke-TcIndependentFileSave -TsProjFile $tsList.Single
         $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
         if ($null -ne $save.Error) {
             $res = New-TcResult -Success $false -ErrorCode 'INDEPENDENT_FILE_SAVE_FAILED' -Data $data `
@@ -124,8 +134,11 @@ function Set-TcIndependentFile {
         $data | Add-Member -NotePropertyName removedFiles -NotePropertyValue $removed
         $bad = $null
         if ($Enabled) {
-            $hasExpected = @($after.Keys | Where-Object { [System.IO.Path]::GetFileName($_) -ieq $expected }).Count -gt 0
-            if ($created.Count -eq 0 -and -not $hasExpected) { $bad = "no new .xti and no '$expected' below the solution folder" }
+            # review S12: the expected file below _Config must be new or rewritten (size / LastWriteTime);
+            # another new .xti or an old untouched one does not count
+            $written = @($after.Keys | Where-Object { [System.IO.Path]::GetFileName($_) -ieq $expected -and $_ -match '\\_Config\\' -and (-not $before.ContainsKey($_) -or $before[$_] -ne $after[$_]) })
+            $data | Add-Member -NotePropertyName writtenFiles -NotePropertyValue $written
+            if ($written.Count -eq 0) { $bad = "no '$expected' below a _Config folder was written (new or changed LastWriteTime)" }
         }
         else {
             $left = @($existing | Where-Object { $after.ContainsKey($_) })

@@ -29,6 +29,12 @@ function Add-MockOwnFileNode([string]$Path, [int]$ItemType, [string]$XtiRel, [bo
         if (-not $this.Props.Supported) { return }
         $this.Props.Own = [bool]$v
         # XAE writes the .xti at once when set True (measured)
+        if ($v -and $global:T.Mode -eq 'other-file') {
+            $o = Join-Path $Root 'Prj\_Config\NC\Other.xti'
+            $null = New-Item -ItemType Directory -Path (Split-Path $o) -Force
+            [System.IO.File]::WriteAllText($o, '<TcSmItem>other</TcSmItem>')
+            return
+        }
         if ($v -and $null -ne $this.Props.Xti -and $global:T.Mode -ne 'no-file') {
             $null = New-Item -ItemType Directory -Path (Split-Path $this.Props.Xti) -Force
             [System.IO.File]::WriteAllText($this.Props.Xti, "<TcSmItem>$($this.Name)</TcSmItem>")
@@ -97,11 +103,32 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
     $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
     Check 'SetIndependentFile modal dialog -> IDE_MODAL_DIALOG, nothing set / recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-Sets).Count -eq 0 -and $null -eq (Get-CodeChanged) -and -not (Test-Path -LiteralPath $AxisXti)) (J $r.error)
+    # review S12
+    Reset-Mock; Reset-BuildRequired
+    [System.IO.File]::WriteAllText((Join-Path $Root 'Prj\Second.tsproj'), '<TcSmProject/>')
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'S12 two .tsproj -> INDEPENDENT_FILE_TSPROJ_AMBIGUOUS before backup and setter' ($r.error.code -eq 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -and (Get-Sets).Count -eq 0 -and $null -eq $r.data.PSObject.Properties['backupPath'] -and @($r.data.tsprojFiles).Count -eq 2) (J $r)
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true
+    Check 'S12 the .tsproj check is also in the dry-run' ($r.error.code -eq 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS') (J $r.error)
+    Remove-Item -LiteralPath (Join-Path $Root 'Prj\Second.tsproj') -Force
+    Reset-Mock; Reset-BuildRequired
+    $null = New-Item -ItemType Directory -Path (Split-Path $AxisXti) -Force
+    [System.IO.File]::WriteAllText($AxisXti, '<TcSmItem>stale</TcSmItem>')
+    (Get-Item -LiteralPath $AxisXti).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddDays(-1)
+    $global:T.Mode = 'no-file'
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'S12 an old untouched Axis 1.xti does not count -> INDEPENDENT_FILE_VERIFY_FAILED' ($r.error.code -eq 'INDEPENDENT_FILE_VERIFY_FAILED' -and @($r.data.writtenFiles).Count -eq 0) (J $r.data)
+    Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'other-file'
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'S12 another new .xti does not count -> INDEPENDENT_FILE_VERIFY_FAILED' ($r.error.code -eq 'INDEPENDENT_FILE_VERIFY_FAILED' -and @($r.data.createdFiles | Where-Object { $_ -like '*Other.xti' }).Count -eq 1) (J $r.data)
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'S12 the expected file written below _Config -> writtenFiles, success' ($r.success -and @($r.data.writtenFiles) -contains $AxisXti) (J $r.data)
     Reset-Mock
     $r = Set-TcIndependentFile -Path 'TINC^NoSuch' -Enabled $true
     Check 'SetIndependentFile missing path -> TREEITEM_NOT_FOUND' ($r.error.code -eq 'TREEITEM_NOT_FOUND') (J $r.error)
 
-    foreach ($c in @('INDEPENDENT_FILE_UNSUPPORTED', 'INDEPENDENT_FILE_WRITE_FAILED', 'INDEPENDENT_FILE_SAVE_FAILED', 'INDEPENDENT_FILE_VERIFY_FAILED')) {
+    foreach ($c in @('INDEPENDENT_FILE_UNSUPPORTED', 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS', 'INDEPENDENT_FILE_WRITE_FAILED', 'INDEPENDENT_FILE_SAVE_FAILED', 'INDEPENDENT_FILE_VERIFY_FAILED')) {
         $h = & $mod { param($k) Get-TcErrorHint -Code $k } $c
         Check "hint $c" (-not [string]::IsNullOrWhiteSpace($h)) "$h"
     }

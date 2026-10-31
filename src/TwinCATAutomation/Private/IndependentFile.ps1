@@ -58,20 +58,18 @@ function Invoke-TcIndependentFileSave {
         Saves the TwinCAT project (.tsproj) with a deadline: @{ Saved = <tsproj> | $null; Error = $null | message }.
     .DESCRIPTION
         Invoke-TcProjectSaveWithDeadline (DTE Project.Save in an STA runspace, PROJECT_SAVE_TIMEOUT,
-        CODING_STANDARDS.md 1) on the single .tsproj below the solution folder. Several / none ->
-        Error (nothing saved). Never throws.
+        CODING_STANDARDS.md 1) on -TsProjFile; the caller checks BEFORE the change that there is
+        exactly one .tsproj (review S12). Never throws.
+    .PARAMETER TsProjFile
+        The .tsproj to save.
     .PARAMETER TimeoutSec
         Deadline of the save.
     #>
     [CmdletBinding()]
-    param([Parameter()][int]$TimeoutSec = 120)
-    $ts = Find-TcSolutionTsProjFile
-    if ($null -eq $ts.Single) {
-        return @{ Saved = $null; Error = "the .tsproj to save is not known ($(@($ts.Files).Count) .tsproj files below the solution folder)" }
-    }
+    param([Parameter(Mandatory)][string]$TsProjFile, [Parameter()][int]$TimeoutSec = 120)
     try {
-        $null = Invoke-TcProjectSaveWithDeadline -TsProjFile $ts.Single -TimeoutSec $TimeoutSec
-        return @{ Saved = $ts.Single; Error = $null }
+        $null = Invoke-TcProjectSaveWithDeadline -TsProjFile $TsProjFile -TimeoutSec $TimeoutSec
+        return @{ Saved = $TsProjFile; Error = $null }
     }
     catch { return @{ Saved = $null; Error = $_.Exception.Message } }
 }
