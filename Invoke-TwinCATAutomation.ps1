@@ -43,6 +43,8 @@ $operationMap = @{
     'AddGvl'          = 'Add-TcGvl'
     'AddDut'          = 'Add-TcDut'
     'AddLibrary'      = 'Add-TcLibrary'
+    'AddInterface'    = 'Add-TcInterface'
+    'AddPouMember'    = 'Add-TcPouMember'
     # PLC Code
     'WritePouCode'    = 'Write-TcPouCode'
     'GetPouCode'      = 'Get-TcPouCode'

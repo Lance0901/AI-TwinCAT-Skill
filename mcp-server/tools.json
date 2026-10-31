@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-30T06:34:05Z",
+    "generatedAt":  "2026-10-31T08:36:31Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -130,6 +130,37 @@
                                       }
                   },
                   {
+                      "name":  "AddInterface",
+                      "cmdlet":  "Add-TcInterface",
+                      "description":  "Create an INTERFACE (CreateChild 618, TE1000 v1.7.0 6.5.5) in <Plc> Project^POUs (or PlcProjectPath) and read it back: the declaration must be INTERFACE <Name> (EXTENDS <Extends> when given). Extends is one string (an array is refused by XAE, measured 2026-10-31 4026 VS2022); not an identifier list -> INVALID_PARAMS. Same checks, BUILD_REQUIRED (#65), project file save (#76, .TcIO in the .plcproj) and PLC_LOGGED_IN as AddPou; failure codes POU_CREATE_FAILED (step in the message), PROJECT_SAVE_FAILED / PROJECT_SAVE_TIMEOUT, IDE_MODAL_DIALOG. data: path, folderPath, objectKind (ITF), itemType 618, extends, declaration, projectSaved. Add methods / properties with AddPouMember ParentPath=<data.path>.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Interface name (e.g. I_Motor)."
+                                                                      },
+                                                             "Extends":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Optional interface it extends, as one string (e.g. I_Base; several: 'I_A, I_B' is passed as given, not measured). Must be identifiers separated by commas."
+                                                                         },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Tree path of the folder the interface is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same as AddPou PlcProjectPath). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
+                                                                                }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "AddLibrary",
                       "cmdlet":  "Add-TcLibrary",
                       "description":  "Add a library reference to the PLC project: ITcPlcLibraryManager.AddLibrary(Name, Version, Vendor) on TIPC^<Plc>^<Plc> Project^References (TE1000 6.5.14). Version * = newest installed (.plcproj gets LibraryReference Include=\"<name>,newest,<vendor>\"). Already referenced (also as placeholder #<name>): success with data.alreadyPresent=true, nothing added, no BUILD_REQUIRED. Not installed: LIBRARY_ADD_FAILED with data.notInstalled=true and an install hint; nothing is saved, the .plcproj is unchanged. Several PLC projects: pass PlcProjectPath (else PLC_PROJECT_AMBIGUOUS). BUILD_REQUIRED (#65): the added reference (also when AddLibrary failed for another reason) records kind code-changed for the open solution (data.buildRequired names the tool and the library; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): the reference is stored in the .plcproj, which is saved (DTE Project.Save of the .tsproj, deadline: PROJECT_SAVE_TIMEOUT) and read back from disk: success only when it lists a library reference named Name (data.projectSaved); otherwise PROJECT_SAVE_FAILED or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified.",
@@ -204,6 +235,67 @@
                                           "required":  [
                                                            "Name",
                                                            "Type"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddPouMember",
+                      "cmdlet":  "Add-TcPouMember",
+                      "description":  "Add a Method, Property, Action, or a property Get / Set accessor below a PROGRAM / FUNCTION_BLOCK / INTERFACE (Get / Set: below a property) and read it back (CreateChild, TE1000 v1.7.0 6.5.5). ParentPath: full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor; for Get / Set ...^FB_Motor^P_Speed) or a name as for GetPouCode (FB_Motor, FB_Motor.P_Speed). Sub type / vInfo (measured 2026-10-31 4026 VS2022, self-built client): FB / PROGRAM parent Method 609 {language, ReturnType, Access}, Property 611 {language, ReturnType, Access}, Action 608 {language}; INTERFACE parent Method 610 {ReturnType}, Property 612 {ReturnType}; property parent Get 613 / Set 614 {language, Access}. ReturnType is required for a Property, optional for a Method, not allowed for Action / Get / Set; Name is not needed for Get / Set. Access PUBLIC / PRIVATE / PROTECTED / INTERNAL is checked by the module (XAE makes any other value PUBLIC silently) -> POU_MEMBER_INVALID; wrong parent kind, Access / Language on an interface member -> POU_MEMBER_INVALID. Get / Set below an INTERFACE property (654 / 655) -> POU_MEMBER_UNSUPPORTED (reading such an accessor crashed VS2022). Same name below the parent (case-insensitive) -> POU_MEMBER_EXISTS (data.existingPath). Ambiguous parent name -> POU_AMBIGUOUS (data.candidates). Modal dialog -> IDE_MODAL_DIALOG, PLC logged in -> PLC_LOGGED_IN (PlcLogout first); nothing created in these cases. Success only after the new item is found with the expected ItemType and its declaration names the member, access and type (an action has none; method / action language checked). data.path = full tree path of the member: pass it as PouPath to GetPouCode / WritePouCode. A property gets no Get / Set by itself: add them with Kind Get / Set. Failure after CreateChild -> POU_MEMBER_CREATE_FAILED naming the step (the member stays in the tree). BUILD_REQUIRED (#65): a created member records kind code-changed (data.buildRequired). No project file save is needed (the parent .TcPOU is written at once, the .plcproj does not change).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ParentPath":  {
+                                                                                "type":  "string",
+                                                                                "description":  "The POU, interface or property that gets the member: a full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor, ...^FB_Motor^P_Speed for Get / Set) or a name as for Get-TcPouCode -PouName (FB_Motor, FB_Motor.P_Speed). A name several objects carry returns POU_AMBIGUOUS with data.candidates."
+                                                                            },
+                                                             "Kind":  {
+                                                                          "type":  "string",
+                                                                          "enum":  [
+                                                                                       "Method",
+                                                                                       "Property",
+                                                                                       "Action",
+                                                                                       "Get",
+                                                                                       "Set"
+                                                                                   ],
+                                                                          "description":  "Method, Property, Action, Get or Set."
+                                                                      },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Member name (IEC identifier). Not needed for Get / Set: an accessor is always named Get / Set."
+                                                                      },
+                                                             "ReturnType":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Method: return type (optional; none = a method without return type). Property: its type (required). Not allowed for Action / Get / Set."
+                                                                            },
+                                                             "Access":  {
+                                                                            "type":  "string",
+                                                                            "description":  "PUBLIC (default), PRIVATE, PROTECTED or INTERNAL (TE1000 6.5.5 p.231). Anything else returns POU_MEMBER_INVALID. Interface members and actions take none.",
+                                                                            "default":  "PUBLIC"
+                                                                        },
+                                                             "Language":  {
+                                                                              "type":  "string",
+                                                                              "enum":  [
+                                                                                           "ST",
+                                                                                           "IL",
+                                                                                           "SFC",
+                                                                                           "FBD",
+                                                                                           "CFC",
+                                                                                           "LD"
+                                                                                       ],
+                                                                              "description":  "Implementation language of a method / action / accessor: ST (default), IL, SFC, FBD, CFC or LD.",
+                                                                              "default":  "ST"
+                                                                          }
+                                                         },
+                                          "required":  [
+                                                           "ParentPath",
+                                                           "Kind"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -680,7 +772,7 @@
                   {
                       "name":  "GetPouCode",
                       "cmdlet":  "Get-TcPouCode",
-                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED.",
+                      "description":  "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED. Members: PouPath <POU path>^<member> (accessor ^<property>^Get), or PouName Parent.Member (FB_X.M_Run, FB_X.P_Value.Get; tried after the name as given). A name that several objects carry (M_Run in two FBs) -> POU_AMBIGUOUS with data.candidates (full paths), never the first hit. The Get / Set of an INTERFACE property (ItemType 654 / 655) -> POU_MEMBER_UNSUPPORTED, nothing read (reading it crashed VS2022, measured 2026-10-31 4026 VS2022).",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -690,11 +782,11 @@
                                           "properties":  {
                                                              "PouName":  {
                                                                              "type":  "string",
-                                                                             "description":  "Name of the POU to read."
+                                                                             "description":  "Name of the POU to read. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing; becomes <FB_X path>^M_Run)."
                                                                          },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
@@ -1430,7 +1522,7 @@
                   {
                       "name":  "WritePouCode",
                       "cmdlet":  "Write-TcPouCode",
-                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. data: pouPath, resolvedBy, objectKind, updated[]. Run BuildProject afterwards to compile. BUILD_REQUIRED (#65): a write (also one that failed half way) records kind code-changed for the open solution (data.buildRequired names the tool and the object; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true.",
+                      "description":  "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. An action has only an implementation: Declaration on it -> INVALID_PARAMS. Implementation \"\" clears the body (written as ' and read back empty, data.cleared=true; otherwise POU_WRITE_FAILED reason empty-not-applied); Declaration \"\" -> POU_WRITE_FAILED reason empty-not-supported, nothing written. Members and POU_AMBIGUOUS / POU_MEMBER_UNSUPPORTED (ITF property Get / Set) as for GetPouCode. data: pouPath, resolvedBy, objectKind, updated[], cleared. Run BuildProject afterwards to compile. BUILD_REQUIRED (#65): a write records kind code-changed (a failed write only when an earlier part was written or the setter failed with IDE_*; a setter XAE refused itself wrote nothing and records nothing) for the open solution (data.buildRequired names the tool and the object; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -1441,19 +1533,19 @@
                                           "properties":  {
                                                              "PouName":  {
                                                                              "type":  "string",
-                                                                             "description":  "Name of the POU to write to."
+                                                                             "description":  "Name of the POU to write to. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing)."
                                                                          },
                                                              "Declaration":  {
                                                                                  "type":  "string",
-                                                                                 "description":  "Structured Text declaration section (VAR blocks)."
+                                                                                 "description":  "Structured Text declaration section (VAR blocks). An empty / blank -Declaration is refused (POU_WRITE_FAILED, data.reason empty-not-supported): clearing a declaration is not measured."
                                                                              },
                                                              "Implementation":  {
                                                                                     "type":  "string",
-                                                                                    "description":  "Structured Text implementation section (code body)."
+                                                                                    "description":  "Structured Text implementation section (code body). -Implementation '' clears the body: ImplementationText = '' is written and must read back empty (measured 2026-10-31, 4026 VS2022, self-built client: COM ImplementationText = '' on a method reads back '')."
                                                                                 },
                                                              "PouPath":  {
                                                                              "type":  "string",
-                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>. Use GetProjectTree with PlcOnly=true to list paths."
+                                                                             "description":  "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
                                                                          }
                                                          },
                                           "required":  [
