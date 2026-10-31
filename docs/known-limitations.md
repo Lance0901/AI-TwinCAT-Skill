@@ -231,6 +231,7 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 - **`ImportPlcOpen` Replace 後用 `.zip` 還原**:磁碟檔副本複製回去 + `ResetSolution` 已實測可還原 ITF property(2026-10-31 4026 VS2022);`ImportChild` 匯回備份 `.zip` 這條沒測。
 - **`GenerateBootProject` solution / project platform 不同時的資料夾**:模組兩個 `_Boot\<platform>\Plc` 都查;XAE 實際寫哪一個沒實測(3.8 的 4026 / 4024 副本兩者都相同)。
 - **`AddPlcTask` 線上行為**:cycle time 不是 base time 倍數時 Activate 後怎麼處理、新 task 的 CycleCount 有沒有增加，都要 Activate 才能測，沒測。
+- **PLC task 的 CycleCount 線上驗證未實測**(UmRT 的 TcSystemServiceUm 不在，實測 2026-11-01):`AddPlcTask` 只回 verifyHint,沒有用 CycleCount 確認新 task 在跑。
 - **`NewTestCase` 給 `WaitUntil` 時回傳不帶 `waitMs`**:只有單元測試。
 - **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
 - **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。
