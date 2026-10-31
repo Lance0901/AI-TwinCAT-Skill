@@ -94,6 +94,11 @@
 - **現象**:`Declaration ""` 回 `POU_WRITE_FAILED`(reason `empty-not-supported`),什麼都不寫。`Implementation ""` 會清空實作並讀回確認(實測 2026-10-31 4026 VS2022 自建 client 的 COM 行為;模組路徑只有單元測試)。
 - **繞過**:declaration 一律給完整內容。
 
+### `GetLibraries` 的 `frozen` 判斷未實測(待 3.8)
+
+- **現象**:`frozen` 只看磁碟上 .plcproj 的 `<PlaceholderResolution><Resolution>` 版本是不是 `*`。實測過的只有「`AddPlaceholder` 用 `*` 加入 → `FreezePlaceholder` 後變成實際版本」(自建 client 2026-10-31 4026 VS2022)。用固定版本加入的 placeholder XAE 寫成什麼、會不會因此被讀成 `frozen = true`,沒有實測;只在 XAE 記憶體、還沒存的改動也看不到。
+- **繞過**:要確定時先 `FreezePlaceholder`(會存檔再讀回),或在 XAE 的 Library Manager 看該 placeholder。待 task 3.8 registered 實測。
+
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-30)
 
 MCP 共 **56 個 tool**:`mcp-server/tools.json` 52 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
