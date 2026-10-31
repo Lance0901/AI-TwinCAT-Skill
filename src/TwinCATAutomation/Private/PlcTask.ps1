@@ -308,12 +308,16 @@ function Format-TcPlcTaskRollback {
 function Test-TcTsProjHasTask {
     <#
     .SYNOPSIS
-        Does the .tsproj on disk list the real-time task -Name? @{ Found; Separate; Error }.
+        Does the .tsproj on disk list the real-time task -Name? @{ Found; Separate; File; Error }.
     .DESCRIPTION
         Add-TcPlcTask readback after the project save (phase2-3.8.md P4): the TIRT task lives in the project file
         (.tsproj) as <Task ...><Name>..</Name></Task> (measured 2026-10-31 4026 VS2022, registered
-        tcauto: <Name>P38Task</Name> appeared only after a Project.Save). A <Task File="..."> entry is
-        stored in its own file (independent project file, not measured): Separate = $true, not checked.
+        tcauto: <Name>P38Task</Name> appeared only after a Project.Save).
+        A <Task File="..."> entry whose file is named after the task is stored in its own file
+        (independent project file; NOT measured): that file is looked up relative to the folder of
+        the .tsproj, then by its file name below <tsproj folder>\_Config, read with Read-TcXmlFile and
+        must contain a <Name> of -Name (Separate = $true, File = the file read). Not found / not
+        readable -> Found = $false with Error.
         Read with Read-TcXmlFile (no DTD). Name comparison is case-sensitive (XAE keeps the name as given).
     .PARAMETER Path
         Path of the .tsproj.
@@ -322,15 +326,38 @@ function Test-TcTsProjHasTask {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+    $hasName = {
+        param($node)
+        foreach ($n in @($node.SelectNodes(".//*[local-name()='Name']"))) {
+            if (([string]$n.get_InnerText()).Trim() -ceq $Name) { return $true }
+        }
+        $false
+    }
     try { $xml = Read-TcXmlFile -Path $Path }
-    catch { return @{ Found = $false; Separate = $false; Error = $_.Exception.Message } }
-    $separate = $false
+    catch { return @{ Found = $false; Separate = $false; File = $null; Error = $_.Exception.Message } }
+    $sepFile = $null
     foreach ($t in @($xml.SelectNodes("//*[local-name()='Task']"))) {
         foreach ($c in @($t.ChildNodes)) {
-            if ($c.get_LocalName() -eq 'Name' -and ([string]$c.get_InnerText()).Trim() -ceq $Name) { return @{ Found = $true; Separate = $false; Error = $null } }
+            if ($c.get_LocalName() -eq 'Name' -and ([string]$c.get_InnerText()).Trim() -ceq $Name) { return @{ Found = $true; Separate = $false; File = $Path; Error = $null } }
         }
         $f = [string]$t.GetAttribute('File')
-        if (-not [string]::IsNullOrWhiteSpace($f) -and [System.IO.Path]::GetFileNameWithoutExtension($f) -ceq $Name) { $separate = $true }
+        if (-not [string]::IsNullOrWhiteSpace($f) -and [System.IO.Path]::GetFileNameWithoutExtension($f) -ceq $Name) { $sepFile = $f }
     }
-    @{ Found = $false; Separate = $separate; Error = $null }
+    if ($null -eq $sepFile) { return @{ Found = $false; Separate = $false; File = $null; Error = $null } }
+    # <Task File=...>: read that file (location rule not measured)
+    $dir = Split-Path -Parent $Path
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add((Join-Path $dir $sepFile))
+    $cfg = Join-Path $dir '_Config'
+    if (Test-Path -LiteralPath $cfg -PathType Container) {
+        foreach ($hit in @(Get-ChildItem -LiteralPath $cfg -Recurse -File -Filter ([System.IO.Path]::GetFileName($sepFile)) -ErrorAction SilentlyContinue)) { $candidates.Add($hit.FullName) }
+    }
+    foreach ($cand in $candidates) {
+        if (-not (Test-Path -LiteralPath $cand -PathType Leaf)) { continue }
+        try { $doc = Read-TcXmlFile -Path $cand }
+        catch { return @{ Found = $false; Separate = $true; File = $cand; Error = $_.Exception.Message } }
+        if (& $hasName $doc) { return @{ Found = $true; Separate = $true; File = $cand; Error = $null } }
+        return @{ Found = $false; Separate = $true; File = $cand; Error = "'$cand' has no <Name>$Name</Name>" }
+    }
+    @{ Found = $false; Separate = $true; File = $null; Error = "the .tsproj names '$sepFile' for task '$Name', but no such file was found (tried $($candidates -join ', '))" }
 }

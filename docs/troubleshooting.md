@@ -660,8 +660,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Add-TcPlcTask` 在 `data.step` 失敗:`tirt-create`(TIRT 底下 CreateChild)、`cycle-time`(ConsumeXml 或它的讀回)、`plc-create`(`<Plc> Project` 底下 CreateChild 621)。`data.stepError` 是那一步的原始錯誤，`data.steps` 是每一步的結果。已建的物件已回滾(`data.rollback[]`;`data.rolledBack = false` 表示有東西沒刪掉，message 會寫 `ROLLBACK INCOMPLETE`;PLC task 刪不掉時 TIRT task 標 `SKIPPED_DEPENDENT`,沒有刪)。IDE_* / PLC_LOGGED_IN 保留原碼，不用這個碼。
 - **下一步**:`rolledBack = true`:排除 `stepError` 的原因後重跑 `Add-TcPlcTask`。`false`:**先刪 PLC task**(`data.rollback` 裡 removed = false、code 不是 `SKIPPED_DEPENDENT` 的 path),再刪 `SKIPPED_DEPENDENT` 的 TIRT task,都用 `Remove-TcTreeItem -Path <path> -ConfirmName <Name> -DryRun $false -AllowNoExport`,再重跑。
 
-### TASK_VERIFY_FAILED
+### TASK_VERIFY_FAILED / TASK_VERIFY_FAILED_DISK
 
+- **save-verify 之後的回滾**(`TASK_VERIFY_FAILED_DISK` 是這種情況用的 hint key,錯誤碼仍是 `TASK_VERIFY_FAILED`):失敗前專案已存檔，磁碟上的 `.plcproj` 已列出 `<Name>.TcTTO`。回滾刪掉物件後模組再存一次檔，從磁碟讀回 `.plcproj` 確認已沒有 `<Name>.TcTTO`(`data.diskState`:plcproj、tcttoListed、saved、saveError)。存檔失敗或還列著 → `data.rolledBack = false`,hint 改成：先 `Get-TcProjectTree -PlcOnly` 確認 task 已不在，再 `Reset-TcSolution -SaveProjectChanges` 存回磁碟並確認 `.plcproj`。只有單元測試，未實測。`.tsproj` 用 `<Task File=...>` 把 task 存在獨立檔案時，模組從 `.tsproj` 資料夾或 `_Config` 底下找那個檔案讀回(位置規則未實測)。
 - **現象**:`Add-TcPlcTask` 每一步都返回了，但讀回不符(`data.mismatches`:`TaskDef/CycleTime`、`TaskDef/Priority`、`PLC task ItemType`、`PlcTaskDef/LinkedTask`,或物件找不到;`data.step = save-verify`:專案已存檔，但磁碟上的 `.tsproj` 沒有 `<Task><Name><Name></Name>`,field `.tsproj TIRT task`)。已建的物件已回滾，同 `TASK_CREATE_FAILED`。
 - **下一步**:先看 `data.mismatches`(field / expected / actual);要看完整 XML 用 `Get-TcTreeItemXml -Path <data.tirtTaskPath>` / `<data.plcTaskPath>`。`rolledBack = false` 時照 `TASK_CREATE_FAILED` 的順序(先 PLC task 再 TIRT task)刪掉留下的 path,再重跑 `Add-TcPlcTask`。
 

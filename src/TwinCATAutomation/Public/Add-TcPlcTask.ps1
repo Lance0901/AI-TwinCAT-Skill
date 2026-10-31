@@ -23,7 +23,9 @@ function Add-TcPlcTask {
              (.plcproj) read back from disk must list <Compile Include="<Name>.TcTTO"> (else
              PROJECT_SAVE_FAILED / IDE_MODAL_DIALOG / PROJECT_SAVE_TIMEOUT, objects kept in XAE memory
              as with Add-TcPou) and the .tsproj a <Task><Name><Name></Name> (else TASK_VERIFY_FAILED
-             step save-verify, rolled back). data.projectSaved.
+             step save-verify, rolled back, then saved again: the .plcproj read back must no longer
+             list <Name>.TcTTO, else data.rolledBack = false and data.diskState). A <Task File=...>
+             entry is read back from that file (not measured). data.projectSaved.
              Add-TcTaskProgram / Remove-TcTaskProgram need no save: CreateChild / DeleteChild 650
              rewrite <task>.TcTTO on disk at once (measured 2026-10-31, phase2-probe.md 3.5).
         Each step uses the generic tree cmdlets with their backup, modal dialog check and readback.
@@ -273,8 +275,9 @@ function Add-TcPlcTask {
             }
             $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
             $ts = Test-TcTsProjHasTask -Path ([string]$save.Saved.tsproj) -Name $Name
-            if ($ts.Separate) {
-                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the .tsproj stores task '$Name' in its own file (<Task File=...>); that file was not checked (not measured)") -Force
+            if ($ts.Separate -and $ts.Found) {
+                $old = if ($null -ne $data.PSObject.Properties['warnings']) { @($data.warnings) } else { @() }
+                $data | Add-Member -NotePropertyName warnings -NotePropertyValue @($old + @("the .tsproj stores task '$Name' in its own file '$($ts.File)' (<Task File=...>, not measured); read back from there")) -Force
             }
             elseif (-not $ts.Found) {
                 $why = if ($ts.Error) { "could not be read ($($ts.Error))" } else { 'has no <Task><Name>' + $Name + '</Name>' }
@@ -293,6 +296,26 @@ function Add-TcPlcTask {
 
         $rollback = & $doRollback
         $rolledBack = (@($rollback | Where-Object { -not $_.removed }).Count -eq 0)
+        # review S1: after save-verify the project file on disk already lists <Name>.TcTTO. Save again
+        # after the rollback and read the .plcproj back; when that cannot be confirmed the rollback
+        # is not complete (data.diskState).
+        $diskHint = $null
+        if ($failure.Step -eq 'save-verify') {
+            $ds = [ordered]@{ plcproj = $null; tcttoListed = $null; saved = $false; saveError = $null }
+            $s2 = Invoke-TcPlcObjectSave -ObjectPath $prjPath -What "rollback of PLC task '$Name'" -Done 'removed'
+            if ($null -ne $s2.Error) { $ds.saveError = [string]$s2.Error.error.message }
+            else {
+                $ds.saved = $true
+                $ds.plcproj = [string]$s2.Saved.plcproj
+                try { $ds.tcttoListed = [bool](Test-TcPlcProjectHasFile -Content (Get-TcPlcProjectContent -Path $ds.plcproj) -File "$Name.TcTTO") }
+                catch { $ds.tcttoListed = $null; $ds.saveError = "readback: $($_.Exception.Message)" }
+            }
+            $data | Add-Member -NotePropertyName diskState -NotePropertyValue ([PSCustomObject]$ds)
+            if (-not $ds.saved -or $ds.tcttoListed -ne $false) {
+                $rolledBack = $false
+                $diskHint = Get-TcErrorHint -Code 'TASK_VERIFY_FAILED_DISK'
+            }
+        }
         $data | Add-Member -NotePropertyName verified -NotePropertyValue $false -Force
         $data | Add-Member -NotePropertyName step -NotePropertyValue $failure.Step
         $stepError = $null
@@ -306,8 +329,9 @@ function Add-TcPlcTask {
             $code = if ($script:TcTreeItemPassThroughCodes -contains $innerCode) { $innerCode } else { 'TASK_CREATE_FAILED' }
         }
         $rbText = Format-TcPlcTaskRollback -Rollback $rollback
+        if ($null -ne $diskHint) { $rbText += "; the .plcproj on disk may still list '$Name.TcTTO' (data.diskState)" }
         $res = New-TcResult -Success $false -ErrorCode $code -Data $data `
-            -ErrorMessage "Add-TcPlcTask stopped at step $($failure.Step): $($failure.Message); $rbText." -Hint (Get-TcErrorHint -Code $code)
+            -ErrorMessage "Add-TcPlcTask stopped at step $($failure.Step): $($failure.Message); $rbText." -Hint $(if ($null -ne $diskHint) { $diskHint } else { Get-TcErrorHint -Code $code })
         if ($called) { $res = Register-TcCodeChange -Result $res -Change "$change [failed at $($failure.Step)]" }
         return $res
     }

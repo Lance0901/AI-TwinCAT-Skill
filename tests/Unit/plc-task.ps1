@@ -112,7 +112,8 @@ function Reset-Mock {
     $global:T.Nodes = @{}   # case-insensitive keys, like LookupTreeItem resolved MAIN for 'main' in this mock
     $global:T.Mods = [System.Collections.ArrayList]::new()
     $global:T.Exports = [System.Collections.ArrayList]::new()
-    $global:T.SaveMode = 'ok'; $global:T.Saves = [System.Collections.ArrayList]::new()
+    $global:T.SaveMode = 'ok'; $global:T.Saves = [System.Collections.ArrayList]::new(); $global:T.StaleTasks = @()
+    Remove-Item -LiteralPath (Join-Path $Root '_Config') -Recurse -Force -ErrorAction SilentlyContinue
     $global:T.Mode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.Dialog = $null; $global:T.DialogThrows = $false; $global:T.ThrowOnLookup = $null
     $null = Add-MockNode 'TIRT'
     $null = Add-MockNode 'TIRT^PlcTask' 19 (New-TaskXml 'TIRT^PlcTask' '100000' '20')
@@ -154,8 +155,22 @@ $global:T.Sm = $sm
         }
         $root = Split-Path -Parent $script:TcSolutionPath
         $ts = Join-Path $root 'Task.tsproj'
-        $names = if ($global:T.SaveMode -eq 'no-tsproj') { @('PlcTask') } else { @($global:T.Nodes['TIRT'].Kids | ForEach-Object { ($_ -split '\^')[-1] }) }
-        [System.IO.File]::WriteAllText($ts, '<TcSmProject><Project><System><Tasks>' + (($names | ForEach-Object { "<Task Id=`"1`"><Name>$_</Name></Task>" }) -join '') + '</Tasks></System></Project></TcSmProject>')
+        if ($global:T.SaveMode -eq 'no-tsproj-savefail2' -and @($global:T.Saves).Count -ge 2) {
+            return @{ Saved = $null; Error = (New-TcResult -Success $false -ErrorCode 'PROJECT_SAVE_FAILED' -ErrorMessage "$What not saved (mock, second save)" -Data ([PSCustomObject]@{ objectPath = $ObjectPath })) }
+        }
+        $names = if ($global:T.SaveMode -like 'no-tsproj*') { @('PlcTask') } else { @($global:T.Nodes['TIRT'].Kids | ForEach-Object { ($_ -split '\^')[-1] }) }
+        $taskXml = foreach ($n in $names) {
+            if ($global:T.SaveMode -like 'separate*' -and $n -ne 'PlcTask') { "<Task File=`"$n.xti`" />" } else { "<Task Id=`"1`"><Name>$n</Name></Task>" }
+        }
+        [System.IO.File]::WriteAllText($ts, '<TcSmProject><Project><System><Tasks>' + ($taskXml -join '') + '</Tasks></System></Project></TcSmProject>')
+        if ($global:T.SaveMode -eq 'separate') {
+            $rt = Join-Path $root '_Config\RT'; $null = New-Item -ItemType Directory -Path $rt -Force
+            foreach ($n in @($names | Where-Object { $_ -ne 'PlcTask' })) { [System.IO.File]::WriteAllText((Join-Path $rt "$n.xti"), "<TcSmItem><Task><Name>$n</Name></Task></TcSmItem>") }
+        }
+        # the .plcproj lists a <Compile Include> for every PLC task in memory ('stale': a removed one stays)
+        $tasks = @($global:T.Nodes.Values | Where-Object { $_.ItemType -eq 621 } | ForEach-Object { $_.Name })
+        if ($global:T.SaveMode -eq 'no-tsproj-stale') { $tasks = @($tasks + @($global:T.StaleTasks)) + @($tasks); $global:T.StaleTasks = @($tasks | Select-Object -Unique) }
+        [System.IO.File]::WriteAllText((Join-Path $root 'plc\plc.plcproj'), '<Project><ItemGroup>' + ((@($tasks | Select-Object -Unique) | ForEach-Object { "<Compile Include=`"$_.TcTTO`" />" }) -join '') + '</ItemGroup></Project>')
         @{ Saved = [PSCustomObject]@{ tsproj = $ts; plcproj = (Join-Path $root 'plc\plc.plcproj'); verifiedFiles = @($ExpectFile) }; Error = $null }
     }
 } $Sln
@@ -207,6 +222,21 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'no-tsproj'
     $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
     Check 'P4 AddPlcTask .tsproj without the task -> TASK_VERIFY_FAILED step save-verify, rolled back' ((-not $r.success) -and $r.error.code -eq 'TASK_VERIFY_FAILED' -and $r.data.step -eq 'save-verify' -and @($r.data.mismatches | Where-Object { $_.field -eq '.tsproj TIRT task' }).Count -eq 1 -and $r.data.rolledBack -and -not $global:T.Nodes.ContainsKey('TIRT^FastTask')) "$(J $r.data)"
+    Check 'S1 save-verify rollback saved again, .plcproj no longer lists FastTask.TcTTO -> rolledBack, diskState' ($r.data.diskState.saved -eq $true -and $r.data.diskState.tcttoListed -eq $false -and @($global:T.Saves).Count -eq 2 -and ([System.IO.File]::ReadAllText((Join-Path $Root 'plc\plc.plcproj'))) -notmatch 'FastTask\.TcTTO') "$(J $r.data.diskState) $($global:T.Saves -join ';')"
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'no-tsproj-stale'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    $hd = & $mod { Get-TcErrorHint -Code 'TASK_VERIFY_FAILED_DISK' }
+    Check 'S1 .plcproj still lists FastTask.TcTTO after the rollback save -> rolledBack false, diskState, disk hint' ((-not $r.success) -and $r.error.code -eq 'TASK_VERIFY_FAILED' -and $r.data.rolledBack -eq $false -and $r.data.diskState.tcttoListed -eq $true -and $r.error.hint -eq $hd -and ([System.IO.File]::ReadAllText((Join-Path $Root 'plc\plc.plcproj'))) -match 'FastTask\.TcTTO') "$(J $r.data.diskState) | $($r.error.hint)"
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'no-tsproj-savefail2'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'S1 the rollback save fails -> rolledBack false, diskState.saveError, disk hint' ((-not $r.success) -and $r.data.rolledBack -eq $false -and $r.data.diskState.saved -eq $false -and $r.data.diskState.saveError -match 'second save' -and $r.error.hint -eq $hd) "$(J $r.data.diskState)"
+    # N2: <Task File=...>: read back from that file
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'separate'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'N2 task in its own file (<Task File=...>) -> read back from _Config, success, warning appended' ($r.success -and @($r.data.warnings | Where-Object { $_ -like '*own file*FastTask.xti*' }).Count -eq 1) "$(J $r.data.warnings)"
+    Reset-Mock; Reset-BuildRequired; $global:T.SaveMode = 'separate-missing'
+    $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    Check 'N2 <Task File=...> without that file -> TASK_VERIFY_FAILED save-verify' ((-not $r.success) -and $r.error.code -eq 'TASK_VERIFY_FAILED' -and $r.data.step -eq 'save-verify' -and $r.error.message -match 'no such file') "$(J $r.error)"
     $h = & $mod { param($p) Test-TcTsProjHasTask -Path $p -Name 'fasttask' } (Join-Path $Root 'Task.tsproj')
     Check 'P4 Test-TcTsProjHasTask: case-sensitive name' (-not $h.Found) "$($h | ConvertTo-Json -Compress)"
 
