@@ -524,6 +524,72 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **其他失敗**:`LIBRARY_ADD_FAILED` 加原始訊息;保守起見記 BUILD_REQUIRED(`[failed after AddLibrary]`)。
 - **`-Version '*'`**:預設值,`.plcproj` 寫成 `<LibraryReference Include="<name>,newest,<vendor>">`(實測 2026-10-28,4024 / 4026)。多個 PLC project 時要給 `-PlcProjectPath`,否則 `PLC_PROJECT_AMBIGUOUS`。
 
+### Library Manager(task 3.1):做法與共同規則
+
+- **做法**:`Get-TcLibraries`、`Add-TcLibraryPlaceholder`、`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 都在 `TIPC^<Plc>^<Plc> Project^References` 上呼叫 `ITcPlcLibraryManager`(TE1000 v1.7.0 §5.25.1 p.113-119、§6.5.14 p.241-244,和 `Add-TcLibrary` 同一個節點)。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.1);registered tcauto 還沒驗證(task 3.8)。
+- **placeholder 的欄位**:References 裡 placeholder 的 `Name` 帶 `#`,`LibraryName` / `Version` / `Distributor` 讀到空字串，模組改讀 `PlaceholderName` 和 `EffectiveResolution`(沒有時讀 `DefaultResolution`;visu placeholder 沒有 `EffectiveResolution`)。
+- **frozen 只看得到 .plcproj**:`FreezePlaceholder` 只把 `.plcproj` 的 `<PlaceholderResolution><Resolution>` 從 `<lib>, * (...)` 改成實際版本，References 物件前後看起來一樣(實測 2026-10-31)。所以 `Get-TcLibraries` 的 `frozen` 與 `Lock-TcLibraryPlaceholder` 的讀回都讀**磁碟上**的 .plcproj(Lock 會先存專案)。
+- **dry-run 與備份**:`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 預設 `DryRun=$true`,不呼叫任何寫入 API。改專案的兩個(Remove / Lock)實寫前把磁碟上的 .plcproj 複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles[0]` 是原檔複本，關掉 solution 後覆蓋回去即可還原);只在 XAE 記憶體裡、還沒存的改動不在備份裡。Install / Uninstall 改的是整台機器的 library repository,不備份、不記 `BUILD_REQUIRED`。
+- **共同防護**:每個寫入呼叫前查 modal dialog(`IDE_MODAL_DIALOG`);`IDE_*` 與 `PLC_LOGGED_IN` 照原碼回傳;改專案的成功後記 `BUILD_REQUIRED`(code-changed),寫入呼叫之後才失敗的也保守記一筆。
+
+### LIBRARY_READ_FAILED
+
+- **現象**:`Get-TcLibraries` 讀 `References` 或 `ScanLibraries()` 時 COM 例外，什麼都沒改。.plcproj 找不到 / 讀不到不算失敗：仍回 success,`frozen = null`、`data.warnings` 寫原因。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog;多個 PLC project 時加 `-PlcProjectPath`;再重跑 `Get-TcLibraries`。
+
+### LIBRARY_INVALID_ARGUMENT
+
+- **現象**:Library Manager cmdlet 在呼叫 XAE 之前就擋下，什麼都沒改。`data.reason`:`name` / `empty`(名稱空白)、`no-library-name`(`Add-TcLibraryPlaceholder` 給了 `-Version` / `-Distributor` 卻沒給 `-LibraryName`)、`ambiguous`(同名的 library 和 placeholder 同時存在)、`not-placeholder`(`Lock-TcLibraryPlaceholder` 指到 library)、`target`(`-Placeholder` 與 `-All` 都給或都沒給)、`wildcard`(`Uninstall-TcLibrary` 的值含 `* ? [ ]`)、`path` / `extension` / `missing` / `repository`(`Install-TcLibrary` 的檔案或 repository 名稱)。
+- **下一步**:照 `error.hint` 修正參數;`ambiguous` 要移除 placeholder 就給 `-Name '#<name>'`。
+
+### LIBRARY_NOT_FOUND
+
+- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 要的名稱不在 References(`data.references` / `data.placeholders` 列出現有的),或 XAE 自己回 not found(RemoveReference 的 `0x98510001` "Specified library '...' not found!"、FreezePlaceholder 的 `0x80004005` "... not found. Cannot freeze!",實測 2026-10-31)。什麼都沒改。
+- **下一步**:`Get-TcLibraries` 看 `name` / `placeholderName`(placeholder 寫成 `#<name>` 或不帶 `#` 都可以),拼對後重跑。
+
+### LIBRARY_VERIFY_FAILED
+
+- **現象**:寫入呼叫有返回，但讀回不符，不能當成功。`data.step` / `data.reason`:`references`(References 讀回沒有新增 / 還留著)、`library`(placeholder 解析到別的 library)、`project-file`(存檔後磁碟上的 .plcproj 不符)、`not-frozen`(`<Resolution>` 還是 `*`,`data.notFrozen`)、`not-listed`(安裝後 ScanLibraries 沒有新項目)、`still-installed`(解除安裝後還在)。
+- **下一步**:`Get-TcLibraries`(repository 的用 `-Repository`)看實際狀態;專案的改動要還原就用 `data.backupFiles`(Remove / Lock)。原因確認後再重跑同一個 cmdlet。
+
+### LIBRARY_BACKUP_FAILED
+
+- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 實寫前的 .plcproj 備份沒寫成(solution 路徑不明、找不到 .plcproj,或 `.tcauto-backup` 不能寫),什麼都沒改。
+- **下一步**:`Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)讓模組知道 solution;先用預設的 dry-run 看 `data.projectFile` 有值，再 `-DryRun $false`。
+
+### LIBRARY_REMOVE_FAILED
+
+- **現象**:`RemoveReference` 丟了 not found 以外的例外(或之後的步驟失敗),reference 可能已經移除，所以保守記 `BUILD_REQUIRED`。
+- **下一步**:`Get-TcLibraries` 確認;要還原用 `data.backupFiles`;`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### PLACEHOLDER_ADD_FAILED
+
+- **現象**:`Add-TcLibraryPlaceholder` 失敗。`data.reason = default-library-not-installed`:預設 library 沒有安裝(COMException `0x98510001` "Default Library '...' not found!",沒有建出 placeholder,實測 2026-10-31);`no-device-placeholder`:沒給 `-LibraryName` 時 XAE 找不到同名的 device placeholder(ArgumentException `0x80070057` "Default Placeholder '...' could not be found!",手冊寫 E_INVALIDARG,實測同值)。這兩種不記 `BUILD_REQUIRED`。沒有 reason:其他 COM 例外，保守記 `BUILD_REQUIRED`。
+- **已存在不是錯誤**:References 已有 `#<name>`,或 XAE 回 "already contained!" → success、`data.alreadyPresent = true`,和 `Add-TcLibrary` 一致。
+- **下一步**:`Get-TcLibraries -Repository` 確認名稱 / 版本 / distributor,沒裝就 `Install-TcLibrary`;沒有 device placeholder 就給 `-LibraryName`。
+
+### PLACEHOLDER_FREEZE_FAILED
+
+- **現象**:`FreezePlaceholder` 丟了 not found 以外的例外。手冊(TE1000 p.244)寫 placeholder 沒有 EffectiveResolution 時回 E_FAIL(`Error_PlaceholderNotResoluted_CannotFreeze`);這一條未實測。`-All` 本身也未實測：沒有 EffectiveResolution 的 placeholder 不列入讀回檢查(`data.skippedUnresolved`)。
+- **下一步**:`Get-TcLibraries` 看 `effectiveResolution`,是 null 的先讓它解析得到(安裝 library),或改用 `-Placeholder` 只鎖其他的;要還原用 `data.backupFiles`。
+
+### LIBRARY_ALREADY_INSTALLED
+
+- **現象**:`Install-TcLibrary` 什麼都沒裝。`data.preCheck = file-name`:檔名是 `<name>_<version>.library`(XAE SaveAsLibrary 產生的檔名格式，實測 2026-10-31),ScanLibraries 已有同名同版本(`data.installed`),沒呼叫 InstallLibrary。`data.preCheck = xae`:檔名看不出版本,XAE 回 IOException `0x80131620` "Library already exists."(手冊寫會取消安裝，實際是丟例外，實測 2026-10-31)。模組一律 `bOverwrite = false`。
+- **為什麼用檔名**:Automation Interface 沒有從 .library 檔讀出名稱 / 版本的方法；檔名和內容不一致時預查可能誤判，這時 `data.installed` 會列出比對到的項目。
+- **下一步**:直接 `Add-TcLibrary` / `Add-TcLibraryPlaceholder` 把它加進專案;真的要換成新檔，先 `Uninstall-TcLibrary`(先 dry-run)再 `Install-TcLibrary`。
+
+### LIBRARY_NOT_INSTALLED
+
+- **現象**:`Uninstall-TcLibrary` 什麼都沒移除:ScanLibraries 沒有和 `-LibraryName` / `-Version` / `-Distributor` 完全相同(大小寫也要相同)的項目;`data.candidates` 列出同名(不分大小寫)的已安裝版本。
+- **為什麼先查**:XAE 的 `UninstallLibrary` 遇到不存在的 library / 版本丟 NullReferenceException `0x80004003`(實測 2026-10-31),分不出是「不存在」還是別的錯誤。
+- **下一步**:`Get-TcLibraries -Repository -Filter <name>` 查正確的值後重跑。
+
+### LIBRARY_INSTALL_FAILED / LIBRARY_UNINSTALL_FAILED
+
+- **現象**:`InstallLibrary` / `UninstallLibrary` 丟例外。`data.reason = repository-not-found`:`-Repository` 不存在(COMException `0x98510001` "Could not find repository '...'",實測 2026-10-31 InstallLibrary;預設 repository 名稱 `System`,TE1000 §6.5.12)。ScanLibraries 不回報每筆在哪個 repository,所以 `Uninstall-TcLibrary` 的預查證明不了它在 `-Repository` 裡;這時 XAE 可能丟 NullReferenceException。
+- **下一步**:`Get-TcLibraries -Repository` 確認狀態,`Get-TcIdeModalDialog` 檢查 dialog,改正 `-Repository` 後重跑。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。

@@ -21,6 +21,13 @@
         'Add-TcLibrary',
         'Add-TcInterface',
         'Add-TcPouMember',
+        # Library Manager (ITcPlcLibraryManager)
+        'Get-TcLibraries',
+        'Add-TcLibraryPlaceholder',
+        'Remove-TcLibraryReference',
+        'Install-TcLibrary',
+        'Uninstall-TcLibrary',
+        'Lock-TcLibraryPlaceholder',
         # PLC Code
         'Write-TcPouCode',
         'Get-TcPouCode',
