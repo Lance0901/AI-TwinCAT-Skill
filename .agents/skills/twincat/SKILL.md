@@ -69,7 +69,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Add-TcLibraryPlaceholder` | `-Placeholder <n> [-LibraryName <lib>] [-Version *] [-Distributor <d>] [-PlcProjectPath <plc>]` | Add a placeholder; existing -> `alreadyPresent`; read back from References and the saved .plcproj |
 | `Remove-TcLibraryReference` | `-Name <lib\|#placeholder> [-DryRun $true] [-PlcProjectPath <plc>]` | Remove a reference / placeholder; dry-run by default; .plcproj backup; read back; `LIBRARY_NOT_FOUND` |
 | `Install-TcLibrary` | `-LibraryPath <file> [-Repository System] [-DryRun $true]` | Install into the machine-wide repository; dry-run by default; `LIBRARY_ALREADY_INSTALLED`; ScanLibraries readback |
-| `Uninstall-TcLibrary` | `-LibraryName <n> -Version <v> -Distributor <d> [-Repository System] [-DryRun $true]` | Uninstall one exact version (no wildcards); dry-run by default; `LIBRARY_NOT_INSTALLED`; ScanLibraries readback |
+| `Uninstall-TcLibrary` | `-LibraryName <n> -Version <v> -Distributor <d> [-Repository System] [-DryRun $true]` | Uninstall one exact version (no wildcards); dry-run by default; `LIBRARY_NOT_INSTALLED`; backs up the repository version folder first (`LIBRARY_BACKUP_FAILED`); ScanLibraries readback |
 | `Lock-TcLibraryPlaceholder` | `-Placeholder <n> \| -All [-DryRun $true]` | Freeze a placeholder (or all) to its current version; dry-run by default; .plcproj backup; verified from `<PlaceholderResolution>` in the .plcproj |
 
 ### PLC Code

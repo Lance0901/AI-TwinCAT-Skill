@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T09:32:32Z",
+    "generatedAt":  "2026-10-31T09:50:25Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1644,7 +1644,7 @@
                   {
                       "name":  "UninstallLibrary",
                       "cmdlet":  "Uninstall-TcLibrary",
-                      "description":  "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; reads back with ScanLibraries.",
+                      "description":  "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; backs up the version folder; reads back with ScanLibraries.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,

@@ -451,3 +451,106 @@ function New-TcLibraryFailure {
     if (-not [string]::IsNullOrWhiteSpace($Reason)) { $Data | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force }
     New-TcResult -Success $false -ErrorCode $Code -ErrorMessage $Message -Hint (Get-TcErrorHint -Code $Code) -Data $Data
 }
+
+# Root folder of the 'System' library repository. Measured 2026-10-31 4026 VS2022 (phase2-probe.md 3.1):
+# InstallLibrary('System', ...) created <root>\<Distributor>\<Library>\<Version> and UninstallLibrary removed it.
+# Overridable for tests. ITcPlcLibraryManager.Repositories (Name / Folder, TE1000 5.22 / 5.23 p.111-112) is
+# tried first, but returned Count=0 in the probe.
+$script:TcSystemLibraryRepositoryRoot = Join-Path ([string]$env:ProgramData) 'Beckhoff\TwinCAT\PlcEngineering\Managed Libraries'
+
+function Get-TcLibraryRepositoryVersionFolder {
+    <#
+    .SYNOPSIS
+        Folder of one installed library version in a repository: @{ Path = <existing folder> | $null; Root; Source; Tried = @() }.
+    .DESCRIPTION
+        Repository root: the Folder of the entry named -Repository in ITcPlcLibraryManager.Repositories
+        (Source 'repositories'), else for 'System' $script:TcSystemLibraryRepositoryRoot (Source
+        'measured-default'). The version folder is <root>\<Distributor>\<LibraryName>\<Version> (layout
+        measured 2026-10-31 4026 VS2022). Path is $null when no root is known or the folder does not exist.
+    .PARAMETER Refs
+        References node.
+    .PARAMETER Repository
+        Repository name.
+    .PARAMETER Library
+        ScanLibraries entry (name, version, distributor).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Refs, [Parameter(Mandatory)][string]$Repository, [Parameter(Mandatory)]$Library)
+    $r = $Refs
+    $roots = [System.Collections.Generic.List[object]]::new()
+    $repoFolder = $null
+    try {
+        $repoFolder = Invoke-TcComRetry -OperationName 'Repositories' -ScriptBlock {
+            $__f = $null
+            $__all = Get-TcComValue -Object $r -Name 'Repositories'
+            if ($null -ne $__all) {
+                foreach ($__rep in $__all) {
+                    if ([string](Get-TcComValue -Object $__rep -Name 'Name') -ieq $Repository) { $__f = [string](Get-TcComValue -Object $__rep -Name 'Folder'); break }
+                }
+            }
+            $__f
+        }
+    }
+    catch {
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+        $repoFolder = $null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($repoFolder)) { $roots.Add(@{ Root = $repoFolder; Source = 'repositories' }) }
+    if ($Repository -ieq 'System' -and -not [string]::IsNullOrWhiteSpace($script:TcSystemLibraryRepositoryRoot)) {
+        $roots.Add(@{ Root = $script:TcSystemLibraryRepositoryRoot; Source = 'measured-default' })
+    }
+    $tried = [System.Collections.Generic.List[string]]::new()
+    foreach ($c in $roots) {
+        $p = Join-Path (Join-Path (Join-Path $c.Root ([string]$Library.distributor)) ([string]$Library.name)) ([string]$Library.version)
+        $tried.Add($p)
+        if (Test-Path -LiteralPath $p -PathType Container) { return @{ Path = $p; Root = $c.Root; Source = $c.Source; Tried = $tried.ToArray() } }
+    }
+    @{ Path = $null; Root = $null; Source = $null; Tried = $tried.ToArray() }
+}
+
+function Invoke-TcLibraryRepositoryBackup {
+    <#
+    .SYNOPSIS
+        Copies a repository version folder to <solution dir>\.tcauto-backup\<yyyyMMdd-HHmmss>\library-repo\<name>\<version>\
+        before UninstallLibrary: @{ Result = $null | <LIBRARY_BACKUP_FAILED>; Backup = @{ backupPath; sourcePath; fileCount } }.
+    .DESCRIPTION
+        Unknown solution directory, no source folder, a failed copy or a copy with a different file count
+        -> LIBRARY_BACKUP_FAILED (the caller must not uninstall).
+    .PARAMETER SourcePath
+        Version folder in the repository ($null when it could not be derived).
+    .PARAMETER Library
+        ScanLibraries entry (name, version).
+    .PARAMETER Data
+        Data attached to a failed result.
+    .PARAMETER Tried
+        Paths that were tried (message).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$SourcePath,
+        [Parameter(Mandatory)]$Library,
+        [Parameter()][object]$Data,
+        [Parameter()][string[]]$Tried = @()
+    )
+    $fail = {
+        param([string]$why)
+        @{ Backup = $null; Result = (New-TcResult -Success $false -ErrorCode 'LIBRARY_BACKUP_FAILED' -Data $Data `
+                    -ErrorMessage "Backup of the repository folder failed, nothing was uninstalled: $why" -Hint (Get-TcErrorHint -Code 'LIBRARY_BACKUP_FAILED')) }
+    }
+    if ([string]::IsNullOrWhiteSpace($SourcePath)) { return (& $fail "the version folder of '$($Library.name) $($Library.version)' could not be derived (tried: $(@($Tried) -join '; '))") }
+    $solutionDir = Get-TcTreeItemSolutionDir
+    if ($null -eq $solutionDir) { return (& $fail 'no solution path is known (Connect-TcIde -SolutionPath / Open-TcProject)') }
+    try {
+        $ts = (Get-Date).ToString('yyyyMMdd-HHmmss')
+        $base = Join-Path (Join-Path (Join-Path $solutionDir $script:TcTreeItemBackupFolder) $ts) 'library-repo'
+        $dest = Join-Path (Join-Path $base (ConvertTo-TcSafeFileName -Name ([string]$Library.name))) (ConvertTo-TcSafeFileName -Name ([string]$Library.version))
+        if (Test-Path -LiteralPath $dest) { return (& $fail "'$dest' already exists") }
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force -ErrorAction Stop
+        Copy-Item -LiteralPath $SourcePath -Destination $dest -Recurse -Force -ErrorAction Stop
+        $srcCount = @(Get-ChildItem -LiteralPath $SourcePath -Recurse -File -Force -ErrorAction Stop).Count
+        $dstCount = @(Get-ChildItem -LiteralPath $dest -Recurse -File -Force -ErrorAction Stop).Count
+        if ($srcCount -ne $dstCount) { return (& $fail "the copy in '$dest' has $dstCount files, the source '$SourcePath' $srcCount") }
+        return @{ Result = $null; Backup = @{ backupPath = $dest; sourcePath = $SourcePath; fileCount = $dstCount } }
+    }
+    catch { return (& $fail $_.Exception.Message) }
+}

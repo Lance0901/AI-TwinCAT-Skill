@@ -529,7 +529,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **做法**:`Get-TcLibraries`、`Add-TcLibraryPlaceholder`、`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 都在 `TIPC^<Plc>^<Plc> Project^References` 上呼叫 `ITcPlcLibraryManager`(TE1000 v1.7.0 §5.25.1 p.113-119、§6.5.14 p.241-244,和 `Add-TcLibrary` 同一個節點)。行為依據：實測 2026-10-31 4026 VS2022 XAE 3.1.4026.18(自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.1);registered tcauto 還沒驗證(task 3.8)。
 - **placeholder 的欄位**:References 裡 placeholder 的 `Name` 帶 `#`,`LibraryName` / `Version` / `Distributor` 讀到空字串，模組改讀 `PlaceholderName` 和 `EffectiveResolution`(沒有時讀 `DefaultResolution`;visu placeholder 沒有 `EffectiveResolution`)。
 - **frozen 只看得到 .plcproj**:`FreezePlaceholder` 只把 `.plcproj` 的 `<PlaceholderResolution><Resolution>` 從 `<lib>, * (...)` 改成實際版本，References 物件前後看起來一樣(實測 2026-10-31)。所以 `Get-TcLibraries` 的 `frozen` 與 `Lock-TcLibraryPlaceholder` 的讀回都讀**磁碟上**的 .plcproj(Lock 會先存專案)。
-- **dry-run 與備份**:`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 預設 `DryRun=$true`,不呼叫任何寫入 API。改專案的兩個(Remove / Lock)實寫前把磁碟上的 .plcproj 複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles[0]` 是原檔複本，關掉 solution 後覆蓋回去即可還原);只在 XAE 記憶體裡、還沒存的改動不在備份裡。Install / Uninstall 改的是整台機器的 library repository,不備份、不記 `BUILD_REQUIRED`。
+- **dry-run 與備份**:`Remove-TcLibraryReference`、`Install-TcLibrary`、`Uninstall-TcLibrary`、`Lock-TcLibraryPlaceholder` 預設 `DryRun=$true`,不呼叫任何寫入 API。改專案的兩個(Remove / Lock)實寫前把磁碟上的 .plcproj 複製到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupFiles[0]` 是原檔複本，關掉 solution 後覆蓋回去即可還原);只在 XAE 記憶體裡、還沒存的改動不在備份裡。Install / Uninstall 改的是整台機器的 library repository,不記 `BUILD_REQUIRED`;Install 不覆蓋所以不備份,Uninstall 實寫前把該版本的 repository 目錄整個複製到 `<sln 目錄>\.tcauto-backup\<時間>\library-repo\<name>\<version>\`(`data.backupPath`;還原：關掉 XAE 後把目錄複製回 `data.repositoryFolder`,XAE 不重新掃描能不能認得未實測，或用 `Install-TcLibrary` 安裝原始 .library)。目錄位置：先用 `ITcPlcLibraryManager.Repositories` 裡同名 repository 的 Folder(TE1000 §5.22 / §5.23;probe 時回 Count=0),`System` 再用實測路徑 `C:\ProgramData\Beckhoff\TwinCAT\PlcEngineering\Managed Libraries\<Distributor>\<Library>\<Version>`(實測 2026-10-31 4026 VS2022)。
 - **共同防護**:每個寫入呼叫前查 modal dialog(`IDE_MODAL_DIALOG`);`IDE_*` 與 `PLC_LOGGED_IN` 照原碼回傳;改專案的成功後記 `BUILD_REQUIRED`(code-changed),寫入呼叫之後才失敗的也保守記一筆。
 
 ### LIBRARY_READ_FAILED
@@ -554,8 +554,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LIBRARY_BACKUP_FAILED
 
-- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 實寫前的 .plcproj 備份沒寫成(solution 路徑不明、找不到 .plcproj,或 `.tcauto-backup` 不能寫),什麼都沒改。
-- **下一步**:`Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)讓模組知道 solution;先用預設的 dry-run 看 `data.projectFile` 有值，再 `-DryRun $false`。
+- **現象**:`Remove-TcLibraryReference` / `Lock-TcLibraryPlaceholder` 實寫前的 .plcproj 備份沒寫成(solution 路徑不明、找不到 .plcproj,或 `.tcauto-backup` 不能寫),什麼都沒改。`Uninstall-TcLibrary`:repository 裡該版本的目錄推不出來(`data.repositoryFolder = null`,message 列出試過的路徑)、solution 路徑不明，或複製失敗 / 檔案數不符，沒有解除安裝。
+- **下一步**:`Connect-TcIde -SolutionPath <sln>`(或 `Open-TcProject`)讓模組知道 solution;先用預設的 dry-run 看 `data.projectFile`(Uninstall 看 `data.repositoryFolder`)有值，再 `-DryRun $false`。Uninstall 的目錄推不出來時(repository 不是 `System`、或不在實測路徑),模組不解除安裝；請使用者在 XAE 的 Library Repository 手動處理。
 
 ### LIBRARY_REMOVE_FAILED
 

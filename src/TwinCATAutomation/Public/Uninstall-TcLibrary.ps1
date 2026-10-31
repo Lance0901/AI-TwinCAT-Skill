@@ -1,7 +1,7 @@
 function Uninstall-TcLibrary {
     <#
     .SYNOPSIS
-        Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; reads back with ScanLibraries.
+        Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; backs up the version folder; reads back with ScanLibraries.
     .DESCRIPTION
         Changes the library repository of the whole machine, not the project. Every PLC project on
         this machine that uses this version loses it. ITcPlcLibraryManager.UninstallLibrary(
@@ -18,12 +18,26 @@ function Uninstall-TcLibrary {
         (LIBRARY_INVALID_ARGUMENT reason wildcard). No exact entry -> LIBRARY_NOT_INSTALLED with
         data.candidates (installed entries of the same name, ignoring case). The repository of an
         entry is not reported by ScanLibraries, so the check does not prove that it is in -Repository.
-        DryRun (default true): UninstallLibrary is NOT called; data.dryRun, data.library (the entry).
-        DryRun=false: modal dialog check (IDE_MODAL_DIALOG), UninstallLibrary, then ScanLibraries again:
+        DryRun (default true): UninstallLibrary is NOT called; data.dryRun, data.library (the entry),
+        data.repositoryFolder (the version folder that would be backed up, $null + data.warnings when it
+        cannot be derived).
+        Backup (DryRun=false, before anything is uninstalled): the version folder
+        <repository root>\<Distributor>\<LibraryName>\<Version> is copied as a whole to
+        <solution dir>\.tcauto-backup\<yyyyMMdd-HHmmss>\library-repo\<name>\<version>\ (data.backupPath,
+        data.repositoryFolder). Repository root: the Folder of -Repository in
+        ITcPlcLibraryManager.Repositories (TE1000 5.22 / 5.23 p.111-112; it returned Count=0 in the probe),
+        else for 'System' C:\ProgramData\Beckhoff\TwinCAT\PlcEngineering\Managed Libraries (layout
+        measured 2026-10-31 4026 VS2022: InstallLibrary created and UninstallLibrary removed
+        <Distributor>\<Library>\<Version> there). Folder not derivable, no solution path, copy failed or
+        incomplete -> LIBRARY_BACKUP_FAILED, nothing is uninstalled.
+        Restore: copy the backed-up folder back to data.repositoryFolder (close XAE first; whether XAE
+        picks it up without a rescan is not measured), or install the original .library file again
+        with Install-TcLibrary.
+        Then modal dialog check (IDE_MODAL_DIALOG), UninstallLibrary, then ScanLibraries again:
         the entry must be gone (data.verified), else LIBRARY_VERIFY_FAILED. XAE refusing the call ->
         LIBRARY_UNINSTALL_FAILED (data.reason repository-not-found for an unknown repository; a
         NullReferenceException is reported as it is).
-        No backup of the repository folder and no BUILD_REQUIRED (the project is not changed).
+        No BUILD_REQUIRED (the project is not changed).
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER LibraryName
         Library name exactly as ScanLibraries lists it (Get-TcLibraries -Repository), e.g. Tc2_Math.
@@ -39,7 +53,8 @@ function Uninstall-TcLibrary {
         PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC
         project (the Library Manager lives on its References node).
     .OUTPUTS
-        data: libraryName, version, distributor, repository, dryRun, library, candidates, verified.
+        data: libraryName, version, distributor, repository, dryRun, library, candidates,
+        repositoryFolder, repositoryFolderSource, backupPath, backupFileCount, verified.
     .EXAMPLE
         Uninstall-TcLibrary -LibraryName MyLib -Version 1.0.0.0 -Distributor 'My Company'
     #>
@@ -100,7 +115,18 @@ function Uninstall-TcLibrary {
                 -Message "ScanLibraries lists no '$LibraryName, $Version ($Distributor)' (exact match); nothing was uninstalled."
         }
         $data | Add-Member -NotePropertyName library -NotePropertyValue $hit
-        if ($DryRun) { return New-TcResult -Success $true -Data $data }
+        $folder = Get-TcLibraryRepositoryVersionFolder -Refs $refs -Repository $Repository -Library $hit
+        $data | Add-Member -NotePropertyName repositoryFolder -NotePropertyValue $folder.Path
+        $data | Add-Member -NotePropertyName repositoryFolderSource -NotePropertyValue $folder.Source
+        if ($DryRun) {
+            if ($null -eq $folder.Path) { $data | Add-Member -NotePropertyName warnings -NotePropertyValue @("the repository folder could not be derived (tried: $(@($folder.Tried) -join '; ')); DryRun=false would return LIBRARY_BACKUP_FAILED") }
+            return New-TcResult -Success $true -Data $data
+        }
+
+        $bk = Invoke-TcLibraryRepositoryBackup -SourcePath $folder.Path -Library $hit -Data $data -Tried @($folder.Tried)
+        if ($null -ne $bk.Result) { return $bk.Result }
+        $data | Add-Member -NotePropertyName backupPath -NotePropertyValue $bk.Backup.backupPath
+        $data | Add-Member -NotePropertyName backupFileCount -NotePropertyValue $bk.Backup.fileCount
 
         $dlg = Get-TcTreeItemDialogResult -Operation "UninstallLibrary '$LibraryName, $Version ($Distributor)'" -Data $data
         if ($null -ne $dlg) { return $dlg }

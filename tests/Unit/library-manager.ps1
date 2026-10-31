@@ -24,6 +24,7 @@ $Root = Join-Path $env:TEMP ("tcauto-unit-lib-{0}" -f [guid]::NewGuid().ToString
 $null = New-Item -ItemType Directory -Path (Join-Path $Root 'plc') -Force
 $Sln = Join-Path $Root 'Lib.sln'
 $global:L = @{ PlcProj = (Join-Path $Root 'plc\plc.plcproj') }
+$RepoRoot = Join-Path $Root 'Managed Libraries'
 
 function New-LibInfo($lib, $ver, $dist) {
     if (-not $lib) { return $null }
@@ -65,7 +66,13 @@ function Reset-Mock {
     foreach ($e in @(@('Tc2_Standard', '3.3.3.0', $B), @('Tc2_Math', '3.5.1.0', $B), @('Tc2_Math', '3.4.0.0', $B), @('MyLib', '1.2.3.4', 'My Co'))) {
         # ScanLibraries entries: Name = LibraryName (measured)
         $null = $global:L.Scan.Add([PSCustomObject]@{ Name = $e[0]; LibraryName = $e[0]; Version = $e[1]; Distributor = $e[2]; DisplayName = "$($e[0]), $($e[1]) ($($e[2]))" })
+        # repository layout <root>\<Distributor>\<Library>\<Version> (measured), with a nested file
+        $vd = Join-Path (Join-Path (Join-Path $RepoRoot $e[2]) $e[0]) $e[1]
+        $null = New-Item -ItemType Directory -Path (Join-Path $vd 'sub') -Force
+        [System.IO.File]::WriteAllText((Join-Path $vd "$($e[0]).library"), "lib $($e[0]) $($e[1])")
+        [System.IO.File]::WriteAllText((Join-Path $vd 'sub\info.txt'), 'x')
     }
+    $global:L.RepoFolder = $null
     Write-MockPlcProj
     if (Test-Path -LiteralPath (Join-Path $Root '.tcauto-backup')) { Remove-Item -LiteralPath (Join-Path $Root '.tcauto-backup') -Recurse -Force }
     & $mod { param($s) $script:TcSolutionPath = $s } $Sln
@@ -128,8 +135,14 @@ $refs | Add-Member ScriptMethod UninstallLibrary {
     $a = $args   # $args inside the Where-Object block would be that block's own
     $keep = @($global:L.Scan | Where-Object { -not ($_.LibraryName -eq $a[1] -and $_.Version -eq $a[2] -and $_.Distributor -eq $a[3]) })
     $global:L.Scan = [System.Collections.ArrayList]::new(); foreach ($k in $keep) { $null = $global:L.Scan.Add($k) }
+    # XAE deletes the version folder (measured)
+    $vd = Join-Path (Join-Path (Join-Path $global:L.RepoUsed $a[3]) $a[1]) $a[2]
+    if (Test-Path -LiteralPath $vd) { Remove-Item -LiteralPath $vd -Recurse -Force }
 }
+# ITcPlcLibraryManager.Repositories: empty in the probe (Count=0); a test sets RepoFolder to return one
+$refs | Add-Member ScriptProperty Repositories { if ($global:L.RepoFolder) { , @([PSCustomObject]@{ Name = 'Custom'; Folder = $global:L.RepoFolder }) } else { , @() } }
 $global:L.RefsNode = $refs
+$global:L.RepoUsed = $RepoRoot
 $sm = New-Object PSObject
 $sm | Add-Member ScriptMethod LookupTreeItem {
     param($p)
@@ -140,6 +153,7 @@ $global:L.Sm = $sm
 
 & $mod {
     $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true
+    $script:TcSystemLibraryRepositoryRoot = $global:L.RepoUsed
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:L.Sm }
     function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:L.Dialog }
@@ -322,9 +336,28 @@ try {
     $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version '*' -Distributor $B -DryRun $false
     Check 'Uninstall: wildcard version -> LIBRARY_INVALID_ARGUMENT wildcard' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_INVALID_ARGUMENT' -and $r.data.reason -eq 'wildcard') (J $r)
     $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.4.0.0 -Distributor $B
-    Check 'Uninstall dry-run (default): found, no call' ($r.success -and $r.data.dryRun -and $r.data.library.version -eq '3.4.0.0' -and (Get-WriteCalls).Count -eq 0) (J $r.data)
+    $vd = Join-Path $RepoRoot "$B\Tc2_Math\3.4.0.0"
+    Check 'Uninstall dry-run (default): found, repositoryFolder derived, no call, no backup' ($r.success -and $r.data.dryRun -and $r.data.library.version -eq '3.4.0.0' -and $r.data.repositoryFolder -eq $vd -and $r.data.repositoryFolderSource -eq 'measured-default' -and (Get-WriteCalls).Count -eq 0 -and (Get-BackupFiles).Count -eq 0) (J $r.data)
     $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.4.0.0 -Distributor $B -DryRun $false
     Check 'Uninstall: UninstallLibrary(System, name, version, dist), verified by ScanLibraries, nothing recorded' ($r.success -and $r.data.verified -and @(Get-WriteCalls)[-1] -eq "UninstallLibrary|System|Tc2_Math|3.4.0.0|$B" -and $null -eq (Get-CodeChanged)) (J $r.data)
+    $bp = [string]$r.data.backupPath
+    Check 'Uninstall: version folder copied whole to .tcauto-backup\<ts>\library-repo\<name>\<version> before the call' ($bp -like "$Root\.tcauto-backup\*\library-repo\Tc2_Math\3.4.0.0" -and (Test-Path -LiteralPath (Join-Path $bp 'Tc2_Math.library')) -and [System.IO.File]::ReadAllText((Join-Path $bp 'Tc2_Math.library')) -eq 'lib Tc2_Math 3.4.0.0' -and (Test-Path -LiteralPath (Join-Path $bp 'sub\info.txt')) -and $r.data.backupFileCount -eq 2 -and -not (Test-Path -LiteralPath $vd)) (J $r.data)
+    Reset-Mock
+    Remove-Item -LiteralPath (Join-Path $RepoRoot "$B\Tc2_Math\3.4.0.0") -Recurse -Force
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.4.0.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: version folder not found -> LIBRARY_BACKUP_FAILED, not uninstalled' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_BACKUP_FAILED' -and $null -eq $r.data.repositoryFolder -and $r.error.message -like '*3.4.0.0*' -and (Get-WriteCalls).Count -eq 0) (J $r)
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -Repository Custom
+    Check 'Uninstall dry-run, other repository without a known folder: repositoryFolder null + warning' ($r.success -and $null -eq $r.data.repositoryFolder -and @($r.data.warnings).Count -eq 1) (J $r.data)
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -Repository Custom -DryRun $false
+    Check 'Uninstall: other repository without a known folder -> LIBRARY_BACKUP_FAILED, not uninstalled' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_BACKUP_FAILED' -and (Get-WriteCalls).Count -eq 0) (J $r.error)
+    $global:L.RepoFolder = $RepoRoot
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -Repository Custom
+    Check 'Uninstall: folder from ITcPlcLibraryManager.Repositories (Name / Folder)' ($r.success -and $r.data.repositoryFolderSource -eq 'repositories' -and $r.data.repositoryFolder -eq (Join-Path $RepoRoot "$B\Tc2_Math\3.5.1.0")) (J $r.data)
+    $global:L.RepoFolder = $null
+    & $mod { $script:TcSolutionPath = $null; $script:TcDte = $null }
+    $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
+    Check 'Uninstall: no solution path -> LIBRARY_BACKUP_FAILED, not uninstalled' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_BACKUP_FAILED' -and (Get-WriteCalls).Count -eq 0) (J $r.error)
+    Reset-Mock
     $global:L.Mode = 'nouninstall'
     $r = Uninstall-TcLibrary -LibraryName Tc2_Math -Version 3.5.1.0 -Distributor $B -DryRun $false
     Check 'Uninstall readback: still listed -> LIBRARY_VERIFY_FAILED still-installed' ((-not $r.success) -and $r.error.code -eq 'LIBRARY_VERIFY_FAILED' -and $r.data.reason -eq 'still-installed') (J $r)
