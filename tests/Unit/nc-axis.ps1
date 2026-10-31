@@ -23,7 +23,7 @@ $Axes = "$Task^Axes"
 $SubTypeNames = @{ Enc = @{ 0 = 'Simulation encoder'; 1 = 'Simulation encoder'; 4 = 'KL5101' }; Drive = @{ 5 = 'KL4XXX'; 7 = 'Two speed drive' }; Ctrl = @{ 1 = 'Position controller P'; 2 = 'PID' } }
 function New-AxisXml([string]$Path, [int]$Id, [int]$Enc = 1, [int]$Drv = 5, [int]$Ctr = 1) {
     $name = ($Path -split '\^')[-1]
-    "<TreeItem><ItemName>$name</ItemName><PathName>$Path</PathName><ItemType>22</ItemType><ItemId>$Id</ItemId><NcAxisDef><AxisType>1</AxisType><AxisParam><Dynamic><Acceleration>1500</Acceleration><Deceleration>1500</Deceleration><Jerk>2250</Jerk></Dynamic><Velo><Fast>2000</Fast><Maximum>2000</Maximum></Velo></AxisParam><Encoder><EncType>$Enc</EncType></Encoder><Drive><DrvType>$Drv</DrvType></Drive><Controller><CtrType>$Ctr</CtrType></Controller></NcAxisDef></TreeItem>"
+    "<TreeItem><ItemName>$name</ItemName><PathName>$Path</PathName><ItemType>22</ItemType><ItemId>$Id</ItemId><NcAxisDef><AxisType>1</AxisType><AxisParam><Dynamic><Acceleration>1500</Acceleration><Deceleration>1500</Deceleration><Jerk>2250</Jerk><AccelerationMaximum>15000</AccelerationMaximum><DecelerationMaximum>15000</DecelerationMaximum></Dynamic><Velo><Fast>2000</Fast><Maximum>2000</Maximum></Velo></AxisParam><Encoder><EncType>$Enc</EncType></Encoder><Drive><DrvType>$Drv</DrvType></Drive><Controller><CtrType>$Ctr</CtrType></Controller></NcAxisDef></TreeItem>"
 }
 function Add-MockAxis([string]$Path, [int]$Sub = 1, [int]$Id = 1, [int]$Enc = 1) {
     $a = Add-MockNode $Path 22 (New-AxisXml $Path $Id $Enc) $Sub 'Continuous Axis'
@@ -68,7 +68,7 @@ $OnCreate = {
     }
     throw (New-ComError 'Not implemented (mock)' -2147467263)
 }
-function Reset-Mock([switch]$NoTask) {
+function Reset-Mock([switch]$NoTask, [string]$Instance = 'plc Instance') {
     Reset-MockTree $Root
     $global:T.Links = [System.Collections.ArrayList]::new()
     $global:T.OnCreate = $OnCreate
@@ -82,11 +82,11 @@ function Reset-Mock([switch]$NoTask) {
     $null = Add-MockNode 'TIPC'
     $null = Add-MockNode 'TIPC^plc' 56
     $null = Add-MockNode 'TIPC^plc^plc Project' 600
-    $null = Add-MockNode 'TIPC^plc^plc Instance' 57
-    $null = Add-MockNode 'TIPC^plc^plc Instance^PlcTask Inputs' 8
-    $null = Add-MockNode 'TIPC^plc^plc Instance^PlcTask Inputs^MAIN.axis.NcToPlc' 7
-    $null = Add-MockNode 'TIPC^plc^plc Instance^PlcTask Outputs' 8
-    $null = Add-MockNode 'TIPC^plc^plc Instance^PlcTask Outputs^MAIN.axis.PlcToNc' 7
+    $null = Add-MockNode "TIPC^plc^$Instance" 57
+    $null = Add-MockNode "TIPC^plc^$Instance^PlcTask Inputs" 8
+    $null = Add-MockNode "TIPC^plc^$Instance^PlcTask Inputs^MAIN.axis.NcToPlc" 7
+    $null = Add-MockNode "TIPC^plc^$Instance^PlcTask Outputs" 8
+    $null = Add-MockNode "TIPC^plc^$Instance^PlcTask Outputs^MAIN.axis.PlcToNc" 7
 }
 $sm = New-MockSysManager
 $sm | Add-Member ScriptMethod ProduceMappingInfo {
@@ -102,11 +102,14 @@ $sm | Add-Member ScriptMethod LinkVariables {
     $global:T.Mods.Add("LinkVariables $a|$b") | Out-Null
     if ($global:T.Mode -eq 'link-fail-2' -and @($global:T.Links).Count -ge 1) { throw (New-ComError "'$a' and '$b' do not match" ([int]0x98510004)) }
     if ($global:T.Mode -eq 'link-noop') { return }
+    # review S7: a modal dialog shows up after the first link
+    if ($global:T.Mode -like 'dialog-after-1*') { $global:T.Dialog = New-MockDialog }
     $null = $global:T.Links.Add([PSCustomObject]@{ a = $a; b = $b })
 }
 $sm | Add-Member ScriptMethod UnlinkVariables {
     param($a, $b)
     $global:T.Mods.Add("UnlinkVariables $a|$b") | Out-Null
+    if ($global:T.Mode -eq 'dialog-after-1-unlink-noop') { return }
     foreach ($l in @($global:T.Links)) { if ($l.a -eq $a -and $l.b -eq $b) { $global:T.Links.Remove($l) } }
 }
 $global:T.Sm = $sm
@@ -238,6 +241,53 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
     Check 'LinkNcAxis modal dialog -> IDE_MODAL_DIALOG, nothing linked / recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and @($global:T.Links).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r.error)
+
+    # ===== review fixes
+    # N1: the HRESULT decides, not the English text
+    Reset-Mock -NoTask; Reset-BuildRequired
+    $global:T.OnCreate = { param($Parent, $Name, $Sub, $Before, $VInfo) throw (New-ComError 'localized text without the English words' ([int]0x98510002)) }
+    $r = Add-TcNcTask -DryRun $false
+    Check 'N1 AddNcTask: 0x98510002 with another text -> NC_TASK_ALREADY_EXISTS, data.hresultHex' ($r.error.code -eq 'NC_TASK_ALREADY_EXISTS' -and $r.data.hresultHex -eq '0x98510002') (J $r)
+    # S8: two axes with the same path
+    Reset-Mock; Reset-BuildRequired
+    $dup = Add-MockAxis "$Axes^Axis 1#2" 1 8
+    $dup.Name = 'Axis 1'
+    $r = Set-TcNcAxisParameter -Axis "$Axes^Axis 1" -MaxVelocity 10
+    Check 'S8 path of a duplicate axis -> NC_AXIS_AMBIGUOUS' ($r.error.code -eq 'NC_AXIS_AMBIGUOUS' -and (Get-MockWrites).Count -eq 0) (J $r.error)
+    # S9: contradicting values are warnings, not refusals
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcNcAxisParameter -Axis 'Axis 1' -MaxVelocity 1000 -Acceleration 20000
+    Check 'S9 MaxVelocity below Velo/Fast and Acceleration above AccelerationMaximum -> warnings, still planned' ($r.success -and @($r.data.warnings | Where-Object { $_ -like '*Velo/Fast*' }).Count -eq 1 -and @($r.data.warnings | Where-Object { $_ -like '*AccelerationMaximum*' }).Count -eq 1) (J $r.data.warnings)
+    $r = Set-TcNcAxisParameter -Axis 'Axis 1' -MaxVelocity 2500
+    Check 'S9 consistent values -> no warning' ($r.success -and $null -eq $r.data.PSObject.Properties['warnings']) (J $r.data)
+    # S9: the type revert is read back
+    Reset-Mock; Reset-BuildRequired
+    $global:T.OnConsume = {
+        param($Node, $Xml)
+        if ($Node.ItemType -ne 22) { return $false }
+        $global:T.ConsumeCount = 1 + [int]$global:T.ConsumeCount
+        if ($global:T.ConsumeCount -ge 2) { return $true }   # the revert is ignored
+        & $OnConsumeAxis $Node $Xml
+    }
+    $global:T.ConsumeCount = 0
+    $r = Set-TcNcAxisParameter -Axis 'Axis 1' -ControllerType 3 -DryRun $false
+    Check 'S9 revert ignored by XAE -> reverted false, revertError says it does not read back' ($r.error.code -eq 'NC_INVALID_SUBTYPE' -and $r.data.reverted -eq $false -and $r.data.revertError -match 'does not read back') (J $r.data)
+    # S7: modal dialog before the second link -> the first is removed and read back
+    Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'dialog-after-1'
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
+    Check 'S7 dialog before the 2nd link -> IDE_MODAL_DIALOG, partialLinks, unlinked, rolledBack true' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and @($r.data.partialLinks).Count -eq 1 -and $r.data.rolledBack -eq $true -and @($global:T.Links).Count -eq 0 -and (Get-CodeChanged) -match 'failed') (J $r)
+    Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'dialog-after-1-unlink-noop'
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
+    Check 'S7 unlink without effect -> rolledBack false (mapping still has the link)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.rolledBack -eq $false -and @($global:T.Links).Count -eq 1) (J $r.data)
+    # N5: a member of the struct linked on its own
+    Reset-Mock; Reset-BuildRequired
+    $null = $global:T.Links.Add([PSCustomObject]@{ a = "$PlcIn.ActPos"; b = 'TIID^Dev^Term^Ch^In' })
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
+    Check 'N5 member-level link (NcToPlc.ActPos) -> NC_AXIS_ALREADY_LINKED' ($r.error.code -eq 'NC_AXIS_ALREADY_LINKED') (J $r.error)
+    # N6: the PLC instance node is read from the tree
+    Reset-Mock -Instance 'MyRenamedInstance'; Reset-BuildRequired
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'N6 renamed PLC instance is found in the tree' ($r.success -and $r.data.instancePath -eq 'TIPC^plc^MyRenamedInstance' -and @($r.data.links)[0].plc -like 'TIPC^plc^MyRenamedInstance^*') (J $r.data)
 
     # ===== hints / tools.json
     foreach ($c in @('NC_TASK_NOT_FOUND', 'NC_TASK_AMBIGUOUS', 'NC_TASK_ALREADY_EXISTS', 'NC_TASK_VERIFY_FAILED', 'NC_AXIS_ALREADY_EXISTS', 'NC_AXIS_NOT_FOUND', 'NC_AXIS_AMBIGUOUS', 'NC_AXIS_VERIFY_FAILED', 'NC_INVALID_SUBTYPE', 'NC_AXIS_PARAM_NOT_FOUND', 'NC_AXIS_PARAM_WRITE_FAILED', 'NC_AXIS_PARAM_VERIFY_FAILED', 'NC_PLC_VARIABLE_NOT_FOUND', 'NC_AXIS_ALREADY_LINKED')) {

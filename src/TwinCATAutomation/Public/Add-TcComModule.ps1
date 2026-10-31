@@ -98,11 +98,13 @@ function Add-TcComModule {
 
         $c = New-TcTreeItem -Path $script:TcComFolderPath -Name $Name -SubType 0 -VInfo $vInfo -DryRun $false
         $called = Test-TcWriteCalled -Result $c
-        Copy-TcDataFields -From $c.data -To $data -Names @('backupPath', 'backupFiles', 'warnings')
+        Copy-TcDataFields -From $c.data -To $data -Names @('backupPath', 'backupFiles', 'warnings', 'hresult', 'hresultHex')
         if (-not $c.success) {
             $code = [string]$c.error.code
             $hint = [string]$c.error.hint
-            if ($code -eq 'TREEITEM_CREATE_FAILED' -and [string]$c.error.message -match 'TCOM Module / TCOM Configuration with GUID') { $code = 'TCCOM_CLASS_NOT_FOUND'; $hint = Get-TcErrorHint -Code $code }
+            # N1: by HRESULT (0x98510009, phase3-probe.md question 9); the English text is the fallback
+            $hr = if ($null -ne $c.data -and $null -ne $c.data.PSObject.Properties['hresult']) { [int]$c.data.hresult } else { 0 }
+            if ($code -eq 'TREEITEM_CREATE_FAILED' -and ($hr -eq [int]0x98510009 -or ($hr -eq 0 -and [string]$c.error.message -match 'TCOM Module / TCOM Configuration with GUID'))) { $code = 'TCCOM_CLASS_NOT_FOUND'; $hint = Get-TcErrorHint -Code $code }
             $res = New-TcResult -Success $false -ErrorCode $code -Data $data -ErrorMessage "Add-TcComModule: $($c.error.message)" -Hint $hint
             if ($called) { $res = Register-TcCodeChange -Result $res -Change "Add-TcComModule $Name [failed]" }
             return $res

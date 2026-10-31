@@ -20,7 +20,7 @@ function New-TcTreeItem {
         expected), and the child names must be the old ones plus exactly one (data.childrenAfter;
         skipped with a warning when the list is cut).
         data.verified=true, data.createdPath / createdName / itemType / subType.
-        XAE refusing the call -> TREEITEM_CREATE_FAILED; returned but not found afterwards, or a
+        XAE refusing the call -> TREEITEM_CREATE_FAILED (data.hresult / hresultHex: the HRESULT of the COM error); returned but not found afterwards, or a
         parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. XAE may give the child another name than requested: data.createdName
         and data.warnings say so. Below TIPC: BUILD_REQUIRED code-changed is recorded.
     .PARAMETER Path
@@ -127,6 +127,13 @@ function New-TcTreeItem {
         catch {
             # An error from CreateChild itself: nothing was created (same rule as Add-TcPou, #65); a
             # wrapped IDE_* error may have happened after XAE created it, so that one is recorded.
+            # data.hresult / hresultHex (phase 3 review N1): callers map XAE codes (0x98510002 ...)
+            # by number instead of the English message.
+            $hr = Get-TcExceptionHResult -InputObject $_
+            if ($hr -ne 0) {
+                $data | Add-Member -NotePropertyName hresult -NotePropertyValue $hr -Force
+                $data | Add-Member -NotePropertyName hresultHex -NotePropertyValue ('0x{0:X8}' -f $hr) -Force
+            }
             $res = New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TREEITEM_CREATE_FAILED' -Data $data -Operation "CreateChild '$plannedPath'"
             if ($isPlc -and $_.Exception.Message -match '^IDE_') { $res = Register-TcCodeChange -Result $res -Change "New-TcTreeItem $plannedPath [failed]" }
             return $res

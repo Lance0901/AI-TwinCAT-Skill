@@ -64,12 +64,14 @@ function Add-TcNcTask {
 
         $c = New-TcTreeItem -Path 'TINC' -Name $Name -SubType 1 -DryRun $false
         $called = Test-TcWriteCalled -Result $c
-        Copy-TcDataFields -From $c.data -To $data -Names @('backupPath', 'backupFiles', 'warnings')
+        Copy-TcDataFields -From $c.data -To $data -Names @('backupPath', 'backupFiles', 'warnings', 'hresult', 'hresultHex')
         if (-not $c.success) {
             $msg = [string]$c.error.message
             $code = [string]$c.error.code
             $hint = [string]$c.error.hint
-            if ($code -eq 'TREEITEM_CREATE_FAILED' -and $msg -match 'Item already exists') { $code = 'NC_TASK_ALREADY_EXISTS'; $hint = Get-TcErrorHint -Code $code }
+            # N1: by HRESULT (0x98510002, phase3-probe.md question 1); the English text is the fallback
+            $hr = if ($null -ne $c.data -and $null -ne $c.data.PSObject.Properties['hresult']) { [int]$c.data.hresult } else { 0 }
+            if ($code -eq 'TREEITEM_CREATE_FAILED' -and ($hr -eq [int]0x98510002 -or ($hr -eq 0 -and $msg -match 'Item already exists'))) { $code = 'NC_TASK_ALREADY_EXISTS'; $hint = Get-TcErrorHint -Code $code }
             $res = New-TcResult -Success $false -ErrorCode $code -Data $data -ErrorMessage "Add-TcNcTask: $msg" -Hint $hint
             if ($called) { $res = Register-TcCodeChange -Result $res -Change "Add-TcNcTask $Name [failed]" }
             return $res

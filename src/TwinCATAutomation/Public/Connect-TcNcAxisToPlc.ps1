@@ -9,18 +9,22 @@ function Connect-TcNcAxisToPlc {
         links the whole struct in one call, in either order:
           PLC '<Plc> Instance^<task> Inputs^<var>.NcToPlc'  <->  NC '<axis>^Outputs^ToPlc'
           PLC '<Plc> Instance^<task> Outputs^<var>.PlcToNc' <->  NC '<axis>^Inputs^FromPlc'
-        The process image names ('PlcTask Inputs' ...) are found below the PLC instance (every
+        The PLC instance is the child of TIPC^<Plc> that has process images (read from the tree,
+        not assumed to be '<Plc> Instance'). The process image names ('PlcTask Inputs' ...) are found below the PLC instance (every
         '* Inputs' / '* Outputs' child is tried), not hard-coded. The AXIS_REF only shows up there
         after a build: not found -> NC_PLC_VARIABLE_NOT_FOUND (hint: Build-TcProject).
         Links already in the mapping (ProduceMappingInfo, Get-TcMappingLinks, the same readback as
         Set-TcVariableLink): both pairs already linked to each other -> success,
         data.alreadyLinked = true, nothing written; any of the four ends linked to something else ->
-        NC_AXIS_ALREADY_LINKED (data.existingLinks; what LinkVariables does with an end that is
+        NC_AXIS_ALREADY_LINKED (also when only a member such as '<var>.NcToPlc.ActPos' is linked;
+        data.existingLinks; what LinkVariables does with an end that is
         already linked was not measured, so the module refuses: remove the old link with
         Remove-TcVariableLink first).
         DryRun (default true): data.links[] (plc, nc, state). DryRun=false: the mapping is backed up
         (ProduceMappingInfo text, data.backupPath), IDE_MODAL_DIALOG check, LinkVariables for each
-        missing pair; when the second one fails the first is unlinked again (data.rolledBack).
+        missing pair; when the second one fails - or a modal dialog appears before it - the first is unlinked
+        again and the mapping read back (data.partialLinks, data.rolledBack = true only when the
+        link is gone from ProduceMappingInfo).
         Readback: both pairs must be in ProduceMappingInfo, else LINK_VERIFY_FAILED.
         XAE errors: TSM_E_MISMATCHINGITEMS -> LINK_TYPE_MISMATCH (e.g. input to input, 0x98510004),
         others LINK_FAILED. BUILD_REQUIRED (code-changed) is recorded once LinkVariables was called.
@@ -77,8 +81,11 @@ function Connect-TcNcAxisToPlc {
         $prj = [string]$spec.PlcProjectPath
         $seg = @($prj -split '\^')
         $plcName = if ($seg.Count -ge 2) { $seg[1] } else { $seg[-1] }
-        $instancePath = "TIPC^$plcName^$plcName Instance"
+        # review N6: the instance node is read from the tree (the child of TIPC^<Plc> with process images)
+        $inst = Resolve-TcPlcInstancePath -SysManager $sm -PlcNodePath "TIPC^$plcName" -ProjectPath $prj
+        $instancePath = $inst.Path
         $data | Add-Member -NotePropertyName instancePath -NotePropertyValue $instancePath
+        if ($null -ne $inst.Note) { Add-TcDataWarning -Data $data -Warning $inst.Note }
 
         $img = Find-TcPlcAxisRefImage -SysManager $sm -InstancePath $instancePath -PlcVariable $PlcVariable
         if ($null -eq $img.NcToPlc -or $null -eq $img.PlcToNc) {
@@ -106,7 +113,13 @@ function Connect-TcNcAxisToPlc {
             $pr.state = 'missing'
             foreach ($l in $links) {
                 foreach ($end in @($pr.plc, $pr.nc)) {
-                    if ($l.a -ieq $end -or $l.b -ieq $end) { $foreign.Add([PSCustomObject]@{ a = $l.a; b = $l.b }) }
+                    # review N5: a member of the struct linked on its own ('...NcToPlc.ActPos',
+                    # '...^ToPlc^...') counts as linked elsewhere too
+                    $hit = $false
+                    foreach ($x in @($l.a, $l.b)) {
+                        if ($x -ieq $end -or $x.StartsWith("$end.", [System.StringComparison]::OrdinalIgnoreCase) -or $x.StartsWith("$end^", [System.StringComparison]::OrdinalIgnoreCase)) { $hit = $true }
+                    }
+                    if ($hit) { $foreign.Add([PSCustomObject]@{ a = $l.a; b = $l.b }) }
                 }
             }
         }
@@ -131,22 +144,43 @@ function Connect-TcNcAxisToPlc {
         Add-TcBackupToData -Data $data -Backup $bk.Backup
 
         $done = [System.Collections.Generic.List[object]]::new()
+        # review S7: undo the links this call made and read the mapping back; rolledBack is true
+        # only when ProduceMappingInfo no longer has any of them. data.partialLinks lists them.
+        $undo = {
+            $data | Add-Member -NotePropertyName partialLinks -NotePropertyValue @($done | ForEach-Object { [PSCustomObject]@{ plc = $_.plc; nc = $_.nc } }) -Force
+            $unlinkErrors = [System.Collections.Generic.List[string]]::new()
+            foreach ($d in $done) {
+                try { Invoke-TcComRetry -OperationName 'UnlinkVariables' -ScriptBlock { $sm.UnlinkVariables($d.plc, $d.nc) } | Out-Null }
+                catch { $unlinkErrors.Add($_.Exception.Message) }
+            }
+            $ok = $true
+            if ($done.Count -gt 0) {
+                try {
+                    $now = @(Get-TcMappingLinks -SysManager $sm)
+                    $left = @($done | Where-Object { Test-TcMappingHasLink -Links $now -PathA $_.plc -PathB $_.nc })
+                    if ($left.Count -gt 0) { $ok = $false }
+                }
+                catch { $ok = $false; $unlinkErrors.Add("mapping readback: $($_.Exception.Message)") }
+            }
+            if ($unlinkErrors.Count -gt 0) { $data | Add-Member -NotePropertyName unlinkErrors -NotePropertyValue $unlinkErrors.ToArray() -Force }
+            $data | Add-Member -NotePropertyName rolledBack -NotePropertyValue $ok -Force
+            $ok
+        }
         foreach ($pr in $todo) {
             $dlg = Get-TcTreeItemDialogResult -Operation "LinkVariables '$($pr.plc)'" -Data $data
             if ($null -ne $dlg) {
-                if ($called) { $dlg = Register-TcCodeChange -Result $dlg -Change "Connect-TcNcAxisToPlc $axisPath [failed]" }
+                if ($called) {
+                    $rb = & $undo
+                    $dlg.error.message = "$($dlg.error.message); $(if ($rb) { 'the link made before was removed again (mapping read back)' } else { 'the link made before could NOT be removed (data.partialLinks)' })"
+                    $dlg = Register-TcCodeChange -Result $dlg -Change "Connect-TcNcAxisToPlc $axisPath [failed]"
+                }
                 return $dlg
             }
             $called = $true
             try { Invoke-TcComRetry -OperationName 'LinkVariables' -ScriptBlock { $sm.LinkVariables($pr.plc, $pr.nc) } | Out-Null; $done.Add($pr) }
             catch {
                 $err = $_
-                $rolledBack = $true
-                foreach ($d in $done) {
-                    try { Invoke-TcComRetry -OperationName 'UnlinkVariables' -ScriptBlock { $sm.UnlinkVariables($d.plc, $d.nc) } | Out-Null }
-                    catch { $rolledBack = $false }
-                }
-                $data | Add-Member -NotePropertyName rolledBack -NotePropertyValue $rolledBack
+                $rolledBack = & $undo
                 $pass = Get-TcTreeItemPassThroughError -ErrorRecord $err
                 $code = if ($null -ne $pass) { $pass.Code } else { ConvertTo-TcTsmErrorCode -InputObject $err -DefaultCode 'LINK_FAILED' }
                 if ($code -eq 'TREEITEM_NOT_FOUND') { $code = 'LINK_FAILED' }

@@ -141,7 +141,8 @@ function Resolve-TcNcAxis {
     .SYNOPSIS
         -Axis (tree path or axis name) -> @{ Result = $null | <failed result>; Path; Item }.
     .DESCRIPTION
-        A path (contains '^') is looked up and must be an axis (ItemType 22). A name is searched in
+        A path (contains '^') is looked up and must be an axis (ItemType 22); when two axes of the
+        Axes children have that same path (duplicate names) -> NC_AXIS_AMBIGUOUS. A name is searched in
         the Axes of every NC task (exact case first, then case-insensitive); several axes with that
         name (XAE allows duplicates, phase3-probe.md question 2) -> NC_AXIS_AMBIGUOUS, none ->
         NC_AXIS_NOT_FOUND (data.ncAxes lists the axes).
@@ -166,6 +167,13 @@ function Resolve-TcNcAxis {
         if ($t -ne $script:TcNcAxisItemType) {
             $Data | Add-Member -NotePropertyName itemType -NotePropertyValue $t -Force
             return (& $fail 'NC_AXIS_NOT_FOUND' "-Axis '$Axis' is not an NC axis (ItemType $t, expected 22); nothing was changed.")
+        }
+        # review S8: XAE allows two axes with the same name, so the same path can mean two axes;
+        # LookupTreeItem would silently pick one of them
+        $same = @(Get-TcNcAxisList -SysManager $SysManager | Where-Object { $_.path -ieq $Axis })
+        if ($same.Count -gt 1) {
+            $Data | Add-Member -NotePropertyName ncAxes -NotePropertyValue @($same | ForEach-Object { $_.path }) -Force
+            return (& $fail 'NC_AXIS_AMBIGUOUS' "$($same.Count) NC axes have the path '$Axis' (XAE allows duplicate names); rename or delete the duplicates first. Nothing was changed.")
         }
         return @{ Path = $Axis; Item = $r.Item; Result = $null }
     }
@@ -269,6 +277,47 @@ function New-TcNcAxisFragment {
     return $doc.OuterXml
 }
 
+function Get-TcNcAxisConsistencyWarnings {
+    <#
+    .SYNOPSIS
+        Warnings for planned NcAxisDef values that contradict other fields of the same ProduceXml (review S9).
+    .DESCRIPTION
+        Checked (the planned value, else the current one): Dynamic/Acceleration <=
+        Dynamic/AccelerationMaximum, Dynamic/Deceleration <= Dynamic/DecelerationMaximum, and
+        Velo/Maximum >= Velo/Fast, FastManual, SlowManual, RefSearch, RefSync. A field missing in the
+        XML is skipped. Not measured: whether the NC refuses, clamps or ignores such values; the
+        cmdlet only reports them.
+    .PARAMETER Doc
+        Axis ProduceXml (XmlDocument).
+    .PARAMETER Planned
+        XPath below TreeItem -> planned text.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][System.Xml.XmlDocument]$Doc, [Parameter(Mandatory)][System.Collections.IDictionary]$Planned)
+    $get = {
+        param([string]$x)
+        if ($Planned.Contains($x)) { return (ConvertFrom-TcInvariantNumberText -Text ([string]$Planned[$x])) }
+        $n = $Doc.SelectSingleNode("TreeItem/$x")
+        if ($null -eq $n) { return $null }
+        return (ConvertFrom-TcInvariantNumberText -Text ([string]$n.InnerText))
+    }
+    $out = [System.Collections.Generic.List[string]]::new()
+    $dyn = 'NcAxisDef/AxisParam/Dynamic'
+    $velo = 'NcAxisDef/AxisParam/Velo'
+    foreach ($pair in @(@('Acceleration', 'AccelerationMaximum'), @('Deceleration', 'DecelerationMaximum'))) {
+        $v = & $get "$dyn/$($pair[0])"; $m = & $get "$dyn/$($pair[1])"
+        if ($null -ne $v -and $null -ne $m -and $v -gt $m) { $out.Add("$($pair[0]) $v is above $($pair[1]) $m (not refused; how the NC treats it is not measured)") }
+    }
+    $max = & $get "$velo/Maximum"
+    if ($null -ne $max) {
+        foreach ($f in @('Fast', 'FastManual', 'SlowManual', 'RefSearch', 'RefSync')) {
+            $v = & $get "$velo/$f"
+            if ($null -ne $v -and $v -gt $max) { $out.Add("Velo/Maximum $max is below Velo/$f $v (not refused; how the NC treats it is not measured)") }
+        }
+    }
+    return $out.ToArray()
+}
+
 function Find-TcPlcAxisRefImage {
     <#
     .SYNOPSIS
@@ -301,6 +350,39 @@ function Find-TcPlcAxisRefImage {
         if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p)) { $out.PlcToNc = $p; break }
     }
     return $out
+}
+
+function Resolve-TcPlcInstancePath {
+    <#
+    .SYNOPSIS
+        Tree path of the PLC instance below 'TIPC^<Plc>' (review N6: not hard-coded as '<Plc> Instance').
+    .DESCRIPTION
+        The child of the PLC node (other than '<Plc> Project') that has a '* Inputs' or '* Outputs'
+        child (the process images of the instance). Exactly one candidate is returned; none or
+        several -> 'TIPC^<Plc>^<Plc> Instance' (the usual name) and Note says why.
+    .PARAMETER SysManager
+        ITcSysManager.
+    .PARAMETER PlcNodePath
+        'TIPC^<Plc>'.
+    .PARAMETER ProjectPath
+        'TIPC^<Plc>^<Plc> Project' (skipped).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$PlcNodePath, [Parameter()][string]$ProjectPath)
+    $leaf = Get-TcTreePathLeaf -Path $PlcNodePath
+    $default = "$PlcNodePath^$leaf Instance"
+    $node = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $PlcNodePath
+    if ($null -eq $node) { return @{ Path = $default; Note = "'$PlcNodePath' not found" } }
+    $cands = [System.Collections.Generic.List[string]]::new()
+    foreach ($c in @(Get-TcTreeItemChildList -Item $node)) {
+        $p = "$PlcNodePath^$($c.name)"
+        if (-not [string]::IsNullOrEmpty($ProjectPath) -and $p -ieq $ProjectPath) { continue }
+        $ci = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p
+        if ($null -eq $ci) { continue }
+        if (@(Get-TcTreeItemChildList -Item $ci | Where-Object { $_.name -like '* Inputs' -or $_.name -like '* Outputs' }).Count -gt 0) { $cands.Add($p) }
+    }
+    if ($cands.Count -eq 1) { return @{ Path = $cands[0]; Note = $null } }
+    return @{ Path = $default; Note = "$($cands.Count) children of '$PlcNodePath' have process images; '$default' is assumed" }
 }
 
 function Invoke-TcNcAxisRollback {

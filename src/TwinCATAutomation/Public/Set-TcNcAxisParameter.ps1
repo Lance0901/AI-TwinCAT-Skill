@@ -19,11 +19,16 @@ function Set-TcNcAxisParameter {
         0-8, 10-21, 24-29; controller 1-3, 5-14; else NC_INVALID_SUBTYPE). A field that is not in this
         axis' ProduceXml -> NC_AXIS_PARAM_NOT_FOUND.
         DryRun (default true): data.changes[] (parameter, xpath, current, planned, changed), data.xml.
+        Values that contradict other fields of the same ProduceXml (Acceleration > AccelerationMaximum,
+        Deceleration > DecelerationMaximum, MaxVelocity below Velo/Fast, FastManual, SlowManual,
+        RefSearch or RefSync) are listed in data.warnings and still written: how the NC treats them is
+        not measured.
         DryRun=false: ProduceXml backup (data.backupPath), IDE_MODAL_DIALOG check, ConsumeXml, then
         ProduceXml again: every field must have its planned value (numbers compared with a relative
         tolerance of 1e-9) else NC_AXIS_PARAM_VERIFY_FAILED (data.mismatches); a changed type must
         give a non-empty ItemSubTypeName on the Enc / Drive / Ctrl child, else the old type numbers
-        are sent back (data.reverted) and NC_INVALID_SUBTYPE. Nothing to change: success,
+        are sent back and read back again (data.reverted = true only when the old numbers and a
+        non-empty ItemSubTypeName read back, else data.revertError) and NC_INVALID_SUBTYPE. Nothing to change: success,
         data.written = false. BUILD_REQUIRED (code-changed) is recorded once ConsumeXml was called.
         The axis type (Continuous / Discrete ...) is fixed at creation (Add-TcNcAxis -AxisType).
         Only unit tests so far; registered tcauto verification is task 4.6.
@@ -161,6 +166,9 @@ function Set-TcNcAxisParameter {
         }
         $xml = New-TcNcAxisFragment -Values $planned
         $data | Add-Member -NotePropertyName xml -NotePropertyValue $xml
+        # review S9: values that contradict other fields of the same ProduceXml are reported, not
+        # refused (how the NC treats them is not measured)
+        Add-TcDataWarning -Data $data -Warning @(Get-TcNcAxisConsistencyWarnings -Doc $doc -Planned $planned)
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
         $bk = Invoke-TcTreeItemBackup -Item $item -Path $axisPath -Data $data -Xml $before
@@ -215,6 +223,20 @@ function Set-TcNcAxisParameter {
                 $rx = New-TcNcAxisFragment -Values $restore
                 try { Invoke-TcComRetry -OperationName "ConsumeXml $axisPath (revert)" -ScriptBlock { $item.ConsumeXml($rx) } | Out-Null; $reverted = $true }
                 catch { $revertError = $_.Exception.Message }
+                if ($reverted) {
+                    # review S9: the revert counts only when the type numbers and names read back
+                    $rd = ConvertFrom-TcTreeItemXmlString -Xml (Get-TcTreeItemXmlText -Item $item -Path $axisPath)
+                    $bad = [System.Collections.Generic.List[string]]::new()
+                    foreach ($u in $unnamed) {
+                        $f = $script:TcNcAxisFields[$u.parameter]
+                        $n = if ($null -ne $rd) { $rd.SelectSingleNode("TreeItem/$($f.XPath)") } else { $null }
+                        $act = if ($null -ne $n) { ([string]$n.InnerText).Trim() } else { '(missing)' }
+                        $cItem = Find-TcTreeItemNoThrow -SysManager $sm -Path $u.child
+                        $nm = [string](Get-TcTreeItemPropertyNoThrow -Item $cItem -Name 'ItemSubTypeName' -Default '')
+                        if ($act -ne ([string]$u.previous).Trim() -or [string]::IsNullOrWhiteSpace($nm)) { $bad.Add("$($u.parameter) reads '$act' (name '$nm'), expected '$($u.previous)'") }
+                    }
+                    if ($bad.Count -gt 0) { $reverted = $false; $revertError = 'the revert does not read back: ' + ($bad -join '; ') }
+                }
             }
             else { $revertError = 'a modal dialog is open in XAE' }
             $data | Add-Member -NotePropertyName unnamedTypes -NotePropertyValue $unnamed.ToArray()
