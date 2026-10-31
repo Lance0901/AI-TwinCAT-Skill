@@ -217,6 +217,14 @@ $script:TcErrorHints['INDEPENDENT_FILE_UNSUPPORTED'] = '這個節點不能獨立
 $script:TcErrorHints['INDEPENDENT_FILE_WRITE_FAILED'] = 'SaveInOwnFile 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcIndependentFile;data.backupPath / backupFiles 是改之前的備份'
 $script:TcErrorHints['INDEPENDENT_FILE_SAVE_FAILED'] = '設定已改但專案沒存成(改動還在 XAE 記憶體):用 Get-TcIdeModalDialog 檢查 dialog、確認 .tsproj 不是唯讀，再重跑 Set-TcIndependentFile 同樣的參數(會再存一次)'
 $script:TcErrorHints['INDEPENDENT_FILE_VERIFY_FAILED'] = '讀回值對了但磁碟上的 .xti 不符(data.createdFiles / removedFiles / expectedFile):不要當成功。看 solution 資料夾的 _Config 目錄;要還原就從 data.backupFiles 複製回去再 Reset-TcSolution'
+# Phase 3 task 4.5: ADS routes (Get-TcAdsRoutes / Find-TcAdsTarget / Add-TcAdsRoute)
+$script:TcErrorHints['ROUTE_READ_FAILED'] = 'TIRR 的 ProduceXml 讀不到 RoutePrj:用 Get-TcIdeModalDialog 檢查 dialog,Get-TcTreeItem -Path TIRR 確認節點後重跑'
+$script:TcErrorHints['ROUTE_SEARCH_REQUIRES_LOCAL_TARGET'] = 'XAE 只能從本機系統搜尋(實測 target = UmRT 也不行):先 Set-TcTarget -AmsNetId <本機 system 的 AmsNetId(data.localNetId)> -NoPlatformSwitch,再 Find-TcAdsTarget,做完再 Set-TcTarget 回原本的 target(data.target)'
+$script:TcErrorHints['ROUTE_SEARCH_FAILED'] = '搜尋被 XAE 拒絕:用 Get-TcIdeModalDialog 檢查 dialog,確認 -Search 是 IPv4 或 host name 後重跑 Find-TcAdsTarget'
+$script:TcErrorHints['ROUTE_ALREADY_EXISTS'] = '已經有到這個 NetId 的 route(data.existingRoutes):用 Get-TcAdsRoutes 確認，不需要再加'
+$script:TcErrorHints['ROUTE_PASSWORD_MISSING'] = '先在執行模組的行程設定環境變數(MCP:在 client 設定的 server env 加),再用 Add-TcAdsRoute -PasswordEnv <變數名稱> 重跑;不要把密碼當參數值傳'
+$script:TcErrorHints['ROUTE_ADD_FAILED'] = 'AddRoute / AddProjectRoute 被 XAE 拒絕(訊息已去掉密碼與 XML):確認遠端 IP / NetId / 帳號，用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcAdsRoutes 看目前的 route'
+$script:TcErrorHints['ROUTE_VERIFY_FAILED'] = '指令有返回但 TIRR 讀回沒有這條 route:不要當成功。用 Get-TcAdsRoutes 看 data.target 的 route 表(TIRR 只顯示目前 target 的),必要時 Set-TcTarget 切到另一端再看'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

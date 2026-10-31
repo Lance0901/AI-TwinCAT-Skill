@@ -1316,6 +1316,53 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:讀回對、也存檔了，但磁碟不符：開啟後沒有新的 `.xti` 也找不到 `data.expectedFile`;或關閉後原本的 `.xti` 還在。
 - **下一步**:看 solution 的 `_Config` 目錄;要還原就把 `data.backupFiles` 複製回去再 `Reset-TcSolution`。
 
+### ADS route(task 4.5):做法
+
+- **節點**:`TIRR`(ItemName `Routes`,ItemType 31;TE1000 v1.7.0 §6.3.11 p.211、§6.3.17 p.220–221、§6.4 p.222–225)。ProduceXml 是**目前 target**(`Set-TcTarget`)的 route 表:`RoutePrj/Target`、`ActualRoutes`、`StaticRoutes`(Name、Address、NetId、Type、有時 Flags)、`ProjectRoutes`、`TargetList`(probe 第 22 題)。`Get-TcAdsRoutes`(MCP `GetAdsRoutes`)唯讀。
+- **搜尋**:`Find-TcAdsTarget`(`FindAdsTargets`)送 `BroadcastSearch` 或 `Search`(4020.10 起)。**target 不是本機 system 時 XAE 直接拒絕**(本機 UmRT 也算不是;probe 第 23 題),模組不會自動切 target,回 `ROUTE_SEARCH_REQUIRES_LOCAL_TARGET`。本機時同步約 4.05 s;probe 一台都沒找到，所以空清單不代表網路上沒有 target。
+- **新增**:`Add-TcAdsRoute`(`AddAdsRoute`)送 `AddRoute`(要遠端帳密)或 `-ProjectRoute` 的 `AddProjectRoute`(只寫專案)。**未實測**(沒有第二台 target,probe 第 24、25、27 題)。密碼只收 `-PasswordEnv`(環境變數名稱;MCP 要在 client 設定的 server `env` 裡設)或 PowerShell 的 `SecureString`,回傳、錯誤訊息、hint、log、備份都不含密碼與 XML。AddRoute 的帳密在網路上只用固定 key 保護(Beckhoff Security Advisory 2017-002,CVE-2017-16718),只在可信網路用。只能建未加密的 route(手冊 p.220)。
+- **密碼遮罩**:所有 tree tool 的 ProduceXml(`Get-TcTreeItemXmlText`)、備份檔、錯誤訊息都把 `*Password` / `*Pwd` 元素與 attribute 的值換成 `***`(AddRoute 的 `<Password>` 是明文,TISY 的 `<LogonPassword>`「stored in the project」,手冊 p.220、p.222)。
+- **刪除 route:不支援**。手冊 p.220:「It is not possible to delete items directly via the Automation Interface」,只能改 `StaticRoutes.xml` 再重啟 TwinCAT service——重啟會把本機 UmRT(`TcSystemServiceUm`)一起停掉，所以沒有做成 tool。實際路徑(probe 第 26 題，實測 2026-11-01 本機 TwinCAT 3.1 / Windows 11):
+  - XAR(TcSysSrv):`%TWINCAT3DIR%\Target\StaticRoutes.xml` = `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`,一般使用者只有讀(要 admin)。
+  - UmRT:`C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\Target\StaticRoutes.xml`(例如 `UmRT_Default`),一般使用者可寫([InfoSys TF6310 UmRT 範例路徑](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/15569027467.html))。
+  - 手冊寫的 `C:\TwinCAT\3.1\Target\StaticRoutes.xml` 在這台不存在，不要寫死。
+  - 手動刪除：先備份該檔，刪掉對應的 `<Route>`(Name + NetId),存檔後重啟 TwinCAT service(UmRT 要再照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」啟動,`Enable-TcConfig -Force`)。
+
+### ROUTE_READ_FAILED
+
+- **現象**:`TIRR` 的 ProduceXml 沒有 `TreeItem/RoutePrj`。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog、`Get-TcTreeItem -Path TIRR` 確認後重跑。
+
+### ROUTE_SEARCH_REQUIRES_LOCAL_TARGET
+
+- **現象**:目前 target(`data.target`)不是本機 system(`data.localNetId`,registry `HKLM\SOFTWARE\[WOW6432Node\]Beckhoff\TwinCAT3\System` 的 AmsNetId),或 XAE 回 "Broadcast search only works on local target system"。什麼都沒送;模組不會自動切 target。
+- **下一步**:`Set-TcTarget -AmsNetId <data.localNetId> -NoPlatformSwitch` → `Find-TcAdsTarget` → `Set-TcTarget -AmsNetId <data.target>` 切回來(切回時平台檢查照常)。
+
+### ROUTE_SEARCH_FAILED
+
+- **現象**:搜尋的 ConsumeXml 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### ROUTE_ALREADY_EXISTS
+
+- **現象**:TIRR(目前 target 的 route 表)已經有這個 NetId 的 route(`data.existingRoutes`)。什麼都沒送。
+- **下一步**:`Get-TcAdsRoutes` 確認;不需要再加。
+
+### ROUTE_PASSWORD_MISSING
+
+- **現象**:AddRoute 沒有密碼來源，或 `-PasswordEnv` 指的環境變數在這個行程是空的。
+- **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),再 `Add-TcAdsRoute -PasswordEnv <名稱>`;不要把密碼當參數值傳。
+
+### ROUTE_ADD_FAILED
+
+- **現象**:XAE 拒絕 AddRoute / AddProjectRoute。訊息已去掉密碼與 XML(`Protect-TcSecretText`)。
+- **下一步**:確認遠端 IP / NetId / 帳號與網路,`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcAdsRoutes` 看目前狀態。
+
+### ROUTE_VERIFY_FAILED
+
+- **現象**:指令有返回，但 TIRR 讀回沒有這個 NetId(AddRoute 看 StaticRoutes / ActualRoutes,project route 看 ProjectRoutes)。TIRR 只顯示目前 target 的 route 表;AddRoute 實際改的是哪一端的表沒實測。
+- **下一步**:`Get-TcAdsRoutes`;必要時 `Set-TcTarget` 切到另一端再看。
+
 ## 已知限制
 
 使用者向的已知限制清單(現象、影響、繞過方式、issue)與真機驗證範圍:[known-limitations.md](known-limitations.md)。

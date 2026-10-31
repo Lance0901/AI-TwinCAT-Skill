@@ -62,6 +62,10 @@
         'Set-TcCurrentVariant',
         # Independent project file (phase 3, task 4.4)
         'Set-TcIndependentFile',
+        # ADS routes (phase 3, task 4.5)
+        'Get-TcAdsRoutes',
+        'Find-TcAdsTarget',
+        'Add-TcAdsRoute',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',

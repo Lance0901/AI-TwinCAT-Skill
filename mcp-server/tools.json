@@ -1,7 +1,64 @@
 {
-    "generatedAt":  "2026-10-31T19:48:27Z",
+    "generatedAt":  "2026-10-31T19:54:38Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
+                  {
+                      "name":  "AddAdsRoute",
+                      "cmdlet":  "Add-TcAdsRoute",
+                      "description":  "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). DryRun defaults to true. The password is NEVER a tool input: PasswordEnv names an environment variable of the MCP server process (set it in the server env of your MCP client config); data, errors, logs and backups never contain the password or the XML (masked as ***). AddRoute credentials are protected only by a fixed key on the network (Beckhoff advisory 2017-002): trusted networks only. A route to the same NetId -> ROUTE_ALREADY_EXISTS; TIRR is read back (ROUTE_VERIFY_FAILED). There is no tool to remove a route: the Automation Interface cannot (edit StaticRoutes.xml and restart the TwinCAT service, which also stops a local UmRT; see docs/troubleshooting.md).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Route name (RemoteName / Name), letters, digits, '_', '-', '.', ' '."
+                                                                      },
+                                                             "NetId":  {
+                                                                           "type":  "string",
+                                                                           "description":  "AmsNetId of the remote system, e.g. 5.1.2.3.1.1."
+                                                                       },
+                                                             "Address":  {
+                                                                             "type":  "string",
+                                                                             "description":  "IPv4 address of the remote system. Exactly one of Address / HostName."
+                                                                         },
+                                                             "HostName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Host name of the remote system. Exactly one of Address / HostName."
+                                                                          },
+                                                             "UserName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "User on the remote system (AddRoute only)."
+                                                                          },
+                                                             "PasswordEnv":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the environment variable that holds the password (AddRoute only); the value is never returned."
+                                                                             },
+                                                             "LocalName":  {
+                                                                               "type":  "string",
+                                                                               "description":  "Optional name of this system in the remote route table (AddRoute LocalName)."
+                                                                           },
+                                                             "ProjectRoute":  {
+                                                                                  "type":  "boolean",
+                                                                                  "description":  "Add only a project route (AddProjectRoute, no credentials, nothing sent to the remote system)."
+                                                                              },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: back up, send, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "NetId"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
                   {
                       "name":  "AddDut",
                       "cmdlet":  "Add-TcDut",
@@ -931,6 +988,29 @@
                                       }
                   },
                   {
+                      "name":  "FindAdsTargets",
+                      "cmdlet":  "Find-TcAdsTarget",
+                      "description":  "Searches the network for ADS targets (TIRR BroadcastSearch, or Search for one IP / host name); only works when the IDE target is the local system. Does not change the configuration.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  false
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Search":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Optional IPv4 address or host name to ask directly; empty = broadcast search."
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "FreezePlaceholder",
                       "cmdlet":  "Lock-TcLibraryPlaceholder",
                       "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj, reads it back and checks the version did not change.",
@@ -982,6 +1062,25 @@
                                                                                     "type":  "string",
                                                                                     "description":  "PLC name or tree path ('TIPC^<Plc>' or 'TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
                                                                                 }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetAdsRoutes",
+                      "cmdlet":  "Get-TcAdsRoutes",
+                      "description":  "Lists the ADS routes of the CURRENT target from the TIRR ProduceXml: actual, static and project routes. Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
                                                          },
                                           "required":  [
 

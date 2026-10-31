@@ -121,7 +121,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-31)
 
-MCP 共 **77 個 tool**:`mcp-server/tools.json` 73 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,加 task 3.2 的 `GenerateBootProject`,加 task 3.4 的 `SaveAsLibrary`、`SaveArchive`,加第 3 期 task 4.1 的 `AddNcTask`、`AddNcAxis`、`SetNcAxisParameter`、`LinkNcAxis`,加 task 4.2 的 `AddTcComModule`、`GetTcComParameter`、`SetTcComParameter`、`SetTcComContext`,加 task 4.3 的 `GetVariants`、`SetVariantConfig`、`SwitchVariant`,加 task 4.4 的 `SetIndependentFile`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 **80 個 tool**:`mcp-server/tools.json` 76 個(2026-10-29 用 node 讀的 37 個,加第 1 期 2026-10-30 新增的 7 個通用 tree tool,加第 2 期 task 3.6 新增的 `AddInterface`、`AddPouMember`,加 task 3.1 新增的 6 個 Library Manager tool:`GetLibraries`、`AddPlaceholder`、`RemoveReference`、`InstallLibrary`、`UninstallLibrary`、`FreezePlaceholder`,加 task 3.7 的 `CheckAllObjects`,加 task 3.5 的 `AddPlcTask`、`LinkProgramToTask`、`UnlinkProgramFromTask`,加 task 3.3 的 `ExportPlcOpen`、`ImportPlcOpen`,加 task 3.2 的 `GenerateBootProject`,加 task 3.4 的 `SaveAsLibrary`、`SaveArchive`,加第 3 期 task 4.1 的 `AddNcTask`、`AddNcAxis`、`SetNcAxisParameter`、`LinkNcAxis`,加 task 4.2 的 `AddTcComModule`、`GetTcComParameter`、`SetTcComParameter`、`SetTcComContext`,加 task 4.3 的 `GetVariants`、`SetVariantConfig`、`SwitchVariant`,加 task 4.4 的 `SetIndependentFile`,加 task 4.5 的 `GetAdsRoutes`、`FindAdsTargets`、`AddAdsRoute`)加 `mcp-server/lib/composites.js` 匯出的 4 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`),兩份名稱沒有重複。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 
@@ -254,4 +254,9 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 | `SetVariantConfig` | `Set-TcProjectVariantConfig` | 只有單元測試。只管 variant / group 清單;item 層的 `PvDisable` / `PvParameter` 不在範圍內(`PvParameter` 對 NC 參數的作用 probe 沒查清楚) |
 | `SwitchVariant` | `Set-TcCurrentVariant` | 只有單元測試。group 狀態下 Activate 會不會真的寫進 target 沒確認(probe 第 18 題),模組一律擋(`VARIANT_GROUP_ACTIVE`) |
 | `SetIndependentFile` | `Set-TcIndependentFile` | 只有單元測試。`Get-TcTreeItem` 沒有 `saveInOwnFile` 欄位;「Enable Multiple Files」全域選項的影響沒查 |
+| `GetAdsRoutes` | `Get-TcAdsRoutes` | 只有單元測試。只看得到目前 target 的 route 表 |
+| `FindAdsTargets` | `Find-TcAdsTarget` | 只有單元測試。probe 時本機搜尋一台都沒找到，原因(防火牆 / UmRT 不回 broadcast)沒查 |
+| `AddAdsRoute` | `Add-TcAdsRoute` | **未實測**(沒有第二台 target,AddRoute / AddProjectRoute 都沒送過);`NoEncryption` 的語意、static / temporary 選項、是否要先 BroadcastSearch 都不明 |
+| 刪除 ADS route | — | **不支援**:AI 不能刪 route,要改 StaticRoutes.xml 並重啟 TwinCAT service(會停掉本機 UmRT)。路徑:XAR `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`(要 admin);UmRT `C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\Target\StaticRoutes.xml`(probe 第 26 題)。做法見 troubleshooting「ADS route」 |
+| 密碼遮罩 | 通用 tree tool / 備份 | 只有單元測試。比對元素 / attribute 名稱 `*Password` / `*Pwd`;AddRoute 之後 TIRR 會不會讀回密碼沒實測 |
 | `EnableConfig` / `GenerateBootProject` 的 variant boot 目錄(#89) | `Enable-TcConfig` / `New-TcBootProject` | 修正只有單元測試;要用 registered tcauto 在有 variant 的副本重跑 `Enable-TcConfig -Force` |

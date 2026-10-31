@@ -9,8 +9,9 @@
 
 # Top-level abbreviations that are probed when not even the first path segment resolves. Taken from the
 # paths used in TE1000 v1.7.0 samples (TIPC, TIID, TIRC, TIRS, TIRT 6.3.1, TINC 6.3.2); only the ones
-# that LookupTreeItem actually resolves are reported.
-$script:TcTreeRootCandidates = @('TIPC', 'TIID', 'TIRC', 'TIRS', 'TIRT', 'TINC')
+# that LookupTreeItem actually resolves are reported. TIRR = route settings (6.3.11 p.211; its
+# ItemName is 'Routes', measured 2026-11-01 4026 VS2022, verification/phase3-probe.md question 22).
+$script:TcTreeRootCandidates = @('TIPC', 'TIID', 'TIRC', 'TIRS', 'TIRT', 'TINC', 'TIRR')
 
 # Upper bound of child names listed in data / hints (a TIID with hundreds of terminals stays readable).
 $script:TcTreeItemMaxChildNames = 200
@@ -389,6 +390,8 @@ function New-TcTreeItemErrorResult {
         [Parameter()][string]$Operation = 'tree item operation'
     )
     $message = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception.Message } else { [string]$ErrorRecord }
+    # an XAE message may quote the ConsumeXml fragment: never return a password from it
+    $message = [string](ConvertTo-TcMaskedXml -Xml $message)
     $code = $null
     $mapped = Get-TcTreeItemPassThroughError -ErrorRecord $ErrorRecord
     if ($null -ne $mapped) {
@@ -416,7 +419,12 @@ function New-TcTreeItemErrorResult {
 function Get-TcTreeItemXmlText {
     <#
     .SYNOPSIS
-        ITcSmTreeItem.ProduceXml(bRecursive) as string (TE1000 v1.7.0 5.2.1.8, p.61: root node TreeItem).
+        ITcSmTreeItem.ProduceXml(bRecursive) as string (TE1000 v1.7.0 5.2.1.8, p.61: root node TreeItem), passwords masked.
+    .DESCRIPTION
+        Every *Password / *Pwd element or attribute value is replaced by *** (ConvertTo-TcMaskedXml),
+        so no tree tool returns or backs up a password: AddRoute takes a plain <Password> (TE1000
+        6.3.17 p.220) and TISY <BootSettings><LogonPassword> "is stored in the project" (6.3.18
+        p.222). The TIRR ProduceXml had none (measured 2026-11-01, phase3-probe.md question 22).
     .PARAMETER Item
         ITcSmTreeItem.
     .PARAMETER Recursive
@@ -427,7 +435,7 @@ function Get-TcTreeItemXmlText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Item, [Parameter()][bool]$Recursive = $false, [Parameter()][string]$Path = '')
     $xml = Invoke-TcComRetry -OperationName "ProduceXml $Path" -ScriptBlock { $Item.ProduceXml($Recursive) }
-    return [string]$xml
+    return [string](ConvertTo-TcMaskedXml -Xml ([string]$xml))
 }
 
 function Test-TcTreePathIsPlc {

@@ -85,6 +85,10 @@ $operationMap = @{
     'SetVariantConfig' = 'Set-TcProjectVariantConfig'
     'SwitchVariant'   = 'Set-TcCurrentVariant'
     'SetIndependentFile' = 'Set-TcIndependentFile'
+    # ADS routes (AddAdsRoute defaults to DryRun; there is no remove, see docs/troubleshooting.md)
+    'GetAdsRoutes'    = 'Get-TcAdsRoutes'
+    'FindAdsTargets'  = 'Find-TcAdsTarget'
+    'AddAdsRoute'     = 'Add-TcAdsRoute'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'
