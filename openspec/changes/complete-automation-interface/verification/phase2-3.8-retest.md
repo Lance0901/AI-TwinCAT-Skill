@@ -161,7 +161,7 @@
 
 ## 還原與確認
 
-- 開始前:`robocopy /MIR` 兩份副本到 `C:\Temp\Verify-4026-axis-baseline-rt\`(259 檔)、`C:\Temp\Verify-4024-bfh-baseline-rt\`(301 檔),逐檔 SHA-256 存檔;4024 EtherCAT Device 1 / 5 仍 `Disabled="true"`(2 處)。Library repository 快照 2585 項。
-- 結束:兩個 IDE 都用 `DisconnectIde Quit=true` 關閉(4026 pid 114924、4024 pid 15436,`ownedBySession true`),之後沒有任何 `devenv` / `TcXaeShell` 行程。`robocopy <baseline> <副本> /MIR` 還原後逐檔 SHA-256 比對:4026 259 / 259、4024 301 / 301,**差異 0**。
+- 開始前:`robocopy /MIR` 兩份副本到 `C:\Temp\Verify-4026-axis-baseline-rt\`(266 檔)、`C:\Temp\Verify-4024-bfh-baseline-rt\`(302 檔),逐檔 SHA-256 存檔(開始時的雜湊清單用 `Get-ChildItem` 沒加 `-Force`,漏了隱藏檔與 `.vs\` 底下的 7 個 / 1 個檔，只列到 259 / 301;收尾時用 `-Force` 重比);4024 EtherCAT Device 1 / 5 仍 `Disabled="true"`(2 處)。Library repository 快照 2585 項。
+- 結束:兩個 IDE 都用 `DisconnectIde Quit=true` 關閉(4026 pid 114924、4024 pid 15436,`ownedBySession true`),之後沒有任何 `devenv` / `TcXaeShell` 行程。`robocopy <baseline> <副本> /MIR` 還原後逐檔 SHA-256 比對(含隱藏檔，`-Force`):4026 266 / 266、4024 302 / 302,**差異 0**;4026 副本也和 3.8 的 `C:\Temp\Verify-4026-axis-baseline-38\`(266 檔)逐檔相同。那 7 個只有 `-Force` 才列得出的檔是 `.vs\AxisInterface_Type01_Library\` 底下的 `.suo`、`DocumentLayout(.backup).json`、Copilot / FileContentIndex 的 `.db` / `.vsidx`,加上 `A10_Scope\VSSettings\.vsm`。
 - Library repository:2585 項，沒有新增或刪除任何目錄 / library;唯一差異是 XAE 自己的 `Managed Libraries\cache` 檔 LastWriteTime 變了(大小 239,180 B 不變，時間 00:37:54 = 4026 IDE 結束時)。`Rt Test4024` 目錄不存在。使用者原有的 `AxisInterface` 等 library 沒有碰。
 - 開始時本機沒有任何 IDE 行程，沒有 attach 或操作使用者的 IDE。
