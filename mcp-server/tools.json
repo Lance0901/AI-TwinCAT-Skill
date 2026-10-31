@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T10:15:08Z",
+    "generatedAt":  "2026-10-31T10:34:23Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -372,6 +372,28 @@
                                                                                             "type":  "boolean",
                                                                                             "description":  "Accept a build whose Error List shows unresolved libraries as success (data.warningCode=LIBRARY_UNRESOLVED, codeVerified=false) instead of returning LIBRARY_UNRESOLVED. It is not a complete build (data.completeBuild=false): BUILD_REQUIRED stays recorded and EnableConfig / PlcLogin / RunLifecycle still refuse to activate or download it (#61); install the missing libraries for that."
                                                                                         }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "CheckAllObjects",
+                      "cmdlet":  "Test-TcPlcProject",
+                      "description":  "Checks the syntax of EVERY object of the PLC project (ITcPlcIECProject2.CheckAllObjects), also the ones no build compiles; returns the Error List rows like BuildProject. Generates no code, never changes BUILD_REQUIRED.",
+                      "timeoutMs":  600000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path ('TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
+                                                                                }
                                                          },
                                           "required":  [
 

@@ -71,6 +71,7 @@ $operationMap = @{
     # Build & Deploy
     'BuildProject'    = 'Build-TcProject'
     'CleanProject'    = 'Clear-TcProject'
+    'CheckAllObjects' = 'Test-TcPlcProject'
     'GetBuildErrors'  = 'Get-TcBuildErrors'
     'SetTarget'       = 'Set-TcTarget'
     'EnableConfig'    = 'Enable-TcConfig'

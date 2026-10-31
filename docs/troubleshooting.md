@@ -590,6 +590,24 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`InstallLibrary` / `UninstallLibrary` 丟例外。`data.reason = null-reference`(Uninstall):XAE 丟 NullReferenceException,實測是「該 repository 裡沒有這個版本」時的錯誤；模組先用 ScanLibraries 確認過存在，所以多半是它裝在別的 repository。`data.reason = repository-not-found`:`-Repository` 不存在(COMException `0x98510001` "Could not find repository '...'",實測 2026-10-31 InstallLibrary;預設 repository 名稱 `System`,TE1000 §6.5.12)。ScanLibraries 不回報每筆在哪個 repository,所以 `Uninstall-TcLibrary` 的預查證明不了它在 `-Repository` 裡;這時 XAE 可能丟 NullReferenceException。
 - **下一步**:`Get-TcLibraries -Repository` 確認狀態,`Get-TcIdeModalDialog` 檢查 dialog,改正 `-Repository` 後重跑。
 
+### CheckAllObjects(task 3.7):做法與 Build 的差別
+
+- **做法**:`Test-TcPlcProject`(MCP `CheckAllObjects`)在 `TIPC^<Plc>^<Plc> Project` 上 late-bind 呼叫 `ITcPlcIECProject2.CheckAllObjects()`(TE1000 v1.7.0 §5.28.2 p.123-124、§6.5.7 p.233-234),呼叫前先查 modal dialog,之後讀 Error List(和 `Build-TcProject` 共用 `Get-TcErrorListSummary`,`errorItems` 每筆一樣是 `severity / code / description / project / file / line / column / category`)。PLC root `TIPC^<Plc>` 沒有這個方法，只有 `<Plc> Project` 有(實測 2026-10-31 4026 VS2022,自建 client,`openspec/changes/complete-automation-interface/verification/phase2-probe.md` 3.7)。
+- **和 Build 的差別**:`Build-TcProject` 只編譯有被引用的物件。沒被引用的 FB 的 method 寫了語法錯(`M_Two := ;`)時，Build 回 success、errors 0;CheckAllObjects 回 `False`,Error List 有 `C0007 Expression expected instead of ';'`(file `FB_P2Probe.TcPOU@M_Two (Impl)`,line 1)(實測 2026-10-31 4026 VS2022,自建 client)。InfoSys 的 PLC 指令 "Check all objects" 也說它檢查所有物件、不產生 code:<https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531345035.html>。
+- **不碰 BUILD_REQUIRED**:不產生 code、不改檔(實測 2026-10-31:呼叫前後 solution 目錄沒有任何檔案變動，含 `_Boot`、`_CompileInfo`),所以既不記也不清 `BUILD_REQUIRED`。成功也不能取代 `Build-TcProject`:`Enable-TcConfig` / `Enter-TcPlcOnline` 之前還是要完整 build。
+- **Error List 的舊項目**:沒有 file、也沒有 code 的錯誤列會一直留在 Error List(實測：失敗的 archive 留下 `'TwinCAT Measurement' ... Error creating Archive`),不算這次檢查的結果，放在 `data.staleErrorItems`。回 `True` 時 `data.errorItems` 一律是空陣列,Error List 上的錯誤列都放 `staleErrorItems` 並加 warning;warning 列照樣在 `data.warningItems` / `codeWarnings`。
+- **沒有 deadline**:CheckAllObjects 是同步呼叫，模組只在呼叫前排除 dialog;probe 每次都在 0.7-2.2 s 內返回(實測 2026-10-31)。MCP tool 的 timeout 是 600 s。
+
+### CHECK_FAILED
+
+- **現象**:`CheckAllObjects()` 回 `False`(`data.passed = false`;語法錯是回 False,不是例外，實測 2026-10-31 4026 VS2022),`data.errorItems` 是 Error List 上有 file 的錯誤列(`codeErrors` / `libraryErrorItems` 分開列),message 列前三筆。`data.passed = null` 加 `data.callError`:CheckAllObjects 丟了例外(手冊 §5.28.2 列 `E_FAIL` `Error_CheckAllObjectsFailed`,probe 沒遇到)或沒回 bool。Error List 讀不到時 `data.errorListError` 有值,message 會寫。
+- **下一步**:依 `data.errorItems` 的 file / line 用 `Get-TcPouCode -PouPath` 讀、`Write-TcPouCode -PouPath` 改，再重跑 `Test-TcPlcProject`;`errorItems` 是空的就用 `Get-TcBuildErrors` 讀 Error List。file 是 `<task>.TcTTO`、line 0 的列(`C0046` / `C0035` / `C0080` / `C0036`)代表 task 呼叫了不存在或不是 PROGRAM 的物件(實測 2026-10-31,`phase2-probe.md` 3.5),要把那個 program 呼叫從 task 底下拿掉。
+
+### CHECK_UNAVAILABLE
+
+- **現象**:`<Plc> Project` 節點沒有 `CheckAllObjects` 方法(`ITcPlcIECProject2` 不可用;PowerShell "does not contain a method named 'CheckAllObjects'")。4024 是否支援還沒實測(task 3.8)。
+- **下一步**:改用 `Build-TcProject`(只編譯有被引用的物件)。
+
 ### PROJECT_SAVE_FAILED
 
 - **現象**:`Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好物件後存專案檔失敗,或存完從磁碟讀回的 .plcproj 沒有新的 `<Compile Include>`(含相對路徑,如 `POUs\FB_X.TcPOU`)/ library reference;`data.objectPath`、`createdInMemory = true`、`savedToDisk = false`。找不到該 PLC 的 .plcproj(例如獨立專案檔 .xti,未驗證)時也回此碼,hint 改成請使用者手動存檔。`Reset-TcSolution -SaveProjectChanges` 步驟 (1b) 比對或存檔失敗時也回此碼,solution 沒有關。

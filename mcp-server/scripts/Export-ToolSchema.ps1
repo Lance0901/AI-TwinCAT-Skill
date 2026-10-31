@@ -107,6 +107,7 @@ $defaultTimeoutMs = 120000
 $timeoutOverrides = @{
     'BuildProject'   = 660000
     'CleanProject'   = 330000
+    'CheckAllObjects' = 600000
     'EnableConfig'   = 600000
     'RunTestCycle'   = 900000
     'ConnectIde'     = 180000
@@ -127,7 +128,9 @@ $timeoutOverrides = @{
 $readOnlyTools = @(
     'GetIdeInfo', 'GetProjectTree', 'GetPouCode', 'GetIoTree', 'GetBuildErrors', 'GetSymbols',
     'GetPlcState', 'GetSystemState', 'ReadVariable', 'WatchVariable', 'NewTestCase',
-    'LookupTreeItem', 'ProduceXml', 'GetLibraries'
+    'LookupTreeItem', 'ProduceXml', 'GetLibraries',
+    # CheckAllObjects (task 3.7) generates no code and changes no file (phase2-probe.md 3.7)
+    'CheckAllObjects'
 )
 $destructiveTools = @(
     'EnableConfig', 'SetSystemState', 'SetPlcState', 'WriteVariable', 'RunTest', 'RunTestCycle',

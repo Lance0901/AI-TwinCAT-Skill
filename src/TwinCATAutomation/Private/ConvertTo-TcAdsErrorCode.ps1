@@ -139,6 +139,9 @@ $script:TcErrorHints['LIBRARY_ALREADY_INSTALLED'] = '直接用 Add-TcLibrary / A
 $script:TcErrorHints['LIBRARY_NOT_INSTALLED'] = 'ScanLibraries 沒有完全符合 -LibraryName / -Version / -Distributor 的項目(大小寫要相同),什麼都沒移除。data.candidates 是同名(不分大小寫)已安裝的版本;用 Get-TcLibraries -Repository -Filter <name> 查正確的值後重跑 Uninstall-TcLibrary'
 $script:TcErrorHints['LIBRARY_INSTALL_FAILED'] = 'Install-TcLibrary 的 InstallLibrary 失敗。data.reason = repository-not-found:-Repository 不存在(預設 System);其他看 error.message,用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcLibraries -Repository 確認有沒有裝上'
 $script:TcErrorHints['LIBRARY_UNINSTALL_FAILED'] = '用 Get-TcLibraries -Repository 確認這個版本還在不在;還在就改正 -Repository(預設 System)後重跑 Uninstall-TcLibrary;用 Get-TcIdeModalDialog 檢查 XAE 有沒有 dialog'
+# CheckAllObjects (complete-automation-interface task 3.7)
+$script:TcErrorHints['CHECK_FAILED'] = '依 data.errorItems 的 file / line 修正程式碼(Get-TcPouCode -PouPath <路徑> 讀、Write-TcPouCode -PouPath <路徑> 改),再重跑 Test-TcPlcProject;data.errorItems 是空的就用 Get-TcBuildErrors 讀 Error List'
+$script:TcErrorHints['CHECK_UNAVAILABLE'] = '改用 Build-TcProject(它只編譯有被引用的物件)'
 
 function Get-TcErrorHint {
     <#

@@ -47,6 +47,7 @@
         # Build & Deploy
         'Build-TcProject',
         'Clear-TcProject',
+        'Test-TcPlcProject',
         'Get-TcBuildErrors',
         'Set-TcTarget',
         'Enable-TcConfig',
