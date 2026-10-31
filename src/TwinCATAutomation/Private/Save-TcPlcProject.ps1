@@ -679,6 +679,9 @@ function Invoke-TcPlcObjectSave {
         Library name that must appear as a library reference.
     .PARAMETER What
         Short text for the messages, e.g. "POU 'FB_Motor'".
+    .PARAMETER Done
+        What happened to -What in XAE, for the messages: 'created' (default), or e.g. 'removed' /
+        'changed' for the Library Manager cmdlets.
     #>
     [CmdletBinding()]
     param(
@@ -692,12 +695,15 @@ function Invoke-TcPlcObjectSave {
         [string]$ExpectLibrary,
 
         [Parameter(Mandatory)]
-        [string]$What
+        [string]$What,
+
+        [Parameter()]
+        [string]$Done = 'created'
     )
 
     $plc = Get-TcPlcNameFromPath -TreePath $ObjectPath
     $errData = [PSCustomObject]@{ objectPath = $ObjectPath; plc = $plc; createdInMemory = $true; savedToDisk = $false }
-    $prefix = "$What was created in XAE ('$ObjectPath') but the project file (.plcproj) was not saved, so closing the solution without saving would drop it"
+    $prefix = "$What was $Done in XAE ('$ObjectPath') but the project file (.plcproj) was not saved, so closing the solution without saving would drop it"
     $locateHint = "物件已建在 XAE 記憶體，但模組找不到這個 PLC 的 .plcproj(error.message 說明找過哪些 .tsproj;獨立專案檔 .xti 的位置規則 InfoSys 沒寫，未驗證)。下一步：請使用者在 XAE 的 Solution Explorer 對該 PLC 專案按右鍵 Save(或 File > Save All,會一併存其他未存文件),再 Get-TcProjectTree -PlcOnly 確認物件還在;不要 Reset-TcSolution -DiscardProjectChanges 或 Disconnect-TcIde -Quit(會丟掉這個物件)"
     if ($null -eq $plc) {
         return @{ Saved = $null; Error = (New-TcResult -Success $false -ErrorMessage "${prefix}: '$ObjectPath' is not below TIPC^<Plc>, the PLC project cannot be located." `
@@ -717,7 +723,7 @@ function Invoke-TcPlcObjectSave {
     try {
         $saved = Save-TcPlcProject @saveParams
         if ($saved.Contains('ModalDialog')) {
-            return @{ Saved = $null; Error = (New-TcModalDialogResult -Dialog $saved.ModalDialog -Operation "Project.Save after creating $What (created in XAE, project file NOT saved)" -Data $errData) }
+            return @{ Saved = $null; Error = (New-TcModalDialogResult -Dialog $saved.ModalDialog -Operation "Project.Save after $What ($Done in XAE, project file NOT saved)" -Data $errData) }
         }
         return @{ Saved = [PSCustomObject]$saved; Error = $null }
     }
