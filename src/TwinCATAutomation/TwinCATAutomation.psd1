@@ -46,6 +46,11 @@
         'Get-TcIoTree',
         'Set-TcVariableLink',
         'Remove-TcVariableLink',
+        # NC axes (phase 3, task 4.1)
+        'Add-TcNcTask',
+        'Add-TcNcAxis',
+        'Set-TcNcAxisParameter',
+        'Connect-TcNcAxisToPlc',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',

@@ -70,6 +70,11 @@ $operationMap = @{
     'GetIoTree'       = 'Get-TcIoTree'
     'SetVariableLink' = 'Set-TcVariableLink'
     'RemoveVariableLink' = 'Remove-TcVariableLink'
+    # NC axes (DryRun by default)
+    'AddNcTask'       = 'Add-TcNcTask'
+    'AddNcAxis'       = 'Add-TcNcAxis'
+    'SetNcAxisParameter' = 'Set-TcNcAxisParameter'
+    'LinkNcAxis'      = 'Connect-TcNcAxisToPlc'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'

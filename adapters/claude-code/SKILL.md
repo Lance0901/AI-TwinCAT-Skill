@@ -86,7 +86,7 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(62)
+## Cmdlet 清單(66)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -124,6 +124,10 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 | `Get-TcIoTree` | I/O 裝置樹 |
 | `Set-TcVariableLink -PlcVariable <tree path> -IoChannel <tree path>` | PLC 變數連 I/O 變數(完整 tree path,如 `TIPC^P^P Instance^PlcTask Inputs^MAIN.bIn`、`TIID^...^Channel 1^Input`;讀回確認) |
 | `Remove-TcVariableLink -PlcVariable <tree path> [-IoChannel <tree path>]` | 移除 link(不給 -IoChannel 移除該變數全部 link;讀回確認) |
+| `Add-TcNcTask [-Name 'NC-Task 1'] [-DryRun $true]` | MCP `AddNcTask`,**預設 dry-run**。TINC 上 CreateChild 1;一個 TINC 只能有一個 NC task,已有就回 `NC_TASK_ALREADY_EXISTS`(實測 0x98510002)。名稱讀回(XAE 加 ` SAF`),讀回 `<task>^Axes`。只有單元測試 |
+| `Add-TcNcAxis -Name <n> [-Task <task>] [-AxisType Continuous\|Discrete\|Stepper\|Encoder] [-DryRun $true]` | MCP `AddNcAxis`,**預設 dry-run**。`<task>^Axes` 上 CreateChild;新軸預設就是模擬軸，讀回確認 Enc = Simulation encoder(`data.simulation`、`data.axisId`)。XAE 不擋同名 → 模組先查(`NC_AXIS_ALREADY_EXISTS`);沒有 NC task → `NC_TASK_NOT_FOUND`(先 `Add-TcNcTask`)。只有單元測試 |
+| `Set-TcNcAxisParameter -Axis <name\|path> [-MaxVelocity] [-Acceleration] [-Deceleration] [-Jerk] [-EncoderType] [-DriveType] [-ControllerType] [-DryRun $true]` | MCP `SetNcAxisParameter`,**預設 dry-run**。ConsumeXml `NcAxisDef/AxisParam/Velo/Maximum`、`Dynamic/*`、`Encoder/EncType`、`Drive/DrvType`、`Controller/CtrType`;XAE 對錯值回 S_OK(`abc` → 0),所以送出前驗證、寫入後逐欄讀回(`NC_AXIS_PARAM_VERIFY_FAILED`);型別號碼沒有名稱 → `NC_INVALID_SUBTYPE` 並送回原值。寫前備份 ProduceXml。只有單元測試 |
+| `Connect-TcNcAxisToPlc -Axis <name\|path> -PlcVariable <MAIN.axis> [-PlcProjectPath <plc>] [-DryRun $true]` | MCP `LinkNcAxis`,**預設 dry-run**。`LinkVariables` 整個 struct:PLC `...Inputs^<var>.NcToPlc` ↔ NC `<axis>^Outputs^ToPlc`、NC `<axis>^Inputs^FromPlc` ↔ PLC `...Outputs^<var>.PlcToNc`;讀回 ProduceMappingInfo。AXIS_REF 要先 Build(`NC_PLC_VARIABLE_NOT_FOUND`);已 link 到別處 → `NC_AXIS_ALREADY_LINKED`。只有單元測試 |
 | `Get-TcTreeItem -Path <tree path> [-MaxChildren 200]` | **通用**(MCP `LookupTreeItem`,唯讀):一個節點的 name / itemType / subType / type / childCount / children[];找不到回 `TREEITEM_NOT_FOUND`,hint 與 `data.nearestPath` / `nearestChildren` 列最接近的上層和它的子節點;`*` `?` 回 `TREEITEM_PATH_INVALID` |
 | `Get-TcTreeItemXml -Path <tree path> [-Recursive]` | **通用**(MCP `ProduceXml`,唯讀):`data.xml`(根元素 `TreeItem`),做 ConsumeXml 片段時照抄路徑 |
 | `New-TcTreeItem -Path <父節點> -Name <n> [-SubType <int>] [-Before <child>] [-VInfo <v>] [-DryRun $false]` | **通用**(MCP `CreateChild`):預設 dry-run(`data.plannedPath`、`currentChildren`);`-DryRun $false` 備份父節點 ProduceXml → CreateChild → 讀回(`data.verified`、`createdPath`;XAE 改名時 `data.warnings`);同名 → `TREEITEM_ALREADY_EXISTS`;XAE 拒絕 → `TREEITEM_CREATE_FAILED`。SubType 只用手冊有寫的(TIRT Task:0 有 image、1 沒有,TE1000 §6.3.1) |

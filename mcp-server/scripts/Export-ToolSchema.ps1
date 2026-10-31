@@ -144,7 +144,9 @@ $destructiveTools = @(
     # PLC task program call removal (task 3.5); dry-run by default.
     'UnlinkProgramFromTask',
     # PLCopen import (task 3.3): Replace deletes children the file lacks; dry-run by default.
-    'ImportPlcOpen'
+    'ImportPlcOpen',
+    # Phase 3 system configuration (tasks 4.1-4.5): change the TwinCAT configuration; dry-run by default.
+    'AddNcTask', 'AddNcAxis', 'SetNcAxisParameter', 'LinkNcAxis'
 )
 
 function Get-ToolAnnotations {

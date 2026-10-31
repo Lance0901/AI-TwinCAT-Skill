@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 62 個 cmdlet 中的 61 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 66 個 cmdlet 中的 65 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (61 of its 62 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (65 of its 66 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -92,7 +92,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
 
-## Tools (65)
+## Tools (69)
 
 Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Parameters are the cmdlet parameters, passed as JSON (`switch` → boolean, `string[]` → array, `hashtable` → object; object keys must be non-empty and must not differ only in case, since PowerShell 5.1 cannot convert such JSON). `Timeout` is the per-call limit after which the bridge is killed; for tools with `TimeoutSec` / `TimeoutMs` / `DurationMs` parameters it grows to at least that value plus 30 s, capped at 2 h (schema `minimum` / `maximum` are enforced first).
 
@@ -194,6 +194,17 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
 | `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O variable (full tree paths; verified via ProduceMappingInfo) |
 | `RemoveVariableLink` | `Remove-TcVariableLink` | `PlcVariable` | 120 s | Remove a variable link (verified via ProduceMappingInfo) |
+
+### System configuration (phase 3; unit tests only, registered verification is task 4.6)
+
+All modifying tools here default to `DryRun=true` and carry `destructiveHint: true`; each backs up before the write (`.tcauto-backup`), checks for a modal dialog right before every COM write and reads back (an unverified write is an error, never `success: true`).
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `AddNcTask` | `Add-TcNcTask` | — | 120 s | CreateChild 1 on TINC; only one NC task per TINC (`NC_TASK_ALREADY_EXISTS`, measured 0x98510002); name read back (XAE appends ` SAF`) |
+| `AddNcAxis` | `Add-TcNcAxis` | `Name` | 120 s | CreateChild below `<task>^Axes` (`AxisType` Continuous / Discrete / Stepper / Encoder); a new axis is a simulation axis, the encoder is read back (`data.simulation`); a duplicate name is refused (`NC_AXIS_ALREADY_EXISTS`, XAE would accept it); no task -> `NC_TASK_NOT_FOUND` |
+| `SetNcAxisParameter` | `Set-TcNcAxisParameter` | `Axis` | 120 s | ConsumeXml `MaxVelocity` / `Acceleration` / `Deceleration` / `Jerk` / `EncoderType` / `DriveType` / `ControllerType`; validated first (XAE stores wrong values with S_OK), every field read back (`NC_AXIS_PARAM_VERIFY_FAILED`); an unnamed type number -> `NC_INVALID_SUBTYPE` and the old type is sent back |
+| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | `Axis`, `PlcVariable` | 120 s | Two struct links (`<var>.NcToPlc` <-> `<axis>^Outputs^ToPlc`, `<axis>^Inputs^FromPlc` <-> `<var>.PlcToNc`) with LinkVariables, verified via ProduceMappingInfo; needs a build (`NC_PLC_VARIABLE_NOT_FOUND`); an end linked elsewhere -> `NC_AXIS_ALREADY_LINKED` |
 
 ### Generic tree items (not yet verified on a real target, task 2.8)
 

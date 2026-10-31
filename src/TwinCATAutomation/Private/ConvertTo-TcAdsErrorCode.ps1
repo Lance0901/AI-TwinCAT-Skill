@@ -173,6 +173,21 @@ $script:TcErrorHints['ARCHIVE_INCOMPLETE'] = '看 data.errorItems 是哪個專�
 $script:TcErrorHints['ARCHIVE_UNVERIFIED'] = '確認 XAE 的 Error List 視窗可見(View > Error List、視窗夠大不被截斷)後用 Get-TcBuildErrors 讀，找 "Error creating Archive" 的列;沒有就可以用 data.filePath 的檔案，有就照 ARCHIVE_INCOMPLETE 處理'
 # IDE not connected (Assert-TcConnection failed) in the task 3.2-3.4 cmdlets
 $script:TcErrorHints['NOT_CONNECTED_IDE'] = '先 Connect-TcIde(要開特定 solution 加 -SolutionPath <sln>),再重跑同一個 tool'
+# Phase 3 task 4.1: NC (Add-TcNcTask / Add-TcNcAxis / Set-TcNcAxisParameter / Connect-TcNcAxisToPlc)
+$script:TcErrorHints['NC_TASK_NOT_FOUND'] = '專案沒有 NC task(或 -Task 不是 NC task):先 Add-TcNcTask -DryRun $false 建一個，再重跑;data.ncTasks 列出現有的 task'
+$script:TcErrorHints['NC_TASK_AMBIGUOUS'] = '有多個 NC task:用 data.ncTasks 其中一個當 -Task 重跑'
+$script:TcErrorHints['NC_TASK_ALREADY_EXISTS'] = '一個 TINC 只能有一個 NC task(實測 0x98510002):直接用 data.existingTasks 的 task,例如 Add-TcNcAxis -Name <axis> -Task <data.existingTasks[0]>'
+$script:TcErrorHints['NC_TASK_VERIFY_FAILED'] = '建立後讀回不到 task 或它的 Axes 節點:看 data.rolledBack;false 時用 Remove-TcTreeItem -Path <data.taskPath> -ConfirmName <名稱> -DryRun $false 刪掉，再用 Get-TcTreeItem -Path TINC 確認後重跑'
+$script:TcErrorHints['NC_AXIS_ALREADY_EXISTS'] = '同名的軸已經存在(XAE 不擋同名，模組擋):換一個 -Name 重跑 Add-TcNcAxis,或直接用現有的軸(Set-TcNcAxisParameter -Axis <名稱>)'
+$script:TcErrorHints['NC_AXIS_NOT_FOUND'] = '找不到這支軸:用 data.ncAxes 裡的名稱或完整 tree path(TINC^<task>^Axes^<axis>)當 -Axis 重跑'
+$script:TcErrorHints['NC_AXIS_AMBIGUOUS'] = '有多支同名的軸:改用 data.ncAxes 裡的完整 tree path 當 -Axis 重跑(或先把重複的軸改名 / 刪掉)'
+$script:TcErrorHints['NC_AXIS_VERIFY_FAILED'] = '建立後讀回不符(data.mismatches):看 data.rolledBack;false 時用 Remove-TcTreeItem -Path <data.axisPath> -ConfirmName <名稱> -DryRun $false 刪掉再重跑 Add-TcNcAxis'
+$script:TcErrorHints['NC_INVALID_SUBTYPE'] = '型別號碼 XAE 沒有名稱(data.allowedTypes 是可以用的值;寫入後 ItemSubTypeName 是空的就已送回原值，看 data.reverted):改用清單裡的號碼重跑 Set-TcNcAxisParameter'
+$script:TcErrorHints['NC_AXIS_PARAM_NOT_FOUND'] = '這支軸的 ProduceXml 沒有這個欄位(data.missingFields),什麼都沒寫:用 Get-TcTreeItemXml -Path <data.axisPath> 確認 NcAxisDef 的結構'
+$script:TcErrorHints['NC_AXIS_PARAM_WRITE_FAILED'] = 'ConsumeXml 被 XAE 拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcTreeItemXml -Path <data.axisPath> 確認目前值後重跑;data.backupPath 是寫入前的 XML'
+$script:TcErrorHints['NC_AXIS_PARAM_VERIFY_FAILED'] = '讀回值和要寫的不同(data.mismatches):不要當成功。用 Get-TcTreeItemXml -Path <data.axisPath> 看實際值;要還原就用 data.backupPath 的值再 Set-TcNcAxisParameter(先 dry-run)'
+$script:TcErrorHints['NC_PLC_VARIABLE_NOT_FOUND'] = 'PLC 端找不到 AXIS_REF 的 NcToPlc / PlcToNc:確認 -PlcVariable 是 AXIS_REF 變數(例如 MAIN.axis),先 Build-TcProject 讓它出現在 <task> Inputs / Outputs 底下，再重跑 Connect-TcNcAxisToPlc'
+$script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {
     <#

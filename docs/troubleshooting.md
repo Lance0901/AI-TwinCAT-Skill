@@ -969,7 +969,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LINK_INVALID_ITEM_TYPE / LINK_TYPE_MISMATCH / LINK_FAILED / UNLINK_FAILED
 
-- **為什麼**:TE1000 §5.1.1.2(p.38)列出 `LinkVariables` 的錯誤:`TSM_E_INVALIDITEMTYPE`(有一端不是 variable)→ `LINK_INVALID_ITEM_TYPE`;`TSM_E_MISMATCHINGITEMS`(型別 / 大小不相容)→ `LINK_TYPE_MISMATCH`。這兩個的數值手冊沒寫,模組用 HRESULT 名稱或訊息文字判斷;都不符時回 `LINK_FAILED`(Unlink 是 `UNLINK_FAILED`)。
+- **為什麼**:TE1000 §5.1.1.2(p.38)列出 `LinkVariables` 的錯誤:`TSM_E_INVALIDITEMTYPE`(有一端不是 variable)→ `LINK_INVALID_ITEM_TYPE`;`TSM_E_MISMATCHINGITEMS`(型別 / 大小不相容)→ `LINK_TYPE_MISMATCH`。這兩個的數值手冊沒寫,模組用 HRESULT 名稱或訊息文字判斷;都不符時回 `LINK_FAILED`(Unlink 是 `UNLINK_FAILED`)。`0x98510004` "'<a>' and '<b>' do not match"(input 接 input)也對到 `LINK_TYPE_MISMATCH`(自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 5 題)。
 - **下一步**:I/O 端給 `^Channel 1^Input` 而不是 `^Channel 1`;兩端型別大小要相同。
 
 ### LINK_VERIFY_FAILED
@@ -1075,6 +1075,88 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### 成功時的 Set-TcTarget data
 
 `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`(solution platform)、`projectPlatform`(操作後 active 的 .tsproj project platform,沒有 .tsproj 為 null)、`platformChanged`(bool);有切換時另有 `requestedProjectPlatform`、 `configuration`、`previousPlatform`、`availablePlatforms`、`projectCheck`(`ok` / `mismatch` / `no-tsproj`)、`platformMatchedBy`、`platformMap`。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`projectPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`;自動切換失敗時加 `platformMap`、`requestedProjectPlatform`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`、`projectPlatform`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId),也原值傳給 EnableConfig(比對結果相同,不再出現「-Platform was not given」的 `data.warning`;target 有回報 TARGETINFO 時仍以 target 為準),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
+
+## 第 3 期系統組態(task 4.1–4.5)
+
+共同規則(和第 2 期相同):修改類 tool 預設 `DryRun = true`;寫入前備份到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupPath` / `data.backupFiles`);每個修改的 COM 呼叫前查 modal dialog(有就 `IDE_MODAL_DIALOG`,什麼都不送);寫入後讀回，不符就回錯誤碼，不報成功;寫入 API 一呼叫就記 `BUILD_REQUIRED`(code-changed),呼叫前就擋下的不記。下列行為除非另外註明，都是**自建 client 實測 2026-11-01 4026 VS2022(XAE 3.1.4026.22)/ 4024 XAE Shell(3.1.4024.71)**,見 [phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md);這些 tool 目前**只有單元測試**,registered tcauto 驗證是 task 4.6。
+
+### NC(task 4.1):做法
+
+- **NC task**:`Add-TcNcTask`(MCP `AddNcTask`)= `TINC` 上 `CreateChild(<name>, 1)`(TE1000 v1.7.0 §6.10.1 p.293)。一個 TINC 只能有一個 NC task:第二個一律 `0x98510002 Item already exists!`(probe 第 1 題),所以模組先看 TINC 有沒有 ItemType 1 的子節點。XAE 會在名稱後加 ` SAF`,名稱一律從讀回取得(`data.taskPath`,不同時寫進 `data.warnings`)。
+- **軸**:`Add-TcNcAxis`(`AddNcAxis`)= `<task>^Axes` 上 `CreateChild(<name>, <subType>)`:Continuous 1、Discrete 2、Stepper 3、Encoder 5(0、8 被 XAE 拒絕);新軸預設就是模擬軸(Enc = Simulation encoder subType 1、Drive = KL4XXX 5、Ctrl = P 1,probe 第 2 題),模組讀回確認 encoder 是 EncType 0 / 1。**XAE 不擋同名**,同名會建出第二支，所以模組自己先查(`NC_AXIS_ALREADY_EXISTS`)。`data.axisId` 是 ProduceXml 的 `ItemId`(NC ADS index group `0x4100 + id`,[InfoSys tc3_ads_intro 713094155](https://infosys.beckhoff.com/content/1033/tc3_ads_intro/713094155.html))。
+- **參數**:`Set-TcNcAxisParameter`(`SetNcAxisParameter`)只開放 ProduceXml 裡有的欄位：`MaxVelocity` = `NcAxisDef/AxisParam/Velo/Maximum`、`Acceleration` / `Deceleration` / `Jerk` = `AxisParam/Dynamic/*`、`EncoderType` / `DriveType` / `ControllerType` = `Encoder/EncType`、`Drive/DrvType`、`Controller/CtrType`(probe 第 3、4 題;實際寫入讀回過的只有 Velo/Maximum、Dynamic/Acceleration 和三種型別欄位)。ConsumeXml 對錯值一律回 S_OK(`abc` 變 0、不存在的元素被忽略、不存在的型別號碼照存但 `ItemSubTypeName` 是空的),所以送出前檢查(數值有限、> 0,Jerk ≥ 0,≤ 1e12;型別號碼只收 XAE 有名稱的),寫入後逐欄讀回;`ChangeChildSubType` 是 E_NOTIMPL,不用。
+- **PLC link**:`Connect-TcNcAxisToPlc`(`LinkNcAxis`)用 `LinkVariables` 整個 struct link:PLC `<Plc> Instance^<task> Inputs^<var>.NcToPlc` ↔ NC `<axis>^Outputs^ToPlc`,NC `<axis>^Inputs^FromPlc` ↔ PLC `<task> Outputs^<var>.PlcToNc`(probe 第 5 題;TE1000 §5.1.1.2 p.38、§6.3.14 p.217)。`<task> Inputs` 的名稱從 PLC instance 的子節點找，不寫死。讀回用 `ProduceMappingInfo`(和 `Set-TcVariableLink` 相同)。備份是 `ProduceMappingInfo` 全文(`MappingInfo.xml`)。
+
+### NC_TASK_NOT_FOUND
+
+- **現象**:專案沒有 `TINC`、TINC 底下沒有 NC task,或 `-Task` 不是現有的 NC task(`data.ncTasks`)。什麼都沒改。
+- **下一步**:`Add-TcNcTask -DryRun $false` 建 task,再重跑;或用 `data.ncTasks` 的值當 `-Task`。
+
+### NC_TASK_AMBIGUOUS
+
+- **現象**:有多個 NC task 又沒給 `-Task`。XAE 一個 TINC 只允許一個(probe 第 1 題),所以實際上不會發生，保留但未實測。
+- **下一步**:用 `data.ncTasks` 其中一個當 `-Task`。
+
+### NC_TASK_ALREADY_EXISTS
+
+- **現象**:TINC 已經有 NC task(`data.existingTasks`),或 XAE 回 `0x98510002 Item already exists!`。什麼都沒建(XAE 拒絕時 CreateChild 已呼叫，會記 BUILD_REQUIRED)。
+- **下一步**:直接用現有的 task:`Add-TcNcAxis -Name <axis> -Task <data.existingTasks[0]>`。
+
+### NC_TASK_VERIFY_FAILED
+
+- **現象**:CreateChild 有返回，但讀回找不到 task、ItemType 不是 1,或沒有 `<task>^Axes`。模組會把它刪掉(`data.rollback`、`data.rolledBack`)。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem -Path <data.taskPath> -ConfirmName <名稱> -DryRun $false` 刪掉，再用 `Get-TcTreeItem -Path TINC` 確認。
+
+### NC_AXIS_ALREADY_EXISTS
+
+- **現象**:`<task>^Axes` 已經有同名的軸(不分大小寫,`data.existingAxes`)。XAE 自己不擋(實測同名會建出第二支),所以模組擋。什麼都沒建。
+- **下一步**:換 `-Name`,或直接用現有的軸。
+
+### NC_AXIS_NOT_FOUND
+
+- **現象**:`-Axis` 的名稱不在任何 NC task 的 Axes 底下(`data.ncAxes` 列出全部),或給的 tree path 不是 NC axis(ItemType 不是 22)。
+- **下一步**:用 `data.ncAxes` 的值重跑。
+
+### NC_AXIS_AMBIGUOUS
+
+- **現象**:有多支軸叫這個名稱(XAE 允許同名)。從名稱分不出是哪一支，link 也分不出(probe 第 5 題)。
+- **下一步**:改用完整 tree path;最好先把重複的軸改名或刪掉。
+
+### NC_AXIS_VERIFY_FAILED
+
+- **現象**:軸建好了，但讀回的 ItemType / subType 不對，或 encoder 不是 Simulation encoder(`data.mismatches`)。模組會刪掉這支軸(`data.rolledBack`)。目前只有 Continuous 在 probe 裡建立並 Activate 過，其他 AxisType 的預設 encoder 沒實測。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem` 刪掉 `data.axisPath`,再重跑。
+
+### NC_INVALID_SUBTYPE
+
+- **現象**:`EncoderType` / `DriveType` / `ControllerType` 不是 XAE 有名稱的號碼(`data.allowedTypes`;什麼都沒寫),或寫入後子節點的 `ItemSubTypeName` 是空的(XAE 照存了沒有名稱的號碼):模組把原本的型別號碼送回去(`data.reverted`、`data.unnamedTypes`)。
+- **為什麼**:不存在的型別也回 S_OK(probe 第 4 題:Drive 18、19、25–40;Enc 9、22、23、30–40;Ctrl 0、4、15–40)。
+- **下一步**:改用 `data.allowedTypes` 的號碼。
+
+### NC_AXIS_PARAM_NOT_FOUND
+
+- **現象**:這支軸的 ProduceXml 沒有要改的欄位(`data.missingFields`)。XAE 會靜默忽略不存在的元素，所以模組不送。
+- **下一步**:`Get-TcTreeItemXml -Path <data.axisPath>` 看 `NcAxisDef` 的實際結構。
+
+### NC_AXIS_PARAM_WRITE_FAILED
+
+- **現象**:ConsumeXml 被 XAE 拒絕(例外)。`data.backupPath` 是寫入前的 ProduceXml。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcTreeItemXml` 確認目前值後重跑。
+
+### NC_AXIS_PARAM_VERIFY_FAILED
+
+- **現象**:ConsumeXml 有返回，但讀回的值和要寫的不同(`data.mismatches`)。不要當成功。
+- **下一步**:`Get-TcTreeItemXml -Path <data.axisPath>` 看實際值;要還原就用 `data.backupPath` 裡的值再跑一次(先 dry-run)。
+
+### NC_PLC_VARIABLE_NOT_FOUND
+
+- **現象**:PLC instance 的 `* Inputs` / `* Outputs` 底下找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`(`data.instanceChildren`)。AXIS_REF 要 build 過才會出現在 process image。
+- **下一步**:確認 `-PlcVariable` 是 AXIS_REF 本身(例如 `MAIN.axis`,不要加 `.NcToPlc`),`Build-TcProject` 後重跑。
+
+### NC_AXIS_ALREADY_LINKED
+
+- **現象**:四個端點之一已經 link 到別處(`data.existingLinks`)。`LinkVariables` 對已 link 的變數會怎樣沒有實測，所以模組不送。
+- **下一步**:`Remove-TcVariableLink` 解掉舊的 link,再重跑 `Connect-TcNcAxisToPlc`。
 
 ## 已知限制
 

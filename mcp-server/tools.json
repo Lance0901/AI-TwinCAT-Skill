@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T16:56:48Z",
+    "generatedAt":  "2026-10-31T19:20:27Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -193,6 +193,78 @@
                                                          },
                                           "required":  [
                                                            "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddNcAxis",
+                      "cmdlet":  "Add-TcNcAxis",
+                      "description":  "Adds an NC axis below '<NC task>^Axes' (CreateChild) and reads back that it is a simulation axis (encoder = Simulation encoder). Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name (no '^')."
+                                                                      },
+                                                             "Task":  {
+                                                                          "type":  "string",
+                                                                          "description":  "NC task name or tree path (TINC^NC-Task 1 SAF); default: the only NC task."
+                                                                      },
+                                                             "AxisType":  {
+                                                                              "type":  "string",
+                                                                              "enum":  [
+                                                                                           "Continuous",
+                                                                                           "Discrete",
+                                                                                           "Stepper",
+                                                                                           "Encoder"
+                                                                                       ],
+                                                                              "description":  "Continuous (default), Discrete, Stepper or Encoder; fixed at creation (ConsumeXml AxisType does not change it, measured).",
+                                                                              "default":  "Continuous"
+                                                                          },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddNcTask",
+                      "cmdlet":  "Add-TcNcTask",
+                      "description":  "Adds the NC task below TINC (CreateChild SubType 1); a TINC holds only one, so an existing task returns NC_TASK_ALREADY_EXISTS. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Requested task name (default 'NC-Task 1'; XAE may append ' SAF').",
+                                                                          "default":  "NC-Task 1"
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1252,6 +1324,43 @@
                                       }
                   },
                   {
+                      "name":  "LinkNcAxis",
+                      "cmdlet":  "Connect-TcNcAxisToPlc",
+                      "description":  "Links an NC axis to a PLC AXIS_REF (two struct links: NcToPlc <-> Outputs^ToPlc, PlcToNc <-> Inputs^FromPlc) and reads the mapping back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Axis":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1)."
+                                                                      },
+                                                             "PlcVariable":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Symbol of the PLC AXIS_REF (AT %I* / %Q* members NcToPlc / PlcToNc), e.g. MAIN.axis or GVL_Motion.arAxis[1]."
+                                                                             },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path when the solution has more than one PLC project."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned links. false: back up, link, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Axis",
+                                                           "PlcVariable"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "LinkProgramToTask",
                       "cmdlet":  "Add-TcTaskProgram",
                       "description":  "Links a PROGRAM to a PLC task (CreateChild 650 below '<Plc> Project^<PlcTask>'). Checks first that the name is an existing PROGRAM, exactly; dry-run by default; backs up the task's .TcTTO and reads back.",
@@ -1775,6 +1884,62 @@
                                                          },
                                           "required":  [
 
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetNcAxisParameter",
+                      "cmdlet":  "Set-TcNcAxisParameter",
+                      "description":  "Sets measured NC axis fields (max velocity, acceleration, deceleration, jerk, encoder / drive / controller type) with ConsumeXml and reads every field back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Axis":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1)."
+                                                                      },
+                                                             "MaxVelocity":  {
+                                                                                 "type":  "number",
+                                                                                 "description":  "AxisParam/Velo/Maximum (axis unit per s, > 0)."
+                                                                             },
+                                                             "Acceleration":  {
+                                                                                  "type":  "number",
+                                                                                  "description":  "AxisParam/Dynamic/Acceleration (> 0)."
+                                                                              },
+                                                             "Deceleration":  {
+                                                                                  "type":  "number",
+                                                                                  "description":  "AxisParam/Dynamic/Deceleration (> 0)."
+                                                                              },
+                                                             "Jerk":  {
+                                                                          "type":  "number",
+                                                                          "description":  "AxisParam/Dynamic/Jerk (>= 0)."
+                                                                      },
+                                                             "EncoderType":  {
+                                                                                 "type":  "integer",
+                                                                                 "description":  "Encoder/EncType number (0 / 1 = Simulation encoder)."
+                                                                             },
+                                                             "DriveType":  {
+                                                                               "type":  "integer",
+                                                                               "description":  "Drive/DrvType number (5 = KL4XXX, the default)."
+                                                                           },
+                                                             "ControllerType":  {
+                                                                                    "type":  "integer",
+                                                                                    "description":  "Controller/CtrType number (1 = Position controller P, the default)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned change. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Axis"
                                                        ],
                                           "additionalProperties":  false
                                       }
