@@ -212,6 +212,7 @@ $script:TcErrorHints['VARIANT_NOT_FOUND'] = 'variant / group 名稱不存在(大
 $script:TcErrorHints['VARIANT_IS_CURRENT'] = '要移除的是目前的 variant(或目前 group 會沒有成員):先 Set-TcCurrentVariant -Name <另一個 variant> -DryRun $false,再重跑 Set-TcProjectVariantConfig'
 $script:TcErrorHints['VARIANT_VERIFY_FAILED'] = '寫入後讀回的 variant / group 和預期不同(data.readback vs data.after):不要當成功。用 Get-TcProjectVariants 確認;要還原就用 data.backupPath 的內容'
 $script:TcErrorHints['VARIANT_SWITCH_FAILED'] = '切換後讀回的 CurrentProjectVariant 不同(data.current):用 Get-TcProjectVariants 確認，再重跑 Set-TcCurrentVariant'
+$script:TcErrorHints['VARIANT_READ_FAILED'] = 'CurrentProjectVariant 讀取失敗(不是「沒有 variant」),什麼都沒做:用 Get-TcIdeModalDialog 檢查 dialog,Get-TcProjectVariants 確認讀得到，再重跑'
 $script:TcErrorHints['VARIANT_GROUP_ACTIVE'] = '目前選的是 variant group,group 不能 Activate:先 Set-TcCurrentVariant -Name <variant> -DryRun $false,再 Build-TcProject,然後重跑 Enable-TcConfig'
 # Phase 3 task 4.4: independent project file (Set-TcIndependentFile)
 $script:TcErrorHints['INDEPENDENT_FILE_UNSUPPORTED'] = '這個節點不能獨立存檔(XAE 回 S_OK 但讀回不變;實測 PlcTask、Axes、TINC、TIRR 都是):改用它的上層或下層節點，例如 PLC project TIPC^<Plc>、NC 軸、NC task、TcCOM 實例'

@@ -44,6 +44,7 @@ $sm | Add-Member ScriptProperty ProjectVariantConfig { $global:T.Config } {
     param($v)
     $global:T.Mods.Add('Set ProjectVariantConfig') | Out-Null
     if (-not (Test-MockConfig $v)) { throw (New-ComError 'Unspecified error' ([int]0x80004005)) }
+    if ($global:T.Mode -eq 'config-drop-future') { $v = $v -replace '<Future>keep</Future>', '' }
     if ($global:T.Mode -eq 'config-drop-last') { $v = $v -replace '<Variant><Name>[^<]*</Name></Variant></ProjectVariants>$', '</ProjectVariants>' }
     $global:T.Config = $v
 }
@@ -130,14 +131,41 @@ try {
     $r = Set-TcCurrentVariant -Name Variant2 -DryRun $false
     Check 'SwitchVariant readback differs -> VARIANT_SWITCH_FAILED, recorded' ($r.error.code -eq 'VARIANT_SWITCH_FAILED' -and (Get-CodeChanged) -match 'verify') (J $r.error)
 
+    # ===== review S6: unknown nodes / attributes survive, whole document read back
+    Reset-Mock -Config '<?xml version="1.0"?><ProjectVariants><Group><Name>Group1</Name><Member>Variant1</Member></Group><Variant Id="7"><Name>Variant1</Name><Build Setting="x"/></Variant><Future a="b">keep</Future></ProjectVariants>'; Reset-BuildRequired
+    $r = Set-TcProjectVariantConfig -AddVariant Variant2 -Group group1 -DryRun $false
+    Check 'S6 add on the DOM: unknown element / attributes kept, verified' ($r.success -and $r.data.verified -and $global:T.Config -match '<Variant Id="7"><Name>Variant1</Name><Build Setting="x" /></Variant>' -and $global:T.Config -match '<Future a="b">keep</Future>' -and $global:T.Config -match '<Variant><Name>Variant2</Name></Variant>') "$($global:T.Config)"
+    Check 'N4 -Group in another case joins the existing group (warning)' ($global:T.Config -match '<Group><Name>Group1</Name><Member>Variant1</Member><Member>Variant2</Member></Group>' -and $global:T.Config -cnotmatch '<Name>group1</Name>' -and @($r.data.warnings | Where-Object { $_ -like '*exists as*Group1*' }).Count -eq 1) "$($global:T.Config) $(J $r.data.warnings)"
+    Reset-Mock -Config '<?xml version="1.0"?><ProjectVariants><Variant><Name>Variant1</Name></Variant><Future>keep</Future></ProjectVariants>'; Reset-BuildRequired; $global:T.Mode = 'config-drop-future'
+    $r = Set-TcProjectVariantConfig -AddVariant Variant2 -DryRun $false
+    Check 'S6 readback compares the whole document (an unknown element lost -> VARIANT_VERIFY_FAILED)' ($r.error.code -eq 'VARIANT_VERIFY_FAILED') (J $r.error)
+
+    # ===== review S2: CurrentProjectVariant read through Invoke-TcComRetry, a failing read is an error
+    if (-not ('TcUnitThrowingVariantSm' -as [type])) {
+        Add-Type -TypeDefinition 'public class TcUnitThrowingVariantSm { public string Msg; public string CurrentProjectVariant { get { throw new System.Runtime.InteropServices.COMException(Msg, unchecked((int)0x80004005)); } } }'
+    }
+    $bad = New-Object TcUnitThrowingVariantSm
+    $bad.Msg = 'Unspecified error (mock)'
+    $rv = & $mod { param($x) Read-TcCurrentVariant -SysManager $x } $bad
+    Check 'S2 Read-TcCurrentVariant: a property that throws -> Error, not empty' ($null -ne $rv.Error -and $null -eq $rv.Value) (J $rv)
+    $global:T.Sm = $bad
+    $r = Enable-TcConfig -Force
+    Check 'S2 Enable-TcConfig: CurrentProjectVariant unreadable -> VARIANT_READ_FAILED, nothing activated' ($r.error.code -eq 'VARIANT_READ_FAILED' -and $r.data.activated -eq $false) (J $r)
+    $bad.Msg = 'IDE_BUSY: mock busy'
+    $r = Enable-TcConfig -Force
+    Check 'S2 Enable-TcConfig: an IDE_* error keeps its code' ($r.error.code -eq 'IDE_BUSY') (J $r.error)
+    $global:T.Sm = $sm
+    $rv = & $mod { Read-TcCurrentVariant -SysManager ([PSCustomObject]@{ Other = 1 }) }
+    Check 'S2 Read-TcCurrentVariant: no such member -> empty, not supported' ($rv.Value -eq '' -and $null -eq $rv.Error -and -not $rv.Supported) (J $rv)
+
     # ===== Enable-TcConfig: VARIANT_GROUP_ACTIVE before anything
     Reset-Mock -Current '[Group1]'; Reset-BuildRequired
     $r = Enable-TcConfig -Force
     Check 'EnableConfig with a group selected -> VARIANT_GROUP_ACTIVE, nothing activated' ($r.error.code -eq 'VARIANT_GROUP_ACTIVE' -and $r.data.activated -eq $false -and $r.error.hint -match 'Set-TcCurrentVariant') (J $r)
-    $g = & $mod { param($s) Test-TcVariantGroupActive -SysManager $s } $sm
+    $g = & $mod { Test-TcVariantGroupActive -Current '[Group1]' }
     Check 'Test-TcVariantGroupActive returns the error for a group' ($g.error.code -eq 'VARIANT_GROUP_ACTIVE') (J $g)
     $global:T.Current = 'Variant1'
-    $g = & $mod { param($s) Test-TcVariantGroupActive -SysManager $s } $sm
+    $g = & $mod { Test-TcVariantGroupActive -Current 'Variant1' }
     Check 'Test-TcVariantGroupActive: a variant is fine' ($null -eq $g) (J $g)
 
     # ===== #89: boot folder of a variant project
@@ -159,13 +187,28 @@ try {
     Check '#89 without -Variant: the old _Boot\<Platform> is compared -> mismatch (the reported bug)' ($d1.status -eq 'mismatch' -and $d1.localDir -eq $old) (J $d1)
     $d2 = & $mod { param($s, $p) Get-TcBootPackageDiff -SolutionPath $s -Platform $p -AmsNetId '1.2.3.4.1.1' -AdsPorts @(851) -Variant 'Variant1' } $Sln $plat
     Check '#89 with -Variant Variant1: _Boot\Variant1\<Platform> is compared -> match' ($d2.status -eq 'match' -and $d2.localDir -eq $var -and $d2.variant -eq 'Variant1') (J $d2)
+    # review S1: base package newer than a stale variant package, target = the base package: the
+    # variant folder is still the only candidate, so the stale package is reported (mismatch)
+    [System.IO.File]::WriteAllText((Join-Path $old 'CurrentConfig.xml'), 'variant package NEW BASE')
+    [System.IO.File]::WriteAllText((Join-Path $tgt 'CurrentConfig.xml'), 'variant package NEW BASE')
+    (Get-Item -LiteralPath (Join-Path $var 'CurrentConfig.xml')).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddHours(-2)
+    $d4 = & $mod { param($s, $p) Get-TcBootPackageDiff -SolutionPath $s -Platform $p -AmsNetId '1.2.3.4.1.1' -AdsPorts @(851) -Variant 'Variant1' } $Sln $plat
+    Check 'S1 base newer than the variant package -> still the variant folder, mismatch reported' ($d4.status -eq 'mismatch' -and $d4.localDir -eq $var) (J $d4)
+    $d5 = & $mod { param($s, $p) Get-TcBootPackageDiff -SolutionPath $s -Platform $p -AmsNetId '1.2.3.4.1.1' -AdsPorts @(851) -Variant 'Variant9' } $Sln $plat
+    Check 'S1 variant folder missing -> base compared, warning' ($d5.localDir -eq $old -and @($d5.warnings | Where-Object { $_ -match 'Variant9' }).Count -eq 1) (J $d5)
+    [System.IO.File]::WriteAllText((Join-Path $old 'CurrentConfig.xml'), 'old package')
+    [System.IO.File]::WriteAllText((Join-Path $tgt 'CurrentConfig.xml'), 'variant package')
     [System.IO.File]::WriteAllText($TsProj, '<TcSmProject><Project><Variants SpecificLocalBootFolder="false"/></Project></TcSmProject>')
     $d3 = & $mod { param($s, $p) Get-TcBootPackageDiff -SolutionPath $s -Platform $p -AmsNetId '1.2.3.4.1.1' -AdsPorts @(851) -Variant 'Variant1' } $Sln $plat
     Check '#89 SpecificLocalBootFolder="false": only _Boot\<Platform>' ($d3.localDir -eq $old) (J $d3)
     [System.IO.File]::WriteAllText($TsProj, '<TcSmProject><Project><Variants SpecificLocalBootFolder="true"/></Project></TcSmProject>')
     & $mod { param($x) $script:MockTsProj = $x; function script:Get-TcPlcProjectFile { param([string]$PlcName) [PSCustomObject]@{ TsProjFile = $script:MockTsProj } } } $TsProj
     $fs = & $mod { param($s) Get-TcBootFileSet -PlcName 'plc' -Platform 'TwinCAT OS (x64)' -AdsPort 851 -SolutionDir $s -Variant 'Variant1' } (Split-Path $Sln)
-    Check '#89 Get-TcBootFileSet -Variant: _Boot\Variant1\<platform>\Plc listed first, both folders scanned' (@($fs.Dirs).Count -eq 2 -and @($fs.Dirs)[0] -like '*\_Boot\Variant1\TwinCAT OS (x64)\Plc' -and @($fs.Files.Keys | Where-Object { $_ -like '*Variant1*Port_851.app' }).Count -eq 1) (J $fs.Dirs)
+    Check 'S1 Get-TcBootFileSet -Variant: only _Boot\Variant1\<platform>\Plc when it exists' (@($fs.Dirs).Count -eq 1 -and @($fs.Dirs)[0] -like '*\_Boot\Variant1\TwinCAT OS (x64)\Plc' -and @($fs.Files.Keys | Where-Object { $_ -like '*Variant1*Port_851.app' }).Count -eq 1 -and @($fs.Files.Keys).Count -eq 1 -and $null -eq $fs.Warning) (J $fs.Dirs)
+    $fsm = & $mod { param($s) Get-TcBootFileSet -PlcName 'plc' -Platform 'TwinCAT OS (x64)' -AdsPort 851 -SolutionDir $s -Variant 'Variant9' } (Split-Path $Sln)
+    Check 'S1 Get-TcBootFileSet variant folder missing -> _Boot\<platform>\Plc with a warning' (@($fsm.Dirs).Count -eq 1 -and @($fsm.Dirs)[0] -notlike '*Variant9*' -and $fsm.Warning -match 'Variant9') (J $fsm)
+    $fsr = & $mod { param($s) Get-TcBootFileSet -PlcName 'plc' -Platform '' -AdsPort 851 -SolutionDir $s } (Split-Path $Sln)
+    Check 'N2 Get-TcBootFileSet fallback search also finds _Boot\<Variant>\<platform>\Plc' (-not $fsr.Derived -and @($fsr.Files.Keys | Where-Object { $_ -like '*\_Boot\Variant1\*Port_851.app' }).Count -eq 1 -and @($fsr.Files.Keys | Where-Object { $_ -like '*\_Boot\TwinCAT OS (x64)\Plc\Port_851.app' }).Count -eq 1) (J @($fsr.Files.Keys))
     $fs0 = & $mod { param($s) Get-TcBootFileSet -PlcName 'plc' -Platform 'TwinCAT OS (x64)' -AdsPort 851 -SolutionDir $s } (Split-Path $Sln)
     Check '#89 Get-TcBootFileSet without variant: unchanged (one folder)' (@($fs0.Dirs).Count -eq 1) (J $fs0.Dirs)
 

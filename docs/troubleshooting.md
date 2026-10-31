@@ -341,7 +341,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### BOOT_PACKAGE_MISMATCH
 
 - **為什麼**:Activate 後專案 `_Boot\<platform>` 與 target Boot 目錄的檔案不一致,代表 Activate 沒把新 configuration 寫到 target,runtime 會用舊 package 啟動。比對 `CurrentConfig.xml`、`CurrentConfig.tszip`、`CurrentConfig\*.tpzip`、`Plc\Port_*.app`(只比本機 package 有的檔;target 多出來的 tpzip 列在 `extraOnTarget`,不算不一致),`data.bootPackage.files[]` 每檔有 local / target 的 `size`、`lastWriteTime`、`sha256`。
-- **Variant 專案(#89)**:有 current variant 時本機 package 在 `_Boot\<Variant>\<platform>`(XAE 寫到那裡，自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 18 題),模組把它和 `_Boot\<platform>` 都列為候選、取 `CurrentConfig.xml` 最新的(`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時只看 `_Boot\<platform>`);`data.bootPackage.variant` 是比對時的 variant。修正前 variant 專案一律誤報這個碼。
+- **Variant 專案(#89)**:有 current variant 時本機 package 在 `_Boot\<Variant>\<platform>`(XAE 寫到那裡，自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 18 題),這個資料夾存在時**只比它**(review S1:不能讓比較新的 `_Boot\<platform>` 蓋掉過期的 variant 包),不存在才退回 `_Boot\<platform>` 並在 `data.bootPackage.warnings` 說明;`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時只看 `_Boot\<platform>`。讀 `CurrentProjectVariant` 失敗回 `VARIANT_READ_FAILED`,不當成沒有 variant;`data.bootPackage.variant` 是比對時的 variant。修正前 variant 專案一律誤報這個碼。
 - **只對本機 runtime**:UmRT 依 `%ProgramData%\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\TcRegistry.xml` 的 `AmsNetId`(BIN,`C7052AFA0101` = 199.5.42.250.1.1)找到 `<name>\3.1\Boot`(InfoSys 未記載,實測);本機 XAR 是 `%ProgramData%\Beckhoff\TwinCAT\3.1\Boot`([InfoSys 4026 起的 Boot 目錄](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/4291093003.html),4026 前是 `C:\TwinCAT\3.1\Boot`)。遠端 target `status = unavailable`,不阻擋流程。
 - **實測**(2026-10-21,4026 + VS2022,本機 UmRT):正常 Activate 後 6 個檔(2 個 CurrentConfig、2 個 tpzip、Port_851.app、Port_852.app)SHA-256 全相同。把 target 的 CurrentConfig 三個檔換回前一版、保留新的 Port_852.app 後 `Set-TcSystemState -State Run`:system 照樣進 Run 並停住,但 851 / 852 都是 Invalid(PLC 沒載入)→ 只看 system state 會誤判,`Enable-TcConfig -Force` 由 `verify` 擋下。
 - **下一步**:重跑 `Enable-TcConfig -Force`(Activate 會重寫 Boot);仍不一致時先備份 target Boot 目錄,再把 `_Boot\<platform>` 的上述檔案複製過去並比對 SHA-256。模組只讀不寫,不會自動覆寫 target 檔案。
@@ -1247,9 +1247,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### Variant(task 4.3):做法
 
 - **API**:`ITcSysManager14.CurrentProjectVariant` / `ProjectVariantConfig` / `ProjectVariantItems`(TE1000 v1.7.0 §5.1.13 p.52、§6.12.1 p.296;[InfoSys 8204600715](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/8204600715.html))。variant management 從 4024 起([InfoSys Variant management Concept](https://infosys.beckhoff.com/content/1033/variant_management/6325752587.html));4024.71 的 32-bit XAE Shell 也能 late-bind(probe 第 15 題)。沒有 variant 時 4026 回空字串、4024 的 Config / Items 回 `$null`,`Get-TcProjectVariants`(MCP `GetVariants`)都轉成空陣列。
-- **整份覆蓋**:寫 `ProjectVariantConfig` 會取代整份文件(不合併、不自動加 `[All]`、current 不會被清掉，probe 第 17 題),所以 `Set-TcProjectVariantConfig`(`SetVariantConfig`)讀出 → 增刪 → 用 XmlDocument 組整份 → 寫回 → 讀回比對。移除目前的 variant 會擋(`VARIANT_IS_CURRENT`)。寫前備份舊文件和 `.tsproj`(存檔後 variant 存在 `.tsproj` 的 `<Variants>` 與根元素 `TcProjectVariant` attribute,item 層的設定存在 item 所在的檔，例如 `_Config\NC\NC.xti`,probe 第 18 題)。
+- **整份覆蓋**:寫 `ProjectVariantConfig` 會取代整份文件(不合併、不自動加 `[All]`、current 不會被清掉，probe 第 17 題),所以 `Set-TcProjectVariantConfig`(`SetVariantConfig`)讀出 → 在原本的 DOM 上增刪 `<Variant>` / `<Member>`(模組不認得的元素與 attribute 原樣保留，review S6)→ 整份寫回 → 讀回整份文件正規化後比對。`-Group` 和 variant 名稱一樣不分大小寫比對。移除目前的 variant 會擋(`VARIANT_IS_CURRENT`)。寫前備份舊文件和 `.tsproj`(存檔後 variant 存在 `.tsproj` 的 `<Variants>` 與根元素 `TcProjectVariant` attribute,item 層的設定存在 item 所在的檔，例如 `_Config\NC\NC.xti`,probe 第 18 題)。
 - **切換**:`Set-TcCurrentVariant`(`SwitchVariant`)名稱大小寫敏感;不存在、大小寫錯、`[All]` 在 XAE 都是 E_FAIL,模組先查;`[Group1]` 可以設、`''` 清掉。
-- **Boot 目錄(#89)**:有 current variant 時 XAE 把 boot 包寫到 `_Boot\<Variant>\<Platform>\`(group 是 `_Boot\[Group1]\<Platform>\`;`.tsproj` 有 `<Variants SpecificLocalBootFolder="true">`)。`Enable-TcConfig` 的 boot-package 比對與 `New-TcBootProject` 的 boot 檔讀回都會看這個資料夾(`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時不看),比對取 `CurrentConfig.xml` 最新的那個;修正前一律誤報 `BOOT_PACKAGE_MISMATCH` 並停在 Config(probe 第 18 題實測 target 的 boot 檔 SHA-256 和 `_Boot\Variant1\TwinCAT OS (x64)\` 相同)。
+- **Boot 目錄(#89)**:有 current variant 時 XAE 把 boot 包寫到 `_Boot\<Variant>\<Platform>\`(group 是 `_Boot\[Group1]\<Platform>\`;`.tsproj` 有 `<Variants SpecificLocalBootFolder="true">`)。`Enable-TcConfig` 的 boot-package 比對與 `New-TcBootProject` 的 boot 檔讀回都會看這個資料夾(存在時只用它，不存在才退回 `_Boot\<Platform>\` 並加 warning;`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時不看);修正前一律誤報 `BOOT_PACKAGE_MISMATCH` 並停在 Config(probe 第 18 題實測 target 的 boot 檔 SHA-256 和 `_Boot\Variant1\TwinCAT OS (x64)\` 相同)。
 
 ### VARIANT_NOT_SUPPORTED
 
@@ -1285,6 +1285,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:設了 `CurrentProjectVariant`,讀回卻是別的值(`data.current`)。
 - **下一步**:`Get-TcProjectVariants` 確認後重跑。
+
+### VARIANT_READ_FAILED
+
+- **現象**:`Enable-TcConfig` / `New-TcBootProject` 讀 `CurrentProjectVariant` 失敗(屬性存在但讀取丟例外;IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG 仍回各自的碼)。不當成「沒有 variant」,因為 boot 目錄和 group 檢查都依它決定(review S2)。什麼都沒做。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcProjectVariants` 確認讀得到，再重跑。
 
 ### VARIANT_GROUP_ACTIVE
 

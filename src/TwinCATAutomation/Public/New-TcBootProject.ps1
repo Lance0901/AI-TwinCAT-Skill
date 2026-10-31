@@ -95,12 +95,18 @@ function New-TcBootProject {
         $data.platform = $platform
         $data | Add-Member -NotePropertyName projectPlatform -NotePropertyValue $projectPlatform
         $plcName = Get-TcPlcNameFromPath -TreePath $plcPath
-        $variant = Get-TcCurrentVariantName -SysManager $sm
+        $cv = Read-TcCurrentVariant -SysManager $sm
+        if ($null -ne $cv.Error) {
+            return New-TcResult -Success $false -ErrorCode 'VARIANT_READ_FAILED' -Data $data `
+                -ErrorMessage "CurrentProjectVariant could not be read ($($cv.Error)); the boot folder cannot be derived, nothing was generated." -Hint (Get-TcErrorHint -Code 'VARIANT_READ_FAILED')
+        }
+        $variant = [string]$cv.Value
         if (-not [string]::IsNullOrWhiteSpace($variant)) { $data | Add-Member -NotePropertyName variant -NotePropertyValue $variant }
         $before = Get-TcBootFileSet -PlcName $plcName -Platform $platform -ProjectPlatform $projectPlatform -AdsPort $port -SolutionDir (Get-TcTreeItemSolutionDir) -Variant $variant
         $data | Add-Member -NotePropertyName bootDir -NotePropertyValue $before.Dir
         $data | Add-Member -NotePropertyName bootDirs -NotePropertyValue @($before.Dirs)
         $data | Add-Member -NotePropertyName bootDirDerived -NotePropertyValue $before.Derived
+        if (-not [string]::IsNullOrEmpty($before.Warning)) { $data | Add-Member -NotePropertyName variantWarning -NotePropertyValue $before.Warning }
 
         $dlg = Get-TcTreeItemDialogResult -Operation "GenerateBootProject '$plcPath'" -Data $data
         if ($null -ne $dlg) { return $dlg }

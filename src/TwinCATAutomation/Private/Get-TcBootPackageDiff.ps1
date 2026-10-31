@@ -85,9 +85,10 @@ function Get-TcBootPackageDiff {
     .PARAMETER Variant
         CurrentProjectVariant (#89): XAE writes the package of a variant project to
         _Boot\<Variant>\<Platform> (measured 2026-11-01 4026 VS2022, self-built client,
-        verification/phase3-probe.md question 18), so that folder is a candidate too
-        (Get-TcVariantBootFolder: not when the .tsproj says SpecificLocalBootFolder="false"); the
-        newest CurrentConfig.xml of the candidates wins. Empty: _Boot\<Platform> only.
+        verification/phase3-probe.md question 18): when that folder exists it is the only
+        candidate (Get-TcVariantBootFolder: not when the .tsproj says SpecificLocalBootFolder=
+        "false"); when it does not, _Boot\<Platform> is compared and warnings[] says so. Empty:
+        _Boot\<Platform> only.
     .OUTPUTS
         PSCustomObject @{ status = 'match' | 'mismatch' | 'unavailable'; reason; localDir;
           targetDir; targetKind; mismatches = [names]; files = @( @{ file; match;
@@ -107,6 +108,7 @@ function Get-TcBootPackageDiff {
         reason     = $null
         localDir   = $null
         variant    = $(if ([string]::IsNullOrWhiteSpace($Variant)) { $null } else { $Variant })
+        warnings   = @()
         targetDir  = $null
         targetKind = $null
         mismatches = @()
@@ -125,8 +127,14 @@ function Get-TcBootPackageDiff {
         if ($tsprojs.Count -eq 0) { continue }
         $dirs = @(Join-Path $b.FullName $Platform)
         # #89: a variant project writes _Boot\<Variant>\<Platform>
+        # review S1: when _Boot\<Variant>\<Platform> exists it is the ONLY candidate (a newer base
+        # package must not hide a stale variant one), else the base folder with a warning
         $vf = Get-TcVariantBootFolder -Variant $Variant -TsProjFile $tsprojs[0].FullName
-        if ($null -ne $vf) { $dirs = @((Join-Path (Join-Path $b.FullName $vf) $Platform)) + $dirs }
+        if ($null -ne $vf) {
+            $vd = Join-Path (Join-Path $b.FullName $vf) $Platform
+            if (Test-Path -LiteralPath $vd -PathType Container) { $dirs = @($vd) }
+            else { $res.warnings = @(@($res.warnings) + @("current variant '$Variant': $vd does not exist, $($dirs[0]) is compared instead")) }
+        }
         foreach ($cand in $dirs) {
             if (-not (Test-Path -LiteralPath $cand)) { continue }
             $xml = Join-Path $cand 'CurrentConfig.xml'

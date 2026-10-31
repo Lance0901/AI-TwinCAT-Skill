@@ -49,32 +49,69 @@ function ConvertFrom-TcVariantConfig {
     return $out
 }
 
-function New-TcVariantConfigXml {
+function ConvertTo-TcVariantConfigDocument {
     <#
     .SYNOPSIS
-        <?xml version="1.0"?><ProjectVariants><Group>...</Group><Variant>...</Variant></ProjectVariants> (XmlDocument, no string concatenation of names).
+        ProjectVariantConfig text -> XmlDocument (DTD prohibited, no resolver, whitespace kept), or a new '<?xml version="1.0"?><ProjectVariants/>' for '' / $null; $null when it does not parse.
     .DESCRIPTION
-        Same layout as the manual sample (6.12.1 p.296): groups first, then variants.
-    .PARAMETER Variants
-        Variant names in order.
-    .PARAMETER Groups
-        @{ name; members } objects.
+        Review S6: the variants are added / removed on this DOM, so elements and attributes the
+        module does not know (build settings, future fields) are written back unchanged.
+    .PARAMETER Xml
+        ProjectVariantConfig value.
     #>
     [CmdletBinding()]
-    param([Parameter()][AllowEmptyCollection()][string[]]$Variants = @(), [Parameter()][AllowEmptyCollection()][object[]]$Groups = @())
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Xml)
     $doc = New-Object System.Xml.XmlDocument
-    $null = $doc.AppendChild($doc.CreateXmlDeclaration('1.0', $null, $null))
-    $root = $doc.AppendChild($doc.CreateElement('ProjectVariants'))
-    foreach ($g in @($Groups)) {
-        $ge = $root.AppendChild($doc.CreateElement('Group'))
-        $ne = $ge.AppendChild($doc.CreateElement('Name')); $ne.InnerText = [string]$g.name
-        foreach ($m in @($g.members)) { $me = $ge.AppendChild($doc.CreateElement('Member')); $me.InnerText = [string]$m }
+    $doc.XmlResolver = $null
+    $doc.PreserveWhitespace = $true
+    if ([string]::IsNullOrWhiteSpace($Xml)) {
+        $null = $doc.AppendChild($doc.CreateXmlDeclaration('1.0', $null, $null))
+        $null = $doc.AppendChild($doc.CreateElement('ProjectVariants'))
+        Write-Output -NoEnumerate $doc
+        return
     }
-    foreach ($v in @($Variants)) {
-        $ve = $root.AppendChild($doc.CreateElement('Variant'))
-        $ne = $ve.AppendChild($doc.CreateElement('Name')); $ne.InnerText = [string]$v
+    $settings = New-Object System.Xml.XmlReaderSettings
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $sr = $null; $reader = $null
+    try {
+        $sr = New-Object System.IO.StringReader($Xml)
+        $reader = [System.Xml.XmlReader]::Create($sr, $settings)
+        $doc.Load($reader)
     }
-    return $doc.OuterXml
+    catch { return $null }
+    finally { if ($null -ne $reader) { $reader.Dispose() }; if ($null -ne $sr) { $sr.Dispose() } }
+    if ($null -eq $doc.DocumentElement -or $doc.DocumentElement.get_Name() -ne 'ProjectVariants') { return $null }
+    Write-Output -NoEnumerate $doc
+}
+
+function ConvertTo-TcNormalizedXml {
+    <#
+    .SYNOPSIS
+        XML text -> canonical form for comparisons: parsed without whitespace, XML declaration and comments dropped, re-serialized; $null when it does not parse.
+    .PARAMETER Xml
+        XML text.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Xml)
+    if ([string]::IsNullOrWhiteSpace($Xml)) { return '' }
+    $settings = New-Object System.Xml.XmlReaderSettings
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $settings.IgnoreWhitespace = $true
+    $settings.IgnoreComments = $true
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.XmlResolver = $null
+    $sr = $null; $reader = $null
+    try {
+        $sr = New-Object System.IO.StringReader($Xml)
+        $reader = [System.Xml.XmlReader]::Create($sr, $settings)
+        $doc.Load($reader)
+    }
+    catch { return $null }
+    finally { if ($null -ne $reader) { $reader.Dispose() }; if ($null -ne $sr) { $sr.Dispose() } }
+    foreach ($n in @($doc.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::XmlDeclaration })) { $null = $doc.RemoveChild($n) }
+    return $doc.DocumentElement.OuterXml
 }
 
 function Get-TcVariantState {
@@ -94,11 +131,11 @@ function Get-TcVariantState {
     param([Parameter(Mandatory)][object]$SysManager)
     $st = @{ Supported = $true; Error = $null; Current = ''; ConfigXml = ''; ItemsXml = ''; Config = $null }
     try {
-        $raw = Invoke-TcComRetry -OperationName 'CurrentProjectVariant' -ScriptBlock { $SysManager.CurrentProjectVariant }
+        $raw = Invoke-TcComRetry -OperationName 'CurrentProjectVariant' -ScriptBlock { Read-TcComPropertyValue -Object $SysManager -Name 'CurrentProjectVariant' }
         if ($null -eq $raw -and $null -eq $SysManager.PSObject.Properties['CurrentProjectVariant']) { throw 'ITcSysManager has no CurrentProjectVariant (ITcSysManager14, TCatSysManagerLib 3.3.0.0)' }
         $st.Current = [string]$raw
-        $st.ConfigXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantConfig' -ScriptBlock { $SysManager.ProjectVariantConfig })
-        $st.ItemsXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantItems' -ScriptBlock { $SysManager.ProjectVariantItems })
+        $st.ConfigXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantConfig' -ScriptBlock { Read-TcComPropertyValue -Object $SysManager -Name 'ProjectVariantConfig' })
+        $st.ItemsXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantItems' -ScriptBlock { Read-TcComPropertyValue -Object $SysManager -Name 'ProjectVariantItems' })
     }
     catch {
         if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
@@ -109,36 +146,52 @@ function Get-TcVariantState {
     return $st
 }
 
-function Get-TcCurrentVariantName {
+function Read-TcCurrentVariant {
     <#
     .SYNOPSIS
-        CurrentProjectVariant of the solution, '' when none / not readable. Never throws.
+        CurrentProjectVariant of the solution: @{ Value = '' | name; Error = $null | message; Supported }.
+    .DESCRIPTION
+        Review S2: read through Invoke-TcComRetry; IDE_* errors (busy, crashed, modal dialog) are
+        thrown so that the caller keeps their code. A read that fails otherwise is an Error, not "no
+        variant" (Enable-TcConfig returns VARIANT_READ_FAILED then). $null with no such member (an
+        XAE without ITcSysManager14, or a mock) is Value '' and Supported $false: late binding answers
+        $null for an unknown name; XAE 4024.71 / 4026.22 return '' (phase3-probe.md questions 15-16).
     .PARAMETER SysManager
         ITcSysManager (or $null).
     #>
     [CmdletBinding()]
     param([Parameter()][AllowNull()][object]$SysManager)
-    if ($null -eq $SysManager) { return '' }
-    try { return [string]$SysManager.CurrentProjectVariant } catch { return '' }
+    if ($null -eq $SysManager) { return @{ Value = ''; Error = $null; Supported = $false } }
+    $v = $null
+    try { $v = Invoke-TcComRetry -OperationName 'CurrentProjectVariant' -ScriptBlock { Read-TcComPropertyValue -Object $SysManager -Name 'CurrentProjectVariant' } }
+    catch {
+        if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+        return @{ Value = $null; Error = $_.Exception.Message; Supported = $true }
+    }
+    if ($null -eq $v) {
+        $has = $false
+        try { $has = $null -ne $SysManager.PSObject.Properties['CurrentProjectVariant'] } catch { $has = $false }
+        return @{ Value = ''; Error = $null; Supported = $has }
+    }
+    return @{ Value = [string]$v; Error = $null; Supported = $true }
 }
 
 function Test-TcVariantGroupActive {
     <#
     .SYNOPSIS
-        VARIANT_GROUP_ACTIVE result when the current project variant is a group ('[Group1]'), else $null.
+        VARIANT_GROUP_ACTIVE result when -Current is a group ('[Group1]'), else $null.
     .DESCRIPTION
         "If a group is selected it is not possible to activate the configurations" (VM manual v1.4
         p.7); XAE itself does not refuse Build or Activate in that state (measured, phase3-probe.md
         question 18), so Enable-TcConfig checks before anything is activated.
-    .PARAMETER SysManager
-        ITcSysManager.
+    .PARAMETER Current
+        CurrentProjectVariant (Read-TcCurrentVariant).
     #>
     [CmdletBinding()]
-    param([Parameter()][AllowNull()][object]$SysManager)
-    $cur = Get-TcCurrentVariantName -SysManager $SysManager
-    if ($cur -notmatch '^\[.*\]$') { return $null }
-    New-TcResult -Success $false -ErrorCode 'VARIANT_GROUP_ACTIVE' -Data ([PSCustomObject]@{ currentVariant = $cur; activated = $false }) `
-        -ErrorMessage "The current project variant is the group '$cur'; a group cannot be activated (variant-specific values would be undefined). Nothing was activated." `
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Current)
+    if ([string]$Current -notmatch '^\[.*\]$') { return $null }
+    New-TcResult -Success $false -ErrorCode 'VARIANT_GROUP_ACTIVE' -Data ([PSCustomObject]@{ currentVariant = $Current; activated = $false }) `
+        -ErrorMessage "The current project variant is the group '$Current'; a group cannot be activated (variant-specific values would be undefined). Nothing was activated." `
         -Hint (Get-TcErrorHint -Code 'VARIANT_GROUP_ACTIVE')
 }
 

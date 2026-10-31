@@ -208,10 +208,19 @@ function Enable-TcConfig {
 
     # VM manual v1.4 p.7: a selected variant group cannot be activated; XAE does not refuse it itself
     # (measured 2026-11-01 4026 VS2022, self-built client, verification/phase3-probe.md question 18).
-    $variantGroup = Test-TcVariantGroupActive -SysManager $sm
+    # Review S2: read with Invoke-TcComRetry; IDE_* keep their code, any other read error stops here
+    # (it must not look like "no variant": the boot folder and the group check depend on it).
+    $cv = $null
+    try { $cv = Read-TcCurrentVariant -SysManager $sm }
+    catch { return New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'VARIANT_READ_FAILED' -Operation 'Enable-TcConfig (CurrentProjectVariant)' }
+    if ($null -ne $cv.Error) {
+        return New-TcResult -Success $false -ErrorCode 'VARIANT_READ_FAILED' -Data ([PSCustomObject]@{ activated = $false }) `
+            -ErrorMessage "CurrentProjectVariant could not be read ($($cv.Error)); nothing was activated." -Hint (Get-TcErrorHint -Code 'VARIANT_READ_FAILED')
+    }
+    $variantGroup = Test-TcVariantGroupActive -Current $cv.Value
     if ($null -ne $variantGroup) { return $variantGroup }
     # #89: a variant project has its boot package in _Boot\<Variant>\<Platform>
-    $currentVariant = Get-TcCurrentVariantName -SysManager $sm
+    $currentVariant = [string]$cv.Value
 
     # --- cycle state (read by the nested helpers below via dynamic scope) ---
     $steps = New-Object System.Collections.ArrayList

@@ -211,6 +211,31 @@ function New-TcConfigBackup {
     }
 }
 
+function Read-TcComPropertyValue {
+    <#
+    .SYNOPSIS
+        Reads a property so that a failing getter THROWS (review S2).
+    .DESCRIPTION
+        '$obj.Name' and PSObject.Properties[Name].Value return $null when the getter throws (the
+        exception is swallowed; checked 2026-11-01 Windows PowerShell 5.1 with a .NET getter that
+        throws COMException), which would make "could not be read" look like "empty". The accessor
+        method get_<Name>() does throw (MethodInvocationException). When there is no such method
+        (FullyQualifiedErrorId MethodNotFound: a script property, an adapter without accessor
+        methods) the property is read the plain way. An object without the member returns $null.
+    .PARAMETER Object
+        COM / .NET object.
+    .PARAMETER Name
+        Property name.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Object, [Parameter(Mandatory)][string]$Name)
+    try { return $Object."get_$Name"() }
+    catch {
+        if ([string]$_.FullyQualifiedErrorId -notlike 'MethodNotFound*') { throw }
+    }
+    return $Object.$Name
+}
+
 function Get-TcTreeItemPropertyNoThrow {
     <#
     .SYNOPSIS

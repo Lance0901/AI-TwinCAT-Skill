@@ -7,17 +7,19 @@ function Set-TcProjectVariantConfig {
         XAE 3.1.4026.22, self-built client,
         openspec/changes/complete-automation-interface/verification/phase3-probe.md question 17: no
         merge, no automatic [All] group, invalid XML -> E_FAIL with the old value kept). So the
-        module reads the current document, adds / removes the variants, builds the new document
-        with XmlDocument (groups first, then variants, as the sample in TE1000 v1.7.0 6.12.1 p.296)
-        and writes it in one go.
+        module reads the current document, adds / removes <Variant> / <Member> elements on that DOM
+        (elements and attributes it does not know stay untouched; a new variant goes after the last
+        <Variant>, a new group before the first, as in the sample of TE1000 v1.7.0 6.12.1 p.296) and
+        writes the whole document back; the read-back document must equal it after normalizing
+        (whitespace, XML declaration, comments).
         Checks (nothing written): names match ^[A-Za-z_][A-Za-z0-9_]*$ (INVALID_PARAMS); an added
         name already present (any case, names are case-sensitive in XAE) -> VARIANT_ALREADY_EXISTS;
         a removed name not present (exact case) -> VARIANT_NOT_FOUND; removing the current variant,
         or the group that is current -> VARIANT_IS_CURRENT (XAE would keep CurrentProjectVariant
         pointing at a name that no longer exists, question 17: switch with Set-TcCurrentVariant
         first). A removed variant is also removed from every group; a group left without members is
-        removed (data.warnings). -Group: the added variants become members of that group (created
-        when missing).
+        removed (data.warnings). -Group: the added variants become members of that group (matched in
+        any case like the variant names; created when missing).
         DryRun (default true): data.before / data.after (variants, groups), data.xml.
         DryRun=false: backup of the old document and the .tsproj (the variants are stored in its
         <Variants> element after a save, question 18), IDE_MODAL_DIALOG check, write, read back:
@@ -108,27 +110,55 @@ function Set-TcProjectVariantConfig {
                 return New-TcResult -Success $false -ErrorCode 'VARIANT_IS_CURRENT' -Data $data -ErrorMessage "'$r' is the current variant; XAE would keep pointing at it after it is removed. Nothing was written." -Hint (Get-TcErrorHint -Code 'VARIANT_IS_CURRENT')
             }
         }
-        foreach ($r in $remove) {
-            $null = $variants.Remove($r)
-            foreach ($g in $groups) { $g.members = @($g.members | Where-Object { $_ -cne $r }) }
+        # review S6: change the document XAE gave us (unknown elements / attributes stay as they are)
+        $doc = ConvertTo-TcVariantConfigDocument -Xml $st.ConfigXml
+        if ($null -eq $doc) {
+            return New-TcResult -Success $false -ErrorCode 'VARIANT_CONFIG_INVALID' -Data $data -ErrorMessage 'ProjectVariantConfig does not parse as a <ProjectVariants> document; nothing was written.' -Hint (Get-TcErrorHint -Code 'VARIANT_CONFIG_INVALID')
         }
-        foreach ($g in @($groups.ToArray())) {
-            if (@($g.members).Count -eq 0 -and $remove.Count -gt 0) {
-                if ($st.Current -ceq "[$($g.name)]") {
-                    return New-TcResult -Success $false -ErrorCode 'VARIANT_IS_CURRENT' -Data $data -ErrorMessage "Removing $(($remove | ForEach-Object { "'$_'" }) -join ', ') leaves the current group '[$($g.name)]' without members. Nothing was written." -Hint (Get-TcErrorHint -Code 'VARIANT_IS_CURRENT')
+        $root = $doc.DocumentElement
+        $nameOf = { param($el) $n = $el.SelectSingleNode('Name'); if ($null -ne $n) { [string]$n.InnerText } else { '' } }
+        foreach ($r in $remove) {
+            foreach ($v in @($root.SelectNodes('Variant'))) { if ((& $nameOf $v) -ceq $r) { $null = $root.RemoveChild($v) } }
+            foreach ($m in @($root.SelectNodes('Group/Member'))) { if ([string]$m.InnerText -ceq $r) { $null = $m.ParentNode.RemoveChild($m) } }
+        }
+        if ($remove.Count -gt 0) {
+            foreach ($g in @($root.SelectNodes('Group'))) {
+                if ($null -ne $g.SelectSingleNode('Member')) { continue }
+                $gn = & $nameOf $g
+                if ($st.Current -ceq "[$gn]") {
+                    return New-TcResult -Success $false -ErrorCode 'VARIANT_IS_CURRENT' -Data $data -ErrorMessage "Removing $(($remove | ForEach-Object { "'$_'" }) -join ', ') leaves the current group '[$gn]' without members. Nothing was written." -Hint (Get-TcErrorHint -Code 'VARIANT_IS_CURRENT')
                 }
-                $null = $groups.Remove($g)
-                Add-TcDataWarning -Data $data -Warning "group '$($g.name)' has no member left and is removed"
+                $null = $root.RemoveChild($g)
+                Add-TcDataWarning -Data $data -Warning "group '$gn' has no member left and is removed"
             }
         }
-        foreach ($a in $add) { $variants.Add($a) }
-        if (-not [string]::IsNullOrWhiteSpace($Group)) {
-            $g = @($groups | Where-Object { $_.name -ceq $Group })[0]
-            if ($null -eq $g) { $g = [PSCustomObject]@{ name = $Group; members = @() }; $groups.Add($g) }
-            $g.members = @(@($g.members) + @($add | Where-Object { @($g.members) -cnotcontains $_ }))
+        $lastVariant = @($root.SelectNodes('Variant'))
+        $anchor = if ($lastVariant.Count -gt 0) { $lastVariant[-1] } else { $null }
+        foreach ($av in $add) {
+            $ve = $doc.CreateElement('Variant')
+            $ne = $doc.CreateElement('Name'); $ne.InnerText = $av; $null = $ve.AppendChild($ne)
+            if ($null -ne $anchor) { $null = $root.InsertAfter($ve, $anchor) } else { $null = $root.AppendChild($ve) }
+            $anchor = $ve
         }
-        $newXml = New-TcVariantConfigXml -Variants $variants.ToArray() -Groups $groups.ToArray()
-        $data | Add-Member -NotePropertyName after -NotePropertyValue ([PSCustomObject]@{ variants = $variants.ToArray(); groups = @($groups | ForEach-Object { [PSCustomObject]@{ name = $_.name; members = @($_.members) } }) })
+        if (-not [string]::IsNullOrWhiteSpace($Group)) {
+            # N4: a group is matched like a variant name: any case (the existing spelling is kept)
+            $ge = @($root.SelectNodes('Group') | Where-Object { (& $nameOf $_) -ieq $Group })[0]
+            if ($null -eq $ge) {
+                $ge = $doc.CreateElement('Group')
+                $ne = $doc.CreateElement('Name'); $ne.InnerText = $Group; $null = $ge.AppendChild($ne)
+                $firstVariant = $root.SelectSingleNode('Variant')
+                if ($null -ne $firstVariant) { $null = $root.InsertBefore($ge, $firstVariant) } else { $null = $root.AppendChild($ge) }
+            }
+            elseif ((& $nameOf $ge) -cne $Group) { Add-TcDataWarning -Data $data -Warning "group '$Group' exists as '$(& $nameOf $ge)'; the variants are added to it" }
+            $members = @($ge.SelectNodes('Member') | ForEach-Object { [string]$_.InnerText })
+            foreach ($av in $add) {
+                if ($members -ccontains $av) { continue }
+                $me = $doc.CreateElement('Member'); $me.InnerText = $av; $null = $ge.AppendChild($me)
+            }
+        }
+        $newXml = $doc.OuterXml
+        $parsedNew = ConvertFrom-TcVariantConfig -Xml $newXml
+        $data | Add-Member -NotePropertyName after -NotePropertyValue ([PSCustomObject]@{ variants = @($parsedNew.Variants); groups = @($parsedNew.Groups) })
         $data | Add-Member -NotePropertyName xml -NotePropertyValue $newXml
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
@@ -146,15 +176,16 @@ function Set-TcProjectVariantConfig {
             $res = New-TcResult -Success $false -ErrorCode 'VARIANT_CONFIG_INVALID' -Data $data -ErrorMessage "XAE refused the new ProjectVariantConfig: $($_.Exception.Message)" -Hint (Get-TcErrorHint -Code 'VARIANT_CONFIG_INVALID')
             return Register-TcCodeChange -Result $res -Change 'Set-TcProjectVariantConfig [failed]'
         }
-        $back = ConvertFrom-TcVariantConfig -Xml ([string](Invoke-TcComRetry -OperationName 'ProjectVariantConfig' -ScriptBlock { $sm.ProjectVariantConfig }))
-        $expV = ($variants.ToArray()) -join "`n"
-        $gotV = (@($back.Variants)) -join "`n"
-        $fmtG = { param($gs) (@($gs | ForEach-Object { "$($_.name)=" + (@($_.members) -join ',') })) -join "`n" }
-        $ok = $back.Ok -and [string]::Equals($expV, $gotV, [System.StringComparison]::Ordinal) -and [string]::Equals((& $fmtG $groups.ToArray()), (& $fmtG @($back.Groups)), [System.StringComparison]::Ordinal)
+        $backXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantConfig' -ScriptBlock { $sm.ProjectVariantConfig })
+        $back = ConvertFrom-TcVariantConfig -Xml $backXml
+        # review S6: the whole document must come back (normalized: whitespace, declaration, comments)
+        $expN = ConvertTo-TcNormalizedXml -Xml $newXml
+        $gotN = ConvertTo-TcNormalizedXml -Xml $backXml
+        $ok = $null -ne $gotN -and [string]::Equals($expN, $gotN, [System.StringComparison]::Ordinal)
         $data | Add-Member -NotePropertyName readback -NotePropertyValue ([PSCustomObject]@{ variants = @($back.Variants); groups = @($back.Groups) })
         if (-not $ok) {
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
-            $res = New-TcResult -Success $false -ErrorCode 'VARIANT_VERIFY_FAILED' -Data $data -ErrorMessage 'ProjectVariantConfig was written, but the variants / groups read back differ from the planned ones (data.readback vs data.after).' -Hint (Get-TcErrorHint -Code 'VARIANT_VERIFY_FAILED')
+            $res = New-TcResult -Success $false -ErrorCode 'VARIANT_VERIFY_FAILED' -Data $data -ErrorMessage 'ProjectVariantConfig was written, but the document read back differs from the one written (compared after normalizing; data.readback vs data.after).' -Hint (Get-TcErrorHint -Code 'VARIANT_VERIFY_FAILED')
             return Register-TcCodeChange -Result $res -Change 'Set-TcProjectVariantConfig [failed at verify]'
         }
         $data | Add-Member -NotePropertyName verified -NotePropertyValue $true

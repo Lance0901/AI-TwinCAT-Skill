@@ -33,9 +33,11 @@ function Get-TcBootFileSet {
     .PARAMETER SolutionDir
         Folder of the .sln (fallback search).
     .PARAMETER Variant
-        CurrentProjectVariant (#89): _Boot\<Variant>\<platform>\Plc is listed first (XAE writes a
-        variant project there, measured 2026-11-01 4026 VS2022, verification/phase3-probe.md
-        question 18), unless the .tsproj says SpecificLocalBootFolder="false" (Get-TcVariantBootFolder).
+        CurrentProjectVariant (#89): XAE writes a variant project to _Boot\<Variant>\<platform>
+        (measured 2026-11-01 4026 VS2022, verification/phase3-probe.md question 18). Unless the
+        .tsproj says SpecificLocalBootFolder="false" (Get-TcVariantBootFolder) only that folder is
+        used when it exists; when it does not, _Boot\<platform> is used and Warning says so. The
+        fallback search also finds _Boot\<Variant>\<platform>\Plc (depth 5).
     #>
     [CmdletBinding()]
     param(
@@ -46,7 +48,7 @@ function Get-TcBootFileSet {
         [Parameter()][AllowNull()][AllowEmptyString()][string]$SolutionDir,
         [Parameter()][AllowNull()][AllowEmptyString()][string]$Variant
     )
-    $out = @{ Dirs = @(); Dir = $null; Derived = $false; Reason = $null; Files = @{} }
+    $out = @{ Dirs = @(); Dir = $null; Derived = $false; Reason = $null; Files = @{}; Warning = $null }
     $tsproj = $null
     if ([string]::IsNullOrWhiteSpace($Platform)) { $out.Reason = 'the solution platform is not known' }
     elseif ($AdsPort -le 0) { $out.Reason = "the ADS port of PLC '$PlcName' is not known" }
@@ -65,8 +67,15 @@ function Get-TcBootFileSet {
         $plats = @($Platform)
         if (-not [string]::IsNullOrWhiteSpace($ProjectPlatform) -and $ProjectPlatform -ne $Platform) { $plats += $ProjectPlatform }
         $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path $boot $_) 'Plc' })
+        # review S1: a current variant (SpecificLocalBootFolder not "false") uses ONLY
+        # _Boot\<Variant>\<platform>\Plc when that folder exists; otherwise _Boot\<platform>\Plc
+        # with a warning (out.Warning), never both (the newer one would hide a stale package)
         $vf = Get-TcVariantBootFolder -Variant $Variant -TsProjFile $tsproj
-        if ($null -ne $vf) { $out.Dirs = @($plats | ForEach-Object { Join-Path (Join-Path (Join-Path $boot $vf) $_) 'Plc' }) + @($out.Dirs) }
+        if ($null -ne $vf) {
+            $vDirs = @($plats | ForEach-Object { Join-Path (Join-Path (Join-Path $boot $vf) $_) 'Plc' })
+            if (@($vDirs | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -gt 0) { $out.Dirs = $vDirs }
+            else { $out.Warning = "current variant '$Variant': no _Boot\$vf\<platform>\Plc folder yet, _Boot\<platform>\Plc is used instead" }
+        }
         $out.Dir = $out.Dirs[0]
         $out.Derived = $true
         foreach ($d in $out.Dirs) {
@@ -83,8 +92,8 @@ function Get-TcBootFileSet {
     }
     $pattern = if ($AdsPort -gt 0) { "Port_$AdsPort*" } else { 'Port_*' }
     try {
-        foreach ($f in @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -Depth 4 -File -Filter $pattern -ErrorAction SilentlyContinue |
-                    Where-Object { $_.FullName -match '\\_Boot\\[^\\]+\\Plc\\[^\\]+$' -and $_.FullName -notmatch '\\\.tcauto-backup\\' })) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -Depth 5 -File -Filter $pattern -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -match '\\_Boot\\(?:[^\\]+\\)?[^\\]+\\Plc\\[^\\]+$' -and $_.FullName -notmatch '\\\.tcauto-backup\\' })) {
             $out.Files[(Get-TcLongPath $f.FullName)] = Get-TcOutputFileFacts -Path $f.FullName
         }
     }
