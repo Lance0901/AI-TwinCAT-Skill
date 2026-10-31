@@ -38,7 +38,10 @@ function Export-TcPlcOpen {
         Readback: the file exists and is not empty, parses as PLCopen XML (Read-TcXmlFile, no DTD:
         no XXE) and every -Selection element's last level is the name of an object or folder in the
         file (PLCOPEN_VERIFY_FAILED, data.missingSelections). data.objects: name, kind (POU / DUT /
-        ITF / GVL), pouType, folder, members (name, kind).
+        ITF / GVL; also the objects of a whole-project export below addData, one GVL per name),
+        pouType, folder (from the -Selection path when the file has no Folder for an object selected
+        inside a folder, verification/phase2-3.8.md P5), members (name, kind; interface methods and
+        properties included).
         The project is not changed and BUILD_REQUIRED is not touched.
         Not verified through the registered MCP server yet (task 3.8).
     .PARAMETER Selection
@@ -180,6 +183,15 @@ function Export-TcPlcOpen {
         try { $parsed = Read-TcPlcOpenFile -Path $FilePath }
         catch { return (& $restoreAndFail 'PLCOPEN_VERIFY_FAILED' 'invalid-file' "PlcOpenExport returned, but '$FilePath' cannot be read as PLCopen XML: $($_.Exception.Message)") }
         $objects = @($parsed.Objects)
+        # One object selected inside a folder: the file has no Folder for it (measured 2026-10-31 4026
+        # and 4024, verification/phase2-3.8.md P5), so the folder comes from the selection path.
+        foreach ($s in @($sel)) {
+            $levels = @($s.Trim() -split '\.')
+            if ($levels.Count -lt 2) { continue }
+            foreach ($o in @($objects | Where-Object { $null -eq $_.folder -and $_.name -ieq $levels[-1] })) {
+                $o.folder = ($levels[0..($levels.Count - 2)] -join '.')
+            }
+        }
         $data | Add-Member -NotePropertyName objects -NotePropertyValue $objects
         $data | Add-Member -NotePropertyName objectCount -NotePropertyValue $objects.Count
         $names = @($objects | ForEach-Object { $_.name }) + @($parsed.Folders)

@@ -114,14 +114,23 @@ function Read-TcPlcOpenFile {
     .DESCRIPTION
         Loaded with Read-TcXmlFile (no DTD, no resolver: no XXE). Elements are matched by local name,
         any namespace (TC6 XML, http://www.plcopen.org/xml/tc6_0200):
-          POU   project/types/pous/pou[@name] (pouType = @pouType: program / functionBlock / function)
-          DUT   project/types/dataTypes/dataType[@name]
-          ITF   project/addData/data/Interface[@name]
-          GVL   every globalVars[@name]
-        Members: <object>/addData/data/(Method | Property | Action | Transition)[@name] and the
-        PLCopen pou/actions/action, pou/transitions/transition. folder: the Folder names around the
-        object in addData/data/ProjectStructure ('.' joined), $null when not listed there. Folders: every
-        ProjectStructure Folder name.
+          POU   project/types/pous/pou[@name] and every addData/data/pou[@name]
+                (pouType = @pouType: program / functionBlock / function)
+          DUT   project/types/dataTypes/dataType[@name] and every addData/data/dataType[@name]
+          ITF   every addData/data/Interface[@name]
+          GVL   every globalVars[@name], one object per name (a GVL with several sections, e.g. a
+                persistent one, is written as several globalVars of the same name)
+        A whole-project export puts the objects below
+        project/addData/data/resource/addData/data/(pou | dataType | Interface) and the GVLs in
+        project/addData/data/resource/globalVars (measured 2026-10-31 4026 VS2022, registered tcauto,
+        verification/phase2-3.8.md P5: 21 pou, 48 dataType, GVL_Motion as 3 globalVars).
+        Members: <object>/addData/data/(Method | Property | Action | Transition)[@name], the
+        PLCopen pou/actions/action, pou/transitions/transition, and for an INTERFACE
+        Interface/Methods/Method and Interface/Properties/Property (measured 2026-10-31, P5 / P6:
+        I_P38Base had <Methods><Method name="M_Do">, its property without accessors was not in the
+        file). folder: the Folder names around the object in addData/data/ProjectStructure ('.'
+        joined), $null when not listed there (a whole-project export wraps the folders in an
+        <Object> for the project itself, measured). Folders: every ProjectStructure Folder name.
         Measured 2026-10-31 4026 VS2022 XAE 3.1.4026.18, self-built client (phase2-probe.md 3.3): an
         exported FB lists <Method name=...>; an ITF lists its methods, its properties without
         accessors only in the ProjectStructure. The other element paths follow the PLCopen TC6 schema
@@ -157,7 +166,8 @@ function Read-TcPlcOpenFile {
         param($node)
         $list = [System.Collections.Generic.List[object]]::new()
         $xp = "./$(& $ln 'addData')/$(& $ln 'data')/*[local-name()='Method' or local-name()='Property' or local-name()='Action' or local-name()='Transition']" +
-            " | ./$(& $ln 'actions')/$(& $ln 'action') | ./$(& $ln 'transitions')/$(& $ln 'transition')"
+            " | ./$(& $ln 'actions')/$(& $ln 'action') | ./$(& $ln 'transitions')/$(& $ln 'transition')" +
+            " | ./$(& $ln 'Methods')/$(& $ln 'Method') | ./$(& $ln 'Properties')/$(& $ln 'Property')"
         foreach ($m in @($node.SelectNodes($xp))) {
             $mn = $m.GetAttribute('name')
             if ([string]::IsNullOrEmpty($mn)) { continue }
@@ -170,18 +180,29 @@ function Read-TcPlcOpenFile {
         param($node, [string]$kind, [string]$pouType)
         $n = $node.GetAttribute('name')
         if ([string]::IsNullOrEmpty($n)) { return }
-        $objects.Add([PSCustomObject]@{
+        $key = "$kind|$($n.ToUpperInvariant())"
+        if ($seen.ContainsKey($key)) {
+            # same object again (a GVL section, or the same object in types and addData): merge its members
+            $o = $seen[$key]
+            $more = @(& $members $node | Where-Object { $mn = $_.name; @($o.members | Where-Object { $_.name -ieq $mn }).Count -eq 0 })
+            if ($more.Count -gt 0) { $o.members = @(@($o.members) + $more) }
+            return
+        }
+        $seen[$key] = [PSCustomObject]@{
                 name    = $n
                 kind    = $kind
                 pouType = $(if ([string]::IsNullOrEmpty($pouType)) { $null } else { $pouType })
                 folder  = $(if ($folderOf.ContainsKey($n)) { $folderOf[$n] } else { $null })
                 members = (& $members $node)
-            })
+            }
+        $objects.Add($seen[$key])
     }
+    $seen = @{}
     $p = "/$(& $ln 'project')"
-    foreach ($n in @($doc.SelectNodes("$p/$(& $ln 'types')/$(& $ln 'pous')/$(& $ln 'pou')"))) { & $add $n 'POU' $n.GetAttribute('pouType') }
-    foreach ($n in @($doc.SelectNodes("$p/$(& $ln 'types')/$(& $ln 'dataTypes')/$(& $ln 'dataType')"))) { & $add $n 'DUT' $null }
-    foreach ($n in @($doc.SelectNodes("$p/$(& $ln 'addData')/$(& $ln 'data')/$(& $ln 'Interface')"))) { & $add $n 'ITF' $null }
+    $inData = "//$(& $ln 'addData')/$(& $ln 'data')"
+    foreach ($n in @($doc.SelectNodes("$p/$(& $ln 'types')/$(& $ln 'pous')/$(& $ln 'pou') | $inData/$(& $ln 'pou')"))) { & $add $n 'POU' $n.GetAttribute('pouType') }
+    foreach ($n in @($doc.SelectNodes("$p/$(& $ln 'types')/$(& $ln 'dataTypes')/$(& $ln 'dataType') | $inData/$(& $ln 'dataType')"))) { & $add $n 'DUT' $null }
+    foreach ($n in @($doc.SelectNodes("$inData/$(& $ln 'Interface')"))) { & $add $n 'ITF' $null }
     foreach ($n in @($doc.SelectNodes("//$(& $ln 'globalVars')[@name]"))) { & $add $n 'GVL' $null }
     return @{ Objects = $objects.ToArray(); Folders = @($folders.ToArray() | Select-Object -Unique) }
 }

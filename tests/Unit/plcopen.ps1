@@ -30,15 +30,18 @@ $Sln = Join-Path $Root 'Open.sln'
 $P = 'TIPC^plc^plc Project'
 
 # PLCopen XML as XAE writes it (TC6 namespace, 3S addData for methods / interfaces / project structure)
-function New-PlcOpenXml([object[]]$Objects) {
+function New-PlcOpenXml([object[]]$Objects, [switch]$NoFolder) {
     $pous = ''; $itfs = ''; $struct = ''
     foreach ($o in $Objects) {
         $m = ($o.Members | ForEach-Object { "<data name=""http://www.3s-software.com/plcopenxml/method"" handleUnknown=""implementation""><Method name=""$_"" /></data>" }) -join ''
-        if ($o.Kind -eq 'ITF') { $itfs += "<data name=""http://www.3s-software.com/plcopenxml/interface"" handleUnknown=""implementation""><Interface name=""$($o.Name)""><addData>$m</addData></Interface></data>" }
+        # an INTERFACE lists its methods in <Methods> (measured 2026-10-31, phase2-3.8.md P5 / P6)
+        $im = ($o.Members | ForEach-Object { "<Method name=""$_""><interface /></Method>" }) -join ''
+        if ($o.Kind -eq 'ITF') { $itfs += "<data name=""http://www.3s-software.com/plcopenxml/interface"" handleUnknown=""implementation""><Interface name=""$($o.Name)""><Methods>$im</Methods><Properties /><addData /></Interface></data>" }
         else { $pous += "<pou name=""$($o.Name)"" pouType=""functionBlock""><interface /><body><ST><xhtml xmlns=""http://www.w3.org/1999/xhtml"" /></ST></body><addData>$m</addData></pou>" }
         $struct += "<Object Name=""$($o.Name)"" ObjectId=""x"" />"
     }
-    "<?xml version=""1.0"" encoding=""utf-8""?><project xmlns=""http://www.plcopen.org/xml/tc6_0200""><fileHeader companyName=""Beckhoff"" /><types><dataTypes /><pous>$pous</pous></types><instances><configurations /></instances><addData>$itfs<data name=""http://www.3s-software.com/plcopenxml/projectstructure"" handleUnknown=""discard""><ProjectStructure><Folder Name=""POUs"">$struct</Folder></ProjectStructure></data></addData></project>"
+    $tree = if ($NoFolder) { $struct } else { '<Folder Name="POUs">' + $struct + '</Folder>' }
+    "<?xml version=""1.0"" encoding=""utf-8""?><project xmlns=""http://www.plcopen.org/xml/tc6_0200""><fileHeader companyName=""Beckhoff"" /><types><dataTypes /><pous>$pous</pous></types><instances><configurations /></instances><addData>$itfs<data name=""http://www.3s-software.com/plcopenxml/projectstructure"" handleUnknown=""discard""><ProjectStructure>$tree</ProjectStructure></data></addData></project>"
 }
 
 $global:T = @{}
@@ -84,7 +87,8 @@ function Set-PrjMethods($n) {
                 $node = @($global:T.Nodes.Values | Where-Object { $_.Name -eq $leaf })[0]
                 @{ Name = $leaf; Kind = $(if ($null -ne $node -and $node.ItemType -eq 618) { 'ITF' } else { 'POU' }); Members = @(if ($null -ne $node) { $node.Kids | Where-Object { $node.ItemType -ne 618 -or $global:T.Nodes[$_].ItemType -eq 610 } | ForEach-Object { ($_ -split '\^')[-1] } }) }
             })
-        [System.IO.File]::WriteAllText($file, (New-PlcOpenXml $objs))
+        # 'nofolder': one object selected inside a folder has no Folder in the file (measured, phase2-3.8.md P5)
+        [System.IO.File]::WriteAllText($file, (New-PlcOpenXml $objs -NoFolder:($global:T.ExportMode -eq 'nofolder')))
     }
     $n | Add-Member ScriptMethod PlcOpenImport {
         param($file, $opt, $sel, $sub)
@@ -255,6 +259,32 @@ try {
     $r = Import-TcPlcOpen -FilePath $emp
     Check 'Import file without objects -> PLCOPEN_FAILED no-objects' ($r.error.code -eq 'PLCOPEN_FAILED' -and $r.data.reason -eq 'no-objects') (J $r.error)
 
+    # ===== P5: a whole-project export as XAE writes it (measured 2026-10-31 4026, phase2-3.8.md P5)
+    $tc6 = 'xmlns="http://www.plcopen.org/xml/tc6_0200"'
+    $whole = "<?xml version=""1.0"" encoding=""utf-8""?><project $tc6><fileHeader companyName=""Beckhoff"" /><types><dataTypes /><pous /></types><instances><configurations /></instances><addData>" +
+        "<data name=""http://www.3s-software.com/plcopenxml/application"" handleUnknown=""implementation""><resource name=""plc"">" +
+        "<globalVars name=""GVL_Motion""><variable name=""a"" /></globalVars><globalVars name=""GVL_Motion""><variable name=""b"" /></globalVars><globalVars name=""GVL_Motion"" persistent=""true""><variable name=""c"" /></globalVars>" +
+        "<globalVars name=""GVL_X"" constant=""true""><variable name=""k"" /></globalVars>" +
+        "<addData><data name=""http://www.3s-software.com/plcopenxml/pou"" handleUnknown=""implementation""><pou name=""FB_Axis"" pouType=""functionBlock""><interface /><addData><data name=""http://www.3s-software.com/plcopenxml/method"" handleUnknown=""implementation""><Method name=""M_Run"" /></data></addData></pou></data>" +
+        "<data name=""http://www.3s-software.com/plcopenxml/datatype"" handleUnknown=""implementation""><dataType name=""ST_A""><baseType /></dataType></data>" +
+        "<data name=""http://www.3s-software.com/plcopenxml/datatype"" handleUnknown=""implementation""><dataType name=""E_B""><baseType /></dataType></data>" +
+        "<data name=""http://www.3s-software.com/plcopenxml/interface"" handleUnknown=""implementation""><Interface name=""I_Base""><Methods><Method name=""M_Do""><interface /></Method></Methods><Properties><Property name=""P_Cnt"" /></Properties><addData /></Interface></data></addData>" +
+        "</resource></data><data name=""http://www.3s-software.com/plcopenxml/projectstructure"" handleUnknown=""discard""><ProjectStructure><Object Name=""plc""><Object Name=""GVL_X"" /><Folder Name=""AxisInterface""><Folder Name=""LIB""><Object Name=""FB_Axis""><Object Name=""M_Run"" /></Object></Folder><Folder Name=""GVL""><Object Name=""GVL_Motion"" /></Folder></Folder></Object></ProjectStructure></data></addData></project>"
+    $wf = Join-Path $In 'whole.xml'; [System.IO.File]::WriteAllText($wf, $whole)
+    $rd = & $mod { param($p) Read-TcPlcOpenFile -Path $p } $wf
+    $byN = @{}; foreach ($o in @($rd.Objects)) { $byN[$o.name] = $o }
+    Check 'P5 whole-project file: objects below addData/data/resource are read (POU, 2 DUT, ITF, 2 GVL)' (@($rd.Objects).Count -eq 6 -and $byN['FB_Axis'].kind -eq 'POU' -and $byN['ST_A'].kind -eq 'DUT' -and $byN['E_B'].kind -eq 'DUT' -and $byN['I_Base'].kind -eq 'ITF') (J $rd.Objects)
+    Check 'P5 GVL with 3 sections is one object' (@($rd.Objects | Where-Object { $_.name -eq 'GVL_Motion' }).Count -eq 1 -and $byN['GVL_X'].kind -eq 'GVL') (J $rd.Objects)
+    Check 'P5 interface members from <Methods> / <Properties>' ((@($byN['I_Base'].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Do,P_Cnt' -and (@($byN['FB_Axis'].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Run') (J $byN['I_Base'])
+    Check 'P5 folder below the project <Object> of the ProjectStructure' ($byN['FB_Axis'].folder -eq 'AxisInterface.LIB' -and $byN['GVL_Motion'].folder -eq 'AxisInterface.GVL' -and $null -eq $byN['GVL_X'].folder) (J $rd.Objects)
+    Reset-Mock; $global:T.ExportMode = 'nofolder'
+    $r = Export-TcPlcOpen -Selection 'POUs.FB_A' -FilePath (Join-Path $Out 'nofolder.xml')
+    Check 'P5 one object selected in a folder, file without Folder -> folder from the selection' ($r.success -and $r.data.objects[0].name -eq 'FB_A' -and $r.data.objects[0].folder -eq 'POUs') (J $r.data.objects)
+    Reset-Mock; $global:T.ExportMode = 'nofolder'
+    $r = Export-TcPlcOpen -Selection 'ITF_A' -FilePath (Join-Path $Out 'nofolder2.xml')
+    Check 'P5 bare name selection: no folder invented; ITF members from <Methods>' ($r.success -and $null -eq $r.data.objects[0].folder -and (@($r.data.objects[0].members | ForEach-Object { $_.name }) -join ',') -eq 'M_Do') (J $r.data.objects)
+    Reset-Mock
+
     # the probe's file: FB_A (only M_Run) + ITF_A (only M_Do) + a new FB_New
     $global:T.FileObjects = @(
         @{ Name = 'FB_A'; Kind = 'POU'; Members = @('M_Run') },
@@ -302,6 +332,7 @@ try {
     $fr = @($r.data.replaced | Where-Object { $_.name -eq 'FB_A' })[0]
     Check 'Import live Replace (S5): diskFileChanged true when the import rewrote the file' ($fr.diskFileChanged -eq $true -and @($r.data.warnings | Where-Object { $_ -match 'did not change' }).Count -eq 0) (J $r.data.replaced)
     $ri = @($r.data.replaced | Where-Object { $_.name -eq 'ITF_A' })[0]
+    Check 'P6 Import live Replace: childrenAfter is an array also with one child' ($ri.childrenAfter -is [array] -and (@($ri.childrenAfter) -join ',') -eq 'M_Do' -and (J $ri) -match '"childrenAfter":\["M_Do"\]') (J $ri)
     Check 'Import live Replace: readback reports the children really deleted' ((@($ri.deletedChildren) -join ',') -eq 'P_Cnt,P_Str' -and $r.data.verified -and @($r.data.added | Where-Object { $_.name -eq 'FB_New' }).Count -eq 1) (J $r.data.replaced)
     Check 'Import live Replace: project saved, the .plcproj readback expects the added object with its folder' (@($global:T.Saves).Count -eq 1 -and $global:T.Saves[0] -eq 'plc|POUs\FB_New.TcPOU' -and (@($r.data.expectedProjectFiles) -join ',') -eq 'POUs\FB_New.TcPOU' -and $null -ne $r.data.projectSaved) "$(J $global:T.Saves) $(J $r.data.projectSaved)"
     Check 'Import live Replace: BUILD_REQUIRED code-changed, no unsaved-.plcproj warning any more' ((Get-CodeChanged) -match 'Import-TcPlcOpen import\.xml \[Replace\]' -and @($r.data.warnings | Where-Object { $_ -match 'only after the project is saved' }).Count -eq 0) "$(Get-CodeChanged)"

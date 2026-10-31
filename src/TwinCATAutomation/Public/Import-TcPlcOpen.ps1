@@ -193,7 +193,7 @@ function Import-TcPlcOpen {
                     $fileObj = @($objects | Where-Object { $_.name -ieq $c.name })[0]
                     $fileMembers = @($fileObj.members | ForEach-Object { $_.name })
                     $item = Find-TcTreeItemNoThrow -SysManager $sm -Path $c.existingPath
-                    $kids = if ($null -ne $item) { @(Get-TcTreeItemChildList -Item $item) } else { @() }
+                    $kids = @(if ($null -ne $item) { Get-TcTreeItemChildList -Item $item })
                     $gone = @($kids | Where-Object { $n = $_.name; @($fileMembers | Where-Object { $_ -ieq $n }).Count -eq 0 } | ForEach-Object { $_.name })
                     [PSCustomObject]@{ name = $c.name; existingPath = $c.existingPath; existingChildren = @($kids | ForEach-Object { $_.name }); fileMembers = $fileMembers; deletedChildren = $gone }
                 })
@@ -308,13 +308,14 @@ function Import-TcPlcOpen {
         elseif ($opt -eq 'Replace') {
             $data | Add-Member -NotePropertyName replaced -NotePropertyValue @($willReplace | ForEach-Object {
                     $item = Find-TcTreeItemNoThrow -SysManager $sm -Path $_.existingPath
-                    $kidsAfter = if ($null -ne $item) { @(Get-TcTreeItemChildNames -Item $item) } else { @() }
+                    # @(...) around the if: a single child must stay an array (phase2-3.8.md P6: childrenAfter was a string)
+                    $kidsAfter = @(if ($null -ne $item) { Get-TcTreeItemChildNames -Item $item })
                     $gone = @(@($_.existingChildren) | Where-Object { $n = $_; @($kidsAfter | Where-Object { $_ -ieq $n }).Count -eq 0 })
                     $b = $skipBefore[$_.name]
                     $hashAfter = Get-TcFileSha256 -Path $b.File
                     $changed = if ($null -eq $b.Hash -or $null -eq $hashAfter) { $null } else { $b.Hash -ne $hashAfter }
                     if ($changed -eq $false) { $warnings.Add("the disk file of replaced '$($_.name)' ($($b.File)) did not change during the import: it may not have been replaced") }
-                    [PSCustomObject]@{ name = $_.name; path = $_.existingPath; childrenAfter = $kidsAfter; deletedChildren = $gone; diskFile = $b.File; diskFileChanged = $changed }
+                    [PSCustomObject]@{ name = $_.name; path = $_.existingPath; childrenAfter = [object[]]$kidsAfter; deletedChildren = $gone; diskFile = $b.File; diskFileChanged = $changed }
                 })
         }
         if ($skipChanged.Count -gt 0) {
