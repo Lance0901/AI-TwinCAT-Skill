@@ -103,13 +103,15 @@
 
 - **現象**:XAE 凍結的版本不一定是目前的 effective 版本:`#Tc2_System` 3.10.1.0 → 3.9.1.0、`#CBML` 4.0.0.0(CODESYS)→ 3.5.13.0(3S)(4026 VS2022);`VisuDialogs` 3.5.12.0 → 4.8.0.0(4024 XAE,回 success、沒有 warning)。模組讀回只檢查不是 `*`,抓不到。XAE 隱含加入、.plcproj 沒有 `<PlaceholderReference>` 的 placeholder(4026 的 `#Tc3_GlobalTypes`)不會被寫，模組回 `LIBRARY_VERIFY_FAILED`,但其他 placeholder 已經改了並存檔(registered tcauto 實測 2026-10-31,細節 [verification/phase2-3.8.md](../openspec/changes/complete-automation-interface/verification/phase2-3.8.md) 7)。
 - **繞過**:不要用 `All=true`;一個一個 `FreezePlaceholder Placeholder=<name>`(單一 freeze 的版本和 effective 相同，實測)。已經跑過 `All` 就用 `data.backupFiles` 的 .plcproj 複製回去再 `ResetSolution`。
-- **模組修正(2026-10-31,只有單元測試，待真機重測)**:凍結後逐一比對 `<Resolution>` 和凍結前的 EffectiveResolution;不同時先用 `SetEffectiveResolution` 釘回(未實測),仍不同回 `LIBRARY_VERSION_CHANGED`(`data.versionChanges[]`、`data.changed[]`、`data.restore`),不再回 success。dry-run 的 `targets[].willFreezeTo` / `versionWillChange` 先預告。`All` 跳過隱含 placeholder 與沒有 EffectiveResolution 的(`data.skipped[]`),不算 `notFrozen`。見 troubleshooting「LIBRARY_VERSION_CHANGED」。
+- **模組修正(2026-10-31)**:凍結後逐一比對 `<Resolution>` 和凍結前的 EffectiveResolution;不同時先用 `SetEffectiveResolution` 釘回，仍不同回 `LIBRARY_VERSION_CHANGED`(`data.versionChanges[]`、`data.changed[]`、`data.restore`),不再回 success。dry-run 的 `targets[].willFreezeTo` / `versionWillChange` 先預告。`All` 跳過隱含 placeholder 與沒有 EffectiveResolution 的(`data.skipped[]`),不算 `notFrozen`。見 troubleshooting「LIBRARY_VERSION_CHANGED」。
+- **真機重測(registered tcauto 實測 2026-11-01,4026 VS2022、4024 XAE)**:`All=true` 實寫後 `.plcproj` 的 `<Resolution>` 等於凍結前 effective(4026 `pinned [CBML, Tc2_System]` → 3.10.1.0、4.0.0.0 (CODESYS);4024 `pinned [VisuDialogs]` → 3.5.12.0),`SetEffectiveResolution` 釘回有效;`#Tc3_GlobalTypes` 進 `skipped[]`,單一呼叫在呼叫前擋下(`implicit-placeholder`)。`LIBRARY_VERSION_CHANGED` 沒有觸發過(釘回都成功)。**dry-run 預告不準**:DefaultResolution 是 `*` 的(CBML、VisuDialogs)預告不變、實寫要釘回;單一路徑的 Tc2_System 預告會變、實寫沒變。看實寫回傳的 `pinned` / `changed`,不要看 dry-run。細節 [verification/phase2-3.8-retest.md](../openspec/changes/complete-automation-interface/verification/phase2-3.8-retest.md) P2 / P3。
 
 ### `AddPlcTask` 建的 task 沒有存進專案檔
 
 - **現象**:`AddPlcTask` 回 `verified=true`,但 .tsproj / .plcproj 沒有寫(只在 XAE 記憶體);接著 `ResetSolution`(含 `SaveProjectChanges=true`)後 TIRT 與 PLC 底下的新 task 都消失，`ResetSolution` 也沒偵測到(registered tcauto 實測 2026-10-31 4026 VS2022)。
 - **繞過**:AddPlcTask 之後跑一個會存專案檔的 tool(例如 `AddGvl` / `AddPou`,或 `GenerateBootProject`),再確認 .tsproj 有 task 名稱、.plcproj 有 `<Compile Include="<task>.TcTTO">`;在那之前不要 `ResetSolution`。
-- **模組修正(2026-10-31,只有單元測試，待真機重測)**:`AddPlcTask` 讀回後自己存檔(同 `AddPou`),並從磁碟讀回 `.plcproj` 的 `<task>.TcTTO`、`.tsproj` 的 task 名稱才 success(`data.projectSaved`)。`LinkProgramToTask` / `UnlinkProgramFromTask` 不需要:650 當下就改寫 `.TcTTO`(實測)。
+- **模組修正(2026-10-31)**:`AddPlcTask` 讀回後自己存檔(同 `AddPou`),並從磁碟讀回 `.plcproj` 的 `<task>.TcTTO`、`.tsproj` 的 task 名稱才 success(`data.projectSaved`)。`LinkProgramToTask` / `UnlinkProgramFromTask` 不需要:650 當下就改寫 `.TcTTO`(實測)。
+- **真機重測(registered tcauto 實測 2026-11-01,4026 VS2022、4024 XAE)**:`.tsproj` 有 inline `<Task Id=... Priority=... CycleTime=...><Name><task></Name>`、`.plcproj` 有 `<Compile Include="<task>.TcTTO">`,`ResetSolution` 後 TIRT 與 PLC 底下的 task 都還在。兩份副本的 task 都是 inline 格式，`<Task File=...>` 讀回路徑沒有走到;save-verify 失敗的 rollback 不改 code 觸發不了，只有單元測試(cycle-time 讀回不符的 rollback 有實測)。細節 [verification/phase2-3.8-retest.md](../openspec/changes/complete-automation-interface/verification/phase2-3.8-retest.md) P4。
 
 ### `SaveAsLibrary` 會存 .plcproj
 
@@ -208,9 +210,9 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 | `RemoveReference` | `Remove-TcLibraryReference` | 已實測(4026、4024)。帶不帶 `#` 都可 |
 | `InstallLibrary` | `Install-TcLibrary` | 已實測(4026、4024,只用自己產生的 library;結束時 repository 與開始前相同)。dry-run 不檢查 repository 名稱(P8) |
 | `UninstallLibrary` | `Uninstall-TcLibrary` | 已實測(4026、4024)。備份目錄內容正確;把備份目錄手動複製回 repository XAE 不認，要用 InstallLibrary 安裝備份裡的 `.library` 還原 |
-| `FreezePlaceholder` | `Lock-TcLibraryPlaceholder` | 已實測(4026、4024)。單一 placeholder 正確;**`All=true` 有問題**,見上方「`FreezePlaceholder All=true` 可能改掉 library 版本」(P2、P3) |
+| `FreezePlaceholder` | `Lock-TcLibraryPlaceholder` | 已實測(4026、4024)。單一 placeholder 正確;`All=true` 的改版本(P2、P3)已修並在 2026-11-01 重測通過(釘回有效、隱含 placeholder 跳過),dry-run 預告不準，見上方「`FreezePlaceholder All=true` 可能改掉 library 版本」 |
 | `CheckAllObjects` | `Test-TcPlcProject` | 已實測(4026 passed / CHECK_FAILED 兩條;4024 支援，副本本身沒被引用的 FB 有錯，只走到 CHECK_FAILED) |
-| `AddPlcTask` | `Add-TcPlcTask` | 已實測(4026、4024)。父節點只多 ChildCount;Priority 超出 XAE 接受範圍會被換成別的值 → 讀回不符、回滾;cycle time 不是 base time 倍數時離線照收、沒警告;**沒存檔**,見上方(P4)。線上 CycleCount 沒測 |
+| `AddPlcTask` | `Add-TcPlcTask` | 已實測(4026、4024)。父節點只多 ChildCount;Priority 超出 XAE 接受範圍會被換成別的值 → 讀回不符、回滾;cycle time 不是 base time 倍數時離線照收、沒警告;沒存檔(P4)已修並在 2026-11-01 重測通過(ResetSolution 後 task 仍在),見上方。線上 CycleCount 沒測 |
 | `LinkProgramToTask` | `Add-TcTaskProgram` | 已實測(4026、4024)。650 `parentUnchanged=true` |
 | `UnlinkProgramFromTask` | `Remove-TcTaskProgram` | 已實測(4026、4024)。650 的 `.zip` 匯不出("No content in ZIP file."),`.TcTTO` 複製回去 + `ResetSolution` 可還原(task 已存檔的前提下) |
 | `ExportPlcOpen` | `Export-TcPlcOpen` | 已實測(4026、4024)。頂層資料夾 selection 讀回 `folder` 正確;**整專案匯出的讀回只列 GVL、ITF method 不列在 members**(P5) |
