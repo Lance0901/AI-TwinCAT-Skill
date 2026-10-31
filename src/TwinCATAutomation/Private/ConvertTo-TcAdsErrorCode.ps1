@@ -201,6 +201,7 @@ $script:TcErrorHints['TCCOM_PARAM_READ_FAILED'] = '讀參數失敗:用 Get-TcIde
 $script:TcErrorHints['TCCOM_PARAM_WRITE_FAILED'] = '寫參數被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,Get-TcComModuleParameter 確認目前值後重跑;data.backupPath 是寫入前的備份'
 $script:TcErrorHints['TCCOM_PARAM_VERIFY_FAILED'] = '寫入有返回但讀回的 bytes 不同(data.readbackHex / plannedHex):不要當成功。用 Get-TcComModuleParameter 確認，要還原就把 data.previousHex 對應的值再寫一次(先 dry-run)'
 $script:TcErrorHints['TCCOM_OBJECT_NOT_FOUND'] = 'target 上沒有這個 object(0x9811071D):先 Enable-TcConfig -Force 讓組態 Activate 並 Run,再重跑 -Online'
+$script:TcErrorHints['TCCOM_ONLINE_CONFIG_MISMATCH'] = 'target 上跑的不確定是這個專案的組態(data.bootPackage),什麼都沒寫:先 Build-TcProject、Enable-TcConfig -Force 讓組態一致，再重跑 Set-TcComModuleParameter -Online;遠端 target 無法比對，不支援 -Online 寫入'
 $script:TcErrorHints['TCCOM_CONTEXT_INVALID'] = 'context id 或 task 不合法(data.contextIds 是 TMC 的 Context Id,不是 0;task 要是 TIRT / TINC 底下的 task):用 data.contextIds 其中一個當 -ContextId、Get-TcTreeItem 確認 -Task 後重跑'
 $script:TcErrorHints['TCCOM_CONTEXT_WRITE_FAILED'] = 'SetModuleContext 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcComModuleContext;data.backupPath 是寫入前的備份'
 $script:TcErrorHints['TCCOM_CONTEXT_VERIFY_FAILED'] = 'SetModuleContext 有返回但讀回的 task oid 不同(data.readbackOidHex):不要當成功。用 Get-TcTreeItemXml 看 module 的 Contexts,再重跑'

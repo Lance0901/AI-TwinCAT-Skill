@@ -8,8 +8,10 @@ function Set-TcComModuleParameter {
         TE1000 v1.7.0 5.33.1.6 p.139, 5.31.1.5 p.132):
           - the value is converted to exactly the parameter size first (type from the ProduceXml
             BaseType / GetTypeOfModulePara, size from BitSize; an enum is an integer of its BitSize)
-            and range checked (INVALID: TCCOM_PARAM_INVALID_VALUE; struct / array types are read-only
-            here: TCCOM_PARAM_UNSUPPORTED_TYPE). A wrong size is refused by XAE with 0x98110705
+            and range checked (INVALID: TCCOM_PARAM_INVALID_VALUE; struct / array types and named
+            types that the module's DataTypes do not confirm as an enum are read-only here:
+            TCCOM_PARAM_UNSUPPORTED_TYPE). A current value of another size than the planned bytes ->
+            TCCOM_PARAM_SIZE_MISMATCH before anything is sent. A wrong size is refused by XAE with 0x98110705
             (ADS_E_INVALIDSIZE) -> TCCOM_PARAM_SIZE_MISMATCH; online an 8-byte scalar is refused too,
             so bytes are always sent.
           - offline: SetModulePara(pid, byte[]) on the module tree item; it changes the project in
@@ -22,6 +24,10 @@ function Set-TcComModuleParameter {
             ProduceXml stayed 4321) and is restored by the next Activate. The previous online value
             is in data.previousHex (and in the backup file). Readback with GetOnlineModulePara.
             Nothing is recorded as BUILD_REQUIRED. 0x9811071D -> TCCOM_OBJECT_NOT_FOUND (not running).
+        Before an online write (dry-run too) the project boot package must equal the target's Boot
+        folder (Get-TcBootPackageDiff status 'match', variant boot folder included), else
+        TCCOM_ONLINE_CONFIG_MISMATCH: an older or other configuration may use the same oid / pid
+        for another object; a remote target ('unavailable') is refused as well (data.bootPackage).
         A modal dialog is checked right before the write (IDE_MODAL_DIALOG, nothing written).
         Same value already: success, data.written = false.
         DryRun (default true): data.currentHex, data.plannedHex, data.value.
@@ -95,7 +101,7 @@ function Set-TcComModuleParameter {
         $tn = $null
         try { $tn = [string](Invoke-TcComRetry -OperationName "GetTypeOfModulePara $($p.idHex)" -ScriptBlock { $item.GetTypeOfModulePara($p.id) }).Name }
         catch { if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }; $tn = $null }
-        $type = Get-TcComParamType -Parameter $p -TypeName $tn
+        $type = Get-TcComParamType -Parameter $p -TypeName $tn -DataTypes $info.dataTypes
         $data | Add-Member -NotePropertyName paramType -NotePropertyValue $type.name
         $planned = $null
         try { $planned = ConvertTo-TcComParamBytes -Type $type -Value $Value }
@@ -110,6 +116,14 @@ function Set-TcComModuleParameter {
         $mm = $null
         if ($Online) {
             if ($null -eq $info.oid) { return New-TcResult -Success $false -ErrorCode 'TCCOM_OBJECT_NOT_FOUND' -Data $data -ErrorMessage "Module '$($m.Path)' has no ObjectId in its ProduceXml; nothing was written." -Hint (Get-TcErrorHint -Code 'TCCOM_OBJECT_NOT_FOUND') }
+            # review S11: the running configuration must be the one of this project, else the oid /
+            # pid may belong to another object (Get-TcBootPackageDiff, as Enable-TcConfig does)
+            $cfg = Test-TcOnlineConfigMatch -SysManager $sm
+            $data | Add-Member -NotePropertyName bootPackage -NotePropertyValue $cfg.BootPackage
+            if (-not $cfg.Match) {
+                return New-TcResult -Success $false -ErrorCode 'TCCOM_ONLINE_CONFIG_MISMATCH' -Data $data `
+                    -ErrorMessage "The configuration running on the target is not confirmed to be this project's ($($cfg.Reason)); nothing was written online." -Hint (Get-TcErrorHint -Code 'TCCOM_ONLINE_CONFIG_MISMATCH')
+            }
             $mm = Invoke-TcComRetry -OperationName 'GetModuleManager' -ScriptBlock { Write-Output -NoEnumerate $sm.GetModuleManager() }
         }
         $readBytes = {
@@ -128,6 +142,11 @@ function Set-TcComModuleParameter {
         }
         $curHex = Format-TcHexBytes -Bytes $current
         $data | Add-Member -NotePropertyName currentHex -NotePropertyValue $curHex
+        # review S10: the value read now must have the size that would be written
+        if (@($current).Count -ne @($planned).Count) {
+            return New-TcResult -Success $false -ErrorCode 'TCCOM_PARAM_SIZE_MISMATCH' -Data $data `
+                -ErrorMessage "$($p.name) reads $(@($current).Count) bytes but the planned value has $(@($planned).Count) ($($type.name), BitSize $($p.bitSize)); nothing was written." -Hint (Get-TcErrorHint -Code 'TCCOM_PARAM_SIZE_MISMATCH')
+        }
         $data | Add-Member -NotePropertyName previousHex -NotePropertyValue $curHex
         $data | Add-Member -NotePropertyName projectChanged -NotePropertyValue (-not $Online)
         if ($curHex -eq $data.plannedHex) {

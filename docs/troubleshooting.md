@@ -1231,6 +1231,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`-Online` 時 target 上沒有這個 object(`0x9811071D`):組態沒 Activate、runtime 不在 Run,或 module 是 Activate 之後才加的。
 - **下一步**:`Enable-TcConfig -Force`,再重跑 `-Online`。
 
+### TCCOM_ONLINE_CONFIG_MISMATCH
+
+- **現象**:`Set-TcComModuleParameter -Online`(dry-run 也一樣)之前，專案的 boot package 和 target 的 Boot 目錄比對不是 `match`(`data.bootPackage`;`Get-TcBootPackageDiff`,variant 專案比 `_Boot\<Variant>\<Platform>`)。target 跑的可能是舊的或別的組態，同一個 oid / pid 可能是另一個 object,所以不寫(review S11)。遠端 target 無法比對(`unavailable`),也一律不寫。
+- **下一步**:`Build-TcProject`、`Enable-TcConfig -Force` 讓 target 跑這個專案，再重跑 `-Online`。
+
 ### TCCOM_CONTEXT_INVALID
 
 - **現象**:module 沒有 context(例如 TcJobPool)、`-ContextId` 不是 TMC 的 Context Id(`data.contextIds`;0 不是預設)、有多個 context 卻沒給 `-ContextId`、`-Task` 沒有 ObjectId,或 XAE 回 `0x80070057`(index 錯)/ E_FAIL(oid 不是這個 context 合法的 task;實測 axis oid、不存在的 oid 都是 E_FAIL)。

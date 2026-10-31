@@ -89,7 +89,7 @@ function Get-TcComModuleParameter {
         $tn = $null
         try { $tn = [string](Invoke-TcComRetry -OperationName "GetTypeOfModulePara $($p.idHex)" -ScriptBlock { $item.GetTypeOfModulePara($p.id) }).Name }
         catch { if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }; $tn = $null }
-        $type = Get-TcComParamType -Parameter $p -TypeName $tn
+        $type = Get-TcComParamType -Parameter $p -TypeName $tn -DataTypes $info.dataTypes
         $data | Add-Member -NotePropertyName paramType -NotePropertyValue $type.name
         $bytes = $null
         try {

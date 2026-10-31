@@ -28,14 +28,15 @@ $NtpParams = @(
     @('PollInterval', '#x03150105', 32, 'UDINT', 4321),
     @('Velocity', '#x0509300a', 64, 'LREAL', 2000),
     @('ServerName', '#x03150110', 160, 'STRING(19)', 'ntp.example'),
-    @('ServerPara', '#x03150120', 128, 'ST_ServerPara', $null)
+    @('ServerPara', '#x03150120', 128, 'ST_ServerPara', $null),
+    @('ModeWord', '#x03150130', 32, 'ST_ModeWord', $null)
 )
 function New-ModuleXml([string]$Path, [string]$Oid, [int[]]$ContextIds) {
     $name = ($Path -split '\^')[-1]
     $ps = ($NtpParams | ForEach-Object { "<Parameter><Name>$($_[0])</Name><BitSize>$($_[2])</BitSize><BaseType>$($_[3])</BaseType><PTCID>$($_[1])</PTCID></Parameter>" }) -join ''
     $vs = ($NtpParams | Where-Object { $null -ne $_[4] } | ForEach-Object { "<Value><Name>$($_[0])</Name><Value>$($_[4])</Value></Value>" }) -join ''
     $cs = ($ContextIds | ForEach-Object { "<Context><Id>$_</Id></Context>" }) -join ''
-    "<TreeItem><ItemName>$name</ItemName><PathName>$Path</PathName><ItemType>48</ItemType><ObjectId>$Oid</ObjectId><TcModuleInstance><Module GUID=`"{7E6D2FDA-2D37-4998-A31F-36958D3A2C8A}`"><Name>TcNtpExternalTimeProvider</Name><Contexts>$cs</Contexts><Parameters>$ps</Parameters><ParameterValues>$vs</ParameterValues></Module></TcModuleInstance></TreeItem>"
+    "<TreeItem><ItemName>$name</ItemName><PathName>$Path</PathName><ItemType>48</ItemType><ObjectId>$Oid</ObjectId><TcModuleInstance><DataTypes><DataType><Name GUID=`"{11111111-0000-0000-0000-000000000001}`">TimeType</Name><BitSize>32</BitSize><BaseType>DINT</BaseType><EnumInfo><Text>Low</Text><Enum>1</Enum></EnumInfo></DataType><DataType><Name>ST_ModeWord</Name><BitSize>32</BitSize><SubItem><Name>a</Name></SubItem></DataType></DataTypes><Module GUID=`"{7E6D2FDA-2D37-4998-A31F-36958D3A2C8A}`"><Name>TcNtpExternalTimeProvider</Name><Contexts>$cs</Contexts><Parameters>$ps</Parameters><ParameterValues>$vs</ParameterValues></Module></TcModuleInstance></TreeItem>"
 }
 function ConvertTo-MockBytes($p) {
     switch ($p[3]) {
@@ -96,14 +97,17 @@ $OnCreate = {
     $v = [string]$VInfo
     $g = [guid]::Empty
     $isNtp = ([guid]::TryParse($v, [ref]$g) -and $g -eq [guid]$NtpGuid) -or $v -eq 'TcNtpExternalTimeProvider'
+    if (-not $isNtp -and $global:T.Mode -eq 'class-hr-only') { throw (New-ComError 'localized text (mock)' ([int]0x98510009)) }
     if (-not $isNtp) { throw (New-ComError "TCOM Module / TCOM Configuration with GUID '%s' not found!" ([int]0x98510009)) }
     $nm = if ($global:T.Mode -eq 'objn') { "$($Name)_Obj1" } else { $Name }
     $m = Add-MockModule "$Folder^$nm (TcNtpExternalTimeProvider)" '#x01010020'
+    if ($global:T.Mode -eq 'objn-hr') { }
     if ($global:T.Mode -eq 'wrong-guid') { $m.Xml = $m.Xml -replace '7E6D2FDA', '00000000' }
     return $m
 }
 function Reset-Mock {
     Reset-MockTree $Root
+    $global:T.BootStatus = 'match'; $global:T.BootCalls = [System.Collections.ArrayList]::new()
     $global:T.OnCreate = $OnCreate
     $global:T.TaskOids = @([uint32]0x02010030)
     $null = Add-MockNode 'TIRC' 0
@@ -143,15 +147,20 @@ $sm | Add-Member ScriptMethod GetModuleManager {
     }
     Write-Output -NoEnumerate $mm
 }
+$sm | Add-Member ScriptMethod GetTargetNetId { '199.5.42.250.1.1' }
 $global:T.Sm = $sm
 Install-MockModule $mod $Sln
+& $mod {
+    function script:Get-TcBootPackageDiff { [CmdletBinding()] param($SolutionPath, $Platform, $AmsNetId, $AdsPorts, $Variant) $null = $global:T.BootCalls.Add("$AmsNetId|$Platform"); [PSCustomObject]@{ status = $global:T.BootStatus; reason = 'mock'; mismatches = @('CurrentConfig.xml') } }
+    function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; projectPlatform = 'TwinCAT OS (x64)' } }
+}
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }
 function Reset-BuildRequired { & $mod { $null = Clear-TcBuildRequired } }
 function Get-Sets { @($global:T.Mods | Where-Object { $_ -match '^(CreateChild|SetModulePara|SetOnlineModulePara|SetModuleContext|DeleteChild) ' }) }
 
 try {
     # ===== codec
-    $tt = & $mod { Get-TcComParamType -Parameter ([PSCustomObject]@{ bitSize = 32; baseType = 'TimeType' }) -TypeName 'TimeType' }
+    $tt = & $mod { Get-TcComParamType -Parameter ([PSCustomObject]@{ bitSize = 32; baseType = 'TimeType' }) -TypeName 'TimeType' -DataTypes @{ TimeType = [PSCustomObject]@{ isEnum = $true; baseType = 'DINT'; bitSize = 32 } } }
     Check 'codec: an enum of 32 bits is a signed 4-byte integer' ($tt.kind -eq 'int' -and $tt.bytes -eq 4) (J $tt)
     $b = & $mod { ConvertTo-TcComParamBytes -Type @{ name = 'LREAL'; bytes = 8; kind = 'float' } -Value '123.5' }
     $v = & $mod { param($x) ConvertFrom-TcComParamBytes -Type @{ name = 'LREAL'; bytes = 8; kind = 'float' } -Bytes $x } $b
@@ -193,7 +202,7 @@ try {
     # ===== Get-TcComModuleParameter
     Reset-Mock; Reset-BuildRequired
     $r = Get-TcComModuleParameter -Module NtpProbe
-    Check 'GetTcComParameter list: found by instance name, parameters with ids and project values' ($r.success -and $r.data.modulePath -eq $Ntp -and @($r.data.parameters).Count -eq 6 -and @($r.data.parameters | Where-Object { $_.name -eq 'PollInterval' -and $_.parameterId -eq '0x03150105' -and $_.projectValue -eq '4321' }).Count -eq 1) (J $r.data)
+    Check 'GetTcComParameter list: found by instance name, parameters with ids and project values' ($r.success -and $r.data.modulePath -eq $Ntp -and @($r.data.parameters).Count -eq 7 -and @($r.data.parameters | Where-Object { $_.name -eq 'PollInterval' -and $_.parameterId -eq '0x03150105' -and $_.projectValue -eq '4321' }).Count -eq 1) (J $r.data)
     $r = Get-TcComModuleParameter -Module NoSuch
     Check 'GetTcComParameter unknown module -> TCCOM_MODULE_NOT_FOUND with modules' ($r.error.code -eq 'TCCOM_MODULE_NOT_FOUND' -and @($r.data.modules) -contains 'NtpProbe') (J $r)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name pollinterval
@@ -205,7 +214,7 @@ try {
     $r = Get-TcComModuleParameter -Module NtpProbe -Name ServerPara
     Check 'GetTcComParameter struct: rawHex only, value null' ($r.success -and $null -eq $r.data.value -and $r.data.rawHex.Length -eq 32) (J $r.data)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name NoSuch
-    Check 'GetTcComParameter unknown name -> TCCOM_PARAM_NOT_FOUND with parameters' ($r.error.code -eq 'TCCOM_PARAM_NOT_FOUND' -and @($r.data.parameters).Count -eq 6) (J $r.error)
+    Check 'GetTcComParameter unknown name -> TCCOM_PARAM_NOT_FOUND with parameters' ($r.error.code -eq 'TCCOM_PARAM_NOT_FOUND' -and @($r.data.parameters).Count -eq 7) (J $r.error)
     $global:T.Nodes[$Ntp].Props.Online[[uint32]0x03150105] = [byte[]][BitConverter]::GetBytes([uint32]7777)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name PollInterval -Online
     Check 'GetTcComParameter -Online reads the running value (7777), not the project value' ($r.success -and $r.data.value -eq 7777 -and $r.data.projectValue -eq '4321' -and $r.data.online) (J $r.data)
@@ -263,8 +272,35 @@ try {
     $r = Set-TcComModuleContext -Module NtpProbe -Task 'TIRT^PlcTask' -DryRun $false
     Check 'SetTcComContext readback differs -> TCCOM_CONTEXT_VERIFY_FAILED' ($r.error.code -eq 'TCCOM_CONTEXT_VERIFY_FAILED') (J $r.error)
 
+    # ===== review fixes
+    # N1: 0x98510009 decides, not the English text
+    Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'class-hr-only'
+    $r = Add-TcComModule -Name NtpX -ClassId '{11111111-2222-3333-4444-555555555555}' -DryRun $false
+    Check 'N1 AddTcComModule: 0x98510009 with another text -> TCCOM_CLASS_NOT_FOUND' ($r.error.code -eq 'TCCOM_CLASS_NOT_FOUND' -and $r.data.hresultHex -eq '0x98510009') (J $r.error)
+    # S10: a named type is an integer only when DataTypes say it is an enum
+    Reset-Mock; Reset-BuildRequired
+    $r = Get-TcComModuleParameter -Module NtpProbe -Name TimeType
+    Check 'S10 enum confirmed by DataTypes (EnumInfo) -> integer value' ($r.success -and $r.data.value -eq 3) (J $r.data)
+    $r = Get-TcComModuleParameter -Module NtpProbe -Name ModeWord
+    Check 'S10 32-bit named type that is no enum -> raw only (value null)' ($r.success -and $null -eq $r.data.value -and -not [string]::IsNullOrEmpty($r.data.rawHex)) (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name ModeWord -Value 5 -DryRun $false
+    Check 'S10 writing that type -> TCCOM_PARAM_UNSUPPORTED_TYPE, nothing sent' ($r.error.code -eq 'TCCOM_PARAM_UNSUPPORTED_TYPE' -and (Get-Sets).Count -eq 0) (J $r.error)
+    $global:T.Nodes[$Ntp].Props.Params[[uint32]0x03150105].Bytes = [byte[]]@(1, 2)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollInterval -Value 5000 -DryRun $false
+    Check 'S10 current value of another size than planned -> TCCOM_PARAM_SIZE_MISMATCH before sending' ($r.error.code -eq 'TCCOM_PARAM_SIZE_MISMATCH' -and (Get-Sets).Count -eq 0) (J $r.error)
+    # S11: online writes need the project's configuration on the target
+    Reset-Mock; Reset-BuildRequired; $global:T.BootStatus = 'mismatch'
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollInterval -Value 5555 -Online -DryRun $false
+    Check 'S11 boot package mismatch -> TCCOM_ONLINE_CONFIG_MISMATCH, nothing written online' ($r.error.code -eq 'TCCOM_ONLINE_CONFIG_MISMATCH' -and (Get-Sets).Count -eq 0 -and $r.data.bootPackage.status -eq 'mismatch' -and $r.error.hint -match 'Enable-TcConfig') (J $r)
+    Reset-Mock; Reset-BuildRequired; $global:T.BootStatus = 'unavailable'
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollInterval -Value 5555 -Online
+    Check 'S11 not comparable (remote target) -> TCCOM_ONLINE_CONFIG_MISMATCH also in dry-run' ($r.error.code -eq 'TCCOM_ONLINE_CONFIG_MISMATCH' -and @($global:T.BootCalls).Count -eq 1 -and $global:T.BootCalls[0] -eq '199.5.42.250.1.1|TwinCAT OS (x64)') (J $r.error)
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollInterval -Value 4000
+    Check 'S11 offline writes do not need the boot package check' ($r.success -and @($global:T.BootCalls).Count -eq 0) (J $r.data)
+
     # ===== hints / tools.json
-    foreach ($c in @('TCCOM_MODULE_ALREADY_EXISTS', 'TCCOM_CLASS_NOT_FOUND', 'TCCOM_VERIFY_FAILED', 'TCCOM_MODULE_NOT_FOUND', 'TCCOM_PARAM_NOT_FOUND', 'TCCOM_PARAM_INVALID_VALUE', 'TCCOM_PARAM_UNSUPPORTED_TYPE', 'TCCOM_PARAM_SIZE_MISMATCH', 'TCCOM_PARAM_READ_FAILED', 'TCCOM_PARAM_WRITE_FAILED', 'TCCOM_PARAM_VERIFY_FAILED', 'TCCOM_OBJECT_NOT_FOUND', 'TCCOM_CONTEXT_INVALID', 'TCCOM_CONTEXT_WRITE_FAILED', 'TCCOM_CONTEXT_VERIFY_FAILED')) {
+    foreach ($c in @('TCCOM_MODULE_ALREADY_EXISTS', 'TCCOM_CLASS_NOT_FOUND', 'TCCOM_VERIFY_FAILED', 'TCCOM_MODULE_NOT_FOUND', 'TCCOM_PARAM_NOT_FOUND', 'TCCOM_PARAM_INVALID_VALUE', 'TCCOM_PARAM_UNSUPPORTED_TYPE', 'TCCOM_PARAM_SIZE_MISMATCH', 'TCCOM_PARAM_READ_FAILED', 'TCCOM_PARAM_WRITE_FAILED', 'TCCOM_PARAM_VERIFY_FAILED', 'TCCOM_OBJECT_NOT_FOUND', 'TCCOM_ONLINE_CONFIG_MISMATCH', 'TCCOM_CONTEXT_INVALID', 'TCCOM_CONTEXT_WRITE_FAILED', 'TCCOM_CONTEXT_VERIFY_FAILED')) {
         $h = & $mod { param($k) Get-TcErrorHint -Code $k } $c
         Check "hint $c" (-not [string]::IsNullOrWhiteSpace($h)) "$h"
     }

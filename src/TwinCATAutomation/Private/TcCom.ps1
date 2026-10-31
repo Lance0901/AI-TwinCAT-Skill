@@ -73,6 +73,19 @@ function Get-TcComModuleInfo {
     $oid = if ($null -ne $oidNode) { ConvertFrom-TcHexId -Value $oidNode.InnerText } else { $null }
     $params = [System.Collections.Generic.List[object]]::new()
     $values = @{}
+    # review S10: the data types of the module (TcModuleInstance/DataTypes/DataType): an enum has
+    # <EnumInfo> children; only a confirmed enum is treated as an integer
+    $dataTypes = @{}
+    foreach ($dt in @($doc.SelectNodes('TreeItem/TcModuleInstance/DataTypes/DataType'))) {
+        $dn = $dt.SelectSingleNode('Name')
+        if ($null -eq $dn -or [string]::IsNullOrWhiteSpace($dn.InnerText)) { continue }
+        $bt = $dt.SelectSingleNode('BaseType'); $bs = $dt.SelectSingleNode('BitSize')
+        $dataTypes[[string]$dn.InnerText] = [PSCustomObject]@{
+            isEnum   = ($null -ne $dt.SelectSingleNode('EnumInfo'))
+            baseType = $(if ($null -ne $bt) { [string]$bt.InnerText } else { $null })
+            bitSize  = $(if ($null -ne $bs -and $bs.InnerText -match '^\d+$') { [int]$bs.InnerText } else { 0 })
+        }
+    }
     $contexts = [System.Collections.Generic.List[object]]::new()
     $classId = $null
     $typeName = $null
@@ -120,6 +133,7 @@ function Get-TcComModuleInfo {
         contexts   = $contexts.ToArray()
         parameters = $params.ToArray()
         values     = $values
+        dataTypes  = $dataTypes
     }
 }
 
@@ -260,17 +274,18 @@ function Get-TcComParamType {
         Codec of a parameter: @{ name; bytes; kind (bool | uint | int | float | string | raw) }.
     .DESCRIPTION
         Order: the BaseType of the XML when it is elementary; then -TypeName (GetTypeOfModulePara.Name)
-        when elementary; STRING(n) / a STRING base type -> string of BitSize/8 bytes; an enum or other
-        named type with 8 / 16 / 32 / 64 bits -> signed integer of that size (an enum's
-        GetTypeOfModulePara name is the enum name, e.g. 'TimeType', measured question 11); else raw
-        (read as hex only, not writable).
+        when elementary; STRING(n) / a STRING base type -> string of BitSize/8 bytes; a type that
+        -DataTypes confirms as an enum (<EnumInfo>; an enum's GetTypeOfModulePara name is the enum
+        name, e.g. 'TimeType', measured question 11) -> integer of its BitSize (signedness from its
+        elementary BaseType, else signed); every other named type -> raw (read as hex only, not
+        writable; review S10: no guessing from the bit size).
     .PARAMETER Parameter
         Parameter of Get-TcComModuleInfo.
     .PARAMETER TypeName
         GetTypeOfModulePara(pid).Name, or $null.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$Parameter, [Parameter()][AllowNull()][AllowEmptyString()][string]$TypeName)
+    param([Parameter(Mandatory)][object]$Parameter, [Parameter()][AllowNull()][AllowEmptyString()][string]$TypeName, [Parameter()][AllowNull()][hashtable]$DataTypes)
     $bits = [int]$Parameter.bitSize
     foreach ($t in @([string]$Parameter.baseType, $TypeName)) {
         if ([string]::IsNullOrWhiteSpace($t)) { continue }
@@ -282,7 +297,19 @@ function Get-TcComParamType {
         if ($u -match '^STRING(\(\d+\))?$' -and $bits -ge 8) { return @{ name = $u; bytes = [int]($bits / 8); kind = 'string' } }
     }
     $nm = if (-not [string]::IsNullOrWhiteSpace($TypeName)) { $TypeName } else { [string]$Parameter.baseType }
-    if (@(8, 16, 32, 64) -contains $bits) { return @{ name = $nm; bytes = [int]($bits / 8); kind = 'int' } }
+    if ($null -ne $DataTypes) {
+        foreach ($t in @([string]$Parameter.baseType, $TypeName)) {
+            if ([string]::IsNullOrWhiteSpace($t) -or -not $DataTypes.ContainsKey($t)) { continue }
+            $d = $DataTypes[$t]
+            if (-not $d.isEnum) { continue }
+            $eb = if ($d.bitSize -gt 0) { $d.bitSize } else { $bits }
+            if (@(8, 16, 32, 64) -notcontains $eb) { continue }
+            $kind = 'int'
+            $ub = ([string]$d.baseType).Trim().ToUpperInvariant()
+            if ($script:TcComElementaryTypes.ContainsKey($ub) -and $script:TcComElementaryTypes[$ub].Kind -eq 'uint') { $kind = 'uint' }
+            return @{ name = $nm; bytes = [int]($eb / 8); kind = $kind; enum = $true }
+        }
+    }
     return @{ name = $nm; bytes = $(if ($bits -gt 0) { [int][Math]::Ceiling($bits / 8) } else { 0 }); kind = 'raw' }
 }
 
@@ -398,6 +425,39 @@ function Format-TcHexBytes {
     [CmdletBinding()]
     param([Parameter()][AllowEmptyCollection()][byte[]]$Bytes = @())
     return (-join (@($Bytes) | ForEach-Object { $_.ToString('X2') }))
+}
+
+function Test-TcOnlineConfigMatch {
+    <#
+    .SYNOPSIS
+        Is the configuration running on the IDE target the one of this project? @{ Match; Reason; BootPackage }.
+    .DESCRIPTION
+        Review S11: Get-TcBootPackageDiff (project _Boot package incl. the variant folder vs the
+        target's Boot folder; only a runtime on this PC can be compared). Match only for status
+        'match'; 'mismatch' and 'unavailable' (remote target, unknown platform ...) are no match.
+        IDE_* errors are thrown.
+    .PARAMETER SysManager
+        ITcSysManager.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$SysManager)
+    $netId = $null
+    try { $netId = [string](Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $SysManager.GetTargetNetId() }) }
+    catch { if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }; $netId = $null }
+    if ([string]::IsNullOrWhiteSpace($netId)) { return @{ Match = $false; Reason = 'the target AmsNetId is not known'; BootPackage = $null } }
+    $plat = $null
+    try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { $plat = $null }
+    $cv = Read-TcCurrentVariant -SysManager $SysManager
+    if ($null -ne $cv.Error) { return @{ Match = $false; Reason = "CurrentProjectVariant could not be read ($($cv.Error))"; BootPackage = $null } }
+    $ports = @()
+    try { $ports = @(Get-TcPlcProjectList -SysManager $SysManager | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
+    $bp = $null
+    try { $bp = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $cv.Value }
+    catch { return @{ Match = $false; Reason = "the boot package could not be compared ($($_.Exception.Message))"; BootPackage = $null } }
+    if ($null -eq $bp) { return @{ Match = $false; Reason = 'the boot package could not be compared'; BootPackage = $null } }
+    if ($bp.status -eq 'match') { return @{ Match = $true; Reason = $null; BootPackage = $bp } }
+    $why = if ($bp.status -eq 'mismatch') { "boot package differs: $(@($bp.mismatches) -join ', ')" } else { "not comparable: $($bp.reason)" }
+    return @{ Match = $false; Reason = $why; BootPackage = $bp }
 }
 
 function ConvertTo-TcComErrorCode {
