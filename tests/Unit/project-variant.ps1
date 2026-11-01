@@ -110,7 +110,6 @@ try {
     Remove-Item -LiteralPath $Old1, $Old2 -Force
     [System.IO.File]::WriteAllText($Sln, '')
     Reset-Mock; Reset-BuildRequired
-    Reset-Mock; Reset-BuildRequired
     $r = Set-TcProjectVariantConfig -RemoveVariant Variant2 -DryRun $false
     Check 'SetVariantConfig live remove: removed from the group too' ($r.success -and $global:T.Config -notmatch 'Variant2' -and $global:T.Config -match '<Group><Name>Group1</Name><Member>Variant1</Member></Group>') "$($global:T.Config)"
     Reset-Mock -Config '<?xml version="1.0"?><ProjectVariants><Group><Name>G</Name><Member>B</Member></Group><Variant><Name>A</Name></Variant><Variant><Name>B</Name></Variant></ProjectVariants>' -Current 'A'

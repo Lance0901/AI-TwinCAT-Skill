@@ -129,8 +129,10 @@ function Set-TcIndependentFile {
                 -ErrorMessage "XAE accepted SaveInOwnFile = $Enabled on '$Path' but reads back '$now': this item cannot be stored in its own file (TE1000 5.2.4: the setter does nothing and returns S_OK)." -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_UNSUPPORTED')
             return Register-TcCodeChange -Result $res -Change "$change [unsupported]"
         }
-        $save = Invoke-TcIndependentFileSave -TsProjFile $tsList.Single
-        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $save.Saved
+        # review S2: DTE's own FullName spelling (it may be an 8.3 name) for the lookup in the save
+        $savePath = if (-not [string]::IsNullOrWhiteSpace([string]$tsList.SavePath)) { [string]$tsList.SavePath } else { [string]$tsList.Single }
+        $save = Invoke-TcIndependentFileSave -TsProjFile $savePath
+        $data | Add-Member -NotePropertyName projectSaved -NotePropertyValue $(if ($null -ne $save.Saved) { $tsList.Single } else { $null })
         if ($null -ne $save.Error) {
             $res = New-TcResult -Success $false -ErrorCode 'INDEPENDENT_FILE_SAVE_FAILED' -Data $data `
                 -ErrorMessage "SaveInOwnFile is $Enabled in XAE, but the project could not be saved: $($save.Error)" -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_SAVE_FAILED')

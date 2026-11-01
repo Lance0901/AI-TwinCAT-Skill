@@ -326,7 +326,8 @@ function Get-TcRealTimeTaskNames {
         Used to build '<instance>^<task> Inputs' / 'Outputs' (phase3-4.6 B1): the PLC instance
         (ItemType 57) reports ChildCount 0 on real COM and its process images are only reachable by
         LookupTreeItem of the full path (measured 2026-11-01, 4026.22 VS2022 and 4024.71 XAE Shell,
-        verification/phase3-4.6.md B1). The children of TIRT are enumerable.
+        verification/phase3-4.6.md B1). That the children of TIRT are enumerable on real COM and
+        carry the same names as '<task> Inputs' is NOT measured yet (pending, 4.6 retest).
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER ProjectPath
@@ -353,11 +354,12 @@ function Get-TcRealTimeTaskNames {
 function Get-TcPlcInstanceImageNames {
     <#
     .SYNOPSIS
-        Candidate process image names of a PLC instance: @{ Inputs = @(...); Outputs = @(...) }.
+        Candidate task names of the process images of a PLC instance ('<task>' of '<task> Inputs' / '<task> Outputs'), distinct, in order.
     .DESCRIPTION
-        The enumerated '* Inputs' / '* Outputs' children come first (when the enumeration returns
-        any), then '<task> Inputs' / '<task> Outputs' for every task name. The enumeration alone is
-        not enough: on real COM it is empty (phase3-4.6 B1).
+        The tasks of the enumerated '* Inputs' / '* Outputs' children come first (when the
+        enumeration returns any), then every task name. The enumeration alone is not enough: on
+        real COM it is empty (phase3-4.6 B1). The caller pairs '<task> Inputs' with
+        '<task> Outputs' of the SAME task (review S4).
     .PARAMETER Item
         ITcSmTreeItem of the PLC instance.
     .PARAMETER TaskNames
@@ -366,27 +368,28 @@ function Get-TcPlcInstanceImageNames {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Item, [Parameter()][string[]]$TaskNames = @())
     $kids = @(Get-TcTreeItemChildList -Item $Item | ForEach-Object { [string]$_.name })
-    $in = [System.Collections.Generic.List[string]]::new()
-    $out = [System.Collections.Generic.List[string]]::new()
-    foreach ($k in @($kids | Where-Object { $_ -like '* Inputs' })) { $in.Add($k) }
-    foreach ($k in @($kids | Where-Object { $_ -like '* Outputs' })) { $out.Add($k) }
-    foreach ($t in @($TaskNames)) {
-        if (@($in | Where-Object { $_ -ieq "$t Inputs" }).Count -eq 0) { $in.Add("$t Inputs") }
-        if (@($out | Where-Object { $_ -ieq "$t Outputs" }).Count -eq 0) { $out.Add("$t Outputs") }
+    $bases = [System.Collections.Generic.List[string]]::new()
+    $cands = @(foreach ($k in $kids) { if ($k -match '^(.+) (Inputs|Outputs)$') { $Matches[1] } }) + @($TaskNames)
+    foreach ($b in $cands) {
+        if ([string]::IsNullOrEmpty([string]$b)) { continue }
+        if (@($bases | Where-Object { $_ -ieq $b }).Count -eq 0) { $bases.Add([string]$b) }
     }
-    return @{ Inputs = $in.ToArray(); Outputs = $out.ToArray() }
+    return $bases.ToArray()
 }
 
 function Find-TcPlcAxisRefImage {
     <#
     .SYNOPSIS
-        PLC side of an AXIS_REF: @{ NcToPlc = '<instance>^<x> Inputs^<var>.NcToPlc' | $null; PlcToNc = '<instance>^<x> Outputs^<var>.PlcToNc' | $null; Instance; Tried }.
+        PLC side of an AXIS_REF: @{ NcToPlc = '<instance>^<task> Inputs^<var>.NcToPlc' | $null; PlcToNc = '<instance>^<task> Outputs^<var>.PlcToNc' | $null; Task; Instance; Tried; Found }.
     .DESCRIPTION
         The process image names are not hard-coded (phase3-probe.md question 5: the task was called
-        PlcTask in that project only). Candidates (Get-TcPlcInstanceImageNames): the enumerated
-        '* Inputs' / '* Outputs' children of the instance, then '<task> Inputs' / '<task> Outputs'
-        for each real-time task (phase3-4.6 B1: the instance enumerates no children on real COM,
-        LookupTreeItem of the full path works). Every candidate is looked up; Tried lists the paths.
+        PlcTask in that project only). Candidate tasks (Get-TcPlcInstanceImageNames): those of the
+        enumerated '* Inputs' / '* Outputs' children of the instance, then each real-time task
+        (phase3-4.6 B1: the instance enumerates no children on real COM, LookupTreeItem of the full
+        path works). review S4: NcToPlc and PlcToNc must come from the SAME task; for each task both
+        '<task> Inputs^<var>.NcToPlc' and '<task> Outputs^<var>.PlcToNc' are looked up, the first task
+        with both wins. No such task -> NcToPlc / PlcToNc $null, Found = every path that was found
+        (one side only), Tried = every path looked up.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER InstancePath
@@ -398,23 +401,24 @@ function Find-TcPlcAxisRefImage {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$InstancePath, [Parameter(Mandatory)][string]$PlcVariable, [Parameter()][string[]]$TaskNames = @())
-    $out = @{ NcToPlc = $null; PlcToNc = $null; Instance = $null; Tried = @() }
+    $out = @{ NcToPlc = $null; PlcToNc = $null; Task = $null; Instance = $null; Tried = @(); Found = @() }
     $tried = [System.Collections.Generic.List[string]]::new()
+    $found = [System.Collections.Generic.List[string]]::new()
     $inst = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $InstancePath
     if ($null -eq $inst) { $tried.Add($InstancePath); $out.Tried = $tried.ToArray(); return $out }
     $out.Instance = $InstancePath
-    $names = Get-TcPlcInstanceImageNames -Item $inst -TaskNames $TaskNames
-    foreach ($k in @($names.Inputs)) {
-        $p = "$InstancePath^$k^$PlcVariable.NcToPlc"
-        $tried.Add($p)
-        if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p)) { $out.NcToPlc = $p; break }
-    }
-    foreach ($k in @($names.Outputs)) {
-        $p = "$InstancePath^$k^$PlcVariable.PlcToNc"
-        $tried.Add($p)
-        if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p)) { $out.PlcToNc = $p; break }
+    foreach ($t in @(Get-TcPlcInstanceImageNames -Item $inst -TaskNames $TaskNames)) {
+        $pin = "$InstancePath^$t Inputs^$PlcVariable.NcToPlc"
+        $pout = "$InstancePath^$t Outputs^$PlcVariable.PlcToNc"
+        $tried.Add($pin); $tried.Add($pout)
+        $hasIn = $null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $pin)
+        $hasOut = $null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $pout)
+        if ($hasIn -and $hasOut) { $out.NcToPlc = $pin; $out.PlcToNc = $pout; $out.Task = $t; $found.Clear(); break }
+        if ($hasIn) { $found.Add($pin) }
+        if ($hasOut) { $found.Add($pout) }
     }
     $out.Tried = $tried.ToArray()
+    $out.Found = $found.ToArray()
     return $out
 }
 

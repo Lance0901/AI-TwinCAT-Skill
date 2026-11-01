@@ -62,6 +62,13 @@ Install-MockModule $mod $Sln
         [CmdletBinding()] param([string]$TsProjFile, [string]$PlcProjFile, [int]$TimeoutSec, [string]$SaveScript)
         $null = $global:T.Saves.Add($TsProjFile)
         if ($global:T.Mode -eq 'save-fail') { throw 'PROJECT_SAVE_TIMEOUT: mock' }
+        # review S2: like the real runspace script, the project is looked up by FullName through
+        # ConvertTo-TcPathKey on both sides
+        if ($null -ne $script:TcDte) {
+            $want = ConvertTo-TcPathKey $TsProjFile
+            $hit = @($script:TcDte.Solution.Projects.List | Where-Object { (ConvertTo-TcPathKey ([string]$_.FullName)) -eq $want })
+            if ($hit.Count -eq 0) { throw "save: Project.Save of '$TsProjFile' failed (no project of the solution has FullName '$TsProjFile')" }
+        }
         foreach ($n in @($global:T.Nodes.Values | Where-Object { $null -ne $_.Props.Xti -and -not $_.Props.Own })) {
             if ($global:T.Mode -ne 'keep-file') { Remove-Item -LiteralPath $n.Props.Xti -Force -ErrorAction SilentlyContinue }
         }
@@ -151,7 +158,37 @@ try {
     Check 'B2 DTE project FullName decides (3 .tsproj, empty .sln) -> success, tsprojSource dte' ($r.success -and $r.data.tsproj -eq $TsProj -and $r.data.tsprojSource -eq 'dte' -and @($global:T.Saves) -contains $TsProj) (J $r.data)
     $bf = & $mod { @(Get-TcTsProjBackupFiles) }
     Check 'B2 Get-TcTsProjBackupFiles (variant / route backups) -> only the DTE .tsproj' (@($bf).Count -eq 1 -and @($bf)[0] -eq $TsProj) (J $bf)
+    # review S2: DTE reports the FullName with 8.3 short names; the save gets DTE's spelling and
+    # the lookup compares long-path keys on both sides
+    $short = (New-Object -ComObject Scripting.FileSystemObject).GetFile($TsProj).ShortPath
+    $dteProjects.List[0].FullName = $short
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check "S2 DTE FullName in 8.3 form ($(if ($short -ne $TsProj) { 'short differs' } else { '8.3 names off: same text' })) -> save gets DTE's spelling, success, data in long form" ($r.success -and @($global:T.Saves) -contains $short -and $r.data.tsproj -eq $TsProj -and $r.data.projectSaved -eq $TsProj -and $r.data.tsprojSource -eq 'dte') "$short $(J $r.data)"
+    $k1 = & $mod { param($a) ConvertTo-TcPathKey $a } $short
+    $k2 = & $mod { param($a) ConvertTo-TcPathKey $a } $TsProj
+    Check 'S2 ConvertTo-TcPathKey: 8.3 and long spelling give the same key' ($k1 -eq $k2 -and $k1 -eq $TsProj.ToUpperInvariant()) "$k1 | $k2"
+    # the same function text in a separate runspace (like the STA runspace of the real save)
+    $fn = & $mod { $script:TcPathKeyFunctionText }
+    $ps = [PowerShell]::Create()
+    try {
+        $null = $ps.AddScript("param(`$a, `$b)`n" + $fn + "`n(ConvertTo-TcPathKey `$a) -eq (ConvertTo-TcPathKey `$b)").AddArgument($short).AddArgument($TsProj)
+        $same = @($ps.Invoke())
+        Check 'S2 the key function text works in a separate runspace (short = long)' ($same.Count -eq 1 -and $same[0] -eq $true -and -not $ps.HadErrors) "$($same -join ',')"
+    }
+    finally { $ps.Dispose() }
+    $dteProjects.List[0].FullName = $TsProj
     & $mod { $script:TcDte = $null }
+    # review S3: an absolute path in the .sln is used as it is; a bad line does not drop the others
+    [System.IO.File]::WriteAllText($Sln, "Project(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Bad`", `"Prj\a<b|c.tsproj`", `"{33333333-2222-3333-4444-555555555555}`"`r`nEndProject`r`nProject(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Old`", `"$Old1`", `"{22222222-2222-3333-4444-555555555555}`"`r`nEndProject`r`n")
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true
+    Check 'S3 .sln: a bad line + an absolute path -> the absolute one decides (source sln)' ($r.success -and $r.data.tsproj -eq $Old1 -and $r.data.tsprojSource -eq 'sln') (J $r.data)
+    [System.IO.File]::WriteAllText($Sln, "Project(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Old`", `"$Old1`", `"{22222222-2222-3333-4444-555555555555}`"`r`nEndProject`r`nProject(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Prj`", `"Prj\Prj.tsproj`", `"{11111111-2222-3333-4444-555555555555}`"`r`nEndProject`r`n")
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true
+    Check 'S3 .sln: one absolute + one relative line -> both resolved (ambiguous, 2 files)' ($r.error.code -eq 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -and $r.data.tsprojSource -eq 'sln' -and @($r.data.tsprojFiles) -contains $Old1 -and @($r.data.tsprojFiles) -contains $TsProj -and @($r.data.tsprojFiles).Count -eq 2) (J $r.data)
+    [System.IO.File]::WriteAllText($Sln, '')
     # nothing names one: folder scan with 3 -> ambiguous, the message says neither DTE nor the .sln named one
     Reset-Mock; Reset-BuildRequired
     $r = Set-TcIndependentFile -Path $Axis -Enabled $true

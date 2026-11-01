@@ -265,10 +265,15 @@ try {
     Check 'N2 SetTcComParameter TIME#1m30s_250ms -> 90250 ms' ($r.success -and $r.data.value -eq 90250) (J $r.data)
     $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#1.5s'
     Check 'N2 SetTcComParameter T#1.5s -> 1500 ms' ($r.success -and $r.data.value -eq 1500) (J $r.data)
-    foreach ($bad in @('T#1.5ms', '-1', 'T#-5s', 'abc', 'T#5x', '4294967296')) {
+    # review N1: units in the order d h m s ms, each once; N2: overflow keeps the fixed message
+    foreach ($bad in @('T#1.5ms', '-1', 'T#-5s', 'abc', 'T#5x', '4294967296', 'T#5s1m', 'T#1s1s', 'T#1ms5s', 'T#1m1h', 'T#99999999999999999999999999999d')) {
         $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value $bad
         Check "N2 SetTcComParameter TIME '$bad' -> TCCOM_PARAM_INVALID_VALUE, nothing written" ($r.error.code -eq 'TCCOM_PARAM_INVALID_VALUE' -and (Get-Sets).Count -eq 0) (J $r.error)
     }
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#99999999999999999999999999999d'
+    Check 'N2 TIME overflow -> fixed English message (out of the TIME range)' ($r.error.code -eq 'TCCOM_PARAM_INVALID_VALUE' -and $r.error.message -match 'out of the TIME range 0\.\.4294967295 ms') (J $r.error)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#1d2h3m4s5ms'
+    Check 'N1 TIME all units in order T#1d2h3m4s5ms -> 93784005 ms' ($r.success -and $r.data.value -eq 93784005) (J $r.data)
     $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#5s' -DryRun $false
     Check 'N2 SetTcComParameter TIME live: SetModulePara, readback 88130000, verified' ($r.success -and $r.data.verified -and $r.data.readbackHex -eq '88130000') (J $r.data)
     $r = Set-TcComModuleParameter -Module NtpProbe -Name ServerPara -Value 1

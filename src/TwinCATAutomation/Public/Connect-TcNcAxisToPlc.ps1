@@ -17,7 +17,9 @@ function Connect-TcNcAxisToPlc {
         COM (ChildCount 0), but the full path can be looked up (measured 2026-11-01, 4026.22 VS2022
         and 4024.71 XAE Shell, verification/phase3-4.6.md B1). The AXIS_REF only shows up there
         after a build: not found -> NC_PLC_VARIABLE_NOT_FOUND (hint: Build-TcProject;
-        data.triedPaths = every path looked up, data.tasks = the task names used).
+        data.triedPaths = every path looked up, data.tasks = the task names used). NcToPlc and
+        PlcToNc must come from the SAME task (review S4): only one side found for a task, or the two
+        sides in different tasks -> NC_PLC_VARIABLE_NOT_FOUND with data.foundPaths (what was found).
         Links already in the mapping (ProduceMappingInfo, Get-TcMappingLinks, the same readback as
         Set-TcVariableLink): both pairs already linked to each other -> success,
         data.alreadyLinked = true, nothing written; any of the four ends linked to something else ->
@@ -98,8 +100,10 @@ function Connect-TcNcAxisToPlc {
         if ($null -eq $img.NcToPlc -or $null -eq $img.PlcToNc) {
             $data | Add-Member -NotePropertyName tasks -NotePropertyValue $tasks
             $data | Add-Member -NotePropertyName triedPaths -NotePropertyValue @($img.Tried)
-            $miss = @(); if ($null -eq $img.NcToPlc) { $miss += "$PlcVariable.NcToPlc (below '* Inputs')" }; if ($null -eq $img.PlcToNc) { $miss += "$PlcVariable.PlcToNc (below '* Outputs')" }
-            $why = if ($null -eq $img.Instance) { "the PLC instance '$instancePath' is not found" } else { "not found below '$instancePath': $($miss -join ', ')" }
+            $data | Add-Member -NotePropertyName foundPaths -NotePropertyValue @($img.Found)
+            $why = if ($null -eq $img.Instance) { "the PLC instance '$instancePath' is not found" }
+            elseif (@($img.Found).Count -gt 0) { "no task of '$instancePath' has both $PlcVariable.NcToPlc (below '<task> Inputs') and $PlcVariable.PlcToNc (below '<task> Outputs'); found only: $((@($img.Found) | ForEach-Object { "'$_'" }) -join ', ')" }
+            else { "neither $PlcVariable.NcToPlc (below '<task> Inputs') nor $PlcVariable.PlcToNc (below '<task> Outputs') found below '$instancePath'" }
             return New-TcResult -Success $false -ErrorCode 'NC_PLC_VARIABLE_NOT_FOUND' -Data $data `
                 -ErrorMessage "AXIS_REF '$PlcVariable': $why; nothing was linked." -Hint (Get-TcErrorHint -Code 'NC_PLC_VARIABLE_NOT_FOUND')
         }

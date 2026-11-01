@@ -169,14 +169,17 @@ function Get-TcDteTsProjFiles {
                     if ($_.Exception.ToString() -match '0x80010001|0x8001010A|RPC_E_CALL_REJECTED|RPC_E_SERVERCALL_RETRYLATER') { throw }
                     $__full = $null
                 }
-                if (-not [string]::IsNullOrWhiteSpace($__full) -and $__full -match '(?i)\.tsproj$') { $__list.Add($__full) }
+                if (-not [string]::IsNullOrWhiteSpace($__full)) { $__list.Add($__full) }
             }
             Write-Output -NoEnumerate $__list.ToArray()
         }
         $files = [System.Collections.Generic.List[string]]::new()
         foreach ($f in @($names)) {
             if ([string]::IsNullOrWhiteSpace($f) -or -not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
-            $full = [System.IO.Path]::GetFullPath($f)
+            # review S2: an 8.3 FullName ('PRJ~1.TSP') counts when its long form is a .tsproj
+            if ($f -notmatch '(?i)\.tsproj$' -and [string](Get-TcLongPath $f) -notmatch '(?i)\.tsproj$') { continue }
+            # kept as DTE spelled it (review S2; .NET Framework GetFullPath would expand 8.3 names)
+            $full = if ([System.IO.Path]::IsPathRooted($f)) { [string]$f } else { [System.IO.Path]::GetFullPath($f) }
             if (@($files | Where-Object { $_ -ieq $full }).Count -eq 0) { $files.Add($full) }
         }
         $out.Files = $files.ToArray()
@@ -188,7 +191,7 @@ function Get-TcDteTsProjFiles {
 function Get-TcSlnTsProjFiles {
     <#
     .SYNOPSIS
-        .tsproj files the .sln references (Project("{...}") = "<name>", "<rel>.tsproj", ...), resolved against the .sln folder, existing on disk, distinct. Never throws.
+        .tsproj files the .sln references (Project("{...}") = "<name>", "<path>.tsproj", ...): an absolute path as it is, a relative one against the .sln folder; existing on disk, distinct. Never throws (a line that cannot be resolved is skipped).
     .PARAMETER SolutionFile
         Path of the .sln.
     #>
@@ -196,24 +199,30 @@ function Get-TcSlnTsProjFiles {
     param([Parameter()][AllowNull()][string]$SolutionFile)
     $files = [System.Collections.Generic.List[string]]::new()
     if ([string]::IsNullOrWhiteSpace($SolutionFile) -or -not (Test-Path -LiteralPath $SolutionFile -PathType Leaf)) { return $files.ToArray() }
-    try {
-        $dir = [System.IO.Path]::GetDirectoryName($SolutionFile)
-        foreach ($line in [System.IO.File]::ReadAllLines($SolutionFile)) {
+    $lines = @()
+    try { $lines = [System.IO.File]::ReadAllLines($SolutionFile) }
+    catch { Write-Verbose "Get-TcSlnTsProjFiles: '$SolutionFile' not readable ($($_.Exception.Message))"; return $files.ToArray() }
+    $dir = [System.IO.Path]::GetDirectoryName($SolutionFile)
+    foreach ($line in $lines) {
+        # review S3: one bad line (invalid path characters ...) does not drop the others
+        try {
             $m = [regex]::Match($line, '^\s*Project\("\{[^}]*\}"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+\.tsproj)"', 'IgnoreCase')
             if (-not $m.Success) { continue }
-            $full = [System.IO.Path]::GetFullPath((Join-Path $dir $m.Groups[1].Value))
+            $ref = $m.Groups[1].Value
+            # an absolute path in the .sln is taken as it is, a relative one against the .sln folder
+            $full = if ([System.IO.Path]::IsPathRooted($ref)) { [System.IO.Path]::GetFullPath($ref) } else { [System.IO.Path]::GetFullPath((Join-Path $dir $ref)) }
             if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
             if (@($files | Where-Object { $_ -ieq $full }).Count -eq 0) { $files.Add($full) }
         }
+        catch { Write-Verbose "Get-TcSlnTsProjFiles: line skipped ($($_.Exception.Message)): $line" }
     }
-    catch { Write-Verbose "Get-TcSlnTsProjFiles: '$SolutionFile' not readable ($($_.Exception.Message))" }
     return $files.ToArray()
 }
 
 function Find-TcSolutionTsProjFile {
     <#
     .SYNOPSIS
-        The .tsproj of the open TwinCAT project: @{ Files = @(); Single = <path> | $null; Source = 'dte' | 'sln' | 'folder' | $null; FolderFiles = @() }.
+        The .tsproj of the open TwinCAT project: @{ Files = @(); Single = <path> | $null; SavePath = <path> | $null; Source = 'dte' | 'sln' | 'folder' | $null; FolderFiles = @() }.
     .DESCRIPTION
         phase3-4.6 B2: a solution folder can hold old copies of the .tsproj that the solution does
         not use (4026 copy: 3 .tsproj, the .sln references one), so the folder is scanned last.
@@ -224,7 +233,10 @@ function Find-TcSolutionTsProjFile {
           3. 'folder' - .tsproj files below the solution folder (depth 3, .tcauto-backup skipped).
         A deciding source with several files leaves Single $null (the solution really has several
         TwinCAT projects). Files = the candidates of the deciding source; FolderFiles = the folder
-        scan (for the data of a failed result). Paths in the long form. Never throws.
+        scan (for the data of a failed result). Paths in the long form (8.3 names expanded).
+        SavePath = the path to give Invoke-TcProjectSaveWithDeadline: for 'dte' the FullName exactly
+        as DTE reported it (review S2: the save looks the project up by FullName; it may be an 8.3
+        short name), else Single. Never throws.
     .PARAMETER SolutionDir
         Folder of the .sln (default Get-TcTreeItemSolutionDir).
     #>
@@ -243,7 +255,7 @@ function Find-TcSolutionTsProjFile {
         }
         catch { $folder = @() }
     }
-    $out = @{ Files = @(); Single = $null; Source = $null; FolderFiles = $folder }
+    $out = @{ Files = @(); Single = $null; SavePath = $null; Source = $null; FolderFiles = $folder }
     foreach ($src in @('dte', 'sln', 'folder')) {
         $files = switch ($src) {
             'dte' { @((Get-TcDteTsProjFiles).Files) }
@@ -254,14 +266,19 @@ function Find-TcSolutionTsProjFile {
         if ($files.Count -eq 0) { continue }
         # the same spelling as the folder scan (long path form; with an 8.3 TEMP the .sln path is short)
         $long = [System.Collections.Generic.List[string]]::new()
+        $raw = @{}
         foreach ($f in $files) {
-            $hit = @($folder | Where-Object { $_ -ieq $f })
-            $p = if ($hit.Count -gt 0) { [string]$hit[0] } else { [string](Get-TcLongPath $f) }
-            if (@($long | Where-Object { $_ -ieq $p }).Count -eq 0) { $long.Add($p) }
+            $lf = [string](Get-TcLongPath $f)
+            $hit = @($folder | Where-Object { $_ -ieq $f -or $_ -ieq $lf })
+            $p = if ($hit.Count -gt 0) { [string]$hit[0] } else { $lf }
+            if (@($long | Where-Object { $_ -ieq $p }).Count -eq 0) { $long.Add($p); $raw[$p.ToUpperInvariant()] = [string]$f }
         }
         $out.Files = $long.ToArray()
         $out.Source = $src
-        if ($long.Count -eq 1) { $out.Single = $long[0] }
+        if ($long.Count -eq 1) {
+            $out.Single = $long[0]
+            $out.SavePath = if ($src -eq 'dte') { $raw[$long[0].ToUpperInvariant()] } else { $long[0] }
+        }
         return $out
     }
     return $out

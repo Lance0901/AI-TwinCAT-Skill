@@ -109,8 +109,9 @@ function Add-TcAdsRoute {
         if ([string]::IsNullOrWhiteSpace($UserName) -or $UserName -match '[\x00-\x1F<>]') { return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' -Data $data -ErrorMessage 'AddRoute needs -UserName (the user on the remote system); nothing was sent.' }
         # phase3-4.6 N4: the messages name only -PasswordEnv as a parameter (the MCP server rewrites it
         # to 'PasswordEnv'); the SecureString parameter does not exist over MCP, so it is described
-        # in words (PowerShell callers) instead of being written as a PowerShell parameter
-        if (-not $hasEnv -and -not $hasSecure) { return New-TcResult -Success $false -ErrorCode 'ROUTE_PASSWORD_MISSING' -Data $data -ErrorMessage 'AddRoute needs a password source: -PasswordEnv names the environment variable that holds the route password (PowerShell callers can pass a SecureString password instead); nothing was sent.' -Hint (Get-TcErrorHint -Code 'ROUTE_PASSWORD_MISSING') }
+        # in words, and only in the message of the both-given case, which only PowerShell can reach
+        # (review N5)
+        if (-not $hasEnv -and -not $hasSecure) { return New-TcResult -Success $false -ErrorCode 'ROUTE_PASSWORD_MISSING' -Data $data -ErrorMessage 'AddRoute needs a password source: -PasswordEnv names the environment variable that holds the route password; nothing was sent.' -Hint (Get-TcErrorHint -Code 'ROUTE_PASSWORD_MISSING') }
         if ($hasEnv -and $hasSecure) { return New-TcResult -Success $false -ErrorCode 'ROUTE_PASSWORD_MISSING' -Data $data -ErrorMessage 'AddRoute takes one password source, not two: either -PasswordEnv or the SecureString password; nothing was sent.' -Hint (Get-TcErrorHint -Code 'ROUTE_PASSWORD_MISSING') }
         # review B1: only variables named for this purpose, so -PasswordEnv cannot read any other
         # secret of the process (PATH-like names, API keys ...)

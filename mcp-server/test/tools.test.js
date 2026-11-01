@@ -451,9 +451,11 @@ describe('cmdlet name rewriting in hints', () => {
       assert.doesNotMatch(out, /(^|\s)-[A-Z][A-Za-z]+/, `PowerShell parameter left in: ${out}`);
       assert.doesNotMatch(out, /-Password/, out);
       assert.match(out, /PasswordEnv/, out);
+      // review N5: nothing the MCP caller cannot do (the SecureString path is PowerShell only)
+      if (msg.startsWith('AddRoute needs')) assert.doesNotMatch(out, /SecureString|PowerShell/, out);
     }
     const none = msgs.find((m) => m.startsWith('AddRoute needs'));
-    assert.equal(rewriteHintCmdletNames(none, real), 'AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password (PowerShell callers can pass a SecureString password instead); nothing was sent.');
+    assert.equal(rewriteHintCmdletNames(none, real), 'AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password; nothing was sent.');
   });
 
   test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {

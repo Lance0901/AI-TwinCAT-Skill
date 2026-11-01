@@ -45,7 +45,7 @@ $script:TcComWritableTypesText = 'BOOL, the integer types, REAL / LREAL, STRING(
 function ConvertFrom-TcTimeLiteral {
     <#
     .SYNOPSIS
-        TIME value text -> milliseconds ([decimal]) or $null: an integer (ms) or an IEC literal T#/TIME# with d / h / m / s / ms parts (e.g. T#5S, T#1m30s, TIME#250ms; '_' allowed, the last part may have a fraction).
+        TIME value text -> milliseconds ([decimal]) or $null: an integer (ms) or an IEC literal T#/TIME# with d / h / m / s / ms parts in that order, each at most once (e.g. T#5S, T#1m30s, TIME#250ms; '_' allowed, the last part may have a fraction). A number too large for [decimal] throws OverflowException.
     .PARAMETER Text
         Value text.
     #>
@@ -61,11 +61,18 @@ function ConvertFrom-TcTimeLiteral {
     $parts = [regex]::Matches($body, '(?i)(\d+(?:\.\d+)?)(ms|d|h|m|s)')
     if ($parts.Count -eq 0 -or (($parts | ForEach-Object { $_.Value }) -join '') -ne $body) { return $null }
     $scale = @{ 'd' = [decimal]86400000; 'h' = [decimal]3600000; 'm' = [decimal]60000; 's' = [decimal]1000; 'ms' = [decimal]1 }
+    # review N1: the units must come in the order d, h, m, s, ms, each at most once
+    $order = @('d', 'h', 'm', 's', 'ms')
+    $last = -1
     $total = [decimal]0
     for ($i = 0; $i -lt $parts.Count; $i++) {
         $num = $parts[$i].Groups[1].Value
+        $unit = $parts[$i].Groups[2].Value.ToLowerInvariant()
+        $rank = [Array]::IndexOf($order, $unit)
+        if ($rank -le $last) { return $null }
+        $last = $rank
         if ($num.Contains('.') -and $i -ne $parts.Count - 1) { return $null }
-        $total += [decimal]::Parse($num, $inv) * $scale[$parts[$i].Groups[2].Value.ToLowerInvariant()]
+        $total += [decimal]::Parse($num, $inv) * $scale[$unit]
     }
     if ($m.Groups[1].Value -eq '-') { $total = -$total }
     return $total
@@ -421,7 +428,9 @@ function ConvertTo-TcComParamBytes {
             return , [byte[]][BitConverter]::GetBytes([double]$d)
         }
         'time' {
-            $ms = ConvertFrom-TcTimeLiteral -Text $text
+            # review N2: an overflow gets the fixed English message, not the .NET (localized) one
+            try { $ms = ConvertFrom-TcTimeLiteral -Text $text }
+            catch [System.OverflowException] { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is out of the TIME range 0..4294967295 ms" }
             if ($null -eq $ms) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is no TIME (milliseconds as an integer, or a literal such as T#5S / T#1m30s / TIME#250ms)" }
             if ($ms -ne [decimal]::Truncate($ms)) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is not a whole number of milliseconds (TIME has a resolution of 1 ms)" }
             if ($ms -lt 0 -or $ms -gt [decimal][uint32]::MaxValue) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' ($ms ms) is out of the TIME range 0..4294967295 ms" }

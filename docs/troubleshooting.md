@@ -1155,7 +1155,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### NC_PLC_VARIABLE_NOT_FOUND
 
-- **現象**:試過的 process image 底下都找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`。`data.triedPaths` 列出每一個 lookup 過的完整 path(`<instance>^<task> Inputs^<var>.NcToPlc` …),`data.tasks` 是拿來拼 path 的 task 名稱(`TIRT` 的子節點 + PLC project 的 PLC task)。AXIS_REF 要 build 過才會出現在 process image。4.6 B1 之前這裡回 `data.instanceChildren`(真 COM 上一律是空的，已移除)。
+- **現象**:試過的 process image 底下都找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`。`data.triedPaths` 列出每一個 lookup 過的完整 path(`<instance>^<task> Inputs^<var>.NcToPlc` …),`data.tasks` 是拿來拼 path 的 task 名稱(`TIRT` 的子節點 + PLC project 的 PLC task;`TIRT` 在真 COM 上列舉得到、名稱和 `<task> Inputs` 相同，**待實測(4.6 retest)**)。`NcToPlc` 和 `PlcToNc` 必須來自**同一個 task**(review S4):只找到一邊，或兩邊分在不同 task,也回這個碼，`data.foundPaths` 列出找到的那些 path。AXIS_REF 要 build 過才會出現在 process image。4.6 B1 之前這裡回 `data.instanceChildren`(真 COM 上一律是空的，已移除)。
 - **下一步**:確認 `-PlcVariable` 是 AXIS_REF 本身(例如 `MAIN.axis`,不要加 `.NcToPlc`),`Build-TcProject`(MCP `BuildProject`)後重跑。`data.tasks` 是空的就是 `TIRT` 底下沒有 task,先 `Get-TcTreeItem -Path TIRT` 確認;要看 image 底下實際的名稱用 `Get-TcTreeItem -Path '<data.triedPaths 去掉最後一段>'`。
 
 ### NC_AXIS_ALREADY_LINKED
@@ -1307,7 +1307,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - `Set-TcIndependentFile`(MCP `SetIndependentFile`)設 `ITcSmTreeItem6.SaveInOwnFile`(TE1000 v1.7.0 §5.2.4 p.62–63、§6.3.9 p.210;[InfoSys 21842602763](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842602763.html))。手冊寫明不支援的 item「setter 什麼都不做、回 S_OK」(p.62),實測 PlcTask、Axes、TINC、TIRR 就是這樣;PLC project、NC 軸、NC task、TcCOM 實例(4024 另有 I/O device)可以(probe 第 20 題)。
 - **setter 當下就寫 `.xti`**(還沒存檔就出現在 `_Config\...`),所以備份(ProduceXml、`.tsproj`、這個 item 現有的 `.xti`)一定在 setter 之前。檔名:`<名稱>.xti`,NC task 是 `_Config\NC\NC.xti`。
-- **存哪一個 `.tsproj`**(phase3-4.6 B2,已修):依序看 (1) DTE `Solution.Projects` 裡 `FullName` 是 `.tsproj` 的專案、(2) `.sln` 參照的 `.tsproj`(`Project("{...}") = "<名稱>", "<相對路徑>.tsproj", ...`)、(3) solution 資料夾底下的 `.tsproj`(深度 3,`.tcauto-backup` 除外);第一個有結果的來源決定(`data.tsprojSource` = `dte` / `sln` / `folder`)。4.6 實測時 4026 副本資料夾有 3 個 `.tsproj`(兩個舊副本),`.sln` 只參照一個，舊版只掃資料夾所以回 `INDEPENDENT_FILE_TSPROJ_AMBIGUOUS`。`Set-TcProjectVariantConfig` / `Set-TcCurrentVariant` 與 `Add-TcAdsRoute -ProjectRoute` 的備份也只複製這一個 `.tsproj`。
+- **存哪一個 `.tsproj`**(phase3-4.6 B2,已修):依序看 (1) DTE `Solution.Projects` 裡 `FullName` 是 `.tsproj` 的專案、(2) `.sln` 參照的 `.tsproj`(`Project("{...}") = "<名稱>", "<相對路徑>.tsproj", ...`)、(3) solution 資料夾底下的 `.tsproj`(深度 3,`.tcauto-backup` 除外);第一個有結果的來源決定(`data.tsprojSource` = `dte` / `sln` / `folder`)。4.6 實測時 4026 副本資料夾有 3 個 `.tsproj`(兩個舊副本),`.sln` 只參照一個，舊版只掃資料夾所以回 `INDEPENDENT_FILE_TSPROJ_AMBIGUOUS`。`Set-TcProjectVariantConfig` / `Set-TcCurrentVariant` 與 `Add-TcAdsRoute -ProjectRoute` 的備份也只複製這一個 `.tsproj`。`.sln` 裡的絕對路徑直接採用、相對路徑以 `.sln` 資料夾為基準，解析失敗的那一行跳過、不影響其他行(review S3)。來源是 `dte` 時，存檔用 DTE 回報的 `FullName` 原樣去找專案，比對時兩邊都展開 8.3 短檔名(`ConvertTo-TcPathKey`,review S2),`data.tsproj` / `projectSaved` 一律是長檔名。
 - 之後模組用有 deadline 的 `Project.Save`(`Invoke-TcProjectSaveWithDeadline`)存檔,`.tsproj` 才會改成 `<... File="<x>.xti"/>`;關閉(False)要存檔 XAE 才會刪 `.xti` 和它的 `.bak`。最後比對存檔前後的 `.xti` 清單(`data.createdFiles` / `removedFiles`)。
 - ProduceXml 沒有對應欄位(`Set-TcTreeItemXml` 做不到);PLC project 獨立存檔後它的 mapping 改存到 `_Config\PLC\<Plc>.xti` 的 `<Mappings>`(probe 第 21 題,[InfoSys 7738192779](https://infosys.beckhoff.com/content/1033/tc3_userinterface/7738192779.html))。XAE 自己寫的檔，不需要 `Reset-TcSolution`。
 
@@ -1370,7 +1370,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### ROUTE_PASSWORD_MISSING
 
-- **現象**:AddRoute 沒有密碼來源(或 PowerShell 同時給了 `-PasswordEnv` 和 SecureString 密碼),或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。message 只把 `-PasswordEnv` 寫成參數(MCP 端由 `mcp-server/lib/tools.js` 的 `rewriteResultHints` 改寫成 `PasswordEnv`);SecureString 密碼只有 PowerShell 有，用文字描述，不寫成 `-Password`(phase3-4.6 N4,已修:之前 MCP 會讀到不存在的 `-Password` 參數)。
+- **現象**:AddRoute 沒有密碼來源(或 PowerShell 同時給了 `-PasswordEnv` 和 SecureString 密碼),或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。message 只把 `-PasswordEnv` 寫成參數(MCP 端由 `mcp-server/lib/tools.js` 的 `rewriteResultHints` 改寫成 `PasswordEnv`);SecureString 密碼只有 PowerShell 有：沒給密碼來源的 message 完全不提它(MCP 也會看到這條),只有「兩個都給」(只有 PowerShell 能觸發)的 message 用文字提到，不寫成 `-Password`(phase3-4.6 N4 / review N5,已修:之前 MCP 會讀到不存在的 `-Password` 參數)。
 - **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),變數名稱是 `TCAUTO_ROUTE_PW` 或 `TCAUTO_ROUTE_PW_<後綴>`,再 `Add-TcAdsRoute -PasswordEnv <名稱>`(MCP `AddAdsRoute PasswordEnv=<名稱>`);不要把密碼當參數值傳。
 
 ### ROUTE_ADD_FAILED

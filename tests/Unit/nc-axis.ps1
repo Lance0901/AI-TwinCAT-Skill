@@ -317,6 +317,19 @@ try {
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.notBuilt'
     $tp = @($r.data.triedPaths)
     Check 'B1 not found -> NC_PLC_VARIABLE_NOT_FOUND, triedPaths has both tasks (Inputs and Outputs), no instanceChildren' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and $tp -contains 'TIPC^plc^plc Instance^OtherTask Inputs^MAIN.notBuilt.NcToPlc' -and $tp -contains 'TIPC^plc^plc Instance^PlcTask Outputs^MAIN.notBuilt.PlcToNc' -and $null -eq $r.data.PSObject.Properties['instanceChildren'] -and $r.error.hint -match 'Build-TcProject') (J $r)
+    # review S4: NcToPlc and PlcToNc must come from the same task
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
+    Remove-MockSubtree 'TIPC^plc^plc Instance^PlcTask Inputs^MAIN.axis.NcToPlc'
+    $null = Add-MockNode 'TIPC^plc^plc Instance^OtherTask Inputs' 8
+    $null = Add-MockNode 'TIPC^plc^plc Instance^OtherTask Inputs^MAIN.axis.NcToPlc' 7
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
+    $fp = @($r.data.foundPaths)
+    Check 'S4 NcToPlc only in OtherTask Inputs, PlcToNc only in PlcTask Outputs -> NC_PLC_VARIABLE_NOT_FOUND, foundPaths lists both, nothing linked' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and $fp -contains 'TIPC^plc^plc Instance^OtherTask Inputs^MAIN.axis.NcToPlc' -and $fp -contains $PlcOut -and $fp.Count -eq 2 -and @($global:T.Links).Count -eq 0 -and $r.error.message -match 'no task' -and $r.error.message -match 'found only') (J $r)
+    # a task with both sides wins, even when another task has one side only
+    $null = Add-MockNode 'TIPC^plc^plc Instance^PlcTask Inputs^MAIN.axis.NcToPlc' 7
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'S4 OtherTask has NcToPlc only, PlcTask has both -> the PlcTask pair' ($r.success -and @($r.data.links)[0].plc -eq $PlcIn -and @($r.data.links)[1].plc -eq $PlcOut) (J $r.data)
     # no TIRT task at all (and nothing enumerable) -> not found, the tried list says so
     Reset-Mock; Reset-BuildRequired
     $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
