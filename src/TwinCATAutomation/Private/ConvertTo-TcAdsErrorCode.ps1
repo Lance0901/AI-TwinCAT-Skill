@@ -219,7 +219,7 @@ $script:TcErrorHints['VARIANT_GROUP_ACTIVE'] = '目前選的是 variant group,gr
 $script:TcErrorHints['INDEPENDENT_FILE_UNSUPPORTED'] = '這個節點不能獨立存檔(XAE 回 S_OK 但讀回不變;實測 PlcTask、Axes、TINC、TIRR 都是):改用它的上層或下層節點，例如 PLC project TIPC^<Plc>、NC 軸、NC task、TcCOM 實例'
 $script:TcErrorHints['INDEPENDENT_FILE_WRITE_FAILED'] = 'SaveInOwnFile 被拒絕:用 Get-TcIdeModalDialog 檢查 dialog,再重跑 Set-TcIndependentFile;data.backupPath / backupFiles 是改之前的備份'
 $script:TcErrorHints['INDEPENDENT_FILE_SAVE_FAILED'] = '設定已改但專案沒存成(改動還在 XAE 記憶體):用 Get-TcIdeModalDialog 檢查 dialog、確認 .tsproj 不是唯讀，再重跑 Set-TcIndependentFile 同樣的參數(會再存一次)'
-$script:TcErrorHints['INDEPENDENT_FILE_TSPROJ_AMBIGUOUS'] = 'solution 資料夾底下的 .tsproj 不是剛好一個(data.tsprojFiles),改完後不知道要存哪一個，什麼都沒改:把多餘的 .tsproj 移出 solution 資料夾，或在 XAE 裡手動勾 Independent Project File'
+$script:TcErrorHints['INDEPENDENT_FILE_TSPROJ_AMBIGUOUS'] = '模組決定不了改完要存哪個 .tsproj(依序看 DTE 載入的專案、.sln 參照的 .tsproj、solution 資料夾底下的 .tsproj;data.tsprojSource 是做決定的來源,data.tsprojFiles 是它列出的檔案),什麼都沒改。tsprojSource = dte / sln:solution 真的有多個 TwinCAT 專案，在 XAE 手動勾 Independent Project File;folder(DTE 與 .sln 都沒給):先 Connect-TcIde 連上開著這個 solution 的 IDE 再重跑 Set-TcIndependentFile,或把多餘的 .tsproj 移出 solution 資料夾'
 $script:TcErrorHints['INDEPENDENT_FILE_VERIFY_FAILED'] = '讀回值對了但磁碟上的 .xti 不符(data.createdFiles / removedFiles / expectedFile):不要當成功。看 solution 資料夾的 _Config 目錄;要還原就從 data.backupFiles 複製回去再 Reset-TcSolution'
 # Phase 3 task 4.5: ADS routes (Get-TcAdsRoutes / Find-TcAdsTarget / Add-TcAdsRoute)
 $script:TcErrorHints['ROUTE_READ_FAILED'] = 'TIRR 的 ProduceXml 讀不到 RoutePrj:用 Get-TcIdeModalDialog 檢查 dialog,Get-TcTreeItem -Path TIRR 確認節點後重跑'

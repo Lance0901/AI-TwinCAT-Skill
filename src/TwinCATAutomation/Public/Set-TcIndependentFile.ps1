@@ -13,9 +13,11 @@ function Set-TcIndependentFile {
         the .xti at once (before any save); False + Project.Save deletes it. The ProduceXml has no
         field for it.
         Steps: getter (already the requested value: success, data.written = false); .xti snapshot of
-        the solution folder; exactly one .tsproj below the solution folder (it is saved afterwards;
-        else INDEPENDENT_FILE_TSPROJ_AMBIGUOUS, nothing changed); DryRun stops here
-        (data.expectedFile, data.existingFiles, data.tsproj).
+        the solution folder; the .tsproj to save afterwards (Find-TcSolutionTsProjFile, phase3-4.6 B2:
+        DTE Solution.Projects FullName, else the .tsproj the .sln references, else the only .tsproj
+        below the solution folder; data.tsproj, data.tsprojSource = dte / sln / folder); a source
+        that names several -> INDEPENDENT_FILE_TSPROJ_AMBIGUOUS (data.tsprojFiles), nothing changed.
+        DryRun stops here (data.expectedFile, data.existingFiles, data.tsproj).
         DryRun=false: backup (ProduceXml, the .tsproj and the item's existing .xti; data.backupPath /
         backupFiles) BEFORE the setter, IDE_MODAL_DIALOG check, setter, getter read back - unchanged
         -> INDEPENDENT_FILE_UNSUPPORTED (XAE ignored it; nothing changed); then Project.Save with a
@@ -88,10 +90,17 @@ function Set-TcIndependentFile {
         # review S12: the project is saved after the setter, so the .tsproj must be known BEFORE anything changes
         $tsList = Find-TcSolutionTsProjFile -SolutionDir $solutionDir
         $data | Add-Member -NotePropertyName tsproj -NotePropertyValue $tsList.Single
+        $data | Add-Member -NotePropertyName tsprojSource -NotePropertyValue $tsList.Source
         if ($null -eq $tsList.Single) {
             $data | Add-Member -NotePropertyName tsprojFiles -NotePropertyValue @($tsList.Files)
+            $where = switch ([string]$tsList.Source) {
+                'dte' { 'the solution loads' }
+                'sln' { 'the .sln references' }
+                'folder' { 'are below the solution folder (neither DTE nor the .sln named one)' }
+                default { 'were found (no DTE project, no .sln reference, none below the solution folder)' }
+            }
             return New-TcResult -Success $false -ErrorCode 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -Data $data `
-                -ErrorMessage "$(@($tsList.Files).Count) .tsproj files below the solution folder; the one to save after the change is not known. Nothing was changed." -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS')
+                -ErrorMessage "$(@($tsList.Files).Count) .tsproj files $where; the one to save after the change is not known. Nothing was changed." -Hint (Get-TcErrorHint -Code 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS')
         }
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 

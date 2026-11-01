@@ -1307,6 +1307,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - `Set-TcIndependentFile`(MCP `SetIndependentFile`)設 `ITcSmTreeItem6.SaveInOwnFile`(TE1000 v1.7.0 §5.2.4 p.62–63、§6.3.9 p.210;[InfoSys 21842602763](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842602763.html))。手冊寫明不支援的 item「setter 什麼都不做、回 S_OK」(p.62),實測 PlcTask、Axes、TINC、TIRR 就是這樣;PLC project、NC 軸、NC task、TcCOM 實例(4024 另有 I/O device)可以(probe 第 20 題)。
 - **setter 當下就寫 `.xti`**(還沒存檔就出現在 `_Config\...`),所以備份(ProduceXml、`.tsproj`、這個 item 現有的 `.xti`)一定在 setter 之前。檔名:`<名稱>.xti`,NC task 是 `_Config\NC\NC.xti`。
+- **存哪一個 `.tsproj`**(phase3-4.6 B2,已修):依序看 (1) DTE `Solution.Projects` 裡 `FullName` 是 `.tsproj` 的專案、(2) `.sln` 參照的 `.tsproj`(`Project("{...}") = "<名稱>", "<相對路徑>.tsproj", ...`)、(3) solution 資料夾底下的 `.tsproj`(深度 3,`.tcauto-backup` 除外);第一個有結果的來源決定(`data.tsprojSource` = `dte` / `sln` / `folder`)。4.6 實測時 4026 副本資料夾有 3 個 `.tsproj`(兩個舊副本),`.sln` 只參照一個，舊版只掃資料夾所以回 `INDEPENDENT_FILE_TSPROJ_AMBIGUOUS`。`Set-TcProjectVariantConfig` / `Set-TcCurrentVariant` 與 `Add-TcAdsRoute -ProjectRoute` 的備份也只複製這一個 `.tsproj`。
 - 之後模組用有 deadline 的 `Project.Save`(`Invoke-TcProjectSaveWithDeadline`)存檔,`.tsproj` 才會改成 `<... File="<x>.xti"/>`;關閉(False)要存檔 XAE 才會刪 `.xti` 和它的 `.bak`。最後比對存檔前後的 `.xti` 清單(`data.createdFiles` / `removedFiles`)。
 - ProduceXml 沒有對應欄位(`Set-TcTreeItemXml` 做不到);PLC project 獨立存檔後它的 mapping 改存到 `_Config\PLC\<Plc>.xti` 的 `<Mappings>`(probe 第 21 題,[InfoSys 7738192779](https://infosys.beckhoff.com/content/1033/tc3_userinterface/7738192779.html))。XAE 自己寫的檔，不需要 `Reset-TcSolution`。
 
@@ -1327,8 +1328,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### INDEPENDENT_FILE_TSPROJ_AMBIGUOUS
 
-- **現象**:solution 資料夾底下(深度 3,`.tcauto-backup` 除外)的 `.tsproj` 不是剛好一個(`data.tsprojFiles`)。設定之後要存檔，不知道存哪一個，所以在備份與 setter 之前就停下(review S12),什麼都沒改。
-- **下一步**:把多餘的 `.tsproj` 移出 solution 資料夾後重跑，或在 XAE 手動勾選。
+- **現象**:決定不了要存哪個 `.tsproj`。來源依序是 DTE 載入的專案、`.sln` 參照的 `.tsproj`、solution 資料夾底下的 `.tsproj`(見上面「做法」);第一個有結果的來源列出不只一個檔(`data.tsprojSource` 是那個來源,`data.tsprojFiles` 是它列出的檔)。設定之後要存檔，所以在備份與 setter 之前就停下(review S12),什麼都沒改。只有資料夾裡有舊副本、但 DTE 或 `.sln` 只指到一個時**不會**再回這個碼(4.6 B2)。
+- **下一步**:`tsprojSource` = `dte` / `sln`:solution 真的有多個 TwinCAT 專案，請在 XAE 手動勾 Independent Project File。`folder`(沒有 DTE 連線，`.sln` 也沒參照 `.tsproj`):先 `Connect-TcIde`(MCP `ConnectIde`)連上開著這個 solution 的 IDE 再重跑;仍是 `folder` 就把多餘的 `.tsproj` 移出 solution 資料夾後重跑。
 
 ### INDEPENDENT_FILE_VERIFY_FAILED
 

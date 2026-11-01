@@ -95,6 +95,21 @@ try {
     $r = Set-TcProjectVariantConfig -AddVariant Variant3 -DryRun $false
     Check 'SetVariantConfig live add: written once, read back, backup with the .tsproj, BUILD_REQUIRED' ($r.success -and $r.data.verified -and (Get-Sets).Count -eq 1 -and $global:T.Config -match 'Variant3' -and (Test-Path -LiteralPath ([string]$r.data.backupPath)) -and @($r.data.backupFiles | Where-Object { $_ -like '*Prj.tsproj' }).Count -eq 1 -and (Get-CodeChanged) -match 'Set-TcProjectVariantConfig') (J $r.data)
     Check 'SetVariantConfig backup holds the old document' (([System.IO.File]::ReadAllText([string]$r.data.backupPath)) -eq $Sample) ''
+    # 4.6 B2: old .tsproj copies in the solution folder, the .sln references one -> only it is backed up
+    $Old1 = Join-Path $Root 'Prj\Prj-Old1.tsproj'; $Old2 = Join-Path $Root 'Prj-Old2.tsproj'
+    [System.IO.File]::WriteAllText($Old1, '<TcSmProject/>'); [System.IO.File]::WriteAllText($Old2, '<TcSmProject/>')
+    [System.IO.File]::WriteAllText($Sln, "Project(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Prj`", `"Prj\Prj.tsproj`", `"{11111111-2222-3333-4444-555555555555}`"`r`nEndProject`r`n")
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcProjectVariantConfig -AddVariant Variant4 -DryRun $false
+    $bt = @($r.data.backupFiles | Where-Object { $_ -like '*.tsproj' })
+    Check 'B2 SetVariantConfig with 3 .tsproj, sln references one -> backupFiles has only Prj.tsproj' ($r.success -and $bt.Count -eq 1 -and $bt[0] -like '*Prj.tsproj') (J $r.data.backupFiles)
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcCurrentVariant -Name Variant2 -DryRun $false
+    $bt = @($r.data.backupFiles | Where-Object { $_ -like '*.tsproj' })
+    Check 'B2 SwitchVariant with 3 .tsproj, sln references one -> backupFiles has only Prj.tsproj' ($r.success -and $bt.Count -eq 1 -and $bt[0] -like '*Prj.tsproj') (J $r.data.backupFiles)
+    Remove-Item -LiteralPath $Old1, $Old2 -Force
+    [System.IO.File]::WriteAllText($Sln, '')
+    Reset-Mock; Reset-BuildRequired
     Reset-Mock; Reset-BuildRequired
     $r = Set-TcProjectVariantConfig -RemoveVariant Variant2 -DryRun $false
     Check 'SetVariantConfig live remove: removed from the group too' ($r.success -and $global:T.Config -notmatch 'Variant2' -and $global:T.Config -match '<Group><Name>Group1</Name><Member>Variant1</Member></Group>') "$($global:T.Config)"

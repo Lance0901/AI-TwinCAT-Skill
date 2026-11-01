@@ -154,7 +154,7 @@ function Add-TcAdsRoute {
         }
         if ($DryRun) { return New-TcResult -Success $true -Data $data }
 
-        $bk = New-TcConfigBackup -Label 'TIRR' -Text $rp.Xml -DiskFiles $(if ($ProjectRoute) { @((Find-TcSolutionTsProjFile).Files) } else { @() }) -Data $data
+        $bk = New-TcConfigBackup -Label 'TIRR' -Text $rp.Xml -DiskFiles $(if ($ProjectRoute) { @(Get-TcTsProjBackupFiles) } else { @() }) -Data $data
         if ($null -ne $bk.Result) { return $bk.Result }
         Add-TcBackupToData -Data $data -Backup $bk.Backup
         $dlg = Get-TcTreeItemDialogResult -Operation "ConsumeXml TIRR ($($data.command))" -Data $data

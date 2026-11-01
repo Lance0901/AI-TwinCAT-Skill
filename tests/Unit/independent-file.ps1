@@ -124,6 +124,39 @@ try {
     Reset-Mock; Reset-BuildRequired
     $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
     Check 'S12 the expected file written below _Config -> writtenFiles, success' ($r.success -and @($r.data.writtenFiles) -contains $AxisXti) (J $r.data)
+    # 4.6 B2: 3 .tsproj in the solution folder (old copies), the .sln references only one
+    $Old1 = Join-Path $Root 'Prj\Prj-Lance-G16.tsproj'; $Old2 = Join-Path $Root 'Prj\Prj-LanceP-NB1.tsproj'
+    [System.IO.File]::WriteAllText($Old1, '<TcSmProject/>'); [System.IO.File]::WriteAllText($Old2, '<TcSmProject/>')
+    $SlnText = "Microsoft Visual Studio Solution File, Format Version 12.00`r`nProject(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Prj`", `"Prj\Prj.tsproj`", `"{11111111-2222-3333-4444-555555555555}`"`r`nEndProject`r`n"
+    [System.IO.File]::WriteAllText($Sln, $SlnText)
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true
+    Check 'B2 3 .tsproj, the .sln references one -> dry-run success, tsproj from the sln' ($r.success -and $r.data.tsproj -eq $TsProj -and $r.data.tsprojSource -eq 'sln') (J $r.data)
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'B2 3 .tsproj, sln names one -> live success, saved that one, backup holds only it' ($r.success -and $r.data.projectSaved -eq $TsProj -and @($global:T.Saves) -contains $TsProj -and @($r.data.backupFiles | Where-Object { $_ -like '*.tsproj' }).Count -eq 1 -and @($r.data.backupFiles | Where-Object { $_ -like '*Prj.tsproj' }).Count -eq 1) (J $r.data)
+    # the .sln references two of them -> really ambiguous
+    [System.IO.File]::WriteAllText($Sln, $SlnText + "Project(`"{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}`") = `"Old`", `"Prj\Prj-Lance-G16.tsproj`", `"{22222222-2222-3333-4444-555555555555}`"`r`nEndProject`r`n")
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'B2 the .sln references two .tsproj -> INDEPENDENT_FILE_TSPROJ_AMBIGUOUS (source sln), nothing set' ($r.error.code -eq 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -and $r.data.tsprojSource -eq 'sln' -and @($r.data.tsprojFiles).Count -eq 2 -and (Get-Sets).Count -eq 0 -and $r.error.message -match 'references') (J $r)
+    # DTE Solution.Projects FullName wins over the .sln (and the folder)
+    [System.IO.File]::WriteAllText($Sln, '')
+    $dteProjects = [PSCustomObject]@{ List = @([PSCustomObject]@{ FullName = $TsProj }, [PSCustomObject]@{ FullName = (Join-Path $Root 'Prj\plc\plc.plcproj') }) }
+    $dteProjects | Add-Member ScriptProperty Count { @($this.List).Count }
+    $dteProjects | Add-Member ScriptMethod Item { param($i) $this.List[$i - 1] }
+    $mockDte = [PSCustomObject]@{ Solution = [PSCustomObject]@{ FullName = $Sln; Projects = $dteProjects } }
+    & $mod { param($d) $script:TcDte = $d } $mockDte
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true -DryRun $false
+    Check 'B2 DTE project FullName decides (3 .tsproj, empty .sln) -> success, tsprojSource dte' ($r.success -and $r.data.tsproj -eq $TsProj -and $r.data.tsprojSource -eq 'dte' -and @($global:T.Saves) -contains $TsProj) (J $r.data)
+    $bf = & $mod { @(Get-TcTsProjBackupFiles) }
+    Check 'B2 Get-TcTsProjBackupFiles (variant / route backups) -> only the DTE .tsproj' (@($bf).Count -eq 1 -and @($bf)[0] -eq $TsProj) (J $bf)
+    & $mod { $script:TcDte = $null }
+    # nothing names one: folder scan with 3 -> ambiguous, the message says neither DTE nor the .sln named one
+    Reset-Mock; Reset-BuildRequired
+    $r = Set-TcIndependentFile -Path $Axis -Enabled $true
+    Check 'B2 no DTE, empty .sln, 3 .tsproj in the folder -> INDEPENDENT_FILE_TSPROJ_AMBIGUOUS (source folder)' ($r.error.code -eq 'INDEPENDENT_FILE_TSPROJ_AMBIGUOUS' -and $r.data.tsprojSource -eq 'folder' -and @($r.data.tsprojFiles).Count -eq 3 -and $r.error.hint -match 'tsprojSource') (J $r)
+    Remove-Item -LiteralPath $Old1, $Old2 -Force
     Reset-Mock
     $r = Set-TcIndependentFile -Path 'TINC^NoSuch' -Enabled $true
     Check 'SetIndependentFile missing path -> TREEITEM_NOT_FOUND' ($r.error.code -eq 'TREEITEM_NOT_FOUND') (J $r.error)
@@ -140,7 +173,7 @@ catch {
     Check 'unexpected-exception' $false "$($_.Exception.Message) at $($_.InvocationInfo.ScriptLineNumber)"
 }
 finally {
-    & $mod { $script:TcIdeConnected = $false; $script:TcSolutionPath = $null }
+    & $mod { $script:TcIdeConnected = $false; $script:TcSolutionPath = $null; $script:TcDte = $null }
     Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue

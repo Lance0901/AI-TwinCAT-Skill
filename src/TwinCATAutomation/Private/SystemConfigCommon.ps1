@@ -146,27 +146,137 @@ function Add-TcDataWarning {
     $Data | Add-Member -NotePropertyName warnings -NotePropertyValue @($old + $add) -Force
 }
 
+function Get-TcDteTsProjFiles {
+    <#
+    .SYNOPSIS
+        FullName of every DTE Solution.Projects entry that ends in .tsproj (distinct, existing on disk): @{ Files = @(); Error = $null | message }. Never throws.
+    .DESCRIPTION
+        The TwinCAT project XAE has loaded (the same DTE Solution.Projects walk as
+        Get-TcPlcProjectFile and Get-TcSysManager). No DTE -> Files empty, Error set.
+    #>
+    [CmdletBinding()]
+    param()
+    $out = @{ Files = @(); Error = $null }
+    $dte = $script:TcDte
+    if ($null -eq $dte) { $out.Error = 'no DTE connection'; return $out }
+    try {
+        $names = Invoke-TcComRetry -OperationName 'Solution.Projects (.tsproj FullName)' -ScriptBlock {
+            $__list = [System.Collections.Generic.List[string]]::new()
+            $__all = $dte.Solution.Projects
+            for ($__i = 1; $__i -le [int]$__all.Count; $__i++) {
+                $__full = $null
+                try { $__full = [string]$__all.Item($__i).FullName } catch {
+                    if ($_.Exception.ToString() -match '0x80010001|0x8001010A|RPC_E_CALL_REJECTED|RPC_E_SERVERCALL_RETRYLATER') { throw }
+                    $__full = $null
+                }
+                if (-not [string]::IsNullOrWhiteSpace($__full) -and $__full -match '(?i)\.tsproj$') { $__list.Add($__full) }
+            }
+            Write-Output -NoEnumerate $__list.ToArray()
+        }
+        $files = [System.Collections.Generic.List[string]]::new()
+        foreach ($f in @($names)) {
+            if ([string]::IsNullOrWhiteSpace($f) -or -not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+            $full = [System.IO.Path]::GetFullPath($f)
+            if (@($files | Where-Object { $_ -ieq $full }).Count -eq 0) { $files.Add($full) }
+        }
+        $out.Files = $files.ToArray()
+    }
+    catch { $out.Error = $_.Exception.Message }
+    return $out
+}
+
+function Get-TcSlnTsProjFiles {
+    <#
+    .SYNOPSIS
+        .tsproj files the .sln references (Project("{...}") = "<name>", "<rel>.tsproj", ...), resolved against the .sln folder, existing on disk, distinct. Never throws.
+    .PARAMETER SolutionFile
+        Path of the .sln.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][string]$SolutionFile)
+    $files = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($SolutionFile) -or -not (Test-Path -LiteralPath $SolutionFile -PathType Leaf)) { return $files.ToArray() }
+    try {
+        $dir = [System.IO.Path]::GetDirectoryName($SolutionFile)
+        foreach ($line in [System.IO.File]::ReadAllLines($SolutionFile)) {
+            $m = [regex]::Match($line, '^\s*Project\("\{[^}]*\}"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+\.tsproj)"', 'IgnoreCase')
+            if (-not $m.Success) { continue }
+            $full = [System.IO.Path]::GetFullPath((Join-Path $dir $m.Groups[1].Value))
+            if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+            if (@($files | Where-Object { $_ -ieq $full }).Count -eq 0) { $files.Add($full) }
+        }
+    }
+    catch { Write-Verbose "Get-TcSlnTsProjFiles: '$SolutionFile' not readable ($($_.Exception.Message))" }
+    return $files.ToArray()
+}
+
 function Find-TcSolutionTsProjFile {
     <#
     .SYNOPSIS
-        .tsproj files below the solution folder (depth 3, .tcauto-backup skipped): @{ Files = @(); Single = <path> | $null }.
+        The .tsproj of the open TwinCAT project: @{ Files = @(); Single = <path> | $null; Source = 'dte' | 'sln' | 'folder' | $null; FolderFiles = @() }.
     .DESCRIPTION
-        Single is set when exactly one .tsproj is found. Never throws.
+        phase3-4.6 B2: a solution folder can hold old copies of the .tsproj that the solution does
+        not use (4026 copy: 3 .tsproj, the .sln references one), so the folder is scanned last.
+        The first source that names at least one existing file decides (Source):
+          1. 'dte'    - DTE Solution.Projects FullName ending in .tsproj (Get-TcDteTsProjFiles);
+          2. 'sln'    - the .tsproj the .sln references (Get-TcSlnTsProjFiles; the .sln is
+                        $script:TcSolutionPath, else DTE Solution.FullName);
+          3. 'folder' - .tsproj files below the solution folder (depth 3, .tcauto-backup skipped).
+        A deciding source with several files leaves Single $null (the solution really has several
+        TwinCAT projects). Files = the candidates of the deciding source; FolderFiles = the folder
+        scan (for the data of a failed result). Paths in the long form. Never throws.
     .PARAMETER SolutionDir
         Folder of the .sln (default Get-TcTreeItemSolutionDir).
     #>
     [CmdletBinding()]
     param([Parameter()][AllowNull()][string]$SolutionDir)
+    $sln = [string]$script:TcSolutionPath
+    if ([string]::IsNullOrWhiteSpace($sln) -and $null -ne $script:TcDte) {
+        try { $sln = [string]$script:TcDte.Solution.FullName } catch { $sln = '' }
+    }
     if ([string]::IsNullOrWhiteSpace($SolutionDir)) { $SolutionDir = Get-TcTreeItemSolutionDir }
-    $files = @()
+    $folder = @()
     if (-not [string]::IsNullOrWhiteSpace($SolutionDir) -and (Test-Path -LiteralPath $SolutionDir -PathType Container)) {
         try {
-            $files = @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -Depth 3 -File -Filter '*.tsproj' -ErrorAction SilentlyContinue |
+            $folder = @(Get-ChildItem -LiteralPath $SolutionDir -Recurse -Depth 3 -File -Filter '*.tsproj' -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -notmatch '\\\.tcauto-backup\\' } | ForEach-Object { $_.FullName })
         }
-        catch { $files = @() }
+        catch { $folder = @() }
     }
-    return @{ Files = $files; Single = $(if ($files.Count -eq 1) { $files[0] } else { $null }) }
+    $out = @{ Files = @(); Single = $null; Source = $null; FolderFiles = $folder }
+    foreach ($src in @('dte', 'sln', 'folder')) {
+        $files = switch ($src) {
+            'dte' { @((Get-TcDteTsProjFiles).Files) }
+            'sln' { @(Get-TcSlnTsProjFiles -SolutionFile $sln) }
+            default { $folder }
+        }
+        $files = @($files)
+        if ($files.Count -eq 0) { continue }
+        # the same spelling as the folder scan (long path form; with an 8.3 TEMP the .sln path is short)
+        $long = [System.Collections.Generic.List[string]]::new()
+        foreach ($f in $files) {
+            $hit = @($folder | Where-Object { $_ -ieq $f })
+            $p = if ($hit.Count -gt 0) { [string]$hit[0] } else { [string](Get-TcLongPath $f) }
+            if (@($long | Where-Object { $_ -ieq $p }).Count -eq 0) { $long.Add($p) }
+        }
+        $out.Files = $long.ToArray()
+        $out.Source = $src
+        if ($long.Count -eq 1) { $out.Single = $long[0] }
+        return $out
+    }
+    return $out
+}
+
+function Get-TcTsProjBackupFiles {
+    <#
+    .SYNOPSIS
+        The .tsproj file(s) to copy into a backup: the one Find-TcSolutionTsProjFile decided, else its candidates (phase3-4.6 B2: not every .tsproj of the solution folder).
+    #>
+    [CmdletBinding()]
+    param()
+    $ts = Find-TcSolutionTsProjFile
+    if ($null -ne $ts.Single) { return @($ts.Single) }
+    return @($ts.Files)
 }
 
 function New-TcConfigBackup {

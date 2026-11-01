@@ -228,9 +228,9 @@ function Get-TcVariantBootFolder {
 function Get-TcVariantDiskFiles {
     <#
     .SYNOPSIS
-        Files that hold the variant configuration (the .tsproj below the solution folder) for the backup.
+        Files that hold the variant configuration for the backup: the .tsproj of the open TwinCAT project (Get-TcTsProjBackupFiles; phase3-4.6 B2, not every .tsproj of the solution folder).
     #>
     [CmdletBinding()]
     param()
-    return @((Find-TcSolutionTsProjFile).Files)
+    return @(Get-TcTsProjBackupFiles)
 }
