@@ -54,8 +54,8 @@ $script:TcUiaMessageBoxAnswer = {
         $vsMbCond = New-Object System.Windows.Automation.PropertyCondition($ae::AutomationIdProperty, $vsMbId)
         $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
         # The pid's top-level windows through the modal scan's EnumWindows helper when it is
-        # loaded (it is after any Get-TcIdeModalDialog in this process): RootElement.FindAll
-        # stalls ~3 s on unresponsive windows of other processes (#24, Get-TcIdeModalDialog.ps1).
+        # loaded (it is after any Find-TcIdeModalDialog in this process): RootElement.FindAll
+        # stalls ~3 s on unresponsive windows of other processes (#24, Find-TcIdeModalDialog.ps1).
         if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
             $windows = New-Object System.Collections.ArrayList
             foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
@@ -236,7 +236,7 @@ function Close-TcMessageBox {
         any other window is refused. This function only sends; it does not wait for the dialog
         to close (Close-TcReloadPrompt polls).
     .PARAMETER Hwnd
-        Native handle of the dialog (Get-TcIdeModalDialog .Hwnd).
+        Native handle of the dialog (Find-TcIdeModalDialog .Hwnd).
     .PARAMETER Answer
         Yes | No | Ok | Cancel | Close. Default Close.
     .PARAMETER ProcessId

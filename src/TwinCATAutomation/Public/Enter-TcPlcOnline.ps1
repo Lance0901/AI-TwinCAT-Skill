@@ -202,7 +202,7 @@
         Write-Verbose "Login to: $PlcProjectPath"
 
         # A modal dialog makes Login() block forever (no COM error) - refuse up front.
-        $dialog = Get-TcIdeModalDialog
+        $dialog = Find-TcIdeModalDialog
         if ($null -ne $dialog) {
             return New-TcModalDialogResult -Dialog $dialog -Operation 'Login' -Data ([PSCustomObject]@{ plcProjectPath = $PlcProjectPath })
         }

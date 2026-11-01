@@ -82,13 +82,13 @@ try {
     $st0 = & $mod { param($n) Wait-TcAdsState -AmsNetId $n -Port 851 -TargetState Any -TimeoutSec 3 } $AmsNetId
     L ("851 before login: reached=$($st0.Reached) state=$($st0.State)")
 
-    # Watcher: a separate STA process polls Get-TcIdeModalDialog (sees dialogs owned by the
+    # Watcher: a separate STA process polls Find-TcIdeModalDialog (sees dialogs owned by the
     # main window too) every 3 s and appends to the log, because a blocked Login() never returns.
     $idePid = [int]$c.data.ideProcessId
     $modulePath = Join-Path $scriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
     $watchScript = "Import-Module '$modulePath' -Force -WarningAction SilentlyContinue; " +
         "`$m = Get-Module TwinCATAutomation; `$end = (Get-Date).AddSeconds(240); " +
-        "while ((Get-Date) -lt `$end) { `$d = & `$m { param(`$p) Get-TcIdeModalDialog -ProcessId `$p -TimeoutSec 5 } $idePid; " +
+        "while ((Get-Date) -lt `$end) { `$d = & `$m { param(`$p) Find-TcIdeModalDialog -ProcessId `$p -TimeoutSec 5 } $idePid; " +
         "if (`$d) { [IO.File]::AppendAllText('$LogPath', ('{0} WATCHER dialog: {1} | {2}' -f (Get-Date -Format 'HH:mm:ss.fff'), `$d.Title, `$d.Text) + [Environment]::NewLine); break }; " +
         "if (-not (Get-Process -Id $idePid -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Seconds 3 }"
     $watcher = Start-Process powershell.exe -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -Command `"$($watchScript -replace '"','\"')`"" -PassThru -WindowStyle Hidden
@@ -102,7 +102,7 @@ try {
 
     $st1 = & $mod { param($n) Wait-TcAdsState -AmsNetId $n -Port 851 -TargetState Any -TimeoutSec 20 } $AmsNetId
     L ("851 after login: reached=$($st1.Reached) state=$($st1.State)")
-    L ("modal: " + (J (& $mod { Get-TcIdeModalDialog })))
+    L ("modal: " + (J (& $mod { Find-TcIdeModalDialog })))
 
     $a = Connect-TcAds
     L ("connect-ads: success=$($a.success) $(if(-not $a.success){ J $a.error })")

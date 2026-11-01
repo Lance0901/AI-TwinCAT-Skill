@@ -15,7 +15,7 @@ function Connect-TcIde {
             COM (Find-TcBlockedSolutionIde): a session record of that process with this
             solution, or a dialog text naming a path inside the solution folder, is strong
             evidence - nothing is launched, the instance is attached (selectedBy
-            'solution-blocked', ITcSysManager $null, data.attached = true) and Get-TcIdeModalDialog
+            'solution-blocked', ITcSysManager $null, data.attached = true) and Find-TcIdeModalDialog
             / Reset-TcSolution work on it right away; a main window title starting with the
             solution name is weak evidence (same-named copies look alike) - nothing is launched
             and nothing is attached (data.attached = false). Either way IDE_MODAL_DIALOG (dialog
@@ -44,7 +44,7 @@ function Connect-TcIde {
         When -SolutionPath is specified, the solution is opened automatically after
         connecting and ITcSysManager is obtained in one step (up to 10 x 1 s).
         Before touching the solution the IDE process is checked for a modal dialog
-        (Get-TcIdeModalDialog); if one is open IDE_MODAL_DIALOG is returned.
+        (Find-TcIdeModalDialog); if one is open IDE_MODAL_DIALOG is returned.
     .PARAMETER ProgId
         COM ProgID to connect to / launch. When given, running instances with this
         ProgID are preferred and only this ProgID is used for launching.
@@ -288,7 +288,7 @@ function Connect-TcIde {
     #    that starts with the solution name while no same-named .sln is known elsewhere, or a
     #    dialog path inside the folder) and not contradicted, or an uncontradicted dialog-path.
     #    The blocked instance is ATTACHED (module state points at it, ITcSysManager stays $null)
-    #    so that Get-TcIdeModalDialog and Reset-TcSolution can act on it right away;
+    #    so that Find-TcIdeModalDialog and Reset-TcSolution can act on it right away;
     #  - weak / contradicted / ambiguous evidence (title only, stale record, two strong IDEs):
     #    nothing is launched and nothing is attached - another agent's IDE must never become ours
     #    (a later Disconnect-TcIde -Quit would close it).
@@ -463,7 +463,7 @@ function Connect-TcIde {
     # Who chose this instance; Disconnect-TcIde -Quit -Kill only kills an IDE this session launched.
     $script:TcIdeSelectedBy = $selectionReason
 
-    # IDE process id + main window handle (for Get-TcIdeModalDialog / the COM watchdog)
+    # IDE process id + main window handle (for Find-TcIdeModalDialog / the COM watchdog)
     $knownPid = 0
     if ($null -ne $chosen -and $null -ne $chosen.pid) { try { $knownPid = [int]$chosen.pid } catch { $knownPid = 0 } }
     $ideInfo = Get-TcIdeProcessId -Dte $dte -ProgId $usedProgId -KnownPid $knownPid -StartedAfter $launchTime
@@ -481,7 +481,7 @@ function Connect-TcIde {
 
     # A modal dialog (Assertion Failed, VS account settings, fatal error ...) blocks every
     # DTE call forever (no RPC_E_CALL_REJECTED), so check before Solution.Open / project scan.
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
             -Data ([PSCustomObject]@{ progId = $usedProgId; ideProcessId = $ideProcessId; candidates = $candidateSummary })

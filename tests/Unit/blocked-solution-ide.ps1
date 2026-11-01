@@ -1,5 +1,5 @@
 # Unit: Connect-TcIde -SolutionPath with a blocked IDE (issue #29), no IDE / runtime needed.
-# Get-AllComObjects, Get-Process and Get-TcIdeModalDialog are replaced inside the module scope;
+# Get-AllComObjects, Get-Process and Find-TcIdeModalDialog are replaced inside the module scope;
 # the ProgId is a fake one, so Connect-TcIde can never launch a real IDE.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/blocked-solution-ide.ps1
 # Exit code = number of failed checks.
@@ -45,7 +45,7 @@ $global:FakeIde = @{}
         if ($global:FakeIde.ContainsKey($Id)) { return [PSCustomObject]@{ Id = $Id; MainWindowTitle = $global:FakeIde[$Id].Title; MainWindowHandle = [IntPtr]::Zero; StartTime = $(if ($global:FakeIde[$Id].Start) { [DateTime]$global:FakeIde[$Id].Start } else { [DateTime]'2026-01-01T00:00:00' }) } }
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
-    function script:Get-TcIdeModalDialog {
+    function script:Find-TcIdeModalDialog {
         [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
         if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) { $ProcessId = [int]$script:TcIdeProcessId }
         if ($global:FakeIde.ContainsKey($ProcessId)) { return $global:FakeIde[$ProcessId].Dialog }

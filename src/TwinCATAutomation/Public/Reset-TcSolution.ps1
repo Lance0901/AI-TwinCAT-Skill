@@ -29,7 +29,7 @@ function Reset-TcSolution {
         what step 1b guards against.
 
         Steps:
-          1. Get-TcIdeModalDialog, repeated while reload prompts keep coming (at most 5):
+          1. Find-TcIdeModalDialog, repeated while reload prompts keep coming (at most 5):
              - reloadTarget 'project': Close-TcReloadPrompt -Answer Yes (IDYES clicked by
                control id through Close-TcMessageBox, language independent), waits up to
                15 s until the prompt is gone; data.answeredYes = true.
@@ -328,7 +328,7 @@ function Reset-TcSolution {
     $yesFailed = $false
     $handled = 0
     while ($true) {
-        $dialog = Get-TcIdeModalDialog
+        $dialog = Find-TcIdeModalDialog
         if ($null -eq $dialog) { break }
         if ([string]$dialog.Kind -ne 'reload-prompt') {
             $op = if ($progress.dismissedReloadPrompt) { 'Reset-TcSolution (after dismissing the reload prompt)' } else { 'Reset-TcSolution (Documents.CloseAll / Solution.Close)' }

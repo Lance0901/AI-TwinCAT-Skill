@@ -528,3 +528,47 @@ describe('cmdlet name rewriting in hints', () => {
     assert.deepEqual(rewriteResultHints({ success: true, data: { a: 1 } }, names), { success: true, data: { a: 1 } });
   });
 });
+
+// #86: Get-TcIdeModalDialog is a public cmdlet but has no catalog tool (the composite tool
+// GetIdeModalDialog serves it), so hints that name it are rewritten through the extra map in index.js.
+describe('Get-TcIdeModalDialog hints (#86)', () => {
+  const catalogReal = loadToolCatalog(path.join(__dirname, '..', 'tools.json'));
+  const extra = { 'Get-TcIdeModalDialog': 'GetIdeModalDialog' };
+  const names = buildCmdletNameMap(catalogReal, extra);
+  const rw = (s) => rewriteHintCmdletNames(s, names);
+
+  test('index.js passes the same extra map', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+    assert.match(src, /buildCmdletNameMap\(catalog, \{ 'Get-TcIdeModalDialog': 'GetIdeModalDialog' \}\)/);
+  });
+
+  test('tools.json has no catalog tool for it; the composite owns the name', () => {
+    assert.equal(catalogReal.has('GetIdeModalDialog'), false);
+    assert.equal(catalogReal.byCmdlet.has('Get-TcIdeModalDialog'), false);
+    assert.equal(names.get('Get-TcIdeModalDialog'), 'GetIdeModalDialog');
+  });
+
+  test('IDE_BUSY / IDE_MODAL_DIALOG style hints become GetIdeModalDialog', () => {
+    assert.equal(
+      rw('先 Get-TcIdeModalDialog -ProcessId <data.ideProcessId> 看是哪個視窗(reload-prompt -> Reset-TcSolution)'),
+      '先 GetIdeModalDialog ProcessId=<data.ideProcessId> 看是哪個視窗(reload-prompt -> ResetSolution)'
+    );
+    const r = rewriteResultHints({
+      success: false,
+      error: { code: 'IDE_BUSY', message: 'm', hint: '先 Get-TcIdeModalDialog 看 kind,再 Reset-TcSolution' }
+    }, names);
+    assert.equal(r.error.hint, '先 GetIdeModalDialog 看 kind,再 ResetSolution');
+    assert.doesNotMatch(JSON.stringify(r), /Get-TcIdeModalDialog/);
+  });
+
+  test('every hint in ConvertTo-TcAdsErrorCode.ps1 that names the cmdlet is rewritten completely', () => {
+    const file = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'Private', 'ConvertTo-TcAdsErrorCode.ps1');
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.includes('Get-TcIdeModalDialog'));
+    assert.ok(lines.length > 10, `expected many hints naming the cmdlet, found ${lines.length}`);
+    for (const line of lines) {
+      const out = rw(line);
+      assert.doesNotMatch(out, /Get-TcIdeModalDialog/, line);
+      assert.match(out, /GetIdeModalDialog/, line);
+    }
+  });
+});

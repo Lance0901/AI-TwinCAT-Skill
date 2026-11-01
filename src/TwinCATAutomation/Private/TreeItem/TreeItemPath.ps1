@@ -343,7 +343,7 @@ function Test-TcTreeItemFilePath {
 function Get-TcTreeItemDialogResult {
     <#
     .SYNOPSIS
-        IDE_MODAL_DIALOG result when a modal dialog is open in the IDE (Get-TcIdeModalDialog), else $null.
+        IDE_MODAL_DIALOG result when a modal dialog is open in the IDE (Find-TcIdeModalDialog), else $null.
     .DESCRIPTION
         Called right before each synchronous modifying COM call of the tree tools (ConsumeXml,
         CreateChild, DeleteChild, ExportChild, ImportChild), as New-TcPlcObject does before CreateChild:
@@ -356,7 +356,7 @@ function Get-TcTreeItemDialogResult {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Operation, [Parameter()][object]$Data)
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -eq $dialog) { return $null }
     $p = @{ Dialog = $dialog; Operation = $Operation }
     if ($null -ne $Data) { $p['Data'] = $Data }

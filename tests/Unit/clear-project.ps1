@@ -1,5 +1,5 @@
 # Unit: Clear-TcProject readback (issue #18), no IDE / runtime needed.
-# A mock DTE replaces $script:TcDte; Get-TcIdeModalDialog / Get-TcBuildErrors are replaced inside
+# A mock DTE replaces $script:TcDte; Find-TcIdeModalDialog / Get-TcBuildErrors are replaced inside
 # the module scope, and Invoke-TcComRetry is wrapped so that a LastBuildInfo read can fail.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/clear-project.ps1
 # Exit code = number of failed checks. Takes ~25 s (CLEAN_TIMEOUT 5 s, nullReads 15 s).
@@ -15,7 +15,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 $global:Mock = @{}
 & $mod {
     $script:TcIdeProcessId = $null   # no watchdog
-    function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
     function script:Get-TcBuildErrors { [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages) $global:Mock.ErrorList }
     $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
     function script:Invoke-TcComRetry {

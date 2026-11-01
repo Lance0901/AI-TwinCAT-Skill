@@ -281,9 +281,9 @@ $docs = [PSCustomObject]@{ Count = 1 }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) if ($global:ResetMode.CloseAllThrows) { throw 'closeall failed (mock)' } }
 $resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
 $global:ResetSln = $sln
-$origFns = & $mod { @{ Dlg = ${function:Get-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
+$origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
 & $mod {
-    Set-Item -Path function:script:Get-TcIdeModalDialog -Value { param($ProcessId) if ($global:DlgQueue.Count -gt 0) { $global:DlgQueue.Dequeue() } else { $null } }
+    Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId) if ($global:DlgQueue.Count -gt 0) { $global:DlgQueue.Dequeue() } else { $null } }
     Set-Item -Path function:script:Close-TcReloadPrompt -Value { param($Dialog, $Answer, $TimeoutSec) @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock' } }
     Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ message = 'no IDE (mock)'; code = 'IDE_NOT_FOUND' } } }
 }
@@ -370,7 +370,7 @@ try {
 finally {
     & $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig
 }
-& $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
+& $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
 Reset-State
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue

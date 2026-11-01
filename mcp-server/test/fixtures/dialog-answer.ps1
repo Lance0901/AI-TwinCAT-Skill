@@ -1,5 +1,5 @@
 # Test fixture for test/modal-probe.test.js: imports the TwinCATAutomation module, scans
-# -ProcessId with the module's Get-TcIdeModalDialog and, with -Answer, answers the dialog with
+# -ProcessId with the module's Find-TcIdeModalDialog and, with -Answer, answers the dialog with
 # the module's Close-TcMessageBox (by control id). With -Classify it only classifies the given
 # title / text pairs (no window needed). Writes ONE JSON line to stdout.
 # Windows PowerShell 5.1, ASCII only, no BOM.
@@ -35,7 +35,7 @@ if ($Classify) {
     exit 0
 }
 
-$dialog = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p -TimeoutSec 10 } $ProcessId
+$dialog = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -TimeoutSec 10 } $ProcessId
 $send = $null
 if ($null -ne $dialog -and -not [string]::IsNullOrWhiteSpace($Answer)) {
     $h = if ($ZeroHwnd) { 0 } else { $dialog.Hwnd }

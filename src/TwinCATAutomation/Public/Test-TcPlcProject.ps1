@@ -78,7 +78,7 @@ function Test-TcPlcProject {
         if ($null -ne $r.Result) { return $r.Result }
         $prj = $r.Item
 
-        $dialog = Get-TcIdeModalDialog
+        $dialog = Find-TcIdeModalDialog
         if ($null -ne $dialog) {
             return New-TcModalDialogResult -Dialog $dialog -Operation 'CheckAllObjects' -Data $data
         }

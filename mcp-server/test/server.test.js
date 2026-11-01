@@ -658,7 +658,7 @@ describe('index.js over stdio (modal probe: ConnectIde policy, late hits, probe 
     assert.match(line, /"-MainHwnd","16962"/);
     assert.match(line, /"-ConfirmScans","2"/);
     assert.match(line, /"-MaxLifetimeSec","64"/, 'ceil(4000 ms / 1000) + 60');
-    assert.match(line, /"-ScanScript","[^"]*Get-TcIdeModalDialog\.ps1"/);
+    assert.match(line, /"-ScanScript","[^"]*Find-TcIdeModalDialog\.ps1"/);
   });
 
   test('ConnectIde to a DIFFERENT solution: probe of the previous IDE is log-only, call not aborted', async () => {

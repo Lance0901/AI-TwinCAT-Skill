@@ -11,6 +11,7 @@
         'Disconnect-TcIde',
         'Reset-TcSolution',
         'Get-TcIdeInfo',
+        'Get-TcIdeModalDialog',
         # Project Management
         'New-TcProject',
         'Open-TcProject',

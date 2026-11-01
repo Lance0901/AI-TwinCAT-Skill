@@ -179,7 +179,7 @@
         return New-TcNoSysManagerResult
     }
 
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
@@ -313,7 +313,7 @@
 
             if ($buildWatch.Elapsed.TotalSeconds -ge $nextModalCheckSec) {
                 $nextModalCheckSec = $buildWatch.Elapsed.TotalSeconds + 5
-                $dialog = Get-TcIdeModalDialog
+                $dialog = Find-TcIdeModalDialog
                 if ($null -ne $dialog) {
                     $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
@@ -322,7 +322,7 @@
                 }
             }
             if ($buildWatch.Elapsed.TotalSeconds -ge $TimeoutSec) {
-                $dialog = Get-TcIdeModalDialog
+                $dialog = Find-TcIdeModalDialog
                 if ($null -ne $dialog) {
                     $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })

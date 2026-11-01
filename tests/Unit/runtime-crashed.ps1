@@ -147,7 +147,7 @@ $global:CrashOn = 'Config'
     function script:Get-TcSysManager { param([switch]$Refresh) $o = [PSCustomObject]@{}; $o | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { '199.5.42.250.1.1' }; $o }
     function script:Get-TcTargetPlatform { param($AmsNetId) [PSCustomObject]@{ targetPlatform = 'TwinCAT OS (x64)'; source = 'adsTargetInfo'; adsError = $null; detail = 'mock' } }
     function script:Get-TcSolutionPlatform { [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; projectPlatform = 'TwinCAT OS (x64)'; configuration = 'Release' } }
-    function script:Get-TcIdeModalDialog { $null }
+    function script:Find-TcIdeModalDialog { $null }
     function script:Get-TcIdeMemoryInfo { $null }
     function script:Invoke-TcActivateWithDeadline { param($TimeoutSec, $AmsNetId) }
     function script:Get-TcPlcProjectList { param($SysManager) @() }
