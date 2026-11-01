@@ -528,7 +528,7 @@ function Connect-TcIde {
         if (-not [string]::Equals($currentNormalized, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase)) {
             try {
                 Write-Verbose "Opening solution: $SolutionPath"
-                Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($SolutionPath) } | Out-Null
+                Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($normalizedSolutionPath) } | Out-Null
             }
             catch {
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'

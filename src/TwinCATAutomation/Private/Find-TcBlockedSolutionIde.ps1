@@ -82,7 +82,7 @@ function Find-TcBlockedSolutionIde {
         [string[]]$KnownSolutions = @()
     )
 
-    # 8.3 short names (user~1 folders, AXISIN~1.SLN) expanded: window titles carry the long name.
+    # Before matching: expand 8.3 short names of -SolutionPath (folders and the file name, so the name compared with window titles is the long one).
     $SolutionPath = Get-TcLongPath $SolutionPath
     if (-not [string]::IsNullOrWhiteSpace($PreviousSolution)) { $PreviousSolution = Get-TcLongPath $PreviousSolution }
     $KnownSolutions = @($KnownSolutions | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Get-TcLongPath $_ })

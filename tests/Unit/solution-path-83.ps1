@@ -130,6 +130,12 @@ try {
     $r = Connect-TcIde -SolutionPath (Join-Path $shortDir 'Nope.sln') -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'connect-missing-file' ($r.error.code -eq 'FILE_NOT_FOUND') "code=$($r.error.code)"
 
+    # --- Solution.Open gets the long name. Open is only reached after Connect-TcIde LAUNCHES an IDE
+    # ([Activator]::CreateInstance of a registered ProgId, not mockable here), so this is a source
+    # check: the call must pass the normalised (8.3-expanded) path, never the raw parameter. ---
+    $src = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Public\Connect-TcIde.ps1') -Raw
+    Check 'open-gets-normalized-path' (($src -match 'Solution\.Open\(\$normalizedSolutionPath\)') -and ($src -notmatch 'Solution\.Open\(\$SolutionPath\)')) 'Solution.Open argument'
+
     # --- the whole blocked-solution-ide suite with every path handed over in 8.3 form ---
     $out = & powershell.exe -NoProfile -File (Join-Path $PSScriptRoot 'blocked-solution-ide.ps1') -Short83 2>&1 | Out-String
     $code = $LASTEXITCODE
