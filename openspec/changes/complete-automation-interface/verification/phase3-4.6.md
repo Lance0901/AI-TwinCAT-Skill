@@ -279,11 +279,12 @@
 
 - `AddAdsRoute Name=R46Dry NetId=5.1.2.3.1.1 Address=192.0.2.10 UserName=Administrator DryRun=true`(沒有 PasswordEnv)→ `ROUTE_PASSWORD_MISSING`,message「AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password; nothing was sent.」——沒有 `-Password`、`SecureString`、`PowerShell`;hint 是 MCP 寫法(`AddAdsRoute PasswordEnv=TCAUTO_ROUTE_PW`)。沒有送出任何 route。
 
-### N6(新發現，未修):移除最後一個 variant 誤報 `VARIANT_VERIFY_FAILED`
+### N6(新發現;已在 527c2ab 修正，只有單元測試):移除最後一個 variant 誤報 `VARIANT_VERIFY_FAILED`
 
 - 重現(4026 VS2022,原本沒有 variant):`SetVariantConfig AddVariant [VarR46] DryRun=false`(success)→ `SetVariantConfig RemoveVariant [VarR46] DryRun=false` → `VARIANT_VERIFY_FAILED`「the document read back differs from the one written」,但 `data.readback = {variants [], groups []}` 和 `data.after` 相同。
 - `GetVariants` → `variants []`、`configXml ""`:variant 實際已移除。寫入的是 `<?xml version="1.0"?><ProjectVariants></ProjectVariants>`,XAE 讀回空字串，模組比對文件時當成不同。
 - 影響：成功的操作被回成失敗，並記 `BUILD_REQUIRED`;AI 可能照 hint 去還原備份。只記錄，沒修 `src/`。
+- 後續：527c2ab 改成比語意(variant / group 清單與其餘內容),`''` 和空的 `<ProjectVariants/>` 都算沒有 variant;只有單元測試，還沒用 registered tcauto 重測。見 `docs/known-limitations.md` 的 `SetVariantConfig` 列。
 
 ### 還原確認(Retest)
 
