@@ -46,6 +46,7 @@
         "properties": {
           "Hang": { "type": "boolean" },
           "Crash": { "type": "boolean" },
+          "AllowUnresolvedLibrary": { "type": "boolean" },
           "DelayMs": { "type": "integer" }
         },
         "required": [],
