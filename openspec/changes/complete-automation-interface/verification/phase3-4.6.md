@@ -236,7 +236,7 @@
 | B2 variant `backupFiles` | **PASS** | 只有 1 個 `.tsproj` |
 | N2 TIME 參數(4026) | **PASS** | Get `value 1000`;`T#5S` / `4321` 讀回相符;`T#5s1m` 擋下 |
 | N4 `ROUTE_PASSWORD_MISSING` | **PASS** | message 沒有 `-Password` / `SecureString` / `PowerShell` |
-| N6(新)`SetVariantConfig` 移除最後一個 variant | **FAIL(誤報)** | 回 `VARIANT_VERIFY_FAILED`,實際已移除 |
+| N6 `SetVariantConfig` 移除最後一個 variant | **FAIL(誤報)→ 已修,PASS** | 當時回 `VARIANT_VERIFY_FAILED`,實際已移除;527c2ab 後 2026-11-02 重測 success,見「N6 Retest」 |
 
 ### B1 / N3:LinkNcAxis
 
@@ -279,12 +279,12 @@
 
 - `AddAdsRoute Name=R46Dry NetId=5.1.2.3.1.1 Address=192.0.2.10 UserName=Administrator DryRun=true`(沒有 PasswordEnv)→ `ROUTE_PASSWORD_MISSING`,message「AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password; nothing was sent.」——沒有 `-Password`、`SecureString`、`PowerShell`;hint 是 MCP 寫法(`AddAdsRoute PasswordEnv=TCAUTO_ROUTE_PW`)。沒有送出任何 route。
 
-### N6(新發現;已在 527c2ab 修正，只有單元測試):移除最後一個 variant 誤報 `VARIANT_VERIFY_FAILED`
+### N6(已修，已實測):移除最後一個 variant 誤報 `VARIANT_VERIFY_FAILED`
 
 - 重現(4026 VS2022,原本沒有 variant):`SetVariantConfig AddVariant [VarR46] DryRun=false`(success)→ `SetVariantConfig RemoveVariant [VarR46] DryRun=false` → `VARIANT_VERIFY_FAILED`「the document read back differs from the one written」,但 `data.readback = {variants [], groups []}` 和 `data.after` 相同。
 - `GetVariants` → `variants []`、`configXml ""`:variant 實際已移除。寫入的是 `<?xml version="1.0"?><ProjectVariants></ProjectVariants>`,XAE 讀回空字串，模組比對文件時當成不同。
 - 影響：成功的操作被回成失敗，並記 `BUILD_REQUIRED`;AI 可能照 hint 去還原備份。只記錄，沒修 `src/`。
-- 後續：527c2ab 改成比語意(variant / group 清單與其餘內容),`''` 和空的 `<ProjectVariants/>` 都算沒有 variant;只有單元測試，還沒用 registered tcauto 重測。見 `docs/known-limitations.md` 的 `SetVariantConfig` 列。
+- 後續:527c2ab 改成比語意(variant / group 清單與其餘內容),`''` 和空的 `<ProjectVariants/>` 都算沒有 variant。2026-11-02 用 registered tcauto 重測 PASS,見文末「N6 Retest」。見 `docs/known-limitations.md` 的 `SetVariantConfig` 列。
 
 ### 還原確認(Retest)
 
@@ -292,3 +292,24 @@
 - 結束時 `DisconnectIde Quit=true`(4026 pid 91380、4024 pid 117180,都是 `selectedBy launched`、`ownedBySession true`;之後沒有 `devenv` / `TcXaeShell` 行程)→ `/MIR` 還原 → 逐檔比對:**4026 266 / 266、4024 302 / 302,SHA-256 全部相同**;Device 1 / Device 5 仍 Disabled。
 - 沒有 attach 其他 IDE;沒送 AddRoute、沒動 StaticRoutes.xml、沒重啟 TwinCAT service、沒停任何非自己啟動的行程;library repository 沒動;`src/` 沒改(`Private/NcAxis.ps1` 的「pending, 4.6 retest」註解因此沒更新)。
 - **UmRT 最後狀態**:pid 102904 仍在跑，**Run**,跑的是 4024 副本(改過的)組態:`AxisR46` 接 `GVL_Axes.axisDraw`、`Axis 3` 沒接(副本已還原，磁碟上不再有這個組態)。下一個測試要先用自己的專案 `EnableConfig Force=true`。
+
+## N6 Retest(registered tcauto,2026-11-02,4026 VS2022 + 本機 UmRT)
+
+- 環境:`VisualStudio.DTE.17.0`(VS2022,4026 XAE),副本 `C:\Temp\Verify-4026-axis\AxisInterface_Type01_Library.sln`,target 本機 UmRT `199.5.42.250.1.1`。registered tcauto 跑的是主 checkout `89fc0a8`(含 527c2ab)。4024 沒跑(非必要項目)。
+- `ConnectIde ProgId=VisualStudio.DTE.17.0 SolutionPath=<副本>` → `selectedBy launched`、`ownedBySession true`、pid 57080、solution 是副本、`solutionPlatform TwinCAT OS (x64)`(connectSec 51.7)。沒有 attach 其他 IDE(開始前沒有 `devenv` / `TcXaeShell` 行程)。
+- 只改 ProjectVariantConfig,沒有 Build / Activate。
+
+| # | 呼叫 | 實際回傳 | 結果 |
+|---|---|---|---|
+| 1 | `GetVariants` | `variants []`、`groups []`、`configXml ""` | 初始沒有 variant |
+| 2 | `SetVariantConfig AddVariant [VarN6] DryRun=false` | success,`verified true`,`readback {variants [VarN6], groups []}`,`backupFiles` 1 個 | PASS |
+| 3 | `SetVariantConfig RemoveVariant [VarN6] DryRun=false` | **success**,`verified true`;寫入 `<?xml version="1.0"?><ProjectVariants></ProjectVariants>`,`readback {variants [], groups []}` = `after`;沒有 `verifyDifferences`(只在失敗時才加),`warnings []` | **PASS**(不再是 `VARIANT_VERIFY_FAILED`) |
+| 4 | `GetVariants` | `variants []`、`groups []`、`configXml ""` | PASS;XAE 仍讀回空字串,觸發條件和原 N6 相同 |
+| 5 | `SetVariantConfig AddVariant [VarN6a, VarN6b] Group=GrpN6 DryRun=false` | success,`verified true`,`groups [{GrpN6, [VarN6a, VarN6b]}]` | PASS |
+| 6 | `SetVariantConfig RemoveVariant [VarN6a] DryRun=false` | success,`verified true`,`groups [{GrpN6, [VarN6b]}]` | PASS |
+| 7 | `SetVariantConfig RemoveVariant [VarN6b] DryRun=false` | **success**,`verified true`,`warnings ["group 'GrpN6' has no member left and is removed"]`,寫入空的 `<ProjectVariants></ProjectVariants>`,`readback {variants [], groups []}` | **PASS**(group 一起刪掉) |
+| 8 | `GetVariants` | `variants []`、`groups []`、`configXml ""` | PASS |
+
+- 收尾:`DisconnectIde Quit=true` → `quit true`、pid 57080、`selectedBy launched`、`ownedBySession true`;之後沒有 `devenv` / `TcXaeShell` 行程。
+- 還原:開始前 robocopy `/MIR` 備份到 `C:\Temp\Verify-4026-axis-baseline-n6`(259 檔,SHA-256 manifest `C:\Temp\Verify-4026-axis-baseline-n6.manifest.json` 與副本一致);結束 `/MIR` 還原,逐檔比對 **259 / 259 SHA-256 全部相同**(`.tcauto-backup` 也清掉)。baseline 資料夾保留。
+- 沒送 AddRoute、沒動 ADS route、沒重啟 TwinCAT service、沒停任何行程;UmRT `TcSystemServiceUm` pid 102904 前後相同;library repository 沒動;`src/` 沒改。
