@@ -620,7 +620,7 @@ function Invoke-OpModal {
 
     $objects = Invoke-Captured -Id $Id -Script {
         param($p, $t)
-        Invoke-InModule { param($p2, $t2) Get-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 } @($p, $t)
+        Invoke-InModule { param($p2, $t2) Find-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 } @($p, $t)
     } -ArgumentList @($ideProcessId, $timeoutSec)
     $dialog = $null
     foreach ($o in $objects) { if ($null -ne $o) { $dialog = $o } }

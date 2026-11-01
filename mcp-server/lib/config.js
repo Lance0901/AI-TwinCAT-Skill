@@ -21,7 +21,7 @@
 //   TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC  seconds after which one UIA scan of the probe is abandoned
 //                              (default 4, clamped 1..30)
 //   TWINCAT_MCP_PROBE_SCAN_SCRIPT    file that defines $script:TcUiaDialogScan, dot-sourced by the probe
-//                              (default: <dir of TWINCAT_MODULE_PATH>/Private/Get-TcIdeModalDialog.ps1)
+//                              (default: <dir of TWINCAT_MODULE_PATH>/Private/Find-TcIdeModalDialog.ps1)
 //
 // Test-only overrides (replace the powershell.exe spawn with any command, e.g. a mock bridge):
 //   TWINCAT_MCP_BRIDGE_COMMAND  executable to spawn instead of powershell.exe
@@ -83,7 +83,7 @@ export const DEFAULT_PROBE_SCAN_TIMEOUT_SEC = 4;
 
 /** The module file that defines $script:TcUiaDialogScan, next to the given TwinCATAutomation.psm1. */
 export function scanScriptFor(modulePath) {
-  return path.join(path.dirname(modulePath), 'Private', 'Get-TcIdeModalDialog.ps1');
+  return path.join(path.dirname(modulePath), 'Private', 'Find-TcIdeModalDialog.ps1');
 }
 export const DEFAULT_SCAN_SCRIPT = scanScriptFor(DEFAULT_MODULE_PATH);
 

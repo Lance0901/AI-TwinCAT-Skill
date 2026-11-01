@@ -317,7 +317,7 @@ function Enable-TcConfig {
         param([string]$Message, [string]$Code, [string]$Hint)
         $diag = [ordered]@{ dialog = $null; errorList = @(); errorListError = $null; bootPackage = $null }
         try {
-            $dlg = Get-TcIdeModalDialog
+            $dlg = Find-TcIdeModalDialog
             if ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
         } catch { }
         if ($null -ne $deadline -and (Get-Date) -ge $deadline) {
@@ -419,7 +419,7 @@ function Enable-TcConfig {
     # (code IDE_MODAL_DIALOG, data.dialogTitle/dialogText) or $null.
     function Test-TcStepModalDialog {
         param([string]$Name)
-        $dlg = Get-TcIdeModalDialog
+        $dlg = Find-TcIdeModalDialog
         if ($null -eq $dlg) { return $null }
         Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: IDE shows modal dialog '$($dlg.Title)'"
         $short = [string]$dlg.Text
@@ -1024,7 +1024,7 @@ function Enable-TcConfig {
     }
     $plcState = $plcs[0].state
     $dlg = $null
-    try { $dlg = Get-TcIdeModalDialog } catch { }
+    try { $dlg = Find-TcIdeModalDialog } catch { }
     $dlgInfo = if ($null -ne $dlg) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
     if ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
     $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; ok = ($bad.Count -eq 0) }

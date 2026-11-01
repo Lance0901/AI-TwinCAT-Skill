@@ -35,6 +35,7 @@ $operationMap = @{
     'DisconnectIde'   = 'Disconnect-TcIde'
     'ResetSolution'   = 'Reset-TcSolution'
     'GetIdeInfo'      = 'Get-TcIdeInfo'
+    'GetIdeModalDialog' = 'Get-TcIdeModalDialog'
     # Project Management
     'NewProject'      = 'New-TcProject'
     'OpenProject'     = 'Open-TcProject'

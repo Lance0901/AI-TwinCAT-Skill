@@ -1,4 +1,4 @@
-# UI Automation scan that runs INSIDE a separate runspace (see Get-TcIdeModalDialog and
+# UI Automation scan that runs INSIDE a separate runspace (see Find-TcIdeModalDialog and
 # the watchdog in Invoke-TcComRetry). It must be self-contained: no module functions,
 # no $script: state. Arguments: target process id, main window handle (0 = unknown),
 # max text length. Emits one PSCustomObject @{ Title; Text; ClassName; IsModal; Hwnd; Buttons }
@@ -581,7 +581,7 @@ function ConvertTo-TcDialogButtonList {
     return $out.ToArray()
 }
 
-function Get-TcIdeModalDialog {
+function Find-TcIdeModalDialog {
     <#
     .SYNOPSIS
         Detects a modal dialog (Assertion Failed, VS account settings, fatal error,
@@ -630,7 +630,7 @@ function Get-TcIdeModalDialog {
 
     $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if ($null -eq $proc) {
-        Write-Verbose "Get-TcIdeModalDialog: process $ProcessId not found."
+        Write-Verbose "Find-TcIdeModalDialog: process $ProcessId not found."
         return $null
     }
 
@@ -656,7 +656,7 @@ function Get-TcIdeModalDialog {
         $null = $ps.AddScript($script:TcUiaDialogScan.ToString()).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500)
         $handle = $ps.BeginInvoke()
         if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) {
-            Write-Verbose "Get-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s."
+            Write-Verbose "Find-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s."
             # Do not block on Stop(): the scan thread may be stuck inside UIA. Leave it to die.
             try { $null = $ps.BeginStop($null, $null) } catch { }
             $ps = $null
@@ -665,7 +665,7 @@ function Get-TcIdeModalDialog {
         }
         $out = $ps.EndInvoke($handle)
         if ($ps.Streams.Error.Count -gt 0) {
-            Write-Verbose "Get-TcIdeModalDialog: scan error: $($ps.Streams.Error[0])"
+            Write-Verbose "Find-TcIdeModalDialog: scan error: $($ps.Streams.Error[0])"
         }
         if ($null -eq $out -or $out.Count -eq 0) { return $null }
         $first = $out[0]
@@ -687,7 +687,7 @@ function Get-TcIdeModalDialog {
         }
     }
     catch {
-        Write-Verbose "Get-TcIdeModalDialog: $($_.Exception.Message)"
+        Write-Verbose "Find-TcIdeModalDialog: $($_.Exception.Message)"
         return $null
     }
     finally {
@@ -701,7 +701,7 @@ function New-TcModalDialogResult {
     .SYNOPSIS
         Builds the failed result (code IDE_MODAL_DIALOG) for a detected dialog.
     .PARAMETER Dialog
-        Hashtable from Get-TcIdeModalDialog (@{ Title; Text; Kind }); Kind is derived
+        Hashtable from Find-TcIdeModalDialog (@{ Title; Text; Kind }); Kind is derived
         from Title / Text when missing.
     .PARAMETER Operation
         Name of the operation that was NOT attempted, for the message.
@@ -751,4 +751,33 @@ function New-TcModalDialogResult {
         -ErrorCode 'IDE_MODAL_DIALOG' `
         -Hint (Get-TcErrorHint -Code $hintCode) `
         -Data $Data
+}
+
+function ConvertTo-TcDialogRecord {
+    <#
+    .SYNOPSIS
+        Module dialog record (@{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons }) -> the JSON
+        shape {title, text, kind, reloadTarget, hwnd, buttons[{id, name}]} that Get-TcIdeModalDialog
+        and the MCP GetIdeModalDialog return as data.dialog. Never throws.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Dialog
+    )
+    $rec = Add-TcDialogKind -Dialog $Dialog
+    $kind = [string]$rec.Kind
+    if ([string]::IsNullOrWhiteSpace($kind)) { $kind = 'unknown' }
+    $target = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$rec.ReloadTarget)) { $target = [string]$rec.ReloadTarget }
+    $hwndOut = $null
+    try { $hv = [long]$rec.Hwnd; if ($hv -gt 0) { $hwndOut = $hv } } catch { $hwndOut = $null }
+    [PSCustomObject][ordered]@{
+        title        = [string]$rec.Title
+        text         = [string]$rec.Text
+        kind         = $kind
+        reloadTarget = $target
+        hwnd         = $hwndOut
+        buttons      = @(ConvertTo-TcDialogButtonList -Buttons $rec.Buttons)
+    }
 }

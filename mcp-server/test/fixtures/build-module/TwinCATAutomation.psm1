@@ -127,7 +127,7 @@ function Get-TcSysManager {
     $sm
 }
 $script:FixtureBuilding = $false
-function Get-TcIdeModalDialog {
+function Find-TcIdeModalDialog {
     if ($script:FixtureBuilding -and (Get-FixtureScenario).ModalWhileBuilding) {
         return @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (fixture)'; Kind = 'unknown'; Hwnd = 0; Buttons = @() }
     }

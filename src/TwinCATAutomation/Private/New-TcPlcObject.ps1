@@ -24,7 +24,7 @@ function New-TcPlcObject {
                        folders do not count). Above -MaxNodes tree nodes only the target path is
                        checked (DuplicateCheckScope 'folder' instead of 'project').
                        -SkipProjectNameCheck: only the target path (DuplicateCheckScope 'parent').
-          -  dialog    a modal dialog in the IDE (Get-TcIdeModalDialog): returns
+          -  dialog    a modal dialog in the IDE (Find-TcIdeModalDialog): returns
                        @{ ModalDialog = <dialog> } without calling CreateChild; the caller returns
                        New-TcModalDialogResult (IDE_MODAL_DIALOG), as Build-TcProject does.
                        Invoke-TcComRetry only classifies a call after it returned, so a dialog
@@ -141,7 +141,7 @@ function New-TcPlcObject {
     $parent = Invoke-TcComRetry -OperationName "LookupTreeItem $ParentPath" -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem($ParentPath) }
 
     # dialog check right before the synchronous CreateChild (it cannot be interrupted)
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) { return @{ ModalDialog = $dialog } }
 
     # 2. create

@@ -6,7 +6,7 @@ function Disconnect-TcIde {
         Without -Quit only the COM references are released; the IDE keeps running.
 
         With -Quit:
-          1. Get-TcIdeModalDialog first. A modal dialog blocks Solution.Close / DTE.Quit
+          1. Find-TcIdeModalDialog first. A modal dialog blocks Solution.Close / DTE.Quit
              forever, so with a dialog up (and no -Kill) nothing is attempted (no 60 s
              retries) and NOTHING is released: the connection stays usable. Result:
              success = false, code IDE_QUIT_FAILED, data.disconnected = false, data.quit =
@@ -103,7 +103,7 @@ function Disconnect-TcIde {
         if ($Kill -and $ideProcessId -gt 0) {
             # A previous -Quit failed (state kept) or the COM link is gone: kill what we still know.
             $quitResult = @{ solutionClosed = $false; quit = $false; error = 'not connected (COM references already released); quit not attempted'; reason = $null }
-            $dialog = Get-TcIdeModalDialog
+            $dialog = Find-TcIdeModalDialog
             $wantKill = $true
         }
         else {
@@ -116,7 +116,7 @@ function Disconnect-TcIde {
         $quitResult = @{ solutionClosed = $false; quit = $false; error = $null; reason = $null }
         # A modal dialog blocks Solution.Close / DTE.Quit forever: check first, do not spend
         # 2 x 60 s in Invoke-TcComRetry.
-        $dialog = Get-TcIdeModalDialog
+        $dialog = Find-TcIdeModalDialog
         if ($null -ne $dialog) {
             $quitResult.error = "modal dialog is up: $($dialog.Title)"
             if ($Kill) { $wantKill = $true }

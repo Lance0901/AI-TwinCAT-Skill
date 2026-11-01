@@ -13,7 +13,7 @@ function Find-TcBlockedSolutionIde {
           - session-record (Get-TcIdeSolutionRecord): the last Connect-TcIde / Open-TcProject
             on this very process (pid + start time) recorded this solution; another solution
             rules the candidate out (unless a dialog path points into our folder, see below).
-          - dialog-path: the dialog text (Get-TcIdeModalDialog, UI Automation with a timeout)
+          - dialog-path: the dialog text (Find-TcIdeModalDialog, UI Automation with a timeout)
             names a project file (.sln/.tsproj/.plcproj/.TcPOU ...) inside the solution folder
             with no other .sln in between ('outside' when all named project files are elsewhere).
           - window-title: Process.MainWindowTitle (Win32 GetWindowText, not through the blocked
@@ -116,7 +116,7 @@ function Find-TcBlockedSolutionIde {
             $recordVerdict = if ([string]::Equals($recorded, $SolutionPath, [StringComparison]::OrdinalIgnoreCase)) { 'same' } else { 'other' }
         }
 
-        $dialog = Get-TcIdeModalDialog -ProcessId $cPid -TimeoutSec $DialogTimeoutSec
+        $dialog = Find-TcIdeModalDialog -ProcessId $cPid -TimeoutSec $DialogTimeoutSec
         $pathVerdict = 'none'
         if ($null -ne $dialog) {
             $paths = @(Get-TcDialogProjectPaths -Text ([string]$dialog.Text))

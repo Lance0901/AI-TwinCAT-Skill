@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Generates mcp-server/tools.json (MCP tool definitions) from the TwinCATAutomation module.
 
@@ -255,7 +255,10 @@ $schemaOverrides = @{
 # Cmdlets that are NOT offered as MCP tools (the cmdlet itself stays in the module).
 # NewProject (#70): AddFromTemplate gets an empty template path and Solution.Create would close
 # the open solution; offered again once #70 is fixed.
-$excludedTools = @('NewProject')
+# GetIdeModalDialog (#86): the Get-TcIdeModalDialog cmdlet is not a catalog tool because the composite
+# tool of the same name (lib/composites.js) already serves it. The composite must stay: when a modal
+# dialog blocks the bridge, it answers through the out-of-process probe, which a plain cmdlet call cannot.
+$excludedTools = @('NewProject', 'GetIdeModalDialog')
 
 $commonParameters = @(
     'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',

@@ -37,7 +37,7 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
 `<id>` is recovered from the raw line with the regex `"id"\s*:\s*("([^"]*)"|(\d+))`
 (string id -> string, digits -> number); only when that does not match is it `null`.
 
-* `modal`  → calls the module-private `Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec <t>`
+* `modal`  → calls the module-private `Find-TcIdeModalDialog -ProcessId <pid> -TimeoutSec <t>`
   inside the module scope (`& (Get-Module TwinCATAutomation) { ... }`). Optional
   `params.ProcessId` (positive integer) selects the IDE process to scan; without it the
   pid stored by `Connect-TcIde` (`$script:TcIdeProcessId`) is used. Optional
@@ -189,7 +189,7 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   `RunTestCycle`, `OpenProject` and `ConnectIde` (and therefore the matching steps of
   `RunLifecycle`, which go through the same path) the server starts a second, short-lived process
   next to the call:
-  `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File bridge/modal-probe.ps1 -ProcessId N -IntervalSec 5 -ConfirmScans 2 -ScanScript <module>/Private/Get-TcIdeModalDialog.ps1 [-MainHwnd H] -MaxLifetimeSec L`.
+  `powershell.exe -NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File bridge/modal-probe.ps1 -ProcessId N -IntervalSec 5 -ConfirmScans 2 -ScanScript <module>/Private/Find-TcIdeModalDialog.ps1 [-MainHwnd H] -MaxLifetimeSec L`.
   `-MainHwnd` is `lastIde.ideMainHwnd`, passed only when known (> 0); `-MaxLifetimeSec` is
   `ceil(call timeout / 1000) + 60`.
   The pid is `lastIde.ideProcessId`; for `ConnectIde` it is the **previous** IDE (captured before
@@ -209,7 +209,7 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
     probe exits 2 if the file is missing or does not define it). Before that interval it warms up once (#24): loads the UIA assemblies, compiles the
     P/Invoke helper types of the scan sources and runs one scan of its own pid, so the first real
     scan does not pay that one-time cost inside its timeout. It waits one interval **before**
-    its first scan (the cmdlet's own pre-call `Get-TcIdeModalDialog` check gets to answer cleanly
+    its first scan (the cmdlet's own pre-call `Find-TcIdeModalDialog` check gets to answer cleanly
     first), then scans every interval, each scan in a fresh STA runspace, abandoned after 4 s
     (`TWINCAT_MCP_PROBE_SCAN_TIMEOUT_SEC`, 1..30) if UIA hangs (normal while XAE's UI thread is busy building; logged for the first abandoned scan
     and then every 10th). Abandoned scans are disposed once they finish; while 10 still hang no new
