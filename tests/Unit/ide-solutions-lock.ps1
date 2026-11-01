@@ -1,0 +1,151 @@
+# Unit: ide-solutions.json read-modify-write is serialized and atomic (issue #51), no IDE needed.
+# $env:LOCALAPPDATA points at a temp folder. Two runspaces (own module instance each, same named
+# mutex) write / remove records at the same time; a third checks that a held mutex makes Save skip
+# (verbose, no throw) instead of waiting forever. Records only survive for a live pid, so a pid
+# missing at the end is excused only when that process has exited meanwhile.
+# $env:TCAUTO_UNIT_MODULE overrides the module path (used to run this against the unfixed code).
+#   powershell.exe -NoProfile -File tests/Unit/ide-solutions-lock.ps1
+# Exit code = number of failed checks.
+$ErrorActionPreference = 'Stop'
+$modulePath = if ($env:TCAUTO_UNIT_MODULE) { $env:TCAUTO_UNIT_MODULE } else { Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1' }
+$origLocalAppData = $env:LOCALAPPDATA
+$tmpRoot = Join-Path $env:TEMP ("tcauto-unit-idesol-{0}" -f [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $tmpRoot -Force
+$env:LOCALAPPDATA = $tmpRoot
+Import-Module $modulePath -Force -WarningAction SilentlyContinue
+$mod = Get-Module TwinCATAutomation
+$fail = 0
+function Check([string]$Name, [bool]$Ok, [string]$Detail) {
+    "{0} {1} {2}" -f $(if ($Ok) { 'PASS' } else { 'FAIL' }), $Name, $Detail
+    if (-not $Ok) { $script:fail++ }
+}
+function Read-Pids { @(& $mod { Read-TcIdeSolutionRecords } | ForEach-Object { [int]$_.pid }) }
+
+# Starts a runspace running -Script with -ArgumentList; returns @{ PS; Handle; Runspace }.
+function Start-Worker([scriptblock]$Script, [object[]]$ArgumentList) {
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    $null = $ps.AddScript($Script.ToString())
+    foreach ($a in $ArgumentList) { $null = $ps.AddArgument($a) }
+    @{ PS = $ps; Handle = $ps.BeginInvoke(); Runspace = $rs }
+}
+function Stop-Worker($W) {
+    try { $msgs = @($W.PS.EndInvoke($W.Handle) | ForEach-Object { "$_" }) } catch { $msgs = @() }
+    foreach ($m in ($msgs | Select-Object -First 3)) { "  worker: $m" }
+    foreach ($e in @($W.PS.Streams.Error | Select-Object -First 3)) { "  worker error: $e" }
+    $W.PS.Dispose(); $W.Runspace.Dispose()
+}
+function Wait-Workers($Ws, [int]$Sec = 120) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($w in $Ws) {
+        while (-not $w.Handle.IsCompleted -and $sw.Elapsed.TotalSeconds -lt $Sec) { Start-Sleep -Milliseconds 50 }
+    }
+    @($Ws | Where-Object { -not $_.Handle.IsCompleted }).Count -eq 0
+}
+
+# Both workers: import their own module copy, wait for the go signal, then run $Action.
+$workerScript = {
+    param($ModulePath, $GoName, $Action, $Pids)
+    Import-Module $ModulePath -Force -WarningAction SilentlyContinue
+    $m = Get-Module TwinCATAutomation
+    $go = [Threading.EventWaitHandle]::OpenExisting($GoName)
+    $null = $go.WaitOne(60000)
+    foreach ($id in $Pids) {
+        # verbose lines (skipped / failed writes) are returned for diagnosis
+        if ($Action -eq 'save') { & $m { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution "C:\x\$i.sln" -Verbose 4>&1 } $id }
+        else { & $m { param($i) Remove-TcIdeSolutionRecord -ProcessId $i -Verbose 4>&1 } $id }
+    }
+}
+
+try {
+    # Live pids whose StartTime we may read (Save needs it).
+    # Some system processes give no / a changing StartTime on a fresh Get-Process (they would never
+    # count as alive for a record, unrelated to locking): keep only pids that read the same 3 times.
+    $live = @(Get-Process | Where-Object { $_.Id -ne $PID -and $_.Id -gt 4 } | ForEach-Object {
+            try {
+                $cand = $_.Id
+                $t = 1..3 | ForEach-Object { (Get-Process -Id $cand -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
+                if (@($t | Select-Object -Unique).Count -eq 1) { $cand }
+            } catch { } } | Select-Object -First 140)
+    if ($live.Count -lt 130) { Check 'precondition' $false "only $($live.Count) readable live processes"; exit 1 }
+    $setA = $live[0..49]; $setB = $live[50..99]          # concurrent Save of two sets of 50
+    $setC = $live[100..119]; $setD = $live[120..129]     # C pre-seeded, removed while D is saved
+
+    function Missing-Alive([int[]]$Expected, [int[]]$Have) {
+        # pids that are absent although their process is still running = lost records
+        @($Expected | Where-Object { $Have -notcontains $_ -and (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+    }
+
+    # 1. two runspaces save 50 different pids each at the same time
+    $goName = "tcauto-go-{0}" -f [guid]::NewGuid().ToString('N')
+    $go = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, $goName)
+    $w1 = Start-Worker $workerScript @($modulePath, $goName, 'save', $setA)
+    $w2 = Start-Worker $workerScript @($modulePath, $goName, 'save', $setB)
+    Start-Sleep -Milliseconds 1500   # both modules imported and waiting on $go
+    $null = $go.Set()
+    $done = Wait-Workers @($w1, $w2)
+    Stop-Worker $w1; Stop-Worker $w2; $go.Dispose()
+    $have = Read-Pids
+    $lost = Missing-Alive ($setA + $setB) $have
+    Check 'workers-finished' $done ''
+    Check 'concurrent-save-keeps-all' ($lost.Count -eq 0) "records=$($have.Count) of 100 (lost while process alive: $($lost.Count))"
+
+    # 2. Remove (set C, pre-seeded) races with Save (set D); unrelated records must survive
+    foreach ($id in $setC) { & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution "C:\c\$i.sln" } $id }
+    $goName = "tcauto-go-{0}" -f [guid]::NewGuid().ToString('N')
+    $go = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, $goName)
+    $w1 = Start-Worker $workerScript @($modulePath, $goName, 'remove', $setC)
+    $w2 = Start-Worker $workerScript @($modulePath, $goName, 'save', $setD)
+    Start-Sleep -Milliseconds 1500
+    $null = $go.Set()
+    $done = Wait-Workers @($w1, $w2)
+    Stop-Worker $w1; Stop-Worker $w2; $go.Dispose()
+    $have = Read-Pids
+    $lostD = Missing-Alive $setD $have
+    $lostA = Missing-Alive ($setA + $setB) $have
+    $leftC = @($setC | Where-Object { $have -contains $_ })
+    Check 'remove-vs-save-keeps-others' ($done -and $lostD.Count -eq 0 -and $lostA.Count -eq 0) "saved set lost=$($lostD.Count), earlier records lost=$($lostA.Count)"
+    Check 'remove-removed' ($leftC.Count -eq 0) "removed pids still present: $($leftC.Count)"
+
+    # 3. no .tmp left behind, file is valid JSON
+    $dir = Join-Path $tmpRoot 'TwinCATAutomation'
+    $tmps = @(Get-ChildItem -LiteralPath $dir -Filter '*.tmp' -ErrorAction SilentlyContinue)
+    Check 'no-tmp-left' ($tmps.Count -eq 0) "tmp files: $($tmps.Count)"
+
+    # 4. mutex held by another holder longer than the wait limit: Save skips, writes verbose, no throw
+    $holdName = "tcauto-hold-{0}" -f [guid]::NewGuid().ToString('N')
+    $hold = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, $holdName)
+    $held = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, "$holdName-held")
+    $holder = Start-Worker {
+        param($Name, $Release, $Held)
+        $r = [Threading.EventWaitHandle]::OpenExisting($Release); $h = [Threading.EventWaitHandle]::OpenExisting($Held)
+        $m = New-Object Threading.Mutex($false, $Name)
+        $null = $m.WaitOne(); $null = $h.Set()
+        $null = $r.WaitOne(30000)
+        $m.ReleaseMutex(); $m.Dispose()
+    } @((& $mod { $script:TcIdeSolutionLockName }), $holdName, "$holdName-held")
+    $null = $held.WaitOne(10000)
+    $before = Read-Pids
+    $probe = $live[130]
+    $threw = $false; $sw = [Diagnostics.Stopwatch]::StartNew()
+    try { $out = & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\held.sln' -Verbose 4>&1 } $probe }
+    catch { $threw = $true; $out = @() }
+    $sw.Stop()
+    $verbose = @($out | Where-Object { $_ -is [Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+    $after = Read-Pids
+    Check 'held-mutex-no-throw' (-not $threw) ''
+    Check 'held-mutex-skipped' ($after -notcontains $probe -and $after.Count -eq $before.Count) "records $($before.Count) -> $($after.Count)"
+    Check 'held-mutex-waited-then-gave-up' ($sw.ElapsedMilliseconds -ge 1500 -and $sw.ElapsedMilliseconds -lt 30000) "$($sw.ElapsedMilliseconds) ms"
+    Check 'held-mutex-verbose' (@($verbose | Where-Object { $_ -match 'skipped' }).Count -eq 1) ($verbose -join ' | ')
+    $null = $hold.Set(); Stop-Worker $holder; $hold.Dispose(); $held.Dispose()
+    # once released, Save works again
+    & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\held.sln' } $probe
+    Check 'save-after-release' ((Read-Pids) -contains $probe) ''
+}
+finally {
+    $env:LOCALAPPDATA = $origLocalAppData
+    Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+exit $fail

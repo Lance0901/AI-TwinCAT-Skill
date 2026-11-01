@@ -19,14 +19,46 @@ function Read-TcIdeSolutionRecords {
     param()
     $path = Get-TcIdeSolutionRecordPath
     if (-not (Test-Path -LiteralPath $path)) { return @() }
-    # PS 5.1 ConvertFrom-Json emits a JSON array as ONE object: unroll it.
-    try { $parsed = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop; return @($parsed | ForEach-Object { $_ } | Where-Object { $null -ne $_ }) }
-    catch { Write-Verbose "IDE solution records unreadable ($($_.Exception.Message))"; return @() }
+    # PS 5.1 ConvertFrom-Json emits a JSON array as ONE object: unroll it. [IO.File]::Replace can
+    # make a reader fail for a moment (sharing violation / file briefly missing): retry a few times.
+    $last = $null
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            if (-not (Test-Path -LiteralPath $path)) { return @() }
+            $parsed = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            return @($parsed | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
+        }
+        catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds (20 * $i) }
+    }
+    Write-Verbose "IDE solution records unreadable ($last)"
+    return @()
 }
 
+# Named mutex + wait limit for the read-modify-write of ide-solutions.json (#51).
+$script:TcIdeSolutionLockName = 'Local\TwinCATAutomation-ide-solutions'
+$script:TcIdeSolutionLockTimeoutMs = 2000
+
+# Runs -Body under the ide-solutions mutex (same helper as build-required.json). Returns $true
+# when it ran without error; otherwise writes a verbose line. Best effort: never throws.
+function Invoke-TcIdeSolutionLocked {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][scriptblock]$Body, [string]$What = 'IDE solution record')
+    $r = Invoke-TcBuildRequiredLocked -Body $Body -MutexName $script:TcIdeSolutionLockName -TimeoutMs $script:TcIdeSolutionLockTimeoutMs
+    if (-not $r.Locked) { Write-Verbose "$What skipped ($($r.Error))"; return $false }
+    if ($r.Error) { Write-Verbose "$What failed ($($r.Error))"; return $false }
+    $true
+}
+
+# -Cache (hashtable) memoizes the answer per record: the writers fill it BEFORE taking the mutex
+# (Get-Process + StartTime per record is slow) so the locked section stays short (#51).
 function Test-TcIdeRecordAlive {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$Record)
+    param([Parameter(Mandatory)][object]$Record, [hashtable]$Cache)
+    if ($null -ne $Cache) {
+        $key = "$($Record.pid)|$($Record.startTime)"
+        if (-not $Cache.ContainsKey($key)) { $Cache[$key] = Test-TcIdeRecordAlive -Record $Record }
+        return [bool]$Cache[$key]
+    }
     try {
         $p = Get-Process -Id ([int]$Record.pid) -ErrorAction Stop
         # Compare as DateTime: pwsh 7 ConvertFrom-Json turns the ISO string into a DateTime itself.
@@ -48,9 +80,13 @@ function Save-TcIdeSolutionRecord {
     )
     try {
         $start = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToString('o')
-        $keep = @(Read-TcIdeSolutionRecords | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_) })
-        $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $start; solution = $Solution }
-        Write-TcIdeSolutionRecords -Records $keep
+        $alive = @{}
+        foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
+        $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -Body {
+            $keep = @(Read-TcIdeSolutionRecords | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
+            $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $start; solution = $Solution }
+            Write-TcIdeSolutionRecords -Records $keep
+        }
     }
     catch { Write-Verbose "IDE solution record not saved ($($_.Exception.Message))" }
 }
@@ -62,9 +98,13 @@ function Write-TcIdeSolutionRecords {
     $path = Get-TcIdeSolutionRecordPath
     $dir = Split-Path -Parent $path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $tmp = "$path.$PID.tmp"
-    Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($Records) -Depth 3) -Encoding UTF8
-    try { Move-Item -LiteralPath $tmp -Destination $path -Force -ErrorAction Stop }
+    $tmp = "$path.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($Records) -Depth 3) -Encoding UTF8
+        # Atomic replace (no window without a file); Move only when there is nothing to replace.
+        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, [NullString]::Value) }
+        else { [IO.File]::Move($tmp, $path) }
+    }
     catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
 }
 
@@ -77,9 +117,13 @@ function Remove-TcIdeSolutionRecord {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
     try {
-        $all = @(Read-TcIdeSolutionRecords)
-        if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
-        Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_) })
+        $alive = @{}
+        foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
+        $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -Body {
+            $all = @(Read-TcIdeSolutionRecords)
+            if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
+            Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
+        }
     }
     catch { Write-Verbose "IDE solution record not removed ($($_.Exception.Message))" }
 }
