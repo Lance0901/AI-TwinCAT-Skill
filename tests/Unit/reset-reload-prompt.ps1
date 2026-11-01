@@ -1,6 +1,6 @@
 ﻿# Unit: Reset-TcSolution handles a reload prompt BEFORE / WHILE it reads Solution.FullName (#87),
 # no IDE needed. A mock DTE whose Solution.FullName answers $null while a (mock) modal dialog is up;
-# Get-TcIdeModalDialog / Close-TcReloadPrompt / Connect-TcIde are replaced inside the module scope.
+# Find-TcIdeModalDialog / Close-TcReloadPrompt / Connect-TcIde are replaced inside the module scope.
 #   A1  prompt (project) already up, module solution path known      -> answered Yes, success
 #   A2  prompt (project) already up, no solution path known (the path is read from the DTE)
 #       -> the modal check runs before the first FullName read, answered Yes, success
@@ -8,6 +8,10 @@
 #       -> handled in the poll (Yes), success well below -TimeoutSec
 #   C   another modal appears while the guard polls -> IDE_MODAL_DIALOG well below -TimeoutSec
 #   D   a file reload prompt appears while the guard polls -> dismissed, close / reopen, success
+#   E   guard reads fine, the prompt comes up during the project check (RPC_E_CALL_REJECTED) -> Yes, success
+#   F   the project check reads back incomplete (PLC not located, no exception), prompt up -> Yes, success
+#   G   the prompt comes up before Solution.Close (DTE.Solution answers $null) -> Yes, success
+#   H   Solution.Close fails with another dialog up -> IDE_MODAL_DIALOG, not SOLUTION_CLOSE_FAILED
 #   powershell.exe -NoProfile -File tests/Unit/reset-reload-prompt.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -63,9 +67,9 @@ $okSm = [PSCustomObject]@{ Mock = $true }
 $okSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) [PSCustomObject]@{ Name = 'TIPC' } }
 $global:OkSm = $okSm
 
-$origFns = & $mod { @{ Dlg = ${function:Get-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
+$origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
 & $mod {
-    Set-Item -Path function:script:Get-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
+    Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
     Set-Item -Path function:script:Close-TcReloadPrompt -Value { param($Dialog, $Answer, $TimeoutSec) $global:W.Log.Add("ClosePrompt:$Answer"); $global:W.Dialog = $null; @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock' } }
     Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $global:W.Log.Add('Connect'); $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
 }
@@ -140,9 +144,83 @@ try {
     & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } ([PSCustomObject]@{ Solution = $stuck; Documents = $docs }) $sln
     $r = Reset-TcSolution -TimeoutSec 5
     Check 'regression: FullName $null, no dialog -> RESET_SOLUTION_UNVERIFIED, nothing closed, modal checked in the poll' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:W.Closed -and @($global:W.Log | Where-Object { $_ -eq 'Modal:none' }).Count -ge 2) ("{0} | {1}" -f (Get-LogText).Substring(0, [Math]::Min(200, (Get-LogText).Length)), (J $r.error))
+
+    # --- E-H (#87 retest 2026-11-02): the prompt comes up AFTER the guard ---
+    $origFns2 = & $mod { @{ Sm = ${function:Get-TcSysManager}; Up = ${function:Get-TcUnsavedPlcObject} } }
+    & $mod {
+        Set-Item -Path function:script:Get-TcSysManager -Value { param([switch]$Refresh) $global:OkSm }
+        Set-Item -Path function:script:Get-TcUnsavedPlcObject -Value {
+            param($SysManager)
+            $global:W.Log.Add("ProjectCheck:$($global:W.CheckMode)")
+            $plc = [PSCustomObject]@{ plc = 'AxisInterface'; checked = $true; reason = $null; plcproj = 'x.plcproj'; tsproj = 'x.tsproj'; warning = $null; missingOnDisk = @(); extraOnDisk = @(); complete = $true; visited = 3 }
+            switch ($global:W.CheckMode) {
+                'throw-appear' { $global:W.CheckMode = 'clean'; $global:W.Dialog = $global:W.LaterDialog; throw "IDE_MODAL_DIALOG: TcXaeShell | reload (operation 'TIPC.Child(1)', original error: Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED)))" }
+                'incomplete-appear' {
+                    $global:W.CheckMode = 'clean'; $global:W.Dialog = $global:W.LaterDialog
+                    $plc = [PSCustomObject]@{ plc = 'AxisInterface'; checked = $false; reason = "locate: no .tsproj of the open solution lists PLC 'AxisInterface'"; plcproj = $null; tsproj = $null; warning = $null; missingOnDisk = @(); extraOnDisk = @(); complete = $false; visited = 0 }
+                }
+            }
+            [PSCustomObject]@{ Plcs = @($plc); Visited = 3; Sec = 0.1 }
+        }
+    }
+    $solG = [PSCustomObject]@{ Mock = $true }
+    $solG | Add-Member -MemberType ScriptProperty -Name FullName -Value { $global:W.Log.Add("FullName:$(if ($null -ne $global:W.Dialog) { 'null' } else { 'sln' })"); if ($null -ne $global:W.Dialog) { $null } else { $global:ResetSln } }
+    $solG | Add-Member -MemberType ScriptMethod -Name Close -Value {
+        param($s)
+        if ($global:W.CloseAppear) { $global:W.CloseAppear = $false; $global:W.Dialog = $global:W.LaterDialog }
+        if ($null -ne $global:W.Dialog) { $global:W.Log.Add('Solution.Close:blocked'); throw 'Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))' }
+        $global:W.Log.Add('Solution.Close'); $global:W.Closed = $true
+    }
+    $solG | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:W.Log.Add('Solution.Open'); $global:W.Opened = $true }
+    $global:SolG = $solG
+    $docsG = [PSCustomObject]@{ Count = 1 }
+    $docsG | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) $global:W.Log.Add('Documents.CloseAll'); if ($global:W.CloseAllAppear) { $global:W.CloseAllAppear = $false; $global:W.Dialog = $global:W.LaterDialog } }
+    $dteG = [PSCustomObject]@{ Documents = $docsG }
+    # DTE.Solution answers $null while a dialog is up (2026-11-02: "cannot call a method on a null-valued expression")
+    $dteG | Add-Member -MemberType ScriptProperty -Name Solution -Value {
+        $global:W.SolReads++
+        if ($global:W.SolAppearAtRead -gt 0 -and $global:W.SolReads -eq $global:W.SolAppearAtRead) { $global:W.Dialog = $global:W.LaterDialog }
+        if ($null -ne $global:W.Dialog -and $global:W.SolNull) { $global:W.Log.Add('Solution:null'); $null } else { $global:SolG }
+    }
+    function Start-ResetG {
+        param([hashtable]$Set)
+        Reset-World -Dialog $null
+        foreach ($k in $Set.Keys) { $global:W[$k] = $Set[$k] }
+        if (-not $global:W.ContainsKey('CheckMode')) { $global:W.CheckMode = 'clean' }
+        & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $dteG $sln
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Reset-TcSolution -TimeoutSec 10
+        $global:LastSec = $sw.Elapsed.TotalSeconds
+        $r
+    }
+    try {
+        $r = Start-ResetG -Set @{ CheckMode = 'throw-appear'; LaterDialog = $projectDlg }
+        Check 'E prompt during the project check (RPC_E_CALL_REJECTED) -> Yes, success, nothing closed' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reopenedSolution -eq $false -and -not $global:W.Closed -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        $r = Start-ResetG -Set @{ CheckMode = 'incomplete-appear'; LaterDialog = $projectDlg }
+        Check 'F project check incomplete (PLC not located), prompt up -> Yes, success, nothing closed' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        $r = Start-ResetG -Set @{ CloseAllAppear = $true; SolNull = $true; LaterDialog = $projectDlg }
+        Check 'G prompt before Solution.Close (DTE.Solution $null) -> Yes, success, not SOLUTION_CLOSE_FAILED' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        # read 1 = guard, read 2 = the one inside Solution.Close (after the pre-check): $null, prompt up
+        $r = Start-ResetG -Set @{ SolReads = 0; SolAppearAtRead = 2; SolNull = $true; LaterDialog = $projectDlg }
+        Check 'G1 DTE.Solution $null inside Solution.Close (prompt up) -> no method call on $null, Yes, success' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed -and (Get-LogText) -match 'Solution:null > Modal:reload-prompt' -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        $r = Start-ResetG -Set @{ CloseAppear = $true; LaterDialog = $projectDlg }
+        # (no timing check: without an IDE pid there is no watchdog, so the rejected Close goes through
+        # the Invoke-TcComRetry busy backoff, ~15 s, before the dialog check)
+        Check 'G2 Solution.Close rejected while a project prompt comes up -> Yes, success' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        $r = Start-ResetG -Set @{ CloseAppear = $true; LaterDialog = $otherDlg }
+        Check 'H Solution.Close fails, other dialog up -> IDE_MODAL_DIALOG (not SOLUTION_CLOSE_FAILED)' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and -not $global:W.Closed) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+    }
+    finally {
+        & $mod { param($f) Set-Item -Path function:script:Get-TcSysManager -Value $f.Sm; Set-Item -Path function:script:Get-TcUnsavedPlcObject -Value $f.Up } $origFns2
+    }
 }
 finally {
-    & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
+    & $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcSolutionPath = $null; $script:TcSysManager = $null }
 }
 
