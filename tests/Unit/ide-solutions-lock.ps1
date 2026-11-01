@@ -60,18 +60,21 @@ $workerScript = {
 }
 
 try {
-    # Live pids whose StartTime we may read (Save needs it).
-    # Some system processes give no / a changing StartTime on a fresh Get-Process (they would never
-    # count as alive for a record, unrelated to locking): keep only pids that read the same 3 times.
-    $live = @(Get-Process | Where-Object { $_.Id -ne $PID -and $_.Id -gt 4 } | ForEach-Object {
-            try {
-                $cand = $_.Id
-                $t = 1..3 | ForEach-Object { (Get-Process -Id $cand -ErrorAction Stop).StartTime.ToUniversalTime().Ticks }
-                if (@($t | Select-Object -Unique).Count -eq 1) { $cand }
-            } catch { } } | Select-Object -First 140)
-    if ($live.Count -lt 130) { Check 'precondition' $false "only $($live.Count) readable live processes"; exit 1 }
-    $setA = $live[0..49]; $setB = $live[50..99]          # concurrent Save of two sets of 50
-    $setC = $live[100..119]; $setD = $live[120..129]     # C pre-seeded, removed while D is saved
+    # Records are kept only for a live pid, so the test spawns its own child processes (idle ping.exe,
+    # stopped in the finally block) instead of borrowing system processes whose StartTime is
+    # unreadable or unstable.
+    $need = 44
+    $children = New-Object System.Collections.ArrayList
+    for ($n = 0; $n -lt $need; $n++) {
+        $psi = New-Object Diagnostics.ProcessStartInfo('ping.exe', '-n 300 127.0.0.1')
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $null = $children.Add([Diagnostics.Process]::Start($psi))
+    }
+    $live = @($children | ForEach-Object { $_.Id })
+    if ($live.Count -ne $need) { Check 'precondition' $false "only $($live.Count) of $need child processes started"; exit 1 }
+    $setA = $live[0..14]; $setB = $live[15..29]          # concurrent Save of two sets of 15
+    $setC = $live[30..35]; $setD = $live[36..39]         # C pre-seeded, removed while D is saved
 
     function Missing-Alive([int[]]$Expected, [int[]]$Have) {
         # pids that are absent although their process is still running = lost records
@@ -90,7 +93,7 @@ try {
     $have = Read-Pids
     $lost = Missing-Alive ($setA + $setB) $have
     Check 'workers-finished' $done ''
-    Check 'concurrent-save-keeps-all' ($lost.Count -eq 0) "records=$($have.Count) of 100 (lost while process alive: $($lost.Count))"
+    Check 'concurrent-save-keeps-all' ($lost.Count -eq 0) "records=$($have.Count) of 30 (lost while process alive: $($lost.Count))"
 
     # 2. Remove (set C, pre-seeded) races with Save (set D); unrelated records must survive
     foreach ($id in $setC) { & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution "C:\c\$i.sln" } $id }
@@ -128,7 +131,7 @@ try {
     } @((& $mod { $script:TcIdeSolutionLockName }), $holdName, "$holdName-held")
     $null = $held.WaitOne(10000)
     $before = Read-Pids
-    $probe = $live[130]
+    $probe = $live[40]
     $threw = $false; $sw = [Diagnostics.Stopwatch]::StartNew()
     try { $out = & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\held.sln' -Verbose 4>&1 } $probe }
     catch { $threw = $true; $out = @() }
@@ -143,8 +146,51 @@ try {
     # once released, Save works again
     & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\held.sln' } $probe
     Check 'save-after-release' ((Read-Pids) -contains $probe) ''
+
+    # 5. file exists but cannot be read (held open without sharing): no write, content unchanged
+    $file = & $mod { Get-TcIdeSolutionRecordPath }
+    $origText = [IO.File]::ReadAllText($file)
+    $p2 = $live[41]
+    $fs = New-Object IO.FileStream($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $threw = $false
+        try { $out = & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\locked.sln' -Verbose 4>&1 } $p2 }
+        catch { $threw = $true; $out = @() }
+    }
+    finally { $fs.Dispose() }
+    $verbose = @($out | Where-Object { $_ -is [Management.Automation.VerboseRecord] } | ForEach-Object { $_.Message })
+    Check 'unreadable-no-throw' (-not $threw) ''
+    Check 'unreadable-content-unchanged' ([IO.File]::ReadAllText($file) -ceq $origText) ''
+    Check 'unreadable-verbose' (@($verbose | Where-Object { $_ -match 'not read|unreadable' }).Count -ge 1) ($verbose -join ' | ')
+    Check 'unreadable-no-tmp' (@(Get-ChildItem -LiteralPath $dir -Filter '*.tmp' -ErrorAction SilentlyContinue).Count -eq 0) ''
+
+    # 6. Replace target held open by a reader: short retries, still failing -> no throw, tmp removed
+    $fs = New-Object IO.FileStream($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $threw = $false
+        try { $out = & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\replace.sln' -Verbose 4>&1 } $p2 }
+        catch { $threw = $true; $out = @() }
+    }
+    finally { $fs.Dispose() }
+    Check 'replace-blocked-no-throw' (-not $threw) ''
+    Check 'replace-blocked-no-tmp' (@(Get-ChildItem -LiteralPath $dir -Filter '*.tmp' -ErrorAction SilentlyContinue).Count -eq 0) ''
+    Check 'replace-blocked-content-unchanged' ([IO.File]::ReadAllText($file) -ceq $origText) ''
+
+    # 7. corrupt JSON: old file kept as .corrupt-<time>, new file holds only the new record
+    [IO.File]::WriteAllText($file, '[ { "pid": 1, "startTi')
+    & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\fresh.sln' } $p2
+    $kept = @(Get-ChildItem -LiteralPath $dir -Filter 'ide-solutions.json.corrupt-*' -ErrorAction SilentlyContinue)
+    $now = @(Read-Pids)
+    Check 'corrupt-renamed' ($kept.Count -eq 1 -and [IO.File]::ReadAllText($kept[0].FullName) -ceq '[ { "pid": 1, "startTi') "kept files: $($kept.Count)"
+    Check 'corrupt-new-file-only-new-record' ($now.Count -eq 1 -and $now[0] -eq $p2) "records: $($now -join ',')"
+
+    # 8. missing file is a normal empty list
+    Remove-Item -LiteralPath $file -Force
+    & $mod { param($i) Save-TcIdeSolutionRecord -ProcessId $i -Solution 'C:\new.sln' } $live[42]
+    Check 'missing-file-written' ((Read-Pids) -contains $live[42]) ''
 }
 finally {
+    foreach ($c in $children) { try { if (-not $c.HasExited) { $c.Kill() } } catch { }; try { $c.Dispose() } catch { } }
     $env:LOCALAPPDATA = $origLocalAppData
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -15,8 +15,13 @@
 2. 讀 `%LOCALAPPDATA%\TwinCATAutomation\ide-solutions.json`(03:25:14 寫入,192 bytes):
 
    ```json
-   [ { "pid": 79440, "startTime": "2026-11-02T03:24:16.0313522+08:00",
-       "solution": "C:\temp\Verify-4026-axis\AxisInterface_Type01_Library.sln" } ]
+   [
+       {
+           "pid":  79440,
+           "startTime":  "2026-11-02T03:24:16.0313522+08:00",
+           "solution":  "C:\\temp\\Verify-4026-axis\\AxisInterface_Type01_Library.sln"
+       }
+   ]
    ```
 
    mutex + `[IO.File]::Replace` 路徑在真機寫入正常,solution 為長名(#63)。

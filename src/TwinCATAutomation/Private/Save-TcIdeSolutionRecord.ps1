@@ -14,24 +14,73 @@ function Get-TcIdeSolutionRecordPath {
     Join-Path (Join-Path $base 'TwinCATAutomation') 'ide-solutions.json'
 }
 
-function Read-TcIdeSolutionRecords {
+# Reads the record file. Returns @{ State; Records; Error } with State
+#   'ok'         parsed (Records may be empty)
+#   'missing'    no file (a normal empty list)
+#   'unreadable' still cannot be opened after retries (sharing violation, access denied)
+#   'corrupt'    opened but is not valid JSON
+# [IO.File]::Replace can make a reader fail for a moment (sharing violation / file briefly
+# missing): the open is retried a few times.
+function Read-TcIdeSolutionRecordFile {
     [CmdletBinding()]
     param()
     $path = Get-TcIdeSolutionRecordPath
-    if (-not (Test-Path -LiteralPath $path)) { return @() }
-    # PS 5.1 ConvertFrom-Json emits a JSON array as ONE object: unroll it. [IO.File]::Replace can
-    # make a reader fail for a moment (sharing violation / file briefly missing): retry a few times.
-    $last = $null
+    $text = $null; $last = $null
     for ($i = 1; $i -le 5; $i++) {
-        try {
-            if (-not (Test-Path -LiteralPath $path)) { return @() }
-            $parsed = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            return @($parsed | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
+        # No Test-Path first: it says "missing" for a file held open exclusively. A file is only
+        # 'missing' when the open itself says not-found.
+        try { $text = [IO.File]::ReadAllText($path); $last = $null; break }
+        catch {
+            $ex = $_.Exception
+            if ($ex.InnerException) { $ex = $ex.InnerException }
+            if ($ex -is [System.IO.FileNotFoundException] -or $ex -is [System.IO.DirectoryNotFoundException]) {
+                return @{ State = 'missing'; Records = @(); Error = $null }
+            }
+            $last = $ex.Message; Start-Sleep -Milliseconds (20 * $i)
         }
-        catch { $last = $_.Exception.Message; Start-Sleep -Milliseconds (20 * $i) }
     }
-    Write-Verbose "IDE solution records unreadable ($last)"
-    return @()
+    if ($null -ne $last) { return @{ State = 'unreadable'; Records = @(); Error = $last } }
+    try {
+        if ([string]::IsNullOrWhiteSpace($text)) { throw 'empty file' }
+        # PS 5.1 ConvertFrom-Json emits a JSON array as ONE object: unroll it.
+        $parsed = $text | ConvertFrom-Json -ErrorAction Stop
+        @{ State = 'ok'; Records = @($parsed | ForEach-Object { $_ } | Where-Object { $null -ne $_ }); Error = $null }
+    }
+    catch { @{ State = 'corrupt'; Records = @(); Error = $_.Exception.Message } }
+}
+
+# Lenient read for lookups: anything unusable is an empty list.
+function Read-TcIdeSolutionRecords {
+    [CmdletBinding()]
+    param()
+    $r = Read-TcIdeSolutionRecordFile
+    if ($r.State -in 'unreadable', 'corrupt') { Write-Verbose "IDE solution records $($r.State) ($($r.Error))" }
+    @($r.Records)
+}
+
+# For a writer, UNDER the lock. Returns the records to build on. 'missing' = empty list. Throws
+# when the file exists but cannot be read (writing would overwrite the other records). A corrupt
+# file is renamed to ide-solutions.json.corrupt-<time> first, like build-required.json.
+function Read-TcIdeSolutionRecordsForWrite {
+    [CmdletBinding()]
+    param(
+        # Remove: a corrupt file has no record to remove, so it is left as it is (the next Save moves it aside).
+        [switch]$LeaveCorrupt
+    )
+    $r = Read-TcIdeSolutionRecordFile
+    switch ($r.State) {
+        'unreadable' { throw "records not read, nothing written ($($r.Error))" }
+        'corrupt' {
+            if ($LeaveCorrupt) { return @() }
+            $path = Get-TcIdeSolutionRecordPath
+            $kept = "$path.corrupt-$((Get-Date).ToString('yyyyMMdd-HHmmss-fff'))"
+            try { [IO.File]::Move($path, $kept) }
+            catch { throw "corrupt records not moved aside, nothing written ($($_.Exception.Message))" }
+            Write-Verbose "IDE solution records corrupt ($($r.Error)); kept as $kept"
+            return @()
+        }
+        default { return @($r.Records) }
+    }
 }
 
 # Named mutex + wait limit for the read-modify-write of ide-solutions.json (#51).
@@ -83,7 +132,7 @@ function Save-TcIdeSolutionRecord {
         $alive = @{}
         foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
         $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -Body {
-            $keep = @(Read-TcIdeSolutionRecords | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
+            $keep = @(Read-TcIdeSolutionRecordsForWrite | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
             $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $start; solution = $Solution }
             Write-TcIdeSolutionRecords -Records $keep
         }
@@ -102,8 +151,15 @@ function Write-TcIdeSolutionRecords {
     try {
         Set-Content -LiteralPath $tmp -Value (ConvertTo-Json -InputObject @($Records) -Depth 3) -Encoding UTF8
         # Atomic replace (no window without a file); Move only when there is nothing to replace.
-        if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, [NullString]::Value) }
-        else { [IO.File]::Move($tmp, $path) }
+        # Readers do not take the mutex and may hold the file open for a moment: retry the replace.
+        for ($i = 1; $i -le 5; $i++) {
+            try {
+                if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) }
+                else { [IO.File]::Move($tmp, $path) }
+                return
+            }
+            catch { if ($i -ge 5) { throw }; Start-Sleep -Milliseconds (50 * $i) }
+        }
     }
     catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw }
 }
@@ -120,7 +176,7 @@ function Remove-TcIdeSolutionRecord {
         $alive = @{}
         foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
         $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -Body {
-            $all = @(Read-TcIdeSolutionRecords)
+            $all = @(Read-TcIdeSolutionRecordsForWrite -LeaveCorrupt)
             if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
             Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
         }
