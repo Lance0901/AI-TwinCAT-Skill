@@ -27,6 +27,7 @@ $NtpParams = @(
     @('ClientEnable', '#x03150101', 8, 'BOOL', 1),
     @('PollInterval', '#x03150105', 32, 'UDINT', 4321),
     @('Velocity', '#x0509300a', 64, 'LREAL', 2000),
+    @('PollTime', '#x03150106', 32, 'TIME', 1000),
     @('ServerName', '#x03150110', 160, 'STRING(19)', 'ntp.example'),
     @('ServerPara', '#x03150120', 128, 'ST_ServerPara', $null),
     @('ModeWord', '#x03150130', 32, 'ST_ModeWord', $null)
@@ -42,6 +43,7 @@ function ConvertTo-MockBytes($p) {
     switch ($p[3]) {
         'BOOL' { return , [byte[]]@([byte]$p[4]) }
         'UDINT' { return , [byte[]][BitConverter]::GetBytes([uint32]$p[4]) }
+        'TIME' { return , [byte[]][BitConverter]::GetBytes([uint32]$p[4]) }
         'TimeType' { return , [byte[]][BitConverter]::GetBytes([int32]$p[4]) }
         'LREAL' { return , [byte[]][BitConverter]::GetBytes([double]$p[4]) }
         'STRING(19)' { $b = New-Object byte[] 20; $s = [Text.Encoding]::ASCII.GetBytes([string]$p[4]); [Array]::Copy($s, $b, $s.Length); return , $b }
@@ -202,7 +204,7 @@ try {
     # ===== Get-TcComModuleParameter
     Reset-Mock; Reset-BuildRequired
     $r = Get-TcComModuleParameter -Module NtpProbe
-    Check 'GetTcComParameter list: found by instance name, parameters with ids and project values' ($r.success -and $r.data.modulePath -eq $Ntp -and @($r.data.parameters).Count -eq 7 -and @($r.data.parameters | Where-Object { $_.name -eq 'PollInterval' -and $_.parameterId -eq '0x03150105' -and $_.projectValue -eq '4321' }).Count -eq 1) (J $r.data)
+    Check 'GetTcComParameter list: found by instance name, parameters with ids and project values' ($r.success -and $r.data.modulePath -eq $Ntp -and @($r.data.parameters).Count -eq 8 -and @($r.data.parameters | Where-Object { $_.name -eq 'PollInterval' -and $_.parameterId -eq '0x03150105' -and $_.projectValue -eq '4321' }).Count -eq 1) (J $r.data)
     $r = Get-TcComModuleParameter -Module NoSuch
     Check 'GetTcComParameter unknown module -> TCCOM_MODULE_NOT_FOUND with modules' ($r.error.code -eq 'TCCOM_MODULE_NOT_FOUND' -and @($r.data.modules) -contains 'NtpProbe') (J $r)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name pollinterval
@@ -214,7 +216,7 @@ try {
     $r = Get-TcComModuleParameter -Module NtpProbe -Name ServerPara
     Check 'GetTcComParameter struct: rawHex only, value null' ($r.success -and $null -eq $r.data.value -and $r.data.rawHex.Length -eq 32) (J $r.data)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name NoSuch
-    Check 'GetTcComParameter unknown name -> TCCOM_PARAM_NOT_FOUND with parameters' ($r.error.code -eq 'TCCOM_PARAM_NOT_FOUND' -and @($r.data.parameters).Count -eq 7) (J $r.error)
+    Check 'GetTcComParameter unknown name -> TCCOM_PARAM_NOT_FOUND with parameters' ($r.error.code -eq 'TCCOM_PARAM_NOT_FOUND' -and @($r.data.parameters).Count -eq 8) (J $r.error)
     $global:T.Nodes[$Ntp].Props.Online[[uint32]0x03150105] = [byte[]][BitConverter]::GetBytes([uint32]7777)
     $r = Get-TcComModuleParameter -Module NtpProbe -Name PollInterval -Online
     Check 'GetTcComParameter -Online reads the running value (7777), not the project value' ($r.success -and $r.data.value -eq 7777 -and $r.data.projectValue -eq '4321' -and $r.data.online) (J $r.data)
@@ -250,6 +252,27 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
     $r = Set-TcComModuleParameter -Module NtpProbe -Name PollInterval -Value 5000 -DryRun $false
     Check 'SetTcComParameter modal dialog -> IDE_MODAL_DIALOG, nothing written / recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-Sets).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r.error)
+
+    # 4.6 N2: TIME (32 bit, ms, UDINT inside) is read as a number and written as ms or T#...
+    Reset-Mock; Reset-BuildRequired
+    $r = Get-TcComModuleParameter -Module NtpProbe -Name PollTime
+    Check 'N2 GetTcComParameter TIME: value 1000 (ms), rawHex E8030000, paramType TIME' ($r.success -and $r.data.value -eq 1000 -and $r.data.rawHex -eq 'E8030000' -and $r.data.paramType -eq 'TIME') (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 4321
+    Check 'N2 SetTcComParameter TIME 4321 (ms) dry-run -> plannedHex E1100000, value 4321' ($r.success -and $r.data.plannedHex -eq 'E1100000' -and $r.data.value -eq 4321 -and (Get-Sets).Count -eq 0) (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#5S'
+    Check 'N2 SetTcComParameter TIME T#5S -> 5000 ms (88130000)' ($r.success -and $r.data.plannedHex -eq '88130000' -and $r.data.value -eq 5000) (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'TIME#1m30s_250ms'
+    Check 'N2 SetTcComParameter TIME#1m30s_250ms -> 90250 ms' ($r.success -and $r.data.value -eq 90250) (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#1.5s'
+    Check 'N2 SetTcComParameter T#1.5s -> 1500 ms' ($r.success -and $r.data.value -eq 1500) (J $r.data)
+    foreach ($bad in @('T#1.5ms', '-1', 'T#-5s', 'abc', 'T#5x', '4294967296')) {
+        $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value $bad
+        Check "N2 SetTcComParameter TIME '$bad' -> TCCOM_PARAM_INVALID_VALUE, nothing written" ($r.error.code -eq 'TCCOM_PARAM_INVALID_VALUE' -and (Get-Sets).Count -eq 0) (J $r.error)
+    }
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name PollTime -Value 'T#5s' -DryRun $false
+    Check 'N2 SetTcComParameter TIME live: SetModulePara, readback 88130000, verified' ($r.success -and $r.data.verified -and $r.data.readbackHex -eq '88130000') (J $r.data)
+    $r = Set-TcComModuleParameter -Module NtpProbe -Name ServerPara -Value 1
+    Check 'N2 unsupported type: message names the type and the writable list (TIME included), hint lists TIME too' ($r.error.code -eq 'TCCOM_PARAM_UNSUPPORTED_TYPE' -and $r.error.message -match 'ST_ServerPara \(16 bytes\)' -and $r.error.message -match 'TIME' -and $r.error.hint -match 'TIME' -and $r.error.hint -match 'paramType') (J $r.error)
 
     # ===== Set-TcComModuleContext
     Reset-Mock; Reset-BuildRequired

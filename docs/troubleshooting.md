@@ -1167,7 +1167,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **建立**:`Add-TcComModule`(MCP `AddTcComModule`)= `TIRC^TcCOM Objects` 上 `CreateChild(<name>, 0, '', <GUID 或型別名稱>)`(TE1000 v1.7.0 §6.7.1 p.274–275;subType 0 / 1、GUID 有沒有大括號都可以，probe 第 9 題)。XAE 一律改名成 `<name> (<ModuleTypeName>)`,同名時再加 `_ObjN`(4024 第一次就加),都不報錯，所以模組先查同名，名稱和 path 一律從讀回取得(`data.createdPath` / `createdName`)。module 要放在 `CustomConfig\Modules` 或 `Config\Io\TcModuleFolders.xml` 列出的資料夾(手冊 p.274)。TMC 沒寫 `<Licenses>` 不代表 runtime 不檢查授權;probe 只 Activate 過 `TcNtpExternalTimeProvider`(`{7e6d2fda-2d37-4998-a31f-36958d3a2c8a}`,測試前要先把 `ClientEnable` 設 FALSE,否則會連 `ntp.beckhoff-cloud.com`)。
 - **找 module**:tree path,或實例名稱(`ITcModuleManager.Modules.Item(i)`,i 從 0;`foreach` 列舉不到、`LookupModule`(v2)late binding 叫不到、`ClassID` 是空的，probe 第 11 題)加 `TIRC^TcCOM Objects` 的子節點名稱。
-- **參數**:清單和 id(`PTCID`)、`BitSize`、`BaseType` 來自 ProduceXml `Module/Parameters/Parameter`,專案值來自 `ParameterValues/Value`(probe 第 10 題)。離線讀寫 `GetModulePara` / `SetModulePara(pid, byte[])`(大小不符 `0x98110705`);值一律先轉成剛好大小的 bytes 並檢查範圍(enum 依 BitSize 當整數;struct / array 只回 `rawHex`)。離線寫入只改 XAE 記憶體(要存檔才進 `.tsproj` / `.xti`),會記 BUILD_REQUIRED。
+- **參數**:清單和 id(`PTCID`)、`BitSize`、`BaseType` 來自 ProduceXml `Module/Parameters/Parameter`,專案值來自 `ParameterValues/Value`(probe 第 10 題)。離線讀寫 `GetModulePara` / `SetModulePara(pid, byte[])`(大小不符 `0x98110705`);值一律先轉成剛好大小的 bytes 並檢查範圍(enum 依 BitSize 當整數;struct / array 只回 `rawHex`)。**TIME**(phase3-4.6 N2,已修):32 bit、1 ms 解析度、內部是 UDINT([InfoSys TIME/LTIME](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/12189021579.html)),讀取的 `value` 是 ms 數字;寫入收整數 ms 或 IEC literal(`T#5S`、`T#1m30s`、`TIME#250ms`,可有 `_`,只有最後一段可帶小數),必須是整數 ms、範圍 0..4294967295。4.6 實測 `TcNtpExternalTimeProvider.PollInterval` 是 TIME(registered tcauto 2026-11-01,4026.22 VS2022,`rawHex E8030000` = 1000)。可寫入的型別：BOOL、整數型別、REAL / LREAL、STRING(n)、TIME、DataTypes 確認是 enum 的型別。離線寫入只改 XAE 記憶體(要存檔才進 `.tsproj` / `.xti`),會記 BUILD_REQUIRED。
 - **Online**:`-Online` 走 `ITcModuleManager.Get/SetOnlineModulePara(oid, pid, ...)`(手冊 §5.31.1.1 p.130:ADS port `AMSPORT_R0_TCOMSERVER` = 10、IG = oid、IO = pid;probe 第 13 題用 raw ADS port 10 讀到相同值)。**online 寫入不改專案**(下次 Activate 就還原),不記 BUILD_REQUIRED;寫入前的 online 值在 `data.previousHex` 和備份檔。
 - **Context**:`Set-TcComModuleContext`(MCP `SetTcComContext`)的 index 是 TMC 的 Context `Id`(NTP 是 1,**不是 0**;probe 第 12 題、手冊 §5.33.2 p.140–141),合法值從 ProduceXml `Module/Contexts/Context/Id` 讀;task oid 是 task ProduceXml 的 `TreeItem/ObjectId`。
 
@@ -1203,8 +1203,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TCCOM_PARAM_UNSUPPORTED_TYPE
 
-- **現象**:參數不是基本型別(struct / array),只能讀 `rawHex`。
-- **下一步**:在 XAE 設定，或改寫它的成員參數(ProduceXml 裡 `ServerPara.bEnable` 這種點號名稱)。
+- **現象**:參數的型別(`data.paramType`;message 有型別名稱與大小)不在可寫入的清單裡(BOOL、整數型別、REAL / LREAL、STRING(n)、TIME、DataTypes 確認是 enum 的型別):struct / array、DataTypes 沒確認是 enum 的具名型別、LTIME / DATE / TOD / DT 等沒支援的型別。只能讀 `rawHex`,什麼都沒寫。4.6 N2 之前 TIME 也落在這裡，而且 hint 一律說「不是基本型別(struct / array)」,和 message 不一致;現在 TIME 可以寫，hint 改成列出可寫入的型別。
+- **下一步**:`Get-TcComModuleParameter`(MCP `GetTcComParameter`)讀 `rawHex`;要改值在 XAE 設定，或改寫它的成員參數(TMC 有獨立成員參數時，例如 ProduceXml 裡 `ServerPara.bEnable` 這種點號名稱)。
 
 ### TCCOM_PARAM_SIZE_MISMATCH
 

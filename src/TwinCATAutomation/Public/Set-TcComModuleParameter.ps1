@@ -7,7 +7,8 @@ function Set-TcComModuleParameter {
         (openspec/changes/complete-automation-interface/verification/phase3-probe.md questions 11, 13;
         TE1000 v1.7.0 5.33.1.6 p.139, 5.31.1.5 p.132):
           - the value is converted to exactly the parameter size first (type from the ProduceXml
-            BaseType / GetTypeOfModulePara, size from BitSize; an enum is an integer of its BitSize)
+            BaseType / GetTypeOfModulePara, size from BitSize; an enum is an integer of its BitSize;
+            TIME is milliseconds, as an integer or a literal such as T#5S, phase3-4.6 N2)
             and range checked (INVALID: TCCOM_PARAM_INVALID_VALUE; struct / array types and named
             types that the module's DataTypes do not confirm as an enum are read-only here:
             TCCOM_PARAM_UNSUPPORTED_TYPE). A current value of another size than the planned bytes ->
@@ -39,7 +40,7 @@ function Set-TcComModuleParameter {
     .PARAMETER ParameterId
         Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name.
     .PARAMETER Value
-        New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING.
+        New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING, milliseconds or a literal such as T#5S for TIME.
     .PARAMETER Online
         Write the running object on the target only (needs Activate + Run); the project is not changed.
     .PARAMETER DryRun

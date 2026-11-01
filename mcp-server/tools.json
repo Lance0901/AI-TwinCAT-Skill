@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-10-31T20:59:18Z",
+    "generatedAt":  "2026-11-01T02:54:15Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -2342,7 +2342,7 @@
                                                                                  "description":  "Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name."
                                                                              },
                                                              "Value":  {
-                                                                           "description":  "New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING."
+                                                                           "description":  "New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING, milliseconds or a literal such as T#5S for TIME."
                                                                        },
                                                              "Online":  {
                                                                             "type":  "boolean",

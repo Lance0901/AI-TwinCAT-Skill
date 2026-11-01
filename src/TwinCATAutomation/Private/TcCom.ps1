@@ -26,7 +26,11 @@ $script:TcHrAdsObjectNotFound = [int]0x9811071D
 $script:TcHrInvalidArg = [int]0x80070057
 $script:TcHrFail = [int]0x80004005
 
-# Elementary types: name -> @{ Bytes; Kind (bool | uint | int | float) }
+# Elementary types: name -> @{ Bytes; Kind (bool | uint | int | float | time) }
+# TIME: 32 bit, resolution 1 ms, stored as UDINT (InfoSys TIME/LTIME,
+# https://infosys.beckhoff.com/content/1033/tc3_plc_intro/12189021579.html); phase3-4.6 N2: the
+# TcNtpExternalTimeProvider parameter PollInterval is TIME (registered tcauto 2026-11-01, 4026.22
+# VS2022, rawHex E8030000 = 1000).
 $script:TcComElementaryTypes = @{
     'BOOL' = @{ Bytes = 1; Kind = 'bool' }
     'BYTE' = @{ Bytes = 1; Kind = 'uint' }; 'USINT' = @{ Bytes = 1; Kind = 'uint' }; 'SINT' = @{ Bytes = 1; Kind = 'int' }
@@ -34,6 +38,37 @@ $script:TcComElementaryTypes = @{
     'DWORD' = @{ Bytes = 4; Kind = 'uint' }; 'UDINT' = @{ Bytes = 4; Kind = 'uint' }; 'DINT' = @{ Bytes = 4; Kind = 'int' }
     'LWORD' = @{ Bytes = 8; Kind = 'uint' }; 'ULINT' = @{ Bytes = 8; Kind = 'uint' }; 'LINT' = @{ Bytes = 8; Kind = 'int' }
     'REAL' = @{ Bytes = 4; Kind = 'float' }; 'LREAL' = @{ Bytes = 8; Kind = 'float' }
+    'TIME' = @{ Bytes = 4; Kind = 'time' }
+}
+$script:TcComWritableTypesText = 'BOOL, the integer types, REAL / LREAL, STRING(n), TIME and enums confirmed by the module DataTypes'
+
+function ConvertFrom-TcTimeLiteral {
+    <#
+    .SYNOPSIS
+        TIME value text -> milliseconds ([decimal]) or $null: an integer (ms) or an IEC literal T#/TIME# with d / h / m / s / ms parts (e.g. T#5S, T#1m30s, TIME#250ms; '_' allowed, the last part may have a fraction).
+    .PARAMETER Text
+        Value text.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Text)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $t = ([string]$Text).Trim()
+    $n = [decimal]0
+    if ([decimal]::TryParse($t, [System.Globalization.NumberStyles]::Integer, $inv, [ref]$n)) { return $n }
+    $m = [regex]::Match($t, '^(?i)(?:T|TIME)#(-?)([0-9_.a-z]+)$')
+    if (-not $m.Success) { return $null }
+    $body = $m.Groups[2].Value.Replace('_', '')
+    $parts = [regex]::Matches($body, '(?i)(\d+(?:\.\d+)?)(ms|d|h|m|s)')
+    if ($parts.Count -eq 0 -or (($parts | ForEach-Object { $_.Value }) -join '') -ne $body) { return $null }
+    $scale = @{ 'd' = [decimal]86400000; 'h' = [decimal]3600000; 'm' = [decimal]60000; 's' = [decimal]1000; 'ms' = [decimal]1 }
+    $total = [decimal]0
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        $num = $parts[$i].Groups[1].Value
+        if ($num.Contains('.') -and $i -ne $parts.Count - 1) { return $null }
+        $total += [decimal]::Parse($num, $inv) * $scale[$parts[$i].Groups[2].Value.ToLowerInvariant()]
+    }
+    if ($m.Groups[1].Value -eq '-') { $total = -$total }
+    return $total
 }
 
 function ConvertTo-TcGuidText {
@@ -332,6 +367,7 @@ function ConvertFrom-TcComParamBytes {
             if ($Type.bytes -eq 4 -and $b.Length -ge 4) { return [double][BitConverter]::ToSingle($b, 0) }
             if ($Type.bytes -eq 8 -and $b.Length -ge 8) { return [BitConverter]::ToDouble($b, 0) }
         }
+        'time' { if ($b.Length -ge 4) { return [uint64][BitConverter]::ToUInt32($b, 0) } }
         'uint' {
             switch ($Type.bytes) { 1 { if ($b.Length -ge 1) { return [uint64]$b[0] } } 2 { if ($b.Length -ge 2) { return [uint64][BitConverter]::ToUInt16($b, 0) } } 4 { if ($b.Length -ge 4) { return [uint64][BitConverter]::ToUInt32($b, 0) } } 8 { if ($b.Length -ge 8) { return [BitConverter]::ToUInt64($b, 0) } } }
         }
@@ -349,7 +385,9 @@ function ConvertTo-TcComParamBytes {
     .DESCRIPTION
         Numbers are parsed with the invariant culture and range checked (no silent wrap: XAE would
         store whatever arrives). BOOL accepts true / false / 1 / 0. A string must fit bytes - 1 ASCII
-        characters (null terminated, padded with 0). Raw types are refused.
+        characters (null terminated, padded with 0). TIME: milliseconds as an integer or an IEC
+        literal (T#5S, T#1m30s, TIME#250ms; ConvertFrom-TcTimeLiteral), 0..4294967295 ms, a whole
+        number of ms. Raw types are refused.
     .PARAMETER Type
         Codec.
     .PARAMETER Value
@@ -382,6 +420,13 @@ function ConvertTo-TcComParamBytes {
             }
             return , [byte[]][BitConverter]::GetBytes([double]$d)
         }
+        'time' {
+            $ms = ConvertFrom-TcTimeLiteral -Text $text
+            if ($null -eq $ms) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is no TIME (milliseconds as an integer, or a literal such as T#5S / T#1m30s / TIME#250ms)" }
+            if ($ms -ne [decimal]::Truncate($ms)) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is not a whole number of milliseconds (TIME has a resolution of 1 ms)" }
+            if ($ms -lt 0 -or $ms -gt [decimal][uint32]::MaxValue) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' ($ms ms) is out of the TIME range 0..4294967295 ms" }
+            return , [byte[]][BitConverter]::GetBytes([uint32]$ms)
+        }
         { $_ -eq 'uint' -or $_ -eq 'int' } {
             $n = [decimal]0
             if (-not [decimal]::TryParse($text, [System.Globalization.NumberStyles]::Integer, $inv, [ref]$n)) { throw "TCCOM_PARAM_INVALID_VALUE: '$text' is no integer ($($Type.name))" }
@@ -396,7 +441,7 @@ function ConvertTo-TcComParamBytes {
             return , $b
         }
     }
-    throw "TCCOM_PARAM_UNSUPPORTED_TYPE: $($Type.name) ($($Type.bytes) bytes) can only be read as hex, not written"
+    throw "TCCOM_PARAM_UNSUPPORTED_TYPE: $($Type.name) ($($Type.bytes) bytes) is not a type this tool can write (writable: $script:TcComWritableTypesText); it can only be read as rawHex"
 }
 
 function ConvertTo-TcByteArray {
