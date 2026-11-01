@@ -209,7 +209,7 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 | `AddPlaceholder` | `Add-TcLibraryPlaceholder` | 已實測(4026、4024) |
 | `RemoveReference` | `Remove-TcLibraryReference` | 已實測(4026、4024)。帶不帶 `#` 都可 |
 | `InstallLibrary` | `Install-TcLibrary` | 已實測(4026、4024,只用自己產生的 library;結束時 repository 與開始前相同)。dry-run 不檢查 repository 名稱(P8) |
-| `UninstallLibrary` | `Uninstall-TcLibrary` | 已實測(4026、4024)。備份目錄內容正確;把備份目錄手動複製回 repository XAE 不認，要用 InstallLibrary 安裝備份裡的 `.library` 還原 |
+| `UninstallLibrary` | `Uninstall-TcLibrary` | 已實測(4026、4024)。備份目錄內容正確;把備份目錄手動複製回 repository XAE 不認，要用 InstallLibrary 安裝備份裡的 `.library` 還原。萬用字元防呆已用 registered tcauto 實測(2026-11-01,4026 VS2022 + 本機 UmRT):`Version=*`(dry-run 與 `DryRun=false`)、`LibraryName=Tc2_*`、`Distributor=Beckhoff*` 都回 `LIBRARY_INVALID_ARGUMENT` reason `wildcard`,message / hint 是 MCP 寫法;repository(排除 `cache`)目錄與 SHA-256、`GetLibraries Repository=true` 473 筆前後相同(phase2-3.8-retest.md N6) |
 | `FreezePlaceholder` | `Lock-TcLibraryPlaceholder` | 已實測(4026、4024)。單一 placeholder 正確;`All=true` 的改版本(P2、P3)已修並在 2026-11-01 重測通過(釘回有效、隱含 placeholder 跳過),dry-run 預告不準，見上方「`FreezePlaceholder All=true` 可能改掉 library 版本」 |
 | `CheckAllObjects` | `Test-TcPlcProject` | 已實測(4026 passed / CHECK_FAILED 兩條;4024 支援，副本本身沒被引用的 FB 有錯，只走到 CHECK_FAILED) |
 | `AddPlcTask` | `Add-TcPlcTask` | 已實測(4026、4024)。父節點只多 ChildCount;Priority 超出 XAE 接受範圍會被換成別的值 → 讀回不符、回滾;cycle time 不是 base time 倍數時離線照收、沒警告;沒存檔(P4)已修並在 2026-11-01 重測通過(ResetSolution 後 task 仍在),見上方。線上 CycleCount 沒測 |
