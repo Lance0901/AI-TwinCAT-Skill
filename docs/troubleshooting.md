@@ -1155,7 +1155,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### NC_PLC_VARIABLE_NOT_FOUND
 
-- **現象**:試過的 process image 底下都找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`。`data.triedPaths` 列出每一個 lookup 過的完整 path(`<instance>^<task> Inputs^<var>.NcToPlc` …),`data.tasks` 是拿來拼 path 的 task 名稱(`TIRT` 的子節點 + PLC project 的 PLC task;`TIRT` 在真 COM 上列舉得到、名稱和 `<task> Inputs` 相同，**待實測(4.6 retest)**)。`NcToPlc` 和 `PlcToNc` 必須來自**同一個 task**(review S4):只找到一邊，或兩邊分在不同 task,也回這個碼，`data.foundPaths` 列出找到的那些 path。AXIS_REF 要 build 過才會出現在 process image。4.6 B1 之前這裡回 `data.instanceChildren`(真 COM 上一律是空的，已移除)。
+- **現象**:試過的 process image 底下都找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`。`data.triedPaths` 列出每一個 lookup 過的完整 path(`<instance>^<task> Inputs^<var>.NcToPlc` …),`data.tasks` 是拿來拼 path 的 task 名稱(`TIRT` 的子節點 + PLC project 的 PLC task;`TIRT` 在真 COM 上列舉得到、名稱和 `<task> Inputs` 相同：實測 2026-11-01 e3cf28c,4026 VS2022 `PlcTask`、4024 XAE Shell `PlcTask` + `MotionTask`,registered tcauto,phase3-4.6.md「Retest(e3cf28c)」)。`NcToPlc` 和 `PlcToNc` 必須來自**同一個 task**(review S4):只找到一邊，或兩邊分在不同 task,也回這個碼，`data.foundPaths` 列出找到的那些 path。AXIS_REF 要 build 過才會出現在 process image。4.6 B1 之前這裡回 `data.instanceChildren`(真 COM 上一律是空的，已移除)。
 - **下一步**:確認 `-PlcVariable` 是 AXIS_REF 本身(例如 `MAIN.axis`,不要加 `.NcToPlc`),`Build-TcProject`(MCP `BuildProject`)後重跑。`data.tasks` 是空的就是 `TIRT` 底下沒有 task,先 `Get-TcTreeItem -Path TIRT` 確認;要看 image 底下實際的名稱用 `Get-TcTreeItem -Path '<data.triedPaths 去掉最後一段>'`。
 
 ### NC_AXIS_ALREADY_LINKED

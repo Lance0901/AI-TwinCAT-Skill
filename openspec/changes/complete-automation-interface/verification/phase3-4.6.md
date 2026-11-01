@@ -218,3 +218,76 @@
   - `Verify-4024-bfh`:302 / 302,**SHA-256 全部相同**;Device 1 / Device 5 仍是 `Disabled="true"`。
 - 沒有 attach 或操作其他 IDE;library repository 沒動;StaticRoutes.xml 沒動。
 - **UmRT 最後狀態**:`TcSystemServiceUm` pid 102904 仍在跑，**AdsState = Run**,跑的是 4024 副本 Variant1 的組態(最後一次 Activate,含沒 link 的 `AxisT46`,沒有 TcCOM instance)。副本已還原，下一個測試要用 `EnableConfig Force=true` 重新 Activate 自己的專案。UmRT 的 `Boot` 目錄被這次 Activate 改寫(預期內)。
+
+## Retest(e3cf28c)
+
+- 方式:**registered tcauto**(`mcp__tcauto__*`)。唯一例外是 B2 的 DTE `FullName` 寫法：用自建 PowerShell 唯讀 COM(`GetActiveObject('VisualStudio.DTE.17.0')`,只讀 `Solution.Projects[].FullName`)讀，結果分開標示。
+- 日期:2026-11-01(本地 13:49–13:57)。受測程式碼:branch `openspec/complete-automation-interface-phase3` HEAD `e3cf28c`(B1 `0a5aa88`、B2 `a099477`、N2 `16b1590`、N4 `dcdc742`、review `e3cf28c`)。載入確認:MCP server node pid 54500(13:48:15)/ bridge powershell pid 11164(13:49:46)晚於 HEAD commit 11:45:30,`src/` 沒有未提交改動。
+- 環境:4026 = `VisualStudio.DTE.17.0`(VS2022),副本 `C:\Temp\Verify-4026-axis\AxisInterface_Type01_Library.sln`,`TwinCAT OS (x64)`,ConnectIde launched pid 91380(41.2 s,`ownedBySession true`);4024 = `TcXaeShell.DTE.15.0`,副本 `C:\Temp\Verify-4024-bfh\BFH-1650.sln`,`TwinCAT RT (x64)`(`SetTarget NoPlatformSwitch=true`),launched pid 117180(34.7 s)。UmRT_Default `TcSystemServiceUm` pid 102904,AmsNetId `199.5.42.250.1.1`。全程沒有 license / trial 對話框，沒有 `IDE_MODAL_DIALOG`。
+- 背景監看:`Watch-Runtime.ps1` pid 84696,log 在 scratchpad `...\fe04933c-800a-42c5-8d18-7583b448c662\scratchpad\runtime-watch.jsonl`(420 筆,13:49:51–13:56:52)。**沒有 `event` 行**:pid 全程 102904,bootdata 396 / 484 byte(沒有 0 byte);Run 393 / Config 22 / Stop 1 / unreachable 4(兩次 Activate)。
+- TwinCAT 行為結論沒有新的 InfoSys 出處，下文都是 **實測 2026-11-01,上述環境**。
+
+| 項目 | 結果 | 重點 |
+|---|---|---|
+| B1 `LinkNcAxis`(4026) | **PASS** | 成功路徑、同一 task、冪等、`NC_AXIS_ALREADY_LINKED`、Run 時 AxisId 相符 |
+| B1 `LinkNcAxis`(4024) | **PASS** | 兩個 task 的專案仍取 `PlcTask` 兩邊;自然觸發 `NC_AXIS_ALREADY_LINKED`;解掉舊 link 後實寫成功、AxisId 相符 |
+| N3 假設(`TIRT` 列舉 task 名稱) | **PASS** | 4026 `[PlcTask]`、4024 `[PlcTask, MotionTask]` |
+| B2 `SetIndependentFile`(4026 原樣) | **PASS** | `tsprojSource dte`,開 / 關都成功;DTE `FullName` 是長檔名(大小寫不同) |
+| B2 variant `backupFiles` | **PASS** | 只有 1 個 `.tsproj` |
+| N2 TIME 參數(4026) | **PASS** | Get `value 1000`;`T#5S` / `4321` 讀回相符;`T#5s1m` 擋下 |
+| N4 `ROUTE_PASSWORD_MISSING` | **PASS** | message 沒有 `-Password` / `SecureString` / `PowerShell` |
+| N6(新)`SetVariantConfig` 移除最後一個 variant | **FAIL(誤報)** | 回 `VARIANT_VERIFY_FAILED`,實際已移除 |
+
+### B1 / N3:LinkNcAxis
+
+- 4026:`LookupTreeItem TIRT` → `childCount 1`,`[PlcTask]`。`AddNcAxis AxisR46`(`axisId 5`)→ `BuildProject`(completeBuild true)→ `LinkNcAxis Axis=AxisR46 PlcVariable=GVL_Motion.arAxisCtrl_gb[5].Admin.Axis`:
+  - dry-run:`instancePath TIPC^AxisInterface^AxisInterface Instance`,links `...^PlcTask Inputs^GVL_Motion.arAxisCtrl_gb[5].Admin.Axis.NcToPlc` ↔ `...^AxisR46^Outputs^ToPlc`、`...^PlcTask Outputs^...PlcToNc` ↔ `...^AxisR46^Inputs^FromPlc`,兩條 `state missing`。
+  - `DryRun=false`:`linked true`,兩條 `state linked`(讀回 mapping;NcToPlc / PlcToNc 都在 `PlcTask`),`mappingLinkCount 10`,備份 `MappingInfo.xml`。
+  - 同一對再 link:`success`,`alreadyLinked true`,沒有寫入。這是設計(`Connect-TcNcAxisToPlc` 說明：兩對已互相 link → success;任一端接在別處 → `NC_AXIS_ALREADY_LINKED`),不是錯誤。
+  - `AxisR46` 改 link `arAxisCtrl_gb[6]`:**`NC_AXIS_ALREADY_LINKED`**,`existingLinks` 是 `[5]` ↔ `AxisR46` 兩條,message「nothing was linked」,hint 是 MCP 寫法(`RemoveVariableLink` / `LinkNcAxis`)。
+  - 獨立驗證:`BuildProject` → `EnableConfig Force=true`(9 steps ok、Run、bootPackage match 4 檔)→ `ReadVariable`:`arAxisCtrl_gb[5].Admin.Axis.NcToPlc.AxisId = 5`(= AxisR46),`DcTimeStamp 3162747712`。
+- 4024:`TIRT` → `childCount 2`,`[PlcTask, MotionTask]`。`AddNcAxis AxisR46`(`axisId 4`)→ `BuildProject`(completeBuild true):
+  - `LinkNcAxis Axis=AxisR46 PlcVariable=GVL_Axes.axisDraw` → **`NC_AXIS_ALREADY_LINKED`**(自然觸發):`axisDraw` 本來就接 `Axis 3`,`existingLinks` 列出兩條。4024 的 3 個 AXIS_REF(`axisDraw` / `axisDrum` / `axisCenter`)都已接軸。
+  - `LinkNcAxis Axis='Axis 3' PlcVariable=GVL_Axes.axisDraw` → success `alreadyLinked true`,兩條 `linked`,都在 `PlcTask`(沒有拿 `MotionTask` 拼 path)。
+  - 用通用 `RemoveVariableLink` 解掉 `axisDraw.NcToPlc` / `.PlcToNc`(`wasLinked true`,`removed true`)→ `LinkNcAxis Axis=AxisR46 PlcVariable=GVL_Axes.axisDraw DryRun=false` → `linked true`,兩條 `linked`(`PlcTask Inputs` / `PlcTask Outputs`),`mappingLinkCount 97`。
+  - `BuildProject` → `EnableConfig Force=true`(Run、bootPackage match 4 檔)→ `ReadVariable GVL_Axes.axisDraw.NcToPlc.AxisId = 4`(= AxisR46)。
+- 沒測到：link 時的 modal dialog rollback(沒有自然出現的 dialog)。
+
+### B2:SetIndependentFile 與 variant 備份(4026,三個 `.tsproj` 都留著)
+
+- 副本資料夾仍有 `AxisInterface_Type01_Library.tsproj`、`-Lance-G16.tsproj`、`-LanceP-NB1.tsproj`。
+- `SetIndependentFile Path='TINC^NC-Task 1 SAF^Axes^AxisR46' Enabled=true DryRun=false` → success,`tsprojSource dte`,`tsproj ...\AxisInterface_Type01_Library.tsproj`,`createdFiles [_Config\NC\Axes\AxisR46.xti]`,`verified true`;磁碟上 `.xti` 存在、`.tsproj` 有 `<Axis File="AxisR46.xti" Id="5"/>`。
+- `Enabled=false` → success,`tsprojSource dte`,`removedFiles` 同一檔，備份含 `.tsproj` 與 `.xti`。
+- DTE `FullName`(自建唯讀 COM,不是 registered tool):`Solution.Projects` 第一個 = `C:\temp\Verify-4026-axis\AxisInterface_Type01_Library\AxisInterface_Type01_Library.tsproj`——**長檔名，不是 8.3**,但 `temp` 是小寫(磁碟是 `C:\Temp`);第二個 project(`A10_Scope`)的 `Name` / `FullName` 都是空字串。4024 的 `ConnectIde` 也回 `solution C:\temp\Verify-4024-bfh\BFH-1650.sln`(同樣小寫)。模組回的路徑是正規化後的寫法，比對不分大小寫，沒有影響。
+- `SetVariantConfig AddVariant [VarR46] DryRun=false` → `backupFiles` **只有 1 個**(`ProjectVariantConfig.AxisInterface_Type01_Library.tsproj`)。
+
+### N2:TIME 參數(4026,只放一個 NTP instance `NtpR46`,沒有 Activate)
+
+| 呼叫 | 結果 |
+|---|---|
+| `AddTcComModule Name=NtpR46 TypeName=TcNtpExternalTimeProvider` | `NtpR46 (TcNtpExternalTimeProvider)`,oid `0x01010010`,12 個參數 |
+| `GetTcComParameter PollInterval` | `baseType TIME`,`rawHex E8030000`,**`value 1000`**,`projectValue "1000"` |
+| `SetTcComParameter PollInterval T#5S` | `plannedHex 88130000`,`value 5000`,`readbackHex 88130000`,`verified true` |
+| Get | `value 5000` |
+| `SetTcComParameter PollInterval 4321` | `E1100000`,`verified true` |
+| Get | `value 4321` |
+| `SetTcComParameter PollInterval T#5s1m` | `TCCOM_PARAM_INVALID_VALUE`「'T#5s1m' is no TIME ...; nothing was written」;再 Get 仍是 4321 |
+
+- 只測 offline(project 值);online TIME 讀寫沒測(這次沒 Activate NTP)。
+
+### N4:AddAdsRoute dry-run
+
+- `AddAdsRoute Name=R46Dry NetId=5.1.2.3.1.1 Address=192.0.2.10 UserName=Administrator DryRun=true`(沒有 PasswordEnv)→ `ROUTE_PASSWORD_MISSING`,message「AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password; nothing was sent.」——沒有 `-Password`、`SecureString`、`PowerShell`;hint 是 MCP 寫法(`AddAdsRoute PasswordEnv=TCAUTO_ROUTE_PW`)。沒有送出任何 route。
+
+### N6(新發現，未修):移除最後一個 variant 誤報 `VARIANT_VERIFY_FAILED`
+
+- 重現(4026 VS2022,原本沒有 variant):`SetVariantConfig AddVariant [VarR46] DryRun=false`(success)→ `SetVariantConfig RemoveVariant [VarR46] DryRun=false` → `VARIANT_VERIFY_FAILED`「the document read back differs from the one written」,但 `data.readback = {variants [], groups []}` 和 `data.after` 相同。
+- `GetVariants` → `variants []`、`configXml ""`:variant 實際已移除。寫入的是 `<?xml version="1.0"?><ProjectVariants></ProjectVariants>`,XAE 讀回空字串，模組比對文件時當成不同。
+- 影響：成功的操作被回成失敗，並記 `BUILD_REQUIRED`;AI 可能照 hint 去還原備份。只記錄，沒修 `src/`。
+
+### 還原確認(Retest)
+
+- 開始前 robocopy `/MIR` 備份到 `C:\Temp\Verify-4026-axis-baseline-46r`(266 檔)、`C:\Temp\Verify-4024-bfh-baseline-46r`(302 檔),逐檔 SHA-256 manifest 與副本一致;4024 Device 1 / Device 5 都是 `Disabled="true"`。
+- 結束時 `DisconnectIde Quit=true`(4026 pid 91380、4024 pid 117180,都是 `selectedBy launched`、`ownedBySession true`;之後沒有 `devenv` / `TcXaeShell` 行程)→ `/MIR` 還原 → 逐檔比對:**4026 266 / 266、4024 302 / 302,SHA-256 全部相同**;Device 1 / Device 5 仍 Disabled。
+- 沒有 attach 其他 IDE;沒送 AddRoute、沒動 StaticRoutes.xml、沒重啟 TwinCAT service、沒停任何非自己啟動的行程;library repository 沒動;`src/` 沒改(`Private/NcAxis.ps1` 的「pending, 4.6 retest」註解因此沒更新)。
+- **UmRT 最後狀態**:pid 102904 仍在跑，**Run**,跑的是 4024 副本(改過的)組態:`AxisR46` 接 `GVL_Axes.axisDraw`、`Axis 3` 沒接(副本已還原，磁碟上不再有這個組態)。下一個測試要先用自己的專案 `EnableConfig Force=true`。
