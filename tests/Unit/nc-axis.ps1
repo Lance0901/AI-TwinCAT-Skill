@@ -79,6 +79,9 @@ function Reset-Mock([switch]$NoTask, [string]$Instance = 'plc Instance') {
         $null = Add-MockNode $Axes 20
         $null = Add-MockAxis "$Axes^Axis 1" 1 1
     }
+    $null = Add-MockNode 'TIRT'
+    $null = Add-MockNode 'TIRT^OtherTask' 1
+    $null = Add-MockNode 'TIRT^PlcTask' 1
     $null = Add-MockNode 'TIPC'
     $null = Add-MockNode 'TIPC^plc' 56
     $null = Add-MockNode 'TIPC^plc^plc Project' 600
@@ -220,7 +223,7 @@ try {
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis.NcToPlc'
     Check 'LinkNcAxis -PlcVariable with .NcToPlc -> INVALID_PARAMS' ($r.error.code -eq 'INVALID_PARAMS') (J $r.error)
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.other'
-    Check 'LinkNcAxis AXIS_REF not in the image -> NC_PLC_VARIABLE_NOT_FOUND, hint Build-TcProject' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and $r.error.hint -match 'Build-TcProject' -and @($r.data.instanceChildren) -contains 'PlcTask Inputs') (J $r)
+    Check 'LinkNcAxis AXIS_REF not in the image -> NC_PLC_VARIABLE_NOT_FOUND, hint Build-TcProject' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and $r.error.hint -match 'Build-TcProject' -and @($r.data.triedPaths) -contains 'TIPC^plc^plc Instance^PlcTask Inputs^MAIN.other.NcToPlc' -and @($r.data.tasks) -contains 'PlcTask') (J $r)
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
     Check 'LinkNcAxis dry-run: both pairs planned, nothing linked' ($r.success -and $r.data.dryRun -and @($r.data.links | Where-Object { $_.state -eq 'missing' }).Count -eq 2 -and @($global:T.Links).Count -eq 0 -and @($r.data.links)[0].plc -eq $PlcIn -and @($r.data.links)[0].nc -eq "$Axes^Axis 1^Outputs^ToPlc") (J $r.data)
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
@@ -288,6 +291,38 @@ try {
     Reset-Mock -Instance 'MyRenamedInstance'; Reset-BuildRequired
     $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
     Check 'N6 renamed PLC instance is found in the tree' ($r.success -and $r.data.instancePath -eq 'TIPC^plc^MyRenamedInstance' -and @($r.data.links)[0].plc -like 'TIPC^plc^MyRenamedInstance^*') (J $r.data)
+
+    # 4.6 B1: real COM - the PLC instance (ItemType 57) enumerates no children (ChildCount 0), only
+    # LookupTreeItem of '<instance>^<task> Inputs' works; the names come from the TIRT tasks
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'B1 instance enumerates nothing, lookup of <instance>^PlcTask Inputs works -> success' ($r.success -and @($r.data.links)[0].plc -eq $PlcIn -and @($r.data.links)[1].plc -eq $PlcOut -and $r.data.instancePath -eq 'TIPC^plc^plc Instance' -and $null -eq $r.data.PSObject.Properties['warnings']) (J $r)
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis' -DryRun $false
+    Check 'B1 instance enumerates nothing -> live link works, two LinkVariables' ($r.success -and $r.data.linked -and @($global:T.Links).Count -eq 2) (J $r.data)
+    # the PLC node enumerates nothing either: '<Plc> Instance' is still tried
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
+    $global:T.Nodes['TIPC^plc'].Kids.Clear()
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'B1 PLC node and instance enumerate nothing -> <Plc> Instance by lookup, success' ($r.success -and $r.data.instancePath -eq 'TIPC^plc^plc Instance' -and @($r.data.links)[0].plc -eq $PlcIn) (J $r)
+    # renamed instance (found by enumerating TIPC^plc) whose children are not enumerable
+    Reset-Mock -Instance 'MyRenamedInstance'; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^MyRenamedInstance'].Kids.Clear()
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'B1 renamed instance without enumerable children -> found via the task image lookup' ($r.success -and $r.data.instancePath -eq 'TIPC^plc^MyRenamedInstance') (J $r.data)
+    # not built yet: nothing below the images -> NC_PLC_VARIABLE_NOT_FOUND lists every tried path
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.notBuilt'
+    $tp = @($r.data.triedPaths)
+    Check 'B1 not found -> NC_PLC_VARIABLE_NOT_FOUND, triedPaths has both tasks (Inputs and Outputs), no instanceChildren' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and $tp -contains 'TIPC^plc^plc Instance^OtherTask Inputs^MAIN.notBuilt.NcToPlc' -and $tp -contains 'TIPC^plc^plc Instance^PlcTask Outputs^MAIN.notBuilt.PlcToNc' -and $null -eq $r.data.PSObject.Properties['instanceChildren'] -and $r.error.hint -match 'Build-TcProject') (J $r)
+    # no TIRT task at all (and nothing enumerable) -> not found, the tried list says so
+    Reset-Mock; Reset-BuildRequired
+    $global:T.Nodes['TIPC^plc^plc Instance'].Kids.Clear()
+    Remove-MockSubtree 'TIRT'
+    $r = Connect-TcNcAxisToPlc -Axis 'Axis 1' -PlcVariable 'MAIN.axis'
+    Check 'B1 no task names and no enumerable image -> NC_PLC_VARIABLE_NOT_FOUND, tasks empty' ($r.error.code -eq 'NC_PLC_VARIABLE_NOT_FOUND' -and @($r.data.tasks).Count -eq 0) (J $r)
 
     # ===== hints / tools.json
     foreach ($c in @('NC_TASK_NOT_FOUND', 'NC_TASK_AMBIGUOUS', 'NC_TASK_ALREADY_EXISTS', 'NC_TASK_VERIFY_FAILED', 'NC_AXIS_ALREADY_EXISTS', 'NC_AXIS_NOT_FOUND', 'NC_AXIS_AMBIGUOUS', 'NC_AXIS_VERIFY_FAILED', 'NC_INVALID_SUBTYPE', 'NC_AXIS_PARAM_NOT_FOUND', 'NC_AXIS_PARAM_WRITE_FAILED', 'NC_AXIS_PARAM_VERIFY_FAILED', 'NC_PLC_VARIABLE_NOT_FOUND', 'NC_AXIS_ALREADY_LINKED')) {

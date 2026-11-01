@@ -10,9 +10,14 @@ function Connect-TcNcAxisToPlc {
           PLC '<Plc> Instance^<task> Inputs^<var>.NcToPlc'  <->  NC '<axis>^Outputs^ToPlc'
           PLC '<Plc> Instance^<task> Outputs^<var>.PlcToNc' <->  NC '<axis>^Inputs^FromPlc'
         The PLC instance is the child of TIPC^<Plc> that has process images (read from the tree,
-        not assumed to be '<Plc> Instance'). The process image names ('PlcTask Inputs' ...) are found below the PLC instance (every
-        '* Inputs' / '* Outputs' child is tried), not hard-coded. The AXIS_REF only shows up there
-        after a build: not found -> NC_PLC_VARIABLE_NOT_FOUND (hint: Build-TcProject).
+        not assumed to be '<Plc> Instance'). The process image names are not hard-coded: the
+        enumerated '* Inputs' / '* Outputs' children of the instance first, then
+        '<task> Inputs' / '<task> Outputs' for every task below TIRT (and every PLC task of the
+        project), each looked up with LookupTreeItem. The instance enumerates no children on real
+        COM (ChildCount 0), but the full path can be looked up (measured 2026-11-01, 4026.22 VS2022
+        and 4024.71 XAE Shell, verification/phase3-4.6.md B1). The AXIS_REF only shows up there
+        after a build: not found -> NC_PLC_VARIABLE_NOT_FOUND (hint: Build-TcProject;
+        data.triedPaths = every path looked up, data.tasks = the task names used).
         Links already in the mapping (ProduceMappingInfo, Get-TcMappingLinks, the same readback as
         Set-TcVariableLink): both pairs already linked to each other -> success,
         data.alreadyLinked = true, nothing written; any of the four ends linked to something else ->
@@ -82,14 +87,17 @@ function Connect-TcNcAxisToPlc {
         $seg = @($prj -split '\^')
         $plcName = if ($seg.Count -ge 2) { $seg[1] } else { $seg[-1] }
         # review N6: the instance node is read from the tree (the child of TIPC^<Plc> with process images)
-        $inst = Resolve-TcPlcInstancePath -SysManager $sm -PlcNodePath "TIPC^$plcName" -ProjectPath $prj
+        # 4.6 B1: the image names come from the real-time tasks, the instance enumerates no children
+        $tasks = @(Get-TcRealTimeTaskNames -SysManager $sm -ProjectPath $prj)
+        $inst = Resolve-TcPlcInstancePath -SysManager $sm -PlcNodePath "TIPC^$plcName" -ProjectPath $prj -TaskNames $tasks
         $instancePath = $inst.Path
         $data | Add-Member -NotePropertyName instancePath -NotePropertyValue $instancePath
         if ($null -ne $inst.Note) { Add-TcDataWarning -Data $data -Warning $inst.Note }
 
-        $img = Find-TcPlcAxisRefImage -SysManager $sm -InstancePath $instancePath -PlcVariable $PlcVariable
+        $img = Find-TcPlcAxisRefImage -SysManager $sm -InstancePath $instancePath -PlcVariable $PlcVariable -TaskNames $tasks
         if ($null -eq $img.NcToPlc -or $null -eq $img.PlcToNc) {
-            $data | Add-Member -NotePropertyName instanceChildren -NotePropertyValue @($img.Images)
+            $data | Add-Member -NotePropertyName tasks -NotePropertyValue $tasks
+            $data | Add-Member -NotePropertyName triedPaths -NotePropertyValue @($img.Tried)
             $miss = @(); if ($null -eq $img.NcToPlc) { $miss += "$PlcVariable.NcToPlc (below '* Inputs')" }; if ($null -eq $img.PlcToNc) { $miss += "$PlcVariable.PlcToNc (below '* Outputs')" }
             $why = if ($null -eq $img.Instance) { "the PLC instance '$instancePath' is not found" } else { "not found below '$instancePath': $($miss -join ', ')" }
             return New-TcResult -Success $false -ErrorCode 'NC_PLC_VARIABLE_NOT_FOUND' -Data $data `

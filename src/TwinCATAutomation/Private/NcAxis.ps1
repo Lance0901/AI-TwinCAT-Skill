@@ -318,38 +318,128 @@ function Get-TcNcAxisConsistencyWarnings {
     return $out.ToArray()
 }
 
+function Get-TcRealTimeTaskNames {
+    <#
+    .SYNOPSIS
+        Names of the real-time tasks: the children of TIRT, then the PLC tasks (ItemType 621) of the PLC project. Distinct, never throws.
+    .DESCRIPTION
+        Used to build '<instance>^<task> Inputs' / 'Outputs' (phase3-4.6 B1): the PLC instance
+        (ItemType 57) reports ChildCount 0 on real COM and its process images are only reachable by
+        LookupTreeItem of the full path (measured 2026-11-01, 4026.22 VS2022 and 4024.71 XAE Shell,
+        verification/phase3-4.6.md B1). The children of TIRT are enumerable.
+    .PARAMETER SysManager
+        ITcSysManager.
+    .PARAMETER ProjectPath
+        'TIPC^<Plc>^<Plc> Project' (optional; its 621 children are added).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$SysManager, [Parameter()][string]$ProjectPath)
+    $names = [System.Collections.Generic.List[string]]::new()
+    $found = [System.Collections.Generic.List[object]]::new()
+    $tirt = Find-TcTreeItemNoThrow -SysManager $SysManager -Path 'TIRT'
+    if ($null -ne $tirt) { foreach ($c in @(Get-TcTreeItemChildList -Item $tirt)) { $found.Add($c) } }
+    if (-not [string]::IsNullOrEmpty($ProjectPath)) {
+        $prj = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $ProjectPath
+        if ($null -ne $prj) { foreach ($c in @(Get-TcTreeItemChildList -Item $prj | Where-Object { $_.itemType -eq $script:TcPlcTaskItemType })) { $found.Add($c) } }
+    }
+    foreach ($c in $found) {
+        $n = [string]$c.name
+        if ([string]::IsNullOrEmpty($n)) { continue }
+        if (@($names | Where-Object { $_ -ieq $n }).Count -eq 0) { $names.Add($n) }
+    }
+    return $names.ToArray()
+}
+
+function Get-TcPlcInstanceImageNames {
+    <#
+    .SYNOPSIS
+        Candidate process image names of a PLC instance: @{ Inputs = @(...); Outputs = @(...) }.
+    .DESCRIPTION
+        The enumerated '* Inputs' / '* Outputs' children come first (when the enumeration returns
+        any), then '<task> Inputs' / '<task> Outputs' for every task name. The enumeration alone is
+        not enough: on real COM it is empty (phase3-4.6 B1).
+    .PARAMETER Item
+        ITcSmTreeItem of the PLC instance.
+    .PARAMETER TaskNames
+        Real-time task names (Get-TcRealTimeTaskNames).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Item, [Parameter()][string[]]$TaskNames = @())
+    $kids = @(Get-TcTreeItemChildList -Item $Item | ForEach-Object { [string]$_.name })
+    $in = [System.Collections.Generic.List[string]]::new()
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($k in @($kids | Where-Object { $_ -like '* Inputs' })) { $in.Add($k) }
+    foreach ($k in @($kids | Where-Object { $_ -like '* Outputs' })) { $out.Add($k) }
+    foreach ($t in @($TaskNames)) {
+        if (@($in | Where-Object { $_ -ieq "$t Inputs" }).Count -eq 0) { $in.Add("$t Inputs") }
+        if (@($out | Where-Object { $_ -ieq "$t Outputs" }).Count -eq 0) { $out.Add("$t Outputs") }
+    }
+    return @{ Inputs = $in.ToArray(); Outputs = $out.ToArray() }
+}
+
 function Find-TcPlcAxisRefImage {
     <#
     .SYNOPSIS
-        PLC side of an AXIS_REF: @{ NcToPlc = '<instance>^<x> Inputs^<var>.NcToPlc' | $null; PlcToNc = '<instance>^<x> Outputs^<var>.PlcToNc' | $null; Instance; Images }.
+        PLC side of an AXIS_REF: @{ NcToPlc = '<instance>^<x> Inputs^<var>.NcToPlc' | $null; PlcToNc = '<instance>^<x> Outputs^<var>.PlcToNc' | $null; Instance; Tried }.
     .DESCRIPTION
-        The process image names ('PlcTask Inputs' ...) are taken from the children of the PLC
-        instance, not hard-coded (phase3-probe.md question 5: the task was called PlcTask in that
-        project only). Every '* Inputs' / '* Outputs' child is tried with LookupTreeItem.
+        The process image names are not hard-coded (phase3-probe.md question 5: the task was called
+        PlcTask in that project only). Candidates (Get-TcPlcInstanceImageNames): the enumerated
+        '* Inputs' / '* Outputs' children of the instance, then '<task> Inputs' / '<task> Outputs'
+        for each real-time task (phase3-4.6 B1: the instance enumerates no children on real COM,
+        LookupTreeItem of the full path works). Every candidate is looked up; Tried lists the paths.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER InstancePath
         'TIPC^<Plc>^<Plc> Instance'.
     .PARAMETER PlcVariable
         Symbol of the AXIS_REF, e.g. 'MAIN.axis'.
+    .PARAMETER TaskNames
+        Real-time task names (Get-TcRealTimeTaskNames).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$InstancePath, [Parameter(Mandatory)][string]$PlcVariable)
-    $out = @{ NcToPlc = $null; PlcToNc = $null; Instance = $null; Images = @() }
+    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$InstancePath, [Parameter(Mandatory)][string]$PlcVariable, [Parameter()][string[]]$TaskNames = @())
+    $out = @{ NcToPlc = $null; PlcToNc = $null; Instance = $null; Tried = @() }
+    $tried = [System.Collections.Generic.List[string]]::new()
     $inst = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $InstancePath
-    if ($null -eq $inst) { return $out }
+    if ($null -eq $inst) { $tried.Add($InstancePath); $out.Tried = $tried.ToArray(); return $out }
     $out.Instance = $InstancePath
-    $kids = @(Get-TcTreeItemChildList -Item $inst | ForEach-Object { $_.name })
-    $out.Images = $kids
-    foreach ($k in @($kids | Where-Object { $_ -like '* Inputs' })) {
+    $names = Get-TcPlcInstanceImageNames -Item $inst -TaskNames $TaskNames
+    foreach ($k in @($names.Inputs)) {
         $p = "$InstancePath^$k^$PlcVariable.NcToPlc"
+        $tried.Add($p)
         if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p)) { $out.NcToPlc = $p; break }
     }
-    foreach ($k in @($kids | Where-Object { $_ -like '* Outputs' })) {
+    foreach ($k in @($names.Outputs)) {
         $p = "$InstancePath^$k^$PlcVariable.PlcToNc"
+        $tried.Add($p)
         if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p)) { $out.PlcToNc = $p; break }
     }
+    $out.Tried = $tried.ToArray()
     return $out
+}
+
+function Test-TcPlcInstanceHasImage {
+    <#
+    .SYNOPSIS
+        $true when a tree item has a process image: an enumerated '* Inputs' / '* Outputs' child, or '<Path>^<task> Inputs' / 'Outputs' found by LookupTreeItem.
+    .PARAMETER SysManager
+        ITcSysManager.
+    .PARAMETER Path
+        Tree path of the candidate instance.
+    .PARAMETER Item
+        Its ITcSmTreeItem.
+    .PARAMETER TaskNames
+        Real-time task names (Get-TcRealTimeTaskNames).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object]$Item, [Parameter()][string[]]$TaskNames = @())
+    if (@(Get-TcTreeItemChildList -Item $Item | Where-Object { $_.name -like '* Inputs' -or $_.name -like '* Outputs' }).Count -gt 0) { return $true }
+    foreach ($t in @($TaskNames)) {
+        foreach ($img in @("$t Inputs", "$t Outputs")) {
+            if ($null -ne (Find-TcTreeItemNoThrow -SysManager $SysManager -Path "$Path^$img")) { return $true }
+        }
+    }
+    return $false
 }
 
 function Resolve-TcPlcInstancePath {
@@ -357,29 +447,36 @@ function Resolve-TcPlcInstancePath {
     .SYNOPSIS
         Tree path of the PLC instance below 'TIPC^<Plc>' (review N6: not hard-coded as '<Plc> Instance').
     .DESCRIPTION
-        The child of the PLC node (other than '<Plc> Project') that has a '* Inputs' or '* Outputs'
-        child (the process images of the instance). Exactly one candidate is returned; none or
-        several -> 'TIPC^<Plc>^<Plc> Instance' (the usual name) and Note says why.
+        Candidates: the enumerated children of the PLC node (other than '<Plc> Project') and
+        '<Plc> Instance' (the usual name, also tried when the enumeration is empty). A candidate counts
+        when it has a process image (Test-TcPlcInstanceHasImage: an enumerated '* Inputs' / '* Outputs'
+        child, or '<task> Inputs' / 'Outputs' found by LookupTreeItem; phase3-4.6 B1, the instance
+        enumerates no children on real COM). Exactly one candidate is returned; none or several ->
+        'TIPC^<Plc>^<Plc> Instance' and Note says why.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER PlcNodePath
         'TIPC^<Plc>'.
     .PARAMETER ProjectPath
         'TIPC^<Plc>^<Plc> Project' (skipped).
+    .PARAMETER TaskNames
+        Real-time task names (Get-TcRealTimeTaskNames).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$PlcNodePath, [Parameter()][string]$ProjectPath)
+    param([Parameter(Mandatory)][object]$SysManager, [Parameter(Mandatory)][string]$PlcNodePath, [Parameter()][string]$ProjectPath, [Parameter()][string[]]$TaskNames = @())
     $leaf = Get-TcTreePathLeaf -Path $PlcNodePath
     $default = "$PlcNodePath^$leaf Instance"
     $node = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $PlcNodePath
     if ($null -eq $node) { return @{ Path = $default; Note = "'$PlcNodePath' not found" } }
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($c in @(Get-TcTreeItemChildList -Item $node)) { $paths.Add("$PlcNodePath^$($c.name)") }
+    if (@($paths | Where-Object { $_ -ieq $default }).Count -eq 0) { $paths.Add($default) }
     $cands = [System.Collections.Generic.List[string]]::new()
-    foreach ($c in @(Get-TcTreeItemChildList -Item $node)) {
-        $p = "$PlcNodePath^$($c.name)"
+    foreach ($p in $paths) {
         if (-not [string]::IsNullOrEmpty($ProjectPath) -and $p -ieq $ProjectPath) { continue }
         $ci = Find-TcTreeItemNoThrow -SysManager $SysManager -Path $p
         if ($null -eq $ci) { continue }
-        if (@(Get-TcTreeItemChildList -Item $ci | Where-Object { $_.name -like '* Inputs' -or $_.name -like '* Outputs' }).Count -gt 0) { $cands.Add($p) }
+        if (Test-TcPlcInstanceHasImage -SysManager $SysManager -Path $p -Item $ci -TaskNames $TaskNames) { $cands.Add($p) }
     }
     if ($cands.Count -eq 1) { return @{ Path = $cands[0]; Note = $null } }
     return @{ Path = $default; Note = "$($cands.Count) children of '$PlcNodePath' have process images; '$default' is assumed" }

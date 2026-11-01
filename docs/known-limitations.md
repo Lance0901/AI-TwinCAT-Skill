@@ -238,14 +238,14 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 
 ### 第 3 期新 tool(task 4.6 registered 實測)
 
-設計依據是自建 client 的 probe([phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md));task 4.6 用 **registered tcauto** 在 4026 VS2022(3.1.4026.22)與 4024 32-bit XAE Shell(3.1.4024.71)+ 本機 UmRT 實測([phase3-4.6.md](../openspec/changes/complete-automation-interface/verification/phase3-4.6.md),2026-11-01)。下表「registered 實測」的 tool 已不只有單元測試;`LinkNcAxis` 在真機不能用(B1)。
+設計依據是自建 client 的 probe([phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md));task 4.6 用 **registered tcauto** 在 4026 VS2022(3.1.4026.22)與 4024 32-bit XAE Shell(3.1.4024.71)+ 本機 UmRT 實測([phase3-4.6.md](../openspec/changes/complete-automation-interface/verification/phase3-4.6.md),2026-11-01)。下表「registered 實測」的 tool 已不只有單元測試。4.6 找到的 B1 / B2 / N2 / N4 已在模組修正(單元測試覆蓋，修正後還沒有再跑 registered 實測);N1 / N3 / N5 是測試資料或環境的限制，保留在下表。
 
 | tool | cmdlet | 狀態 / 已知限制 |
 |---|---|---|
 | `AddNcTask` | `Add-TcNcTask` | registered 實測：只有 `NC_TASK_ALREADY_EXISTS`(兩個副本都已有 task)。從零建 NC task 的成功路徑沒實測，名稱預期加 ` SAF` |
 | `AddNcAxis` | `Add-TcNcAxis` | registered 實測(4026 / 4024):建立、同名擋、Simulation encoder、`axisId` = Run 時 `NcToPlc.AxisId`,DcTimeStamp 遞增。只有 Continuous 軸實測;模擬軸「會不會動」沒測(要有 MC_Power / MC_MoveAbsolute 的測試 POU) |
 | `SetNcAxisParameter` | `Set-TcNcAxisParameter` | registered 實測：MaxVelocity / Deceleration / Jerk 寫入讀回、DriveType 7 ↔ 5、`NC_INVALID_SUBTYPE`(送出前擋)、矛盾值 warnings。寫入後 `ItemSubTypeName` 空白時的還原路徑沒跑到;`PvParameter` 對 NC 參數的作用不明，不支援依 variant 設參數 |
-| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | **真機不能用(phase3-4.6 B1)**:PLC instance 在真 COM 上列舉不到子節點(`ChildCount 0`,但 `<instance>^PlcTask Inputs` 可以 lookup),一律 `NC_PLC_VARIABLE_NOT_FOUND`(4026、4024 都重現)。暫時改用 `SetVariableLink` 兩條 struct link(`...PlcTask Inputs^<var>.NcToPlc` ↔ `<axis>^Outputs^ToPlc`、`...PlcTask Outputs^<var>.PlcToNc` ↔ `<axis>^Inputs^FromPlc`,實測可 Activate) |
+| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | **B1 已修(單元測試)**:4.6 實測時 PLC instance 在真 COM 上列舉不到子節點(`ChildCount 0`,但 `<instance>^PlcTask Inputs` 可以 lookup),一律 `NC_PLC_VARIABLE_NOT_FOUND`。現在用 `TIRT` 的 task 名稱拼 `<instance>^<task> Inputs` / `Outputs` 直接 lookup,找不到時 `data.triedPaths` 列出試過的 path。**修正後的 link 成功路徑、`NC_AXIS_ALREADY_LINKED`、modal rollback 還沒在真機跑過**;在那之前也可用 `SetVariableLink` 兩條 struct link(`...PlcTask Inputs^<var>.NcToPlc` ↔ `<axis>^Outputs^ToPlc`、`...PlcTask Outputs^<var>.PlcToNc` ↔ `<axis>^Inputs^FromPlc`,實測可 Activate) |
 | `AddTcComModule` | `Add-TcComModule` | registered 實測：GUID / TypeName、名稱 ` (TypeName)` 後綴、4024 `_Obj1`。只有 `TcNtpExternalTimeProvider` 在 UmRT 上 Activate 過;**一個 runtime 只能有一個 NTP instance**(第二個 `Register ExternalTime failed, HR=98110708`,XAE 跳 fatal error dialog,實測);其他 module 會不會要授權沒測 |
 | `GetTcComParameter` | `Get-TcComModuleParameter` | registered 實測(清單、offline、`Online`)。TIME 型別只回 `rawHex`,`value` 是 null;`-Online` 走 ModuleManager(要 IDE) |
 | `SetTcComParameter` | `Set-TcComModuleParameter` | registered 實測：BOOL / UINT / DINT 寫入讀回、範圍檢查、online 寫入不改專案、`TCCOM_ONLINE_CONFIG_MISMATCH`。TIME 不能寫(`TCCOM_PARAM_UNSUPPORTED_TYPE`,hint 誤寫成 struct / array);enum 只收整數;struct / array 不能寫(4024 的 NTP `ClientEnable` 在 struct `ClientPara` 裡，無法用 tool 關掉);`TCCOM_PARAM_SIZE_MISMATCH` 在真機觸發不了 |
