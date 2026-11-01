@@ -240,14 +240,18 @@ function Merge-TcBuildRequiredEntry {
 }
 
 # Runs $Body under the named mutex of the state directory. Returns @{ Locked; Result; Error }.
+# -MutexName / -TimeoutMs default to the build-required state file's; Save-TcIdeSolutionRecord
+# reuses this for ide-solutions.json (#51).
 function Invoke-TcBuildRequiredLocked {
-    param([scriptblock]$Body)
-    $mutex = New-Object System.Threading.Mutex($false, (Get-TcBuildRequiredMutexName))
+    param([scriptblock]$Body, [string]$MutexName, [int]$TimeoutMs)
+    if ([string]::IsNullOrEmpty($MutexName)) { $MutexName = Get-TcBuildRequiredMutexName }
+    if ($TimeoutMs -le 0) { $TimeoutMs = $script:TcBuildRequiredLockTimeoutMs }
+    $mutex = New-Object System.Threading.Mutex($false, $MutexName)
     $got = $false
     try {
-        try { $got = $mutex.WaitOne($script:TcBuildRequiredLockTimeoutMs) }
+        try { $got = $mutex.WaitOne($TimeoutMs) }
         catch [System.Threading.AbandonedMutexException] { $got = $true }
-        if (-not $got) { return @{ Locked = $false; Result = $null; Error = "lock not acquired within $($script:TcBuildRequiredLockTimeoutMs) ms" } }
+        if (-not $got) { return @{ Locked = $false; Result = $null; Error = "lock not acquired within $TimeoutMs ms" } }
         try { return @{ Locked = $true; Result = (& $Body); Error = $null } }
         catch { return @{ Locked = $true; Result = $null; Error = $_.Exception.Message } }
     }
