@@ -28,3 +28,6 @@ temp_*.ps1
 
 # Integration test logs
 tests/Integration/logs/
+
+# Claude Code per-machine settings
+.claude/settings.local.json
