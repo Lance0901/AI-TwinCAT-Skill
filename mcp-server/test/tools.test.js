@@ -216,6 +216,30 @@ describe('cmdlet name rewriting in hints', () => {
     assert.equal(rw('Set-TcTarget -Platform "TwinCAT RT (x64)" -Configuration Release'), 'SetTarget Platform="TwinCAT RT (x64)" Configuration=Release');
   });
 
+  // PR #54 (bfs2021), fixture catalog: a switch does not swallow the word after it (#53)
+  test('a switch does not swallow the word after it (#53)', () => {
+    assert.equal(
+      rw('Build-TcProject -AllowUnresolvedLibrary if the user accepts'),
+      'BuildProject AllowUnresolvedLibrary=true if the user accepts'
+    );
+    assert.equal(
+      rw('Build-TcProject -AllowUnresolvedLibrary / Enable-TcConfig -Version 1.0'),
+      'BuildProject AllowUnresolvedLibrary=true / EnableConfig Version=1.0'
+    );
+    assert.equal(
+      rw('Build-TcProject -Hang 需要使用者同意後繼續'),
+      'BuildProject Hang=true 需要使用者同意後繼續'
+    );
+  });
+
+  test('a parameter with a value still consumes it', () => {
+    assert.equal(
+      rw('Connect-TcIde -SolutionPath MySln.sln -NoLaunch'),
+      'ConnectIde SolutionPath=MySln.sln NoLaunch=true'
+    );
+    assert.equal(rw('Read-TcVariable -Path PLC1.MAIN.x -Mode Raw'), 'ReadVariable Path=PLC1.MAIN.x Mode=Raw');
+  });
+
   test('real mixed Chinese sentence', () => {
     assert.equal(
       rw('PLC runtime port 851 不存在:程式尚未下載或 PLC 未啟動。先 Enter-TcPlcOnline,再 Set-TcPlcState -State Run'),
@@ -314,6 +338,37 @@ describe('cmdlet name rewriting in hints', () => {
         "after the XML restore, copy 'a' over 'b' and run ResetSolution (not measured); or ImportChild of 'c.zip' (not measured)"
       );
       assert.equal(rw('PLC code changed by Add-TcInterface I_P38Base'), 'PLC code changed by AddInterface I_P38Base');
+    });
+
+    // #53 / PR #54: a switch (boolean in inputSchema) never swallows the word after it.
+    test('#53: switch followed by prose, "/", CJK, a value parameter, a sentence end or the end', () => {
+      // the issue text
+      assert.equal(
+        rw('Build-TcProject -AllowUnresolvedLibrary if the user accepts'),
+        'BuildProject AllowUnresolvedLibrary=true if the user accepts'
+      );
+      assert.equal(
+        rw('Build-TcProject -AllowUnresolvedLibrary / Enable-TcConfig -Force'),
+        'BuildProject AllowUnresolvedLibrary=true / EnableConfig Force=true'
+      );
+      assert.equal(
+        rw('請執行 Build-TcProject -AllowUnresolvedLibrary 需要使用者同意後繼續'),
+        '請執行 BuildProject AllowUnresolvedLibrary=true 需要使用者同意後繼續'
+      );
+      // a value parameter after (or before) a switch still takes its value
+      assert.equal(
+        rw('Build-TcProject -AllowUnresolvedLibrary -ExpectedProject MyProj to build one project'),
+        'BuildProject AllowUnresolvedLibrary=true ExpectedProject=MyProj to build one project'
+      );
+      assert.equal(
+        rw('Build-TcProject -ExpectedProject MyProj -AllowUnresolvedLibrary and retry'),
+        'BuildProject ExpectedProject=MyProj AllowUnresolvedLibrary=true and retry'
+      );
+      assert.equal(rw('Enable-TcConfig -Force -TimeoutSec 300'), 'EnableConfig Force=true TimeoutSec=300');
+      // the switch at the end of the hint or of the sentence
+      assert.equal(rw('Retry with Build-TcProject -AllowUnresolvedLibrary'), 'Retry with BuildProject AllowUnresolvedLibrary=true');
+      assert.equal(rw('Retry with Build-TcProject -AllowUnresolvedLibrary.'), 'Retry with BuildProject AllowUnresolvedLibrary=true.');
+      assert.equal(rw('請執行 Enable-TcConfig -Force'), '請執行 EnableConfig Force=true');
     });
 
     test('lone PowerShell parameters, arrays, enums; switches of the named tool', () => {
