@@ -143,4 +143,33 @@ registered tcauto,4026 VS2022,本機 UmRT `199.5.42.250.1.1`。
 - `RUNTIME_CRASHED` 提早退出:單元測試
 - NewTestCase WaitUntil 回傳不帶 `waitMs`:單元測試
 - SetVariableLink / RemoveVariableLink 成功路徑:只有自建 client(subagent,離線 EK1100 + EL1004),registered 等第 1 期 `CreateChild`
-- 1.4 AddLibrary 在 4024 的 2026-10-28 結果:自建 client;2026-10-29 已用 registered tcauto 在 4024 複測 PASS
+- 1.4 AddLibrary 在 4024 的 2026-10-28 結果:自建 client;2026-10-29 已用 registered tcauto 在 4024 複測 PASS;4026 VS2022 2026-11-02 registered tcauto 複測 PASS(見文末「#80 4026 Retest」)
+
+---
+
+# #80 4026 Retest(registered tcauto,2026-11-02,4026 VS2022 + 本機 UmRT)
+
+- 時間:2026-11-02 01:32–01:34(+08:00)
+- 方式:registered tcauto MCP(`mcp__tcauto__*`),沒有自建 client
+- 環境:4026 VS2022 `VisualStudio.DTE.17.0`(pid 31684,本 session launched,ownedBySession true),副本 `C:\Temp\Verify-4026-axis\AxisInterface_Type01_Library.sln`,`Release|TwinCAT OS (x64)`;本機 UmRT `199.5.42.250.1.1`
+- 被測程式:`Add-TcLibrary` 走 `ITcPlcLibraryManager.AddLibrary`(a603c59)
+- Baseline:`C:\Temp\Verify-4026-axis-baseline-80`(robocopy /MIR,259 檔),SHA-256 manifest `C:\Temp\Verify-4026-axis-baseline-80.manifest.json`;保留
+- Watcher:`tests/Integration/logs/runtime-watch-80-4026.jsonl`,144 筆,UmRT pid 102904 全程不變、AdsState Run、`TCNC.bootdata` 484 bytes,0 個 event
+- 沒動 library repository(沒有 InstallLibrary / UninstallLibrary);Tc2_DataExchange 3.4.2.0 是本機原本就安裝的
+
+| # | tool | 情境 | 結果 | 實際回傳 |
+|---|------|------|------|----------|
+| 1 | robocopy /MIR | 副本 → baseline-80 | PASS | 259 檔;.plcproj `C7EB8373…B70C3`、.tsproj `C141D3B9…55682`,與上方 hash 表一致 |
+| 2 | ConnectIde | ProgId `VisualStudio.DTE.17.0` + 副本 | PASS | selectedBy launched,ownedBySession true,pid 31684,connectSec 53,solution 是副本,amsNetId 199.5.42.250.1.1 |
+| 2 | SetTarget | Platform `TwinCAT OS (x64)` | PASS | projectCheck ok,platformChanged false,adsError 0x702(UmRT 沒有 TARGETINFO) |
+| 2 | GetLibraries | 初始 references | PASS | totalCount 25,全是 placeholder(含 #Tc2_Utilities、#Tc3_Module,所以這兩個不能拿來測);沒有 Tc2_DataExchange |
+| 2 | GetLibraries | Repository,Filter `Tc*_*` | PASS | 278 筆,含 Tc2_DataExchange 3.4.2.0 |
+| 3 | AddLibrary | Tc2_DataExchange(已安裝、未引用) | PASS | success,alreadyPresent false,verifiedLibraries [Tc2_DataExchange],plcprojChanged true,saveSec 0.35,buildRequired 記錄;**沒有 0x98510001** |
+| 3 | GetLibraries | 讀回 Filter Tc2_DataExchange | PASS | totalCount 26;Tc2_DataExchange 3.4.2.0,isPlaceholder false;.plcproj 有 `<LibraryReference Include="Tc2_DataExchange,newest,Beckhoff Automation GmbH">` |
+| 4 | AddLibrary | Tc2_DataExchange 重複 | PASS | success,alreadyPresent true,existingReference Tc2_DataExchange,plcprojChanged false(lastWrite 前後相同),沒有 buildRequired |
+| 5 | AddLibrary | Tc9_NoSuchLib_80(未安裝) | PASS(預期 Fail) | `LIBRARY_ADD_FAILED`,data.notInstalled true,projectSaved null,message 0x98510001「Managed Library 'Tc9_NoSuchLib_80, * (Beckhoff Automation GmbH)' not found!」,hint 說未安裝、.plcproj 沒被修改、到 Library Repository 安裝;.plcproj SHA-256 前後相同(`60E2C746…D7AA4`),references 仍 26 |
+| 6 | BuildProject | — | PASS | buildSucceeded true,errors 0,**libraryErrors 0**,warnings 26(C0xxx,與先前相同),codeVerified / coverageComplete / completeBuild true,decidedBy LastBuildInfo,10.7 s |
+| 7 | DisconnectIde | Quit true | PASS | quit true,solutionClosed true,ownedBySession true,pid 31684 已退出 |
+| 7 | 還原 | baseline-80 → 副本(/MIR),逐檔 SHA-256 | PASS | manifest 259 檔、副本 259 檔、mismatch 0;.plcproj 回到 `C7EB8373…B70C3` |
+
+結論:#80 在 4026 VS2022 以 registered tcauto 實測 PASS(0x98510001 只在「未安裝」時出現，並正確對應到 `LIBRARY_ADD_FAILED` + notInstalled)。加上 2026-10-29 的 4024 registered 複測,4024 / 4026 兩組都已實測。
