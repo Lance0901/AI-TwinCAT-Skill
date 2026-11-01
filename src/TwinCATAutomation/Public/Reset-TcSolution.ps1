@@ -38,6 +38,12 @@ function Reset-TcSolution {
                does not matter).
              data.dismissedReloadPrompt = true when any prompt was dismissed. Any other
              dialog is reported as IDE_MODAL_DIALOG (it would block Solution.Close too).
+             Step 1 runs before every Solution / Solution.FullName read (also before the path
+             of the open solution is read when neither -SolutionPath nor a module solution is
+             known), and again whenever such a poll gets no answer and a reload prompt is up
+             (#87: XAE shows the prompt some time after the file changed on disk, and while it
+             is up Solution.FullName answered $null; real-machine check of this fix pending).
+             A non-reload dialog seen in such a poll ends it with IDE_MODAL_DIALOG at once.
           When only project prompts were answered and our Yes click was really sent for each
           (a prompt that vanished without our click forces the full path): steps 2-4 are
           SKIPPED. Solution.FullName is polled on the DTE we hold (500 ms, up to -TimeoutSec,
@@ -95,7 +101,8 @@ function Reset-TcSolution {
         ($script:TcSolutionPath), else the solution currently open in the IDE.
     .PARAMETER TimeoutSec
         Expected upper bound for each of Documents.CloseAll, Solution.Close and
-        Solution.Open (Invoke-TcComRetry -TimeoutSec). Default 120.
+        Solution.Open (Invoke-TcComRetry -TimeoutSec), and how long Solution.FullName is
+        polled (path read, wait after a Yes reload, guard). Default 120.
     .PARAMETER DiscardProjectChanges
         Skip step 1b: close without saving even when PLC objects in XAE are missing from
         the .plcproj on disk (they are dropped). Use after PROJECT_UNSAVED_CHANGES when the disk
@@ -193,28 +200,12 @@ function Reset-TcSolution {
     $progId = $script:TcProgId
     $previousPid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $previousPid = [int]$script:TcIdeProcessId } catch { $previousPid = 0 } }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-    # --- resolve the solution to reopen ---
     $path = $SolutionPath
     if ([string]::IsNullOrWhiteSpace($path) -and -not [string]::IsNullOrWhiteSpace($script:TcSolutionPath)) {
         $path = [string]$script:TcSolutionPath
     }
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        try {
-            $path = [string](Invoke-TcComRetry -OperationName 'Solution.FullName' -ScriptBlock { [string]$dte.Solution.FullName })
-        }
-        catch {
-            return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NO_SOLUTION' -MessagePrefix 'Could not read the path of the open solution'
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        return New-TcResult -Success $false -ErrorMessage 'No solution is open and no -SolutionPath was given; nothing to reopen.' `
-            -ErrorCode 'NO_SOLUTION' -Hint (Get-TcErrorHint -Code 'NO_SOLUTION')
-    }
-    if (-not (Test-Path -LiteralPath $path)) {
-        return New-TcResult -Success $false -ErrorMessage "Solution file not found: $path" -ErrorCode 'FILE_NOT_FOUND'
-    }
-    $path = Get-TcLongPath (Resolve-Path -LiteralPath $path).Path
 
     $progress = [ordered]@{
         solution              = $path
@@ -286,7 +277,7 @@ function Reset-TcSolution {
     # or the solution the IDE reports (RESET_SOLUTION_MISMATCH). Which one XAE really reloaded is
     # not known for sure, so after a Yes reload EVERY candidate is recorded: $path, the start
     # solution and the reported one (empty ones dropped, one record per solution key).
-    $leaf = [IO.Path]::GetFileName([string]$path)
+    # $path may still be unknown here (a prompt answered before the path was read, #87).
     $startSolution = [string]$script:TcSolutionPath
     function Register-TcResetChange {
         param([object]$Result, [string]$Change, [string[]]$Solutions)
@@ -311,167 +302,263 @@ function Reset-TcSolution {
     }
     function Complete-TcResetFailure {
         param([object]$Result, [string]$Step, [switch]$Always, [string]$ReloadedSolution)
+        $leafNow = if ([string]::IsNullOrWhiteSpace([string]$path)) { '<solution>' } else { [IO.Path]::GetFileName([string]$path) }
         if ($progress.answeredYes) {
-            $change = "Reset-TcSolution $leaf (project reloaded from disk, then $Step failed)"
+            $change = "Reset-TcSolution $leafNow (project reloaded from disk, then $Step failed)"
             return Register-TcResetChange -Result $Result -Change $change -Solutions @($path, $startSolution, $ReloadedSolution)
         }
         if ($Always) {
-            return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leaf ($Step failed, solution may be half open)"
+            return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leafNow ($Step failed, solution may be half open)"
         }
         $Result
     }
 
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-
     # --- 1. modal dialogs: reload prompts are answered (project: Yes, file: WM_CLOSE), anything else is reported ---
-    $needReopen = $false   # a prompt was closed with WM_CLOSE (answer No) or vanished without our click
-    $yesFailed = $false
-    $handled = 0
-    while ($true) {
-        $dialog = Find-TcIdeModalDialog
-        if ($null -eq $dialog) { break }
-        if ([string]$dialog.Kind -ne 'reload-prompt') {
-            $op = if ($progress.dismissedReloadPrompt) { 'Reset-TcSolution (after dismissing the reload prompt)' } else { 'Reset-TcSolution (Documents.CloseAll / Solution.Close)' }
-            return Complete-TcResetFailure -Step 'modal dialog check' -Result (New-TcModalDialogResult -Dialog $dialog -Operation $op -Data (Get-ProgressData))
-        }
-        $handled++
-        if ($handled -gt 5) {
-            return Complete-TcResetFailure -Step 'reload prompt handling' -Result (New-TcModalDialogResult -Dialog $dialog -Operation 'Reset-TcSolution (reload prompts keep appearing; 5 dismissed)' -Data (Get-ProgressData))
-        }
-        $target = [string]$dialog.ReloadTarget
-        if ($target -eq 'project' -or [string]::IsNullOrWhiteSpace([string]$progress.reloadTarget)) { $progress.reloadTarget = $target }
+    # Runs before every DTE read that a modal dialog can block (Solution / Solution.FullName),
+    # and again for a reload prompt that comes up while such a read is polled (#87: XAE shows the
+    # prompt some time after the file changed on disk; meanwhile Solution.FullName answers $null).
+    # Returns $null when no dialog is left, else the failed result.
+    $state = @{
+        NeedReopen  = $false   # a prompt was closed with WM_CLOSE (answer No) or vanished without our click
+        YesFailed   = $false
+        Handled     = 0
+        YesPathDone = $false   # the Yes-only reconnect was attempted (it failed: full path from now on)
+    }
+    function Invoke-TcResetDialogStep {
+        param([object]$FirstDialog)
+        $pending = $FirstDialog
+        while ($true) {
+            $dialog = if ($null -ne $pending) { $pending } else { Find-TcIdeModalDialog }
+            $pending = $null
+            if ($null -eq $dialog) { return $null }
+            if ([string]$dialog.Kind -ne 'reload-prompt') {
+                $op = if ($progress.dismissedReloadPrompt) { 'Reset-TcSolution (after dismissing the reload prompt)' } else { 'Reset-TcSolution (Documents.CloseAll / Solution.Close)' }
+                return Complete-TcResetFailure -Step 'modal dialog check' -Result (New-TcModalDialogResult -Dialog $dialog -Operation $op -Data (Get-ProgressData))
+            }
+            $state.Handled++
+            if ($state.Handled -gt 5) {
+                return Complete-TcResetFailure -Step 'reload prompt handling' -Result (New-TcModalDialogResult -Dialog $dialog -Operation 'Reset-TcSolution (reload prompts keep appearing; 5 dismissed)' -Data (Get-ProgressData))
+            }
+            $target = [string]$dialog.ReloadTarget
+            if ($target -eq 'project' -or [string]::IsNullOrWhiteSpace([string]$progress.reloadTarget)) { $progress.reloadTarget = $target }
 
-        if ($target -eq 'project' -and -not $yesFailed) {
-            $yes = Close-TcReloadPrompt -Dialog $dialog -Answer Yes -TimeoutSec 15
-            if ($yes.Sent -and ($yes.Dismissed -or $null -ne $yes.NextDialog)) {
-                # Our click was sent and the prompt closed (another dialog may be up now: the loop
-                # reports it). Only an actual click counts as answeredYes.
-                $progress.answeredYes = $true
-                $progress.dismissedReloadPrompt = $true
-                Write-Verbose "Reset-TcSolution: project reload prompt answered Yes ($($yes.Reason))."
+            if ($target -eq 'project' -and -not $state.YesFailed) {
+                $yes = Close-TcReloadPrompt -Dialog $dialog -Answer Yes -TimeoutSec 15
+                if ($yes.Sent -and ($yes.Dismissed -or $null -ne $yes.NextDialog)) {
+                    # Our click was sent and the prompt closed (another dialog may be up now: the loop
+                    # reports it). Only an actual click counts as answeredYes.
+                    $progress.answeredYes = $true
+                    $progress.dismissedReloadPrompt = $true
+                    Write-Verbose "Reset-TcSolution: project reload prompt answered Yes ($($yes.Reason))."
+                    continue
+                }
+                if ($yes.Dismissed -and -not $yes.Sent) {
+                    # The prompt vanished without our click: nobody knows whether XAE reloaded, so
+                    # take the full close / reopen path.
+                    $state.NeedReopen = $true
+                    Write-Verbose "Reset-TcSolution: project reload prompt was already gone ($($yes.Reason)); doing the full close / reopen."
+                    continue
+                }
+                # Yes click failed or the prompt stayed: fall back to WM_CLOSE + close / reopen.
+                $state.YesFailed = $true
+                Write-Verbose "Reset-TcSolution: answering Yes failed ($($yes.Reason)); falling back to WM_CLOSE and close / reopen."
                 continue
             }
-            if ($yes.Dismissed -and -not $yes.Sent) {
-                # The prompt vanished without our click: nobody knows whether XAE reloaded, so
-                # take the full close / reopen path.
-                $needReopen = $true
-                Write-Verbose "Reset-TcSolution: project reload prompt was already gone ($($yes.Reason)); doing the full close / reopen."
-                continue
-            }
-            # Yes click failed or the prompt stayed: fall back to WM_CLOSE + close / reopen.
-            $yesFailed = $true
-            Write-Verbose "Reset-TcSolution: answering Yes failed ($($yes.Reason)); falling back to WM_CLOSE and close / reopen."
-            continue
-        }
 
-        $closeResult = Close-TcReloadPrompt -Dialog $dialog
-        if (-not $closeResult.Dismissed) {
-            return Complete-TcResetFailure -Step 'reload prompt dismissal' -Result (New-TcModalDialogResult -Dialog $dialog -Operation "Reset-TcSolution (reload prompt could not be dismissed: $($closeResult.Reason))" `
-                -Data (Get-ProgressData))
+            $closeResult = Close-TcReloadPrompt -Dialog $dialog
+            if (-not $closeResult.Dismissed) {
+                return Complete-TcResetFailure -Step 'reload prompt dismissal' -Result (New-TcModalDialogResult -Dialog $dialog -Operation "Reset-TcSolution (reload prompt could not be dismissed: $($closeResult.Reason))" `
+                    -Data (Get-ProgressData))
+            }
+            $progress.dismissedReloadPrompt = $true
+            $state.NeedReopen = $true
+            Write-Verbose "Reset-TcSolution: reload prompt dismissed ($($closeResult.Reason))."
         }
-        $progress.dismissedReloadPrompt = $true
-        $needReopen = $true
-        Write-Verbose "Reset-TcSolution: reload prompt dismissed ($($closeResult.Reason))."
     }
 
-    # --- Yes-only path: XAE reloaded the project itself; skip CloseAll / Close / Open ---
-    if ($progress.answeredYes -and -not $needReopen) {
-        # a. Wait on the DTE we hold until XAE answers Solution.FullName with our solution again
-        #    (it is busy while it reloads the project). Polled every 500 ms, no blind sleep.
-        $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
-        $reloaded = $false
-        $lastRead = $null
-        while ($waitSw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+    # Polls Solution.FullName on the DTE we hold (500 ms, up to -TimeoutSec; each read is one
+    # Invoke-TcComRetry attempt). Fail closed: $null (busy after a reload, or a modal dialog up)
+    # is not an answer; '' (no solution open) is. After every read that gave no answer the IDE is
+    # checked for a modal dialog (#87): a reload prompt is returned in .Dialog for
+    # Invoke-TcResetDialogStep, any other dialog ends the poll with IDE_MODAL_DIALOG in .Failure.
+    function Read-TcResetSolutionName {
+        param([string]$Operation)
+        $rsw = [System.Diagnostics.Stopwatch]::StartNew()
+        $out = @{ Read = $false; Value = $null; Error = $null; ErrorRecord = $null; Sec = 0; Dialog = $null; Failure = $null }
+        while ($true) {
             try {
-                $full = [string](Invoke-TcComRetry -OperationName 'Solution.FullName (post-reload wait)' -MaxRetries 1 -ScriptBlock { [string]$dte.Solution.FullName })
-                $lastRead = $full
-                if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals((Get-TcLongPath $full), $path, [StringComparison]::OrdinalIgnoreCase)) { $reloaded = $true; break }
+                $raw = Invoke-TcComRetry -MaxRetries 1 -OperationName $Operation -ScriptBlock { $gSol = $dte.Solution; if ($null -eq $gSol) { $null } else { $gSol.FullName } }
+                if ($null -ne $raw) { $out.Read = $true; $out.Value = [string]$raw; break }
+                $out.Error = 'Solution / Solution.FullName answered $null'
+                $out.ErrorRecord = $null
             }
-            catch { $lastRead = $_.Exception.Message }
+            catch {
+                $out.Error = $_.Exception.Message
+                $out.ErrorRecord = $_
+                # a crashed IDE never answers again: stop polling it
+                if ($out.Error -match '^IDE_CRASHED') { break }
+            }
+            $d = Find-TcIdeModalDialog
+            if ($null -ne $d) {
+                if ([string]$d.Kind -eq 'reload-prompt') { $out.Dialog = $d }
+                else { $out.Failure = New-TcModalDialogResult -Dialog $d -Operation "Reset-TcSolution ($Operation; nothing closed)" -Data (Get-ProgressData) }
+                break
+            }
+            if ($rsw.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
             Start-Sleep -Milliseconds 500
         }
-        $progress['reloadWaitSec'] = [math]::Round($waitSw.Elapsed.TotalSeconds, 1)
-        if (-not $reloaded) { Write-Verbose "Reset-TcSolution: Solution.FullName not back to '$path' after the Yes reload (last: $lastRead); reconnecting anyway." }
-
-        # b. Reconnect; on failure restore the identity and fall back to close / reopen on the old DTE.
-        $saved = @{
-            Dte = $script:TcDte; ProgId = $script:TcProgId; Pid = $script:TcIdeProcessId; SelectedBy = $script:TcIdeSelectedBy
-            Sln = $script:TcSolutionPath; Start = $script:TcIdeStartTime; MainHwnd = $script:TcIdeMainHwnd
-            Settings = $script:TcAutomationSettings; Silent = $script:TcSilentMode; SilentOriginal = $script:TcSilentModeOriginal
-        }
-        if ($null -ne $script:TcSysManager) {
-            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }
-            $script:TcSysManager = $null
-        }
-        $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
-        if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
-        $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
-        $connect = Connect-TcIde @connectParams
-        $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
-        $probeError = $null
-        if (-not $connect.success) {
-            $probeError = "Connect-TcIde failed: [$($connect.error.code)] $($connect.error.message)"
-            $script:TcDte = $saved.Dte; $script:TcProgId = $saved.ProgId; $script:TcIdeConnected = ($null -ne $saved.Dte)
-            $script:TcIdeProcessId = $saved.Pid; $script:TcIdeSelectedBy = $saved.SelectedBy; $script:TcSolutionPath = $saved.Sln
-            $script:TcIdeStartTime = $saved.Start; $script:TcIdeMainHwnd = $saved.MainHwnd
-            $script:TcAutomationSettings = $saved.Settings; $script:TcSilentMode = $saved.Silent; $script:TcSilentModeOriginal = $saved.SilentOriginal
-        }
-        else {
-            # Probe the re-bound ITcSysManager the same way other commands use it.
-            $sm = $script:TcSysManager
-            if ($null -eq $sm) { $probeError = 'ITcSysManager not available after reconnect' }
-            else {
-                $tipc = $null
-                try {
-                    $tipc = Invoke-TcComRetry -OperationName 'LookupTreeItem TIPC (post-reload probe)' -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem('TIPC') }
-                    if ($null -eq $tipc) { $probeError = "LookupTreeItem('TIPC') returned null" }
-                }
-                catch { $probeError = $_.Exception.Message }
-                if ($null -ne $tipc) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tipc) | Out-Null } catch { } }
-            }
-            if ($null -eq $probeError) {
-                $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Extra ([ordered]@{ connectSec = $connectSec }) -Total $sw)
-                return Register-TcResetChange -Result $ok -Change "Reset-TcSolution $leaf (project reloaded from disk)" -Solutions @([string]$script:TcSolutionPath, $path, $startSolution)
-            }
-        }
-        Write-Verbose "Reset-TcSolution: reconnect after the Yes reload failed ($probeError); doing the full close / reopen."
-        $progress['yesPathError'] = $probeError
-        $dte = $script:TcDte
-        $progId = $script:TcProgId
-        if ($null -eq $dte) {
-            return Complete-TcResetFailure -Step 'reconnect' -Result (New-TcResult -Success $false -ErrorMessage "Project reload answered Yes, but the IDE is not usable afterwards: $probeError" `
-                -ErrorCode 'NOT_CONNECTED' -Data (Get-ProgressData -Extra @{ connectSec = $connectSec }))
-        }
+        $out.Sec = [math]::Round($rsw.Elapsed.TotalSeconds, 1)
+        $out
     }
 
-    # --- guard (#29): never close a solution the module did not expect in this IDE ---
-    # Connect-TcIde can attach a blocked IDE on evidence such as a session record; when the IDE
-    # turns out to have ANOTHER solution open than the module believes, closing it would hit
-    # someone else's work. Expected = the solution the module connected / opened (else $path).
-    $expected = if (-not [string]::IsNullOrWhiteSpace($script:TcSolutionPath)) { [string]$script:TcSolutionPath } else { $path }
-    # Fail closed: poll until Solution.FullName can be read (busy after a reload, $null for a
-    # moment), up to -TimeoutSec. Never readable -> RESET_SOLUTION_UNVERIFIED, nothing closed.
-    # '' (no solution open) is a valid answer and lets the reset go on.
-    $openNow = $null
-    $guardRead = $false
-    $guardError = $null
-    $guardSw = [System.Diagnostics.Stopwatch]::StartNew()
+    # --- resolve the solution to reopen ---
+    $pendingDialog = $null
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        # The path has to come from the DTE: clear reload prompts first, the read would only see $null (#87).
+        $pathRead = $null
+        while ($true) {
+            $stepFail = Invoke-TcResetDialogStep -FirstDialog $pendingDialog
+            $pendingDialog = $null
+            if ($null -ne $stepFail) { return $stepFail }
+            $pathRead = Read-TcResetSolutionName -Operation 'Solution.FullName'
+            if ($null -ne $pathRead.Failure) { return Complete-TcResetFailure -Step 'modal dialog check' -Result $pathRead.Failure }
+            if ($null -ne $pathRead.Dialog) { $pendingDialog = $pathRead.Dialog; continue }
+            break
+        }
+        if (-not $pathRead.Read) {
+            if ($null -ne $pathRead.ErrorRecord) {
+                return Complete-TcResetFailure -Step 'solution path read' -Result (New-TcAdsErrorResult -ErrorRecord $pathRead.ErrorRecord -DefaultCode 'NO_SOLUTION' -MessagePrefix 'Could not read the path of the open solution')
+            }
+            return Complete-TcResetFailure -Step 'solution path read' -Result (New-TcResult -Success $false -ErrorCode 'NO_SOLUTION' -Hint (Get-TcErrorHint -Code 'NO_SOLUTION') `
+                -ErrorMessage "Could not read the path of the open solution within $TimeoutSec s ($($pathRead.Error)); nothing to reopen.")
+        }
+        $path = $pathRead.Value
+    }
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        return New-TcResult -Success $false -ErrorMessage 'No solution is open and no -SolutionPath was given; nothing to reopen.' `
+            -ErrorCode 'NO_SOLUTION' -Hint (Get-TcErrorHint -Code 'NO_SOLUTION')
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+        return New-TcResult -Success $false -ErrorMessage "Solution file not found: $path" -ErrorCode 'FILE_NOT_FOUND'
+    }
+    $path = Get-TcLongPath (Resolve-Path -LiteralPath $path).Path
+    $progress.solution = $path
+    $leaf = [IO.Path]::GetFileName([string]$path)
+
+    $guard = $null
+    $expected = $path
+    $reloadWaitSec = 0.0
+
+    # Steps 1, Yes-only path and guard run again whenever a reload prompt comes up while
+    # Solution.FullName is polled (at most 5 prompts in total, Invoke-TcResetDialogStep).
     while ($true) {
-        try {
-            $raw = Invoke-TcComRetry -MaxRetries 1 -OperationName 'Solution.FullName (guard)' -ScriptBlock { $gSol = $dte.Solution; if ($null -eq $gSol) { $null } else { $gSol.FullName } }
-            if ($null -ne $raw) { $openNow = [string]$raw; $guardRead = $true; break }
-            $guardError = 'Solution / Solution.FullName answered $null'
+        $stepFail = Invoke-TcResetDialogStep -FirstDialog $pendingDialog
+        $pendingDialog = $null
+        if ($null -ne $stepFail) { return $stepFail }
+
+        # --- Yes-only path: XAE reloaded the project itself; skip CloseAll / Close / Open ---
+        if ($progress.answeredYes -and -not $state.NeedReopen -and -not $state.YesPathDone) {
+            # a. Wait on the DTE we hold until XAE answers Solution.FullName with our solution again
+            #    (it is busy while it reloads the project). Polled every 500 ms, no blind sleep; a
+            #    dialog that comes up meanwhile (another reload prompt) is handled first (#87).
+            $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+            $reloaded = $false
+            $lastRead = $null
+            while ($waitSw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+                try {
+                    $full = [string](Invoke-TcComRetry -OperationName 'Solution.FullName (post-reload wait)' -MaxRetries 1 -ScriptBlock { [string]$dte.Solution.FullName })
+                    $lastRead = $full
+                    if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals((Get-TcLongPath $full), $path, [StringComparison]::OrdinalIgnoreCase)) { $reloaded = $true; break }
+                }
+                catch { $lastRead = $_.Exception.Message }
+                $pendingDialog = Find-TcIdeModalDialog
+                if ($null -ne $pendingDialog) { break }
+                Start-Sleep -Milliseconds 500
+            }
+            $reloadWaitSec += $waitSw.Elapsed.TotalSeconds
+            $progress['reloadWaitSec'] = [math]::Round($reloadWaitSec, 1)
+            if ($null -ne $pendingDialog) {
+                Write-Verbose "Reset-TcSolution: a dialog came up while waiting for the Yes reload ($($pendingDialog.Kind)); handling it first."
+                continue
+            }
+            if (-not $reloaded) { Write-Verbose "Reset-TcSolution: Solution.FullName not back to '$path' after the Yes reload (last: $lastRead); reconnecting anyway." }
+            $state.YesPathDone = $true
+
+            # b. Reconnect; on failure restore the identity and fall back to close / reopen on the old DTE.
+            $saved = @{
+                Dte = $script:TcDte; ProgId = $script:TcProgId; Pid = $script:TcIdeProcessId; SelectedBy = $script:TcIdeSelectedBy
+                Sln = $script:TcSolutionPath; Start = $script:TcIdeStartTime; MainHwnd = $script:TcIdeMainHwnd
+                Settings = $script:TcAutomationSettings; Silent = $script:TcSilentMode; SilentOriginal = $script:TcSilentModeOriginal
+            }
+            if ($null -ne $script:TcSysManager) {
+                try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }
+                $script:TcSysManager = $null
+            }
+            $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
+            if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
+            $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
+            $connect = Connect-TcIde @connectParams
+            $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
+            $probeError = $null
+            if (-not $connect.success) {
+                $probeError = "Connect-TcIde failed: [$($connect.error.code)] $($connect.error.message)"
+                $script:TcDte = $saved.Dte; $script:TcProgId = $saved.ProgId; $script:TcIdeConnected = ($null -ne $saved.Dte)
+                $script:TcIdeProcessId = $saved.Pid; $script:TcIdeSelectedBy = $saved.SelectedBy; $script:TcSolutionPath = $saved.Sln
+                $script:TcIdeStartTime = $saved.Start; $script:TcIdeMainHwnd = $saved.MainHwnd
+                $script:TcAutomationSettings = $saved.Settings; $script:TcSilentMode = $saved.Silent; $script:TcSilentModeOriginal = $saved.SilentOriginal
+            }
+            else {
+                # Probe the re-bound ITcSysManager the same way other commands use it.
+                $sm = $script:TcSysManager
+                if ($null -eq $sm) { $probeError = 'ITcSysManager not available after reconnect' }
+                else {
+                    $tipc = $null
+                    try {
+                        $tipc = Invoke-TcComRetry -OperationName 'LookupTreeItem TIPC (post-reload probe)' -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem('TIPC') }
+                        if ($null -eq $tipc) { $probeError = "LookupTreeItem('TIPC') returned null" }
+                    }
+                    catch { $probeError = $_.Exception.Message }
+                    if ($null -ne $tipc) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($tipc) | Out-Null } catch { } }
+                }
+                if ($null -eq $probeError) {
+                    $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Extra ([ordered]@{ connectSec = $connectSec }) -Total $sw)
+                    return Register-TcResetChange -Result $ok -Change "Reset-TcSolution $leaf (project reloaded from disk)" -Solutions @([string]$script:TcSolutionPath, $path, $startSolution)
+                }
+            }
+            Write-Verbose "Reset-TcSolution: reconnect after the Yes reload failed ($probeError); doing the full close / reopen."
+            $progress['yesPathError'] = $probeError
+            $dte = $script:TcDte
+            $progId = $script:TcProgId
+            if ($null -eq $dte) {
+                return Complete-TcResetFailure -Step 'reconnect' -Result (New-TcResult -Success $false -ErrorMessage "Project reload answered Yes, but the IDE is not usable afterwards: $probeError" `
+                    -ErrorCode 'NOT_CONNECTED' -Data (Get-ProgressData -Extra @{ connectSec = $connectSec }))
+            }
         }
-        catch { $guardError = $_.Exception.Message }
-        if ($guardSw.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
-        Start-Sleep -Milliseconds 500
+
+        # --- guard (#29): never close a solution the module did not expect in this IDE ---
+        # Connect-TcIde can attach a blocked IDE on evidence such as a session record; when the IDE
+        # turns out to have ANOTHER solution open than the module believes, closing it would hit
+        # someone else's work. Never readable within -TimeoutSec -> RESET_SOLUTION_UNVERIFIED,
+        # nothing closed. A reload prompt that comes up during the poll is handled (loop again),
+        # any other dialog ends it with IDE_MODAL_DIALOG (#87).
+        # Expected = the solution the module connected / opened (else $path).
+        $expected = if (-not [string]::IsNullOrWhiteSpace($script:TcSolutionPath)) { [string]$script:TcSolutionPath } else { $path }
+        $guard = Read-TcResetSolutionName -Operation 'Solution.FullName (guard)'
+        if ($null -ne $guard.Failure) { return Complete-TcResetFailure -Step 'modal dialog check' -Result $guard.Failure }
+        if ($null -ne $guard.Dialog) {
+            Write-Verbose "Reset-TcSolution: a reload prompt ($($guard.Dialog.ReloadTarget)) came up while reading Solution.FullName; handling it."
+            $pendingDialog = $guard.Dialog
+            continue
+        }
+        break
     }
-    if (-not $guardRead) {
+    if (-not $guard.Read) {
         return Complete-TcResetFailure -Step 'solution check' -Result (New-TcResult -Success $false `
-            -ErrorMessage "Reset-TcSolution not attempted: Solution.FullName of the IDE (pid $previousPid) could not be read within $TimeoutSec s ($guardError), so the open solution could not be compared with '$expected'. Nothing was closed." `
+            -ErrorMessage "Reset-TcSolution not attempted: Solution.FullName of the IDE (pid $previousPid) could not be read within $TimeoutSec s ($($guard.Error)), so the open solution could not be compared with '$expected'. Nothing was closed." `
             -ErrorCode 'RESET_SOLUTION_UNVERIFIED' -Hint (Get-TcErrorHint -Code 'RESET_SOLUTION_UNVERIFIED') `
-            -Data (Get-ProgressData -Extra @{ expectedSolution = $expected; guardError = $guardError; guardSec = [math]::Round($guardSw.Elapsed.TotalSeconds, 1) }))
+            -Data (Get-ProgressData -Extra @{ expectedSolution = $expected; guardError = $guard.Error; guardSec = $guard.Sec }))
     }
+    $openNow = $guard.Value
     if (-not [string]::IsNullOrWhiteSpace($openNow)) {
         $openNorm = try { Get-TcLongPath $openNow } catch { $openNow }
         $expNorm = try { Get-TcLongPath $expected } catch { $expected }
