@@ -17,7 +17,9 @@ function Set-TcTreeItemXml {
             attributes-not-supported (data.attributePaths), structure-mismatch (a fragment leaf is an
             element with child elements in the current XML, or text next to child elements;
             data.structurePaths), repeated-count-mismatch (a different number of same-name repeated
-            elements than now; data.repeatedCountMismatches), derived-only (every changed leaf is a
+            elements than now; data.repeatedCountMismatches), secret-only (every changed leaf is a
+            password field, masked as *** in ProduceXml, or derived; data.secretPaths; a password field
+            next to verifiable ones is sent but not compared, data.warnings), derived-only (every changed leaf is a
             derived TcModuleInstance Context / ParameterValues field; data.derivedPaths).
           - TREEITEM_INVALID_VALUE: a known field with an invalid value (data.invalidFields), e.g.
             TaskDef/CycleTime must be an integer > 0 (XAE stores 0, negative numbers and text; measured).
@@ -109,6 +111,14 @@ function Set-TcTreeItemXml {
         $changes = @($cmp.Changes)
         $changed = @($changes | Where-Object { $_.changed })
         $changedDerived = @($changed | Where-Object { $_.derived })
+        $changedSecret = @($changed | Where-Object { $_.secret })
+        # password fields cannot be read back (masked as ***): like derived fields they are not compared
+        $verifiable = @($changed | Where-Object { -not $_.derived -and -not $_.secret })
+        if ($changedSecret.Count -gt 0 -and $verifiable.Count -eq 0) {
+            $data | Add-Member -NotePropertyName secretPaths -NotePropertyValue @($changedSecret | ForEach-Object { $_.path })
+            return New-TcXmlMergeFailedResult -Reason 'secret-only' -Data $data `
+                -Message ("Every changed element of the fragment is a password field (or derived): its value is masked as *** in ProduceXml, so the write could not be read back: " + (@($changedSecret | ForEach-Object { $_.path }) -join ', '))
+        }
         if ($changed.Count -gt 0 -and $changedDerived.Count -eq $changed.Count) {
             $data | Add-Member -NotePropertyName derivedPaths -NotePropertyValue @($changedDerived | ForEach-Object { $_.path })
             return New-TcXmlMergeFailedResult -Reason 'derived-only' -Data $data `
@@ -118,6 +128,7 @@ function Set-TcTreeItemXml {
         $data | Add-Member -NotePropertyName changedCount -NotePropertyValue $changed.Count
         $warnings = @()
         if ($changedDerived.Count -gt 0) { $warnings += "derived fields in the fragment ($(@($changedDerived | ForEach-Object { $_.path }) -join ', ')) are recomputed by XAE and are not read back" }
+        if ($changedSecret.Count -gt 0) { $warnings += "password fields in the fragment ($(@($changedSecret | ForEach-Object { $_.path }) -join ', ')) are masked as *** in ProduceXml: they are not read back, and the backup holds *** for them (it cannot restore a password)" }
 
         if ($DryRun) {
             $data | Add-Member -NotePropertyName currentXml -NotePropertyValue $currentXml
@@ -179,6 +190,8 @@ function Set-TcTreeItemXml {
             $ok = ($mism.Count -eq 0 -and $unexpected.Count -eq 0)
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $ok
             $skipped = @($frag.Leaves | Where-Object { $_.derived } | ForEach-Object { $_.path })
+            $skippedSecret = @($frag.Leaves | Where-Object { $_.secret } | ForEach-Object { $_.path })
+            if ($skippedSecret.Count -gt 0) { $data | Add-Member -NotePropertyName skippedSecret -NotePropertyValue $skippedSecret }
             if ($skipped.Count -gt 0) { $data | Add-Member -NotePropertyName skippedDerived -NotePropertyValue $skipped }
             if ($mism.Count -gt 0) { $data | Add-Member -NotePropertyName mismatches -NotePropertyValue $mism }
             if ($unexpected.Count -gt 0) { $data | Add-Member -NotePropertyName unexpectedChanges -NotePropertyValue $unexpected }

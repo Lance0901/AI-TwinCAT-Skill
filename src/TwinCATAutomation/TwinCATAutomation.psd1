@@ -46,6 +46,26 @@
         'Get-TcIoTree',
         'Set-TcVariableLink',
         'Remove-TcVariableLink',
+        # NC axes (phase 3, task 4.1)
+        'Add-TcNcTask',
+        'Add-TcNcAxis',
+        'Set-TcNcAxisParameter',
+        'Connect-TcNcAxisToPlc',
+        # TcCOM modules (phase 3, task 4.2)
+        'Add-TcComModule',
+        'Get-TcComModuleParameter',
+        'Set-TcComModuleParameter',
+        'Set-TcComModuleContext',
+        # Project variants (phase 3, task 4.3)
+        'Get-TcProjectVariants',
+        'Set-TcProjectVariantConfig',
+        'Set-TcCurrentVariant',
+        # Independent project file (phase 3, task 4.4)
+        'Set-TcIndependentFile',
+        # ADS routes (phase 3, task 4.5)
+        'Get-TcAdsRoutes',
+        'Find-TcAdsTarget',
+        'Add-TcAdsRoute',
         # Generic tree items (LookupTreeItem / ProduceXml / CreateChild / ConsumeXml / DeleteChild / ExportChild / ImportChild)
         'Get-TcTreeItem',
         'Get-TcTreeItemXml',

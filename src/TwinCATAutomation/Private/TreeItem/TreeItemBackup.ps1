@@ -202,7 +202,7 @@ function New-TcTreeItemBackup {
         Writes the ProduceXml backup (and copies of -DiskFiles) to
         <SolutionDir>\.tcauto-backup\<yyyyMMdd-HHmmss>\: @{ backupPath; backupDir; backupFiles; warnings }.
     .DESCRIPTION
-        backupPath = '<safe path>.xml' (UTF-8 without BOM, exactly the ProduceXml text); an existing name
+        backupPath = '<safe path>.xml' (UTF-8 without BOM, the ProduceXml text with passwords masked); an existing name
         in the same second gets '-2', '-3' ... Disk files are copied as '<safe path>.<file name>'; a copy
         that fails becomes a warning. Throws when the XML cannot be written (the caller must not modify
         anything then: TREEITEM_BACKUP_FAILED).
@@ -236,7 +236,8 @@ function New-TcTreeItemBackup {
     $target = Join-Path $dir "$base.xml"
     $n = 1
     while (Test-Path -LiteralPath $target) { $n++; $target = Join-Path $dir "$base-$n.xml" }
-    [System.IO.File]::WriteAllText($target, $Xml, (New-Object System.Text.UTF8Encoding($false)))
+    # passwords masked here as well (ConvertTo-TcMaskedXml): a backup must never hold one
+    [System.IO.File]::WriteAllText($target, [string](ConvertTo-TcMaskedXml -Xml $Xml), (New-Object System.Text.UTF8Encoding($false)))
     $copied = [System.Collections.Generic.List[string]]::new()
     $warnings = [System.Collections.Generic.List[string]]::new()
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($target)

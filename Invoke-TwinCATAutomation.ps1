@@ -70,6 +70,25 @@ $operationMap = @{
     'GetIoTree'       = 'Get-TcIoTree'
     'SetVariableLink' = 'Set-TcVariableLink'
     'RemoveVariableLink' = 'Remove-TcVariableLink'
+    # NC axes (DryRun by default)
+    'AddNcTask'       = 'Add-TcNcTask'
+    'AddNcAxis'       = 'Add-TcNcAxis'
+    'SetNcAxisParameter' = 'Set-TcNcAxisParameter'
+    'LinkNcAxis'      = 'Connect-TcNcAxisToPlc'
+    # TcCOM modules (the modifying ones default to DryRun)
+    'AddTcComModule'  = 'Add-TcComModule'
+    'GetTcComParameter' = 'Get-TcComModuleParameter'
+    'SetTcComParameter' = 'Set-TcComModuleParameter'
+    'SetTcComContext' = 'Set-TcComModuleContext'
+    # Project variants (the modifying ones default to DryRun)
+    'GetVariants'     = 'Get-TcProjectVariants'
+    'SetVariantConfig' = 'Set-TcProjectVariantConfig'
+    'SwitchVariant'   = 'Set-TcCurrentVariant'
+    'SetIndependentFile' = 'Set-TcIndependentFile'
+    # ADS routes (AddAdsRoute defaults to DryRun; there is no remove, see docs/troubleshooting.md)
+    'GetAdsRoutes'    = 'Get-TcAdsRoutes'
+    'FindAdsTargets'  = 'Find-TcAdsTarget'
+    'AddAdsRoute'     = 'Add-TcAdsRoute'
     # Generic tree items (prefer the dedicated tools; the modifying ones default to DryRun)
     'LookupTreeItem'  = 'Get-TcTreeItem'
     'ProduceXml'      = 'Get-TcTreeItemXml'

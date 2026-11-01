@@ -15,7 +15,8 @@
 #     child elements in the fragment (structure-mismatch);
 #   - repeated sibling elements (same name) whose number differs from the current XML
 #     (repeated-count-mismatch): how XAE merges fewer / more repeated elements is unknown;
-#   - a fragment whose changed leaves are all derived fields (derived-only): nothing could be read back.
+#   - a fragment whose changed leaves are all derived fields (derived-only): nothing could be read back;
+#     the same for password fields (secret-only): their value is masked as *** in every ProduceXml text.
 # After a write every leaf of the whole ProduceXml (attributes included) outside the fragment and not
 # derived must be unchanged (Compare-TcTreeItemXmlFull; TREEITEM_VERIFY_FAILED data.unexpectedChanges).
 # XmlNode members are read through get_Name() / get_ChildNodes() / ...: the PowerShell XML adapter lets a
@@ -60,7 +61,7 @@ function Test-TcXmlPathDerived {
 function Get-TcXmlLeafList {
     <#
     .SYNOPSIS
-        Leaf elements below an XML element: { path; key; segments; value; derived; isAttribute }.
+        Leaf elements below an XML element: { path; key; segments; value; derived; secret; isAttribute }.
     .DESCRIPTION
         A leaf is an element without child elements. path is the element path from the root
         ('TreeItem/TaskDef/CycleTime'); a segment gets a 1-based [n] when its parent has more than one
@@ -68,7 +69,9 @@ function Get-TcXmlLeafList {
         $script:TcTreeItemFieldRules). segments = @(@{ name; index; count }) without the root (count =
         number of sibling elements with that name in the parent). derived = the leaf lies below a
         TcModuleInstance element inside Context or ParameterValues (recomputed by XAE, excluded from
-        the readback comparison). With -IncludeAttributes every attribute of every element (root
+        the readback comparison). secret = an element on the path (or the attribute) is a password
+        field (Test-TcSecretName: password / passwd / pwd); its value is masked as *** in every
+        ProduceXml text, so it cannot be compared either (phase 3 review S5). With -IncludeAttributes every attribute of every element (root
         included) is listed too, as '<element path>/@<name>' (isAttribute = $true); used by the
         whole-XML comparison after a write.
     .PARAMETER Root
@@ -85,15 +88,16 @@ function Get-TcXmlLeafList {
         $cur = $stack.Pop()
         $names = @($cur.Segments | ForEach-Object { $_.name })
         $derived = Test-TcXmlPathDerived -Names $names
+        $secret = @($names | Where-Object { Test-TcSecretName -Name $_ }).Count -gt 0
         if ($IncludeAttributes -and $null -ne $cur.Node.get_Attributes()) {
             foreach ($a in $cur.Node.get_Attributes()) {
-                $list.Add([PSCustomObject]@{ path = "$($cur.Path)/@$($a.get_Name())"; key = "$($cur.Key)/@$($a.get_Name())"; segments = $cur.Segments; value = [string]$a.get_Value(); derived = $derived; isAttribute = $true })
+                $list.Add([PSCustomObject]@{ path = "$($cur.Path)/@$($a.get_Name())"; key = "$($cur.Key)/@$($a.get_Name())"; segments = $cur.Segments; value = [string]$a.get_Value(); derived = $derived; secret = ($secret -or (Test-TcSecretName -Name $a.get_LocalName())); isAttribute = $true })
             }
         }
         $kids = @($cur.Node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element })
         if ($kids.Count -eq 0) {
             if ($cur.Segments.Count -eq 0) { continue }   # the root itself
-            $list.Add([PSCustomObject]@{ path = $cur.Path; key = $cur.Key; segments = $cur.Segments; value = [string]$cur.Node.get_InnerText(); derived = $derived; isAttribute = $false })
+            $list.Add([PSCustomObject]@{ path = $cur.Path; key = $cur.Key; segments = $cur.Segments; value = [string]$cur.Node.get_InnerText(); derived = $derived; secret = $secret; isAttribute = $false })
             continue
         }
         $counts = @{}
@@ -330,8 +334,14 @@ function Compare-TcTreeItemFragment {
         $hasKids = @($node.get_ChildNodes() | Where-Object { $_.get_NodeType() -eq [System.Xml.XmlNodeType]::Element }).Count -gt 0
         if ($hasKids) { $structure.Add([string]$l.path); continue }
         $cur = [string]$node.get_InnerText()
+        if ($l.secret) {
+            # a password field: the current value is masked (***), so equality cannot be judged (a
+            # fragment value '***' is NOT "unchanged"), and neither value is ever returned
+            $changes.Add([PSCustomObject]@{ path = $l.path; current = $script:TcPasswordMask; planned = $script:TcPasswordMask; changed = $true; derived = [bool]$l.derived; secret = $true })
+            continue
+        }
         $changed = -not (Test-TcXmlValueEqual -Expected $l.value -Actual $cur)
-        $entry = [PSCustomObject]@{ path = $l.path; current = $cur; planned = $l.value; changed = $changed; derived = [bool]$l.derived }
+        $entry = [PSCustomObject]@{ path = $l.path; current = $cur; planned = $l.value; changed = $changed; derived = [bool]$l.derived; secret = $false }
         $changes.Add($entry)
         if ($changed -and -not $l.derived) { $mismatches.Add([PSCustomObject]@{ path = $l.path; expected = $l.value; actual = $cur }) }
     }
@@ -390,8 +400,8 @@ function Compare-TcTreeItemXmlFull {
     $da.LoadXml($AfterXml)
     $skip = @{}
     foreach ($p in @($ExcludePaths)) { if (-not [string]::IsNullOrEmpty($p)) { $skip[$p] = $true } }
-    $lb = @(Get-TcXmlLeafList -Root $db.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $skip.ContainsKey($_.path) })
-    $la = @(Get-TcXmlLeafList -Root $da.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $skip.ContainsKey($_.path) })
+    $lb = @(Get-TcXmlLeafList -Root $db.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $_.secret -and -not $skip.ContainsKey($_.path) })
+    $la = @(Get-TcXmlLeafList -Root $da.DocumentElement -IncludeAttributes | Where-Object { -not $_.derived -and -not $_.secret -and -not $skip.ContainsKey($_.path) })
     $out = [System.Collections.Generic.List[object]]::new()
     if ($AdditionsOnly) {
         $after = @{}

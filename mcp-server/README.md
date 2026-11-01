@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 62 個 cmdlet 中的 61 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 77 個 cmdlet 中的 76 個(`NewProject` 暫時下架,#70)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (61 of its 62 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (76 of its 77 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -92,7 +92,7 @@ Testing only (replace the `powershell.exe` spawn with any command, e.g. the mock
 
 Flags accept `1`, `true`, `yes`, `on` (case-insensitive).
 
-## Tools (65)
+## Tools (80)
 
 Tool names equal the CLI action names (`ConnectIde` = `Connect-TcIde`). Parameters are the cmdlet parameters, passed as JSON (`switch` → boolean, `string[]` → array, `hashtable` → object; object keys must be non-empty and must not differ only in case, since PowerShell 5.1 cannot convert such JSON). `Timeout` is the per-call limit after which the bridge is killed; for tools with `TimeoutSec` / `TimeoutMs` / `DurationMs` parameters it grows to at least that value plus 30 s, capped at 2 h (schema `minimum` / `maximum` are enforced first).
 
@@ -194,6 +194,28 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
 | `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O variable (full tree paths; verified via ProduceMappingInfo) |
 | `RemoveVariableLink` | `Remove-TcVariableLink` | `PlcVariable` | 120 s | Remove a variable link (verified via ProduceMappingInfo) |
+
+### System configuration (phase 3; unit tests only, registered verification is task 4.6)
+
+All modifying tools here default to `DryRun=true` and carry `destructiveHint: true`; each backs up before the write (`.tcauto-backup`), checks for a modal dialog right before every COM write and reads back (an unverified write is an error, never `success: true`).
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `AddNcTask` | `Add-TcNcTask` | — | 120 s | CreateChild 1 on TINC; only one NC task per TINC (`NC_TASK_ALREADY_EXISTS`, measured 0x98510002); name read back (XAE appends ` SAF`) |
+| `AddNcAxis` | `Add-TcNcAxis` | `Name` | 120 s | CreateChild below `<task>^Axes` (`AxisType` Continuous / Discrete / Stepper / Encoder); a new axis is a simulation axis, the encoder is read back (`data.simulation`); a duplicate name is refused (`NC_AXIS_ALREADY_EXISTS`, XAE would accept it); no task -> `NC_TASK_NOT_FOUND` |
+| `SetNcAxisParameter` | `Set-TcNcAxisParameter` | `Axis` | 120 s | ConsumeXml `MaxVelocity` / `Acceleration` / `Deceleration` / `Jerk` / `EncoderType` / `DriveType` / `ControllerType`; validated first (XAE stores wrong values with S_OK), every field read back (`NC_AXIS_PARAM_VERIFY_FAILED`); an unnamed type number -> `NC_INVALID_SUBTYPE` and the old type is sent back |
+| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | `Axis`, `PlcVariable` | 120 s | Two struct links (`<var>.NcToPlc` <-> `<axis>^Outputs^ToPlc`, `<axis>^Inputs^FromPlc` <-> `<var>.PlcToNc`) with LinkVariables, verified via ProduceMappingInfo; needs a build (`NC_PLC_VARIABLE_NOT_FOUND`); an end linked elsewhere -> `NC_AXIS_ALREADY_LINKED` |
+| `AddTcComModule` | `Add-TcComModule` | `Name` | 120 s | CreateChild in `TIRC^TcCOM Objects` from `ClassId` (GUID) or `TypeName` (exactly one); XAE renames it `<Name> (<type>)` / `_ObjN`, so a taken name is refused first (`TCCOM_MODULE_ALREADY_EXISTS`) and `createdPath` / `createdName` / `classId` / `oidHex` / `contextIds` come from the readback; unknown class -> `TCCOM_CLASS_NOT_FOUND` |
+| `GetTcComParameter` | `Get-TcComModuleParameter` | `Module` | 120 s | Read-only. No `Name` / `ParameterId`: the parameter list of the ProduceXml (name, id, bit size, base type, project value). With one: `GetModulePara` decoded (`value`, `rawHex`); `Online=true`: `GetOnlineModulePara` from the running object (`TCCOM_OBJECT_NOT_FOUND` when not running) |
+| `SetTcComParameter` | `Set-TcComModuleParameter` | `Module`, `Value` | 120 s | Value converted to exactly the parameter size and range checked (`TCCOM_PARAM_INVALID_VALUE`); offline `SetModulePara` (backup, bytes read back, BUILD_REQUIRED); `Online=true`: `SetOnlineModulePara`, the project is NOT changed (restored by the next Activate) |
+| `SetTcComContext` | `Set-TcComModuleContext` | `Module`, `Task` | 120 s | `SetModuleContext` with the TMC Context Id (not 0; legal ids read from the ProduceXml) and the task's ObjectId, read back with `GetModuleContext` (`TCCOM_CONTEXT_INVALID` / `TCCOM_CONTEXT_VERIFY_FAILED`) |
+| `GetVariants` | `Get-TcProjectVariants` | — | 120 s | Read-only: `current`, `currentIsGroup`, `variants[]`, `groups[]`, `configXml`, `itemsXml`; no variants (4024 `$null`, 4026 '') -> empty arrays; `VARIANT_NOT_SUPPORTED` when the properties are missing |
+| `SetVariantConfig` | `Set-TcProjectVariantConfig` | — | 120 s | `AddVariant` / `RemoveVariant` (arrays), optional `Group`; ProjectVariantConfig is replaced as a whole, so it is read, changed, written back in one document and read back; backs up the old document and the .tsproj; removing the current variant -> `VARIANT_IS_CURRENT` |
+| `SwitchVariant` | `Set-TcCurrentVariant` | `Name` | 120 s | Case-sensitive (`VARIANT_NOT_FOUND`); `[Group1]` is accepted but `EnableConfig` then returns `VARIANT_GROUP_ACTIVE`; '' clears it; read back; BUILD_REQUIRED recorded |
+| `SetIndependentFile` | `Set-TcIndependentFile` | `Path`, `Enabled` | 120 s | `SaveInOwnFile`: the setter writes the .xti at once, so the backup is made before it; unchanged readback -> `INDEPENDENT_FILE_UNSUPPORTED` (PlcTask, Axes, TINC, TIRR); then a project save with a deadline and the .xti on disk compared before / after (`createdFiles` / `removedFiles`) |
+| `GetAdsRoutes` | `Get-TcAdsRoutes` | — | 120 s | Read-only: TIRR ProduceXml of the CURRENT target: `target`, `actualRoutes[]`, `staticRoutes[]`, `projectRoutes[]` (passwords would be masked) |
+| `FindAdsTargets` | `Find-TcAdsTarget` | — | 120 s | BroadcastSearch, or `Search` (IPv4 / host); XAE searches only when the target is the local system -> `ROUTE_SEARCH_REQUIRES_LOCAL_TARGET` (the target is not switched for you); synchronous about 4 s; an empty list proves nothing |
+| `AddAdsRoute` | `Add-TcAdsRoute` | `Name`, `NetId` | 120 s | **Not measured** (no second target). AddRoute (`Address` or `HostName`, `UserName`, `PasswordEnv` = name of an environment variable of the server process, Process scope only, named `TCAUTO_ROUTE_PW` or `TCAUTO_ROUTE_PW_<SUFFIX>` (else `INVALID_PARAMS`); set it in the server `env`) or `ProjectRoute=true` (AddProjectRoute, no credentials). The password is never a tool input and never appears in data / errors / backups. Same NetId -> `ROUTE_ALREADY_EXISTS`; TIRR read back (`ROUTE_VERIFY_FAILED`). No remove tool: the Automation Interface cannot delete routes (StaticRoutes.xml + service restart, see docs/troubleshooting.md) |
 
 ### Generic tree items (not yet verified on a real target, task 2.8)
 

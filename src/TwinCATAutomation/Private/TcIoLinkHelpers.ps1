@@ -129,7 +129,9 @@ function ConvertTo-TcTsmErrorCode {
     if ($null -eq $InputObject -or $InputObject -is [string]) { $msg = [string]$InputObject }
     if ($hr -eq [int]0x98510001 -or $msg -match 'ITEMNOTFOUND|Item .* not found') { return 'TREEITEM_NOT_FOUND' }
     if ($msg -match 'INVALIDITEMTYPE|not a variable|invalid item type') { return 'LINK_INVALID_ITEM_TYPE' }
-    if ($msg -match 'MISMATCHINGITEMS|not compatible|mismatch') { return 'LINK_TYPE_MISMATCH' }
+    # 0x98510004 "'<a>' and '<b>' do not match": input linked to input (measured 2026-11-01 4026 VS2022,
+    # self-built client, verification/phase3-probe.md question 5)
+    if ($hr -eq [int]0x98510004 -or $msg -match 'MISMATCHINGITEMS|not compatible|mismatch|do not match') { return 'LINK_TYPE_MISMATCH' }
     return $DefaultCode
 }
 

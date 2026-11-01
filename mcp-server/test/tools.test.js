@@ -439,6 +439,25 @@ describe('cmdlet name rewriting in hints', () => {
     });
   });
 
+  // phase3-4.6 N4: the AddAdsRoute password messages must read as MCP after the rewrite (no
+  // PowerShell-only '-Password', every '-Param' turned into the MCP spelling)
+  test('AddAdsRoute password / ProjectRoute messages: MCP spelling, no -Password (4.6 N4)', () => {
+    const real = buildCmdletNameMap(loadToolCatalog(path.join(__dirname, '..', 'tools.json')));
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'Public', 'Add-TcAdsRoute.ps1'), 'utf8');
+    const msgs = [...src.matchAll(/-ErrorMessage '([^']*(?:Password|ProjectRoute sends)[^']*)'/g)].map((m) => m[1]);
+    assert.ok(msgs.length >= 3, `found ${msgs.length} messages`);
+    for (const msg of msgs) {
+      const out = rewriteResultHints({ success: false, error: { code: 'ROUTE_PASSWORD_MISSING', message: msg } }, real).error.message;
+      assert.doesNotMatch(out, /(^|\s)-[A-Z][A-Za-z]+/, `PowerShell parameter left in: ${out}`);
+      assert.doesNotMatch(out, /-Password/, out);
+      assert.match(out, /PasswordEnv/, out);
+      // review N5: nothing the MCP caller cannot do (the SecureString path is PowerShell only)
+      if (msg.startsWith('AddRoute needs')) assert.doesNotMatch(out, /SecureString|PowerShell/, out);
+    }
+    const none = msgs.find((m) => m.startsWith('AddRoute needs'));
+    assert.equal(rewriteHintCmdletNames(none, real), 'AddRoute needs a password source: PasswordEnv names the environment variable that holds the route password; nothing was sent.');
+  });
+
   test('rewriteResultHints: error.hint, nested steps, data.hint, harmless on junk', () => {
     const a = { success: false, error: { code: 'X', hint: '呼叫 Connect-TcAds' } };
     assert.equal(rewriteResultHints(a, names), a);

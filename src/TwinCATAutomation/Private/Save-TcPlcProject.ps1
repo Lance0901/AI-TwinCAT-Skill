@@ -211,6 +211,24 @@ function Test-TcPlcProjectHasFile {
     $Content.CompileLeaf.Contains($f)
 }
 
+# review S2 (phase3-4.6 B2): the save looks the project up by FullName; DTE and the caller may spell
+# the same .tsproj differently (8.3 short names: C:\Users\RUNNER~1\...). Both sides go through this
+# key (full path, 8.3 names expanded by GetLongPathName when the path exists, upper case). The same
+# text is defined here and inside the background runspace script of Invoke-TcProjectSaveWithDeadline
+# (that runspace has no module functions; TcLongPathNative is a type of this AppDomain).
+$script:TcPathKeyFunctionText = @'
+function ConvertTo-TcPathKey([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $full = $Path.Trim()
+    try { $full = [IO.Path]::GetFullPath($full) } catch { return $full.ToUpperInvariant() }
+    $long = $null
+    try { $long = [TwinCATAutomation.TcLongPathNative]::Get($full) } catch { $long = $null }
+    if (-not [string]::IsNullOrEmpty($long)) { $full = $long }
+    return $full.TrimEnd('\').ToUpperInvariant()
+}
+'@
+. ([scriptblock]::Create($script:TcPathKeyFunctionText))
+
 function Invoke-TcProjectSaveWithDeadline {
     <#
     .SYNOPSIS
@@ -263,7 +281,7 @@ foreach ($e in [ComRotHelper]::GetAllDteInstances()) {
 }
 if ($null -eq $entry) { throw "DTE of pid $DtePid not found in the Running Object Table" }
 $dte = $entry['Object']
-$want = [IO.Path]::GetFullPath($TsProj)
+$want = ConvertTo-TcPathKey $TsProj
 while ($true) {
     try {
         $proj = $null
@@ -272,9 +290,9 @@ while ($true) {
             $p = $all.Item($i)
             $full = $null
             try { $full = [string]$p.FullName } catch { if ($_.Exception.ToString() -match '0x80010001|RPC_E_CALL_REJECTED') { throw } }
-            if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals([IO.Path]::GetFullPath($full), $want, [StringComparison]::OrdinalIgnoreCase)) { $proj = $p; break }
+            if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals((ConvertTo-TcPathKey $full), $want, [StringComparison]::OrdinalIgnoreCase)) { $proj = $p; break }
         }
-        if ($null -eq $proj) { throw "no project of the solution has FullName '$want'" }
+        if ($null -eq $proj) { throw "no project of the solution has FullName '$TsProj'" }
         # the caller gave up (PROJECT_SAVE_TIMEOUT reported): never start a save after that
         if ($null -ne $Cancel -and $Cancel['Cancel']) { throw 'cancelled: the caller reported PROJECT_SAVE_TIMEOUT' }
         $proj.Save()
@@ -287,6 +305,9 @@ while ($true) {
     }
 }
 '@
+    # review S2: the path key function goes right after the param() line of the background script
+    $nl = $realScript.IndexOf("`n")
+    $realScript = $realScript.Substring(0, $nl + 1) + $script:TcPathKeyFunctionText + "`n" + $realScript.Substring($nl + 1)
     $scriptText = if ([string]::IsNullOrWhiteSpace($SaveScript)) { $realScript } else { $SaveScript }
     if ([string]::IsNullOrWhiteSpace($SaveScript)) {
         if ($idePid -le 0) { throw "save: IDE process id unknown (Connect-TcIde first); cannot run Project.Save of '$TsProjFile' with a deadline." }

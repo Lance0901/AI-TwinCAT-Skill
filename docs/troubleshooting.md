@@ -341,6 +341,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### BOOT_PACKAGE_MISMATCH
 
 - **為什麼**:Activate 後專案 `_Boot\<platform>` 與 target Boot 目錄的檔案不一致,代表 Activate 沒把新 configuration 寫到 target,runtime 會用舊 package 啟動。比對 `CurrentConfig.xml`、`CurrentConfig.tszip`、`CurrentConfig\*.tpzip`、`Plc\Port_*.app`(只比本機 package 有的檔;target 多出來的 tpzip 列在 `extraOnTarget`,不算不一致),`data.bootPackage.files[]` 每檔有 local / target 的 `size`、`lastWriteTime`、`sha256`。
+- **Variant 專案(#89)**:有 current variant 時本機 package 在 `_Boot\<Variant>\<platform>`(XAE 寫到那裡，自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 18 題),這個資料夾存在時**只比它**(review S1:不能讓比較新的 `_Boot\<platform>` 蓋掉過期的 variant 包),不存在才退回 `_Boot\<platform>` 並在 `data.bootPackage.warnings` 說明;`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時只看 `_Boot\<platform>`。讀 `CurrentProjectVariant` 失敗回 `VARIANT_READ_FAILED`,不當成沒有 variant;`data.bootPackage.variant` 是比對時的 variant。修正前 variant 專案一律誤報這個碼。
 - **只對本機 runtime**:UmRT 依 `%ProgramData%\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\TcRegistry.xml` 的 `AmsNetId`(BIN,`C7052AFA0101` = 199.5.42.250.1.1)找到 `<name>\3.1\Boot`(InfoSys 未記載,實測);本機 XAR 是 `%ProgramData%\Beckhoff\TwinCAT\3.1\Boot`([InfoSys 4026 起的 Boot 目錄](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/4291093003.html),4026 前是 `C:\TwinCAT\3.1\Boot`)。遠端 target `status = unavailable`,不阻擋流程。
 - **實測**(2026-10-21,4026 + VS2022,本機 UmRT):正常 Activate 後 6 個檔(2 個 CurrentConfig、2 個 tpzip、Port_851.app、Port_852.app)SHA-256 全相同。把 target 的 CurrentConfig 三個檔換回前一版、保留新的 Port_852.app 後 `Set-TcSystemState -State Run`:system 照樣進 Run 並停住,但 851 / 852 都是 Invalid(PLC 沒載入)→ 只看 system state 會誤判,`Enable-TcConfig -Force` 由 `verify` 擋下。
 - **下一步**:重跑 `Enable-TcConfig -Force`(Activate 會重寫 Boot);仍不一致時先備份 target Boot 目錄,再把 `_Boot\<platform>` 的上述檔案複製過去並比對 SHA-256。模組只讀不寫,不會自動覆寫 target 檔案。
@@ -918,6 +919,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:修改呼叫有返回,但讀回不符:`ConsumeXml` 讀回的值和片段不同(`data.mismatches` 的 `expected` / `actual`),或片段以外的非衍生欄位變了(`data.unexpectedChanges`:`path`、`kind` = `changed` / `removed` / `added`、`before`、`after`;重複元素數量變了會顯示成 removed / added);`CreateChild` / `ImportChild` 之後找不到新節點,或父節點原有的值少了 / 變了(`data.parentUnchanged=false`、`data.unexpectedChanges`,這時新節點已經建立);`DeleteChild` 之後節點還在。`success` 一定是 false。
 - **為什麼**:XAE 對未知元素、錯的路徑會回 S_OK 但什麼都不改(實測 2026-10-30,task 2.1);不讀回就會誤報成功(#28 / #32)。
+- **密碼欄位**:備份與 ProduceXml 裡的密碼欄位都是 `***`(第 3 期 review S5),**不能拿備份還原密碼**,要在 XAE 重新輸入。
 - **下一步**:`ProduceXml` 看目前內容;`data.backupPath` 是寫入前的 XML,`data.backupFiles` 是磁碟檔副本。要還原欄位就把備份裡對應的元素做成片段再 `ConsumeXml`(先 dry-run);刪錯的節點用 `ImportChild` 匯入 `data.exportPath`。
 
 ### TREEITEM_DELETE_NAME_MISMATCH
@@ -962,6 +964,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `attributes-not-supported`:片段有 XML attribute(含 `xmlns`,`data.attributePaths`)。目前只支援 element 值。
   - `structure-mismatch`:片段的最底層元素在目前的 XML 是有子元素的節點,例如 `<TreeItem><TaskDef/></TreeItem>`、`<TaskDef>123</TaskDef>`;或片段在有子元素的元素裡放了文字(`data.structurePaths`)。
   - `repeated-count-mismatch`:同名重複元素的數量和目前的 XML 不同,例如目前有兩個 `CPU`,片段只放一個(`data.repeatedCountMismatches`:`path`、`fragmentCount`、`currentCount`)。
+  - `secret-only`:片段有變動的欄位全是密碼欄位(元素或 attribute 名稱含 `password` / `passwd` / `pwd`,`data.secretPaths`)。所有 ProduceXml 都把密碼遮成 `***`,寫入後無法讀回，片段值是 `***` 也不能當成「沒變」(送出會把密碼改成 `***`),所以不送。片段裡同時有可驗證的欄位時照送，密碼欄位不比對、寫進 `data.warnings` / `data.skippedSecret`,`data.changes` 的值一律是 `***`。
   - `derived-only`:片段有變動的欄位全是 `TcModuleInstance` 底下的 `Context` / `ParameterValues`(`data.derivedPaths`);XAE 會依來源欄位重算,讀回也不比對,所以等於沒驗證。片段裡同時有來源欄位和衍生欄位時照送,`data.warnings` 註明衍生欄位不驗證。
 - **值的比對**(讀回、全量比對):先去頭尾空白做 Ordinal(區分大小寫)比對;不同時,兩邊都能解析成數字才比數值(十進位,或 `#x` 十六進位,前綴不分大小寫,例如 `#x1E` = `#x1e` = `30`);其他文字一律區分大小寫。
 - **為什麼**:實測 2026-10-30(4026 VS2022,task 2.1):根元素錯回 `E_FAIL`「No TreeItem found.」,語法錯回 `E_FAIL`,都不會部分寫入;**未知元素或錯的路徑回 S_OK 但什麼都不改**,呼叫端看不出來,所以模組在送出前先比對路徑。
@@ -969,7 +972,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LINK_INVALID_ITEM_TYPE / LINK_TYPE_MISMATCH / LINK_FAILED / UNLINK_FAILED
 
-- **為什麼**:TE1000 §5.1.1.2(p.38)列出 `LinkVariables` 的錯誤:`TSM_E_INVALIDITEMTYPE`(有一端不是 variable)→ `LINK_INVALID_ITEM_TYPE`;`TSM_E_MISMATCHINGITEMS`(型別 / 大小不相容)→ `LINK_TYPE_MISMATCH`。這兩個的數值手冊沒寫,模組用 HRESULT 名稱或訊息文字判斷;都不符時回 `LINK_FAILED`(Unlink 是 `UNLINK_FAILED`)。
+- **為什麼**:TE1000 §5.1.1.2(p.38)列出 `LinkVariables` 的錯誤:`TSM_E_INVALIDITEMTYPE`(有一端不是 variable)→ `LINK_INVALID_ITEM_TYPE`;`TSM_E_MISMATCHINGITEMS`(型別 / 大小不相容)→ `LINK_TYPE_MISMATCH`。這兩個的數值手冊沒寫,模組用 HRESULT 名稱或訊息文字判斷;都不符時回 `LINK_FAILED`(Unlink 是 `UNLINK_FAILED`)。`0x98510004` "'<a>' and '<b>' do not match"(input 接 input)也對到 `LINK_TYPE_MISMATCH`(自建 client 實測 2026-11-01 4026 VS2022,phase3-probe 第 5 題)。
 - **下一步**:I/O 端給 `^Channel 1^Input` 而不是 `^Channel 1`;兩端型別大小要相同。
 
 ### LINK_VERIFY_FAILED
@@ -1075,6 +1078,310 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### 成功時的 Set-TcTarget data
 
 `Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`(solution platform)、`projectPlatform`(操作後 active 的 .tsproj project platform,沒有 .tsproj 為 null)、`platformChanged`(bool);有切換時另有 `requestedProjectPlatform`、 `configuration`、`previousPlatform`、`availablePlatforms`、`projectCheck`(`ok` / `mismatch` / `no-tsproj`)、`platformMatchedBy`、`platformMap`。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`projectPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`;自動切換失敗時加 `platformMap`、`requestedProjectPlatform`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`、`projectPlatform`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId),也原值傳給 EnableConfig(比對結果相同,不再出現「-Platform was not given」的 `data.warning`;target 有回報 TARGETINFO 時仍以 target 為準),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
+
+## 第 3 期系統組態(task 4.1–4.5)
+
+共同規則(和第 2 期相同):修改類 tool 預設 `DryRun = true`;寫入前備份到 `<sln 目錄>\.tcauto-backup\<時間>\`(`data.backupPath` / `data.backupFiles`);每個修改的 COM 呼叫前查 modal dialog(有就 `IDE_MODAL_DIALOG`,什麼都不送);寫入後讀回，不符就回錯誤碼，不報成功;寫入 API 一呼叫就記 `BUILD_REQUIRED`(code-changed),呼叫前就擋下的不記。下列行為除非另外註明，都是**自建 client 實測 2026-11-01 4026 VS2022(XAE 3.1.4026.22)/ 4024 XAE Shell(3.1.4024.71)**,見 [phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md);這些 tool 目前**只有單元測試**,registered tcauto 驗證是 task 4.6。
+
+### NC(task 4.1):做法
+
+- **NC task**:`Add-TcNcTask`(MCP `AddNcTask`)= `TINC` 上 `CreateChild(<name>, 1)`(TE1000 v1.7.0 §6.10.1 p.293)。一個 TINC 只能有一個 NC task:第二個一律 `0x98510002 Item already exists!`(probe 第 1 題),所以模組先看 TINC 有沒有 ItemType 1 的子節點。XAE 會在名稱後加 ` SAF`,名稱一律從讀回取得(`data.taskPath`,不同時寫進 `data.warnings`)。
+- **軸**:`Add-TcNcAxis`(`AddNcAxis`)= `<task>^Axes` 上 `CreateChild(<name>, <subType>)`:Continuous 1、Discrete 2、Stepper 3、Encoder 5(0、8 被 XAE 拒絕);新軸預設就是模擬軸(Enc = Simulation encoder subType 1、Drive = KL4XXX 5、Ctrl = P 1,probe 第 2 題),模組讀回確認 encoder 是 EncType 0 / 1。**XAE 不擋同名**,同名會建出第二支，所以模組自己先查(`NC_AXIS_ALREADY_EXISTS`)。`data.axisId` 是 ProduceXml 的 `ItemId`(NC ADS index group `0x4100 + id`,[InfoSys tc3_ads_intro 713094155](https://infosys.beckhoff.com/content/1033/tc3_ads_intro/713094155.html))。
+- **參數**:`Set-TcNcAxisParameter`(`SetNcAxisParameter`)只開放 ProduceXml 裡有的欄位：`MaxVelocity` = `NcAxisDef/AxisParam/Velo/Maximum`、`Acceleration` / `Deceleration` / `Jerk` = `AxisParam/Dynamic/*`、`EncoderType` / `DriveType` / `ControllerType` = `Encoder/EncType`、`Drive/DrvType`、`Controller/CtrType`(probe 第 3、4 題;實際寫入讀回過的只有 Velo/Maximum、Dynamic/Acceleration 和三種型別欄位)。ConsumeXml 對錯值一律回 S_OK(`abc` 變 0、不存在的元素被忽略、不存在的型別號碼照存但 `ItemSubTypeName` 是空的),所以送出前檢查(數值有限、> 0,Jerk ≥ 0,≤ 1e12;型別號碼只收 XAE 有名稱的),寫入後逐欄讀回;`ChangeChildSubType` 是 E_NOTIMPL,不用。
+- **PLC link**:`Connect-TcNcAxisToPlc`(`LinkNcAxis`)用 `LinkVariables` 整個 struct link:PLC `<Plc> Instance^<task> Inputs^<var>.NcToPlc` ↔ NC `<axis>^Outputs^ToPlc`,NC `<axis>^Inputs^FromPlc` ↔ PLC `<task> Outputs^<var>.PlcToNc`(probe 第 5 題;TE1000 §5.1.1.2 p.38、§6.3.14 p.217)。`<task> Inputs` 的名稱不寫死：先用 PLC instance 列舉得到的 `* Inputs` / `* Outputs`,再用 `TIRT` 底下每個 task(以及 PLC project 的 PLC task)拼 `<instance>^<task> Inputs` / `Outputs` 直接 `LookupTreeItem`。**真 COM 上 PLC instance(ItemType 57)列舉不到子節點**(`ChildCount 0`),但完整 path 可以 lookup(registered 實測 2026-11-01,4026.22 VS2022 與 4024.71 XAE Shell,[phase3-4.6.md](../openspec/changes/complete-automation-interface/verification/phase3-4.6.md) B1,已修)。讀回用 `ProduceMappingInfo`(和 `Set-TcVariableLink` 相同)。備份是 `ProduceMappingInfo` 全文(`MappingInfo.xml`)。
+
+- **review 修正(第 3 期)**:XAE 的錯誤用 HRESULT 判斷(`New-TcTreeItem` 的 `data.hresult` / `hresultHex`;0x98510002 → `NC_TASK_ALREADY_EXISTS`、0x98510009 → `TCCOM_CLASS_NOT_FOUND`,英文訊息只當備援)。給 tree path 時也檢查同 path 的重複軸(`NC_AXIS_AMBIGUOUS`)。和同份 ProduceXml 其他欄位矛盾的值(Acceleration > AccelerationMaximum、Deceleration > DecelerationMaximum、MaxVelocity 低於 Velo/Fast、FastManual、SlowManual、RefSearch、RefSync)只列在 `data.warnings`、照寫(NC 怎麼處理未實測)。型別還原後會讀回號碼與 `ItemSubTypeName`,讀不回 `data.reverted = false`。LinkNcAxis:PLC instance 從樹上找(TIPC^<Plc> 底下有 process image 的子節點);struct 成員(`<var>.NcToPlc.ActPos`)已單獨 link 也算已 link;第二條 link 前出現 modal dialog 時，第一條會解掉並讀回 mapping(`data.partialLinks`,`data.rolledBack` 只在 mapping 確認沒有了才是 true)。
+
+### NC_TASK_NOT_FOUND
+
+- **現象**:專案沒有 `TINC`、TINC 底下沒有 NC task,或 `-Task` 不是現有的 NC task(`data.ncTasks`)。什麼都沒改。
+- **下一步**:`Add-TcNcTask -DryRun $false` 建 task,再重跑;或用 `data.ncTasks` 的值當 `-Task`。
+
+### NC_TASK_AMBIGUOUS
+
+- **現象**:有多個 NC task 又沒給 `-Task`。XAE 一個 TINC 只允許一個(probe 第 1 題),所以實際上不會發生，保留但未實測。
+- **下一步**:用 `data.ncTasks` 其中一個當 `-Task`。
+
+### NC_TASK_ALREADY_EXISTS
+
+- **現象**:TINC 已經有 NC task(`data.existingTasks`),或 XAE 回 `0x98510002 Item already exists!`。什麼都沒建(XAE 拒絕時 CreateChild 已呼叫，會記 BUILD_REQUIRED)。
+- **下一步**:直接用現有的 task:`Add-TcNcAxis -Name <axis> -Task <data.existingTasks[0]>`。
+
+### NC_TASK_VERIFY_FAILED
+
+- **現象**:CreateChild 有返回，但讀回找不到 task、ItemType 不是 1,或沒有 `<task>^Axes`。模組會把它刪掉(`data.rollback`、`data.rolledBack`)。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem -Path <data.taskPath> -ConfirmName <名稱> -DryRun $false` 刪掉，再用 `Get-TcTreeItem -Path TINC` 確認。
+
+### NC_AXIS_ALREADY_EXISTS
+
+- **現象**:`<task>^Axes` 已經有同名的軸(不分大小寫,`data.existingAxes`)。XAE 自己不擋(實測同名會建出第二支),所以模組擋。什麼都沒建。
+- **下一步**:換 `-Name`,或直接用現有的軸。
+
+### NC_AXIS_NOT_FOUND
+
+- **現象**:`-Axis` 的名稱不在任何 NC task 的 Axes 底下(`data.ncAxes` 列出全部),或給的 tree path 不是 NC axis(ItemType 不是 22)。
+- **下一步**:用 `data.ncAxes` 的值重跑。
+
+### NC_AXIS_AMBIGUOUS
+
+- **現象**:有多支軸叫這個名稱(XAE 允許同名)。從名稱分不出是哪一支，link 也分不出(probe 第 5 題)。
+- **下一步**:改用完整 tree path;最好先把重複的軸改名或刪掉。
+
+### NC_AXIS_VERIFY_FAILED
+
+- **現象**:軸建好了，但讀回的 ItemType / subType 不對，或 encoder 不是 Simulation encoder(`data.mismatches`)。模組會刪掉這支軸(`data.rolledBack`)。目前只有 Continuous 在 probe 裡建立並 Activate 過，其他 AxisType 的預設 encoder 沒實測。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem` 刪掉 `data.axisPath`,再重跑。
+
+### NC_INVALID_SUBTYPE
+
+- **現象**:`EncoderType` / `DriveType` / `ControllerType` 不是 XAE 有名稱的號碼(`data.allowedTypes`;什麼都沒寫),或寫入後子節點的 `ItemSubTypeName` 是空的(XAE 照存了沒有名稱的號碼):模組把原本的型別號碼送回去(`data.reverted`、`data.unnamedTypes`)。
+- **為什麼**:不存在的型別也回 S_OK(probe 第 4 題:Drive 18、19、25–40;Enc 9、22、23、30–40;Ctrl 0、4、15–40)。
+- **下一步**:改用 `data.allowedTypes` 的號碼。
+
+### NC_AXIS_PARAM_NOT_FOUND
+
+- **現象**:這支軸的 ProduceXml 沒有要改的欄位(`data.missingFields`)。XAE 會靜默忽略不存在的元素，所以模組不送。
+- **下一步**:`Get-TcTreeItemXml -Path <data.axisPath>` 看 `NcAxisDef` 的實際結構。
+
+### NC_AXIS_PARAM_WRITE_FAILED
+
+- **現象**:ConsumeXml 被 XAE 拒絕(例外)。`data.backupPath` 是寫入前的 ProduceXml。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcTreeItemXml` 確認目前值後重跑。
+
+### NC_AXIS_PARAM_VERIFY_FAILED
+
+- **現象**:ConsumeXml 有返回，但讀回的值和要寫的不同(`data.mismatches`)。不要當成功。
+- **下一步**:`Get-TcTreeItemXml -Path <data.axisPath>` 看實際值;要還原就用 `data.backupPath` 裡的值再跑一次(先 dry-run)。
+
+### NC_PLC_VARIABLE_NOT_FOUND
+
+- **現象**:試過的 process image 底下都找不到 `<PlcVariable>.NcToPlc` / `.PlcToNc`。`data.triedPaths` 列出每一個 lookup 過的完整 path(`<instance>^<task> Inputs^<var>.NcToPlc` …),`data.tasks` 是拿來拼 path 的 task 名稱(`TIRT` 的子節點 + PLC project 的 PLC task;`TIRT` 在真 COM 上列舉得到、名稱和 `<task> Inputs` 相同：實測 2026-11-01 e3cf28c,4026 VS2022 `PlcTask`、4024 XAE Shell `PlcTask` + `MotionTask`,registered tcauto,phase3-4.6.md「Retest(e3cf28c)」)。`NcToPlc` 和 `PlcToNc` 必須來自**同一個 task**(review S4):只找到一邊，或兩邊分在不同 task,也回這個碼，`data.foundPaths` 列出找到的那些 path。AXIS_REF 要 build 過才會出現在 process image。4.6 B1 之前這裡回 `data.instanceChildren`(真 COM 上一律是空的，已移除)。
+- **下一步**:確認 `-PlcVariable` 是 AXIS_REF 本身(例如 `MAIN.axis`,不要加 `.NcToPlc`),`Build-TcProject`(MCP `BuildProject`)後重跑。`data.tasks` 是空的就是 `TIRT` 底下沒有 task,先 `Get-TcTreeItem -Path TIRT` 確認;要看 image 底下實際的名稱用 `Get-TcTreeItem -Path '<data.triedPaths 去掉最後一段>'`。
+
+### NC_AXIS_ALREADY_LINKED
+
+- **現象**:四個端點之一已經 link 到別處(`data.existingLinks`)。`LinkVariables` 對已 link 的變數會怎樣沒有實測，所以模組不送。
+- **下一步**:`Remove-TcVariableLink` 解掉舊的 link,再重跑 `Connect-TcNcAxisToPlc`。
+
+### TcCOM(task 4.2):做法
+
+- **建立**:`Add-TcComModule`(MCP `AddTcComModule`)= `TIRC^TcCOM Objects` 上 `CreateChild(<name>, 0, '', <GUID 或型別名稱>)`(TE1000 v1.7.0 §6.7.1 p.274–275;subType 0 / 1、GUID 有沒有大括號都可以，probe 第 9 題)。XAE 一律改名成 `<name> (<ModuleTypeName>)`,同名時再加 `_ObjN`(4024 第一次就加),都不報錯，所以模組先查同名，名稱和 path 一律從讀回取得(`data.createdPath` / `createdName`)。module 要放在 `CustomConfig\Modules` 或 `Config\Io\TcModuleFolders.xml` 列出的資料夾(手冊 p.274)。TMC 沒寫 `<Licenses>` 不代表 runtime 不檢查授權;probe 只 Activate 過 `TcNtpExternalTimeProvider`(`{7e6d2fda-2d37-4998-a31f-36958d3a2c8a}`,測試前要先把 `ClientEnable` 設 FALSE,否則會連 `ntp.beckhoff-cloud.com`)。
+- **找 module**:tree path,或實例名稱(`ITcModuleManager.Modules.Item(i)`,i 從 0;`foreach` 列舉不到、`LookupModule`(v2)late binding 叫不到、`ClassID` 是空的，probe 第 11 題)加 `TIRC^TcCOM Objects` 的子節點名稱。
+- **參數**:清單和 id(`PTCID`)、`BitSize`、`BaseType` 來自 ProduceXml `Module/Parameters/Parameter`,專案值來自 `ParameterValues/Value`(probe 第 10 題)。離線讀寫 `GetModulePara` / `SetModulePara(pid, byte[])`(大小不符 `0x98110705`);值一律先轉成剛好大小的 bytes 並檢查範圍(enum 依 BitSize 當整數;struct / array 只回 `rawHex`)。**TIME**(phase3-4.6 N2,已修):32 bit、1 ms 解析度、內部是 UDINT([InfoSys TIME/LTIME](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/12189021579.html)),讀取的 `value` 是 ms 數字;寫入收整數 ms 或 IEC literal(`T#5S`、`T#1m30s`、`TIME#250ms`,可有 `_`,只有最後一段可帶小數),必須是整數 ms、範圍 0..4294967295。4.6 實測 `TcNtpExternalTimeProvider.PollInterval` 是 TIME(registered tcauto 2026-11-01,4026.22 VS2022,`rawHex E8030000` = 1000)。可寫入的型別：BOOL、整數型別、REAL / LREAL、STRING(n)、TIME、DataTypes 確認是 enum 的型別。離線寫入只改 XAE 記憶體(要存檔才進 `.tsproj` / `.xti`),會記 BUILD_REQUIRED。
+- **Online**:`-Online` 走 `ITcModuleManager.Get/SetOnlineModulePara(oid, pid, ...)`(手冊 §5.31.1.1 p.130:ADS port `AMSPORT_R0_TCOMSERVER` = 10、IG = oid、IO = pid;probe 第 13 題用 raw ADS port 10 讀到相同值)。**online 寫入不改專案**(下次 Activate 就還原),不記 BUILD_REQUIRED;寫入前的 online 值在 `data.previousHex` 和備份檔。
+- **Context**:`Set-TcComModuleContext`(MCP `SetTcComContext`)的 index 是 TMC 的 Context `Id`(NTP 是 1,**不是 0**;probe 第 12 題、手冊 §5.33.2 p.140–141),合法值從 ProduceXml `Module/Contexts/Context/Id` 讀;task oid 是 task ProduceXml 的 `TreeItem/ObjectId`。
+
+### TCCOM_MODULE_ALREADY_EXISTS
+
+- **現象**:`TIRC^TcCOM Objects` 已有 `<Name>` 或 `<Name> (...)` 的子節點(`data.existingModules`)。XAE 會靜默改名成 `<Name>_ObjN`,模組先擋。什麼都沒建。
+- **下一步**:換 `-Name`,或用現有的實例。
+
+### TCCOM_CLASS_NOT_FOUND
+
+- **現象**:XAE 回 `0x98510009 TCOM Module / TCOM Configuration with GUID '%s' not found!`(訊息裡的 `%s` 沒被替換，實測)。
+- **下一步**:確認 GUID / 型別名稱和 TMC 的 `<Module GUID=...>` 一致，module 有裝在 TwinCAT 找得到的資料夾。
+
+### TCCOM_VERIFY_FAILED
+
+- **現象**:實例建好了，但 ProduceXml 的 `Module/@GUID` / `Module/Name` 和要求的不同，或沒有 `TcModuleInstance`(`data.mismatches`)。模組會刪掉它(`data.rolledBack`)。
+- **下一步**:`rolledBack = false` 時用 `Remove-TcTreeItem -Path <data.createdPath> -ConfirmName <data.createdName> -DryRun $false` 刪掉。
+
+### TCCOM_MODULE_NOT_FOUND
+
+- **現象**:`-Module` 的名稱 / path 找不到，或那個節點不是 TcCOM 實例(ProduceXml 沒有 `TcModuleInstance/Module`)。`data.modules` 是 ModuleManager 的實例名稱。
+- **下一步**:用 `data.modules` 的名稱，或 `Get-TcTreeItem -Path 'TIRC^TcCOM Objects'` 查到的完整 path。
+
+### TCCOM_PARAM_NOT_FOUND
+
+- **現象**:ProduceXml 沒有這個參數名稱 / id(`data.parameters` 列出 `名稱 id`),或 XAE 對 pid 回 E_FAIL(離線)/ `0x98110703`(online)。
+- **下一步**:`Get-TcComModuleParameter -Module <module>` 看清單後重跑。
+
+### TCCOM_PARAM_INVALID_VALUE
+
+- **現象**:值轉不成參數型別，或超出範圍(例如 UINT 70000、DINT `abc`)。什麼都沒寫。XAE 自己對錯值不一定報錯(NC 的 ConsumeXml `abc` 變 0),所以模組擋。
+- **下一步**:數字用 `.` 當小數點、BOOL 用 `true` / `false` / `1` / `0`、STRING 只收可列印 ASCII 且長度要小於參數大小。
+
+### TCCOM_PARAM_UNSUPPORTED_TYPE
+
+- **現象**:參數的型別(`data.paramType`;message 有型別名稱與大小)不在可寫入的清單裡(BOOL、整數型別、REAL / LREAL、STRING(n)、TIME、DataTypes 確認是 enum 的型別):struct / array、DataTypes 沒確認是 enum 的具名型別、LTIME / DATE / TOD / DT 等沒支援的型別。只能讀 `rawHex`,什麼都沒寫。4.6 N2 之前 TIME 也落在這裡，而且 hint 一律說「不是基本型別(struct / array)」,和 message 不一致;現在 TIME 可以寫，hint 改成列出可寫入的型別。
+- **下一步**:`Get-TcComModuleParameter`(MCP `GetTcComParameter`)讀 `rawHex`;要改值在 XAE 設定，或改寫它的成員參數(TMC 有獨立成員參數時，例如 ProduceXml 裡 `ServerPara.bEnable` 這種點號名稱)。
+
+### TCCOM_PARAM_SIZE_MISMATCH
+
+- **現象**:XAE 回 `0x98110705`(ADS_E_INVALIDSIZE):送出的 bytes 和參數大小不同。online 寫入 8-byte scalar 也會這樣(probe 第 13 題),所以模組一律送 bytes。
+- **下一步**:`Get-TcComModuleParameter` 看 `bitSize` / `paramType`,確認 ProduceXml 的 `BitSize` 正確。
+
+### TCCOM_PARAM_READ_FAILED
+
+- **現象**:`GetModulePara` / `GetOnlineModulePara` 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑;`-Online` 時先 `Get-TcSystemState` 確認是 Run。
+
+### TCCOM_PARAM_WRITE_FAILED
+
+- **現象**:`SetModulePara` / `SetOnlineModulePara` 丟了其他例外。`data.backupPath` 是寫入前的備份。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcComModuleParameter` 確認目前值後重跑。
+
+### TCCOM_PARAM_VERIFY_FAILED
+
+- **現象**:寫入有返回，但讀回的 bytes(`data.readbackHex`)和要寫的(`data.plannedHex`)不同。不要當成功。
+- **下一步**:`Get-TcComModuleParameter` 確認;要還原就把 `data.previousHex` 對應的值再寫一次(先 dry-run)。
+
+### TCCOM_OBJECT_NOT_FOUND
+
+- **現象**:`-Online` 時 target 上沒有這個 object(`0x9811071D`):組態沒 Activate、runtime 不在 Run,或 module 是 Activate 之後才加的。
+- **下一步**:`Enable-TcConfig -Force`,再重跑 `-Online`。
+
+### TCCOM_ONLINE_CONFIG_MISMATCH
+
+- **現象**:`Set-TcComModuleParameter -Online`(dry-run 也一樣)之前，專案的 boot package 和 target 的 Boot 目錄比對不是 `match`(`data.bootPackage`;`Get-TcBootPackageDiff`,variant 專案比 `_Boot\<Variant>\<Platform>`)。target 跑的可能是舊的或別的組態，同一個 oid / pid 可能是另一個 object,所以不寫(review S11)。遠端 target 無法比對(`unavailable`),也一律不寫。
+- **下一步**:`Build-TcProject`、`Enable-TcConfig -Force` 讓 target 跑這個專案，再重跑 `-Online`。
+
+### TCCOM_CONTEXT_INVALID
+
+- **現象**:module 沒有 context(例如 TcJobPool)、`-ContextId` 不是 TMC 的 Context Id(`data.contextIds`;0 不是預設)、有多個 context 卻沒給 `-ContextId`、`-Task` 沒有 ObjectId,或 XAE 回 `0x80070057`(index 錯)/ E_FAIL(oid 不是這個 context 合法的 task;實測 axis oid、不存在的 oid 都是 E_FAIL)。
+- **下一步**:用 `data.contextIds` 的值當 `-ContextId`,`-Task` 給 TIRT / TINC 底下的 task。
+
+### TCCOM_CONTEXT_WRITE_FAILED
+
+- **現象**:`SetModuleContext` 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### TCCOM_CONTEXT_VERIFY_FAILED
+
+- **現象**:`SetModuleContext` 有返回，但 `GetModuleContext(id)` 讀回的 oid(`data.readbackOidHex`)不是要設的 task。
+- **下一步**:`Get-TcTreeItemXml` 看 module 的 `Contexts`(`ManualConfig/OTCID`),再重跑。
+
+### Variant(task 4.3):做法
+
+- **API**:`ITcSysManager14.CurrentProjectVariant` / `ProjectVariantConfig` / `ProjectVariantItems`(TE1000 v1.7.0 §5.1.13 p.52、§6.12.1 p.296;[InfoSys 8204600715](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/8204600715.html))。variant management 從 4024 起([InfoSys Variant management Concept](https://infosys.beckhoff.com/content/1033/variant_management/6325752587.html));4024.71 的 32-bit XAE Shell 也能 late-bind(probe 第 15 題)。沒有 variant 時 4026 回空字串、4024 的 Config / Items 回 `$null`,`Get-TcProjectVariants`(MCP `GetVariants`)都轉成空陣列。
+- **整份覆蓋**:寫 `ProjectVariantConfig` 會取代整份文件(不合併、不自動加 `[All]`、current 不會被清掉，probe 第 17 題),所以 `Set-TcProjectVariantConfig`(`SetVariantConfig`)讀出 → 在原本的 DOM 上增刪 `<Variant>` / `<Member>`(模組不認得的元素與 attribute 原樣保留，review S6)→ 整份寫回 → 讀回整份文件正規化後比對。`-Group` 和 variant 名稱一樣不分大小寫比對。移除目前的 variant 會擋(`VARIANT_IS_CURRENT`)。寫前備份舊文件和 `.tsproj`(存檔後 variant 存在 `.tsproj` 的 `<Variants>` 與根元素 `TcProjectVariant` attribute,item 層的設定存在 item 所在的檔，例如 `_Config\NC\NC.xti`,probe 第 18 題)。
+- **切換**:`Set-TcCurrentVariant`(`SwitchVariant`)名稱大小寫敏感;不存在、大小寫錯、`[All]` 在 XAE 都是 E_FAIL,模組先查;`[Group1]` 可以設、`''` 清掉。
+- **Boot 目錄(#89)**:有 current variant 時 XAE 把 boot 包寫到 `_Boot\<Variant>\<Platform>\`(group 是 `_Boot\[Group1]\<Platform>\`;`.tsproj` 有 `<Variants SpecificLocalBootFolder="true">`)。`Enable-TcConfig` 的 boot-package 比對與 `New-TcBootProject` 的 boot 檔讀回都會看這個資料夾(存在時只用它，不存在才退回 `_Boot\<Platform>\` 並加 warning;`.tsproj` 明寫 `SpecificLocalBootFolder="false"` 時不看);修正前一律誤報 `BOOT_PACKAGE_MISMATCH` 並停在 Config(probe 第 18 題實測 target 的 boot 檔 SHA-256 和 `_Boot\Variant1\TwinCAT OS (x64)\` 相同)。
+
+### VARIANT_NOT_SUPPORTED
+
+- **現象**:讀 `CurrentProjectVariant` 丟例外，或讀到 `$null` 而且物件沒有這個成員(late binding 對不存在的名稱回 `$null` 不報錯;4024.71 / 4026.22 實測都回字串)。
+- **下一步**:XAE 要 4024 以上;否則在 XAE 的 Project Variants 工具列手動操作。
+
+### VARIANT_CONFIG_INVALID
+
+- **現象**:`ProjectVariantConfig` 不是 `<ProjectVariants>` 文件，或 XAE 拒絕寫入的文件(E_FAIL,原值不變，probe 第 17 題)。
+- **下一步**:`Get-TcProjectVariants` 看 `data.configXml`。
+
+### VARIANT_ALREADY_EXISTS
+
+- **現象**:`-AddVariant` 的名稱已存在(不分大小寫比對，避免只差大小寫的兩個 variant)。什麼都沒寫。
+- **下一步**:換名稱。
+
+### VARIANT_NOT_FOUND
+
+- **現象**:`-RemoveVariant` / `-Name` 不在 `ProjectVariantConfig`(大小寫要完全相同;只差大小寫時訊息會寫出正確的名稱),group 要寫成 `[Group1]`;或 XAE 對 `CurrentProjectVariant` 回 E_FAIL。
+- **下一步**:用 `data.variants` / `data.groups` 的名稱重跑。
+
+### VARIANT_IS_CURRENT
+
+- **現象**:要移除目前的 variant,或移除後目前的 group 會沒有成員。XAE 不會自己改 current(probe 第 17 題),所以模組擋。
+- **下一步**:`Set-TcCurrentVariant -Name <另一個> -DryRun $false`,再重跑。
+
+### VARIANT_VERIFY_FAILED
+
+- **現象**:寫入後讀回的 variant / group 清單和預期不同(`data.readback` vs `data.after`),或其餘內容(模組不認得的元素 / attribute,review S6)沒有讀回。不同的部分列在 `data.verifyDifferences`(`variants`、`groups`、`document`、`readback does not parse`)。比的是語意,不是 XML 字串:`''` / `$null` 和空的 `<ProjectVariants/>` 視為相同(4.6 N6:移除最後一個 variant 後 XAE 讀回空字串,實測 2026-11-01 4026 VS2022,phase3-4.6.md Retest;這種情況不回此碼)。
+- **下一步**:`Get-TcProjectVariants` 確認;還原用 `data.backupPath`(舊文件)。
+
+### VARIANT_SWITCH_FAILED
+
+- **現象**:設了 `CurrentProjectVariant`,讀回卻是別的值(`data.current`)。
+- **下一步**:`Get-TcProjectVariants` 確認後重跑。
+
+### VARIANT_READ_FAILED
+
+- **現象**:`Enable-TcConfig` / `New-TcBootProject` 讀 `CurrentProjectVariant` 失敗(屬性存在但讀取丟例外;IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG 仍回各自的碼)。不當成「沒有 variant」,因為 boot 目錄和 group 檢查都依它決定(review S2)。什麼都沒做。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcProjectVariants` 確認讀得到，再重跑。
+
+### VARIANT_GROUP_ACTIVE
+
+- **現象**:`Enable-TcConfig` 時 current variant 是 group(`[Group1]`)。group 不能 Activate(VM 手冊 v1.4 p.7:不同 variant 的值會變成未定義),XAE 自己不擋(Build / Activate 都會跑，probe 第 18 題),所以模組在任何檢查與 Activate 之前回這個碼，什麼都沒做。
+- **下一步**:`Set-TcCurrentVariant -Name <variant> -DryRun $false`、`Build-TcProject`,再 `Enable-TcConfig -Force`。
+
+### Independent project file(task 4.4):做法
+
+- `Set-TcIndependentFile`(MCP `SetIndependentFile`)設 `ITcSmTreeItem6.SaveInOwnFile`(TE1000 v1.7.0 §5.2.4 p.62–63、§6.3.9 p.210;[InfoSys 21842602763](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842602763.html))。手冊寫明不支援的 item「setter 什麼都不做、回 S_OK」(p.62),實測 PlcTask、Axes、TINC、TIRR 就是這樣;PLC project、NC 軸、NC task、TcCOM 實例(4024 另有 I/O device)可以(probe 第 20 題)。
+- **setter 當下就寫 `.xti`**(還沒存檔就出現在 `_Config\...`),所以備份(ProduceXml、`.tsproj`、這個 item 現有的 `.xti`)一定在 setter 之前。檔名:`<名稱>.xti`,NC task 是 `_Config\NC\NC.xti`。
+- **存哪一個 `.tsproj`**(phase3-4.6 B2,已修):依序看 (1) DTE `Solution.Projects` 裡 `FullName` 是 `.tsproj` 的專案、(2) `.sln` 參照的 `.tsproj`(`Project("{...}") = "<名稱>", "<相對路徑>.tsproj", ...`)、(3) solution 資料夾底下的 `.tsproj`(深度 3,`.tcauto-backup` 除外);第一個有結果的來源決定(`data.tsprojSource` = `dte` / `sln` / `folder`)。4.6 實測時 4026 副本資料夾有 3 個 `.tsproj`(兩個舊副本),`.sln` 只參照一個，舊版只掃資料夾所以回 `INDEPENDENT_FILE_TSPROJ_AMBIGUOUS`。`Set-TcProjectVariantConfig` / `Set-TcCurrentVariant` 與 `Add-TcAdsRoute -ProjectRoute` 的備份也只複製這一個 `.tsproj`。`.sln` 裡的絕對路徑直接採用、相對路徑以 `.sln` 資料夾為基準，解析失敗的那一行跳過、不影響其他行(review S3)。來源是 `dte` 時，存檔用 DTE 回報的 `FullName` 原樣去找專案，比對時兩邊都展開 8.3 短檔名(`ConvertTo-TcPathKey`,review S2),`data.tsproj` / `projectSaved` 一律是長檔名。
+- 之後模組用有 deadline 的 `Project.Save`(`Invoke-TcProjectSaveWithDeadline`)存檔,`.tsproj` 才會改成 `<... File="<x>.xti"/>`;關閉(False)要存檔 XAE 才會刪 `.xti` 和它的 `.bak`。最後比對存檔前後的 `.xti` 清單(`data.createdFiles` / `removedFiles`)。
+- ProduceXml 沒有對應欄位(`Set-TcTreeItemXml` 做不到);PLC project 獨立存檔後它的 mapping 改存到 `_Config\PLC\<Plc>.xti` 的 `<Mappings>`(probe 第 21 題,[InfoSys 7738192779](https://infosys.beckhoff.com/content/1033/tc3_userinterface/7738192779.html))。XAE 自己寫的檔，不需要 `Reset-TcSolution`。
+
+### INDEPENDENT_FILE_UNSUPPORTED
+
+- **現象**:`SaveInOwnFile` 讀不到，或 setter 回 S_OK 但讀回不變(這個 item 不能獨立存檔;`data.readback`)。磁碟沒有變。setter 已呼叫，所以有記 BUILD_REQUIRED。
+- **下一步**:改用可以獨立存檔的節點(PLC project `TIPC^<Plc>`、NC 軸、NC task、TcCOM 實例)。
+
+### INDEPENDENT_FILE_WRITE_FAILED
+
+- **現象**:setter 丟例外。`data.backupPath` / `backupFiles` 是改之前的備份。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog,再重跑。
+
+### INDEPENDENT_FILE_SAVE_FAILED
+
+- **現象**:讀回已經是要的值(開啟時 `.xti` 已寫出),但 `Project.Save` 失敗或逾時,`.tsproj` 還沒更新;改動在 XAE 記憶體。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog、確認 `.tsproj` 不是唯讀，再用同樣參數重跑(讀回相同會直接回 `written = false`,這時改用 XAE 的 Save All 或 `Reset-TcSolution -SaveProjectChanges`)。
+
+### INDEPENDENT_FILE_TSPROJ_AMBIGUOUS
+
+- **現象**:決定不了要存哪個 `.tsproj`。來源依序是 DTE 載入的專案、`.sln` 參照的 `.tsproj`、solution 資料夾底下的 `.tsproj`(見上面「做法」);第一個有結果的來源列出不只一個檔(`data.tsprojSource` 是那個來源,`data.tsprojFiles` 是它列出的檔)。設定之後要存檔，所以在備份與 setter 之前就停下(review S12),什麼都沒改。只有資料夾裡有舊副本、但 DTE 或 `.sln` 只指到一個時**不會**再回這個碼(4.6 B2)。
+- **下一步**:`tsprojSource` = `dte` / `sln`:solution 真的有多個 TwinCAT 專案，請在 XAE 手動勾 Independent Project File。`folder`(沒有 DTE 連線，`.sln` 也沒參照 `.tsproj`):先 `Connect-TcIde`(MCP `ConnectIde`)連上開著這個 solution 的 IDE 再重跑;仍是 `folder` 就把多餘的 `.tsproj` 移出 solution 資料夾後重跑。
+
+### INDEPENDENT_FILE_VERIFY_FAILED
+
+- **現象**:讀回對、也存檔了，但磁碟不符：開啟後 `_Config` 底下的 `data.expectedFile` 不是新寫出、大小 / LastWriteTime 也沒變(別的新 `.xti` 或原本就在、沒動過的同名檔都不算;`data.writtenFiles`);或關閉後原本的 `.xti` 還在。
+- **下一步**:看 solution 的 `_Config` 目錄;要還原就把 `data.backupFiles` 複製回去再 `Reset-TcSolution`。
+
+### ADS route(task 4.5):做法
+
+- **節點**:`TIRR`(ItemName `Routes`,ItemType 31;TE1000 v1.7.0 §6.3.11 p.211、§6.3.17 p.220–221、§6.4 p.222–225)。ProduceXml 是**目前 target**(`Set-TcTarget`)的 route 表:`RoutePrj/Target`、`ActualRoutes`、`StaticRoutes`(Name、Address、NetId、Type、有時 Flags)、`ProjectRoutes`、`TargetList`(probe 第 22 題)。`Get-TcAdsRoutes`(MCP `GetAdsRoutes`)唯讀。
+- **搜尋**:`Find-TcAdsTarget`(`FindAdsTargets`)送 `BroadcastSearch` 或 `Search`(4020.10 起)。**target 不是本機 system 時 XAE 直接拒絕**(本機 UmRT 也算不是;probe 第 23 題),模組不會自動切 target,回 `ROUTE_SEARCH_REQUIRES_LOCAL_TARGET`。本機時同步約 4.05 s;probe 一台都沒找到，所以空清單不代表網路上沒有 target。
+- **新增**:`Add-TcAdsRoute`(`AddAdsRoute`)送 `AddRoute`(要遠端帳密)或 `-ProjectRoute` 的 `AddProjectRoute`(只寫專案)。**未實測**(沒有第二台 target,probe 第 24、25、27 題)。密碼只收 `-PasswordEnv`(環境變數名稱，只讀 Process scope,名稱一定要是 `TCAUTO_ROUTE_PW` 或 `TCAUTO_ROUTE_PW_<後綴>`,其他名稱回 `INVALID_PARAMS`,避免拿它讀別的環境變數;MCP 要在 client 設定的 server `env` 裡設)或 PowerShell 的 `SecureString`,回傳、錯誤訊息、hint、log、備份都不含密碼與 XML。AddRoute 的帳密在網路上只用固定 key 保護(Beckhoff Security Advisory 2017-002,CVE-2017-16718),只在可信網路用。只能建未加密的 route(手冊 p.220)。
+- **密碼遮罩**:所有 tree tool 的 ProduceXml(`Get-TcTreeItemXmlText`)、備份檔、錯誤訊息都把 `*Password` / `*Pwd` 元素與 attribute 的值換成 `***`(AddRoute 的 `<Password>` 是明文,TISY 的 `<LogonPassword>`「stored in the project」,手冊 p.220、p.222)。
+- **刪除 route:不支援**。手冊 p.220:「It is not possible to delete items directly via the Automation Interface」,只能改 `StaticRoutes.xml` 再重啟 TwinCAT service——重啟會把本機 UmRT(`TcSystemServiceUm`)一起停掉，所以沒有做成 tool。實際路徑(probe 第 26 題，實測 2026-11-01 本機 TwinCAT 3.1 / Windows 11):
+  - XAR(TcSysSrv):`%TWINCAT3DIR%\Target\StaticRoutes.xml` = `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`,一般使用者只有讀(要 admin)。
+  - UmRT:`C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\Target\StaticRoutes.xml`(例如 `UmRT_Default`),一般使用者可寫([InfoSys TF6310 UmRT 範例路徑](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/15569027467.html))。
+  - 手冊寫的 `C:\TwinCAT\3.1\Target\StaticRoutes.xml` 在這台不存在，不要寫死。
+  - 手動刪除：先備份該檔，刪掉對應的 `<Route>`(Name + NetId),存檔後重啟 TwinCAT service(UmRT 要再照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」啟動,`Enable-TcConfig -Force`)。
+
+### ROUTE_READ_FAILED
+
+- **現象**:`TIRR` 的 ProduceXml 沒有 `TreeItem/RoutePrj`。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog、`Get-TcTreeItem -Path TIRR` 確認後重跑。
+
+### ROUTE_SEARCH_REQUIRES_LOCAL_TARGET
+
+- **現象**:目前 target(`data.target`)不是本機 system(`data.localNetId`,registry `HKLM\SOFTWARE\[WOW6432Node\]Beckhoff\TwinCAT3\System` 的 AmsNetId),或 XAE 回 "Broadcast search only works on local target system"。什麼都沒送;模組不會自動切 target。
+- **下一步**:`Set-TcTarget -AmsNetId <data.localNetId> -NoPlatformSwitch` → `Find-TcAdsTarget` → `Set-TcTarget -AmsNetId <data.target>` 切回來(切回時平台檢查照常)。
+
+### ROUTE_SEARCH_FAILED
+
+- **現象**:搜尋的 ConsumeXml 丟了其他例外。
+- **下一步**:`Get-TcIdeModalDialog` 檢查 dialog 後重跑。
+
+### ROUTE_ALREADY_EXISTS
+
+- **現象**:TIRR(目前 target 的 route 表)已經有這個 NetId 的 route(`data.existingRoutes`)。什麼都沒送。
+- **下一步**:`Get-TcAdsRoutes` 確認;不需要再加。
+
+### ROUTE_PASSWORD_MISSING
+
+- **現象**:AddRoute 沒有密碼來源(或 PowerShell 同時給了 `-PasswordEnv` 和 SecureString 密碼),或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。message 只把 `-PasswordEnv` 寫成參數(MCP 端由 `mcp-server/lib/tools.js` 的 `rewriteResultHints` 改寫成 `PasswordEnv`);SecureString 密碼只有 PowerShell 有：沒給密碼來源的 message 完全不提它(MCP 也會看到這條),只有「兩個都給」(只有 PowerShell 能觸發)的 message 用文字提到，不寫成 `-Password`(phase3-4.6 N4 / review N5,已修:之前 MCP 會讀到不存在的 `-Password` 參數)。
+- **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),變數名稱是 `TCAUTO_ROUTE_PW` 或 `TCAUTO_ROUTE_PW_<後綴>`,再 `Add-TcAdsRoute -PasswordEnv <名稱>`(MCP `AddAdsRoute PasswordEnv=<名稱>`);不要把密碼當參數值傳。
+
+### ROUTE_ADD_FAILED
+
+- **現象**:XAE 拒絕 AddRoute / AddProjectRoute。訊息已去掉密碼與 XML(`Protect-TcSecretText`)。
+- **下一步**:確認遠端 IP / NetId / 帳號與網路,`Get-TcIdeModalDialog` 檢查 dialog,`Get-TcAdsRoutes` 看目前狀態。
+
+### ROUTE_VERIFY_FAILED
+
+- **現象**:指令有返回，但 TIRR 讀回沒有這個 NetId(AddRoute 看 StaticRoutes / ActualRoutes,project route 看 ProjectRoutes)。TIRR 只顯示目前 target 的 route 表;AddRoute 實際改的是哪一端的表沒實測。
+- **下一步**:`Get-TcAdsRoutes`;必要時 `Set-TcTarget` 切到另一端再看。
 
 ## 已知限制
 

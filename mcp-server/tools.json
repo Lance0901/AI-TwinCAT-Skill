@@ -1,7 +1,64 @@
 {
-    "generatedAt":  "2026-10-31T16:56:48Z",
+    "generatedAt":  "2026-11-01T02:54:15Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
+                  {
+                      "name":  "AddAdsRoute",
+                      "cmdlet":  "Add-TcAdsRoute",
+                      "description":  "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). DryRun defaults to true. The password is NEVER a tool input: PasswordEnv names an environment variable of the MCP server process (Process scope only; the name must be TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX>, anything else is INVALID_PARAMS; set it in the server env of your MCP client config); data, errors, logs and backups never contain the password or the XML (masked as ***). AddRoute credentials are protected only by a fixed key on the network (Beckhoff advisory 2017-002): trusted networks only. A route to the same NetId -> ROUTE_ALREADY_EXISTS; TIRR is read back (ROUTE_VERIFY_FAILED). There is no tool to remove a route: the Automation Interface cannot (edit StaticRoutes.xml and restart the TwinCAT service, which also stops a local UmRT; see docs/troubleshooting.md).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Route name (RemoteName / Name), letters, digits, '_', '-', '.', ' '."
+                                                                      },
+                                                             "NetId":  {
+                                                                           "type":  "string",
+                                                                           "description":  "AmsNetId of the remote system, e.g. 5.1.2.3.1.1."
+                                                                       },
+                                                             "Address":  {
+                                                                             "type":  "string",
+                                                                             "description":  "IPv4 address of the remote system. Exactly one of Address / HostName."
+                                                                         },
+                                                             "HostName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Host name of the remote system. Exactly one of Address / HostName."
+                                                                          },
+                                                             "UserName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "User on the remote system (AddRoute only)."
+                                                                          },
+                                                             "PasswordEnv":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Name of the environment variable (Process scope) that holds the password, TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (AddRoute only); the value is never returned."
+                                                                             },
+                                                             "LocalName":  {
+                                                                               "type":  "string",
+                                                                               "description":  "Optional name of this system in the remote route table (AddRoute LocalName)."
+                                                                           },
+                                                             "ProjectRoute":  {
+                                                                                  "type":  "boolean",
+                                                                                  "description":  "Add only a project route (AddProjectRoute, no credentials, nothing sent to the remote system)."
+                                                                              },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: back up, send, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name",
+                                                           "NetId"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
                   {
                       "name":  "AddDut",
                       "cmdlet":  "Add-TcDut",
@@ -198,6 +255,78 @@
                                       }
                   },
                   {
+                      "name":  "AddNcAxis",
+                      "cmdlet":  "Add-TcNcAxis",
+                      "description":  "Adds an NC axis below '<NC task>^Axes' (CreateChild) and reads back that it is a simulation axis (encoder = Simulation encoder). Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name (no '^')."
+                                                                      },
+                                                             "Task":  {
+                                                                          "type":  "string",
+                                                                          "description":  "NC task name or tree path (TINC^NC-Task 1 SAF); default: the only NC task."
+                                                                      },
+                                                             "AxisType":  {
+                                                                              "type":  "string",
+                                                                              "enum":  [
+                                                                                           "Continuous",
+                                                                                           "Discrete",
+                                                                                           "Stepper",
+                                                                                           "Encoder"
+                                                                                       ],
+                                                                              "description":  "Continuous (default), Discrete, Stepper or Encoder; fixed at creation (ConsumeXml AxisType does not change it, measured).",
+                                                                              "default":  "Continuous"
+                                                                          },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddNcTask",
+                      "cmdlet":  "Add-TcNcTask",
+                      "description":  "Adds the NC task below TINC (CreateChild SubType 1); a TINC holds only one, so an existing task returns NC_TASK_ALREADY_EXISTS. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Requested task name (default 'NC-Task 1'; XAE may append ' SAF').",
+                                                                          "default":  "NC-Task 1"
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "AddPlaceholder",
                       "cmdlet":  "Add-TcLibraryPlaceholder",
                       "description":  "Adds a library placeholder to the PLC project (ITcPlcLibraryManager.AddPlaceholder), saves the project file and reads it back.",
@@ -378,6 +507,42 @@
                                           "required":  [
                                                            "ParentPath",
                                                            "Kind"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "AddTcComModule",
+                      "cmdlet":  "Add-TcComModule",
+                      "description":  "Creates a TcCOM module instance below 'TIRC^TcCOM Objects' from its class GUID or type name and returns the name XAE actually gave it. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Instance name (no '^'); XAE appends ' (<type>)'."
+                                                                      },
+                                                             "ClassId":  {
+                                                                             "type":  "string",
+                                                                             "description":  "Class GUID from the TMC (<Module GUID=...>), with or without braces. Exactly one of ClassId / TypeName."
+                                                                         },
+                                                             "TypeName":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Module type name, e.g. TcNtpExternalTimeProvider. Exactly one of ClassId / TypeName."
+                                                                          },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report the plan. false: create and read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -823,6 +988,29 @@
                                       }
                   },
                   {
+                      "name":  "FindAdsTargets",
+                      "cmdlet":  "Find-TcAdsTarget",
+                      "description":  "Searches the network for ADS targets (TIRR BroadcastSearch, or Search for one IP / host name); only works when the IDE target is the local system. Does not change the configuration.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true,
+                                          "openWorldHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Search":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Optional IPv4 address or host name to ask directly; empty = broadcast search."
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "FreezePlaceholder",
                       "cmdlet":  "Lock-TcLibraryPlaceholder",
                       "description":  "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj, reads it back and checks the version did not change.",
@@ -874,6 +1062,25 @@
                                                                                     "type":  "string",
                                                                                     "description":  "PLC name or tree path ('TIPC^<Plc>' or 'TIPC^<Plc>^<Plc> Project') when the solution has more than one PLC project (otherwise PLC_PROJECT_AMBIGUOUS)."
                                                                                 }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetAdsRoutes",
+                      "cmdlet":  "Get-TcAdsRoutes",
+                      "description":  "Lists the ADS routes of the CURRENT target from the TIRR ProduceXml: actual, static and project routes. Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
                                                          },
                                           "required":  [
 
@@ -1101,6 +1308,59 @@
                                       }
                   },
                   {
+                      "name":  "GetTcComParameter",
+                      "cmdlet":  "Get-TcComModuleParameter",
+                      "description":  "Reads TcCOM module parameters: without -Name / -ParameterId the list from the ProduceXml; with one, its value via GetModulePara (offline) or GetOnlineModulePara (-Online). Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Parameter name (case-insensitive), e.g. PollInterval."
+                                                                      },
+                                                             "ParameterId":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name."
+                                                                             },
+                                                             "Online":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Read the value of the running object on the target (needs Activate + Run) instead of the project value."
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetVariants",
+                      "cmdlet":  "Get-TcProjectVariants",
+                      "description":  "Reads the project variants (CurrentProjectVariant, ProjectVariantConfig, ProjectVariantItems): current, variants[], groups[]. Read-only.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "ImportChild",
                       "cmdlet":  "Import-TcTreeItem",
                       "description":  "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). A PLC folder is imported from the .zip file ExportChild wrote (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured). DryRun defaults to true (nothing imported; data.currentChildren, data.fileSize). Checks: FilePath is a valid absolute file path and exists (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), parent exists, a child named Name does not exist (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). Without Name the name is read from the .xti (data.expectedName; __FILENAME__ = file name without extension; null for a .zip, then data.warnings says no clash check was done) and checked the same way, dry-run included (XAE would rename silently, e.g. Task28 -> Task28_1). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing imported), ImportChild, look the imported item up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged) and the child names must be the old ones plus exactly one (data.childrenAfter; skipped with a warning when the list is cut): data.verified=true, data.importedPath / importedName (a name other than Name / expectedName: data.warnings); refused -> TREEITEM_IMPORT_FAILED, not found or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed.",
@@ -1247,6 +1507,43 @@
                                                          },
                                           "required":  [
 
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "LinkNcAxis",
+                      "cmdlet":  "Connect-TcNcAxisToPlc",
+                      "description":  "Links an NC axis to a PLC AXIS_REF (two struct links: NcToPlc <-> Outputs^ToPlc, PlcToNc <-> Inputs^FromPlc) and reads the mapping back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Axis":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1)."
+                                                                      },
+                                                             "PlcVariable":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Symbol of the PLC AXIS_REF (AT %I* / %Q* members NcToPlc / PlcToNc), e.g. MAIN.axis or GVL_Motion.arAxis[1]."
+                                                                             },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "PLC name or tree path when the solution has more than one PLC project."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned links. false: back up, link, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Axis",
+                                                           "PlcVariable"
                                                        ],
                                           "additionalProperties":  false
                                       }
@@ -1780,6 +2077,95 @@
                                       }
                   },
                   {
+                      "name":  "SetIndependentFile",
+                      "cmdlet":  "Set-TcIndependentFile",
+                      "description":  "Turns \"Independent Project File\" (ITcSmTreeItem6.SaveInOwnFile) of a tree item on or off, saves the project and checks the .xti on disk. Dry-run by default; backs up BEFORE the setter (it writes the .xti at once).",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Path":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Full tree path, e.g. 'TIPC^MyPlc', 'TINC^NC-Task 1 SAF^Axes^Axis 1', 'TIRC^TcCOM Objects^<name> (<type>)'."
+                                                                      },
+                                                             "Enabled":  {
+                                                                             "type":  "boolean",
+                                                                             "description":  "true = store the item in its own .xti, false = back into the parent file."
+                                                                         },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the plan. false: back up, set, save, check the disk.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Path",
+                                                           "Enabled"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetNcAxisParameter",
+                      "cmdlet":  "Set-TcNcAxisParameter",
+                      "description":  "Sets measured NC axis fields (max velocity, acceleration, deceleration, jerk, encoder / drive / controller type) with ConsumeXml and reads every field back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Axis":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1)."
+                                                                      },
+                                                             "MaxVelocity":  {
+                                                                                 "type":  "number",
+                                                                                 "description":  "AxisParam/Velo/Maximum (axis unit per s, > 0)."
+                                                                             },
+                                                             "Acceleration":  {
+                                                                                  "type":  "number",
+                                                                                  "description":  "AxisParam/Dynamic/Acceleration (> 0)."
+                                                                              },
+                                                             "Deceleration":  {
+                                                                                  "type":  "number",
+                                                                                  "description":  "AxisParam/Dynamic/Deceleration (> 0)."
+                                                                              },
+                                                             "Jerk":  {
+                                                                          "type":  "number",
+                                                                          "description":  "AxisParam/Dynamic/Jerk (>= 0)."
+                                                                      },
+                                                             "EncoderType":  {
+                                                                                 "type":  "integer",
+                                                                                 "description":  "Encoder/EncType number (0 / 1 = Simulation encoder)."
+                                                                             },
+                                                             "DriveType":  {
+                                                                               "type":  "integer",
+                                                                               "description":  "Drive/DrvType number (5 = KL4XXX, the default)."
+                                                                           },
+                                                             "ControllerType":  {
+                                                                                    "type":  "integer",
+                                                                                    "description":  "Controller/CtrType number (1 = Position controller P, the default)."
+                                                                                },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned change. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Axis"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "SetPlcState",
                       "cmdlet":  "Set-TcPlcState",
                       "description":  "Switch the PLC runtime to Run, Stop or Reset and wait for the state. WARNING: on a UmRT (user-mode runtime) target, Reset kills TcSystemServiceUm and you must EnableConfig again. Prefer Run/Stop.",
@@ -1894,6 +2280,88 @@
                                       }
                   },
                   {
+                      "name":  "SetTcComContext",
+                      "cmdlet":  "Set-TcComModuleContext",
+                      "description":  "Assigns a task to a context of a TcCOM module (SetModuleContext with the TMC Context Id, not 0) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Task":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Tree path of the task, e.g. TIRT^PlcTask or TINC^NC-Task 1 SAF."
+                                                                      },
+                                                             "ContextId":  {
+                                                                               "type":  "integer",
+                                                                               "description":  "TMC Context Id; default (-1): the only context of the module.",
+                                                                               "default":  -1
+                                                                           },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the plan. false: back up, set, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module",
+                                                           "Task"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetTcComParameter",
+                      "cmdlet":  "Set-TcComModuleParameter",
+                      "description":  "Writes one TcCOM module parameter (SetModulePara into the project, or SetOnlineModulePara with -Online into the running object only) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Module":  {
+                                                                            "type":  "string",
+                                                                            "description":  "Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>))."
+                                                                        },
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Parameter name (case-insensitive)."
+                                                                      },
+                                                             "ParameterId":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Parameter id (PTCID) as '#x03150105', '0x03150105' or decimal, instead of -Name."
+                                                                             },
+                                                             "Value":  {
+                                                                           "description":  "New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING, milliseconds or a literal such as T#5S for TIME."
+                                                                       },
+                                                             "Online":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Write the running object on the target only (needs Activate + Run); the project is not changed."
+                                                                        },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the planned bytes. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Module",
+                                                           "Value"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "SetVariableLink",
                       "cmdlet":  "Set-TcVariableLink",
                       "description":  "Links a PLC variable to an I/O variable (ITcSysManager.LinkVariables) and reads the mapping back.",
@@ -1917,6 +2385,78 @@
                                           "required":  [
                                                            "PlcVariable",
                                                            "IoChannel"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SetVariantConfig",
+                      "cmdlet":  "Set-TcProjectVariantConfig",
+                      "description":  "Adds or removes project variants: reads ProjectVariantConfig, changes it, writes the WHOLE document back and reads it back. Dry-run by default; backs up the .tsproj first.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "AddVariant":  {
+                                                                                "type":  "array",
+                                                                                "items":  {
+                                                                                              "type":  "string"
+                                                                                          },
+                                                                                "minItems":  1,
+                                                                                "description":  "Variant names to add."
+                                                                            },
+                                                             "RemoveVariant":  {
+                                                                                   "type":  "array",
+                                                                                   "items":  {
+                                                                                                 "type":  "string"
+                                                                                             },
+                                                                                   "minItems":  1,
+                                                                                   "description":  "Variant names to remove (exact case)."
+                                                                               },
+                                                             "Group":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Optional group the added variants join (created when missing)."
+                                                                       },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only report the new document. false: back up, write, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "SwitchVariant",
+                      "cmdlet":  "Set-TcCurrentVariant",
+                      "description":  "Switches the current project variant (CurrentProjectVariant; case-sensitive, '[Group]' allowed but not activatable, '' clears it) and reads it back. Dry-run by default.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  false,
+                                          "destructiveHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Name":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Variant name (exact case), '[<group>]', or '' to clear."
+                                                                      },
+                                                             "DryRun":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Default true: only check and report. false: back up, switch, read back.",
+                                                                            "default":  true
+                                                                        }
+                                                         },
+                                          "required":  [
+                                                           "Name"
                                                        ],
                                           "additionalProperties":  false
                                       }

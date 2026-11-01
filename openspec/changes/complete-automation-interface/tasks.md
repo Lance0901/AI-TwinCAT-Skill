@@ -34,9 +34,9 @@
 
 ## 4. 第 3 期：系統組態(→ v0.5.0-beta)
 
-- [ ] 4.1 NC 模擬軸：建立、設定參數、link 到 AXIS_REF;在 UmRT 實測
-- [ ] 4.2 TcCOM module 實例與 online 參數讀寫
-- [ ] 4.3 Variant management:列出、建立、切換(先查 4024 是否支援)
-- [ ] 4.4 Independent project file
-- [ ] 4.5 ADS route:broadcast search、新增、刪除。確認密碼不外洩;沒有第二台 target 時只做單元測試，並標未實測
+- [x] 4.1 NC 模擬軸：建立、設定參數、link 到 AXIS_REF;在 UmRT 實測
+- [x] 4.2 TcCOM module 實例與 online 參數讀寫
+- [x] 4.3 Variant management:列出、建立、切換(先查 4024 是否支援)
+- [x] 4.4 Independent project file
+- [x] 4.5 ADS route:broadcast search、新增、刪除。確認密碼不外洩;沒有第二台 target 時只做單元測試，並標未實測
 - [ ] 4.6 文件同步、known-limitations 更新;兩個 host 實測;發 v0.5.0-beta
