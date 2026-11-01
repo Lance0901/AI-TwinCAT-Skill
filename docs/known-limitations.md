@@ -236,27 +236,27 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 - **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
 - **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。
 
-### 第 3 期新 tool(只有單元測試，待 4.6 registered 實測)
+### 第 3 期新 tool(task 4.6 registered 實測)
 
-設計依據是自建 client 的 probe([phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md),2026-11-01 4026 VS2022 / 4024 XAE Shell);下列 tool 本身都**只有單元測試**(`tests/Unit/*.ps1`,mock XAE),還沒用 registered tcauto 跑過(task 4.6)。
+設計依據是自建 client 的 probe([phase3-probe.md](../openspec/changes/complete-automation-interface/verification/phase3-probe.md));task 4.6 用 **registered tcauto** 在 4026 VS2022(3.1.4026.22)與 4024 32-bit XAE Shell(3.1.4024.71)+ 本機 UmRT 實測([phase3-4.6.md](../openspec/changes/complete-automation-interface/verification/phase3-4.6.md),2026-11-01)。下表「registered 實測」的 tool 已不只有單元測試;`LinkNcAxis` 在真機不能用(B1)。
 
 | tool | cmdlet | 狀態 / 已知限制 |
 |---|---|---|
-| `AddNcTask` | `Add-TcNcTask` | 只有單元測試。從零建 NC task 沒實測(兩個 probe 副本都已有 task),名稱預期加 ` SAF` |
-| `AddNcAxis` | `Add-TcNcAxis` | 只有單元測試。只有 Continuous 軸在 probe 裡 Activate 過;模擬軸「會不會動」沒測(要有 MC_Power / MC_MoveAbsolute 的測試 POU) |
-| `SetNcAxisParameter` | `Set-TcNcAxisParameter` | 只有單元測試。`Deceleration` / `Jerk` 在 probe 沒寫入過(同一個 `<Dynamic>` 元素);`PvParameter` 對 NC 參數的作用不明，不支援依 variant 設參數 |
-| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | 只有單元測試。已 link 到別處的端點一律拒絕(`NC_AXIS_ALREADY_LINKED`),LinkVariables 對它的行為沒測 |
-| `AddTcComModule` | `Add-TcComModule` | 只有單元測試。授權:只有 `TcNtpExternalTimeProvider` 在 UmRT 上 Activate 過;其他 module 會不會要授權沒測 |
-| `GetTcComParameter` | `Get-TcComModuleParameter` | 只有單元測試。`-Online` 走 ModuleManager(要 IDE),沒有改走 raw ADS port 10 |
-| `SetTcComParameter` | `Set-TcComModuleParameter` | 只有單元測試。enum 只收整數(不收 EnumText);struct / array 不能寫;online 寫入不改專案，下次 Activate 會還原 |
-| `SetTcComContext` | `Set-TcComModuleContext` | 只有單元測試 |
-| `GetVariants` | `Get-TcProjectVariants` | 只有單元測試 |
-| `SetVariantConfig` | `Set-TcProjectVariantConfig` | 只有單元測試。只管 variant / group 清單;item 層的 `PvDisable` / `PvParameter` 不在範圍內(`PvParameter` 對 NC 參數的作用 probe 沒查清楚) |
-| `SwitchVariant` | `Set-TcCurrentVariant` | 只有單元測試。group 狀態下 Activate 會不會真的寫進 target 沒確認(probe 第 18 題),模組一律擋(`VARIANT_GROUP_ACTIVE`) |
-| `SetIndependentFile` | `Set-TcIndependentFile` | 只有單元測試。`Get-TcTreeItem` 沒有 `saveInOwnFile` 欄位;「Enable Multiple Files」全域選項的影響沒查 |
-| `GetAdsRoutes` | `Get-TcAdsRoutes` | 只有單元測試。只看得到目前 target 的 route 表 |
-| `FindAdsTargets` | `Find-TcAdsTarget` | 只有單元測試。probe 時本機搜尋一台都沒找到，原因(防火牆 / UmRT 不回 broadcast)沒查 |
-| `AddAdsRoute` | `Add-TcAdsRoute` | **未實測**(沒有第二台 target,AddRoute / AddProjectRoute 都沒送過);`NoEncryption` 的語意、static / temporary 選項、是否要先 BroadcastSearch 都不明 |
+| `AddNcTask` | `Add-TcNcTask` | registered 實測：只有 `NC_TASK_ALREADY_EXISTS`(兩個副本都已有 task)。從零建 NC task 的成功路徑沒實測，名稱預期加 ` SAF` |
+| `AddNcAxis` | `Add-TcNcAxis` | registered 實測(4026 / 4024):建立、同名擋、Simulation encoder、`axisId` = Run 時 `NcToPlc.AxisId`,DcTimeStamp 遞增。只有 Continuous 軸實測;模擬軸「會不會動」沒測(要有 MC_Power / MC_MoveAbsolute 的測試 POU) |
+| `SetNcAxisParameter` | `Set-TcNcAxisParameter` | registered 實測：MaxVelocity / Deceleration / Jerk 寫入讀回、DriveType 7 ↔ 5、`NC_INVALID_SUBTYPE`(送出前擋)、矛盾值 warnings。寫入後 `ItemSubTypeName` 空白時的還原路徑沒跑到;`PvParameter` 對 NC 參數的作用不明，不支援依 variant 設參數 |
+| `LinkNcAxis` | `Connect-TcNcAxisToPlc` | **真機不能用(phase3-4.6 B1)**:PLC instance 在真 COM 上列舉不到子節點(`ChildCount 0`,但 `<instance>^PlcTask Inputs` 可以 lookup),一律 `NC_PLC_VARIABLE_NOT_FOUND`(4026、4024 都重現)。暫時改用 `SetVariableLink` 兩條 struct link(`...PlcTask Inputs^<var>.NcToPlc` ↔ `<axis>^Outputs^ToPlc`、`...PlcTask Outputs^<var>.PlcToNc` ↔ `<axis>^Inputs^FromPlc`,實測可 Activate) |
+| `AddTcComModule` | `Add-TcComModule` | registered 實測：GUID / TypeName、名稱 ` (TypeName)` 後綴、4024 `_Obj1`。只有 `TcNtpExternalTimeProvider` 在 UmRT 上 Activate 過;**一個 runtime 只能有一個 NTP instance**(第二個 `Register ExternalTime failed, HR=98110708`,XAE 跳 fatal error dialog,實測);其他 module 會不會要授權沒測 |
+| `GetTcComParameter` | `Get-TcComModuleParameter` | registered 實測(清單、offline、`Online`)。TIME 型別只回 `rawHex`,`value` 是 null;`-Online` 走 ModuleManager(要 IDE) |
+| `SetTcComParameter` | `Set-TcComModuleParameter` | registered 實測：BOOL / UINT / DINT 寫入讀回、範圍檢查、online 寫入不改專案、`TCCOM_ONLINE_CONFIG_MISMATCH`。TIME 不能寫(`TCCOM_PARAM_UNSUPPORTED_TYPE`,hint 誤寫成 struct / array);enum 只收整數;struct / array 不能寫(4024 的 NTP `ClientEnable` 在 struct `ClientPara` 裡，無法用 tool 關掉);`TCCOM_PARAM_SIZE_MISMATCH` 在真機觸發不了 |
+| `SetTcComContext` | `Set-TcComModuleContext` | registered 實測(Context Id 1 ← PlcTask、ContextId 0 擋) |
+| `GetVariants` | `Get-TcProjectVariants` | registered 實測(4026 空字串、4024 `$null` 都當成沒有 variant)。真 COM 的「讀取失敗」觸發不了 |
+| `SetVariantConfig` | `Set-TcProjectVariantConfig` | registered 實測(新增 / 移除 / group、備份 `.tsproj`)。「未知節點保留」只有單元測試;solution 資料夾有多個 `.tsproj` 時全部都備份;item 層的 `PvDisable` / `PvParameter` 不在範圍內 |
+| `SwitchVariant` | `Set-TcCurrentVariant` | registered 實測(大小寫擋、`[Group1]` → `EnableConfig` `VARIANT_GROUP_ACTIVE`)。group 狀態下 Activate 會不會真的寫進 target 沒確認(probe 第 18 題),模組一律擋 |
+| `SetIndependentFile` | `Set-TcIndependentFile` | registered 實測：NC 軸 / TcCOM / PLC(4026)、I/O device(4024)的 `.xti` 與 `.tsproj` 參照;PlcTask `INDEPENDENT_FILE_UNSUPPORTED`。**solution 資料夾有多個 `.tsproj` 就回 `INDEPENDENT_FILE_TSPROJ_AMBIGUOUS`**,即使 `.sln` 只參照一個(phase3-4.6 B2);`Get-TcTreeItem` 沒有 `saveInOwnFile` 欄位;「Enable Multiple Files」全域選項的影響沒查 |
+| `GetAdsRoutes` | `Get-TcAdsRoutes` | registered 實測(target = UmRT 與本機)。只看得到目前 target 的 route 表 |
+| `FindAdsTargets` | `Find-TcAdsTarget` | registered 實測(`ROUTE_SEARCH_REQUIRES_LOCAL_TARGET`;本機約 4.1 s)。本機搜尋一台都沒找到，原因(防火牆 / UmRT 不回 broadcast)沒查 |
+| `AddAdsRoute` | `Add-TcAdsRoute` | registered 只實測 dry-run 與參數檢查(`ROUTE_PASSWORD_MISSING`、`PasswordEnv` 名稱 `INVALID_PARAMS`、ProjectRoute dry-run);**AddRoute / AddProjectRoute 沒送過**(沒有第二台 target);`NoEncryption` 的語意、static / temporary 選項、是否要先 BroadcastSearch 都不明 |
 | 刪除 ADS route | — | **不支援**:AI 不能刪 route,要改 StaticRoutes.xml 並重啟 TwinCAT service(會停掉本機 UmRT)。路徑:XAR `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`(要 admin);UmRT `C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\Target\StaticRoutes.xml`(probe 第 26 題)。做法見 troubleshooting「ADS route」 |
-| 密碼遮罩 | 通用 tree tool / 備份 | 只有單元測試。比對元素 / attribute 名稱 `*Password` / `*Pwd`;AddRoute 之後 TIRR 會不會讀回密碼沒實測 |
-| `EnableConfig` / `GenerateBootProject` 的 variant boot 目錄(#89) | `Enable-TcConfig` / `New-TcBootProject` | 修正只有單元測試;要用 registered tcauto 在有 variant 的副本重跑 `Enable-TcConfig -Force` |
+| 密碼遮罩 | 通用 tree tool / 備份 | 只有單元測試。比對元素 / attribute 名稱 `*Password` / `*Pwd`;`TISY`(LogonPassword)在 4026.22 / 4024.71 都 `TREEITEM_NOT_FOUND`,真機的密碼欄位在哪個節點不知道;AddRoute 之後 TIRR 會不會讀回密碼沒實測 |
+| `EnableConfig` / `GenerateBootProject` 的 variant boot 目錄(#89) | `Enable-TcConfig` / `New-TcBootProject` | registered 實測(4026 / 4024):Variant1 → Build → `EnableConfig Force=true` → Run,bootPackage 比對 `_Boot\Variant1\<platform>`;`GenerateBootProject` 讀回 `_Boot\Variant1\<platform>\Plc` |
