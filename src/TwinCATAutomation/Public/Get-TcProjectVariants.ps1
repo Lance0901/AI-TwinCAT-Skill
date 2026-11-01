@@ -15,7 +15,7 @@ function Get-TcProjectVariants {
         Enable-TcConfig returns VARIANT_GROUP_ACTIVE), variants[] (names, case-sensitive), groups[]
         (name, members[]), configXml, itemsXml (item-level settings, e.g. PvUseDisable per variant).
         Change the list with Set-TcProjectVariantConfig, switch with Set-TcCurrentVariant.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .EXAMPLE
         Get-TcProjectVariants
     #>

@@ -25,7 +25,7 @@ function Add-TcComModule {
         Uses New-TcTreeItem (backup of the folder, modal dialog check, parent / child readback).
         BUILD_REQUIRED (code-changed) is recorded once CreateChild was called.
         DryRun (default true): nothing is created; data.plannedSteps, data.vInfo.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Name
         Instance name (no '^'); XAE appends ' (<type>)'.
     .PARAMETER ClassId

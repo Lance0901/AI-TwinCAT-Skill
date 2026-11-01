@@ -30,7 +30,7 @@ function Set-TcIndependentFile {
         into the PLC .xti when the PLC project is independent (InfoSys
         https://infosys.beckhoff.com/content/1033/tc3_userinterface/7738192779.html, measured).
         BUILD_REQUIRED (code-changed) is recorded once the setter was called.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Path
         Full tree path, e.g. 'TIPC^MyPlc', 'TINC^NC-Task 1 SAF^Axes^Axis 1', 'TIRC^TcCOM Objects^<name> (<type>)'.
     .PARAMETER Enabled

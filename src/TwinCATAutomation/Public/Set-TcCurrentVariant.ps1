@@ -21,7 +21,7 @@ function Set-TcCurrentVariant {
         XAE -> VARIANT_NOT_FOUND. BUILD_REQUIRED (code-changed) is recorded once the property was
         written: the variant changes disabled items, mappings and parameters, Build-TcProject before
         Enable-TcConfig. With a variant the boot package is in _Boot\<Variant>\<Platform> (#89).
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Name
         Variant name (exact case), '[<group>]', or '' to clear.
     .PARAMETER DryRun

@@ -14,7 +14,7 @@ function Get-TcAdsRoutes {
         flags), projectRoutes[]. Add a route with Add-TcAdsRoute; removing one is not supported by
         the Automation Interface (TE1000 p.220: edit StaticRoutes.xml and restart the TwinCAT
         service), see docs/troubleshooting.md.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .EXAMPLE
         Get-TcAdsRoutes
     #>

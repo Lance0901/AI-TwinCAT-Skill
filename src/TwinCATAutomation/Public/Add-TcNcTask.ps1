@@ -19,7 +19,7 @@ function Add-TcNcTask {
         the created task is deleted again (data.rollback).
         BUILD_REQUIRED (code-changed) is recorded once CreateChild was called.
         DryRun (default true): nothing is created; data.plannedSteps.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Name
         Requested task name (default 'NC-Task 1'; XAE may append ' SAF').
     .PARAMETER DryRun

@@ -35,7 +35,7 @@ function Connect-TcNcAxisToPlc {
         Readback: both pairs must be in ProduceMappingInfo, else LINK_VERIFY_FAILED.
         XAE errors: TSM_E_MISMATCHINGITEMS -> LINK_TYPE_MISMATCH (e.g. input to input, 0x98510004),
         others LINK_FAILED. BUILD_REQUIRED (code-changed) is recorded once LinkVariables was called.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Axis
         Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1).
     .PARAMETER PlcVariable

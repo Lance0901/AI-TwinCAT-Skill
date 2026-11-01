@@ -23,7 +23,7 @@ function Get-TcComModuleParameter {
         typeName, value (decoded; $null for types that are only shown as hex), rawHex, projectValue
         (ParameterValues text), online. data (list): parameters[] (name, parameterId, bitSize,
         baseType, projectValue, group).
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Module
         Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>)).
     .PARAMETER Name

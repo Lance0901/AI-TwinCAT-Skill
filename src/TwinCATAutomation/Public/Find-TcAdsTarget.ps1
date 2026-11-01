@@ -19,7 +19,7 @@ function Find-TcAdsTarget {
         A modal dialog is checked right before ConsumeXml. The fragment is built with XmlDocument.
         data: target, search, targets[] (name, netId, ipAddr, version, os ...), elapsedMs. An empty
         list is not an error, but it is no proof that there is no target either (data.note).
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Search
         Optional IPv4 address or host name to ask directly; empty = broadcast search.
     .EXAMPLE

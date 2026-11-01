@@ -12,7 +12,7 @@ function Add-TcAdsRoute {
         <TargetList><BroadcastSearch>true</BroadcastSearch></TargetList>; that part is left out here
         (a search only works with the local system as target, phase3-probe.md question 23).
         NOT MEASURED (openspec/changes/complete-automation-interface/verification/phase3-probe.md
-        questions 24, 25, 27: no second target). Only unit tests; registered verification is task 4.6.
+        questions 24, 25, 27: no second target). Registered tcauto verified dry-run only (openspec/changes/complete-automation-interface/verification/phase3-4.6.md); no route was actually added.
         Password: only -PasswordEnv (name of an environment variable of THIS process, Process scope
         only, and it must be named TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX> (upper case, digits,
         '_'), so no other variable can be read through it; over MCP set it in the server's env) or -Password as a SecureString (PowerShell only). The plain text exists

@@ -20,7 +20,7 @@ function Set-TcComModuleContext {
         GetModuleContext(id) must return the task oid (TCCOM_CONTEXT_VERIFY_FAILED). Already assigned:
         success, data.written = false. BUILD_REQUIRED (code-changed) is recorded once SetModuleContext
         was called.
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Module
         Instance name or tree path (TIRC^TcCOM Objects^<name> (<type>)).
     .PARAMETER Task

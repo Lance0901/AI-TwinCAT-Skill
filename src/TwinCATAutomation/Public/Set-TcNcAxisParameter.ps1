@@ -31,7 +31,7 @@ function Set-TcNcAxisParameter {
         non-empty ItemSubTypeName read back, else data.revertError) and NC_INVALID_SUBTYPE. Nothing to change: success,
         data.written = false. BUILD_REQUIRED (code-changed) is recorded once ConsumeXml was called.
         The axis type (Continuous / Discrete ...) is fixed at creation (Add-TcNcAxis -AxisType).
-        Only unit tests so far; registered tcauto verification is task 4.6.
+        Verified with registered tcauto on 4026 and 4024 (openspec/changes/complete-automation-interface/verification/phase3-4.6.md).
     .PARAMETER Axis
         Axis name or tree path (TINC^NC-Task 1 SAF^Axes^Axis 1).
     .PARAMETER MaxVelocity
