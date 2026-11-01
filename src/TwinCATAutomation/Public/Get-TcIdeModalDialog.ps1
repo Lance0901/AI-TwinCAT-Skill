@@ -19,7 +19,7 @@ function Get-TcIdeModalDialog {
         a call keeps failing with IDE_BUSY). Otherwise it is
         { title, text, kind, reloadTarget, hwnd, buttons[{ id, name }] }:
         kind 'reload-prompt' (reloadTarget 'file' | 'project') or 'unknown' (reloadTarget $null).
-        data.processId is the pid that was scanned.
+        data.ideProcessId (same name as the MCP tool and the hints) is the pid that was scanned.
     .PARAMETER ProcessId
         IDE process id. Default 0 = the pid Connect-TcIde recorded. Pass it explicitly to inspect
         an IDE this session is not connected to (e.g. one that blocked Connect-TcIde).
@@ -55,7 +55,7 @@ function Get-TcIdeModalDialog {
     $dialogOut = $null
     if ($null -ne $dialog) { $dialogOut = ConvertTo-TcDialogRecord -Dialog $dialog }
     New-TcResult -Success $true -Data ([PSCustomObject][ordered]@{
-            processId = $ProcessId
+            ideProcessId = $ProcessId
             dialog    = $dialogOut
         })
 }

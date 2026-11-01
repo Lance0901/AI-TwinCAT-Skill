@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Generates mcp-server/tools.json (MCP tool definitions) from the TwinCATAutomation module.
 

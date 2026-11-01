@@ -17,7 +17,7 @@
 
    模組原文(`ConvertTo-TcAdsErrorCode.ps1` `SOLUTION_CLOSE_FAILED`)是「用 Get-TcIdeModalDialog 看 ...」:MCP 端已改寫為 `GetIdeModalDialog`,沒有殘留 cmdlet 名。
 2. `GetIdeModalDialog`(composite,bridge 內部改呼叫 `Find-TcIdeModalDialog`):success,`data.dialog.kind` reload-prompt、`reloadTarget` project、buttons `YesButton` / `NoButton`(VS2022 WPF,id 0)。
-3. CLI 補充(**不是 MCP**:獨立 `powershell.exe` `Import-Module` 主 checkout 模組):`Get-TcIdeModalDialog -ProcessId 79440` → `{"success":true,"data":{"processId":79440,"dialog":{"title":"Microsoft Visual Studio","text":"The project file '...AxisInterface.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?","kind":"reload-prompt","reloadTarget":"project","hwnd":277286638,"buttons":[...]}}}`;不帶 pid → `NOT_CONNECTED`,hint「先 Connect-TcIde ...」。修前同一呼叫是 `CommandNotFoundException`(issue 原文)。
+3. CLI 補充(**不是 MCP**:獨立 `powershell.exe` `Import-Module` 主 checkout 模組):`Get-TcIdeModalDialog -ProcessId 79440` → `{"success":true,"data":{"ideProcessId":79440,"dialog":{"title":"Microsoft Visual Studio","text":"The project file '...AxisInterface.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?","kind":"reload-prompt","reloadTarget":"project","hwnd":277286638,"buttons":[...]}}}`;不帶 pid → `NOT_CONNECTED`,hint「先 Connect-TcIde ...」。修前同一呼叫是 `CommandNotFoundException`(issue 原文)。(註:實測當時欄位名是 `data.processId`,後來依 PR #100 review 改成與 MCP / hint 一致的 `data.ideProcessId`。)
 4. 之後 `ResetSolution` 回答 Yes 清掉 prompt(answeredYes true,8.5 s)。
 
 ## 結論

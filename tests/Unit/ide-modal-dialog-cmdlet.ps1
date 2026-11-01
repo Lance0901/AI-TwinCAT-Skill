@@ -26,12 +26,12 @@ $r = Get-TcIdeModalDialog
 Check 'nopid-fails' ($r.success -eq $false -and $r.error.code -eq 'NOT_CONNECTED') "$($r.error.code)"
 Check 'nopid-hint' (-not [string]::IsNullOrWhiteSpace($r.error.hint) -and $r.error.hint -match 'Connect-TcIde') "$($r.error.hint)"
 
-# 3. no dialog -> success, data.dialog null, data.processId
+# 3. no dialog -> success, data.dialog null, data.ideProcessId
 & $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null } }
 $r = Get-TcIdeModalDialog -ProcessId 4242
 Check 'none-success' ($r.success -eq $true) ''
 Check 'none-dialog-null' ($null -eq $r.data.dialog) ''
-Check 'none-pid' ($r.data.processId -eq 4242) "$($r.data.processId)"
+Check 'none-pid' ($r.data.ideProcessId -eq 4242) "$($r.data.ideProcessId)"
 
 # 4. a dialog -> data.dialog has the MCP GetIdeModalDialog shape; pid defaults to the connected one
 $global:SeenPid = $null; $global:SeenTimeout = $null
@@ -47,7 +47,7 @@ $global:SeenPid = $null; $global:SeenTimeout = $null
 }
 $r = Get-TcIdeModalDialog -TimeoutSec 9
 Check 'dlg-success' ($r.success -eq $true) ''
-Check 'dlg-default-pid' ($global:SeenPid -eq 777 -and $r.data.processId -eq 777) "$($global:SeenPid)"
+Check 'dlg-default-pid' ($global:SeenPid -eq 777 -and $r.data.ideProcessId -eq 777) "$($global:SeenPid)"
 Check 'dlg-timeout-passed' ($global:SeenTimeout -eq 9) "$($global:SeenTimeout)"
 $d = $r.data.dialog
 Check 'dlg-fields' ($d.title -eq 'Microsoft Visual Studio' -and $d.kind -eq 'reload-prompt' -and $d.reloadTarget -eq 'file' -and $d.hwnd -eq 66052) ($d | ConvertTo-Json -Compress)
