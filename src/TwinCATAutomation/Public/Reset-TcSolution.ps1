@@ -214,7 +214,7 @@ function Reset-TcSolution {
     if (-not (Test-Path -LiteralPath $path)) {
         return New-TcResult -Success $false -ErrorMessage "Solution file not found: $path" -ErrorCode 'FILE_NOT_FOUND'
     }
-    $path = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $path).Path)
+    $path = Get-TcLongPath (Resolve-Path -LiteralPath $path).Path
 
     $progress = [ordered]@{
         solution              = $path
@@ -385,7 +385,7 @@ function Reset-TcSolution {
             try {
                 $full = [string](Invoke-TcComRetry -OperationName 'Solution.FullName (post-reload wait)' -MaxRetries 1 -ScriptBlock { [string]$dte.Solution.FullName })
                 $lastRead = $full
-                if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals([IO.Path]::GetFullPath($full), $path, [StringComparison]::OrdinalIgnoreCase)) { $reloaded = $true; break }
+                if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals((Get-TcLongPath $full), $path, [StringComparison]::OrdinalIgnoreCase)) { $reloaded = $true; break }
             }
             catch { $lastRead = $_.Exception.Message }
             Start-Sleep -Milliseconds 500
@@ -473,8 +473,8 @@ function Reset-TcSolution {
             -Data (Get-ProgressData -Extra @{ expectedSolution = $expected; guardError = $guardError; guardSec = [math]::Round($guardSw.Elapsed.TotalSeconds, 1) }))
     }
     if (-not [string]::IsNullOrWhiteSpace($openNow)) {
-        $openNorm = try { [IO.Path]::GetFullPath($openNow) } catch { $openNow }
-        $expNorm = try { [IO.Path]::GetFullPath($expected) } catch { $expected }
+        $openNorm = try { Get-TcLongPath $openNow } catch { $openNow }
+        $expNorm = try { Get-TcLongPath $expected } catch { $expected }
         if (-not [string]::Equals($openNorm, $expNorm, [StringComparison]::OrdinalIgnoreCase)) {
             return Complete-TcResetFailure -Step 'solution check' -ReloadedSolution $openNorm -Result (New-TcResult -Success $false `
                 -ErrorMessage "Reset-TcSolution not attempted: the IDE (pid $previousPid) has '$openNorm' open, not '$expNorm' that the module expected. Nothing was closed." `
