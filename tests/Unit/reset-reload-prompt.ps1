@@ -1,6 +1,6 @@
 ﻿# Unit: Reset-TcSolution handles a reload prompt BEFORE / WHILE it reads Solution.FullName (#87),
 # no IDE needed. A mock DTE whose Solution.FullName answers $null while a (mock) modal dialog is up;
-# Get-TcIdeModalDialog / Close-TcReloadPrompt / Connect-TcIde are replaced inside the module scope.
+# Find-TcIdeModalDialog / Close-TcReloadPrompt / Connect-TcIde are replaced inside the module scope.
 #   A1  prompt (project) already up, module solution path known      -> answered Yes, success
 #   A2  prompt (project) already up, no solution path known (the path is read from the DTE)
 #       -> the modal check runs before the first FullName read, answered Yes, success
@@ -63,9 +63,9 @@ $okSm = [PSCustomObject]@{ Mock = $true }
 $okSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) [PSCustomObject]@{ Name = 'TIPC' } }
 $global:OkSm = $okSm
 
-$origFns = & $mod { @{ Dlg = ${function:Get-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
+$origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
 & $mod {
-    Set-Item -Path function:script:Get-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
+    Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
     Set-Item -Path function:script:Close-TcReloadPrompt -Value { param($Dialog, $Answer, $TimeoutSec) $global:W.Log.Add("ClosePrompt:$Answer"); $global:W.Dialog = $null; @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock' } }
     Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $global:W.Log.Add('Connect'); $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
 }
@@ -142,7 +142,7 @@ try {
     Check 'regression: FullName $null, no dialog -> RESET_SOLUTION_UNVERIFIED, nothing closed, modal checked in the poll' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:W.Closed -and @($global:W.Log | Where-Object { $_ -eq 'Modal:none' }).Count -ge 2) ("{0} | {1}" -f (Get-LogText).Substring(0, [Math]::Min(200, (Get-LogText).Length)), (J $r.error))
 }
 finally {
-    & $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
+    & $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f.Dlg; Set-Item -Path function:script:Close-TcReloadPrompt -Value $f.Rp; Set-Item -Path function:script:Connect-TcIde -Value $f.Conn } $origFns
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcSolutionPath = $null; $script:TcSysManager = $null }
 }
 
