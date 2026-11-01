@@ -1,4 +1,4 @@
-# Project variant helpers (complete-automation-interface phase 3, task 4.3): Get-TcProjectVariants,
+﻿# Project variant helpers (complete-automation-interface phase 3, task 4.3): Get-TcProjectVariants,
 # Set-TcProjectVariantConfig, Set-TcCurrentVariant, the VARIANT_GROUP_ACTIVE check of Enable-TcConfig
 # and the variant boot folder of Enable-TcConfig / New-TcBootProject (#89).
 # API: ITcSysManager14 CurrentProjectVariant / ProjectVariantConfig / ProjectVariantItems (TE1000
@@ -112,6 +112,48 @@ function ConvertTo-TcNormalizedXml {
     finally { if ($null -ne $reader) { $reader.Dispose() }; if ($null -ne $sr) { $sr.Dispose() } }
     foreach ($n in @($doc.ChildNodes | Where-Object { $_.NodeType -eq [System.Xml.XmlNodeType]::XmlDeclaration })) { $null = $doc.RemoveChild($n) }
     return $doc.DocumentElement.OuterXml
+}
+
+function Compare-TcVariantConfig {
+    <#
+    .SYNOPSIS
+        Readback check of Set-TcProjectVariantConfig: @{ Same = $true | $false; Differences = @('variants' | 'groups' | 'document' | 'readback does not parse') }.
+    .DESCRIPTION
+        Compared by meaning, not by text: the variant list (order and case kept), the group list
+        (name and members), then the rest of the document (review S6: unknown elements and
+        attributes must come back; normalized with ConvertTo-TcNormalizedXml).
+        4.6 N6: '' / $null and an empty <ProjectVariants/> (no attribute, no child) are the same
+        document, "no variant, no group". After writing '<?xml version="1.0"?><ProjectVariants></ProjectVariants>'
+        (the last variant removed) XAE reads back the empty string '' (實測 2026-11-01 4026 VS2022
+        XAE 3.1.4026.22, phase3-4.6.md Retest, N6); comparing the text reported VARIANT_VERIFY_FAILED
+        although the variant was gone.
+    .PARAMETER Expected
+        Document written.
+    .PARAMETER Actual
+        Document read back.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][AllowEmptyString()][string]$Expected, [Parameter()][AllowNull()][AllowEmptyString()][string]$Actual)
+    $diff = [System.Collections.Generic.List[string]]::new()
+    $exp = ConvertFrom-TcVariantConfig -Xml $Expected
+    $got = ConvertFrom-TcVariantConfig -Xml $Actual
+    if (-not $got.Ok -or -not $exp.Ok) {
+        $diff.Add('readback does not parse')
+        return @{ Same = $false; Differences = $diff.ToArray() }
+    }
+    if (-not [string]::Equals((@($exp.Variants) -join "`n"), (@($got.Variants) -join "`n"), [System.StringComparison]::Ordinal)) { $diff.Add('variants') }
+    $groupText = { param($gs) (@($gs | ForEach-Object { "$($_.name)=$(@($_.members) -join ',')" }) -join "`n") }
+    if (-not [string]::Equals((& $groupText $exp.Groups), (& $groupText $got.Groups), [System.StringComparison]::Ordinal)) { $diff.Add('groups') }
+    $norm = {
+        param($x)
+        $n = ConvertTo-TcNormalizedXml -Xml $x
+        if ($n -ceq '<ProjectVariants />' -or $n -ceq '<ProjectVariants></ProjectVariants>') { $n = '' }
+        $n
+    }
+    $expN = & $norm $Expected
+    $gotN = & $norm $Actual
+    if ($null -eq $gotN -or -not [string]::Equals([string]$expN, [string]$gotN, [System.StringComparison]::Ordinal)) { $diff.Add('document') }
+    return @{ Same = ($diff.Count -eq 0); Differences = $diff.ToArray() }
 }
 
 function Get-TcVariantState {

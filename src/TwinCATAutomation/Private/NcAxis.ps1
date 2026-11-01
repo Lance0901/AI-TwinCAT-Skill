@@ -1,4 +1,4 @@
-# NC configuration helpers (complete-automation-interface phase 3, task 4.1): Add-TcNcTask,
+﻿# NC configuration helpers (complete-automation-interface phase 3, task 4.1): Add-TcNcTask,
 # Add-TcNcAxis, Set-TcNcAxisParameter, Connect-TcNcAxisToPlc.
 # Measured 2026-11-01 4026 VS2022 XAE 3.1.4026.22 / 4024 XAE Shell 3.1.4024.71, self-built client
 # (openspec/changes/complete-automation-interface/verification/phase3-probe.md, questions 1-5):
@@ -326,8 +326,11 @@ function Get-TcRealTimeTaskNames {
         Used to build '<instance>^<task> Inputs' / 'Outputs' (phase3-4.6 B1): the PLC instance
         (ItemType 57) reports ChildCount 0 on real COM and its process images are only reachable by
         LookupTreeItem of the full path (measured 2026-11-01, 4026.22 VS2022 and 4024.71 XAE Shell,
-        verification/phase3-4.6.md B1). That the children of TIRT are enumerable on real COM and
-        carry the same names as '<task> Inputs' is NOT measured yet (pending, 4.6 retest).
+        verification/phase3-4.6.md B1). The children of TIRT are enumerable on real COM and carry
+        the names used in '<task> Inputs' / 'Outputs' (實測 2026-11-01, registered tcauto,
+        phase3-4.6.md Retest B1 / N3): 4026.22 VS2022 TIRT childCount 1 = [PlcTask]; 4024.71 XAE
+        Shell childCount 2 = [PlcTask, MotionTask]; on both the links went to 'PlcTask Inputs' /
+        'PlcTask Outputs' and were read back as linked.
     .PARAMETER SysManager
         ITcSysManager.
     .PARAMETER ProjectPath

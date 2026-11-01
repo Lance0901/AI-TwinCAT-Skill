@@ -1285,7 +1285,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### VARIANT_VERIFY_FAILED
 
-- **現象**:寫入後讀回的 variant / group 清單和預期不同(`data.readback` vs `data.after`)。
+- **現象**:寫入後讀回的 variant / group 清單和預期不同(`data.readback` vs `data.after`),或其餘內容(模組不認得的元素 / attribute,review S6)沒有讀回。不同的部分列在 `data.verifyDifferences`(`variants`、`groups`、`document`、`readback does not parse`)。比的是語意,不是 XML 字串:`''` / `$null` 和空的 `<ProjectVariants/>` 視為相同(4.6 N6:移除最後一個 variant 後 XAE 讀回空字串,實測 2026-11-01 4026 VS2022,phase3-4.6.md Retest;這種情況不回此碼)。
 - **下一步**:`Get-TcProjectVariants` 確認;還原用 `data.backupPath`(舊文件)。
 
 ### VARIANT_SWITCH_FAILED

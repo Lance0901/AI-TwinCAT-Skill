@@ -45,6 +45,9 @@ $sm | Add-Member ScriptProperty ProjectVariantConfig { $global:T.Config } {
     $global:T.Mods.Add('Set ProjectVariantConfig') | Out-Null
     if (-not (Test-MockConfig $v)) { throw (New-ComError 'Unspecified error' ([int]0x80004005)) }
     if ($global:T.Mode -eq 'config-drop-future') { $v = $v -replace '<Future>keep</Future>', '' }
+    # 4.6 N6: XAE reads back '' after an empty <ProjectVariants> was written (measured 2026-11-01 4026 VS2022, phase3-4.6.md Retest)
+    if ($global:T.Mode -eq 'config-empty-blank' -and $v -match '<ProjectVariants\s*(/>|>\s*</ProjectVariants>)\s*$') { $v = '' }
+    if ($global:T.Mode -eq 'config-ignore') { return }
     if ($global:T.Mode -eq 'config-drop-last') { $v = $v -replace '<Variant><Name>[^<]*</Name></Variant></ProjectVariants>$', '</ProjectVariants>' }
     $global:T.Config = $v
 }
@@ -121,6 +124,26 @@ try {
     Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'config-drop-last'
     $r = Set-TcProjectVariantConfig -AddVariant Variant3 -DryRun $false
     Check 'SetVariantConfig readback differs -> VARIANT_VERIFY_FAILED, recorded' ($r.error.code -eq 'VARIANT_VERIFY_FAILED' -and (Get-CodeChanged) -match 'verify') (J $r.error)
+    # 4.6 N6: removing the last variant writes an empty <ProjectVariants>, XAE reads back ''
+    Reset-Mock -Config '<?xml version="1.0"?><ProjectVariants><Variant><Name>VarR46</Name></Variant></ProjectVariants>' -Current ''; Reset-BuildRequired; $global:T.Mode = 'config-empty-blank'
+    $r = Set-TcProjectVariantConfig -RemoveVariant VarR46 -DryRun $false
+    Check 'N6 remove the last variant, XAE reads back '''' -> success, verified' ($r.success -and $r.data.verified -and $global:T.Config -eq '' -and $r.data.xml -match '<ProjectVariants\s*(/>|></ProjectVariants>)$' -and @($r.data.readback.variants).Count -eq 0 -and @($r.data.readback.groups).Count -eq 0 -and (Get-CodeChanged) -match 'Set-TcProjectVariantConfig [+] -VarR46') (J $r)
+    Reset-Mock -Config '<?xml version="1.0"?><ProjectVariants><Variant><Name>VarR46</Name></Variant></ProjectVariants>' -Current ''; Reset-BuildRequired; $global:T.Mode = 'config-ignore'
+    $r = Set-TcProjectVariantConfig -RemoveVariant VarR46 -DryRun $false
+    Check 'N6 remove the last variant, readback still has it -> VARIANT_VERIFY_FAILED (variants)' ($r.error.code -eq 'VARIANT_VERIFY_FAILED' -and $r.data.verified -eq $false -and @($r.data.verifyDifferences) -contains 'variants' -and (Get-CodeChanged) -match 'verify') (J $r)
+    $cmp = { param($e, $a) & $mod { param($x, $y) Compare-TcVariantConfig -Expected $x -Actual $y } $e $a }
+    $c = & $cmp '<?xml version="1.0"?><ProjectVariants></ProjectVariants>' ''
+    Check 'N6 Compare: empty <ProjectVariants></ProjectVariants> vs '''' -> same' ($c.Same) (J $c)
+    $c = & $cmp '<?xml version="1.0"?><ProjectVariants/>' $null
+    Check 'N6 Compare: <ProjectVariants/> vs $null (4024) -> same' ($c.Same) (J $c)
+    $c = & $cmp '<?xml version="1.0"?><ProjectVariants><Future>keep</Future></ProjectVariants>' ''
+    Check 'N6 Compare: an unknown element lost into '''' -> document differs' (-not $c.Same -and @($c.Differences) -contains 'document' -and @($c.Differences) -notcontains 'variants') (J $c)
+    $c = & $cmp '<?xml version="1.0"?><ProjectVariants></ProjectVariants>' '<?xml version="1.0"?><ProjectVariants><Group><Name>G</Name><Member>A</Member></Group></ProjectVariants>'
+    Check 'N6 Compare: empty written, a group read back -> groups differ' (-not $c.Same -and @($c.Differences) -contains 'groups') (J $c)
+    $c = & $cmp '<?xml version="1.0"?><ProjectVariants></ProjectVariants>' 'not xml'
+    Check 'N6 Compare: readback does not parse -> not same' (-not $c.Same) (J $c)
+    $c = & $cmp $Sample ($Sample -replace '<\?xml version="1.0"\?>', '')
+    Check 'Compare: same document without the declaration -> same' ($c.Same) (J $c)
     Reset-Mock; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
     $r = Set-TcProjectVariantConfig -AddVariant Variant3 -DryRun $false
     Check 'SetVariantConfig modal dialog -> IDE_MODAL_DIALOG, nothing written / recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-Sets).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r.error)

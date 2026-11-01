@@ -1,4 +1,4 @@
-function Set-TcProjectVariantConfig {
+﻿function Set-TcProjectVariantConfig {
     <#
     .SYNOPSIS
         Adds or removes project variants: reads ProjectVariantConfig, changes it, writes the WHOLE document back and reads it back. Dry-run by default; backs up the .tsproj first.
@@ -23,7 +23,9 @@ function Set-TcProjectVariantConfig {
         DryRun (default true): data.before / data.after (variants, groups), data.xml.
         DryRun=false: backup of the old document and the .tsproj (the variants are stored in its
         <Variants> element after a save, question 18), IDE_MODAL_DIALOG check, write, read back:
-        the variant and group lists must equal the planned ones (VARIANT_VERIFY_FAILED). XAE
+        the variant and group lists, and the rest of the document, must equal the planned ones
+        (VARIANT_VERIFY_FAILED, data.verifyDifferences); '' read back after an empty
+        <ProjectVariants> (the last variant removed, 4.6 N6) counts as the same. XAE
         refusing the document -> VARIANT_CONFIG_INVALID. BUILD_REQUIRED (code-changed) is recorded
         once the property was written.
         Item-level variant settings (PvDisable ...) are not changed here.
@@ -178,14 +180,15 @@ function Set-TcProjectVariantConfig {
         }
         $backXml = [string](Invoke-TcComRetry -OperationName 'ProjectVariantConfig' -ScriptBlock { $sm.ProjectVariantConfig })
         $back = ConvertFrom-TcVariantConfig -Xml $backXml
-        # review S6: the whole document must come back (normalized: whitespace, declaration, comments)
-        $expN = ConvertTo-TcNormalizedXml -Xml $newXml
-        $gotN = ConvertTo-TcNormalizedXml -Xml $backXml
-        $ok = $null -ne $gotN -and [string]::Equals($expN, $gotN, [System.StringComparison]::Ordinal)
+        # compared by meaning (variants, groups) plus the rest of the document (review S6); 4.6 N6:
+        # XAE reads back '' after an empty <ProjectVariants> was written (實測 2026-11-01 4026 VS2022,
+        # phase3-4.6.md Retest), which counts as "no variant, no group" (Compare-TcVariantConfig)
+        $cmp = Compare-TcVariantConfig -Expected $newXml -Actual $backXml
         $data | Add-Member -NotePropertyName readback -NotePropertyValue ([PSCustomObject]@{ variants = @($back.Variants); groups = @($back.Groups) })
-        if (-not $ok) {
+        if (-not $cmp.Same) {
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
-            $res = New-TcResult -Success $false -ErrorCode 'VARIANT_VERIFY_FAILED' -Data $data -ErrorMessage 'ProjectVariantConfig was written, but the document read back differs from the one written (compared after normalizing; data.readback vs data.after).' -Hint (Get-TcErrorHint -Code 'VARIANT_VERIFY_FAILED')
+            $data | Add-Member -NotePropertyName verifyDifferences -NotePropertyValue @($cmp.Differences)
+            $res = New-TcResult -Success $false -ErrorCode 'VARIANT_VERIFY_FAILED' -Data $data -ErrorMessage "ProjectVariantConfig was written, but what was read back differs from the planned document in: $(@($cmp.Differences) -join ', ') (data.verifyDifferences; data.readback vs data.after)." -Hint (Get-TcErrorHint -Code 'VARIANT_VERIFY_FAILED')
             return Register-TcCodeChange -Result $res -Change 'Set-TcProjectVariantConfig [failed at verify]'
         }
         $data | Add-Member -NotePropertyName verified -NotePropertyValue $true
