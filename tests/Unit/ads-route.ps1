@@ -141,6 +141,13 @@ try {
     Reset-Mock; Reset-BuildRequired
     $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator
     Check 'AddAdsRoute without a password source -> ROUTE_PASSWORD_MISSING' ($r.error.code -eq 'ROUTE_PASSWORD_MISSING') (J $r.error)
+    # 4.6 N4: no PowerShell-only parameter (-Password) in the message, the MCP side has none
+    Check 'N4 ROUTE_PASSWORD_MISSING message names -PasswordEnv, no -Password parameter' ($r.error.message -match '-PasswordEnv' -and $r.error.message -notmatch '-Password(?!Env)') (J $r.error)
+    $sec = New-Object System.Security.SecureString; $sec.AppendChar('x'); $sec.MakeReadOnly()
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_UNIT -Password $sec
+    Check 'N4 both password sources -> ROUTE_PASSWORD_MISSING, message without -Password' ($r.error.code -eq 'ROUTE_PASSWORD_MISSING' -and $r.error.message -match 'not two' -and $r.error.message -notmatch '-Password(?!Env)') (J $r.error)
+    $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -ProjectRoute -PasswordEnv TCAUTO_ROUTE_PW_UNIT
+    Check 'N4 -ProjectRoute with -PasswordEnv -> INVALID_PARAMS, message without -Password' ($r.error.code -eq 'INVALID_PARAMS' -and $r.error.message -notmatch '-Password(?!Env)') (J $r.error)
     $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv TCAUTO_ROUTE_PW_NOT_SET_X
     Check 'AddAdsRoute empty environment variable -> ROUTE_PASSWORD_MISSING, hint PasswordEnv' ($r.error.code -eq 'ROUTE_PASSWORD_MISSING' -and $r.error.hint -match 'PasswordEnv') (J $r.error)
     $r = Add-TcAdsRoute -Name CX-1 -NetId 5.1.2.3.1.1 -Address 192.168.1.20 -UserName Administrator -PasswordEnv PATH

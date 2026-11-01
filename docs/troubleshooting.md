@@ -1370,8 +1370,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### ROUTE_PASSWORD_MISSING
 
-- **現象**:AddRoute 沒有密碼來源，或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。
-- **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),再 `Add-TcAdsRoute -PasswordEnv <名稱>`;不要把密碼當參數值傳。
+- **現象**:AddRoute 沒有密碼來源(或 PowerShell 同時給了 `-PasswordEnv` 和 SecureString 密碼),或 `-PasswordEnv` 指的環境變數在這個行程(Process scope,不看 User scope)是空的。message 只把 `-PasswordEnv` 寫成參數(MCP 端由 `mcp-server/lib/tools.js` 的 `rewriteResultHints` 改寫成 `PasswordEnv`);SecureString 密碼只有 PowerShell 有，用文字描述，不寫成 `-Password`(phase3-4.6 N4,已修:之前 MCP 會讀到不存在的 `-Password` 參數)。
+- **下一步**:在執行模組的行程設定環境變數(MCP:client 設定裡 server 的 `env`),變數名稱是 `TCAUTO_ROUTE_PW` 或 `TCAUTO_ROUTE_PW_<後綴>`,再 `Add-TcAdsRoute -PasswordEnv <名稱>`(MCP `AddAdsRoute PasswordEnv=<名稱>`);不要把密碼當參數值傳。
 
 ### ROUTE_ADD_FAILED
 
