@@ -39,4 +39,4 @@
 - [x] 4.3 Variant management:列出、建立、切換(先查 4024 是否支援)
 - [x] 4.4 Independent project file
 - [x] 4.5 ADS route:broadcast search、新增、刪除。確認密碼不外洩;沒有第二台 target 時只做單元測試，並標未實測
-- [ ] 4.6 文件同步、known-limitations 更新;兩個 host 實測;發 v0.5.0-beta
+- [x] 4.6 文件同步、known-limitations 更新;兩個 host 實測;發 v0.5.0-beta
