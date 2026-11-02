@@ -35,8 +35,10 @@ function Find-TcBlockedSolutionIde {
         record, e.g. opened by hand in an IDE that is blocked as well) cannot be told apart.
         A candidate without a known pid is skipped; an unreadable (empty Version, not busy)
         candidate without a dialog is skipped too (most likely an IDE shutting down).
-        Limits: 8.3 short names and UNC paths in the dialog text are compared as text after
-        GetFullPath (no short-name expansion), so they may give 'none' or 'outside'.
+        Every path compared here (-SolutionPath, record, module state, known solutions, dialog
+        paths) goes through Get-TcLongPath, so 8.3 short names match their long form (#63).
+        Limits: UNC paths in the dialog text are compared as text; an 8.3 name in a dialog whose
+        file no longer exists cannot be expanded and may give 'none' or 'outside'.
     .PARAMETER Candidates
         Busy / unreadable candidates built by Connect-TcIde (properties pid, progId,
         displayName, Object, optional unreadable).
@@ -80,12 +82,16 @@ function Find-TcBlockedSolutionIde {
         [string[]]$KnownSolutions = @()
     )
 
+    # Before matching: expand 8.3 short names of -SolutionPath (folders and the file name, so the name compared with window titles is the long one).
+    $SolutionPath = Get-TcLongPath $SolutionPath
+    if (-not [string]::IsNullOrWhiteSpace($PreviousSolution)) { $PreviousSolution = Get-TcLongPath $PreviousSolution }
+    $KnownSolutions = @($KnownSolutions | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Get-TcLongPath $_ })
     $slnName = [IO.Path]::GetFileNameWithoutExtension($SolutionPath)
     $slnDir = [IO.Path]::GetDirectoryName($SolutionPath).TrimEnd('\') + '\'
     $titlePattern = '^' + [regex]::Escape($slnName) + '(\s|$)'
     # A same-named .sln in another folder that is known to be open (readable ROT candidates,
     # live session records): then a window title cannot tell the two apart and never corroborates.
-    $known = @($KnownSolutions) + @(Read-TcIdeSolutionRecords | Where-Object { Test-TcIdeRecordAlive -Record $_ } | ForEach-Object { [string]$_.solution })
+    $known = @($KnownSolutions) + @(Read-TcIdeSolutionRecords | Where-Object { Test-TcIdeRecordAlive -Record $_ } | ForEach-Object { if ([string]::IsNullOrWhiteSpace([string]$_.solution)) { '' } else { Get-TcLongPath ([string]$_.solution) } })
     $sameNameElsewhere = @($known | Where-Object {
             -not [string]::IsNullOrWhiteSpace($_) -and
             [string]::Equals([IO.Path]::GetFileNameWithoutExtension($_), $slnName, [StringComparison]::OrdinalIgnoreCase) -and
@@ -111,6 +117,7 @@ function Find-TcBlockedSolutionIde {
         }
 
         $recorded = Get-TcIdeSolutionRecord -ProcessId $cPid
+        if (-not [string]::IsNullOrWhiteSpace($recorded)) { $recorded = Get-TcLongPath $recorded }
         $recordVerdict = 'none'
         if (-not [string]::IsNullOrWhiteSpace($recorded)) {
             $recordVerdict = if ([string]::Equals($recorded, $SolutionPath, [StringComparison]::OrdinalIgnoreCase)) { 'same' } else { 'other' }
@@ -181,14 +188,14 @@ function Get-TcDialogProjectPaths {
     <#
     .SYNOPSIS
         Absolute paths of project files (.sln, .tsproj, .plcproj, .TcPOU ...) in a dialog text,
-        normalised with GetFullPath. A path never spans another drive letter, so two paths in
+        normalised with Get-TcLongPath (8.3 short names expanded when the path exists). A path never spans another drive letter, so two paths in
         one text are not glued together.
     #>
     [CmdletBinding()]
     param([Parameter()][string]$Text = '')
     $pattern = '(?i)[A-Za-z]:\\(?:(?![A-Za-z]:\\)[^\r\n"''<>|?*])+?\.(?:sln|tsproj|tspproj|plcproj|tmc|xti|TcPOU|TcGVL|TcDUT|TcTTO|TcIO|TcVIS)(?![A-Za-z0-9])'
     foreach ($m in [regex]::Matches($Text, $pattern)) {
-        try { [IO.Path]::GetFullPath($m.Value) } catch { $m.Value }
+        try { Get-TcLongPath $m.Value } catch { $m.Value }
     }
 }
 

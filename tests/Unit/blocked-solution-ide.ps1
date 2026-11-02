@@ -3,6 +3,10 @@
 # the ProgId is a fake one, so Connect-TcIde can never launch a real IDE.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/blocked-solution-ide.ps1
 # Exit code = number of failed checks.
+#   -Short83: hand -SolutionPath and the dialog text to the module in 8.3 short form (#63: GitHub's
+#   runner TEMP is C:\Users\RUNNER~1\...); expectations stay the long form. Skips (exit 0) when
+#   the volume generates no 8.3 names.
+param([switch]$Short83)
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
@@ -36,6 +40,33 @@ $origLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $slnDir   # session records go to the temp folder
 $sln = Join-Path $slnDir 'Demo.sln'
 Set-Content -Path $sln -Value 'Microsoft Visual Studio Solution File, Format Version 12.00'
+$slnLong = $sln
+$slnDirIn = $slnDir   # spelling given to the module
+if ($Short83) {
+    if ($null -eq ([System.Management.Automation.PSTypeName]'TcUnitShortPath').Type) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+using System.Text;
+public static class TcUnitShortPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
+    public static string Get(string p) {
+        var sb = new StringBuilder(1024);
+        uint n = GetShortPathName(p, sb, (uint)sb.Capacity);
+        return (n > 0 && n < sb.Capacity) ? sb.ToString() : p;
+    }
+}
+'@
+    }
+    $slnDirIn = [TcUnitShortPath]::Get($slnDir)
+    if ($slnDirIn -eq $slnDir) {
+        "SKIP blocked-solution-ide -Short83: this volume does not generate 8.3 short names ($slnDir)"
+        $env:LOCALAPPDATA = $origLocalAppData
+        Remove-Item -LiteralPath $slnDir -Recurse -Force -ErrorAction SilentlyContinue
+        exit 0
+    }
+    $sln = Join-Path $slnDirIn 'Demo.sln'
+}
 
 # Fake world: pid -> @{ Title; Dialog }
 $global:FakeIde = @{}
@@ -78,7 +109,7 @@ function New-Dte([string]$Mode) {
 function Set-Rot([object[]]$Entries) {
     $global:FakeRot = @($Entries | ForEach-Object { @{ DisplayName = "!Fake.DTE.1:$($_.Pid)"; Object = (New-Dte $_.Mode); ProgId = 'Fake.DTE.1'; ProcessId = $_.Pid } })
 }
-$reload = @{ Title = 'TcXaeShell'; Text = "The project file '$slnDir\Demo\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Hwnd = 0; Buttons = @() }
+$reload = @{ Title = 'TcXaeShell'; Text = "The project file '$slnDirIn\Demo\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Hwnd = 0; Buttons = @() }
 $reloadOther = @{ Title = 'TcXaeShell'; Text = "The project file 'C:\Elsewhere\Demo\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Hwnd = 0; Buttons = @() }
 
 try {
@@ -111,7 +142,7 @@ try {
     Check 'connect-modal-data' ($r.data.ideProcessId -eq 201 -and $r.data.matchedBy -eq 'dialog-path' -and $r.data.attached -and $r.data.dialogKind -eq 'reload-prompt' -and $r.data.rotDisplayName -eq '!Fake.DTE.1:201') "pid=$($r.data.ideProcessId) by=$($r.data.matchedBy) kind=$($r.data.dialogKind)"
     Check 'connect-modal-hint' ($r.error.hint -match 'Reset-TcSolution') "$($r.error.hint)"
     $st = & $mod { [PSCustomObject]@{ pid = $script:TcIdeProcessId; connected = $script:TcIdeConnected; by = $script:TcIdeSelectedBy; sln = $script:TcSolutionPath; sm = $script:TcSysManager } }
-    Check 'connect-modal-attached' ($st.pid -eq 201 -and $st.connected -and $st.by -eq 'solution-blocked' -and $st.sln -eq $sln -and $null -eq $st.sm) "pid=$($st.pid) by=$($st.by) sln=$($st.sln)"
+    Check 'connect-modal-attached' ($st.pid -eq 201 -and $st.connected -and $st.by -eq 'solution-blocked' -and $st.sln -eq $slnLong -and $null -eq $st.sm) "pid=$($st.pid) by=$($st.by) sln=$($st.sln)"
 
     # --- Connect-TcIde (no -NoLaunch): busy IDE, title match, no dialog -> IDE_BUSY, nothing launched ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }

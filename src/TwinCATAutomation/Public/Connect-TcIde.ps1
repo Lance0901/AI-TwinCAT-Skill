@@ -131,7 +131,7 @@ function Connect-TcIde {
             return New-TcResult -Success $false -ErrorMessage "Solution file not found: $SolutionPath" -ErrorCode 'FILE_NOT_FOUND'
         }
         $SolutionPath = (Resolve-Path $SolutionPath).Path
-        $normalizedSolutionPath = [IO.Path]::GetFullPath($SolutionPath)
+        $normalizedSolutionPath = Get-TcLongPath $SolutionPath   # 8.3 short names expanded (#63)
     }
 
     $progIds = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
@@ -224,7 +224,7 @@ function Connect-TcIde {
 
         $normalizedSolution = $null
         if (-not $isBusy -and -not [string]::IsNullOrWhiteSpace($solution)) {
-            $normalizedSolution = try { [IO.Path]::GetFullPath($solution) } catch { $solution }
+            $normalizedSolution = try { Get-TcLongPath $solution } catch { $solution }
         }
 
         $candidate = [PSCustomObject]@{
@@ -524,11 +524,11 @@ function Connect-TcIde {
     # --- Auto-open solution if -SolutionPath specified and not already open ---
     if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
         $currentSln = try { [string]$dte.Solution.FullName } catch { '' }
-        $currentNormalized = if ([string]::IsNullOrWhiteSpace($currentSln)) { '' } else { try { [IO.Path]::GetFullPath($currentSln) } catch { $currentSln } }
+        $currentNormalized = if ([string]::IsNullOrWhiteSpace($currentSln)) { '' } else { try { Get-TcLongPath $currentSln } catch { $currentSln } }
         if (-not [string]::Equals($currentNormalized, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase)) {
             try {
                 Write-Verbose "Opening solution: $SolutionPath"
-                Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($SolutionPath) } | Out-Null
+                Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($normalizedSolutionPath) } | Out-Null
             }
             catch {
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'
@@ -616,11 +616,11 @@ function Connect-TcIde {
         if ($readTry -lt 3) { Start-Sleep -Milliseconds 300 }
     }
     if ([string]::IsNullOrWhiteSpace($ideVersion)) { $ideVersion = 'unknown' }
-    if ([string]::IsNullOrWhiteSpace($ideSolution) -and -not [string]::IsNullOrWhiteSpace($SolutionPath)) { $ideSolution = $SolutionPath }
+    if ([string]::IsNullOrWhiteSpace($ideSolution) -and -not [string]::IsNullOrWhiteSpace($SolutionPath)) { $ideSolution = $normalizedSolutionPath }
 
     # Remembered for Reset-TcSolution (Solution.Close + reopen); only a solution that is really open.
     if (-not [string]::IsNullOrWhiteSpace($ideSolution)) {
-        $script:TcSolutionPath = try { [IO.Path]::GetFullPath([string]$ideSolution) } catch { [string]$ideSolution }
+        $script:TcSolutionPath = try { Get-TcLongPath ([string]$ideSolution) } catch { [string]$ideSolution }
         # Remembered across processes: a later Connect-TcIde can recognise this IDE while a modal
         # dialog blocks its DTE (#29, Find-TcBlockedSolutionIde 'session-record').
         if ($ideProcessId -gt 0) { Save-TcIdeSolutionRecord -ProcessId $ideProcessId -Solution $script:TcSolutionPath }
