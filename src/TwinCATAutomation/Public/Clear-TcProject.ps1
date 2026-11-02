@@ -5,7 +5,7 @@ function Clear-TcProject {
     .DESCRIPTION
         Removes the build output of every project of the active solution configuration, e.g.
         before a Build-TcProject that must start from scratch. Steps:
-          1. Assert-TcConnection, then Get-TcIdeModalDialog: a dialog blocks the call, so
+          1. Assert-TcConnection, then Find-TcIdeModalDialog: a dialog blocks the call, so
              IDE_MODAL_DIALOG is returned without trying.
           2. DTE.Solution and Solution.SolutionBuild are read until both are non-null (500 ms
              polls, at most 15 s; data.nullReads counts the $null answers). The old
@@ -80,7 +80,7 @@ function Clear-TcProject {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
 
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Clean'
     }
@@ -141,7 +141,7 @@ function Clear-TcProject {
 
             if ($watch.Elapsed.TotalSeconds -ge $nextModalCheckSec -or $watch.Elapsed.TotalSeconds -ge $TimeoutSec) {
                 $nextModalCheckSec = $watch.Elapsed.TotalSeconds + 5
-                $dialog = Get-TcIdeModalDialog
+                $dialog = Find-TcIdeModalDialog
                 if ($null -ne $dialog) {
                     return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Clean (clean in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads })
@@ -159,7 +159,7 @@ function Clear-TcProject {
     catch {
         # A dialog that came up between two modal checks makes BuildState fail as IDE_BUSY first.
         $err = $_
-        $dialog = Get-TcIdeModalDialog
+        $dialog = Find-TcIdeModalDialog
         if ($null -ne $dialog) {
             return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Clean (clean in progress)' `
                 -Data ([PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads })

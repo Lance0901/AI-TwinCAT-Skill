@@ -302,12 +302,12 @@ $r = Add-TcPou -Name FB_OK -Type FunctionBlock -PlcProjectPath "$P^POUs"
 Check 'Add-TcPou data has duplicateCheckScope project' ($r.success -and $r.data.duplicateCheckScope -eq 'project' -and $r.data.duplicateCheckSkippedNodes -eq 0) ($r | ConvertTo-Json -Compress)
 
 # modal dialog: CreateChild must not be called
-$origDialog = & $mod { ${function:Get-TcIdeModalDialog} }
-& $mod { Set-Item -Path function:script:Get-TcIdeModalDialog -Value { @{ Title = 'TcXaeShell'; Text = 'mock dialog'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() } } }
+$origDialog = & $mod { ${function:Find-TcIdeModalDialog} }
+& $mod { Set-Item -Path function:script:Find-TcIdeModalDialog -Value { @{ Title = 'TcXaeShell'; Text = 'mock dialog'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() } } }
 $calls = $global:MockCreateCalls.Count
 $r = Add-TcDut -Name ST_MOD -DutType Struct
 Check 'modal dialog -> IDE_MODAL_DIALOG, CreateChild not called' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:MockCreateCalls.Count -eq $calls -and -not $global:MockTree.ContainsKey("$P^DUTs^ST_MOD")) ($r | ConvertTo-Json -Compress)
-& $mod { param($f) Set-Item -Path function:script:Get-TcIdeModalDialog -Value $f } $origDialog
+& $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f } $origDialog
 Reset-BuildRequired
 $null = & $mod { param($r) Register-TcCodeChange -Result $r -Change 'x' } $null
 Check '#65 Register-TcCodeChange with $null result: recorded, returns null' ((Get-CodeChanged) -eq 'PLC code changed by x') "$(Get-CodeChanged)"

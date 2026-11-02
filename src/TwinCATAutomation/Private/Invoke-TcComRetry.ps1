@@ -13,7 +13,7 @@ function Invoke-TcComRetry {
 
         Watchdog: when the IDE process id is known ($script:TcIdeProcessId, set by
         Connect-TcIde) a background runspace scans the IDE for a modal dialog every
-        2 s (same UI Automation scan as Get-TcIdeModalDialog). It only records what
+        2 s (same UI Automation scan as Find-TcIdeModalDialog). It only records what
         it sees in $script:TcLastModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd;
         Buttons } via Add-TcDialogKind: Kind from Get-TcModalDialogKind, ReloadTarget 'file' /
         'project' for a reload prompt) - it never touches any window.
@@ -30,7 +30,7 @@ function Invoke-TcComRetry {
           - call succeeded + dialog seen -> result returned, warning written
         Limitation: a DTE call that is blocked by a modal dialog (e.g. the XAE
         "Assertion Failed" box) does NOT return and cannot be interrupted from here;
-        callers check Get-TcIdeModalDialog BEFORE issuing such calls.
+        callers check Find-TcIdeModalDialog BEFORE issuing such calls.
 
         Internal variables are prefixed with __tc to avoid shadowing caller variables.
     .PARAMETER ScriptBlock

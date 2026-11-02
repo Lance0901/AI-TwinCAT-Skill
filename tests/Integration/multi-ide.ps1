@@ -5,7 +5,7 @@
 #   D  Connect-TcIde -SolutionPath <target> -ProgId: must LAUNCH a new instance (nobody has the target
 #      solution open), ideProcessId not in {A,B,C}, candidates[] lists A and B, A/B untouched
 #   E  Connect-TcIde again: selectedBy = solution-match, same pid
-#   F  modal dialog in A (DTE.ExecuteCommand from a background job): Get-TcIdeModalDialog on the target
+#   F  modal dialog in A (DTE.ExecuteCommand from a background job): Find-TcIdeModalDialog on the target
 #      -> null, on A's pid -> detected; then the dialog is closed (WM_CLOSE) / A is killed
 #   G  Build-TcProject in the target succeeds; A/B still untouched
 #   H  Disconnect-TcIde -Quit: only the target pid disappears, A/B/C keep running
@@ -289,8 +289,8 @@ try {
         $okB = ($pidB -le 0) -or ($null -ne $b -and [string]::IsNullOrWhiteSpace($b.solution))
         [PSCustomObject]@{ success = ($okA -and $okB); data = [PSCustomObject]@{ a = $a; b = $b; rot = $snap; aliveA = (Test-Alive $pidA); aliveB = (Test-Alive $pidB); aliveC = (Test-Alive $pidC) } }
     } -Note 'A still has the other solution, B still empty (the target was not opened into them)'
-    $null = Invoke-Step 'D-no-dialog' 'Get-TcIdeModalDialog (target)' {
-        $dlg = & $mod { Get-TcIdeModalDialog }
+    $null = Invoke-Step 'D-no-dialog' 'Find-TcIdeModalDialog (target)' {
+        $dlg = & $mod { Find-TcIdeModalDialog }
         [PSCustomObject]@{ success = ($null -eq $dlg); data = [PSCustomObject]@{ dialog = $dlg; pid = (& $mod { $script:TcIdeProcessId }); mainHwnd = (& $mod { $script:TcIdeMainHwnd }) } }
     }
     if (-not $d.success -or $pidTarget -le 0 -or ($foreignPids -contains $pidTarget)) {
@@ -310,11 +310,11 @@ try {
         $usedCommand = $null
         foreach ($cmd in @('Tools.Options', 'Help.About')) {
             $modalJob = Start-ModalJob -ProcId $pidA -Command $cmd
-            $r = Invoke-Step 'F-open-dialog-A' "DTE(A).ExecuteCommand('$cmd') via job; poll Get-TcIdeModalDialog -ProcessId $pidA" {
+            $r = Invoke-Step 'F-open-dialog-A' "DTE(A).ExecuteCommand('$cmd') via job; poll Find-TcIdeModalDialog -ProcessId $pidA" {
                 $until = (Get-Date).AddSeconds((Get-Budget 30))
                 $dlg = $null
                 while ((Get-Date) -lt $until -and $null -eq $dlg) {
-                    $dlg = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p } $pidA
+                    $dlg = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $pidA
                     if ($null -eq $dlg) { Start-Sleep -Milliseconds 1000 }
                 }
                 $jobState = [string]$modalJob.State
@@ -326,16 +326,16 @@ try {
             $modalJob = $null
         }
 
-        $null = Invoke-Step 'F-target-no-dialog' 'Get-TcIdeModalDialog (connected target, default pid)' {
-            $dlg = & $mod { Get-TcIdeModalDialog }
+        $null = Invoke-Step 'F-target-no-dialog' 'Find-TcIdeModalDialog (connected target, default pid)' {
+            $dlg = & $mod { Find-TcIdeModalDialog }
             [PSCustomObject]@{ success = ($null -eq $dlg); data = [PSCustomObject]@{ dialog = $dlg; pid = (& $mod { $script:TcIdeProcessId }) } }
         } -Note "A has a dialog open; the target (pid $pidTarget) must report none"
-        $null = Invoke-Step 'F-target-no-dialog-explicit' "Get-TcIdeModalDialog -ProcessId $pidTarget" {
-            $dlg = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p } $pidTarget
+        $null = Invoke-Step 'F-target-no-dialog-explicit' "Find-TcIdeModalDialog -ProcessId $pidTarget" {
+            $dlg = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $pidTarget
             [PSCustomObject]@{ success = ($null -eq $dlg); data = [PSCustomObject]@{ dialog = $dlg } }
         }
-        $null = Invoke-Step 'F-A-dialog-detected' "Get-TcIdeModalDialog -ProcessId $pidA" {
-            $dlg = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p } $pidA
+        $null = Invoke-Step 'F-A-dialog-detected' "Find-TcIdeModalDialog -ProcessId $pidA" {
+            $dlg = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $pidA
             [PSCustomObject]@{ success = ($null -ne $dlg); data = [PSCustomObject]@{ dialog = $dlg; command = $usedCommand } }
         } -Note 'the dialog in A is seen when asked for pid A'
 
@@ -348,7 +348,7 @@ try {
             foreach ($w in $dlgWins) { $null = [MultiIdeWin]::Close($w.Key); $how += "WM_CLOSE '$($w.Value)'; " }
             $until = (Get-Date).AddSeconds((Get-Budget 30))
             while ((Get-Date) -lt $until) {
-                $dlg = & $mod { param($p) Get-TcIdeModalDialog -ProcessId $p } $pidA
+                $dlg = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $pidA
                 if ($null -eq $dlg) { $closed = $true; break }
                 Start-Sleep -Milliseconds 1000
             }

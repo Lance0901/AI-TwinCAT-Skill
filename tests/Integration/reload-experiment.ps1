@@ -284,7 +284,7 @@ function Watch-ReloadDialog {
         if (-not $activated -and $sw.Elapsed.TotalSeconds -ge [math]::Min(5, $Seconds / 3)) {
             # Read the POU once BEFORE activating the main window (only when no dialog is up).
             if ($null -eq $script:earlyRead) {
-                if (& $mod { Get-TcIdeModalDialog }) { $script:earlyRead = 'skipped (modal dialog)' }
+                if (& $mod { Find-TcIdeModalDialog }) { $script:earlyRead = 'skipped (modal dialog)' }
                 else {
                     $eg = Get-TcPouCode -PouName $PouName -PouPath $PouPath
                     $script:earlyRead = if ($eg.success) { ([string]$eg.data.implementation).Contains($injectLine) } else { "error $($eg.error.code)" }
@@ -458,7 +458,7 @@ function Invoke-Judgement {
     $res.dialogs = @($watch.dialogs | ForEach-Object { "$($_.where):'$($_.title)' [$($_.cls)] modal=$($_.modal) text='$($_.text)' buttons=$(@($_.buttons) -join '/') at $($_.atSec)s" })
     $res.clicked = @($watch.clicked)
     Start-Sleep -Seconds 2   # let the watchdog dismiss an assertion box first
-    $modal = & $mod { Get-TcIdeModalDialog }
+    $modal = & $mod { Find-TcIdeModalDialog }
     $res.moduleModal = if ($modal) { "$($modal.Title) | $($modal.Text)" } else { $null }
     if ($modal -and @($watch.clicked).Count -eq 0) {
         $res.blocked = $true
@@ -533,7 +533,7 @@ catch { Write-Log 'exception' @{ message = $_.Exception.Message; at = $_.Invocat
 finally {
     if ($script:wd) { $script:summary.assertionsIgnored = @(Stop-AssertWatchdog $script:wd); Write-Log 'assertions' $script:summary.assertionsIgnored }
     if ($script:connected) {
-        $modal = & $mod { Get-TcIdeModalDialog }
+        $modal = & $mod { Find-TcIdeModalDialog }
         if ($modal -and $script:ownIde) { Stop-Process -Id $script:idePid -Force -ErrorAction SilentlyContinue; $null = Disconnect-TcIde; Write-Host 'finally: killed own IDE (modal dialog)' }
         else { try { $null = Disconnect-TcIde -Quit:$script:ownIde } catch { } }
     }

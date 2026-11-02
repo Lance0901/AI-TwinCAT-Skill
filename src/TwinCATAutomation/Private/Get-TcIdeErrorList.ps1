@@ -1,6 +1,6 @@
 ﻿# UI Automation scan of the IDE "Error List" tool window. Runs INSIDE a separate STA
 # runspace (Invoke-TcUiaScan), so it must be self-contained: no module functions, no
-# $script: state. Same pattern as $script:TcUiaDialogScan (Get-TcIdeModalDialog).
+# $script: state. Same pattern as $script:TcUiaDialogScan (Find-TcIdeModalDialog).
 #
 # Arguments: target process id, wanted severities (bool Errors/Warnings/Messages),
 # max rows per severity, settle time in ms after a toggle/scroll.

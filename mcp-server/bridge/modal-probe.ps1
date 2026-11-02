@@ -11,7 +11,7 @@
 # Exit codes: 0 dialog reported / stdin closed / lifetime exceeded, 2 error, 3 process not found.
 #
 # The scan is the module's $script:TcUiaDialogScan, dot-sourced from -ScanScript
-# (src/TwinCATAutomation/Private/Get-TcIdeModalDialog.ps1), so window selection, the known-title
+# (src/TwinCATAutomation/Private/Find-TcIdeModalDialog.ps1), so window selection, the known-title
 # list and the dialog text heuristics live in one place. This script only adds:
 #   - the kill rule: (IsModal or ClassName '#32770') and the IDE main window BLOCKED: IsEnabled
 #     false (Win32 / WinForms owners), or WindowPattern.WindowInteractionState
@@ -86,7 +86,7 @@ if ([string]::IsNullOrWhiteSpace($ScanScript) -or -not (Test-Path -LiteralPath $
     exit 2
 }
 try {
-    # Also defines the functions Get-TcIdeModalDialog / New-TcModalDialogResult; the probe never
+    # Also defines the functions Find-TcIdeModalDialog / New-TcModalDialogResult; the probe never
     # calls them (they need module state). Only $script:TcUiaDialogScan is used.
     . $ScanScript
 }

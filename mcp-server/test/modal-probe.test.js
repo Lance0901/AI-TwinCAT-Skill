@@ -107,7 +107,7 @@ describe('lib/modal-probe.js', () => {
     assert.ok(!fallback.args.includes('-ScanTimeoutSec'), 'script default unless given');
     const st = buildProbeSpawnSpec({ pid: 9, scanTimeoutSec: 10 });
     assert.deepEqual(st.args.slice(-2), ['-ScanTimeoutSec', '10']);
-    assert.match(DEFAULT_SCAN_SCRIPT, /src[\\/]TwinCATAutomation[\\/]Private[\\/]Get-TcIdeModalDialog\.ps1$/);
+    assert.match(DEFAULT_SCAN_SCRIPT, /src[\\/]TwinCATAutomation[\\/]Private[\\/]Find-TcIdeModalDialog\.ps1$/);
     assert.ok(fs.existsSync(DEFAULT_SCAN_SCRIPT), 'default scan script exists');
   });
 
@@ -151,8 +151,8 @@ describe('lib/modal-probe.js', () => {
     assert.equal(loadConfig({ TWINCAT_MCP_PROBE_SCAN_SCRIPT: 'X:\\scan.ps1' }).modalProbe.scanScript, 'X:\\scan.ps1');
     // follows TWINCAT_MODULE_PATH when not overridden
     const fromModule = loadConfig({ TWINCAT_MODULE_PATH: path.join('M:', 'mod', 'TwinCATAutomation.psm1') }).modalProbe.scanScript;
-    assert.equal(fromModule, path.join('M:', 'mod', 'Private', 'Get-TcIdeModalDialog.ps1'));
-    assert.equal(scanScriptFor(path.join('A:', 'b', 'x.psm1')), path.join('A:', 'b', 'Private', 'Get-TcIdeModalDialog.ps1'));
+    assert.equal(fromModule, path.join('M:', 'mod', 'Private', 'Find-TcIdeModalDialog.ps1'));
+    assert.equal(scanScriptFor(path.join('A:', 'b', 'x.psm1')), path.join('A:', 'b', 'Private', 'Find-TcIdeModalDialog.ps1'));
   });
 
   test('stderr "debug:" lines go to onDebug, other lines to onError', async () => {
@@ -388,7 +388,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       assert.ok(elapsed < REPORT_WITHIN_MS, `took ${elapsed} ms`);
     });
 
-    /** Run fixtures/dialog-answer.ps1 (module Get-TcIdeModalDialog / Close-TcMessageBox) and parse its JSON line. */
+    /** Run fixtures/dialog-answer.ps1 (module Find-TcIdeModalDialog / Close-TcMessageBox) and parse its JSON line. */
     function dialogAnswer(args) {
       return new Promise((resolve, reject) => {
         const child = spawn(defaultPowershellPath(), ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', DIALOG_ANSWER, '-ModulePath', MODULE_PATH, ...args], {

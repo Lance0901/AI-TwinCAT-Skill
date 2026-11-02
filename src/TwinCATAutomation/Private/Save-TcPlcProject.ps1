@@ -337,7 +337,7 @@ while ($true) {
             if ($sw.Elapsed.TotalSeconds -ge $nextScan) {
                 $nextScan = $sw.Elapsed.TotalSeconds + 2
                 try {
-                    $dlg = Get-TcIdeModalDialog
+                    $dlg = Find-TcIdeModalDialog
                     if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg }
                 } catch { }
             }
@@ -364,7 +364,7 @@ while ($true) {
                 # is still up makes it IDE_MODAL_DIALOG.
                 $seen = $script:TcLastModalDialog
                 $dlgNow = $null
-                try { $dlgNow = Get-TcIdeModalDialog } catch { $dlgNow = $null }
+                try { $dlgNow = Find-TcIdeModalDialog } catch { $dlgNow = $null }
                 $script:TcLastModalDialog = $dlgNow
                 if ($null -ne $dlgNow) {
                     $t = [string]$dlgNow.Text
@@ -381,7 +381,7 @@ while ($true) {
         $cancel['Cancel'] = $true
         $diag = [ordered]@{ dialog = $null; ideAlive = $null; ideResponding = $null; readOnlyFiles = @(); elapsedSec = [int]$sw.Elapsed.TotalSeconds }
         try {
-            $dlg = Get-TcIdeModalDialog
+            $dlg = Find-TcIdeModalDialog
             if ($null -eq $dlg) { $dlg = $script:TcLastModalDialog }
             if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
         } catch { }
@@ -438,7 +438,7 @@ function Save-TcPlcProject {
         Legacy Mode! ...".
         Steps (each failure throws a message starting with 'save:', or PROJECT_SAVE_TIMEOUT /
         IDE_*):
-          1. dialog   Get-TcIdeModalDialog: returns @{ ModalDialog = <dialog> } without saving
+          1. dialog   Find-TcIdeModalDialog: returns @{ ModalDialog = <dialog> } without saving
           2. locate   Get-TcPlcProjectFile ('save: locate: ...')
           3. before   the .plcproj on disk is read once: SHA256, LastWriteTimeUtc and which
                       -ExpectFile entries are already there (preExisting)
@@ -476,7 +476,7 @@ function Save-TcPlcProject {
         [int]$TimeoutSec = 60
     )
 
-    $dialog = Get-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) { return @{ ModalDialog = $dialog } }
 
     $info = Get-TcPlcProjectFile -PlcName $PlcName

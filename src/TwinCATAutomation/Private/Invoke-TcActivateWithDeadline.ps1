@@ -86,7 +86,7 @@ $sm.ActivateConfiguration()
             if ($sw.Elapsed.TotalSeconds -ge $nextScan) {
                 $nextScan = $sw.Elapsed.TotalSeconds + 2
                 try {
-                    $dlg = Get-TcIdeModalDialog
+                    $dlg = Find-TcIdeModalDialog
                     if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg }
                 } catch { }
             }
@@ -123,7 +123,7 @@ $sm.ActivateConfiguration()
         # --- deadline passed: collect diagnostics, abandon the call ---
         $diag = [ordered]@{ dialog = $null; ideAlive = $null; ideResponding = $null; runtimeAlive = $null; systemState = $null; elapsedSec = [int]$sw.Elapsed.TotalSeconds }
         try {
-            $dlg = Get-TcIdeModalDialog
+            $dlg = Find-TcIdeModalDialog
             if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
         } catch { }
         if ($idePid -gt 0) {

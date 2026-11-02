@@ -2,7 +2,7 @@
 # logged in. XAE's CreateChild error "Cannot add an object because it affects a device you are currently
 # logged into" (measured 2026-10-29, 4026 XAE in VS2022) -> PLC_LOGGED_IN with an Exit-TcPlcOnline (MCP PlcLogout) hint, and an
 # error returned by CreateChild itself records no BUILD_REQUIRED. No IDE: mock ITcSysManager whose
-# folder CreateChild throws; Resolve-TcPlcProjectPath / Get-TcIdeModalDialog / Invoke-TcPlcObjectSave stubbed.
+# folder CreateChild throws; Resolve-TcPlcProjectPath / Find-TcIdeModalDialog / Invoke-TcPlcObjectSave stubbed.
 #   powershell.exe -NoProfile -File tests/Unit/plc-logged-in.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -47,7 +47,7 @@ $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
     param($s, $p)
     $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcSysManager = $s; $script:TcSolutionPath = 'C:\Demo\LoggedIn.sln'
     function script:Resolve-TcPlcProjectPath { param($SysManager) 'TIPC^plc^plc Project' }
-    function script:Get-TcIdeModalDialog { $null }
+    function script:Find-TcIdeModalDialog { $null }
     function script:Invoke-TcPlcObjectSave { [CmdletBinding()] param([string]$ObjectPath, [string]$ExpectFile, [string]$ExpectLibrary, [string]$What) throw 'save must not be reached (mock)' }
 } $sm $P
 function Get-CodeChanged { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; (Get-TcBuildRequiredReasons $e)['code-changed'] } }

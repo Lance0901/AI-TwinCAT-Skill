@@ -4,7 +4,7 @@
 # An in-memory tree in $global:T.Nodes (path -> node). Node behaviour can be changed per test:
 #   $global:T.OnCreate  = { param($Parent, $Name, $SubType, $Before, $VInfo) <return a node or throw> }
 #   $global:T.OnConsume = { param($Node, $Xml) <$true = handled> }   (default: leaf merge like XAE)
-#   $global:T.Dialog    = <dialog object> makes Get-TcIdeModalDialog report a modal dialog.
+#   $global:T.Dialog    = <dialog object> makes Find-TcIdeModalDialog report a modal dialog.
 # A test script run with -File shares the global scope: never use $t (= $T, variable names are
 # case-insensitive) for anything else, it would replace the whole mock.
 # Every write is logged in $global:T.Mods ("CreateChild <path>/<sub>", "ConsumeXml <path>", ...).
@@ -110,7 +110,7 @@ function Install-MockModule($Module, [string]$Sln) {
         $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcSolutionPath = $s
         function script:Assert-TcConnection { }
         function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:T.Sm }
-        function script:Get-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:T.Dialog }
+        function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $global:T.Dialog }
         function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
         function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
     } $Sln
