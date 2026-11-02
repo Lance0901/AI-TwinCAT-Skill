@@ -52,7 +52,7 @@ $global:FakeIde = @{}
         if ($global:FakeIde.ContainsKey($Id)) { return [PSCustomObject]@{ Id = $Id; MainWindowTitle = $global:FakeIde[$Id].Title; MainWindowHandle = [IntPtr]::Zero; StartTime = [DateTime]'2026-01-01T00:00:00' } }
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
-    function script:Get-TcIdeModalDialog {
+    function script:Find-TcIdeModalDialog {
         [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
         if ($global:FakeIde.ContainsKey($ProcessId)) { return $global:FakeIde[$ProcessId].Dialog }
         $null
