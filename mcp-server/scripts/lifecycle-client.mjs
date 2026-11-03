@@ -26,6 +26,7 @@ function arg(name, def) {
 }
 const sln = arg('sln', '');
 const progId = arg('progid', 'VisualStudio.DTE.17.0');
+// tcauto-allow(amsnetid): real-machine client default = the local UmRT_Default of the test PC; pass --netid for any other target
 const netId = arg('netid', '199.5.42.250.1.1');
 const platform = arg('platform', '');
 const expectFail = arg('expect-fail', '');

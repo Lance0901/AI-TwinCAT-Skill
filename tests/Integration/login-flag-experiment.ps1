@@ -16,7 +16,7 @@ param(
     [Parameter(Mandatory)][string]$SolutionPath,
     [int]$Flag = 1,
     [string]$ProgId = 'TcXaeShell.DTE.15.0',
-    [string]$AmsNetId = '199.5.42.250.1.1',
+    [string]$AmsNetId = '199.5.42.250.1.1',  # tcauto-allow(amsnetid): integration default = the local UmRT_Default of the test PC; pass -AmsNetId for any other target
     [string]$Symbol = 'MAIN_GantryCylinder.Acc',
     [string]$LogPath = '',
     [switch]$SilentMode,

@@ -2,7 +2,7 @@
     [string]$Repo = (Join-Path $PSScriptRoot '..\..'),
     [string]$Sln = 'C:\Temp\FalseSuccess-b\RobustSolutionFrameworkDemo.sln',
     [string]$ProgId = 'VisualStudio.DTE.17.0',
-    [string]$NetId = '199.5.42.250.1.1',
+    [string]$NetId = '199.5.42.250.1.1',  # tcauto-allow(amsnetid): integration default = the local UmRT_Default of the test PC; pass -NetId for any other target
     [string]$FwGuid = 'B7598CF7-8B30-4C49-8EFB-69ED4671CC91',
     [Parameter(Mandatory)][string]$LogPath,
     [int]$DeadlineMin = 45,
@@ -125,6 +125,7 @@ try {
                     if ($c.ReadState().AdsState.ToString() -eq 'Run') {
                         Start-Sleep -Milliseconds 800
                         $si = New-Object TwinCAT.Ads.StateInfo; $si.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 16); $si.DeviceState = 0
+                        # tcauto-allow(writecontrol): #32 reproduction: injects Reconfig right after Run to provoke the fall-back the module must report
                         $c.WriteControl($si); $sent = $true; "Reconfig sent at $([int]$sw.ElapsedMilliseconds) ms"
                     }
                     $c.Dispose()

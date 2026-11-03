@@ -13,6 +13,11 @@
       generics    No New-Object of a System.Collections.Generic.* type in src/ and mcp-server/ *.ps1 / *.psm1
                   (AST based; "New-Object $type" is rejected too). Measured 2026-10-28, PS 5.1.26100.9711:
                   @() on a New-Object List[object] throws ArgumentException; use [System.Collections.Generic.List[...]]::new() (#75).
+      forbidden   #68: no hardcoded AmsNetId literal, StartRestartTwinCAT, ExecuteCommand("TwinCAT.*")
+                  or direct .WriteControl( in the code (comments / help ignored) of src/, mcp-server/
+                  (.ps1 .psm1 .js .mjs, not mcp-server/test/) and tests/Integration/*.ps1, except
+                  where an inline marker "tcauto-allow(<rule>): <reason>" names the rule
+                  (scripts/forbidden-patterns.ps1; tests/Unit/forbidden-lint.ps1 proves it hits).
       cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
                   number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md
                   "Available Commands (N)", README.md "All Commands (N)" and
@@ -252,6 +257,28 @@ try {
 }
 catch {
     Add-CheckResult 'generics' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
+
+# ---------------------------------------------------------------------------
+# forbidden: fail-closed fallbacks and hardcoded AmsNetIds (#68), scripts/forbidden-patterns.ps1
+# ---------------------------------------------------------------------------
+try {
+    . (Join-Path $scriptDir 'forbidden-patterns.ps1')
+    $fbFiles = @(Get-RepoFiles -Root $repoRoot -Extensions @('.ps1', '.psm1', '.js', '.mjs') | Where-Object { Test-TcForbiddenScope (Get-RelativePath $_) } | Sort-Object)
+    $fbHits = @(Find-TcForbiddenPattern -Files $fbFiles -Root $repoRoot)
+    $fbBad = @($fbHits | Where-Object { -not $_.Allowed })
+    $fbOk = @($fbHits | Where-Object { $_.Allowed })
+    if ($fbBad.Count -eq 0) {
+        Add-CheckResult 'forbidden' 'PASS' "$($fbFiles.Count) files, no forbidden pattern ($($fbOk.Count) allowed by tcauto-allow marker)"
+    }
+    else {
+        $lines = @($fbBad | ForEach-Object { '{0}:{1} [{2}] {3}: {4}' -f $_.File, $_.Line, $_.Rule, $_.Why, $(if ($_.Text.Length -gt 120) { $_.Text.Substring(0, 120) } else { $_.Text }) })
+        $lines += 'a legitimate use needs "# tcauto-allow(<rule>): <reason>" on the line or on a comment-only line above it (adapters/claude-code/SKILL.md "Failure contract")'
+        Add-CheckResult 'forbidden' 'FAIL' "$($fbBad.Count) forbidden pattern hit(s)" $lines
+    }
+}
+catch {
+    Add-CheckResult 'forbidden' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
 # ---------------------------------------------------------------------------

@@ -43,7 +43,7 @@ param(
     [int]$IntervalMs = 1000,
     [ValidateRange(0, 2147483)]
     [int]$DurationSec = 0,
-    [string]$AmsNetId = '199.5.42.250.1.1',   # local UmRT_Default of the test PC only
+    [string]$AmsNetId = '199.5.42.250.1.1',   # local UmRT_Default of the test PC only; tcauto-allow(amsnetid): integration default, pass -AmsNetId for any other target
     [string]$RuntimeDir = 'C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\UmRT_Default'
 )
 

@@ -15,7 +15,7 @@
 param(
     [Parameter(Mandatory)][string]$SolutionPath,
     [Parameter(Mandatory)][string]$ProgId,
-    [string]$AmsNetId = '199.5.42.250.1.1',
+    [string]$AmsNetId = '199.5.42.250.1.1',  # tcauto-allow(amsnetid): integration default = the local UmRT_Default of the test PC; pass -AmsNetId for any other target
     [string]$PlcProject,
     [Parameter(Mandatory)][string]$LogPath,
     [switch]$PreLaunch,
@@ -302,7 +302,9 @@ function Invoke-UmRtCycle {
     } -Note 'does ActivateConfiguration() alone leave Config on UmRT?'
 
     if ($poll.data.finalState -ne 'Run') {
+        # tcauto-allow(startrestart): measurement step of this experiment (does Activate alone leave Config), only after ActivateConfiguration() left Config
         $r = Invoke-Step "$P-startrestart" 'ITcSysManager.StartRestartTwinCAT()' {
+            # tcauto-allow(startrestart): same measurement step, see the line above
             & $mod { Invoke-TcComRetry -OperationName 'StartRestartTwinCAT' -ScriptBlock { (Get-TcSysManager).StartRestartTwinCAT() } | Out-Null }
             [PSCustomObject]@{ success = $true }
         }
@@ -334,7 +336,7 @@ function Invoke-UmRtCycle {
                     $si = New-Object TwinCAT.Ads.StateInfo
                     $si.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 5)  # Run (never Reset)
                     $si.DeviceState = 0
-                    $c.WriteControl($si)
+                    $c.WriteControl($si)  # tcauto-allow(writecontrol): smoke step under test, followed by Wait-TcAdsState Run below
                 } finally { try { $c.Dispose() } catch { } }
                 Wait-TcAdsState -AmsNetId $n -Port 851 -TargetState Run -TimeoutSec 60
             } $AmsNetId
