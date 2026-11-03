@@ -72,8 +72,12 @@ function Set-TcTarget {
         When a platform was activated also data.configuration, data.previousPlatform,
         data.availablePlatforms (solution platform names of that configuration),
         data.projectCheck ('ok' | 'mismatch' | 'no-tsproj'), data.platformMatchedBy,
-        data.platformMap (solution platform -> @{ solutionPlatform; projectPlatforms =
-        @(@{ project; platform; shouldBuild }) }), data.restored (after PLATFORM_SET_FAILED or a
+        data.platformMap (solution platform -> @{ solutionPlatform; solutionPlatformSource;
+        projectPlatform; projectPlatforms = @(@{ project; platform; shouldBuild }) }; an entry
+        whose solution platform is unknown has the key '<unknown #N>', #110),
+        data.platformMapReliable ($false when an entry has no known solution platform, e.g.
+        VS2022 with unsaved solution changes), data.platformMapReason ($null when reliable;
+        availablePlatforms then lists only the known solution platforms), data.restored (after PLATFORM_SET_FAILED or a
         build selection that changed after the switch), data.buildSelection (one entry per PLC
         project: plc, project, nodePath, configuration (the target), current = @{ configuration;
         shouldBuild; disabled }, target = @{ shouldBuild }, after = @{ shouldBuild; disabled },
@@ -174,6 +178,8 @@ function Set-TcTarget {
     $data | Add-Member -NotePropertyName 'projectCheck' -NotePropertyValue $sw.projectCheck
     $data | Add-Member -NotePropertyName 'platformMatchedBy' -NotePropertyValue $sw.platformMatchedBy
     $data | Add-Member -NotePropertyName 'platformMap' -NotePropertyValue $sw.platformMap
+    $data | Add-Member -NotePropertyName 'platformMapReliable' -NotePropertyValue $sw.platformMapReliable
+    $data | Add-Member -NotePropertyName 'platformMapReason' -NotePropertyValue $sw.platformMapReason
     if ($null -ne $sw.restored) { $data | Add-Member -NotePropertyName 'restored' -NotePropertyValue $sw.restored }
     $data | Add-Member -NotePropertyName 'buildSelection' -NotePropertyValue $sw.buildSelection
     $data | Add-Member -NotePropertyName 'buildSelectionChanges' -NotePropertyValue @($sw.buildSelectionChanges)

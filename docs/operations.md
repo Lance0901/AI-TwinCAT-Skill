@@ -166,7 +166,7 @@ Sets target AMS Net ID (always first: `data.targetSet`) and makes the active sol
 | Platform | string | No | | Solution platform to activate, e.g. `TwinCAT OS (x64)`; omitted = platform untouched |
 | Configuration | string | No | Release | Solution configuration used with `Platform` |
 
-**Returns (with Platform):** `{ amsNetId, platform, configuration, platformChanged, previousPlatform, availablePlatforms }`; errors `PLATFORM_NOT_FOUND` (hint lists the available platforms), `PLATFORM_SET_FAILED`.
+**Returns (with Platform):** `{ amsNetId, platform, configuration, platformChanged, previousPlatform, availablePlatforms, platformMap, platformMapReliable, platformMapReason }` (`platformMapReliable = false` when a solution platform name is not readable, e.g. VS2022 with unsaved solution changes; see troubleshooting "platformMap 不可靠"); errors `PLATFORM_NOT_FOUND` (hint lists the available platforms), `PLATFORM_SET_FAILED`.
 
 ### Enable-TcConfig / `EnableConfig`
 Activates TwinCAT configuration.

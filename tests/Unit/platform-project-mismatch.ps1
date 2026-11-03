@@ -390,9 +390,80 @@ try {
     New-MockDte -Rows $rel -Active 1 -NoPlatformName -Unsaved
     $list = @(& $mod { Get-TcSolutionConfigurations })
     Check 's1-unsaved-unknown' (@($list | Where-Object { $_.SolutionPlatformSource -eq 'unknown' }).Count -eq 2) (($list | ForEach-Object { $_.SolutionPlatformSource }) -join ',')
+    Check 's1-unsaved-reason-code' (@($list | Where-Object { $_.SlnUnusableReason -eq 'unsaved' }).Count -eq 2) (($list | ForEach-Object { $_.SlnUnusableReason }) -join ',')
     New-MockDte -Rows $rel -Active 1 -NoPlatformName
     $list = @(& $mod { Get-TcSolutionConfigurations })
     Check 's1-anchor-ok' ((($list | ForEach-Object { "$($_.SolutionPlatform)/$($_.SolutionPlatformSource)" }) -join '|') -eq "$OS/sln|$RT/sln") (($list | ForEach-Object { "$($_.SolutionPlatform)/$($_.SolutionPlatformSource)" }) -join '|')
+    Check 's1-anchor-ok-no-reason' (@($list | Where-Object { $null -ne $_.SlnUnusableReason }).Count -eq 0) (($list | ForEach-Object { $_.SlnUnusableReason }) -join ',')
+
+    # --- #110: unsaved solution (VS2022, PlatformName not readable) -> platformMap marked unreliable,
+    # no project-platform keys, no '(#N)' keys; the switch itself is unchanged (b1-multi-candidate).
+    # Two items with the same project platform: the old map keyed them 'RT' and 'RT (#1)'.
+    $dirty = @(
+        @{ Name = 'Release'; Sol = $OS; Proj = $RT; SB = $true }
+        @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
+    )
+    New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    $ac = & $mod { $script:TcDte.Solution.Properties.Item('ActiveConfig').Value }
+    $keys = @($r.platformMap.PSObject.Properties | ForEach-Object { $_.Name })
+    $mapJson = $r.platformMap | ConvertTo-Json -Depth 5 -Compress
+    Check 's1-dirty-no-suffix-key' (@($keys | Where-Object { $_ -like '*(#*' }).Count -eq 0 -and ($keys -join '|') -eq '<unknown #0>|<unknown #1>') ($keys -join '|')
+    Check 's1-dirty-no-project-platform-key' (@($keys | Where-Object { $_ -eq $RT -or $_ -eq $OS }).Count -eq 0) ($keys -join '|')
+    Check 's1-dirty-entry' ($r.platformMap.'<unknown #1>'.projectPlatform -eq $RT -and $null -eq $r.platformMap.'<unknown #1>'.solutionPlatform -and $r.platformMap.'<unknown #1>'.solutionPlatformSource -eq 'unknown' -and @($r.platformMap.'<unknown #1>'.projectPlatforms).Count -eq 2) $mapJson
+    Check 's1-dirty-unreliable' ($r.platformMapReliable -eq $false -and $r.platformMapReason -match 'unsaved changes' -and $r.platformMapReason -match 'VS2022') "reliable=$($r.platformMapReliable) reason=$($r.platformMapReason)"
+    Check 's1-dirty-available-no-project-platform' (@($r.availablePlatforms).Count -eq 0) (@($r.availablePlatforms) -join ', ')
+    Check 's1-dirty-switch-unchanged' ($r.success -and $r.platformMatchedBy -eq 'projectPlatform' -and $r.platform -eq $RT -and $ac -eq "Release|$RT" -and ($global:MockState.Activations -join ',') -eq '0,1') "success=$($r.success) by=$($r.platformMatchedBy) ActiveConfig=$ac activations: $($global:MockState.Activations -join ',')"
+    # PLATFORM_NOT_FOUND while dirty: the hint says why the list is short and what to do
+    New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT CE7 (ARMV7)' }
+    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'Build-TcProject' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
+    # PLATFORM_PROJECT_MISMATCH while dirty: the good list names '<unknown #N>', not a project platform
+    $dirtyMis = @(
+        @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
+        @{ Name = 'Release'; Sol = $OS; Proj = $OS; SB = $true }
+    )
+    New-MockDte -Rows $dirtyMis -Active 0 -NoPlatformName -Unsaved
+    $sc = @(& $mod { Get-TcSolutionConfigurations })
+    $res = & $mod { param($c) Resolve-TcPlatformTarget -Configs $c -Platform 'TwinCAT OS (x64)' -Configuration 'Release' } $sc
+    $e = & $mod { param($s) New-TcProjectMismatchError -SameConfig $s -Platform 'TwinCAT OS (x64)' -Configuration 'Release' -BadText 'x' } $res.SameConfig
+    Check 's1-dirty-mismatch-hint' ($e.hint -match [regex]::Escape("'<unknown #1>'") -and $e.hint -match 'not reliable' -and $e.hint -notmatch [regex]::Escape("whose .tsproj is built for '$OS': '$OS'")) "$($e.hint)"
+    # saved: same rows -> reliable, keys are the solution platforms
+    New-MockDte -Rows $dirty -Active 0 -NoPlatformName
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    $keys = @($r.platformMap.PSObject.Properties | ForEach-Object { $_.Name })
+    Check 's1-saved-reliable' ($r.success -and $r.platformMapReliable -eq $true -and $null -eq $r.platformMapReason -and ($keys -join '|') -eq "$OS|$RT" -and (@($r.availablePlatforms) -join '|') -eq "$OS|$RT" -and $r.platformMatchedBy -eq 'solutionPlatform') "reliable=$($r.platformMapReliable) keys=$($keys -join '|') available=$(@($r.availablePlatforms) -join '|')"
+    # PlatformName readable (TcXaeShell): reliable, the .sln is not read (no reason)
+    New-MockDte -Rows $dirty -Active 0 -Unsaved
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 's1-platformname-reliable' ($r.platformMapReliable -eq $true -and $null -eq $r.platformMapReason) "reliable=$($r.platformMapReliable) reason=$($r.platformMapReason)"
+
+    # --- #110: SlnUnusableReason codes ---
+    New-MockDte -Rows $rel -Active 1 -NoPlatformName -SlnRows @($rel[1], $rel[0])
+    $list = @(& $mod { Get-TcSolutionConfigurations })
+    Check 'sln-reason-anchor' (@($list | Where-Object { $_.SlnUnusableReason -eq 'anchor-mismatch' }).Count -eq 2) (($list | ForEach-Object { $_.SlnUnusableReason }) -join ',')
+    New-MockDte -Rows $rel -Active 1 -NoPlatformName -SlnRows @($rel[0])
+    $list = @(& $mod { Get-TcSolutionConfigurations })
+    Check 'sln-reason-mismatch' (@($list | Where-Object { $_.SlnUnusableReason -eq 'sln-mismatch' }).Count -eq 2) (($list | ForEach-Object { $_.SlnUnusableReason }) -join ',')
+    New-MockDte -Rows $rel -Active 1 -NoPlatformName
+    & $mod { $script:TcDte.Solution.FullName = 'C:\nonexistent-tcauto-unit\none.sln' }
+    $list = @(& $mod { Get-TcSolutionConfigurations })
+    Check 'sln-reason-unreadable' (@($list | Where-Object { $_.SlnUnusableReason -eq 'sln-unreadable' }).Count -eq 2) (($list | ForEach-Object { $_.SlnUnusableReason }) -join ',')
+
+    # --- Get-TcSlnConfigurationPlatforms: missing file, no section, section ---
+    $none = & $mod { Get-TcSlnConfigurationPlatforms -Path 'C:\nonexistent-tcauto-unit\none.sln' }
+    $empty = & $mod { Get-TcSlnConfigurationPlatforms -Path '' }
+    $noSec = Join-Path $env:TEMP ("tcauto-unit-{0}.sln" -f [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllLines($noSec, @('Microsoft Visual Studio Solution File, Format Version 12.00', 'Global', "`tGlobalSection(ProjectConfigurationPlatforms) = postSolution", "`t`t{X}.Release|TwinCAT RT (x64).ActiveCfg = Release|TwinCAT RT (x64)", "`tEndGlobalSection", 'EndGlobal'))
+    $script:tempFiles += $noSec
+    $nsRows = & $mod { param($p) Get-TcSlnConfigurationPlatforms -Path $p } $noSec
+    $withSec = Join-Path $env:TEMP ("tcauto-unit-{0}.sln" -f [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllLines($withSec, @('Global', "`tGlobalSection(SolutionConfigurationPlatforms) = preSolution", "`t`tDebug|$RT = Debug|$RT", '', "`t`tRelease|$OS = Release|$OS", "`t`tbroken line", "`tEndGlobalSection", "`tGlobalSection(SolutionConfigurationPlatforms) = preSolution", "`t`tLater|$CE7 = Later|$CE7", "`tEndGlobalSection", 'EndGlobal'))
+    $script:tempFiles += $withSec
+    $wsRows = & $mod { param($p) Get-TcSlnConfigurationPlatforms -Path $p } $withSec
+    Check 'sln-parse-missing' ($null -eq $none -and $null -eq $empty) "none=$none empty=$empty"
+    Check 'sln-parse-no-section' ($null -eq $nsRows) ($nsRows | ConvertTo-Json -Compress)
+    Check 'sln-parse-section' (@($wsRows).Count -eq 2 -and $wsRows[0].Configuration -eq 'Debug' -and $wsRows[0].Platform -eq $RT -and $wsRows[1].Configuration -eq 'Release' -and $wsRows[1].Platform -eq $OS) ($wsRows | ConvertTo-Json -Compress)
 
     # --- S2: no .tsproj -> Get-TcSolutionPlatform projectPlatform = $null ---
     New-MockDte -Rows $rel -Active 1 -NoTsproj

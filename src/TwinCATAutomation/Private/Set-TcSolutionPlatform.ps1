@@ -104,8 +104,13 @@
             projectCheck ('ok' | 'mismatch' | 'no-tsproj' | $null when no match);
             platformMatchedBy ('solutionPlatform' | 'projectPlatform' | $null);
             platformMap (solution platform -> @{ solutionPlatform; solutionPlatformSource;
-                         projectPlatforms = @(@{ project; platform; shouldBuild }) } for every
-                         item of -Configuration);
+                         projectPlatform (first context); projectPlatforms = @(@{ project;
+                         platform; shouldBuild }) } for every item of -Configuration; an item
+                         whose solution platform is unknown has the key '<unknown #<Index>>',
+                         #110, see Resolve-TcPlatformTarget);
+            platformMapReliable ($false when an item of -Configuration has no known solution
+                         platform; $null before the configurations were read);
+            platformMapReason (why, e.g. 'solution has unsaved changes ...'; $null when reliable);
             restored ($true/$false after a failed readback of a switch, else $null);
             buildSelection (@() when there is no PLC project; $null when not read) = @(@{
                 plc (PLC tree name, else the .plcproj name); project (SolutionContext unique name);
@@ -146,6 +151,8 @@
         projectCheck             = $null
         platformMatchedBy        = $null
         platformMap              = $null
+        platformMapReliable      = $null
+        platformMapReason        = $null
         restored                 = $null
         buildSelection           = $null
         buildSelectionChanges    = @()
@@ -170,6 +177,8 @@
     $out.availablePlatforms = $available
     $out.availableConfigurations = $availableConfigs
     $out.platformMap = $res.PlatformMap
+    $out.platformMapReliable = $res.PlatformMapReliable
+    $out.platformMapReason = $res.PlatformMapReason
 
     $candidates = @($res.Candidates)
     $alreadyActive = ($reliableSources -contains [string]$before.platformSource) -and ([string]$before.platform -ieq $Platform) -and ([string]$before.configuration -ieq $Configuration)
@@ -184,6 +193,8 @@
         if (-not [string]::IsNullOrWhiteSpace($PlatformSource)) {
             $hint += " '$Platform' was read from the target ($PlatformSource), not typed by you: the solution has no solution platform of that name. Add it in the Configuration Manager with the TwinCAT project (.tsproj) and PLC project mapped to project platform '$Platform', or pass -Platform / -NoPlatformSwitch (Set-TcTarget), -NoPlatformFix (Enable-TcConfig) to skip the automatic switch."
         }
+        $note = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason
+        if ($null -ne $note) { $hint += " $note" }
         $out.error = [PSCustomObject]@{ message = $msg; code = 'PLATFORM_NOT_FOUND'; hint = $hint }
         return $out
     }
@@ -473,10 +484,23 @@ function Resolve-TcPlatformTarget {
         Read-only part of the solution platform switch, shared by Set-TcSolutionPlatform and
         Enable-TcConfig -NoPlatformFix: match names, platformMap and the candidates for
         '<Configuration>|<Platform>'. Never touches the IDE.
+    .DESCRIPTION
+        platformMap / availablePlatforms (#110): an item whose solution platform is unknown
+        (Get-TcSolutionConfigurations SolutionPlatformSource 'unknown', e.g. VS2022 with an
+        unsaved solution) is listed under the key '<unknown #<Index>>' (Index = position in
+        SolutionConfigurations), never under its project platform name, and it is left out of
+        Available. PlatformMapReliable is $false when any item of -Configuration is unknown;
+        PlatformMapReason then says why (from SlnUnusableReason). The map stays an object keyed
+        by solution platform (not an array) so existing consumers that read
+        platformMap.'<solution platform>' keep working for the reliable entries. A second item
+        with the same known solution platform (not seen in a real solution) gets
+        '<duplicate #<Index>>'. Matching (MatchPlatform / Candidates) is unchanged.
     .OUTPUTS
-        @{ SameConfig; Available (solution platform names of -Configuration); AvailableConfigs;
-           PlatformMap; Candidates (the item with that known solution platform, else the
-           unknown-platform items whose first-context project platform has that name) }
+        @{ SameConfig; Available (known solution platform names of -Configuration; unknown
+           items left out); AvailableConfigs; PlatformMap; PlatformMapReliable (bool);
+           PlatformMapReason ($null when reliable); Candidates (the item with that known
+           solution platform, else the unknown-platform items whose first-context project
+           platform has that name) }
         Every item of -Configs gets MatchPlatform / MatchedBy ('solutionPlatform' |
         'projectPlatform') note properties.
     #>
@@ -494,22 +518,40 @@ function Resolve-TcPlatformTarget {
         $c | Add-Member -NotePropertyName 'MatchedBy' -NotePropertyValue $by -Force
     }
     $sameConfig = @(@($Configs) | Where-Object { [string]$_.Name -ieq $Configuration })
-    $available = @($sameConfig | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.MatchPlatform) } | ForEach-Object { [string]$_.MatchPlatform } | Select-Object -Unique)
+    # only names that really are solution platforms (#110): an unknown item's project platform is not one
+    $available = @($sameConfig | Where-Object { $_.MatchedBy -eq 'solutionPlatform' -and -not [string]::IsNullOrWhiteSpace([string]$_.MatchPlatform) } | ForEach-Object { [string]$_.MatchPlatform } | Select-Object -Unique)
     $availableConfigs = @(@($Configs) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Name) } | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
 
     # platformMap: every solution platform of -Configuration -> project platforms below it.
+    # Unknown items: '<unknown #Index>', never the project platform name (#110).
     $map = [ordered]@{}
+    $unknownItems = @()
     foreach ($c in $sameConfig) {
-        $key = if ([string]::IsNullOrWhiteSpace([string]$c.MatchPlatform)) { "<unknown #$($c.Index)>" } else { [string]$c.MatchPlatform }
-        if ($map.Contains($key)) { $key = "$key (#$($c.Index))" }
+        $key = $null
+        if ($c.MatchedBy -ne 'solutionPlatform' -or [string]::IsNullOrWhiteSpace([string]$c.MatchPlatform)) { $key = "<unknown #$($c.Index)>"; $unknownItems += $c }
+        else {
+            $key = [string]$c.MatchPlatform
+            if ($map.Contains($key)) { $key = "<duplicate #$($c.Index)>" }
+        }
         $projs = @(@($c.Contexts) | ForEach-Object {
                 [PSCustomObject]@{ project = [string]$_.ProjectName; platform = [string]$_.PlatformName; shouldBuild = $_.ShouldBuild }
             })
+        $firstProj = $null
+        foreach ($ctx in @($c.Contexts)) { $firstProj = [string]$ctx.PlatformName; break }
         $map[$key] = [PSCustomObject]@{
             solutionPlatform       = $c.SolutionPlatform
             solutionPlatformSource = $c.SolutionPlatformSource
+            projectPlatform        = $firstProj
             projectPlatforms       = $projs
         }
+    }
+    $mapReliable = ($unknownItems.Count -eq 0)
+    $mapReason = $null
+    if (-not $mapReliable) {
+        $code = $null
+        $rp = $unknownItems[0].PSObject.Properties['SlnUnusableReason']
+        if ($null -ne $rp) { $code = [string]$rp.Value }
+        $mapReason = Get-TcPlatformMapReasonText -Code $code
     }
 
     # Candidates: the item with that known solution platform, else unknown-platform items whose
@@ -523,8 +565,30 @@ function Resolve-TcPlatformTarget {
         Available        = $available
         AvailableConfigs = $availableConfigs
         PlatformMap      = [PSCustomObject]$map
+        PlatformMapReliable = $mapReliable
+        PlatformMapReason   = $mapReason
         Candidates       = $candidates
     }
+}
+
+function Get-TcPlatformMapReasonText {
+    # platformMapReason text for a Get-TcSolutionConfigurations SlnUnusableReason code (#110).
+    param([string]$Code)
+    $why = switch ($Code) {
+        'unsaved' { 'solution has unsaved changes (Solution.Saved = False), so the .sln on disk may differ from the loaded solution' }
+        'sln-unreadable' { 'the .sln file or its SolutionConfigurationPlatforms section could not be read' }
+        'sln-mismatch' { 'the .sln SolutionConfigurationPlatforms rows do not match the solution configurations of the IDE (row count or names)' }
+        'anchor-mismatch' { 'the .sln row of the active configuration does not equal the solution''s ActiveConfig' }
+        default { 'the .sln could not be used' }
+    }
+    "$why; VS2022 does not expose solution platform names through DTE (SolutionConfiguration2.PlatformName)"
+}
+
+function Get-TcPlatformMapHintNote {
+    # Hint sentence when platformMap is not reliable (#110); $null when it is.
+    param([bool]$Reliable, [string]$Reason)
+    if ($Reliable) { return $null }
+    "data.platformMap is not reliable ($Reason): entries keyed '<unknown #N>' have no known solution platform (data.platformMapReliable = false) and availablePlatforms lists only the known ones. Get the solution saved first (Build-TcProject: XAE saved it at the next build, 實測 2026-11-03 VS2022 + TwinCAT 4026; or File > Save All in XAE yourself), then run Set-TcTarget again for the full map."
 }
 
 function Test-TcCandidateProjects {
@@ -568,12 +632,21 @@ function New-TcProjectMismatchError {
     $good = @(@($SameConfig) | Where-Object {
             $t = Select-TcTsprojContext -Contexts $_.Contexts -All
             $t.Count -gt 0 -and @($t | Where-Object { -not ([string]$_.PlatformName -ieq $Platform) }).Count -eq 0
-        } | ForEach-Object { [string]$_.MatchPlatform })
+        } | ForEach-Object {
+            # an unknown solution platform is named by its platformMap key, never by its project platform (#110)
+            if ($_.MatchedBy -eq 'solutionPlatform') { [string]$_.MatchPlatform } else { "<unknown #$($_.Index)>" }
+        })
+    $unknown = @(@($SameConfig) | Where-Object { $_.MatchedBy -ne 'solutionPlatform' })
     $msg = "Solution platform '$Configuration|$Platform' builds the TwinCAT project for another project platform: $BadText. Activating it would not build for a '$Platform' target; nothing was switched (data.platformMap)."
     $hint = Get-TcErrorHint -Code 'PLATFORM_PROJECT_MISMATCH'
     if ($null -ne $hint) { $hint = $hint.Replace('<platform>', $Platform) }
     if ($good.Count -gt 0) { $hint += " Solution platform(s) of '$Configuration' whose .tsproj is built for '$Platform': '$($good -join "', '")'." }
     else { $hint += " No solution platform of '$Configuration' builds the .tsproj for '$Platform'." }
+    if ($unknown.Count -gt 0) {
+        $rp = $unknown[0].PSObject.Properties['SlnUnusableReason']
+        $code = if ($null -ne $rp) { [string]$rp.Value } else { $null }
+        $hint += ' ' + (Get-TcPlatformMapHintNote -Reliable $false -Reason (Get-TcPlatformMapReasonText -Code $code))
+    }
     [PSCustomObject]@{ message = $msg; code = 'PLATFORM_PROJECT_MISMATCH'; hint = $hint }
 }
 

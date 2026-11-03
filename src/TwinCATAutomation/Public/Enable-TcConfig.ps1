@@ -176,9 +176,11 @@ function Enable-TcConfig {
         dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
         ideMemoryMB, solutionPlatform (active solution platform
         at Activate time, after an automatic fix; $null when unreadable), projectPlatform
-        (project platform of the ACTIVE .tsproj; $null without .tsproj), platformMap and
-        requestedProjectPlatform (only after a failed platform-fix: solution platform ->
-        project platforms; .tsproj project platform under the requested solution platform),
+        (project platform of the ACTIVE .tsproj; $null without .tsproj), platformMap,
+        platformMapReliable / platformMapReason and requestedProjectPlatform (only after a
+        failed platform-fix: solution platform -> project platforms, '<unknown #N>' keys and
+        platformMapReliable = $false when a solution platform is unknown (#110); .tsproj
+        project platform under the requested solution platform),
         targetPlatform
         ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
         platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
@@ -270,6 +272,8 @@ function Enable-TcConfig {
     $projectPlatform = $null
     $requestedProjectPlatform = $null
     $platformMap = $null
+    $platformMapReliable = $null
+    $platformMapReason = $null
     $buildSelection = $null
     $buildSelectionChanges = $null
     $platformRestored = $null
@@ -307,6 +311,8 @@ function Enable-TcConfig {
             projectPlatform = $projectPlatform
             requestedProjectPlatform = $requestedProjectPlatform
             platformMap = $platformMap
+            platformMapReliable = $platformMapReliable
+            platformMapReason = $platformMapReason
             buildSelection = $buildSelection
             buildSelectionChanges = $buildSelectionChanges
             restored    = $platformRestored
@@ -547,6 +553,8 @@ function Enable-TcConfig {
                         $e = New-TcProjectMismatchError -SameConfig $res.SameConfig -Platform $wanted -Configuration $confNow -BadText $pc.BadText
                         Set-Variable -Name requestedProjectPlatform -Value $pc.RequestedProjectPlatform -Scope 1
                         Set-Variable -Name platformMap -Value $res.PlatformMap -Scope 1
+                        Set-Variable -Name platformMapReliable -Value $res.PlatformMapReliable -Scope 1
+                        Set-Variable -Name platformMapReason -Value $res.PlatformMapReason -Scope 1
                         $h = ([string]$e.hint).Replace('<id>', $idText)
                         return New-TcStepFailure -Message "Active solution platform $solText differs from '$wanted' ($srcText), and switching would not help: $([string]$e.message) (-NoPlatformFix: nothing was activated.)" -Code 'PLATFORM_PROJECT_MISMATCH' -Hint $h
                     }
@@ -575,6 +583,8 @@ function Enable-TcConfig {
         }
         if (-not $r.success) {
             Set-Variable -Name platformMap -Value $r.platformMap -Scope 1
+            Set-Variable -Name platformMapReliable -Value $r.platformMapReliable -Scope 1
+            Set-Variable -Name platformMapReason -Value $r.platformMapReason -Scope 1
             # projectPlatform stays the ACTIVE one (unchanged / restored); the one under the
             # requested solution platform goes to requestedProjectPlatform.
             if (-not [string]::IsNullOrWhiteSpace([string]$r.projectPlatform)) { Set-Variable -Name projectPlatform -Value $r.projectPlatform -Scope 1 }
