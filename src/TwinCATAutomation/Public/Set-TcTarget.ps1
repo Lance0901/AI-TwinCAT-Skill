@@ -75,8 +75,9 @@ function Set-TcTarget {
         data.platformMap (solution platform -> @{ solutionPlatform; solutionPlatformSource;
         projectPlatform; projectPlatforms = @(@{ project; platform; shouldBuild }) }; an entry
         whose solution platform is unknown has the key '<unknown #N>', #110),
-        data.platformMapReliable ($false when an entry has no known solution platform, e.g.
-        VS2022 with unsaved solution changes), data.platformMapReason ($null when reliable;
+        data.platformMapReliable ($false when an entry has no known solution platform, i.e.
+        PlatformName read back empty (VS2022) and the .sln not usable, or two entries report the
+        same one), data.platformMapReason (the actual cause; $null when reliable;
         availablePlatforms then lists only the known solution platforms), data.restored (after PLATFORM_SET_FAILED or a
         build selection that changed after the switch), data.buildSelection (one entry per PLC
         project: plc, project, nodePath, configuration (the target), current = @{ configuration;

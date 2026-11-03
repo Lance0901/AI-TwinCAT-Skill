@@ -545,8 +545,11 @@ function Enable-TcConfig {
             # project platform, Set-TcTarget -Platform would only return PLATFORM_PROJECT_MISMATCH,
             # so say that now. Unreadable -> the plain PLATFORM_MISMATCH below.
             $confNow = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
+            $mapNote = $null
             try {
                 $res = Resolve-TcPlatformTarget -Configs @(Get-TcSolutionConfigurations) -Platform $wanted -Configuration $confNow
+                # #110 N4: an unreliable map is named in the PLATFORM_MISMATCH hint below too
+                $mapNote = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason
                 if (@($res.Candidates).Count -gt 0) {
                     $pc = Test-TcCandidateProjects -Candidates $res.Candidates -Platform $wanted
                     if ($pc.ProjectCheck -eq 'mismatch') {
@@ -563,6 +566,7 @@ function Enable-TcConfig {
             catch { Write-Verbose "Enable-TcConfig: project platform look-up skipped ($($_.Exception.Message))" }
             $hint = Get-TcErrorHint -Code 'PLATFORM_MISMATCH'
             if ($null -ne $hint) { $hint = $hint.Replace('<id>', $idText).Replace('<platform>', $wanted) }
+            if ($null -ne $mapNote) { $hint = "$hint $mapNote" }
             return New-TcStepFailure -Message "Active solution platform $solText differs from '$wanted' ($srcText). ActivateConfiguration() would fail with 'Check config failed!'; nothing was activated (-NoPlatformFix)." -Code 'PLATFORM_MISMATCH' -Hint $hint
         }
 

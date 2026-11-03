@@ -82,6 +82,16 @@ function New-MockDte {
     & $mod { param($d) $script:TcDte = $d } $dte
 }
 $script:tempFiles = @()
+# #110: put the .plcproj context FIRST with project platform $PlcPlatform and the .tsproj second
+# with $TsPlatform, so an unknown item matched by its first context can fail the .tsproj check.
+function Set-MockPlcFirstContexts {
+    param([int]$Index, [string]$PlcPlatform, [string]$TsPlatform, [string]$Folder = 'Demo')
+    $c = $global:MockCfgs[$Index]
+    $c.SolutionContexts = @(
+        [PSCustomObject]@{ ProjectName = "$Folder\plc\plc.plcproj"; ConfigurationName = $c.Name; PlatformName = $PlcPlatform; ShouldBuild = $true }
+        [PSCustomObject]@{ ProjectName = "$Folder\$Folder.tsproj"; ConfigurationName = $c.Name; PlatformName = $TsPlatform; ShouldBuild = $true }
+    )
+}
 
 try {
     # --- (a) Festo: solution Release|OS (x64) -> project ARMT2 (ShouldBuild False) ---
@@ -411,13 +421,14 @@ try {
     Check 's1-dirty-no-suffix-key' (@($keys | Where-Object { $_ -like '*(#*' }).Count -eq 0 -and ($keys -join '|') -eq '<unknown #0>|<unknown #1>') ($keys -join '|')
     Check 's1-dirty-no-project-platform-key' (@($keys | Where-Object { $_ -eq $RT -or $_ -eq $OS }).Count -eq 0) ($keys -join '|')
     Check 's1-dirty-entry' ($r.platformMap.'<unknown #1>'.projectPlatform -eq $RT -and $null -eq $r.platformMap.'<unknown #1>'.solutionPlatform -and $r.platformMap.'<unknown #1>'.solutionPlatformSource -eq 'unknown' -and @($r.platformMap.'<unknown #1>'.projectPlatforms).Count -eq 2) $mapJson
-    Check 's1-dirty-unreliable' ($r.platformMapReliable -eq $false -and $r.platformMapReason -match 'unsaved changes' -and $r.platformMapReason -match 'VS2022') "reliable=$($r.platformMapReliable) reason=$($r.platformMapReason)"
+    Check 's1-dirty-unreliable' ($r.platformMapReliable -eq $false -and $r.platformMapReason -match 'Solution\.Saved read back False' -and $r.platformMapReason -match 'PlatformName read back empty' -and $r.platformMapReason -notmatch 'VS2022 does not expose') "reliable=$($r.platformMapReliable) reason=$($r.platformMapReason)"
     Check 's1-dirty-available-no-project-platform' (@($r.availablePlatforms).Count -eq 0) (@($r.availablePlatforms) -join ', ')
     Check 's1-dirty-switch-unchanged' ($r.success -and $r.platformMatchedBy -eq 'projectPlatform' -and $r.platform -eq $RT -and $ac -eq "Release|$RT" -and ($global:MockState.Activations -join ',') -eq '0,1') "success=$($r.success) by=$($r.platformMatchedBy) ActiveConfig=$ac activations: $($global:MockState.Activations -join ',')"
     # PLATFORM_NOT_FOUND while dirty: the hint says why the list is short and what to do
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT CE7 (ARMV7)' }
-    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'Build-TcProject' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
+    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $r.error.hint -match 'not verified' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
+    Check 's1-dirty-not-found-availtext' ($r.error.message -match [regex]::Escape('(not readable: data.platformMapReliable = false, see platformMapReason)')) "$($r.error.message)"
     # PLATFORM_PROJECT_MISMATCH while dirty: the good list names '<unknown #N>', not a project platform
     $dirtyMis = @(
         @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
@@ -428,6 +439,31 @@ try {
     $res = & $mod { param($c) Resolve-TcPlatformTarget -Configs $c -Platform 'TwinCAT OS (x64)' -Configuration 'Release' } $sc
     $e = & $mod { param($s) New-TcProjectMismatchError -SameConfig $s -Platform 'TwinCAT OS (x64)' -Configuration 'Release' -BadText 'x' } $res.SameConfig
     Check 's1-dirty-mismatch-hint' ($e.hint -match [regex]::Escape("'<unknown #1>'") -and $e.hint -match 'not reliable' -and $e.hint -notmatch [regex]::Escape("whose .tsproj is built for '$OS': '$OS'")) "$($e.hint)"
+    # full Set-TcSolutionPlatform flow while dirty: the unknown candidate (matched by its first
+    # context, the .plcproj) builds the .tsproj for ARMT2 -> PLATFORM_PROJECT_MISMATCH, nothing switched
+    $plcFirst = @(
+        @{ Name = 'Release'; Sol = $OS; Proj = $ARMT2; SB = $true }
+        @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
+    )
+    New-MockDte -Rows $plcFirst -Active 1 -NoPlatformName -Unsaved
+    Set-MockPlcFirstContexts -Index 0 -PlcPlatform $OS -TsPlatform $ARMT2
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 's1-dirty-flow-project-mismatch' ($r.error.code -eq 'PLATFORM_PROJECT_MISMATCH' -and $r.platformMatchedBy -eq 'projectPlatform' -and $r.platformMapReliable -eq $false -and $r.platformMapReason -match 'Solution\.Saved' -and $r.error.hint -match 'not reliable' -and $global:MockState.Activations.Count -eq 0 -and @($r.platformMap.PSObject.Properties | Where-Object { $_.Name -like '*(#*' }).Count -eq 0) "code=$($r.error.code) reliable=$($r.platformMapReliable) activations=$($global:MockState.Activations -join ',') hint=$($r.error.hint)"
+
+    # duplicate known solution platform (PlatformName readable): second key '<duplicate #N>', unreliable
+    $dupRows = @(
+        @{ Name = 'Release'; Sol = $OS; Proj = $OS; SB = $true }
+        @{ Name = 'Release'; Sol = $OS; Proj = $OS; SB = $true }
+        @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
+    )
+    New-MockDte -Rows $dupRows -Active 2
+    $sc = @(& $mod { Get-TcSolutionConfigurations })
+    $res = & $mod { param($c) Resolve-TcPlatformTarget -Configs $c -Platform 'TwinCAT OS (x64)' -Configuration 'Release' } $sc
+    $keys = @($res.PlatformMap.PSObject.Properties | ForEach-Object { $_.Name })
+    Check 's1-duplicate-key' (($keys -join '|') -eq "$OS|<duplicate #1>|$RT" -and $res.PlatformMapReliable -eq $false -and $res.PlatformMapReason -match 'same solution platform' -and (@($res.Available) -join '|') -eq "$OS|$RT") "keys=$($keys -join '|') reliable=$($res.PlatformMapReliable) reason=$($res.PlatformMapReason)"
+    $st = & $mod { param($c) Get-TcPlatformMapStatus -SameConfig $c } $res.SameConfig
+    Check 's1-duplicate-code' ($st.Code -eq 'duplicate-platform' -and -not $st.Reliable) "code=$($st.Code)"
+
     # saved: same rows -> reliable, keys are the solution platforms
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
@@ -527,6 +563,41 @@ try {
     New-MockDte -Rows $robust -Active 3
     $r = & $mod { Enable-TcConfig -NoPlatformFix -WarningAction SilentlyContinue }
     Check 'enable-nofix-mismatch' (-not $r.success -and $r.error.code -eq 'PLATFORM_MISMATCH' -and $global:MockState.Activations.Count -eq 0) "code=$($r.error.code)"
+    Check 'enable-nofix-reliable-fields' ($r.data.PSObject.Properties.Name -contains 'platformMapReliable' -and $r.error.hint -notmatch 'not reliable') "hint=$($r.error.hint)"
+
+    # --- #110: platformMapReliable / platformMapReason reach Enable-TcConfig and Set-TcTarget ---
+    # (target platform from the TARGETINFO mock: OS (x64); the active configuration is Release|RT)
+    $plcFirst = @(
+        @{ Name = 'Release'; Sol = $OS; Proj = $ARMT2; SB = $true }
+        @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
+    )
+    # -NoPlatformFix, dirty, the OS candidate's .tsproj is ARMT2 -> PLATFORM_PROJECT_MISMATCH
+    New-MockDte -Rows $plcFirst -Active 1 -NoPlatformName -Unsaved
+    Set-MockPlcFirstContexts -Index 0 -PlcPlatform $OS -TsPlatform $ARMT2
+    $r = & $mod { Enable-TcConfig -NoPlatformFix -WarningAction SilentlyContinue }
+    Check 'enable-nofix-dirty-project-mismatch' ($r.error.code -eq 'PLATFORM_PROJECT_MISMATCH' -and $r.data.platformMapReliable -eq $false -and $r.data.platformMapReason -match 'Solution\.Saved' -and $null -ne $r.data.platformMap.'<unknown #0>' -and $r.error.hint -match 'not reliable' -and $global:MockState.Activations.Count -eq 0) "code=$($r.error.code) reliable=$($r.data.platformMapReliable) hint=$($r.error.hint)"
+    # -NoPlatformFix, dirty, no OS candidate at all -> PLATFORM_MISMATCH with the unreliable note (N4)
+    New-MockDte -Rows $dirty -Active 1 -NoPlatformName -Unsaved
+    $r = & $mod { Enable-TcConfig -NoPlatformFix -WarningAction SilentlyContinue }
+    Check 'enable-nofix-dirty-mismatch-note' ($r.error.code -eq 'PLATFORM_MISMATCH' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $global:MockState.Activations.Count -eq 0) "code=$($r.error.code) hint=$($r.error.hint)"
+    # platform-fix (no -NoPlatformFix) fails while dirty -> data carries the fields
+    $null = & $mod { Clear-TcBuildRequired }
+    New-MockDte -Rows $plcFirst -Active 1 -NoPlatformName -Unsaved
+    Set-MockPlcFirstContexts -Index 0 -PlcPlatform $OS -TsPlatform $ARMT2
+    $r = & $mod { Enable-TcConfig -WarningAction SilentlyContinue }
+    Check 'enable-fix-dirty-fields' ($r.error.code -eq 'PLATFORM_PROJECT_MISMATCH' -and $r.data.platformMapReliable -eq $false -and $r.data.platformMapReason -match 'Solution\.Saved' -and $r.error.hint -match 'not reliable' -and -not $r.data.activated -and $global:MockState.Activations.Count -eq 0) "code=$($r.error.code) reliable=$($r.data.platformMapReliable) msg=$($r.error.message)"
+    # Set-TcTarget: dirty switch succeeds, data reports the unreliable map; saved -> reliable
+    & $mod {
+        function script:Get-TcSysManager { $o = [PSCustomObject]@{}; $o | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { '1.2.3.4.1.1' }; $o | Add-Member -MemberType ScriptMethod -Name SetTargetNetId -Value { param($n) }; $o }
+    }
+    New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
+    $r = & $mod { Set-TcTarget -AmsNetId '1.2.3.4.1.1' -Platform 'TwinCAT RT (x64)' -WarningAction SilentlyContinue }
+    $keys = @($r.data.platformMap.PSObject.Properties | ForEach-Object { $_.Name })
+    Check 'settarget-dirty-fields' ($r.success -and $r.data.platform -eq $RT -and $r.data.platformMapReliable -eq $false -and $r.data.platformMapReason -match 'Solution\.Saved' -and ($keys -join '|') -eq '<unknown #0>|<unknown #1>' -and @($r.data.availablePlatforms).Count -eq 0) "success=$($r.success) code=$($r.error.code) reliable=$($r.data.platformMapReliable) keys=$($keys -join '|')"
+    New-MockDte -Rows $dirty -Active 0 -NoPlatformName
+    $r = & $mod { Set-TcTarget -AmsNetId '1.2.3.4.1.1' -Platform 'TwinCAT RT (x64)' -WarningAction SilentlyContinue }
+    Check 'settarget-saved-fields' ($r.success -and $r.data.platformMapReliable -eq $true -and $null -eq $r.data.platformMapReason -and $r.data.PSObject.Properties.Name -contains 'platformMapReason') "success=$($r.success) code=$($r.error.code) reliable=$($r.data.platformMapReliable)"
+    $null = & $mod { Clear-TcBuildRequired }
 
     # --- state file not writable (held open with FileShare.Read, like a reader / virus scanner):
     # the switch reports stateWarning, no .tmp is left, Enable-TcConfig still refuses (in-memory entry)
