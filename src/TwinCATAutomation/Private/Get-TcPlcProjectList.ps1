@@ -13,11 +13,12 @@ function Get-TcPlcProjectList {
                        disable/enable a tree item"
                        https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425861515.html).
                        A disabled PLC is not activated, so Enable-TcConfig skips it.
-                       $null when Disabled cannot be read (#67 N3). Callers: Enable-TcConfig,
-                       Resolve-TcPlcProjectPath and Build-TcProject (#104) count $null as enabled
-                       (logged in / started / kept in the coverage: a disabled one then fails its
-                       login instead of being silently left out); the solution platform switch
-                       (Set-TcSolutionPlatform) returns BUILD_SELECTION_UNKNOWN.
+                       $null when Disabled cannot be read (#67 N3). Callers: Enable-TcConfig
+                       refuses before anything is done (BUILD_SELECTION_UNKNOWN); the solution
+                       platform switch (Set-TcSolutionPlatform) returns BUILD_SELECTION_UNKNOWN;
+                       Build-TcProject (#104) counts it as enabled (kept in the coverage, which
+                       only makes the coverage check stricter); Resolve-TcPlcProjectPath keeps it
+                       as a candidate.
         The "<Plc> Project" child is not always enumerable (on 4026 only "<Plc> Instance"
         is listed), so projectPath is built from the name like Resolve-TcPlcProjectPath.
           projectFile  absolute path of the .plcproj: <PlcProjectDef>...<ProjectPath> of the PLC

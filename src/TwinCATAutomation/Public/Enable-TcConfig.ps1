@@ -51,8 +51,10 @@ function Enable-TcConfig {
                               selection that could not be undone (BUILD_REQUIRED kind
                               build-selection) nothing at all is done: BUILD_SELECTION_CHANGED
                               (data.buildSelectionGuard) until Set-TcTarget switches back.
-        A PLC whose Disabled cannot be read ($null) counts as enabled: it is logged in and started
-        (a disabled one then fails its login instead of being left out silently).
+        A PLC whose Disabled cannot be read (Get-TcPlcProjectList disabled = $null, #67) stops
+        Enable-TcConfig before anything else (before the platform check, Activate, Login):
+        BUILD_SELECTION_UNKNOWN, data.plcsWithoutDisabled; it would otherwise be activated, logged in
+        and downloaded without knowing whether the user disabled it.
           platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
                               output of the old platform must not be activated; a failing
                               build stops here with its code (BUILD_FAILED ...), and a
@@ -222,7 +224,6 @@ function Enable-TcConfig {
     # #67: a platform switch left a changed PLC build selection that could not be undone
     $selGuard = Get-TcBuildSelectionGuard
     if ($null -ne $selGuard) { return New-TcBuildSelectionGuardResult -Guard $selGuard -Operation 'Enable-TcConfig' -Data ([PSCustomObject]@{ activated = $false }) }
-
     # VM manual v1.4 p.7: a selected variant group cannot be activated; XAE does not refuse it itself
     # (measured 2026-11-01 4026 VS2022, self-built client, verification/phase3-probe.md question 18).
     # Review S2: read with Invoke-TcComRetry; IDE_* keep their code, any other read error stops here
@@ -238,6 +239,20 @@ function Enable-TcConfig {
     if ($null -ne $variantGroup) { return $variantGroup }
     # #89: a variant project has its boot package in _Boot\<Variant>\<Platform>
     $currentVariant = [string]$cv.Value
+
+    # #67 S-D: a PLC whose Disabled cannot be read would be activated / logged in / downloaded
+    # without knowing whether it is disabled: fail closed before anything is done. A list that
+    # cannot be read at all is handled later as before.
+    $disList = $null
+    try { $disList = @(Get-TcPlcProjectList -SysManager $sm) } catch { $disList = $null }
+    if ($null -ne $disList) {
+        $noDis = @($disList | Where-Object { $_.disabled -isnot [bool] } | ForEach-Object { [string]$_.name })
+        if ($noDis.Count -gt 0) {
+            return New-TcResult -Success $false -ErrorCode 'BUILD_SELECTION_UNKNOWN' -Hint (Get-TcDisabledUnreadableHint) `
+                -Data ([PSCustomObject]@{ activated = $false; plcsWithoutDisabled = $noDis }) `
+                -ErrorMessage "Not activated: Disabled of PLC project(s) $($noDis -join ', ') could not be read (ITcSmTreeItem.Disabled), so it is not known whether they would be activated, logged in and downloaded; nothing was done (#67)."
+        }
+    }
 
     # --- cycle state (read by the nested helpers below via dynamic scope) ---
     $steps = New-Object System.Collections.ArrayList

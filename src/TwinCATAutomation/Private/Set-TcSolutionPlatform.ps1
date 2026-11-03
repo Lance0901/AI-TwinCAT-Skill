@@ -217,7 +217,7 @@
     # guard (#67): an earlier switch left the IDE at a configuration with a changed build selection
     # and could not switch back; switching to the configuration it came from is always allowed
     $guard = Get-TcBuildSelectionGuard
-    $returning = ($null -ne $guard -and -not [string]::IsNullOrWhiteSpace([string]$guard.previous) -and [string]$guard.previous -ieq $targetLabel)
+    $returning = Test-TcBuildSelectionGuardTarget -Guard $guard -Configuration $Configuration -Platform $Platform
     $selState = Get-TcBuildSelectionState -ConfigurationLabel $beforeLabel
     $selByIndex = @{}
     $excluded = @()
@@ -232,15 +232,25 @@
         }
     }
     else {
-        if ($null -ne $selState.Error) {
+        $ideCodes = @('IDE_CRASHED', 'IDE_MODAL_DIALOG', 'IDE_BUSY')
+        if ($null -ne $selState.Error -and $returning -and $ideCodes -notcontains [string]$selState.Error.code) {
+            # switching back to the configuration the guard came from (#67 S-A): a selection that
+            # cannot be read must not keep the guard forever; reported, not blocking
+            Write-Verbose "Set-TcSolutionPlatform: build selection not readable while switching back ($([string]$selState.Error.message))"
+            $out | Add-Member -NotePropertyName 'buildSelectionError' -NotePropertyValue ([string]$selState.Error.message) -Force
+        }
+        elseif ($null -ne $selState.Error) {
+            $hint = if ([string]$selState.Error.code -eq 'BUILD_SELECTION_UNKNOWN') { Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN' } else { [string]$selState.Error.hint }
+            if ($returning) { $hint = "$hint $(Get-TcBuildSelectionReturnHint -Guard $guard)".Trim() }
             $out.error = [PSCustomObject]@{
                 message = "Build selection of '$beforeLabel' could not be read, so the switch to '$targetLabel' could not be checked for PLC projects that would start or stop being built; nothing was switched: $([string]$selState.Error.message)"
                 code    = [string]$selState.Error.code
-                hint    = $(if ([string]$selState.Error.code -eq 'BUILD_SELECTION_UNKNOWN') { Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN' } else { [string]$selState.Error.hint })
+                hint    = $hint
             }
             return $out
         }
-        if (@($selState.Entries).Count -eq 0) { $out.buildSelection = @() }
+        if ($null -ne $selState.Error) { }
+        elseif (@($selState.Entries).Count -eq 0) { $out.buildSelection = @() }
         else {
             $keep = @()
             $first = $null
@@ -250,7 +260,8 @@
                 if ($null -eq $first) { $first = $cmp }
                 if ($null -eq $cmp.Error -and @($cmp.Changes).Count -gt 0 -and $null -eq $firstChanged) { $firstChanged = $cmp }
                 $selByIndex[[int]$cand.Index] = $cmp
-                if ($null -eq $cmp.Error -and (@($cmp.Changes).Count -eq 0 -or $returning)) { $keep += $cand }
+                # switching back (#67 S-A): neither a change nor a failed comparison blocks
+                if ($returning -or ($null -eq $cmp.Error -and @($cmp.Changes).Count -eq 0)) { $keep += $cand }
                 else {
                     $why = if ($null -ne $cmp.Error) { "not comparable ($([string]$cmp.Error))" } else { Format-TcBuildSelectionChanges -Changes $cmp.Changes }
                     $excluded += [PSCustomObject]@{ Text = "#$($cand.Index): $why"; Changes = @($cmp.Changes) }
@@ -309,7 +320,7 @@
         }
         if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
         # already at the configuration the guard came from (switched back by hand in XAE)
-        if ($null -ne $guard -and [string]$guard.previous -ieq "$($after.configuration)|$($after.platform)") { $out.stateWarning = Clear-TcBuildSelectionGuard }
+        if (Test-TcBuildSelectionGuardTarget -Guard $guard -Configuration ([string]$after.configuration) -Platform ([string]$after.platform)) { $out.stateWarning = Clear-TcBuildSelectionGuard }
         $out.success = $true
         return $out
     }
@@ -415,9 +426,9 @@
             $hint = $null
             if ($out.restored -ne $true) {
                 # IDE stays at the target with a build selection nobody chose: guard (#67 S1)
-                $gw = Set-TcBuildSelectionGuard -Previous $beforeLabel -Left $leftAt -Changes $changeText
+                $gw = Set-TcBuildSelectionGuard -PreviousConfiguration ([string]$before.configuration) -PreviousPlatform ([string]$before.platform) -Left $leftAt -Changes $changeText
                 if (-not [string]::IsNullOrWhiteSpace([string]$gw)) { $out.stateWarning = (@($out.stateWarning, $gw) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ' }
-                $hint = Get-TcBuildSelectionStuckHint -Previous $beforeLabel -Left $leftAt -Changes $changeText
+                $hint = Get-TcBuildSelectionStuckHint -PreviousConfiguration ([string]$before.configuration) -PreviousPlatform ([string]$before.platform) -Left $leftAt -Changes $changeText
             }
             if ($null -ne $chk.Error) {
                 $code = if ([string]::IsNullOrWhiteSpace([string]$chk.ErrorCode)) { 'BUILD_SELECTION_UNKNOWN' } else { [string]$chk.ErrorCode }
@@ -448,7 +459,7 @@
     }
     # switched back to the configuration the guard came from (#67): the build selection is that
     # configuration's again
-    if ($null -ne $guard -and [string]$guard.previous -ieq "$($out.configuration)|$($out.platform)") {
+    if (Test-TcBuildSelectionGuardTarget -Guard $guard -Configuration ([string]$out.configuration) -Platform ([string]$out.platform)) {
         $cw = Clear-TcBuildSelectionGuard
         if (-not [string]::IsNullOrWhiteSpace([string]$cw)) { $out.stateWarning = (@($out.stateWarning, $cw) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ' }
     }
@@ -774,12 +785,42 @@ function Format-TcBuildSelectionChanges {
         }) -join '; '
 }
 
+function Get-TcSetTargetBackCommand {
+    # 'Set-TcTarget ... -Platform '<p>' [-Configuration '<c>']' with PowerShell single-quote escaping
+    param([string]$Configuration, [string]$Platform)
+    $cmd = "Set-TcTarget -AmsNetId <id> -Platform '$($Platform.Replace("'", "''"))'"
+    if (-not [string]::IsNullOrWhiteSpace($Configuration)) { $cmd += " -Configuration '$($Configuration.Replace("'", "''"))'" }
+    $cmd
+}
+
 function Get-TcBuildSelectionStuckHint {
     # Hint when the build selection changed after a switch AND the previous configuration could not
     # be re-activated (#67 S1): the IDE stays at -Left; the guard blocks Build / Enable.
-    param([string]$Previous, [string]$Left, [string]$Changes)
-    $cfg = $Previous; $plat = $Previous
-    $i = $Previous.IndexOf('|')
-    if ($i -gt 0) { $cfg = $Previous.Substring(0, $i); $plat = $Previous.Substring($i + 1) }
-    "切回失敗:XAE 現在停在 '$Left',PLC 的 build selection 與切換前('$Previous')不同($Changes),在一個平台停用的 PLC 可能已被重新啟用。不要 Build-TcProject / Enable-TcConfig(模組已記下 BUILD_REQUIRED kind build-selection,這兩個會回 BUILD_SELECTION_CHANGED 拒絕)。下一步:Set-TcTarget -AmsNetId <id> -Platform '$plat' -Configuration '$cfg' 切回(成功就清除),或在 XAE 工具列手動切回 '$Previous' 後重跑同一個 Set-TcTarget(已是 active 也會清除)。"
+    param([string]$PreviousConfiguration, [string]$PreviousPlatform, [string]$Left, [string]$Changes)
+    $prev = Format-TcConfigLabel -Configuration $PreviousConfiguration -Platform $PreviousPlatform
+    $back = Get-TcSetTargetBackCommand -Configuration $PreviousConfiguration -Platform $PreviousPlatform
+    "切回失敗:XAE 現在停在 '$Left',PLC 的 build selection 與切換前('$prev')不同($Changes),在一個平台停用的 PLC 可能已被重新啟用。不要 Build-TcProject / Enable-TcConfig(模組已記下 BUILD_REQUIRED kind build-selection,這兩個會回 BUILD_SELECTION_CHANGED 拒絕)。下一步:$back 切回(成功就清除),或在 XAE 工具列手動切回 '$prev' 後重跑同一個 Set-TcTarget(已是 active 也會清除)。"
+}
+
+function Get-TcBuildSelectionGuardHint {
+    # Hint of the Build-TcProject / Enable-TcConfig refusal while the build-selection guard is
+    # recorded (#67 S-C); a legacy record (no structured previous configuration) is removed by hand.
+    param($Guard)
+    if ($Guard.legacy) {
+        return "先前的平台切換改變了 PLC 的 build selection 且沒能切回，這筆紀錄是舊格式，沒有存原 configuration,模組無法自動解除($([string]$Guard.reason))。確認 XAE 已切回切換前的 configuration、Configuration Manager 每個 PLC 的 Build 勾選與原本一致後，結束所有 TcAuto session / MCP server,手動編輯 '$([string]$Guard.stateFile)'(刪掉這個 solution 的項目;只有它就刪整個檔案),再重新 Build-TcProject。"
+    }
+    $left = if ([string]::IsNullOrWhiteSpace([string]$Guard.leftConfiguration)) { '(未記錄)' } else { [string]$Guard.leftConfiguration }
+    $ch = if ([string]::IsNullOrWhiteSpace([string]$Guard.changes)) { '未記錄' } else { [string]$Guard.changes }
+    "已拒絕:$(Get-TcBuildSelectionStuckHint -PreviousConfiguration ([string]$Guard.previousConfiguration) -PreviousPlatform ([string]$Guard.previousPlatform) -Left $left -Changes $ch)"
+}
+
+function Get-TcBuildSelectionReturnHint {
+    # Added to an IDE_* error while switching back to the configuration a guard came from (#67 S-A).
+    param($Guard)
+    "build-selection guard 仍在(原 configuration '$([string]$Guard.previous)'):IDE 恢復後重跑同一個 Set-TcTarget,或在 XAE 工具列手動切回 '$([string]$Guard.previous)' 後重跑同一個 Set-TcTarget(已是 active 就會清除 guard)。"
+}
+
+function Get-TcDisabledUnreadableHint {
+    # Enable-TcConfig refusal: a PLC whose Disabled cannot be read (#67 S-D).
+    "有 PLC 節點的 Disabled(ITcSmTreeItem.Disabled)讀不到(data.plcsWithoutDisabled),無法判斷它會不會被 Activate,所以什麼都沒做(不 Activate、不 Login、不下載)。IDE 忙就重試;持續讀不到就 Reset-TcSolution,或在 XAE 確認該 PLC 節點的 Disable 狀態後存檔再 Enable-TcConfig。"
 }

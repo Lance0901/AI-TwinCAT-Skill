@@ -331,14 +331,83 @@ try {
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
     Check 'S1 switching back to the previous configuration: allowed, guard cleared' ($r.success -and $r.platform -eq $RT -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code) $($r.error.message)"
     # guard cleared also when the previous configuration is already active (switched back in XAE)
-    & $mod { param($p) Set-TcBuildSelectionGuard -Previous $p -Left 'Release|X' -Changes 'unit' } "Release|$RT" | Out-Null
+    & $mod { param($p) Set-TcBuildSelectionGuard -PreviousConfiguration 'Release' -PreviousPlatform $p -Left 'Release|X' -Changes 'unit' } $RT | Out-Null
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
     Check 'S1 already at the previous configuration clears the guard' ($r.success -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code)"
     # a guard for another configuration is not cleared by an unrelated switch
-    & $mod { param($p) Set-TcBuildSelectionGuard -Previous $p -Left 'Release|X' -Changes 'unit' } 'Debug|Y' | Out-Null
+    & $mod { Set-TcBuildSelectionGuard -PreviousConfiguration 'Debug' -PreviousPlatform 'Y' -Left 'Release|X' -Changes 'unit' } | Out-Null
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
     Check 'S1 guard of another configuration stays' ($null -ne (& $mod { Get-TcBuildSelectionGuard })) 'guard gone'
     & $mod { Clear-TcBuildSelectionGuard } | Out-Null
+
+    # --- round 3 ---
+    # S-C: the refusal hint is the guard's own text, not the generic BUILD_SELECTION_CHANGED hint
+    & $mod { param($p) Set-TcBuildSelectionGuard -PreviousConfiguration 'Release' -PreviousPlatform $p -Left 'Release|X' -Changes 'unit change' } $RT | Out-Null
+    $b = Build-TcProject
+    $generic = & $mod { Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED' }
+    Check 'S-C guard refusal hint: own text with the way back, not the generic hint' ($b.error.code -eq 'BUILD_SELECTION_CHANGED' -and -not $b.error.hint.Contains($generic) -and $b.error.hint -match [regex]::Escape("-Platform '$RT' -Configuration 'Release'") -and $b.error.hint -match 'unit change') "$($b.error.hint)"
+    # G5 / S-B: a complete build (Clear-TcBuildRequired) keeps the build-selection record, drops the rest
+    & $mod { Set-TcBuildRequired -Kind 'code-changed' -Reason 'unit code change' -WarningAction SilentlyContinue } | Out-Null
+    & $mod { Clear-TcBuildRequired } | Out-Null
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    $br = & $mod { Get-TcBuildRequired }
+    $kinds = @((& $mod { param($e) Get-TcBuildRequiredReasons $e } $br).Keys)
+    Check 'G5 Clear-TcBuildRequired keeps build-selection only (with its fields)' ($null -ne $g -and $g.previousPlatform -eq $RT -and $g.previousConfiguration -eq 'Release' -and -not $g.legacy -and ($kinds -join ',') -eq 'build-selection') "kinds=$($kinds -join ',') g=$(J $g)"
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'G5 guard then cleared by the (already active) previous configuration' ($r.success -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code)"
+
+    # N-a: names with an apostrophe; previous configuration without name matches by platform
+    & $mod { param($p) Set-TcBuildSelectionGuard -PreviousConfiguration "Rel'ease" -PreviousPlatform $p -Left 'x' -Changes 'y' } $RT | Out-Null
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    $hint = & $mod { param($x) Get-TcBuildSelectionGuardHint -Guard $x } $g
+    $m1 = & $mod { param($x, $p) Test-TcBuildSelectionGuardTarget -Guard $x -Configuration "Rel'ease" -Platform $p } $g $RT
+    $m2 = & $mod { param($x, $p) Test-TcBuildSelectionGuardTarget -Guard $x -Configuration 'Release' -Platform $p } $g $RT
+    Check "N-a Rel'ease: stored as a field, matched exactly, quoted in the hint" ($g.previousConfiguration -eq "Rel'ease" -and $g.previous -eq "Rel'ease|$RT" -and $m1 -and -not $m2 -and $hint -match [regex]::Escape("-Configuration 'Rel''ease'")) "g=$(J $g) m1=$m1 m2=$m2 hint=$hint"
+    & $mod { Clear-TcBuildSelectionGuard } | Out-Null
+    & $mod { param($p) Set-TcBuildSelectionGuard -PreviousConfiguration '' -PreviousPlatform $p -Left 'x' -Changes 'y' } $RT | Out-Null
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    $m = & $mod { param($x, $p) Test-TcBuildSelectionGuardTarget -Guard $x -Configuration 'Release' -Platform $p } $g $RT
+    Check 'N-a previous without configuration: matched by platform' ($m -and $g.previous -eq $RT) "g=$(J $g) m=$m"
+    & $mod { Clear-TcBuildSelectionGuard } | Out-Null
+    # legacy record (no buildSelectionGuard field): never matched, hint names the state file
+    & $mod { Set-TcBuildRequired -Kind 'build-selection' -Reason "old text previous configuration 'Release|TwinCAT RT (x64)'" -WarningAction SilentlyContinue } | Out-Null
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    $hint = & $mod { param($x) Get-TcBuildSelectionGuardHint -Guard $x } $g
+    $m = & $mod { param($x, $p) Test-TcBuildSelectionGuardTarget -Guard $x -Configuration 'Release' -Platform $p } $g $RT
+    $file = & $mod { Get-TcBuildRequiredFile }
+    Check 'N-a legacy record: not matched, hint = manual removal of build-required.json' ($g.legacy -and -not $m -and $hint.Contains($file)) "g=$(J $g) hint=$hint"
+    & $mod { Clear-TcBuildSelectionGuard } | Out-Null
+
+    # G4 / S-A: guard recorded by an unreadable readback whose restore failed; switching back with
+    # the build selection still unreadable is allowed and clears the guard
+    $rowsG = @(
+        @{ Name = 'Release'; Sol = $OS; SB = @{ A = $true; B = $true } }
+        @{ Name = 'Release'; Sol = $RT; SB = @{ A = $true; B = $true } }
+    )
+    New-MockDte -Rows $rowsG -Active 1
+    Set-Tree @((N 'A' $false), (N 'B' $false))
+    $global:PlcListThrows = 'after-switch'
+    $global:MockCfgs[1] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { if ($global:RestoreBroken) { throw 'restore boom (mock)' }; $null = $global:MockState.Activations.Add($this.MockIndex); $global:MockState.Active = $this.MockIndex }
+    $global:RestoreBroken = $true
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    Check 'G4 unreadable readback + restore failed -> guard' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $r.restored -eq $false -and $null -ne $g -and $g.previous -eq "Release|$RT") "$($r.error.code) restored=$($r.restored) g=$(J $g)"
+    # IDE error while switching back: still blocked, hint names the guard and the manual way back
+    $global:RestoreBroken = $false
+    $global:PlcListThrows = 'always'; $global:PlcListThrowMsg = 'IDE_CRASHED: the IDE is gone (unit mock)'
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'G4 IDE_CRASHED while switching back: blocked, hint names guard + manual switch' ($r.error.code -eq 'IDE_CRASHED' -and $r.error.hint -match 'guard' -and $r.error.hint -match 'Set-TcTarget' -and $global:MockState.Active -eq 0) "$($r.error.code) $($r.error.hint)"
+    $global:PlcListThrowMsg = $null
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'G4 switching back with the build selection unreadable: allowed, guard cleared' ($r.success -and $r.platform -eq $RT -and -not [string]::IsNullOrWhiteSpace([string]$r.buildSelectionError) -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code) $($r.error.message)"
+    $global:PlcListThrows = $null
+
+    # S-D: Enable-TcConfig refuses before anything when a PLC's Disabled cannot be read
+    New-MockDte -Rows $rowsG -Active 0
+    Set-Tree @((N 'A' $false), (N 'B' $null))
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check 'S-D Enable-TcConfig: Disabled $null -> BUILD_SELECTION_UNKNOWN, nothing done' ((-not $e.success) -and $e.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and (@($e.data.plcsWithoutDisabled) -join ',') -eq 'B' -and $e.data.activated -eq $false -and $global:MockState.Activations.Count -eq 0 -and $e.error.hint -match 'Disabled') "$($e.error.code): $($e.error.message)"
+    Set-Tree @((N 'A' $false), (N 'B' $false))
     # readback not readable -> restore + BUILD_SELECTION_UNKNOWN
     New-MockDte -Rows $rows -Active 1
     Set-Tree @((N 'A' $false), (N 'B' $false))
