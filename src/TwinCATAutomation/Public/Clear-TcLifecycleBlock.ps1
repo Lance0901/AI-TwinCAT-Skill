@@ -20,7 +20,9 @@ function Clear-TcLifecycleBlock {
         (the record key: the AmsNetId in lower case, '<unknown>' for an empty or loopback
         127.x.x.x.y.z NetId, '<corrupt>'), reason, clearedAt, remaining (number of records left),
         remainingKeys, stillBlocking (keys that still block every target: '<unknown>' /
-        '<corrupt>'; message and data.next name the -AmsNetId to pass), receipt (appended to
+        '<corrupt>'; after clearing '<unknown>' every remaining key, because a command on an
+        unknown / loopback target is blocked by any record; message and data.next name the
+        -AmsNetId to pass), receipt (appended to
         lifecycle-block-history.jsonl next to the state file). The state file cannot be updated
         (lock / write failure) -> LIFECYCLE_BLOCKED, nothing removed.
     .PARAMETER AmsNetId
@@ -74,7 +76,8 @@ function Clear-TcLifecycleBlock {
     $rest = Get-TcLifecycleBlockList
     $restKeys = if ($null -eq $rest) { $null } else { @($rest | ForEach-Object { [string]$_.key }) }
     # N1: records that still block every target, and the call that would remove them
-    $globalKeys = @($restKeys | Where-Object { $_ -eq '<unknown>' -or $_ -eq '<corrupt>' })
+    # a command on '<unknown>' (unknown / loopback target) is blocked by ANY record: all of them count
+    $globalKeys = if ($key -eq '<unknown>') { @($restKeys) } else { @($restKeys | Where-Object { $_ -eq '<unknown>' -or $_ -eq '<corrupt>' }) }
     $next = @($globalKeys | ForEach-Object { "Clear-TcLifecycleBlock -AmsNetId '$_' -Reason '<why>'" })
     $msg = if ($null -eq $rm.Removed) { "No lifecycle block was recorded for $AmsNetId (key '$key')." } else { "Lifecycle block of $AmsNetId (key '$key') removed ($($rm.Removed.command) $($rm.Removed.errorCode) at $($rm.Removed.time))." }
     if ($null -eq $restKeys) { $msg += ' The remaining records could not be read: every target may still be blocked.' }

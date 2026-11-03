@@ -305,12 +305,16 @@ try {
     $fake::Mode = 'config'; $fake::ThrowOnWrite = $true
     $x = Set-TcSystemState -State Run -AmsNetId $B -TimeoutSec 2 -SettleSec 0
     $fake::ThrowOnWrite = $false
-    Check '(12) exception from WriteControl (request may have gone out) -> failure + block' ((-not $x.success) -and $x.data.lifecycleBlock.amsNetId -eq $B -and $x.data.lifecycleBlock.step -match 'exception') (J $x)
+    Check '(12) exception from WriteControl (request may have gone out) -> failure + block, requestSent=true' ((-not $x.success) -and $x.data.lifecycleBlock.amsNetId -eq $B -and $x.data.lifecycleBlock.step -match 'exception' -and $x.data.requestSent -eq $true) (J $x)
     $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (12) next case'
     $fake::ThrowOnConnect = $true
     $x = Set-TcSystemState -State Run -AmsNetId $B -TimeoutSec 2 -SettleSec 0
     $fake::ThrowOnConnect = $false
-    Check '(12) exception before WriteControl (connect) -> failure, no block' ((-not $x.success) -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $B)) (J $x)
+    Check '(12) exception before WriteControl (connect) -> failure, no block, requestSent=false' ((-not $x.success) -and $x.data.requestSent -eq $false -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $B)) (J $x)
+    $fake::Mode = 'config'; $fake::NextMode = 'run'
+    $x = Set-TcSystemState -State Run -AmsNetId $B -TimeoutSec 5 -SettleSec 0
+    $fake::NextMode = $null
+    Check '(12) nit-3 success reports requestSent=true' ($x.success -and $x.data.requestSent -eq $true) (J $x.data)
 
     # --- (13) N2: ADS commands check the block with the session NetId after Ensure-TcAdsConnection ---
     $null = & $mod { param($n) Set-TcLifecycleBlock -AmsNetId $n -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' } $B
@@ -328,6 +332,47 @@ try {
     $w = Write-TcVariable -Path 'MAIN.x' -Value 1
     Check '(13) connected to another target -> not refused' ($w.error.code -ne 'LIFECYCLE_BLOCKED') "code=$($w.error.code)"
     $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (13) done'
+
+    # --- (14) review 2: S-A nested precondition codes after set-config, S-B -PlcProjectPath, nit-3 requestSent ---
+    & $mod {
+        $script:UtSss = 0
+        function script:Set-TcSystemState {
+            param([string]$State, [string]$AmsNetId, [int]$TimeoutSec)
+            $script:UtSss++
+            if ($null -ne $global:SetConfigFail -and $State -eq 'Config') {
+                return New-TcResult -Success $false -ErrorCode 'ADS_TIMEOUT' -ErrorMessage 'mock failure' -Data ([PSCustomObject]@{ requestSent = [bool]$global:SetConfigFail })
+            }
+            New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State; requestSent = $true })
+        }
+        function script:Enter-TcPlcOnline {
+            param($LoginMode, $PlcProjectPath, $TimeoutSec)
+            if ($global:LoginCode) { return New-TcResult -Success $false -ErrorCode $global:LoginCode -ErrorMessage 'login refused (mock)' }
+            New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login' })
+        }
+    }
+    $fake::Mode = 'run'; $global:PlcState = 'Run'
+    foreach ($lc in @('NOT_CONNECTED', 'BUILD_REQUIRED')) {
+        $global:LoginCode = $lc
+        $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+        Check "(14) S-A login returns $lc after set-config / Activate -> block recorded" ($e.error.code -eq $lc -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $e.data.lifecycleBlock.errorCode -eq $lc -and $e.data.lifecycleBlock.step -eq 'login') (J $e.data.lifecycleBlock)
+        $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case'
+    }
+    $global:LoginCode = $null
+    & $mod { $script:UtSss = 0 }
+    $e = Enable-TcConfig -Force -PlcProjectPath 'NoSuchPlc' -WarningAction SilentlyContinue
+    $sss = & $mod { $script:UtSss }
+    Check '(14) S-B -PlcProjectPath typo -> PLC_PROJECT_NOT_FOUND before set-config, no block, runtime untouched' ($e.error.code -eq 'PLC_PROJECT_NOT_FOUND' -and $sss -eq 0 -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A) -and -not $e.data.activateSent) "sss=$sss $(J $e.data.steps)"
+    $e = Enable-TcConfig -Force -PlcProjectPath 'P' -WarningAction SilentlyContinue
+    Check '(14) S-B existing -PlcProjectPath passes the early check' ($e.success) "$($e.error.code) $($e.error.message)"
+    $global:SetConfigFail = $true
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check '(14) nit-3 set-config failed with data.requestSent=true -> block (no lifecycleBlock needed)' ($e.error.code -eq 'ADS_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'set-config') (J $e.data.lifecycleBlock)
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case'
+    $global:SetConfigFail = $false
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check '(14) nit-3 set-config failed with data.requestSent=false -> no block' ($e.error.code -eq 'ADS_TIMEOUT' -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A)) (J $e.data)
+    $global:SetConfigFail = $null
+
     # --- (8) persistence and corrupt state ---
     $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.5.5.5.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' -RequestedState 'Run' -ReachedState 'Config' }
     Import-Module $modulePath -Force -WarningAction SilentlyContinue
@@ -366,7 +411,10 @@ try {
     Check '(9) block written for 127.0.0.1.1.1 goes to <unknown> and blocks every target' ($key -eq '<unknown>' -and $null -ne $any) (J $any)
     $cc = Clear-TcLifecycleBlock -AmsNetId '10.8.8.8.1.1' -Reason 'user checked target 10.8.8.8'
     Check '(9) N1 Clear of a real target names <unknown> still blocking' (@($cc.data.stillBlocking) -contains '<unknown>' -and $cc.data.message -match "-AmsNetId '<unknown>'") (J $cc.data)
-    $null = Clear-TcLifecycleBlock -AmsNetId '<unknown>' -Reason 'unit test cleanup'
+    $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.4.4.4.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
+    $cc = Clear-TcLifecycleBlock -AmsNetId '<unknown>' -Reason 'user checked the loopback target'
+    Check '(9) nit-1 Clear <unknown> lists every remaining key as still blocking' ($cc.data.cleared.amsNetId -eq '127.0.0.1.1.1' -and @($cc.data.stillBlocking) -contains '10.4.4.4.1.1' -and $cc.data.message -match "-AmsNetId '10.4.4.4.1.1'") (J $cc.data)
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.4.4.4.1.1' -Reason 'unit test cleanup'
     $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.9.9.9.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
     $lb = & $mod { Get-TcLifecycleBlock -AmsNetId '127.0.0.1.1.1' }
     $lb2 = & $mod { Get-TcLifecycleBlock -AmsNetId '127.1.2.3.1.1' }

@@ -129,14 +129,15 @@ function Enable-TcConfig {
         Fail closed (#68): every success=false result has activated, restarted, loggedIn,
         reconnected and platformFixed = $false; what really happened is in activateSent,
         activateReturned, runSent, runReached, loginCompleted, platformSwitched, requestedState and
-        reachedState (last system state read back). Once set-config (a Set-TcSystemState that
-        sent its WriteControl) or ActivateConfiguration() was sent, EVERY failure records a
-        lifecycle block for the target (data.lifecycleBlock) - ACTIVATE_TIMEOUT, ACTIVATE_FAILED,
-        IDE_CRASHED, IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED, STATE_SET_FAILED,
+        reachedState (last system state read back). Once set-config (a Set-TcSystemState with
+        data.requestSent = $true) or ActivateConfiguration() was sent, EVERY failure records a
+        lifecycle block for the target (data.lifecycleBlock), for example ACTIVATE_TIMEOUT,
+        ACTIVATE_FAILED, IDE_CRASHED, IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED,
+        NOT_CONNECTED / BUILD_REQUIRED of the nested login, STATE_SET_FAILED,
         ADS_RECONNECT_FAILED, SYSTEM_STATE_*, RUNTIME_STATE_MISMATCH, BOOT_PACKAGE_MISMATCH,
-        PLC_* ... - except the precondition codes of $script:TcLifecyclePreconditionCodes
-        (Private/LifecycleBlock.ps1: BUILD_REQUIRED, BUILD_SELECTION_*, PLATFORM_*,
-        AMS_NETID_REQUIRED, ...); while one exists Enable-TcConfig returns
+        PLC_*; only LIFECYCLE_BLOCKED of a nested command is not recorded again. Failures before
+        that (BUILD_REQUIRED, PLATFORM_*, a -PlcProjectPath that names no PLC project ->
+        PLC_PROJECT_NOT_FOUND, checked before set-config) record nothing. While one exists Enable-TcConfig returns
         LIFECYCLE_BLOCKED before anything is read or changed. Only Clear-TcLifecycleBlock (after
         the user agreed) removes it.
         When a step after Activate fails (set-run, wait-plc-port, wait-plc-run, verify),
@@ -488,7 +489,7 @@ function Enable-TcConfig {
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
         $res = New-TcResult @params
         # #68: a failed postcondition after a runtime-changing request blocks the target
-        if ($runtimeChangeSent -and $script:TcLifecyclePreconditionCodes -notcontains $Code) {
+        if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
             $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $requestedState -ReachedState $reachedState -Step ($failedStep -join '')
         }
@@ -839,6 +840,22 @@ function Enable-TcConfig {
     if ($null -ne $fail) { return $fail }
     $fail = Test-TcBuildRequired
     if ($null -ne $fail) { return $fail }
+    # S-B (#68 review 2): a -PlcProjectPath that names no PLC project is refused before anything
+    # is changed (PLC_PROJECT_NOT_FOUND, no lifecycle block). A list that cannot be read here is
+    # resolved after set-run as before.
+    if (@($PlcProjectPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+        $preList = $null
+        try { $preList = @(Get-TcPlcProjectList -SysManager $sm) } catch { $preList = $null; Write-Verbose "Enable-TcConfig: PLC project list not readable before set-config ($($_.Exception.Message))" }
+        if ($null -ne $preList) {
+            foreach ($spec in $PlcProjectPath) {
+                if ([string]::IsNullOrWhiteSpace($spec)) { continue }
+                if ($null -eq (Find-TcPlcProject -List $preList -Spec $spec)) {
+                    Add-TcStepRecord -Name 'plc-project' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "'$spec' not found before set-config"
+                    return New-TcStepFailure -Message "PLC project '$spec' not found; nothing was changed. PLC projects: $(($preList | ForEach-Object { $_.projectPath }) -join ', ')" -Code 'PLC_PROJECT_NOT_FOUND'
+                }
+            }
+        }
+    }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
 
     # 1. set-config
@@ -849,9 +866,10 @@ function Enable-TcConfig {
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {
-        # Set-TcSystemState records a block only when its WriteControl went out; without one
-        # (connect failed, ADS assembly missing ...) nothing was sent to the runtime
-        if ($null -eq $r.data -or $null -eq $r.data.PSObject.Properties['lifecycleBlock']) { $runtimeChangeSent = $false }
+        # nit-3: Set-TcSystemState reports whether its WriteControl was called (data.requestSent);
+        # without it (connect failed, ADS assembly missing, refused ...) nothing reached the runtime
+        $rsp = if ($null -ne $r.data) { $r.data.PSObject.Properties['requestSent'] } else { $null }
+        if ($null -eq $rsp -or $rsp.Value -ne $true) { $runtimeChangeSent = $false }
         Add-TcStepRecord -Name 'set-config' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         $res = New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Config' -DefaultCode 'CONFIG_SWITCH_FAILED'
         Add-TcRuntimeCrashData -Result $res -StateResult $r

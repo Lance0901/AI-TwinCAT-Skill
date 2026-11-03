@@ -19,6 +19,8 @@
                   tests/Integration/*.ps1, except where a marker COMMENT
                   "tcauto-allow(<rule>): <reason>" names the rule
                   (scripts/forbidden-patterns.ps1; tests/Unit/forbidden-lint.ps1 proves it hits).
+                  Also lists the tcauto-allow markers added relative to origin/master (for review;
+                  skipped without failing when origin/master cannot be diffed).
       cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
                   number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md
                   "Available Commands (N)", README.md "All Commands (N)" and
@@ -269,8 +271,25 @@ try {
     $fbHits = @(Find-TcForbiddenPattern -Files $fbFiles -Root $repoRoot)
     $fbBad = @($fbHits | Where-Object { -not $_.Allowed })
     $fbOk = @($fbHits | Where-Object { $_.Allowed })
+    # markers added relative to origin/master (information for the reviewer, never a failure)
+    $newMarkers = [System.Collections.Generic.List[string]]::new()
+    $markerNote = $null
+    try {
+        $d = Invoke-Native 'git' @('-C', $repoRoot, 'diff', '--unified=0', '--no-color', 'origin/master', '--', 'src', 'mcp-server', 'tests/Integration')
+        if ($d.Code -ne 0) { $markerNote = "markers added since origin/master: skipped (git diff exit $($d.Code))" }
+        else {
+            $curFile = $null
+            foreach ($l in $d.Output) {
+                if ($l -match '^\+\+\+ b/(.+)$') { $curFile = $Matches[1]; continue }
+                if ($l -match '^\+(?!\+\+)' -and $l -match 'tcauto-allow\(') { $newMarkers.Add(("{0}: {1}" -f $curFile, $l.Substring(1).Trim())) }
+            }
+            $markerNote = "markers added since origin/master: $($newMarkers.Count)"
+        }
+    }
+    catch { $markerNote = "markers added since origin/master: skipped ($($_.Exception.Message))" }
+    $markerLines = @($markerNote) + @($newMarkers | ForEach-Object { "  + $_" })
     if ($fbBad.Count -eq 0) {
-        Add-CheckResult 'forbidden' 'PASS' "$($fbFiles.Count) files, no forbidden pattern ($($fbOk.Count) allowed by tcauto-allow marker)"
+        Add-CheckResult 'forbidden' 'PASS' "$($fbFiles.Count) files, no forbidden pattern ($($fbOk.Count) allowed by tcauto-allow marker)" $markerLines
     }
     else {
         $lines = @($fbBad | ForEach-Object { '{0}:{1} [{2}] {3}: {4}' -f $_.File, $_.Line, $_.Rule, $_.Why, $(if ($_.Text.Length -gt 120) { $_.Text.Substring(0, 120) } else { $_.Text }) })

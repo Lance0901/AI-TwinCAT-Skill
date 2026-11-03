@@ -35,9 +35,12 @@
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
         data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
 
-        Fail closed (#68): every failure after WriteControl was sent - SYSTEM_STATE_TIMEOUT,
-        SYSTEM_STATE_MISMATCH, RUNTIME_CRASHED and an exception (ADS error) after the write - also
-        records a lifecycle block for the target (data.lifecycleBlock).
+        Fail closed (#68): every failure once WriteControl was called - SYSTEM_STATE_TIMEOUT,
+        SYSTEM_STATE_MISMATCH, RUNTIME_CRASHED and an exception (ADS error) from or after the
+        write - also records a lifecycle block for the target (data.lifecycleBlock). A
+        WriteControl that the target refuses on the spot (ADS error from the call itself) records
+        one too: whether part of the request took effect is not known, so this is conservative.
+        data.requestSent tells whether WriteControl was called ($false: nothing was sent).
         While a block exists for the target, this command returns LIFECYCLE_BLOCKED and sends
         nothing; only Clear-TcLifecycleBlock (after the user agreed) removes it.
     .PARAMETER State
@@ -95,7 +98,7 @@
 
     # #68: a failed postcondition on this target is still unresolved: send nothing
     $blocked = Test-TcLifecycleBlock -AmsNetId $AmsNetId -Command 'Set-TcSystemState'
-    if ($null -ne $blocked) { return $blocked }
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $false -Force; return $blocked }
 
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
@@ -162,6 +165,7 @@
             amsNetId         = $AmsNetId
             netIdSource      = $netIdSource
             elapsedMs        = [int]$requestWatch.ElapsedMilliseconds
+            requestSent      = $true
         }
 
         if (-not $leftOriginal) {
@@ -282,6 +286,9 @@
     }
     catch {
         $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        $rd = $res.PSObject.Properties['data']
+        if ($null -eq $rd -or $null -eq $rd.Value) { $res | Add-Member -NotePropertyName 'data' -NotePropertyValue ([PSCustomObject]@{}) -Force }
+        $res.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $sent -Force
         # #68: the request may have changed the runtime: fail closed
         if ($sent) { $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -Step 'after the state request (exception)' }
         $res

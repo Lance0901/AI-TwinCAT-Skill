@@ -2,19 +2,22 @@
 # the requested state was reached" - fail closed until a person has looked at it.
 #
 # Written ONLY after a runtime-changing request was sent and the command then failed:
-#   Set-TcSystemState  after WriteControl: SYSTEM_STATE_TIMEOUT, SYSTEM_STATE_MISMATCH,
-#                      RUNTIME_CRASHED and any exception (ADS error) after the write
-#   Enable-TcConfig    after set-config / ActivateConfiguration() was sent: every failure code
-#                      except $script:TcLifecyclePreconditionCodes (ACTIVATE_TIMEOUT,
-#                      ACTIVATE_FAILED, IDE_CRASHED, IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED,
-#                      STATE_SET_FAILED, ADS_RECONNECT_FAILED, SYSTEM_STATE_*,
-#                      RUNTIME_STATE_MISMATCH, BOOT_PACKAGE_MISMATCH, PLC_* ... all record one).
-#                      A set-config whose Set-TcSystemState sent nothing (no data.lifecycleBlock)
-#                      does not count as sent.
-#   Set-TcPlcState     WriteControl sent, the port did not reach Run / Stop (PLC_RUN_TIMEOUT /
-#                      STATE_SET_FAILED from the readback)
-# Precondition refusals (BUILD_REQUIRED, BUILD_SELECTION_*, PLATFORM_*, AMS_NETID_REQUIRED ...)
-# before anything was sent never write one: nothing was changed.
+#   Set-TcSystemState  any failure once WriteControl was called (data.requestSent = $true; also
+#                      when the write itself was refused on the spot - conservative), records a
+#                      block, for example SYSTEM_STATE_TIMEOUT, SYSTEM_STATE_MISMATCH,
+#                      RUNTIME_CRASHED or an ADS exception after the write.
+#   Enable-TcConfig    any failure once set-config (a Set-TcSystemState with
+#                      data.requestSent = $true) or ActivateConfiguration() was sent records a
+#                      block, for example ACTIVATE_TIMEOUT, ACTIVATE_FAILED, IDE_CRASHED,
+#                      IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED, NOT_CONNECTED or
+#                      BUILD_REQUIRED of the nested login, STATE_SET_FAILED, SYSTEM_STATE_*,
+#                      RUNTIME_STATE_MISMATCH, BOOT_PACKAGE_MISMATCH, PLC_*; the only exception is
+#                      LIFECYCLE_BLOCKED (a nested command was refused, the block exists already).
+#   Set-TcPlcState     records a block when WriteControl was sent and the port did not reach Run
+#                      / Stop, for example PLC_RUN_TIMEOUT or STATE_SET_FAILED from the readback.
+# Failures before anything was sent (BUILD_REQUIRED, BUILD_SELECTION_*, PLATFORM_*,
+# AMS_NETID_REQUIRED, PLC_PROJECT_NOT_FOUND of Enable-TcConfig -PlcProjectPath ...) never write
+# one: nothing was changed.
 #
 # While a record exists for the target, every runtime-changing public command returns
 # LIFECYCLE_BLOCKED (success = false, data.lifecycleBlock) and does nothing (Test-TcLifecycleBlock):
@@ -55,14 +58,6 @@
 $script:TcLifecycleBlockLocal = @{}
 $script:TcLifecycleUnknownKey = '<unknown>'
 $script:TcLifecycleCorruptKey = '<corrupt>'
-# Enable-TcConfig failure codes that never record a block: a precondition that refused before
-# anything changed (also when returned later, e.g. LIFECYCLE_BLOCKED of a nested command)
-$script:TcLifecyclePreconditionCodes = @(
-    'NOT_CONNECTED', 'AMS_NETID_REQUIRED', 'LIFECYCLE_BLOCKED',
-    'BUILD_REQUIRED', 'BUILD_SELECTION_CHANGED', 'BUILD_SELECTION_UNKNOWN',
-    'PLATFORM_MISMATCH', 'PLATFORM_PROJECT_MISMATCH', 'PLATFORM_NOT_FOUND', 'PLATFORM_SET_FAILED', 'PLATFORM_UNKNOWN',
-    'VARIANT_READ_FAILED', 'VARIANT_GROUP_ACTIVE'
-)
 
 function Get-TcLifecycleBlockFile {
     Join-Path (Split-Path -Parent (Get-TcBuildRequiredFile)) 'lifecycle-block.json'
