@@ -146,10 +146,18 @@
         is not in skippedProjects, does not raise PROJECT_SKIPPED_BY_CONFIGURATION and does not
         keep coverageComplete / codeVerified / completeBuild false. An ENABLED project that is
         skipped still does (#28). Coverage entries are matched to PLC tree items by name (.plcproj
-        file name = TIPC child name); an entry with no matching tree item counts as enabled. When
+        file name = TIPC child name); an entry with no matching tree item counts as enabled. The
+        match must be one to one (fail closed): when a disabled tree item matches more than one
+        entry, an enabled tree item matches none, or an entry matches more than one tree item,
+        every project counts as enabled (old behaviour) and data.disabledCheckError says why. When
         the PLC project list cannot be read every project counts as enabled (old behaviour) and
         data.disabledCheckError holds the message. When every PLC project is disabled and skipped,
-        nothing was compiled: coverageComplete and codeVerified are $false (CODE_NOT_VERIFIED).
+        nothing was compiled: coverageComplete, codeVerified and completeBuild are $false
+        (CODE_NOT_VERIFIED), like a solution without PLC project - and like it, BUILD_REQUIRED is
+        neither recorded nor cleared by such a build (no PLC code is activated).
+        InfoSys on disabling: https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425861515.html
+        (that .tsproj Disabled="true" reads back as ITcSmTreeItem.Disabled <> 0 on the PLC node is
+        not measured yet).
         Skipped projects without -ExpectedProject: success stays as decided above, plus
         data.warningCode = PROJECT_SKIPPED_BY_CONFIGURATION, data.warning and Write-Warning.
         -ExpectedProject <name>: when one of them is skipped the build is not started and
@@ -211,13 +219,20 @@
     try { $coverage = Get-TcBuildCoverage }
     catch { return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build not started (reading SolutionContexts failed)' }
     # --- disabled PLC projects (#104): ITcSmTreeItem.Disabled of the TIPC child (Get-TcPlcProjectList),
-    # the same reading Enable-TcConfig and Resolve-TcPlcProjectPath use to leave them out. A coverage
+    # the same reading Enable-TcConfig and Resolve-TcPlcProjectPath use to leave them out (a disabled
+    # tree item is not activated: InfoSys "How to disable/enable a tree item",
+    # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425861515.html). A coverage
     # entry is matched to a PLC tree item by name (the .plcproj file name without extension = the
     # TIPC child name, the same assumption as Find-TcBuildCoverageEntry's 'TIPC^<Plc>' form); an
-    # entry without a matching tree item counts as enabled (old behaviour). A disabled entry that
-    # the configuration skips gets status 'disabled' (not 'skipped'): it is not part of the
-    # coverage, so it does not keep coverageComplete false. A disabled entry that IS built stays
-    # 'built'. When the list cannot be read every entry counts as enabled (data.disabledCheckError).
+    # entry without a matching tree item counts as enabled (old behaviour). The name is not a
+    # reliable key (two folders with PLC.plcproj; an enabled node 'Main' whose file is Legacy.plcproj
+    # next to a disabled node 'Legacy'), so the match must be one to one, else fail closed: when a
+    # disabled node matches more than one entry, an enabled node matches no entry, or an entry
+    # matches more than one node, every entry counts as enabled (old behaviour) and
+    # data.disabledCheckError says why. A disabled entry that the configuration skips gets status
+    # 'disabled' (not 'skipped'): it is not part of the coverage, so it does not keep
+    # coverageComplete false. A disabled entry that IS built stays 'built'. When the list cannot be
+    # read every entry counts as enabled (data.disabledCheckError).
     $disabledCheckError = $null
     foreach ($p in @($coverage.projects)) { $p | Add-Member -NotePropertyName 'disabled' -NotePropertyValue $false -Force }
     if ($null -eq $coverage.error -and @($coverage.projects).Count -gt 0) {
@@ -230,12 +245,29 @@
             $disabledCheckError = $_.Exception.Message
             Write-Verbose "Build-TcProject: PLC project list not readable ($disabledCheckError); every PLC project counts as enabled."
         }
-        if ($null -ne $plcList) {
+        # without any disabled tree item nothing is marked, so the one-to-one check is not needed
+        if ($null -ne $plcList -and @($plcList | Where-Object { $_.disabled -eq $true }).Count -gt 0) {
+            $ambiguous = @()
+            foreach ($n in $plcList) {
+                $hits = @($coverage.projects | Where-Object { [string]$_.name -ieq [string]$n.name })
+                if ($n.disabled -eq $true -and $hits.Count -gt 1) { $ambiguous += "disabled PLC '$($n.name)' matches $($hits.Count) .plcproj entries ($(($hits | ForEach-Object { $_.uniqueName }) -join ', '))" }
+                if ($n.disabled -ne $true -and $hits.Count -eq 0) { $ambiguous += "enabled PLC '$($n.name)' matches no .plcproj entry (its project file has another name)" }
+            }
             foreach ($p in @($coverage.projects)) {
-                $item = @($plcList | Where-Object { [string]$_.name -ieq [string]$p.name } | Select-Object -First 1)
-                if ($item.Count -gt 0 -and $item[0].disabled -eq $true) {
-                    $p.disabled = $true
-                    if ($p.status -eq 'skipped') { $p.status = 'disabled' }
+                $nodes = @($plcList | Where-Object { [string]$_.name -ieq [string]$p.name })
+                if ($nodes.Count -gt 1) { $ambiguous += ".plcproj entry '$($p.uniqueName)' matches $($nodes.Count) PLC tree items" }
+            }
+            if ($ambiguous.Count -gt 0) {
+                $disabledCheckError = "PLC tree items cannot be matched one to one to the .plcproj entries by name, so every PLC project counts as enabled: $($ambiguous -join '; ')"
+                Write-Verbose "Build-TcProject: $disabledCheckError"
+            }
+            else {
+                foreach ($p in @($coverage.projects)) {
+                    $item = @($plcList | Where-Object { [string]$_.name -ieq [string]$p.name })
+                    if ($item.Count -eq 1 -and $item[0].disabled -eq $true) {
+                        $p.disabled = $true
+                        if ($p.status -eq 'skipped') { $p.status = 'disabled' }
+                    }
                 }
             }
         }
@@ -283,7 +315,8 @@
             return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($missing -join ', ') not in the solution (PLC projects: $known)." `
                 -ErrorCode 'EXPECTED_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'EXPECTED_PROJECT_NOT_FOUND') -Data $covData
         }
-        # #104: a disabled PLC project is never activated (Enable-TcConfig leaves it out), so
+        # #104: a disabled PLC project is never activated (Enable-TcConfig leaves it out; InfoSys
+        # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425861515.html), so
         # expecting it is a mistake - refused whether or not the configuration builds it.
         $disabledExpected = @($expected | Where-Object { (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_).disabled -eq $true })
         if ($disabledExpected.Count -gt 0) {
@@ -307,14 +340,20 @@
     # without PLC project - the coverage list (SolutionContexts) read without error AND the TIPC
     # tree has no PLC child (Get-TcPlcProjectList; unreadable -> recorded): there is no PLC code
     # to verify, and such a solution can never reach completeBuild, so the entry could only be
-    # removed by hand.
+    # removed by hand. The same holds when every PLC project is disabled and not built (#104,
+    # status 'disabled', the disabled check itself without disabledCheckError): no PLC code is
+    # activated, so it is treated like a solution without PLC project (not recorded; completeBuild
+    # stays $false and an existing entry is not cleared, as for a solution without PLC project).
     $noPlcChecked = $false
     $noPlcProject = $false
+    $allDisabled = ($null -eq $coverage.error) -and ($null -eq $disabledCheckError) -and (@($coverage.projects).Count -gt 0) -and
+        (@($coverage.projects | Where-Object { $_.status -ne 'disabled' }).Count -eq 0)
     $recordUnverified = {
         param([string]$What, [object]$Target)
         if (-not $noPlcChecked) {
             $noPlc = ($null -eq $coverage.error) -and (@($coverage.projects).Count -eq 0)
-            if ($noPlc) {
+            if ($allDisabled) { $noPlc = $true }
+            elseif ($noPlc) {
                 try { $noPlc = (@(Get-TcPlcProjectList -SysManager $sm).Count -eq 0) } catch { $noPlc = $false }
             }
             Set-Variable -Name noPlcProject -Value $noPlc -Scope 1

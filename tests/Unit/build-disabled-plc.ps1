@@ -8,7 +8,10 @@
 #   (c) -ExpectedProject naming a disabled project -> EXPECTED_PROJECT_DISABLED, build not started
 #   (d) Get-TcPlcProjectList throws -> old behaviour (all enabled) + data.disabledCheckError
 #   plus: a disabled project that IS built stays 'built'; a coverage entry without a tree item is
-#   enabled; every PLC disabled + skipped -> not complete (nothing compiled).
+#   enabled; every PLC disabled + skipped -> not complete (nothing compiled), BUILD_REQUIRED neither
+#   recorded nor cleared; a name match that is not one to one fails closed (review M1: two
+#   PLC.plcproj, enabled 'Main' with Legacy.plcproj next to a disabled 'Legacy'); an empty PLC
+#   list; IDE_CRASHED / IDE_MODAL_DIALOG from the PLC list stop before the build.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/build-disabled-plc.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -36,7 +39,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
     $script:TcSolutionPath = $s
     $script:UtProjects = @()
     $script:UtPlcList = @()
-    $script:UtPlcListThrows = $false
+    $script:UtPlcListThrows = $null
     $script:UtBuildStarted = $false
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [PSCustomObject]@{ Mock = $true } }
@@ -46,7 +49,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
         # fresh objects per call: Build-TcProject marks them (disabled / status)
         $projects = @($script:UtProjects | ForEach-Object {
             [PSCustomObject]@{
-                name = $_.name; uniqueName = "Demo\$($_.name)\$($_.name).plcproj"; configuration = 'Release'
+                name = $_.name; uniqueName = $(if ($_.unique) { $_.unique } else { "Demo\$($_.name)\$($_.name).plcproj" }); configuration = 'Release'
                 platform = 'TwinCAT OS (x64)'; shouldBuild = $_.build; status = $(if ($_.build) { 'pending' } else { 'skipped' })
             }
         })
@@ -54,7 +57,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
     }
     function script:Get-TcPlcProjectList {
         param($SysManager)
-        if ($script:UtPlcListThrows) { throw 'TIPC not readable (unit mock)' }
+        if ($script:UtPlcListThrows) { throw [string]$script:UtPlcListThrows }
         @($script:UtPlcList | ForEach-Object {
             [PSCustomObject]@{ name = $_.name; nodePath = "TIPC^$($_.name)"; projectPath = "TIPC^$($_.name)^$($_.name) Project"; adsPort = 851; disabled = [bool]$_.disabled }
         })
@@ -73,7 +76,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
     $script:TcDte = [PSCustomObject]@{ Solution = [PSCustomObject]@{ SolutionBuild = $sb }; ToolWindows = $null }
 } $sln
 
-function Set-Scenario($Projects, $PlcList, [bool]$Throws = $false) {
+function Set-Scenario($Projects, $PlcList, [string]$Throws = $null) {
     & $mod { param($p, $l, $t) $script:UtProjects = @($p); $script:UtPlcList = @($l); $script:UtPlcListThrows = $t; $script:UtBuildStarted = $false } $Projects $PlcList $Throws
 }
 function Get-BuildStarted { & $mod { $script:UtBuildStarted } }
@@ -129,12 +132,12 @@ Check '(c) nothing recorded (build not started)' ($null -eq (Get-Entry)) (J (Get
 
 # --- (d) Get-TcPlcProjectList throws: old behaviour + disabledCheckError
 Reset-State
-Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true)) $true
+Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true)) 'TIPC not readable (unit mock)'
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check '(d) disabledCheckError set' ($d.disabledCheckError -match 'TIPC not readable') (J $d)
 Check '(d) old behaviour: demo skipped, PROJECT_SKIPPED_BY_CONFIGURATION, completeBuild false' ((Status $r) -eq 'plc=built/False,demo=skipped/False' -and $d.warningCode -eq 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $d.completeBuild -eq $false -and @($d.disabledProjects).Count -eq 0) "$(Status $r) $(J $d.warningCodes)"
-Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true)) $true
+Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true)) 'TIPC not readable (unit mock)'
 $r = Build-TcProject -ExpectedProject 'demo' -WarningAction SilentlyContinue
 Check '(d) -ExpectedProject demo -> old PROJECT_SKIPPED_BY_CONFIGURATION + disabledCheckError' ($r.error.code -eq 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $r.data.disabledCheckError -match 'TIPC not readable') (J $r)
 
@@ -154,6 +157,52 @@ Set-Scenario @((P 'demo' $false), (P 'demo2' $false)) @((T 'demo' $true), (T 'de
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check 'every PLC disabled + skipped -> coverageComplete false, codeVerified false, CODE_NOT_VERIFIED, no PROJECT_SKIPPED' ($r.success -and $d.coverageComplete -eq $false -and $d.codeVerified -eq $false -and $d.completeBuild -eq $false -and (@($d.warningCodes) -join ',') -eq 'CODE_NOT_VERIFIED' -and $d.warning -match 'every PLC project is disabled') (J $d)
+Check 'every PLC disabled + skipped -> BUILD_REQUIRED not recorded (like a solution without PLC project)' ($null -eq $d.PSObject.Properties['buildRequired'] -and $null -eq (Get-Entry)) (J (Get-Entry))
+& $mod { Set-TcBuildRequired -Kind 'platform-switch' -Reason 'unit: platform switched' -WarningAction SilentlyContinue } | Out-Null
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'every PLC disabled + skipped -> an existing entry is not cleared either' ($r.data.completeBuild -eq $false -and $null -ne (Get-Entry) -and $null -eq $r.data.PSObject.Properties['buildRequired']) (J (Get-Entry))
+
+# --- M1: the name match must be one to one, else fail closed (every entry enabled + disabledCheckError)
+function PU([string]$Name, [bool]$Build, [string]$Unique) { @{ name = $Name; build = $Build; unique = $Unique } }
+# A: two folders with PLC.plcproj; tree node 'PLC' disabled, 'Line2' enabled (its file is the second PLC.plcproj)
+Reset-State
+Set-Scenario @((PU 'PLC' $false 'Demo\PLC\PLC.plcproj'), (PU 'PLC' $false 'Demo\Line2\PLC.plcproj')) @((T 'PLC' $true), (T 'Line2' $false))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'M1 A: two PLC.plcproj + disabled PLC / enabled Line2 -> both skipped (not disabled), completeBuild false' ((Status $r) -eq 'PLC=skipped/False,PLC=skipped/False' -and $d.completeBuild -eq $false -and @($d.disabledProjects).Count -eq 0 -and $d.warningCode -eq 'PROJECT_SKIPPED_BY_CONFIGURATION') "$(Status $r) $(J $d.warningCodes)"
+Check 'M1 A: disabledCheckError names the ambiguity' ($d.disabledCheckError -match 'one to one' -and $d.disabledCheckError -match "disabled PLC 'PLC' matches 2" -and $d.disabledCheckError -match "enabled PLC 'Line2' matches no") ([string]$d.disabledCheckError)
+Check 'M1 A: BUILD_REQUIRED recorded' ($null -ne $d.buildRequired -and $null -ne (Get-Entry)) (J $d)
+# B: enabled node 'Main' whose file is Legacy.plcproj; a disabled node 'Legacy' with file OldDemo.plcproj
+Reset-State
+Set-Scenario @((PU 'Legacy' $false 'Demo\Main\Legacy.plcproj'), (PU 'OldDemo' $false 'Demo\Legacy\OldDemo.plcproj')) @((T 'Main' $false), (T 'Legacy' $true))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'M1 B: enabled Main (Legacy.plcproj) is not marked disabled by the disabled node Legacy' ((Status $r) -eq 'Legacy=skipped/False,OldDemo=skipped/False' -and $d.completeBuild -eq $false -and @($d.disabledProjects).Count -eq 0 -and (@($d.skippedProjects) -join ',') -eq 'Legacy,OldDemo') "$(Status $r)"
+Check 'M1 B: disabledCheckError names the unmatched enabled node' ($d.disabledCheckError -match "enabled PLC 'Main' matches no") ([string]$d.disabledCheckError)
+Set-Scenario @((PU 'Legacy' $false 'Demo\Main\Legacy.plcproj'), (PU 'OldDemo' $false 'Demo\Legacy\OldDemo.plcproj')) @((T 'Main' $false), (T 'Legacy' $true))
+$r = Build-TcProject -ExpectedProject 'Legacy' -WarningAction SilentlyContinue
+Check 'M1 B: -ExpectedProject Legacy -> PROJECT_SKIPPED_BY_CONFIGURATION (not EXPECTED_PROJECT_DISABLED)' ($r.error.code -eq 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $r.data.disabledCheckError -match 'one to one') (J $r.error)
+# an entry matching two tree items (case-only duplicates)
+Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true), (T 'DEMO' $false))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'M1: an entry matching two tree items -> fail closed' ((Status $r) -eq 'plc=built/False,demo=skipped/False' -and $r.data.disabledCheckError -match "entry 'Demo\\demo\\demo.plcproj' matches 2") "$(Status $r) $($r.data.disabledCheckError)"
+# no disabled node at all: no one-to-one check, no disabledCheckError (an enabled node with another file name is fine)
+Set-Scenario @((P 'plc' $true), (P 'Legacy' $true)) @((T 'plc' $false), (T 'Main' $false))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'no disabled node -> no disabledCheckError, complete' ($null -eq $r.data.PSObject.Properties['disabledCheckError'] -and $r.data.completeBuild -eq $true) (J $r.data)
+
+# --- S2: Get-TcPlcProjectList returns nothing -> every entry enabled, old behaviour
+Reset-State
+Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @()
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'empty PLC list -> all enabled, demo skipped, PROJECT_SKIPPED_BY_CONFIGURATION, no disabledCheckError' ((Status $r) -eq 'plc=built/False,demo=skipped/False' -and $r.data.warningCode -eq 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $r.data.completeBuild -eq $false -and $null -eq $r.data.PSObject.Properties['disabledCheckError']) "$(Status $r)"
+# --- S2: IDE_CRASHED / IDE_MODAL_DIALOG from the PLC list -> error, build not started
+foreach ($code in 'IDE_CRASHED', 'IDE_MODAL_DIALOG') {
+    Reset-State
+    Set-Scenario @((P 'plc' $true), (P 'demo' $false)) @((T 'plc' $false), (T 'demo' $true)) "${code}: the IDE is gone (unit mock)"
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check "PLC list throws $code -> success false, build not started, nothing recorded" ((-not $r.success) -and $r.error.message -match $code -and -not (Get-BuildStarted) -and $null -eq (Get-Entry)) (J $r)
+}
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 "failed: $fail"

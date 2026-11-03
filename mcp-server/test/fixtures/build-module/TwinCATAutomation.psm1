@@ -29,6 +29,8 @@
 #   skipped                lbi 0, no rows; a second PLC project is skipped by the configuration
 #   disabled-skipped       like skipped, but the second PLC project (plc2) is disabled in the TIPC
 #                          tree (Get-TcPlcProjectList disabled = true, .tsproj Disabled="true", #104)
+#   mixed-skipped          like skipped (plc2 enabled + skipped), plus a third PLC project plc3 that
+#                          is disabled and skipped (#104: only plc2 is a coverage gap)
 #   all-skipped            lbi 0, no rows; the only PLC project is skipped (#58, TwinCAT_Festo shape:
 #                          solution platform = the fixture platform, project platform
 #                          'TwinCAT OS (ARMT2)', the coverage label carries the project platform
@@ -90,6 +92,7 @@ $script:FixtureScenarios = @{
     'skipped-library'       = @{ Lbi = 0; Sets = @('library'); Skipped = $true }
     'skipped'               = @{ Lbi = 0; Sets = @(); Skipped = $true }
     'disabled-skipped'      = @{ Lbi = 0; Sets = @(); Skipped = $true; Plc2Disabled = $true }
+    'mixed-skipped'         = @{ Lbi = 0; Sets = @(); Skipped = $true; Plc3Disabled = $true }
     'all-skipped'           = @{ Lbi = 0; Sets = @(); AllSkipped = $true; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
     'coverage-error'        = @{ Lbi = 0; Sets = @(); CoverageError = 'SolutionContexts not readable (fixture)' }
     'no-plc'                = @{ Lbi = 0; Sets = @(); NoPlc = $true }
@@ -142,6 +145,10 @@ function Get-TcPlcProjectList {
     if ($sc.NoPlc) { return @() }
     $list = @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false })
     if ($sc.Plc2Disabled) { $list += [PSCustomObject]@{ name = 'plc2'; nodePath = 'TIPC^plc2'; projectPath = 'TIPC^plc2^plc2 Project'; adsPort = 852; disabled = $true } }
+    if ($sc.Plc3Disabled) {
+        $list += [PSCustomObject]@{ name = 'plc2'; nodePath = 'TIPC^plc2'; projectPath = 'TIPC^plc2^plc2 Project'; adsPort = 852; disabled = $false }
+        $list += [PSCustomObject]@{ name = 'plc3'; nodePath = 'TIPC^plc3'; projectPath = 'TIPC^plc3^plc3 Project'; adsPort = 853; disabled = $true }
+    }
     $list
 }
 function Get-TcBuildCoverage {
@@ -162,6 +169,12 @@ function Get-TcBuildCoverage {
     if ((Get-FixtureScenario).Skipped) {
         $projects += [PSCustomObject]@{
             name = 'plc2'; uniqueName = 'Demo\plc2\plc2.plcproj'; configuration = 'Release'
+            platform = 'TwinCAT RT (x64)'; shouldBuild = $false; status = 'skipped'
+        }
+    }
+    if ((Get-FixtureScenario).Plc3Disabled) {
+        $projects += [PSCustomObject]@{
+            name = 'plc3'; uniqueName = 'Demo\plc3\plc3.plcproj'; configuration = 'Release'
             platform = 'TwinCAT RT (x64)'; shouldBuild = $false; status = 'skipped'
         }
     }

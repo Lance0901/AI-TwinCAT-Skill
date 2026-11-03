@@ -296,6 +296,22 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.equal(d.disabledCheckError, undefined);
   });
 
+  test('enabled skipped + disabled skipped: only the enabled one is a gap (PROJECT_SKIPPED_BY_CONFIGURATION, completeBuild false)', async () => {
+    const { res, body } = await build('mixed-skipped');
+    assert.notEqual(res.isError, true, JSON.stringify(body));
+    const d = body.data;
+    assert.equal(body.success, true);
+    assert.deepEqual(d.projects.map((p) => [p.name, p.status, p.disabled]), [['plc', 'built', false], ['plc2', 'skipped', false], ['plc3', 'disabled', true]]);
+    assert.deepEqual(d.skippedProjects, ['plc2']);
+    assert.deepEqual(d.disabledProjects, ['plc3']);
+    assert.deepEqual(d.warningCodes, ['PROJECT_SKIPPED_BY_CONFIGURATION', 'CODE_NOT_VERIFIED']);
+    assert.match(d.warning, /plc2/);
+    assert.doesNotMatch(d.warning, /plc3/);
+    assert.equal(d.coverageComplete, false);
+    assert.equal(d.completeBuild, false);
+    assert.match(d.buildRequired, /completeBuild=false/);
+  });
+
   test('ExpectedProject naming a disabled PLC project: EXPECTED_PROJECT_DISABLED, build not started', async () => {
     const { res, body } = await build('disabled-skipped', { ExpectedProject: ['plc', 'plc2'] });
     assert.equal(res.isError, true, JSON.stringify(body));
