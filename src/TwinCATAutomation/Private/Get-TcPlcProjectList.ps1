@@ -15,13 +15,17 @@ function Get-TcPlcProjectList {
                        A disabled PLC is not activated, so Enable-TcConfig skips it.
         The "<Plc> Project" child is not always enumerable (on 4026 only "<Plc> Instance"
         is listed), so projectPath is built from the name like Resolve-TcPlcProjectPath.
+          projectFile  absolute path of the .plcproj: <PlcProjectDef>...<ProjectPath> of the PLC
+                       node's ProduceXml (measured 2026-11-03, 4026 + VS2022 + local UmRT, through
+                       the registered tcauto MCP); $null when missing or not an absolute path.
+                       Build-TcProject matches its coverage entries by this path (#104).
         The ADS port source was measured on 4026 + VS2022 (2026-10-21): the PLC node XML
         contains <AdsPort>851</AdsPort> / <AdsPort>852</AdsPort> per PLC; the
         "<Plc> Project" XML has none. InfoSys does not document this element (measured).
     .PARAMETER SysManager
         ITcSysManager (Get-TcSysManager).
     .OUTPUTS
-        PSCustomObject[] @{ name; nodePath; projectPath; adsPort; disabled }
+        PSCustomObject[] @{ name; nodePath; projectPath; adsPort; disabled; projectFile }
     #>
     [CmdletBinding()]
     param(
@@ -50,12 +54,22 @@ function Get-TcPlcProjectList {
             $plcPorts = @($ports | Where-Object { $_ -ge 800 -and $_ -le 899 })
             if ($plcPorts.Count -gt 0) { $port = $plcPorts[0] } elseif ($ports.Count -gt 0) { $port = $ports[0] }
         }
+        $projectFile = $null
+        if (-not [string]::IsNullOrWhiteSpace($info.Xml)) {
+            $pm = [regex]::Match($info.Xml, '(?s)<PlcProjectDef\b.*?<ProjectPath>([^<]+)</ProjectPath>')
+            if ($pm.Success) {
+                $pf = [System.Net.WebUtility]::HtmlDecode($pm.Groups[1].Value).Trim()
+                # only an absolute path is usable (the base of a relative one is not known here)
+                if (-not [string]::IsNullOrWhiteSpace($pf) -and [IO.Path]::IsPathRooted($pf)) { $projectFile = $pf }
+            }
+        }
         $list += [PSCustomObject]@{
             name        = $info.Name
             nodePath    = $info.Path
             projectPath = "$($info.Path)^$($info.Name) Project"
             adsPort     = $port
             disabled    = ($info.Disabled -ne 0)
+            projectFile = $projectFile
         }
     }
     return $list
