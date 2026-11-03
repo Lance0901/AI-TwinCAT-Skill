@@ -105,7 +105,7 @@ function Get-TcBuildErrors {
     # Make sure the tool window is shown (auto-hidden / closed windows are invisible to UIA).
     try {
         Invoke-TcComRetry -MaxRetries 2 -OperationName 'View.ErrorList' -TimeoutSec 30 -ScriptBlock {
-            $script:TcDte.ExecuteCommand('View.ErrorList')
+            $script:TcDte.ExecuteCommand('View.ErrorList')  # tcauto-allow(executecommand): opens the XAE Error List window to read it, no TwinCAT command
         } | Out-Null
         Start-Sleep -Milliseconds 300
     }

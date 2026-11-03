@@ -4,16 +4,19 @@
     tests/Unit/forbidden-lint.ps1. Dot-source it; it only defines functions.
 
 .DESCRIPTION
-    A hit is code text (comments and comment-based help are ignored) that matches one rule:
+    A hit is code text (comments and comment-based help are ignored; string literals are code)
+    that matches one rule:
       amsnetid        an AmsNetId literal (\b\d{1,3}(\.\d{1,3}){5}\b): AmsNetIds are dynamic,
                       take them from the IDE target / ADS session or a parameter.
-      startrestart    ITcSysManager.StartRestartTwinCAT: shows dialogs; Enable-TcConfig -Force
-                      uses ADS WriteControl.
-      executecommand  DTE.ExecuteCommand("TwinCAT.*"): GUI command fallback.
-      writecontrol    a direct .WriteControl( call: runtime state changes go through
-                      Set-TcSystemState / Set-TcPlcState / Enable-TcConfig, which read back.
-    A legitimate use is allowed only by an explicit marker that names the rule and a reason,
-    on the same line or on a comment-only line directly above it:
+      startrestart    StartRestartTwinCAT: a restart through the IDE, outside the module's gated
+                      lifecycle (Enable-TcConfig -Force / Set-TcSystemState read the state back).
+      executecommand  any ExecuteCommand (DTE command; "TwinCAT.*" commands are a GUI fallback).
+      writecontrol    any WriteControl / WriteControlAsync (also in a string, e.g. reflection):
+                      runtime state changes go through Set-TcSystemState / Set-TcPlcState /
+                      Enable-TcConfig, which read back.
+    A legitimate use is allowed only by an explicit marker that names the rule and a reason, in
+    a COMMENT (PowerShell comment token, JavaScript // or /* */; a marker inside a string does not
+    count) on the same line, or on a comment-only line directly above it:
         # tcauto-allow(writecontrol): Set-TcSystemState itself, readback below
         // tcauto-allow(amsnetid): default of the local test PC, override with --netid
     Several rules: tcauto-allow(writecontrol,amsnetid): <reason>. The reason must have at least
@@ -24,34 +27,48 @@
 function Get-TcForbiddenRules {
     @(
         [PSCustomObject]@{ Id = 'amsnetid'; Regex = [regex]'\b\d{1,3}(?:\.\d{1,3}){5}\b'; Why = 'hardcoded AmsNetId (dynamic per target: IDE target, ADS session or a parameter)' }
-        [PSCustomObject]@{ Id = 'startrestart'; Regex = [regex]'StartRestartTwinCAT'; Why = 'StartRestartTwinCAT (dialogs; use Enable-TcConfig -Force)' }
-        [PSCustomObject]@{ Id = 'executecommand'; Regex = [regex]'ExecuteCommand\(\s*[''"]TwinCAT\.'; Why = 'DTE.ExecuteCommand("TwinCAT.*") GUI command' }
-        [PSCustomObject]@{ Id = 'writecontrol'; Regex = [regex]'\.WriteControl\('; Why = 'direct WriteControl (use Set-TcSystemState / Set-TcPlcState / Enable-TcConfig)' }
+        [PSCustomObject]@{ Id = 'startrestart'; Regex = [regex]'StartRestartTwinCAT'; Why = 'StartRestartTwinCAT (restart outside the gated lifecycle; use Enable-TcConfig -Force)' }
+        [PSCustomObject]@{ Id = 'executecommand'; Regex = [regex]'\bExecuteCommand\b'; Why = 'DTE ExecuteCommand (GUI command)' }
+        [PSCustomObject]@{ Id = 'writecontrol'; Regex = [regex]'\bWriteControl(?:Async)?\b'; Why = 'WriteControl (use Set-TcSystemState / Set-TcPlcState / Enable-TcConfig)' }
     )
 }
 
-# Text of a PowerShell file with every comment token replaced by spaces (line breaks kept).
+# Splits a text into @{ Code; Comments }: two strings of the same length and line breaks, Code
+# with every comment character blanked, Comments with every non-comment character blanked.
+# $Ranges: comment ranges as @(start, end) (end exclusive).
+function Split-TcCommentText {
+    param([string]$Text, [object[]]$Ranges)
+    $code = $Text.ToCharArray()
+    $com = ([regex]::Replace($Text, '[^\r\n]', ' ')).ToCharArray()
+    foreach ($r in $Ranges) {
+        for ($i = [int]$r[0]; $i -lt [int]$r[1] -and $i -lt $code.Length; $i++) {
+            $ch = $code[$i]
+            if ($ch -eq "`r" -or $ch -eq "`n") { continue }
+            $com[$i] = $ch
+            $code[$i] = ' '
+        }
+    }
+    @{ Code = (-join $code); Comments = (-join $com) }
+}
+
+# PowerShell file: comment = a Comment token of the 5.1 parser (comment-based help included).
 function Get-TcPsCodeText {
     param([string]$Path)
     $tokens = $null; $errors = $null
     $null = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
     $text = [IO.File]::ReadAllText($Path)
-    $chars = $text.ToCharArray()
-    foreach ($t in $tokens) {
-        if ($t.Kind -ne [System.Management.Automation.Language.TokenKind]::Comment) { continue }
-        for ($i = $t.Extent.StartOffset; $i -lt $t.Extent.EndOffset -and $i -lt $chars.Length; $i++) {
-            if ($chars[$i] -ne "`r" -and $chars[$i] -ne "`n") { $chars[$i] = ' ' }
-        }
-    }
-    -join $chars
+    $ranges = @($tokens | Where-Object { $_.Kind -eq [System.Management.Automation.Language.TokenKind]::Comment } | ForEach-Object { , @($_.Extent.StartOffset, $_.Extent.EndOffset) })
+    Split-TcCommentText -Text $text -Ranges $ranges
 }
 
-# Text of a JavaScript file with // and /* */ comments replaced by spaces (strings and template
-# literals are skipped; regex literals are not recognised, which only matters for a '//' in one).
+# JavaScript file: // and /* */ outside strings and template literals (regex literals are not
+# recognised, which only matters for a '//' or '/*' inside one).
 function Get-TcJsCodeText {
     param([string]$Path)
-    $chars = [IO.File]::ReadAllText($Path).ToCharArray()
+    $text = [IO.File]::ReadAllText($Path)
+    $chars = $text.ToCharArray()
     $n = $chars.Length
+    $ranges = [System.Collections.Generic.List[object]]::new()
     $i = 0
     $quote = [char]0
     while ($i -lt $n) {
@@ -64,30 +81,32 @@ function Get-TcJsCodeText {
         }
         if ($c -eq "'" -or $c -eq '"' -or $c -eq '`') { $quote = $c; $i++; continue }
         if ($c -eq '/' -and $next -eq '/') {
-            while ($i -lt $n -and $chars[$i] -ne "`n") { if ($chars[$i] -ne "`r") { $chars[$i] = ' ' }; $i++ }
+            $s0 = $i
+            while ($i -lt $n -and $chars[$i] -ne "`n") { $i++ }
+            $ranges.Add(@($s0, $i))
             continue
         }
         if ($c -eq '/' -and $next -eq '*') {
-            while ($i -lt $n -and -not ($chars[$i] -eq '*' -and $i + 1 -lt $n -and $chars[$i + 1] -eq '/')) {
-                if ($chars[$i] -ne "`r" -and $chars[$i] -ne "`n") { $chars[$i] = ' ' }
-                $i++
-            }
-            if ($i -lt $n) { $chars[$i] = ' '; if ($i + 1 -lt $n) { $chars[$i + 1] = ' ' }; $i += 2 }
+            $s0 = $i
+            $i += 2
+            while ($i -lt $n -and -not ($chars[$i] -eq '*' -and $i + 1 -lt $n -and $chars[$i + 1] -eq '/')) { $i++ }
+            $i = [Math]::Min($n, $i + 2)
+            $ranges.Add(@($s0, $i))
             continue
         }
         $i++
     }
-    -join $chars
+    Split-TcCommentText -Text $text -Ranges $ranges.ToArray()
 }
 
-# Rule ids allowed for raw line $Index (0-based) of $Raw: a marker on that line, or on the line
-# above when that line is only a comment.
+# Rule ids allowed for line $Index (0-based): a marker in the comment part of that line, or in
+# the comment part of the line above when that line has no code.
 function Get-TcAllowedRules {
-    param([string[]]$Raw, [int]$Index)
+    param([string[]]$CodeLines, [string[]]$CommentLines, [int]$Index)
     $marker = [regex]'tcauto-allow\((?<rules>[a-z]+(?:\s*,\s*[a-z]+)*)\):\s*(?<reason>\S.{7,})'
     $found = @()
-    $candidates = @($Raw[$Index])
-    if ($Index -gt 0 -and $Raw[$Index - 1] -match '^\s*(#|//)') { $candidates += $Raw[$Index - 1] }
+    $candidates = @($CommentLines[$Index])
+    if ($Index -gt 0 -and [string]::IsNullOrWhiteSpace($CodeLines[$Index - 1])) { $candidates += $CommentLines[$Index - 1] }
     foreach ($l in $candidates) {
         foreach ($m in $marker.Matches([string]$l)) { $found += @($m.Groups['rules'].Value -split '\s*,\s*') }
     }
@@ -97,15 +116,16 @@ function Get-TcAllowedRules {
 function Find-TcForbiddenPattern {
     <#
     .SYNOPSIS
-        Returns one object per hit: File (relative to -Root), Line, Rule, Text, Allowed.
+        Returns one object per hit: File (relative to -Root), Line, Rule, Why, Text, Allowed.
     #>
     param([string[]]$Files, [string]$Root)
     $rules = Get-TcForbiddenRules
     $hits = [System.Collections.Generic.List[object]]::new()
     foreach ($f in $Files) {
         $ext = [IO.Path]::GetExtension($f).ToLowerInvariant()
-        $code = if ($ext -eq '.js' -or $ext -eq '.mjs') { Get-TcJsCodeText -Path $f } else { Get-TcPsCodeText -Path $f }
-        $codeLines = $code -split "`n"
+        $parts = if ($ext -eq '.js' -or $ext -eq '.mjs') { Get-TcJsCodeText -Path $f } else { Get-TcPsCodeText -Path $f }
+        $codeLines = $parts.Code -split "`n"
+        $comLines = $parts.Comments -split "`n"
         $raw = [IO.File]::ReadAllText($f) -split "`n"
         $rel = $f
         if (-not [string]::IsNullOrEmpty($Root) -and $f.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $f.Substring($Root.Length).TrimStart('\', '/').Replace('\', '/') }
@@ -114,7 +134,7 @@ function Find-TcForbiddenPattern {
             $allowed = $null
             foreach ($r in $rules) {
                 if (-not $r.Regex.IsMatch($line)) { continue }
-                if ($null -eq $allowed) { $allowed = @(Get-TcAllowedRules -Raw $raw -Index $i) }
+                if ($null -eq $allowed) { $allowed = @(Get-TcAllowedRules -CodeLines $codeLines -CommentLines $comLines -Index $i) }
                 $hits.Add([PSCustomObject]@{ File = $rel; Line = $i + 1; Rule = $r.Id; Why = $r.Why; Text = $raw[$i].Trim(); Allowed = ($allowed -contains $r.Id) })
             }
         }
@@ -123,7 +143,7 @@ function Find-TcForbiddenPattern {
 }
 
 # Files the check scans: src/ and mcp-server/ (.ps1 .psm1 .js .mjs, not mcp-server/test/) and
-# tests/Integration/*.ps1, given as full paths with a relative path function.
+# tests/Integration/*.ps1.
 function Test-TcForbiddenScope {
     param([string]$RelativePath)
     $p = $RelativePath.Replace('\', '/')

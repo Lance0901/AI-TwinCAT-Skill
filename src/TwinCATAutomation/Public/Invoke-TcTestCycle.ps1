@@ -27,6 +27,9 @@
         While a lifecycle block exists for the target nothing runs (no Build either):
         LIFECYCLE_BLOCKED (data.lifecycleBlock); an ACTIVATION_FAILED whose Enable-TcConfig
         recorded a block carries it in data.lifecycleBlock.
+        A failing PLC Run (step Run) or PLC Stop (step Stop) ends the cycle with success = false and
+        that step's error code / hint / data.lifecycleBlock; the steps that did not run are listed
+        in data.steps with success = $false and status 'NOT RUN'.
     #>
     [CmdletBinding()]
     param(
@@ -156,10 +159,12 @@
     $steps += [PSCustomObject]@{ step = 'Run'; success = $runResult.success }
     $runNetId = if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) { $cachedAmsNetId } else { $script:TcAdsAmsNetId }
     if (-not $runResult.success) {
-        # Run was refused (e.g. PLC_NOT_LOADED / PLC_RUN_TIMEOUT): do not wait another 30 s for it
-        Write-Verbose "PLC Run failed ($($runResult.error.code)): $($runResult.error.message) - skipping Run wait"
+        # #68: fail closed - no tests, no Stop; the step's code / hint / lifecycleBlock are kept
+        $steps += [PSCustomObject]@{ step = 'Tests'; success = $false; status = 'NOT RUN' }
+        if (-not $KeepRunning) { $steps += [PSCustomObject]@{ step = 'Stop'; success = $false; status = 'NOT RUN' } }
+        return (New-TcCycleStepFailure -StepResult $runResult -Prefix 'PLC Run failed' -DefaultCode 'STATE_SET_FAILED' -Steps $steps)
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($runNetId)) {
+    if (-not [string]::IsNullOrWhiteSpace($runNetId)) {
         $waitRun = Wait-TcAdsState -AmsNetId $runNetId -Port 851 -TargetState Run -TimeoutSec 30
         Write-Verbose "PLC Run wait: reached=$($waitRun.Reached) state=$($waitRun.State) elapsed=$($waitRun.ElapsedMs)ms"
     }
@@ -194,10 +199,11 @@
     $warnings = @($testResults | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['warning'] -and -not [string]::IsNullOrWhiteSpace([string]$_.warning) } |
         ForEach-Object { "$($_.name): $($_.warning)" })
 
-    # Step 8: Stop PLC (unless KeepRunning)
+    # Step 8: Stop PLC (unless KeepRunning); a failed Stop fails the cycle (#68)
+    $stopResult = $null
     if (-not $KeepRunning) {
-        Set-TcPlcState -State Stop | Out-Null
-        $steps += [PSCustomObject]@{ step = 'Stop'; success = $true }
+        $stopResult = Set-TcPlcState -State Stop
+        $steps += [PSCustomObject]@{ step = 'Stop'; success = [bool]$stopResult.success }
     }
 
     $cycleElapsed = ([DateTime]::Now - $cycleStart).TotalMilliseconds
@@ -214,5 +220,8 @@
     }
     if ($warnings.Count -gt 0) { $report | Add-Member -NotePropertyName 'warnings' -NotePropertyValue $warnings }
 
+    if ($null -ne $stopResult -and -not $stopResult.success) {
+        return (New-TcCycleStepFailure -StepResult $stopResult -Prefix 'PLC Stop after the tests failed' -DefaultCode 'STATE_SET_FAILED' -Steps $steps -Data $report)
+    }
     New-TcResult -Success ($failed -eq 0) -Data $report
 }

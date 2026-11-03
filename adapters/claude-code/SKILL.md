@@ -93,18 +93,19 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 | Cmdlet | `success: true` 代表(已讀回) | 失敗會記 lifecycle block 的 code |
 |---|---|---|
-| `Set-TcSystemState` | port 10000 讀回 = 要求的狀態,且停留 `-SettleSec`(原狀態 = 目標時有先看到離開) | `SYSTEM_STATE_TIMEOUT`、`SYSTEM_STATE_MISMATCH` |
-| `Enable-TcConfig`(無 `-Force`) | `ActivateConfiguration()` 返回、`LastBuildInfo` = 0、本機 target 的 Boot package 一致 | Activate 後 `BOOT_PACKAGE_MISMATCH` |
-| `Enable-TcConfig -Force` | `verify`:port 10000 = Run、每個 PLC port = Run(`-NoLogin` 只看系統)、沒有 modal dialog | set-config / Activate 送出後的 `SYSTEM_STATE_TIMEOUT`、`SYSTEM_STATE_MISMATCH`、`RUNTIME_STATE_MISMATCH`、`BOOT_PACKAGE_MISMATCH`、`PLC_NOT_LOADED`、`PLC_RUN_TIMEOUT` |
+| `Set-TcSystemState` | port 10000 讀回 = 要求的狀態,且停留 `-SettleSec`(原狀態 = 目標時有先看到離開) | WriteControl 送出後的任何失敗:`SYSTEM_STATE_TIMEOUT`、`SYSTEM_STATE_MISMATCH`、`RUNTIME_CRASHED`、送出後的 ADS 例外 |
+| `Enable-TcConfig`(無 `-Force`) | `ActivateConfiguration()` 返回、`LastBuildInfo` = 0、本機 target 的 Boot package 一致 | 送出 Activate 後的任何失敗(`ACTIVATE_TIMEOUT`、`ACTIVATE_FAILED`、`IDE_CRASHED`、`BOOT_PACKAGE_MISMATCH`…) |
+| `Enable-TcConfig -Force` | `verify`:port 10000 = Run、每個 PLC port = Run(`-NoLogin` 只看系統)、沒有 modal dialog | set-config(Set-TcSystemState 真的送出 WriteControl)或 Activate 送出後的**任何**失敗,前置條件類 code 除外:`ACTIVATE_TIMEOUT`、`ACTIVATE_FAILED`、`IDE_CRASHED`、`IDE_MODAL_DIALOG`、`CYCLE_TIMEOUT`、`LOGIN_FAILED`、`STATE_SET_FAILED`、`ADS_RECONNECT_FAILED`、`SYSTEM_STATE_*`、`RUNTIME_CRASHED`、`RUNTIME_STATE_MISMATCH`、`BOOT_PACKAGE_MISMATCH`、`PLC_*`… |
 | `Set-TcPlcState` | Run / Stop:該 port 讀回 = 目標;Reset:200 ms 後讀一次 | `PLC_RUN_TIMEOUT`、Stop 未到達的 `STATE_SET_FAILED` |
 | `Enter-TcPlcOnline` / `Send-TcPlcProgram` | `Login()` 返回(`data.plcStateBefore` / `plcStateAfter` 是讀回值),不代表 PLC Run | 不記(只被擋) |
 | `Write-TcVariable` | `WriteAny` 返回;`data.written` 是轉型後寫入的值 | 不記(只被擋) |
+| `Invoke-TcTestCycle` | 每個 test case 都 Pass,且(沒有 `-KeepRunning` 時)PLC Stop 讀回到達 | 由內部命令記;PLC Run 失敗立即回(其餘步驟 `status = NOT RUN`),Stop 失敗整個 cycle `success: false`,都帶該步的 code / hint / `data.lifecycleBlock` |
 
-前置條件失敗(`BUILD_REQUIRED`、`BUILD_SELECTION_*`、`PLATFORM_*`、`AMS_NETID_REQUIRED`…)什麼都沒改,不記 block。`RUNTIME_CRASHED` 不記 block(runtime 已不在,hint 要使用者手動重啟)。
+前置條件失敗(`BUILD_REQUIRED`、`BUILD_SELECTION_*`、`PLATFORM_*`、`AMS_NETID_REQUIRED`、`VARIANT_*`…,清單在 `Private/LifecycleBlock.ps1` 的 `$script:TcLifecyclePreconditionCodes`)什麼都沒改,不記 block。`RUNTIME_CRASHED` 也記 block:由使用者決定是否重啟 `TcSystemServiceUm`,不要自行重啟 service 或操作 console。
 
 ### LIFECYCLE_BLOCKED(機器強制)
 
-block 以 target AmsNetId 為 key 存在 `%TEMP%\TwinCATAutomation\lifecycle-block.json`(跨 `Import-Module -Force`、MCP bridge 重啟仍有效;不同 target 互不影響;解析不了 target 的命令遇到任何 block 都擋)。有 block 時下列命令回 `LIFECYCLE_BLOCKED`、什麼都不送:`Set-TcSystemState`、`Enable-TcConfig`、`Enter-TcPlcOnline`、`Send-TcPlcProgram`、`Set-TcPlcState`(所有 State)、`Write-TcVariable`、`Invoke-TcTest`、`Invoke-TcTestCycle`、`Set-TcComModuleParameter -Online -DryRun $false`(MCP:`RunLifecycle` 在 EnableConfig 步驟被擋)。唯讀命令(`Get-TcSystemState`、`Get-TcPlcState`、`Read-TcVariable`、`Get-TcSymbols`、`Connect-TcAds`、`Build-TcProject`、`Get-TcIdeModalDialog`…)不擋。成功的命令**不會**自動清掉 block。
+block 以 target AmsNetId 為 key 存在 `%TEMP%\TwinCATAutomation\lifecycle-block.json`(跨 `Import-Module -Force`、MCP bridge 重啟仍有效;不同 target 互不影響;解析不了 target、或 target 是 loopback NetId(`127.x.x.x.y.z`,例如 `127.0.0.1.1.1`)的命令遇到任何 block 都擋,寫給它們的 block 存成 `<unknown>`、擋所有 target;state 檔損毀時換成 `<corrupt>`、擋所有 target)。有 block 時下列命令回 `LIFECYCLE_BLOCKED`、什麼都不送:`Set-TcSystemState`、`Enable-TcConfig`、`Enter-TcPlcOnline`、`Send-TcPlcProgram`、`Set-TcPlcState`(所有 State)、`Write-TcVariable`、`Invoke-TcTest`、`Invoke-TcTestCycle`、`Set-TcComModuleParameter -Online -DryRun $false`(MCP:`RunLifecycle` 在 EnableConfig 步驟被擋)。唯讀命令(`Get-TcSystemState`、`Get-TcPlcState`、`Read-TcVariable`、`Get-TcSymbols`、`Connect-TcAds`、`Build-TcProject`、`Get-TcIdeModalDialog`…)不擋。成功的命令**不會**自動清掉 block。
 
 ### 禁止的自動 fallback
 
@@ -119,7 +120,7 @@ block 以 target AmsNetId 為 key 存在 `%TEMP%\TwinCATAutomation\lifecycle-blo
 7. 寫死 AmsNetId 或沿用聊天內容裡的 AmsNetId(一律從 `Connect-TcIde` / IDE target / `Connect-TcAds` 取得)。
 8. 自動修改 Platform、Target、Route、ShouldBuild 或 PLC Disabled 來「讓它過」。
 
-`scripts/check.ps1` 的 `forbidden` 檢查會擋 repo 程式碼裡的 1、2、3 與寫死的 AmsNetId;合法用途要在該行(或正上方的註解行)加 `# tcauto-allow(<rule>): <理由>`。
+`scripts/check.ps1` 的 `forbidden` 檢查會擋 repo 程式碼(含字串)裡任何 `WriteControl` / `WriteControlAsync`、`StartRestartTwinCAT`、任何 `ExecuteCommand` 與寫死的 AmsNetId;合法用途要在該行(或正上方只有註解的那行)以註解加 `# tcauto-allow(<rule>): <理由>`(字串裡的標記不算)。
 
 ### 人工核准流程
 
@@ -300,9 +301,9 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `EXPECTED_PROJECT_DISABLED` | `-ExpectedProject` 指到 TwinCAT 專案裡 disabled 的 PLC project(.tsproj `Disabled="true"`),它不會被 Activate,沒開始 Build(#104) | 從 `-ExpectedProject` 拿掉;要用它就先在 XAE 取消 Disable 並存檔 |
 | `EXPECTED_PROJECT_NOT_FOUND` / `BUILD_COVERAGE_UNKNOWN` | `-ExpectedProject` 名稱不是 solution 的 PLC project / 無法確認它有被編到(SolutionContexts 讀不到,或 Build 失敗但 Error List 沒有該 project 的列);沒給 `-ExpectedProject` 也會因某個 PLC project 的 ShouldBuild 讀不到而不開始 Build(`data.unreadableProjects`,#67) | 用 `data.projects` 的名稱;看 XAE Error List;ShouldBuild 讀不到就重試，持續的話 `Reset-TcSolution` 或到 Configuration Manager 確認 Build 勾選 |
 | `PLC_PROJECT_AMBIGUOUS` | `Enter-TcPlcOnline` / `Exit-TcPlcOnline` 沒給 `-PlcProjectPath`,solution 卻有多個 PLC project | 帶 `-PlcProjectPath <PLC 名稱>`(`data.plcProjects` 列 name/projectPath/adsPort) |
-| `LIFECYCLE_BLOCKED` | 這個 target 之前有 runtime 改變請求送出後讀回沒到達(`data.lifecycleBlock`),fail closed:會改 runtime 的命令全部不執行 | 停止、回報 `data.lifecycleBlock`,只做唯讀診斷;**不要**改用 raw ADS / COM / DTE / GUI / console;使用者同意後 `Clear-TcLifecycleBlock -Reason '<理由>'` 再從頭跑。見上方「Failure contract」 |
+| `LIFECYCLE_BLOCKED` | 這個 target 之前有 runtime 改變請求送出後失敗(讀回沒到達或中途中斷,`data.lifecycleBlock`),fail closed:會改 runtime 的命令全部不執行 | 停止、回報 `data.lifecycleBlock`,只做唯讀診斷;**不要**改用 raw ADS / COM / DTE / GUI / console;使用者同意後 `Clear-TcLifecycleBlock -Reason '<理由>'` 再從頭跑。見上方「Failure contract」 |
 | `SYSTEM_STATE_TIMEOUT` | `Set-TcSystemState` 輪詢逾時,系統沒切到目標狀態 | `Get-TcSystemState` 看目前狀態;檢查 XAE / TwinCAT System Service 錯誤;UmRT 可能要重啟 `TcSystemServiceUm`。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認 |
-| `RUNTIME_CRASHED` | `Set-TcSystemState`(含 `Enable-TcConfig -Force` 的 set-config / set-run)等待中，本機 UmRT 的 `TcSystemServiceUm` 行程消失:開始時有行程且 target 是本機 UmRT,之後行程不在、port 10000 連續回 ADS 0x7 超過 10 s,提早回(不等 `-TimeoutSec`);`data.lastError` / `lastState` / `servicePidAtStart`(`Enable-TcConfig` 在 `data.runtimeCrash`)。遠端 target 不偵測 | 重啟 `TcSystemServiceUm`(指令見 troubleshooting「SYSTEM_STATE_TIMEOUT」),再 `Enable-TcConfig -Force`;crash 簽名對照「已知限制」#21 |
+| `RUNTIME_CRASHED` | `Set-TcSystemState`(含 `Enable-TcConfig -Force` 的 set-config / set-run)等待中，本機 UmRT 的 `TcSystemServiceUm` 行程消失:開始時有行程且 target 是本機 UmRT,之後行程不在、port 10000 連續回 ADS 0x7 超過 10 s,提早回(不等 `-TimeoutSec`);`data.lastError` / `lastState` / `servicePidAtStart`(`Enable-TcConfig` 在 `data.runtimeCrash`)。遠端 target 不偵測 | 會記 lifecycle block(#68):停止、把 `data` 回報使用者，由使用者決定是否重啟 `TcSystemServiceUm`;不要自行重啟 service、`Stop-Process` 或操作 console。使用者處理並同意後 `Clear-TcLifecycleBlock`,再 `Enable-TcConfig -Force`;crash 簽名對照「已知限制」#21 |
 | `CODE_NOT_VERIFIED` | `Build-TcProject` 成功但無法證明程式碼有編譯(Error List 讀不到,或有沒有行號的 code 列):success + `data.warningCodes[]`。順序:`PROJECT_SKIPPED_BY_CONFIGURATION`、`LIBRARY_UNRESOLVED`(加 `-AllowUnresolvedLibrary` 時)、`CODE_NOT_VERIFIED`;library 錯誤與沒行號的 code 列同時出現時兩個都在(#56),`warningCode` 是第一個 | 看 XAE Error List;`ERRORLIST_UNAVAILABLE` 處理後重跑 Build |
 | `BUILD_REQUIRED` | `Enable-TcConfig` / `Enter-TcPlcOnline`:solution platform 切換後，或上一次 `Build-TcProject` 不是完整成功(`LIBRARY_UNRESOLVED`、`BUILD_FAILED`、`BUILD_STATUS_UNKNOWN`、success 但 `completeBuild=false`;#56,`data.buildRequired`)之後，或程式碼 / 專案被 `Write-TcPouCode`、`Add-TcPou`、`Add-TcDut`、`Add-TcGvl`、`Add-TcLibrary`、`New-TcProject`、`Reset-TcSolution` 改過之後(code-changed,#65;這些 cmdlet 的結果有 `data.buildRequired`,狀態檔寫不進去時 `data.stateWarning`;hint 開頭 `Recorded:` 寫哪個 cmdlet 改了哪個物件),還沒有完整成功的 Build:產物可能還是舊平台的(推論,未實測)、程式碼沒被證實有編譯或改過的程式碼還沒編譯，拒絕 Activate / Login;狀態存成檔案(每個 .sln 一筆)。從沒透過模組 build 或改過的 solution 不擋(已知範圍) | `Build-TcProject` 完整成功(`data.completeBuild = true`:`coverageComplete` 且 `codeVerified = true`;`-AllowUnresolvedLibrary` 的 build 不算,#61;缺 lib 先安裝，有 project 被跳過先勾回 Build)後再 `Enable-TcConfig`;message 會寫上一次 build 為什麼不算。沒有 `.plcproj` / PLC 刻意不 build 的 solution 永遠不會完整成功：確認產物對應目前平台後手動刪 `%TEMP%\TwinCATAutomation\build-required.json` 該筆 |
 | `LIBRARY_UNRESOLVED` | `Build-TcProject`:Error List 有 library 錯誤(缺 / 未安裝的 lib),build 本來會判成功,但程式碼可能沒被編譯;`data.buildSucceeded = null`、`data.codeVerified = false` | 先在 XAE Library Manager 安裝 `data.libraryErrorItems` 列的 lib 再 Build;`-AllowUnresolvedLibrary` 只讓這次 build 回 success + `warningCode = LIBRARY_UNRESOLVED`,`completeBuild = false`、BUILD_REQUIRED 保留,之後 Activate / Login 仍被擋(#61) |

@@ -13,10 +13,11 @@
       generics    No New-Object of a System.Collections.Generic.* type in src/ and mcp-server/ *.ps1 / *.psm1
                   (AST based; "New-Object $type" is rejected too). Measured 2026-10-28, PS 5.1.26100.9711:
                   @() on a New-Object List[object] throws ArgumentException; use [System.Collections.Generic.List[...]]::new() (#75).
-      forbidden   #68: no hardcoded AmsNetId literal, StartRestartTwinCAT, ExecuteCommand("TwinCAT.*")
-                  or direct .WriteControl( in the code (comments / help ignored) of src/, mcp-server/
-                  (.ps1 .psm1 .js .mjs, not mcp-server/test/) and tests/Integration/*.ps1, except
-                  where an inline marker "tcauto-allow(<rule>): <reason>" names the rule
+      forbidden   #68: no hardcoded AmsNetId literal, StartRestartTwinCAT, ExecuteCommand or
+                  WriteControl(Async) in the code (strings included, comments / help ignored) of
+                  src/, mcp-server/ (.ps1 .psm1 .js .mjs, not mcp-server/test/) and
+                  tests/Integration/*.ps1, except where a marker COMMENT
+                  "tcauto-allow(<rule>): <reason>" names the rule
                   (scripts/forbidden-patterns.ps1; tests/Unit/forbidden-lint.ps1 proves it hits).
       cmdlets     The module imports (it must not depend on TwinCAT being installed) and the
                   number of exported cmdlets equals the number written in CLAUDE.md / AGENTS.md

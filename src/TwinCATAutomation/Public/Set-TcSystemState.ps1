@@ -35,8 +35,9 @@
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
         data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
 
-        Fail closed (#68): SYSTEM_STATE_TIMEOUT and SYSTEM_STATE_MISMATCH come after WriteControl
-        was sent, so they also record a lifecycle block for the target (data.lifecycleBlock).
+        Fail closed (#68): every failure after WriteControl was sent - SYSTEM_STATE_TIMEOUT,
+        SYSTEM_STATE_MISMATCH, RUNTIME_CRASHED and an exception (ADS error) after the write - also
+        records a lifecycle block for the target (data.lifecycleBlock).
         While a block exists for the target, this command returns LIFECYCLE_BLOCKED and sends
         nothing; only Clear-TcLifecycleBlock (after the user agreed) removes it.
     .PARAMETER State
@@ -102,6 +103,7 @@
     }
 
     $sysClient = $null
+    $sent = $false   # #68: WriteControl went out (a later failure records a lifecycle block)
     try {
         $sysClient = New-Object TwinCAT.Ads.TcAdsClient
         $sysClient.Connect($AmsNetId, 10000)
@@ -119,6 +121,7 @@
         $sentName = $newState.AdsState.ToString()
         $newState.DeviceState = 0
         $requestWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $sent = $true
         $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
         # Original state = target (Run -> Run restart, Config -> Config): the target only
@@ -165,7 +168,7 @@
             $data.finalState = $State
             $data.currentState = $State
             $res = New-TcResult -Success $false `
-                -ErrorMessage "TwinCAT was already in '$State' and never left it within $([Math]::Min(10, $TimeoutSec)) s after WriteControl $sentName ($sentCode): the restart was not observed, so the current '$State' is the old state, not a confirmed restart." `
+                -ErrorMessage "TwinCAT was already in '$State' and never left it within $([Math]::Min(10, $TimeoutSec)) s after the AdsState write $sentName ($sentCode): the restart was not observed, so the current '$State' is the old state, not a confirmed restart." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH') `
                 -Data $data
@@ -190,11 +193,12 @@
             $data | Add-Member -NotePropertyName 'servicePidAtStart' -NotePropertyValue @($wait.ServicePidAtStart)
             $data | Add-Member -NotePropertyName 'runtimeName' -NotePropertyValue $wait.RuntimeName
             $data | Add-Member -NotePropertyName 'unreachableMs' -NotePropertyValue $wait.UnreachableMs
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "The local UmRT '$($wait.RuntimeName)' disappeared while waiting for '$State': TcSystemServiceUm (pid $pidText at the start) no longer exists and port 10000 answered ADS 0x7 for $([int]($wait.UnreachableMs / 1000)) s (last state seen: $seen; last error: $($wait.LastError)). Stopped waiting after $([int]($requestWatch.ElapsedMilliseconds / 1000)) s instead of -TimeoutSec $TimeoutSec s." `
                 -ErrorCode 'RUNTIME_CRASHED' `
                 -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $seen -Step 'wait (runtime crashed)')
         }
 
         if (-not $wait.Reached) {
@@ -277,7 +281,10 @@
         New-TcResult -Success $true -Data $data
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        # #68: the request may have changed the runtime: fail closed
+        if ($sent) { $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -Step 'after the state request (exception)' }
+        $res
     }
     finally {
         if ($null -ne $sysClient) {

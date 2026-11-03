@@ -207,8 +207,8 @@ function Start-ModalJob([int]$ProcId, [string]$Command) {
         $entries = @(& $m { Get-AllComObjects -IncludeDisplayName })
         $e = $entries | Where-Object { $_['ProcessId'] -eq $procId } | Select-Object -First 1
         if ($null -eq $e) { return "no ROT entry for pid $procId" }
-        try { $e['Object'].ExecuteCommand($command); return "ExecuteCommand($command) returned" }
-        catch { return "ExecuteCommand($command) failed: $($_.Exception.Message)" }
+        try { $e['Object'].ExecuteCommand($command); return "ExecuteCommand($command) returned" }  # tcauto-allow(executecommand): experiment opens a dialog in a foreign IDE on purpose (modal detection test)
+        catch { return "ExecuteCommand($command) failed: $($_.Exception.Message)" }  # tcauto-allow(executecommand): message text of the experiment step above
     }
 }
 
@@ -310,7 +310,7 @@ try {
         $usedCommand = $null
         foreach ($cmd in @('Tools.Options', 'Help.About')) {
             $modalJob = Start-ModalJob -ProcId $pidA -Command $cmd
-            $r = Invoke-Step 'F-open-dialog-A' "DTE(A).ExecuteCommand('$cmd') via job; poll Find-TcIdeModalDialog -ProcessId $pidA" {
+            $r = Invoke-Step 'F-open-dialog-A' "DTE(A).ExecuteCommand('$cmd') via job; poll Find-TcIdeModalDialog -ProcessId $pidA" {  # tcauto-allow(executecommand): step label of the dialog experiment
                 $until = (Get-Date).AddSeconds((Get-Budget 30))
                 $dlg = $null
                 while ((Get-Date) -lt $until -and $null -eq $dlg) {

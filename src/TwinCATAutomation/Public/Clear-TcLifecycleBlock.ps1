@@ -4,11 +4,11 @@ function Clear-TcLifecycleBlock {
         Removes the LIFECYCLE_BLOCKED record of one target. Call it ONLY after the user has seen the block and agreed.
     .DESCRIPTION
         #68 fail-closed guard. When a runtime-changing command (Set-TcSystemState, Enable-TcConfig,
-        Set-TcPlcState) sent its request and the readback did not reach the requested state, the
-        module records a lifecycle block for that target AmsNetId (Private/LifecycleBlock.ps1).
-        While it exists, Set-TcSystemState, Enable-TcConfig, Enter-TcPlcOnline, Send-TcPlcProgram,
-        Set-TcPlcState, Write-TcVariable, Invoke-TcTest, Invoke-TcTestCycle and
-        Set-TcComModuleParameter -Online return LIFECYCLE_BLOCKED and do nothing.
+        Set-TcPlcState) sent its request and then failed (the readback did not reach the requested
+        state, or the command broke off), the module records a lifecycle block for that target
+        AmsNetId (Private/LifecycleBlock.ps1). While it exists, Set-TcSystemState, Enable-TcConfig,
+        Enter-TcPlcOnline, Send-TcPlcProgram, Set-TcPlcState, Write-TcVariable, Invoke-TcTest,
+        Invoke-TcTestCycle and Set-TcComModuleParameter -Online return LIFECYCLE_BLOCKED and do nothing.
 
         Do NOT call this on your own to get past LIFECYCLE_BLOCKED. The required flow is:
         stop, report the block (data.lifecycleBlock: command, errorCode, requestedState,
@@ -16,15 +16,18 @@ function Clear-TcLifecycleBlock {
         user agreed, with their reason in -Reason. A successful command never clears the block by
         itself (the commands that could succeed are refused while it exists).
 
-        Returns data: cleared (the removed record, $null when the target had none), amsNetId,
-        reason, clearedAt, remaining (records left for other targets), corruptBackup (an
-        unparseable state file was moved there; its records are gone), receipt (what was
-        appended to lifecycle-block-history.jsonl next to the state file). The state file cannot
-        be updated (lock / write failure) -> LIFECYCLE_BLOCKED, nothing removed.
+        Returns data: cleared (the removed record, $null when the key had none), amsNetId, key
+        (the record key: the AmsNetId in lower case, '<unknown>' for an empty or loopback
+        127.x.x.x.y.z NetId, '<corrupt>'), reason, clearedAt, remaining (number of records left),
+        remainingKeys, stillBlocking (keys that still block every target: '<unknown>' /
+        '<corrupt>'; message and data.next name the -AmsNetId to pass), receipt (appended to
+        lifecycle-block-history.jsonl next to the state file). The state file cannot be updated
+        (lock / write failure) -> LIFECYCLE_BLOCKED, nothing removed.
     .PARAMETER AmsNetId
         Target whose block is removed. Default: the IDE target (Connect-TcIde), then the ADS
-        session. '<unknown>' removes a record written while the target was not known.
-        Not resolvable -> AMS_NETID_REQUIRED with data.blocks (every record).
+        session. '<unknown>' removes a record written while the target was not known (or for a
+        loopback NetId such as 127.0.0.1.1.1); '<corrupt>' removes the record that replaced an
+        unreadable state file. Not resolvable -> AMS_NETID_REQUIRED with data.blocks (every record).
     .PARAMETER Reason
         Why the block may be lifted, in the user's words (who approved, what was checked). Required.
     .EXAMPLE
@@ -50,33 +53,45 @@ function Clear-TcLifecycleBlock {
     }
     if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
         return New-TcResult -Success $false -ErrorCode 'AMS_NETID_REQUIRED' -Hint (Get-TcErrorHint -Code 'AMS_NETID_REQUIRED') `
-            -ErrorMessage 'AmsNetId not given and no IDE target / ADS session to take it from; pass -AmsNetId (data.blocks lists every record).' `
+            -ErrorMessage 'AmsNetId not given and no IDE target / ADS session to take it from; pass -AmsNetId (data.blocks lists every record with its key).' `
             -Data ([PSCustomObject]@{ blocks = (Get-TcLifecycleBlockList) })
     }
+    $key = ConvertTo-TcLifecycleKey $AmsNetId
 
     $rm = Remove-TcLifecycleBlock -AmsNetId $AmsNetId
     if (-not [string]::IsNullOrWhiteSpace([string]$rm.Warning)) {
         return New-TcResult -Success $false -ErrorCode 'LIFECYCLE_BLOCKED' -Hint (Get-TcErrorHint -Code 'LIFECYCLE_BLOCKED') `
             -ErrorMessage "Clear-TcLifecycleBlock: $($rm.Warning)" `
-            -Data ([PSCustomObject]@{ amsNetId = $AmsNetId; cleared = $null; lifecycleBlock = (Get-TcLifecycleBlock -AmsNetId $AmsNetId) })
+            -Data ([PSCustomObject]@{ amsNetId = $AmsNetId; key = $key; cleared = $null; lifecycleBlock = (Get-TcLifecycleBlock -AmsNetId $AmsNetId) })
     }
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-    $receipt = [PSCustomObject]@{ clearedAt = $now; amsNetId = $AmsNetId; netIdSource = $source; reason = $Reason; cleared = $rm.Removed; corruptBackup = $rm.CorruptBackup }
+    $receipt = [PSCustomObject]@{ clearedAt = $now; amsNetId = $AmsNetId; key = $key; netIdSource = $source; reason = $Reason; cleared = $rm.Removed }
     try {
         $hist = Join-Path (Split-Path -Parent (Get-TcLifecycleBlockFile)) 'lifecycle-block-history.jsonl'
         [IO.File]::AppendAllText($hist, (($receipt | ConvertTo-Json -Depth 5 -Compress) + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
     }
     catch { Write-Verbose "Clear-TcLifecycleBlock: history not written ($($_.Exception.Message))" }
     $rest = Get-TcLifecycleBlockList
+    $restKeys = if ($null -eq $rest) { $null } else { @($rest | ForEach-Object { [string]$_.key }) }
+    # N1: records that still block every target, and the call that would remove them
+    $globalKeys = @($restKeys | Where-Object { $_ -eq '<unknown>' -or $_ -eq '<corrupt>' })
+    $next = @($globalKeys | ForEach-Object { "Clear-TcLifecycleBlock -AmsNetId '$_' -Reason '<why>'" })
+    $msg = if ($null -eq $rm.Removed) { "No lifecycle block was recorded for $AmsNetId (key '$key')." } else { "Lifecycle block of $AmsNetId (key '$key') removed ($($rm.Removed.command) $($rm.Removed.errorCode) at $($rm.Removed.time))." }
+    if ($null -eq $restKeys) { $msg += ' The remaining records could not be read: every target may still be blocked.' }
+    elseif ($globalKeys.Count -gt 0) { $msg += " Still blocking EVERY target: $(($globalKeys | ForEach-Object { "'$_'" }) -join ', ') - only after the user agreed: $($next -join '; ')." }
+    elseif ($restKeys.Count -gt 0) { $msg += " Records left for other targets: $($restKeys -join ', ')." }
     New-TcResult -Success $true -Data ([PSCustomObject]@{
         cleared       = $rm.Removed
         amsNetId      = $AmsNetId
+        key           = $key
         netIdSource   = $source
         reason        = $Reason
         clearedAt     = $now
-        remaining     = $(if ($null -eq $rest) { $null } else { @($rest).Count })
-        corruptBackup = $rm.CorruptBackup
+        remaining     = $(if ($null -eq $restKeys) { $null } else { $restKeys.Count })
+        remainingKeys = $restKeys
+        stillBlocking = @($globalKeys)
+        next          = @($next)
         receipt       = $receipt
-        message       = $(if ($null -eq $rm.Removed) { "No lifecycle block was recorded for $AmsNetId." } else { "Lifecycle block of $AmsNetId removed ($($rm.Removed.command) $($rm.Removed.errorCode) at $($rm.Removed.time))." })
+        message       = $msg
     })
 }

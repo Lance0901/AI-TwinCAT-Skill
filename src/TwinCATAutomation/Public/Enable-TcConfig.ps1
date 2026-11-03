@@ -129,10 +129,14 @@ function Enable-TcConfig {
         Fail closed (#68): every success=false result has activated, restarted, loggedIn,
         reconnected and platformFixed = $false; what really happened is in activateSent,
         activateReturned, runSent, runReached, loginCompleted, platformSwitched, requestedState and
-        reachedState (last system state read back). After set-config / ActivateConfiguration()
-        was sent, SYSTEM_STATE_TIMEOUT, SYSTEM_STATE_MISMATCH, RUNTIME_STATE_MISMATCH,
-        BOOT_PACKAGE_MISMATCH, PLC_NOT_LOADED and PLC_RUN_TIMEOUT also record a lifecycle block
-        for the target (data.lifecycleBlock); while one exists Enable-TcConfig returns
+        reachedState (last system state read back). Once set-config (a Set-TcSystemState that
+        sent its WriteControl) or ActivateConfiguration() was sent, EVERY failure records a
+        lifecycle block for the target (data.lifecycleBlock) - ACTIVATE_TIMEOUT, ACTIVATE_FAILED,
+        IDE_CRASHED, IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED, STATE_SET_FAILED,
+        ADS_RECONNECT_FAILED, SYSTEM_STATE_*, RUNTIME_STATE_MISMATCH, BOOT_PACKAGE_MISMATCH,
+        PLC_* ... - except the precondition codes of $script:TcLifecyclePreconditionCodes
+        (Private/LifecycleBlock.ps1: BUILD_REQUIRED, BUILD_SELECTION_*, PLATFORM_*,
+        AMS_NETID_REQUIRED, ...); while one exists Enable-TcConfig returns
         LIFECYCLE_BLOCKED before anything is read or changed. Only Clear-TcLifecycleBlock (after
         the user agreed) removes it.
         When a step after Activate fails (set-run, wait-plc-port, wait-plc-run, verify),
@@ -484,7 +488,7 @@ function Enable-TcConfig {
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
         $res = New-TcResult @params
         # #68: a failed postcondition after a runtime-changing request blocks the target
-        if ($runtimeChangeSent -and $script:TcLifecyclePostconditionCodes -contains $Code) {
+        if ($runtimeChangeSent -and $script:TcLifecyclePreconditionCodes -notcontains $Code) {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
             $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $requestedState -ReachedState $reachedState -Step ($failedStep -join '')
         }
@@ -845,6 +849,9 @@ function Enable-TcConfig {
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {
+        # Set-TcSystemState records a block only when its WriteControl went out; without one
+        # (connect failed, ADS assembly missing ...) nothing was sent to the runtime
+        if ($null -eq $r.data -or $null -eq $r.data.PSObject.Properties['lifecycleBlock']) { $runtimeChangeSent = $false }
         Add-TcStepRecord -Name 'set-config' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         $res = New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Config' -DefaultCode 'CONFIG_SWITCH_FAILED'
         Add-TcRuntimeCrashData -Result $res -StateResult $r
@@ -1044,7 +1051,7 @@ function Enable-TcConfig {
                 }
                 $reconnectedInStep6 = $reconnectedInStep6 -or [bool]$script:TcAdsReconnected
                 $note = if ([bool]$script:TcAdsReconnected) { ', module session auto-reconnected' } else { '' }
-                Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via module session ${netId}:${port}, state $($r.data.currentState)$note"
+                Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via module session ${netId}:${port}, state $($r.data.currentState)$note"  # tcauto-allow(writecontrol): step detail text, the call is Set-TcPlcState
             }
             else {
                 $sessionDesc = if ([string]::IsNullOrWhiteSpace($script:TcAdsAmsNetId)) { 'none' } else { "$($script:TcAdsAmsNetId):$($script:TcAdsPort)" }
@@ -1059,19 +1066,19 @@ function Enable-TcConfig {
                     if ([int]$before.AdsState -eq 5) {
                         # Boot project autostart already put the PLC in Run; WriteControl Run would
                         # answer ADS 0x712 "invalid state".
-                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "port $port already in Run (boot project autostart), WriteControl skipped"
+                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "port $port already in Run (boot project autostart), WriteControl skipped"  # tcauto-allow(writecontrol): step detail text, nothing is sent here
                     }
                     else {
                         $runInfo = New-Object TwinCAT.Ads.StateInfo
                         $runInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 5)  # AdsState.Run
                         $runInfo.DeviceState = 0
                         $tmpClient.WriteControl($runInfo)  # tcauto-allow(writecontrol): step set-plc-run of the gated cycle; wait-plc-run and verify read it back
-                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via temporary ${netId}:${port} client (module session '$sessionDesc' untouched)"
+                        Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via temporary ${netId}:${port} client (module session '$sessionDesc' untouched)"  # tcauto-allow(writecontrol): step detail text of the marked call above
                     }
                 }
                 catch {
                     Add-TcStepRecord -Name 'set-plc-run' -Ok $false -Watch $sw -Detail "Run via temporary ${netId}:${port} client failed: $($_.Exception.Message)"
-                    $err = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_SET_FAILED' -MessagePrefix "WriteControl Run on ${netId}:${port} failed"
+                    $err = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_SET_FAILED' -MessagePrefix "WriteControl Run on ${netId}:${port} failed"  # tcauto-allow(writecontrol): error message text of the marked call above
                     $hp = $err.error.PSObject.Properties['hint']
                     return New-TcRuntimeFailure -Message "Failed to start PLC '$($p.name)': $([string]$err.error.message)" -Code ([string]$err.error.code) -Hint $(if ($null -ne $hp) { [string]$hp.Value } else { $null })
                 }

@@ -37,6 +37,11 @@ try {
         "`$v = '3.1.4026.22'"                                             # 16 version: no hit
         "`$y = '$id' # tcauto-allow(amsnetid,writecontrol): fixture default; pass -AmsNetId"   # 17 allowed (list)
         "`$s = `"call ExecuteCommand('TwinCAT.Foo')`""                   # 18 executecommand hit inside a string (code text)
+        '$c.WriteControlAsync($s)'                                        # 19 N5: WriteControlAsync hit
+        '$c.GetType().InvokeMember("WriteControl", $f, $null, $c, $a)'   # 20 N5: WriteControl as a string (reflection) hit
+        '$dte.ExecuteCommand("View.ErrorList")'                          # 21 N5: any ExecuteCommand hit
+        "`$m = '# tcauto-allow(writecontrol): marker inside a string'; `$c.WriteControl(`$s)"   # 22 N6: marker in a string: not allowed
+        '$dte.ExecuteCommand("View.ErrorList")  # tcauto-allow(executecommand): opens the Error List only'   # 23 allowed
     )
     $psFile = Join-Path $root 'src\fixture.ps1'
     [IO.File]::WriteAllLines($psFile, $ps)
@@ -48,6 +53,9 @@ try {
         "const url = 'https://example.com/x'; const n = '$id';"            # 5 hit ('//' inside a string)
         "// tcauto-allow(amsnetid): real-machine client default, override with --netid"   # 6
         "const d = '$id';"                                                # 7 allowed
+        "client.WriteControl (s);"                                        # 8 N5: '.WriteControl (' with a space hit
+        "const t = '// tcauto-allow(writecontrol): in a string'; c.WriteControl(s);"   # 9 N6: marker in a string: not allowed
+        "dte.ExecuteCommand('x'); /* tcauto-allow(executecommand): block comment marker */"   # 10 allowed
     )
     $jsFile = Join-Path $root 'mcp-server\lib\fixture.js'
     [IO.File]::WriteAllLines($jsFile, $js)
@@ -73,7 +81,15 @@ try {
     Check 'js literal: hit' ((Get-Hit $j 4).Count -eq 1 -and -not (Get-Hit $j 4)[0].Allowed) ''
     Check "js '//' inside a string does not start a comment" ((Get-Hit $j 5).Count -eq 1) ''
     Check 'js marker line above: allowed' ((Get-Hit $j 7).Count -eq 1 -and (Get-Hit $j 7)[0].Allowed) ''
-    Check 'total hits as expected (14)' ($hits.Count -eq 14) (($hits | ForEach-Object { "$($_.File):$($_.Line) $($_.Rule) $($_.Allowed)" }) -join '; ')
+    Check 'N5: WriteControlAsync hit' ((Get-Hit $p 19).Count -eq 1 -and (Get-Hit $p 19)[0].Rule -eq 'writecontrol' -and -not (Get-Hit $p 19)[0].Allowed) ''
+    Check 'N5: WriteControl in a string (reflection) hit' ((Get-Hit $p 20).Count -eq 1 -and (Get-Hit $p 20)[0].Rule -eq 'writecontrol') ''
+    Check 'N5: any ExecuteCommand hit (View.ErrorList without marker)' ((Get-Hit $p 21).Count -eq 1 -and (Get-Hit $p 21)[0].Rule -eq 'executecommand' -and -not (Get-Hit $p 21)[0].Allowed) ''
+    Check 'N6: a marker inside a string does not allow' ((Get-Hit $p 22).Count -eq 1 -and -not (Get-Hit $p 22)[0].Allowed) ''
+    Check 'ExecuteCommand with a marker comment: allowed' ((Get-Hit $p 23).Count -eq 1 -and (Get-Hit $p 23)[0].Allowed) ''
+    Check "N5: js '.WriteControl (' with a space hit" ((Get-Hit $j 8).Count -eq 1 -and (Get-Hit $j 8)[0].Rule -eq 'writecontrol' -and -not (Get-Hit $j 8)[0].Allowed) ''
+    Check 'N6: js marker inside a string does not allow' ((Get-Hit $j 9).Count -eq 1 -and -not (Get-Hit $j 9)[0].Allowed) ''
+    Check 'js marker in a block comment on the same line: allowed' ((Get-Hit $j 10).Count -eq 1 -and (Get-Hit $j 10)[0].Allowed) ''
+    Check 'total hits as expected (22)' ($hits.Count -eq 22) (($hits | ForEach-Object { "$($_.File):$($_.Line) $($_.Rule) $($_.Allowed)" }) -join '; ')
 
     # scope of the check
     Check 'scope: src, mcp-server (not test/), tests/Integration only' ((Test-TcForbiddenScope 'src/a.ps1') -and (Test-TcForbiddenScope 'mcp-server/lib/a.js') -and (Test-TcForbiddenScope 'mcp-server/scripts/a.mjs') -and (Test-TcForbiddenScope 'tests/Integration/a.ps1') -and -not (Test-TcForbiddenScope 'mcp-server/test/a.test.js') -and -not (Test-TcForbiddenScope 'tests/Unit/a.ps1') -and -not (Test-TcForbiddenScope 'docs/a.md') -and -not (Test-TcForbiddenScope 'src/a.md')) ''

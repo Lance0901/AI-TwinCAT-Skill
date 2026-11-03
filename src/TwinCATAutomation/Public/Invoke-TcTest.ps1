@@ -17,13 +17,16 @@ function Invoke-TcTest {
         [PSCustomObject]$TestCase
     )
 
-    # #68: the session's target has an unresolved failed postcondition: no setup writes
-    $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Invoke-TcTest'
-    if ($null -ne $blocked) { return $blocked }
-
-    try { $null = Ensure-TcAdsConnection } catch {
-        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
+    $ensureError = $null
+    try { $null = Ensure-TcAdsConnection } catch { $ensureError = $_ }
+    # #68 (N2): checked with the session's AmsNetId after Ensure-TcAdsConnection. A failed
+    # (re)connect with a known AmsNetId is still checked (fail closed); a session that never had
+    # an AmsNetId returns the connect error as before (nothing can be sent without a session).
+    if ($null -eq $ensureError -or -not [string]::IsNullOrWhiteSpace([string]$script:TcAdsAmsNetId)) {
+        $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Invoke-TcTest'
+        if ($null -ne $blocked) { return $blocked }
     }
+    if ($null -ne $ensureError) { return New-TcAdsErrorResult -ErrorRecord $ensureError -DefaultCode 'NOT_CONNECTED' }
 
     # Validate WaitUntil before any write (a hand-built test case may skip New-TcTestCase)
     $wuProp = $TestCase.PSObject.Properties['waitUntil']

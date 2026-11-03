@@ -328,7 +328,7 @@ function Invoke-UmRtCycle {
             [PSCustomObject]@{ success = [bool]$w.Reached; data = [PSCustomObject]$w }
         }
         if (-not $r.success) { return $false }
-        $r = Invoke-Step "$P-plc-run" 'WriteControl Run via temporary 851 client' {
+        $r = Invoke-Step "$P-plc-run" 'WriteControl Run via temporary 851 client' {  # tcauto-allow(writecontrol): step label of the marked smoke step below
             $w = & $mod {
                 param($n)
                 $c = New-TcAdsClient -AmsNetId $n -Port 851

@@ -513,7 +513,7 @@ try {
     $r = Enable-TcConfig -NoLogin -WarningAction SilentlyContinue
     # #68: this run fails later (BUILD_REQUIRED: the mocked build does not clear the switch record), so
     # platformFixed is $false on the failure result; platformSwitched keeps the fact
-    Check '(f) Enable-TcConfig: selection the same -> switched and built, buildSelection in data' ($global:Calls.Build -eq 1 -and ($global:MockState.Activations -join ',') -eq '0' -and @($r.data.buildSelection).Count -eq 2 -and $r.data.platformSwitched -and ($r.success -or -not $r.data.platformFixed)) "$($r.error.code) $($r.error.message) calls=$(J $global:Calls)"
+    Check '(f) Enable-TcConfig: selection the same -> switched and built, buildSelection in data' ($global:Calls.Build -eq 1 -and ($global:MockState.Activations -join ',') -eq '0' -and @($r.data.buildSelection).Count -eq 2 -and $r.data.platformSwitched -and -not $r.success -and $r.error.code -eq 'BUILD_REQUIRED' -and -not $r.data.platformFixed) "$($r.error.code) $($r.error.message) calls=$(J $global:Calls)"
 }
 finally {
     foreach ($f in $script:tempFiles) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }

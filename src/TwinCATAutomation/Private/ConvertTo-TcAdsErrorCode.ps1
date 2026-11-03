@@ -116,7 +116,7 @@ $script:TcErrorHints['LINK_FAILED'] = 'LinkVariables 失敗，原因不在已知
 $script:TcErrorHints['UNLINK_FAILED'] = 'UnlinkVariables 失敗：看 error.message,用 Get-TcIdeModalDialog 檢查 dialog;確認兩端都是完整 tree path 的變數'
 # task 1.8 (complete-automation-interface, phase0-1.7 findings 2 and 4)
 # RUNTIME_CRASHED: Set-TcSystemState / Wait-TcAdsState -DetectRuntimeCrash, local UmRT only
-$script:TcErrorHints['RUNTIME_CRASHED'] = '本機 UmRT(TcSystemServiceUm)在等待狀態切換時消失：開始等待時的行程(data.servicePidAtStart)已不在，且 port 10000 連續回 ADS 0x7 超過 10 s。重試同一步沒有用，先重啟 UmRT:行程已不在就直接啟動 TcSystemServiceUm(指令見 docs/troubleshooting.md「SYSTEM_STATE_TIMEOUT」的 UmRT 重啟指令;還有殘留行程才先 Stop-Process),重啟後 runtime 停在 Config,再 Enable-TcConfig -Force(MCP:EnableConfig Force=true)。crash 簽名(Windows 事件 1000 的 faulting module / exception、%LOCALAPPDATA%\CrashDumps\TcSystemServiceUm.exe.<pid>.dmp)對照 docs/troubleshooting.md「已知限制」的 UmRT crash(#21);簽名不同就記下 dump 開 issue'
+$script:TcErrorHints['RUNTIME_CRASHED'] = '本機 UmRT(TcSystemServiceUm)在等待狀態切換時消失：開始等待時的行程(data.servicePidAtStart)已不在，且 port 10000 連續回 ADS 0x7 超過 10 s。這個 target 已記錄 lifecycle block(#68):停止，把 data(lastError、lastState、servicePidAtStart、runtimeName)回報使用者，由使用者決定是否重啟 TcSystemServiceUm;不要自行重啟 service、Stop-Process 或操作 console。使用者處理並同意後才 Clear-TcLifecycleBlock -Reason ''<理由>'',再 Enable-TcConfig -Force(MCP:EnableConfig Force=true)。給使用者參考:UmRT 重啟方式見 docs/troubleshooting.md「SYSTEM_STATE_TIMEOUT」;crash 簽名(Windows 事件 1000 的 faulting module / exception、%LOCALAPPDATA%\CrashDumps\TcSystemServiceUm.exe.<pid>.dmp)對照 docs/troubleshooting.md「已知限制」的 UmRT crash(#21)'
 # PLC_LOGGED_IN: XAE refuses CreateChild while logged in ("Cannot add an object because it affects a
 # device you are currently logged into", measured 2026-10-29, 4026 XAE in VS2022). English key words only.
 $script:TcPlcLoggedInPattern = '(?i)affects\s+a\s+device\s+you\s+are\s+currently\s+logged\s+in|cannot\s+add\s+an\s+object\b.*\blogged\s+in'
@@ -233,7 +233,12 @@ $script:TcErrorHints['ROUTE_PASSWORD_MISSING'] = '先在執行模組的行程設
 $script:TcErrorHints['ROUTE_ADD_FAILED'] = 'AddRoute / AddProjectRoute 被 XAE 拒絕(訊息已去掉密碼與 XML):確認遠端 IP / NetId / 帳號，用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcAdsRoutes 看目前的 route'
 $script:TcErrorHints['ROUTE_VERIFY_FAILED'] = '指令有返回但 TIRR 讀回沒有這條 route:不要當成功。用 Get-TcAdsRoutes 看 data.target 的 route 表(TIRR 只顯示目前 target 的),必要時 Set-TcTarget 切到另一端再看'
 # #68: fail-closed guard after a runtime-changing request whose readback did not reach the target state
-$script:TcErrorHints['LIFECYCLE_BLOCKED'] = '停止後續所有步驟(標示 NOT RUN),把 data.lifecycleBlock(command、errorCode、requestedState、reachedState、message、time)原樣回報給使用者，只做唯讀診斷(Get-TcSystemState、Get-TcPlcState、Get-TcIdeModalDialog、Get-TcBuildErrors)。不要自行改用其他控制通道:raw ADS WriteControl、COM/DTE 重啟或 TwinCAT 指令、GUI 點擊、TcSystemServiceUm console、改 Platform/Target/Route。使用者確認並同意後才呼叫 Clear-TcLifecycleBlock -Reason ''<使用者的理由>''(預設目前 target,-AmsNetId 指定其他 target),再從頭重跑 lifecycle。見 docs/troubleshooting.md「LIFECYCLE_BLOCKED」'
+# Stop instruction put in front of the hint of a result that just recorded a block (Add-TcLifecycleBlockResult);
+# {target} = the AmsNetId. Not an error code (no troubleshooting heading needed).
+$script:TcLifecycleStopPrefix = '已記錄 LIFECYCLE_BLOCKED'
+$script:TcLifecycleStopMarker = '給使用者的診斷:'
+$script:TcLifecycleStopText = '已記錄 LIFECYCLE_BLOCKED({target},data.lifecycleBlock):在這裡停止，其餘步驟標示 NOT RUN,把這個結果回報使用者。使用者同意並呼叫 Clear-TcLifecycleBlock -Reason ''<理由>'' 之前，所有會改 runtime 的命令都會被拒絕;不要改用其他控制通道(raw ADS、COM、DTE、GUI、console)。給使用者的診斷:'
+$script:TcErrorHints['LIFECYCLE_BLOCKED'] = '停止後續所有步驟(標示 NOT RUN),把 data.lifecycleBlock(command、errorCode、requestedState、reachedState、message、time)原樣回報給使用者，只做唯讀診斷(Get-TcSystemState、Get-TcPlcState、Get-TcIdeModalDialog、Get-TcBuildErrors)。不要自行改用其他控制通道:直接用 TcAdsClient 寫 ADS 狀態、COM/DTE 重啟或 TwinCAT 指令、GUI 點擊、TcSystemServiceUm console、改 Platform/Target/Route。使用者確認並同意後才呼叫 Clear-TcLifecycleBlock -Reason ''<使用者的理由>''(預設目前 target,-AmsNetId 指定其他 target),再從頭重跑 lifecycle。見 docs/troubleshooting.md「LIFECYCLE_BLOCKED」'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

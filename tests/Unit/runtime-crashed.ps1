@@ -134,13 +134,16 @@ $sw.Stop()
 Check 'Set-TcSystemState -> RUNTIME_CRASHED before -TimeoutSec' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $sw.Elapsed.TotalSeconds -lt 25) "code=$($r.error.code) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
 Check 'RUNTIME_CRASHED data: lastError, lastState, servicePidAtStart' ($r.data.lastError -match '0x7' -and $r.data.lastState -eq 'Run' -and (@($r.data.servicePidAtStart) -join ',') -eq '4242' -and $r.data.runtimeName -eq 'UmRT_Default' -and $r.data.unreachableMs -ge 10000) ($r.data | ConvertTo-Json -Compress -Depth 3)
 Check 'RUNTIME_CRASHED hint: restart UmRT, Enable-TcConfig -Force, #21' ($r.error.hint -match 'TcSystemServiceUm' -and $r.error.hint -match 'Enable-TcConfig -Force' -and $r.error.hint -match '#21' -and $r.error.hint -match 'SYSTEM_STATE_TIMEOUT') "$($r.error.hint)"
+# #68 (S2): RUNTIME_CRASHED after WriteControl records a lifecycle block; the hint says to leave the restart to the user
+Check 'RUNTIME_CRASHED recorded a lifecycle block, hint: user decides, no own restart' ($r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.data.lifecycleBlock.amsNetId -eq '199.5.42.250.1.1' -and $r.error.hint -match 'LIFECYCLE_BLOCKED' -and $r.error.hint -match 'Stop-Process' -and $r.error.hint -match 'console') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
 
 # remote target: Set-TcSystemState keeps SYSTEM_STATE_TIMEOUT
 Set-Ads 'crashAfterWrite'; $global:UmRt = $null
 $r = Set-TcSystemState -State Config -AmsNetId '5.6.7.8.1.1' -TimeoutSec 3
 Check 'Set-TcSystemState remote target -> SYSTEM_STATE_TIMEOUT (unchanged)' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['servicePidAtStart']) "code=$($r.error.code)"
 # #68: SYSTEM_STATE_TIMEOUT after WriteControl records a lifecycle block (RUNTIME_CRASHED does not); lift it for the next cases
-Check 'SYSTEM_STATE_TIMEOUT recorded a lifecycle block, RUNTIME_CRASHED did not' ($r.data.lifecycleBlock.amsNetId -eq '5.6.7.8.1.1' -and $null -eq (& $mod { Get-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' })) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
+Check 'SYSTEM_STATE_TIMEOUT recorded a lifecycle block for that target only' ($r.data.lifecycleBlock.amsNetId -eq '5.6.7.8.1.1' -and $null -eq (& $mod { Get-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' })) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
 $null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next case'
 
 # --- Enable-TcConfig -Force passes RUNTIME_CRASHED on (set-config and set-run)
@@ -171,7 +174,11 @@ Check 'Enable-TcConfig set-config: RUNTIME_CRASHED code + hint passed on' ((-not
 Check 'Enable-TcConfig set-config: data.runtimeCrash' ((@($r.data.runtimeCrash.servicePidAtStart) -join ',') -eq '4242' -and $r.data.runtimeCrash.lastError -match '0x7' -and -not $r.data.activated) ($r.data.runtimeCrash | ConvertTo-Json -Compress)
 $global:CrashOn = 'Run'
 $r = Enable-TcConfig -Force -WarningAction SilentlyContinue
-Check 'Enable-TcConfig set-run: RUNTIME_CRASHED passed on, no Error List diagnostics' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.error.hint -eq $hint -and $r.data.activateReturned -and -not $r.data.activated -and $r.data.runtimeCrash.runtimeName -eq 'UmRT_Default' -and @($r.data.steps | Where-Object { $_.step -eq 'set-run' -and -not $_.ok }).Count -eq 1) "code=$($r.error.code) msg=$($r.error.message)"
+Check 'Enable-TcConfig set-run: RUNTIME_CRASHED passed on, no Error List diagnostics' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.error.hint.EndsWith($hint) -and $r.data.activateReturned -and -not $r.data.activated -and $r.data.runtimeCrash.runtimeName -eq 'UmRT_Default' -and @($r.data.steps | Where-Object { $_.step -eq 'set-run' -and -not $_.ok }).Count -eq 1) "code=$($r.error.code) msg=$($r.error.message)"
+
+# #68 (S1): the set-run RUNTIME_CRASHED came after set-config / Activate: Enable-TcConfig recorded a block
+Check 'Enable-TcConfig set-run RUNTIME_CRASHED recorded a lifecycle block' ($r.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
 
 # --- Invoke-TcTestCycle keeps RUNTIME_CRASHED (not ACTIVATION_FAILED)
 & $mod {

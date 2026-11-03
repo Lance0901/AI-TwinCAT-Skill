@@ -32,22 +32,28 @@ function Set-TcPlcState {
         [int]$TimeoutSec = 30
     )
 
-    # #68: the ADS session's target has an unresolved failed postcondition: send nothing
-    $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Set-TcPlcState'
-    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestedState' -NotePropertyValue $State -Force; return $blocked }
-
-    try { $reconnected = Ensure-TcAdsConnection } catch {
+    $ensureError = $null
+    $reconnected = $false
+    try { $reconnected = Ensure-TcAdsConnection } catch { $ensureError = $_ }
+    # #68 (N2): checked with the session's AmsNetId after Ensure-TcAdsConnection. A failed
+    # (re)connect with a known AmsNetId is still checked (fail closed); a session that never had
+    # an AmsNetId returns the connect error as before (nothing can be sent without a session).
+    if ($null -eq $ensureError -or -not [string]::IsNullOrWhiteSpace([string]$script:TcAdsAmsNetId)) {
+        $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Set-TcPlcState'
+        if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestedState' -NotePropertyValue $State -Force; return $blocked }
+    }
+    if ($null -ne $ensureError) {
         if ($State -eq 'Run') {
-            $mappedEnsure = ConvertTo-TcAdsErrorCode -InputObject $_
+            $mappedEnsure = ConvertTo-TcAdsErrorCode -InputObject $ensureError
             if ($null -ne $mappedEnsure -and $mappedEnsure.Code -eq 'ADS_PORT_NOT_FOUND') {
                 return New-TcResult -Success $false `
-                    -ErrorMessage "PLC runtime port $($script:TcAdsPort) not found - no PLC program has been downloaded: $($_.Exception.Message)" `
+                    -ErrorMessage "PLC runtime port $($script:TcAdsPort) not found - no PLC program has been downloaded: $($ensureError.Exception.Message)" `
                     -ErrorCode 'PLC_NOT_LOADED' `
                     -Hint (Get-TcErrorHint -Code 'PLC_NOT_LOADED') `
                     -Data ([PSCustomObject]@{ requestedState = $State; currentState = $null; reconnected = $false })
             }
         }
-        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
+        return New-TcAdsErrorResult -ErrorRecord $ensureError -DefaultCode 'NOT_CONNECTED'
     }
 
     $stateMap = @{
