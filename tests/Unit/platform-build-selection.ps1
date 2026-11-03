@@ -16,6 +16,12 @@
 #       Set-TcTarget passes it on)
 #   (g) no PLC project                         -> switched as before, buildSelection = @()
 #   plus: unknown-platform candidates (one changes, one does not), already active.
+#   Review round 2: ShouldBuild $null in the DTE context (real Get-TcSolutionConfigurations /
+#   Get-TcBuildCoverage, Build-TcProject fails closed), Disabled not readable (real
+#   Get-TcPlcProjectList -> $null), a disabled PLC that the target builds (S2), restore failure ->
+#   build-selection guard (Build-TcProject / Enable-TcConfig refuse, switching back clears it),
+#   IDE_* during the readback keeps its code, match by .plcproj path, candidates (one excluded by a
+#   change, the other fails the readback; change preferred over not comparable).
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/platform-build-selection.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -79,12 +85,14 @@ function New-MockDte {
 
 # PLC tree: @{ name; disabled; flip (Disabled toggles once another configuration is active) }.
 # $global:PlcListThrows: 'always' | 'after-switch' | $null. $global:CoverageError: Get-TcBuildCoverage error.
-function Set-Tree([object[]]$Nodes) { $global:PlcTree = @($Nodes); $global:PlcListThrows = $null; $global:CoverageError = $null }
-function N([string]$Name, [bool]$Disabled, [switch]$Flip) { @{ name = $Name; disabled = $Disabled; flip = [bool]$Flip } }
+# disabled $null = not readable. $global:PlcListThrowMsg: the text thrown (default 'TIPC not readable (mock)').
+function Set-Tree([object[]]$Nodes) { $global:PlcTree = @($Nodes); $global:PlcListThrows = $null; $global:PlcListThrowMsg = $null; $global:CoverageError = $null }
+function N([string]$Name, $Disabled, [switch]$Flip, [string]$File) { @{ name = $Name; disabled = $Disabled; flip = [bool]$Flip; file = $(if ($File) { $File } else { $null }) } }
 
 & $mod {
     $script:TcIdeProcessId = $null
     $script:UtOrigCoverage = ${function:Get-TcBuildCoverage}
+    $script:UtOrigPlcList = ${function:Get-TcPlcProjectList}
     function script:Assert-TcConnection { }
     function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
     function script:Get-TcSysManager {
@@ -97,11 +105,13 @@ function N([string]$Name, [bool]$Disabled, [switch]$Flip) { @{ name = $Name; dis
     function script:Get-TcPlcProjectList {
         [CmdletBinding()] param($SysManager)
         $switched = ($global:MockState.Active -ne $global:MockState.Initial)
-        if ($global:PlcListThrows -eq 'always' -or ($global:PlcListThrows -eq 'after-switch' -and $switched)) { throw 'TIPC not readable (mock)' }
+        if ($global:PlcListThrows -eq 'always' -or ($global:PlcListThrows -eq 'after-switch' -and $switched)) {
+            if ($global:PlcListThrowMsg) { throw $global:PlcListThrowMsg } else { throw 'TIPC not readable (mock)' }
+        }
         @($global:PlcTree | ForEach-Object {
-                $d = [bool]$_.disabled
-                if ($_.flip -and $switched) { $d = -not $d }
-                [PSCustomObject]@{ name = $_.name; nodePath = "TIPC^$($_.name)"; projectPath = "TIPC^$($_.name)^$($_.name) Project"; adsPort = 851; disabled = $d; projectFile = $null }
+                $d = $_.disabled
+                if ($null -ne $d) { $d = [bool]$d; if ($_.flip -and $switched) { $d = -not $d } }
+                [PSCustomObject]@{ name = $_.name; nodePath = "TIPC^$($_.name)"; projectPath = "TIPC^$($_.name)^$($_.name) Project"; adsPort = 851; disabled = $d; projectFile = $_.file }
             })
     }
     # $global:NullShouldBuild = '<SolutionPlatform>|<project>': that context's ShouldBuild reads $null
@@ -212,7 +222,59 @@ try {
     $global:NullShouldBuild = "$OS|Demo\A\A.plcproj"
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
     $global:NullShouldBuild = $null
-    Check '(d) target ShouldBuild null -> BUILD_SELECTION_UNKNOWN' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $global:MockState.Activations.Count -eq 0) "$($r.error.code): $($r.error.message)"
+    Check '(d) target ShouldBuild null (wrapper) -> BUILD_SELECTION_UNKNOWN' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $global:MockState.Activations.Count -eq 0) "$($r.error.code): $($r.error.message)"
+    # M1: ShouldBuild $null in the DTE context itself, through the real Get-TcSolutionConfigurations
+    # (reviewer S2 shape: target ShouldBuild null, Disabled read as false) -> never success
+    $rows = @(
+        @{ Name = 'Release'; Sol = $OS; SB = @{ A = $true; B = $null } }
+        @{ Name = 'Release'; Sol = $RT; SB = @{ A = $true; B = $false } }
+    )
+    New-MockDte -Rows $rows -Active 1
+    $cfgs = @(& $mod { Get-TcSolutionConfigurations })
+    $bOs = @($cfgs[0].Contexts | Where-Object { $_.ProjectName -match 'B\.plcproj' })
+    Check 'M1 Get-TcSolutionConfigurations keeps ShouldBuild $null' ($bOs.Count -eq 1 -and $null -eq $bOs[0].ShouldBuild) (J $bOs)
+    Set-Tree @((N 'A' $false), (N 'B' $false))
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'M1 target ShouldBuild $null (DTE) -> BUILD_SELECTION_UNKNOWN, not switched' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $global:MockState.Activations.Count -eq 0) "$($r.error.code): $($r.error.message)"
+    # active ShouldBuild $null: Get-TcBuildCoverage 'unreadable', the switch and Build-TcProject fail closed
+    New-MockDte -Rows $rows -Active 0
+    $cov = & $mod { Get-TcBuildCoverage }
+    $covB = @($cov.projects | Where-Object { $_.name -eq 'B' })
+    Check 'M1 Get-TcBuildCoverage: ShouldBuild $null -> status unreadable' ($covB.Count -eq 1 -and $null -eq $covB[0].shouldBuild -and $covB[0].status -eq 'unreadable') (J $cov.projects)
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'M1 active ShouldBuild $null -> BUILD_SELECTION_UNKNOWN, not switched' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $global:MockState.Activations.Count -eq 0 -and $r.error.message -match 'B\.plcproj') "$($r.error.code): $($r.error.message)"
+    $b = Build-TcProject
+    Check 'M1 Build-TcProject: ShouldBuild $null -> BUILD_COVERAGE_UNKNOWN, build not started' ((-not $b.success) -and $b.error.code -eq 'BUILD_COVERAGE_UNKNOWN' -and (@($b.data.unreadableProjects) -join ',') -eq 'B' -and $b.data.coverageComplete -eq $false) "$($b.error.code): $($b.error.message)"
+    # N3: Disabled not readable
+    $rows = @(
+        @{ Name = 'Release'; Sol = $OS; SB = @{ A = $true } }
+        @{ Name = 'Release'; Sol = $RT; SB = @{ A = $true } }
+    )
+    New-MockDte -Rows $rows -Active 1
+    Set-Tree @((N 'A' $null))
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'N3 Disabled $null -> BUILD_SELECTION_UNKNOWN, not switched' ($r.error.code -eq 'BUILD_SELECTION_UNKNOWN' -and $global:MockState.Activations.Count -eq 0 -and $r.error.message -match 'Disabled') "$($r.error.code): $($r.error.message)"
+    $nodeNoDis = [PSCustomObject]@{ Name = 'X'; PathName = 'TIPC^X'; Xml = '<TreeItem><AdsPort>851</AdsPort></TreeItem>' }
+    $nodeNoDis | Add-Member -MemberType ScriptMethod -Name ProduceXml -Value { param($x) $this.Xml }
+    $tipc = [PSCustomObject]@{ ChildCount = 1; Nodes = @($nodeNoDis) }
+    $tipc | Add-Member -MemberType ScriptMethod -Name Child -Value { param($i) $this.Nodes[$i - 1] }
+    $smList = [PSCustomObject]@{ Tipc = $tipc }
+    $smList | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) $this.Tipc }
+    $real = @(& $mod { param($s) & $script:UtOrigPlcList -SysManager $s } $smList)
+    Check 'N3 Get-TcPlcProjectList: Disabled not readable -> $null (not enabled)' ($real.Count -eq 1 -and $null -eq $real[0].disabled) (J $real)
+
+    # S6: match by .plcproj path (node names differ from the .plcproj names, a disabled node)
+    $rows = @(
+        @{ Name = 'Release'; Sol = $OS; SB = @{ A = $false; B = $true } }
+        @{ Name = 'Release'; Sol = $RT; SB = @{ A = $false; B = $true } }
+    )
+    New-MockDte -Rows $rows -Active 1
+    & $mod { $script:TcSolutionPath = 'C:\UnitSol\Demo.sln' }
+    Set-Tree @((N 'Main' $true -File 'C:\UnitSol\Demo\A\A.plcproj'), (N 'Other' $false -File 'C:\UnitSol\Demo\B\B.plcproj'))
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $mainSel = @($r.buildSelection | Where-Object { $_.project -eq 'Demo\A\A.plcproj' })
+    Check 'S6 match by .plcproj path: switched, A attributed to disabled node Main' ($r.success -and $mainSel.Count -eq 1 -and $mainSel[0].plc -eq 'Main' -and $mainSel[0].current.disabled -eq $true -and $mainSel[0].nodePath -eq 'TIPC^Main') "$($r.error.code) $($r.error.message) $(J $r.buildSelection)"
+
     # PLC tree item but no .plcproj context at all
     $rows = @(
         @{ Name = 'Release'; Sol = $OS; SB = @{} }
@@ -229,13 +291,54 @@ try {
         @{ Name = 'Release'; Sol = $RT; SB = @{ A = $true; B = $true } }
     )
     New-MockDte -Rows $rows -Active 1
-    Set-Tree @((N 'A' $false), (N 'B' $true -Flip))
+    Set-Tree @((N 'A' $false), (N 'B' $false -Flip))
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
     $ch = @($r.buildSelectionChanges)
     $ac = & $mod { $script:TcDte.Solution.Properties.Item('ActiveConfig').Value }
     Check '(e) readback differs -> BUILD_SELECTION_CHANGED' ($r.error.code -eq 'BUILD_SELECTION_CHANGED' -and $r.error.message -match 're-activated') "$($r.error.code): $($r.error.message)"
     Check '(e) restored to the previous configuration' ($r.restored -eq $true -and ($global:MockState.Activations -join ',') -eq '0,1' -and $ac -eq "Release|$RT" -and $r.platform -eq $RT -and -not $r.platformChanged) "restored=$($r.restored) activations: $($global:MockState.Activations -join ',') ActiveConfig=$ac"
-    Check '(e) change: B disabled true -> false after' ($ch.Count -eq 1 -and $ch[0].plc -eq 'B' -and $ch[0].current.disabled -eq $true -and $ch[0].after.disabled -eq $false) (J $ch)
+    Check '(e) change: B disabled false -> true after' ($ch.Count -eq 1 -and $ch[0].plc -eq 'B' -and $ch[0].current.disabled -eq $false -and $ch[0].after.disabled -eq $true) (J $ch)
+    Check '(e) restored: no guard, generic hint' ($null -eq (& $mod { Get-TcBuildSelectionGuard }) -and $r.error.hint -notmatch 'Set-TcTarget -AmsNetId') "$($r.error.hint)"
+
+    # S2: disabled now (current ShouldBuild true) and built by the target -> change (fail closed)
+    Set-Tree @((N 'A' $false), (N 'B' $true))
+    New-MockDte -Rows $rows -Active 1
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'S2 disabled + target builds -> BUILD_SELECTION_CHANGED, nothing activated' ($r.error.code -eq 'BUILD_SELECTION_CHANGED' -and $global:MockState.Activations.Count -eq 0 -and @($r.buildSelectionChanges).Count -eq 1 -and $r.buildSelectionChanges[0].plc -eq 'B') "$($r.error.code) $(J $r.buildSelectionChanges)"
+
+    # S3: IDE_CRASHED while reading back -> restored, the code and its hint are kept
+    New-MockDte -Rows $rows -Active 1
+    Set-Tree @((N 'A' $false), (N 'B' $false))
+    $global:PlcListThrows = 'after-switch'; $global:PlcListThrowMsg = 'IDE_CRASHED: the IDE is gone (unit mock)'
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    Check 'S3 readback IDE_CRASHED keeps its code and hint, restored' ($r.error.code -eq 'IDE_CRASHED' -and $r.error.hint -match 'Connect-TcIde' -and $r.restored -eq $true) "$($r.error.code) restored=$($r.restored) $($r.error.hint)"
+
+    # S1 / S6: change read back AND the restore fails -> guard, stuck hint; Build / Enable refuse;
+    # switching back is allowed and clears the guard
+    New-MockDte -Rows $rows -Active 1
+    Set-Tree @((N 'A' $false), (N 'B' $false -Flip))
+    $global:MockCfgs[1] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); throw 'restore boom (mock)' }
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
+    $g = & $mod { Get-TcBuildSelectionGuard }
+    Check 'S1 restore failed -> BUILD_SELECTION_CHANGED, restored false' ($r.error.code -eq 'BUILD_SELECTION_CHANGED' -and $r.restored -eq $false -and $r.platform -eq $OS -and $r.error.message -match 'could not be restored') "$($r.error.code) restored=$($r.restored) platform=$($r.platform)"
+    Check 'S1 stuck hint: stays at target, Set-TcTarget back, no Build / Enable' ($r.error.hint -match [regex]::Escape("Release|$OS") -and $r.error.hint -match [regex]::Escape("Set-TcTarget -AmsNetId <id> -Platform '$RT' -Configuration 'Release'") -and $r.error.hint -match 'Build-TcProject / Enable-TcConfig' -and $r.error.hint -notmatch '\u5DF2\u5207\u56DE') "$($r.error.hint)"
+    Check 'S1 guard recorded with the previous configuration' ($null -ne $g -and $g.previous -eq "Release|$RT" -and $g.reason -match "'B'") (J $g)
+    $b = Build-TcProject
+    Check 'S1 Build-TcProject refused while the guard is recorded' ((-not $b.success) -and $b.error.code -eq 'BUILD_SELECTION_CHANGED' -and $b.data.buildSelectionGuard.previous -eq "Release|$RT" -and $b.error.hint -match [regex]::Escape("-Platform '$RT'")) "$($b.error.code) $($b.error.message)"
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check 'S1 Enable-TcConfig refused while the guard is recorded, nothing activated' ((-not $e.success) -and $e.error.code -eq 'BUILD_SELECTION_CHANGED' -and $e.data.activated -eq $false -and ($global:MockState.Activations -join ',') -eq '0,1') "$($e.error.code) activations: $($global:MockState.Activations -join ',')"
+    $global:MockCfgs[1] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); $global:MockState.Active = $this.MockIndex }
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'S1 switching back to the previous configuration: allowed, guard cleared' ($r.success -and $r.platform -eq $RT -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code) $($r.error.message)"
+    # guard cleared also when the previous configuration is already active (switched back in XAE)
+    & $mod { param($p) Set-TcBuildSelectionGuard -Previous $p -Left 'Release|X' -Changes 'unit' } "Release|$RT" | Out-Null
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'S1 already at the previous configuration clears the guard' ($r.success -and $null -eq (& $mod { Get-TcBuildSelectionGuard })) "$($r.error.code)"
+    # a guard for another configuration is not cleared by an unrelated switch
+    & $mod { param($p) Set-TcBuildSelectionGuard -Previous $p -Left 'Release|X' -Changes 'unit' } 'Debug|Y' | Out-Null
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'S1 guard of another configuration stays' ($null -ne (& $mod { Get-TcBuildSelectionGuard })) 'guard gone'
+    & $mod { Clear-TcBuildSelectionGuard } | Out-Null
     # readback not readable -> restore + BUILD_SELECTION_UNKNOWN
     New-MockDte -Rows $rows -Active 1
     Set-Tree @((N 'A' $false), (N 'B' $false))
@@ -279,6 +382,23 @@ try {
     $global:MockCfgs[1].MockSol = $RT
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
     Check 'candidates: all change -> BUILD_SELECTION_CHANGED' ($r.error.code -eq 'BUILD_SELECTION_CHANGED' -and $global:MockState.Activations.Count -eq 0) "$($r.error.code) activations: $($global:MockState.Activations -join ',')"
+    # the candidate with a change is left out, the other one fails the readback -> PLATFORM_SET_FAILED
+    # naming the left-out candidate (N2)
+    New-MockDte -Rows $rows -Active 0 -NoPlatformName -SlnRows @($rows[0]) -Proj @{ 0 = $OS; 1 = $RT; 2 = $RT }
+    $global:MockCfgs[1].MockSol = $RT; $global:MockCfgs[2].MockSol = $RT
+    $global:MockCfgs[2] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex) }
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'candidates: left-out change named in PLATFORM_SET_FAILED' ($r.error.code -eq 'PLATFORM_SET_FAILED' -and ($global:MockState.Activations -join ',') -eq '2,0' -and $r.error.message -match 'Not tried because of the build selection' -and $r.error.message -match '#1' -and @($r.buildSelectionChanges).Count -eq 1) "$($r.error.code) activations: $($global:MockState.Activations -join ',') $($r.error.message)"
+    # one candidate not comparable, the other with a change -> BUILD_SELECTION_CHANGED (N2)
+    $rows3 = @(
+        @{ Name = 'Release'; Sol = $OS; SB = @{ A = $true } }
+        @{ Name = 'Release'; Sol = 'X1'; SB = @{ A = $true; C = $true } }
+        @{ Name = 'Release'; Sol = 'X2'; SB = @{ A = $false } }
+    )
+    New-MockDte -Rows $rows3 -Active 0 -NoPlatformName -SlnRows @($rows3[0]) -Proj @{ 0 = $OS; 1 = $RT; 2 = $RT }
+    $global:MockCfgs[1].MockSol = $RT; $global:MockCfgs[2].MockSol = $RT
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
+    Check 'candidates: change preferred over not comparable' ($r.error.code -eq 'BUILD_SELECTION_CHANGED' -and $global:MockState.Activations.Count -eq 0 -and @($r.buildSelectionChanges).Count -eq 1) "$($r.error.code) $($r.error.message)"
 
     # --- (f) Set-TcTarget and Enable-TcConfig pass the codes on; Enable-TcConfig stops before Build ---
     $rows = @(

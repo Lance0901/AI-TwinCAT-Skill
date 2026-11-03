@@ -57,19 +57,34 @@
                    the candidate (same configuration name, the requested platform; the
                    Get-TcSolutionConfigurations item that Activate() would select) is compared
                    with it by project unique name: target ShouldBuild <> current ShouldBuild is a
-                   change. A candidate with a change is not activated; no candidate left ->
-                   BUILD_SELECTION_CHANGED (data.buildSelectionChanges), nothing switched. Data
-                   not readable (contexts, the TwinCAT project, the PLC tree, a context missing or
-                   duplicated under the candidate, ShouldBuild $null, PLC tree items without
-                   .plcproj context, a disabled tree item without a one-to-one match) ->
+                   change, and so is a PLC that is disabled now and that the target builds
+                   (fail closed, also when its current ShouldBuild is true). A candidate with a
+                   change is not activated; no candidate left -> BUILD_SELECTION_CHANGED
+                   (data.buildSelectionChanges; preferred over BUILD_SELECTION_UNKNOWN when any
+                   candidate has a change), nothing switched. Data not readable (contexts, the
+                   TwinCAT project, the PLC tree, a context missing or duplicated under the
+                   candidate, ShouldBuild or Disabled not a real bool ($null), PLC tree items
+                   without .plcproj context, a disabled tree item without a one-to-one match) ->
                    BUILD_SELECTION_UNKNOWN (IDE_CRASHED / IDE_MODAL_DIALOG / IDE_BUSY keep their
                    code), nothing switched. No .plcproj context and no PLC tree item: nothing
                    to compare, the switch goes on (data.buildSelection = @()).
           after    after a switch that read back correctly, ShouldBuild of every .plcproj context
                    and Disabled of every PLC tree item are read again and compared with before.
                    Different or not readable -> the previous configuration is re-activated
-                   (data.restored) and BUILD_SELECTION_CHANGED / BUILD_SELECTION_UNKNOWN returned.
+                   (data.restored) and BUILD_SELECTION_CHANGED / BUILD_SELECTION_UNKNOWN returned
+                   (IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG of the readback keep their code).
+          guard    when that re-activation fails (data.restored = $false) the IDE stays at a
+                   configuration whose build selection differs: BUILD_REQUIRED kind
+                   'build-selection' is recorded (Set-TcBuildSelectionGuard, with the previous
+                   configuration and the changed PLCs), the hint says so, and Build-TcProject /
+                   Enable-TcConfig refuse with BUILD_SELECTION_CHANGED until it is cleared. A
+                   switch to the previous configuration is always allowed (no build selection
+                   block, the readback is only reported); the guard is cleared when the active
+                   configuration is the previous one after a successful call (switched back, or
+                   already active after a manual switch in XAE).
         Already active: nothing is switched; data.buildSelection is read best effort (no error).
+        A candidate left out because of the build selection is named in the PLATFORM_SET_FAILED
+        message when the remaining candidates fail.
     .PARAMETER Platform
         Solution platform to activate.
     .PARAMETER Configuration
@@ -199,8 +214,13 @@
     # --- build selection (#67): before Activate; a candidate that would change it is not used ---
     $targetLabel = "$Configuration|$Platform"
     $beforeLabel = if ([string]::IsNullOrWhiteSpace([string]$before.configuration)) { [string]$before.platform } else { "$($before.configuration)|$($before.platform)" }
+    # guard (#67): an earlier switch left the IDE at a configuration with a changed build selection
+    # and could not switch back; switching to the configuration it came from is always allowed
+    $guard = Get-TcBuildSelectionGuard
+    $returning = ($null -ne $guard -and -not [string]::IsNullOrWhiteSpace([string]$guard.previous) -and [string]$guard.previous -ieq $targetLabel)
     $selState = Get-TcBuildSelectionState -ConfigurationLabel $beforeLabel
     $selByIndex = @{}
+    $excluded = @()
     if ($alreadyActive) {
         # nothing is switched: informational only, never an error
         if ($null -eq $selState.Error) {
@@ -224,15 +244,24 @@
         else {
             $keep = @()
             $first = $null
+            $firstChanged = $null
             foreach ($cand in $candidates) {
                 $cmp = Compare-TcBuildSelection -State $selState -Candidate $cand -TargetLabel $targetLabel
                 if ($null -eq $first) { $first = $cmp }
-                if ($null -eq $cmp.Error -and @($cmp.Changes).Count -eq 0) { $keep += $cand; $selByIndex[[int]$cand.Index] = $cmp }
+                if ($null -eq $cmp.Error -and @($cmp.Changes).Count -gt 0 -and $null -eq $firstChanged) { $firstChanged = $cmp }
+                $selByIndex[[int]$cand.Index] = $cmp
+                if ($null -eq $cmp.Error -and (@($cmp.Changes).Count -eq 0 -or $returning)) { $keep += $cand }
+                else {
+                    $why = if ($null -ne $cmp.Error) { "not comparable ($([string]$cmp.Error))" } else { Format-TcBuildSelectionChanges -Changes $cmp.Changes }
+                    $excluded += [PSCustomObject]@{ Text = "#$($cand.Index): $why"; Changes = @($cmp.Changes) }
+                }
             }
             if ($keep.Count -eq 0) {
+                # a candidate with a real change wins over one that could not be compared (N2)
+                if ($null -ne $firstChanged) { $first = $firstChanged }
                 $out.buildSelection = @($first.Items)
                 $out.buildSelectionChanges = @($first.Changes)
-                if ($null -ne $first.Error) {
+                if ($null -eq $firstChanged) {
                     $out.error = [PSCustomObject]@{
                         message = "Build selection under '$targetLabel' could not be compared with '$beforeLabel'; nothing was switched: $([string]$first.Error)"
                         code    = 'BUILD_SELECTION_UNKNOWN'
@@ -241,7 +270,7 @@
                     return $out
                 }
                 $out.error = [PSCustomObject]@{
-                    message = "Switching from '$beforeLabel' to '$targetLabel' would change which PLC projects are built: $(Format-TcBuildSelectionChanges -Changes $first.Changes). On 4026 a PLC is disabled only in the configuration it was disabled in; nothing was switched (data.buildSelectionChanges)."
+                    message = "Switching from '$beforeLabel' to '$targetLabel' would change which PLC projects are built: $(Format-TcBuildSelectionChanges -Changes $first.Changes). On 4026 a PLC is disabled only in the configuration it was disabled in (measured 2026-11-03, 4026 VS2022 + TcXaeShell 64-bit); nothing was switched (data.buildSelectionChanges)."
                     code    = 'BUILD_SELECTION_CHANGED'
                     hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED')
                 }
@@ -249,6 +278,7 @@
             }
             $candidates = @($keep)
             $out.buildSelection = @($selByIndex[[int]$candidates[0].Index].Items)
+            if ($returning) { $out.buildSelectionChanges = @($selByIndex[[int]$candidates[0].Index].Changes) }
         }
     }
 
@@ -278,6 +308,8 @@
             return $out
         }
         if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
+        # already at the configuration the guard came from (switched back by hand in XAE)
+        if ($null -ne $guard -and [string]$guard.previous -ieq "$($after.configuration)|$($after.platform)") { $out.stateWarning = Clear-TcBuildSelectionGuard }
         $out.success = $true
         return $out
     }
@@ -345,6 +377,10 @@
 
     if ($null -ne $activateError -or -not (& $isOk $after)) {
         $restoreText = & $restore
+        if ($excluded.Count -gt 0) {
+            $restoreText += " Not tried because of the build selection (#67, data.buildSelectionChanges): $(($excluded | ForEach-Object { $_.Text }) -join '; ')."
+            $out.buildSelectionChanges = @($excluded | ForEach-Object { $_.Changes })
+        }
         if ($null -ne $activateError) {
             $hp = $activateError.PSObject.Properties['hint']
             $out.error = [PSCustomObject]@{
@@ -366,21 +402,38 @@
     if ($null -ne $selCmp) {
         $out.buildSelection = @($selCmp.Items)
         $chk = Test-TcBuildSelectionAfter -State $selState -Items $selCmp.Items
-        if ($null -ne $chk.Error -or @($chk.Changes).Count -gt 0) {
+        if ($returning) {
+            # back to the configuration the guard came from: a selection that differs from the
+            # (changed) one before is expected; reported only
             $out.buildSelectionChanges = @($chk.Changes)
+        }
+        elseif ($null -ne $chk.Error -or @($chk.Changes).Count -gt 0) {
+            $out.buildSelectionChanges = @($chk.Changes)
+            $leftAt = "$Configuration|$Platform"
             $restoreText = & $restore
+            $changeText = if ($null -ne $chk.Error) { "not readable: $([string]$chk.Error)" } else { Format-TcBuildSelectionChanges -Changes $chk.Changes -After }
+            $hint = $null
+            if ($out.restored -ne $true) {
+                # IDE stays at the target with a build selection nobody chose: guard (#67 S1)
+                $gw = Set-TcBuildSelectionGuard -Previous $beforeLabel -Left $leftAt -Changes $changeText
+                if (-not [string]::IsNullOrWhiteSpace([string]$gw)) { $out.stateWarning = (@($out.stateWarning, $gw) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ' }
+                $hint = Get-TcBuildSelectionStuckHint -Previous $beforeLabel -Left $leftAt -Changes $changeText
+            }
             if ($null -ne $chk.Error) {
+                $code = if ([string]::IsNullOrWhiteSpace([string]$chk.ErrorCode)) { 'BUILD_SELECTION_UNKNOWN' } else { [string]$chk.ErrorCode }
+                if ($null -eq $hint) { $hint = if ($code -eq 'BUILD_SELECTION_UNKNOWN' -or [string]::IsNullOrWhiteSpace([string]$chk.ErrorHint)) { Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN' } else { [string]$chk.ErrorHint } }
                 $out.error = [PSCustomObject]@{
                     message = "Switched to '$targetLabel', but the build selection could not be read back ($([string]$chk.Error)).$restoreText"
-                    code    = 'BUILD_SELECTION_UNKNOWN'
-                    hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN')
+                    code    = $code
+                    hint    = $hint
                 }
             }
             else {
+                if ($null -eq $hint) { $hint = Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED' }
                 $out.error = [PSCustomObject]@{
-                    message = "Switched to '$targetLabel', but the build selection read back differs from '$beforeLabel': $(Format-TcBuildSelectionChanges -Changes $chk.Changes -After).$restoreText"
+                    message = "Switched to '$targetLabel', but the build selection read back differs from '$beforeLabel': $changeText.$restoreText"
                     code    = 'BUILD_SELECTION_CHANGED'
-                    hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED')
+                    hint    = $hint
                 }
             }
             return $out
@@ -392,6 +445,12 @@
         # measured): Enable-TcConfig refuses to activate until a complete Build-TcProject
         # success (BUILD_REQUIRED, state file: Private/Set-TcBuildRequired.ps1).
         $out.stateWarning = Set-TcBuildRequired -Reason "solution platform switched from '$($before.configuration)|$($before.platform)' to '$($out.configuration)|$($out.platform)'"
+    }
+    # switched back to the configuration the guard came from (#67): the build selection is that
+    # configuration's again
+    if ($null -ne $guard -and [string]$guard.previous -ieq "$($out.configuration)|$($out.platform)") {
+        $cw = Clear-TcBuildSelectionGuard
+        if (-not [string]::IsNullOrWhiteSpace([string]$cw)) { $out.stateWarning = (@($out.stateWarning, $cw) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ' }
     }
     $out.success = $true
     return $out
@@ -532,8 +591,15 @@ function Get-TcBuildSelectionState {
     $cov = $null
     try { $cov = Get-TcBuildCoverage }
     catch { $out.Error = (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix 'SolutionContexts not readable').error; return $out }
-    if ($null -ne $cov.error) { $out.Error = & $unknown "SolutionContexts of the active configuration not readable ($($cov.error))"; return $out }
+    if ($null -ne $cov.error) {
+        # IDE_BUSY & co. keep their code (Get-TcBuildCoverage returns them as text)
+        $out.Error = (New-TcAdsErrorResult -ErrorRecord ([Exception]::new([string]$cov.error)) -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix 'SolutionContexts of the active configuration not readable').error
+        return $out
+    }
     $entries = @($cov.projects)
+    # #67 M1: ShouldBuild is only used when it was read as a real bool
+    $noSb = @($entries | Where-Object { $_.shouldBuild -isnot [bool] })
+    if ($noSb.Count -gt 0) { $out.Error = & $unknown "ShouldBuild of $(($noSb | ForEach-Object { "'$($_.uniqueName)'" }) -join ', ') in the active configuration not readable"; return $out }
 
     $sm = $null
     try { $sm = Get-TcSysManager } catch { $sm = $null }
@@ -545,6 +611,9 @@ function Get-TcBuildSelectionState {
     $plcList = @()
     try { $plcList = @(Get-TcPlcProjectList -SysManager $sm) }
     catch { $out.Error = (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix 'PLC project list (TIPC) not readable').error; return $out }
+    # #67 N3: Disabled $null (not readable) is never taken as enabled here
+    $noDis = @($plcList | Where-Object { $_.disabled -isnot [bool] })
+    if ($noDis.Count -gt 0) { $out.Error = & $unknown "Disabled of PLC tree item(s) $(($noDis | ForEach-Object { "'$($_.name)'" }) -join ', ') not readable"; return $out }
     $out.Nodes = @($plcList | ForEach-Object { [PSCustomObject]@{ name = [string]$_.name; nodePath = [string]$_.nodePath; disabled = ($_.disabled -eq $true) } })
     if ($entries.Count -eq 0) {
         if ($plcList.Count -gt 0) { $out.Error = & $unknown "PLC tree item(s) $(($plcList | ForEach-Object { "'$($_.name)'" }) -join ', ') but no .plcproj SolutionContext in the active configuration" }
@@ -582,8 +651,9 @@ function Compare-TcBuildSelection {
         the .plcproj contexts of a switch candidate (Get-TcSolutionConfigurations item). #67.
     .OUTPUTS
         @{ Error ($null or message: a context missing / duplicated under the candidate, ShouldBuild
-           $null, a .plcproj only the candidate has); Items (buildSelection items, after = $null);
-           Changes (items whose target ShouldBuild differs from the current one) }
+           not a bool, a .plcproj only the candidate has); Items (buildSelection items, after = $null);
+           Changes (items whose target ShouldBuild differs from the current one, or disabled now and
+           built by the target) }
     #>
     param($State, $Candidate, [string]$TargetLabel)
     $ctxs = @(@($Candidate.Contexts) | Where-Object { $null -ne $_ -and [string]$_.ProjectName -match '(?i)\.plcproj$' })
@@ -593,8 +663,8 @@ function Compare-TcBuildSelection {
         $hit = @($ctxs | Where-Object { [string]$_.ProjectName -ieq [string]$e.project })
         $tsb = $null
         if ($hit.Count -ne 1) { $problems += "'$($e.project)' has $($hit.Count) SolutionContexts under '$TargetLabel'" }
-        elseif ($null -eq $hit[0].ShouldBuild) { $problems += "ShouldBuild of '$($e.project)' under '$TargetLabel' not readable" }
-        else { $tsb = [bool]$hit[0].ShouldBuild }
+        elseif ($hit[0].ShouldBuild -isnot [bool]) { $problems += "ShouldBuild of '$($e.project)' under '$TargetLabel' not readable" }
+        else { $tsb = $hit[0].ShouldBuild }
         $items += [PSCustomObject]@{
             plc           = $e.plc
             project       = $e.project
@@ -603,7 +673,9 @@ function Compare-TcBuildSelection {
             current       = [PSCustomObject]@{ configuration = $State.Configuration; shouldBuild = $e.shouldBuild; disabled = $e.disabled }
             target        = [PSCustomObject]@{ shouldBuild = $tsb }
             after         = $null
-            changed       = ($null -ne $tsb -and $tsb -ne [bool]$e.shouldBuild)
+            # S2: a PLC disabled now that the target builds is a change even when its current
+            # ShouldBuild is true (fail closed)
+            changed       = ($null -ne $tsb -and (($tsb -ne [bool]$e.shouldBuild) -or ($e.disabled -eq $true -and $tsb)))
         }
     }
     foreach ($c in $ctxs) {
@@ -625,20 +697,27 @@ function Test-TcBuildSelectionAfter {
         tree item again and compares them with the state before (by project unique name / tree
         path). Fills Items[].after and .changed. Never throws.
     .OUTPUTS
-        @{ Error ($null or message); Changes (changed items, plus tree items without .plcproj
-           context whose Disabled changed) }
+        @{ Error ($null or message); ErrorCode (BUILD_SELECTION_UNKNOWN, or IDE_BUSY / IDE_CRASHED /
+           IDE_MODAL_DIALOG ... mapped by New-TcAdsErrorResult); ErrorHint; Changes (changed
+           items, plus tree items without .plcproj context whose Disabled changed) }
     #>
     param($State, [object[]]$Items)
+    $fail = {
+        param($Rec, [string]$Prefix)
+        $e = (New-TcAdsErrorResult -ErrorRecord $Rec -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix $Prefix).error
+        $hp = $e.PSObject.Properties['hint']
+        [PSCustomObject]@{ Error = [string]$e.message; ErrorCode = [string]$e.code; ErrorHint = $(if ($null -ne $hp) { [string]$hp.Value } else { $null }); Changes = @() }
+    }
     $cov = $null
-    try { $cov = Get-TcBuildCoverage } catch { return [PSCustomObject]@{ Error = "SolutionContexts not readable: $($_.Exception.Message)"; Changes = @() } }
-    if ($null -ne $cov.error) { return [PSCustomObject]@{ Error = "SolutionContexts not readable: $($cov.error)"; Changes = @() } }
+    try { $cov = Get-TcBuildCoverage } catch { return (& $fail $_ 'SolutionContexts not readable') }
+    if ($null -ne $cov.error) { return (& $fail ([Exception]::new([string]$cov.error)) 'SolutionContexts not readable') }
     $plcList = @()
     if (@($State.Nodes).Count -gt 0) {
         $sm = $null
         try { $sm = Get-TcSysManager } catch { $sm = $null }
-        if ($null -eq $sm) { return [PSCustomObject]@{ Error = 'the TwinCAT project (ITcSysManager) is not readable'; Changes = @() } }
+        if ($null -eq $sm) { return [PSCustomObject]@{ Error = 'the TwinCAT project (ITcSysManager) is not readable'; ErrorCode = 'BUILD_SELECTION_UNKNOWN'; ErrorHint = $null; Changes = @() } }
         try { $plcList = @(Get-TcPlcProjectList -SysManager $sm) }
-        catch { return [PSCustomObject]@{ Error = "PLC project list (TIPC) not readable: $($_.Exception.Message)"; Changes = @() } }
+        catch { return (& $fail $_ 'PLC project list (TIPC) not readable') }
     }
     $problems = @()
     $changes = @()
@@ -648,11 +727,13 @@ function Test-TcBuildSelectionAfter {
         if (-not [string]::IsNullOrWhiteSpace([string]$it.nodePath)) {
             $nd = @($plcList | Where-Object { [string]$_.nodePath -ieq [string]$it.nodePath })
             if ($nd.Count -ne 1) { $problems += "PLC tree item '$($it.nodePath)' found $($nd.Count) times after the switch"; continue }
-            $dis = ($nd[0].disabled -eq $true)
+            if ($nd[0].disabled -isnot [bool]) { $problems += "Disabled of '$($it.nodePath)' not readable after the switch"; continue }
+            $dis = $nd[0].disabled
         }
         if ($hit.Count -ne 1) { $problems += "'$($it.project)' has $($hit.Count) SolutionContexts after the switch"; continue }
+        if ($hit[0].shouldBuild -isnot [bool]) { $problems += "ShouldBuild of '$($it.project)' not readable after the switch"; continue }
         $it.after = [PSCustomObject]@{ shouldBuild = $hit[0].shouldBuild; disabled = $dis }
-        $it.changed = ([bool]$hit[0].shouldBuild -ne [bool]$it.current.shouldBuild) -or ($dis -ne [bool]$it.current.disabled)
+        $it.changed = ($hit[0].shouldBuild -ne [bool]$it.current.shouldBuild) -or ($dis -ne [bool]$it.current.disabled)
         if ($it.changed) { $changes += $it }
     }
     # tree items that no item covers (no .plcproj context matched): Disabled only
@@ -660,6 +741,7 @@ function Test-TcBuildSelectionAfter {
         if (@(@($Items) | Where-Object { [string]$_.nodePath -ieq [string]$n.nodePath }).Count -gt 0) { continue }
         $nd = @($plcList | Where-Object { [string]$_.nodePath -ieq [string]$n.nodePath })
         if ($nd.Count -ne 1) { $problems += "PLC tree item '$($n.nodePath)' found $($nd.Count) times after the switch"; continue }
+        if ($nd[0].disabled -isnot [bool]) { $problems += "Disabled of '$($n.nodePath)' not readable after the switch"; continue }
         if (($nd[0].disabled -eq $true) -ne [bool]$n.disabled) {
             $changes += [PSCustomObject]@{
                 plc           = $n.name
@@ -673,7 +755,8 @@ function Test-TcBuildSelectionAfter {
             }
         }
     }
-    [PSCustomObject]@{ Error = $(if ($problems.Count -gt 0) { $problems -join '; ' } else { $null }); Changes = $changes }
+    $err = if ($problems.Count -gt 0) { $problems -join '; ' } else { $null }
+    [PSCustomObject]@{ Error = $err; ErrorCode = $(if ($null -ne $err) { 'BUILD_SELECTION_UNKNOWN' } else { $null }); ErrorHint = $null; Changes = $changes }
 }
 
 function Format-TcBuildSelectionChanges {
@@ -689,4 +772,14 @@ function Format-TcBuildSelectionChanges {
                 "$name shouldBuild $(& $tf $_.current.shouldBuild) -> $(& $tf $_.target.shouldBuild) (disabled $(& $tf $_.current.disabled))"
             }
         }) -join '; '
+}
+
+function Get-TcBuildSelectionStuckHint {
+    # Hint when the build selection changed after a switch AND the previous configuration could not
+    # be re-activated (#67 S1): the IDE stays at -Left; the guard blocks Build / Enable.
+    param([string]$Previous, [string]$Left, [string]$Changes)
+    $cfg = $Previous; $plat = $Previous
+    $i = $Previous.IndexOf('|')
+    if ($i -gt 0) { $cfg = $Previous.Substring(0, $i); $plat = $Previous.Substring($i + 1) }
+    "切回失敗:XAE 現在停在 '$Left',PLC 的 build selection 與切換前('$Previous')不同($Changes),在一個平台停用的 PLC 可能已被重新啟用。不要 Build-TcProject / Enable-TcConfig(模組已記下 BUILD_REQUIRED kind build-selection,這兩個會回 BUILD_SELECTION_CHANGED 拒絕)。下一步:Set-TcTarget -AmsNetId <id> -Platform '$plat' -Configuration '$cfg' 切回(成功就清除),或在 XAE 工具列手動切回 '$Previous' 後重跑同一個 Set-TcTarget(已是 active 也會清除)。"
 }

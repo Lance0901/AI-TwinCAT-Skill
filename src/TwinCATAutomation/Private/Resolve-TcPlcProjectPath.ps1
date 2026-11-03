@@ -29,6 +29,7 @@ function Resolve-TcPlcProjectPath {
     if ($RequireSingle) {
         $all = @(Get-TcPlcProjectList -SysManager $sm)
         # disabled PLCs (ITcSmTreeItem.Disabled) are not candidates
+        # disabled $null (not readable, #67 N3) counts as enabled: kept, never silently dropped
         $plcs = @($all | Where-Object { -not $_.disabled })
         if ($plcs.Count -eq 1 -and $all.Count -gt 1) { return $plcs[0].projectPath }
         if ($plcs.Count -gt 1) {

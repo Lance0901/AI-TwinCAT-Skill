@@ -173,7 +173,14 @@
         built or not) returns EXPECTED_PROJECT_DISABLED (build not started); one that ends
         'failed' fails with BUILD_FAILED, one that ends 'unknown' with BUILD_COVERAGE_UNKNOWN.
         When the contexts cannot be read data.coverageError is set, data.coverageComplete =
-        $false; with -ExpectedProject that is BUILD_COVERAGE_UNKNOWN.
+        $false; with -ExpectedProject that is BUILD_COVERAGE_UNKNOWN. A PLC project whose
+        ShouldBuild is not read as a real bool (status 'unreadable', #67) is neither built nor
+        skipped: the build is not started, BUILD_COVERAGE_UNKNOWN (data.unreadableProjects),
+        with or without -ExpectedProject. A PLC tree item whose Disabled cannot be read ($null)
+        counts as enabled (it stays in the coverage).
+        While a solution platform switch left a changed PLC build selection that could not be
+        undone (#67, Get-TcBuildSelectionGuard), nothing is built: BUILD_SELECTION_CHANGED
+        (data.buildSelectionGuard); switch back with Set-TcTarget first.
         Measured 2026-10-21 (4026 + VS2022): SolutionContext.ProjectName is the unique name
         'RobustSolutionFrameworkDemo\FrameworkUnitTest\FrameworkUnitTest.plcproj'; the
         PLC name is its file name without extension.
@@ -218,6 +225,10 @@
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
+
+    # #67: a platform switch left a changed PLC build selection that could not be undone
+    $selGuard = Get-TcBuildSelectionGuard
+    if ($null -ne $selGuard) { return New-TcBuildSelectionGuardResult -Guard $selGuard -Operation 'Build-TcProject' }
 
     # set again only by a successful build (Enable-TcConfig BUILD_REQUIRED message)
     $script:TcLastBuildVerdict = $null
@@ -290,6 +301,15 @@
             $solutionConfiguration = "$($solPlat.configuration)|$($solPlat.platform)"
         }
         else { $solutionConfiguration = [string]$solPlat.configuration }
+    }
+    # #67 M1: a PLC project whose ShouldBuild was not read as a bool is neither built nor skipped:
+    # the build is not started (fail closed), with or without -ExpectedProject
+    $unreadable = @($coverage.projects | Where-Object { $_.status -eq 'unreadable' })
+    if ($null -eq $coverage.error -and $unreadable.Count -gt 0) {
+        $names = @($unreadable | ForEach-Object { $_.name })
+        return New-TcResult -Success $false -ErrorCode 'BUILD_COVERAGE_UNKNOWN' -Hint (Get-TcErrorHint -Code 'BUILD_COVERAGE_UNKNOWN') `
+            -ErrorMessage "Build not started: ShouldBuild of PLC project(s) $($names -join ', ') in '$solutionConfiguration' could not be read, so it is not known whether the build covers them." `
+            -Data ([PSCustomObject]@{ projects = @($coverage.projects); unreadableProjects = $names; coverageComplete = $false; solutionConfiguration = $solutionConfiguration; disabledProjects = $disabledProjects; disabledMatchBy = $disabledMatchBy })
     }
     $expected = @($ExpectedProject | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() })
     if ($expected.Count -gt 0) {

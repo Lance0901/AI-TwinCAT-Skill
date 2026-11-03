@@ -42,11 +42,17 @@ function Enable-TcConfig {
                               platform -> PLATFORM_PROJECT_MISMATCH (nothing switched,
                               data.platformMap); activation failed -> PLATFORM_SET_FAILED.
                               A switch that would change which PLC projects are built (a PLC
-                              disabled only in the active configuration, #67) ->
+                              disabled only in the active configuration, measured 2026-11-03,
+                              4026 VS2022 + TcXaeShell 64-bit, #67) ->
                               BUILD_SELECTION_CHANGED (data.buildSelectionChanges; nothing
                               switched, or switched back: data.restored); not checkable ->
                               BUILD_SELECTION_UNKNOWN. Either stops here: no Build, no
-                              Activate, no Login.
+                              Activate, no Login. While an earlier switch left a changed build
+                              selection that could not be undone (BUILD_REQUIRED kind
+                              build-selection) nothing at all is done: BUILD_SELECTION_CHANGED
+                              (data.buildSelectionGuard) until Set-TcTarget switches back.
+        A PLC whose Disabled cannot be read ($null) counts as enabled: it is logged in and started
+        (a disabled one then fails its login instead of being left out silently).
           platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
                               output of the old platform must not be activated; a failing
                               build stops here with its code (BUILD_FAILED ...), and a
@@ -212,6 +218,10 @@ function Enable-TcConfig {
     if ($null -eq $sm) {
         return New-TcNoSysManagerResult
     }
+
+    # #67: a platform switch left a changed PLC build selection that could not be undone
+    $selGuard = Get-TcBuildSelectionGuard
+    if ($null -ne $selGuard) { return New-TcBuildSelectionGuardResult -Guard $selGuard -Operation 'Enable-TcConfig' -Data ([PSCustomObject]@{ activated = $false }) }
 
     # VM manual v1.4 p.7: a selected variant group cannot be activated; XAE does not refuse it itself
     # (measured 2026-11-01 4026 VS2022, self-built client, verification/phase3-probe.md question 18).

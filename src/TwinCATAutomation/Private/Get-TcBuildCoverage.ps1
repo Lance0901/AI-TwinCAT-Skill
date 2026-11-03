@@ -17,7 +17,9 @@ function Get-TcBuildCoverage {
         @{ configuration = '<name>|<solution platform>', '<name>' when the solution platform is
            not readable here, or $null; error = $null or message;
            projects = @( @{ name; uniqueName; configuration; platform; shouldBuild; status } ) }
-        status is 'skipped' when ShouldBuild is false, else 'pending' (decided after the build).
+        status is 'skipped' when ShouldBuild is false, 'pending' when true (decided after the
+        build), 'unreadable' when ShouldBuild was not read as a bool (shouldBuild $null, #67 M1:
+        Build-TcProject does not start then, BUILD_COVERAGE_UNKNOWN).
     #>
     [CmdletBinding()]
     param()
@@ -29,12 +31,15 @@ function Get-TcBuildCoverage {
             $out = @()
             $out += ,@{ Kind = 'config'; Name = [string]$ac.Name; Platform = $(try { [string]$ac.PlatformName } catch { '' }) }
             foreach ($ctx in $ac.SolutionContexts) {
+                # only a real bool (#67 M1); anything else stays $null (status 'unreadable')
+                $sbv = $null
+                try { $v = $ctx.ShouldBuild; if ($v -is [bool]) { $sbv = $v } } catch { $sbv = $null }
                 $out += ,@{
                     Kind          = 'ctx'
                     ProjectName   = [string]$ctx.ProjectName
                     Configuration = [string]$ctx.ConfigurationName
                     Platform      = [string]$ctx.PlatformName
-                    ShouldBuild   = [bool]$ctx.ShouldBuild
+                    ShouldBuild   = $sbv
                 }
             }
             Write-Output -NoEnumerate $out
@@ -70,7 +75,7 @@ function Get-TcBuildCoverage {
             configuration = $r.Configuration
             platform      = $r.Platform
             shouldBuild   = $r.ShouldBuild
-            status        = if ($r.ShouldBuild) { 'pending' } else { 'skipped' }
+            status        = if ($null -eq $r.ShouldBuild) { 'unreadable' } elseif ($r.ShouldBuild) { 'pending' } else { 'skipped' }
         }
     }
     $result.projects = $projects

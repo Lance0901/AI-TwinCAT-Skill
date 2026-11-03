@@ -1,5 +1,7 @@
 # #67 真機重現(master 6b672fe)
 
+> 這份是修正**之前**在 master `6b672fe` 重現問題的紀錄，不是修正的驗證;修正版(`fix/67-build-selection-on-platform-switch`)的真機驗證之後另補。
+
 環境：實測 2026-11-03,本機 UmRT_Default(`199.5.42.250.1.1`,`TcSystemServiceUm.exe` 3.1.0.2649),registered tcauto MCP。
 - VS2022 `VisualStudio.DTE.17.0` pid 74652(本 session 啟動,16:12–16:19)
 - 64-bit XAE Shell `TcXaeShell.DTE.17.0` pid 120916(本 session 啟動,16:19–16:22)

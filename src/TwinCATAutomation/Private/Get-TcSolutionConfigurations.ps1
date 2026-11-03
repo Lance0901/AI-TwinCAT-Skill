@@ -38,7 +38,8 @@
     .OUTPUTS
         [PSCustomObject[]] @{ Index (0-based); Name; SolutionPlatform;
             SolutionPlatformSource ('PlatformName' | 'sln' | 'unknown');
-            Contexts = @(@{ ProjectName; ConfigurationName; PlatformName; ShouldBuild });
+            Contexts = @(@{ ProjectName; ConfigurationName; PlatformName;
+                ShouldBuild ($true / $false, or $null when it was not read as a bool) });
             Com (the SolutionConfiguration COM object, for Activate()) }
     #>
     [CmdletBinding()]
@@ -62,7 +63,8 @@
                     try { $pn = [string]$ctx.ProjectName } catch { }
                     try { $cn = [string]$ctx.ConfigurationName } catch { }
                     try { $pl = [string]$ctx.PlatformName } catch { }
-                    try { $sb = [bool]$ctx.ShouldBuild } catch { }
+                    # only a real bool (#67 M1): [bool]$null would read a failed getter as False
+                    try { $v = $ctx.ShouldBuild; if ($v -is [bool]) { $sb = $v } } catch { }
                     $null = $ctxList.Add([PSCustomObject]@{ ProjectName = $pn; ConfigurationName = $cn; PlatformName = $pl; ShouldBuild = $sb })
                 }
             }
@@ -178,7 +180,7 @@ function Get-TcComContexts {
             try { $pn = [string]$ctx.ProjectName } catch { }
             try { $cn = [string]$ctx.ConfigurationName } catch { }
             try { $pl = [string]$ctx.PlatformName } catch { }
-            try { $sb = [bool]$ctx.ShouldBuild } catch { }
+            try { $v = $ctx.ShouldBuild; if ($v -is [bool]) { $sb = $v } } catch { }
             $null = $list.Add([PSCustomObject]@{ ProjectName = $pn; ConfigurationName = $cn; PlatformName = $pl; ShouldBuild = $sb })
         }
     }
