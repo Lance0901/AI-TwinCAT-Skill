@@ -549,7 +549,7 @@ function Enable-TcConfig {
             try {
                 $res = Resolve-TcPlatformTarget -Configs @(Get-TcSolutionConfigurations) -Platform $wanted -Configuration $confNow
                 # #110 N4: an unreliable map is named in the PLATFORM_MISMATCH hint below too
-                $mapNote = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason
+                $mapNote = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason -Code $res.PlatformMapCode
                 if (@($res.Candidates).Count -gt 0) {
                     $pc = Test-TcCandidateProjects -Candidates $res.Candidates -Platform $wanted
                     if ($pc.ProjectCheck -eq 'mismatch') {

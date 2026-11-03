@@ -196,7 +196,7 @@
         if (-not [string]::IsNullOrWhiteSpace($PlatformSource)) {
             $hint += " '$Platform' was read from the target ($PlatformSource), not typed by you: the solution has no solution platform of that name. Add it in the Configuration Manager with the TwinCAT project (.tsproj) and PLC project mapped to project platform '$Platform', or pass -Platform / -NoPlatformSwitch (Set-TcTarget), -NoPlatformFix (Enable-TcConfig) to skip the automatic switch."
         }
-        $note = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason
+        $note = Get-TcPlatformMapHintNote -Reliable $res.PlatformMapReliable -Reason $res.PlatformMapReason -Code $res.PlatformMapCode
         if ($null -ne $note) { $hint += " $note" }
         $out.error = [PSCustomObject]@{ message = $msg; code = 'PLATFORM_NOT_FOUND'; hint = $hint }
         return $out
@@ -502,7 +502,8 @@ function Resolve-TcPlatformTarget {
     .OUTPUTS
         @{ SameConfig; Available (known solution platform names of -Configuration; unknown
            items left out); AvailableConfigs; PlatformMap; PlatformMapReliable (bool);
-           PlatformMapReason ($null when reliable); Candidates (the item with that known
+           PlatformMapReason ($null when reliable); PlatformMapCode (Get-TcPlatformMapStatus
+           Code, for Get-TcPlatformMapHintNote); Candidates (the item with that known
            solution platform, else the unknown-platform items whose first-context project
            platform has that name) }
         Every item of -Configs gets MatchPlatform / MatchedBy ('solutionPlatform' |
@@ -522,8 +523,9 @@ function Resolve-TcPlatformTarget {
         $c | Add-Member -NotePropertyName 'MatchedBy' -NotePropertyValue $by -Force
     }
     $sameConfig = @(@($Configs) | Where-Object { [string]$_.Name -ieq $Configuration })
-    # only names that really are solution platforms (#110): an unknown item's project platform is not one
-    $available = @($sameConfig | Where-Object { $_.MatchedBy -eq 'solutionPlatform' -and -not [string]::IsNullOrWhiteSpace([string]$_.MatchPlatform) } | ForEach-Object { [string]$_.MatchPlatform } | Select-Object -Unique)
+    # only names that really are solution platforms (#110): an unknown item's project platform is
+    # not one; a duplicated name is listed once
+    $available = @($sameConfig | Where-Object { -not (Test-TcPlatformUnknown -Item $_) } | ForEach-Object { [string]$_.MatchPlatform } | Select-Object -Unique)
     $availableConfigs = @(@($Configs) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Name) } | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
 
     # platformMap: every solution platform of -Configuration -> project platforms below it.
@@ -563,6 +565,7 @@ function Resolve-TcPlatformTarget {
         PlatformMap      = [PSCustomObject]$map
         PlatformMapReliable = $status.Reliable
         PlatformMapReason   = $status.Reason
+        PlatformMapCode     = $status.Code
         Candidates       = $candidates
     }
 }
@@ -612,10 +615,15 @@ function Get-TcPlatformMapStatus {
 }
 
 function Get-TcPlatformMapHintNote {
-    # Hint sentence when platformMap is not reliable (#110); $null when it is.
-    param([bool]$Reliable, [string]$Reason)
+    # Hint sentence when platformMap is not reliable (#110); $null when it is. -Code is the
+    # Get-TcPlatformMapStatus code: a duplicate is a Configuration Manager matter, saving does
+    # not change it.
+    param([bool]$Reliable, [string]$Reason, [string]$Code)
     if ($Reliable) { return $null }
-    "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): entries keyed '<unknown #N>' / '<duplicate #N>' have no trustworthy solution platform name and availablePlatforms lists only the known ones. Save the solution in XAE (File > Save All), then run Set-TcTarget again for the full map (whether Build-TcProject saves it is not verified)."
+    if ($Code -eq 'duplicate-platform') {
+        return "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): the entry keyed '<duplicate #N>' reports a solution platform another entry of this configuration already has, and availablePlatforms lists that name once. Ask the user to check the duplicated solution platform in the XAE Configuration Manager."
+    }
+    "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): entries keyed '<unknown #N>' have no known solution platform and availablePlatforms lists only the known ones. Save the solution in XAE (File > Save All), then run Set-TcTarget again for the full map (whether Build-TcProject saves it is not verified)."
 }
 
 function Test-TcCandidateProjects {
@@ -669,7 +677,7 @@ function New-TcProjectMismatchError {
     if ($null -ne $hint) { $hint = $hint.Replace('<platform>', $Platform) }
     if ($good.Count -gt 0) { $hint += " Solution platform(s) of '$Configuration' whose .tsproj is built for '$Platform': '$($good -join "', '")'." }
     else { $hint += " No solution platform of '$Configuration' builds the .tsproj for '$Platform'." }
-    $note = Get-TcPlatformMapHintNote -Reliable $status.Reliable -Reason $status.Reason
+    $note = Get-TcPlatformMapHintNote -Reliable $status.Reliable -Reason $status.Reason -Code $status.Code
     if ($null -ne $note) { $hint += " $note" }
     [PSCustomObject]@{ message = $msg; code = 'PLATFORM_PROJECT_MISMATCH'; hint = $hint }
 }

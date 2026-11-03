@@ -427,7 +427,7 @@ try {
     # PLATFORM_NOT_FOUND while dirty: the hint says why the list is short and what to do
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT CE7 (ARMV7)' }
-    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $r.error.hint -match 'not verified' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
+    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $r.error.hint -match 'not verified' -and $r.error.hint -notmatch 'trustworthy' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
     Check 's1-dirty-not-found-availtext' ($r.error.message -match [regex]::Escape('(not readable: data.platformMapReliable = false, see platformMapReason)')) "$($r.error.message)"
     # PLATFORM_PROJECT_MISMATCH while dirty: the good list names '<unknown #N>', not a project platform
     $dirtyMis = @(
@@ -463,6 +463,12 @@ try {
     Check 's1-duplicate-key' (($keys -join '|') -eq "$OS|<duplicate #1>|$RT" -and $res.PlatformMapReliable -eq $false -and $res.PlatformMapReason -match 'same solution platform' -and (@($res.Available) -join '|') -eq "$OS|$RT") "keys=$($keys -join '|') reliable=$($res.PlatformMapReliable) reason=$($res.PlatformMapReason)"
     $st = & $mod { param($c) Get-TcPlatformMapStatus -SameConfig $c } $res.SameConfig
     Check 's1-duplicate-code' ($st.Code -eq 'duplicate-platform' -and -not $st.Reliable) "code=$($st.Code)"
+    $note = & $mod { param($s) Get-TcPlatformMapHintNote -Reliable $s.Reliable -Reason $s.Reason -Code $s.Code } $st
+    Check 's1-duplicate-hint' ($note -match 'Configuration Manager' -and $note -match 'duplicate' -and $note -notmatch 'Save All' -and $note -notmatch 'trustworthy') "$note"
+    # full flow: PLATFORM_NOT_FOUND on the duplicate solution carries the Configuration Manager note
+    New-MockDte -Rows $dupRows -Active 2
+    $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT CE7 (ARMV7)' }
+    Check 's1-duplicate-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.platformMapReliable -eq $false -and $r.error.hint -match 'check the duplicated solution platform' -and $r.error.hint -notmatch 'Save All' -and (@($r.availablePlatforms) -join '|') -eq "$OS|$RT") "$($r.error.code): $($r.error.hint)"
 
     # saved: same rows -> reliable, keys are the solution platforms
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName
