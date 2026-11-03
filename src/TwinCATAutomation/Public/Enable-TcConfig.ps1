@@ -41,6 +41,20 @@ function Enable-TcConfig {
                               PLATFORM_NOT_FOUND; its .tsproj built for another project
                               platform -> PLATFORM_PROJECT_MISMATCH (nothing switched,
                               data.platformMap); activation failed -> PLATFORM_SET_FAILED.
+                              A switch that would change which PLC projects are built (a PLC
+                              disabled only in the active configuration, measured 2026-11-03,
+                              4026 VS2022 + TcXaeShell 64-bit, #67) ->
+                              BUILD_SELECTION_CHANGED (data.buildSelectionChanges; nothing
+                              switched, or switched back: data.restored); not checkable ->
+                              BUILD_SELECTION_UNKNOWN. Either stops here: no Build, no
+                              Activate, no Login. While an earlier switch left a changed build
+                              selection that could not be undone (BUILD_REQUIRED kind
+                              build-selection) nothing at all is done: BUILD_SELECTION_CHANGED
+                              (data.buildSelectionGuard) until Set-TcTarget switches back.
+        A PLC whose Disabled cannot be read (Get-TcPlcProjectList disabled = $null, #67) stops
+        Enable-TcConfig before anything else (before the platform check, Activate, Login):
+        BUILD_SELECTION_UNKNOWN, data.plcsWithoutDisabled; it would otherwise be activated, logged in
+        and downloaded without knowing whether the user disabled it.
           platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
                               output of the old platform must not be activated; a failing
                               build stops here with its code (BUILD_FAILED ...), and a
@@ -168,8 +182,9 @@ function Enable-TcConfig {
         targetPlatform
         ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
         platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
-        solution platform was switched and rebuilt), warning (only set on the 'skipped'
-        path), steps[].
+        solution platform was switched and rebuilt), buildSelection / buildSelectionChanges /
+        restored (only after a platform-fix attempt, see Set-TcTarget; $null otherwise),
+        warning (only set on the 'skipped' path), steps[].
     #>
     [CmdletBinding()]
     param(
@@ -206,6 +221,9 @@ function Enable-TcConfig {
         return New-TcNoSysManagerResult
     }
 
+    # #67: a platform switch left a changed PLC build selection that could not be undone
+    $selGuard = Get-TcBuildSelectionGuard
+    if ($null -ne $selGuard) { return New-TcBuildSelectionGuardResult -Guard $selGuard -Operation 'Enable-TcConfig' -Data ([PSCustomObject]@{ activated = $false }) }
     # VM manual v1.4 p.7: a selected variant group cannot be activated; XAE does not refuse it itself
     # (measured 2026-11-01 4026 VS2022, self-built client, verification/phase3-probe.md question 18).
     # Review S2: read with Invoke-TcComRetry; IDE_* keep their code, any other read error stops here
@@ -221,6 +239,20 @@ function Enable-TcConfig {
     if ($null -ne $variantGroup) { return $variantGroup }
     # #89: a variant project has its boot package in _Boot\<Variant>\<Platform>
     $currentVariant = [string]$cv.Value
+
+    # #67 S-D: a PLC whose Disabled cannot be read would be activated / logged in / downloaded
+    # without knowing whether it is disabled: fail closed before anything is done. A list that
+    # cannot be read at all is handled later as before.
+    $disList = $null
+    try { $disList = @(Get-TcPlcProjectList -SysManager $sm) } catch { $disList = $null }
+    if ($null -ne $disList) {
+        $noDis = @($disList | Where-Object { $_.disabled -isnot [bool] } | ForEach-Object { [string]$_.name })
+        if ($noDis.Count -gt 0) {
+            return New-TcResult -Success $false -ErrorCode 'BUILD_SELECTION_UNKNOWN' -Hint (Get-TcDisabledUnreadableHint) `
+                -Data ([PSCustomObject]@{ activated = $false; plcsWithoutDisabled = $noDis }) `
+                -ErrorMessage "Not activated: Disabled of PLC project(s) $($noDis -join ', ') could not be read (ITcSmTreeItem.Disabled), so it is not known whether they would be activated, logged in and downloaded; nothing was done (#67)."
+        }
+    }
 
     # --- cycle state (read by the nested helpers below via dynamic scope) ---
     $steps = New-Object System.Collections.ArrayList
@@ -238,6 +270,9 @@ function Enable-TcConfig {
     $projectPlatform = $null
     $requestedProjectPlatform = $null
     $platformMap = $null
+    $buildSelection = $null
+    $buildSelectionChanges = $null
+    $platformRestored = $null
     $targetPlatform = $null
     $targetPlatformSource = $null
     $platformFixed = $false
@@ -272,6 +307,9 @@ function Enable-TcConfig {
             projectPlatform = $projectPlatform
             requestedProjectPlatform = $requestedProjectPlatform
             platformMap = $platformMap
+            buildSelection = $buildSelection
+            buildSelectionChanges = $buildSelectionChanges
+            restored    = $platformRestored
             targetPlatform = $targetPlatform
             targetPlatformSource = $targetPlatformSource
             platformFixed = $platformFixed
@@ -523,6 +561,11 @@ function Enable-TcConfig {
         $conf = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
         $srcArg = if ($null -ne $tp -and $wanted -eq [string]$tp.targetPlatform) { $srcText } else { $null }
         $r = Set-TcSolutionPlatform -Platform $wanted -Configuration $conf -PlatformSource $srcArg
+        # #67: the build selection is reported on success and failure; BUILD_SELECTION_CHANGED /
+        # BUILD_SELECTION_UNKNOWN stop below like any failed switch (no Build, no Activate)
+        Set-Variable -Name buildSelection -Value $r.buildSelection -Scope 1
+        Set-Variable -Name buildSelectionChanges -Value @($r.buildSelectionChanges) -Scope 1
+        Set-Variable -Name platformRestored -Value $r.restored -Scope 1
         $swp = $r.PSObject.Properties['stateWarning']
         if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
             # BUILD_REQUIRED only in memory (state file not writable): reported on the success AND

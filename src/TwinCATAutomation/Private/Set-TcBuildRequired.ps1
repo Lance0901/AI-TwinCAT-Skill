@@ -19,6 +19,17 @@
 #                     Recorded through Register-TcCodeChange; the reason lists which cmdlet
 #                     changed which object ('PLC code changed by Write-TcPouCode MAIN [...] | ...',
 #                     the last $script:TcCodeChangedMaxItems changes, older ones counted).
+#   build-selection   (#67) Set-TcSolutionPlatform switched, read back a changed PLC build selection
+#                     (a PLC disabled under the previous platform is built under the new one) and
+#                     could not re-activate the previous configuration. Unlike the others it is
+#                     not about the build output: Build-TcProject and Enable-TcConfig refuse with
+#                     BUILD_SELECTION_CHANGED while it is recorded (Get-TcBuildSelectionGuard), and
+#                     Clear-TcBuildRequired (a complete build) always keeps it; only
+#                     Set-TcSolutionPlatform removes it (Clear-TcBuildSelectionGuard) once the
+#                     active configuration is the previous one again. The entry carries
+#                     buildSelectionGuard = { previousConfiguration; previousPlatform;
+#                     leftConfiguration; changes } as its own JSON field (an entry without it is
+#                     a legacy record: removed by hand only, see Get-TcBuildSelectionGuardHint).
 # The kinds of one entry are kept side by side (reasons); the entry's 'kind' is the first of
 # $script:TcBuildRequiredKinds that it has, so a later code-changed never hides a platform switch
 # or an unverified build.
@@ -79,7 +90,8 @@ $script:TcCorruptStateKey = '<corrupt>'
 $script:TcBuildRequiredLocal = @{}
 $script:TcBuildRequiredLockTimeoutMs = 3000
 # Order in which the reasons of one entry are reported; the first one an entry has is its 'kind'.
-$script:TcBuildRequiredKinds = @('platform-switch', 'unverified-build', 'code-changed')
+$script:TcBuildRequiredKinds = @('build-selection', 'platform-switch', 'unverified-build', 'code-changed')
+$script:TcBuildSelectionPrefix = 'PLC build selection changed by a solution platform switch that could not be undone; previous configuration '
 # code-changed reason: at most this many changes are listed, older ones are counted (#65).
 $script:TcCodeChangedPrefix = 'PLC code changed by '
 $script:TcCodeChangedMaxItems = 8
@@ -178,17 +190,29 @@ function Get-TcBuildRequiredReasons {
 
 # One entry from a reasons map: reason = the texts in $script:TcBuildRequiredKinds order.
 function New-TcBuildRequiredEntry {
-    param([string]$Solution, [System.Collections.IDictionary]$Reasons, [string]$Kind, [string]$At)
+    param([string]$Solution, [System.Collections.IDictionary]$Reasons, [string]$Kind, [string]$At, [object]$Guard)
     $ordered = [ordered]@{}
     foreach ($k in $script:TcBuildRequiredKinds) { if ($Reasons.Contains($k)) { $ordered[$k] = $Reasons[$k] } }
     foreach ($k in $Reasons.Keys) { if (-not $ordered.Contains($k)) { $ordered[$k] = $Reasons[$k] } }
-    [PSCustomObject]@{
+    $e = [PSCustomObject]@{
         solution = $Solution
         kind     = $Kind
         reason   = (@($ordered.Values) -join '; and ')
         reasons  = [PSCustomObject]$ordered
         at       = $At
     }
+    # #67: the build-selection guard's structured data, only while that kind is recorded
+    if ($null -ne $Guard -and $ordered.Contains('build-selection')) { $e | Add-Member -NotePropertyName 'buildSelectionGuard' -NotePropertyValue $Guard }
+    $e
+}
+
+# buildSelectionGuard field of an entry, or $null (#67)
+function Get-TcEntryGuard {
+    param([object]$Entry)
+    if ($null -eq $Entry) { return $null }
+    $p = $Entry.PSObject.Properties['buildSelectionGuard']
+    if ($null -eq $p) { return $null }
+    $p.Value
 }
 
 # Two code-changed reasons as one: every change once (a repeated one moves to the end), the
@@ -236,7 +260,9 @@ function Merge-TcBuildRequiredEntry {
     $kind = if ($null -ne $kp) { [string]$kp.Value } else { 'platform-switch' }
     foreach ($k in $script:TcBuildRequiredKinds) { if ($r.Contains($k)) { $kind = $k; break } }
     $sol = if (-not [string]::IsNullOrWhiteSpace([string]$Newer.solution)) { [string]$Newer.solution } else { [string]$Older.solution }
-    New-TcBuildRequiredEntry -Solution $sol -Reasons $r -Kind $kind -At ([string]$Newer.at)
+    $g = Get-TcEntryGuard $Newer
+    if ($null -eq $g) { $g = Get-TcEntryGuard $Older }
+    New-TcBuildRequiredEntry -Solution $sol -Reasons $r -Kind $kind -At ([string]$Newer.at) -Guard $g
 }
 
 # Runs $Body under the named mutex of the state directory. Returns @{ Locked; Result; Error }.
@@ -339,14 +365,15 @@ function Set-TcBuildRequired {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Reason,
-        [ValidateSet('platform-switch', 'unverified-build', 'code-changed')][string]$Kind = 'platform-switch',
-        [string]$SolutionPath
+        [ValidateSet('build-selection', 'platform-switch', 'unverified-build', 'code-changed')][string]$Kind = 'platform-switch',
+        [string]$SolutionPath,
+        [object]$Guard
     )
     $sln = if ($PSBoundParameters.ContainsKey('SolutionPath')) { $SolutionPath } else { [string]$script:TcSolutionPath }
     $key = ConvertTo-TcSolutionKey $sln
     $reasons = [ordered]@{}
     $reasons[$Kind] = $Reason
-    $new = New-TcBuildRequiredEntry -Solution ([string]$sln) -Reasons $reasons -Kind $Kind -At ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+    $new = New-TcBuildRequiredEntry -Solution ([string]$sln) -Reasons $reasons -Kind $Kind -At ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) -Guard $Guard
     $script:TcBuildRequiredLocal[$key] = Merge-TcBuildRequiredEntry -Older $script:TcBuildRequiredLocal[$key] -Newer $new
     $r = Invoke-TcBuildRequiredLocked -Body {
         $st = Read-TcBuildRequiredState
@@ -362,19 +389,39 @@ function Set-TcBuildRequired {
 function Clear-TcBuildRequired {
     <#
     .SYNOPSIS
-        Removes the entry of the current solution (every kind) and the '<unknown>' entry (see
-        the file header) from memory and from the file. The '<corrupt>' entry stays. Never
-        throws: returns $null or a warning text (the file still blocks then: fail-closed).
+        Removes the entry of the current solution (every kind except 'build-selection', #67) and
+        the '<unknown>' entry (see the file header) from memory and from the file. The
+        '<corrupt>' entry stays, and so does a 'build-selection' record (a complete build does
+        not undo a changed PLC build selection; only Clear-TcBuildSelectionGuard removes it).
+        Never throws: returns $null or a warning text (the file still blocks then: fail-closed).
     #>
     [CmdletBinding()]
     param()
     $key = ConvertTo-TcSolutionKey $script:TcSolutionPath
-    $null = $script:TcBuildRequiredLocal.Remove($key)
-    $null = $script:TcBuildRequiredLocal.Remove($script:TcUnknownSolutionKey)
+    # what is left of an entry: only its build-selection record (with the guard field), or nothing
+    $keep = {
+        param($Entry)
+        if ($null -eq $Entry) { return $null }
+        $rs = Get-TcBuildRequiredReasons $Entry
+        if (-not $rs.Contains('build-selection')) { return $null }
+        $only = [ordered]@{}
+        $only['build-selection'] = $rs['build-selection']
+        New-TcBuildRequiredEntry -Solution ([string]$Entry.solution) -Reasons $only -Kind 'build-selection' -At ([string]$Entry.at) -Guard (Get-TcEntryGuard $Entry)
+    }
+    foreach ($k in @($key, $script:TcUnknownSolutionKey)) {
+        if ($script:TcBuildRequiredLocal.ContainsKey($k)) {
+            $n = & $keep $script:TcBuildRequiredLocal[$k]
+            if ($null -eq $n) { $null = $script:TcBuildRequiredLocal.Remove($k) } else { $script:TcBuildRequiredLocal[$k] = $n }
+        }
+    }
     $r = Invoke-TcBuildRequiredLocked -Body {
         $st = Read-TcBuildRequiredState
-        $null = $st.Entries.Remove($key)
-        $null = $st.Entries.Remove($script:TcUnknownSolutionKey)
+        foreach ($k in @($key, $script:TcUnknownSolutionKey)) {
+            if ($st.Entries.ContainsKey($k)) {
+                $n = & $keep $st.Entries[$k]
+                if ($null -eq $n) { $null = $st.Entries.Remove($k) } else { $st.Entries[$k] = $n }
+            }
+        }
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($r.Locked -and $null -eq $r.Error) { return $null }
@@ -416,6 +463,11 @@ function Get-TcBuildRequiredConsequence {
     param([object]$Entry)
     $kinds = @((Get-TcBuildRequiredReasons $Entry).Keys)
     $parts = @()
+    if ($kinds -contains 'build-selection') {
+        $g = Get-TcEntryGuard $Entry
+        $back = if ($null -ne $g) { "Set-TcTarget -AmsNetId <id> -Platform '$(([string]$g.previousPlatform).Replace("'", "''"))' -Configuration '$(([string]$g.previousConfiguration).Replace("'", "''"))'" } else { "Set-TcTarget -AmsNetId <id> -Platform '<previous platform>' -Configuration '<previous configuration>'" }
+        $parts += "the IDE was left at a solution configuration whose PLC build selection differs from the one before the switch (#67); switch back first ($back)"
+    }
     if ($kinds -contains 'platform-switch') { $parts += 'the compiled PLC output may still be that of the previous platform' }
     if ($kinds -contains 'unverified-build') { $parts += 'the last build did not prove that the PLC code was compiled (an Activate or Login would compile again without anybody checking the result, #56)' }
     if ($kinds -contains 'code-changed') { $parts += 'the PLC code or project was changed after the last complete build (an Activate or Login would compile that change without anybody checking the result, #65)' }
@@ -482,4 +534,123 @@ function Register-TcCodeChange {
     if (-not [string]::IsNullOrWhiteSpace([string]$sw)) { $data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$sw) -Force }
     $Result | Add-Member -NotePropertyName 'data' -NotePropertyValue $data -Force
     return $Result
+}
+
+function Set-TcBuildSelectionGuard {
+    <#
+    .SYNOPSIS
+        #67: records BUILD_REQUIRED kind 'build-selection' for the current solution: a switch from
+        -PreviousConfiguration|-PreviousPlatform to -Left changed the PLC build selection
+        (-Changes) and could not be undone. The previous configuration is stored as its own
+        fields (entry.buildSelectionGuard), the reason is text only. Returns $null or the
+        warning of Set-TcBuildRequired (memory only). Never throws.
+    #>
+    param([string]$PreviousConfiguration, [string]$PreviousPlatform, [string]$Left, [string]$Changes)
+    $label = Format-TcConfigLabel -Configuration $PreviousConfiguration -Platform $PreviousPlatform
+    $g = [PSCustomObject]@{ previousConfiguration = $PreviousConfiguration; previousPlatform = $PreviousPlatform; leftConfiguration = $Left; changes = $Changes }
+    try { Set-TcBuildRequired -Kind 'build-selection' -Reason "$($script:TcBuildSelectionPrefix)'$label'; left at '$Left': $Changes" -Guard $g -WarningAction SilentlyContinue }
+    catch { "build-selection guard not recorded: $($_.Exception.Message)" }
+}
+
+# '<cfg>|<platform>', or the platform alone when the configuration is not known
+function Format-TcConfigLabel {
+    param([string]$Configuration, [string]$Platform)
+    if ([string]::IsNullOrWhiteSpace($Configuration)) { return [string]$Platform }
+    "$Configuration|$Platform"
+}
+
+function Test-TcBuildSelectionGuardTarget {
+    # #67: is '<Configuration>|<Platform>' the configuration -Guard came from? A legacy guard
+    # (no structured fields) never matches; a previous configuration without name matches by
+    # platform only.
+    param($Guard, [string]$Configuration, [string]$Platform)
+    if ($null -eq $Guard -or $Guard.legacy -or [string]::IsNullOrWhiteSpace([string]$Guard.previousPlatform)) { return $false }
+    if (-not ([string]$Guard.previousPlatform -ieq $Platform)) { return $false }
+    [string]::IsNullOrWhiteSpace([string]$Guard.previousConfiguration) -or ([string]$Guard.previousConfiguration -ieq $Configuration)
+}
+
+function Get-TcBuildSelectionGuard {
+    <#
+    .SYNOPSIS
+        #67: the 'build-selection' record of the current solution, or $null:
+        @{ previousConfiguration; previousPlatform; previous (label, $null for a legacy record);
+        leftConfiguration; changes; legacy; reason; solution; at; stateFile }. A state that
+        cannot be read is not a guard here (Get-TcBuildRequired still blocks Enable-TcConfig).
+    #>
+    $e = $null
+    try { $e = Get-TcBuildRequired } catch { $e = $null }
+    if ($null -eq $e) { return $null }
+    $r = Get-TcBuildRequiredReasons $e
+    if (-not $r.Contains('build-selection')) { return $null }
+    $g = Get-TcEntryGuard $e
+    $pc = $null; $pp = $null; $left = $null; $ch = $null
+    if ($null -ne $g) { $pc = [string]$g.previousConfiguration; $pp = [string]$g.previousPlatform; $left = [string]$g.leftConfiguration; $ch = [string]$g.changes }
+    $legacy = ($null -eq $g -or [string]::IsNullOrWhiteSpace($pp))
+    [PSCustomObject]@{
+        previousConfiguration = $pc
+        previousPlatform      = $pp
+        previous              = $(if ($legacy) { $null } else { Format-TcConfigLabel -Configuration $pc -Platform $pp })
+        leftConfiguration     = $left
+        changes               = $ch
+        legacy                = $legacy
+        reason                = [string]$r['build-selection']
+        solution              = [string]$e.solution
+        at                    = [string]$e.at
+        stateFile             = (Get-TcBuildRequiredFile)
+    }
+}
+
+function Clear-TcBuildSelectionGuard {
+    <#
+    .SYNOPSIS
+        #67: removes only the 'build-selection' kind of the current solution's entry (memory and
+        file); the other kinds stay. Returns $null or a warning text (the file still blocks then).
+    #>
+    $key = ConvertTo-TcSolutionKey $script:TcSolutionPath
+    $strip = {
+        param($Entry)
+        if ($null -eq $Entry) { return $null }
+        $r = Get-TcBuildRequiredReasons $Entry
+        if (-not $r.Contains('build-selection')) { return $Entry }
+        $r.Remove('build-selection')
+        if ($r.Count -eq 0) { return $null }
+        $kind = 'platform-switch'
+        foreach ($k in $script:TcBuildRequiredKinds) { if ($r.Contains($k)) { $kind = $k; break } }
+        New-TcBuildRequiredEntry -Solution ([string]$Entry.solution) -Reasons $r -Kind $kind -At ([string]$Entry.at)
+    }
+    foreach ($k in @($key, $script:TcUnknownSolutionKey)) {
+        if ($script:TcBuildRequiredLocal.ContainsKey($k)) {
+            $n = & $strip $script:TcBuildRequiredLocal[$k]
+            if ($null -eq $n) { $null = $script:TcBuildRequiredLocal.Remove($k) } else { $script:TcBuildRequiredLocal[$k] = $n }
+        }
+    }
+    $res = Invoke-TcBuildRequiredLocked -Body {
+        $st = Read-TcBuildRequiredState
+        foreach ($k in @($key, $script:TcUnknownSolutionKey)) {
+            if ($st.Entries.ContainsKey($k)) {
+                $n = & $strip $st.Entries[$k]
+                if ($null -eq $n) { $null = $st.Entries.Remove($k) } else { $st.Entries[$k] = $n }
+            }
+        }
+        Write-TcBuildRequiredState -Entries $st.Entries
+    }
+    if ($res.Locked -and $null -eq $res.Error) { return $null }
+    "Clear-TcBuildSelectionGuard: $(Get-TcBuildRequiredFile) not updated ($($res.Error)); Build-TcProject and Enable-TcConfig stay blocked until a later Set-TcTarget can update it."
+}
+
+function New-TcBuildSelectionGuardResult {
+    <#
+    .SYNOPSIS
+        #67: the BUILD_SELECTION_CHANGED refusal of Build-TcProject / Enable-TcConfig while the
+        'build-selection' guard is recorded (-Guard from Get-TcBuildSelectionGuard). -Data gets
+        buildSelectionGuard.
+    #>
+    param($Guard, [string]$Operation, [object]$Data)
+    $prev = if ($Guard.legacy) { '<unknown: legacy record>' } else { [string]$Guard.previous }
+    if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+    $Data | Add-Member -NotePropertyName 'buildSelectionGuard' -NotePropertyValue $Guard -Force
+    # own text (Get-TcBuildSelectionGuardHint), not the generic BUILD_SELECTION_CHANGED hint (that one
+    # is about a switch that was refused or undone)
+    New-TcResult -Success $false -ErrorCode 'BUILD_SELECTION_CHANGED' -Hint (Get-TcBuildSelectionGuardHint -Guard $Guard) -Data $Data `
+        -ErrorMessage "${Operation} refused: the PLC build selection was changed by a solution platform switch that could not be undone (previous configuration '$prev', #67); nothing was done."
 }

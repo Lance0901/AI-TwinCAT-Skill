@@ -36,6 +36,16 @@ function Set-TcTarget {
         'Release|TwinCAT OS (x64)' -> .tsproj 'TwinCAT OS (ARMT2)'): before switching, the
         project platform of the .tsproj under the chosen solution platform is checked; a
         mismatch switches nothing and returns PLATFORM_PROJECT_MISMATCH (data.platformMap).
+        Build selection (#67): on 4026 a disabled PLC is disabled only in the solution
+        configuration it was disabled in (Disabled = that configuration has no Build.0 for it,
+        measured 2026-11-03, 4026 VS2022 + TcXaeShell 64-bit), so a switch could build,
+        download and start it. Before switching, ShouldBuild of every PLC project under the target configuration is compared with the
+        active one (and Disabled read): a difference switches nothing and returns
+        BUILD_SELECTION_CHANGED (data.buildSelectionChanges); data that cannot be read
+        (contexts, PLC tree, no one-to-one PLC / .plcproj match while a PLC is disabled) returns
+        BUILD_SELECTION_UNKNOWN. After the switch ShouldBuild and Disabled are read back; a
+        difference re-activates the previous configuration (data.restored) and returns
+        BUILD_SELECTION_CHANGED.
         InfoSys "Setting the TwinCAT target platform":
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html
     .PARAMETER AmsNetId
@@ -63,10 +73,16 @@ function Set-TcTarget {
         data.availablePlatforms (solution platform names of that configuration),
         data.projectCheck ('ok' | 'mismatch' | 'no-tsproj'), data.platformMatchedBy,
         data.platformMap (solution platform -> @{ solutionPlatform; projectPlatforms =
-        @(@{ project; platform; shouldBuild }) }), data.restored (after PLATFORM_SET_FAILED).
+        @(@{ project; platform; shouldBuild }) }), data.restored (after PLATFORM_SET_FAILED or a
+        build selection that changed after the switch), data.buildSelection (one entry per PLC
+        project: plc, project, nodePath, configuration (the target), current = @{ configuration;
+        shouldBuild; disabled }, target = @{ shouldBuild }, after = @{ shouldBuild; disabled },
+        changed; @() without PLC project) and data.buildSelectionChanges (the changed entries).
         Errors: PLATFORM_UNKNOWN, PLATFORM_NOT_FOUND (data.availablePlatforms,
         data.availableConfigurations), PLATFORM_PROJECT_MISMATCH (data.platformMap,
-        data.requestedProjectPlatform; nothing switched), PLATFORM_SET_FAILED (data.restored).
+        data.requestedProjectPlatform; nothing switched), PLATFORM_SET_FAILED (data.restored),
+        BUILD_SELECTION_CHANGED (data.buildSelectionChanges; nothing switched, or switched back:
+        data.restored), BUILD_SELECTION_UNKNOWN (nothing switched, or switched back).
     .EXAMPLE
         Set-TcTarget -AmsNetId 199.5.42.250.1.1 -Platform 'TwinCAT OS (x64)'
         Local UmRT, platform given explicitly (works on runtimes without TARGETINFO).
@@ -159,6 +175,8 @@ function Set-TcTarget {
     $data | Add-Member -NotePropertyName 'platformMatchedBy' -NotePropertyValue $sw.platformMatchedBy
     $data | Add-Member -NotePropertyName 'platformMap' -NotePropertyValue $sw.platformMap
     if ($null -ne $sw.restored) { $data | Add-Member -NotePropertyName 'restored' -NotePropertyValue $sw.restored }
+    $data | Add-Member -NotePropertyName 'buildSelection' -NotePropertyValue $sw.buildSelection
+    $data | Add-Member -NotePropertyName 'buildSelectionChanges' -NotePropertyValue @($sw.buildSelectionChanges)
     $swp = $sw.PSObject.Properties['stateWarning']
     if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
         $prev = $data.PSObject.Properties['warning']
