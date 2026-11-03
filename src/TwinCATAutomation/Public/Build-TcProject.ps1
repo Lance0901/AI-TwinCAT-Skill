@@ -131,12 +131,31 @@
                   skipped  ShouldBuild = false: not part of the active solution configuration
                   failed   ShouldBuild and the build failed with an Error List row of this project
                   unknown  ShouldBuild, the build failed but no row names this project
-        data.skippedProjects (names), data.coverageComplete (every PLC project 'built').
+                  disabled ShouldBuild = false AND the PLC project is disabled in the TwinCAT
+                           project (#104, see below); not counted as skipped
+        data.projects[].disabled  $true when the PLC tree item (TIPC^<name>) is disabled
+                  (ITcSmTreeItem.Disabled, .tsproj <Project Disabled="true">, read with
+                  Get-TcPlcProjectList like Enable-TcConfig); a disabled project that the
+                  configuration builds keeps status 'built' / 'failed' / 'unknown' and counts
+                  like any other.
+        data.skippedProjects (names, status 'skipped' only), data.disabledProjects (names, status
+        'disabled'), data.coverageComplete (every PLC project except the 'disabled' ones 'built',
+        and at least one such project).
+        Disabled PLC projects (#104): XAE does not activate a disabled PLC project and Enable-TcConfig
+        leaves it out, so a disabled project that the configuration skips is no coverage gap: it
+        is not in skippedProjects, does not raise PROJECT_SKIPPED_BY_CONFIGURATION and does not
+        keep coverageComplete / codeVerified / completeBuild false. An ENABLED project that is
+        skipped still does (#28). Coverage entries are matched to PLC tree items by name (.plcproj
+        file name = TIPC child name); an entry with no matching tree item counts as enabled. When
+        the PLC project list cannot be read every project counts as enabled (old behaviour) and
+        data.disabledCheckError holds the message. When every PLC project is disabled and skipped,
+        nothing was compiled: coverageComplete and codeVerified are $false (CODE_NOT_VERIFIED).
         Skipped projects without -ExpectedProject: success stays as decided above, plus
         data.warningCode = PROJECT_SKIPPED_BY_CONFIGURATION, data.warning and Write-Warning.
         -ExpectedProject <name>: when one of them is skipped the build is not started and
         PROJECT_SKIPPED_BY_CONFIGURATION is returned (success = false); a name that is no
-        PLC project of the solution returns EXPECTED_PROJECT_NOT_FOUND; one that ends
+        PLC project of the solution returns EXPECTED_PROJECT_NOT_FOUND; a disabled one (#104,
+        built or not) returns EXPECTED_PROJECT_DISABLED (build not started); one that ends
         'failed' fails with BUILD_FAILED, one that ends 'unknown' with BUILD_COVERAGE_UNKNOWN.
         When the contexts cannot be read data.coverageError is set, data.coverageComplete =
         $false; with -ExpectedProject that is BUILD_COVERAGE_UNKNOWN.
@@ -148,7 +167,8 @@
         BUILD_TIMEOUT after that. Default 600.
     .PARAMETER ExpectedProject
         PLC project name(s) that must take part in the build (e.g. 'FrameworkUnitTest').
-        Matched against the .plcproj file name (without extension).
+        Matched against the .plcproj file name (without extension). A disabled PLC project
+        is refused with EXPECTED_PROJECT_DISABLED.
     .PARAMETER AllowUnresolvedLibrary
         Accept a build whose Error List shows unresolved libraries (missing / not installed)
         as success, with data.warningCode = LIBRARY_UNRESOLVED and codeVerified = $false.
@@ -190,6 +210,37 @@
     # --- coverage: which PLC projects the active solution configuration builds (#28) ---
     try { $coverage = Get-TcBuildCoverage }
     catch { return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build not started (reading SolutionContexts failed)' }
+    # --- disabled PLC projects (#104): ITcSmTreeItem.Disabled of the TIPC child (Get-TcPlcProjectList),
+    # the same reading Enable-TcConfig and Resolve-TcPlcProjectPath use to leave them out. A coverage
+    # entry is matched to a PLC tree item by name (the .plcproj file name without extension = the
+    # TIPC child name, the same assumption as Find-TcBuildCoverageEntry's 'TIPC^<Plc>' form); an
+    # entry without a matching tree item counts as enabled (old behaviour). A disabled entry that
+    # the configuration skips gets status 'disabled' (not 'skipped'): it is not part of the
+    # coverage, so it does not keep coverageComplete false. A disabled entry that IS built stays
+    # 'built'. When the list cannot be read every entry counts as enabled (data.disabledCheckError).
+    $disabledCheckError = $null
+    foreach ($p in @($coverage.projects)) { $p | Add-Member -NotePropertyName 'disabled' -NotePropertyValue $false -Force }
+    if ($null -eq $coverage.error -and @($coverage.projects).Count -gt 0) {
+        $plcList = $null
+        try { $plcList = @(Get-TcPlcProjectList -SysManager $sm) }
+        catch {
+            if ($_.Exception.Message -match 'IDE_CRASHED|IDE_MODAL_DIALOG') {
+                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_FAILED' -MessagePrefix 'Build not started (reading the PLC project list failed)'
+            }
+            $disabledCheckError = $_.Exception.Message
+            Write-Verbose "Build-TcProject: PLC project list not readable ($disabledCheckError); every PLC project counts as enabled."
+        }
+        if ($null -ne $plcList) {
+            foreach ($p in @($coverage.projects)) {
+                $item = @($plcList | Where-Object { [string]$_.name -ieq [string]$p.name } | Select-Object -First 1)
+                if ($item.Count -gt 0 -and $item[0].disabled -eq $true) {
+                    $p.disabled = $true
+                    if ($p.status -eq 'skipped') { $p.status = 'disabled' }
+                }
+            }
+        }
+    }
+    $disabledProjects = @($coverage.projects | Where-Object { $_.status -eq 'disabled' } | ForEach-Object { $_.name })
     # Solution configuration of the result (#58): the same reading as Get-TcIdeInfo / Connect-TcIde
     # data.solutionPlatform (Get-TcSolutionPlatform, DTE Solution.Properties('ActiveConfig')), not
     # the platform of the PLC project contexts, which is the PROJECT platform (solution
@@ -216,6 +267,10 @@
             solutionPlatform      = $solPlat.platform
             projectPlatform       = $solPlat.projectPlatform
             platformSource        = $solPlat.platformSource
+            disabledProjects      = $disabledProjects
+        }
+        if ($null -ne $disabledCheckError) {
+            $covData | Add-Member -NotePropertyName 'disabledCheckError' -NotePropertyValue $disabledCheckError
         }
         if ($null -ne $coverage.error) {
             $covData | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
@@ -227,6 +282,13 @@
             $known = ($coverage.projects | ForEach-Object { $_.name }) -join ', '
             return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($missing -join ', ') not in the solution (PLC projects: $known)." `
                 -ErrorCode 'EXPECTED_PROJECT_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'EXPECTED_PROJECT_NOT_FOUND') -Data $covData
+        }
+        # #104: a disabled PLC project is never activated (Enable-TcConfig leaves it out), so
+        # expecting it is a mistake - refused whether or not the configuration builds it.
+        $disabledExpected = @($expected | Where-Object { (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_).disabled -eq $true })
+        if ($disabledExpected.Count -gt 0) {
+            return New-TcResult -Success $false -ErrorMessage "Build not started: expected PLC project(s) $($disabledExpected -join ', ') are disabled in the TwinCAT project (ITcSmTreeItem.Disabled, .tsproj Disabled=""true""); a disabled PLC project is not activated, so it cannot be an expected project." `
+                -ErrorCode 'EXPECTED_PROJECT_DISABLED' -Hint (Get-TcErrorHint -Code 'EXPECTED_PROJECT_DISABLED') -Data $covData
         }
         $skippedExpected = @($expected | Where-Object { (Find-TcBuildCoverageEntry -Projects $coverage.projects -Name $_).status -eq 'skipped' })
         if ($skippedExpected.Count -gt 0) {
@@ -442,7 +504,7 @@
         $projects = @()
         foreach ($p in @($coverage.projects)) {
             $st = $p.status
-            if ($st -ne 'skipped') {
+            if ($st -ne 'skipped' -and $st -ne 'disabled') {
                 if ($buildSucceeded -eq $true) { $st = 'built' }
                 else {
                     $pattern = "[\\/]$([regex]::Escape($p.name))[\\/]"
@@ -457,10 +519,14 @@
                 platform      = $p.platform
                 shouldBuild   = $p.shouldBuild
                 status        = $st
+                disabled      = [bool]$p.disabled
             }
         }
         $skippedProjects = @($projects | Where-Object { $_.status -eq 'skipped' } | ForEach-Object { $_.name })
-        $coverageComplete = ($null -eq $coverage.error) -and ($projects.Count -gt 0) -and (@($projects | Where-Object { $_.status -ne 'built' }).Count -eq 0)
+        # #104: disabled + skipped PLC projects ('disabled') are not part of the coverage; at least
+        # one enabled PLC project must remain, else nothing was compiled (like a solution without PLC).
+        $activeProjects = @($projects | Where-Object { $_.status -ne 'disabled' })
+        $coverageComplete = ($null -eq $coverage.error) -and ($activeProjects.Count -gt 0) -and (@($activeProjects | Where-Object { $_.status -ne 'built' }).Count -eq 0)
 
         # --- coverage decides codeVerified too (#58) ---
         # A clean Error List only proves the code of the PLC projects that were compiled. With a
@@ -476,6 +542,10 @@
             elseif ($projects.Count -eq 0) {
                 $codeVerified = $false
                 $coverageWhy = 'the solution has no PLC project (.plcproj) in the active solution configuration'
+            }
+            elseif ($activeProjects.Count -eq 0) {
+                $codeVerified = $false
+                $coverageWhy = "no PLC project was compiled (every PLC project is disabled and not built: $($disabledProjects -join ', '))"
             }
             elseif ($skippedProjects.Count -gt 0) {
                 $codeVerified = $false
@@ -493,6 +563,7 @@
             buildSucceeded = $buildSucceeded
             projects       = $projects
             skippedProjects = $skippedProjects
+            disabledProjects = $disabledProjects
             coverageComplete = $coverageComplete
             solutionConfiguration = $solutionConfiguration
             solutionPlatform = $solPlat.platform
@@ -529,6 +600,9 @@
         }
         if ($null -ne $coverage.error) {
             $data | Add-Member -NotePropertyName 'coverageError' -NotePropertyValue $coverage.error
+        }
+        if ($null -ne $disabledCheckError) {
+            $data | Add-Member -NotePropertyName 'disabledCheckError' -NotePropertyValue $disabledCheckError
         }
         if ($skippedProjects.Count -gt 0) {
             $warn = "Build-TcProject: PLC project(s) $($skippedProjects -join ', ') are not built by the active solution configuration '$solutionConfiguration' (PROJECT_SKIPPED_BY_CONFIGURATION); their compiled output is stale. $(Get-TcErrorHint -Code 'PROJECT_SKIPPED_BY_CONFIGURATION')"

@@ -88,7 +88,7 @@ test('tools.json BuildProject description names the #23 / #45 fields and the All
   const tools = JSON.parse(fs.readFileSync(TOOLS_JSON, 'utf8'));
   const list = Array.isArray(tools) ? tools : tools.tools;
   const bp = list.find((t) => t.name === 'BuildProject');
-  for (const field of ['data.errors', 'data.libraryErrors', 'data.libraryErrorItems', 'category', 'decidedBy', 'LIBRARY_UNRESOLVED', 'codeVerified']) {
+  for (const field of ['data.errors', 'data.libraryErrors', 'data.libraryErrorItems', 'category', 'decidedBy', 'LIBRARY_UNRESOLVED', 'codeVerified', 'data.disabledProjects', 'EXPECTED_PROJECT_DISABLED']) {
     assert.ok(bp.description.includes(field), `BuildProject description mentions ${field}`);
   }
   assert.equal(bp.inputSchema.properties.AllowUnresolvedLibrary.type, 'boolean');
@@ -275,6 +275,35 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.equal(body.data.codeVerified, false);
     assert.deepEqual(body.data.warningCodes, ['PROJECT_SKIPPED_BY_CONFIGURATION', 'CODE_NOT_VERIFIED']);
     assert.deepEqual(body.data.projects.map((p) => [p.name, p.status]), [['plc', 'built'], ['plc2', 'skipped']]);
+    assert.deepEqual(body.data.disabledProjects, [], 'an enabled skipped project is not disabled (#104)');
+    assert.equal(body.data.completeBuild, false);
+  });
+
+  // #104: a PLC project disabled in the .tsproj (Disabled="true") and not built is no coverage gap
+  test('disabled + skipped PLC project: status disabled, not skipped, completeBuild true, no warning', async () => {
+    const { res, body } = await build('disabled-skipped');
+    assert.notEqual(res.isError, true, JSON.stringify(body));
+    const d = body.data;
+    assert.equal(body.success, true);
+    assert.deepEqual(d.projects.map((p) => [p.name, p.status, p.disabled]), [['plc', 'built', false], ['plc2', 'disabled', true]]);
+    assert.deepEqual(d.disabledProjects, ['plc2']);
+    assert.deepEqual(d.skippedProjects, []);
+    assert.equal(d.coverageComplete, true);
+    assert.equal(d.codeVerified, true);
+    assert.equal(d.completeBuild, true);
+    assert.equal(d.warningCode, undefined);
+    assert.equal(d.buildRequired, undefined);
+    assert.equal(d.disabledCheckError, undefined);
+  });
+
+  test('ExpectedProject naming a disabled PLC project: EXPECTED_PROJECT_DISABLED, build not started', async () => {
+    const { res, body } = await build('disabled-skipped', { ExpectedProject: ['plc', 'plc2'] });
+    assert.equal(res.isError, true, JSON.stringify(body));
+    assert.equal(body.error.code, 'EXPECTED_PROJECT_DISABLED');
+    assert.match(body.error.message, /plc2 are disabled/);
+    assert.match(body.error.hint, /disabled/);
+    assert.deepEqual(body.data.disabledProjects, ['plc2']);
+    assert.equal(body.data.buildSec, undefined, 'the build was not started');
   });
 
   test('PLC project list not readable (coverageError): codeVerified null, CODE_NOT_VERIFIED', async () => {
