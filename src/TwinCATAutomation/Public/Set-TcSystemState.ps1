@@ -34,6 +34,11 @@
         disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
         data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
+
+        Fail closed (#68): SYSTEM_STATE_TIMEOUT and SYSTEM_STATE_MISMATCH come after WriteControl
+        was sent, so they also record a lifecycle block for the target (data.lifecycleBlock).
+        While a block exists for the target, this command returns LIFECYCLE_BLOCKED and sends
+        nothing; only Clear-TcLifecycleBlock (after the user agreed) removes it.
     .PARAMETER State
         Target state: Run or Config.
     .PARAMETER AmsNetId
@@ -87,6 +92,10 @@
         }
     }
 
+    # #68: a failed postcondition on this target is still unresolved: send nothing
+    $blocked = Test-TcLifecycleBlock -AmsNetId $AmsNetId -Command 'Set-TcSystemState'
+    if ($null -ne $blocked) { return $blocked }
+
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
         return New-TcResult -Success $false -ErrorMessage 'TwinCAT.Ads.dll not found.' -ErrorCode 'ADS_ASSEMBLY_NOT_FOUND'
@@ -110,7 +119,7 @@
         $sentName = $newState.AdsState.ToString()
         $newState.DeviceState = 0
         $requestWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $sysClient.WriteControl($newState)
+        $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
         # Original state = target (Run -> Run restart, Config -> Config): the target only
         # counts once the system was seen LEAVING it (other state or port unreachable),
@@ -155,11 +164,12 @@
         if (-not $leftOriginal) {
             $data.finalState = $State
             $data.currentState = $State
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT was already in '$State' and never left it within $([Math]::Min(10, $TimeoutSec)) s after WriteControl $sentName ($sentCode): the restart was not observed, so the current '$State' is the old state, not a confirmed restart." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH') `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $State -Step 'leave-original')
         }
 
         # Poll port 10000 until the target state is reached (replaces fixed sleep)
@@ -195,11 +205,12 @@
                 $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
                 if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
             }
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT did not reach state '$State' within $TimeoutSec s (last state: $($wait.State)).$detail" `
                 -ErrorCode 'SYSTEM_STATE_TIMEOUT' `
                 -Hint $hint `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$wait.State) -Step 'wait')
         }
         $data.reached = $true
         $data.latencyMs = [int]$requestWatch.ElapsedMilliseconds
@@ -255,11 +266,12 @@
                 $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
                 if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
             }
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT reached '$State' but did not stay there: readback '$readback' after $SettleSec s (sent AdsState $sentName ($sentCode); trace $traceText)." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint $hint `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$readback) -Step 'settle')
         }
 
         New-TcResult -Success $true -Data $data

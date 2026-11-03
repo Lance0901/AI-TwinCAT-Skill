@@ -121,6 +121,7 @@ $operationMap = @{
     'PlcLogout'       = 'Exit-TcPlcOnline'
     'GetSystemState'  = 'Get-TcSystemState'
     'SetSystemState'  = 'Set-TcSystemState'
+    'ClearLifecycleBlock' = 'Clear-TcLifecycleBlock'
     # Automated Testing
     'NewTestCase'     = 'New-TcTestCase'
     'RunTest'         = 'Invoke-TcTest'

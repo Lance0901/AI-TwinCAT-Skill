@@ -18,6 +18,8 @@ function Write-TcVariable {
         data.written is the value actually written (converted, not the input echoed): for time types the
         normalized IEC literal (T#6000ms -> T#6s) plus the raw integer in data.ms / data.ns / data.unix;
         enums add data.name.
+        While a lifecycle block exists for the ADS session's AmsNetId (#68, a runtime-changing
+        command failed its readback) nothing is written: LIFECYCLE_BLOCKED (data.lifecycleBlock).
     .PARAMETER Path
         Variable path (e.g., "MAIN.nSetpoint").
     .PARAMETER Value
@@ -31,6 +33,10 @@ function Write-TcVariable {
         [Parameter(Mandatory)]
         [object]$Value
     )
+
+    # #68: the session's target has an unresolved failed postcondition: write nothing
+    $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Write-TcVariable'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'path' -NotePropertyValue $Path -Force; return $blocked }
 
     try { $reconnected = Ensure-TcAdsConnection } catch {
         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'

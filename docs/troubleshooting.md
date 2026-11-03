@@ -59,7 +59,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - port 851 只在 download 後存在;download 前 `Connect-TcAds -Port 851` 必回 `ADS_PORT_NOT_FOUND`。
 - Activate 會重啟 TwinCAT XAR,所有既有 ADS 連線失效;IDE 的 COM 參考**不會**失效,不要重連 IDE。
 - 不要用 `Start-Sleep` 猜等待時間;所有等待都已在 cmdlet 內輪詢(`-TimeoutSec` 可調)。
-- `Invoke-TcTestCycle` 內部就是上面的流程,每步同樣 gating。
+- **Fail closed(#68)**:`success: true` 才代表狀態已讀回到達。任何 lifecycle 步驟回 `success: false` 就停下，後續步驟標 NOT RUN、回報使用者;runtime 改變請求送出後讀回沒到達(`SYSTEM_STATE_TIMEOUT`、`SYSTEM_STATE_MISMATCH`、`RUNTIME_STATE_MISMATCH`、`BOOT_PACKAGE_MISMATCH`、`PLC_NOT_LOADED`、`PLC_RUN_TIMEOUT`、`Set-TcPlcState` Stop 沒到)會記 lifecycle block,之後會改 runtime 的命令都回 `LIFECYCLE_BLOCKED`,直到使用者同意後 `Clear-TcLifecycleBlock`。見下方「LIFECYCLE_BLOCKED」與 `adapters/claude-code/SKILL.md`「Failure contract」。
+- `Invoke-TcTestCycle` 內部就是上面的流程,每步同樣 gating。Activate 之後不再 `Connect-TcIde`(#68)。
 - `SetTargetNetId` 本身**不會**改 solution platform(實測,見「ACTIVATE_FAILED」的「platform 怎麼來的」)。`Set-TcTarget` 設完 NetId 後讀 target 的 TARGETINFO(見「Target platform(TARGETINFO)」),讀得到就自動切 solution platform;讀不到又沒給 `-Platform` → `PLATFORM_UNKNOWN`(NetId 已設好)。目前這台的 UmRT / Windows XAR 都回 0x702,所以換 target 或 tsproj 的 target 連不到時,要加 `-Platform`(或 `Enable-TcConfig -Platform`;`Connect-TcIde` 的 `data.solutionPlatform` 看現在是哪個)。見 `ACTIVATE_FAILED`。
 
 ## 環境矩陣
@@ -300,6 +301,22 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:`Connect-TcIde -SolutionPath` 開了 solution,但 `Solution.IsOpen` / `Projects.Count` 在時限內沒就緒。常見:.sln 內沒有 TwinCAT 專案、XAE 跳出 dialog(升級專案、缺 library)、或 IDE 正在冷啟動。
 - **下一步**:看 XAE 畫面關 dialog;重跑 `Connect-TcIde -SolutionPath <sln>`。
+
+### LIFECYCLE_BLOCKED
+
+- **為什麼**:這個 target(AmsNetId)之前有一個會改變 runtime 的請求已經送出，但讀回沒有到達要求的狀態(#68,#32 的情境:WriteControl 沒丟例外、讀回仍是 Config)。模組把它記成 lifecycle block(`data.lifecycleBlock`:`amsNetId`、`command`、`errorCode`、`message`、`requestedState`、`reachedState`、`step`、`time`),之後 fail closed:會改 runtime 的命令都不執行。
+- **誰會記**:`Set-TcSystemState` 的 `SYSTEM_STATE_TIMEOUT` / `SYSTEM_STATE_MISMATCH`;`Enable-TcConfig` 在 set-config / `ActivateConfiguration()` 送出之後的 `SYSTEM_STATE_TIMEOUT`、`SYSTEM_STATE_MISMATCH`、`RUNTIME_STATE_MISMATCH`、`BOOT_PACKAGE_MISMATCH`、`PLC_NOT_LOADED`、`PLC_RUN_TIMEOUT`;`Set-TcPlcState` 送出後 Run 沒到(`PLC_RUN_TIMEOUT`)或 Stop 沒到(`STATE_SET_FAILED`)。前置條件失敗(`BUILD_REQUIRED`、`BUILD_SELECTION_*`、`PLATFORM_*`、`AMS_NETID_REQUIRED`)什麼都沒改，不記。`RUNTIME_CRASHED` 不記(runtime 已不在，見該節)。成功的命令**不會**自動清掉 block。
+- **誰會被擋**:`Set-TcSystemState`、`Enable-TcConfig`(有無 `-Force`)、`Enter-TcPlcOnline`、`Send-TcPlcProgram`、`Set-TcPlcState`(所有 State)、`Write-TcVariable`、`Invoke-TcTest`、`Invoke-TcTestCycle`(連 Build 都不跑)、`Set-TcComModuleParameter -Online -DryRun $false`;MCP 的 `RunLifecycle` 在 EnableConfig 步驟被擋(前面的 ConnectIde / SetTarget / BuildProject 仍會跑)。唯讀 / 診斷命令(`Get-TcSystemState`、`Get-TcPlcState`、`Read-TcVariable`、`Get-TcSymbols`、`Connect-TcAds`、`Build-TcProject`、`Get-TcIdeModalDialog`、`Get-TcBuildErrors`)不擋。`Exit-TcPlcOnline` 也不擋(登出不改 runtime 狀態)。
+- **存在哪**:`%TEMP%\TwinCATAutomation\lifecycle-block.json`(測試用 `TCAUTO_STATE_DIR`),以 AmsNetId 為 key,不同 target 互不影響;跨 `Import-Module -Force`、MCP bridge 重啟仍有效。寫入用 named mutex + `[IO.File]::Replace`(同 `build-required.json`),寫不了檔時至少在本行程的記憶體裡擋(`data.lifecycleBlock.stateWarning`)。檔案讀不到 / 解析不了 → 所有 target 都擋(`errorCode = state-unreadable`)。命令解析不出自己的 target AmsNetId 時，任何 block 都擋。`127.0.0.1.1.1` 與本機實際 AmsNetId 是不同 key。
+- **下一步(人工核准流程)**:
+  1. 停止，後續步驟標示 NOT RUN,把 `data.lifecycleBlock` 與當時的 result 原樣回報使用者。
+  2. 只做唯讀診斷:`Get-TcSystemState`、`Get-TcPlcState`、`Get-TcIdeModalDialog`、`Get-TcBuildErrors`、XAE License 節點。
+  3. **不要**自行改用其他控制通道:直接 `TcAdsClient.WriteControl`、`ITcSysManager` 的 StartRestart 方法、`DTE.ExecuteCommand("TwinCAT.*")`、Activate 後重新 `Connect-TcIde`、GUI 點 toolbar、`TcSystemServiceUm` console 的 `r` / `c`、寫死或沿用聊天裡的 AmsNetId、自動改 Platform / Target / Route / ShouldBuild / PLC Disabled。
+  4. 使用者確認原因並同意後:`Clear-TcLifecycleBlock -Reason '<使用者的理由>'`(MCP `ClearLifecycleBlock`;預設目前 IDE target,別的 target 帶 `-AmsNetId`;記錄寫進 block 時 AmsNetId 不明則用 `-AmsNetId '<unknown>'`)。回傳 `data.cleared`、`data.receipt`,並附加到同目錄的 `lifecycle-block-history.jsonl`。解析不了的 state 檔會被移到 `lifecycle-block.json.corrupt-<時間>`(`data.corruptBackup`,裡面其他 target 的紀錄一併失效)。
+  5. 從頭重跑 lifecycle(`Build-TcProject` → `Enable-TcConfig -Force` → …)。
+- **失敗回傳的欄位**:`Enable-TcConfig` 回 `success: false` 時 `activated`、`restarted`、`loggedIn`、`reconnected`、`platformFixed` 一律是 `false`;實際送了什麼看 `activateSent`、`activateReturned`、`runSent`、`runReached`、`loginCompleted`、`platformSwitched`、`requestedState`、`reachedState`(最後讀回的 port 10000 狀態)。
+- **靜態檢查**:`scripts/check.ps1` 的 `forbidden` 檢查 `src/`、`mcp-server/`、`tests/Integration/` 程式碼裡寫死的 AmsNetId、StartRestart 方法、`ExecuteCommand("TwinCAT.*")` 與直接 `.WriteControl(`;合法用途要在該行或正上方註解行寫 `tcauto-allow(<rule>): <理由>`(`scripts/forbidden-patterns.ps1`,單元測試 `tests/Unit/forbidden-lint.ps1`)。
+- **測試**:`tests/Unit/lifecycle-block.ps1`(mock,#32 regression:Set-TcSystemState 讀回 Config → block,之後 Login / PLC Run / ADS Write / Enable-TcConfig 全擋且沒呼叫底層 COM / ADS,Clear 後恢復，不同 AmsNetId 不互擋;Enable-TcConfig verify 讀回 Config → block 且 `restarted` / `activated` 不是 true;`Invoke-TcTestCycle` Activate 後不呼叫 `Connect-TcIde`)。真機尚未驗證。
 
 ### SYSTEM_STATE_TIMEOUT
 

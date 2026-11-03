@@ -109,6 +109,10 @@
         return New-TcNoSysManagerResult
     }
 
+    # #68: a failed postcondition on this target is unresolved: no login, no download
+    $blocked = Test-TcLifecycleBlock -AmsNetId (Resolve-TcLifecycleNetId -SysManager $sm) -Command 'Enter-TcPlcOnline'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'online' -NotePropertyValue $false -Force; return $blocked }
+
     # BUILD_REQUIRED (#56 point 1): same state as Enable-TcConfig. XAE compiles by itself before
     # a login or download when the project changed (InfoSys "Command Login",
     # https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2531393419.html; "Command Download",

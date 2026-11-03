@@ -98,6 +98,7 @@
         'Exit-TcPlcOnline',
         'Get-TcSystemState',
         'Set-TcSystemState',
+        'Clear-TcLifecycleBlock',
         # Automated Testing
         'New-TcTestCase',
         'Invoke-TcTest',

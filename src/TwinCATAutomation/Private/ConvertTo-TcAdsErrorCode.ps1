@@ -232,6 +232,8 @@ $script:TcErrorHints['ROUTE_ALREADY_EXISTS'] = '已經有到這個 NetId 的 rou
 $script:TcErrorHints['ROUTE_PASSWORD_MISSING'] = '先在執行模組的行程設定環境變數(MCP:在 client 設定的 server env 加),變數名稱一定要是 TCAUTO_ROUTE_PW 或 TCAUTO_ROUTE_PW_<後綴>(只讀 Process scope),再用 Add-TcAdsRoute -PasswordEnv TCAUTO_ROUTE_PW 重跑;不要把密碼當參數值傳'
 $script:TcErrorHints['ROUTE_ADD_FAILED'] = 'AddRoute / AddProjectRoute 被 XAE 拒絕(訊息已去掉密碼與 XML):確認遠端 IP / NetId / 帳號，用 Get-TcIdeModalDialog 檢查 dialog,再用 Get-TcAdsRoutes 看目前的 route'
 $script:TcErrorHints['ROUTE_VERIFY_FAILED'] = '指令有返回但 TIRR 讀回沒有這條 route:不要當成功。用 Get-TcAdsRoutes 看 data.target 的 route 表(TIRR 只顯示目前 target 的),必要時 Set-TcTarget 切到另一端再看'
+# #68: fail-closed guard after a runtime-changing request whose readback did not reach the target state
+$script:TcErrorHints['LIFECYCLE_BLOCKED'] = '停止後續所有步驟(標示 NOT RUN),把 data.lifecycleBlock(command、errorCode、requestedState、reachedState、message、time)原樣回報給使用者，只做唯讀診斷(Get-TcSystemState、Get-TcPlcState、Get-TcIdeModalDialog、Get-TcBuildErrors)。不要自行改用其他控制通道:raw ADS WriteControl、COM/DTE 重啟或 TwinCAT 指令、GUI 點擊、TcSystemServiceUm console、改 Platform/Target/Route。使用者確認並同意後才呼叫 Clear-TcLifecycleBlock -Reason ''<使用者的理由>''(預設目前 target,-AmsNetId 指定其他 target),再從頭重跑 lifecycle。見 docs/troubleshooting.md「LIFECYCLE_BLOCKED」'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

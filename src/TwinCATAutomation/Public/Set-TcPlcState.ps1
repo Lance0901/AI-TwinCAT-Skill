@@ -12,6 +12,10 @@ function Set-TcPlcState {
         For Run and Stop the port is then polled until it reports the target state;
         if it does not within -TimeoutSec, PLC_RUN_TIMEOUT (Run) or STATE_SET_FAILED
         (Stop) is returned. Reset is verified with a single read after 200 ms.
+        Fail closed (#68): those two readback failures come after WriteControl was sent and also
+        record a lifecycle block for the session's AmsNetId (data.lifecycleBlock). While a block
+        exists for it, Set-TcPlcState returns LIFECYCLE_BLOCKED and sends nothing (every -State);
+        only Clear-TcLifecycleBlock (after the user agreed) removes it.
     .PARAMETER State
         Target state: Run, Stop, or Reset.
     .PARAMETER TimeoutSec
@@ -27,6 +31,10 @@ function Set-TcPlcState {
         [ValidateRange(1, 3600)]
         [int]$TimeoutSec = 30
     )
+
+    # #68: the ADS session's target has an unresolved failed postcondition: send nothing
+    $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Set-TcPlcState'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestedState' -NotePropertyValue $State -Force; return $blocked }
 
     try { $reconnected = Ensure-TcAdsConnection } catch {
         if ($State -eq 'Run') {
@@ -90,7 +98,7 @@ function Set-TcPlcState {
         $newStateInfo = New-Object TwinCAT.Ads.StateInfo
         $newStateInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], $targetState)
         $newStateInfo.DeviceState = 0
-        $script:TcAdsClient.WriteControl($newStateInfo)
+        $script:TcAdsClient.WriteControl($newStateInfo)  # tcauto-allow(writecontrol): Set-TcPlcState itself; Run / Stop polled until reached, failure -> lifecycle block
 
         if ($State -eq 'Run' -or $State -eq 'Stop') {
             # Poll the port until it reports the target state (separate temporary client)
@@ -112,7 +120,7 @@ function Set-TcPlcState {
                 }
                 $hint = Get-TcErrorHint -Code $code
                 if (-not [string]::IsNullOrWhiteSpace($hint)) { $params['Hint'] = $hint }
-                return New-TcResult @params
+                return (Add-TcLifecycleBlockResult -Result (New-TcResult @params) -Command 'Set-TcPlcState' -AmsNetId ([string]$script:TcAdsAmsNetId) -RequestedState $State -ReachedState ([string]$wait.State) -Step "port $($script:TcAdsPort)")
             }
             return New-TcResult -Success $true -Data $data
         }

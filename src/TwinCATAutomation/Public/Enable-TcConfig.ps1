@@ -126,6 +126,15 @@ function Enable-TcConfig {
                             proof.
           7. reconnect      Re-open the module ADS session if one existed before the
                             restart (skipped when step 6 already auto-reconnected it).
+        Fail closed (#68): every success=false result has activated, restarted, loggedIn,
+        reconnected and platformFixed = $false; what really happened is in activateSent,
+        activateReturned, runSent, runReached, loginCompleted, platformSwitched, requestedState and
+        reachedState (last system state read back). After set-config / ActivateConfiguration()
+        was sent, SYSTEM_STATE_TIMEOUT, SYSTEM_STATE_MISMATCH, RUNTIME_STATE_MISMATCH,
+        BOOT_PACKAGE_MISMATCH, PLC_NOT_LOADED and PLC_RUN_TIMEOUT also record a lifecycle block
+        for the target (data.lifecycleBlock); while one exists Enable-TcConfig returns
+        LIFECYCLE_BLOCKED before anything is read or changed. Only Clear-TcLifecycleBlock (after
+        the user agreed) removes it.
         When a step after Activate fails (set-run, wait-plc-port, wait-plc-run, verify),
         data.diagnostics is filled: dialog (modal dialog title/text), errorList (first error
         rows of the XAE Error List), bootPackage (fresh comparison). A Boot package
@@ -170,7 +179,9 @@ function Enable-TcConfig {
         Restart TwinCAT with the new configuration without logging in; waits briefly
         for a boot project on 851 but does not fail when there is none.
     .OUTPUTS
-        data: activated, restarted, loggedIn, reconnected, plcState (last AdsState seen
+        data: activated, restarted, loggedIn, reconnected (all $false on a failure), activateSent,
+        activateReturned, runSent, runReached, loginCompleted, platformSwitched, requestedState,
+        reachedState, lifecycleBlock (only when a block was recorded), plcState (last AdsState seen
         on the first PLC port, 851 in a one-PLC solution), plcs[] (@{ name; projectPath;
         adsPort; loggedIn; state }), bootPackage, finalCheck (@{ systemState; plcs;
         dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
@@ -220,6 +231,10 @@ function Enable-TcConfig {
     if ($null -eq $sm) {
         return New-TcNoSysManagerResult
     }
+
+    # #68: an earlier postcondition failure on this target is unresolved: do nothing at all
+    $blocked = Test-TcLifecycleBlock -AmsNetId (Resolve-TcLifecycleNetId -SysManager $sm) -Command 'Enable-TcConfig'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'activated' -NotePropertyValue $false -Force; return $blocked }
 
     # #67: a platform switch left a changed PLC build selection that could not be undone
     $selGuard = Get-TcBuildSelectionGuard
@@ -283,6 +298,12 @@ function Enable-TcConfig {
     $bootPackage = $null
     $finalCheck = $null
     $diagnostics = $null
+    # #68 postcondition facts (kept on failure, where activated / restarted / ... are always $false)
+    $runtimeChangeSent = $false   # set-config (-Force) or ActivateConfiguration() was sent
+    $activateSent = $false
+    $runSent = $false
+    $reachedState = $null         # last system state read back (port 10000)
+    $requestedState = $(if ($Force) { 'Run' } else { 'Activated' })
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -294,12 +315,24 @@ function Enable-TcConfig {
         })
     }
 
+    # -Failed (#68): every "done" field is $false on a failure result; the facts stay in
+    # activateSent / activateReturned / runSent / runReached / loginCompleted / platformSwitched /
+    # reachedState (same values on success and failure).
     function Get-TcCycleData {
+        param([switch]$Failed)
         [PSCustomObject]@{
-            activated   = $activated
-            restarted   = $restarted
-            loggedIn    = $loggedIn
-            reconnected = $reconnected
+            activated   = ($activated -and -not $Failed)
+            restarted   = ($restarted -and -not $Failed)
+            loggedIn    = ($loggedIn -and -not $Failed)
+            reconnected = ($reconnected -and -not $Failed)
+            activateSent     = $activateSent
+            activateReturned = $activated
+            runSent          = $runSent
+            runReached       = $restarted
+            loginCompleted   = $loggedIn
+            platformSwitched = $platformFixed
+            requestedState   = $requestedState
+            reachedState     = $reachedState
             plcState    = $plcState
             amsNetId    = $netId
             ideMemoryMB = $ideMemoryMB
@@ -312,7 +345,7 @@ function Enable-TcConfig {
             restored    = $platformRestored
             targetPlatform = $targetPlatform
             targetPlatformSource = $targetPlatformSource
-            platformFixed = $platformFixed
+            platformFixed = ($platformFixed -and -not $Failed)
             platformCheck = $platformCheck
             warning     = $platformWarning
             plcs        = @($plcs)
@@ -446,10 +479,16 @@ function Enable-TcConfig {
 
     function New-TcStepFailure {
         param([string]$Message, [string]$Code, [string]$Hint)
-        $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData) }
+        $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed) }
         if ([string]::IsNullOrWhiteSpace($Hint)) { $Hint = Get-TcErrorHint -Code $Code }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
-        New-TcResult @params
+        $res = New-TcResult @params
+        # #68: a failed postcondition after a runtime-changing request blocks the target
+        if ($runtimeChangeSent -and $script:TcLifecyclePostconditionCodes -contains $Code) {
+            $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $requestedState -ReachedState $reachedState -Step ($failedStep -join '')
+        }
+        $res
     }
 
     # A modal dialog (Assertion Failed, fatal error ...) makes ActivateConfiguration()
@@ -710,6 +749,17 @@ function Enable-TcConfig {
         $Result.data | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $StateResult.data -Force
     }
 
+    # readbackState (else currentState) of a Set-TcSystemState result, $null when there is none
+    function Get-TcReadbackState {
+        param([object]$StateResult)
+        if ($null -eq $StateResult -or $null -eq $StateResult.data) { return $null }
+        foreach ($n in @('readbackState', 'currentState', 'lastState')) {
+            $p = $StateResult.data.PSObject.Properties[$n]
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return [string]$p.Value }
+        }
+        $null
+    }
+
     # ------------------------------------------------------------------
     # Activate only (no -Force): behaviour unchanged
     # ------------------------------------------------------------------
@@ -724,6 +774,8 @@ function Enable-TcConfig {
         Read-TcIdeMemoryBeforeActivate
         $failedBefore = Read-TcLastBuildInfo
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $runtimeChangeSent = $true
+        $activateSent = $true
         try {
             Invoke-TcActivateWithDeadline -TimeoutSec $ActivateTimeoutSec -AmsNetId $netId
         }
@@ -789,7 +841,9 @@ function Enable-TcConfig {
     $fail = Test-TcCycleDeadline -Name 'set-config'
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $runtimeChangeSent = $true
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
+    $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-config' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         $res = New-TcStepFailureFromResult -Result $r -Prefix 'Failed to switch to Config' -DefaultCode 'CONFIG_SWITCH_FAILED'
@@ -806,6 +860,7 @@ function Enable-TcConfig {
     Read-TcIdeMemoryBeforeActivate
     $failedBefore = Read-TcLastBuildInfo
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $activateSent = $true
     try {
         Invoke-TcActivateWithDeadline -TimeoutSec ([Math]::Min($ActivateTimeoutSec, (Get-TcRemainingSec))) -AmsNetId $netId
     }
@@ -837,7 +892,9 @@ function Enable-TcConfig {
     $fail = Test-TcCycleDeadline -Name 'set-run'
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $runSent = $true
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
+    $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         if ([string]$r.error.code -eq 'RUNTIME_CRASHED') {
@@ -1008,7 +1065,7 @@ function Enable-TcConfig {
                         $runInfo = New-Object TwinCAT.Ads.StateInfo
                         $runInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], 5)  # AdsState.Run
                         $runInfo.DeviceState = 0
-                        $tmpClient.WriteControl($runInfo)
+                        $tmpClient.WriteControl($runInfo)  # tcauto-allow(writecontrol): step set-plc-run of the gated cycle; wait-plc-run and verify read it back
                         Add-TcStepRecord -Name 'set-plc-run' -Ok $true -Watch $sw -Detail "WriteControl Run sent via temporary ${netId}:${port} client (module session '$sessionDesc' untouched)"
                     }
                 }
@@ -1049,6 +1106,7 @@ function Enable-TcConfig {
     }
     catch { $sysErr = $_.Exception.Message }
     finally { if ($null -ne $probe) { try { $probe.Dispose() } catch { } } }
+    $reachedState = $(if ($sysState) { $sysState } else { 'Unreachable' })
     $plcChecks = @()
     $bad = @()
     if ($sysState -ne 'Run') { $bad += "system (port 10000) $(if ($sysState) { $sysState } else { "unreachable: $sysErr" })" }

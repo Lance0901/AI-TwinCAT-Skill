@@ -139,6 +139,9 @@ Check 'RUNTIME_CRASHED hint: restart UmRT, Enable-TcConfig -Force, #21' ($r.erro
 Set-Ads 'crashAfterWrite'; $global:UmRt = $null
 $r = Set-TcSystemState -State Config -AmsNetId '5.6.7.8.1.1' -TimeoutSec 3
 Check 'Set-TcSystemState remote target -> SYSTEM_STATE_TIMEOUT (unchanged)' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['servicePidAtStart']) "code=$($r.error.code)"
+# #68: SYSTEM_STATE_TIMEOUT after WriteControl records a lifecycle block (RUNTIME_CRASHED does not); lift it for the next cases
+Check 'SYSTEM_STATE_TIMEOUT recorded a lifecycle block, RUNTIME_CRASHED did not' ($r.data.lifecycleBlock.amsNetId -eq '5.6.7.8.1.1' -and $null -eq (& $mod { Get-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' })) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
+$null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next case'
 
 # --- Enable-TcConfig -Force passes RUNTIME_CRASHED on (set-config and set-run)
 $global:CrashOn = 'Config'
@@ -168,7 +171,7 @@ Check 'Enable-TcConfig set-config: RUNTIME_CRASHED code + hint passed on' ((-not
 Check 'Enable-TcConfig set-config: data.runtimeCrash' ((@($r.data.runtimeCrash.servicePidAtStart) -join ',') -eq '4242' -and $r.data.runtimeCrash.lastError -match '0x7' -and -not $r.data.activated) ($r.data.runtimeCrash | ConvertTo-Json -Compress)
 $global:CrashOn = 'Run'
 $r = Enable-TcConfig -Force -WarningAction SilentlyContinue
-Check 'Enable-TcConfig set-run: RUNTIME_CRASHED passed on, no Error List diagnostics' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.error.hint -eq $hint -and $r.data.activated -and $r.data.runtimeCrash.runtimeName -eq 'UmRT_Default' -and @($r.data.steps | Where-Object { $_.step -eq 'set-run' -and -not $_.ok }).Count -eq 1) "code=$($r.error.code) msg=$($r.error.message)"
+Check 'Enable-TcConfig set-run: RUNTIME_CRASHED passed on, no Error List diagnostics' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.error.hint -eq $hint -and $r.data.activateReturned -and -not $r.data.activated -and $r.data.runtimeCrash.runtimeName -eq 'UmRT_Default' -and @($r.data.steps | Where-Object { $_.step -eq 'set-run' -and -not $_.ok }).Count -eq 1) "code=$($r.error.code) msg=$($r.error.message)"
 
 # --- Invoke-TcTestCycle keeps RUNTIME_CRASHED (not ACTIVATION_FAILED)
 & $mod {

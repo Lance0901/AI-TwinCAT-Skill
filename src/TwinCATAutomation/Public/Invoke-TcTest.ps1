@@ -6,6 +6,8 @@ function Invoke-TcTest {
         with waitTimedOut=true, lastValues and waitMs (time actually waited).
         A test case that waits with the deprecated WaitMs (no WaitUntil, waitMs > 0) gets
         data.warning (the test case's own warning from New-TcTestCase, or the same text).
+        While a lifecycle block exists for the ADS session's AmsNetId (#68) nothing is written or
+        read: LIFECYCLE_BLOCKED (data.lifecycleBlock).
     .PARAMETER TestCase
         A test case object from New-TcTestCase.
     #>
@@ -14,6 +16,10 @@ function Invoke-TcTest {
         [Parameter(Mandatory)]
         [PSCustomObject]$TestCase
     )
+
+    # #68: the session's target has an unresolved failed postcondition: no setup writes
+    $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Invoke-TcTest'
+    if ($null -ne $blocked) { return $blocked }
 
     try { $null = Ensure-TcAdsConnection } catch {
         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'

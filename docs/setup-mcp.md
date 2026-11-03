@@ -1,6 +1,6 @@
 # TcAuto MCP Setup
 
-Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, Claude Code or any MCP client can call 76 of the 78 cmdlets (plus 4 composite tools; `NewProject` is not offered, #70) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
+Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, Claude Code or any MCP client can call 77 of the 79 cmdlets (plus 4 composite tools; `NewProject` is not offered, #70) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
 
 ## Prerequisites
 

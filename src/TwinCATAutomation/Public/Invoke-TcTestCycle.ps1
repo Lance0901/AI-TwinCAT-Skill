@@ -20,6 +20,13 @@
         data.runtimeCrash.
         Test cases that wait with the deprecated WaitMs: each result has data.warning (as
         Invoke-TcTest) and the report lists them in data.warnings ("<name>: <warning>").
+        #68: the IDE is NOT reconnected after Activate (Connect-TcIde after Activate is a forbidden
+        fallback, adapters/claude-code/SKILL.md): Enable-TcConfig -Force already refreshed the
+        ITcSysManager reference and read back system Run and every PLC port (step verify), and the
+        AmsNetId is the one cached before Activate (else data.amsNetId of Enable-TcConfig).
+        While a lifecycle block exists for the target nothing runs (no Build either):
+        LIFECYCLE_BLOCKED (data.lifecycleBlock); an ACTIVATION_FAILED whose Enable-TcConfig
+        recorded a block carries it in data.lifecycleBlock.
     #>
     [CmdletBinding()]
     param(
@@ -41,6 +48,11 @@
     if ($null -ne $script:TcSysManager) {
         try { $cachedAmsNetId = $script:TcSysManager.GetTargetNetId() } catch { }
     }
+
+    # #68: an unresolved failed postcondition on this target: run nothing (not even the build)
+    $blockId = if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) { [string]$cachedAmsNetId } else { [string]$script:TcAdsAmsNetId }
+    $blocked = Test-TcLifecycleBlock -AmsNetId $blockId -Command 'Invoke-TcTestCycle'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'steps' -NotePropertyValue @() -Force; return $blocked }
 
     # Step 1: Build
     if (-not $SkipBuild) {
@@ -78,31 +90,23 @@
         if ($aCode -eq 'RUNTIME_CRASHED' -and $null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['runtimeCrash']) {
             $aData | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $activateResult.data.runtimeCrash
         }
+        if ($null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['lifecycleBlock']) {
+            $aData | Add-Member -NotePropertyName 'lifecycleBlock' -NotePropertyValue $activateResult.data.lifecycleBlock
+        }
         $aParams = @{
             Success      = $false
             ErrorMessage = "Activation failed ($aCode): $($activateResult.error.message)"
-            ErrorCode    = $(if ($aCode -eq 'RUNTIME_CRASHED') { 'RUNTIME_CRASHED' } else { 'ACTIVATION_FAILED' })
+            ErrorCode    = $(if ($aCode -eq 'RUNTIME_CRASHED' -or $aCode -eq 'LIFECYCLE_BLOCKED') { $aCode } else { 'ACTIVATION_FAILED' })
             Data         = $aData
         }
         if ($null -ne $ahp -and -not [string]::IsNullOrWhiteSpace([string]$ahp.Value)) { $aParams['Hint'] = [string]$ahp.Value }
         return New-TcResult @aParams
     }
 
-    # Step 2.5: Reconnect IDE (Activate restarts TwinCAT, COM references become stale)
-    # Poll port 10000 until TwinCAT is back in Run instead of a blind sleep.
-    if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) {
-        $waitSys = Wait-TcAdsState -AmsNetId $cachedAmsNetId -Port 10000 -TargetState Run -TimeoutSec 60
-        Write-Verbose "TwinCAT system Run wait: reached=$($waitSys.Reached) state=$($waitSys.State) elapsed=$($waitSys.ElapsedMs)ms"
-    }
-    else {
-        Start-Sleep -Seconds 3  # No AmsNetId known: fall back to settle delay
-    }
-    $reconnResult = Connect-TcIde
-    if (-not $reconnResult.success) {
-        Write-Verbose "IDE reconnect warning: $($reconnResult.error.message)"
-    }
-    if ([string]::IsNullOrWhiteSpace($cachedAmsNetId) -and $reconnResult.success -and $reconnResult.data.PSObject.Properties['amsNetId']) {
-        $cachedAmsNetId = $reconnResult.data.amsNetId
+    # No IDE reconnect after Activate (#68): Enable-TcConfig -Force refreshed the ITcSysManager
+    # reference itself and its verify step read back system Run, so there is nothing to wait for.
+    if ([string]::IsNullOrWhiteSpace($cachedAmsNetId) -and $null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['amsNetId']) {
+        $cachedAmsNetId = [string]$activateResult.data.amsNetId
     }
 
     # Step 3: Login + Download (Login(1) under SilentMode, auto-downloads program)
