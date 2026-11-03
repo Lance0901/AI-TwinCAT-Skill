@@ -17,6 +17,17 @@ $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::
 # No modal-dialog watchdog in Invoke-TcComRetry (no IDE process).
 & $mod { $script:TcIdeProcessId = $null }
 
+# Build selection check (#67): the mock DTE has one enabled PLC 'plc' (plc.plcproj) whose
+# ShouldBuild is the same in every row the switches below use (tests/Unit/platform-build-selection.ps1
+# covers the check itself). Installed again after every Import-Module -Force.
+function Install-PlcTreeMock {
+    & $mod {
+        function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) [PSCustomObject]@{ Mock = $true } }
+        function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
+    }
+}
+Install-PlcTreeMock
+
 $OS = 'TwinCAT OS (x64)'
 $RT = 'TwinCAT RT (x64)'
 $ARMT2 = 'TwinCAT OS (ARMT2)'
@@ -177,6 +188,7 @@ try {
     # the entry is a file: a fresh module import (Import-Module -Force) still sees it
     Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
     $mod = Get-Module TwinCATAutomation
+    Install-PlcTreeMock
     & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\DEMO\unit.sln' }
     $req = & $mod { Get-TcBuildRequired }
     Check 'br-survives-reimport' ($null -ne $req -and $req.reason -match 'could not be undone') "req=$($req | ConvertTo-Json -Compress)"
@@ -232,6 +244,7 @@ try {
     Check 'br-kinds-both' ($req.reason -eq 'unit switch; and unit unverified' -and $req.kind -eq 'platform-switch' -and $cons -match 'previous platform' -and $cons -match 'did not prove') "req=$($req | ConvertTo-Json -Compress) cons=$cons"
     Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
     $mod = Get-Module TwinCATAutomation
+    Install-PlcTreeMock
     & $mod { $script:TcIdeProcessId = $null; $script:TcSolutionPath = 'C:\Demo\Kinds.sln' }
     $req = & $mod { Get-TcBuildRequired }
     Check 'br-kinds-file' ($req.reason -eq 'unit switch; and unit unverified') "req=$($req | ConvertTo-Json -Compress)"
@@ -284,6 +297,7 @@ try {
     $w = & $mod { Set-TcBuildRequired -Reason 'unit non-ascii' }
     Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
     $mod = Get-Module TwinCATAutomation
+    Install-PlcTreeMock
     & $mod { param($p) $script:TcIdeProcessId = $null; $script:TcSolutionPath = $p } $uni
     $req = & $mod { Get-TcBuildRequired }
     Check 'br-non-ascii-key' ($null -eq $w -and $null -ne $req -and $req.reason -eq 'unit non-ascii' -and $req.solution -eq $uni) "w=$w req=$($req | ConvertTo-Json -Compress)"
@@ -351,8 +365,10 @@ try {
     Check 'b1-no-false-success' (-not $r.success -and $r.error.code -eq 'PLATFORM_SET_FAILED' -and $r.platformMatchedBy -eq 'projectPlatform') "$($r.error.code) success=$($r.success) ActiveConfig=$ac"
     Check 'b1-restored' ($r.restored -eq $true -and $ac -eq "Release|$OS") "restored=$($r.restored) activations: $($global:MockState.Activations -join ',')"
 
+    # SB the same in both rows: a candidate whose ShouldBuild differs is not activated (#67,
+    # tests/Unit/platform-build-selection.ps1); here only the candidate order counts.
     $cTwo = @(
-        @{ Name = 'Release'; Sol = $OS; Proj = $RT; SB = $false }
+        @{ Name = 'Release'; Sol = $OS; Proj = $RT; SB = $true }
         @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
     )
     New-MockDte -Rows $cTwo -Active 0 -NoPlatformName -SlnRows @($cTwo[0])
@@ -384,8 +400,9 @@ try {
     Check 's2-no-tsproj-null' ($null -eq $s.projectPlatform -and $s.platform -eq $RT) ($s | ConvertTo-Json -Compress)
 
     # --- Activate() throws on a candidate -> readback + restore still run ---
+    # SB the same in every row (#67: a candidate whose ShouldBuild differs is not activated).
     $three = @(
-        @{ Name = 'Release'; Sol = $OS; Proj = $RT; SB = $false }
+        @{ Name = 'Release'; Sol = $OS; Proj = $RT; SB = $true }
         @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
         @{ Name = 'Release'; Sol = $CE7; Proj = $CE7; SB = $true }
     )

@@ -20,7 +20,8 @@ Set-TcTarget -AmsNetId <id> [-Platform <name>] (平台由 target 決定:UmRT / B
       │                                          Windows RT = 'TwinCAT RT (x64)';target 有 TARGETINFO
       │                                          就自動對齊,沒有(ADS 0x702)要帶 -Platform,只換 NetId
       │                                          用 -NoPlatformSwitch。切換前檢查 .tsproj 的 project
-      │                                          platform,不符 → PLATFORM_PROJECT_MISMATCH)
+      │                                          platform,不符 → PLATFORM_PROJECT_MISMATCH;每個 PLC
+      │                                          的 build selection 會變 → BUILD_SELECTION_CHANGED)
       ▼
 Build-TcProject [-ExpectedProject <PLC>]
       │  BUILD_FAILED → 看 data.errorItems(Error List 明細);BUILD_TIMEOUT → 看 dialog
@@ -1084,9 +1085,30 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:`SolutionConfiguration.Activate()` 之後(實測同步生效,~30 ms),最多 3 s 內讀回的 solution platform(`Solution.Properties('ActiveConfig')`)或 .tsproj 的 project platform 不是要求的那個(切換沒生效,或 XAE 有 dialog)。模組會 `Activate()` 切換前的 configuration 還原,`data.restored = true/false`(已是 active、沒切換時為 null)。只要 solution platform 讀得到(`ActiveConfig` / `PlatformName`),讀回就一律要求它等於目標;solution platform 未知(VS2022 且 .sln 對不上)時依 project platform 找到的候選會逐一 Activate 驗證。
 - **下一步**:`Get-TcIdeInfo` 看 `solutionPlatform`;`Get-TcIdeModalDialog` 檢查 dialog;必要時在 XAE 工具列的 Solution Platforms 下拉手動選,再重跑 `Set-TcTarget -Platform`。
 
+### PLC Disabled = active configuration 的 Build.0(#67)
+
+- **機制(實測 2026-11-03,4026 VS2022 + TcXaeShell 64-bit,registered tcauto,[紀錄](../openspec/changes/complete-automation-interface/verification/issue67-realmachine.md))**:4026 的 PLC `Disabled`(`ITcSmTreeItem.Disabled`、ProduceXml `TreeItem/Disabled`)不是獨立屬性，是「目前 active solution configuration 有沒有該 .plcproj 的 `Build.0`」(DTE `SolutionContext.ShouldBuild`)。XAE 停用 PLC 時只拿掉 **active configuration** 的 `Build.0`,其他 configuration 的 `Build.0` 都還在;.tsproj 的 `Disabled="true"` 只是存檔時依 active configuration 寫出來的。
+- **後果**:切 solution platform 後 `Disabled` 跟著目標 configuration 的 ShouldBuild 變(切換本身不寫磁碟);之後 Build 會把 .tsproj 的 `Disabled` 改寫到磁碟。所以只能在**切換前**擋。實害(master 6b672fe):使用者在 `TwinCAT RT (x64)` 停用的 PLC,`Enable-TcConfig -Force -Platform 'TwinCAT OS (x64)'` 的 platform-fix 把它重新 enable、build、download 到 852 並 Run,回 success、沒有 warning。
+- **InfoSys**:只說明 SolutionContexts 的 `ShouldBuild` 是 per configuration 開關子專案 build([Setting the TwinCAT target platform](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html));沒有 Disabled ↔ Build.0 綁定的說明，上面的綁定是實測。
+- **模組做法**:`Set-TcTarget` 與 `Enable-TcConfig` 的 platform-fix(共用 `Set-TcSolutionPlatform`)切換前比對每個 PLC 在目前 active configuration 的 ShouldBuild / Disabled 與目標 configuration(同 configuration 名稱、目標平台)的 ShouldBuild,不同 → `BUILD_SELECTION_CHANGED`,讀不到 → `BUILD_SELECTION_UNKNOWN`,都不切;切換後讀回不同 → 切回原平台並回 `BUILD_SELECTION_CHANGED`。成功時 `data.buildSelection` 列出每個 PLC 的 before / target / after。
+
+### BUILD_SELECTION_CHANGED
+
+- **現象**:`Set-TcTarget`(`-Platform` 或 target 回報的平台)或 `Enable-TcConfig` 的自動切換 `platform-fix` 回 `BUILD_SELECTION_CHANGED`。切換前發現的:**什麼都沒切換**;`Enable-TcConfig` 停在 `platform-fix`(ok=false),沒有 Build、Activate、Login。切換後讀回才發現的:已切回原 configuration(`data.restored = true/false`)。
+- **data**:`data.buildSelectionChanges[]`:每個會改變的 PLC `{ plc; project(.plcproj unique name); nodePath; configuration(目標 '<Configuration>|<Platform>'); current = { configuration; shouldBuild; disabled }; target = { shouldBuild }; after = { shouldBuild; disabled }(切換後讀回的，切換前擋下時為 null); changed }`。`data.buildSelection[]` 是全部 PLC(同一格式)。
+- **為什麼**:目標 configuration 的 ShouldBuild 跟目前不同：在一個平台停用的 PLC,換平台後會被 build、download、Run(或反過來，目前有 build 的 PLC 在目標平台不 build)。見「PLC Disabled = active configuration 的 Build.0」。
+- **比對方式**:目前 = active configuration 每個 .plcproj SolutionContext 的 ShouldBuild(`Get-TcBuildCoverage`)+ 每個 PLC 樹節點的 Disabled(`Get-TcPlcProjectList`),兩者對應沿用 Build-TcProject(#104)的 .plcproj path 優先、名稱次之、不一對一就 fail closed(只在有 PLC 被 disabled 時要求);目標 = `Get-TcSolutionConfigurations` 裡會被 `Activate()` 的那一項(同 configuration 名稱、目標 solution platform)每個 .plcproj context 的 ShouldBuild,用 project unique name 對應。目標 ShouldBuild ≠ 目前 ShouldBuild 就是改變。solution platform 未知、有多個候選時，會改變的候選不會被 Activate。
+- **下一步**:XAE 的 Build > Configuration Manager,選目標 configuration(`data.buildSelectionChanges[].configuration`),讓每個 PLC 的 Build 勾選與目前一致(在目前平台停用的 PLC,在目標平台也取消勾選),存檔後重跑;確定要改 build 範圍，就先在目前平台調整(停用 / 啟用 PLC)再切。
+
+### BUILD_SELECTION_UNKNOWN
+
+- **現象**:同上兩個 cmdlet,切換前讀不到比對所需的資料，**什麼都沒切換**(fail closed);或切換後讀回失敗，已切回原平台(`data.restored`)。
+- **為什麼**:active configuration 的 SolutionContexts 讀不到;有 .plcproj context 但讀不到 TwinCAT 專案(ITcSysManager)或 PLC 樹(TIPC);有 PLC 樹節點但 active configuration 沒有任何 .plcproj context;有 PLC 被 disabled、但 PLC 節點與 .plcproj 對不成一對一(節點沒有 PlcProjectDef/ProjectPath、名稱與 .plcproj 檔名不同);目標 configuration 少了某個 .plcproj、某個重複、ShouldBuild 讀不到，或只有目標有的 .plcproj。IDE 層的錯誤保留原碼(`IDE_BUSY`、`IDE_CRASHED`、`IDE_MODAL_DIALOG`)。
+- **下一步**:看 `error.message` 的原因。IDE 忙就重試;PLC 名稱與 .plcproj 檔名不一致時改成一致;或在 XAE 手動切平台，確認 Configuration Manager 每個 PLC 的 Build 勾選後 `Build-TcProject`。
+
 ### 成功時的 Set-TcTarget data
 
-`Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`(solution platform)、`projectPlatform`(操作後 active 的 .tsproj project platform,沒有 .tsproj 為 null)、`platformChanged`(bool);有切換時另有 `requestedProjectPlatform`、 `configuration`、`previousPlatform`、`availablePlatforms`、`projectCheck`(`ok` / `mismatch` / `no-tsproj`)、`platformMatchedBy`、`platformMap`。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`projectPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`;自動切換失敗時加 `platformMap`、`requestedProjectPlatform`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`、`projectPlatform`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId),也原值傳給 EnableConfig(比對結果相同,不再出現「-Platform was not given」的 `data.warning`;target 有回報 TARGETINFO 時仍以 target 為準),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
+`Set-TcTarget -AmsNetId <id> [-Platform <name>] [-Configuration Release] [-NoPlatformSwitch]` 的 data:`amsNetId`、`targetSet`、`platformCheck`、`targetPlatform`、`targetPlatformSource`、`adsError`、`platform`(solution platform)、`projectPlatform`(操作後 active 的 .tsproj project platform,沒有 .tsproj 為 null)、`platformChanged`(bool);有切換時另有 `requestedProjectPlatform`、 `configuration`、`previousPlatform`、`availablePlatforms`、`projectCheck`(`ok` / `mismatch` / `no-tsproj`)、`platformMatchedBy`、`platformMap`、`buildSelection`(每個 PLC 的 before / target / after,沒有 PLC 為空陣列)、`buildSelectionChanges`(#67)。`Enable-TcConfig` 的 data 一律有 `targetPlatform`、`targetPlatformSource`、`solutionPlatform`、`projectPlatform`、`platformFixed`、`platformCheck`(skipped 時加 `warning`;自動切換失敗時加 `platformMap`、`requestedProjectPlatform`)。`Connect-TcIde` / `Get-TcIdeInfo` 的 data 多 `solutionPlatform`、`solutionConfiguration`、`projectPlatform`。MCP `SetTarget` 有 `Platform` / `Configuration` / `NoPlatformSwitch` 參數,`EnableConfig` 有 `Platform` / `NoPlatformFix`;`RunLifecycle` 的 `Platform` 給 SetTarget 步驟(在 Build 之前切換,沒給 `TargetAmsNetId` 用 `ConnectIde` 回的 AmsNetId),也原值傳給 EnableConfig(比對結果相同,不再出現「-Platform was not given」的 `data.warning`;target 有回報 TARGETINFO 時仍以 target 為準),沒給 `Platform` 時 SetTarget 帶 `NoPlatformSwitch=true`,platform 交給 EnableConfig 檢查。MCP 的 hint 改寫保留引號內的值:`Set-TcTarget -Platform 'TwinCAT OS (x64)'` → `SetTarget Platform='TwinCAT OS (x64)'`。
 
 ## 第 3 期系統組態(task 4.1–4.5)
 

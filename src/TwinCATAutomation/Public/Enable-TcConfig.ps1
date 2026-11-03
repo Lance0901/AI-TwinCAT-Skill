@@ -41,6 +41,12 @@ function Enable-TcConfig {
                               PLATFORM_NOT_FOUND; its .tsproj built for another project
                               platform -> PLATFORM_PROJECT_MISMATCH (nothing switched,
                               data.platformMap); activation failed -> PLATFORM_SET_FAILED.
+                              A switch that would change which PLC projects are built (a PLC
+                              disabled only in the active configuration, #67) ->
+                              BUILD_SELECTION_CHANGED (data.buildSelectionChanges; nothing
+                              switched, or switched back: data.restored); not checkable ->
+                              BUILD_SELECTION_UNKNOWN. Either stops here: no Build, no
+                              Activate, no Login.
           platform-fix-build  Build-TcProject (same build as the cmdlet), because the PLC
                               output of the old platform must not be activated; a failing
                               build stops here with its code (BUILD_FAILED ...), and a
@@ -168,8 +174,9 @@ function Enable-TcConfig {
         targetPlatform
         ($null when not readable) / targetPlatformSource ('adsTargetInfo' | 'unavailable'),
         platformCheck ('target' | 'parameter' | 'skipped'), platformFixed (bool: the
-        solution platform was switched and rebuilt), warning (only set on the 'skipped'
-        path), steps[].
+        solution platform was switched and rebuilt), buildSelection / buildSelectionChanges /
+        restored (only after a platform-fix attempt, see Set-TcTarget; $null otherwise),
+        warning (only set on the 'skipped' path), steps[].
     #>
     [CmdletBinding()]
     param(
@@ -238,6 +245,9 @@ function Enable-TcConfig {
     $projectPlatform = $null
     $requestedProjectPlatform = $null
     $platformMap = $null
+    $buildSelection = $null
+    $buildSelectionChanges = $null
+    $platformRestored = $null
     $targetPlatform = $null
     $targetPlatformSource = $null
     $platformFixed = $false
@@ -272,6 +282,9 @@ function Enable-TcConfig {
             projectPlatform = $projectPlatform
             requestedProjectPlatform = $requestedProjectPlatform
             platformMap = $platformMap
+            buildSelection = $buildSelection
+            buildSelectionChanges = $buildSelectionChanges
+            restored    = $platformRestored
             targetPlatform = $targetPlatform
             targetPlatformSource = $targetPlatformSource
             platformFixed = $platformFixed
@@ -523,6 +536,11 @@ function Enable-TcConfig {
         $conf = if ([string]::IsNullOrWhiteSpace($sol.configuration)) { 'Release' } else { [string]$sol.configuration }
         $srcArg = if ($null -ne $tp -and $wanted -eq [string]$tp.targetPlatform) { $srcText } else { $null }
         $r = Set-TcSolutionPlatform -Platform $wanted -Configuration $conf -PlatformSource $srcArg
+        # #67: the build selection is reported on success and failure; BUILD_SELECTION_CHANGED /
+        # BUILD_SELECTION_UNKNOWN stop below like any failed switch (no Build, no Activate)
+        Set-Variable -Name buildSelection -Value $r.buildSelection -Scope 1
+        Set-Variable -Name buildSelectionChanges -Value @($r.buildSelectionChanges) -Scope 1
+        Set-Variable -Name platformRestored -Value $r.restored -Scope 1
         $swp = $r.PSObject.Properties['stateWarning']
         if ($null -ne $swp -and -not [string]::IsNullOrWhiteSpace([string]$swp.Value)) {
             # BUILD_REQUIRED only in memory (state file not writable): reported on the success AND

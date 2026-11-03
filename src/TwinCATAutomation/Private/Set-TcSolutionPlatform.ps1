@@ -40,6 +40,36 @@
            on to the next candidate; when none passes, the configuration that was active
            before is re-activated (data.restored) and PLATFORM_SET_FAILED returned. When
            nothing was switched (already active) data.restored stays $null.
+        Build selection (#67), between steps 2 and 3 and after step 4: on 4026 the PLC Disabled
+        flag (ITcSmTreeItem.Disabled, .tsproj Disabled="true") mirrors whether the ACTIVE
+        solution configuration has a Build.0 for that PLC (SolutionContext.ShouldBuild); XAE's
+        Disable removes only the active configuration's Build.0, and a platform switch makes
+        Disabled follow the ShouldBuild of the new configuration (實測 2026-11-03, 4026 VS2022 +
+        TcXaeShell 64-bit, verification/issue67-realmachine.md). ShouldBuild is per configuration
+        (InfoSys "Setting the TwinCAT target platform"
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html). So a PLC
+        disabled under one platform would be built, downloaded and started under another.
+          before   Get-TcBuildSelectionState reads the active configuration: ShouldBuild of every
+                   .plcproj context (Get-TcBuildCoverage) and Disabled of every PLC tree item
+                   (Get-TcPlcProjectList), matched like Build-TcProject (#104,
+                   Resolve-TcPlcCoverageNodes: .plcproj path, then name, one to one) - the match
+                   is required only when a PLC tree item is disabled. Every .plcproj context of
+                   the candidate (same configuration name, the requested platform; the
+                   Get-TcSolutionConfigurations item that Activate() would select) is compared
+                   with it by project unique name: target ShouldBuild <> current ShouldBuild is a
+                   change. A candidate with a change is not activated; no candidate left ->
+                   BUILD_SELECTION_CHANGED (data.buildSelectionChanges), nothing switched. Data
+                   not readable (contexts, the TwinCAT project, the PLC tree, a context missing or
+                   duplicated under the candidate, ShouldBuild $null, PLC tree items without
+                   .plcproj context, a disabled tree item without a one-to-one match) ->
+                   BUILD_SELECTION_UNKNOWN (IDE_CRASHED / IDE_MODAL_DIALOG / IDE_BUSY keep their
+                   code), nothing switched. No .plcproj context and no PLC tree item: nothing
+                   to compare, the switch goes on (data.buildSelection = @()).
+          after    after a switch that read back correctly, ShouldBuild of every .plcproj context
+                   and Disabled of every PLC tree item are read again and compared with before.
+                   Different or not readable -> the previous configuration is re-activated
+                   (data.restored) and BUILD_SELECTION_CHANGED / BUILD_SELECTION_UNKNOWN returned.
+        Already active: nothing is switched; data.buildSelection is read best effort (no error).
     .PARAMETER Platform
         Solution platform to activate.
     .PARAMETER Configuration
@@ -62,10 +92,18 @@
                          projectPlatforms = @(@{ project; platform; shouldBuild }) } for every
                          item of -Configuration);
             restored ($true/$false after a failed readback of a switch, else $null);
+            buildSelection (@() when there is no PLC project; $null when not read) = @(@{
+                plc (PLC tree name, else the .plcproj name); project (SolutionContext unique name);
+                nodePath ($null without tree item); configuration ('<Configuration>|<Platform>',
+                the target); current = @{ configuration; shouldBuild; disabled };
+                target = @{ shouldBuild }; after = @{ shouldBuild; disabled } ($null until read
+                back); changed });
+            buildSelectionChanges (the buildSelection items with changed = $true, plus PLC tree
+                items without .plcproj context whose Disabled changed; @() otherwise);
             availablePlatforms; availableConfigurations }
         error.code: PLATFORM_NOT_FOUND, PLATFORM_PROJECT_MISMATCH, PLATFORM_SET_FAILED
-        (activation failed or not visible afterwards), or a mapped COM code (IDE_BUSY,
-        IDE_CRASHED, ...).
+        (activation failed or not visible afterwards), BUILD_SELECTION_CHANGED,
+        BUILD_SELECTION_UNKNOWN, or a mapped COM code (IDE_BUSY, IDE_CRASHED, ...).
     #>
     [CmdletBinding()]
     param(
@@ -94,6 +132,8 @@
         platformMatchedBy        = $null
         platformMap              = $null
         restored                 = $null
+        buildSelection           = $null
+        buildSelectionChanges    = @()
         stateWarning             = $null   # BUILD_REQUIRED kept in memory only (Set-TcBuildRequired)
         availablePlatforms       = @()
         availableConfigurations  = @()
@@ -154,6 +194,62 @@
     if ($out.projectCheck -eq 'mismatch') {
         $out.error = New-TcProjectMismatchError -SameConfig $sameConfig -Platform $Platform -Configuration $Configuration -BadText $badText
         return $out
+    }
+
+    # --- build selection (#67): before Activate; a candidate that would change it is not used ---
+    $targetLabel = "$Configuration|$Platform"
+    $beforeLabel = if ([string]::IsNullOrWhiteSpace([string]$before.configuration)) { [string]$before.platform } else { "$($before.configuration)|$($before.platform)" }
+    $selState = Get-TcBuildSelectionState -ConfigurationLabel $beforeLabel
+    $selByIndex = @{}
+    if ($alreadyActive) {
+        # nothing is switched: informational only, never an error
+        if ($null -eq $selState.Error) {
+            $out.buildSelection = @($selState.Entries | ForEach-Object {
+                    $cur = [PSCustomObject]@{ configuration = $beforeLabel; shouldBuild = $_.shouldBuild; disabled = $_.disabled }
+                    [PSCustomObject]@{ plc = $_.plc; project = $_.project; nodePath = $_.nodePath; configuration = $targetLabel; current = $cur
+                        target = [PSCustomObject]@{ shouldBuild = $_.shouldBuild }; after = [PSCustomObject]@{ shouldBuild = $_.shouldBuild; disabled = $_.disabled }; changed = $false }
+                })
+        }
+    }
+    else {
+        if ($null -ne $selState.Error) {
+            $out.error = [PSCustomObject]@{
+                message = "Build selection of '$beforeLabel' could not be read, so the switch to '$targetLabel' could not be checked for PLC projects that would start or stop being built; nothing was switched: $([string]$selState.Error.message)"
+                code    = [string]$selState.Error.code
+                hint    = $(if ([string]$selState.Error.code -eq 'BUILD_SELECTION_UNKNOWN') { Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN' } else { [string]$selState.Error.hint })
+            }
+            return $out
+        }
+        if (@($selState.Entries).Count -eq 0) { $out.buildSelection = @() }
+        else {
+            $keep = @()
+            $first = $null
+            foreach ($cand in $candidates) {
+                $cmp = Compare-TcBuildSelection -State $selState -Candidate $cand -TargetLabel $targetLabel
+                if ($null -eq $first) { $first = $cmp }
+                if ($null -eq $cmp.Error -and @($cmp.Changes).Count -eq 0) { $keep += $cand; $selByIndex[[int]$cand.Index] = $cmp }
+            }
+            if ($keep.Count -eq 0) {
+                $out.buildSelection = @($first.Items)
+                $out.buildSelectionChanges = @($first.Changes)
+                if ($null -ne $first.Error) {
+                    $out.error = [PSCustomObject]@{
+                        message = "Build selection under '$targetLabel' could not be compared with '$beforeLabel'; nothing was switched: $([string]$first.Error)"
+                        code    = 'BUILD_SELECTION_UNKNOWN'
+                        hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN')
+                    }
+                    return $out
+                }
+                $out.error = [PSCustomObject]@{
+                    message = "Switching from '$beforeLabel' to '$targetLabel' would change which PLC projects are built: $(Format-TcBuildSelectionChanges -Changes $first.Changes). On 4026 a PLC is disabled only in the configuration it was disabled in; nothing was switched (data.buildSelectionChanges)."
+                    code    = 'BUILD_SELECTION_CHANGED'
+                    hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED')
+                }
+                return $out
+            }
+            $candidates = @($keep)
+            $out.buildSelection = @($selByIndex[[int]$candidates[0].Index].Items)
+        }
     }
 
     # Readback check: the solution platform read back must be -Platform whatever the match was
@@ -223,7 +319,9 @@
     $out.projectPlatform = $after.projectPlatform
     $out.platformChanged = (-not ([string]$before.platform -ieq [string]$after.platform)) -or (-not ([string]$before.configuration -ieq [string]$after.configuration))
 
-    if ($null -ne $activateError -or -not (& $isOk $after)) {
+    # Re-activates the configuration that was active before (failed readback, build selection
+    # changed); sets $out.platform / projectPlatform / platformChanged / restored, returns the text.
+    $restore = {
         $restoredOk = $false
         if ($null -ne $prevCom) {
             try {
@@ -242,7 +340,11 @@
             # platform is not the one the last build was made for
             $out.stateWarning = Set-TcBuildRequired -Reason "solution platform left at '$($out.platform)' (was '$($before.configuration)|$($before.platform)') after a failed switch to '$Configuration|$Platform' that could not be undone"
         }
-        $restoreText = if ($restoredOk) { " The previous configuration '$($before.configuration)|$($before.platform)' was re-activated." } else { ' The previous configuration could not be restored.' }
+        if ($restoredOk) { " The previous configuration '$($before.configuration)|$($before.platform)' was re-activated." } else { ' The previous configuration could not be restored.' }
+    }
+
+    if ($null -ne $activateError -or -not (& $isOk $after)) {
+        $restoreText = & $restore
         if ($null -ne $activateError) {
             $hp = $activateError.PSObject.Properties['hint']
             $out.error = [PSCustomObject]@{
@@ -258,6 +360,31 @@
             hint    = (Get-TcErrorHint -Code 'PLATFORM_SET_FAILED')
         }
         return $out
+    }
+    # --- build selection read back (#67): Disabled follows the new configuration's Build.0 ---
+    $selCmp = $selByIndex[[int]$cand.Index]
+    if ($null -ne $selCmp) {
+        $out.buildSelection = @($selCmp.Items)
+        $chk = Test-TcBuildSelectionAfter -State $selState -Items $selCmp.Items
+        if ($null -ne $chk.Error -or @($chk.Changes).Count -gt 0) {
+            $out.buildSelectionChanges = @($chk.Changes)
+            $restoreText = & $restore
+            if ($null -ne $chk.Error) {
+                $out.error = [PSCustomObject]@{
+                    message = "Switched to '$targetLabel', but the build selection could not be read back ($([string]$chk.Error)).$restoreText"
+                    code    = 'BUILD_SELECTION_UNKNOWN'
+                    hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN')
+                }
+            }
+            else {
+                $out.error = [PSCustomObject]@{
+                    message = "Switched to '$targetLabel', but the build selection read back differs from '$beforeLabel': $(Format-TcBuildSelectionChanges -Changes $chk.Changes -After).$restoreText"
+                    code    = 'BUILD_SELECTION_CHANGED'
+                    hint    = (Get-TcErrorHint -Code 'BUILD_SELECTION_CHANGED')
+                }
+            }
+            return $out
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($after.configuration)) { $out.configuration = $after.configuration }
     if ($out.platformChanged) {
@@ -378,4 +505,188 @@ function New-TcProjectMismatchError {
     if ($good.Count -gt 0) { $hint += " Solution platform(s) of '$Configuration' whose .tsproj is built for '$Platform': '$($good -join "', '")'." }
     else { $hint += " No solution platform of '$Configuration' builds the .tsproj for '$Platform'." }
     [PSCustomObject]@{ message = $msg; code = 'PLATFORM_PROJECT_MISMATCH'; hint = $hint }
+}
+
+function Get-TcBuildSelectionState {
+    <#
+    .SYNOPSIS
+        Build selection of the ACTIVE solution configuration (#67): ShouldBuild of every .plcproj
+        SolutionContext (Get-TcBuildCoverage) and ITcSmTreeItem.Disabled of every PLC tree item
+        (Get-TcPlcProjectList), matched with Resolve-TcPlcCoverageNodes. Never throws.
+    .DESCRIPTION
+        The match is required only when a PLC tree item is disabled (without one every entry is
+        enabled, like Build-TcProject #104); an entry without a tree item counts as enabled.
+        Error (@{ message; code; hint }, code BUILD_SELECTION_UNKNOWN or a mapped IDE_* code):
+        contexts not readable; .plcproj contexts but no TwinCAT project (ITcSysManager) or PLC
+        tree not readable; PLC tree items but no .plcproj context; a disabled tree item and no
+        one-to-one match.
+    .OUTPUTS
+        @{ Error; Configuration; MatchBy;
+           Entries = @(@{ plc; project; nodePath; shouldBuild; disabled });
+           Nodes = @(@{ name; nodePath; disabled }) }
+    #>
+    param([string]$ConfigurationLabel)
+    $out = [PSCustomObject]@{ Error = $null; Configuration = $ConfigurationLabel; MatchBy = $null; Entries = @(); Nodes = @() }
+    $unknown = { param([string]$Msg) [PSCustomObject]@{ message = $Msg; code = 'BUILD_SELECTION_UNKNOWN'; hint = (Get-TcErrorHint -Code 'BUILD_SELECTION_UNKNOWN') } }
+
+    $cov = $null
+    try { $cov = Get-TcBuildCoverage }
+    catch { $out.Error = (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix 'SolutionContexts not readable').error; return $out }
+    if ($null -ne $cov.error) { $out.Error = & $unknown "SolutionContexts of the active configuration not readable ($($cov.error))"; return $out }
+    $entries = @($cov.projects)
+
+    $sm = $null
+    try { $sm = Get-TcSysManager } catch { $sm = $null }
+    if ($null -eq $sm) {
+        # no TwinCAT project: no PLC tree; .plcproj contexts without it cannot be checked
+        if ($entries.Count -gt 0) { $out.Error = & $unknown 'the TwinCAT project (ITcSysManager) is not readable, so the Disabled state of the PLC projects is unknown' }
+        return $out
+    }
+    $plcList = @()
+    try { $plcList = @(Get-TcPlcProjectList -SysManager $sm) }
+    catch { $out.Error = (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'BUILD_SELECTION_UNKNOWN' -MessagePrefix 'PLC project list (TIPC) not readable').error; return $out }
+    $out.Nodes = @($plcList | ForEach-Object { [PSCustomObject]@{ name = [string]$_.name; nodePath = [string]$_.nodePath; disabled = ($_.disabled -eq $true) } })
+    if ($entries.Count -eq 0) {
+        if ($plcList.Count -gt 0) { $out.Error = & $unknown "PLC tree item(s) $(($plcList | ForEach-Object { "'$($_.name)'" }) -join ', ') but no .plcproj SolutionContext in the active configuration" }
+        return $out
+    }
+
+    $nodes = [object[]]::new($entries.Count)
+    if ($plcList.Count -gt 0) {
+        $m = Resolve-TcPlcCoverageNodes -Entries $entries -PlcList $plcList -SolutionPath ([string]$script:TcSolutionPath)
+        if ($null -eq $m.Error) { $nodes = $m.Nodes; $out.MatchBy = $m.MatchBy }
+        elseif (@($plcList | Where-Object { $_.disabled -eq $true }).Count -gt 0) {
+            $out.Error = & $unknown (Get-TcPlcMatchErrorText -Reasons $m.Error -Consequence 'the Disabled state per PLC project is unknown')
+            return $out
+        }
+    }
+    $list = @()
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $n = $nodes[$i]
+        $list += [PSCustomObject]@{
+            plc         = $(if ($null -ne $n) { [string]$n.name } else { [string]$entries[$i].name })
+            project     = [string]$entries[$i].uniqueName
+            nodePath    = $(if ($null -ne $n) { [string]$n.nodePath } else { $null })
+            shouldBuild = $entries[$i].shouldBuild
+            disabled    = ($null -ne $n -and $n.disabled -eq $true)
+        }
+    }
+    $out.Entries = $list
+    $out
+}
+
+function Compare-TcBuildSelection {
+    <#
+    .SYNOPSIS
+        Compares the build selection of the active configuration (Get-TcBuildSelectionState) with
+        the .plcproj contexts of a switch candidate (Get-TcSolutionConfigurations item). #67.
+    .OUTPUTS
+        @{ Error ($null or message: a context missing / duplicated under the candidate, ShouldBuild
+           $null, a .plcproj only the candidate has); Items (buildSelection items, after = $null);
+           Changes (items whose target ShouldBuild differs from the current one) }
+    #>
+    param($State, $Candidate, [string]$TargetLabel)
+    $ctxs = @(@($Candidate.Contexts) | Where-Object { $null -ne $_ -and [string]$_.ProjectName -match '(?i)\.plcproj$' })
+    $items = @()
+    $problems = @()
+    foreach ($e in @($State.Entries)) {
+        $hit = @($ctxs | Where-Object { [string]$_.ProjectName -ieq [string]$e.project })
+        $tsb = $null
+        if ($hit.Count -ne 1) { $problems += "'$($e.project)' has $($hit.Count) SolutionContexts under '$TargetLabel'" }
+        elseif ($null -eq $hit[0].ShouldBuild) { $problems += "ShouldBuild of '$($e.project)' under '$TargetLabel' not readable" }
+        else { $tsb = [bool]$hit[0].ShouldBuild }
+        $items += [PSCustomObject]@{
+            plc           = $e.plc
+            project       = $e.project
+            nodePath      = $e.nodePath
+            configuration = $TargetLabel
+            current       = [PSCustomObject]@{ configuration = $State.Configuration; shouldBuild = $e.shouldBuild; disabled = $e.disabled }
+            target        = [PSCustomObject]@{ shouldBuild = $tsb }
+            after         = $null
+            changed       = ($null -ne $tsb -and $tsb -ne [bool]$e.shouldBuild)
+        }
+    }
+    foreach ($c in $ctxs) {
+        if (@(@($State.Entries) | Where-Object { [string]$_.project -ieq [string]$c.ProjectName }).Count -eq 0) {
+            $problems += "'$($c.ProjectName)' is a .plcproj context only under '$TargetLabel'"
+        }
+    }
+    [PSCustomObject]@{
+        Error   = $(if ($problems.Count -gt 0) { $problems -join '; ' } else { $null })
+        Items   = $items
+        Changes = @($items | Where-Object { $_.changed })
+    }
+}
+
+function Test-TcBuildSelectionAfter {
+    <#
+    .SYNOPSIS
+        After a switch (#67): reads ShouldBuild of every .plcproj context and Disabled of every PLC
+        tree item again and compares them with the state before (by project unique name / tree
+        path). Fills Items[].after and .changed. Never throws.
+    .OUTPUTS
+        @{ Error ($null or message); Changes (changed items, plus tree items without .plcproj
+           context whose Disabled changed) }
+    #>
+    param($State, [object[]]$Items)
+    $cov = $null
+    try { $cov = Get-TcBuildCoverage } catch { return [PSCustomObject]@{ Error = "SolutionContexts not readable: $($_.Exception.Message)"; Changes = @() } }
+    if ($null -ne $cov.error) { return [PSCustomObject]@{ Error = "SolutionContexts not readable: $($cov.error)"; Changes = @() } }
+    $plcList = @()
+    if (@($State.Nodes).Count -gt 0) {
+        $sm = $null
+        try { $sm = Get-TcSysManager } catch { $sm = $null }
+        if ($null -eq $sm) { return [PSCustomObject]@{ Error = 'the TwinCAT project (ITcSysManager) is not readable'; Changes = @() } }
+        try { $plcList = @(Get-TcPlcProjectList -SysManager $sm) }
+        catch { return [PSCustomObject]@{ Error = "PLC project list (TIPC) not readable: $($_.Exception.Message)"; Changes = @() } }
+    }
+    $problems = @()
+    $changes = @()
+    foreach ($it in @($Items)) {
+        $hit = @(@($cov.projects) | Where-Object { [string]$_.uniqueName -ieq [string]$it.project })
+        $dis = $false
+        if (-not [string]::IsNullOrWhiteSpace([string]$it.nodePath)) {
+            $nd = @($plcList | Where-Object { [string]$_.nodePath -ieq [string]$it.nodePath })
+            if ($nd.Count -ne 1) { $problems += "PLC tree item '$($it.nodePath)' found $($nd.Count) times after the switch"; continue }
+            $dis = ($nd[0].disabled -eq $true)
+        }
+        if ($hit.Count -ne 1) { $problems += "'$($it.project)' has $($hit.Count) SolutionContexts after the switch"; continue }
+        $it.after = [PSCustomObject]@{ shouldBuild = $hit[0].shouldBuild; disabled = $dis }
+        $it.changed = ([bool]$hit[0].shouldBuild -ne [bool]$it.current.shouldBuild) -or ($dis -ne [bool]$it.current.disabled)
+        if ($it.changed) { $changes += $it }
+    }
+    # tree items that no item covers (no .plcproj context matched): Disabled only
+    foreach ($n in @($State.Nodes)) {
+        if (@(@($Items) | Where-Object { [string]$_.nodePath -ieq [string]$n.nodePath }).Count -gt 0) { continue }
+        $nd = @($plcList | Where-Object { [string]$_.nodePath -ieq [string]$n.nodePath })
+        if ($nd.Count -ne 1) { $problems += "PLC tree item '$($n.nodePath)' found $($nd.Count) times after the switch"; continue }
+        if (($nd[0].disabled -eq $true) -ne [bool]$n.disabled) {
+            $changes += [PSCustomObject]@{
+                plc           = $n.name
+                project       = $null
+                nodePath      = $n.nodePath
+                configuration = $null
+                current       = [PSCustomObject]@{ configuration = $State.Configuration; shouldBuild = $null; disabled = [bool]$n.disabled }
+                target        = [PSCustomObject]@{ shouldBuild = $null }
+                after         = [PSCustomObject]@{ shouldBuild = $null; disabled = ($nd[0].disabled -eq $true) }
+                changed       = $true
+            }
+        }
+    }
+    [PSCustomObject]@{ Error = $(if ($problems.Count -gt 0) { $problems -join '; ' } else { $null }); Changes = $changes }
+}
+
+function Format-TcBuildSelectionChanges {
+    # Changes as one '; '-joined text for error messages.
+    param([object[]]$Changes, [switch]$After)
+    $tf = { param($v) if ($null -eq $v) { 'null' } else { ([string]$v).ToLowerInvariant() } }
+    (@($Changes) | ForEach-Object {
+            $name = if ([string]::IsNullOrWhiteSpace([string]$_.project)) { "'$($_.plc)'" } else { "'$($_.plc)' ($($_.project))" }
+            if ($After -and $null -ne $_.after) {
+                "$name shouldBuild $(& $tf $_.current.shouldBuild) -> $(& $tf $_.after.shouldBuild), disabled $(& $tf $_.current.disabled) -> $(& $tf $_.after.disabled)"
+            }
+            else {
+                "$name shouldBuild $(& $tf $_.current.shouldBuild) -> $(& $tf $_.target.shouldBuild) (disabled $(& $tf $_.current.disabled))"
+            }
+        }) -join '; '
 }

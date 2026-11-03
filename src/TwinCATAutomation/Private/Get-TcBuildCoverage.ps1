@@ -98,3 +98,88 @@ function Find-TcBuildCoverageEntry {
     }
     return $null
 }
+
+function Resolve-TcPlcCoverageNodes {
+    <#
+    .SYNOPSIS
+        Matches PLC tree items (Get-TcPlcProjectList) to .plcproj SolutionContexts entries
+        (Get-TcBuildCoverage projects) one to one. Shared by Build-TcProject (#104) and
+        Set-TcSolutionPlatform (#67). Never throws, never touches the IDE.
+    .DESCRIPTION
+        1st: by .plcproj path. The PLC node's projectFile (ProduceXml PlcProjectDef/ProjectPath,
+        absolute, measured 2026-11-03 on 4026 + VS2022) against the entry's uniqueName (relative
+        to the solution directory, or absolute), both through Get-TcLongPath (GetFullPath + 8.3
+        long name), case-insensitive. Used only when every node has a projectFile, every node
+        matches exactly one entry and no entry matches two nodes.
+        2nd: by name (.plcproj file name without extension = TIPC child name). The name is not a
+        reliable key (two folders with PLC.plcproj; an enabled node 'Main' whose file is
+        Legacy.plcproj next to a disabled node 'Legacy'), so it must be one to one, else fail
+        closed: a disabled node that matches more than one entry, an enabled node that matches no
+        entry, or an entry that matches more than one node -> Error (no Nodes). The caller words
+        the message; Get-TcPlcMatchErrorText gives the common start. An entry without a
+        matching node keeps $null (callers count it as enabled).
+    .OUTPUTS
+        @{ MatchBy ('path' | 'name' | $null on Error); Error ($null or the reasons, '; '-joined);
+           Nodes (object[], the matched node per entry index or $null) }
+    #>
+    param([object[]]$Entries, [object[]]$PlcList, [string]$SolutionPath)
+    $entries = @($Entries)
+    $plcList = @($PlcList)
+    $nodes = [object[]]::new($entries.Count)
+    $normPath = {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+        try { return (Get-TcLongPath $Path).TrimEnd('\', '/').ToLowerInvariant() } catch { return $null }
+    }
+    $slnDir = $null
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
+        try { $slnDir = [IO.Path]::GetDirectoryName($SolutionPath) } catch { $slnDir = $null }
+    }
+    $entryPaths = [object[]]::new($entries.Count)
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $u = [string]$entries[$i].uniqueName
+        $abs = $null
+        if (-not [string]::IsNullOrWhiteSpace($u)) {
+            if ([IO.Path]::IsPathRooted($u)) { $abs = $u }
+            elseif ($null -ne $slnDir) { $abs = Join-Path $slnDir $u }
+        }
+        $entryPaths[$i] = & $normPath $abs
+    }
+    $pathOk = (@($plcList | Where-Object { $null -eq (& $normPath ([string]$_.projectFile)) }).Count -eq 0)
+    if ($pathOk) {
+        foreach ($n in $plcList) {
+            $np = & $normPath ([string]$n.projectFile)
+            $hits = @(for ($i = 0; $i -lt $entries.Count; $i++) { if ($null -ne $entryPaths[$i] -and $entryPaths[$i] -eq $np) { $i } })
+            if ($hits.Count -ne 1 -or $null -ne $nodes[$hits[0]]) { $pathOk = $false; break }
+            $nodes[$hits[0]] = $n
+        }
+    }
+    if ($pathOk) { return [PSCustomObject]@{ MatchBy = 'path'; Error = $null; Nodes = $nodes } }
+
+    $nodes = [object[]]::new($entries.Count)
+    $ambiguous = @()
+    foreach ($n in $plcList) {
+        $hits = @($entries | Where-Object { [string]$_.name -ieq [string]$n.name })
+        if ($n.disabled -eq $true -and $hits.Count -gt 1) { $ambiguous += "disabled PLC '$($n.name)' matches $($hits.Count) .plcproj entries ($(($hits | ForEach-Object { $_.uniqueName }) -join ', '))" }
+        if ($n.disabled -ne $true -and $hits.Count -eq 0) { $ambiguous += "enabled PLC '$($n.name)' matches no .plcproj entry (its project file has another name)" }
+    }
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $hit = @($plcList | Where-Object { [string]$_.name -ieq [string]$entries[$i].name })
+        if ($hit.Count -gt 1) { $ambiguous += ".plcproj entry '$($entries[$i].uniqueName)' matches $($hit.Count) PLC tree items" }
+        elseif ($hit.Count -eq 1) { $nodes[$i] = $hit[0] }
+    }
+    if ($ambiguous.Count -gt 0) {
+        return [PSCustomObject]@{
+            MatchBy = $null
+            Error   = ($ambiguous -join '; ')
+            Nodes   = [object[]]::new($entries.Count)
+        }
+    }
+    [PSCustomObject]@{ MatchBy = 'name'; Error = $null; Nodes = $nodes }
+}
+
+function Get-TcPlcMatchErrorText {
+    # Common wording of a failed Resolve-TcPlcCoverageNodes; -Consequence is what the caller does.
+    param([string]$Reasons, [string]$Consequence)
+    "PLC tree items cannot be matched one to one to the .plcproj entries, neither by .plcproj path (a PLC node without ProjectPath, or no one-to-one path match) nor by name, so $($Consequence): $Reasons"
+}
