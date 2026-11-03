@@ -145,11 +145,18 @@
         leaves it out, so a disabled project that the configuration skips is no coverage gap: it
         is not in skippedProjects, does not raise PROJECT_SKIPPED_BY_CONFIGURATION and does not
         keep coverageComplete / codeVerified / completeBuild false. An ENABLED project that is
-        skipped still does (#28). Coverage entries are matched to PLC tree items by name (.plcproj
-        file name = TIPC child name); an entry with no matching tree item counts as enabled. The
-        match must be one to one (fail closed): when a disabled tree item matches more than one
-        entry, an enabled tree item matches none, or an entry matches more than one tree item,
-        every project counts as enabled (old behaviour) and data.disabledCheckError says why. When
+        skipped still does (#28). Coverage entries are matched to PLC tree items first by .plcproj
+        path: the PLC node's ProduceXml PlcProjectDef/ProjectPath (absolute; measured 2026-11-03,
+        4026 + VS2022 + local UmRT, Get-TcPlcProjectList projectFile) against the entry's uniqueName
+        joined to the solution directory, both normalised with Get-TcLongPath (GetFullPath, 8.3 short
+        names to long) and compared case-insensitively. The path match is used only when every PLC
+        node has a ProjectPath, each node matches exactly one entry and no entry matches two nodes;
+        else by name (.plcproj file name = TIPC child name), where an entry with no matching tree
+        item counts as enabled. The name match must be one to one too (fail closed): when a
+        disabled tree item matches more than one entry, an enabled tree item matches none, or an
+        entry matches more than one tree item, every project counts as enabled (old behaviour) and
+        data.disabledCheckError says why. data.disabledMatchBy is 'path', 'name' or $null (no
+        disabled tree item, list not readable, or no one-to-one match). When
         the PLC project list cannot be read every project counts as enabled (old behaviour) and
         data.disabledCheckError holds the message. When every PLC project is disabled and skipped,
         nothing was compiled: coverageComplete, codeVerified and completeBuild are $false
@@ -222,7 +229,7 @@
     # the same reading Enable-TcConfig and Resolve-TcPlcProjectPath use to leave them out (a disabled
     # tree item is not activated: InfoSys "How to disable/enable a tree item",
     # https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425861515.html). A coverage
-    # entry is matched to a PLC tree item by name (the .plcproj file name without extension = the
+    # entry is matched to a PLC tree item by .plcproj path first (see below), else by name (the .plcproj file name without extension = the
     # TIPC child name, the same assumption as Find-TcBuildCoverageEntry's 'TIPC^<Plc>' form); an
     # entry without a matching tree item counts as enabled (old behaviour). The name is not a
     # reliable key (two folders with PLC.plcproj; an enabled node 'Main' whose file is Legacy.plcproj
@@ -234,6 +241,8 @@
     # coverageComplete false. A disabled entry that IS built stays 'built'. When the list cannot be
     # read every entry counts as enabled (data.disabledCheckError).
     $disabledCheckError = $null
+    # 'path' | 'name' | $null (no disabled tree item, list not readable, or no one-to-one match)
+    $disabledMatchBy = $null
     foreach ($p in @($coverage.projects)) { $p | Add-Member -NotePropertyName 'disabled' -NotePropertyValue $false -Force }
     if ($null -eq $coverage.error -and @($coverage.projects).Count -gt 0) {
         $plcList = $null
@@ -247,6 +256,51 @@
         }
         # without any disabled tree item nothing is marked, so the one-to-one check is not needed
         if ($null -ne $plcList -and @($plcList | Where-Object { $_.disabled -eq $true }).Count -gt 0) {
+            # 1st: by .plcproj path. The PLC node's projectFile (ProduceXml PlcProjectDef/ProjectPath,
+            # absolute, measured 2026-11-03 on 4026 + VS2022) against the entry's uniqueName (relative
+            # to the solution directory, or absolute), both through Get-TcLongPath (GetFullPath + 8.3
+            # long name), case-insensitive. Used only when every node has a projectFile, every node
+            # matches exactly one entry and no entry matches two nodes; else 2nd: by name (below).
+            $normPath = {
+                param([string]$Path)
+                if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+                try { return (Get-TcLongPath $Path).TrimEnd('\', '/').ToLowerInvariant() } catch { return $null }
+            }
+            $slnDir = $null
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:TcSolutionPath)) {
+                try { $slnDir = [IO.Path]::GetDirectoryName([string]$script:TcSolutionPath) } catch { $slnDir = $null }
+            }
+            $entries = @($coverage.projects)
+            $entryPaths = [object[]]::new($entries.Count)
+            $nodeOfEntry = [object[]]::new($entries.Count)
+            for ($i = 0; $i -lt $entries.Count; $i++) {
+                $u = [string]$entries[$i].uniqueName
+                $abs = $null
+                if (-not [string]::IsNullOrWhiteSpace($u)) {
+                    if ([IO.Path]::IsPathRooted($u)) { $abs = $u }
+                    elseif ($null -ne $slnDir) { $abs = Join-Path $slnDir $u }
+                }
+                $entryPaths[$i] = & $normPath $abs
+            }
+            $pathOk = (@($plcList | Where-Object { $null -eq (& $normPath ([string]$_.projectFile)) }).Count -eq 0)
+            if ($pathOk) {
+                foreach ($n in $plcList) {
+                    $np = & $normPath ([string]$n.projectFile)
+                    $hits = @(for ($i = 0; $i -lt $entries.Count; $i++) { if ($null -ne $entryPaths[$i] -and $entryPaths[$i] -eq $np) { $i } })
+                    if ($hits.Count -ne 1 -or $null -ne $nodeOfEntry[$hits[0]]) { $pathOk = $false; break }
+                    $nodeOfEntry[$hits[0]] = $n
+                }
+            }
+            if ($pathOk) {
+                for ($i = 0; $i -lt $entries.Count; $i++) {
+                    if ($null -ne $nodeOfEntry[$i] -and $nodeOfEntry[$i].disabled -eq $true) {
+                        $entries[$i].disabled = $true
+                        if ($entries[$i].status -eq 'skipped') { $entries[$i].status = 'disabled' }
+                    }
+                }
+                $disabledMatchBy = 'path'
+            }
+            else {
             $ambiguous = @()
             foreach ($n in $plcList) {
                 $hits = @($coverage.projects | Where-Object { [string]$_.name -ieq [string]$n.name })
@@ -258,7 +312,7 @@
                 if ($nodes.Count -gt 1) { $ambiguous += ".plcproj entry '$($p.uniqueName)' matches $($nodes.Count) PLC tree items" }
             }
             if ($ambiguous.Count -gt 0) {
-                $disabledCheckError = "PLC tree items cannot be matched one to one to the .plcproj entries by name, so every PLC project counts as enabled: $($ambiguous -join '; ')"
+                $disabledCheckError = "PLC tree items cannot be matched one to one to the .plcproj entries, neither by .plcproj path (a PLC node without ProjectPath, or no one-to-one path match) nor by name, so every PLC project counts as enabled: $($ambiguous -join '; ')"
                 Write-Verbose "Build-TcProject: $disabledCheckError"
             }
             else {
@@ -269,6 +323,8 @@
                         if ($p.status -eq 'skipped') { $p.status = 'disabled' }
                     }
                 }
+                $disabledMatchBy = 'name'
+            }
             }
         }
     }
@@ -300,6 +356,7 @@
             projectPlatform       = $solPlat.projectPlatform
             platformSource        = $solPlat.platformSource
             disabledProjects      = $disabledProjects
+            disabledMatchBy       = $disabledMatchBy
         }
         if ($null -ne $disabledCheckError) {
             $covData | Add-Member -NotePropertyName 'disabledCheckError' -NotePropertyValue $disabledCheckError
@@ -603,6 +660,7 @@
             projects       = $projects
             skippedProjects = $skippedProjects
             disabledProjects = $disabledProjects
+            disabledMatchBy  = $disabledMatchBy
             coverageComplete = $coverageComplete
             solutionConfiguration = $solutionConfiguration
             solutionPlatform = $solPlat.platform

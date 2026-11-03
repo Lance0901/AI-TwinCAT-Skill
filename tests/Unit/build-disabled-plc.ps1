@@ -11,7 +11,10 @@
 #   enabled; every PLC disabled + skipped -> not complete (nothing compiled), BUILD_REQUIRED neither
 #   recorded nor cleared; a name match that is not one to one fails closed (review M1: two
 #   PLC.plcproj, enabled 'Main' with Legacy.plcproj next to a disabled 'Legacy'); an empty PLC
-#   list; IDE_CRASHED / IDE_MODAL_DIALOG from the PLC list stop before the build.
+#   list; IDE_CRASHED / IDE_MODAL_DIALOG from the PLC list stop before the build. The match by
+#   .plcproj path (Get-TcPlcProjectList projectFile from PlcProjectDef/ProjectPath): swapped names
+#   (enabled 'Main' with Legacy.plcproj, disabled 'Legacy' with Main.plcproj), a node without
+#   ProjectPath or a path that is not one to one falls back to the name match, 8.3 vs long path.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/build-disabled-plc.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -33,6 +36,27 @@ function J($o) { $o | ConvertTo-Json -Compress -Depth 6 }
 $sln = Join-Path $stateRoot 'Demo\Demo.sln'
 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $sln) -Force
 Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
+
+# --- the real Get-TcPlcProjectList reads projectFile from the PLC node XML (PlcProjectDef/ProjectPath,
+# measured 2026-11-03, 4026 + VS2022), before it is mocked below
+function New-PlcNode([string]$Name, [int]$Disabled, [string]$Xml) {
+    $n = [PSCustomObject]@{ Name = $Name; PathName = "TIPC^$Name"; Disabled = $Disabled; Xml = $Xml }
+    $n | Add-Member -MemberType ScriptMethod -Name ProduceXml -Value { param($x) $this.Xml }
+    $n
+}
+$nodes = @(
+    (New-PlcNode 'Main' 0 '<TreeItem><PlcProjectDef><ProjectPath>C:\Sol\Main\Legacy.plcproj</ProjectPath></PlcProjectDef><AdsPort>851</AdsPort></TreeItem>'),
+    (New-PlcNode 'Legacy' 1 '<TreeItem><PlcProjectDef><Name>x</Name><ProjectPath>C:\Sol\R&amp;D\Main.plcproj</ProjectPath></PlcProjectDef><AdsPort>852</AdsPort></TreeItem>'),
+    (New-PlcNode 'Rel' 0 '<TreeItem><PlcProjectDef><ProjectPath>Rel\Rel.plcproj</ProjectPath></PlcProjectDef></TreeItem>'),
+    (New-PlcNode 'None' 0 '<TreeItem><AdsPort>853</AdsPort><ProjectPath>C:\not\in\def.plcproj</ProjectPath></TreeItem>')
+)
+$tipc = [PSCustomObject]@{ ChildCount = $nodes.Count; Nodes = $nodes }
+$tipc | Add-Member -MemberType ScriptMethod -Name Child -Value { param($i) $this.Nodes[$i - 1] }
+$smList = [PSCustomObject]@{ Tipc = $tipc }
+$smList | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) $this.Tipc }
+$list = @(& $mod { param($s) Get-TcPlcProjectList -SysManager $s } $smList)
+Check 'Get-TcPlcProjectList projectFile: absolute PlcProjectDef/ProjectPath, XML-decoded' ($list[0].projectFile -eq 'C:\Sol\Main\Legacy.plcproj' -and $list[1].projectFile -eq 'C:\Sol\R&D\Main.plcproj' -and $list[1].disabled -eq $true) (J $list)
+Check 'Get-TcPlcProjectList projectFile: relative path or no PlcProjectDef -> null' ($null -eq $list[2].projectFile -and $null -eq $list[3].projectFile -and $list[3].adsPort -eq 853) (J $list)
 
 & $mod {
     param($s)
@@ -59,7 +83,7 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
         param($SysManager)
         if ($script:UtPlcListThrows) { throw [string]$script:UtPlcListThrows }
         @($script:UtPlcList | ForEach-Object {
-            [PSCustomObject]@{ name = $_.name; nodePath = "TIPC^$($_.name)"; projectPath = "TIPC^$($_.name)^$($_.name) Project"; adsPort = 851; disabled = [bool]$_.disabled }
+            [PSCustomObject]@{ name = $_.name; nodePath = "TIPC^$($_.name)"; projectPath = "TIPC^$($_.name)^$($_.name) Project"; adsPort = 851; disabled = [bool]$_.disabled; projectFile = $_.file }
         })
     }
     function script:Get-TcBuildErrors {
@@ -100,7 +124,7 @@ Check '(a) success, completeBuild true, coverageComplete true, codeVerified true
 Check '(a) disabledProjects lists both disabled ones' ((@($d.disabledProjects) -join ',') -eq 'RobustSolutionDemoProject,Polar_II_ChamberDemo') (J $d.disabledProjects)
 Check '(a) skippedProjects empty, no warningCode, no buildRequired' (@($d.skippedProjects).Count -eq 0 -and $null -eq $d.PSObject.Properties['warningCode'] -and $null -eq $d.PSObject.Properties['buildRequired']) (J $d)
 Check '(a) project status / disabled flags' ((Status $r) -eq 'RobustSolutionFramework=built/False,FrameworkUnitTest=built/False,RobustSolutionDemoProject=disabled/True,Polar_II_ChamberDemo=disabled/True') (Status $r)
-Check '(a) no disabledCheckError' ($null -eq $d.PSObject.Properties['disabledCheckError']) (J $d)
+Check '(a) no disabledCheckError, matched by name (the mock nodes have no ProjectPath)' ($null -eq $d.PSObject.Properties['disabledCheckError'] -and $d.disabledMatchBy -eq 'name') (J $d)
 Check '(a) complete build cleared BUILD_REQUIRED' ($null -eq (Get-Entry)) (J (Get-Entry))
 
 # --- (b) 1 enabled skipped + 1 disabled skipped: #28 protection unchanged
@@ -203,6 +227,59 @@ foreach ($code in 'IDE_CRASHED', 'IDE_MODAL_DIALOG') {
     $r = Build-TcProject -WarningAction SilentlyContinue
     Check "PLC list throws $code -> success false, build not started, nothing recorded" ((-not $r.success) -and $r.error.message -match $code -and -not (Get-BuildStarted) -and $null -eq (Get-Entry)) (J $r)
 }
+
+
+# --- match by .plcproj path (PLC node ProduceXml PlcProjectDef/ProjectPath, Get-TcPlcProjectList projectFile)
+$slnDir = Split-Path -Parent $sln
+function TF([string]$Name, [bool]$Disabled, [string]$File) { @{ name = $Name; disabled = $Disabled; file = $File } }
+# swapped names: enabled node 'Main' uses Legacy.plcproj, disabled node 'Legacy' uses Main.plcproj.
+# By name the enabled Legacy.plcproj would be marked disabled (false success); by path it is not.
+Reset-State
+Set-Scenario @((PU 'Legacy' $false 'Main\Legacy.plcproj'), (PU 'Main' $true 'Legacy\Main.plcproj')) `
+             @((TF 'Main' $false (Join-Path $slnDir 'Main\Legacy.plcproj')), (TF 'Legacy' $true (Join-Path $slnDir 'Legacy\Main.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'path: swapped names -> enabled Legacy.plcproj skipped, disabled Main.plcproj built + disabled' ((Status $r) -eq 'Legacy=skipped/False,Main=built/True' -and $d.disabledMatchBy -eq 'path' -and @($d.disabledProjects).Count -eq 0) "$(Status $r) by=$($d.disabledMatchBy)"
+Check 'path: swapped names -> completeBuild false + PROJECT_SKIPPED_BY_CONFIGURATION for Legacy, no disabledCheckError' ($d.completeBuild -eq $false -and $d.warningCode -eq 'PROJECT_SKIPPED_BY_CONFIGURATION' -and (@($d.skippedProjects) -join ',') -eq 'Legacy' -and $null -eq $d.PSObject.Properties['disabledCheckError']) (J $d.warningCodes)
+# path match, issue shape: disabled + skipped by path -> complete
+Reset-State
+Set-Scenario @((PU 'plc' $true 'plc\plc.plcproj'), (PU 'demo' $false 'demo\demo.plcproj')) `
+             @((TF 'plc' $false (Join-Path $slnDir 'PLC\PLC.PLCPROJ')), (TF 'demo' $true (Join-Path $slnDir 'demo\..\demo\demo.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'path: case-insensitive + GetFullPath -> demo disabled, completeBuild true, by path' ((Status $r) -eq 'plc=built/False,demo=disabled/True' -and $r.data.completeBuild -eq $true -and $r.data.disabledMatchBy -eq 'path') "$(Status $r) by=$($r.data.disabledMatchBy)"
+# a PLC node without ProjectPath -> back to the name match
+Set-Scenario @((PU 'plc' $true 'plc\plc.plcproj'), (PU 'demo' $false 'demo\demo.plcproj')) `
+             @((TF 'plc' $false $null), (TF 'demo' $true (Join-Path $slnDir 'demo\demo.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'path: a node without ProjectPath -> name match (disabledMatchBy name)' ((Status $r) -eq 'plc=built/False,demo=disabled/True' -and $r.data.disabledMatchBy -eq 'name') "$(Status $r) by=$($r.data.disabledMatchBy)"
+# a node path that matches no entry -> not one to one -> name match
+Set-Scenario @((PU 'plc' $true 'plc\plc.plcproj'), (PU 'demo' $false 'demo\demo.plcproj')) `
+             @((TF 'plc' $false (Join-Path $slnDir 'elsewhere\plc.plcproj')), (TF 'demo' $true (Join-Path $slnDir 'demo\demo.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'path: a node path without entry -> name match' ($r.data.disabledMatchBy -eq 'name' -and (Status $r) -eq 'plc=built/False,demo=disabled/True') "$(Status $r) by=$($r.data.disabledMatchBy)"
+# two nodes on the same path -> not one to one -> name match
+Set-Scenario @((PU 'plc' $true 'plc\plc.plcproj'), (PU 'demo' $false 'demo\demo.plcproj')) `
+             @((TF 'plc' $false (Join-Path $slnDir 'demo\demo.plcproj')), (TF 'demo' $true (Join-Path $slnDir 'demo\demo.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'path: two nodes on one path -> name match' ($r.data.disabledMatchBy -eq 'name') "by=$($r.data.disabledMatchBy)"
+# path not one to one AND name not one to one -> fail closed
+Set-Scenario @((PU 'PLC' $false 'PLC\PLC.plcproj'), (PU 'PLC' $false 'Line2\PLC.plcproj')) `
+             @((TF 'PLC' $true $null), (TF 'Line2' $false (Join-Path $slnDir 'Line2\PLC.plcproj')))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'path and name both ambiguous -> fail closed, disabledMatchBy null, disabledCheckError' ($null -eq $r.data.disabledMatchBy -and $r.data.disabledCheckError -match 'neither by .plcproj path' -and @($r.data.disabledProjects).Count -eq 0 -and $r.data.completeBuild -eq $false) "by=$($r.data.disabledMatchBy) $($r.data.disabledCheckError)"
+# 8.3 short path of the node vs the long uniqueName of the entry
+$longDir = Join-Path $slnDir 'Long Folder Name For Demo PLC'
+$null = New-Item -ItemType Directory -Path $longDir -Force
+$longFile = Join-Path $longDir 'DemoProjectWithLongName.plcproj'
+Set-Content -LiteralPath $longFile -Value '' -Encoding ASCII
+$shortFile = (& cmd.exe /c "for %I in (`"$longFile`") do @echo %~sI" | Select-Object -First 1)
+if (-not [string]::IsNullOrWhiteSpace($shortFile)) { $shortFile = $shortFile.Trim() } else { $shortFile = $longFile }
+"INFO 8.3 path: $shortFile (equals the long path when 8.3 names are off on this volume)"
+Reset-State
+Set-Scenario @((PU 'plc' $true 'plc\plc.plcproj'), (PU 'DemoProjectWithLongName' $false 'Long Folder Name For Demo PLC\DemoProjectWithLongName.plcproj')) `
+             @((TF 'plc' $false (Join-Path $slnDir 'plc\plc.plcproj')), (TF 'OtherName' $true $shortFile))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check '8.3 node path matches the long entry path (by path, the names differ)' ((Status $r) -eq 'plc=built/False,DemoProjectWithLongName=disabled/True' -and $r.data.disabledMatchBy -eq 'path' -and $r.data.completeBuild -eq $true) "$(Status $r) by=$($r.data.disabledMatchBy) short=$shortFile"
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 "failed: $fail"

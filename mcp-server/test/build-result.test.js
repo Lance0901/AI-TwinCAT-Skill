@@ -294,6 +294,7 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
     assert.equal(d.warningCode, undefined);
     assert.equal(d.buildRequired, undefined);
     assert.equal(d.disabledCheckError, undefined);
+    assert.equal(d.disabledMatchBy, 'name', 'the fixture PLC nodes have no ProjectPath');
   });
 
   test('enabled skipped + disabled skipped: only the enabled one is a gap (PROJECT_SKIPPED_BY_CONFIGURATION, completeBuild false)', async () => {
