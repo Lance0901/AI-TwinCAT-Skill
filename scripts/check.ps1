@@ -176,10 +176,17 @@ function Get-NpmTestFailureDetail {
     # does not survive the native output decoding.
     $specStart = -1
     for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i] -match 'failing tests:\s*$') { $specStart = $i; break } }
-    if ($specStart -ge 0) { foreach ($l in @($Lines[$specStart..($Lines.Count - 1)] | Select-Object -First 200)) { $out.Add($l) } }
-    $all = @($out.ToArray() | Select-Object -First $maxLines)
-    if ($out.Count -gt $maxLines) { $all += "... ($($out.Count - $maxLines) more failure-detail lines cut)" }
-    return @{ Lines = $all; HasSpecSummary = ($specStart -ge 0) }
+    # The spec section is cut in the middle (its head and its tail are kept: the tail holds the
+    # last failure); the TAP / diag part gets what is left of the 400 lines.
+    $spec = @()
+    if ($specStart -ge 0) {
+        $spec = @($Lines[$specStart..($Lines.Count - 1)])
+        if ($spec.Count -gt 200) { $spec = @($spec[0..149]) + @("... ($($spec.Count - 200) spec summary lines cut)") + @($spec[($spec.Count - 50)..($spec.Count - 1)]) }
+    }
+    $room = $maxLines - $spec.Count
+    $head = @($out.ToArray() | Select-Object -First $room)
+    if ($out.Count -gt $room) { $head += "... ($($out.Count - $room) more failure-detail lines cut)" }
+    return @{ Lines = @($head + $spec); HasSpecSummary = ($specStart -ge 0) }
 }
 
 # ---------------------------------------------------------------------------
@@ -642,7 +649,8 @@ else {
             }
             if ($ok) {
                 $t = Invoke-Native $npm.Source @('test')
-                $summary = @($t.Output | Where-Object { $_ -match '^# (tests|pass|fail|skipped|todo) \d+' } | ForEach-Object { $_.TrimStart('#', ' ') }) -join ', '
+                # TAP (Node 22): "# tests 212"; spec (Node 24): "<info glyph> tests 212" (the glyph is not matched: cp950)
+                $summary = @($t.Output | ForEach-Object { if ($_ -match '^(?:\S{1,4}\s+)?((?:tests|pass|fail|skipped|todo) \d+)\s*$') { $Matches[1] } }) -join ', '
                 if ($t.Code -eq 0) {
                     Add-CheckResult 'npm test' 'PASS' "$summary$installed"
                 }

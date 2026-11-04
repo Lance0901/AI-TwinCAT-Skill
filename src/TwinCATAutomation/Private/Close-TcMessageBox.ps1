@@ -234,10 +234,13 @@ function Close-TcMessageBox {
         or when the send itself fails / times out, WM_COMMAND (0x0111) with wParam =
         MAKEWPARAM(id, BN_CLICKED 0) = id and lParam = the button handle (the notification a
         real click sends to the dialog) is posted instead, and the handle is polled again for
-        2 s (Closed). Not posted when the dialog is disabled or has an enabled popup (the Yes
-        handler of a custom #32770 dialog opened a nested modal: the click did land), then
-        Sent = true, Closed = false. A PostMessage that fails because the dialog closed in the
-        meantime (BM_CLICK took effect after the 2 s) is Sent = true, Method BM_CLICK, Closed. A
+        2 s (Closed). Before posting, on both paths (send processed or timed out): a dialog that
+        is already gone is Sent = true, Method BM_CLICK, Closed = true; a dialog that is
+        disabled or has an enabled popup (the Yes handler of a custom #32770 dialog opened a
+        nested modal: the click did land, and its synchronous BN_CLICKED is what made the send
+        time out) gets no WM_COMMAND: Sent = true, Method BM_CLICK, Closed = false. A
+        PostMessage that fails because the dialog closed in the meantime is Sent = true, Method
+        BM_CLICK, Closed = true. A
         dialog without that control id (a WPF window such as the VS2022 message box,
         AutomationId 'Microsoft.VisualStudio.MessageBox', 2026-10-21) is answered through UI
         Automation instead: the Button with AutomationId OKButton / YesButton / NoButton /
@@ -358,24 +361,29 @@ function Close-TcMessageBox {
         # Timed out / hung: the click may still be processed; fall back to the posted command.
         $why = "SendMessageTimeout BM_CLICK to control $id failed or timed out"
     }
-    if ($ret -ne [IntPtr]::Zero) {
-        # #64 review S2: a disabled dialog or one with an enabled popup means the click landed and
-        # its handler opened a nested modal (custom #32770 dialogs). Posting the command again
-        # would answer twice.
-        $state = [TcAutomation.MessageBoxState]
-        $GW_ENABLEDPOPUP = [uint32]6
-        if (-not $native::IsWindow($Hwnd)) {
-            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
-            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed right after the 2000 ms check"
-            Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
-            return $result
-        }
-        if (-not $state::IsWindowEnabled($Hwnd) -or $state::GetWindow($Hwnd, $GW_ENABLEDPOPUP) -ne [IntPtr]::Zero) {
-            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $false
-            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog is still open but disabled / showing a popup (nested modal), so WM_COMMAND was not posted"
-            Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
-            return $result
-        }
+    # Both paths (#64 review S2 / round 2 M1): BM_CLICK processed but the dialog still open, AND a
+    # send that timed out. A Yes handler of a custom #32770 dialog that opens a nested modal keeps
+    # the synchronous BN_CLICKED from returning, so the send times out although the click landed.
+    # The dialog is then disabled (the nested modal owns it) or has an enabled popup: posting
+    # WM_COMMAND would answer a second time, re-entrantly. Not posted then.
+    if (-not $native::IsWindow($Hwnd)) {
+        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
+        $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the send / the 2000 ms check"
+        Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+        return $result
+    }
+    $state = [TcAutomation.MessageBoxState]
+    $GW_ENABLEDPOPUP = [uint32]6
+    # GetWindow(GW_ENABLEDPOPUP) returns the window itself when it has no enabled popup
+    # (https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindow);
+    # measured 0 instead (2026-11-05, Windows 11 26200, PS 5.1): both mean "no popup".
+    $popup = $state::GetWindow($Hwnd, $GW_ENABLEDPOPUP)
+    if (-not $state::IsWindowEnabled($Hwnd) -or ($popup -ne [IntPtr]::Zero -and $popup -ne $Hwnd)) {
+        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $false
+        $sendState = if ($ret -ne [IntPtr]::Zero) { 'send processed' } else { 'send timed out' }
+        $result.Reason = "BM_CLICK to control $id ($Answer): $sendState; dialog disabled / nested modal, WM_COMMAND not posted"
+        Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+        return $result
     }
     Write-Verbose "Close-TcMessageBox: $why; posting WM_COMMAND."
 
@@ -388,8 +396,8 @@ function Close-TcMessageBox {
         $result.Closed = Wait-TcDialogGone -Native $native -Hwnd $Hwnd -TimeoutMs 2000
         $result.Reason = "$why; WM_COMMAND $id ($Answer) posted"
     }
-    elseif ($ret -ne [IntPtr]::Zero -and -not $native::IsWindow($Hwnd)) {
-        # #64 review S1: BM_CLICK did take effect, just after the 2 s check: the dialog is gone.
+    elseif (-not $native::IsWindow($Hwnd)) {
+        # #64 review S1: the click did take effect, just after the checks above: the dialog is gone.
         $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
         $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the 2000 ms check"
     }

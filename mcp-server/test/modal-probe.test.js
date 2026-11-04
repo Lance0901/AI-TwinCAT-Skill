@@ -20,6 +20,7 @@ const REAL_PROBE = path.join(__dirname, '..', 'bridge', 'modal-probe.ps1');
 const PROBE_PARENT = path.join(__dirname, 'fixtures', 'probe-parent.js');
 const HOST_WINDOW = path.join(__dirname, 'fixtures', 'host-window.ps1');
 const HOST_WINDOW_WPF = path.join(__dirname, 'fixtures', 'host-window-wpf.ps1');
+const HOST_DIALOG = path.join(__dirname, 'fixtures', 'host-dialog.ps1');
 const DIALOG_ANSWER = path.join(__dirname, 'fixtures', 'dialog-answer.ps1');
 const MODULE_PATH = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
@@ -445,6 +446,69 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
           await waitFor(() => hostLines.includes('result Yes'), 15000),
           `host answered Yes (host: ${JSON.stringify(hostLines)}, send: ${JSON.stringify(r.send)}, host process: ${JSON.stringify(host.diag)})`
         );
+      } finally {
+        host.kill();
+      }
+    });
+
+    /** Start fixtures/host-dialog.ps1 -Mode <mode>; resolves { host, hwnd, lines } once it is shown. */
+    async function startDialogHost(mode) {
+      const child = spawn(defaultPowershellPath(), ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', HOST_DIALOG, '-Mode', mode, '-LifetimeSec', '60'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
+      hosts.push(child);
+      child.diag = [];
+      readline.createInterface({ input: child.stderr }).on('line', (l) => child.diag.push(`stderr: ${l}`));
+      child.once('exit', (code, signal) => child.diag.push(`exited (code ${code}, signal ${signal})`));
+      const lines = [];
+      const hwnd = await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error(`host-dialog did not print 'ready' (${JSON.stringify(child.diag)})`)), 20000);
+        readline.createInterface({ input: child.stdout }).on('line', (l) => {
+          const s = l.trim();
+          lines.push(s);
+          const m = /^ready (\d+)$/.exec(s);
+          if (m) {
+            clearTimeout(t);
+            resolve(m[1]);
+          }
+        });
+      });
+      return { host: child, hwnd, lines };
+    }
+
+    // #64 review: a custom #32770-like dialog whose Yes handler opens a nested modal. BM_CLICK's
+    // synchronous BN_CLICKED then does not return (the send times out) although the click landed;
+    // a WM_COMMAND fallback would answer a second time, re-entrantly.
+    test('custom dialog whose Yes handler opens a nested modal: answered once, no WM_COMMAND fallback (BM_CLICK, Closed false)', async (t) => {
+      const { host, hwnd, lines } = await startDialogHost('Nested');
+      try {
+        const r = await dialogAnswer(['-ProcessId', String(host.pid), '-Hwnd', hwnd, '-Answer', 'Yes']);
+        t.diagnostic(`[diag] send ${JSON.stringify(r.send)}`);
+        assert.ok(await waitFor(() => lines.includes('result Yes 1'), 15000), `first answer (host: ${JSON.stringify(lines)}, ${JSON.stringify(host.diag)})`);
+        // a posted WM_COMMAND is dispatched by the nested MessageBox loop at once; give it time
+        await new Promise((r2) => setTimeout(r2, 1500));
+        assert.deepEqual(lines.filter((l) => l.startsWith('result ')), ['result Yes 1'], `answered exactly once: ${JSON.stringify(r.send)}`);
+        assert.equal(r.send.sent, true, JSON.stringify(r.send));
+        assert.equal(r.send.method, 'BM_CLICK', JSON.stringify(r.send));
+        assert.equal(r.send.closed, false, JSON.stringify(r.send));
+        assert.match(r.send.reason, /WM_COMMAND not posted/);
+      } finally {
+        host.kill();
+      }
+    });
+
+    test('BM_CLICK that clicks nothing (disabled button): WM_COMMAND fallback answers once and the dialog closes', async (t) => {
+      const { host, hwnd, lines } = await startDialogHost('DisabledButton');
+      try {
+        const r = await dialogAnswer(['-ProcessId', String(host.pid), '-Hwnd', hwnd, '-Answer', 'Yes']);
+        t.diagnostic(`[diag] send ${JSON.stringify(r.send)}`);
+        assert.equal(r.send.sent, true, JSON.stringify(r.send));
+        assert.equal(r.send.method, 'WM_COMMAND', JSON.stringify(r.send));
+        assert.equal(r.send.closed, true, JSON.stringify(r.send));
+        assert.match(r.send.reason, /still open 2000 ms later .*; WM_COMMAND 6 \(Yes\) posted/);
+        assert.ok(await waitFor(() => lines.includes('result Yes 1'), 15000), `answered (host: ${JSON.stringify(lines)}, ${JSON.stringify(host.diag)})`);
+        assert.deepEqual(lines.filter((l) => l.startsWith('result ')), ['result Yes 1']);
       } finally {
         host.kill();
       }

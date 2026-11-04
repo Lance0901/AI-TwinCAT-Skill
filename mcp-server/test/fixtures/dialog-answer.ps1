@@ -14,7 +14,11 @@ param(
     [switch]$Classify,
 
     # Pass handle 0 to Close-TcMessageBox (exercises its UI Automation lookup of the VS2022 message box).
-    [switch]$ZeroHwnd
+    [switch]$ZeroHwnd,
+
+    # Answer this window handle directly (no scan): the custom dialog of host-dialog.ps1 is no
+    # modal dialog for Find-TcIdeModalDialog. Output dialog is then null.
+    [long]$Hwnd = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,9 +39,13 @@ if ($Classify) {
     exit 0
 }
 
-$dialog = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -TimeoutSec 10 } $ProcessId
+$dialog = $null
+if ($Hwnd -eq 0) { $dialog = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -TimeoutSec 10 } $ProcessId }
 $send = $null
-if ($null -ne $dialog -and -not [string]::IsNullOrWhiteSpace($Answer)) {
+if ($Hwnd -ne 0 -and -not [string]::IsNullOrWhiteSpace($Answer)) {
+    $send = & $mod { param($h, $a, $p) Close-TcMessageBox -Hwnd ([IntPtr]$h) -Answer $a -ProcessId $p } $Hwnd $Answer $ProcessId
+}
+elseif ($null -ne $dialog -and -not [string]::IsNullOrWhiteSpace($Answer)) {
     $h = if ($ZeroHwnd) { 0 } else { $dialog.Hwnd }
     $send = & $mod { param($h, $a, $p) Close-TcMessageBox -Hwnd ([IntPtr][long]$h) -Answer $a -ProcessId $p } $h $Answer $ProcessId
 }
