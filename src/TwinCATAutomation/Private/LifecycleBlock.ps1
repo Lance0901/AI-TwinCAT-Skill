@@ -388,6 +388,10 @@ function Get-TcLifecycleBlockAdvice {
 # read from the IDE (Save-TcIdeTargetNetId: Resolve-TcLifecycleNetId, Connect-TcIde, Connect-TcAds,
 # Get-TcSystemState, Set-TcSystemState, Enable-TcConfig, Set-TcTarget), only while the IDE is still
 # connected with the same cached ITcSysManager. Never throws.
+# N-a: the cache can be stale - the target may have been changed in the XAE GUI or by another
+# process since it was read. That is acceptable only because this feeds hint text: the refusals
+# (Test-TcLifecycleBlock callers) never use this cache, they resolve their target live
+# (Resolve-TcLifecycleNetId, the ADS session or their own -AmsNetId).
 $script:TcIdeTargetNetIdCache = $null
 function Save-TcIdeTargetNetId {
     param([string]$AmsNetId)

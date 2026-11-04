@@ -44,8 +44,9 @@
         the lifecycle block's reachedState is then empty. data.leftOriginal is $true only when a
         read returned a state other than data.originalState ($null when the original could not be
         read); failed reads after the write (leave check, wait or settle) are data.unreachableSeen.
-        A failure after the wait also carries the wait's probe log (data.probeErrors: ms, code,
-        adsCode, hresult, pidAlive, message; the last 200, data.probeErrorsDropped) and, for a
+        A failure after the wait also carries the wait's probe log (data.probeErrors: runs of equal
+        failed probes { fromMs, toMs, count, code, adsCode, hresult, pidAlive, message }, at most
+        50 runs, data.probeErrorsDropped; Wait-TcAdsState .DESCRIPTION) and, for a
         local UmRT, data.deadlineCheck (#114 S1, diagnosis of the crash verdict).
 
         Fail closed (#68): every failure once WriteControl was called - SYSTEM_STATE_TIMEOUT,

@@ -34,10 +34,14 @@ function Wait-TcAdsState {
         Get-TcLocalUmRtProcess can read the process list (ProcessListReadable) and finds no
         TcSystemServiceUm process of that runtime at all (not a restart under a new pid); the
         start-pid check (c) is not required there, its result is reported in DeadlineCheck.
-        ProbeErrors (#114 S1, diagnosis): one entry per failed probe, the last 200 (older ones
-        counted in ProbeErrorsDropped): ms (since the wait started), code (mapped module code or
-        $null = not mapped), adsCode / hresult (numeric codes of the exception chain), pidAlive
-        (any start pid alive per Test-TcProcessAlive; $null without crash detection), message.
+        ProbeErrors (#114 S1, diagnosis): failed probes as RUNS - consecutive failures with the same
+        code, adsCode, hresult and pidAlive are one entry { fromMs, toMs (since the wait started),
+        count, code (mapped module code, $null = not mapped), adsCode (first ErrorCode in the
+        exception chain), hresult and message (of the INNERMOST exception, not the localized
+        "Exception calling ..." wrapper; message cut to 160 chars, from the first probe of the run),
+        pidAlive (any start pid alive per Test-TcProcessAlive; $null without crash detection) }.
+        At most 50 runs: the first 10 and the last 40; runs removed in between are counted in
+        ProbeErrorsDropped (so a long 0x502 / unreachable phase stays a few hundred bytes).
         AnyProbeFailed: at least one probe failed during the wait.
         StatesSeen: every state that ReadState() returned, in order, consecutive duplicates
         dropped; failed probes are not states (Set-TcSystemState data.leftOriginal).
@@ -101,7 +105,8 @@ function Wait-TcAdsState {
     $umrt = $null
     $seen = [System.Collections.Generic.List[string]]::new()
     $probeErrors = [System.Collections.Generic.List[object]]::new()
-    $probeCap = 200
+    $probeCap = 50          # runs kept: the first $probeKeepFirst and the last ($probeCap - $probeKeepFirst)
+    $probeKeepFirst = 10
     $probeDropped = 0
     $anyFailed = $false
     $lastCode = $null
@@ -163,18 +168,29 @@ function Wait-TcAdsState {
                 # #114 S1: bounded probe log (diagnosis of a missed crash verdict)
                 $adsCode = $null; $hres = $null
                 $ex = $err.Exception
+                $inner = $ex
                 while ($null -ne $ex) {
                     $ep = $ex.PSObject.Properties['ErrorCode']
-                    if ($null -eq $adsCode -and $null -ne $ep -and $null -ne $ep.Value) { try { $adsCode = '0x{0:X}' -f ([int64]$ep.Value -band 0xFFFFFFFF) } catch { } }
+                    if ($null -eq $adsCode -and $null -ne $ep -and $null -ne $ep.Value) { try { $adsCode = '0x{0:X}' -f [int]$ep.Value } catch { } }
+                    $inner = $ex
                     $ex = $ex.InnerException
                 }
-                try { $hres = '0x{0:X8}' -f ([int64]$err.Exception.HResult -band 0xFFFFFFFF) } catch { }
+                # R2-S2: HResult / message of the innermost exception (the outer one is PowerShell's
+                # MethodInvocationException with a localized prefix and its own HResult)
+                try { $hres = '0x{0:X8}' -f [int]$inner.HResult } catch { }   # X8 of an Int32 = its 32-bit pattern
                 $pidAlive = $null
                 if ($null -ne $umrt) { $pidAlive = (@($umrt.Pids | Where-Object { Test-TcProcessAlive -Id $_ }).Count -gt 0) }
-                $msgShort = [string]$lastError
-                if ($msgShort.Length -gt 160) { $msgShort = $msgShort.Substring(0, 160) }
-                if ($probeErrors.Count -ge $probeCap) { $probeErrors.RemoveAt(0); $probeDropped++ }
-                $probeErrors.Add([PSCustomObject]@{ ms = [int]$stopwatch.ElapsedMilliseconds; code = $lastCode; adsCode = $adsCode; hresult = $hres; pidAlive = $pidAlive; message = $msgShort })
+                $nowMs = [int]$stopwatch.ElapsedMilliseconds
+                $lastRun = if ($probeErrors.Count -gt 0) { $probeErrors[$probeErrors.Count - 1] } else { $null }
+                if ($null -ne $lastRun -and $lastRun.code -eq $lastCode -and $lastRun.adsCode -eq $adsCode -and $lastRun.hresult -eq $hres -and $lastRun.pidAlive -eq $pidAlive) {
+                    $lastRun.toMs = $nowMs; $lastRun.count++
+                }
+                else {
+                    $msgShort = [string]$inner.Message
+                    if ($msgShort.Length -gt 160) { $msgShort = $msgShort.Substring(0, 160) }
+                    if ($probeErrors.Count -ge $probeCap) { $probeErrors.RemoveAt($probeKeepFirst); $probeDropped++ }
+                    $probeErrors.Add([PSCustomObject]@{ fromMs = $nowMs; toMs = $nowMs; count = 1; code = $lastCode; adsCode = $adsCode; hresult = $hres; pidAlive = $pidAlive; message = $msgShort })
+                }
                 if ($null -ne $umrt) {
                     if ($null -ne $mapped -and $mapped.Code -eq 'ADS_TARGET_NOT_FOUND') {
                         if ($null -eq $unreachSince) { $unreachSince = $stopwatch.Elapsed.TotalSeconds }

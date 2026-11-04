@@ -40,6 +40,7 @@ namespace TwinCAT.Ads {
             if (m == "crashAfterWrite") { m = Written ? "down7" : "run"; }
             if (m == "crashLate") { m = (Written && (System.DateTime.Now - WrittenAt).TotalSeconds >= DownAfterSec) ? "down7" : "run"; }
             if (m == "crashLateOther") { m = (Written && (System.DateTime.Now - WrittenAt).TotalSeconds >= DownAfterSec) ? "other" : "run"; }
+            if (m == "alt") { m = (Reads % 2 == 0) ? "down7" : "timeout"; }
             if (m == "other") { throw new System.InvalidOperationException("Native call failed in the mock (no ADS code)."); }
             if (m == "switch") { m = Written ? "config" : "run"; }
             if (m == "blip") { if (Written && BlipReads > 0) { BlipReads--; m = "down7"; } else { m = "run"; } }
@@ -173,6 +174,14 @@ Check '#114 crash late: finalState / currentState Unreachable, lastState Run, le
 Check '#114 crash late: block reachedState empty, crash hint, message names the deadline' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.error.hint -match 'TcSystemServiceUm' -and $r.error.message -match 'at -TimeoutSec' -and $r.data.lifecycleBlock.readbackNote -eq 'runtime-gone') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress) msg=$($r.error.message)"
 Check '#114 S1 crash late: probeErrors (0x7 mapped, pidAlive false), deadlineCheck, unreachableSeen (S2)' (@($r.data.probeErrors).Count -gt 0 -and @($r.data.probeErrors)[-1].code -eq 'ADS_TARGET_NOT_FOUND' -and @($r.data.probeErrors)[-1].pidAlive -eq $false -and $r.data.deadlineCheck.processListReadable -eq $true -and @($r.data.deadlineCheck.pidsNow).Count -eq 0 -and $r.data.unreachableSeen -eq $true) ($r.data | Select-Object probeErrors, deadlineCheck, unreachableSeen | ConvertTo-Json -Compress -Depth 4)
 $null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+
+# R2-S1 / R2-S2: equal failures are one run; hresult / message come from the innermost exception
+$last = @($r.data.probeErrors)[-1]
+Check '#114 R2 probe runs: the 0x7 phase is one run (count > 1, fromMs < toMs), innermost message / hresult' (@($r.data.probeErrors).Count -le 3 -and $last.count -gt 1 -and $last.fromMs -lt $last.toMs -and $last.message -like 'Ads-Error 0x7*' -and $last.hresult -eq '0x80131500') ($r.data.probeErrors | ConvertTo-Json -Compress -Depth 3)
+Set-Ads 'alt'; $global:UmRt = $null
+$w = & $mod { Wait-TcAdsState -AmsNetId '5.6.7.8.1.1' -Port 10000 -TargetState Run -TimeoutSec 7 -IntervalMs 20 }
+$pe = @($w.ProbeErrors)
+Check '#114 R2 probe runs capped at 50 (first 10 + last 40), dropped counted' ($pe.Count -eq 50 -and $w.ProbeErrorsDropped -gt 0 -and $pe[0].fromMs -le $pe[1].fromMs -and $pe[9].toMs -lt $pe[10].fromMs -and ($pe | Measure-Object -Property count -Sum).Sum -lt ($pe.Count + $w.ProbeErrorsDropped + 1)) "runs=$($pe.Count) dropped=$($w.ProbeErrorsDropped)"
 
 # S1 (b): the failure after the crash is not mapped to ADS_TARGET_NOT_FOUND (0x7 streak never starts)
 Set-Ads 'crashLateOther'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
