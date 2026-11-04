@@ -4,7 +4,11 @@
 # Masks are heuristics: they cannot know a customer name inside a free-text sentence (use -ExtraMask
 # of New-TcIssueReport for that), a token that is split across two lines is not recognised, and the
 # caller must still read the body before submitting it. When a path cannot be told apart from the
-# prose behind it, the whole rest of the line is masked (privacy over readability).
+# prose behind it, the whole rest of the line is masked (privacy over readability). Order of work:
+# mask the (wide-cut) text first, cut the MASKED text afterwards at a word boundary, never the other
+# way round (a cut before masking leaves a prefix of a token that no rule recognises any more).
+# Known limits: a path that Out-String / the console wrapped over two lines is two fragments (the
+# second one is not seen as a path), and a token split across lines is not recognised.
 
 function Add-TcMaskCount {
     param([hashtable]$Counts, [string]$Name, [int]$By = 1)
@@ -17,8 +21,70 @@ $script:TcDeidProjectExtensions = 'sln|tsproj|plcproj|tsp|xti|xtd|tmc|tpy|librar
 $script:TcDeidKeepExtensions = 'log|txt|json|ini|cfg|csv|dll|exe|bak|7z|md|pdf|bat|ps1|lib'
 # Hosts whose URLs are kept as they are.
 $script:TcDeidUrlWhitelist = '(?i)^(?:github\.com|infosys\.beckhoff\.com|learn\.microsoft\.com)$'
-# System folders whose full path is kept (no customer data in them).
-$script:TcDeidSystemPath = '(?i)^(?:file:/{2,3})?[A-Za-z]:[\\/]+(?:TwinCAT|Windows|Program Files(?: \(x86\))?|ProgramData[\\/]+Beckhoff|Users[\\/]+<user>[\\/]+AppData)(?:[\\/]|\s|$)'
+# Known TwinCAT / Beckhoff product folders whose full path is kept (no customer data in them). Anything
+# else (TwinCAT\Projects, Temp, Program Files\<vendor>, Windows\Temp ...) follows the normal rules.
+$script:TcDeidSystemPath = '(?i)^(?:file:/{2,3})?[A-Za-z]:[\\/]+(?:TwinCAT[\\/]+3\.\d+[\\/]+(?:Boot|Config|Components|Target|Repository|System)|Program Files(?: \(x86\))?[\\/]+Beckhoff|ProgramData[\\/]+Beckhoff|Users[\\/]+<user>[\\/]+AppData[\\/]+Local[\\/]+Beckhoff)(?:[\\/]|\s|$)'
+# Folder names that carry no customer information (never added to the mask list).
+$script:TcDeidGenericFolders = '(?i)^(?:users?|documents?|desktop|onedrive|projects?|src|source|sources|plc|pous|duts|gvls|temp|tmp|appdata|local|roaming|downloads?|program files|programdata|windows|system32|work|data|backup|backups|archive|bin|obj|lib|libs|build|builds|test|tests|docs?|logs?|config|configs?|twincat|beckhoff|common|shared|public|system|boot|repository|target|components|library|libraries|scripts?|tools?|modules?|windowspowershell|repos?|git|new|old|demo|files?|share|shares|net|org|com|the|and|gmbh|ltd|inc|co|visual studio|vs|x64|x86|debug|release|publish|output|in|out|root|home|mnt|drive)$'
+
+# Cuts RAW text to at most Cap characters (wide cap, before masking) and drops the partial token at the
+# cut, so no prefix of a token is left behind. A trailing run longer than 200 characters stays (it is long
+# enough for the length based rules).
+function Limit-TcRawText {
+    param([string]$Text, [int]$Cap)
+    if ($null -eq $Text -or $Text.Length -le $Cap) { return $Text }
+    $n = $Cap
+    if ([char]::IsHighSurrogate($Text[$n - 1])) { $n-- }
+    $cut = $Text.Substring(0, $n)
+    $m = [regex]::Match($cut, '\S{1,200}$')
+    if ($m.Success -and $m.Length -lt $cut.Length) { $cut = $cut.Substring(0, $cut.Length - $m.Length) }
+    return $cut
+}
+
+# Cuts MASKED text to at most Cap characters at a word boundary (backs off up to 200 characters, else
+# drops the last token) and never inside a <placeholder>. The caller appends its marker.
+function Limit-TcMaskedText {
+    param([string]$Text, [int]$Cap)
+    if ($null -eq $Text -or $Text.Length -le $Cap) { return $Text }
+    $n = [Math]::Max(0, $Cap)
+    if ($n -gt 0 -and [char]::IsHighSurrogate($Text[$n - 1])) { $n-- }
+    $lt = if ($n -gt 0) { $Text.LastIndexOf('<', $n - 1) } else { -1 }
+    if ($lt -ge 0 -and $lt -ge $n - 16) {
+        $gt = $Text.IndexOf('>', $lt)
+        if ($gt -ge $n) { $n = $lt }
+    }
+    $min = [Math]::Max(0, $n - 200)
+    $found = -1
+    for ($i = $n; $i -gt $min; $i--) {
+        $ch = $Text[$i - 1]
+        if ([char]::IsWhiteSpace($ch) -or ',;:"''()[]{}=<>'.IndexOf($ch) -ge 0) { $found = $i; break }
+    }
+    if ($found -ge 0) { $n = $found }
+    else {
+        $ws = $Text.LastIndexOfAny([char[]]@(' ', "`t", "`r", "`n"), [Math]::Max(0, $n - 1))
+        if ($ws -gt 0) { $n = $ws }
+    }
+    return $Text.Substring(0, $n).TrimEnd()
+}
+
+# Folder names of a masked path -> $Counts['__folders'] (case-insensitive set). They are masked as words
+# in the rest of the text and in the other inputs ("because ACME license expired"). Generic names stay.
+function Add-TcFolderNames {
+    param([hashtable]$Counts, [string]$DirText)
+    if ([string]::IsNullOrEmpty($DirText)) { return }
+    if (-not $Counts.ContainsKey('__folders')) { $Counts['__folders'] = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase) }
+    $set = $Counts['__folders']
+    $first = $true
+    foreach ($seg in ($DirText -split '[\\/]+')) {
+        if ($first) { $first = $false; if ($seg -match '^(?:[A-Za-z]:|file:|X:)?$') { continue } }
+        $seg = $seg.Trim()
+        if ($seg.Length -lt 3 -or $seg.Length -gt 80 -or $seg.Contains('<') -or $seg.Contains('>')) { continue }
+        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch '^\d+$') { [void]$set.Add($seg) }
+        foreach ($w in ($seg -split '[\s_.\-]+')) {
+            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch '^\d+$') { [void]$set.Add($w) }
+        }
+    }
+}
 
 # Regex replace with a PowerShell evaluator. No .NET delegate: a scriptblock turned into a MatchEvaluator
 # (or closed with GetNewClosure) loses the module scope, so Add-TcMaskCount would not be found.
@@ -60,15 +126,22 @@ function Convert-TcDeidPath {
         $leaf = $pm.Groups['leaf'].Value
         $rest = $Path.Substring($pm.Index + 1 + $leaf.Length)
         $kind = 'project-path'
+        Add-TcFolderNames -Counts $Counts -DirText $Path.Substring(0, $pm.Index)
     }
     else {
         $idx = $Path.LastIndexOfAny([char[]]@([char]92, [char]47))
         $tail = if ($idx -ge 0) { $Path.Substring($idx + 1) } else { '' }
+        $dirEnd = if ($idx -ge 0) { $idx } else { 0 }
         if ($tail -ne '') {
             $tok = [regex]::Match($tail, '^\S+').Value
-            $clean = $tok.TrimEnd(')', ']', '}', '.', ',', ';', ':')
+            # "build.log:42: error" -> the leaf is build.log; the line number and the message stay
+            $clean = ($tok.TrimEnd(')', ']', '}', '.', ',', ';', ':') -replace '(?::\d+)+$', '')
             if ($clean -match ('(?i)\.(?:' + $script:TcDeidKeepExtensions + ')$')) { $leaf = $clean; $rest = $tail.Substring($clean.Length) }
         }
+        # the folders (and a short extension-less last segment, which is a folder too) become mask words
+        $dirText = $Path.Substring(0, $dirEnd)
+        if ($leaf -eq '' -and $tail -ne '' -and $tail.Length -le 60 -and $tail -notmatch '[:<>]') { $dirText = $dirText + '/' + $tail }
+        Add-TcFolderNames -Counts $Counts -DirText $dirText
     }
     Add-TcMaskCount -Counts $Counts -Name $kind
     if ($leaf -ne '') { return '<path>' + $sep + $leaf + $rest }
@@ -104,7 +177,7 @@ function ConvertTo-TcDeidentifiedText {
 
     if ([string]::IsNullOrEmpty($Text)) { return $Text }
     $s = Repair-TcSurrogates $Text
-    if ($s.Length -gt 100000) { $s = $s.Substring(0, 100000) }
+    if ($s.Length -gt 100000) { $s = Limit-TcRawText -Text $s -Cap 100000 }
     $c = $Counts
 
     # 1. URLs: host (and port, user info) and path are identifying, except a few public documentation hosts
@@ -142,6 +215,21 @@ function ConvertTo-TcDeidentifiedText {
         return $m.Groups[1].Value + $m.Groups[2].Value + '<host>'
     }
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)\b(address|hostname|routename|computername|machinename)(\s*["'']?\s*[:=]\s*["'']?)([^\s"'',;&]+)' -Map $ev
+    # PowerShell parameters that name a machine / route / address: "-Name ACME-CX01 -Address 10.2.3.4"
+    $ev = {
+        param($m)
+        if ($m.Groups[2].Value.StartsWith('<')) { return $m.Value }
+        Add-TcMaskCount -Counts $c -Name 'host-key'
+        return $m.Groups[1].Value + '<host>'
+    }
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)((?<![\w-])-(?:Name|RouteName|Address|HostName|ComputerName)(?::|\s+))("[^"
+]*"|''[^''
+]*''|[^\s"'',;&]+)' -Map $ev
+    # dotless route / target names: CX-5A1B2C (CX default names), <name>:<ADS or TwinCAT port>
+    $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'host-name'; return '<host>' }
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9-])CX-[0-9A-F]{6}(?:-[A-Za-z0-9_-]+)?(?![A-Za-z0-9-]|\.[A-Za-z0-9])' -Map $ev
+    $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'host-name'; return '<host>' + $m.Groups[1].Value }
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\w.:/\\<>-])[A-Za-z][A-Za-z0-9_-]{2,62}(:(?:48898|851|852|853|801|10000))(?![0-9])' -Map $ev
     # well-known token shapes (GitHub, OpenAI-style, AWS, Bearer, JWT)
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'token'; return '<token>' }
     $s = Invoke-TcRegexMap -Text $s -Pattern '\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})' -Map $ev
@@ -149,7 +237,7 @@ function ConvertTo-TcDeidentifiedText {
 
     # 3. e-mail addresses (left boundary and bounded quantifiers keep the scan linear)
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'email'; return '<email>' }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\p{L}\p{N}._%+-])[\p{L}\p{N}._%+-]{1,64}@[\p{L}\p{N}-]{1,63}(?:\.[\p{L}\p{N}-]{1,63}){1,8}' -Map $ev
 
     # 4. TwinCAT tree paths below TIPC^: every segment after the first is a project / PLC / object name
     $ev = {
@@ -179,13 +267,17 @@ function ConvertTo-TcDeidentifiedText {
         if ($rest.Length -le 1) { return '\\<host>' }
         return '\\<host>\' + (Convert-TcDeidPath -Path ('X:' + $rest) -Counts $c)
     }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\\A-Za-z0-9])\\\\(?<host>[^\\/\s"''<>|]+)(?<rest>(?:(?!\s[A-Za-z]:[\\/])[^\r\n"''`|*?])*)' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\\A-Za-z0-9:])\\\\(?<host>[^\\/\s"''<>|]+)(?<rest>(?:(?!\s[A-Za-z]:[\\/])[^\r\n"''`|*?])*)' -Map $ev
     # 6b. drive paths (back or forward slashes, file:///), up to a quote / line end / the next path start
     $ev = { param($m) return (Convert-TcDeidPath -Path $m.Value -Counts $c) }
     $stop = '(?!\s[A-Za-z]:[\\/]|\s\\\\|\s\.{1,2}[\\/])'
     $s = Invoke-TcRegexMap -Text $s -Pattern ('(?<![A-Za-z0-9])(?:file:/{2,3})?[A-Za-z]:[\\/](?:' + $stop + '[^\r\n"''`|*?])*') -Map $ev
     # 6c. relative paths (.\x, ..\x, ./x)
     $s = Invoke-TcRegexMap -Text $s -Pattern ('(?<![\w.:/\\])\.{1,2}[\\/](?:' + $stop + '[^\r\n"''`|*?])*') -Map $ev
+
+    # 6d. root-relative paths (\Projects\ACME\Line3\Main.sln): a backslash, a segment of 2+ characters, a backslash
+    $s = Invoke-TcRegexMap -Text $s -Pattern ('(?<![\w.:/\\>)\]~])\\(?=[^\\/\s"''<>|:*?]{2,}\\)(?:' + $stop + '[^
+"''`|*?])*') -Map ({ param($m) return (Convert-TcDeidPath -Path ('X:' + $m.Value) -Counts $c) })
 
     # 7. host names with a private / public suffix (documentation hosts stay)
     $ev = {
@@ -194,7 +286,7 @@ function ConvertTo-TcDeidentifiedText {
         Add-TcMaskCount -Counts $c -Name 'host-name'
         return '<host>'
     }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9._<-])(?:[A-Za-z0-9-]{1,63}\.){1,6}(?:local|lan|corp|intranet|internal|home|localdomain|lab|site|com|net|org|de|tw|cn|jp|io|co|uk|eu|edu|gov|at|ch|nl|fr|it|us)(?![A-Za-z0-9-])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9._<-])(?:[A-Za-z0-9-]{1,63}\.){1,6}(?:local|lan|corp|intranet|internal|home|localdomain|lab|site|com|net|org|de|tw|cn|jp|io|co|uk|eu|edu|gov|at|ch|nl|fr|it|us|box|arpa)(?![A-Za-z0-9-])' -Map $ev
 
     # 8. this machine's own names (computer, user, domain), whole words only; 2 characters are enough for non-ASCII names
     foreach ($pair in @(@('machine-name', $env:COMPUTERNAME, '<host>'), @('user-name', $env:USERNAME, '<user>'), @('machine-name', $env:USERDOMAIN, '<host>'))) {
@@ -257,16 +349,20 @@ function ConvertTo-TcDeidentifiedText {
     }
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![A-Za-z0-9+/_=.-])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/_=.-])' -Map $ev
 
-    # 12. caller supplied literals; text inside <...> placeholders is skipped so <path> / <user> survive
-    foreach ($lit in @($ExtraMask)) {
-        if ([string]::IsNullOrWhiteSpace($lit) -or $lit.Length -lt 2) { continue }
+    # 12. caller supplied literals and the folder names of the masked paths ("because ACME license expired");
+    #     text inside <...> placeholders is skipped so <path> / <user> survive. Longest literal first.
+    foreach ($group in @(@('extra', @($ExtraMask)), @('folder-name', @($(if ($c.ContainsKey('__folders')) { $c['__folders'] } else { @() }))))) {
+        $kind = [string]$group[0]
+        $lits = @($group[1] | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and ([string]$_).Length -ge 2 } | Sort-Object { ([string]$_).Length } -Descending | Select-Object -First 300 -Unique)
+        if ($lits.Count -eq 0) { continue }
+        $alt = (@($lits | ForEach-Object { [regex]::Escape([string]$_) }) -join '|')
         $ev = {
             param($m)
             if ($m.Groups[1].Success) { return $m.Groups[1].Value }
-            Add-TcMaskCount -Counts $c -Name 'extra'
+            Add-TcMaskCount -Counts $c -Name $kind
             return '<redacted>'
         }
-        $s = Invoke-TcRegexMap -Text $s -Pattern ('(<[A-Za-z-]{1,20}>)|' + [regex]::Escape($lit)) -Map $ev -IgnoreCase
+        $s = Invoke-TcRegexMap -Text $s -Pattern ('(<[A-Za-z-]{1,20}>)|' + $alt) -Map $ev -IgnoreCase
     }
     return $s
 }
@@ -306,15 +402,20 @@ function ConvertTo-TcDeidentifiedValue {
         [int]$Depth = 0
     )
 
-    if ($null -eq $State) { $State = @{ Nodes = 0; Cut = 0 } }
+    if ($null -eq $State) { $State = @{ Nodes = 0; Cut = 0; Chars = 0 } }
     if ($null -eq $Value) { return $null }
     if ($Depth -gt 12) { return '[max depth]' }
     $State.Nodes = [int]$State.Nodes + 1
     if ($State.Nodes -gt 3000) { $State.Cut = [int]$State.Cut + 1; return '[truncated]' }
     if ($Value -is [string]) {
-        $str = $Value
-        if ($str.Length -gt 3000) { $str = $str.Substring(0, 3000) + ' [cut]' }
-        return (ConvertTo-TcDeidentifiedText -Text $str -Counts $Counts -ExtraMask $ExtraMask)
+        # wide raw cap (20000) and a total character budget bound the work; the leaf is masked FIRST and the
+        # masked text is cut at a word boundary to 3000 characters afterwards
+        $State.Chars = [int]$State.Chars + [Math]::Min($Value.Length, 20000)
+        if ($State.Chars -gt 150000) { $State.Cut = [int]$State.Cut + 1; return '[truncated]' }
+        $str = Limit-TcRawText -Text $Value -Cap 20000
+        $masked = ConvertTo-TcDeidentifiedText -Text $str -Counts $Counts -ExtraMask $ExtraMask
+        if ($masked.Length -gt 3000) { $masked = (Limit-TcMaskedText -Text $masked -Cap 3000) + ' [cut]' }
+        return $masked
     }
     if ($Value -is [bool] -or $Value -is [ValueType]) { return $Value }
 

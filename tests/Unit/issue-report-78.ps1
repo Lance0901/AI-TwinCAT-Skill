@@ -48,7 +48,7 @@ $body = [string]$r.data.body
 Check 'success + url + body' ($r.success -and $r.data.url -and $body) ($r | ConvertTo-Json -Compress -Depth 3)
 
 # (1) masks
-Check 'user dir keeps the form C:\Users\<user>\AppData' ((& $mod { $c = @{}; ConvertTo-TcDeidentifiedText -Text 'C:\Users\bob\AppData\Local\Temp\x.log' -Counts $c }) -eq 'C:\Users\<user>\AppData\Local\Temp\x.log') ''
+Check 'user dir keeps the form C:\Users\<user>\AppData\Local\Beckhoff' ((& $mod { $c = @{}; ConvertTo-TcDeidentifiedText -Text 'C:\Users\bob\AppData\Local\Beckhoff\x.log' -Counts $c }) -ceq 'C:\Users\<user>\AppData\Local\Beckhoff\x.log') ''
 Check 'bob gone' (-not ($body -cmatch 'bob')) $body
 Check 'ACME gone (ExtraMask + path)' (-not ($body -cmatch 'ACME|acme')) $body
 Check 'project path reduced to file name' ($body -match '<path>\\\\?Main\.sln' -and $body -notmatch 'Customers' -and $body -notmatch 'Desktop\\') $body
@@ -150,7 +150,7 @@ Check 'directory without extension masked' ($o -ceq '<path>') $o
 $o = Mask 'D:\Cust\ACME\Line3\notes.txt'
 Check 'diagnostic file keeps its name' ($o -ceq '<path>\notes.txt') $o
 $o = Mask 'C:\TwinCAT\3.1\Boot\CurrentConfig.xml and C:\Program Files\ACME Tools\cfg.ini'
-Check 'system folders keep the full path (even .xml)' ($o -ceq 'C:\TwinCAT\3.1\Boot\CurrentConfig.xml and C:\Program Files\ACME Tools\cfg.ini') $o
+Check 'TwinCAT product folders keep the full path (even .xml); Program Files\<vendor> does not' ($o -ceq 'C:\TwinCAT\3.1\Boot\CurrentConfig.xml and <path>\cfg.ini') $o
 # 3 IPv4 next to words ending in v / ver
 foreach ($t in 'connect to server 192.168.1.20 failed', 'Server: 192.168.1.20', 'driver=10.0.0.5', 'dev 10.0.0.5', 'Observer 10.0.0.5') {
     $o = Mask $t
@@ -176,7 +176,7 @@ Check 'UNC host with domain' ($o -notmatch 'fileserver|acme' -and $o -match '<ho
 $o = Mask 'C:\Users\Bob Smith\Desktop\x.sln'
 Check 'user name with a space' ($o -notmatch 'Bob|Smith') $o
 $o = Mask 'C:\Users\bob\AppData\Local\Temp\x.log'
-Check 'user dir form kept for AppData' ($o -ceq 'C:\Users\<user>\AppData\Local\Temp\x.log') $o
+Check 'AppData\Local\Temp is not a whitelisted folder' ($o -ceq '<path>\x.log') $o
 # 8 hosts / URLs
 $o = Mask 'https://acme.sharepoint.com/sites/Line3/Shared%20Documents/x.sln and https://acme-my.sharepoint.com/personal/bob_acme_com/Documents'
 Check 'SharePoint URLs masked' ($o -notmatch 'acme|bob|Line3|sharepoint') $o
@@ -271,6 +271,76 @@ Set-Content -LiteralPath (Join-Path $tmpRoot '.git\packed-refs') -Value @('# pac
 $c3 = & $mod { param($b) Get-TcModuleCommit -ModuleBase $b } (Join-Path $tmpRoot 'src\TwinCATAutomation')
 Remove-Item -LiteralPath $tmpRoot -Recurse -Force
 Check 'commit: refs/heads file, packed-refs, and only when ModuleBase is <root>\src\TwinCATAutomation' ($c1 -eq 'abcdef0' -and $null -eq $c2 -and $c3 -eq '1234567') ("$c1 / $c2 / $c3")
+
+# ---- review round 2
+# 1 truncation: a token that straddles the cut leaves no prefix (sweep every cut position)
+function Test-NoPrefix([string]$Body, [string]$Token) {
+    for ($i = 0; $i -le $Token.Length - 8; $i++) { if ($Body.Contains($Token.Substring($i, 8))) { return $false } }
+    return $true
+}
+$sweepTokens = @('AB12cd34EF56gh78IJ90kl12MN34op56qr78', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'bob.smith@acme.example.com', '10.11.12.13.1.1', '192.168.100.200', 'sk-abcdefghijklmnop1234')
+$sweepBad = @()
+$sw = [Diagnostics.Stopwatch]::StartNew()
+foreach ($tok in $sweepTokens) {
+    for ($k = 1; $k -le $tok.Length; $k++) {
+        $pad = ('a ' * 6000).Substring(0, 3000 - $k)
+        if (-not $pad.EndsWith(' ')) { $pad = $pad.Substring(0, $pad.Length - 1) + ' ' }
+        $r = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ($pad + $tok + ' end') } }) -NoEnvironment
+        if (-not (Test-NoPrefix $r.data.body $tok)) { $sweepBad += "leaf $tok k=$k" }
+        $pad2 = ('a ' * 12000).Substring(0, 10000 - $k)
+        if (-not $pad2.EndsWith(' ')) { $pad2 = $pad2.Substring(0, $pad2.Length - 1) + ' ' }
+        $r = New-TcIssueReport -Title 't' -Notes ($pad2 + $tok + ' end') -NoEnvironment
+        if (-not (Test-NoPrefix $r.data.body $tok)) { $sweepBad += "notes $tok k=$k" }
+    }
+}
+Check ("cut sweep: no 8-char piece of a straddling token survives ({0:n0}s)" -f $sw.Elapsed.TotalSeconds) ($sweepBad.Count -eq 0) ($sweepBad -join '; ')
+$cutAt = New-TcIssueReport -Title 't' -NoEnvironment -Notes (('word ' * 1990) + 'password=Hunter2Secret! and more words here ' + ('x ' * 400))
+Check 'a cut never lands inside a placeholder' ($cutAt.data.body -notmatch '<[a-z-]{1,10}\z|<[a-z-]{1,10}\r?\n\[input' -and $cutAt.data.body -notmatch 'Hunter2') ''
+# 2 system path whitelist
+foreach ($t in 'C:\TwinCAT\Projects\ACME_Line3\ACME.sln', 'C:\Users\bob\AppData\Local\Temp\ACME_Line3\x.tmp', 'C:\Windows\Temp\ACME\dump.dmp', 'C:\Program Files\ACME Tools\cfg.ini', 'C:\ProgramData\ACME\x.txt') {
+    $o = Mask $t
+    Check "not whitelisted: $t" ($o -notmatch 'ACME|Line3') $o
+}
+foreach ($t in 'C:\TwinCAT\3.1\Boot\Plc\Port_851.app', 'C:\TwinCAT\3.1\Config\Io\x.xml', 'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\x.dll', 'C:\ProgramData\Beckhoff\TwinCAT\3.1\x.log') {
+    $o = Mask $t
+    Check "kept: $t" ($o -ceq $t) $o
+}
+# 3 TIPC names from objects
+$tobj = [pscustomobject]@{ success = $false; error = [pscustomobject]@{ code = 'X'; message = 'TIPC^ZetaCorp^ZetaCorp Project failed; ZetaCorp PLC not running' } }
+$to = New-TcIssueReport -Title 't' -Result $tobj -NoEnvironment
+$tp = New-TcIssueReport -Title 't' -Parameters ([pscustomobject]@{ PlcProjectPath = 'TIPC^YotaPlc^YotaPlc Project'; Note = 'YotaPlc runs' }) -NoEnvironment
+$ts = New-TcIssueReport -Title 't' -Result ($tobj | ConvertTo-Json -Depth 5) -NoEnvironment
+Check 'TIPC^ names from object Result / Parameters / JSON string are masked everywhere' ($to.data.body -notmatch 'ZetaCorp' -and $tp.data.body -notmatch 'YotaPlc' -and $ts.data.body -notmatch 'ZetaCorp') ($to.data.body + $tp.data.body)
+# 4 folder names -> mask words
+$o = Mask 'Cannot open ''D:\Cust\ACME\x.sln'' because ACME license expired'
+Check 'folder name masked in the prose behind the path' ($o -notmatch 'ACME' -and $o -match 'license expired') $o
+$fx = New-TcIssueReport -Title 'Zorbo problem' -Parameters @{ SolutionPath = 'D:\Zorbo Industries\Line7\Main.sln' } -Notes 'Zorbo is the customer, Industries too' -NoEnvironment
+Check 'folder names of a path in Parameters are masked in Notes / Title' ($fx.data.body -notmatch 'Zorbo' -and $fx.data.title -notmatch 'Zorbo') ($fx.data.title + ' | ' + $fx.data.body)
+$o = Mask 'C:\Users\bob\Documents\Projects\x.sln then open the Documents of Projects'
+Check 'generic folder names stay' ($o -match 'Documents of Projects') $o
+# 5 dotless hosts / routes / ports / parameters
+foreach ($pair in @(@('route CX-5A1B2C to target', 'CX-5A1B2C'), @('RouteName: CX-5A1B2C-Line3', 'Line3'), @('connect acme-plc01:48898 failed', 'acme-plc01'), @('ads plc7box:851 down', 'plc7box'), @('AddRoute -Name ACME-CX01 -Address 10.2.3.4', 'ACME-CX01|10\.2\.3\.4'), @('host cx-1a2b3c.fritz.box ok', 'fritz|cx-1a2b3c'), @('Set-TcTarget -HostName mypc7 now', 'mypc7'))) {
+    $o = Mask $pair[0]
+    Check ("dotless host: " + $pair[0]) ($o -notmatch $pair[1]) $o
+}
+# 6 root-relative paths; escaped sequences stay
+$o = Mask '\Projects\ACME\Line3\Main.sln'
+Check 'root-relative project path' ($o -ceq '<path>\Main.sln') $o
+$o = Mask '\Projects\ACME\Line3'
+Check 'root-relative directory' ($o -ceq '<path>') $o
+$o = Mask 'line1\r\nline2\t\x'
+Check 'escaped \r\n \t sequences are not paths' ($o -ceq 'line1\r\nline2\t\x') $o
+# 7 non-ASCII e-mail
+$cust = [string][char]0x5BA2 + [char]0x6236
+$o = Mask ('wang.xm@' + $cust + '.com.tw and bob@acme.com.tw')
+Check 'non-ASCII e-mail domain masked' ($o -ceq '<email> and <email>') $o
+# nit: line-number suffix
+$o = Mask 'D:\Cust\ACME\build.log:42: error C0077'
+Check 'build.log:42: keeps leaf and message' ($o -ceq '<path>\build.log:42: error C0077') $o
+# reviewer probe: perf on the pathological inputs
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$rf = New-TcIssueReport -Title 't' -Result ('{"a":"' + ('x1.' * 30000) + '"}') -Notes ('D:\a b ' * 20000) -NoEnvironment
+Check ("90000-char JSON string + 140000-char path-like Notes: {0:n1}s < 60s" -f $sw.Elapsed.TotalSeconds) ($rf.success -and $sw.Elapsed.TotalSeconds -lt 60 -and $rf.data.urlLength -le 7000) ''
 
 "failed: $fail"
 exit $fail

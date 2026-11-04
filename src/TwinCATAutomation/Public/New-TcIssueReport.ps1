@@ -42,10 +42,12 @@ function New-TcIssueReport {
         URL length: browsers and servers cut long URLs, and GitHub does not document a limit
         (the default 7000 is a conservative value that was NOT measured). The encoded URL is limited
         to -MaxUrlLength characters: the largest of Result / Parameters / Notes / Expected is shortened
-        first and ends with "[truncated]" (data.truncated, data.truncatedSections). Every input is
-        cut BEFORE masking (strings at 10000 characters, tree leaves at 3000, at most 3000 tree
-        nodes), so data.body is the de-identified text of that bounded input, not of an unlimited
-        one; it is complete with respect to it and can be pasted into the issue form by hand when the
+        first and ends with "[truncated]" (data.truncated, data.truncatedSections). Inputs are masked
+        first (inside a wide raw cap of 30000 characters, 20000 per JSON string, 150000 in total, at most 3000
+        tree nodes) and the MASKED text is cut afterwards at a word boundary (10000 characters per
+        section, 3000 per JSON string), never inside a placeholder and never in the middle of a token
+        that was masked, so no prefix of a secret is left behind. data.body is therefore complete only
+        with respect to that bounded input; it can be pasted into the issue form by hand when the
         URL version was shortened. The title is limited to 120 characters.
 
         Source: the "issues/new?title=&body=&labels=" query parameters pre-fill a new issue (GitHub Docs
@@ -126,17 +128,25 @@ function New-TcIssueReport {
     }
 
     $baseUrl = 'https://github.com/Lance0901/AI-TwinCAT-Skill/issues/new'
-    $inputCap = 10000      # raw characters per input, cut BEFORE masking
+    $inputCap = 10000      # characters per input AFTER masking (cut at a word boundary)
+    $rawCap = 30000        # wide raw cap before masking (bounds the work, the partial token at the cut is dropped)
     $jsonParseCap = 100000 # a longer JSON string is kept as (cut) text instead of being parsed
     $counts = @{}
 
     # --- helpers
-    function Limit-IssueText {
+    # Mask FIRST (inside a wide raw cap, the partial token at that cut is dropped), cut the MASKED text
+    # at a word boundary afterwards: a cut before masking would leave prefixes of tokens that no rule recognises.
+    function ConvertTo-BoundedText {
+        param([string]$Text, [int]$Cap, [string]$Marker = '')
+        $raw = Limit-TcRawText -Text $Text -Cap $rawCap
+        $m = ConvertTo-TcDeidentifiedText -Text $raw -Counts $counts -ExtraMask $maskList
+        if ($m.Length -gt $Cap) { $m = (Limit-TcMaskedText -Text $m -Cap $Cap) + $Marker }
+        return $m
+    }
+    function Limit-MaskedJson {
         param([string]$Text, [int]$Cap)
-        if ($null -eq $Text -or $Text.Length -le $Cap) { return $Text }
-        $n = $Cap
-        if ([char]::IsHighSurrogate($Text[$n - 1])) { $n-- }
-        return $Text.Substring(0, $n) + "`n[input cut at $Cap characters]"
+        if ($Text.Length -le $Cap) { return $Text }
+        return (Limit-TcMaskedText -Text $Text -Cap $Cap) + "`n[input cut at $Cap characters]"
     }
     function ConvertTo-IssueTree {
         param($Value)
@@ -188,35 +198,47 @@ function New-TcIssueReport {
     $mask = [System.Collections.Generic.List[string]]::new()
     foreach ($m in @($ExtraMask)) { if (-not [string]::IsNullOrWhiteSpace($m)) { $mask.Add($m) } }
     foreach ($n in @(Get-TcIssueKnownNames)) { if ($n -and -not $mask.Contains($n)) { $mask.Add($n) } }
-    $rawProbe = (@($Title, $Tool, $Expected, $Notes) + @($Parameters, $Result | Where-Object { $_ -is [string] })) -join "`n"
-    if ($rawProbe.Length -gt 200000) { $rawProbe = $rawProbe.Substring(0, 200000) }
+    # the probe holds every input as text (objects as JSON), so TIPC^ names in objects are found too
+    $probeParts = [System.Collections.Generic.List[string]]::new()
+    foreach ($x in @($Title, $Tool, $Expected, $Notes)) { if ($x) { $probeParts.Add([string]$x) } }
+    foreach ($x in @($Parameters, $Result)) {
+        if ($null -eq $x) { continue }
+        if ($x -is [string]) { $probeParts.Add($x) }
+        else { try { $probeParts.Add((ConvertTo-Json -InputObject $x -Depth 12 -Compress)) } catch { $null = $_ } }
+    }
+    $rawProbe = Limit-TcRawText -Text ($probeParts -join "`n") -Cap 100000
     foreach ($m in [regex]::Matches($rawProbe, 'TIPC\^([^\^\r\n"''`;,|]{2,80})')) {
         $n = $m.Groups[1].Value.Trim()
         if ($n.Length -ge 2 -and $n -notmatch '^(?i:untitled\d*)$' -and -not $mask.Contains($n)) { $mask.Add($n) }
     }
+    # dry run over all inputs: the folder names of every path become mask words for ALL inputs
+    $probeCounts = @{}
+    $null = ConvertTo-TcDeidentifiedText -Text $rawProbe -Counts $probeCounts -ExtraMask $mask.ToArray()
+    if ($probeCounts.ContainsKey('__folders')) {
+        foreach ($f in $probeCounts['__folders']) { if (-not $mask.Contains($f)) { $mask.Add($f) } }
+    }
     $maskList = $mask.ToArray()
 
     # --- title / tool
-    $titleRaw = Limit-IssueText -Text (($Title -replace '\s+', ' ').Trim()) -Cap 400
-    $titleText = ConvertTo-TcDeidentifiedText -Text $titleRaw -Counts $counts -ExtraMask $maskList
+    $titleText = ConvertTo-BoundedText -Text (($Title -replace '\s+', ' ').Trim()) -Cap 400
     if ($titleText.Length -gt 120) {
-        $n = 117
-        if ([char]::IsHighSurrogate($titleText[$n - 1])) { $n-- }
-        $titleText = $titleText.Substring(0, $n).TrimEnd() + '...'
+        $titleText = (Limit-TcMaskedText -Text $titleText -Cap 117) + '...'
     }
     $toolText = ''
     if (-not [string]::IsNullOrWhiteSpace($Tool)) {
-        $toolText = ConvertTo-TcDeidentifiedText -Text (Limit-IssueText -Text (($Tool -replace '\s+', ' ').Trim()) -Cap 200) -Counts $counts -ExtraMask $maskList
+        $toolText = ConvertTo-BoundedText -Text (($Tool -replace '\s+', ' ').Trim()) -Cap 200
     }
 
     # --- parameters / result
-    $state = @{ Nodes = 0; Cut = 0 }
+    $state = @{ Nodes = 0; Cut = 0; Chars = 0 }
     $paramsText = ''
     if ($null -ne $Parameters -and -not ($Parameters -is [string] -and [string]::IsNullOrWhiteSpace($Parameters))) {
         $tree = ConvertTo-IssueTree $Parameters
-        if ($tree -is [string]) { $tree = Limit-IssueText -Text $tree -Cap $inputCap }
-        $masked = ConvertTo-TcDeidentifiedValue -Value $tree -Counts $counts -ExtraMask $maskList -State $state
-        $paramsText = Limit-IssueText -Text (ConvertTo-IssueJson $masked) -Cap $inputCap
+        if ($tree -is [string]) { $paramsText = ConvertTo-BoundedText -Text $tree -Cap $inputCap -Marker "`n[input cut at $inputCap characters]" }
+        else {
+            $masked = ConvertTo-TcDeidentifiedValue -Value $tree -Counts $counts -ExtraMask $maskList -State $state
+            $paramsText = Limit-MaskedJson -Text (ConvertTo-IssueJson $masked) -Cap $inputCap
+        }
     }
 
     $resultText = ''
@@ -224,25 +246,28 @@ function New-TcIssueReport {
     $resultSuccess = $null
     if ($null -ne $Result -and -not ($Result -is [string] -and [string]::IsNullOrWhiteSpace($Result))) {
         $tree = ConvertTo-IssueTree $Result
-        if ($tree -is [string]) { $tree = Limit-IssueText -Text $tree -Cap $inputCap }
-        $err = Get-IssueProp $tree 'error'
-        $codeValue = Get-IssueProp $err 'code'
-        if ($null -ne $codeValue) {
-            $cv = [string]$codeValue
-            if ($cv -match '^[A-Z0-9_]{1,64}$') { $errorCode = $cv }
-            else { $errorCode = ConvertTo-TcDeidentifiedText -Text (Limit-IssueText -Text ($cv -replace '[\r\n`]+', ' ') -Cap 80) -Counts $counts -ExtraMask $maskList }
+        if ($tree -is [string]) { $resultText = ConvertTo-BoundedText -Text $tree -Cap $inputCap -Marker "`n[input cut at $inputCap characters]" }
+        else {
+            $err = Get-IssueProp $tree 'error'
+            $codeValue = Get-IssueProp $err 'code'
+            if ($null -ne $codeValue) {
+                $cv = [string]$codeValue
+                if ($cv -match '^[A-Z0-9_]{1,64}$') { $errorCode = $cv }
+                else { $errorCode = ConvertTo-BoundedText -Text ($cv -replace '[\r\n`]+', ' ') -Cap 80 }
+            }
+            $sv = Get-IssueProp $tree 'success'
+            if ($sv -is [bool]) { $resultSuccess = $sv }
+            $state = @{ Nodes = 0; Cut = 0; Chars = 0 }
+            $masked = ConvertTo-TcDeidentifiedValue -Value $tree -Counts $counts -ExtraMask $maskList -OmitKey @('hint') -State $state
+            $resultText = Limit-MaskedJson -Text (ConvertTo-IssueJson $masked) -Cap $inputCap
         }
-        $sv = Get-IssueProp $tree 'success'
-        if ($sv -is [bool]) { $resultSuccess = $sv }
-        $state = @{ Nodes = 0; Cut = 0 }
-        $masked = ConvertTo-TcDeidentifiedValue -Value $tree -Counts $counts -ExtraMask $maskList -OmitKey @('hint') -State $state
-        $resultText = Limit-IssueText -Text (ConvertTo-IssueJson $masked) -Cap $inputCap
     }
 
+    $marker10k = "`n[input cut at $inputCap characters]"
     $expectedText = ''
-    if (-not [string]::IsNullOrWhiteSpace($Expected)) { $expectedText = ConvertTo-TcDeidentifiedText -Text (Limit-IssueText -Text $Expected.Trim() -Cap $inputCap) -Counts $counts -ExtraMask $maskList }
+    if (-not [string]::IsNullOrWhiteSpace($Expected)) { $expectedText = ConvertTo-BoundedText -Text $Expected.Trim() -Cap $inputCap -Marker $marker10k }
     $notesText = ''
-    if (-not [string]::IsNullOrWhiteSpace($Notes)) { $notesText = ConvertTo-TcDeidentifiedText -Text (Limit-IssueText -Text $Notes.Trim() -Cap $inputCap) -Counts $counts -ExtraMask $maskList }
+    if (-not [string]::IsNullOrWhiteSpace($Notes)) { $notesText = ConvertTo-BoundedText -Text $Notes.Trim() -Cap $inputCap -Marker $marker10k }
 
     # --- environment: only what the module already holds in memory
     $environment = $null
@@ -288,7 +313,7 @@ function New-TcIssueReport {
     }
 
     $maskFooter = {
-        $names = @($counts.Keys | Sort-Object)
+        $names = @($counts.Keys | Where-Object { $_ -notlike '__*' } | Sort-Object)
         if ($names.Count -eq 0) { return '_De-identified automatically by New-TcIssueReport (no masks were needed). Review before submitting._' }
         $list = ($names | ForEach-Object { '{0} x{1}' -f $_, $counts[$_] }) -join ', '
         return ('_De-identified automatically by New-TcIssueReport; masks applied: ' + $list + '. Review before submitting._')
@@ -304,7 +329,7 @@ function New-TcIssueReport {
     # --- label (masked and reduced to harmless characters)
     $labelClean = ''
     if (-not [string]::IsNullOrWhiteSpace($Label)) {
-        $labelClean = (ConvertTo-TcDeidentifiedText -Text (Limit-IssueText -Text $Label.Trim() -Cap 50) -Counts $counts -ExtraMask $maskList) -replace '[^A-Za-z0-9 _.:-]', ''
+        $labelClean = (ConvertTo-BoundedText -Text $Label.Trim() -Cap 50) -replace '[^A-Za-z0-9 _.:-]', ''
         $labelClean = $labelClean.Trim()
     }
     $labelPart = ''
@@ -334,8 +359,7 @@ function New-TcIssueReport {
         # cut by the excess (encoded characters are 1..9 characters each: cut generously, at least a quarter)
         $cut = [Math]::Max([int]($body.Length * 0.25), [int]($excess / 3) + 1)
         $newLen = [Math]::Max(0, $body.Length - $cut)
-        if ($newLen -gt 0 -and [char]::IsHighSurrogate($body[$newLen - 1])) { $newLen-- }
-        $texts[$victim] = ($body.Substring(0, $newLen).TrimEnd() + "`n" + $marker).Trim()
+        $texts[$victim] = ((Limit-TcMaskedText -Text $body -Cap $newLen) + "`n" + $marker).Trim()
         if (-not $truncated.Contains($victim)) { $truncated.Add($victim) }
         $bodyForUrl = [string](& $buildBody)
     }
@@ -344,11 +368,12 @@ function New-TcIssueReport {
     $url = $baseUrl + $titlePart + '&body=' + [System.Uri]::EscapeDataString($bodyForUrl) + $labelPart
     $urlTooLong = $url.Length -gt $MaxUrlLength
 
-    $maskReport = if ($counts.Count -eq 0) { 'No mask was needed. The text may still contain names this tool cannot recognise: read data.body before submitting.' }
-    else { 'Masked: ' + ((@($counts.Keys | Sort-Object) | ForEach-Object { '{0} x{1}' -f $_, $counts[$_] }) -join ', ') + '. Customer / site / person names inside sentences are NOT detected unless listed in -ExtraMask: read data.body before submitting.' }
+    $countKeys = @($counts.Keys | Where-Object { $_ -notlike '__*' } | Sort-Object)
+    $maskReport = if ($countKeys.Count -eq 0) { 'No mask was needed. The text may still contain names this tool cannot recognise: read data.body before submitting.' }
+    else { 'Masked: ' + (($countKeys | ForEach-Object { '{0} x{1}' -f $_, $counts[$_] }) -join ', ') + '. Customer / site / person names inside sentences are NOT detected unless listed in -ExtraMask: read data.body before submitting.' }
 
     $maskTable = [ordered]@{}
-    foreach ($k in @($counts.Keys | Sort-Object)) { $maskTable[$k] = $counts[$k] }
+    foreach ($k in $countKeys) { $maskTable[$k] = $counts[$k] }
 
     $howTo = 'Show data.maskReport and data.body to the user. Only the user opens data.url in a browser signed in to GitHub, checks the text and presses Submit new issue; do not open or submit it yourself. '
     if ($truncated.Count -gt 0) { $howTo += 'The URL version was shortened (' + ($truncated -join ', ') + '): paste data.body into the form instead of using the URL if the whole text is needed.' }
