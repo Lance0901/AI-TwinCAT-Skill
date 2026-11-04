@@ -96,6 +96,7 @@ $global:FakeIde = @{}
             $o = (Get-Variable -Name obj -Scope 1 -ValueOnly)
             if ($o.PSObject.Properties['Busy'] -and $o.Busy) { throw "IDE_BUSY: '$OperationName' failed after $MaxRetries attempts - the IDE rejected the call (RPC_E_CALL_REJECTED 0x80010001)." }
         }
+        # depends on the OperationName string in Connect-TcIde ('SilentMode read (original)'): renaming it there silently disables this hook
         if ($OperationName -eq 'SilentMode read (original)' -and $global:SilentGetterThrows) { throw 'RPC_E_SERVERFAULT (mock: SilentMode getter fails)' }
         if ($OperationName -eq 'Solution.FullName (guard)' -and $global:GuardThrows) { throw 'RPC_E_SERVERCALL_RETRYLATER (mock: XAE busy after the reload)' }
         & $script:UnitOrigComRetry @PSBoundParameters
@@ -304,13 +305,27 @@ try {
     $global:GuardThrows = $false
     Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
 
-    # --- #55 nit: guard read '' (no solution open) is an answer: passes the guard (no UNVERIFIED / MISMATCH), the reset goes on to close ---
+    # --- #55: guard read answers $null (Solution.FullName $null) and stays so -> UNVERIFIED after -TimeoutSec, nothing closed ---
     $global:ClosedSolution = $false
+    $nullSol = [PSCustomObject]@{ FullName = $null }
+    $nullSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $nullSol $fakeDocs
+    $swNull = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Reset-TcSolution -TimeoutSec 5   # ValidateRange minimum is 5
+    $swNull.Stop()
+    Check 'reset-guard-null-times-out' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'answered \$null' -and $r.data.guardSec -le 7 -and $swNull.Elapsed.TotalSeconds -lt 12) "code=$($r.error.code) closed=$global:ClosedSolution err=$($r.data.guardError) guardSec=$($r.data.guardSec) total=$([math]::Round($swNull.Elapsed.TotalSeconds, 1))"
+
+    # --- #55 nit: guard read '' (no solution open) is an answer: passes the guard (no UNVERIFIED / MISMATCH), the reset goes on to close ---
+    # Separate flags for Documents.CloseAll and Solution.Close. The mock has no project / reopen support, so the reset ends in PROJECT_OPEN_FAILED after closing; only the guard is under test.
+    $global:SolClosed = $false
+    $global:DocsClosed = $false
     $emptySol = [PSCustomObject]@{ FullName = '' }
-    $emptySol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
-    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s; $script:TcSysManager = $null } $sln $emptySol $fakeDocs
+    $emptySol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:SolClosed = $true }
+    $emptyDocs = [PSCustomObject]@{ Count = 0 }
+    $emptyDocs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:DocsClosed = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s; $script:TcSysManager = $null } $sln $emptySol $emptyDocs
     $r = Reset-TcSolution -TimeoutSec 5 -DiscardProjectChanges
-    Check 'reset-guard-empty-passes' ($r.error.code -notin @('RESET_SOLUTION_UNVERIFIED', 'RESET_SOLUTION_MISMATCH') -and $global:ClosedSolution) "code=$($r.error.code) closed=$global:ClosedSolution"
+    Check 'reset-guard-empty-passes' ($r.error.code -notin @('RESET_SOLUTION_UNVERIFIED', 'RESET_SOLUTION_MISMATCH') -and $global:SolClosed) "code=$($r.error.code) docsClosed=$global:DocsClosed solClosed=$global:SolClosed"
 
     # --- should-fix 2: a same-named .sln known open elsewhere -> the title does not corroborate a record ---
     $global:FakeIde = @{ 981 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
