@@ -106,16 +106,171 @@ foreach ($f in $src) {
         if ($t.Kind -eq 'Comment') { continue }
         if ($t.Text -match $forbidden) { $hits += ('{0}: {1}' -f $f.Name, $t.Text) }
     }
+    # no git (or any other native program) is started: no command named git / gh / curl / powershell ...
+    $cmds = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+    foreach ($cmd in $cmds) {
+        $name = $cmd.GetCommandName()
+        if ($name -match '^(?i:git|gh|curl|wget|powershell|pwsh|cmd|node|npm)(\.exe)?$') { $hits += ('{0}: command {1}' -f $f.Name, $name) }
+    }
 }
 Check 'source: no web / process / gh / IDE / ADS access (3 files)' ($src.Count -eq 3 -and $hits.Count -eq 0) ($hits -join '; ')
 
 # (4) environment from module state only
 & $mod { $script:TcIdeConnected = $true; $script:TcProgId = 'VisualStudio.DTE.17.0'; $script:TcSolutionPath = 'C:\Users\bob\Customer X\Plant.sln'; $script:TcAdsConnected = $true; $script:TcAdsAmsNetId = '10.1.2.3.1.1'; $script:TcAdsAssemblyVersion = '4.4.0.0' }
 $e = New-TcIssueReport -Title 'env'
-Check 'environment: module, powershell, ProgId, solution FILE NAME, ads dll' ($e.data.environment.module -match '^TwinCATAutomation \d' -and $e.data.environment.powershell -match '5\.1|7\.' -and $e.data.environment.ideProgId -eq 'VisualStudio.DTE.17.0' -and $e.data.environment.solutionFile -eq 'Plant.sln' -and $e.data.environment.adsDllVersion -eq '4.4.0.0') ($e.data.environment | ConvertTo-Json -Compress)
+Check 'environment: module, powershell, ProgId, ads dll; solution file name OMITTED by default' ($e.data.environment.module -match '^TwinCATAutomation \d' -and $e.data.environment.powershell -match '5\.1|7\.' -and $e.data.environment.ideProgId -eq 'VisualStudio.DTE.17.0' -and -not $e.data.environment.Contains('solutionFile') -and $e.data.environment.adsDllVersion -eq '4.4.0.0') ($e.data.environment | ConvertTo-Json -Compress)
 Check 'environment: no AmsNetId, no customer folder' ($e.data.body -notmatch '10\.1\.2\.3' -and $e.data.body -notmatch 'Customer X' -and $e.data.body -notmatch 'bob') ''
 $ne = New-TcIssueReport -Title 'env' -NoEnvironment
 Check '-NoEnvironment drops the section' ($ne.data.body -notmatch '## Environment' -and $null -eq $ne.data.environment) ''
+
+# ---- review round 1 (every leak the reviewer probed is a test)
+function Mask([string]$Text, [string[]]$Extra) { $c = @{}; & $mod { param($x, $c, $e) ConvertTo-TcDeidentifiedText -Text $x -Counts $c -ExtraMask $e } $Text $c $Extra }
+$bs = [string][char]92
+function P([string]$s) { $s -replace '/B/', $bs }    # write backslashes without escaping trouble
+$cn = [string][char]0x5BA2 + [char]0x6236 + 'A'       # a non-ASCII customer name
+
+# 1 any number of spaces / non-ASCII in a drive path
+$o = Mask 'D:\OneDrive - ACME Automation GmbH\Projects\Line3\Main.sln'
+Check 'path with many spaces -> <path>\Main.sln' ($o -ceq '<path>\Main.sln') $o
+$o = Mask 'D:\Work Folder With Many Spaces Here\Cust\Main.sln'
+Check 'path with 5 spaces in a folder' ($o -ceq '<path>\Main.sln') $o
+$o = Mask ('D:\' + $cn + ' x\Line 3\Main.sln')
+Check 'non-ASCII customer folder' ($o -ceq '<path>\Main.sln') $o
+$o = Mask 'D:\Projects\ACME\Line3\PLC\POUs\MAIN.TcPOU(12): error C0077'
+Check 'error line keeps the file and the message, not the folders' ($o -ceq '<path>\MAIN.TcPOU(12): error C0077') $o
+$o = Mask 'Open D:\Cust\ACME\a.sln then D:\Cust\ACME\b.sln'
+Check 'two paths in one sentence' ($o -ceq 'Open <path>\a.sln then <path>\b.sln') $o
+$o = Mask 'Message: Cannot find path ''D:\Cust\ACME\x.txt'' because it does not exist.'
+Check 'quoted path ends at the quote' ($o -ceq 'Message: Cannot find path ''<path>\x.txt'' because it does not exist.') $o
+# 2 directories, trailing backslash
+$o = Mask 'D:\Cust\ACME\Line3\'
+Check 'trailing-backslash directory masked' ($o -ceq '<path>\') $o
+$o = Mask 'D:\Cust\ACME\Line3'
+Check 'directory without extension masked' ($o -ceq '<path>') $o
+$o = Mask 'D:\Cust\ACME\Line3\notes.txt'
+Check 'diagnostic file keeps its name' ($o -ceq '<path>\notes.txt') $o
+$o = Mask 'C:\TwinCAT\3.1\Boot\CurrentConfig.xml and C:\Program Files\ACME Tools\cfg.ini'
+Check 'system folders keep the full path (even .xml)' ($o -ceq 'C:\TwinCAT\3.1\Boot\CurrentConfig.xml and C:\Program Files\ACME Tools\cfg.ini') $o
+# 3 IPv4 next to words ending in v / ver
+foreach ($t in 'connect to server 192.168.1.20 failed', 'Server: 192.168.1.20', 'driver=10.0.0.5', 'dev 10.0.0.5', 'Observer 10.0.0.5') {
+    $o = Mask $t
+    Check "IPv4 masked: $t" ($o -notmatch '\d+\.\d+\.\d+\.\d+' -and $o -match '<ip>') $o
+}
+foreach ($t in 'Version 3.4.3.0', 'version=3.4.3.0', 'ver 3.4.3.0') {
+    $o = Mask $t
+    Check "version kept: $t" ($o -ceq $t) $o
+}
+# 7 forward slashes, file:///, relative, %5C, UNC
+$o = Mask 'D:/Projects/ACME/Line3/Main.sln'
+Check 'forward-slash drive path' ($o -ceq '<path>/Main.sln') $o
+$o = Mask 'file:///D:/Projects/ACME/Line3/Main.sln'
+Check 'file:/// path' ($o -ceq '<path>/Main.sln') $o
+$o = Mask '.\ACME\Line3\Main.sln and ..\Cust\x.plcproj'
+Check 'relative paths' ($o -ceq '<path>\Main.sln and <path>\x.plcproj') $o
+$o = Mask 'D:%5CCust%5CACME%5Cx.sln'
+Check '%5C encoded backslashes' ($o -notmatch 'ACME|Cust') $o
+$o = Mask ($bs + $bs + 'fileserver01' + $bs + 'eng$' + $bs + 'ACME' + $bs + 'Line3' + $bs + 'Main.sln')
+Check 'UNC share path' ($o -ceq ($bs + $bs + '<host>' + $bs + '<path>' + $bs + 'Main.sln')) $o
+$o = Mask ($bs + $bs + 'fileserver01.acme.local' + $bs + 'share')
+Check 'UNC host with domain' ($o -notmatch 'fileserver|acme' -and $o -match '<host>') $o
+$o = Mask 'C:\Users\Bob Smith\Desktop\x.sln'
+Check 'user name with a space' ($o -notmatch 'Bob|Smith') $o
+$o = Mask 'C:\Users\bob\AppData\Local\Temp\x.log'
+Check 'user dir form kept for AppData' ($o -ceq 'C:\Users\<user>\AppData\Local\Temp\x.log') $o
+# 8 hosts / URLs
+$o = Mask 'https://acme.sharepoint.com/sites/Line3/Shared%20Documents/x.sln and https://acme-my.sharepoint.com/personal/bob_acme_com/Documents'
+Check 'SharePoint URLs masked' ($o -notmatch 'acme|bob|Line3|sharepoint') $o
+$o = Mask 'see https://github.com/Lance0901/AI-TwinCAT-Skill/issues/78 and https://infosys.beckhoff.com/x and https://learn.microsoft.com/y'
+Check 'whitelisted documentation hosts stay' ($o -ceq 'see https://github.com/Lance0901/AI-TwinCAT-Skill/issues/78 and https://infosys.beckhoff.com/x and https://learn.microsoft.com/y') $o
+$o = Mask 'http://192.168.1.20:8080/x tc://cx-5a1b2c.acme.local/route'
+Check 'URL with IP / tc:// host' ($o -notmatch '192\.168|acme|cx-5a1b2c') $o
+$o = Mask 'route Address=cx-5a1b2c.acme.local HostName: CX-5A1B2C RouteName=Line3Route'
+Check 'Address / HostName / RouteName text' ($o -notmatch 'cx-5a1b2c|CX-5A1B2C|acme|Line3Route') $o
+# 9 IPv6 / MAC
+foreach ($t in 'fe80::1c2b:3d4e:5f60:7a8b%12', '2001:db8::1', '2001:0db8:0000:0000:0000:0000:0000:0001', 'at fd00::10 up') {
+    $o = Mask $t
+    Check "IPv6 masked: $t" ($o -notmatch '[0-9a-f]{2,4}:[0-9a-f]' -and $o -match '<ip>') $o
+}
+$o = Mask 'loopback ::1 stays'
+Check '::1 stays' ($o -ceq 'loopback ::1 stays') $o
+$o = Mask 'mac 00AA22BB44CC and 202611051030'
+Check 'MAC without separators masked, a number stays' ($o -ceq 'mac <mac> and 202611051030') $o
+# 13 quoted secrets
+$o = Mask 'password: "my secret pass" and password is hunter2 and pwd=''two words'' end'
+Check 'quoted / "is" secrets' ($o -notmatch 'my secret|pass"|hunter2|two words') $o
+# 12 short non-ASCII user names
+$oldUser = $env:USERNAME
+$env:USERNAME = [string][char]0x738B + [char]0x660E
+$o = Mask ('hello ' + $env:USERNAME + ' there')
+$env:USERNAME = 'ab'
+$o2 = Mask 'hello ab there'
+$env:USERNAME = $oldUser
+Check '2-char non-ASCII user name masked, 2-char ASCII is not' ($o -ceq 'hello <user> there' -and $o2 -ceq 'hello ab there') ("$o / $o2")
+# nit: ExtraMask never corrupts placeholders
+$o = Mask 'C:\Users\x\proj\Main.sln mail a@b.example' @('path', 'email')
+Check 'ExtraMask path / email leaves <path> <email> intact' ($o -ceq '<path>\Main.sln mail <email>') $o
+# 10 TIPC tree paths, solution base name
+$o = Mask 'Path TIPC^ACME_Line3^ACME_Line3 Project^POUs^MAIN failed'
+Check 'TIPC^ tree path: segments after TIPC masked' ($o -notmatch 'ACME|POUs|MAIN' -and $o -match '^Path TIPC\^<segment>\^<segment>') $o
+& $mod { $script:TcSolutionPath = 'D:\x\ZetaCorpLine.sln' }
+$k = New-TcIssueReport -Title 'ZetaCorpLine broke' -Notes 'in the ZetaCorpLine solution; plc TIPC^PlcAlpha7^PlcAlpha7 Project, again PlcAlpha7' -Tool 'x'
+Check 'open solution base name and PLC names from TIPC^ masked everywhere' ($k.data.body -notmatch 'ZetaCorpLine|PlcAlpha7' -and $k.data.title -notmatch 'ZetaCorpLine') ($k.data.title + ' | ' + $k.data.body)
+$ki = New-TcIssueReport -Title 'x' -IncludeSolutionName
+Check '-IncludeSolutionName adds solutionFile' ($ki.data.environment.solutionFile -eq 'ZetaCorpLine.sln') ($ki.data.environment | ConvertTo-Json -Compress)
+& $mod { $script:TcSolutionPath = $null }
+# 6 keys
+$kr = New-TcIssueReport -Title 't' -NoEnvironment -ExtraMask 'ACME' -Result @{ success = $false; data = @{ 'D:\Cust\Plant9\x.sln' = 'k'; '192.168.5.5' = 1; 'ACMEKey' = 2; Password = 'p'; Address = 'cx-1'; RouteName = 'r' } }
+Check 'object keys masked (path, IP, ExtraMask); secret / host keys by original key' ($kr.data.body -notmatch 'Plant9|192\.168|ACME|"p"|cx-1|"r"' -and $kr.data.body -match '<secret>' -and $kr.data.body -match '<host>') $kr.data.body
+# 14 error.code
+$kc = New-TcIssueReport -Title 't' -NoEnvironment -ExtraMask 'ACME' -Result @{ success = $false; error = @{ code = 'D:\Cust\ACME\x ACME'; message = 'm' } }
+$kg = New-TcIssueReport -Title 't' -NoEnvironment -Result @{ success = $false; error = @{ code = 'BUILD_FAILED'; message = 'm' } }
+Check 'error.code: a code-shaped value is shown, anything else is masked' ($kc.data.body -notmatch 'ACME|Cust' -and $kg.data.body -match 'error\.code: `BUILD_FAILED`') $kc.data.body
+# nit: label
+$kl = New-TcIssueReport -Title 't' -NoEnvironment -Label 'C:\Users\bob\x lbl'
+Check '-Label is masked / sanitised' ($kl.data.url -notmatch 'bob' -and ($kl.data.labels -join ',') -notmatch 'bob') $kl.data.url
+# 4 huge inputs: no exception, URL within the limit
+$sw = [Diagnostics.Stopwatch]::StartNew()
+try {
+    $h1 = New-TcIssueReport -Title 'big' -Result ('x' * 70000) -Notes ('y' * 70000) -Expected ('e' * 70000) -Parameters ('p' * 70000) -NoEnvironment
+    Check '70000-char inputs: success, URL within the limit' ($h1.success -and $h1.data.urlLength -le 7000 -and $h1.data.url.Length -eq $h1.data.urlLength -and $h1.data.truncated) ("{0}" -f $h1.data.urlLength)
+    $h2 = New-TcIssueReport -Title 'big' -Result ('{"a":"' + ('z' * 50000) + '"}') -Parameters ('{"b":"' + ('w' * 50000) + '"}') -NoEnvironment
+    Check '50000-char JSON strings: success, URL within the limit' ($h2.success -and $h2.data.urlLength -le 7000) ("{0}" -f $h2.data.urlLength)
+    $arr = @(1..6000 | ForEach-Object { @{ k = "item $_ 192.168.1.$($_ % 250)" } })
+    $h3 = New-TcIssueReport -Title 'many' -Result @{ success = $false; data = $arr } -NoEnvironment
+    Check '6000-element result: success, node budget, URL within the limit' ($h3.success -and $h3.data.urlLength -le 7000 -and $h3.data.body -notmatch '192\.168') ("{0}" -f $h3.data.urlLength)
+    $cjk = ([string][char]0x4E2D + [char]0x6587 + [char]::ConvertFromUtf32(0x1F600)) * 8000
+    $h4 = New-TcIssueReport -Title 'cjk' -Notes $cjk -Result ('{"m":"' + $cjk + '"}')
+    Check 'CJK + emoji inputs: success, URL within the limit, decodes' ($h4.success -and $h4.data.urlLength -le 7000 -and $h4.data.url.Length -eq $h4.data.urlLength -and (Get-Query $h4.data.url 'body').Length -gt 100) ("{0}" -f $h4.data.urlLength)
+}
+catch { Check 'huge inputs do not throw' $false $_.Exception.Message }
+Check 'huge inputs finish in reasonable time' ($sw.Elapsed.TotalSeconds -lt 120) ("{0:n1}s" -f $sw.Elapsed.TotalSeconds)
+# 11 linear time on long runs
+foreach ($s in @(('z' * 16000), ('z1' * 8000), ('a b ' * 4000), ('a.b' * 5000), ('x@' * 4000))) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $null = Mask $s
+    Check ("regex time on {0}...: {1:n2}s < 3s" -f $s.Substring(0, 4), $sw.Elapsed.TotalSeconds) ($sw.Elapsed.TotalSeconds -lt 3) ''
+}
+# 5 surrogates
+$emoji = [char]::ConvertFromUtf32(0x1F600)
+$sg = New-TcIssueReport -Title (('a' * 116) + $emoji + 'bbbbbb') -NoEnvironment
+$tv = [string]$sg.data.title
+$lone = [regex]::IsMatch($tv, '[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]')
+$ok = $true; try { $null = [Uri]::UnescapeDataString((Get-Query $sg.data.url 'title')); [void][System.Text.Encoding]::UTF8.GetBytes($tv) } catch { $ok = $false }
+Check 'title cut never splits a surrogate pair' ($sg.success -and -not $lone -and $tv.Length -le 120 -and ($tv -ceq (Get-Query $sg.data.url 'title'))) $tv.Length
+$lo = New-TcIssueReport -Title ('x' + [string][char]0xD83D + 'y') -Notes ('n' + [string][char]0xDE00 + 'm') -NoEnvironment
+Check 'lone surrogates in the input are replaced by U+FFFD' ($lo.success -and $lo.data.title -ceq ('x' + [string][char]0xFFFD + 'y') -and $lo.data.body -match [string][char]0xFFFD) $lo.data.title
+# 15 commit from .git files (no process)
+$tmpRoot = Join-Path $env:TEMP ('tcauto-78-{0}' -f [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Force -Path (Join-Path $tmpRoot 'src\TwinCATAutomation'), (Join-Path $tmpRoot '.git\refs\heads'), (Join-Path $tmpRoot 'other\TwinCATAutomation')
+Set-Content -LiteralPath (Join-Path $tmpRoot '.git\HEAD') -Value 'ref: refs/heads/feat' -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $tmpRoot '.git\refs\heads\feat') -Value 'abcdef0123456789abcdef0123456789abcdef01' -Encoding ASCII
+$c1 = & $mod { param($b) Get-TcModuleCommit -ModuleBase $b } (Join-Path $tmpRoot 'src\TwinCATAutomation')
+$c2 = & $mod { param($b) Get-TcModuleCommit -ModuleBase $b } (Join-Path $tmpRoot 'other\TwinCATAutomation')
+Remove-Item -LiteralPath (Join-Path $tmpRoot '.git\refs\heads\feat')
+Set-Content -LiteralPath (Join-Path $tmpRoot '.git\packed-refs') -Value @('# pack-refs', '1234567890abcdef1234567890abcdef12345678 refs/heads/feat') -Encoding ASCII
+$c3 = & $mod { param($b) Get-TcModuleCommit -ModuleBase $b } (Join-Path $tmpRoot 'src\TwinCATAutomation')
+Remove-Item -LiteralPath $tmpRoot -Recurse -Force
+Check 'commit: refs/heads file, packed-refs, and only when ModuleBase is <root>\src\TwinCATAutomation' ($c1 -eq 'abcdef0' -and $null -eq $c2 -and $c3 -eq '1234567') ("$c1 / $c2 / $c3")
 
 "failed: $fail"
 exit $fail

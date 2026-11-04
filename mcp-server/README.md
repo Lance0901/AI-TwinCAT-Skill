@@ -122,7 +122,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `ReportIssue` | `New-TcIssueReport` | `Title` | 120 s | #78: de-identified, pre-filled GitHub new-issue URL (`data.url`) + the same title / body as text (`data.body`, complete); `readOnlyHint`. Creates nothing, no GitHub / network call, no token, no IDE / ADS access, not refused by `LIFECYCLE_BLOCKED`. Masks user names in paths, machine names, AMS NetIds, IP / MAC, e-mail, project paths (-> file name), secrets (`data.masks`); `ExtraMask` hides customer / site names; URL capped at `MaxUrlLength` (7000, `[truncated]`, `data.truncated`). Only the user opens and submits the URL |
+| `ReportIssue` | `New-TcIssueReport` | `Title` | 120 s | #78: de-identified, pre-filled GitHub new-issue URL (`data.url`) + the same title / body as text (`data.body`, complete); `readOnlyHint`. Creates nothing, no GitHub / network call, no token, no IDE / ADS access, not refused by `LIFECYCLE_BLOCKED`. Masks user names in paths, machine names, URLs / hosts, AMS NetIds, IP / MAC, e-mail, object keys, project paths (-> file name; other folders masked), the open solution's name, secrets (`data.masks`); `ExtraMask` hides customer / site names; solution file name only with `IncludeSolutionName`; inputs are cut before masking; URL capped at `MaxUrlLength` (7000, `[truncated]`, `data.truncated`). Only the user opens and submits the URL |
 
 ### Project
 

@@ -146,6 +146,10 @@ actions:
         type: integer
         required: false
         description: Encoded URL limit, 2000..8000 (default 7000)
+      IncludeSolutionName:
+        type: boolean
+        required: false
+        description: Put the solution file name into the Environment section (default left out)
 
   - name: ClearLifecycleBlock
     description: Remove the LIFECYCLE_BLOCKED record of one target (#68). Call ONLY after the user saw data.lifecycleBlock and agreed

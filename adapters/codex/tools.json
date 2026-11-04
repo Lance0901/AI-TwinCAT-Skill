@@ -113,7 +113,8 @@
         "Label": { "type": "string", "description": "Issue label", "required": false, "default": "field-report" },
         "MaxUrlLength": { "type": "integer", "description": "Encoded URL limit, 2000..8000", "required": false, "default": 7000 },
         "ExtraMask": { "type": "array", "description": "Literal strings (customer/site names) to replace with <redacted>", "required": false },
-        "NoEnvironment": { "type": "boolean", "description": "Leave the Environment section out", "required": false }
+        "NoEnvironment": { "type": "boolean", "description": "Leave the Environment section out", "required": false },
+        "IncludeSolutionName": { "type": "boolean", "description": "Put the solution file name into the Environment section (default: left out)", "required": false }
       }
     },
     {
