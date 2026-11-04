@@ -623,7 +623,7 @@ function Get-TcPlatformMapHintNote {
     if ($Code -eq 'duplicate-platform') {
         return "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): the entry keyed '<duplicate #N>' reports a solution platform another entry of this configuration already has, and availablePlatforms lists that name once. Ask the user to check the duplicated solution platform in the XAE Configuration Manager."
     }
-    "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): entries keyed '<unknown #N>' have no known solution platform and availablePlatforms lists only the known ones. Save the solution in XAE (File > Save All), then run Set-TcTarget again for the full map (whether Build-TcProject saves it is not verified)."
+    "data.platformMap is not reliable ($Reason; data.platformMapReliable = false): entries keyed '<unknown #N>' have no known solution platform and availablePlatforms lists only the known ones. Save the solution, then run Set-TcTarget again for the full map: File > Save All in XAE, or Build-TcProject (it wrote the .sln back and the next Set-TcTarget was reliable again, 實測 2026-11-04 VS2022 VisualStudio.DTE.17.0 + TwinCAT 4026, registered tcauto; not tested on XAE Shell)."
 }
 
 function Test-TcCandidateProjects {

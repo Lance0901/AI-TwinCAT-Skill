@@ -427,7 +427,7 @@ try {
     # PLATFORM_NOT_FOUND while dirty: the hint says why the list is short and what to do
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName -Unsaved
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT CE7 (ARMV7)' }
-    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $r.error.hint -match 'not verified' -and $r.error.hint -notmatch 'trustworthy' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
+    Check 's1-dirty-not-found-hint' ($r.error.code -eq 'PLATFORM_NOT_FOUND' -and $r.error.hint -match 'not reliable' -and $r.error.hint -match 'File > Save All' -and $r.error.hint -match 'Build-TcProject' -and $r.error.hint -notmatch 'not verified' -and $r.error.hint -notmatch 'trustworthy' -and $r.platformMapReliable -eq $false) "$($r.error.code): $($r.error.hint)"
     Check 's1-dirty-not-found-availtext' ($r.error.message -match [regex]::Escape('(not readable: data.platformMapReliable = false, see platformMapReason)')) "$($r.error.message)"
     # PLATFORM_PROJECT_MISMATCH while dirty: the good list names '<unknown #N>', not a project platform
     $dirtyMis = @(

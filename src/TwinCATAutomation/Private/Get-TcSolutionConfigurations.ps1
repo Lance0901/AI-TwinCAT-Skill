@@ -35,12 +35,15 @@
           'unknown'       neither: SolutionPlatform = $null (callers may fall back to the
                           project platform of the contexts). SlnUnusableReason says why the
                           .sln was not used (#110; the first that applies):
-                            'unsaved'          Solution.Saved read back $false. #110 saw every
-                                               item 'unknown' right after ConsumeXml
-                                               <Disabled> (實測 2026-11-03, VS2022, TwinCAT
-                                               4026); that Saved was $false there is 推論,
-                                               待真機確認 (Solution.Saved stays True after an
-                                               unsaved CreateChild: docs/troubleshooting.md
+                            'unsaved'          Solution.Saved read back $false: after
+                                               ConsumeXml <Disabled> and before a save every
+                                               item is 'unknown' with this reason; a
+                                               Build-TcProject wrote the .sln back and the
+                                               items were 'sln' again (實測 2026-11-04,
+                                               VS2022 VisualStudio.DTE.17.0 + TwinCAT 4026,
+                                               registered tcauto, #110). Not every edit sets
+                                               it: Solution.Saved stays True after an unsaved
+                                               CreateChild (docs/troubleshooting.md
                                                "磁碟改檔的正確做法")
                             'sln-unreadable'   no .sln path, file missing / unreadable, or no
                                                SolutionConfigurationPlatforms section
