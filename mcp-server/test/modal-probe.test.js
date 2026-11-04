@@ -320,12 +320,10 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
   describe('against a WinForms window titled like XAE (host-window.ps1)', () => {
     const hosts = [];
     after(() => {
+      // ChildProcess.kill(), never process.kill(pid): a host that already exited may have had its
+      // pid reused by another process (a bridge / server of a parallel test file) by now.
       for (const h of hosts) {
-        try {
-          process.kill(h.pid);
-        } catch {
-          /* already gone */
-        }
+        if (h.exitCode === null && h.signalCode === null) h.kill();
       }
     });
 
@@ -336,6 +334,10 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
         windowsHide: true
       });
       hosts.push(child);
+      // diagnostics for a failing test (#64): the host's stderr and exit
+      child.diag = [];
+      readline.createInterface({ input: child.stderr }).on('line', (l) => child.diag.push(`stderr: ${l}`));
+      child.once('exit', (code, signal) => child.diag.push(`exited (code ${code}, signal ${signal})`));
       await new Promise((resolve, reject) => {
         const t = setTimeout(() => reject(new Error(`host-window did not print '${waitLine}'`)), 20000);
         readline.createInterface({ input: child.stdout }).on('line', (l) => {
@@ -434,7 +436,13 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
         assert.deepEqual(r.dialog.buttons.map((b) => b.id).sort(), [6, 7], 'IDYES / IDNO by control id');
         assert.equal(r.send.sent, true, JSON.stringify(r.send));
         assert.equal(r.send.controlId, 6);
-        assert.ok(await waitFor(() => hostLines.includes('result Yes'), 15000), `host answered Yes (host: ${JSON.stringify(hostLines)})`);
+        // #64: 'sent' alone was true while the dialog stayed open (BM_CLICK processed, no click);
+        // the module now checks that the dialog is gone and falls back to WM_COMMAND IDYES.
+        assert.equal(r.send.closed, true, `dialog closed after the answer: ${JSON.stringify(r.send)}`);
+        assert.ok(
+          await waitFor(() => hostLines.includes('result Yes'), 15000),
+          `host answered Yes (host: ${JSON.stringify(hostLines)}, send: ${JSON.stringify(r.send)}, host process: ${JSON.stringify(host.diag)})`
+        );
       } finally {
         host.kill();
       }

@@ -146,6 +146,36 @@ function Invoke-Native {
     }
 }
 
+# Failure details of a failed npm test run (#98 / #64), for the FAIL lines:
+#   TAP (Node 22): the YAML block (error, stack) after every 'not ok' of a test (suites that only
+#     failed because a subtest did are skipped), then every '[diag]' diagnostic line of the tests;
+#   spec (Node 24): everything from the 'failing tests:' summary on (it carries error and stack).
+# Bounded so a run with many failures stays readable.
+function Get-NpmTestFailureDetail {
+    param([string[]]$Lines)
+    $out = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Lines.Count -and $out.Count -lt 300; $i++) {
+        if ($Lines[$i] -notmatch '^(\s*)not ok ') { continue }
+        $block = [System.Collections.Generic.List[string]]::new()
+        $block.Add($Lines[$i])
+        if ($i + 1 -lt $Lines.Count -and $Lines[$i + 1].Trim() -eq '---') {
+            for ($j = $i + 1; $j -lt $Lines.Count -and $block.Count -lt 60; $j++) {
+                $block.Add($Lines[$j])
+                if ($j -gt $i + 1 -and $Lines[$j].Trim() -eq '...') { break }
+            }
+        }
+        if (@($block | Where-Object { $_ -match "failureType: 'subtestsFailed'" }).Count -gt 0) { continue }
+        $out.AddRange($block)
+    }
+    $diag = @($Lines | Where-Object { $_ -match '\[diag\]' } | Select-Object -First 200)
+    foreach ($d in $diag) { $out.Add($d) }
+    $specStart = -1
+    $mark = [string][char]0x2716 + ' failing tests:'
+    for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i].Contains($mark)) { $specStart = $i; break } }
+    if ($specStart -ge 0) { foreach ($l in @($Lines[$specStart..($Lines.Count - 1)] | Select-Object -First 200)) { $out.Add($l) } }
+    return , $out.ToArray()
+}
+
 # ---------------------------------------------------------------------------
 # parse (Windows PowerShell 5.1 parser)
 # ---------------------------------------------------------------------------
@@ -612,7 +642,11 @@ else {
                 }
                 else {
                     $failing = @($t.Output | Where-Object { $_ -match '^\s*not ok ' } | Select-Object -First 20)
-                    Add-CheckResult 'npm test' 'FAIL' "exit $($t.Code); $summary" ($failing + @('--- last 15 lines ---') + @($t.Output | Select-Object -Last 15))
+                    # #98 / #64: the TAP reporter (Node 22) puts the error of a failed test in the
+                    # YAML block after its 'not ok' line and the test's own diagnostics in '[diag]'
+                    # lines; the last 15 lines alone lost both, so a CI flake had no reason.
+                    $details = Get-NpmTestFailureDetail -Lines $t.Output
+                    Add-CheckResult 'npm test' 'FAIL' "exit $($t.Code); $summary" ($failing + @('--- failure details ---') + $details + @('--- last 15 lines ---') + @($t.Output | Select-Object -Last 15))
                 }
             }
         }

@@ -47,6 +47,6 @@ $result = [ordered]@{
     dialog = if ($null -eq $dialog) { $null } else {
         [ordered]@{ title = $dialog.Title; text = $dialog.Text; kind = $dialog.Kind; reloadTarget = $dialog.ReloadTarget; hwnd = $dialog.Hwnd; buttons = $buttons }
     }
-    send   = if ($null -eq $send) { $null } else { [ordered]@{ sent = $send.Sent; method = $send.Method; controlId = $send.ControlId; reason = $send.Reason } }
+    send   = if ($null -eq $send) { $null } else { [ordered]@{ sent = $send.Sent; method = $send.Method; controlId = $send.ControlId; reason = $send.Reason; closed = $send.Closed } }
 }
 [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress -Depth 6))

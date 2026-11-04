@@ -215,8 +215,14 @@ function Close-TcMessageBox {
         -Answer Yes|No|Ok|Cancel clicks the button with control id IDYES 6 / IDNO 7 / IDOK 1 /
         IDCANCEL 2: GetDlgItem(hwnd, id), then BM_CLICK (0x00F5) through SendMessageTimeout
         (SMTO_ABORTIFHUNG, 5000 ms; a plain SendMessage would hang when the dialog thread is
-        busy). Only when that send fails / times out on an existing button, WM_COMMAND (0x0111)
-        with wParam = MAKEWPARAM(id, BN_CLICKED 0) = id is posted to the dialog instead. A
+        busy). A processed BM_CLICK is not proof of a click: "If the button is in a dialog box
+        and the dialog box is not active, the BM_CLICK message might fail"
+        (https://learn.microsoft.com/en-us/windows/win32/controls/bm-click; #64: send returned
+        success, the dialog stayed open and its owner never got the answer). So the dialog
+        handle is polled for up to 2 s afterwards; when it still exists, or when the send itself
+        fails / times out, WM_COMMAND (0x0111) with wParam = MAKEWPARAM(id, BN_CLICKED 0) = id
+        and lParam = the button handle (exactly the notification a real click sends to the
+        dialog) is posted instead, and the handle is polled again for 2 s (Closed). A
         dialog without that control id (a WPF window such as the VS2022 message box,
         AutomationId 'Microsoft.VisualStudio.MessageBox', 2026-10-21) is answered through UI
         Automation instead: the Button with AutomationId OKButton / YesButton / NoButton /
@@ -233,8 +239,8 @@ function Close-TcMessageBox {
         IDNO); only the control id is stable.
 
         The window must belong to the IDE process (-ProcessId, default $script:TcIdeProcessId);
-        any other window is refused. This function only sends; it does not wait for the dialog
-        to close (Close-TcReloadPrompt polls).
+        any other window is refused. Apart from the 2 s checks of the control-id path above it
+        does not wait for the dialog to close (Close-TcReloadPrompt polls).
     .PARAMETER Hwnd
         Native handle of the dialog (Find-TcIdeModalDialog .Hwnd).
     .PARAMETER Answer
@@ -243,7 +249,8 @@ function Close-TcMessageBox {
         Process that must own the window. Default: $script:TcIdeProcessId.
     .OUTPUTS
         Hashtable @{ Sent = [bool]; Method = 'BM_CLICK' | 'WM_COMMAND' | 'WM_CLOSE' | 'UIA_INVOKE' | 'UIA_CLOSE' | $null;
-        ControlId = [int]; Reason = [string] }.
+        ControlId = [int]; Reason = [string]; Closed = [bool] or $null }. Closed (control-id path
+        only, else $null): the dialog handle was gone within the 2 s check after the last send.
     #>
     [CmdletBinding()]
     param(
@@ -258,7 +265,7 @@ function Close-TcMessageBox {
         [int]$ProcessId = 0
     )
 
-    $result = @{ Sent = $false; Method = $null; ControlId = 0; Reason = $null }
+    $result = @{ Sent = $false; Method = $null; ControlId = 0; Reason = $null; Closed = $null }
 
     if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) {
         try { $ProcessId = [int]$script:TcIdeProcessId } catch { $ProcessId = 0 }
@@ -322,20 +329,43 @@ function Close-TcMessageBox {
     $SMTO_ABORTIFHUNG = [uint32]0x0002
     $smResult = [IntPtr]::Zero
     $ret = $native::SendMessageTimeout($hBtn, $BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero, $SMTO_ABORTIFHUNG, [uint32]5000, [ref]$smResult)
+    $why = $null
     if ($ret -ne [IntPtr]::Zero) {
-        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Reason = "BM_CLICK sent to control $id ($Answer)"
-        Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
-        return $result
+        # Processed is not clicked (BM_CLICK docs, #64): the answer counts once the dialog is gone.
+        if (Wait-TcDialogGone -Native $native -Hwnd $Hwnd -TimeoutMs 2000) {
+            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true; $result.Reason = "BM_CLICK sent to control $id ($Answer)"
+            Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+            return $result
+        }
+        $why = "BM_CLICK to control $id was processed but the dialog was still open 2000 ms later (BM_CLICK can fail on a dialog that is not active)"
     }
-    # Timed out / hung: the click may still be processed; fall back to the posted command.
-    Write-Verbose "Close-TcMessageBox: SendMessageTimeout BM_CLICK to control $id failed or timed out; posting WM_COMMAND."
+    else {
+        # Timed out / hung: the click may still be processed; fall back to the posted command.
+        $why = "SendMessageTimeout BM_CLICK to control $id failed or timed out"
+    }
+    Write-Verbose "Close-TcMessageBox: $why; posting WM_COMMAND."
 
     $WM_COMMAND = [uint32]0x0111
-    # MAKEWPARAM(id, BN_CLICKED = 0) = id; lParam = the button handle.
+    # MAKEWPARAM(id, BN_CLICKED = 0) = id; lParam = the button handle. Answering a dialog that is
+    # already closing is harmless: the same id ends the same dialog.
     if ($native::PostMessage($Hwnd, $WM_COMMAND, [IntPtr]$id, $hBtn)) {
-        $result.Sent = $true; $result.Method = 'WM_COMMAND'; $result.Reason = "WM_COMMAND $id ($Answer) posted"
+        $result.Sent = $true; $result.Method = 'WM_COMMAND'
+        $result.Closed = Wait-TcDialogGone -Native $native -Hwnd $Hwnd -TimeoutMs 2000
+        $result.Reason = "$why; WM_COMMAND $id ($Answer) posted"
     }
-    else { $result.Reason = "PostMessage WM_COMMAND $id failed" }
-    Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+    else { $result.Reason = "$why; PostMessage WM_COMMAND $id failed" }
+    Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId, closed $($result.Closed))."
     return $result
+}
+
+# true once the dialog handle no longer exists (polled every 50 ms up to -TimeoutMs).
+function Wait-TcDialogGone {
+    [CmdletBinding()]
+    param($Native, [IntPtr]$Hwnd, [int]$TimeoutMs = 2000)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($Native::IsWindow($Hwnd)) {
+        if ($sw.ElapsedMilliseconds -ge $TimeoutMs) { return $false }
+        Start-Sleep -Milliseconds 50
+    }
+    return $true
 }
