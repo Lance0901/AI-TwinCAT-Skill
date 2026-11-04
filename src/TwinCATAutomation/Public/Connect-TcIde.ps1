@@ -650,6 +650,7 @@ function Connect-TcIde {
     if ($sysManagerAvailable) {
         try {
             $amsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $script:TcSysManager.GetTargetNetId() }
+            Save-TcIdeTargetNetId $amsNetId
             $data | Add-Member -NotePropertyName 'amsNetId' -NotePropertyValue $amsNetId
         }
         catch { }

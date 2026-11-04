@@ -165,7 +165,9 @@ function Set-TcLifecycleBlock {
         [string]$Message,
         [string]$RequestedState,
         [string]$ReachedState,
-        [string]$Step
+        [string]$Step,
+        # #114 N5: why reachedState is empty: 'unreachable' (last read failed), 'runtime-gone'
+        [string]$ReadbackNote
     )
     $key = ConvertTo-TcLifecycleKey $AmsNetId
     $entry = [PSCustomObject]@{
@@ -175,6 +177,7 @@ function Set-TcLifecycleBlock {
         message        = $Message
         requestedState = $RequestedState
         reachedState   = $ReachedState
+        readbackNote   = $(if ([string]::IsNullOrWhiteSpace($ReadbackNote)) { $null } else { $ReadbackNote })
         step           = $Step
         time           = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     }
@@ -292,7 +295,7 @@ function Resolve-TcLifecycleNetId {
     try {
         $sm = $SysManager
         if ($null -eq $sm) { $sm = Get-TcSysManager }
-        if ($null -ne $sm) { $id = [string](Invoke-TcComRetry -OperationName 'GetTargetNetId' -MaxRetries 2 -ScriptBlock { $sm.GetTargetNetId() }) }
+        if ($null -ne $sm) { $id = [string](Invoke-TcComRetry -OperationName 'GetTargetNetId' -MaxRetries 2 -ScriptBlock { $sm.GetTargetNetId() }); Save-TcIdeTargetNetId $id }
     }
     catch { $id = $null }
     if ([string]::IsNullOrWhiteSpace($id)) { $id = [string]$script:TcAdsAmsNetId }
@@ -325,8 +328,8 @@ function Format-TcLifecycleBlockStates {
     param($Block)
     $req = if ([string]::IsNullOrWhiteSpace([string]$Block.requestedState)) { 'unknown' } else { "'$($Block.requestedState)'" }
     $rb = if (-not [string]::IsNullOrWhiteSpace([string]$Block.reachedState)) { "'$($Block.reachedState)'" }
-          elseif ([string]$Block.errorCode -eq 'RUNTIME_CRASHED') { 'nothing (runtime gone)' }
-          elseif ([string]$Block.step -match 'unreachable') { 'nothing (port 10000 unreachable)' }   # #114
+          elseif ([string]$Block.readbackNote -eq 'runtime-gone' -or [string]$Block.errorCode -eq 'RUNTIME_CRASHED') { 'nothing (runtime gone)' }
+          elseif ([string]$Block.readbackNote -eq 'unreachable') { 'nothing (port 10000 unreachable)' }   # #114 N5
           else { 'nothing' }
     "requested $req; system state read back afterwards: $rb"
 }
@@ -379,18 +382,23 @@ function Get-TcLifecycleBlockAdvice {
     @{ Mode = $(if ($replace) { 'replace' } else { 'attach' }); Block = $b }
 }
 
-# #114 minor 5: target AmsNetId of the connected IDE for the hint-only path, or $null. Uses only the
-# ITcSysManager that an earlier command already cached ($script:TcSysManager; no project scan, no
-# retries: this path must stay fast) and one GetTargetNetId call. Never throws.
+# #114 minor 5 / S5: target AmsNetId of the connected IDE for the hint-only path, or $null.
+# It makes NO COM call: a synchronous GetTargetNetId on a hung XAE has no deadline
+# (CODING_STANDARDS 1), and a hint must never block. It returns the NetId that an earlier command
+# read from the IDE (Save-TcIdeTargetNetId: Resolve-TcLifecycleNetId, Connect-TcIde, Connect-TcAds,
+# Get-TcSystemState, Set-TcSystemState, Enable-TcConfig, Set-TcTarget), only while the IDE is still
+# connected with the same cached ITcSysManager. Never throws.
+$script:TcIdeTargetNetIdCache = $null
+function Save-TcIdeTargetNetId {
+    param([string]$AmsNetId)
+    if ([string]::IsNullOrWhiteSpace($AmsNetId)) { return }
+    $script:TcIdeTargetNetIdCache = @{ NetId = $AmsNetId.Trim(); SysManager = $script:TcSysManager }
+}
 function Resolve-TcLifecycleIdeNetId {
-    $id = $null
-    try {
-        $sm = $script:TcSysManager
-        if ($script:TcIdeConnected -and $null -ne $sm) { $id = [string]$sm.GetTargetNetId() }
-    }
-    catch { $id = $null }
-    if ([string]::IsNullOrWhiteSpace($id)) { return $null }
-    $id.Trim()
+    $c = $script:TcIdeTargetNetIdCache
+    if (-not $script:TcIdeConnected -or $null -eq $c -or $null -eq $script:TcSysManager) { return $null }
+    if (-not [object]::ReferenceEquals($c.SysManager, $script:TcSysManager)) { return $null }
+    [string]$c.NetId
 }
 
 function Add-TcLifecycleBlockResult {
@@ -400,11 +408,11 @@ function Add-TcLifecycleBlockResult {
         -Result with data.lifecycleBlock and the hint prefixed by the stop instruction
         ($script:TcLifecycleStopText). Never throws.
     #>
-    param([object]$Result, [Parameter(Mandatory)][string]$Command, [string]$AmsNetId, [string]$RequestedState, [string]$ReachedState, [string]$Step)
+    param([object]$Result, [Parameter(Mandatory)][string]$Command, [string]$AmsNetId, [string]$RequestedState, [string]$ReachedState, [string]$Step, [string]$ReadbackNote)
     if ($null -eq $Result) { return $Result }
     $code = $null; $msg = $null
     if ($null -ne $Result.error) { $code = [string]$Result.error.code; $msg = [string]$Result.error.message }
-    $b = Set-TcLifecycleBlock -AmsNetId $AmsNetId -Command $Command -ErrorCode $code -Message $msg -RequestedState $RequestedState -ReachedState $ReachedState -Step $Step
+    $b = Set-TcLifecycleBlock -AmsNetId $AmsNetId -Command $Command -ErrorCode $code -Message $msg -RequestedState $RequestedState -ReachedState $ReachedState -Step $Step -ReadbackNote $ReadbackNote
     $data = $null
     $dp = $Result.PSObject.Properties['data']
     if ($null -ne $dp) { $data = $dp.Value }

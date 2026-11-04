@@ -22,14 +22,23 @@ function Wait-TcAdsState {
         waited the full 300 s for SYSTEM_STATE_TIMEOUT. A remote target, the local XAR, or a
         UmRT that was not running at the start keep the old behaviour (wait until -TimeoutSec).
 
-        Check at the deadline (#114, CrashDetectedBy = 'deadline'): the 10 s streak above counts
-        from the first 0x7 PROBE, not from the moment the process vanished, and restarts on any
-        other result, so a crash late in the wait could reach -TimeoutSec with the streak still
-        short and was reported as a timeout (measured 2026-11-04, 4026 VS2022, local UmRT: process
-        gone 46 s into a 60 s wait, 0x7 until the deadline, SYSTEM_STATE_TIMEOUT). When the wait
-        times out and the LAST probe answered 0x7, the pids seen at the start are gone AND
-        Get-TcLocalUmRtProcess finds no TcSystemServiceUm process of that runtime at all (so not a
-        restart under a new pid), RuntimeCrashed is set as well.
+        Check at the deadline (#114, CrashDetectedBy = 'deadline'). Measured 2026-11-04 (4026
+        VS2022, local UmRT, TcSystemServiceUm.exe 3.1.0.2649): the process vanished 46 s into a
+        60 s wait, the last error was ADS 0x7, and the result was SYSTEM_STATE_TIMEOUT. WHY the
+        early check above did not fire is NOT confirmed (no per-probe record of that run). Possible
+        causes in this code: (a) the streak counts from the first 0x7 PROBE and restarts on any
+        other result, so it can still be shorter than -CrashUnreachableSec at the deadline;
+        (b) a failure that ConvertTo-TcAdsErrorCode does not map to ADS_TARGET_NOT_FOUND never
+        starts the streak; (c) Test-TcProcessAlive still finds a start pid. So when the wait
+        times out with the LAST probe failed (any error), RuntimeCrashed is set when
+        Get-TcLocalUmRtProcess can read the process list (ProcessListReadable) and finds no
+        TcSystemServiceUm process of that runtime at all (not a restart under a new pid); the
+        start-pid check (c) is not required there, its result is reported in DeadlineCheck.
+        ProbeErrors (#114 S1, diagnosis): one entry per failed probe, the last 200 (older ones
+        counted in ProbeErrorsDropped): ms (since the wait started), code (mapped module code or
+        $null = not mapped), adsCode / hresult (numeric codes of the exception chain), pidAlive
+        (any start pid alive per Test-TcProcessAlive; $null without crash detection), message.
+        AnyProbeFailed: at least one probe failed during the wait.
         StatesSeen: every state that ReadState() returned, in order, consecutive duplicates
         dropped; failed probes are not states (Set-TcSystemState data.leftOriginal).
     .PARAMETER AmsNetId
@@ -51,7 +60,9 @@ function Wait-TcAdsState {
         keeps it); ElapsedMs = [int]; LastError = [string] ($null when the last probe succeeded);
         RuntimeCrashed = [bool]; CrashDetectedBy = 'streak' | 'deadline' | $null;
         RuntimeName = [string]; ServicePidAtStart = [int[]]; UnreachableMs = [int];
-        StatesSeen = [string[]] }
+        StatesSeen = [string[]]; AnyProbeFailed = [bool]; ProbeErrors = [object[]];
+        ProbeErrorsDropped = [int]; DeadlineCheck = $null | @{ startPidsAlive; pidsNow;
+        processListReadable; lastProbeCode } }
     #>
     [CmdletBinding()]
     param(
@@ -89,20 +100,30 @@ function Wait-TcAdsState {
     $unreachSince = $null   # stopwatch seconds of the first ADS 0x7 of the current streak
     $umrt = $null
     $seen = [System.Collections.Generic.List[string]]::new()
+    $probeErrors = [System.Collections.Generic.List[object]]::new()
+    $probeCap = 200
+    $probeDropped = 0
+    $anyFailed = $false
+    $lastCode = $null
+    $deadlineCheck = $null
 
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
         return @{
-            Reached           = $false
-            State             = $null
-            ElapsedMs         = 0
-            LastError         = 'TwinCAT.Ads.dll not found.'
-            RuntimeCrashed    = $false
-            CrashDetectedBy   = $null
-            RuntimeName       = $null
-            ServicePidAtStart = [int[]]@()
-            UnreachableMs     = 0
-            StatesSeen        = [string[]]@()
+            Reached            = $false
+            State              = $null
+            ElapsedMs          = 0
+            LastError          = 'TwinCAT.Ads.dll not found.'
+            RuntimeCrashed     = $false
+            CrashDetectedBy    = $null
+            RuntimeName        = $null
+            ServicePidAtStart  = [int[]]@()
+            UnreachableMs      = 0
+            StatesSeen         = [string[]]@()
+            AnyProbeFailed     = $false
+            ProbeErrors        = [object[]]@()
+            ProbeErrorsDropped = 0
+            DeadlineCheck      = $null
         }
     }
 
@@ -130,20 +151,37 @@ function Wait-TcAdsState {
                 }
             }
             catch {
-                $lastError = $_.Exception.Message
+                $err = $_
+                $lastError = $err.Exception.Message
+                $anyFailed = $true
                 if ($null -ne $client) {
                     try { $client.Dispose() } catch { }
                     $client = $null
                 }
+                $mapped = ConvertTo-TcAdsErrorCode -InputObject $err
+                $lastCode = if ($null -ne $mapped) { [string]$mapped.Code } else { $null }
+                # #114 S1: bounded probe log (diagnosis of a missed crash verdict)
+                $adsCode = $null; $hres = $null
+                $ex = $err.Exception
+                while ($null -ne $ex) {
+                    $ep = $ex.PSObject.Properties['ErrorCode']
+                    if ($null -eq $adsCode -and $null -ne $ep -and $null -ne $ep.Value) { try { $adsCode = '0x{0:X}' -f ([int64]$ep.Value -band 0xFFFFFFFF) } catch { } }
+                    $ex = $ex.InnerException
+                }
+                try { $hres = '0x{0:X8}' -f ([int64]$err.Exception.HResult -band 0xFFFFFFFF) } catch { }
+                $pidAlive = $null
+                if ($null -ne $umrt) { $pidAlive = (@($umrt.Pids | Where-Object { Test-TcProcessAlive -Id $_ }).Count -gt 0) }
+                $msgShort = [string]$lastError
+                if ($msgShort.Length -gt 160) { $msgShort = $msgShort.Substring(0, 160) }
+                if ($probeErrors.Count -ge $probeCap) { $probeErrors.RemoveAt(0); $probeDropped++ }
+                $probeErrors.Add([PSCustomObject]@{ ms = [int]$stopwatch.ElapsedMilliseconds; code = $lastCode; adsCode = $adsCode; hresult = $hres; pidAlive = $pidAlive; message = $msgShort })
                 if ($null -ne $umrt) {
-                    $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
                     if ($null -ne $mapped -and $mapped.Code -eq 'ADS_TARGET_NOT_FOUND') {
                         if ($null -eq $unreachSince) { $unreachSince = $stopwatch.Elapsed.TotalSeconds }
                     }
                     else { $unreachSince = $null }
                     if ($null -ne $unreachSince -and ($stopwatch.Elapsed.TotalSeconds - $unreachSince) -ge $CrashUnreachableSec) {
-                        $alive = @($umrt.Pids | Where-Object { Test-TcProcessAlive -Id $_ })
-                        if ($alive.Count -eq 0) { $crashed = $true; $crashBy = 'streak'; break }
+                        if (-not $pidAlive) { $crashed = $true; $crashBy = 'streak'; break }
                     }
                 }
             }
@@ -151,14 +189,21 @@ function Wait-TcAdsState {
             if ($stopwatch.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
             Start-Sleep -Milliseconds $IntervalMs
         }
-        # #114: timed out while the last probe answered 0x7 (streak shorter than -CrashUnreachableSec):
-        # the runtime counts as gone when the start pids no longer exist and no process of that
-        # runtime runs now (a restart under a new pid is not a crash). See .DESCRIPTION.
-        if (-not $reached -and -not $crashed -and $null -ne $umrt -and $null -ne $unreachSince) {
+        # #114: timed out with the last probe failed (any error, causes (a)-(c) in .DESCRIPTION):
+        # the runtime counts as gone when the process list is readable and no TcSystemServiceUm of
+        # that runtime runs now (a restart under a new pid is not a crash).
+        if (-not $reached -and -not $crashed -and $null -ne $umrt -and $null -ne $lastError) {
             $alive = @($umrt.Pids | Where-Object { Test-TcProcessAlive -Id $_ })
-            $now = $null
-            if ($alive.Count -eq 0) { $now = Get-TcLocalUmRtProcess -AmsNetId $AmsNetId }
-            if ($alive.Count -eq 0 -and $null -ne $now -and @($now.Pids).Count -eq 0) { $crashed = $true; $crashBy = 'deadline' }
+            $now = Get-TcLocalUmRtProcess -AmsNetId $AmsNetId
+            # S7: an unreadable process list (empty Pids) is no evidence that the runtime is gone
+            $readable = ($null -ne $now) -and -not ($null -ne $now.PSObject.Properties['ProcessListReadable'] -and $now.ProcessListReadable -eq $false)
+            $deadlineCheck = [PSCustomObject]@{
+                startPidsAlive      = [int[]]$alive
+                pidsNow             = $(if ($null -ne $now) { [int[]]@($now.Pids) } else { $null })
+                processListReadable = $readable
+                lastProbeCode       = $lastCode
+            }
+            if ($readable -and @($now.Pids).Count -eq 0) { $crashed = $true; $crashBy = 'deadline' }
         }
     }
     finally {
@@ -182,5 +227,9 @@ function Wait-TcAdsState {
         RuntimeName       = $(if ($null -ne $umrt) { [string]$umrt.RuntimeName } else { $null })
         ServicePidAtStart = $(if ($null -ne $umrt) { [int[]]@($umrt.Pids) } else { [int[]]@() })
         UnreachableMs     = $unreachMs
+        AnyProbeFailed    = $anyFailed
+        ProbeErrors       = [object[]]$probeErrors.ToArray()
+        ProbeErrorsDropped = $probeDropped
+        DeadlineCheck     = $deadlineCheck
     }
 }

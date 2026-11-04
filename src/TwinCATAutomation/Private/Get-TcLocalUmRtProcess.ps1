@@ -21,8 +21,9 @@ function Get-TcLocalUmRtProcess {
     .PARAMETER AmsNetId
         Target AMS Net ID.
     .OUTPUTS
-        $null (not a local UmRT) or [PSCustomObject]@{ RuntimeName; Pids = [int[]]; PidSource }
-        (Pids empty when the UmRT is not running).
+        $null (not a local UmRT) or [PSCustomObject]@{ RuntimeName; Pids = [int[]]; PidSource;
+        ProcessListReadable } (Pids empty when the UmRT is not running). ProcessListReadable = $false
+        (#114 S7): the process list could not be read, so empty Pids does NOT mean "not running".
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$AmsNetId)
@@ -34,6 +35,7 @@ function Get-TcLocalUmRtProcess {
 
     $pids = @()
     $source = 'commandline'
+    $readable = $true
     try {
         $procs = @(Get-CimInstance Win32_Process -Filter "Name='TcSystemServiceUm.exe'" -ErrorAction Stop)
         $pids = @($procs | Where-Object { [string]$_.CommandLine -match [regex]::Escape($name) } | ForEach-Object { [int]$_.ProcessId })
@@ -45,8 +47,9 @@ function Get-TcLocalUmRtProcess {
     catch {
         Write-Verbose "Get-TcLocalUmRtProcess: process list not readable ($($_.Exception.Message))"
         $pids = @()
+        $readable = $false
     }
-    [PSCustomObject]@{ RuntimeName = $name; Pids = [int[]]$pids; PidSource = $source }
+    [PSCustomObject]@{ RuntimeName = $name; Pids = [int[]]$pids; PidSource = $source; ProcessListReadable = $readable }
 }
 
 function Test-TcProcessAlive {

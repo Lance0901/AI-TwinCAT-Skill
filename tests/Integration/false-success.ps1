@@ -109,7 +109,7 @@ try {
         $d = Disconnect-TcAds
 
         $s = Set-TcSystemState -State Run -AmsNetId $NetId
-        Log 'run-to-run' $s 'success, leftOriginal, originalState Run, finalState Run, latencyMs' ($s.success -and $s.data.leftOriginal -and $s.data.originalState -eq 'Run' -and $s.data.finalState -eq 'Run' -and $s.data.latencyMs -gt 0)
+        Log 'run-to-run' $s 'success, restart observed (leftOriginal or unreachableSeen, #114), originalState Run, finalState Run, latencyMs' ($s.success -and ($s.data.leftOriginal -or $s.data.unreachableSeen) -and $s.data.originalState -eq 'Run' -and $s.data.finalState -eq 'Run' -and $s.data.latencyMs -gt 0)
         Ensure-UmRt
         # ---------------- 4. simulated fall-back: Run reached, then Config (#32 item 1) ----------------
         $s = Set-TcSystemState -State Config -AmsNetId $NetId

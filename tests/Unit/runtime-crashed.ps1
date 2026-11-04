@@ -39,6 +39,8 @@ namespace TwinCAT.Ads {
             string m = Mode;
             if (m == "crashAfterWrite") { m = Written ? "down7" : "run"; }
             if (m == "crashLate") { m = (Written && (System.DateTime.Now - WrittenAt).TotalSeconds >= DownAfterSec) ? "down7" : "run"; }
+            if (m == "crashLateOther") { m = (Written && (System.DateTime.Now - WrittenAt).TotalSeconds >= DownAfterSec) ? "other" : "run"; }
+            if (m == "other") { throw new System.InvalidOperationException("Native call failed in the mock (no ADS code)."); }
             if (m == "switch") { m = Written ? "config" : "run"; }
             if (m == "blip") { if (Written && BlipReads > 0) { BlipReads--; m = "down7"; } else { m = "run"; } }
             if (m == "flap") { m = (Reads % 3 == 0) ? "config" : "down7"; }
@@ -168,8 +170,29 @@ $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 4 
 $sw.Stop()
 Check '#114 crash late (0x7 streak < 10 s at the deadline, no UmRT process left) -> RUNTIME_CRASHED' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and $sw.Elapsed.TotalSeconds -lt 15) "code=$($r.error.code) by=$($r.data.crashDetectedBy) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
 Check '#114 crash late: finalState / currentState Unreachable, lastState Run, leftOriginal false' ($r.data.finalState -eq 'Unreachable' -and $r.data.currentState -eq 'Unreachable' -and $r.data.lastState -eq 'Run' -and $r.data.leftOriginal -eq $false -and $r.data.lastError -match '0x7') ($r.data | ConvertTo-Json -Compress -Depth 3)
-Check '#114 crash late: block reachedState empty, crash hint, message names the deadline' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.error.hint -match 'TcSystemServiceUm' -and $r.error.message -match 'Detected at -TimeoutSec') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress) msg=$($r.error.message)"
+Check '#114 crash late: block reachedState empty, crash hint, message names the deadline' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.error.hint -match 'TcSystemServiceUm' -and $r.error.message -match 'at -TimeoutSec' -and $r.data.lifecycleBlock.readbackNote -eq 'runtime-gone') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress) msg=$($r.error.message)"
+Check '#114 S1 crash late: probeErrors (0x7 mapped, pidAlive false), deadlineCheck, unreachableSeen (S2)' (@($r.data.probeErrors).Count -gt 0 -and @($r.data.probeErrors)[-1].code -eq 'ADS_TARGET_NOT_FOUND' -and @($r.data.probeErrors)[-1].pidAlive -eq $false -and $r.data.deadlineCheck.processListReadable -eq $true -and @($r.data.deadlineCheck.pidsNow).Count -eq 0 -and $r.data.unreachableSeen -eq $true) ($r.data | Select-Object probeErrors, deadlineCheck, unreachableSeen | ConvertTo-Json -Compress -Depth 4)
 $null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+
+# S1 (b): the failure after the crash is not mapped to ADS_TARGET_NOT_FOUND (0x7 streak never starts)
+Set-Ads 'crashLateOther'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
+$r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
+Check '#114 S1(b) unmapped error after the crash, no UmRT process left -> RUNTIME_CRASHED (deadline), probe code null' ($r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and $null -eq @($r.data.probeErrors)[-1].code -and $r.data.unreachableMs -eq 0 -and $r.data.deadlineCheck.lastProbeCode -eq $null) "code=$($r.error.code) $($r.data | Select-Object probeErrors, deadlineCheck | ConvertTo-Json -Compress -Depth 4)"
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+
+# S1 (c): Test-TcProcessAlive still reports the start pid, but the process list has no process of the runtime
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @(4242)
+$r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
+Check '#114 S1(c) start pid still "alive", process list empty -> RUNTIME_CRASHED (deadline), startPidsAlive / pidAlive recorded' ($r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and (@($r.data.deadlineCheck.startPidsAlive) -join ',') -eq '4242' -and @($r.data.probeErrors)[-1].pidAlive -eq $true) "code=$($r.error.code) $($r.data | Select-Object probeErrors, deadlineCheck | ConvertTo-Json -Compress -Depth 4)"
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+
+# S7: the process list cannot be read at the deadline (empty Pids, ProcessListReadable false) -> no crash verdict
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtCalls = 0; $global:AlivePids = @()
+$global:UmRtLater = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int[]]@(); PidSource = 'commandline'; ProcessListReadable = $false }
+$r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
+Check '#114 S7 process list unreadable at the deadline -> SYSTEM_STATE_TIMEOUT, deadlineCheck.processListReadable false' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.deadlineCheck.processListReadable -eq $false -and $r.data.finalState -eq 'Unreachable') "code=$($r.error.code) $($r.data.deadlineCheck | ConvertTo-Json -Compress)"
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+$global:UmRtLater = $null
 
 # same, but a TcSystemServiceUm of this runtime runs again under a new pid (restart, not a crash)
 # -> SYSTEM_STATE_TIMEOUT, but still no 'Run' for a target that did not answer
@@ -178,7 +201,7 @@ $global:UmRtLater = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
 Check '#114 0x7 at the deadline, UmRT runs under a new pid -> SYSTEM_STATE_TIMEOUT (not crashed)' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT') "code=$($r.error.code) msg=$($r.error.message)"
 Check '#114 timeout with a failed last read: finalState / currentState Unreachable, lastState Run, leftOriginal false' ($r.data.finalState -eq 'Unreachable' -and $r.data.currentState -eq 'Unreachable' -and $r.data.lastState -eq 'Run' -and $r.data.leftOriginal -eq $false -and $r.data.unreachableMs -gt 0 -and $r.error.message -match 'unreachable \(last state read: Run\)') ($r.data | ConvertTo-Json -Compress -Depth 3)
-Check '#114 timeout block: reachedState empty, step says unreachable (not Run)' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.step -match 'unreachable' -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
+Check '#114 timeout block: reachedState empty, step says unreachable (not Run)' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.step -match 'unreachable' -and $r.data.lifecycleBlock.readbackNote -eq 'unreachable' -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and @($r.data.probeErrors).Count -gt 0) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
 $tb = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 1
 Check '#114 LIFECYCLE_BLOCKED message: nothing read back (unreachable), requestSent false' ($tb.error.code -eq 'LIFECYCLE_BLOCKED' -and $tb.error.message -match 'nothing \(port 10000 unreachable\)' -and $tb.error.message -notmatch "read back 'Run'" -and $tb.data.requestSent -eq $false) "$($tb.error.message)"
 $null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
@@ -187,7 +210,7 @@ $global:UmRtLater = $null
 # leftOriginal (#114 point 3): only a read that returned another state counts
 Set-Ads 'run'; $global:UmRt = $null
 $r = Set-TcSystemState -State Config -AmsNetId '5.6.7.8.1.1' -TimeoutSec 2 -SettleSec 0
-Check '#114 original Run, target Config, every read Run -> timeout, leftOriginal false, finalState Run' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.leftOriginal -eq $false -and $r.data.finalState -eq 'Run' -and [string]$r.data.lifecycleBlock.reachedState -eq 'Run') ($r.data | ConvertTo-Json -Compress -Depth 3)
+Check '#114 original Run, target Config, every read Run -> timeout, leftOriginal false, finalState Run' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.leftOriginal -eq $false -and $r.data.unreachableSeen -eq $false -and $r.data.finalState -eq 'Run' -and [string]$r.data.lifecycleBlock.reachedState -eq 'Run') ($r.data | ConvertTo-Json -Compress -Depth 3)
 $null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next case'
 Set-Ads 'switch'; $global:UmRt = $null
 $r = Set-TcSystemState -State Config -AmsNetId '5.6.7.8.1.1' -TimeoutSec 5 -SettleSec 0
