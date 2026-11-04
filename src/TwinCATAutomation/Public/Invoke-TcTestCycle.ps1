@@ -20,6 +20,16 @@
         data.runtimeCrash.
         Test cases that wait with the deprecated WaitMs: each result has data.warning (as
         Invoke-TcTest) and the report lists them in data.warnings ("<name>: <warning>").
+        #68: the IDE is NOT reconnected after Activate (Connect-TcIde after Activate is a forbidden
+        fallback, adapters/claude-code/SKILL.md): Enable-TcConfig -Force already refreshed the
+        ITcSysManager reference and read back system Run and every PLC port (step verify), and the
+        AmsNetId is the one cached before Activate (else data.amsNetId of Enable-TcConfig).
+        While a lifecycle block exists for the target nothing runs (no Build either):
+        LIFECYCLE_BLOCKED (data.lifecycleBlock); an ACTIVATION_FAILED whose Enable-TcConfig
+        recorded a block carries it in data.lifecycleBlock.
+        A failing PLC Run (step Run) or PLC Stop (step Stop) ends the cycle with success = false and
+        that step's error code / hint / data.lifecycleBlock; the steps that did not run are listed
+        in data.steps with success = $false and status 'NOT RUN'.
     #>
     [CmdletBinding()]
     param(
@@ -41,6 +51,11 @@
     if ($null -ne $script:TcSysManager) {
         try { $cachedAmsNetId = $script:TcSysManager.GetTargetNetId() } catch { }
     }
+
+    # #68: an unresolved failed postcondition on this target: run nothing (not even the build)
+    $blockId = if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) { [string]$cachedAmsNetId } else { [string]$script:TcAdsAmsNetId }
+    $blocked = Test-TcLifecycleBlock -AmsNetId $blockId -Command 'Invoke-TcTestCycle'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'steps' -NotePropertyValue @() -Force; return $blocked }
 
     # Step 1: Build
     if (-not $SkipBuild) {
@@ -78,31 +93,23 @@
         if ($aCode -eq 'RUNTIME_CRASHED' -and $null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['runtimeCrash']) {
             $aData | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $activateResult.data.runtimeCrash
         }
+        if ($null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['lifecycleBlock']) {
+            $aData | Add-Member -NotePropertyName 'lifecycleBlock' -NotePropertyValue $activateResult.data.lifecycleBlock
+        }
         $aParams = @{
             Success      = $false
             ErrorMessage = "Activation failed ($aCode): $($activateResult.error.message)"
-            ErrorCode    = $(if ($aCode -eq 'RUNTIME_CRASHED') { 'RUNTIME_CRASHED' } else { 'ACTIVATION_FAILED' })
+            ErrorCode    = $(if ($aCode -eq 'RUNTIME_CRASHED' -or $aCode -eq 'LIFECYCLE_BLOCKED') { $aCode } else { 'ACTIVATION_FAILED' })
             Data         = $aData
         }
         if ($null -ne $ahp -and -not [string]::IsNullOrWhiteSpace([string]$ahp.Value)) { $aParams['Hint'] = [string]$ahp.Value }
         return New-TcResult @aParams
     }
 
-    # Step 2.5: Reconnect IDE (Activate restarts TwinCAT, COM references become stale)
-    # Poll port 10000 until TwinCAT is back in Run instead of a blind sleep.
-    if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) {
-        $waitSys = Wait-TcAdsState -AmsNetId $cachedAmsNetId -Port 10000 -TargetState Run -TimeoutSec 60
-        Write-Verbose "TwinCAT system Run wait: reached=$($waitSys.Reached) state=$($waitSys.State) elapsed=$($waitSys.ElapsedMs)ms"
-    }
-    else {
-        Start-Sleep -Seconds 3  # No AmsNetId known: fall back to settle delay
-    }
-    $reconnResult = Connect-TcIde
-    if (-not $reconnResult.success) {
-        Write-Verbose "IDE reconnect warning: $($reconnResult.error.message)"
-    }
-    if ([string]::IsNullOrWhiteSpace($cachedAmsNetId) -and $reconnResult.success -and $reconnResult.data.PSObject.Properties['amsNetId']) {
-        $cachedAmsNetId = $reconnResult.data.amsNetId
+    # No IDE reconnect after Activate (#68): Enable-TcConfig -Force refreshed the ITcSysManager
+    # reference itself and its verify step read back system Run, so there is nothing to wait for.
+    if ([string]::IsNullOrWhiteSpace($cachedAmsNetId) -and $null -ne $activateResult.data -and $null -ne $activateResult.data.PSObject.Properties['amsNetId']) {
+        $cachedAmsNetId = [string]$activateResult.data.amsNetId
     }
 
     # Step 3: Login + Download (Login(1) under SilentMode, auto-downloads program)
@@ -152,10 +159,12 @@
     $steps += [PSCustomObject]@{ step = 'Run'; success = $runResult.success }
     $runNetId = if (-not [string]::IsNullOrWhiteSpace($cachedAmsNetId)) { $cachedAmsNetId } else { $script:TcAdsAmsNetId }
     if (-not $runResult.success) {
-        # Run was refused (e.g. PLC_NOT_LOADED / PLC_RUN_TIMEOUT): do not wait another 30 s for it
-        Write-Verbose "PLC Run failed ($($runResult.error.code)): $($runResult.error.message) - skipping Run wait"
+        # #68: fail closed - no tests, no Stop; the step's code / hint / lifecycleBlock are kept
+        $steps += [PSCustomObject]@{ step = 'Tests'; success = $false; status = 'NOT RUN' }
+        if (-not $KeepRunning) { $steps += [PSCustomObject]@{ step = 'Stop'; success = $false; status = 'NOT RUN' } }
+        return (New-TcCycleStepFailure -StepResult $runResult -Prefix 'PLC Run failed' -DefaultCode 'STATE_SET_FAILED' -Steps $steps)
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($runNetId)) {
+    if (-not [string]::IsNullOrWhiteSpace($runNetId)) {
         $waitRun = Wait-TcAdsState -AmsNetId $runNetId -Port 851 -TargetState Run -TimeoutSec 30
         Write-Verbose "PLC Run wait: reached=$($waitRun.Reached) state=$($waitRun.State) elapsed=$($waitRun.ElapsedMs)ms"
     }
@@ -190,10 +199,11 @@
     $warnings = @($testResults | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['warning'] -and -not [string]::IsNullOrWhiteSpace([string]$_.warning) } |
         ForEach-Object { "$($_.name): $($_.warning)" })
 
-    # Step 8: Stop PLC (unless KeepRunning)
+    # Step 8: Stop PLC (unless KeepRunning); a failed Stop fails the cycle (#68)
+    $stopResult = $null
     if (-not $KeepRunning) {
-        Set-TcPlcState -State Stop | Out-Null
-        $steps += [PSCustomObject]@{ step = 'Stop'; success = $true }
+        $stopResult = Set-TcPlcState -State Stop
+        $steps += [PSCustomObject]@{ step = 'Stop'; success = [bool]$stopResult.success }
     }
 
     $cycleElapsed = ([DateTime]::Now - $cycleStart).TotalMilliseconds
@@ -210,5 +220,8 @@
     }
     if ($warnings.Count -gt 0) { $report | Add-Member -NotePropertyName 'warnings' -NotePropertyValue $warnings }
 
+    if ($null -ne $stopResult -and -not $stopResult.success) {
+        return (New-TcCycleStepFailure -StepResult $stopResult -Prefix 'PLC Stop after the tests failed' -DefaultCode 'STATE_SET_FAILED' -Steps $steps -Data $report)
+    }
     New-TcResult -Success ($failed -eq 0) -Data $report
 }

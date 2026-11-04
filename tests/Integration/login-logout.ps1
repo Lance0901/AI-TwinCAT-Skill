@@ -13,7 +13,7 @@
 param(
     [Parameter(Mandatory)][string]$SolutionPath,
     [string]$ProgId = 'TcXaeShell.DTE.15.0',
-    [string]$AmsNetId = '199.5.42.250.1.1',
+    [string]$AmsNetId = '199.5.42.250.1.1',  # tcauto-allow(amsnetid): integration default = the local UmRT_Default of the test PC; pass -AmsNetId for any other target
     [string]$LogPath = (Join-Path $PSScriptRoot 'logs\login-logout.log'),
     [switch]$KeepIde
 )

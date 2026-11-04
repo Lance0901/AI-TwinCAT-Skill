@@ -111,6 +111,18 @@ actions:
         required: false
         description: Auto-detected from IDE if omitted
 
+  - name: ClearLifecycleBlock
+    description: Remove the LIFECYCLE_BLOCKED record of one target (#68). Call ONLY after the user saw data.lifecycleBlock and agreed
+    parameters:
+      Reason:
+        type: string
+        required: true
+        description: The user's approval in their words
+      AmsNetId:
+        type: string
+        required: false
+        description: Default IDE target, then ADS session
+
   - name: ConnectAds
     description: Connect to PLC runtime via ADS. AmsNetId auto-detected from IDE target.
     parameters:

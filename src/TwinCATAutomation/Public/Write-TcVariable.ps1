@@ -18,6 +18,8 @@ function Write-TcVariable {
         data.written is the value actually written (converted, not the input echoed): for time types the
         normalized IEC literal (T#6000ms -> T#6s) plus the raw integer in data.ms / data.ns / data.unix;
         enums add data.name.
+        While a lifecycle block exists for the ADS session's AmsNetId (#68, a runtime-changing
+        command failed its readback) nothing is written: LIFECYCLE_BLOCKED (data.lifecycleBlock).
     .PARAMETER Path
         Variable path (e.g., "MAIN.nSetpoint").
     .PARAMETER Value
@@ -32,9 +34,17 @@ function Write-TcVariable {
         [object]$Value
     )
 
-    try { $reconnected = Ensure-TcAdsConnection } catch {
-        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'NOT_CONNECTED'
+    $ensureError = $null
+    $reconnected = $false
+    try { $reconnected = Ensure-TcAdsConnection } catch { $ensureError = $_ }
+    # #68 (N2): checked with the session's AmsNetId after Ensure-TcAdsConnection. A failed
+    # (re)connect with a known AmsNetId is still checked (fail closed); a session that never had
+    # an AmsNetId returns the connect error as before (nothing can be sent without a session).
+    if ($null -eq $ensureError -or -not [string]::IsNullOrWhiteSpace([string]$script:TcAdsAmsNetId)) {
+        $blocked = Test-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId) -Command 'Write-TcVariable'
+        if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'path' -NotePropertyValue $Path -Force; return $blocked }
     }
+    if ($null -ne $ensureError) { return New-TcAdsErrorResult -ErrorRecord $ensureError -DefaultCode 'NOT_CONNECTED' }
 
     try {
         # Ensure TcAdsHelper is compiled (needs TwinCAT.Ads.dll loaded first)

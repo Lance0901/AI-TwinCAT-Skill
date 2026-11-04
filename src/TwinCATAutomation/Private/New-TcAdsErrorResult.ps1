@@ -23,6 +23,8 @@ function New-TcAdsErrorResult {
     .PARAMETER Port
         ADS port the failing call used (for hints that name the port). Default: the
         module session port, else 851.
+    .PARAMETER AmsNetId
+        #68: the target AmsNetId of the failing call when known (New-TcResult -LifecycleNetId).
     #>
     [CmdletBinding()]
     param(
@@ -43,7 +45,10 @@ function New-TcAdsErrorResult {
         [hashtable]$CodeAliases,
 
         [Parameter()]
-        [int]$Port = 0
+        [int]$Port = 0,
+
+        [Parameter()]
+        [string]$AmsNetId
     )
 
     # Hints such as ADS_PORT_NOT_FOUND name the port that was actually used: an
@@ -84,6 +89,7 @@ function New-TcAdsErrorResult {
     }
     if (-not [string]::IsNullOrWhiteSpace($hint)) { $params['Hint'] = $hint }
     if ($null -ne $Data) { $params['Data'] = $Data }
+    if (-not [string]::IsNullOrWhiteSpace($AmsNetId)) { $params['LifecycleNetId'] = $AmsNetId }
 
     New-TcResult @params
 }

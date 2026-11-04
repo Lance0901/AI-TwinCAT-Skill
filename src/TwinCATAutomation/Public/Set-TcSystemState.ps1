@@ -34,6 +34,15 @@
         disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
         data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
+
+        Fail closed (#68): every failure once WriteControl was called - SYSTEM_STATE_TIMEOUT,
+        SYSTEM_STATE_MISMATCH, RUNTIME_CRASHED and an exception (ADS error) from or after the
+        write - also records a lifecycle block for the target (data.lifecycleBlock). A
+        WriteControl that the target refuses on the spot (ADS error from the call itself) records
+        one too: whether part of the request took effect is not known, so this is conservative.
+        data.requestSent tells whether WriteControl was called ($false: nothing was sent).
+        While a block exists for the target, this command returns LIFECYCLE_BLOCKED and sends
+        nothing; only Clear-TcLifecycleBlock (after the user agreed) removes it.
     .PARAMETER State
         Target state: Run or Config.
     .PARAMETER AmsNetId
@@ -87,12 +96,17 @@
         }
     }
 
+    # #68: a failed postcondition on this target is still unresolved: send nothing
+    $blocked = Test-TcLifecycleBlock -AmsNetId $AmsNetId -Command 'Set-TcSystemState'
+    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $false -Force; return $blocked }
+
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
         return New-TcResult -Success $false -ErrorMessage 'TwinCAT.Ads.dll not found.' -ErrorCode 'ADS_ASSEMBLY_NOT_FOUND'
     }
 
     $sysClient = $null
+    $sent = $false   # #68: WriteControl went out (a later failure records a lifecycle block)
     try {
         $sysClient = New-Object TwinCAT.Ads.TcAdsClient
         $sysClient.Connect($AmsNetId, 10000)
@@ -110,7 +124,8 @@
         $sentName = $newState.AdsState.ToString()
         $newState.DeviceState = 0
         $requestWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $sysClient.WriteControl($newState)
+        $sent = $true
+        $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
         # Original state = target (Run -> Run restart, Config -> Config): the target only
         # counts once the system was seen LEAVING it (other state or port unreachable),
@@ -150,16 +165,18 @@
             amsNetId         = $AmsNetId
             netIdSource      = $netIdSource
             elapsedMs        = [int]$requestWatch.ElapsedMilliseconds
+            requestSent      = $true
         }
 
         if (-not $leftOriginal) {
             $data.finalState = $State
             $data.currentState = $State
-            return New-TcResult -Success $false `
-                -ErrorMessage "TwinCAT was already in '$State' and never left it within $([Math]::Min(10, $TimeoutSec)) s after WriteControl $sentName ($sentCode): the restart was not observed, so the current '$State' is the old state, not a confirmed restart." `
+            $res = New-TcResult -Success $false `
+                -ErrorMessage "TwinCAT was already in '$State' and never left it within $([Math]::Min(10, $TimeoutSec)) s after the AdsState write $sentName ($sentCode): the restart was not observed, so the current '$State' is the old state, not a confirmed restart." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH') `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $State -Step 'leave-original')
         }
 
         # Poll port 10000 until the target state is reached (replaces fixed sleep)
@@ -180,11 +197,12 @@
             $data | Add-Member -NotePropertyName 'servicePidAtStart' -NotePropertyValue @($wait.ServicePidAtStart)
             $data | Add-Member -NotePropertyName 'runtimeName' -NotePropertyValue $wait.RuntimeName
             $data | Add-Member -NotePropertyName 'unreachableMs' -NotePropertyValue $wait.UnreachableMs
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "The local UmRT '$($wait.RuntimeName)' disappeared while waiting for '$State': TcSystemServiceUm (pid $pidText at the start) no longer exists and port 10000 answered ADS 0x7 for $([int]($wait.UnreachableMs / 1000)) s (last state seen: $seen; last error: $($wait.LastError)). Stopped waiting after $([int]($requestWatch.ElapsedMilliseconds / 1000)) s instead of -TimeoutSec $TimeoutSec s." `
                 -ErrorCode 'RUNTIME_CRASHED' `
                 -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -Step "wait: runtime gone (RUNTIME_CRASHED); last state seen before it vanished: $seen")
         }
 
         if (-not $wait.Reached) {
@@ -195,11 +213,12 @@
                 $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
                 if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
             }
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT did not reach state '$State' within $TimeoutSec s (last state: $($wait.State)).$detail" `
                 -ErrorCode 'SYSTEM_STATE_TIMEOUT' `
                 -Hint $hint `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$wait.State) -Step 'wait')
         }
         $data.reached = $true
         $data.latencyMs = [int]$requestWatch.ElapsedMilliseconds
@@ -255,17 +274,24 @@
                 $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
                 if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
             }
-            return New-TcResult -Success $false `
+            $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT reached '$State' but did not stay there: readback '$readback' after $SettleSec s (sent AdsState $sentName ($sentCode); trace $traceText)." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint $hint `
                 -Data $data
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$readback) -Step 'settle')
         }
 
         New-TcResult -Success $true -Data $data
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        $res = New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        $rd = $res.PSObject.Properties['data']
+        if ($null -eq $rd -or $null -eq $rd.Value) { $res | Add-Member -NotePropertyName 'data' -NotePropertyValue ([PSCustomObject]@{}) -Force }
+        $res.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $sent -Force
+        # #68: the request may have changed the runtime: fail closed
+        if ($sent) { $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -Step 'after the state request (exception)' }
+        $res
     }
     finally {
         if ($null -ne $sysClient) {

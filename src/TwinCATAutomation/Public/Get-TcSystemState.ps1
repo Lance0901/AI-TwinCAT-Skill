@@ -40,7 +40,7 @@ function Get-TcSystemState {
             $netIdSource = 'ads-session'
         }
         else {
-            $AmsNetId = '127.0.0.1.1.1'
+            $AmsNetId = '127.0.0.1.1.1'  # tcauto-allow(amsnetid): documented read-only fallback to the local system (.DESCRIPTION step 3), never used for a state change
             $netIdSource = 'local'
         }
     }
@@ -71,7 +71,7 @@ function Get-TcSystemState {
         })
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_FAILED' -MessagePrefix "Failed to read system state of $AmsNetId ($netIdSource)"
+        New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_FAILED' -MessagePrefix "Failed to read system state of $AmsNetId ($netIdSource)"
     }
     finally {
         if ($null -ne $sysClient) {

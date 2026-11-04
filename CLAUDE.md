@@ -30,6 +30,7 @@ Read-TcVariable -Path "MAIN.nCounter"   # 5. auto-reconnects after a later Enabl
 - **VS2022**: `Build($true)` never returns (module polls `BuildState`); WPF message boxes; zh-TW Error List: `docs/troubleshooting.md` "已知 modal dialog", "BUILD_TIMEOUT", "ERRORLIST_UNAVAILABLE".
 - **No blind waits**: `Set-TcSystemState`, `Enable-TcConfig -Force` and `Invoke-TcTestCycle` poll until the target state is reached. Do not add `Start-Sleep`.
 - **No false success (#28 / #32)**: run the whole lifecycle in ONE persistent PowerShell session (or the MCP server). Build coverage (`PROJECT_SKIPPED_BY_CONFIGURATION`, `-ExpectedProject`), state readback (`SYSTEM_STATE_MISMATCH`, `RUNTIME_STATE_MISMATCH`, `BOOT_PACKAGE_MISMATCH`) and multi-PLC `-PlcProjectPath` (`PLC_PROJECT_AMBIGUOUS`): `docs/troubleshooting.md` "Lifecycle 正確順序" and the error-code sections.
+- **Fail closed (#68)**: `success: true` only after the readback reached the target state. On `success: false` or `LIFECYCLE_BLOCKED`: stop, report `data.lifecycleBlock` / `data.steps` to the user, never fall back to raw ADS WriteControl / COM / DTE / GUI / console or a re-`Connect-TcIde` after Activate; `Clear-TcLifecycleBlock -Reason` only after the user agreed. Stop conditions, postcondition table, forbidden fallbacks: `adapters/claude-code/SKILL.md` "Failure contract"; `docs/troubleshooting.md` "LIFECYCLE_BLOCKED".
 - **Troubleshooting**: `docs/troubleshooting.md` — error code table, correct lifecycle order, environment matrix, known limits (UmRT fake Run, Reset kills `TcSystemServiceUm`, compiler codes only inferred from Error List text).
 - **TwinCAT facts**: check infosys.beckhoff.com first and cite the link (or mark the claim 實測 with date and environment).
 - **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).
@@ -39,6 +40,6 @@ Read-TcVariable -Path "MAIN.nCounter"   # 5. auto-reconnects after a later Enabl
 
 Claude Code `adapters/claude-code/SKILL.md` · Codex `adapters/codex/tools.json` · Antigravity `adapters/antigravity/plugin.yaml` · MCP (Claude Desktop / any client) `mcp-server/README.md`
 
-## Available Commands (78)
+## Available Commands (79)
 
 Full list with parameters: `adapters/claude-code/SKILL.md`, or `Get-Command -Module TwinCATAutomation` after importing the module.

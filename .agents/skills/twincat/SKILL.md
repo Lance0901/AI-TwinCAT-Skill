@@ -116,6 +116,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Get-TcPlcState` | | Read PLC state |
 | `Set-TcSystemState` | `-State <Run\|Config> [-AmsNetId <id>]` | Set system state via ADS WriteControl |
 | `Get-TcSystemState` | `[-AmsNetId <id>]` | Read system state |
+| `Clear-TcLifecycleBlock` | `-Reason <text> [-AmsNetId <id>]` | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
 | `Set-TcTarget` | `-AmsNetId <id>` | Set target system |
 
 ### I/O Configuration

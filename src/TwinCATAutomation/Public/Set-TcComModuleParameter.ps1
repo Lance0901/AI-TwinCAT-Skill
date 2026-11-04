@@ -42,7 +42,7 @@ function Set-TcComModuleParameter {
     .PARAMETER Value
         New value: number (invariant culture, '.' as decimal separator), true / false for BOOL, text for STRING, milliseconds or a literal such as T#5S for TIME.
     .PARAMETER Online
-        Write the running object on the target only (needs Activate + Run); the project is not changed.
+        Write the running object on the target only (needs Activate + Run); the project is not changed. With -DryRun $false refused with LIFECYCLE_BLOCKED while the IDE target has a lifecycle block (#68).
     .PARAMETER DryRun
         Default true: only report the planned bytes. false: back up, write, read back.
     .EXAMPLE
@@ -85,6 +85,11 @@ function Set-TcComModuleParameter {
     }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
+    # #68: an online write changes the running target: not while its lifecycle is blocked
+    if ($Online -and -not $DryRun) {
+        $blocked = Test-TcLifecycleBlock -AmsNetId (Resolve-TcLifecycleNetId -SysManager $sm) -Command 'Set-TcComModuleParameter'
+        if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'module' -NotePropertyValue $Module -Force; return $blocked }
+    }
 
     $called = $false
     $what = if ($Online) { 'SetOnlineModulePara' } else { 'SetModulePara' }

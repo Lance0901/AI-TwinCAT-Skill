@@ -93,6 +93,14 @@
       }
     },
     {
+      "name": "ClearLifecycleBlock",
+      "description": "Remove the LIFECYCLE_BLOCKED record of one target (#68). Call ONLY after the user saw data.lifecycleBlock and agreed; never to get past LIFECYCLE_BLOCKED on your own",
+      "parameters": {
+        "Reason": { "type": "string", "description": "The user's approval in their words", "required": true },
+        "AmsNetId": { "type": "string", "description": "Default: IDE target, then ADS session", "required": false }
+      }
+    },
+    {
       "name": "ConnectAds",
       "description": "Connect to PLC runtime via ADS. AmsNetId is auto-detected from IDE target if omitted.",
       "parameters": {

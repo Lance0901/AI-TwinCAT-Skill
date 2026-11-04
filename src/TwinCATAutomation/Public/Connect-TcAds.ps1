@@ -76,7 +76,7 @@ function Connect-TcAds {
     }
     catch {
         $script:TcAdsConnected = $false
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'ADS_CONNECT_FAILED' -MessagePrefix 'ADS connection failed' -Port $Port `
+        New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'ADS_CONNECT_FAILED' -MessagePrefix 'ADS connection failed' -Port $Port `
             -Data ([PSCustomObject]@{ amsNetId = $AmsNetId; port = $Port; adsBackend = $adsBackend })
     }
 }

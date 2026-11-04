@@ -432,7 +432,7 @@ function Invoke-Mechanism {
             catch { $r.select = "error: $($_.Exception.Message)" }
             foreach ($cmd in 'Project.UnloadProject', 'Project.ReloadProject') {
                 $t = [Diagnostics.Stopwatch]::StartNew()
-                try { Invoke-Dte { (Get-Dte).ExecuteCommand($cmd) } | Out-Null; $r[$cmd] = "ok $([int]$t.ElapsedMilliseconds)ms" }
+                try { Invoke-Dte { (Get-Dte).ExecuteCommand($cmd) } | Out-Null; $r[$cmd] = "ok $([int]$t.ElapsedMilliseconds)ms" }  # tcauto-allow(executecommand): reload experiment runs XAE commands on a test copy on purpose
                 catch { $r[$cmd] = "error: $($_.Exception.Message)" }
             }
             # the module caches ITcSysManager of the old project object
