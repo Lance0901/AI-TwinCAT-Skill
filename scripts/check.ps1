@@ -649,8 +649,9 @@ else {
             }
             if ($ok) {
                 $t = Invoke-Native $npm.Source @('test')
-                # TAP (Node 22): "# tests 212"; spec (Node 24): "<info glyph> tests 212" (the glyph is not matched: cp950)
-                $summary = @($t.Output | ForEach-Object { if ($_ -match '^(?:\S{1,4}\s+)?((?:tests|pass|fail|skipped|todo) \d+)\s*$') { $Matches[1] } }) -join ', '
+                # TAP (Node 22): "# tests 212"; spec (Node 24): "<info glyph> tests 212" (the glyph is not matched:
+                # under cp950 it decodes to "??", possibly without the space); a bare "tests N" line is no summary
+                $summary = @($t.Output | ForEach-Object { if ($_ -match '^\S{1,4}\s*((?:tests|pass|fail|skipped|todo) \d+)\s*$') { $Matches[1] } }) -join ', '
                 if ($t.Code -eq 0) {
                     Add-CheckResult 'npm test' 'PASS' "$summary$installed"
                 }

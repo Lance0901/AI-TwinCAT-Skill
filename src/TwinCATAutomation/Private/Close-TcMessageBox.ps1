@@ -235,12 +235,13 @@ function Close-TcMessageBox {
         MAKEWPARAM(id, BN_CLICKED 0) = id and lParam = the button handle (the notification a
         real click sends to the dialog) is posted instead, and the handle is polled again for
         2 s (Closed). Before posting, on both paths (send processed or timed out): a dialog that
-        is already gone is Sent = true, Method BM_CLICK, Closed = true; a dialog that is
-        disabled or has an enabled popup (the Yes handler of a custom #32770 dialog opened a
+        is disabled or has an enabled popup (the Yes handler of a custom #32770 dialog opened a
         nested modal: the click did land, and its synchronous BN_CLICKED is what made the send
-        time out) gets no WM_COMMAND: Sent = true, Method BM_CLICK, Closed = false. A
-        PostMessage that fails because the dialog closed in the meantime is Sent = true, Method
-        BM_CLICK, Closed = true. A
+        time out) gets no WM_COMMAND: Sent = true, Method BM_CLICK, Closed = false. A dialog
+        that is gone (before posting, or PostMessage failed because it closed meanwhile) is
+        Sent = true, Method BM_CLICK, Closed = true only after a PROCESSED BM_CLICK; after a
+        send that timed out nobody knows who closed it (user, XAE, hung thread): Sent = false,
+        Reason 'dialog already gone' (Close-TcReloadPrompt: Dismissed, not answered). A
         dialog without that control id (a WPF window such as the VS2022 message box,
         AutomationId 'Microsoft.VisualStudio.MessageBox', 2026-10-21) is answered through UI
         Automation instead: the Button with AutomationId OKButton / YesButton / NoButton /
@@ -366,10 +367,20 @@ function Close-TcMessageBox {
     # the synchronous BN_CLICKED from returning, so the send times out although the click landed.
     # The dialog is then disabled (the nested modal owns it) or has an enabled popup: posting
     # WM_COMMAND would answer a second time, re-entrantly. Not posted then.
+    # Dialog gone: only a PROCESSED BM_CLICK may count as our answer. After a send that timed out
+    # (#64 review round 3 M2) the dialog may have been closed by anything (the user pressed No,
+    # XAE closed it, the thread was hung): reported like a dialog that was already gone, the
+    # string Close-TcReloadPrompt recognizes (Dismissed, not answered).
     if (-not $native::IsWindow($Hwnd)) {
-        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
-        $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the send / the 2000 ms check"
-        Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+        if ($ret -ne [IntPtr]::Zero) {
+            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
+            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the 2000 ms check"
+        }
+        else {
+            $result.Sent = $false; $result.Closed = $true
+            $result.Reason = 'dialog already gone'
+        }
+        Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId; $why)."
         return $result
     }
     $state = [TcAutomation.MessageBoxState]
@@ -381,7 +392,7 @@ function Close-TcMessageBox {
     if (-not $state::IsWindowEnabled($Hwnd) -or ($popup -ne [IntPtr]::Zero -and $popup -ne $Hwnd)) {
         $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $false
         $sendState = if ($ret -ne [IntPtr]::Zero) { 'send processed' } else { 'send timed out' }
-        $result.Reason = "BM_CLICK to control $id ($Answer): $sendState; dialog disabled / nested modal, WM_COMMAND not posted"
+        $result.Reason = "BM_CLICK to control $id ($Answer): $sendState ($why); dialog disabled / nested modal, WM_COMMAND not posted"
         Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
         return $result
     }
@@ -397,9 +408,14 @@ function Close-TcMessageBox {
         $result.Reason = "$why; WM_COMMAND $id ($Answer) posted"
     }
     elseif (-not $native::IsWindow($Hwnd)) {
-        # #64 review S1: the click did take effect, just after the checks above: the dialog is gone.
-        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
-        $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the 2000 ms check"
+        # The dialog closed in the meantime. A processed BM_CLICK took effect late (#64 review S1);
+        # after a timed-out send nobody knows who closed it (round 3 M2).
+        $result.Closed = $true
+        if ($ret -ne [IntPtr]::Zero) {
+            $result.Sent = $true; $result.Method = 'BM_CLICK'
+            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the 2000 ms check"
+        }
+        else { $result.Reason = 'dialog already gone' }
     }
     else { $result.Reason = "$why; PostMessage WM_COMMAND $id failed" }
     Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId, closed $($result.Closed))."

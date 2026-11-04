@@ -480,19 +480,41 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
     // #64 review: a custom #32770-like dialog whose Yes handler opens a nested modal. BM_CLICK's
     // synchronous BN_CLICKED then does not return (the send times out) although the click landed;
     // a WM_COMMAND fallback would answer a second time, re-entrantly.
-    test('custom dialog whose Yes handler opens a nested modal: answered once, no WM_COMMAND fallback (BM_CLICK, Closed false)', async (t) => {
+    test('custom dialog whose Yes handler opens a nested modal: answered once, no second answer (Closed false)', async (t) => {
       const { host, hwnd, lines } = await startDialogHost('Nested');
       try {
         const r = await dialogAnswer(['-ProcessId', String(host.pid), '-Hwnd', hwnd, '-Answer', 'Yes']);
-        t.diagnostic(`[diag] send ${JSON.stringify(r.send)}`);
+        t.diagnostic(`[diag] send.method ${r.send?.method}, send ${JSON.stringify(r.send)}`);
         assert.ok(await waitFor(() => lines.includes('result Yes 1'), 15000), `first answer (host: ${JSON.stringify(lines)}, ${JSON.stringify(host.diag)})`);
         // a posted WM_COMMAND is dispatched by the nested MessageBox loop at once; give it time
         await new Promise((r2) => setTimeout(r2, 1500));
         assert.deepEqual(lines.filter((l) => l.startsWith('result ')), ['result Yes 1'], `answered exactly once: ${JSON.stringify(r.send)}`);
         assert.equal(r.send.sent, true, JSON.stringify(r.send));
-        assert.equal(r.send.method, 'BM_CLICK', JSON.stringify(r.send));
         assert.equal(r.send.closed, false, JSON.stringify(r.send));
-        assert.match(r.send.reason, /WM_COMMAND not posted/);
+        // Either the BM_CLICK landed (guard: nested modal, nothing posted) or, when the BM_CLICK did
+        // not click (#64), the WM_COMMAND fallback answered once and opened the nested modal.
+        if (r.send.method === 'BM_CLICK') assert.match(r.send.reason, /WM_COMMAND not posted/);
+        else {
+          assert.equal(r.send.method, 'WM_COMMAND', JSON.stringify(r.send));
+          assert.match(r.send.reason, /WM_COMMAND 6 \(Yes\) posted/);
+        }
+      } finally {
+        host.kill();
+      }
+    });
+
+    // #64 review round 3: the send timed out and the dialog is gone by then. Who closed it is
+    // unknowable (user, XAE, a hung thread), so it is not reported as answered.
+    test('send timed out and the dialog is gone: Sent false, "dialog already gone" (not reported as answered)', async (t) => {
+      const { host, hwnd, lines } = await startDialogHost('CloseThenHang');
+      try {
+        const r = await dialogAnswer(['-ProcessId', String(host.pid), '-Hwnd', hwnd, '-Answer', 'Yes']);
+        t.diagnostic(`[diag] send.method ${r.send?.method}, send ${JSON.stringify(r.send)}`);
+        assert.ok(lines.includes('closed'), `the fixture closed its dialog (host: ${JSON.stringify(lines)}, ${JSON.stringify(host.diag)})`);
+        assert.equal(r.send.sent, false, JSON.stringify(r.send));
+        assert.equal(r.send.reason, 'dialog already gone', JSON.stringify(r.send));
+        assert.equal(r.send.closed, true, JSON.stringify(r.send));
+        assert.equal(r.send.method, null, JSON.stringify(r.send));
       } finally {
         host.kill();
       }

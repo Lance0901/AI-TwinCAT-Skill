@@ -7,10 +7,13 @@
 #                         then disabled and the synchronous BN_CLICKED of BM_CLICK does not return)
 #   -Mode DisabledButton  the button is WS_DISABLED: BM_CLICK is processed but clicks nothing, so
 #                         only the WM_COMMAND fallback answers; the handler then closes the form
+#   -Mode CloseThenHang   the handler closes the form and then keeps the UI thread busy for 6 s:
+#                         the BM_CLICK send times out (5 s) and the dialog is already gone (who
+#                         closed it is unknowable for the caller); writes "closed", no answer line
 # Writes "ready <hwnd>" once the form is shown. Closes itself after -LifetimeSec.
 # Windows PowerShell 5.1, run with -STA, ASCII only, no BOM.
 param(
-    [ValidateSet('Nested', 'DisabledButton')]
+    [ValidateSet('Nested', 'DisabledButton', 'CloseThenHang')]
     [string]$Mode = 'Nested',
     [int]$LifetimeSec = 60
 )
@@ -19,6 +22,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 public class TcFixtureDialog : Form {
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -32,6 +36,13 @@ public class TcFixtureDialog : Form {
         CreateWindowEx(0, "BUTTON", "Yes", style, 10, 10, 80, 30, Handle, (IntPtr)6, IntPtr.Zero, IntPtr.Zero);
     }
     protected override void WndProc(ref Message m) {
+        if (m.Msg == 0x0111 && (m.WParam.ToInt64() & 0xFFFF) == 6 && Mode == "CloseThenHang") {
+            Console.Out.WriteLine("closed");
+            Console.Out.Flush();
+            Close();
+            Thread.Sleep(6000);
+            return;
+        }
         if (m.Msg == 0x0111 && (m.WParam.ToInt64() & 0xFFFF) == 6) {
             Answers++;
             Console.Out.WriteLine("result Yes " + Answers);
