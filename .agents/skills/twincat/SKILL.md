@@ -116,6 +116,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Get-TcPlcState` | | Read PLC state |
 | `Set-TcSystemState` | `-State <Run\|Config> [-AmsNetId <id>]` | Set system state via ADS WriteControl |
 | `Get-TcSystemState` | `[-AmsNetId <id>]` | Read system state |
+| `New-TcIssueReport` | `-Title <t> [-Tool] [-Parameters] [-Result] [-Expected] [-Notes] [-Label] [-MaxUrlLength 7000] [-ExtraMask] [-NoEnvironment]` | MCP `ReportIssue` (#78): builds a de-identified, pre-filled GitHub new-issue URL (`data.url`) plus the same title / body as text (`data.body`, complete). Creates nothing, no GitHub / network call, no IDE / ADS access, works while LIFECYCLE_BLOCKED. Show `data.maskReport` and `data.body` to the user; only the user opens and submits the URL (the repo is public) |
 | `Clear-TcLifecycleBlock` | `-Reason <text> [-AmsNetId <id>]` | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
 | `Set-TcTarget` | `-AmsNetId <id>` | Set target system |
 

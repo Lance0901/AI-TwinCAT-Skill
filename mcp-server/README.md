@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 79 個 cmdlet 中的 77 個(`NewProject` 暫時下架,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 80 個 cmdlet 中的 78 個(`NewProject` 暫時下架,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 4 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (77 of its 79 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70; `Get-TcIdeModalDialog` is the `GetIdeModalDialog` composite tool, #86) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (78 of its 80 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70; `Get-TcIdeModalDialog` is the `GetIdeModalDialog` composite tool, #86) plus 4 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -117,6 +117,12 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | `GetIdeInfo` | `Get-TcIdeInfo` | — | 120 s | IDE version, edition, open solution; cheap connectivity check |
 | `ConnectAds` | `Connect-TcAds` | — | 120 s | Open ADS; `AmsNetId` auto-detected from the IDE target, `Port` default 851 |
 | `DisconnectAds` | `Disconnect-TcAds` | — | 120 s | Close ADS and forget the endpoint (disables auto-reconnect) |
+
+### Field report
+
+| Tool | Cmdlet | Required params | Timeout | Description |
+|---|---|---|---|---|
+| `ReportIssue` | `New-TcIssueReport` | `Title` | 120 s | #78: de-identified, pre-filled GitHub new-issue URL (`data.url`) + the same title / body as text (`data.body`, complete); `readOnlyHint`. Creates nothing, no GitHub / network call, no token, no IDE / ADS access, not refused by `LIFECYCLE_BLOCKED`. Masks user names in paths, machine names, AMS NetIds, IP / MAC, e-mail, project paths (-> file name), secrets (`data.masks`); `ExtraMask` hides customer / site names; URL capped at `MaxUrlLength` (7000, `[truncated]`, `data.truncated`). Only the user opens and submits the URL |
 
 ### Project
 
