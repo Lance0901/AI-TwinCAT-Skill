@@ -58,7 +58,7 @@ afterEach((t) => {
     const lines = s.lines.filter((l) => l.at >= testStartedAt);
     if (!lines.length) continue;
     t.diagnostic(`[diag] ${s.label} (pid ${s.pid ?? '?'}), ms since its start:`);
-    for (const l of lines) t.diagnostic(`[diag]   +${l.at - s.t0} ms ${l.text}`);
+    for (const l of lines) t.diagnostic(`[diag]   ${new Date(l.at).toISOString()} +${l.at - s.t0} ms ${l.text}`);
   }
 });
 

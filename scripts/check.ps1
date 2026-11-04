@@ -150,9 +150,12 @@ function Invoke-Native {
 #   TAP (Node 22): the YAML block (error, stack) after every 'not ok' of a test (suites that only
 #     failed because a subtest did are skipped), then every '[diag]' diagnostic line of the tests;
 #   spec (Node 24): everything from the 'failing tests:' summary on (it carries error and stack).
-# Bounded so a run with many failures stays readable.
+# Bounded (400 lines in all) so a run with many failures stays readable.
+# Returns @{ Lines = string[]; HasSpecSummary = bool } (the spec summary already ends the output,
+# so the caller then skips its 'last 15 lines').
 function Get-NpmTestFailureDetail {
     param([string[]]$Lines)
+    $maxLines = 400
     $out = [System.Collections.Generic.List[string]]::new()
     for ($i = 0; $i -lt $Lines.Count -and $out.Count -lt 300; $i++) {
         if ($Lines[$i] -notmatch '^(\s*)not ok ') { continue }
@@ -169,11 +172,14 @@ function Get-NpmTestFailureDetail {
     }
     $diag = @($Lines | Where-Object { $_ -match '\[diag\]' } | Select-Object -First 200)
     foreach ($d in $diag) { $out.Add($d) }
+    # The marker glyph before 'failing tests:' is not matched: under a zh-TW console (cp950) it
+    # does not survive the native output decoding.
     $specStart = -1
-    $mark = [string][char]0x2716 + ' failing tests:'
-    for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i].Contains($mark)) { $specStart = $i; break } }
+    for ($i = 0; $i -lt $Lines.Count; $i++) { if ($Lines[$i] -match 'failing tests:\s*$') { $specStart = $i; break } }
     if ($specStart -ge 0) { foreach ($l in @($Lines[$specStart..($Lines.Count - 1)] | Select-Object -First 200)) { $out.Add($l) } }
-    return , $out.ToArray()
+    $all = @($out.ToArray() | Select-Object -First $maxLines)
+    if ($out.Count -gt $maxLines) { $all += "... ($($out.Count - $maxLines) more failure-detail lines cut)" }
+    return @{ Lines = $all; HasSpecSummary = ($specStart -ge 0) }
 }
 
 # ---------------------------------------------------------------------------
@@ -646,7 +652,8 @@ else {
                     # YAML block after its 'not ok' line and the test's own diagnostics in '[diag]'
                     # lines; the last 15 lines alone lost both, so a CI flake had no reason.
                     $details = Get-NpmTestFailureDetail -Lines $t.Output
-                    Add-CheckResult 'npm test' 'FAIL' "exit $($t.Code); $summary" ($failing + @('--- failure details ---') + $details + @('--- last 15 lines ---') + @($t.Output | Select-Object -Last 15))
+                    $tail = if ($details.HasSpecSummary) { @() } else { @('--- last 15 lines ---') + @($t.Output | Select-Object -Last 15) }
+                    Add-CheckResult 'npm test' 'FAIL' "exit $($t.Code); $summary" ($failing + @('--- failure details ---') + @($details.Lines) + $tail)
                 }
             }
         }

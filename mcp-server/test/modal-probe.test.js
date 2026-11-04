@@ -420,7 +420,7 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
       });
     });
 
-    test('plcproj reload prompt (YesNo #32770): module scan -> reload-prompt/project with buttons 6/7; Close-TcMessageBox -Answer Yes clicks IDYES by control id', async () => {
+    test('plcproj reload prompt (YesNo #32770): module scan -> reload-prompt/project with buttons 6/7; Close-TcMessageBox -Answer Yes clicks IDYES by control id', async (t) => {
       const text = String.raw`The project file 'C:\p\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?`;
       const host = await startHost(['-ShowMessageBox', '-YesNo', '-MessageTitle', 'TwinCAT XAE', '-MessageText', text], 'dialog');
       const hostLines = [];
@@ -436,8 +436,10 @@ describe('bridge/modal-probe.ps1 (real script)', { skip: !isWin && 'Windows only
         assert.deepEqual(r.dialog.buttons.map((b) => b.id).sort(), [6, 7], 'IDYES / IDNO by control id');
         assert.equal(r.send.sent, true, JSON.stringify(r.send));
         assert.equal(r.send.controlId, 6);
-        // #64: 'sent' alone was true while the dialog stayed open (BM_CLICK processed, no click);
-        // the module now checks that the dialog is gone and falls back to WM_COMMAND IDYES.
+        // #64: CI saw sent = true but no answer from the host; a processed BM_CLICK that did not
+        // click is the inference (BM_CLICK remarks on Microsoft Learn). The module now checks that
+        // the dialog is gone and falls back to WM_COMMAND IDYES; the method shows which one ran.
+        t.diagnostic(`[diag] send.method ${r.send.method}, closed ${r.send.closed}, reason: ${r.send.reason}`);
         assert.equal(r.send.closed, true, `dialog closed after the answer: ${JSON.stringify(r.send)}`);
         assert.ok(
           await waitFor(() => hostLines.includes('result Yes'), 15000),

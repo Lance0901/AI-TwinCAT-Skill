@@ -21,6 +21,16 @@ public static extern System.IntPtr GetDlgItem(System.IntPtr hDlg, int nIDDlgItem
 public static extern bool IsWindow(System.IntPtr hWnd);
 '@ -ErrorAction Stop
         }
+        # Separate type (#64 review S2): a process that already compiled MessageBoxNative above
+        # (module re-imported with -Force) cannot get new members on that type.
+        if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.MessageBoxState').Type) {
+            Add-Type -Namespace TcAutomation -Name MessageBoxState -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsWindowEnabled(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint uCmd);
+'@ -ErrorAction Stop
+        }
         return $null
     }
     catch { return $_.Exception.Message }
@@ -217,12 +227,17 @@ function Close-TcMessageBox {
         (SMTO_ABORTIFHUNG, 5000 ms; a plain SendMessage would hang when the dialog thread is
         busy). A processed BM_CLICK is not proof of a click: "If the button is in a dialog box
         and the dialog box is not active, the BM_CLICK message might fail"
-        (https://learn.microsoft.com/en-us/windows/win32/controls/bm-click; #64: send returned
-        success, the dialog stayed open and its owner never got the answer). So the dialog
-        handle is polled for up to 2 s afterwards; when it still exists, or when the send itself
-        fails / times out, WM_COMMAND (0x0111) with wParam = MAKEWPARAM(id, BN_CLICKED 0) = id
-        and lParam = the button handle (exactly the notification a real click sends to the
-        dialog) is posted instead, and the handle is polled again for 2 s (Closed). A
+        (https://learn.microsoft.com/en-us/windows/win32/controls/bm-click). #64 (CI run
+        40185005290) only showed that the send succeeded and the fixture host never printed
+        its answer; that the dialog stayed open is an inference from those remarks, not
+        observed. So the dialog handle is polled for up to 2 s afterwards; when it still exists,
+        or when the send itself fails / times out, WM_COMMAND (0x0111) with wParam =
+        MAKEWPARAM(id, BN_CLICKED 0) = id and lParam = the button handle (the notification a
+        real click sends to the dialog) is posted instead, and the handle is polled again for
+        2 s (Closed). Not posted when the dialog is disabled or has an enabled popup (the Yes
+        handler of a custom #32770 dialog opened a nested modal: the click did land), then
+        Sent = true, Closed = false. A PostMessage that fails because the dialog closed in the
+        meantime (BM_CLICK took effect after the 2 s) is Sent = true, Method BM_CLICK, Closed. A
         dialog without that control id (a WPF window such as the VS2022 message box,
         AutomationId 'Microsoft.VisualStudio.MessageBox', 2026-10-21) is answered through UI
         Automation instead: the Button with AutomationId OKButton / YesButton / NoButton /
@@ -343,15 +358,40 @@ function Close-TcMessageBox {
         # Timed out / hung: the click may still be processed; fall back to the posted command.
         $why = "SendMessageTimeout BM_CLICK to control $id failed or timed out"
     }
+    if ($ret -ne [IntPtr]::Zero) {
+        # #64 review S2: a disabled dialog or one with an enabled popup means the click landed and
+        # its handler opened a nested modal (custom #32770 dialogs). Posting the command again
+        # would answer twice.
+        $state = [TcAutomation.MessageBoxState]
+        $GW_ENABLEDPOPUP = [uint32]6
+        if (-not $native::IsWindow($Hwnd)) {
+            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
+            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed right after the 2000 ms check"
+            Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+            return $result
+        }
+        if (-not $state::IsWindowEnabled($Hwnd) -or $state::GetWindow($Hwnd, $GW_ENABLEDPOPUP) -ne [IntPtr]::Zero) {
+            $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $false
+            $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog is still open but disabled / showing a popup (nested modal), so WM_COMMAND was not posted"
+            Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId)."
+            return $result
+        }
+    }
     Write-Verbose "Close-TcMessageBox: $why; posting WM_COMMAND."
 
     $WM_COMMAND = [uint32]0x0111
-    # MAKEWPARAM(id, BN_CLICKED = 0) = id; lParam = the button handle. Answering a dialog that is
-    # already closing is harmless: the same id ends the same dialog.
+    # MAKEWPARAM(id, BN_CLICKED = 0) = id; lParam = the button handle. For a MessageBox a second
+    # answer to a box that is already closing is harmless: the same id ends the same box (the
+    # nested-modal case of custom dialogs is excluded above).
     if ($native::PostMessage($Hwnd, $WM_COMMAND, [IntPtr]$id, $hBtn)) {
         $result.Sent = $true; $result.Method = 'WM_COMMAND'
         $result.Closed = Wait-TcDialogGone -Native $native -Hwnd $Hwnd -TimeoutMs 2000
         $result.Reason = "$why; WM_COMMAND $id ($Answer) posted"
+    }
+    elseif ($ret -ne [IntPtr]::Zero -and -not $native::IsWindow($Hwnd)) {
+        # #64 review S1: BM_CLICK did take effect, just after the 2 s check: the dialog is gone.
+        $result.Sent = $true; $result.Method = 'BM_CLICK'; $result.Closed = $true
+        $result.Reason = "BM_CLICK sent to control $id ($Answer); the dialog closed after the 2000 ms check"
     }
     else { $result.Reason = "$why; PostMessage WM_COMMAND $id failed" }
     Write-Verbose "Close-TcMessageBox: $($result.Reason) (hwnd $Hwnd, pid $ProcessId, closed $($result.Closed))."
