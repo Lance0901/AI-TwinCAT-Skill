@@ -20,9 +20,21 @@ $inner = Join-Path $PSScriptRoot 'build-error-category.ps1'
 $sentinel = Join-Path $env:TCAUTO_STATE_DIR 'caller-session-state'
 $null = New-Item -ItemType Directory -Path $sentinel -Force
 
+# The simulated session points TEMP / TMP / LOCALAPPDATA at folders inside this test's isolated
+# TCAUTO_STATE_DIR first: even a future relaunch regression (test running un-isolated in that
+# session) cannot reach the machine's real %TEMP% / %LOCALAPPDATA%\TwinCATAutomation.
+$sessionEnv = Join-Path $env:TCAUTO_STATE_DIR 'session-env'
+foreach ($d in 'temp', 'localappdata') { $null = New-Item -ItemType Directory -Path (Join-Path $sessionEnv $d) -Force }
+$redirect = @"
+`$env:TEMP = '$((Join-Path $sessionEnv 'temp') -replace "'", "''")'
+`$env:TMP = `$env:TEMP
+`$env:LOCALAPPDATA = '$((Join-Path $sessionEnv 'localappdata') -replace "'", "''")'
+"@
+
 # Runs $Body in a fresh "persistent session" (-EncodedCommand, so the inner test is NOT the -File
 # entry of that process) and returns its output lines.
 function Invoke-Session([string]$Body) {
+    $Body = $redirect + "`r`n" + $Body
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Body))
     $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     try { $out = @(& powershell.exe -NoProfile -NonInteractive -EncodedCommand $enc 2>&1 | ForEach-Object { "$_" }) }
@@ -87,6 +99,29 @@ $body = @"
 "@
 $out = Invoke-Session $body
 Check 'amp-exit-code-propagated' ((Get-Value $out 'code') -eq '3') "code=$(Get-Value $out 'code') | $($out -join ' / ')"
+
+# 4. a non-switch parameter is not re-serialised onto a command line: the helper throws, the test
+#    body does not run (neither here nor in a child) and the session environment is unchanged
+$withArg = Join-Path $env:TCAUTO_STATE_DIR 'arg118.ps1'
+Set-Content -LiteralPath $withArg -Encoding ASCII -Value @(
+    'param([string]$Name)'
+    '$ErrorActionPreference = ''Stop'''
+    ". '$((Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -replace "'", "''")' -Caller `$PSCommandPath -CallerArgs `$PSBoundParameters; if (`$null -ne `$TcUnitChildExit) { exit `$TcUnitChildExit }"
+    '"body-ran"'
+    'exit 0'
+)
+$body = @"
+Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:\TCAUTO_TEST_FORBID_REAL_STATE -ErrorAction SilentlyContinue
+`$o = @(try { & '$($withArg -replace "'", "''")' -Name 'a "b" c\' 2>&1 | ForEach-Object { "`$_" } } catch { "caught=`$(`$_.Exception.Message)" })
+`$o
+"dir=[`$(`$env:TCAUTO_STATE_DIR)]"
+"forbid=[`$(`$env:TCAUTO_TEST_FORBID_REAL_STATE)]"
+"@
+$out = Invoke-Session $body
+Check 'arg-not-forwarded-throws' (@($out | Where-Object { $_ -match 'cannot forward -Name' }).Count -ge 1) "$($out -join ' / ')"
+Check 'arg-body-not-run' (@($out | Where-Object { $_ -eq 'body-ran' }).Count -eq 0) "$($out -join ' / ')"
+Check 'arg-env-unchanged' ((Get-Value $out 'dir') -eq '[]' -and (Get-Value $out 'forbid') -eq '[]') "dir=$(Get-Value $out 'dir') forbid=$(Get-Value $out 'forbid')"
 
 "failed: $fail"
 exit [Math]::Min($fail, 255)

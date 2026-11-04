@@ -43,22 +43,46 @@ if (-not (Test-TcUnitProcessEntry $Caller)) {
     if ($env:TCAUTO_UNIT_RELAUNCHED -eq $Caller) {
         throw "UnitIsolation: '$Caller' was started again with -File but still is not the process entry; refusing to change this session's environment (#118)"
     }
+    # Always Windows PowerShell 5.1 (powershell.exe), even when the caller runs under pwsh: 5.1 is
+    # the reference runtime of the module and of scripts/check.ps1. No -ExecutionPolicy here: the
+    # child inherits the caller's effective policy.
+    $tcUnitExe = Get-Command powershell.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $tcUnitExe) {
+        throw "UnitIsolation: powershell.exe not found, '$Caller' cannot run in its own process; not running it in this session (#118)"
+    }
+    # Only switches are forwarded: re-serialising other values on a command line would silently
+    # change them (quotes, arrays, empty strings, a trailing backslash, [bool]). A test that
+    # needs one has to be run with powershell.exe -File itself.
     $tcUnitArgs = @('-NoProfile', '-File', $Caller)
     if ($null -ne $CallerArgs) {
         foreach ($k in @($CallerArgs.Keys)) {
             $v = $CallerArgs[$k]
             if ($v -is [System.Management.Automation.SwitchParameter]) { if ($v.IsPresent) { $tcUnitArgs += "-$k" } }
-            else { $tcUnitArgs += "-$k"; $tcUnitArgs += "$v" }
+            else { throw "UnitIsolation: cannot forward -$k to '$Caller' in its own process (only switches are forwarded); run it with powershell.exe -NoProfile -File (#118)" }
         }
     }
     $tcUnitSavedRelaunch = $env:TCAUTO_UNIT_RELAUNCHED
     $tcUnitSavedEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'   # 5.1: stderr of a native child must not become a terminating error
     $env:TCAUTO_UNIT_RELAUNCHED = $Caller
-    try { & powershell.exe @tcUnitArgs; $tcUnitCode = $LASTEXITCODE }
+    $tcUnitCode = $null
+    $global:LASTEXITCODE = $null
+    $tcUnitStarted = $false
+    $tcUnitError = ''
+    try {
+        & $tcUnitExe.Source @tcUnitArgs
+        $tcUnitStarted = $?
+        $tcUnitCode = $LASTEXITCODE
+    }
+    catch { $tcUnitStarted = $false; $tcUnitError = $_.Exception.Message }
     finally {
         if ($null -eq $tcUnitSavedRelaunch) { Remove-Item Env:\TCAUTO_UNIT_RELAUNCHED -ErrorAction SilentlyContinue } else { $env:TCAUTO_UNIT_RELAUNCHED = $tcUnitSavedRelaunch }
         $ErrorActionPreference = $tcUnitSavedEap
+    }
+    # Fail closed: no exit code from the child -> it did not run; never fall back to this session.
+    # ($? is also $false for a child that ran and exited non-zero: then the exit code counts.)
+    if ($null -eq $tcUnitCode -or ($tcUnitCode -isnot [int])) {
+        throw "UnitIsolation: '$Caller' did not run in its own process (no exit code; started=$tcUnitStarted $tcUnitError); not running it in this session (#118)"
     }
     # 'exit' in a dot-sourced file ends only that file: the caller's line ends the test with this code.
     $TcUnitChildExit = $tcUnitCode
