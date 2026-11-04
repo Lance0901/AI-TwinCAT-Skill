@@ -11,6 +11,13 @@
       }
     },
     {
+      "name": "GetAutomationVersion",
+      "description": "Installed module version, source repo, commit and install time from the install manifest (#30, offline). Verify=true checks the installed files against the recorded SHA256 (INSTALL_MANIFEST_MISMATCH).",
+      "parameters": {
+        "Verify": { "type": "boolean", "description": "Compare installed files with the manifest hashes", "required": false }
+      }
+    },
+    {
       "name": "NewProject",
       "description": "Create new TwinCAT project with PLC and MAIN program. #70: only on an IDE with no solution open (otherwise SOLUTION_ALREADY_OPEN, nothing created); not offered on the MCP server",
       "parameters": {

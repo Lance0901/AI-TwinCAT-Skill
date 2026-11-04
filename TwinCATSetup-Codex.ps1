@@ -3,14 +3,40 @@
     Install TwinCAT Automation skill for Codex.
     Checks prerequisites, then installs the skill + AGENTS.md to user-level
     so Codex can use TwinCAT automation in ANY project.
+.DESCRIPTION
+    Writes tcauto-install-manifest.json into the skill directory (#30): source repository,
+    module version, commit (read from the .git files of this checkout, or from the
+    tcauto-source.json stamp of a release zip; git is not started), install time and the
+    SHA256 of every installed file (SKILL.md and TwinCATAutomation/; ~/.codex/AGENTS.md is not
+    part of it). Get-TcAutomationVersion (MCP GetAutomationVersion) reads it offline. The
+    Claude Code and Antigravity installers write the same schema.
+.PARAMETER Uninstall
+    Remove the skill directory and the AGENTS.md this installer wrote.
+.PARAMETER Verify
+    Read-only. Prints the install manifest (source, version, commit, install time), checks the
+    installed files against the manifest hashes, and compares them with an install from this
+    source (.agents/skills/twincat/SKILL.md with <module-path> substituted, src/TwinCATAutomation).
+    Exit code 0 = match, 1 = mismatch, not installed or no manifest.
+.PARAMETER SkillDir
+    Skill directory. Default: ~/.agents/skills/twincat. Tests pass a temp folder.
+.PARAMETER CodexHome
+    Folder that receives AGENTS.md. Default: ~/.codex. Tests pass a temp folder.
+.PARAMETER SkipPrerequisites
+    Skip the TwinCAT / IDE / module import checks (tests and CI without TwinCAT).
 .EXAMPLE
     pwsh ./TwinCATSetup-Codex.ps1
 .EXAMPLE
     pwsh ./TwinCATSetup-Codex.ps1 -Uninstall
+.EXAMPLE
+    pwsh ./TwinCATSetup-Codex.ps1 -Verify
 #>
 [CmdletBinding()]
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Verify,
+    [string]$SkillDir = (Join-Path $HOME ".agents\skills\twincat"),
+    [string]$CodexHome = (Join-Path $HOME ".codex"),
+    [switch]$SkipPrerequisites
 )
 
 $ErrorActionPreference = 'Continue'
@@ -19,9 +45,15 @@ $fail = 0
 $scriptRoot = $PSScriptRoot
 
 # Paths
-$userSkillDir  = Join-Path $HOME ".agents\skills\twincat"
-$codexHome     = Join-Path $HOME ".codex"
+$userSkillDir  = $SkillDir
+$codexHome     = $CodexHome
 $codexAgentsMd = Join-Path $codexHome "AGENTS.md"
+$srcModule     = Join-Path $scriptRoot "src\TwinCATAutomation"
+$srcSkill      = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
+
+# Install / manifest / verify helpers shared with the module (Get-TcAutomationVersion) and the
+# Claude Code / Antigravity installers.
+. (Join-Path $srcModule "Private\InstallManifest.ps1")
 
 function Write-Check {
     param([string]$Name, [bool]$Ok, [string]$Detail)
@@ -36,7 +68,7 @@ function Write-Check {
     }
 }
 
-# ─── Uninstall ───
+# --- Uninstall ---
 if ($Uninstall) {
     Write-Host ""
     Write-Host "=== Uninstall TwinCAT Skill ===" -ForegroundColor Yellow
@@ -61,116 +93,118 @@ if ($Uninstall) {
     return
 }
 
-# ─── Prerequisites Check ───
-Write-Host ""
-Write-Host "=== TwinCAT Automation — Setup Check ===" -ForegroundColor Cyan
-Write-Host ""
-
-# 1. Windows
-$isWin = $env:OS -eq 'Windows_NT'
-Write-Check "Windows OS" $isWin $(if ($isWin) { [System.Environment]::OSVersion.VersionString } else { "TwinCAT requires Windows" })
-
-# 2. PowerShell version
-$psVer = $PSVersionTable.PSVersion
-$psOk = $psVer.Major -ge 5
-Write-Check "PowerShell 5.1+" $psOk "Version: $psVer"
-
-# 3. TwinCAT installation
-$tcPaths = @(
-    "C:\TwinCAT\3.1",
-    "${env:ProgramFiles(x86)}\Beckhoff\TwinCAT\3.1",
-    "C:\TwinCAT"
-)
-$tcFound = $null
-foreach ($p in $tcPaths) {
-    if (Test-Path $p) { $tcFound = $p; break }
+# --- Verify (read-only) ---
+if ($Verify) {
+    $code = Invoke-TcInstallVerify -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill `
+        -Label 'Codex' -InstallerScript 'pwsh ./TwinCATSetup-Codex.ps1'
+    exit $code
 }
-Write-Check "TwinCAT 3 installed" ($null -ne $tcFound) $(if ($tcFound) { $tcFound } else { "Not found in common paths" })
 
-# 4. TwinCAT.Ads.dll
-$adsDllSearchRoots = @(
-    "C:\TwinCAT",
-    "${env:ProgramFiles(x86)}\Beckhoff\TwinCAT"
-)
-$adsFound = $null
-foreach ($root in $adsDllSearchRoots) {
-    if (Test-Path $root) {
-        $found = Get-ChildItem -Path $root -Filter "TwinCAT.Ads.dll" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.DirectoryName -match 'Components[\\/]Base[\\/]v\d+' } |
-            Sort-Object { [regex]::Match($_.DirectoryName, 'v(\d+)').Groups[1].Value -as [int] } -Descending |
-            Select-Object -First 1
-        if ($found) { $adsFound = $found.FullName; break }
-    }
+# --- Prerequisites Check ---
+if ($SkipPrerequisites) {
+    Write-Host ""
+    Write-Host "=== Prerequisites skipped (-SkipPrerequisites) ===" -ForegroundColor Yellow
 }
-Write-Check "TwinCAT.Ads.dll" ($null -ne $adsFound) $(if ($adsFound) { $adsFound } else { "Required for ADS communication" })
+else {
+    Write-Host ""
+    Write-Host "=== TwinCAT Automation - Setup Check ===" -ForegroundColor Cyan
+    Write-Host ""
 
-# 5. Visual Studio / TwinCAT XAE Shell
-$vsFound = $false
-$vsDetail = ""
-try {
-    $dteProgIds = @("VisualStudio.DTE.17.0", "VisualStudio.DTE.16.0", "TcXaeShell.DTE.15.0")
-    foreach ($progId in $dteProgIds) {
-        try {
-            $type = [System.Type]::GetTypeFromProgID($progId)
-            if ($null -ne $type) { $vsFound = $true; $vsDetail = $progId; break }
-        } catch {}
+    # 1. Windows
+    $isWin = $env:OS -eq 'Windows_NT'
+    Write-Check "Windows OS" $isWin $(if ($isWin) { [System.Environment]::OSVersion.VersionString } else { "TwinCAT requires Windows" })
+
+    # 2. PowerShell version
+    $psVer = $PSVersionTable.PSVersion
+    $psOk = $psVer.Major -ge 5
+    Write-Check "PowerShell 5.1+" $psOk "Version: $psVer"
+
+    # 3. TwinCAT installation
+    $tcPaths = @(
+        "C:\TwinCAT\3.1",
+        "${env:ProgramFiles(x86)}\Beckhoff\TwinCAT\3.1",
+        "C:\TwinCAT"
+    )
+    $tcFound = $null
+    foreach ($p in $tcPaths) {
+        if (Test-Path $p) { $tcFound = $p; break }
     }
-} catch {}
-Write-Check "IDE available (VS2022/XAE Shell)" $vsFound $(if ($vsDetail) { "ProgID: $vsDetail" } else { "No compatible IDE found" })
+    Write-Check "TwinCAT 3 installed" ($null -ne $tcFound) $(if ($tcFound) { $tcFound } else { "Not found in common paths" })
 
-# 6. Module import
-Write-Host ""
-Write-Host "--- Module Import ---" -ForegroundColor Cyan
-$modulePath = Join-Path $scriptRoot "src\TwinCATAutomation\TwinCATAutomation.psm1"
-$moduleOk = $false
-$cmdletCount = 0
-try {
-    Import-Module $modulePath -Force -ErrorAction Stop 3>$null
-    $cmds = Get-Command -Module TwinCATAutomation -ErrorAction SilentlyContinue
-    $cmdletCount = $cmds.Count
-    $moduleOk = $cmdletCount -gt 0
-} catch {
+    # 4. TwinCAT.Ads.dll
+    $adsDllSearchRoots = @(
+        "C:\TwinCAT",
+        "${env:ProgramFiles(x86)}\Beckhoff\TwinCAT"
+    )
+    $adsFound = $null
+    foreach ($root in $adsDllSearchRoots) {
+        if (Test-Path $root) {
+            $found = Get-ChildItem -Path $root -Filter "TwinCAT.Ads.dll" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.DirectoryName -match 'Components[\\/]Base[\\/]v\d+' } |
+                Sort-Object { [regex]::Match($_.DirectoryName, 'v(\d+)').Groups[1].Value -as [int] } -Descending |
+                Select-Object -First 1
+            if ($found) { $adsFound = $found.FullName; break }
+        }
+    }
+    Write-Check "TwinCAT.Ads.dll" ($null -ne $adsFound) $(if ($adsFound) { $adsFound } else { "Required for ADS communication" })
+
+    # 5. Visual Studio / TwinCAT XAE Shell
+    $vsFound = $false
+    $vsDetail = ""
+    try {
+        $dteProgIds = @("VisualStudio.DTE.17.0", "VisualStudio.DTE.16.0", "TcXaeShell.DTE.15.0")
+        foreach ($progId in $dteProgIds) {
+            try {
+                $type = [System.Type]::GetTypeFromProgID($progId)
+                if ($null -ne $type) { $vsFound = $true; $vsDetail = $progId; break }
+            } catch {}
+        }
+    } catch {}
+    Write-Check "IDE available (VS2022/XAE Shell)" $vsFound $(if ($vsDetail) { "ProgID: $vsDetail" } else { "No compatible IDE found" })
+
+    # 6. Module import
+    Write-Host ""
+    Write-Host "--- Module Import ---" -ForegroundColor Cyan
+    $modulePath = Join-Path $srcModule "TwinCATAutomation.psm1"
     $moduleOk = $false
-}
-Write-Check "Module import" $moduleOk "$cmdletCount cmdlets loaded"
+    $cmdletCount = 0
+    try {
+        Import-Module $modulePath -Force -ErrorAction Stop 3>$null
+        $cmds = Get-Command -Module TwinCATAutomation -ErrorAction SilentlyContinue
+        $cmdletCount = $cmds.Count
+        $moduleOk = $cmdletCount -gt 0
+    } catch {
+        $moduleOk = $false
+    }
+    Write-Check "Module import" $moduleOk "$cmdletCount cmdlets loaded"
 
-# Summary
-Write-Host ""
-Write-Host "=== Prerequisites ===" -ForegroundColor Cyan
-Write-Host "  Passed: $pass" -ForegroundColor Green
-Write-Host "  Failed: $fail" -ForegroundColor $(if ($fail -gt 0) { "Red" } else { "Green" })
-
-if ($fail -gt 0) {
+    # Summary
     Write-Host ""
-    Write-Host "Some checks failed. Please install missing prerequisites." -ForegroundColor Yellow
-    Write-Host "See README.md for requirements."
-    Write-Host ""
-    return
+    Write-Host "=== Prerequisites ===" -ForegroundColor Cyan
+    Write-Host "  Passed: $pass" -ForegroundColor Green
+    Write-Host "  Failed: $fail" -ForegroundColor $(if ($fail -gt 0) { "Red" } else { "Green" })
+
+    if ($fail -gt 0) {
+        Write-Host ""
+        Write-Host "Some checks failed. Please install missing prerequisites." -ForegroundColor Yellow
+        Write-Host "See README.md for requirements."
+        Write-Host ""
+        return
+    }
 }
 
-# ─── Install to User-Level ───
+# --- Install to User-Level ---
 Write-Host ""
 Write-Host "=== Install Skill (user-level) ===" -ForegroundColor Cyan
 
-# 1. Create skill directory
-if (-not (Test-Path $userSkillDir)) {
-    New-Item -Path $userSkillDir -ItemType Directory -Force | Out-Null
-}
-
-# 2. Copy module to skill directory
-$srcModule = Join-Path $scriptRoot "src\TwinCATAutomation"
-$destModule = Join-Path $userSkillDir "TwinCATAutomation"
-if (Test-Path $destModule) { Remove-Item $destModule -Recurse -Force }
-Copy-Item $srcModule -Destination $destModule -Recurse -Force
-$absModulePath = Join-Path $destModule "TwinCATAutomation.psm1"
-Write-Host "  Installed module: $destModule" -ForegroundColor Green
-
-# 3. Copy SKILL.md and replace <module-path> with absolute path
-$srcSkill = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
-$skillContent = Get-Content $srcSkill -Raw
-$skillContent = $skillContent -replace '<module-path>', $absModulePath
-Set-Content -Path (Join-Path $userSkillDir "SKILL.md") -Value $skillContent -Encoding UTF8
-Write-Host "  Installed skill: $userSkillDir\SKILL.md" -ForegroundColor Green
+# 1. Module -> <skill>\TwinCATAutomation, SKILL.md with <module-path> = absolute path (UTF-8
+#    without BOM), then the install manifest.
+$manifest = Install-TcSkillPayload -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill -Installer 'codex'
+$absModulePath = Join-Path $userSkillDir "TwinCATAutomation\TwinCATAutomation.psm1"
+Write-Host "  Installed module: $(Join-Path $userSkillDir 'TwinCATAutomation')" -ForegroundColor Green
+Write-Host "  Installed skill:  $(Join-Path $userSkillDir 'SKILL.md')" -ForegroundColor Green
+Write-Host "  Manifest:         $(Join-Path $userSkillDir $script:TcInstallManifestName)" -ForegroundColor Green
+Write-Host "  Version:          $($manifest.version)  commit $(if ($manifest.commit) { $manifest.commit } else { '(unknown)' }) [$($manifest.commitSource)]" -ForegroundColor White
 
 # 2. Write ~/.codex/AGENTS.md with absolute module path
 if (-not (Test-Path $codexHome)) {
@@ -189,23 +223,22 @@ Import-Module "$absModulePath" -Force
 
 Then follow the workflow: Connect-TcIde -> Build-TcProject -> Enable-TcConfig -Force -> Enter-TcPlcOnline -> Connect-TcAds -> Set-TcPlcState -State Run -> Read/Write variables.
 
-See the ``twincat`` skill for full command reference.
+See the ``twincat`` skill for full command reference. Installed version / source commit: Get-TcAutomationVersion.
 
 ## Important
 
-- AmsNetId is dynamic — never hardcode. Auto-detected from IDE target.
+- AmsNetId is dynamic - never hardcode. Auto-detected from IDE target.
 - All commands return JSON: {"success": true, "data": {...}} or {"success": false, "error": {...}}
 - No dialogs: Enable-TcConfig -Force uses ADS. Enter-TcPlcOnline uses Login(3).
-- Write MAIN-level vars for FB testing — PLC overwrites VAR_INPUT every scan cycle.
+- Write MAIN-level vars for FB testing - PLC overwrites VAR_INPUT every scan cycle.
 - Correct order: Build -> Activate -> Login -> ADS -> Start (ADS port 851 needs Login first).
 "@
 
 # Check if existing AGENTS.md belongs to us or to another project
-$shouldWrite = $true
 if (Test-Path $codexAgentsMd) {
     $existing = Get-Content $codexAgentsMd -Raw
     if ($existing -notmatch 'TwinCAT Automation') {
-        # Not ours — append instead of overwrite
+        # Not ours - append instead of overwrite
         $agentsContent = $existing.TrimEnd() + "`n`n" + $agentsContent
         Write-Host "  Appended to existing: $codexAgentsMd" -ForegroundColor Green
     } else {
@@ -214,10 +247,7 @@ if (Test-Path $codexAgentsMd) {
 } else {
     Write-Host "  Created: $codexAgentsMd" -ForegroundColor Green
 }
-
-if ($shouldWrite) {
-    Set-Content -Path $codexAgentsMd -Value $agentsContent -Encoding UTF8
-}
+Set-Content -Path $codexAgentsMd -Value $agentsContent -Encoding UTF8
 
 # Done
 Write-Host ""
@@ -228,5 +258,6 @@ Write-Host "  AGENTS.md written to: $codexAgentsMd" -ForegroundColor White
 Write-Host "  Module path:          $absModulePath" -ForegroundColor White
 Write-Host ""
 Write-Host "  Codex can now use TwinCAT automation in ANY project." -ForegroundColor Green
+Write-Host "  To verify:    pwsh ./TwinCATSetup-Codex.ps1 -Verify" -ForegroundColor DarkGray
 Write-Host "  To uninstall: pwsh ./TwinCATSetup-Codex.ps1 -Uninstall" -ForegroundColor DarkGray
 Write-Host ""
