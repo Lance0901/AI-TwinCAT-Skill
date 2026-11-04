@@ -225,12 +225,30 @@ $script:TcUiaErrorListScan = {
             $entireCond = New-Object System.Windows.Automation.AndCondition -ArgumentList (, $entireParts)
             $candidates = [System.Collections.Generic.List[object]]::new()
             try { foreach ($c in $combo.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
-            $winsNow = $null
-            try { $winsNow = Get-IdeTopLevelWindows } catch { $winsNow = $null }
-            if ($null -ne $winsNow) {
-                foreach ($wn in $winsNow) {
-                    try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+            # The drop-down is a popup window; a WPF ComboBox popup is likely an OWNED window
+            # (inferred, not measured), which TopLevelOf skips. So every visible window of the pid,
+            # owned ones included (UiaScanPidWindows.VisibleOf), is searched; with no candidate
+            # the desktop-wide FindAll is tried once when no selectable item was found (#42 review;
+            # needs a real-machine check on the zh-TW VS2022 Error List).
+            $winsNow = [System.Collections.Generic.List[object]]::new()
+            if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanPidWindows').Type) {
+                foreach ($wh in [TcAutomation.UiaScanPidWindows]::VisibleOf([uint32]$TargetPid)) {
+                    try { $we = $ae::FromHandle($wh); if ($null -ne $we) { $winsNow.Add($we) } } catch { }
                 }
+            }
+            else { try { foreach ($we in Get-IdeTopLevelWindows) { $winsNow.Add($we) } } catch { } }
+            foreach ($wn in $winsNow) {
+                try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+            }
+            $selectable = @($candidates | Where-Object { $null -ne (Get-UiaPattern $_ ([System.Windows.Automation.SelectionItemPattern]::Pattern)) }).Count
+            if ($selectable -eq 0) {
+                $notes.Add("scope popup: no selectable 'Entire Solution' item in the IDE windows; desktop-wide FindAll fallback")
+                try {
+                    foreach ($wn in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+                        try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+                    }
+                }
+                catch { }
             }
             $selected = $false
             foreach ($c in $candidates) {

@@ -355,6 +355,50 @@ describe('BuildProject through the real bridge (mock IDE)', { skip: !isWin && 'W
 
 // #57 through the real bridge.ps1 and the real Get-TcSymbols / Read-TcVariable (ADS mocked in the
 // fixture module): array data must reach the client element for element.
+describe('GetIdeModalDialog through the real bridge: an incomplete scan is not "no dialog" (#42)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
+  async function modal(scenario, args) {
+    if (!shared) await build('clean');
+    fs.writeFileSync(scenarioFile, scenario);
+    try {
+      return (await callShared('GetIdeModalDialog', args)).body;
+    } finally {
+      fs.writeFileSync(scenarioFile, 'clean');
+    }
+  }
+  test('complete scan, no dialog: success, scanComplete true, dialog null', async () => {
+    const r = await modal('clean', { ProcessId: 4242 });
+    assert.equal(r.success, true, JSON.stringify(r));
+    assert.equal(r.data.scanComplete, true);
+    assert.equal(r.data.dialog, null);
+  });
+  test('scan did not finish: MODAL_SCAN_INCOMPLETE, scanComplete false, modalScan; prepare capped below the tool timeout', async () => {
+    const r = await modal('modal-incomplete', { ProcessId: 4242, TimeoutSec: 60 });
+    assert.equal(r.success, false, JSON.stringify(r));
+    assert.equal(r.error.code, 'MODAL_SCAN_INCOMPLETE');
+    // the server rewrites cmdlet names in hints to tool names
+    assert.match(r.error.hint, /GetIdeModalDialog TimeoutSec=15/);
+    assert.equal(r.data.ideProcessId, 4242);
+    assert.equal(r.data.scanComplete, false);
+    assert.equal(r.data.dialog, null);
+    assert.equal(r.data.modalScan.reason, 'timeout');
+    assert.equal(r.data.modalScan.timeoutSec, 60);
+    // 90 s tool timeout - 15 s margin - 60 s scan = 15 s preparation cap
+    assert.match(r.data.modalScan.message, /timeout=60 prepare=15\)/);
+    const d = await modal('modal-incomplete', { ProcessId: 4242 });
+    assert.match(d.data.modalScan.message, /timeout=5 prepare=60\)/);
+  });
+  test('scan throws: MODAL_SCAN_INCOMPLETE with reason error, the bridge survives', async () => {
+    const r = await modal('modal-throws', { ProcessId: 4242 });
+    assert.equal(r.success, false, JSON.stringify(r));
+    assert.equal(r.error.code, 'MODAL_SCAN_INCOMPLETE');
+    assert.equal(r.data.scanComplete, false);
+    assert.equal(r.data.modalScan.reason, 'error');
+    assert.match(r.data.modalScan.message, /UIA scan exploded/);
+    const again = await modal('clean', { ProcessId: 4242 });
+    assert.equal(again.success, true, 'same bridge answers again');
+  });
+});
+
 describe('array data through the real bridge (GetSymbols / ReadVariable, #57)', { skip: !isWin && 'Windows only (powershell.exe bridge)' }, () => {
   test('GetSymbols returns every symbol as an array, also for one match and for none', async () => {
     const many = (await callShared('GetSymbols', { Filter: 'MAIN*' })).body;

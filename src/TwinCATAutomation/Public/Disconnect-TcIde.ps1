@@ -133,7 +133,8 @@ function Disconnect-TcIde {
             else {
                 $data = New-QuitData -QuitResult $quitResult -Dialog $dialog -Disconnected $false
                 $data.message = 'NOT disconnected; IDE NOT quit: the modal-dialog scan did not complete, Solution.Close / DTE.Quit not attempted. The connection is kept.'
-                return New-TcModalScanIncompleteResult -Scan $dialog -Operation 'Disconnect-TcIde -Quit (Solution.Close / DTE.Quit; connection kept)' -Data $data
+                return New-TcModalScanIncompleteResult -Scan $dialog -Operation 'Disconnect-TcIde -Quit (Solution.Close / DTE.Quit; connection kept)' -Data $data `
+                    -HintSuffix 'Fallbacks for Disconnect-TcIde: without -Quit it only releases the COM references (the IDE keeps running); an IDE this session launched (data.ownedBySession = true) can be ended with Disconnect-TcIde -Quit -Kill.'
             }
         }
         elseif ($null -ne $dialog) {

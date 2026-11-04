@@ -618,12 +618,18 @@ function Invoke-OpModal {
     if ($timeoutSec -lt 1) { $timeoutSec = 1 }
     if ($timeoutSec -gt 60) { $timeoutSec = 60 }
 
+    # #42 review: prepare (cold start) + scan must end before the Node-side tool timeout
+    # (GetIdeModalDialog timeoutMs 90000 in lib/composites.js), else BRIDGE_TIMEOUT kills this
+    # bridge. 90 - 15 s margin (runspace start-up, JSON, pipe) - scan budget = prepare cap
+    # (TimeoutSec 60 -> 15 s prepare, TimeoutSec 5 -> 60 s).
+    $toolTimeoutSec = 90
+    $prepareSec = [Math]::Max(1, [Math]::Min(60, $toolTimeoutSec - 15 - $timeoutSec))
     $dialog = $null
     try {
         $objects = Invoke-Captured -Id $Id -Script {
-            param($p, $t)
-            Invoke-InModule { param($p2, $t2) Find-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 } @($p, $t)
-        } -ArgumentList @($ideProcessId, $timeoutSec)
+            param($p, $t, $pp)
+            Invoke-InModule { param($p2, $t2, $pp2) Find-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 -PrepareTimeoutSec $pp2 } @($p, $t, $pp)
+        } -ArgumentList @($ideProcessId, $timeoutSec, $prepareSec)
         foreach ($o in $objects) { if ($null -ne $o) { $dialog = $o } }
     }
     catch {

@@ -357,9 +357,11 @@ function Connect-TcIde {
                         $blockedData | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $hit.Dialog)
                     }
                     $weakCode = if ($null -ne $hitDialog) { 'IDE_MODAL_DIALOG' } elseif ($hitScanIncomplete) { 'MODAL_SCAN_INCOMPLETE' } else { 'IDE_BUSY' }
+                    $weakHint = Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })
+                    if ($hitScanIncomplete) { $weakHint = "Rescan first: Get-TcIdeModalDialog -ProcessId $blockedPid -TimeoutSec 15 (the dialog scan of this IDE did not complete, data.modalScan). $weakHint" }
                     return New-TcResult -Success $false `
                         -ErrorMessage "IDE_BLOCKED_SAME_NAME (weak / ambiguous evidence): the IDE pid $blockedPid $evidence and $weakText. No second IDE was launched and nothing was attached." `
-                        -ErrorCode $weakCode -Hint (Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })) -Data $blockedData
+                        -ErrorCode $weakCode -Hint $weakHint -Data $blockedData
                 }
                 # attached: a dialog -> IDE_MODAL_DIALOG, an incomplete scan -> MODAL_SCAN_INCOMPLETE (#42)
                 if ($null -ne $hit.Dialog) {

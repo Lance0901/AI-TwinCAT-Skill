@@ -236,6 +236,8 @@ export const GetIdeModalDialog = {
     'Any other dialog is kind "unknown" (reloadTarget null): handle it by hand, or DisconnectIde Quit=true Kill=true for an IDE ConnectIde launched. ' +
     'buttons = [{id, name}] of a Win32 message box (control id 1 OK, 2 Cancel, 6 Yes, 7 No; name is the localized caption).',
   annotations: { readOnlyHint: true },
+  // bridge.ps1 Invoke-OpModal caps the scan preparation so that preparation + TimeoutSec + 15 s
+  // margin stays below this (#42): change both together.
   timeoutMs: 90000,
   inputSchema: {
     type: 'object',

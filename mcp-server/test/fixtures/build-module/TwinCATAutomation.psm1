@@ -39,6 +39,8 @@
 #   no-plc                 lbi 0, no rows; the solution has no .plcproj (I/O / NC only)
 #   context-platform       lbi 0, no rows; Get-TcSolutionPlatform only has platformSource 'context'
 #                          (its platform is the project platform 'TwinCAT OS (ARMT2)')
+#   modal-incomplete       Find-TcIdeModalDialog returns the incomplete-scan record (#42)
+#   modal-throws           Find-TcIdeModalDialog throws (#42, bridge catch branch)
 # GetSymbols / ReadVariable (#57): the real Get-TcSymbols / Read-TcVariable on a fixture symbol
 # table (TcAdsHelper type defined here, no ADS); a path containing 'Missing' is not found.
 # Enable-TcConfig: the solution platform starts as env TCAUTO_TEST_PLATFORM (default
@@ -97,6 +99,8 @@ $script:FixtureScenarios = @{
     'coverage-error'        = @{ Lbi = 0; Sets = @(); CoverageError = 'SolutionContexts not readable (fixture)' }
     'no-plc'                = @{ Lbi = 0; Sets = @(); NoPlc = $true }
     'context-platform'      = @{ Lbi = 0; Sets = @(); PlatformSource = 'context'; ProjectPlatform = 'TwinCAT OS (ARMT2)' }
+    'modal-incomplete'      = @{ Lbi = 0; Sets = @(); ModalScan = 'incomplete' }
+    'modal-throws'          = @{ Lbi = 0; Sets = @(); ModalScan = 'throws' }
 }
 function Get-FixtureScenario {
     $name = $script:FixtureScenario
@@ -134,7 +138,16 @@ function Get-TcSysManager {
 }
 $script:FixtureBuilding = $false
 function Find-TcIdeModalDialog {
-    if ($script:FixtureBuilding -and (Get-FixtureScenario).ModalWhileBuilding) {
+    [CmdletBinding()]
+    param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
+    # #42: modal-incomplete -> the real incomplete-scan record (its message carries the caps the
+    # bridge passed); modal-throws -> the scan throws (bridge catch branch)
+    $sc = Get-FixtureScenario
+    if ($sc.ModalScan -eq 'incomplete') {
+        return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'timeout' -TimeoutSec $TimeoutSec -Message "fixture: scan did not finish (timeout=$TimeoutSec prepare=$PrepareTimeoutSec)")
+    }
+    if ($sc.ModalScan -eq 'throws') { throw 'fixture: UIA scan exploded' }
+    if ($script:FixtureBuilding -and $sc.ModalWhileBuilding) {
         return @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (fixture)'; Kind = 'unknown'; Hwnd = 0; Buttons = @() }
     }
     $null

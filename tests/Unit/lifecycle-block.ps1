@@ -215,6 +215,45 @@ try {
     $ok = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(5) success: activated / restarted / loggedIn true, reachedState Run, no block' ($ok.success -and $ok.data.activated -and $ok.data.restarted -and $ok.data.loggedIn -and $ok.data.reachedState -eq 'Run' -and $null -eq $ok.data.PSObject.Properties['lifecycleBlock']) "code=$($ok.error.code) msg=$($ok.error.message)"
 
+    # --- (5b) #42: the modal scan does not complete ---
+    # $global:Scan.From: 'verify' = incomplete only after the login (the verify readback), 'start' = always
+    $global:Scan = @{ From = 'verify'; Calls = [System.Collections.Generic.List[int]]::new() }
+    & $mod {
+        $script:UtOrigFind42 = ${function:Find-TcIdeModalDialog}
+        function script:Find-TcIdeModalDialog {
+            [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+            if ($global:Scan.From -eq 'start' -or $global:Calls.Login -gt 0) {
+                $global:Scan.Calls.Add($TimeoutSec)
+                return (New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec $TimeoutSec -Message 'mock: scan did not finish')
+            }
+            $null
+        }
+    }
+    # (a1) verify: system and PLC Run, scan incomplete -> one rescan (<= 15 s), MODAL_SCAN_INCOMPLETE + block
+    Reset-Calls; $fake::Mode = 'run'; $global:PlcState = 'Run'; $global:Scan.Calls.Clear(); $global:Scan.From = 'verify'
+    $v = Enable-TcConfig -Force -TimeoutSec 120 -WarningAction SilentlyContinue
+    $scans = @($global:Scan.Calls)
+    Check '(5b) verify scan incomplete -> MODAL_SCAN_INCOMPLETE, not success' ((-not $v.success) -and $v.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $v.data.finalCheck.dialogScanComplete -eq $false -and $v.data.finalCheck.modalScan.reason -eq 'timeout') "code=$($v.error.code) msg=$($v.error.message)"
+    Check '(5b) exactly one rescan, bounded by Min(15, remaining); no third scan in the failure diagnostics' ($scans.Count -eq 2 -and $scans[1] -le 15 -and $scans[1] -ge 1) "scans=$($scans -join ',')"
+    Check '(5b) block recorded (runtime was changed), step verify' ($v.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $v.data.lifecycleBlock.errorCode -eq 'MODAL_SCAN_INCOMPLETE' -and $v.data.lifecycleBlock.step -eq 'verify') (J $v.data.lifecycleBlock)
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'test (5b) a1 done'
+    # (a2) verify: scan incomplete AND the system fell back to Config -> RUNTIME_STATE_MISMATCH
+    & $mod {
+        $script:UtOrigSss42 = ${function:Set-TcSystemState}
+        function script:Set-TcSystemState { param([string]$State, [string]$AmsNetId, [int]$TimeoutSec) $global:Calls.SetSystemState++; if ($State -eq 'Run') { [TwinCAT.Ads.TcAdsClient]::Mode = 'config' }; New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State }) }
+    }
+    Reset-Calls; $fake::Mode = 'run'; $global:Scan.Calls.Clear()
+    $v = Enable-TcConfig -Force -TimeoutSec 120 -WarningAction SilentlyContinue
+    Check '(5b) verify scan incomplete + state mismatch -> RUNTIME_STATE_MISMATCH, block' ((-not $v.success) -and $v.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $v.data.finalCheck.dialogScanComplete -eq $false -and $v.data.lifecycleBlock.errorCode -eq 'RUNTIME_STATE_MISMATCH') "code=$($v.error.code) msg=$($v.error.message)"
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'test (5b) a2 done'
+    & $mod { Set-Item -Path function:script:Set-TcSystemState -Value $script:UtOrigSss42 }
+    # (b) Activate only (no -Force): the pre-Activate gate sees an incomplete scan -> MODAL_SCAN_INCOMPLETE, nothing sent, NO block
+    Reset-Calls; $fake::Mode = 'run'; $global:Scan.Calls.Clear(); $global:Scan.From = 'start'
+    $v = Enable-TcConfig -WarningAction SilentlyContinue
+    $blk = Get-Content -LiteralPath $stateFile -Raw -ErrorAction SilentlyContinue
+    Check '(5b) pre-Activate gate incomplete -> MODAL_SCAN_INCOMPLETE, no Activate, no block' ((-not $v.success) -and $v.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Calls.Activate -eq 0 -and $null -eq $v.data.PSObject.Properties['lifecycleBlock'] -and ($null -eq $blk -or $blk -notmatch [regex]::Escape($A))) "code=$($v.error.code) activate=$($global:Calls.Activate) block=$($null -ne $v.data.PSObject.Properties['lifecycleBlock'])"
+    & $mod { Set-Item -Path function:script:Find-TcIdeModalDialog -Value $script:UtOrigFind42 }
+
     # --- (6) precondition failure writes nothing; SYSTEM_STATE_MISMATCH / PLC_RUN_TIMEOUT write ---
     & $mod { $script:UtOrigBR = ${function:Get-TcBuildRequired} }
     & $mod { function script:Get-TcBuildRequired { [PSCustomObject]@{ solution = 'C:\Demo\Guard.sln'; kind = 'code-changed'; reason = 'PLC code changed by mock'; reasons = [PSCustomObject]@{ 'code-changed' = 'PLC code changed by mock' }; at = 'now' } } }

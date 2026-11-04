@@ -46,17 +46,29 @@ try {
     Check 'A2 dialog scan: EnumWindows by pid + PrepareOnly mode' ($scanText -match 'TopLevelOf' -and $scanText -match 'EnumWindows' -and $scanText -match 'PrepareOnly') ''
     $elText = Get-CodeText (& $mod { $script:TcUiaErrorListScan }).ToString()
     $elFindAll = [regex]::Matches($elText, 'RootElement\s*\.\s*FindAll').Count
-    Check 'A3 Error List scan: TopLevelOf, desktop FindAll only once (fallback)' ($elText -match 'TopLevelOf' -and $elFindAll -eq 1) "FindAll count $elFindAll"
+    Check 'A3 Error List scan: TopLevelOf / VisibleOf, desktop FindAll only as the two fallbacks' ($elText -match 'TopLevelOf' -and $elText -match 'VisibleOf' -and $elFindAll -eq 2) "FindAll count $elFindAll"
+
+    # --- A4: Initialize-TcUiaScanTypes is bounded (types not compiled yet in this process) ---
+    if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
+        & $mod { $script:TcUiaDialogScan = { param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false) Start-Sleep -Seconds 6 } }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $ok = & $mod { Initialize-TcUiaScanTypes -TimeoutSec 1 }
+        $ms = $sw.ElapsedMilliseconds
+        & $mod { param($s) $script:TcUiaDialogScan = $s } $origScan
+        Check 'A4 Initialize-TcUiaScanTypes: a hanging preparation is abandoned at -TimeoutSec' ($ok -eq $false -and $ms -lt 3000) "$ms ms ok=$ok"
+    }
+    else { Check 'A4 Initialize-TcUiaScanTypes cap (skipped: types already loaded)' $true '' }
 
     # --- B: real scan, real EnumWindows, a pid without top-level windows ---
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $r = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -TimeoutSec 30 } $PID
     $inc = & $mod { param($d) Test-TcModalScanIncomplete $d } $r
     Check 'B1 real scan of a pid without windows -> complete, no dialog' ($null -eq $r -and -not $inc) ("{0} ms {1}" -f $sw.ElapsedMilliseconds, (J $r))
-    $types = @('UiaScanWindows', 'UiaScanNative', 'UiaScanButtonNative') | Where-Object { -not ([System.Management.Automation.PSTypeName]"TcAutomation.$_").Type }
+    $types = @('UiaScanWindows', 'UiaScanPidWindows', 'UiaScanNative', 'UiaScanButtonNative') | Where-Object { -not ([System.Management.Automation.PSTypeName]"TcAutomation.$_").Type }
     Check 'B2 all scan types compiled (one Add-Type)' (@($types).Count -eq 0) "missing: $($types -join ',')"
     $own = @([TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$PID))
-    Check 'B3 EnumWindows lists no window for this console process' ($own.Count -eq 0) "$($own.Count)"
+    $ownAll = @([TcAutomation.UiaScanPidWindows]::VisibleOf([uint32]$PID))
+    Check 'B3 EnumWindows lists no window for this console process' ($own.Count -eq 0 -and $ownAll.Count -eq 0) "$($own.Count)/$($ownAll.Count)"
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $ok = & $mod { Initialize-TcUiaScanTypes }
     Check 'B4 Initialize-TcUiaScanTypes: types present, fast once compiled' ($ok -eq $true -and $sw.ElapsedMilliseconds -lt 3000) "$($sw.ElapsedMilliseconds) ms"
@@ -168,6 +180,7 @@ try {
     $r = Disconnect-TcIde -Quit
     $still = & $mod { $null -ne $script:TcDte -and $script:TcIdeConnected }
     Check 'E3 Disconnect-TcIde -Quit, incomplete scan -> MODAL_SCAN_INCOMPLETE, nothing attempted, connection kept' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and -not $global:M.Closed -and -not $global:M.Quit -and $r.data.disconnected -eq $false -and $r.data.modalScan.reason -eq 'timeout' -and $still) (J $r)
+    Check 'E3 hint names the Disconnect fallbacks' ($r.error.hint -match 'without -Quit' -and $r.error.hint -match 'Disconnect-TcIde -Quit -Kill') "$($r.error.hint)"
     & $mod { $script:TcIdeProcessId = $null; $script:TcIdeSelectedBy = $null }
 
     # E4
