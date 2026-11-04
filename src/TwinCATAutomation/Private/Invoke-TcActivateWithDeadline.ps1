@@ -87,7 +87,8 @@ $sm.ActivateConfiguration()
                 $nextScan = $sw.Elapsed.TotalSeconds + 2
                 try {
                     $dlg = Find-TcIdeModalDialog
-                    if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg }
+                    # an incomplete scan (#42) is no dialog record: never stored as "seen"
+                    if ($null -ne $dlg -and -not (Test-TcModalScanIncomplete $dlg)) { $script:TcLastModalDialog = $dlg }
                 } catch { }
             }
         }
@@ -121,11 +122,13 @@ $sm.ActivateConfiguration()
         }
 
         # --- deadline passed: collect diagnostics, abandon the call ---
-        $diag = [ordered]@{ dialog = $null; ideAlive = $null; ideResponding = $null; runtimeAlive = $null; systemState = $null; elapsedSec = [int]$sw.Elapsed.TotalSeconds }
+        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; ideAlive = $null; ideResponding = $null; runtimeAlive = $null; systemState = $null; elapsedSec = [int]$sw.Elapsed.TotalSeconds }
         try {
             $dlg = Find-TcIdeModalDialog
-            if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
-        } catch { }
+            # #42: an incomplete scan is reported (dialogScanComplete false), not read as "no dialog"
+            if (Test-TcModalScanIncomplete $dlg) { $diag['dialogScanComplete'] = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg }
+            elseif ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
+        } catch { $diag['dialogScanComplete'] = $false }
         if ($idePid -gt 0) {
             try { $proc = Get-Process -Id $idePid -ErrorAction Stop; $diag.ideAlive = $true; $diag.ideResponding = [bool]$proc.Responding }
             catch { $diag.ideAlive = $false }

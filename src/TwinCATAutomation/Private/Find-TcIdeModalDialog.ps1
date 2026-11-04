@@ -31,11 +31,79 @@
 #     to Pane / Edit / Document descendants, skipping buttons and the title.
 # mcp-server/bridge/modal-probe.ps1 dot-sources this file and runs this same scriptblock
 # (-ScanScript), so its parameter list and output shape are a contract.
+#
+# PrepareOnly (4th argument, default $false, #42): only load the UIA assemblies and compile the
+# P/Invoke types, then return without touching any window. Find-TcIdeModalDialog runs this step
+# before the timed scan so the cold-start cost does not eat the -TimeoutSec budget: Add-Type
+# -MemberDefinition / -TypeDefinition runs the C# compiler (csc.exe, a separate process), which
+# was the bulk of the first scan (measured 2026-11-04, Windows 11, Windows PowerShell 5.1, idle:
+# first scan 573-643 ms, second 24-34 ms, one Add-Type ~150 ms; under CPU load the issue #42
+# measurement 2026-10-28 saw 4-6.7 s for the first scan and 0.1-1.2 s for the second). All
+# missing types are compiled in ONE Add-Type (one compiler run) instead of up to three.
 $script:TcUiaDialogScan = {
-    param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText)
+    param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false)
 
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+
+    # P/Invoke types (TcAutomation.*), AppDomain-wide: compiled once per process, every missing one
+    # in a single Add-Type. Close-TcMessageBox and the Error List scan use UiaScanWindows too.
+    $tcTypeSource = [ordered]@{
+        UiaScanWindows      = @'
+public class UiaScanWindows {
+    public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumProc callback, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(System.IntPtr hWnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+    public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint targetPid) {
+        var list = new System.Collections.Generic.List<System.IntPtr>();
+        EnumWindows(delegate (System.IntPtr h, System.IntPtr l) {
+            uint p;
+            GetWindowThreadProcessId(h, out p);
+            if (p != targetPid || !IsWindowVisible(h)) { return true; }
+            System.IntPtr owner = GetWindow(h, 4);  // GW_OWNER
+            if (owner == System.IntPtr.Zero || !IsWindowVisible(owner)) { list.Add(h); }
+            return true;
+        }, System.IntPtr.Zero);
+        return list;
+    }
+}
+'@
+        UiaScanNative       = @'
+public class UiaScanNative {
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+}
+'@
+        UiaScanButtonNative = @'
+public class UiaScanButtonNative {
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    public static extern int GetClassName(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern int GetDlgCtrlID(System.IntPtr hWnd);
+}
+'@
+    }
+    $tcMissing = @($tcTypeSource.Keys | Where-Object { -not ([System.Management.Automation.PSTypeName]"TcAutomation.$_").Type })
+    if ($tcMissing.Count -gt 0) {
+        $tcSrc = "namespace TcAutomation {`r`n" + (($tcMissing | ForEach-Object { $tcTypeSource[$_] }) -join "`r`n") + "`r`n}"
+        Add-Type -TypeDefinition $tcSrc -ErrorAction Stop
+    }
+    if ($PrepareOnly) {
+        # UIA client start-up: the desktop root element only (no FindAll: that one walks every
+        # top-level window of every process, see below).
+        try { $null = [System.Windows.Automation.AutomationElement]::RootElement.Current.ControlType } catch { }
+        return
+    }
 
     $ae = [System.Windows.Automation.AutomationElement]
     # Top-level windows of the pid: EnumWindows + GetWindowThreadProcessId (no window messages),
@@ -47,31 +115,8 @@ $script:TcUiaDialogScan = {
     # window, are skipped as on the UIA desktop level (UIA lists those under their owner; measured, not documented: the MessageBox(owner) of fixtures/host-window.ps1 is a UIA child of its form, see mcp-server/bridge/modal-probe.ps1). A
     # window whose owner is hidden is kept: skipping every owned window lost the main windows
     # of fixtures/host-window.ps1 and host-window-wpf.ps1 (measured 2026-10-25).
-    if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
-        Add-Type -Namespace TcAutomation -Name UiaScanWindows -MemberDefinition @'
-public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern bool EnumWindows(EnumProc callback, System.IntPtr lParam);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern bool IsWindowVisible(System.IntPtr hWnd);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
-public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint targetPid) {
-    var list = new System.Collections.Generic.List<System.IntPtr>();
-    EnumWindows(delegate (System.IntPtr h, System.IntPtr l) {
-        uint p;
-        GetWindowThreadProcessId(h, out p);
-        if (p != targetPid || !IsWindowVisible(h)) { return true; }
-        System.IntPtr owner = GetWindow(h, 4);  // GW_OWNER
-        if (owner == System.IntPtr.Zero || !IsWindowVisible(owner)) { list.Add(h); }
-        return true;
-    }, System.IntPtr.Zero);
-    return list;
-}
-'@ -ErrorAction Stop
-    }
+    # No desktop-wide RootElement.FindAll is left in this scan (#42): the owned-dialog and VS2022
+    # message-box searches below start at the IDE's own window elements.
     $windows = New-Object System.Collections.ArrayList
     foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
         try {
@@ -84,16 +129,10 @@ public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint tar
 
     # Win32 caption of a window (GetWindowText). The UIA Name of a WPF window can be its
     # content text instead of its title, so the caption is used where the title matters.
-    # The P/Invoke type is compiled once per process and only when first needed.
+    # The P/Invoke type is compiled at the top of the scan (one Add-Type for all types).
     function Get-TcScanCaption([long]$h) {
         if ($h -le 0) { return '' }
         try {
-            if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanNative').Type) {
-                Add-Type -Namespace TcAutomation -Name UiaScanNative -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
-public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
-'@ -ErrorAction Stop
-            }
             $csb = New-Object System.Text.StringBuilder 1024
             $null = [TcAutomation.UiaScanNative]::GetWindowText([IntPtr]$h, $csb, $csb.Capacity)
             return $csb.ToString().Trim()
@@ -107,18 +146,6 @@ public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBui
         $list = New-Object System.Collections.ArrayList
         if ($h -le 0) { return ,$list }
         try {
-            if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanButtonNative').Type) {
-                Add-Type -Namespace TcAutomation -Name UiaScanButtonNative -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
-public static extern int GetWindowText(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
-[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
-public static extern int GetClassName(System.IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
-[System.Runtime.InteropServices.DllImport("user32.dll")]
-public static extern int GetDlgCtrlID(System.IntPtr hWnd);
-'@ -ErrorAction Stop
-            }
             $native = [TcAutomation.UiaScanButtonNative]
             $child = $native::GetWindow([IntPtr]$h, 5)   # GW_CHILD
             $guard = 0
@@ -595,19 +622,30 @@ function Find-TcIdeModalDialog {
         'file') and for the XAE "project file ... modified outside of TwinCAT XAE. Do you
         want to reload the project?" prompt (ReloadTarget 'project'), else 'unknown' with
         ReloadTarget $null).
-        Returns $null when the pid is unknown, the process does
-        not exist, no dialog is open, or the scan does not finish within -TimeoutSec.
+        Returns $null only when the scan COMPLETED without finding a dialog, or there is nothing
+        to scan (pid unknown, process gone).
 
-        The UI Automation calls run in a separate runspace with a hard timeout:
+        A scan that did not complete (#42) returns the incomplete marker of
+        New-TcModalScanIncomplete instead: @{ ScanIncomplete = $true; Reason = 'timeout' |
+        'prepare-timeout' | 'error'; ... Kind = 'scan-incomplete' }. It is NOT "no dialog": it is
+        non-$null on purpose, so a pre-flight check written as `if ($null -ne $dialog)` refuses
+        the operation, and New-TcModalDialogResult turns it into MODAL_SCAN_INCOMPLETE. Callers
+        that only poll (a watcher, a wait loop whose end is decided by another readback) skip it
+        with Test-TcModalScanIncomplete; it must never be stored in $script:TcLastModalDialog.
+
+        Two phases in one STA runspace: (1) prepare: load the UIA assemblies and compile the
+        P/Invoke types (no window is touched, so it cannot block on the IDE; bounded by
+        $script:TcUiaScanPrepareTimeoutSec, default 60 s, NOT by -TimeoutSec: the cold start
+        that #42 measured is mostly this step); (2) the scan itself, bounded by -TimeoutSec:
         while a modal dialog is up, UIA itself can block on the IDE's message loop.
         This function never throws.
     .PARAMETER ProcessId
         IDE process id. Default: $script:TcIdeProcessId.
     .PARAMETER TimeoutSec
-        Maximum time for the UIA scan. Default 5.
+        Maximum time for the UIA scan (phase 2). Default 5.
     .OUTPUTS
         Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; ReloadTarget = [string|$null];
-        Hwnd = [long]; Buttons = @(@{ Id = [int]; Name = [string] }) } or $null
+        Hwnd = [long]; Buttons = @(@{ Id = [int]; Name = [string] }) }, the incomplete marker, or $null
         (Hwnd = native window handle of the dialog, 0 when unknown; used by Close-TcReloadPrompt /
         Close-TcMessageBox. Buttons = Win32 button children of a #32770 message box, by control
         id: 1 OK, 2 Cancel, 6 Yes, 7 No; empty for other windows; for the VS2022 WPF message box
@@ -644,6 +682,13 @@ function Find-TcIdeModalDialog {
         }
     }
 
+    $prepareTimeoutSec = 60
+    if ($null -ne $script:TcUiaScanPrepareTimeoutSec) {
+        try { $prepareTimeoutSec = [Math]::Max(1, [int]$script:TcUiaScanPrepareTimeoutSec) } catch { $prepareTimeoutSec = 60 }
+    }
+    $scanText = $script:TcUiaDialogScan.ToString()
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $prepareMs = [long]0
     $ps = $null
     $rs = $null
     try {
@@ -653,23 +698,52 @@ function Find-TcIdeModalDialog {
         $rs.Open()
         $ps = [PowerShell]::Create()
         $ps.Runspace = $rs
-        $null = $ps.AddScript($script:TcUiaDialogScan.ToString()).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500)
+
+        # --- phase 1: prepare (cold start, #42); fast once the types exist in this process ---
+        $null = $ps.AddScript($scanText).AddArgument(0).AddArgument([long]0).AddArgument(0).AddArgument($true)
+        $handle = $ps.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne($prepareTimeoutSec * 1000)) {
+            Write-Verbose "Find-TcIdeModalDialog: UIA scan preparation did not finish within $prepareTimeoutSec s."
+            try { $null = $ps.BeginStop($null, $null) } catch { }
+            $ps = $null
+            $rs = $null
+            return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'prepare-timeout' -TimeoutSec $TimeoutSec -ElapsedMs $sw.ElapsedMilliseconds `
+                    -Message "loading UI Automation / compiling the scan types did not finish within $prepareTimeoutSec s")
+        }
+        $null = $ps.EndInvoke($handle)
+        if ($ps.Streams.Error.Count -gt 0) {
+            return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -ElapsedMs $sw.ElapsedMilliseconds `
+                    -Message "scan preparation failed: $($ps.Streams.Error[0])")
+        }
+        $prepareMs = $sw.ElapsedMilliseconds
+        $ps.Commands.Clear()
+
+        # --- phase 2: the scan, bounded by -TimeoutSec ---
+        $scanWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = $ps.AddScript($scanText).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500)
         $handle = $ps.BeginInvoke()
         if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) {
-            Write-Verbose "Find-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s."
+            Write-Verbose "Find-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s (preparation took $prepareMs ms)."
             # Do not block on Stop(): the scan thread may be stuck inside UIA. Leave it to die.
             try { $null = $ps.BeginStop($null, $null) } catch { }
             $ps = $null
             $rs = $null
-            return $null
+            return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'timeout' -TimeoutSec $TimeoutSec -ElapsedMs $scanWatch.ElapsedMilliseconds -PrepareMs $prepareMs `
+                    -Message "the UI Automation scan of pid $ProcessId did not finish within $TimeoutSec s")
         }
         $out = $ps.EndInvoke($handle)
+        Write-Verbose "Find-TcIdeModalDialog: pid $ProcessId prepare $prepareMs ms, scan $($scanWatch.ElapsedMilliseconds) ms (budget $TimeoutSec s)."
+        $hasOut =($null -ne $out -and $out.Count -gt 0 -and $null -ne $out[0])
         if ($ps.Streams.Error.Count -gt 0) {
             Write-Verbose "Find-TcIdeModalDialog: scan error: $($ps.Streams.Error[0])"
+            # An error and no result: the scan may have stopped before it looked at every window.
+            if (-not $hasOut) {
+                return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -ElapsedMs $scanWatch.ElapsedMilliseconds -PrepareMs $prepareMs `
+                        -Message "the UI Automation scan failed: $($ps.Streams.Error[0])")
+            }
         }
-        if ($null -eq $out -or $out.Count -eq 0) { return $null }
+        if (-not $hasOut) { return $null }
         $first = $out[0]
-        if ($null -eq $first) { return $null }
         $title = [string]$first.Title
         if ([string]::IsNullOrWhiteSpace($title)) { return $null }
         $text = [string]$first.Text
@@ -688,7 +762,8 @@ function Find-TcIdeModalDialog {
     }
     catch {
         Write-Verbose "Find-TcIdeModalDialog: $($_.Exception.Message)"
-        return $null
+        return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -ElapsedMs $sw.ElapsedMilliseconds -PrepareMs $prepareMs `
+                -Message "the UI Automation scan failed: $($_.Exception.Message)")
     }
     finally {
         if ($null -ne $ps) { try { $ps.Dispose() } catch { } }
@@ -696,10 +771,125 @@ function Find-TcIdeModalDialog {
     }
 }
 
+function Initialize-TcUiaScanTypes {
+    <#
+    .SYNOPSIS
+        Loads the UIA assemblies and compiles the TcAutomation.* P/Invoke types of the dialog scan
+        in the CURRENT runspace (they are AppDomain-wide, so every scan runspace of the process
+        sees them). Touches no window, so it cannot block on the IDE. Returns $true when
+        TcAutomation.UiaScanWindows is available. Never throws. Used before scans that only use
+        the types when present (the Error List scan, #42).
+    #>
+    [CmdletBinding()]
+    param()
+    try { & $script:TcUiaDialogScan 0 ([long]0) 0 $true }
+    catch { Write-Verbose "Initialize-TcUiaScanTypes: $($_.Exception.Message)" }
+    return [bool](([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type)
+}
+
+function New-TcModalScanIncomplete {
+    <#
+    .SYNOPSIS
+        The record Find-TcIdeModalDialog returns when its scan did not complete (#42): it is
+        unknown whether a dialog is up. Shaped like a dialog record (Title '' / Kind
+        'scan-incomplete') so code that only reads those fields does not break, plus
+        ScanIncomplete = $true. Test it with Test-TcModalScanIncomplete.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()][int]$ProcessId = 0,
+        [Parameter(Mandatory)][ValidateSet('timeout', 'prepare-timeout', 'error')][string]$Reason,
+        [Parameter()][int]$TimeoutSec = 0,
+        [Parameter()][long]$ElapsedMs = 0,
+        [Parameter()][long]$PrepareMs = 0,
+        [Parameter()][string]$Message = ''
+    )
+    @{
+        ScanIncomplete = $true
+        Reason         = $Reason
+        ProcessId      = $ProcessId
+        TimeoutSec     = $TimeoutSec
+        ElapsedMs      = $ElapsedMs
+        PrepareMs      = $PrepareMs
+        Message        = $Message
+        Title          = ''
+        Text           = ''
+        Kind           = 'scan-incomplete'
+        ReloadTarget   = $null
+        Hwnd           = [long]0
+        Buttons        = @()
+    }
+}
+
+function Test-TcModalScanIncomplete {
+    <#
+    .SYNOPSIS
+        $true when -Dialog is the incomplete-scan record of Find-TcIdeModalDialog (#42), i.e.
+        it is unknown whether a dialog is up. $false for $null (scan complete, no dialog) and for
+        a real dialog record.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][AllowNull()][object]$Dialog)
+    if ($null -eq $Dialog) { return $false }
+    try {
+        if ($Dialog -is [System.Collections.IDictionary]) { return ($Dialog.Contains('ScanIncomplete') -and [bool]$Dialog['ScanIncomplete']) }
+        $p = $Dialog.PSObject.Properties['ScanIncomplete']
+        return ($null -ne $p -and [bool]$p.Value)
+    }
+    catch { return $false }
+}
+
+function ConvertTo-TcModalScanInfo {
+    <#
+    .SYNOPSIS
+        Incomplete-scan record -> the JSON shape data.modalScan
+        { scanComplete = $false; reason; ideProcessId; timeoutSec; elapsedMs; prepareMs; message }.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Scan)
+    $get = { param($k) if ($Scan -is [System.Collections.IDictionary]) { $Scan[$k] } else { $p = $Scan.PSObject.Properties[$k]; if ($null -ne $p) { $p.Value } else { $null } } }
+    [PSCustomObject][ordered]@{
+        scanComplete = $false
+        reason       = [string](& $get 'Reason')
+        ideProcessId = [int](& $get 'ProcessId')
+        timeoutSec   = [int](& $get 'TimeoutSec')
+        elapsedMs    = [long](& $get 'ElapsedMs')
+        prepareMs    = [long](& $get 'PrepareMs')
+        message      = [string](& $get 'Message')
+    }
+}
+
+function New-TcModalScanIncompleteResult {
+    <#
+    .SYNOPSIS
+        Failed result MODAL_SCAN_INCOMPLETE for an operation that was NOT attempted because the
+        modal-dialog scan did not complete (#42): unknown is never treated as "no dialog".
+        data.scanComplete = $false, data.dialog = $null, data.modalScan = ConvertTo-TcModalScanInfo.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Scan,
+        [Parameter()][string]$Operation = 'COM call',
+        [Parameter()][object]$Data
+    )
+    $info = ConvertTo-TcModalScanInfo -Scan $Scan
+    if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+    $Data | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false -Force
+    $Data | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $null -Force
+    $Data | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue $info -Force
+    New-TcResult -Success $false `
+        -ErrorMessage "MODAL_SCAN_INCOMPLETE: '$Operation' not attempted - the modal-dialog scan of IDE pid $($info.ideProcessId) did not complete ($($info.reason): $($info.message)); it is unknown whether a dialog blocks the IDE." `
+        -ErrorCode 'MODAL_SCAN_INCOMPLETE' `
+        -Hint (Get-TcErrorHint -Code 'MODAL_SCAN_INCOMPLETE') `
+        -Data $Data
+}
+
 function New-TcModalDialogResult {
     <#
     .SYNOPSIS
-        Builds the failed result (code IDE_MODAL_DIALOG) for a detected dialog.
+        Builds the failed result (code IDE_MODAL_DIALOG) for a detected dialog; for the
+        incomplete-scan record of Find-TcIdeModalDialog the result is MODAL_SCAN_INCOMPLETE
+        (New-TcModalScanIncompleteResult), so every pre-flight check fails closed (#42).
     .PARAMETER Dialog
         Hashtable from Find-TcIdeModalDialog (@{ Title; Text; Kind }); Kind is derived
         from Title / Text when missing.
@@ -723,6 +913,11 @@ function New-TcModalDialogResult {
         [Parameter()]
         [object]$Data
     )
+
+    # An incomplete scan (#42) is not a dialog and not "no dialog": MODAL_SCAN_INCOMPLETE.
+    if (Test-TcModalScanIncomplete $Dialog) {
+        return New-TcModalScanIncompleteResult -Scan $Dialog -Operation $Operation -Data $Data
+    }
 
     $rec = Add-TcDialogKind -Dialog $Dialog
     $title = [string]$rec.Title

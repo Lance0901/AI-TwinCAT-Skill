@@ -175,7 +175,7 @@ rl.on('line', (line) => {
       if (!pid) {
         return result(id, { success: false, error: { code: 'NOT_CONNECTED', message: 'No IDE process known', hint: 'Run Connect-TcIde first' } });
       }
-      return result(id, { success: true, data: { ideProcessId: pid, dialog: null, timeoutSec: req.params?.TimeoutSec ?? 5 } });
+      return result(id, { success: true, data: { ideProcessId: pid, scanComplete: true, dialog: null, timeoutSec: req.params?.TimeoutSec ?? 5 } });
     }
     case 'shutdown':
       result(id, { success: true });

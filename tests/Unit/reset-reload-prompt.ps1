@@ -12,6 +12,7 @@
 #   F   the project check reads back incomplete (PLC not located, no exception), prompt up -> Yes, success
 #   G   the prompt comes up before Solution.Close (DTE.Solution answers $null) -> Yes, success
 #   H   Solution.Close fails with another dialog up -> IDE_MODAL_DIALOG, not SOLUTION_CLOSE_FAILED
+#   I   the modal scan does not complete (#42) -> MODAL_SCAN_INCOMPLETE, nothing closed
 #   powershell.exe -NoProfile -File tests/Unit/reset-reload-prompt.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -135,6 +136,12 @@ try {
     $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
     Check 'D file prompt during the guard -> dismissed, closed and reopened, success' ($r.success -and $r.data.dismissedReloadPrompt -eq $true -and $r.data.reloadTarget -eq 'file' -and $r.data.answeredYes -eq $false -and $r.data.reopenedSolution -eq $true -and $global:W.Closed -and $global:W.Opened -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
     Check 'D the prompt was closed without Yes' (@($global:W.Log) -contains 'ClosePrompt:' -and @($global:W.Log) -notcontains 'ClosePrompt:Yes') (Get-LogText)
+
+    # --- I (#42): the modal scan does not complete -> MODAL_SCAN_INCOMPLETE, nothing closed ---
+    $incompleteScan = & $mod { New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec 5 -Message 'mock: scan did not finish' }
+    Reset-World -Dialog $incompleteScan
+    $r = Start-Reset -ModulePath $sln
+    Check 'I incomplete modal scan at the start -> MODAL_SCAN_INCOMPLETE, nothing closed, not read as "no dialog"' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.scanComplete -eq $false -and $r.data.modalScan.reason -eq 'timeout' -and -not $global:W.Closed -and -not $global:W.Opened -and @($global:W.Log) -notcontains 'Documents.CloseAll') ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
 
     # --- regression: guard read stays $null without any dialog -> RESET_SOLUTION_UNVERIFIED after -TimeoutSec ---
     Reset-World -Dialog $null

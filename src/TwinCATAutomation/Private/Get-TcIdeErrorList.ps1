@@ -62,8 +62,25 @@ $script:TcUiaErrorListScan = {
     }
 
     # --- 1. top-level windows of the IDE process (main window + floating tool windows) ---
+    # EnumWindows filtered by the pid + AutomationElement.FromHandle (TcAutomation.UiaScanWindows,
+    # compiled by Initialize-TcUiaScanTypes before this scan runs), not RootElement.FindAll
+    # (Children, ProcessId): that one queries every top-level window on the desktop and stalls
+    # ~3 s on an unresponsive window of any other process (#24 / #42, measured 2026-10-25, see
+    # Find-TcIdeModalDialog.ps1). The desktop FindAll is only the fallback when the type is missing.
     $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-    $windows = $ae::RootElement.FindAll($scope::Children, $pidCond)
+    function Get-IdeTopLevelWindows {
+        $list = [System.Collections.Generic.List[object]]::new()
+        if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
+            foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+                try { $we = $ae::FromHandle($wh); if ($null -ne $we) { $list.Add($we) } } catch { }
+            }
+            return , $list
+        }
+        $notes.Add('TcAutomation.UiaScanWindows not loaded: desktop-wide FindAll used')
+        try { foreach ($we in $ae::RootElement.FindAll($scope::Children, $pidCond)) { $list.Add($we) } } catch { }
+        return , $list
+    }
+    $windows = Get-IdeTopLevelWindows
     if ($null -eq $windows -or $windows.Count -eq 0) {
         $notes.Add("no top-level window for pid $TargetPid")
         return [PSCustomObject]@{ Found = $false; Counts = $null; Rows = @(); Truncated = $false; Headers = @(); ToggleUsed = $false; Notes = $notes.ToArray() }
@@ -209,7 +226,7 @@ $script:TcUiaErrorListScan = {
             $candidates = [System.Collections.Generic.List[object]]::new()
             try { foreach ($c in $combo.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
             $winsNow = $null
-            try { $winsNow = $ae::RootElement.FindAll($scope::Children, $pidCond) } catch { $winsNow = $null }
+            try { $winsNow = Get-IdeTopLevelWindows } catch { $winsNow = $null }
             if ($null -ne $winsNow) {
                 foreach ($wn in $winsNow) {
                     try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }

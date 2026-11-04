@@ -14,6 +14,9 @@ function Disconnect-TcIde {
              text, kind, reloadTarget}. A reload prompt (kind reload-prompt): run
              Reset-TcSolution, then Disconnect-TcIde -Quit again. Anything else: -Quit -Kill
              (launched IDE) or Stop-Process -Id data.ideProcessId.
+             A dialog scan that did not complete (#42) is treated the same way, as unknown:
+             nothing attempted, connection kept, code MODAL_SCAN_INCOMPLETE (data.modalScan);
+             with -Kill the kill path is taken.
           2. Solution.Close($false) + DTE.Quit(). When the quit does not succeed the result
              is success = false, code IDE_QUIT_FAILED (data.solutionClosed / quit / quitError /
              ideProcessId / selectedBy, data.disconnected = true); the COM references are
@@ -54,7 +57,7 @@ function Disconnect-TcIde {
         data.ideProcessId, data.selectedBy, data.ownedBySession, data.disconnected,
         data.dialog (when a modal was seen), data.killed / data.alreadyExited (kill path),
         data.reason ('not connected' when there was nothing to quit).
-        Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED.
+        Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED, MODAL_SCAN_INCOMPLETE.
     #>
     [CmdletBinding()]
     param(
@@ -87,7 +90,12 @@ function Disconnect-TcIde {
             disconnected   = $Disconnected
         }
         if ($null -ne $QuitResult.reason) { $d | Add-Member -NotePropertyName 'reason' -NotePropertyValue $QuitResult.reason }
-        if ($null -ne $Dialog) {
+        if (Test-TcModalScanIncomplete $Dialog) {
+            # #42: the scan did not complete - reported as unknown, not as a dialog
+            $d | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
+            $d | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $Dialog)
+        }
+        elseif ($null -ne $Dialog) {
             $rec = Add-TcDialogKind -Dialog $Dialog
             $d | Add-Member -NotePropertyName 'dialog' -NotePropertyValue ([PSCustomObject][ordered]@{
                     title = $rec.Title; text = $rec.Text; kind = $rec.Kind; reloadTarget = $rec.ReloadTarget
@@ -117,7 +125,18 @@ function Disconnect-TcIde {
         # A modal dialog blocks Solution.Close / DTE.Quit forever: check first, do not spend
         # 2 x 60 s in Invoke-TcComRetry.
         $dialog = Find-TcIdeModalDialog
-        if ($null -ne $dialog) {
+        if (Test-TcModalScanIncomplete $dialog) {
+            # #42: unknown whether a dialog blocks Solution.Close / DTE.Quit - never read as "no dialog".
+            # -Kill: the kill path (as for a dialog); otherwise nothing is attempted, connection kept.
+            $quitResult.error = 'modal dialog scan incomplete: unknown whether a dialog is up'
+            if ($Kill) { $wantKill = $true }
+            else {
+                $data = New-QuitData -QuitResult $quitResult -Dialog $dialog -Disconnected $false
+                $data.message = 'NOT disconnected; IDE NOT quit: the modal-dialog scan did not complete, Solution.Close / DTE.Quit not attempted. The connection is kept.'
+                return New-TcModalScanIncompleteResult -Scan $dialog -Operation 'Disconnect-TcIde -Quit (Solution.Close / DTE.Quit; connection kept)' -Data $data
+            }
+        }
+        elseif ($null -ne $dialog) {
             $quitResult.error = "modal dialog is up: $($dialog.Title)"
             if ($Kill) { $wantKill = $true }
             else {

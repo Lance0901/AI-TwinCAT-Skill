@@ -115,6 +115,9 @@ function Get-TcBuildErrors {
 
     $timedOut = $false
     $scanError = $null
+    # The scan lists the IDE windows with TcAutomation.UiaScanWindows (EnumWindows by pid, #42):
+    # compile it here, outside the -TimeoutSec budget of the scan (it touches no window).
+    $null = Initialize-TcUiaScanTypes
     # @(): a single PSCustomObject has no usable .Count in PS 5.1
     $out = @(Invoke-TcUiaScan -Script $script:TcUiaErrorListScan -TimeoutSec $TimeoutSec `
         -Arguments @($idePid, $true, [bool]$IncludeWarnings, [bool]$IncludeMessages, 2000, 150) `

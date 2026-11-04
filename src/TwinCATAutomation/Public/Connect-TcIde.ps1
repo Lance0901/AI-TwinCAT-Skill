@@ -307,6 +307,9 @@ function Connect-TcIde {
             if ($blocked.Count -gt 0) {
                 $hit = $blocked[0]
                 $bc = $hit.Candidate
+                # #42: the dialog scan of the blocked IDE may not have completed (unknown, not "no dialog")
+                $hitScanIncomplete = Test-TcModalScanIncomplete $hit.Dialog
+                $hitDialog = if ($hitScanIncomplete) { $null } else { $hit.Dialog }
                 $blockedPid = [int]$bc.pid
                 # Two IDEs with strong evidence for the same .sln: ambiguous, attach none.
                 $strongCount = @($blocked | Where-Object { $_.Strong }).Count
@@ -316,7 +319,7 @@ function Connect-TcIde {
                     $script:TcProgId = $bc.progId
                     $script:TcIdeConnected = $true
                     $script:TcSysManager = $null
-                    $script:TcLastModalDialog = $hit.Dialog
+                    $script:TcLastModalDialog = $hitDialog
                     $script:TcSolutionPath = $normalizedSolutionPath
                     $script:TcIdeProcessId = $blockedPid
                     $script:TcIdeSelectedBy = if (Test-TcLaunchedIde -ProcessId $blockedPid) { 'launched' } else { 'solution-blocked' }
@@ -340,17 +343,25 @@ function Connect-TcIde {
                     ownedBySession    = ($attach -and $script:TcIdeSelectedBy -eq 'launched')
                     launched          = $false
                     solution          = $normalizedSolutionPath
-                    blockedCandidates = @($blocked | ForEach-Object { [PSCustomObject]@{ pid = $_.Candidate.pid; progId = $_.Candidate.progId; windowTitle = $_.WindowTitle; matchedBy = $_.MatchedBy; strong = [bool]$_.Strong; contradiction = $_.Contradiction; corroboratedBy = $_.CorroboratedBy; dialogTitle = $(if ($null -ne $_.Dialog) { $_.Dialog.Title } else { $null }) } })
+                    blockedCandidates = @($blocked | ForEach-Object { [PSCustomObject]@{ pid = $_.Candidate.pid; progId = $_.Candidate.progId; windowTitle = $_.WindowTitle; matchedBy = $_.MatchedBy; strong = [bool]$_.Strong; contradiction = $_.Contradiction; corroboratedBy = $_.CorroboratedBy; dialogTitle = $(if ($null -ne $_.Dialog -and -not (Test-TcModalScanIncomplete $_.Dialog)) { $_.Dialog.Title } else { $null }); dialogScanComplete = (-not (Test-TcModalScanIncomplete $_.Dialog)) } })
                     candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
                     connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
                 }
                 if (-not $attach) {
-                    $weakText = if ($null -ne $hit.Dialog) { "shows the modal dialog '$($hit.Dialog.Title)'" } else { 'rejects every DTE call (RPC_E_CALL_REJECTED) and no modal dialog was found' }
-                    $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $hit.Dialog
+                    $weakText = if ($null -ne $hitDialog) { "shows the modal dialog '$($hitDialog.Title)'" }
+                    elseif ($hitScanIncomplete) { 'rejects every DTE call (RPC_E_CALL_REJECTED) and the modal-dialog scan did not complete (unknown whether a dialog is up)' }
+                    else { 'rejects every DTE call (RPC_E_CALL_REJECTED) and no modal dialog was found' }
+                    $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $hitDialog
+                    if ($hitScanIncomplete) {
+                        $blockedData | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
+                        $blockedData | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $hit.Dialog)
+                    }
+                    $weakCode = if ($null -ne $hitDialog) { 'IDE_MODAL_DIALOG' } elseif ($hitScanIncomplete) { 'MODAL_SCAN_INCOMPLETE' } else { 'IDE_BUSY' }
                     return New-TcResult -Success $false `
                         -ErrorMessage "IDE_BLOCKED_SAME_NAME (weak / ambiguous evidence): the IDE pid $blockedPid $evidence and $weakText. No second IDE was launched and nothing was attached." `
-                        -ErrorCode $(if ($null -ne $hit.Dialog) { 'IDE_MODAL_DIALOG' } else { 'IDE_BUSY' }) -Hint (Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })) -Data $blockedData
+                        -ErrorCode $weakCode -Hint (Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })) -Data $blockedData
                 }
+                # attached: a dialog -> IDE_MODAL_DIALOG, an incomplete scan -> MODAL_SCAN_INCOMPLETE (#42)
                 if ($null -ne $hit.Dialog) {
                     return New-TcModalDialogResult -Dialog $hit.Dialog -Operation "Connect-TcIde -SolutionPath (IDE pid $blockedPid $evidence; no second IDE launched)" -Data $blockedData
                 }

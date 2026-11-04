@@ -72,6 +72,13 @@ function Close-TcReloadPrompt {
         if (-not $gone) { continue }   # IsWindow is the authority; the scan can return $null on a timeout
         $again = Find-TcIdeModalDialog
         if ($null -eq $again) { $out.Dismissed = $true; $out.Reason = 'dialog closed'; return $out }
+        if (Test-TcModalScanIncomplete $again) {
+            # #42: our dialog is gone (IsWindow); what is up now is unknown. NextDialog stays
+            # $null: the caller's next step scans again and fails closed on another incomplete scan.
+            $out.Dismissed = $true
+            $out.Reason = "dialog closed; the follow-up modal-dialog scan did not complete ($([string]$again.Reason))"
+            return $out
+        }
         $out.NextDialog = $again
         if ([string]$again.Kind -eq 'reload-prompt') {
             $out.Dismissed = $true
