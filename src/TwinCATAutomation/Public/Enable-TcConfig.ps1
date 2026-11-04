@@ -779,7 +779,8 @@ function Enable-TcConfig {
         if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return $null }
         foreach ($n in @('readbackState', 'currentState')) {
             $p = $StateResult.data.PSObject.Properties[$n]
-            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return [string]$p.Value }
+            # #114: 'Unreachable' (the last read failed) is not a read-back state either
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return $(if ([string]$p.Value -eq 'Unreachable') { $null } else { [string]$p.Value }) }
         }
         $null
     }

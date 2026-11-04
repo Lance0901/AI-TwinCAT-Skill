@@ -33,7 +33,16 @@
         When the target is the local Usermode Runtime and its TcSystemServiceUm process
         disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
-        data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs).
+        data.lastState, data.servicePidAtStart, data.runtimeName, data.unreachableMs). When
+        -TimeoutSec ends while port 10000 answers ADS 0x7 and no TcSystemServiceUm process of
+        that runtime runs any more, it is RUNTIME_CRASHED as well, even if the 0x7 streak is
+        shorter than 10 s (#114; data.crashDetectedBy = 'streak' | 'deadline').
+
+        Reported states (#114): data.finalState / currentState is 'Unreachable' when the last
+        read failed (ADS error), never the last state read before it (that one is data.lastState);
+        the lifecycle block's reachedState is then empty. data.leftOriginal is $true only when a
+        read returned a state other than data.originalState ($null when the original could not be
+        read); failed reads after the write are data.unreachableSeen.
 
         Fail closed (#68): every failure once WriteControl was called - SYSTEM_STATE_TIMEOUT,
         SYSTEM_STATE_MISMATCH, RUNTIME_CRASHED and an exception (ADS error) from or after the
@@ -98,7 +107,7 @@
 
     # #68: a failed postcondition on this target is still unresolved: send nothing
     $blocked = Test-TcLifecycleBlock -AmsNetId $AmsNetId -Command 'Set-TcSystemState'
-    if ($null -ne $blocked) { $blocked.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $false -Force; return $blocked }
+    if ($null -ne $blocked) { return $blocked }   # data.requestSent = $false (Test-TcLifecycleBlock)
 
     $loaded = Find-TcAdsAssembly
     if (-not $loaded) {
@@ -132,16 +141,22 @@
         # otherwise the poll below would succeed on the stale pre-restart state. Polled every
         # 100 ms for at most 10 s (within -TimeoutSec). Measured 2026-10-21 (UmRT): Reset /
         # Reconfig make port 10000 unreachable after ~0.3 s, then Stop, then the target.
-        # Original <> target: seeing the target is already a change, leftOriginal = $true.
-        $leftOriginal = ($stateBefore -ne $State)
-        if (-not $leftOriginal) {
+        # #114: data.leftOriginal is $true only when a read RETURNED a state other than the original
+        # (a failed read is not a state); data.unreachableSeen reports failed reads after the write.
+        # The restart counts as observed when either happened. Unknown original ($null) ->
+        # leftOriginal $null. Original <> target: decided from the states the wait below reads.
+        $leftOriginal = if ($null -eq $stateBefore) { $null } else { $false }
+        $unreachableSeen = $false
+        if ($stateBefore -eq $State) {
             $leaveSec = [Math]::Min(10, $TimeoutSec)
             while ($requestWatch.Elapsed.TotalSeconds -lt $leaveSec) {
                 try {
                     $s = $sysClient.ReadState().AdsState.ToString()
                     if ($s -ne $State) { $leftOriginal = $true; break }
                 }
-                catch { $leftOriginal = $true; break }  # port unreachable = restart in progress
+                # port unreachable = restart in progress (observed, but not a state: the wait below
+                # can still see e.g. Stop and set leftOriginal). Stop here: this client may stay stale.
+                catch { $unreachableSeen = $true; break }
                 Start-Sleep -Milliseconds 100
             }
         }
@@ -156,6 +171,7 @@
             originalState    = $stateBefore
             stateBefore      = $stateBefore
             leftOriginal     = $leftOriginal
+            unreachableSeen  = $unreachableSeen
             reached          = $false
             finalState       = $null
             currentState     = $null
@@ -168,7 +184,7 @@
             requestSent      = $true
         }
 
-        if (-not $leftOriginal) {
+        if ($stateBefore -eq $State -and -not $leftOriginal -and -not $unreachableSeen) {
             $data.finalState = $State
             $data.currentState = $State
             $res = New-TcResult -Success $false `
@@ -185,20 +201,35 @@
         # for >= 10 s ends the wait early with RUNTIME_CRASHED (Wait-TcAdsState .DESCRIPTION);
         # remote targets / no UmRT process at the start: unchanged, wait until -TimeoutSec.
         $wait = Wait-TcAdsState -AmsNetId $AmsNetId -Port 10000 -TargetState $State -TimeoutSec $remaining -DetectRuntimeCrash
-        $data.currentState = $wait.State
-        $data.finalState = $wait.State
+        # #114: leftOriginal only from states that were actually read (failed probes are not states)
+        if ($null -ne $stateBefore -and -not $leftOriginal) {
+            $other = @(@($wait.StatesSeen) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) -and [string]$_ -ne $stateBefore })
+            if ($other.Count -gt 0) { $leftOriginal = $true; $data.leftOriginal = $true }
+        }
+        # #114: the last probe failed (ADS error, e.g. 0x7) -> the state is NOT the last value read
+        # before; report 'Unreachable' (same word as data.stateTrace / readbackState of the settle
+        # loop), the last value read goes to data.lastState
+        $lastReadFailed = -not [string]::IsNullOrEmpty([string]$wait.LastError)
+        $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $stateBefore }
+        $shown = if ($lastReadFailed) { 'Unreachable' } else { $wait.State }
+        $data.currentState = $shown
+        $data.finalState = $shown
         $data.elapsedMs = [int]$requestWatch.ElapsedMilliseconds
 
         if ($wait.RuntimeCrashed) {
-            $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $stateBefore }
             $pidText = (@($wait.ServicePidAtStart) | ForEach-Object { [string]$_ }) -join ', '
             $data | Add-Member -NotePropertyName 'lastError' -NotePropertyValue $wait.LastError
             $data | Add-Member -NotePropertyName 'lastState' -NotePropertyValue $seen
             $data | Add-Member -NotePropertyName 'servicePidAtStart' -NotePropertyValue @($wait.ServicePidAtStart)
             $data | Add-Member -NotePropertyName 'runtimeName' -NotePropertyValue $wait.RuntimeName
             $data | Add-Member -NotePropertyName 'unreachableMs' -NotePropertyValue $wait.UnreachableMs
+            $data | Add-Member -NotePropertyName 'crashDetectedBy' -NotePropertyValue $wait.CrashDetectedBy
+            $when = if ([string]$wait.CrashDetectedBy -eq 'deadline') {
+                "Detected at -TimeoutSec $TimeoutSec s: no TcSystemServiceUm process of this runtime runs any more and the last probe answered ADS 0x7 (0x7 for the last $([int]($wait.UnreachableMs / 1000)) s)."
+            }
+            else { "Stopped waiting after $([int]($requestWatch.ElapsedMilliseconds / 1000)) s instead of -TimeoutSec $TimeoutSec s." }
             $res = New-TcResult -Success $false `
-                -ErrorMessage "The local UmRT '$($wait.RuntimeName)' disappeared while waiting for '$State': TcSystemServiceUm (pid $pidText at the start) no longer exists and port 10000 answered ADS 0x7 for $([int]($wait.UnreachableMs / 1000)) s (last state seen: $seen; last error: $($wait.LastError)). Stopped waiting after $([int]($requestWatch.ElapsedMilliseconds / 1000)) s instead of -TimeoutSec $TimeoutSec s." `
+                -ErrorMessage "The local UmRT '$($wait.RuntimeName)' disappeared while waiting for '$State': TcSystemServiceUm (pid $pidText at the start) no longer exists and port 10000 answered ADS 0x7 for $([int]($wait.UnreachableMs / 1000)) s (last state seen: $seen; last error: $($wait.LastError)). $when" `
                 -ErrorCode 'RUNTIME_CRASHED' `
                 -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
                 -Data $data
@@ -208,17 +239,30 @@
         if (-not $wait.Reached) {
             $detail = if ($wait.LastError) { " Last error: $($wait.LastError)" } else { '' }
             $hint = Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT'
-            $lic = if ($wait.State -eq 'Config') { Get-TcLicenseDiagnosis -AmsNetId $AmsNetId } else { $null }
+            $lic = if (-not $lastReadFailed -and $wait.State -eq 'Config') { Get-TcLicenseDiagnosis -AmsNetId $AmsNetId } else { $null }
             if ($null -ne $lic) {
                 $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
                 if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
             }
+            $data | Add-Member -NotePropertyName 'lastState' -NotePropertyValue $seen
+            $data | Add-Member -NotePropertyName 'lastError' -NotePropertyValue $wait.LastError
+            if (-not [string]::IsNullOrEmpty([string]$wait.RuntimeName)) {
+                # local UmRT, crash check active but not met (process still there / not 0x7): for diagnosis
+                $data | Add-Member -NotePropertyName 'servicePidAtStart' -NotePropertyValue @($wait.ServicePidAtStart)
+                $data | Add-Member -NotePropertyName 'runtimeName' -NotePropertyValue $wait.RuntimeName
+                $data | Add-Member -NotePropertyName 'unreachableMs' -NotePropertyValue $wait.UnreachableMs
+            }
+            $last = if ($lastReadFailed) { "unreachable (last state read: $seen)" } else { [string]$wait.State }
             $res = New-TcResult -Success $false `
-                -ErrorMessage "TwinCAT did not reach state '$State' within $TimeoutSec s (last state: $($wait.State)).$detail" `
+                -ErrorMessage "TwinCAT did not reach state '$State' within $TimeoutSec s (last state: $last).$detail" `
                 -ErrorCode 'SYSTEM_STATE_TIMEOUT' `
                 -Hint $hint `
                 -Data $data
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$wait.State) -Step 'wait')
+            # #114: nothing was read back at the end: reachedState empty like the crash record, the
+            # last value read before goes to the step text
+            $reachedRb = if ($lastReadFailed) { $null } else { [string]$wait.State }
+            $step = if ($lastReadFailed) { "wait: port 10000 unreachable at the deadline; last state read before: $seen" } else { 'wait' }
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -Step $step)
         }
         $data.reached = $true
         $data.latencyMs = [int]$requestWatch.ElapsedMilliseconds
@@ -265,6 +309,11 @@
         $data.stateTrace = @($trace.ToArray())
         $data.elapsedMs = [int]$requestWatch.ElapsedMilliseconds
         $data | Add-Member -NotePropertyName 'held' -NotePropertyValue ($null -eq $deviated)
+        # #114: a settle sample that READ another state also counts as having left the original
+        if ($null -ne $stateBefore -and -not $data.leftOriginal) {
+            if (@($data.stateTrace | Where-Object { [string]$_.state -ne 'Unreachable' -and [string]$_.state -ne $stateBefore }).Count -gt 0) { $data.leftOriginal = $true }
+        }
+        foreach ($t in $data.stateTrace) { if ([string]$t.state -eq 'Unreachable') { $data.unreachableSeen = $true } }
 
         if ($null -ne $deviated) {
             $traceText = ($data.stateTrace | ForEach-Object { "+$($_.ms)ms $($_.state)" }) -join ', '
@@ -279,7 +328,10 @@
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint $hint `
                 -Data $data
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState ([string]$readback) -Step 'settle')
+            # #114: an unreachable final readback is not a state (reachedState empty, see the wait branch)
+            $reachedRb = if ([string]$readback -eq 'Unreachable') { $null } else { [string]$readback }
+            $step = if ($null -eq $reachedRb) { 'settle: port 10000 unreachable at the final readback' } else { 'settle' }
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -Step $step)
         }
 
         New-TcResult -Success $true -Data $data

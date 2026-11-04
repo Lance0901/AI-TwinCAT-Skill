@@ -1,4 +1,4 @@
-# Unit: #68 fail-closed lifecycle guard (#32 regression), no IDE / ADS / runtime needed.
+﻿# Unit: #68 fail-closed lifecycle guard (#32 regression), no IDE / ADS / runtime needed.
 # TwinCAT.Ads.TcAdsClient is a fake type compiled here (WriteControl never throws, ReadState
 # returns $global:AdsMode), Find-TcAdsAssembly / Wait-TcAdsState / the IDE helpers are stubbed in
 # module scope. Covers:
@@ -145,7 +145,8 @@ try {
         $x = & $blockedRuns[$k]
         $exp = ($k -replace ' .*$', '')
         if ($k -eq 'Send-TcPlcProgram') { $exp = 'Enter-TcPlcOnline' }
-        Check "(2) $k -> LIFECYCLE_BLOCKED, data.lifecycleBlock, NOT RUN" ((-not $x.success) -and $x.error.code -eq 'LIFECYCLE_BLOCKED' -and $x.data.notRun -eq $true -and $x.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $x.data.command -eq $exp -and $x.error.hint -match 'Clear-TcLifecycleBlock') "code=$($x.error.code) cmd=$($x.data.command)"
+        # #114 minor 7: every refusal says requestSent = false (not only Set-TcSystemState)
+        Check "(2) $k -> LIFECYCLE_BLOCKED, data.lifecycleBlock, NOT RUN, requestSent false" ((-not $x.success) -and $x.error.code -eq 'LIFECYCLE_BLOCKED' -and $x.data.notRun -eq $true -and $x.data.requestSent -eq $false -and $x.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $x.data.command -eq $exp -and $x.error.hint -match 'Clear-TcLifecycleBlock') "code=$($x.error.code) cmd=$($x.data.command)"
     }
     Check '(2) nothing sent: no WriteControl / Login / Activate / WriteAny / Build / state switch' ($fake::Writes -eq 0 -and $global:Calls.WriteControl -eq 0 -and $global:Calls.Login -eq 0 -and $global:Calls.Activate -eq 0 -and $global:Calls.WriteAny -eq 0 -and $global:Calls.Build -eq 0 -and $global:Calls.WaitPort -eq 0) (J $global:Calls)
     $e = & $blockedRuns['Enable-TcConfig']
@@ -484,6 +485,18 @@ try {
     & $mod { $script:TcAdsAmsNetId = $null }
     $u = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
     Check '(16) S-1 session target unknown, block on another target -> NOT_CONNECTED hint kept (one note appended), no lifecycleBlock' ($u.error.hint.StartsWith($nc) -and $u.error.hint -match '#68' -and -not $u.error.hint.StartsWith($pre) -and $null -eq $u.PSObject.Properties['data']) (J $u)
+    # #114 minor 5: no ADS session, but the connected IDE's target IS the blocked one -> "this target"
+    # (read-only prefix + data.lifecycleBlock), not "another target"
+    $ideSaved = $global:IdeTarget
+    $global:IdeTarget = '10.3.3.3.1.1'
+    & $mod { $script:TcIdeConnected = $true; $sm = [PSCustomObject]@{ Mock = $true }; $sm | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { $global:IdeTarget }; $script:TcSysManager = $sm }
+    $ui = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
+    Check '(16) #114 no ADS session, IDE target blocked -> NOT_CONNECTED hint starts with the read-only text, data.lifecycleBlock, no "another target" note' ($ui.error.hint.StartsWith($pre) -and $ui.error.hint.Contains($nc) -and $ui.data.lifecycleBlock.amsNetId -eq '10.3.3.3.1.1' -and -not $ui.error.hint.Contains((& $mod { $script:TcLifecycleOtherBlockNote }))) (J $ui)
+    $global:IdeTarget = '10.4.4.4.1.1'
+    $uo = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
+    Check '(16) #114 no ADS session, IDE target NOT blocked (block on another target) -> hint kept + note, no lifecycleBlock' ($uo.error.hint.StartsWith($nc) -and $uo.error.hint.Contains((& $mod { $script:TcLifecycleOtherBlockNote })) -and $null -eq $uo.PSObject.Properties['data']) (J $uo)
+    & $mod { $script:TcIdeConnected = $false }
+    $global:IdeTarget = $ideSaved
     & $mod { $script:TcAdsAmsNetId = '10.9.9.9.1.1' }
     $nb = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
     Check '(16) S-1 session on target B (no block) -> hint unchanged' ($nb.error.hint -eq $nc -and $null -eq $nb.PSObject.Properties['data']) (J $nb)
