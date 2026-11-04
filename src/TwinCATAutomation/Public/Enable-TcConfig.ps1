@@ -895,6 +895,11 @@ function Enable-TcConfig {
     # 1. set-config
     $fail = Test-TcCycleDeadline -Name 'set-config'
     if ($null -ne $fail) { return $fail }
+    # #42 review: modal check BEFORE the first runtime change. A dialog or an incomplete scan stops
+    # here with the target untouched (no lifecycle block); the pre-activate gate below stays for a
+    # dialog that comes up while set-config runs (that one does record a block).
+    $fail = Test-TcStepModalDialog -Name 'set-config'
+    if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
     $blockRequested = 'Config'

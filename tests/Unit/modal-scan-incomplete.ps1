@@ -180,7 +180,7 @@ try {
     $r = Disconnect-TcIde -Quit
     $still = & $mod { $null -ne $script:TcDte -and $script:TcIdeConnected }
     Check 'E3 Disconnect-TcIde -Quit, incomplete scan -> MODAL_SCAN_INCOMPLETE, nothing attempted, connection kept' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and -not $global:M.Closed -and -not $global:M.Quit -and $r.data.disconnected -eq $false -and $r.data.modalScan.reason -eq 'timeout' -and $still) (J $r)
-    Check 'E3 hint names the Disconnect fallbacks' ($r.error.hint -match 'without -Quit' -and $r.error.hint -match 'Disconnect-TcIde -Quit -Kill') "$($r.error.hint)"
+    Check 'E3 hint names the Disconnect fallbacks' ($r.error.hint -match 'Get-TcIdeModalDialog -TimeoutSec 15' -and $r.error.hint -match 'data\.ownedBySession = true' -and $r.error.hint -match 'Disconnect-TcIde -Quit -Kill') "$($r.error.hint)"
     & $mod { $script:TcIdeProcessId = $null; $script:TcIdeSelectedBy = $null }
 
     # E4

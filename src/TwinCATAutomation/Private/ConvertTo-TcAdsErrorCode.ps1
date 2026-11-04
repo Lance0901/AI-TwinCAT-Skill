@@ -82,6 +82,13 @@ $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.ope
 # task 1.3 (complete-automation-interface): I/O scan and variable link (TE1000 v1.7.0 6.6.2, 5.1.1.2, 5.1.1.8, 5.1.3.4)
 $script:TcErrorHints['IO_SCAN_REQUIRES_CONFIG'] = 'I/O scan 需要 TwinCAT 在 Config mode(TE1000 6.6.2 Requirements);data.state 是目前狀態。先 Set-TcSystemState -State Config 再重跑 Invoke-TcIoScan(本機 UmRT 切 Config 可能 crash,#21,見 troubleshooting「已知限制」);掃完用 Enable-TcConfig -Force 回 Run'
 $script:TcErrorHints['MODAL_SCAN_INCOMPLETE'] = 'modal dialog 掃描沒有完成(data.modalScan.reason:timeout = UI Automation 掃描超過 -TimeoutSec;prepare-timeout = 載入 UIA / 編譯掃描用型別逾時;error = 掃描失敗),所以「IDE 有沒有 dialog」是未知，不是沒有;原本的操作沒有執行(或結果未驗證)。用 Get-TcIdeModalDialog -TimeoutSec 15(MCP:GetIdeModalDialog TimeoutSec=15)再掃一次:data.scanComplete = true 且 dialog = null 才代表沒有 dialog,有 dialog 依 kind 處理(reload-prompt → Reset-TcSolution);確認後重跑原本的指令。機器忙(CPU 滿載)時掃描會變慢，仍逾時就先等負載降下來。見 docs/troubleshooting.md「MODAL_SCAN_INCOMPLETE」'
+# Caller-specific fragments appended to a hint (not hint keys, so no troubleshooting heading of
+# their own; they extend MODAL_SCAN_INCOMPLETE / IDE_BLOCKED_*). Kept here so hint text stays in
+# one language and in one file (#42 review). <pid> is replaced by the caller.
+$script:TcHintFragments = @{
+    'MODAL_SCAN_INCOMPLETE_QUIT'    = 'Disconnect-TcIde 的其他做法：不加 -Quit 只釋放 COM 參考(IDE 繼續開著);本 session 啟動的 IDE(data.ownedBySession = true)可用 Disconnect-TcIde -Quit -Kill 結束。'
+    'IDE_BLOCKED_SCAN_INCOMPLETE'   = '先重掃:Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15(這個 IDE 的 dialog 掃描沒有完成,data.modalScan)。'
+}
 $script:TcErrorHints['IO_SCAN_FAILED'] = 'TIID.ProduceXml(false) / CreateChild / ConsumeXml 失敗:確認 target 在 Config、硬體已接上並上電、遠端 target 已 Set-TcTarget;用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog'
 $script:TcErrorHints['IO_SCAN_VERIFY_FAILED'] = '-Apply 建立的 device 讀回 I/O tree 時找不到(data.devices[].path):用 Get-TcIoTree 看實際內容,不要把這次掃描當成成功'
 $script:TcErrorHints['LIBRARY_ADD_FAILED'] = 'ITcPlcLibraryManager.AddLibrary 失敗。data.notInstalled = true:library 沒有安裝(TSM_E_ITEMNOTFOUND,.plcproj 沒被修改),先在 XAE 的 PLC > Library Repository 安裝，確認名稱 / 版本 / 廠商後重跑 Add-TcLibrary;其他情況看 error.message,用 Get-TcIdeModalDialog 檢查 dialog。已有同名 reference 不是錯誤(success + data.alreadyPresent)。見 docs/troubleshooting.md「LIBRARY_ADD_FAILED」'

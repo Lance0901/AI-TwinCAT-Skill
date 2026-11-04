@@ -27,7 +27,8 @@ function Get-TcBuildErrors {
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
-        Hard limit for the UI Automation scan. Default 30.
+        Hard limit for the UI Automation scan, including the one-time preparation of its helper
+        types (the first call in a process; the scan gets what is left, at least 1 s). Default 30.
     .OUTPUTS
         data.counts      @{ errors; warnings; messages } from the summary buttons
         data.errors      [ @{ severity; code; description; project; file; line; column } ]
@@ -117,10 +118,14 @@ function Get-TcBuildErrors {
     $scanError = $null
     # The scan lists the IDE windows with TcAutomation.UiaScanWindows (EnumWindows by pid, #42):
     # compile it here, before the scan budget starts (it touches no window); bounded by the same
-    # -TimeoutSec in its own runspace, so the call never waits without a deadline.
+    # -TimeoutSec in its own runspace, so the call never waits without a deadline. The time it took
+    # is taken off the scan budget: preparation + scan stay within -TimeoutSec (+ at most 1 s, the
+    # scan always gets at least 1 s).
+    $prepWatch = [System.Diagnostics.Stopwatch]::StartNew()
     $null = Initialize-TcUiaScanTypes -TimeoutSec ([Math]::Min(600, [Math]::Max(1, $TimeoutSec)))
+    $scanBudgetSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($prepWatch.Elapsed.TotalSeconds))
     # @(): a single PSCustomObject has no usable .Count in PS 5.1
-    $out = @(Invoke-TcUiaScan -Script $script:TcUiaErrorListScan -TimeoutSec $TimeoutSec `
+    $out = @(Invoke-TcUiaScan -Script $script:TcUiaErrorListScan -TimeoutSec $scanBudgetSec `
         -Arguments @($idePid, $true, [bool]$IncludeWarnings, [bool]$IncludeMessages, 2000, 150) `
         -TimedOut ([ref]$timedOut) -ErrorOut ([ref]$scanError))
 

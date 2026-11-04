@@ -243,8 +243,14 @@ $script:TcUiaErrorListScan = {
             $selectable = @($candidates | Where-Object { $null -ne (Get-UiaPattern $_ ([System.Windows.Automation.SelectionItemPattern]::Pattern)) }).Count
             if ($selectable -eq 0) {
                 $notes.Add("scope popup: no selectable 'Entire Solution' item in the IDE windows; desktop-wide FindAll fallback")
+                # windows already searched above are skipped (by native handle)
+                $searched = @{}
+                foreach ($wn in $winsNow) { try { $searched[[long]$wn.Current.NativeWindowHandle] = $true } catch { } }
                 try {
                     foreach ($wn in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+                        $nh = [long]0
+                        try { $nh = [long]$wn.Current.NativeWindowHandle } catch { $nh = 0 }
+                        if ($nh -ne 0 -and $searched.ContainsKey($nh)) { continue }
                         try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
                     }
                 }

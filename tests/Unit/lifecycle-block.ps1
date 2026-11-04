@@ -222,7 +222,7 @@ try {
         $script:UtOrigFind42 = ${function:Find-TcIdeModalDialog}
         function script:Find-TcIdeModalDialog {
             [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
-            if ($global:Scan.From -eq 'start' -or $global:Calls.Login -gt 0) {
+            if ($global:Scan.From -eq 'start' -or ($global:Scan.From -eq 'verify' -and $global:Calls.Login -gt 0) -or ($global:Scan.From -eq 'after-config' -and $global:Calls.SetSystemState -gt 0)) {
                 $global:Scan.Calls.Add($TimeoutSec)
                 return (New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec $TimeoutSec -Message 'mock: scan did not finish')
             }
@@ -252,6 +252,16 @@ try {
     $v = Enable-TcConfig -WarningAction SilentlyContinue
     $blk = Get-Content -LiteralPath $stateFile -Raw -ErrorAction SilentlyContinue
     Check '(5b) pre-Activate gate incomplete -> MODAL_SCAN_INCOMPLETE, no Activate, no block' ((-not $v.success) -and $v.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Calls.Activate -eq 0 -and $null -eq $v.data.PSObject.Properties['lifecycleBlock'] -and ($null -eq $blk -or $blk -notmatch [regex]::Escape($A))) "code=$($v.error.code) activate=$($global:Calls.Activate) block=$($null -ne $v.data.PSObject.Properties['lifecycleBlock'])"
+    # (c) -Force, incomplete before set-config -> stops at the new set-config gate: no state switch, no block
+    Reset-Calls; $fake::Mode = 'run'; $global:Scan.Calls.Clear(); $global:Scan.From = 'start'
+    $v = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    $blk = Get-Content -LiteralPath $stateFile -Raw -ErrorAction SilentlyContinue
+    Check '(5b) -Force, scan incomplete before set-config -> MODAL_SCAN_INCOMPLETE, no Set-TcSystemState, no Activate, no block' ((-not $v.success) -and $v.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Calls.SetSystemState -eq 0 -and $global:Calls.Activate -eq 0 -and $null -eq $v.data.PSObject.Properties['lifecycleBlock'] -and ($null -eq $blk -or $blk -notmatch [regex]::Escape($A)) -and @($v.data.steps | Where-Object { $_.step -eq 'set-config' -and -not $_.ok }).Count -eq 1) "code=$($v.error.code) sss=$($global:Calls.SetSystemState) block=$($null -ne $v.data.PSObject.Properties['lifecycleBlock']) steps=$(J $v.data.steps)"
+    # (d) -Force, scan incomplete only after set-config was sent -> pre-activate gate fails, block recorded (step activate)
+    Reset-Calls; $fake::Mode = 'run'; $global:Scan.Calls.Clear(); $global:Scan.From = 'after-config'
+    $v = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check '(5b) -Force, scan incomplete after set-config -> MODAL_SCAN_INCOMPLETE, no Activate, block (step activate)' ((-not $v.success) -and $v.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Calls.SetSystemState -ge 1 -and $global:Calls.Activate -eq 0 -and $v.data.lifecycleBlock.errorCode -eq 'MODAL_SCAN_INCOMPLETE' -and $v.data.lifecycleBlock.step -eq 'activate') "code=$($v.error.code) sss=$($global:Calls.SetSystemState) block=$(J $v.data.lifecycleBlock)"
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'test (5b) d done'
     & $mod { Set-Item -Path function:script:Find-TcIdeModalDialog -Value $script:UtOrigFind42 }
 
     # --- (6) precondition failure writes nothing; SYSTEM_STATE_MISMATCH / PLC_RUN_TIMEOUT write ---
