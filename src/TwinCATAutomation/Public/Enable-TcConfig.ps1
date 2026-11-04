@@ -487,7 +487,7 @@ function Enable-TcConfig {
 
     function New-TcStepFailure {
         param([string]$Message, [string]$Code, [string]$Hint)
-        $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed) }
+        $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed); LifecycleNetId = [string]$netId }
         if ([string]::IsNullOrWhiteSpace($Hint)) { $Hint = Get-TcErrorHint -Code $Code }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
         $res = New-TcResult @params

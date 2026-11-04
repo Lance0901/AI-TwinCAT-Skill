@@ -243,6 +243,8 @@ $script:TcLifecycleStopMarker = '給使用者的診斷:'
 $script:TcLifecycleReadOnlyPrefix = '此 target 有 LIFECYCLE_BLOCKED'
 $script:TcLifecycleReadOnlyMarker = '原本的建議(使用者同意並 Clear 之前不要照做):'
 $script:TcLifecycleReadOnlyText = '此 target 有 LIFECYCLE_BLOCKED(data.lifecycleBlock):不要依一般建議去 Set-TcSystemState、Enter-TcPlcOnline、Set-TcPlcState、Enable-TcConfig(都會被拒絕),也不要改用其他控制通道(raw ADS、COM、DTE、GUI、console)。把這個錯誤和 data.lifecycleBlock 回報使用者，只做唯讀診斷;使用者同意後才 Clear-TcLifecycleBlock -Reason ''<理由>''。原本的建議(使用者同意並 Clear 之前不要照做):'
+# S-1: appended (hint kept) when the failing call's target is unknown but some target is blocked.
+$script:TcLifecycleOtherBlockNote = '(#68:另有 target 存在 lifecycle block;要對某個 target 做會改 runtime 的動作前，先確認它沒有 block。Clear-TcLifecycleBlock 只在使用者同意後呼叫，見 docs/troubleshooting.md「LIFECYCLE_BLOCKED」)'
 $script:TcLifecycleStopText = '已記錄 LIFECYCLE_BLOCKED({target},data.lifecycleBlock):在這裡停止，其餘步驟標示 NOT RUN,把這個結果回報使用者。使用者同意並呼叫 Clear-TcLifecycleBlock -Reason ''<理由>'' 之前，所有會改 runtime 的命令都會被拒絕;不要改用其他控制通道(raw ADS、COM、DTE、GUI、console)。給使用者的診斷:'
 $script:TcErrorHints['LIFECYCLE_BLOCKED'] = '停止後續所有步驟(標示 NOT RUN),把 data.lifecycleBlock(command、errorCode、requestedState、reachedState、message、time)原樣回報給使用者，只做唯讀診斷(Get-TcSystemState、Get-TcPlcState、Get-TcIdeModalDialog、Get-TcBuildErrors)。不要自行改用其他控制通道:直接用 TcAdsClient 寫 ADS 狀態、COM/DTE 重啟或 TwinCAT 指令、GUI 點擊、TcSystemServiceUm console、改 Platform/Target/Route。使用者確認並同意後才呼叫 Clear-TcLifecycleBlock -Reason ''<使用者的理由>''(預設目前 target,-AmsNetId 指定其他 target),再從頭重跑 lifecycle。見 docs/troubleshooting.md「LIFECYCLE_BLOCKED」'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'

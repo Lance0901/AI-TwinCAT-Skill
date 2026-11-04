@@ -13,6 +13,9 @@ function New-TcResult {
     .PARAMETER Hint
         Optional next-action hint for failed operations. Emitted as error.hint
         only when non-empty, so the existing JSON shape is unchanged otherwise.
+    .PARAMETER LifecycleNetId
+        #68: the target AmsNetId of the failing call, when the caller knows it; else the ADS
+        session's is used to decide whether the hint must be replaced (Get-TcLifecycleBlockAdvice).
     #>
     [CmdletBinding()]
     param(
@@ -29,7 +32,10 @@ function New-TcResult {
         [string]$ErrorCode,
 
         [Parameter()]
-        [string]$Hint
+        [string]$Hint,
+
+        [Parameter()]
+        [string]$LifecycleNetId
     )
 
     if ($Success) {
@@ -47,13 +53,20 @@ function New-TcResult {
         # agent to a blocked (runtime-changing) command is replaced by the stop text; the block is
         # attached as data.lifecycleBlock
         $advice = $null
-        if (-not [string]::IsNullOrWhiteSpace($ErrorCode)) { $advice = Get-TcLifecycleBlockAdvice -Code $ErrorCode }
-        if ($null -ne $advice) {
-            $orig = if ([string]::IsNullOrWhiteSpace($Hint)) { '' } else { " $Hint" }
-            $Hint = "$($script:TcLifecycleReadOnlyText)$orig"
+        if (-not [string]::IsNullOrWhiteSpace($ErrorCode)) { $advice = Get-TcLifecycleBlockAdvice -Code $ErrorCode -AmsNetId $LifecycleNetId }
+        if ($null -ne $advice -and $advice.Mode -eq 'note') {
+            # target unknown: the hint stays, one sentence points at the block (S-1)
+            $Hint = "$Hint $($script:TcLifecycleOtherBlockNote)".Trim()
+        }
+        elseif ($null -ne $advice) {
+            if ($advice.Mode -eq 'replace') {
+                $orig = if ([string]::IsNullOrWhiteSpace($Hint)) { '' } else { " $Hint" }
+                $Hint = "$($script:TcLifecycleReadOnlyText)$orig"
+            }
+            # nit-1: never change the caller's -Data object: attach to a copy
             if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
-            if ($Data -is [System.Collections.IDictionary]) { $Data['lifecycleBlock'] = $advice }
-            elseif ($Data -is [System.Management.Automation.PSCustomObject]) { $Data | Add-Member -NotePropertyName 'lifecycleBlock' -NotePropertyValue $advice -Force }
+            if ($Data -is [System.Collections.IDictionary]) { $copy = @{}; foreach ($k in $Data.Keys) { $copy[$k] = $Data[$k] }; $copy['lifecycleBlock'] = $advice.Block; $Data = $copy }
+            elseif ($Data -is [System.Management.Automation.PSCustomObject]) { $Data = $Data.PSObject.Copy(); $Data | Add-Member -NotePropertyName 'lifecycleBlock' -NotePropertyValue $advice.Block -Force }
         }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) {
             $errorObj | Add-Member -NotePropertyName 'hint' -NotePropertyValue $Hint

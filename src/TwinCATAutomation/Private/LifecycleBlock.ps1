@@ -198,9 +198,11 @@ function Set-TcLifecycleBlock {
 }
 
 # File + memory records as one hashtable (memory wins), or @{ Error = text } when unreadable.
+# -TimeoutMs: lock wait (default: the build-required default; the hint-only path passes a short one).
 function Get-TcLifecycleBlockEntries {
+    param([int]$TimeoutMs = 0)
     $r = $null
-    try { $r = Invoke-TcBuildRequiredLocked -MutexName (Get-TcLifecycleBlockMutexName) -Body { Read-TcLifecycleBlockState } }
+    try { $r = Invoke-TcBuildRequiredLocked -MutexName (Get-TcLifecycleBlockMutexName) -TimeoutMs $TimeoutMs -Body { Read-TcLifecycleBlockState } }
     catch { $r = @{ Locked = $false; Error = $_.Exception.Message } }
     if (-not $r.Locked -or $null -ne $r.Error) { return @{ Error = [string]$r.Error; Entries = $null } }
     $entries = @{}
@@ -218,8 +220,8 @@ function Get-TcLifecycleBlock {
         'state-unreadable' record (fail closed).
     #>
     [CmdletBinding()]
-    param([string]$AmsNetId)
-    $all = Get-TcLifecycleBlockEntries
+    param([string]$AmsNetId, [int]$TimeoutMs = 0)
+    $all = Get-TcLifecycleBlockEntries -TimeoutMs $TimeoutMs
     if ($null -ne $all.Error) {
         return [PSCustomObject]@{
             amsNetId = $AmsNetId; command = $null; errorCode = 'state-unreadable'
@@ -271,16 +273,16 @@ function Remove-TcLifecycleBlock {
     @{ Removed = $removed; Warning = $null }
 }
 
-# All records (file + memory) as @{ key; record }, for Clear-TcLifecycleBlock's report; $null when
-# unreadable. No records -> an EMPTY ARRAY, never $null: the leading comma keeps PowerShell from
-# unrolling @() into $null on the way out (V4, measured 2026-11-04: an unrolled empty list made
-# Clear report "could not be read" after it removed the last record). Callers must not wrap the
-# call in an if-expression or @() themselves before the $null check.
+# All records (file + memory), for Clear-TcLifecycleBlock's report, as
+# @{ Readable = <bool>; List = <object[]> of @{ key; record } }. Wrapped in a hashtable so that an
+# empty list can never be unrolled into $null on the way out (V4, measured 2026-11-04: an unrolled
+# empty list made Clear report "could not be read" after it removed the last record).
+# Readable = $false: List is an empty array and the records are not known.
 function Get-TcLifecycleBlockList {
     $all = Get-TcLifecycleBlockEntries
-    if ($null -ne $all.Error) { return $null }
-    $list = @($all.Entries.Keys | Sort-Object | ForEach-Object { [PSCustomObject]@{ key = $_; record = $all.Entries[$_] } })
-    , $list
+    if ($null -ne $all.Error) { return @{ Readable = $false; List = [object[]]@() } }
+    $list = [object[]]@($all.Entries.Keys | Sort-Object | ForEach-Object { [PSCustomObject]@{ key = $_; record = $all.Entries[$_] } })
+    @{ Readable = $true; List = $list }
 }
 
 # Target AmsNetId of the IDE (GetTargetNetId), else the ADS session, else $null. Never throws.
@@ -329,15 +331,34 @@ function Format-TcLifecycleBlockStates {
 
 # Side findings 3 / 4: error codes whose usual hint points at a runtime-changing command (Connect
 # then SetSystemState / PlcLogin / SetPlcState / EnableConfig). New-TcResult replaces their hint by
-# $script:TcLifecycleReadOnlyText while the target has a lifecycle block.
-$script:TcLifecycleHintCodes = @('ADS_TARGET_NOT_FOUND', 'ADS_PORT_NOT_FOUND', 'NOT_CONNECTED', 'NOT_CONNECTED_IDE', 'PLC_NOT_LOADED', 'ADS_INVALID_STATE', 'ADS_SYMBOL_NOT_FOUND', 'SYMBOL_NOT_FOUND')
+# $script:TcLifecycleReadOnlyText while THEIR target has a lifecycle block.
+$script:TcLifecycleHintCodes = @('ADS_TARGET_NOT_FOUND', 'ADS_PORT_NOT_FOUND', 'NOT_CONNECTED', 'PLC_NOT_LOADED', 'ADS_INVALID_STATE')
+# Codes whose hint is kept (it is a read-only step) but which get data.lifecycleBlock attached.
+$script:TcLifecycleAttachOnlyCodes = @('ADS_SYMBOL_NOT_FOUND', 'SYMBOL_NOT_FOUND')
+# Lock wait of this hint-only path (ms): a busy lock adds no advice; the refusals
+# (Test-TcLifecycleBlock) keep their normal wait and fail closed.
+$script:TcLifecycleAdviceLockMs = 300
 
-# The block that applies to the ADS session's AmsNetId (unknown -> any record), when -Code is one
-# of $script:TcLifecycleHintCodes; else $null. Never throws.
 function Get-TcLifecycleBlockAdvice {
-    param([string]$Code)
-    if ($script:TcLifecycleHintCodes -notcontains $Code) { return $null }
-    try { return (Get-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId)) } catch { return $null }
+    <#
+    .SYNOPSIS
+        For New-TcResult (side findings 3 / 4): $null, or @{ Mode = 'replace' | 'attach' | 'note';
+        Block }. The target is -AmsNetId when the caller knows it, else the ADS session's AmsNetId.
+        A known target with a block (its own, '<unknown>' or '<corrupt>') -> 'replace' for
+        $script:TcLifecycleHintCodes, 'attach' for $script:TcLifecycleAttachOnlyCodes. An unknown
+        (or loopback) target never gets the hint replaced: 'note' when any record exists (one
+        sentence is appended). Short lock wait; unreadable / busy -> $null. Never throws.
+    #>
+    param([string]$Code, [string]$AmsNetId)
+    $replace = $script:TcLifecycleHintCodes -contains $Code
+    $attach = $script:TcLifecycleAttachOnlyCodes -contains $Code
+    if (-not $replace -and -not $attach) { return $null }
+    $id = if (-not [string]::IsNullOrWhiteSpace($AmsNetId)) { $AmsNetId } else { [string]$script:TcAdsAmsNetId }
+    $b = $null
+    try { $b = Get-TcLifecycleBlock -AmsNetId $id -TimeoutMs $script:TcLifecycleAdviceLockMs } catch { return $null }
+    if ($null -eq $b -or [string]$b.errorCode -eq 'state-unreadable') { return $null }
+    if ((ConvertTo-TcLifecycleKey $id) -eq $script:TcLifecycleUnknownKey) { return @{ Mode = 'note'; Block = $b } }
+    @{ Mode = $(if ($replace) { 'replace' } else { 'attach' }); Block = $b }
 }
 
 function Add-TcLifecycleBlockResult {
@@ -363,10 +384,16 @@ function Add-TcLifecycleBlockResult {
         $hp = $Result.error.PSObject.Properties['hint']
         $old = if ($null -ne $hp) { [string]$hp.Value } else { '' }
         # a nested Set-TcSystemState already put the stop instruction in front: replace it, do not repeat it
-        $marker = $script:TcLifecycleStopMarker
-        if ($old.StartsWith($script:TcLifecycleStopPrefix) -and $old.Contains($marker)) { $old = $old.Substring($old.IndexOf($marker) + $marker.Length).Trim() }
-        $rmark = $script:TcLifecycleReadOnlyMarker
-        if ($old.StartsWith($script:TcLifecycleReadOnlyPrefix) -and $old.Contains($rmark)) { $old = $old.Substring($old.IndexOf($rmark) + $rmark.Length).Trim() }
+        # S-2: strip every leading stop / read-only text (in any order, nested results can stack
+        # them) until none is left, then put exactly one stop text in front
+        $pairs = @(@($script:TcLifecycleStopPrefix, $script:TcLifecycleStopMarker), @($script:TcLifecycleReadOnlyPrefix, $script:TcLifecycleReadOnlyMarker))
+        $changed = $true
+        while ($changed) {
+            $changed = $false
+            foreach ($pm in $pairs) {
+                if ($old.StartsWith($pm[0]) -and $old.Contains($pm[1])) { $old = $old.Substring($old.IndexOf($pm[1]) + $pm[1].Length).Trim(); $changed = $true }
+            }
+        }
         $tgt = if ([string]::IsNullOrWhiteSpace($AmsNetId)) { '<unknown>' } elseif (Test-TcLoopbackNetId $AmsNetId) { "$AmsNetId (<unknown>)" } else { $AmsNetId }
         $stop = $script:TcLifecycleStopText.Replace('{target}', $tgt)
         $Result.error | Add-Member -NotePropertyName 'hint' -NotePropertyValue "$stop $old".TrimEnd() -Force

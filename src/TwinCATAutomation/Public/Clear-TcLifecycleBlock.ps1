@@ -57,7 +57,7 @@ function Clear-TcLifecycleBlock {
     if ([string]::IsNullOrWhiteSpace($AmsNetId)) {
         return New-TcResult -Success $false -ErrorCode 'AMS_NETID_REQUIRED' -Hint (Get-TcErrorHint -Code 'AMS_NETID_REQUIRED') `
             -ErrorMessage 'AmsNetId not given and no IDE target / ADS session to take it from; pass -AmsNetId (data.blocks lists every record with its key).' `
-            -Data ([PSCustomObject]@{ blocks = (Get-TcLifecycleBlockList) })
+            -Data ([PSCustomObject]@{ blocks = (Get-TcLifecycleBlockList).List })
     }
     $key = ConvertTo-TcLifecycleKey $AmsNetId
 
@@ -77,12 +77,12 @@ function Clear-TcLifecycleBlock {
     # V4: an empty list must stay an empty array (an if-expression or a function return would
     # unroll @() into $null, which reads as "could not be read"): plain assignments only
     $rest = Get-TcLifecycleBlockList
-    $readable = ($null -ne $rest)
+    $readable = [bool]$rest.Readable
     $restKeys = $null
     $restList = $null
     if ($readable) {
-        $restList = [object[]]@($rest)
-        $restKeys = [string[]]@($rest | ForEach-Object { [string]$_.key })
+        $restList = [object[]]$rest.List
+        $restKeys = [string[]]@($rest.List | ForEach-Object { [string]$_.key })
     }
     # N1: records that still block every target, and the call that would remove them
     # a command on '<unknown>' (unknown / loopback target) is blocked by ANY record: all of them count

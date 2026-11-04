@@ -71,7 +71,7 @@ function Get-TcSystemState {
         })
     }
     catch {
-        New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_FAILED' -MessagePrefix "Failed to read system state of $AmsNetId ($netIdSource)"
+        New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_FAILED' -MessagePrefix "Failed to read system state of $AmsNetId ($netIdSource)"
     }
     finally {
         if ($null -ne $sysClient) {

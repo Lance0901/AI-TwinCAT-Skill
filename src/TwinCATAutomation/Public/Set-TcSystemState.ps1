@@ -285,7 +285,7 @@
         New-TcResult -Success $true -Data $data
     }
     catch {
-        $res = New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
+        $res = New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
         $rd = $res.PSObject.Properties['data']
         if ($null -eq $rd -or $null -eq $rd.Value) { $res | Add-Member -NotePropertyName 'data' -NotePropertyValue ([PSCustomObject]@{}) -Force }
         $res.data | Add-Member -NotePropertyName 'requestSent' -NotePropertyValue $sent -Force
