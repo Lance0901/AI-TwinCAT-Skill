@@ -202,7 +202,7 @@
                 -ErrorCode 'RUNTIME_CRASHED' `
                 -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
                 -Data $data
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $seen -Step 'wait (runtime crashed)')
+            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -Step "wait: runtime gone (RUNTIME_CRASHED); last state seen before it vanished: $seen")
         }
 
         if (-not $wait.Reached) {

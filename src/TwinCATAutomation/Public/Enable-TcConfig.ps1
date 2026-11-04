@@ -309,6 +309,9 @@ function Enable-TcConfig {
     $runSent = $false
     $reachedState = $null         # last system state read back (port 10000)
     $requestedState = $(if ($Force) { 'Run' } else { 'Activated' })
+    # state the step that failed actually requested (lifecycle block record, side finding 2): Config
+    # during set-config, Activated during activate / boot-package, Run from set-run on
+    $blockRequested = $requestedState
 
     function Add-TcStepRecord {
         param([string]$Name, [bool]$Ok, [System.Diagnostics.Stopwatch]$Watch, [string]$Detail)
@@ -491,7 +494,7 @@ function Enable-TcConfig {
         # #68: a failed postcondition after a runtime-changing request blocks the target
         if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
-            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $requestedState -ReachedState $reachedState -Step ($failedStep -join '')
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $blockRequested -ReachedState $reachedState -Step ($failedStep -join '')
         }
         $res
     }
@@ -758,7 +761,9 @@ function Enable-TcConfig {
     function Get-TcReadbackState {
         param([object]$StateResult)
         if ($null -eq $StateResult -or $null -eq $StateResult.data) { return $null }
-        foreach ($n in @('readbackState', 'currentState', 'lastState')) {
+        # the runtime is gone: its last value seen before is not a read-back state (side finding 2)
+        if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return $null }
+        foreach ($n in @('readbackState', 'currentState')) {
             $p = $StateResult.data.PSObject.Properties[$n]
             if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return [string]$p.Value }
         }
@@ -851,7 +856,9 @@ function Enable-TcConfig {
                 if ([string]::IsNullOrWhiteSpace($spec)) { continue }
                 if ($null -eq (Find-TcPlcProject -List $preList -Spec $spec)) {
                     Add-TcStepRecord -Name 'plc-project' -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "'$spec' not found before set-config"
-                    return New-TcStepFailure -Message "PLC project '$spec' not found; nothing was changed. PLC projects: $(($preList | ForEach-Object { $_.projectPath }) -join ', ')" -Code 'PLC_PROJECT_NOT_FOUND'
+                    $names = (($preList | ForEach-Object { $_.name }) -join ', ')
+                    return New-TcStepFailure -Message "PLC project '$spec' not found; nothing was changed. PLC projects: $(($preList | ForEach-Object { $_.projectPath }) -join ', ')" -Code 'PLC_PROJECT_NOT_FOUND' `
+                        -Hint "Check the -PlcProjectPath name '$spec': it matches no PLC project of the solution (names: $names). Use one of these names or a tree path from Get-TcProjectTree, then call Enable-TcConfig again; nothing was changed, so no lifecycle block was recorded." 
                 }
             }
         }
@@ -863,6 +870,7 @@ function Enable-TcConfig {
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
+    $blockRequested = 'Config'
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {
@@ -876,6 +884,7 @@ function Enable-TcConfig {
         return $res
     }
     Add-TcStepRecord -Name 'set-config' -Ok $true -Watch $sw -Detail "system state $($r.data.currentState)"
+    $blockRequested = 'Activated'
 
     # 2. activate
     $fail = Test-TcCycleDeadline -Name 'activate'
@@ -918,6 +927,7 @@ function Enable-TcConfig {
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runSent = $true
+    $blockRequested = 'Run'
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     if (-not $r.success) {

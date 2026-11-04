@@ -43,6 +43,18 @@ function New-TcResult {
             message = $ErrorMessage
             code    = $ErrorCode
         }
+        # #68 side findings 3 / 4: while the target has a lifecycle block, a hint that would send the
+        # agent to a blocked (runtime-changing) command is replaced by the stop text; the block is
+        # attached as data.lifecycleBlock
+        $advice = $null
+        if (-not [string]::IsNullOrWhiteSpace($ErrorCode)) { $advice = Get-TcLifecycleBlockAdvice -Code $ErrorCode }
+        if ($null -ne $advice) {
+            $orig = if ([string]::IsNullOrWhiteSpace($Hint)) { '' } else { " $Hint" }
+            $Hint = "$($script:TcLifecycleReadOnlyText)$orig"
+            if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+            if ($Data -is [System.Collections.IDictionary]) { $Data['lifecycleBlock'] = $advice }
+            elseif ($Data -is [System.Management.Automation.PSCustomObject]) { $Data | Add-Member -NotePropertyName 'lifecycleBlock' -NotePropertyValue $advice -Force }
+        }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) {
             $errorObj | Add-Member -NotePropertyName 'hint' -NotePropertyValue $Hint
         }

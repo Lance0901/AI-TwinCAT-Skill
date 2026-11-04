@@ -271,11 +271,16 @@ function Remove-TcLifecycleBlock {
     @{ Removed = $removed; Warning = $null }
 }
 
-# All records (file + memory) as @{ key; record }, for Clear-TcLifecycleBlock's report; $null when unreadable.
+# All records (file + memory) as @{ key; record }, for Clear-TcLifecycleBlock's report; $null when
+# unreadable. No records -> an EMPTY ARRAY, never $null: the leading comma keeps PowerShell from
+# unrolling @() into $null on the way out (V4, measured 2026-11-04: an unrolled empty list made
+# Clear report "could not be read" after it removed the last record). Callers must not wrap the
+# call in an if-expression or @() themselves before the $null check.
 function Get-TcLifecycleBlockList {
     $all = Get-TcLifecycleBlockEntries
     if ($null -ne $all.Error) { return $null }
-    @($all.Entries.Keys | Sort-Object | ForEach-Object { [PSCustomObject]@{ key = $_; record = $all.Entries[$_] } })
+    $list = @($all.Entries.Keys | Sort-Object | ForEach-Object { [PSCustomObject]@{ key = $_; record = $all.Entries[$_] } })
+    , $list
 }
 
 # Target AmsNetId of the IDE (GetTargetNetId), else the ADS session, else $null. Never throws.
@@ -305,10 +310,34 @@ function Test-TcLifecycleBlock {
     if ($null -eq $b) { return $null }
     $target = if ([string]::IsNullOrWhiteSpace($AmsNetId)) { '<target AmsNetId unknown>' } elseif (Test-TcLoopbackNetId $AmsNetId) { "$AmsNetId (loopback: compared with every record)" } else { $AmsNetId }
     $what = if ([string]$b.errorCode -in @('state-unreadable', 'state-corrupt')) { [string]$b.message }
-            else { "$($b.command) failed at $($b.time) with $($b.errorCode) (requested '$($b.requestedState)', read back '$($b.reachedState)') on $(if ($b.amsNetId) { $b.amsNetId } else { 'an unknown target' })" }
+            else { "$($b.command) did NOT succeed: it failed at $($b.time) with $($b.errorCode)$(if ($b.step) { " in step '$($b.step)'" }) on $(if ($b.amsNetId) { $b.amsNetId } else { 'an unknown target' }) ($(Format-TcLifecycleBlockStates $b))" }
     New-TcResult -Success $false -ErrorCode 'LIFECYCLE_BLOCKED' -Hint (Get-TcErrorHint -Code 'LIFECYCLE_BLOCKED') `
         -ErrorMessage "$Command NOT RUN on ${target}: the lifecycle is blocked because $what. Nothing was sent." `
         -Data ([PSCustomObject]@{ command = $Command; amsNetId = $AmsNetId; notRun = $true; lifecycleBlock = $b })
+}
+
+# "requested 'Config'; system state read back afterwards: nothing (runtime gone)" - never in a
+# form that reads like success (side finding 2).
+function Format-TcLifecycleBlockStates {
+    param($Block)
+    $req = if ([string]::IsNullOrWhiteSpace([string]$Block.requestedState)) { 'unknown' } else { "'$($Block.requestedState)'" }
+    $rb = if (-not [string]::IsNullOrWhiteSpace([string]$Block.reachedState)) { "'$($Block.reachedState)'" }
+          elseif ([string]$Block.errorCode -eq 'RUNTIME_CRASHED') { 'nothing (runtime gone)' }
+          else { 'nothing' }
+    "requested $req; system state read back afterwards: $rb"
+}
+
+# Side findings 3 / 4: error codes whose usual hint points at a runtime-changing command (Connect
+# then SetSystemState / PlcLogin / SetPlcState / EnableConfig). New-TcResult replaces their hint by
+# $script:TcLifecycleReadOnlyText while the target has a lifecycle block.
+$script:TcLifecycleHintCodes = @('ADS_TARGET_NOT_FOUND', 'ADS_PORT_NOT_FOUND', 'NOT_CONNECTED', 'NOT_CONNECTED_IDE', 'PLC_NOT_LOADED', 'ADS_INVALID_STATE', 'ADS_SYMBOL_NOT_FOUND', 'SYMBOL_NOT_FOUND')
+
+# The block that applies to the ADS session's AmsNetId (unknown -> any record), when -Code is one
+# of $script:TcLifecycleHintCodes; else $null. Never throws.
+function Get-TcLifecycleBlockAdvice {
+    param([string]$Code)
+    if ($script:TcLifecycleHintCodes -notcontains $Code) { return $null }
+    try { return (Get-TcLifecycleBlock -AmsNetId ([string]$script:TcAdsAmsNetId)) } catch { return $null }
 }
 
 function Add-TcLifecycleBlockResult {
@@ -336,6 +365,8 @@ function Add-TcLifecycleBlockResult {
         # a nested Set-TcSystemState already put the stop instruction in front: replace it, do not repeat it
         $marker = $script:TcLifecycleStopMarker
         if ($old.StartsWith($script:TcLifecycleStopPrefix) -and $old.Contains($marker)) { $old = $old.Substring($old.IndexOf($marker) + $marker.Length).Trim() }
+        $rmark = $script:TcLifecycleReadOnlyMarker
+        if ($old.StartsWith($script:TcLifecycleReadOnlyPrefix) -and $old.Contains($rmark)) { $old = $old.Substring($old.IndexOf($rmark) + $rmark.Length).Trim() }
         $tgt = if ([string]::IsNullOrWhiteSpace($AmsNetId)) { '<unknown>' } elseif (Test-TcLoopbackNetId $AmsNetId) { "$AmsNetId (<unknown>)" } else { $AmsNetId }
         $stop = $script:TcLifecycleStopText.Replace('{target}', $tgt)
         $Result.error | Add-Member -NotePropertyName 'hint' -NotePropertyValue "$stop $old".TrimEnd() -Force

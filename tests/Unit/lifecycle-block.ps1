@@ -361,12 +361,12 @@ try {
     & $mod { $script:UtSss = 0 }
     $e = Enable-TcConfig -Force -PlcProjectPath 'NoSuchPlc' -WarningAction SilentlyContinue
     $sss = & $mod { $script:UtSss }
-    Check '(14) S-B -PlcProjectPath typo -> PLC_PROJECT_NOT_FOUND before set-config, no block, runtime untouched' ($e.error.code -eq 'PLC_PROJECT_NOT_FOUND' -and $sss -eq 0 -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A) -and -not $e.data.activateSent) "sss=$sss $(J $e.data.steps)"
+    Check '(14) S-B -PlcProjectPath typo -> PLC_PROJECT_NOT_FOUND before set-config, no block, runtime untouched; hint: check the name (side finding 5)' ($e.error.code -eq 'PLC_PROJECT_NOT_FOUND' -and $e.error.hint -match '-PlcProjectPath' -and $e.error.hint -match 'Get-TcProjectTree' -and $e.error.hint -notmatch 'Activate' -and $sss -eq 0 -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A) -and -not $e.data.activateSent) "sss=$sss $(J $e.data.steps)"
     $e = Enable-TcConfig -Force -PlcProjectPath 'P' -WarningAction SilentlyContinue
     Check '(14) S-B existing -PlcProjectPath passes the early check' ($e.success) "$($e.error.code) $($e.error.message)"
     $global:SetConfigFail = $true
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
-    Check '(14) nit-3 set-config failed with data.requestSent=true -> block (no lifecycleBlock needed)' ($e.error.code -eq 'ADS_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'set-config') (J $e.data.lifecycleBlock)
+    Check '(14) nit-3 set-config failed with data.requestSent=true -> block (no lifecycleBlock needed)' ($e.error.code -eq 'ADS_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'set-config' -and $e.data.lifecycleBlock.requestedState -eq 'Config') (J $e.data.lifecycleBlock)
     $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case'
     $global:SetConfigFail = $false
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
@@ -421,6 +421,49 @@ try {
     Check '(9) command on a loopback NetId is blocked by any record' ($null -ne $lb -and $null -ne $lb2 -and $lb.amsNetId -eq '10.9.9.9.1.1') (J $lb)
     $null = Clear-TcLifecycleBlock -AmsNetId '10.9.9.9.1.1' -Reason 'unit test cleanup'
     $null = Clear-TcLifecycleBlock -AmsNetId '10.5.5.5.1.1' -Reason 'unit test cleanup'
+
+    # --- (15) V4 (real machine 2026-11-04): clearing the LAST record must not read as "could not be read" ---
+    $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'user approved after the real-machine check'
+    $js = $cc.data | ConvertTo-Json -Compress -Depth 6
+    Check '(15) V4 clear the only record -> no "could not be read", remaining / remainingKeys / stillBlocking are empty arrays' ($cc.success -and $cc.data.cleared.amsNetId -eq '10.3.3.3.1.1' -and $cc.data.message -notmatch 'could not be read' -and $cc.data.message -match 'No lifecycle block is left' -and $null -ne $cc.data.remaining -and $cc.data.remaining -is [array] -and @($cc.data.remaining).Count -eq 0 -and $cc.data.remainingKeys -is [array] -and @($cc.data.remainingKeys).Count -eq 0 -and $cc.data.stillBlocking -is [array] -and @($cc.data.stillBlocking).Count -eq 0) $js
+    Check '(15) V4 JSON has "remaining":[] and "remainingKeys":[]' ($js -match '"remaining":\[\]' -and $js -match '"remainingKeys":\[\]' -and $js -match '"stillBlocking":\[\]') $js
+    $lst = (& $mod { $x = Get-TcLifecycleBlockList; @{ V = $x } }).V
+    Check '(15) V4 Get-TcLifecycleBlockList with no record -> empty array, not $null' ($null -ne $lst -and $lst -is [array] -and $lst.Count -eq 0) "$(if ($null -eq $lst) { 'null' } else { $lst.GetType().Name })"
+    $nb = & $mod { Get-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' }
+    Check '(15) V4 Get-TcLifecycleBlock with no record -> $null (not blocked)' ($null -eq $nb) (J $nb)
+    # control: the state file really cannot be read (held open without sharing) -> fail closed
+    $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
+    $fs = [IO.File]::Open($stateFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $lst = (& $mod { $x = Get-TcLifecycleBlockList; @{ V = $x } }).V
+        $gb = & $mod { Get-TcLifecycleBlock -AmsNetId '10.2.2.2.1.1' }
+        $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'control: file locked'
+    }
+    finally { $fs.Dispose() }
+    Check '(15) control: unreadable file -> list $null, every target blocked (state-unreadable), Clear fails closed' ($null -eq $lst -and $gb.errorCode -eq 'state-unreadable' -and -not $cc.success -and $cc.error.code -eq 'LIFECYCLE_BLOCKED') "list=$(J $lst) clear=$(J $cc)"
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test cleanup after the control'
+    Check '(15) after the lock is gone the record clears normally' ($cc.success -and $cc.data.cleared.amsNetId -eq '10.3.3.3.1.1' -and @($cc.data.remaining).Count -eq 0 -and $cc.data.message -notmatch 'could not be read') (J $cc.data)
+
+    # --- (16) side findings 3 / 4: hints that point at blocked commands are replaced while blocked ---
+    & $mod { $script:TcAdsAmsNetId = '10.3.3.3.1.1' }
+    $plain = & $mod { New-TcResult -Success $false -ErrorCode 'ADS_TARGET_NOT_FOUND' -ErrorMessage 'no answer (mock)' -Hint (Get-TcErrorHint -Code 'ADS_TARGET_NOT_FOUND') }
+    $orig = & $mod { Get-TcErrorHint -Code 'ADS_TARGET_NOT_FOUND' }
+    Check '(16) no block -> ADS_TARGET_NOT_FOUND keeps its usual hint, no lifecycleBlock' ($plain.error.hint -eq $orig -and $null -eq $plain.PSObject.Properties['data']) (J $plain)
+    $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcSystemState' -ErrorCode 'RUNTIME_CRASHED' -RequestedState 'Config' }
+    $pre = & $mod { $script:TcLifecycleReadOnlyPrefix }
+    foreach ($code in @('ADS_TARGET_NOT_FOUND', 'ADS_PORT_NOT_FOUND', 'NOT_CONNECTED', 'PLC_NOT_LOADED')) {
+        $x = & $mod { param($c) New-TcResult -Success $false -ErrorCode $c -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code $c) } $code
+        Check "(16) block on the session target -> $code hint starts with the stop text, data.lifecycleBlock attached" ($x.error.code -eq $code -and $x.error.hint.StartsWith($pre) -and $x.error.hint -match 'Clear-TcLifecycleBlock' -and $x.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED') (J $x)
+    }
+    $ae = & $mod { $e = $null; try { throw 'Ads-Error 0x7 : Target machine could not be found.' } catch { $e = $_ }; New-TcAdsErrorResult -ErrorRecord $e -DefaultCode 'ADS_CONNECT_FAILED' -MessagePrefix 'mock' }
+    Check '(16) the same through New-TcAdsErrorResult (ADS 0x7 -> ADS_TARGET_NOT_FOUND)' ($ae.error.code -eq 'ADS_TARGET_NOT_FOUND' -and $ae.error.hint.StartsWith($pre)) (J $ae)
+    $other = & $mod { New-TcResult -Success $false -ErrorCode 'BUILD_FAILED' -ErrorMessage 'mock' -Hint 'build hint' }
+    Check '(16) codes whose hint is not a runtime-changing step are left alone' ($other.error.hint -eq 'build hint') (J $other)
+    $tb = & $mod { Test-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcPlcState' }
+    Check '(16) side finding 2: block message of a crash says nothing was read back, no success-like wording' ($tb.error.message -match "requested 'Config'" -and $tb.error.message -match 'nothing \(runtime gone\)' -and $tb.error.message -match 'did NOT succeed' -and $tb.error.message -notmatch "read back '") "$($tb.error.message)"
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test (16) cleanup'
+    & $mod { $script:TcAdsAmsNetId = $null }
 
     # --- registration ---
     $h = & $mod { Get-TcErrorHint -Code 'LIFECYCLE_BLOCKED' }
