@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-04T16:42:04Z",
+    "generatedAt":  "2026-11-04T17:11:44Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1128,7 +1128,7 @@
                                           "properties":  {
                                                              "Verify":  {
                                                                             "type":  "boolean",
-                                                                            "description":  "Also compare the installed files with the SHA256 hashes recorded in the install manifest (tamper / partial update check)."
+                                                                            "description":  "Also compare the installed files with the SHA256 hashes recorded in the install manifest (detects an accidental or partial change of the installed copy)."
                                                                         }
                                                          },
                                           "required":  [

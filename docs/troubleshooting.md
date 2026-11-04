@@ -1453,9 +1453,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### 安裝 manifest(#30):做法
 
 - `TwinCATSetup-Claude.ps1` / `-Codex.ps1` / `-Antigravity.ps1` 安裝(或更新安裝)時,在 skill 目錄(`SKILL.md` 旁)寫 `tcauto-install-manifest.json`(UTF-8 無 BOM,唯讀屬性;三個 installer 同一個 schema,共用 `src/TwinCATAutomation/Private/InstallManifest.ps1`):`schemaVersion`(1)、`name`(SKILL.md frontmatter)、`module`、`sourceUrl`(.psd1 的 `ProjectUri`)、`version`(.psd1 的 `ModuleVersion`)、`release`、`commit`、`ref`、`commitSource`、`installer`(`claude-code` / `codex` / `antigravity`)、`installedAt`(UTC ISO-8601)、`sourcePath`、`hashAlgorithm`(`SHA256`)、`files[]`(`path` 以 `/` 分隔的相對路徑、`sha256` 小寫、`size`;`SKILL.md` 與 `TwinCATAutomation/` 全部檔案,不含 manifest 本身,也不含 Codex 的 `~/.codex/AGENTS.md`)。
-- **commit 從哪來**(`commitSource`):來源根目錄有 `tcauto-source.json`(release zip 在 build 時寫入的 stamp:`sourceUrl`、`commit`、`ref`、`release`,#20)→ `release-stamp`;否則讀 checkout 的 `.git` 檔案(`HEAD`、`refs/heads/*`、`packed-refs`;linked worktree 的 `.git` 檔 + `commondir`)→ `git`;都沒有 → `unknown`、`commit = null`。**不啟動 git**,所以也看不出 working tree 有沒有未 commit 的改動:`commit` 是 HEAD,檔案內容以 `files[].sha256` 為準。
+- **commit 從哪來**(`commitSource`):先讀 checkout 的 `.git` 檔案(`HEAD`、`refs/heads/*`、`packed-refs`;linked worktree 的 `.git` 檔 + `commondir`)→ `git`;沒有 `.git` 才讀來源根目錄的 `tcauto-source.json` → `release-stamp`(**保留給 #20 的 release zip**,build 時寫入 `sourceUrl`、`commit`、`ref`、`release`,格式由 #20 定;commit 必須是 40 / 64 位 hex,否則忽略並警告);都沒有 → `unknown`、`commit = null`。**不啟動 git**,所以也看不出 working tree 有沒有未 commit 的改動:`commit` 是 HEAD,檔案內容以 `files[].sha256` 為準。symbolic ref 串接、reftable 格式的 repo 讀不到 commit(`commit = null`,原因放在 `warnings`)。讀不到 .psd1 / stamp 不會讓安裝失敗，只會缺值並印警告。`Get-TcAutomationVersion` 在 source tree 只有模組資料夾確實是 `<root>\src\TwinCATAutomation` 時才讀 `<root>` 的 commit,否則 `commitSource = unknown`。
 - **讀**:`Get-TcAutomationVersion`(MCP `GetAutomationVersion`,唯讀)。裝出來的副本回 `data.installed = true`、`source = install-manifest` 與 manifest 欄位;直接從 repo / 解開的 release 載入的模組(例如從 repo 啟動的 MCP server)回 `installed = false`、`source = source-tree`,version / commit 當場從 .psd1 與 stamp / `.git` 讀。
-- **驗證**:`Get-TcAutomationVersion -Verify` 比對安裝的檔案與 manifest 的 SHA256(`data.verify`);installer 的 `-Verify`(`-SkillDir` 指定目錄)另外印出 manifest、再和「從這份來源安裝會寫出的內容」比對,commit 不同但檔案相同只標 `[DIFFERENT]`、不算 mismatch。測試用 `-SkillDir <暫存目錄> -SkipPrerequisites`(Codex 另有 `-CodexHome`),不碰使用者 profile。
+- **驗證**:`Get-TcAutomationVersion -Verify` 比對安裝的檔案與 manifest 的 SHA256(`data.verify`);installer 的 `-Verify`(`-SkillDir` 指定目錄)另外印出 manifest、再和「從這份來源安裝會寫出的內容」比對,commit 不同但檔案相同只標 `[DIFFERENT]`、不算 mismatch。測試用 `-SkillDir <暫存目錄> -SkipPrerequisites`(Codex 另有 `-CodexHome`),不碰使用者 profile;相對路徑以目前 PowerShell 位置為準並展開成實際拼法(大小寫、8.3 短名),安裝與 `-Verify` 寫進 SKILL.md 的模組路徑因此一致。installer 本身失敗(helper 不見、複製或寫檔失敗、驗證過程出錯)一律 exit 1,不會印「Installation Complete」。`-Uninstall` 只刪 installer 寫過的目錄(有 manifest,或有 `SKILL.md` + `TwinCATAutomation\TwinCATAutomation.psd1`),其他目錄拒絕並 exit 1。
 
 ### INSTALL_MANIFEST_NOT_FOUND
 
@@ -1465,7 +1465,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### INSTALL_MANIFEST_INVALID
 
-- **現象**:manifest 讀不出來:JSON 壞掉、缺 `schemaVersion` / `files`,或 `schemaVersion` 比這個模組認得的新。
+- **現象**:manifest 讀不出來:JSON 壞掉、缺 `schemaVersion` / `files`,`schemaVersion` 比這個模組認得的新，某個 `files[].sha256` 不是 64 位 hex,或某個 `files[].path` 會離開安裝目錄(含 `..`、絕對路徑、`:`、`\`;這種 manifest 不拿來讀任何檔案)。
 - **下一步**:不要手動修 manifest;在來源 repo 重跑 `TwinCATSetup-<工具>.ps1`(會覆寫 manifest)。
 
 ### INSTALL_MANIFEST_MISMATCH

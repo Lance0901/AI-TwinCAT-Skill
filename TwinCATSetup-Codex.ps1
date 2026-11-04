@@ -18,9 +18,9 @@
     source (.agents/skills/twincat/SKILL.md with <module-path> substituted, src/TwinCATAutomation).
     Exit code 0 = match, 1 = mismatch, not installed or no manifest.
 .PARAMETER SkillDir
-    Skill directory. Default: ~/.agents/skills/twincat. Tests pass a temp folder.
+    Skill directory. Default: ~/.agents/skills/twincat. A relative path is resolved against the current PowerShell location. Tests pass a temp folder.
 .PARAMETER CodexHome
-    Folder that receives AGENTS.md. Default: ~/.codex. Tests pass a temp folder.
+    Folder that receives AGENTS.md. Default: ~/.codex. A relative path is resolved against the current PowerShell location. Tests pass a temp folder.
 .PARAMETER SkipPrerequisites
     Skip the TwinCAT / IDE / module import checks (tests and CI without TwinCAT).
 .EXAMPLE
@@ -45,15 +45,29 @@ $fail = 0
 $scriptRoot = $PSScriptRoot
 
 # Paths
-$userSkillDir  = $SkillDir
-$codexHome     = $CodexHome
-$codexAgentsMd = Join-Path $codexHome "AGENTS.md"
 $srcModule     = Join-Path $scriptRoot "src\TwinCATAutomation"
 $srcSkill      = Join-Path $scriptRoot ".agents\skills\twincat\SKILL.md"
 
 # Install / manifest / verify helpers shared with the module (Get-TcAutomationVersion) and the
-# Claude Code / Antigravity installers.
-. (Join-Path $srcModule "Private\InstallManifest.ps1")
+# other installers. A missing or broken helper is a failed run (exit 1), never a silent success.
+$helper = Join-Path $srcModule "Private\InstallManifest.ps1"
+if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+    Write-Host "  [FAIL] Installer helper missing: $helper (incomplete source tree; re-download or re-clone)" -ForegroundColor Red
+    exit 1
+}
+try {
+    $ErrorActionPreference = 'Stop'
+    . $helper
+    # absolute (relative to the PowerShell location, not the process directory), real spelling
+    $userSkillDir = Resolve-TcInstallPath -Path $SkillDir -SessionState $ExecutionContext.SessionState
+    $codexHome = Resolve-TcInstallPath -Path $CodexHome -SessionState $ExecutionContext.SessionState
+    $codexAgentsMd = Join-Path $codexHome "AGENTS.md"
+    $ErrorActionPreference = 'Continue'
+}
+catch {
+    Write-Host "  [FAIL] Installer setup failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
 function Write-Check {
     param([string]$Name, [bool]$Ok, [string]$Detail)
@@ -72,8 +86,14 @@ function Write-Check {
 if ($Uninstall) {
     Write-Host ""
     Write-Host "=== Uninstall TwinCAT Skill ===" -ForegroundColor Yellow
-    if (Test-Path $userSkillDir) {
-        Remove-Item $userSkillDir -Recurse -Force
+    if (Test-Path -LiteralPath $userSkillDir) {
+        if (-not (Test-TcInstalledSkillDir -Dir $userSkillDir)) {
+            # never delete a folder this installer did not write (a mistyped -SkillDir)
+            Write-Host "  [FAIL] Not a TwinCAT skill folder (no $($script:TcInstallManifestName), no SKILL.md + TwinCATAutomation\TwinCATAutomation.psd1): $userSkillDir; nothing removed" -ForegroundColor Red
+            Write-Host ""
+            exit 1
+        }
+        Remove-Item -LiteralPath $userSkillDir -Recurse -Force
         Write-Host "  Removed: $userSkillDir" -ForegroundColor Green
     } else {
         Write-Host "  Not found: $userSkillDir" -ForegroundColor DarkGray
@@ -95,8 +115,16 @@ if ($Uninstall) {
 
 # --- Verify (read-only) ---
 if ($Verify) {
-    $code = Invoke-TcInstallVerify -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill `
-        -Label 'Codex' -InstallerScript 'pwsh ./TwinCATSetup-Codex.ps1'
+    $code = 1
+    try {
+        $code = Invoke-TcInstallVerify -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill `
+            -Label 'Codex' -InstallerScript 'pwsh ./TwinCATSetup-Codex.ps1'
+    }
+    catch {
+        Write-Host "  [FAIL] Verify failed: $($_.Exception.Message)" -ForegroundColor Red
+        $code = 1
+    }
+    if ($code -isnot [int]) { $code = 1 }
     exit $code
 }
 
@@ -199,7 +227,20 @@ Write-Host "=== Install Skill (user-level) ===" -ForegroundColor Cyan
 
 # 1. Module -> <skill>\TwinCATAutomation, SKILL.md with <module-path> = absolute path (UTF-8
 #    without BOM), then the install manifest.
-$manifest = Install-TcSkillPayload -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill -Installer 'codex'
+$manifest = $null
+try {
+    $manifest = Install-TcSkillPayload -SkillDir $userSkillDir -SourceRoot $scriptRoot -SkillSource $srcSkill -Installer 'codex'
+}
+catch {
+    Write-Host "  [FAIL] Install failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "         The skill folder may be incomplete: fix the cause and run this installer again." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+if ($null -eq $manifest) {
+    Write-Host "  [FAIL] Install failed: no install manifest written" -ForegroundColor Red
+    exit 1
+}
 $absModulePath = Join-Path $userSkillDir "TwinCATAutomation\TwinCATAutomation.psm1"
 Write-Host "  Installed module: $(Join-Path $userSkillDir 'TwinCATAutomation')" -ForegroundColor Green
 Write-Host "  Installed skill:  $(Join-Path $userSkillDir 'SKILL.md')" -ForegroundColor Green

@@ -7,47 +7,95 @@
 #
 # The installers dot-source this file directly from the source tree (they run before anything is
 # installed), so it uses nothing but what it defines itself and plain .NET / built-in cmdlets.
+# Every function name here is unique in src/TwinCATAutomation (the module dot-sources all Private
+# files, a later definition with the same name silently replaces an earlier one; scripts/check.ps1
+# "functions" enforces it).
 #
 # Where the commit comes from (Get-TcSourceInfo), in this order:
-#   1. tcauto-source.json in the source root: a build-time stamp a release zip (#20) carries
-#      ({"sourceUrl", "commit", "ref", "release"}); no git needed at install time.
-#   2. the .git of a source checkout, read as files (HEAD, refs/heads/*, packed-refs; a worktree's
+#   1. the .git of a source checkout, read as files (HEAD, refs/heads/*, packed-refs; a worktree's
 #      .git file + commondir). git itself is never started.
+#   2. tcauto-source.json in the source root. RESERVED for the release zip of #20: a build-time
+#      stamp {"sourceUrl", "commit", "ref", "release"} so no git is needed at install time. Only
+#      read when there is no .git; the format is fixed by #20.
 #   3. neither: commit = null, commitSource = 'unknown'.
 
 $script:TcInstallManifestName = 'tcauto-install-manifest.json'
 $script:TcSourceStampName = 'tcauto-source.json'
 $script:TcInstallManifestSchemaVersion = 1
 
-function Read-TcUtf8Text {
+function Read-TcInstallText {
     # UTF-8 text with or without BOM (Windows PowerShell 5.1 Get-Content reads BOM-less files as ANSI).
     param([Parameter(Mandatory)][string]$Path)
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
 }
 
-function Write-TcUtf8Text {
+function Write-TcInstallText {
     # UTF-8 without BOM (5.1 Set-Content -Encoding UTF8 writes a BOM).
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][AllowEmptyString()][string]$Content)
     [System.IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-function Get-TcSha256Hex {
+function Get-TcInstallSha256Hex {
     param([Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { return ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
 
-function Get-TcFileSha256 {
+function Get-TcInstallFileSha256 {
+    # lower-case hex SHA256 of a file; throws when it cannot be read
     param([Parameter(Mandatory)][string]$Path)
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+}
+
+function Resolve-TcInstallPath {
+    <#
+    .SYNOPSIS
+        Absolute, normalized form of a folder path given to an installer: relative paths are resolved
+        against the PowerShell location (not the process working directory), and every component
+        that exists on disk gets its real spelling (case, 8.3 short names expanded), so the module
+        path written into SKILL.md is the same at install and at -Verify.
+    #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$SessionState)
+    $full = [System.IO.Path]::GetFullPath($SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)).TrimEnd('\', '/')
+    $root = [System.IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrEmpty($root) -or $full.Length -le $root.Length) { return $full }
+    $current = $root
+    $parts = $full.Substring($root.Length).Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+    $exists = $true
+    foreach ($part in $parts) {
+        $next = $null
+        if ($exists -and (Test-Path -LiteralPath $current -PathType Container)) {
+            try {
+                # the search pattern matches the long and the 8.3 name; the result is the long name
+                $hit = @([System.IO.Directory]::GetFileSystemEntries($current, $part))
+                if ($hit.Count -eq 1) { $next = $hit[0] }
+            } catch { $next = $null }
+        }
+        if ($null -eq $next) { $exists = $false; $next = Join-Path $current $part }
+        $current = $next
+    }
+    return $current
+}
+
+function Test-TcInstallRelPath {
+    # A files[].path of a manifest: relative, '/'-separated, no '..', no drive / root / backslash.
+    param([AllowNull()][AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if ($Path.Contains('\') -or $Path.Contains(':') -or $Path.StartsWith('/')) { return $false }
+    foreach ($seg in $Path.Split('/')) {
+        if ($seg -eq '' -or $seg -eq '.' -or $seg -eq '..') { return $false }
+    }
+    return $true
 }
 
 function Get-TcGitHeadInfo {
     <#
     .SYNOPSIS
         Reads the checked-out commit of a git working tree from its .git files (no git process).
-        Returns @{ commit; ref } ($null commit for an unborn branch) or $null when RepoRoot has no .git.
+        Returns @{ commit; ref; note } or $null when RepoRoot has no .git. commit is $null (with a
+        note) for an unborn branch, a symbolic ref chain or a reftable repository (refs not stored
+        as files).
     #>
     param([Parameter(Mandatory)][string]$RepoRoot)
 
@@ -58,7 +106,7 @@ function Get-TcGitHeadInfo {
     }
     elseif (Test-Path -LiteralPath $dotGit -PathType Leaf) {
         # linked worktree / submodule: ".git" is a file "gitdir: <path>"
-        $line = (Read-TcUtf8Text $dotGit).Trim()
+        $line = (Read-TcInstallText $dotGit).Trim()
         if ($line -match '^gitdir:\s*(.+)$') {
             $p = $Matches[1].Trim()
             if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $RepoRoot $p }
@@ -73,19 +121,24 @@ function Get-TcGitHeadInfo {
     $commonDir = $gitDir
     $commonFile = Join-Path $gitDir 'commondir'
     if (Test-Path -LiteralPath $commonFile -PathType Leaf) {
-        $c = (Read-TcUtf8Text $commonFile).Trim()
+        $c = (Read-TcInstallText $commonFile).Trim()
         if (-not [System.IO.Path]::IsPathRooted($c)) { $c = Join-Path $gitDir $c }
         $commonDir = [System.IO.Path]::GetFullPath($c)
     }
 
-    $head = (Read-TcUtf8Text $headFile).Trim()
+    $head = (Read-TcInstallText $headFile).Trim()
     $ref = $null
     $commit = $null
+    $note = $null
     if ($head -match '^ref:\s*(\S+)$') {
         $ref = $Matches[1]
+        if ($ref -match '(^|/)\.invalid$' -or (Test-Path -LiteralPath (Join-Path $commonDir 'reftable') -PathType Container)) {
+            # reftable format: HEAD points at refs/heads/.invalid, the real refs are binary tables
+            return [ordered]@{ commit = $null; ref = $null; note = 'reftable repository: refs are not plain files, commit not read (git is not started)' }
+        }
         foreach ($dir in @($gitDir, $commonDir)) {
             $refFile = Join-Path $dir ($ref -replace '/', '\')
-            if (Test-Path -LiteralPath $refFile -PathType Leaf) { $commit = (Read-TcUtf8Text $refFile).Trim(); break }
+            if (Test-Path -LiteralPath $refFile -PathType Leaf) { $commit = (Read-TcInstallText $refFile).Trim(); break }
         }
         if ($null -eq $commit) {
             $packed = Join-Path $commonDir 'packed-refs'
@@ -95,6 +148,8 @@ function Get-TcGitHeadInfo {
                 }
             }
         }
+        if ($null -eq $commit) { $note = "unborn branch: $ref has no commit" }
+        elseif ($commit -match '^ref:') { $commit = $null; $note = "symbolic ref chain ($ref -> another ref) is not followed" }
     }
     else {
         $commit = $head   # detached HEAD
@@ -102,66 +157,82 @@ function Get-TcGitHeadInfo {
     if ($null -ne $commit) {
         $commit = $commit.ToLowerInvariant()
         # SHA-1 (40) or SHA-256 (64) object names only
-        if ($commit -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { $commit = $null }
+        if ($commit -notmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { $commit = $null; $note = 'HEAD / ref does not hold a 40 / 64 hex object name' }
     }
-    return [ordered]@{ commit = $commit; ref = $ref }
+    return [ordered]@{ commit = $commit; ref = $ref; note = $note }
 }
 
 function Get-TcSourceInfo {
     <#
     .SYNOPSIS
         Source repository, module version and commit of a source tree (a checkout or an extracted
-        release zip). ModuleDir is the TwinCATAutomation module folder of that tree.
+        release zip). ModuleDir is the TwinCATAutomation module folder of that tree. Never throws:
+        what could not be read is $null and explained in warnings[].
     #>
     param(
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$ModuleDir
     )
 
-    $version = $null
-    $sourceUrl = $null
-    $psd1 = Join-Path $ModuleDir 'TwinCATAutomation.psd1'
-    if (Test-Path -LiteralPath $psd1 -PathType Leaf) {
-        $data = Import-PowerShellDataFile -LiteralPath $psd1
-        $version = [string]$data.ModuleVersion
-        if ($data.PrivateData -and $data.PrivateData.PSData) { $sourceUrl = [string]$data.PrivateData.PSData.ProjectUri }
-    }
-
+    $warnings = [System.Collections.Generic.List[string]]::new()
     $info = [ordered]@{
-        sourceUrl    = $sourceUrl
-        version      = $version
+        sourceUrl    = $null
+        version      = $null
         release      = $null
         commit       = $null
         ref          = $null
         commitSource = 'unknown'
+        warnings     = $null
     }
 
-    $stamp = Join-Path $SourceRoot $script:TcSourceStampName
-    if (Test-Path -LiteralPath $stamp -PathType Leaf) {
-        $s = (Read-TcUtf8Text $stamp) | ConvertFrom-Json
-        if ($s.sourceUrl) { $info.sourceUrl = [string]$s.sourceUrl }
-        if ($s.release) { $info.release = [string]$s.release }
-        if ($s.ref) { $info.ref = [string]$s.ref }
-        if ($s.commit) { $info.commit = ([string]$s.commit).ToLowerInvariant() }
-        $info.commitSource = 'release-stamp'
-        return $info
+    $psd1 = Join-Path $ModuleDir 'TwinCATAutomation.psd1'
+    if (Test-Path -LiteralPath $psd1 -PathType Leaf) {
+        try {
+            $data = Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop
+            $info.version = [string]$data.ModuleVersion
+            if ($data.PrivateData -and $data.PrivateData.PSData) { $info.sourceUrl = [string]$data.PrivateData.PSData.ProjectUri }
+        }
+        catch { $warnings.Add("module manifest $psd1 cannot be read: $($_.Exception.Message)") }
     }
+    else { $warnings.Add("module manifest not found: $psd1") }
 
-    $git = Get-TcGitHeadInfo -RepoRoot $SourceRoot
+    $git = $null
+    try { $git = Get-TcGitHeadInfo -RepoRoot $SourceRoot }
+    catch { $warnings.Add(".git cannot be read: $($_.Exception.Message)") }
     if ($null -ne $git) {
         $info.commit = $git.commit
         $info.ref = $git.ref
         $info.commitSource = 'git'
+        if ($git.note) { $warnings.Add($git.note) }
     }
+    else {
+        $stamp = Join-Path $SourceRoot $script:TcSourceStampName
+        if (Test-Path -LiteralPath $stamp -PathType Leaf) {
+            try {
+                $s = (Read-TcInstallText $stamp) | ConvertFrom-Json -ErrorAction Stop
+                if ($s.sourceUrl) { $info.sourceUrl = [string]$s.sourceUrl }
+                if ($s.release) { $info.release = [string]$s.release }
+                if ($s.ref) { $info.ref = [string]$s.ref }
+                $c = ([string]$s.commit).ToLowerInvariant()
+                if ($c -match '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { $info.commit = $c }
+                else { $warnings.Add("$($script:TcSourceStampName): commit '$($s.commit)' is not a 40 / 64 hex object name, ignored") }
+                $info.commitSource = 'release-stamp'
+            }
+            catch { $warnings.Add("$($script:TcSourceStampName) cannot be read: $($_.Exception.Message)") }
+        }
+    }
+    $info.warnings = @($warnings)
     return $info
 }
 
 function Get-TcSkillName {
-    # "name:" of the SKILL.md frontmatter, $null when there is none
+    # "name:" inside the SKILL.md frontmatter (between the first two '---' lines), $null when there is none
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-    $m = [regex]::Match((Read-TcUtf8Text $Path), '\A---\r?\n(?:.*\r?\n)*?name:\s*(.+?)\s*\r?\n')
-    if ($m.Success) { return $m.Groups[1].Value }
+    $m = [regex]::Match((Read-TcInstallText $Path), '\A---\r?\n(?<fm>(?:(?!---\r?\n).*\r?\n)*?)---\r?\n')
+    if (-not $m.Success) { return $null }
+    $n = [regex]::Match($m.Groups['fm'].Value, '(?m)^name:[ \t]*(.+?)[ \t]*\r?$')
+    if ($n.Success) { return $n.Groups[1].Value }
     return $null
 }
 
@@ -185,7 +256,7 @@ function Get-TcInstallFileHashes {
         foreach ($f in $files) {
             $rel = $f.FullName.Substring($root.Length).TrimStart('\', '/') -replace '\\', '/'
             if ($rel -eq $script:TcInstallManifestName) { continue }
-            $items.Add([ordered]@{ path = $rel; sha256 = (Get-TcFileSha256 $f.FullName); size = [long]$f.Length })
+            $items.Add([ordered]@{ path = $rel; sha256 = (Get-TcInstallFileSha256 $f.FullName); size = [long]$f.Length })
         }
     }
     return @($items | Sort-Object -Property @{ Expression = { $_.path } })
@@ -224,20 +295,26 @@ function Write-TcInstallManifest {
     }
     $path = Join-Path $InstallRoot $script:TcInstallManifestName
     if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-Item -LiteralPath $path -Force).IsReadOnly = $false }
-    Write-TcUtf8Text -Path $path -Content ($manifest | ConvertTo-Json -Depth 6)
+    Write-TcInstallText -Path $path -Content ($manifest | ConvertTo-Json -Depth 6)
     (Get-Item -LiteralPath $path -Force).IsReadOnly = $true
+    foreach ($w in $src.warnings) { Write-Warning "install manifest: $w" }
     return $manifest
 }
 
 function Read-TcInstallManifest {
-    # Parsed manifest; throws when the file is not a manifest this module understands.
+    # Parsed manifest; throws when the file is not a manifest this module understands (also when a
+    # files[].path leaves the install folder: '..', rooted, drive, backslash).
     param([Parameter(Mandatory)][string]$Path)
-    $m = (Read-TcUtf8Text $Path) | ConvertFrom-Json
+    $m = (Read-TcInstallText $Path) | ConvertFrom-Json -ErrorAction Stop
     if ($null -eq $m -or $null -eq $m.schemaVersion -or $null -eq $m.files) {
         throw "$Path is not a TwinCATAutomation install manifest (schemaVersion / files missing)"
     }
     if ([int]$m.schemaVersion -gt $script:TcInstallManifestSchemaVersion) {
         throw "$Path has schemaVersion $($m.schemaVersion); this module reads up to $($script:TcInstallManifestSchemaVersion)"
+    }
+    foreach ($f in @($m.files)) {
+        if (-not (Test-TcInstallRelPath ([string]$f.path))) { throw "$Path lists an invalid file path '$($f.path)' (must be relative, '/'-separated, without '..', ':' or '\')" }
+        if ([string]$f.sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "$Path has an invalid sha256 for '$($f.path)'" }
     }
     return $m
 }
@@ -251,18 +328,33 @@ function Find-TcInstallManifest {
     return $null
 }
 
+function Test-TcInstalledSkillDir {
+    # True when Dir looks like a skill folder one of the installers wrote: the install manifest, or
+    # SKILL.md + TwinCATAutomation\TwinCATAutomation.psd1 (an install from before #30). -Uninstall
+    # deletes nothing else.
+    param([Parameter(Mandatory)][string]$Dir)
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $Dir $script:TcInstallManifestName) -PathType Leaf) { return $true }
+    return ((Test-Path -LiteralPath (Join-Path $Dir 'SKILL.md') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Dir 'TwinCATAutomation\TwinCATAutomation.psd1') -PathType Leaf))
+}
+
 function Compare-TcInstallFiles {
     <#
     .SYNOPSIS
         Compares the files below InstallRoot with Expected (items with path + sha256). Returns
         [ordered]@{ ok; checked; matched; mismatched [{path, expected, actual}]; missing [path];
         extra [path] }. extra = files in a folder that Expected covers (e.g. TwinCATAutomation/)
-        that Expected does not list; loose files next to SKILL.md are not reported.
+        that Expected does not list; loose files next to SKILL.md are not reported. Throws on a path
+        that would leave InstallRoot (see Test-TcInstallRelPath).
     #>
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Expected
     )
+    foreach ($e in $Expected) {
+        if (-not (Test-TcInstallRelPath ([string]$e.path))) { throw "invalid install file path '$($e.path)' (must be relative, '/'-separated, without '..', ':' or '\')" }
+    }
     $root = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd('\', '/')
     $mismatched = [System.Collections.Generic.List[object]]::new()
     $missing = [System.Collections.Generic.List[string]]::new()
@@ -276,9 +368,10 @@ function Compare-TcInstallFiles {
         if ($rel.Contains('/')) { $dirs[$rel.Split('/')[0]] = $true }
         $full = Join-Path $root ($rel -replace '/', '\')
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $missing.Add($rel); continue }
-        $actual = Get-TcFileSha256 $full
-        if ($actual -eq ([string]$e.sha256).ToLowerInvariant()) { $matched++ }
-        else { $mismatched.Add([ordered]@{ path = $rel; expected = ([string]$e.sha256).ToLowerInvariant(); actual = $actual }) }
+        $actual = Get-TcInstallFileSha256 $full
+        $exp = ([string]$e.sha256).ToLowerInvariant()
+        if ([string]::Equals($actual, $exp, [System.StringComparison]::Ordinal)) { $matched++ }
+        else { $mismatched.Add([ordered]@{ path = $rel; expected = $exp; actual = $actual }) }
     }
     foreach ($d in ($dirs.Keys | Sort-Object)) {
         $dirPath = Join-Path $root $d
@@ -301,7 +394,7 @@ function Compare-TcInstallFiles {
 function Get-TcRenderedSkillContent {
     # SKILL.md as installed: the repo file with <module-path> replaced literally (no regex tokens).
     param([Parameter(Mandatory)][string]$SkillSource, [Parameter(Mandatory)][string]$ModulePath)
-    return (Read-TcUtf8Text $SkillSource).Replace('<module-path>', $ModulePath)
+    return (Read-TcInstallText $SkillSource).Replace('<module-path>', $ModulePath)
 }
 
 function Get-TcExpectedInstallFiles {
@@ -312,11 +405,11 @@ function Get-TcExpectedInstallFiles {
     )
     $items = [System.Collections.Generic.List[object]]::new()
     $skillBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($SkillContent)
-    $items.Add([ordered]@{ path = 'SKILL.md'; sha256 = (Get-TcSha256Hex $skillBytes); size = [long]$skillBytes.Length })
+    $items.Add([ordered]@{ path = 'SKILL.md'; sha256 = (Get-TcInstallSha256Hex $skillBytes); size = [long]$skillBytes.Length })
     $root = [System.IO.Path]::GetFullPath($SourceModuleDir).TrimEnd('\', '/')
     foreach ($f in @(Get-ChildItem -LiteralPath $root -Recurse -File -Force)) {
         $rel = 'TwinCATAutomation/' + ($f.FullName.Substring($root.Length).TrimStart('\', '/') -replace '\\', '/')
-        $items.Add([ordered]@{ path = $rel; sha256 = (Get-TcFileSha256 $f.FullName); size = [long]$f.Length })
+        $items.Add([ordered]@{ path = $rel; sha256 = (Get-TcInstallFileSha256 $f.FullName); size = [long]$f.Length })
     }
     return @($items | Sort-Object -Property @{ Expression = { $_.path } })
 }
@@ -326,7 +419,7 @@ function Install-TcSkillPayload {
     .SYNOPSIS
         The install step shared by the three installers: copies the module to <SkillDir>\TwinCATAutomation
         (replacing an older copy), writes SKILL.md with the module path filled in, then the manifest.
-        Returns the manifest.
+        Returns the manifest; throws on the first failure (the caller reports it and exits 1).
     #>
     param(
         [Parameter(Mandatory)][string]$SkillDir,
@@ -334,13 +427,16 @@ function Install-TcSkillPayload {
         [Parameter(Mandatory)][string]$SkillSource,
         [Parameter(Mandatory)][string]$Installer
     )
+    $ErrorActionPreference = 'Stop'
     $srcModule = Join-Path $SourceRoot 'src\TwinCATAutomation'
+    if (-not (Test-Path -LiteralPath (Join-Path $srcModule 'TwinCATAutomation.psd1') -PathType Leaf)) { throw "module source not found: $srcModule" }
+    if (-not (Test-Path -LiteralPath $SkillSource -PathType Leaf)) { throw "SKILL.md source not found: $SkillSource" }
     $destModule = Join-Path $SkillDir 'TwinCATAutomation'
     if (-not (Test-Path -LiteralPath $SkillDir)) { New-Item -Path $SkillDir -ItemType Directory -Force | Out-Null }
     if (Test-Path -LiteralPath $destModule) { Remove-Item -LiteralPath $destModule -Recurse -Force }
     Copy-Item -LiteralPath $srcModule -Destination $destModule -Recurse -Force
     $absModulePath = Join-Path $destModule 'TwinCATAutomation.psm1'
-    Write-TcUtf8Text -Path (Join-Path $SkillDir 'SKILL.md') -Content (Get-TcRenderedSkillContent -SkillSource $SkillSource -ModulePath $absModulePath)
+    Write-TcInstallText -Path (Join-Path $SkillDir 'SKILL.md') -Content (Get-TcRenderedSkillContent -SkillSource $SkillSource -ModulePath $absModulePath)
     return Write-TcInstallManifest -InstallRoot $SkillDir -SourceRoot $SourceRoot -ModuleDir $srcModule -Installer $Installer
 }
 
@@ -348,8 +444,9 @@ function Invoke-TcInstallVerify {
     <#
     .SYNOPSIS
         Read-only -Verify of the installers: prints the manifest (source, version, commit, install
-        time), checks the installed files against the manifest hashes and against what an install
-        from SourceRoot would write. Returns 0 (match) or 1 (mismatch, not installed, no manifest).
+        time), checks the installed files against the manifest hashes (accidental or partial change)
+        and against what an install from SourceRoot would write. Returns 0 (match) or 1 (mismatch,
+        not installed, no / invalid manifest, or the check itself failed).
         A different commit with identical files is only a warning (e.g. a docs-only commit).
     #>
     param(
@@ -359,6 +456,7 @@ function Invoke-TcInstallVerify {
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$InstallerScript
     )
+    $ErrorActionPreference = 'Stop'
     $srcModule = Join-Path $SourceRoot 'src\TwinCATAutomation'
     $absModulePath = Join-Path (Join-Path $SkillDir 'TwinCATAutomation') 'TwinCATAutomation.psm1'
     $problems = [System.Collections.Generic.List[string]]::new()
@@ -394,6 +492,7 @@ function Invoke-TcInstallVerify {
         }
         catch {
             Write-Host "  [INVALID]  $($_.Exception.Message)" -ForegroundColor Red
+            $manifest = $null
             $problems.Add('manifest invalid')
         }
     }
@@ -412,6 +511,7 @@ function Invoke-TcInstallVerify {
     Write-Host ""
     Write-Host "--- Source (installed files vs installer source) ---" -ForegroundColor Cyan
     Write-Host "  source version: $($src.version)  commit: $(if ($src.commit) { $src.commit } else { '(unknown)' }) [$($src.commitSource)]"
+    foreach ($w in $src.warnings) { Write-Host "  [WARN]     $w" -ForegroundColor Yellow }
     $expected = Get-TcExpectedInstallFiles -SourceModuleDir $srcModule -SkillContent (Get-TcRenderedSkillContent -SkillSource $SkillSource -ModulePath $absModulePath)
     $r2 = Compare-TcInstallFiles -InstallRoot $SkillDir -Expected $expected
     Write-TcInstallCompareLines -Result $r2 -What 'source'

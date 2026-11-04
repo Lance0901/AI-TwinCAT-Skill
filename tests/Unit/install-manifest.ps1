@@ -9,6 +9,11 @@
 #     attribute handled) and verifies again; a broken manifest -> INSTALL_MANIFEST_INVALID.
 #  5. Module loaded from the source tree: installed=false, source=source-tree; -Verify ->
 #     INSTALL_MANIFEST_NOT_FOUND.
+#  Review round 1: .git preferred over the stamp, bad stamp / .psd1 -> warnings (no throw), symbolic
+#  ref chain / reftable -> no commit, frontmatter-only skill name, hash helper not shadowed (M1),
+#  traversal paths refused (S5), helper / SKILL.md source missing -> exit 1 (M2), relative and
+#  case / 8.3 -SkillDir (S3), -Uninstall refuses a foreign folder (S4), copied module folder ->
+#  commit unknown (S6).
 # Never touches the user profile: every install goes to a temp folder whose name contains "30".
 #   powershell.exe -NoProfile -File tests/Unit/install-manifest.ps1
 # Exit code = number of failed checks.
@@ -87,11 +92,67 @@ try {
     $psd1Version = [string](Import-PowerShellDataFile (Join-Path $srcModuleDir 'TwinCATAutomation.psd1')).ModuleVersion
     $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r1 $srcModuleDir
     Check 'source info: git' ($s.commitSource -eq 'git' -and $s.commit -eq $shaA -and $s.version -eq $psd1Version -and $s.sourceUrl -like 'https://github.com/*') "$($s.commitSource) $($s.version) $($s.sourceUrl)"
-    Write-File "$r1\tcauto-source.json" ('{"sourceUrl":"https://example.invalid/repo30","commit":"' + $shaB + '","ref":"refs/tags/v9.9.9","release":"v9.9.9"}')
+    $stampJson = '{"sourceUrl":"https://example.invalid/repo30","commit":"' + $shaB + '","ref":"refs/tags/v9.9.9","release":"v9.9.9"}'
+    Write-File "$r1\tcauto-source.json" $stampJson
     $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r1 $srcModuleDir
-    Check 'source info: release stamp wins over .git' ($s.commitSource -eq 'release-stamp' -and $s.commit -eq $shaB -and $s.release -eq 'v9.9.9' -and $s.sourceUrl -eq 'https://example.invalid/repo30') "$($s.commitSource) $($s.commit)"
+    Check 'source info: .git wins over a release stamp' ($s.commitSource -eq 'git' -and $s.commit -eq $shaA) "$($s.commitSource) $($s.commit)"
+    $r7 = Join-Path $tmpRoot 'release30'
+    Write-File "$r7\tcauto-source.json" $stampJson
+    $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r7 $srcModuleDir
+    Check 'source info: release stamp without .git' ($s.commitSource -eq 'release-stamp' -and $s.commit -eq $shaB -and $s.release -eq 'v9.9.9' -and $s.sourceUrl -eq 'https://example.invalid/repo30') "$($s.commitSource) $($s.commit)"
+    Write-File "$r7\tcauto-source.json" '{"commit":"not-a-sha30","release":"v1"}'
+    $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r7 $srcModuleDir
+    Check 'source info: stamp commit not 40/64 hex -> null + warning' ($null -eq $s.commit -and @($s.warnings).Count -ge 1 -and $s.version -eq $psd1Version) "$(@($s.warnings) -join '; ')"
+    Write-File "$r7\tcauto-source.json" '{ not json 30'
+    $threw = $false
+    try { $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r7 $srcModuleDir } catch { $threw = $true }
+    Check 'source info: broken stamp JSON -> warning, no throw' (-not $threw -and $null -eq $s.commit -and @($s.warnings).Count -ge 1) "$(@($s.warnings) -join '; ')"
+    $badMod = Join-Path $tmpRoot 'badpsd1-30'
+    Write-File "$badMod\TwinCATAutomation.psd1" '@{ ModuleVersion = (Get-Date) }'
+    $threw = $false
+    try { $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r6 $badMod } catch { $threw = $true }
+    Check 'source info: unreadable .psd1 -> warning, no throw' (-not $threw -and $null -eq $s.version -and @($s.warnings).Count -ge 1) "$(@($s.warnings) -join '; ')"
     $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $r6 $srcModuleDir
     Check 'source info: nothing -> unknown' ($s.commitSource -eq 'unknown' -and $null -eq $s.commit -and $s.version -eq $psd1Version) ''
+
+    # symbolic ref chain / reftable: no commit, a note instead
+    $r8 = Join-Path $tmpRoot 'repo-symref30'
+    Write-File "$r8\.git\HEAD" "ref: refs/heads/alias`n"
+    Write-File "$r8\.git\refs\heads\alias" "ref: refs/heads/main`n"
+    Write-File "$r8\.git\refs\heads\main" "$shaA`n"
+    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r8
+    Check 'git: symbolic ref chain -> commit null + note' ($null -eq $g.commit -and $g.note -like '*symbolic*') "$($g.note)"
+    $r9 = Join-Path $tmpRoot 'repo-reftable30'
+    Write-File "$r9\.git\HEAD" "ref: refs/heads/.invalid`n"
+    $null = New-Item -ItemType Directory -Path "$r9\.git\reftable" -Force
+    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r9
+    Check 'git: reftable -> commit null + note' ($null -eq $g.commit -and $g.note -like '*reftable*') "$($g.note)"
+
+    # SKILL.md name only from the frontmatter
+    $sk = Join-Path $tmpRoot 'skillname30'
+    Write-File "$sk\a.md" "---`ndescription: x`n---`n`nname: NotTheName`n"
+    Write-File "$sk\b.md" "---`ndescription: x`nname: Real30`n---`nname: Other`n"
+    $na = & $mod { param($p) Get-TcSkillName -Path $p } "$sk\a.md"
+    $nb = & $mod { param($p) Get-TcSkillName -Path $p } "$sk\b.md"
+    Check 'skill name: only inside the frontmatter' ($null -eq $na -and $nb -eq 'Real30') "a=$na b=$nb"
+
+    # M1: the hash helper is not shadowed by another Private file (PlcOpen.ps1 has Get-TcFileSha256)
+    $hf = Join-Path $sk 'b.md'
+    $h = & $mod { param($p) Get-TcInstallFileSha256 $p } $hf
+    Check 'hash helper inside the module: lower-case SHA256' ($h -ceq (Get-FileHash -LiteralPath $hf -Algorithm SHA256).Hash.ToLowerInvariant()) "$h"
+
+    # S5: paths that leave the install folder are refused
+    $travRoot = Join-Path $tmpRoot 'trav30\skill'
+    $null = New-Item -ItemType Directory -Path $travRoot -Force
+    foreach ($bad in @('../../outside30.txt', 'C:/Windows/win.ini', '/abs30', 'TwinCATAutomation\x.ps1', 'a/../b', '')) {
+        $threw = $false
+        try { $null = & $mod { param($a, $b) Compare-TcInstallFiles -InstallRoot $a -Expected $b } $travRoot @([pscustomobject]@{ path = $bad; sha256 = ('0' * 64) }) } catch { $threw = $true }
+        Check "compare: invalid path '$bad' refused" $threw ''
+    }
+    Write-File "$travRoot\tcauto-install-manifest.json" ('{"schemaVersion":1,"files":[{"path":"../../outside30.txt","sha256":"' + ('0' * 64) + '","size":1}]}')
+    $threw = $false
+    try { $null = & $mod { param($p) Read-TcInstallManifest -Path $p } "$travRoot\tcauto-install-manifest.json" } catch { $threw = $true }
+    Check 'read manifest: traversal path -> throws' $threw ''
 
     # ------------------------------------------------------------------ 2. installers
     $expectedCommit = (& $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $repoRoot)
@@ -179,6 +240,76 @@ try {
     Check 'broken manifest: INSTALL_MANIFEST_INVALID' ($null -ne $res -and -not $res.success -and $res.error.code -eq 'INSTALL_MANIFEST_INVALID') "$($res.error.code)"
     $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $dir, '-Verify')
     Check 'broken manifest: installer -Verify exits 1' ($v.Code -eq 1) "exit $($v.Code)"
+    # S5: a manifest pointing outside the install folder is INVALID, nothing outside is read
+    Write-File $mf ('{"schemaVersion":1,"files":[{"path":"../../outside30.txt","sha256":"' + ('0' * 64) + '","size":1}]}')
+    $c = Invoke-ChildCommand ($verCmd -f '-Verify')
+    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    Check 'traversal manifest: Get-TcAutomationVersion -Verify -> INSTALL_MANIFEST_INVALID' ($null -ne $res -and -not $res.success -and $res.error.code -eq 'INSTALL_MANIFEST_INVALID') "$($res.error.code)"
+    $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $dir, '-Verify')
+    Check 'traversal manifest: installer -Verify exits 1' ($v.Code -eq 1 -and $v.Out -match 'INVALID') "exit $($v.Code)"
+
+    # ------------------------------------------------------------------ M2: failures are failures
+    # a source tree without Private\InstallManifest.ps1, and one without the SKILL.md source
+    $partial = Join-Path $tmpRoot 'partial30-src'
+    $null = New-Item -ItemType Directory -Path "$partial\src" -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') -Destination $partial
+    Copy-Item -LiteralPath $srcModuleDir -Destination "$partial\src\TwinCATAutomation" -Recurse
+    $null = New-Item -ItemType Directory -Path "$partial\adapters\claude-code" -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'adapters\claude-code\SKILL.md') -Destination "$partial\adapters\claude-code\SKILL.md"
+    Remove-Item -LiteralPath "$partial\src\TwinCATAutomation\Private\InstallManifest.ps1" -Force
+    $pdir = Join-Path $tmpRoot 'partial30-skill'
+    $v = Invoke-Child "$partial\TwinCATSetup-Claude.ps1" @('-SkillDir', $pdir, '-Verify')
+    Check 'helper missing: -Verify exits 1' ($v.Code -eq 1) "exit $($v.Code)"
+    $r = Invoke-Child "$partial\TwinCATSetup-Claude.ps1" @('-SkillDir', $pdir, '-SkipPrerequisites')
+    Check 'helper missing: install exits 1, no "Installation Complete"' ($r.Code -eq 1 -and $r.Out -notmatch 'Installation Complete' -and -not (Test-Path -LiteralPath $pdir)) "exit $($r.Code)"
+    Copy-Item -LiteralPath (Join-Path $srcModuleDir 'Private\InstallManifest.ps1') -Destination "$partial\src\TwinCATAutomation\Private\InstallManifest.ps1"
+    Remove-Item -LiteralPath "$partial\adapters\claude-code\SKILL.md" -Force
+    $r = Invoke-Child "$partial\TwinCATSetup-Claude.ps1" @('-SkillDir', $pdir, '-SkipPrerequisites')
+    Check 'SKILL.md source missing: install exits 1, no "Installation Complete"' ($r.Code -eq 1 -and $r.Out -notmatch 'Installation Complete' -and $r.Out -match 'Install failed') "exit $($r.Code)"
+    $v = Invoke-Child "$partial\TwinCATSetup-Claude.ps1" @('-SkillDir', $dir, '-Verify')
+    Check 'SKILL.md source missing: -Verify exits 1' ($v.Code -eq 1) "exit $($v.Code)"
+
+    # ------------------------------------------------------------------ S3: relative -SkillDir / -CodexHome
+    # the PowerShell location differs from the process working directory in the child
+    $work = Join-Path $tmpRoot 'work30'
+    $null = New-Item -ItemType Directory -Path $work -Force
+    $codexScript = Join-Path $repoRoot 'TwinCATSetup-Codex.ps1'
+    $c = Invoke-ChildCommand ("Set-Location -LiteralPath '$work'; & '$codexScript' -SkillDir 'rel30skill' -CodexHome 'rel30home' -SkipPrerequisites *> `$null; exit `$LASTEXITCODE")
+    $relSkill = Join-Path $work 'rel30skill\SKILL.md'
+    $relText = if (Test-Path -LiteralPath $relSkill) { [System.IO.File]::ReadAllText($relSkill, [System.Text.Encoding]::UTF8) } else { '' }
+    Check 'relative -SkillDir / -CodexHome: resolved against the PowerShell location' ($c.Code -eq 0 -and $relText.Contains((Join-Path $work 'rel30skill\TwinCATAutomation\TwinCATAutomation.psm1')) -and (Test-Path -LiteralPath (Join-Path $work 'rel30home\AGENTS.md'))) "exit $($c.Code)"
+    $c = Invoke-ChildCommand ("Set-Location -LiteralPath '$work'; & '$codexScript' -SkillDir 'rel30skill' -CodexHome 'rel30home' -Verify *> `$null; exit `$LASTEXITCODE")
+    Check 'relative -SkillDir: -Verify exits 0' ($c.Code -eq 0) "exit $($c.Code)"
+
+    # case / 8.3 spelling of -SkillDir does not change the expected SKILL.md
+    $caseDir = Join-Path $tmpRoot 'CaseDir30'
+    $r = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $caseDir, '-SkipPrerequisites')
+    $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $caseDir.ToLowerInvariant(), '-Verify')
+    Check 'other case of -SkillDir: -Verify exits 0' ($r.Code -eq 0 -and $v.Code -eq 0) "install $($r.Code) verify $($v.Code)"
+    $short = $null
+    try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($caseDir).ShortPath } catch { $short = $null }
+    if ($short -and $short -ne $caseDir) {
+        $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $short, '-Verify')
+        Check '8.3 -SkillDir: -Verify exits 0' ($v.Code -eq 0) "$short exit $($v.Code)"
+    }
+    else { "INFO 8.3 -SkillDir: no short name on this volume, not tested" }
+
+    # ------------------------------------------------------------------ S4: -Uninstall only removes a skill folder
+    $other = Join-Path $tmpRoot 'other30'
+    Write-File "$other\keep30.txt" 'not a skill'
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $other, '-Uninstall')
+    Check '-Uninstall on a foreign folder: refused (exit 1), files kept' ($u.Code -eq 1 -and (Test-Path -LiteralPath "$other\keep30.txt")) "exit $($u.Code)"
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Antigravity.ps1') @('-SkillDir', $caseDir, '-Uninstall')
+    Check '-Uninstall on an installed folder: removed (exit 0)' ($u.Code -eq 0 -and -not (Test-Path -LiteralPath $caseDir)) "exit $($u.Code)"
+
+    # ------------------------------------------------------------------ S6: copied module folder, not <root>\src\TwinCATAutomation
+    $fake = Join-Path $tmpRoot 'fake30'
+    Write-File "$fake\.git\HEAD" "$shaA`n"
+    $null = New-Item -ItemType Directory -Path "$fake\lib" -Force
+    Copy-Item -LiteralPath $srcModuleDir -Destination "$fake\lib\TwinCATAutomation" -Recurse
+    $c = Invoke-ChildCommand ("Import-Module '$fake\lib\TwinCATAutomation\TwinCATAutomation.psm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion | ConvertTo-Json -Depth 6 -Compress")
+    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    Check 'copied module folder: commit not taken from an unrelated .git' ($null -ne $res -and $res.success -and $res.data.commitSource -eq 'unknown' -and $null -eq $res.data.commit -and $res.data.version -eq $psd1Version) "$($res.data.commitSource) $($res.data.commit)"
 
     # ------------------------------------------------------------------ 5. source tree
     $res = Get-TcAutomationVersion

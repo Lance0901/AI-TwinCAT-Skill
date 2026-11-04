@@ -9,16 +9,18 @@ function Get-TcAutomationVersion {
         version, release, commit, ref, commitSource, installer, installedAt, sourcePath, fileCount).
         A module loaded from a source checkout or an extracted release (e.g. the TcAuto MCP server
         started from the repository) has no manifest: data.installed = false, data.source =
-        'source-tree', and version / commit are read from the module manifest and the tcauto-source.json
-        stamp or the .git files (git is not started). commitSource tells which: 'release-stamp', 'git'
-        or 'unknown'. data.moduleVersion is the ModuleVersion of the loaded module's .psd1,
-        data.modulePath its folder.
+        'source-tree': version from the module's .psd1; the commit only when the module folder is
+        <root>\src\TwinCATAutomation, from <root>\.git (read as files, git is not started) or, without
+        .git, the tcauto-source.json stamp reserved for the release zip (#20). commitSource tells which:
+        'git', 'release-stamp' or 'unknown' (data.warnings says why a value is missing).
+        data.moduleVersion is the ModuleVersion of the loaded module's .psd1, data.modulePath its folder.
         -Verify compares every installed file with the SHA256 in the manifest: data.verify (ok,
         checked, matched, mismatched [path, expected, actual], missing, extra). A difference returns
         INSTALL_MANIFEST_MISMATCH; -Verify without a manifest INSTALL_MANIFEST_NOT_FOUND; a manifest
-        that cannot be read INSTALL_MANIFEST_INVALID. Read-only: nothing is written.
+        that cannot be read (or lists a path outside the install folder) INSTALL_MANIFEST_INVALID.
+        Read-only: nothing is written.
     .PARAMETER Verify
-        Also compare the installed files with the SHA256 hashes recorded in the install manifest (tamper / partial update check).
+        Also compare the installed files with the SHA256 hashes recorded in the install manifest (detects an accidental or partial change of the installed copy).
     .EXAMPLE
         Get-TcAutomationVersion
     .EXAMPLE
@@ -33,18 +35,35 @@ function Get-TcAutomationVersion {
     $moduleDir = $null
     if ($MyInvocation.MyCommand.Module) { $moduleDir = $MyInvocation.MyCommand.Module.ModuleBase }
     if ([string]::IsNullOrWhiteSpace($moduleDir)) { $moduleDir = Split-Path -Parent $PSScriptRoot }
-    $moduleDir = [System.IO.Path]::GetFullPath($moduleDir)
+    $moduleDir = [System.IO.Path]::GetFullPath($moduleDir).TrimEnd('\', '/')
 
     $moduleVersion = $null
     $psd1 = Join-Path $moduleDir 'TwinCATAutomation.psd1'
     if (Test-Path -LiteralPath $psd1 -PathType Leaf) {
-        try { $moduleVersion = [string](Import-PowerShellDataFile -LiteralPath $psd1).ModuleVersion } catch { $moduleVersion = $null }
+        try { $moduleVersion = [string](Import-PowerShellDataFile -LiteralPath $psd1 -ErrorAction Stop).ModuleVersion } catch { $moduleVersion = $null }
     }
 
     $manifestPath = Find-TcInstallManifest -ModuleDir $moduleDir
     if ($null -eq $manifestPath) {
-        $sourceRoot = Split-Path -Parent (Split-Path -Parent $moduleDir)   # <root>\src\TwinCATAutomation
-        $src = Get-TcSourceInfo -SourceRoot $sourceRoot -ModuleDir $moduleDir
+        # A commit belongs to <root> only when the module folder really is <root>\src\TwinCATAutomation;
+        # anywhere else (a copied module folder) a .git / stamp above it says nothing about this module.
+        $srcDir = Split-Path -Parent $moduleDir
+        $sourceRoot = if ($srcDir) { Split-Path -Parent $srcDir } else { $null }
+        $inTree = $false
+        if (-not [string]::IsNullOrEmpty($sourceRoot) -and (Split-Path -Leaf $srcDir) -eq 'src') {
+            $expectedDir = [System.IO.Path]::GetFullPath((Join-Path $sourceRoot 'src\TwinCATAutomation')).TrimEnd('\', '/')
+            $inTree = [string]::Equals($expectedDir, $moduleDir, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        if ($inTree) {
+            $src = Get-TcSourceInfo -SourceRoot $sourceRoot -ModuleDir $moduleDir
+        }
+        else {
+            # version still comes from the module's own .psd1; there is no source root to read a commit from
+            $src = Get-TcSourceInfo -SourceRoot $moduleDir -ModuleDir $moduleDir
+            $src.commit = $null; $src.ref = $null; $src.release = $null; $src.commitSource = 'unknown'
+            $src.warnings = @(@($src.warnings) + "module folder $moduleDir is not <root>\src\TwinCATAutomation of a source tree: commit unknown")
+            $sourceRoot = $null
+        }
         $data = [ordered]@{
             installed     = $false
             source        = 'source-tree'
@@ -58,6 +77,7 @@ function Get-TcAutomationVersion {
             ref           = $src.ref
             commitSource  = $src.commitSource
             sourcePath    = $sourceRoot
+            warnings      = @($src.warnings)
         }
         if ($Verify) {
             return New-TcResult -Success $false -ErrorCode 'INSTALL_MANIFEST_NOT_FOUND' -Hint $script:TcErrorHints['INSTALL_MANIFEST_NOT_FOUND'] `
