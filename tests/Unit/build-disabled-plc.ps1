@@ -21,6 +21,7 @@ $ErrorActionPreference = 'Stop'
 $stateRoot = Join-Path $env:TEMP ("tcauto-unit-dis-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $stateRoot -Force
 $env:TCAUTO_STATE_DIR = Join-Path $stateRoot 'state'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 # 8.3 TEMP on CI runners (#43): the state keys are long paths

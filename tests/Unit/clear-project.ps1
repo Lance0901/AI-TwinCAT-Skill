@@ -4,6 +4,7 @@
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/clear-project.ps1
 # Exit code = number of failed checks. Takes ~25 s (CLEAN_TIMEOUT 5 s, nullReads 15 s).
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0

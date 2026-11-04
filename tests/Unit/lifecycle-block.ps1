@@ -28,6 +28,7 @@
 $ErrorActionPreference = 'Stop'
 $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::NewGuid().ToString('N'))
 $modulePath = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module $modulePath -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0

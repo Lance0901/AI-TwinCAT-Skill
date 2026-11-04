@@ -7,11 +7,13 @@
 #   powershell.exe -NoProfile -File tests/Unit/ide-solutions-lock.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
 $modulePath = if ($env:TCAUTO_UNIT_MODULE) { $env:TCAUTO_UNIT_MODULE } else { Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1' }
 $origLocalAppData = $env:LOCALAPPDATA
 $tmpRoot = Join-Path $env:TEMP ("tcauto-unit-idesol-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmpRoot -Force
-$env:LOCALAPPDATA = $tmpRoot
+$env:LOCALAPPDATA = $tmpRoot            # module versions before #118 (TCAUTO_UNIT_MODULE) keep the records here
+$env:TCAUTO_STATE_DIR = $tmpRoot         # #118: records + mutex name follow TCAUTO_STATE_DIR
 Import-Module $modulePath -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
@@ -113,9 +115,19 @@ try {
     Check 'remove-removed' ($leftC.Count -eq 0) "removed pids still present: $($leftC.Count)"
 
     # 3. no .tmp left behind, file is valid JSON
-    $dir = Join-Path $tmpRoot 'TwinCATAutomation'
+    $dir = Split-Path -Parent (& $mod { Get-TcIdeSolutionRecordPath })
     $tmps = @(Get-ChildItem -LiteralPath $dir -Filter '*.tmp' -ErrorAction SilentlyContinue)
     Check 'no-tmp-left' ($tmps.Count -eq 0) "tmp files: $($tmps.Count)"
+
+    # 4a. #118: the lock name of a TCAUTO_STATE_DIR run is its own, never the global name a real
+    #     TcAuto session (or another test run) holds; the record file is in TCAUTO_STATE_DIR
+    $lockName = & $mod { if (Get-Command Get-TcIdeSolutionLockName -ErrorAction SilentlyContinue) { Get-TcIdeSolutionLockName } else { $script:TcIdeSolutionLockName } }
+    $globalName = & $mod { $script:TcIdeSolutionLockName }
+    if (-not $env:TCAUTO_UNIT_MODULE) {
+        Check 'lock-name-per-state-dir' ($lockName -ne $globalName -and $lockName -match '^Local\\TwinCATAutomation-ide-solutions\.[0-9a-f]{16}$') "$lockName"
+        $recPath = & $mod { Get-TcIdeSolutionRecordPath }
+        Check 'record-file-in-state-dir' ([string]::Equals((Split-Path -Parent $recPath).TrimEnd('\'), $tmpRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) "$recPath"
+    }
 
     # 4. mutex held by another holder longer than the wait limit: Save skips, writes verbose, no throw
     $holdName = "tcauto-hold-{0}" -f [guid]::NewGuid().ToString('N')
@@ -128,7 +140,7 @@ try {
         $null = $m.WaitOne(); $null = $h.Set()
         $null = $r.WaitOne(30000)
         $m.ReleaseMutex(); $m.Dispose()
-    } @((& $mod { $script:TcIdeSolutionLockName }), $holdName, "$holdName-held")
+    } @($lockName, $holdName, "$holdName-held")
     $null = $held.WaitOne(10000)
     $before = Read-Pids
     $probe = $live[40]

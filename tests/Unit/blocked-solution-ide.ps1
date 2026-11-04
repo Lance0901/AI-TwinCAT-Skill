@@ -8,6 +8,7 @@
 #   the volume generates no 8.3 names.
 param([switch]$Short83)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
@@ -38,6 +39,10 @@ public static class TcUnitLongPath {
 $slnDir = [TcUnitLongPath]::Get($slnDir)
 $origLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $slnDir   # session records go to the temp folder
+$origStateDir = $env:TCAUTO_STATE_DIR
+# #118: records live in TCAUTO_STATE_DIR; an inherited one (solution-path-83.ps1 runs this script
+# with -Short83) holds the caller's fake-pid records, which would contradict ours: use our own.
+$env:TCAUTO_STATE_DIR = Join-Path $slnDir 'state'
 $sln = Join-Path $slnDir 'Demo.sln'
 Set-Content -Path $sln -Value 'Microsoft Visual Studio Solution File, Format Version 12.00'
 $slnLong = $sln
@@ -62,6 +67,7 @@ public static class TcUnitShortPath {
     if ($slnDirIn -eq $slnDir) {
         "SKIP blocked-solution-ide -Short83: this volume does not generate 8.3 short names ($slnDir)"
         $env:LOCALAPPDATA = $origLocalAppData
+        $env:TCAUTO_STATE_DIR = $origStateDir
         Remove-Item -LiteralPath $slnDir -Recurse -Force -ErrorAction SilentlyContinue
         exit 0
     }
@@ -327,6 +333,7 @@ try {
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }
     $env:LOCALAPPDATA = $origLocalAppData
+    $env:TCAUTO_STATE_DIR = $origStateDir
     Remove-Item -LiteralPath $slnDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Variable -Name FakeIde, FakeRot -Scope Global -ErrorAction SilentlyContinue
 }

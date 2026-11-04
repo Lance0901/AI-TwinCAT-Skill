@@ -43,8 +43,12 @@
       unit        every tests/Unit/*.ps1 in its own powershell.exe (no IDE / runtime needed):
                   PASS when each exits 0 (and its "failed: N" line, if any, says 0); a script
                   that runs longer than 300 s is killed and fails. Skipped with -Fast (#43).
-      npm test    mcp-server unit tests (npm ci first when node_modules is missing).
-                  Skipped with -Fast.
+                  #118: each script runs with its own empty TCAUTO_STATE_DIR (removed afterwards)
+                  and TCAUTO_TEST_FORBID_REAL_STATE=1, must dot-source tests/Unit/lib/UnitIsolation.ps1
+                  before its first Import-Module, and fails when the module printed
+                  TCAUTO_REAL_STATE_REFUSED (it tried to use the real %TEMP% / %LOCALAPPDATA% state).
+      npm test    mcp-server unit tests (npm ci first when node_modules is missing), with an isolated
+                  TCAUTO_STATE_DIR and TCAUTO_TEST_FORBID_REAL_STATE=1 (#118). Skipped with -Fast.
     Exit code 0 when nothing failed, 1 otherwise. SKIP never counts as PASS; with -Strict a
     SKIP fails the run as well.
 
@@ -524,49 +528,87 @@ else {
         $unitTimeoutMs = 300000
         $unitFailed = New-Object System.Collections.Generic.List[string]
         $unitLines = New-Object System.Collections.Generic.List[string]
+        # #118 isolation rule: a script that imports the module dot-sources tests/Unit/lib/UnitIsolation.ps1
+        # BEFORE its first Import-Module (own TCAUTO_STATE_DIR + TCAUTO_TEST_FORBID_REAL_STATE when run directly).
         foreach ($uf in $unitFiles) {
-            # Own process per file (each imports the module with its own mocks). Output goes to
-            # files: reading redirected pipes synchronously can dead-lock on a full buffer.
-            $outFile = Join-Path ([IO.Path]::GetTempPath()) ("unit-{0}.out" -f [guid]::NewGuid().ToString('N'))
-            $errFile = "$outFile.err"
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            $p = Start-Process -FilePath 'powershell.exe' -PassThru -NoNewWindow -WorkingDirectory $repoRoot `
-                -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
-                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($uf.FullName)`"")
-            # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
-            # Start-Process -PassThru object reads back as $null after the exit.
-            $null = $p.Handle
-            try {
-                $done = $p.WaitForExit($unitTimeoutMs)
-                $killed = $true
-                if (-not $done) {
-                    try { $p.Kill() } catch { }
-                    # bounded: a process that does not die after Kill must not hang the check
-                    $killed = $p.WaitForExit(10000)
-                }
-                $code = if ($done) { $p.ExitCode } else { -1 }
-                if (-not $killed) { $unitLines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
-                $out = @()
-                foreach ($f in @($outFile, $errFile)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
-                # "failed: N" is printed by most of them; exit 0 is what counts
-                $failLine = @($out | Where-Object { $_ -match '^failed:\s*\d+' } | Select-Object -Last 1)
-                $secs = [int]$sw.Elapsed.TotalSeconds
-                if ($code -eq 0 -and -not ($failLine.Count -gt 0 -and $failLine[0] -notmatch '^failed:\s*0\s*$')) {
-                    $unitLines.Add("$($uf.Name): ok ($secs s)")
-                }
-                else {
-                    $why = if (-not $done) { "timeout after $($unitTimeoutMs / 1000) s" } else { "exit $code" }
-                    $unitFailed.Add($uf.Name)
-                    $unitLines.Add("$($uf.Name): $why ($secs s)")
-                    foreach ($l in @($out | Where-Object { $_ -match '^\s*FAIL\b' } | Select-Object -First 10)) { $unitLines.Add("  $l") }
-                    foreach ($l in @($out | Select-Object -Last 5)) { $unitLines.Add("  | $l") }
-                }
+            $ulines = @(Get-Content -LiteralPath $uf.FullName)
+            $imp = -1; $iso = -1
+            for ($i = 0; $i -lt $ulines.Count; $i++) {
+                $code = ($ulines[$i] -replace '#.*$', '')
+                if ($iso -lt 0 -and $code -match '^\s*\.\s+\(Join-Path\s+\$PSScriptRoot\s+''lib\\UnitIsolation\.ps1''\)') { $iso = $i }
+                if ($imp -lt 0 -and $code -match '\bImport-Module\b') { $imp = $i }
             }
-            finally {
-                $p.Dispose()
-                Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+            if ($imp -ge 0 -and ($iso -lt 0 -or $iso -gt $imp)) {
+                $unitFailed.Add($uf.Name)
+                $unitLines.Add("$($uf.Name): imports the module without dot-sourcing lib\UnitIsolation.ps1 first (#118: its state would be the machine's real %TEMP%\TwinCATAutomation)")
             }
         }
+        # #118: every script gets its own empty TCAUTO_STATE_DIR (inherited by the child) and the
+        # module refuses the real state folders (TCAUTO_TEST_FORBID_REAL_STATE); removed afterwards.
+        $unitStateRoot = Join-Path ([IO.Path]::GetTempPath()) ("tcauto-check-state-{0}" -f [guid]::NewGuid().ToString('N'))
+        $savedStateDir = $env:TCAUTO_STATE_DIR
+        $savedForbid = $env:TCAUTO_TEST_FORBID_REAL_STATE
+        $env:TCAUTO_TEST_FORBID_REAL_STATE = '1'
+        try {
+            foreach ($uf in $unitFiles) {
+                $env:TCAUTO_STATE_DIR = Join-Path $unitStateRoot $uf.BaseName
+                $null = New-Item -ItemType Directory -Path $env:TCAUTO_STATE_DIR -Force
+                # Own process per file (each imports the module with its own mocks). Output goes to
+                # files: reading redirected pipes synchronously can dead-lock on a full buffer.
+                $outFile = Join-Path ([IO.Path]::GetTempPath()) ("unit-{0}.out" -f [guid]::NewGuid().ToString('N'))
+                $errFile = "$outFile.err"
+                $sw = [Diagnostics.Stopwatch]::StartNew()
+                $p = Start-Process -FilePath 'powershell.exe' -PassThru -NoNewWindow -WorkingDirectory $repoRoot `
+                    -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($uf.FullName)`"")
+                # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
+                # Start-Process -PassThru object reads back as $null after the exit.
+                $null = $p.Handle
+                try {
+                    $done = $p.WaitForExit($unitTimeoutMs)
+                    $killed = $true
+                    if (-not $done) {
+                        try { $p.Kill() } catch { }
+                        # bounded: a process that does not die after Kill must not hang the check
+                        $killed = $p.WaitForExit(10000)
+                    }
+                    $code = if ($done) { $p.ExitCode } else { -1 }
+                    if (-not $killed) { $unitLines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
+                    $out = @()
+                    foreach ($f in @($outFile, $errFile)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
+                    # "failed: N" is printed by most of them; exit 0 is what counts
+                    $failLine = @($out | Where-Object { $_ -match '^failed:\s*\d+' } | Select-Object -Last 1)
+                    $secs = [int]$sw.Elapsed.TotalSeconds
+                    # #118: the module printed this when the script tried to use the real state folder
+                    $realState = @($out | Where-Object { $_ -match 'TCAUTO_REAL_STATE_REFUSED' } | Select-Object -First 3)
+                    if ($realState.Count -gt 0) {
+                        $unitFailed.Add($uf.Name)
+                        $unitLines.Add("$($uf.Name): tried to use the real TcAuto state folder (#118)")
+                        foreach ($l in $realState) { $unitLines.Add("  | $l") }
+                    }
+                    elseif ($code -eq 0 -and -not ($failLine.Count -gt 0 -and $failLine[0] -notmatch '^failed:\s*0\s*$')) {
+                        $unitLines.Add("$($uf.Name): ok ($secs s)")
+                    }
+                    else {
+                        $why = if (-not $done) { "timeout after $($unitTimeoutMs / 1000) s" } else { "exit $code" }
+                        $unitFailed.Add($uf.Name)
+                        $unitLines.Add("$($uf.Name): $why ($secs s)")
+                        foreach ($l in @($out | Where-Object { $_ -match '^\s*FAIL\b' } | Select-Object -First 10)) { $unitLines.Add("  $l") }
+                        foreach ($l in @($out | Select-Object -Last 5)) { $unitLines.Add("  | $l") }
+                    }
+                }
+                finally {
+                    $p.Dispose()
+                    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        finally {
+            if ($null -eq $savedStateDir) { Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue } else { $env:TCAUTO_STATE_DIR = $savedStateDir }
+            if ($null -eq $savedForbid) { Remove-Item Env:\TCAUTO_TEST_FORBID_REAL_STATE -ErrorAction SilentlyContinue } else { $env:TCAUTO_TEST_FORBID_REAL_STATE = $savedForbid }
+            Remove-Item -LiteralPath $unitStateRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $unitFailed = @($unitFailed | Select-Object -Unique)
         if ($unitFailed.Count -eq 0) {
             Add-CheckResult 'unit' 'PASS' "$($unitFiles.Count) tests/Unit scripts, exit 0" @($unitLines)
         }
@@ -593,6 +635,14 @@ else {
     }
     else {
         Push-Location $mcpDir
+        # #118: the bridge / fixture PowerShell children inherit an isolated state folder and the
+        # refusal of the real one (a test that sets its own TCAUTO_STATE_DIR keeps it).
+        $npmStateDir = Join-Path ([IO.Path]::GetTempPath()) ("tcauto-check-npm-state-{0}" -f [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $npmStateDir -Force
+        $savedStateDir = $env:TCAUTO_STATE_DIR
+        $savedForbid = $env:TCAUTO_TEST_FORBID_REAL_STATE
+        $env:TCAUTO_STATE_DIR = $npmStateDir
+        $env:TCAUTO_TEST_FORBID_REAL_STATE = '1'
         try {
             $installed = ''
             $ok = $true
@@ -621,6 +671,9 @@ else {
         }
         finally {
             Pop-Location
+            if ($null -eq $savedStateDir) { Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue } else { $env:TCAUTO_STATE_DIR = $savedStateDir }
+            if ($null -eq $savedForbid) { Remove-Item Env:\TCAUTO_TEST_FORBID_REAL_STATE -ErrorAction SilentlyContinue } else { $env:TCAUTO_TEST_FORBID_REAL_STATE = $savedForbid }
+            Remove-Item -LiteralPath $npmStateDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
