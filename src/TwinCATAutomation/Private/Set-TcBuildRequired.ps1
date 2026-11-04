@@ -119,6 +119,14 @@ function Get-TcStateDir {
     Join-Path ([IO.Path]::GetTempPath()) 'TwinCATAutomation'
 }
 
+# A state file name for messages / data only: never throws. Under TCAUTO_TEST_FORBID_REAL_STATE
+# without TCAUTO_STATE_DIR it gives '<refused>\<name>' (the marker line is still printed), so the
+# fail-closed result that carries the message is still returned (#118).
+function Get-TcStateFileLabel {
+    param([Parameter(Mandatory)][string]$Name)
+    try { Join-Path (Get-TcStateDir) $Name } catch { "<refused>\$Name" }
+}
+
 function Get-TcBuildRequiredFile {
     Join-Path (Get-TcStateDir) 'build-required.json'
 }
@@ -401,7 +409,7 @@ function Set-TcBuildRequired {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($r.Locked -and $null -eq $r.Error) { return $null }
-    $w = "BUILD_REQUIRED was recorded in this process only, not in $(Get-TcBuildRequiredFile) ($($r.Error)): another process (or an MCP bridge restart) will not see it; run Build-TcProject before Enable-TcConfig or a PLC login."
+    $w = "BUILD_REQUIRED was recorded in this process only, not in $(Get-TcStateFileLabel 'build-required.json') ($($r.Error)): another process (or an MCP bridge restart) will not see it; run Build-TcProject before Enable-TcConfig or a PLC login."
     Write-Warning $w
     return $w
 }
@@ -445,7 +453,7 @@ function Clear-TcBuildRequired {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($r.Locked -and $null -eq $r.Error) { return $null }
-    $w = "Clear-TcBuildRequired: $(Get-TcBuildRequiredFile) not updated ($($r.Error)); Enable-TcConfig and PLC logins stay blocked until a later Build-TcProject can update it."
+    $w = "Clear-TcBuildRequired: $(Get-TcStateFileLabel 'build-required.json') not updated ($($r.Error)); Enable-TcConfig and PLC logins stay blocked until a later Build-TcProject can update it."
     Write-Warning $w
     return $w
 }
@@ -616,7 +624,7 @@ function Get-TcBuildSelectionGuard {
         reason                = [string]$r['build-selection']
         solution              = [string]$e.solution
         at                    = [string]$e.at
-        stateFile             = (Get-TcBuildRequiredFile)
+        stateFile             = (Get-TcStateFileLabel 'build-required.json')
     }
 }
 
@@ -655,7 +663,7 @@ function Clear-TcBuildSelectionGuard {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($res.Locked -and $null -eq $res.Error) { return $null }
-    "Clear-TcBuildSelectionGuard: $(Get-TcBuildRequiredFile) not updated ($($res.Error)); Build-TcProject and Enable-TcConfig stay blocked until a later Set-TcTarget can update it."
+    "Clear-TcBuildSelectionGuard: $(Get-TcStateFileLabel 'build-required.json') not updated ($($res.Error)); Build-TcProject and Enable-TcConfig stay blocked until a later Set-TcTarget can update it."
 }
 
 function New-TcBuildSelectionGuardResult {

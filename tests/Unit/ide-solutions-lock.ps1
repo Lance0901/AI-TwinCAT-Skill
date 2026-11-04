@@ -7,12 +7,13 @@
 #   powershell.exe -NoProfile -File tests/Unit/ide-solutions-lock.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1')   # #118: own TCAUTO_STATE_DIR, never the real state
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 $modulePath = if ($env:TCAUTO_UNIT_MODULE) { $env:TCAUTO_UNIT_MODULE } else { Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1' }
 $origLocalAppData = $env:LOCALAPPDATA
 $tmpRoot = Join-Path $env:TEMP ("tcauto-unit-idesol-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmpRoot -Force
 $env:LOCALAPPDATA = $tmpRoot            # module versions before #118 (TCAUTO_UNIT_MODULE) keep the records here
+$origStateDir = $env:TCAUTO_STATE_DIR
 $env:TCAUTO_STATE_DIR = $tmpRoot         # #118: records + mutex name follow TCAUTO_STATE_DIR
 Import-Module $modulePath -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
@@ -204,6 +205,7 @@ try {
 finally {
     foreach ($c in $children) { try { if (-not $c.HasExited) { $c.Kill() } } catch { }; try { $c.Dispose() } catch { } }
     $env:LOCALAPPDATA = $origLocalAppData
+    $env:TCAUTO_STATE_DIR = $origStateDir
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 exit $fail

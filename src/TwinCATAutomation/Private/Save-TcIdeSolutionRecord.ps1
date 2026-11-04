@@ -12,7 +12,8 @@
 function Get-TcIdeSolutionRecordPath {
     [CmdletBinding()]
     param()
-    if (-not [string]::IsNullOrWhiteSpace($env:TCAUTO_STATE_DIR)) { return (Join-Path $env:TCAUTO_STATE_DIR 'ide-solutions.json') }
+    # TCAUTO_STATE_DIR (tests) -> the same folder as every other state file (Get-TcStateDir)
+    if (-not [string]::IsNullOrWhiteSpace($env:TCAUTO_STATE_DIR)) { return (Join-Path (Get-TcStateDir) 'ide-solutions.json') }
     Assert-TcRealStateAllowed -What 'the IDE solution records'
     $base = $env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($base)) { $base = $env:TEMP }

@@ -529,13 +529,19 @@ else {
         $unitFailed = New-Object System.Collections.Generic.List[string]
         $unitLines = New-Object System.Collections.Generic.List[string]
         # #118 isolation rule: a script that imports the module dot-sources tests/Unit/lib/UnitIsolation.ps1
-        # BEFORE its first Import-Module (own TCAUTO_STATE_DIR + TCAUTO_TEST_FORBID_REAL_STATE when run directly).
+        # with -Caller $PSCommandPath and ends on "; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }"
+        # BEFORE its first Import-Module (own process, own TCAUTO_STATE_DIR, TCAUTO_TEST_FORBID_REAL_STATE
+        # when run directly).
+        # Limits (text check, not AST): a line is compared after cutting at the first '#'; an
+        # Import-Module inside a string, here-string or runspace script block counts as an import
+        # (stricter, never looser); a module loaded another way (New-Module, & $psm1, using module)
+        # is not seen. The runtime refusal (TCAUTO_REAL_STATE_REFUSED below) still covers those.
         foreach ($uf in $unitFiles) {
             $ulines = @(Get-Content -LiteralPath $uf.FullName)
             $imp = -1; $iso = -1
             for ($i = 0; $i -lt $ulines.Count; $i++) {
                 $code = ($ulines[$i] -replace '#.*$', '')
-                if ($iso -lt 0 -and $code -match '^\s*\.\s+\(Join-Path\s+\$PSScriptRoot\s+''lib\\UnitIsolation\.ps1''\)') { $iso = $i }
+                if ($iso -lt 0 -and $code -match '^\s*\.\s+\(Join-Path\s+\$PSScriptRoot\s+''lib\\UnitIsolation\.ps1''\)\s+-Caller\s+\$PSCommandPath\b.*;\s*if\s*\(\$null\s+-ne\s+\$TcUnitChildExit\)\s*\{\s*exit\s+\$TcUnitChildExit\s*\}') { $iso = $i }
                 if ($imp -lt 0 -and $code -match '\bImport-Module\b') { $imp = $i }
             }
             if ($imp -ge 0 -and ($iso -lt 0 -or $iso -gt $imp)) {
@@ -657,7 +663,13 @@ else {
             if ($ok) {
                 $t = Invoke-Native $npm.Source @('test')
                 $summary = @($t.Output | Where-Object { $_ -match '^# (tests|pass|fail|skipped|todo) \d+' } | ForEach-Object { $_.TrimStart('#', ' ') }) -join ', '
-                if ($t.Code -eq 0) {
+                # #118: a bridge / fixture child that tried the real state folder (only lines that
+                # reach npm's output: a test that swallows its child's stderr is not seen here)
+                $realState = @($t.Output | Where-Object { "$_" -match 'TCAUTO_REAL_STATE_REFUSED' } | Select-Object -First 5)
+                if ($realState.Count -gt 0) {
+                    Add-CheckResult 'npm test' 'FAIL' "a test tried to use the real TcAuto state folder (#118); $summary" @($realState)
+                }
+                elseif ($t.Code -eq 0) {
                     Add-CheckResult 'npm test' 'PASS' "$summary$installed"
                 }
                 else {
