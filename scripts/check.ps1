@@ -269,7 +269,10 @@ catch {
 # is unique. The .psm1 dot-sources Private\*.ps1 and Public\*.ps1 one after another, so a second
 # definition with the same name silently replaces the first for the whole module (#30 review:
 # Get-TcFileSha256 in InstallManifest.ps1 was overridden by the one in PlcOpen.ps1). Function names
-# are case-insensitive; nested functions (inside another function) are not counted.
+# are case-insensitive; nested functions (inside another function) are not counted. Functions
+# defined inside a script block that is not itself inside a function (e.g. the body handed to a
+# background runspace) ARE counted on purpose: they are top-level in the runspace that runs them and
+# the same name rule keeps them from being confused with a module function.
 # ---------------------------------------------------------------------------
 try {
     $fnFiles = @($psFiles | Where-Object { (Get-RelativePath $_) -match '^src/TwinCATAutomation/' -and ($_ -like '*.ps1' -or $_ -like '*.psm1') })

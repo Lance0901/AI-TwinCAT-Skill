@@ -15,7 +15,7 @@ function Get-TcAutomationVersion {
         'git', 'release-stamp' or 'unknown' (data.warnings says why a value is missing).
         data.moduleVersion is the ModuleVersion of the loaded module's .psd1, data.modulePath its folder.
         -Verify compares every installed file with the SHA256 in the manifest: data.verify (ok,
-        checked, matched, mismatched [path, expected, actual], missing, extra). A difference returns
+        checked, matched, mismatched [path, expected, actual], missing, extra, unreadable [path, error]).
         INSTALL_MANIFEST_MISMATCH; -Verify without a manifest INSTALL_MANIFEST_NOT_FOUND; a manifest
         that cannot be read (or lists a path outside the install folder) INSTALL_MANIFEST_INVALID.
         Read-only: nothing is written.
@@ -52,7 +52,11 @@ function Get-TcAutomationVersion {
         $inTree = $false
         if (-not [string]::IsNullOrEmpty($sourceRoot) -and (Split-Path -Leaf $srcDir) -eq 'src') {
             $expectedDir = [System.IO.Path]::GetFullPath((Join-Path $sourceRoot 'src\TwinCATAutomation')).TrimEnd('\', '/')
-            $inTree = [string]::Equals($expectedDir, $moduleDir, [System.StringComparison]::OrdinalIgnoreCase)
+            # ... and <root> must be this repository (installer + Claude adapter next to src\), not any
+            # folder that happens to have a src\ with a .git above it
+            $inTree = [string]::Equals($expectedDir, $moduleDir, [System.StringComparison]::OrdinalIgnoreCase) -and
+                (Test-Path -LiteralPath (Join-Path $sourceRoot 'TwinCATSetup-Claude.ps1') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $sourceRoot 'adapters\claude-code\SKILL.md') -PathType Leaf)
         }
         if ($inTree) {
             $src = Get-TcSourceInfo -SourceRoot $sourceRoot -ModuleDir $moduleDir
@@ -61,7 +65,7 @@ function Get-TcAutomationVersion {
             # version still comes from the module's own .psd1; there is no source root to read a commit from
             $src = Get-TcSourceInfo -SourceRoot $moduleDir -ModuleDir $moduleDir
             $src.commit = $null; $src.ref = $null; $src.release = $null; $src.commitSource = 'unknown'
-            $src.warnings = @(@($src.warnings) + "module folder $moduleDir is not <root>\src\TwinCATAutomation of a source tree: commit unknown")
+            $src.warnings = @(@($src.warnings) + "module folder $moduleDir is not <root>\src\TwinCATAutomation of this repository (TwinCATSetup-Claude.ps1, adapters\claude-code\SKILL.md): commit unknown")
             $sourceRoot = $null
         }
         $data = [ordered]@{
@@ -112,16 +116,24 @@ function Get-TcAutomationVersion {
         installedAt   = $m.installedAt
         sourcePath    = $m.sourcePath
         fileCount     = @($m.files).Count
+        warnings      = @(if ($null -ne $m.warnings) { $m.warnings })
     }
     if (-not $Verify) { return New-TcResult -Success $true -Data $data }
 
     $installRoot = Split-Path -Parent $manifestPath
-    $v = Compare-TcInstallFiles -InstallRoot $installRoot -Expected @($m.files)
+    try {
+        $v = Compare-TcInstallFiles -InstallRoot $installRoot -Expected @($m.files)
+    }
+    catch {
+        # e.g. the install folder cannot be listed: not verified = not ok
+        $v = [ordered]@{ ok = $false; checked = @($m.files).Count; matched = 0; mismatched = @(); missing = @(); extra = @()
+            unreadable = @([ordered]@{ path = '.'; error = $_.Exception.Message }) }
+    }
     $data['verify'] = $v
     if (-not $v.ok) {
-        $n = @($v.mismatched).Count + @($v.missing).Count + @($v.extra).Count
+        $n = @($v.mismatched).Count + @($v.missing).Count + @($v.extra).Count + @($v.unreadable).Count
         return New-TcResult -Success $false -ErrorCode 'INSTALL_MANIFEST_MISMATCH' -Hint $script:TcErrorHints['INSTALL_MANIFEST_MISMATCH'] `
-            -ErrorMessage "$n installed file(s) differ from $($script:TcInstallManifestName) (mismatched $(@($v.mismatched).Count), missing $(@($v.missing).Count), extra $(@($v.extra).Count))" -Data $data
+            -ErrorMessage "$n installed file(s) differ from $($script:TcInstallManifestName) (mismatched $(@($v.mismatched).Count), missing $(@($v.missing).Count), extra $(@($v.extra).Count), unreadable $(@($v.unreadable).Count))" -Data $data
     }
     return New-TcResult -Success $true -Data $data
 }

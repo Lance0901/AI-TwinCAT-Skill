@@ -81,7 +81,7 @@ $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.ope
 # #30: Get-TcAutomationVersion (install manifest written by TwinCATSetup-*.ps1)
 $script:TcErrorHints['INSTALL_MANIFEST_NOT_FOUND'] = '這個模組不是安裝出來的副本(沒有 tcauto-install-manifest.json,data.source = source-tree),沒有東西可以 -Verify:不帶 -Verify 的 Get-TcAutomationVersion 看 data.commit / data.commitSource。舊版 installer 裝的 skill 也沒有 manifest:在來源 repo 重跑 TwinCATSetup-<工具>.ps1 後再驗證'
 $script:TcErrorHints['INSTALL_MANIFEST_INVALID'] = 'tcauto-install-manifest.json 讀不出來(JSON 壞掉、缺 schemaVersion / files、比這個模組新的 schemaVersion,或 files[].path 指到安裝目錄外:..、絕對路徑、:、\):不要手動修改它，在來源 repo 重跑 TwinCATSetup-<工具>.ps1 重新安裝(會重寫 manifest)'
-$script:TcErrorHints['INSTALL_MANIFEST_MISMATCH'] = '安裝的檔案與 manifest 記錄的 SHA256 不同(data.verify.mismatched / missing / extra):有人改過或只更新了一部分。把 data.verify 回報給使用者，在來源 repo 重跑 TwinCATSetup-<工具>.ps1(或 -Verify 看與來源的差異)後再用；不要自己改回檔案'
+$script:TcErrorHints['INSTALL_MANIFEST_MISMATCH'] = '安裝的檔案與 manifest 記錄的 SHA256 不同(data.verify.mismatched / missing / extra / unreadable):有人改過、只更新了一部分，或檔案讀不到(被鎖住、沒有權限，看 unreadable[].error)。把 data.verify 回報給使用者，在來源 repo 重跑 TwinCATSetup-<工具>.ps1(或 -Verify 看與來源的差異)後再用；不要自己改回檔案'
 
 # task 1.3 (complete-automation-interface): I/O scan and variable link (TE1000 v1.7.0 6.6.2, 5.1.1.2, 5.1.1.8, 5.1.3.4)
 $script:TcErrorHints['IO_SCAN_REQUIRES_CONFIG'] = 'I/O scan 需要 TwinCAT 在 Config mode(TE1000 6.6.2 Requirements);data.state 是目前狀態。先 Set-TcSystemState -State Config 再重跑 Invoke-TcIoScan(本機 UmRT 切 Config 可能 crash,#21,見 troubleshooting「已知限制」);掃完用 Enable-TcConfig -Force 回 Run'

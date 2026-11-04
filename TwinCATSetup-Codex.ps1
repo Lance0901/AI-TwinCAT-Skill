@@ -93,7 +93,14 @@ if ($Uninstall) {
             Write-Host ""
             exit 1
         }
-        Remove-Item -LiteralPath $userSkillDir -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $userSkillDir -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Host "  [FAIL] Could not remove $userSkillDir`: $($_.Exception.Message) (a file in use? close the AI tool / PowerShell that loaded the module and retry)" -ForegroundColor Red
+            Write-Host ""
+            exit 1
+        }
         Write-Host "  Removed: $userSkillDir" -ForegroundColor Green
     } else {
         Write-Host "  Not found: $userSkillDir" -ForegroundColor DarkGray
@@ -217,7 +224,7 @@ else {
         Write-Host "Some checks failed. Please install missing prerequisites." -ForegroundColor Yellow
         Write-Host "See README.md for requirements."
         Write-Host ""
-        return
+        exit 1
     }
 }
 
@@ -288,7 +295,15 @@ if (Test-Path $codexAgentsMd) {
 } else {
     Write-Host "  Created: $codexAgentsMd" -ForegroundColor Green
 }
-Set-Content -Path $codexAgentsMd -Value $agentsContent -Encoding UTF8
+try {
+    Set-Content -LiteralPath $codexAgentsMd -Value $agentsContent -Encoding UTF8 -ErrorAction Stop
+}
+catch {
+    Write-Host "  [FAIL] Could not write $codexAgentsMd`: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "         The skill itself is installed ($userSkillDir); fix the cause and run this installer again." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
 
 # Done
 Write-Host ""

@@ -22,6 +22,7 @@
 $script:TcInstallManifestName = 'tcauto-install-manifest.json'
 $script:TcSourceStampName = 'tcauto-source.json'
 $script:TcInstallManifestSchemaVersion = 1
+$script:TcInstallManifestInstallers = @('claude-code', 'codex', 'antigravity')
 
 function Read-TcInstallText {
     # UTF-8 text with or without BOM (Windows PowerShell 5.1 Get-Content reads BOM-less files as ANSI).
@@ -54,12 +55,22 @@ function Resolve-TcInstallPath {
         Absolute, normalized form of a folder path given to an installer: relative paths are resolved
         against the PowerShell location (not the process working directory), and every component
         that exists on disk gets its real spelling (case, 8.3 short names expanded), so the module
-        path written into SKILL.md is the same at install and at -Verify.
+        path written into SKILL.md is the same at install and at -Verify. A drive / share root is
+        returned as is ('C:\', not the drive-relative 'C:'). Throws for a path of another provider
+        (HKCU:\..., Cert:\...) and for wildcards (* ?), which a folder name cannot hold.
     #>
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$SessionState)
-    $full = [System.IO.Path]::GetFullPath($SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)).TrimEnd('\', '/')
+    if ($Path.IndexOfAny([char[]]@('*', '?')) -ge 0) { throw "wildcards are not allowed in an install folder path: $Path" }
+    $provider = $null
+    $drive = $null
+    $resolved = $SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path, [ref]$provider, [ref]$drive)
+    if ($null -eq $provider -or $provider.Name -ne 'FileSystem') { throw "not a file system path: $Path (provider $(if ($provider) { $provider.Name } else { 'unknown' }))" }
+    $full = [System.IO.Path]::GetFullPath($resolved)
     $root = [System.IO.Path]::GetPathRoot($full)
-    if ([string]::IsNullOrEmpty($root) -or $full.Length -le $root.Length) { return $full }
+    if ([string]::IsNullOrEmpty($root)) { return $full.TrimEnd('\', '/') }
+    if ($full.Length -le $root.Length) { return $root }
+    $full = $full.TrimEnd('\', '/')
+    if ($full.Length -le $root.Length) { return $root }
     $current = $root
     $parts = $full.Substring($root.Length).Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
     $exists = $true
@@ -291,13 +302,16 @@ function Write-TcInstallManifest {
         installedAt   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture)
         sourcePath    = [System.IO.Path]::GetFullPath($SourceRoot)
         hashAlgorithm = 'SHA256'
+        warnings      = @($src.warnings)
         files         = $files
     }
     $path = Join-Path $InstallRoot $script:TcInstallManifestName
     if (Test-Path -LiteralPath $path -PathType Leaf) { (Get-Item -LiteralPath $path -Force).IsReadOnly = $false }
     Write-TcInstallText -Path $path -Content ($manifest | ConvertTo-Json -Depth 6)
     (Get-Item -LiteralPath $path -Force).IsReadOnly = $true
-    foreach ($w in $src.warnings) { Write-Warning "install manifest: $w" }
+    # informational only: -WarningAction Continue so a caller's $WarningPreference = 'Stop' cannot
+    # turn a finished install into a failure (the warnings are also stored in the manifest)
+    foreach ($w in $src.warnings) { Write-Warning "install manifest: $w" -WarningAction Continue }
     return $manifest
 }
 
@@ -329,14 +343,21 @@ function Find-TcInstallManifest {
 }
 
 function Test-TcInstalledSkillDir {
-    # True when Dir looks like a skill folder one of the installers wrote: the install manifest, or
-    # SKILL.md + TwinCATAutomation\TwinCATAutomation.psd1 (an install from before #30). -Uninstall
-    # deletes nothing else.
+    # True when Dir is a skill folder one of the installers wrote: SKILL.md plus either a readable
+    # install manifest written by a known installer, or TwinCATAutomation\TwinCATAutomation.psd1 (also
+    # an install from before #30). A bare or bogus manifest next to other files is not enough.
+    # -Uninstall deletes nothing else.
     param([Parameter(Mandatory)][string]$Dir)
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return $false }
-    if (Test-Path -LiteralPath (Join-Path $Dir $script:TcInstallManifestName) -PathType Leaf) { return $true }
-    return ((Test-Path -LiteralPath (Join-Path $Dir 'SKILL.md') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $Dir 'TwinCATAutomation\TwinCATAutomation.psd1') -PathType Leaf))
+    if (-not (Test-Path -LiteralPath (Join-Path $Dir 'SKILL.md') -PathType Leaf)) { return $false }
+    $mf = Join-Path $Dir $script:TcInstallManifestName
+    if (Test-Path -LiteralPath $mf -PathType Leaf) {
+        try {
+            $m = Read-TcInstallManifest -Path $mf
+            if ($script:TcInstallManifestInstallers -contains [string]$m.installer) { return $true }
+        } catch { }
+    }
+    return (Test-Path -LiteralPath (Join-Path $Dir 'TwinCATAutomation\TwinCATAutomation.psd1') -PathType Leaf)
 }
 
 function Compare-TcInstallFiles {
@@ -344,7 +365,7 @@ function Compare-TcInstallFiles {
     .SYNOPSIS
         Compares the files below InstallRoot with Expected (items with path + sha256). Returns
         [ordered]@{ ok; checked; matched; mismatched [{path, expected, actual}]; missing [path];
-        extra [path] }. extra = files in a folder that Expected covers (e.g. TwinCATAutomation/)
+        extra [path]; unreadable [{path, error}] }. extra = files in a folder that Expected covers (e.g. TwinCATAutomation/)
         that Expected does not list; loose files next to SKILL.md are not reported. Throws on a path
         that would leave InstallRoot (see Test-TcInstallRelPath).
     #>
@@ -352,6 +373,8 @@ function Compare-TcInstallFiles {
         [Parameter(Mandatory)][string]$InstallRoot,
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Expected
     )
+    # unreadable [{path, error}]: a file that exists but cannot be hashed (locked, no access) is a
+    # difference, not an exception
     foreach ($e in $Expected) {
         if (-not (Test-TcInstallRelPath ([string]$e.path))) { throw "invalid install file path '$($e.path)' (must be relative, '/'-separated, without '..', ':' or '\')" }
     }
@@ -359,6 +382,7 @@ function Compare-TcInstallFiles {
     $mismatched = [System.Collections.Generic.List[object]]::new()
     $missing = [System.Collections.Generic.List[string]]::new()
     $extra = [System.Collections.Generic.List[string]]::new()
+    $unreadable = [System.Collections.Generic.List[object]]::new()
     $known = @{}   # case-insensitive, like the file system
     $dirs = @{}
     $matched = 0
@@ -368,7 +392,8 @@ function Compare-TcInstallFiles {
         if ($rel.Contains('/')) { $dirs[$rel.Split('/')[0]] = $true }
         $full = Join-Path $root ($rel -replace '/', '\')
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { $missing.Add($rel); continue }
-        $actual = Get-TcInstallFileSha256 $full
+        try { $actual = Get-TcInstallFileSha256 $full }
+        catch { $unreadable.Add([ordered]@{ path = $rel; error = $_.Exception.Message }); continue }
         $exp = ([string]$e.sha256).ToLowerInvariant()
         if ([string]::Equals($actual, $exp, [System.StringComparison]::Ordinal)) { $matched++ }
         else { $mismatched.Add([ordered]@{ path = $rel; expected = $exp; actual = $actual }) }
@@ -382,12 +407,13 @@ function Compare-TcInstallFiles {
         }
     }
     return [ordered]@{
-        ok         = ($mismatched.Count -eq 0 -and $missing.Count -eq 0 -and $extra.Count -eq 0)
+        ok         = ($mismatched.Count -eq 0 -and $missing.Count -eq 0 -and $extra.Count -eq 0 -and $unreadable.Count -eq 0)
         checked    = @($Expected).Count
         matched    = $matched
         mismatched = @($mismatched)
         missing    = @($missing | Sort-Object)
         extra      = @($extra | Sort-Object)
+        unreadable = @($unreadable)
     }
 }
 
@@ -432,7 +458,8 @@ function Install-TcSkillPayload {
     if (-not (Test-Path -LiteralPath (Join-Path $srcModule 'TwinCATAutomation.psd1') -PathType Leaf)) { throw "module source not found: $srcModule" }
     if (-not (Test-Path -LiteralPath $SkillSource -PathType Leaf)) { throw "SKILL.md source not found: $SkillSource" }
     $destModule = Join-Path $SkillDir 'TwinCATAutomation'
-    if (-not (Test-Path -LiteralPath $SkillDir)) { New-Item -Path $SkillDir -ItemType Directory -Force | Out-Null }
+    # .NET, not New-Item -Path: a folder name may contain [ ] (wildcard characters for -Path)
+    $null = [System.IO.Directory]::CreateDirectory($SkillDir)
     if (Test-Path -LiteralPath $destModule) { Remove-Item -LiteralPath $destModule -Recurse -Force }
     Copy-Item -LiteralPath $srcModule -Destination $destModule -Recurse -Force
     $absModulePath = Join-Path $destModule 'TwinCATAutomation.psm1'
@@ -545,5 +572,6 @@ function Write-TcInstallCompareLines {
     foreach ($m in $Result.mismatched) { Write-Host "  [MISMATCH] $($m.path)  (content differs from $What)" -ForegroundColor Red }
     foreach ($m in $Result.missing) { Write-Host "  [MISMATCH] $m  (missing in install)" -ForegroundColor Red }
     foreach ($m in $Result.extra) { Write-Host "  [MISMATCH] $m  (extra in install, not in $What)" -ForegroundColor Red }
+    foreach ($m in $Result.unreadable) { Write-Host "  [MISMATCH] $($m.path)  (cannot be read: $($m.error))" -ForegroundColor Red }
     if ($Result.ok) { Write-Host "  [MATCH]    $($Result.matched) file(s)" -ForegroundColor Green }
 }

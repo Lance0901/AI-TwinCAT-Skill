@@ -14,6 +14,10 @@
 #  traversal paths refused (S5), helper / SKILL.md source missing -> exit 1 (M2), relative and
 #  case / 8.3 -SkillDir (S3), -Uninstall refuses a foreign folder (S4), copied module folder ->
 #  commit unknown (S6).
+#  Review round 2: repo markers for the source-tree commit, drive root / UNC / provider / wildcard
+#  paths, [ ] in -SkillDir, bogus manifests do not make a folder deletable, locked files (verify ->
+#  unreadable, uninstall -> exit 1), Codex AGENTS.md write failure and failed prerequisites -> exit 1,
+#  warnings under $WarningPreference = 'Stop' do not fail an install, data.warnings in both modes.
 # Never touches the user profile: every install goes to a temp folder whose name contains "30".
 #   powershell.exe -NoProfile -File tests/Unit/install-manifest.ps1
 # Exit code = number of failed checks.
@@ -36,10 +40,12 @@ function Write-File([string]$Path, [string]$Text) {
 }
 # Runs a script in a child Windows PowerShell; returns @{ Code; Out }.
 function Invoke-Child([string]$File, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'   # stderr of the child is output here, not a terminating error
     $out = & powershell.exe -NoProfile -File $File @Arguments 2>&1 | ForEach-Object { "$_" }
     @{ Code = $LASTEXITCODE; Out = ($out -join "`n") }
 }
 function Invoke-ChildCommand([string]$Command) {
+    $ErrorActionPreference = 'Continue'
     $out = & powershell.exe -NoProfile -Command $Command 2>&1 | ForEach-Object { "$_" }
     @{ Code = $LASTEXITCODE; Out = ($out -join "`n") }
 }
@@ -156,7 +162,7 @@ try {
 
     # ------------------------------------------------------------------ 2. installers
     $expectedCommit = (& $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $repoRoot)
-    $expectedKeys = 'schemaVersion,name,module,sourceUrl,version,release,commit,ref,commitSource,installer,installedAt,sourcePath,hashAlgorithm,files'
+    $expectedKeys = 'schemaVersion,name,module,sourceUrl,version,release,commit,ref,commitSource,installer,installedAt,sourcePath,hashAlgorithm,warnings,files'
     $installs = @(
         @{ Name = 'claude-code'; Script = 'TwinCATSetup-Claude.ps1'; Extra = @() },
         @{ Name = 'codex'; Script = 'TwinCATSetup-Codex.ps1'; Extra = @('-CodexHome', (Join-Path $tmpRoot 'codex30-home')) },
@@ -310,6 +316,105 @@ try {
     $c = Invoke-ChildCommand ("Import-Module '$fake\lib\TwinCATAutomation\TwinCATAutomation.psm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion | ConvertTo-Json -Depth 6 -Compress")
     $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
     Check 'copied module folder: commit not taken from an unrelated .git' ($null -ne $res -and $res.success -and $res.data.commitSource -eq 'unknown' -and $null -eq $res.data.commit -and $res.data.version -eq $psd1Version) "$($res.data.commitSource) $($res.data.commit)"
+
+    # ------------------------------------------------------------------ review round 2
+    # R2-5: <x>\src\TwinCATAutomation with a .git above it is not enough; the repo markers decide
+    $fake2 = Join-Path $tmpRoot 'fake30b'
+    Write-File "$fake2\.git\HEAD" "$shaA`n"
+    $null = New-Item -ItemType Directory -Path "$fake2\src" -Force
+    Copy-Item -LiteralPath $srcModuleDir -Destination "$fake2\src\TwinCATAutomation" -Recurse
+    $verSrc = "Import-Module '$fake2\src\TwinCATAutomation\TwinCATAutomation.psm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion | ConvertTo-Json -Depth 6 -Compress"
+    $c = Invoke-ChildCommand $verSrc
+    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    Check 'src\TwinCATAutomation without repo markers: commit unknown' ($null -ne $res -and $res.data.commitSource -eq 'unknown' -and $null -eq $res.data.commit -and @($res.data.warnings).Count -ge 1) "$($res.data.commitSource)"
+    Write-File "$fake2\TwinCATSetup-Claude.ps1" '# marker'
+    Write-File "$fake2\adapters\claude-code\SKILL.md" '---'
+    $c = Invoke-ChildCommand $verSrc
+    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    Check 'src\TwinCATAutomation with repo markers: commit from <root>\.git' ($null -ne $res -and $res.data.commitSource -eq 'git' -and $res.data.commit -eq $shaA) "$($res.data.commitSource) $($res.data.commit)"
+
+    # R2-3 / nit: path normalization edge cases
+    $rp = { param($p) Resolve-TcInstallPath -Path $p -SessionState $ExecutionContext.SessionState }
+    $sysDrive = [System.IO.Path]::GetPathRoot($env:SystemRoot)
+    $r0 = & $mod $rp $sysDrive
+    Check "resolve: drive root stays '$sysDrive'" ($r0 -eq $sysDrive) "$r0"
+    $r0 = & $mod $rp ("Microsoft.PowerShell.Core\FileSystem::" + $env:SystemRoot)
+    Check 'resolve: FileSystem:: provider path accepted' ($r0 -eq $env:SystemRoot) "$r0"
+    foreach ($bad in @('HKCU:\Software', ($sysDrive + 'Win*'), ($sysDrive + 'x?30'))) {
+        $threw = $false
+        try { $null = & $mod $rp $bad } catch { $threw = $true }
+        Check "resolve: '$bad' refused" $threw ''
+    }
+    $unc = '\\localhost\' + $sysDrive.Substring(0, 1) + '$\Windows'
+    $r0 = $null; try { $r0 = & $mod $rp $unc } catch { $r0 = "THROW $($_.Exception.Message)" }
+    Check 'resolve: UNC path keeps its share root' ([string]$r0 -like '\\localhost\*$\Windows') "$r0"
+
+    # [ ] in the folder name: install, verify, uninstall
+    $br = Join-Path $tmpRoot 'sk[30]'
+    $r = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $br, '-SkipPrerequisites')
+    $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $br, '-Verify')
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $br, '-Uninstall')
+    Check '[ ] in -SkillDir: install / verify / uninstall' ($r.Code -eq 0 -and $v.Code -eq 0 -and $u.Code -eq 0 -and -not (Test-Path -LiteralPath $br)) "install $($r.Code) verify $($v.Code) uninstall $($u.Code)"
+
+    # R2-4: a bogus manifest does not make a folder deletable
+    $bogus = Join-Path $tmpRoot 'bogus30'
+    Write-File "$bogus\tcauto-install-manifest.json" '{}'
+    Write-File "$bogus\SKILL.md" 'user file'
+    Write-File "$bogus\user30.txt" 'keep me'
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $bogus, '-Uninstall')
+    Check '-Uninstall: {} manifest + SKILL.md + user file -> refused, kept' ($u.Code -eq 1 -and (Test-Path -LiteralPath "$bogus\user30.txt")) "exit $($u.Code)"
+    Write-File "$bogus\tcauto-install-manifest.json" '{"schemaVersion":1,"installer":"other30","files":[]}'
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $bogus, '-Uninstall')
+    Check '-Uninstall: manifest of an unknown installer -> refused' ($u.Code -eq 1 -and (Test-Path -LiteralPath "$bogus\user30.txt")) "exit $($u.Code)"
+    Remove-Item -LiteralPath "$bogus\SKILL.md" -Force
+    Write-File "$bogus\tcauto-install-manifest.json" '{"schemaVersion":1,"installer":"claude-code","files":[]}'
+    $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $bogus, '-Uninstall')
+    Check '-Uninstall: valid manifest but no SKILL.md -> refused' ($u.Code -eq 1 -and (Test-Path -LiteralPath "$bogus\user30.txt")) "exit $($u.Code)"
+
+    # R2-1 / R2-2: locked files
+    $lockDir = Join-Path $tmpRoot 'lock30'
+    $r = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $lockDir, '-SkipPrerequisites')
+    $lockFile = Join-Path $lockDir 'SKILL.md'
+    $fs = [System.IO.File]::Open($lockFile, 'Open', 'Read', 'None')
+    try {
+        $c = Invoke-ChildCommand ("Import-Module '$lockDir\TwinCATAutomation\TwinCATAutomation.psm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion -Verify | ConvertTo-Json -Depth 8 -Compress")
+        $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+        Check 'locked file: Get-TcAutomationVersion -Verify -> MISMATCH with data.verify.unreadable' ($null -ne $res -and $res.error.code -eq 'INSTALL_MANIFEST_MISMATCH' -and (@($res.data.verify.unreadable | ForEach-Object { $_.path }) -contains 'SKILL.md')) "$($res.error.code)"
+        $v = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $lockDir, '-Verify')
+        Check 'locked file: installer -Verify exits 1' ($v.Code -eq 1) "exit $($v.Code)"
+        $u = Invoke-Child (Join-Path $repoRoot 'TwinCATSetup-Claude.ps1') @('-SkillDir', $lockDir, '-Uninstall')
+        Check 'locked file: -Uninstall cannot remove -> exit 1' ($u.Code -eq 1 -and $u.Out -match 'Could not remove') "exit $($u.Code)"
+    }
+    finally { $fs.Dispose() }
+    $c = Invoke-ChildCommand ("Import-Module '$($installs[2].Dir)\TwinCATAutomation\TwinCATAutomation.psm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion | ConvertTo-Json -Depth 8 -Compress")
+    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    Check 'installed mode: data.warnings present (array)' ($null -ne $res -and $res.success -and $null -ne $res.data.PSObject.Properties['warnings']) ''
+
+    # R2-1: Codex AGENTS.md cannot be written -> exit 1, no "Installation Complete"
+    $badHome = Join-Path $tmpRoot 'codex30-badhome'
+    $null = New-Item -ItemType Directory -Path "$badHome\AGENTS.md" -Force   # a folder where the file should go
+    $r = Invoke-Child $codexScript @('-SkillDir', (Join-Path $tmpRoot 'codex30-skill2'), '-CodexHome', $badHome, '-SkipPrerequisites')
+    Check 'Codex AGENTS.md not writable: exit 1, no "Installation Complete"' ($r.Code -eq 1 -and $r.Out -notmatch 'Installation Complete' -and $r.Out -match 'Could not write') "exit $($r.Code)"
+
+    # R2-1: failed prerequisites -> exit 1 (module import fails in this copy)
+    $broken = Join-Path $tmpRoot 'broken30-src'
+    $null = New-Item -ItemType Directory -Path "$broken\src" -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'TwinCATSetup-Antigravity.ps1') -Destination $broken
+    Copy-Item -LiteralPath $srcModuleDir -Destination "$broken\src\TwinCATAutomation" -Recurse
+    Write-File "$broken\src\TwinCATAutomation\TwinCATAutomation.psm1" "throw 'broken module 30'"
+    $null = New-Item -ItemType Directory -Path "$broken\.agents\skills\twincat" -Force
+    Copy-Item -LiteralPath (Join-Path $repoRoot '.agents\skills\twincat\SKILL.md') -Destination "$broken\.agents\skills\twincat\SKILL.md"
+    $bdir = Join-Path $tmpRoot 'broken30-skill'
+    $r = Invoke-Child "$broken\TwinCATSetup-Antigravity.ps1" @('-SkillDir', $bdir)
+    Check 'prerequisites failed: exit 1, nothing installed' ($r.Code -eq 1 -and $r.Out -notmatch 'Installation Complete' -and -not (Test-Path -LiteralPath $bdir)) "exit $($r.Code)"
+
+    # nit: source warnings under $WarningPreference = 'Stop' do not fail a finished install
+    Write-File "$broken\src\TwinCATAutomation\TwinCATAutomation.psm1" ([System.IO.File]::ReadAllText((Join-Path $srcModuleDir 'TwinCATAutomation.psm1')))
+    Write-File "$broken\tcauto-source.json" '{"commit":"not-hex-30","release":"v0"}'
+    $agScript = Join-Path $broken 'TwinCATSetup-Antigravity.ps1'
+    $c = Invoke-ChildCommand ("`$WarningPreference = 'Stop'; & '$agScript' -SkillDir '$bdir' -SkipPrerequisites *> `$null; exit `$LASTEXITCODE")
+    $wm = if (Test-Path -LiteralPath "$bdir\tcauto-install-manifest.json") { [System.IO.File]::ReadAllText("$bdir\tcauto-install-manifest.json") | ConvertFrom-Json } else { $null }
+    Check 'WarningPreference Stop: install with source warnings still exit 0, warnings in manifest' ($c.Code -eq 0 -and $null -ne $wm -and @($wm.warnings).Count -ge 1 -and $wm.commitSource -eq 'release-stamp') "exit $($c.Code)"
 
     # ------------------------------------------------------------------ 5. source tree
     $res = Get-TcAutomationVersion
