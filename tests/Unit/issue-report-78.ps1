@@ -342,5 +342,62 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $rf = New-TcIssueReport -Title 't' -Result ('{"a":"' + ('x1.' * 30000) + '"}') -Notes ('D:\a b ' * 20000) -NoEnvironment
 Check ("90000-char JSON string + 140000-char path-like Notes: {0:n1}s < 60s" -f $sw.Elapsed.TotalSeconds) ($rf.success -and $sw.Elapsed.TotalSeconds -lt 60 -and $rf.data.urlLength -le 7000) ''
 
+# ---- review round 3
+# 1 raw cap on text without whitespace (comma separated keys): a token across the 30000 cap leaves no prefix
+$keyUnit = 'AB12cd34EF56gh78IJ90kl12MN34op56,'
+$rawBase = $keyUnit * 1000
+$rawBad = @()
+$sw = [Diagnostics.Stopwatch]::StartNew()
+foreach ($tok in @('bob.smith@acme.example.com', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', '10.11.12.13.1.1', 'AB12cd34EF56gh78IJ90kl12MN34op56qr78xy')) {
+    for ($off = 1; $off -lt $tok.Length; $off += 2) {
+        $r = New-TcIssueReport -Title 't' -Notes ($rawBase.Substring(0, 29999 - $off) + ',' + $tok + ',' + ('q' * 600)) -NoEnvironment
+        if ($off -ge 6 -and $r.data.body.Contains($tok.Substring(0, $off))) { $rawBad += "notes $tok off=$off" }
+    }
+    for ($off = 5; $off -lt $tok.Length; $off += 4) {
+        $r = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ($rawBase.Substring(0, 19999 - $off) + ',' + $tok + ',' + ('q' * 600)) } }) -NoEnvironment
+        if ($r.data.body.Contains($tok.Substring(0, $off))) { $rawBad += "leaf $tok off=$off" }
+    }
+}
+$rp = New-TcIssueReport -Title 't' -Notes ($rawBase.Substring(0, 29985) + ',password=Hunter2Secret,' + ('q' * 600)) -NoEnvironment
+if ($rp.data.body -match 'Hunter') { $rawBad += 'password value' }
+Check ("raw cap sweep without whitespace ({0:n0}s)" -f $sw.Elapsed.TotalSeconds) ($rawBad.Count -eq 0) ($rawBad -join '; ')
+$rt = & $mod { param($t) Limit-TcRawText -Text $t -Cap 30000 } (('z' * 300) + (' ' + ('k,' * 20000)))
+Check 'Limit-TcRawText never ends inside a token (ends in front of a boundary)' ($rt.Length -le 30000 -and ($rt -match '[,]$' -or $rt -match 'k$')) $rt.Substring($rt.Length - 10)
+# 2 never trimmed: 500 folder names + one -ExtraMask; every name still masked
+$paths = (1..500 | ForEach-Object { "D:\Kunde$_\Werk$_\x.sln" }) -join "`n"
+$m2 = New-TcIssueReport -Title 'Zq9 issue' -ExtraMask 'Zq9' -Notes ($paths + "`nVisited Zq9 plant, Kunde7, Werk499 and Kunde500, also ZQ9X") -NoEnvironment
+$vis = ($m2.data.body -split "`n" | Where-Object { $_ -match 'Visited' }) -join ' '
+Check '500 folder names + 1 ExtraMask: all masked, ExtraMask kept' ($m2.data.title -notmatch 'Zq9' -and $vis -notmatch 'Zq9|Kunde7|Werk499|Kunde500|ZQ9' -and $vis -match 'Visited') $vis
+$extra = (1..400 | ForEach-Object { "SecretCust$_" })
+$m3 = New-TcIssueReport -Title 't' -ExtraMask $extra -Notes 'ping SecretCust1 SecretCust400 and SecretCust399x' -NoEnvironment
+Check '400 -ExtraMask literals: none dropped' ($m3.data.body -notmatch 'SecretCust') ($m3.data.body)
+# 3 many folder names: bounded time
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$many = (0..1999 | ForEach-Object { "D:\Kunde$_\Werk$_\Anlage$_\file$_.sln" }) -join "`n"
+$m4 = New-TcIssueReport -Title 't' -Notes $many -Result ([pscustomobject]@{ success = $false; data = @(1..2500 | ForEach-Object { "E:\Cust$_\Plant$_\x.TcPOU(12): error at 10.0.$($_ % 250).1" }) }) -NoEnvironment
+Check ("2000 paths in Notes + 2500 path leaves: {0:n1}s < 60s" -f $sw.Elapsed.TotalSeconds) ($m4.success -and $sw.Elapsed.TotalSeconds -lt 60 -and $m4.data.urlLength -le 7000) ''
+# 4 project base names; 5 URL labels / path segments / e-mail domains; 6 UNC
+$o = Mask 'D:\Projects\ACME_Line3.sln opened; ACME_Line3 Project failed in Line3'
+Check '.sln base name masked in the prose' ($o -notmatch 'ACME|Line3') $o
+$o = Mask ("D:\Projects\Beta7Corp.tsproj`nD:\p\Gamma8.plcproj`nD:\p\Delta9.tnzip`nD:\p\Eps10.tszip`nBeta7Corp Project: Gamma8 Delta9 Eps10")
+Check '.tsproj / .plcproj / .tnzip / .tszip base names masked' ($o -notmatch 'Beta7Corp|Gamma8|Delta9|Eps10') $o
+$o = Mask 'D:\x\Main.TcPOU and FB_Pumpe1 in Main'
+Check 'POU-level names are not folder words' ($o -match 'FB_Pumpe1' -and $o -match 'in Main') $o
+$o = Mask 'see https://acme.sharepoint.com/sites/Line3 - Line3 at acme; https://github.com/x'
+Check 'URL host first label and path segments masked in the prose' ($o -notmatch 'acme|Line3' -and $o -match 'github\.com') $o
+$o = Mask 'mail bob@zetacorp.com about ZetaCorp'
+Check 'e-mail domain first label masked in the prose' ($o -notmatch 'zetacorp|ZetaCorp') $o
+$o = Mask 'mail bob@gmail.com about gmail'
+Check 'generic mail domain labels are not folder words' ($o -match 'about gmail') $o
+foreach ($t in ('share:' + $bs + $bs + 'fileserver01' + $bs + 'ACME' + $bs + 'x.sln'), ('UNC=' + $bs + $bs + 'fileserver01' + $bs + 'ACME'), ($bs + $bs + 'fileserver01' + $bs + 'eng and fileserver01 down'), ($bs + $bs + '?' + $bs + 'D:' + $bs + 'Cust' + $bs + 'ACME' + $bs + 'x.sln')) {
+    $o = Mask $t
+    Check "UNC form: $t" ($o -notmatch 'fileserver01|ACME') $o
+}
+$o = Mask ('D:' + $bs + $bs + 'Zorbo' + $bs + $bs + 'x.sln')
+Check 'drive path with doubled backslashes is not UNC' ($o -notmatch 'Zorbo') $o
+# nit: ASCII folder names match whole words only; generic words stay
+$o = Mask 'D:\Kunde\code\x.sln: the code failed; Kunden Kunde'
+Check 'whole-word match: Kunde masked, Kunden kept, generic "code" kept' ($o -match 'Kunden' -and $o -notmatch 'Kunde[^n]|Kunde$' -and $o -match 'the code failed') $o
+
 "failed: $fail"
 exit $fail

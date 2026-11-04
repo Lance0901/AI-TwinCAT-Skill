@@ -140,7 +140,11 @@ function New-TcIssueReport {
         param([string]$Text, [int]$Cap, [string]$Marker = '')
         $raw = Limit-TcRawText -Text $Text -Cap $rawCap
         $m = ConvertTo-TcDeidentifiedText -Text $raw -Counts $counts -ExtraMask $maskList
+        # the raw text was cut: masking may have moved the end next to a fragment, so the last token goes too
+        $wasCut = $raw.Length -lt $Text.Length
+        if ($wasCut) { $m = Remove-TcTrailingToken -Text $m }
         if ($m.Length -gt $Cap) { $m = (Limit-TcMaskedText -Text $m -Cap $Cap) + $Marker }
+        elseif ($wasCut -and $Marker) { $m = $m + $Marker }
         return $m
     }
     function Limit-MaskedJson {
@@ -206,7 +210,7 @@ function New-TcIssueReport {
         if ($x -is [string]) { $probeParts.Add($x) }
         else { try { $probeParts.Add((ConvertTo-Json -InputObject $x -Depth 12 -Compress)) } catch { $null = $_ } }
     }
-    $rawProbe = Limit-TcRawText -Text ($probeParts -join "`n") -Cap 100000
+    $rawProbe = Limit-TcRawText -Text ($probeParts -join "`n") -Cap 150000   # same as the masking limit of ConvertTo-TcDeidentifiedText (the tree budget is 150000 as well)
     foreach ($m in [regex]::Matches($rawProbe, 'TIPC\^([^\^\r\n"''`;,|]{2,80})')) {
         $n = $m.Groups[1].Value.Trim()
         if ($n.Length -ge 2 -and $n -notmatch '^(?i:untitled\d*)$' -and -not $mask.Contains($n)) { $mask.Add($n) }
@@ -214,10 +218,10 @@ function New-TcIssueReport {
     # dry run over all inputs: the folder names of every path become mask words for ALL inputs
     $probeCounts = @{}
     $null = ConvertTo-TcDeidentifiedText -Text $rawProbe -Counts $probeCounts -ExtraMask $mask.ToArray()
-    if ($probeCounts.ContainsKey('__folders')) {
-        foreach ($f in $probeCounts['__folders']) { if (-not $mask.Contains($f)) { $mask.Add($f) } }
-    }
+    # -ExtraMask, the solution name and the TIPC^ names stay in $maskList (never trimmed); the folder names
+    # travel as a set in $counts (looked up token by token, nothing is dropped, no regex per name)
     $maskList = $mask.ToArray()
+    if ($probeCounts.ContainsKey('__folders')) { $counts['__folders'] = $probeCounts['__folders']; $counts['__folders_x'] = $probeCounts['__folders_x'] }
 
     # --- title / tool
     $titleText = ConvertTo-BoundedText -Text (($Title -replace '\s+', ' ').Trim()) -Cap 400
