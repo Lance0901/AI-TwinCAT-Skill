@@ -33,11 +33,31 @@
                           (Solution.Saved not $false) and the .sln row at the index of the
                           active configuration equals Solution.Properties('ActiveConfig').
           'unknown'       neither: SolutionPlatform = $null (callers may fall back to the
-                          project platform of the contexts).
+                          project platform of the contexts). SlnUnusableReason says why the
+                          .sln was not used (#110; the first that applies):
+                            'unsaved'          Solution.Saved read back $false: after
+                                               ConsumeXml <Disabled> and before a save every
+                                               item is 'unknown' with this reason; a
+                                               Build-TcProject wrote the .sln back and the
+                                               items were 'sln' again (實測 2026-11-04,
+                                               VS2022 VisualStudio.DTE.17.0 + TwinCAT 4026,
+                                               registered tcauto, #110). Not every edit sets
+                                               it: Solution.Saved stays True after an unsaved
+                                               CreateChild (docs/troubleshooting.md
+                                               "磁碟改檔的正確做法")
+                            'sln-unreadable'   no .sln path, file missing / unreadable, or no
+                                               SolutionConfigurationPlatforms section
+                            'sln-mismatch'     .sln row count or a configuration name at an
+                                               index differs from the COM items
+                            'anchor-mismatch'  ActiveConfig not readable, or the .sln row at
+                                               the active configuration's index differs from it
+                          $null on every item when the .sln was used or not needed.
         Throws on a COM failure (mapped by Invoke-TcComRetry: IDE_BUSY, IDE_CRASHED ...).
     .OUTPUTS
         [PSCustomObject[]] @{ Index (0-based); Name; SolutionPlatform;
             SolutionPlatformSource ('PlatformName' | 'sln' | 'unknown');
+            SlnUnusableReason ($null | 'unsaved' | 'sln-unreadable' | 'sln-mismatch' |
+                'anchor-mismatch'; the same on every item);
             Contexts = @(@{ ProjectName; ConfigurationName; PlatformName;
                 ShouldBuild ($true / $false, or $null when it was not read as a bool) });
             Com (the SolutionConfiguration COM object, for Activate()) }
@@ -92,14 +112,21 @@
         }
         $slnRows = Get-TcSlnConfigurationPlatforms -Path $anchor.FullName
     }
+    # Why the .sln is not used (#110): reported in the result, the decision itself is unchanged.
+    $slnReason = $null
     $slnUsable = ($null -ne $slnRows -and @($slnRows).Count -eq $items.Count)
+    if ($null -ne $anchor) {
+        if ($null -eq $slnRows) { $slnReason = 'sln-unreadable' }
+        elseif (-not $slnUsable) { $slnReason = 'sln-mismatch' }
+    }
     if ($slnUsable) {
         for ($k = 0; $k -lt $items.Count; $k++) {
-            if (-not ([string]$slnRows[$k].Configuration -ieq [string]$items[$k].Name)) { $slnUsable = $false; break }
+            if (-not ([string]$slnRows[$k].Configuration -ieq [string]$items[$k].Name)) { $slnUsable = $false; $slnReason = 'sln-mismatch'; break }
         }
     }
-    # Unsaved solution: the .sln on disk may not be what the IDE has loaded.
-    if ($slnUsable -and $anchor.Saved -eq $false) { $slnUsable = $false }
+    # Unsaved solution: the .sln on disk may not be what the IDE has loaded. Named first: it is
+    # also the likely cause of a row count / name difference.
+    if ($null -ne $anchor -and $anchor.Saved -eq $false) { $slnUsable = $false; $slnReason = 'unsaved' }
     # Anchor: the .sln row at the index of the active configuration must equal ActiveConfig
     # ('<Config>|<SolutionPlatform>', correct on both hosts). The active COM item is found by
     # object identity, else by Name + its contexts (several identical items: the ActiveConfig
@@ -115,8 +142,9 @@
             }
         }
         $hit = @($idx | Where-Object { ("$($slnRows[$_].Configuration)|$($slnRows[$_].Platform)") -ieq $ac })
-        if ([string]::IsNullOrWhiteSpace($ac) -or $hit.Count -eq 0) { $slnUsable = $false }
+        if ([string]::IsNullOrWhiteSpace($ac) -or $hit.Count -eq 0) { $slnUsable = $false; $slnReason = 'anchor-mismatch' }
     }
+    if ($slnUsable) { $slnReason = $null }
 
     $out = @()
     foreach ($it in $items) {
@@ -129,6 +157,7 @@
             Name                   = $it.Name
             SolutionPlatform       = $plat
             SolutionPlatformSource = $src
+            SlnUnusableReason      = $slnReason
             Contexts               = @($it.Contexts)
             Com                    = $it.Com
         }
