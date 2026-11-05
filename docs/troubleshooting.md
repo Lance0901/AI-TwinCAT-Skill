@@ -617,6 +617,10 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - **切換**:選取值不是 `整個方案` / `Entire Solution` 就切過去，切完**讀回**選取值。讀回仍是別的 scope → `data.scope.entire = false`;讀回讀不到 → `entire = null`。
   - **列數讀回檢查**:每個要讀的 severity,讀到的列數少於按鈕總數，就回本 code。errors 一定比;warnings 預設比,`-IncludeWarnings:$false` 不比;messages 只有 `-IncludeMessages` 才比。按鈕總數讀不到的 severity 不比。`scope.entire = false` 時一律回本 code。
   - **重複列**:同一頁出現多次的相同列算多列，只有跨捲動頁重複的才去重。限制：完全相同的兩列剛好分在相鄰兩頁時，看起來和捲動重疊一樣，只算一列，可能少於總數而觸發本 code;每頁的重複數記在 `data.notes`(`rows '<severity>' page N: ...`)。
+  - **垃圾列與穩定讀取(#138 F1)**:實測 2026-11-06,4026 zh-TW VS2022(真機報告 pr138-e026472 F1)。scope 剛切回 `整個方案` 時，讀到一列 `project` / `file` / `line` 全是 null 的列，它的 description 是整列的 accessible name(`<訊息> : 警告. 專案: AxisInterface. 檔案: AxisInterface.plcproj. 行: 1`),看起來是格子還沒 realize。這一列被算進列數：第一次讀到 22/25,其實只有 21 條真的;第二次讀到 26/25 卻回 success。如果剛好漏一條、又多一條垃圾，數量就對上了(fail open)。現在的處理:
+    - **垃圾列不算**:description 是空的，或沒有 project / file / line / code、而且 description 帶著那段 accessible-name 尾巴(`: 警告. 專案:`;英文 `: Warning. Project:` 是推論、未實測)的列，不算進列數，數量記在 `data.notes` 的 `junkRows`。沒有位置但 description 是一般文字的列(XAE 的 build-summary 列)仍是真的列，因為它也算在按鈕總數裡。
+    - **穩定讀取**:切換過 scope、或這次讀到垃圾列時，同一個 severity 隔一個 settle 間隔(150 ms)再讀，要**連續兩次列數相同、而且等於按鈕總數**才採用;最多讀 4 次、最多 10 s。做不到就把該 severity 列為 unstable(`data.missingRows[].unstable = true`),結果是 `ERRORLIST_INCOMPLETE`,即使最後一次剛好對上。每次讀到的列數記在 `data.notes`(`stability reads: ...`)。
+    - **「切不回」只有 unit 覆蓋**:`scope.entire = false` 的情境在真機做不出來(4026 zh-TW 和 4024 英文都能自動切回)。
 - **`Get-TcBuildErrors` 為什麼 fail closed**:總數 > 讀到的列，代表有列沒讀到，沒讀到的可能是 error。如果回 `success` 再加 note,呼叫端仍會把它當成 0 errors(`CODING_STANDARDS.md` §2,#68)。
 - **Build / CheckAllObjects / Clean 怎麼處理(#138)**:它們用 `Get-TcErrorListReadState` 判斷 **error 列**完不完整，讀到的列一律保留:BUILD_FAILED 時 `codeErrors` / `errorItems` 仍列出讀到的部分。
   - 下列任一情況,`errorListError = ERRORLIST_INCOMPLETE`、`codeVerified = null`、`CODE_NOT_VERIFIED`、`completeBuild = false`,`Enable-TcConfig` 會回 `BUILD_REQUIRED`,下一步提示指向這一節:

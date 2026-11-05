@@ -497,6 +497,24 @@ $script:TcUiaErrorListScan = {
     }
 
     # Read every row of the (virtualised) grid for one severity, scrolling page by page.
+    # Junk rows (#138 F1, 實測 2026-11-06, 4026 zh-TW VS2022, report pr138-e026472 F1): right after
+    # the scope was switched to 整個方案 a row was read with project / file / line all null and the
+    # row's whole accessible name as description ("<text> : 警告. 專案: AxisInterface. 檔案:
+    # AxisInterface.plcproj. 行: 1"), apparently a row whose cells were not realised yet. It was
+    # counted as a row (22/25 with only 21 real ones, then 26/25 -> success): an unrealised row plus a
+    # missed row would match the total (fail open). A junk row is NOT a row: empty description, or no
+    # project / file / line / code AND the description has that accessible-name tail. The English
+    # tail (": Warning. Project: ...") is inferred, not measured. Rows without a location but with a
+    # plain description (XAE build-summary rows) stay real rows: they are part of the button totals.
+    $junkTailPattern = '\s:\s*(警告|錯誤|訊息|Warning|Error|Message)\.\s*(專案|Project)\s*:'
+    function Test-JunkRow {
+        param($Item)
+        if ([string]::IsNullOrWhiteSpace([string]$Item.description)) { return $true }
+        $noLoc = [string]::IsNullOrWhiteSpace([string]$Item.project) -and [string]::IsNullOrWhiteSpace([string]$Item.file) -and
+                 [string]::IsNullOrWhiteSpace([string]$Item.line) -and [string]::IsNullOrWhiteSpace([string]$Item.code)
+        return ($noLoc -and ([string]$Item.description) -match $junkTailPattern)
+    }
+
     function Read-Grid {
         param([string]$severity, $seen, $out)
         $truncated = $false
@@ -528,6 +546,7 @@ $script:TcUiaErrorListScan = {
                 $pageKeys = @{}
                 foreach ($r in $rows) {
                     $item = Read-Row $r $severity
+                    if (Test-JunkRow $item) { $junkCount.n++; continue }
                     $key = ($item.description + '|' + $item.project + '|' + $item.file + '|' + $item.line + '|' + $item.column)
                     $pageKeys[$key] = 1 + [int]$pageKeys[$key]
                     if ($pageKeys[$key] -le [int]$seen[$key]) { continue }
@@ -586,6 +605,45 @@ $script:TcUiaErrorListScan = {
     if ($WantWarnings) { $wanted += 'Warning' }
     if ($WantMessages) { $wanted += 'Message' }
 
+    # Read one severity. After a scope switch, or when a junk row was seen, a single read is not
+    # trusted (#138 F1: the grid is still realising rows): the severity is read again, one settle
+    # interval ($SettleMs) apart, until two consecutive reads give the same count AND that count is
+    # the button total; at most $StableMaxReads reads and $StableMaxSec seconds. Not reached -> the
+    # severity is listed in $unstable (Get-TcBuildErrors: ERRORLIST_INCOMPLETE) and the last read is kept.
+    $StableMaxReads = 4
+    $StableMaxSec = 10
+    $junkCount = @{ n = 0 }
+    $unstable = [System.Collections.Generic.List[string]]::new()
+    function Read-SeverityStable {
+        param([string]$Sev, $Total, [bool]$RequireStable, $Out)
+        $junkBefore = $junkCount.n
+        $first = [System.Collections.Generic.List[object]]::new()
+        $trunc = Read-Grid $Sev @{} $first
+        $need = $RequireStable -or ($junkCount.n -gt $junkBefore)
+        if (-not $need -or $null -eq $Total) {
+            foreach ($x in $first) { $Out.Add($x) }
+            return $trunc
+        }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $last = $first
+        $readCounts = [System.Collections.Generic.List[int]]::new()
+        $readCounts.Add($first.Count)
+        $stable = $false
+        for ($i = 2; $i -le $StableMaxReads -and $sw.Elapsed.TotalSeconds -lt $StableMaxSec; $i++) {
+            Start-Sleep -Milliseconds $SettleMs
+            $cur = [System.Collections.Generic.List[object]]::new()
+            $trunc = Read-Grid $Sev @{} $cur
+            $readCounts.Add($cur.Count)
+            $prevCount = $last.Count
+            $last = $cur
+            if ($cur.Count -eq $prevCount -and $cur.Count -eq [int]$Total) { $stable = $true; break }
+        }
+        foreach ($x in $last) { $Out.Add($x) }
+        $notes.Add("rows '$Sev' stability reads: $($readCounts -join ', ') of $Total; " + $(if ($stable) { 'stable' } else { 'NOT stable' }))
+        if (-not $stable) { $unstable.Add($Sev) }
+        return $trunc
+    }
+
     $rowsOut = [System.Collections.Generic.List[object]]::new()
     $truncatedAny = $false
     $toggleUsed = $false
@@ -609,8 +667,7 @@ $script:TcUiaErrorListScan = {
                 }
                 if (-not $ok) { $notes.Add("toggle to '$sev' only failed; rows of this pass may carry a wrong severity") }
                 Start-Sleep -Milliseconds $SettleMs
-                $seen = @{}
-                if (Read-Grid $sev $seen $rowsOut) { $truncatedAny = $true }
+                if (Read-SeverityStable $sev $total ([bool]$scopeInfo.switched) $rowsOut) { $truncatedAny = $true }
             }
         }
         else {
@@ -644,6 +701,7 @@ $script:TcUiaErrorListScan = {
         }
     }
 
+    if ($junkCount.n -gt 0) { $notes.Add("junkRows: $($junkCount.n) row(s) without location whose description is the row's accessible name, not counted (#138 F1)") }
     [PSCustomObject]@{
         Found      = $true
         Counts     = [PSCustomObject]@{ errors = $counts.errors; warnings = $counts.warnings; messages = $counts.messages }
@@ -652,6 +710,8 @@ $script:TcUiaErrorListScan = {
         Headers    = $headerIds.ToArray()
         ToggleUsed = $toggleUsed
         CountsTotalForm = [bool]$cb.TwoNumbers
+        Unstable   = $unstable.ToArray()
+        JunkRows   = [int]$junkCount.n
         Scope      = [PSCustomObject]$scopeInfo
         Notes      = $notes.ToArray()
     }
@@ -751,6 +811,11 @@ function Get-TcErrorListShortfall {
     $out = [System.Collections.Generic.List[object]]::new()
     $c = $Scan.Counts
     if ($null -eq $c) { return , $out }
+    # Severities whose repeated reads never settled on the button total (#138 F1): incomplete even
+    # when the last read happens to match.
+    $unstable = @()
+    if ($null -ne $Scan.PSObject.Properties['Unstable']) { $unstable = @($Scan.Unstable) }
+    $unstableMap = @{ Error = 'errors'; Warning = 'warnings'; Message = 'messages' }
     $pairs = @(
         [PSCustomObject]@{ name = 'errors'; want = $true; read = $Errors },
         [PSCustomObject]@{ name = 'warnings'; want = $IncludeWarnings; read = $Warnings },
@@ -760,8 +825,9 @@ function Get-TcErrorListShortfall {
             if (-not $p.want) { continue }
             $expected = $c.($p.name)
             if ($null -eq $expected) { continue }
-            if ($p.read -lt [int]$expected) {
-                $out.Add([PSCustomObject]@{ severity = $p.name; expected = [int]$expected; read = $p.read })
+            $isUnstable = @($unstable | Where-Object { $unstableMap[[string]$_] -eq $p.name }).Count -gt 0
+            if ($p.read -lt [int]$expected -or $isUnstable) {
+                $out.Add([PSCustomObject]@{ severity = $p.name; expected = [int]$expected; read = $p.read; unstable = $isUnstable })
             }
         }
     }

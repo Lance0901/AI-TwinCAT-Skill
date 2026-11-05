@@ -29,6 +29,13 @@
 #      E1 page overlap A,B,C / B,C,D -> 4 rows; E2 same-page duplicate A,A,B -> 3 rows + note;
 #      E3 duplicate on page 1 and again on page 2 -> kept as 2; E4 copies split across pages
 #      (documented limit) -> counted once
+#   F  junk rows and stabilised reads (#138 F1, real-machine report pr138-e026472):
+#      F1 a project:null row whose description is the accessible name is not counted (junkRows)
+#      F2 junk row + one real row missing, grid never settles -> severity unstable
+#      F3 grid realises the rows on the next read -> stable after 2 equal reads = total
+#      F4 Get-TcBuildErrors: junk excluded + one missing -> ERRORLIST_INCOMPLETE; unstable severity
+#         with a matching last read -> ERRORLIST_INCOMPLETE (unstable)
+#      F5 a real row without location (build-summary) is NOT junk
 #   D  #107: Error List budget of Build-TcProject / Test-TcPlcProject
 #      D1 $script:TcBuildErrorListTimeoutSec >= 30, no 8 s branch left in either cmdlet
 #      D2 a scan that needs 17 s (simulated, no wait): times out with the old 8 s budget, reads
@@ -274,11 +281,22 @@ try {
     Check 'C8 hint for ERRORLIST_INCOMPLETE' (-not [string]::IsNullOrWhiteSpace([string]$hint) -and $hint -match '整個方案') ''
 
     # --- E: Read-Grid on a mock scrolling grid ---
-    $rgNames = @('Get-UiaPattern', 'New-TypeOr', 'Read-Grid')
+    $rgNames = @('Get-UiaPattern', 'New-TypeOr', 'Read-Grid', 'Test-JunkRow', 'Read-SeverityStable')
     $rgAsts = @($scanSb.Ast.FindAll({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $rgNames -contains $a.Name }, $true))
-    Check 'E0 scan defines Read-Grid / New-TypeOr' ($rgAsts.Count -eq 3) "$($rgAsts.Count)/3"
+    Check 'E0 scan defines Read-Grid / New-TypeOr / Test-JunkRow / Read-SeverityStable' ($rgAsts.Count -eq 5) "$($rgAsts.Count)/5"
     foreach ($f in $rgAsts) { . ([scriptblock]::Create($f.Extent.Text)) }
-    function Read-Row($r, [string]$sev) { [PSCustomObject]@{ severity = $sev; description = [string]$r.Desc; project = 'P'; file = 'F'; line = '1'; column = '1' } }
+    $rgVars = @($scanSb.Ast.FindAll({ param($a) $a -is [System.Management.Automation.Language.AssignmentStatementAst] -and $a.Left.Extent.Text -match '^\$(junkTailPattern|StableMaxReads|StableMaxSec)$' }, $true))
+    foreach ($v in $rgVars) { . ([scriptblock]::Create($v.Extent.Text)) }
+    # 'JUNK:<x>' = the unrealised row of the report: no project / file / line, accessible name as description
+    # 'NOLOC:<x>' = a real row without location (build-summary row)
+    function Read-Row($r, [string]$sev) {
+        $d = [string]$r.Desc
+        if ($d -like 'JUNK:*') { return [PSCustomObject]@{ severity = $sev; description = ($d.Substring(5) + ' : 警告. 專案: AxisInterface. 檔案: AxisInterface.plcproj. 行: 1'); project = $null; file = $null; line = $null; column = $null; code = $null } }
+        if ($d -like 'NOLOC:*') { return [PSCustomObject]@{ severity = $sev; description = $d.Substring(6); project = $null; file = $null; line = $null; column = $null; code = $null } }
+        [PSCustomObject]@{ severity = $sev; description = $d; project = 'P'; file = 'F'; line = '1'; column = '1'; code = $null }
+    }
+    $script:junkCount = @{ n = 0 }
+    $script:unstable = [System.Collections.Generic.List[string]]::new()
     $spKey = [System.Windows.Automation.ScrollPattern]::Pattern.ProgrammaticName
     function New-MockGrid([object[][]]$Pages) {
         $state = [PSCustomObject]@{ Idx = 0; Pages = $Pages }
@@ -296,6 +314,7 @@ try {
     }
     function Invoke-ReadGrid([object[][]]$Pages) {
         $script:grid = New-MockGrid $Pages
+        $script:junkCount = @{ n = 0 }
         $script:notes = [System.Collections.Generic.List[string]]::new()
         $script:MaxRows = 2000
         $script:SettleMs = 0
@@ -311,6 +330,55 @@ try {
     Check 'E3 duplicate on page 1, one copy again on page 2 (overlap) -> A,A,B,C' (($g.Rows -join ',') -eq 'A,A,B,C') (J $g)
     $g = Invoke-ReadGrid @(@('A', 'B'), @('B', 'C'))
     Check 'E4 copies split across a page boundary look like overlap -> counted once (documented limit)' (($g.Rows -join ',') -eq 'A,B,C') (J $g)
+
+    # --- F: junk rows and stabilised reads (#138 F1) ---
+    $g = Invoke-ReadGrid @(, @('A', 'B', 'JUNK:C'))
+    Check 'F1 project:null accessible-name row is not counted (A,B), junkRows 1' (($g.Rows -join ',') -eq 'A,B' -and $script:junkCount.n -eq 1) (J $g)
+    $g = Invoke-ReadGrid @(, @('A', 'NOLOC:Project build failed', 'B'))
+    Check 'F5 a real row without location (plain description) is kept' (@($g.Rows).Count -eq 3 -and $script:junkCount.n -eq 0) (J $g)
+
+    # A single-page grid whose content changes per read: snapshot k is returned by the k-th FindAll.
+    function New-SnapshotGrid([object[][]]$Snapshots) {
+        $state = [PSCustomObject]@{ Calls = 0; Snaps = $Snapshots }
+        $g = [PSCustomObject]@{ State = $state }
+        $g | Add-Member ScriptMethod TryGetCurrentPattern { param($Pattern, $Out) $false }
+        $g | Add-Member ScriptMethod FindAll {
+            param($TreeScope, $Condition)
+            $i = [Math]::Min($this.State.Calls, $this.State.Snaps.Count - 1)
+            $this.State.Calls++
+            , @($this.State.Snaps[$i] | ForEach-Object { [PSCustomObject]@{ Desc = $_ } })
+        }
+        $g
+    }
+    function Invoke-Stable([object[][]]$Snapshots, $Total, [bool]$RequireStable) {
+        $script:grid = New-SnapshotGrid $Snapshots
+        $script:junkCount = @{ n = 0 }
+        $script:unstable = [System.Collections.Generic.List[string]]::new()
+        $script:notes = [System.Collections.Generic.List[string]]::new()
+        $script:MaxRows = 2000
+        $script:SettleMs = 0
+        $out = [System.Collections.Generic.List[object]]::new()
+        $null = Read-SeverityStable 'Warning' $Total $RequireStable $out
+        [PSCustomObject]@{ Rows = @($out | ForEach-Object { $_.description }); Unstable = @($script:unstable); Reads = $script:grid.State.Calls; Notes = @($script:notes) }
+    }
+    $g = Invoke-Stable @(, @('A', 'B', 'JUNK:C')) 3 $false
+    Check 'F2 junk row + C missing, never settles: junk triggers re-reads, Warning unstable, bounded reads' (@($g.Unstable) -contains 'Warning' -and @($g.Rows).Count -eq 2 -and $g.Reads -le $StableMaxReads -and $g.Reads -ge 2) (J $g)
+    $g = Invoke-Stable @(@('A', 'JUNK:B', 'C'), @('A', 'B', 'C')) 3 $false
+    Check 'F3 rows realised on the next read: two equal reads = total -> stable, A,B,C' (@($g.Unstable).Count -eq 0 -and ($g.Rows -join ',') -eq 'A,B,C' -and $g.Reads -eq 3) (J $g)
+    $g = Invoke-Stable @(, @('A', 'B', 'C')) 3 $true
+    Check 'F3 after a scope switch even a clean read is confirmed once more (2 reads)' (@($g.Unstable).Count -eq 0 -and $g.Reads -eq 2) (J $g)
+    $g = Invoke-Stable @(, @('A', 'B', 'C')) 3 $false
+    Check 'F3 no switch, no junk: a single read' ($g.Reads -eq 1) (J $g)
+
+    Set-Scan -Rows @((Row 'Warning' 'w1'), (Row 'Warning' 'w2')) -Errors 0 -Warnings 3
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    Check 'F4 junk excluded + one real row missing (2 of 3) -> ERRORLIST_INCOMPLETE' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE') (J $r.data.missingRows)
+    Set-Scan -Rows @((Row 'Error' 'e1'), (Row 'Warning' 'w1'), (Row 'Warning' 'w2')) -Errors 1 -Warnings 2
+    $global:ScanResult | Add-Member -NotePropertyName Unstable -NotePropertyValue @('Error')
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    $s = Get-Summary
+    $mr = @($r.data.missingRows | Where-Object { $_.severity -eq 'errors' })
+    Check 'F4 errors unstable, last read matches the total -> ERRORLIST_INCOMPLETE, summary blocks (codeVerified null)' (-not $r.success -and $mr.Count -eq 1 -and $mr[0].unstable -and $s.errorListError -eq 'ERRORLIST_INCOMPLETE') (J $r.data.missingRows)
 
     # --- D: #107 Error List budget ---
     $budget = & $mod { $script:TcBuildErrorListTimeoutSec }
