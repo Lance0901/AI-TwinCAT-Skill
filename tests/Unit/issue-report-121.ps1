@@ -86,12 +86,43 @@ Check '12-digit numbers without mac context / Beckhoff prefix stay' ($o -ceq 'bu
 $o = Mask 'D:\Customers\Zebra2024\Main.sln FB_Zebra ST_ZebraRecipe Zebra2024 FB_Motor MAIN'
 Check 'M1 folder Zebra2024: FB_Zebra / ST_ZebraRecipe masked, FB_Motor and MAIN stay' ($o -notmatch 'Zebra' -and $o -cmatch 'FB_Motor' -and $o -cmatch 'MAIN') $o
 $o = Mask 'D:\x\AcmeCorp\Main.sln FB_AcmeMotor ST_CorpData FB_Pump'
-Check 'M1 folder AcmeCorp: camel parts Acme and Corp masked, Motor / Data / Pump stay' ($o -notmatch 'Acme|Corp' -and $o -cmatch 'Motor' -and $o -cmatch 'Data' -and $o -cmatch 'FB_Pump') $o
+Check 'M1/N2 folder AcmeCorp: first camel part Acme masked (the customer name is at the start), Corp / Motor / Data / Pump stay' ($o -notmatch 'Acme' -and $o -cmatch 'ST_CorpData' -and $o -cmatch 'Motor' -and $o -cmatch 'FB_Pump') $o
 $o = Mask 'D:\x\ZebraFab\Main.sln ZebraFabLine ST_ZebraFab'
 Check 'M1 folder ZebraFab: Zebra part masked in ZebraFabLine' ($o -notmatch 'Zebra') $o
 # M5 generic / common folder names do not hide Beckhoff or PLC names
 $o = Mask 'D:\Motor\Motion\EtherCATDevices\Visualization\Customers\Productionline\Main.sln FB_MotorControl Tc2_EtherCAT Visual Studio CustomAxis FB_ProductionData FB_Motor Motion'
-Check 'M5 folders Motor / Motion / EtherCATDevices / Visualization / Customers / Productionline hide nothing' ($o -cmatch 'FB_MotorControl' -and $o -cmatch 'Tc2_EtherCAT' -and $o -cmatch 'Visual Studio' -and $o -cmatch 'CustomAxis' -and $o -cmatch 'FB_ProductionData' -and $o -cmatch 'FB_Motor ' -and $o -cmatch 'Motion$') $o
+Check 'M5 folders Motor / Motion / EtherCATDevices / Visualization / Customers / Productionline hide no part of a longer name' ($o -cmatch 'FB_MotorControl' -and $o -cmatch 'Tc2_EtherCAT' -and $o -cmatch 'Visual Studio' -and $o -cmatch 'CustomAxis' -and $o -cmatch 'FB_ProductionData') $o
+# N1 a customer whose name is a common word is still masked as a whole word; longer names keep the word
+$o = Mask 'D:\Customers\Motion\Line\Main.sln the Motion AG called; FB_MotionControl Tc2_MC2'
+Check 'N1 folder Motion: "Motion AG" masked, FB_MotionControl kept' ($o -notmatch 'Motion AG' -and $o -cmatch 'FB_MotionControl' -and $o -cmatch 'the <redacted> AG') $o
+foreach ($w in 'Speed', 'Master', 'Global', 'Ether', 'Custom', 'Simulation') {
+    $o = Mask ("D:\x\$w\Main.sln by $w GmbH; FB_${w}Data")
+    Check "N1 customer called $w is masked as a whole word, FB_${w}Data kept" ($o -notmatch "by $w" -and $o -cmatch ("FB_${w}Data")) $o
+}
+$o = Mask 'D:\x\Simulation\Main.sln FB_SimulAxis Simulation'
+Check 'N1 folder Simulation: the word is masked, a beginning of a common word (FB_SimulAxis) stays' ($o -cmatch 'FB_SimulAxis <redacted>$') $o
+# N2 camel parts of a folder name: only the first one, never a Beckhoff / IEC product word
+$o = Mask 'D:\x\TwinCATProjects\Main.sln TwinCAT XAE TcUnit Twin'
+Check 'N2 folder TwinCATProjects: TwinCAT / TcUnit kept' ($o -cmatch 'TwinCAT XAE TcUnit' ) $o
+$o = Mask 'D:\x\UnitTests\Main.sln TcUnit Unit FB_UnitTest'
+Check 'N2 folder UnitTests: TcUnit, Unit kept' ($o -cmatch 'TcUnit Unit FB_UnitTest') $o
+$o = Mask 'D:\x\XAEShell\Main.sln XAE Shell VisualStudioShell'
+Check 'N2 folder XAEShell: XAE / Shell parts kept' ($o -cmatch 'XAE Shell VisualStudioShell') $o
+# N3 <name>_CX: variables with a common prefix stay
+foreach ($t in 'Diag_CX5130', 'Axis_CX5130', 'Info_CX5130', 'Data_CX5130', 'Motor_CX5130') {
+    $o = Mask $t
+    Check "N3 counter: identifier stays: $t" ($o -ceq $t) $o
+}
+$o = Mask 'route Zebra_CX5130 down'
+Check 'N3 Zebra_CX5130 still masked' ($o -notmatch 'Zebra' -and $o -match '<host>') $o
+# N4 MACAddr / addr variants, key rule
+$o = Mask 'MACAddr=001122334455 mac_addr: 112233445566 HW-Addr 223344556677 PhysicalAddr=334455667788 hwaddress 445566778899'
+Check 'N4 MAC text variants (MACAddr, mac_addr, HW-Addr, PhysicalAddr, hwaddress)' ($o -notmatch '\d{12}') $o
+$o = Mask 'macron 001122334455 and hwaddr_x 112233445566 and addr 223344556677'
+Check 'N4 counter: macron, hwaddr_x, plain addr are no MAC context' ($o -ceq 'macron 001122334455 and hwaddr_x 112233445566 and addr 223344556677') $o
+$cm = @{}
+$vm = & $mod { param($c) ConvertTo-TcDeidentifiedValue -Value ([pscustomobject]@{ MACAddr = '001122334455'; mac_address = '1'; 'HW-Addr' = '2'; hwaddress = '3'; physical_address = '4'; machine = 'x'; macro = 'y'; MacAddressType = 'z' }) -Counts $c } $cm
+Check 'N4 object keys MACAddr / mac_address / HW-Addr / hwaddress / physical_address -> <mac>; machine / macro / MacAddressType untouched' ($vm['MACAddr'] -ceq '<mac>' -and $vm['mac_address'] -ceq '<mac>' -and $vm['HW-Addr'] -ceq '<mac>' -and $vm['hwaddress'] -ceq '<mac>' -and $vm['physical_address'] -ceq '<mac>' -and $vm['machine'] -ceq 'x' -and $vm['macro'] -ceq 'y' -and $vm['MacAddressType'] -ceq 'z') ($vm | ConvertTo-Json -Compress)
 # M2 digit-only MAC notations and the object key rule
 $o = Mask 'macAddress=001122334455 mac-address: 112233445566 MAC-Adresse 223344556677 physicaladdress=334455667788 physical address 445566778899 hw-addr 556677889900'
 Check 'M2 MAC notations: macAddress, mac-address, MAC-Adresse, physicaladdress, physical address, hw-addr' ($o -notmatch '\d{12}' -and ([regex]::Matches($o, '<mac>')).Count -eq 5) $o   # "mac-address: x" is taken first by the existing "address:" host-key rule (<host>), the value is masked either way

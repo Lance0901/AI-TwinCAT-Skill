@@ -27,11 +27,14 @@ $script:TcDeidUrlWhitelist = '(?i)^(?:github\.com|infosys\.beckhoff\.com|learn\.
 # else (TwinCAT\Projects, Temp, Program Files\<vendor>, Windows\Temp ...) follows the normal rules.
 $script:TcDeidSystemPath = '(?i)^(?:file:/{2,3})?[A-Za-z]:[\\/]+(?:TwinCAT[\\/]+3\.\d+[\\/]+(?:Boot|Config|Components|Target|Repository|System)|Program Files(?: \(x86\))?[\\/]+Beckhoff|ProgramData[\\/]+Beckhoff|Users[\\/]+<user>[\\/]+AppData[\\/]+Local[\\/]+Beckhoff)(?:[\\/]|\s|$)'
 # Folder names that carry no customer information (never added to the mask list).
-$script:TcDeidGenericFolders = '(?i)^(?:users?|documents?|desktop|onedrive|projects?|src|source|sources|plc|pous|duts|gvls|temp|tmp|appdata|local|roaming|downloads?|program files|programdata|windows|system32|work|data|backup|backups|archive|bin|obj|lib|libs|build|builds|test|tests|docs?|logs?|config|configs?|twincat|beckhoff|common|shared|public|system|boot|repository|target|components|library|libraries|scripts?|tools?|modules?|windowspowershell|repos?|git|new|old|demo|files?|share|shares|net|org|com|the|and|gmbh|ltd|inc|co|visual studio|vs|x64|x86|debug|release|publish|output|in|out|root|home|mnt|drive|code|codes|app|apps|main|error|errors|prod|production|dev|staging|stage|plant|line|machine|cell|station|axis|www|my|mail|smtp|ftp|api|portal|login|sharepoint|sites?|personal|shared|index|default|wiki|pages|blob|tree|raw|issues|pull|gmail|outlook|hotmail|yahoo|icloud|live|msn|qq|protonmail|v\d+|http|https|visualization|visualizations|visual|visu|simulation|motion|ethercat|custom|customers?)$'
+$script:TcDeidGenericFolders = '(?i)^(?:users?|documents?|desktop|onedrive|projects?|src|source|sources|plc|pous|duts|gvls|temp|tmp|appdata|local|roaming|downloads?|program files|programdata|windows|system32|work|data|backup|backups|archive|bin|obj|lib|libs|build|builds|test|tests|docs?|logs?|config|configs?|twincat|beckhoff|common|shared|public|system|boot|repository|target|components|library|libraries|scripts?|tools?|modules?|windowspowershell|repos?|git|new|old|demo|files?|share|shares|net|org|com|the|and|gmbh|ltd|inc|co|visual studio|vs|x64|x86|debug|release|publish|output|in|out|root|home|mnt|drive|code|codes|app|apps|main|error|errors|prod|production|dev|staging|stage|plant|line|machine|cell|station|axis|www|my|mail|smtp|ftp|api|portal|login|sharepoint|sites?|personal|shared|index|default|wiki|pages|blob|tree|raw|issues|pull|gmail|outlook|hotmail|yahoo|icloud|live|msn|qq|protonmail|v\d+|http|https)$'
 
 # Common PLC / automation words. The prefix tier of the folder-name mask (a part of 5+ letters that is the beginning of a
 # folder name, #121) never masks these: a folder "Motorworks" must not hide every "Motor" in the report.
-$script:TcDeidCommonWords = '(?i)^(?:motor|motors|servo|drive|drives|valve|valves|robot|robots|pump|pumps|cylinder|sensor|sensors|conveyor|control|controller|status|state|states|error|errors|alarm|alarms|recipe|recipes|config|setup|standard|system|utility|utilities|buffer|timer|timers|counter|counters|output|outputs|input|inputs|enable|reset|start|limit|limits|speed|position|torque|safety|handle|message|global|local|master|slave|group|array|string|number|value|values|table|event|events|module|modules|device|devices|machine|process|stage|check|clear|first|last|index|queue|stack|alias|trace|debug|ready|empty|count|mover|track|belt|gripper|fault|warning|data|time|date|text|lreal|udint|motion|ethercat|ether|visual|visualization|simulation|custom|customer|customers|station|stations|production|devices)$'
+$script:TcDeidCommonWords = '(?i)^(?:motor|motors|servo|drive|drives|valve|valves|robot|robots|pump|pumps|cylinder|sensor|sensors|conveyor|control|controller|status|state|states|error|errors|alarm|alarms|recipe|recipes|config|setup|standard|system|utility|utilities|buffer|timer|timers|counter|counters|output|outputs|input|inputs|enable|reset|start|limit|limits|speed|position|torque|safety|handle|message|global|local|master|slave|group|array|string|number|value|values|table|event|events|module|modules|device|devices|machine|process|stage|check|clear|first|last|index|queue|stack|alias|trace|debug|ready|empty|count|mover|track|belt|gripper|fault|warning|data|time|date|text|lreal|udint|motion|ethercat|ether|visual|visualization|simulation|custom|customer|customers|station|stations|production|devices|visu|visualizations)$'
+# Beckhoff / IEC product words: never taken from a folder name as a camel-case part and never masked as a part of a name
+# (a folder TwinCATProjects must not hide TwinCAT, a folder UnitTests must not hide TcUnit).
+$script:TcDeidProductWords = '(?i)^(?:twin|twincat|unit|tcunit|xae|xar|shell|cat|beckhoff|ads|plc|tcom|runtime|engineering|automation|studio|base|stand|standard|utilities|isg|tcxae)$'
 
 # Token boundary characters (shared by the raw and the masked cut).
 $script:TcDeidBoundary = ',;:"''()[]{}=<>'
@@ -121,27 +124,29 @@ function Add-TcFolderNames {
         $seg = $seg.Trim()
         if ($seg.Length -lt 3 -or $seg.Length -gt 80 -or $seg.Contains('<') -or $seg.Contains('>')) { continue }
         $names = [System.Collections.Generic.List[string]]::new()
-        # a folder called like a generic folder or a common PLC word (Motor, Motion ...) carries no customer name (#121)
-        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch $script:TcDeidCommonWords -and $seg -notmatch '^\d+$') { $names.Add($seg) }
+        # (a folder that is called like a common PLC word, e.g. Motion, still counts as a name: the whole word is masked;
+        #  the common-word list only protects PARTS of other names, see the camel-case handling below, #121)
+        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch '^\d+$') { $names.Add($seg) }
         foreach ($w in ($seg -split '[\s_.\-]+')) {
-            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch $script:TcDeidCommonWords -and $w -notmatch '^\d+$') { $names.Add($w) }
+            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch '^\d+$') { $names.Add($w) }
         }
         foreach ($nm in $names) {
             if ($set.Add($nm) -and $nm -notmatch '^[A-Za-z0-9]{3,}$') { [void]$setX.Add($nm) }
             if ($nm -notmatch '^[A-Za-z0-9]{3,}$') { continue }
-            # #121: a plain name also gives (a) its camel-case parts of 4+ letters, without a trailing number
-            # (Zebra2024 -> Zebra, AcmeCorp -> Acme + Corp) and (b) the beginnings (5+ letters) of the name and of
-            # its long parts ("Zebra" in FB_Zebra when the folder is "Zebrafab"). Generic / common words never.
+            # #121: a plain name also gives (a) its FIRST camel-case part of 4+ letters, without a trailing number (the
+            # customer name is usually at the start: Zebra2024 -> Zebra, AcmeCorp -> Acme; Corp is not taken) and (b) the
+            # beginnings (5+ letters) of the name and of that part ("Zebra" in FB_Zebra when the folder is "Zebrafab").
+            # Generic / common / Beckhoff product words are never taken as the part (TwinCATProjects -> not Twin).
             $base = $nm -replace '\d+$', ''
             $cands = [System.Collections.Generic.List[string]]::new()
             if ($base -match '^[A-Za-z]+$') {
-                $cands.Add($base)
-                foreach ($pm in [regex]::Matches($base, '[A-Z]+(?![a-z])|[A-Z]?[a-z]+')) {
-                    $part = $pm.Value
-                    if ($part.Length -ge 4 -and $part -notmatch $script:TcDeidGenericFolders -and $part -notmatch $script:TcDeidCommonWords) {
-                        [void]$set.Add($part)
-                        if ($part -ne $base) { $cands.Add($part) }
-                    }
+                # no beginnings of a name that is itself a common word (folder Simulation: FB_SimulAxis stays)
+                if ($base -notmatch $script:TcDeidCommonWords) { $cands.Add($base) }
+                $pm =[regex]::Match($base, '[A-Z]+(?![a-z])|[A-Z]?[a-z]+')
+                $part = $pm.Value
+                if ($part.Length -ge 4 -and $part -notmatch $script:TcDeidGenericFolders -and $part -notmatch $script:TcDeidCommonWords -and $part -notmatch $script:TcDeidProductWords) {
+                    [void]$set.Add($part)
+                    if ($part -ne $base) { $cands.Add($part) }
                 }
             }
             foreach ($cand in $cands) {
@@ -308,7 +313,15 @@ function ConvertTo-TcDeidentifiedText {
     # (CX2500-M310, EL1008-CX..., EtherCAT-CX...) and "CX5130-based" compounds stay. Known limit: other spellings (a name that
     # is glued to CX01 without a separator, a space instead of the hyphen, a 1-digit number) are only masked via -ExtraMask.
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Tc\d?|Embedded|Industrial|Compact|EtherCAT|E[LKPJ]\d{4})-)(?:[A-Za-z0-9_]+-)+CX\d{2,5}[A-Za-z0-9]*(?:-[A-Za-z0-9_]+)*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Embedded|Industrial|Compact|EtherCAT)[_-])[A-Za-z][A-Za-z0-9]{3,}_CX\d{2,5}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
+    # <name>_CX01: not when <name> is a common PLC word or a usual identifier prefix (Diag_CX5130, Axis_CX5130 are variables)
+    $evUs = {
+        param($m)
+        $nm = $m.Groups['nm'].Value
+        if ($nm -match $script:TcDeidCommonWords -or $nm -match $script:TcDeidGenericFolders -or $nm -match $script:TcDeidProductWords -or $nm -match '(?i)^(?:diag|info|axis|data|task|prog|func|test|beckhoff|embedded|industrial|compact|ethercat)$') { return $m.Value }
+        Add-TcMaskCount -Counts $c -Name 'host-name'
+        return '<host>'
+    }
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?<nm>[A-Za-z][A-Za-z0-9]{3,})_CX\d{2,5}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $evUs
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Tc\d?|Embedded|Industrial|Compact|EtherCAT)-)(?:[A-Za-z0-9_]+-)+CX-\d{2,3}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])CX\d{2,5}-(?!(?:based|compatible|series|type|class|like|device|system|model|variant|platform)(?![A-Za-z0-9_]))(?![A-Za-z]\d{3}(?![A-Za-z0-9_]))[A-Za-z][A-Za-z0-9_-]*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'host-name'; return '<host>' + $m.Groups[1].Value }
@@ -438,7 +451,7 @@ function ConvertTo-TcDeidentifiedText {
     # https://infosys.beckhoff.com/content/1033/cx8010_hw/1610610827.html); any other 12-digit number (a time stamp ...) stays.
     # In an object the key decides (ConvertTo-TcDeidentifiedValue).
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'mac-address'; return '<mac>' }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![0-9A-Za-z-])(?:000105[0-9]{6}|(?<=\b(?:mac(?:[\s_-]?adress?e?|[\s_-]?address)?|hwaddr|hw-addr|physical[\s_-]?address)[\s:="'']{0,4})[0-9]{12})(?![0-9A-Za-z-])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![0-9A-Za-z-])(?:000105[0-9]{6}|(?<=\b(?:mac(?:[\s_-]?(?:addr|add?res{1,2}e?))?|hw[\s_-]?(?:addr|add?res{1,2}e?)|physical[\s_-]?(?:addr|add?res{1,2}e?))[\s:="'']{0,4})[0-9]{12})(?![0-9A-Za-z-])' -Map $ev
 
     # 11. long letter+digit runs (base64 / hex keys, license keys); GUIDs and identifiers with _ - . are left alone
     $ev = {
@@ -490,7 +503,7 @@ function ConvertTo-TcDeidentifiedText {
                 # a part that is a generic folder word / common PLC word is never masked (folder "Motor" or "EtherCATDevices"
                 # must not hide FB_MotorControl / Tc2_EtherCAT); the 4-letter minimum keeps IEC / Beckhoff prefixes out.
                 # "I_Zebras" (a longer word that only starts like the folder name) stays on purpose: a trade-off, not a bug.
-                $hit = ($set.Contains($part) -or ($part.Length -ge 5 -and $setP.Contains($part))) -and $part -notmatch $script:TcDeidCommonWords -and $part -notmatch $script:TcDeidGenericFolders
+                $hit = ($set.Contains($part) -or ($part.Length -ge 5 -and $setP.Contains($part))) -and $part -notmatch $script:TcDeidCommonWords -and $part -notmatch $script:TcDeidGenericFolders -and $part -notmatch $script:TcDeidProductWords
                 if (-not $hit) { continue }
                 if ($null -eq $sbn) { $sbn = [System.Text.StringBuilder]::new() }
                 [void]$sbn.Append($v.Substring($lastEnd, $pm.Index - $lastEnd)).Append('<redacted>')
@@ -515,7 +528,7 @@ function ConvertTo-TcDeidentifiedText {
 # Keys whose VALUE is a credential whatever it looks like (AddAdsRoute Password, ...).
 $script:TcDeidSecretKeyPattern = '(?i)^(pass(word|wd|wordenv|phrase)?|pwd|secret|token|api_?key|credentials?|authorization)$'
 # Keys whose value is a MAC address in any notation (also 12 digits without separators).
-$script:TcDeidMacKeyPattern = '(?i)^(mac|macaddress|hwaddr|physicaladdress)$'
+$script:TcDeidMacKeyPattern = '(?i)^(mac|mac[_-]?addr(ess)?|hw[_-]?addr(ess)?|physical[_-]?address)$'
 # Keys whose value is a host / route / machine name.
 $script:TcDeidHostKeyPattern = '(?i)^(address|routename|hostname|host|computername|machinename)$'
 
