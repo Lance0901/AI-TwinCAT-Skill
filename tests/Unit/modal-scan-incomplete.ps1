@@ -20,6 +20,7 @@
 # Exit code = number of failed checks. Takes ~20 s.
 $ErrorActionPreference = 'Stop'
 $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-msi-{0}" -f [guid]::NewGuid().ToString('N'))
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
