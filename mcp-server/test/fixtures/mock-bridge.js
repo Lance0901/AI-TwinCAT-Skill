@@ -7,7 +7,9 @@
 //   cmdlet Set-TcTarget    echoes data.params; AmsNetId '0.0.0.0.0.0' fails with TARGET_NOT_FOUND
 //   cmdlet Read-TcVariable shape of the real cmdlet: one Path -> data {path, value, type}; several -> data
 //                          is an ARRAY of entries; a path containing 'Missing' is {path, error, code
-//                          SYMBOL_NOT_FOUND} in the array, a SYMBOL_NOT_FOUND failure when it is the only path
+//                          SYMBOL_NOT_FOUND} in the array, a SYMBOL_NOT_FOUND failure when it is the only path;
+//                          several paths fail closed like the real cmdlet (#60): PARTIAL_READ_FAILED with
+//                          top-level partial / failedPaths (partial false, failedPaths [] when all read)
 //   cmdlet Get-TcSymbols   data is an ARRAY of {path, type, size, comment} whose path contains Filter
 //                          (without '*'); requires Connect-TcAds (#57)
 //   cmdlet Get-TcIdeInfo   writes a warning log line, then NOT_CONNECTED + hint
@@ -156,7 +158,19 @@ function handleCall(req) {
           if (entries[0].error) return result(id, { success: false, error: { code: 'SYMBOL_NOT_FOUND', message: entries[0].error, hint: entries[0].hint } });
           return result(id, { success: true, data: entries[0] });
         }
-        return result(id, { success: true, data: entries });
+        // #60 like the real Read-TcVariable: several paths fail closed (PARTIAL_READ_FAILED, data still
+        // every entry, top-level partial / failedPaths); every path read -> partial false, failedPaths []
+        const failedPaths = entries.filter((e) => e.error).map((e) => e.path);
+        if (failedPaths.length > 0) {
+          return result(id, {
+            success: false,
+            error: { code: 'PARTIAL_READ_FAILED', message: `${failedPaths.length} of ${entries.length} paths could not be read: ${failedPaths.map((p) => `${p} (SYMBOL_NOT_FOUND)`).join(', ')}.`, hint: 'Re-read only failedPaths' },
+            data: entries,
+            partial: true,
+            failedPaths
+          });
+        }
+        return result(id, { success: true, data: entries, partial: false, failedPaths: [] });
       }
       case 'Get-TcSymbols': {
         if (!state.adsConnected) {
