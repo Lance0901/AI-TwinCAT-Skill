@@ -5,6 +5,7 @@
 #   powershell.exe -NoProfile -File tests/Unit/solution-path-83.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
@@ -44,6 +45,8 @@ if ($short -eq $sln -or $short -notmatch '~') {
 $shortDir = [TcUnit83Path]::Short($longDir)
 "short form under test: $short"
 $env:LOCALAPPDATA = $root   # session records go to the temp folder
+$origStateDir = $env:TCAUTO_STATE_DIR
+$env:TCAUTO_STATE_DIR = Join-Path $root 'state'   # #118: own records (the -Short83 child below uses its own folder)
 
 $global:FakeIde = @{}
 & $mod {
@@ -144,6 +147,7 @@ try {
 finally {
     Reset-Conn
     $env:LOCALAPPDATA = $origLocalAppData
+    $env:TCAUTO_STATE_DIR = $origStateDir
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Variable -Name FakeIde, FakeRot -Scope Global -ErrorAction SilentlyContinue
 }

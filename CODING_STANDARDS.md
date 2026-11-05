@@ -1,6 +1,6 @@
 # Coding Standards
 
-審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法與檔案編碼、cmdlet 數與文件一致、禁用措辭、`src/` 與 `mcp-server/` 不用 `New-Object` 建 generic 集合(改用 `[System.Collections.Generic.List[object]]::new()`;實測 2026-10-28,PS 5.1.26100.9711:`New-Object` 建的 `List[object]` 被 `@()` 包住會丟 `ArgumentException`,#75)、錯誤碼在 troubleshooting 有一節、`tools.json` 同步、`tests/Unit/*.ps1`、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
+審查(人或 `reviewer` agent)依這份判斷。這裡只放需要判斷的規則;機械項(PS 5.1 語法與檔案編碼、cmdlet 數與文件一致、禁用措辭、`src/` 與 `mcp-server/` 不用 `New-Object` 建 generic 集合(改用 `[System.Collections.Generic.List[object]]::new()`;實測 2026-10-28,PS 5.1.26100.9711:`New-Object` 建的 `List[object]` 被 `@()` 包住會丟 `ArgumentException`,#75)、錯誤碼在 troubleshooting 有一節、`tools.json` 同步、`tests/Unit/*.ps1`(每支在 import 模組前先寫 `. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }`:不是 `-File` 入口時(例如在常駐 session 用 `&`)改在自己的 powershell.exe 跑，只轉送 switch 參數；用自己的 `TCAUTO_STATE_DIR`,碰到機器上真的 `%TEMP%` / `%LOCALAPPDATA%\TwinCATAutomation` 狀態就 FAIL,#118)、`npm test`)由 `scripts/check.ps1` 檢查,pre-commit 與 CI 都會跑。
 
 ## 1. 可能無限阻塞的 COM / DTE 呼叫要有 deadline
 
