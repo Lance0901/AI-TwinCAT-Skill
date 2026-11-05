@@ -67,7 +67,7 @@ foreach ($t in 'firmware V10.0.0.5 failed', 'ver.10.0.0.5 failed', 'v192.168.1.5
     $o = Mask $t
     Check "private-range address after v / ver is masked: $t" ($o -notmatch '\d+\.\d+\.\d+\.\d+' -and $o -match '<ip>') $o
 }
-foreach ($t in 'v1.2.3.4', 'V3.1.4024.12', 'ver.1.2.3.4', 'ver 3.4.3.0', 'Version 10.0.0.5', 'version=3.4.3.0', 'Tc2_Standard.3.4.3.0', 'v8.8.8.8') {
+foreach ($t in 'v1.2.3.4', 'V3.1.4024.12', 'ver.1.2.3.4', 'ver 3.4.3.0', 'Version 3.4.3.0', 'version=3.4.3.0', 'Tc2_Standard.3.4.3.0', 'v8.8.8.8') {
     $o = Mask $t
     Check "version stays: $t" ($o -ceq $t) $o
 }
@@ -165,6 +165,48 @@ $rd = New-TcIssueReport -Title 't' -Notes ('Q' * 40000) -NoEnvironment
 Check 'm3 dropped input says so (no "cut at 10000")' ($rd.data.body -match 'input dropped: 40000 characters without a word boundary' -and $rd.data.body -notmatch 'cut at 10000') $rd.data.body
 $rl2 = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ('Q' * 25000) } }) -NoEnvironment
 Check 'm3 dropped result leaf says so' ($rl2.data.body -match 'input dropped: 25000 characters') $rl2.data.body
+
+# ---- #122 false positives found with the registered tcauto: standard install folders, versions
+$ads = 'C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
+$ads2 = 'C:\Program Files\TwinCAT\3.1\Components\Base\v170\TwinCAT.Ads.dll'
+$fp = New-TcIssueReport -Title 'ads' -NoEnvironment -Notes 'On TwinCAT 3.1.4026 the Program Files folder, Base and Components of Build_4026.22 v170 stay readable' `
+    -Result @{ success = $true; data = @{ adsBackend = @{ version = '4.3.32.0'; fileVersion = '3.1.4026.22'; assembly = $ads; assembly2 = $ads2 }; note = "loaded $ads and $ads2" } }
+$b = [string]$fp.data.body
+Check '#122 Notes "TwinCAT 3.1.4026" and the install-folder words are kept' ($b -cmatch 'On TwinCAT 3\.1\.4026 the Program Files folder, Base and Components of Build_4026\.22 v170 stay readable') $b
+Check '#122 adsBackend.version 4.3.32.0 and fileVersion are kept (not an IP)' ($b -cmatch '"version":\s*"4\.3\.32\.0"' -and $b -cmatch '"fileVersion":\s*"3\.1\.4026\.22"' -and $b -notmatch '<ip>') $b
+Check '#122 TwinCAT.Ads.dll path under Program Files (Beckhoff) is kept whole, nothing "<redacted>"' ($b -cmatch [regex]::Escape('Beckhoff\\TwinCAT\\3.1\\Components\\Base\\v170\\TwinCAT.Ads.dll') -and $b -notmatch '<redacted>') $b
+$o = Mask ($ads2 + ' and Notes 3.1.4026 Program Base Components')
+Check '#122 even when the path is not whitelisted (Program Files\TwinCAT), its folder names are no mask words' ($o -match '3\.1\.4026 Program Base Components') $o
+$o = Mask 'C:\Users\bob\Customer X\Plant7.sln failed; TwinCAT 3.1 at Customer X plant; Program Base'
+Check '#122 counter: a user / customer path is still masked, its customer folder with it' ($o -notmatch 'bob|Customer|Plant7' -and $o -cmatch 'TwinCAT 3\.1' -and $o -cmatch 'Program Base') $o
+$o = Mask 'D:\Cust\Acme\v170\Build_4026.22\3.1\Main.sln v170 Build_4026.22 3.1 Acme'
+Check '#122 version / build segments of a customer path are no mask words; the customer name is' ($o -cmatch 'v170 Build_4026\.22 3\.1 <redacted>') $o
+$o = Mask 'D:\Cust\ABB\Main.sln ABB'
+Check '#122 folder names shorter than 4 characters are no mask words' ($o -cmatch 'ABB$') $o
+foreach ($t in 'fileVersion=4.3.32.0', 'assemblyVersion: 4.3.32.0', 'ProductVersion 4.3.32.0', 'Version 4.3.32.0', '"version":"4.3.32.0"', 'ver 4.3.32.0', 'v4.3.32.0') {
+    $o = Mask $t
+    Check "#122 version text kept: $t" ($o -ceq $t) $o
+}
+foreach ($t in 'fileVersion=10.0.0.5 is not a version key text', 'host 4.3.32.0', 'ipVersion 10.1.2.3') {
+    $o = Mask $t
+    Check "#122 counter: still an IP: $t" ($o -match '<ip>') $o
+}
+$vk = & $mod { param($c) ConvertTo-TcDeidentifiedValue -Value ([pscustomobject]@{ version = '4.3.32.0'; FileVersion = '1.2.3.4'; ip = '4.3.32.0'; version2 = '4.3.32.0'; assemblyVersion = 'ver 10.0.0.5 at plc7box:851' }) -Counts $c } @{}
+Check '#122 version keys keep a plain version; other keys and non-version values are still masked' ($vk['version'] -ceq '4.3.32.0' -and $vk['FileVersion'] -ceq '1.2.3.4' -and $vk['ip'] -ceq '<ip>' -and $vk['version2'] -ceq '<ip>' -and $vk['assemblyVersion'] -notmatch '10\.0\.0\.5|plc7box') ($vk | ConvertTo-Json -Compress)
+
+# ---- #122 blocker: an address followed by a full stop / comma / bracket at the end of a sentence
+foreach ($t in 'target 199.5.42.250.1.1.', 'target 199.5.42.250.1.1,', 'target (199.5.42.250.1.1)', 'target 199.5.42.250.1.1. Next', 'target 199.5.42.250.1.1.', 'host 192.168.1.20.', 'host 192.168.1.20,', 'host (192.168.1.20)', 'host 192.168.1.20. Next sentence', 'host [192.168.1.20].', 'host 8.8.4.4.') {
+    $o = Mask $t
+    Check "#122 address at a sentence end is masked: $t" ($o -notmatch '\d+\.\d+\.\d+\.\d+' -and $o -match '<ip>|<netid>') $o
+}
+foreach ($t in 'target 199.5.42.250.1.1.7', 'host 192.168.1.20.5', 'build 1.2.3.4.5.6.7') {
+    $o = Mask $t
+    Check "#122 counter: a longer dotted number is not cut into an address: $t" ($o -ceq $t) $o
+}
+foreach ($t in 'Version 10.0.0.5', 'fileVersion=192.168.1.20.', 'ver. 10.1.2.3') {
+    $o = Mask $t
+    Check "#122 a private-range number after version / ver is an address: $t" ($o -match '<ip>') $o
+}
 
 # the whole report: new masks take part in New-TcIssueReport
 $r = New-TcIssueReport -Title 'Zebrafab Line7' -Parameters @{ SolutionPath = 'D:\Customers\Zebrafab\Line7\Main.sln' } -Notes 'FB_Zebra failed on Zebra-CX01 (V10.0.0.5, mac 001122334455); MAIN ok' -NoEnvironment

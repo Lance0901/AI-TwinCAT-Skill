@@ -36,6 +36,11 @@ $script:TcDeidCommonWords = '(?i)^(?:motor|motors|servo|drive|drives|valve|valve
 # (a folder TwinCATProjects must not hide TwinCAT, a folder UnitTests must not hide TcUnit).
 $script:TcDeidProductWords = '(?i)^(?:twin|twincat|unit|tcunit|xae|xar|shell|cat|beckhoff|ads|plc|tcom|runtime|engineering|automation|studio|base|stand|standard|utilities|isg|tcxae)$'
 
+# Standard Windows / Beckhoff install folders (whole segment or one word of it): never a customer name (#122).
+$script:TcDeidStdDirs = '(?i)^(?:program files(?: \(x86\))?|programdata|program|files|\(x86\)|x86|x64|beckhoff|twincat|components|base|plc|functions|library|repository|plctemplates|boot|config|target|xae|xar|windows|system32|appdata|local|roaming|temp|public|default)$'
+# A number or a version / build segment: 3.1, 4026, v170, Build_4026.22 (#122).
+$script:TcDeidVersionSegment = '(?i)^(?:(?:v|ver|version|build|rev)[_.\- ]?)?\d+(?:[._\-]\d+)*$'
+
 # Token boundary characters (shared by the raw and the masked cut).
 $script:TcDeidBoundary = ',;:"''()[]{}=<>'
 
@@ -122,13 +127,17 @@ function Add-TcFolderNames {
     foreach ($seg in ($DirText -split '[\\/]+')) {
         if ($first) { $first = $false; if ($seg -match '^(?:[A-Za-z]:|file:|X:)?$') { continue } }
         $seg = $seg.Trim()
-        if ($seg.Length -lt 3 -or $seg.Length -gt 80 -or $seg.Contains('<') -or $seg.Contains('>')) { continue }
+        # segments of fewer than 4 characters, numbers / versions (3.1, v170, Build_4026.22) and the standard Windows /
+        # Beckhoff install folders carry no customer name and are never masked as words (#122: "3.1", "Program", "Base"
+        # made a whole report unreadable)
+        if ($seg.Length -lt 4 -or $seg.Length -gt 80 -or $seg.Contains('<') -or $seg.Contains('>')) { continue }
+        if ($seg -match $script:TcDeidStdDirs -or $seg -match $script:TcDeidVersionSegment) { continue }
         $names = [System.Collections.Generic.List[string]]::new()
         # (a folder that is called like a common PLC word, e.g. Motion, still counts as a name: the whole word is masked;
         #  the common-word list only protects PARTS of other names, see the camel-case handling below, #121)
-        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch '^\d+$') { $names.Add($seg) }
+        if ($seg -notmatch $script:TcDeidGenericFolders) { $names.Add($seg) }
         foreach ($w in ($seg -split '[\s_.\-]+')) {
-            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch '^\d+$') { $names.Add($w) }
+            if ($w.Length -ge 4 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch $script:TcDeidStdDirs -and $w -notmatch $script:TcDeidVersionSegment) { $names.Add($w) }
         }
         foreach ($nm in $names) {
             if ($set.Add($nm) -and $nm -notmatch '^[A-Za-z0-9]{3,}$') { [void]$setX.Add($nm) }
@@ -411,7 +420,7 @@ function ConvertTo-TcDeidentifiedText {
         Add-TcMaskCount -Counts $c -Name 'ams-netid'
         return '<netid>'
     }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?:\d{1,3}\.){5}\d{1,3}(?![\d.])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?:\d{1,3}\.){5}\d{1,3}(?!\d|\.\d)' -Map $ev
 
     # 10. IPv4 (loopback and 0.0.0.0 stay; a dotted number right after the WORD version is a version; after ver / ver. / v it
     #     is a version too unless it lies in a private / link-local range (10., 192.168., 172.16-31., 169.254.): V10.0.0.5 and
@@ -426,7 +435,7 @@ function ConvertTo-TcDeidentifiedText {
         Add-TcMaskCount -Counts $c -Name 'ip-address'
         return $m.Groups['pre'].Value + '<ip>'
     }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?<!\b(?i:version|ver|v)[\s:="'']{0,3})(?:(?<pre>\b(?i:ver|v)[\s:="''.]{0,3})(?=(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.)))?(?<ip>(?:\d{1,3}\.){3}\d{1,3})(?![\d.])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?<!(?:(?i:version)|\b(?i:ver|v))[\s:="'']{0,3})(?:(?<pre>(?:(?i:version)|\b(?i:ver|v))[\s:="''.]{0,3})(?=(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.)))?(?<ip>(?:\d{1,3}\.){3}\d{1,3})(?!\d|\.\d)' -Map $ev
     # IPv6: full and compressed (::), optional %zone; ::1 stays
     $ev = {
         param($m)
@@ -529,6 +538,8 @@ function ConvertTo-TcDeidentifiedText {
 $script:TcDeidSecretKeyPattern = '(?i)^(pass(word|wd|wordenv|phrase)?|pwd|secret|token|api_?key|credentials?|authorization)$'
 # Keys whose value is a MAC address in any notation (also 12 digits without separators).
 $script:TcDeidMacKeyPattern = '(?i)^(mac|mac[_-]?addr(ess)?|hw[_-]?addr(ess)?|physical[_-]?address)$'
+# Keys whose value is a version number (4.3.32.0 would look like an IP address).
+$script:TcDeidVersionKeyPattern = '(?i)^(version|fileversion|assemblyversion|productversion)$'
 # Keys whose value is a host / route / machine name.
 $script:TcDeidHostKeyPattern = '(?i)^(address|routename|hostname|host|computername|machinename)$'
 
@@ -611,6 +622,10 @@ function ConvertTo-TcDeidentifiedValue {
             elseif ($k -match $script:TcDeidMacKeyPattern -and $null -ne $p[1] -and ($p[1] -is [string] -or $p[1] -is [ValueType]) -and -not ($p[1] -is [bool]) -and [string]$p[1] -ne '') {
                 Add-TcMaskCount -Counts $Counts -Name 'mac-address'
                 $out[$maskedKey] = '<mac>'
+            }
+            elseif ($k -match $script:TcDeidVersionKeyPattern -and $p[1] -is [string] -and $p[1] -match '^\d+(?:\.\d+){1,5}(?:[-+][0-9A-Za-z.-]{1,32})?$') {
+                # a plain version number under a version key is kept as it is (#122); anything else is masked as usual
+                $out[$maskedKey] = $p[1]
             }
             elseif ($k -match $script:TcDeidHostKeyPattern -and $p[1] -is [string] -and $p[1] -ne '') {
                 Add-TcMaskCount -Counts $Counts -Name 'host-key'
