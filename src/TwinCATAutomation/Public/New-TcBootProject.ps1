@@ -143,7 +143,8 @@ function New-TcBootProject {
             $msg = "GenerateBootProject on '$plcPath' failed ($($info.hresultHex)): $($info.message)"
             if ($null -ne $els.errorListError) {
                 $data | Add-Member -NotePropertyName errorListError -NotePropertyValue $els.errorListError
-                $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed"
+                if ($els.incomplete) { $msg += "; the Error List was read only in part ($($els.errorListError), data.missingRows), so the errors listed may not be all of them" }
+                else { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
             }
             elseif ($located.Count -eq 0 -and @($els.unclassified).Count -gt 0) {
                 $msg += "; the Error List shows no error row, but $(@($els.unclassified).Count) row(s) of unknown severity (data.unclassified): $((@($els.unclassified) | Select-Object -First 3 | ForEach-Object { [string]$_.description }) -join '; ')"

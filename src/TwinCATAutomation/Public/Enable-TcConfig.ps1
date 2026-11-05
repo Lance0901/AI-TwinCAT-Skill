@@ -415,9 +415,16 @@ function Enable-TcConfig {
         }
         elseif ($null -eq $diag.dialog) {
             try {
-                $el = Get-TcBuildErrors -TimeoutSec 8
-                if ($el.success) { $diag.errorList = @(@($el.data.errors) | Select-Object -First 10 | ForEach-Object { [string]$_.description }) }
-                else { $diag.errorListError = [string]$el.error.code }
+                # #107: the Error List budget of the build paths, capped by what is left of -TimeoutSec
+                # (Get-TcBuildErrors accepts 5..600 s); an upper bound, the scan returns when done.
+                $elBudget = [int]$script:TcBuildErrorListTimeoutSec
+                if ($null -ne $deadline) { $elBudget = [int][Math]::Min($elBudget, [Math]::Floor(($deadline - (Get-Date)).TotalSeconds)) }
+                $elBudget = [Math]::Max(5, $elBudget)
+                $el = Get-TcBuildErrors -TimeoutSec $elBudget
+                $elState = Get-TcErrorListReadState -Result $el
+                # #138: the rows of an incomplete read are listed too; errorListError still says it was partial
+                if ($elState.usable) { $diag.errorList = @(@($el.data.errors) | Select-Object -First 10 | ForEach-Object { [string]$_.description }) }
+                if (-not $el.success -and -not $elState.errorsComplete) { $diag.errorListError = [string]$el.error.code }
             } catch { $diag.errorListError = $_.Exception.Message }
         }
         $plat = $projectPlatform
@@ -704,7 +711,8 @@ function Enable-TcConfig {
             if ($wcs -contains 'LIBRARY_UNRESOLVED') { $nextSteps += 'install the missing library (data.libraryErrorItems of Build-TcProject) in the XAE Library Manager first' }
             if ($wcs -contains 'PROJECT_SKIPPED_BY_CONFIGURATION') { $nextSteps += 'a PLC project was skipped by the active solution configuration (data.skippedProjects): tick Build for it in the Configuration Manager' }
             if ($wcs -contains 'CODE_NOT_VERIFIED') {
-                if ($null -eq $b.data.codeVerified) { $nextSteps += 'the Error List could not be read (data.errorListError of Build-TcProject): make it readable (Error List window open, English or zh-TW UI), then build again' }
+                if ($null -eq $b.data.codeVerified -and [string]$b.data.errorListError -eq 'ERRORLIST_INCOMPLETE') { $nextSteps += 'the Error List was read only in part (data.missingRows / data.errorListScope of Build-TcProject): set the Error List scope filter to Entire Solution, turn on Errors / Warnings / Messages and clear its search box, then build again' }
+                elseif ($null -eq $b.data.codeVerified) { $nextSteps += 'the Error List could not be read (data.errorListError of Build-TcProject): make it readable (Error List window open, English or zh-TW UI), then build again' }
                 elseif ($wcs -notcontains 'PROJECT_SKIPPED_BY_CONFIGURATION' -and $null -ne $covp -and $covp.Value -ne $true) { $nextSteps += 'the solution has no PLC project that took part in the build: add one or build a solution with a PLC project' }
                 else { $nextSteps += 'the Error List has code rows without a file/line (data.errorItems): fix or clear them' }
             }

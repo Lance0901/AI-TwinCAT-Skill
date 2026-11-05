@@ -498,7 +498,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:`Build-TcProject` 判定成功,但沒辦法證明 PLC 程式碼有被編譯:Error List 讀不到(`data.errorListError`,例如 `ERRORLIST_UNAVAILABLE`;`codeVerified = null`、`libraryErrors = null`,`errors` 退回 `failedProjects`),或 Error List 有「有 file、沒有行號」的 code 列(`codeVerified = false`;可能是分類規則不認得的語系的 Library Manager 列),或有 PLC project 被 active solution configuration 跳過(`codeVerified = false`,排在 `PROJECT_SKIPPED_BY_CONFIGURATION` 之後,#58;見上一節)。這是 warning,不是錯誤:`success = true`,`data.warningCodes[]` 含 `CODE_NOT_VERIFIED`,`data.warning` 說明原因。
 - **`data.warningCodes` 的順序與並存(#56)**:依序 `PROJECT_SKIPPED_BY_CONFIGURATION`、`LIBRARY_UNRESOLVED`(只在加了 `-AllowUnresolvedLibrary` 時)、`CODE_NOT_VERIFIED`;`data.warningCode` / `data.warning` 是第一個，每個碼都會 Write-Warning。同一次 build 同時有 library 錯誤和「沒有行號的 code 列」時，兩個都放進去:`["LIBRARY_UNRESOLVED", "CODE_NOT_VERIFIED"]`(兩個是獨立的缺口:library 錯誤讓程式碼可能沒編譯，沒行號的 code 列是分類規則不認得的列),而且 `completeBuild = false`(加了 `-AllowUnresolvedLibrary` 的 build 本來就永遠不完整,#61)。只有 library 錯誤、沒有沒行號的列時只有 `LIBRARY_UNRESOLVED`(它已經說明程式碼沒被證實);有 project 被跳過又有 library 錯誤時是 `["PROJECT_SKIPPED_BY_CONFIGURATION", "LIBRARY_UNRESOLVED"]`。沒加 `-AllowUnresolvedLibrary` 時有 library 錯誤就是 `LIBRARY_UNRESOLVED` 錯誤，不會有 warningCodes 的 CODE_NOT_VERIFIED。
 - **solution 裡沒有 `.plcproj`(只有 I/O 或 NC 設定)時，出現這個碼是預期結果**:沒有 PLC 程式碼可以驗證,`codeVerified = false`,不代表 build 有問題。
-- **下一步**:看 XAE 的 Error List;Error List 讀不到時照 `ERRORLIST_UNAVAILABLE` 處理後重跑 `Build-TcProject`;project 被跳過時照 `PROJECT_SKIPPED_BY_CONFIGURATION` 處理。在確認之前不要把它當成「程式沒問題」。
+- **下一步**:看 XAE 的 Error List;Error List 讀不到時照 `ERRORLIST_UNAVAILABLE` 處理、讀不完整時照 `ERRORLIST_INCOMPLETE` 處理後重跑 `Build-TcProject`;project 被跳過時照 `PROJECT_SKIPPED_BY_CONFIGURATION` 處理。在確認之前不要把它當成「程式沒問題」。
 
 ### BUILD_REQUIRED
 
@@ -532,7 +532,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **Build 成功時 `errorItems` 不一定空**:Error List 會留著非 PLC code 的項目。2026-10-18 實測 GantryCylinder 專案 build 成功仍有 7 筆 Error,全部是 `file = plc.Library Manager`、`line = 0` 的「Could not open library '#System_VisuElem3DPath' / '#System_VisuElemTrace' / '#System_VisuElemCamDisplayer' / '#System_VisuElemsAlarm' / '#System_VisuElemsDateTime'(placeholder 無法解析)」與「'#Analyzation' 3.5.2.0 / '#IecSfc' 3.4.2.0 has not been installed」——是機器上缺 visu/分析函式庫,不影響 `failedProjects`,但**可能影響程式碼有沒有被編譯**(4024 Festo 實測 2026-10-25;4026 GantryCylinder 未驗證,#45;見 `LIBRARY_UNRESOLVED`)。這些列的 `category` 是 `library`,只算進 `libraryErrors`(#23 以前算進 `errors`)。
 - **XAE Build 會先存檔**:VS 的 Save all before build 預設開啟,`Write-TcPouCode` 後 `Build-TcProject` 會把 POU 寫進磁碟;要試錯請用複本。
 - **Warning 也讀得到內容**(2026-10-20):`Build-TcProject` 的 `data.warningItems[]`(與 errorItems 同格式)與 `data.codeWarnings[]`(排除 Library Manager 項),`Get-TcBuildErrors` 的 `-IncludeWarnings` 預設開(`-IncludeWarnings:$false` 省 1~2 s 的 toggle)。之前 `warnings=1` 卻沒有項目,就是這個開關沒開。按鈕計數的 regex 也認 zh-TW 的「3 個錯誤 / 1 個警告 / 2 則訊息」。
-- **zh-TW VS2022 也讀得到**(2026-10-21,取代舊註記「需英文 UI」):窗格名 `錯誤清單`(英文 UI 是 `Error List`);摘要按鈕是 `0 / 2 錯誤` 的「顯示 / 總數」形式,取總數;VS2022 的 Error List 預設 scope 是 `目前專案`(Current Project),會藏其他專案的列,模組讀之前先切到 `整個方案`(Entire Solution)。其他語系仍回 `ERRORLIST_UNAVAILABLE`。
+- **zh-TW VS2022 也讀得到**(2026-10-21,取代舊註記「需英文 UI」):窗格名 `錯誤清單`(英文 UI 是 `Error List`);摘要按鈕是 `0 / 2 錯誤` 的「顯示 / 總數」形式,取總數;VS2022 的 Error List 預設 scope 是 `目前專案`(Current Project),會藏其他專案的列,模組讀之前先切到 `整個方案`(Entire Solution);目前的 scope 從下拉選單本身的選取值讀(#117,見 `ERRORLIST_INCOMPLETE`)。其他語系仍回 `ERRORLIST_UNAVAILABLE`。
 - **Error List 的 UIA 結構(TcXaeShell 15.0,2026-10-18)**,改版時照這個找:
   ```
   Window '<sln> - TcXaeShell'
@@ -604,6 +604,50 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **下一步**:確認 XAE 主視窗可見、Error List 釘住(不是 auto-hide);手動 View > Error List 後重跑;IDE 若有 dialog 先處理(`Get-TcIdeModalDialog`)。`Build-TcProject` 遇到這個情況不會失敗,只把 `data.errorListError` 設為此 code 並讓 `errors` 退回 `failedProjects`。
 - **逾時之後**:逾時的 scan 會被停下並在下一次 `Get-TcBuildErrors` / `Build-TcProject` 時清掉;thread 還沒停時回本 code 加 `data.scanBusy = true`,停了就照常掃描。#75 之前清理本身會丟 `ArgumentException`(「引數類型不相容」;實測 2026-10-28,PS 5.1.26100.9711:`New-Object` 建的 `List[object]` 被 `@()` 包住會丟,不是整個 5.1.26100 都會),一次逾時就讓同一個 bridge / PowerShell session 的 Build 與 Error List 永久失敗,只能重啟;現在清不掉的項目會被丟棄並在 `Get-TcBuildErrors` / `Build-TcProject` 的 `data.scanCleanupWarning` 註明,不會再卡住。
 - **丟棄的 scan 可能還在跑**:被丟棄的項目若狀態讀不到、或整個清單走不了而被重設,舊 UIA thread 可能還在動 Errors / Warnings / Messages 篩選按鈕。這種情況下**該次呼叫不開新 scan**,回本 code,`data.scanBusy = false`、`data.scanMayBeRunning = true` 並帶 `data.scanCleanupWarning`;`Build-TcProject` 把 `scanCleanupWarning` 帶進自己的 `data`、`errorListError = ERRORLIST_UNAVAILABLE`、`codeVerified = null`(不會算成 verified,#61)。再呼叫一次才照常掃描。殘餘風險:被丟棄的舊 thread 已不再追蹤,第二次呼叫時它若仍在跑,還是可能跟新 scan 搶篩選按鈕(要 UIA thread 卡死、連清理本身也失敗才會發生,且只會出現在已拒絕過一次之後);無法在不追蹤的情況下確認它停了。
+
+- **Build 的 Error List 預算(#107)**:`Build-TcProject` / `Test-TcPlcProject` / `Clear-TcProject` 不論成功或失敗，都給 Error List 完整的 30 s(`$script:TcBuildErrorListTimeoutSec`)。這是上限不是等待，讀完就返回。`Enable-TcConfig` 失敗診斷時讀 Error List,也用同一個預算，但不超過 `-TimeoutSec` 剩下的時間(最少 5 s)。以前成功路徑只給 8 s,而 Error List 的掃描(叫出窗格、切 scope、切 severity、讀 grid)要 16.5–17.8 s:實測 2026-11-03,TwinCAT 3.1 Build 4026、`TcXaeShell.DTE.17.0`(VS2022 XAE Shell),回報者見 #107。結果 build 成功卻回 `errorListError = ERRORLIST_UNAVAILABLE`、`CODE_NOT_VERIFIED`,接著 `Enable-TcConfig` 被 `BUILD_REQUIRED` 擋下。現在要 30 s 內仍讀不完才會回這個 code;單獨跑 `Get-TcBuildErrors -TimeoutSec 60` 可以確認是不是只是慢。MCP 的 `BuildProject` 在 `TimeoutSec` 之後多留 90 s、`CleanProject` 多留 60 s(`mcp-server/lib/tools.js` `TOOL_GRACE_MS`;預設 tool timeout 690 s / 360 s),避免 build / clean 用完 `TimeoutSec` 時，bridge 在讀 Error List 的途中被砍。
+
+### ERRORLIST_INCOMPLETE
+
+- **現象**:`Get-TcBuildErrors` 回 `success = false`、`error.code = ERRORLIST_INCOMPLETE`。data 內容:
+  - `data.incomplete = true`。
+  - `data.missingRows[]`:哪個 severity 少讀。每筆有 `severity`、`expected`(摘要按鈕上的總數)、`read`(讀到的列數);severity 無法隔離時只有一筆 `total`。
+  - `data.errorsTotalUnknown`:Errors 按鈕的總數讀不到。
+  - `data.scope = { before, after, entire, switched }`,`data.notes` 是掃描紀錄。
+  - 讀到的部分列仍在 `data.errors` / `data.warnings`。
+- **為什麼(#117)**:zh-TW VS2022 的 Error List scope 設成 `目前專案` 時,`BuildProject` 與 `GetBuildErrors` 都回 `warnings: 28`,但 `warningItems: []`,而且 `success: true`。實測 2026-11-05,VS2022 `VisualStudio.DTE.17.0` zh-TW、4026、`C:\Temp\Verify-4026-axis`,當時的目前專案不是 PLC 專案;切回 `整個方案` 後 28 列全讀到。原因是舊的 scope 判斷在 Error List 裡找名稱為 `目前專案` 等的 ListItem,而下拉選單**收合時沒有任何 ListItem**,模組就判定「不用切換」,把篩過的列當成整份清單。
+  - Error List 的 scope 篩選有 Entire Solution / Open Documents / Current Project / Current Document 四種，見 [Microsoft Learn: How to view errors and warnings](https://learn.microsoft.com/en-us/visualstudio/ide/error-list-window) 的 "Filter the list by scope and source"。這是 VS 的視窗，不是 TwinCAT 的功能,InfoSys 沒有對應頁面。
+- **現在的做法**:
+  - **讀 scope**:從下拉選單**本身**讀，用 `SelectionPattern.GetSelection()` 取選取項目的名稱，讀不到再用 `ValuePattern`。收合時也讀得到(實測 2026-11-05,同一輪的 UIA probe)。
+    - 只有選取值是已知 scope 名稱的 ComboBox 才算 scope 下拉。已知名稱是上面那四種的英文名，加上 `整個方案` / `目前專案`(實測)、`目前文件` / `開啟文件`(推論)。`Changed Documents` / `已變更的文件` 不在 Learn 的清單上，保守加入，未實測。
+    - 另一個 `Build + IntelliSense` 下拉不算。
+    - **清單外的名稱**(其他語系、未來新增的 scope)不會被認成 scope 下拉,`scope.entire = null`,這時只靠下面的列數檢查保護。都讀不到時才退回舊做法(展開中的 ListItem)。
+  - **切換**:選取值不是 `整個方案` / `Entire Solution` 就切過去，切完**讀回**選取值。讀回仍是別的 scope → `data.scope.entire = false`;讀回讀不到 → `entire = null`。
+  - **列數讀回檢查**:每個要讀的 severity,讀到的列數少於按鈕總數，就回本 code。errors 一定比;warnings 預設比,`-IncludeWarnings:$false` 不比;messages 只有 `-IncludeMessages` 才比。按鈕總數讀不到的 severity 不比。`scope.entire = false` 時一律回本 code。
+  - **重複列**:同一頁出現多次的相同列算多列，只有跨捲動頁重複的才去重。限制：完全相同的兩列剛好分在相鄰兩頁時，看起來和捲動重疊一樣，只算一列，可能少於總數而觸發本 code;每頁的重複數記在 `data.notes`(`rows '<severity>' page N: ...`)。
+  - **垃圾列與穩定讀取(#138 F1)**:實測 2026-11-06,4026 zh-TW VS2022(真機報告 pr138-e026472 F1)。scope 剛切回 `整個方案` 時，讀到一列 `project` / `file` / `line` 全是 null 的列，它的 description 是整列的 accessible name(`<訊息> : 警告. 專案: AxisInterface. 檔案: AxisInterface.plcproj. 行: 1`),看起來是格子還沒 realize。這一列被算進列數：第一次讀到 22/25,其實只有 21 條真的;第二次讀到 26/25 卻回 success。如果剛好漏一條、又多一條垃圾，數量就對上了(fail open)。現在的處理:
+    - **垃圾列不算**:description 是空的，或沒有 project / file / line / code、而且 description 帶著那段 accessible-name 尾巴(`: 警告. 專案:`;英文 `: Warning. Project:` 是推論、未實測)的列，不算進列數，數量記在 `data.notes` 的 `junkRows`。沒有位置但 description 是一般文字的列(XAE 的 build-summary 列)仍是真的列，因為它也算在按鈕總數裡。
+    - **穩定讀取**:切換過 scope、或這次讀到垃圾列時，同一個 severity 隔一個 settle 間隔(150 ms)再讀，要**連續兩次列數相同、而且等於按鈕總數**才採用;最多讀 4 次、最多 10 s。做不到就把該 severity 列為 unstable(`data.missingRows[].unstable = true`),結果是 `ERRORLIST_INCOMPLETE`,即使最後一次剛好對上。每次讀到的列數記在 `data.notes`(`stability reads: ...`)。每次都讀到 0 列、但總數 > 0 時，不標 unstable(列數沒有在跳),notes 寫 `no rows read`,`data.missingRows[].noRows = true`;結果一樣是 `ERRORLIST_INCOMPLETE`(#138 O5)。
+    - **「切不回」只有 unit 覆蓋**:`scope.entire = false` 的情境在真機做不出來(4026 zh-TW 和 4024 英文都能自動切回)。
+- **`Get-TcBuildErrors` 為什麼 fail closed**:總數 > 讀到的列，代表有列沒讀到，沒讀到的可能是 error。如果回 `success` 再加 note,呼叫端仍會把它當成 0 errors(`CODING_STANDARDS.md` §2,#68)。
+- **Build / CheckAllObjects / Clean 怎麼處理(#138)**:它們用 `Get-TcErrorListReadState` 判斷 **error 列**完不完整，讀到的列一律保留:BUILD_FAILED 時 `codeErrors` / `errorItems` 仍列出讀到的部分。
+  - 下列任一情況,`errorListError = ERRORLIST_INCOMPLETE`、`codeVerified = null`、`CODE_NOT_VERIFIED`、`completeBuild = false`,`Enable-TcConfig` 會回 `BUILD_REQUIRED`,下一步提示指向這一節:
+    - errors 少讀;
+    - severity 無法隔離、比的是 `total`;
+    - Errors 總數讀不到;
+    - `scope.entire = false` **而且**有列數對不上。
+  - **只有 warnings 少讀**:不擋，見 `WARNINGS_INCOMPLETE`。
+  - **`scope.entire = false` 但每個總數都對得上**:只有至少一個 severity 按鈕是 `X / Y` / `X of Y` 兩個數字的格式時(`data.countsTotalForm = true`,Y 是總數)才降成 `data.errorListNote`、不擋;按鈕都是單一數字(`9 Errors`、`3 個錯誤`)時，那個數字可能只是篩過的清單的數量，對得上也證明不了什麼，維持不完整(`codeVerified = null`,fail closed,#138)。
+  - `Build-TcProject` 的 data 會帶 `errorListScope`、`missingRows` 與 `errorListNote`。
+- **下一步**:
+  1. 在 XAE 的 Error List 把 scope 下拉選成 `整個方案`(Entire Solution)、Errors / Warnings / Messages 三個按鈕都按下、清空 Error List 的搜尋框，再重跑 `Get-TcBuildErrors`;要解除 `BUILD_REQUIRED` 就重跑 `Build-TcProject`。
+  2. 仍是本 code 時，看 `data.notes`(`scope: ...`、`buttons: ...`、`rows ... page ...`)與 `data.missingRows`,附在 issue 裡。不要把部分清單當成結果。
+
+### WARNINGS_INCOMPLETE
+
+- **現象**:`Build-TcProject` 回 success,`data.warningCodes` 含 `WARNINGS_INCOMPLETE`;`Test-TcPlcProject`(CheckAllObjects)沒有 warningCodes,只在 `data.warningTexts` 加一筆帶 `(WARNINGS_INCOMPLETE)` 的說明。`data.missingRows` 只列出 `warnings`(或 `messages`),`data.errorListNote` 寫著讀到幾列、總數幾列。
+- **為什麼(#138)**:Error List 的 error 列完整(Errors 總數對得上，可隔離 severity),只有 warnings 讀得比按鈕總數少。`data.warningItems` 因此不是整份清單，但程式碼有沒有編譯是看 error 列，所以不影響 `codeVerified` / `completeBuild`,也不會留下 `BUILD_REQUIRED`。`Get-TcBuildErrors` 本身遇到同樣情況仍回 `ERRORLIST_INCOMPLETE`。
+- **下一步**:需要完整的 warning 清單時，照 `ERRORLIST_INCOMPLETE` 的下一步(scope 切 `整個方案`、清空搜尋框)後重跑 `Get-TcBuildErrors`。
 
 ### SOLUTION_CLOSE_FAILED / NO_SOLUTION
 
