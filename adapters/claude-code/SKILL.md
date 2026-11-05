@@ -382,6 +382,7 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `ADS_SYMBOL_NOT_FOUND` | 符號不存在:新程式尚未下載,或路徑拼錯(ADS 0x710) | `Get-TcSymbols -Filter "MAIN.*"` 確認;必要時 `Enter-TcPlcOnline` |
 | `SYMBOL_NOT_FOUND` | `Read-TcVariable` 單一路徑讀不到(沿用舊 code,hint 同 `ADS_SYMBOL_NOT_FOUND`) | 同上 |
 | `PARTIAL_READ_FAILED` | `Read-TcVariable` 多路徑，至少一個 path 讀不到(#60,fail closed):`data` 仍是每個 path 一筆的陣列，頂層 `partial = true`、`failedPaths` 列出失敗的 path | 看 `data` 裡失敗那幾筆的 `code`;符號錯就 `Get-TcSymbols` 確認，連線類先 `Get-TcPlcState`,再只重讀 `failedPaths` |
+| `WATCH_READ_FAILED` | `Watch-TcVariable`(一個或多個 path)監看期間至少一次讀不到(#139,fail closed):samples 裡那次是 `null` 加 `errors`(多路徑)或 `error` / `code`(單一路徑),`data.failedReads` / `data.lastErrors`,頂層 `partial` / `failedPaths`;`Until` 的 path 讀不到時 `untilMet=false` 不代表條件沒成立 | 看 `data.lastErrors` 的 `code`:符號錯就 `Get-TcSymbols` 確認,連線類先 `Get-TcPlcState`,再重新監看 |
 | `ADS_INVALID_STATE` | PLC 狀態不允許此操作,例如系統在 Config 模式就叫 PLC Run(ADS 0x712) | 順序 `Enable-TcConfig` → `Enter-TcPlcOnline` → `Set-TcPlcState Run` |
 | `ADS_TIMEOUT` | ADS 逾時:目標忙碌或網路問題(ADS 0x745) | 稍後重試;`Get-TcSystemState` 看目標是否活著 |
 | `PLC_NOT_LOADED` | `Set-TcPlcState Run` 時 PLC 內沒有程式(未 download;port 851 不存在,含自動重連時才發現的情況) | 先 `Enter-TcPlcOnline` 再 Run,或用 `Enable-TcConfig -Force` |

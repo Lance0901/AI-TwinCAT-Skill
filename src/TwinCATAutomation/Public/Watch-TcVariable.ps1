@@ -120,6 +120,12 @@ function Watch-TcVariable {
         finalValues (multiple paths), sampleCount, samples, truncated, keepLast, reconnected }.
         Without -Until: data = { path, sampleCount, durationMs, elapsedMs, samples, truncated, keepLast, reconnected }.
         Invalid -Until returns error code INVALID_PARAMS.
+        Fail closed (#139): a read that failed in any round (one path or several) makes the result
+        success = false with WATCH_READ_FAILED; data is still complete and also has failedReads
+        (path -> rounds whose read failed) and lastErrors (path -> last {error, code, hint}). A failed
+        read is null in the sample plus sample.errors.<path> (several paths) or sample.error / code /
+        hint (one path). Every result has the top-level fields partial and failedPaths (-Path order):
+        partial = false, failedPaths = [] when every read worked.
     .NOTES
         Samples use the Read-TcVariable conversion: value plus ms/ns/unix (raw integer) for
         TIME/DATE types (value is the IEC literal) and name (member name) for enums.
@@ -194,24 +200,45 @@ function Watch-TcVariable {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $limitMs = if ($hasUntil) { $UntilTimeoutMs } elseif ($DurationMs -gt 0) { $DurationMs } else { 2000 }
 
+        # #139: failed reads per path (count of rounds) and the last error of each, in -Path order
+        $failedCount = [ordered]@{}
+        $lastError = @{}
+
         while ($sw.ElapsedMilliseconds -lt $limitMs) {
             $values = [ordered]@{}
             $readData = @{}
+            $errors = [ordered]@{}
             foreach ($p in $Path) {
                 $v = $null
                 $readResult = Read-TcVariable -Path $p
                 if ($readResult -and $readResult.success) { $v = $readResult.data.value; $readData[$p] = $readResult.data }
+                else {
+                    $e = [ordered]@{
+                        error = if ($readResult -and $readResult.error) { [string]$readResult.error.message } else { 'Read-TcVariable returned no result' }
+                        code  = if ($readResult -and $readResult.error) { [string]$readResult.error.code } else { $null }
+                    }
+                    if ($readResult -and $readResult.error -and $null -ne $readResult.error.PSObject.Properties['hint']) { $e.hint = [string]$readResult.error.hint }
+                    $errors[$p] = [PSCustomObject]$e
+                    $lastError[$p] = $errors[$p]
+                    if (-not $failedCount.Contains($p)) { $failedCount[$p] = 0 }
+                    $failedCount[$p]++
+                }
                 $values[$p] = $v
             }
             $lastValues = $values
             $ts = [DateTime]::Now.ToString('o')
-            # Single path: the Read-TcVariable conversion (value + ms/ns/unix for time types, name for enums)
+            # Single path: the Read-TcVariable conversion (value + ms/ns/unix for time types, name for enums).
+            # A failed read is null plus the error (#139): sample.errors (multi) / error, code, hint (single).
             $sample = if ($multi) {
-                [PSCustomObject]@{ timestamp = $ts; values = [PSCustomObject]$values }
+                $s = [PSCustomObject]@{ timestamp = $ts; values = [PSCustomObject]$values }
+                if ($errors.Count -gt 0) { $s | Add-Member -NotePropertyName 'errors' -NotePropertyValue ([PSCustomObject]$errors) }
+                $s
             } elseif ($readData.ContainsKey($Path[0])) {
                 New-TcWatchSample -Data $readData[$Path[0]]
             } else {
-                [PSCustomObject]@{ timestamp = $ts; value = $null }
+                $s = [ordered]@{ timestamp = $ts; value = $null }
+                foreach ($k in $errors[$Path[0]].PSObject.Properties.Name) { $s[$k] = $errors[$Path[0]].$k }
+                [PSCustomObject]$s
             }
             $sampleCount++
             $samples.Add($sample)
@@ -250,10 +277,9 @@ function Watch-TcVariable {
             $data['truncated']   = $truncated
             $data['keepLast']    = $keep
             $data['reconnected'] = $reconnected
-            New-TcResult -Success $true -Data ([PSCustomObject]$data)
         }
         else {
-            New-TcResult -Success $true -Data ([PSCustomObject]@{
+            $data = [ordered]@{
                 path        = $pathOut
                 sampleCount = $sampleCount
                 durationMs  = $limitMs
@@ -262,8 +288,39 @@ function Watch-TcVariable {
                 truncated   = $truncated
                 keepLast    = $keep
                 reconnected = $reconnected
-            })
+            }
         }
+
+        # #139, fail closed like Read-TcVariable (#60): a read that failed in any round makes the
+        # result success = false with WATCH_READ_FAILED. data stays complete (samples, untilMet, ...)
+        # and gets failedReads (path -> number of rounds whose read failed) and lastErrors (path ->
+        # the last {error, code, hint}); the top level has partial / failedPaths (in -Path order),
+        # partial = false and failedPaths = [] when every read worked.
+        $failed = @($Path | Where-Object { $failedCount.Contains($_) })
+        if ($failed.Count -gt 0) {
+            $fr = [ordered]@{}; $le = [ordered]@{}
+            foreach ($p in $failed) { $fr[$p] = $failedCount[$p]; $le[$p] = $lastError[$p] }
+            $data['failedReads'] = [PSCustomObject]$fr
+            $data['lastErrors'] = [PSCustomObject]$le
+            $detail = (@($failed | ForEach-Object {
+                $c = if ([string]::IsNullOrEmpty([string]$lastError[$_].code)) { 'unmapped' } else { [string]$lastError[$_].code }
+                "$_ ($c, $($failedCount[$_]) of $sampleCount rounds)"
+            })) -join ', '
+            $msg = "$($failed.Count) of $($Path.Count) watched paths could not be read: $detail."
+            if ($hasUntil -and -not $untilMet -and $failed -contains $untilPath) {
+                # untilMet = true always comes from a successful read (untilSample); false may not
+                $msg += " The -Until path $untilPath is among them: untilMet=false does not mean the condition was false on the PLC."
+            }
+            $msg += ' Failed reads are null in samples; the error is in sample.errors (several paths) or sample.error / code (one path) and in data.lastErrors.'
+            $res = New-TcResult -Success $false -ErrorMessage $msg -ErrorCode 'WATCH_READ_FAILED' `
+                -Hint (Get-TcErrorHint -Code 'WATCH_READ_FAILED') -Data ([PSCustomObject]$data)
+        }
+        else {
+            $res = New-TcResult -Success $true -Data ([PSCustomObject]$data)
+        }
+        $res | Add-Member -NotePropertyName 'partial' -NotePropertyValue ($failed.Count -gt 0) -Force
+        $res | Add-Member -NotePropertyName 'failedPaths' -NotePropertyValue ([string[]]$failed) -Force
+        $res
     }
     catch {
         New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'WATCH_FAILED' -MessagePrefix 'Watch failed'

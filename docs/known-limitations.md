@@ -11,7 +11,7 @@
 - **現象**:`WatchVariable` 一次給多個 `Path`,其中某些路徑讀不到時,sample 裡該路徑的值是 `null`、沒有 error / code,整個呼叫仍回 `success: true`,頂層也沒有部分失敗標記;`Until` 用的路徑讀不到時只回 `untilMet: false`。
 - **影響**:呼叫端如果只看 `success`,會把讀取失敗當成值為 null(或 FALSE / 0)的正常結果。
 - **繞過**:拿到 `null` 一律視為**讀取失敗**,不要當成 PLC 的值;需要確定時先用 `ReadVariable` 確認路徑讀得到。
-- **已修**:`ReadVariable` / `QuickRead` 多路徑已改成 fail closed(任一路徑失敗回 `PARTIAL_READ_FAILED`,頂層有 `partial` / `failedPaths`),見 [troubleshooting.md「PARTIAL_READ_FAILED」](troubleshooting.md#partial_read_failed)。
+- **已修**:`ReadVariable` / `QuickRead` 多路徑已改成 fail closed(任一路徑失敗回 `PARTIAL_READ_FAILED`,頂層有 `partial` / `failedPaths`),見 [troubleshooting.md「PARTIAL_READ_FAILED」](troubleshooting.md#partial_read_failed)。`WatchVariable` 在 #139 的修正裡也改成 fail closed(任一輪讀不到回 `WATCH_READ_FAILED`,sample 帶 error、頂層 `partial` / `failedPaths`),見 [troubleshooting.md「WATCH_READ_FAILED」](troubleshooting.md#watch_read_failed);**尚待真機驗證**,驗過之後這條移除。
 - **Issue**:[#139](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/139)(來源 [#60](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/60))
 
 ### UmRT 長時間執行後 task 停止循環,但 ADS 仍回 Run(#26)
