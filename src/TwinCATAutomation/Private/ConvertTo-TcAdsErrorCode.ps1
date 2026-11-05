@@ -271,7 +271,12 @@ $script:TcErrorHints['LIFECYCLE_BLOCKED'] = '停止後續所有步驟(標示 NOT
 # #130 F1: appended to the hint when none of the three #113 fields was passed at all (data.possibleStaleSchema)
 $script:TcLifecycleStaleSchemaText = '若透過 MCP 呼叫，可能是 server 的 tool schema 比模組舊(server 啟動於 #113 之前，送不出 FallbackMethod / AllowedSideEffects / MaxVerifyLevel);請重啟 MCP server(開新 session)再 Clear。不要只用 Reason 繞過。'
 $script:TcErrorHints['LIFECYCLE_RECEIPT_INCOMPLETE'] = 'Clear-TcLifecycleBlock 沒有執行,block 還在(data.missing 是缺或空白的欄位,data.invalid 是不合法的值)。先問使用者，照使用者的話補齊四個欄位再呼叫一次:-Reason(為什麼可以解除)、-FallbackMethod(解除後用什麼方法繼續)、-AllowedSideEffects(允許的副作用，每項一個字串;都不允許時只給 none,不能和其他項並列)、-MaxVerifyLevel(清除後這次驗證會做到的最高層;結果不得宣稱超過它。data.allowedVerifyLevels 之一:None / SystemState / PlcState / VariableRead / TestObserved)。不要自己編內容。見 docs/troubleshooting.md「LIFECYCLE_RECEIPT_INCOMPLETE」'
-$script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
+# #72: Connect-TcIde without -ProgId never launches the first registered IDE any more
+$script:TcErrorHints['PROGID_REQUIRED'] = 'Connect-TcIde 沒有啟動 IDE:沒給 -ProgId,也無法從 solution 的 .tsproj(根節點 TcVersion)判斷 TwinCAT 版本(data.solutionVersion.reason),而機器上註冊了多個 IDE(data.registeredProgIds)。帶 -ProgId 重跑:4024 → TcXaeShell.DTE.15.0;4026 → TcXaeShell.DTE.17.0(TcXaeShell64)或 VisualStudio.DTE.17.0(VS2022)'
+$script:TcErrorHints['IDE_VERSION_NOT_REGISTERED'] = 'Connect-TcIde 沒有啟動 IDE:.tsproj 的 TcVersion(data.solutionVersion.tsprojects)對應的 IDE 沒有註冊(data.registeredProgIds)。用錯版本的 XAE 開會污染 .vs 快取(#72),所以不會用猜的。確定要用某個 IDE 時帶 -ProgId 重跑;否則先安裝對應 build 的 XAE'
+# #136: never a second IDE for a solution this session is still launching
+$script:TcErrorHints['IDE_LAUNCH_PENDING'] = '本 session 為這個 .sln 啟動的 IDE(pid <pid>)還活著但 DTE 沒回應(冷啟動中，或被 dialog 擋住),所以沒有再開第二個。Get-TcIdeModalDialog -ProcessId <pid> 看有沒有 dialog,關掉後重跑同一個 Connect-TcIde;還在啟動就稍後重跑。IDE 卡死才 Disconnect-TcIde -Quit -Kill(只會殺本 session 啟動的這個 pid)後再 Connect-TcIde'
+$script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] ='有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {
     <#

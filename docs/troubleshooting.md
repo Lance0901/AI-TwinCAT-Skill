@@ -243,6 +243,39 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:XAE / VS 卡在首次啟動精靈、帳戶登入視窗、license 提示,或該 ProgId 對應的 IDE 沒裝好。
 - **下一步**:手動開一次該 IDE 確認能正常進到主畫面;或改用 `-ProgId` 指定另一個 IDE,或先手動開好 IDE(含 solution)再 `Connect-TcIde -SolutionPath <sln>`。
 
+### 啟動哪個 IDE(#72):progIdSelectedBy
+
+`Connect-TcIde` 要自己啟動 IDE、又沒給 `-ProgId` 時,不再挑「第一個註冊的 ProgID」(那會讓 4026 的 solution 被 4024 的 32-bit XAE 打開，並在 `.vs\<sln>\v15` 留下錯版快取，見 #72)。`data.progIdSelectedBy` 說明怎麼選的:
+
+| 值 | 意思 |
+|---|---|
+| `explicit` | 呼叫端給了 `-ProgId` |
+| `running-instance` | 接上 ROT 裡已在跑的 IDE(沒有啟動) |
+| `tsproj-version` | 從 solution 引用的 `.tsproj` 根節點 `TcVersion` 判斷(證據在 `data.solutionVersion`:每個 .tsproj 的 `tcVersion` / `build`、`.sln` 的 `visualStudioVersion` 只當參考) |
+| `only-one-registered` | 判斷不出版本，但三個已知 ProgID 只註冊了一個 |
+
+- **版本存在哪**:InfoSys 說專案檔記著最後存檔的 TwinCAT 版本([Selection of a TwinCAT 3 version before loading a project](https://infosys.beckhoff.com/content/1033/tc3_remote_manager/3154642571.html)),但沒寫欄位名。實測(2026-11-06,唯讀):`C:\Temp\Verify-4026-axis` 的 `.tsproj` 根節點是 `<TcSmProject ... TcVersion="3.1.4026.22">`,`C:\Temp\Verify-4024-bfh` 的是 `TcVersion="3.1.4024.71"`。
+- **build → IDE**:TcXaeShell 是 Visual Studio 2017 Shell、TcXaeShell64 是 Visual Studio 2022 Shell,從 build 4026 起才有([System requirements](https://infosys.beckhoff.com/content/1033/tc3_overview/6162419083.html))。所以 build < 4026 → `TcXaeShell.DTE.15.0`;build ≥ 4026 → `TcXaeShell.DTE.17.0`(TcXaeShell64),沒有才 `VisualStudio.DTE.17.0`(VS2022)。
+- **已知限制**:4026 只裝 32-bit TcXaeShell(ProgID 一樣是 15.0)的機器分辨不出來，會回 `IDE_VERSION_NOT_REGISTERED`,帶 `-ProgId 'TcXaeShell.DTE.15.0'` 即可。
+
+### PROGID_REQUIRED
+
+- **現象**:`Connect-TcIde` 沒啟動任何 IDE,回 `PROGID_REQUIRED`。`data.registeredProgIds` 是註冊了的 ProgID,`data.solutionVersion.reason` 是判斷不出版本的原因(沒給 `-SolutionPath`、solution 沒引用 .tsproj、.tsproj 沒有 `TcVersion`、多個 .tsproj 的 build 不同)。
+- **為什麼**:不帶 `-ProgId`、判斷不出 TwinCAT 版本、又註冊了不只一個 IDE 時，模組不猜(#72)。
+- **下一步**:帶 `-ProgId` 重跑:4024 → `TcXaeShell.DTE.15.0`;4026 → `TcXaeShell.DTE.17.0` 或 `VisualStudio.DTE.17.0`。
+
+### IDE_VERSION_NOT_REGISTERED
+
+- **現象**:`.tsproj` 的 `TcVersion` 讀得到(`data.solutionVersion.tsprojects`),但對應的 IDE ProgID 沒註冊(`data.registeredProgIds`),沒啟動任何 IDE。
+- **為什麼**:用別的世代的 XAE 開會升級 / 污染專案與 `.vs` 快取(#72),所以不自動換一個。
+- **下一步**:確定要用某個 IDE 就帶 `-ProgId` 重跑;否則先安裝對應 build 的 XAE。見「啟動哪個 IDE(#72)」的已知限制。
+
+### IDE_LAUNCH_PENDING
+
+- **現象(#136)**:`Connect-TcIde -SolutionPath <sln>` 回 `IDE_LAUNCH_PENDING`,`data.ideProcessId` / `data.ideStartTime` 是本 session 先前為同一個 .sln 啟動、還活著的 IDE,`data.probe` 是它的狀態(`not-in-rot` 還沒登記到 ROT、`busy` RPC_E_CALL_REJECTED、`unreadable` DTE.Version 空白),`data.waitedSec` 是這次等了多久(最多 60 s)。沒有啟動第二個 IDE。
+- **為什麼**:VS2022 冷啟動時第一次 `Connect-TcIde` 可能在開 solution 前就回 `MODAL_SCAN_INCOMPLETE`;舊版重試時找不到「開著這個 .sln 的 IDE」,又多開一個 VS2022。現在模組記下本 session 啟動的 IDE(pid + StartTime,和 `Disconnect-TcIde -Kill` 的 launch 記錄同一份)及它是為哪個 .sln 啟動的;重試時只要那個行程還在(pid 與 StartTime 都相同，回收的 pid 不算),就等它的 DTE 回應並 attach(`data.selectedBy = 'session-launched'`,`ownedBySession = true`),等不到就回這個碼。**同一個 .sln 在本 session 有啟動中的 IDE 時，絕不再啟動第二個**(`-LaunchIfBlocked`、`-NoLaunch` 也一樣)。那個 IDE 之後開了別的 solution、或行程已結束，才放行。只在同一個模組 session(MCP server / 同一個 PowerShell)內有效。
+- **下一步**:`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看有沒有 dialog,關掉後重跑同一個 `Connect-TcIde`;還在啟動就稍後重跑。確定卡死才 `Disconnect-TcIde -Quit -Kill`(只殺本 session 啟動的這個 pid;模組已記住它)再 `Connect-TcIde`。
+
 ### IDE_TIMEOUT
 
 - **現象**:COM cmdlet 回 `IDE_TIMEOUT`,訊息含 `did not return within N s`。
