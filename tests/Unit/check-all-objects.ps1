@@ -85,7 +85,7 @@ try {
     $r = Test-TcPlcProject
     Check 'True -> success, passed true' ($r.success -and $r.data.passed -eq $true -and $global:C.Calls -eq 1) (J $r)
     Check 'True -> errorItems is an empty array' ($null -ne $r.data.PSObject.Properties['errorItems'] -and @($r.data.errorItems).Count -eq 0 -and @($r.data.codeErrors).Count -eq 0) (J $r.data)
-    Check 'True -> Error List read anyway (short timeout), warnings returned' ($global:C.ElCalls.Count -eq 1 -and $global:C.ElCalls[0] -eq '8|True' -and @($r.data.warningItems).Count -eq 1 -and $r.data.warnings -eq 1 -and @($r.data.codeWarnings).Count -eq 1) "$($global:C.ElCalls -join ';') $(J $r.data.warningItems)"
+    Check 'True -> Error List read anyway (full 30 s budget, #107), warnings returned' ($global:C.ElCalls.Count -eq 1 -and $global:C.ElCalls[0] -eq '30|True' -and @($r.data.warningItems).Count -eq 1 -and $r.data.warnings -eq 1 -and @($r.data.codeWarnings).Count -eq 1) "$($global:C.ElCalls -join ';') $(J $r.data.warningItems)"
     Check 'True -> plcProjectPath, checkSec' ($r.data.plcProjectPath -eq $PrjPath -and $null -ne $r.data.checkSec) (J $r.data)
 
     Reset-Mock; $global:C.Rows = @($rowStale)

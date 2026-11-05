@@ -121,9 +121,9 @@ function Test-TcPlcProject {
         $data | Add-Member -NotePropertyName checkSec -NotePropertyValue ([Math]::Round($sw.Elapsed.TotalSeconds, 2))
         if ($null -ne $callError) { $data | Add-Member -NotePropertyName callError -NotePropertyValue $callError }
 
-        # Error List: a passed check only needs a short look (as a successful Build-TcProject).
-        $elTimeout = if ($passed -eq $true) { 8 } else { 0 }
-        $els = Get-TcErrorListSummary -TimeoutSec $elTimeout
+        # Error List: the full budget on every path, as Build-TcProject (#107: 8 s on the passed
+        # path was too short for the VS2022 Error List scan; an upper bound, not a wait).
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec
         # stale = left over from earlier operations: no file (category other) AND no compiler code
         $isStale = { param($i) $i.category -eq 'other' -and [string]::IsNullOrWhiteSpace([string]$i.code) }
         $located = @($els.errorItems | Where-Object { -not (& $isStale $_) })
@@ -151,6 +151,12 @@ function Test-TcPlcProject {
             $data | Add-Member -NotePropertyName errorListError -NotePropertyValue $els.errorListError
             $warningTexts += "the Error List could not be read ($($els.errorListError): $($els.errorListMessage)); the result comes from the CheckAllObjects return value only"
         }
+        if ($els.incomplete) { $data | Add-Member -NotePropertyName missingRows -NotePropertyValue @($els.missingRows) }
+        if ($null -ne $els.errorListNote) {
+            # warnings (only) read short (#138): the error rows are complete, not a blocking failure
+            $data | Add-Member -NotePropertyName errorListNote -NotePropertyValue $els.errorListNote
+            $warningTexts += $(if ($els.warningsIncomplete) { "$($els.errorListNote) (WARNINGS_INCOMPLETE)" } else { [string]$els.errorListNote })
+        }
         if ($els.severityUnknown) {
             $data | Add-Member -NotePropertyName severityUnknown -NotePropertyValue $true
             $data | Add-Member -NotePropertyName unclassified -NotePropertyValue @($els.unclassified)
@@ -165,7 +171,8 @@ function Test-TcPlcProject {
         }
         else {
             $msg = "CheckAllObjects on '$prjPath' returned False"
-            if ($null -ne $els.errorListError) { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
+            if ($null -ne $els.errorListError -and $els.incomplete) { $msg += "; the Error List was read only in part ($($els.errorListError), data.missingRows), so the errors listed may not be all of them" }
+            elseif ($null -ne $els.errorListError) { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
             elseif ($located.Count -eq 0) { $msg += '; the Error List shows no error row except stale ones (no file and no code)' }
             else {
                 $parts = @()

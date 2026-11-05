@@ -202,17 +202,20 @@ function Clear-TcProject {
         # the solution was opened, 0 after a build (measured 2026-10-25, 4024 32-bit XAE Shell;
         # 4026 VS2022 RobustDemo: 0). That is LIBRARY_UNRESOLVED (an error unless
         # -AllowUnresolvedLibrary), never a clean that worked; anything else is CLEAN_FAILED.
-        $errList = Get-TcBuildErrors -TimeoutSec 30
+        $errList = Get-TcBuildErrors -TimeoutSec $script:TcBuildErrorListTimeoutSec
+        # #138: only the ERROR rows matter here; warnings read short do not make the list unusable
+        $elState = Get-TcErrorListReadState -Result $errList
         $items = @()
-        if ($errList.success) { $items = @($errList.data.errors) }
+        if ($elState.usable) { $items = @($errList.data.errors) }
         # Same classification as Build-TcProject (#23 / #44): category code|library|other.
         foreach ($item in $items) {
             $item | Add-Member -NotePropertyName 'category' -NotePropertyValue (Get-TcErrorItemCategory $item) -Force
         }
         $data | Add-Member -NotePropertyName 'errorItems' -NotePropertyValue $items
-        $libraryOnly = $errList.success -and $items.Count -gt 0 -and @($items | Where-Object { $_.category -ne 'library' }).Count -eq 0
+        $libraryOnly = $elState.errorsComplete -and $items.Count -gt 0 -and @($items | Where-Object { $_.category -ne 'library' }).Count -eq 0
+        if ($elState.incomplete) { $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue @($elState.missingRows) }
         if (-not $libraryOnly) {
-            if (-not $errList.success) { $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errList.error.code }
+            if (-not $elState.errorsComplete) { $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errList.error.code }
             return New-TcResult -Success $false -ErrorMessage "Clean finished but $failed project(s) failed (SolutionBuild.LastBuildInfo)." `
                 -ErrorCode 'CLEAN_FAILED' -Hint (Get-TcErrorHint -Code 'CLEAN_FAILED') -Data $data
         }
