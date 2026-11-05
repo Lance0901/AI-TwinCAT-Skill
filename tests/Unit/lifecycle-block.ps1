@@ -167,17 +167,16 @@ try {
     Check '(3) Get-TcSystemState (read-only) is not blocked' ($g.error.code -ne 'LIFECYCLE_BLOCKED') (J $g)
 
     # --- (4) Clear-TcLifecycleBlock ---
-    $threw = $false
-    try { $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason '' } catch { $threw = $true }
-    Check '(4) -Reason is required (empty refused)' $threw ''
-    $c = Clear-TcLifecycleBlock -Reason 'user checked the license and approved a new Enable-TcConfig -Force'
+    $e = Clear-TcLifecycleBlock -AmsNetId $A -Reason '' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    Check '(4) -Reason is required (empty refused, #113: LIFECYCLE_RECEIPT_INCOMPLETE)' ((-not $e.success) -and $e.error.code -eq 'LIFECYCLE_RECEIPT_INCOMPLETE' -and (@($e.data.missing) -contains 'Reason')) (J $e)
+    $c = Clear-TcLifecycleBlock -Reason 'user checked the license and approved a new Enable-TcConfig -Force' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(4) Clear (AmsNetId from the IDE target) returns the removed record + receipt' ($c.success -and $c.data.cleared.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $c.data.amsNetId -eq $A -and $c.data.netIdSource -eq 'resolved' -and $c.data.receipt.reason -match 'approved') (J $c.data)
     $hist = Join-Path $env:TCAUTO_STATE_DIR 'lifecycle-block-history.jsonl'
     Check '(4) receipt appended to lifecycle-block-history.jsonl' ((Test-Path -LiteralPath $hist) -and ((Get-Content -LiteralPath $hist -Raw) -match 'approved')) ''
     Reset-Calls
     $w = Write-TcVariable -Path 'MAIN.bStart' -Value $true
     Check '(4) after Clear, Write-TcVariable is no longer refused' ($w.error.code -ne 'LIFECYCLE_BLOCKED') "code=$($w.error.code)"
-    $c2 = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'second call'
+    $c2 = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'second call' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(4) Clear without a record -> success, cleared=$null' ($c2.success -and $null -eq $c2.data.cleared) (J $c2.data)
 
     # --- (5) Enable-TcConfig -Force: set-run reached Run, verify reads Config ---
@@ -208,7 +207,7 @@ try {
     Reset-Calls
     $e2 = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(5) second Enable-TcConfig -Force -> LIFECYCLE_BLOCKED, no state switch, no Activate' ($e2.error.code -eq 'LIFECYCLE_BLOCKED' -and $global:Calls.SetSystemState -eq 0 -and $global:Calls.Activate -eq 0) "code=$($e2.error.code) calls=$(J $global:Calls)"
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'test (5) done'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'test (5) done' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
     # Enable-TcConfig -Force success: the done fields are true and match the facts
     Reset-Calls; $fake::Mode = 'run'
@@ -229,12 +228,12 @@ try {
     Set-Session $A
     $q = Set-TcSystemState -State Config -AmsNetId $A -TimeoutSec 1 -SettleSec 0
     Check '(6) target A still free while B is blocked' ($q.error.code -ne 'LIFECYCLE_BLOCKED') "code=$($q.error.code)"
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'reset'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'reset' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $global:PlcState = 'Stop'
     $t = Set-TcPlcState -State Run -TimeoutSec 1
     Check '(6) Set-TcPlcState Run not reached -> PLC_RUN_TIMEOUT + block' ($t.error.code -eq 'PLC_RUN_TIMEOUT' -and $t.data.lifecycleBlock.command -eq 'Set-TcPlcState' -and $t.data.lifecycleBlock.requestedState -eq 'Run' -and $t.data.lifecycleBlock.reachedState -eq 'Stop') (J $t.data)
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'reset'
-    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'reset'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'reset' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'reset' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
     # --- (7) Invoke-TcTestCycle: no Connect-TcIde after Activate ---
     & $mod {
@@ -286,17 +285,17 @@ try {
     $fake::Mode = 'run'
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(11) ACTIVATE_TIMEOUT after set-config -> block (Enable-TcConfig, step activate)' ($e.error.code -eq 'ACTIVATE_TIMEOUT' -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $e.data.lifecycleBlock.errorCode -eq 'ACTIVATE_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'activate' -and $e.data.activateSent -and -not $e.data.activated) (J $e.data.lifecycleBlock)
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $e = Enable-TcConfig -WarningAction SilentlyContinue
     Check '(11) ACTIVATE_TIMEOUT without -Force (Activate sent) -> block' ($e.error.code -eq 'ACTIVATE_TIMEOUT' -and $e.data.lifecycleBlock.errorCode -eq 'ACTIVATE_TIMEOUT') (J $e.data.lifecycleBlock)
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     & $mod {
         function script:Invoke-TcActivateWithDeadline { param($TimeoutSec, $AmsNetId) $global:Calls.Activate++ }
         function script:Set-TcSystemState { param([string]$State, [string]$AmsNetId, [int]$TimeoutSec) Start-Sleep -Milliseconds 10500; New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State }) }
     }
     $e = Enable-TcConfig -Force -TimeoutSec 10 -WarningAction SilentlyContinue
     Check '(11) CYCLE_TIMEOUT after set-config -> block (step activate)' ($e.error.code -eq 'CYCLE_TIMEOUT' -and $e.data.lifecycleBlock.errorCode -eq 'CYCLE_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'activate' -and $e.data.reachedState -eq 'Config') (J $e.data.lifecycleBlock)
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (11) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     & $mod { function script:Set-TcSystemState { param([string]$State, [string]$AmsNetId, [int]$TimeoutSec) New-TcResult -Success $false -ErrorCode 'ADS_TARGET_NOT_FOUND' -ErrorMessage 'connect failed before WriteControl (mock)' -Data ([PSCustomObject]@{}) } }
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(11) set-config that sent nothing (no lifecycleBlock from Set-TcSystemState) -> no block' ($e.error.code -eq 'ADS_TARGET_NOT_FOUND' -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A)) (J $e.data)
@@ -307,7 +306,7 @@ try {
     $x = Set-TcSystemState -State Run -AmsNetId $B -TimeoutSec 2 -SettleSec 0
     $fake::ThrowOnWrite = $false
     Check '(12) exception from WriteControl (request may have gone out) -> failure + block, requestSent=true' ((-not $x.success) -and $x.data.lifecycleBlock.amsNetId -eq $B -and $x.data.lifecycleBlock.step -match 'exception' -and $x.data.requestSent -eq $true) (J $x)
-    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (12) next case'
+    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (12) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $fake::ThrowOnConnect = $true
     $x = Set-TcSystemState -State Run -AmsNetId $B -TimeoutSec 2 -SettleSec 0
     $fake::ThrowOnConnect = $false
@@ -332,7 +331,7 @@ try {
     Set-Session $A
     $w = Write-TcVariable -Path 'MAIN.x' -Value 1
     Check '(13) connected to another target -> not refused' ($w.error.code -ne 'LIFECYCLE_BLOCKED') "code=$($w.error.code)"
-    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (13) done'
+    $null = Clear-TcLifecycleBlock -AmsNetId $B -Reason 'unit test (13) done' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
     # --- (14) review 2: S-A nested precondition codes after set-config, S-B -PlcProjectPath, nit-3 requestSent ---
     & $mod {
@@ -356,7 +355,7 @@ try {
         $global:LoginCode = $lc
         $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
         Check "(14) S-A login returns $lc after set-config / Activate -> block recorded" ($e.error.code -eq $lc -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $e.data.lifecycleBlock.errorCode -eq $lc -and $e.data.lifecycleBlock.step -eq 'login') (J $e.data.lifecycleBlock)
-        $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case'
+        $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     }
     $global:LoginCode = $null
     & $mod { $script:UtSss = 0 }
@@ -368,7 +367,7 @@ try {
     $global:SetConfigFail = $true
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(14) nit-3 set-config failed with data.requestSent=true -> block (no lifecycleBlock needed)' ($e.error.code -eq 'ADS_TIMEOUT' -and $e.data.lifecycleBlock.step -eq 'set-config' -and $e.data.lifecycleBlock.requestedState -eq 'Config') (J $e.data.lifecycleBlock)
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $global:SetConfigFail = $false
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
     Check '(14) nit-3 set-config failed with data.requestSent=false -> no block' ($e.error.code -eq 'ADS_TIMEOUT' -and $null -eq $e.data.PSObject.Properties['lifecycleBlock'] -and $null -eq (& $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A)) (J $e.data)
@@ -392,7 +391,7 @@ try {
     $nStop = ([regex]::Matches([string]$e.error.hint, [regex]::Escape($stopP))).Count
     $nRo = ([regex]::Matches([string]$e.error.hint, [regex]::Escape($roP))).Count
     Check '(14b) S-2 set-config ADS_TARGET_NOT_FOUND through the nested path -> stop text exactly once, no read-only text' ($e.error.code -eq 'ADS_TARGET_NOT_FOUND' -and $nStop -eq 1 -and $nRo -eq 0 -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig') "stop=$nStop ro=$nRo hint=$($e.error.hint)"
-    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14b) cleanup'
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14b) cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     & $mod { function script:Set-TcSystemState { param([string]$State, [string]$AmsNetId, [int]$TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State; requestSent = $true }) } }
 
     # --- (8) persistence and corrupt state ---
@@ -414,16 +413,16 @@ try {
     $onDisk = (Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json)
     $stillA = & $mod { Get-TcLifecycleBlock -AmsNetId '10.5.5.5.1.1' }
     Check '(8) S5 target B written after the file broke: <corrupt> kept, B added, A still blocked' ($null -ne $onDisk.PSObject.Properties['<corrupt>'] -and $null -ne $onDisk.PSObject.Properties['10.7.7.7.1.1'] -and $null -ne $stillA) (Get-Content -LiteralPath $stateFile -Raw)
-    $cc = Clear-TcLifecycleBlock -AmsNetId '10.6.6.6.1.1' -Reason 'user looked at the corrupt state'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.6.6.6.1.1' -Reason 'user looked at the corrupt state' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(8) N1 Clear of another key names what still blocks every target' ($cc.success -and @($cc.data.stillBlocking) -contains '<corrupt>' -and $cc.data.message -match "-AmsNetId '<corrupt>'" -and @($cc.data.next).Count -eq 1) (J $cc.data)
-    $cc = Clear-TcLifecycleBlock -AmsNetId '<corrupt>' -Reason 'user removed the corrupt state'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '<corrupt>' -Reason 'user removed the corrupt state' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(8) Clear <corrupt> -> the <corrupt> record is gone, B still blocked' ($cc.success -and $cc.data.cleared.errorCode -eq 'state-corrupt' -and $null -ne (& $mod { Get-TcLifecycleBlock -AmsNetId '10.7.7.7.1.1' }) -and $null -eq (& $mod { Get-TcLifecycleBlock -AmsNetId '10.6.6.6.1.1' })) (J $cc.data)
-    $null = Clear-TcLifecycleBlock -AmsNetId '10.7.7.7.1.1' -Reason 'unit test cleanup'
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.7.7.7.1.1' -Reason 'unit test cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     foreach ($bad in @('null', '[1, 2]', '"text"', '{ "10.1.1.1.1.1": 5 }')) {
         [IO.File]::WriteAllText($stateFile, $bad)
         $g = & $mod { Get-TcLifecycleBlock -AmsNetId '10.6.6.6.1.1' }
         Check "(8) N4 content $bad -> treated as corrupt (blocks)" ($null -ne $g -and $g.errorCode -eq 'state-corrupt') (J $g)
-        $null = Clear-TcLifecycleBlock -AmsNetId '<corrupt>' -Reason 'unit test cleanup'
+        $null = Clear-TcLifecycleBlock -AmsNetId '<corrupt>' -Reason 'unit test cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     }
 
     # --- (9) S4: loopback NetId is compared with every record ---
@@ -431,22 +430,22 @@ try {
     $any = & $mod { Get-TcLifecycleBlock -AmsNetId '10.8.8.8.1.1' }
     $key = & $mod { ConvertTo-TcLifecycleKey '127.0.0.1.1.1' }
     Check '(9) block written for 127.0.0.1.1.1 goes to <unknown> and blocks every target' ($key -eq '<unknown>' -and $null -ne $any) (J $any)
-    $cc = Clear-TcLifecycleBlock -AmsNetId '10.8.8.8.1.1' -Reason 'user checked target 10.8.8.8'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.8.8.8.1.1' -Reason 'user checked target 10.8.8.8' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(9) N1 Clear of a real target names <unknown> still blocking' (@($cc.data.stillBlocking) -contains '<unknown>' -and $cc.data.message -match "-AmsNetId '<unknown>'") (J $cc.data)
     $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.4.4.4.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
-    $cc = Clear-TcLifecycleBlock -AmsNetId '<unknown>' -Reason 'user checked the loopback target'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '<unknown>' -Reason 'user checked the loopback target' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(9) nit-1 Clear <unknown> lists every remaining key as still blocking' ($cc.data.cleared.amsNetId -eq '127.0.0.1.1.1' -and @($cc.data.stillBlocking) -contains '10.4.4.4.1.1' -and $cc.data.message -match "-AmsNetId '10.4.4.4.1.1'") (J $cc.data)
-    $null = Clear-TcLifecycleBlock -AmsNetId '10.4.4.4.1.1' -Reason 'unit test cleanup'
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.4.4.4.1.1' -Reason 'unit test cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.9.9.9.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
     $lb = & $mod { Get-TcLifecycleBlock -AmsNetId '127.0.0.1.1.1' }
     $lb2 = & $mod { Get-TcLifecycleBlock -AmsNetId '127.1.2.3.1.1' }
     Check '(9) command on a loopback NetId is blocked by any record' ($null -ne $lb -and $null -ne $lb2 -and $lb.amsNetId -eq '10.9.9.9.1.1') (J $lb)
-    $null = Clear-TcLifecycleBlock -AmsNetId '10.9.9.9.1.1' -Reason 'unit test cleanup'
-    $null = Clear-TcLifecycleBlock -AmsNetId '10.5.5.5.1.1' -Reason 'unit test cleanup'
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.9.9.9.1.1' -Reason 'unit test cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.5.5.5.1.1' -Reason 'unit test cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
     # --- (15) V4 (real machine 2026-11-04): clearing the LAST record must not read as "could not be read" ---
     $null = & $mod { Set-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcSystemState' -ErrorCode 'SYSTEM_STATE_TIMEOUT' }
-    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'user approved after the real-machine check'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'user approved after the real-machine check' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $js = $cc.data | ConvertTo-Json -Compress -Depth 6
     Check '(15) V4 clear the only record -> no "could not be read", remaining / remainingKeys / stillBlocking are empty arrays' ($cc.success -and $cc.data.cleared.amsNetId -eq '10.3.3.3.1.1' -and $cc.data.message -notmatch 'could not be read' -and $cc.data.message -match 'No lifecycle block is left' -and $null -ne $cc.data.remaining -and $cc.data.remaining -is [array] -and @($cc.data.remaining).Count -eq 0 -and $cc.data.remainingKeys -is [array] -and @($cc.data.remainingKeys).Count -eq 0 -and $cc.data.stillBlocking -is [array] -and @($cc.data.stillBlocking).Count -eq 0) $js
     Check '(15) V4 JSON has "remaining":[] and "remainingKeys":[]' ($js -match '"remaining":\[\]' -and $js -match '"remainingKeys":\[\]' -and $js -match '"stillBlocking":\[\]') $js
@@ -460,11 +459,11 @@ try {
     try {
         $lst = (& $mod { $x = Get-TcLifecycleBlockList; @{ V = $x } }).V
         $gb = & $mod { Get-TcLifecycleBlock -AmsNetId '10.2.2.2.1.1' }
-        $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'control: file locked'
+        $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'control: file locked' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     }
     finally { $fs.Dispose() }
     Check '(15) control: unreadable file -> list $null, every target blocked (state-unreadable), Clear fails closed' ($lst.Readable -eq $false -and $gb.errorCode -eq 'state-unreadable' -and -not $cc.success -and $cc.error.code -eq 'LIFECYCLE_BLOCKED') "list=$(J $lst) clear=$(J $cc)"
-    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test cleanup after the control'
+    $cc = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test cleanup after the control' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(15) after the lock is gone the record clears normally' ($cc.success -and $cc.data.cleared.amsNetId -eq '10.3.3.3.1.1' -and @($cc.data.remaining).Count -eq 0 -and $cc.data.message -notmatch 'could not be read') (J $cc.data)
 
     # --- (16) side findings 3 / 4: hints that point at blocked commands are replaced while blocked ---
@@ -503,7 +502,7 @@ try {
     Check '(16) codes whose hint is not a runtime-changing step are left alone' ($other.error.hint -eq 'build hint') (J $other)
     $tb = & $mod { Test-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Command 'Set-TcPlcState' }
     Check '(16) side finding 2: block message of a crash says nothing was read back, no success-like wording' ($tb.error.message -match "requested 'Config'" -and $tb.error.message -match 'nothing \(runtime gone\)' -and $tb.error.message -match 'did NOT succeed' -and $tb.error.message -notmatch "read back '") "$($tb.error.message)"
-    $null = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test (16) cleanup'
+    $null = Clear-TcLifecycleBlock -AmsNetId '10.3.3.3.1.1' -Reason 'unit test (16) cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     & $mod { $script:TcAdsAmsNetId = $null }
 
     # --- registration ---
