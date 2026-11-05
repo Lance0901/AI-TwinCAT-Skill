@@ -9,7 +9,8 @@
 # could not be done is kept as PENDING (what this module meant to write, never the old file
 # record) and the next lookup (Find-TcBlockedSolutionIde / Get-TcIdeSolutionRecord) writes it
 # once the lock is free, so a blocked IDE (no new Save ever) is recognised again by the pending
-# content. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager are replaced inside the module
+# content. #127 round 2: a pending write never overwrites a record another process wrote later
+# (writtenAt), and one Find syncs once. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager are replaced inside the module
 # scope (fake pids), as in blocked-solution-ide.ps1.
 #   powershell.exe -NoProfile -File tests/Unit/ide-solution-record-untrusted.ps1
 # Exit code = number of failed checks.
@@ -147,6 +148,72 @@ try {
     Check 'replace-blocked-pending-written-on-lookup' ($rec -eq $slnC -and (Get-FileSolution 1231) -eq $slnC -and $null -eq (Get-Warn 1231)) "record=$rec file=$(Get-FileSolution 1231)"
     & $mod { param($b) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $b } $slnB
     Check 'replace-blocked-then-saved-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
+
+    # 8. #127 round 2: a pending write never overwrites a record another PROCESS wrote later
+    $start1231 = [string](@(& $mod { Read-TcIdeSolutionRecords }) | Where-Object { [int]$_.pid -eq 1231 } | Select-Object -First 1).startTime
+    $slnD = Join-Path $tmpRoot 'D\Demo.sln'
+    # another powershell.exe writes the record file (writtenAt = its own "now" unless -NoWrittenAt)
+    function Write-RecordByOtherProcess([string]$Solution, [switch]$NoWrittenAt) {
+        $js = @"
+`$rec = [ordered]@{ pid = 1231; startTime = '$start1231'; solution = '$Solution' }
+if (-not `$$([bool]$NoWrittenAt)) { `$rec.writtenAt = (Get-Date).ToUniversalTime().ToString('o') }
+[IO.File]::WriteAllText('$recFile', (ConvertTo-Json -InputObject @([PSCustomObject]`$rec) -Depth 3))
+"@
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($js))
+        $w = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $enc) -WindowStyle Hidden -PassThru
+        $null = $w.WaitForExit(60000); $w.Dispose()
+    }
+    function Fail-Write([scriptblock]$Write) {
+        $fs = New-Object IO.FileStream($recFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        try { & $mod $Write } finally { $fs.Dispose() }
+    }
+    # 8a. pending save D, then another process writes C (newer): the lookup keeps C, trusts it
+    Fail-Write ([scriptblock]::Create("Save-TcIdeSolutionRecord -ProcessId 1231 -Solution '$slnD'"))
+    $pendingBefore = $null -ne (Get-Warn 1231)
+    Start-Sleep -Milliseconds 50   # the other process' clock reading is later than the pending one
+    Write-RecordByOtherProcess $slnC
+    $rec = Get-Rec 1231
+    Check 'pending-save-older-than-other-process-not-written' ($pendingBefore -and $rec -eq $slnC -and (Get-FileSolution 1231) -eq $slnC -and $null -eq (Get-Warn 1231)) "pending=$pendingBefore record=$rec file=$(Get-FileSolution 1231)"
+    # 8b. pending remove, then another process writes B (newer): the lookup does not delete it
+    Fail-Write { Remove-TcIdeSolutionRecord -ProcessId 1231 }
+    $pendingBefore = $null -ne (Get-Warn 1231)
+    Start-Sleep -Milliseconds 50
+    Write-RecordByOtherProcess $slnB
+    $rec = Get-Rec 1231
+    Check 'pending-remove-older-than-other-process-not-done' ($pendingBefore -and $rec -eq $slnB -and (Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "pending=$pendingBefore record=$rec file=$(Get-FileSolution 1231)"
+    # 8c. a record without writtenAt (format before #127 round 2) counts as older: pending D is written
+    Fail-Write ([scriptblock]::Create("Save-TcIdeSolutionRecord -ProcessId 1231 -Solution '$slnD'"))
+    Write-RecordByOtherProcess $slnC -NoWrittenAt
+    $rec = Get-Rec 1231
+    Check 'pending-save-over-legacy-record-written' ($rec -eq $slnD -and (Get-FileSolution 1231) -eq $slnD -and $null -eq (Get-Warn 1231)) "record=$rec file=$(Get-FileSolution 1231)"
+    # 8d. reason = first failure, retries counted (lock held by the holder process again)
+    $hold2 = "tcauto-unit-123-{0}" -f [guid]::NewGuid().ToString('N')
+    $rel2 = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, "$hold2-release")
+    $held2 = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, "$hold2-held")
+    Fail-Write ([scriptblock]::Create("Save-TcIdeSolutionRecord -ProcessId 1231 -Solution '$slnB'"))   # first failure: file unreadable (lock free)
+    $hs = $holderScript.Replace($evName, $hold2)
+    $holder2 = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($hs))) -WindowStyle Hidden -PassThru
+    try {
+        $null = $held2.WaitOne(30000)
+        $null = Get-Rec 1231; $null = Get-Rec 1231   # two retries, lock held: skipped
+        $w = Get-Warn 1231
+        Check 'pending-first-reason-and-retries' ($w -match 'not read' -and $w -notmatch 'lock not acquired' -and $w -match 'retries so far: 2') "$w"
+        # 2 (minor): one Find with two candidates syncs once (loop uses Get-TcIdeSolutionRecord -NoSync)
+        $syncs = & $mod {
+            $orig = ${function:Sync-TcIdeSolutionRecordPending}
+            $script:UnitSyncCount = 0
+            Set-Item -Path function:script:Sync-TcIdeSolutionRecordPending -Value { param([int]$TimeoutMs) $script:UnitSyncCount++ }
+            try { $null = Find-TcBlockedSolutionIde -Candidates @([PSCustomObject]@{ pid = 1231; busy = $true }, [PSCustomObject]@{ pid = 1232; busy = $true }) -SolutionPath 'C:\x\Demo.sln' -DialogTimeoutSec 1 }
+            finally { Set-Item -Path function:script:Sync-TcIdeSolutionRecordPending -Value $orig }
+            $script:UnitSyncCount
+        }
+        Check 'find-syncs-once' ($syncs -eq 1) "syncs=$syncs"
+    }
+    finally {
+        $null = $rel2.Set(); if (-not $holder2.WaitForExit(15000)) { $holder2.Kill() }; $holder2.Dispose(); $rel2.Dispose(); $held2.Dispose()
+    }
+    $null = Get-Rec 1231   # lock free: the pending B is written
+    Check 'pending-written-after-second-release' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "file=$(Get-FileSolution 1231)"
 }
 finally {
     if ($null -ne $release) { try { $null = $release.Set() } catch { } }

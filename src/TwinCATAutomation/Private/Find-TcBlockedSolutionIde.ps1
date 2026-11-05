@@ -124,7 +124,7 @@ function Find-TcBlockedSolutionIde {
 
         # #123: the last record write for this process was skipped -> the file record may be stale
         $recordUntrusted = Get-TcIdeSolutionRecordWarning -ProcessId $cPid
-        $recorded = Get-TcIdeSolutionRecord -ProcessId $cPid   # $null while untrusted
+        $recorded = Get-TcIdeSolutionRecord -ProcessId $cPid -NoSync   # $null while untrusted; synced once above
         if (-not [string]::IsNullOrWhiteSpace($recorded)) { $recorded = Get-TcLongPath $recorded }
         $recordVerdict = if ($null -ne $recordUntrusted) { 'untrusted' } else { 'none' }
         if (-not [string]::IsNullOrWhiteSpace($recorded)) {

@@ -4,7 +4,8 @@
 #   ($env:TCAUTO_STATE_DIR\ide-solutions.json when that test override is set, so one variable
 #   isolates every state file of a test run, #118; mutex name then gets the same path hash as
 #   build-required.json)
-#   [ { pid; startTime ('o' format); solution } ]
+#   [ { pid; startTime ('o' format); solution; writtenAt (UTC 'o', #127: a pending write never
+#     overwrites a record written later by another process; missing = older) } ]
 # Connect-TcIde -SolutionPath reads it for an IDE whose DTE cannot be asked (modal dialog / busy,
 # issue #29). A record only counts while the same process (pid AND start time) is still running,
 # so a recycled pid never matches. Best effort: an I/O error never throws, but a skipped write
@@ -129,52 +130,92 @@ function Invoke-TcIdeSolutionLocked {
 # Per module instance: another PowerShell process / MCP bridge still sees the old file record.
 $script:TcIdeSolutionPendingRetryMs = 250
 
-# Does the write. -Action save: the record { pid; startTime; solution } replaces the one of
-# -ProcessId; remove: the record of -ProcessId is dropped. Returns $null or the failure reason.
+# Is the record's writtenAt later than -Than (both 'o' strings)? A record without writtenAt (the
+# format before #127 round 2) or an unparsable one counts as older.
+function Test-TcIdeRecordNewer {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Record, [string]$Than)
+    if ($null -eq $Record -or [string]::IsNullOrWhiteSpace($Than)) { return $false }
+    $w = $Record.PSObject.Properties['writtenAt']
+    if ($null -eq $w -or $null -eq $w.Value -or [string]::IsNullOrWhiteSpace([string]$w.Value)) { return $false }
+    try {
+        $rs = [Globalization.DateTimeStyles]::RoundtripKind
+        $recAt = if ($w.Value -is [DateTime]) { [DateTime]$w.Value } else { [DateTime]::Parse([string]$w.Value, [Globalization.CultureInfo]::InvariantCulture, $rs) }
+        $thanAt = [DateTime]::Parse($Than, [Globalization.CultureInfo]::InvariantCulture, $rs)
+        return ($recAt.ToUniversalTime() -gt $thanAt.ToUniversalTime())
+    }
+    catch { return $false }
+}
+
+# Does the write. -Action save: the record { pid; startTime; solution; writtenAt } replaces the one
+# of -ProcessId; remove: the record of -ProcessId is dropped. -WrittenAt = when the write was
+# wanted (UTC 'o'). -IfNotSuperseded (pending writes): when the file record of -ProcessId was
+# written LATER than -WrittenAt (another process wrote a newer one, #127 round 2), nothing is
+# written and $Superseded.Value is set. Returns $null or the failure reason.
 function Invoke-TcIdeSolutionRecordWrite {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][ValidateSet('save', 'remove')][string]$Action,
         [Parameter(Mandatory)][int]$ProcessId,
         [string]$StartTime, [string]$Solution,
+        [string]$WrittenAt = (Get-Date).ToUniversalTime().ToString('o'),
+        [switch]$IfNotSuperseded,
+        [ref]$Superseded,
         [int]$TimeoutMs = $script:TcIdeSolutionLockTimeoutMs
     )
+    $state = @{ superseded = $false }
     try {
         $alive = @{}
         foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
         if ($Action -eq 'save') {
-            return (Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -TimeoutMs $TimeoutMs -Body {
-                    $keep = @(Read-TcIdeSolutionRecordsForWrite | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
-                    $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $StartTime; solution = $Solution }
-                    Write-TcIdeSolutionRecords -Records $keep
-                })
+            $failure = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -TimeoutMs $TimeoutMs -Body {
+                $all = @(Read-TcIdeSolutionRecordsForWrite)
+                if ($IfNotSuperseded -and @($all | Where-Object { [int]$_.pid -eq $ProcessId -and (Test-TcIdeRecordNewer -Record $_ -Than $WrittenAt) }).Count -gt 0) { $state.superseded = $true; return }
+                $keep = @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
+                $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $StartTime; solution = $Solution; writtenAt = $WrittenAt }
+                Write-TcIdeSolutionRecords -Records $keep
+            }
         }
-        return (Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -TimeoutMs $TimeoutMs -Body {
+        else {
+            $failure = Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -TimeoutMs $TimeoutMs -Body {
                 $all = @(Read-TcIdeSolutionRecordsForWrite -LeaveCorrupt)
-                if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
+                $mine = @($all | Where-Object { [int]$_.pid -eq $ProcessId })
+                if (-not $mine) { return }
+                if ($IfNotSuperseded -and @($mine | Where-Object { Test-TcIdeRecordNewer -Record $_ -Than $WrittenAt }).Count -gt 0) { $state.superseded = $true; return }
                 Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
-            })
+            }
+        }
     }
-    catch { $msg = "IDE solution record $Action failed ($($_.Exception.Message))"; Write-Verbose $msg; return $msg }
+    catch { $failure = "IDE solution record $Action failed ($($_.Exception.Message))"; Write-Verbose $failure }
+    if ($null -ne $Superseded) { $Superseded.Value = [bool]$state.superseded }
+    $failure
 }
 
-# -Failure $null: the write is done, nothing pending. Otherwise the write is kept as pending.
+# -Failure $null: the write is done, nothing pending. Otherwise the write is kept as pending
+# { action; pid; startTime; solution; at (= writtenAt it was meant to have); reason (the FIRST
+# failure while pending); retries }.
 function Set-TcIdeSolutionRecordPending {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][int]$ProcessId,
         [AllowNull()][string]$Failure,
-        [string]$Action = 'save', [string]$StartTime, [string]$Solution
+        [string]$Action = 'save', [string]$StartTime, [string]$Solution, [string]$At
     )
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
     if ($null -eq $key) { return }   # process gone: its record no longer counts anyway
     if ($null -eq $script:TcIdeSolutionRecordPending) { $script:TcIdeSolutionRecordPending = @{} }
     if ([string]::IsNullOrWhiteSpace($Failure)) { $script:TcIdeSolutionRecordPending.Remove($key); return }
-    $script:TcIdeSolutionRecordPending[$key] = [PSCustomObject]@{ action = $Action; pid = $ProcessId; startTime = $StartTime; solution = $Solution; reason = $Failure }
+    $old = $script:TcIdeSolutionRecordPending[$key]
+    $reason = if ($null -ne $old) { $old.reason } else { $Failure }
+    $retries = if ($null -ne $old) { [int]$old.retries } else { 0 }
+    $script:TcIdeSolutionRecordPending[$key] = [PSCustomObject]@{ action = $Action; pid = $ProcessId; startTime = $StartTime; solution = $Solution; at = $At; reason = $reason; retries = $retries }
 }
 
-# Retries every pending write once (short lock wait). Done -> trusted again; still not possible ->
-# stays pending. A pending entry of a process that is gone (or restarted) is dropped. Never throws.
+# Retries every pending write once (short lock wait). Done -> trusted again; the file record of
+# that process is newer than the pending write (another process wrote it later) -> the pending
+# write is dropped unwritten and the record is trusted; still not possible -> stays pending
+# (retries + 1, reason = the first failure). A pending entry of a process that is gone (or
+# restarted) is dropped. Never throws.
 function Sync-TcIdeSolutionRecordPending {
     [CmdletBinding()]
     param([int]$TimeoutMs = $script:TcIdeSolutionPendingRetryMs)
@@ -183,9 +224,13 @@ function Sync-TcIdeSolutionRecordPending {
         $p = $script:TcIdeSolutionRecordPending[$key]
         try {
             if ((Get-TcIdeProcessKey -ProcessId ([int]$p.pid)) -ne $key) { $script:TcIdeSolutionRecordPending.Remove($key); continue }
-            $failure = Invoke-TcIdeSolutionRecordWrite -Action $p.action -ProcessId ([int]$p.pid) -StartTime $p.startTime -Solution $p.solution -TimeoutMs $TimeoutMs
-            if ($null -eq $failure) { $script:TcIdeSolutionRecordPending.Remove($key); Write-Verbose "IDE solution record of pid $($p.pid): pending $($p.action) written" }
-            else { $p.reason = $failure }
+            $sup = $false
+            $failure = Invoke-TcIdeSolutionRecordWrite -Action $p.action -ProcessId ([int]$p.pid) -StartTime $p.startTime -Solution $p.solution -WrittenAt $p.at -IfNotSuperseded -Superseded ([ref]$sup) -TimeoutMs $TimeoutMs
+            if ($null -eq $failure) {
+                $script:TcIdeSolutionRecordPending.Remove($key)
+                Write-Verbose $(if ($sup) { "IDE solution record of pid $($p.pid): pending $($p.action) dropped, the file has a newer record" } else { "IDE solution record of pid $($p.pid): pending $($p.action) written" })
+            }
+            else { $p.retries = [int]$p.retries + 1 }
         }
         catch { Write-Verbose "IDE solution record pending $($p.action) not written ($($_.Exception.Message))" }
     }
@@ -198,7 +243,8 @@ function Get-TcIdeSolutionRecordWarning {
     if ($null -eq $script:TcIdeSolutionRecordPending -or $script:TcIdeSolutionRecordPending.Count -eq 0) { return $null }
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
     if ($null -eq $key -or -not $script:TcIdeSolutionRecordPending.ContainsKey($key)) { return $null }
-    "session record of IDE process $ProcessId not updated: $($script:TcIdeSolutionRecordPending[$key].reason); its previous record is not used as evidence by this session (the $($script:TcIdeSolutionRecordPending[$key].action) is retried on the next lookup)"
+    $p = $script:TcIdeSolutionRecordPending[$key]
+    "session record of IDE process $ProcessId not updated: $($p.reason); its previous record is not used as evidence by this session (the $($p.action) is retried on the next lookup; retries so far: $([int]$p.retries))"
 }
 
 # -Cache (hashtable) memoizes the answer per record: the writers fill it BEFORE taking the mutex
@@ -232,9 +278,10 @@ function Save-TcIdeSolutionRecord {
     )
     try { $start = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToString('o') }
     catch { Write-Verbose "IDE solution record not saved ($($_.Exception.Message))"; return }   # process gone: nothing to record
-    $failure = Invoke-TcIdeSolutionRecordWrite -Action save -ProcessId $ProcessId -StartTime $start -Solution $Solution
+    $at = (Get-Date).ToUniversalTime().ToString('o')
+    $failure = Invoke-TcIdeSolutionRecordWrite -Action save -ProcessId $ProcessId -StartTime $start -Solution $Solution -WrittenAt $at
     # #123: not silent: a skipped write is kept as pending, the old record is untrusted meanwhile
-    Set-TcIdeSolutionRecordPending -ProcessId $ProcessId -Failure $failure -Action save -StartTime $start -Solution $Solution
+    Set-TcIdeSolutionRecordPending -ProcessId $ProcessId -Failure $failure -Action save -StartTime $start -Solution $Solution -At $at
 }
 
 # Replaces the record file with -Records (tmp + move). Throws on failure (callers are best effort).
@@ -269,9 +316,10 @@ function Remove-TcIdeSolutionRecord {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
-    $failure = Invoke-TcIdeSolutionRecordWrite -Action remove -ProcessId $ProcessId
+    $at = (Get-Date).ToUniversalTime().ToString('o')
+    $failure = Invoke-TcIdeSolutionRecordWrite -Action remove -ProcessId $ProcessId -WrittenAt $at
     # #123: a record that should be gone but is still in the file must not be used (pending remove)
-    Set-TcIdeSolutionRecordPending -ProcessId $ProcessId -Failure $failure -Action remove
+    Set-TcIdeSolutionRecordPending -ProcessId $ProcessId -Failure $failure -Action remove -At $at
 }
 
 function Get-TcIdeSolutionRecord {
@@ -279,11 +327,12 @@ function Get-TcIdeSolutionRecord {
     .SYNOPSIS
         Solution recorded for the RUNNING process -ProcessId (same start time), or $null.
         $null as well while a write of that process is still pending (#123, see
-        Set-TcIdeSolutionRecordPending); the pending write is retried first.
+        Set-TcIdeSolutionRecordPending); the pending write is retried first unless -NoSync
+        (the caller already ran Sync-TcIdeSolutionRecordPending for this lookup).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId)
-    Sync-TcIdeSolutionRecordPending
+    param([Parameter(Mandatory)][int]$ProcessId, [switch]$NoSync)
+    if (-not $NoSync) { Sync-TcIdeSolutionRecordPending }
     $untrusted = Get-TcIdeSolutionRecordWarning -ProcessId $ProcessId
     if ($null -ne $untrusted) { Write-Verbose $untrusted; return $null }
     try {
