@@ -13,6 +13,8 @@
       generics    No New-Object of a System.Collections.Generic.* type in src/ and mcp-server/ *.ps1 / *.psm1
                   (AST based; "New-Object $type" is rejected too). Measured 2026-10-28, PS 5.1.26100.9711:
                   @() on a New-Object List[object] throws ArgumentException; use [System.Collections.Generic.List[...]]::new() (#75).
+      functions   Every top-level function name in src/TwinCATAutomation *.ps1 / *.psm1 is unique
+                  (the module dot-sources all files; a later definition silently replaces an earlier one, #30).
       forbidden   #68: no hardcoded AmsNetId literal, StartRestartTwinCAT, ExecuteCommand or
                   WriteControl(Async) in the code (strings included, comments / help ignored) of
                   src/, mcp-server/ (.ps1 .psm1 .js .mjs, not mcp-server/test/) and
@@ -309,6 +311,52 @@ catch {
     Add-CheckResult 'generics' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
+# ---------------------------------------------------------------------------
+# functions: every function name defined at the top level of src/TwinCATAutomation (*.ps1 / *.psm1)
+# is unique. The .psm1 dot-sources Private\*.ps1 and Public\*.ps1 one after another, so a second
+# definition with the same name silently replaces the first for the whole module (#30 review:
+# Get-TcFileSha256 in InstallManifest.ps1 was overridden by the one in PlcOpen.ps1). Function names
+# are case-insensitive; nested functions (inside another function) are not counted. Functions
+# defined inside a script block that is not itself inside a function (e.g. the body handed to a
+# background runspace) ARE counted on purpose: they are top-level in the runspace that runs them and
+# the same name rule keeps them from being confused with a module function.
+# ---------------------------------------------------------------------------
+try {
+    $fnFiles = @($psFiles | Where-Object { (Get-RelativePath $_) -match '^src/TwinCATAutomation/' -and ($_ -like '*.ps1' -or $_ -like '*.psm1') })
+    $fnDefs = @{}
+    foreach ($f in $fnFiles) {
+        $ast = $parsedAsts[$f]
+        if ($null -eq $ast) { continue }
+        $defs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+        foreach ($d in $defs) {
+            $outer = $d.Parent
+            $nested = $false
+            while ($null -ne $outer) {
+                if ($outer -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $nested = $true; break }
+                $outer = $outer.Parent
+            }
+            if ($nested) { continue }
+            $key = $d.Name.ToLowerInvariant()
+            if (-not $fnDefs.ContainsKey($key)) { $fnDefs[$key] = [System.Collections.Generic.List[string]]::new() }
+            $fnDefs[$key].Add(('{0}:{1}' -f (Get-RelativePath $f), $d.Extent.StartLineNumber))
+        }
+    }
+    $dupHits = [System.Collections.Generic.List[string]]::new()
+    foreach ($k in ($fnDefs.Keys | Sort-Object)) {
+        if ($fnDefs[$k].Count -gt 1) { $dupHits.Add(('{0}: {1}' -f $k, ($fnDefs[$k] -join ', '))) }
+    }
+    if ($dupHits.Count -eq 0) {
+        Add-CheckResult 'functions' 'PASS' "$($fnDefs.Count) top-level functions in $($fnFiles.Count) src/TwinCATAutomation files, no duplicate name"
+    }
+    else {
+        $n = $dupHits.Count
+        $dupHits.Add('rename one of them: the module dot-sources every file, the definition loaded last wins everywhere')
+        Add-CheckResult 'functions' 'FAIL' "$n function name(s) defined more than once in src/TwinCATAutomation" $dupHits
+    }
+}
+catch {
+    Add-CheckResult 'functions' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
 # ---------------------------------------------------------------------------
 # forbidden: fail-closed fallbacks and hardcoded AmsNetIds (#68), scripts/forbidden-patterns.ps1
 # ---------------------------------------------------------------------------
