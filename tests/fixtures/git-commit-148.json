@@ -1,0 +1,213 @@
+{
+  "_comment": [
+    "#148: one set of fake .git layouts for the two readers of the checked-out commit:",
+    "Read-TcGitCommit (src/TwinCATAutomation/Private/InstallManifest.ps1, run by tests/Unit/git-commit-148.ps1)",
+    "and readGitHead (mcp-server/lib/module-source.js, run by mcp-server/test/git-commit.test.js).",
+    "Both runners build every case in its own folder under a base folder with a non-ASCII name (U+6574 U+7406),",
+    "and both must give the expected result, so the two sides agree on every case.",
+    "files: path relative to the case folder -> text (UTF-8, no BOM, written as is; {case} = the case folder,",
+    "forward slashes), or { text, bom: true } (UTF-8 with BOM), or { bytes: [..] }. dirs: empty folders to create.",
+    "root: the checkout root inside the case folder (default '.').",
+    "expect: null = no usable .git; else commit / ref exactly, note = null or a substring of the note.",
+    "Non-ASCII text is written as \\u escapes so this file stays ASCII."
+  ],
+  "cases": [
+    {
+      "name": "loose branch ref (SHA-1)",
+      "files": { ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/heads/main": "0123456789abcdef0123456789abcdef01234567\n" },
+      "expect": { "commit": "0123456789abcdef0123456789abcdef01234567", "ref": "refs/heads/main", "note": null }
+    },
+    {
+      "name": "packed-refs with header, peeled line and other refs",
+      "files": {
+        ".git/HEAD": "ref: refs/heads/feat/x\n",
+        ".git/packed-refs": "# pack-refs with: peeled fully-peeled sorted\nfedcba9876543210fedcba9876543210fedcba98 refs/heads/feat/xy\n0123456789abcdef0123456789abcdef01234567 refs/heads/feat/x\n^fedcba9876543210fedcba9876543210fedcba98\n"
+      },
+      "expect": { "commit": "0123456789abcdef0123456789abcdef01234567", "ref": "refs/heads/feat/x", "note": null }
+    },
+    {
+      "name": "loose ref wins over packed-refs",
+      "files": {
+        ".git/HEAD": "ref: refs/heads/main\n",
+        ".git/refs/heads/main": "1111111111111111111111111111111111111111\n",
+        ".git/packed-refs": "2222222222222222222222222222222222222222 refs/heads/main\n"
+      },
+      "expect": { "commit": "1111111111111111111111111111111111111111", "ref": "refs/heads/main", "note": null }
+    },
+    {
+      "name": "detached HEAD, upper case SHA-1 -> lower case",
+      "files": { ".git/HEAD": "0123456789ABCDEF0123456789ABCDEF01234567\n" },
+      "expect": { "commit": "0123456789abcdef0123456789abcdef01234567", "ref": null, "note": null }
+    },
+    {
+      "name": "detached HEAD, SHA-256",
+      "files": { ".git/HEAD": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" },
+      "expect": { "commit": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "ref": null, "note": null }
+    },
+    {
+      "name": "SHA-256 loose ref, upper case -> lower case",
+      "files": { ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/heads/main": "FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210\n" },
+      "expect": { "commit": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", "ref": "refs/heads/main", "note": null }
+    },
+    {
+      "name": "SHA-256 in packed-refs",
+      "files": {
+        ".git/HEAD": "ref: refs/heads/main\n",
+        ".git/packed-refs": "# pack-refs with: peeled fully-peeled sorted\nabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd refs/heads/main\n"
+      },
+      "expect": { "commit": "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd", "ref": "refs/heads/main", "note": null }
+    },
+    {
+      "name": "50 hex digits is no object name",
+      "files": { ".git/HEAD": "ref: refs/heads/main\n", ".git/refs/heads/main": "0123456789abcdef0123456789abcdef0123456789abcdef01\n" },
+      "expect": { "commit": null, "ref": "refs/heads/main", "note": "object name" }
+    },
+    {
+      "name": "41 hex digits detached HEAD is no object name",
+      "files": { ".git/HEAD": "0123456789abcdef0123456789abcdef012345678\n" },
+      "expect": { "commit": null, "ref": null, "note": "object name" }
+    },
+    {
+      "name": "linked worktree: absolute gitdir (forward slashes), commondir, ref only in common packed-refs",
+      "root": "wt",
+      "files": {
+        "main/.git/HEAD": "ref: refs/heads/master\n",
+        "main/.git/refs/heads/master": "1111111111111111111111111111111111111111\n",
+        "main/.git/packed-refs": "# pack-refs with: peeled fully-peeled sorted\n3333333333333333333333333333333333333333 refs/heads/fix/148\n",
+        "main/.git/worktrees/wt/HEAD": "ref: refs/heads/fix/148\n",
+        "main/.git/worktrees/wt/commondir": "../..\n",
+        "wt/.git": "gitdir: {case}/main/.git/worktrees/wt\n"
+      },
+      "expect": { "commit": "3333333333333333333333333333333333333333", "ref": "refs/heads/fix/148", "note": null }
+    },
+    {
+      "name": "linked worktree: relative gitdir, CRLF, loose ref in the common dir",
+      "root": "main/.claude/worktrees/wt",
+      "files": {
+        "main/.git/HEAD": "ref: refs/heads/master\n",
+        "main/.git/refs/heads/fix/148": "4444444444444444444444444444444444444444\r\n",
+        "main/.git/worktrees/wt/HEAD": "ref: refs/heads/fix/148\r\n",
+        "main/.git/worktrees/wt/commondir": "../..\r\n",
+        "main/.claude/worktrees/wt/.git": "gitdir: ../../../.git/worktrees/wt\r\n"
+      },
+      "expect": { "commit": "4444444444444444444444444444444444444444", "ref": "refs/heads/fix/148", "note": null }
+    },
+    {
+      "name": "linked worktree: .git file and HEAD with a UTF-8 BOM, detached HEAD",
+      "root": "wt",
+      "files": {
+        "main/.git/HEAD": "ref: refs/heads/master\n",
+        "main/.git/worktrees/wt/HEAD": { "text": "5555555555555555555555555555555555555555\n", "bom": true },
+        "main/.git/worktrees/wt/commondir": "../..\n",
+        "wt/.git": { "text": "gitdir: {case}/main/.git/worktrees/wt", "bom": true }
+      },
+      "expect": { "commit": "5555555555555555555555555555555555555555", "ref": null, "note": null }
+    },
+    {
+      "name": "non-ASCII branch name, loose ref",
+      "files": { ".git/HEAD": "ref: refs/heads/fix/\u6574\u7406\n", ".git/refs/heads/fix/\u6574\u7406": "6666666666666666666666666666666666666666\n" },
+      "expect": { "commit": "6666666666666666666666666666666666666666", "ref": "refs/heads/fix/\u6574\u7406", "note": null }
+    },
+    {
+      "name": "non-ASCII branch name, packed-refs",
+      "files": {
+        ".git/HEAD": "ref: refs/heads/fix/\u6574\u7406\n",
+        ".git/packed-refs": "# pack-refs with: peeled fully-peeled sorted\n7777777777777777777777777777777777777777 refs/heads/fix/\u6574\u7406\n"
+      },
+      "expect": { "commit": "7777777777777777777777777777777777777777", "ref": "refs/heads/fix/\u6574\u7406", "note": null }
+    },
+    {
+      "name": "branch name with '+' and '@'",
+      "files": { ".git/HEAD": "ref: refs/heads/a+b@c\n", ".git/refs/heads/a+b@c": "8888888888888888888888888888888888888888\n" },
+      "expect": { "commit": "8888888888888888888888888888888888888888", "ref": "refs/heads/a+b@c", "note": null }
+    },
+    {
+      "name": "ref with '..' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/../../HEAD\n", "HEAD": "9999999999999999999999999999999999999999\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "ref with a backslash is refused",
+      "files": { ".git/HEAD": "ref: refs/heads\\main\n", ".git/refs/heads/main": "9999999999999999999999999999999999999999\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "ref outside refs/ is refused",
+      "files": { ".git/HEAD": "ref: heads/main\n", ".git/heads/main": "9999999999999999999999999999999999999999\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "reftable: HEAD refs/heads/.invalid and a reftable folder",
+      "files": { ".git/HEAD": "ref: refs/heads/.invalid\n", ".git/refs/heads": "this is a file, as git writes it for reftable\n" },
+      "dirs": [".git/reftable"],
+      "expect": { "commit": null, "ref": null, "note": "reftable" }
+    },
+    {
+      "name": "reftable folder in the common dir of a linked worktree",
+      "root": "wt",
+      "files": {
+        "main/.git/HEAD": "ref: refs/heads/.invalid\n",
+        "main/.git/worktrees/wt/HEAD": "ref: refs/heads/main\n",
+        "main/.git/worktrees/wt/commondir": "../..\n",
+        "main/.git/refs/heads/main": "1111111111111111111111111111111111111111\n",
+        "wt/.git": "gitdir: ../main/.git/worktrees/wt\n"
+      },
+      "dirs": ["main/.git/reftable"],
+      "expect": { "commit": null, "ref": null, "note": "reftable" }
+    },
+    {
+      "name": "unborn branch",
+      "files": { ".git/HEAD": "ref: refs/heads/main\n" },
+      "expect": { "commit": null, "ref": "refs/heads/main", "note": "unborn" }
+    },
+    {
+      "name": "symbolic ref chain is not followed",
+      "files": {
+        ".git/HEAD": "ref: refs/heads/alias\n",
+        ".git/refs/heads/alias": "ref: refs/heads/main\n",
+        ".git/refs/heads/main": "1111111111111111111111111111111111111111\n"
+      },
+      "expect": { "commit": null, "ref": "refs/heads/alias", "note": "symbolic" }
+    },
+    {
+      "name": "HEAD with neither an object name nor a ref",
+      "files": { ".git/HEAD": "hello\n" },
+      "expect": { "commit": null, "ref": null, "note": "object name" }
+    },
+    {
+      "name": "garbage .git file (binary bytes)",
+      "files": { ".git": { "bytes": [255, 254, 0, 19, 55, 10, 103, 105, 116] } },
+      "expect": null
+    },
+    {
+      "name": "garbage .git file (text without gitdir:)",
+      "files": { ".git": "not a gitdir line\n" },
+      "expect": null
+    },
+    {
+      "name": "empty .git file",
+      "files": { ".git": "" },
+      "expect": null
+    },
+    {
+      "name": "'GITDIR:' in upper case is no gitdir line (git reads it case-sensitively)",
+      "files": { ".git": "GITDIR: {case}/real\n", "real/HEAD": "1111111111111111111111111111111111111111\n" },
+      "expect": null
+    },
+    {
+      "name": "gitdir that does not exist",
+      "files": { ".git": "gitdir: {case}/gone\n" },
+      "expect": null
+    },
+    {
+      "name": ".git folder without HEAD",
+      "dirs": [".git/refs"],
+      "expect": null
+    },
+    {
+      "name": "no .git at all",
+      "dirs": ["src"],
+      "expect": null
+    }
+  ]
+}
