@@ -194,7 +194,7 @@ function Set-TcLifecycleBlock {
     if ($null -eq $r -or -not $r.Locked -or $null -ne $r.Error) {
         $why = if ($null -ne $r) { $r.Error } else { 'unknown error' }
         $copy = $entry.PSObject.Copy()
-        $copy | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue "LIFECYCLE_BLOCKED was recorded in this process only, not in $(Get-TcLifecycleBlockFile) ($why): another process (or an MCP bridge restart) will not see it." -Force
+        $copy | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue "LIFECYCLE_BLOCKED was recorded in this process only, not in $(Get-TcStateFileLabel 'lifecycle-block.json') ($why): another process (or an MCP bridge restart) will not see it." -Force
         return $copy
     }
     $entry
@@ -214,6 +214,28 @@ function Get-TcLifecycleBlockEntries {
     @{ Error = $null; Entries = $entries }
 }
 
+function Get-TcLifecycleBlockLocalForReload {
+    <#
+    .SYNOPSIS
+        #41: the lifecycle block records ONLY this module instance holds in memory
+        ($script:TcLifecycleBlockLocal), for the MCP bridge op 'retire' (ReloadModule): a reload
+        drops them, so the bridge refuses while this returns any record. File records are not
+        listed: they survive a reload. Returns @{ List = <object[]> of @{ key; record } }.
+        Throws when the variable is missing or not a hashtable; the bridge then refuses (fail closed).
+        A module older than #41 has no such function: the bridge then reads the variable itself.
+        After #130 (cross-bridge sync, #113) is merged: run that sync first (through
+        Get-TcLifecycleBlockEntries) so a record another bridge already cleared is dropped here too.
+    #>
+    $v = Get-Variable -Name 'TcLifecycleBlockLocal' -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $v) { throw '$script:TcLifecycleBlockLocal is not defined' }
+    $local = $v.Value
+    if ($local -isnot [System.Collections.IDictionary]) {
+        throw "`$script:TcLifecycleBlockLocal is not a hashtable ($(if ($null -eq $local) { 'null' } else { $local.GetType().FullName }))"
+    }
+    $list = [object[]]@($local.Keys | Sort-Object | ForEach-Object { @{ key = [string]$_; record = $local[$_] } })
+    @{ List = $list }
+}
+
 function Get-TcLifecycleBlock {
     <#
     .SYNOPSIS
@@ -228,7 +250,7 @@ function Get-TcLifecycleBlock {
     if ($null -ne $all.Error) {
         return [PSCustomObject]@{
             amsNetId = $AmsNetId; command = $null; errorCode = 'state-unreadable'
-            message = "the lifecycle block state $(Get-TcLifecycleBlockFile) could not be checked ($($all.Error)); every target is blocked until it is readable"
+            message = "the lifecycle block state $(Get-TcStateFileLabel 'lifecycle-block.json') could not be checked ($($all.Error)); every target is blocked until it is readable"
             requestedState = $null; reachedState = $null; step = $null; time = $null
         }
     }
@@ -270,7 +292,7 @@ function Remove-TcLifecycleBlock {
         $why = if ($null -ne $r) { $r.Error } else { 'unknown error' }
         # the memory copy is gone but the file still blocks: put it back, nothing changed
         if ($null -ne $removed) { $script:TcLifecycleBlockLocal[$key] = $removed }
-        return @{ Removed = $null; Warning = "$(Get-TcLifecycleBlockFile) not updated ($why); the target stays blocked." }
+        return @{ Removed = $null; Warning = "$(Get-TcStateFileLabel 'lifecycle-block.json') not updated ($why); the target stays blocked." }
     }
     if ($null -ne $r.Result.Old) { $removed = $r.Result.Old }
     @{ Removed = $removed; Warning = $null }

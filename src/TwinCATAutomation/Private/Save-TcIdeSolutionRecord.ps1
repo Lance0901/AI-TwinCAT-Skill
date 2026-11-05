@@ -1,6 +1,9 @@
 # Which solution each IDE process had open the last time Connect-TcIde connected to it with a
 # solution, kept in a small JSON file shared by every PowerShell process / MCP bridge of this user:
 #   $env:LOCALAPPDATA\TwinCATAutomation\ide-solutions.json
+#   ($env:TCAUTO_STATE_DIR\ide-solutions.json when that test override is set, so one variable
+#   isolates every state file of a test run, #118; mutex name then gets the same path hash as
+#   build-required.json)
 #   [ { pid; startTime ('o' format); solution } ]
 # Connect-TcIde -SolutionPath reads it for an IDE whose DTE cannot be asked (modal dialog / busy,
 # issue #29). A record only counts while the same process (pid AND start time) is still running,
@@ -9,6 +12,9 @@
 function Get-TcIdeSolutionRecordPath {
     [CmdletBinding()]
     param()
+    # TCAUTO_STATE_DIR (tests) -> the same folder as every other state file (Get-TcStateDir)
+    if (-not [string]::IsNullOrWhiteSpace($env:TCAUTO_STATE_DIR)) { return (Join-Path (Get-TcStateDir) 'ide-solutions.json') }
+    Assert-TcRealStateAllowed -What 'the IDE solution records'
     $base = $env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($base)) { $base = $env:TEMP }
     Join-Path (Join-Path $base 'TwinCATAutomation') 'ide-solutions.json'
@@ -84,15 +90,25 @@ function Read-TcIdeSolutionRecordsForWrite {
 }
 
 # Named mutex + wait limit for the read-modify-write of ide-solutions.json (#51).
+# With TCAUTO_STATE_DIR set the name gets the hash of that directory (Get-TcBuildRequiredMutexName),
+# so a test run never shares the lock with a real TcAuto session or another test run (#118:
+# blocked-solution-ide.ps1 / ide-solutions-lock.ps1 lost a record when another process held the
+# one global name longer than the 2 s wait limit).
 $script:TcIdeSolutionLockName = 'Local\TwinCATAutomation-ide-solutions'
 $script:TcIdeSolutionLockTimeoutMs = 2000
+
+function Get-TcIdeSolutionLockName {
+    if ([string]::IsNullOrWhiteSpace($env:TCAUTO_STATE_DIR)) { return $script:TcIdeSolutionLockName }
+    # 'Local\TwinCATAutomation.BuildRequired.<hash>' -> 'Local\TwinCATAutomation-ide-solutions.<hash>'
+    "$($script:TcIdeSolutionLockName).$(((Get-TcBuildRequiredMutexName) -split '\.')[-1])"
+}
 
 # Runs -Body under the ide-solutions mutex (same helper as build-required.json). Returns $true
 # when it ran without error; otherwise writes a verbose line. Best effort: never throws.
 function Invoke-TcIdeSolutionLocked {
     [CmdletBinding()]
     param([Parameter(Mandatory)][scriptblock]$Body, [string]$What = 'IDE solution record')
-    $r = Invoke-TcBuildRequiredLocked -Body $Body -MutexName $script:TcIdeSolutionLockName -TimeoutMs $script:TcIdeSolutionLockTimeoutMs
+    $r = Invoke-TcBuildRequiredLocked -Body $Body -MutexName (Get-TcIdeSolutionLockName) -TimeoutMs $script:TcIdeSolutionLockTimeoutMs
     if (-not $r.Locked) { Write-Verbose "$What skipped ($($r.Error))"; return $false }
     if ($r.Error) { Write-Verbose "$What failed ($($r.Error))"; return $false }
     $true
