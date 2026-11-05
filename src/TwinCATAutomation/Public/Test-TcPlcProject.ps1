@@ -155,7 +155,7 @@ function Test-TcPlcProject {
         if ($null -ne $els.errorListNote) {
             # warnings (only) read short (#138): the error rows are complete, not a blocking failure
             $data | Add-Member -NotePropertyName errorListNote -NotePropertyValue $els.errorListNote
-            $warningTexts += "$($els.errorListNote) (WARNINGS_INCOMPLETE when warnings are short)"
+            $warningTexts += $(if ($els.warningsIncomplete) { "$($els.errorListNote) (WARNINGS_INCOMPLETE)" } else { [string]$els.errorListNote })
         }
         if ($els.severityUnknown) {
             $data | Add-Member -NotePropertyName severityUnknown -NotePropertyValue $true

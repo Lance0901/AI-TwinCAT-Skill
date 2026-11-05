@@ -21,7 +21,8 @@
 #         C7b failed build + warnings short -> codeErrors listed (not empty)
 #         C7c errors short -> errorListError ERRORLIST_INCOMPLETE, the rows read still listed
 #         C7d severities not isolated (total) / Errors total unreadable -> errors not complete
-#         C7e scope.entire = $false with every count matching -> note only, not blocking
+#         C7e scope.entire = $false with every count matching, buttons 'X / Y' -> note only, not blocking
+#         C7h same with single-number buttons -> stays incomplete (codeVerified = null, #138 N1)
 #         C7f scope.entire = $false AND warnings short -> blocking
 #      C8 the hint exists
 #   E  Read-Grid (extracted from the scan AST, Read-Row stubbed) on a MOCK scrolling grid (#138):
@@ -190,12 +191,13 @@ try {
     function Row([string]$Sev, [string]$Desc, [int]$Line = 1) {
         [PSCustomObject]@{ severity = $Sev; description = $Desc; project = 'Plc'; file = 'MAIN'; line = "$Line"; column = '1'; code = $null }
     }
-    function Set-Scan([object[]]$Rows, $Errors, $Warnings, $Messages = 0, [bool]$Toggle = $true, $Scope = $null) {
+    function Set-Scan([object[]]$Rows, $Errors, $Warnings, $Messages = 0, [bool]$Toggle = $true, $Scope = $null, [bool]$TotalForm = $true) {
         if ($null -eq $Scope) { $Scope = [PSCustomObject]@{ before = '整個方案'; after = '整個方案'; entire = $true; switched = $false } }
         $global:ScanResult = [PSCustomObject]@{
             Found = $true; Rows = @($Rows); Truncated = $false; ToggleUsed = $Toggle; Notes = @('mock'); Headers = @()
             Counts = [PSCustomObject]@{ errors = $Errors; warnings = $Warnings; messages = $Messages }
             Scope = $Scope
+            CountsTotalForm = $TotalForm
         }
     }
 
@@ -256,6 +258,10 @@ try {
     $r = Get-TcBuildErrors -TimeoutSec 30
     $s = Get-Summary
     Check "C7e scope '目前專案', counts match: Get-TcBuildErrors fails closed, summary only notes it" (-not $r.success -and $null -eq $s.errorListError -and -not $s.warningsIncomplete -and $s.errorListNote -match 'every count matches') (Sel $s)
+
+    Set-Scan -Rows @((Row 'Warning' 'w1')) -Errors 0 -Warnings 1 -TotalForm $false -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
+    $s = Get-Summary
+    Check "C7h scope '目前專案', counts match, single-number buttons -> ERRORLIST_INCOMPLETE (Build: codeVerified = null)" ($s.errorListError -eq 'ERRORLIST_INCOMPLETE' -and $null -eq $s.errorListNote) (Sel $s)
 
     Set-Scan -Rows @() -Errors 0 -Warnings 28 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
     $s = Get-Summary

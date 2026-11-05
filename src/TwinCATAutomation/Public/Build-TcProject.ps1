@@ -707,7 +707,8 @@
             Add-TcBuildWarning -Data $data -Code 'LIBRARY_UNRESOLVED' -Text $libWarn
         }
         if ($codeNotVerified) {
-            $why = if ($null -ne $errorListError) { "the Error List could not be read ($errorListError)" }
+            $why = if ($null -ne $errorListError -and $els.incomplete) { "the Error List was read only in part ($errorListError, data.missingRows)" }
+                   elseif ($null -ne $errorListError) { "the Error List could not be read ($errorListError)" }
                    elseif ($unlocatedCode.Count -gt 0) { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
                    else { $coverageWhy }
             Add-TcBuildWarning -Data $data -Code 'CODE_NOT_VERIFIED' -Text "Build-TcProject: build reported success but $why, so it is not confirmed that the PLC code was compiled (CODE_NOT_VERIFIED). $(Get-TcErrorHint -Code 'CODE_NOT_VERIFIED')"

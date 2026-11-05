@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T15:46:49Z",
+    "generatedAt":  "2026-11-05T15:49:10Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -611,7 +611,7 @@
                       "name":  "CleanProject",
                       "cmdlet":  "Clear-TcProject",
                       "description":  "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: issue #18 once hit a null-valued expression on Solution / SolutionBuild right after ConnectIde (cause not confirmed); this tool waits for them and counts the null answers (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG. Readback SolutionBuild.LastBuildInfo: 0 -> success, data.cleanVerified=true; unreadable -> CLEAN_UNVERIFIED (always a failure); > 0 with only unresolved-library Error List rows (<plc>.Library Manager, no line) -> LIBRARY_UNRESOLVED (data.libraryErrorItems; a later BuildProject success may not have compiled the PLC code, #45), or with AllowUnresolvedLibrary=true success with data.warningCode=LIBRARY_UNRESOLVED and cleanVerified=false; any other error -> CLEAN_FAILED (data.errorItems). data: buildState, failedProjects, cleanVerified, cleanSec, nullReads, errorItems.",
-                      "timeoutMs":  330000,
+                      "timeoutMs":  360000,
                       "annotations":  {
                                           "readOnlyHint":  false,
                                           "destructiveHint":  false

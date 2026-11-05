@@ -597,7 +597,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **逾時之後**:逾時的 scan 會被停下並在下一次 `Get-TcBuildErrors` / `Build-TcProject` 時清掉;thread 還沒停時回本 code 加 `data.scanBusy = true`,停了就照常掃描。#75 之前清理本身會丟 `ArgumentException`(「引數類型不相容」;實測 2026-10-28,PS 5.1.26100.9711:`New-Object` 建的 `List[object]` 被 `@()` 包住會丟,不是整個 5.1.26100 都會),一次逾時就讓同一個 bridge / PowerShell session 的 Build 與 Error List 永久失敗,只能重啟;現在清不掉的項目會被丟棄並在 `Get-TcBuildErrors` / `Build-TcProject` 的 `data.scanCleanupWarning` 註明,不會再卡住。
 - **丟棄的 scan 可能還在跑**:被丟棄的項目若狀態讀不到、或整個清單走不了而被重設,舊 UIA thread 可能還在動 Errors / Warnings / Messages 篩選按鈕。這種情況下**該次呼叫不開新 scan**,回本 code,`data.scanBusy = false`、`data.scanMayBeRunning = true` 並帶 `data.scanCleanupWarning`;`Build-TcProject` 把 `scanCleanupWarning` 帶進自己的 `data`、`errorListError = ERRORLIST_UNAVAILABLE`、`codeVerified = null`(不會算成 verified,#61)。再呼叫一次才照常掃描。殘餘風險:被丟棄的舊 thread 已不再追蹤,第二次呼叫時它若仍在跑,還是可能跟新 scan 搶篩選按鈕(要 UIA thread 卡死、連清理本身也失敗才會發生,且只會出現在已拒絕過一次之後);無法在不追蹤的情況下確認它停了。
 
-- **Build 的 Error List 預算(#107)**:`Build-TcProject` / `Test-TcPlcProject` / `Clear-TcProject` 不論成功或失敗，都給 Error List 完整的 30 s(`$script:TcBuildErrorListTimeoutSec`)。這是上限不是等待，讀完就返回。`Enable-TcConfig` 失敗診斷時讀 Error List,也用同一個預算，但不超過 `-TimeoutSec` 剩下的時間(最少 5 s)。以前成功路徑只給 8 s,而 Error List 的掃描(叫出窗格、切 scope、切 severity、讀 grid)要 16.5–17.8 s:實測 2026-11-03,TwinCAT 3.1 Build 4026、`TcXaeShell.DTE.17.0`(VS2022 XAE Shell),回報者見 #107。結果 build 成功卻回 `errorListError = ERRORLIST_UNAVAILABLE`、`CODE_NOT_VERIFIED`,接著 `Enable-TcConfig` 被 `BUILD_REQUIRED` 擋下。現在要 30 s 內仍讀不完才會回這個 code;單獨跑 `Get-TcBuildErrors -TimeoutSec 60` 可以確認是不是只是慢。MCP 的 `BuildProject` 在 `TimeoutSec` 之後多留 90 s(`mcp-server/lib/tools.js` `TOOL_GRACE_MS`;預設 tool timeout 690 s),避免 build 用完 `TimeoutSec` 時，bridge 在讀 Error List 的途中被砍。
+- **Build 的 Error List 預算(#107)**:`Build-TcProject` / `Test-TcPlcProject` / `Clear-TcProject` 不論成功或失敗，都給 Error List 完整的 30 s(`$script:TcBuildErrorListTimeoutSec`)。這是上限不是等待，讀完就返回。`Enable-TcConfig` 失敗診斷時讀 Error List,也用同一個預算，但不超過 `-TimeoutSec` 剩下的時間(最少 5 s)。以前成功路徑只給 8 s,而 Error List 的掃描(叫出窗格、切 scope、切 severity、讀 grid)要 16.5–17.8 s:實測 2026-11-03,TwinCAT 3.1 Build 4026、`TcXaeShell.DTE.17.0`(VS2022 XAE Shell),回報者見 #107。結果 build 成功卻回 `errorListError = ERRORLIST_UNAVAILABLE`、`CODE_NOT_VERIFIED`,接著 `Enable-TcConfig` 被 `BUILD_REQUIRED` 擋下。現在要 30 s 內仍讀不完才會回這個 code;單獨跑 `Get-TcBuildErrors -TimeoutSec 60` 可以確認是不是只是慢。MCP 的 `BuildProject` 在 `TimeoutSec` 之後多留 90 s、`CleanProject` 多留 60 s(`mcp-server/lib/tools.js` `TOOL_GRACE_MS`;預設 tool timeout 690 s / 360 s),避免 build / clean 用完 `TimeoutSec` 時，bridge 在讀 Error List 的途中被砍。
 
 ### ERRORLIST_INCOMPLETE
 
@@ -625,7 +625,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
     - Errors 總數讀不到;
     - `scope.entire = false` **而且**有列數對不上。
   - **只有 warnings 少讀**:不擋，見 `WARNINGS_INCOMPLETE`。
-  - **`scope.entire = false` 但每個總數都對得上**:只記在 `data.errorListNote`,不擋。
+  - **`scope.entire = false` 但每個總數都對得上**:只有至少一個 severity 按鈕是 `X / Y` / `X of Y` 兩個數字的格式時(`data.countsTotalForm = true`,Y 是總數)才降成 `data.errorListNote`、不擋;按鈕都是單一數字(`9 Errors`、`3 個錯誤`)時，那個數字可能只是篩過的清單的數量，對得上也證明不了什麼，維持不完整(`codeVerified = null`,fail closed,#138)。
   - `Build-TcProject` 的 data 會帶 `errorListScope`、`missingRows` 與 `errorListNote`。
 - **下一步**:
   1. 在 XAE 的 Error List 把 scope 下拉選成 `整個方案`(Entire Solution)、Errors / Warnings / Messages 三個按鈕都按下、清空 Error List 的搜尋框，再重跑 `Get-TcBuildErrors`;要解除 `BUILD_REQUIRED` 就重跑 `Build-TcProject`。
@@ -633,7 +633,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### WARNINGS_INCOMPLETE
 
-- **現象**:`Build-TcProject` 回 success,`data.warningCodes` 含 `WARNINGS_INCOMPLETE`;`Test-TcPlcProject`(CheckAllObjects)則是 `data.warningTexts` 有一筆說明。`data.missingRows` 只列出 `warnings`(或 `messages`),`data.errorListNote` 寫著讀到幾列、總數幾列。
+- **現象**:`Build-TcProject` 回 success,`data.warningCodes` 含 `WARNINGS_INCOMPLETE`;`Test-TcPlcProject`(CheckAllObjects)沒有 warningCodes,只在 `data.warningTexts` 加一筆帶 `(WARNINGS_INCOMPLETE)` 的說明。`data.missingRows` 只列出 `warnings`(或 `messages`),`data.errorListNote` 寫著讀到幾列、總數幾列。
 - **為什麼(#138)**:Error List 的 error 列完整(Errors 總數對得上，可隔離 severity),只有 warnings 讀得比按鈕總數少。`data.warningItems` 因此不是整份清單，但程式碼有沒有編譯是看 error 列，所以不影響 `codeVerified` / `completeBuild`,也不會留下 `BUILD_REQUIRED`。`Get-TcBuildErrors` 本身遇到同樣情況仍回 `ERRORLIST_INCOMPLETE`。
 - **下一步**:需要完整的 warning 清單時，照 `ERRORLIST_INCOMPLETE` 的下一步(scope 切 `整個方案`、清空搜尋框)後重跑 `Get-TcBuildErrors`。
 

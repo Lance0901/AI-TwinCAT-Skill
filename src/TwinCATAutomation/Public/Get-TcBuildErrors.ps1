@@ -221,6 +221,8 @@
     }
     if ($shortfall.Count -gt 0 -or $scopeFiltered) {
         $data | Add-Member -NotePropertyName 'incomplete' -NotePropertyValue $true
+        # $true when a count button read "X / Y" (shown / total): the totals do not depend on the scope
+        $data | Add-Member -NotePropertyName 'countsTotalForm' -NotePropertyValue ($null -ne $scan.PSObject.Properties['CountsTotalForm'] -and [bool]$scan.CountsTotalForm)
         $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue $shortfall.ToArray()
         # $true when the Errors button total was not readable: the error rows cannot be checked
         $data | Add-Member -NotePropertyName 'errorsTotalUnknown' -NotePropertyValue ($null -eq $scan.Counts -or $null -eq $scan.Counts.errors)

@@ -143,13 +143,14 @@ $script:TcUiaErrorListScan = {
         if ($word -match '^(Errors?|個錯誤|錯誤)$') { $sevName = 'Error' }
         elseif ($word -match '^(Warnings?|個警告|警告)$') { $sevName = 'Warning' }
         $num = if ($m.Groups[2].Success) { [int]$m.Groups[2].Value } else { [int]$m.Groups[1].Value }
-        return [PSCustomObject]@{ Severity = $sevName; Count = $num }
+        return [PSCustomObject]@{ Severity = $sevName; Count = $num; TwoNumbers = [bool]$m.Groups[2].Success }
     }
 
     $btnCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::Button)
     function Find-CountButtons {
         param($Root)
         $found = @{}
+        $twoNumbers = $false
         $cnt = [ordered]@{ errors = $null; warnings = $null; messages = $null }
         $all = $null
         try { $all = $Root.FindAll($scope::Descendants, $btnCond) } catch { $all = $null }
@@ -163,9 +164,13 @@ $script:TcUiaErrorListScan = {
                     'Message' { $cnt.messages = $parsed.Count }
                 }
                 $found[$parsed.Severity] = $b
+                if ($parsed.TwoNumbers) { $twoNumbers = $true }
             }
         }
-        return [PSCustomObject]@{ Buttons = $found; Counts = $cnt }
+        # TwoNumbers: at least one button reads "X / Y" / "X of Y" (shown / total). Only then is the
+        # number a total that does not depend on the scope filter (#138 N1); a single number may be
+        # the count of the filtered list.
+        return [PSCustomObject]@{ Buttons = $found; Counts = $cnt; TwoNumbers = $twoNumbers }
     }
 
     # The buttons (and the scope ComboBox) live in the tool window's toolbar: under the
@@ -646,6 +651,7 @@ $script:TcUiaErrorListScan = {
         Truncated  = $truncatedAny
         Headers    = $headerIds.ToArray()
         ToggleUsed = $toggleUsed
+        CountsTotalForm = [bool]$cb.TwoNumbers
         Scope      = [PSCustomObject]$scopeInfo
         Notes      = $notes.ToArray()
     }
@@ -786,7 +792,8 @@ function Get-TcErrorListReadState {
                               none of these holds:
                                 - an 'errors' shortfall, or a 'total' shortfall (severities not isolated)
                                 - the Errors button total was not readable (data.errorsTotalUnknown)
-                                - data.scope.entire = $false AND some shortfall (filtered list, rows missing)
+                                - data.scope.entire = $false AND (some shortfall, or no count button in the
+                                  "X / Y" form: data.countsTotalForm, #138 N1)
           warningsIncomplete  $true when warnings were read short (data.missingRows has 'warnings')
           incomplete          $true for an ERRORLIST_INCOMPLETE result
           missingRows / scope data.missingRows / data.scope of the result (@() / $null)
@@ -814,7 +821,11 @@ function Get-TcErrorListReadState {
     $errorsShort = ($sevs -contains 'errors') -or ($sevs -contains 'total')
     $totalUnknown = ($null -ne $d.PSObject.Properties['errorsTotalUnknown'] -and [bool]$d.errorsTotalUnknown)
     $scopeFiltered = ($null -ne $state.scope -and $state.scope.entire -eq $false)
-    $state.errorsComplete = -not ($errorsShort -or $totalUnknown -or ($scopeFiltered -and $state.missingRows.Count -gt 0))
+    # A filtered scope whose counts all match is only relaxed to a note when the buttons showed
+    # "X / Y" (data.countsTotalForm): then Y is the solution total. A single-number button may count
+    # the filtered list only, so matching counts prove nothing: stays incomplete (#138 N1, fail closed).
+    $totalForm = ($null -ne $d.PSObject.Properties['countsTotalForm'] -and [bool]$d.countsTotalForm)
+    $state.errorsComplete = -not ($errorsShort -or $totalUnknown -or ($scopeFiltered -and ($state.missingRows.Count -gt 0 -or -not $totalForm)))
     $state.warningsIncomplete = ($sevs -contains 'warnings')
     if ($state.errorsComplete) {
         $parts = @()

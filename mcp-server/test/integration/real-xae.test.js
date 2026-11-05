@@ -45,7 +45,7 @@ const INDEX = path.join(__dirname, '..', '..', 'index.js');
 const EXPECTED_TOOL_COUNT =
   JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tools.json'), 'utf8')).tools.length + composites.length;
 const CONNECT_TIMEOUT_MS = 300000; // ConnectIde may launch XAE and open the solution
-const BUILD_TIMEOUT_MS = 660000; // tools.json BuildProject.timeoutMs 600000 + grace
+const BUILD_TIMEOUT_MS = 690000; // tools.json BuildProject.timeoutMs: default TimeoutSec 600 s + 90 s grace (lib/tools.js TOOL_GRACE_MS, #138)
 const SHORT_TIMEOUT_MS = 120000; // GetIdeInfo / GetStatus / GetIdeModalDialog / DisconnectIde
 // Whitelist: everything else (EnableConfig, PlcLogin, SetPlcState, WriteVariable, RunLifecycle, ...)
 // changes the machine and is refused by callTool() below.
