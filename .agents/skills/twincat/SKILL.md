@@ -52,7 +52,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Disconnect-TcIde` | | Disconnect from IDE |
 | `Reset-TcSolution` | `[-SolutionPath <sln>] [-TimeoutSec 120]` | Dismiss the reload prompt, close all documents (no save), close + reopen the solution on the same IDE so XAE reloads project files changed on disk; only needed when the changed .TcPOU is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
 | `Get-TcIdeInfo` | | Get IDE version, solution path, connection status |
-| `Get-TcIdeModalDialog` | `-ProcessId` `-TimeoutSec` | Report the modal dialog blocking the IDE (data.dialog = null when none); works while DTE calls fail with IDE_BUSY |
+| `Get-TcIdeModalDialog` | `-ProcessId` `-TimeoutSec` | Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog = null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not "none"); works while DTE calls fail with IDE_BUSY |
 
 ### Project Management
 | Command | Parameters | Description |
@@ -117,7 +117,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Set-TcSystemState` | `-State <Run\|Config> [-AmsNetId <id>]` | Set system state via ADS WriteControl |
 | `Get-TcSystemState` | `[-AmsNetId <id>]` | Read system state |
 | `New-TcIssueReport` | `-Title <t> [-Tool] [-Parameters] [-Result] [-Expected] [-Notes] [-Label] [-MaxUrlLength 7000] [-ExtraMask] [-NoEnvironment] [-IncludeSolutionName]` | MCP `ReportIssue` (#78): builds a de-identified, pre-filled GitHub new-issue URL (`data.url`) plus the same title / body as text (`data.body`, complete). Creates nothing, no GitHub / network call, no IDE / ADS access, works while LIFECYCLE_BLOCKED. Object keys, URLs / hosts, paths (project files keep only the file name), the open solution's name and secrets are masked; the solution file name is left out of the environment unless `-IncludeSolutionName`. Show `data.maskReport` and `data.body` to the user; only the user opens and submits the URL (the repo is public) |
-| `Clear-TcLifecycleBlock` | `-Reason <text> [-AmsNetId <id>]` | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
+| `Clear-TcLifecycleBlock` | `-Reason <text> -FallbackMethod <text> -AllowedSideEffects <text[]> -MaxVerifyLevel <None/SystemState/PlcState/VariableRead/TestObserved> [-AmsNetId <id>]` (#113: all four required, else LIFECYCLE_RECEIPT_INCOMPLETE) | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
 | `Set-TcTarget` | `-AmsNetId <id>` | Set target system |
 
 ### I/O Configuration

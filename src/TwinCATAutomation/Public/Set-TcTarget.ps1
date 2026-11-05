@@ -124,6 +124,7 @@ function Set-TcTarget {
     try {
         # Set target via ITcSysManager
         $sm.SetTargetNetId($AmsNetId)
+        Save-TcIdeTargetNetId $AmsNetId   # #114 S5: hint path reads this, never COM
     }
     catch {
         return New-TcResult -Success $false -ErrorMessage "Failed to set target: $_" -ErrorCode 'TARGET_SET_FAILED'

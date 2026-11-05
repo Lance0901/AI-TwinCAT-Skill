@@ -37,7 +37,9 @@ function Reset-TcSolution {
                (Close-TcReloadPrompt; the solution is reopened right after, so the answer
                does not matter).
              data.dismissedReloadPrompt = true when any prompt was dismissed. Any other
-             dialog is reported as IDE_MODAL_DIALOG (it would block Solution.Close too).
+             dialog is reported as IDE_MODAL_DIALOG (it would block Solution.Close too); a
+             scan that did not complete as MODAL_SCAN_INCOMPLETE, nothing closed (#42; inside
+             a poll an incomplete scan only means "keep polling").
              Step 1 runs before every Solution / Solution.FullName read (also before the path
              of the open solution is read when neither -SolutionPath nor a module solution is
              known), and again whenever such a poll gets no answer and a reload prompt is up
@@ -264,7 +266,7 @@ function Reset-TcSolution {
         $all['sysManagerAvailable'] = [bool]$ConnectData.sysManagerAvailable
         $all['silentMode'] = $ConnectData.silentMode
         $data = Get-ProgressData -Extra $all
-        foreach ($name in @('amsNetId', 'warning')) {
+        foreach ($name in @('amsNetId', 'warning', 'sessionRecordWarning')) {   # #123: Connect-TcIde could not update the session record
             $prop = $ConnectData.PSObject.Properties[$name]
             if ($null -ne $prop) { $data | Add-Member -NotePropertyName $name -NotePropertyValue $prop.Value -Force }
         }
@@ -407,6 +409,9 @@ function Reset-TcSolution {
                 if ($out.Error -match '^IDE_CRASHED') { break }
             }
             $d = Find-TcIdeModalDialog
+            # #42: an incomplete scan while polling is unknown, not "no dialog": keep polling (the
+            # poll ends on an answer or -TimeoutSec; without an answer nothing is closed).
+            if (Test-TcModalScanIncomplete $d) { $d = $null }
             if ($null -ne $d) {
                 if ([string]$d.Kind -eq 'reload-prompt') { $out.Dialog = $d }
                 else { $out.Failure = New-TcModalDialogResult -Dialog $d -Operation "Reset-TcSolution ($Operation; nothing closed)" -Data (Get-ProgressData) }
@@ -498,6 +503,9 @@ function Reset-TcSolution {
                 }
                 catch { $lastRead = $_.Exception.Message }
                 $pendingDialog = Find-TcIdeModalDialog
+                # #42: incomplete scan while waiting: keep waiting; the reconnect after the wait
+                # (Connect-TcIde) checks for a dialog again and fails closed on an incomplete scan
+                if (Test-TcModalScanIncomplete $pendingDialog) { $pendingDialog = $null }
                 if ($null -ne $pendingDialog) { break }
                 Start-Sleep -Milliseconds 500
             }

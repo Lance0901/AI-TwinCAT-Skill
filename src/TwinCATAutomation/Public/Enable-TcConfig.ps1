@@ -312,6 +312,7 @@ function Enable-TcConfig {
     $activateSent = $false
     $runSent = $false
     $reachedState = $null         # last system state read back (port 10000)
+    $reachedNote = $null          # #114 N2: why reachedState is empty ('unreachable' / 'runtime-gone'), for the block
     $requestedState = $(if ($Force) { 'Run' } else { 'Activated' })
     # state the step that failed actually requested (lifecycle block record, side finding 2): Config
     # during set-config, Activated during activate / boot-package, Run from set-run on
@@ -399,12 +400,16 @@ function Enable-TcConfig {
     # Failure of a step after Activate: collect modal dialog, Error List errors and a fresh
     # Boot package comparison into data.diagnostics; a Boot package mismatch wins as code.
     function New-TcRuntimeFailure {
-        param([string]$Message, [string]$Code, [string]$Hint)
-        $diag = [ordered]@{ dialog = $null; errorList = @(); errorListError = $null; bootPackage = $null }
+        # -DialogScan: a scan result the caller already has (a dialog record, an incomplete-scan
+        # record, or 'none' = scanned, no dialog); then no second scan is made (#42).
+        param([string]$Message, [string]$Code, [string]$Hint, [object]$DialogScan)
+        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; errorList = @(); errorListError = $null; bootPackage = $null }
         try {
-            $dlg = Find-TcIdeModalDialog
-            if ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
-        } catch { }
+            $dlg = if ($null -ne $DialogScan) { if ($DialogScan -is [string] -and $DialogScan -eq 'none') { $null } else { $DialogScan } } else { Find-TcIdeModalDialog }
+            # #42: an incomplete scan is reported as such (dialogScanComplete false), never as "no dialog"
+            if (Test-TcModalScanIncomplete $dlg) { $diag.dialogScanComplete = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg }
+            elseif ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
+        } catch { $diag.dialogScanComplete = $false }
         if ($null -ne $deadline -and (Get-Date) -ge $deadline) {
             $diag.errorListError = 'skipped: -TimeoutSec budget exhausted'
         }
@@ -500,7 +505,7 @@ function Enable-TcConfig {
         # #68: a failed postcondition after a runtime-changing request blocks the target
         if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
-            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $blockRequested -ReachedState $reachedState -Step ($failedStep -join '')
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $blockRequested -ReachedState $reachedState -ReadbackNote $reachedNote -Step ($failedStep -join '')
         }
         $res
     }
@@ -512,6 +517,15 @@ function Enable-TcConfig {
         param([string]$Name)
         $dlg = Find-TcIdeModalDialog
         if ($null -eq $dlg) { return $null }
+        if (Test-TcModalScanIncomplete $dlg) {
+            # #42: unknown is not "no dialog": the step is not attempted
+            $info = ConvertTo-TcModalScanInfo -Scan $dlg
+            Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: modal dialog scan incomplete ($($info.reason))"
+            $res = New-TcStepFailure -Message "MODAL_SCAN_INCOMPLETE: step '$Name' not attempted - the modal-dialog scan of the IDE did not complete ($($info.reason): $($info.message)); it is unknown whether a dialog blocks the IDE." -Code 'MODAL_SCAN_INCOMPLETE'
+            $res.data | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false -Force
+            $res.data | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue $info -Force
+            return $res
+        }
         Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: IDE shows modal dialog '$($dlg.Title)'"
         $short = [string]$dlg.Text
         if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
@@ -705,7 +719,7 @@ function Enable-TcConfig {
     # Resolves the IDE target AmsNetId (ITcSysManager.GetTargetNetId, then the ADS session), $null when unknown.
     function Resolve-TcCycleNetId {
         $id = $null
-        try { $id = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
+        try { $id = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() }; Save-TcIdeTargetNetId $id } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
         if ([string]::IsNullOrWhiteSpace($id)) { $id = $script:TcAdsAmsNetId }
         if ([string]::IsNullOrWhiteSpace($id)) { return $null }
         return [string]$id
@@ -771,6 +785,20 @@ function Enable-TcConfig {
         $Result.data | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $StateResult.data -Force
     }
 
+    # #114 N2: why a Set-TcSystemState result has no read-back state: 'runtime-gone' (RUNTIME_CRASHED),
+    # 'unreachable' (its last read failed), else $null. Kept in the block Enable-TcConfig records.
+    function Get-TcReadbackNote {
+        param([object]$StateResult)
+        if ($null -eq $StateResult) { return $null }
+        if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return 'runtime-gone' }
+        if ($null -eq $StateResult.data) { return $null }
+        foreach ($n in @('readbackState', 'currentState')) {
+            $p = $StateResult.data.PSObject.Properties[$n]
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return $(if ([string]$p.Value -eq 'Unreachable') { 'unreachable' } else { $null }) }
+        }
+        $null
+    }
+
     # readbackState (else currentState) of a Set-TcSystemState result, $null when there is none
     function Get-TcReadbackState {
         param([object]$StateResult)
@@ -779,7 +807,8 @@ function Enable-TcConfig {
         if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return $null }
         foreach ($n in @('readbackState', 'currentState')) {
             $p = $StateResult.data.PSObject.Properties[$n]
-            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return [string]$p.Value }
+            # #114: 'Unreachable' (the last read failed) is not a read-back state either
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return $(if ([string]$p.Value -eq 'Unreachable') { $null } else { [string]$p.Value }) }
         }
         $null
     }
@@ -882,11 +911,17 @@ function Enable-TcConfig {
     # 1. set-config
     $fail = Test-TcCycleDeadline -Name 'set-config'
     if ($null -ne $fail) { return $fail }
+    # #42 review: modal check BEFORE the first runtime change. A dialog or an incomplete scan stops
+    # here with the target untouched (no lifecycle block); the pre-activate gate below stays for a
+    # dialog that comes up while set-config runs (that one does record a block).
+    $fail = Test-TcStepModalDialog -Name 'set-config'
+    if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
     $blockRequested = 'Config'
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
+    $reachedNote = Get-TcReadbackNote -StateResult $r
     if (-not $r.success) {
         # nit-3: Set-TcSystemState reports whether its WriteControl was called (data.requestSent);
         # without it (connect failed, ADS assembly missing, refused ...) nothing reached the runtime
@@ -944,6 +979,7 @@ function Enable-TcConfig {
     $blockRequested = 'Run'
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
+    $reachedNote = Get-TcReadbackNote -StateResult $r
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         if ([string]$r.error.code -eq 'RUNTIME_CRASHED') {
@@ -1155,7 +1191,9 @@ function Enable-TcConfig {
     }
     catch { $sysErr = $_.Exception.Message }
     finally { if ($null -ne $probe) { try { $probe.Dispose() } catch { } } }
-    $reachedState = $(if ($sysState) { $sysState } else { 'Unreachable' })
+    # #114 N1: an unreachable port 10000 is not a read-back state (empty, the note says why)
+    $reachedState = $(if ($sysState) { $sysState } else { $null })
+    $reachedNote = $(if ($sysState) { $null } else { 'unreachable' })
     $plcChecks = @()
     $bad = @()
     if ($sysState -ne 'Run') { $bad += "system (port 10000) $(if ($sysState) { $sysState } else { "unreachable: $sysErr" })" }
@@ -1174,14 +1212,31 @@ function Enable-TcConfig {
     }
     $plcState = $plcs[0].state
     $dlg = $null
-    try { $dlg = Find-TcIdeModalDialog } catch { }
-    $dlgInfo = if ($null -ne $dlg) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
-    if ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
-    $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; ok = ($bad.Count -eq 0) }
+    try { $dlg = Find-TcIdeModalDialog } catch { $dlg = New-TcModalScanIncomplete -Reason 'error' -Message $_.Exception.Message }
+    # #42: success only after a COMPLETE scan found no dialog. One retry with a larger budget
+    # before an incomplete scan fails the readback (the first scan may have paid a cold start).
+    # The retry shares the one -TimeoutSec of the whole call: Min(15, remaining); under 1 s left the
+    # first (incomplete) result stands.
+    if (Test-TcModalScanIncomplete $dlg) {
+        $leftSec = if ($null -ne $deadline) { [int][Math]::Floor(($deadline - (Get-Date)).TotalSeconds) } else { 15 }
+        $retrySec = [Math]::Min(15, $leftSec)
+        if ($retrySec -ge 1) {
+            try { $dlg = Find-TcIdeModalDialog -TimeoutSec $retrySec } catch { $dlg = New-TcModalScanIncomplete -Reason 'error' -TimeoutSec $retrySec -Message $_.Exception.Message }
+        }
+    }
+    $dlgScanIncomplete = Test-TcModalScanIncomplete $dlg
+    $dlgInfo = if ($null -ne $dlg -and -not $dlgScanIncomplete) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
+    $onlyScanBad = ($bad.Count -eq 0 -and $dlgScanIncomplete)
+    if ($dlgScanIncomplete) { $bad += "modal dialog scan incomplete ($([string]$dlg.Reason))" }
+    elseif ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
+    $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; dialogScanComplete = (-not $dlgScanIncomplete); ok = ($bad.Count -eq 0) }
+    if ($dlgScanIncomplete) { $finalCheck | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $dlg) }
     if ($bad.Count -gt 0) {
         $detail = "final readback: $($bad -join ', ')"
         Add-TcStepRecord -Name 'verify' -Ok $false -Watch $sw -Detail $detail
-        return New-TcRuntimeFailure -Message "Cycle steps reported success but the $detail." -Code 'RUNTIME_STATE_MISMATCH'
+        $verifyCode = if ($onlyScanBad) { 'MODAL_SCAN_INCOMPLETE' } else { 'RUNTIME_STATE_MISMATCH' }
+        # the verify scan result is reused: no second dialog scan on top of the -TimeoutSec budget
+        return New-TcRuntimeFailure -Message "Cycle steps reported success but the $detail." -Code $verifyCode -DialogScan $(if ($null -eq $dlg) { 'none' } else { $dlg })
     }
     Add-TcStepRecord -Name 'verify' -Ok $true -Watch $sw -Detail "system Run; $((($plcChecks | ForEach-Object { "port $($_.adsPort) $($_.state)" }) -join ', '))"
 

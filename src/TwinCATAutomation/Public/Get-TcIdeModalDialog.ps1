@@ -14,11 +14,16 @@ function Get-TcIdeModalDialog {
         fail with IDE_BUSY. It only reads: the dialog is not answered or closed (Reset-TcSolution
         handles reload prompts). In the MCP server the same data is the GetIdeModalDialog tool.
 
-        data.dialog is $null when no dialog is open, the process is gone, or the scan did not finish
-        within -TimeoutSec (indistinguishable from "no dialog"; retry with a larger -TimeoutSec when
-        a call keeps failing with IDE_BUSY). Otherwise it is
+        success = true and data.scanComplete = true: the scan finished. data.dialog is then $null
+        when no dialog is open (or the process is gone), otherwise
         { title, text, kind, reloadTarget, hwnd, buttons[{ id, name }] }:
         kind 'reload-prompt' (reloadTarget 'file' | 'project') or 'unknown' (reloadTarget $null).
+        A scan that did not finish within -TimeoutSec (or failed) is NOT reported as "no dialog"
+        (#42): success = false, code MODAL_SCAN_INCOMPLETE, data.scanComplete = false,
+        data.dialog = $null, data.modalScan = { reason (timeout | prepare-timeout | error),
+        timeoutSec, elapsedMs, prepareMs, message }; retry with a larger -TimeoutSec.
+        The first scan of a process loads UI Automation and compiles its helper types; that
+        cold start runs before the -TimeoutSec budget starts.
         data.ideProcessId (same name as the MCP tool and the hints) is the pid that was scanned.
     .PARAMETER ProcessId
         IDE process id. Default 0 = the pid Connect-TcIde recorded. Pass it explicitly to inspect
@@ -50,12 +55,29 @@ function Get-TcIdeModalDialog {
     }
 
     $dialog = $null
-    try { $dialog = Find-TcIdeModalDialog -ProcessId $ProcessId -TimeoutSec $TimeoutSec } catch { $dialog = $null }
+    try { $dialog = Find-TcIdeModalDialog -ProcessId $ProcessId -TimeoutSec $TimeoutSec }
+    catch {
+        $dialog = New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -Message "the scan threw: $($_.Exception.Message)"
+    }
+
+    if (Test-TcModalScanIncomplete $dialog) {
+        $info = ConvertTo-TcModalScanInfo -Scan $dialog
+        return New-TcResult -Success $false -ErrorCode 'MODAL_SCAN_INCOMPLETE' `
+            -ErrorMessage "MODAL_SCAN_INCOMPLETE: the modal-dialog scan of IDE pid $ProcessId did not complete ($($info.reason): $($info.message)); it is unknown whether a dialog is open." `
+            -Hint (Get-TcErrorHint -Code 'MODAL_SCAN_INCOMPLETE') `
+            -Data ([PSCustomObject][ordered]@{
+                ideProcessId = $ProcessId
+                scanComplete = $false
+                dialog       = $null
+                modalScan    = $info
+            })
+    }
 
     $dialogOut = $null
     if ($null -ne $dialog) { $dialogOut = ConvertTo-TcDialogRecord -Dialog $dialog }
     New-TcResult -Success $true -Data ([PSCustomObject][ordered]@{
             ideProcessId = $ProcessId
-            dialog    = $dialogOut
+            scanComplete = $true
+            dialog       = $dialogOut
         })
 }

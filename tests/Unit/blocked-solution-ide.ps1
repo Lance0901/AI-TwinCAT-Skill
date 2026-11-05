@@ -149,6 +149,8 @@ try {
     Check 'connect-modal-code' (-not $r.success -and $r.error.code -eq 'IDE_MODAL_DIALOG') "code=$($r.error.code) msg=$($r.error.message)"
     Check 'connect-modal-data' ($r.data.ideProcessId -eq 201 -and $r.data.matchedBy -eq 'dialog-path' -and $r.data.attached -and $r.data.dialogKind -eq 'reload-prompt' -and $r.data.rotDisplayName -eq '!Fake.DTE.1:201') "pid=$($r.data.ideProcessId) by=$($r.data.matchedBy) kind=$($r.data.dialogKind)"
     Check 'connect-modal-hint' ($r.error.hint -match 'Reset-TcSolution') "$($r.error.hint)"
+    $strongDialogShape = (@($r.data.dialog.PSObject.Properties.Name) -join ',')
+    $strongFlat = (@('dialogTitle', 'dialogText', 'dialogKind', 'dialogReloadTarget', 'dialogButtons') | Where-Object { @($r.data.PSObject.Properties.Name) -ccontains $_ }).Count
     $st = & $mod { [PSCustomObject]@{ pid = $script:TcIdeProcessId; connected = $script:TcIdeConnected; by = $script:TcIdeSelectedBy; sln = $script:TcSolutionPath; sm = $script:TcSysManager } }
     Check 'connect-modal-attached' ($st.pid -eq 201 -and $st.connected -and $st.by -eq 'solution-blocked' -and $st.sln -eq $slnLong -and $null -eq $st.sm) "pid=$($st.pid) by=$($st.by) sln=$($st.sln)"
 
@@ -198,6 +200,10 @@ try {
     Set-Rot @(@{ Pid = 702; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1'
     Check 'connect-weak-modal' (-not $r.success -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and -not $r.data.attached -and $r.error.hint -match 'LaunchIfBlocked') "code=$($r.error.code) attached=$($r.data.attached)"
+    # #127 F2: the weak path reports the dialog in the same camelCase shape as the strong path
+    $weakDialogShape = (@($r.data.dialog.PSObject.Properties.Name) -join ',')
+    $weakFlat = (@('dialogTitle', 'dialogText', 'dialogKind', 'dialogReloadTarget', 'dialogButtons') | Where-Object { @($r.data.PSObject.Properties.Name) -ccontains $_ }).Count
+    Check 'connect-weak-dialog-shape' ($weakDialogShape -ceq 'title,text,kind,reloadTarget,buttons' -and $weakDialogShape -ceq $strongDialogShape -and $weakFlat -eq 5 -and $strongFlat -eq 5 -and $r.data.dialogKind -eq 'unknown' -and $r.data.dialog.title -eq 'Target system reports a fatal error') "weak=$weakDialogShape flat=$weakFlat strong=$strongDialogShape flat=$strongFlat kind=$($r.data.dialogKind)"
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -LaunchIfBlocked
     Check 'connect-weak-launchifblocked' (-not $r.success -and $r.error.code -eq 'TWINCAT_NOT_FOUND') "code=$($r.error.code)"
 
@@ -366,6 +372,27 @@ try {
     Set-Rot @(@{ Pid = 991; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'weak-own-ide-hint' (-not $r.data.attached -and $r.data.launchedBySession -and $r.error.hint -match 'Stop-Process' -and $r.error.hint -match 'launchedBySession = true') "launched=$($r.data.launchedBySession) hint=$($r.error.hint.Substring(0, 30))"
+
+    # --- #42: the dialog scan of the blocked IDE does not complete -> unknown, never IDE_BUSY ("no dialog") ---
+    $incomplete = & $mod { New-TcModalScanIncomplete -ProcessId 0 -Reason 'timeout' -TimeoutSec 5 -Message 'mock: scan did not finish' }
+    # weak (title only): MODAL_SCAN_INCOMPLETE, not attached, hint says rescan first
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcLastModalDialog = $null }
+    $global:FakeIde = @{ 902 = @{ Title = 'Demo - TcXaeShell'; Dialog = $incomplete } }
+    Set-Rot @(@{ Pid = 902; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1'
+    Check 'connect-weak-scan-incomplete' (-not $r.success -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and -not $r.data.attached -and $r.data.scanComplete -eq $false -and $r.data.modalScan.reason -eq 'timeout' -and $null -eq $r.data.dialog -and $r.error.message -match 'scan did not complete') "code=$($r.error.code) attached=$($r.data.attached) msg=$($r.error.message)"
+    Check 'connect-weak-scan-incomplete-hint' ($r.error.hint -match 'Get-TcIdeModalDialog -ProcessId 902 -TimeoutSec 15' -and $r.error.hint -match 'LaunchIfBlocked') "$($r.error.hint)"
+    Check 'connect-weak-scan-incomplete-candidates' (@($r.data.blockedCandidates | Where-Object { $_.pid -eq 902 -and $_.dialogScanComplete -eq $false -and $null -eq $_.dialogTitle }).Count -eq 1) "$($r.data.blockedCandidates | ConvertTo-Json -Compress)"
+    # strong (session record + title): attached, MODAL_SCAN_INCOMPLETE, the marker is not stored as "dialog seen"
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcLastModalDialog = $null }
+    $global:FakeIde = @{ 911 = @{ Title = 'Demo - TcXaeShell'; Dialog = $incomplete } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 911 -Solution $s } $sln
+    Set-Rot @(@{ Pid = 911; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
+    $last = & $mod { $script:TcLastModalDialog }
+    Check 'connect-strong-scan-incomplete' (-not $r.success -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.attached -and $r.data.ideProcessId -eq 911 -and $r.data.matchedBy -eq 'session-record' -and $r.data.scanComplete -eq $false -and $null -eq $last) "code=$($r.error.code) attached=$($r.data.attached) by=$($r.data.matchedBy) last=$($null -ne $last)"
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
+    $global:FakeIde = @{ 991 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }   # the next check uses the fake pid 991
 
     # --- nit: unreadable SilentMode original is remembered as 'unknown', never as true ---
     & $mod { Set-TcIdeSilentOriginal -ProcessId 991 -Value 'unknown' }

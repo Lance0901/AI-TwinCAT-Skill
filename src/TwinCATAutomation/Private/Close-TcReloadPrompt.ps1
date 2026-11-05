@@ -15,7 +15,8 @@ function Close-TcReloadPrompt {
         Measured 2026-10-20 (4024 32-bit XAE): the file prompt is gone ~2 s after WM_CLOSE.
 
         Poll: every 500 ms until the dialog window no longer exists. IsWindow on the original
-        handle is the only proof (a $null from Find-TcIdeModalDialog can also be a scan timeout).
+        handle is the only proof (the scan may not complete: Find-TcIdeModalDialog then returns
+        the incomplete-scan record, #42).
         Once it is gone, the scan result is reported: a reload prompt that appears right after
         (another file / project) is returned as NextDialog with Dismissed = true; any other
         dialog as NextDialog with Dismissed = false. Timeout -> Dismissed = false.
@@ -69,9 +70,16 @@ function Close-TcReloadPrompt {
         Start-Sleep -Milliseconds 500
         $gone = $false
         try { $gone = -not [TcAutomation.MessageBoxNative]::IsWindow($h) } catch { $gone = $false }
-        if (-not $gone) { continue }   # IsWindow is the authority; the scan can return $null on a timeout
+        if (-not $gone) { continue }   # IsWindow is the authority; the scan may not complete (#42)
         $again = Find-TcIdeModalDialog
         if ($null -eq $again) { $out.Dismissed = $true; $out.Reason = 'dialog closed'; return $out }
+        if (Test-TcModalScanIncomplete $again) {
+            # #42: our dialog is gone (IsWindow); what is up now is unknown. NextDialog stays
+            # $null: the caller's next step scans again and fails closed on another incomplete scan.
+            $out.Dismissed = $true
+            $out.Reason = "dialog closed; the follow-up modal-dialog scan did not complete ($([string]$again.Reason))"
+            return $out
+        }
         $out.NextDialog = $again
         if ([string]$again.Kind -eq 'reload-prompt') {
             $out.Dismissed = $true

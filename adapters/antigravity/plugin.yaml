@@ -158,6 +158,21 @@ actions:
         type: string
         required: true
         description: The user's approval in their words
+      FallbackMethod:
+        type: string
+        required: true
+        description: How the work continues after the block is lifted, as the user approved it (#113)
+      AllowedSideEffects:
+        type: array
+        items:
+          type: string
+        required: true
+        description: Side effects the user allowed, one entry each; exactly [none] when none, never none with another entry (#113)
+      MaxVerifyLevel:
+        type: string
+        enum: [None, SystemState, PlcState, VariableRead, TestObserved]
+        required: true
+        description: The highest layer the verification after this clear will reach; results must not claim more than it (#113). Missing, empty or invalid fields return LIFECYCLE_RECEIPT_INCOMPLETE
       AmsNetId:
         type: string
         required: false

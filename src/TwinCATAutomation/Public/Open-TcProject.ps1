@@ -34,10 +34,14 @@ function Open-TcProject {
         $script:TcSysManager = $null
         $sm = Get-TcSysManager
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
+        $data = [PSCustomObject]@{
             solution            = $script:TcDte.Solution.FullName
             sysManagerAvailable = ($null -ne $sm)
-        })
+        }
+        # #123: the record could not be updated (lock busy): say so, the old one is not used
+        $recWarn = if ($null -ne $script:TcIdeProcessId) { Get-TcIdeSolutionRecordWarning -ProcessId ([int]$script:TcIdeProcessId) } else { $null }
+        if ($null -ne $recWarn) { $data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
+        New-TcResult -Success $true -Data $data
     }
     catch {
         New-TcResult -Success $false -ErrorMessage "Failed to open project: $_" -ErrorCode 'PROJECT_OPEN_FAILED'

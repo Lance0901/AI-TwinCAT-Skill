@@ -334,7 +334,8 @@ function Wait-ProbeSliced([int]$Milliseconds) {
 # result; under CPU load the first scan took several times as long as the next ones). Assemblies and
 # compiled types belong to the AppDomain, so doing it once here, before the first interval, lets
 # every runspace scan skip it (each Add-Type is guarded by a type check).
-# The Add-Type commands are taken from the scan sources themselves (no second copy).
+# The Add-Type commands are taken from the scan sources themselves (no second copy): the
+# -MemberDefinition ones by AST, the module scan's types through its PrepareOnly mode.
 # The other cause of slow scans (RootElement.FindAll stalling ~3 s on any unresponsive window of
 # another process) is handled in the module scan, which lists the pid's windows via EnumWindows.
 function Initialize-ProbeWarmup {
@@ -366,6 +367,15 @@ function Initialize-ProbeWarmup {
             Test-ProbeShouldExit
         }
     }
+    # The module scan (#42) compiles all its types in one Add-Type -TypeDefinition at its top and
+    # has a PrepareOnly mode (4th argument) that does only that: run it here. An older scan
+    # without the parameter just scans pid 0 (no windows) and returns.
+    try {
+        $null = & ([scriptblock]::Create($scanText)) 0 ([long]0) 0 $true
+        if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) { $compiled++ }
+    }
+    catch { Write-ProbeDebug "warm-up: scan type preparation failed: $($_.Exception.Message)" }
+    Test-ProbeShouldExit
     $compileMs = $sw.ElapsedMilliseconds
     # One scan of this process (no windows of its own, -MainHwnd 0: the IDE handle belongs to another pid) pays the
     # remaining first-use cost (UIA client start-up in this process, compiling the scan

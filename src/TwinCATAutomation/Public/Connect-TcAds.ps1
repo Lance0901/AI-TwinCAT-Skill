@@ -43,6 +43,7 @@ function Connect-TcAds {
         if ($null -ne $script:TcSysManager) {
             try {
                 $AmsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $script:TcSysManager.GetTargetNetId() }
+                Save-TcIdeTargetNetId $AmsNetId
                 Write-Verbose "Auto-detected AmsNetId from IDE: $AmsNetId"
             }
             catch {
