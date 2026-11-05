@@ -12,6 +12,17 @@ function Set-TcPlcState {
         For Run and Stop the port is then polled until it reports the target state;
         if it does not within -TimeoutSec, PLC_RUN_TIMEOUT (Run) or STATE_SET_FAILED
         (Stop) is returned. Reset is verified with a single read after 200 ms.
+        Reported states for Run / Stop (#131, same rule as Set-TcSystemState #114): data.currentState /
+        finalState is 'Unreachable' when the last read of the port failed (ADS error, e.g. a runtime
+        crash during the wait), never the last state read before it (that one is data.lastState, the
+        error data.lastError; both always present, lastError $null when the last read succeeded).
+        data.originalState is the state read before WriteControl ($null when it could not be read);
+        data.leftOriginal is $true only when a read RETURNED a state other than it ($null when the
+        original is unknown); failed reads during the wait are data.unreachableSeen ($true whenever
+        currentState is 'Unreachable', also when the wait could not probe at all). Run on a PLC that
+        already runs returns the same fields (alreadyInState, nothing sent). A failure also
+        carries the wait's probe log (data.probeErrors, data.probeErrorsDropped), and the lifecycle
+        block's reachedState is then empty (readbackNote 'unreachable').
         Fail closed (#68): those two readback failures come after WriteControl was sent and also
         record a lifecycle block for the session's AmsNetId (data.lifecycleBlock). While a block
         exists for it, Set-TcPlcState returns LIFECYCLE_BLOCKED and sends nothing (every -State);
@@ -63,9 +74,13 @@ function Set-TcPlcState {
     }
 
     try {
+        # #131: state before the request (data.originalState / leftOriginal); Run reads it below
+        $stateBefore = $null
+        if ($State -eq 'Stop') {
+            try { $stateBefore = $script:TcAdsClient.ReadState() } catch { $stateBefore = $null }
+        }
         # Run requires a downloaded program: check before sending WriteControl
         if ($State -eq 'Run') {
-            $stateBefore = $null
             try {
                 $stateBefore = $script:TcAdsClient.ReadState()
             }
@@ -90,12 +105,19 @@ function Set-TcPlcState {
             # Already running (e.g. boot project autostart): WriteControl Run would answer
             # ADS 0x712 "invalid state", so treat it as done.
             if ([int]$stateBefore.AdsState -eq 5) {
+                # #131: same fields as the polled path (nothing sent, the read before is the readback)
                 return New-TcResult -Success $true -Data ([PSCustomObject]@{
-                    requestedState = $State
-                    currentState   = 'Run'
-                    reconnected    = $reconnected
-                    elapsedMs      = 0
-                    alreadyInState = $true
+                    requestedState  = $State
+                    originalState   = 'Run'
+                    currentState    = 'Run'
+                    finalState      = 'Run'
+                    lastState       = 'Run'
+                    lastError       = $null
+                    leftOriginal    = $false
+                    unreachableSeen = $false
+                    reconnected     = $reconnected
+                    elapsedMs       = 0
+                    alreadyInState  = $true
                 })
             }
         }
@@ -109,24 +131,51 @@ function Set-TcPlcState {
         if ($State -eq 'Run' -or $State -eq 'Stop') {
             # Poll the port until it reports the target state (separate temporary client)
             $wait = Wait-TcAdsState -AmsNetId $script:TcAdsAmsNetId -Port $script:TcAdsPort -TargetState $State -TimeoutSec $TimeoutSec
+            # #131 (same rule as Set-TcSystemState #114): Wait-TcAdsState.State is the last state READ;
+            # a later failed probe keeps it. When the last probe failed the state is 'Unreachable',
+            # the last value read goes to data.lastState (the original state when nothing was read).
+            $original = if ($null -ne $stateBefore) { [string]$stateBefore.AdsState } else { $null }
+            $lastReadFailed = -not [string]::IsNullOrEmpty([string]$wait.LastError)
+            $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $original }
+            $shown = if ($lastReadFailed) { 'Unreachable' } else { [string]$wait.State }
+            # leftOriginal only from states that were actually read (failed probes are not states)
+            $leftOriginal = $null
+            if ($null -ne $original) {
+                $leftOriginal = (@(@($wait.StatesSeen) | Where-Object { -not [string]::IsNullOrEmpty([string]$_) -and [string]$_ -ne $original }).Count -gt 0)
+            }
             $data = [PSCustomObject]@{
-                requestedState = $State
-                currentState   = $wait.State
-                reconnected    = $reconnected
-                elapsedMs      = $wait.ElapsedMs
+                requestedState  = $State
+                originalState   = $original
+                currentState    = $shown
+                finalState      = $shown
+                lastState       = $seen
+                lastError       = $(if ($lastReadFailed) { [string]$wait.LastError } else { $null })
+                leftOriginal    = $leftOriginal
+                # also when the wait returned before any probe (TwinCAT.Ads.dll not found: LastError set,
+                # AnyProbeFailed false): currentState is 'Unreachable' then, so this must agree
+                unreachableSeen = (($wait.AnyProbeFailed -eq $true) -or $lastReadFailed)
+                reconnected     = $reconnected
+                elapsedMs       = $wait.ElapsedMs
             }
             if (-not $wait.Reached) {
                 $detail = if ($wait.LastError) { " Last error: $($wait.LastError)" } else { '' }
                 $code = if ($State -eq 'Run') { 'PLC_RUN_TIMEOUT' } else { 'STATE_SET_FAILED' }
+                $last = if ($lastReadFailed) { "unreachable (last state read: $seen)" } else { $shown }
+                $data | Add-Member -NotePropertyName 'probeErrors' -NotePropertyValue @($wait.ProbeErrors | Where-Object { $null -ne $_ }) -Force
+                $data | Add-Member -NotePropertyName 'probeErrorsDropped' -NotePropertyValue ([int]$wait.ProbeErrorsDropped) -Force
                 $params = @{
                     Success      = $false
-                    ErrorMessage = "PLC did not reach '$State' within $TimeoutSec s (last state: $($wait.State)).$detail"
+                    ErrorMessage = "PLC did not reach '$State' within $TimeoutSec s (last state: $last).$detail"
                     ErrorCode    = $code
                     Data         = $data
                 }
                 $hint = Get-TcErrorHint -Code $code
                 if (-not [string]::IsNullOrWhiteSpace($hint)) { $params['Hint'] = $hint }
-                return (Add-TcLifecycleBlockResult -Result (New-TcResult @params) -Command 'Set-TcPlcState' -AmsNetId ([string]$script:TcAdsAmsNetId) -RequestedState $State -ReachedState ([string]$wait.State) -Step "port $($script:TcAdsPort)")
+                # nothing was read back at the end: reachedState empty, the last value read goes to the step text
+                $reachedRb = if ($lastReadFailed) { $null } else { $shown }
+                $step = if ($lastReadFailed) { "port $($script:TcAdsPort) unreachable at the deadline; last state read before: $seen" } else { "port $($script:TcAdsPort)" }
+                $note = if ($lastReadFailed) { 'unreachable' } else { $null }
+                return (Add-TcLifecycleBlockResult -Result (New-TcResult @params) -Command 'Set-TcPlcState' -AmsNetId ([string]$script:TcAdsAmsNetId) -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step)
             }
             return New-TcResult -Success $true -Data $data
         }

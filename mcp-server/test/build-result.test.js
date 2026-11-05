@@ -462,7 +462,11 @@ describe('array data through the real bridge (GetSymbols / ReadVariable, #57)', 
 
   test('ReadVariable with several paths returns every entry; the missing one carries its error', async () => {
     const r = (await callShared('ReadVariable', { Path: ['MAIN.nCounter', 'MAIN.nMissing'] })).body;
-    assert.equal(r.success, true, JSON.stringify(r));
+    // #60: a failed path fails closed; data still holds every entry, partial / failedPaths at the top level
+    assert.equal(r.success, false, JSON.stringify(r));
+    assert.equal(r.error.code, 'PARTIAL_READ_FAILED');
+    assert.equal(r.partial, true);
+    assert.deepEqual(r.failedPaths, ['MAIN.nMissing']);
     assert.ok(Array.isArray(r.data), `data must be an array: ${JSON.stringify(r)}`);
     assert.equal(r.data.length, 2);
     assert.equal(r.data[0].path, 'MAIN.nCounter');
@@ -470,6 +474,12 @@ describe('array data through the real bridge (GetSymbols / ReadVariable, #57)', 
     assert.equal(r.data[1].path, 'MAIN.nMissing');
     assert.match(r.data[1].error, /not found/);
     assert.ok(Number.isInteger(r.order.seq));
+
+    const both = (await callShared('ReadVariable', { Path: ['MAIN.nCounter', 'MAIN.nCounter'] })).body;
+    assert.equal(both.success, true, JSON.stringify(both));
+    assert.equal(both.partial, false);
+    assert.deepEqual(both.failedPaths, []);
+    assert.ok(Array.isArray(both.data) && both.data.length === 2);
 
     const single = (await callShared('ReadVariable', { Path: ['MAIN.nCounter'] })).body;
     assert.equal(single.data.path, 'MAIN.nCounter', 'one path: data is the entry object');

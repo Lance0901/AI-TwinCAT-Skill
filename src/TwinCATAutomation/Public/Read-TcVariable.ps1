@@ -9,6 +9,12 @@ function Read-TcVariable {
                                                     integer is in ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT) or unix (DATE/DT)
           enum                                      value is the integer, name is the member name (null + hint when unknown)
           STRUCT / ARRAY / other                    value is the raw byte array (int[]), size is the byte count
+        One path: data is the entry; an unreadable symbol fails with SYMBOL_NOT_FOUND.
+        Several paths (#60, fail closed): data is an array with one entry per path, an unreadable
+        path is {path, error, code, hint}. The result also has the top-level fields partial ($true
+        when at least one path failed) and failedPaths (the paths that failed, in input order).
+        Any failed path makes the result success = false with PARTIAL_READ_FAILED; data still holds
+        every entry, including the values that were read.
     .PARAMETER Path
         Variable path(s). Single string or array (e.g., "MAIN.nCounter" or @("MAIN.nCounter","MAIN.bRunning")).
     #>
@@ -62,8 +68,28 @@ function Read-TcVariable {
             }
         }
         else {
-            # (,$results): keep data an array (New-TcResult unrolls -Data, #57)
-            New-TcResult -Success $true -Data (,$results)
+            # #60: several paths, fail closed. data stays the array of every entry (#57); the
+            # top-level partial / failedPaths say whether any path failed (data is an array, so they
+            # cannot go inside it). Any failed path -> success = false, PARTIAL_READ_FAILED.
+            $failed = @($results | Where-Object { $null -ne $_.PSObject.Properties['error'] } | ForEach-Object { [string]$_.path })
+            if ($failed.Count -gt 0) {
+                $detail = (@($results | Where-Object { $null -ne $_.PSObject.Properties['error'] } | ForEach-Object {
+                    $c = if ($null -ne $_.PSObject.Properties['code']) { [string]$_.code } else { 'unmapped' }
+                    "$($_.path) ($c)"
+                })) -join ', '
+                $res = New-TcResult -Success $false `
+                    -ErrorMessage "$($failed.Count) of $($Path.Count) paths could not be read: $detail. The values that were read are in data; every failed entry has error / code / hint." `
+                    -ErrorCode 'PARTIAL_READ_FAILED' `
+                    -Hint (Get-TcErrorHint -Code 'PARTIAL_READ_FAILED') `
+                    -Data $results
+            }
+            else {
+                # (,$results): keep data an array (New-TcResult unrolls -Data, #57)
+                $res = New-TcResult -Success $true -Data (,$results)
+            }
+            $res | Add-Member -NotePropertyName 'partial' -NotePropertyValue ($failed.Count -gt 0) -Force
+            $res | Add-Member -NotePropertyName 'failedPaths' -NotePropertyValue ([string[]]$failed) -Force
+            $res
         }
     }
     catch {

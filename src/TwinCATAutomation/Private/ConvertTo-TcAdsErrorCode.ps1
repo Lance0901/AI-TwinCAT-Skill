@@ -75,6 +75,8 @@ $script:TcErrorHints = @{
 $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / description / file / line);修正後重跑 Build-TcProject'
 # Legacy code kept by Read-TcVariable for a missing symbol: same hint as ADS_SYMBOL_NOT_FOUND
 $script:TcErrorHints['SYMBOL_NOT_FOUND'] = $script:TcErrorHints['ADS_SYMBOL_NOT_FOUND']
+# #60: Read-TcVariable with several paths, at least one failed (fail closed)
+$script:TcErrorHints['PARTIAL_READ_FAILED'] = '多路徑讀取有 path 讀不到(頂層 failedPaths;每筆的 error / code / hint 在 data 的那一筆):讀到的值仍在 data 裡，但整筆結果不算成功。code 是 ADS_SYMBOL_NOT_FOUND → 用 Get-TcSymbols 確認路徑(新變數要先下載);是連線類錯誤(ADS_TARGET_NOT_FOUND / ADS_PORT_NOT_FOUND / ADS_TIMEOUT)→ 先 Get-TcPlcState 確認狀態再重讀。只重讀 failedPaths 即可'
 # #47: Add-TcDut / Add-TcGvl read back a member order that differs from the input order
 $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] = 'DUT / GVL 已建立並存檔,但讀回的成員順序(data.actualOrder)與輸入(data.expectedOrder)不同:用 Write-TcPouCode -PouPath <data.path> -Declaration <依正確順序的 declaration> 改寫,再 Get-TcPouCode 確認後 Build-TcProject;不要沿用這個順序(STRUCT 記憶體配置會不同)'
 # #70: New-TcProject refuses while the IDE has a solution open: Solution.Create closes it without
