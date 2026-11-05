@@ -127,12 +127,12 @@ actions:
         items:
           type: string
         required: true
-        description: Side effects the user allowed, one entry each; [none] when none (#113)
+        description: Side effects the user allowed, one entry each; exactly [none] when none, never none with another entry (#113)
       MaxVerifyLevel:
         type: string
         enum: [None, SystemState, PlcState, VariableRead, TestObserved]
         required: true
-        description: Highest layer verified afterwards (#113); missing or empty fields return LIFECYCLE_RECEIPT_INCOMPLETE
+        description: The highest layer the verification after this clear will reach; results must not claim more than it (#113). Missing, empty or invalid fields return LIFECYCLE_RECEIPT_INCOMPLETE
       AmsNetId:
         type: string
         required: false

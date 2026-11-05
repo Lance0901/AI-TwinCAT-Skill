@@ -167,9 +167,8 @@ try {
     Check '(3) Get-TcSystemState (read-only) is not blocked' ($g.error.code -ne 'LIFECYCLE_BLOCKED') (J $g)
 
     # --- (4) Clear-TcLifecycleBlock ---
-    $threw = $false
-    try { $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason '' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None } catch { $threw = $true }
-    Check '(4) -Reason is required (empty refused)' $threw ''
+    $e = Clear-TcLifecycleBlock -AmsNetId $A -Reason '' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    Check '(4) -Reason is required (empty refused, #113: LIFECYCLE_RECEIPT_INCOMPLETE)' ((-not $e.success) -and $e.error.code -eq 'LIFECYCLE_RECEIPT_INCOMPLETE' -and (@($e.data.missing) -contains 'Reason')) (J $e)
     $c = Clear-TcLifecycleBlock -Reason 'user checked the license and approved a new Enable-TcConfig -Force' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     Check '(4) Clear (AmsNetId from the IDE target) returns the removed record + receipt' ($c.success -and $c.data.cleared.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $c.data.amsNetId -eq $A -and $c.data.netIdSource -eq 'resolved' -and $c.data.receipt.reason -match 'approved') (J $c.data)
     $hist = Join-Path $env:TCAUTO_STATE_DIR 'lifecycle-block-history.jsonl'
