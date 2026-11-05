@@ -338,7 +338,8 @@ while ($true) {
                 $nextScan = $sw.Elapsed.TotalSeconds + 2
                 try {
                     $dlg = Find-TcIdeModalDialog
-                    if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg }
+                    # an incomplete scan (#42) is no dialog record: never stored as "seen"
+                    if ($null -ne $dlg -and -not (Test-TcModalScanIncomplete $dlg)) { $script:TcLastModalDialog = $dlg }
                 } catch { }
             }
         }
@@ -364,14 +365,17 @@ while ($true) {
                 # is still up makes it IDE_MODAL_DIALOG.
                 $seen = $script:TcLastModalDialog
                 $dlgNow = $null
-                try { $dlgNow = Find-TcIdeModalDialog } catch { $dlgNow = $null }
-                $script:TcLastModalDialog = $dlgNow
-                if ($null -ne $dlgNow) {
+                try { $dlgNow = Find-TcIdeModalDialog } catch { $dlgNow = New-TcModalScanIncomplete -Reason 'error' -Message $_.Exception.Message }
+                $nowIncomplete = Test-TcModalScanIncomplete $dlgNow
+                $script:TcLastModalDialog = if ($nowIncomplete) { $null } else { $dlgNow }
+                if ($null -ne $dlgNow -and -not $nowIncomplete) {
                     $t = [string]$dlgNow.Text
                     if ($t.Length -gt 200) { $t = $t.Substring(0, 200) }
                     throw "IDE_MODAL_DIALOG: $($dlgNow.Title) | $t (operation 'Project.Save', original error: $msg)"
                 }
-                $seenNote = if ($null -ne $seen) { "; a dialog '$($seen.Title)' was up during the call and is gone now" } else { '' }
+                # #42: an incomplete scan says nothing about a dialog; the save error stands
+                $seenNote = if ($nowIncomplete) { "; the modal-dialog scan after the failure did not complete ($([string]$dlgNow.Reason)), a dialog may still be up" }
+                elseif ($null -ne $seen) { "; a dialog '$($seen.Title)' was up during the call and is gone now" } else { '' }
                 throw "save: Project.Save of '$TsProjFile' failed ($msg)$seenNote."
             }
             return
@@ -379,9 +383,11 @@ while ($true) {
 
         # --- deadline passed: stop the background retries, collect diagnostics, abandon the call ---
         $cancel['Cancel'] = $true
-        $diag = [ordered]@{ dialog = $null; ideAlive = $null; ideResponding = $null; readOnlyFiles = @(); elapsedSec = [int]$sw.Elapsed.TotalSeconds }
+        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; ideAlive = $null; ideResponding = $null; readOnlyFiles = @(); elapsedSec = [int]$sw.Elapsed.TotalSeconds }
         try {
             $dlg = Find-TcIdeModalDialog
+            # #42: an incomplete scan is reported (dialogScanComplete false); the dialog seen during the call still counts
+            if (Test-TcModalScanIncomplete $dlg) { $diag.dialogScanComplete = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg; $dlg = $null }
             if ($null -eq $dlg) { $dlg = $script:TcLastModalDialog }
             if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
         } catch { }

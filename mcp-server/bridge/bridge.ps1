@@ -618,12 +618,35 @@ function Invoke-OpModal {
     if ($timeoutSec -lt 1) { $timeoutSec = 1 }
     if ($timeoutSec -gt 60) { $timeoutSec = 60 }
 
-    $objects = Invoke-Captured -Id $Id -Script {
-        param($p, $t)
-        Invoke-InModule { param($p2, $t2) Find-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 } @($p, $t)
-    } -ArgumentList @($ideProcessId, $timeoutSec)
+    # #42 review: prepare (cold start) + scan must end before the Node-side tool timeout
+    # (GetIdeModalDialog timeoutMs 90000 in lib/composites.js), else BRIDGE_TIMEOUT kills this
+    # bridge. 90 - 15 s margin (runspace start-up, JSON, pipe) - scan budget = prepare cap
+    # (TimeoutSec 60 -> 15 s prepare, TimeoutSec 5 -> 60 s).
+    $toolTimeoutSec = 90
+    $prepareSec = [Math]::Max(1, [Math]::Min(60, $toolTimeoutSec - 15 - $timeoutSec))
     $dialog = $null
-    foreach ($o in $objects) { if ($null -ne $o) { $dialog = $o } }
+    try {
+        $objects = Invoke-Captured -Id $Id -Script {
+            param($p, $t, $pp)
+            Invoke-InModule { param($p2, $t2, $pp2) Find-TcIdeModalDialog -ProcessId $p2 -TimeoutSec $t2 -PrepareTimeoutSec $pp2 } @($p, $t, $pp)
+        } -ArgumentList @($ideProcessId, $timeoutSec, $prepareSec)
+        foreach ($o in $objects) { if ($null -ne $o) { $dialog = $o } }
+    }
+    catch {
+        $em = $_.Exception.Message
+        $dialog = Invoke-InModule { param($p2, $t2, $m2) New-TcModalScanIncomplete -ProcessId $p2 -Reason 'error' -TimeoutSec $t2 -Message $m2 } @($ideProcessId, $timeoutSec, "the scan threw: $em")
+    }
+
+    # #42: a scan that did not complete is NOT "no dialog": MODAL_SCAN_INCOMPLETE, scanComplete false.
+    $incomplete = $false
+    try { $incomplete = [bool](Invoke-InModule { param($d) Test-TcModalScanIncomplete $d } @(, $dialog)) } catch { $incomplete = $false }
+    if ($incomplete) {
+        $info = Invoke-InModule { param($d) ConvertTo-TcModalScanInfo -Scan $d } @(, $dialog)
+        $hint = Invoke-InModule { Get-TcErrorHint -Code 'MODAL_SCAN_INCOMPLETE' } @()
+        return New-ErrorResult -Code 'MODAL_SCAN_INCOMPLETE' -Hint $hint `
+            -Message "MODAL_SCAN_INCOMPLETE: the modal-dialog scan of IDE pid $ideProcessId did not complete ($($info.reason): $($info.message)); it is unknown whether a dialog is open." `
+            -Data ([ordered]@{ ideProcessId = [int]$ideProcessId; scanComplete = $false; dialog = $null; modalScan = $info })
+    }
 
     $dialogOut = $null
     if ($null -ne $dialog) {
@@ -634,7 +657,7 @@ function Invoke-OpModal {
         # 'unknown' (reloadTarget null). Classification is the module's (Add-TcDialogKind).
         $dialogOut = ConvertTo-BridgeDialog $dialog
     }
-    return New-SuccessResult -Data ([ordered]@{ ideProcessId = [int]$ideProcessId; dialog = $dialogOut })
+    return New-SuccessResult -Data ([ordered]@{ ideProcessId = [int]$ideProcessId; scanComplete = $true; dialog = $dialogOut })
 }
 
 function ConvertTo-BridgeDialog {
