@@ -43,7 +43,8 @@
 #   - a FILE, so it survives Import-Module -Force, one-process-per-call CLI use and a restarted
 #     MCP bridge:  <dir>\build-required.json
 #       { "<normalized .sln path>": { solution; kind; reason; reasons { <kind>: text }; at }, ... }
-#     <dir> = $env:TCAUTO_STATE_DIR (tests) or %TEMP%\TwinCATAutomation. Entries written before
+#     <dir> = $env:TCAUTO_STATE_DIR (tests) or %TEMP%\TwinCATAutomation (Get-TcStateDir; unit
+#     tests refuse the default with TCAUTO_TEST_FORBID_REAL_STATE=1, #118). Entries written before
 #     #56 have no kind / reasons: read as kind 'platform-switch'.
 #   - plus an in-memory copy ($script:TcBuildRequiredLocal) of every entry this module instance
 #     recorded: when the file cannot be written (another process or a virus scanner holds it
@@ -97,10 +98,37 @@ $script:TcCodeChangedPrefix = 'PLC code changed by '
 $script:TcCodeChangedMaxItems = 8
 $script:TcCodeChangedSeparator = ' | '
 
-function Get-TcBuildRequiredFile {
+# Directory of every module state file (build-required.json, lifecycle-block.json, its history and,
+# when TCAUTO_STATE_DIR is set, ide-solutions.json): $env:TCAUTO_STATE_DIR or %TEMP%\TwinCATAutomation.
+# #118: with $env:TCAUTO_TEST_FORBID_REAL_STATE = '1' (set by the unit-test isolation helper and
+# scripts/check.ps1) the default (real) directory is refused: a marker line goes straight to the
+# process stderr (callers may swallow the exception; scripts/check.ps1 fails the test on the
+# marker) and the call throws, so a test can never read or write the machine's real state.
+function Assert-TcRealStateAllowed {
+    param([string]$What)
+    if ($env:TCAUTO_TEST_FORBID_REAL_STATE -ne '1') { return }
+    $msg = "TCAUTO_REAL_STATE_REFUSED: $What would use the real state directory (TCAUTO_STATE_DIR is not set) while TCAUTO_TEST_FORBID_REAL_STATE=1 (#118)"
+    try { [Console]::Error.WriteLine($msg) } catch { }
+    throw $msg
+}
+
+function Get-TcStateDir {
     $dir = $env:TCAUTO_STATE_DIR
-    if ([string]::IsNullOrWhiteSpace($dir)) { $dir = Join-Path ([IO.Path]::GetTempPath()) 'TwinCATAutomation' }
-    Join-Path $dir 'build-required.json'
+    if (-not [string]::IsNullOrWhiteSpace($dir)) { return $dir }
+    Assert-TcRealStateAllowed -What 'the module state'
+    Join-Path ([IO.Path]::GetTempPath()) 'TwinCATAutomation'
+}
+
+# A state file name for messages / data only: never throws. Under TCAUTO_TEST_FORBID_REAL_STATE
+# without TCAUTO_STATE_DIR it gives '<refused>\<name>' (the marker line is still printed), so the
+# fail-closed result that carries the message is still returned (#118).
+function Get-TcStateFileLabel {
+    param([Parameter(Mandatory)][string]$Name)
+    try { Join-Path (Get-TcStateDir) $Name } catch { "<refused>\$Name" }
+}
+
+function Get-TcBuildRequiredFile {
+    Join-Path (Get-TcStateDir) 'build-required.json'
 }
 
 # Name of the mutex that guards the state file (see the file header).
@@ -381,7 +409,7 @@ function Set-TcBuildRequired {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($r.Locked -and $null -eq $r.Error) { return $null }
-    $w = "BUILD_REQUIRED was recorded in this process only, not in $(Get-TcBuildRequiredFile) ($($r.Error)): another process (or an MCP bridge restart) will not see it; run Build-TcProject before Enable-TcConfig or a PLC login."
+    $w = "BUILD_REQUIRED was recorded in this process only, not in $(Get-TcStateFileLabel 'build-required.json') ($($r.Error)): another process (or an MCP bridge restart) will not see it; run Build-TcProject before Enable-TcConfig or a PLC login."
     Write-Warning $w
     return $w
 }
@@ -425,7 +453,7 @@ function Clear-TcBuildRequired {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($r.Locked -and $null -eq $r.Error) { return $null }
-    $w = "Clear-TcBuildRequired: $(Get-TcBuildRequiredFile) not updated ($($r.Error)); Enable-TcConfig and PLC logins stay blocked until a later Build-TcProject can update it."
+    $w = "Clear-TcBuildRequired: $(Get-TcStateFileLabel 'build-required.json') not updated ($($r.Error)); Enable-TcConfig and PLC logins stay blocked until a later Build-TcProject can update it."
     Write-Warning $w
     return $w
 }
@@ -596,7 +624,7 @@ function Get-TcBuildSelectionGuard {
         reason                = [string]$r['build-selection']
         solution              = [string]$e.solution
         at                    = [string]$e.at
-        stateFile             = (Get-TcBuildRequiredFile)
+        stateFile             = (Get-TcStateFileLabel 'build-required.json')
     }
 }
 
@@ -635,7 +663,7 @@ function Clear-TcBuildSelectionGuard {
         Write-TcBuildRequiredState -Entries $st.Entries
     }
     if ($res.Locked -and $null -eq $res.Error) { return $null }
-    "Clear-TcBuildSelectionGuard: $(Get-TcBuildRequiredFile) not updated ($($res.Error)); Build-TcProject and Enable-TcConfig stay blocked until a later Set-TcTarget can update it."
+    "Clear-TcBuildSelectionGuard: $(Get-TcStateFileLabel 'build-required.json') not updated ($($res.Error)); Build-TcProject and Enable-TcConfig stay blocked until a later Set-TcTarget can update it."
 }
 
 function New-TcBuildSelectionGuardResult {

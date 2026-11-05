@@ -5,6 +5,7 @@
 # The abandoned entries are real PowerShell/Runspace pairs that already finished; only the UIA
 # scan itself (Invoke-TcUiaScan) and View.ErrorList (Invoke-TcComRetry) are replaced.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
