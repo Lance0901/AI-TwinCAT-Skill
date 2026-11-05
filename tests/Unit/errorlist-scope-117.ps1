@@ -36,6 +36,7 @@
 #      F4 Get-TcBuildErrors: junk excluded + one missing -> ERRORLIST_INCOMPLETE; unstable severity
 #         with a matching last read -> ERRORLIST_INCOMPLETE (unstable)
 #      F5 a real row without location (build-summary) is NOT junk
+#      F6 every read 0 rows with a total > 0 -> 'no rows read' / noRows, not unstable (#138 O5)
 #   D  #107: Error List budget of Build-TcProject / Test-TcPlcProject
 #      D1 $script:TcBuildErrorListTimeoutSec >= 30, no 8 s branch left in either cmdlet
 #      D2 a scan that needs 17 s (simulated, no wait): times out with the old 8 s budget, reads
@@ -354,12 +355,13 @@ try {
         $script:grid = New-SnapshotGrid $Snapshots
         $script:junkCount = @{ n = 0 }
         $script:unstable = [System.Collections.Generic.List[string]]::new()
+        $script:noRows = [System.Collections.Generic.List[string]]::new()
         $script:notes = [System.Collections.Generic.List[string]]::new()
         $script:MaxRows = 2000
         $script:SettleMs = 0
         $out = [System.Collections.Generic.List[object]]::new()
         $null = Read-SeverityStable 'Warning' $Total $RequireStable $out
-        [PSCustomObject]@{ Rows = @($out | ForEach-Object { $_.description }); Unstable = @($script:unstable); Reads = $script:grid.State.Calls; Notes = @($script:notes) }
+        [PSCustomObject]@{ Rows = @($out | ForEach-Object { $_.description }); Unstable = @($script:unstable); NoRows = @($script:noRows); Reads = $script:grid.State.Calls; Notes = @($script:notes) }
     }
     $g = Invoke-Stable @(, @('A', 'B', 'JUNK:C')) 3 $false
     Check 'F2 junk row + C missing, never settles: junk triggers re-reads, Warning unstable, bounded reads' (@($g.Unstable) -contains 'Warning' -and @($g.Rows).Count -eq 2 -and $g.Reads -le $StableMaxReads -and $g.Reads -ge 2) (J $g)
@@ -369,6 +371,13 @@ try {
     Check 'F3 after a scope switch even a clean read is confirmed once more (2 reads)' (@($g.Unstable).Count -eq 0 -and $g.Reads -eq 2) (J $g)
     $g = Invoke-Stable @(, @('A', 'B', 'C')) 3 $false
     Check 'F3 no switch, no junk: a single read' ($g.Reads -eq 1) (J $g)
+    $g = Invoke-Stable @(, @()) 3 $true
+    Check "F6 every read 0 rows, total 3 -> 'no rows read' + noRows, not unstable (#138 O5)" (@($g.NoRows) -contains 'Warning' -and @($g.Unstable).Count -eq 0 -and @($g.Notes | Where-Object { $_ -match 'no rows read' }).Count -eq 1 -and @($g.Notes | Where-Object { $_ -match 'NOT stable' }).Count -eq 0) (J $g)
+    Set-Scan -Rows @() -Errors 0 -Warnings 3
+    $global:ScanResult | Add-Member -NotePropertyName NoRows -NotePropertyValue @('Warning')
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    $mw = @($r.data.missingRows | Where-Object { $_.severity -eq 'warnings' })
+    Check 'F6 Get-TcBuildErrors: missingRows noRows = true, unstable = false, still ERRORLIST_INCOMPLETE' (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and $mw.Count -eq 1 -and $mw[0].noRows -and -not $mw[0].unstable) (J $r.data.missingRows)
 
     Set-Scan -Rows @((Row 'Warning' 'w1'), (Row 'Warning' 'w2')) -Errors 0 -Warnings 3
     $r = Get-TcBuildErrors -TimeoutSec 30

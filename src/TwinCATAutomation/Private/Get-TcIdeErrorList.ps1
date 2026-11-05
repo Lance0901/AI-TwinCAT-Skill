@@ -614,6 +614,9 @@ $script:TcUiaErrorListScan = {
     $StableMaxSec = 10
     $junkCount = @{ n = 0 }
     $unstable = [System.Collections.Generic.List[string]]::new()
+    # Severities where every read returned 0 rows while the button total is > 0 (#138 O5): not
+    # "unstable" (the count never moved), reported on its own; still incomplete (fail closed).
+    $noRows = [System.Collections.Generic.List[string]]::new()
     function Read-SeverityStable {
         param([string]$Sev, $Total, [bool]$RequireStable, $Out)
         $junkBefore = $junkCount.n
@@ -639,8 +642,10 @@ $script:TcUiaErrorListScan = {
             if ($cur.Count -eq $prevCount -and $cur.Count -eq [int]$Total) { $stable = $true; break }
         }
         foreach ($x in $last) { $Out.Add($x) }
-        $notes.Add("rows '$Sev' stability reads: $($readCounts -join ', ') of $Total; " + $(if ($stable) { 'stable' } else { 'NOT stable' }))
-        if (-not $stable) { $unstable.Add($Sev) }
+        $allZero = (@($readCounts | Where-Object { $_ -ne 0 }).Count -eq 0) -and [int]$Total -gt 0
+        $verdict = if ($stable) { 'stable' } elseif ($allZero) { 'no rows read' } else { 'NOT stable' }
+        $notes.Add("rows '$Sev' stability reads: $($readCounts -join ', ') of $Total; $verdict")
+        if (-not $stable) { if ($allZero) { $noRows.Add($Sev) } else { $unstable.Add($Sev) } }
         return $trunc
     }
 
@@ -711,6 +716,7 @@ $script:TcUiaErrorListScan = {
         ToggleUsed = $toggleUsed
         CountsTotalForm = [bool]$cb.TwoNumbers
         Unstable   = $unstable.ToArray()
+        NoRows     = $noRows.ToArray()
         JunkRows   = [int]$junkCount.n
         Scope      = [PSCustomObject]$scopeInfo
         Notes      = $notes.ToArray()
@@ -815,6 +821,8 @@ function Get-TcErrorListShortfall {
     # when the last read happens to match.
     $unstable = @()
     if ($null -ne $Scan.PSObject.Properties['Unstable']) { $unstable = @($Scan.Unstable) }
+    $noRowsSev = @()
+    if ($null -ne $Scan.PSObject.Properties['NoRows']) { $noRowsSev = @($Scan.NoRows) }
     $unstableMap = @{ Error = 'errors'; Warning = 'warnings'; Message = 'messages' }
     $pairs = @(
         [PSCustomObject]@{ name = 'errors'; want = $true; read = $Errors },
@@ -826,8 +834,9 @@ function Get-TcErrorListShortfall {
             $expected = $c.($p.name)
             if ($null -eq $expected) { continue }
             $isUnstable = @($unstable | Where-Object { $unstableMap[[string]$_] -eq $p.name }).Count -gt 0
-            if ($p.read -lt [int]$expected -or $isUnstable) {
-                $out.Add([PSCustomObject]@{ severity = $p.name; expected = [int]$expected; read = $p.read; unstable = $isUnstable })
+            $isNoRows = @($noRowsSev | Where-Object { $unstableMap[[string]$_] -eq $p.name }).Count -gt 0
+            if ($p.read -lt [int]$expected -or $isUnstable -or $isNoRows) {
+                $out.Add([PSCustomObject]@{ severity = $p.name; expected = [int]$expected; read = $p.read; unstable = $isUnstable; noRows = $isNoRows })
             }
         }
     }
