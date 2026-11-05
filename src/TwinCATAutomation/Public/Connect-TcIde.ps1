@@ -637,6 +637,9 @@ function Connect-TcIde {
         silentMode          = $script:TcSilentMode
         candidates          = $candidateSummary
     }
+    # #123: the session record could not be updated (lock busy): say so, the old one is not used
+    $recWarn = if ($ideProcessId -gt 0) { Get-TcIdeSolutionRecordWarning -ProcessId $ideProcessId } else { $null }
+    if ($null -ne $recWarn) { $data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }

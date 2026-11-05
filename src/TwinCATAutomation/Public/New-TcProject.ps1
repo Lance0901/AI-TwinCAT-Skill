@@ -107,6 +107,9 @@ function New-TcProject {
             plcProject = "$Name" + '_Plc'
             path       = $solutionPath
         })
+        # #123: the record could not be updated (lock busy): say so, the old one is not used
+        $recWarn = if ($null -ne $script:TcIdeProcessId) { Get-TcIdeSolutionRecordWarning -ProcessId ([int]$script:TcIdeProcessId) } else { $null }
+        if ($null -ne $recWarn) { $ok.data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
         Register-TcCodeChange -Result $ok -Change "New-TcProject $Name"
     }
     catch {

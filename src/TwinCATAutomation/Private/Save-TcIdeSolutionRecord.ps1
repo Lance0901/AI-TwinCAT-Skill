@@ -7,7 +7,8 @@
 #   [ { pid; startTime ('o' format); solution } ]
 # Connect-TcIde -SolutionPath reads it for an IDE whose DTE cannot be asked (modal dialog / busy,
 # issue #29). A record only counts while the same process (pid AND start time) is still running,
-# so a recycled pid never matches. Best effort: any I/O error is ignored.
+# so a recycled pid never matches. Best effort: an I/O error never throws, but a skipped write
+# makes the old record of that process untrusted in this module instance (#123).
 
 function Get-TcIdeSolutionRecordPath {
     [CmdletBinding()]
@@ -103,15 +104,42 @@ function Get-TcIdeSolutionLockName {
     "$($script:TcIdeSolutionLockName).$(((Get-TcBuildRequiredMutexName) -split '\.')[-1])"
 }
 
-# Runs -Body under the ide-solutions mutex (same helper as build-required.json). Returns $true
-# when it ran without error; otherwise writes a verbose line. Best effort: never throws.
+# Runs -Body under the ide-solutions mutex (same helper as build-required.json). Returns $null
+# when it ran without error; otherwise the reason (string) and a verbose line. Never throws.
 function Invoke-TcIdeSolutionLocked {
     [CmdletBinding()]
     param([Parameter(Mandatory)][scriptblock]$Body, [string]$What = 'IDE solution record')
     $r = Invoke-TcBuildRequiredLocked -Body $Body -MutexName (Get-TcIdeSolutionLockName) -TimeoutMs $script:TcIdeSolutionLockTimeoutMs
-    if (-not $r.Locked) { Write-Verbose "$What skipped ($($r.Error))"; return $false }
-    if ($r.Error) { Write-Verbose "$What failed ($($r.Error))"; return $false }
-    $true
+    if (-not $r.Locked) { $msg = "$What skipped ($($r.Error))"; Write-Verbose $msg; return $msg }
+    if ($r.Error) { $msg = "$What failed ($($r.Error))"; Write-Verbose $msg; return $msg }
+    $null
+}
+
+# --- #123: records of this process that could not be written are not trusted ---
+# A skipped / failed Save or Remove leaves the previous record of that IDE process in the file
+# (e.g. the solution before Open-TcProject). Until a later Save / Remove for the same process
+# (pid AND start time) succeeds, this module instance does not use the file record of that
+# process (Get-TcIdeSolutionRecord returns $null, Find-TcBlockedSolutionIde makes every match of
+# it weak) and the cmdlet that wrote it reports data.sessionRecordWarning.
+# Per module instance: another PowerShell process / MCP bridge still sees the old file record.
+function Set-TcIdeSolutionRecordUntrusted {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId, [AllowNull()][string]$Reason)
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -eq $key) { return }   # process gone: its record no longer counts anyway
+    if ($null -eq $script:TcIdeSolutionRecordUntrusted) { $script:TcIdeSolutionRecordUntrusted = @{} }
+    if ([string]::IsNullOrWhiteSpace($Reason)) { $script:TcIdeSolutionRecordUntrusted.Remove($key) }
+    else { $script:TcIdeSolutionRecordUntrusted[$key] = $Reason }
+}
+
+# The reason the record of process -ProcessId is not trusted (see above), or $null.
+function Get-TcIdeSolutionRecordWarning {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($null -eq $script:TcIdeSolutionRecordUntrusted -or $script:TcIdeSolutionRecordUntrusted.Count -eq 0) { return $null }
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -eq $key -or -not $script:TcIdeSolutionRecordUntrusted.ContainsKey($key)) { return $null }
+    "session record of IDE process $ProcessId not updated: $($script:TcIdeSolutionRecordUntrusted[$key]); its previous record is not used as evidence by this session"
 }
 
 # -Cache (hashtable) memoizes the answer per record: the writers fill it BEFORE taking the mutex
@@ -143,17 +171,20 @@ function Save-TcIdeSolutionRecord {
         [Parameter(Mandatory)][int]$ProcessId,
         [Parameter(Mandatory)][string]$Solution
     )
+    $failure = $null
     try {
         $start = (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToString('o')
         $alive = @{}
         foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
-        $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -Body {
+        $failure = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -Body {
             $keep = @(Read-TcIdeSolutionRecordsForWrite | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
             $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $start; solution = $Solution }
             Write-TcIdeSolutionRecords -Records $keep
         }
     }
-    catch { Write-Verbose "IDE solution record not saved ($($_.Exception.Message))" }
+    catch { $failure = "IDE solution record not saved ($($_.Exception.Message))"; Write-Verbose $failure }
+    # #123: not silent: a skipped write makes the old record of this process untrusted
+    Set-TcIdeSolutionRecordUntrusted -ProcessId $ProcessId -Reason $failure
 }
 
 # Replaces the record file with -Records (tmp + move). Throws on failure (callers are best effort).
@@ -188,25 +219,32 @@ function Remove-TcIdeSolutionRecord {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
+    $failure = $null
     try {
         $alive = @{}
         foreach ($r in @(Read-TcIdeSolutionRecords)) { $null = Test-TcIdeRecordAlive -Record $r -Cache $alive }   # outside the lock
-        $null = Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -Body {
+        $failure = Invoke-TcIdeSolutionLocked -What 'IDE solution record remove' -Body {
             $all = @(Read-TcIdeSolutionRecordsForWrite -LeaveCorrupt)
             if (-not @($all | Where-Object { [int]$_.pid -eq $ProcessId })) { return }
             Write-TcIdeSolutionRecords -Records @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
         }
     }
-    catch { Write-Verbose "IDE solution record not removed ($($_.Exception.Message))" }
+    catch { $failure = "IDE solution record not removed ($($_.Exception.Message))"; Write-Verbose $failure }
+    # #123: a record that should be gone but is still in the file must not be used
+    Set-TcIdeSolutionRecordUntrusted -ProcessId $ProcessId -Reason $failure
 }
 
 function Get-TcIdeSolutionRecord {
     <#
     .SYNOPSIS
         Solution recorded for the RUNNING process -ProcessId (same start time), or $null.
+        $null as well while the record of that process is untrusted (#123: the last write was
+        skipped, see Set-TcIdeSolutionRecordUntrusted).
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
+    $untrusted = Get-TcIdeSolutionRecordWarning -ProcessId $ProcessId
+    if ($null -ne $untrusted) { Write-Verbose $untrusted; return $null }
     try {
         foreach ($r in @(Read-TcIdeSolutionRecords)) {
             if ([int]$r.pid -ne $ProcessId) { continue }
