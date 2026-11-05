@@ -11,6 +11,14 @@
 // entries `git worktree list` shows: <main>\.git\worktrees\<name>\gitdir names <worktree>\.git, and
 // that .git file must point back to the same <main>\.git\worktrees\<name> (a stale or foreign entry
 // is not allowed). Every other path is refused.
+//
+// Limits of the commit read (moduleCommit is then null, never a wrong sha):
+//   - HEAD must be a 40-character sha (detached) or `ref: refs/...` made of [A-Za-z0-9._/-] only; a
+//     branch name with other characters (e.g. non-ASCII, '+', '@{') is not resolved.
+//   - only loose refs and packed-refs; a repository using the reftable backend
+//     (extensions.refStorage = reftable) has neither, so no commit is found.
+//   - SHA-1 repositories only (a SHA-256 repository has 64-character ids).
+//   - HEAD only: uncommitted changes in the working tree are not detected (moduleDirty is null).
 import fs from 'node:fs';
 import path from 'node:path';
 

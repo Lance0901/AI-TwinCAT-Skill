@@ -1,9 +1,20 @@
 # Test fixture (#41, no IDE): the smallest module the REAL bridge/bridge.ps1 can load to exercise
-# op 'retire' (ReloadModule). It keeps an in-memory lifecycle block table under the same name as the
-# real module ($script:TcLifecycleBlockLocal, Private/LifecycleBlock.ps1) and never writes a state
-# file. Loaded by test/reload.test.js; the file name keeps the module name 'TwinCATAutomation'.
+# op 'retire' (ReloadModule). It dot-sources the REAL state code of the module
+# (Private/Set-TcBuildRequired.ps1 and Private/LifecycleBlock.ps1), so $script:TcBuildRequiredLocal,
+# $script:TcLifecycleBlockLocal and the build-required.json helpers are exactly the shipped ones
+# (a rename there fails test/reload.test.js). State files go to $env:TCAUTO_STATE_DIR (the test sets
+# a temp directory). Loaded by test/reload.test.js; the file name keeps the module name.
+#
+# env TCAUTO_TEST_RELOAD_DROP_VAR = 'lifecycle' | 'build': remove that variable after loading, to
+# prove that a module without it is refused (fail closed).
 
-$script:TcLifecycleBlockLocal = @{}
+$privateDir = Join-Path $PSScriptRoot '..\..\..\..\src\TwinCATAutomation\Private'
+. (Join-Path $privateDir 'Set-TcBuildRequired.ps1')
+. (Join-Path $privateDir 'LifecycleBlock.ps1')
+
+if ($env:TCAUTO_TEST_RELOAD_DROP_VAR -eq 'lifecycle') { Remove-Variable -Name TcLifecycleBlockLocal -Scope Script }
+if ($env:TCAUTO_TEST_RELOAD_DROP_VAR -eq 'build') { Remove-Variable -Name TcBuildRequiredLocal -Scope Script }
+
 $script:TcDte = $null
 $script:TcAdsConnected = $false
 $script:TcIdeProcessId = $null
@@ -46,14 +57,35 @@ function Disconnect-TcAds {
 function Set-TcSystemState {
     <#
     .SYNOPSIS
-        Fixture: records an in-memory lifecycle block and fails like a Set-TcSystemState that sent its request.
+        Fixture: records an in-memory lifecycle block only (as when the state file cannot be written) and fails.
     .PARAMETER AmsNetId
         Target of the fake block.
     #>
     [CmdletBinding()]
     param([string]$AmsNetId = '5.1.2.3.1.1')
-    $script:TcLifecycleBlockLocal[$AmsNetId.ToLowerInvariant()] = [PSCustomObject]@{ amsNetId = $AmsNetId; command = 'Set-TcSystemState'; errorCode = 'SYSTEM_STATE_TIMEOUT' }
+    $script:TcLifecycleBlockLocal[(ConvertTo-TcLifecycleKey $AmsNetId)] = [PSCustomObject]@{ amsNetId = $AmsNetId; command = 'Set-TcSystemState'; errorCode = 'SYSTEM_STATE_TIMEOUT' }
     [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'SYSTEM_STATE_TIMEOUT'; message = 'fixture: state not reached' } }
 }
 
-Export-ModuleMember -Function Connect-TcIde, Disconnect-TcIde, Disconnect-TcAds, Set-TcSystemState
+function Register-TcCodeChange {
+    <#
+    .SYNOPSIS
+        Fixture: records a code-changed BUILD_REQUIRED entry for a solution.
+    .PARAMETER SolutionPath
+        Solution the entry is for.
+    .PARAMETER LocalOnly
+        Keep the entry in memory only (as when build-required.json could not be written).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SolutionPath, [switch]$LocalOnly)
+    if ($LocalOnly) {
+        $reasons = [ordered]@{ 'code-changed' = 'PLC code changed by fixture' }
+        $key = ConvertTo-TcSolutionKey $SolutionPath
+        $script:TcBuildRequiredLocal[$key] = New-TcBuildRequiredEntry -Solution $SolutionPath -Reasons $reasons -Kind 'code-changed' -At ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))
+        return [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ key = $key; localOnly = $true } }
+    }
+    $w = Set-TcBuildRequired -Reason 'PLC code changed by fixture' -Kind 'code-changed' -SolutionPath $SolutionPath 3>$null
+    [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ key = (ConvertTo-TcSolutionKey $SolutionPath); localOnly = $false; warning = $w } }
+}
+
+Export-ModuleMember -Function Connect-TcIde, Disconnect-TcIde, Disconnect-TcAds, Set-TcSystemState, Register-TcCodeChange

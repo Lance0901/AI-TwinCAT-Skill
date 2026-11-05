@@ -8,7 +8,7 @@
 //   ctx.baseModulePath     module path the server was started with (TWINCAT_MODULE_PATH): the allow list of
 //                          ReloadModule is derived from its checkout
 //   ctx.onModuleReloaded(p) called after ReloadModule loaded module path p (index.js updates the probe scan script)
-import { checkModulePath } from './module-source.js';
+import { checkModulePath, pathKey } from './module-source.js';
 
 function errorResult(code, message, hint) {
   const error = { code, message };
@@ -182,7 +182,7 @@ export const GetStatus = {
   name: 'GetStatus',
   description:
     'Snapshot of the whole stack: bridge state (IDE/ADS connected, AmsNetId), IDE info, TwinCAT system state and PLC state. ' +
-    'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit (40-character git sha of that checkout when the module was loaded, read from the .git files; null outside a git checkout) and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). ' +
+    'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit (40-character git sha HEAD of that checkout pointed at when the module was loaded, read from the .git files; null outside a git checkout; uncommitted changes in the working tree are NOT reflected, so moduleDirty is always null: it cannot be known without running git), moduleDirty and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). ' +
     'Fails with NOT_CONNECTED when the IDE is not connected (run ConnectIde first); each sub-query is independent, a failing one is reported in place without aborting the others.',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
@@ -203,6 +203,7 @@ export const GetStatus = {
       ...(stateResult.data ?? {}),
       modulePath: mod.modulePath ?? null,
       moduleCommit: mod.moduleCommit ?? null,
+      moduleDirty: null,
       loadedAt: mod.loadedAt ?? null
     };
 
@@ -276,7 +277,9 @@ export const GetIdeModalDialog = {
 };
 
 function moduleSnapshot(m) {
-  return { modulePath: m?.modulePath ?? null, moduleCommit: m?.moduleCommit ?? null, loadedAt: m?.loadedAt ?? null };
+  // moduleDirty: always null; whether the working tree has uncommitted changes cannot be read from
+  // the .git files without running git (#41 review), so moduleCommit only names HEAD.
+  return { modulePath: m?.modulePath ?? null, moduleCommit: m?.moduleCommit ?? null, moduleDirty: null, loadedAt: m?.loadedAt ?? null };
 }
 
 export const ReloadModule = {
@@ -285,11 +288,12 @@ export const ReloadModule = {
     'Load the TwinCATAutomation PowerShell module again (#41): the bridge process is retired and a new one imports the module from ModulePath (omit it to reload the module path loaded now). ' +
     "ModulePath must be src\\TwinCATAutomation\\TwinCATAutomation.psm1 of the main checkout the server was started from, or the same file in one of that repository's git worktrees (the entries of `git worktree list`); any other path is refused with RELOAD_PATH_NOT_ALLOWED (data.allowed lists the accepted paths). " +
     'Fail closed (#68): while the loaded module holds a lifecycle block in memory the reload is refused with RELOAD_LIFECYCLE_BLOCKED and nothing changes; report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed. ' +
+    'BUILD_REQUIRED entries the module holds in memory are written to build-required.json first (data.buildRequiredPersisted lists the ones that were missing there); when that file cannot be read or written the reload is refused with RELOAD_BUILD_REQUIRED and nothing changes. ' +
     'The IDE and ADS connections are released first (DisconnectIde without Quit: the IDE keeps running; DisconnectAds): run ConnectIde (and ConnectAds) again after the reload. ' +
-    'Returns data.previous and data.current = {modulePath, moduleCommit, loadedAt} (moduleCommit: 40-character git sha read from the .git files). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
+    'Returns data.previous and data.current = {modulePath, moduleCommit, loadedAt} (moduleCommit: 40-character git sha HEAD pointed at, read from the .git files; uncommitted working-tree changes are not reflected, moduleDirty is always null). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
     'Only the PowerShell module is reloaded: the MCP server (index.js, bridge.ps1) and its tool list (tools.json) stay those of the running server; a cmdlet or parameter the new module adds is not offered until the server restarts.',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-  timeoutMs: 180000,
+  timeoutMs: 210000, // retire 90 s + start 60 s + restore start 60 s
   inputSchema: {
     type: 'object',
     properties: {
@@ -342,7 +346,7 @@ export const ReloadModule = {
       let restored = false;
       let restoreError = null;
       const back = previousPath;
-      if (back && back !== target) {
+      if (back && pathKey(back) !== pathKey(target)) {
         bridge.modulePath = back;
         try {
           await bridge.start();
@@ -375,6 +379,7 @@ export const ReloadModule = {
         cmdlets: Array.isArray(started?.cmdlets) ? started.cmdlets.length : null,
         ideDisconnected: was.ideWasConnected === true,
         adsDisconnected: was.adsWasConnected === true,
+        buildRequiredPersisted: Array.isArray(was.buildRequiredPersisted) ? was.buildRequiredPersisted : [],
         reconnectRequired: true,
         note: 'The IDE and ADS connections were released before the reload (the IDE keeps running). Run ConnectIde again (and ConnectAds) before any IDE or ADS tool.'
       }

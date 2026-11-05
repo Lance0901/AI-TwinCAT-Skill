@@ -352,8 +352,20 @@ export class PowerShellBridge {
    * the module holds a lifecycle block in memory; otherwise Disconnect-TcAds + Disconnect-TcIde, reply,
    * exit) and switch to `nextModulePath` for the next child. Queued FIFO like every call, so it never
    * interrupts a call in flight. Resolves to the retire result; never rejects.
+   * No child running and none starting (never started, or the last start failed, e.g. after a
+   * RELOAD_FAILED that could not restore): there is no process and so no in-memory state to lose;
+   * the path is switched right away and no retire is sent. Sending it would start the current
+   * (possibly broken) path first and never get past MODULE_IMPORT_FAILED.
    */
   retire(nextModulePath, opts = {}) {
+    if (!this.isRunning && !this._starting && !this._stopping) {
+      if (opts.signal?.aborted) return Promise.resolve(errorResult('CANCELLED', CANCELLED_MESSAGE));
+      if (typeof nextModulePath === 'string' && nextModulePath) this.modulePath = nextModulePath;
+      return Promise.resolve({
+        success: true,
+        data: { retired: false, noBridge: true, modulePath: null, ideWasConnected: false, adsWasConnected: false, buildRequiredPersisted: [] }
+      });
+    }
     return this.call('retire', { ...opts, nextModulePath });
   }
 

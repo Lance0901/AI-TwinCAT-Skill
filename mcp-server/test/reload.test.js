@@ -191,11 +191,23 @@ function toolsWithSystemState() {
     description: 'fixture',
     inputSchema: { type: 'object', properties: { AmsNetId: { type: 'string' }, Fail: { type: 'boolean' } }, required: [], additionalProperties: false }
   });
+  doc.tools.push({
+    name: 'MarkBuildRequired',
+    cmdlet: 'Register-TcCodeChange',
+    description: 'fixture',
+    inputSchema: { type: 'object', properties: { SolutionPath: { type: 'string' }, StateUnwritable: { type: 'boolean' } }, required: [], additionalProperties: false }
+  });
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-reload41-tools-'));
   tempDirs.push(dir);
   const file = path.join(dir, 'tools.json');
   fs.writeFileSync(file, JSON.stringify(doc));
   return file;
+}
+
+function newStateDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-41-'));
+  tempDirs.push(dir);
+  return dir;
 }
 
 async function startServer(modulePath, extraEnv = {}) {
@@ -211,6 +223,8 @@ async function startServer(modulePath, extraEnv = {}) {
       TWINCAT_MCP_SKIP_PID_CHECK: '1',
       TWINCAT_MODULE_PATH: modulePath,
       MOCK_BRIDGE_FAIL_MODULE: 'badimport41',
+      TCAUTO_STATE_DIR: newStateDir(),
+      TCAUTO_TEST_FORBID_REAL_STATE: '1',
       ...extraEnv
     },
     stderr: 'pipe'
@@ -227,9 +241,11 @@ async function status(client) {
 describe('ReloadModule over stdio (mock bridge, fake repository)', () => {
   let r;
   let client;
+  let stateDir;
   before(async () => {
     r = makeRepo();
-    client = await startServer(r.mod(r.main));
+    stateDir = newStateDir();
+    client = await startServer(r.mod(r.main), { TCAUTO_STATE_DIR: stateDir });
   });
   after(async () => client?.close());
 
@@ -249,6 +265,7 @@ describe('ReloadModule over stdio (mock bridge, fake repository)', () => {
     assert.equal(s.error.code, 'NOT_CONNECTED');
     assert.equal(pathKey(s.data.bridge.modulePath), pathKey(r.mod(r.main)));
     assert.equal(s.data.bridge.moduleCommit, SHA_MAIN);
+    assert.equal(s.data.bridge.moduleDirty, null, 'dirty state is not known without git');
     assert.ok(!Number.isNaN(Date.parse(s.data.bridge.loadedAt)), 'loadedAt is an ISO time');
   });
 
@@ -312,6 +329,28 @@ describe('ReloadModule over stdio (mock bridge, fake repository)', () => {
     assert.notEqual(s.loadedAt, before.loadedAt);
   });
 
+  test('in-memory BUILD_REQUIRED entries are written to build-required.json before the reload', async () => {
+    const sln = 'C:\\Proj41\\Demo.sln';
+    assert.equal(parse(await client.callTool({ name: 'MarkBuildRequired', arguments: { SolutionPath: sln } })).success, true);
+    const res = parse(await client.callTool({ name: 'ReloadModule', arguments: {} }));
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.deepEqual(res.data.buildRequiredPersisted, [sln.toLowerCase()]);
+    const doc = JSON.parse(fs.readFileSync(path.join(stateDir, 'build-required.json'), 'utf8'));
+    assert.ok(doc[sln.toLowerCase()], 'entry is in the state file the new bridge reads');
+  });
+
+  test('BUILD_REQUIRED entries that cannot be written -> RELOAD_BUILD_REQUIRED, bridge kept', async () => {
+    assert.equal(parse(await client.callTool({ name: 'MarkBuildRequired', arguments: { SolutionPath: 'C:\\Proj41\\B.sln', StateUnwritable: true } })).success, true);
+    const before = (await status(client)).data.bridge;
+    const res = await client.callTool({ name: 'ReloadModule', arguments: {} });
+    assert.equal(res.isError, true);
+    const body = parse(res);
+    assert.equal(body.error.code, 'RELOAD_BUILD_REQUIRED');
+    assert.equal(body.data.notRun, true);
+    assert.ok(body.data.buildRequiredKeys.includes('c:\\proj41\\b.sln'));
+    assert.equal((await status(client)).data.bridge.loadedAt, before.loadedAt, 'same bridge process');
+  });
+
   test('fail closed (#68): an in-memory lifecycle block refuses the reload and keeps the bridge (and the block)', async () => {
     const fail = parse(await client.callTool({ name: 'SetSystemState', arguments: { AmsNetId: '5.1.2.3.1.1', Fail: true } }));
     assert.equal(fail.success, false);
@@ -332,20 +371,137 @@ describe('ReloadModule over stdio (mock bridge, fake repository)', () => {
   });
 });
 
+describe('ReloadModule after a RELOAD_FAILED that could not restore (#129 review)', () => {
+  let r;
+  let client;
+  let failFile;
+  before(async () => {
+    r = makeRepo();
+    failFile = path.join(r.root, 'fail-markers41.txt');
+    fs.writeFileSync(failFile, '');
+    client = await startServer(r.mod(r.main), { MOCK_BRIDGE_FAIL_FILE: failFile });
+  });
+  after(async () => client?.close());
+
+  test('no bridge left: the next ReloadModule to a good allowed path starts it (no retire of the broken path)', async () => {
+    assert.equal((await status(client)).data.bridge.moduleCommit, SHA_MAIN);
+    // the new path AND the previous one fail to import -> restored false, no child
+    fs.writeFileSync(failFile, `${path.basename(r.bad)}\n${path.basename(r.main)}${path.sep}\n`);
+    const failed = parse(await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: r.mod(r.bad) } }));
+    assert.equal(failed.error.code, 'RELOAD_FAILED');
+    assert.equal(failed.data.restored, false);
+    const dead = parse(await client.callTool({ name: 'ConnectIde', arguments: {} }));
+    assert.equal(dead.error.code, 'MODULE_IMPORT_FAILED', 'no module is loaded now');
+    // reloading the same broken path again fails again ...
+    const again = parse(await client.callTool({ name: 'ReloadModule', arguments: {} }));
+    assert.equal(again.success, false);
+    // ... but switching to another allowed path recovers
+    const ok = parse(await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: r.mod(r.wt) } }));
+    assert.equal(ok.success, true, JSON.stringify(ok));
+    assert.equal(ok.data.current.moduleCommit, SHA_WT);
+    assert.equal(parse(await client.callTool({ name: 'ConnectIde', arguments: {} })).success, true);
+  });
+});
+
+// ---------------------------------------------------------------- module source code contract
+
+describe('module state the bridge relies on is defined in src (#129 review)', () => {
+  const priv = path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'Private');
+  test('LifecycleBlock.ps1 defines $script:TcLifecycleBlockLocal and Get-TcLifecycleBlockLocalForReload', () => {
+    const t = fs.readFileSync(path.join(priv, 'LifecycleBlock.ps1'), 'utf8');
+    assert.match(t, /^\$script:TcLifecycleBlockLocal = @\{\}/m);
+    assert.match(t, /^function Get-TcLifecycleBlockLocalForReload\b/m);
+  });
+  test('Set-TcBuildRequired.ps1 defines $script:TcBuildRequiredLocal and the helpers retire calls', () => {
+    const t = fs.readFileSync(path.join(priv, 'Set-TcBuildRequired.ps1'), 'utf8');
+    assert.match(t, /^\$script:TcBuildRequiredLocal = @\{\}/m);
+    for (const fn of ['Invoke-TcBuildRequiredLocked', 'Read-TcBuildRequiredState', 'Write-TcBuildRequiredState', 'Merge-TcBuildRequiredEntry', 'Get-TcBuildRequiredReasons', 'Get-TcEntryGuard']) {
+      assert.match(t, new RegExp(`^function ${fn}\\b`, 'm'), fn);
+    }
+  });
+  test('bridge.ps1 calls exactly those helpers', () => {
+    const t = fs.readFileSync(path.join(__dirname, '..', 'bridge', 'bridge.ps1'), 'utf8');
+    for (const name of ['Get-TcLifecycleBlockLocalForReload', 'TcBuildRequiredLocal', 'Invoke-TcBuildRequiredLocked', 'Read-TcBuildRequiredState', 'Write-TcBuildRequiredState', 'Merge-TcBuildRequiredEntry']) {
+      assert.ok(t.includes(name), name);
+    }
+  });
+});
+
 // ---------------------------------------------------------------- real bridge.ps1
 
 describe('bridge.ps1 op retire (real PowerShell, fixture module)', { skip: !isWin && 'Windows PowerShell only' }, () => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-41-'));
-  tempDirs.push(stateDir);
+  const stateDir = newStateDir();
   const bridges = [];
   after(async () => {
     for (const b of bridges) await b.stop();
   });
-  const make = () => {
-    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE, env: { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_FORBID_REAL_STATE: '1' } });
+  const make = (env = {}) => {
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE, env: { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_FORBID_REAL_STATE: '1', ...env } });
     bridges.push(b);
     return b;
   };
+  const readBuildState = (dir) => {
+    const f = path.join(dir, 'build-required.json');
+    return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')) : {};
+  };
+
+  test('in-memory-only BUILD_REQUIRED entry is written to build-required.json by retire', async () => {
+    const dir = newStateDir();
+    const b = make({ TCAUTO_STATE_DIR: dir });
+    await b.start();
+    const sln = path.join(dir, 'Demo41.sln');
+    const mark = await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: sln, LocalOnly: true } });
+    assert.equal(mark.success, true, JSON.stringify(mark));
+    const key = mark.data.key;
+    assert.equal(readBuildState(dir)[key], undefined, 'not in the file yet');
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.deepEqual(res.data.buildRequiredPersisted, [key]);
+    const entry = readBuildState(dir)[key];
+    assert.ok(entry, 'written to the file');
+    assert.match(JSON.stringify(entry), /PLC code changed by fixture/);
+  });
+
+  test('BUILD_REQUIRED entry already in the file: retire does not rewrite it', async () => {
+    const dir = newStateDir();
+    const b = make({ TCAUTO_STATE_DIR: dir });
+    await b.start();
+    const mark = await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: path.join(dir, 'Same41.sln') } });
+    assert.equal(mark.success, true, JSON.stringify(mark));
+    assert.ok(readBuildState(dir)[mark.data.key], 'Set-TcBuildRequired wrote the file');
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.deepEqual(res.data.buildRequiredKeys, [mark.data.key]);
+    assert.deepEqual(res.data.buildRequiredPersisted, []);
+  });
+
+  test('BUILD_REQUIRED entry that cannot be written: RELOAD_BUILD_REQUIRED, same process', async () => {
+    const dir = newStateDir();
+    const b = make({ TCAUTO_STATE_DIR: dir });
+    await b.start();
+    const pid1 = b.pid;
+    await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: path.join(dir, 'Locked41.sln'), LocalOnly: true } });
+    fs.mkdirSync(path.join(dir, 'build-required.json')); // a directory where the file must go: write fails
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, false, JSON.stringify(res));
+    assert.equal(res.error.code, 'RELOAD_BUILD_REQUIRED');
+    assert.equal(res.data.notRun, true);
+    assert.equal(res.data.buildRequiredKeys.length, 1);
+    assert.equal(b.pid, pid1, 'bridge not restarted');
+  });
+
+  for (const [drop, code] of [['lifecycle', 'RELOAD_LIFECYCLE_BLOCKED'], ['build', 'RELOAD_BUILD_REQUIRED']]) {
+    test(`module without $script:Tc${drop === 'lifecycle' ? 'LifecycleBlock' : 'BuildRequired'}Local -> ${code} (fail closed)`, async () => {
+      const b = make({ TCAUTO_TEST_RELOAD_DROP_VAR: drop });
+      await b.start();
+      const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+      assert.equal(res.success, false, JSON.stringify(res));
+      assert.equal(res.error.code, code);
+      if (drop === 'lifecycle') assert.equal(res.data.lifecycleBlocks[0].key, '<unreadable>');
+      else assert.match(res.data.error, /TcBuildRequiredLocal/);
+    });
+  }
+
 
   test('no block: retire releases IDE/ADS, answers, and the next call runs in a new process', async () => {
     const b = make();

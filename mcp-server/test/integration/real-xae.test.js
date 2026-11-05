@@ -19,8 +19,10 @@
 // cascade-fail.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { composites } from '../../lib/composites.js';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -39,7 +41,9 @@ if (ENABLED && !SOLUTION) console.log(`[real-xae] skipped: ${SKIP_REASON}`);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', '..', 'index.js');
 
-const EXPECTED_TOOL_COUNT = 39; // 35 catalog (tools.json) + 4 composites
+// catalog (tools.json) + composites, counted from the files the server itself loads
+const EXPECTED_TOOL_COUNT =
+  JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tools.json'), 'utf8')).tools.length + composites.length;
 const CONNECT_TIMEOUT_MS = 300000; // ConnectIde may launch XAE and open the solution
 const BUILD_TIMEOUT_MS = 660000; // tools.json BuildProject.timeoutMs 600000 + grace
 const SHORT_TIMEOUT_MS = 120000; // GetIdeInfo / GetStatus / GetIdeModalDialog / DisconnectIde

@@ -211,6 +211,27 @@ function Get-TcLifecycleBlockEntries {
     @{ Error = $null; Entries = $entries }
 }
 
+function Get-TcLifecycleBlockLocalForReload {
+    <#
+    .SYNOPSIS
+        #41: the lifecycle block records ONLY this module instance holds in memory
+        ($script:TcLifecycleBlockLocal), for the MCP bridge op 'retire' (ReloadModule): a reload
+        drops them, so the bridge refuses while this returns any record. File records are not
+        listed: they survive a reload. Returns @{ List = <object[]> of @{ key; record } }.
+        Throws when the variable is missing or not a hashtable; the bridge then refuses (fail closed).
+        After #130 (cross-bridge sync, #113) is merged: run that sync first (through
+        Get-TcLifecycleBlockEntries) so a record another bridge already cleared is dropped here too.
+    #>
+    $v = Get-Variable -Name 'TcLifecycleBlockLocal' -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $v) { throw '$script:TcLifecycleBlockLocal is not defined' }
+    $local = $v.Value
+    if ($local -isnot [System.Collections.IDictionary]) {
+        throw "`$script:TcLifecycleBlockLocal is not a hashtable ($(if ($null -eq $local) { 'null' } else { $local.GetType().FullName }))"
+    }
+    $list = [object[]]@($local.Keys | Sort-Object | ForEach-Object { @{ key = [string]$_; record = $local[$_] } })
+    @{ List = $list }
+}
+
 function Get-TcLifecycleBlock {
     <#
     .SYNOPSIS

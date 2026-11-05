@@ -64,14 +64,25 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
 * `shutdown` → child disconnects ADS (ignore errors), releases COM refs via
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
-* `retire` (#41, step 1 of the `ReloadModule` tool) → when the module holds a lifecycle block in
-  memory (`$script:TcLifecycleBlockLocal` not empty, or not readable) it is refused and nothing
-  changes: `{"success":false,"error":{"code":"RELOAD_LIFECYCLE_BLOCKED",...},"data":{"modulePath":"...","lifecycleBlocks":[{"key":"...","record":{...}}],"readable":bool,"notRun":true}}`.
-  Otherwise it does what `shutdown` does and replies
-  `{"success":true,"data":{"retired":true,"modulePath":"...","ideWasConnected":bool,"adsWasConnected":bool}}`
-  before it exits 0. The Node side (`PowerShellBridge.retire(nextModulePath)`) detaches the child
-  as soon as the success line arrives, so no further request reaches it, and the next request
-  starts a new child with `-ModulePath <nextModulePath>`.
+* `retire` (#41, step 1 of the `ReloadModule` tool), in this order:
+  1. the module's private `Get-TcLifecycleBlockLocalForReload` lists the lifecycle block records
+     held in memory (`$script:TcLifecycleBlockLocal`); any record, a module without that function,
+     or a function that throws → refused, nothing changes:
+     `{"success":false,"error":{"code":"RELOAD_LIFECYCLE_BLOCKED",...},"data":{"modulePath":"...","lifecycleBlocks":[{"key":"...","record":{...}}],"readable":bool,"notRun":true}}`
+     (`key` `<missing>` / `<unreadable>` for the last two).
+  2. every in-memory BUILD_REQUIRED entry (`$script:TcBuildRequiredLocal`) is merged into
+     `build-required.json` under the state mutex (`Merge-TcBuildRequiredEntry`; written only when an
+     entry is missing there or differs). Variable or helper missing, lock not acquired, file not
+     readable / writable → refused, nothing changes:
+     `{"success":false,"error":{"code":"RELOAD_BUILD_REQUIRED",...},"data":{"modulePath":"...","buildRequiredKeys":[...],"error":"...","notRun":true}}`.
+  3. it does what `shutdown` does and replies
+     `{"success":true,"data":{"retired":true,"modulePath":"...","ideWasConnected":bool,"adsWasConnected":bool,"buildRequiredKeys":[...],"buildRequiredPersisted":[...]}}`
+     before it exits 0.
+
+  The Node side (`PowerShellBridge.retire(nextModulePath)`) detaches the child as soon as the
+  success line arrives, so no further request reaches it, and the next request starts a new child
+  with `-ModulePath <nextModulePath>`. With no child running and none starting (never started, or
+  the last start failed) no `retire` is sent: the path is switched and the next start uses it.
 
 ### Parameter conversion (`op:"call"`)
 
@@ -288,7 +299,7 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   returns `RELOAD_FAILED` and starts the previous path again (`data.restored`). Every child that
   reports ready sets the module snapshot `GetStatus` returns in `data.bridge`: `modulePath`
   (`ready.modulePath`), `moduleCommit` (HEAD sha read from the `.git` files of that checkout, no
-  `git.exe`; `null` outside a checkout) and `loadedAt`.
+  `git.exe`; `null` outside a checkout; HEAD only, uncommitted changes are not reflected), `moduleDirty` (always `null`) and `loadedAt`.
 * `RunLifecycle` steps: `ConnectIde`, `SetTarget` (only when `TargetAmsNetId` and/or `Platform` is a non-empty
   string; runs right after `ConnectIde` as `SetTarget {AmsNetId, Platform}` with `Platform`, or
   `SetTarget {AmsNetId, NoPlatformSwitch: true}` without it; `AmsNetId` falls back to the one `ConnectIde`
