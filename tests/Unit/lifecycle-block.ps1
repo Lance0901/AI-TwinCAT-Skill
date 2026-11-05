@@ -1,4 +1,4 @@
-# Unit: #68 fail-closed lifecycle guard (#32 regression), no IDE / ADS / runtime needed.
+﻿# Unit: #68 fail-closed lifecycle guard (#32 regression), no IDE / ADS / runtime needed.
 # TwinCAT.Ads.TcAdsClient is a fake type compiled here (WriteControl never throws, ReadState
 # returns $global:AdsMode), Find-TcAdsAssembly / Wait-TcAdsState / the IDE helpers are stubbed in
 # module scope. Covers:
@@ -146,7 +146,8 @@ try {
         $x = & $blockedRuns[$k]
         $exp = ($k -replace ' .*$', '')
         if ($k -eq 'Send-TcPlcProgram') { $exp = 'Enter-TcPlcOnline' }
-        Check "(2) $k -> LIFECYCLE_BLOCKED, data.lifecycleBlock, NOT RUN" ((-not $x.success) -and $x.error.code -eq 'LIFECYCLE_BLOCKED' -and $x.data.notRun -eq $true -and $x.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $x.data.command -eq $exp -and $x.error.hint -match 'Clear-TcLifecycleBlock') "code=$($x.error.code) cmd=$($x.data.command)"
+        # #114 minor 7: every refusal says requestSent = false (not only Set-TcSystemState)
+        Check "(2) $k -> LIFECYCLE_BLOCKED, data.lifecycleBlock, NOT RUN, requestSent false" ((-not $x.success) -and $x.error.code -eq 'LIFECYCLE_BLOCKED' -and $x.data.notRun -eq $true -and $x.data.requestSent -eq $false -and $x.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $x.data.command -eq $exp -and $x.error.hint -match 'Clear-TcLifecycleBlock') "code=$($x.error.code) cmd=$($x.data.command)"
     }
     Check '(2) nothing sent: no WriteControl / Login / Activate / WriteAny / Build / state switch' ($fake::Writes -eq 0 -and $global:Calls.WriteControl -eq 0 -and $global:Calls.Login -eq 0 -and $global:Calls.Activate -eq 0 -and $global:Calls.WriteAny -eq 0 -and $global:Calls.Build -eq 0 -and $global:Calls.WaitPort -eq 0) (J $global:Calls)
     $e = & $blockedRuns['Enable-TcConfig']
@@ -441,6 +442,24 @@ try {
     $nRo = ([regex]::Matches([string]$e.error.hint, [regex]::Escape($roP))).Count
     Check '(14b) S-2 set-config ADS_TARGET_NOT_FOUND through the nested path -> stop text exactly once, no read-only text' ($e.error.code -eq 'ADS_TARGET_NOT_FOUND' -and $nStop -eq 1 -and $nRo -eq 0 -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig') "stop=$nStop ro=$nRo hint=$($e.error.hint)"
     $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14b) cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+
+    # --- (14c) #114 N1 / N2: set-config timed out with port 10000 unreachable -> Enable-TcConfig keeps
+    # reachedState empty and readbackNote 'unreachable' (not 'Unreachable' as a state, not lost)
+    & $mod {
+        function script:Set-TcSystemState {
+            param([string]$State, [string]$AmsNetId, [int]$TimeoutSec)
+            if ($State -eq 'Config') {
+                $res = New-TcResult -Success $false -ErrorCode 'SYSTEM_STATE_TIMEOUT' -ErrorMessage 'did not reach Config (last state: unreachable) (mock)' -Data ([PSCustomObject]@{ requestSent = $true; currentState = 'Unreachable'; finalState = 'Unreachable'; readbackState = $null; lastState = 'Run' })
+                return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReadbackNote 'unreachable' -Step 'wait: port 10000 unreachable at the deadline; last state read before: Run')
+            }
+            New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State; requestSent = $true })
+        }
+    }
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check '(14c) #114 set-config unreachable timeout -> Enable-TcConfig block: reachedState empty, readbackNote unreachable, data.reachedState empty' ($e.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $e.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and [string]::IsNullOrEmpty([string]$e.data.lifecycleBlock.reachedState) -and $e.data.lifecycleBlock.readbackNote -eq 'unreachable' -and [string]::IsNullOrEmpty([string]$e.data.reachedState)) (J $e.data.lifecycleBlock)
+    $tb = & $mod { param($n) Test-TcLifecycleBlock -AmsNetId $n -Command 'Set-TcPlcState' } $A
+    Check '(14c) #114 N5 block message from readbackNote: nothing (port 10000 unreachable)' ($tb.error.message -match 'nothing \(port 10000 unreachable\)' -and $tb.error.message -notmatch "read back 'Unreachable'") "$($tb.error.message)"
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14c) cleanup' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     & $mod { function script:Set-TcSystemState { param([string]$State, [string]$AmsNetId, [int]$TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State; requestSent = $true }) } }
 
     # --- (8) persistence and corrupt state ---
@@ -533,6 +552,23 @@ try {
     & $mod { $script:TcAdsAmsNetId = $null }
     $u = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
     Check '(16) S-1 session target unknown, block on another target -> NOT_CONNECTED hint kept (one note appended), no lifecycleBlock' ($u.error.hint.StartsWith($nc) -and $u.error.hint -match '#68' -and -not $u.error.hint.StartsWith($pre) -and $null -eq $u.PSObject.Properties['data']) (J $u)
+    # #114 minor 5: no ADS session, but the connected IDE's target IS the blocked one -> "this target"
+    # (read-only prefix + data.lifecycleBlock), not "another target"
+    $ideSaved = $global:IdeTarget
+    $global:IdeTarget = '10.3.3.3.1.1'
+    # S5: the hint path makes no COM call; it uses the NetId an earlier command read from the IDE.
+    # GetTargetNetId throws here: it must not be called.
+    & $mod { $script:TcIdeConnected = $true; $sm = [PSCustomObject]@{ Mock = $true }; $sm | Add-Member -MemberType ScriptMethod -Name GetTargetNetId -Value { throw 'GetTargetNetId must not be called on the hint path' }; $script:TcSysManager = $sm; Save-TcIdeTargetNetId '10.3.3.3.1.1' }
+    $ui = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
+    Check '(16) #114 no ADS session, IDE target blocked -> NOT_CONNECTED hint starts with the read-only text, data.lifecycleBlock, no "another target" note' ($ui.error.hint.StartsWith($pre) -and $ui.error.hint.Contains($nc) -and $ui.data.lifecycleBlock.amsNetId -eq '10.3.3.3.1.1' -and -not $ui.error.hint.Contains((& $mod { $script:TcLifecycleOtherBlockNote }))) (J $ui)
+    & $mod { Save-TcIdeTargetNetId '10.4.4.4.1.1' }
+    $uo = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
+    Check '(16) #114 no ADS session, IDE target NOT blocked (block on another target) -> hint kept + note, no lifecycleBlock' ($uo.error.hint.StartsWith($nc) -and $uo.error.hint.Contains((& $mod { $script:TcLifecycleOtherBlockNote })) -and $null -eq $uo.PSObject.Properties['data']) (J $uo)
+    & $mod { $script:TcIdeConnected = $true; $script:TcSysManager = [PSCustomObject]@{ Other = $true } }
+    $ux = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
+    Check '(16) #114 S5 cached NetId of another ITcSysManager (IDE reconnected) is not used -> note only' ($ux.error.hint.Contains((& $mod { $script:TcLifecycleOtherBlockNote })) -and $null -eq $ux.PSObject.Properties['data']) (J $ux)
+    & $mod { $script:TcIdeConnected = $false; $script:TcIdeTargetNetIdCache = $null }
+    $global:IdeTarget = $ideSaved
     & $mod { $script:TcAdsAmsNetId = '10.9.9.9.1.1' }
     $nb = & $mod { New-TcResult -Success $false -ErrorCode 'NOT_CONNECTED' -ErrorMessage 'mock' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED') }
     Check '(16) S-1 session on target B (no block) -> hint unchanged' ($nb.error.hint -eq $nc -and $null -eq $nb.PSObject.Properties['data']) (J $nb)

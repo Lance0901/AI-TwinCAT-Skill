@@ -30,7 +30,7 @@ function Get-TcSystemState {
         $sm = $null
         try { $sm = Get-TcSysManager } catch { Write-Verbose "Get-TcSystemState: no IDE connection ($($_.Exception.Message))" }
         if ($null -ne $sm) {
-            try { $AmsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { }
+            try { $AmsNetId = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() }; Save-TcIdeTargetNetId $AmsNetId } catch { }
         }
         if (-not [string]::IsNullOrWhiteSpace($AmsNetId)) {
             $netIdSource = 'ide-target'

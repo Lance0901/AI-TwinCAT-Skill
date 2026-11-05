@@ -312,6 +312,7 @@ function Enable-TcConfig {
     $activateSent = $false
     $runSent = $false
     $reachedState = $null         # last system state read back (port 10000)
+    $reachedNote = $null          # #114 N2: why reachedState is empty ('unreachable' / 'runtime-gone'), for the block
     $requestedState = $(if ($Force) { 'Run' } else { 'Activated' })
     # state the step that failed actually requested (lifecycle block record, side finding 2): Config
     # during set-config, Activated during activate / boot-package, Run from set-run on
@@ -504,7 +505,7 @@ function Enable-TcConfig {
         # #68: a failed postcondition after a runtime-changing request blocks the target
         if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
-            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $blockRequested -ReachedState $reachedState -Step ($failedStep -join '')
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $blockRequested -ReachedState $reachedState -ReadbackNote $reachedNote -Step ($failedStep -join '')
         }
         $res
     }
@@ -718,7 +719,7 @@ function Enable-TcConfig {
     # Resolves the IDE target AmsNetId (ITcSysManager.GetTargetNetId, then the ADS session), $null when unknown.
     function Resolve-TcCycleNetId {
         $id = $null
-        try { $id = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() } } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
+        try { $id = Invoke-TcComRetry -OperationName 'GetTargetNetId' -ScriptBlock { $sm.GetTargetNetId() }; Save-TcIdeTargetNetId $id } catch { Write-Verbose "Enable-TcConfig: GetTargetNetId failed: $($_.Exception.Message)" }
         if ([string]::IsNullOrWhiteSpace($id)) { $id = $script:TcAdsAmsNetId }
         if ([string]::IsNullOrWhiteSpace($id)) { return $null }
         return [string]$id
@@ -784,6 +785,20 @@ function Enable-TcConfig {
         $Result.data | Add-Member -NotePropertyName 'runtimeCrash' -NotePropertyValue $StateResult.data -Force
     }
 
+    # #114 N2: why a Set-TcSystemState result has no read-back state: 'runtime-gone' (RUNTIME_CRASHED),
+    # 'unreachable' (its last read failed), else $null. Kept in the block Enable-TcConfig records.
+    function Get-TcReadbackNote {
+        param([object]$StateResult)
+        if ($null -eq $StateResult) { return $null }
+        if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return 'runtime-gone' }
+        if ($null -eq $StateResult.data) { return $null }
+        foreach ($n in @('readbackState', 'currentState')) {
+            $p = $StateResult.data.PSObject.Properties[$n]
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return $(if ([string]$p.Value -eq 'Unreachable') { 'unreachable' } else { $null }) }
+        }
+        $null
+    }
+
     # readbackState (else currentState) of a Set-TcSystemState result, $null when there is none
     function Get-TcReadbackState {
         param([object]$StateResult)
@@ -792,7 +807,8 @@ function Enable-TcConfig {
         if ($null -ne $StateResult.error -and [string]$StateResult.error.code -eq 'RUNTIME_CRASHED') { return $null }
         foreach ($n in @('readbackState', 'currentState')) {
             $p = $StateResult.data.PSObject.Properties[$n]
-            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return [string]$p.Value }
+            # #114: 'Unreachable' (the last read failed) is not a read-back state either
+            if ($null -ne $p -and -not [string]::IsNullOrWhiteSpace([string]$p.Value)) { return $(if ([string]$p.Value -eq 'Unreachable') { $null } else { [string]$p.Value }) }
         }
         $null
     }
@@ -905,6 +921,7 @@ function Enable-TcConfig {
     $blockRequested = 'Config'
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
+    $reachedNote = Get-TcReadbackNote -StateResult $r
     if (-not $r.success) {
         # nit-3: Set-TcSystemState reports whether its WriteControl was called (data.requestSent);
         # without it (connect failed, ADS assembly missing, refused ...) nothing reached the runtime
@@ -962,6 +979,7 @@ function Enable-TcConfig {
     $blockRequested = 'Run'
     $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
+    $reachedNote = Get-TcReadbackNote -StateResult $r
     if (-not $r.success) {
         Add-TcStepRecord -Name 'set-run' -Ok $false -Watch $sw -Detail ([string]$r.error.message)
         if ([string]$r.error.code -eq 'RUNTIME_CRASHED') {
@@ -1173,7 +1191,9 @@ function Enable-TcConfig {
     }
     catch { $sysErr = $_.Exception.Message }
     finally { if ($null -ne $probe) { try { $probe.Dispose() } catch { } } }
-    $reachedState = $(if ($sysState) { $sysState } else { 'Unreachable' })
+    # #114 N1: an unreachable port 10000 is not a read-back state (empty, the note says why)
+    $reachedState = $(if ($sysState) { $sysState } else { $null })
+    $reachedNote = $(if ($sysState) { $null } else { 'unreachable' })
     $plcChecks = @()
     $bad = @()
     if ($sysState -ne 'Run') { $bad += "system (port 10000) $(if ($sysState) { $sysState } else { "unreachable: $sysErr" })" }
