@@ -7,12 +7,13 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { loadConfig } from './lib/config.js';
+import { loadConfig, scanScriptFor } from './lib/config.js';
 import { PowerShellBridge, errorResult } from './lib/bridge.js';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
 import { ModalProbe, PROBED_TOOLS } from './lib/modal-probe.js';
+import { moduleInfoOf } from './lib/module-source.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -69,6 +70,13 @@ function flushPendingLogs() {
   for (const params of items) server.sendLoggingMessage(params).catch(() => {});
 }
 
+// #41: the module the bridge has loaded, set every time a bridge child reports ready (GetStatus
+// data.bridge.modulePath / moduleCommit / loadedAt). The commit is read from the .git files at load
+// time: a later checkout in that directory does not change what the running bridge imported.
+/** @type {{modulePath:string|null, moduleCommit:string|null, loadedAt:string|null}|null} */
+let loadedModule = null;
+const baseModulePath = config.modulePath;
+
 const bridge = new PowerShellBridge({
   modulePath: config.modulePath,
   powershellPath: config.powershellPath,
@@ -76,6 +84,11 @@ const bridge = new PowerShellBridge({
   spawnSpec: config.spawnSpec,
   env: config.verbose ? { TWINCAT_MCP_VERBOSE: '1' } : {},
   onLog: (level, message, meta) => emitLog(level, { message, ...meta }),
+  onReady: (ready, loaded) => {
+    // ready.modulePath is what PowerShell actually imported; a mock bridge may report anything
+    const reported = typeof ready?.modulePath === 'string' && path.win32.isAbsolute(ready.modulePath) ? ready.modulePath : loaded.modulePath;
+    loadedModule = { ...moduleInfoOf(reported), loadedAt: loaded.loadedAt };
+  },
   onStderr: (line) => {
     if (config.verbose) console.error(`[bridge] ${line}`);
     emitLog('error', { message: line, source: 'stderr' });
@@ -354,6 +367,14 @@ function makeContext(signal) {
     callTool: (name, args) => callCatalogTool(name, args, signal),
     get lastIde() {
       return lastIde ? { ...lastIde } : null;
+    },
+    get module() {
+      return loadedModule ? { ...loadedModule } : null;
+    },
+    baseModulePath,
+    onModuleReloaded: (modulePath) => {
+      // the modal probe dot-sources the UIA scan of the loaded module unless it was set explicitly
+      if (!process.env.TWINCAT_MCP_PROBE_SCAN_SCRIPT) config.modalProbe.scanScript = scanScriptFor(modulePath);
     }
   };
 }

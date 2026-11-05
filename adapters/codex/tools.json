@@ -97,6 +97,9 @@
       "description": "Remove the LIFECYCLE_BLOCKED record of one target (#68). Call ONLY after the user saw data.lifecycleBlock and agreed; never to get past LIFECYCLE_BLOCKED on your own",
       "parameters": {
         "Reason": { "type": "string", "description": "The user's approval in their words", "required": true },
+        "FallbackMethod": { "type": "string", "description": "How the work continues after the block is lifted, as the user approved it (#113)", "required": true },
+        "AllowedSideEffects": { "type": "array", "items": { "type": "string" }, "description": "Side effects the user allowed, one entry each; exactly [\"none\"] when none, never none with another entry (#113)", "required": true },
+        "MaxVerifyLevel": { "type": "string", "enum": ["None", "SystemState", "PlcState", "VariableRead", "TestObserved"], "description": "The highest layer the verification after this clear will reach; results must not claim more than it (#113). A missing, empty or invalid field returns LIFECYCLE_RECEIPT_INCOMPLETE", "required": true },
         "AmsNetId": { "type": "string", "description": "Default: IDE target, then ADS session", "required": false }
       }
     },
