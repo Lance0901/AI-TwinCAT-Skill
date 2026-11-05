@@ -140,7 +140,7 @@ Check 'RUNTIME_CRASHED recorded a lifecycle block, hint: user decides, no own re
 Check 'RUNTIME_CRASHED block: reachedState empty (runtime gone), step names it, requested = sent state' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.step -match 'runtime gone' -and $r.data.lifecycleBlock.requestedState -eq 'Config') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
 $tb = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 1
 Check 'RUNTIME_CRASHED block message: nothing read back, no success-like wording' ($tb.error.code -eq 'LIFECYCLE_BLOCKED' -and $tb.error.message -match 'nothing \(runtime gone\)' -and $tb.error.message -notmatch "read back 'Run'") "$($tb.error.message)"
-$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 # remote target: Set-TcSystemState keeps SYSTEM_STATE_TIMEOUT
 Set-Ads 'crashAfterWrite'; $global:UmRt = $null
@@ -148,7 +148,7 @@ $r = Set-TcSystemState -State Config -AmsNetId '5.6.7.8.1.1' -TimeoutSec 3
 Check 'Set-TcSystemState remote target -> SYSTEM_STATE_TIMEOUT (unchanged)' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['servicePidAtStart']) "code=$($r.error.code)"
 # #68: SYSTEM_STATE_TIMEOUT after WriteControl records a lifecycle block (RUNTIME_CRASHED does not); lift it for the next cases
 Check 'SYSTEM_STATE_TIMEOUT recorded a lifecycle block for that target only' ($r.data.lifecycleBlock.amsNetId -eq '5.6.7.8.1.1' -and $null -eq (& $mod { Get-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' })) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
-$null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next case'
+$null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 # --- Enable-TcConfig -Force passes RUNTIME_CRASHED on (set-config and set-run)
 $global:CrashOn = 'Config'
@@ -182,7 +182,7 @@ Check 'Enable-TcConfig set-run: RUNTIME_CRASHED passed on, no Error List diagnos
 
 # #68 (S1): the set-run RUNTIME_CRASHED came after set-config / Activate: Enable-TcConfig recorded a block
 Check 'Enable-TcConfig set-run RUNTIME_CRASHED recorded a lifecycle block (requested Run, nothing read back)' ($r.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.data.lifecycleBlock.requestedState -eq 'Run' -and [string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState)) "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
-$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case'
+$null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 # --- Invoke-TcTestCycle keeps RUNTIME_CRASHED (not ACTIVATION_FAILED)
 & $mod {
