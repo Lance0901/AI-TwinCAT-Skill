@@ -47,10 +47,15 @@
 #   In-memory copy ($script:TcLifecycleBlockLocal): every record this module instance wrote. It
 #   keeps blocking in THIS process when the file cannot be written (data.lifecycleBlock.stateWarning),
 #   but another process, a new Import-Module or a restarted MCP bridge does not see such a record.
-#   It is removed only by Clear-TcLifecycleBlock in this process: a record removed from the file by
-#   another process (or by hand) still blocks here until then.
+#   It is removed by Clear-TcLifecycleBlock in this process, or (#113, cross-bridge sync) when the
+#   file no longer holds the key AND lifecycle-block-history.jsonl has a receipt of the same key
+#   whose clearedAtUtc is later than the record's createdAtUtc (another process cleared it). Fail
+#   closed: no such receipt (e.g. a record removed by hand), a history file that is missing, cannot
+#   be read or has a line that does not parse as a JSON object, a record or receipt without a
+#   readable UTC time (written by an older module) -> the in-memory record keeps blocking.
 #   Lock time-out / unreadable file -> every target blocked ('state-unreadable').
-#   Every Clear-TcLifecycleBlock appends its receipt to lifecycle-block-history.jsonl (best effort).
+#   Every Clear-TcLifecycleBlock appends its receipt to lifecycle-block-history.jsonl (best effort;
+#   #113: reason, fallbackMethod, allowedSideEffects, maxVerifyLevel, clearedAtUtc, ...).
 #
 # Windows PowerShell 5.1; this source file is ASCII (the user-facing stop text is
 # $script:TcLifecycleStopText in ConvertTo-TcAdsErrorCode.ps1, UTF-8 with BOM).
@@ -58,6 +63,9 @@
 $script:TcLifecycleBlockLocal = @{}
 $script:TcLifecycleUnknownKey = '<unknown>'
 $script:TcLifecycleCorruptKey = '<corrupt>'
+# #113: Clear-TcLifecycleBlock -MaxVerifyLevel, lowest to highest (the #68 lifecycle layers that
+# can be read back; mcp-server/scripts/Export-ToolSchema.ps1 offers the same list as the enum).
+$script:TcLifecycleVerifyLevels = @('None', 'SystemState', 'PlcState', 'VariableRead', 'TestObserved')
 
 function Get-TcLifecycleBlockFile {
     Join-Path (Split-Path -Parent (Get-TcBuildRequiredFile)) 'lifecycle-block.json'
@@ -177,6 +185,8 @@ function Set-TcLifecycleBlock {
         reachedState   = $ReachedState
         step           = $Step
         time           = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        # #113: exact creation time, compared with a Clear receipt's clearedAtUtc (cross-bridge sync)
+        createdAtUtc   = [DateTime]::UtcNow.ToString('o')
     }
     $script:TcLifecycleBlockLocal[$key] = $entry
     $r = $null
@@ -197,8 +207,59 @@ function Set-TcLifecycleBlock {
     $entry
 }
 
+function Get-TcLifecycleHistoryFile {
+    Join-Path (Split-Path -Parent (Get-TcLifecycleBlockFile)) 'lifecycle-block-history.jsonl'
+}
+
+# A UTC time written with ToString('o'), or $null when missing / not parseable.
+function ConvertTo-TcLifecycleUtc {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) { return $Value.ToUniversalTime() }
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    $d = [DateTime]::MinValue
+    $styles = [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal
+    if ([DateTime]::TryParse($s, [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$d)) { return $d }
+    $null
+}
+
+function Test-TcLifecycleClearReceipt {
+    <#
+    .SYNOPSIS
+        #113 cross-bridge sync: $true only when lifecycle-block-history.jsonl has a receipt of -Key
+        whose clearedAtUtc is later than -Entry.createdAtUtc. Fail closed ($false): the entry has
+        no readable createdAtUtc, the history file is missing or cannot be read, any non-empty
+        line does not parse as a JSON object (corrupt history), no matching receipt. Never throws.
+    #>
+    param([string]$Key, $Entry)
+    try {
+        $created = $null
+        if ($null -ne $Entry -and $null -ne $Entry.PSObject.Properties['createdAtUtc']) { $created = ConvertTo-TcLifecycleUtc $Entry.createdAtUtc }
+        if ($null -eq $created) { return $false }
+        $hist = Get-TcLifecycleHistoryFile
+        if (-not (Test-Path -LiteralPath $hist -PathType Leaf)) { return $false }
+        $lines = [IO.File]::ReadAllText($hist) -split "`r?`n"
+        $found = $false
+        foreach ($line in $lines) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $o = $null
+            try { $o = ConvertFrom-Json -InputObject $line -ErrorAction Stop } catch { return $false }
+            if ($o -isnot [System.Management.Automation.PSCustomObject]) { return $false }
+            if ([string]$o.key -cne $Key) { continue }
+            $cleared = $null
+            if ($null -ne $o.PSObject.Properties['clearedAtUtc']) { $cleared = ConvertTo-TcLifecycleUtc $o.clearedAtUtc }
+            if ($null -ne $cleared -and $cleared -gt $created) { $found = $true }
+        }
+        return $found
+    }
+    catch { return $false }
+}
+
 # File + memory records as one hashtable (memory wins), or @{ Error = text } when unreadable.
 # -TimeoutMs: lock wait (default: the build-required default; the hint-only path passes a short one).
+# #113: an in-memory record whose key is no longer in the file is dropped when another process
+# cleared it (Test-TcLifecycleClearReceipt); otherwise it keeps blocking (fail closed).
 function Get-TcLifecycleBlockEntries {
     param([int]$TimeoutMs = 0)
     $r = $null
@@ -207,7 +268,15 @@ function Get-TcLifecycleBlockEntries {
     if (-not $r.Locked -or $null -ne $r.Error) { return @{ Error = [string]$r.Error; Entries = $null } }
     $entries = @{}
     if ($null -ne $r.Result) { foreach ($k in $r.Result.Keys) { $entries[$k] = $r.Result[$k] } }
-    foreach ($k in $script:TcLifecycleBlockLocal.Keys) { $entries[$k] = $script:TcLifecycleBlockLocal[$k] }
+    foreach ($k in @($script:TcLifecycleBlockLocal.Keys)) {
+        $local = $script:TcLifecycleBlockLocal[$k]
+        if (-not $entries.ContainsKey($k) -and (Test-TcLifecycleClearReceipt -Key $k -Entry $local)) {
+            Write-Verbose "lifecycle block '$k': not in the file any more and a later Clear receipt is in the history; in-memory copy dropped (#113)"
+            $null = $script:TcLifecycleBlockLocal.Remove($k)
+            continue
+        }
+        $entries[$k] = $local
+    }
     @{ Error = $null; Entries = $entries }
 }
 
