@@ -27,11 +27,11 @@ $script:TcDeidUrlWhitelist = '(?i)^(?:github\.com|infosys\.beckhoff\.com|learn\.
 # else (TwinCAT\Projects, Temp, Program Files\<vendor>, Windows\Temp ...) follows the normal rules.
 $script:TcDeidSystemPath = '(?i)^(?:file:/{2,3})?[A-Za-z]:[\\/]+(?:TwinCAT[\\/]+3\.\d+[\\/]+(?:Boot|Config|Components|Target|Repository|System)|Program Files(?: \(x86\))?[\\/]+Beckhoff|ProgramData[\\/]+Beckhoff|Users[\\/]+<user>[\\/]+AppData[\\/]+Local[\\/]+Beckhoff)(?:[\\/]|\s|$)'
 # Folder names that carry no customer information (never added to the mask list).
-$script:TcDeidGenericFolders = '(?i)^(?:users?|documents?|desktop|onedrive|projects?|src|source|sources|plc|pous|duts|gvls|temp|tmp|appdata|local|roaming|downloads?|program files|programdata|windows|system32|work|data|backup|backups|archive|bin|obj|lib|libs|build|builds|test|tests|docs?|logs?|config|configs?|twincat|beckhoff|common|shared|public|system|boot|repository|target|components|library|libraries|scripts?|tools?|modules?|windowspowershell|repos?|git|new|old|demo|files?|share|shares|net|org|com|the|and|gmbh|ltd|inc|co|visual studio|vs|x64|x86|debug|release|publish|output|in|out|root|home|mnt|drive|code|codes|app|apps|main|error|errors|prod|production|dev|staging|stage|plant|line|machine|cell|station|axis|www|my|mail|smtp|ftp|api|portal|login|sharepoint|sites?|personal|shared|index|default|wiki|pages|blob|tree|raw|issues|pull|gmail|outlook|hotmail|yahoo|icloud|live|msn|qq|protonmail|v\d+|http|https)$'
+$script:TcDeidGenericFolders = '(?i)^(?:users?|documents?|desktop|onedrive|projects?|src|source|sources|plc|pous|duts|gvls|temp|tmp|appdata|local|roaming|downloads?|program files|programdata|windows|system32|work|data|backup|backups|archive|bin|obj|lib|libs|build|builds|test|tests|docs?|logs?|config|configs?|twincat|beckhoff|common|shared|public|system|boot|repository|target|components|library|libraries|scripts?|tools?|modules?|windowspowershell|repos?|git|new|old|demo|files?|share|shares|net|org|com|the|and|gmbh|ltd|inc|co|visual studio|vs|x64|x86|debug|release|publish|output|in|out|root|home|mnt|drive|code|codes|app|apps|main|error|errors|prod|production|dev|staging|stage|plant|line|machine|cell|station|axis|www|my|mail|smtp|ftp|api|portal|login|sharepoint|sites?|personal|shared|index|default|wiki|pages|blob|tree|raw|issues|pull|gmail|outlook|hotmail|yahoo|icloud|live|msn|qq|protonmail|v\d+|http|https|visualization|visualizations|visual|visu|simulation|motion|ethercat|custom|customers?)$'
 
 # Common PLC / automation words. The prefix tier of the folder-name mask (a part of 5+ letters that is the beginning of a
 # folder name, #121) never masks these: a folder "Motorworks" must not hide every "Motor" in the report.
-$script:TcDeidCommonWords = '(?i)^(?:motor|motors|servo|drive|drives|valve|valves|robot|robots|pump|pumps|cylinder|sensor|sensors|conveyor|control|controller|status|state|states|error|errors|alarm|alarms|recipe|recipes|config|setup|standard|system|utility|utilities|buffer|timer|timers|counter|counters|output|outputs|input|inputs|enable|reset|start|limit|limits|speed|position|torque|safety|handle|message|global|local|master|slave|group|array|string|number|value|values|table|event|events|module|modules|device|devices|machine|process|stage|check|clear|first|last|index|queue|stack|alias|trace|debug|ready|empty|count|mover|track|belt|gripper|fault|warning|data|time|date|text|lreal|udint)$'
+$script:TcDeidCommonWords = '(?i)^(?:motor|motors|servo|drive|drives|valve|valves|robot|robots|pump|pumps|cylinder|sensor|sensors|conveyor|control|controller|status|state|states|error|errors|alarm|alarms|recipe|recipes|config|setup|standard|system|utility|utilities|buffer|timer|timers|counter|counters|output|outputs|input|inputs|enable|reset|start|limit|limits|speed|position|torque|safety|handle|message|global|local|master|slave|group|array|string|number|value|values|table|event|events|module|modules|device|devices|machine|process|stage|check|clear|first|last|index|queue|stack|alias|trace|debug|ready|empty|count|mover|track|belt|gripper|fault|warning|data|time|date|text|lreal|udint|motion|ethercat|ether|visual|visualization|simulation|custom|customer|customers|station|stations|production|devices)$'
 
 # Token boundary characters (shared by the raw and the masked cut).
 $script:TcDeidBoundary = ',;:"''()[]{}=<>'
@@ -121,17 +121,31 @@ function Add-TcFolderNames {
         $seg = $seg.Trim()
         if ($seg.Length -lt 3 -or $seg.Length -gt 80 -or $seg.Contains('<') -or $seg.Contains('>')) { continue }
         $names = [System.Collections.Generic.List[string]]::new()
-        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch '^\d+$') { $names.Add($seg) }
+        # a folder called like a generic folder or a common PLC word (Motor, Motion ...) carries no customer name (#121)
+        if ($seg -notmatch $script:TcDeidGenericFolders -and $seg -notmatch $script:TcDeidCommonWords -and $seg -notmatch '^\d+$') { $names.Add($seg) }
         foreach ($w in ($seg -split '[\s_.\-]+')) {
-            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch '^\d+$') { $names.Add($w) }
+            if ($w.Length -ge 3 -and $w -notmatch $script:TcDeidGenericFolders -and $w -notmatch $script:TcDeidCommonWords -and $w -notmatch '^\d+$') { $names.Add($w) }
         }
         foreach ($nm in $names) {
-            if ($set.Add($nm)) {
-                if ($nm -notmatch '^[A-Za-z0-9]{3,}$') { [void]$setX.Add($nm) }
-                elseif ($nm -match '^[A-Za-z]{6,}$') {
-                    # #121: the beginnings (5+ letters) of the name: "Zebra" in FB_Zebra when the folder is "Zebrafab"
-                    for ($pl = 5; $pl -lt $nm.Length; $pl++) { [void]$setP.Add($nm.Substring(0, $pl)) }
+            if ($set.Add($nm) -and $nm -notmatch '^[A-Za-z0-9]{3,}$') { [void]$setX.Add($nm) }
+            if ($nm -notmatch '^[A-Za-z0-9]{3,}$') { continue }
+            # #121: a plain name also gives (a) its camel-case parts of 4+ letters, without a trailing number
+            # (Zebra2024 -> Zebra, AcmeCorp -> Acme + Corp) and (b) the beginnings (5+ letters) of the name and of
+            # its long parts ("Zebra" in FB_Zebra when the folder is "Zebrafab"). Generic / common words never.
+            $base = $nm -replace '\d+$', ''
+            $cands = [System.Collections.Generic.List[string]]::new()
+            if ($base -match '^[A-Za-z]+$') {
+                $cands.Add($base)
+                foreach ($pm in [regex]::Matches($base, '[A-Z]+(?![a-z])|[A-Z]?[a-z]+')) {
+                    $part = $pm.Value
+                    if ($part.Length -ge 4 -and $part -notmatch $script:TcDeidGenericFolders -and $part -notmatch $script:TcDeidCommonWords) {
+                        [void]$set.Add($part)
+                        if ($part -ne $base) { $cands.Add($part) }
+                    }
                 }
+            }
+            foreach ($cand in $cands) {
+                for ($pl = 5; $pl -lt $cand.Length; $pl++) { [void]$setP.Add($cand.Substring(0, $pl)) }
             }
         }
     }
@@ -282,16 +296,21 @@ function ConvertTo-TcDeidentifiedText {
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)((?<![\w-])-(?:Name|RouteName|Address|HostName|ComputerName)(?::|\s+))("[^"
 ]*"|''[^''
 ]*''|[^\s"'',;&]+)' -Map $ev
-    # dotless route / target names seen in practice: CX-xxxxxx host names (the default host name of a CX is "CX-" plus the last
-    # three bytes of its MAC address, e.g. 00-01-05-aa-bb-cc -> CX-aabbcc:
-    # https://infosys.beckhoff.com/content/1033/cx8010_hw/1610610827.html and
-    # https://infosys.beckhoff.com/content/1033/twincat_bsd/5715950475.html) and <name>:<ADS / TwinCAT port>
+    # dotless route / target names seen in practice: default host names of Beckhoff devices and <name>:<ADS / TwinCAT port>.
+    # InfoSys (https://infosys.beckhoff.com/content/1033/twincat_bsd/5715950475.html): older devices get the prefix CX, CP or
+    # BK_IPC plus the last 3 bytes of the MAC (example CX-1224A3; the first 3 bytes of a Beckhoff MAC are always 00-01-05,
+    # https://infosys.beckhoff.com/content/1033/cx8010_hw/1610610827.html); newer ones BTN- plus the 8-character BTN (BTN-000fgyeg).
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'host-name'; return '<host>' }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9-])CX-[0-9A-F]{6}(?:-[A-Za-z0-9_-]+)?(?![A-Za-z0-9-]|\.[A-Za-z0-9])' -Map $ev
-    # #121: a renamed CX in free text, without a key: <name>-CX01 / <name>-<line>-CX5130 (the model name alone, CX5130, is no
-    # host) and CX5130-<name>; vendor words in front and "CX5130-based" style compounds stay
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Tc\d?|Embedded|Industrial|Compact)-)(?:[A-Za-z0-9_]+-)+CX\d{2,5}[A-Za-z0-9]*(?:-[A-Za-z0-9_]+)*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])CX\d{2,5}-(?!(?:based|compatible|series|type|class|like|device|system|model|variant|platform)(?![A-Za-z0-9_]))[A-Za-z][A-Za-z0-9_-]*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9-])(?:CX|CP|BK_IPC)-[0-9A-F]{6}(?:-[A-Za-z0-9_-]+)?(?![A-Za-z0-9-]|\.[A-Za-z0-9])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9-])BTN-[0-9a-z]{8}(?![A-Za-z0-9-]|\.[A-Za-z0-9])' -Map $ev
+    # #121: a renamed CX in free text, without a key: <name>-CX01, <name>-<line>-CX5130, <name>_CX01 (name of 4+ letters, so that
+    # FB_CX5130Handler stays), <name>-CX-01, and CX5130-<name>. The model name alone (CX5130), vendor words in front, order codes
+    # (CX2500-M310, EL1008-CX..., EtherCAT-CX...) and "CX5130-based" compounds stay. Known limit: other spellings (a name that
+    # is glued to CX01 without a separator, a space instead of the hyphen, a 1-digit number) are only masked via -ExtraMask.
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Tc\d?|Embedded|Industrial|Compact|EtherCAT|E[LKPJ]\d{4})-)(?:[A-Za-z0-9_]+-)+CX\d{2,5}[A-Za-z0-9]*(?:-[A-Za-z0-9_]+)*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Embedded|Industrial|Compact|EtherCAT)[_-])[A-Za-z][A-Za-z0-9]{3,}_CX\d{2,5}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])(?!(?:Beckhoff|TwinCAT|Tc\d?|Embedded|Industrial|Compact|EtherCAT)-)(?:[A-Za-z0-9_]+-)+CX-\d{2,3}(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![A-Za-z0-9_-])CX\d{2,5}-(?!(?:based|compatible|series|type|class|like|device|system|model|variant|platform)(?![A-Za-z0-9_]))(?![A-Za-z]\d{3}(?![A-Za-z0-9_]))[A-Za-z][A-Za-z0-9_-]*(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' -Map $ev
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'host-name'; return '<host>' + $m.Groups[1].Value }
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\w.:/\\<>-])[A-Za-z][A-Za-z0-9_-]{2,62}(:(?:48898|851|852|853|801|10000))(?![0-9])' -Map $ev
     # well-known token shapes (GitHub, OpenAI-style, AWS, Bearer, JWT)
@@ -382,20 +401,19 @@ function ConvertTo-TcDeidentifiedText {
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?:\d{1,3}\.){5}\d{1,3}(?![\d.])' -Map $ev
 
     # 10. IPv4 (loopback and 0.0.0.0 stay; a dotted number right after the WORD version is a version; after ver / ver. / v it
-    #     is a version too unless it lies in a private / link-local range: V10.0.0.5 and ver.192.168.1.5 are masked, #121)
+    #     is a version too unless it lies in a private / link-local range (10., 192.168., 172.16-31., 169.254.): V10.0.0.5 and
+    #     ver.192.168.1.5 are masked, #121. The prefix group only matches in front of such a range (a lookahead), so a text full
+    #     of v1.2.3.4 versions costs nothing extra. Known trade-off: a .NET version such as v10.0.0.0 is masked too.)
     $ev = {
         param($m)
         $ip = $m.Groups['ip'].Value
-        $oct = @($ip.Split('.') | ForEach-Object { [int]$_ })
-        if (@($oct | Where-Object { $_ -gt 255 }).Count -gt 0) { return $m.Value }
+        $oct = [int[]]$ip.Split('.')
+        if ($oct[0] -gt 255 -or $oct[1] -gt 255 -or $oct[2] -gt 255 -or $oct[3] -gt 255) { return $m.Value }
         if ($oct[0] -eq 127 -or $ip -eq '0.0.0.0') { return $m.Value }
-        $private = ($oct[0] -eq 10) -or ($oct[0] -eq 192 -and $oct[1] -eq 168) -or ($oct[0] -eq 172 -and $oct[1] -ge 16 -and $oct[1] -le 31) -or ($oct[0] -eq 169 -and $oct[1] -eq 254)
-        $pre = $m.Groups['pre'].Value
-        if ($pre -ne '' -and -not $private) { return $m.Value }
         Add-TcMaskCount -Counts $c -Name 'ip-address'
-        return $pre + '<ip>'
+        return $m.Groups['pre'].Value + '<ip>'
     }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?<!\b(?i:version)[\s:="'']{0,3})(?<pre>\b(?i:ver|v)[\s:="''.]{0,3})?(?<ip>(?:\d{1,3}\.){3}\d{1,3})(?![\d.])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![\d.])(?<!\b(?i:version|ver|v)[\s:="'']{0,3})(?:(?<pre>\b(?i:ver|v)[\s:="''.]{0,3})(?=(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.)))?(?<ip>(?:\d{1,3}\.){3}\d{1,3})(?![\d.])' -Map $ev
     # IPv6: full and compressed (::), optional %zone; ::1 stays
     $ev = {
         param($m)
@@ -415,11 +433,12 @@ function ConvertTo-TcDeidentifiedText {
     }
     $s = Invoke-TcRegexMap -Text $s -Pattern '(?<![0-9A-Za-z-])[0-9A-Fa-f]{12}(?![0-9A-Za-z-])' -Map $ev
 
-    # 12 digits and no letter (#121): a MAC only after the word mac / hwaddr, or with the Beckhoff vendor prefix 00-01-05 (every
-    # Beckhoff MAC starts with it: https://infosys.beckhoff.com/content/1033/cx8010_hw/1610610827.html); any other
-    # 12-digit number (a time stamp ...) stays
+    # 12 digits and no letter (#121): a MAC only after the word mac / macAddress / mac-address / MAC-Adresse / hwaddr /
+    # physicaladdress, or with the Beckhoff vendor prefix 00-01-05 (every Beckhoff MAC starts with it:
+    # https://infosys.beckhoff.com/content/1033/cx8010_hw/1610610827.html); any other 12-digit number (a time stamp ...) stays.
+    # In an object the key decides (ConvertTo-TcDeidentifiedValue).
     $ev = { param($m) Add-TcMaskCount -Counts $c -Name 'mac-address'; return '<mac>' }
-    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![0-9A-Za-z-])(?:000105[0-9]{6}|(?<=\b(?:mac|hwaddr|hw-addr)(?:\s+address)?[\s:="'']{0,4})[0-9]{12})(?![0-9A-Za-z-])' -Map $ev
+    $s = Invoke-TcRegexMap -Text $s -Pattern '(?i)(?<![0-9A-Za-z-])(?:000105[0-9]{6}|(?<=\b(?:mac(?:[\s_-]?adress?e?|[\s_-]?address)?|hwaddr|hw-addr|physical[\s_-]?address)[\s:="'']{0,4})[0-9]{12})(?![0-9A-Za-z-])' -Map $ev
 
     # 11. long letter+digit runs (base64 / hex keys, license keys); GUIDs and identifiers with _ - . are left alone
     $ev = {
@@ -468,7 +487,10 @@ function ConvertTo-TcDeidentifiedText {
             $lastEnd = 0
             foreach ($pm in [regex]::Matches($v, '[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+')) {
                 $part = $pm.Value
-                $hit = $set.Contains($part) -or ($part.Length -ge 5 -and $setP.Contains($part) -and $part -notmatch $script:TcDeidCommonWords)
+                # a part that is a generic folder word / common PLC word is never masked (folder "Motor" or "EtherCATDevices"
+                # must not hide FB_MotorControl / Tc2_EtherCAT); the 4-letter minimum keeps IEC / Beckhoff prefixes out.
+                # "I_Zebras" (a longer word that only starts like the folder name) stays on purpose: a trade-off, not a bug.
+                $hit = ($set.Contains($part) -or ($part.Length -ge 5 -and $setP.Contains($part))) -and $part -notmatch $script:TcDeidCommonWords -and $part -notmatch $script:TcDeidGenericFolders
                 if (-not $hit) { continue }
                 if ($null -eq $sbn) { $sbn = [System.Text.StringBuilder]::new() }
                 [void]$sbn.Append($v.Substring($lastEnd, $pm.Index - $lastEnd)).Append('<redacted>')
@@ -492,6 +514,8 @@ function ConvertTo-TcDeidentifiedText {
 
 # Keys whose VALUE is a credential whatever it looks like (AddAdsRoute Password, ...).
 $script:TcDeidSecretKeyPattern = '(?i)^(pass(word|wd|wordenv|phrase)?|pwd|secret|token|api_?key|credentials?|authorization)$'
+# Keys whose value is a MAC address in any notation (also 12 digits without separators).
+$script:TcDeidMacKeyPattern = '(?i)^(mac|macaddress|hwaddr|physicaladdress)$'
 # Keys whose value is a host / route / machine name.
 $script:TcDeidHostKeyPattern = '(?i)^(address|routename|hostname|host|computername|machinename)$'
 
@@ -537,7 +561,12 @@ function ConvertTo-TcDeidentifiedValue {
         if ($State.Chars -gt 150000) { $State.Cut = [int]$State.Cut + 1; return '[truncated]' }
         $str = Limit-TcRawText -Text $Value -Cap 20000
         $masked = ConvertTo-TcDeidentifiedText -Text $str -Counts $Counts -ExtraMask $ExtraMask
-        if ($str.Length -lt $Value.Length) { $masked = (Remove-TcTrailingToken -Text $masked) + ' [cut]' }
+        if ($str.Length -lt $Value.Length) {
+            $masked = Remove-TcTrailingToken -Text $masked
+            # nothing is left: the whole value was one run without a word boundary
+            if ([string]::IsNullOrEmpty($masked)) { $masked = '[input dropped: {0} characters without a word boundary]' -f $Value.Length }
+            else { $masked = $masked + ' [cut]' }
+        }
         if ($masked.Length -gt 3000) { $masked = (Limit-TcMaskedText -Text $masked -Cap 3000) + ' [cut]' }
         return $masked
     }
@@ -565,6 +594,10 @@ function ConvertTo-TcDeidentifiedValue {
             if ($k -match $script:TcDeidSecretKeyPattern -and $null -ne $p[1] -and -not ($p[1] -is [bool])) {
                 Add-TcMaskCount -Counts $Counts -Name 'secret'
                 $out[$maskedKey] = '<secret>'
+            }
+            elseif ($k -match $script:TcDeidMacKeyPattern -and $null -ne $p[1] -and ($p[1] -is [string] -or $p[1] -is [ValueType]) -and -not ($p[1] -is [bool]) -and [string]$p[1] -ne '') {
+                Add-TcMaskCount -Counts $Counts -Name 'mac-address'
+                $out[$maskedKey] = '<mac>'
             }
             elseif ($k -match $script:TcDeidHostKeyPattern -and $p[1] -is [string] -and $p[1] -ne '') {
                 Add-TcMaskCount -Counts $Counts -Name 'host-key'

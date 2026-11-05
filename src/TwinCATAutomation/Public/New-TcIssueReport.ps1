@@ -142,7 +142,11 @@ function New-TcIssueReport {
         $m = ConvertTo-TcDeidentifiedText -Text $raw -Counts $counts -ExtraMask $maskList
         # the raw text was cut: masking may have moved the end next to a fragment, so the last token goes too
         $wasCut = $raw.Length -lt $Text.Length
-        if ($wasCut) { $m = Remove-TcTrailingToken -Text $m }
+        if ($wasCut) {
+            $m = Remove-TcTrailingToken -Text $m
+            # nothing is left: the whole input was one run without a word boundary (#121)
+            if ([string]::IsNullOrEmpty($m)) { return ('[input dropped: {0} characters without a word boundary]' -f $Text.Length) }
+        }
         if ($m.Length -gt $Cap) { $m = (Limit-TcMaskedText -Text $m -Cap $Cap) + $Marker }
         elseif ($wasCut -and $Marker) { $m = $m + $Marker }
         return $m

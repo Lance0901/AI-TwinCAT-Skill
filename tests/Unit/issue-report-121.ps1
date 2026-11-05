@@ -81,6 +81,59 @@ Check 'digit-only MAC with the Beckhoff prefix 00-01-05 masked' ($o -ceq 'beckho
 $o = Mask 'built 202611051030 and id 123456123456 and 000106123456'
 Check '12-digit numbers without mac context / Beckhoff prefix stay' ($o -ceq 'built 202611051030 and id 123456123456 and 000106123456') $o
 
+# ---- review round 1 (#128)
+# M1 folder names with a number / several camel-case parts
+$o = Mask 'D:\Customers\Zebra2024\Main.sln FB_Zebra ST_ZebraRecipe Zebra2024 FB_Motor MAIN'
+Check 'M1 folder Zebra2024: FB_Zebra / ST_ZebraRecipe masked, FB_Motor and MAIN stay' ($o -notmatch 'Zebra' -and $o -cmatch 'FB_Motor' -and $o -cmatch 'MAIN') $o
+$o = Mask 'D:\x\AcmeCorp\Main.sln FB_AcmeMotor ST_CorpData FB_Pump'
+Check 'M1 folder AcmeCorp: camel parts Acme and Corp masked, Motor / Data / Pump stay' ($o -notmatch 'Acme|Corp' -and $o -cmatch 'Motor' -and $o -cmatch 'Data' -and $o -cmatch 'FB_Pump') $o
+$o = Mask 'D:\x\ZebraFab\Main.sln ZebraFabLine ST_ZebraFab'
+Check 'M1 folder ZebraFab: Zebra part masked in ZebraFabLine' ($o -notmatch 'Zebra') $o
+# M5 generic / common folder names do not hide Beckhoff or PLC names
+$o = Mask 'D:\Motor\Motion\EtherCATDevices\Visualization\Customers\Productionline\Main.sln FB_MotorControl Tc2_EtherCAT Visual Studio CustomAxis FB_ProductionData FB_Motor Motion'
+Check 'M5 folders Motor / Motion / EtherCATDevices / Visualization / Customers / Productionline hide nothing' ($o -cmatch 'FB_MotorControl' -and $o -cmatch 'Tc2_EtherCAT' -and $o -cmatch 'Visual Studio' -and $o -cmatch 'CustomAxis' -and $o -cmatch 'FB_ProductionData' -and $o -cmatch 'FB_Motor ' -and $o -cmatch 'Motion$') $o
+# M2 digit-only MAC notations and the object key rule
+$o = Mask 'macAddress=001122334455 mac-address: 112233445566 MAC-Adresse 223344556677 physicaladdress=334455667788 physical address 445566778899 hw-addr 556677889900'
+Check 'M2 MAC notations: macAddress, mac-address, MAC-Adresse, physicaladdress, physical address, hw-addr' ($o -notmatch '\d{12}' -and ([regex]::Matches($o, '<mac>')).Count -eq 5) $o   # "mac-address: x" is taken first by the existing "address:" host-key rule (<host>), the value is masked either way
+$o = Mask 'macro 001122334455 and timestamp=202611051030'
+Check 'M2 counter: "macro" and "timestamp" are no MAC context' ($o -ceq 'macro 001122334455 and timestamp=202611051030') $o
+$cm = @{}
+$vm = & $mod { param($c) ConvertTo-TcDeidentifiedValue -Value ([pscustomobject]@{ MacAddress = '001122334455'; mac = 112233445566; hwaddr = 'x'; PhysicalAddress = '33-44'; timestamp = 202611051030; note = 'macro 1' }) -Counts $c } $cm
+Check 'M2 object keys mac / macaddress / hwaddr / physicaladdress -> <mac>, other keys untouched' ($vm['MacAddress'] -ceq '<mac>' -and $vm['mac'] -ceq '<mac>' -and $vm['hwaddr'] -ceq '<mac>' -and $vm['PhysicalAddress'] -ceq '<mac>' -and $vm['timestamp'] -eq 202611051030 -and $vm['note'] -ceq 'macro 1') ($vm | ConvertTo-Json -Compress)
+# M3 performance: versions cost nothing extra
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$o = Mask ('v1.1.1.1 ' * 15000)
+Check ("M3 15000 x 'v1.1.1.1': {0:n2}s < 2s, versions kept" -f $sw.Elapsed.TotalSeconds) ($sw.Elapsed.TotalSeconds -lt 2 -and $o.StartsWith('v1.1.1.1 v1.1.1.1')) ''
+$o = Mask 'v10.0.0.0 and V172.16.0.9 and ver 169.254.1.1 and V172.32.0.1'
+Check 'M3 private ranges after v: 10. 172.16-31. 169.254. masked (also .NET v10.0.0.0, known trade-off), 172.32 stays' ($o -ceq 'v<ip> and V<ip> and ver <ip> and V172.32.0.1') $o
+# M4 CP / BK_IPC / BTN host names
+foreach ($t in 'CX-1224A3', 'CP-1224A3', 'BK_IPC-1224A3', 'BTN-000fgyeg', 'host BTN-000FGYEG ok') {
+    $o = Mask $t
+    Check "M4 default host name masked: $t" ($o -notmatch '1224A3|000fgyeg' -and $o -match '<host>') $o
+}
+foreach ($t in 'CP-12', 'BTN-abc', 'BTN-000fgyeg12', 'CP-1224A3B', 'ATN-000fgyeg') {
+    $o = Mask $t
+    Check "M4 counter: not a host name: $t" ($o -ceq $t) $o
+}
+# m1 order codes, m2 more spellings
+foreach ($t in 'CX2500-M310 power supply', 'EL1008-CX5130 cable', 'EtherCAT-CX5130 coupler', 'EK1100-CX2040') {
+    $o = Mask $t
+    Check "m1 order code / vendor name stays: $t" ($o -ceq $t) $o
+}
+foreach ($pair in @(@('route Zebra_CX01 down', 'Zebra'), @('route zebra-cx-01 down', 'zebra'))) {
+    $o = Mask $pair[0]
+    Check ("m2 renamed CX spelling: " + $pair[0]) ($o -notmatch $pair[1] -and $o -match '<host>') $o
+}
+foreach ($t in 'FB_CX5130Handler', 'Tc_CX01 name', 'a CX-01 model') {
+    $o = Mask $t
+    Check "m2 counter: stays: $t" ($o -ceq $t) $o
+}
+# m3 the dropped-input marker
+$rd = New-TcIssueReport -Title 't' -Notes ('Q' * 40000) -NoEnvironment
+Check 'm3 dropped input says so (no "cut at 10000")' ($rd.data.body -match 'input dropped: 40000 characters without a word boundary' -and $rd.data.body -notmatch 'cut at 10000') $rd.data.body
+$rl2 = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ('Q' * 25000) } }) -NoEnvironment
+Check 'm3 dropped result leaf says so' ($rl2.data.body -match 'input dropped: 25000 characters') $rl2.data.body
+
 # the whole report: new masks take part in New-TcIssueReport
 $r = New-TcIssueReport -Title 'Zebrafab Line7' -Parameters @{ SolutionPath = 'D:\Customers\Zebrafab\Line7\Main.sln' } -Notes 'FB_Zebra failed on Zebra-CX01 (V10.0.0.5, mac 001122334455); MAIN ok' -NoEnvironment
 Check 'report: customer prefix, renamed CX, V-address and digit MAC masked; MAIN kept' ($r.data.body -notmatch 'Zebra' -and $r.data.body -notmatch '10\.0\.0\.5' -and $r.data.body -notmatch '001122334455' -and $r.data.body -cmatch 'MAIN ok') $r.data.body
