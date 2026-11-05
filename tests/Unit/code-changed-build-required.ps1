@@ -193,6 +193,8 @@ Check 'Add-TcLibrary AddLibrary other failure -> LIBRARY_ADD_FAILED, recorded (c
 Reset-State
 
 # --- New-TcProject on a mock DTE: the NEW solution is recorded
+# #70: the template lookup is covered by tests/Unit/new-project-template.ps1; stubbed here (no TwinCAT install needed)
+& $mod { function script:Resolve-TcProjectTemplate { [PSCustomObject]@{ Path = 'C:\Mock\TwinCAT Project.tsproj'; Searched = @('C:\Mock\TwinCAT Project.tsproj') } } }
 $newPlc = [PSCustomObject]@{ Mock = $true }
 $newPlc | Add-Member -MemberType ScriptMethod -Name CreateChild -Value { param($a, $b, $c, $d) [PSCustomObject]@{ Name = $a } }
 $newSm = [PSCustomObject]@{ Mock = $true }

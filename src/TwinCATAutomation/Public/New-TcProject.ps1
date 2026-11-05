@@ -12,8 +12,17 @@ function New-TcProject {
         IDE_BUSY) the call returns SOLUTION_ALREADY_OPEN (data.openSolution) and
         Solution.Create is never called: Solution.Create closes the open solution without a
         warning, its unsaved changes are lost (measured 2026-10-28, #70: TwinCAT 3.1.4026.22
-        XAE in VS2022 and 4024 32-bit XAE Shell, registered tcauto). The template path of AddFromTemplate is not fixed yet
-        (#70), so the MCP server does not offer NewProject for now; the cmdlet stays.
+        XAE in VS2022 and 4024 32-bit XAE Shell, registered tcauto).
+        Templates (#70): AddFromTemplate got an empty template string (STG_E_FILENOTFOUND on 4026,
+        ArgumentException on 4024). It now gets the full path of 'TwinCAT Project.tsproj' from
+        Resolve-TcProjectTemplate (InfoSys "Accessing TwinCAT configuration":
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html),
+        and CreateChild gets the template NAME 'Standard PLC Template' (InfoSys "How to create a
+        PLC project": only the template name for standard Beckhoff templates:
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842439947.html).
+        No template file -> TEMPLATE_NOT_FOUND (data.searched), resolved BEFORE Solution.Create so
+        the IDE state is untouched. Real-machine create + Build on 4024 and 4026: still open.
+        The MCP server keeps NewProject off until then; the cmdlet stays.
         BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
         (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
         never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
@@ -70,6 +79,15 @@ function New-TcProject {
             -Data ([PSCustomObject]@{ openSolution = $openSolution; created = $false })
     }
 
+    # #70: resolve the XAE project template before Solution.Create; nothing is touched when it is missing
+    $template = Resolve-TcProjectTemplate
+    if ($null -eq $template -or [string]::IsNullOrWhiteSpace([string]$template.Path)) {
+        return New-TcResult -Success $false -ErrorCode 'TEMPLATE_NOT_FOUND' -Hint $script:TcErrorHints['TEMPLATE_NOT_FOUND'] `
+            -ErrorMessage "TwinCAT project template 'TwinCAT Project.tsproj' not found; New-TcProject did not call Solution.Create (#70)." `
+            -Data ([PSCustomObject]@{ searched = @($template.Searched); created = $false })
+    }
+    $tcProjectTemplate = [string]$template.Path
+
     $solutionCreated = $false   # #65: the IDE holds the new solution from here on
     try {
         $solutionPath = Join-Path $Path $Name
@@ -83,9 +101,8 @@ function New-TcProject {
         $solutionCreated = $true
 
         # Add TwinCAT XAE project
-        # TwinCAT project template GUID
-        $tcProjectTemplate = ''
-        $tcProject = $solution.AddFromTemplate($tcProjectTemplate, $solutionPath, $Name, $false)
+        # full path of 'TwinCAT Project.tsproj' (InfoSys 242721803: AddFromTemplate(template, destination, name))
+        $tcProject = $solution.AddFromTemplate($tcProjectTemplate, $solutionPath, $Name)
 
         # Get ITcSysManager from the new project
         $sysManager = $tcProject.Object
@@ -93,7 +110,8 @@ function New-TcProject {
 
         # Add PLC project under the TwinCAT project
         $plcConfig = $sysManager.LookupTreeItem('TIPC')
-        $plcProject = $plcConfig.CreateChild("$Name" + '_Plc', 0, '', [System.Guid]::Empty.ToString('B'))
+        # CreateChild(name, subType 0, '', vInfo): standard Beckhoff templates are given by NAME only (InfoSys 21842439947)
+        $plcProject = $plcConfig.CreateChild("$Name" + '_Plc', 0, '', 'Standard PLC Template')
 
         # Save solution
         $solution.SaveAs($slnFile)
