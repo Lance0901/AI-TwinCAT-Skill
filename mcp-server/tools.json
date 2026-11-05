@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T13:46:37Z",
+    "generatedAt":  "2026-11-05T13:47:29Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1134,6 +1134,28 @@
                                           "type":  "object",
                                           "properties":  {
 
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "GetAutomationVersion",
+                      "cmdlet":  "Get-TcAutomationVersion",
+                      "description":  "Read-only and offline: which TwinCATAutomation this server runs (#30). Module installed by TwinCATSetup-Claude/Codex/Antigravity.ps1: read from tcauto-install-manifest.json in the skill folder (data.installed=true, source=install-manifest): name, sourceUrl, version, release, commit, ref, commitSource (git / release-stamp / unknown), installer, installedAt, sourcePath, fileCount. Server started from the repository: installed=false, source=source-tree, version from the .psd1 and commit from the .git files (git is not started; uncommitted changes are not detected). data.moduleVersion / modulePath describe the loaded module. Verify=true compares every installed file with the SHA256 in the manifest (data.verify: ok, checked, matched, mismatched [path, expected, actual], missing, extra, unreadable [path, error]): a difference returns INSTALL_MANIFEST_MISMATCH, no manifest INSTALL_MANIFEST_NOT_FOUND, an unreadable manifest INSTALL_MANIFEST_INVALID. Include version and commit when reporting an issue.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Verify":  {
+                                                                            "type":  "boolean",
+                                                                            "description":  "Also compare the installed files with the SHA256 hashes recorded in the install manifest (detects an accidental or partial change of the installed copy)."
+                                                                        }
                                                          },
                                           "required":  [
 

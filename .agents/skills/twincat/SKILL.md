@@ -7,6 +7,8 @@ description: Use when the user asks to automate TwinCAT 3 IDE, build or deploy P
 
 Control TwinCAT 3 IDE and PLC runtime using the TwinCATAutomation PowerShell module.
 
+Canonical repository: https://github.com/Lance0901/AI-TwinCAT-Skill. The installer records the source repo, version and commit in `tcauto-install-manifest.json` next to this file; `Get-TcAutomationVersion` reads it (include its output when reporting an issue).
+
 ## Setup
 
 ```powershell
@@ -52,6 +54,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Disconnect-TcIde` | | Disconnect from IDE |
 | `Reset-TcSolution` | `[-SolutionPath <sln>] [-TimeoutSec 120]` | Dismiss the reload prompt, close all documents (no save), close + reopen the solution on the same IDE so XAE reloads project files changed on disk; only needed when the changed .TcPOU is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
 | `Get-TcIdeInfo` | | Get IDE version, solution path, connection status |
+| `Get-TcAutomationVersion` | `[-Verify]` | Installed version, source repo, commit and install time from `tcauto-install-manifest.json` (#30, offline); `-Verify` checks the installed files' SHA256 (`INSTALL_MANIFEST_MISMATCH`) |
 | `Get-TcIdeModalDialog` | `-ProcessId` `-TimeoutSec` | Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog = null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not "none"); works while DTE calls fail with IDE_BUSY |
 
 ### Project Management
