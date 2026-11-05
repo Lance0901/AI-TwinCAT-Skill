@@ -49,6 +49,12 @@ function Disconnect-TcIde {
         earlier -Quit already failed), kill the IDE process. Refused with IDE_NOT_OWNED
         unless this session launched that IDE (data.ownedBySession). -Kill without -Quit
         is INVALID_PARAMS.
+    .PARAMETER ForgetPendingLaunch
+        Only forget the launch records of IDEs this session launched whose process id could not
+        be confirmed (Connect-TcIde IDE_LAUNCH_PENDING with data.probe 'pid-unconfirmed'), so the
+        next Connect-TcIde -SolutionPath may launch again. Closes nothing, keeps the connection
+        (data.forgottenLaunches). Close that IDE yourself first if it is still running. Not with
+        -Quit / -Kill (INVALID_PARAMS).
     .EXAMPLE
         Disconnect-TcIde -Quit          # IDE_QUIT_FAILED (modal up, connection kept) ...
         Disconnect-TcIde -Quit -Kill    # ... then kill it, no reconnect needed
@@ -63,11 +69,23 @@ function Disconnect-TcIde {
     param(
         [switch]$Quit,
 
-        [switch]$Kill
+        [switch]$Kill,
+
+        [switch]$ForgetPendingLaunch
     )
 
     if ($Kill -and -not $Quit) {
         return New-TcResult -Success $false -ErrorMessage '-Kill requires -Quit (Disconnect-TcIde -Quit -Kill).' -ErrorCode 'INVALID_PARAMS'
+    }
+    if ($ForgetPendingLaunch) {
+        if ($Quit) { return New-TcResult -Success $false -ErrorMessage '-ForgetPendingLaunch cannot be combined with -Quit / -Kill.' -ErrorCode 'INVALID_PARAMS' }
+        # #147 m-b: the exit for IDE_LAUNCH_PENDING probe 'pid-unconfirmed'; the connection and
+        # every IDE process are left alone
+        $forgotten = @(Clear-TcUnconfirmedLaunches)
+        return New-TcResult -Success $true -Data ([PSCustomObject]@{
+                message           = "Forgot $($forgotten.Count) launch record(s) with an unconfirmed process id; no IDE was closed and the connection is unchanged."
+                forgottenLaunches = $forgotten
+            })
     }
 
     $ideProcessId = 0

@@ -38,10 +38,10 @@ function Connect-TcIde {
         instance qualifies a new IDE is launched (#72, data.progIdSelectedBy): the single -ProgId
         given ('explicit'); else the IDE of the TwinCAT build the .tsproj files of -SolutionPath
         were saved with (root attribute TcVersion; 'tsproj-version', evidence in
-        data.solutionVersion): build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0,
-        each only with the TwinCAT XAE Base >= 4026 found in its install folder (via the ProgID's
-        LocalServer32); build < 4026 -> TcXaeShell.DTE.15.0 when its XAE is that build or a Remote
-        Manager of that build is installed. A solution without any .tsproj (or no -SolutionPath)
+        data.solutionVersion): build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0
+        (only with the TwinCAT XAE integrated); build < 4026 -> TcXaeShell.DTE.15.0; launched only
+        when the TwinCAT XAE Base version found in its install folder (via the ProgID's
+        LocalServer32) EQUALS the TcVersion, revision included. A solution without any .tsproj (or no -SolutionPath)
         and a single registered IDE -> 'only-one-registered'. Otherwise nothing is launched:
         IDE_VERSION_NOT_REGISTERED (build known, no IDE confirmed for it) or PROGID_REQUIRED (the
         version of a .tsproj unreadable / conflicting, XAE build not confirmable, several IDEs). #136:

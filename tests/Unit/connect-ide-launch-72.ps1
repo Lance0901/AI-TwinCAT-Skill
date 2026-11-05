@@ -60,6 +60,9 @@ $slnMissing = New-Sln 'smissing' @('<missing>')
 $slnCorrupt = New-Sln 'scorrupt' @('<corrupt>')
 $slnNoTs = New-Sln 'snots' @()
 $slnOther = New-Sln 'sother' @('3.1.4026.22')
+$sln26r19 = New-Sln 's4026r19' @('3.1.4026.19')
+$sln24r59 = New-Sln 's4024r59' @('3.1.4024.59')
+$slnRevMix = New-Sln 'srevmix' @('3.1.4026.22', '3.1.4026.19')
 $long = { param($p) & $mod { param($x) Get-TcLongPath $x } $p }
 $sln26L = & $long $sln26
 
@@ -80,6 +83,7 @@ $global:GuessPid72 = 0            # Get-TcIdeProcessId: pid guessed from the sta
 $global:Modal72 = 'incomplete'    # 'incomplete' | 'dialog' | 'none'
 $global:ModalQueue72 = New-Object System.Collections.ArrayList
 $global:GetComObjectCalls72 = 0
+$global:Kills72 = New-Object System.Collections.ArrayList   # m-c: Stop-TcLaunchedIde / Stop-Process are mocks, nothing real is ever killed
 
 function New-FakeDte([string]$Version = '17.0', [string]$Solution = '', [bool]$Busy = $false) {
     $sol = New-Object PSObject
@@ -156,6 +160,8 @@ function New-RotEntry([int]$ProcId, [object]$Object, [string]$ProgId = 'VisualSt
         }
         & $script:UnitOrigComRetry @PSBoundParameters
     }
+    function script:Stop-TcLaunchedIde { [CmdletBinding()] param([object]$Dte, [string]$ProgId, [DateTime]$StartedAfter) [void]$global:Kills72.Add("Stop-TcLaunchedIde $ProgId"); ,@() }
+    function script:Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force) [void]$global:Kills72.Add("Stop-Process $Id") }
     function script:Get-AllComObjects { [CmdletBinding()] param([switch]$IncludeDisplayName) $global:Rot72 }
 } ${function:New-FakeDte} ${function:New-RotEntry}
 
@@ -190,7 +196,9 @@ try {
     $rp = { param($p, $s) & $mod { param($a, $b) Resolve-TcLaunchProgId -ProgId $a -SolutionPath $b } $p $s }
     Reset-State
     $r = & $rp '' $sln26;   Check 'A4 4026 -> TcXaeShell.DTE.17.0' ($r.progId -eq 'TcXaeShell.DTE.17.0' -and $r.selectedBy -eq 'tsproj-version') "$($r.progId)/$($r.selectedBy)"
-    $r = & $rp '' $sln24;   Check 'A5 4024, 32-bit shell XAE 4026 + Remote Manager 4024.71 -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0' -and $r.selectedBy -eq 'tsproj-version') "$($r.progId)/$($r.selectedBy) $($r.errorMessage)"
+    $r = & $rp '' $sln24;   Check 'A5 M3-b: 4024 project, 32-bit shell is XAE 4026 (+ Remote Manager 4024.71) -> PROGID_REQUIRED, untested path' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'not measured yet') "$($r.errorCode) $($r.errorMessage)"
+    $r = & $rp '' $sln26r19; Check 'A5b m-a: 4026.19 project, XAE 4026.22 -> PROGID_REQUIRED (revision compared strictly)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
+    $r = & $rp '' $slnRevMix; Check 'A5c two .tsproj, same build, other revision -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'different TwinCAT versions') "$($r.errorCode)"
     $global:Reg72 = @('TcXaeShell.DTE.15.0', 'VisualStudio.DTE.17.0')
     $r = & $rp '' $sln26;   Check 'A6 4026 without TcXaeShell64 -> VisualStudio.DTE.17.0 (XAE integrated)' ($r.progId -eq 'VisualStudio.DTE.17.0' -and $r.selectedBy -eq 'tsproj-version') "$($r.progId)/$($r.selectedBy)"
     $global:Ide72['VisualStudio.DTE.17.0'] = $null
@@ -214,11 +222,12 @@ try {
     Reset-State; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4026.22') }
     $r = & $rp '' $sln24;   Check 'A14 4024, 32-bit shell is XAE 4026 without Remote Manager 4024 -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'Remote Manager') "$($r.errorCode)"
     Reset-State; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.71'; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4024; remoteManagerBuilds = @() }
-    $r = & $rp '' $sln24;   Check 'A15 4024, 32-bit shell is XAE 4024 -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0') "$($r.progId)/$($r.errorCode)"
+    $r = & $rp '' $sln24;   Check 'A15 4024.71 project, 32-bit shell is XAE 4024.71 -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0') "$($r.progId)/$($r.errorCode)"
+    $r = & $rp '' $sln24r59; Check 'A15b 4024.59 project, XAE 4024.71 -> PROGID_REQUIRED (4024.59 != 4024.71)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     $global:Ide72['TcXaeShell.DTE.15.0'] = $null; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4024.71') }
     $r = & $rp '' $sln24;   Check 'A16 4024, XAE build of the 32-bit shell unreadable and 4026 installed -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.errorCode)"
     $global:Inst72 = [PSCustomObject]@{ installedBuild = 4024; remoteManagerBuilds = @() }
-    $r = & $rp '' $sln24;   Check 'A17 4024, XAE unreadable and no 4026 installed -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0') "$($r.progId)/$($r.errorCode)"
+    $r = & $rp '' $sln24;   Check 'A17 4024, XAE unreadable and no 4026 installed -> PROGID_REQUIRED (m-a: only an equal XAE version is accepted)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     Reset-State; $global:Ide72['TcXaeShell.DTE.17.0'] = $null
     $r = & $rp '' $sln26;   Check 'A18 4026, TcXaeShell64 XAE unreadable -> VisualStudio.DTE.17.0' ($r.progId -eq 'VisualStudio.DTE.17.0') "$($r.progId)/$($r.errorCode)"
 
@@ -226,7 +235,7 @@ try {
     Reset-State
     $r = Connect-TcIde -SolutionPath $sln26
     Check 'B1 4026 sln launches TcXaeShell.DTE.17.0' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.17.0' -and $r.data.progIdSelectedBy -eq 'tsproj-version' -and $r.data.progId -eq 'TcXaeShell.DTE.17.0') "launches=$($global:Launches72 -join ',') code=$($r.error.code) by=$($r.data.progIdSelectedBy)"
-    Reset-State
+    Reset-State; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.71'
     $r = Connect-TcIde -SolutionPath $sln24
     Check 'B2 4024 sln launches TcXaeShell.DTE.15.0' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.15.0' -and $r.data.progIdSelectedBy -eq 'tsproj-version') "launches=$($global:Launches72 -join ',') by=$($r.data.progIdSelectedBy)"
     Reset-State
@@ -322,15 +331,28 @@ try {
     $d4 = Connect-TcIde -SolutionPath $sln26
     Check 'D4 unconfirmed launch and no IDE process started since then is alive -> record dropped, new launch' ($global:Launches72.Count -eq 2) "launches=$($global:Launches72.Count) code=$($d4.error.code)"
 
+    # --- D5: m-b, the exit for pid-unconfirmed ---
+    Reset-State
+    $global:LaunchInRot72 = $false; $global:GuessPid72 = 9777; $global:Procs72[9777] = [DateTime]::Now
+    $null = Connect-TcIde -SolutionPath $sln26
+    $bad = Disconnect-TcIde -ForgetPendingLaunch -Quit
+    Check 'D5 -ForgetPendingLaunch with -Quit -> INVALID_PARAMS' ($bad.error.code -eq 'INVALID_PARAMS') "code=$($bad.error.code)"
+    $fg = Disconnect-TcIde -ForgetPendingLaunch
+    Check 'D6 Disconnect-TcIde -ForgetPendingLaunch forgets the unconfirmed launch record' ($fg.success -and @($fg.data.forgottenLaunches).Count -eq 1 -and @($fg.data.forgottenLaunches)[0].solution -eq $sln26L) ($fg | ConvertTo-Json -Compress -Depth 4)
+    $global:LaunchInRot72 = $true; $global:GuessPid72 = 0
+    $d7 = Connect-TcIde -SolutionPath $sln26
+    Check 'D7 after forgetting, the next Connect-TcIde may launch again' ($global:Launches72.Count -eq 2) "launches=$($global:Launches72.Count) code=$($d7.error.code)"
+
     # --- E: nothing real ---
     Check 'E1 the GetActiveObject fallback is the mock (no real ROT lookup)' ($global:GetComObjectCalls72 -gt 0) "calls=$($global:GetComObjectCalls72)"
     $srcText = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Public\Connect-TcIde.ps1') -Raw) + (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Private\Resolve-TcLaunchProgId.ps1') -Raw)
+    Check 'E3 m-c: nothing was killed (Stop-TcLaunchedIde / Stop-Process are mocks and were not called)' ($global:Kills72.Count -eq 0) ($global:Kills72 -join ', ')
     Check 'E2 Connect-TcIde / launch helpers call GetActiveObject only through Get-ComObject' ($srcText -notmatch 'Marshal\]::GetActiveObject') ''
 }
 finally {
     Reset-State
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Variable -Name Reg72, Ide72, Inst72, Launches72, LaunchedDtes72, NextPid72, Procs72, Rot72, LaunchInRot72, GuessPid72, Modal72, ModalQueue72, GetComObjectCalls72 -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name Kills72, Reg72, Ide72, Inst72, Launches72, LaunchedDtes72, NextPid72, Procs72, Rot72, LaunchInRot72, GuessPid72, Modal72, ModalQueue72, GetComObjectCalls72 -Scope Global -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"

@@ -30,16 +30,19 @@
 # 4024.71, 4026.19, 4026.20, 4026.22; read as the installed Remote Manager versions, an inference
 # from the folder contents, not stated by InfoSys).
 # Rules (Resolve-TcLaunchProgId):
-#   build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0, each only with a readable XAE
-#                    Base manifest of build >= 4026; never the 32-bit shell (#72: a 4026 solution in
-#                    it left a v15 .suo next to the v17 one and the next 64-bit load hung)
-#   build < 4026  -> TcXaeShell.DTE.15.0 when its XAE Base is that older build, or it is newer and a
-#                    Remote Manager folder of that build exists; XAE Base unreadable -> accepted only
-#                    when no 4026 is installed (HKLM ...\Beckhoff\TwinCAT3\System Build), otherwise
-#                    PROGID_REQUIRED
-# Known limits: a 4026 install whose only shell is the 32-bit TcXaeShell gets IDE_VERSION_NOT_REGISTERED
-# for a 4026 project (pass -ProgId); whether a 4024 project opened by the 4026 XAE through the
-# Automation Interface really uses the 4024 Remote Manager is not verified here.
+#   candidates: build >= 4026 -> TcXaeShell.DTE.17.0, then VisualStudio.DTE.17.0 (only with an XAE
+#                    Base >= 4026, i.e. the XAE integrated); never the 32-bit shell (#72: a 4026
+#                    solution opened in it left a v15 .suo next to the v17 one, highly correlated with
+#                    the following 64-bit load hang, measured in #72)
+#               build < 4026  -> TcXaeShell.DTE.15.0
+#   a candidate is launched only when its XAE Base version EQUALS the project TcVersion (revision
+#   included). Any other case (other version, unreadable XAE Base, only a Remote Manager folder of
+#   the project build) -> PROGID_REQUIRED; no candidate registered / integrated ->
+#   IDE_VERSION_NOT_REGISTERED.
+# Known limits: strict revision compare (no Beckhoff compatibility rule between revisions found);
+# a 4024 project on a machine whose XAE is 4026 (this repo's dev machine) always needs -ProgId until
+# the Remote Manager behaviour of the Automation Interface is measured; a 4026 install whose only
+# shell is the 32-bit TcXaeShell gets IDE_VERSION_NOT_REGISTERED for a 4026 project.
 
 $script:TcKnownIdeProgIds = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
 
@@ -227,37 +230,36 @@ function Resolve-TcLaunchProgId {
         return (& $required $ev.reason)
     }
     $build = [int]$ev.builds[0]
-    $tcv = @($ev.tsprojects)[0].tcVersion
+    # m-a: the full version (revision included) must match; 3.1.4024.59 != 3.1.4024.71. No
+    # Beckhoff rule was found that makes another revision of the same build compatible (the
+    # Remote Manager page only says a pinned project is OFFERED the latest revision of its
+    # release), so the comparison is strict.
+    $tcvs = @($ev.tsprojects | ForEach-Object { [string]$_.tcVersion } | Sort-Object -Unique)
+    if ($tcvs.Count -gt 1) { return (& $required "the referenced .tsproj files were saved with different TwinCAT versions ($($tcvs -join ', '))") }
+    $tcv = $tcvs[0]
     $infos = @($out.registered | ForEach-Object { Get-TcProgIdIdeInfo -ProgId $_ } | Where-Object { $null -ne $_ })
     $out.ide = $infos
     $info = { param($p) @($infos | Where-Object { $_.progId -eq $p }) | Select-Object -First 1 }
-    if ($build -ge 4026) {
-        foreach ($p in 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0') {
-            $i = & $info $p
-            if ($null -ne $i -and $null -ne $i.xaeBuild -and $i.xaeBuild -ge 4026) { $out.progId = $p; $out.selectedBy = 'tsproj-version'; return $out }
-        }
+    $xaeList = (@($infos | ForEach-Object { "$($_.progId)=$(if ($_.xaeVersion) { $_.xaeVersion } else { 'unknown' })" }) -join ', ')
+    # #147 M3-b: an XAE of another version is NOT accepted, not even with a Remote Manager folder
+    # of the project build: whether the Automation Interface loads the project with that Remote
+    # Manager is not measured yet.
+    $untested = 'XAE build differs from the project build; whether the Automation Interface loads the project with the Remote Manager of that build is not measured yet'
+    $wanted = if ($build -ge 4026) { @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0') } else { @('TcXaeShell.DTE.15.0') }
+    $present = @($wanted | ForEach-Object { & $info $_ } | Where-Object { $null -ne $_ })
+    if ($build -ge 4026) { $present = @($present | Where-Object { $null -ne $_.xaeBuild -and $_.xaeBuild -ge 4026 }) }   # VS2022 only with the XAE integrated
+    if ($present.Count -eq 0) {
         $out.errorCode = 'IDE_VERSION_NOT_REGISTERED'
-        $out.errorMessage = "The solution's TwinCAT project was saved with build $build (TcVersion $tcv), which needs TcXaeShell.DTE.17.0 (TcXaeShell64) or VisualStudio.DTE.17.0 with the TwinCAT XAE integrated (XAE Base >= 4026); none is confirmed (registered: $($out.registered -join ', '); XAE Base: $(@($infos | ForEach-Object { "$($_.progId)=$(if ($_.xaeVersion) { $_.xaeVersion } else { 'unknown' })" }) -join ', ')). No IDE was launched; pass -ProgId to choose one."
+        $out.errorMessage = "The solution's TwinCAT project was saved with TcVersion $tcv, which needs $($wanted -join ' or ')$(if ($build -ge 4026) { ' with the TwinCAT XAE >= 4026 integrated' }); none is registered / confirmed (registered: $($out.registered -join ', '); XAE Base: $xaeList). No IDE was launched; pass -ProgId to choose one."
         return $out
     }
-    $i = & $info 'TcXaeShell.DTE.15.0'
-    if ($null -eq $i) {
-        $out.errorCode = 'IDE_VERSION_NOT_REGISTERED'
-        $out.errorMessage = "The solution's TwinCAT project was saved with build $build (TcVersion $tcv), which needs the 32-bit TcXaeShell (TcXaeShell.DTE.15.0); it is not registered (registered: $($out.registered -join ', ')). No IDE was launched; pass -ProgId to choose one."
-        return $out
-    }
+    $exact = @($present | Where-Object { [string]$_.xaeVersion -eq $tcv }) | Select-Object -First 1
+    if ($null -ne $exact) { $out.progId = $exact.progId; $out.selectedBy = 'tsproj-version'; return $out }
     $inst = Get-TcXaeInstallInfo
     $out.evidence | Add-Member -NotePropertyName 'xaeInstall' -NotePropertyValue $inst -Force
-    if ($null -ne $i.xaeBuild) {
-        if ($i.xaeBuild -lt 4026) { $out.progId = $i.progId; $out.selectedBy = 'tsproj-version'; return $out }
-        if (@($inst.remoteManagerBuilds | Where-Object { (ConvertTo-TcBuildNumber "3.1.$_") -eq $build }).Count -gt 0) { $out.progId = $i.progId; $out.selectedBy = 'tsproj-version'; return $out }
-        return (& $required "the project was saved with build $build, but TcXaeShell.DTE.15.0 is XAE $($i.xaeVersion) and no Remote Manager of build $build was found (Remote Manager builds: $(if ($inst.remoteManagerBuilds.Count) { $inst.remoteManagerBuilds -join ', ' } else { 'none' }))")
-    }
-    if ($null -ne $inst.installedBuild -and $inst.installedBuild -ge 4026) {
-        return (& $required "the project was saved with build $build, the XAE build of TcXaeShell.DTE.15.0 is not readable ($($i.installRoot)) and TwinCAT $($inst.installedBuild) is installed (its 32-bit shell is also TcXaeShell.DTE.15.0)")
-    }
-    $out.progId = $i.progId; $out.selectedBy = 'tsproj-version'
-    $out
+    $unknown = @($present | Where-Object { [string]::IsNullOrWhiteSpace($_.xaeVersion) })
+    $detail = if ($unknown.Count -eq $present.Count) { "the XAE version of $(@($present | ForEach-Object { $_.progId }) -join ' / ') is not readable" } else { $untested }
+    return (& $required "the project was saved with TcVersion $tcv, but no IDE has exactly that XAE ($xaeList; Remote Manager builds: $(if ($inst.remoteManagerBuilds.Count) { $inst.remoteManagerBuilds -join ', ' } else { 'none' })): $detail")
 }
 
 # --- #136: the IDE this session launched for a solution ---
@@ -317,6 +319,23 @@ function Clear-TcSessionLaunchedIde {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Solution)
     if ($null -ne $script:TcLaunchedIdeSolutions) { $script:TcLaunchedIdeSolutions.Remove($Solution.ToLowerInvariant()) }
+}
+
+# Disconnect-TcIde -ForgetPendingLaunch (#147 m-b): drops every launch record whose pid is NOT
+# confirmed (pid-unconfirmed), so the next Connect-TcIde for that solution may launch again. The
+# IDE itself is not touched (it is not known to be ours). Returns what was dropped.
+function Clear-TcUnconfirmedLaunches {
+    [CmdletBinding()]
+    param()
+    if ($null -eq $script:TcLaunchedIdeSolutions -or $script:TcLaunchedIdeSolutions.Count -eq 0) { return @() }
+    $dropped = @()
+    foreach ($k in @($script:TcLaunchedIdeSolutions.Keys)) {
+        $r = $script:TcLaunchedIdeSolutions[$k]
+        if ($null -ne $r.processKey) { continue }
+        $dropped += [PSCustomObject]@{ solution = $r.solution; progId = $r.progId; launchTime = $(if ($null -ne $r.launchTime) { ([DateTime]$r.launchTime).ToString('o') } else { $null }) }
+        $script:TcLaunchedIdeSolutions.Remove($k)
+    }
+    $dropped
 }
 
 # The launch record of -Solution while that IDE can still be alive, else $null (record dropped).

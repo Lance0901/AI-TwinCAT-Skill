@@ -245,13 +245,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### 啟動哪個 IDE(#72):progIdSelectedBy
 
-`Connect-TcIde` 要自己啟動 IDE、又沒給 `-ProgId` 時，不再挑「第一個註冊的 ProgID」(那會讓 4026 的 solution 被 32-bit TcXaeShell 打開，在 `.vs\<sln>\v15` 留下另一份 `.suo`,之後 64-bit 載入卡住，見 #72)。`data.progIdSelectedBy` 說明怎麼選的:
+`Connect-TcIde` 要自己啟動 IDE、又沒給 `-ProgId` 時，不再挑「第一個註冊的 ProgID」(那會讓 4026 的 solution 被 32-bit TcXaeShell 打開，在 `.vs\<sln>\v15` 留下另一份 `.suo`,與之後 64-bit 載入卡住高度相關(#72 實測))。`data.progIdSelectedBy` 說明怎麼選的:
 
 | 值 | 意思 |
 |---|---|
 | `explicit` | 呼叫端給了 `-ProgId` |
 | `running-instance` | 接上 ROT 裡已在跑的 IDE(沒有啟動) |
-| `tsproj-version` | 從 solution 引用的**每一個** `.tsproj` 根節點 `TcVersion` 判斷(證據在 `data.solutionVersion`:每個 .tsproj 的 `tcVersion` / `build` / `error`、`.sln` 的 `visualStudioVersion` 只當參考、4024 專案時的 `xaeInstall`) |
+| `tsproj-version` | 從 solution 引用的**每一個** `.tsproj` 根節點 `TcVersion` 判斷(證據在 `data.solutionVersion`:每個 .tsproj 的 `tcVersion` / `build` / `error`、`.sln` 的 `visualStudioVersion` 只當參考、沒選到時的 `xaeInstall`) |
 | `only-one-registered` | 沒給 `-SolutionPath`,或 solution 根本沒引用 .tsproj,而三個已知 ProgID 只註冊了一個 |
 
 - **版本存在哪**:InfoSys 說專案檔記著最後存檔的 TwinCAT 版本([Selection of a TwinCAT 3 version before loading a project](https://infosys.beckhoff.com/content/1033/tc3_remote_manager/3154642571.html)),但沒寫欄位名。實測(2026-11-06,唯讀):`C:\Temp\Verify-4026-axis` 的 `.tsproj` 根節點是 `<TcSmProject ... TcVersion="3.1.4026.22">`,`C:\Temp\Verify-4024-bfh` 的是 `TcVersion="3.1.4024.71"`。只讀 `.tsproj`。有一個 .tsproj 缺檔、XML 壞掉或沒有 `TcVersion`,就不判斷(`PROGID_REQUIRED`)。
@@ -264,16 +264,19 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - 三個安裝根目錄下都有 `Common7\IDE\Extensions\Beckhoff Automation GmbH\TwinCAT XAE Base\extension.vsixmanifest`,Identity Version 都是 3.1.4026.22。模組用這個 manifest 判斷「這個 IDE 有整合 TwinCAT XAE,是哪個 build」:沒有這個 manifest 的 VS2022 不算 TwinCAT IDE。
   - `<TwinCATDir>\3.1\Components\Base\Build_<build>` 資料夾(這台有 4024.59、4024.71、4026.19、4026.20、4026.22):模組把它當成已安裝的 Remote Manager 版本。這是從資料夾內容推論的，不是 InfoSys 的說法。
 - **規則**:
-  - build ≥ 4026:`TcXaeShell.DTE.17.0`,沒有才用 `VisualStudio.DTE.17.0`,兩者都要讀得到 XAE Base ≥ 4026。不用 32-bit shell(#72)。
-  - build < 4026:`TcXaeShell.DTE.15.0`,條件是它的 XAE Base 就是那個舊 build,或 XAE 比較新但有該 build 的 Remote Manager。XAE Base 讀不到、又偵測到裝了 4026(`HKLM\...\Beckhoff\TwinCAT3\System` 的 `Build`)時，回 `PROGID_REQUIRED`(4026 的 32-bit shell 也是 ProgID 15.0,分不出來)。
+  - 候選:build ≥ 4026 → `TcXaeShell.DTE.17.0`,其次 `VisualStudio.DTE.17.0`(兩者都要讀得到 XAE Base ≥ 4026,也就是有整合 TwinCAT XAE)。不用 32-bit shell(#72)。build < 4026 → `TcXaeShell.DTE.15.0`。
+  - 候選的 XAE Base 版本要**完全等於**專案的 `TcVersion`(含 revision,`3.1.4024.59` ≠ `3.1.4024.71`)才啟動。
+  - 其他情況一律 `PROGID_REQUIRED`:版本不同、XAE Base 讀不到、只有該 build 的 Remote Manager 資料夾。Automation Interface 是否會用對應版本的 Remote Manager 載入，尚未實測(#147 M3-b)。
+  - 沒有註冊 / 沒整合 XAE 的候選 → `IDE_VERSION_NOT_REGISTERED`。
 - **已知限制**:
+  - revision 嚴格比較：查不到 Beckhoff 對「同 build 不同 revision」的相容規則(Remote Manager 頁只說 pin 的專案在原版本沒裝時會「提供」同 release 最新的 revision,要人選)。所以 `3.1.4026.19` 的專案在 XAE `3.1.4026.22` 的機器上也要帶 `-ProgId`。
+  - 這台開發機的 XAE 是 4026.22,4024 專案(`TcVersion="3.1.4024.71"`)不帶 `-ProgId` 一律 `PROGID_REQUIRED`,要帶 `-ProgId 'TcXaeShell.DTE.15.0'`。等真機證明 Remote Manager 行為後再放寬。
   - 只裝 4026 32-bit TcXaeShell 的機器，開 4026 專案會回 `IDE_VERSION_NOT_REGISTERED`,要帶 `-ProgId 'TcXaeShell.DTE.15.0'`。
-  - XAE 4026 的 32-bit shell 經由 Automation Interface 開 4024 專案時，是否真的用 4024 Remote Manager 載入，沒有在這裡驗證(InfoSys:沒 pin 的專案要手動選版本)。
-  - 不帶 `-SolutionPath`、又註冊了多個 IDE 時，現在回 `PROGID_REQUIRED`,不再預設開第一個(多 IDE 的機器要帶 `-SolutionPath` 或 `-ProgId`)。
+  - 不帶 `-SolutionPath`、又註冊了多個 IDE 時，現在回 `PROGID_REQUIRED`,不再預設開第一個(多 IDE 的機器要帶 `-ProgId`,或帶 `.tsproj` `TcVersion` 讀得到的 `-SolutionPath`)。
 
 ### PROGID_REQUIRED
 
-- **現象**:`Connect-TcIde` 沒啟動任何 IDE,回 `PROGID_REQUIRED`。`data.registeredProgIds` 是註冊了的 ProgID,`data.solutionVersion.reason` 是無法決定的原因:沒給 `-SolutionPath`、某個 .tsproj 缺檔 / XML 壞掉 / 沒有 `TcVersion`、多個 .tsproj 的 build 不同，或 4024 專案但 32-bit TcXaeShell 的 XAE build / Remote Manager 無法確認。
+- **現象**:`Connect-TcIde` 沒啟動任何 IDE,回 `PROGID_REQUIRED`。`data.registeredProgIds` 是註冊了的 ProgID,`data.solutionVersion.reason` 是無法決定的原因:沒給 `-SolutionPath`、某個 .tsproj 缺檔 / XML 壞掉 / 沒有 `TcVersion`、多個 .tsproj 的 build 不同，或沒有任何候選 IDE 的 XAE 版本完全等於專案的 `TcVersion`(含 revision;XAE Base 讀不到也算)。
 - **為什麼**:不帶 `-ProgId` 又無法確定該用哪個 IDE 時，模組不猜(#72)。
 - **下一步**:帶 `-ProgId` 重跑:4024 → `TcXaeShell.DTE.15.0`;4026 → `TcXaeShell.DTE.17.0` 或 `VisualStudio.DTE.17.0`。
 
@@ -305,7 +308,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **下一步**:
   - `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看有沒有 dialog,關掉後重跑同一個 `Connect-TcIde`;還在啟動就稍後重跑。
   - 要換 ProgId，或 IDE 卡死:`data.ownedBySession = true` 時 `Disconnect-TcIde -Quit -Kill`(只殺本 session 確認過的這個 pid)後再 `Connect-TcIde`。
-  - `pid-unconfirmed` 時模組不殺任何行程，自己確認是哪個 IDE 再處理。
+  - `pid-unconfirmed` 時模組不殺任何行程：自己確認並關掉那個 IDE(或確定它已不在),再 `Disconnect-TcIde -ForgetPendingLaunch`(MCP `DisconnectIde ForgetPendingLaunch=true`;只清掉 pid 未確認的啟動紀錄，不關 IDE、不動連線，回 `data.forgottenLaunches`),然後重跑 `Connect-TcIde`。
 
 ### IDE_TIMEOUT
 
