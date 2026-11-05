@@ -266,7 +266,7 @@ function Reset-TcSolution {
         $all['sysManagerAvailable'] = [bool]$ConnectData.sysManagerAvailable
         $all['silentMode'] = $ConnectData.silentMode
         $data = Get-ProgressData -Extra $all
-        foreach ($name in @('amsNetId', 'warning')) {
+        foreach ($name in @('amsNetId', 'warning', 'sessionRecordWarning')) {   # #123: Connect-TcIde could not update the session record
             $prop = $ConnectData.PSObject.Properties[$name]
             if ($null -ne $prop) { $data | Add-Member -NotePropertyName $name -NotePropertyValue $prop.Value -Force }
         }

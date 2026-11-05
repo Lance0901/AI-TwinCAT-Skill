@@ -35,6 +35,10 @@ function Find-TcBlockedSolutionIde {
         record, e.g. opened by hand in an IDE that is blocked as well) cannot be told apart.
         A candidate without a known pid is skipped; an unreadable (empty Version, not busy)
         candidate without a dialog is skipped too (most likely an IDE shutting down).
+        A record whose last write was skipped (#123, Get-TcIdeSolutionRecordWarning) is not
+        used, and every match of that process is weak (Contradiction = the warning). The
+        pending write is retried first (Sync-TcIdeSolutionRecordPending); once it is written,
+        the record (= what this module meant to write) counts again.
         Every path compared here (-SolutionPath, record, module state, known solutions, dialog
         paths) goes through Get-TcLongPath, so 8.3 short names match their long form (#63).
         Limits: UNC paths in the dialog text are compared as text; an 8.3 name in a dialog whose
@@ -84,6 +88,8 @@ function Find-TcBlockedSolutionIde {
         [string[]]$KnownSolutions = @()
     )
 
+    # #127 F1: retry a pending session-record write first (lock free again -> trusted again)
+    Sync-TcIdeSolutionRecordPending
     # Before matching: expand 8.3 short names of -SolutionPath (folders and the file name, so the name compared with window titles is the long one).
     $SolutionPath = Get-TcLongPath $SolutionPath
     if (-not [string]::IsNullOrWhiteSpace($PreviousSolution)) { $PreviousSolution = Get-TcLongPath $PreviousSolution }
@@ -118,9 +124,11 @@ function Find-TcBlockedSolutionIde {
             try { $moduleSame = ([DateTime]$proc.StartTime -eq [DateTime]$PreviousStartTime) } catch { $moduleSame = $false }
         }
 
-        $recorded = Get-TcIdeSolutionRecord -ProcessId $cPid
+        # #123: the last record write for this process was skipped -> the file record may be stale
+        $recordUntrusted = Get-TcIdeSolutionRecordWarning -ProcessId $cPid
+        $recorded = Get-TcIdeSolutionRecord -ProcessId $cPid -NoSync   # $null while untrusted; synced once above
         if (-not [string]::IsNullOrWhiteSpace($recorded)) { $recorded = Get-TcLongPath $recorded }
-        $recordVerdict = 'none'
+        $recordVerdict = if ($null -ne $recordUntrusted) { 'untrusted' } else { 'none' }
         if (-not [string]::IsNullOrWhiteSpace($recorded)) {
             $recordVerdict = if ([string]::Equals($recorded, $SolutionPath, [StringComparison]::OrdinalIgnoreCase)) { 'same' } else { 'other' }
         }
@@ -166,6 +174,11 @@ function Find-TcBlockedSolutionIde {
         }
         elseif ($titleState -eq 'match' -and $pathVerdict -ne 'outside') {
             $matchedBy = 'window-title'
+        }
+        # #123 fail closed: with an untrusted record nothing about this process is attached.
+        if ($null -ne $matchedBy -and $null -ne $recordUntrusted) {
+            $strong = $false
+            if ($null -eq $contradiction) { $contradiction = $recordUntrusted }
         }
         # An unreadable (not busy) DTE without a dialog is most likely an IDE shutting down.
         $unreadableProp = $c.PSObject.Properties['unreadable']

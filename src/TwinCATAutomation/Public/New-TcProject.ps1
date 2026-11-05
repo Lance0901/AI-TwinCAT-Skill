@@ -107,6 +107,9 @@ function New-TcProject {
             plcProject = "$Name" + '_Plc'
             path       = $solutionPath
         })
+        # #123: the record could not be updated (lock busy): say so, the old one is not used
+        $recWarn = if ($null -ne $script:TcIdeProcessId) { Get-TcIdeSolutionRecordWarning -ProcessId ([int]$script:TcIdeProcessId) } else { $null }
+        if ($null -ne $recWarn) { $ok.data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
         Register-TcCodeChange -Result $ok -Change "New-TcProject $Name"
     }
     catch {
@@ -115,7 +118,14 @@ function New-TcProject {
             # the module must not keep the previous .sln as key while the IDE holds another solution
             $script:TcSolutionPath = $null
             # and the #29 session record must not keep saying this IDE has the old solution
-            if ($null -ne $script:TcIdeProcessId) { Remove-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) }
+            if ($null -ne $script:TcIdeProcessId) {
+                Remove-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId)
+                # #123: the remove was skipped (lock busy): say so, the old record is not used
+                $recWarn = Get-TcIdeSolutionRecordWarning -ProcessId ([int]$script:TcIdeProcessId)
+                if ($null -ne $recWarn) {
+                    $res = New-TcResult -Success $false -ErrorMessage ([string]$res.error.message) -ErrorCode 'PROJECT_CREATE_FAILED' -Data ([PSCustomObject]@{ sessionRecordWarning = $recWarn })
+                }
+            }
             return Register-TcCodeChange -Result $res -Change "New-TcProject $Name [failed after Solution.Create]"
         }
         $res

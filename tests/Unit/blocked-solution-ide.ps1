@@ -149,6 +149,8 @@ try {
     Check 'connect-modal-code' (-not $r.success -and $r.error.code -eq 'IDE_MODAL_DIALOG') "code=$($r.error.code) msg=$($r.error.message)"
     Check 'connect-modal-data' ($r.data.ideProcessId -eq 201 -and $r.data.matchedBy -eq 'dialog-path' -and $r.data.attached -and $r.data.dialogKind -eq 'reload-prompt' -and $r.data.rotDisplayName -eq '!Fake.DTE.1:201') "pid=$($r.data.ideProcessId) by=$($r.data.matchedBy) kind=$($r.data.dialogKind)"
     Check 'connect-modal-hint' ($r.error.hint -match 'Reset-TcSolution') "$($r.error.hint)"
+    $strongDialogShape = (@($r.data.dialog.PSObject.Properties.Name) -join ',')
+    $strongFlat = (@('dialogTitle', 'dialogText', 'dialogKind', 'dialogReloadTarget', 'dialogButtons') | Where-Object { @($r.data.PSObject.Properties.Name) -ccontains $_ }).Count
     $st = & $mod { [PSCustomObject]@{ pid = $script:TcIdeProcessId; connected = $script:TcIdeConnected; by = $script:TcIdeSelectedBy; sln = $script:TcSolutionPath; sm = $script:TcSysManager } }
     Check 'connect-modal-attached' ($st.pid -eq 201 -and $st.connected -and $st.by -eq 'solution-blocked' -and $st.sln -eq $slnLong -and $null -eq $st.sm) "pid=$($st.pid) by=$($st.by) sln=$($st.sln)"
 
@@ -198,6 +200,10 @@ try {
     Set-Rot @(@{ Pid = 702; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1'
     Check 'connect-weak-modal' (-not $r.success -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and -not $r.data.attached -and $r.error.hint -match 'LaunchIfBlocked') "code=$($r.error.code) attached=$($r.data.attached)"
+    # #127 F2: the weak path reports the dialog in the same camelCase shape as the strong path
+    $weakDialogShape = (@($r.data.dialog.PSObject.Properties.Name) -join ',')
+    $weakFlat = (@('dialogTitle', 'dialogText', 'dialogKind', 'dialogReloadTarget', 'dialogButtons') | Where-Object { @($r.data.PSObject.Properties.Name) -ccontains $_ }).Count
+    Check 'connect-weak-dialog-shape' ($weakDialogShape -ceq 'title,text,kind,reloadTarget,buttons' -and $weakDialogShape -ceq $strongDialogShape -and $weakFlat -eq 5 -and $strongFlat -eq 5 -and $r.data.dialogKind -eq 'unknown' -and $r.data.dialog.title -eq 'Target system reports a fatal error') "weak=$weakDialogShape flat=$weakFlat strong=$strongDialogShape flat=$strongFlat kind=$($r.data.dialogKind)"
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -LaunchIfBlocked
     Check 'connect-weak-launchifblocked' (-not $r.success -and $r.error.code -eq 'TWINCAT_NOT_FOUND') "code=$($r.error.code)"
 

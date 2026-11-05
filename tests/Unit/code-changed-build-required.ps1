@@ -238,6 +238,12 @@ try {
     $rawBefore = Get-Content -Raw -LiteralPath $recFile
     & $mod { param($p) Remove-TcIdeSolutionRecord -ProcessId $p } $PID
     Check 'Remove-TcIdeSolutionRecord on a corrupt record file leaves it unchanged' ((Get-Content -Raw -LiteralPath $recFile) -eq $rawBefore) ''
+    # #123: the remove fails (record file held open without sharing) -> PROJECT_CREATE_FAILED says so
+    $fs = New-Object IO.FileStream($recFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try { $r123 = New-TcProject -Name NewDemo4 -Path $stateRoot }
+    finally { $fs.Dispose() }
+    Check 'New-TcProject failure after Solution.Create, record not removed -> data.sessionRecordWarning (#123)' ((-not $r123.success) -and $r123.error.code -eq 'PROJECT_CREATE_FAILED' -and $r123.data.sessionRecordWarning -match 'remove failed' -and $r123.data.buildRequired -like '*NewDemo4*') ($r123 | ConvertTo-Json -Compress)
+    & $mod { param($p) Remove-TcIdeSolutionRecord -ProcessId $p } $PID   # lock / file free again: clears the mark
 }
 finally {
     $env:LOCALAPPDATA = $savedLocal
@@ -367,6 +373,10 @@ try {
         Check 'Reset with two records -> both state warnings joined' ($r.data.stateWarning -eq 'warn for Other.sln; warn for Demo.sln') "$($r.data.stateWarning)"
     }
     finally { & $mod { param($f) Set-Item -Path function:script:Set-TcBuildRequired -Value $f } $origSet2 }
+    # #123: data.sessionRecordWarning of the reconnect (session record not updated) is passed on
+    & $mod { Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true; sessionRecordWarning = 'session record of IDE process 0 not updated: mock 123' } } } }
+    $r = Start-Reset -Dialogs @() -Mode @{}
+    Check 'Reset forwards data.sessionRecordWarning of the reconnect (#123)' ($r.success -and $r.data.sessionRecordWarning -eq 'session record of IDE process 0 not updated: mock 123') ($r | ConvertTo-Json -Compress -Depth 2)
 }
 finally {
     & $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig
