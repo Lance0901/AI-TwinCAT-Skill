@@ -1,6 +1,6 @@
 # TcAuto MCP Setup
 
-Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, Claude Code or any MCP client can call 77 of the 79 cmdlets (plus 4 composite tools; `NewProject` is not offered, #70) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
+Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Desktop, Claude Code or any MCP client can call 77 of the 79 cmdlets (plus 5 composite tools; `NewProject` is not offered, #70) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
 
 ## Prerequisites
 
@@ -72,7 +72,7 @@ With Claude Desktop (or Claude Code) connected, ask it to call `GetStatus`. Befo
 { "success": false, "error": { "code": "NOT_CONNECTED", "message": "IDE not connected", "hint": "Run ConnectIde first (optionally with SolutionPath)." }, "data": { "bridge": { "ideConnected": false, ... } } }
 ```
 
-That proves Node started, `powershell.exe` spawned and the module imported. Then: "Connect to the IDE with `C:\path\to\MyProject.sln`, build it, activate with Force and read `MAIN.nCounter`" (or a single `RunLifecycle` call).
+That proves Node started, `powershell.exe` spawned and the module imported. `data.bridge.modulePath` / `moduleCommit` / `loadedAt` say which module file (and which git commit of its checkout) the bridge loaded and when (#41). To test another commit in the same session, check it out in a git worktree of this repository and call `ReloadModule ModulePath=<worktree>\src\TwinCATAutomation\TwinCATAutomation.psm1` (then `ConnectIde` again; see `docs/troubleshooting.md` "ReloadModule"). Then: "Connect to the IDE with `C:\path\to\MyProject.sln`, build it, activate with Force and read `MAIN.nCounter`" (or a single `RunLifecycle` call).
 
 ## Troubleshooting
 

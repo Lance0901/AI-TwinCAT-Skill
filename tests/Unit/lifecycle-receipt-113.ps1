@@ -109,6 +109,15 @@ try {
         $miss = (@($r.data.missing) | Sort-Object) -join ','
         Check "(1) $name -> LIFECYCLE_RECEIPT_INCOMPLETE, missing='$($c.m)', $($c.i) invalid" ((-not $r.success) -and $r.error.code -eq 'LIFECYCLE_RECEIPT_INCOMPLETE' -and $miss -eq $c.m -and @($r.data.invalid).Count -eq $c.i -and $r.data.notRun -eq $true -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
     }
+    # #130 F1: only Reason passed (an MCP server with the pre-#113 schema) -> possibleStaleSchema + restart hint
+    $stale = & $mod { $script:TcLifecycleStaleSchemaText }
+    $r = Clear-TcLifecycleBlock -AmsNetId $X -Reason 'unit 113: old MCP schema'
+    Check '(1) none of the three new fields passed -> possibleStaleSchema=true, hint says restart the MCP server, nothing removed' ((-not $r.success) -and $r.error.code -eq 'LIFECYCLE_RECEIPT_INCOMPLETE' -and $r.data.possibleStaleSchema -eq $true -and $r.error.hint.EndsWith($stale) -and $stale -match 'MCP server' -and $r.error.message -match 'schema may be older' -and $null -ne (Get-B $X)) (J $r)
+    $r = Clear-TcLifecycleBlock -AmsNetId $X -Reason 'unit 113' -FallbackMethod '' -AllowedSideEffects @() -MaxVerifyLevel ''
+    Check '(1) the three fields passed EMPTY -> possibleStaleSchema=false, no restart sentence' ((-not $r.success) -and $r.data.possibleStaleSchema -eq $false -and -not $r.error.hint.Contains($stale)) (J $r)
+    $pp = Without @('MaxVerifyLevel')
+    $r = Clear-TcLifecycleBlock -AmsNetId $X @pp
+    Check '(1) only one new field missing -> possibleStaleSchema=false' ($r.data.possibleStaleSchema -eq $false) (J $r.data)
     $b = Get-B $X
     Check '(1) nothing removed by an incomplete receipt' ($null -ne $b -and $b.errorCode -eq 'SYSTEM_STATE_TIMEOUT') (J $b)
     Check '(1) no receipt written by an incomplete call' (-not (Test-Path -LiteralPath $hist)) ''
@@ -136,6 +145,9 @@ try {
     Check '(3) B is blocked before the clear' ($null -ne (Get-B $Y) -and (Test-BLocal $Y)) ''
     $a = Invoke-AClear $Y
     Check '(3) process A cleared the record (receipt written)' ($a.success -and $a.data.cleared.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $a.data.receiptWritten -eq $true) (J $a)
+    # #130 / #129: ReloadModule's check runs the sync first -> the cleared record is not listed
+    $rl = & $mod { Get-TcLifecycleBlockLocalForReload }
+    Check '(3) Get-TcLifecycleBlockLocalForReload runs the sync first: the record A cleared is not listed' ((@($rl.List | Where-Object { $_.key -eq $Y })).Count -eq 0 -and -not (Test-BLocal $Y)) (J $rl)
     $t = & $mod { param($i) Test-TcLifecycleBlock -AmsNetId $i -Command 'Enable-TcConfig' } $Y
     Check '(3) B: no longer blocked after A cleared' ($null -eq $t) (J $t)
     Check '(3) B: in-memory copy dropped' (-not (Test-BLocal $Y)) ''
@@ -145,6 +157,8 @@ try {
     Remove-FromFileOnly $Z
     $b = Get-B $Z
     Check '(4) removed from the file by hand, no receipt -> B still blocked, syncNote says why' ($null -ne $b -and (Test-BLocal $Z) -and $b.syncNote -match 'no Clear receipt of this record' -and $b.syncNote -match 'THIS process') (J $b)
+    $rl = & $mod { Get-TcLifecycleBlockLocalForReload }
+    Check '(4) Get-TcLifecycleBlockLocalForReload still lists the record without a bound receipt (reload refused)' ((@($rl.List | Where-Object { $_.key -eq $Z })).Count -eq 1) (J $rl)
     $t = & $mod { param($i) Test-TcLifecycleBlock -AmsNetId $i -Command 'Enable-TcConfig' } $Z
     Check '(4) LIFECYCLE_BLOCKED message carries the syncNote' ($t.error.code -eq 'LIFECYCLE_BLOCKED' -and $t.error.message -match 'Cross-bridge sync' -and $null -eq (Get-BLocal $Z).PSObject.Properties['syncNote']) (J $t)
     Set-B $Y

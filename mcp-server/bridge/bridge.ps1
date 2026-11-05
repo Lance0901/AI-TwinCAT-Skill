@@ -712,6 +712,216 @@ function Invoke-OpState {
     })
 }
 
+function Get-BridgeModuleVariable {
+    # @{ Exists; Value } of a $script: variable of the module. Unlike Get-ModuleVar this tells
+    # "not defined" apart from "defined as $null" (#41 review: a missing variable must fail closed).
+    param([string]$Name)
+    Invoke-InModule {
+        param($n)
+        $v = Get-Variable -Name $n -Scope Script -ErrorAction SilentlyContinue
+        if ($null -eq $v) { return @{ Exists = $false; Value = $null } }
+        return @{ Exists = $true; Value = $v.Value }
+    } @($Name)
+}
+
+function Get-BridgeLocalLifecycleBlocks {
+    # #41 / #68: the lifecycle block records the module holds in memory ($script:TcLifecycleBlockLocal,
+    # Private/LifecycleBlock.ps1). A record there may exist in memory only (the state file could not be
+    # written), so a new Import-Module / bridge process would not see it. Returns @{ Readable; List }
+    # (List = [{ key; record }]). The check itself is the module's private
+    # Get-TcLifecycleBlockLocalForReload; since #130 it runs the cross-bridge sync first, which only
+    # removes records whose Clear receipt is bound to them (#113), so the rest still refuse.
+    # A module older than #41 has no such function: then $script:TcLifecycleBlockLocal itself is read
+    # (every module since #68 defines it), so a session can reload into an older sha AND out of it.
+    # Neither the function nor the variable, a value that is not a hashtable, or an exception counts
+    # as a block (fail closed).
+    $list = New-Object System.Collections.ArrayList
+    try {
+        $has = Invoke-InModule { [bool](Get-Command -Name 'Get-TcLifecycleBlockLocalForReload' -CommandType Function -ErrorAction SilentlyContinue) }
+        if (-not $has) {
+            $var = Get-BridgeModuleVariable 'TcLifecycleBlockLocal'
+            if (-not $var.Exists) {
+                $null = $list.Add([ordered]@{ key = '<missing>'; record = 'the loaded module has neither Get-TcLifecycleBlockLocalForReload nor $script:TcLifecycleBlockLocal (older than #68), so its in-memory lifecycle blocks cannot be checked; ask the user before restarting the MCP server, which drops the in-memory state' })
+                return @{ Readable = $false; List = [object[]]$list.ToArray() }
+            }
+            $local = $var.Value
+            if (-not ($local -is [System.Collections.IDictionary])) {
+                $t = if ($null -eq $local) { 'null' } else { $local.GetType().FullName }
+                $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "unexpected value of `$script:TcLifecycleBlockLocal ($t)" })
+                return @{ Readable = $false; List = [object[]]$list.ToArray() }
+            }
+            foreach ($k in @($local.Keys | Sort-Object)) { $null = $list.Add([ordered]@{ key = [string]$k; record = $local[$k] }) }
+            return @{ Readable = $true; List = [object[]]$list.ToArray() }
+        }
+        $r = Invoke-InModule { Get-TcLifecycleBlockLocalForReload }
+        if ($null -eq $r -or -not ($r -is [System.Collections.IDictionary]) -or -not $r.Contains('List')) { throw 'Get-TcLifecycleBlockLocalForReload returned no list' }
+        foreach ($e in @($r['List'])) { $null = $list.Add([ordered]@{ key = [string]$e['key']; record = $e['record'] }) }
+        return @{ Readable = $true; List = [object[]]$list.ToArray() }
+    }
+    catch {
+        $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "the in-memory lifecycle block state could not be read: $($_.Exception.Message)" })
+        return @{ Readable = $false; List = [object[]]$list.ToArray() }
+    }
+}
+
+function Save-BridgeBuildRequiredFallback {
+    # #41 review round 2: a module without one of the helpers Save-BridgeLocalBuildRequired uses
+    # (Merge-TcBuildRequiredEntry & co.) still has $script:TcBuildRequiredLocal. The bridge then adds
+    # every in-memory entry whose key is MISSING from build-required.json, unchanged, under the same
+    # mutex (name from the module's Get-TcBuildRequiredMutexName). A key already in the file is left
+    # alone: any entry blocks its solution, and without the module's merge rule the bridge must not
+    # rewrite one. No mutex name, lock not acquired, file not readable / writable -> refused.
+    param($Local, [string[]]$Keys, [string]$Missing)
+    $fail = { param($why) @{ Ok = $false; Error = "the loaded module has no $Missing; $why"; Keys = $Keys; Persisted = [string[]]@() } }
+    $dir = $env:TCAUTO_STATE_DIR
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1') { return (& $fail 'the real state directory is refused (TCAUTO_TEST_FORBID_REAL_STATE=1, #118)') }
+        $dir = Join-Path ([IO.Path]::GetTempPath()) 'TwinCATAutomation'
+    }
+    $mutexName = $null
+    try { $mutexName = [string](Invoke-InModule { if (Get-Command -Name 'Get-TcBuildRequiredMutexName' -CommandType Function -ErrorAction SilentlyContinue) { Get-TcBuildRequiredMutexName } }) } catch { $mutexName = $null }
+    if ([string]::IsNullOrWhiteSpace($mutexName)) { return (& $fail 'its Get-TcBuildRequiredMutexName is missing too, so build-required.json cannot be updated under its lock') }
+    $file = Join-Path $dir 'build-required.json'
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $got = $false
+    $tmp = $null
+    try {
+        try { $got = $mutex.WaitOne(3000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+        if (-not $got) { return (& $fail 'lock not acquired within 3000 ms') }
+        $doc = [ordered]@{}
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            $text = [IO.File]::ReadAllText($file)
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $obj = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+                if (-not ($obj -is [System.Management.Automation.PSCustomObject])) { throw "$file is not a JSON object" }
+                foreach ($p in $obj.PSObject.Properties) { $doc[$p.Name] = $p.Value }
+            }
+        }
+        elseif (Test-Path -LiteralPath $file) { throw "$file is not a file" }
+        $written = New-Object System.Collections.ArrayList
+        foreach ($k in $Keys) {
+            if (-not $doc.Contains($k)) { $doc[$k] = $Local[$k]; $null = $written.Add($k) }
+        }
+        if ($written.Count -gt 0) {
+            if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+            $tmp = "$file.$PID.tmp"
+            [IO.File]::WriteAllText($tmp, ([PSCustomObject]$doc | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+            if (Test-Path -LiteralPath $file) { [IO.File]::Replace($tmp, $file, [NullString]::Value) } else { [IO.File]::Move($tmp, $file) }
+        }
+        return @{ Ok = $true; Error = $null; Keys = $Keys; Persisted = [string[]]$written.ToArray(); Fallback = $true }
+    }
+    catch {
+        try { if ($tmp -and (Test-Path -LiteralPath $tmp)) { [IO.File]::Delete($tmp) } } catch { }
+        return (& $fail "build-required.json could not be updated: $($_.Exception.Message)")
+    }
+    finally {
+        if ($got) { try { $mutex.ReleaseMutex() } catch { } }
+        $mutex.Dispose()
+    }
+}
+
+function Save-BridgeLocalBuildRequired {
+    # #41 review: $script:TcBuildRequiredLocal (Private/Set-TcBuildRequired.ps1) holds every
+    # BUILD_REQUIRED entry this module instance recorded, also one that never reached
+    # build-required.json (the file could not be written). A reload would drop it and open the build
+    # gate. So, under the state file's mutex, every in-memory entry is merged into the file
+    # (Merge-TcBuildRequiredEntry, the module's own rule) and the file is written when an entry is
+    # missing there or differs in solution / reasons / build-selection guard. Returns
+    # @{ Ok; Error; Keys; Persisted }; Ok = $false (variable missing, functions missing, lock not
+    # acquired, file not readable / writable) refuses the reload.
+    try {
+        $var = Get-BridgeModuleVariable 'TcBuildRequiredLocal'
+        if (-not $var.Exists) {
+            return @{ Ok = $false; Error = 'the loaded module does not define $script:TcBuildRequiredLocal, so its in-memory BUILD_REQUIRED entries cannot be checked'; Keys = [string[]]@(); Persisted = [string[]]@() }
+        }
+        $local = $var.Value
+        if (-not ($local -is [System.Collections.IDictionary])) {
+            $t = if ($null -eq $local) { 'null' } else { $local.GetType().FullName }
+            return @{ Ok = $false; Error = "unexpected value of `$script:TcBuildRequiredLocal ($t)"; Keys = [string[]]@(); Persisted = [string[]]@() }
+        }
+        $keys = [string[]]@($local.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+        if ($keys.Count -eq 0) { return @{ Ok = $true; Error = $null; Keys = $keys; Persisted = [string[]]@() } }
+        $r = Invoke-InModule {
+            param($localEntries, $localKeys)
+            foreach ($fn in @('Invoke-TcBuildRequiredLocked', 'Read-TcBuildRequiredState', 'Write-TcBuildRequiredState', 'Merge-TcBuildRequiredEntry', 'Get-TcBuildRequiredReasons', 'Get-TcEntryGuard')) {
+                if ($null -eq (Get-Command -Name $fn -CommandType Function -ErrorAction SilentlyContinue)) {
+                    return @{ Fallback = $true; Missing = $fn }
+                }
+            }
+            $signature = {
+                param($e)
+                if ($null -eq $e) { return '' }
+                $m = Get-TcBuildRequiredReasons $e
+                $parts = @(@($m.Keys) | Sort-Object | ForEach-Object { "$_=$($m[$_])" })
+                $g = Get-TcEntryGuard $e
+                $gs = if ($null -ne $g) { ConvertTo-Json -InputObject $g -Depth 6 -Compress } else { '' }
+                "$([string]$e.solution)`n$($parts -join "`n")`n$gs"
+            }
+            Invoke-TcBuildRequiredLocked -Body {
+                $st = Read-TcBuildRequiredState
+                $written = New-Object System.Collections.ArrayList
+                foreach ($k in $localKeys) {
+                    $old = $st.Entries[$k]
+                    $merged = Merge-TcBuildRequiredEntry -Older $old -Newer $localEntries[$k]
+                    if ($null -eq $old -or (& $signature $old) -ne (& $signature $merged)) {
+                        $st.Entries[$k] = $merged
+                        $null = $written.Add($k)
+                    }
+                }
+                if ($written.Count -gt 0) { Write-TcBuildRequiredState -Entries $st.Entries }
+                , ([string[]]$written.ToArray())
+            }
+        } @($local, $keys)
+        if ($null -ne $r -and $r.Contains('Fallback')) {
+            return Save-BridgeBuildRequiredFallback -Local $local -Keys $keys -Missing ([string]$r.Missing)
+        }
+        if ($null -eq $r -or -not $r.Locked -or $null -ne $r.Error) {
+            $why = if ($null -ne $r -and $null -ne $r.Error) { [string]$r.Error } else { 'lock not acquired' }
+            return @{ Ok = $false; Error = $why; Keys = $keys; Persisted = [string[]]@() }
+        }
+        return @{ Ok = $true; Error = $null; Keys = $keys; Persisted = [string[]]@($r.Result) }
+    }
+    catch {
+        return @{ Ok = $false; Error = $_.Exception.Message; Keys = [string[]]@(); Persisted = [string[]]@() }
+    }
+}
+
+function Invoke-OpRetire {
+    # #41 ReloadModule, step 1 of 2. Refused while the module holds a lifecycle block in memory (a
+    # reload must never become a way around #68) or while its in-memory BUILD_REQUIRED entries cannot
+    # be written to build-required.json (Save-BridgeLocalBuildRequired; a reload must not open the
+    # build gate either). Otherwise ADS and the IDE COM references are released (Disconnect-TcAds /
+    # Disconnect-TcIde without -Quit: the IDE keeps running) and the main loop exits after the reply.
+    # The Node side then starts a new bridge process with the new -ModulePath.
+    $blocks = Get-BridgeLocalLifecycleBlocks
+    $modulePathNow = [string]$script:Module.Path
+    if ($blocks.List.Count -gt 0) {
+        return New-ErrorResult -Code 'RELOAD_LIFECYCLE_BLOCKED' `
+            -Message "ReloadModule NOT RUN: the loaded module holds $($blocks.List.Count) lifecycle block record(s) in memory or its in-memory lifecycle state cannot be checked (#68); a reload would drop the in-memory copy. Nothing was disconnected or reloaded." `
+            -Hint 'Stop and report data.lifecycleBlocks to the user. The block is cleared only with ClearLifecycleBlock after the user agreed; then run ReloadModule again. Do not restart the server or the bridge to get around it.' `
+            -Data ([ordered]@{ modulePath = $modulePathNow; lifecycleBlocks = $blocks.List; readable = $blocks.Readable; notRun = $true })
+    }
+    $build = Save-BridgeLocalBuildRequired
+    if (-not $build.Ok) {
+        return New-ErrorResult -Code 'RELOAD_BUILD_REQUIRED' `
+            -Message "ReloadModule NOT RUN: the in-memory BUILD_REQUIRED entries of the loaded module could not be written to build-required.json ($($build.Error)); a reload would drop them and skip the build check. Nothing was disconnected or reloaded." `
+            -Hint 'Run BuildProject until it returns data.completeBuild=true (that removes the entries), or make the state directory writable again, then ReloadModule again. Do not restart the server or the bridge to get around it.' `
+            -Data ([ordered]@{ modulePath = $modulePathNow; buildRequiredKeys = $build.Keys; error = $build.Error; notRun = $true })
+    }
+    $ideWas = $false; $adsWas = $false
+    try { $ideWas = ($null -ne (Get-ModuleVar 'TcDte')) } catch { }
+    try { $adsWas = [bool](Get-ModuleVar 'TcAdsConnected') } catch { }
+    Invoke-BridgeCleanup
+    return New-SuccessResult -Data ([ordered]@{
+        retired                = $true
+        modulePath             = $modulePathNow
+        ideWasConnected        = $ideWas
+        adsWasConnected        = $adsWas
+        buildRequiredKeys      = $build.Keys
+        buildRequiredPersisted = $build.Persisted
+    })
+}
+
 function Invoke-BridgeCleanup {
     # Best effort: drop the ADS client and release COM references. Never throws,
     # never writes to stdout.
@@ -764,13 +974,18 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             'ping' {
                 Write-Result -Id $id -Result (New-SuccessResult -Data ([ordered]@{ pong = $true }))
             }
+            'retire' {
+                $retire = Invoke-OpRetire
+                Write-Result -Id $id -Result $retire
+                if ($retire.success -eq $true) { $shutdown = $true }
+            }
             'shutdown' {
                 Invoke-BridgeCleanup
                 Write-Result -Id $id -Result ([PSCustomObject]@{ success = $true })
                 $shutdown = $true
             }
             default {
-                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, shutdown.')
+                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, retire, shutdown.')
             }
         }
     }

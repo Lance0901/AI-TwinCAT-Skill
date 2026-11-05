@@ -325,7 +325,42 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:`Clear-TcLifecycleBlock`(MCP `ClearLifecycleBlock`)的結構化 receipt 不完整(#113)。`data.missing`:缺少或空白的欄位(`Reason`、`FallbackMethod`、`AllowedSideEffects`、`MaxVerifyLevel`);`data.invalid`:值不合法(`MaxVerifyLevel` 不是 `None` / `SystemState` / `PlcState` / `VariableRead` / `TestObserved`;`AllowedSideEffects` 有 `none` 又有其他項)。`data.allowedVerifyLevels` 是合法層級。什麼都沒清,block 還在，也不寫 history。
 - **MCP 與 cmdlet 的差別**:MCP 呼叫時 tools.json 的 schema 先檢查：沒帶參數(`Missing required parameter`)、`AllowedSideEffects` 是空陣列、`MaxVerifyLevel` 不在 enum(大小寫要一致)時，在進 bridge 前就回 `INVALID_PARAMS`,同樣什麼都沒清;通過 schema 但內容是空字串 / 只有空白，或 `none` 和其他項並列，才由 cmdlet 回這個 code。直接呼叫 cmdlet / CLI 時一律是這個 code(四個參數刻意不設 PowerShell `Mandatory`,避免互動提示或 binding error)。
 - **欄位意義**:`-Reason` 是使用者同意解除的理由;`-FallbackMethod` 是使用者核准的繼續方法(例如「經 tcauto 重跑 Enable-TcConfig -Force」);`-AllowedSideEffects` 是允許的副作用，每項一個字串(例如 `TwinCAT restart`、`PLC download`、`PLC Run`;都不允許時只給 `none`,不能和其他項並列);`-MaxVerifyLevel` = 清除後這次驗證會做到的最高層;結果不得宣稱超過它(The highest layer the verification after this clear will reach; results must not claim more than it.)。層級由低到高 `None`(不驗證)→ `SystemState`(讀回 TwinCAT system state)→ `PlcState`(讀回 PLC port 狀態)→ `VariableRead`(讀回 PLC 變數)→ `TestObserved`(觀察到測試結果),名稱沿用 #68 的 lifecycle 用語。四個欄位都寫進 `lifecycle-block-history.jsonl` 的 receipt。
+- **升級注意(#130 F1)**:已經在跑的 MCP server 用的是啟動時讀進來的 `tools.json`。#113 之前啟動的 server,`ClearLifecycleBlock` 的 schema 沒有 `FallbackMethod` / `AllowedSideEffects` / `MaxVerifyLevel`,Claude 送不出這三個欄位;bridge 重啟或 `ReloadModule` 換成新模組後，透過這個 server 就永遠清不掉 block。這時三個欄位全部「沒傳」(不是傳了空值),回傳會帶 `data.possibleStaleSchema = true`,hint 多一句請重啟 MCP server(開新 session)再 Clear。**merge #130 後，所有開著的 Claude session 都要重開**,才能用新的 Clear。模組不會退回「只用 Reason」清除，那會削弱 receipt。
 - **下一步**:不要自己編內容。回去問使用者，照使用者的話補齊或改正後再呼叫一次 `Clear-TcLifecycleBlock`。
+
+### ReloadModule(MCP,#41):做法與共同規則
+
+- **用途**:同一個 MCP session 依序驗多個 sha:bridge 退場，新的 PowerShell bridge 重新 `Import-Module`。`ModulePath` 選填，不帶就重載目前載入的路徑。只有模組重載;`index.js`、`bridge.ps1`、tool 清單(`tools.json`)仍是執行中 server 的版本，新模組多出的 cmdlet / 參數要等 server 重啟才會出現在 `tools/list`。
+- **做法**:先檢查 `ModulePath`,再把 bridge op `retire` 排進佇列(正在跑的呼叫先跑完)。bridge 依序做三件事:
+  1. 確認記憶體裡沒有 lifecycle block(模組有 `Get-TcLifecycleBlockLocalForReload` 就用它;沒有(#41 之前的模組)就直接讀 `$script:TcLifecycleBlockLocal`,它必須存在、是 hashtable 而且是空的;兩者都沒有就拒絕，見 `RELOAD_LIFECYCLE_BLOCKED`)。
+  2. 在 state 檔的 mutex 下，把 `$script:TcBuildRequiredLocal` 的每一筆用模組自己的 `Merge-TcBuildRequiredEntry` 合併進 `build-required.json`;檔案缺這筆、或 solution / reasons / build-selection guard 不同就寫回(`data.buildRequiredPersisted` 列出寫回的 key)。模組缺這些 helper 但有變數時，改用 bridge 自己的寫回邏輯：用模組的 `Get-TcBuildRequiredMutexName` 取得同一把鎖，只把檔案裡**沒有**的 key 原樣加進去(檔案裡已有的 key 本來就會擋那個 solution,bridge 不知道 merge 規則就不改它)。寫不了、讀不到、變數不存在、連 mutex 名稱都拿不到 → `RELOAD_BUILD_REQUIRED`。
+  3. 執行 `Disconnect-TcAds`、`Disconnect-TcIde`(不帶 `-Quit`,IDE 保持開著),回覆後結束;Node 端再用新的 `-ModulePath` 啟動新的 bridge。
+
+  沒有 bridge 行程在跑(從未啟動，或上次啟動失敗，例如 `RELOAD_FAILED` 且沒還原成功)時不送 `retire`,直接換路徑啟動：沒有行程就沒有記憶體狀態會丟。不在同一個行程裡 `Import-Module -Force`,原因是模組用 `Add-Type` 編進行程的 C# 型別(`TcAdsHelper`、`MessageBoxNative`)卸載不掉，新版改了也不會生效;舊的 COM 參考也會留在行程裡。
+- **回傳**:`data.previous` / `data.current` = `{modulePath, moduleCommit, moduleDirty, loadedAt}`,`data.ideDisconnected`、`data.adsDisconnected`、`data.buildRequiredPersisted`、`data.reconnectRequired = true`。`moduleCommit` 是載入當時該 checkout 的 HEAD 指到的 sha,從 `.git` 檔案讀(`HEAD`、loose ref、`packed-refs`、worktree 的 `commondir`),不啟動 `git.exe`;不在 git checkout 裡時是 `null`。**它只代表 HEAD**:工作區裡還沒 commit 的改動不會反映出來，所以 `moduleDirty` 一律是 `null`(不跑 git 判斷不了)。驗證特定 sha 時，請用乾淨的 worktree。讀不到 commit(結果是 `null`,不會給錯的 sha)的情況:分支名含 `[A-Za-z0-9._/-]` 以外的字元、repository 用 reftable(`extensions.refStorage = reftable`,沒有 loose ref / packed-refs)、SHA-256 repository。`GetStatus` 的 `data.bridge.modulePath` / `moduleCommit` / `moduleDirty` / `loadedAt` 是同一份資料。
+- **之後**:IDE / ADS 連線已斷開，先 `ConnectIde`(必要時 `SetTarget`、`ConnectAds`)再做別的。lifecycle block 與 BUILD_REQUIRED 的狀態檔在新 bridge 照樣有效(同一個 `TCAUTO_STATE_DIR` / `%TEMP%\TwinCATAutomation`)。寫回 BUILD_REQUIRED 是偏保守的做法：如果別的行程已經用一次完整 build 把檔案裡的紀錄清掉，本行程記憶體裡那筆仍會被寫回，新 bridge 會要求再 build 一次。
+- **Timeout**:210 s(`retire` 90 s + 新 bridge 啟動 60 s + 失敗時還原啟動 60 s)。
+- **測試**:`mcp-server/test/reload.test.js`(假 repo 的 allow list 與 commit 讀取;mock bridge 走 stdio;真的 `bridge.ps1` 加 fixture 模組測 `retire`,fixture 會 dot-source 真的 `Private/Set-TcBuildRequired.ps1` 與 `Private/LifecycleBlock.ps1`;另有 #41 之前格式的 fixture `reload-module-old`(有變數、沒有 helper),測 reload 進去再 reload 出來、有 block 仍拒絕、BUILD_REQUIRED 退回邏輯)。registered tcauto 真機 reload 尚未驗證。
+
+### RELOAD_PATH_NOT_ALLOWED
+
+- **為什麼**:`ReloadModule` 的 `ModulePath` 不是允許的路徑。允許的只有兩種:server 啟動時的 `TWINCAT_MODULE_PATH` 所屬 repo 的主 checkout 的 `src\TwinCATAutomation\TwinCATAutomation.psm1`,以及 `<主 checkout>\.git\worktrees\*\gitdir` 登記、而且該 worktree 的 `.git` 檔指回同一筆登記的 worktree 裡的同一個相對路徑(也就是 `git worktree list` 列出、目錄還在的 worktree)。相對路徑、別的檔名、別的 repo、目錄已刪的 worktree、檔案不存在都拒絕。server 本身不是從 git checkout 啟動(安裝版)時，任何 `ModulePath` 都拒絕。
+- **下一步**:從 `data.allowed` 挑一個路徑重試，或不帶 `ModulePath` 重載目前的模組。什麼都沒有斷開或重載(`data.notRun = true`)。
+
+### RELOAD_LIFECYCLE_BLOCKED
+
+- **為什麼**:目前載入的模組記憶體裡有 lifecycle block(`$script:TcLifecycleBlockLocal` 不是空的,#68)。這份記憶體副本可能只存在這個行程(狀態檔寫不了時),reload 之後就看不到，所以一律拒絕，不讓 reload 變成繞過 fail closed 的方法。檢查集中在模組的 private 函式 `Get-TcLifecycleBlockLocalForReload`(`Private/LifecycleBlock.ps1`),bridge 只呼叫它。#41 之前的模組(例如要驗的 #42 / #114 / #119 / #120 / #122 / #127 branch)沒有這個函式，這時 bridge 直接讀 `$script:TcLifecycleBlockLocal`(#68 之後的模組都有),所以可以 reload 進那些 sha,也可以再 reload 出來;裡面有 block 時照樣拒絕。函式和變數都沒有(#68 之前的模組,`key = '<missing>'`),或函式丟例外、值不是 hashtable(`'<unreadable>'`)也當成有 block。目前它只看本行程的記憶體副本：別的 bridge 已經 Clear 掉的紀錄，這裡仍會擋(#130 的跨 bridge 同步 merge 後，這個函式會改成先同步再判斷)。`data.lifecycleBlocks` = `[{key, record}]`,什麼都沒有斷開或重載(`data.notRun = true`)。
+- **下一步**:依 [LIFECYCLE_BLOCKED](#lifecycle_blocked) 的人工核准流程：停止、把 `data.lifecycleBlocks` 回報使用者;使用者同意後才 `ClearLifecycleBlock`,再重跑 `ReloadModule`。不要用重啟 MCP server / kill bridge 的方式繞過。
+
+### RELOAD_BUILD_REQUIRED
+
+- **為什麼**:目前載入的模組記憶體裡有 BUILD_REQUIRED 紀錄(`$script:TcBuildRequiredLocal`),但沒辦法確認它們都已經寫進 `build-required.json`:鎖不到、檔案讀不到或寫不了、變數不存在，或模組缺寫檔 helper 而且連 `Get-TcBuildRequiredMutexName` 也沒有(bridge 的退回邏輯拿不到同一把鎖)。reload 會丟掉記憶體副本，等於繞過 build gate(#61 / #65),所以拒絕。`data.buildRequiredKeys` 列出記憶體裡的 solution key,`data.error` 是原因，什麼都沒有斷開或重載(`data.notRun = true`)。只要記憶體紀錄都能寫進檔案，就不會拒絕。
+- **下一步**:`BuildProject` 跑到 `data.completeBuild = true`(會把紀錄清掉),或讓 state 目錄恢復可寫，再 `ReloadModule`。不要用重啟 MCP server / kill bridge 的方式繞過。
+
+### RELOAD_FAILED
+
+- **為什麼**:舊 bridge 已退場(IDE / ADS 已斷開),但新的 `ModulePath` 匯入失敗(`data.importError`,例如語法錯誤、檔案在 Windows PowerShell 5.1 下 parse 不過)。
+- **下一步**:`data.restored = true` 表示已重新載入原本的路徑(`data.current`),修好模組後再 `ReloadModule`;之後要重新 `ConnectIde`。`data.restored = false`(`data.restoreError`;重載的就是原本的路徑時也不會還原)時目前沒有模組，一般呼叫都回 `MODULE_IMPORT_FAILED`;這時 `ReloadModule` 換到一條能匯入的白名單路徑就會恢復(沒有 bridge 行程時不送 `retire`,直接換路徑啟動),或重啟 server。
 
 ### SYSTEM_STATE_TIMEOUT
 

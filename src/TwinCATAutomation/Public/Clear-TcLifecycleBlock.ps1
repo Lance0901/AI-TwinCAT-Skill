@@ -92,9 +92,15 @@ function Clear-TcLifecycleBlock {
         $what = @()
         if ($missing.Count -gt 0) { $what += "missing or empty: $($missing -join ', ')" }
         if ($invalid.Count -gt 0) { $what += "invalid: $($invalid -join '; ')" }
-        return New-TcResult -Success $false -ErrorCode 'LIFECYCLE_RECEIPT_INCOMPLETE' -Hint (Get-TcErrorHint -Code 'LIFECYCLE_RECEIPT_INCOMPLETE') `
-            -ErrorMessage "Clear-TcLifecycleBlock NOT RUN: the receipt is incomplete ($($what -join '; ')). Nothing was removed." `
-            -Data ([PSCustomObject]@{ missing = [string[]]$missing; invalid = [string[]]$invalid; allowedVerifyLevels = [string[]]$script:TcLifecycleVerifyLevels; notRun = $true })
+        # #130 F1: none of the three #113 fields was passed at all (not passed empty): an MCP
+        # server started before #113 still offers the old ClearLifecycleBlock schema and cannot
+        # send them. Never fall back to a Reason-only clear; tell the caller to restart the server.
+        $stale = -not ($PSBoundParameters.ContainsKey('FallbackMethod') -or $PSBoundParameters.ContainsKey('AllowedSideEffects') -or $PSBoundParameters.ContainsKey('MaxVerifyLevel'))
+        $hint = Get-TcErrorHint -Code 'LIFECYCLE_RECEIPT_INCOMPLETE'
+        if ($stale) { $hint = "$hint $script:TcLifecycleStaleSchemaText" }
+        return New-TcResult -Success $false -ErrorCode 'LIFECYCLE_RECEIPT_INCOMPLETE' -Hint $hint `
+            -ErrorMessage "Clear-TcLifecycleBlock NOT RUN: the receipt is incomplete ($($what -join '; ')). Nothing was removed.$(if ($stale) { ' None of -FallbackMethod / -AllowedSideEffects / -MaxVerifyLevel was passed: through MCP the server''s tool schema may be older than the module.' })" `
+            -Data ([PSCustomObject]@{ missing = [string[]]$missing; invalid = [string[]]$invalid; allowedVerifyLevels = [string[]]$script:TcLifecycleVerifyLevels; possibleStaleSchema = $stale; notRun = $true })
     }
     $Reason = $Reason.Trim()
     $FallbackMethod = $FallbackMethod.Trim()
