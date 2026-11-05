@@ -3,14 +3,16 @@
 // List access is mocked (fixtures/build-module/TwinCATAutomation.psm1, rows in
 // fixtures/build-error-list.json), so what is asserted is what an MCP client receives after the
 // bridge serialised the result.
-import { test, describe, after } from 'node:test';
+import { test, describe, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', 'index.js');
@@ -40,7 +42,33 @@ after(async () => {
   }
 });
 
+// Diagnostics (#98): every server keeps its own stderr, the bridge stderr / log lines it forwards
+// as MCP log notifications, and its exit, with ms since it was started. A failing test prints
+// them for the servers that ran during that test, so a flaky failure says why the server or the
+// bridge went away (CI only showed "Connection closed" / MODULE_IMPORT_FAILED without a reason).
+// Shared servers (started by an earlier test) contribute the lines of the failing test's time span.
+const servers = [];
+let testStartedAt = 0;
+beforeEach(() => {
+  testStartedAt = Date.now();
+});
+afterEach((t) => {
+  if (t.passed) return;
+  for (const s of servers) {
+    const lines = s.lines.filter((l) => l.at >= testStartedAt);
+    if (!lines.length) continue;
+    t.diagnostic(`[diag] ${s.label} (pid ${s.pid ?? '?'}), ms since its start:`);
+    for (const l of lines) t.diagnostic(`[diag]   ${new Date(l.at).toISOString()} +${l.at - s.t0} ms ${l.text}`);
+  }
+});
+
 async function startServer(scenario, extraEnv = {}) {
+  const diag = { label: `server '${scenario}'`, t0: Date.now(), pid: null, lines: [] };
+  servers.push(diag);
+  const note = (text) => {
+    diag.lines.push({ at: Date.now(), text });
+    if (diag.lines.length > 300) diag.lines.splice(0, diag.lines.length - 300);
+  };
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [INDEX],
@@ -55,8 +83,23 @@ async function startServer(scenario, extraEnv = {}) {
     },
     stderr: 'pipe'
   });
+  // Read the piped stderr (it was never read before: the lines were lost, #98).
+  if (transport.stderr) readline.createInterface({ input: transport.stderr, crlfDelay: Infinity }).on('line', (l) => note(`stderr: ${l}`));
   const client = new Client({ name: 'build-result-test', version: '0.0.0' }, { capabilities: {} });
-  await client.connect(transport);
+  // bridge stderr reaches the client as 'error' log notifications (index.js onStderr)
+  client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => note(`log ${n.params.level}: ${JSON.stringify(n.params.data)}`));
+  client.onclose = () => note('MCP connection closed');
+  note('spawning index.js');
+  try {
+    await client.connect(transport);
+  } catch (err) {
+    note(`connect failed: ${err?.message ?? err}`);
+    throw err;
+  }
+  diag.pid = transport.pid;
+  note(`connected (server pid ${transport.pid})`);
+  // exit code / signal of index.js (SDK-internal ChildProcess; diagnostics only)
+  transport._process?.once?.('exit', (code, signal) => note(`index.js exited (code ${code}, signal ${signal})`));
   return client;
 }
 
