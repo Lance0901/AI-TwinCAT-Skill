@@ -940,14 +940,15 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### PROJECT_DIR_EXISTS
 
+- **檢查順序**:solution 已開(`SOLUTION_ALREADY_OPEN`)-> template(`TEMPLATE_NOT_FOUND`)-> 資料夾已存在(此碼)-> `Solution.Create`。IDE 開著 solution 又撞到既有資料夾時,先回 `SOLUTION_ALREADY_OPEN`;兩者都不會動到 IDE 或資料夾。
 - **現象**(#70):`<Path>\<Name>` 已存在,`New-TcProject` 直接回此碼(`data.path`),沒有呼叫 `Solution.Create`,IDE 的 solution 沒動。
 - **為什麼**:template 會把檔案寫進這個資料夾,不重用既有資料夾,避免覆蓋別人的檔案。
 - **下一步**:換 `-Name` / `-Path`,或確認舊資料夾沒用後自行刪除再重跑。
 
 ### PROJECT_CREATE_UNVERIFIED
 
-- **現象**(#70):`Solution.Create` / `AddFromTemplate` / `CreateChild` / `SaveAs` 都沒丟錯,但讀回缺東西:`.sln`、`.tsproj`、`.plcproj` 不在磁碟上,或 `TIPC^<Name>_Plc` 找不到。`data.missing` 列出缺的項目。這時 IDE 已開著半成品 solution:模組把 solution 路徑設為未知、移除 #29 session record,並記 `BUILD_REQUIRED`(`<unknown>`,擋所有 solution 直到完整 Build)。
-- **為什麼**:以前只要呼叫沒丟錯就回 success,不確定新專案真的存在。成功判定現在要讀回(fail closed)。這些 COM 呼叫沒有加 wall-clock deadline:它們是無法從外面取消的同步 STA 呼叫,加 deadline 只會放棄一個 IDE 仍在執行的呼叫;整個建立在兩版 XAE 上約 5 s(實測 2026-11-05)。
+- **現象**(#70):`Solution.Create` / `AddFromTemplate` / `CreateChild` / `SaveAs` 都沒丟錯,但讀回缺東西:`.sln`、`.tsproj`、`.plcproj` 不在磁碟上,`.tsproj` 內容沒有 `<Plc>` 節點與指向 `<Name>_Plc.plcproj` 的 `PrjFilePath`(專案沒存檔),或 `TIPC^<Name>_Plc` 找不到。`data.missing` 列出缺的項目。這時 IDE 已開著半成品 solution:模組把 solution 路徑設為未知、移除 #29 session record,並記 `BUILD_REQUIRED`(`<unknown>`,擋所有 solution 直到完整 Build)。
+- **為什麼**:以前只要呼叫沒丟錯就回 success,不確定新專案真的存在。實測 2026-11-05(4024 與 4026.22 重驗):`CreateChild` 之後 `.tsproj` 還是 329 bytes 的空骨架、沒有 `<Plc>`,PLC 專案只在 XAE 記憶體,要到第一次 Build 才寫進檔案;success 後不存檔就關 solution,PLC 專案會消失(Build 回 no PLC project)。所以現在先 `Project.Save()` 再 `Solution.SaveAs`(InfoSys「Accessing TwinCAT configuration」範例的順序:[InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html)),讀回檢查 `.tsproj` 內容而不只是檔案存在。成功判定現在要讀回(fail closed)。這些 COM 呼叫沒有加 wall-clock deadline:它們是無法從外面取消的同步 STA 呼叫,加 deadline 只會放棄一個 IDE 仍在執行的呼叫;整個建立在兩版 XAE 上約 5 s(實測 2026-11-05)。
 - **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog,在 XAE 檢查 `data.path`;通常要關掉 solution、刪掉該資料夾後重跑。
 
 ### SOLUTION_ALREADY_OPEN

@@ -25,14 +25,20 @@ $sm = [PSCustomObject]@{ Mock = $true }
 $sm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) if ($global:Tc70.NoPlcNode -and $p -like 'TIPC^*') { return $null }; $plcNode }.GetNewClosure()
 $solution = [PSCustomObject]@{ Mock = $true; IsOpen = $false; FullName = '' }
 $solution | Add-Member -MemberType ScriptMethod -Name Create -Value { param($a, $b) $global:Tc70.Create++ }
-$solution | Add-Member -MemberType ScriptMethod -Name AddFromTemplate -Value { $global:Tc70.Calls += ,(@('AddFromTemplate') + $args); [PSCustomObject]@{ Object = $sm } }.GetNewClosure()
+$solution | Add-Member -MemberType ScriptMethod -Name AddFromTemplate -Value { $global:Tc70.Calls += ,(@('AddFromTemplate') + $args); $global:Tc70.Dir = $args[1]; $global:Tc70.Name = $args[2]; $tcp = [PSCustomObject]@{ Object = $sm }; $tcp | Add-Member -MemberType ScriptMethod -Name Save -Value {
+    $global:Tc70.Calls += ,@('Project.Save')
+    $d = $global:Tc70.Dir; $n = $global:Tc70.Name
+    if ($global:Tc70.Files -eq 'all') {
+        Set-Content -LiteralPath (Join-Path $d "$n.tsproj") -Encoding ASCII -Value "<TcSmProject><Project><Plc><Project Name=`"${n}_Plc`" PrjFilePath=`"${n}_Plc\${n}_Plc.plcproj`"/></Plc></Project></TcSmProject>"
+    }
+    elseif ($global:Tc70.Files -eq 'skeleton') {
+        Set-Content -LiteralPath (Join-Path $d "$n.tsproj") -Encoding ASCII -Value '<Project ProjectGUID="{1}" ShowHideConfigurations="#x6"/>'
+    }
+    if ($global:Tc70.Files -in 'all', 'skeleton') { Set-Content -LiteralPath (Join-Path $d "${n}_Plc.plcproj") -Value '' -Encoding ASCII }
+}; $tcp }.GetNewClosure()
 $solution | Add-Member -MemberType ScriptMethod -Name SaveAs -Value { param($a)
     Set-Content -LiteralPath $a -Value '' -Encoding ASCII
-    if ($global:Tc70.Files -eq 'all') {
-        $d = Split-Path -Parent $a; $n = [System.IO.Path]::GetFileNameWithoutExtension($a)
-        Set-Content -LiteralPath (Join-Path $d "$n.tsproj") -Value '' -Encoding ASCII
-        Set-Content -LiteralPath (Join-Path $d "${n}_Plc.plcproj") -Value '' -Encoding ASCII
-    }
+    $global:Tc70.Calls += ,@('SaveAs')
 }
 & $mod { param($s) $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $s }; $script:TcSolutionPath = $null } $solution
 
@@ -45,6 +51,7 @@ $add = @($global:Tc70.Calls | Where-Object { $_[0] -eq 'AddFromTemplate' })
 $cc = @($global:Tc70.Calls | Where-Object { $_[0] -eq 'CreateChild' })
 Check 'success with a resolved template' ($r.success -eq $true) ($r | ConvertTo-Json -Compress -Depth 4)
 Check 'AddFromTemplate: one call, template = resolved full path (never empty)' ($add.Count -eq 1 -and $add[0][1] -eq $tpl -and -not [string]::IsNullOrWhiteSpace($add[0][1])) ($add | ConvertTo-Json -Compress)
+Check 'Project.Save() is called before SaveAs' (($global:Tc70.Calls | ForEach-Object { $_[0] }) -join ',' -match 'CreateChild,Project.Save,SaveAs') (($global:Tc70.Calls | ForEach-Object { $_[0] }) -join ',')
 Check 'AddFromTemplate: destination = <Path>\<Name>, project name = Name' ($add.Count -eq 1 -and $add[0][2] -eq (Join-Path $root 'Demo70') -and $add[0][3] -eq 'Demo70') ($add | ConvertTo-Json -Compress)
 Check 'CreateChild: PLC name, subType 0, empty 3rd arg, vInfo = "Standard PLC Template"' ($cc.Count -eq 1 -and $cc[0][1] -eq 'Demo70_Plc' -and $cc[0][2] -eq 0 -and $cc[0][3] -eq '' -and $cc[0][4] -eq 'Standard PLC Template') ($cc | ConvertTo-Json -Compress)
 
@@ -71,6 +78,10 @@ Check 'existing folder -> PROJECT_DIR_EXISTS, Solution.Create not called' ((-not
 $global:Tc70.Files = 'sln'
 $r = New-TcProject -Name Unver70a -Path $root
 Check 'only the .sln on disk -> PROJECT_CREATE_UNVERIFIED listing .tsproj and .plcproj, path unknown' ((-not $r.success) -and $r.error.code -eq 'PROJECT_CREATE_UNVERIFIED' -and (@($r.data.missing) -join '|') -like '*tsproj*' -and (@($r.data.missing) -join '|') -like '*plcproj*' -and $null -eq (& $mod { $script:TcSolutionPath })) ($r | ConvertTo-Json -Compress -Depth 4)
+$global:Tc70.Files = 'skeleton'
+& $mod { $script:TcBuildRequiredLocal = @{} }
+$r = New-TcProject -Name Skel70 -Path $root
+Check 'unsaved 329-byte-style .tsproj skeleton (no <Plc>) -> PROJECT_CREATE_UNVERIFIED naming the .tsproj' ((-not $r.success) -and $r.error.code -eq 'PROJECT_CREATE_UNVERIFIED' -and (@($r.data.missing) -join '|') -like '*no <Plc> node*') ($r | ConvertTo-Json -Compress -Depth 4)
 $global:Tc70.Files = 'all'; $global:Tc70.NoPlcNode = $true
 & $mod { $script:TcBuildRequiredLocal = @{} }
 $r = New-TcProject -Name Unver70b -Path $root

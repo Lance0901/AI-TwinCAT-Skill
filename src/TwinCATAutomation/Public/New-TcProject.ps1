@@ -22,8 +22,11 @@ function New-TcProject {
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842439947.html).
         No template file -> TEMPLATE_NOT_FOUND (data.searched), resolved BEFORE Solution.Create so
         the IDE state is untouched. An existing <Path>\<Name> -> PROJECT_DIR_EXISTS (before
-        Solution.Create). Success needs a read-back (.sln, .tsproj, .plcproj on disk and the
-        TIPC^<Name>_Plc node in the tree), otherwise PROJECT_CREATE_UNVERIFIED (data.missing).
+        Solution.Create). The TwinCAT project is saved (Project.Save(), then Solution.SaveAs, as in InfoSys) and
+        success needs a read-back (.sln, .tsproj and .plcproj on disk, the .tsproj CONTENT has a <Plc>
+        node with PrjFilePath to <Name>_Plc.plcproj, and the TIPC^<Name>_Plc node in the tree),
+        otherwise PROJECT_CREATE_UNVERIFIED (data.missing). Check order: solution open, template,
+        folder exists, then Solution.Create (an open solution + an existing folder gives SOLUTION_ALREADY_OPEN).
         Measured 2026-11-05 (4024 32-bit XAE Shell and 4026.22 XAE in VS2022; the project was
         created with a self-made client, the Build ran through the registered tcauto): create and
         a complete Build succeed on both, no dialog, about 5 s. The MCP server keeps NewProject
@@ -125,7 +128,13 @@ function New-TcProject {
         # CreateChild(name, subType 0, '', vInfo): standard Beckhoff templates are given by NAME only (InfoSys 21842439947)
         $plcProject = $plcConfig.CreateChild("$Name" + '_Plc', 0, '', 'Standard PLC Template')
 
-        # Save solution
+        # Save the TwinCAT project first, then the solution. InfoSys "Accessing TwinCAT configuration"
+        # does the same (C# project.Save(); solution.SaveAs(...), PowerShell $project.Save(); $sln.SaveAs(...)):
+        # https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html
+        # Measured 2026-11-05 (4024 and 4026.22, #70 re-verification): without Project.Save() the
+        # .tsproj stays a 329 byte skeleton with no <Plc> node until the first Build, so closing the
+        # solution unsaved loses the PLC project (Build: "no PLC project").
+        $tcProject.Save()
         $solution.SaveAs($slnFile)
 
         # #70 read-back: success only when the files are on disk and the PLC node is in the tree.
@@ -138,6 +147,19 @@ function New-TcProject {
         if (-not (Test-Path -LiteralPath $slnFile -PathType Leaf)) { $missing += $slnFile }
         if (@(Get-ChildItem -LiteralPath $solutionPath -Filter '*.tsproj' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0) { $missing += "$solutionPath\**\*.tsproj" }
         if (@(Get-ChildItem -LiteralPath $solutionPath -Filter '*.plcproj' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0) { $missing += "$solutionPath\**\*.plcproj" }
+        # content, not only existence: some .tsproj must have a <Plc> node that references <Name>_Plc.plcproj
+        # (a 329 byte skeleton without it is what an unsaved project looks like)
+        $tsprojFiles = @(Get-ChildItem -LiteralPath $solutionPath -Filter '*.tsproj' -File -Recurse -ErrorAction SilentlyContinue)
+        if ($tsprojFiles.Count -gt 0) {
+            $refPattern = 'PrjFilePath\s*=\s*"[^"]*' + [regex]::Escape("$Name`_Plc.plcproj") + '"'
+            $hasPlc = $false
+            foreach ($tf in $tsprojFiles) {
+                $txt = ''
+                try { $txt = [System.IO.File]::ReadAllText($tf.FullName) } catch { $null = $_ }
+                if ($txt -match '<Plc[\s>/]' -and $txt -match $refPattern) { $hasPlc = $true; break }
+            }
+            if (-not $hasPlc) { $missing += "$($tsprojFiles[0].FullName): no <Plc> node with PrjFilePath to $Name`_Plc.plcproj (project not saved)" }
+        }
         $plcNode = $null
         try { $plcNode = Invoke-TcComRetry -MaxRetries 3 -OperationName 'LookupTreeItem' -ScriptBlock { Write-Output -NoEnumerate $sysManager.LookupTreeItem("TIPC^$Name" + '_Plc') } }
         catch { $null = $_ }   # not found counts as missing below
