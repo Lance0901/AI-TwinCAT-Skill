@@ -123,6 +123,8 @@ $operationMap = @{
     'GetSystemState'  = 'Get-TcSystemState'
     'SetSystemState'  = 'Set-TcSystemState'
     'ClearLifecycleBlock' = 'Clear-TcLifecycleBlock'
+    # Field report (#78): offline, no GitHub call
+    'ReportIssue'     = 'New-TcIssueReport'
     # Automated Testing
     'NewTestCase'     = 'New-TcTestCase'
     'RunTest'         = 'Invoke-TcTest'

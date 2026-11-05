@@ -77,6 +77,30 @@ describe('tools.json (generated catalog)', () => {
     }
   });
 
+  // #78: ReportIssue only formats a pre-filled GitHub new-issue URL: read-only, no required IDE state.
+  test('ReportIssue is read-only; Title is the only required parameter; Parameters / Result accept objects', () => {
+    const t = catalog.get('ReportIssue');
+    assert.ok(t, 'ReportIssue is in the catalog');
+    assert.equal(t.cmdlet, 'New-TcIssueReport');
+    assert.deepEqual(t.annotations, { readOnlyHint: true });
+    assert.deepEqual(t.inputSchema.required, ['Title']);
+    assert.equal(t.inputSchema.properties.MaxUrlLength.default, 7000);
+    assert.equal(t.inputSchema.properties.Label.default, 'field-report');
+    for (const w of ['NOTHING', 'LIFECYCLE_BLOCKED', 'ONLY THE USER', 'data.body', 'MaxUrlLength']) {
+      assert.ok(t.description.includes(w), `ReportIssue description lacks ${w}`);
+    }
+    const ok = validateParams(t, {
+      Title: 'BuildProject times out',
+      Tool: 'BuildProject',
+      Parameters: { TimeoutSec: 600 },
+      Result: { success: false, error: { code: 'BUILD_TIMEOUT', message: 'x' } },
+      ExtraMask: ['ACME']
+    });
+    assert.equal(ok.ok, true, JSON.stringify(ok.error));
+    assert.equal(validateParams(t, { Tool: 'BuildProject' }).ok, false, 'Title is required');
+    assert.equal(validateParams(t, { Title: 'x', MaxUrlLength: 1999 }).ok, false, 'MaxUrlLength minimum 2000');
+  });
+
   // #70: NewProject is not offered over MCP (the cmdlet New-TcProject stays).
   test('NewProject is not in the MCP catalog', () => {
     assert.equal(catalog.get('NewProject'), undefined);

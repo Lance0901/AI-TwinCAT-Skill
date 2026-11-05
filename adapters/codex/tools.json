@@ -111,6 +111,23 @@
       }
     },
     {
+      "name": "ReportIssue",
+      "description": "Build a de-identified, pre-filled GitHub new-issue URL (data.url) plus the same title/body as text (data.body, complete) for a problem found while using this tool (#78). Creates nothing, no GitHub or network call, no IDE/ADS access, works while LIFECYCLE_BLOCKED. Masks user names in paths, machine names, AMS NetIds, IP/MAC, e-mail, project paths (to file name), secrets (data.masks); ExtraMask hides customer/site names. URL capped at MaxUrlLength (data.truncated, [truncated]). Show data.maskReport and data.body to the user; ONLY the user opens and submits the URL (the repository is public).",
+      "parameters": {
+        "Title": { "type": "string", "description": "One-line summary (120 chars max)", "required": true },
+        "Tool": { "type": "string", "description": "Tool or cmdlet that was called", "required": false },
+        "Parameters": { "type": "any", "description": "Parameters of that call (object or JSON string)", "required": false },
+        "Result": { "type": "any", "description": "The failing {success,error,data} result (object or JSON string); error.hint is dropped", "required": false },
+        "Expected": { "type": "string", "description": "Expected behavior", "required": false },
+        "Notes": { "type": "string", "description": "Steps before the call, TwinCAT/XAE version, target kind", "required": false },
+        "Label": { "type": "string", "description": "Issue label", "required": false, "default": "field-report" },
+        "MaxUrlLength": { "type": "integer", "description": "Encoded URL limit, 2000..8000", "required": false, "default": 7000 },
+        "ExtraMask": { "type": "array", "description": "Literal strings (customer/site names) to replace with <redacted>", "required": false },
+        "NoEnvironment": { "type": "boolean", "description": "Leave the Environment section out", "required": false },
+        "IncludeSolutionName": { "type": "boolean", "description": "Put the solution file name into the Environment section (default: left out)", "required": false }
+      }
+    },
+    {
       "name": "ConnectAds",
       "description": "Connect to PLC runtime via ADS. AmsNetId is auto-detected from IDE target if omitted.",
       "parameters": {

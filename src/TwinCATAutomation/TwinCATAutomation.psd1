@@ -100,6 +100,8 @@
         'Get-TcSystemState',
         'Set-TcSystemState',
         'Clear-TcLifecycleBlock',
+        # Field report (#78): offline, builds a pre-filled GitHub new-issue URL
+        'New-TcIssueReport',
         # Automated Testing
         'New-TcTestCase',
         'Invoke-TcTest',
