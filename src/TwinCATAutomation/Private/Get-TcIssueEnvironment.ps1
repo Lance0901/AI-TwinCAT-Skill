@@ -5,6 +5,11 @@ function Get-TcModuleCommit {
     [CmdletBinding()]
     param([string]$ModuleBase)
 
+    # #140: git writes the .git file of a linked worktree ("gitdir: <path>"), commondir and refs as
+    # UTF-8 without BOM. Windows PowerShell 5.1 Get-Content reads such a file as ANSI, so a
+    # non-ASCII checkout path (e.g. OneDrive\<CJK folder>) came back garbled and no commit was found.
+    $firstLine = { param([string]$File) ((Read-TcInstallText -Path $File) -split "`r?`n", 2)[0].Trim() }
+
     try {
         if ([string]::IsNullOrWhiteSpace($ModuleBase)) { return $null }
         $mb = [System.IO.Path]::GetFullPath($ModuleBase).TrimEnd('\')
@@ -15,7 +20,7 @@ function Get-TcModuleCommit {
         $gitDir = $null
         if (Test-Path -LiteralPath $dot -PathType Container) { $gitDir = $dot }
         elseif (Test-Path -LiteralPath $dot -PathType Leaf) {
-            $line = [string](Get-Content -LiteralPath $dot -TotalCount 1)
+            $line = & $firstLine $dot
             if ($line -match '^gitdir:\s*(.+)$') {
                 $g = $Matches[1].Trim()
                 if (-not [System.IO.Path]::IsPathRooted($g)) { $g = Join-Path $root $g }
@@ -23,7 +28,7 @@ function Get-TcModuleCommit {
             }
         }
         if (-not $gitDir) { return $null }
-        $head = ([string](Get-Content -LiteralPath (Join-Path $gitDir 'HEAD') -TotalCount 1)).Trim()
+        $head = & $firstLine (Join-Path $gitDir 'HEAD')
         $sha = $null
         if ($head -match '^[0-9a-f]{40}$') { $sha = $head }
         elseif ($head -match '^ref:\s*(refs/[A-Za-z0-9._/-]+)$' -and $head -notmatch '\.\.') {
@@ -31,14 +36,14 @@ function Get-TcModuleCommit {
             $dirs = @($gitDir)
             $cd = Join-Path $gitDir 'commondir'
             if (Test-Path -LiteralPath $cd -PathType Leaf) {
-                $c = ([string](Get-Content -LiteralPath $cd -TotalCount 1)).Trim()
+                $c = & $firstLine $cd
                 if (-not [System.IO.Path]::IsPathRooted($c)) { $c = Join-Path $gitDir $c }
                 $dirs += [System.IO.Path]::GetFullPath($c)
             }
             foreach ($d in $dirs) {
                 $rf = Join-Path $d ($ref -replace '/', '\')
                 if (Test-Path -LiteralPath $rf -PathType Leaf) {
-                    $v = ([string](Get-Content -LiteralPath $rf -TotalCount 1)).Trim()
+                    $v = & $firstLine $rf
                     if ($v -match '^[0-9a-f]{40}$') { $sha = $v; break }
                 }
             }
@@ -46,7 +51,7 @@ function Get-TcModuleCommit {
                 foreach ($d in $dirs) {
                     $pr = Join-Path $d 'packed-refs'
                     if (-not (Test-Path -LiteralPath $pr -PathType Leaf)) { continue }
-                    foreach ($l in (Get-Content -LiteralPath $pr)) {
+                    foreach ($l in ((Read-TcInstallText -Path $pr) -split "`r?`n")) {
                         if ($l -match ('^([0-9a-f]{40}) ' + [regex]::Escape($ref) + '$')) { $sha = $Matches[1]; break }
                     }
                     if ($sha) { break }
