@@ -23,8 +23,9 @@ Run the whole lifecycle in ONE persistent PowerShell session (or the MCP server)
 # 1. Connect (one-step with -SolutionPath)
 $r = Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
-# 1b. Target + solution platform (read from the target, switched to it)
-Set-TcTarget -AmsNetId $r.data.amsNetId -Platform 'TwinCAT OS (x64)'
+# 1b. Target + solution platform: read from the target (TARGETINFO) and switched to it.
+#     Only when it returns PLATFORM_UNKNOWN add -Platform (UmRT / TwinCAT/BSD: 'TwinCAT OS (x64)').
+Set-TcTarget -AmsNetId $r.data.amsNetId
 
 # 2. Build (BUILD_FAILED -> data.errorItems)
 Build-TcProject
@@ -59,7 +60,7 @@ Details: https://github.com/Lance0901/AI-TwinCAT-Skill/blob/master/adapters/clau
 Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the same one as in `adapters/claude-code/SKILL.md`, which also has the hand-written usage notes per cmdlet.
 
 <!-- generated:cmdlet-signatures -->
-<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改;上面的表是手寫的用法說明。 -->
+<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改。 -->
 
 | Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |
 |---|---|---|

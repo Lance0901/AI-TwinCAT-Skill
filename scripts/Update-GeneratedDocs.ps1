@@ -97,7 +97,7 @@ foreach ($c in $commands) {
 }
 $signatureBlock = @(
     '',
-    '<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改;上面的表是手寫的用法說明。 -->',
+    '<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改。 -->',
     '',
     '| Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |',
     '|---|---|---|'
