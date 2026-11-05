@@ -233,7 +233,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 ### Cmdlet 簽章(自動產生)
 
 <!-- generated:cmdlet-signatures -->
-<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改;上面的表是手寫的用法說明。 -->
+<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改。 -->
 
 | Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |
 |---|---|---|

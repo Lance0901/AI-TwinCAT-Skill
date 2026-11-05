@@ -18,11 +18,20 @@
     Line endings and BOM of every file are kept.
 
     Default: rewrite the files. -Check: write nothing, list every stale spot, exit 1 when any
-    (scripts/check.ps1 runs it that way). Not covered on purpose: adapters/codex/tools.json,
-    adapters/antigravity/plugin.yaml and .agents/skills/twincat/SKILL.md (see the PR of #25:
-    they describe the CLI actions of Invoke-TwinCATAutomation.ps1 / a hand-written lifecycle
-    example, no list that follows from Get-Command).
+    (scripts/check.ps1 runs it that way).
 
+    Whole generated files (#144; nothing in them is hand-written, edit the generator or the sources):
+      adapters/codex/tools.json, adapters/antigravity/plugin.yaml
+        One action per key of $operationMap in Invoke-TwinCATAutomation.ps1 (the single source of the
+        CLI actions), in file order. Parameters, types, enums, defaults and descriptions come from the
+        action's entry in mcp-server/tools.json. Descriptions are taken COMPLETE (whitespace collapsed):
+        they carry the safety rules (confirm with the user, fail closed, who may call what); a DryRun
+        default of true is stated if the text does not say it. The three actions that have no tools.json entry (NewProject: not offered on
+        MCP, #70; GetIdeModalDialog: composite; ListOperations: CLI only) are described in
+        $extraActions below. scripts/check.ps1 additionally compares the action names with
+        $operationMap ('adapters' rule).
+    .agents/skills/twincat/SKILL.md: hand-written lifecycle example and Failure contract; the cmdlet
+    signature table in it is the generated cmdlet-signatures block (same as adapters/claude-code/SKILL.md).
 .PARAMETER Check
     Report only; exit code 1 when a file differs from the generated output.
 .PARAMETER DocsRoot
@@ -42,8 +51,10 @@ if ([string]::IsNullOrWhiteSpace($DocsRoot)) { $DocsRoot = $repoRoot }
 # Files that carry markers (relative paths). A marker in any other file is ignored.
 $targets = @(
     'README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md',
-    'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md'
+    'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md', '.agents/skills/twincat/SKILL.md'
 )
+# Files that are generated as a whole (relative paths): the content is built below.
+$wholeFiles = @('adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')
 # Counts that sit in a code fence: file, regex with named group n, value key.
 $patternRules = @(
     @{ File = 'README.md'; Regex = 'Public/\s+# (?<n>\d+) exported cmdlets'; Key = 'cmdlet-count' },
@@ -86,12 +97,178 @@ foreach ($c in $commands) {
 }
 $signatureBlock = @(
     '',
-    '<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改;上面的表是手寫的用法說明。 -->',
+    '<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改。 -->',
     '',
     '| Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |',
     '|---|---|---|'
 ) + $rows + @('')
 
+# ---- adapter files (#144) ----------------------------------------------------------------------
+$cliText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'Invoke-TwinCATAutomation.ps1'), $utf8)
+$mapMatch = [regex]::Match($cliText, '\$operationMap\s*=\s*@\{(?<body>.*?)\n\}', 'Singleline')
+if (-not $mapMatch.Success) { throw 'Invoke-TwinCATAutomation.ps1: $operationMap not found' }
+$actionNames = @([regex]::Matches($mapMatch.Groups['body'].Value, "(?m)^\s*'([A-Za-z0-9]+)'\s*=") | ForEach-Object { $_.Groups[1].Value })
+if ($actionNames.Count -eq 0) { throw '$operationMap has no entries' }
+
+# Actions without a tools.json entry: name -> description + parameters (name, type, required, description, enum).
+$extraActions = @{
+    NewProject       = @{
+        Description = 'Create new TwinCAT project with PLC and MAIN program. #70: only on an IDE with no solution open (otherwise SOLUTION_ALREADY_OPEN, nothing created); not offered on the MCP server.'
+        Params      = @(
+            @{ Name = 'Name'; Type = 'string'; Required = $true; Description = 'Project name' },
+            @{ Name = 'Path'; Type = 'string'; Required = $false; Description = 'Target directory' })
+    }
+    GetIdeModalDialog = @{
+        Description = 'Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not none). Works while DTE calls fail with IDE_BUSY. On MCP this is a composite tool.'
+        Params      = @(
+            @{ Name = 'ProcessId'; Type = 'integer'; Required = $false; Description = 'IDE process id (default: the connected IDE)' },
+            @{ Name = 'TimeoutSec'; Type = 'integer'; Required = $false; Minimum = 1; Maximum = 60; Default = 5; Description = 'How long to probe for a dialog (1..60, default 5).' })
+    }
+    ListOperations   = @{ Description = 'List all available operations.'; Params = @() }
+}
+
+# $extraActions must describe real operationMap actions, with the parameters of the cmdlet behind them.
+$opCmdlet = @{}
+foreach ($mm in [regex]::Matches($mapMatch.Groups['body'].Value, "(?m)^\s*'([A-Za-z0-9]+)'\s*=\s*(?:[$]null|'([^']+)')")) { $opCmdlet[$mm.Groups[1].Value] = $mm.Groups[2].Value }
+$commonParams = @([System.Management.Automation.PSCmdlet]::CommonParameters) + @([System.Management.Automation.PSCmdlet]::OptionalCommonParameters)
+foreach ($ek in $extraActions.Keys) {
+    if ($actionNames -cnotcontains $ek) { throw "`$extraActions key '$ek' is not an action of `$operationMap in Invoke-TwinCATAutomation.ps1" }
+    $cn = $opCmdlet[$ek]
+    if ([string]::IsNullOrEmpty($cn)) { if (@($extraActions[$ek].Params).Count -ne 0) { throw "`$extraActions '$ek' has parameters but no cmdlet" }; continue }
+    $cmd = $commands | Where-Object { $_.Name -eq $cn }
+    if (-not $cmd) { throw "`$extraActions '$ek': cmdlet '$cn' is not exported by the module" }
+    $real = @($cmd.Parameters.Values | Where-Object { $commonParams -notcontains $_.Name } | ForEach-Object { $_.Name } | Sort-Object)
+    $mine = @($extraActions[$ek].Params | ForEach-Object { $_.Name } | Sort-Object)
+    if (($real -join ',') -cne ($mine -join ',')) { throw "`$extraActions '$ek' parameters ($($mine -join ', ')) differ from $cn ($($real -join ', '))" }
+    foreach ($ep in $extraActions[$ek].Params) {
+        $isMandatory = @($cmd.Parameters[$ep.Name].Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count -gt 0
+        if ([bool]$ep.Required -ne $isMandatory) { throw "`$extraActions '$ek' parameter $($ep.Name): Required = $($ep.Required), cmdlet says $isMandatory" }
+    }
+}
+
+function ConvertTo-AdapterJsonString([string]$s) {
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    foreach ($ch in $s.ToCharArray()) {
+        switch ($ch) {
+            '"' { [void]$sb.Append('\"') }
+            '\' { [void]$sb.Append('\\') }
+            "`n" { [void]$sb.Append('\n') }
+            "`r" { [void]$sb.Append('\r') }
+            "`t" { [void]$sb.Append('\t') }
+            default { if ([int]$ch -lt 32) { [void]$sb.AppendFormat('\u{0:x4}', [int]$ch) } else { [void]$sb.Append($ch) } }
+        }
+    }
+    [void]$sb.Append('"')
+    $sb.ToString()
+}
+function ConvertTo-AdapterScalar($v) {
+    if ($v -is [bool]) { return $(if ($v) { 'true' } else { 'false' }) }
+    if ($v -is [string]) { return (ConvertTo-AdapterJsonString $v) }
+    if ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal]) { return [string]::Format([cultureinfo]::InvariantCulture, '{0}', $v) }
+    throw "adapter generator: value of type $(if ($null -eq $v) { 'null' } else { $v.GetType().FullName }) is not a scalar"
+}
+# Whole text, whitespace collapsed (the descriptions carry safety rules: nothing is cut).
+function Get-FlatText([string]$Text) { ($Text -replace '\s+', ' ').Trim() }
+
+$toolByName = @{}
+foreach ($t in $toolsDoc.tools) { $toolByName[[string]$t.name] = $t }
+$adapterActions = New-Object System.Collections.Generic.List[object]
+foreach ($an in $actionNames) {
+    $ps = New-Object System.Collections.Generic.List[object]
+    if ($toolByName.ContainsKey($an)) {
+        $tool = $toolByName[$an]
+        $desc = Get-FlatText ([string]$tool.description)
+        $req = @($tool.inputSchema.required)
+        foreach ($prop in $tool.inputSchema.properties.PSObject.Properties) {
+            $pv = $prop.Value
+            $ps.Add(@{
+                    Name = $prop.Name
+                    Type = $(if ($pv.PSObject.Properties['type']) { [string]$pv.type } else { 'any' })
+                    Enum = $(if ($pv.PSObject.Properties['enum']) { @($pv.enum) } else { $null })
+                    Minimum = $(if ($pv.PSObject.Properties['minimum']) { $pv.minimum } else { $null })
+                    Maximum = $(if ($pv.PSObject.Properties['maximum']) { $pv.maximum } else { $null })
+                    Items = $(if ($pv.PSObject.Properties['items'] -and $pv.items.PSObject.Properties['type']) { [string]$pv.items.type } else { $null })
+                    Required = ($req -contains $prop.Name)
+                    HasDefault = [bool]$pv.PSObject.Properties['default']
+                    Default = $(if ($pv.PSObject.Properties['default']) { $pv.default } else { $null })
+                    Description = $(if ($pv.PSObject.Properties['description']) { Get-FlatText ([string]$pv.description) } else { '' })
+                })
+            if ($prop.Name -eq 'DryRun' -and $pv.PSObject.Properties['default'] -and $pv.default -eq $true -and $desc -notmatch '(?i)dry-run') { $desc += ' Dry-run by default.' }
+        }
+    }
+    elseif ($extraActions.ContainsKey($an)) {
+        $desc = $extraActions[$an].Description
+        foreach ($ep in $extraActions[$an].Params) {
+            $ps.Add(@{ Name = $ep.Name; Type = $ep.Type; Enum = $null; Items = $null; Minimum = $ep.Minimum; Maximum = $ep.Maximum; Required = $ep.Required; HasDefault = ($null -ne $ep.Default); Default = $ep.Default; Description = $ep.Description })
+        }
+    }
+    else { throw "operationMap action '$an' has neither a tools.json entry nor an `$extraActions entry in scripts/Update-GeneratedDocs.ps1" }
+    $adapterActions.Add(@{ Name = $an; Description = $desc; Params = $ps })
+}
+
+$jsonLines = New-Object System.Collections.Generic.List[string]
+$jsonLines.AddRange([string[]]@('{', '  "name": "twincat-automation",', '  "description": "TwinCAT 3 IDE automation and PLC runtime control",', '  "entryPoint": "pwsh Invoke-TwinCATAutomation.ps1",', '  "tools": ['))
+for ($ai = 0; $ai -lt $adapterActions.Count; $ai++) {
+    $a = $adapterActions[$ai]
+    $jsonLines.Add('    {')
+    $jsonLines.Add("      `"name`": $(ConvertTo-AdapterJsonString $a.Name),")
+    $jsonLines.Add("      `"description`": $(ConvertTo-AdapterJsonString $a.Description),")
+    if ($a.Params.Count -eq 0) { $jsonLines.Add('      "parameters": {}') }
+    else {
+        $jsonLines.Add('      "parameters": {')
+        for ($pi = 0; $pi -lt $a.Params.Count; $pi++) {
+            $q = $a.Params[$pi]
+            $f = New-Object System.Collections.Generic.List[string]
+            $f.Add("`"type`": $(ConvertTo-AdapterJsonString $q.Type)")
+            if ($null -ne $q.Enum) { $f.Add("`"enum`": [$((@($q.Enum) | ForEach-Object { ConvertTo-AdapterScalar $_ }) -join ', ')]") }
+            if ($q.Items) { $f.Add("`"items`": { `"type`": $(ConvertTo-AdapterJsonString $q.Items) }") }
+            if ($null -ne $q.Minimum) { $f.Add("`"minimum`": $(ConvertTo-AdapterScalar $q.Minimum)") }
+            if ($null -ne $q.Maximum) { $f.Add("`"maximum`": $(ConvertTo-AdapterScalar $q.Maximum)") }
+            if ($q.Description) { $f.Add("`"description`": $(ConvertTo-AdapterJsonString $q.Description)") }
+            $f.Add("`"required`": $(ConvertTo-AdapterScalar $q.Required)")
+            if ($q.HasDefault) { $f.Add("`"default`": $(ConvertTo-AdapterScalar $q.Default)") }
+            $jsonLines.Add("        $(ConvertTo-AdapterJsonString $q.Name): { $($f -join ', ') }$(if ($pi -lt $a.Params.Count - 1) { ',' })")
+        }
+        $jsonLines.Add('      }')
+    }
+    $jsonLines.Add("    }$(if ($ai -lt $adapterActions.Count - 1) { ',' })")
+}
+$jsonLines.Add('  ]')
+$jsonLines.Add('}')
+
+$yamlLines = New-Object System.Collections.Generic.List[string]
+$yamlLines.AddRange([string[]]@(
+        '# Generated by scripts/Update-GeneratedDocs.ps1 from $operationMap (Invoke-TwinCATAutomation.ps1) and mcp-server/tools.json (#144).',
+        '# Do not edit by hand: run the script and commit the result.',
+        'name: twincat-automation', 'description: TwinCAT 3 IDE automation and PLC runtime control via PowerShell', 'version: 0.1.0', 'author: Lance0901', '',
+        'runtime:', '  command: pwsh', '  args:', '    - Invoke-TwinCATAutomation.ps1', '    - --operation', '    - "{{operation}}"', '    - --params', '    - "{{params_json}}"', '',
+        'actions:'))
+foreach ($a in $adapterActions) {
+    $yamlLines.Add("  - name: $($a.Name)")
+    $yamlLines.Add("    description: $(ConvertTo-AdapterJsonString $a.Description)")
+    if ($a.Params.Count -gt 0) {
+        $yamlLines.Add('    parameters:')
+        foreach ($q in $a.Params) {
+            $yamlLines.Add("      $($q.Name):")
+            if ($q.Type -ne 'any') { $yamlLines.Add("        type: $($q.Type)") }
+            if ($null -ne $q.Enum) { $yamlLines.Add("        enum: [$((@($q.Enum) | ForEach-Object { ConvertTo-AdapterScalar $_ }) -join ', ')]") }
+            if ($q.Items) { $yamlLines.Add('        items:'); $yamlLines.Add("          type: $($q.Items)") }
+            if ($null -ne $q.Minimum) { $yamlLines.Add("        minimum: $(ConvertTo-AdapterScalar $q.Minimum)") }
+            if ($null -ne $q.Maximum) { $yamlLines.Add("        maximum: $(ConvertTo-AdapterScalar $q.Maximum)") }
+            if ($q.Description) { $yamlLines.Add("        description: $(ConvertTo-AdapterJsonString $q.Description)") }
+            $yamlLines.Add("        required: $(ConvertTo-AdapterScalar $q.Required)")
+            if ($q.HasDefault) { $yamlLines.Add("        default: $(ConvertTo-AdapterScalar $q.Default)") }
+        }
+    }
+    $yamlLines.Add('')
+}
+# no blank line after the last action
+$yamlLines.RemoveAt($yamlLines.Count - 1)
+$wholeContent = @{
+    'adapters/codex/tools.json'          = (($jsonLines -join "`n") + "`n")
+    'adapters/antigravity/plugin.yaml'   = (($yamlLines -join "`n") + "`n")
+}
 $values = @{
     'cmdlet-count'      = [string]$commands.Count
     'mcp-tool-count'    = [string]@($toolsDoc.tools).Count
@@ -152,6 +329,28 @@ foreach ($rel in $targets) {
     }
 }
 
+foreach ($rel in $wholeFiles) {
+    $path = Join-Path $DocsRoot $rel
+    $crlf = $true
+    $hasBom = $false
+    $orig = $null
+    if (Test-Path -LiteralPath $path) {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+        $orig = $utf8.GetString($bytes, $(if ($hasBom) { 3 } else { 0 }), $bytes.Length - $(if ($hasBom) { 3 } else { 0 }))
+        $crlf = $orig.Contains("`r`n")
+    }
+    $result = if ($crlf) { $wholeContent[$rel].Replace("`n", "`r`n") } else { $wholeContent[$rel] }
+    if ($null -eq $orig -or $result -cne $orig) {
+        $stale.Add($rel)
+        if (-not $Check) {
+            $out = $utf8.GetBytes($result)
+            if ($hasBom) { $out = [byte[]](0xEF, 0xBB, 0xBF) + $out }
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
+            [System.IO.File]::WriteAllBytes($path, $out)
+        }
+    }
+}
 # every key used in the values table must appear somewhere (a typo'd marker would silently go stale)
 $used = @{}
 foreach ($rel in $targets) {
@@ -163,9 +362,9 @@ foreach ($p in $problems) { Write-Host "PROBLEM $p" }
 if ($Check) {
     foreach ($s in $stale) { Write-Host "STALE   $s" }
     if ($stale.Count -gt 0 -or $problems.Count -gt 0) { exit 1 }
-    Write-Host "generated docs up to date ($($values['cmdlet-count']) cmdlets, $($values['mcp-tool-count']) MCP tools, $($values['composite-count']) composites)"
+    Write-Host "generated docs up to date ($($values['cmdlet-count']) cmdlets, $($values['mcp-tool-count']) MCP tools, $($values['composite-count']) composites, $($actionNames.Count) CLI actions)"
     exit 0
 }
 foreach ($s in $stale) { Write-Host "updated $s" }
 if ($problems.Count -gt 0) { exit 1 }
-Write-Host "done ($($values['cmdlet-count']) cmdlets, $($values['mcp-tool-count']) MCP tools, $($values['composite-count']) composites)"
+Write-Host "done ($($values['cmdlet-count']) cmdlets, $($values['mcp-tool-count']) MCP tools, $($values['composite-count']) composites, $($actionNames.Count) CLI actions)"
