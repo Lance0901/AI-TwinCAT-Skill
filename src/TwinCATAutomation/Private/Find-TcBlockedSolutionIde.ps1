@@ -97,7 +97,7 @@ function Find-TcBlockedSolutionIde {
     $sameNameElsewhere = @($known | Where-Object {
             -not [string]::IsNullOrWhiteSpace($_) -and
             [string]::Equals([IO.Path]::GetFileNameWithoutExtension($_), $slnName, [StringComparison]::OrdinalIgnoreCase) -and
-            -not [string]::Equals($_, $SolutionPath, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -Unique
+            -not [string]::Equals($_, $SolutionPath, [StringComparison]::OrdinalIgnoreCase) }) | Sort-Object -Unique   # Sort-Object -Unique is case-insensitive (Select-Object -Unique is not): one entry per path
 
     $hits = @()
     foreach ($c in @($Candidates)) {

@@ -27,7 +27,7 @@ On `ok:false` the child exits with code 2 after writing the line.
 | field | type | notes |
 |---|---|---|
 | `id` | string | opaque, echoed back |
-| `op` | `"call"` \| `"modal"` \| `"state"` \| `"ping"` \| `"shutdown"` | default `"call"` |
+| `op` | `"call"` \| `"modal"` \| `"state"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
 | `cmdlet` | string | `op:"call"` only. Must be in the exported list from `ready`; anything else → `{"success":false,"error":{"code":"INVALID_CMDLET"}}`. Never evaluated as script. |
 | `params` | object | `op:"call"` only. Splatted. See conversion rules. |
 
@@ -64,6 +64,29 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
 * `shutdown` → child disconnects ADS (ignore errors), releases COM refs via
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
+* `retire` (#41, step 1 of the `ReloadModule` tool), in this order:
+  1. the module's private `Get-TcLifecycleBlockLocalForReload` lists the lifecycle block records
+     held in memory (`$script:TcLifecycleBlockLocal`). A module without that function (older than
+     #41) is checked by reading `$script:TcLifecycleBlockLocal` directly (it must exist and be a
+     hashtable). Any record, neither function nor variable, a non-hashtable value or an exception →
+     refused, nothing changes:
+     `{"success":false,"error":{"code":"RELOAD_LIFECYCLE_BLOCKED",...},"data":{"modulePath":"...","lifecycleBlocks":[{"key":"...","record":{...}}],"readable":bool,"notRun":true}}`
+     (`key` `<missing>` / `<unreadable>` for the failure cases).
+  2. every in-memory BUILD_REQUIRED entry (`$script:TcBuildRequiredLocal`) is merged into
+     `build-required.json` under the state mutex (`Merge-TcBuildRequiredEntry`; written only when an
+     entry is missing there or differs). A module without those helpers (but with the variable):
+     the bridge itself adds the keys missing from the file, unchanged, under the mutex named by the
+     module's `Get-TcBuildRequiredMutexName`. Variable missing, no mutex name, lock not acquired,
+     file not readable / writable → refused, nothing changes:
+     `{"success":false,"error":{"code":"RELOAD_BUILD_REQUIRED",...},"data":{"modulePath":"...","buildRequiredKeys":[...],"error":"...","notRun":true}}`.
+  3. it does what `shutdown` does and replies
+     `{"success":true,"data":{"retired":true,"modulePath":"...","ideWasConnected":bool,"adsWasConnected":bool,"buildRequiredKeys":[...],"buildRequiredPersisted":[...]}}`
+     before it exits 0.
+
+  The Node side (`PowerShellBridge.retire(nextModulePath)`) detaches the child as soon as the
+  success line arrives, so no further request reaches it, and the next request starts a new child
+  with `-ModulePath <nextModulePath>`. With no child running and none starting (never started, or
+  the last start failed) no `retire` is sent: the path is switched and the next start uses it.
 
 ### Parameter conversion (`op:"call"`)
 
@@ -269,7 +292,18 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   reconnecting.
 * `tools/list` entries carry `annotations` when the catalog entry in tools.json has them; the
   composites set their own (`GetStatus`, `QuickRead`, `GetIdeModalDialog`: `readOnlyHint: true`;
-  `RunLifecycle`: `destructiveHint: true, readOnlyHint: false`).
+  `RunLifecycle`: `destructiveHint: true, readOnlyHint: false`; `ReloadModule`: `readOnlyHint: false,
+  destructiveHint: false, idempotentHint: false`).
+* `ReloadModule` (#41): `ModulePath` (optional) is checked against the allow list first
+  (`lib/module-source.js`: `src\TwinCATAutomation\TwinCATAutomation.psm1` of the main checkout of
+  the `TWINCAT_MODULE_PATH` the server started with, and of every worktree registered in
+  `<main>\.git\worktrees\*\gitdir` whose `.git` file points back; `RELOAD_PATH_NOT_ALLOWED`
+  otherwise, nothing sent). Then `op:"retire"` is queued FIFO like any call (a call in flight
+  finishes first); on success the next child starts with the new `-ModulePath`. A failed import
+  returns `RELOAD_FAILED` and starts the previous path again (`data.restored`). Every child that
+  reports ready sets the module snapshot `GetStatus` returns in `data.bridge`: `modulePath`
+  (`ready.modulePath`), `moduleCommit` (HEAD sha read from the `.git` files of that checkout, no
+  `git.exe`; `null` outside a checkout; HEAD only, uncommitted changes are not reflected), `moduleDirty` (always `null`) and `loadedAt`.
 * `RunLifecycle` steps: `ConnectIde`, `SetTarget` (only when `TargetAmsNetId` and/or `Platform` is a non-empty
   string; runs right after `ConnectIde` as `SetTarget {AmsNetId, Platform}` with `Platform`, or
   `SetTarget {AmsNetId, NoPlatformSwitch: true}` without it; `AmsNetId` falls back to the one `ConnectIde`

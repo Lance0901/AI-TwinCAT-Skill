@@ -8,6 +8,7 @@
 #   the volume generates no 8.3 names.
 param([switch]$Short83)
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
@@ -38,6 +39,10 @@ public static class TcUnitLongPath {
 $slnDir = [TcUnitLongPath]::Get($slnDir)
 $origLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $slnDir   # session records go to the temp folder
+$origStateDir = $env:TCAUTO_STATE_DIR
+# #118: records live in TCAUTO_STATE_DIR; an inherited one (solution-path-83.ps1 runs this script
+# with -Short83) holds the caller's fake-pid records, which would contradict ours: use our own.
+$env:TCAUTO_STATE_DIR = Join-Path $slnDir 'state'
 $sln = Join-Path $slnDir 'Demo.sln'
 Set-Content -Path $sln -Value 'Microsoft Visual Studio Solution File, Format Version 12.00'
 $slnLong = $sln
@@ -62,6 +67,7 @@ public static class TcUnitShortPath {
     if ($slnDirIn -eq $slnDir) {
         "SKIP blocked-solution-ide -Short83: this volume does not generate 8.3 short names ($slnDir)"
         $env:LOCALAPPDATA = $origLocalAppData
+        $env:TCAUTO_STATE_DIR = $origStateDir
         Remove-Item -LiteralPath $slnDir -Recurse -Force -ErrorAction SilentlyContinue
         exit 0
     }
@@ -96,6 +102,8 @@ $global:FakeIde = @{}
             $o = (Get-Variable -Name obj -Scope 1 -ValueOnly)
             if ($o.PSObject.Properties['Busy'] -and $o.Busy) { throw "IDE_BUSY: '$OperationName' failed after $MaxRetries attempts - the IDE rejected the call (RPC_E_CALL_REJECTED 0x80010001)." }
         }
+        # depends on the OperationName string in Connect-TcIde ('SilentMode read (original)'): renaming it there silently disables this hook
+        if ($OperationName -eq 'SilentMode read (original)' -and $global:SilentGetterThrows) { throw 'RPC_E_SERVERFAULT (mock: SilentMode getter fails)' }
         if ($OperationName -eq 'Solution.FullName (guard)' -and $global:GuardThrows) { throw 'RPC_E_SERVERCALL_RETRYLATER (mock: XAE busy after the reload)' }
         & $script:UnitOrigComRetry @PSBoundParameters
     }
@@ -303,6 +311,28 @@ try {
     $global:GuardThrows = $false
     Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
 
+    # --- #55: guard read answers $null (Solution.FullName $null) and stays so -> UNVERIFIED after -TimeoutSec, nothing closed ---
+    $global:ClosedSolution = $false
+    $nullSol = [PSCustomObject]@{ FullName = $null }
+    $nullSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $nullSol $fakeDocs
+    $swNull = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Reset-TcSolution -TimeoutSec 5   # ValidateRange minimum is 5
+    $swNull.Stop()
+    Check 'reset-guard-null-times-out' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'answered \$null' -and $r.data.guardSec -le 7 -and $swNull.Elapsed.TotalSeconds -lt 12) "code=$($r.error.code) closed=$global:ClosedSolution err=$($r.data.guardError) guardSec=$($r.data.guardSec) total=$([math]::Round($swNull.Elapsed.TotalSeconds, 1))"
+
+    # --- #55 nit: guard read '' (no solution open) is an answer: passes the guard (no UNVERIFIED / MISMATCH), the reset goes on to close ---
+    # Separate flags for Documents.CloseAll and Solution.Close. The mock has no project / reopen support, so the reset ends in PROJECT_OPEN_FAILED after closing; only the guard is under test.
+    $global:SolClosed = $false
+    $global:DocsClosed = $false
+    $emptySol = [PSCustomObject]@{ FullName = '' }
+    $emptySol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:SolClosed = $true }
+    $emptyDocs = [PSCustomObject]@{ Count = 0 }
+    $emptyDocs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:DocsClosed = $true }
+    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s; $script:TcSysManager = $null } $sln $emptySol $emptyDocs
+    $r = Reset-TcSolution -TimeoutSec 5 -DiscardProjectChanges
+    Check 'reset-guard-empty-passes' ($r.error.code -notin @('RESET_SOLUTION_UNVERIFIED', 'RESET_SOLUTION_MISMATCH') -and $global:SolClosed) "code=$($r.error.code) docsClosed=$global:DocsClosed solClosed=$global:SolClosed"
+
     # --- should-fix 2: a same-named .sln known open elsewhere -> the title does not corroborate a record ---
     $global:FakeIde = @{ 981 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
     & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 981 -Solution $s } $sln
@@ -310,6 +340,24 @@ try {
     Check 'same-name-elsewhere-weak' ($hits.Count -eq 1 -and -not $hits[0].Strong -and $null -eq $hits[0].CorroboratedBy -and $hits[0].Contradiction -match 'same-named') "strong=$($hits[0].Strong) why=$($hits[0].Contradiction)"
     $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s } @([PSCustomObject]@{ pid = 981; busy = $true }) $sln)
     Check 'record-title-corroborated' ($hits.Count -eq 1 -and $hits[0].Strong -and $hits[0].CorroboratedBy -eq 'window-title') "strong=$($hits[0].Strong) by=$($hits[0].CorroboratedBy)"
+
+    # --- #55: same-named .sln known only from SESSION RECORDS (602 -> C:\Elsewhere\Demo.sln, 601 -> ours), full Connect-TcIde ---
+    # Both IDEs are busy with the title 'Demo - TcXaeShell': the title cannot tell them apart, so the record of 601
+    # is not corroborated -> weak, nothing attached, and (no -NoLaunch) no second IDE is launched either.
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }
+    $global:FakeIde = @{ 601 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }; 602 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Demo.sln' } $sln
+    Set-Rot @(@{ Pid = 602; Mode = 'busy' }, @{ Pid = 601; Mode = 'busy' })
+    $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1'
+    Check 'same-name-record-not-attached' (-not $r.success -and $r.error.code -eq 'IDE_BUSY' -and -not $r.data.attached -and -not (& $mod { $script:TcIdeConnected })) "code=$($r.error.code) attached=$($r.data.attached)"
+    Check 'same-name-record-reason' ($r.data.notAttachedReason -match 'same-named' -and $r.data.notAttachedReason -match 'Elsewhere') "reason=$($r.data.notAttachedReason)"
+    Check 'same-name-record-no-launch' ($r.error.code -ne 'TWINCAT_NOT_FOUND' -and $r.error.message -match 'IDE_BLOCKED_SAME_NAME') "code=$($r.error.code) msg=$($r.error.message)"
+
+    # --- #55 nit: the same elsewhere path known twice in different case is listed once ---
+    $global:FakeIde = @{ 981 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 981 -Solution $s } $sln
+    $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s -KnownSolutions @('C:\Elsewhere\Demo.sln', 'c:\elsewhere\demo.sln') } @([PSCustomObject]@{ pid = 981; busy = $true }) $sln)
+    Check 'same-name-elsewhere-listed-once' ($hits.Count -eq 1 -and ([regex]::Matches($hits[0].Contradiction, '(?i)elsewhere[\\/]demo\.sln')).Count -eq 1) "why=$($hits[0].Contradiction)"
 
     # --- nit: weak match on an IDE this session launched -> IDE_BLOCKED_OWN hint, no -LaunchIfBlocked advice ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }
@@ -344,10 +392,31 @@ try {
     & $mod { Set-TcIdeSilentOriginal -ProcessId 991 -Value 'unknown' }
     $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 991 }
     Check 'silent-unknown' ($so -is [string] -and $so -eq 'unknown') "value=$so"
+
+    # --- #55 nit: the SilentMode getter throws on connect -> remembered 'unknown', Disconnect never writes the setter ---
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null; Set-TcIdeSilentOriginal -ProcessId 995 -Value $null }
+    $global:FakeIde = @{ 995 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    $global:SilentWrites = [System.Collections.Generic.List[string]]::new()
+    $settings = New-Object PSObject
+    $settings | Add-Member -MemberType ScriptProperty -Name SilentMode -Value { throw 'RPC_E_SERVERFAULT (mock: SilentMode getter fails)' } -SecondValue { param($v) $global:SilentWrites.Add([string]$v) }
+    $readyDte = New-Object PSObject
+    $readyDte | Add-Member -MemberType NoteProperty -Name Version -Value '17.0'
+    $readyDte | Add-Member -MemberType NoteProperty -Name Solution -Value ([PSCustomObject]@{ FullName = ''; IsOpen = $false; Projects = [PSCustomObject]@{ Count = 0 } })
+    $readyDte | Add-Member -MemberType ScriptMethod -Name GetObject -Value { param($n) , $settings }.GetNewClosure()
+    $global:FakeRot = @(@{ DisplayName = '!Fake.DTE.1:995'; Object = $readyDte; ProgId = 'Fake.DTE.1'; ProcessId = 995 })
+    $global:SilentGetterThrows = $true
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:SilentGetterThrows = $false
+    $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 995 }
+    Check 'silent-unknown-connect' ($r.success -and $so -eq 'unknown' -and (& $mod { $null -eq $script:TcSilentModeOriginal })) "success=$($r.success) err=$($r.error.message) stored=$so"
+    $global:SilentWrites.Clear()
+    $null = Disconnect-TcIde
+    Check 'silent-unknown-disconnect-no-setter' ($global:SilentWrites.Count -eq 0) "writes=$($global:SilentWrites -join ',')"
 }
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }
     $env:LOCALAPPDATA = $origLocalAppData
+    $env:TCAUTO_STATE_DIR = $origStateDir
     Remove-Item -LiteralPath $slnDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Variable -Name FakeIde, FakeRot -Scope Global -ErrorAction SilentlyContinue
 }

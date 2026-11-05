@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $stateRoot = Join-Path $env:TEMP ("tcauto-unit-cc-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $stateRoot -Force
 $env:TCAUTO_STATE_DIR = Join-Path $stateRoot 'state'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 # GitHub's windows runner has TEMP = C:\Users\RUNNER~1\... (8.3 short name, #43): the state
