@@ -513,6 +513,7 @@ function Format-TcLifecycleBlockStates {
     $req = if ([string]::IsNullOrWhiteSpace([string]$Block.requestedState)) { 'unknown' } else { "'$($Block.requestedState)'" }
     $rb = if (-not [string]::IsNullOrWhiteSpace([string]$Block.reachedState)) { "'$($Block.reachedState)'" }
           elseif ([string]$Block.readbackNote -eq 'runtime-gone' -or [string]$Block.errorCode -eq 'RUNTIME_CRASHED') { 'nothing (runtime gone)' }
+          elseif ([string]$Block.readbackNote -eq 'unreachable' -and [string]$Block.command -eq 'Set-TcPlcState') { 'nothing (PLC port unreachable)' }   # #131
           elseif ([string]$Block.readbackNote -eq 'unreachable') { 'nothing (port 10000 unreachable)' }   # #114 N5
           else { 'nothing' }
     "requested $req; system state read back afterwards: $rb"

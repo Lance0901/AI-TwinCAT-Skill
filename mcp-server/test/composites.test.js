@@ -18,6 +18,28 @@ describe('QuickRead data shape (no bridge)', () => {
     assert.equal(r.connectedOnDemand, false);
   });
 
+  // #60: ReadVariable fails closed on a partial read; QuickRead keeps success=false, the code and the
+  // top-level partial / failedPaths, and does not run ConnectAds (not a NOT_CONNECTED code).
+  test('PARTIAL_READ_FAILED passes through with partial / failedPaths, no ConnectAds', async () => {
+    const calls = [];
+    const partial = {
+      success: false,
+      error: { code: 'PARTIAL_READ_FAILED', message: '1 of 2 paths could not be read: MAIN.b (ADS_SYMBOL_NOT_FOUND).' },
+      data: [{ path: 'MAIN.a', value: 1 }, { path: 'MAIN.b', error: 'x', code: 'ADS_SYMBOL_NOT_FOUND' }],
+      partial: true,
+      failedPaths: ['MAIN.b']
+    };
+    const r = await QuickRead.run({ callTool: async (name) => { calls.push(name); return partial; } }, { Path: ['MAIN.a', 'MAIN.b'] });
+    assert.deepEqual(calls, ['ReadVariable']);
+    assert.equal(r.success, false);
+    assert.equal(r.error.code, 'PARTIAL_READ_FAILED');
+    assert.equal(r.partial, true);
+    assert.deepEqual(r.failedPaths, ['MAIN.b']);
+    assert.ok(Array.isArray(r.data));
+    assert.equal(r.data.length, 2);
+    assert.equal(r.connectedOnDemand, false);
+  });
+
   test('null data stays null; missing data becomes {connectedOnDemand}; object data gets it merged', async () => {
     const n = await run(null);
     assert.equal(n.data, null);

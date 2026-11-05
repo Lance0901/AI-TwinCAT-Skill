@@ -135,7 +135,8 @@ export const QuickRead = {
   name: 'QuickRead',
   description:
     'Read one or more PLC variables, connecting ADS on demand: calls ReadVariable and, if ADS is not connected yet, runs ConnectAds (AmsNetId/Port optional, auto-detected from the IDE target) and reads again. ' +
-    'Returns the ReadVariable result plus connectedOnDemand (whether a connection was made): always at the top level of the result, and also as data.connectedOnDemand when data is an object (one Path). With several paths data stays the array of per-path entries (each {path, value, type} or {path, error, code}).',
+    'Returns the ReadVariable result plus connectedOnDemand (whether a connection was made): always at the top level of the result, and also as data.connectedOnDemand when data is an object (one Path). With several paths data stays the array of per-path entries (each {path, value, type} or {path, error, code}); ' +
+    'fail closed (#60): when any of several paths fails the result is success=false with PARTIAL_READ_FAILED, data still holds every entry, and the top level has partial=true and failedPaths (the failed paths in input order); every path read: success=true, partial=false, failedPaths=[].',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
   inputSchema: {

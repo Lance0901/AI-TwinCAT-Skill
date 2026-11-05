@@ -286,10 +286,11 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `ADS_TARGET_NOT_FOUND` | AmsNetId 無回應:TwinCAT 正在重啟,或 NetId 錯(ADS 0x7) | 等 `Get-TcSystemState` 回 Run 再 `Connect-TcAds`;NetId 用 `Connect-TcIde` 回的值 |
 | `ADS_SYMBOL_NOT_FOUND` | 符號不存在:新程式尚未下載,或路徑拼錯(ADS 0x710) | `Get-TcSymbols -Filter "MAIN.*"` 確認;必要時 `Enter-TcPlcOnline` |
 | `SYMBOL_NOT_FOUND` | `Read-TcVariable` 單一路徑讀不到(沿用舊 code,hint 同 `ADS_SYMBOL_NOT_FOUND`) | 同上 |
+| `PARTIAL_READ_FAILED` | `Read-TcVariable` 多路徑，至少一個 path 讀不到(#60,fail closed):`data` 仍是每個 path 一筆的陣列，頂層 `partial = true`、`failedPaths` 列出失敗的 path | 看 `data` 裡失敗那幾筆的 `code`;符號錯就 `Get-TcSymbols` 確認，連線類先 `Get-TcPlcState`,再只重讀 `failedPaths` |
 | `ADS_INVALID_STATE` | PLC 狀態不允許此操作,例如系統在 Config 模式就叫 PLC Run(ADS 0x712) | 順序 `Enable-TcConfig` → `Enter-TcPlcOnline` → `Set-TcPlcState Run` |
 | `ADS_TIMEOUT` | ADS 逾時:目標忙碌或網路問題(ADS 0x745) | 稍後重試;`Get-TcSystemState` 看目標是否活著 |
 | `PLC_NOT_LOADED` | `Set-TcPlcState Run` 時 PLC 內沒有程式(未 download;port 851 不存在,含自動重連時才發現的情況) | 先 `Enter-TcPlcOnline` 再 Run,或用 `Enable-TcConfig -Force` |
-| `PLC_RUN_TIMEOUT` | 已送 Run,但 851 在時限內沒進 Run | `Get-TcPlcState` 看狀態;Error/Stop 時查 PLC 例外或 build 錯誤,重新 `Enter-TcPlcOnline` |
+| `PLC_RUN_TIMEOUT` | 已送 Run,但 851 在時限內沒進 Run;最後一次讀取失敗時 `data.currentState` / `finalState` 是 `Unreachable`,之前讀到的在 `data.lastState`、錯誤在 `data.lastError`(#131) | `Get-TcPlcState` 看狀態;Error/Stop 時查 PLC 例外或 build 錯誤,重新 `Enter-TcPlcOnline` |
 | `CYCLE_TIMEOUT` | `Enable-TcConfig -Force` 的 `-TimeoutSec` 總預算在某步開始前用完 | 看 `data.steps[]` 卡在哪步;加大 `-TimeoutSec` |
 | `AMS_NETID_REQUIRED` | 沒有 IDE 連線可推 AmsNetId,又沒給 `-AmsNetId` | `Connect-TcIde -SolutionPath <sln>`,AmsNetId 自動偵測 |
 | `PROJECT_OPEN_TIMEOUT` | Solution 在時限內沒載完:.sln 不含 TwinCAT 專案,或 XAE 被 dialog 擋 | 關 dialog,重跑 `Connect-TcIde -SolutionPath <sln>` |
