@@ -181,11 +181,17 @@ if (-not `$$([bool]$NoWrittenAt)) { `$rec.writtenAt = (Get-Date).ToUniversalTime
     Write-RecordByOtherProcess $slnB
     $rec = Get-Rec 1231
     Check 'pending-remove-older-than-other-process-not-done' ($pendingBefore -and $rec -eq $slnB -and (Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "pending=$pendingBefore record=$rec file=$(Get-FileSolution 1231)"
-    # 8c. a record without writtenAt (format before #127 round 2) counts as older: pending D is written
+    # 8c. a record without writtenAt (older module version) naming ANOTHER solution: conservative,
+    #     the pending D is not written and the record stays untrusted (round 3 minor A)
     Fail-Write ([scriptblock]::Create("Save-TcIdeSolutionRecord -ProcessId 1231 -Solution '$slnD'"))
     Write-RecordByOtherProcess $slnC -NoWrittenAt
     $rec = Get-Rec 1231
-    Check 'pending-save-over-legacy-record-written' ($rec -eq $slnD -and (Get-FileSolution 1231) -eq $slnD -and $null -eq (Get-Warn 1231)) "record=$rec file=$(Get-FileSolution 1231)"
+    Check 'pending-save-over-legacy-other-solution-not-written' ($null -eq $rec -and (Get-FileSolution 1231) -eq $slnC -and (Get-Warn 1231) -match 'not updated') "record=$rec file=$(Get-FileSolution 1231) warn=$(Get-Warn 1231)"
+    #     the same solution without writtenAt: the pending D is written (with writtenAt), trusted
+    Write-RecordByOtherProcess $slnD -NoWrittenAt
+    $rec = Get-Rec 1231
+    $wa = [string](@(& $mod { Read-TcIdeSolutionRecords }) | Where-Object { [int]$_.pid -eq 1231 } | Select-Object -First 1).writtenAt
+    Check 'pending-save-over-legacy-same-solution-written' ($rec -eq $slnD -and (Get-FileSolution 1231) -eq $slnD -and $null -eq (Get-Warn 1231) -and -not [string]::IsNullOrWhiteSpace($wa)) "record=$rec file=$(Get-FileSolution 1231) writtenAt=$wa"
     # 8d. reason = first failure, retries counted (lock held by the holder process again)
     $hold2 = "tcauto-unit-123-{0}" -f [guid]::NewGuid().ToString('N')
     $rel2 = New-Object Threading.EventWaitHandle($false, [Threading.EventResetMode]::ManualReset, "$hold2-release")
@@ -208,12 +214,16 @@ if (-not `$$([bool]$NoWrittenAt)) { `$rec.writtenAt = (Get-Date).ToUniversalTime
             $script:UnitSyncCount
         }
         Check 'find-syncs-once' ($syncs -eq 1) "syncs=$syncs"
+        # nit D: save -> remove pending: reason and retries start over
+        & $mod { Remove-TcIdeSolutionRecord -ProcessId 1231 }
+        $w = Get-Warn 1231
+        Check 'pending-action-change-resets-reason' ($w -match 'remove skipped' -and $w -match 'retries so far: 0') "$w"
     }
     finally {
         $null = $rel2.Set(); if (-not $holder2.WaitForExit(15000)) { $holder2.Kill() }; $holder2.Dispose(); $rel2.Dispose(); $held2.Dispose()
     }
-    $null = Get-Rec 1231   # lock free: the pending B is written
-    Check 'pending-written-after-second-release' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "file=$(Get-FileSolution 1231)"
+    $null = Get-Rec 1231   # lock free: the pending remove is done
+    Check 'pending-written-after-second-release' ((Get-FileSolution 1231) -eq '' -and $null -eq (Get-Warn 1231)) "file=$(Get-FileSolution 1231)"
 }
 finally {
     if ($null -ne $release) { try { $null = $release.Set() } catch { } }

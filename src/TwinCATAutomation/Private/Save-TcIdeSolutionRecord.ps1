@@ -131,7 +131,8 @@ function Invoke-TcIdeSolutionLocked {
 $script:TcIdeSolutionPendingRetryMs = 250
 
 # Is the record's writtenAt later than -Than (both 'o' strings)? A record without writtenAt (the
-# format before #127 round 2) or an unparsable one counts as older.
+# format before #127 round 2) or an unparsable one counts as older. writtenAt is wall-clock time:
+# a clock that jumps back can make this comparison wrong (known limit).
 function Test-TcIdeRecordNewer {
     [CmdletBinding()]
     param([AllowNull()][object]$Record, [string]$Than)
@@ -170,7 +171,15 @@ function Invoke-TcIdeSolutionRecordWrite {
         if ($Action -eq 'save') {
             $failure = Invoke-TcIdeSolutionLocked -What 'IDE solution record save' -TimeoutMs $TimeoutMs -Body {
                 $all = @(Read-TcIdeSolutionRecordsForWrite)
-                if ($IfNotSuperseded -and @($all | Where-Object { [int]$_.pid -eq $ProcessId -and (Test-TcIdeRecordNewer -Record $_ -Than $WrittenAt) }).Count -gt 0) { $state.superseded = $true; return }
+                if ($IfNotSuperseded) {
+                    $mine = @($all | Where-Object { [int]$_.pid -eq $ProcessId })
+                    if (@($mine | Where-Object { Test-TcIdeRecordNewer -Record $_ -Than $WrittenAt }).Count -gt 0) { $state.superseded = $true; return }
+                    # conservative (#127 round 3 minor A): a record without writtenAt (older module
+                    # version, maybe written AFTER our failed write) naming another solution is not
+                    # overwritten; the record stays untrusted until a new Save of this module succeeds
+                    $legacyOther = @($mine | Where-Object { $null -eq $_.PSObject.Properties['writtenAt'] -or [string]::IsNullOrWhiteSpace([string]$_.writtenAt) } | Where-Object { -not [string]::Equals([string]$_.solution, $Solution, [StringComparison]::OrdinalIgnoreCase) })
+                    if ($legacyOther.Count -gt 0) { throw "the file record of pid $ProcessId has no writtenAt (older module version) and names another solution ('$($legacyOther[0].solution)'); pending save not written" }
+                }
                 $keep = @($all | Where-Object { [int]$_.pid -ne $ProcessId -and (Test-TcIdeRecordAlive -Record $_ -Cache $alive) })
                 $keep += [PSCustomObject]@{ pid = $ProcessId; startTime = $StartTime; solution = $Solution; writtenAt = $WrittenAt }
                 Write-TcIdeSolutionRecords -Records $keep
@@ -206,8 +215,10 @@ function Set-TcIdeSolutionRecordPending {
     if ($null -eq $script:TcIdeSolutionRecordPending) { $script:TcIdeSolutionRecordPending = @{} }
     if ([string]::IsNullOrWhiteSpace($Failure)) { $script:TcIdeSolutionRecordPending.Remove($key); return }
     $old = $script:TcIdeSolutionRecordPending[$key]
-    $reason = if ($null -ne $old) { $old.reason } else { $Failure }
-    $retries = if ($null -ne $old) { [int]$old.retries } else { 0 }
+    # the first failure is kept while the SAME action stays pending; save <-> remove starts over
+    $same = ($null -ne $old -and $old.action -eq $Action)
+    $reason = if ($same) { $old.reason } else { $Failure }
+    $retries = if ($same) { [int]$old.retries } else { 0 }
     $script:TcIdeSolutionRecordPending[$key] = [PSCustomObject]@{ action = $Action; pid = $ProcessId; startTime = $StartTime; solution = $Solution; at = $At; reason = $reason; retries = $retries }
 }
 
