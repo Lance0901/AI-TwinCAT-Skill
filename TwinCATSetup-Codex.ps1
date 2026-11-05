@@ -277,7 +277,7 @@ See the ``twincat`` skill for full command reference. Installed version / source
 
 - AmsNetId is dynamic - never hardcode. Auto-detected from IDE target.
 - All commands return JSON: {"success": true, "data": {...}} or {"success": false, "error": {...}}
-- No dialogs: Enable-TcConfig -Force uses ADS. Enter-TcPlcOnline uses Login(3).
+- No dialogs: Enable-TcConfig -Force uses ADS. Enter-TcPlcOnline takes -LoginMode Regular|Download|OnlineChange (no SILENT by default, never flag 3; see docs/troubleshooting.md "LOGIN_FAILED").
 - Write MAIN-level vars for FB testing - PLC overwrites VAR_INPUT every scan cycle.
 - Correct order: Build -> Activate -> Login -> ADS -> Start (ADS port 851 needs Login first).
 "@
