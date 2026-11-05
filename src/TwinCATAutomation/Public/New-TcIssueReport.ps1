@@ -221,7 +221,7 @@ function New-TcIssueReport {
     # -ExtraMask, the solution name and the TIPC^ names stay in $maskList (never trimmed); the folder names
     # travel as a set in $counts (looked up token by token, nothing is dropped, no regex per name)
     $maskList = $mask.ToArray()
-    if ($probeCounts.ContainsKey('__folders')) { $counts['__folders'] = $probeCounts['__folders']; $counts['__folders_x'] = $probeCounts['__folders_x'] }
+    if ($probeCounts.ContainsKey('__folders')) { $counts['__folders'] = $probeCounts['__folders']; $counts['__folders_x'] = $probeCounts['__folders_x']; $counts['__folders_p'] = $probeCounts['__folders_p'] }
 
     # --- title / tool
     $titleText = ConvertTo-BoundedText -Text (($Title -replace '\s+', ' ').Trim()) -Cap 400
