@@ -492,6 +492,9 @@ try {
     $root = Join-Path $PSScriptRoot '..\..'
     $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw -Encoding UTF8
     $readmeZh = Get-Content -LiteralPath (Join-Path $root 'README.zh-TW.md') -Raw -Encoding UTF8
+    # #25: counts sit inside <!-- generated:... --> markers; read the text as a reader sees it
+    $readme = $readme -replace '<!-- /?generated[^>]*-->', ''
+    $readmeZh = $readmeZh -replace '<!-- /?generated[^>]*-->', ''
     $nums = @()
     foreach ($m in [regex]::Matches($readme, 'providing (\d+) cmdlets|# (\d+) exported cmdlets')) { $nums += [int]("$($m.Groups[1].Value)$($m.Groups[2].Value)") }
     foreach ($m in [regex]::Matches($readmeZh, '(\d+)\s*[^\x00-\x7F]+\s*cmdlet')) { $nums += [int]$m.Groups[1].Value }

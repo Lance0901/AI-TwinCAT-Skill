@@ -142,7 +142,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(81)
+## Cmdlet 清單(<!-- generated:cmdlet-count -->81<!-- /generated -->)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -229,6 +229,96 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `New-TcTestCase -Name <n> [-Setup @()] [-WaitUntil @(@{Path;Operator;Expected}) [-WaitTimeoutMs 5000]] -Assertions @() [-Teardown @()]` | 定義測試。`-WaitUntil` 輪詢到條件成立才跑 assertions(逾時 → 該 case Fail,結果帶 `waitTimedOut` / `lastValues` / `waitMs`);`-WaitMs` 是固定盲等,**不建議使用**(deprecated) |
 | `Invoke-TcTest -TestCase <tc>` | 跑單一測試 |
 | `Invoke-TcTestCycle -TestCases @() [-SkipBuild] [-KeepRunning]` | Build→Activate→Login→Run→Test→Stop,每步 gating;codeVerified 不是 true 的 build 不會被 Activate(#61) |
+
+### Cmdlet 簽章(自動產生)
+
+<!-- generated:cmdlet-signatures -->
+<!-- 由 scripts/Update-GeneratedDocs.ps1 從 Get-Command 與 mcp-server/tools.json 產生,不要手改;上面的表是手寫的用法說明。 -->
+
+| Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |
+|---|---|---|
+| `Add-TcAdsRoute` | `AddAdsRoute` | `-Name <string> -NetId <string> [-Address <string>] [-HostName <string>] [-UserName <string>] [-PasswordEnv <string>] [-Password <SecureString>] [-LocalName <string>] [-ProjectRoute] [-DryRun <bool>]` |
+| `Add-TcComModule` | `AddTcComModule` | `-Name <string> [-ClassId <string>] [-TypeName <string>] [-DryRun <bool>]` |
+| `Add-TcDut` | `AddDut` | `-Name <string> -DutType <string> [-Fields <obj>] [-AliasType <string>]` |
+| `Add-TcGvl` | `AddGvl` | `-Name <string> [-Variables <obj>]` |
+| `Add-TcInterface` | `AddInterface` | `-Name <string> [-Extends <string>] [-PlcProjectPath <string>]` |
+| `Add-TcLibrary` | `AddLibrary` | `-Name <string> [-Version <string>] [-Vendor <string>] [-PlcProjectPath <string>]` |
+| `Add-TcLibraryPlaceholder` | `AddPlaceholder` | `-Placeholder <string> [-LibraryName <string>] [-Version <string>] [-Distributor <string>] [-PlcProjectPath <string>]` |
+| `Add-TcNcAxis` | `AddNcAxis` | `-Name <string> [-Task <string>] [-AxisType <string>] [-DryRun <bool>]` |
+| `Add-TcNcTask` | `AddNcTask` | `[-Name <string>] [-DryRun <bool>]` |
+| `Add-TcPlcTask` | `AddPlcTask` | `-Name <string> -CycleTimeUs <int> [-Priority <int>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
+| `Add-TcPou` | `AddPou` | `-Name <string> -Type <string> [-ReturnType <string>] [-PlcProjectPath <string>]` |
+| `Add-TcPouMember` | `AddPouMember` | `-ParentPath <string> -Kind <string> [-Name <string>] [-ReturnType <string>] [-Access <string>] [-Language <string>]` |
+| `Add-TcTaskProgram` | `LinkProgramToTask` | `-ProgramName <string> [-PlcTask <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
+| `Build-TcProject` | `BuildProject` | `[-TimeoutSec <int>] [-ExpectedProject <string[]>] [-AllowUnresolvedLibrary]` |
+| `Clear-TcLifecycleBlock` | `ClearLifecycleBlock` | `[-AmsNetId <string>] [-Reason <string>] [-FallbackMethod <string>] [-AllowedSideEffects <string[]>] [-MaxVerifyLevel <string>]` |
+| `Clear-TcProject` | `CleanProject` | `[-TimeoutSec <int>] [-AllowUnresolvedLibrary]` |
+| `Connect-TcAds` | `ConnectAds` | `[-AmsNetId <string>] [-Port <int>]` |
+| `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked]` |
+| `Connect-TcNcAxisToPlc` | `LinkNcAxis` | `-Axis <string> -PlcVariable <string> [-PlcProjectPath <string>] [-DryRun <bool>]` |
+| `Disconnect-TcAds` | `DisconnectAds` | - |
+| `Disconnect-TcIde` | `DisconnectIde` | `[-Quit] [-Kill]` |
+| `Enable-TcConfig` | `EnableConfig` | `[-Force] [-NoLogin] [-TimeoutSec <int>] [-NoPlatformFix] [-Platform <string>] [-PlcProjectPath <string[]>] [-ActivateTimeoutSec <int>]` |
+| `Enter-TcPlcOnline` | `PlcLogin` | `[-PlcProjectPath <string>] [-LoginMode <string>] [-SilentFlag] [-TimeoutSec <int>]` |
+| `Exit-TcPlcOnline` | `PlcLogout` | `[-PlcProjectPath <string>]` |
+| `Export-TcPlcOpen` | `ExportPlcOpen` | `[-Selection <string[]>] -FilePath <string> [-PlcProjectPath <string>] [-Overwrite]` |
+| `Export-TcTreeItem` | `ExportChild` | `-Path <string> -FilePath <string>` |
+| `Find-TcAdsTarget` | `FindAdsTargets` | `[-Search <string>]` |
+| `Get-TcAdsRoutes` | `GetAdsRoutes` | - |
+| `Get-TcAutomationVersion` | `GetAutomationVersion` | `[-Verify]` |
+| `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>]` |
+| `Get-TcComModuleParameter` | `GetTcComParameter` | `-Module <string> [-Name <string>] [-ParameterId <string>] [-Online]` |
+| `Get-TcIdeInfo` | `GetIdeInfo` | - |
+| `Get-TcIdeModalDialog` | - | `[-ProcessId <int>] [-TimeoutSec <int>]` |
+| `Get-TcIoTree` | `GetIoTree` | - |
+| `Get-TcLibraries` | `GetLibraries` | `[-Repository] [-Filter <string>] [-PlcProjectPath <string>]` |
+| `Get-TcPlcState` | `GetPlcState` | - |
+| `Get-TcPouCode` | `GetPouCode` | `-PouName <string> [-PouPath <string>]` |
+| `Get-TcProjectTree` | `GetProjectTree` | `[-Depth <int>] [-PlcOnly]` |
+| `Get-TcProjectVariants` | `GetVariants` | - |
+| `Get-TcSymbols` | `GetSymbols` | `[-Filter <string>]` |
+| `Get-TcSystemState` | `GetSystemState` | `[-AmsNetId <string>]` |
+| `Get-TcTreeItem` | `LookupTreeItem` | `-Path <string> [-MaxChildren <int>]` |
+| `Get-TcTreeItemXml` | `ProduceXml` | `-Path <string> [-Recursive]` |
+| `Import-TcPlcOpen` | `ImportPlcOpen` | `-FilePath <string> [-Option <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
+| `Import-TcTreeItem` | `ImportChild` | `-Path <string> -FilePath <string> [-Before <string>] [-Reconnect <bool>] [-Name <string>] [-DryRun <bool>]` |
+| `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
+| `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
+| `Invoke-TcTest` | `RunTest` | `-TestCase <PSObject>` |
+| `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <PSObject[]> [-SkipBuild] [-KeepRunning]` |
+| `Lock-TcLibraryPlaceholder` | `FreezePlaceholder` | `[-Placeholder <string>] [-All] [-DryRun <bool>] [-PlcProjectPath <string>]` |
+| `New-TcBootProject` | `GenerateBootProject` | `[-PlcProjectPath <string>]` |
+| `New-TcIssueReport` | `ReportIssue` | `-Title <string> [-Tool <string>] [-Parameters <obj>] [-Result <obj>] [-Expected <string>] [-Notes <string>] [-Label <string>] [-MaxUrlLength <int>] [-ExtraMask <string[]>] [-NoEnvironment] [-IncludeSolutionName]` |
+| `New-TcProject` | - | `-Name <string> [-Path <string>]` |
+| `New-TcTestCase` | `NewTestCase` | `-Name <string> [-Setup <Hashtable[]>] [-Teardown <Hashtable[]>] [-WaitUntil <Hashtable[]>] [-WaitTimeoutMs <int>] [-WaitMs <int>] -Assertions <Hashtable[]>` |
+| `New-TcTreeItem` | `CreateChild` | `-Path <string> -Name <string> [-SubType <int>] [-Before <string>] [-VInfo <obj>] [-DryRun <bool>]` |
+| `Open-TcProject` | `OpenProject` | `-Path <string>` |
+| `Read-TcVariable` | `ReadVariable` | `-Path <string[]>` |
+| `Remove-TcLibraryReference` | `RemoveReference` | `-Name <string> [-Kind <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
+| `Remove-TcTaskProgram` | `UnlinkProgramFromTask` | `-ProgramName <string> [-PlcTask <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
+| `Remove-TcTreeItem` | `DeleteChild` | `-Path <string> -ConfirmName <string> [-DryRun <bool>] [-AllowNoExport]` |
+| `Remove-TcVariableLink` | `RemoveVariableLink` | `-PlcVariable <string> [-IoChannel <string>]` |
+| `Reset-TcSolution` | `ResetSolution` | `[-SolutionPath <string>] [-TimeoutSec <int>] [-DiscardProjectChanges] [-SaveProjectChanges]` |
+| `Save-TcArchive` | `SaveArchive` | `-FilePath <string> [-Kind <string>] [-Overwrite]` |
+| `Save-TcPlcLibrary` | `SaveAsLibrary` | `-FilePath <string> [-PlcProjectPath <string>] [-Overwrite]` |
+| `Send-TcPlcProgram` | `SendPlcProgram` | `[-PlcProjectPath <string>]` |
+| `Set-TcComModuleContext` | `SetTcComContext` | `-Module <string> -Task <string> [-ContextId <int>] [-DryRun <bool>]` |
+| `Set-TcComModuleParameter` | `SetTcComParameter` | `-Module <string> [-Name <string>] [-ParameterId <string>] -Value <obj> [-Online] [-DryRun <bool>]` |
+| `Set-TcCurrentVariant` | `SwitchVariant` | `-Name <string> [-DryRun <bool>]` |
+| `Set-TcIndependentFile` | `SetIndependentFile` | `-Path <string> -Enabled <bool> [-DryRun <bool>]` |
+| `Set-TcNcAxisParameter` | `SetNcAxisParameter` | `-Axis <string> [-MaxVelocity <double>] [-Acceleration <double>] [-Deceleration <double>] [-Jerk <double>] [-EncoderType <int>] [-DriveType <int>] [-ControllerType <int>] [-DryRun <bool>]` |
+| `Set-TcPlcState` | `SetPlcState` | `-State <string> [-TimeoutSec <int>]` |
+| `Set-TcProjectVariantConfig` | `SetVariantConfig` | `[-AddVariant <string[]>] [-RemoveVariant <string[]>] [-Group <string>] [-DryRun <bool>]` |
+| `Set-TcSystemState` | `SetSystemState` | `-State <string> [-AmsNetId <string>] [-TimeoutSec <int>] [-SettleSec <int>]` |
+| `Set-TcTarget` | `SetTarget` | `-AmsNetId <string> [-Platform <string>] [-Configuration <string>] [-NoPlatformSwitch]` |
+| `Set-TcTreeItemXml` | `ConsumeXml` | `-Path <string> -Xml <string> [-DryRun <bool>]` |
+| `Set-TcVariableLink` | `SetVariableLink` | `-PlcVariable <string> -IoChannel <string>` |
+| `Test-TcPlcProject` | `CheckAllObjects` | `[-PlcProjectPath <string>]` |
+| `Uninstall-TcLibrary` | `UninstallLibrary` | `-LibraryName <string> -Version <string> -Distributor <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
+| `Watch-TcVariable` | `WatchVariable` | `-Path <string[]> [-IntervalMs <int>] [-DurationMs <int>] [-Until <string>] [-UntilTimeoutMs <int>] [-TimeoutMs <int>] [-KeepLast <int>]` |
+| `Write-TcPouCode` | `WritePouCode` | `-PouName <string> [-Declaration <string>] [-Implementation <string>] [-PouPath <string>]` |
+| `Write-TcVariable` | `WriteVariable` | `-Path <string> -Value <obj>` |
+<!-- /generated -->
 
 ### 型別對照(Read/Write/Watch-TcVariable)
 

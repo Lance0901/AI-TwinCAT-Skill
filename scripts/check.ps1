@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Repository guardrails: the mechanical checks every commit and every CI run must pass.
 
@@ -41,7 +41,10 @@
       errorcodes  Every key of $script:TcErrorHints (ConvertTo-TcAdsErrorCode.ps1) appears in a
                   heading of docs/troubleshooting.md.
       tools.json  mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
-                  (generatedAt and line endings ignored).
+                  (line endings ignored; the file has no timestamp, #25).
+      gendocs     scripts/Update-GeneratedDocs.ps1 -Check: the cmdlet / MCP tool / composite counts and the
+                  SKILL.md signature table inside <!-- generated:... --> markers (README*, CLAUDE.md,
+                  AGENTS.md, SKILL.md, docs/setup-mcp.md, mcp-server/README.md) equal what the code gives (#25).
       unit        every tests/Unit/*.ps1 in its own powershell.exe (no IDE / runtime needed):
                   PASS when each exits 0 (and its "failed: N" line, if any, says 0); a script
                   that runs longer than 300 s is killed and fails. Skipped with -Fast (#43).
@@ -62,7 +65,7 @@
     Treat SKIP as a failure (used by CI).
 
 .EXAMPLE
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Strict
+    powershell.exe -NoProfile -File scripts/check.ps1 -Strict
 #>
 [CmdletBinding()]
 param(
@@ -75,7 +78,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # The parse check is only meaningful with the 5.1 parser: re-run under Windows PowerShell.
 if ($PSVersionTable.PSEdition -eq 'Core') {
-    $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    $argsList = @('-NoProfile', '-File', $PSCommandPath)
     if ($Fast) { $argsList += '-Fast' }
     if ($Strict) { $argsList += '-Strict' }
     & powershell.exe @argsList
@@ -401,10 +404,11 @@ catch {
 # ---------------------------------------------------------------------------
 try {
     $docCounts = @(
-        @{ File = 'CLAUDE.md'; Pattern = 'Available Commands \((\d+)\)' },
-        @{ File = 'AGENTS.md'; Pattern = 'Available Commands \((\d+)\)' },
-        @{ File = 'README.md'; Pattern = 'All Commands \((\d+)\)' },
-        @{ File = 'adapters/claude-code/SKILL.md'; Pattern = 'Cmdlet \S*\((\d+)\)' }
+        @{ File = 'CLAUDE.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'AGENTS.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'README.md'; Pattern = 'All Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'README.zh-TW.md'; Pattern = '所有指令（(?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'adapters/claude-code/SKILL.md'; Pattern = 'Cmdlet \S*\((?:<!--[^>]*-->)?(\d+)' }
     )
     $moduleCount = $null
     $importError = $null
@@ -572,14 +576,14 @@ try {
     $exportScript = Join-Path $repoRoot 'mcp-server\scripts\Export-ToolSchema.ps1'
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tools-check-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
-        $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $exportScript, '-OutPath', $tmp)
+        $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-File', $exportScript, '-OutPath', $tmp)
         if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
             Add-CheckResult 'tools.json' 'FAIL' "Export-ToolSchema.ps1 failed (exit $($r.Code))" @($r.Output | Select-Object -Last 15)
         }
         else {
             $normalize = {
                 param([string]$s)
-                ($s -replace '"generatedAt"\s*:\s*"[^"]*"', '' -replace "`r`n", "`n").TrimEnd()
+                ($s -replace "`r`n", "`n").TrimEnd()
             }
             $fresh = & $normalize ([System.IO.File]::ReadAllText($tmp, $utf8))
             $committed = & $normalize ([System.IO.File]::ReadAllText($toolsJson, $utf8))
@@ -606,6 +610,22 @@ catch {
     Add-CheckResult 'tools.json' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
+# ---------------------------------------------------------------------------
+# gendocs: counts and the SKILL.md signature table are generated (#25)
+# ---------------------------------------------------------------------------
+try {
+    $genScript = Join-Path $repoRoot 'scripts\Update-GeneratedDocs.ps1'
+    $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-File', $genScript, '-Check')
+    if ($r.Code -eq 0) {
+        Add-CheckResult 'gendocs' 'PASS' (@($r.Output | Where-Object { $_ -match 'up to date' } | Select-Object -First 1) -join '')
+    }
+    else {
+        Add-CheckResult 'gendocs' 'FAIL' 'generated docs are stale: run scripts/Update-GeneratedDocs.ps1 and commit the result' @($r.Output | Select-Object -Last 15)
+    }
+}
+catch {
+    Add-CheckResult 'gendocs' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
 # ---------------------------------------------------------------------------
 # unit: tests/Unit/*.ps1 (no IDE / runtime; exit code = number of failed checks, #43)
 # ---------------------------------------------------------------------------
@@ -657,7 +677,7 @@ else {
                 $sw = [Diagnostics.Stopwatch]::StartNew()
                 $p = Start-Process -FilePath 'powershell.exe' -PassThru -NoNewWindow -WorkingDirectory $repoRoot `
                     -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
-                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($uf.FullName)`"")
+                    -ArgumentList @('-NoProfile', '-File', "`"$($uf.FullName)`"")
                 # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
                 # Start-Process -PassThru object reads back as $null after the exit.
                 $null = $p.Handle

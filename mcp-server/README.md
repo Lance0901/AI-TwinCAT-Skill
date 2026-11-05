@@ -1,8 +1,8 @@
 # TcAuto MCP
 
-> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 81 個 cmdlet 中的 79 個(`NewProject` 暫時下架,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 5 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
+> **TL;DR(繁中)**:把 `TwinCATAutomation` PowerShell 模組 <!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時下架,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool,透過 MCP(stdio)暴露給 Claude Desktop、Claude Code 或任何 MCP client。Server 只開一個常駐的 Windows PowerShell 5.1(STA)子程序,IDE COM 參考與 ADS 連線在呼叫之間都保留,所以 `ConnectIde` → `BuildProject` → `EnableConfig` → `ReadVariable` 可以當成一連串獨立的 tool call 來用。安裝:`cd mcp-server && npm install`;設定見下方 Configure;錯誤碼表沿用 [docs/troubleshooting.md](../docs/troubleshooting.md);已知限制與真機驗證範圍見 [docs/known-limitations.md](../docs/known-limitations.md)。
 
-Exposes the `TwinCATAutomation` module (79 of its 81 cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70; `Get-TcIdeModalDialog` is the `GetIdeModalDialog` composite tool, #86) plus 5 composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
+Exposes the `TwinCATAutomation` module (<!-- generated:mcp-tool-count -->79<!-- /generated --> of its <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets: `New-TcProject` / `NewProject` is temporarily not offered, #70; `Get-TcIdeModalDialog` is the `GetIdeModalDialog` composite tool, #86) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools over the Model Context Protocol (stdio transport). One long-lived Windows PowerShell 5.1 (STA) child process holds the module's COM (DTE, `ITcSysManager`) and ADS state, so tool calls are stateful across the whole session: connect once, then build, activate and read variables as separate calls.
 
 ## Requirements
 
@@ -379,7 +379,7 @@ node scripts/lifecycle-client.mjs --sln C:\Temp\RobustDemo-b\RobustSolutionFrame
 `tools.json` is generated from the module's cmdlet metadata. After changing a cmdlet's parameters:
 
 ```powershell
-npm run generate-tools   # runs scripts/Export-ToolSchema.ps1 with powershell.exe
+npm run generate-tools   # runs scripts/Export-ToolSchema.ps1 with powershell.exe (needs a policy that runs local scripts, e.g. RemoteSigned; tools.json has no timestamp, #25)
 npm test
 ```
 

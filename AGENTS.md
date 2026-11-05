@@ -26,9 +26,9 @@ Read-TcVariable -Path "MAIN.nCounter"; Write-TcVariable -Path "MAIN.bEnable" -Va
 - **Lifecycle order, platform, VS2022, false success**: `docs/troubleshooting.md` ("Lifecycle 正確順序", "環境矩陣", "ACTIVATE_FAILED", error-code sections). Run the whole lifecycle in ONE persistent PowerShell session.
 - **Fail closed (#68)**: `success: true` only after the readback reached the target state. On `success: false` or `LIFECYCLE_BLOCKED`: stop, report `data.lifecycleBlock` / `data.steps` to the user, never fall back to raw ADS WriteControl / COM / DTE / GUI / console or a re-`Connect-TcIde` after Activate; `Clear-TcLifecycleBlock -Reason` only after the user agreed. Stop conditions, postcondition table, forbidden fallbacks: `adapters/claude-code/SKILL.md` "Failure contract"; `docs/troubleshooting.md` "LIFECYCLE_BLOCKED".
 - **TwinCAT facts**: check infosys.beckhoff.com first and cite the link (or mark the claim 實測 with date and environment).
-- **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).
+- **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).; counts of cmdlets / tools / composites and the SKILL.md signature table sit inside `<!-- generated:... -->` markers - never edit them by hand, run `scripts/Update-GeneratedDocs.ps1` (check.ps1 fails when stale, #25)
 - **Real-machine test agents**: shared rules in `docs/agent-brief-realmachine.md`.
 
-## Available Commands (81)
+## Available Commands (<!-- generated:cmdlet-count -->81<!-- /generated -->)
 
 Full list with parameters: `.agents/skills/twincat/SKILL.md` (Codex skill), `adapters/claude-code/SKILL.md`, `adapters/codex/tools.json`, or `Get-Command -Module TwinCATAutomation` after importing the module.

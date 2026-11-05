@@ -13,7 +13,7 @@
       * assigns a per-tool timeout (ms) used by the Node side.
 
     Run it again whenever a cmdlet signature changes:
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Export-ToolSchema.ps1
+        powershell.exe -NoProfile -File scripts/Export-ToolSchema.ps1
 
 .PARAMETER ModulePath
     TwinCATAutomation.psm1. Default: ../../src/TwinCATAutomation/TwinCATAutomation.psm1.
@@ -529,7 +529,6 @@ foreach ($n in @($readOnlyTools + $destructiveTools)) {
 }
 
 $document = [ordered]@{
-    generatedAt   = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     moduleVersion = $moduleVersion
     tools         = $sortedTools
 }

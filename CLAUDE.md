@@ -33,13 +33,13 @@ Read-TcVariable -Path "MAIN.nCounter"   # 5. auto-reconnects after a later Enabl
 - **Fail closed (#68)**: `success: true` only after the readback reached the target state. On `success: false` or `LIFECYCLE_BLOCKED`: stop, report `data.lifecycleBlock` / `data.steps` to the user, never fall back to raw ADS WriteControl / COM / DTE / GUI / console or a re-`Connect-TcIde` after Activate; `Clear-TcLifecycleBlock -Reason` only after the user agreed. Stop conditions, postcondition table, forbidden fallbacks: `adapters/claude-code/SKILL.md` "Failure contract"; `docs/troubleshooting.md` "LIFECYCLE_BLOCKED".
 - **Troubleshooting**: `docs/troubleshooting.md` — error code table, correct lifecycle order, environment matrix, known limits (UmRT fake Run, Reset kills `TcSystemServiceUm`, compiler codes only inferred from Error List text).
 - **TwinCAT facts**: check infosys.beckhoff.com first and cite the link (or mark the claim 實測 with date and environment).
-- **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).
+- **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`).; counts of cmdlets / tools / composites and the SKILL.md signature table sit inside `<!-- generated:... -->` markers - never edit them by hand, run `scripts/Update-GeneratedDocs.ps1` (check.ps1 fails when stale, #25)
 - **Real-machine test agents**: shared rules in `docs/agent-brief-realmachine.md`.
 
 ## Tool-Specific Adapters
 
 Claude Code `adapters/claude-code/SKILL.md` · Codex `adapters/codex/tools.json` · Antigravity `adapters/antigravity/plugin.yaml` · MCP (Claude Desktop / any client) `mcp-server/README.md`
 
-## Available Commands (81)
+## Available Commands (<!-- generated:cmdlet-count -->81<!-- /generated -->)
 
 Full list with parameters: `adapters/claude-code/SKILL.md`, or `Get-Command -Module TwinCATAutomation` after importing the module.

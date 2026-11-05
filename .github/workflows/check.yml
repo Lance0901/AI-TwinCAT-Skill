@@ -33,4 +33,4 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: scripts/check.ps1 -Strict
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Strict
+        run: powershell -NoProfile -File scripts/check.ps1 -Strict
