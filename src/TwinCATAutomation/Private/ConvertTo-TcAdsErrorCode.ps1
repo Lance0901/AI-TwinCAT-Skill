@@ -80,6 +80,10 @@ $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] = 'DUT / GVL 已建立並存檔,�
 # #70: New-TcProject refuses while the IDE has a solution open: Solution.Create closes it without
 # a warning (實測 2026-10-28, #70: 4026.22 XAE in VS2022 / 4024 32-bit XAE Shell, registered tcauto)
 $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.openSolution),New-TcProject 不會建立:Solution.Create 會關掉目前的 solution 並丟掉未存的改動(#70)。建議在 XAE 手動建立新專案後用 Connect-TcIde -SolutionPath <新 .sln> 接上;要用 New-TcProject 就先在 XAE 存好、關掉目前的 solution 再呼叫。NewProject 目前不在 MCP 提供'
+# #30: Get-TcAutomationVersion (install manifest written by TwinCATSetup-*.ps1)
+$script:TcErrorHints['INSTALL_MANIFEST_NOT_FOUND'] = '這個模組不是安裝出來的副本(沒有 tcauto-install-manifest.json,data.source = source-tree),沒有東西可以 -Verify:不帶 -Verify 的 Get-TcAutomationVersion 看 data.commit / data.commitSource。舊版 installer 裝的 skill 也沒有 manifest:在來源 repo 重跑 TwinCATSetup-<工具>.ps1 後再驗證'
+$script:TcErrorHints['INSTALL_MANIFEST_INVALID'] = 'tcauto-install-manifest.json 讀不出來(JSON 壞掉、缺 schemaVersion / files、比這個模組新的 schemaVersion,或 files[].path 指到安裝目錄外:..、絕對路徑、:、\):不要手動修改它，在來源 repo 重跑 TwinCATSetup-<工具>.ps1 重新安裝(會重寫 manifest)'
+$script:TcErrorHints['INSTALL_MANIFEST_MISMATCH'] = '安裝的檔案與 manifest 記錄的 SHA256 不同(data.verify.mismatched / missing / extra / unreadable):有人改過、只更新了一部分，或檔案讀不到(被鎖住、沒有權限，看 unreadable[].error)。把 data.verify 回報給使用者，在來源 repo 重跑 TwinCATSetup-<工具>.ps1(或 -Verify 看與來源的差異)後再用；不要自己改回檔案'
 $script:TcErrorHints['PROJECT_DIR_EXISTS'] = '<Path>\<Name> 資料夾已存在(data.path):New-TcProject 不會寫進既有資料夾,也沒有呼叫 Solution.Create,IDE 的 solution 沒動。換一個 -Name / -Path,或自己確認並刪除空的舊資料夾後重跑;見 docs/troubleshooting.md「PROJECT_DIR_EXISTS」'
 $script:TcErrorHints['PROJECT_CREATE_UNVERIFIED'] = 'New-TcProject 的呼叫沒有丟錯,但讀回少了東西(data.missing:.sln / .tsproj / .plcproj 或 TIPC^<Name>_Plc 節點):不要當成成功。IDE 現在開著這個半成品 solution,模組已把 solution 路徑設為未知並記 BUILD_REQUIRED(<unknown>)。用 Get-TcIdeModalDialog 看有沒有 dialog,在 XAE 檢查 data.path,通常要刪掉該資料夾、關掉 solution 後重建;見 docs/troubleshooting.md「PROJECT_CREATE_UNVERIFIED」'
 # #70: New-TcProject found no 'TwinCAT Project.tsproj' (InfoSys 242721803 passes it as the AddFromTemplate path)

@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 79 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 80 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 功能
 
@@ -150,6 +150,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 | `Get-TcSystemState` | 讀取系統狀態 |
 | `Set-TcTarget` | 設定目標系統（本機/遠端）；solution platform 跟著 target(TARGETINFO)或 `-Platform`（UmRT：`'TwinCAT OS (x64)'`）；`-NoPlatformSwitch` 只設 NetId |
 | `Get-TcIdeInfo` | 取得 IDE 版本與連線資訊 |
+| `Get-TcAutomationVersion [-Verify]` | 從安裝 manifest 讀模組版本、來源 repo、commit 與安裝時間(#30);`-Verify` 比對安裝檔案的 SHA256 |
 | `Get-TcIdeModalDialog` | 回報擋住 IDE 的 modal dialog(標題、內文、種類、按鈕);不走 COM,DTE 被擋時也能用 |
 
 ### ADS 變數
@@ -210,7 +211,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 79 個匯出的 cmdlet
+  Public/                       # 80 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/
@@ -278,9 +279,17 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
+### 安裝版本(三個 installer 共用)
+
+每次安裝(含重新安裝)都會在安裝的 `SKILL.md` 旁寫 `tcauto-install-manifest.json`:來源 repo(canonical:https://github.com/Lance0901/AI-TwinCAT-Skill)、模組版本、commit(從 checkout 的 `.git` 檔案讀，不啟動 git;release zip 則讀它帶的 `tcauto-source.json`)、安裝時間與每個安裝檔案的 SHA256。Claude Code / Codex / Antigravity 同一個 schema。
+
+- `Get-TcAutomationVersion`(MCP `GetAutomationVersion`)離線查詢;`-Verify` 比對安裝檔案與記錄的 hash(`INSTALL_MANIFEST_MISMATCH`)。
+- `pwsh ./TwinCATSetup-<Claude|Codex|Antigravity>.ps1 -Verify` 印出 manifest,並與 manifest 及這份 checkout 比對(exit 0 = 一致)。
+- `-SkillDir <目錄>` 安裝 / 驗證其他目錄(Codex 另有 `-CodexHome`);細節見 `docs/troubleshooting.md`「安裝 manifest(#30)」。
+
 ## MCP Server 安裝(Claude Desktop / 任何 MCP client)
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:79 個 cmdlet 中的 77 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 5 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
+同一個模組也能以 TcAuto MCP server(stdio)提供:80 個 cmdlet 中的 78 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 5 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
 
 ```powershell
 cd mcp-server

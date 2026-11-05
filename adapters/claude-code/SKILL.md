@@ -7,7 +7,7 @@ description: Control TwinCAT 3 IDE, manage PLC projects, build and deploy progra
 
 用 TwinCATAutomation PowerShell 模組控制 TwinCAT 3 IDE(XAE)與 PLC runtime。全程無 dialog。
 
-已知限制(beta)與真機驗證範圍:`docs/known-limitations.md`。遇到問題請開 GitHub issue(https://github.com/Lance0901/AI-TwinCAT-Skill/issues),附 tool 名稱、參數、回傳 JSON。
+已知限制(beta)與真機驗證範圍:`docs/known-limitations.md`。遇到問題請開 GitHub issue(https://github.com/Lance0901/AI-TwinCAT-Skill/issues),附 tool 名稱、參數、回傳 JSON,以及 `Get-TcAutomationVersion`(MCP `GetAutomationVersion`)回的 version / commit。Canonical repository:https://github.com/Lance0901/AI-TwinCAT-Skill;安裝來源與 commit 記在 skill 目錄的 `tcauto-install-manifest.json`(#30)。
 
 ## Setup
 
@@ -142,7 +142,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(79)
+## Cmdlet 清單(80)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -152,6 +152,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Disconnect-TcIde [-Quit] [-Kill]` | 釋放 IDE COM 參考。`-Quit`:先查 modal(有就直接回 `IDE_QUIT_FAILED`,`data.dialog`、`data.quit=false`、`disconnected=false`,不白等 60 s,**連線原封保留**:reload-prompt 就 `Reset-TcSolution` 再 `-Quit`;其他用 `-Quit -Kill` 或 `Stop-Process`),再 `Solution.Close`(不存檔)+ `DTE.Quit`;quit 失敗也回 `IDE_QUIT_FAILED`(`success:false`,`data.ideProcessId` / `quitError`,IDE 還活著)。失敗時模組保留 pid / `selectedBy`,可直接接 `-Quit -Kill`,不用重連。`-Quit -Kill`:quit 不了(modal 或 DTE.Quit 失敗)就 `Stop-Process -Force` 該 IDE 並等它消失(≤10 s,`data.killed=true`;kill 前確認 pid 仍是 TcXaeShell / devenv 且啟動時間相符,否則視為過期 pid、不殺;pid 已不存在回 `alreadyExited=true`);只限本 session 啟動的 IDE(`data.ownedBySession=true`;`Reset-TcSolution` 內部重連後 `selectedBy` 變 solution-match 也照樣允許),否則回 `IDE_NOT_OWNED` 不殺。`-Kill` 不帶 `-Quit` 回 `INVALID_PARAMS` |
 | `Reset-TcSolution [-SolutionPath <sln>] [-TimeoutSec 120] [-SaveProjectChanges \| -DiscardProjectChanges]` | 關掉 reload 提示(若正在跳)→ 比對 XAE 裡的 PLC 物件與磁碟 .plcproj(#76,`data.projectCheck`;對不到 .plcproj 的 PLC 標 `checked=false` 跳過):**預設不存檔**,有 `missingOnDisk` 就回 `PROJECT_UNSAVED_CHANGES`、不存不關(XAE 有、磁碟沒列 ≈ 磁碟上被刪,分不出來;只有 `extraOnDisk` 不擋,重開就載入磁碟版本);`-SaveProjectChanges` 保留 XAE 版本,只存專案檔(DTE `Project.Save`,有 deadline → `PROJECT_SAVE_TIMEOUT`)並讀回(`data.savedProjects`),但處理過 reload 提示 / 物件檔在磁碟上不存在,或同一個 .tsproj 的任一 PLC(`Project.Save` 會寫全部 .plcproj)`checked=false` / 比對不完整 / `extraOnDisk` 非空時仍拒絕(`data.saveRefused`);`-DiscardProjectChanges` 以磁碟為準(跳過比對、直接丟掉);兩者互斥(`INVALID_PARAMS`)。實測 2026-10-28:一般文字文件不會被存;PLC editor 中未存的 POU 內容是否會被寫出未驗證→ `Documents.CloseAll`(不存檔)→ `Solution.Close` → 同一個 IDE `Solution.Open` → `Connect-TcIde -SolutionPath` 重連(實測約 20~25 s:Open 7~9 s + 重連 12~13 s),讓 XAE 重新從磁碟載入所有專案檔。磁碟直接改 .TcPOU 且該檔開在編輯器時用(見「重要注意」11)。.plcproj 被改寫時 XAE 跳「The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?」(`reloadTarget=project`):它按 **Yes**(Win32 框用 control id 6,VS2022 WPF 框用 UIA Invoke `YesButton`;語系無關),XAE 自己 reload 專案,只重連 + 探測 `LookupTreeItem('TIPC')`、不 close/reopen(`data.answeredYes=true`、`reopenedSolution=false`),失敗才退回完整流程;其他 modal 會回 `IDE_MODAL_DIALOG`;data 有 `dismissedReloadPrompt`、`reloadTarget`、`answeredYes`、`reopenedSolution`、`ownedBySession`、`closedDocuments`、`sameIde`、`closeSec`、`openSec`、`connectSec`、`totalSec` |
 | `Get-TcIdeInfo` | IDE 版本、solution 路徑、連線狀態、`solutionPlatform` / `solutionConfiguration` |
+| `Get-TcAutomationVersion [-Verify]` | MCP `GetAutomationVersion`,唯讀、離線。裝出來的副本讀 skill 目錄的 `tcauto-install-manifest.json`(#30):`data.installed=true`、`sourceUrl`、`version`、`commit`、`commitSource`(`git` / `release-stamp` / `unknown`)、`installer`、`installedAt`、`fileCount`;從 repo 載入(例如 MCP server)回 `installed=false`、`source=source-tree`,commit 從 `.git` 檔案讀(不啟動 git)。`-Verify` 比對安裝檔案與 manifest 的 SHA256(`data.verify`):不同回 `INSTALL_MANIFEST_MISMATCH`,沒有 manifest 回 `INSTALL_MANIFEST_NOT_FOUND`,讀不出來回 `INSTALL_MANIFEST_INVALID` |
 | `Get-TcIdeModalDialog [-ProcessId <pid>] [-TimeoutSec 5]` | 回報擋住 IDE 的 modal dialog:`data.scanComplete = true` 時 `data.dialog` 為 `null`(沒有 dialog)或 `{title, text, kind, reloadTarget, hwnd, buttons}`,`data.ideProcessId`;掃描在 `-TimeoutSec` 內沒完成回 `MODAL_SCAN_INCOMPLETE`(`scanComplete = false`,`data.modalScan`),是「未知」不是「沒有」(#42);只讀、不走 COM,DTE 被擋(`IDE_BUSY`)時也能用(MCP:`GetIdeModalDialog`) |
 | `New-TcProject -Name <n> [-Path <dir>]` | 建新 solution + PLC 專案 + MAIN。**MCP 暫時下架**(#70);IDE 已開著 solution 時回 `SOLUTION_ALREADY_OPEN`,不呼叫 `Solution.Create` |
 | `Open-TcProject -Path <sln>` | 開既有 solution |
@@ -282,6 +283,9 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `IDE_CRASHED` | RPC 失敗(0x800706BE / 0x800706BA / 0x80010108)且 IDE 行程已不存在:XAE 崩潰(多為 32-bit XAE 於 Activate 時 OutOfMemoryException,Visu 引擎,事件 1026);模組已把 IDE 狀態重設為未連線 | 重新 `Connect-TcIde -SolutionPath ...`,再從 Build / `Enable-TcConfig` 開始;長流程輪次間用 `Disconnect-TcIde -Quit` |
 | `IDE_TIMEOUT` | DTE 呼叫超過 `Invoke-TcComRetry -TimeoutSec`(預設 120 s,Build 600 s,Activate/Login 300 s)才失敗返回;通常是 IDE 被 dialog 卡住或長操作 | 看 XAE 畫面有沒有 dialog;必要時 kill IDE 後重新 `Connect-TcIde` |
 | `NOT_CONNECTED` | 沒 `Connect-TcAds`,或 `Enable-TcConfig` 重啟後自動重連也失敗 | `Connect-TcAds`;剛 Activate 的話先 `Get-TcSystemState` 確認 Run |
+| `INSTALL_MANIFEST_MISMATCH` | `Get-TcAutomationVersion -Verify`:安裝的檔案與 `tcauto-install-manifest.json` 記錄的 SHA256 不同(`data.verify.mismatched` / `missing` / `extra` / `unreadable`),安裝副本被改過、只更新了一部分，或檔案讀不到(被鎖住) | 把 `data.verify` 回報給使用者;來源 repo 跑 `TwinCATSetup-<工具>.ps1 -Verify` 看差異後重跑 installer,不要自己改回檔案 |
+| `INSTALL_MANIFEST_NOT_FOUND` | `Get-TcAutomationVersion -Verify` 找不到 manifest:模組從 repo 直接載入(`data.source=source-tree`)或是舊版 installer 裝的 | 不帶 `-Verify` 看 `data.commit` / `commitSource`;要 manifest 就重跑 installer |
+| `INSTALL_MANIFEST_INVALID` | manifest 讀不出來:JSON 壞、缺 `schemaVersion` / `files`、schemaVersion 比模組新，或 `files[].path` 指到安裝目錄外(`..`、絕對路徑、`:`、`\`) | 不要手改 manifest;重跑 `TwinCATSetup-<工具>.ps1` |
 | `ADS_PORT_NOT_FOUND` | port 851 不存在:程式尚未下載或 PLC 未啟動(ADS 0x6) | `Enter-TcPlcOnline` → `Set-TcPlcState -State Run`,或直接 `Enable-TcConfig -Force` |
 | `ADS_TARGET_NOT_FOUND` | AmsNetId 無回應:TwinCAT 正在重啟,或 NetId 錯(ADS 0x7) | 等 `Get-TcSystemState` 回 Run 再 `Connect-TcAds`;NetId 用 `Connect-TcIde` 回的值 |
 | `ADS_SYMBOL_NOT_FOUND` | 符號不存在:新程式尚未下載,或路徑拼錯(ADS 0x710) | `Get-TcSymbols -Filter "MAIN.*"` 確認;必要時 `Enter-TcPlcOnline` |

@@ -21,6 +21,14 @@ actions:
         required: false
         description: COM ProgID (default TcXaeShell.DTE.17.0)
 
+  - name: GetAutomationVersion
+    description: Installed module version, source repo, commit and install time from the install manifest (#30, offline)
+    parameters:
+      Verify:
+        type: boolean
+        required: false
+        description: Compare installed files with the manifest SHA256 (INSTALL_MANIFEST_MISMATCH)
+
   - name: NewProject
     description: "Create new TwinCAT project. #70: only on an IDE with no solution open (otherwise SOLUTION_ALREADY_OPEN, nothing created); not offered on the MCP server"
     parameters:
