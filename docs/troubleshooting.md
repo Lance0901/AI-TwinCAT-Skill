@@ -204,7 +204,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **碼與 hint**:hint key;錯誤碼是 `IDE_MODAL_DIALOG` 或 `IDE_BUSY`,情況同「IDE_BLOCKED_SAME_NAME」,但 `data.launchedBySession = true`:被擋住的 IDE 是本 session 啟動的。
 - **為什麼**:那很可能就是你的 IDE,只是證據不夠 attach;`-LaunchIfBlocked` 會再開一個 IDE 開同一個 .sln,所以這個 hint 不建議它。
-- **下一步**:處理 `data.dialog`(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`)後重跑同一個 `Connect-TcIde`;卡死就 `Stop-Process -Id <data.ideProcessId>`(只限本 session 啟動的)再重新 `Connect-TcIde`。
+- **下一步**:處理 `data.dialog`(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`;MCP `GetIdeModalDialog ProcessId=<data.ideProcessId>`)後重跑同一個 `Connect-TcIde`(MCP `ConnectIde SolutionPath=<sln>`);卡死就 `Stop-Process -Id <data.ideProcessId>`(只限本 session 啟動的;MCP 沒有這個工具,要在 MCP 之外手動做)再重新 `Connect-TcIde`。
 
 ### IDE_MODAL_DIALOG / IDE_MODAL_DIALOG_RELOAD
 
@@ -530,7 +530,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼(#29)**:關閉前的防呆(見「RESET_SOLUTION_MISMATCH」)要先讀到 IDE 目前開的 solution 才能比對;在 `-TimeoutSec` 內每 500 ms 重讀,一直丟例外或回 `$null`(例如 reload 後 XAE 還在忙)就 fail-closed,不關沒有比對過的 solution。讀回空字串(沒有開著的 solution)才放行。
 - **reload 提示晚跳出來(#87)**:實測 2026-11-01(4026 `VisualStudio.DTE.17.0`,TwinCAT 3.1.4026.22,registered tcauto,副本 `C:\Temp\Verify-4026-axis`):XAE 開著時把 `.plcproj` 複製蓋回,立刻 `ResetSolution`,120.3 s 後回 `RESET_SOLUTION_UNVERIFIED`(`guardError` "Solution / Solution.FullName answered $null",120 s 就是 `-TimeoutSec` 預設值);之後 `GetIdeModalDialog` 看到 project reload 提示,再跑一次 `ResetSolution` 才 `answeredYes true`(10.4 s)。當時的程式只在開頭查一次 dialog,防呆輪詢 `Solution.FullName` 時不再查。現在的程式邏輯(**待真機驗證**):每次讀 `Solution.FullName` 沒得到答案(`$null` 或例外)就 `Get-TcIdeModalDialog` 一次;是 reload 提示就照步驟 1 處理(project 按 Yes 走 Yes-only 路徑,file 關掉後走 close/reopen)再重讀,是其他 dialog 立刻回 `IDE_MODAL_DIALOG`,不等滿 `-TimeoutSec`。沒有 `-SolutionPath`、模組也不知道 solution 時,讀 solution 路徑之前也先處理 dialog。提示到底是在呼叫前就在、還是期間才跳出,那次沒有確認。
 - **prompt 在 guard 之後才跳出(#87 重測)**:實測 2026-11-02(4026 `VisualStudio.DTE.17.0`,registered tcauto,副本 `C:\Temp\Verify-4026-axis`,紀錄 `openspec/changes/complete-automation-interface/verification/issue87-smallbug.md`):改 `.plcproj` 後約 0.5 s 呼叫 `ResetSolution`,4 輪只有 1 輪成功(10.1 s,`answeredYes` true)。另外 3 輪:1 輪 0.8 s 回 `SOLUTION_CLOSE_FAILED`(projectCheck 的 PLC `checked` false、locate 失敗,`Solution.Close` 對 `$null` 呼叫方法),2 輪 3.7 s 回 `IDE_MODAL_DIALOG`(projectCheck 的 `TIPC.Child(1)` / object list 遇 `RPC_E_CALL_REJECTED`);之後 `GetIdeModalDialog` 都看得到 project reload 提示。提示已經在畫面上時呼叫，每次都成功(8~9 s)。現在的程式邏輯(**待真機驗證**):步驟 1b 丟例外或讀回不完整(有 PLC `checked` false、沒有 `ITcSysManager`)時、`Documents.CloseAll` 與 `Solution.Close` 之前、以及這兩者失敗時，都會再 `Get-TcIdeModalDialog`。`DTE.Solution` 讀回 `$null` 視為失敗，不對它呼叫方法。查到 reload 提示就回到步驟 1,整個流程重跑(只答過 project 提示就走 Yes-only 路徑);查到其他 dialog 就回 `IDE_MODAL_DIALOG`,不再回 `PROJECT_SAVE_FAILED` / `SOLUTION_CLOSE_FAILED`。整個呼叫共用「最多 5 個提示」的上限,`Solution.FullName` 的輪詢合計不超過 `-TimeoutSec`。`Solution.Close` 成功之後不再重跑。
-- **下一步**:`Get-TcIdeModalDialog -ProcessId <data.previousIdeProcessId>` 看有沒有 dialog 並處理;等 XAE 不忙後重跑 `Reset-TcSolution`(可加大 `-TimeoutSec`);仍讀不到就 `Connect-TcIde -SolutionPath <sln>` 重新連線再試。
+- **下一步**:`Get-TcIdeModalDialog -ProcessId <data.previousIdeProcessId>`(MCP `GetIdeModalDialog ProcessId=<data.previousIdeProcessId>`)看有沒有 dialog 並處理;等 XAE 不忙後重跑 `Reset-TcSolution`(MCP `ResetSolution`;可加大 `-TimeoutSec`);仍讀不到就 `Connect-TcIde -SolutionPath <sln>`(MCP `ConnectIde SolutionPath=<sln>`)重新連線再試。
 
 ### CLEAN_FAILED
 
