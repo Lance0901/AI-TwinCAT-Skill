@@ -373,20 +373,11 @@ function Add-TcLaunchedIde {
         allowed for it), independent of $script:TcIdeSelectedBy, which a later Connect-TcIde resets.
     #>
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][int]$ProcessId,
-        # #136: the (normalised) solution the IDE was launched for; Find-TcSessionLaunchedIde
-        # finds it again so a retry never launches a second IDE for the same .sln
-        [string]$Solution
-    )
+    param([Parameter(Mandatory)][int]$ProcessId)
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
     if ($null -eq $key) { return }
     if ($null -eq $script:TcLaunchedIdes) { $script:TcLaunchedIdes = @{} }
     $script:TcLaunchedIdes[$key] = $true
-    if (-not [string]::IsNullOrWhiteSpace($Solution)) {
-        if ($null -eq $script:TcLaunchedIdeSolutions) { $script:TcLaunchedIdeSolutions = @{} }
-        $script:TcLaunchedIdeSolutions[$key] = $Solution
-    }
 }
 
 function Test-TcLaunchedIde {

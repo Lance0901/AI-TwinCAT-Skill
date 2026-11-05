@@ -23,7 +23,9 @@ function Get-TcIdeProcessId {
           3. the youngest <exe> process started after -StartedAfter (freshly launched IDE)
         Every COM read is guarded; the function never throws.
     .OUTPUTS
-        Hashtable @{ ProcessId = [int]; MainHwnd = [long] } (0 when unknown).
+        Hashtable @{ ProcessId = [int]; MainHwnd = [long]; Source = 'main-window' | 'known-pid' |
+        'start-time' | '' } (0 when unknown). 'start-time' is a guess (another IDE started at the
+        same moment matches too): Connect-TcIde never owns / attaches an IDE by it (#147 M2).
     #>
     [CmdletBinding()]
     param(
@@ -42,6 +44,7 @@ function Get-TcIdeProcessId {
 
     $hwnd = [long]0
     $procId = 0
+    $source = ''
 
     if ($null -ne $Dte) {
         try {
@@ -63,14 +66,14 @@ public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint process
             }
             $outPid = [uint32]0
             $null = [TcAutomation.Native]::GetWindowThreadProcessId([IntPtr]$hwnd, [ref]$outPid)
-            if ($outPid -gt 0) { $procId = [int]$outPid }
+            if ($outPid -gt 0) { $procId = [int]$outPid; $source = 'main-window' }
         }
         catch {
             Write-Verbose "Get-TcIdeProcessId: GetWindowThreadProcessId failed ($($_.Exception.Message))"
         }
     }
 
-    if ($procId -le 0 -and $KnownPid -gt 0) { $procId = $KnownPid }
+    if ($procId -le 0 -and $KnownPid -gt 0) { $procId = $KnownPid; $source = 'known-pid' }
 
     if ($procId -le 0 -and $null -ne $StartedAfter) {
         $since = $null
@@ -82,7 +85,7 @@ public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint process
                 try { $st = $_.StartTime } catch { $st = $null }
                 ($null -ne $st) -and ($st -ge $since.AddSeconds(-2))
             } | Sort-Object StartTime -Descending)
-            if ($young.Count -gt 0) { $procId = [int]$young[0].Id }
+            if ($young.Count -gt 0) { $procId = [int]$young[0].Id; $source = 'start-time' }   # a GUESS (#136 M2): never used for ownership
         }
     }
 
@@ -98,6 +101,7 @@ public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint process
     return @{
         ProcessId = $procId
         MainHwnd  = $hwnd
+        Source    = $source   # main-window | known-pid | start-time (guess) | ''
     }
 }
 

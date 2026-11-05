@@ -731,7 +731,7 @@
                                           "properties":  {
                                                              "ProgId":  {
                                                                             "type":  "string",
-                                                                            "description":  "COM ProgID to connect to / launch. When given, running instances with this ProgID are preferred and only this ProgID is used for launching."
+                                                                            "description":  "COM ProgID to connect to / launch. When given, running instances with this ProgID are preferred and only this ProgID is used for launching. Without it the IDE to launch is derived from the .tsproj TcVersion of -SolutionPath; on a machine with several IDEs pass -SolutionPath or -ProgId (else PROGID_REQUIRED). An IDE this session launched for the same solution with another ProgID is not attached (IDE_LAUNCH_PENDING, data.progIdMismatch)."
                                                                         },
                                                              "SolutionPath":  {
                                                                                   "type":  "string",
@@ -739,7 +739,7 @@
                                                                               },
                                                              "NoLaunch":  {
                                                                               "type":  "boolean",
-                                                                              "description":  "If set, do not launch a new IDE instance if none is running."
+                                                                              "description":  "If set, do not launch a new IDE instance if none is running. With -SolutionPath an IDE this session launched for that solution and that is still starting is still waited for (up to 60 s) before IDE_LAUNCH_PENDING is returned."
                                                                           },
                                                              "LaunchIfBlocked":  {
                                                                                      "type":  "boolean",
