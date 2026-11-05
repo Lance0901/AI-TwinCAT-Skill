@@ -1,0 +1,382 @@
+// #41 ReloadModule + GetStatus data.bridge.modulePath / moduleCommit / loadedAt.
+//   1. lib/module-source.js on a fake repository (main checkout + worktrees, .git files only)
+//   2. index.js over stdio with the mock bridge: allow list, fail closed on an in-memory lifecycle
+//      block, IDE/ADS released, import failure restores the previous module
+//   3. the REAL bridge/bridge.ps1 op 'retire' with a fixture module (Windows only)
+// Nothing here touches the real %TEMP%\TwinCATAutomation state: the fake repository lives in its own
+// temp directory (name contains 41) and the real-bridge test sets its own TCAUTO_STATE_DIR.
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import {
+  MODULE_RELATIVE_PATH,
+  checkoutRootOf,
+  readHeadCommit,
+  mainCheckoutOf,
+  listCheckouts,
+  allowedModulePaths,
+  checkModulePath,
+  moduleInfoOf,
+  pathKey
+} from '../lib/module-source.js';
+import { PowerShellBridge } from '../lib/bridge.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const INDEX = path.join(__dirname, '..', 'index.js');
+const FIXTURE = path.join(__dirname, 'fixtures', 'tools.fixture.json');
+const MOCK = path.join(__dirname, 'fixtures', 'mock-bridge.js');
+const RELOAD_MODULE = path.join(__dirname, 'fixtures', 'reload-module', 'TwinCATAutomation.psm1');
+const isWin = process.platform === 'win32';
+
+const SHA_MAIN = '1111111111111111111111111111111111111111';
+const SHA_WT = '2222222222222222222222222222222222222222';
+const SHA_FEAT = '3333333333333333333333333333333333333333';
+const SHA_BAD = '4444444444444444444444444444444444444444';
+
+const tempDirs = [];
+after(() => {
+  for (const d of tempDirs) {
+    try {
+      fs.rmSync(d, { recursive: true, force: true });
+    } catch {
+      /* temp directory */
+    }
+  }
+});
+
+function put(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+}
+
+/** Main checkout + worktrees, laid out like git does it (forward slashes in gitdir files). */
+function makeRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-reload41-'));
+  tempDirs.push(root);
+  const fwd = (p) => p.replace(/\\/g, '/');
+  const main = path.join(root, 'main');
+  const git = path.join(main, '.git');
+  put(path.join(git, 'HEAD'), 'ref: refs/heads/master\n');
+  put(path.join(git, 'refs', 'heads', 'master'), `${SHA_MAIN}\n`);
+  put(path.join(git, 'packed-refs'), `# pack-refs with: peeled fully-peeled sorted\n${SHA_FEAT} refs/heads/feat\n`);
+  put(path.join(main, MODULE_RELATIVE_PATH), '# main\n');
+  const worktree = (name, head) => {
+    const dir = path.join(root, name);
+    const entry = path.join(git, 'worktrees', name);
+    put(path.join(entry, 'HEAD'), `${head}\n`);
+    put(path.join(entry, 'commondir'), '../..\n');
+    put(path.join(entry, 'gitdir'), `${fwd(path.join(dir, '.git'))}\n`);
+    put(path.join(dir, '.git'), `gitdir: ${fwd(entry)}\n`);
+    put(path.join(dir, MODULE_RELATIVE_PATH), `# ${name}\n`);
+    return dir;
+  };
+  const wt = worktree('wt-a', SHA_WT); // detached HEAD
+  const feat = worktree('wt-feat', 'ref: refs/heads/feat'); // branch only in packed-refs
+  const bad = worktree('wt-badimport41', SHA_BAD);
+  // a stale entry (directory removed): `git worktree list` would call it prunable; not allowed
+  const goneEntry = path.join(git, 'worktrees', 'gone');
+  put(path.join(goneEntry, 'HEAD'), `${SHA_WT}\n`);
+  put(path.join(goneEntry, 'gitdir'), `${fwd(path.join(root, 'gone', '.git'))}\n`);
+  // a directory whose .git file claims the wt-a entry but is not registered itself
+  const foreign = path.join(root, 'foreign');
+  put(path.join(foreign, '.git'), `gitdir: ${fwd(path.join(git, 'worktrees', 'wt-a'))}\n`);
+  put(path.join(foreign, MODULE_RELATIVE_PATH), '# foreign\n');
+  // an unrelated repository
+  const other = path.join(root, 'other');
+  put(path.join(other, '.git', 'HEAD'), `${SHA_MAIN}\n`);
+  put(path.join(other, MODULE_RELATIVE_PATH), '# other\n');
+  const mod = (dir) => path.join(dir, MODULE_RELATIVE_PATH);
+  return { root, main, wt, feat, bad, foreign, other, mod };
+}
+
+describe('module-source (#41): commit and allow list from the .git files', () => {
+  let r;
+  before(() => {
+    r = makeRepo();
+  });
+
+  test('checkoutRootOf: only <root>\\src\\TwinCATAutomation\\TwinCATAutomation.psm1 of a directory with .git', () => {
+    assert.equal(pathKey(checkoutRootOf(r.mod(r.main))), pathKey(r.main));
+    assert.equal(pathKey(checkoutRootOf(r.mod(r.wt))), pathKey(r.wt));
+    assert.equal(checkoutRootOf(path.join(r.main, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psd1')), null);
+    assert.equal(checkoutRootOf(path.join(r.root, 'nogit', MODULE_RELATIVE_PATH)), null);
+    assert.equal(checkoutRootOf(''), null);
+  });
+
+  test('readHeadCommit: loose ref, detached HEAD in a worktree, branch only in packed-refs', () => {
+    assert.equal(readHeadCommit(r.main), SHA_MAIN);
+    assert.equal(readHeadCommit(r.wt), SHA_WT);
+    assert.equal(readHeadCommit(r.feat), SHA_FEAT);
+    assert.equal(readHeadCommit(path.join(r.root, 'nogit')), null);
+  });
+
+  test('mainCheckoutOf resolves a worktree to the main checkout through commondir', () => {
+    assert.equal(pathKey(mainCheckoutOf(r.wt)), pathKey(r.main));
+    assert.equal(pathKey(mainCheckoutOf(r.main)), pathKey(r.main));
+  });
+
+  test('listCheckouts = main + registered worktrees whose .git points back (stale / foreign excluded)', () => {
+    const keys = listCheckouts(r.main).map(pathKey).sort();
+    assert.deepEqual(keys, [r.main, r.bad, r.feat, r.wt].map(pathKey).sort());
+  });
+
+  test('allowedModulePaths is the same list from the main checkout and from a worktree', () => {
+    const fromMain = allowedModulePaths(r.mod(r.main)).map(pathKey).sort();
+    const fromWt = allowedModulePaths(r.mod(r.wt)).map(pathKey).sort();
+    assert.deepEqual(fromMain, fromWt);
+    assert.equal(fromMain.length, 4);
+    assert.deepEqual(allowedModulePaths(path.join(r.root, 'x.psm1')), []);
+  });
+
+  test('checkModulePath accepts main / worktree modules (any case, forward slashes) and refuses everything else', () => {
+    const base = r.mod(r.main);
+    assert.equal(checkModulePath(r.mod(r.wt), base).ok, true);
+    assert.equal(checkModulePath(r.mod(r.main), base).ok, true);
+    assert.equal(checkModulePath(r.mod(r.wt).toUpperCase().replace(/\\/g, '/'), base).ok, true);
+    const refused = [
+      r.mod(r.foreign), // .git claims a registered entry but is not that worktree
+      r.mod(r.other), // another repository
+      path.join(r.root, 'gone', MODULE_RELATIVE_PATH), // stale worktree entry
+      path.join(r.wt, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psd1'), // other file
+      path.join(r.wt, 'src', 'TwinCATAutomation', 'Private', '..', '..', '..', '..', 'other', MODULE_RELATIVE_PATH),
+      MODULE_RELATIVE_PATH, // relative
+      '\\src\\TwinCATAutomation\\TwinCATAutomation.psm1', // root-relative
+      ''
+    ];
+    for (const p of refused) {
+      const c = checkModulePath(p, base);
+      assert.equal(c.ok, false, `refused: ${p}`);
+      assert.ok(typeof c.reason === 'string' && c.reason.length > 0);
+    }
+    // a server started from outside a checkout allows no ModulePath at all
+    const none = checkModulePath(r.mod(r.wt), path.join(r.root, 'installed', 'TwinCATAutomation.psm1'));
+    assert.equal(none.ok, false);
+    assert.match(none.reason, /not part of a git checkout/);
+  });
+
+  test('a registered worktree whose module file is missing is refused', () => {
+    const p = r.mod(r.feat);
+    fs.renameSync(p, `${p}.moved`);
+    try {
+      const c = checkModulePath(p, r.mod(r.main));
+      assert.equal(c.ok, false);
+      assert.match(c.reason, /does not exist/);
+    } finally {
+      fs.renameSync(`${p}.moved`, p);
+    }
+  });
+
+  test('moduleInfoOf gives the commit of the checkout, null outside one', () => {
+    assert.deepEqual(moduleInfoOf(r.mod(r.wt)), { modulePath: r.mod(r.wt), moduleCommit: SHA_WT });
+    assert.equal(moduleInfoOf('mock').moduleCommit, null);
+  });
+});
+
+// ---------------------------------------------------------------- MCP server + mock bridge
+
+function parse(result) {
+  return JSON.parse(result.content[0].text);
+}
+
+function toolsWithSystemState() {
+  const doc = JSON.parse(fs.readFileSync(FIXTURE, 'utf8'));
+  doc.tools.push({
+    name: 'SetSystemState',
+    cmdlet: 'Set-TcSystemState',
+    description: 'fixture',
+    inputSchema: { type: 'object', properties: { AmsNetId: { type: 'string' }, Fail: { type: 'boolean' } }, required: [], additionalProperties: false }
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-reload41-tools-'));
+  tempDirs.push(dir);
+  const file = path.join(dir, 'tools.json');
+  fs.writeFileSync(file, JSON.stringify(doc));
+  return file;
+}
+
+async function startServer(modulePath, extraEnv = {}) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [INDEX],
+    env: {
+      ...process.env,
+      TWINCAT_MCP_TOOLS_JSON: toolsWithSystemState(),
+      TWINCAT_MCP_BRIDGE_COMMAND: process.execPath,
+      TWINCAT_MCP_BRIDGE_ARGS: JSON.stringify([MOCK]),
+      TWINCAT_MCP_MODAL_PROBE: '0',
+      TWINCAT_MCP_SKIP_PID_CHECK: '1',
+      TWINCAT_MODULE_PATH: modulePath,
+      MOCK_BRIDGE_FAIL_MODULE: 'badimport41',
+      ...extraEnv
+    },
+    stderr: 'pipe'
+  });
+  const client = new Client({ name: 'reload-test', version: '0.0.0' }, { capabilities: {} });
+  await client.connect(transport);
+  return client;
+}
+
+async function status(client) {
+  return parse(await client.callTool({ name: 'GetStatus', arguments: {} }));
+}
+
+describe('ReloadModule over stdio (mock bridge, fake repository)', () => {
+  let r;
+  let client;
+  before(async () => {
+    r = makeRepo();
+    client = await startServer(r.mod(r.main));
+  });
+  after(async () => client?.close());
+
+  test('tools/list offers ReloadModule with an optional ModulePath', async () => {
+    const { tools } = await client.listTools();
+    const t = tools.find((x) => x.name === 'ReloadModule');
+    assert.ok(t, 'ReloadModule listed');
+    assert.equal(t.inputSchema.properties.ModulePath.type, 'string');
+    assert.deepEqual(t.inputSchema.required, []);
+    assert.equal(t.inputSchema.additionalProperties, false);
+    assert.match(t.description, /RELOAD_LIFECYCLE_BLOCKED/);
+    assert.match(t.description, /ConnectIde/);
+  });
+
+  test('GetStatus data.bridge names modulePath, moduleCommit and loadedAt (also before ConnectIde)', async () => {
+    const s = await status(client);
+    assert.equal(s.error.code, 'NOT_CONNECTED');
+    assert.equal(pathKey(s.data.bridge.modulePath), pathKey(r.mod(r.main)));
+    assert.equal(s.data.bridge.moduleCommit, SHA_MAIN);
+    assert.ok(!Number.isNaN(Date.parse(s.data.bridge.loadedAt)), 'loadedAt is an ISO time');
+  });
+
+  test('a path outside the allow list -> RELOAD_PATH_NOT_ALLOWED, bridge untouched', async () => {
+    const before = (await status(client)).data.bridge;
+    for (const p of [r.mod(r.other), r.mod(r.foreign), 'C:\\Windows\\System32\\x.psm1', MODULE_RELATIVE_PATH]) {
+      const res = await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: p } });
+      assert.equal(res.isError, true);
+      const body = parse(res);
+      assert.equal(body.error.code, 'RELOAD_PATH_NOT_ALLOWED', p);
+      assert.equal(body.data.notRun, true);
+      assert.equal(body.data.allowed.length, 4);
+    }
+    const afterState = (await status(client)).data.bridge;
+    assert.equal(afterState.loadedAt, before.loadedAt, 'no restart');
+  });
+
+  test('ReloadModule ModulePath=<worktree> -> previous/current with their commits; IDE and ADS released', async () => {
+    const c = parse(await client.callTool({ name: 'ConnectIde', arguments: {} }));
+    assert.equal(c.success, true);
+    const before = (await status(client)).data.bridge;
+    assert.equal(before.ideConnected, true);
+
+    const res = parse(await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: r.mod(r.wt) } }));
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.equal(res.data.previous.moduleCommit, SHA_MAIN);
+    assert.equal(pathKey(res.data.previous.modulePath), pathKey(r.mod(r.main)));
+    assert.equal(res.data.current.moduleCommit, SHA_WT);
+    assert.equal(pathKey(res.data.current.modulePath), pathKey(r.mod(r.wt)));
+    assert.notEqual(res.data.current.loadedAt, res.data.previous.loadedAt);
+    assert.equal(res.data.ideDisconnected, true);
+    assert.equal(res.data.reconnectRequired, true);
+    assert.match(res.data.note, /ConnectIde/);
+
+    const s = await status(client);
+    assert.equal(s.error.code, 'NOT_CONNECTED', 'the new bridge has no IDE connection');
+    assert.equal(s.data.bridge.ideConnected, false);
+    assert.equal(s.data.bridge.moduleCommit, SHA_WT);
+    assert.equal(s.data.bridge.loadedAt, res.data.current.loadedAt);
+  });
+
+  test('ReloadModule without ModulePath reloads the module loaded now (worktree on a packed branch next)', async () => {
+    const res = parse(await client.callTool({ name: 'ReloadModule', arguments: {} }));
+    assert.equal(res.success, true);
+    assert.equal(pathKey(res.data.current.modulePath), pathKey(res.data.previous.modulePath));
+    assert.notEqual(res.data.current.loadedAt, res.data.previous.loadedAt);
+    const feat = parse(await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: r.mod(r.feat) } }));
+    assert.equal(feat.data.current.moduleCommit, SHA_FEAT);
+  });
+
+  test('a module that fails to import -> RELOAD_FAILED and the previous module is loaded again', async () => {
+    const before = (await status(client)).data.bridge;
+    const res = parse(await client.callTool({ name: 'ReloadModule', arguments: { ModulePath: r.mod(r.bad) } }));
+    assert.equal(res.success, false);
+    assert.equal(res.error.code, 'RELOAD_FAILED');
+    assert.equal(res.data.restored, true);
+    assert.equal(res.data.importError.code, 'MODULE_IMPORT_FAILED');
+    const s = (await status(client)).data.bridge;
+    assert.equal(pathKey(s.modulePath), pathKey(before.modulePath));
+    assert.equal(s.moduleCommit, before.moduleCommit);
+    assert.notEqual(s.loadedAt, before.loadedAt);
+  });
+
+  test('fail closed (#68): an in-memory lifecycle block refuses the reload and keeps the bridge (and the block)', async () => {
+    const fail = parse(await client.callTool({ name: 'SetSystemState', arguments: { AmsNetId: '5.1.2.3.1.1', Fail: true } }));
+    assert.equal(fail.success, false);
+    const before = (await status(client)).data.bridge;
+    for (const args of [{}, { ModulePath: r.mod(r.main) }]) {
+      const res = await client.callTool({ name: 'ReloadModule', arguments: args });
+      assert.equal(res.isError, true);
+      const body = parse(res);
+      assert.equal(body.error.code, 'RELOAD_LIFECYCLE_BLOCKED');
+      assert.ok(body.error.hint);
+      assert.equal(body.data.notRun, true);
+      assert.equal(body.data.lifecycleBlocks.length, 1);
+      assert.equal(body.data.lifecycleBlocks[0].key, '5.1.2.3.1.1');
+    }
+    const s = (await status(client)).data.bridge;
+    assert.equal(s.loadedAt, before.loadedAt, 'same bridge process');
+    assert.equal(pathKey(s.modulePath), pathKey(before.modulePath));
+  });
+});
+
+// ---------------------------------------------------------------- real bridge.ps1
+
+describe('bridge.ps1 op retire (real PowerShell, fixture module)', { skip: !isWin && 'Windows PowerShell only' }, () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-state-41-'));
+  tempDirs.push(stateDir);
+  const bridges = [];
+  after(async () => {
+    for (const b of bridges) await b.stop();
+  });
+  const make = () => {
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE, env: { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_FORBID_REAL_STATE: '1' } });
+    bridges.push(b);
+    return b;
+  };
+
+  test('no block: retire releases IDE/ADS, answers, and the next call runs in a new process', async () => {
+    const b = make();
+    await b.start();
+    const pid1 = b.pid;
+    assert.equal((await b.call('call', { cmdlet: 'Connect-TcIde', params: {} })).success, true);
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.equal(res.data.retired, true);
+    assert.equal(res.data.ideWasConnected, true);
+    assert.match(res.data.modulePath, /reload-module/);
+    const st = await b.call('state');
+    assert.equal(st.success, true);
+    assert.equal(st.data.ideConnected, false);
+    assert.notEqual(b.pid, pid1, 'a new bridge process');
+  });
+
+  test('in-memory lifecycle block: RELOAD_LIFECYCLE_BLOCKED, same process, block still there', async () => {
+    const b = make();
+    await b.start();
+    const pid1 = b.pid;
+    await b.call('call', { cmdlet: 'Set-TcSystemState', params: { AmsNetId: '5.1.2.3.1.1' } });
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, false);
+    assert.equal(res.error.code, 'RELOAD_LIFECYCLE_BLOCKED');
+    assert.match(res.error.hint, /ClearLifecycleBlock/);
+    assert.equal(res.data.notRun, true);
+    assert.equal(res.data.lifecycleBlocks.length, 1);
+    assert.equal(res.data.lifecycleBlocks[0].key, '5.1.2.3.1.1');
+    assert.equal(b.pid, pid1, 'bridge not restarted');
+    const again = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(again.error.code, 'RELOAD_LIFECYCLE_BLOCKED', 'the block is still in memory');
+  });
+});

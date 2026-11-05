@@ -320,6 +320,29 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **靜態檢查**:`scripts/check.ps1` 的 `forbidden` 檢查 `src/`、`mcp-server/`、`tests/Integration/` 程式碼(含字串，不含註解)裡寫死的 AmsNetId、StartRestart 方法、任何 `ExecuteCommand` 與任何 `WriteControl` / `WriteControlAsync`;合法用途要在該行或正上方只有註解的那行，以**註解**寫 `tcauto-allow(<rule>): <理由>`(字串裡的標記不算)(`scripts/forbidden-patterns.ps1`,單元測試 `tests/Unit/forbidden-lint.ps1`)。
 - **測試**:`tests/Unit/lifecycle-block.ps1`(mock,#32 regression:Set-TcSystemState 讀回 Config → block,之後 Login / PLC Run / ADS Write / Enable-TcConfig 全擋且沒呼叫底層 COM / ADS,Clear 後恢復，不同 AmsNetId 不互擋;Enable-TcConfig verify 讀回 Config → block 且 `restarted` / `activated` 不是 true;`Invoke-TcTestCycle` Activate 後不呼叫 `Connect-TcIde`,PLC Run / Stop 失敗讓 cycle 失敗;`ACTIVATE_TIMEOUT` / `CYCLE_TIMEOUT` 記 block;`Set-TcSystemState` WriteControl 後的例外記 block;loopback NetId、損毀 state 檔仍擋;ADS 命令未連線回 `NOT_CONNECTED`)、`tests/Unit/runtime-crashed.ps1`(`RUNTIME_CRASHED` 記 block)。真機尚未驗證。
 
+### ReloadModule(MCP,#41):做法與共同規則
+
+- **用途**:同一個 MCP session 依序驗多個 sha:bridge 退場，新的 PowerShell bridge 重新 `Import-Module`。`ModulePath` 選填，不帶就重載目前載入的路徑。只有模組重載;`index.js`、`bridge.ps1`、tool 清單(`tools.json`)仍是執行中 server 的版本，新模組多出的 cmdlet / 參數要等 server 重啟才會出現在 `tools/list`。
+- **做法**:先檢查 `ModulePath`,再把 bridge op `retire` 排進佇列(正在跑的呼叫先跑完)。bridge 確認記憶體裡沒有 lifecycle block 後執行 `Disconnect-TcAds`、`Disconnect-TcIde`(不帶 `-Quit`,IDE 保持開著),回覆後結束;Node 端再用新的 `-ModulePath` 啟動新的 bridge。不在同一個行程裡 `Import-Module -Force`,原因是模組用 `Add-Type` 編進行程的 C# 型別(`TcAdsHelper`、`MessageBoxNative`)卸載不掉，新版改了也不會生效;舊的 COM 參考也會留在行程裡。
+- **回傳**:`data.previous` / `data.current` = `{modulePath, moduleCommit, loadedAt}`,`data.ideDisconnected`、`data.adsDisconnected`、`data.reconnectRequired = true`。`moduleCommit` 是載入當時該 checkout 的 HEAD sha,從 `.git` 檔案讀(`HEAD`、loose ref、`packed-refs`、worktree 的 `commondir`),不啟動 `git.exe`;不在 git checkout 裡時是 `null`。`GetStatus` 的 `data.bridge.modulePath` / `moduleCommit` / `loadedAt` 是同一份資料。
+- **之後**:IDE / ADS 連線已斷開，先 `ConnectIde`(必要時 `SetTarget`、`ConnectAds`)再做別的。lifecycle block 與 BUILD_REQUIRED 的狀態檔在新 bridge 照樣有效(同一個 `TCAUTO_STATE_DIR` / `%TEMP%\TwinCATAutomation`)。已知限制:BUILD_REQUIRED 只存在記憶體的紀錄(`$script:TcBuildRequiredLocal`,狀態檔寫不了時才會只有它)reload 後會消失，目前 `ReloadModule` 不檢查它;正常情況紀錄同時在檔案裡，不受影響。
+- **測試**:`mcp-server/test/reload.test.js`(假 repo 的 allow list 與 commit 讀取、mock bridge 走 stdio、真的 `bridge.ps1` 加 fixture 模組測 `retire`)。registered tcauto 真機 reload 尚未驗證。
+
+### RELOAD_PATH_NOT_ALLOWED
+
+- **為什麼**:`ReloadModule` 的 `ModulePath` 不是允許的路徑。允許的只有兩種:server 啟動時的 `TWINCAT_MODULE_PATH` 所屬 repo 的主 checkout 的 `src\TwinCATAutomation\TwinCATAutomation.psm1`,以及 `<主 checkout>\.git\worktrees\*\gitdir` 登記、而且該 worktree 的 `.git` 檔指回同一筆登記的 worktree 裡的同一個相對路徑(也就是 `git worktree list` 列出、目錄還在的 worktree)。相對路徑、別的檔名、別的 repo、目錄已刪的 worktree、檔案不存在都拒絕。server 本身不是從 git checkout 啟動(安裝版)時，任何 `ModulePath` 都拒絕。
+- **下一步**:從 `data.allowed` 挑一個路徑重試，或不帶 `ModulePath` 重載目前的模組。什麼都沒有斷開或重載(`data.notRun = true`)。
+
+### RELOAD_LIFECYCLE_BLOCKED
+
+- **為什麼**:目前載入的模組記憶體裡有 lifecycle block(`$script:TcLifecycleBlockLocal` 不是空的或讀不到,#68)。這份記憶體副本可能只存在這個行程(狀態檔寫不了時),reload 之後就看不到，所以一律拒絕，不讓 reload 變成繞過 fail closed 的方法。`data.lifecycleBlocks` = `[{key, record}]`,什麼都沒有斷開或重載(`data.notRun = true`)。
+- **下一步**:依 [LIFECYCLE_BLOCKED](#lifecycle_blocked) 的人工核准流程：停止、把 `data.lifecycleBlocks` 回報使用者;使用者同意後才 `ClearLifecycleBlock`,再重跑 `ReloadModule`。不要用重啟 MCP server / kill bridge 的方式繞過。
+
+### RELOAD_FAILED
+
+- **為什麼**:舊 bridge 已退場(IDE / ADS 已斷開),但新的 `ModulePath` 匯入失敗(`data.importError`,例如語法錯誤、檔案在 Windows PowerShell 5.1 下 parse 不過)。
+- **下一步**:`data.restored = true` 表示已重新載入原本的路徑(`data.current`),修好模組後再 `ReloadModule`;之後要重新 `ConnectIde`。`data.restored = false`(`data.restoreError`)時目前沒有模組，每個呼叫都回 `MODULE_IMPORT_FAILED`,直到某次 `ReloadModule` 成功或 server 重啟。
+
 ### SYSTEM_STATE_TIMEOUT
 
 - **為什麼**:`Set-TcSystemState` 透過 ADS WriteControl 要求切換後,輪詢 port 10000 在 `-TimeoutSec` 內沒到目標狀態。原因:TwinCAT System Service 報錯(license、config 錯)、UmRT service 掛掉、或 target 無回應。UmRT 還有一種:process 活著、CPU idle,但對 199.5.42.250.1.1 的每個 ADS 呼叫都回 **0x502「Mailbox is full」**(本機 TcSysSrv 正常)→ `Enable-TcConfig` 等 180 s 回 `SYSTEM_STATE_TIMEOUT`(2026-10-21 實測,見「已知限制」)。若 target 是 UmRT 且剛 Activate 就停在 Config,常見原因是 license 不足(trial 未涵蓋專案用到的 TF),請在 XAE 的 License 節點確認。

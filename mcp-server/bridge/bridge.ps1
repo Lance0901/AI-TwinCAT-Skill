@@ -712,6 +712,53 @@ function Invoke-OpState {
     })
 }
 
+function Get-BridgeLocalLifecycleBlocks {
+    # #41 / #68: the lifecycle block records the module holds in memory ($script:TcLifecycleBlockLocal,
+    # Private/LifecycleBlock.ps1). A record there may exist in memory only (the state file could not be
+    # written), so a new Import-Module / bridge process would not see it. Returns @{ Readable; List }
+    # (List = [{ key; record }]); anything unexpected counts as a block (fail closed).
+    $list = New-Object System.Collections.ArrayList
+    try {
+        $local = Get-ModuleVar 'TcLifecycleBlockLocal'
+        if ($null -eq $local) { return @{ Readable = $true; List = [object[]]@() } }
+        if (-not ($local -is [System.Collections.IDictionary])) {
+            $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "unexpected type $($local.GetType().FullName)" })
+            return @{ Readable = $false; List = [object[]]$list.ToArray() }
+        }
+        foreach ($k in @($local.Keys | Sort-Object)) { $null = $list.Add([ordered]@{ key = [string]$k; record = $local[$k] }) }
+        return @{ Readable = $true; List = [object[]]$list.ToArray() }
+    }
+    catch {
+        $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "the in-memory lifecycle block state could not be read: $($_.Exception.Message)" })
+        return @{ Readable = $false; List = [object[]]$list.ToArray() }
+    }
+}
+
+function Invoke-OpRetire {
+    # #41 ReloadModule, step 1 of 2: refuse while the module holds a lifecycle block in memory (a
+    # reload must never become a way around #68), else release ADS and the IDE COM references
+    # (Disconnect-TcAds / Disconnect-TcIde without -Quit: the IDE keeps running) and let the main loop
+    # exit after the reply. The Node side then starts a new bridge process with the new -ModulePath.
+    $blocks = Get-BridgeLocalLifecycleBlocks
+    $modulePathNow = [string]$script:Module.Path
+    if ($blocks.List.Count -gt 0) {
+        return New-ErrorResult -Code 'RELOAD_LIFECYCLE_BLOCKED' `
+            -Message "ReloadModule NOT RUN: the loaded module holds $($blocks.List.Count) lifecycle block record(s) in memory (#68); a reload would drop the in-memory copy. Nothing was disconnected or reloaded." `
+            -Hint 'Stop and report data.lifecycleBlocks to the user. The block is cleared only with ClearLifecycleBlock after the user agreed; then run ReloadModule again. Do not restart the server or the bridge to get around it.' `
+            -Data ([ordered]@{ modulePath = $modulePathNow; lifecycleBlocks = $blocks.List; readable = $blocks.Readable; notRun = $true })
+    }
+    $ideWas = $false; $adsWas = $false
+    try { $ideWas = ($null -ne (Get-ModuleVar 'TcDte')) } catch { }
+    try { $adsWas = [bool](Get-ModuleVar 'TcAdsConnected') } catch { }
+    Invoke-BridgeCleanup
+    return New-SuccessResult -Data ([ordered]@{
+        retired          = $true
+        modulePath       = $modulePathNow
+        ideWasConnected  = $ideWas
+        adsWasConnected  = $adsWas
+    })
+}
+
 function Invoke-BridgeCleanup {
     # Best effort: drop the ADS client and release COM references. Never throws,
     # never writes to stdout.
@@ -764,13 +811,18 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             'ping' {
                 Write-Result -Id $id -Result (New-SuccessResult -Data ([ordered]@{ pong = $true }))
             }
+            'retire' {
+                $retire = Invoke-OpRetire
+                Write-Result -Id $id -Result $retire
+                if ($retire.success -eq $true) { $shutdown = $true }
+            }
             'shutdown' {
                 Invoke-BridgeCleanup
                 Write-Result -Id $id -Result ([PSCustomObject]@{ success = $true })
                 $shutdown = $true
             }
             default {
-                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, shutdown.')
+                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, retire, shutdown.')
             }
         }
     }

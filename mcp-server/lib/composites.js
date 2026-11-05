@@ -4,6 +4,11 @@
 //   ctx.callTool(name, a)  runs a catalog tool through the normal path (validation + timeout) -> result object
 //   ctx.lastIde            {ideProcessId, selectedBy, solution, ideMainHwnd} of the last successful ConnectIde, or null
 //   ctx.signal             AbortSignal of the MCP request (optional); forwarded to bridge calls
+//   ctx.module             {modulePath, moduleCommit, loadedAt} of the module the bridge has loaded (#41), or null
+//   ctx.baseModulePath     module path the server was started with (TWINCAT_MODULE_PATH): the allow list of
+//                          ReloadModule is derived from its checkout
+//   ctx.onModuleReloaded(p) called after ReloadModule loaded module path p (index.js updates the probe scan script)
+import { checkModulePath } from './module-source.js';
 
 function errorResult(code, message, hint) {
   const error = { code, message };
@@ -177,6 +182,7 @@ export const GetStatus = {
   name: 'GetStatus',
   description:
     'Snapshot of the whole stack: bridge state (IDE/ADS connected, AmsNetId), IDE info, TwinCAT system state and PLC state. ' +
+    'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit (40-character git sha of that checkout when the module was loaded, read from the .git files; null outside a git checkout) and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). ' +
     'Fails with NOT_CONNECTED when the IDE is not connected (run ConnectIde first); each sub-query is independent, a failing one is reported in place without aborting the others.',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
@@ -191,7 +197,14 @@ export const GetStatus = {
   async run(ctx, args = {}) {
     const stateResult = await ctx.bridge.call('state', { signal: ctx.signal });
     if (stateResult.success !== true) return stateResult;
-    const state = stateResult.data ?? {};
+    // #41: which module the bridge runs (path, commit read from the .git files at load time, load time)
+    const mod = ctx.module ?? {};
+    const state = {
+      ...(stateResult.data ?? {}),
+      modulePath: mod.modulePath ?? null,
+      moduleCommit: mod.moduleCommit ?? null,
+      loadedAt: mod.loadedAt ?? null
+    };
 
     if (!state.ideConnected) {
       return {
@@ -262,5 +275,112 @@ export const GetIdeModalDialog = {
   }
 };
 
-export const composites = [RunLifecycle, QuickRead, GetStatus, GetIdeModalDialog];
+function moduleSnapshot(m) {
+  return { modulePath: m?.modulePath ?? null, moduleCommit: m?.moduleCommit ?? null, loadedAt: m?.loadedAt ?? null };
+}
+
+export const ReloadModule = {
+  name: 'ReloadModule',
+  description:
+    'Load the TwinCATAutomation PowerShell module again (#41): the bridge process is retired and a new one imports the module from ModulePath (omit it to reload the module path loaded now). ' +
+    "ModulePath must be src\\TwinCATAutomation\\TwinCATAutomation.psm1 of the main checkout the server was started from, or the same file in one of that repository's git worktrees (the entries of `git worktree list`); any other path is refused with RELOAD_PATH_NOT_ALLOWED (data.allowed lists the accepted paths). " +
+    'Fail closed (#68): while the loaded module holds a lifecycle block in memory the reload is refused with RELOAD_LIFECYCLE_BLOCKED and nothing changes; report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed. ' +
+    'The IDE and ADS connections are released first (DisconnectIde without Quit: the IDE keeps running; DisconnectAds): run ConnectIde (and ConnectAds) again after the reload. ' +
+    'Returns data.previous and data.current = {modulePath, moduleCommit, loadedAt} (moduleCommit: 40-character git sha read from the .git files). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
+    'Only the PowerShell module is reloaded: the MCP server (index.js, bridge.ps1) and its tool list (tools.json) stay those of the running server; a cmdlet or parameter the new module adds is not offered until the server restarts.',
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  timeoutMs: 180000,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      ModulePath: {
+        type: 'string',
+        description:
+          'Absolute path of TwinCATAutomation.psm1 to load: <main checkout>\\src\\TwinCATAutomation\\TwinCATAutomation.psm1 or the same relative path in a git worktree of that repository. Omit to reload the module path loaded now.'
+      }
+    },
+    required: [],
+    additionalProperties: false
+  },
+  async run(ctx, args = {}) {
+    const bridge = ctx.bridge;
+    const previous = moduleSnapshot(ctx.module);
+    const previousPath = bridge.modulePath;
+    let target = previousPath;
+    if (args.ModulePath !== undefined) {
+      const check = checkModulePath(args.ModulePath, ctx.baseModulePath);
+      if (!check.ok) {
+        return {
+          success: false,
+          error: {
+            code: 'RELOAD_PATH_NOT_ALLOWED',
+            message: `ReloadModule NOT RUN: ${check.reason} (${args.ModulePath}). Nothing was disconnected or reloaded.`,
+            hint: 'Pass the TwinCATAutomation.psm1 of the main checkout or of one of its git worktrees (data.allowed), or omit ModulePath to reload the current module.'
+          },
+          data: { requested: args.ModulePath, allowed: check.allowed, previous, notRun: true }
+        };
+      }
+      target = check.path;
+    }
+
+    const retire = await bridge.retire(target, { timeoutMs: 90000, signal: ctx.signal });
+    if (retire.success !== true) {
+      // RELOAD_LIFECYCLE_BLOCKED (nothing changed), CANCELLED, BRIDGE_* or MODULE_IMPORT_FAILED of the old module
+      const extra = retire.data && typeof retire.data === 'object' && !Array.isArray(retire.data) ? retire.data : {};
+      return { ...retire, data: { ...extra, requested: target, previous } };
+    }
+
+    let started = null;
+    let startError = null;
+    try {
+      started = await bridge.start();
+    } catch (err) {
+      startError = { code: err?.code ?? 'MODULE_IMPORT_FAILED', message: err?.message ?? String(err) };
+    }
+    if (startError) {
+      // Bring the previous module back so the server stays usable; the IDE/ADS state is gone either way.
+      let restored = false;
+      let restoreError = null;
+      const back = previousPath;
+      if (back && back !== target) {
+        bridge.modulePath = back;
+        try {
+          await bridge.start();
+          restored = true;
+          ctx.onModuleReloaded?.(back);
+        } catch (err) {
+          restoreError = err?.message ?? String(err);
+        }
+      }
+      return {
+        success: false,
+        error: {
+          code: 'RELOAD_FAILED',
+          message: `ReloadModule: the bridge was retired but ${target} could not be imported (${startError.code}: ${startError.message}).`,
+          hint: restored
+            ? 'The previous module was loaded again (data.current). Fix the module (Import-Module -Force in a Windows PowerShell 5.1 console shows the error), then ReloadModule again. Run ConnectIde again either way.'
+            : 'No module is loaded now: every call returns MODULE_IMPORT_FAILED until a ReloadModule with a module that imports succeeds or the server restarts.'
+        },
+        data: { requested: target, previous, current: restored ? moduleSnapshot(ctx.module) : null, restored, restoreError, importError: startError, retired: retire.data ?? null }
+      };
+    }
+
+    ctx.onModuleReloaded?.(target);
+    const was = retire.data ?? {};
+    return {
+      success: true,
+      data: {
+        previous,
+        current: moduleSnapshot(ctx.module),
+        cmdlets: Array.isArray(started?.cmdlets) ? started.cmdlets.length : null,
+        ideDisconnected: was.ideWasConnected === true,
+        adsDisconnected: was.adsWasConnected === true,
+        reconnectRequired: true,
+        note: 'The IDE and ADS connections were released before the reload (the IDE keeps running). Run ConnectIde again (and ConnectAds) before any IDE or ADS tool.'
+      }
+    };
+  }
+};
+
+export const composites = [RunLifecycle, QuickRead, GetStatus, GetIdeModalDialog, ReloadModule];
 export default composites;

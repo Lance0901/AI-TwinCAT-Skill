@@ -80,6 +80,8 @@ export class PowerShellBridge {
    * @param {{command:string,args:string[]}} [options.spawnSpec]  replaces the powershell.exe command line entirely (tests)
    * @param {(level:string,message:string,meta:object)=>void} [options.onLog]
    * @param {(line:string)=>void} [options.onStderr]
+   * @param {(ready:object, info:{modulePath:string, loadedAt:string})=>void} [options.onReady]
+   *   called once per child that became ready (first start, restart, ReloadModule)
    */
   constructor(options = {}) {
     this.modulePath = options.modulePath ?? process.env.TWINCAT_MODULE_PATH ?? DEFAULT_MODULE_PATH;
@@ -89,6 +91,8 @@ export class PowerShellBridge {
     this.spawnSpec = options.spawnSpec ?? null;
     this.onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
     this.onStderr = typeof options.onStderr === 'function' ? options.onStderr : () => {};
+    this.onReady = typeof options.onReady === 'function' ? options.onReady : () => {};
+    this.loadedAt = null; // ISO time the current child reported ready
 
     this.child = null;
     this.ready = null; // ready payload from the child
@@ -163,7 +167,9 @@ export class PowerShellBridge {
       child = spawn(command, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
-        env: { ...process.env, ...this.env }
+        // TWINCAT_MCP_BRIDGE_MODULE_PATH: the module path of this child also for a spawnSpec override
+        // (the mock bridge reports it as ready.modulePath); bridge.ps1 reads -ModulePath instead.
+        env: { ...process.env, ...this.env, TWINCAT_MCP_BRIDGE_MODULE_PATH: this.modulePath }
       });
     } catch (err) {
       this.lastStartError = new BridgeStartError('MODULE_IMPORT_FAILED', `Failed to spawn bridge: ${err.message}`, HINTS.MODULE_IMPORT_FAILED, err);
@@ -252,8 +258,11 @@ export class PowerShellBridge {
     // Ready: wire up steady-state handlers.
     this.child = child;
     this.ready = ready;
+    this.loadedAt = new Date().toISOString();
     this.lastStartError = null;
     adopted = true;
+    const loaded = { modulePath: this.modulePath, loadedAt: this.loadedAt };
+    this._safe(() => this.onReady(ready, loaded));
     for (const line of early.splice(0)) this._onLine(line);
 
     child.on('error', (err) => {
@@ -318,8 +327,34 @@ export class PowerShellBridge {
     if (!current) return;
     this._current = null;
     clearTimeout(current.timer);
+    if (current.op === 'retire' && result?.success === true) this._detachRetired(current);
     this._settle(current, result);
     this._pump();
+  }
+
+  /**
+   * op:'retire' succeeded (#41 ReloadModule): the child released IDE/ADS and exits by itself. It is
+   * detached BEFORE the queue is pumped, so no further request reaches it: the next call (the
+   * ReloadModule start or any queued call) spawns a fresh child with item.nextModulePath.
+   */
+  _detachRetired(item) {
+    const old = this.child;
+    this._reset();
+    if (typeof item.nextModulePath === 'string' && item.nextModulePath) this.modulePath = item.nextModulePath;
+    if (old) {
+      const t = setTimeout(() => this._killChild(old), STOP_TIMEOUT_MS);
+      t.unref();
+    }
+  }
+
+  /**
+   * #41: ask the child to retire (bridge.ps1 op:'retire': refused with RELOAD_LIFECYCLE_BLOCKED while
+   * the module holds a lifecycle block in memory; otherwise Disconnect-TcAds + Disconnect-TcIde, reply,
+   * exit) and switch to `nextModulePath` for the next child. Queued FIFO like every call, so it never
+   * interrupts a call in flight. Resolves to the retire result; never rejects.
+   */
+  retire(nextModulePath, opts = {}) {
+    return this.call('retire', { ...opts, nextModulePath });
   }
 
   /** Resolve an item exactly once and drop its abort listener. */
@@ -333,7 +368,7 @@ export class PowerShellBridge {
 
   /**
    * Send one request to the child. Resolves to the result object (id/event removed). Never rejects.
-   * @param {'call'|'modal'|'state'|'ping'|'shutdown'} op
+   * @param {'call'|'modal'|'state'|'ping'|'retire'|'shutdown'} op
    * @param {{cmdlet?:string, params?:object, timeoutMs?:number, signal?:AbortSignal, token?:object}} [opts]
    *   signal: while the call is still queued, an abort removes it from the queue and resolves it with
    *   CANCELLED (nothing was executed). Once the request has been written to PowerShell it cannot be
@@ -341,7 +376,7 @@ export class PowerShellBridge {
    *   token: any object identifying this call for abortCall() (the modal-dialog probe in index.js).
    */
   call(op = 'call', opts = {}) {
-    const { cmdlet, params, timeoutMs, signal, token } = opts;
+    const { cmdlet, params, timeoutMs, signal, token, nextModulePath } = opts;
     return new Promise((resolve) => {
       const item = {
         id: String(this._nextId++),
@@ -354,7 +389,8 @@ export class PowerShellBridge {
         signal: signal ?? null,
         onAbort: null,
         settled: false,
-        token: token ?? null
+        token: token ?? null,
+        nextModulePath: nextModulePath ?? null
       };
       if (signal?.aborted) {
         this._settle(item, errorResult('CANCELLED', CANCELLED_MESSAGE));

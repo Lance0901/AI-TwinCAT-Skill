@@ -18,13 +18,22 @@
 //   unparseable request line      answered with {id:null, event:'result', INVALID_REQUEST} like bridge.ps1
 //   env MOCK_BRIDGE_READY_FAIL=1   writes ready ok:false and exits 2
 //   env MOCK_BRIDGE_ARGS_ECHO=1    includes process.argv in the ready line (spawn arg tests)
+//   ready.modulePath               env TWINCAT_MCP_BRIDGE_MODULE_PATH (set by PowerShellBridge), else 'mock'
+//   env MOCK_BRIDGE_FAIL_MODULE=x  ready ok:false (MODULE_IMPORT_FAILED) when the module path contains x (#41)
+//   cmdlet Set-TcSystemState + params.Fail  records an in-memory lifecycle block (like
+//                          $script:TcLifecycleBlockLocal) and fails with SYSTEM_STATE_TIMEOUT (#41)
+//   op retire              like bridge.ps1: RELOAD_LIFECYCLE_BLOCKED while a block is recorded, else
+//                          disconnects, answers {retired, ideWasConnected, adsWasConnected} and exits 0
 import readline from 'node:readline';
 
 const CMDLETS = [
   'Connect-TcIde', 'Disconnect-TcIde', 'Get-TcIdeInfo', 'Build-TcProject', 'Enable-TcConfig',
   'Connect-TcAds', 'Disconnect-TcAds', 'Read-TcVariable', 'Write-TcVariable',
-  'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget', 'Get-TcSymbols'
+  'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget', 'Get-TcSymbols', 'Set-TcSystemState'
 ];
+
+const MODULE_PATH = process.env.TWINCAT_MCP_BRIDGE_MODULE_PATH || 'mock';
+const lifecycleBlockLocal = {};
 
 const SYMBOLS = [
   { path: 'MAIN.nCounter', type: 'INT', size: 2, comment: '' },
@@ -53,7 +62,12 @@ if (process.env.MOCK_BRIDGE_READY_FAIL === '1') {
   process.exit(2);
 }
 
-const readyLine = { event: 'ready', ok: true, cmdlets: CMDLETS, psVersion: 'mock', apartment: 'STA', modulePath: 'mock' };
+if (process.env.MOCK_BRIDGE_FAIL_MODULE && MODULE_PATH.includes(process.env.MOCK_BRIDGE_FAIL_MODULE)) {
+  write({ event: 'ready', ok: false, error: { code: 'MODULE_IMPORT_FAILED', message: `mock import failure for ${MODULE_PATH}` } });
+  process.exit(2);
+}
+
+const readyLine = { event: 'ready', ok: true, cmdlets: CMDLETS, psVersion: 'mock', apartment: 'STA', modulePath: MODULE_PATH };
 if (process.env.MOCK_BRIDGE_ARGS_ECHO === '1') readyLine.argv = process.argv.slice(2);
 write(readyLine);
 if (process.env.MOCK_BRIDGE_EARLY_LOG === '1') {
@@ -144,6 +158,13 @@ function handleCall(req) {
         return result(id, { success: true, data: { amsNetId: params.AmsNetId, params } });
       case 'Get-TcPlcState':
         return result(id, { success: true, data: { state: 'Run' } });
+      case 'Set-TcSystemState':
+        if (params.Fail === true) {
+          const key = String(params.AmsNetId ?? '<unknown>').toLowerCase();
+          lifecycleBlockLocal[key] = { amsNetId: params.AmsNetId ?? null, command: 'Set-TcSystemState', errorCode: 'SYSTEM_STATE_TIMEOUT' };
+          return result(id, { success: false, error: { code: 'SYSTEM_STATE_TIMEOUT', message: 'mock: state not reached' }, data: { lifecycleBlock: lifecycleBlockLocal[key] } });
+        }
+        return result(id, { success: true, data: { state: params.State ?? 'Run' } });
       default:
         return result(id, { success: true, data: { cmdlet, params } });
     }
@@ -176,6 +197,22 @@ rl.on('line', (line) => {
         return result(id, { success: false, error: { code: 'NOT_CONNECTED', message: 'No IDE process known', hint: 'Run Connect-TcIde first' } });
       }
       return result(id, { success: true, data: { ideProcessId: pid, dialog: null, timeoutSec: req.params?.TimeoutSec ?? 5 } });
+    }
+    case 'retire': {
+      const keys = Object.keys(lifecycleBlockLocal).sort();
+      if (keys.length > 0) {
+        return result(id, {
+          success: false,
+          error: { code: 'RELOAD_LIFECYCLE_BLOCKED', message: `mock: ${keys.length} lifecycle block record(s) in memory`, hint: 'Stop and report data.lifecycleBlocks to the user.' },
+          data: { modulePath: MODULE_PATH, lifecycleBlocks: keys.map((key) => ({ key, record: lifecycleBlockLocal[key] })), readable: true, notRun: true }
+        });
+      }
+      const was = { ideWasConnected: state.ideConnected, adsWasConnected: state.adsConnected };
+      state.ideConnected = false;
+      state.adsConnected = false;
+      result(id, { success: true, data: { retired: true, modulePath: MODULE_PATH, ...was } });
+      process.exit(0);
+      break;
     }
     case 'shutdown':
       result(id, { success: true });
