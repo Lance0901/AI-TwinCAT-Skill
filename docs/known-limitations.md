@@ -24,7 +24,7 @@
 
 ### NewProject:MCP 暫時下架(#70)
 
-- **現象**:`New-TcProject` 給 `AddFromTemplate` 的 template 路徑是空字串,建專案的流程沒有對照 InfoSys 驗證;而且 `Solution.Create` 會關掉 IDE 目前開著的 solution(未存的改動會丟掉,#70 記錄的風險)。
+- **現象**:`Solution.Create` 會關掉 IDE 目前開著的 solution(未存的改動會丟掉,#70 記錄的風險),而且 `New-TcProject` 還沒有經過 tcauto 本身驗證。template 路徑已修好(從安裝目錄解析,對照 InfoSys):2026-11-05 實測,4024 32-bit XAE Shell 與 4026.22 XAE in VS2022,建專案用自建 client、Build 用 registered tcauto,兩版都建立並 Build 成功。
 - **影響**:MCP server **暫時不提供 `NewProject` tool**(`tools.json` 不再列出);cmdlet `New-TcProject` 保留,但 IDE 已開著 solution 時直接回 `SOLUTION_ALREADY_OPEN`,不呼叫 `Solution.Create`。
 - **繞過**:在 XAE 手動建立新專案,再 `ConnectIde SolutionPath=<新 .sln>` 接上。
 - **Issue**:[#70](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/70)
@@ -234,7 +234,7 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 - **PLC task 的 CycleCount 線上驗證未實測**(UmRT 的 TcSystemServiceUm 不在，實測 2026-11-01):`AddPlcTask` 只回 verifyHint,沒有用 CycleCount 確認新 task 在跑。
 - **`NewTestCase` 給 `WaitUntil` 時回傳不帶 `waitMs`**:只有單元測試。
 - **`SetVariableLink` / `RemoveVariableLink` 成功路徑**:registered 未測(見上表)。
-- **`NewProject`**:MCP 暫時下架,cmdlet 保留,沒有在真機驗證(見 #70)。
+- **`NewProject`**:MCP 暫時下架,cmdlet 保留;2026-11-05 在 4024 / 4026.22 實測建專案 + Build 成功(自建 client + registered tcauto),但還沒經過 tcauto 本身(見 #70)。
 
 ### 第 3 期新 tool(task 4.6 registered 實測)
 

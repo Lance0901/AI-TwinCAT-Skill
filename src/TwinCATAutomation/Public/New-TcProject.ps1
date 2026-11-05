@@ -21,8 +21,14 @@ function New-TcProject {
         PLC project": only the template name for standard Beckhoff templates:
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842439947.html).
         No template file -> TEMPLATE_NOT_FOUND (data.searched), resolved BEFORE Solution.Create so
-        the IDE state is untouched. Real-machine create + Build on 4024 and 4026: still open.
-        The MCP server keeps NewProject off until then; the cmdlet stays.
+        the IDE state is untouched. An existing <Path>\<Name> -> PROJECT_DIR_EXISTS (before
+        Solution.Create). Success needs a read-back (.sln, .tsproj, .plcproj on disk and the
+        TIPC^<Name>_Plc node in the tree), otherwise PROJECT_CREATE_UNVERIFIED (data.missing).
+        Measured 2026-11-05 (4024 32-bit XAE Shell and 4026.22 XAE in VS2022; the project was
+        created with a self-made client, the Build ran through the registered tcauto): create and
+        a complete Build succeed on both, no dialog, about 5 s. The MCP server keeps NewProject
+        off for the reasons that remain: Solution.Create closes the solution the IDE has open,
+        and the cmdlet was not yet driven through tcauto itself. The cmdlet stays.
         BUILD_REQUIRED (#65): on success the NEW solution is recorded as 'code-changed'
         (Register-TcCodeChange, after $script:TcSolutionPath points at it): its PLC project was
         never built, so Enable-TcConfig and Enter-TcPlcOnline refuse until a complete
@@ -88,12 +94,18 @@ function New-TcProject {
     }
     $tcProjectTemplate = [string]$template.Path
 
+    # #70: an existing <Path>\<Name> is never reused (the template would write into a foreign folder)
+    $solutionPath = Join-Path $Path $Name
+    if (Test-Path -LiteralPath $solutionPath) {
+        return New-TcResult -Success $false -ErrorCode 'PROJECT_DIR_EXISTS' -Hint $script:TcErrorHints['PROJECT_DIR_EXISTS'] `
+            -ErrorMessage "The folder '$solutionPath' already exists; New-TcProject did not call Solution.Create (#70)." `
+            -Data ([PSCustomObject]@{ path = $solutionPath; created = $false })
+    }
+
     $solutionCreated = $false   # #65: the IDE holds the new solution from here on
+    $missing = @()               # #70: files / nodes the read-back did not find
     try {
-        $solutionPath = Join-Path $Path $Name
-        if (-not (Test-Path $solutionPath)) {
-            New-Item -Path $solutionPath -ItemType Directory -Force | Out-Null
-        }
+        New-Item -Path $solutionPath -ItemType Directory -Force | Out-Null
 
         $slnFile = Join-Path $solutionPath "$Name.sln"
         $solution = $script:TcDte.Solution
@@ -115,6 +127,23 @@ function New-TcProject {
 
         # Save solution
         $solution.SaveAs($slnFile)
+
+        # #70 read-back: success only when the files are on disk and the PLC node is in the tree.
+        # No wall-clock deadline on these calls (nor on Solution.Create / AddFromTemplate /
+        # CreateChild above): they are synchronous STA calls into the IDE that cannot be cancelled
+        # from here (a deadline would only abandon a call the IDE keeps executing), and the whole
+        # create took about 5 s on 4024 and 4026.22 (measured 2026-11-05). An RPC-busy IDE is
+        # retried by Invoke-TcComRetry; any exception lands in the catch below, which records the
+        # unknown solution state.
+        if (-not (Test-Path -LiteralPath $slnFile -PathType Leaf)) { $missing += $slnFile }
+        if (@(Get-ChildItem -LiteralPath $solutionPath -Filter '*.tsproj' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0) { $missing += "$solutionPath\**\*.tsproj" }
+        if (@(Get-ChildItem -LiteralPath $solutionPath -Filter '*.plcproj' -File -Recurse -ErrorAction SilentlyContinue).Count -eq 0) { $missing += "$solutionPath\**\*.plcproj" }
+        $plcNode = $null
+        try { $plcNode = Invoke-TcComRetry -MaxRetries 3 -OperationName 'LookupTreeItem' -ScriptBlock { Write-Output -NoEnumerate $sysManager.LookupTreeItem("TIPC^$Name" + '_Plc') } }
+        catch { $null = $_ }   # not found counts as missing below
+        if ($null -eq $plcNode) { $missing += "TIPC^$Name`_Plc" }
+        if ($missing.Count -gt 0) { throw "read-back after create found nothing for: $($missing -join '; ')" }
+
         # The IDE now has this new solution: module state and the #29 session record follow it.
         $script:TcSolutionPath = try { Get-TcLongPath $slnFile } catch { $slnFile }
         if ($null -ne $script:TcIdeProcessId) { Save-TcIdeSolutionRecord -ProcessId ([int]$script:TcIdeProcessId) -Solution $script:TcSolutionPath }
@@ -128,7 +157,13 @@ function New-TcProject {
         Register-TcCodeChange -Result $ok -Change "New-TcProject $Name"
     }
     catch {
-        $res = New-TcResult -Success $false -ErrorMessage "Failed to create project: $_" -ErrorCode 'PROJECT_CREATE_FAILED'
+        if ($missing.Count -gt 0) {
+            $res = New-TcResult -Success $false -ErrorMessage "New-TcProject finished but the read-back failed: $_" -ErrorCode 'PROJECT_CREATE_UNVERIFIED' `
+                -Hint $script:TcErrorHints['PROJECT_CREATE_UNVERIFIED'] -Data ([PSCustomObject]@{ missing = @($missing); path = $solutionPath })
+        }
+        else {
+            $res = New-TcResult -Success $false -ErrorMessage "Failed to create project: $_" -ErrorCode 'PROJECT_CREATE_FAILED'
+        }
         if ($solutionCreated) {
             # the module must not keep the previous .sln as key while the IDE holds another solution
             $script:TcSolutionPath = $null
