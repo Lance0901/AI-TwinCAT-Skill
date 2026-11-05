@@ -62,8 +62,25 @@ $script:TcUiaErrorListScan = {
     }
 
     # --- 1. top-level windows of the IDE process (main window + floating tool windows) ---
+    # EnumWindows filtered by the pid + AutomationElement.FromHandle (TcAutomation.UiaScanWindows,
+    # compiled by Initialize-TcUiaScanTypes before this scan runs), not RootElement.FindAll
+    # (Children, ProcessId): that one queries every top-level window on the desktop and stalls
+    # ~3 s on an unresponsive window of any other process (#24 / #42, measured 2026-10-25, see
+    # Find-TcIdeModalDialog.ps1). The desktop FindAll is only the fallback when the type is missing.
     $pidCond = New-Object System.Windows.Automation.PropertyCondition($ae::ProcessIdProperty, $TargetPid)
-    $windows = $ae::RootElement.FindAll($scope::Children, $pidCond)
+    function Get-IdeTopLevelWindows {
+        $list = [System.Collections.Generic.List[object]]::new()
+        if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
+            foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+                try { $we = $ae::FromHandle($wh); if ($null -ne $we) { $list.Add($we) } } catch { }
+            }
+            return , $list
+        }
+        $notes.Add('TcAutomation.UiaScanWindows not loaded: desktop-wide FindAll used')
+        try { foreach ($we in $ae::RootElement.FindAll($scope::Children, $pidCond)) { $list.Add($we) } } catch { }
+        return , $list
+    }
+    $windows = Get-IdeTopLevelWindows
     if ($null -eq $windows -or $windows.Count -eq 0) {
         $notes.Add("no top-level window for pid $TargetPid")
         return [PSCustomObject]@{ Found = $false; Counts = $null; Rows = @(); Truncated = $false; Headers = @(); ToggleUsed = $false; Notes = $notes.ToArray() }
@@ -208,12 +225,36 @@ $script:TcUiaErrorListScan = {
             $entireCond = New-Object System.Windows.Automation.AndCondition -ArgumentList (, $entireParts)
             $candidates = [System.Collections.Generic.List[object]]::new()
             try { foreach ($c in $combo.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
-            $winsNow = $null
-            try { $winsNow = $ae::RootElement.FindAll($scope::Children, $pidCond) } catch { $winsNow = $null }
-            if ($null -ne $winsNow) {
-                foreach ($wn in $winsNow) {
-                    try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+            # The drop-down is a popup window; a WPF ComboBox popup is likely an OWNED window
+            # (inferred, not measured), which TopLevelOf skips. So every visible window of the pid,
+            # owned ones included (UiaScanPidWindows.VisibleOf), is searched; with no candidate
+            # the desktop-wide FindAll is tried once when no selectable item was found (#42 review;
+            # needs a real-machine check on the zh-TW VS2022 Error List).
+            $winsNow = [System.Collections.Generic.List[object]]::new()
+            if (([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanPidWindows').Type) {
+                foreach ($wh in [TcAutomation.UiaScanPidWindows]::VisibleOf([uint32]$TargetPid)) {
+                    try { $we = $ae::FromHandle($wh); if ($null -ne $we) { $winsNow.Add($we) } } catch { }
                 }
+            }
+            else { try { foreach ($we in Get-IdeTopLevelWindows) { $winsNow.Add($we) } } catch { } }
+            foreach ($wn in $winsNow) {
+                try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+            }
+            $selectable = @($candidates | Where-Object { $null -ne (Get-UiaPattern $_ ([System.Windows.Automation.SelectionItemPattern]::Pattern)) }).Count
+            if ($selectable -eq 0) {
+                $notes.Add("scope popup: no selectable 'Entire Solution' item in the IDE windows; desktop-wide FindAll fallback")
+                # windows already searched above are skipped (by native handle)
+                $searched = @{}
+                foreach ($wn in $winsNow) { try { $searched[[long]$wn.Current.NativeWindowHandle] = $true } catch { } }
+                try {
+                    foreach ($wn in $ae::RootElement.FindAll($scope::Children, $pidCond)) {
+                        $nh = [long]0
+                        try { $nh = [long]$wn.Current.NativeWindowHandle } catch { $nh = 0 }
+                        if ($nh -ne 0 -and $searched.ContainsKey($nh)) { continue }
+                        try { foreach ($c in $wn.FindAll($scope::Descendants, $entireCond)) { $candidates.Add($c) } } catch { }
+                    }
+                }
+                catch { }
             }
             $selected = $false
             foreach ($c in $candidates) {

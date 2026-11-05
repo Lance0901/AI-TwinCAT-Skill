@@ -59,7 +59,9 @@ function Find-TcBlockedSolutionIde {
         @{ Candidate; Dialog; MatchedBy ('module-state' | 'session-record' | 'dialog-path' |
         'window-title'); Strong ([bool]); Contradiction ([string] or $null); CorroboratedBy
         ('dialog-path' | 'window-title' | $null); WindowTitle },
-        strong matches first.
+        strong matches first. Dialog can be the incomplete-scan record of Find-TcIdeModalDialog
+        (#42, Test-TcModalScanIncomplete): no dialog-path evidence, and an unreadable candidate is
+        then kept (unknown is not "no dialog"); Connect-TcIde reports it as MODAL_SCAN_INCOMPLETE.
     #>
     [CmdletBinding()]
     param(
@@ -133,7 +135,7 @@ function Find-TcBlockedSolutionIde {
 
         $dialog = Find-TcIdeModalDialog -ProcessId $cPid -TimeoutSec $DialogTimeoutSec
         $pathVerdict = 'none'
-        if ($null -ne $dialog) {
+        if ($null -ne $dialog -and -not (Test-TcModalScanIncomplete $dialog)) {
             $paths = @(Get-TcDialogProjectPaths -Text ([string]$dialog.Text))
             if ($paths.Count -gt 0) {
                 $inside = @($paths | Where-Object { Test-TcPathInSolution -Path $_ -SolutionDir $slnDir })

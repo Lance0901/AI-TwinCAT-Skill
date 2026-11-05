@@ -240,7 +240,9 @@ export const GetIdeModalDialog = {
     'Check whether the XAE (Visual Studio shell) window is blocked by a modal dialog, e.g. "Assertion Failed" or a license prompt. ' +
     'Use it before BuildProject / EnableConfig when the IDE seems stuck, and after a BRIDGE_TIMEOUT. Needs an IDE process id: the one from ConnectIde, ' +
     'or (after a bridge restart) the last ConnectIde this server saw, or an explicit ProcessId. ' +
-    'Returns data.dialog = null when nothing is blocking, otherwise {title, text, kind, reloadTarget, hwnd, buttons}. kind "reload-prompt" is ' +
+    'Returns data.scanComplete = true and data.dialog = null when nothing is blocking, otherwise {title, text, kind, reloadTarget, hwnd, buttons}. ' +
+    'A scan that did not finish within TimeoutSec is NOT "no dialog": success false, code MODAL_SCAN_INCOMPLETE, data.scanComplete = false, ' +
+    'data.modalScan.reason (timeout | prepare-timeout | error); retry with a larger TimeoutSec (e.g. 15). kind "reload-prompt" is ' +
     'either the VS prompt "File has been changed outside the environment. Reload the new file?" (reloadTarget "file": a file open in an XAE ' +
     'editor was changed on disk) or the XAE prompt "The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the ' +
     'project?" (reloadTarget "project": a .plcproj was rewritten on disk). For both call ResetSolution: it answers Yes to the project prompt ' +
@@ -248,6 +250,8 @@ export const GetIdeModalDialog = {
     'Any other dialog is kind "unknown" (reloadTarget null): handle it by hand, or DisconnectIde Quit=true Kill=true for an IDE ConnectIde launched. ' +
     'buttons = [{id, name}] of a Win32 message box (control id 1 OK, 2 Cancel, 6 Yes, 7 No; name is the localized caption).',
   annotations: { readOnlyHint: true },
+  // bridge.ps1 Invoke-OpModal caps the scan preparation so that preparation + TimeoutSec + 15 s
+  // margin stays below this (#42): change both together.
   timeoutMs: 90000,
   inputSchema: {
     type: 'object',

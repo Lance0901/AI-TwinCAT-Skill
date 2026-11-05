@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T11:59:54Z",
+    "generatedAt":  "2026-11-05T12:25:53Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1164,7 +1164,7 @@
                                                                                 "type":  "integer",
                                                                                 "minimum":  5,
                                                                                 "maximum":  600,
-                                                                                "description":  "Hard limit for the UI Automation scan. Default 30.",
+                                                                                "description":  "Hard limit for the UI Automation scan, including the one-time preparation of its helper types (the first call in a process; the scan gets what is left, at least 1 s). Default 30.",
                                                                                 "default":  30
                                                                             }
                                                          },

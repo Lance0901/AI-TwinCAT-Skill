@@ -399,12 +399,16 @@ function Enable-TcConfig {
     # Failure of a step after Activate: collect modal dialog, Error List errors and a fresh
     # Boot package comparison into data.diagnostics; a Boot package mismatch wins as code.
     function New-TcRuntimeFailure {
-        param([string]$Message, [string]$Code, [string]$Hint)
-        $diag = [ordered]@{ dialog = $null; errorList = @(); errorListError = $null; bootPackage = $null }
+        # -DialogScan: a scan result the caller already has (a dialog record, an incomplete-scan
+        # record, or 'none' = scanned, no dialog); then no second scan is made (#42).
+        param([string]$Message, [string]$Code, [string]$Hint, [object]$DialogScan)
+        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; errorList = @(); errorListError = $null; bootPackage = $null }
         try {
-            $dlg = Find-TcIdeModalDialog
-            if ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
-        } catch { }
+            $dlg = if ($null -ne $DialogScan) { if ($DialogScan -is [string] -and $DialogScan -eq 'none') { $null } else { $DialogScan } } else { Find-TcIdeModalDialog }
+            # #42: an incomplete scan is reported as such (dialogScanComplete false), never as "no dialog"
+            if (Test-TcModalScanIncomplete $dlg) { $diag.dialogScanComplete = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg }
+            elseif ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
+        } catch { $diag.dialogScanComplete = $false }
         if ($null -ne $deadline -and (Get-Date) -ge $deadline) {
             $diag.errorListError = 'skipped: -TimeoutSec budget exhausted'
         }
@@ -512,6 +516,15 @@ function Enable-TcConfig {
         param([string]$Name)
         $dlg = Find-TcIdeModalDialog
         if ($null -eq $dlg) { return $null }
+        if (Test-TcModalScanIncomplete $dlg) {
+            # #42: unknown is not "no dialog": the step is not attempted
+            $info = ConvertTo-TcModalScanInfo -Scan $dlg
+            Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: modal dialog scan incomplete ($($info.reason))"
+            $res = New-TcStepFailure -Message "MODAL_SCAN_INCOMPLETE: step '$Name' not attempted - the modal-dialog scan of the IDE did not complete ($($info.reason): $($info.message)); it is unknown whether a dialog blocks the IDE." -Code 'MODAL_SCAN_INCOMPLETE'
+            $res.data | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false -Force
+            $res.data | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue $info -Force
+            return $res
+        }
         Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: IDE shows modal dialog '$($dlg.Title)'"
         $short = [string]$dlg.Text
         if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
@@ -882,6 +895,11 @@ function Enable-TcConfig {
     # 1. set-config
     $fail = Test-TcCycleDeadline -Name 'set-config'
     if ($null -ne $fail) { return $fail }
+    # #42 review: modal check BEFORE the first runtime change. A dialog or an incomplete scan stops
+    # here with the target untouched (no lifecycle block); the pre-activate gate below stays for a
+    # dialog that comes up while set-config runs (that one does record a block).
+    $fail = Test-TcStepModalDialog -Name 'set-config'
+    if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
     $blockRequested = 'Config'
@@ -1174,14 +1192,31 @@ function Enable-TcConfig {
     }
     $plcState = $plcs[0].state
     $dlg = $null
-    try { $dlg = Find-TcIdeModalDialog } catch { }
-    $dlgInfo = if ($null -ne $dlg) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
-    if ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
-    $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; ok = ($bad.Count -eq 0) }
+    try { $dlg = Find-TcIdeModalDialog } catch { $dlg = New-TcModalScanIncomplete -Reason 'error' -Message $_.Exception.Message }
+    # #42: success only after a COMPLETE scan found no dialog. One retry with a larger budget
+    # before an incomplete scan fails the readback (the first scan may have paid a cold start).
+    # The retry shares the one -TimeoutSec of the whole call: Min(15, remaining); under 1 s left the
+    # first (incomplete) result stands.
+    if (Test-TcModalScanIncomplete $dlg) {
+        $leftSec = if ($null -ne $deadline) { [int][Math]::Floor(($deadline - (Get-Date)).TotalSeconds) } else { 15 }
+        $retrySec = [Math]::Min(15, $leftSec)
+        if ($retrySec -ge 1) {
+            try { $dlg = Find-TcIdeModalDialog -TimeoutSec $retrySec } catch { $dlg = New-TcModalScanIncomplete -Reason 'error' -TimeoutSec $retrySec -Message $_.Exception.Message }
+        }
+    }
+    $dlgScanIncomplete = Test-TcModalScanIncomplete $dlg
+    $dlgInfo = if ($null -ne $dlg -and -not $dlgScanIncomplete) { [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } } else { $null }
+    $onlyScanBad = ($bad.Count -eq 0 -and $dlgScanIncomplete)
+    if ($dlgScanIncomplete) { $bad += "modal dialog scan incomplete ($([string]$dlg.Reason))" }
+    elseif ($null -ne $dlg) { $bad += "modal dialog '$($dlg.Title)'" }
+    $finalCheck = [PSCustomObject]@{ systemState = $sysState; plcs = $plcChecks; dialog = $dlgInfo; dialogScanComplete = (-not $dlgScanIncomplete); ok = ($bad.Count -eq 0) }
+    if ($dlgScanIncomplete) { $finalCheck | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $dlg) }
     if ($bad.Count -gt 0) {
         $detail = "final readback: $($bad -join ', ')"
         Add-TcStepRecord -Name 'verify' -Ok $false -Watch $sw -Detail $detail
-        return New-TcRuntimeFailure -Message "Cycle steps reported success but the $detail." -Code 'RUNTIME_STATE_MISMATCH'
+        $verifyCode = if ($onlyScanBad) { 'MODAL_SCAN_INCOMPLETE' } else { 'RUNTIME_STATE_MISMATCH' }
+        # the verify scan result is reused: no second dialog scan on top of the -TimeoutSec budget
+        return New-TcRuntimeFailure -Message "Cycle steps reported success but the $detail." -Code $verifyCode -DialogScan $(if ($null -eq $dlg) { 'none' } else { $dlg })
     }
     Add-TcStepRecord -Name 'verify' -Ok $true -Watch $sw -Detail "system Run; $((($plcChecks | ForEach-Object { "port $($_.adsPort) $($_.state)" }) -join ', '))"
 
