@@ -130,6 +130,7 @@ function Clear-TcProject {
     $state = $null
     $seenNotDone = $false
     $nextModalCheckSec = 5.0
+    $lastScanIncomplete = $null
     try {
         while ($true) {
             $state = [int](Invoke-TcComRetry -MaxRetries 3 -OperationName 'SolutionBuild.BuildState' -ScriptBlock { $sb.BuildState })
@@ -142,16 +143,21 @@ function Clear-TcProject {
             if ($watch.Elapsed.TotalSeconds -ge $nextModalCheckSec -or $watch.Elapsed.TotalSeconds -ge $TimeoutSec) {
                 $nextModalCheckSec = $watch.Elapsed.TotalSeconds + 5
                 $dialog = Find-TcIdeModalDialog
-                if ($null -ne $dialog) {
+                # An incomplete scan (#42) while polling: unknown, keep polling BuildState.
+                if (Test-TcModalScanIncomplete $dialog) { $lastScanIncomplete = $dialog }
+                elseif ($null -ne $dialog) {
                     return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Clean (clean in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads })
                 }
+                else { $lastScanIncomplete = $null }
             }
             if ($watch.Elapsed.TotalSeconds -ge $TimeoutSec) {
+                $toData = [PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads }
+                if ($null -ne $lastScanIncomplete) { $toData | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $lastScanIncomplete) }
                 return New-TcResult -Success $false `
                     -ErrorMessage "Clean did not finish within $TimeoutSec s (SolutionBuild.BuildState = $state; 1 NotStarted, 2 InProgress, 3 Done)." `
                     -ErrorCode 'CLEAN_TIMEOUT' -Hint (Get-TcErrorHint -Code 'CLEAN_TIMEOUT') `
-                    -Data ([PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads })
+                    -Data $toData
             }
             Start-Sleep -Milliseconds 500
         }
@@ -160,7 +166,8 @@ function Clear-TcProject {
         # A dialog that came up between two modal checks makes BuildState fail as IDE_BUSY first.
         $err = $_
         $dialog = Find-TcIdeModalDialog
-        if ($null -ne $dialog) {
+        # incomplete scan (#42): the BuildState error below is the result; nothing is claimed about a dialog
+        if ($null -ne $dialog -and -not (Test-TcModalScanIncomplete $dialog)) {
             return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Clean (clean in progress)' `
                 -Data ([PSCustomObject]@{ buildState = $state; cleanSec = [math]::Round($watch.Elapsed.TotalSeconds, 1); nullReads = $nullReads })
         }

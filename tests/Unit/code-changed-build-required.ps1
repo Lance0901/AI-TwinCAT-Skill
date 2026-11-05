@@ -193,6 +193,8 @@ Check 'Add-TcLibrary AddLibrary other failure -> LIBRARY_ADD_FAILED, recorded (c
 Reset-State
 
 # --- New-TcProject on a mock DTE: the NEW solution is recorded
+# #70: the template lookup is covered by tests/Unit/new-project-template.ps1; stubbed here (no TwinCAT install needed)
+& $mod { function script:Resolve-TcProjectTemplate { [PSCustomObject]@{ Path = 'C:\Mock\TwinCAT Project.tsproj'; Searched = @('C:\Mock\TwinCAT Project.tsproj') } } }
 $newPlc = [PSCustomObject]@{ Mock = $true }
 $newPlc | Add-Member -MemberType ScriptMethod -Name CreateChild -Value { param($a, $b, $c, $d) [PSCustomObject]@{ Name = $a } }
 $newSm = [PSCustomObject]@{ Mock = $true }
@@ -200,8 +202,8 @@ $newSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param
 # #70: an IDE without an open solution (New-TcProject refuses otherwise, SOLUTION_ALREADY_OPEN)
 $solution = [PSCustomObject]@{ Mock = $true; IsOpen = $false; FullName = '' }
 $solution | Add-Member -MemberType ScriptMethod -Name Create -Value { param($a, $b) }
-$solution | Add-Member -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) [PSCustomObject]@{ Object = $newSm } }.GetNewClosure()
-$solution | Add-Member -MemberType ScriptMethod -Name SaveAs -Value { param($a) Set-Content -LiteralPath $a -Value '' -Encoding ASCII }
+$solution | Add-Member -MemberType ScriptMethod -Name AddFromTemplate -Value { param($a, $b, $c, $d) $tcp = [PSCustomObject]@{ Object = $newSm }; $tcp | Add-Member -MemberType ScriptMethod -Name Save -Value { }; $tcp }.GetNewClosure()
+$solution | Add-Member -MemberType ScriptMethod -Name SaveAs -Value { param($a) Set-Content -LiteralPath $a -Value '' -Encoding ASCII; $d = Split-Path -Parent $a; $n = [System.IO.Path]::GetFileNameWithoutExtension($a); Set-Content -LiteralPath (Join-Path $d "$n.tsproj") -Value "<Project><Plc><Project PrjFilePath=`"${n}_Plc\${n}_Plc.plcproj`"/></Plc></Project>" -Encoding ASCII; Set-Content -LiteralPath (Join-Path $d "${n}_Plc.plcproj") -Value '' -Encoding ASCII }   # #70 read-back needs the project files and a .tsproj with a <Plc> node
 & $mod { param($s) $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $s }; $script:TcSolutionPath = 'C:\Old\Old.sln' } $solution
 $r = New-TcProject -Name NewDemo -Path $stateRoot
 $newSln = Join-Path $stateRoot 'NewDemo\NewDemo.sln'
@@ -238,6 +240,12 @@ try {
     $rawBefore = Get-Content -Raw -LiteralPath $recFile
     & $mod { param($p) Remove-TcIdeSolutionRecord -ProcessId $p } $PID
     Check 'Remove-TcIdeSolutionRecord on a corrupt record file leaves it unchanged' ((Get-Content -Raw -LiteralPath $recFile) -eq $rawBefore) ''
+    # #123: the remove fails (record file held open without sharing) -> PROJECT_CREATE_FAILED says so
+    $fs = New-Object IO.FileStream($recFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try { $r123 = New-TcProject -Name NewDemo4 -Path $stateRoot }
+    finally { $fs.Dispose() }
+    Check 'New-TcProject failure after Solution.Create, record not removed -> data.sessionRecordWarning (#123)' ((-not $r123.success) -and $r123.error.code -eq 'PROJECT_CREATE_FAILED' -and $r123.data.sessionRecordWarning -match 'remove failed' -and $r123.data.buildRequired -like '*NewDemo4*') ($r123 | ConvertTo-Json -Compress)
+    & $mod { param($p) Remove-TcIdeSolutionRecord -ProcessId $p } $PID   # lock / file free again: clears the mark
 }
 finally {
     $env:LOCALAPPDATA = $savedLocal
@@ -367,6 +375,10 @@ try {
         Check 'Reset with two records -> both state warnings joined' ($r.data.stateWarning -eq 'warn for Other.sln; warn for Demo.sln') "$($r.data.stateWarning)"
     }
     finally { & $mod { param($f) Set-Item -Path function:script:Set-TcBuildRequired -Value $f } $origSet2 }
+    # #123: data.sessionRecordWarning of the reconnect (session record not updated) is passed on
+    & $mod { Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true; sessionRecordWarning = 'session record of IDE process 0 not updated: mock 123' } } } }
+    $r = Start-Reset -Dialogs @() -Mode @{}
+    Check 'Reset forwards data.sessionRecordWarning of the reconnect (#123)' ($r.success -and $r.data.sessionRecordWarning -eq 'session record of IDE process 0 not updated: mock 123') ($r | ConvertTo-Json -Compress -Depth 2)
 }
 finally {
     & $mod { param($f) Set-Item -Path function:script:Connect-TcIde -Value $f } $connOrig

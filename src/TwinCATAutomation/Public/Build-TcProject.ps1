@@ -439,7 +439,9 @@
             if ($buildWatch.Elapsed.TotalSeconds -ge $nextModalCheckSec) {
                 $nextModalCheckSec = $buildWatch.Elapsed.TotalSeconds + 5
                 $dialog = Find-TcIdeModalDialog
-                if ($null -ne $dialog) {
+                # An incomplete scan (#42) while polling: unknown, keep polling BuildState (the
+                # build result is decided by BuildState, not by this check).
+                if ($null -ne $dialog -and -not (Test-TcModalScanIncomplete $dialog)) {
                     $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
                     & $recordUnverified 'IDE_MODAL_DIALOG during the build' $res.data
@@ -448,13 +450,16 @@
             }
             if ($buildWatch.Elapsed.TotalSeconds -ge $TimeoutSec) {
                 $dialog = Find-TcIdeModalDialog
-                if ($null -ne $dialog) {
+                $scanIncomplete = Test-TcModalScanIncomplete $dialog
+                if ($null -ne $dialog -and -not $scanIncomplete) {
                     $res = New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build (build in progress, BuildState never reached Done)' `
                         -Data ([PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) })
                     & $recordUnverified 'IDE_MODAL_DIALOG during the build' $res.data
                     return $res
                 }
                 $toData = [PSCustomObject]@{ buildState = $buildState; buildSec = [math]::Round($buildWatch.Elapsed.TotalSeconds, 1) }
+                # BUILD_TIMEOUT either way; an incomplete scan is reported, not read as "no dialog".
+                if ($scanIncomplete) { $toData | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $dialog) }
                 & $recordUnverified 'BUILD_TIMEOUT' $toData
                 return New-TcResult -Success $false `
                     -ErrorMessage "Build did not finish within $TimeoutSec s (SolutionBuild.BuildState = $buildState; 1 NotStarted, 2 InProgress, 3 Done)." `

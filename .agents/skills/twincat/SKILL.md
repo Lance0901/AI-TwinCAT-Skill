@@ -55,7 +55,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Reset-TcSolution` | `[-SolutionPath <sln>] [-TimeoutSec 120]` | Dismiss the reload prompt, close all documents (no save), close + reopen the solution on the same IDE so XAE reloads project files changed on disk; only needed when the changed .TcPOU is open in an XAE editor (otherwise XAE picks it up within ~5 s) |
 | `Get-TcIdeInfo` | | Get IDE version, solution path, connection status |
 | `Get-TcAutomationVersion` | `[-Verify]` | Installed version, source repo, commit and install time from `tcauto-install-manifest.json` (#30, offline); `-Verify` checks the installed files' SHA256 (`INSTALL_MANIFEST_MISMATCH`) |
-| `Get-TcIdeModalDialog` | `-ProcessId` `-TimeoutSec` | Report the modal dialog blocking the IDE (data.dialog = null when none); works while DTE calls fail with IDE_BUSY |
+| `Get-TcIdeModalDialog` | `-ProcessId` `-TimeoutSec` | Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog = null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not "none"); works while DTE calls fail with IDE_BUSY |
 
 ### Project Management
 | Command | Parameters | Description |
@@ -119,7 +119,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `Get-TcPlcState` | | Read PLC state |
 | `Set-TcSystemState` | `-State <Run\|Config> [-AmsNetId <id>]` | Set system state via ADS WriteControl |
 | `Get-TcSystemState` | `[-AmsNetId <id>]` | Read system state |
-| `Clear-TcLifecycleBlock` | `-Reason <text> [-AmsNetId <id>]` | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
+| `Clear-TcLifecycleBlock` | `-Reason <text> -FallbackMethod <text> -AllowedSideEffects <text[]> -MaxVerifyLevel <None/SystemState/PlcState/VariableRead/TestObserved> [-AmsNetId <id>]` (#113: all four required, else LIFECYCLE_RECEIPT_INCOMPLETE) | Remove the LIFECYCLE_BLOCKED record of a target (#68); ONLY after the user agreed (adapters/claude-code/SKILL.md "Failure contract") |
 | `Set-TcTarget` | `-AmsNetId <id>` | Set target system |
 
 ### I/O Configuration
