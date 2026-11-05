@@ -4,7 +4,8 @@
 # Remove then skip the write as before, but the old record of that IDE process must no longer be
 # used: Get-TcIdeSolutionRecord returns $null, Find-TcBlockedSolutionIde makes the match weak
 # (contradiction = the warning) and Open-TcProject reports data.sessionRecordWarning. Once a write
-# succeeds again, the record counts again. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager
+# succeeds again, the record counts again. A write that fails INSIDE the lock (file unreadable,
+# Replace blocked by a reader) marks the record untrusted the same way. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager
 # are replaced inside the module scope (fake pids), as in blocked-solution-ide.ps1.
 #   powershell.exe -NoProfile -File tests/Unit/ide-solution-record-untrusted.ps1
 # Exit code = number of failed checks.
@@ -83,7 +84,7 @@ try {
     $w = Get-Warn 1231
     Check 'held-save-warning' ($w -match 'not updated' -and $w -match 'skipped') "$w"
     $h = @(Find-Hit $slnA)
-    Check 'held-find-not-strong' ($h.Count -eq 0 -or (-not $h[0].Strong -and $h[0].Contradiction -match 'not updated')) "hits=$(@($h | ForEach-Object { "$($_.MatchedBy) strong=$($_.Strong) why=$($_.Contradiction)" }) -join ',')"
+    Check 'held-find-not-strong' ($h.Count -eq 1 -and -not $h[0].Strong -and $h[0].Contradiction -match 'not updated') "hits=$(@($h | ForEach-Object { "$($_.MatchedBy) strong=$($_.Strong) why=$($_.Contradiction)" }) -join ',')"
 
     # 4. Remove while held: the record that should be gone is not used either
     & $mod { param($i) Remove-TcIdeSolutionRecord -ProcessId $i } 1232
@@ -111,6 +112,26 @@ try {
     Check 'released-find-old-solution-not-strong' (@($h | Where-Object { $_.Strong }).Count -eq 0) "hits=$(@($h | ForEach-Object { "$($_.MatchedBy) strong=$($_.Strong)" }) -join ',')"
     & $mod { param($i) Remove-TcIdeSolutionRecord -ProcessId $i } 1232
     Check 'released-remove' ((Get-FileSolution 1232) -eq '' -and $null -eq (Get-Warn 1232)) "file=$(Get-FileSolution 1232)"
+
+    # 7. lock taken, but the write fails inside it: the record is untrusted as well
+    $recFile = & $mod { Get-TcIdeSolutionRecordPath }
+    $slnC = Join-Path $tmpRoot 'C\Demo.sln'
+    # 7a. file held open without sharing: the records cannot be read under the lock
+    $fs = New-Object IO.FileStream($recFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try { & $mod { param($c) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $c } $slnC }
+    finally { $fs.Dispose() }
+    $w = Get-Warn 1231
+    Check 'unreadable-in-lock-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Rec 1231) -and $w -match 'save failed' -and $w -match 'not read') "file=$(Get-FileSolution 1231) warn=$w"
+    & $mod { param($b) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $b } $slnB
+    Check 'unreadable-then-saved-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
+    # 7b. file held open by a reader: [IO.File]::Replace keeps failing
+    $fs = New-Object IO.FileStream($recFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { & $mod { param($c) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $c } $slnC }
+    finally { $fs.Dispose() }
+    $w = Get-Warn 1231
+    Check 'replace-blocked-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Rec 1231) -and $w -match 'save failed') "file=$(Get-FileSolution 1231) warn=$w"
+    & $mod { param($b) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $b } $slnB
+    Check 'replace-blocked-then-saved-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
 }
 finally {
     if ($null -ne $release) { try { $null = $release.Set() } catch { } }
