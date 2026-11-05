@@ -4,6 +4,9 @@
 #   * stale count              -Check reports STALE (exit 1); a normal run rewrites it back to the repo text
 #   * missing closing marker   PROBLEM, exit 1, the file is NOT written (hand-written text is not swallowed)
 #   * count marker with text   PROBLEM, exit 1, the file is NOT written
+#   * adapters/codex/tools.json, adapters/antigravity/plugin.yaml (#144) are generated as a whole:
+#     an edited action name is STALE and is rewritten back; a deleted file is created again;
+#     every $operationMap action appears exactly once in both
 #   powershell.exe -NoProfile -File tests/Unit/generated-docs.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -17,7 +20,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $gen = Join-Path $root 'scripts\Update-GeneratedDocs.ps1'
-$targets = @('README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md', 'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md')
+$targets = @('README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md', 'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md', 'adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')
 $work = Join-Path $env:TCAUTO_STATE_DIR 'docs'
 
 function New-DocsCopy([string]$Name) {
@@ -90,6 +93,35 @@ $before = Read-Bytes $readme
 $r = Invoke-Gen $d
 Check 'text-body-problem-exit1' ($r.Code -eq 1 -and $r.Text -match 'not a number') "$($r.Code) $($r.Text)"
 Check 'text-body-file-untouched' (Same (Read-Bytes $readme) $before) 'README.md was rewritten'
+
+# adapters (#144): generated as a whole files
+foreach ($rel in @('adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')) {
+    $tag = ($rel -replace '[^a-z]', '-')
+    $d = New-DocsCopy "adapter-$tag"
+    $f = Join-Path $d $rel
+    $orig = Read-Bytes $f
+    $edited = $utf8.GetString($orig).Replace('AddPou', 'AddPouEdited')
+    [IO.File]::WriteAllBytes($f, $utf8.GetBytes($edited))
+    $r = Invoke-Gen $d -CheckOnly
+    Check "adapter-edit-stale ($rel)" ($r.Code -eq 1 -and $r.Text -match ('STALE\s+' + [regex]::Escape($rel))) "$($r.Code) $($r.Text)"
+    $r = Invoke-Gen $d
+    Check "adapter-edit-rewritten ($rel)" ($r.Code -eq 0 -and (Same (Read-Bytes $f) $orig)) "$($r.Code) $($r.Text)"
+    Remove-Item -LiteralPath $f
+    $r = Invoke-Gen $d
+    Check "adapter-missing-created ($rel)" ($r.Code -eq 0 -and (Same (Read-Bytes $f) $orig)) "$($r.Code) $($r.Text)"
+}
+
+# every operationMap action is in both adapters, once
+$cli = [IO.File]::ReadAllText((Join-Path $root 'Invoke-TwinCATAutomation.ps1'), $utf8)
+$body = [regex]::Match($cli, '\$operationMap\s*=\s*@\{(?<b>.*?)\n\}', 'Singleline').Groups['b'].Value
+$ops = @([regex]::Matches($body, "(?m)^\s*'([A-Za-z0-9]+)'\s*=") | ForEach-Object { $_.Groups[1].Value })
+$codex = (([IO.File]::ReadAllText((Join-Path $root 'adapters\codex\tools.json'), $utf8)) | ConvertFrom-Json).tools
+$yaml = [IO.File]::ReadAllText((Join-Path $root 'adapters\antigravity\plugin.yaml'), $utf8)
+$yamlNames = @([regex]::Matches($yaml, '(?m)^  - name: (\S+)\s*$') | ForEach-Object { $_.Groups[1].Value })
+Check 'operationMap-not-empty' ($ops.Count -gt 50) "$($ops.Count)"
+Check 'codex-actions-equal-operationMap' (($ops -join ',') -ceq (@($codex | ForEach-Object { $_.name }) -join ',')) "codex $(@($codex).Count) vs map $($ops.Count)"
+Check 'antigravity-actions-equal-operationMap' (($ops -join ',') -ceq ($yamlNames -join ',')) "yaml $($yamlNames.Count) vs map $($ops.Count)"
+Check 'codex-no-stale-enterplconline' (@($codex | Where-Object { $_.name -eq 'EnterPlcOnline' }).Count -eq 0) 'EnterPlcOnline is not an operationMap action (PlcLogin is)'
 
 "failed: $fail"
 exit $fail

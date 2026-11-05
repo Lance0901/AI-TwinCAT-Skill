@@ -234,6 +234,7 @@ All commands return structured JSON:
 - TwinCAT 3 XAE (Build 4024+) or Visual Studio 2022 with TwinCAT integration
 - PowerShell 5.1+ or PowerShell 7+
 - .NET Framework (for TwinCAT.Ads.dll)
+- Windows PowerShell must be allowed to run local scripts (execution policy `RemoteSigned` or looser). If the repository came from a zip or a browser download, Windows marks the files as downloaded from the internet (Mark-of-the-Web): run `Get-ChildItem -Recurse <repo> | Unblock-File` once, otherwise a `RemoteSigned` policy refuses the scripts.
 
 ## Important Notes
 
