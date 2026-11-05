@@ -289,7 +289,15 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:多路徑 `Read-TcVariable`(MCP `ReadVariable` / `QuickRead`,Path 有兩個以上)至少一個 path 讀不到。以前整筆仍回 `success: true`,頂層沒有任何標記，只看 `success` 會漏掉(#60,實測 2026-10-28 registered tcauto:部分或全部 path 是 `ADS_SYMBOL_NOT_FOUND` 都回 `success: true`)。
 - **現在(fail closed)**:任一 path 失敗 → `success: false`、`error.code = PARTIAL_READ_FAILED`,message 列出 `<path> (<code>)`。`data` 仍是每個 path 一筆的陣列(順序同輸入，讀到的值照常在裡面;讀不到的那筆是 `{path, error, code, hint}`)。結果頂層另有 `partial`(有 path 失敗就是 `true`)與 `failedPaths`(失敗的 path,依輸入順序);全部成功時是 `success: true`、`partial: false`、`failedPaths: []`。`data` 是陣列，所以這兩個欄位放在頂層，不在 `data` 裡。單一路徑不變(讀不到回 `SYMBOL_NOT_FOUND`,沒有 `partial` / `failedPaths`)。
 - **下一步**:看 `failedPaths` 與 `data` 裡那幾筆的 `code`:`ADS_SYMBOL_NOT_FOUND` 見上節(`Get-TcSymbols` 確認路徑，新變數要先下載);連線類(`ADS_TARGET_NOT_FOUND` / `ADS_PORT_NOT_FOUND` / `ADS_TIMEOUT`)先 `Get-TcPlcState` 確認狀態再只重讀 `failedPaths`。
-- **未涵蓋**:`Watch-TcVariable` 多路徑取樣把讀不到的 path 記成 `null`、沒有 error(#60 實測第 5 點),這次沒改，追蹤在 #139。
+- **Watch**:`Watch-TcVariable` 讀不到時是另一個碼 `WATCH_READ_FAILED`,見下節(#139)。
+
+### WATCH_READ_FAILED
+
+- **現象**:`Watch-TcVariable`(MCP `WatchVariable`)監看期間，至少一個 path 至少有一輪讀不到。以前讀不到的值記成 `null`、沒有 error / code,整筆仍回 `success: true`,和「值真的是 null」分不出來;`Until` 的 path 讀不到時只回 `untilMet: false`(#139,實測 2026-10-28 registered tcauto,`Main.NoSuchVar_Repro60` 那一路是 `null`)。
+- **現在(fail closed,比照 `PARTIAL_READ_FAILED`)**:任一 path 有任一輪讀不到 → `success: false`、`error.code = WATCH_READ_FAILED`,message 列出 `<path> (<code>, <n> of <m> rounds)`。單一路徑和多路徑規則一樣。`data` 照常完整(`samples`、`sampleCount`、`untilMet`、`untilSample`、`finalValue(s)` …),另加 `failedReads`(path → 讀不到的輪數)與 `lastErrors`(path → 最後一次的 `{error, code, hint}`)。讀不到的那一輪在 sample 裡仍是 `null`,但旁邊有錯誤：多路徑是 `sample.errors.<path>`,單一路徑是 `sample.error` / `code`(`hint` 只放在 `data.lastErrors`,免得 `KeepLast` 筆 sample 每筆重複一次)。同一個 path 在 `-Path` 給了兩次(不分大小寫)只讀一次。結果頂層有 `partial` 與 `failedPaths`(依 `-Path` 順序);全部讀到時是 `success: true`、`partial: false`、`failedPaths: []`。
+- **為什麼整筆算失敗**:監看的用途是拿值去判斷;有一輪讀不到，那一輪的 `null` 就不是 PLC 的值，只看 `success` 的呼叫端不能把它當成正常結果(#68 fail closed 的方向)。只有一輪暫時讀不到(例如重啟中 `ADS_TIMEOUT`)也一樣回 `WATCH_READ_FAILED`,`failedReads` 會告訴你是幾輪。
+- **Until**:`untilMet: true` 一定來自一次讀到的值(`untilSample`)。`Until` 的 path 讀不到而 `untilMet: false` 時，message 會寫出來：這不代表條件在 PLC 上沒成立。
+- **下一步**:看 `data.lastErrors` 的 `code`:`SYMBOL_NOT_FOUND` / `ADS_SYMBOL_NOT_FOUND` 見「ADS_SYMBOL_NOT_FOUND」(`Get-TcSymbols` 確認路徑，新變數要先下載);連線類(`ADS_TARGET_NOT_FOUND` / `ADS_PORT_NOT_FOUND` / `ADS_TIMEOUT`)先 `Get-TcPlcState` 確認狀態，再重新監看。
 
 ### ADS_INVALID_STATE(ADS 0x712)
 

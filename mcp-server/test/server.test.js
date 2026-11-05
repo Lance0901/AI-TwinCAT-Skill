@@ -357,13 +357,16 @@ describe('index.js over stdio (extended fixture, composites)', () => {
     assert.deepEqual(none.data, [], 'no match is an empty array, not an object with only seq');
   });
 
-  test('ReadVariable with several paths: array data with every entry; a missing path is an entry with its error', async () => {
+  test('ReadVariable with several paths: array data with every entry; a missing path is an entry with its error (fail closed, #60)', async () => {
     const res = await client.callTool({
       name: 'ReadVariable',
       arguments: { Path: ['TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount', 'MAIN.nMissing'] }
     });
     const body = parse(res);
-    assert.equal(body.success, true);
+    assert.equal(body.success, false);
+    assert.equal(body.error.code, 'PARTIAL_READ_FAILED');
+    assert.equal(body.partial, true);
+    assert.deepEqual(body.failedPaths, ['MAIN.nMissing']);
     assert.ok(Array.isArray(body.data), `data must stay an array: ${JSON.stringify(body)}`);
     assert.equal(body.data.length, 2);
     assert.deepEqual(body.data[0], { path: 'TwinCAT_SystemInfoVarList._TaskInfo[1].CycleCount', value: 0, type: 'INT', reconnected: false });
