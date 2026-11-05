@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Install TwinCAT Automation skill for Codex.
     Checks prerequisites, then installs the skill + AGENTS.md to user-level
@@ -279,7 +279,14 @@ See the ``twincat`` skill for full command reference. Installed version / source
 - All commands return JSON: {"success": true, "data": {...}} or {"success": false, "error": {...}}
 - No dialogs: Enable-TcConfig -Force uses ADS. Enter-TcPlcOnline takes -LoginMode Regular|Download|OnlineChange (no SILENT by default, never flag 3; see docs/troubleshooting.md "LOGIN_FAILED").
 - Write MAIN-level vars for FB testing - PLC overwrites VAR_INPUT every scan cycle.
-- Correct order: Build -> Activate -> Login -> ADS -> Start (ADS port 851 needs Login first).
+- Correct order: Build -> Activate -> Login -> ADS -> Start (ADS port 851 needs Login first). Enable-TcConfig -Force does Activate, Login and PLC Run in one step; do not add Start-Sleep.
+
+## Failure contract (fail closed, #68)
+
+- success: true only after the readback reached the target state. On success: false, error.code LIFECYCLE_BLOCKED, or data.lifecycleBlock: STOP every step that changes the runtime, mark the rest NOT RUN, and report the result (data.lifecycleBlock, data.steps) to the user.
+- Never fall back to raw ADS WriteControl, StartRestartTwinCAT, DTE.ExecuteCommand, the GUI, the TcSystemServiceUm console, or a re-Connect-TcIde after Activate.
+- Clear-TcLifecycleBlock (MCP ClearLifecycleBlock) only after the user has seen the block and agreed (receipt: -Reason, -FallbackMethod, -AllowedSideEffects, -MaxVerifyLevel). Never to get past LIFECYCLE_BLOCKED on your own.
+- Confirm with the user before Enable-TcConfig, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset kills TcSystemServiceUm on a UmRT target) and Invoke-TcTestCycle.
 "@
 
 # Check if existing AGENTS.md belongs to us or to another project

@@ -24,13 +24,14 @@
       adapters/codex/tools.json, adapters/antigravity/plugin.yaml
         One action per key of $operationMap in Invoke-TwinCATAutomation.ps1 (the single source of the
         CLI actions), in file order. Parameters, types, enums, defaults and descriptions come from the
-        action's entry in mcp-server/tools.json (descriptions: first sentence, capped; a DryRun default
-        of true is stated). The three actions that have no tools.json entry (NewProject: not offered on
+        action's entry in mcp-server/tools.json. Descriptions are taken COMPLETE (whitespace collapsed):
+        they carry the safety rules (confirm with the user, fail closed, who may call what); a DryRun
+        default of true is stated if the text does not say it. The three actions that have no tools.json entry (NewProject: not offered on
         MCP, #70; GetIdeModalDialog: composite; ListOperations: CLI only) are described in
         $extraActions below. scripts/check.ps1 additionally compares the action names with
         $operationMap ('adapters' rule).
-    .agents/skills/twincat/SKILL.md keeps only the hand-written lifecycle example and links to
-    adapters/claude-code/SKILL.md for the cmdlet table.
+    .agents/skills/twincat/SKILL.md: hand-written lifecycle example and Failure contract; the cmdlet
+    signature table in it is the generated cmdlet-signatures block (same as adapters/claude-code/SKILL.md).
 .PARAMETER Check
     Report only; exit code 1 when a file differs from the generated output.
 .PARAMETER DocsRoot
@@ -50,7 +51,7 @@ if ([string]::IsNullOrWhiteSpace($DocsRoot)) { $DocsRoot = $repoRoot }
 # Files that carry markers (relative paths). A marker in any other file is ignored.
 $targets = @(
     'README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md',
-    'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md'
+    'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md', '.agents/skills/twincat/SKILL.md'
 )
 # Files that are generated as a whole (relative paths): the content is built below.
 $wholeFiles = @('adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')
@@ -121,9 +122,28 @@ $extraActions = @{
         Description = 'Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not none). Works while DTE calls fail with IDE_BUSY. On MCP this is a composite tool.'
         Params      = @(
             @{ Name = 'ProcessId'; Type = 'integer'; Required = $false; Description = 'IDE process id (default: the connected IDE)' },
-            @{ Name = 'TimeoutSec'; Type = 'integer'; Required = $false; Description = 'Maximum seconds for the scan' })
+            @{ Name = 'TimeoutSec'; Type = 'integer'; Required = $false; Minimum = 1; Maximum = 60; Default = 5; Description = 'How long to probe for a dialog (1..60, default 5).' })
     }
     ListOperations   = @{ Description = 'List all available operations.'; Params = @() }
+}
+
+# $extraActions must describe real operationMap actions, with the parameters of the cmdlet behind them.
+$opCmdlet = @{}
+foreach ($mm in [regex]::Matches($mapMatch.Groups['body'].Value, "(?m)^\s*'([A-Za-z0-9]+)'\s*=\s*(?:[$]null|'([^']+)')")) { $opCmdlet[$mm.Groups[1].Value] = $mm.Groups[2].Value }
+$commonParams = @([System.Management.Automation.PSCmdlet]::CommonParameters) + @([System.Management.Automation.PSCmdlet]::OptionalCommonParameters)
+foreach ($ek in $extraActions.Keys) {
+    if ($actionNames -cnotcontains $ek) { throw "`$extraActions key '$ek' is not an action of `$operationMap in Invoke-TwinCATAutomation.ps1" }
+    $cn = $opCmdlet[$ek]
+    if ([string]::IsNullOrEmpty($cn)) { if (@($extraActions[$ek].Params).Count -ne 0) { throw "`$extraActions '$ek' has parameters but no cmdlet" }; continue }
+    $cmd = $commands | Where-Object { $_.Name -eq $cn }
+    if (-not $cmd) { throw "`$extraActions '$ek': cmdlet '$cn' is not exported by the module" }
+    $real = @($cmd.Parameters.Values | Where-Object { $commonParams -notcontains $_.Name } | ForEach-Object { $_.Name } | Sort-Object)
+    $mine = @($extraActions[$ek].Params | ForEach-Object { $_.Name } | Sort-Object)
+    if (($real -join ',') -cne ($mine -join ',')) { throw "`$extraActions '$ek' parameters ($($mine -join ', ')) differ from $cn ($($real -join ', '))" }
+    foreach ($ep in $extraActions[$ek].Params) {
+        $isMandatory = @($cmd.Parameters[$ep.Name].Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count -gt 0
+        if ([bool]$ep.Required -ne $isMandatory) { throw "`$extraActions '$ek' parameter $($ep.Name): Required = $($ep.Required), cmdlet says $isMandatory" }
+    }
 }
 
 function ConvertTo-AdapterJsonString([string]$s) {
@@ -145,23 +165,11 @@ function ConvertTo-AdapterJsonString([string]$s) {
 function ConvertTo-AdapterScalar($v) {
     if ($v -is [bool]) { return $(if ($v) { 'true' } else { 'false' }) }
     if ($v -is [string]) { return (ConvertTo-AdapterJsonString $v) }
-    ([string]::Format([cultureinfo]::InvariantCulture, '{0}', $v))
+    if ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal]) { return [string]::Format([cultureinfo]::InvariantCulture, '{0}', $v) }
+    throw "adapter generator: value of type $(if ($null -eq $v) { 'null' } else { $v.GetType().FullName }) is not a scalar"
 }
-# First sentence (not split at "e.g. " / "i.e. "), whitespace collapsed, capped.
-function Get-ShortText([string]$Text, [int]$Max) {
-    $s = ($Text -replace '\s+', ' ').Trim()
-    $pos = 0
-    while ($true) {
-        $m = [regex]::Match($s.Substring($pos), '\.\s+(?=[A-Z])')
-        if (-not $m.Success) { break }
-        $end = $pos + $m.Index
-        if ($s.Substring(0, $end + 1) -match '(e\.g|i\.e|vs|etc|\.\.)\.$') { $pos = $end + 1; continue }
-        $s = $s.Substring(0, $end + 1)
-        break
-    }
-    if ($s.Length -gt $Max) { $s = $s.Substring(0, $Max - 3).TrimEnd() + '...' }
-    $s
-}
+# Whole text, whitespace collapsed (the descriptions carry safety rules: nothing is cut).
+function Get-FlatText([string]$Text) { ($Text -replace '\s+', ' ').Trim() }
 
 $toolByName = @{}
 foreach ($t in $toolsDoc.tools) { $toolByName[[string]$t.name] = $t }
@@ -170,7 +178,7 @@ foreach ($an in $actionNames) {
     $ps = New-Object System.Collections.Generic.List[object]
     if ($toolByName.ContainsKey($an)) {
         $tool = $toolByName[$an]
-        $desc = Get-ShortText ([string]$tool.description) 300
+        $desc = Get-FlatText ([string]$tool.description)
         $req = @($tool.inputSchema.required)
         foreach ($prop in $tool.inputSchema.properties.PSObject.Properties) {
             $pv = $prop.Value
@@ -178,11 +186,13 @@ foreach ($an in $actionNames) {
                     Name = $prop.Name
                     Type = $(if ($pv.PSObject.Properties['type']) { [string]$pv.type } else { 'any' })
                     Enum = $(if ($pv.PSObject.Properties['enum']) { @($pv.enum) } else { $null })
+                    Minimum = $(if ($pv.PSObject.Properties['minimum']) { $pv.minimum } else { $null })
+                    Maximum = $(if ($pv.PSObject.Properties['maximum']) { $pv.maximum } else { $null })
                     Items = $(if ($pv.PSObject.Properties['items'] -and $pv.items.PSObject.Properties['type']) { [string]$pv.items.type } else { $null })
                     Required = ($req -contains $prop.Name)
                     HasDefault = [bool]$pv.PSObject.Properties['default']
                     Default = $(if ($pv.PSObject.Properties['default']) { $pv.default } else { $null })
-                    Description = $(if ($pv.PSObject.Properties['description']) { Get-ShortText ([string]$pv.description) 240 } else { '' })
+                    Description = $(if ($pv.PSObject.Properties['description']) { Get-FlatText ([string]$pv.description) } else { '' })
                 })
             if ($prop.Name -eq 'DryRun' -and $pv.PSObject.Properties['default'] -and $pv.default -eq $true -and $desc -notmatch '(?i)dry-run') { $desc += ' Dry-run by default.' }
         }
@@ -190,7 +200,7 @@ foreach ($an in $actionNames) {
     elseif ($extraActions.ContainsKey($an)) {
         $desc = $extraActions[$an].Description
         foreach ($ep in $extraActions[$an].Params) {
-            $ps.Add(@{ Name = $ep.Name; Type = $ep.Type; Enum = $null; Items = $null; Required = $ep.Required; HasDefault = $false; Default = $null; Description = $ep.Description })
+            $ps.Add(@{ Name = $ep.Name; Type = $ep.Type; Enum = $null; Items = $null; Minimum = $ep.Minimum; Maximum = $ep.Maximum; Required = $ep.Required; HasDefault = ($null -ne $ep.Default); Default = $ep.Default; Description = $ep.Description })
         }
     }
     else { throw "operationMap action '$an' has neither a tools.json entry nor an `$extraActions entry in scripts/Update-GeneratedDocs.ps1" }
@@ -213,6 +223,8 @@ for ($ai = 0; $ai -lt $adapterActions.Count; $ai++) {
             $f.Add("`"type`": $(ConvertTo-AdapterJsonString $q.Type)")
             if ($null -ne $q.Enum) { $f.Add("`"enum`": [$((@($q.Enum) | ForEach-Object { ConvertTo-AdapterScalar $_ }) -join ', ')]") }
             if ($q.Items) { $f.Add("`"items`": { `"type`": $(ConvertTo-AdapterJsonString $q.Items) }") }
+            if ($null -ne $q.Minimum) { $f.Add("`"minimum`": $(ConvertTo-AdapterScalar $q.Minimum)") }
+            if ($null -ne $q.Maximum) { $f.Add("`"maximum`": $(ConvertTo-AdapterScalar $q.Maximum)") }
             if ($q.Description) { $f.Add("`"description`": $(ConvertTo-AdapterJsonString $q.Description)") }
             $f.Add("`"required`": $(ConvertTo-AdapterScalar $q.Required)")
             if ($q.HasDefault) { $f.Add("`"default`": $(ConvertTo-AdapterScalar $q.Default)") }
@@ -242,6 +254,8 @@ foreach ($a in $adapterActions) {
             if ($q.Type -ne 'any') { $yamlLines.Add("        type: $($q.Type)") }
             if ($null -ne $q.Enum) { $yamlLines.Add("        enum: [$((@($q.Enum) | ForEach-Object { ConvertTo-AdapterScalar $_ }) -join ', ')]") }
             if ($q.Items) { $yamlLines.Add('        items:'); $yamlLines.Add("          type: $($q.Items)") }
+            if ($null -ne $q.Minimum) { $yamlLines.Add("        minimum: $(ConvertTo-AdapterScalar $q.Minimum)") }
+            if ($null -ne $q.Maximum) { $yamlLines.Add("        maximum: $(ConvertTo-AdapterScalar $q.Maximum)") }
             if ($q.Description) { $yamlLines.Add("        description: $(ConvertTo-AdapterJsonString $q.Description)") }
             $yamlLines.Add("        required: $(ConvertTo-AdapterScalar $q.Required)")
             if ($q.HasDefault) { $yamlLines.Add("        default: $(ConvertTo-AdapterScalar $q.Default)") }

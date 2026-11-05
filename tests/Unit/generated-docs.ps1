@@ -20,7 +20,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $gen = Join-Path $root 'scripts\Update-GeneratedDocs.ps1'
-$targets = @('README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md', 'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md', 'adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')
+$targets = @('README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md', 'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md', 'docs/known-limitations.md', '.agents/skills/twincat/SKILL.md', 'adapters/codex/tools.json', 'adapters/antigravity/plugin.yaml')
 $work = Join-Path $env:TCAUTO_STATE_DIR 'docs'
 
 function New-DocsCopy([string]$Name) {
@@ -122,6 +122,44 @@ Check 'operationMap-not-empty' ($ops.Count -gt 50) "$($ops.Count)"
 Check 'codex-actions-equal-operationMap' (($ops -join ',') -ceq (@($codex | ForEach-Object { $_.name }) -join ',')) "codex $(@($codex).Count) vs map $($ops.Count)"
 Check 'antigravity-actions-equal-operationMap' (($ops -join ',') -ceq ($yamlNames -join ',')) "yaml $($yamlNames.Count) vs map $($ops.Count)"
 Check 'codex-no-stale-enterplconline' (@($codex | Where-Object { $_.name -eq 'EnterPlcOnline' }).Count -eq 0) 'EnterPlcOnline is not an operationMap action (PlcLogin is)'
+
+# safety rules must survive the generation (#146 review): the adapter text is the COMPLETE tool description
+$must = [ordered]@{
+    ClearLifecycleBlock = @('ONLY after the user has seen the block', 'never call it on your own to get past LIFECYCLE_BLOCKED')
+    EnableConfig        = @('Confirm with the user first')
+    WriteVariable       = @('Confirm with the user first')
+    RunTestCycle        = @('Confirm with the user first')
+    SetSystemState      = @('all outputs go to zero', 'call ClearLifecycleBlock only after the user agreed')
+    SetPlcState         = @('Reset kills TcSystemServiceUm', 'call ClearLifecycleBlock only after the user agreed')
+    ReportIssue         = @('ONLY THE USER opens')
+}
+$yamlBlocks = @{}
+foreach ($blk in ($yaml -split "(?m)^  - name: ") | Select-Object -Skip 1) { $yamlBlocks[($blk -split "\r?\n")[0].Trim()] = $blk }
+foreach ($k in $must.Keys) {
+    $cd = [string](@($codex | Where-Object { $_.name -eq $k })[0].description)
+    foreach ($phrase in $must[$k]) {
+        Check "safety-codex-$k ($phrase)" ($cd.Contains($phrase)) $cd.Substring(0, [Math]::Min(120, $cd.Length))
+        Check "safety-antigravity-$k ($phrase)" ($yamlBlocks[$k].Contains($phrase)) ''
+    }
+}
+
+# .agents SKILL.md: failure contract, generated signature table, no blind wait; Codex AGENTS.md template: failure contract
+$agentsSkill = [IO.File]::ReadAllText((Join-Path $root '.agents\skills\twincat\SKILL.md'), $utf8)
+Check 'agents-skill-failure-contract' ($agentsSkill -match 'Failure contract' -and $agentsSkill -match 'LIFECYCLE_BLOCKED' -and $agentsSkill -match 'Clear-TcLifecycleBlock' -and $agentsSkill -match 'agreed') ''
+Check 'agents-skill-signature-table' ($agentsSkill -match '<!-- generated:cmdlet-signatures -->' -and $agentsSkill.Contains('| `Enable-TcConfig` |')) ''
+Check 'agents-skill-no-start-sleep' ($agentsSkill -notmatch '(?m)^\s*Start-Sleep') 'a Start-Sleep line is in the lifecycle example'
+$codexSetup = [IO.File]::ReadAllText((Join-Path $root 'TwinCATSetup-Codex.ps1'), $utf8)
+Check 'codex-setup-failure-contract' ($codexSetup -match 'Failure contract \(fail closed' -and $codexSetup -match 'Clear-TcLifecycleBlock \(MCP ClearLifecycleBlock\) only after the user has seen the block') ''
+
+# .agents SKILL.md signature table edited -> STALE, rewritten back
+$d = New-DocsCopy 'agents-skill'
+$f = Join-Path $d '.agents/skills/twincat/SKILL.md'
+$orig = Read-Bytes $f
+[IO.File]::WriteAllBytes($f, $utf8.GetBytes($utf8.GetString($orig).Replace('| `Enable-TcConfig` |', '| `Enable-TcConfigX` |')))
+$r = Invoke-Gen $d -CheckOnly
+Check 'agents-skill-edit-stale' ($r.Code -eq 1 -and $r.Text -match 'STALE\s+\.agents') "$($r.Code) $($r.Text)"
+$r = Invoke-Gen $d
+Check 'agents-skill-rewritten' ($r.Code -eq 0 -and (Same (Read-Bytes $f) $orig)) "$($r.Code) $($r.Text)"
 
 "failed: $fail"
 exit $fail

@@ -263,7 +263,7 @@ pwsh ./TwinCATSetup-Codex.ps1
 
 會檢查先決條件（Windows、TwinCAT、ADS DLL、IDE、模組）並安裝：
 - `~/.agents/skills/twincat/TwinCATAutomation/` — PowerShell 模組（所有 cmdlet）
-- `~/.agents/skills/twincat/SKILL.md` — Codex 技能，完整 API 參考
+- `~/.agents/skills/twincat/SKILL.md` — Codex 技能：lifecycle 範例、fail-closed 規則與自動產生的 cmdlet 簽章表
 - `~/.codex/AGENTS.md` — 全域專案指引
 
 解除安裝：`pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
@@ -312,7 +312,7 @@ Claude Code 會自動讀取 repo 的 `.mcp.json`;Claude Desktop 設定見 [docs/
 
 - **Codex 桌面版整合**：`TwinCATSetup-Codex.ps1` 安裝器 — 檢查先決條件並將 skill + AGENTS.md 安裝到使用者層級（`~/.agents/skills/`、`~/.codex/`），讓 Codex 在任何專案都能使用 TwinCAT 自動化
 - **AGENTS.md**：Codex 專案指引（在 repo 和使用者層級自動發現）
-- **.agents/skills/twincat/SKILL.md**：Lifecycle 範例，完整 API 參考指向 `adapters/claude-code/SKILL.md`，作為 Codex 技能
+- **.agents/skills/twincat/SKILL.md**：lifecycle 範例、fail-closed 規則與自動產生的 cmdlet 簽章表，作為 Codex 技能
 - **修復 Test 2 根本原因**：ADS 寫入 FB `VAR_INPUT` 會被 PLC 每個掃描週期覆寫。必須改寫 MAIN 層級的獨立變數（Decision #17）
 - **修復完整自動化測試循環**：正確的生命週期順序是 Build -> Activate -> Login -> ADS -> Start -> Test（ADS 連線必須在 Login+Download 之後）
 - **修復 `Enter-TcPlcOnline`**：使用 `LookupTreeItem` 搭配建構的路徑，取代子項列舉（TwinCAT 重啟後 Project 子項會隱藏）

@@ -16,15 +16,15 @@ runtime:
 
 actions:
   - name: ConnectIde
-    description: "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE."
+    description: "Connect to a running TwinCAT XAE / Visual Studio instance (found through the Running Object Table); only if none is found does it launch a new XAE. SolutionPath is optional and opens that .sln after connecting. Call this before any project, build or runtime tool. Returns ideProcessId, connectSec (total seconds), launchSec (only when a new IDE was launched: seconds until DTE was ready) and, when a solution is open, the detected target AmsNetId. When the IDE that has SolutionPath open is blocked by a modal dialog or busy (its DTE answers RPC_E_CALL_REJECTED or an empty Version), it is recognised without COM and IDE_MODAL_DIALOG (or IDE_BUSY without a dialog) is returned with data.ideProcessId, data.dialog, data.matchedBy and data.attached; no second IDE is launched. matchedBy module-state (the IDE this server was connected to), session-record (an earlier ConnectIde saw this process with this solution) or dialog-path (the dialog names a file in the solution folder) attach that IDE (attached=true): GetIdeModalDialog / ResetSolution work on it right away. window-title (title = solution name only; may be a same-named copy elsewhere) does not attach (attached=false); when that IDE is not yours, LaunchIfBlocked=true ignores it and launches. After the dialog is closed the same ConnectIde call connects to it."
     parameters:
       ProgId:
         type: string
-        description: "COM ProgID to connect to / launch."
+        description: "COM ProgID to connect to / launch. When given, running instances with this ProgID are preferred and only this ProgID is used for launching."
         required: false
       SolutionPath:
         type: string
-        description: "Path to a .sln file."
+        description: "Path to a .sln file. If specified, the IDE will open this solution automatically after connecting (or connect to an instance already running this solution)."
         required: false
       NoLaunch:
         type: boolean
@@ -32,11 +32,11 @@ actions:
         required: false
       LaunchIfBlocked:
         type: boolean
-        description: "With -SolutionPath: ignore a blocked IDE that matches only by window title (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and go on as if it were not there (launch unless -NoLaunch)."
+        description: "With -SolutionPath: ignore a blocked IDE that matches only by window title (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and go on as if it were not there (launch unless -NoLaunch). A blocked IDE recognised by strong evidence (module-state, session-record, dialog-path) is still reported."
         required: false
 
   - name: DisconnectIde
-    description: "Release the DTE/COM references held by the bridge."
+    description: "Release the DTE/COM references held by the bridge. The IDE keeps running unless Quit=true, which closes the solution without saving and quits the IDE (only use on an IDE that ConnectIde launched). With Quit=true a modal dialog is checked first: if one is up nothing is attempted, nothing is released (the connection stays: for kind reload-prompt run ResetSolution, then DisconnectIde Quit=true again) and the result is IDE_QUIT_FAILED (data.dialog {title, text, kind, reloadTarget}, quit=false, disconnected=false); if DTE.Quit fails the result is also IDE_QUIT_FAILED (success=false, data.ideProcessId / quitError; the IDE process still runs). After a failure the IDE pid is kept, so DisconnectIde Quit=true Kill=true can follow directly without ConnectIde. Kill=true (only with Quit=true) kills the IDE process in those two cases, but only when this session launched it (data.ownedBySession, still true after the internal reconnect of ResetSolution), otherwise IDE_NOT_OWNED and nothing is killed; data.killed tells whether it was killed. COM references are always released."
     parameters:
       Quit:
         type: boolean
@@ -44,32 +44,34 @@ actions:
         required: false
       Kill:
         type: boolean
-        description: "Only with Quit=true: kill the IDE process when it cannot be quit (modal dialog, DTE.Quit failed)."
+        description: "Only with Quit=true: kill the IDE process when it cannot be quit (modal dialog, DTE.Quit failed). Only for an IDE this session launched (data.ownedBySession); any other IDE -> IDE_NOT_OWNED, nothing killed."
         required: false
 
   - name: ResetSolution
-    description: "Reload every project file from disk: dismisses the reload prompt if it is up (data.dismissedReloadPrompt)."
+    description: "Reload every project file from disk: dismisses the reload prompt if it is up (data.dismissedReloadPrompt). The XAE project prompt \"The project file ... has been modified outside of TwinCAT XAE. Do you want to reload the project?\" (a rewritten .plcproj; GetIdeModalDialog kind reload-prompt, reloadTarget project) is answered Yes by dialog control id (any UI language) and XAE reloads the project itself: then only ConnectIde runs again, no close / reopen (data.answeredYes=true, data.reopenedSolution=false, data.reloadTarget). Otherwise it closes all documents without saving (data.closedDocuments), Solution.Close, Solution.Open of the same .sln on the same IDE, then ConnectIde again (20-25 s in total, data.totalSec). Use right after .TcPOU / .plcproj files were changed ON DISK by another tool while they are open in an XAE editor: otherwise XAE shows the modal \"File has been changed outside the environment. Reload the new file?\" (GetIdeModalDialog kind reload-prompt) and every call blocks. A file that is not open in an editor is picked up automatically within ~5 s and needs no call; WritePouCode / AddPou write through COM and never need it. Before closing, the PLC objects in XAE are compared with the .plcproj on disk (data.projectCheck, per PLC: checked, missingOnDisk [file, relativePath, fileExists], extraOnDisk, complete; a PLC whose .plcproj cannot be located, e.g. an independent .xti project file, gets checked=false + reason and is skipped). Nothing is saved by default: an object that XAE has and the .plcproj does not list cannot be told apart from one deleted on disk, so any missingOnDisk returns PROJECT_UNSAVED_CHANGES and nothing is saved or closed (extraOnDisk alone does not block: the reopen loads the disk version, XAE loses nothing). SaveProjectChanges=true keeps the XAE version: ONLY the project files are saved (.tsproj / .plcproj, DTE Project.Save with a deadline, PROJECT_SAVE_TIMEOUT) and read back (data.savedProjects); it is still refused (PROJECT_UNSAVED_CHANGES, data.saveRefused, plc '*' = not one PLC) when a reload prompt was handled first, the .TcPOU / .TcDUT / .TcGVL is missing at its relative path on disk, or any PLC of the same .tsproj (Project.Save writes every .plcproj below it) could not be compared, was compared incompletely or lists objects XAE does not have. DiscardProjectChanges=true keeps the disk version (closes anyway, XAE-only objects are dropped). The two exclude each other (INVALID_PARAMS). Do not use BuildProject to resolve it: a build also saves editor buffers. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified. Unsaved library references / tasks / I/O are not detected. Any other modal dialog is reported as IDE_MODAL_DIALOG. Dialogs are checked before Solution.FullName is read and again after every poll of it that got no answer, so a reload prompt that XAE shows a few seconds after the disk change is handled in the poll and another dialog returns IDE_MODAL_DIALOG at once instead of RESET_SOLUTION_UNVERIFIED after TimeoutSec. A prompt that comes up later (during the project file check, before or during Documents.CloseAll / Solution.Close) is handled the same way: the reset starts over from the dialog step (nothing is closed before Solution.Close succeeds) and another dialog returns IDE_MODAL_DIALOG instead of PROJECT_SAVE_FAILED / SOLUTION_CLOSE_FAILED (#87; real-machine check pending). The ADS connection is kept. BUILD_REQUIRED (#65): a reload from disk (the files may have been changed outside the module) records kind code-changed for the open solution (data.buildRequired names the tool and the .sln; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true."
     parameters:
       SolutionPath:
         type: string
-        description: ".sln to reopen."
+        description: ".sln to reopen. Default: the solution ConnectIde / OpenProject opened."
         required: false
       TimeoutSec:
         type: integer
+        minimum: 5
+        maximum: 600
         description: "Expected upper bound for each of Documents.CloseAll, Solution.Close and Solution.Open, and the total time Solution.FullName is polled in one call (wait after a Yes reload, solution check), in seconds (default 120)."
         required: false
         default: 120
       DiscardProjectChanges:
         type: boolean
-        description: "true = keep the disk version: skip the project file check and close without saving even when PLC objects in XAE are missing from the .plcproj on disk (they are dropped)."
+        description: "true = keep the disk version: skip the project file check and close without saving even when PLC objects in XAE are missing from the .plcproj on disk (they are dropped). Use after PROJECT_UNSAVED_CHANGES when the disk version is the one to keep. Not together with SaveProjectChanges."
         required: false
       SaveProjectChanges:
         type: boolean
-        description: "true = keep the XAE version: objects in XAE that the .plcproj on disk does not list are saved (project files only) before closing."
+        description: "true = keep the XAE version: objects in XAE that the .plcproj on disk does not list are saved (project files only) before closing. Refused (PROJECT_UNSAVED_CHANGES, data.saveRefused) when the disk shows a change: a reload prompt was handled, an object file is missing on disk, or any PLC of the same .tsproj (Project.Save writes all of them) could not be compared, was compared incompletely or its .plcproj lists objects XAE does not have. Not together with DiscardProjectChanges."
         required: false
 
   - name: GetIdeInfo
-    description: "Return version, edition, open solution, ITcSysManager availability and the active solution platform / configuration (solutionPlatform, solutionConfiguration; null when unreadable) of the connected IDE."
+    description: "Return version, edition, open solution, ITcSysManager availability and the active solution platform / configuration (solutionPlatform, solutionConfiguration; null when unreadable) of the connected IDE. Cheap connectivity check; fails with NOT_CONNECTED before ConnectIde."
 
   - name: GetIdeModalDialog
     description: "Report the modal dialog blocking the IDE (data.scanComplete true + data.dialog null when none; an unfinished scan is MODAL_SCAN_INCOMPLETE, unknown, not none). Works while DTE calls fail with IDE_BUSY. On MCP this is a composite tool."
@@ -80,11 +82,14 @@ actions:
         required: false
       TimeoutSec:
         type: integer
-        description: "Maximum seconds for the scan"
+        minimum: 1
+        maximum: 60
+        description: "How long to probe for a dialog (1..60, default 5)."
         required: false
+        default: 5
 
   - name: GetAutomationVersion
-    description: "Read-only and offline: which TwinCATAutomation this server runs (#30)."
+    description: "Read-only and offline: which TwinCATAutomation this server runs (#30). Module installed by TwinCATSetup-Claude/Codex/Antigravity.ps1: read from tcauto-install-manifest.json in the skill folder (data.installed=true, source=install-manifest): name, sourceUrl, version, release, commit, ref, commitSource (git / release-stamp / unknown), installer, installedAt, sourcePath, fileCount. Server started from the repository: installed=false, source=source-tree, version from the .psd1 and commit from the .git files (git is not started; uncommitted changes are not detected). data.moduleVersion / modulePath describe the loaded module. Verify=true compares every installed file with the SHA256 in the manifest (data.verify: ok, checked, matched, mismatched [path, expected, actual], missing, extra, unreadable [path, error]): a difference returns INSTALL_MANIFEST_MISMATCH, no manifest INSTALL_MANIFEST_NOT_FOUND, an unreadable manifest INSTALL_MANIFEST_INVALID. Include version and commit when reporting an issue."
     parameters:
       Verify:
         type: boolean
@@ -112,11 +117,13 @@ actions:
         required: true
 
   - name: GetProjectTree
-    description: "Read the project tree."
+    description: "Read the project tree. Every node has name, path, type, itemType, subType and children; path can be passed as-is to GetPouCode / WritePouCode PouPath. type is the item kind from ItemType (Project, Folder, FunctionBlock, Function, Program, Dut, Gvl, Task, References ...) or the numeric ItemType when unknown (itemType / subType are also returned as numbers). The PLC node TIPC^<Plc> also lists \"<Plc> Project\" with its POUs, DUTs and GVLs folders (on 4024 and 4026 the project node is hidden from enumeration and is added by path). Depth (default 4) = levels below each root, enough for TIPC^<Plc>^<Plc> Project^POUs^<POU>; a node at the depth limit that still has children comes back with children=[] and truncated=true. PlcOnly=true returns only the TIPC subtree."
     parameters:
       Depth:
         type: integer
-        description: "Levels below each root node (1-10, default 4). 4 reaches the POUs: TIPC(0)^<Plc>(1)^<Plc> Project(2)^POUs(3)^<POU>(4)."
+        minimum: 1
+        maximum: 10
+        description: "Levels below each root node (1-10, default 4). 4 reaches the POUs: TIPC(0)^<Plc>(1)^<Plc> Project(2)^POUs(3)^<POU>(4). Nodes at the limit that have children return truncated=true."
         required: false
         default: 4
       PlcOnly:
@@ -125,7 +132,7 @@ actions:
         required: false
 
   - name: AddPou
-    description: "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), language..."
+    description: "Create a POU (Program, FunctionBlock or Function, language ST) in <Plc> Project^POUs (or PlcProjectPath) and read it back: success only when the new item is found with the expected kind. data: path, folderPath, objectKind (POU), itemType (602 Program / 603 Function / 604 FunctionBlock), language (read back from the new item, must be ST), declaration (default header written by XAE; a Function header must contain : ReturnType). Then fill it with WritePouCode. A POU / DUT / GVL / ITF with the same name anywhere in the same PLC project -> POU_CREATE_FAILED with its path (nothing created; data.duplicateCheckScope = project, or folder when the project has more than 3000 nodes); a failed readback names the step and that the object stays in the tree (error.hint says what to do). A modal dialog in XAE -> IDE_MODAL_DIALOG before anything is created. BUILD_REQUIRED (#65): a created POU (also one whose readback failed) records kind code-changed for the open solution (data.buildRequired names the tool and the POU; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): CreateChild changes the .plcproj only in XAE memory, so after the readback the project files are saved (DTE Project.Save of the .tsproj, with a deadline: PROJECT_SAVE_TIMEOUT + data.saveDiagnostics) and the .plcproj is read back from disk: success only when it has a <Compile Include> with the relative path of the object <folders>\\<Name>.TcPOU (data.projectSaved: plc, plcproj, tsproj, savedFiles, verifiedFiles [file, preExisting], plcprojChanged, lastWriteBefore, lastWriteAfter, saveSec, warning); otherwise PROJECT_SAVE_FAILED (data.objectPath, createdInMemory=true, savedToDisk=false: the object exists only in XAE memory; error.hint gives the next step, also when the .plcproj cannot be located) or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified. PLC still logged in (XAE: Cannot add an object because it affects a device you are currently logged into, measured 2026-10-29 4026 VS2022) -> PLC_LOGGED_IN, nothing created and no BUILD_REQUIRED recorded: PlcLogout first, then call it again."
     parameters:
       Name:
         type: string
@@ -138,16 +145,16 @@ actions:
         required: true
       ReturnType:
         type: string
-        description: "Return type for Functions (e.g., INT, BOOL)."
+        description: "Return type for Functions (e.g., INT, BOOL). Ignored for Program/FunctionBlock."
         required: false
         default: "BOOL"
       PlcProjectPath:
         type: string
-        description: "Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same on 4024 and 4026)."
+        description: "Tree path of the folder the POU is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same on 4024 and 4026). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
         required: false
 
   - name: AddGvl
-    description: "Create a GVL in <Plc> Project^GVLs, write VAR_GLOBAL ... END_VAR from Variables and read it back."
+    description: "Create a GVL in <Plc> Project^GVLs, write VAR_GLOBAL ... END_VAR from Variables and read it back. Variables is an ARRAY in declaration order (#47): [{\"name\":\"bStart\",\"type\":\"BOOL\"},{\"name\":\"nCount\",\"type\":\"INT\",\"init\":\"0\",\"comment\":\"...\"}]; the old object form {\"bStart\":\"BOOL\"} is not accepted (INVALID_PARAMS: object key order is not kept). An invalid entry (name not an identifier, duplicate name, missing type, unknown key) -> INVALID_PARAMS, nothing created. After saving, the declaration read back is parsed and its variable order compared with the input: a difference -> MEMBER_ORDER_MISMATCH (data.expectedOrder, data.actualOrder, data.declaration; the GVL exists, fix it with WritePouCode), never success; on success data.memberOrder is the order read back. data: path, objectKind (GVL), itemType 615, declaration, memberOrder. A name that already exists or a declaration that reads back different -> GVL_CREATE_FAILED. Change it later with WritePouCode Declaration only (a GVL has no implementation). BUILD_REQUIRED (#65): a created GVL (also one whose readback failed) records kind code-changed for the open solution (data.buildRequired names the tool and the GVL; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): CreateChild changes the .plcproj only in XAE memory, so after the readback the project files are saved (DTE Project.Save of the .tsproj, with a deadline: PROJECT_SAVE_TIMEOUT + data.saveDiagnostics) and the .plcproj is read back from disk: success only when it has a <Compile Include> with the relative path of the object <folders>\\<Name>.TcGVL (data.projectSaved: plc, plcproj, tsproj, savedFiles, verifiedFiles [file, preExisting], plcprojChanged, lastWriteBefore, lastWriteAfter, saveSec, warning); otherwise PROJECT_SAVE_FAILED (data.objectPath, createdInMemory=true, savedToDisk=false: the object exists only in XAE memory; error.hint gives the next step, also when the .plcproj cannot be located) or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified. PLC still logged in (XAE: Cannot add an object because it affects a device you are currently logged into, measured 2026-10-29 4026 VS2022) -> PLC_LOGGED_IN, nothing created and no BUILD_REQUIRED recorded: PlcLogout first, then call it again."
     parameters:
       Name:
         type: string
@@ -161,7 +168,7 @@ actions:
         required: false
 
   - name: AddDut
-    description: "Create a DUT (Struct / Enum / Union / Alias) in <Plc> Project^DUTs, write its declaration (TYPE ... END_TYPE from Fields / AliasType; an Enum without Fields gets enum_member := 0) and read it back."
+    description: "Create a DUT (Struct / Enum / Union / Alias) in <Plc> Project^DUTs, write its declaration (TYPE ... END_TYPE from Fields / AliasType; an Enum without Fields gets enum_member := 0) and read it back. Fields is an ARRAY in declaration order (#47): Struct / Union [{\"name\":\"bStart\",\"type\":\"BOOL\"},{\"name\":\"nCount\",\"type\":\"INT\",\"init\":\"0\",\"comment\":\"...\"}], Enum [{\"name\":\"eIdle\",\"value\":0},{\"name\":\"eRun\",\"value\":1}]; the old object form {\"bStart\":\"BOOL\"} is not accepted (INVALID_PARAMS: object key order is not kept). An invalid entry (name not an identifier, duplicate name, missing type, unknown key) -> INVALID_PARAMS, nothing created. After saving, the declaration read back is parsed and its member order compared with the input: a difference -> MEMBER_ORDER_MISMATCH (data.expectedOrder, data.actualOrder, data.declaration; the DUT exists, fix it with WritePouCode), never success; on success data.memberOrder is the order read back. data: path, objectKind (DUT), itemType (605 Enum / 606 Struct / 607 Union / 623 Alias), declaration, memberOrder. A name that already exists or a declaration that reads back different -> DUT_CREATE_FAILED. Change it later with WritePouCode Declaration only (a DUT has no implementation). BUILD_REQUIRED (#65): a created DUT (also one whose readback failed) records kind code-changed for the open solution (data.buildRequired names the tool and the DUT; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): CreateChild changes the .plcproj only in XAE memory, so after the readback the project files are saved (DTE Project.Save of the .tsproj, with a deadline: PROJECT_SAVE_TIMEOUT + data.saveDiagnostics) and the .plcproj is read back from disk: success only when it has a <Compile Include> with the relative path of the object <folders>\\<Name>.TcDUT (data.projectSaved: plc, plcproj, tsproj, savedFiles, verifiedFiles [file, preExisting], plcprojChanged, lastWriteBefore, lastWriteAfter, saveSec, warning); otherwise PROJECT_SAVE_FAILED (data.objectPath, createdInMemory=true, savedToDisk=false: the object exists only in XAE memory; error.hint gives the next step, also when the .plcproj cannot be located) or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified. PLC still logged in (XAE: Cannot add an object because it affects a device you are currently logged into, measured 2026-10-29 4026 VS2022) -> PLC_LOGGED_IN, nothing created and no BUILD_REQUIRED recorded: PlcLogout first, then call it again."
     parameters:
       Name:
         type: string
@@ -176,7 +183,7 @@ actions:
         type: array
         items:
           type: object
-        description: "Members in declaration order (array; the order is kept and verified on readback, #47)."
+        description: "Members in declaration order (array; the order is kept and verified on readback, #47). Struct / Union: [{\"name\":\"bStart\",\"type\":\"BOOL\"},{\"name\":\"nCount\",\"type\":\"INT\",\"init\":\"0\",\"comment\":\"counter\"}] (name and type required). Enum: [{\"name\":\"eIdle\",\"value\":0},{\"name\":\"eRun\"}] (value optional). Ignored for Alias."
         required: false
       AliasType:
         type: string
@@ -184,7 +191,7 @@ actions:
         required: false
 
   - name: AddLibrary
-    description: "Add a library reference to the PLC project: ITcPlcLibraryManager.AddLibrary(Name, Version, Vendor) on TIPC^<Plc>^<Plc> Project^References (TE1000 6.5.14)."
+    description: "Add a library reference to the PLC project: ITcPlcLibraryManager.AddLibrary(Name, Version, Vendor) on TIPC^<Plc>^<Plc> Project^References (TE1000 6.5.14). Version * = newest installed (.plcproj gets LibraryReference Include=\"<name>,newest,<vendor>\"). Already referenced (also as placeholder #<name>): success with data.alreadyPresent=true, nothing added, no BUILD_REQUIRED. Not installed: LIBRARY_ADD_FAILED with data.notInstalled=true and an install hint; nothing is saved, the .plcproj is unchanged. Several PLC projects: pass PlcProjectPath (else PLC_PROJECT_AMBIGUOUS). BUILD_REQUIRED (#65): the added reference (also when AddLibrary failed for another reason) records kind code-changed for the open solution (data.buildRequired names the tool and the library; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true. Project file (#76): the reference is stored in the .plcproj, which is saved (DTE Project.Save of the .tsproj, deadline: PROJECT_SAVE_TIMEOUT) and read back from disk: success only when it lists a library reference named Name (data.projectSaved); otherwise PROJECT_SAVE_FAILED or IDE_MODAL_DIALOG. What else Project.Save writes (measured 2026-10-28, 4026 VS2022): a dirty plain text document is NOT saved; whether unsaved content of a PLC editor (a POU edited in the GUI) is written was NOT verified."
     parameters:
       Name:
         type: string
@@ -192,21 +199,21 @@ actions:
         required: true
       Version:
         type: string
-        description: "Library version."
+        description: "Library version. Default '*' = newest installed (the manual sample uses '*'; the project file then gets <LibraryReference Include=\"<name>,newest,<vendor>\">, measured)."
         required: false
         default: "*"
       Vendor:
         type: string
-        description: "Distributor / company."
+        description: "Distributor / company. Default 'Beckhoff Automation GmbH'."
         required: false
         default: "Beckhoff Automation GmbH"
       PlcProjectPath:
         type: string
-        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project)."
+        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
         required: false
 
   - name: AddInterface
-    description: "Create an INTERFACE (CreateChild 618, TE1000 v1.7.0 6.5.5) in <Plc> Project^POUs (or PlcProjectPath) and read it back: the declaration must be INTERFACE <Name> (EXTENDS <Extends> when given)."
+    description: "Create an INTERFACE (CreateChild 618, TE1000 v1.7.0 6.5.5) in <Plc> Project^POUs (or PlcProjectPath) and read it back: the declaration must be INTERFACE <Name> (EXTENDS <Extends> when given). Extends is one string (an array is refused by XAE, measured 2026-10-31 4026 VS2022); not an identifier list -> INVALID_PARAMS. Same checks, BUILD_REQUIRED (#65), project file save (#76, .TcIO in the .plcproj) and PLC_LOGGED_IN as AddPou; failure codes POU_CREATE_FAILED (step in the message), PROJECT_SAVE_FAILED / PROJECT_SAVE_TIMEOUT, IDE_MODAL_DIALOG. data: path, folderPath, objectKind (ITF), itemType 618, extends, declaration, projectSaved. Add methods / properties with AddPouMember ParentPath=<data.path>."
     parameters:
       Name:
         type: string
@@ -214,19 +221,19 @@ actions:
         required: true
       Extends:
         type: string
-        description: "Optional interface it extends, as one string (e.g. I_Base; several: 'I_A, I_B' is passed as given, not measured)."
+        description: "Optional interface it extends, as one string (e.g. I_Base; several: 'I_A, I_B' is passed as given, not measured). Must be identifiers separated by commas."
         required: false
       PlcProjectPath:
         type: string
-        description: "Tree path of the folder the interface is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same as AddPou PlcProjectPath)."
+        description: "Tree path of the folder the interface is created in, e.g. TIPC^<Plc>^<Plc> Project^POUs (same as AddPou PlcProjectPath). Omit to auto-detect (<Plc> Project^POUs, else the <Plc> Project node; see data.folderPath)."
         required: false
 
   - name: AddPouMember
-    description: "Add a Method, Property, Action, or a property Get / Set accessor below a PROGRAM / FUNCTION_BLOCK / INTERFACE (Get / Set: below a property) and read it back (CreateChild, TE1000 v1.7.0 6.5.5)."
+    description: "Add a Method, Property, Action, or a property Get / Set accessor below a PROGRAM / FUNCTION_BLOCK / INTERFACE (Get / Set: below a property) and read it back (CreateChild, TE1000 v1.7.0 6.5.5). ParentPath: full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor; for Get / Set ...^FB_Motor^P_Speed) or a name as for GetPouCode (FB_Motor, FB_Motor.P_Speed). Sub type / vInfo (measured 2026-10-31 4026 VS2022, self-built client): FB / PROGRAM parent Method 609 {language, ReturnType, Access}, Property 611 {language, ReturnType, Access}, Action 608 {language}; INTERFACE parent Method 610 {ReturnType}, Property 612 {ReturnType}; property parent Get 613 / Set 614 {language, Access}. ReturnType is required for a Property, optional for a Method, not allowed for Action / Get / Set; Name is not needed for Get / Set. Access PUBLIC / PRIVATE / PROTECTED / INTERNAL is checked by the module (XAE makes any other value PUBLIC silently) -> POU_MEMBER_INVALID; wrong parent kind, Access / Language on an interface member -> POU_MEMBER_INVALID. Get / Set below an INTERFACE property (654 / 655) -> POU_MEMBER_UNSUPPORTED (reading such an accessor crashed VS2022); Get / Set with Access other than PUBLIC or Language other than ST -> POU_MEMBER_UNSUPPORTED (accessor-not-measured); a Method without ReturnType only with PUBLIC + ST (its language is reported, not checked). Same name below the parent (case-insensitive) -> POU_MEMBER_EXISTS (data.existingPath). Ambiguous parent name -> POU_AMBIGUOUS (data.candidates). Modal dialog -> IDE_MODAL_DIALOG, PLC logged in -> PLC_LOGGED_IN (PlcLogout first); nothing created in these cases. Success only after the new item is found with the expected ItemType and its declaration names the member, access and type (an action has none; method / action language checked). data.path = full tree path of the member: pass it as PouPath to GetPouCode / WritePouCode. A property gets no Get / Set by itself: add them with Kind Get / Set. Failure after CreateChild -> POU_MEMBER_CREATE_FAILED naming the step (the member stays in the tree). BUILD_REQUIRED (#65): a created member records kind code-changed (data.buildRequired). No project file save is needed (the parent .TcPOU is written at once, the .plcproj does not change)."
     parameters:
       ParentPath:
         type: string
-        description: "The POU, interface or property that gets the member: a full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor, ...^FB_Motor^P_Speed for Get / Set) or a name as for Get-TcPouCode -PouName (FB_Motor, FB_Motor.P_Speed)."
+        description: "The POU, interface or property that gets the member: a full tree path (TIPC^<Plc>^<Plc> Project^POUs^FB_Motor, ...^FB_Motor^P_Speed for Get / Set) or a name as for Get-TcPouCode -PouName (FB_Motor, FB_Motor.P_Speed). A name several objects carry returns POU_AMBIGUOUS with data.candidates."
         required: true
       Kind:
         type: string
@@ -235,15 +242,15 @@ actions:
         required: true
       Name:
         type: string
-        description: "Member name (IEC identifier)."
+        description: "Member name (IEC identifier). Not needed for Get / Set: an accessor is always named Get / Set."
         required: false
       ReturnType:
         type: string
-        description: "Method: return type (optional; none = a method without return type)."
+        description: "Method: return type (optional; none = a method without return type). Property: its type (required). Not allowed for Action / Get / Set."
         required: false
       Access:
         type: string
-        description: "PUBLIC (default), PRIVATE, PROTECTED or INTERNAL (TE1000 6.5.5 p.231)."
+        description: "PUBLIC (default), PRIVATE, PROTECTED or INTERNAL (TE1000 6.5.5 p.231). Anything else returns POU_MEMBER_INVALID. Interface members and actions take none; Get / Set only PUBLIC."
         required: false
         default: "PUBLIC"
       Language:
@@ -262,7 +269,7 @@ actions:
         required: false
       Filter:
         type: string
-        description: "Wildcard on the name (-like, case-insensitive), e.g. 'Tc2_*'."
+        description: "Wildcard on the name (-like, case-insensitive), e.g. 'Tc2_*'. References: matches name, placeholderName or libraryName. Default: everything."
         required: false
       PlcProjectPath:
         type: string
@@ -278,16 +285,16 @@ actions:
         required: true
       LibraryName:
         type: string
-        description: "Default library of the placeholder (e.g. Tc2_Math)."
+        description: "Default library of the placeholder (e.g. Tc2_Math). Empty: one-argument form (device placeholder)."
         required: false
       Version:
         type: string
-        description: "Default library version; '*' (default) = newest installed."
+        description: "Default library version; '*' (default) = newest installed. Only with -LibraryName."
         required: false
         default: "*"
       Distributor:
         type: string
-        description: "Distributor of the default library."
+        description: "Distributor of the default library. Default 'Beckhoff Automation GmbH'. Only with -LibraryName."
         required: false
         default: "Beckhoff Automation GmbH"
       PlcProjectPath:
@@ -296,7 +303,7 @@ actions:
         required: false
 
   - name: RemoveReference
-    description: "Removes a library reference or placeholder from the PLC project (ITcPlcLibraryManager.RemoveReference). Dry-run by default."
+    description: "Removes a library reference or placeholder from the PLC project (ITcPlcLibraryManager.RemoveReference). Dry-run by default; backs up the .plcproj and reads back."
     parameters:
       Name:
         type: string
@@ -305,7 +312,7 @@ actions:
       Kind:
         type: string
         enum: ["Library", "Placeholder"]
-        description: "Library or Placeholder: which reference -Name means."
+        description: "Library or Placeholder: which reference -Name means. Optional; needed only when a library and a placeholder share the name (Placeholder; Library is refused then, see above)."
         required: false
       DryRun:
         type: boolean
@@ -318,7 +325,7 @@ actions:
         required: false
 
   - name: InstallLibrary
-    description: "Installs a .library / .compiled-library file into a library repository of this machine (ITcPlcLibraryManager.InstallLibrary). Dry-run by default."
+    description: "Installs a .library / .compiled-library file into a library repository of this machine (ITcPlcLibraryManager.InstallLibrary). Dry-run by default; reads back with ScanLibraries."
     parameters:
       LibraryPath:
         type: string
@@ -326,7 +333,7 @@ actions:
         required: true
       Repository:
         type: string
-        description: "Repository name."
+        description: "Repository name. Default 'System' (TE1000 6.5.12)."
         required: false
         default: "System"
       DryRun:
@@ -340,7 +347,7 @@ actions:
         required: false
 
   - name: UninstallLibrary
-    description: "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default."
+    description: "Removes one library version from a library repository of this machine (ITcPlcLibraryManager.UninstallLibrary). Dry-run by default; exact name / version / distributor; backs up the version folder; reads back with ScanLibraries."
     parameters:
       LibraryName:
         type: string
@@ -348,7 +355,7 @@ actions:
         required: true
       Version:
         type: string
-        description: "Exact version, e.g. 3.5.1.0."
+        description: "Exact version, e.g. 3.5.1.0. No '*'."
         required: true
       Distributor:
         type: string
@@ -356,7 +363,7 @@ actions:
         required: true
       Repository:
         type: string
-        description: "Repository name."
+        description: "Repository name. Default 'System' (TE1000 6.5.12)."
         required: false
         default: "System"
       DryRun:
@@ -370,15 +377,15 @@ actions:
         required: false
 
   - name: FreezePlaceholder
-    description: "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default."
+    description: "Freezes one library placeholder (or all with -All) to its current version (ITcPlcLibraryManager.FreezePlaceholder). Dry-run by default; backs up the .plcproj, reads it back and checks the version did not change."
     parameters:
       Placeholder:
         type: string
-        description: "Placeholder to freeze, with or without the leading '#'."
+        description: "Placeholder to freeze, with or without the leading '#'. Not together with -All."
         required: false
       All:
         type: boolean
-        description: "Freeze every placeholder (FreezePlaceholder with an empty name)."
+        description: "Freeze every placeholder (FreezePlaceholder with an empty name). Not together with -Placeholder."
         required: false
       DryRun:
         type: boolean
@@ -391,7 +398,7 @@ actions:
         required: false
 
   - name: AddPlcTask
-    description: "Adds a PLC task: a real-time task TIRT^<Name> with CycleTimeUs / Priority plus the PLC task object '<Plc> Project^<Name>' linked to it. Dry-run by default."
+    description: "Adds a PLC task: a real-time task TIRT^<Name> with CycleTimeUs / Priority plus the PLC task object '<Plc> Project^<Name>' linked to it. Dry-run by default; rolls back what it created when a step fails."
     parameters:
       Name:
         type: string
@@ -416,7 +423,7 @@ actions:
         default: true
 
   - name: LinkProgramToTask
-    description: "Links a PROGRAM to a PLC task (CreateChild 650 below '<Plc> Project^<PlcTask>'). Dry-run by default."
+    description: "Links a PROGRAM to a PLC task (CreateChild 650 below '<Plc> Project^<PlcTask>'). Checks first that the name is an existing PROGRAM, exactly; dry-run by default; backs up the task's .TcTTO and reads back."
     parameters:
       ProgramName:
         type: string
@@ -438,7 +445,7 @@ actions:
         default: true
 
   - name: UnlinkProgramFromTask
-    description: "Removes a program call from a PLC task (DeleteChild of the 650 child of '<Plc> Project^<PlcTask>'). Dry-run by default."
+    description: "Removes a program call from a PLC task (DeleteChild of the 650 child of '<Plc> Project^<PlcTask>'). Dry-run by default; backs up the task's .TcTTO and the call (ExportChild .zip) first and reads back."
     parameters:
       ProgramName:
         type: string
@@ -460,13 +467,13 @@ actions:
         default: true
 
   - name: ExportPlcOpen
-    description: "Exports PLC objects (or the whole PLC project) to a PLCopen XML file (PlcOpenExport on '<Plc> Project'); does not change the project."
+    description: "Exports PLC objects (or the whole PLC project) to a PLCopen XML file (PlcOpenExport on '<Plc> Project'); does not change the project. Reads the file back and lists its objects."
     parameters:
       Selection:
         type: array
         items:
           type: string
-        description: "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels; the first level is a folder of the PLC project, e.g. 'AxisInterface.LIB.AxisControl.FB_AxisControl' (the string measured 2026-10-31) or 'POUs.FB_A'."
+        description: "Objects or folders relative to '<Plc> Project', one per element, '.' between folder levels; the first level is a folder of the PLC project, e.g. 'AxisInterface.LIB.AxisControl.FB_AxisControl' (the string measured 2026-10-31) or 'POUs.FB_A'. Leading / trailing blanks are trimmed. Empty = the whole PLC project."
         required: false
       FilePath:
         type: string
@@ -482,7 +489,7 @@ actions:
         required: false
 
   - name: ImportPlcOpen
-    description: "Imports a PLCopen XML file into the PLC project (PlcOpenImport on '<Plc> Project'). Dry-run by default."
+    description: "Imports a PLCopen XML file into the PLC project (PlcOpenImport on '<Plc> Project'). Dry-run by default: lists the objects of the file, the conflicts with the project and what -Option will do with them."
     parameters:
       FilePath:
         type: string
@@ -491,7 +498,7 @@ actions:
       Option:
         type: string
         enum: ["None", "Replace", "Rename", "Skip"]
-        description: "What happens with an object that already exists: None (default; a conflict fails, nothing is imported), Replace (the existing object is replaced, children the file lacks are deleted; backed up first), Rename (the imported object gets '_1..."
+        description: "What happens with an object that already exists: None (default; a conflict fails, nothing is imported), Replace (the existing object is replaced, children the file lacks are deleted; backed up first), Rename (the imported object gets '_1'), Skip (the existing object is kept)."
         required: false
         default: "None"
       PlcProjectPath:
@@ -505,7 +512,7 @@ actions:
         default: true
 
   - name: SaveAsLibrary
-    description: "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed."
+    description: "Saves the PLC project as a library file (.library / .compiled-library) with SaveAsLibrary(path, $false): the library is NOT installed. Also SAVES the .plcproj: unsaved XAE changes of the PLC project are written to disk (measured 2026-10-31, 4026 VS2022 and 4024 XAE, registered tcauto). Reads the file back."
     parameters:
       FilePath:
         type: string
@@ -521,7 +528,7 @@ actions:
         required: false
 
   - name: SaveArchive
-    description: "Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there."
+    description: "Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there. Lists the archive entries."
     parameters:
       FilePath:
         type: string
@@ -530,7 +537,7 @@ actions:
       Kind:
         type: string
         enum: ["Solution", "Configuration"]
-        description: "Solution (default): the whole solution, .tnzip (ITcArchivePersist)."
+        description: "Solution (default): the whole solution, .tnzip (ITcArchivePersist). Configuration: the TwinCAT project only, .tszip (ITcSysManager9.SaveAsArchive)."
         required: false
         default: "Solution"
       Overwrite:
@@ -539,39 +546,39 @@ actions:
         required: false
 
   - name: WritePouCode
-    description: "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed)."
+    description: "Write Declaration and/or Implementation of an existing PLC object through the XAE edit buffer (no ResetSolution needed). DUT / GVL / ITF / property have only a declaration: passing Implementation for one of them returns INVALID_PARAMS and nothing is written (data.objectKind; for a property the hint points to its ^Get / ^Set accessor); send the whole TYPE ... END_TYPE / VAR_GLOBAL ... END_VAR as Declaration. An action has only an implementation: Declaration on it -> INVALID_PARAMS. Implementation \"\" clears the body (written as ' and read back empty, data.cleared=true; otherwise POU_WRITE_FAILED reason empty-not-applied); Declaration \"\" -> POU_WRITE_FAILED reason empty-not-supported, nothing written. Members and POU_AMBIGUOUS / POU_MEMBER_UNSUPPORTED (ITF property Get / Set) as for GetPouCode. data: pouPath, resolvedBy, objectKind, updated[], cleared. Run BuildProject afterwards to compile. BUILD_REQUIRED (#65): a write records kind code-changed (also a write that failed after a setter was called: the edit buffer may have changed; a request refused before any setter records nothing). An ItemType that cannot be read -> POU_WRITE_FAILED reason itemtype-unreadable, nothing written for the open solution (data.buildRequired names the tool and the object; data.stateWarning when the state file could not be written): EnableConfig / PlcLogin / SendPlcProgram then refuse with BUILD_REQUIRED until BuildProject returns data.completeBuild=true."
     parameters:
       PouName:
         type: string
-        description: "Name of the POU to write to."
+        description: "Name of the POU to write to. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing)."
         required: true
       Declaration:
         type: string
-        description: "Structured Text declaration section (VAR blocks)."
+        description: "Structured Text declaration section (VAR blocks). An empty / blank -Declaration is refused (POU_WRITE_FAILED, data.reason empty-not-supported): clearing a declaration is not measured."
         required: false
       Implementation:
         type: string
-        description: "Structured Text implementation section (code body). -Implementation '' clears the body: ImplementationText = '' is written and must read back empty (measured 2026-10-31, 4026 VS2022, self-built client: COM ImplementationText = '' on a me..."
+        description: "Structured Text implementation section (code body). -Implementation '' clears the body: ImplementationText = '' is written and must read back empty (measured 2026-10-31, 4026 VS2022, self-built client: COM ImplementationText = '' on a method reads back '')."
         required: false
       PouPath:
         type: string
-        description: "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy)."
+        description: "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
         required: false
 
   - name: GetPouCode
-    description: "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum..."
+    description: "Read the source of a PLC object: POU, DUT, GVL, interface, method ... data.objectKind (POU / DUT / GVL / ITF / METHOD / ACTION / PROPERTY_GET / ... / UNKNOWN, from the tree item ItemType; data.itemType, data.itemTypeName), data.pouType (Program / Function / FunctionBlock for a POU, Struct / Enum / Union / Alias for a DUT), data.language (ST / LD / FBD ..., null for DUT / GVL / ITF), data.hasImplementation, data.implementationReadable, data.declaration, data.implementation. hasImplementation=false (DUT, GVL, ITF, property): implementation is null because the object has no implementation part, the whole source is in declaration. A POU returns an implementation string (empty when there is no code; LD / FBD return XAE XML, not ST); implementationReadable=false means it has an implementation part that did not come back as text (implementation null). A COM call that throws, or a declaration that reads null, returns POU_READ_FAILED. Members: PouPath <POU path>^<member> (accessor ^<property>^Get), or PouName Parent.Member (FB_X.M_Run, FB_X.P_Value.Get; tried after the name as given). A name that several objects carry (M_Run in two FBs) -> POU_AMBIGUOUS with data.candidates (full paths), never the first hit. The Get / Set of an INTERFACE property (ItemType 654 / 655) -> POU_MEMBER_UNSUPPORTED, nothing read (reading it crashed VS2022, measured 2026-10-31 4026 VS2022). An ItemType that cannot be read -> POU_READ_FAILED reason itemtype-unreadable (fail-closed)."
     parameters:
       PouName:
         type: string
-        description: "Name of the POU to read."
+        description: "Name of the POU to read. A member can be named Parent.Member: FB_X.M_Run, FB_X.P_Value.Get (tried only after the name as given found nothing; becomes <FB_X path>^M_Run)."
         required: true
       PouPath:
         type: string
-        description: "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy)."
+        description: "Full tree path; omit to auto-detect from PouName (POUs folder -> project root -> tree search depth 4 -> Parent.Member, see data.pouPath / data.resolvedBy). Format on 4024 and 4026: TIPC^<Plc>^<Plc> Project^POUs^<name>; DUT ...^DUTs^<name>, GVL ...^GVLs^<name>; member ...^<POU>^<member>, accessor ...^<POU>^<property>^Get. Use GetProjectTree with PlcOnly=true to list paths."
         required: false
 
   - name: IoScan
-    description: "Scan the I/O devices of the target (ProduceXml(false) on TIID, TE1000 6.6.2)."
+    description: "Scan the I/O devices of the target (ProduceXml(false) on TIID, TE1000 6.6.2). Requires the target in Config mode, otherwise IO_SCAN_REQUIRES_CONFIG. Default: only returns data.devices, the I/O tree is not changed; Apply=true adds them (CreateChild + AddressInfo + ScanBoxes) and reads them back. No device found: success, devices=[] and data.warning."
     parameters:
       Apply:
         type: boolean
@@ -602,7 +609,7 @@ actions:
         required: true
       IoChannel:
         type: string
-        description: "Full tree path of the I/O variable."
+        description: "Full tree path of the I/O variable. Omit to remove all links of -PlcVariable."
         required: false
         default: ""
 
@@ -714,11 +721,11 @@ actions:
         required: true
       ClassId:
         type: string
-        description: "Class GUID from the TMC (<Module GUID=...>), with or without braces."
+        description: "Class GUID from the TMC (<Module GUID=...>), with or without braces. Exactly one of ClassId / TypeName."
         required: false
       TypeName:
         type: string
-        description: "Module type name, e.g. TcNtpExternalTimeProvider."
+        description: "Module type name, e.g. TcNtpExternalTimeProvider. Exactly one of ClassId / TypeName."
         required: false
       DryRun:
         type: boolean
@@ -727,7 +734,7 @@ actions:
         default: true
 
   - name: GetTcComParameter
-    description: "Reads TcCOM module parameters: without -Name / -ParameterId the list from the ProduceXml; with one, its value via GetModulePara (offline) or GetOnlineModulePara (-Online)."
+    description: "Reads TcCOM module parameters: without -Name / -ParameterId the list from the ProduceXml; with one, its value via GetModulePara (offline) or GetOnlineModulePara (-Online). Read-only."
     parameters:
       Module:
         type: string
@@ -747,7 +754,7 @@ actions:
         required: false
 
   - name: SetTcComParameter
-    description: "Writes one TcCOM module parameter (SetModulePara into the project, or SetOnlineModulePara with -Online into the running object only) and reads it back. Dry-run by default."
+    description: "Writes one TcCOM module parameter (SetModulePara into the project, or SetOnlineModulePara with -Online into the running object only) and reads it back. Dry-run by default. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool (Online=true, DryRun=false) returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       Module:
         type: string
@@ -766,7 +773,7 @@ actions:
         required: true
       Online:
         type: boolean
-        description: "Write the running object on the target only (needs Activate + Run); the project is not changed."
+        description: "Write the running object on the target only (needs Activate + Run); the project is not changed. With -DryRun $false refused with LIFECYCLE_BLOCKED while the IDE target has a lifecycle block (#68)."
         required: false
       DryRun:
         type: boolean
@@ -797,10 +804,10 @@ actions:
         default: true
 
   - name: GetVariants
-    description: "Reads the project variants (CurrentProjectVariant, ProjectVariantConfig, ProjectVariantItems): current, variants[], groups[]."
+    description: "Reads the project variants (CurrentProjectVariant, ProjectVariantConfig, ProjectVariantItems): current, variants[], groups[]. Read-only."
 
   - name: SetVariantConfig
-    description: "Adds or removes project variants: reads ProjectVariantConfig, changes it, writes the WHOLE document back and reads it back. Dry-run by default."
+    description: "Adds or removes project variants: reads ProjectVariantConfig, changes it, writes the WHOLE document back and reads it back. Dry-run by default; backs up the .tsproj first."
     parameters:
       AddVariant:
         type: array
@@ -838,7 +845,7 @@ actions:
         default: true
 
   - name: SetIndependentFile
-    description: "Turns \"Independent Project File\" (ITcSmTreeItem6.SaveInOwnFile) of a tree item on or off, saves the project and checks the .xti on disk. Dry-run by default."
+    description: "Turns \"Independent Project File\" (ITcSmTreeItem6.SaveInOwnFile) of a tree item on or off, saves the project and checks the .xti on disk. Dry-run by default; backs up BEFORE the setter (it writes the .xti at once)."
     parameters:
       Path:
         type: string
@@ -855,10 +862,10 @@ actions:
         default: true
 
   - name: GetAdsRoutes
-    description: "Lists the ADS routes of the CURRENT target from the TIRR ProduceXml: actual, static and project routes."
+    description: "Lists the ADS routes of the CURRENT target from the TIRR ProduceXml: actual, static and project routes. Read-only."
 
   - name: FindAdsTargets
-    description: "Searches the network for ADS targets (TIRR BroadcastSearch, or Search for one IP / host name); only works when the IDE target is the local system."
+    description: "Searches the network for ADS targets (TIRR BroadcastSearch, or Search for one IP / host name); only works when the IDE target is the local system. Does not change the configuration."
     parameters:
       Search:
         type: string
@@ -866,7 +873,7 @@ actions:
         required: false
 
   - name: AddAdsRoute
-    description: "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). Dry-run by default."
+    description: "NOT MEASURED (no second target was available; only unit tests): add an ADS route to a remote system (TIRR ConsumeXml AddRoute: Name, NetId, Address (IPv4) or HostName, UserName, LocalName) or, with ProjectRoute=true, only a project route (AddProjectRoute, no credentials). DryRun defaults to true. The password is NEVER a tool input: PasswordEnv names an environment variable of the MCP server process (Process scope only; the name must be TCAUTO_ROUTE_PW or TCAUTO_ROUTE_PW_<SUFFIX>, anything else is INVALID_PARAMS; set it in the server env of your MCP client config); data, errors, logs and backups never contain the password or the XML (masked as ***). AddRoute credentials are protected only by a fixed key on the network (Beckhoff advisory 2017-002): trusted networks only. A route to the same NetId -> ROUTE_ALREADY_EXISTS; TIRR is read back (ROUTE_VERIFY_FAILED). There is no tool to remove a route: the Automation Interface cannot (edit StaticRoutes.xml and restart the TwinCAT service, which also stops a local UmRT; see docs/troubleshooting.md). Dry-run by default."
     parameters:
       Name:
         type: string
@@ -878,11 +885,11 @@ actions:
         required: true
       Address:
         type: string
-        description: "IPv4 address of the remote system."
+        description: "IPv4 address of the remote system. Exactly one of Address / HostName."
         required: false
       HostName:
         type: string
-        description: "Host name of the remote system."
+        description: "Host name of the remote system. Exactly one of Address / HostName."
         required: false
       UserName:
         type: string
@@ -907,36 +914,38 @@ actions:
         default: true
 
   - name: LookupTreeItem
-    description: "Generic tree tool, read-only: look up ONE tree item by its full path (ITcSysManager.LookupTreeItem, TE1000 v1.7.0 5.1.1.3) and return name, itemType, subType, subTypeName, type, childCount and children[] (name, path, itemType, subType, type)."
+    description: "Generic tree tool, read-only: look up ONE tree item by its full path (ITcSysManager.LookupTreeItem, TE1000 v1.7.0 5.1.1.3) and return name, itemType, subType, subTypeName, type, childCount and children[] (name, path, itemType, subType, type). Path is the full tree path separated by ^, e.g. TIRT^PlcTask, TIPC^MyPlc^MyPlc Project^POUs, TIID^Device 1 (EtherCAT); wildcards * ? return TREEITEM_PATH_INVALID. A missing path returns TREEITEM_NOT_FOUND whose error.hint and data.nearestPath / nearestChildren name the nearest existing parent and its children. Prefer GetProjectTree / GetIoTree / GetPouCode when they cover the node."
     parameters:
       Path:
         type: string
-        description: "Full tree path, e.g. \"TIRT^PlcTask\" or \"TIPC^MyPlc^MyPlc Project^POUs\"."
+        description: "Full tree path, e.g. \"TIRT^PlcTask\" or \"TIPC^MyPlc^MyPlc Project^POUs\". No wildcards."
         required: true
       MaxChildren:
         type: integer
+        minimum: 1
+        maximum: 1000
         description: "Maximum number of children listed (1-1000, default 200)."
         required: false
         default: 200
 
   - name: ProduceXml
-    description: "Generic tree tool, read-only: return the XML description of one tree item (ITcSmTreeItem.ProduceXml, TE1000 v1.7.0 5.2.1.8; root element TreeItem) in data.xml."
+    description: "Generic tree tool, read-only: return the XML description of one tree item (ITcSmTreeItem.ProduceXml, TE1000 v1.7.0 5.2.1.8; root element TreeItem) in data.xml. Use its element paths to build a ConsumeXml fragment (e.g. TreeItem/TaskDef/CycleTime of a task). Missing path: TREEITEM_NOT_FOUND with the nearest existing parent in error.hint."
     parameters:
       Path:
         type: string
-        description: "Full tree path, e.g. \"TIRT^PlcTask\"."
+        description: "Full tree path, e.g. \"TIRT^PlcTask\". No wildcards."
         required: true
       Recursive:
         type: boolean
-        description: "Passed as bRecursive to ProduceXml (default false)."
+        description: "Passed as bRecursive to ProduceXml (default false). The manual excerpt (5.2.1.8) does not say what it adds. Measured 2026-10-30 (registered tcauto, 4026 VS2022 XAE 3.1.4026.22): no difference on TIRT, a Task (TIRT^PlcTask) and a PLC folder with 3 children; other node types (I/O, NC) not measured."
         required: false
 
   - name: CreateChild
-    description: "Generic tree tool that CHANGES the configuration: create a child below Path (ITcSmTreeItem.CreateChild(Name, SubType, Before, VInfo), TE1000 v1.7.0 5.2.1.2). Dry-run by default."
+    description: "Generic tree tool that CHANGES the configuration: create a child below Path (ITcSmTreeItem.CreateChild(Name, SubType, Before, VInfo), TE1000 v1.7.0 5.2.1.2). Prefer AddPou / AddDut / AddGvl / AddLibrary / IoScan when they cover the object. SubType / VInfo depend on the parent; only use values documented in TE1000 / InfoSys, e.g. TIRT task SubType 0 = with image, 1 = without image (6.3.1); TIID EtherCAT master 111 (6.6.1). DryRun defaults to true (nothing created; data.plannedPath, data.currentChildren). Checks: parent exists (TREEITEM_NOT_FOUND with nearest parent), no child with Name (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing created), CreateChild, look up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged) and the child names must be the old ones plus exactly one (data.childrenAfter; skipped with a warning when the list is cut): data.verified=true, data.createdPath / createdName (XAE may rename: data.warnings); refused -> TREEITEM_CREATE_FAILED, not found afterwards or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed. Dry-run by default."
     parameters:
       Path:
         type: string
-        description: "Full tree path of the PARENT, e.g. \"TIRT\"."
+        description: "Full tree path of the PARENT, e.g. \"TIRT\". No wildcards."
         required: true
       Name:
         type: string
@@ -944,7 +953,7 @@ actions:
         required: true
       SubType:
         type: integer
-        description: "nSubType of CreateChild (default 0)."
+        description: "nSubType of CreateChild (default 0). Depends on the parent; see the examples."
         required: false
         default: 0
       Before:
@@ -962,11 +971,11 @@ actions:
         default: true
 
   - name: ConsumeXml
-    description: "Generic tree tool that CHANGES the configuration: write an XML fragment into one tree item (ITcSmTreeItem.ConsumeXml, TE1000 v1.7.0 5.2.1.1). Dry-run by default."
+    description: "Generic tree tool that CHANGES the configuration: write an XML fragment into one tree item (ITcSmTreeItem.ConsumeXml, TE1000 v1.7.0 5.2.1.1). Prefer a dedicated tool when one exists. DryRun defaults to true: first call it without DryRun and read data.changes (path, current, planned, changed) and data.currentXml; then call again with DryRun=false. The fragment is sent as-is and XAE merges it (fields not in it keep their value; measured 2026-10-30): root <TreeItem>, element paths exactly as in ProduceXml, only the fields to change, e.g. <TreeItem><TaskDef><CycleTime>40000</CycleTime></TaskDef></TreeItem> (CycleTime unit 100 ns). XAE ignores unknown elements silently, so every leaf path must exist in the current XML, else XML_MERGE_FAILED (data.missingPaths, data.reason syntax / root / empty / paths-not-in-current-xml). Refused before sending because the XAE merge is not measured (XML_MERGE_FAILED): attributes-not-supported (only element values, no attributes; data.attributePaths), structure-mismatch (a value on an element that has child elements now, e.g. <TaskDef/> or <TaskDef>123</TaskDef>; data.structurePaths), repeated-count-mismatch (copy every repeated sibling, e.g. all CPU elements, in the current number; data.repeatedCountMismatches), derived-only (only TcModuleInstance Context / ParameterValues would change; data.derivedPaths). Known fields are validated by the module (TaskDef/CycleTime integer > 0, else TREEITEM_INVALID_VALUE). DryRun=false: ProduceXml backup (+ the node disk file such as <task>.TcTTO) to <solution dir>\\.tcauto-backup\\<yyyyMMdd-HHmmss>\\ (data.backupPath, data.backupFiles, data.warnings), IDE_MODAL_DIALOG if a dialog is open (nothing sent), ConsumeXml, read back: every fragment leaf must have the planned value (derived fields excluded, data.mismatches expected / actual) and every other non-derived element / attribute of the whole XML must be unchanged (data.unexpectedChanges path / kind / before / after): data.verified=true, else TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed. Dry-run by default."
     parameters:
       Path:
         type: string
-        description: "Full tree path of the item to change, e.g. \"TIRT^PlcTask\"."
+        description: "Full tree path of the item to change, e.g. \"TIRT^PlcTask\". No wildcards."
         required: true
       Xml:
         type: string
@@ -979,11 +988,11 @@ actions:
         default: true
 
   - name: DeleteChild
-    description: "Generic tree tool that DELETES configuration: delete the tree item at Path (its parent ITcSmTreeItem.DeleteChild(name), TE1000 v1.7.0 5.2.1.3). Dry-run by default."
+    description: "Generic tree tool that DELETES configuration: delete the tree item at Path (its parent ITcSmTreeItem.DeleteChild(name), TE1000 v1.7.0 5.2.1.3). Prefer a dedicated tool when one exists. Full path only, no wildcards, not a top-level node (TREEITEM_PATH_INVALID). ConfirmName is required and must equal the item name exactly, else TREEITEM_DELETE_NAME_MISMATCH (data.nodeName) and nothing is deleted. The item must report the parent derived from Path, else TREEITEM_DELETE_FAILED data.reason parent-mismatch (nothing deleted). DryRun defaults to true (nothing deleted; data.nodeName, itemType, childCount, children). DryRun=false: backup first (recursive ProduceXml data.backupPath, disk file data.backupFiles, ExportChild file data.exportPath for ImportChild: .xti, or .zip for every node below TIPC; XAE refuses .xti for a PLC folder, measured 2026-10-30 4026 VS2022 on a PLC folder only, other TIPC nodes not measured, a failed export deletes nothing). A missing <task>.TcTTO is a warning only when a .plcproj / .tsproj references it (a task without a PLC project has none). When the ExportChild backup fails or its file is missing nothing is deleted: TREEITEM_BACKUP_FAILED data.reason export-failed / export-missing; AllowNoExport=true deletes anyway with a warning. IDE_MODAL_DIALOG if a dialog is open. Then DeleteChild, then the path must no longer resolve: data.verified=true, else TREEITEM_VERIFY_FAILED; refused -> TREEITEM_DELETE_FAILED. Below TIPC records BUILD_REQUIRED code-changed. Dry-run by default."
     parameters:
       Path:
         type: string
-        description: "Full tree path of the item to delete, e.g. \"TIRT^Task 2\"."
+        description: "Full tree path of the item to delete, e.g. \"TIRT^Task 2\". No wildcards."
         required: true
       ConfirmName:
         type: string
@@ -996,27 +1005,27 @@ actions:
         default: true
       AllowNoExport:
         type: boolean
-        description: "true = delete even when the ExportChild backup (.xti, .zip below TIPC) failed or was not written (only the recursive ProduceXml backup remains, ImportChild cannot restore it; data.warnings says so)."
+        description: "true = delete even when the ExportChild backup (.xti, .zip below TIPC) failed or was not written (only the recursive ProduceXml backup remains, ImportChild cannot restore it; data.warnings says so). Default false: TREEITEM_BACKUP_FAILED, nothing deleted."
         required: false
 
   - name: ExportChild
-    description: "Generic tree tool: export the tree item at Path with its subtree to an .xti file (parent ITcSmTreeItem.ExportChild(name, FilePath), TE1000 v1.7.0 5.2.1.4)."
+    description: "Generic tree tool: export the tree item at Path with its subtree to an .xti file (parent ITcSmTreeItem.ExportChild(name, FilePath), TE1000 v1.7.0 5.2.1.4). Does not change the configuration. A PLC folder below TIPC (ItemType 601) needs a .zip file name: XAE refuses .xti there (\"doesn't specify a zip archive\", measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured and passed to XAE as given), so the module refuses it first (TREEITEM_EXPORT_FAILED data.reason plc-requires-zip, data.itemType, hint with the .zip name). FilePath must be an absolute file path (not a root such as C:\\, no < > | \" * ?), its folder must exist and the file must not exist (TREEITEM_EXPORT_FAILED, data.reason not-absolute / invalid-path / folder-missing / file-exists). Success only when the file exists and is not empty (data.exported, data.fileSize). Re-import with ImportChild."
     parameters:
       Path:
         type: string
-        description: "Full tree path of the item to export, e.g. \"TIRT^PlcTask\"."
+        description: "Full tree path of the item to export, e.g. \"TIRT^PlcTask\". No wildcards."
         required: true
       FilePath:
         type: string
-        description: "Absolute path of the file to write: .xti, or .zip for a PLC folder below TIPC (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured)."
+        description: "Absolute path of the file to write: .xti, or .zip for a PLC folder below TIPC (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured). Its folder must exist, the file must not."
         required: true
 
   - name: ImportChild
-    description: "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). Dry-run by default."
+    description: "Generic tree tool that CHANGES the configuration: import an .xti / XML file as a child of Path (ITcSmTreeItem.ImportChild(FilePath, Before, Reconnect, Name), TE1000 v1.7.0 5.2.1.6; templates 6.3.2). A PLC folder is imported from the .zip file ExportChild wrote (measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured). DryRun defaults to true (nothing imported; data.currentChildren, data.fileSize). Checks: FilePath is a valid absolute file path and exists (TREEITEM_IMPORT_FAILED, data.reason not-absolute / invalid-path / file-missing), parent exists, a child named Name does not exist (TREEITEM_ALREADY_EXISTS), Before is a child (looked up as Path^Before). Without Name the name is read from the .xti (data.expectedName; __FILENAME__ = file name without extension; null for a .zip, then data.warnings says no clash check was done) and checked the same way, dry-run included (XAE would rename silently, e.g. Task28 -> Task28_1). DryRun=false: backup of the parent ProduceXml (data.backupPath), IDE_MODAL_DIALOG if a dialog is open (nothing imported), ImportChild, look the imported item up again and re-read the parent ProduceXml (it may only gain entries, ChildCount +1 is expected, data.parentUnchanged) and the child names must be the old ones plus exactly one (data.childrenAfter; skipped with a warning when the list is cut): data.verified=true, data.importedPath / importedName (a name other than Name / expectedName: data.warnings); refused -> TREEITEM_IMPORT_FAILED, not found or a parent field changed (data.unexpectedChanges) -> TREEITEM_VERIFY_FAILED. Below TIPC records BUILD_REQUIRED code-changed."
     parameters:
       Path:
         type: string
-        description: "Full tree path of the PARENT, e.g. \"TIRT\" or \"TIID\"."
+        description: "Full tree path of the PARENT, e.g. \"TIRT\" or \"TIID\". No wildcards."
         required: true
       FilePath:
         type: string
@@ -1044,39 +1053,43 @@ actions:
         default: true
 
   - name: BuildProject
-    description: "Build the PLC project of the open solution and wait for the result."
+    description: "Build the PLC project of the open solution and wait for the result. On BUILD_FAILED read data.codeErrors (description/file/line taken from the XAE Error List) instead of guessing. data.errors counts CODE errors only; missing / unresolved libraries (Library Manager rows such as \"Could not open library\") are counted separately in data.libraryErrors and listed in data.libraryErrorItems. With library errors the PLC code may not have been compiled at all (no code error is then reported), so a build that would otherwise succeed returns LIBRARY_UNRESOLVED (success=false, buildSucceeded=null, codeVerified=false): install the missing libraries in the XAE Library Manager first; AllowUnresolvedLibrary=true accepts it as success with data.warningCode=LIBRARY_UNRESOLVED, but such a build is never complete (data.completeBuild=false) and keeps BUILD_REQUIRED, so EnableConfig / PlcLogin still refuse (#61). data.codeVerified=true means the Error List was read, lists no library error and no code row without a line, and every PLC project took part in the build: a PLC project skipped by the configuration (or none in the solution) gives codeVerified=false and data.warningCodes [PROJECT_SKIPPED_BY_CONFIGURATION, CODE_NOT_VERIFIED] (#58); a success that is not verified that way (Error List unreadable, unlocated code rows) carries data.warningCode=CODE_NOT_VERIFIED. data.warningCodes lists every warning code (data.warningCode is the first). Breaking change (#23): data.errors no longer includes Library Manager rows. data.errorItems keeps every Error List error, each with category code | library | other (other = no file, e.g. a build-summary row). data.decidedBy says what decided buildSucceeded (LastBuildInfo, else ErrorList). Warnings come with their contents: data.warningItems (same shape) and data.codeWarnings (without Library Manager items), unless data.errorListError is set. A full build can take several minutes: the build is started asynchronously and SolutionBuild.BuildState is polled (the synchronous VS2022 call never returns); TimeoutSec (default 600) bounds the wait, after which BUILD_TIMEOUT is returned; a modal dialog that appears during the build is returned as IDE_MODAL_DIALOG. Requires ConnectIde with an open solution. Coverage: data.projects lists every PLC project (.plcproj) with status built / skipped / failed / unknown / disabled (built / skipped from the active solution configuration, DTE SolutionContext.ShouldBuild) and a boolean disabled (from the TIPC tree, ITcSmTreeItem.Disabled of the PLC node, matched one to one by .plcproj path - the PLC node PlcProjectDef/ProjectPath - else by name; data.disabledMatchBy says path / name / null; an ambiguous match counts every project as enabled and sets data.disabledCheckError), data.skippedProjects, data.disabledProjects and data.coverageComplete. A PLC project that is disabled in the TwinCAT project (.tsproj Disabled=\"true\", ITcSmTreeItem.Disabled) and not built has status disabled (#104): it is listed in data.disabledProjects, not in data.skippedProjects, raises no PROJECT_SKIPPED_BY_CONFIGURATION and does not keep coverageComplete / codeVerified / completeBuild false; an ENABLED skipped project still does. When the PLC project list cannot be read every project counts as enabled and data.disabledCheckError is set. data.solutionConfiguration is '<configuration>|<solution platform>' read like GetIdeInfo (data.solutionPlatform equals GetIdeInfo solutionPlatform), data.projectPlatform the .tsproj project platform, data.platformSource how the solution platform was read (with 'context' solutionConfiguration is the configuration name only); each PLC project's own platform is data.projects[].platform. BUILD_REQUIRED (after a platform switch, or after a build that was not a complete success) is cleared only by a build with coverageComplete=true and codeVerified=true (data.completeBuild=true; never an AllowUnresolvedLibrary build, #61). A build that ends LIBRARY_UNRESOLVED, BUILD_FAILED, BUILD_STATUS_UNKNOWN, BUILD_TIMEOUT or IDE_MODAL_DIALOG after it started, or succeeds with completeBuild=false records BUILD_REQUIRED for the solution (data.buildRequired; data.stateWarning when the state file could not be written), so EnableConfig and PlcLogin refuse until a complete build (#56; not for a solution without PLC project). With accepted library rows and a code row without a line number data.warningCodes has LIBRARY_UNRESOLVED and CODE_NOT_VERIFIED. A PLC project that the active solution configuration does not build (no Build.0 in the .sln) is skipped silently by XAE while it still says Build succeeded: the result keeps success but sets data.warningCode=PROJECT_SKIPPED_BY_CONFIGURATION and data.warning. ExpectedProject=[names] makes a skipped project a failure (PROJECT_SKIPPED_BY_CONFIGURATION, build not started), an unknown name EXPECTED_PROJECT_NOT_FOUND, a disabled PLC project EXPECTED_PROJECT_DISABLED (build not started); use it whenever a specific PLC (e.g. a unit-test PLC) must be compiled."
     parameters:
       TimeoutSec:
         type: integer
-        description: "Maximum time in seconds to wait for the build to finish (BuildState = Done); BUILD_TIMEOUT after that."
+        minimum: 5
+        maximum: 7200
+        description: "Maximum time in seconds to wait for the build to finish (BuildState = Done); BUILD_TIMEOUT after that. Default 600."
         required: false
         default: 600
       ExpectedProject:
         type: array
         items:
           type: string
-        description: "PLC project name(s) that must be compiled, e.g. [\"FrameworkUnitTest\"] (the .plcproj file name without extension)."
+        description: "PLC project name(s) that must be compiled, e.g. [\"FrameworkUnitTest\"] (the .plcproj file name without extension). Skipped by the active solution configuration -> PROJECT_SKIPPED_BY_CONFIGURATION (build not started); not in the solution -> EXPECTED_PROJECT_NOT_FOUND; disabled in the TwinCAT project -> EXPECTED_PROJECT_DISABLED."
         required: false
       AllowUnresolvedLibrary:
         type: boolean
-        description: "Accept a build whose Error List shows unresolved libraries as success (data.warningCode=LIBRARY_UNRESOLVED, codeVerified=false) instead of returning LIBRARY_UNRESOLVED."
+        description: "Accept a build whose Error List shows unresolved libraries as success (data.warningCode=LIBRARY_UNRESOLVED, codeVerified=false) instead of returning LIBRARY_UNRESOLVED. It is not a complete build (data.completeBuild=false): BUILD_REQUIRED stays recorded and EnableConfig / PlcLogin / RunLifecycle still refuse to activate or download it (#61); install the missing libraries for that."
         required: false
 
   - name: CleanProject
-    description: "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT)."
+    description: "Clean the open solution (Build > Clean Solution) and wait until SolutionBuild.BuildState is Done (TimeoutSec default 300 -> CLEAN_TIMEOUT). Use instead of touching DTE yourself: issue #18 once hit a null-valued expression on Solution / SolutionBuild right after ConnectIde (cause not confirmed); this tool waits for them and counts the null answers (data.nullReads). A modal dialog returns IDE_MODAL_DIALOG. Readback SolutionBuild.LastBuildInfo: 0 -> success, data.cleanVerified=true; unreadable -> CLEAN_UNVERIFIED (always a failure); > 0 with only unresolved-library Error List rows (<plc>.Library Manager, no line) -> LIBRARY_UNRESOLVED (data.libraryErrorItems; a later BuildProject success may not have compiled the PLC code, #45), or with AllowUnresolvedLibrary=true success with data.warningCode=LIBRARY_UNRESOLVED and cleanVerified=false; any other error -> CLEAN_FAILED (data.errorItems). data: buildState, failedProjects, cleanVerified, cleanSec, nullReads, errorItems."
     parameters:
       TimeoutSec:
         type: integer
-        description: "Maximum time in seconds for the clean (BuildState = Done)."
+        minimum: 5
+        maximum: 3600
+        description: "Maximum time in seconds for the clean (BuildState = Done). Default 300."
         required: false
         default: 300
       AllowUnresolvedLibrary:
         type: boolean
-        description: "Accept a clean whose only errors are unresolved libraries ('<plc>.Library Manager'): success with data.warningCode = LIBRARY_UNRESOLVED and data.cleanVerified = $false instead of the LIBRARY_UNRESOLVED error."
+        description: "Accept a clean whose only errors are unresolved libraries ('<plc>.Library Manager'): success with data.warningCode = LIBRARY_UNRESOLVED and data.cleanVerified = $false instead of the LIBRARY_UNRESOLVED error. Use only for a project known to miss libraries."
         required: false
 
   - name: CheckAllObjects
-    description: "Checks the syntax of EVERY object of the PLC project (ITcPlcIECProject2.CheckAllObjects), also the ones no build compiles; returns the Error List rows like BuildProject."
+    description: "Checks the syntax of EVERY object of the PLC project (ITcPlcIECProject2.CheckAllObjects), also the ones no build compiles; returns the Error List rows like BuildProject. Generates no code, never changes BUILD_REQUIRED."
     parameters:
       PlcProjectPath:
         type: string
@@ -1084,7 +1097,7 @@ actions:
         required: false
 
   - name: GenerateBootProject
-    description: "Generates the local boot project of a PLC (GenerateBootProject($false) on 'TIPC^<Plc>'): writes _Boot\\<platform>\\Plc\\Port_<port>.* of the project, not the target."
+    description: "Generates the local boot project of a PLC (GenerateBootProject($false) on 'TIPC^<Plc>'): writes _Boot\\<platform>\\Plc\\Port_<port>.* of the project, not the target. SAVES the project files. Reads the boot files back."
     parameters:
       PlcProjectPath:
         type: string
@@ -1092,11 +1105,11 @@ actions:
         required: false
 
   - name: GetBuildErrors
-    description: "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]."
+    description: "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is read from the scope combo itself (also while collapsed) and switched to Entire Solution before reading when it shows anything else (left switched, read back). Fewer rows read than the button totals, or a scope that could not be switched, return ERRORLIST_INCOMPLETE (data.missingRows, data.scope), never success with a partial list. BuildProject / CheckAllObjects / CleanProject keep the rows read and block (codeVerified=null) only when the ERROR rows are not proven complete; warnings read short there is data.warningCodes WARNINGS_INCOMPLETE, not blocking."
     parameters:
       IncludeWarnings:
         type: boolean
-        description: "Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA)."
+        description: "Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA). Also reads warning rows (data.warnings, always present when on, possibly empty)."
         required: false
       IncludeMessages:
         type: boolean
@@ -1104,12 +1117,14 @@ actions:
         required: false
       TimeoutSec:
         type: integer
-        description: "Hard limit for the UI Automation scan, including the one-time preparation of its helper types (the first call in a process; the scan gets what is left, at least 1 s)."
+        minimum: 5
+        maximum: 600
+        description: "Hard limit for the UI Automation scan, including the one-time preparation of its helper types (the first call in a process; the scan gets what is left, at least 1 s). Default 30."
         required: false
         default: 30
 
   - name: SetTarget
-    description: "Set the target AmsNetId (ITcSysManager.SetTargetNetId, always done first: data.amsNetId, data.targetSet=true even when the result is an error) and make the active solution platform follow the target."
+    description: "Set the target AmsNetId (ITcSysManager.SetTargetNetId, always done first: data.amsNetId, data.targetSet=true even when the result is an error) and make the active solution platform follow the target. The target decides the platform: the active solution platform must match it (Usermode Runtime / UmRT and TwinCAT/BSD = 'TwinCAT OS (x64)', Windows RT target = 'TwinCAT RT (x64)'), otherwise EnableConfig fails with ACTIVATE_FAILED. Before switching, the project platform of the .tsproj under the chosen solution platform is checked: a solution platform that maps to another project platform (e.g. 'TwinCAT OS (x64)' -> 'TwinCAT OS (ARMT2)') returns PLATFORM_PROJECT_MISMATCH and nothing is switched (data.platformMap). Build selection (#67): on 4026 a PLC's Disabled mirrors whether the ACTIVE configuration has a Build.0 for it (measured 2026-11-03, 4026 VS2022 + TcXaeShell 64-bit), so a PLC disabled under one platform would be built, downloaded and started under another. Before switching, ShouldBuild of every PLC project under the target configuration is compared with the active one (data.buildSelection: plc, project, configuration, current shouldBuild/disabled, target shouldBuild, after): a difference (or a PLC disabled now that the target builds) returns BUILD_SELECTION_CHANGED (data.buildSelectionChanges) and nothing is switched; data that cannot be read returns BUILD_SELECTION_UNKNOWN (fail closed). A difference read back after the switch re-activates the previous configuration (data.restored) and returns BUILD_SELECTION_CHANGED; when that fails (restored=false) BuildProject and EnableConfig refuse with BUILD_SELECTION_CHANGED (data.buildSelectionGuard) until SetTarget switches back to the previous configuration (always allowed; clears it). With Platform that platform is activated for Configuration (default Release; data.platformCheck='parameter'). Without Platform the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) is activated ('target'); not in the solution -> PLATFORM_NOT_FOUND. Target without TARGETINFO (ADS 0x702, data.adsError) and no Platform -> PLATFORM_UNKNOWN (NetId already set; nothing guessed). NoPlatformSwitch=true only sets the NetId ('disabled'). Returns data.platform (solution platform) / projectPlatform (active .tsproj) / requestedProjectPlatform / platformChanged / targetPlatform / targetPlatformSource and, when a platform was activated, configuration / previousPlatform / availablePlatforms / projectCheck / platformMap / platformMapReliable / platformMapReason / buildSelection / buildSelectionChanges. platformMapReliable=false (#110: SolutionConfiguration2.PlatformName read back empty and the .sln not usable, or a duplicate): those entries are keyed <unknown #N> / <duplicate #N>; unknown entries are left out of availablePlatforms, a duplicate's name is listed once (platformMapReason gives the actual cause); the switch itself is still verified by readback. For the full map save the solution, then run SetTarget again: File > Save All in XAE, or BuildProject (measured 2026-11-04, VS2022 VisualStudio.DTE.17.0 + TwinCAT 4026, registered tcauto: the build wrote the .sln back and the next SetTarget was reliable again; not tested on XAE Shell)."
     parameters:
       AmsNetId:
         type: string
@@ -1117,11 +1132,11 @@ actions:
         required: true
       Platform:
         type: string
-        description: "Solution platform to activate, e.g. 'TwinCAT OS (x64)' (Usermode Runtime / UmRT, TwinCAT/BSD) or 'TwinCAT RT (x64)' (Windows RT)."
+        description: "Solution platform to activate, e.g. 'TwinCAT OS (x64)' (Usermode Runtime / UmRT, TwinCAT/BSD) or 'TwinCAT RT (x64)' (Windows RT). Omit to follow the platform the target reports (TARGETINFO); a target without TARGETINFO then returns PLATFORM_UNKNOWN."
         required: false
       Configuration:
         type: string
-        description: "Solution configuration name."
+        description: "Solution configuration name. With Platform default Release; for the automatic switch the active configuration."
         required: false
         default: "Release"
       NoPlatformSwitch:
@@ -1130,7 +1145,7 @@ actions:
         required: false
 
   - name: EnableConfig
-    description: "Activate the configuration on the target without any dialog."
+    description: "Activate the configuration on the target without any dialog. Restarts TwinCAT and downloads/starts the PLC program: the machine stops and restarts. Confirm with the user first. With Force=true it runs the whole lifecycle: Config -> Activate -> wait for Run -> PLC Login+Download -> wait for port 851 -> PLC Run, and reports every step in data.steps. NoLogin=true stops after TwinCAT is in Run (no download, no PLC Run). TwinCAT restarts, so call ConnectAds again afterwards (ReadVariable/WriteVariable also auto-reconnect; data.reconnected tells you). Never add sleeps around this call; it polls until the target state is reached. Before Activate the active solution platform is compared with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700; data.platformCheck='target'), else with Platform when given ('parameter'); the solution platform and the project platform of its .tsproj must both match; on a mismatch the solution platform is switched and the project rebuilt (steps platform-fix, platform-fix-build; data.platformFixed=true; not part of TimeoutSec). NoPlatformFix=true returns PLATFORM_MISMATCH instead, before anything is activated. A solution platform with the right name whose .tsproj is built for another project platform makes the switch return PLATFORM_PROJECT_MISMATCH (data.platformMap, data.requestedProjectPlatform; fix the Configuration Manager). A switch that would change which PLC projects are built returns BUILD_SELECTION_CHANGED (data.buildSelectionChanges: plc, configuration, current shouldBuild/disabled, target shouldBuild; on 4026 a PLC disabled under one platform is enabled under another, measured 2026-11-03, 4026 VS2022 + TcXaeShell 64-bit, #67), unreadable data BUILD_SELECTION_UNKNOWN; either stops before any build or activation (data.buildSelection / buildSelectionChanges / restored, see SetTarget). A target without TARGETINFO (ADS 0x702, e.g. the UmRT of TwinCAT 3.1.4026.21-22) and no Platform: platformCheck='skipped', data.warning set, Activate runs as before. data always has targetPlatform, targetPlatformSource (adsTargetInfo / unavailable), solutionPlatform, projectPlatform (.tsproj project platform), platformFixed, platformCheck. ACTIVATE_FAILED = ActivateConfiguration() returned but XAE reported failed projects ('Check config failed!'; nothing written to the target), usually because the active solution platform (data.solutionPlatform) differs from the target platform: retry with Platform ('TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target). Multi-PLC: every PLC project (or PlcProjectPath) is logged in and started on its own ADS port (851, 852, ...; data.plcs). After Activate the project _Boot package is compared with the Boot folder of a target on this PC (data.bootPackage, BOOT_PACKAGE_MISMATCH). Step verify reads back port 10000 and every PLC port at the end and checks for a modal dialog: anything not Run is RUNTIME_STATE_MISMATCH (data.finalCheck), never success; failures after Activate carry data.diagnostics (dialog, Error List rows, bootPackage). BUILD_REQUIRED (nothing activated): after a solution platform switch or after a BuildProject that was not a complete success (LIBRARY_UNRESOLVED, BUILD_FAILED, completeBuild=false; #56) there was no complete BuildProject; Activate would compile by itself without anybody checking the result. Also after WritePouCode / AddPou / AddDut / AddGvl / AddLibrary / ResetSolution (or the New-TcProject cmdlet) changed the PLC code or project (kind code-changed, #65; error.hint names the tool and object). After a BuildProject that did not prove the code compiled (codeVerified not true, e.g. unresolved libraries, also AllowUnresolvedLibrary=true) the module records BUILD_REQUIRED and EnableConfig does not activate, download or start until a complete build (#61; EnableConfig has no AllowUnresolvedLibrary): when the build after an automatic platform switch succeeds with data.completeBuild not true, BUILD_REQUIRED is returned before set-config (message names codeVerified / warningCodes); install the missing libraries and run BuildProject until data.completeBuild=true. A solution never built or changed through these tools is not refused (known limit, see docs/troubleshooting.md BUILD_REQUIRED). RUNTIME_CRASHED of the set-config / set-run step (local UmRT process gone) is returned with its code and hint, crash data in data.runtimeCrash. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       Force:
         type: boolean
@@ -1142,7 +1157,9 @@ actions:
         required: false
       TimeoutSec:
         type: integer
-        description: "Overall time limit for the whole -Force cycle (single deadline)."
+        minimum: 10
+        maximum: 3600
+        description: "Overall time limit for the whole -Force cycle (single deadline). Default 120. The platform-fix / platform-fix-build steps run before the deadline starts."
         required: false
         default: 120
       NoPlatformFix:
@@ -1151,38 +1168,40 @@ actions:
         required: false
       Platform:
         type: string
-        description: "Reference platform used only when the target does not report one through TARGETINFO (ADS 0x702): 'TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target."
+        description: "Reference platform used only when the target does not report one through TARGETINFO (ADS 0x702): 'TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target. A platform the target reports wins."
         required: false
       PlcProjectPath:
         type: array
         items:
           type: string
-        description: "PLC project(s) to log in and start, by name ([\"FrameworkUnitTest\"]) or tree path."
+        description: "PLC project(s) to log in and start, by name ([\"FrameworkUnitTest\"]) or tree path. Default: every PLC project of the solution."
         required: false
       ActivateTimeoutSec:
         type: integer
-        description: "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force)."
+        minimum: 10
+        maximum: 3600
+        description: "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever."
         required: false
         default: 180
 
   - name: SendPlcProgram
-    description: "Download the compiled PLC program to the target (alias of PlcLogin LoginMode=Download: Login+Download without dialogs)."
+    description: "Download the compiled PLC program to the target (alias of PlcLogin LoginMode=Download: Login+Download without dialogs). Refused with BUILD_REQUIRED like PlcLogin. When the code is unchanged since the running program XAE skips the download: data.downloaded=false (measured 2026-10-28, _AppInfo.AppTimestamp unchanged). After a real download the PLC is left in Stop (data.plcStateAfter): SetPlcState State=Run to start it. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       PlcProjectPath:
         type: string
-        description: "Tree path to PLC project."
+        description: "Tree path to PLC project. Default auto-detects from TIPC."
         required: false
 
   - name: ConnectAds
-    description: "Open the ADS connection to the PLC runtime."
+    description: "Open the ADS connection to the PLC runtime. Leave AmsNetId empty: it is auto-detected from the IDE target and changes per target (local UmRT, remote CX ...), so never hardcode it. Port defaults to 851 (PLC runtime 1). Requires ConnectIde for auto-detection."
     parameters:
       AmsNetId:
         type: string
-        description: "Target AmsNetId."
+        description: "Target AmsNetId. Leave empty to auto-detect from the IDE target (recommended; it differs per target)."
         required: false
       Port:
         type: integer
-        description: "ADS port."
+        description: "ADS port. Default: 851 (PLC Runtime 1)."
         required: false
         default: 851
 
@@ -1190,38 +1209,38 @@ actions:
     description: "Close the ADS connection and forget the cached endpoint (disables auto-reconnect)."
 
   - name: ReadVariable
-    description: "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS."
+    description: "Read one or more PLC variables by symbol path (e.g. [\"MAIN.nCounter\",\"GVL.bRun\"]) via ADS. Path is always an array, even for a single variable. One path: data is the entry (an unknown symbol fails with SYMBOL_NOT_FOUND); several paths: data is an array with one entry per path, a path that could not be read is {path, error, code, hint} inside it. Fail closed (#60): when any of several paths fails the result is success=false with PARTIAL_READ_FAILED, data still holds every entry (the values that were read included), and the top level has partial=true and failedPaths (the failed paths in input order); with every path read it is success=true, partial=false, failedPaths=[]. Each entry has path, value, type: BOOL/integers/REAL/STRING are plain values; TIME/TOD, LTIME/LTOD, DATE/DT, LDATE/LDT return the IEC literal in value (\"T#6s\", \"DT#2026-10-20-12:30:00\") plus the raw integer in ms (TIME/TOD), ns (LTIME/LTOD/LDATE/LDT) or unix (DATE/DT); enums return the integer in value plus the member name in name; STRUCT/ARRAY return the raw bytes in value plus size. Requires ConnectAds (auto-reconnects after EnableConfig)."
     parameters:
       Path:
         type: array
         items:
           type: string
-        description: "Array of PLC symbol paths, e.g. [\"MAIN.nCounter\"]."
+        description: "Array of PLC symbol paths, e.g. [\"MAIN.nCounter\"]. Always an array, also for a single variable."
         required: true
 
   - name: WriteVariable
-    description: "Write a single PLC variable by symbol path via ADS."
+    description: "Write a single PLC variable by symbol path via ADS. Writes directly into the running PLC; may drive outputs or axes. Confirm with the user first. Value is converted to the PLC type of the symbol: JSON bool for BOOL, number for integer/REAL types, string for STRING; TIME/TOD take an IEC literal (\"T#6s\", \"T#1m30s500ms\", \"TOD#12:30:00\"; integer ms also accepted), LTIME/LTOD \"LTIME#1us\" (or integer ns), DATE/DT \"D#2026-10-20\" / \"DT#2026-10-20-12:30:00\" / ISO 8601 (or integer seconds since 1970), enums an integer or the member name. STRUCT/ARRAY cannot be written as a whole (TYPE_MISMATCH): write their members. data.written is the value actually written: the normalized literal for time types (\"T#6000ms\" -> \"T#6s\", raw integer in ms/ns/unix), the converted number otherwise, plus name for enums. Requires ConnectAds. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       Path:
         type: string
         description: "Variable path (e.g., \"MAIN.nSetpoint\")."
         required: true
       Value:
-        description: "New value matching the PLC type of the symbol: JSON bool (BOOL), number (integer/REAL/LREAL), string (STRING)."
+        description: "New value matching the PLC type of the symbol: JSON bool (BOOL), number (integer/REAL/LREAL), string (STRING). TIME/TOD: \"T#6s\" / \"T#1m30s500ms\" / \"TOD#12:30:00\" (integer ms also accepted); LTIME/LTOD: \"LTIME#1us\" (or integer ns); DATE/DT: \"D#2026-10-20\", \"DT#2026-10-20-12:30:00\" or ISO 8601 (or integer seconds since 1970); LDATE/LDT: \"LDT#...\" (or integer ns); enum: integer or member name (\"READY\")."
         required: true
 
   - name: WatchVariable
-    description: "Poll one or more PLC variables (Path is an array; every round reads each path in order) every IntervalMs."
+    description: "Poll one or more PLC variables (Path is an array; every round reads each path in order) every IntervalMs. Without Until it samples for DurationMs (default 2000). With Until it waits for a condition '<Path> <op> <value>' (op: == != > < >= <=, e.g. 'MAIN.fTarget == 123.5' or 'MAIN.bDone == TRUE'; <Path> must be one of Path) and returns as soon as it holds or after UntilTimeoutMs (default 5000): data.untilMet, untilSample, elapsedMs. Numbers compare numerically, TRUE/FALSE as booleans, other values as case-insensitive text; a failed read never satisfies the condition. Only the last KeepLast samples are returned (default 20 with Until, 50 without); sampleCount is the total and truncated tells whether older samples were dropped. Single-path samples are {timestamp, value} plus ms/ns/unix for TIME/DATE types and name for enums (same conversion as ReadVariable; a numeric Until value compares with that raw integer, text with the IEC literal / enum member name), multi-path samples {timestamp, values:{<path>:<value>}}. Use Until instead of a long DurationMs or repeated ReadVariable calls. Requires ConnectAds."
     parameters:
       Path:
         type: array
         items:
           type: string
-        description: "One or more variable paths to monitor, e.g. [\"MAIN.nCounter\"] or [\"MAIN.fActual\",\"MAIN.bDone\"]."
+        description: "One or more variable paths to monitor, e.g. [\"MAIN.nCounter\"] or [\"MAIN.fActual\",\"MAIN.bDone\"]. Always an array."
         required: true
       IntervalMs:
         type: integer
-        description: "Delay between sampling rounds in milliseconds."
+        description: "Delay between sampling rounds in milliseconds. Default: 100."
         required: false
         default: 100
       DurationMs:
@@ -1234,7 +1253,7 @@ actions:
         required: false
       UntilTimeoutMs:
         type: integer
-        description: "Maximum time in ms to wait for Until before returning untilMet=false."
+        description: "Maximum time in ms to wait for Until before returning untilMet=false. Default 5000."
         required: false
         default: 5000
       TimeoutMs:
@@ -1249,7 +1268,7 @@ actions:
         default: 0
 
   - name: GetSymbols
-    description: "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter): data is an array (empty when nothing matches) of {path, type, size, comment}, plus enumValues (member name -> value) for enum types; the execution order is in the top-level order field."
+    description: "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter): data is an array (empty when nothing matches) of {path, type, size, comment}, plus enumValues (member name -> value) for enum types; the execution order is in the top-level order field. Use it to find exact variable paths and types before ReadVariable/WriteVariable."
     parameters:
       Filter:
         type: string
@@ -1260,60 +1279,64 @@ actions:
     description: "Read the PLC runtime state (Run/Stop/...) on the connected ADS port."
 
   - name: SetPlcState
-    description: "Switch the PLC runtime to Run, Stop or Reset and wait for the state."
+    description: "Switch the PLC runtime to Run, Stop or Reset and wait for the state. WARNING: on a UmRT (user-mode runtime) target, Reset kills TcSystemServiceUm and you must EnableConfig again. Prefer Run/Stop. Run/Stop (#131): when the last read of the PLC port failed (e.g. runtime crash) data.currentState / finalState is 'Unreachable', the last state read before is data.lastState and the error data.lastError; data.leftOriginal is true only when a read returned a state other than data.originalState, failed reads are data.unreachableSeen. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       State:
         type: string
         enum: ["Run", "Stop", "Reset"]
-        description: "Run, Stop or Reset."
+        description: "Run, Stop or Reset. Reset kills TcSystemServiceUm on a UmRT target."
         required: true
       TimeoutSec:
         type: integer
-        description: "Maximum wait for Run/Stop to be reached."
+        minimum: 1
+        maximum: 3600
+        description: "Maximum wait for Run/Stop to be reached. Default 30."
         required: false
         default: 30
 
   - name: PlcLogin
-    description: "Login to the PLC project and download the program in one call (PLC_LOGIN_FLAGS Regular, prompts answered by SilentMode, no dialogs)."
+    description: "Login to the PLC project and download the program in one call (PLC_LOGIN_FLAGS Regular, prompts answered by SilentMode, no dialogs). Use after a successful BuildProject when TwinCAT is already in Run; EnableConfig Force=true already includes this step. With several PLC projects pass PlcProjectPath (PLC name such as FrameworkUnitTest or tree path); without it PLC_PROJECT_AMBIGUOUS is returned instead of logging into the first PLC. data.adsPort is the PLC's ADS port. Refused with BUILD_REQUIRED (every LoginMode, nothing sent to the IDE) while the solution needs a complete BuildProject (after a platform switch, a build that was not a complete success, #56, or a code / project change by WritePouCode, AddPou, AddDut, AddGvl, AddLibrary or ResetSolution (or the New-TcProject cmdlet), #65; error.hint names the tool and object): XAE compiles before a login by itself, but that compile is not checked. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       PlcProjectPath:
         type: string
-        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project)."
+        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
         required: false
       LoginMode:
         type: string
         enum: ["Regular", "Download", "OnlineChange"]
-        description: "Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has no program (XAE decides)."
+        description: "Regular (default): PLC_LOGIN_FLAGS_REGULAR - login, download only when the runtime has no program (XAE decides). Download: FORCEDOWNLOAD (used by Send-TcPlcProgram); measured 2026-10-28 (4026 VS2022, UmRT): with code unchanged since the running program XAE does not download (data.downloaded = $false, _AppInfo.AppTimestamp unchanged); after a code change it downloads and the PLC is left in Stop. OnlineChange: FORCEONLINECHANGE. SILENT (256) is only OR-ed in with -SilentFlag."
         required: false
         default: "Regular"
       SilentFlag:
         type: boolean
-        description: "OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags."
+        description: "OR PLC_LOGIN_FLAGS_SILENT (256) into the login flags. Off by default: prompts are answered by the global ITcAutomationSettings.SilentMode that Connect-TcIde enables."
         required: false
       TimeoutSec:
         type: integer
-        description: "Expected upper bound of the Login COM call (Invoke-TcComRetry -TimeoutSec), default 300."
+        minimum: 1
+        maximum: 3600
+        description: "Expected upper bound of the Login COM call (Invoke-TcComRetry -TimeoutSec), default 300. Enable-TcConfig passes the rest of its overall -TimeoutSec budget."
         required: false
         default: 300
 
   - name: PlcLogout
-    description: "Log out of the PLC project (the runtime keeps running)."
+    description: "Log out of the PLC project (the runtime keeps running). With several PLC projects pass PlcProjectPath (PLC name or tree path); without it PLC_PROJECT_AMBIGUOUS. data.plcProjectPath / data.adsPort tell which PLC was logged out."
     parameters:
       PlcProjectPath:
         type: string
-        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project)."
+        description: "PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project."
         required: false
 
   - name: GetSystemState
-    description: "Read the TwinCAT system state (Run/Config) of a target over ADS port 10000."
+    description: "Read the TwinCAT system state (Run/Config) of a target over ADS port 10000. AmsNetId defaults to the IDE target (ConnectIde), then the ADS session (ConnectAds), then the local system 127.0.0.1.1.1; data.amsNetId / data.netIdSource tell which one was used. netIdSource=local means you read the local TwinCAT system, which is usually NOT your target."
     parameters:
       AmsNetId:
         type: string
-        description: "Target AmsNetId."
+        description: "Target AmsNetId. Leave empty to use the IDE target, then the ADS session, then the local system 127.0.0.1.1.1 (see data.netIdSource)."
         required: false
 
   - name: SetSystemState
-    description: "Switch TwinCAT to Run or Config via ADS WriteControl (no StartRestartTwinCAT dialog) and poll until the state is reached."
+    description: "Switch TwinCAT to Run or Config via ADS WriteControl (no StartRestartTwinCAT dialog) and poll until the state is reached. Switching to Config stops the runtime: all outputs go to zero. Does not download the PLC program; EnableConfig Force=true is the usual choice. Run sends AdsState Reset (2) and Config sends Reconfig (16) on port 10000 (data.sentAdsState; Run (5) is refused there with ADS 0x701). After the target state is seen it must hold for SettleSec (default 3 s) and is read back (data.readbackState, data.stateTrace): a runtime that falls back to Config (e.g. ADS 1809 symbol version invalid) returns SYSTEM_STATE_MISMATCH, never success. When the original state equals the target (Run -> Run restart) the system must first be seen leaving it. data: originalState, finalState, reached, held, leftOriginal, latencyMs; when it stays in / falls back to Config the license server (ADS port 30) is read and expired / invalid licenses are put into error.hint and data.licenses. Local UmRT only: when its TcSystemServiceUm process (data.servicePidAtStart) disappears and port 10000 answers ADS 0x7 for 10 s, RUNTIME_CRASHED is returned at once (data.lastError, lastState, runtimeName, unreachableMs) instead of SYSTEM_STATE_TIMEOUT after TimeoutSec; when TimeoutSec ends while the last read fails and no TcSystemServiceUm of that runtime runs any more (process list readable) it is RUNTIME_CRASHED too (data.crashDetectedBy streak / deadline; a failure carries data.probeErrors and deadlineCheck for diagnosis); restart the UmRT, then EnableConfig Force=true. When the last read failed, finalState / currentState is Unreachable (data.lastState = last state read), never the old state; leftOriginal is true only when a read returned another state (unreachableSeen: any failed read after the request, also during the wait). Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       State:
         type: string
@@ -1322,48 +1345,50 @@ actions:
         required: true
       AmsNetId:
         type: string
-        description: "Target AMS Net ID."
+        description: "Target AMS Net ID. Optional; resolved from the IDE target, then the ADS session. Never falls back to the local system 127.0.0.1.1.1."
         required: false
       TimeoutSec:
         type: integer
-        description: "Maximum time to wait for the target state."
+        description: "Maximum time to wait for the target state. Default 60."
         required: false
         default: 60
       SettleSec:
         type: integer
-        description: "Seconds the reached state must hold before success (sampled every 250 ms, then read back)."
+        minimum: 0
+        maximum: 60
+        description: "Seconds the reached state must hold before success (sampled every 250 ms, then read back). Default 3; 0 = final readback only."
         required: false
         default: 3
 
   - name: ClearLifecycleBlock
-    description: "Remove the LIFECYCLE_BLOCKED record of one target (#68)."
+    description: "Remove the LIFECYCLE_BLOCKED record of one target (#68). Call it ONLY after the user has seen the block (data.lifecycleBlock of the refused tool: command, errorCode, requestedState, reachedState, message, time) and agreed; never call it on your own to get past LIFECYCLE_BLOCKED. A block is recorded when SetSystemState (any failure after its state request was sent, RUNTIME_CRASHED included), EnableConfig (any failure after set-config / Activate was sent, ACTIVATE_FAILED and NOT_CONNECTED / BUILD_REQUIRED of the nested login included; failures before that, such as BUILD_REQUIRED, PLATFORM_* or PLC_PROJECT_NOT_FOUND of PlcProjectPath, record nothing) or SetPlcState (Run / Stop not reached) sent a runtime-changing request and then failed; while it exists SetSystemState, EnableConfig, PlcLogin, SendPlcProgram, SetPlcState, WriteVariable, RunTest, RunTestCycle, RunLifecycle (at its EnableConfig step) and SetTcComParameter Online=true DryRun=false return LIFECYCLE_BLOCKED and do nothing. Read-only tools are not blocked. Structured receipt (#113), all four required and filled in with the user's words, never invented: Reason = why the user approved lifting the block; FallbackMethod = how the work continues afterwards; AllowedSideEffects = array of the side effects the user allowed (e.g. [\"TwinCAT restart\",\"PLC download\"]; exactly [\"none\"] when none, never \"none\" together with another entry); MaxVerifyLevel = the highest layer the verification after this clear will reach, results must not claim more than it (None, SystemState, PlcState, VariableRead, TestObserved). An empty or invalid field returns LIFECYCLE_RECEIPT_INCOMPLETE (data.missing / data.invalid) and nothing is removed. AmsNetId defaults to the IDE target, then the ADS session; '<unknown>' (records of an unknown or loopback 127.x.x.x.y.z NetId, which block every target) and '<corrupt>' (an unreadable state file) are cleared by name; data.stillBlocking / data.next name what still blocks every target. data: cleared (the removed record, null when none), remaining (array of {key, record} still recorded: [] when nothing is left, null only when the state could not be read), remainingKeys (array of keys), stillBlocking, receipt (reason, fallbackMethod, allowedSideEffects, maxVerifyLevel, clearedAt, clearedAtUtc, ...; appended to lifecycle-block-history.jsonl under the state lock), receiptWritten (false + historyWarning when the receipt could not be appended: other bridges will NOT sync). Cross-bridge (#113): another MCP bridge / PowerShell process that still holds the block in memory drops it once the state file no longer has it and the history has the receipt of exactly that record (same key, createdAtUtc and command; clearedAtUtc not in the future); otherwise it keeps blocking and data.lifecycleBlock.syncNote says why: then clear it through that bridge. The sync is a convenience, not a security boundary (the history is not tamper-proof). After clearing, run the lifecycle again from the start with the approved FallbackMethod; nothing clears a block automatically."
     parameters:
       AmsNetId:
         type: string
-        description: "Target whose block is removed."
+        description: "Target whose block is removed. Default: the IDE target (Connect-TcIde), then the ADS session. '<unknown>' removes a record written while the target was not known (or for a loopback NetId such as 127.0.0.1.1.1); '<corrupt>' removes the record that replaced an unreadable state file. Not resolvable -> AMS_NETID_REQUIRED with data.blocks (every record)."
         required: false
       Reason:
         type: string
-        description: "Required."
+        description: "Required. Why the block may be lifted, in the user's words (who approved, what was checked). Missing or empty -> LIFECYCLE_RECEIPT_INCOMPLETE."
         required: true
       FallbackMethod:
         type: string
-        description: "Required (#113)."
+        description: "Required (#113). How the work continues after the block is lifted, as the user approved it, e.g. 'rerun Enable-TcConfig -Force through tcauto' or 'user restarts TcSystemServiceUm by hand, then Enable-TcConfig -Force'. Missing or empty -> LIFECYCLE_RECEIPT_INCOMPLETE."
         required: true
       AllowedSideEffects:
         type: array
         items:
           type: string
-        description: "Required (#113)."
+        description: "Required (#113). The side effects the user allowed for that continuation, one entry each, e.g. 'TwinCAT restart', 'PLC download', 'PLC Run'; exactly 'none' (alone) when none are allowed. At least one non-empty entry, 'none' never together with another entry, else LIFECYCLE_RECEIPT_INCOMPLETE."
         required: true
       MaxVerifyLevel:
         type: string
         enum: ["None", "SystemState", "PlcState", "VariableRead", "TestObserved"]
-        description: "Required (#113)."
+        description: "Required (#113). The highest layer the verification after this clear will reach; results must not claim more than it. One of None, SystemState (TwinCAT system state read back), PlcState (PLC port state read back), VariableRead (a PLC variable read back), TestObserved (a test result observed). Missing or another value -> LIFECYCLE_RECEIPT_INCOMPLETE."
         required: true
 
   - name: ReportIssue
-    description: "Build a de-identified, pre-filled GitHub new-issue URL (and the same title / body as text) for a problem found while using this server; it creates NOTHING, calls no GitHub API and no network, needs no token and no IDE / ADS connection (works while the IDE is blocked by a modal dialog and is not r..."
+    description: "Build a de-identified, pre-filled GitHub new-issue URL (and the same title / body as text) for a problem found while using this server; it creates NOTHING, calls no GitHub API and no network, needs no token and no IDE / ADS connection (works while the IDE is blocked by a modal dialog and is not refused by LIFECYCLE_BLOCKED). Title is the one-line summary; Tool, Parameters, Result (the failing {success,error,data} object, error.hint is dropped), Expected and Notes are optional. User names in paths, this machine's names, URLs and host names, AMS NetIds (loopback stays), IPv4 / IPv6 / MAC addresses, e-mail addresses, object keys, project paths (a project file keeps only its file name, other folders are masked, TIPC^ tree paths keep only TIPC) and secrets are masked; the name of the open solution is masked everywhere; ExtraMask lists literal strings (customer / site / person names) to hide as well. A token split across two lines is not recognised. data.masks / data.maskReport say what was masked. The encoded URL is capped at MaxUrlLength (default 7000): the largest of Result / Parameters / Notes / Expected is shortened and ends with [truncated] (data.truncated); data.body is always the complete de-identified text. The repository is PUBLIC: show data.maskReport and data.body to the user; ONLY THE USER opens data.url in a browser signed in to GitHub, reviews the text and submits it. Never open or submit it yourself. The environment section uses only what the server already holds in memory (module version / commit, PowerShell, OS, IDE ProgId, TwinCAT.Ads.dll version; the solution file name only with IncludeSolutionName=true); XAE / TwinCAT version is not read, put it in Notes. Inputs are masked first and the masked text is cut afterwards at a word boundary (10000 characters per text, 3000 per JSON string; never a prefix of a secret), so data.body is complete only with respect to that bounded input. Folder names of masked paths, dotless route names (CX-xxxxxx, name:48898) and non-ASCII e-mail addresses are masked as well."
     parameters:
       Title:
         type: string
@@ -1374,7 +1399,7 @@ actions:
         description: "Name of the MCP tool or cmdlet that was called, e.g. 'BuildProject' or 'Enable-TcConfig'."
         required: false
       Parameters:
-        description: "The parameters of that call: an object, or a JSON string."
+        description: "The parameters of that call: an object, or a JSON string. Credential-like keys are masked."
         required: false
       Result:
         description: "The failing result: the {success, error, data} object returned by the tool, or its JSON string. error.hint is dropped."
@@ -1389,12 +1414,14 @@ actions:
         required: false
       Label:
         type: string
-        description: "Issue label in the URL."
+        description: "Issue label in the URL. Default 'field-report'. Empty = no labels parameter."
         required: false
         default: "field-report"
       MaxUrlLength:
         type: integer
-        description: "Upper limit of the encoded URL in characters, 2000..8000."
+        minimum: 2000
+        maximum: 8000
+        description: "Upper limit of the encoded URL in characters, 2000..8000. Default 7000."
         required: false
         default: 7000
       ExtraMask:
@@ -1413,7 +1440,7 @@ actions:
         required: false
 
   - name: NewTestCase
-    description: "Build a test case object for RunTest/RunTestCycle."
+    description: "Build a test case object for RunTest/RunTestCycle. Setup/Teardown are arrays of {Path, Value} writes; Assertions are {Path, Operator, Expected} with Operator one of Equal (default), NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse. WaitUntil (preferred) = array of {Path, Operator, Expected} polled until all hold (WaitTimeoutMs, default 5000); on timeout RunTest reports Fail with waitTimedOut, lastValues, waitMs. WaitMs is a deprecated fixed blind wait. Pure data, no IDE/PLC access. Without WaitUntil the result has waitMs and a warning that WaitMs is deprecated (RunTest / RunTestCycle results carry it too); with WaitUntil there is no waitMs (an explicit WaitMs is reported as waitMsIgnored + warning)."
     parameters:
       Name:
         type: string
@@ -1435,27 +1462,27 @@ actions:
         type: array
         items:
           type: object
-        description: "Conditions to poll before the assertions (replaces WaitMs): array of {\"Path\":\"MAIN.bDone\",\"Operator\":\"IsTrue\"} (same keys and Operator set as Assertions; Expected omitted for IsTrue/IsFalse)."
+        description: "Conditions to poll before the assertions (replaces WaitMs): array of {\"Path\":\"MAIN.bDone\",\"Operator\":\"IsTrue\"} (same keys and Operator set as Assertions; Expected omitted for IsTrue/IsFalse). All conditions must hold in the same 100 ms sampling round; assertions then run immediately. Not met within WaitTimeoutMs: the test case is Fail with waitTimedOut=true, lastValues, waitMs. Invalid entries: INVALID_PARAMS."
         required: false
       WaitTimeoutMs:
         type: integer
-        description: "Maximum time in ms to poll WaitUntil (1..600000, default 5000)."
+        description: "Maximum time in ms to poll WaitUntil (1..600000, default 5000). Only used with WaitUntil."
         required: false
         default: 5000
       WaitMs:
         type: integer
-        description: "DEPRECATED: fixed blind wait in ms before the assertions (default 1000), ignored when WaitUntil is given."
+        description: "DEPRECATED: fixed blind wait in ms before the assertions (default 1000), ignored when WaitUntil is given. Use WaitUntil."
         required: false
         default: 1000
       Assertions:
         type: array
         items:
           type: object
-        description: "Checks after WaitUntil (or the deprecated WaitMs): array of {\"Path\":\"MAIN.y\",\"Operator\":\"Equal\",\"Expected\":1}."
+        description: "Checks after WaitUntil (or the deprecated WaitMs): array of {\"Path\":\"MAIN.y\",\"Operator\":\"Equal\",\"Expected\":1}. Keys: Path (PLC symbol path), Operator (optional, default Equal; one of Equal, NotEqual, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, Contains, IsTrue, IsFalse), Expected (omit for IsTrue/IsFalse). Short forms like \"eq\"/\"gt\" are NOT accepted."
         required: true
 
   - name: RunTest
-    description: "Execute one test case created with NewTestCase (setup writes -> wait -> assertions -> teardown writes) against the connected PLC."
+    description: "Execute one test case created with NewTestCase (setup writes -> wait -> assertions -> teardown writes) against the connected PLC. Requires ConnectAds. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       TestCase:
         type: object
@@ -1463,7 +1490,7 @@ actions:
         required: true
 
   - name: RunTestCycle
-    description: "Builds, activates (TwinCAT restart) and runs the PLC: changes the running machine."
+    description: "Builds, activates (TwinCAT restart) and runs the PLC: changes the running machine. Confirm with the user first. Full automated test cycle: build (unless SkipBuild), activate configuration, login, run every test case from NewTestCase, then stop the PLC (unless KeepRunning). Returns per-test results. Can take many minutes (timeout 900 s). A test case that waits with the deprecated WaitMs has data.warning in its result; the report lists them in data.warnings. RUNTIME_CRASHED during activation is returned as it is (data.runtimeCrash). Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       TestCases:
         type: array

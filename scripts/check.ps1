@@ -93,6 +93,10 @@ $ProgressPreference = 'SilentlyContinue'
 $tcPolicyLines = @((& powershell.exe -NoProfile -Command $script:TcPolicyCommand) | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
 $tcPolicy = if ($tcPolicyLines.Count -gt 0) { $tcPolicyLines[0] } else { '' }
 $tcPolicyAdvice = Get-TcPolicyAdvice -Effective $tcPolicy -ListLines @($tcPolicyLines | Select-Object -Skip 1)
+if (-not $tcPolicy) {
+    Write-Host 'FAIL  policy      could not read the Windows PowerShell execution policy (powershell.exe -NoProfile -Command Get-ExecutionPolicy printed nothing)' -ForegroundColor Red
+    exit 1
+}
 if ($tcPolicyAdvice) {
     Write-Host "FAIL  policy      $tcPolicyAdvice" -ForegroundColor Red
     exit 1
@@ -660,14 +664,15 @@ catch {
 try {
     $cliText = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'Invoke-TwinCATAutomation.ps1'), [System.Text.Encoding]::UTF8)
     $mapBody = [regex]::Match($cliText, '\$operationMap\s*=\s*@\{(?<b>.*?)\n\}', 'Singleline').Groups['b'].Value
-    $mapOps = @([regex]::Matches($mapBody, "(?m)^\s*'([A-Za-z0-9]+)'\s*=") | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $mapOps = @([regex]::Matches($mapBody, "(?m)^\s*'([A-Za-z0-9]+)'\s*=") | ForEach-Object { $_.Groups[1].Value })
     if ($mapOps.Count -eq 0) { throw 'no entries found in $operationMap of Invoke-TwinCATAutomation.ps1' }
-    $codexOps = @((([System.IO.File]::ReadAllText((Join-Path $repoRoot 'adapters\codex\tools.json'), [System.Text.Encoding]::UTF8)) | ConvertFrom-Json).tools | ForEach-Object { [string]$_.name } | Sort-Object -Unique)
-    $agOps = @([regex]::Matches([System.IO.File]::ReadAllText((Join-Path $repoRoot 'adapters\antigravity\plugin.yaml'), [System.Text.Encoding]::UTF8), '(?m)^  - name: (\S+)\s*$') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $codexOps = @((([System.IO.File]::ReadAllText((Join-Path $repoRoot 'adapters\codex\tools.json'), [System.Text.Encoding]::UTF8)) | ConvertFrom-Json).tools | ForEach-Object { [string]$_.name })
+    $agOps = @([regex]::Matches([System.IO.File]::ReadAllText((Join-Path $repoRoot 'adapters\antigravity\plugin.yaml'), [System.Text.Encoding]::UTF8), '(?m)^  - name: (\S+)\s*$') | ForEach-Object { $_.Groups[1].Value })
     $diffs = New-Object System.Collections.Generic.List[string]
     foreach ($pair in @(@('adapters/codex/tools.json', $codexOps), @('adapters/antigravity/plugin.yaml', $agOps))) {
-        foreach ($n in @($mapOps | Where-Object { $pair[1] -notcontains $_ })) { $diffs.Add("$($pair[0]): missing action $n (in `$operationMap)") }
-        foreach ($n in @($pair[1] | Where-Object { $mapOps -notcontains $_ })) { $diffs.Add("$($pair[0]): action $n is not in `$operationMap") }
+        foreach ($dup in @($pair[1] | Group-Object | Where-Object { $_.Count -gt 1 })) { $diffs.Add("$($pair[0]): action $($dup.Name) is listed $($dup.Count) times") }
+        foreach ($n in @($mapOps | Where-Object { $pair[1] -cnotcontains $_ })) { $diffs.Add("$($pair[0]): missing action $n (in `$operationMap)") }
+        foreach ($n in @($pair[1] | Where-Object { $mapOps -cnotcontains $_ })) { $diffs.Add("$($pair[0]): action $n is not in `$operationMap") }
     }
     if ($diffs.Count -eq 0) { Add-CheckResult 'adapters' 'PASS' "$($mapOps.Count) actions in `$operationMap, codex and antigravity" }
     else { Add-CheckResult 'adapters' 'FAIL' 'adapter action sets differ from $operationMap: run scripts/Update-GeneratedDocs.ps1 and commit the result' @($diffs | Select-Object -First 15) }

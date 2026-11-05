@@ -265,7 +265,7 @@ pwsh ./TwinCATSetup-Codex.ps1
 
 This checks prerequisites (Windows, TwinCAT, ADS DLL, IDE, module) and installs:
 - `~/.agents/skills/twincat/TwinCATAutomation/` -- PowerShell module (all cmdlets)
-- `~/.agents/skills/twincat/SKILL.md` -- Codex skill with full API reference
+- `~/.agents/skills/twincat/SKILL.md` -- Codex skill: lifecycle example, failure contract (fail closed) and the generated cmdlet signature table
 - `~/.codex/AGENTS.md` -- global project instructions
 
 To uninstall: `pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
@@ -320,7 +320,7 @@ Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit 
 
 - **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
 - **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
-- **.agents/skills/twincat/SKILL.md**: full 81-command API reference as Codex skill
+- **.agents/skills/twincat/SKILL.md**: lifecycle example, failure contract and generated cmdlet signature table, as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)
