@@ -938,11 +938,31 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **輸入格式**:成員一律有序:MCP 用陣列 `Fields` / `Variables` = `[{"name":"bStart","type":"BOOL","init":"TRUE","comment":"..."}, ...]`,Enum 為 `[{"name":"eIdle","value":0}, ...]`;PowerShell 另可用 `[ordered]@{ bStart = 'BOOL' }`。一般 `[hashtable]` 超過一個成員 → `INVALID_PARAMS`(不猜順序,什麼都沒建);只有一個成員的 hashtable 可接受。舊的 MCP object 格式(`{"bStart":"BOOL",...}`)已移除,JSON schema 驗證直接回 `INVALID_PARAMS`(JS 的 object key 順序對整數型 key 也不保證)。
 - **下一步**:`Write-TcPouCode -PouPath <data.path> -Declaration <正確順序>` 改寫,`Get-TcPouCode` 確認,再 `Build-TcProject`。
 
+### TEMPLATE_NOT_FOUND
+
+- **現象**(#70):`New-TcProject` 找不到 XAE 專案 template `TwinCAT Project.tsproj`,回此碼與 `data.searched`(已查的完整路徑),沒有呼叫 `Solution.Create`(IDE 目前的 solution 沒被關,也不記 `BUILD_REQUIRED`)。
+- **為什麼**:`AddFromTemplate` 要完整的 template 檔案路徑。以前傳空字串,4026 回 `STG_E_FILENOTFOUND`、4024 回 `ArgumentException`(實測 2026-10-28,見 #70)。InfoSys「Accessing TwinCAT configuration」的範例用 `C:\TwinCAT\3.1\Components\Base\PrjTemplate\TwinCAT Project.tsproj`,並說明要依環境調整([InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html))。本機實測 2026-11-05(唯讀查檔案系統):檔案在 `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Components\Base\PrjTemplate\`,4024 與 4026 build 並存於同一個 `Components` 下。模組依序找 `$env:TWINCAT3DIR`、registry `HKLM\SOFTWARE\WOW6432Node\Beckhoff\TwinCAT3\TwinCATDir`、Program Files (x86)、Program Files、`C:\TwinCAT\3.1`。PLC 專案的 `CreateChild` 只傳 template 名稱 `Standard PLC Template`(InfoSys「How to create a PLC project」:標準 Beckhoff template 只用名稱,[InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842439947.html))。
+- **下一步**:確認 TwinCAT XAE 已安裝,或把 `TWINCAT3DIR` 設成 TwinCAT 的 `3.1` 目錄後重跑。
+- **真機實測 2026-11-05**(4024 32-bit XAE Shell 與 4026.22 XAE in VS2022):建專案用自建 client,Build 用 registered tcauto;兩版都建立成功、`BuildProject` completeBuild、約 5 s、沒有 dialog,新 `.plcproj` 與 Standard PLC Template 的 Compile / Folder / PlaceholderReference 相同。template 是版本中立的 67 bytes 骨架,在共用的 `Components\Base\PrjTemplate` 底下。
+
+### PROJECT_DIR_EXISTS
+
+- **檢查順序**:solution 已開(`SOLUTION_ALREADY_OPEN`)-> template(`TEMPLATE_NOT_FOUND`)-> 資料夾已存在(此碼)-> `Solution.Create`。IDE 開著 solution 又撞到既有資料夾時,先回 `SOLUTION_ALREADY_OPEN`;兩者都不會動到 IDE 或資料夾。
+- **現象**(#70):`<Path>\<Name>` 已存在,`New-TcProject` 直接回此碼(`data.path`),沒有呼叫 `Solution.Create`,IDE 的 solution 沒動。
+- **為什麼**:template 會把檔案寫進這個資料夾,不重用既有資料夾,避免覆蓋別人的檔案。
+- **下一步**:換 `-Name` / `-Path`,或確認舊資料夾沒用後自行刪除再重跑。
+
+### PROJECT_CREATE_UNVERIFIED
+
+- **現象**(#70):`Solution.Create` / `AddFromTemplate` / `CreateChild` / `SaveAs` 都沒丟錯,但讀回缺東西:`.sln`、`.tsproj`、`.plcproj` 不在磁碟上,`.tsproj` 內容沒有 `<Plc>` 節點與指向 `<Name>_Plc.plcproj` 的 `PrjFilePath`(專案沒存檔),或 `TIPC^<Name>_Plc` 找不到。`data.missing` 列出缺的項目。這時 IDE 已開著半成品 solution:模組把 solution 路徑設為未知、移除 #29 session record,並記 `BUILD_REQUIRED`(`<unknown>`,擋所有 solution 直到完整 Build)。
+- **為什麼**:以前只要呼叫沒丟錯就回 success,不確定新專案真的存在。實測 2026-11-05(4024 與 4026.22 重驗):`CreateChild` 之後 `.tsproj` 還是 329 bytes 的空骨架、沒有 `<Plc>`,PLC 專案只在 XAE 記憶體,要到第一次 Build 才寫進檔案;success 後不存檔就關 solution,PLC 專案會消失(Build 回 no PLC project)。所以現在先 `Project.Save()` 再 `Solution.SaveAs`(InfoSys「Accessing TwinCAT configuration」範例的順序:[InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/242721803.html)),讀回檢查 `.tsproj` 內容而不只是檔案存在。成功判定現在要讀回(fail closed)。這些 COM 呼叫沒有加 wall-clock deadline:它們是無法從外面取消的同步 STA 呼叫,加 deadline 只會放棄一個 IDE 仍在執行的呼叫;整個建立在兩版 XAE 上約 5 s(實測 2026-11-05)。
+- **下一步**:`Get-TcIdeModalDialog` 看有沒有 dialog,在 XAE 檢查 `data.path`;通常要關掉 solution、刪掉該資料夾後重跑。
+
 ### SOLUTION_ALREADY_OPEN
 
 - **現象**(#70):`New-TcProject` 發現 IDE 已開著 solution(`DTE.Solution.IsOpen` 或 `FullName` 非空;讀不到也當成開著,fail-closed;IDE 回 RPC busy 時改回 `IDE_BUSY`),直接拒絕,沒有呼叫 `Solution.Create`。`data.openSolution` 是目前的 solution(讀不到時為 null)。
-- **為什麼**:`Solution.Create` 會不經提示關掉目前的 solution,未存的改動會丟掉(實測 2026-10-28,見 #70:TwinCAT 3.1.4026.22 XAE in VS2022 與 4024 32-bit XAE Shell,registered tcauto,兩者呼叫後 `GetIdeInfo` 的 solution 都變成空字串);`New-TcProject` 的 template 路徑本身也還沒修(#70),所以 MCP 暫時不提供 `NewProject` tool,只保留 cmdlet。
-- **下一步**:在 #70 修好之前,建議在 XAE 手動建立新專案,再 `Connect-TcIde -SolutionPath <新 .sln>` 接上。一定要用 `New-TcProject` 時,先在 XAE 存好並關掉目前的 solution(IDE 不開任何 solution)再呼叫。
+- **為什麼**:`Solution.Create` 會不經提示關掉目前的 solution,未存的改動會丟掉(實測 2026-10-28,見 #70:TwinCAT 3.1.4026.22 XAE in VS2022 與 4024 32-bit XAE Shell,registered tcauto,兩者呼叫後 `GetIdeInfo` 的 solution 都變成空字串);template 路徑已改成從安裝目錄解析(見 `TEMPLATE_NOT_FOUND`),2026-11-05 實測 4024 32-bit XAE Shell 與 4026.22 XAE in VS2022 建專案與 Build 成功(建專案用自建 client,Build 用 registered tcauto)。MCP 仍不提供 `NewProject` tool、只保留 cmdlet,剩下的原因是:`Solution.Create` 會關掉 IDE 目前的 solution,而且 cmdlet 還沒有經過 tcauto 本身驗證。
+- **下一步**:建議在 XAE 手動建立新專案,再 `Connect-TcIde -SolutionPath <新 .sln>` 接上(MCP 沒有 `NewProject`)。要用 `New-TcProject` 時,先在 XAE 存好並關掉目前的 solution(IDE 不開任何 solution)再呼叫。
 
 ### IO_SCAN_REQUIRES_CONFIG / IO_SCAN_FAILED / IO_SCAN_VERIFY_FAILED
 
