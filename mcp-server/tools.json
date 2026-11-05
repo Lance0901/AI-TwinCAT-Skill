@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T13:28:32Z",
+    "generatedAt":  "2026-11-05T13:47:29Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1960,6 +1960,74 @@
                                                          },
                                           "required":  [
                                                            "PlcVariable"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
+                      "name":  "ReportIssue",
+                      "cmdlet":  "New-TcIssueReport",
+                      "description":  "Build a de-identified, pre-filled GitHub new-issue URL (and the same title / body as text) for a problem found while using this server; it creates NOTHING, calls no GitHub API and no network, needs no token and no IDE / ADS connection (works while the IDE is blocked by a modal dialog and is not refused by LIFECYCLE_BLOCKED). Title is the one-line summary; Tool, Parameters, Result (the failing {success,error,data} object, error.hint is dropped), Expected and Notes are optional. User names in paths, this machine's names, URLs and host names, AMS NetIds (loopback stays), IPv4 / IPv6 / MAC addresses, e-mail addresses, object keys, project paths (a project file keeps only its file name, other folders are masked, TIPC^ tree paths keep only TIPC) and secrets are masked; the name of the open solution is masked everywhere; ExtraMask lists literal strings (customer / site / person names) to hide as well. A token split across two lines is not recognised. data.masks / data.maskReport say what was masked. The encoded URL is capped at MaxUrlLength (default 7000): the largest of Result / Parameters / Notes / Expected is shortened and ends with [truncated] (data.truncated); data.body is always the complete de-identified text. The repository is PUBLIC: show data.maskReport and data.body to the user; ONLY THE USER opens data.url in a browser signed in to GitHub, reviews the text and submits it. Never open or submit it yourself. The environment section uses only what the server already holds in memory (module version / commit, PowerShell, OS, IDE ProgId, TwinCAT.Ads.dll version; the solution file name only with IncludeSolutionName=true); XAE / TwinCAT version is not read, put it in Notes. Inputs are masked first and the masked text is cut afterwards at a word boundary (10000 characters per text, 3000 per JSON string; never a prefix of a secret), so data.body is complete only with respect to that bounded input. Folder names of masked paths, dotless route names (CX-xxxxxx, name:48898) and non-ASCII e-mail addresses are masked as well.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "Title":  {
+                                                                           "type":  "string",
+                                                                           "description":  "One-line summary of the problem (becomes the issue title, 120 characters at most)."
+                                                                       },
+                                                             "Tool":  {
+                                                                          "type":  "string",
+                                                                          "description":  "Name of the MCP tool or cmdlet that was called, e.g. 'BuildProject' or 'Enable-TcConfig'."
+                                                                      },
+                                                             "Parameters":  {
+                                                                                "description":  "The parameters of that call: an object, or a JSON string. Credential-like keys are masked."
+                                                                            },
+                                                             "Result":  {
+                                                                            "description":  "The failing result: the {success, error, data} object returned by the tool, or its JSON string. error.hint is dropped."
+                                                                        },
+                                                             "Expected":  {
+                                                                              "type":  "string",
+                                                                              "description":  "What you expected to happen instead."
+                                                                          },
+                                                             "Notes":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Anything else: steps before the call, TwinCAT / XAE version and target kind (UmRT, CX ...), what was tried."
+                                                                       },
+                                                             "Label":  {
+                                                                           "type":  "string",
+                                                                           "description":  "Issue label in the URL. Default 'field-report'. Empty = no labels parameter.",
+                                                                           "default":  "field-report"
+                                                                       },
+                                                             "MaxUrlLength":  {
+                                                                                  "type":  "integer",
+                                                                                  "minimum":  2000,
+                                                                                  "maximum":  8000,
+                                                                                  "description":  "Upper limit of the encoded URL in characters, 2000..8000. Default 7000.",
+                                                                                  "default":  7000
+                                                                              },
+                                                             "ExtraMask":  {
+                                                                               "type":  "array",
+                                                                               "items":  {
+                                                                                             "type":  "string"
+                                                                                         },
+                                                                               "minItems":  1,
+                                                                               "description":  "Literal strings (customer, site, plant, person names) to replace with <redacted> everywhere."
+                                                                           },
+                                                             "NoEnvironment":  {
+                                                                                   "type":  "boolean",
+                                                                                   "description":  "Leave the Environment section out."
+                                                                               },
+                                                             "IncludeSolutionName":  {
+                                                                                         "type":  "boolean",
+                                                                                         "description":  "Put the solution file name of the connected IDE into the Environment section (left out by default)."
+                                                                                     }
+                                                         },
+                                          "required":  [
+                                                           "Title"
                                                        ],
                                           "additionalProperties":  false
                                       }

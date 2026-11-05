@@ -119,6 +119,46 @@ actions:
         required: false
         description: Auto-detected from IDE if omitted
 
+  - name: ReportIssue
+    description: Build a de-identified, pre-filled GitHub new-issue URL (data.url) plus the same title/body as text (data.body, complete) for a problem found while using this tool (#78). Creates nothing, no GitHub or network call, no IDE/ADS access, works while LIFECYCLE_BLOCKED. Masks user names in paths, machine names, AMS NetIds, IP/MAC, e-mail, project paths (to file name), secrets (data.masks); ExtraMask hides customer/site names. Show data.maskReport and data.body to the user; ONLY the user opens and submits the URL (the repository is public).
+    parameters:
+      Title:
+        type: string
+        required: true
+        description: One-line summary (120 chars max)
+      Tool:
+        type: string
+        required: false
+        description: Tool or cmdlet that was called
+      Parameters:
+        type: object
+        required: false
+        description: Parameters of that call (object or JSON string)
+      Result:
+        type: object
+        required: false
+        description: The failing {success,error,data} result (object or JSON string); error.hint is dropped
+      Expected:
+        type: string
+        required: false
+        description: Expected behavior
+      Notes:
+        type: string
+        required: false
+        description: Steps before the call, TwinCAT/XAE version, target kind
+      ExtraMask:
+        type: array
+        required: false
+        description: Literal strings (customer/site names) to replace with <redacted>
+      MaxUrlLength:
+        type: integer
+        required: false
+        description: Encoded URL limit, 2000..8000 (default 7000)
+      IncludeSolutionName:
+        type: boolean
+        required: false
+        description: Put the solution file name into the Environment section (default left out)
+
   - name: ClearLifecycleBlock
     description: Remove the LIFECYCLE_BLOCKED record of one target (#68). Call ONLY after the user saw data.lifecycleBlock and agreed
     parameters:
