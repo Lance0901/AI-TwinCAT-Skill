@@ -68,14 +68,14 @@
 - **現象**:`EnableConfig` 進行到 Activate 的 set-config 階段時,本機 UmRT 的 `TcSystemServiceUm` 偶發 crash(實測 2026-10-28 18:19,`TcSystemServiceUm` 3.1.0.2649,faulting module `TcOsSys.dll`,exception code 0xc0000005)。
 - **影響**:模組等不到目標狀態,回 `SYSTEM_STATE_TIMEOUT`,**不會假成功**;但這次 Activate 沒有完成,PLC 不在 Run。
 - **繞過**:照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`,再重跑 `EnableConfig Force=true`。
-- **Issue**:[#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21)
+- **Issue**:[#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21);逐次真機紀錄見 [verification/issue21-umrt-crash-records.md](../openspec/changes/complete-automation-interface/verification/issue21-umrt-crash-records.md)
 
 ### UmRT 第二種 crash 簽名:ntdll.dll stack overflow(#21)
 
 - **現象**:`EnableConfig` 的 set-config 階段,`TcSystemServiceUm` 3.1.0.2649 崩潰,faulting module `ntdll.dll`,exception code 0xc00000fd(stack overflow),offset 0x1cfa8(實測 2026-10-29 11:57,4026 VS2022,本機 UmRT)。前兆是 `TCNC.bootdata` 先變成 0 bytes。和上一條 `TcOsSys.dll` 0xc0000005 是不同簽名。
 - **影響**:同上,target 消失,等不到目標狀態(模組現在偵測到 runtime 消失會提早回 `RUNTIME_CRASHED`,但這條路徑只有單元測試,見下方「未實測」)。
 - **繞過**:同上,照「UmRT 復原」重啟 `TcSystemServiceUm` 後重跑 `EnableConfig Force=true`。
-- **Issue**:追蹤在 [#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21),補充說明見 [issuecomment-6487701546](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21#issuecomment-6487701546)
+- **Issue**:追蹤在 [#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21),補充說明見 [issuecomment-6487701546](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21#issuecomment-6487701546),紀錄見 [verification/issue21-umrt-crash-records.md](../openspec/changes/complete-automation-interface/verification/issue21-umrt-crash-records.md)
 
 ### PLC login 中不能新增物件(`PLC_LOGGED_IN`)
 

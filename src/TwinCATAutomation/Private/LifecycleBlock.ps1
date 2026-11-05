@@ -191,7 +191,7 @@ function Set-TcLifecycleBlock {
     if ($null -eq $r -or -not $r.Locked -or $null -ne $r.Error) {
         $why = if ($null -ne $r) { $r.Error } else { 'unknown error' }
         $copy = $entry.PSObject.Copy()
-        $copy | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue "LIFECYCLE_BLOCKED was recorded in this process only, not in $(Get-TcLifecycleBlockFile) ($why): another process (or an MCP bridge restart) will not see it." -Force
+        $copy | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue "LIFECYCLE_BLOCKED was recorded in this process only, not in $(Get-TcStateFileLabel 'lifecycle-block.json') ($why): another process (or an MCP bridge restart) will not see it." -Force
         return $copy
     }
     $entry
@@ -225,7 +225,7 @@ function Get-TcLifecycleBlock {
     if ($null -ne $all.Error) {
         return [PSCustomObject]@{
             amsNetId = $AmsNetId; command = $null; errorCode = 'state-unreadable'
-            message = "the lifecycle block state $(Get-TcLifecycleBlockFile) could not be checked ($($all.Error)); every target is blocked until it is readable"
+            message = "the lifecycle block state $(Get-TcStateFileLabel 'lifecycle-block.json') could not be checked ($($all.Error)); every target is blocked until it is readable"
             requestedState = $null; reachedState = $null; step = $null; time = $null
         }
     }
@@ -267,7 +267,7 @@ function Remove-TcLifecycleBlock {
         $why = if ($null -ne $r) { $r.Error } else { 'unknown error' }
         # the memory copy is gone but the file still blocks: put it back, nothing changed
         if ($null -ne $removed) { $script:TcLifecycleBlockLocal[$key] = $removed }
-        return @{ Removed = $null; Warning = "$(Get-TcLifecycleBlockFile) not updated ($why); the target stays blocked." }
+        return @{ Removed = $null; Warning = "$(Get-TcStateFileLabel 'lifecycle-block.json') not updated ($why); the target stays blocked." }
     }
     if ($null -ne $r.Result.Old) { $removed = $r.Result.Old }
     @{ Removed = $removed; Warning = $null }
