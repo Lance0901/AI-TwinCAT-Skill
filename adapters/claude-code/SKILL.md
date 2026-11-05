@@ -237,7 +237,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 
 | Cmdlet | MCP tool | 參數(`[ ]` = 選填;切換參數不帶值) |
 |---|---|---|
-| `Add-TcAdsRoute` | `AddAdsRoute` | `-Name <string> -NetId <string> [-Address <string>] [-HostName <string>] [-UserName <string>] [-PasswordEnv <string>] [-Password <SecureString>] [-LocalName <string>] [-ProjectRoute] [-DryRun <bool>]` |
+| `Add-TcAdsRoute` | `AddAdsRoute` | `-Name <string> -NetId <string> [-Address <string>] [-HostName <string>] [-UserName <string>] [-PasswordEnv <string>] [-Password <securestring>] [-LocalName <string>] [-ProjectRoute] [-DryRun <bool>]` |
 | `Add-TcComModule` | `AddTcComModule` | `-Name <string> [-ClassId <string>] [-TypeName <string>] [-DryRun <bool>]` |
 | `Add-TcDut` | `AddDut` | `-Name <string> -DutType <string> [-Fields <obj>] [-AliasType <string>]` |
 | `Add-TcGvl` | `AddGvl` | `-Name <string> [-Variables <obj>]` |
@@ -269,7 +269,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Get-TcBuildErrors` | `GetBuildErrors` | `[-IncludeWarnings] [-IncludeMessages] [-TimeoutSec <int>]` |
 | `Get-TcComModuleParameter` | `GetTcComParameter` | `-Module <string> [-Name <string>] [-ParameterId <string>] [-Online]` |
 | `Get-TcIdeInfo` | `GetIdeInfo` | - |
-| `Get-TcIdeModalDialog` | - | `[-ProcessId <int>] [-TimeoutSec <int>]` |
+| `Get-TcIdeModalDialog` | `GetIdeModalDialog` (composite) | `[-ProcessId <int>] [-TimeoutSec <int>]` |
 | `Get-TcIoTree` | `GetIoTree` | - |
 | `Get-TcLibraries` | `GetLibraries` | `[-Repository] [-Filter <string>] [-PlcProjectPath <string>]` |
 | `Get-TcPlcState` | `GetPlcState` | - |
@@ -284,13 +284,13 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Import-TcTreeItem` | `ImportChild` | `-Path <string> -FilePath <string> [-Before <string>] [-Reconnect <bool>] [-Name <string>] [-DryRun <bool>]` |
 | `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
-| `Invoke-TcTest` | `RunTest` | `-TestCase <PSObject>` |
-| `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <PSObject[]> [-SkipBuild] [-KeepRunning]` |
+| `Invoke-TcTest` | `RunTest` | `-TestCase <psobject>` |
+| `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <psobject[]> [-SkipBuild] [-KeepRunning]` |
 | `Lock-TcLibraryPlaceholder` | `FreezePlaceholder` | `[-Placeholder <string>] [-All] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `New-TcBootProject` | `GenerateBootProject` | `[-PlcProjectPath <string>]` |
 | `New-TcIssueReport` | `ReportIssue` | `-Title <string> [-Tool <string>] [-Parameters <obj>] [-Result <obj>] [-Expected <string>] [-Notes <string>] [-Label <string>] [-MaxUrlLength <int>] [-ExtraMask <string[]>] [-NoEnvironment] [-IncludeSolutionName]` |
 | `New-TcProject` | - | `-Name <string> [-Path <string>]` |
-| `New-TcTestCase` | `NewTestCase` | `-Name <string> [-Setup <Hashtable[]>] [-Teardown <Hashtable[]>] [-WaitUntil <Hashtable[]>] [-WaitTimeoutMs <int>] [-WaitMs <int>] -Assertions <Hashtable[]>` |
+| `New-TcTestCase` | `NewTestCase` | `-Name <string> [-Setup <hashtable[]>] [-Teardown <hashtable[]>] [-WaitUntil <hashtable[]>] [-WaitTimeoutMs <int>] [-WaitMs <int>] -Assertions <hashtable[]>` |
 | `New-TcTreeItem` | `CreateChild` | `-Path <string> -Name <string> [-SubType <int>] [-Before <string>] [-VInfo <obj>] [-DryRun <bool>]` |
 | `Open-TcProject` | `OpenProject` | `-Path <string>` |
 | `Read-TcVariable` | `ReadVariable` | `-Path <string[]>` |

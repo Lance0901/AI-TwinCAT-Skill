@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Repository guardrails: the mechanical checks every commit and every CI run must pass.
 
@@ -66,6 +66,11 @@
 
 .EXAMPLE
     powershell.exe -NoProfile -File scripts/check.ps1 -Strict
+
+    Prerequisite: Windows PowerShell must be allowed to run local scripts. The checks start
+    powershell.exe children WITHOUT -ExecutionPolicy Bypass; when the effective policy is Restricted
+    or AllSigned this script stops first with:
+        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 #>
 [CmdletBinding()]
 param(
@@ -75,6 +80,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Preflight (#25): children start without -ExecutionPolicy Bypass, so a Restricted / AllSigned
+# Windows PowerShell would fail them with a bare SecurityError. Stop with the fix instead.
+$tcPolicy = ((& powershell.exe -NoProfile -Command Get-ExecutionPolicy) | Out-String).Trim()
+if ($tcPolicy -eq 'Restricted' -or $tcPolicy -eq 'AllSigned') {
+    Write-Host "FAIL  policy      Windows PowerShell execution policy is ${tcPolicy}: local scripts cannot run. Run once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned" -ForegroundColor Red
+    exit 1
+}
 
 # The parse check is only meaningful with the 5.1 parser: re-run under Windows PowerShell.
 if ($PSVersionTable.PSEdition -eq 'Core') {
@@ -403,11 +416,13 @@ catch {
 # cmdlet count vs documentation
 # ---------------------------------------------------------------------------
 try {
+    # U+6240 U+6709 U+6307 U+4EE4 U+FF08: the README.zh-TW heading (kept out of the source: this file is ASCII)
+    $zhAllCommands = (@(0x6240, 0x6709, 0x6307, 0x4EE4, 0xFF08) | ForEach-Object { [string][char]$_ }) -join ''
     $docCounts = @(
         @{ File = 'CLAUDE.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
         @{ File = 'AGENTS.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
         @{ File = 'README.md'; Pattern = 'All Commands \((?:<!--[^>]*-->)?(\d+)' },
-        @{ File = 'README.zh-TW.md'; Pattern = '所有指令（(?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'README.zh-TW.md'; Pattern = ($zhAllCommands + '(?:<!--[^>]*-->)?(\d+)') },
         @{ File = 'adapters/claude-code/SKILL.md'; Pattern = 'Cmdlet \S*\((?:<!--[^>]*-->)?(\d+)' }
     )
     $moduleCount = $null
@@ -443,7 +458,7 @@ try {
             Add-CheckResult 'cmdlets' 'PASS' "$moduleCount exported; $($seen -join ', ')"
         }
         else {
-            Add-CheckResult 'cmdlets' 'FAIL' "documented cmdlet count differs from the module ($moduleCount)" $mismatch
+            Add-CheckResult 'cmdlets' 'FAIL' "documented cmdlet count differs from the module ($moduleCount): run scripts/Update-GeneratedDocs.ps1" $mismatch
         }
     }
 }
@@ -616,11 +631,15 @@ catch {
 try {
     $genScript = Join-Path $repoRoot 'scripts\Update-GeneratedDocs.ps1'
     $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-File', $genScript, '-Check')
+    $outText = @($r.Output) -join "`n"
     if ($r.Code -eq 0) {
         Add-CheckResult 'gendocs' 'PASS' (@($r.Output | Where-Object { $_ -match 'up to date' } | Select-Object -First 1) -join '')
     }
+    elseif ($outText -match '(?m)^(STALE|PROBLEM)\b') {
+        Add-CheckResult 'gendocs' 'FAIL' 'generated docs are stale: if a cmdlet parameter changed run "npm run generate-tools" in mcp-server first, then "powershell -NoProfile -File scripts/Update-GeneratedDocs.ps1"; commit the result' @($r.Output | Select-Object -Last 15)
+    }
     else {
-        Add-CheckResult 'gendocs' 'FAIL' 'generated docs are stale: run scripts/Update-GeneratedDocs.ps1 and commit the result' @($r.Output | Select-Object -Last 15)
+        Add-CheckResult 'gendocs' 'FAIL' "scripts/Update-GeneratedDocs.ps1 crashed (exit $($r.Code)), this is not a stale-docs result" @($r.Output | Select-Object -Last 15)
     }
 }
 catch {

@@ -305,6 +305,8 @@ Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [doc
 
 Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit hook then runs `scripts/check.ps1 -Fast` (PS 5.1 parse and file encoding, cmdlet count vs docs, banned wording, error codes documented, `tools.json` in sync; it reads the working tree, not the index); run `scripts/check.ps1` (adds `npm test`) before a PR, CI runs it with `-Strict` (SKIP fails) on `windows-latest`. Review rules: [CODING_STANDARDS.md](CODING_STANDARDS.md).
 
+**Prerequisite**: `scripts/check.ps1` and `npm run generate-tools` run local `.ps1` files in `powershell.exe` WITHOUT `-ExecutionPolicy Bypass`. When the effective policy is `Restricted` or `AllSigned` they stop with a clear error; run once `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. The pre-commit hook still starts `check.ps1` with `-ExecutionPolicy Bypass` so a commit is never blocked by the machine policy (it only runs this repository's own script; the hook is outside #25).
+
 ## Changelog
 
 ### 2026-04-02
@@ -317,7 +319,7 @@ Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit 
 
 - **Codex desktop integration**: `TwinCATSetup-Codex.ps1` installer -- checks prerequisites and installs skill + AGENTS.md to user-level (`~/.agents/skills/`, `~/.codex/`) so Codex can use TwinCAT automation in any project
 - **AGENTS.md**: project instructions for Codex (auto-discovered at repo and user level)
-- **.agents/skills/twincat/SKILL.md**: full <!-- generated:cmdlet-count -->81<!-- /generated -->-command API reference as Codex skill
+- **.agents/skills/twincat/SKILL.md**: full 81-command API reference as Codex skill
 - **Fix Test 2 root cause**: ADS writes to FB `VAR_INPUT` are overwritten by PLC each scan cycle. Must write MAIN-level standalone variables instead (Decision #17)
 - **Fix full automated test cycle**: Correct lifecycle order is Build -> Activate -> Login -> ADS -> Start -> Test (ADS connection must come after Login+Download)
 - **Fix `Enter-TcPlcOnline`**: Use `LookupTreeItem` with constructed path instead of child enumeration (Project child hidden after TwinCAT restart)

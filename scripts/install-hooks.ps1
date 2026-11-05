@@ -2,7 +2,7 @@
 .SYNOPSIS
     Points git at the repository hooks in .githooks (pre-commit runs scripts/check.ps1 -Fast).
 .EXAMPLE
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-hooks.ps1
+    powershell.exe -NoProfile -File scripts/install-hooks.ps1
 #>
 [CmdletBinding()]
 param()
