@@ -48,6 +48,7 @@ Check '1 hint from the hint table' (-not [string]::IsNullOrWhiteSpace($r.error.h
 Check '1 top level partial = true, failedPaths = [missing path]' ($r.partial -eq $true -and (@($r.failedPaths) -join ',') -eq 'Main.NoSuchVar_Repro139') "partial=$($r.partial) failed=$(@($r.failedPaths) -join ',')"
 $s0 = @($r.data.samples)[0]
 Check '1 sample: value null plus errors.<path> with code SYMBOL_NOT_FOUND; readable path keeps its value' ($null -eq $s0.values.'Main.NoSuchVar_Repro139' -and $s0.values.'MAIN.a' -eq 7 -and $s0.errors.'Main.NoSuchVar_Repro139'.code -eq 'SYMBOL_NOT_FOUND' -and $null -eq $s0.errors.PSObject.Properties['MAIN.a']) (J $s0)
+Check '1 sample error has no hint (KeepLast copies), data.lastErrors has it (#145)' ($null -eq $s0.errors.'Main.NoSuchVar_Repro139'.PSObject.Properties['hint'] -and -not [string]::IsNullOrWhiteSpace($r.data.lastErrors.'Main.NoSuchVar_Repro139'.hint)) (J $s0)
 Check '1 data.failedReads = every round, data.lastErrors has the code' ($r.data.failedReads.'Main.NoSuchVar_Repro139' -eq $r.data.sampleCount -and $r.data.sampleCount -ge 1 -and $r.data.lastErrors.'Main.NoSuchVar_Repro139'.code -eq 'SYMBOL_NOT_FOUND') (J $r.data)
 Check '1 message names the path, its code and the rounds' ($r.error.message -match 'Main\.NoSuchVar_Repro139 \(SYMBOL_NOT_FOUND, \d+ of \d+ rounds\)' -and $r.error.message -match '1 of 2 watched paths') $r.error.message
 $j = Round $r
@@ -78,6 +79,7 @@ $r = Watch-TcVariable -Path @('MAIN.gone') -IntervalMs 10 -DurationMs 50
 $s0 = @($r.data.samples)[0]
 Check '5 one missing path -> WATCH_READ_FAILED, failedPaths [MAIN.gone], data.path a string' ((-not $r.success) -and $r.error.code -eq 'WATCH_READ_FAILED' -and (@($r.failedPaths) -join ',') -eq 'MAIN.gone' -and $r.data.path -eq 'MAIN.gone') (J $r)
 Check '5 single sample: value null, code SYMBOL_NOT_FOUND, error text' ($null -eq $s0.value -and $s0.code -eq 'SYMBOL_NOT_FOUND' -and -not [string]::IsNullOrWhiteSpace($s0.error)) (J $s0)
+Check '5 single sample: no hint (only in data.lastErrors, #145)' ($null -eq $s0.PSObject.Properties['hint'] -and -not [string]::IsNullOrWhiteSpace($r.data.lastErrors.'MAIN.gone'.hint)) (J $s0)
 
 # --- 6: one readable path: unchanged sample shape, success, partial false
 $global:Missing139 = @()
@@ -88,6 +90,13 @@ Check '6 one readable path, Until met -> success, partial false, sample {timesta
 # --- 7: an invalid -Until still returns INVALID_PARAMS before any read (no partial fields needed)
 $r = Watch-TcVariable -Path @('MAIN.a') -Until 'MAIN.zz == 1'
 Check '7 -Until path not in -Path -> INVALID_PARAMS' ((-not $r.success) -and $r.error.code -eq 'INVALID_PARAMS') (J $r)
+
+# --- 8: a path given twice (other case) is read once per round: failedReads <= sampleCount (#145)
+$global:Missing139 = @('MAIN.gone'); $global:FlakyOnce139 = @{}
+$r = Watch-TcVariable -Path @('MAIN.a', 'MAIN.gone', 'main.GONE') -IntervalMs 10 -DurationMs 50
+Check '8 duplicate path (case-insensitive) -> read once: failedReads = sampleCount, failedPaths one entry, data.path deduplicated' ((-not $r.success) -and $r.data.failedReads.'MAIN.gone' -eq $r.data.sampleCount -and (@($r.failedPaths) -join ',') -eq 'MAIN.gone' -and (@($r.data.path) -join ',') -eq 'MAIN.a,MAIN.gone' -and $r.error.message -match '1 of 2 watched paths') (J $r)
+$r = Watch-TcVariable -Path @('MAIN.gone', 'main.gone') -IntervalMs 10 -DurationMs 50
+Check '8 only duplicates of one path -> treated as one path (data.path a string, single sample shape)' ((-not $r.success) -and $r.data.path -eq 'MAIN.gone' -and $null -ne @($r.data.samples)[0].PSObject.Properties['code']) (J $r)
 
 "failed: $fail"
 exit $fail

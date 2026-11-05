@@ -74,6 +74,31 @@ Put (Join-Path $wt '.git') "gitdir: ../../../.git/worktrees/gone`n"
 $c = Commit $wt
 Check '7 gitdir that does not exist -> $null' ($null -eq $c) "[$c]"
 
+# 8 empty .git file and a .git file with garbage -> $null, never throws (#145 review)
+Put (Join-Path $wt '.git') ''
+$c = Commit $wt
+Check '8 empty .git file -> $null' ($null -eq $c) "[$c]"
+[System.IO.File]::WriteAllBytes((Join-Path $wt '.git'), [byte[]](0xFF, 0xFE, 0x00, 0x13, 0x37, 0x0A, 0x67, 0x69, 0x74))
+$c = Commit $wt
+Check '8 .git file with garbage bytes -> $null' ($null -eq $c) "[$c]"
+Put (Join-Path $wt '.git') "not a gitdir line`n"
+$c = Commit $wt
+Check '8 .git file without "gitdir:" -> $null' ($null -eq $c) "[$c]"
+
+# 9 non-ASCII branch name (loose ref and packed-refs, UTF-8 like git); ".." is still refused
+Put (Join-Path $wt '.git') ("gitdir: " + ($wtGit -replace '\\', '/') + "`n")
+Put (Join-Path $wtGit 'HEAD') "ref: refs/heads/fix/$cjk`n"
+Put (Join-Path $main ".git\refs\heads\fix\$cjk") "0123456789abcdef0123456789abcdef01234567`n"
+$c = Commit $wt
+Check '9 non-ASCII branch name, loose ref -> 0123456' ($c -eq '0123456') "[$c]"
+Remove-Item -LiteralPath (Join-Path $main ".git\refs\heads\fix\$cjk")
+Put (Join-Path $main '.git\packed-refs') "# pack-refs with: peeled fully-peeled sorted`n89abcdef0123456789abcdef0123456789abcdef refs/heads/fix/$cjk`n"
+$c = Commit $wt
+Check '9 non-ASCII branch name, packed-refs -> 89abcde' ($c -eq '89abcde') "[$c]"
+Put (Join-Path $wtGit 'HEAD') "ref: refs/heads/../../HEAD`n"
+$c = Commit $wt
+Check '9 ref with ".." -> $null' ($null -eq $c) "[$c]"
+
 Remove-Item -LiteralPath (Split-Path -Parent $base) -Recurse -Force
 "failed: $fail"
 exit $fail

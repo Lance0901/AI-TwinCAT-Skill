@@ -128,8 +128,12 @@ describe('QuickRead connectedOnDemand over the server (#141)', () => {
   test('on-demand connect once, then several paths and one path both report false', async () => {
     const q = async (Path) => parse(await client.callTool({ name: 'QuickRead', arguments: { Path } }));
     const first = await q(['MAIN.a', 'MAIN.Missing']);
+    // the mock fails closed like the real module (#60): the reread after ConnectAds is PARTIAL_READ_FAILED
+    assert.equal(first.success, false);
+    assert.equal(first.error.code, 'PARTIAL_READ_FAILED', JSON.stringify(first));
     assert.equal(first.connectedOnDemand, true, JSON.stringify(first));
-    assert.equal(first.error?.code, undefined, 'mock: a Missing path is an entry, not an error');
+    assert.equal(first.partial, true);
+    assert.deepEqual(first.failedPaths, ['MAIN.Missing']);
     const second = await q(['MAIN.a', 'MAIN.b']);
     assert.equal(second.success, true);
     assert.ok(Array.isArray(second.data));

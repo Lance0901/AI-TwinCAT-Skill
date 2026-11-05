@@ -123,9 +123,10 @@ function Watch-TcVariable {
         Fail closed (#139): a read that failed in any round (one path or several) makes the result
         success = false with WATCH_READ_FAILED; data is still complete and also has failedReads
         (path -> rounds whose read failed) and lastErrors (path -> last {error, code, hint}). A failed
-        read is null in the sample plus sample.errors.<path> (several paths) or sample.error / code /
-        hint (one path). Every result has the top-level fields partial and failedPaths (-Path order):
-        partial = false, failedPaths = [] when every read worked.
+        read is null in the sample plus sample.errors.<path> (several paths) or sample.error / code
+        (one path); the hint is only in data.lastErrors. Every result has the top-level fields partial
+        and failedPaths (-Path order): partial = false, failedPaths = [] when every read worked.
+        A path given more than once (case-insensitive) is read once per round.
     .NOTES
         Samples use the Read-TcVariable conversion: value plus ms/ns/unix (raw integer) for
         TIME/DATE types (value is the IEC literal) and name (member name) for enums.
@@ -153,6 +154,11 @@ function Watch-TcVariable {
         [Parameter()]
         [int]$KeepLast = 0
     )
+
+    # #145 review: a path given twice (case-insensitive, like -Until) is read once per round, so
+    # failedReads never counts more than one failure per path and round
+    $seenPath = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $Path = [string[]]@($Path | Where-Object { $seenPath.Add($_) })
 
     $multi = $Path.Count -gt 1
     $hasUntil = -not [string]::IsNullOrWhiteSpace($Until)
@@ -218,8 +224,9 @@ function Watch-TcVariable {
                         code  = if ($readResult -and $readResult.error) { [string]$readResult.error.code } else { $null }
                     }
                     if ($readResult -and $readResult.error -and $null -ne $readResult.error.PSObject.Properties['hint']) { $e.hint = [string]$readResult.error.hint }
-                    $errors[$p] = [PSCustomObject]$e
-                    $lastError[$p] = $errors[$p]
+                    # the sample keeps {error, code}; the hint only in data.lastErrors (not KeepLast times, #145)
+                    $errors[$p] = [PSCustomObject]@{ error = $e.error; code = $e.code }
+                    $lastError[$p] = [PSCustomObject]$e
                     if (-not $failedCount.Contains($p)) { $failedCount[$p] = 0 }
                     $failedCount[$p]++
                 }
@@ -228,7 +235,7 @@ function Watch-TcVariable {
             $lastValues = $values
             $ts = [DateTime]::Now.ToString('o')
             # Single path: the Read-TcVariable conversion (value + ms/ns/unix for time types, name for enums).
-            # A failed read is null plus the error (#139): sample.errors (multi) / error, code, hint (single).
+            # A failed read is null plus the error (#139): sample.errors (multi) / error, code (single).
             $sample = if ($multi) {
                 $s = [PSCustomObject]@{ timestamp = $ts; values = [PSCustomObject]$values }
                 if ($errors.Count -gt 0) { $s | Add-Member -NotePropertyName 'errors' -NotePropertyValue ([PSCustomObject]$errors) }

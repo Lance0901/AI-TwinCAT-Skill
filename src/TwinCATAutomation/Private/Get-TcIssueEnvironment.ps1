@@ -31,7 +31,7 @@ function Get-TcModuleCommit {
         $head = & $firstLine (Join-Path $gitDir 'HEAD')
         $sha = $null
         if ($head -match '^[0-9a-f]{40}$') { $sha = $head }
-        elseif ($head -match '^ref:\s*(refs/[A-Za-z0-9._/-]+)$' -and $head -notmatch '\.\.') {
+        elseif ($head -match '^ref:\s*(refs/\S+)$' -and $head -notmatch '\.\.') {
             $ref = $Matches[1]
             $dirs = @($gitDir)
             $cd = Join-Path $gitDir 'commondir'
