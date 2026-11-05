@@ -3,6 +3,14 @@ import { MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS } from './config.js';
 
 export const DEFAULT_TIMEOUT_MS = 120000;
 const GRACE_MS = 30000;
+// Tools that do work AFTER their TimeoutSec budget ran out: BuildProject's TimeoutSec bounds the
+// build wait only, then the Error List is read with its own 30 s upper bound
+// ($script:TcBuildErrorListTimeoutSec, #107) plus the build output / coverage readbacks. A 30 s
+// grace would let the bridge be killed while a build that used its whole TimeoutSec is still
+// reading the Error List (#138), so it gets 90 s. Bounding the Error List by the build's remaining
+// time instead was not chosen: a long build would get a short Error List budget again and come
+// back CODE_NOT_VERIFIED, the bug #107 fixed.
+export const TOOL_GRACE_MS = Object.freeze({ BuildProject: 90000 });
 export { MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS };
 
 /** Read tools.json and return Map<name, tool>. */
@@ -159,7 +167,8 @@ function num(v) {
 
 /**
  * Node-side timeout for one call. When the caller passes the cmdlet's own
- * TimeoutSec / TimeoutMs / DurationMs, that budget plus a 30 s grace wins when larger,
+ * TimeoutSec / TimeoutMs / DurationMs, that budget plus a 30 s grace (TOOL_GRACE_MS for the
+ * tools listed there, BuildProject 90 s) wins when larger,
  * so the bridge is only killed when the cmdlet itself is stuck.
  * The result is clamped to [MIN_CALL_TIMEOUT_MS, MAX_CALL_TIMEOUT_MS] (1 s .. 2 h): a value
  * above 2^31-1 ms would make setTimeout fire immediately and report BRIDGE_TIMEOUT at once.
@@ -171,10 +180,11 @@ export function computeTimeoutMs(tool, args = {}) {
   const durationMs = num(args?.DurationMs);
   const untilTimeoutMs = num(args?.UntilTimeoutMs);
 
+  const grace = (tool?.name && Object.prototype.hasOwnProperty.call(TOOL_GRACE_MS, tool.name)) ? TOOL_GRACE_MS[tool.name] : GRACE_MS;
   let result = base;
-  if (timeoutSec !== undefined) result = Math.max(result, timeoutSec * 1000 + GRACE_MS);
+  if (timeoutSec !== undefined) result = Math.max(result, timeoutSec * 1000 + grace);
   if (timeoutMs !== undefined || untilTimeoutMs !== undefined || durationMs !== undefined) {
-    result = Math.max(result, (timeoutMs ?? 0) + (untilTimeoutMs ?? 0) + (durationMs ?? 0) + GRACE_MS);
+    result = Math.max(result, (timeoutMs ?? 0) + (untilTimeoutMs ?? 0) + (durationMs ?? 0) + grace);
   }
   if (!Number.isFinite(result)) result = MAX_CALL_TIMEOUT_MS;
   return Math.min(Math.max(result, MIN_CALL_TIMEOUT_MS), MAX_CALL_TIMEOUT_MS);

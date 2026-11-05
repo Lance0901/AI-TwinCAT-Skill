@@ -53,8 +53,10 @@
                          ComboBox's own selection (#117); entire = $null when no scope combo was recognised
         ERRORLIST_INCOMPLETE (#117): fewer rows were read than the summary buttons count (per requested
                          severity), or the scope stayed on another filter than Entire Solution; data then
-                         carries the partial rows, data.missingRows [ @{ severity; expected; read } ],
-                         data.scope and data.notes. Never success with a partial list.
+                         carries the partial rows, data.incomplete = $true, data.missingRows
+                         [ @{ severity; expected; read } ], data.errorsTotalUnknown, data.scope and data.notes.
+                         Never success with a partial list (callers decide with Get-TcErrorListReadState
+                         whether the ERROR rows are complete anyway, #138).
     #>
     [CmdletBinding()]
     param(
@@ -218,7 +220,10 @@
         $data | Add-Member -NotePropertyName 'scope' -NotePropertyValue $scopeData
     }
     if ($shortfall.Count -gt 0 -or $scopeFiltered) {
+        $data | Add-Member -NotePropertyName 'incomplete' -NotePropertyValue $true
         $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue $shortfall.ToArray()
+        # $true when the Errors button total was not readable: the error rows cannot be checked
+        $data | Add-Member -NotePropertyName 'errorsTotalUnknown' -NotePropertyValue ($null -eq $scan.Counts -or $null -eq $scan.Counts.errors)
         $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) -Force
         $parts = @($shortfall | ForEach-Object { "$($_.severity): $($_.read) of $($_.expected) row(s) read" })
         if ($scopeFiltered) {

@@ -191,7 +191,8 @@ $script:TcUiaErrorListScan = {
 
     # --- 3b. scope filter: VS2022 defaults the Error List to "Current Project" (目前專案),
     # hiding the rows of the other projects (scope filter of the Error List window:
-    # https://learn.microsoft.com/en-us/visualstudio/ide/reference/error-list-window).
+    # https://learn.microsoft.com/en-us/visualstudio/ide/error-list-window, "Filter the list by
+    # scope and source": Entire Solution, Open Documents, Current Project, Current Document).
     # Switch the ComboBox to "Entire Solution" (整個方案) whenever it shows anything else.
     # The current scope is read from the ComboBox ITSELF (SelectionPattern.GetSelection(), else
     # ValuePattern): while the drop-down is collapsed the combo has no ListItem descendants, so
@@ -201,8 +202,13 @@ $script:TcUiaErrorListScan = {
     # Result in $scopeInfo (emitted as Scope): before / after = selected scope name, entire =
     # $true (Entire Solution confirmed by readback), $false (another scope and the switch did not
     # take: the rows are filtered), $null (no scope ComboBox recognised: unknown).
+    # Known scope names: the four of the Microsoft Learn page above (zh-TW 整個方案 / 目前專案 實測
+    # 2026-11-05; the other zh-TW names are inferred) plus 'Changed Documents' / '已變更的文件'
+    # (not on that page, added defensively, not measured). A combo showing a name OUTSIDE this list
+    # is not recognised as the scope combo (scope unknown, entire = $null): then only the
+    # rows-vs-count readback of Get-TcBuildErrors protects the result.
     $scopeEntirePattern = '^(整個方案|Entire Solution)$'
-    $scopePartialPattern = '^(目前的?專案|目前的?文件|開啟的?文件|Current Project|Current Document|Open Documents)$'
+    $scopePartialPattern = '^(目前的?專案|目前的?文件|開啟的?文件|已變更的?文件|Current Project|Current Document|Open Documents|Changed Documents)$'
     function Get-ScopeKind {
         param([string]$Name)
         if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
@@ -498,6 +504,7 @@ $script:TcUiaErrorListScan = {
             Start-Sleep -Milliseconds $SettleMs
         }
         $guard = 0
+        $pageNo = 0
         while ($true) {
             $rows = $null
             try { $rows = $grid.FindAll($scope::Children, $rowCond) } catch { $rows = $null }
@@ -509,6 +516,10 @@ $script:TcUiaErrorListScan = {
                 # row listed N times on ONE page is N rows: $seen keeps the highest number of
                 # copies of a key seen on a single page, so genuine duplicates are not dropped
                 # and do not trip the rows-vs-count readback of Get-TcBuildErrors (#117).
+                # Limit: identical rows split ACROSS a page boundary (one copy on each page) look like
+                # a scroll overlap and are counted once, so the read can fall short of the button
+                # total; the per-page duplicate counts are written to the notes to explain it.
+                $pageNo++
                 $pageKeys = @{}
                 foreach ($r in $rows) {
                     $item = Read-Row $r $severity
@@ -518,6 +529,12 @@ $script:TcUiaErrorListScan = {
                     $seen[$key] = $pageKeys[$key]
                     $out.Add($item)
                     if ($out.Count -ge $MaxRows) { $truncated = $true; break }
+                }
+                $dupKeys = @($pageKeys.Keys | Where-Object { $pageKeys[$_] -gt 1 })
+                if ($dupKeys.Count -gt 0) {
+                    $dupRows = 0
+                    foreach ($k in $dupKeys) { $dupRows += $pageKeys[$k] - 1 }
+                    $notes.Add("rows '$severity' page ${pageNo}: $($dupKeys.Count) key(s) listed more than once on the page ($dupRows extra row(s), counted as separate rows; copies split across a page boundary are counted once)")
                 }
             }
             if ($truncated) { break }
@@ -754,6 +771,65 @@ function Get-TcErrorListShortfall {
         }
     }
     return , $out
+}
+
+function Get-TcErrorListReadState {
+    <#
+    .SYNOPSIS
+        How complete a Get-TcBuildErrors result is, for the Build / Test / Clean paths (#117, #138).
+    .DESCRIPTION
+        Get-TcBuildErrors fails closed with ERRORLIST_INCOMPLETE on ANY shortfall. The build paths
+        only need the ERROR rows to be complete; a list that is short of warnings only must not keep
+        a build unverified forever. Returned PSCustomObject:
+          usable              $true when rows can be taken from Result.data (success, or ERRORLIST_INCOMPLETE)
+          errorsComplete      $true when the error rows are complete: success, or ERRORLIST_INCOMPLETE where
+                              none of these holds:
+                                - an 'errors' shortfall, or a 'total' shortfall (severities not isolated)
+                                - the Errors button total was not readable (data.errorsTotalUnknown)
+                                - data.scope.entire = $false AND some shortfall (filtered list, rows missing)
+          warningsIncomplete  $true when warnings were read short (data.missingRows has 'warnings')
+          incomplete          $true for an ERRORLIST_INCOMPLETE result
+          missingRows / scope data.missingRows / data.scope of the result (@() / $null)
+          note                a short text for the non-blocking cases (warnings short, scope not Entire
+                              Solution with every count matching), else $null
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Result)
+    $state = [PSCustomObject]@{ usable = $false; errorsComplete = $false; warningsIncomplete = $false; incomplete = $false; missingRows = @(); scope = $null; note = $null }
+    if ($null -eq $Result) { return $state }
+    $d = $Result.data
+    if ($null -ne $d -and $null -ne $d.PSObject.Properties['scope']) { $state.scope = $d.scope }
+    if ($Result.success) {
+        $state.usable = $true
+        $state.errorsComplete = $true
+        return $state
+    }
+    $code = $null
+    if ($null -ne $Result.error) { $code = [string]$Result.error.code }
+    if ($code -ne 'ERRORLIST_INCOMPLETE' -or $null -eq $d -or $null -eq $d.PSObject.Properties['errors']) { return $state }
+    $state.usable = $true
+    $state.incomplete = $true
+    if ($null -ne $d.PSObject.Properties['missingRows']) { $state.missingRows = @($d.missingRows) }
+    $sevs = @($state.missingRows | ForEach-Object { [string]$_.severity })
+    $errorsShort = ($sevs -contains 'errors') -or ($sevs -contains 'total')
+    $totalUnknown = ($null -ne $d.PSObject.Properties['errorsTotalUnknown'] -and [bool]$d.errorsTotalUnknown)
+    $scopeFiltered = ($null -ne $state.scope -and $state.scope.entire -eq $false)
+    $state.errorsComplete = -not ($errorsShort -or $totalUnknown -or ($scopeFiltered -and $state.missingRows.Count -gt 0))
+    $state.warningsIncomplete = ($sevs -contains 'warnings')
+    if ($state.errorsComplete) {
+        $parts = @()
+        if ($state.warningsIncomplete) {
+            $w = @($state.missingRows | Where-Object { $_.severity -eq 'warnings' })[0]
+            $parts += "warnings: $($w.read) of $($w.expected) row(s) read"
+        }
+        if ($sevs -contains 'messages') {
+            $m = @($state.missingRows | Where-Object { $_.severity -eq 'messages' })[0]
+            $parts += "messages: $($m.read) of $($m.expected) row(s) read"
+        }
+        if ($scopeFiltered) { $parts += "scope filter '$($state.scope.after)' is not Entire Solution, but every count matches the rows read" }
+        $state.note = "Error List read in part, error rows complete (" + ($parts -join '; ') + ')'
+    }
+    return $state
 }
 
 function Test-TcLibraryManagerItem {

@@ -128,6 +128,11 @@ describe('validateParams', () => {
 });
 
 describe('computeTimeoutMs', () => {
+  it('BuildProject gets a 90 s grace after TimeoutSec (Error List read after the build, #107 / #138)', () => {
+    assert.equal(computeTimeoutMs({ name: 'BuildProject', timeoutMs: 690000 }, { TimeoutSec: 900 }), 990000);
+    assert.equal(computeTimeoutMs({ name: 'BuildProject', timeoutMs: 690000 }, {}), 690000);
+    assert.equal(computeTimeoutMs({ name: 'CleanProject', timeoutMs: 120000 }, { TimeoutSec: 300 }), 330000);
+  });
   test('uses tool.timeoutMs (or 120000 default) when no timing args', () => {
     assert.equal(computeTimeoutMs({ timeoutMs: 2000 }, {}), 2000);
     assert.equal(computeTimeoutMs({}, {}), 120000);

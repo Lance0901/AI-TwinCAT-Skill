@@ -113,9 +113,14 @@
         data.codeWarnings    warningItems without the "Library Manager" items and without the
                              rows that have no file (XAE build-summary rows such as "Project
                              'plc' build ... failed" stay in the Error List as Warning)
-        data.errorListError  only when the Error List could not be read (its error code), or was read
-                             only in part (ERRORLIST_INCOMPLETE: fewer rows than the button totals, or the
-                             scope filter stayed on another scope than Entire Solution, #117); codeVerified = $null then
+        data.errorListError  only when the Error List could not be read (its error code), or its ERROR rows
+                             were read only in part (ERRORLIST_INCOMPLETE: errors / total short of the button
+                             totals, Errors total unreadable, or a filtered scope with rows missing, #117);
+                             codeVerified = $null then, but errorItems / codeErrors still list the rows read (#138)
+        data.errorListScope  the Error List scope filter @{ before; after; entire; switched } (#117)
+        data.missingRows     with an incomplete read: [ @{ severity; expected; read } ]
+        data.errorListNote   warnings (only) read short, or a filtered scope whose counts all match: the error
+                             rows are complete; warnings short also adds WARNINGS_INCOMPLETE to warningCodes
         data.scanCleanupWarning  only when Get-TcBuildErrors dropped leftover timed-out UIA scans (#75); when one may still
                              be running the Error List is not read in that call (errorListError = ERRORLIST_UNAVAILABLE, codeVerified = $null)
         data.buildSec        seconds from Build($false) until BuildState reported Done
@@ -661,6 +666,10 @@
         if ($null -ne $errorListError) {
             $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errorListError
         }
+        # #117 / #138: what the Error List read covered (scope filter, rows short of the button totals)
+        if ($null -ne $els.scope) { $data | Add-Member -NotePropertyName 'errorListScope' -NotePropertyValue $els.scope }
+        if ($els.incomplete) { $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue @($els.missingRows) }
+        if ($null -ne $els.errorListNote) { $data | Add-Member -NotePropertyName 'errorListNote' -NotePropertyValue $els.errorListNote }
         # Leftover timed-out Error List scans that were dropped (#75); on a failed read it also
         # explains ERRORLIST_UNAVAILABLE (codeVerified stays $null then).
         $elScanWarning = $els.scanCleanupWarning
@@ -702,6 +711,10 @@
                    elseif ($unlocatedCode.Count -gt 0) { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
                    else { $coverageWhy }
             Add-TcBuildWarning -Data $data -Code 'CODE_NOT_VERIFIED' -Text "Build-TcProject: build reported success but $why, so it is not confirmed that the PLC code was compiled (CODE_NOT_VERIFIED). $(Get-TcErrorHint -Code 'CODE_NOT_VERIFIED')"
+        }
+        # after the codes that decide completeBuild: WARNINGS_INCOMPLETE never does (#138)
+        if ($els.warningsIncomplete) {
+            Add-TcBuildWarning -Data $data -Code 'WARNINGS_INCOMPLETE' -Text "Build-TcProject: $($els.errorListNote); data.warningItems is not the whole list (WARNINGS_INCOMPLETE). The error rows are complete, so this does not affect codeVerified. $(Get-TcErrorHint -Code 'WARNINGS_INCOMPLETE')"
         }
 
         if ($null -eq $buildSucceeded) {

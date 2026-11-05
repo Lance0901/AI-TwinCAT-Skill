@@ -16,8 +16,18 @@
 #      C4 scope stayed on '目前專案' (entire = $false), counts match -> ERRORLIST_INCOMPLETE
 #      C5 -IncludeWarnings:$false: warnings not compared -> success
 #      C6 severities not isolatable: total rows vs sum of totals
-#      C7 Get-TcErrorListSummary -> errorListError ERRORLIST_INCOMPLETE, no items
+#      C7 Get-TcErrorListSummary / Get-TcErrorListReadState on ERRORLIST_INCOMPLETE (#138):
+#         C7a only warnings short -> errorListError $null, warningsIncomplete, rows kept
+#         C7b failed build + warnings short -> codeErrors listed (not empty)
+#         C7c errors short -> errorListError ERRORLIST_INCOMPLETE, the rows read still listed
+#         C7d severities not isolated (total) / Errors total unreadable -> errors not complete
+#         C7e scope.entire = $false with every count matching -> note only, not blocking
+#         C7f scope.entire = $false AND warnings short -> blocking
 #      C8 the hint exists
+#   E  Read-Grid (extracted from the scan AST, Read-Row stubbed) on a MOCK scrolling grid (#138):
+#      E1 page overlap A,B,C / B,C,D -> 4 rows; E2 same-page duplicate A,A,B -> 3 rows + note;
+#      E3 duplicate on page 1 and again on page 2 -> kept as 2; E4 copies split across pages
+#      (documented limit) -> counted once
 #   D  #107: Error List budget of Build-TcProject / Test-TcPlcProject
 #      D1 $script:TcBuildErrorListTimeoutSec >= 30, no 8 s branch left in either cmdlet
 #      D2 a scan that needs 17 s (simulated, no wait): times out with the old 8 s budget, reads
@@ -220,12 +230,81 @@ try {
     $r = Get-TcBuildErrors -TimeoutSec 30
     Check "C6 not isolatable, 1 row for 1 + 2 -> ERRORLIST_INCOMPLETE 'total'" (-not $r.success -and $r.error.code -eq 'ERRORLIST_INCOMPLETE' -and @($r.data.missingRows)[0].severity -eq 'total' -and @($r.data.missingRows)[0].expected -eq 3) (J $r.data.missingRows)
 
-    Set-Scan -Rows @() -Errors 0 -Warnings 28
-    $s = & $mod { Get-TcErrorListSummary -TimeoutSec 30 }
-    Check 'C7 Get-TcErrorListSummary: errorListError ERRORLIST_INCOMPLETE, no items (Build-TcProject -> codeVerified null)' ($s.errorListError -eq 'ERRORLIST_INCOMPLETE' -and @($s.warningItems).Count -eq 0 -and @($s.errorItems).Count -eq 0) (J ($s | Select-Object errorListError, errorCount, warningCount))
+    function Get-Summary([int]$Fallback = 0) { & $mod { param($f) Get-TcErrorListSummary -TimeoutSec 30 -FallbackErrorCount $f } $Fallback }
+    function Sel($x) { J ($x | Select-Object errorListError, incomplete, warningsIncomplete, errorListNote, errorCount, missingRows) }
+
+    Set-Scan -Rows @((Row 'Warning' 'w1')) -Errors 0 -Warnings 28
+    $s = Get-Summary
+    Check 'C7a summary, only warnings short: errorListError null (not blocking), warningsIncomplete, rows kept' ($null -eq $s.errorListError -and $s.incomplete -and $s.warningsIncomplete -and @($s.warningItems).Count -eq 1 -and $s.errorListNote -match 'warnings: 1 of 28') (Sel $s)
+
+    Set-Scan -Rows @((Row 'Error' "Identifier 'x' not defined" 7), (Row 'Warning' 'w1')) -Errors 1 -Warnings 28
+    $s = Get-Summary -Fallback 1
+    Check 'C7b failed build + warnings short: codeErrors not empty, errorListError null' (@($s.codeErrors).Count -eq 1 -and $s.codeErrors[0].line -eq 7 -and $null -eq $s.errorListError -and $s.errorCount -eq 1) (Sel $s)
+
+    Set-Scan -Rows @((Row 'Error' "Identifier 'x' not defined" 7)) -Errors 3 -Warnings 0
+    $s = Get-Summary -Fallback 1
+    Check 'C7c errors short: errorListError ERRORLIST_INCOMPLETE, codeErrors / errorItems still list the row read' ($s.errorListError -eq 'ERRORLIST_INCOMPLETE' -and @($s.codeErrors).Count -eq 1 -and @($s.errorItems).Count -eq 1 -and @($s.missingRows)[0].severity -eq 'errors') (Sel $s)
+
+    Set-Scan -Rows @((Row 'Unknown' 'a')) -Errors 1 -Warnings 2 -Toggle $false
+    $s = Get-Summary
+    Check "C7d severities not isolated ('total' short) -> errors not complete" ($s.errorListError -eq 'ERRORLIST_INCOMPLETE') (Sel $s)
+    Set-Scan -Rows @() -Errors $null -Warnings 28
+    $s = Get-Summary
+    Check 'C7d Errors total unreadable + warnings short -> errors not complete' ($s.errorListError -eq 'ERRORLIST_INCOMPLETE') (Sel $s)
+
+    Set-Scan -Rows @((Row 'Warning' 'w1')) -Errors 0 -Warnings 1 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
+    $r = Get-TcBuildErrors -TimeoutSec 30
+    $s = Get-Summary
+    Check "C7e scope '目前專案', counts match: Get-TcBuildErrors fails closed, summary only notes it" (-not $r.success -and $null -eq $s.errorListError -and -not $s.warningsIncomplete -and $s.errorListNote -match 'every count matches') (Sel $s)
+
+    Set-Scan -Rows @() -Errors 0 -Warnings 28 -Scope ([PSCustomObject]@{ before = '目前專案'; after = '目前專案'; entire = $false; switched = $false })
+    $s = Get-Summary
+    Check "C7f scope '目前專案' AND warnings short -> blocking (errors not proven complete)" ($s.errorListError -eq 'ERRORLIST_INCOMPLETE') (Sel $s)
+
+    $st = & $mod { Get-TcErrorListReadState -Result ([PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'ERRORLIST_UNAVAILABLE' }; data = $null }) }
+    Check 'C7g ERRORLIST_UNAVAILABLE -> not usable' (-not $st.usable -and -not $st.errorsComplete) (J $st)
 
     $hint = & $mod { Get-TcErrorHint -Code 'ERRORLIST_INCOMPLETE' }
     Check 'C8 hint for ERRORLIST_INCOMPLETE' (-not [string]::IsNullOrWhiteSpace([string]$hint) -and $hint -match '整個方案') ''
+
+    # --- E: Read-Grid on a mock scrolling grid ---
+    $rgNames = @('Get-UiaPattern', 'New-TypeOr', 'Read-Grid')
+    $rgAsts = @($scanSb.Ast.FindAll({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $rgNames -contains $a.Name }, $true))
+    Check 'E0 scan defines Read-Grid / New-TypeOr' ($rgAsts.Count -eq 3) "$($rgAsts.Count)/3"
+    foreach ($f in $rgAsts) { . ([scriptblock]::Create($f.Extent.Text)) }
+    function Read-Row($r, [string]$sev) { [PSCustomObject]@{ severity = $sev; description = [string]$r.Desc; project = 'P'; file = 'F'; line = '1'; column = '1' } }
+    $spKey = [System.Windows.Automation.ScrollPattern]::Pattern.ProgrammaticName
+    function New-MockGrid([object[][]]$Pages) {
+        $state = [PSCustomObject]@{ Idx = 0; Pages = $Pages }
+        $sp = [PSCustomObject]@{ State = $state }
+        $sp | Add-Member ScriptProperty Current {
+            $n = $this.State.Pages.Count
+            [PSCustomObject]@{ VerticallyScrollable = ($n -gt 1); VerticalScrollPercent = $(if ($n -le 1) { 100.0 } else { [double]$this.State.Idx * 100.0 / ($n - 1) }) }
+        }
+        $sp | Add-Member ScriptMethod SetScrollPercent { param($h, $v) $this.State.Idx = 0 }
+        $sp | Add-Member ScriptMethod ScrollVertical { param($a) if ($this.State.Idx -lt $this.State.Pages.Count - 1) { $this.State.Idx++ } }
+        $g = [PSCustomObject]@{ State = $state; Patterns = @{ $spKey = $sp } }
+        $g | Add-Member ScriptMethod TryGetCurrentPattern { param($Pattern, $Out) $p = $this.Patterns[$Pattern.ProgrammaticName]; if ($null -eq $p) { return $false }; $Out.Value = $p; $true }
+        $g | Add-Member ScriptMethod FindAll { param($TreeScope, $Condition) , @($this.State.Pages[$this.State.Idx] | ForEach-Object { [PSCustomObject]@{ Desc = $_ } }) }
+        $g
+    }
+    function Invoke-ReadGrid([object[][]]$Pages) {
+        $script:grid = New-MockGrid $Pages
+        $script:notes = [System.Collections.Generic.List[string]]::new()
+        $script:MaxRows = 2000
+        $script:SettleMs = 0
+        $out = [System.Collections.Generic.List[object]]::new()
+        $trunc = Read-Grid 'Warning' @{} $out
+        [PSCustomObject]@{ Rows = @($out | ForEach-Object { $_.description }); Truncated = $trunc; Notes = @($script:notes) }
+    }
+    $g = Invoke-ReadGrid @(@('A', 'B', 'C'), @('B', 'C', 'D'))
+    Check 'E1 page overlap A,B,C / B,C,D -> A,B,C,D, no duplicate note' (($g.Rows -join ',') -eq 'A,B,C,D' -and -not $g.Truncated -and @($g.Notes).Count -eq 0) (J $g)
+    $g = Invoke-ReadGrid @(, @('A', 'A', 'B'))
+    Check 'E2 same-page duplicate A,A,B -> 3 rows, note records the duplicate' (($g.Rows -join ',') -eq 'A,A,B' -and @($g.Notes | Where-Object { $_ -match "page 1: 1 key\(s\).*1 extra row" }).Count -eq 1) (J $g)
+    $g = Invoke-ReadGrid @(@('A', 'A', 'B'), @('A', 'B', 'C'))
+    Check 'E3 duplicate on page 1, one copy again on page 2 (overlap) -> A,A,B,C' (($g.Rows -join ',') -eq 'A,A,B,C') (J $g)
+    $g = Invoke-ReadGrid @(@('A', 'B'), @('B', 'C'))
+    Check 'E4 copies split across a page boundary look like overlap -> counted once (documented limit)' (($g.Rows -join ',') -eq 'A,B,C') (J $g)
 
     # --- D: #107 Error List budget ---
     $budget = & $mod { $script:TcBuildErrorListTimeoutSec }
@@ -235,7 +314,11 @@ try {
         $txt = [IO.File]::ReadAllText((Join-Path $root $f))
         if ($txt -match '\{\s*8\s*\}' -or $txt -notmatch 'Get-TcErrorListSummary\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec') { $bad += $f }
     }
-    Check 'D1 budget >= 30 s on every path, no 8 s branch' ($budget -ge 30 -and $bad.Count -eq 0) "budget=$budget bad=$($bad -join ',')"
+    $ecTxt = [IO.File]::ReadAllText((Join-Path $root 'Enable-TcConfig.ps1'))
+    $clTxt = [IO.File]::ReadAllText((Join-Path $root 'Clear-TcProject.ps1'))
+    if ($ecTxt -match 'Get-TcBuildErrors\s+-TimeoutSec\s+8\b' -or $ecTxt -notmatch 'TcBuildErrorListTimeoutSec') { $bad += 'Enable-TcConfig.ps1' }
+    if ($clTxt -notmatch 'Get-TcBuildErrors\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec') { $bad += 'Clear-TcProject.ps1' }
+    Check 'D1 budget >= 30 s on every path, no 8 s branch (Build / Test / Clean / Enable-TcConfig diagnostics)' ($budget -ge 30 -and $bad.Count -eq 0) "budget=$budget bad=$($bad -join ',')"
 
     Set-Scan -Rows @() -Errors 0 -Warnings 0
     $global:ScanNeedsSec = 17      # VS2022 measured 16.5-17.8 s (#107); simulated, nothing waits

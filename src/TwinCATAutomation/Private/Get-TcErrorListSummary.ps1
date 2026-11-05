@@ -26,6 +26,16 @@ function Get-TcErrorListSummary {
           truncated          Get-TcBuildErrors data.truncated: not every row could be read ($false when
                              the Error List was not readable)
           scanCleanupWarning Get-TcBuildErrors data.scanCleanupWarning (#75), else $null
+          incomplete         $true when Get-TcBuildErrors returned ERRORLIST_INCOMPLETE (#117): the rows that
+                             were read are still in errorItems / warningItems (#138)
+          missingRows        Get-TcBuildErrors data.missingRows (@() when complete)
+          scope              Get-TcBuildErrors data.scope ($null when not read)
+          warningsIncomplete $true when only warnings (or messages) were read short: errorListError stays
+                             $null (the error rows are complete), Build-TcProject adds WARNINGS_INCOMPLETE
+          errorListNote      text for that non-blocking case, else $null
+        errorListError = ERRORLIST_INCOMPLETE only when the ERROR rows are not proven complete
+        (Get-TcErrorListReadState: errors / total shortfall, Errors total unreadable, or a filtered
+        scope with a shortfall); callers then treat the code as not verified (codeVerified = $null).
         The code of Build-TcProject before this function existed (complete-automation-interface task
         3.7); Build-TcProject keeps its own success decision.
     .PARAMETER TimeoutSec
@@ -51,7 +61,11 @@ function Get-TcErrorListSummary {
     $unclassified = @()
     $truncated = $false
     $el = if ($TimeoutSec -gt 0) { Get-TcBuildErrors -IncludeWarnings -TimeoutSec $TimeoutSec } else { Get-TcBuildErrors -IncludeWarnings }
-    if ($el.success) {
+    $rs = Get-TcErrorListReadState -Result $el
+    $errorListNote = $null
+    if ($rs.usable) {
+        # Success, or ERRORLIST_INCOMPLETE: the rows that were read are kept either way (#138), so a
+        # failed build still lists the code errors that were read.
         $errorItems = @($el.data.errors)
         if ($null -ne $el.data.counts.errors) { $errorCount = [int]$el.data.counts.errors } else { $errorCount = $errorItems.Count }
         if ($null -ne $el.data.PSObject.Properties['warnings']) { $warningItems = @($el.data.warnings) }
@@ -60,6 +74,11 @@ function Get-TcErrorListSummary {
         if ($null -ne $el.data.PSObject.Properties['severityUnknown']) { $severityUnknown = [bool]$el.data.severityUnknown }
         if ($null -ne $el.data.PSObject.Properties['unclassified']) { $unclassified = @($el.data.unclassified) }
         if ($null -ne $el.data.PSObject.Properties['truncated']) { $truncated = [bool]$el.data.truncated }
+        if (-not $rs.errorsComplete) {
+            $errorListError = [string]$el.error.code
+            $errorListMessage = [string]$el.error.message
+        }
+        elseif ($rs.incomplete) { $errorListNote = $rs.note }
     }
     else {
         $errorListError = [string]$el.error.code
@@ -78,6 +97,10 @@ function Get-TcErrorListSummary {
     if ($null -eq $errorListError) {
         $errorCount = $codeErrors.Count
         $libraryErrorCount = $libraryErrorItems.Count
+    }
+    elseif ($rs.usable) {
+        # errors read in part: at least what was read, never fewer than the fallback count
+        $errorCount = [Math]::Max($codeErrors.Count, $FallbackErrorCount)
     }
     # Warnings: also drop rows without a file (the XAE build-summary row "... build for platform ...
     # failed" is listed as a Warning without project/file/line and survives the next successful build).
@@ -103,5 +126,10 @@ function Get-TcErrorListSummary {
         unclassified       = $unclassified
         truncated          = $truncated
         scanCleanupWarning = $scanWarning
+        incomplete         = [bool]$rs.incomplete
+        missingRows        = @($rs.missingRows)
+        scope              = $rs.scope
+        warningsIncomplete = [bool]($rs.incomplete -and $rs.errorsComplete -and $rs.warningsIncomplete)
+        errorListNote      = $errorListNote
     }
 }

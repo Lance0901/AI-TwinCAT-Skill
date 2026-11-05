@@ -151,6 +151,12 @@ function Test-TcPlcProject {
             $data | Add-Member -NotePropertyName errorListError -NotePropertyValue $els.errorListError
             $warningTexts += "the Error List could not be read ($($els.errorListError): $($els.errorListMessage)); the result comes from the CheckAllObjects return value only"
         }
+        if ($els.incomplete) { $data | Add-Member -NotePropertyName missingRows -NotePropertyValue @($els.missingRows) }
+        if ($null -ne $els.errorListNote) {
+            # warnings (only) read short (#138): the error rows are complete, not a blocking failure
+            $data | Add-Member -NotePropertyName errorListNote -NotePropertyValue $els.errorListNote
+            $warningTexts += "$($els.errorListNote) (WARNINGS_INCOMPLETE when warnings are short)"
+        }
         if ($els.severityUnknown) {
             $data | Add-Member -NotePropertyName severityUnknown -NotePropertyValue $true
             $data | Add-Member -NotePropertyName unclassified -NotePropertyValue @($els.unclassified)
@@ -165,7 +171,8 @@ function Test-TcPlcProject {
         }
         else {
             $msg = "CheckAllObjects on '$prjPath' returned False"
-            if ($null -ne $els.errorListError) { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
+            if ($null -ne $els.errorListError -and $els.incomplete) { $msg += "; the Error List was read only in part ($($els.errorListError), data.missingRows), so the errors listed may not be all of them" }
+            elseif ($null -ne $els.errorListError) { $msg += "; the Error List could not be read ($($els.errorListError)), so the errors are not listed" }
             elseif ($located.Count -eq 0) { $msg += '; the Error List shows no error row except stale ones (no file and no code)' }
             else {
                 $parts = @()
