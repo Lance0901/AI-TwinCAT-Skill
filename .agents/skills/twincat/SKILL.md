@@ -84,7 +84,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked]` |
 | `Connect-TcNcAxisToPlc` | `LinkNcAxis` | `-Axis <string> -PlcVariable <string> [-PlcProjectPath <string>] [-DryRun <bool>]` |
 | `Disconnect-TcAds` | `DisconnectAds` | - |
-| `Disconnect-TcIde` | `DisconnectIde` | `[-Quit] [-Kill]` |
+| `Disconnect-TcIde` | `DisconnectIde` | `[-Quit] [-Kill] [-ForgetPendingLaunch]` |
 | `Enable-TcConfig` | `EnableConfig` | `[-Force] [-NoLogin] [-TimeoutSec <int>] [-NoPlatformFix] [-Platform <string>] [-PlcProjectPath <string[]>] [-ActivateTimeoutSec <int>]` |
 | `Enter-TcPlcOnline` | `PlcLogin` | `[-PlcProjectPath <string>] [-LoginMode <string>] [-SilentFlag] [-TimeoutSec <int>]` |
 | `Exit-TcPlcOnline` | `PlcLogout` | `[-PlcProjectPath <string>]` |
