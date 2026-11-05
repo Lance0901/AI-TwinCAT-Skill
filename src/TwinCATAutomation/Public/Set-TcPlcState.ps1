@@ -18,7 +18,9 @@ function Set-TcPlcState {
         error data.lastError; both always present, lastError $null when the last read succeeded).
         data.originalState is the state read before WriteControl ($null when it could not be read);
         data.leftOriginal is $true only when a read RETURNED a state other than it ($null when the
-        original is unknown); failed reads during the wait are data.unreachableSeen. A failure also
+        original is unknown); failed reads during the wait are data.unreachableSeen ($true whenever
+        currentState is 'Unreachable', also when the wait could not probe at all). Run on a PLC that
+        already runs returns the same fields (alreadyInState, nothing sent). A failure also
         carries the wait's probe log (data.probeErrors, data.probeErrorsDropped), and the lifecycle
         block's reachedState is then empty (readbackNote 'unreachable').
         Fail closed (#68): those two readback failures come after WriteControl was sent and also
@@ -103,12 +105,19 @@ function Set-TcPlcState {
             # Already running (e.g. boot project autostart): WriteControl Run would answer
             # ADS 0x712 "invalid state", so treat it as done.
             if ([int]$stateBefore.AdsState -eq 5) {
+                # #131: same fields as the polled path (nothing sent, the read before is the readback)
                 return New-TcResult -Success $true -Data ([PSCustomObject]@{
-                    requestedState = $State
-                    currentState   = 'Run'
-                    reconnected    = $reconnected
-                    elapsedMs      = 0
-                    alreadyInState = $true
+                    requestedState  = $State
+                    originalState   = 'Run'
+                    currentState    = 'Run'
+                    finalState      = 'Run'
+                    lastState       = 'Run'
+                    lastError       = $null
+                    leftOriginal    = $false
+                    unreachableSeen = $false
+                    reconnected     = $reconnected
+                    elapsedMs       = 0
+                    alreadyInState  = $true
                 })
             }
         }
@@ -142,7 +151,9 @@ function Set-TcPlcState {
                 lastState       = $seen
                 lastError       = $(if ($lastReadFailed) { [string]$wait.LastError } else { $null })
                 leftOriginal    = $leftOriginal
-                unreachableSeen = ($wait.AnyProbeFailed -eq $true)
+                # also when the wait returned before any probe (TwinCAT.Ads.dll not found: LastError set,
+                # AnyProbeFailed false): currentState is 'Unreachable' then, so this must agree
+                unreachableSeen = (($wait.AnyProbeFailed -eq $true) -or $lastReadFailed)
                 reconnected     = $reconnected
                 elapsedMs       = $wait.ElapsedMs
             }

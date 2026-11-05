@@ -289,7 +289,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:多路徑 `Read-TcVariable`(MCP `ReadVariable` / `QuickRead`,Path 有兩個以上)至少一個 path 讀不到。以前整筆仍回 `success: true`,頂層沒有任何標記，只看 `success` 會漏掉(#60,實測 2026-10-28 registered tcauto:部分或全部 path 是 `ADS_SYMBOL_NOT_FOUND` 都回 `success: true`)。
 - **現在(fail closed)**:任一 path 失敗 → `success: false`、`error.code = PARTIAL_READ_FAILED`,message 列出 `<path> (<code>)`。`data` 仍是每個 path 一筆的陣列(順序同輸入，讀到的值照常在裡面;讀不到的那筆是 `{path, error, code, hint}`)。結果頂層另有 `partial`(有 path 失敗就是 `true`)與 `failedPaths`(失敗的 path,依輸入順序);全部成功時是 `success: true`、`partial: false`、`failedPaths: []`。`data` 是陣列，所以這兩個欄位放在頂層，不在 `data` 裡。單一路徑不變(讀不到回 `SYMBOL_NOT_FOUND`,沒有 `partial` / `failedPaths`)。
 - **下一步**:看 `failedPaths` 與 `data` 裡那幾筆的 `code`:`ADS_SYMBOL_NOT_FOUND` 見上節(`Get-TcSymbols` 確認路徑，新變數要先下載);連線類(`ADS_TARGET_NOT_FOUND` / `ADS_PORT_NOT_FOUND` / `ADS_TIMEOUT`)先 `Get-TcPlcState` 確認狀態再只重讀 `failedPaths`。
-- **未涵蓋**:`Watch-TcVariable` 多路徑取樣把讀不到的 path 記成 `null`、沒有 error(#60 實測第 5 點),這次沒改。
+- **未涵蓋**:`Watch-TcVariable` 多路徑取樣把讀不到的 path 記成 `null`、沒有 error(#60 實測第 5 點),這次沒改，追蹤在 #139。
 
 ### ADS_INVALID_STATE(ADS 0x712)
 
@@ -446,7 +446,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Set-TcPlcState -State Run`(或 `Enable-TcConfig -Force` 的 PLC Run 步)回 `PLC_RUN_TIMEOUT`(Stop / Reset 對應的是 `STATE_SET_FAILED`)。
 - **為什麼**:送出 Run 後 PLC 在 `-TimeoutSec` 內沒有進入 Run(PLC 例外、程式沒載入、runtime 狀態不對)。
 - **下一步**:`Get-TcPlcState` 看目前狀態;Error / Stop 就檢查 PLC 例外或 Build 錯誤,再 `Enter-TcPlcOnline` 後重試;851 是 Invalid 見 `PLC_NOT_LOADED`。
-- **回報的狀態**(#131,與 `Set-TcSystemState` 的 #114 同規則;Run / Stop 都適用，含 `STATE_SET_FAILED`):等待中最後一次讀 PLC port 失敗(ADS 錯誤，例如 runtime crash 讓 port 消失)時,`data.currentState` / `finalState` 是 `Unreachable`,不是之前最後讀到的狀態;那個在 `data.lastState`(等待中一次都沒讀到就是送出前的狀態),錯誤在 `data.lastError`(最後一次讀取成功時是 `null`)。`data.originalState` 是送出前讀到的狀態(讀不到是 `null`);`data.leftOriginal` 只在某次讀取**真的讀到**和 `originalState` 不同的狀態時才是 `true`(讀取失敗不算狀態;`originalState` 是 `null` 時為 `null`);等待中有任何讀取失敗記在 `data.unreachableSeen`。失敗時另附 `probeErrors` / `probeErrorsDropped`(格式同 `SYSTEM_STATE_TIMEOUT`),lifecycle block 的 `reachedState` 是空的(`readbackNote = unreachable`,`step` 寫 unreachable 與之前最後讀到的狀態),`LIFECYCLE_BLOCKED` 訊息寫「read back afterwards: nothing (PLC port unreachable)」。`Set-TcPlcState` 的等待**沒有** `RUNTIME_CRASHED` 偵測(只有 `Set-TcSystemState` 有);crash 路徑在真機上無法故意觸發，只有 unit test(`tests/Unit/plc-state-unreachable-131.ps1`)。
+- **回報的狀態**(#131,與 `Set-TcSystemState` 的 #114 同規則;Run / Stop 都適用，含 `STATE_SET_FAILED`):等待中最後一次讀 PLC port 失敗(ADS 錯誤，例如 runtime crash 讓 port 消失)時,`data.currentState` / `finalState` 是 `Unreachable`,不是之前最後讀到的狀態;那個在 `data.lastState`(等待中一次都沒讀到就是送出前的狀態),錯誤在 `data.lastError`(最後一次讀取成功時是 `null`)。`data.originalState` 是送出前讀到的狀態(讀不到是 `null`);`data.leftOriginal` 只在某次讀取**真的讀到**和 `originalState` 不同的狀態時才是 `true`(讀取失敗不算狀態;`originalState` 是 `null` 時為 `null`);等待中有任何讀取失敗記在 `data.unreachableSeen`(`currentState` 是 `Unreachable` 時一定是 `true`,包括等待根本沒能讀，例如找不到 TwinCAT.Ads.dll);PLC 已經在 Run 時 `-State Run` 不送出(`alreadyInState`),這些欄位照樣都有。失敗時另附 `probeErrors` / `probeErrorsDropped`(格式同 `SYSTEM_STATE_TIMEOUT`),lifecycle block 的 `reachedState` 是空的(`readbackNote = unreachable`,`step` 寫 unreachable 與之前最後讀到的狀態),`LIFECYCLE_BLOCKED` 訊息寫「read back afterwards: nothing (PLC port unreachable)」。`Set-TcPlcState` 的等待**沒有** `RUNTIME_CRASHED` 偵測(只有 `Set-TcSystemState` 有);crash 路徑在真機上無法故意觸發，只有 unit test(`tests/Unit/plc-state-unreachable-131.ps1`)。
 
 ### PLC_PROJECT_NOT_FOUND
 

@@ -107,6 +107,24 @@ $r = Set-TcPlcState -State Stop -TimeoutSec 2
 $d = $r.data
 Check 'F original unreadable -> success, originalState null, leftOriginal null' ($r.success -and $d.currentState -eq 'Stop' -and $null -eq $d.originalState -and $null -eq $d.leftOriginal -and $d.unreachableSeen -eq $false) (J $d)
 
+# --- H: Run on a PLC that already runs -> alreadyInState, nothing sent, every #131 field present
+Set-Case '10.131.0.8.1.1' 'Run' @('Run')
+$r = Set-TcPlcState -State Run -TimeoutSec 1
+$d = $r.data
+$names = @('originalState', 'currentState', 'finalState', 'lastState', 'lastError', 'leftOriginal', 'unreachableSeen')
+$missing = @($names | Where-Object { $null -eq $d.PSObject.Properties[$_] })
+Check 'H already Run -> success, alreadyInState, no WriteControl' ($r.success -and $d.alreadyInState -eq $true -and $fake::Writes -eq 0) (J $d)
+Check 'H already Run -> originalState / currentState / finalState / lastState Run, lastError null, leftOriginal / unreachableSeen false' ($missing.Count -eq 0 -and $d.originalState -eq 'Run' -and $d.currentState -eq 'Run' -and $d.finalState -eq 'Run' -and $d.lastState -eq 'Run' -and $null -eq $d.lastError -and $d.leftOriginal -eq $false -and $d.unreachableSeen -eq $false) "missing=$($missing -join ',') $(J $d)"
+
+# --- I: the wait returns before any probe (TwinCAT.Ads.dll not found for the temporary client):
+# currentState 'Unreachable' must come with unreachableSeen = true
+Set-Case '10.131.0.9.1.1' 'Stop' @('Stop')
+& $mod { $script:UtOrigFind = ${function:script:Find-TcAdsAssembly}; function script:Find-TcAdsAssembly { $false } }
+try { $r = Set-TcPlcState -State Run -TimeoutSec 1 }
+finally { & $mod { Set-Item -Path function:script:Find-TcAdsAssembly -Value $script:UtOrigFind } }
+$d = $r.data
+Check 'I dll not found in the wait -> PLC_RUN_TIMEOUT, Unreachable, unreachableSeen true, lastState = original' ($r.error.code -eq 'PLC_RUN_TIMEOUT' -and $d.currentState -eq 'Unreachable' -and $d.unreachableSeen -eq $true -and $d.lastState -eq 'Stop' -and [string]$d.lastError -match 'dll not found') (J $d)
+
 # --- G: JSON shape (MCP bridge serialises with ConvertTo-Json): the new fields survive
 Set-Case '10.131.0.7.1.1' 'Stop' @('down7')
 $r = Set-TcPlcState -State Run -TimeoutSec 1
