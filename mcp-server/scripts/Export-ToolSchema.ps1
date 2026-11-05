@@ -268,8 +268,9 @@ $schemaOverrides = @{
 $requiredOverrides = @('ClearLifecycleBlock.Reason', 'ClearLifecycleBlock.FallbackMethod', 'ClearLifecycleBlock.AllowedSideEffects', 'ClearLifecycleBlock.MaxVerifyLevel')
 
 # Cmdlets that are NOT offered as MCP tools (the cmdlet itself stays in the module).
-# NewProject (#70): AddFromTemplate gets an empty template path and Solution.Create would close
-# the open solution; offered again once #70 is fixed.
+# NewProject (#70): Solution.Create closes the solution the IDE has open, and the cmdlet has not been
+# driven through tcauto itself (measured 2026-11-05, 4024 32-bit XAE Shell and 4026.22 XAE in VS2022:
+# create with a self-made client, Build with the registered tcauto, both succeed).
 # GetIdeModalDialog (#86): the Get-TcIdeModalDialog cmdlet is not a catalog tool because the composite
 # tool of the same name (lib/composites.js) already serves it. The composite must stay: when a modal
 # dialog blocks the bridge, it answers through the out-of-process probe, which a plain cmdlet call cannot.

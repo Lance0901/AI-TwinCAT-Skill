@@ -121,7 +121,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 
 ### Project
 
-`NewProject` (`New-TcProject`) is temporarily not offered over MCP (#70: empty template path, and `Solution.Create` would close the open solution); create the project in XAE and use `ConnectIde SolutionPath=...`. See [docs/known-limitations.md](../docs/known-limitations.md).
+`NewProject` (`New-TcProject`) is temporarily not offered over MCP (#70: `Solution.Create` closes the solution the IDE has open, and the cmdlet has not been verified through tcauto itself; measured 2026-11-05 on the 4024 32-bit XAE Shell and 4026.22 XAE in VS2022: create with a self-made client, Build with the registered tcauto, both succeed); create the project in XAE and use `ConnectIde SolutionPath=...`. See [docs/known-limitations.md](../docs/known-limitations.md).
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|

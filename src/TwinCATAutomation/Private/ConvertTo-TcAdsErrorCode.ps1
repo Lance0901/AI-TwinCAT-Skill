@@ -78,6 +78,10 @@ $script:TcErrorHints['MEMBER_ORDER_MISMATCH'] = 'DUT / GVL 已建立並存檔,�
 # #70: New-TcProject refuses while the IDE has a solution open: Solution.Create closes it without
 # a warning (實測 2026-10-28, #70: 4026.22 XAE in VS2022 / 4024 32-bit XAE Shell, registered tcauto)
 $script:TcErrorHints['SOLUTION_ALREADY_OPEN'] = 'IDE 已開著 solution(data.openSolution),New-TcProject 不會建立:Solution.Create 會關掉目前的 solution 並丟掉未存的改動(#70)。建議在 XAE 手動建立新專案後用 Connect-TcIde -SolutionPath <新 .sln> 接上;要用 New-TcProject 就先在 XAE 存好、關掉目前的 solution 再呼叫。NewProject 目前不在 MCP 提供'
+$script:TcErrorHints['PROJECT_DIR_EXISTS'] = '<Path>\<Name> 資料夾已存在(data.path):New-TcProject 不會寫進既有資料夾,也沒有呼叫 Solution.Create,IDE 的 solution 沒動。換一個 -Name / -Path,或自己確認並刪除空的舊資料夾後重跑;見 docs/troubleshooting.md「PROJECT_DIR_EXISTS」'
+$script:TcErrorHints['PROJECT_CREATE_UNVERIFIED'] = 'New-TcProject 的呼叫沒有丟錯,但讀回少了東西(data.missing:.sln / .tsproj / .plcproj 或 TIPC^<Name>_Plc 節點):不要當成成功。IDE 現在開著這個半成品 solution,模組已把 solution 路徑設為未知並記 BUILD_REQUIRED(<unknown>)。用 Get-TcIdeModalDialog 看有沒有 dialog,在 XAE 檢查 data.path,通常要刪掉該資料夾、關掉 solution 後重建;見 docs/troubleshooting.md「PROJECT_CREATE_UNVERIFIED」'
+# #70: New-TcProject found no 'TwinCAT Project.tsproj' (InfoSys 242721803 passes it as the AddFromTemplate path)
+$script:TcErrorHints['TEMPLATE_NOT_FOUND'] = '找不到 TwinCAT 專案 template(TwinCAT Project.tsproj,已查的路徑在 data.searched):New-TcProject 沒有呼叫 Solution.Create,IDE 的 solution 沒動。確認 TwinCAT XAE 已安裝(預設 <TwinCAT 目錄>\3.1\Components\Base\PrjTemplate),或把 TWINCAT3DIR 設成 TwinCAT 的 3.1 目錄後重試;見 docs/troubleshooting.md「TEMPLATE_NOT_FOUND」'
 
 # task 1.3 (complete-automation-interface): I/O scan and variable link (TE1000 v1.7.0 6.6.2, 5.1.1.2, 5.1.1.8, 5.1.3.4)
 $script:TcErrorHints['IO_SCAN_REQUIRES_CONFIG'] = 'I/O scan 需要 TwinCAT 在 Config mode(TE1000 6.6.2 Requirements);data.state 是目前狀態。先 Set-TcSystemState -State Config 再重跑 Invoke-TcIoScan(本機 UmRT 切 Config 可能 crash,#21,見 troubleshooting「已知限制」);掃完用 Enable-TcConfig -Force 回 Run'
