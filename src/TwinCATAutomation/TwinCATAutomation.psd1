@@ -12,6 +12,7 @@
         'Reset-TcSolution',
         'Get-TcIdeInfo',
         'Get-TcIdeModalDialog',
+        'Get-TcAutomationVersion',
         # Project Management
         'New-TcProject',
         'Open-TcProject',
