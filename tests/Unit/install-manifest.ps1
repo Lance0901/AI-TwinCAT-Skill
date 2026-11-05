@@ -26,6 +26,17 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $modulePath = Join-Path $repoRoot 'src\TwinCATAutomation\TwinCATAutomation.psm1'
 $tmpRoot = Join-Path $env:TEMP ("tcauto-unit-30-manifest-{0}" -f [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tmpRoot -Force
+# $env:TEMP may hold 8.3 components (GitHub runner: C:\Users\RUNNER~1\...); the installers write the
+# long spelling into SKILL.md (Resolve-TcInstallPath), so the expected paths use it too.
+if (-not ('TcUnit30.LongPath' -as [type])) {
+    Add-Type -Namespace TcUnit30 -Name LongPath -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+public static extern uint GetLongPathName(string shortPath, System.Text.StringBuilder longPath, uint bufferLength);
+'@
+}
+$longBuf = New-Object System.Text.StringBuilder 32768
+$longLen = [TcUnit30.LongPath]::GetLongPathName($tmpRoot, $longBuf, [uint32]$longBuf.Capacity)
+if ($longLen -gt 0 -and $longLen -lt $longBuf.Capacity) { $tmpRoot = $longBuf.ToString() }
 Import-Module $modulePath -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
 $fail = 0
