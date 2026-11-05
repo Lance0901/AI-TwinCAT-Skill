@@ -35,9 +35,23 @@ function Connect-TcIde {
         last-resort candidate (solution '<busy>', only used without -SolutionPath); an
         instance failing with any other COM error (dead RPC server 0x800706BA, E_FAIL
         0x80004005 - typically an IDE that is shutting down) is skipped. When no DTE
-        instance qualifies a new IDE is launched from the first registered ProgID in TcXaeShell.DTE.15.0
-        (4024, 32-bit XAE Shell), TcXaeShell.DTE.17.0, VisualStudio.DTE.17.0 (4026 /
-        VS2022) - or the single -ProgId given. A launched IDE is polled (500 ms, max
+        instance qualifies a new IDE is launched (#72, data.progIdSelectedBy): the single -ProgId
+        given ('explicit'); else the IDE of the TwinCAT build the .tsproj files of -SolutionPath
+        were saved with (root attribute TcVersion; 'tsproj-version', evidence in
+        data.solutionVersion): build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0
+        (only with the TwinCAT XAE integrated); build < 4026 -> TcXaeShell.DTE.15.0; launched only
+        when the TwinCAT XAE Base version found in its install folder (via the ProgID's
+        LocalServer32) EQUALS the TcVersion, revision included. A solution without any .tsproj (or no -SolutionPath)
+        and a single registered IDE -> 'only-one-registered'. Otherwise nothing is launched:
+        IDE_VERSION_NOT_REGISTERED (build known, no IDE confirmed for it) or PROGID_REQUIRED (the
+        version of a .tsproj unreadable / conflicting, XAE build not confirmable, several IDEs). #136:
+        an IDE this session launched for -SolutionPath that can still be alive is waited for (max
+        60 s, also with -NoLaunch) and attached (selectedBy 'session-launched') - never a second
+        IDE for the same .sln, not even with -LaunchIfBlocked; if it does not answer, its pid is
+        not confirmed or -ProgId names another ProgID, IDE_LAUNCH_PENDING. The pid of a launched
+        IDE is taken from the ROT entry holding the identical DTE object (data.pidSource
+        'rot-identity') or the DTE main window; a pid only guessed from the start time is never
+        owned or attached (IDE_LAUNCH_PENDING, data.pidConfirmed = false). A launched IDE is polled (500 ms, max
         60 s) until DTE.Version and DTE.Solution are readable, then UserControl is
         set so it stays visible; if it never becomes ready it is quit / killed again
         (no orphan) and IDE_LAUNCH_FAILED is returned.
@@ -47,13 +61,19 @@ function Connect-TcIde {
         (Find-TcIdeModalDialog); if one is open IDE_MODAL_DIALOG is returned.
     .PARAMETER ProgId
         COM ProgID to connect to / launch. When given, running instances with this
-        ProgID are preferred and only this ProgID is used for launching.
+        ProgID are preferred and only this ProgID is used for launching. Without it the IDE to
+        launch is derived from the .tsproj TcVersion of -SolutionPath; on a machine with several
+        IDEs pass -SolutionPath or -ProgId (else PROGID_REQUIRED). An IDE this session launched
+        for the same solution with another ProgID is not attached (IDE_LAUNCH_PENDING,
+        data.progIdMismatch).
     .PARAMETER SolutionPath
         Path to a .sln file. If specified, the IDE will open this solution
         automatically after connecting (or connect to an instance already
         running this solution).
     .PARAMETER NoLaunch
-        If set, do not launch a new IDE instance if none is running.
+        If set, do not launch a new IDE instance if none is running. With -SolutionPath an IDE
+        this session launched for that solution and that is still starting is still waited for
+        (up to 60 s) before IDE_LAUNCH_PENDING is returned.
     .PARAMETER LaunchIfBlocked
         With -SolutionPath: ignore a blocked IDE that matches only by window title
         (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and
@@ -65,7 +85,9 @@ function Connect-TcIde {
         Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
     .OUTPUTS
         data.progId       ProgID actually used (parsed from the ROT moniker, else DTE.RegistryRoot)
+        data.progIdSelectedBy  explicit | running-instance | tsproj-version | only-one-registered
         data.ideProcessId pid of the connected IDE (0 when it could not be determined)
+        data.pidSource    rot-identity | main-window | known-pid | start-time (guess) | ''
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }
         data.connectSec   seconds the whole call took (every successful path)
         data.solutionPlatform / solutionConfiguration  active solution platform and
@@ -136,7 +158,7 @@ function Connect-TcIde {
         $normalizedSolutionPath = Get-TcLongPath $SolutionPath   # 8.3 short names expanded (#63)
     }
 
-    $progIds = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
+    $progIds = @($script:TcKnownIdeProgIds)
     if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
         $progIds = @($ProgId)
     }
@@ -145,6 +167,10 @@ function Connect-TcIde {
     $usedProgId = $null
     $selectionReason = $null
     $launchTime = $null
+    # #72: how the ProgID was chosen: explicit (-ProgId), running-instance (an IDE found in the
+    # ROT), tsproj-version / only-one-registered (launch, Resolve-TcLaunchProgId)
+    $progIdSelectedBy = $null
+    $progIdEvidence = $null
 
     # --- Enumerate ALL running IDE instances via ROT ---
     # (Marshal.GetActiveObject only returns ONE per ProgID; ROT enumeration finds ALL)
@@ -279,7 +305,85 @@ function Connect-TcIde {
     if ($null -ne $chosen) {
         $dte = $chosen.Object
         $usedProgId = $chosen.progId
+        $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId) -and $usedProgId -ieq $ProgId) { 'explicit' } else { 'running-instance' }
         Write-Verbose "Connected to DTE pid=$($chosen.pid) progId=$usedProgId solution='$($chosen.solution)' ($selectionReason)"
+    }
+
+    # --- #136: this session already launched an IDE for -SolutionPath and it can still be alive ---
+    # (cold VS2022 start: the first Connect-TcIde answered MODAL_SCAN_INCOMPLETE before the
+    # solution was opened, so neither solution-match nor the session record knows it). Checked
+    # before the #29 blocked-IDE evidence: never launch a second IDE for the same .sln (not with
+    # -LaunchIfBlocked either). Wait for that IDE (Wait-TcSessionLaunchedIde, max 60 s, also with
+    # -NoLaunch) and attach to it, or return IDE_LAUNCH_PENDING / IDE_MODAL_DIALOG. Not attached:
+    #  - its pid is not confirmed (ROT identity / main window) - another IDE that came up at the same
+    #    time must never be taken for it (#147 M2);
+    #  - -ProgId names another ProgID than the one it was launched with (data.progIdMismatch, M1).
+    # Released only when it meanwhile has ANOTHER solution open or its process is gone.
+    if ($null -eq $chosen -and $null -ne $normalizedSolutionPath) {
+        $own = Find-TcSessionLaunchedIde -Solution $normalizedSolutionPath
+        if ($null -ne $own) {
+            $mismatch = $null
+            if (-not [string]::IsNullOrWhiteSpace($ProgId) -and -not ([string]$own.progId -ieq $ProgId)) {
+                $mismatch = [PSCustomObject]@{ requested = $ProgId; launched = [string]$own.progId }
+            }
+            $wait = if ($null -eq $mismatch) { Wait-TcSessionLaunchedIde -Record $own } else { $null }
+            if ($null -ne $wait -and $wait.state -eq 'ready') {
+                $dte = $wait.entry['Object']
+                $usedProgId = [string]$wait.entry['ProgId']
+                if ([string]::IsNullOrWhiteSpace($usedProgId)) { $usedProgId = [string]$own.progId }
+                $selectionReason = 'session-launched'
+                $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId)) { 'explicit' } else { 'running-instance' }
+                $chosen = [PSCustomObject]@{ pid = [int]$own.processId; progId = $usedProgId; solution = $wait.solution }
+                Write-Verbose "Attached to IDE pid $($own.processId) launched by this session for '$normalizedSolutionPath' (#136)"
+            }
+            elseif ($null -ne $wait -and $wait.state -in 'other-solution', 'gone') {
+                Clear-TcSessionLaunchedIde -Solution $normalizedSolutionPath   # no longer the IDE of this solution
+            }
+            else {
+                # Still starting / blocked / not ours to attach: a CONFIRMED pid is kept (no DTE
+                # calls), so Get-TcIdeModalDialog -ProcessId and Disconnect-TcIde -Quit -Kill can act
+                # on it; nothing is launched.
+                $ownPid = [int]$own.processId
+                if ($ownPid -gt 0) {
+                    $script:TcIdeProcessId = $ownPid
+                    $script:TcIdeSelectedBy = 'launched'
+                    try { $script:TcIdeStartTime = (Get-Process -Id $ownPid -ErrorAction Stop).StartTime } catch { $script:TcIdeStartTime = $null }
+                }
+                $probe = if ($null -ne $mismatch) { 'progid-mismatch' } else { $wait.state }
+                $pendingData = [PSCustomObject]@{
+                    ideProcessId      = $ownPid
+                    ideStartTime      = $(if ($null -ne $own.processKey) { ($own.processKey -split '\|', 2)[1] } else { $null })
+                    pidConfirmed      = ($ownPid -gt 0)
+                    progId            = [string]$own.progId
+                    progIdMismatch    = $mismatch
+                    probe             = $probe
+                    waitedSec         = $(if ($null -ne $wait) { $wait.waitedSec } else { 0 })
+                    launchedBySession = $true
+                    ownedBySession    = ($ownPid -gt 0)
+                    attached          = $false
+                    launched          = $false
+                    solution          = $normalizedSolutionPath
+                    candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
+                    connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+                }
+                if ($probe -eq 'dialog') {
+                    return New-TcModalDialogResult -Dialog $wait.dialog -Operation "Connect-TcIde -SolutionPath (IDE pid $ownPid launched by this session for this solution; no second IDE launched)" -Data $pendingData
+                }
+                if ($probe -eq 'scan-incomplete') {
+                    $pendingData | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
+                    $pendingData | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $wait.dialog)
+                }
+                $why = switch ($probe) {
+                    'progid-mismatch' { "it was launched as $($own.progId), not the requested -ProgId $ProgId; it is not attached" }
+                    'pid-unconfirmed' { 'its process id is not confirmed (the ROT has no entry with that DTE object yet), so no IDE is attached' }
+                    default { "its DTE did not answer within $($wait.waitedSec) s ($probe)" }
+                }
+                $hint = ([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', $(if ($ownPid -gt 0) { [string]$ownPid } else { '<data.ideProcessId>' }))
+                return New-TcResult -Success $false `
+                    -ErrorMessage "IDE_LAUNCH_PENDING: this session launched an IDE$(if ($ownPid -gt 0) { " (pid $ownPid)" }) for '$normalizedSolutionPath' that may still be running, but $why. No second IDE was launched." `
+                    -ErrorCode 'IDE_LAUNCH_PENDING' -Hint $hint -Data $pendingData
+            }
+        }
     }
 
     # --- #29: the IDE that has -SolutionPath open may be blocked (modal dialog / busy) ---
@@ -386,6 +490,7 @@ function Connect-TcIde {
                 $dte = $candidateObj
                 $usedProgId = $candidateProgId
                 $selectionReason = 'get-active-object'
+                $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId)) { 'explicit' } else { 'running-instance' }
                 Write-Verbose "Fallback: found IDE via GetActiveObject ($candidateProgId)"
                 break
             }
@@ -399,22 +504,22 @@ function Connect-TcIde {
                 -Data ([PSCustomObject]@{ candidates = @($candidates | Select-Object progId, solution, pid) })
         }
 
-        # First registered ProgID wins (4024: TcXaeShell.DTE.15.0, 4026: VisualStudio.DTE.17.0)
-        $launchProgId = $null
-        $launchType = $null
-        foreach ($candidateProgId in $progIds) {
-            $t = try { [Type]::GetTypeFromProgID($candidateProgId) } catch { $null }
-            if ($null -ne $t) {
-                $launchProgId = $candidateProgId
-                $launchType = $t
-                break
+        # #72: -ProgId, else the IDE of the TwinCAT build the solution's .tsproj was saved with
+        # (TcVersion), else the only registered IDE; otherwise nothing is launched (never the
+        # first registered ProgID: that opened 4026 solutions in the 4024 XAE).
+        $pick = Resolve-TcLaunchProgId -ProgId $ProgId -SolutionPath $normalizedSolutionPath
+        $progIdEvidence = $pick.evidence
+        if ($null -ne $pick.errorCode) {
+            $pickData = [PSCustomObject]@{
+                registeredProgIds = @($pick.registered)
+                solutionVersion   = $pick.evidence
+                candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
             }
+            return New-TcResult -Success $false -ErrorMessage $pick.errorMessage -ErrorCode $pick.errorCode `
+                -Hint (Get-TcErrorHint -Code $pick.errorCode) -Data $pickData
         }
-        if ($null -eq $launchType) {
-            return New-TcResult -Success $false `
-                -ErrorMessage "TwinCAT 3 XAE is not installed. None of the ProgIDs are registered: $($progIds -join ', '). Install TwinCAT 3 XAE from https://www.beckhoff.com/twincat3/ or pass -ProgId." `
-                -ErrorCode 'TWINCAT_NOT_FOUND'
-        }
+        $launchProgId = $pick.progId
+        $progIdSelectedBy = $pick.selectedBy
 
         # Launch. Right after CreateInstance the DTE is not usable yet: touching
         # MainWindow.Visible at that point fails with "property 'Visible' cannot be
@@ -425,7 +530,7 @@ function Connect-TcIde {
         $launchTime = [DateTime]::Now
         try {
             Write-Verbose "Launching IDE via ProgID $launchProgId"
-            $dte = [Activator]::CreateInstance($launchType)
+            $dte = New-TcIdeInstance -ProgId $launchProgId
         }
         catch {
             return New-TcResult -Success $false -ErrorMessage "Failed to launch TwinCAT IDE ($launchProgId): $($_.Exception.Message)" `
@@ -466,6 +571,19 @@ function Connect-TcIde {
         try { $dte.SuppressUI = $false } catch { }
         $usedProgId = $launchProgId
         $selectionReason = 'launched'
+        # #147 M2: the pid of the launched IDE comes from the ROT entry whose object IS this DTE
+        # (moniker '!<ProgId>:<pid>'), polled briefly; Get-TcIdeProcessId below may confirm it via
+        # the DTE's own main window instead. A pid only guessed from the start time is never owned.
+        $rotDeadline = [DateTime]::Now.AddSeconds($script:TcLaunchRotWaitSec)
+        while ($true) {
+            $rotHit = Find-TcRotEntryForDte -Dte $dte
+            if ($null -ne $rotHit -and [int]$rotHit['ProcessId'] -gt 0) {
+                $chosen = [PSCustomObject]@{ pid = [int]$rotHit['ProcessId']; progId = $launchProgId; solution = '' }
+                break
+            }
+            if ([DateTime]::Now -ge $rotDeadline) { break }
+            Start-Sleep -Milliseconds 500
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($usedProgId)) {
@@ -487,7 +605,42 @@ function Connect-TcIde {
     $script:TcIdeProcessId = if ($ideInfo.ProcessId -gt 0) { [int]$ideInfo.ProcessId } else { $null }
     $script:TcIdeMainHwnd = [long]$ideInfo.MainHwnd
     $ideProcessId = if ($null -ne $script:TcIdeProcessId) { $script:TcIdeProcessId } else { 0 }
-    if ($selectionReason -eq 'launched' -and $ideProcessId -gt 0) { Add-TcLaunchedIde -ProcessId $ideProcessId }
+    # 'rot-identity' (ROT entry of this very DTE), 'main-window' (DTE.MainWindow.HWnd), 'known-pid',
+    # 'start-time' (a guess: the youngest IDE process started since the launch)
+    $pidSource = if ($selectionReason -eq 'launched' -and $null -ne $chosen -and $ideInfo.Source -eq 'known-pid') { 'rot-identity' } else { [string]$ideInfo.Source }
+    if ($selectionReason -eq 'launched') {
+        if ($ideProcessId -gt 0 -and $pidSource -in 'rot-identity', 'main-window') {
+            Add-TcLaunchedIde -ProcessId $ideProcessId
+            # #136: remembered with the solution it was launched for (Find-TcSessionLaunchedIde)
+            if ($null -ne $normalizedSolutionPath) { Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId $ideProcessId -LaunchTime $launchTime }
+        }
+        else {
+            # #147 M2: the pid could only be guessed (or not found at all): it might be the user's
+            # IDE that came up at the same time. Nothing is owned or attached; the DTE object is kept
+            # in the launch record so a retry recognises the IDE once the ROT lists it.
+            if ($null -ne $normalizedSolutionPath) { Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId 0 -LaunchTime $launchTime }
+            $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeSelectedBy = $null
+            $script:TcIdeProcessId = $null; $script:TcIdeMainHwnd = 0; $script:TcIdeStartTime = $null
+            return New-TcResult -Success $false `
+                -ErrorMessage "IDE_LAUNCH_PENDING: an IDE ($usedProgId) was launched, but its process id could not be confirmed (no ROT entry with this DTE object, no main window; pid source '$pidSource'). Nothing was attached and the IDE is not treated as owned by this session." `
+                -ErrorCode 'IDE_LAUNCH_PENDING' -Hint (([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', '<data.ideProcessId>')) `
+                -Data ([PSCustomObject]@{
+                    ideProcessId      = 0
+                    guessedProcessId  = $ideProcessId
+                    pidConfirmed      = $false
+                    pidSource         = $pidSource
+                    progId            = $usedProgId
+                    progIdSelectedBy  = $progIdSelectedBy
+                    probe             = 'pid-unconfirmed'
+                    launchedBySession = $true
+                    ownedBySession    = $false
+                    attached          = $false
+                    launched          = $true
+                    solution          = $normalizedSolutionPath
+                    connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+                })
+        }
+    }
     if ($ideProcessId -gt 0 -and (Test-TcLaunchedIde -ProcessId $ideProcessId)) { $script:TcIdeSelectedBy = 'launched' }
     # Start time of that process: Disconnect-TcIde -Kill compares it so a recycled pid is never killed.
     $script:TcIdeStartTime = $null
@@ -501,7 +654,7 @@ function Connect-TcIde {
     $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
-            -Data ([PSCustomObject]@{ progId = $usedProgId; ideProcessId = $ideProcessId; candidates = $candidateSummary })
+            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary })
     }
 
     # Automation Interface silent mode: ITcAutomationSettings.SilentMode = true makes XAE answer
@@ -645,12 +798,14 @@ function Connect-TcIde {
 
     $data = [PSCustomObject]@{
         progId              = $usedProgId
+        progIdSelectedBy    = $progIdSelectedBy
         version             = $ideVersion
         solution            = $ideSolution
         sysManagerAvailable = $sysManagerAvailable
         selectedBy          = $selectionReason
         ownedBySession      = ($script:TcIdeSelectedBy -eq 'launched')
         ideProcessId        = $ideProcessId
+        pidSource           = $pidSource
         silentMode          = $script:TcSilentMode
         candidates          = $candidateSummary
     }
@@ -660,6 +815,8 @@ function Connect-TcIde {
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }
+    # #72: what the launched ProgID was derived from (.tsproj TcVersion per project, .sln VisualStudioVersion)
+    if ($null -ne $progIdEvidence) { $data | Add-Member -NotePropertyName 'solutionVersion' -NotePropertyValue $progIdEvidence }
     # Active solution platform / configuration ($null when unreadable or no solution).
     $solPlatform = Get-TcSolutionPlatform
     $data | Add-Member -NotePropertyName 'solutionPlatform' -NotePropertyValue $solPlatform.platform
