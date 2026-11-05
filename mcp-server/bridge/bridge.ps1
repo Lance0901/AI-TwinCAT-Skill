@@ -752,7 +752,8 @@ function Get-BridgeLocalLifecycleBlocks {
     # Private/LifecycleBlock.ps1). A record there may exist in memory only (the state file could not be
     # written), so a new Import-Module / bridge process would not see it. Returns @{ Readable; List }
     # (List = [{ key; record }]). The check itself is the module's private
-    # Get-TcLifecycleBlockLocalForReload (one place to change when #130 adds the cross-bridge sync).
+    # Get-TcLifecycleBlockLocalForReload; since #130 it runs the cross-bridge sync first, which only
+    # removes records whose Clear receipt is bound to them (#113), so the rest still refuse.
     # A module older than #41 has no such function: then $script:TcLifecycleBlockLocal itself is read
     # (every module since #68 defines it), so a session can reload into an older sha AND out of it.
     # Neither the function nor the variable, a value that is not a hashtable, or an exception counts

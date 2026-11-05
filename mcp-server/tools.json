@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T10:43:02Z",
+    "generatedAt":  "2026-11-05T11:31:42Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -640,7 +640,7 @@
                   {
                       "name":  "ClearLifecycleBlock",
                       "cmdlet":  "Clear-TcLifecycleBlock",
-                      "description":  "Remove the LIFECYCLE_BLOCKED record of one target (#68). Call it ONLY after the user has seen the block (data.lifecycleBlock of the refused tool: command, errorCode, requestedState, reachedState, message, time) and agreed; never call it on your own to get past LIFECYCLE_BLOCKED. A block is recorded when SetSystemState (any failure after its state request was sent, RUNTIME_CRASHED included), EnableConfig (any failure after set-config / Activate was sent, ACTIVATE_FAILED and NOT_CONNECTED / BUILD_REQUIRED of the nested login included; failures before that, such as BUILD_REQUIRED, PLATFORM_* or PLC_PROJECT_NOT_FOUND of PlcProjectPath, record nothing) or SetPlcState (Run / Stop not reached) sent a runtime-changing request and then failed; while it exists SetSystemState, EnableConfig, PlcLogin, SendPlcProgram, SetPlcState, WriteVariable, RunTest, RunTestCycle, RunLifecycle (at its EnableConfig step) and SetTcComParameter Online=true DryRun=false return LIFECYCLE_BLOCKED and do nothing. Read-only tools are not blocked. Reason (required) = the user's approval in their words. AmsNetId defaults to the IDE target, then the ADS session; '<unknown>' (records of an unknown or loopback 127.x.x.x.y.z NetId, which block every target) and '<corrupt>' (an unreadable state file) are cleared by name; data.stillBlocking / data.next name what still blocks every target. data: cleared (the removed record, null when none), remaining (array of {key, record} still recorded: [] when nothing is left, null only when the state could not be read), remainingKeys (array of keys), stillBlocking, receipt (appended to lifecycle-block-history.jsonl). After clearing, run the lifecycle again from the start; nothing clears a block automatically.",
+                      "description":  "Remove the LIFECYCLE_BLOCKED record of one target (#68). Call it ONLY after the user has seen the block (data.lifecycleBlock of the refused tool: command, errorCode, requestedState, reachedState, message, time) and agreed; never call it on your own to get past LIFECYCLE_BLOCKED. A block is recorded when SetSystemState (any failure after its state request was sent, RUNTIME_CRASHED included), EnableConfig (any failure after set-config / Activate was sent, ACTIVATE_FAILED and NOT_CONNECTED / BUILD_REQUIRED of the nested login included; failures before that, such as BUILD_REQUIRED, PLATFORM_* or PLC_PROJECT_NOT_FOUND of PlcProjectPath, record nothing) or SetPlcState (Run / Stop not reached) sent a runtime-changing request and then failed; while it exists SetSystemState, EnableConfig, PlcLogin, SendPlcProgram, SetPlcState, WriteVariable, RunTest, RunTestCycle, RunLifecycle (at its EnableConfig step) and SetTcComParameter Online=true DryRun=false return LIFECYCLE_BLOCKED and do nothing. Read-only tools are not blocked. Structured receipt (#113), all four required and filled in with the user's words, never invented: Reason = why the user approved lifting the block; FallbackMethod = how the work continues afterwards; AllowedSideEffects = array of the side effects the user allowed (e.g. [\"TwinCAT restart\",\"PLC download\"]; exactly [\"none\"] when none, never \"none\" together with another entry); MaxVerifyLevel = the highest layer the verification after this clear will reach, results must not claim more than it (None, SystemState, PlcState, VariableRead, TestObserved). An empty or invalid field returns LIFECYCLE_RECEIPT_INCOMPLETE (data.missing / data.invalid) and nothing is removed. AmsNetId defaults to the IDE target, then the ADS session; '<unknown>' (records of an unknown or loopback 127.x.x.x.y.z NetId, which block every target) and '<corrupt>' (an unreadable state file) are cleared by name; data.stillBlocking / data.next name what still blocks every target. data: cleared (the removed record, null when none), remaining (array of {key, record} still recorded: [] when nothing is left, null only when the state could not be read), remainingKeys (array of keys), stillBlocking, receipt (reason, fallbackMethod, allowedSideEffects, maxVerifyLevel, clearedAt, clearedAtUtc, ...; appended to lifecycle-block-history.jsonl under the state lock), receiptWritten (false + historyWarning when the receipt could not be appended: other bridges will NOT sync). Cross-bridge (#113): another MCP bridge / PowerShell process that still holds the block in memory drops it once the state file no longer has it and the history has the receipt of exactly that record (same key, createdAtUtc and command; clearedAtUtc not in the future); otherwise it keeps blocking and data.lifecycleBlock.syncNote says why: then clear it through that bridge. The sync is a convenience, not a security boundary (the history is not tamper-proof). After clearing, run the lifecycle again from the start with the approved FallbackMethod; nothing clears a block automatically.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  false,
@@ -655,11 +655,37 @@
                                                                           },
                                                              "Reason":  {
                                                                             "type":  "string",
-                                                                            "description":  "Why the block may be lifted, in the user's words (who approved, what was checked). Required."
-                                                                        }
+                                                                            "description":  "Required. Why the block may be lifted, in the user's words (who approved, what was checked). Missing or empty -> LIFECYCLE_RECEIPT_INCOMPLETE."
+                                                                        },
+                                                             "FallbackMethod":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Required (#113). How the work continues after the block is lifted, as the user approved it, e.g. 'rerun Enable-TcConfig -Force through tcauto' or 'user restarts TcSystemServiceUm by hand, then Enable-TcConfig -Force'. Missing or empty -> LIFECYCLE_RECEIPT_INCOMPLETE."
+                                                                                },
+                                                             "AllowedSideEffects":  {
+                                                                                        "type":  "array",
+                                                                                        "items":  {
+                                                                                                      "type":  "string"
+                                                                                                  },
+                                                                                        "minItems":  1,
+                                                                                        "description":  "Required (#113). The side effects the user allowed for that continuation, one entry each, e.g. 'TwinCAT restart', 'PLC download', 'PLC Run'; exactly 'none' (alone) when none are allowed. At least one non-empty entry, 'none' never together with another entry, else LIFECYCLE_RECEIPT_INCOMPLETE."
+                                                                                    },
+                                                             "MaxVerifyLevel":  {
+                                                                                    "type":  "string",
+                                                                                    "enum":  [
+                                                                                                 "None",
+                                                                                                 "SystemState",
+                                                                                                 "PlcState",
+                                                                                                 "VariableRead",
+                                                                                                 "TestObserved"
+                                                                                             ],
+                                                                                    "description":  "Required (#113). The highest layer the verification after this clear will reach; results must not claim more than it. One of None, SystemState (TwinCAT system state read back), PlcState (PLC port state read back), VariableRead (a PLC variable read back), TestObserved (a test result observed). Missing or another value -> LIFECYCLE_RECEIPT_INCOMPLETE."
+                                                                                }
                                                          },
                                           "required":  [
-                                                           "Reason"
+                                                           "Reason",
+                                                           "FallbackMethod",
+                                                           "AllowedSideEffects",
+                                                           "MaxVerifyLevel"
                                                        ],
                                           "additionalProperties":  false
                                       }
