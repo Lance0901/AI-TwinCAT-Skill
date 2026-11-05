@@ -14,13 +14,17 @@
 # zh-TW VS2022 (XAE 4026.22, 2026-10-21): pane Name '錯誤清單' or '錯誤清單 - 目前的專案 (<proj>)'
 # (class GenericPane), grid ControlType.Table ClassName ListView, same English header
 # AutomationIds. The scope ComboBox defaults to '目前專案' (Current Project), which hides
-# the rows of other projects; the scan switches it to '整個方案' (Entire Solution) first
+# the rows of other projects; the scan reads the combo's selection (SelectionPattern, works
+# while collapsed, #117) and switches it to '整個方案' (Entire Solution) first
 # (note 'scope switched to entire solution') and leaves it there.
 #   Rows         - [PSCustomObject]@{ severity; description; project; file; line; column; code; raw }
 #   Truncated    - $true when the grid has no ScrollPattern (only visible rows read)
 #                  or MaxRows was hit
 #   Headers      - column AutomationIds seen in the header row
 #   ToggleUsed   - $true when the severity buttons were toggled to isolate severities
+#   Scope        - @{ before; after; entire; switched }: scope filter read from the scope
+#                  ComboBox's own selection (#117); entire $true = Entire Solution confirmed,
+#                  $false = another scope that could not be switched (rows filtered), $null = unknown
 #   Notes        - diagnostic strings
 #
 # Error List structure of TcXaeShell 15.0 (VS2017 shell), 2026-10-18:
@@ -186,30 +190,111 @@ $script:TcUiaErrorListScan = {
     }
 
     # --- 3b. scope filter: VS2022 defaults the Error List to "Current Project" (目前專案),
-    # hiding the rows of the other projects. Switch the ComboBox to "Entire Solution"
-    # (整個方案) when it shows another scope. Best effort: on any failure the popup is
-    # collapsed and the visible rows are read.
-    $scopeNamePattern = '^(目前專案|目前文件|開啟文件|Current Project|Current Document|Open Documents)$'
+    # hiding the rows of the other projects (scope filter of the Error List window:
+    # https://learn.microsoft.com/en-us/visualstudio/ide/reference/error-list-window).
+    # Switch the ComboBox to "Entire Solution" (整個方案) whenever it shows anything else.
+    # The current scope is read from the ComboBox ITSELF (SelectionPattern.GetSelection(), else
+    # ValuePattern): while the drop-down is collapsed the combo has no ListItem descendants, so
+    # looking for the scope names among ListItems found nothing and the filtered rows were read
+    # as the whole list (#117, 實測 2026-11-05, zh-TW VS2022 4026: scope 目前專案 -> warnings 28,
+    # 0 rows read; GetSelection() on the collapsed combo returned the selected item).
+    # Result in $scopeInfo (emitted as Scope): before / after = selected scope name, entire =
+    # $true (Entire Solution confirmed by readback), $false (another scope and the switch did not
+    # take: the rows are filtered), $null (no scope ComboBox recognised: unknown).
+    $scopeEntirePattern = '^(整個方案|Entire Solution)$'
+    $scopePartialPattern = '^(目前的?專案|目前的?文件|開啟的?文件|Current Project|Current Document|Open Documents)$'
+    function Get-ScopeKind {
+        param([string]$Name)
+        if ([string]::IsNullOrWhiteSpace($Name)) { return $null }
+        $n = $Name.Trim()
+        if ($n -match $scopeEntirePattern) { return 'entire' }
+        if ($n -match $scopePartialPattern) { return 'partial' }
+        return $null
+    }
+    # Name of the selected item of a ComboBox: SelectionPattern first (readable while collapsed),
+    # then the ValuePattern value; $null when neither is readable.
+    function Get-ComboSelectionName {
+        param($Combo)
+        $sp = Get-UiaPattern $Combo ([System.Windows.Automation.SelectionPattern]::Pattern)
+        if ($null -ne $sp) {
+            try {
+                foreach ($s in @($sp.Current.GetSelection())) {
+                    $nm = Get-UiaName $s
+                    if (-not [string]::IsNullOrWhiteSpace($nm)) { return $nm.Trim() }
+                }
+            }
+            catch { }
+        }
+        $vp = Get-UiaPattern $Combo ([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($null -ne $vp) {
+            try {
+                $v = [string]$vp.Current.Value
+                if (-not [string]::IsNullOrWhiteSpace($v)) { return $v.Trim() }
+            }
+            catch { }
+        }
+        return $null
+    }
+    # The scope ComboBox among the ComboBoxes of the tool window: the one whose selection is a
+    # known scope name (the other combo, 'Build + IntelliSense', is not a scope). $null if none.
+    function Find-ScopeCombo {
+        param($Root)
+        $comboCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::ComboBox)
+        $combos = $null
+        try { $combos = $Root.FindAll($scope::Descendants, $comboCond) } catch { $combos = $null }
+        if ($null -eq $combos) { return $null }
+        foreach ($c in $combos) {
+            $sel = Get-ComboSelectionName $c
+            $kind = Get-ScopeKind $sel
+            if ($null -ne $kind) { return [PSCustomObject]@{ Combo = $c; Selected = $sel; Kind = $kind } }
+        }
+        return $null
+    }
+
+    $scopeInfo = [ordered]@{ before = $null; after = $null; entire = $null; switched = $false }
     $listItemCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, $ct::ListItem)
-    $scopeItem = $null
-    try {
-        foreach ($li in $toolRoot.FindAll($scope::Descendants, $listItemCond)) {
-            if ((Get-UiaName $li) -match $scopeNamePattern) { $scopeItem = $li; break }
+    $scopeHit = Find-ScopeCombo $toolRoot
+    if ($null -eq $scopeHit) {
+        # Fallback (old detection): an EXPANDED drop-down lists its items as ListItems; walk up
+        # from a partial-scope item to its ComboBox. Only reached when no combo selection is readable.
+        $scopeItem = $null
+        try {
+            foreach ($li in $toolRoot.FindAll($scope::Descendants, $listItemCond)) {
+                if ((Get-ScopeKind (Get-UiaName $li)) -eq 'partial') { $scopeItem = $li; break }
+            }
+        }
+        catch { $scopeItem = $null }
+        if ($null -ne $scopeItem) {
+            try {
+                $up = $scopeItem
+                for ($lvl = 1; $lvl -le 4; $lvl++) {
+                    $up = $walker.GetParent($up)
+                    if ($null -eq $up) { break }
+                    if ($up.Current.ControlType -eq $ct::ComboBox) {
+                        $scopeHit = [PSCustomObject]@{ Combo = $up; Selected = (Get-UiaName $scopeItem); Kind = 'partial' }
+                        break
+                    }
+                }
+            }
+            catch { $scopeHit = $null }
         }
     }
-    catch { $scopeItem = $null }
-    if ($null -ne $scopeItem) {
-        $scopeName = Get-UiaName $scopeItem
-        $combo = $null
+    if ($null -eq $scopeHit) {
+        $notes.Add('scope: no Error List scope ComboBox with a readable selection; scope unknown')
+    }
+    elseif ($scopeHit.Kind -eq 'entire') {
+        $scopeInfo.before = $scopeHit.Selected
+        $scopeInfo.after = $scopeHit.Selected
+        $scopeInfo.entire = $true
+        $notes.Add("scope: '$($scopeHit.Selected)' (entire solution, no switch)")
+    }
+    else {
+        $scopeName = $scopeHit.Selected
+        $scopeInfo.before = $scopeName
+        $scopeInfo.entire = $false
+        $combo = $scopeHit.Combo
         $ecp = $null
         try {
-            $up = $scopeItem
-            for ($lvl = 1; $lvl -le 4; $lvl++) {
-                $up = $walker.GetParent($up)
-                if ($null -eq $up) { break }
-                if ($up.Current.ControlType -eq $ct::ComboBox) { $combo = $up; break }
-            }
-            if ($null -eq $combo) { throw "no ComboBox above the scope item '$scopeName'" }
             $ecp = Get-UiaPattern $combo ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
             if ($null -eq $ecp) { throw 'scope ComboBox has no ExpandCollapsePattern' }
             $ecp.Expand()
@@ -269,7 +354,25 @@ $script:TcUiaErrorListScan = {
                 if ($ecp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { $ecp.Collapse() }
             }
             catch { }
-            $notes.Add("scope switched to entire solution (was '$scopeName')")
+            # Readback: the switch counts only when the combo now reports Entire Solution.
+            # A combo whose selection is not readable at all (only reachable through the ListItem
+            # fallback) cannot be confirmed: entire stays $null (unknown) and the row-count
+            # readback of Get-TcBuildErrors decides.
+            $after = Get-ComboSelectionName $combo
+            $scopeInfo.after = $after
+            if ($null -eq $after) {
+                $scopeInfo.entire = $null
+                $scopeInfo.switched = $true
+                $notes.Add("scope: 'Entire Solution' selected (was '$scopeName'), selection not readable back; scope unknown")
+            }
+            elseif ((Get-ScopeKind $after) -ne 'entire') {
+                throw "scope readback after Select() is '$after', not Entire Solution"
+            }
+            else {
+                $scopeInfo.entire = $true
+                $scopeInfo.switched = $true
+                $notes.Add("scope switched to entire solution (was '$scopeName')")
+            }
             # Re-read the grid and the counts for the new scope.
             $g2 = $null
             try { $g2 = $pane.FindFirst($scope::Descendants, $gridCond) } catch { $g2 = $null }
@@ -277,7 +380,8 @@ $script:TcUiaErrorListScan = {
             $cb = Find-CountButtons $toolRoot
         }
         catch {
-            $notes.Add("scope switch to entire solution failed (scope '$scopeName'): $($_.Exception.Message); reading the visible rows")
+            # entire stays $false: the rows read below are filtered; Get-TcBuildErrors fails closed.
+            $notes.Add("scope switch to entire solution failed (scope '$scopeName'): $($_.Exception.Message); the visible rows are filtered")
             if ($null -ne $ecp) {
                 try {
                     if ($ecp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded) { $ecp.Collapse() }
@@ -401,11 +505,17 @@ $script:TcUiaErrorListScan = {
                 try { $rows = $grid.FindAll($scope::Descendants, $rowCond) } catch { $rows = $null }
             }
             if ($null -ne $rows) {
+                # De-duplication across scroll pages (a row seen on two pages is one row), but a
+                # row listed N times on ONE page is N rows: $seen keeps the highest number of
+                # copies of a key seen on a single page, so genuine duplicates are not dropped
+                # and do not trip the rows-vs-count readback of Get-TcBuildErrors (#117).
+                $pageKeys = @{}
                 foreach ($r in $rows) {
                     $item = Read-Row $r $severity
                     $key = ($item.description + '|' + $item.project + '|' + $item.file + '|' + $item.line + '|' + $item.column)
-                    if ($seen.ContainsKey($key)) { continue }
-                    $seen[$key] = $true
+                    $pageKeys[$key] = 1 + [int]$pageKeys[$key]
+                    if ($pageKeys[$key] -le [int]$seen[$key]) { continue }
+                    $seen[$key] = $pageKeys[$key]
                     $out.Add($item)
                     if ($out.Count -ge $MaxRows) { $truncated = $true; break }
                 }
@@ -519,6 +629,7 @@ $script:TcUiaErrorListScan = {
         Truncated  = $truncatedAny
         Headers    = $headerIds.ToArray()
         ToggleUsed = $toggleUsed
+        Scope      = [PSCustomObject]$scopeInfo
         Notes      = $notes.ToArray()
     }
 }
@@ -594,6 +705,55 @@ function ConvertTo-TcErrorListItem {
         line        = $line
         column      = $column
     }
+}
+
+function Get-TcErrorListShortfall {
+    <#
+    .SYNOPSIS
+        Severities whose rows read from the Error List are fewer than the total on their summary
+        button (#117). Returns a List of @{ severity; expected; read } (empty = complete).
+    .DESCRIPTION
+        Only the requested severities are compared (errors always, warnings with -IncludeWarnings,
+        messages with -IncludeMessages); a severity whose button total was not readable ($null) is
+        not compared. When the severities were isolated by toggling the filter buttons
+        (Scan.ToggleUsed) each one is compared on its own; otherwise all rows read (classified or
+        not) are compared with the sum of the requested totals (severity 'total').
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Scan,
+        [int]$Errors, [int]$Warnings, [int]$Messages, [int]$Unclassified,
+        [bool]$IncludeWarnings = $true, [bool]$IncludeMessages = $false
+    )
+    $out = [System.Collections.Generic.List[object]]::new()
+    $c = $Scan.Counts
+    if ($null -eq $c) { return , $out }
+    $pairs = @(
+        [PSCustomObject]@{ name = 'errors'; want = $true; read = $Errors },
+        [PSCustomObject]@{ name = 'warnings'; want = $IncludeWarnings; read = $Warnings },
+        [PSCustomObject]@{ name = 'messages'; want = $IncludeMessages; read = $Messages })
+    if ($Scan.ToggleUsed) {
+        foreach ($p in $pairs) {
+            if (-not $p.want) { continue }
+            $expected = $c.($p.name)
+            if ($null -eq $expected) { continue }
+            if ($p.read -lt [int]$expected) {
+                $out.Add([PSCustomObject]@{ severity = $p.name; expected = [int]$expected; read = $p.read })
+            }
+        }
+    }
+    else {
+        $expected = 0
+        foreach ($p in $pairs) {
+            if (-not $p.want) { continue }
+            if ($null -ne $c.($p.name)) { $expected += [int]$c.($p.name) }
+        }
+        $read = $Errors + $Warnings + $Messages + $Unclassified
+        if ($read -lt $expected) {
+            $out.Add([PSCustomObject]@{ severity = 'total'; expected = $expected; read = $read })
+        }
+    }
+    return , $out
 }
 
 function Test-TcLibraryManagerItem {
@@ -672,6 +832,12 @@ function Get-TcErrorItemCategory {
 # Invoke-TcUiaScan parks them here with BeginStop issued; Clear-TcUiaAbandonedScans
 # disposes the ones that have since stopped. $script:TcErrorListScanBusy stays $true
 # while any of them is still running.
+# Error List budget of Build-TcProject / Test-TcPlcProject on EVERY path (#107): an upper bound for
+# Get-TcBuildErrors -TimeoutSec, not a wait (the scan returns when it has read the list). The
+# success path used to get 8 s; the reporter measured 16.5-17.8 s for the scan on a 4026 VS2022 XAE
+# (實測, issue #107), so a successful build came back CODE_NOT_VERIFIED.
+$script:TcBuildErrorListTimeoutSec = 30
+
 $script:TcUiaAbandonedScans = [System.Collections.Generic.List[object]]::new()
 $script:TcErrorListScanBusy = $false
 # Set by Clear-TcUiaAbandonedScans when it had to drop entries it could not handle;

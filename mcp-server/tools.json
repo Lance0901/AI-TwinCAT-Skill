@@ -1,5 +1,5 @@
 {
-    "generatedAt":  "2026-11-05T12:58:58Z",
+    "generatedAt":  "2026-11-05T14:49:40Z",
     "moduleVersion":  "0.1.0",
     "tools":  [
                   {
@@ -1144,7 +1144,7 @@
                   {
                       "name":  "GetBuildErrors",
                       "cmdlet":  "Get-TcBuildErrors",
-                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is switched from Current Project / Current Document / Open Documents to Entire Solution before reading (left switched).",
+                      "description":  "Read the compiler messages currently shown in the XAE Error List: data.counts {errors, warnings, messages}, data.errors[] and data.warnings[] (IncludeWarnings defaults to true; IncludeWarnings=false skips the warning toggle and saves 1-2 s); IncludeMessages=true adds data.messages[]. Items are {severity, code, description, project, file, line, column}. Counts are read from the summary buttons in English and zh-TW UI (zh-TW VS2022 'shown / total' labels report the total); other UI languages return ERRORLIST_UNAVAILABLE. In VS2022 the Error List scope filter is read from the scope combo itself (also while collapsed) and switched to Entire Solution before reading when it shows anything else (left switched, read back). Fewer rows read than the button totals, or a scope that could not be switched, return ERRORLIST_INCOMPLETE (data.missingRows, data.scope), never success with a partial list.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true

@@ -1,4 +1,4 @@
-function Get-TcBuildErrors {
+﻿function Get-TcBuildErrors {
     <#
     .SYNOPSIS
         Reads the compiler messages shown in the IDE "Error List" window (errors, and
@@ -18,9 +18,12 @@ function Get-TcBuildErrors {
         Requires the IDE process id stored by Connect-TcIde and a visible Error List
         (not auto-hidden); otherwise ERRORLIST_UNAVAILABLE is returned.
         English and zh-TW VS2022 UIs are recognised (pane name / count button labels
-        such as "0 / 2" + the localized word; the total is reported). When the VS2022
-        scope filter shows "Current Project" / "Current Document" / "Open Documents",
-        the scan switches it to "Entire Solution" first (leaves it switched).
+        such as "0 / 2" + the localized word; the total is reported). The scope filter is
+        read from the scope ComboBox's own selection (also while it is collapsed, #117); when it
+        is not "Entire Solution" ("Current Project" / "Current Document" / "Open Documents") the
+        scan switches it to "Entire Solution" first (leaves it switched) and reads it back.
+        Readback: when fewer rows are read than the summary buttons count, or the scope could not
+        be switched, the result is ERRORLIST_INCOMPLETE, never success with a partial list.
     .PARAMETER IncludeWarnings
         Default on; -IncludeWarnings:$false skips the warning toggle (saves 1-2 s of UIA).
         Also reads warning rows (data.warnings, always present when on, possibly empty).
@@ -46,6 +49,12 @@ function Get-TcBuildErrors {
                          this call starts no new scan (ERRORLIST_UNAVAILABLE), the next call scans (#75)
         data.scanCleanupWarning  set when leftover timed-out scans could not be inspected /
                          disposed and were dropped instead (#75); on success and failure results
+        data.scope       @{ before; after; entire; switched }: the scope filter read from the scope
+                         ComboBox's own selection (#117); entire = $null when no scope combo was recognised
+        ERRORLIST_INCOMPLETE (#117): fewer rows were read than the summary buttons count (per requested
+                         severity), or the scope stayed on another filter than Entire Solution; data then
+                         carries the partial rows, data.missingRows [ @{ severity; expected; read } ],
+                         data.scope and data.notes. Never success with a partial list.
     #>
     [CmdletBinding()]
     param(
@@ -165,6 +174,24 @@ function Get-TcBuildErrors {
         messages = if ($null -ne $scan.Counts -and $null -ne $scan.Counts.messages) { [int]$scan.Counts.messages } else { $null }
     }
 
+    # --- readback (#117): the rows read must add up to the totals on the summary buttons ---
+    # A filtered list (scope 'Current Project', a filter that could not be switched, rows the
+    # scroll could not reach) shows fewer rows than the button totals; returning it as success
+    # would hide errors / warnings (false success, CODING_STANDARDS section 2). Fail closed with
+    # ERRORLIST_INCOMPLETE; the partial rows stay in data for diagnosis.
+    $shortfall = Get-TcErrorListShortfall -Scan $scan -Errors $errors.Count -Warnings $warnings.Count -Messages $messages.Count `
+        -Unclassified $unclassified.Count -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages)
+    $scopeData = $null
+    if ($null -ne $scan.PSObject.Properties['Scope'] -and $null -ne $scan.Scope) {
+        $scopeData = [PSCustomObject]@{
+            before   = $scan.Scope.before
+            after    = $scan.Scope.after
+            entire   = $scan.Scope.entire
+            switched = [bool]$scan.Scope.switched
+        }
+    }
+    $scopeFiltered = ($null -ne $scopeData -and $scopeData.entire -eq $false)
+
     # .ToArray(): @(<generic List>) inside a [PSCustomObject]@{} literal fails in PS 5.1
     # ("argument types incompatible")
     $data = [PSCustomObject]@{
@@ -186,6 +213,20 @@ function Get-TcBuildErrors {
     }
     if ($null -ne $cleanupWarning) {
         $data | Add-Member -NotePropertyName 'scanCleanupWarning' -NotePropertyValue $cleanupWarning
+    }
+    if ($null -ne $scopeData) {
+        $data | Add-Member -NotePropertyName 'scope' -NotePropertyValue $scopeData
+    }
+    if ($shortfall.Count -gt 0 -or $scopeFiltered) {
+        $data | Add-Member -NotePropertyName 'missingRows' -NotePropertyValue $shortfall.ToArray()
+        $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes) -Force
+        $parts = @($shortfall | ForEach-Object { "$($_.severity): $($_.read) of $($_.expected) row(s) read" })
+        if ($scopeFiltered) {
+            $parts += "scope filter is '$($scopeData.after)' (was '$($scopeData.before)'), not Entire Solution, and could not be switched"
+        }
+        return New-TcResult -Success $false `
+            -ErrorMessage ('ERRORLIST_INCOMPLETE: the Error List rows read do not cover the whole list (' + ($parts -join '; ') + '); a partial read proves neither 0 errors nor the warning list.') `
+            -ErrorCode 'ERRORLIST_INCOMPLETE' -Hint (Get-TcErrorHint -Code 'ERRORLIST_INCOMPLETE') -Data $data
     }
     if ($VerbosePreference -ne 'SilentlyContinue') {
         $data | Add-Member -NotePropertyName 'notes' -NotePropertyValue @($scan.Notes)

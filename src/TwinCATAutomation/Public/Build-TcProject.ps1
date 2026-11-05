@@ -113,7 +113,9 @@
         data.codeWarnings    warningItems without the "Library Manager" items and without the
                              rows that have no file (XAE build-summary rows such as "Project
                              'plc' build ... failed" stay in the Error List as Warning)
-        data.errorListError  only when the Error List could not be read (its error code)
+        data.errorListError  only when the Error List could not be read (its error code), or was read
+                             only in part (ERRORLIST_INCOMPLETE: fewer rows than the button totals, or the
+                             scope filter stayed on another scope than Entire Solution, #117); codeVerified = $null then
         data.scanCleanupWarning  only when Get-TcBuildErrors dropped leftover timed-out UIA scans (#75); when one may still
                              be running the Error List is not read in that call (errorListError = ERRORLIST_UNAVAILABLE, codeVerified = $null)
         data.buildSec        seconds from Build($false) until BuildState reported Done
@@ -509,15 +511,17 @@
         $messages = @($buildOutput -split "`n" | Where-Object { $_.Trim() -ne '' })
 
         # Error List (UI Automation): the PLC compiler does not report through DTE.
-        # A build that is known to have succeeded only needs a short look (leftover
-        # Library Manager items); a failed / undecided build gets the default timeout.
+        # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):
+        # the success path used to get 8 s, but the scan (show the pane, switch the scope, toggle
+        # the severities, read the grid) took 16.5-17.8 s on a 4026 VS2022 XAE after a build that
+        # succeeded, so a good build came back CODE_NOT_VERIFIED (#107, 實測 by the issue reporter).
+        # The budget is an upper bound, not a wait: the scan returns as soon as it has read the list.
         # Read and classified by Get-TcErrorListSummary (shared with Test-TcPlcProject, task 3.7):
         # every error row gets a category (#23); "Library Manager" rows are missing / unresolved
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
         $fallbackWarnings = @($messages | Where-Object { $_ -match 'warning' }).Count
-        $elTimeout = if ($null -ne $failedProjects -and $failedProjects -eq 0) { 8 } else { 0 }
-        $els = Get-TcErrorListSummary -TimeoutSec $elTimeout -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount

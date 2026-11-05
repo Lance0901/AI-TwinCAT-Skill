@@ -121,9 +121,9 @@ function Test-TcPlcProject {
         $data | Add-Member -NotePropertyName checkSec -NotePropertyValue ([Math]::Round($sw.Elapsed.TotalSeconds, 2))
         if ($null -ne $callError) { $data | Add-Member -NotePropertyName callError -NotePropertyValue $callError }
 
-        # Error List: a passed check only needs a short look (as a successful Build-TcProject).
-        $elTimeout = if ($passed -eq $true) { 8 } else { 0 }
-        $els = Get-TcErrorListSummary -TimeoutSec $elTimeout
+        # Error List: the full budget on every path, as Build-TcProject (#107: 8 s on the passed
+        # path was too short for the VS2022 Error List scan; an upper bound, not a wait).
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec
         # stale = left over from earlier operations: no file (category other) AND no compiler code
         $isStale = { param($i) $i.category -eq 'other' -and [string]::IsNullOrWhiteSpace([string]$i.code) }
         $located = @($els.errorItems | Where-Object { -not (& $isStale $_) })
