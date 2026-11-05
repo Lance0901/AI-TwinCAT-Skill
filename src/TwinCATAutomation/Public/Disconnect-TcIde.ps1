@@ -25,7 +25,7 @@ function Disconnect-TcIde {
         (Stop-Process -Force, then up to 10 s until it is gone; data.killed = true,
         success = true). Only for an IDE this session launched (data.ownedBySession, i.e.
         Connect-TcIde selectedBy 'launched'; this survives Reset-TcSolution's internal
-        reconnect); for any other IDE nothing is killed and the result is IDE_NOT_OWNED
+        reconnect and, #73, a bridge restart / ReloadModule via launched-ides.json); for any other IDE nothing is killed and the result is IDE_NOT_OWNED
         (kill it yourself with Stop-Process -Id data.ideProcessId if that is really intended).
         Before Stop-Process the pid must still be a TcXaeShell / devenv process started at
         the time Connect-TcIde recorded (+-2 s); otherwise the stored pid is stale, it is
@@ -51,10 +51,12 @@ function Disconnect-TcIde {
         is INVALID_PARAMS.
     .PARAMETER ForgetPendingLaunch
         Only forget the launch records of IDEs this session launched whose process id could not
-        be confirmed (Connect-TcIde IDE_LAUNCH_PENDING with data.probe 'pid-unconfirmed'), so the
-        next Connect-TcIde -SolutionPath may launch again. Closes nothing, keeps the connection
-        (data.forgottenLaunches). Close that IDE yourself first if it is still running. Not with
-        -Quit / -Kill (INVALID_PARAMS).
+        be confirmed (Connect-TcIde IDE_LAUNCH_PENDING with data.probe 'pid-unconfirmed'), also
+        the ones persisted in launched-ides.json by an earlier module instance / bridge (#149),
+        so the next Connect-TcIde -SolutionPath may launch again. Closes nothing, keeps the
+        connection (data.forgottenLaunches; LAUNCH_RECORD_UNAVAILABLE when the file could not be
+        updated). Close that IDE yourself first if it is still running. Not with -Quit / -Kill
+        (INVALID_PARAMS).
     .EXAMPLE
         Disconnect-TcIde -Quit          # IDE_QUIT_FAILED (modal up, connection kept) ...
         Disconnect-TcIde -Quit -Kill    # ... then kill it, no reconnect needed
@@ -63,7 +65,8 @@ function Disconnect-TcIde {
         data.ideProcessId, data.selectedBy, data.ownedBySession, data.disconnected,
         data.dialog (when a modal was seen), data.killed / data.alreadyExited (kill path),
         data.reason ('not connected' when there was nothing to quit).
-        Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED, MODAL_SCAN_INCOMPLETE.
+        Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED, MODAL_SCAN_INCOMPLETE,
+        LAUNCH_RECORD_UNAVAILABLE (-ForgetPendingLaunch).
     #>
     [CmdletBinding()]
     param(
@@ -80,19 +83,28 @@ function Disconnect-TcIde {
     if ($ForgetPendingLaunch) {
         if ($Quit) { return New-TcResult -Success $false -ErrorMessage '-ForgetPendingLaunch cannot be combined with -Quit / -Kill.' -ErrorCode 'INVALID_PARAMS' }
         # #147 m-b: the exit for IDE_LAUNCH_PENDING probe 'pid-unconfirmed'; the connection and
-        # every IDE process are left alone
-        $forgotten = @(Clear-TcUnconfirmedLaunches)
-        return New-TcResult -Success $true -Data ([PSCustomObject]@{
-                message           = "Forgot $($forgotten.Count) launch record(s) with an unconfirmed process id; no IDE was closed and the connection is unchanged."
-                forgottenLaunches = $forgotten
-            })
+        # every IDE process are left alone; #149: the persisted unconfirmed records too
+        $cleared = Clear-TcUnconfirmedLaunches
+        $forgotten = @($cleared.Dropped)
+        $fdata = [PSCustomObject]@{
+            message           = "Forgot $($forgotten.Count) launch record(s) with an unconfirmed process id; no IDE was closed and the connection is unchanged."
+            forgottenLaunches = $forgotten
+        }
+        if ($null -ne $cleared.Failure) {
+            # fail closed: the module records are gone, but the file could not be updated
+            $fdata | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $cleared.Failure
+            return New-TcResult -Success $false -ErrorMessage "LAUNCH_RECORD_UNAVAILABLE: the persisted launch records could not be updated ($($cleared.Failure)); a restarted bridge may still refuse to launch for that solution. Retry Disconnect-TcIde -ForgetPendingLaunch." `
+                -ErrorCode 'LAUNCH_RECORD_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'LAUNCH_RECORD_UNAVAILABLE') -Data $fdata
+        }
+        return New-TcResult -Success $true -Data $fdata
     }
 
     $ideProcessId = 0
     if ($null -ne $script:TcIdeProcessId) { try { $ideProcessId = [int]$script:TcIdeProcessId } catch { $ideProcessId = 0 } }
     $selectedBy = $script:TcIdeSelectedBy
     # Owned = launched by this module: selectedBy, or the per-process list that survives a failed
-    # / later Connect-TcIde (pid + start time, Add-TcLaunchedIde).
+    # / later Connect-TcIde (pid + start time, Add-TcLaunchedIde) and, #73, a bridge restart /
+    # ReloadModule (launched-ides.json, confirmed pid only; unreadable file = not owned).
     $ownedBySession = ($selectedBy -eq 'launched') -or ($null -ne $script:TcIdeProcessId -and (Test-TcLaunchedIde -ProcessId ([int]$script:TcIdeProcessId)))
 
     function New-QuitData {
@@ -254,6 +266,8 @@ function Disconnect-TcIde {
         return New-TcResult -Success $true -Data $data
     }
     if ($quitResult.quit) {
+        # #73: the IDE is gone (or going): its launch record no longer belongs to anyone
+        if ($ideProcessId -gt 0) { $null = Remove-TcLaunchRecord -ProcessId $ideProcessId }
         Clear-IdeIdentity
         $data.message = 'Disconnected and IDE quit.'
         return New-TcResult -Success $true -Data $data
@@ -284,6 +298,7 @@ function Disconnect-TcIde {
     # devenv.exe, see Get-TcIdeExeName, same start time +-2 s); a recycled pid is never killed.
     $proc = Get-Process -Id $ideProcessId -ErrorAction SilentlyContinue
     if ($null -eq $proc) {
+        $null = Remove-TcLaunchRecord -ProcessId $ideProcessId   # #73: already exited
         Clear-IdeIdentity
         $data | Add-Member -NotePropertyName 'alreadyExited' -NotePropertyValue $true
         $data.message = "Disconnected; IDE pid $ideProcessId had already exited, nothing to kill."
@@ -319,6 +334,7 @@ function Disconnect-TcIde {
         return New-TcResult -Success $false -ErrorMessage "IDE_QUIT_FAILED: IDE pid $ideProcessId still running 10 s after Stop-Process -Force." `
             -ErrorCode 'IDE_QUIT_FAILED' -Hint (Get-TcErrorHint -Code 'IDE_QUIT_FAILED') -Data $data
     }
+    $null = Remove-TcLaunchRecord -ProcessId $ideProcessId   # #73: killed
     Clear-IdeIdentity
     $data.killed = $true
     $data.message = "Disconnected; IDE could not be quit and was killed (pid $ideProcessId)."

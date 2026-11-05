@@ -278,6 +278,7 @@ $script:TcErrorHints['PROGID_REQUIRED'] = 'Connect-TcIde 沒有啟動 IDE:沒給
 $script:TcErrorHints['IDE_VERSION_NOT_REGISTERED'] = 'Connect-TcIde 沒有啟動 IDE:.tsproj 的 TcVersion(data.solutionVersion.tsprojects)對應的 IDE 沒有註冊，或沒有確認到裝了 TwinCAT XAE 整合(data.registeredProgIds)。用別的版本的 XAE 開，專案可能被改寫 / 降版(#72),所以不會用猜的。確定要用某個 IDE 時帶 -ProgId 重跑;否則先安裝對應 build 的 XAE'
 # #136: never a second IDE for a solution this session is still launching
 $script:TcErrorHints['IDE_LAUNCH_PENDING'] = '本 session 已為這個 .sln 啟動過 IDE(pid <pid>),它可能還活著，所以沒有再開第二個。data.probe:not-in-rot / busy / unreadable / scan-incomplete = 還在啟動或被擋住(-NoLaunch 時也最多等 60 s);pid-unconfirmed = pid 無法確認，沒有 attach 也不算本 session 擁有;progid-mismatch = 它是用別的 ProgId 啟動的(data.progIdMismatch)。Get-TcIdeModalDialog -ProcessId <pid> 看有沒有 dialog,關掉後重跑同一個 Connect-TcIde;還在啟動就稍後重跑。要換 ProgId 或 IDE 卡死:data.ownedBySession = true 時 Disconnect-TcIde -Quit -Kill(只殺這個 pid)後再 Connect-TcIde;pid-unconfirmed 時模組不殺任何行程：自己確認並關掉那個 IDE(或確定它已不在),再 Disconnect-TcIde -ForgetPendingLaunch(MCP:DisconnectIde ForgetPendingLaunch=true)清掉這筆啟動紀錄，然後重跑 Connect-TcIde'
+$script:TcErrorHints['LAUNCH_RECORD_UNAVAILABLE'] = '啟動紀錄檔(<TCAUTO_STATE_DIR 或 %TEMP%\TwinCATAutomation>\launched-ides.json)讀不到或寫不進去(data.launchRecordWarning),通常是另一個 TcAuto 行程正拿著鎖。模組記憶體裡的紀錄已清掉;稍後重跑同一個 Disconnect-TcIde -ForgetPendingLaunch。不要手動刪改這個檔案。'
 $script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {

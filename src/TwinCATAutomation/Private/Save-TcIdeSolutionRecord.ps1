@@ -31,8 +31,11 @@ function Get-TcIdeSolutionRecordPath {
 # missing): the open is retried a few times.
 function Read-TcIdeSolutionRecordFile {
     [CmdletBinding()]
-    param()
-    $path = Get-TcIdeSolutionRecordPath
+    param(
+        # another JSON list file of the same shape (launched-ides.json, #73 / #149)
+        [string]$Path
+    )
+    $path = if ([string]::IsNullOrWhiteSpace($Path)) { Get-TcIdeSolutionRecordPath } else { $Path }
     $text = $null; $last = $null
     for ($i = 1; $i -le 5; $i++) {
         # No Test-Path first: it says "missing" for a file held open exclusively. A file is only
@@ -298,8 +301,8 @@ function Save-TcIdeSolutionRecord {
 # Replaces the record file with -Records (tmp + move). Throws on failure (callers are best effort).
 function Write-TcIdeSolutionRecords {
     [CmdletBinding()]
-    param([object[]]$Records)
-    $path = Get-TcIdeSolutionRecordPath
+    param([object[]]$Records, [string]$Path)
+    $path = if ([string]::IsNullOrWhiteSpace($Path)) { Get-TcIdeSolutionRecordPath } else { $Path }
     $dir = Split-Path -Parent $path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $tmp = "$path.$PID.$([guid]::NewGuid().ToString('N')).tmp"
@@ -356,7 +359,7 @@ function Get-TcIdeSolutionRecord {
     $null
 }
 
-# --- per-process module state (kept across Connect-TcIde calls, never across processes) ---
+# --- per-process module state (kept across Connect-TcIde calls; launches also persisted, #73) ---
 # Key = "<pid>|<start time 'o'>", so a recycled pid never matches.
 function Get-TcIdeProcessKey {
     [CmdletBinding()]
@@ -371,6 +374,7 @@ function Add-TcLaunchedIde {
     .SYNOPSIS
         Remembers that this module launched IDE process -ProcessId (Disconnect-TcIde -Kill is
         allowed for it), independent of $script:TcIdeSelectedBy, which a later Connect-TcIde resets.
+        Module memory only; Connect-TcIde persists it with Save-TcLaunchRecord (#73).
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
@@ -380,12 +384,22 @@ function Add-TcLaunchedIde {
     $script:TcLaunchedIdes[$key] = $true
 }
 
+# #73: not in the module memory (a restarted bridge / ReloadModule / Import-Module -Force) ->
+# the persisted launch record of that process (TcLaunchRecordStore.ps1): only a VALID one (pid +
+# start time + image name) whose pid was CONFIRMED (rot-identity / main-window) restores the
+# ownership, and it is cached in memory. An unreadable / corrupt file restores nothing.
 function Test-TcLaunchedIde {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
-    if ($null -eq $script:TcLaunchedIdes) { return $false }
     $key = Get-TcIdeProcessKey -ProcessId $ProcessId
-    ($null -ne $key -and $script:TcLaunchedIdes.ContainsKey($key))
+    if ($null -eq $key) { return $false }
+    if ($null -ne $script:TcLaunchedIdes -and $script:TcLaunchedIdes.ContainsKey($key)) { return $true }
+    $rec = Find-TcConfirmedLaunchRecord -ProcessId $ProcessId
+    if ($null -eq $rec) { return $false }
+    if ($null -eq $script:TcLaunchedIdes) { $script:TcLaunchedIdes = @{} }
+    $script:TcLaunchedIdes[$key] = $true
+    Write-Verbose "IDE pid $ProcessId owned by this session: launch record restored from the state file ($($rec.pidSource), module instance $($rec.moduleInstanceId))"
+    $true
 }
 
 function Get-TcIdeSilentOriginal {

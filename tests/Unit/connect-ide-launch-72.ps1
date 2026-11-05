@@ -168,7 +168,7 @@ function New-RotEntry([int]$ProcId, [object]$Object, [string]$ProgId = 'VisualSt
 function Reset-State {
     $global:Rot72 = @(); $global:Launches72.Clear(); $global:LaunchedDtes72 = @{}; $global:Procs72 = @{}; $global:Modal72 = 'incomplete'; $global:ModalQueue72.Clear()
     $global:Reg72 = $all3; $global:Ide72 = $ideDefault.Clone(); $global:Inst72 = $instDefault; $global:LaunchInRot72 = $true; $global:GuessPid72 = 0
-    & $mod { $script:TcLaunchedIdes = @{}; $script:TcLaunchedIdeSolutions = @{}; $script:TcIdeProcessId = $null; $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcSolutionPath = $null; $script:TcIdeStartTime = $null; $script:TcIdeSelectedBy = $null }
+    & $mod { Remove-Item -LiteralPath (Get-TcLaunchRecordPath) -Force -ErrorAction SilentlyContinue; $script:TcLaunchedIdes = @{}; $script:TcLaunchedIdeSolutions = @{}; $script:TcIdeProcessId = $null; $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcSolutionPath = $null; $script:TcIdeStartTime = $null; $script:TcIdeSelectedBy = $null }
 }
 function Set-OwnRot([int]$ProcId, [string]$Mode, [string]$Solution = '') {
     $o = $global:LaunchedDtes72[$ProcId]

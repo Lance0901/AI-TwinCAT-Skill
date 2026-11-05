@@ -96,6 +96,8 @@ function Connect-TcIde {
                           solution platform (may differ from solutionPlatform, e.g. solution
                           'TwinCAT OS (x64)' -> project 'TwinCAT OS (ARMT2)')
         data.launchSec    seconds from starting a new IDE until its DTE answered (only when selectedBy = 'launched')
+        data.ownedBySession  this session (or an earlier module instance / bridge, launched-ides.json) launched the IDE
+        data.launchRecordWarning  launched-ides.json could not be read / written (only when that happened)
     #>
     [CmdletBinding()]
     param(
@@ -120,11 +122,13 @@ function Connect-TcIde {
     # new instance into a false IDE_CRASHED.
     # An IDE this session launched stays 'owned' (Disconnect-TcIde -Kill) whatever a later
     # Connect-TcIde (a failed one included) finds: Add-TcLaunchedIde / Test-TcLaunchedIde keep the
-    # pid + start time of every IDE this module launched, independent of TcIdeSelectedBy.
+    # pid + start time of every IDE this module launched, independent of TcIdeSelectedBy, and
+    # (#73 / #149) launched-ides.json keeps them across a bridge restart / ReloadModule.
     # Also kept for #29: the IDE this module was connected to and its solution
     # (Find-TcBlockedSolutionIde 'module-state': recognises our own blocked IDE without file I/O).
     # #127 F1: a session-record write that was skipped earlier (lock busy) is retried first
     Sync-TcIdeSolutionRecordPending
+    $script:TcLaunchRecordWarning = $null   # #73: set by a failed read / write of launched-ides.json during this call
     $previousIdePid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $previousIdePid = [int]$script:TcIdeProcessId } catch { $previousIdePid = 0 } }
     $previousSolution = [string]$script:TcSolutionPath
@@ -609,16 +613,24 @@ function Connect-TcIde {
     # 'start-time' (a guess: the youngest IDE process started since the launch)
     $pidSource = if ($selectionReason -eq 'launched' -and $null -ne $chosen -and $ideInfo.Source -eq 'known-pid') { 'rot-identity' } else { [string]$ideInfo.Source }
     if ($selectionReason -eq 'launched') {
+        $launchId = [guid]::NewGuid().ToString('N')
         if ($ideProcessId -gt 0 -and $pidSource -in 'rot-identity', 'main-window') {
             Add-TcLaunchedIde -ProcessId $ideProcessId
             # #136: remembered with the solution it was launched for (Find-TcSessionLaunchedIde)
-            if ($null -ne $normalizedSolutionPath) { Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId $ideProcessId -LaunchTime $launchTime }
+            if ($null -ne $normalizedSolutionPath) { $null = Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId $ideProcessId -LaunchTime $launchTime -LaunchId $launchId }
+            # #73 / #149: persisted, so a restarted bridge / ReloadModule still owns it
+            $null = Save-TcLaunchRecord -LaunchId $launchId -ProcessId $ideProcessId -PidSource $pidSource -ProgId $usedProgId -Solution $normalizedSolutionPath -LaunchTime $launchTime
         }
         else {
             # #147 M2: the pid could only be guessed (or not found at all): it might be the user's
             # IDE that came up at the same time. Nothing is owned or attached; the DTE object is kept
             # in the launch record so a retry recognises the IDE once the ROT lists it.
-            if ($null -ne $normalizedSolutionPath) { Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId 0 -LaunchTime $launchTime }
+            if ($null -ne $normalizedSolutionPath) {
+                $null = Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId $usedProgId -Dte $dte -ProcessId 0 -LaunchTime $launchTime -LaunchId $launchId
+                # #149: persisted as 'pid-unconfirmed' (guessed pid): after a bridge restart it only
+                # keeps a second IDE from being launched for this .sln, it never makes an IDE owned
+                $null = Save-TcLaunchRecord -LaunchId $launchId -ProcessId $ideProcessId -PidSource 'pid-unconfirmed' -ProgId $usedProgId -Solution $normalizedSolutionPath -LaunchTime $launchTime
+            }
             $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeSelectedBy = $null
             $script:TcIdeProcessId = $null; $script:TcIdeMainHwnd = 0; $script:TcIdeStartTime = $null
             return New-TcResult -Success $false `
@@ -812,6 +824,8 @@ function Connect-TcIde {
     # #123: the session record could not be updated (lock busy): say so, the old one is not used
     $recWarn = if ($ideProcessId -gt 0) { Get-TcIdeSolutionRecordWarning -ProcessId $ideProcessId } else { $null }
     if ($null -ne $recWarn) { $data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
+    # #73: the launch record file could not be read / written during this call (ownership may not survive a bridge restart)
+    if ($null -ne $script:TcLaunchRecordWarning) { $data | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }

@@ -234,7 +234,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### IDE_NOT_OWNED
 
 - **現象**:`Disconnect-TcIde -Quit -Kill` 回 `IDE_NOT_OWNED`,`data.ownedBySession = false`(`data.selectedBy` 例如 `solution-match`)。
-- **為什麼**:`-Kill` 只殺本 session 用 `Connect-TcIde` 啟動的 IDE,不殺使用者自己開的 IDE。`Reset-TcSolution` 重連到同一個 pid 時仍算 launched。
+- **為什麼**:`-Kill` 只殺本 session 用 `Connect-TcIde` 啟動的 IDE,不殺使用者自己開的 IDE。`Reset-TcSolution` 重連到同一個 pid 時仍算 launched;bridge 重啟、`ReloadModule`、`Import-Module -Force` 之後也仍算(#73,見「啟動紀錄持久化(#73 / #149)」)。啟動紀錄檔讀不到或壞掉時一律不算 owned,這時也會回這個碼。
 - **下一步**:確定要關就自己 `Stop-Process -Id <data.ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。`data.quitError` 說明 quit 為什麼失敗。再呼叫一次 `-Quit -Kill` 結果不變(仍 `IDE_NOT_OWNED`)。
 
 ### IDE_LAUNCH_FAILED
@@ -300,7 +300,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - 那個行程還在(pid 與 StartTime 都相同，回收的 pid 不算),就先掃 modal dialog,再讀 DTE,回應了就 attach(`data.selectedBy = 'session-launched'`,`ownedBySession = true`)。
   - **同一個 .sln 在本 session 有啟動中的 IDE 時，絕不再啟動第二個**,`-LaunchIfBlocked`、`-NoLaunch` 也一樣。
   - 只有那個 IDE 已改開別的 solution，或行程已結束，才放行。
-  - 只在同一個模組 session(MCP server / 同一個 PowerShell)內有效(持久化見 follow-up issue)。
+  - 這份紀錄也寫進 `launched-ides.json`(#149),bridge 重啟 / `ReloadModule` 之後一樣有效，見「啟動紀錄持久化(#73 / #149)」。
 - **pid 怎麼確認(#147 M2)**:
   - 啟動後，從 ROT 找「物件就是這個 DTE」的項目，pid 取 moniker `!<ProgId>:<pid>`(`data.pidSource = 'rot-identity'`);或用 DTE 自己的主視窗(`main-window`)。
   - 只能用「啟動時間之後最新的 IDE 行程」猜的 pid(`start-time`)可能是同時冒出來的使用者 IDE:這種 pid 不記錄、不 attach、不算 `ownedBySession`,直接回 `IDE_LAUNCH_PENDING`(`probe = 'pid-unconfirmed'`,`data.guessedProcessId` 只供參考)。
@@ -309,6 +309,35 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看有沒有 dialog,關掉後重跑同一個 `Connect-TcIde`;還在啟動就稍後重跑。
   - 要換 ProgId，或 IDE 卡死:`data.ownedBySession = true` 時 `Disconnect-TcIde -Quit -Kill`(只殺本 session 確認過的這個 pid)後再 `Connect-TcIde`。
   - `pid-unconfirmed` 時模組不殺任何行程：自己確認並關掉那個 IDE(或確定它已不在),再 `Disconnect-TcIde -ForgetPendingLaunch`(MCP `DisconnectIde ForgetPendingLaunch=true`;只清掉 pid 未確認的啟動紀錄，不關 IDE、不動連線，回 `data.forgottenLaunches`),然後重跑 `Connect-TcIde`。
+
+### 啟動紀錄持久化(#73 / #149)
+
+- **現象(修正前)**:MCP bridge 重啟(`BRIDGE_TIMEOUT`、`IDE_MODAL_DIALOG` 之後的重啟)、`ReloadModule` 或 `Import-Module -Force` 之後，本 session 啟動的 IDE 的 launch / ownership 紀錄只在舊的模組記憶體裡，跟著消失:
+  - `Connect-TcIde` 再連到同一個 pid 時 `ownedBySession = false`,`Disconnect-TcIde -Quit -Kill` 回 `IDE_NOT_OWNED`(#73,實測 2026-11-05,4024 TcXaeShell 32-bit,PR #129 ReloadModule 驗證)。
+  - 那個 IDE 還在冷啟動時，重試的 `Connect-TcIde -SolutionPath` 可能再開第二個 IDE(#149)。
+- **現在**:每次啟動 IDE、拿到 pid(確認的或猜的)時，寫一筆紀錄到 `<Get-TcStateDir>\launched-ides.json`(`TCAUTO_STATE_DIR`,沒設就是 `%TEMP%\TwinCATAutomation`)。
+  - 欄位:`launchId`、`pid`、`startTime`(UTC)、`imageName`(行程名稱，不含 .exe)、`progId`、`solution`、`pidSource`、`launchedAt` / `createdAt` / `updatedAt`(UTC)、`moduleInstanceId`(寫入的模組 instance)、`hostPid`(寫入的 PowerShell / bridge 行程)。
+  - 鎖的做法和 `ide-solutions.json` 一樣:read-modify-write 在 named mutex `Local\TwinCATAutomation-launched-ides` 下進行;設了 `TCAUTO_STATE_DIR` 時，名稱加上該目錄的 hash。`[IO.File]::Replace` 原子取代檔案。
+  - 模組記憶體只當快取。記憶體沒有的，就讀檔案。
+- **讀回時一定驗證**:pid 存在，而且 StartTime 和 image name 都和紀錄相同，才算數，所以回收的 pid 不會被當成自己的。不符的紀錄不用，下次寫入時清掉。
+- **誰能恢復 ownership**:只有 `pidSource` 是 `rot-identity` 或 `main-window` 的紀錄可以(`Test-TcLaunchedIde` → `data.ownedBySession = true`,`-Kill` 允許)。
+  - `pid-unconfirmed`(pid 只是用啟動時間猜的，#147 M2)**永遠不恢復 ownership**。跨行程時沒有 DTE 物件可比對，也無法事後確認。
+  - 它只用來擋住同一個 .sln 的第二次啟動(`IDE_LAUNCH_PENDING`,`probe = 'pid-unconfirmed'`),直到那個行程結束，或 `Disconnect-TcIde -ForgetPendingLaunch`(會一起清掉檔案裡的這筆)。
+- **清除**:`Disconnect-TcIde -Quit` 成功、`-Quit -Kill` 殺掉，或發現行程已結束(`alreadyExited`)時，刪掉該 pid 的紀錄。IDE 改開別的 solution 時，紀錄保留 ownership,但 `solution` 清成 null。
+- **fail closed**:紀錄檔讀不到(被鎖住、權限)或內容壞掉時，**不把任何 IDE 當成 owned**,也不拿它擋啟動;正常的 `ConnectIde` attach(solution-match 等)照常進行,`data.ownedBySession = false`。
+  - 這次呼叫讀寫失敗時，`Connect-TcIde` 成功結果帶 `data.launchRecordWarning`。
+  - 下一次寫入時，壞掉的檔案改名成 `launched-ides.json.corrupt-<time>`,裡面的紀錄不再算數。
+- **限制**:
+  - 本 module instance 自己啟動的 IDE 記在記憶體，檔案壞掉也仍算 owned;從檔案恢復的也快取在記憶體。
+  - 有設和沒設 `TCAUTO_STATE_DIR` 的行程用不同的檔案，彼此看不到。
+  - 不要手動刪改這個檔案。
+- **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
+
+### LAUNCH_RECORD_UNAVAILABLE
+
+- **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。
+- **為什麼**:模組記憶體裡 pid 未確認的紀錄已清掉，但 `launched-ides.json` 讀不到或寫不進去，通常是另一個 TcAuto 行程正拿著鎖(等待上限約 2 s)。檔案裡的那筆還在，重啟後的 bridge 仍可能因此回 `IDE_LAUNCH_PENDING`。
+- **下一步**:稍後重跑同一個 `Disconnect-TcIde -ForgetPendingLaunch`。不要手動刪改這個檔案。
 
 ### IDE_TIMEOUT
 
