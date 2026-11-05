@@ -21,6 +21,7 @@
 # Never touches the user profile: every install goes to a temp folder whose name contains "30".
 #   powershell.exe -NoProfile -File tests/Unit/install-manifest.ps1
 # Exit code = number of failed checks.
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 $modulePath = Join-Path $repoRoot 'src\TwinCATAutomation\TwinCATAutomation.psm1'
