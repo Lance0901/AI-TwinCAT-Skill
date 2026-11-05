@@ -33,6 +33,11 @@ function Get-TcErrorListSummary {
           warningsIncomplete $true when only warnings (or messages) were read short: errorListError stays
                              $null (the error rows are complete), Build-TcProject adds WARNINGS_INCOMPLETE
           errorListNote      text for that non-blocking case, else $null
+          runtimeMessages    PLC runtime ADS log rows (TcUnit, ADSLOGSTR; Get-TcRuntimeLogKind 'runtime', #66), error and
+                             warning rows, category 'runtime'; they are NOT in errorItems / warningItems and
+                             never count as build errors
+          ambiguousRows      rows with the runtime log prefix that also have a file, line or code: kept in
+                             errorItems / warningItems (fail closed), each with a 'note'
         errorListError = ERRORLIST_INCOMPLETE only when the ERROR rows are not proven complete
         (Get-TcErrorListReadState: errors / total shortfall, Errors total unreadable, or a filtered
         scope with a shortfall); callers then treat the code as not verified (codeVerified = $null).
@@ -85,6 +90,36 @@ function Get-TcErrorListSummary {
         $errorListMessage = [string]$el.error.message
     }
 
+    # PLC runtime ADS log rows (#66, Get-TcRuntimeLogKind): TcUnit / ADSLOGSTR output is not a build
+    # message, so it leaves errorItems / warningItems for runtimeMessages (category 'runtime') and
+    # never counts as a build error. A row with the log prefix that also has a file, line or code
+    # cannot be told apart: it stays where it was (fail closed) and gets a 'note'.
+    $runtimeMessages = @()
+    $ambiguousRows = @()
+    $ambiguousNote = "looks like a PLC runtime ADS log row ('<task>' (<port>): ...) but has a file, line or compiler code, so it is kept as a build row (#66)"
+    $splitRuntime = {
+        param([object[]]$Rows)
+        $kept = @()
+        foreach ($r in @($Rows)) {
+            if ($null -eq $r) { continue }
+            $kind = Get-TcRuntimeLogKind $r
+            if ($kind -eq 'runtime') {
+                $r | Add-Member -NotePropertyName 'category' -NotePropertyValue 'runtime' -Force
+                Set-Variable -Name runtimeMessages -Value (@($runtimeMessages) + $r) -Scope 1
+            }
+            else {
+                if ($kind -eq 'ambiguous') {
+                    $r | Add-Member -NotePropertyName 'note' -NotePropertyValue $ambiguousNote -Force
+                    Set-Variable -Name ambiguousRows -Value (@($ambiguousRows) + $r) -Scope 1
+                }
+                $kept += $r
+            }
+        }
+        $kept
+    }
+    $errorItems = @(& $splitRuntime $errorItems)
+    $warningItems = @(& $splitRuntime $warningItems)
+
     # Category per item (#23): "Library Manager" rows are missing / unresolved libraries, not PLC
     # code errors; they stay listed after a successful build and never fail it on their own.
     foreach ($item in $errorItems) {
@@ -131,5 +166,7 @@ function Get-TcErrorListSummary {
         scope              = $rs.scope
         warningsIncomplete = [bool]($rs.incomplete -and $rs.errorsComplete -and $rs.warningsIncomplete)
         errorListNote      = $errorListNote
+        runtimeMessages    = @($runtimeMessages)
+        ambiguousRows      = @($ambiguousRows)
     }
 }

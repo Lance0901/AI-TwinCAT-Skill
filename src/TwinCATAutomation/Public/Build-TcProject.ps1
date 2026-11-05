@@ -108,7 +108,17 @@
                              all errors of the Error List; category (Get-TcErrorItemCategory):
                              code (has a file), library (file like '*Library Manager' with no
                              line, or "Could not open library" without a line), other (no file)
+                             PLC runtime ADS log rows are NOT in errorItems (#66, see data.runtimeMessages)
         data.codeErrors      errorItems with category 'code' - the PLC code errors
+        data.runtimeMessages PLC runtime ADS log rows of the Error List (TcUnit, ADSLOGSTR output; #66), same shape
+                             with category 'runtime': description "'<task>' (<ADS port>): ..." and no file, no line,
+                             no compiler code (Get-TcRuntimeLogKind). Error and warning rows; never in errorItems /
+                             warningItems / codeErrors, never part of the success decision; @() when none.
+                             InfoSys: ADSLOGSTR messages from the PLC application are shown in the XAE Error List
+                             (https://infosys.beckhoff.com/content/1033/tf6500_tc3_iec60870_5_10x/984578315.html);
+                             the row form is 實測 (#66, 2026-10-27, VS2022 4026, local UmRT, TcUnit project)
+        data.runtimeMessageNote  only when a row has that prefix AND a file, line or code: it cannot be told apart,
+                             so it stays in errorItems / warningItems (fail closed) with a 'note' on the row
         data.warningItems    same shape as errorItems, the warnings of the Error List (@() when it could not be read)
         data.codeWarnings    warningItems without the "Library Manager" items and without the
                              rows that have no file (XAE build-summary rows such as "Project
@@ -657,8 +667,13 @@
             libraryErrorItems = $libraryErrorItems
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
+            runtimeMessages = @($els.runtimeMessages)
             buildSec       = $buildSec
             codeVerified   = $codeVerified
+        }
+        # #66: rows with the runtime log prefix that also have a file / line / code stay build rows (fail closed)
+        if (@($els.ambiguousRows).Count -gt 0) {
+            $data | Add-Member -NotePropertyName 'runtimeMessageNote' -NotePropertyValue "$(@($els.ambiguousRows).Count) Error List row(s) look like PLC runtime ADS log output ('<task>' (<port>): ...) but have a file, line or compiler code; they are kept in errorItems / warningItems as build rows (see their 'note')"
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
@@ -748,6 +763,10 @@
             }
             elseif ($null -ne $failedProjects) {
                 $summary += " ($failedProjects project(s) failed; no code error listed in the Error List)"
+            }
+            # #66: TcUnit / ADSLOGSTR rows are not build errors; say so, so they are not read as the cause
+            if (@($els.runtimeMessages).Count -gt 0) {
+                $summary += ". $(@($els.runtimeMessages).Count) PLC runtime log row(s) of the Error List (data.runtimeMessages, e.g. TcUnit / ADSLOGSTR output) are not build errors and were left out"
             }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint (Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE') -Data $data

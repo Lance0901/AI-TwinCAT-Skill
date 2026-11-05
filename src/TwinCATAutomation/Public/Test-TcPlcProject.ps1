@@ -49,7 +49,8 @@ function Test-TcPlcProject {
         project (otherwise PLC_PROJECT_AMBIGUOUS).
     .OUTPUTS
         data: plcProjectPath, passed, checkSec, errors (code error count), warnings (warning count),
-        errorItems, codeErrors, libraryErrorItems, staleErrorItems, warningItems, codeWarnings;
+        errorItems, codeErrors, libraryErrorItems, staleErrorItems, runtimeMessages (PLC runtime ADS
+        log rows such as TcUnit output, never in errorItems, #66), warningItems, codeWarnings;
         errorListError, callError and warningTexts only when they apply.
     .EXAMPLE
         Test-TcPlcProject
@@ -144,6 +145,8 @@ function Test-TcPlcProject {
             $data | Add-Member -NotePropertyName errors -NotePropertyValue $(if ($null -eq $els.errorListError) { @($els.codeErrors).Count } else { $null })
         }
         $data | Add-Member -NotePropertyName staleErrorItems -NotePropertyValue $stale
+        # #66: PLC runtime ADS log rows (TcUnit, ADSLOGSTR) are no check results (Get-TcErrorListSummary)
+        $data | Add-Member -NotePropertyName runtimeMessages -NotePropertyValue @($els.runtimeMessages)
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue $(if ($null -eq $els.errorListError) { $els.warningCount } else { $null })
         $data | Add-Member -NotePropertyName warningItems -NotePropertyValue $els.warningItems
         $data | Add-Member -NotePropertyName codeWarnings -NotePropertyValue $els.codeWarnings
