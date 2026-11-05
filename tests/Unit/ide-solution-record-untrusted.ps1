@@ -5,8 +5,12 @@
 # used: Get-TcIdeSolutionRecord returns $null, Find-TcBlockedSolutionIde makes the match weak
 # (contradiction = the warning) and Open-TcProject reports data.sessionRecordWarning. Once a write
 # succeeds again, the record counts again. A write that fails INSIDE the lock (file unreadable,
-# Replace blocked by a reader) marks the record untrusted the same way. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager
-# are replaced inside the module scope (fake pids), as in blocked-solution-ide.ps1.
+# Replace blocked by a reader) marks the record untrusted the same way. #127 F1: the write that
+# could not be done is kept as PENDING (what this module meant to write, never the old file
+# record) and the next lookup (Find-TcBlockedSolutionIde / Get-TcIdeSolutionRecord) writes it
+# once the lock is free, so a blocked IDE (no new Save ever) is recognised again by the pending
+# content. Get-Process / Find-TcIdeModalDialog / Get-TcSysManager are replaced inside the module
+# scope (fake pids), as in blocked-solution-ide.ps1.
 #   powershell.exe -NoProfile -File tests/Unit/ide-solution-record-untrusted.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -102,9 +106,16 @@ try {
     $r = Open-TcProject -Path $slnB
     Check 'open-project-warning' ($r.success -and $r.data.sessionRecordWarning -match 'not updated') "success=$($r.success) warn=$($r.data.sessionRecordWarning)"
 
-    # 6. released: the next write succeeds and the record counts again
+    # 6. released (#127 F1): no new Save comes (blocked IDE); the next lookup writes the pending
+    #    save (B, what this module meant to write) and the pending remove, then trusts the record
     $null = $release.Set()
     $null = $holder.WaitForExit(30000)
+    Check 'released-still-pending-before-lookup' ((Get-FileSolution 1231) -eq $slnA -and $null -ne (Get-Warn 1231) -and $null -ne (Get-Warn 1232)) "file=$(Get-FileSolution 1231)"
+    $h = @(Find-Hit $slnB)
+    Check 'released-find-writes-pending' ((Get-FileSolution 1231) -eq $slnB -and (Get-FileSolution 1232) -eq '' -and $null -eq (Get-Warn 1231) -and $null -eq (Get-Warn 1232)) "file1231=$(Get-FileSolution 1231) file1232=$(Get-FileSolution 1232) warn=$(Get-Warn 1231)"
+    Check 'released-find-strong-by-pending-content' ($h.Count -eq 1 -and $h[0].Strong -and $h[0].MatchedBy -eq 'session-record' -and $h[0].CorroboratedBy -eq 'window-title') "hits=$(@($h | ForEach-Object { "$($_.MatchedBy) strong=$($_.Strong) why=$($_.Contradiction)" }) -join ',')"
+    $h = @(Find-Hit $slnA)
+    Check 'released-find-old-file-record-not-used' (@($h | Where-Object { $_.Strong }).Count -eq 0) "hits=$(@($h | ForEach-Object { "$($_.MatchedBy) strong=$($_.Strong)" }) -join ',')"
     $r = Open-TcProject -Path $slnB
     Check 'released-open-no-warning' ($r.success -and $null -eq $r.data.PSObject.Properties['sessionRecordWarning']) "warn=$($r.data.sessionRecordWarning)"
     Check 'released-record-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
@@ -121,7 +132,9 @@ try {
     try { & $mod { param($c) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $c } $slnC }
     finally { $fs.Dispose() }
     $w = Get-Warn 1231
-    Check 'unreadable-in-lock-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Rec 1231) -and $w -match 'save failed' -and $w -match 'not read') "file=$(Get-FileSolution 1231) warn=$w"
+    Check 'unreadable-in-lock-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $w -match 'save failed' -and $w -match 'not read') "file=$(Get-FileSolution 1231) warn=$w"
+    $rec = Get-Rec 1231   # lookup: file free again -> the pending save (C) is written first
+    Check 'unreadable-pending-written-on-lookup' ($rec -eq $slnC -and (Get-FileSolution 1231) -eq $slnC -and $null -eq (Get-Warn 1231)) "record=$rec file=$(Get-FileSolution 1231)"
     & $mod { param($b) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $b } $slnB
     Check 'unreadable-then-saved-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
     # 7b. file held open by a reader: [IO.File]::Replace keeps failing
@@ -129,7 +142,9 @@ try {
     try { & $mod { param($c) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $c } $slnC }
     finally { $fs.Dispose() }
     $w = Get-Warn 1231
-    Check 'replace-blocked-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $null -eq (Get-Rec 1231) -and $w -match 'save failed') "file=$(Get-FileSolution 1231) warn=$w"
+    Check 'replace-blocked-untrusted' ((Get-FileSolution 1231) -eq $slnB -and $w -match 'save failed') "file=$(Get-FileSolution 1231) warn=$w"
+    $rec = Get-Rec 1231
+    Check 'replace-blocked-pending-written-on-lookup' ($rec -eq $slnC -and (Get-FileSolution 1231) -eq $slnC -and $null -eq (Get-Warn 1231)) "record=$rec file=$(Get-FileSolution 1231)"
     & $mod { param($b) Save-TcIdeSolutionRecord -ProcessId 1231 -Solution $b } $slnB
     Check 'replace-blocked-then-saved-trusted' ((Get-Rec 1231) -eq $slnB -and $null -eq (Get-Warn 1231)) "record=$(Get-Rec 1231)"
 }

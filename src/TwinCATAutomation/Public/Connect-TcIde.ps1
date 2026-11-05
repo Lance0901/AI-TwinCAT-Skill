@@ -101,6 +101,8 @@ function Connect-TcIde {
     # pid + start time of every IDE this module launched, independent of TcIdeSelectedBy.
     # Also kept for #29: the IDE this module was connected to and its solution
     # (Find-TcBlockedSolutionIde 'module-state': recognises our own blocked IDE without file I/O).
+    # #127 F1: a session-record write that was skipped earlier (lock busy) is retried first
+    Sync-TcIdeSolutionRecordPending
     $previousIdePid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $previousIdePid = [int]$script:TcIdeProcessId } catch { $previousIdePid = 0 } }
     $previousSolution = [string]$script:TcSolutionPath
@@ -346,7 +348,9 @@ function Connect-TcIde {
                 }
                 if (-not $attach) {
                     $weakText = if ($null -ne $hit.Dialog) { "shows the modal dialog '$($hit.Dialog.Title)'" } else { 'rejects every DTE call (RPC_E_CALL_REJECTED) and no modal dialog was found' }
-                    $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $hit.Dialog
+                    # #127 F2: same dialog shape as the strong path (New-TcModalDialogResult)
+                    if ($null -ne $hit.Dialog) { $blockedData = Add-TcModalDialogData -Dialog $hit.Dialog -Data $blockedData }
+                    else { $blockedData | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $null }
                     return New-TcResult -Success $false `
                         -ErrorMessage "IDE_BLOCKED_SAME_NAME (weak / ambiguous evidence): the IDE pid $blockedPid $evidence and $weakText. No second IDE was launched and nothing was attached." `
                         -ErrorCode $(if ($null -ne $hit.Dialog) { 'IDE_MODAL_DIALOG' } else { 'IDE_BUSY' }) -Hint (Get-TcErrorHint -Code $(if ($blockedData.launchedBySession) { 'IDE_BLOCKED_OWN' } else { 'IDE_BLOCKED_SAME_NAME' })) -Data $blockedData

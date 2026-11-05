@@ -730,6 +730,30 @@ function New-TcModalDialogResult {
     $kind = [string]$rec.Kind
     $short = if ($text.Length -gt 200) { $text.Substring(0, 200) } else { $text }
 
+    $Data = Add-TcModalDialogData -Dialog $rec -Data $Data
+    $hintCode = if ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
+    New-TcResult -Success $false `
+        -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog ($kind): $title | $short" `
+        -ErrorCode 'IDE_MODAL_DIALOG' `
+        -Hint (Get-TcErrorHint -Code $hintCode) `
+        -Data $Data
+}
+
+function Add-TcModalDialogData {
+    <#
+    .SYNOPSIS
+        Adds the dialog fields of New-TcModalDialogResult to -Data (a new PSCustomObject when
+        $null) and returns it: dialogTitle / dialogText / dialogKind / dialogReloadTarget /
+        dialogButtons and data.dialog = { title; text; kind; reloadTarget; buttons[{id; name}] }.
+        One shape for every result that reports a dialog (#127 F2: the weak-evidence path of
+        Connect-TcIde used to put the raw PascalCase module record into data.dialog).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Dialog, [Parameter()][object]$Data)
+    $rec = Add-TcDialogKind -Dialog $Dialog
+    $title = [string]$rec.Title
+    $text = [string]$rec.Text
+    $kind = [string]$rec.Kind
     if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
     $Data | Add-Member -NotePropertyName 'dialogTitle' -NotePropertyValue $title -Force
     $Data | Add-Member -NotePropertyName 'dialogText' -NotePropertyValue $text -Force
@@ -744,13 +768,7 @@ function New-TcModalDialogResult {
             reloadTarget = $rec.ReloadTarget
             buttons      = $buttonsOut
         }) -Force
-
-    $hintCode = if ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
-    New-TcResult -Success $false `
-        -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog ($kind): $title | $short" `
-        -ErrorCode 'IDE_MODAL_DIALOG' `
-        -Hint (Get-TcErrorHint -Code $hintCode) `
-        -Data $Data
+    $Data
 }
 
 function ConvertTo-TcDialogRecord {

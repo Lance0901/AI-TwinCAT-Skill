@@ -36,7 +36,9 @@ function Find-TcBlockedSolutionIde {
         A candidate without a known pid is skipped; an unreadable (empty Version, not busy)
         candidate without a dialog is skipped too (most likely an IDE shutting down).
         A record whose last write was skipped (#123, Get-TcIdeSolutionRecordWarning) is not
-        used, and every match of that process is weak (Contradiction = the warning).
+        used, and every match of that process is weak (Contradiction = the warning). The
+        pending write is retried first (Sync-TcIdeSolutionRecordPending); once it is written,
+        the record (= what this module meant to write) counts again.
         Every path compared here (-SolutionPath, record, module state, known solutions, dialog
         paths) goes through Get-TcLongPath, so 8.3 short names match their long form (#63).
         Limits: UNC paths in the dialog text are compared as text; an 8.3 name in a dialog whose
@@ -84,6 +86,8 @@ function Find-TcBlockedSolutionIde {
         [string[]]$KnownSolutions = @()
     )
 
+    # #127 F1: retry a pending session-record write first (lock free again -> trusted again)
+    Sync-TcIdeSolutionRecordPending
     # Before matching: expand 8.3 short names of -SolutionPath (folders and the file name, so the name compared with window titles is the long one).
     $SolutionPath = Get-TcLongPath $SolutionPath
     if (-not [string]::IsNullOrWhiteSpace($PreviousSolution)) { $PreviousSolution = Get-TcLongPath $PreviousSolution }
