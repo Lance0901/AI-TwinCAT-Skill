@@ -729,15 +729,28 @@ function Get-BridgeLocalLifecycleBlocks {
     # Private/LifecycleBlock.ps1). A record there may exist in memory only (the state file could not be
     # written), so a new Import-Module / bridge process would not see it. Returns @{ Readable; List }
     # (List = [{ key; record }]). The check itself is the module's private
-    # Get-TcLifecycleBlockLocalForReload (one place to change when #130 adds the cross-bridge sync);
-    # a module without that function, or one that throws (variable missing / not a hashtable), counts
+    # Get-TcLifecycleBlockLocalForReload (one place to change when #130 adds the cross-bridge sync).
+    # A module older than #41 has no such function: then $script:TcLifecycleBlockLocal itself is read
+    # (every module since #68 defines it), so a session can reload into an older sha AND out of it.
+    # Neither the function nor the variable, a value that is not a hashtable, or an exception counts
     # as a block (fail closed).
     $list = New-Object System.Collections.ArrayList
     try {
         $has = Invoke-InModule { [bool](Get-Command -Name 'Get-TcLifecycleBlockLocalForReload' -CommandType Function -ErrorAction SilentlyContinue) }
         if (-not $has) {
-            $null = $list.Add([ordered]@{ key = '<missing>'; record = 'the loaded module has no Get-TcLifecycleBlockLocalForReload, so its in-memory lifecycle blocks cannot be checked (a module older than #41 cannot be reloaded; ask the user before restarting the MCP server, which drops the in-memory state)' })
-            return @{ Readable = $false; List = [object[]]$list.ToArray() }
+            $var = Get-BridgeModuleVariable 'TcLifecycleBlockLocal'
+            if (-not $var.Exists) {
+                $null = $list.Add([ordered]@{ key = '<missing>'; record = 'the loaded module has neither Get-TcLifecycleBlockLocalForReload nor $script:TcLifecycleBlockLocal (older than #68), so its in-memory lifecycle blocks cannot be checked; ask the user before restarting the MCP server, which drops the in-memory state' })
+                return @{ Readable = $false; List = [object[]]$list.ToArray() }
+            }
+            $local = $var.Value
+            if (-not ($local -is [System.Collections.IDictionary])) {
+                $t = if ($null -eq $local) { 'null' } else { $local.GetType().FullName }
+                $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "unexpected value of `$script:TcLifecycleBlockLocal ($t)" })
+                return @{ Readable = $false; List = [object[]]$list.ToArray() }
+            }
+            foreach ($k in @($local.Keys | Sort-Object)) { $null = $list.Add([ordered]@{ key = [string]$k; record = $local[$k] }) }
+            return @{ Readable = $true; List = [object[]]$list.ToArray() }
         }
         $r = Invoke-InModule { Get-TcLifecycleBlockLocalForReload }
         if ($null -eq $r -or -not ($r -is [System.Collections.IDictionary]) -or -not $r.Contains('List')) { throw 'Get-TcLifecycleBlockLocalForReload returned no list' }
@@ -747,6 +760,62 @@ function Get-BridgeLocalLifecycleBlocks {
     catch {
         $null = $list.Add([ordered]@{ key = '<unreadable>'; record = "the in-memory lifecycle block state could not be read: $($_.Exception.Message)" })
         return @{ Readable = $false; List = [object[]]$list.ToArray() }
+    }
+}
+
+function Save-BridgeBuildRequiredFallback {
+    # #41 review round 2: a module without one of the helpers Save-BridgeLocalBuildRequired uses
+    # (Merge-TcBuildRequiredEntry & co.) still has $script:TcBuildRequiredLocal. The bridge then adds
+    # every in-memory entry whose key is MISSING from build-required.json, unchanged, under the same
+    # mutex (name from the module's Get-TcBuildRequiredMutexName). A key already in the file is left
+    # alone: any entry blocks its solution, and without the module's merge rule the bridge must not
+    # rewrite one. No mutex name, lock not acquired, file not readable / writable -> refused.
+    param($Local, [string[]]$Keys, [string]$Missing)
+    $fail = { param($why) @{ Ok = $false; Error = "the loaded module has no $Missing; $why"; Keys = $Keys; Persisted = [string[]]@() } }
+    $dir = $env:TCAUTO_STATE_DIR
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1') { return (& $fail 'the real state directory is refused (TCAUTO_TEST_FORBID_REAL_STATE=1, #118)') }
+        $dir = Join-Path ([IO.Path]::GetTempPath()) 'TwinCATAutomation'
+    }
+    $mutexName = $null
+    try { $mutexName = [string](Invoke-InModule { if (Get-Command -Name 'Get-TcBuildRequiredMutexName' -CommandType Function -ErrorAction SilentlyContinue) { Get-TcBuildRequiredMutexName } }) } catch { $mutexName = $null }
+    if ([string]::IsNullOrWhiteSpace($mutexName)) { return (& $fail 'its Get-TcBuildRequiredMutexName is missing too, so build-required.json cannot be updated under its lock') }
+    $file = Join-Path $dir 'build-required.json'
+    $mutex = New-Object System.Threading.Mutex($false, $mutexName)
+    $got = $false
+    $tmp = $null
+    try {
+        try { $got = $mutex.WaitOne(3000) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+        if (-not $got) { return (& $fail 'lock not acquired within 3000 ms') }
+        $doc = [ordered]@{}
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            $text = [IO.File]::ReadAllText($file)
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $obj = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+                if (-not ($obj -is [System.Management.Automation.PSCustomObject])) { throw "$file is not a JSON object" }
+                foreach ($p in $obj.PSObject.Properties) { $doc[$p.Name] = $p.Value }
+            }
+        }
+        elseif (Test-Path -LiteralPath $file) { throw "$file is not a file" }
+        $written = New-Object System.Collections.ArrayList
+        foreach ($k in $Keys) {
+            if (-not $doc.Contains($k)) { $doc[$k] = $Local[$k]; $null = $written.Add($k) }
+        }
+        if ($written.Count -gt 0) {
+            if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+            $tmp = "$file.$PID.tmp"
+            [IO.File]::WriteAllText($tmp, ([PSCustomObject]$doc | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+            if (Test-Path -LiteralPath $file) { [IO.File]::Replace($tmp, $file, [NullString]::Value) } else { [IO.File]::Move($tmp, $file) }
+        }
+        return @{ Ok = $true; Error = $null; Keys = $Keys; Persisted = [string[]]$written.ToArray(); Fallback = $true }
+    }
+    catch {
+        try { if ($tmp -and (Test-Path -LiteralPath $tmp)) { [IO.File]::Delete($tmp) } } catch { }
+        return (& $fail "build-required.json could not be updated: $($_.Exception.Message)")
+    }
+    finally {
+        if ($got) { try { $mutex.ReleaseMutex() } catch { } }
+        $mutex.Dispose()
     }
 }
 
@@ -775,7 +844,7 @@ function Save-BridgeLocalBuildRequired {
             param($localEntries, $localKeys)
             foreach ($fn in @('Invoke-TcBuildRequiredLocked', 'Read-TcBuildRequiredState', 'Write-TcBuildRequiredState', 'Merge-TcBuildRequiredEntry', 'Get-TcBuildRequiredReasons', 'Get-TcEntryGuard')) {
                 if ($null -eq (Get-Command -Name $fn -CommandType Function -ErrorAction SilentlyContinue)) {
-                    return @{ Locked = $false; Result = $null; Error = "the loaded module has no $fn" }
+                    return @{ Fallback = $true; Missing = $fn }
                 }
             }
             $signature = {
@@ -802,6 +871,9 @@ function Save-BridgeLocalBuildRequired {
                 , ([string[]]$written.ToArray())
             }
         } @($local, $keys)
+        if ($null -ne $r -and $r.Contains('Fallback')) {
+            return Save-BridgeBuildRequiredFallback -Local $local -Keys $keys -Missing ([string]$r.Missing)
+        }
         if ($null -eq $r -or -not $r.Locked -or $null -ne $r.Error) {
             $why = if ($null -ne $r -and $null -ne $r.Error) { [string]$r.Error } else { 'lock not acquired' }
             return @{ Ok = $false; Error = $why; Keys = $keys; Persisted = [string[]]@() }

@@ -66,14 +66,18 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
 * `retire` (#41, step 1 of the `ReloadModule` tool), in this order:
   1. the module's private `Get-TcLifecycleBlockLocalForReload` lists the lifecycle block records
-     held in memory (`$script:TcLifecycleBlockLocal`); any record, a module without that function,
-     or a function that throws → refused, nothing changes:
+     held in memory (`$script:TcLifecycleBlockLocal`). A module without that function (older than
+     #41) is checked by reading `$script:TcLifecycleBlockLocal` directly (it must exist and be a
+     hashtable). Any record, neither function nor variable, a non-hashtable value or an exception →
+     refused, nothing changes:
      `{"success":false,"error":{"code":"RELOAD_LIFECYCLE_BLOCKED",...},"data":{"modulePath":"...","lifecycleBlocks":[{"key":"...","record":{...}}],"readable":bool,"notRun":true}}`
-     (`key` `<missing>` / `<unreadable>` for the last two).
+     (`key` `<missing>` / `<unreadable>` for the failure cases).
   2. every in-memory BUILD_REQUIRED entry (`$script:TcBuildRequiredLocal`) is merged into
      `build-required.json` under the state mutex (`Merge-TcBuildRequiredEntry`; written only when an
-     entry is missing there or differs). Variable or helper missing, lock not acquired, file not
-     readable / writable → refused, nothing changes:
+     entry is missing there or differs). A module without those helpers (but with the variable):
+     the bridge itself adds the keys missing from the file, unchanged, under the mutex named by the
+     module's `Get-TcBuildRequiredMutexName`. Variable missing, no mutex name, lock not acquired,
+     file not readable / writable → refused, nothing changes:
      `{"success":false,"error":{"code":"RELOAD_BUILD_REQUIRED",...},"data":{"modulePath":"...","buildRequiredKeys":[...],"error":"...","notRun":true}}`.
   3. it does what `shutdown` does and replies
      `{"success":true,"data":{"retired":true,"modulePath":"...","ideWasConnected":bool,"adsWasConnected":bool,"buildRequiredKeys":[...],"buildRequiredPersisted":[...]}}`

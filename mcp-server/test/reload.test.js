@@ -31,6 +31,7 @@ const INDEX = path.join(__dirname, '..', 'index.js');
 const FIXTURE = path.join(__dirname, 'fixtures', 'tools.fixture.json');
 const MOCK = path.join(__dirname, 'fixtures', 'mock-bridge.js');
 const RELOAD_MODULE = path.join(__dirname, 'fixtures', 'reload-module', 'TwinCATAutomation.psm1');
+const RELOAD_MODULE_OLD = path.join(__dirname, 'fixtures', 'reload-module-old', 'TwinCATAutomation.psm1');
 const isWin = process.platform === 'win32';
 
 const SHA_MAIN = '1111111111111111111111111111111111111111';
@@ -488,6 +489,73 @@ describe('bridge.ps1 op retire (real PowerShell, fixture module)', { skip: !isWi
     assert.equal(res.data.notRun, true);
     assert.equal(res.data.buildRequiredKeys.length, 1);
     assert.equal(b.pid, pid1, 'bridge not restarted');
+  });
+
+  // #41 review round 2: the shas to verify (#42, #114, #119, #120, #122, #127) predate #41: their
+  // module has the variables but not the helpers. Reload into such a module and back out of it.
+  test('old-format module (variables, no helpers): reload into it and out of it again', async () => {
+    const b = make();
+    await b.start();
+    assert.match(b.ready.modulePath, /reload-module[\\/]/);
+    const into = await b.retire(RELOAD_MODULE_OLD, { timeoutMs: 60000 });
+    assert.equal(into.success, true, JSON.stringify(into));
+    assert.equal((await b.call('state')).success, true);
+    assert.match(b.ready.modulePath, /reload-module-old/);
+    const out = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(out.success, true, JSON.stringify(out));
+    assert.equal((await b.call('state')).success, true);
+    assert.doesNotMatch(b.ready.modulePath, /reload-module-old/);
+  });
+
+  test('old-format module with an in-memory lifecycle block: still RELOAD_LIFECYCLE_BLOCKED', async () => {
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE_OLD, env: { TCAUTO_STATE_DIR: newStateDir(), TCAUTO_TEST_FORBID_REAL_STATE: '1' } });
+    bridges.push(b);
+    await b.start();
+    const pid1 = b.pid;
+    await b.call('call', { cmdlet: 'Set-TcSystemState', params: { AmsNetId: '5.1.2.3.1.1' } });
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, false, JSON.stringify(res));
+    assert.equal(res.error.code, 'RELOAD_LIFECYCLE_BLOCKED');
+    assert.equal(res.data.lifecycleBlocks[0].key, '5.1.2.3.1.1');
+    assert.equal(b.pid, pid1);
+  });
+
+  test('old-format module: an in-memory-only BUILD_REQUIRED entry is added to the file by the bridge fallback', async () => {
+    const dir = newStateDir();
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE_OLD, env: { TCAUTO_STATE_DIR: dir, TCAUTO_TEST_FORBID_REAL_STATE: '1' } });
+    bridges.push(b);
+    await b.start();
+    const inFile = await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: path.join(dir, 'InFile41.sln') } });
+    const local = await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: path.join(dir, 'Old41.sln'), LocalOnly: true } });
+    assert.equal(local.success, true, JSON.stringify(local));
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, true, JSON.stringify(res));
+    assert.deepEqual(res.data.buildRequiredPersisted, [local.data.key], 'only the key missing from the file');
+    const doc = readBuildState(dir);
+    assert.ok(doc[local.data.key]);
+    assert.ok(doc[inFile.data.key]);
+  });
+
+  test('old-format module: BUILD_REQUIRED entry that cannot be written -> RELOAD_BUILD_REQUIRED', async () => {
+    const dir = newStateDir();
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE_OLD, env: { TCAUTO_STATE_DIR: dir, TCAUTO_TEST_FORBID_REAL_STATE: '1' } });
+    bridges.push(b);
+    await b.start();
+    await b.call('call', { cmdlet: 'Register-TcCodeChange', params: { SolutionPath: path.join(dir, 'OldLocked41.sln'), LocalOnly: true } });
+    fs.mkdirSync(path.join(dir, 'build-required.json'));
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.success, false, JSON.stringify(res));
+    assert.equal(res.error.code, 'RELOAD_BUILD_REQUIRED');
+    assert.match(res.data.error, /Merge-TcBuildRequiredEntry/);
+  });
+
+  test('old-format module without $script:TcLifecycleBlockLocal (older than #68) -> refused', async () => {
+    const b = new PowerShellBridge({ modulePath: RELOAD_MODULE_OLD, env: { TCAUTO_STATE_DIR: newStateDir(), TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_TEST_RELOAD_DROP_VAR: 'lifecycle' } });
+    bridges.push(b);
+    await b.start();
+    const res = await b.retire(RELOAD_MODULE, { timeoutMs: 60000 });
+    assert.equal(res.error.code, 'RELOAD_LIFECYCLE_BLOCKED');
+    assert.equal(res.data.lifecycleBlocks[0].key, '<missing>');
   });
 
   for (const [drop, code] of [['lifecycle', 'RELOAD_LIFECYCLE_BLOCKED'], ['build', 'RELOAD_BUILD_REQUIRED']]) {
