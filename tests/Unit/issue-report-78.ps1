@@ -231,7 +231,7 @@ Check '-Label is masked / sanitised' ($kl.data.url -notmatch 'bob' -and ($kl.dat
 # 4 huge inputs: no exception, URL within the limit
 $sw = [Diagnostics.Stopwatch]::StartNew()
 try {
-    $h1 = New-TcIssueReport -Title 'big' -Result ('x' * 70000) -Notes ('y' * 70000) -Expected ('e' * 70000) -Parameters ('p' * 70000) -NoEnvironment
+    $h1 = New-TcIssueReport -Title 'big' -Result ('x ' * 35000) -Notes ('y ' * 35000) -Expected ('e ' * 35000) -Parameters ('p ' * 35000) -NoEnvironment   # words, not one run: a run without a boundary is dropped completely since #121
     Check '70000-char inputs: success, URL within the limit' ($h1.success -and $h1.data.urlLength -le 7000 -and $h1.data.url.Length -eq $h1.data.urlLength -and $h1.data.truncated) ("{0}" -f $h1.data.urlLength)
     $h2 = New-TcIssueReport -Title 'big' -Result ('{"a":"' + ('z' * 50000) + '"}') -Parameters ('{"b":"' + ('w' * 50000) + '"}') -NoEnvironment
     Check '50000-char JSON strings: success, URL within the limit' ($h2.success -and $h2.data.urlLength -le 7000) ("{0}" -f $h2.data.urlLength)
