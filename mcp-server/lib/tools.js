@@ -35,7 +35,7 @@ export function loadToolCatalog(toolsJsonPath) {
     });
   }
   map.byCmdlet = byCmdlet;
-  map.meta = { generatedAt: doc.generatedAt, moduleVersion: doc.moduleVersion };
+  map.meta = { moduleVersion: doc.moduleVersion };
   return map;
 }
 

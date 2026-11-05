@@ -41,7 +41,10 @@
       errorcodes  Every key of $script:TcErrorHints (ConvertTo-TcAdsErrorCode.ps1) appears in a
                   heading of docs/troubleshooting.md.
       tools.json  mcp-server/tools.json equals a fresh Export-ToolSchema.ps1 output
-                  (generatedAt and line endings ignored).
+                  (line endings ignored; the file has no timestamp, #25).
+      gendocs     scripts/Update-GeneratedDocs.ps1 -Check: the cmdlet / MCP tool / composite counts and the
+                  SKILL.md signature table inside <!-- generated:... --> markers (README*, CLAUDE.md,
+                  AGENTS.md, SKILL.md, docs/setup-mcp.md, mcp-server/README.md) equal what the code gives (#25).
       unit        every tests/Unit/*.ps1 in its own powershell.exe (no IDE / runtime needed):
                   PASS when each exits 0 (and its "failed: N" line, if any, says 0); a script
                   that runs longer than 300 s is killed and fails. Skipped with -Fast (#43).
@@ -62,7 +65,12 @@
     Treat SKIP as a failure (used by CI).
 
 .EXAMPLE
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Strict
+    powershell.exe -NoProfile -File scripts/check.ps1 -Strict
+
+    Prerequisite: Windows PowerShell must be allowed to run local scripts. The checks start
+    powershell.exe children WITHOUT -ExecutionPolicy Bypass; when the effective policy is Restricted
+    or AllSigned this script stops first with:
+        Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 #>
 [CmdletBinding()]
 param(
@@ -73,9 +81,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# Preflight (#25): children start without -ExecutionPolicy Bypass, so a Restricted / AllSigned
+# Windows PowerShell would fail them with a bare SecurityError. Stop with the fix instead.
+$tcPolicy = ((& powershell.exe -NoProfile -Command Get-ExecutionPolicy) | Out-String).Trim()
+if ($tcPolicy -eq 'Restricted' -or $tcPolicy -eq 'AllSigned') {
+    Write-Host "FAIL  policy      Windows PowerShell execution policy is ${tcPolicy}: local scripts cannot run. Run once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned" -ForegroundColor Red
+    exit 1
+}
+
 # The parse check is only meaningful with the 5.1 parser: re-run under Windows PowerShell.
 if ($PSVersionTable.PSEdition -eq 'Core') {
-    $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    $argsList = @('-NoProfile', '-File', $PSCommandPath)
     if ($Fast) { $argsList += '-Fast' }
     if ($Strict) { $argsList += '-Strict' }
     & powershell.exe @argsList
@@ -400,11 +416,14 @@ catch {
 # cmdlet count vs documentation
 # ---------------------------------------------------------------------------
 try {
+    # U+6240 U+6709 U+6307 U+4EE4 U+FF08: the README.zh-TW heading (kept out of the source: this file is ASCII)
+    $zhAllCommands = (@(0x6240, 0x6709, 0x6307, 0x4EE4, 0xFF08) | ForEach-Object { [string][char]$_ }) -join ''
     $docCounts = @(
-        @{ File = 'CLAUDE.md'; Pattern = 'Available Commands \((\d+)\)' },
-        @{ File = 'AGENTS.md'; Pattern = 'Available Commands \((\d+)\)' },
-        @{ File = 'README.md'; Pattern = 'All Commands \((\d+)\)' },
-        @{ File = 'adapters/claude-code/SKILL.md'; Pattern = 'Cmdlet \S*\((\d+)\)' }
+        @{ File = 'CLAUDE.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'AGENTS.md'; Pattern = 'Available Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'README.md'; Pattern = 'All Commands \((?:<!--[^>]*-->)?(\d+)' },
+        @{ File = 'README.zh-TW.md'; Pattern = ($zhAllCommands + '(?:<!--[^>]*-->)?(\d+)') },
+        @{ File = 'adapters/claude-code/SKILL.md'; Pattern = 'Cmdlet \S*\((?:<!--[^>]*-->)?(\d+)' }
     )
     $moduleCount = $null
     $importError = $null
@@ -439,7 +458,7 @@ try {
             Add-CheckResult 'cmdlets' 'PASS' "$moduleCount exported; $($seen -join ', ')"
         }
         else {
-            Add-CheckResult 'cmdlets' 'FAIL' "documented cmdlet count differs from the module ($moduleCount)" $mismatch
+            Add-CheckResult 'cmdlets' 'FAIL' "documented cmdlet count differs from the module ($moduleCount): run scripts/Update-GeneratedDocs.ps1" $mismatch
         }
     }
 }
@@ -572,14 +591,14 @@ try {
     $exportScript = Join-Path $repoRoot 'mcp-server\scripts\Export-ToolSchema.ps1'
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tools-check-{0}.json" -f [guid]::NewGuid().ToString('N'))
     try {
-        $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $exportScript, '-OutPath', $tmp)
+        $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-File', $exportScript, '-OutPath', $tmp)
         if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $tmp)) {
             Add-CheckResult 'tools.json' 'FAIL' "Export-ToolSchema.ps1 failed (exit $($r.Code))" @($r.Output | Select-Object -Last 15)
         }
         else {
             $normalize = {
                 param([string]$s)
-                ($s -replace '"generatedAt"\s*:\s*"[^"]*"', '' -replace "`r`n", "`n").TrimEnd()
+                ($s -replace "`r`n", "`n").TrimEnd()
             }
             $fresh = & $normalize ([System.IO.File]::ReadAllText($tmp, $utf8))
             $committed = & $normalize ([System.IO.File]::ReadAllText($toolsJson, $utf8))
@@ -606,6 +625,26 @@ catch {
     Add-CheckResult 'tools.json' 'FAIL' "check crashed: $($_.Exception.Message)"
 }
 
+# ---------------------------------------------------------------------------
+# gendocs: counts and the SKILL.md signature table are generated (#25)
+# ---------------------------------------------------------------------------
+try {
+    $genScript = Join-Path $repoRoot 'scripts\Update-GeneratedDocs.ps1'
+    $r = Invoke-Native 'powershell.exe' @('-NoProfile', '-File', $genScript, '-Check')
+    $outText = @($r.Output) -join "`n"
+    if ($r.Code -eq 0) {
+        Add-CheckResult 'gendocs' 'PASS' (@($r.Output | Where-Object { $_ -match 'up to date' } | Select-Object -First 1) -join '')
+    }
+    elseif ($outText -match '(?m)^(STALE|PROBLEM)\b') {
+        Add-CheckResult 'gendocs' 'FAIL' 'generated docs are stale: if a cmdlet parameter changed run "npm run generate-tools" in mcp-server first, then "powershell -NoProfile -File scripts/Update-GeneratedDocs.ps1"; commit the result' @($r.Output | Select-Object -Last 15)
+    }
+    else {
+        Add-CheckResult 'gendocs' 'FAIL' "scripts/Update-GeneratedDocs.ps1 crashed (exit $($r.Code)), this is not a stale-docs result" @($r.Output | Select-Object -Last 15)
+    }
+}
+catch {
+    Add-CheckResult 'gendocs' 'FAIL' "check crashed: $($_.Exception.Message)"
+}
 # ---------------------------------------------------------------------------
 # unit: tests/Unit/*.ps1 (no IDE / runtime; exit code = number of failed checks, #43)
 # ---------------------------------------------------------------------------
@@ -657,7 +696,7 @@ else {
                 $sw = [Diagnostics.Stopwatch]::StartNew()
                 $p = Start-Process -FilePath 'powershell.exe' -PassThru -NoNewWindow -WorkingDirectory $repoRoot `
                     -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
-                    -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$($uf.FullName)`"")
+                    -ArgumentList @('-NoProfile', '-File', "`"$($uf.FullName)`"")
                 # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
                 # Start-Process -PassThru object reads back as $null after the exit.
                 $null = $p.Handle

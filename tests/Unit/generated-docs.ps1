@@ -1,0 +1,95 @@
+# Unit: scripts/Update-GeneratedDocs.ps1 (#25). No IDE / runtime. The generator runs against a COPY of
+# the target docs (-DocsRoot), never the repository files:
+#   * pristine copy            -Check passes
+#   * stale count              -Check reports STALE (exit 1); a normal run rewrites it back to the repo text
+#   * missing closing marker   PROBLEM, exit 1, the file is NOT written (hand-written text is not swallowed)
+#   * count marker with text   PROBLEM, exit 1, the file is NOT written
+#   powershell.exe -NoProfile -File tests/Unit/generated-docs.ps1
+# Exit code = number of failed checks.
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
+$fail = 0
+function Check([string]$Name, [bool]$Ok, [string]$Detail) {
+    if ($Detail.Length -gt 400) { $Detail = $Detail.Substring(0, 400) }
+    "{0} {1} {2}" -f $(if ($Ok) { 'PASS' } else { 'FAIL' }), $Name, $Detail
+    if (-not $Ok) { $script:fail++ }
+}
+
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
+$gen = Join-Path $root 'scripts\Update-GeneratedDocs.ps1'
+$targets = @('README.md', 'README.zh-TW.md', 'CLAUDE.md', 'AGENTS.md', 'adapters/claude-code/SKILL.md', 'docs/setup-mcp.md', 'mcp-server/README.md')
+$work = Join-Path $env:TCAUTO_STATE_DIR 'docs'
+
+function New-DocsCopy([string]$Name) {
+    $dir = Join-Path $work $Name
+    foreach ($t in $targets) {
+        $dst = Join-Path $dir $t
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force
+        Copy-Item -LiteralPath (Join-Path $root $t) -Destination $dst
+    }
+    $dir
+}
+function Invoke-Gen([string]$Dir, [switch]$CheckOnly) {
+    $a = @('-NoProfile', '-File', $gen, '-DocsRoot', $Dir)
+    if ($CheckOnly) { $a += '-Check' }
+    $out = @(& powershell.exe @a 2>&1 | ForEach-Object { "$_" })
+    @{ Code = $LASTEXITCODE; Text = ($out -join "`n") }
+}
+function Read-Bytes([string]$Path) { [IO.File]::ReadAllBytes($Path) }
+function Same([byte[]]$A, [byte[]]$B) { [Convert]::ToBase64String($A) -ceq [Convert]::ToBase64String($B) }
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
+# pristine
+$d = New-DocsCopy 'pristine'
+$r = Invoke-Gen $d -CheckOnly
+Check 'pristine-check-passes' ($r.Code -eq 0) "$($r.Code) $($r.Text)"
+
+# stale count
+$d = New-DocsCopy 'stale'
+$readme = Join-Path $d 'README.md'
+$orig = Read-Bytes $readme
+$text = $utf8.GetString($orig)
+$stale = [regex]::Replace($text, '(<!-- generated:cmdlet-count -->)\d+', '${1}62', 1)
+[IO.File]::WriteAllText($readme, $stale, $utf8)
+$r = Invoke-Gen $d -CheckOnly
+Check 'stale-check-fails' ($r.Code -eq 1 -and $r.Text -match 'STALE\s+README\.md') "$($r.Code) $($r.Text)"
+Check 'stale-check-wrote-nothing' ($utf8.GetString((Read-Bytes $readme)) -ceq $stale) 'README.md changed by -Check'
+$r = Invoke-Gen $d
+Check 'stale-rewrite-ok' ($r.Code -eq 0 -and (Same (Read-Bytes $readme) $orig)) "$($r.Code) $($r.Text)"
+
+# missing closing marker: hand-written text after it must survive and the file must not be written
+$d = New-DocsCopy 'unclosed'
+$readme = Join-Path $d 'README.md'
+$text = $utf8.GetString((Read-Bytes $readme))
+$broken = ([regex]'<!-- /generated -->').Replace($text, '', 1) + "`r`nHAND-WRITTEN-SENTINEL`r`n"
+$brokenBytes = $utf8.GetBytes($broken)
+[IO.File]::WriteAllBytes($readme, $brokenBytes)
+$r = Invoke-Gen $d
+Check 'unclosed-problem-exit1' ($r.Code -eq 1 -and $r.Text -match 'PROBLEM README\.md') "$($r.Code) $($r.Text)"
+Check 'unclosed-file-untouched' (Same (Read-Bytes $readme) $brokenBytes) 'README.md was rewritten'
+Check 'unclosed-sentinel-kept' ($utf8.GetString((Read-Bytes $readme)).Contains('HAND-WRITTEN-SENTINEL')) 'hand-written text lost'
+
+# opening marker inside an open block (closing marker of the first one missing, more markers follow)
+$d = New-DocsCopy 'nested'
+$claude = Join-Path $d 'CLAUDE.md'
+$text = $utf8.GetString((Read-Bytes $claude))
+$nested = ([regex]'<!-- /generated -->').Replace($text, '<!-- generated:composite-count -->5', 1)
+[IO.File]::WriteAllBytes($claude, $utf8.GetBytes($nested))
+$before = Read-Bytes $claude
+$r = Invoke-Gen $d
+Check 'nested-problem-exit1' ($r.Code -eq 1 -and $r.Text -match 'PROBLEM CLAUDE\.md') "$($r.Code) $($r.Text)"
+Check 'nested-file-untouched' (Same (Read-Bytes $claude) $before) 'CLAUDE.md was rewritten'
+
+# count marker whose body is text
+$d = New-DocsCopy 'text-body'
+$readme = Join-Path $d 'README.md'
+$text = $utf8.GetString((Read-Bytes $readme))
+$bad = [regex]::Replace($text, '(<!-- generated:cmdlet-count -->)\d+', '${1}many words', 1)
+[IO.File]::WriteAllBytes($readme, $utf8.GetBytes($bad))
+$before = Read-Bytes $readme
+$r = Invoke-Gen $d
+Check 'text-body-problem-exit1' ($r.Code -eq 1 -and $r.Text -match 'not a number') "$($r.Code) $($r.Text)"
+Check 'text-body-file-untouched' (Same (Read-Bytes $readme) $before) 'README.md was rewritten'
+
+"failed: $fail"
+exit $fail

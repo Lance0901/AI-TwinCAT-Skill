@@ -14,7 +14,7 @@
     "start": "node index.js",
     "test": "node --test \"test/*.test.js\"",
     "test:integration": "node --test \"test/integration/*.test.js\"",
-    "generate-tools": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Export-ToolSchema.ps1"
+    "generate-tools": "node scripts/check-execution-policy.mjs && powershell.exe -NoProfile -File scripts/Export-ToolSchema.ps1"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1"

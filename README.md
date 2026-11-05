@@ -6,7 +6,7 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 ## Why
 
-TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing 81 cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
+TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
 ## Features
 
@@ -85,7 +85,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## All Commands (81)
+## All Commands (<!-- generated:cmdlet-count -->81<!-- /generated -->)
 
 ### Connection
 | Command | Description |
@@ -291,7 +291,7 @@ Every install (and re-install) writes `tcauto-install-manifest.json` next to the
 
 ## MCP Server Setup (Claude Desktop / any MCP client)
 
-The same module is also available as the TcAuto MCP server (stdio) exposing 79 of the 81 cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86) plus 5 composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
+The same module is also available as the TcAuto MCP server (stdio) exposing <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
 
 ```powershell
 cd mcp-server
@@ -304,6 +304,8 @@ Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [doc
 ## Development
 
 Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit hook then runs `scripts/check.ps1 -Fast` (PS 5.1 parse and file encoding, cmdlet count vs docs, banned wording, error codes documented, `tools.json` in sync; it reads the working tree, not the index); run `scripts/check.ps1` (adds `npm test`) before a PR, CI runs it with `-Strict` (SKIP fails) on `windows-latest`. Review rules: [CODING_STANDARDS.md](CODING_STANDARDS.md).
+
+**Prerequisite**: `scripts/check.ps1` and `npm run generate-tools` run local `.ps1` files in `powershell.exe` WITHOUT `-ExecutionPolicy Bypass`. When the effective policy is `Restricted` or `AllSigned` they stop with a clear error; run once `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. The pre-commit hook still starts `check.ps1` with `-ExecutionPolicy Bypass` so a commit is never blocked by the machine policy (it only runs this repository's own script; the hook is outside #25).
 
 ## Changelog
 
