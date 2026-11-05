@@ -40,6 +40,44 @@ describe('QuickRead data shape (no bridge)', () => {
     assert.equal(r.connectedOnDemand, false);
   });
 
+  // #141: connectedOnDemand is true only when this call ran ConnectAds; ADS already connected (the
+  // first ReadVariable answers) is false for several paths exactly like for one path.
+  test('#141 connectedOnDemand follows whether ConnectAds ran, for one path and several', async () => {
+    for (const Path of [['MAIN.a', 'MAIN.b'], ['MAIN.a']]) {
+      const multi = Path.length > 1;
+      const ok = multi ? { success: true, data: Path.map((p) => ({ path: p, value: 1 })), partial: false, failedPaths: [] } : { success: true, data: { path: Path[0], value: 1 } };
+      let connected = true;
+      const calls = [];
+      const ctx = {
+        callTool: async (name) => {
+          calls.push(name);
+          if (name === 'ConnectAds') {
+            connected = true;
+            return { success: true, data: {} };
+          }
+          return connected ? ok : { success: false, error: { code: 'NOT_CONNECTED', message: 'ADS not connected' } };
+        }
+      };
+      const already = await QuickRead.run(ctx, { Path });
+      assert.deepEqual(calls, ['ReadVariable'], `${Path}: connected -> one ReadVariable, no ConnectAds`);
+      assert.equal(already.connectedOnDemand, false, `${Path}: connected -> false`);
+      assert.equal(already.success, true);
+      if (multi) assert.ok(Array.isArray(already.data));
+      else assert.equal(already.data.connectedOnDemand, false);
+
+      connected = false;
+      calls.length = 0;
+      const onDemand = await QuickRead.run(ctx, { Path });
+      assert.deepEqual(calls, ['ReadVariable', 'ConnectAds', 'ReadVariable'], `${Path}: not connected -> connect and read again`);
+      assert.equal(onDemand.connectedOnDemand, true);
+
+      calls.length = 0;
+      const after = await QuickRead.run(ctx, { Path });
+      assert.deepEqual(calls, ['ReadVariable'], `${Path}: the next call reuses the connection`);
+      assert.equal(after.connectedOnDemand, false, `${Path}: the call after the on-demand connect -> false`);
+    }
+  });
+
   test('null data stays null; missing data becomes {connectedOnDemand}; object data gets it merged', async () => {
     const n = await run(null);
     assert.equal(n.data, null);
@@ -76,6 +114,39 @@ async function startServer() {
 }
 
 const parse = (res) => JSON.parse(res.content[0].text);
+
+// #141 (real machine 2026-11-05: after the on-demand connect a second multi-path QuickRead was
+// reported with connectedOnDemand=true). Same sequence against the mock bridge, which starts with
+// ADS disconnected; order.seq shows how many bridge calls each QuickRead made.
+describe('QuickRead connectedOnDemand over the server (#141)', () => {
+  let client;
+  before(async () => {
+    client = await startServer();
+  });
+  after(async () => client?.close());
+
+  test('on-demand connect once, then several paths and one path both report false', async () => {
+    const q = async (Path) => parse(await client.callTool({ name: 'QuickRead', arguments: { Path } }));
+    const first = await q(['MAIN.a', 'MAIN.Missing']);
+    // the mock fails closed like the real module (#60): the reread after ConnectAds is PARTIAL_READ_FAILED
+    assert.equal(first.success, false);
+    assert.equal(first.error.code, 'PARTIAL_READ_FAILED', JSON.stringify(first));
+    assert.equal(first.connectedOnDemand, true, JSON.stringify(first));
+    assert.equal(first.partial, true);
+    assert.deepEqual(first.failedPaths, ['MAIN.Missing']);
+    const second = await q(['MAIN.a', 'MAIN.b']);
+    assert.equal(second.success, true);
+    assert.ok(Array.isArray(second.data));
+    assert.equal(second.connectedOnDemand, false, `ADS already connected: ${JSON.stringify(second)}`);
+    assert.equal(second.order.seq, first.order.seq + 1, 'one bridge call (ReadVariable only, no ConnectAds)');
+    const third = await q(['MAIN.b']);
+    assert.equal(third.connectedOnDemand, false);
+    assert.equal(third.data.connectedOnDemand, false);
+    assert.equal(third.order.seq, second.order.seq + 1);
+    const fourth = await q(['MAIN.a', 'MAIN.b']);
+    assert.equal(fourth.connectedOnDemand, false);
+  });
+});
 
 describe('RunLifecycle TargetAmsNetId', () => {
   let client;
