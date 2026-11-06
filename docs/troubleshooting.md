@@ -181,7 +181,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | `Set-TcSystemState Run`(原本 Run) | success,`leftOriginal = true`,`latencyMs = 1411` |
 | `Set-TcSystemState Run`,另一個行程在進 Run 0.8 s 後送 Reconfig(模擬退回 Config) | `SYSTEM_STATE_MISMATCH`,trace `+7ms Run, +772ms Unreachable, +1555ms Config` |
 | target Boot 的 CurrentConfig 換回前一版、保留新 Port_852.app,`Set-TcSystemState Run` | system 進 Run 並停住,但 851 / 852 Invalid:只看 system state 會誤判,`Enable-TcConfig` 的 verify 擋得下 |
-| 鎖住 target `Boot\CurrentConfig.xml` 後 Activate(舊版程式碼) | `ActivateConfiguration()` 掛 17 分鐘;因此加了 `ACTIVATE_TIMEOUT`(mock 測試 `tests/Unit/activate-timeout.ps1` 6/6) |
+| 鎖住 target `Boot\CurrentConfig.xml` 後 Activate(舊版程式碼) | `ActivateConfiguration()` 掛 17 分鐘;因此加了 `ACTIVATE_TIMEOUT`(mock 測試 `tests/Unit/activate-timeout.ps1`;回傳時間上限見 #153) |
 | lifecycle-smoke B(VS2022,RobustDemo-b,`TwinCAT OS (x64)`) | 37/37 |
 | lifecycle-smoke A(32-bit XAE 4024,TcFestoNoVisu) | 34/34 |
 
@@ -548,7 +548,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### ACTIVATE_TIMEOUT
 
 - **為什麼**:`ActivateConfiguration()` 在 `-ActivateTimeoutSec`(預設 180 s;`-Force` 時再受 `-TimeoutSec` 剩餘時間限制)內沒返回。以前這個 COM 呼叫在呼叫端執行緒同步執行,`Invoke-TcComRetry` 的 `-TimeoutSec` 只能在呼叫「失敗返回後」歸類成 `IDE_TIMEOUT`,中斷不了:2026-10-21 實測 target Boot 檔被鎖住時掛了 17 分鐘,VS2022 最後被 Windows 判定沒回應關掉,UmRT 也一起消失。現在 Activate 在另一個 STA runspace 執行(依 IDE pid 從 Running Object Table 取同一個 DTE,`Solution.Projects(i).Object` 取 `ITcSysManager`),主執行緒限時等待、每 2 s 掃 modal;逾時就放棄等待(呼叫本身停不掉,XAE 內部可能還在跑)。
-- **data.activateDiagnostics**:`dialog`(modal 標題/內文)、`ideAlive`、`ideResponding`(Windows 的「沒有回應」)、`runtimeAlive`(本機 UmRT 的 `TcSystemServiceUm.exe` 是否還在;非本機 UmRT 為 null)、`systemState`(port 10000 的 AdsState 或 unreachable)、`elapsedSec`。
+- **回傳時間上限(#153)**:`ACTIVATE_TIMEOUT` 最晚在 `-ActivateTimeoutSec` + 診斷預算(`$script:TcActivateDiagBudgetSec`,預設 10 s)+ 不到 1 s 的收尾內回傳。期限內的 modal 掃描只用剩餘時間(prepare + scan 合計 ≤ 剩餘秒數,剩不到 2 s 就不掃);逾時後的診斷(dialog 掃描、`TcSystemServiceUm` 查詢、port 10000 讀狀態)共用那 10 s,用完的步驟不做並寫明 `skipped`(dialog 掃描則 `dialogScanComplete = false` + `modalScan`,`modalScan.reason = no-budget`;port 10000 的 ADS client `Timeout` 設最多 2 s,單位 ms:[InfoSys TcAdsClient.Timeout](https://infosys.beckhoff.com/content/1033/tcadsnetref/7313415307.html))。背景 runspace 只 `BeginStop`、不等待也不 Dispose:Activate 呼叫仍在 XAE 內跑,所以 `ACTIVATE_TIMEOUT` 一律記 lifecycle block,不能當成「沒送出」。實測 2026-11-06(本機,32 個 busy loop 壓 16 核):舊版期限內那次冷啟動 UIA 掃描(Add-Type 編譯)佔 2.1–3.7 s,`-TimeoutSec 3` 的 mock 在 5.9–8.7 s 才回;CI run 42136357332 的 `elapsedSec = 29` 表示多出的 26 s 都在期限迴圈內(推論:耗在那次冷啟動掃描,其 prepare 上限原本 60 s;CI 上沒有逐段計時)。逾時後的收尾(`BeginStop`)實測 < 0.6 s,不是原因。測試:`tests/Unit/activate-timeout.ps1`(預算切分、每次掃描都用滿上限的最壞情況)。
+- **data.activateDiagnostics**:`dialog`(modal 標題/內文;逾時後那次掃描沒看到或沒掃完時，填期限內看到的那個)、`dialogSeenDuringWait`(`true` = `dialog` 來自期限內的掃描，不是最後一次)、`ideAlive`、`ideResponding`(Windows 的「沒有回應」)、`runtimeAlive`(本機 UmRT 的 `TcSystemServiceUm.exe` 是否還在;`null` 時看 `runtimeCheck`)、`runtimeCheck`(`checked` / `not-local-umrt` / `skipped: diagnostics budget used up` / `error: <訊息>`;沒給 AmsNetId 為 null)、`systemState`(port 10000 的 AdsState、unreachable,或診斷預算用完時 `skipped: ...`)、`elapsedSec`(期限迴圈結束時的秒數)、`diagnosticsSec`(診斷本身花的秒數)。
 - **下一步**:依診斷處理:dialog → 處理視窗;`ideResponding = false` → `Disconnect-TcIde -Quit -Kill`(本 session 啟動的)後重新 `Connect-TcIde`;`runtimeAlive = false` → 照 `SYSTEM_STATE_TIMEOUT` 的指令重啟 UmRT 後 `Enable-TcConfig -Force`。
 
 ### ADS_SYMBOL_VERSION_INVALID(ADS 0x711 / 1809)

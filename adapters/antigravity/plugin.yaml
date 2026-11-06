@@ -1184,7 +1184,7 @@ actions:
         type: integer
         minimum: 10
         maximum: 3600
-        description: "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever."
+        description: "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, dialogSeenDuringWait, ideAlive, ideResponding, runtimeAlive, runtimeCheck, systemState (may be skipped:), elapsedSec, diagnosticsSec) instead of waiting forever; returns within ActivateTimeoutSec + 10 s diagnostics budget + about 1 s."
         required: false
         default: 180
 
