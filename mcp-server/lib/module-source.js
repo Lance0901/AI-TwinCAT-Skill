@@ -301,6 +301,7 @@ export function readSourceStamp(root) {
   if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
   const str = (v) => (typeof v === 'string' && v.length ? v : null);
   return {
+    kind: str(s.kind),
     commit: typeof s.commit === 'string' && OBJECT_NAME_RE.test(s.commit) ? s.commit.toLowerCase() : null,
     ref: str(s.ref),
     branch: str(s.branch),
@@ -313,15 +314,18 @@ export function readSourceStamp(root) {
 
 /**
  * <root> when modulePath is <root>\src\TwinCATAutomation\TwinCATAutomation.psm1 of an installed
- * runtime (#162: <root> holds a readable tcauto-source.json), else null.
+ * runtime (#162: <root> holds a readable tcauto-source.json with kind 'tcauto-runtime'), else null.
  */
 export function installedRootOf(modulePath) {
   const mp = normalizePath(modulePath);
   if (mp === null) return null;
   const root = path.win32.resolve(mp, '..', '..', '..');
   if (pathKey(path.win32.join(root, MODULE_RELATIVE_PATH)) !== mp.toLowerCase()) return null;
-  return readSourceStamp(root) ? root : null;
+  return readSourceStamp(root)?.kind === RUNTIME_STAMP_KIND ? root : null;
 }
+
+/** `kind` of the stamp Install-TcAutoRuntime.ps1 writes; a release stamp (#20) or anything else is not an installed runtime. */
+export const RUNTIME_STAMP_KIND = 'tcauto-runtime';
 
 /**
  * { modulePath, moduleCommit, moduleDirty, moduleSource } for a loaded module path:

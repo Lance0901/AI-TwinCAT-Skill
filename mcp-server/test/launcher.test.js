@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { Launcher, readCurrent, resolveInstallRoot, RELOAD_TOOL, VERSION_RE } from '../launcher/tcauto-launcher.mjs';
+import { Launcher, readCurrent, resolveInstallRoot, runtimeEnv, RELOAD_TOOL, VERSION_RE } from '../launcher/tcauto-launcher.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_RUNTIME = path.join(__dirname, 'fixtures', 'mock-runtime-server.mjs');
@@ -135,6 +135,13 @@ describe('readCurrent / resolveInstallRoot', () => {
     assert.equal(cur.commit, SHA_A);
     assert.equal(cur.entry, path.join(root, 'runtime', VER_A, 'mcp-server', 'index.js'));
     assert.ok(VERSION_RE.test(`${VER_A}-dirty-20261106T101500Z`));
+  });
+
+  test('runtimeEnv drops TWINCAT_MODULE_PATH / TWINCAT_MCP_TOOLS_JSON / TWINCAT_MCP_PROBE_SCAN_SCRIPT (any case), keeps the rest', () => {
+    const dropped = [];
+    const env = { twincat_module_path: 'C:\\od162\\x.psm1', TWINCAT_MCP_TOOLS_JSON: 'x', TWINCAT_MCP_PROBE_SCAN_SCRIPT: '', TWINCAT_MCP_VERBOSE: '1', Path: 'p' };
+    assert.deepEqual(runtimeEnv(env, (n) => dropped.push(n)), { TWINCAT_MCP_VERBOSE: '1', Path: 'p' });
+    assert.deepEqual(dropped.sort(), ['TWINCAT_MCP_TOOLS_JSON', 'twincat_module_path']);
   });
 
   test('install root: TCAUTO_RUNTIME_ROOT, else the parent of the launcher folder', () => {
@@ -319,7 +326,7 @@ function installRealCopy(root, version, commit) {
   fs.writeFileSync(path.join(dir, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1'), '# fixture\n');
   fs.writeFileSync(
     path.join(dir, 'tcauto-source.json'),
-    JSON.stringify({ schema: 1, commit, ref: 'refs/heads/feat/162-test', branch: 'feat/162-test', dirty: false, installedAt: '2026-11-06T00:00:00.000Z', sourcePath: 'C:\\src162', version })
+    JSON.stringify({ schema: 1, kind: 'tcauto-runtime', commit, ref: 'refs/heads/feat/162-test', branch: 'feat/162-test', dirty: false, installedAt: '2026-11-06T00:00:00.000Z', sourcePath: 'C:\\src162', version })
   );
   return dir;
 }
@@ -345,13 +352,18 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
     root = newRoot();
     installRealCopy(root, VER_A, SHA_A);
     installRealCopy(root, VER_B, SHA_B);
+    // the fixture catalog (with SetSystemState) is the runtimes' own tools.json: the launcher drops TWINCAT_MCP_TOOLS_JSON
+    const tools = toolsWithBlock(root);
+    for (const v of [VER_A, VER_B]) fs.copyFileSync(tools, path.join(root, 'runtime', v, 'mcp-server', 'tools.json'));
     setCurrent(root, VER_A, SHA_A);
     const stateDir = path.join(root, 'state-162');
     fs.mkdirSync(stateDir);
     ownerFile = path.join(root, 'owners-162.txt');
     const env = {
       ...process.env,
-      TWINCAT_MCP_TOOLS_JSON: toolsWithBlock(root),
+      // #162 review: these would make an installed runtime load another catalog / module; the launcher drops them
+      TWINCAT_MCP_TOOLS_JSON: 'C:\\nowhere162\\tools.json',
+      TWINCAT_MODULE_PATH: 'C:\\nowhere162\\src\\TwinCATAutomation\\TwinCATAutomation.psm1',
       TWINCAT_MCP_BRIDGE_COMMAND: process.execPath,
       TWINCAT_MCP_BRIDGE_ARGS: JSON.stringify([MOCK_BRIDGE]),
       TWINCAT_MCP_MODAL_PROBE: '0',
@@ -360,7 +372,6 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
       TCAUTO_STATE_DIR: stateDir,
       TCAUTO_TEST_FORBID_REAL_STATE: '1'
     };
-    delete env.TWINCAT_MODULE_PATH; // the runtime's own src\TwinCATAutomation module
     h = harness(root, { env });
   });
   after(async () => {
@@ -387,6 +398,11 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
     assert.equal(b.moduleSource, 'installed');
     assert.equal(b.moduleCommit, SHA_A);
     assert.equal(b.moduleDirty, false);
+    assert.equal(
+      b.modulePath.toLowerCase(),
+      path.join(root, 'runtime', VER_A, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1').toLowerCase(),
+      'a TWINCAT_MODULE_PATH in the client config is not used by the runtime'
+    );
 
     // ReloadModule with another ModulePath is refused in an installed runtime and names ReloadRuntime
     const rm = h.body(await h.call('ReloadModule', { ModulePath: path.join(root, 'runtime', VER_B, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1') }));

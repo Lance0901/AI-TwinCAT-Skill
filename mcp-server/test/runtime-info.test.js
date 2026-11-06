@@ -44,7 +44,7 @@ function installedLayout(stamp) {
   fs.mkdirSync(path.join(ver, 'src', 'TwinCATAutomation'), { recursive: true });
   fs.mkdirSync(path.join(ver, 'mcp-server'), { recursive: true });
   fs.writeFileSync(path.join(ver, MODULE_RELATIVE_PATH), '# fixture\n');
-  if (stamp !== undefined) fs.writeFileSync(path.join(ver, 'tcauto-source.json'), typeof stamp === 'string' ? stamp : JSON.stringify(stamp));
+  if (stamp !== undefined) fs.writeFileSync(path.join(ver, 'tcauto-source.json'), typeof stamp === 'string' ? stamp : JSON.stringify({ kind: 'tcauto-runtime', ...stamp }));
   return { root, ver, mod: path.join(ver, MODULE_RELATIVE_PATH) };
 }
 
@@ -76,6 +76,11 @@ describe('installed runtime stamp (tcauto-source.json)', () => {
     assert.deepEqual(moduleInfoOf(a.mod), { modulePath: a.mod, moduleCommit: null, moduleDirty: null, moduleSource: 'installed' });
     const b = installedLayout('{broken');
     assert.deepEqual(moduleInfoOf(b.mod), { modulePath: b.mod, moduleCommit: null, moduleDirty: null, moduleSource: null });
+    // a stamp of another kind (the #20 release stamp has no kind) is not an installed runtime
+    const rel = installedLayout({ kind: null, commit: SHA, dirty: false });
+    assert.equal(installedRootOf(rel.mod), null);
+    assert.equal(moduleInfoOf(rel.mod).moduleSource, null);
+    assert.equal(runtimeInfoOf(path.join(rel.ver, 'mcp-server')).source, 'unknown');
     const c = installedLayout(undefined);
     assert.equal(installedRootOf(c.mod), null);
     // another file in the runtime is not the module

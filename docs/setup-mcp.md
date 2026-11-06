@@ -31,7 +31,7 @@ powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1
 What it does:
 
 1. Refuses (`WORKTREE_DIRTY`, nothing written) when `git status` lists uncommitted changes below `mcp-server\` (except `test\`) or `src\TwinCATAutomation\`. `-AllowDirty` installs them anyway as `<commit>-dirty-<UTC time>` with `dirty: true`.
-2. Copies `mcp-server\` (without `node_modules` and `test`) and `src\TwinCATAutomation\` to `%LOCALAPPDATA%\TwinCATAutomation\runtime\<12-char commit>\` (a staging folder first, renamed when complete) and runs `npm ci --omit=dev` there. A clean version that is installed already is reused.
+2. Copies the files `git ls-files -co --exclude-standard` lists (tracked + untracked that are not git-ignored; an ignored `temp_*.ps1` / `*.ps1xml` / `.env` is never installed) below `mcp-server\` (without `node_modules` and `test`) and `src\TwinCATAutomation\` to `%LOCALAPPDATA%\TwinCATAutomation\runtime\<12-char commit>\` (a staging folder first, renamed when complete) and runs `npm ci --omit=dev` there. A clean version that is installed already is reused.
 3. Writes `runtime\<version>\tcauto-source.json` (`commit`, `ref`, `branch`, `dirty`, `installedAt`, `sourcePath`, `version`) and switches `runtime\current.json` to the new version atomically (temp file + replace).
 4. Copies `mcp-server\launcher\tcauto-launcher.mjs` to `%LOCALAPPDATA%\TwinCATAutomation\launcher\` only when its content changed (the launcher rarely changes; a running launcher keeps the file it was started from).
 5. Keeps the 3 newest versions (`-Keep N`, 1..20). An older one is removed only when it is not the current one and no running launcher uses it (a folder that cannot be renamed is reported in `pruneSkipped` and kept).
@@ -42,7 +42,7 @@ If a copy fails with a OneDrive error, right-click the checkout folder in Explor
 
 ## Register the launcher (once)
 
-Use absolute paths. Do not set `TWINCAT_MODULE_PATH` for the launcher: each runtime imports its own `src\TwinCATAutomation` (a `TWINCAT_MODULE_PATH` in the client config would make every runtime load that one module instead).
+Use absolute paths. Each runtime imports its own `src\TwinCATAutomation` and `tools.json`: the launcher does not pass `TWINCAT_MODULE_PATH`, `TWINCAT_MCP_TOOLS_JSON` or `TWINCAT_MCP_PROBE_SCAN_SCRIPT` to the runtime (it logs that it dropped them), so leave them out of the launcher registration.
 
 ### Claude Code
 

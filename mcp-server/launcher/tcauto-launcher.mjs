@@ -29,6 +29,8 @@
 //     parent pid); index.js uses it as the TCAUTO_OWNER_ID of its PowerShell bridges, so an IDE
 //     launched before a ReloadRuntime is still this session's afterwards. It is never read from
 //     the environment: a new client connection (new launcher process) gets a new id.
+//   - TWINCAT_MODULE_PATH / TWINCAT_MCP_TOOLS_JSON / TWINCAT_MCP_PROBE_SCAN_SCRIPT are removed from
+//     the runtime's environment (RUNTIME_OVERRIDE_VARS): a runtime always runs its own copies.
 // stdout belongs to the MCP transport: diagnostics go to stderr only.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -162,6 +164,25 @@ function killTree(proc) {
   } catch {
     /* already gone */
   }
+}
+
+// Variables that would make an installed runtime load another module / tool catalog / UIA scan
+// script than its own (e.g. a TWINCAT_MODULE_PATH into a OneDrive checkout left in the client
+// config): never passed to a runtime child. Compared case-insensitively (Windows environment).
+export const RUNTIME_OVERRIDE_VARS = Object.freeze(['TWINCAT_MODULE_PATH', 'TWINCAT_MCP_TOOLS_JSON', 'TWINCAT_MCP_PROBE_SCAN_SCRIPT']);
+
+/** Copy of env without RUNTIME_OVERRIDE_VARS; onDropped(name) for each one that was set. */
+export function runtimeEnv(env, onDropped = () => {}) {
+  const drop = new Set(RUNTIME_OVERRIDE_VARS.map((n) => n.toUpperCase()));
+  const out = {};
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (drop.has(k.toUpperCase())) {
+      if (v !== undefined && v !== '') onDropped(k);
+      continue;
+    }
+    out[k] = v;
+  }
+  return out;
 }
 
 class StartError extends Error {
@@ -387,7 +408,9 @@ export class Launcher {
       if (!cur.ok) throw new StartError('RUNTIME_NOT_INSTALLED', cur.reason);
       target = cur;
     }
-    const env = { ...this.env, TCAUTO_LAUNCHER_OWNER_ID: this.ownerId, TCAUTO_LAUNCHER_PID: String(process.pid) };
+    const env = runtimeEnv(this.env, (name) => this.log(`${name} is not passed to the runtime: it runs its own module and tools.json (#162)`));
+    env.TCAUTO_LAUNCHER_OWNER_ID = this.ownerId;
+    env.TCAUTO_LAUNCHER_PID = String(process.pid);
     let proc;
     try {
       proc = spawn(this.nodePath, [target.entry], { cwd: path.dirname(target.entry), env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });

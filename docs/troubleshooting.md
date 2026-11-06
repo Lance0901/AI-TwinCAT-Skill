@@ -503,7 +503,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:MCP 註冊直接指向 OneDrive 裡的 `<repo>\mcp-server\index.js` 時，client 重開後第一個呼叫回 `MODULE_IMPORT_FAILED`(`Bridge exited before ready (code 1)`),bridge 的 stderr 是 `The cloud sync provider failed to validate the downloaded data.`(雲端檔案提供者錯誤 383,#162,2026-11-06 Codex 回報)。同一份 repo 在 OneDrive 路徑下 `Import-Module` 要 52–65 s,複製到 `%TEMP%` 約 6 s(實測 2026-11-06,Windows 11、PS 5.1,#158),貼著 bridge 的啟動 timeout 60 s。
 - **原因**:OneDrive「檔案隨選」只在本機留 placeholder,第一次讀取才下載(hydration)。下載驗證失敗時讀檔直接出錯;成功時，每個被 dot-source 的小檔也都要先經過 cloud file provider。另外 client 跑的是 checkout 當下所在的分支。
-- **做法**:不要讓 MCP client 從 OneDrive 執行 runtime。用 `scripts\Install-TcAutoRuntime.ps1` 把 runtime 裝到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<version>\`,client 只註冊 launcher(`docs/setup-mcp.md`)。安裝腳本自己會從 OneDrive 讀檔(robocopy),讀不到時回 `COPY_FAILED`:在檔案總管對 checkout 資料夾按右鍵 →「一律保留在此裝置上」,等 OneDrive 下載完再跑一次。
+- **做法**:不要讓 MCP client 從 OneDrive 執行 runtime。用 `scripts\Install-TcAutoRuntime.ps1` 把 runtime 裝到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<version>\`,client 只註冊 launcher(`docs/setup-mcp.md`)。安裝腳本自己會從 OneDrive 讀檔(只複製 `git ls-files -co --exclude-standard` 列出的檔案，被 gitignore 的檔案不會進 runtime),讀不到時回 `COPY_FAILED`:在檔案總管對 checkout 資料夾按右鍵 →「一律保留在此裝置上」,等 OneDrive 下載完再跑一次。
 - **還沒做的**:bridge 啟動前預讀檔案、`MODULE_IMPORT_FAILED` 帶出 cloud provider 的 stderr 原文(#162 建議 2–3)不在這次範圍;直接從 OneDrive checkout 跑 `index.js`(開發用)仍會遇到上述延遲。
 
 ### ReloadRuntime(MCP launcher,#162):做法與共同規則
@@ -517,6 +517,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   5. 新 runtime 起不來 → `RUNTIME_START_FAILED`,自動重啟舊版本(`data.restored`)。
 - **重載中的請求**:立刻回 `RUNTIME_RELOADING`(tool call 回 tool error,其他 request 回 JSON-RPC error),不排隊、不丟失;`ping` 由 launcher 自己回。
 - **runtime 意外結束**:它還沒回應的 request 全部回 `RUNTIME_DIED`;下一個 request 自動用同一個版本重啟(重送 `initialize`)。
+- **環境變數**:launcher 不把 `TWINCAT_MODULE_PATH`、`TWINCAT_MCP_TOOLS_JSON`、`TWINCAT_MCP_PROBE_SCAN_SCRIPT` 傳給 runtime(stderr 會記一行),安裝版 runtime 一律用自己的模組與 `tools.json`,不會悄悄載入 OneDrive checkout 的模組。`installed` 的判定要求 `tcauto-source.json` 的 `kind` 是 `tcauto-runtime`(#20 的 release stamp 不算)。
 - **owner id**:一個 launcher 行程一個 GUID,傳給每個 runtime,所以 `ReloadRuntime` 前後啟動的 IDE 都算同一個 session 的(見「啟動紀錄持久化(#73 / #149)」)。
 - **回傳**:`data.previous` / `data.current` = `{version, commit, dirty, branch, installedAt, runtimeDir}`,`data.retired`(bridge retire 的 data,例如 `ideWasConnected`),`data.reconnectRequired = true`。之後先 `ConnectIde`。
 - **client 端**:收到 `notifications/tools/list_changed` 後會不會重抓 tool 清單由 client 決定(Claude Code / Claude Desktop / Codex 未實測)。沒重抓時，新版本新增的 tool / 參數要重連 client 才看得到;既有 tool 的呼叫已經送到新 runtime。
@@ -560,7 +561,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### Install-TcAutoRuntime.ps1 的錯誤(#162)
 
 - `WORKTREE_DIRTY`:`mcp-server\`(不含 `test\`)或 `src\TwinCATAutomation\` 有未 commit 的改動(`data.changes`),什麼都沒寫。commit 後重跑，或加 `-AllowDirty`(版本名 `<commit>-dirty-<UTC 時間>`,`dirty: true`)。
-- `COPY_FAILED`:robocopy 失敗，多半是 OneDrive 檔案下載不了(見上方「OneDrive 與 hydration」)。
+- `COPY_FAILED`:某個檔案複製失敗，多半是 OneDrive 檔案下載不了(見上方「OneDrive 與 hydration」)。
 - `NPM_CI_FAILED`:暫存複本裡的 `npm ci --omit=dev` 失敗(Node / npm 不在 PATH、registry 連不到)。暫存複本會刪掉,`current.json` 不變。
 - `RUNTIME_DAMAGED` / `RUNTIME_IN_USE`:同名版本資料夾不完整;是 current 就不動它(可能正在跑),否則刪不掉(被使用中)。
 - `GIT_NOT_FOUND` / `GIT_FAILED` / `SOURCE_INCOMPLETE` / `RENAME_FAILED` / `CURRENT_WRITE_FAILED` / `LAUNCHER_WRITE_FAILED`:訊息裡有路徑與原因;`current.json` 只在新版本完整就位後才換。

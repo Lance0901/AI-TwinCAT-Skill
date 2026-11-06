@@ -16,7 +16,11 @@
     <commit>-dirty-<UTC yyyyMMddTHHmmssZ>, so a dirty install never replaces a clean one. A clean
     version that is already installed completely is reused (only current.json is switched).
     Dirty = "git status --porcelain" lists anything below mcp-server\ (except test\) or
-    src\TwinCATAutomation\, tracked or untracked: those files would be copied.
+    src\TwinCATAutomation\, tracked or untracked.
+    Only the files "git ls-files -co --exclude-standard" lists there are copied (tracked + untracked
+    that are not ignored): a git-ignored file (temp_*.ps1, *.ps1xml, .env, ...) never reaches the
+    runtime, where the module would otherwise dot-source a stray Public\ / Private\ .ps1 that is
+    not part of the commit the stamp names (#162 review).
 
     Retention: the -Keep newest runtime folders (by installedAt) are kept; an older one is removed
     only when it is not the version current.json names. It is renamed first and deleted after, so a
@@ -124,16 +128,44 @@ function Get-FileSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
-function Copy-Tree {
-    # robocopy: copies the content of Source into Destination; ExcludeDirs are full paths
-    param([string]$Source, [string]$Destination, [string[]]$ExcludeDirs = @())
-    $roboArgs = @($Source, $Destination, '/E', '/R:2', '/W:1', '/NFL', '/NDL', '/NJH', '/NJS', '/NP')
-    if ($ExcludeDirs.Count -gt 0) { $roboArgs += '/XD'; $roboArgs += $ExcludeDirs }
-    $r = Invoke-Native -File 'robocopy.exe' -Arguments $roboArgs
-    # robocopy exit codes 0..7 are success (1 = files copied), 8 and above are failures
-    if ($r.Code -ge 8) {
-        Stop-Install -Code 'COPY_FAILED' -Message "robocopy $Source -> $Destination failed (exit $($r.Code)): $((@($r.Lines) | Where-Object { $_.Trim() } | Select-Object -Last 5) -join ' | ')" `
-            -Hint 'A file in a OneDrive folder that cannot be downloaded (cloud file provider error 383 / "The cloud sync provider failed to validate the downloaded data") cannot be copied: right-click the checkout folder in Explorer -> "Always keep on this device", wait for OneDrive to finish, then run this script again (#162).'
+$script:InstallPathspec = @('--', 'mcp-server', 'src/TwinCATAutomation', ':(exclude)mcp-server/test', ':(exclude)mcp-server/node_modules')
+
+function Get-InstallFileList {
+    # Repository-relative paths (forward slashes) of the files to install: tracked + untracked that
+    # are not git-ignored (git ls-files -co --exclude-standard), below the pathspec above. Tracked
+    # files deleted in the working tree are left out (only reachable with -AllowDirty).
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $oldEnc = $null
+    try { $oldEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { $oldEnc = $null }
+    try { $r = Invoke-Native -File 'git' -Arguments (@('-C', $RepoRoot, '-c', 'core.quotepath=off', 'ls-files', '-co', '--exclude-standard') + $script:InstallPathspec) }
+    finally { if ($null -ne $oldEnc) { try { [Console]::OutputEncoding = $oldEnc } catch { } } }
+    if ($r.Code -ne 0) { Stop-Install -Code 'GIT_FAILED' -Message "git ls-files failed in $RepoRoot (exit $($r.Code)): $(@($r.Lines) -join ' | ')" }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $files = [System.Collections.Generic.List[string]]::new()
+    foreach ($l in @($r.Lines)) {
+        $rel = "$l".Trim()
+        if (-not $rel -or -not $seen.Add($rel)) { continue }
+        if (Test-Path -LiteralPath (Join-Path $RepoRoot ($rel -replace '/', '\')) -PathType Leaf) { $files.Add($rel) }
+    }
+    return , $files
+}
+
+function Copy-InstallFiles {
+    # copies each listed file to the same relative path below Destination
+    param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$Destination, [Parameter(Mandatory)]$Files)
+    foreach ($rel in $Files) {
+        $relWin = $rel -replace '/', '\'
+        $src = Join-Path $RepoRoot $relWin
+        $dst = Join-Path $Destination $relWin
+        try {
+            $dir = Split-Path -Parent $dst
+            if (-not [System.IO.Directory]::Exists($dir)) { $null = [System.IO.Directory]::CreateDirectory($dir) }
+            [System.IO.File]::Copy($src, $dst, $true)
+        }
+        catch {
+            Stop-Install -Code 'COPY_FAILED' -Message "cannot copy $src`: $($_.Exception.Message)" `
+                -Hint 'A file in a OneDrive folder that cannot be downloaded (cloud file provider error 383 / "The cloud sync provider failed to validate the downloaded data") cannot be copied: right-click the checkout folder in Explorer -> "Always keep on this device", wait for OneDrive to finish, then run this script again (#162).'
+        }
     }
 }
 
@@ -173,7 +205,7 @@ $commit = "$commit".Trim().ToLowerInvariant()
 $r = Invoke-Native -File 'git' -Arguments @('-C', $repoRoot, 'symbolic-ref', '--quiet', 'HEAD')
 $ref = if ($r.Code -eq 0) { "$(@($r.Lines) | Select-Object -First 1)".Trim() } else { $null }
 $branch = if ($ref -and $ref.StartsWith('refs/heads/')) { $ref.Substring(11) } else { $null }
-$r = Invoke-Native -File 'git' -Arguments @('-C', $repoRoot, 'status', '--porcelain', '--untracked-files=all', '--', 'mcp-server', 'src/TwinCATAutomation', ':(exclude)mcp-server/test', ':(exclude)mcp-server/node_modules')
+$r = Invoke-Native -File 'git' -Arguments (@('-C', $repoRoot, 'status', '--porcelain', '--untracked-files=all') + $script:InstallPathspec)
 if ($r.Code -ne 0) { Stop-Install -Code 'GIT_FAILED' -Message "git status failed in $repoRoot (exit $($r.Code)): $(@($r.Lines) -join ' | ')" }
 $changes = @(@($r.Lines) | Where-Object { "$_".Trim() })
 $dirty = $changes.Count -gt 0
@@ -222,8 +254,10 @@ if (-not $reused) {
     $script:Staging = Join-Path $runtimeFolder ('.staging-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Force -Path $script:Staging
     Write-Host '  copying mcp-server and src\TwinCATAutomation ...'
-    Copy-Tree -Source $srcMcp -Destination (Join-Path $script:Staging 'mcp-server') -ExcludeDirs @((Join-Path $srcMcp 'node_modules'), (Join-Path $srcMcp 'test'))
-    Copy-Tree -Source $srcModule -Destination (Join-Path $script:Staging 'src\TwinCATAutomation')
+    # only files git lists (tracked + untracked, not ignored): an ignored temp_*.ps1 never reaches the runtime
+    $installFiles = Get-InstallFileList -RepoRoot $repoRoot
+    Copy-InstallFiles -RepoRoot $repoRoot -Destination $script:Staging -Files $installFiles
+    Write-Host "  $($installFiles.Count) files copied"
 
     Write-Host '  npm ci --omit=dev ...'
     $stageMcp = Join-Path $script:Staging 'mcp-server'

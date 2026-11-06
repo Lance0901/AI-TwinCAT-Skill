@@ -18,7 +18,7 @@
 // ReloadRuntime (same launcher) keeps it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { readGitHead, readSourceStamp, SOURCE_STAMP_NAME } from './module-source.js';
+import { readGitHead, readSourceStamp, SOURCE_STAMP_NAME, RUNTIME_STAMP_KIND } from './module-source.js';
 
 export const LAUNCHER_ENV = Object.freeze({ ownerId: 'TCAUTO_LAUNCHER_OWNER_ID', pid: 'TCAUTO_LAUNCHER_PID' });
 
@@ -64,7 +64,7 @@ export function runtimeInfoOf(mcpServerDir) {
   const base = { runtimeDir, runtimeRoot: null, version: null, commit: null, branch: null, dirty: null, installedAt: null, sourcePath: null };
   try {
     const stamp = readSourceStamp(runtimeDir);
-    if (stamp) {
+    if (stamp?.kind === RUNTIME_STAMP_KIND) {
       const parent = path.win32.dirname(runtimeDir);
       const inRuntimeFolder = path.win32.basename(parent).toLowerCase() === 'runtime';
       return {

@@ -57,7 +57,11 @@ function makeRepo() {
   put(path.join(repo, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1'), '# fixture\n');
   put(path.join(repo, 'src', 'TwinCATAutomation', 'Private', 'p.ps1'), '# private\n');
   put(path.join(repo, 'README.md'), 'outside the copied folders\n');
-  put(path.join(repo, '.gitignore'), 'node_modules/\n');
+  put(path.join(repo, '.gitignore'), 'node_modules/\ntemp_*.ps1\n*.ps1xml\n.env\n');
+  // git-ignored files (#162 review): never part of a commit, so never installed (the module would dot-source the .ps1)
+  put(path.join(repo, 'src', 'TwinCATAutomation', 'Private', 'temp_stray.ps1'), 'throw "stray"\n');
+  put(path.join(repo, 'src', 'TwinCATAutomation', 'Public', 'x.ps1xml'), '<x/>\n');
+  put(path.join(repo, 'mcp-server', '.env'), 'SECRET=162\n');
   spawnSync('git', ['init', '-q', '-b', 'feat/162-fixture', repo]);
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'fixture 1');
@@ -118,6 +122,11 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     assert.ok(!fs.existsSync(path.join(dir, 'mcp-server', 'node_modules', 'junk')), 'the source node_modules is not copied');
     assert.ok(fs.existsSync(path.join(dir, 'mcp-server', 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json')), 'npm ci ran in the copy');
     assert.ok(!fs.existsSync(path.join(dir, 'README.md')), 'only mcp-server and src\\TwinCATAutomation');
+    assert.equal(result.data.dirty, false, 'ignored files do not make the tree dirty');
+    for (const f of ['src\\TwinCATAutomation\\Private\\temp_stray.ps1', 'src\\TwinCATAutomation\\Public\\x.ps1xml', 'mcp-server\\.env']) {
+      assert.ok(fs.existsSync(path.join(repo, f)), `fixture has ${f}`);
+      assert.ok(!fs.existsSync(path.join(dir, f)), `git-ignored ${f} is not installed`);
+    }
 
     const stamp = readJson(path.join(dir, 'tcauto-source.json'));
     assert.equal(stamp.commit, head);
@@ -156,6 +165,7 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     const versionsBefore = versionsIn(root);
 
     fs.appendFileSync(path.join(repo, 'mcp-server', 'lib', 'a.js'), '// uncommitted\n');
+    put(path.join(repo, 'mcp-server', 'lib', 'untracked162.js'), '// untracked, not ignored\n');
     try {
       const refused = install(repo, root, { npm });
       assert.equal(refused.code, 1);
@@ -170,10 +180,13 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
       const stamp = readJson(path.join(root, 'runtime', dirty.result.data.version, 'tcauto-source.json'));
       assert.equal(stamp.dirty, true);
       assert.match(fs.readFileSync(path.join(root, 'runtime', dirty.result.data.version, 'mcp-server', 'lib', 'a.js'), 'utf8'), /uncommitted/);
+      assert.ok(fs.existsSync(path.join(root, 'runtime', dirty.result.data.version, 'mcp-server', 'lib', 'untracked162.js')), 'an untracked, not ignored file is installed (and made it dirty)');
+      assert.ok(!fs.existsSync(path.join(root, 'runtime', dirty.result.data.version, 'src', 'TwinCATAutomation', 'Private', 'temp_stray.ps1')), 'ignored file not installed with -AllowDirty either');
       assert.equal(readJson(curFile).version, dirty.result.data.version);
       assert.equal(readJson(curFile).dirty, true);
     } finally {
       git(repo, 'checkout', '--', 'mcp-server');
+      fs.rmSync(path.join(repo, 'mcp-server', 'lib', 'untracked162.js'), { force: true });
     }
   });
 
