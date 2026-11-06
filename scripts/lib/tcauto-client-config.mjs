@@ -4,7 +4,7 @@
 // release zip (lib\tcauto-client-config.mjs) as well as from the checkout (scripts\lib\).
 //
 //   node tcauto-client-config.mjs set    --client <claude-code|claude-desktop|codex> --file <path> --command <exe> --arg <a> [--arg <b> ...] [--stamp <s>]
-//   node tcauto-client-config.mjs remove --client <...> --file <path> --owned-root <install root> [--stamp <s>]
+//   node tcauto-client-config.mjs remove --client <...> --file <path> --owned-root <install root> [--force] [--stamp <s>]
 //
 // Only the tcauto entry changes; every other server, key and table is kept:
 //   claude-code     ~/.claude.json, top-level mcpServers.tcauto = {type: 'stdio', command, args, env: {}}
@@ -13,8 +13,11 @@
 //   codex           ~/.codex/config.toml, table [mcp_servers.tcauto] (and its sub-tables) with command / args
 // Before a file is changed it is copied to <file>.bak-<stamp>. JSON is written as UTF-8 without BOM,
 // with the indent and line ending of the original. The new file is written to a temp file next to
-// it and renamed over it. `remove` removes the entry only when its command is below --owned-root (an
-// entry that points elsewhere, e.g. a developer checkout, is left and reported as 'foreign').
+// it and renamed over it. `remove` removes the entry when its command is below --owned-root. An entry
+// whose command is elsewhere but one of whose args is below --owned-root (e.g. a developer
+// registration "node <root>\launcher\tcauto-launcher.mjs") uses this install too: it is left and
+// reported as 'shared' (removed with --force, the caller then removes the files). Any other entry
+// (e.g. a developer checkout) is left and reported as 'foreign'.
 // Prints one JSON line {success, data | error}; exit code 0 / 1.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,6 +50,20 @@ export function isOwned(command, root) {
   if (typeof command !== 'string' || !command || typeof root !== 'string' || !root) return false;
   const norm = (p) => path.win32.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
   return norm(command).startsWith(norm(root) + '\\');
+}
+
+/** 'owned' (command below root), 'shared' (only an arg below root) or 'foreign' */
+export function usageOf(command, args, root) {
+  if (isOwned(command, root)) return 'owned';
+  if (Array.isArray(args) && args.some((a) => isOwned(a, root))) return 'shared';
+  return 'foreign';
+}
+
+/** remove decision: -> 'remove' | 'shared' | 'foreign' */
+function removeDecision(command, args, root, force) {
+  const u = usageOf(command, args, root);
+  if (u === 'owned' || (u === 'shared' && force)) return 'remove';
+  return u;
 }
 
 // ------------------------------------------------------------------ JSON
@@ -86,13 +103,14 @@ export function setJson(text, file, client, command, args) {
   return { text: formatJson(obj, text), action: previous === null ? 'added' : 'updated', previous };
 }
 
-/** -> { text, action: 'removed' | 'absent' | 'foreign', previous } */
-export function removeJson(text, file, ownedRoot) {
+/** -> { text, action: 'removed' | 'absent' | 'shared' | 'foreign', previous } */
+export function removeJson(text, file, ownedRoot, force = false) {
   const obj = parseJson(text ?? '', file);
   const servers = isPlainObject(obj.mcpServers) ? obj.mcpServers : null;
   const previous = servers?.[SERVER_NAME] ?? null;
   if (previous === null) return { text, action: 'absent', previous };
-  if (!isOwned(previous?.command, ownedRoot)) return { text, action: 'foreign', previous };
+  const decision = removeDecision(previous?.command, previous?.args, ownedRoot, force);
+  if (decision !== 'remove') return { text, action: decision, previous };
   delete servers[SERVER_NAME];
   return { text: formatJson(obj, text), action: 'removed', previous };
 }
@@ -126,16 +144,28 @@ function tomlSection(command, args, eol) {
   return [`[mcp_servers.${SERVER_NAME}]`, `command = ${tomlString(command)}`, `args = [${args.map(tomlString).join(', ')}]`].join(eol) + eol;
 }
 
+const TOML_STR = String.raw`'([^']*)'|"((?:[^"\\]|\\.)*)"`;
+
+function tomlStrValue(m1, m2) {
+  if (m1 !== undefined) return m1;
+  try {
+    return JSON.parse(`"${m2}"`);
+  } catch {
+    return m2;
+  }
+}
+
 /** first string value of `command = ...` in a removed section, for ownership / reporting */
 function tomlCommandOf(sectionText) {
-  const m = /^\s*command\s*=\s*(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/m.exec(sectionText);
-  if (!m) return null;
-  if (m[1] !== undefined) return m[1];
-  try {
-    return JSON.parse(`"${m[2]}"`);
-  } catch {
-    return m[2];
-  }
+  const m = new RegExp(String.raw`^\s*command\s*=\s*(?:${TOML_STR})`, 'm').exec(sectionText);
+  return m ? tomlStrValue(m[1], m[2]) : null;
+}
+
+/** the strings of `args = [...]` (one or more lines) in a removed section */
+function tomlArgsOf(sectionText) {
+  const m = /^\s*args\s*=\s*\[([\s\S]*?)\]/m.exec(sectionText);
+  if (!m) return [];
+  return [...m[1].matchAll(new RegExp(TOML_STR, 'g'))].map((x) => tomlStrValue(x[1], x[2]));
 }
 
 /**
@@ -190,14 +220,15 @@ export function setToml(text, file, command, args) {
   return { text: (rest ? rest + eol : '') + section, action: previous === null ? 'added' : 'updated', previous };
 }
 
-/** -> { text, action: 'removed' | 'absent' | 'foreign', previous } */
-export function removeToml(text, file, ownedRoot) {
+/** -> { text, action: 'removed' | 'absent' | 'shared' | 'foreign', previous } */
+export function removeToml(text, file, ownedRoot, force = false) {
   const src = (text ?? '').replace(/^\uFEFF/, '');
   const eol = /\r\n/.test(src) ? '\r\n' : '\n';
   const { keep, removed } = splitToml(src, file);
   if (!removed.length) return { text, action: 'absent', previous: null };
   const previous = joinLines(removed, eol);
-  if (!isOwned(tomlCommandOf(previous), ownedRoot)) return { text, action: 'foreign', previous };
+  const decision = removeDecision(tomlCommandOf(previous), tomlArgsOf(previous), ownedRoot, force);
+  if (decision !== 'remove') return { text, action: decision, previous };
   return { text: joinLines(keep, eol), action: 'removed', previous };
 }
 
@@ -222,7 +253,7 @@ function writeAtomic(file, text) {
  * Applies `set` / `remove` to a file. -> { file, client, action, previous, backup }
  * A file that does not exist is created by `set` (no backup); `remove` reports 'absent'.
  */
-export function applyToFile({ action, client, file, command, args = [], ownedRoot, stamp }) {
+export function applyToFile({ action, client, file, command, args = [], ownedRoot, stamp, force = false }) {
   const format = CLIENTS[client];
   if (!format) throw new ConfigError('BAD_ARGUMENT', `unknown client ${client}`);
   const exists = fs.existsSync(file);
@@ -233,7 +264,7 @@ export function applyToFile({ action, client, file, command, args = [], ownedRoo
     r = format === 'json' ? setJson(text, file, client, command, args) : setToml(text, file, command, args);
   } else if (action === 'remove') {
     if (!exists) return { file, client, action: 'absent', previous: null, backup: null };
-    r = format === 'json' ? removeJson(text, file, ownedRoot) : removeToml(text, file, ownedRoot);
+    r = format === 'json' ? removeJson(text, file, ownedRoot, force) : removeToml(text, file, ownedRoot, force);
   } else {
     throw new ConfigError('BAD_ARGUMENT', `unknown action ${action}`);
   }
@@ -259,6 +290,10 @@ function parseArgs(argv) {
   o.action = argv[0];
   for (let i = 1; i < argv.length; i++) {
     const k = argv[i];
+    if (k === '--force') {
+      o.force = true;
+      continue;
+    }
     const v = argv[i + 1];
     if (v === undefined) throw new ConfigError('BAD_ARGUMENT', `${k} needs a value`);
     i++;

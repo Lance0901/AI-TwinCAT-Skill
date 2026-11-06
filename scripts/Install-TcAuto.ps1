@@ -30,10 +30,14 @@
     used), sends MCP initialize + tools/list and reports the tool count and the runtime version /
     commit. It does not connect to an IDE and does not start the PowerShell bridge. Nothing is written.
 
-    -Uninstall: removes the tcauto entry from each of -Clients (backup first; an entry whose command is
-    not below InstallRoot, e.g. a developer checkout, is left and reported as 'foreign'), then removes
-    <InstallRoot>\node, launcher and runtime. Other files in InstallRoot (ide-solutions.json, ...) stay;
-    InstallRoot itself is removed only when it is empty then. The backups stay next to the config files.
+    -Uninstall: removes the tcauto entry from each of -Clients whose command is below InstallRoot
+    (backup first), then removes <InstallRoot>\node, launcher and runtime. An entry whose command is
+    elsewhere but one of whose args is below InstallRoot (e.g. "node <InstallRoot>\launcher\
+    tcauto-launcher.mjs" registered by a developer) still uses this install: it is left ('shared') and
+    no folder is removed (INSTALL_SHARED) unless -Force, which removes that entry too. Any other entry
+    (e.g. a developer checkout) is left ('foreign'). Other files in InstallRoot (ide-solutions.json,
+    ...) stay; InstallRoot itself is removed only when it is empty then. The backups stay next to the
+    config files.
 
     The last stdout line is "TCAUTO_INSTALL_RESULT <json>" ({success, data | error}); exit code 0 on
     success, 1 otherwise.
@@ -63,6 +67,10 @@
 .PARAMETER Uninstall
     Unregister the clients and remove the installed files (see DESCRIPTION).
 
+.PARAMETER Force
+    With -Uninstall: also remove a tcauto entry that only uses this install through its args
+    ('shared', e.g. "node <InstallRoot>\launcher\tcauto-launcher.mjs") and remove the files anyway.
+
 .PARAMETER Verify
     Only check the installed server (initialize + tools/list); writes nothing.
 
@@ -73,13 +81,15 @@
     Time limit of the -Verify check (5..600 s, default 90).
 
 .EXAMPLE
-    powershell -NoProfile -File .\Install-TcAuto.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1
+    (Windows client PCs default to the execution policy Restricted, under which no script runs;
+    -ExecutionPolicy Bypass applies to this one powershell.exe process only.)
 
 .EXAMPLE
-    powershell -NoProfile -File .\Install-TcAuto.ps1 -Clients ClaudeCode,Codex
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Clients ClaudeCode,Codex
 
 .EXAMPLE
-    powershell -NoProfile -File .\Install-TcAuto.ps1 -Uninstall
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
@@ -91,6 +101,7 @@ param(
     [string]$PackageRoot,
     [ValidateRange(1, 20)][int]$Keep = 3,
     [switch]$Uninstall,
+    [switch]$Force,
     [switch]$Verify,
     [switch]$NoVerify,
     [ValidateRange(5, 600)][int]$VerifyTimeoutSec = 90
@@ -100,6 +111,12 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 . (Join-Path $PSScriptRoot 'lib\TcAutoInstall.ps1')
+
+# anything not handled below still ends with a result line (and no staging folder left behind)
+trap {
+    $msg = "$($_.Exception.Message) (at $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber))"
+    Stop-Install -Code 'INSTALL_FAILED' -Message $msg -Hint 'Nothing after this step was done. Run Install-TcAuto.ps1 again; if it fails the same way, report this message.'
+}
 
 $clientConfigScript = Join-Path $PSScriptRoot 'lib\tcauto-client-config.mjs'
 $clientIds = @{ ClaudeCode = 'claude-code'; ClaudeDesktop = 'claude-desktop'; Codex = 'codex' }
@@ -174,7 +191,10 @@ function Invoke-ClientConfig {
     }
     $a = @($clientConfigScript, $Action, '--client', $clientIds[$Name], '--file', $file, '--stamp', $backupStamp)
     if ($Action -eq 'set') { $a += @('--command', $installedNode, '--arg', $launcherPath) }
-    else { $a += @('--owned-root', $InstallRoot) }
+    else {
+        $a += @('--owned-root', $InstallRoot)
+        if ($Force) { $a += '--force' }
+    }
     $oldEnc = $null
     try { $oldEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { $oldEnc = $null }
     try { $r = Invoke-Native -File $Node -Arguments $a }
@@ -191,8 +211,9 @@ function Invoke-ClientConfig {
     else {
         $row.action = [string]$res.data.action; $row.previous = $res.data.previous; $row.backup = $res.data.backup
         if ($row.action -eq 'foreign') { $row.reason = "tcauto points outside $InstallRoot; left as it is" }
+        if ($row.action -eq 'shared') { $row.reason = "tcauto runs another command but uses files below $InstallRoot (args); left as it is" }
     }
-    $color = if ($row.action -eq 'failed') { 'Red' } elseif ($row.action -in @('skipped', 'foreign')) { 'Yellow' } else { 'Gray' }
+    $color = if ($row.action -eq 'failed') { 'Red' } elseif ($row.action -in @('skipped', 'foreign', 'shared')) { 'Yellow' } else { 'Gray' }
     Write-Host "  $Name`: $($row.action)$(if ($row.reason) { " - $($row.reason)" })" -ForegroundColor $color
     if ($row.backup) { Write-Host "    backup: $($row.backup)" }
     return $row
@@ -329,6 +350,13 @@ if ($Uninstall) {
         $rows.Add((Invoke-ClientConfig -Node $helperNode -Name $name -Action 'remove'))
     }
     $folders = [System.Collections.Generic.List[object]]::new()
+    $shared = @($rows | Where-Object { $_.action -eq 'shared' })
+    if ($shared.Count -gt 0) {
+        # a registration still starts files of this install: removing them would break that client
+        $data = [ordered]@{ installRoot = $InstallRoot; mode = 'uninstall'; clients = @($rows); folders = @(); installRootRemoved = $false; warnings = @($script:TcInstallWarnings) }
+        Stop-Install -Code 'INSTALL_SHARED' -Message "$($shared.Count) client registration(s) still use files below $InstallRoot through their args: $(@($shared | ForEach-Object { "$($_.client) ($($_.file))" }) -join '; '); no installed file was removed." `
+            -Hint 'Change or remove that tcauto registration first (e.g. claude mcp remove tcauto -s user), then run Install-TcAuto.ps1 -Uninstall again; or run it with -Uninstall -Force to remove that registration and the files too.' -Data $data
+    }
     foreach ($f in @($runtimeFolder, $launcherFolder, $nodeFolder)) { $folders.Add((Remove-TcInstallFolder -Path $f)) }
     $rootRemoved = $false
     if ((Test-Path -LiteralPath $InstallRoot) -and @(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -eq 0) {
@@ -381,22 +409,33 @@ $null = New-Item -ItemType Directory -Force -Path $nodeFolder
 Get-ChildItem -LiteralPath $nodeFolder -Filter 'node.exe.old-*' -Force -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop } catch { } }
 $nodeUpdated = $false
 if ((Get-FileSha256 $pkgNode) -ne (Get-FileSha256 $installedNode)) {
-    if (Test-Path -LiteralPath $installedNode) {
-        # a running node.exe cannot be overwritten or deleted, but it can be renamed
-        $aside = Join-Path $nodeFolder ('node.exe.old-' + [guid]::NewGuid().ToString('N'))
-        try { [System.IO.File]::Move($installedNode, $aside) }
-        catch { Stop-Install -Code 'NODE_IN_USE' -Message "cannot replace $installedNode`: $($_.Exception.Message)" -Hint 'Close Claude Code, Claude Desktop and Codex, then run Install-TcAuto.ps1 again.' }
-        try { Remove-Item -LiteralPath $aside -Force -ErrorAction Stop } catch { }
-    }
+    # 1. copy next to it, 2. move the old one aside (a running node.exe cannot be overwritten or
+    # deleted, but it can be renamed), 3. move the copy in. A failure puts the old one back.
     $tmpNode = Join-Path $nodeFolder ('.node.exe.' + [guid]::NewGuid().ToString('N') + '.tmp')
-    try {
-        [System.IO.File]::Copy($pkgNode, $tmpNode, $true)
-        [System.IO.File]::Move($tmpNode, $installedNode)
-    }
+    try { [System.IO.File]::Copy($pkgNode, $tmpNode, $true) }
     catch {
         try { [System.IO.File]::Delete($tmpNode) } catch { }
-        Stop-Install -Code 'COPY_FAILED' -Message "cannot copy node.exe to $installedNode`: $($_.Exception.Message)"
+        Stop-Install -Code 'COPY_FAILED' -Message "cannot copy node.exe into $nodeFolder`: $($_.Exception.Message)" -Hint 'Check the free disk space and that the folder is writable, then run Install-TcAuto.ps1 again.'
     }
+    $aside = $null
+    if (Test-Path -LiteralPath $installedNode) {
+        $aside = Join-Path $nodeFolder ('node.exe.old-' + [guid]::NewGuid().ToString('N'))
+        try { [System.IO.File]::Move($installedNode, $aside) }
+        catch {
+            try { [System.IO.File]::Delete($tmpNode) } catch { }
+            Stop-Install -Code 'NODE_IN_USE' -Message "cannot replace $installedNode`: $($_.Exception.Message); the old node.exe is unchanged." -Hint 'Close Claude Code, Claude Desktop and Codex, then run Install-TcAuto.ps1 again.'
+        }
+    }
+    try { [System.IO.File]::Move($tmpNode, $installedNode) }
+    catch {
+        $why = $_.Exception.Message
+        $restored = $true
+        if ($null -ne $aside) { try { [System.IO.File]::Move($aside, $installedNode) } catch { $restored = $false } }
+        try { [System.IO.File]::Delete($tmpNode) } catch { }
+        Stop-Install -Code 'COPY_FAILED' -Message "cannot move the new node.exe to $installedNode`: $why; $(if ($null -eq $aside) { 'there was no node.exe before' } elseif ($restored) { 'the old node.exe was put back' } else { "the old node.exe is still at $aside" })." `
+            -Hint 'Close Claude Code, Claude Desktop and Codex, then run Install-TcAuto.ps1 again.'
+    }
+    if ($null -ne $aside) { try { Remove-Item -LiteralPath $aside -Force -ErrorAction Stop } catch { } }
     $nodeUpdated = $true
 }
 foreach ($extra in @(Get-ChildItem -LiteralPath (Join-Path $PackageRoot 'node') -File | Where-Object { $_.Name -ne 'node.exe' })) {

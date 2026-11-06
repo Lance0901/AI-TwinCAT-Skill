@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setJson, removeJson, setToml, removeToml, applyToFile, tomlString, isOwned } from '../../scripts/lib/tcauto-client-config.mjs';
+import { setJson, removeJson, setToml, removeToml, applyToFile, tomlString, isOwned, usageOf } from '../../scripts/lib/tcauto-client-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -241,6 +241,34 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     assert.equal(un.result.data.installRootRemoved, false);
   });
 
+  test('-Uninstall with a registration that only passes a file of this install (node <root>\\launcher\\...): INSTALL_SHARED, nothing removed; -Force removes it', () => {
+    const root = path.join(tmp('root'), 'TwinCATAutomation');
+    const c = fakeClients();
+    const launcher = path.join(root, 'launcher', 'tcauto-launcher.mjs');
+    const ins = runInstaller(['-InstallRoot', root, ...c.args, '-NoVerify']);
+    assert.equal(ins.code, 0, JSON.stringify(ins.result));
+    // a developer registration: command 'node' from PATH, the installed launcher as its arg
+    const desk = readJson(c.files.desktop);
+    desk.mcpServers.tcauto = { command: 'node', args: [launcher] };
+    put(c.files.desktop, JSON.stringify(desk, null, 2));
+
+    const un = runInstaller(['-InstallRoot', root, ...c.args, '-Uninstall']);
+    assert.equal(un.code, 1, JSON.stringify(un.result));
+    assert.equal(un.result.error.code, 'INSTALL_SHARED');
+    assert.match(un.result.error.hint, /-Force/);
+    const ub = Object.fromEntries(un.result.data.clients.map((r) => [r.client, r]));
+    assert.equal(ub.ClaudeDesktop.action, 'shared');
+    assert.deepEqual(readJson(c.files.desktop).mcpServers.tcauto, { command: 'node', args: [launcher] }, 'the shared entry is left');
+    for (const f of ['node\\node.exe', 'launcher\\tcauto-launcher.mjs', 'runtime\\current.json']) assert.ok(fs.existsSync(path.join(root, f)), `${f} not removed`);
+
+    const forced = runInstaller(['-InstallRoot', root, ...c.args, '-Uninstall', '-Force']);
+    assert.equal(forced.code, 0, JSON.stringify(forced.result));
+    assert.equal(forced.result.data.clients.find((r) => r.client === 'ClaudeDesktop').action, 'removed');
+    assert.ok(!('tcauto' in readJson(c.files.desktop).mcpServers));
+    assert.ok('fs' in readJson(c.files.desktop).mcpServers);
+    for (const f of ['node', 'launcher', 'runtime']) assert.ok(!fs.existsSync(path.join(root, f)), `${f} removed`);
+  });
+
   test('a client without config file / folder is skipped and reported; -Clients selects', () => {
     const root = path.join(tmp('root'), 'TwinCATAutomation');
     const home = tmp('home');
@@ -316,6 +344,21 @@ describe('tcauto-client-config.mjs (#20)', () => {
     assert.equal(rm.action, 'removed');
     assert.equal(rm.text, "model = 'x'\n");
     assert.equal(removeToml('[mcp_servers.tcauto]\ncommand = "D:\\\\x\\\\node.exe"\n', 'f', ROOT).action, 'foreign');
+  });
+
+  test("remove: an entry that only passes a file of the install in its args is 'shared' (removed with force)", () => {
+    const json = JSON.stringify({ mcpServers: { tcauto: { command: 'node', args: [ARG] } } });
+    assert.equal(removeJson(json, 'f', ROOT).action, 'shared');
+    assert.equal(removeJson(json, 'f', ROOT, true).action, 'removed');
+    const toml = `[mcp_servers.tcauto]\ncommand = 'node'\nargs = [\n  '--x',\n  '${ARG}',\n]\n`;
+    const r = removeToml(toml, 'f', ROOT);
+    assert.equal(r.action, 'shared');
+    assert.equal(r.text, toml, 'not changed');
+    assert.equal(removeToml(toml, 'f', ROOT, true).action, 'removed');
+    assert.equal(removeToml("[mcp_servers.tcauto]\ncommand = 'node'\nargs = ['D:\\\\dev\\\\index.js']\n", 'f', ROOT).action, 'foreign');
+    assert.equal(usageOf(CMD, [], ROOT), 'owned');
+    assert.equal(usageOf('node', ['-x', ARG], ROOT), 'shared');
+    assert.equal(usageOf('node', ['C:\\dev\\x.js'], ROOT), 'foreign');
   });
 
   test("tomlString / isOwned: literal string for paths, basic string when a ' is in it", () => {

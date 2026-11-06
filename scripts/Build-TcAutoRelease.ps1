@@ -64,6 +64,13 @@ $ProgressPreference = 'SilentlyContinue'
 
 . (Join-Path $PSScriptRoot 'lib\TcAutoInstall.ps1')
 
+# anything not handled below still ends with a result line; Stop-Install removes the work folder
+# (dist\.build-*, $script:TcInstallStaging once it exists)
+trap {
+    $msg = "$($_.Exception.Message) (at $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber))"
+    Stop-Install -Code 'BUILD_FAILED' -Message $msg -Hint 'No zip was written. Fix the cause and run Build-TcAutoRelease.ps1 again.'
+}
+
 # Node.js build in the zip: an LTS line that CI tests (check.yml: Node 22 and 24). Raise all three
 # values together, from https://nodejs.org/dist/v<version>/SHASUMS256.txt.
 $NodeVersion = '24.22.2'
@@ -219,11 +226,13 @@ $readme = @(
     ''
     '1. Check the SHA256 of the zip against TcAuto-<version>.zip.sha256 (Get-FileHash -Algorithm SHA256).'
     '2. Unblock the zip (Unblock-File, or Properties -> Unblock) and extract it.'
-    '3. In the extracted folder: powershell -NoProfile -File .\Install-TcAuto.ps1'
+    '3. In the extracted folder: powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1'
+    '   (Windows client PCs default to the execution policy Restricted, which runs no script; Bypass'
+    '   applies to this one powershell.exe process only and changes no setting.)'
     '4. Restart Claude Code / Claude Desktop / Codex once.'
     ''
     'Later versions: run Install-TcAuto.ps1 of the new zip, then call the MCP tool ReloadRuntime.'
-    'Remove: powershell -NoProfile -File .\Install-TcAuto.ps1 -Uninstall'
+    'Remove: powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall'
     "Details: docs/setup-mcp.md (customer install) in $(if ($sourceUrl) { $sourceUrl -replace '\.git$', '' } else { 'the TcAuto repository' })"
     "node\node.exe: Node.js $($nodeInfo.version) (official win-x64 build, MIT license: node\LICENSE)"
 )

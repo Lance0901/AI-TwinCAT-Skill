@@ -26,11 +26,11 @@ Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE for `Co
    (Get-FileHash .\TcAuto-<version>.zip -Algorithm SHA256).Hash.ToLower()   # = first word of the .sha256 file
    ```
 
-2. Unblock the zip (a downloaded script is blocked under the `RemoteSigned` execution policy): `Unblock-File .\TcAuto-<version>.zip`, or Properties -> **Unblock**. Extract it to a local folder (not OneDrive).
+2. Unblock the zip (`Unblock-File .\TcAuto-<version>.zip`, or Properties -> **Unblock**) and extract it to a local folder (not OneDrive). Unblocking removes the "downloaded from the internet" mark from the extracted files; it does not let scripts run: the default execution policy of a Windows client PC is `Restricted`, which runs no script at all ([about_Execution_Policies](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies)). That is why step 3 starts the installer with `-ExecutionPolicy Bypass`, which applies only to that one `powershell.exe` process and changes no setting.
 3. Close Claude Code, Claude Desktop and Codex (Claude Code rewrites `~\.claude.json` while it runs), then in the extracted folder:
 
    ```powershell
-   powershell -NoProfile -File .\Install-TcAuto.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1
    ```
 
    It copies `node\`, `launcher\` and `runtime\<version>\` to `%LOCALAPPDATA%\TwinCATAutomation` (an installed copy of the same version is reused; `runtime\current.json` is switched atomically; the 3 newest runtimes are kept) and registers the server `tcauto` = `<InstallRoot>\node\node.exe <InstallRoot>\launcher\tcauto-launcher.mjs` in:
@@ -45,12 +45,12 @@ Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE for `Co
 4. At the end the installer runs the same check as `-Verify`: it starts the installed `node.exe` with the launcher, sends MCP `initialize` + `tools/list` and reports the tool count (<!-- generated:mcp-tool-count -->79<!-- /generated --> cmdlet tools + <!-- generated:composite-count -->5<!-- /generated --> composite tools + the launcher's `ReloadRuntime`) and the runtime commit. It does not connect to an IDE.
 5. Restart each client once. Then ask it to call `GetStatus` (see "Verify" below), then `ConnectIde`.
 
-The last stdout line is `TCAUTO_INSTALL_RESULT {json}` (`success`, `data` / `error.code` + `hint`), exit code 0 / 1.
+The last stdout line is `TCAUTO_INSTALL_RESULT {json}` (`success`, `data` / `error.code` + `hint`), exit code 0 / 1; an unexpected error gives `INSTALL_FAILED` (`BUILD_FAILED` for `Build-TcAutoRelease.ps1`). In the table, `...` is `powershell -NoProfile -ExecutionPolicy Bypass`.
 
 | Command | What it does |
 |---|---|
-| `Install-TcAuto.ps1 -Verify` | Only the check of step 4; writes nothing |
-| `Install-TcAuto.ps1 -Uninstall` | Removes `tcauto` from the three files (backup first; a `tcauto` that points outside the install root is left, `foreign`), then `node\`, `launcher\` and `runtime\`. Other files in `%LOCALAPPDATA%\TwinCATAutomation` (`ide-solutions.json`) stay. Close the clients first (`INSTALL_IN_USE` otherwise) |
+| `... -File .\Install-TcAuto.ps1 -Verify` | Only the check of step 4; writes nothing |
+| `... -File .\Install-TcAuto.ps1 -Uninstall` | Removes `tcauto` from the three files when its command is below the install root (backup first), then `node\`, `launcher\` and `runtime\`. A `tcauto` that runs another command but passes a file below the install root (e.g. `node <root>\launcher\tcauto-launcher.mjs`, a developer registration) is left (`shared`) and nothing is removed (`INSTALL_SHARED`): change that registration first, or add `-Force` to remove it and the files. Any other `tcauto` is left (`foreign`). Other files in `%LOCALAPPDATA%\TwinCATAutomation` (`ide-solutions.json`) stay. Close the clients first (`INSTALL_IN_USE` otherwise) |
 | `-InstallRoot`, `-ClaudeCodeConfig`, `-ClaudeDesktopConfig`, `-CodexConfig` | Other paths (tests use temp folders) |
 
 **Next versions:** extract the new zip and run its `Install-TcAuto.ps1` the same way. The registration does not change, so no client restart is needed: call the MCP tool `ReloadRuntime`, then `ConnectIde` again ("Switch to another version" below). Only a new `node.exe` (another Node.js version in the zip) is used after the next client restart; a `node.exe` that a running client holds is renamed aside, not overwritten.
