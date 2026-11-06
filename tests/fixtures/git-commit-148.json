@@ -328,6 +328,26 @@
       "name": "review: packed-refs with a UTF-8 BOM",
       "files": { ".git/HEAD": "ref: refs/heads/main\n", ".git/packed-refs": { "text": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main\n", "bom": true } },
       "expect": { "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ref": "refs/heads/main", "note": null }
+    },
+    {
+      "name": "#154: component '.' + combining acute (U+0301) starts with '.' (code unit exact), refused",
+      "files": { ".git/HEAD": "ref: refs/heads/.\u0301x\n", ".git/refs/heads/.\u0301x": "6666666666666666666666666666666666666666\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "#154: ref ending with '.' + soft hyphen (U+00AD) does not end with '.', git accepts",
+      "files": { ".git/HEAD": "ref: refs/heads/foo.\u00ad\n", ".git/refs/heads/foo.\u00ad": "6666666666666666666666666666666666666666\n" },
+      "expect": { "commit": "6666666666666666666666666666666666666666", "ref": "refs/heads/foo.\u00ad", "note": null }
+    },
+    {
+      "name": "#154: component soft hyphen (U+00AD) + '.x' does not start with '.', git accepts",
+      "files": { ".git/HEAD": "ref: refs/heads/\u00ad.x\n", ".git/refs/heads/\u00ad.x": "6666666666666666666666666666666666666666\n" },
+      "expect": { "commit": "6666666666666666666666666666666666666666", "ref": "refs/heads/\u00ad.x", "note": null }
+    },
+    {
+      "name": "#154: component zero width joiner (U+200D) + '.x' does not start with '.', git accepts",
+      "files": { ".git/HEAD": "ref: refs/heads/\u200d.x\n", ".git/refs/heads/\u200d.x": "6666666666666666666666666666666666666666\n" },
+      "expect": { "commit": "6666666666666666666666666666666666666666", "ref": "refs/heads/\u200d.x", "note": null }
     }
   ]
 }
