@@ -101,6 +101,25 @@ function Test-TcInstallRelPath {
     return $true
 }
 
+function Test-TcGitRefName {
+    # A ref name git itself would accept (https://git-scm.com/docs/git-check-ref-format), and that
+    # is safe as a path below the gitdir: refs/<name>, no '..', '\', ':', '~', '^', '?', '*', '[',
+    # blank, control character or '@{'; no empty component, no component starting with '.' or
+    # ending with '.lock'; not ending with '.' or '/'. Windows drops a trailing '.' of a path
+    # component, so "refs/heads/foo." would otherwise read refs/heads/foo. Same rule as
+    # isGitRefName in mcp-server/lib/module-source.js (#148).
+    param([AllowEmptyString()][string]$Ref)
+    if (-not $Ref.StartsWith('refs/', [System.StringComparison]::Ordinal)) { return $false }
+    if ($Ref.EndsWith('.') -or $Ref.EndsWith('/') -or $Ref.Contains('..') -or $Ref.Contains('@{')) { return $false }
+    foreach ($ch in $Ref.ToCharArray()) {
+        if ([int]$ch -lt 0x20 -or [int]$ch -eq 0x7F -or ' ~^:?*[\'.IndexOf($ch) -ge 0) { return $false }
+    }
+    foreach ($part in $Ref.Split('/')) {
+        if ($part.Length -eq 0 -or $part.StartsWith('.') -or $part.EndsWith('.lock', [System.StringComparison]::Ordinal)) { return $false }
+    }
+    return $true
+}
+
 function Read-TcGitCommit {
     <#
     .SYNOPSIS
@@ -109,22 +128,33 @@ function Read-TcGitCommit {
         Get-TcModuleCommit (ReportIssue, #78 / #140); mcp-server/lib/module-source.js readGitHead
         follows the same rules and both run tests/fixtures/git-commit-148.json.
         Returns $null when RepoRoot has no usable .git (none, a .git file without a "gitdir:" line,
-        a gitdir that is not a directory, no HEAD). Otherwise @{ commit; ref; note }: commit is the
+        a gitdir that is not a directory, no HEAD, a file that exists but cannot be read; the reason
+        of a read failure goes to -Failure). Otherwise @{ commit; ref; note }: commit is the
         lower-case 40 (SHA-1) or 64 (SHA-256) hex object name, or $null with a note (unborn branch,
         symbolic ref chain, refused ref name, reftable repository, not an object name).
-        Rules: every file is read as UTF-8 with or without BOM (Read-TcInstallText), first line,
-        trimmed; ".git" may be a directory or a file "gitdir: <path>" (relative to RepoRoot);
-        "commondir" (relative to the gitdir) holds refs and packed-refs of a linked worktree; HEAD is
-        a detached object name or "ref: refs/<name>" (any non-blank characters, so non-ASCII branch
-        names work, but never "..", "\" or ":"); the loose ref (gitdir, then common dir) wins over
-        packed-refs; hex is accepted in either case. Never throws.
+        Rules: every file is decoded as UTF-8 (a UTF-8 BOM is dropped, nothing else is detected:
+        a UTF-16 file is garbage, as for git), first line, only ASCII blanks trimmed; ".git" may be
+        a directory or a file "gitdir: <path>" (relative to RepoRoot; "gitdir:" and "ref:" are
+        case-sensitive, as git reads them, https://git-scm.com/docs/gitrepository-layout);
+        "commondir" (relative to the gitdir) holds refs and packed-refs of a linked worktree; HEAD
+        is a detached object name or "ref: <name>" with a name git-check-ref-format accepts
+        (Test-TcGitRefName; non-ASCII branch names work); the loose ref (gitdir, then common dir)
+        wins over packed-refs, whose names are compared case-sensitively; hex is accepted in either
+        case. Never throws.
     #>
-    param([Parameter(Mandatory)][string]$RepoRoot)
+    param([Parameter(Mandatory)][string]$RepoRoot, [ref]$Failure)
 
+    $blank = [char[]]@(' ', "`t", "`r", "`n")
+    $readText = {
+        param([string]$File)
+        $text = (New-Object System.Text.UTF8Encoding($false)).GetString([System.IO.File]::ReadAllBytes($File))
+        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+        return $text
+    }
     $firstLine = {
         param([string]$File)
         if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return $null }
-        return ((Read-TcInstallText -Path $File) -split "`r?`n", 2)[0].Trim()
+        return ((& $readText $File) -split "`r?`n", 2)[0].Trim($blank)
     }
     $objectName = '^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$'
     $result = { param($Commit, $Ref, $Note) [ordered]@{ commit = $Commit; ref = $Ref; note = $Note } }
@@ -138,8 +168,8 @@ function Read-TcGitCommit {
         elseif (Test-Path -LiteralPath $dotGit -PathType Leaf) {
             # linked worktree / submodule: ".git" is a file "gitdir: <path>"
             $line = & $firstLine $dotGit
-            if ($line -cmatch '^gitdir:\s*(.+)$') {
-                $p = $Matches[1].Trim()
+            if ($line -cmatch '^gitdir:[ \t]*(.+)$') {
+                $p = $Matches[1].Trim($blank)
                 if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path $RepoRoot $p }
                 $gitDir = [System.IO.Path]::GetFullPath($p)
             }
@@ -157,14 +187,15 @@ function Read-TcGitCommit {
         }
 
         if ($head -match $objectName) { return (& $result $head.ToLowerInvariant() $null $null) }   # detached HEAD
-        if ($head -cnotmatch '^ref:\s*(\S+)$') { return (& $result $null $null 'HEAD does not hold a 40 / 64 hex object name or a ref') }
+        if ($head -cnotmatch '^ref:[ \t]*([^ \t]+)$') { return (& $result $null $null 'HEAD does not hold a 40 / 64 hex object name or a ref') }
         $ref = $Matches[1]
+        # reftable (extensions.refStorage = reftable, https://git-scm.com/docs/reftable): HEAD points
+        # at refs/heads/.invalid, the real refs are binary tables in <common dir>\reftable
         if ($ref -cmatch '(^|/)\.invalid$' -or (Test-Path -LiteralPath (Join-Path $commonDir 'reftable') -PathType Container)) {
-            # reftable format: HEAD points at refs/heads/.invalid, the real refs are binary tables
             return (& $result $null $null 'reftable repository: refs are not plain files, commit not read (git is not started)')
         }
-        if ($ref -cnotmatch '^refs/' -or $ref.Contains('..') -or $ref.Contains('\') -or $ref.Contains(':')) {
-            return (& $result $null $null "HEAD ref '$ref' is refused (must be refs/..., without '..', '\' or ':')")
+        if (-not (Test-TcGitRefName $ref)) {
+            return (& $result $null $null "HEAD ref '$ref' is refused (not a ref name git-check-ref-format accepts below refs/)")
         }
 
         $dirs = @($gitDir)
@@ -179,7 +210,7 @@ function Read-TcGitCommit {
             foreach ($d in $dirs) {
                 $packed = Join-Path $d 'packed-refs'
                 if (-not (Test-Path -LiteralPath $packed -PathType Leaf)) { continue }
-                foreach ($l in ((Read-TcInstallText -Path $packed) -split "`r?`n")) {
+                foreach ($l in ((& $readText $packed) -split "`r?`n")) {
                     if ($l -cmatch '^([0-9a-fA-F]{40}|[0-9a-fA-F]{64}) (.+)$' -and $Matches[2] -ceq $ref) { $commit = $Matches[1]; $found = $true; break }
                 }
                 if ($found) { break }
@@ -190,7 +221,10 @@ function Read-TcGitCommit {
         if ($commit -notmatch $objectName) { return (& $result $null $ref 'HEAD / ref does not hold a 40 / 64 hex object name') }
         return (& $result $commit.ToLowerInvariant() $ref $null)
     }
-    catch { return $null }
+    catch {
+        if ($PSBoundParameters.ContainsKey('Failure')) { $Failure.Value = $_.Exception.Message }
+        return $null
+    }
 }
 
 function Get-TcSourceInfo {
@@ -229,9 +263,11 @@ function Get-TcSourceInfo {
 
     # Read-TcGitCommit never throws: a .git that is there but cannot be used (garbage .git file,
     # gitdir gone, unreadable file) is $null, reported here and the release stamp is tried next
-    $git = Read-TcGitCommit -RepoRoot $SourceRoot
+    $gitFailure = $null
+    $git = Read-TcGitCommit -RepoRoot $SourceRoot -Failure ([ref]$gitFailure)
     if ($null -eq $git -and (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
-        $warnings.Add('.git cannot be read (no gitdir / HEAD found, or a file is unreadable); commit not taken from git')
+        if ($gitFailure) { $warnings.Add(".git cannot be read: $gitFailure; commit not taken from git") }
+        else { $warnings.Add('.git cannot be read (no gitdir: line, gitdir is not a folder, or no HEAD); commit not taken from git') }
     }
     if ($null -ne $git) {
         $info.commit = $git.commit

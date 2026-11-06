@@ -11,16 +11,20 @@
 // install manifest); both run the shared fixture tests/fixtures/git-commit-148.json
 // (test/git-commit.test.js and tests/Unit/git-commit-148.ps1), so a checkout gives the same commit
 // on both sides:
-//   - every file is UTF-8 with or without BOM, first line, trimmed;
-//   - .git is a directory or a file "gitdir: <path>" (relative to the checkout root); commondir
-//     (relative to the gitdir) holds refs and packed-refs of a linked worktree;
+//   - every file is decoded as UTF-8 (a UTF-8 BOM is dropped, nothing else is detected: a UTF-16
+//     file is garbage, as for git), first line, only ASCII blanks (space, tab, CR, LF) trimmed;
+//   - .git is a directory or a file "gitdir: <path>" (relative to the checkout root); "gitdir:" and
+//     "ref:" are case-sensitive, as git reads them (https://git-scm.com/docs/gitrepository-layout);
+//     commondir (relative to the gitdir) holds refs and packed-refs of a linked worktree;
 //   - HEAD is a detached 40 (SHA-1) or 64 (SHA-256) hex object name (either case, returned in lower
-//     case) or `ref: refs/<name>` with any non-blank characters (non-ASCII branch names work) but
-//     never '..', '\' or ':';
-//   - the loose ref (gitdir, then common dir) wins over packed-refs.
+//     case) or `ref: refs/<name>` with a name git-check-ref-format accepts
+//     (https://git-scm.com/docs/git-check-ref-format, isGitRefName; non-ASCII branch names work);
+//   - the loose ref (gitdir, then common dir) wins over packed-refs, whose names are compared
+//     case-sensitively.
 // Limits (moduleCommit is then null, never a wrong sha):
-//   - a repository using the reftable backend (extensions.refStorage = reftable: HEAD is
-//     `ref: refs/heads/.invalid`, a reftable directory) is not read; readGitHead says so in `note`.
+//   - a repository using the reftable backend (extensions.refStorage = reftable,
+//     https://git-scm.com/docs/reftable: HEAD is `ref: refs/heads/.invalid`, a reftable directory)
+//     is not read; readGitHead says so in `note`.
 //   - a symbolic ref chain (a ref file holding `ref: ...`) is not followed.
 //   - HEAD only: uncommitted changes in the working tree are not detected (moduleDirty is null).
 //
@@ -35,7 +39,30 @@ import path from 'node:path';
 export const MODULE_RELATIVE_PATH = path.win32.join('src', 'TwinCATAutomation', 'TwinCATAutomation.psm1');
 
 const OBJECT_NAME_RE = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
-const PACKED_RE = /^([0-9a-fA-F]{40}|[0-9a-fA-F]{64}) (.+)$/;
+// [^\n] like '.' of .NET (a JavaScript '.' also stops at \r, U+2028, U+2029)
+const PACKED_RE = /^([0-9a-fA-F]{40}|[0-9a-fA-F]{64}) ([^\n]+)$/;
+
+/** Only ASCII blanks, like Read-TcGitCommit (String.prototype.trim also drops U+FEFF, U+3000, ...). */
+function trimBlank(s) {
+  return s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
+}
+
+/**
+ * A ref name git itself would accept (https://git-scm.com/docs/git-check-ref-format), and that is
+ * safe as a path below the gitdir: refs/<name>, no '..', '\', ':', '~', '^', '?', '*', '[', blank,
+ * control character or '@{'; no empty component, no component starting with '.' or ending with
+ * '.lock'; not ending with '.' or '/'. Windows drops a trailing '.' of a path component, so
+ * "refs/heads/foo." would otherwise read refs/heads/foo. Same rule as Test-TcGitRefName (#148).
+ */
+export function isGitRefName(ref) {
+  if (typeof ref !== 'string' || !ref.startsWith('refs/')) return false;
+  if (ref.endsWith('.') || ref.endsWith('/') || ref.includes('..') || ref.includes('@{')) return false;
+  for (const ch of ref) {
+    const c = ch.codePointAt(0);
+    if (c < 0x20 || c === 0x7f || ' ~^:?*[\\'.includes(ch)) return false;
+  }
+  return ref.split('/').every((part) => part.length > 0 && !part.startsWith('.') && !part.endsWith('.lock'));
+}
 
 /** First line of a file, trimmed; null when it is not a file (missing / directory). */
 function readFirstLine(file) {
@@ -49,10 +76,10 @@ function readFirstLine(file) {
 /** As readFirstLine, but a file that exists and cannot be read throws (Read-TcGitCommit: never a stale sha). */
 function readFirstLineStrict(file) {
   if (!isFile(file)) return null;
-  return readText(file).split(/\r?\n/, 1)[0].trim();
+  return trimBlank(readText(file).split(/\r?\n/, 1)[0]);
 }
 
-/** UTF-8 text without a leading BOM (like .NET File.ReadAllText with UTF8). */
+/** UTF-8 text without a leading BOM (Read-TcGitCommit: UTF8Encoding without detection, U+FEFF dropped). */
 function readText(file) {
   return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
 }
@@ -113,8 +140,8 @@ export function gitDirsOf(root, strict = false) {
   let gitDir = null;
   if (isDir(dot)) gitDir = dot;
   else if (isFile(dot)) {
-    const m = /^gitdir:\s*(.+)$/.exec(first(dot) ?? '');
-    if (m) gitDir = path.win32.resolve(root, m[1].trim());
+    const m = /^gitdir:[ \t]*([^\n]+)$/.exec(first(dot) ?? '');
+    if (m) gitDir = path.win32.resolve(root, trimBlank(m[1]));
   }
   if (!gitDir || !isDir(gitDir)) return null;
   let commonDir = gitDir;
@@ -137,14 +164,14 @@ export function readGitHead(root) {
     const head = readFirstLineStrict(path.win32.join(dirs.gitDir, 'HEAD'));
     if (head === null) return null;
     if (OBJECT_NAME_RE.test(head)) return result(head.toLowerCase(), null, null); // detached HEAD
-    const m = /^ref:\s*(\S+)$/.exec(head);
+    const m = /^ref:[ \t]*([^ \t\n]+)$/.exec(head);
     if (!m) return result(null, null, 'HEAD does not hold a 40 / 64 hex object name or a ref');
     const ref = m[1];
     if (/(^|\/)\.invalid$/.test(ref) || isDir(path.win32.join(dirs.commonDir, 'reftable'))) {
       return result(null, null, 'reftable repository: refs are not plain files, commit not read (git is not started)');
     }
-    if (!ref.startsWith('refs/') || ref.includes('..') || ref.includes('\\') || ref.includes(':')) {
-      return result(null, null, `HEAD ref '${ref}' is refused (must be refs/..., without '..', '\\' or ':')`);
+    if (!isGitRefName(ref)) {
+      return result(null, null, `HEAD ref '${ref}' is refused (not a ref name git-check-ref-format accepts below refs/)`);
     }
     const search = pathKey(dirs.commonDir) === pathKey(dirs.gitDir) ? [dirs.gitDir] : [dirs.gitDir, dirs.commonDir];
     let commit = null;

@@ -3,12 +3,15 @@
 // Read-TcGitCommit (the PowerShell reader used by Get-TcModuleCommit and the install manifest), so
 // both sides give the same commit for every case.
 // Fake repositories only, in a temp folder with a non-ASCII name (contains 148); no git process.
+// The locked-file test (Windows only) starts powershell.exe -NoProfile -Command only to hold a file
+// open without sharing; it loads no module and touches no TcAuto state.
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { readGitHead, readHeadCommit, moduleInfoOf, MODULE_RELATIVE_PATH } from '../lib/module-source.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +44,7 @@ function build(c, i) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (typeof v === 'string') fs.writeFileSync(file, v.replaceAll('{case}', caseFwd), 'utf8');
     else if (v.bytes) fs.writeFileSync(file, Buffer.from(v.bytes));
+    else if (v.utf16) fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(v.utf16.replaceAll('{case}', caseFwd), 'utf16le')]));
     else fs.writeFileSync(file, (v.bom ? '\uFEFF' : '') + v.text.replaceAll('{case}', caseFwd), 'utf8');
   }
   return c.root ? path.join(dir, ...c.root.split('/')) : dir;
@@ -72,5 +76,67 @@ describe('module-source readGitHead (#148): shared fixture with Read-TcGitCommit
       const hasDotGit = fs.existsSync(path.join(root, '.git'));
       assert.equal(moduleInfoOf(path.join(root, MODULE_RELATIVE_PATH)).moduleCommit, hasDotGit ? want : null);
     });
+  });
+});
+
+/** Holds `file` open with FileShare.None in a child powershell.exe until release() is called. */
+function lockFile(file) {
+  return new Promise((resolve, reject) => {
+    const script =
+      "$l = [System.IO.File]::Open($env:TCAUTO_LOCK148, 'Open', 'ReadWrite', 'None'); " +
+      "[Console]::Out.WriteLine('locked148'); [Console]::Out.Flush(); [void][Console]::In.ReadLine(); $l.Dispose()";
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      env: { ...process.env, TCAUTO_LOCK148: file },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`lock helper did not start: ${err}`));
+    }, 60000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      if (out.includes('locked148')) {
+        clearTimeout(timer);
+        resolve({
+          release: () =>
+            new Promise((done) => {
+              child.on('exit', done);
+              child.stdin.end('\n');
+            })
+        });
+      }
+    });
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+  });
+}
+
+describe('module-source readGitHead (#148 review 6): a file that exists but cannot be read', () => {
+  const skip = process.platform !== 'win32' ? 'FileShare.None locking needs Windows (powershell.exe)' : false;
+  test('locked loose ref -> null, never the packed-refs sha, never throws', { skip }, async () => {
+    const dir = path.join(base, 'locked');
+    const put = (rel, text) => {
+      const f = path.join(dir, ...rel.split('/'));
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, text, 'utf8');
+      return f;
+    };
+    put('.git/HEAD', 'ref: refs/heads/main\n');
+    const loose = put('.git/refs/heads/main', '1111111111111111111111111111111111111111\n');
+    put('.git/packed-refs', '2222222222222222222222222222222222222222 refs/heads/main\n');
+    assert.equal(readHeadCommit(dir), '1111111111111111111111111111111111111111');
+    const lock = await lockFile(loose);
+    try {
+      assert.equal(readGitHead(dir), null);
+      assert.equal(readHeadCommit(dir), null);
+    } finally {
+      await lock.release();
+    }
+    assert.equal(readHeadCommit(dir), '1111111111111111111111111111111111111111');
   });
 });

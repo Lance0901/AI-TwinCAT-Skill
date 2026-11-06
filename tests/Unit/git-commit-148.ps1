@@ -44,6 +44,7 @@ foreach ($case in $cases) {
             $v = $p.Value
             if ($v -is [string]) { [System.IO.File]::WriteAllText($file, $v.Replace('{case}', $caseFwd), $noBom) }
             elseif ($null -ne $v.bytes) { [System.IO.File]::WriteAllBytes($file, [byte[]]@($v.bytes | ForEach-Object { [byte]$_ })) }
+            elseif ($null -ne $v.utf16) { [System.IO.File]::WriteAllBytes($file, [byte[]](@(0xFF, 0xFE) + [System.Text.Encoding]::Unicode.GetBytes(([string]$v.utf16).Replace('{case}', $caseFwd)))) }
             else { [System.IO.File]::WriteAllText($file, ([string]$v.text).Replace('{case}', $caseFwd), $(if ($v.bom) { $withBom } else { $noBom })) }
         }
     }
@@ -77,16 +78,22 @@ $garbageCase = [array]::IndexOf(@($cases | ForEach-Object { $_.name }), 'garbage
 $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } (Join-Path $base ('c{0:D2}' -f $garbageCase)) $srcModuleDir
 Check 'Get-TcSourceInfo: garbage .git file -> commit unknown + warning, no throw' ($s.commitSource -eq 'unknown' -and $null -eq $s.commit -and (@($s.warnings) -join ' ') -like '*.git cannot be read*') "$($s.commitSource) $(@($s.warnings) -join '; ')"
 
-# a loose ref file that exists but cannot be read: never a stale packed-refs sha
+# a loose ref file that exists but cannot be read: never a stale packed-refs sha; the reason (it names the
+# file in every UI culture, the localized wording is not compared) reaches -Failure and the manifest warning
 $lockDir = Join-Path $base 'locked'
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $lockDir '.git\refs\heads')
 [System.IO.File]::WriteAllText((Join-Path $lockDir '.git\HEAD'), "ref: refs/heads/main`n", $noBom)
 [System.IO.File]::WriteAllText((Join-Path $lockDir '.git\refs\heads\main'), "1111111111111111111111111111111111111111`n", $noBom)
 [System.IO.File]::WriteAllText((Join-Path $lockDir '.git\packed-refs'), "2222222222222222222222222222222222222222 refs/heads/main`n", $noBom)
 $lock = [System.IO.File]::Open((Join-Path $lockDir '.git\refs\heads\main'), 'Open', 'ReadWrite', 'None')
-try { $g = & $mod { param($r) Read-TcGitCommit -RepoRoot $r } $lockDir }
+try {
+    $g = & $mod { param($r) $why = $null; $x = Read-TcGitCommit -RepoRoot $r -Failure ([ref]$why); @{ g = $x; why = $why } } $lockDir
+    $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $lockDir $srcModuleDir
+}
 finally { $lock.Dispose() }
-Check 'locked loose ref -> $null (not the packed-refs sha), no throw' ($null -eq $g) "commit=$(Show $g.commit)"
+Check 'locked loose ref -> $null (not the packed-refs sha), no throw, -Failure has the reason' ($null -eq $g.g -and "$($g.why)" -like '*heads\main*') "commit=$(Show $g.g.commit) why=$(Show $g.why)"
+$w = @($s.warnings) -join '; '
+Check 'review 4: Get-TcSourceInfo warning carries the read failure' ($null -eq $s.commit -and $w -like '*.git cannot be read: *' -and $w -like '*heads\main*') $w
 
 Remove-Item -LiteralPath (Split-Path -Parent $base) -Recurse -Force
 "failed: $fail"

@@ -6,7 +6,7 @@
     "Both runners build every case in its own folder under a base folder with a non-ASCII name (U+6574 U+7406),",
     "and both must give the expected result, so the two sides agree on every case.",
     "files: path relative to the case folder -> text (UTF-8, no BOM, written as is; {case} = the case folder,",
-    "forward slashes), or { text, bom: true } (UTF-8 with BOM), or { bytes: [..] }. dirs: empty folders to create.",
+    "forward slashes), or { text, bom: true } (UTF-8 with BOM), or { bytes: [..] }, or { utf16: text } (UTF-16 LE with BOM). dirs: empty folders to create.",
     "root: the checkout root inside the case folder (default '.').",
     "expect: null = no usable .git; else commit / ref exactly, note = null or a substring of the note.",
     "Non-ASCII text is written as \\u escapes so this file stays ASCII."
@@ -208,6 +208,126 @@
       "name": "no .git at all",
       "dirs": ["src"],
       "expect": null
+    },
+    {
+      "name": "review 1: ref ending with '.' is refused (Windows would read refs/heads/foo)",
+      "files": { ".git/HEAD": "ref: refs/heads/foo.\n", ".git/refs/heads/foo": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: component starting with '.' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/.hidden\n", ".git/refs/heads/.hidden": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: component ending with '.lock' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/main.lock\n", ".git/refs/heads/main.lock": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '~' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a~1\n", ".git/refs/heads/a~1": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '^' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a^b\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '?' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a?b\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '*' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a*b\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '[' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a[b\n", ".git/refs/heads/a[b": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: '@{' is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a@{1}\n", ".git/refs/heads/a@{1}": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: control character is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a\u0001b\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: DEL is refused",
+      "files": { ".git/HEAD": "ref: refs/heads/a\u007fb\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: empty component is refused",
+      "files": { ".git/HEAD": "ref: refs/heads//main\n", ".git/refs/heads/main": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "refused" }
+    },
+    {
+      "name": "review 1: blank inside the ref is no ref line",
+      "files": { ".git/HEAD": "ref: refs/heads/a b\n", ".git/refs/heads/a b": "1111111111111111111111111111111111111111\n" },
+      "expect": { "commit": null, "ref": null, "note": "HEAD does not hold" }
+    },
+    {
+      "name": "review 1: tab inside the ref is no ref line",
+      "files": { ".git/HEAD": "ref: refs/heads/a\tb\n" },
+      "expect": { "commit": null, "ref": null, "note": "HEAD does not hold" }
+    },
+    {
+      "name": "review 2: UTF-16 LE .git file is garbage (no BOM detection)",
+      "files": { ".git": { "utf16": "gitdir: {case}/real\n" }, "real/HEAD": "2222222222222222222222222222222222222222\n" },
+      "expect": null
+    },
+    {
+      "name": "review 2: UTF-16 LE HEAD is no object name",
+      "files": { ".git/HEAD": { "utf16": "2222222222222222222222222222222222222222\n" } },
+      "expect": { "commit": null, "ref": null, "note": "HEAD does not hold" }
+    },
+    {
+      "name": "review 3: U+0085 (NEL) is part of the branch name, not a blank",
+      "files": { ".git/HEAD": "ref: refs/heads/a\u0085b\n", ".git/refs/heads/a\u0085b": "4444444444444444444444444444444444444444\n" },
+      "expect": { "commit": "4444444444444444444444444444444444444444", "ref": "refs/heads/a\u0085b", "note": null }
+    },
+    {
+      "name": "review 3: trailing U+0085 is not trimmed",
+      "files": { ".git/HEAD": "ref: refs/heads/main\u0085\n", ".git/refs/heads/main": "4444444444444444444444444444444444444444\n" },
+      "expect": { "commit": null, "ref": "refs/heads/main\u0085", "note": "unborn" }
+    },
+    {
+      "name": "review 3: U+FEFF after the ref is not trimmed (only a leading BOM is dropped)",
+      "files": { ".git/HEAD": "ref: refs/heads/main\ufeff\n", ".git/refs/heads/main": "5555555555555555555555555555555555555555\n" },
+      "expect": { "commit": null, "ref": "refs/heads/main\ufeff", "note": "unborn" }
+    },
+    {
+      "name": "review 3: U+3000 after a detached sha is not trimmed",
+      "files": { ".git/HEAD": "5555555555555555555555555555555555555555\u3000\n" },
+      "expect": { "commit": null, "ref": null, "note": "HEAD does not hold" }
+    },
+    {
+      "name": "review 5: packed-refs names are compared case-sensitively",
+      "files": { ".git/HEAD": "ref: refs/heads/Main\n", ".git/packed-refs": "6666666666666666666666666666666666666666 refs/heads/main\n" },
+      "expect": { "commit": null, "ref": "refs/heads/Main", "note": "unborn" }
+    },
+    {
+      "name": "review 5: 'REF:' in upper case is no ref line",
+      "files": { ".git/HEAD": "REF: refs/heads/main\n", ".git/refs/heads/main": "8888888888888888888888888888888888888888\n" },
+      "expect": { "commit": null, "ref": null, "note": "HEAD does not hold" }
+    },
+    {
+      "name": "review 5: multi-line .git file, the first line counts",
+      "files": { ".git": "gitdir: {case}/real\nextra\n", "real/HEAD": "cccccccccccccccccccccccccccccccccccccccc\n" },
+      "expect": { "commit": "cccccccccccccccccccccccccccccccccccccccc", "ref": null, "note": null }
+    },
+    {
+      "name": "review: packed-refs with a UTF-8 BOM",
+      "files": { ".git/HEAD": "ref: refs/heads/main\n", ".git/packed-refs": { "text": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main\n", "bom": true } },
+      "expect": { "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ref": "refs/heads/main", "note": null }
     }
   ]
 }
