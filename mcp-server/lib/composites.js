@@ -4,7 +4,8 @@
 //   ctx.callTool(name, a)  runs a catalog tool through the normal path (validation + timeout) -> result object
 //   ctx.lastIde            {ideProcessId, selectedBy, solution, ideMainHwnd} of the last successful ConnectIde, or null
 //   ctx.signal             AbortSignal of the MCP request (optional); forwarded to bridge calls
-//   ctx.module             {modulePath, moduleCommit, loadedAt} of the module the bridge has loaded (#41), or null
+//   ctx.module             {modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt} of the module the bridge has loaded (#41), or null
+//   ctx.runtime            where this server runs from (#162: lib/runtime-info.js runtimeInfoOf + launcherPid, ownerIdFrom), or undefined
 //   ctx.baseModulePath     module path the server was started with (TWINCAT_MODULE_PATH): the allow list of
 //                          ReloadModule is derived from its checkout
 //   ctx.onModuleReloaded(p) called after ReloadModule loaded module path p (index.js updates the probe scan script)
@@ -183,7 +184,8 @@ export const GetStatus = {
   name: 'GetStatus',
   description:
     'Snapshot of the whole stack: bridge state (IDE/ADS connected, AmsNetId), IDE info, TwinCAT system state and PLC state. ' +
-    'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit (40-character git sha HEAD of that checkout pointed at when the module was loaded, read from the .git files; null outside a git checkout; uncommitted changes in the working tree are NOT reflected, so moduleDirty is always null: it cannot be known without running git), moduleDirty and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). ' +
+    'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit, moduleDirty, moduleSource and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). moduleSource "git-checkout": moduleCommit is the 40-character git sha HEAD of that checkout pointed at when the module was loaded, read from the .git files, and moduleDirty is null (uncommitted changes in the working tree cannot be known without running git); moduleSource "installed" (#162, a runtime installed by scripts/Install-TcAutoRuntime.ps1): moduleCommit and moduleDirty come from its tcauto-source.json; any other path: all three are null. ' +
+    'data.bridge.runtime says where the MCP server itself runs from (#162): source ("installed" | "git-checkout" | "unknown"), runtimeDir, runtimeRoot (install root of an installed runtime), version, commit, branch, dirty, installedAt, sourcePath, launcherPid (set when the launcher started it: switch versions with ReloadRuntime) and ownerIdFrom ("launcher" | "server"). ' +
     'Fails with NOT_CONNECTED when the IDE is not connected (run ConnectIde first); each sub-query is independent, a failing one is reported in place without aborting the others.',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
@@ -204,8 +206,10 @@ export const GetStatus = {
       ...(stateResult.data ?? {}),
       modulePath: mod.modulePath ?? null,
       moduleCommit: mod.moduleCommit ?? null,
-      moduleDirty: null,
-      loadedAt: mod.loadedAt ?? null
+      moduleDirty: mod.moduleDirty ?? null,
+      moduleSource: mod.moduleSource ?? null,
+      loadedAt: mod.loadedAt ?? null,
+      runtime: ctx.runtime ?? null
     };
 
     if (!state.ideConnected) {
@@ -282,9 +286,15 @@ export const GetIdeModalDialog = {
 };
 
 function moduleSnapshot(m) {
-  // moduleDirty: always null; whether the working tree has uncommitted changes cannot be read from
-  // the .git files without running git (#41 review), so moduleCommit only names HEAD.
-  return { modulePath: m?.modulePath ?? null, moduleCommit: m?.moduleCommit ?? null, moduleDirty: null, loadedAt: m?.loadedAt ?? null };
+  // moduleDirty: null for a git checkout (uncommitted changes cannot be read from the .git files
+  // without running git, #41 review); an installed runtime (#162) has it in its tcauto-source.json.
+  return {
+    modulePath: m?.modulePath ?? null,
+    moduleCommit: m?.moduleCommit ?? null,
+    moduleDirty: m?.moduleDirty ?? null,
+    moduleSource: m?.moduleSource ?? null,
+    loadedAt: m?.loadedAt ?? null
+  };
 }
 
 export const ReloadModule = {
@@ -295,8 +305,9 @@ export const ReloadModule = {
     'Fail closed (#68): while the loaded module holds a lifecycle block in memory the reload is refused with RELOAD_LIFECYCLE_BLOCKED and nothing changes; report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed. ' +
     'BUILD_REQUIRED entries the module holds in memory are written to build-required.json first (data.buildRequiredPersisted lists the ones that were missing there); when that file cannot be read or written the reload is refused with RELOAD_BUILD_REQUIRED and nothing changes. ' +
     'The IDE and ADS connections are released first (DisconnectIde without Quit: the IDE keeps running; DisconnectAds): run ConnectIde (and ConnectAds) again after the reload. ' +
-    'Returns data.previous and data.current = {modulePath, moduleCommit, loadedAt} (moduleCommit: 40-character git sha HEAD pointed at, read from the .git files; uncommitted working-tree changes are not reflected, moduleDirty is always null). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
-    'Only the PowerShell module is reloaded: the MCP server (index.js, bridge.ps1) and its tool list (tools.json) stay those of the running server; a cmdlet or parameter the new module adds is not offered until the server restarts.',
+    'Returns data.previous and data.current = {modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt} (as GetStatus data.bridge: in a git checkout moduleCommit is the 40-character git sha HEAD pointed at, read from the .git files, and moduleDirty is null because uncommitted working-tree changes are not reflected). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
+    'Only the PowerShell module is reloaded: the MCP server (index.js, bridge.ps1) and its tool list (tools.json) stay those of the running server; a cmdlet or parameter the new module adds is not offered until the server restarts. ' +
+    'Installed runtime (#162, GetStatus data.bridge.runtime.source "installed"): only the loaded module can be reloaded (omit ModulePath); to switch to another version run scripts/Install-TcAutoRuntime.ps1 in the checkout, then ReloadRuntime (a tool of the launcher): it replaces the whole runtime (index.js, bridge.ps1, tools.json and the module) and refreshes the tool list.',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   timeoutMs: 210000, // retire 90 s + start 60 s + restore start 60 s
   inputSchema: {

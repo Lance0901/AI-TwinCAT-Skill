@@ -23,6 +23,10 @@
 //   TWINCAT_MCP_PROBE_SCAN_SCRIPT    file that defines $script:TcUiaDialogScan, dot-sourced by the probe
 //                              (default: <dir of TWINCAT_MODULE_PATH>/Private/Find-TcIdeModalDialog.ps1)
 //
+// Set by the launcher (#162, launcher/tcauto-launcher.mjs), read in lib/runtime-info.js, never by hand:
+//   TCAUTO_LAUNCHER_OWNER_ID / TCAUTO_LAUNCHER_PID  owner id for the bridges, used only when the pid is
+//                              this process's parent pid
+//
 // Test-only overrides (replace the powershell.exe spawn with any command, e.g. a mock bridge):
 //   TWINCAT_MCP_BRIDGE_COMMAND  executable to spawn instead of powershell.exe
 //   TWINCAT_MCP_BRIDGE_ARGS     JSON array of arguments for that executable

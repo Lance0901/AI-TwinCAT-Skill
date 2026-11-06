@@ -6,14 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 
-import { loadConfig, scanScriptFor } from './lib/config.js';
+import { loadConfig, scanScriptFor, MCP_SERVER_DIR } from './lib/config.js';
 import { PowerShellBridge, errorResult } from './lib/bridge.js';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
 import { ModalProbe, PROBED_TOOLS } from './lib/modal-probe.js';
 import { moduleInfoOf } from './lib/module-source.js';
+import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -77,7 +79,19 @@ function flushPendingLogs() {
 let loadedModule = null;
 const baseModulePath = config.modulePath;
 
+// #162: started by the launcher (tcauto-launcher.mjs)? Then its owner id is used for every bridge,
+// so the IDEs launched before a ReloadRuntime stay this session's (#152 N1, lib/runtime-info.js).
+// The variables are removed from this process so the PowerShell children do not inherit them.
+const launcher = launcherContextFrom(process.env, process.ppid);
+delete process.env[LAUNCHER_ENV.ownerId];
+delete process.env[LAUNCHER_ENV.pid];
+if (launcher && !launcher.ok) console.error(`[tcauto-mcp] launcher variables ignored: ${launcher.reason}`);
+const fromLauncher = launcher?.ok === true;
+// GetStatus data.bridge.runtime: where this index.js runs from (installed runtime or git checkout)
+const runtimeInfo = { ...runtimeInfoOf(MCP_SERVER_DIR), launcherPid: fromLauncher ? launcher.pid : null, ownerIdFrom: fromLauncher ? 'launcher' : 'server' };
+
 const bridge = new PowerShellBridge({
+  ownerId: fromLauncher ? launcher.ownerId : undefined,
   modulePath: config.modulePath,
   powershellPath: config.powershellPath,
   bridgeScript: config.bridgeScript,
@@ -371,6 +385,9 @@ function makeContext(signal) {
     get module() {
       return loadedModule ? { ...loadedModule } : null;
     },
+    get runtime() {
+      return { ...runtimeInfo };
+    },
     baseModulePath,
     onModuleReloaded: (modulePath) => {
       // the modal probe dot-sources the UIA scan of the loaded module unless it was set explicitly
@@ -416,9 +433,24 @@ function startProgress(name, request, extra) {
   return () => clearInterval(timer);
 }
 
+// #162 ReloadRuntime: tool calls running now (the launcher refuses a reload while one runs; the
+// retire below checks again) and whether this runtime has handed its bridge back.
+let activeToolCalls = 0;
+let runtimeRetired = false;
+
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
+  if (runtimeRetired) {
+    return toToolResult(
+      errorResult(
+        'RUNTIME_RETIRED',
+        `${name} NOT RUN: this runtime process was retired by the launcher (ReloadRuntime) and accepts no more calls.`,
+        'Call ReloadRuntime again (the launcher starts the runtime current.json names), then ConnectIde.'
+      )
+    );
+  }
+  activeToolCalls++;
   const stopProgress = startProgress(name, request, extra);
   try {
     // extra.signal fires on notifications/cancelled: a call still waiting in the bridge queue is
@@ -429,9 +461,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     console.error(`[tcauto-mcp] ${name} failed: ${err?.stack ?? err}`);
     return toToolResult(errorResult('INTERNAL_ERROR', `${name}: ${err?.message ?? String(err)}`));
   } finally {
+    activeToolCalls--;
     stopProgress();
   }
 });
+
+/**
+ * #162: the launcher's request `tcauto/retire` (ReloadRuntime, step 1). Only registered when this
+ * process was started by a launcher. The PowerShell bridge takes the same retire path as
+ * ReloadModule (bridge.ps1 op:'retire': refused with RELOAD_LIFECYCLE_BLOCKED / RELOAD_BUILD_REQUIRED
+ * and nothing changes, else IDE/ADS released and the child exits), so a ReloadRuntime can never drop
+ * an in-memory lifecycle block (#68). On success this process waits until the PowerShell child has
+ * exited (its launch records are then claimable by the next runtime's bridge with the same owner id,
+ * #152 N1) and answers every later tool call with RUNTIME_RETIRED; the launcher closes stdin next.
+ * The result is a {success, data|error} object (not a tool result).
+ */
+async function retireForLauncher() {
+  if (runtimeRetired) return { success: true, data: { retired: true, alreadyRetired: true } };
+  if (activeToolCalls > 0) {
+    return {
+      success: false,
+      error: {
+        code: 'RUNTIME_RELOAD_BUSY',
+        message: `ReloadRuntime NOT RUN: ${activeToolCalls} tool call(s) still running in the runtime. Nothing was changed.`,
+        hint: 'Wait until the running call has returned, then ReloadRuntime again.'
+      },
+      data: { activeToolCalls, notRun: true }
+    };
+  }
+  const child = bridge.child;
+  const exited = child && child.exitCode === null && child.signalCode === null ? new Promise((resolve) => child.once('exit', resolve)) : null;
+  const res = await bridge.retire(null, { timeoutMs: 90000 });
+  if (res?.success === true) {
+    runtimeRetired = true;
+    if (exited) {
+      let timer;
+      await Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, 15000)))]);
+      clearTimeout(timer);
+    }
+  }
+  return res;
+}
+
+if (fromLauncher) {
+  const RetireRequestSchema = z.object({ method: z.literal('tcauto/retire'), params: z.optional(z.any()) });
+  server.setRequestHandler(RetireRequestSchema, async () => retireForLauncher());
+}
 
 // ---------------------------------------------------------------- lifecycle
 
