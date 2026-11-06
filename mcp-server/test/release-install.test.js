@@ -6,7 +6,8 @@
 // -InstallRoot and all three config paths, with TCAUTO_TEST_FORBID_REAL_STATE=1, an empty
 // TCAUTO_RUNTIME_ROOT and its own TCAUTO_STATE_DIR. The real ~/.claude.json, Claude Desktop / Codex
 // configs and %LOCALAPPDATA%\TwinCATAutomation are never read or written.
-// node.exe in the zip: this test's own node (process.execPath, -AllowUnverifiedNode); npm is a
+// node.exe in the zip: a copy of this test's own node plus one byte (never the pinned build,
+// -AllowUnverifiedNode); npm is a
 // stand-in that copies mcp-server\node_modules of this checkout (no registry access).
 // Windows only (powershell.exe, tar.exe).
 import { test, describe, before, after } from 'node:test';
@@ -17,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setJson, removeJson, setToml, removeToml, applyToFile, tomlString, isOwned, usageOf } from '../../scripts/lib/tcauto-client-config.mjs';
+import { setJson, removeJson, setToml, removeToml, applyToFile, tomlString, isOwned, usageOf, longPath } from '../../scripts/lib/tcauto-client-config.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
@@ -66,6 +67,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
   let build; // build result data
   let pkg; // extracted zip
   let stateDir;
+  let fakeNode; // node.exe put into the zip
 
   function runInstaller(args, { noNode = false } = {}) {
     const env = { ...process.env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_RUNTIME_ROOT: '', TCAUTO_STATE_DIR: stateDir };
@@ -112,9 +114,14 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     assert.ok(fs.existsSync(path.join(nm, '@modelcontextprotocol', 'sdk', 'package.json')), 'run npm ci in mcp-server first');
     // robocopy (xcopy fails with exit 4 when stdin is not a console); exit codes below 8 mean success
     fs.writeFileSync(npm, `@echo off\r\nrobocopy "${nm}" node_modules /E /NFL /NDL /NJH /NJS /NP >nul\r\nif %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%\r\nexit /b 0\r\n`);
+    // a node.exe that is certainly not the pinned build (CI may run exactly the pinned version):
+    // this node plus one byte at the end (PE overlay, it still runs)
+    fakeNode = path.join(tmp('node'), 'node.exe');
+    fs.copyFileSync(process.execPath, fakeNode);
+    fs.appendFileSync(fakeNode, Buffer.from([0]));
     const r = spawnSync(
       POWERSHELL,
-      ['-NoProfile', '-NonInteractive', '-File', BUILD, '-OutputDir', out, '-Version', '0.0.0-issue20.test', '-AllowDirty', '-NodeExePath', process.execPath, '-AllowUnverifiedNode', '-NpmPath', npm],
+      ['-NoProfile', '-NonInteractive', '-File', BUILD, '-OutputDir', out, '-Version', '0.0.0-issue20.test', '-AllowDirty', '-NodeExePath', fakeNode, '-AllowUnverifiedNode', '-NpmPath', npm],
       { encoding: 'utf8', env: { ...process.env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_STATE_DIR: stateDir }, timeout: 400000 }
     );
     const { code, result } = resultOf(r);
@@ -135,7 +142,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     const manifest = readJson(path.join(pkg, 'tcauto-release.json'));
     assert.equal(manifest.version, '0.0.0-issue20.test');
     assert.equal(manifest.node.verified, false, 'a local node.exe that is not the pinned build is marked');
-    assert.equal(manifest.node.sha256, sha256(process.execPath));
+    assert.equal(manifest.node.sha256, sha256(fakeNode));
     const runtimes = fs.readdirSync(path.join(pkg, 'runtime'));
     assert.deepEqual(runtimes, [build.runtimeVersion]);
     const rt = path.join(pkg, 'runtime', build.runtimeVersion);
@@ -154,15 +161,18 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
   test('install: merge into three configs (backup, old value listed), -Verify without node on PATH, reinstall reuses, -Uninstall', () => {
     const root = path.join(tmp('root'), 'TwinCATAutomation');
     const c = fakeClients();
-    const nodeExe = path.join(root, 'node', 'node.exe');
-    const launcher = path.join(root, 'launcher', 'tcauto-launcher.mjs');
+    // the installer writes the long form of the path (TEMP may be 8.3, e.g. C:\Users\RUNNER~1 on CI)
+    const longRoot = path.join(longPath(path.dirname(root)), 'TwinCATAutomation');
+    const nodeExe = path.join(longRoot, 'node', 'node.exe');
+    const launcher = path.join(longRoot, 'launcher', 'tcauto-launcher.mjs');
 
     const ins = runInstaller(['-InstallRoot', root, ...c.args], { noNode: true });
     assert.equal(ins.code, 0, JSON.stringify(ins.result));
     const d = ins.result.data;
+    assert.equal(d.installRoot.toLowerCase(), longRoot.toLowerCase());
     assert.equal(d.version, build.runtimeVersion);
     assert.equal(d.release, '0.0.0-issue20.test');
-    assert.equal(sha256(nodeExe), sha256(process.execPath));
+    assert.equal(sha256(nodeExe), sha256(fakeNode));
     assert.equal(readJson(path.join(root, 'runtime', 'current.json')).version, build.runtimeVersion);
     assert.equal(fs.readFileSync(launcher, 'utf8'), fs.readFileSync(path.join(REPO, 'mcp-server', 'launcher', 'tcauto-launcher.mjs'), 'utf8'));
     assert.ok(d.verify.toolCount > 0, JSON.stringify(d.verify));
@@ -244,6 +254,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
   test('-Uninstall with a registration that only passes a file of this install (node <root>\\launcher\\...): INSTALL_SHARED, nothing removed; -Force removes it', () => {
     const root = path.join(tmp('root'), 'TwinCATAutomation');
     const c = fakeClients();
+    // as tmp() gives it: on CI an 8.3 path (C:\Users\RUNNER~1\...), while the install root is long
     const launcher = path.join(root, 'launcher', 'tcauto-launcher.mjs');
     const ins = runInstaller(['-InstallRoot', root, ...c.args, '-NoVerify']);
     assert.equal(ins.code, 0, JSON.stringify(ins.result));

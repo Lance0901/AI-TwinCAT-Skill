@@ -45,10 +45,32 @@ function sameValue(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** true when a command path lies below root (case-insensitive, Windows paths). */
+/**
+ * The long, real form of a Windows path: 8.3 names (C:\Users\RUNNER~1) expanded, as
+ * fs.realpathSync.native gives it for the deepest part that exists; the rest is appended as written.
+ * Both sides of a comparison go through it, so a registration written with a short name and an
+ * install root given with the long one (or the other way round) compare equal.
+ */
+export function longPath(p) {
+  let cur = path.win32.resolve(p);
+  const rest = [];
+  for (;;) {
+    try {
+      return path.win32.join(fs.realpathSync.native(cur), ...rest);
+    } catch {
+      const parent = path.win32.dirname(cur);
+      if (parent === cur) return path.win32.resolve(p);
+      rest.unshift(path.win32.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/** true when a path lies below root (long form, case-insensitive, Windows paths). */
 export function isOwned(command, root) {
   if (typeof command !== 'string' || !command || typeof root !== 'string' || !root) return false;
-  const norm = (p) => path.win32.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  if (!path.win32.isAbsolute(command)) return false; // 'node' (from PATH) is never below a folder
+  const norm = (p) => longPath(p).replace(/[\\/]+$/, '').toLowerCase();
   return norm(command).startsWith(norm(root) + '\\');
 }
 

@@ -76,6 +76,32 @@ function Get-FileSha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Get-TcLongPath {
+    # Full path with every existing component in its real (long) spelling: an 8.3 name such as
+    # C:\Users\RUNNER~1 becomes C:\Users\runneradmin (a directory listing matches short names as well
+    # and returns the long one). Components that do not exist yet are kept as written. Never throws.
+    param([Parameter(Mandatory)][string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $rootPart = [System.IO.Path]::GetPathRoot($full)
+    $parts = @($full.Substring($rootPart.Length).Split([char[]]'\', [System.StringSplitOptions]::RemoveEmptyEntries))
+    if ($parts.Count -eq 0) { return $full }
+    $cur = $rootPart.TrimEnd('\')
+    $exists = $true
+    foreach ($p in $parts) {
+        $next = $p
+        if ($exists -and $p.IndexOfAny([char[]]'*?') -lt 0) {
+            try {
+                $hits = @([System.IO.Directory]::GetFileSystemEntries($cur + '\', $p))
+                if ($hits.Count -eq 1) { $next = [System.IO.Path]::GetFileName($hits[0]) } else { $exists = $false }
+            }
+            catch { $exists = $false }
+        }
+        $cur = $cur + '\' + $next
+    }
+    if (-not $cur) { return $full }
+    return $cur
+}
+
 function Resolve-TcInstallRoot {
     # -InstallRoot, else %TCAUTO_RUNTIME_ROOT%, else %LOCALAPPDATA%\TwinCATAutomation (the launcher
     # finds current.json the same way). TCAUTO_TEST_FORBID_REAL_STATE=1 refuses the real one (#118).
@@ -84,8 +110,9 @@ function Resolve-TcInstallRoot {
         if ($env:TCAUTO_RUNTIME_ROOT) { $InstallRoot = $env:TCAUTO_RUNTIME_ROOT }
         else { $InstallRoot = Join-Path $env:LOCALAPPDATA 'TwinCATAutomation' }
     }
-    $root = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
-    $real = if ($env:LOCALAPPDATA) { [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'TwinCATAutomation')).TrimEnd('\') } else { $null }
+    # long form (no 8.3 names): it is written into the client configs and compared with other paths
+    $root = Get-TcLongPath -Path $InstallRoot
+    $real = if ($env:LOCALAPPDATA) { Get-TcLongPath -Path (Join-Path $env:LOCALAPPDATA 'TwinCATAutomation') } else { $null }
     if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1' -and $real -and $root -ieq $real) {
         Stop-Install -Code 'TCAUTO_REAL_STATE_REFUSED' -Message "TCAUTO_TEST_FORBID_REAL_STATE=1: refusing to install into the real $real (#118); pass -InstallRoot or TCAUTO_RUNTIME_ROOT."
     }

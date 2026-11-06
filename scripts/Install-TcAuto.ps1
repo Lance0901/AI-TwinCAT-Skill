@@ -152,7 +152,7 @@ if (-not $CodexConfig) {
 $configFiles = @{ ClaudeCode = $ClaudeCodeConfig; ClaudeDesktop = $ClaudeDesktopConfig; Codex = $CodexConfig }
 $backupStamp = (Get-Date).ToString('yyyyMMddTHHmmss')
 
-if ($env:TCAUTO_RUNTIME_ROOT -and ([System.IO.Path]::GetFullPath($env:TCAUTO_RUNTIME_ROOT).TrimEnd('\') -ine $InstallRoot)) {
+if ($env:TCAUTO_RUNTIME_ROOT -and ((Get-TcLongPath -Path $env:TCAUTO_RUNTIME_ROOT) -ine $InstallRoot)) {
     $script:TcInstallWarnings.Add("TCAUTO_RUNTIME_ROOT=$env:TCAUTO_RUNTIME_ROOT is set and differs from $InstallRoot`: a launcher started with it uses that root instead.")
 }
 
