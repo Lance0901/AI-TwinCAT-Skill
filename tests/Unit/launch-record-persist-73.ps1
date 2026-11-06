@@ -10,7 +10,8 @@
 #   U  a pid-unconfirmed record never restores ownership; -ForgetPendingLaunch clears the file
 #   Q  Disconnect-TcIde -Quit clears the record (data.launchRecordWarning when it cannot)
 #   X  #152 M1: record of another live TcAuto session (hostPid alive) -> not owned, -Kill refused,
-#      no second IDE; adopted once that host is gone
+#      no second IDE; adopted once that host is gone (same ownerId only, X7-X9 round 2 N1);
+#      X10 N2: no hostStartTime -> not ours; X1b N5 hint pid; W1 / W2 / M1b N4 skipped-save warning
 #   M  m1: an unconfirmed write never replaces a confirmed record; n3: non-IDE images not recorded
 #   J  m3 / m4: JSON of the wrong shape, cleanup only drops records that are certainly stale
 #   B  #29 solution-blocked -> launched after a restart (own / other session)
@@ -19,6 +20,8 @@
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
+# #152 N1: the MCP server passes its owner id to the bridge; this process plays that bridge
+$env:TCAUTO_OWNER_ID = 'owner-73-A'
 $modPath = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
@@ -48,6 +51,7 @@ $global:ModalQueue73 = New-Object System.Collections.ArrayList
 $global:Kills73 = New-Object System.Collections.ArrayList
 $global:Quits73 = 0
 $global:Blocked73 = $false
+$global:NextName73 = $null       # process name of the next launched IDE (default TcXaeShell)
 
 function New-FakeDte([string]$Solution = '') {
     $sol = New-Object PSObject
@@ -85,6 +89,7 @@ function Restart-Module {
             [void]$global:Launches73.Add($ProgId)
             $pidNew = $global:NextPid73; $global:NextPid73++
             $global:Procs73[$pidNew] = [DateTime]::Now
+            if ($null -ne $global:NextName73) { $global:Names73[$pidNew] = $global:NextName73 }
             $o = & $script:UnitNewFakeDte
             $global:LaunchedDtes73[$pidNew] = $o
             if ($global:LaunchInRot73) { $global:Rot73 = @($global:Rot73) + @(& $script:UnitNewRotEntry $pidNew $o $ProgId) }
@@ -144,7 +149,7 @@ function Restart-Module {
 
 function Reset-All {
     $global:Rot73 = @(); $global:Launches73.Clear(); $global:LaunchedDtes73 = @{}; $global:Procs73 = @{}; $global:Names73 = @{}
-    $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false
+    $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false; $global:NextName73 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Restart-Module
 }
@@ -327,7 +332,8 @@ try {
     Restart-Module
     $own = & $mod { param($p) Test-TcLaunchedIde -ProcessId $p } $first.Pid
     $r = Connect-TcIde -SolutionPath $sln
-    Check 'X1 record of another live session: not owned, but no second IDE (IDE_LAUNCH_PENDING other-session)' ($own -eq $false -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $r.data.ownedBySession -eq $false -and $r.data.launchedBySession -eq $false -and [int]$r.data.ideProcessId -eq 0 -and [int]$r.data.otherSession.hostPid -eq 9600 -and $global:Launches73.Count -eq 1) "owned=$own code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
+    Check 'X1 record of another live session: not owned, but no second IDE (IDE_LAUNCH_PENDING other-session)' ($own -eq $false -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $r.data.ownedBySession -eq $false -and $r.data.launchedBySession -eq $false -and [int]$r.data.ideProcessId -eq 0 -and [int]$r.data.otherSession.hostPid -eq 9600 -and $r.data.otherSession.hostState -eq 'alive' -and $global:Launches73.Count -eq 1) "owned=$own code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
+    Check 'X1b N5: the hint names the other session''s IDE pid, not 0' ($r.error.hint -match "pid $($first.Pid)" -and $r.error.hint -notmatch 'pid 0\b') "$($r.error.hint)"
     $d0 = Disconnect-TcIde -Quit -Kill
     Check 'X2 nothing of the other session is kept for -Kill (not connected, nothing killed)' ($global:Kills73.Count -eq 0 -and $d0.data.reason -eq 'not connected') "code=$($d0.error.code) reason=$($d0.data.reason)"
     Show-OwnInRot $first.Pid $slnL
@@ -354,13 +360,57 @@ try {
     $fg = Disconnect-TcIde -ForgetPendingLaunch
     Check 'X6 -ForgetPendingLaunch keeps the unconfirmed record of another live session' ($fg.success -and @($fg.data.forgottenLaunches).Count -eq 0 -and @($fg.data.otherSessionLaunches).Count -eq 1 -and @(Read-Records).Count -eq 1) ($fg | ConvertTo-Json -Compress -Depth 4)
 
+    # --- N1: a session that ended is taken over only by the same MCP server (ownerId) ---
+    foreach ($case in @(
+            @{ Name = 'X7 host gone, other ownerId (another MCP server / a later conversation)'; Owner = 'owner-73-B'; Env = 'owner-73-A' },
+            @{ Name = 'X8 host gone, record without ownerId'; Owner = $null; Env = 'owner-73-A' },
+            @{ Name = 'X9 host gone, this process has no ownerId (manual PowerShell)'; Owner = 'owner-73-A'; Env = $null })) {
+        Reset-All
+        $first = Start-OwnIde
+        Edit-Records { param($r) $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = $case.Owner }
+        $global:Procs73.Remove(9600)   # that host process is gone
+        $env:TCAUTO_OWNER_ID = $case.Env
+        Restart-Module
+        try {
+            $own = & $mod { param($p) Test-TcLaunchedIde -ProcessId $p } $first.Pid
+            $r = Connect-TcIde -SolutionPath $sln
+            Check "$($case.Name) -> second launch blocked, not owned" ($own -eq $false -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $r.data.otherSession.hostState -eq 'gone' -and $r.data.ownedBySession -eq $false -and $global:Launches73.Count -eq 1 -and [int]@(Read-Records)[0].hostPid -eq 9600) "owned=$own code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
+            Show-OwnInRot $first.Pid $slnL
+            $global:Modal73 = 'dialog'
+            $r = Connect-TcIde -SolutionPath $sln
+            $d = Disconnect-TcIde -Quit -Kill
+            Check "$($case.Name) -> solution-match attach not owned, -Kill refused" ($r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "owned=$($r.data.ownedBySession) code=$($d.error.code)"
+            $null = Disconnect-TcIde
+        }
+        finally { $env:TCAUTO_OWNER_ID = 'owner-73-A' }
+    }
+    Reset-All
+    $first = Start-OwnIde
+    Edit-Records { param($r) $r.hostStartTime = $null }   # N2: own pid but no hostStartTime
+    Restart-Module
+    $own = & $mod { param($p) Test-TcLaunchedIde -ProcessId $p } $first.Pid
+    $state = & $mod { param($x) Get-TcLaunchRecordHostState -Record $x } @(Read-Records)[0]
+    Check 'X10 N2: record of this pid without hostStartTime -> alive (fail closed), not owned' ($own -eq $false -and $state -eq 'alive') "owned=$own state=$state"
+
+    # --- N4: a skipped save is reported ---
+    Reset-All
+    $global:NextName73 = 'notepad'
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'W1 N4: launched process is not an IDE image -> record not written, data.launchRecordWarning' ($r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and [string]$r.data.launchRecordWarning -match 'not written' -and @(Read-Records).Count -eq 0) "code=$($r.error.code) warn=$($r.data.launchRecordWarning)"
+    Reset-All
+    $global:LaunchInRot73 = $false
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'W2 N4: unconfirmed launch without any pid -> not written, data.launchRecordWarning' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and [string]$r.data.launchRecordWarning -match 'no process id') "code=$($r.error.code) warn=$($r.data.launchRecordWarning)"
+
     # --- M: m1, an unconfirmed write never replaces a confirmed record ---
     Reset-All
     $first = Start-OwnIde
     $lid = [string]@(Read-Records)[0].launchId
     $null = & $mod { param($p, $s) Save-TcLaunchRecord -LaunchId ([guid]::NewGuid().ToString('N')) -ProcessId $p -PidSource 'start-time' -ProgId 'TcXaeShell.DTE.17.0' -Solution $s } $first.Pid $slnL
     $null = & $mod { param($p, $s, $l) Save-TcLaunchRecord -LaunchId $l -ProcessId $p -PidSource 'start-time' -ProgId 'TcXaeShell.DTE.17.0' -Solution $s } $first.Pid $slnL $lid
+    $warn = & $mod { $script:TcLaunchRecordWarning }
     $recs = @(Read-Records)
+    Check 'M1b N4: the blocked unconfirmed save sets launchRecordWarning' ([string]$warn -match 'confirmed record already names') "$warn"
     Check 'M1 unconfirmed save (same pid / same launch) does not replace the confirmed record' ($recs.Count -eq 1 -and $recs[0].pidSource -eq 'rot-identity' -and [string]$recs[0].launchId -eq $lid) ($recs | ConvertTo-Json -Compress)
     $null = & $mod { param($p, $s) Save-TcLaunchRecord -LaunchId ([guid]::NewGuid().ToString('N')) -ProcessId $p -PidSource 'main-window' -ProgId 'TcXaeShell.DTE.17.0' -Solution $s } $first.Pid $slnL
     $recs = @(Read-Records)
@@ -441,7 +491,7 @@ $m = Get-Module TwinCATAutomation
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Variable -Name Launches73, LaunchedDtes73, NextPid73, Procs73, Names73, Rot73, LaunchInRot73, GuessPid73, Modal73, ModalQueue73, Kills73, Quits73, Blocked73, OtherHostStart73 -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name Launches73, LaunchedDtes73, NextPid73, Procs73, Names73, Rot73, LaunchInRot73, GuessPid73, Modal73, ModalQueue73, Kills73, Quits73, Blocked73, OtherHostStart73, NextName73 -Scope Global -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"

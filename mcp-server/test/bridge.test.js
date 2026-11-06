@@ -381,3 +381,33 @@ describe('stampOrder (execution order on a result)', () => {
     assert.deepEqual(input, { success: true, data: { a: 1 } });
   });
 });
+describe('launch-record owner id (#152 N1)', () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  test('every child of one bridge gets the same TCAUTO_OWNER_ID (start, ReloadModule retire, stop + start)', async () => {
+    const owners = [];
+    const { bridge } = makeBridge({ env: { MOCK_BRIDGE_OWNER_ECHO: '1' }, onReady: (ready) => owners.push(ready.ownerId) });
+    bridges.push(bridge);
+    assert.match(bridge.ownerId, UUID);
+    await bridge.start();
+    const retired = await bridge.retire(bridge.modulePath);
+    assert.equal(retired.success, true);
+    const pong = await bridge.call('ping');          // the next call starts a fresh child (as after ReloadModule)
+    assert.equal(pong.success, true);
+    await bridge.stop();
+    await bridge.start();                            // as after BRIDGE_TIMEOUT / a dead child
+    assert.equal(owners.length, 3, `ready count ${owners.length}`);
+    for (const o of owners) assert.equal(o, bridge.ownerId);
+  });
+
+  test('another bridge (another MCP server) gets another owner id; an explicit ownerId is passed as is', async () => {
+    const a = makeBridge().bridge;
+    const b = makeBridge().bridge;
+    assert.notEqual(a.ownerId, b.ownerId);
+    const owners = [];
+    const { bridge } = makeBridge({ ownerId: 'owner-73-fixed', env: { MOCK_BRIDGE_OWNER_ECHO: '1' }, onReady: (ready) => owners.push(ready.ownerId) });
+    bridges.push(bridge);
+    await bridge.start();
+    assert.deepEqual(owners, ['owner-73-fixed']);
+  });
+});

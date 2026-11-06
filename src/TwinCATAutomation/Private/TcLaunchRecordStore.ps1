@@ -5,12 +5,19 @@
 #   [ { launchId; pid; startTime (UTC 'o'); imageName (process name, no .exe); progId;
 #       solution (the .sln it was launched for, $null = none / released); pidSource
 #       ('rot-identity' | 'main-window' | 'pid-unconfirmed'); launchedAt (UTC 'o'); createdAt
-#       (UTC 'o'); updatedAt (UTC 'o'); moduleInstanceId; hostPid; hostStartTime (UTC 'o') } ]
+#       (UTC 'o'); updatedAt (UTC 'o'); moduleInstanceId; hostPid; hostStartTime (UTC 'o');
+#       ownerId } ]
 # hostPid + hostStartTime = the PowerShell process (MCP bridge) whose module wrote / adopted the
-# record (#152 M1). Several bridges share the file: a record restores ownership only in its own
-# host ($PID) or when that host process is gone (Request-TcLaunchRecordOwnership, adopted under
-# the lock). A record of another LIVE TcAuto session still blocks a second launch for its .sln
-# (IDE_LAUNCH_PENDING probe 'other-session') but is never owned: -Kill is refused.
+# record (#152 M1). ownerId = $env:TCAUTO_OWNER_ID, a GUID the MCP server (node) creates once and
+# passes to every bridge child it spawns (first start, BRIDGE_TIMEOUT restart, ReloadModule), so
+# it is the same across those restarts and different for every other MCP server / conversation;
+# a manual PowerShell has none (#152 round 2 N1). Several sessions share the file: a record
+# restores ownership only in its own host ($PID with the same start time), or when its host
+# process is gone AND its ownerId equals this process's ownerId (adopted under the lock). Anything
+# else - another live session, a session that ended (a later conversation must not take over an
+# IDE the user may have kept working in), no ownerId, a host that cannot be verified - still
+# blocks a second launch for its .sln (IDE_LAUNCH_PENDING probe 'other-session') but is never
+# owned: -Kill is refused.
 # Read-modify-write under a named mutex like ide-solutions.json (#51); with TCAUTO_STATE_DIR set the
 # mutex name carries the hash of that directory (#118).
 # A record only counts while the SAME process is running: pid exists, its start time AND its image
@@ -107,7 +114,10 @@ function Get-TcLaunchRecordHostState {
     if ($hp -eq $PID) {
         $mine = Get-TcLaunchHostStartTime
         $rec = $null; try { $rec = (ConvertTo-TcUtcDate $Record.hostStartTime).ToString('o') } catch { $rec = $null }
-        if ($null -eq $rec -or $null -eq $mine -or $rec -eq $mine) { return 'self' }
+        # N2: a record without (parsable) hostStartTime, or our own start time unreadable: not
+        # provably ours -> 'alive' (fail closed)
+        if ($null -eq $rec -or $null -eq $mine) { return 'alive' }
+        if ($rec -eq $mine) { return 'self' }
         return 'gone'   # a recycled pid: the writer was another, earlier process
     }
     $p = $null
@@ -119,10 +129,25 @@ function Get-TcLaunchRecordHostState {
     'alive'
 }
 
+# The ownerId of this process ($env:TCAUTO_OWNER_ID, set by the MCP server), or $null.
+function Get-TcLaunchOwnerId {
+    $o = $env:TCAUTO_OWNER_ID
+    if ([string]::IsNullOrWhiteSpace($o)) { return $null }
+    $o.Trim()
+}
+
+# May this process own / adopt / forget -Record? Its host is this process ('self'), or its host is
+# gone and it has the same non-empty ownerId (the same MCP server, N1).
 function Test-TcLaunchRecordClaimable {
     [CmdletBinding()]
     param([AllowNull()][object]$Record)
-    (Get-TcLaunchRecordHostState -Record $Record) -in 'self', 'gone'
+    $state = Get-TcLaunchRecordHostState -Record $Record
+    if ($state -eq 'self') { return $true }
+    if ($state -ne 'gone') { return $false }
+    $mine = Get-TcLaunchOwnerId
+    if ($null -eq $mine) { return $false }
+    $theirs = $null; try { $theirs = [string]$Record.ownerId } catch { $theirs = $null }
+    (-not [string]::IsNullOrWhiteSpace($theirs)) -and [string]::Equals($theirs.Trim(), $mine, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Test-TcLaunchRecordConfirmed {
@@ -188,12 +213,15 @@ function Save-TcLaunchRecord {
         [Parameter(Mandatory)][int]$ProcessId,
         [string]$PidSource, [string]$ProgId, [AllowNull()][string]$Solution, [AllowNull()][object]$LaunchTime
     )
-    if ($ProcessId -le 0) { return $null }
-    try { $p = Get-Process -Id $ProcessId -ErrorAction Stop } catch { return $null }   # gone: nothing to record
+    # N4: every skip is reported (data.launchRecordWarning): the launch is then not protected
+    # across a bridge restart
+    $skip = { param($why) $script:TcLaunchRecordWarning = "launch record of pid $ProcessId not written: $why"; Write-Verbose $script:TcLaunchRecordWarning; $script:TcLaunchRecordWarning }
+    if ($ProcessId -le 0) { return (& $skip 'no process id') }
+    try { $p = Get-Process -Id $ProcessId -ErrorAction Stop } catch { return (& $skip 'the process is not running') }
     $start = $null; try { $start = ([DateTime]$p.StartTime).ToUniversalTime().ToString('o') } catch { $start = $null }
     $image = [string]$p.ProcessName
-    if ($null -eq $start -or [string]::IsNullOrWhiteSpace($image)) { return $null }   # cannot be validated later
-    if ((Get-TcIdeImageNames) -notcontains $image) { return $null }   # not an IDE process (n3)
+    if ($null -eq $start -or [string]::IsNullOrWhiteSpace($image)) { return (& $skip 'its start time / image name is not readable, so it could not be validated later') }
+    if ((Get-TcIdeImageNames) -notcontains $image) { return (& $skip "its image '$image' is not an IDE ($((Get-TcIdeImageNames) -join ' / '))") }   # n3
     $now = (Get-Date).ToUniversalTime().ToString('o')
     $launchedAt = $now
     if ($null -ne $LaunchTime) { try { $launchedAt = ([DateTime]$LaunchTime).ToUniversalTime().ToString('o') } catch { $launchedAt = $now } }
@@ -203,24 +231,29 @@ function Save-TcLaunchRecord {
         solution = $(if ([string]::IsNullOrWhiteSpace($Solution)) { $null } else { $Solution }); pidSource = $src
         launchedAt = $launchedAt; createdAt = $now; updatedAt = $now
         moduleInstanceId = $script:TcModuleInstanceId; hostPid = $PID; hostStartTime = (Get-TcLaunchHostStartTime)
+        ownerId = (Get-TcLaunchOwnerId)
     }
     $isConfirmed = ($src -ne 'pid-unconfirmed')
-    Update-TcLaunchRecordFile -What 'launch record save' -Mutate {
+    $res = @{ blocked = $false }
+    $failure = Update-TcLaunchRecordFile -What 'launch record save' -Mutate {
         param($all)
         $old = @($all | Where-Object { [string]$_.launchId -eq $LaunchId }) | Select-Object -First 1
         if ($null -ne $old) {
             # m1: an unconfirmed write never replaces a confirmed record of the same launch
-            if (-not $isConfirmed -and (Test-TcLaunchRecordConfirmed -Record $old)) { return $all }
+            if (-not $isConfirmed -and (Test-TcLaunchRecordConfirmed -Record $old)) { $res.blocked = $true; return $all }
             try { $rec.createdAt = (ConvertTo-TcUtcDate $old.createdAt).ToString('o') } catch { }
         }
         # same pid, other launch: only a CONFIRMED record replaces it; an unconfirmed one is not
         # written when a confirmed record names that pid (it would replace / shadow it)
         $samePid = @($all | Where-Object { [string]$_.launchId -ne $LaunchId -and (Test-TcLaunchRecordPid -Record $_ -ProcessId $ProcessId) })
-        if (-not $isConfirmed -and @($samePid | Where-Object { Test-TcLaunchRecordConfirmed -Record $_ }).Count -gt 0) { return $all }
+        if (-not $isConfirmed -and @($samePid | Where-Object { Test-TcLaunchRecordConfirmed -Record $_ }).Count -gt 0) { $res.blocked = $true; return $all }
         $keep = @($all | Where-Object { [string]$_.launchId -ne $LaunchId })
         if ($isConfirmed) { $keep = @($keep | Where-Object { -not (Test-TcLaunchRecordPid -Record $_ -ProcessId $ProcessId) }) }
         $keep + @($rec)
     }
+    if ($null -ne $failure) { return $failure }
+    if ($res.blocked) { return (& $skip 'a confirmed record already names this process (an unconfirmed write never replaces it)') }
+    $null
 }
 
 function Test-TcLaunchRecordPid {
@@ -229,16 +262,17 @@ function Test-TcLaunchRecordPid {
     $p -eq $ProcessId
 }
 
-# #152 M1: may this module instance own the IDE of -Record? Only a record of this host ($PID) or
-# of a host process that is gone. A gone host's record is adopted under the lock (hostPid /
-# hostStartTime / moduleInstanceId become this process) so a third bridge cannot claim it too;
+# #152 M1 / N1: may this module instance own the IDE of -Record? Only a record of this host ($PID,
+# same start time), or of a host process that is gone with the SAME ownerId (the same MCP server:
+# a bridge restart / ReloadModule). Such a record is adopted under the lock (hostPid /
+# hostStartTime / moduleInstanceId become this process) so another bridge cannot claim it too;
 # when that write fails the answer is $false (fail closed).
 function Request-TcLaunchRecordOwnership {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Record)
     $state = Get-TcLaunchRecordHostState -Record $Record
     if ($state -eq 'self') { return $true }
-    if ($state -ne 'gone') { return $false }
+    if (-not (Test-TcLaunchRecordClaimable -Record $Record)) { return $false }
     $res = @{ adopted = $false }
     $lid = [string]$Record.launchId
     $failure = Update-TcLaunchRecordFile -What 'launch record adopt' -Mutate {

@@ -388,7 +388,10 @@ function Connect-TcIde {
                     'other-session' { "it was launched by another TcAuto session that is still running (host pid $($other.hostPid)); it is not attached and not owned here" }
                     default { "its DTE did not answer within $($wait.waitedSec) s ($probe)" }
                 }
-                $hint = ([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', $(if ($ownPid -gt 0) { [string]$ownPid } else { '<data.ideProcessId>' }))
+                # N5: <pid> = the process the caller should look at (own pid, the other session's IDE, or the guessed pid)
+                $hintPid = if ($ownPid -gt 0) { [string]$ownPid } elseif ($null -ne $other) { [string]$other.processId } elseif ($null -ne $own.guessedRecord) { [string]([int]$own.guessedRecord.pid) } else { '<data.ideProcessId>' }
+                $hint = ([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', $hintPid)
+                if ($null -ne $script:TcLaunchRecordWarning) { $pendingData | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning -Force }
                 return New-TcResult -Success $false `
                     -ErrorMessage "IDE_LAUNCH_PENDING: $(if ($null -ne $other) { 'another TcAuto session' } else { 'this session' }) launched an IDE$(if ($ownPid -gt 0) { " (pid $ownPid)" }) for '$normalizedSolutionPath' that may still be running, but $why. No second IDE was launched." `
                     -ErrorCode 'IDE_LAUNCH_PENDING' -Hint $hint -Data $pendingData
@@ -656,6 +659,7 @@ function Connect-TcIde {
                     launched          = $true
                     solution          = $normalizedSolutionPath
                     connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+                    launchRecordWarning = $script:TcLaunchRecordWarning
                 })
         }
     }
@@ -672,7 +676,7 @@ function Connect-TcIde {
     $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
-            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary })
+            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning })
     }
 
     # Automation Interface silent mode: ITcAutomationSettings.SilentMode = true makes XAE answer
