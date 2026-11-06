@@ -387,7 +387,9 @@ function Add-TcLaunchedIde {
 # #73: not in the module memory (a restarted bridge / ReloadModule / Import-Module -Force) ->
 # the persisted launch record of that process (TcLaunchRecordStore.ps1): only a VALID one (pid +
 # start time + image name) whose pid was CONFIRMED (rot-identity / main-window) restores the
-# ownership, and it is cached in memory. An unreadable / corrupt file restores nothing.
+# ownership - and only when it is this host's record or its host process is gone (#152 M1,
+# Request-TcLaunchRecordOwnership) - and it is cached in memory. An unreadable / corrupt file
+# restores nothing.
 function Test-TcLaunchedIde {
     [CmdletBinding()]
     param([Parameter(Mandatory)][int]$ProcessId)
@@ -396,6 +398,8 @@ function Test-TcLaunchedIde {
     if ($null -ne $script:TcLaunchedIdes -and $script:TcLaunchedIdes.ContainsKey($key)) { return $true }
     $rec = Find-TcConfirmedLaunchRecord -ProcessId $ProcessId
     if ($null -eq $rec) { return $false }
+    # #152 M1: launched by another LIVE TcAuto session (bridge) -> not ours
+    if (-not (Request-TcLaunchRecordOwnership -Record $rec)) { Write-Verbose "IDE pid $ProcessId was launched by another TcAuto session (host pid $($rec.hostPid)); not owned"; return $false }
     if ($null -eq $script:TcLaunchedIdes) { $script:TcLaunchedIdes = @{} }
     $script:TcLaunchedIdes[$key] = $true
     Write-Verbose "IDE pid $ProcessId owned by this session: launch record restored from the state file ($($rec.pidSource), module instance $($rec.moduleInstanceId))"

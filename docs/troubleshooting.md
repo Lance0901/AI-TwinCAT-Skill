@@ -295,6 +295,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `scan-incomplete`:modal 掃描沒完成，所以沒讀 DTE(帶 `data.modalScan`)。
   - `pid-unconfirmed`:pid 無法確認，見下面 M2。
   - `progid-mismatch`:它是用別的 ProgID 啟動的(`data.progIdMismatch = { requested; launched }`)。
+  - `other-session`:是另一個仍在執行的 TcAuto session(bridge)啟動的(`data.otherSession = { hostPid; moduleInstanceId; processId; pidSource }`),不 attach、不算 owned、`data.ideProcessId = 0`,見「啟動紀錄持久化(#73 / #149)」。
   - 那個 IDE 有 modal dialog 時改回 `IDE_MODAL_DIALOG`。
 - **為什麼**:VS2022 冷啟動時，第一次 `Connect-TcIde` 可能在開 solution 前就回 `MODAL_SCAN_INCOMPLETE`;舊版重試時找不到「開著這個 .sln 的 IDE」,又多開一個 VS2022。現在模組記下本 session 為哪個 .sln 啟動了哪個 IDE:DTE 物件、ProgID、確認過的 pid + StartTime。重試時:
   - 那個行程還在(pid 與 StartTime 都相同，回收的 pid 不算),就先掃 modal dialog,再讀 DTE,回應了就 attach(`data.selectedBy = 'session-launched'`,`ownedBySession = true`)。
@@ -316,27 +317,35 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `Connect-TcIde` 再連到同一個 pid 時 `ownedBySession = false`,`Disconnect-TcIde -Quit -Kill` 回 `IDE_NOT_OWNED`(#73,實測 2026-11-05,4024 TcXaeShell 32-bit,PR #129 ReloadModule 驗證)。
   - 那個 IDE 還在冷啟動時，重試的 `Connect-TcIde -SolutionPath` 可能再開第二個 IDE(#149)。
 - **現在**:每次啟動 IDE、拿到 pid(確認的或猜的)時，寫一筆紀錄到 `<Get-TcStateDir>\launched-ides.json`(`TCAUTO_STATE_DIR`,沒設就是 `%TEMP%\TwinCATAutomation`)。
-  - 欄位:`launchId`、`pid`、`startTime`(UTC)、`imageName`(行程名稱，不含 .exe)、`progId`、`solution`、`pidSource`、`launchedAt` / `createdAt` / `updatedAt`(UTC)、`moduleInstanceId`(寫入的模組 instance)、`hostPid`(寫入的 PowerShell / bridge 行程)。
+  - 欄位:`launchId`、`pid`、`startTime`(UTC)、`imageName`(行程名稱，不含 .exe)、`progId`、`solution`、`pidSource`、`launchedAt` / `createdAt` / `updatedAt`(UTC)、`moduleInstanceId`(寫入的模組 instance)、`hostPid` + `hostStartTime`(寫入或接手這筆紀錄的 PowerShell / bridge 行程)。
   - 鎖的做法和 `ide-solutions.json` 一樣:read-modify-write 在 named mutex `Local\TwinCATAutomation-launched-ides` 下進行;設了 `TCAUTO_STATE_DIR` 時，名稱加上該目錄的 hash。`[IO.File]::Replace` 原子取代檔案。
   - 模組記憶體只當快取。記憶體沒有的，就讀檔案。
-- **讀回時一定驗證**:pid 存在，而且 StartTime 和 image name 都和紀錄相同，才算數，所以回收的 pid 不會被當成自己的。不符的紀錄不用，下次寫入時清掉。
-- **誰能恢復 ownership**:只有 `pidSource` 是 `rot-identity` 或 `main-window` 的紀錄可以(`Test-TcLaunchedIde` → `data.ownedBySession = true`,`-Kill` 允許)。
+- **讀回時一定驗證**:pid 存在、StartTime 和 image name 都和紀錄相同，而且 image name 是 IDE(`TcXaeShell` / `devenv`),才算數，所以回收的 pid 不會被當成自己的。不符的紀錄不用。
+- **寫入時清理(#152 m3)**:只丟「確定不是同一個行程」的紀錄：行程不存在，或 StartTime 讀得到但不符(以及 pid / StartTime 根本無法解析的格式錯誤紀錄)。StartTime 讀不到(例如權限)的紀錄保留原樣。
+- **去重(#152 m1)**:同一個 `launchId`,或同一個 pid 且新紀錄是 confirmed,才取代舊紀錄。unconfirmed 的寫入不覆蓋 confirmed 的紀錄。
+- **誰能恢復 ownership**:只有 `pidSource` 是 `rot-identity` 或 `main-window` 的紀錄可以(`Test-TcLaunchedIde` → `data.ownedBySession = true`,`-Kill` 允許),而且還要是自己的(#152 M1):
+  - `hostPid` 等於本行程(`$PID`),或 `hostPid` + `hostStartTime` 對應的行程已經不在(pid 不存在，或 StartTime 不同)。後者在鎖內改寫 host 欄位、接手這筆紀錄，第三個 bridge 就不會再搶。寫不進去就不接手(fail closed)。
+  - 其他情況(另一個還活著的 TcAuto session,或 host 無法確認)一律視為別的 session 啟動的：**仍擋住同一個 .sln 的第二次啟動**(`IDE_LAUNCH_PENDING`,`probe = 'other-session'`),但不 attach、不算 owned,`-Kill` 被拒(`IDE_NOT_OWNED`)。
+  - 多個 bridge 共用同一個紀錄檔時，靠這個判斷不會認領對方啟動的 IDE。
   - `pid-unconfirmed`(pid 只是用啟動時間猜的，#147 M2)**永遠不恢復 ownership**。跨行程時沒有 DTE 物件可比對，也無法事後確認。
-  - 它只用來擋住同一個 .sln 的第二次啟動(`IDE_LAUNCH_PENDING`,`probe = 'pid-unconfirmed'`),直到那個行程結束，或 `Disconnect-TcIde -ForgetPendingLaunch`(會一起清掉檔案裡的這筆)。
-- **清除**:`Disconnect-TcIde -Quit` 成功、`-Quit -Kill` 殺掉，或發現行程已結束(`alreadyExited`)時，刪掉該 pid 的紀錄。IDE 改開別的 solution 時，紀錄保留 ownership,但 `solution` 清成 null。
+  - **猜到的 pid 仍會寫入**,只用來擋住同一個 .sln 的第二次啟動(`IDE_LAUNCH_PENDING`,`probe = 'pid-unconfirmed'`,猜的 pid 放在 `data.guessedProcessId`,`data.ideProcessId = 0`),不給 ownership。直到那個行程(檔案裡的 pid + StartTime)結束，或 `Disconnect-TcIde -ForgetPendingLaunch`(會一起清掉檔案裡的這筆;另一個還活著的 session 的紀錄不清，列在 `data.otherSessionLaunches`)。
+  - 從檔案恢復的這種紀錄沒有 DTE 物件，永遠無法確認，所以不等待(不跑 60 s 的 wait),直接回 `pid-unconfirmed`。
+  - **和 #149 原規格不同**:#149 寫「只寫入確認過的 pid」「未確認的記錄不能沿用」。這裡改成寫入、但只拿來擋啟動：#149 的目的就是 bridge 重啟後不要再開第二個 IDE,丟掉這筆就會再開;不給 ownership,所以不會殺錯或接錯使用者的 IDE。代價：如果猜到的其實是使用者的 IDE,它開著的期間這個 .sln 不會自動再啟動，要用 `-ForgetPendingLaunch` 解開。
+- **清除**:`Disconnect-TcIde -Quit` 成功、`-Quit -Kill` 殺掉，或發現行程已結束(`alreadyExited`)時，刪掉該 pid 的紀錄(寫不進去時結果帶 `data.launchRecordWarning`)。IDE 改開別的 solution 時，紀錄保留 ownership,但 `solution` 清成 null。
 - **fail closed**:紀錄檔讀不到(被鎖住、權限)或內容壞掉時，**不把任何 IDE 當成 owned**,也不拿它擋啟動;正常的 `ConnectIde` attach(solution-match 等)照常進行,`data.ownedBySession = false`。
   - 這次呼叫讀寫失敗時，`Connect-TcIde` 成功結果帶 `data.launchRecordWarning`。
   - 下一次寫入時，壞掉的檔案改名成 `launched-ides.json.corrupt-<time>`,裡面的紀錄不再算數。
 - **限制**:
   - 本 module instance 自己啟動的 IDE 記在記憶體，檔案壞掉也仍算 owned;從檔案恢復的也快取在記憶體。
   - 有設和沒設 `TCAUTO_STATE_DIR` 的行程用不同的檔案，彼此看不到。
+  - 舊 bridge 行程在重啟後仍殘留(沒結束)時，新 bridge 不會接手它的紀錄(視為另一個還活著的 session)。
   - 不要手動刪改這個檔案。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
 ### LAUNCH_RECORD_UNAVAILABLE
 
 - **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。
-- **為什麼**:模組記憶體裡 pid 未確認的紀錄已清掉，但 `launched-ides.json` 讀不到或寫不進去，通常是另一個 TcAuto 行程正拿著鎖(等待上限約 2 s)。檔案裡的那筆還在，重啟後的 bridge 仍可能因此回 `IDE_LAUNCH_PENDING`。
+- **為什麼**:模組記憶體裡 pid 未確認的紀錄已清掉，但 `launched-ides.json` 讀不到或寫不進去。可能原因：鎖被另一個 TcAuto 行程佔用(等待上限 2 s)、權限不足、檔案被其他程式開著。檔案裡的那筆還在，重啟後的 bridge 仍可能因此回 `IDE_LAUNCH_PENDING`。
 - **下一步**:稍後重跑同一個 `Disconnect-TcIde -ForgetPendingLaunch`。不要手動刪改這個檔案。
 
 ### IDE_TIMEOUT

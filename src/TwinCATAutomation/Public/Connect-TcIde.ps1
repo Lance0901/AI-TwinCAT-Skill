@@ -330,7 +330,9 @@ function Connect-TcIde {
             if (-not [string]::IsNullOrWhiteSpace($ProgId) -and -not ([string]$own.progId -ieq $ProgId)) {
                 $mismatch = [PSCustomObject]@{ requested = $ProgId; launched = [string]$own.progId }
             }
-            $wait = if ($null -eq $mismatch) { Wait-TcSessionLaunchedIde -Record $own } else { $null }
+            # #152 M1: launched by another live TcAuto session -> blocks a second launch, never attached / owned
+            $other = $own.otherSession
+            $wait = if ($null -eq $mismatch -and $null -eq $other) { Wait-TcSessionLaunchedIde -Record $own } else { $null }
             if ($null -ne $wait -and $wait.state -eq 'ready') {
                 $dte = $wait.entry['Object']
                 $usedProgId = [string]$wait.entry['ProgId']
@@ -347,13 +349,13 @@ function Connect-TcIde {
                 # Still starting / blocked / not ours to attach: a CONFIRMED pid is kept (no DTE
                 # calls), so Get-TcIdeModalDialog -ProcessId and Disconnect-TcIde -Quit -Kill can act
                 # on it; nothing is launched.
-                $ownPid = [int]$own.processId
+                $ownPid = if ($null -ne $other) { 0 } else { [int]$own.processId }
                 if ($ownPid -gt 0) {
                     $script:TcIdeProcessId = $ownPid
                     $script:TcIdeSelectedBy = 'launched'
                     try { $script:TcIdeStartTime = (Get-Process -Id $ownPid -ErrorAction Stop).StartTime } catch { $script:TcIdeStartTime = $null }
                 }
-                $probe = if ($null -ne $mismatch) { 'progid-mismatch' } else { $wait.state }
+                $probe = if ($null -ne $other) { 'other-session' } elseif ($null -ne $mismatch) { 'progid-mismatch' } else { $wait.state }
                 $pendingData = [PSCustomObject]@{
                     ideProcessId      = $ownPid
                     ideStartTime      = $(if ($null -ne $own.processKey) { ($own.processKey -split '\|', 2)[1] } else { $null })
@@ -362,7 +364,7 @@ function Connect-TcIde {
                     progIdMismatch    = $mismatch
                     probe             = $probe
                     waitedSec         = $(if ($null -ne $wait) { $wait.waitedSec } else { 0 })
-                    launchedBySession = $true
+                    launchedBySession = ($null -eq $other)
                     ownedBySession    = ($ownPid -gt 0)
                     attached          = $false
                     launched          = $false
@@ -370,6 +372,9 @@ function Connect-TcIde {
                     candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
                     connectSec        = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
                 }
+                # m2: a pid only guessed (restored pid-unconfirmed record) is reported apart, never as ideProcessId
+                if ($null -ne $own.guessedRecord) { $pendingData | Add-Member -NotePropertyName 'guessedProcessId' -NotePropertyValue ([int]$own.guessedRecord.pid) }
+                if ($null -ne $other) { $pendingData | Add-Member -NotePropertyName 'otherSession' -NotePropertyValue $other }
                 if ($probe -eq 'dialog') {
                     return New-TcModalDialogResult -Dialog $wait.dialog -Operation "Connect-TcIde -SolutionPath (IDE pid $ownPid launched by this session for this solution; no second IDE launched)" -Data $pendingData
                 }
@@ -380,11 +385,12 @@ function Connect-TcIde {
                 $why = switch ($probe) {
                     'progid-mismatch' { "it was launched as $($own.progId), not the requested -ProgId $ProgId; it is not attached" }
                     'pid-unconfirmed' { 'its process id is not confirmed (the ROT has no entry with that DTE object yet), so no IDE is attached' }
+                    'other-session' { "it was launched by another TcAuto session that is still running (host pid $($other.hostPid)); it is not attached and not owned here" }
                     default { "its DTE did not answer within $($wait.waitedSec) s ($probe)" }
                 }
                 $hint = ([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', $(if ($ownPid -gt 0) { [string]$ownPid } else { '<data.ideProcessId>' }))
                 return New-TcResult -Success $false `
-                    -ErrorMessage "IDE_LAUNCH_PENDING: this session launched an IDE$(if ($ownPid -gt 0) { " (pid $ownPid)" }) for '$normalizedSolutionPath' that may still be running, but $why. No second IDE was launched." `
+                    -ErrorMessage "IDE_LAUNCH_PENDING: $(if ($null -ne $other) { 'another TcAuto session' } else { 'this session' }) launched an IDE$(if ($ownPid -gt 0) { " (pid $ownPid)" }) for '$normalizedSolutionPath' that may still be running, but $why. No second IDE was launched." `
                     -ErrorCode 'IDE_LAUNCH_PENDING' -Hint $hint -Data $pendingData
             }
         }

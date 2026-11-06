@@ -55,7 +55,8 @@ function Disconnect-TcIde {
         the ones persisted in launched-ides.json by an earlier module instance / bridge (#149),
         so the next Connect-TcIde -SolutionPath may launch again. Closes nothing, keeps the
         connection (data.forgottenLaunches; LAUNCH_RECORD_UNAVAILABLE when the file could not be
-        updated). Close that IDE yourself first if it is still running. Not with -Quit / -Kill
+        updated; records of another TcAuto session that is still running are kept,
+        data.otherSessionLaunches). Close that IDE yourself first if it is still running. Not with -Quit / -Kill
         (INVALID_PARAMS).
     .EXAMPLE
         Disconnect-TcIde -Quit          # IDE_QUIT_FAILED (modal up, connection kept) ...
@@ -64,7 +65,8 @@ function Disconnect-TcIde {
         data.message, and with -Quit: data.solutionClosed, data.quit, data.quitError,
         data.ideProcessId, data.selectedBy, data.ownedBySession, data.disconnected,
         data.dialog (when a modal was seen), data.killed / data.alreadyExited (kill path),
-        data.reason ('not connected' when there was nothing to quit).
+        data.reason ('not connected' when there was nothing to quit), data.launchRecordWarning
+        (launched-ides.json could not be read / written).
         Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED, MODAL_SCAN_INCOMPLETE,
         LAUNCH_RECORD_UNAVAILABLE (-ForgetPendingLaunch).
     #>
@@ -77,6 +79,7 @@ function Disconnect-TcIde {
         [switch]$ForgetPendingLaunch
     )
 
+    $script:TcLaunchRecordWarning = $null   # #73: set by a failed read / write of launched-ides.json during this call
     if ($Kill -and -not $Quit) {
         return New-TcResult -Success $false -ErrorMessage '-Kill requires -Quit (Disconnect-TcIde -Quit -Kill).' -ErrorCode 'INVALID_PARAMS'
     }
@@ -86,9 +89,11 @@ function Disconnect-TcIde {
         # every IDE process are left alone; #149: the persisted unconfirmed records too
         $cleared = Clear-TcUnconfirmedLaunches
         $forgotten = @($cleared.Dropped)
+        $keptOther = @($cleared.Kept)
         $fdata = [PSCustomObject]@{
-            message           = "Forgot $($forgotten.Count) launch record(s) with an unconfirmed process id; no IDE was closed and the connection is unchanged."
+            message           = "Forgot $($forgotten.Count) launch record(s) with an unconfirmed process id$(if ($keptOther.Count -gt 0) { "; kept $($keptOther.Count) of another TcAuto session that is still running" }); no IDE was closed and the connection is unchanged."
             forgottenLaunches = $forgotten
+            otherSessionLaunches = $keptOther
         }
         if ($null -ne $cleared.Failure) {
             # fail closed: the module records are gone, but the file could not be updated
@@ -132,6 +137,11 @@ function Disconnect-TcIde {
                 })
         }
         $d
+    }
+    # #73: launched-ides.json could not be read / written during this call
+    function Add-LaunchRecordWarning([object]$D) {
+        if ($null -ne $script:TcLaunchRecordWarning) { $D | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning -Force }
+        $D
     }
 
     $quitResult = $null
@@ -270,7 +280,7 @@ function Disconnect-TcIde {
         if ($ideProcessId -gt 0) { $null = Remove-TcLaunchRecord -ProcessId $ideProcessId }
         Clear-IdeIdentity
         $data.message = 'Disconnected and IDE quit.'
-        return New-TcResult -Success $true -Data $data
+        return New-TcResult -Success $true -Data (Add-LaunchRecordWarning $data)
     }
 
     # --- quit did not happen (identity kept for a follow-up -Quit -Kill) ---
@@ -284,6 +294,7 @@ function Disconnect-TcIde {
     $data | Add-Member -NotePropertyName 'killed' -NotePropertyValue $false
     if (-not $ownedBySession) {
         $data.message = "Disconnected; IDE NOT quit and NOT killed: it was not launched by this session (selectedBy '$selectedBy')."
+        $data = Add-LaunchRecordWarning $data
         return New-TcResult -Success $false `
             -ErrorMessage "IDE_NOT_OWNED: the IDE (pid $ideProcessId, selectedBy '$selectedBy') was not launched by this session; -Kill refused. Quit failed: $($quitResult.error)" `
             -ErrorCode 'IDE_NOT_OWNED' -Hint (Get-TcErrorHint -Code 'IDE_NOT_OWNED') -Data $data
@@ -302,7 +313,7 @@ function Disconnect-TcIde {
         Clear-IdeIdentity
         $data | Add-Member -NotePropertyName 'alreadyExited' -NotePropertyValue $true
         $data.message = "Disconnected; IDE pid $ideProcessId had already exited, nothing to kill."
-        return New-TcResult -Success $true -Data $data
+        return New-TcResult -Success $true -Data (Add-LaunchRecordWarning $data)
     }
     $procName = [string]$proc.ProcessName
     $why = $null
@@ -338,5 +349,5 @@ function Disconnect-TcIde {
     Clear-IdeIdentity
     $data.killed = $true
     $data.message = "Disconnected; IDE could not be quit and was killed (pid $ideProcessId)."
-    New-TcResult -Success $true -Data $data
+    New-TcResult -Success $true -Data (Add-LaunchRecordWarning $data)
 }
