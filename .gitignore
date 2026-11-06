@@ -31,3 +31,6 @@ tests/Integration/logs/
 
 # Claude Code per-machine settings
 .claude/settings.local.json
+
+# Release build output (scripts/Build-TcAutoRelease.ps1)
+dist/

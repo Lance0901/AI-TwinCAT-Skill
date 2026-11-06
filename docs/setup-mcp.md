@@ -12,6 +12,51 @@ MCP client --stdio--> %LOCALAPPDATA%\TwinCATAutomation\launcher\tcauto-launcher.
 
 Why not register `<repo>\mcp-server\index.js` directly: the client then runs whatever branch the checkout has at that moment, and when the checkout sits in OneDrive, files that are online-only must be downloaded first. A failed download (cloud file provider error 383, "The cloud sync provider failed to validate the downloaded data") makes the bridge exit before ready (`MODULE_IMPORT_FAILED`, #162), and the module import there took 52-65 s against 6 s from `%TEMP%` (measured 2026-11-06, #158). The installed runtime lives in `%LOCALAPPDATA%`, never in OneDrive.
 
+Two ways to install: a **customer PC** uses the release zip (next section; no Node.js, git or checkout needed). A **developer** installs from a checkout with `scripts\Install-TcAutoRuntime.ps1` (from "Prerequisites" on). Both put the same layout below `%LOCALAPPDATA%\TwinCATAutomation` and the same launcher.
+
+## Customer install (release zip)
+
+The release zip `TcAuto-<version>.zip` (GitHub Releases, built by `.github/workflows/release.yml` on a `v*` tag with `scripts\Build-TcAutoRelease.ps1`, #20) contains the runtime with its `node_modules`, the launcher, `Install-TcAuto.ps1` and an official Node.js `node.exe` (win-x64 LTS, version pinned in `Build-TcAutoRelease.ps1`; the build checks its SHA256 against the pinned value and the release's `SHASUMS256.txt`). The client runs that `node.exe`, so the PC needs no Node.js. A single executable (Node SEA) was not used: with a plain `node.exe` the launcher can still switch runtimes with `ReloadRuntime`.
+
+Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE for `ConnectIde` (the installer warns when it finds neither `TWINCAT3DIR` nor the registry value `HKLM\SOFTWARE\WOW6432Node\Beckhoff\TwinCAT3\TwinCATDir`, and installs anyway).
+
+1. Download `TcAuto-<version>.zip` and `TcAuto-<version>.zip.sha256` from the release. Compare the hash:
+
+   ```powershell
+   (Get-FileHash .\TcAuto-<version>.zip -Algorithm SHA256).Hash.ToLower()   # = first word of the .sha256 file
+   ```
+
+2. Unblock the zip (a downloaded script is blocked under the `RemoteSigned` execution policy): `Unblock-File .\TcAuto-<version>.zip`, or Properties -> **Unblock**. Extract it to a local folder (not OneDrive).
+3. Close Claude Code, Claude Desktop and Codex (Claude Code rewrites `~\.claude.json` while it runs), then in the extracted folder:
+
+   ```powershell
+   powershell -NoProfile -File .\Install-TcAuto.ps1
+   ```
+
+   It copies `node\`, `launcher\` and `runtime\<version>\` to `%LOCALAPPDATA%\TwinCATAutomation` (an installed copy of the same version is reused; `runtime\current.json` is switched atomically; the 3 newest runtimes are kept) and registers the server `tcauto` = `<InstallRoot>\node\node.exe <InstallRoot>\launcher\tcauto-launcher.mjs` in:
+
+   | Client | File | Entry |
+   |---|---|---|
+   | Claude Code (user scope) | `%USERPROFILE%\.claude.json` | top-level `mcpServers.tcauto` (`type: stdio`, `command`, `args`, `env`); project scopes are not touched |
+   | Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers.tcauto` (`command`, `args`) |
+   | Codex | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | table `[mcp_servers.tcauto]` (`command`, `args`) |
+
+   Only the `tcauto` entry changes; other servers and settings stay as they are. Each file is copied to `<file>.bak-<yyyyMMddTHHmmss>` before it changes. An existing `tcauto` (for example one that points at a checkout) is overwritten, and its old value is in the result (`data.clients[].previous`). A client is skipped (and reported) when its file (Claude Code) or folder (Claude Desktop, Codex) does not exist. Choose clients with `-Clients ClaudeCode,Codex`. A config file that is not valid JSON, or a Codex `tcauto` written as a key instead of a `[mcp_servers.tcauto]` table, is left unchanged (`CLIENT_CONFIG_FAILED`). Claude Desktop from the Microsoft Store keeps its config in another folder: pass it with `-ClaudeDesktopConfig <path>`.
+4. At the end the installer runs the same check as `-Verify`: it starts the installed `node.exe` with the launcher, sends MCP `initialize` + `tools/list` and reports the tool count (<!-- generated:mcp-tool-count -->79<!-- /generated --> cmdlet tools + <!-- generated:composite-count -->5<!-- /generated --> composite tools + the launcher's `ReloadRuntime`) and the runtime commit. It does not connect to an IDE.
+5. Restart each client once. Then ask it to call `GetStatus` (see "Verify" below), then `ConnectIde`.
+
+The last stdout line is `TCAUTO_INSTALL_RESULT {json}` (`success`, `data` / `error.code` + `hint`), exit code 0 / 1.
+
+| Command | What it does |
+|---|---|
+| `Install-TcAuto.ps1 -Verify` | Only the check of step 4; writes nothing |
+| `Install-TcAuto.ps1 -Uninstall` | Removes `tcauto` from the three files (backup first; a `tcauto` that points outside the install root is left, `foreign`), then `node\`, `launcher\` and `runtime\`. Other files in `%LOCALAPPDATA%\TwinCATAutomation` (`ide-solutions.json`) stay. Close the clients first (`INSTALL_IN_USE` otherwise) |
+| `-InstallRoot`, `-ClaudeCodeConfig`, `-ClaudeDesktopConfig`, `-CodexConfig` | Other paths (tests use temp folders) |
+
+**Next versions:** extract the new zip and run its `Install-TcAuto.ps1` the same way. The registration does not change, so no client restart is needed: call the MCP tool `ReloadRuntime`, then `ConnectIde` again ("Switch to another version" below). Only a new `node.exe` (another Node.js version in the zip) is used after the next client restart; a `node.exe` that a running client holds is renamed aside, not overwritten.
+
+Build a zip yourself (maintainers): `powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1` in a clean checkout (`-AllowDirty` otherwise; `-NodeExePath <node.exe>` uses a downloaded `node.exe`, which must have the pinned SHA256). Output: `dist\TcAuto-<git describe>.zip` + `.sha256` (about 40 MB).
+
 ## Prerequisites
 
 - Windows 10/11 with TwinCAT 3.1 XAE (verified on 4026)
@@ -118,7 +163,7 @@ That proves Node started, `powershell.exe` spawned and the module imported. `dat
 | Symptom | Cause | Fix |
 |---|---|---|
 | Server not listed / "failed to start" in the client | Node < 22, wrong path in `args`, or (checkout registration) `npm install` not run | `node --version`; use the absolute path to the launcher; run `scripts\Install-TcAutoRuntime.ps1` (it runs `npm ci` in the runtime) |
-| First call returns `RUNTIME_NOT_INSTALLED` | No `runtime\current.json` below the install root the launcher uses (`TCAUTO_RUNTIME_ROOT`, else the parent of the launcher folder) | Run `scripts\Install-TcAutoRuntime.ps1` |
+| First call returns `RUNTIME_NOT_INSTALLED` | No `runtime\current.json` below the install root the launcher uses (`TCAUTO_RUNTIME_ROOT`, else the parent of the launcher folder) | Run `scripts\Install-TcAutoRuntime.ps1` (customer PC: `Install-TcAuto.ps1` of the release zip) |
 | A call returns `RUNTIME_DIED` | The runtime process (node) exited during the call | The next call starts it again; `ConnectIde` again; the launcher stderr (client log) has the reason |
 | Every call returns `MODULE_IMPORT_FAILED`, stderr "The cloud sync provider failed to validate the downloaded data" | The runtime or module is read from a OneDrive folder whose files are not on the device (#162) | Use the installed runtime and the launcher (above); for a checkout registration: "Always keep on this device" on the checkout |
 | Every call returns `MODULE_IMPORT_FAILED` | `powershell.exe` not found (custom `TWINCAT_MCP_POWERSHELL`) or `TWINCAT_MODULE_PATH` wrong | Check both paths; run `powershell.exe -NoProfile -Command "Import-Module '<path>\TwinCATAutomation.psm1'"` by hand |

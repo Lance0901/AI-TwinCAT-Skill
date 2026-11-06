@@ -302,6 +302,8 @@ npm test          # no TwinCAT needed
 
 Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [docs/setup-mcp.md](docs/setup-mcp.md) and [mcp-server/README.md](mcp-server/README.md).
 
+**Customer PCs (no Node.js, no git):** download `TcAuto-<version>.zip` from the [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases), check its SHA256 and run `Install-TcAuto.ps1` from it: it brings its own `node.exe` and registers TcAuto in Claude Code, Claude Desktop and Codex (#20). Steps: [docs/setup-mcp.md "Customer install (release zip)"](docs/setup-mcp.md#customer-install-release-zip).
+
 ## Development
 
 Run `powershell -File scripts/install-hooks.ps1` once per clone: the pre-commit hook then runs `scripts/check.ps1 -Fast` (PS 5.1 parse and file encoding, cmdlet count vs docs, banned wording, error codes documented, `tools.json` in sync; it reads the working tree, not the index); run `scripts/check.ps1` (adds `npm test`) before a PR, CI runs it with `-Strict` (SKIP fails) on `windows-latest`. Review rules: [CODING_STANDARDS.md](CODING_STANDARDS.md).

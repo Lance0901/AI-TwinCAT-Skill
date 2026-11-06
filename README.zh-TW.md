@@ -300,6 +300,8 @@ npm test          # 不需要 TwinCAT
 
 Claude Code 會自動讀取 repo 的 `.mcp.json`;Claude Desktop 設定見 [docs/setup-mcp.md](docs/setup-mcp.md) 與 [mcp-server/README.md](mcp-server/README.md)。
 
+**客戶機器(不必裝 Node.js、git)**:從 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 下載 `TcAuto-<version>.zip`,驗 SHA256 後執行裡面的 `Install-TcAuto.ps1`:zip 自帶 `node.exe`,並把 TcAuto 註冊到 Claude Code、Claude Desktop 與 Codex(#20)。步驟見 [docs/setup-mcp.md「Customer install (release zip)」](docs/setup-mcp.md#customer-install-release-zip)。
+
 ## 更新日誌
 
 ### 2026-04-02
