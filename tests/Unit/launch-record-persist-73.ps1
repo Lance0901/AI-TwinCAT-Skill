@@ -369,6 +369,7 @@ try {
         $first = Start-OwnIde
         Edit-Records { param($r) $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = $case.Owner }
         $global:Procs73.Remove(9600)   # that host process is gone
+        $global:Rot73 = @()            # its IDE not in the ROT (an IDE seen with no solution would release it, R3-1)
         $env:TCAUTO_OWNER_ID = $case.Env
         Restart-Module
         try {
@@ -391,6 +392,37 @@ try {
     $own = & $mod { param($p) Test-TcLaunchedIde -ProcessId $p } $first.Pid
     $state = & $mod { param($x) Get-TcLaunchRecordHostState -Record $x } @(Read-Records)[0]
     Check 'X10 N2: record of this pid without hostStartTime -> alive (fail closed), not owned' ($own -eq $false -and $state -eq 'alive') "owned=$own state=$state"
+
+    # --- R3-1: another session's record does not block X once its IDE has another solution ---
+    $slnY = Join-Path $slnDir 'other-73.sln'
+    foreach ($case in @(
+            @{ Name = 'Y1 other session alive, its IDE now has Y open'; Gone = $false; Sol = $slnY; Launch = $true },
+            @{ Name = 'Y2 other session gone (other ownerId), its IDE now has Y open'; Gone = $true; Sol = $slnY; Launch = $true },
+            @{ Name = 'Y3 other session gone, its IDE has no solution open'; Gone = $true; Sol = ''; Launch = $true },
+            @{ Name = 'Y4 other session alive, its IDE has no solution open (may be cold-starting)'; Gone = $false; Sol = ''; Launch = $false })) {
+        Reset-All
+        $first = Start-OwnIde
+        if ($case.Gone) { Edit-Records { param($r) $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = 'owner-73-B' } }
+        else { Set-OtherHost }
+        Restart-Module
+        Show-OwnInRot $first.Pid $case.Sol
+        $global:Modal73 = 'incomplete'
+        $r = Connect-TcIde -SolutionPath $sln
+        if ($case.Launch) {
+            Check "$($case.Name) -> ConnectIde -SolutionPath X launches as usual" ($global:Launches73.Count -eq 2 -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Kills73.Count -eq 0) "code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
+        }
+        else {
+            Check "$($case.Name) -> still blocked (IDE_LAUNCH_PENDING other-session)" ($global:Launches73.Count -eq 1 -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session') "code=$($r.error.code) launches=$($global:Launches73.Count)"
+        }
+    }
+    Reset-All
+    $first = Start-OwnIde
+    Set-OtherHost
+    Restart-Module
+    $o = $global:LaunchedDtes73[$first.Pid]; $o.Busy = $true
+    $global:Rot73 = @(New-RotEntry $first.Pid $o)
+    $r = Connect-TcIde -SolutionPath $sln -LaunchIfBlocked
+    Check 'Y5 other session alive, its IDE busy (solution unknown) -> still blocked' ($global:Launches73.Count -eq 1 -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session') "code=$($r.error.code) launches=$($global:Launches73.Count)"
 
     # --- N4: a skipped save is reported ---
     Reset-All

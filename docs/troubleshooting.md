@@ -330,6 +330,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - 為什麼要 `ownerId`:對話 A 啟動 IDE(`UserControl = true`,IDE 留著)後結束，使用者接著在那個 IDE 手動改、還有未存檔的變更;隔天對話 B 的 `ConnectIde` 如果只看「host 已不在」就接手，`-Quit -Kill` 會丟掉使用者的變更。現在對話 B 的 `ownerId` 不同，不接手。
   - 其他情況(另一個還活著的 TcAuto session、別的 MCP server / 已結束的對話、沒有 `ownerId`、host 無法確認)一律視為別的 session 啟動的(`data.otherSession.hostState` 是 `alive` 或 `gone`):**仍擋住同一個 .sln 的第二次啟動**(`IDE_LAUNCH_PENDING`,`probe = 'other-session'`),但不 attach、不算 owned,`-Kill` 被拒(`IDE_NOT_OWNED`)。
   - 多個 bridge 共用同一個紀錄檔時，靠這個判斷不會認領對方啟動的 IDE。
+  - **別的 session 的紀錄不會永久擋住這個 .sln(#152 R3-1)**:`Connect-TcIde` 選 IDE 時已從 ROT 讀到每個 IDE 的 pid 和開著的 solution(不多做 COM 呼叫)。紀錄的 pid 在其中而且開著**別的** solution(使用者在那個 IDE 關掉 X、改開 Y)→ 不擋，照常啟動;host 已不在時，那個 IDE 沒開任何 solution 也不擋。host 還活著而 solution 是空的(對方可能還在冷啟動)、或那個 IDE 忙碌 / 讀不到 → 仍擋。
   - `pid-unconfirmed`(pid 只是用啟動時間猜的，#147 M2)**永遠不恢復 ownership**。跨行程時沒有 DTE 物件可比對，也無法事後確認。
   - **猜到的 pid 仍會寫入**,只用來擋住同一個 .sln 的第二次啟動(`IDE_LAUNCH_PENDING`,`probe = 'pid-unconfirmed'`,猜的 pid 放在 `data.guessedProcessId`,`data.ideProcessId = 0`),不給 ownership。直到那個行程(檔案裡的 pid + StartTime)結束，或 `Disconnect-TcIde -ForgetPendingLaunch`(會一起清掉檔案裡的這筆;另一個還活著的 session 的紀錄不清，列在 `data.otherSessionLaunches`)。
   - 從檔案恢復的這種紀錄沒有 DTE 物件，永遠無法確認，所以不等待(不跑 60 s 的 wait),直接回 `pid-unconfirmed`。
@@ -342,10 +343,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **限制**:
   - 本 module instance 自己啟動的 IDE 記在記憶體，檔案壞掉也仍算 owned;從檔案恢復的也快取在記憶體。
   - 有設和沒設 `TCAUTO_STATE_DIR` 的行程用不同的檔案，彼此看不到。
+  - **只涵蓋同一個 MCP server 內的 bridge 重啟與 `ReloadModule`(#152 R3-2)**。MCP server 本身重啟(Claude Code 重連、server crash、重開 Claude Code)會產生新的 `TCAUTO_OWNER_ID`,之前啟動的 IDE 變成別的 session 的(fail closed):不算 owned、`-Kill` 被拒，仍擋同一個 .sln 的第二次啟動，直到那個 IDE 改開別的 solution 或結束。
   - 舊 bridge 行程在重啟後仍殘留(沒結束)時，新 bridge 不會接手它的紀錄(視為另一個還活著的 session,`hostState = 'alive'`)。**孤兒 bridge 的出路(#152 N3)**:`data.otherSession.hostPid` 是 `powershell.exe`,而且它所屬的 MCP server 已經不在時，請使用者確認後結束那個行程，再重跑 `Connect-TcIde`(之後同一個 MCP server 的 bridge 才能接手;別的 MCP server 仍然不會)。
   - 別的 MCP server / 已結束的對話啟動的 IDE(`hostState = 'gone'`,`ownerId` 不同)不會被接手：請使用者確認那個 IDE 不再需要後自己關掉，紀錄就會失效。
   - 手動開的 PowerShell(沒有 `TCAUTO_OWNER_ID`)只認 host 是自己的紀錄:`Import-Module -Force` 之後仍算 owned,換一個 PowerShell 就不算。
-  - 不要手動刪改這個檔案。
+  - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`(#152 R3-3)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
 ### LAUNCH_RECORD_UNAVAILABLE

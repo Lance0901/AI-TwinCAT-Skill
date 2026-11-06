@@ -325,6 +325,22 @@ function Connect-TcIde {
     # Released only when it meanwhile has ANOTHER solution open or its process is gone.
     if ($null -eq $chosen -and $null -ne $normalizedSolutionPath) {
         $own = Find-TcSessionLaunchedIde -Solution $normalizedSolutionPath
+        # #152 R3-1: a record of ANOTHER session no longer blocks this .sln when that IDE (same pid,
+        # read above from the ROT - no new COM call) now has another solution open; when its host
+        # is gone, also when it has no solution open. A live host with an empty solution may still
+        # be cold-starting: kept. A busy / unreadable IDE (solution unknown): kept.
+        if ($null -ne $own -and $null -ne $own.otherSession) {
+            $op = 0; try { $op = [int]$own.otherSession.processId } catch { $op = 0 }
+            $seen = @($readyCandidates | Where-Object { $op -gt 0 -and [int]$_.pid -eq $op }) | Select-Object -First 1
+            if ($null -ne $seen) {
+                $seenSol = [string]$seen.normalizedSolution
+                $release = if (-not [string]::IsNullOrWhiteSpace($seenSol)) { -not [string]::Equals($seenSol, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase) } else { $own.otherSession.hostState -eq 'gone' }
+                if ($release) {
+                    Write-Verbose "Launch record of another session (IDE pid $op) does not block '$normalizedSolutionPath': that IDE now has '$seenSol' open"
+                    $own = $null
+                }
+            }
+        }
         if ($null -ne $own) {
             $mismatch = $null
             if (-not [string]::IsNullOrWhiteSpace($ProgId) -and -not ([string]$own.progId -ieq $ProgId)) {
