@@ -89,6 +89,8 @@ $kindCases = @(
     @{ Name = 'quoted name before the first pipe -> null'; Item = (Row 'Error' "Identifier 'a' | 'PlcTask' (350): x"); Want = $null }
     @{ Name = 'prefix without a digit -> null'; Item = (Row 'Error' "Unexpected token | 'PlcTask' (350): x"); Want = $null }
     @{ Name = 'two pipes before the quote -> null'; Item = (Row 'Error' "12 | 34 | 'PlcTask' (350): x"); Want = $null }
+    # n2: the prefix is bounded (40 non-digits before the first digit, 60 after): a long one does not match
+    @{ Name = 'prefix longer than the bound -> null'; Item = (Row 'Error' ("1" + ("x" * 70) + " | 'PlcTask' (350): x")); Want = $null }
     # review #150 F2: system rows in the same form are runtime / system log rows too (probe rows)
     @{ Name = 'TCOM Server row -> runtime'; Item = (Row 'Error' "'TCOM Server' (10): NtpType Register ExternalTime failed, HR=98110708"); Want = 'runtime' }
     @{ Name = 'TwinCAT System row with a project -> runtime'; Item = (Row 'Error' "'TwinCAT System' (10000): Error: >> license not found <<" $null $null $null 'plc'); Want = 'runtime' }
@@ -160,6 +162,7 @@ Check '(a) success, completeBuild true, codeVerified true' ($r.success -and $d.b
 Check '(a) errorItems / codeErrors empty, errors 0' (@($d.errorItems).Count -eq 0 -and @($d.codeErrors).Count -eq 0 -and $d.errors -eq 0) (J $d.errorItems)
 Check '(a) the 7 log rows are in runtimeMessages, category runtime' (@($d.runtimeMessages).Count -eq 7 -and @($d.runtimeMessages | Where-Object { $_.category -ne 'runtime' }).Count -eq 0 -and @($d.runtimeMessages | Where-Object { $_.description -match 'Successful tests: 6' }).Count -eq 1) (J $d.runtimeMessages)
 Check '(a) no runtimeMessageNote, no warningCodes' ($null -eq $d.PSObject.Properties['runtimeMessageNote'] -and $null -eq $d.PSObject.Properties['warningCodes']) (J $d)
+Check '(a/O13) plcOnlineSuspected present and false on a success' ($null -ne $d.PSObject.Properties['plcOnlineSuspected'] -and $d.plcOnlineSuspected -eq $false) (J $d)
 
 # --- (a2) the same rows with LastBuildInfo unreadable: decided by the Error List, still success
 Reset-State
@@ -195,8 +198,9 @@ $d = $r.data
 Check '(b2) BUILD_FAILED, errorItems empty' (-not $r.success -and $r.error.code -eq 'BUILD_FAILED' -and @($d.errorItems).Count -eq 0) (J $r)
 Check '(b2) project status unknown (no build row names it)' (@($d.projects)[0].status -eq 'unknown') (J $d.projects)
 # O9 (實測 2026-11-06): PLC logged in -> XAE did not compile; the message must not read "0 code error(s)"
-Check '(b2/O9) plcOnlineSuspected, message says XAE did not compile (no "0 code error"), names the log rows' ($d.plcOnlineSuspected -eq $true -and $r.error.message -match 'PLC is probably logged in, so XAE did not compile' -and $r.error.message -notmatch '0 code error' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -notmatch 'Successful tests') $r.error.message
-Check '(b2/O9) hint: Exit-TcPlcOnline then Build-TcProject' ($r.error.hint -match '^PLC is logged in; XAE did not compile\. Exit-TcPlcOnline then Build-TcProject') $r.error.hint
+Check '(b2/O9) plcOnlineSuspected, the usual summary kept and the O9 sentence appended, names the log rows' ($d.plcOnlineSuspected -eq $true -and $r.error.message -match '^Build failed: 0 code error\(s\) \(1 project\(s\) failed; no code error listed in the Error List\)' -and $r.error.message -match 'XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -notmatch 'Successful tests') $r.error.message
+Check '(b2/O9) hint: suspected / probably, Exit-TcPlcOnline then Build-TcProject' ($r.error.hint -match '^PLC is probably logged in; XAE probably did not compile \(suspected' -and $r.error.hint -match 'Exit-TcPlcOnline then Build-TcProject') $r.error.hint
+Check '(b2/O12) plcOnlineSuspected -> codeVerified null (XAE did not compile, the clean Error List proves nothing)' ($null -eq $d.codeVerified -and $null -ne $d.PSObject.Properties['codeVerified']) (J $d)
 Check '(b2/O9) BUILD_REQUIRED still recorded' ($null -ne $d.buildRequired) (J $d)
 
 # --- O9 shape of the real run: 7 TcUnit errors + the Port_851 warning + the 'TwinCAT XAE' failed warning, LastBuildInfo 2
@@ -211,13 +215,25 @@ Check "O9 real shape: 8 runtimeMessages (7 errors + Port_851), the 'TwinCAT XAE'
 Reset-State
 Set-Scenario (@(TcUnitRows) + (Row 'Error' "Identifier 'nPr150Undeclared' not defined" 'MAIN.TcPOU (Impl)' 6 'C0046' 'Untitled1') + (Row 'Error' "'nPr150Undeclared' is no valid assignment target" 'MAIN.TcPOU (Impl)' 6 'C0018' 'Untitled1')) @((& $warnXaeFailed)) 1
 $r = Build-TcProject -WarningAction SilentlyContinue
-Check 'after Logout (C0046 + C0018 listed) -> no plcOnlineSuspected, "2 code error(s)", compile hint' ((-not $r.success) -and $null -eq $r.data.PSObject.Properties['plcOnlineSuspected'] -and $r.error.message -match '2 code error' -and $r.error.message -match 'C0046' -and $r.error.hint -notmatch 'Exit-TcPlcOnline') (J $r)
+Check 'after Logout (C0046 + C0018 listed) -> plcOnlineSuspected false, "2 code error(s)", compile hint' ((-not $r.success) -and $r.data.plcOnlineSuspected -eq $false -and $r.error.message -match '2 code error' -and $r.error.message -match 'C0046' -and $r.error.hint -notmatch 'Exit-TcPlcOnline') (J $r)
+
+# --- not O9 (review #150 round 3 M1): log rows left from an earlier online session + a code row
+# without a file (C0077, category other) -> the C0077 is the cause, no Logout hint
+Reset-State
+Set-Scenario (@(TcUnitRows) + (Row 'Error' 'Unknown type: FB_Gone' $null $null 'C0077')) @((& $warnXaeFailed)) 1
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'M1: left-over log rows + C0077 without file -> plcOnlineSuspected false, message lists C0077, compile hint' ((-not $r.success) -and $r.data.plcOnlineSuspected -eq $false -and $r.error.message -match 'C0077 Unknown type: FB_Gone' -and $r.error.message -notmatch 'probably logged in' -and $r.error.hint -notmatch 'Exit-TcPlcOnline' -and $r.data.codeVerified -ne $null) (J $r)
+# an XAE error row without a code (no file) + left-over log rows -> not O9 either
+Reset-State
+Set-Scenario (@(TcUnitRows) + (Row 'Error' "Error writing file 'C:\Demo66\_Boot\x.bin'")) @() 1
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'M1: left-over log rows + XAE error without code -> plcOnlineSuspected false, the error row in the message' ((-not $r.success) -and $r.data.plcOnlineSuspected -eq $false -and $r.error.message -match 'Error writing file' -and $r.error.hint -notmatch 'Exit-TcPlcOnline') (J $r)
 
 # --- not O9: no runtime rows -> the old "no code error listed" message
 Reset-State
 Set-Scenario @() @((& $warnXaeFailed)) 1
 $r = Build-TcProject -WarningAction SilentlyContinue
-Check 'no runtime rows, no compiler row -> no plcOnlineSuspected, message "no code error listed"' ((-not $r.success) -and $null -eq $r.data.PSObject.Properties['plcOnlineSuspected'] -and $r.error.message -match 'no code error listed') (J $r)
+Check 'no runtime rows, no compiler row -> plcOnlineSuspected false, message "no code error listed"' ((-not $r.success) -and $r.data.plcOnlineSuspected -eq $false -and $r.error.message -match 'no code error listed') (J $r)
 
 # --- (c) a row that cannot be told apart: log prefix AND file + line -> kept, with a note
 $amb = { Row 'Error' "'PlcTask' (350): Identifier 'x' not defined" 'C:\Demo66\plc\POUs\MAIN.TcPOU' 5 $null 'plc' }

@@ -75,7 +75,7 @@ $script:TcErrorHints = @{
 $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / description / file / line);修正後重跑 Build-TcProject'
 # #66 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT): BUILD_FAILED with no compiler row while the PLC is
 # logged in - XAE did not compile; Build-TcProject sets data.plcOnlineSuspected and uses this hint.
-$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is logged in; XAE did not compile. Exit-TcPlcOnline then Build-TcProject(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
+$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is probably logged in; XAE probably did not compile (suspected: no compiler error row, only runtime log rows). Exit-TcPlcOnline then Build-TcProject(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
 # Legacy code kept by Read-TcVariable for a missing symbol: same hint as ADS_SYMBOL_NOT_FOUND
 $script:TcErrorHints['SYMBOL_NOT_FOUND'] = $script:TcErrorHints['ADS_SYMBOL_NOT_FOUND']
 # #60: Read-TcVariable with several paths, at least one failed (fail closed)

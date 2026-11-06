@@ -1009,14 +1009,17 @@ function Get-TcErrorItemCategory {
 # brackets hold no plain number). Other UI languages / XAE versions are not measured.
 # Timestamp prefix (實測 2026-11-06, VS2022 4026 + local UmRT, PR #150 head c35694b, the same TcUnit
 # project): the rows are read as "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6",
-# so the form above is preceded by "<timestamp> | ". The timestamp follows the Windows locale (a zh-TW
-# form such as "2026/11/6 上午 09:11:28 520 毫秒 | " is 推論, not measured), so it is not parsed: the
-# optional prefix is "anything up to the FIRST ' | ' that contains a digit and no ' or |". Trade-off: a
+# so the form above is preceded by "<timestamp> | ". 實測: with UI language zh-TW and regional format
+# en-US the timestamp is in the en-US form. That it follows the regional format (not the UI language) is
+# 推論, so is a zh-TW form such as "2026/11/6 上午 09:11:28 520 毫秒 | "; the timestamp is therefore not
+# parsed: the optional prefix is "up to the FIRST ' | ', containing a digit and no ' or |". Trade-off: a
 # compiler message would be taken for a log row only if its text starts with such a digit-run, then
 # ' | ', then "'<name>' (<number>):" as the first quote of the line, AND it has no file, no line, no
 # compiler code and no library message (any of those makes it 'ambiguous', kept as an error); the
-# prefix allows no quote, so a quoted identifier before the first ' | ' never matches.
-$script:TcRuntimeLogPrefixPattern = "^\s*(?:[^'|]*\d[^'|]*\s\|\s+)?'[^']+'\s*\(\d+\)\s*:"
+# prefix allows no quote, so a quoted identifier before the first ' | ' never matches. Bounded (review
+# #150 n2): at most 40 non-digit characters before the first digit, 60 after it, so the match is
+# linear (the first class has no digit, the first digit position is fixed).
+$script:TcRuntimeLogPrefixPattern = "^\s*(?:[^'|\d]{0,40}\d[^'|]{0,60}\s\|\s+)?'[^']+'\s*\(\d+\)\s*:"
 
 function Get-TcRuntimeLogKind {
     <#

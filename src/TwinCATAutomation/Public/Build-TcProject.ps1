@@ -103,7 +103,10 @@
         data.libraryErrorItems  errorItems with category 'library'
         data.warnings        warning count (Error List; fallback: warning lines of the build output)
         data.messages        lines of the DTE build output pane (usually empty)
-        data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read)
+        data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read): the number of projects
+                             of the SOLUTION that failed, not only PLC projects - the TwinCAT project (.tsproj) counts
+                             too (實測 2026-11-06, #66 O12: 2 with one PLC project while the PLC was logged in;
+                             that the second one is the .tsproj is 推論)
         data.errorItems      [ @{ severity; code; description; project; file; line; column; category } ]
                              all errors of the Error List; category (Get-TcErrorItemCategory):
                              code (has a file), library (file like '*Library Manager' with no
@@ -125,7 +128,8 @@
                              Error List decides the result (decidedBy = ErrorList, LastBuildInfo not readable)
                              and runtimeMessages is not empty, codeVerified = $null and a successful build gets
                              CODE_NOT_VERIFIED (not complete, BUILD_REQUIRED stays; review #150 F3).
-        data.plcOnlineSuspected  BUILD_FAILED only: $true when no code / library error row was listed, every built PLC
+        data.plcOnlineSuspected  always present ($false unless set, O13); $true (BUILD_FAILED only, codeVerified then
+                             $null, O12) when no code / library error row was listed, every built PLC
                              project is 'unknown' and runtime / system log rows are present - the PLC is probably
                              logged in and XAE did not compile (#66 / O9, 實測 2026-11-06; hint BUILD_FAILED_PLC_ONLINE)
         data.runtimeMessageNote  only when a row has that prefix AND a file, line, code or library message: it
@@ -688,6 +692,8 @@
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
             runtimeMessages = @($els.runtimeMessages)
+            # O13: always present; $true only on the BUILD_FAILED path below (#66 / O9)
+            plcOnlineSuspected = $false
             buildSec       = $buildSec
             codeVerified   = $codeVerified
         }
@@ -796,12 +802,18 @@
             # error row (every built project 'unknown') and runtime / system log rows present.
             $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE'
             $activeStatus = @($projects | Where-Object { $_.status -ne 'skipped' -and $_.status -ne 'disabled' } | ForEach-Object { $_.status })
-            $plcOnlineSuspected = ($null -eq $errorListError) -and ($codeErrors.Count -eq 0) -and ($libraryErrorItems.Count -eq 0) -and
+            # review #150 round 3 M1: ANY other error row (code without a file, an XAE error without a code)
+            # rules it out - it may be the real cause, and old log rows stay after a logout
+            $plcOnlineSuspected = ($null -eq $errorListError) -and ($codeErrors.Count -eq 0) -and ($libraryErrorItems.Count -eq 0) -and ($nonLibraryErrors.Count -eq 0) -and
                 (@($els.runtimeMessages).Count -gt 0) -and ($activeStatus.Count -gt 0) -and (@($activeStatus | Where-Object { $_ -ne 'unknown' }).Count -eq 0)
             if ($plcOnlineSuspected) {
-                $summary = "Build failed but XAE listed no compiler error: the PLC is probably logged in, so XAE did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout). $failedProjects project(s) failed; $(@($els.runtimeMessages).Count) runtime / system log row(s) in the Error List (data.runtimeMessages), no error row names a PLC project"
+                # appended, the summary above is kept (review #150 round 3 M1)
+                $summary += ". XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout); no error row names a PLC project"
                 $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
-                $data | Add-Member -NotePropertyName 'plcOnlineSuspected' -NotePropertyValue $true -Force
+                $data.plcOnlineSuspected = $true
+                # O12: XAE did not compile, so a clean Error List proves nothing (codeVerified was $true
+                # when the Error List had no code row): not verified
+                $data.codeVerified = $null
             }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint $buildHint -Data $data
