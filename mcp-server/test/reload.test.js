@@ -173,7 +173,7 @@ describe('module-source (#41): commit and allow list from the .git files', () =>
   });
 
   test('moduleInfoOf gives the commit of the checkout, null outside one', () => {
-    assert.deepEqual(moduleInfoOf(r.mod(r.wt)), { modulePath: r.mod(r.wt), moduleCommit: SHA_WT });
+    assert.deepEqual(moduleInfoOf(r.mod(r.wt)), { modulePath: r.mod(r.wt), moduleCommit: SHA_WT, moduleDirty: null, moduleSource: 'git-checkout' });
     assert.equal(moduleInfoOf('mock').moduleCommit, null);
   });
 });

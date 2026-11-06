@@ -266,7 +266,10 @@ export function checkModulePath(candidate, baseModulePath) {
     return { ok: false, reason: 'ModulePath must be an absolute path', allowed };
   }
   if (allowed.length === 0) {
-    return { ok: false, reason: 'the module the server was started with is not part of a git checkout, so no other ModulePath is allowed', allowed };
+    const why = installedRootOf(baseModulePath)
+      ? 'the server runs an installed runtime (#162), not a git checkout, so no other ModulePath is allowed (switch versions with Install-TcAutoRuntime.ps1 + ReloadRuntime)'
+      : 'the module the server was started with is not part of a git checkout, so no other ModulePath is allowed';
+    return { ok: false, reason: why, allowed };
   }
   const key = pathKey(candidate);
   const hit = allowed.find((a) => pathKey(a) === key);
@@ -275,8 +278,64 @@ export function checkModulePath(candidate, baseModulePath) {
   return { ok: true, path: hit, allowed };
 }
 
-/** { modulePath, moduleCommit } for a loaded module path (commit null outside a checkout). */
+/** File name of the runtime stamp scripts/Install-TcAutoRuntime.ps1 writes into an installed runtime (#162). */
+export const SOURCE_STAMP_NAME = 'tcauto-source.json';
+
+/**
+ * The stamp <root>\tcauto-source.json of an installed runtime (#162), or null when there is none or
+ * it is not usable. Same file name and the same commit / ref fields as the release stamp that
+ * Get-TcSourceInfo reads (Private/InstallManifest.ps1); Install-TcAutoRuntime.ps1 adds branch,
+ * dirty, installedAt, sourcePath and version. A commit that is not a 40 / 64 hex object name is
+ * null (never a guess); dirty is true / false only when the stamp says so, else null.
+ */
+export function readSourceStamp(root) {
+  if (typeof root !== 'string' || !root) return null;
+  const file = path.win32.join(root, SOURCE_STAMP_NAME);
+  if (!isFile(file)) return null;
+  let s;
+  try {
+    s = JSON.parse(readText(file));
+  } catch {
+    return null;
+  }
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+  const str = (v) => (typeof v === 'string' && v.length ? v : null);
+  return {
+    commit: typeof s.commit === 'string' && OBJECT_NAME_RE.test(s.commit) ? s.commit.toLowerCase() : null,
+    ref: str(s.ref),
+    branch: str(s.branch),
+    dirty: typeof s.dirty === 'boolean' ? s.dirty : null,
+    installedAt: str(s.installedAt),
+    sourcePath: str(s.sourcePath),
+    version: str(s.version)
+  };
+}
+
+/**
+ * <root> when modulePath is <root>\src\TwinCATAutomation\TwinCATAutomation.psm1 of an installed
+ * runtime (#162: <root> holds a readable tcauto-source.json), else null.
+ */
+export function installedRootOf(modulePath) {
+  const mp = normalizePath(modulePath);
+  if (mp === null) return null;
+  const root = path.win32.resolve(mp, '..', '..', '..');
+  if (pathKey(path.win32.join(root, MODULE_RELATIVE_PATH)) !== mp.toLowerCase()) return null;
+  return readSourceStamp(root) ? root : null;
+}
+
+/**
+ * { modulePath, moduleCommit, moduleDirty, moduleSource } for a loaded module path:
+ *   - a git checkout: commit read from the .git files, dirty null (not known without running git),
+ *     moduleSource 'git-checkout';
+ *   - an installed runtime (#162): commit and dirty from its tcauto-source.json, moduleSource 'installed';
+ *   - anything else: commit / dirty / moduleSource null.
+ */
 export function moduleInfoOf(modulePath) {
+  const p = typeof modulePath === 'string' ? modulePath : null;
   const root = checkoutRootOf(modulePath);
-  return { modulePath: typeof modulePath === 'string' ? modulePath : null, moduleCommit: root ? readHeadCommit(root) : null };
+  if (root) return { modulePath: p, moduleCommit: readHeadCommit(root), moduleDirty: null, moduleSource: 'git-checkout' };
+  const inst = installedRootOf(modulePath);
+  const stamp = inst ? readSourceStamp(inst) : null;
+  if (stamp) return { modulePath: p, moduleCommit: stamp.commit, moduleDirty: stamp.dirty, moduleSource: 'installed' };
+  return { modulePath: p, moduleCommit: null, moduleDirty: null, moduleSource: null };
 }

@@ -319,6 +319,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現在**:每次啟動 IDE、拿到 pid(確認的或猜的)時，寫一筆紀錄到 `<Get-TcStateDir>\launched-ides.json`(`TCAUTO_STATE_DIR`,沒設就是 `%TEMP%\TwinCATAutomation`)。
   - 欄位:`launchId`、`pid`、`startTime`(UTC)、`imageName`(行程名稱，不含 .exe)、`progId`、`solution`、`pidSource`、`launchedAt` / `createdAt` / `updatedAt`(UTC)、`moduleInstanceId`(寫入的模組 instance)、`hostPid` + `hostStartTime`(寫入或接手這筆紀錄的 PowerShell / bridge 行程)、`ownerId`(寫入時的 `TCAUTO_OWNER_ID`)。
   - `TCAUTO_OWNER_ID`:MCP server(node)啟動時產生一個 GUID,傳給它 spawn 的每個 PowerShell bridge(第一次啟動、`BRIDGE_TIMEOUT` / `IDE_MODAL_DIALOG` 之後的重啟、`ReloadModule` 都是同一個值);另一個 MCP server / 對話的值不同。手動開的 PowerShell 沒有這個值。
+  - 經 launcher 啟動時(#162):GUID 改由 launcher 產生，一個 launcher 行程一個值，傳給它啟動的每個 runtime(`TCAUTO_LAUNCHER_OWNER_ID`,加上 `TCAUTO_LAUNCHER_PID` = launcher 自己的 pid);`index.js` 只在 `TCAUTO_LAUNCHER_PID` 等於自己的父行程 pid 時採用，否則照舊自己產生。所以 `ReloadRuntime` 前後的 bridge 是同一個 owner,可以接手前一個 runtime 啟動的 IDE;client 重連(新的 launcher 行程)仍是新的值。接手規則本身沒有放寬(仍要 host 已不在 + ownerId 相同):`ReloadRuntime` 會等舊 runtime 的 PowerShell 結束後才啟動新 runtime。
   - 鎖的做法和 `ide-solutions.json` 一樣:read-modify-write 在 named mutex `Local\TwinCATAutomation-launched-ides` 下進行;設了 `TCAUTO_STATE_DIR` 時，名稱加上該目錄的 hash。`[IO.File]::Replace` 原子取代檔案。
   - 模組記憶體只當快取。記憶體沒有的，就讀檔案。
 - **讀回時一定驗證**:pid 存在、StartTime 和 image name 都和紀錄相同，而且 image name 是 IDE(`TcXaeShell` / `devenv`),才算數，所以回收的 pid 不會被當成自己的。不符的紀錄不用。
@@ -343,11 +344,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **限制**:
   - 本 module instance 自己啟動的 IDE 記在記憶體，檔案壞掉也仍算 owned;從檔案恢復的也快取在記憶體。
   - 有設和沒設 `TCAUTO_STATE_DIR` 的行程用不同的檔案，彼此看不到。
-  - **只涵蓋同一個 MCP server 內的 bridge 重啟與 `ReloadModule`(#152 R3-2)**。MCP server 本身重啟(Claude Code 重連、server crash、重開 Claude Code)會產生新的 `TCAUTO_OWNER_ID`,之前啟動的 IDE 變成別的 session 的(fail closed):不算 owned、`-Kill` 被拒，仍擋同一個 .sln 的第二次啟動，直到那個 IDE 改開別的 solution 或結束。
+  - **只涵蓋同一個 MCP server 內的 bridge 重啟與 `ReloadModule`,以及同一個 launcher 內的 `ReloadRuntime`(#152 R3-2、#162)**。MCP server 本身重啟(Claude Code 重連、server crash、重開 Claude Code)會產生新的 `TCAUTO_OWNER_ID`,之前啟動的 IDE 變成別的 session 的(fail closed):不算 owned、`-Kill` 被拒，仍擋同一個 .sln 的第二次啟動，直到那個 IDE 改開別的 solution 或結束。
   - 舊 bridge 行程在重啟後仍殘留(沒結束)時，新 bridge 不會接手它的紀錄(視為另一個還活著的 session,`hostState = 'alive'`)。**孤兒 bridge 的出路(#152 N3)**:`data.otherSession.hostPid` 是 `powershell.exe`,而且它所屬的 MCP server 已經不在時，請使用者確認後結束那個行程，再重跑 `Connect-TcIde`(之後同一個 MCP server 的 bridge 才能接手;別的 MCP server 仍然不會)。
   - 別的 MCP server / 已結束的對話啟動的 IDE(`hostState = 'gone'`,`ownerId` 不同)不會被接手：請使用者確認那個 IDE 不再需要後自己關掉，紀錄就會失效。
   - 手動開的 PowerShell(沒有 `TCAUTO_OWNER_ID`)只認 host 是自己的紀錄:`Import-Module -Force` 之後仍算 owned,換一個 PowerShell 就不算。
-  - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`(#152 R3-3)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
+  - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`、`TCAUTO_LAUNCHER_OWNER_ID` / `TCAUTO_LAUNCHER_PID`(#152 R3-3、#162)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
 ### LAUNCH_RECORD_UNAVAILABLE
@@ -472,14 +473,15 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   3. 執行 `Disconnect-TcAds`、`Disconnect-TcIde`(不帶 `-Quit`,IDE 保持開著),回覆後結束;Node 端再用新的 `-ModulePath` 啟動新的 bridge。
 
   沒有 bridge 行程在跑(從未啟動，或上次啟動失敗，例如 `RELOAD_FAILED` 且沒還原成功)時不送 `retire`,直接換路徑啟動：沒有行程就沒有記憶體狀態會丟。不在同一個行程裡 `Import-Module -Force`,原因是模組用 `Add-Type` 編進行程的 C# 型別(`TcAdsHelper`、`MessageBoxNative`)卸載不掉，新版改了也不會生效;舊的 COM 參考也會留在行程裡。
-- **回傳**:`data.previous` / `data.current` = `{modulePath, moduleCommit, moduleDirty, loadedAt}`,`data.ideDisconnected`、`data.adsDisconnected`、`data.buildRequiredPersisted`、`data.reconnectRequired = true`。`moduleCommit` 是載入當時該 checkout 的 HEAD 指到的 sha,從 `.git` 檔案讀(`HEAD`、loose ref、`packed-refs`、worktree 的 `commondir`),不啟動 `git.exe`;不在 git checkout 裡時是 `null`。**它只代表 HEAD**:工作區裡還沒 commit 的改動不會反映出來，所以 `moduleDirty` 一律是 `null`(不跑 git 判斷不了)。驗證特定 sha 時，請用乾淨的 worktree。讀法和 `Get-TcModuleCommit`(ReportIssue 的 commit 行)、install manifest 共用同一套規則(#148,PowerShell 端 `Read-TcGitCommit`,兩邊跑同一組 fixture `tests/fixtures/git-commit-148.json`):檔案一律以 UTF-8 解碼(UTF-8 BOM 會去掉；不偵測其他編碼,UTF-16 檔視為亂碼，和 git 一樣)、只 trim ASCII 空白、`gitdir:` / `ref:` 大小寫敏感、SHA-1 與 SHA-256 都收(大小寫都收，回傳小寫)、分支名可含非 ASCII 字元。讀不到 commit(結果是 `null`,不會給錯的 sha)的情況:ref 不符合 [git check-ref-format](https://git-scm.com/docs/git-check-ref-format) 或不在 `refs/` 底下(含 `..`、`\`、`:`、`~ ^ ? * [`、空白、控制字元、`@{`,某段以 `.` 開頭，結尾是 `.` 或 `.lock`)、symbolic ref 串接、repository 用 reftable(`extensions.refStorage = reftable`,沒有 loose ref / packed-refs)、`.git` 檔沒有 `gitdir:` 行或指到不存在的資料夾。ref 名稱一律逐字(Ordinal)比對:`.` 開頭、結尾是 `.` 的判斷不會略過軟連字號或零寬字元;`.lock` 區分大小寫,但 NTFS 不分大小寫，`main.LOCK` 兩邊(PS、JS)與 git 都接受。`GetStatus` 的 `data.bridge.modulePath` / `moduleCommit` / `moduleDirty` / `loadedAt` 是同一份資料。
+- **安裝版 runtime(#162)**:`GetStatus` 的 `data.bridge.runtime.source` 是 `installed` 時，只能重載目前的模組(不帶 `ModulePath`);`moduleCommit` / `moduleDirty` 取自該 runtime 的 `tcauto-source.json`(`moduleSource = 'installed'`)。換版本(連同 `index.js`、`bridge.ps1`、`tools.json`)用 `ReloadRuntime`。下面 `.git` 的讀法只適用 `moduleSource = 'git-checkout'`。
+- **回傳**:`data.previous` / `data.current` = `{modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt}`,`data.ideDisconnected`、`data.adsDisconnected`、`data.buildRequiredPersisted`、`data.reconnectRequired = true`。`moduleCommit` 是載入當時該 checkout 的 HEAD 指到的 sha,從 `.git` 檔案讀(`HEAD`、loose ref、`packed-refs`、worktree 的 `commondir`),不啟動 `git.exe`;不在 git checkout 裡時是 `null`。**它只代表 HEAD**:工作區裡還沒 commit 的改動不會反映出來，所以 git checkout 的 `moduleDirty` 一律是 `null`(不跑 git 判斷不了)。驗證特定 sha 時，請用乾淨的 worktree。讀法和 `Get-TcModuleCommit`(ReportIssue 的 commit 行)、install manifest 共用同一套規則(#148,PowerShell 端 `Read-TcGitCommit`,兩邊跑同一組 fixture `tests/fixtures/git-commit-148.json`):檔案一律以 UTF-8 解碼(UTF-8 BOM 會去掉；不偵測其他編碼,UTF-16 檔視為亂碼，和 git 一樣)、只 trim ASCII 空白、`gitdir:` / `ref:` 大小寫敏感、SHA-1 與 SHA-256 都收(大小寫都收，回傳小寫)、分支名可含非 ASCII 字元。讀不到 commit(結果是 `null`,不會給錯的 sha)的情況:ref 不符合 [git check-ref-format](https://git-scm.com/docs/git-check-ref-format) 或不在 `refs/` 底下(含 `..`、`\`、`:`、`~ ^ ? * [`、空白、控制字元、`@{`,某段以 `.` 開頭，結尾是 `.` 或 `.lock`)、symbolic ref 串接、repository 用 reftable(`extensions.refStorage = reftable`,沒有 loose ref / packed-refs)、`.git` 檔沒有 `gitdir:` 行或指到不存在的資料夾。ref 名稱一律逐字(Ordinal)比對:`.` 開頭、結尾是 `.` 的判斷不會略過軟連字號或零寬字元;`.lock` 區分大小寫,但 NTFS 不分大小寫，`main.LOCK` 兩邊(PS、JS)與 git 都接受。`GetStatus` 的 `data.bridge.modulePath` / `moduleCommit` / `moduleDirty` / `loadedAt` 是同一份資料。
 - **之後**:IDE / ADS 連線已斷開，先 `ConnectIde`(必要時 `SetTarget`、`ConnectAds`)再做別的。lifecycle block 與 BUILD_REQUIRED 的狀態檔在新 bridge 照樣有效(同一個 `TCAUTO_STATE_DIR` / `%TEMP%\TwinCATAutomation`)。寫回 BUILD_REQUIRED 是偏保守的做法：如果別的行程已經用一次完整 build 把檔案裡的紀錄清掉，本行程記憶體裡那筆仍會被寫回，新 bridge 會要求再 build 一次。
 - **Timeout**:210 s(`retire` 90 s + 新 bridge 啟動 60 s + 失敗時還原啟動 60 s)。
 - **測試**:`mcp-server/test/reload.test.js`(假 repo 的 allow list 與 commit 讀取;mock bridge 走 stdio;真的 `bridge.ps1` 加 fixture 模組測 `retire`,fixture 會 dot-source 真的 `Private/Set-TcBuildRequired.ps1` 與 `Private/LifecycleBlock.ps1`;另有 #41 之前格式的 fixture `reload-module-old`(有變數、沒有 helper),測 reload 進去再 reload 出來、有 block 仍拒絕、BUILD_REQUIRED 退回邏輯)。registered tcauto 真機 reload 尚未驗證。
 
 ### RELOAD_PATH_NOT_ALLOWED
 
-- **為什麼**:`ReloadModule` 的 `ModulePath` 不是允許的路徑。允許的只有兩種:server 啟動時的 `TWINCAT_MODULE_PATH` 所屬 repo 的主 checkout 的 `src\TwinCATAutomation\TwinCATAutomation.psm1`,以及 `<主 checkout>\.git\worktrees\*\gitdir` 登記、而且該 worktree 的 `.git` 檔指回同一筆登記的 worktree 裡的同一個相對路徑(也就是 `git worktree list` 列出、目錄還在的 worktree)。相對路徑、別的檔名、別的 repo、目錄已刪的 worktree、檔案不存在都拒絕。server 本身不是從 git checkout 啟動(安裝版)時，任何 `ModulePath` 都拒絕。
+- **為什麼**:`ReloadModule` 的 `ModulePath` 不是允許的路徑。允許的只有兩種:server 啟動時的 `TWINCAT_MODULE_PATH` 所屬 repo 的主 checkout 的 `src\TwinCATAutomation\TwinCATAutomation.psm1`,以及 `<主 checkout>\.git\worktrees\*\gitdir` 登記、而且該 worktree 的 `.git` 檔指回同一筆登記的 worktree 裡的同一個相對路徑(也就是 `git worktree list` 列出、目錄還在的 worktree)。相對路徑、別的檔名、別的 repo、目錄已刪的 worktree、檔案不存在都拒絕。server 本身不是從 git checkout 啟動(安裝版，包括 `Install-TcAutoRuntime.ps1` 裝的 runtime,#162)時，任何 `ModulePath` 都拒絕;安裝版要換版本請重跑安裝腳本再呼叫 `ReloadRuntime`(見下方「ReloadRuntime」一節)。
 - **下一步**:從 `data.allowed` 挑一個路徑重試，或不帶 `ModulePath` 重載目前的模組。什麼都沒有斷開或重載(`data.notRun = true`)。
 
 ### RELOAD_LIFECYCLE_BLOCKED
@@ -496,6 +498,73 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:舊 bridge 已退場(IDE / ADS 已斷開),但新的 `ModulePath` 匯入失敗(`data.importError`,例如語法錯誤、檔案在 Windows PowerShell 5.1 下 parse 不過)。
 - **下一步**:`data.restored = true` 表示已重新載入原本的路徑(`data.current`),修好模組後再 `ReloadModule`;之後要重新 `ConnectIde`。`data.restored = false`(`data.restoreError`;重載的就是原本的路徑時也不會還原)時目前沒有模組，一般呼叫都回 `MODULE_IMPORT_FAILED`;這時 `ReloadModule` 換到一條能匯入的白名單路徑就會恢復(沒有 bridge 行程時不送 `retire`,直接換路徑啟動),或重啟 server。
+
+### OneDrive 與 hydration(MCP,#162 / #158)
+
+- **現象**:MCP 註冊直接指向 OneDrive 裡的 `<repo>\mcp-server\index.js` 時，client 重開後第一個呼叫回 `MODULE_IMPORT_FAILED`(`Bridge exited before ready (code 1)`),bridge 的 stderr 是 `The cloud sync provider failed to validate the downloaded data.`(雲端檔案提供者錯誤 383,#162,2026-11-06 Codex 回報)。同一份 repo 在 OneDrive 路徑下 `Import-Module` 要 52–65 s,複製到 `%TEMP%` 約 6 s(實測 2026-11-06,Windows 11、PS 5.1,#158),貼著 bridge 的啟動 timeout 60 s。
+- **原因**:OneDrive「檔案隨選」只在本機留 placeholder,第一次讀取才下載(hydration)。下載驗證失敗時讀檔直接出錯;成功時，每個被 dot-source 的小檔也都要先經過 cloud file provider。另外 client 跑的是 checkout 當下所在的分支。
+- **做法**:不要讓 MCP client 從 OneDrive 執行 runtime。用 `scripts\Install-TcAutoRuntime.ps1` 把 runtime 裝到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<version>\`,client 只註冊 launcher(`docs/setup-mcp.md`)。安裝腳本自己會從 OneDrive 讀檔(robocopy),讀不到時回 `COPY_FAILED`:在檔案總管對 checkout 資料夾按右鍵 →「一律保留在此裝置上」,等 OneDrive 下載完再跑一次。
+- **還沒做的**:bridge 啟動前預讀檔案、`MODULE_IMPORT_FAILED` 帶出 cloud provider 的 stderr 原文(#162 建議 2–3)不在這次範圍;直接從 OneDrive checkout 跑 `index.js`(開發用)仍會遇到上述延遲。
+
+### ReloadRuntime(MCP launcher,#162):做法與共同規則
+
+- **用途**:換到 `runtime\current.json` 指定的版本(先跑 `Install-TcAutoRuntime.ps1`),不用重連 MCP client。整個 runtime(`index.js`、`bridge.ps1`、`tools.json`、模組)一起換;`ReloadModule` 只換 PowerShell 模組。這個 tool 是 launcher(`mcp-server\launcher\tcauto-launcher.mjs`)自己加進 `tools/list` 的，只有經 launcher 啟動時才有。
+- **做法**(launcher):
+  1. 有還沒回應的 `tools/call` → `RUNTIME_RELOAD_BUSY`,什麼都不做(lifecycle 操作不能被切斷)。`current.json` 讀不到 / 版本資料夾不完整 → `RUNTIME_NOT_INSTALLED`,什麼都不做。
+  2. 對舊 runtime 送 launcher 專用的 request `tcauto/retire`:`index.js` 讓 bridge 走和 `ReloadModule` 相同的 `retire`(記憶體裡有 lifecycle block → `RELOAD_LIFECYCLE_BLOCKED`;BUILD_REQUIRED 寫不回檔案 → `RELOAD_BUILD_REQUIRED`;兩者都是什麼都沒變，舊 runtime 照常服務)。成功時 IDE / ADS 連線釋放(IDE 保持開著),`index.js` 等 PowerShell 結束後才回覆，之後的 tool call 一律回 `RUNTIME_RETIRED`。這個 request 只有 `TCAUTO_LAUNCHER_PID` 等於父行程 pid 的 `index.js` 才接受;client 直接送 `tcauto/...` 會被 launcher 回 Method not found。
+  3. 關閉舊 runtime 的 stdin(正常 shutdown;20 s 內沒結束才 kill)。
+  4. 啟動新 runtime,重送 client 當初的 `initialize`(回應吞掉)與 `notifications/initialized`,回覆 tool call,再送 `notifications/tools/list_changed`。launcher 的 `initialize` 回應一律標 `capabilities.tools.listChanged = true`。
+  5. 新 runtime 起不來 → `RUNTIME_START_FAILED`,自動重啟舊版本(`data.restored`)。
+- **重載中的請求**:立刻回 `RUNTIME_RELOADING`(tool call 回 tool error,其他 request 回 JSON-RPC error),不排隊、不丟失;`ping` 由 launcher 自己回。
+- **runtime 意外結束**:它還沒回應的 request 全部回 `RUNTIME_DIED`;下一個 request 自動用同一個版本重啟(重送 `initialize`)。
+- **owner id**:一個 launcher 行程一個 GUID,傳給每個 runtime,所以 `ReloadRuntime` 前後啟動的 IDE 都算同一個 session 的(見「啟動紀錄持久化(#73 / #149)」)。
+- **回傳**:`data.previous` / `data.current` = `{version, commit, dirty, branch, installedAt, runtimeDir}`,`data.retired`(bridge retire 的 data,例如 `ideWasConnected`),`data.reconnectRequired = true`。之後先 `ConnectIde`。
+- **client 端**:收到 `notifications/tools/list_changed` 後會不會重抓 tool 清單由 client 決定(Claude Code / Claude Desktop / Codex 未實測)。沒重抓時，新版本新增的 tool / 參數要重連 client 才看得到;既有 tool 的呼叫已經送到新 runtime。
+- **測試**:`mcp-server/test/launcher.test.js`(mock runtime:轉送、重放 initialize、list_changed、重載中請求、有進行中呼叫時拒絕、retire 被拒、runtime 掛掉、新版本起不來;以及兩份真的 `index.js` 複本 + mock bridge)、`mcp-server/test/runtime-info.test.js`、`mcp-server/test/install-runtime.test.js`。registered tcauto 真機驗證尚未做。
+
+### RUNTIME_NOT_INSTALLED
+
+- **為什麼**:launcher 找不到可用的 runtime:`<install root>\runtime\current.json` 不存在、不是 JSON、`version` 不是 runtime 資料夾名稱，或該版本的 `mcp-server\index.js` 不存在。install root 是 `TCAUTO_RUNTIME_ROOT`,沒設就是 launcher 所在資料夾的上一層。
+- **下一步**:在 checkout 跑 `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1`,再重試(或 `ReloadRuntime`)。`ReloadRuntime` 回這個碼時什麼都沒變(`data.notRun = true`)。
+
+### RUNTIME_RELOAD_BUSY
+
+- **為什麼**:`ReloadRuntime` 時還有 tool call 在 runtime 裡跑(`data.running` 列出名稱),或 runtime 正在啟動。什麼都沒變。
+- **下一步**:等那些呼叫回來，再 `ReloadRuntime`。不要為了 reload 中斷 `BuildProject` / `EnableConfig` / `RunLifecycle`。
+
+### RUNTIME_RELOADING
+
+- **為什麼**:呼叫送到時 `ReloadRuntime` 正在換 runtime,這個呼叫沒有執行;或某個 request 在 reload 退場的 runtime 裡沒被回應。
+- **下一步**:等 `ReloadRuntime` 回來後再呼叫(reload 會釋放 IDE 連線，先 `ConnectIde`)。
+
+### RUNTIME_RETIRED
+
+- **為什麼**:這個 runtime 已經被 launcher 的 retire 收掉(通常是 `ReloadRuntime` 的 retire 超時後才完成),不再接受呼叫。
+- **下一步**:再呼叫一次 `ReloadRuntime`(launcher 會啟動 `current.json` 指定的 runtime),然後 `ConnectIde`。
+
+### RUNTIME_DIED
+
+- **為什麼**:runtime 行程(node)在回應前結束了(`error.message` 帶 exit code)。呼叫可能跑了，也可能沒跑。
+- **下一步**:下一個呼叫會自動重啟同一個版本(IDE / ADS 狀態全部遺失)。改變機器狀態的呼叫重做前先 `GetStatus` / `GetPlcState` 確認，再 `ConnectIde`。原因看 launcher 的 stderr(client 的 MCP log)。
+
+### RUNTIME_START_FAILED
+
+- **為什麼**:runtime 起不來或沒回應重送的 `initialize`(例如安裝不完整、`node_modules` 缺檔、`tools.json` 壞掉)。`ReloadRuntime` 時舊 runtime 已退場;`data.restored = true` 表示已重新啟動舊版本。
+- **下一步**:重跑 `Install-TcAutoRuntime.ps1` 再 `ReloadRuntime`;不管有沒有還原都要重新 `ConnectIde`。`data.restored = false` 時下一個呼叫會試著啟動 `current.json` 指定的版本。
+
+### RUNTIME_RETIRE_TIMEOUT / RUNTIME_RETIRE_UNSUPPORTED / RUNTIME_RETIRE_FAILED
+
+- **為什麼**:舊 runtime 沒在時間內回應 `tcauto/retire`(`TIMEOUT`,舊 runtime 繼續跑)、不認得這個 request(`UNSUPPORTED`,比 launcher 舊的 runtime),或回了 JSON-RPC 錯誤(`FAILED`)。三者都沒有切換,launcher 也不會硬殺舊 runtime(不能跳過 bridge 的 fail-closed retire)。
+- **下一步**:`TIMEOUT`:先 `GetStatus`,稍後再 `ReloadRuntime`(若之後回 `RUNTIME_RETIRED`,表示 retire 晚到完成，再 `ReloadRuntime` 一次)。`UNSUPPORTED`:重連 MCP client(Claude Code 用 `/mcp` reconnect),bridge 會走正常 shutdown。`FAILED`:回報錯誤內容。
+
+### Install-TcAutoRuntime.ps1 的錯誤(#162)
+
+- `WORKTREE_DIRTY`:`mcp-server\`(不含 `test\`)或 `src\TwinCATAutomation\` 有未 commit 的改動(`data.changes`),什麼都沒寫。commit 後重跑，或加 `-AllowDirty`(版本名 `<commit>-dirty-<UTC 時間>`,`dirty: true`)。
+- `COPY_FAILED`:robocopy 失敗，多半是 OneDrive 檔案下載不了(見上方「OneDrive 與 hydration」)。
+- `NPM_CI_FAILED`:暫存複本裡的 `npm ci --omit=dev` 失敗(Node / npm 不在 PATH、registry 連不到)。暫存複本會刪掉,`current.json` 不變。
+- `RUNTIME_DAMAGED` / `RUNTIME_IN_USE`:同名版本資料夾不完整;是 current 就不動它(可能正在跑),否則刪不掉(被使用中)。
+- `GIT_NOT_FOUND` / `GIT_FAILED` / `SOURCE_INCOMPLETE` / `RENAME_FAILED` / `CURRENT_WRITE_FAILED` / `LAUNCHER_WRITE_FAILED`:訊息裡有路徑與原因;`current.json` 只在新版本完整就位後才換。
+- `TCAUTO_REAL_STATE_REFUSED`:測試環境(`TCAUTO_TEST_FORBID_REAL_STATE=1`)指到真的 `%LOCALAPPDATA%\TwinCATAutomation`,拒絕寫入(#118)。
 
 ### SYSTEM_STATE_TIMEOUT
 

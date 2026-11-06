@@ -17,6 +17,7 @@
     "generate-tools": "node scripts/check-execution-policy.mjs && powershell.exe -NoProfile -File scripts/Export-ToolSchema.ps1"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
   }
 }
