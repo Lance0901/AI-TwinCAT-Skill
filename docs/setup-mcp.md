@@ -38,10 +38,12 @@ Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE for `Co
    | Client | File | Entry |
    |---|---|---|
    | Claude Code (user scope) | `%USERPROFILE%\.claude.json` | top-level `mcpServers.tcauto` (`type: stdio`, `command`, `args`, `env`); project scopes are not touched |
-   | Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers.tcauto` (`command`, `args`) |
+   | Claude Desktop | MSIX package (Microsoft Store / winget): `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json`; standard install: `%APPDATA%\Claude\claude_desktop_config.json` (see below) | `mcpServers.tcauto` (`command`, `args`) |
    | Codex | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | table `[mcp_servers.tcauto]` (`command`, `args`) |
 
-   Only the `tcauto` entry changes; other servers and settings stay as they are. Each file is copied to `<file>.bak-<yyyyMMddTHHmmss>` before it changes. An existing `tcauto` (for example one that points at a checkout) is overwritten, and its old value is in the result (`data.clients[].previous`). A client is skipped (and reported) when its file (Claude Code) or folder (Claude Desktop, Codex) does not exist. Choose clients with `-Clients ClaudeCode,Codex`. A config file that is not valid JSON, or a Codex `tcauto` written as a key instead of a `[mcp_servers.tcauto]` table, is left unchanged (`CLIENT_CONFIG_FAILED`). Claude Desktop from the Microsoft Store keeps its config in another folder: pass it with `-ClaudeDesktopConfig <path>`.
+   Only the `tcauto` entry changes; other servers and settings stay as they are. Each file is copied to `<file>.bak-<yyyyMMddTHHmmss>` before it changes. An existing `tcauto` (for example one that points at a checkout) is overwritten, and its old value is in the result (`data.clients[].previous`). A client is skipped (and reported) when its file (Claude Code) or folder (Claude Desktop, Codex) does not exist. Choose clients with `-Clients ClaudeCode,Codex`. A config file that is not valid JSON, or a Codex `tcauto` written as a key instead of a `[mcp_servers.tcauto]` table, is left unchanged (`CLIENT_CONFIG_FAILED`).
+
+   **Claude Desktop has two config locations (#165).** The MSIX package reads `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json` (the folder that also holds its `preferences` and `logs\`), not `%APPDATA%\Claude\` (實測 2026-11-07, Windows 11, Claude Desktop MSIX 4.23118.0.0, package `Claude_4.23118.0.0_x64__pzs8sxrjxfjjc`, folder `claude_pzs8sxrjxfjjc`; Anthropic's documentation names only `%APPDATA%\Claude`). The installer writes every existing `%LOCALAPPDATA%\Claude-Data\claude_*\` folder, and `%APPDATA%\Claude\` when that folder exists or no MSIX folder was found; when both exist both get the entry. `data.clients[]` has one row per file with `variant` = `msix` / `standard`. `-ClaudeDesktopConfig <path>` writes only that file (`variant` = `override`); `-LocalAppDataRoot` / `-AppDataRoot` replace `%LOCALAPPDATA%` / `%APPDATA%` for this lookup.
 4. At the end the installer runs the same check as `-Verify`: it starts the installed `node.exe` with the launcher, sends MCP `initialize` + `tools/list` and reports the tool count (<!-- generated:mcp-tool-count -->79<!-- /generated --> cmdlet tools + <!-- generated:composite-count -->5<!-- /generated --> composite tools + the launcher's `ReloadRuntime`) and the runtime commit. It does not connect to an IDE.
 5. Restart each client once. Then ask it to call `GetStatus` (see "Verify" below), then `ConnectIde`.
 
@@ -50,8 +52,8 @@ The last stdout line is `TCAUTO_INSTALL_RESULT {json}` (`success`, `data` / `err
 | Command | What it does |
 |---|---|
 | `... -File .\Install-TcAuto.ps1 -Verify` | Only the check of step 4; writes nothing |
-| `... -File .\Install-TcAuto.ps1 -Uninstall` | Removes `tcauto` from the three files when its command is below the install root (backup first), then `node\`, `launcher\` and `runtime\`. A `tcauto` that runs another command but passes a file below the install root (e.g. `node <root>\launcher\tcauto-launcher.mjs`, a developer registration) is left (`shared`) and nothing is removed (`INSTALL_SHARED`): change that registration first, or add `-Force` to remove it and the files. Any other `tcauto` is left (`foreign`). Other files in `%LOCALAPPDATA%\TwinCATAutomation` (`ide-solutions.json`) stay. Close the clients first (`INSTALL_IN_USE` otherwise) |
-| `-InstallRoot`, `-ClaudeCodeConfig`, `-ClaudeDesktopConfig`, `-CodexConfig` | Other paths (tests use temp folders) |
+| `... -File .\Install-TcAuto.ps1 -Uninstall` | Removes `tcauto` from the client files (every Claude Desktop location above) when its command is below the install root (backup first), then `node\`, `launcher\` and `runtime\`. A `tcauto` that runs another command but passes a file below the install root (e.g. `node <root>\launcher\tcauto-launcher.mjs`, a developer registration) is left (`shared`) and nothing is removed (`INSTALL_SHARED`): change that registration first, or add `-Force` to remove it and the files. Any other `tcauto` is left (`foreign`). Other files in `%LOCALAPPDATA%\TwinCATAutomation` (`ide-solutions.json`) stay. Close the clients first (`INSTALL_IN_USE` otherwise) |
+| `-InstallRoot`, `-ClaudeCodeConfig`, `-ClaudeDesktopConfig`, `-CodexConfig`, `-LocalAppDataRoot`, `-AppDataRoot` | Other paths (tests use temp folders) |
 
 **Next versions:** extract the new zip and run its `Install-TcAuto.ps1` the same way. The registration does not change, so no client restart is needed: call the MCP tool `ReloadRuntime`, then `ConnectIde` again ("Switch to another version" below). Only a new `node.exe` (another Node.js version in the zip) is used after the next client restart; a `node.exe` that a running client holds is renamed aside, not overwritten.
 
@@ -99,7 +101,7 @@ An existing user-scope `tcauto` must be removed first (`claude mcp remove tcauto
 
 ### Claude Desktop
 
-`%APPDATA%\Claude\claude_desktop_config.json`, then restart Claude Desktop:
+`%APPDATA%\Claude\claude_desktop_config.json` (standard install) or, for the MSIX package, `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json` (實測 2026-11-07, Windows 11, Claude Desktop MSIX 4.23118.0.0; see "Claude Desktop has two config locations" above), then restart Claude Desktop:
 
 ```json
 {
@@ -173,4 +175,4 @@ That proves Node started, `powershell.exe` spawned and the module imported. `dat
 | `RunLifecycle` / `EnableConfig` returns `ACTIVATE_FAILED` (target without TARGETINFO) | XAE's Check config failed: the solution platform differs from the target platform (a UmRT / Usermode Runtime needs `TwinCAT OS (x64)`; measured 2026-10-21 on 4026 XAE). `EnableConfig` compares the platforms first, but a target that answers TARGETINFO with ADS 0x702 (the runtime of TwinCAT 3.1.4026.21-22) reports none, so without `Platform` the check is skipped (`data.platformCheck` = `skipped`, `data.warning`) | `EnableConfig {"Force": true, "Platform": "TwinCAT OS (x64)"}` (switches + rebuilds), or `SetTarget {"AmsNetId": "<id>", "Platform": "TwinCAT OS (x64)"}` / `RunLifecycle` with `Platform`, then `BuildProject` + `EnableConfig` |
 | Any other `error.code` | Module error, passed through unchanged | Follow `error.hint`; code table in [troubleshooting.md](troubleshooting.md) |
 
-Claude Desktop writes the server's stderr (with the launcher, the launcher's and the runtime's) to `%APPDATA%\Claude\logs\mcp-server-tcauto.log`. Set `TWINCAT_MCP_VERBOSE=1` in the config `env` to also get `Write-Verbose` output from the module as `debug` log notifications.
+Claude Desktop writes the server's stderr (with the launcher, the launcher's and the runtime's) to `%APPDATA%\Claude\logs\mcp-server-tcauto.log` (MSIX package: `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\logs\mcp-server-tcauto.log`, 實測 2026-11-07, Windows 11, Claude Desktop MSIX 4.23118.0.0). Set `TWINCAT_MCP_VERBOSE=1` in the config `env` to also get `Write-Verbose` output from the module as `debug` log notifications.

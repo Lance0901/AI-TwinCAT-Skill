@@ -9,7 +9,9 @@
 // Only the tcauto entry changes; every other server, key and table is kept:
 //   claude-code     ~/.claude.json, top-level mcpServers.tcauto = {type: 'stdio', command, args, env: {}}
 //                   (user scope; projects[*].mcpServers are not touched)
-//   claude-desktop  %APPDATA%\Claude\claude_desktop_config.json, mcpServers.tcauto = {command, args}
+//   claude-desktop  claude_desktop_config.json, mcpServers.tcauto = {command, args}; which file(s) -
+//                   %LOCALAPPDATA%\Claude-Data\claude_*\ (MSIX) and/or %APPDATA%\Claude\ (standard) -
+//                   Install-TcAuto.ps1 decides (#165); this helper changes the one --file it gets
 //   codex           ~/.codex/config.toml, table [mcp_servers.tcauto] (and its sub-tables) with command / args
 // Before a file is changed it is copied to <file>.bak-<stamp>. JSON is written as UTF-8 without BOM,
 // with the indent and line ending of the original. The new file is written to a temp file next to
