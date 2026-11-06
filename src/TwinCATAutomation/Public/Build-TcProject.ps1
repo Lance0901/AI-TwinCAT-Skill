@@ -112,7 +112,8 @@
         data.codeErrors      errorItems with category 'code' - the PLC code errors
         data.runtimeMessages runtime / system log rows of the Error List (#66): TcUnit / ADSLOGSTR output of the
                              PLC, also rows such as 'TCOM Server' (10): / 'TwinCAT System' (10000):. Same shape with
-                             category 'runtime': description "'<source>' (<number>): ..." and no file, no line, no
+                             category 'runtime': description "'<source>' (<number>): ..." (optionally after "<timestamp> | ",
+                             實測 2026-11-06) and no file, no line, no
                              compiler code, no library message (Get-TcRuntimeLogKind). Error and warning rows; never
                              in errorItems / warningItems / codeErrors; @() when none. InfoSys: ADSLOGSTR messages
                              from the PLC application are shown in the XAE Error List
@@ -124,6 +125,9 @@
                              Error List decides the result (decidedBy = ErrorList, LastBuildInfo not readable)
                              and runtimeMessages is not empty, codeVerified = $null and a successful build gets
                              CODE_NOT_VERIFIED (not complete, BUILD_REQUIRED stays; review #150 F3).
+        data.plcOnlineSuspected  BUILD_FAILED only: $true when no code / library error row was listed, every built PLC
+                             project is 'unknown' and runtime / system log rows are present - the PLC is probably
+                             logged in and XAE did not compile (#66 / O9, 實測 2026-11-06; hint BUILD_FAILED_PLC_ONLINE)
         data.runtimeMessageNote  only when a row has that prefix AND a file, line, code or library message: it
                              cannot be told apart, so it stays in errorItems / warningItems (fail closed) with a
                              'note' on the row
@@ -785,8 +789,22 @@
             if (@($els.runtimeMessages).Count -gt 0) {
                 $summary += ". $(@($els.runtimeMessages).Count) runtime / system log row(s) of the Error List (data.runtimeMessages, '<source>' (<number>): ..., e.g. TcUnit / ADSLOGSTR output) are not build errors and were left out"
             }
+            # #66 problem 2 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT; InfoSys: no source found): with
+            # the PLC logged in XAE does not compile at all (0.8 s, LastBuildInfo > 0, the real C0046 is not
+            # in the Error List; after PlcLogout the build lists C0046 / C0018). Decided from data already
+            # read, no extra COM call: no code / library / located error row, no PLC project named by an
+            # error row (every built project 'unknown') and runtime / system log rows present.
+            $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE'
+            $activeStatus = @($projects | Where-Object { $_.status -ne 'skipped' -and $_.status -ne 'disabled' } | ForEach-Object { $_.status })
+            $plcOnlineSuspected = ($null -eq $errorListError) -and ($codeErrors.Count -eq 0) -and ($libraryErrorItems.Count -eq 0) -and
+                (@($els.runtimeMessages).Count -gt 0) -and ($activeStatus.Count -gt 0) -and (@($activeStatus | Where-Object { $_ -ne 'unknown' }).Count -eq 0)
+            if ($plcOnlineSuspected) {
+                $summary = "Build failed but XAE listed no compiler error: the PLC is probably logged in, so XAE did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout). $failedProjects project(s) failed; $(@($els.runtimeMessages).Count) runtime / system log row(s) in the Error List (data.runtimeMessages), no error row names a PLC project"
+                $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
+                $data | Add-Member -NotePropertyName 'plcOnlineSuspected' -NotePropertyValue $true -Force
+            }
             & $recordUnverified 'BUILD_FAILED' $data
-            New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint (Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE') -Data $data
+            New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint $buildHint -Data $data
         }
         else {
             # -ExpectedProject: each one must have been built (skipped was refused before the build)

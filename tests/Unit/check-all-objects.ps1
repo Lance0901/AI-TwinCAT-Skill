@@ -1,4 +1,4 @@
-# Unit: task 3.7 (complete-automation-interface phase 2): Test-TcPlcProject (MCP CheckAllObjects) and
+﻿# Unit: task 3.7 (complete-automation-interface phase 2): Test-TcPlcProject (MCP CheckAllObjects) and
 # the Error List summary it shares with Build-TcProject (Get-TcErrorListSummary).
 # No IDE / runtime: a mock '<Plc> Project' node whose CheckAllObjects() returns what XAE returned in the
 # probe (verification/phase2-probe.md 3.7: True, or False without an exception), and a mocked
@@ -110,7 +110,7 @@ try {
 
     # ===== #66: runtime / system log rows ("'<source>' (<number>): ...", no file / line / code) go to
     # data.runtimeMessages, not errorItems / staleErrorItems (Test-TcPlcProject uses -SplitRuntimeLog)
-    $rowTcUnit = { New-Row '' "'PlcTask' (350): | Successful tests: 6" '' $null }
+    $rowTcUnit = { New-Row '' "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6" '' $null }   # real row (實測 2026-11-06, PR #150)
     $rowTcom = { New-Row '' "'TCOM Server' (10): NtpType Register ExternalTime failed, HR=98110708" '' $null }
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowTcUnit, $rowTcom, $rowStale)
     $r = Test-TcPlcProject

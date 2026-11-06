@@ -1,4 +1,4 @@
-# Unit: runtime / system log rows (TcUnit / ADSLOGSTR output, 'TCOM Server', 'TwinCAT System') in the Error List are not build errors
+﻿# Unit: runtime / system log rows (TcUnit / ADSLOGSTR output, 'TCOM Server', 'TwinCAT System') in the Error List are not build errors
 # (issue #66), no IDE / runtime needed. The DTE / SolutionContexts / Error List are mocked in the
 # module scope; the real Build-TcProject, Get-TcErrorListSummary, Get-TcRuntimeLogKind and
 # Set/Clear-TcBuildRequired run (state in a temp TCAUTO_STATE_DIR). Covers:
@@ -33,22 +33,29 @@ $sln = Join-Path $stateRoot 'Demo66\Demo66.sln'
 $null = New-Item -ItemType Directory -Path (Split-Path -Parent $sln) -Force
 Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
 
-# --- Error List rows. Log rows: the form measured in #66 (2026-10-27, VS2022 4026, local UmRT,
-# RobustSolutionFrameworkDemo with TcUnit): "'PlcTask' (350): | ...", no project / file / line.
+# --- Error List rows. Log rows: no project / file / line (#66, 2026-10-27, VS2022 4026, local UmRT,
+# RobustSolutionFrameworkDemo with TcUnit).
 function Row([string]$Sev, [string]$Desc, [string]$File = $null, $Line = $null, [string]$Code = $null, [string]$Project = $null) {
     [PSCustomObject]@{ severity = $Sev; code = $Code; description = $Desc; project = $Project; file = $File; line = $Line; column = $null }
 }
+# Real rows, verbatim (實測 2026-11-06, VS2022 4026 zh-TW UI + local UmRT, PR #150 head c35694b, same
+# project; C:\Temp\verify-reports\pr150-c35694b.md appendix, GetBuildErrors IncludeMessages=true): every
+# row carries a "<timestamp> | " prefix. The fixture before this fix had no prefix (written from the
+# issue text), so the unit tests passed while the real machine failed (review #150, real-machine F1).
 function TcUnitRows {
     @(
-        (Row 'Error' "'PlcTask' (350): | ==========TESTS FINISHED RUNNING==========")
-        (Row 'Error' "'PlcTask' (350): | Test suites: 2")
-        (Row 'Error' "'PlcTask' (350): | Tests: 6")
-        (Row 'Error' "'PlcTask' (350): | Successful tests: 6")
-        (Row 'Error' "'PlcTask' (350): | Failed tests: 0")
-        (Row 'Error' "'PlcTask' (350): | Duration: 0.010000")
-        (Row 'Error' "'PlcTask' (350): | ======================================")
+        (Row 'Error' "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Test suites: 1")
+        (Row 'Error' "11/6/2026 9:11:28 AM 580 ms | 'PlcTask' (350): | Failed tests: 0")
+        (Row 'Error' "11/6/2026 9:11:28 AM 560 ms | 'PlcTask' (350): | Successful tests: 6")
+        (Row 'Error' "11/6/2026 9:11:28 AM 500 ms | 'PlcTask' (350): | ==========TESTS FINISHED RUNNING==========")
+        (Row 'Error' "11/6/2026 9:11:28 AM 600 ms | 'PlcTask' (350): | Duration: 3.6307284")
+        (Row 'Error' "11/6/2026 9:11:28 AM 540 ms | 'PlcTask' (350): | Tests: 6")
+        (Row 'Error' "11/6/2026 9:11:28 AM 620 ms | 'PlcTask' (350): | ======================================")
     )
 }
+# the two warnings of the same run (verbatim): a PLC runtime row and the XAE build-summary row
+$warnPersist = { Row 'Warning' "11/6/2026 9:11:24 AM 204 ms | 'Port_851' (851): Persistent data of symbol 'GVL_HMI.setCombiTaper' not restored. Symbol not found. 29 further symbols also not restored." }
+$warnXaeFailed = { Row 'Warning' "11/6/2026 9:12:34 AM 453 ms | 'TwinCAT XAE': Project 'Untitled1' build for platform 'TwinCAT OS (x64)' failed." }
 $c0046 = { Row 'Error' "Identifier 'nPr62Undeclared' not defined" 'C:\Demo66\plc\POUs\MAIN.TcPOU' 12 'C0046' 'plc' }
 
 # --- Get-TcRuntimeLogKind
@@ -63,6 +70,25 @@ $kindCases = @(
     @{ Name = 'build-summary row without prefix -> null'; Item = (Row 'Error' "Build of project 'plc' failed"); Want = $null }
     @{ Name = 'quoted name without port -> null'; Item = (Row 'Error' "'PlcTask': x"); Want = $null }
     @{ Name = 'null item -> null'; Item = $null; Want = $null }
+    # real rows of the appendix (verbatim; the System Manager row has machine / user / IP masked)
+    @{ Name = 'real Port_851 warning -> runtime'; Item = (& $warnPersist); Want = 'runtime' }
+    @{ Name = "real 'TwinCAT XAE' build-summary warning (no (n)) -> null, kept as a build row"; Item = (& $warnXaeFailed); Want = $null }
+    @{ Name = "real 'TwinCAT Analytics Workbench' (date in brackets, line 0) -> null"; Item = (Row 'Message' "'TwinCAT Analytics Workbench' (11/6/2026 9:08:16 AM): Unable to initialize ToolBox Service. First usage may take some loading time." $null 0); Want = $null }
+    @{ Name = 'real License Server message -> runtime'; Item = (Row 'Message' "11/6/2026 9:11:10 AM 418 ms | 'License Server' (30): license validation status is Valid(3)"); Want = 'runtime' }
+    @{ Name = 'real TcOsSys message -> runtime'; Item = (Row 'Message' "11/6/2026 9:11:18 AM 977 ms | 'TcOsSys' (50): TwinCAT System Start: AdsState: 5 NumProc: 16"); Want = 'runtime' }
+    @{ Name = 'real TwinCAT System message -> runtime'; Item = (Row 'Message' "11/6/2026 9:11:19 AM 147 ms | 'TwinCAT System' (10000): Initializing TwinCAT Server TcMcGst.exe."); Want = 'runtime' }
+    @{ Name = 'real System Manager message (masked) -> runtime'; Item = (Row 'Message' "11/6/2026 9:11:17 AM 322 ms | 'System Manager' (38812): Activate configuration performed from 'HOST' (0.0.0.0.1.1) by 'HOST\user'"); Want = 'runtime' }
+    @{ Name = 'real C0046 (Logout, seq 112) -> null'; Item = (Row 'Error' "Identifier 'nPr150Undeclared' not defined" 'MAIN.TcPOU (Impl)' 6 'C0046' 'Untitled1'); Want = $null }
+    # timestamp prefix (#150 real machine): the en-US row is 實測, the zh-TW form is 推論 (not measured)
+    @{ Name = 'en-US timestamp prefix (measured row) -> runtime'; Item = (Row 'Error' "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6"); Want = 'runtime' }
+    @{ Name = 'zh-TW timestamp prefix (inferred) -> runtime'; Item = (Row 'Error' "2026/11/6 上午 09:11:28 520 毫秒 | 'PlcTask' (350): | Successful tests: 6"); Want = 'runtime' }
+    @{ Name = 'timestamp prefix + system row -> runtime'; Item = (Row 'Error' "11/6/2026 9:11:30 AM 3 ms | 'TCOM Server' (10): NtpType Register ExternalTime failed"); Want = 'runtime' }
+    @{ Name = 'timestamp prefix + file -> ambiguous'; Item = (Row 'Error' "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): x" 'C:\p\MAIN.TcPOU' 4); Want = 'ambiguous' }
+    @{ Name = 'timestamp prefix + Measurement (time in brackets) -> null'; Item = (Row 'Error' "11/6/2026 9:11:28 AM 520 ms | 'TwinCAT Measurement' (22:30:40.881): Error creating Archive"); Want = $null }
+    # the prefix must hold a digit and no quote / pipe: compiler-like texts with ' | ' do not match
+    @{ Name = 'quoted name before the first pipe -> null'; Item = (Row 'Error' "Identifier 'a' | 'PlcTask' (350): x"); Want = $null }
+    @{ Name = 'prefix without a digit -> null'; Item = (Row 'Error' "Unexpected token | 'PlcTask' (350): x"); Want = $null }
+    @{ Name = 'two pipes before the quote -> null'; Item = (Row 'Error' "12 | 34 | 'PlcTask' (350): x"); Want = $null }
     # review #150 F2: system rows in the same form are runtime / system log rows too (probe rows)
     @{ Name = 'TCOM Server row -> runtime'; Item = (Row 'Error' "'TCOM Server' (10): NtpType Register ExternalTime failed, HR=98110708"); Want = 'runtime' }
     @{ Name = 'TwinCAT System row with a project -> runtime'; Item = (Row 'Error' "'TwinCAT System' (10000): Error: >> license not found <<" $null $null $null 'plc'); Want = 'runtime' }
@@ -132,7 +158,7 @@ $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check '(a) success, completeBuild true, codeVerified true' ($r.success -and $d.buildSucceeded -eq $true -and $d.completeBuild -eq $true -and $d.codeVerified -eq $true) (J $r)
 Check '(a) errorItems / codeErrors empty, errors 0' (@($d.errorItems).Count -eq 0 -and @($d.codeErrors).Count -eq 0 -and $d.errors -eq 0) (J $d.errorItems)
-Check '(a) the 7 log rows are in runtimeMessages, category runtime' (@($d.runtimeMessages).Count -eq 7 -and @($d.runtimeMessages | Where-Object { $_.category -ne 'runtime' }).Count -eq 0 -and $d.runtimeMessages[3].description -match 'Successful tests: 6') (J $d.runtimeMessages)
+Check '(a) the 7 log rows are in runtimeMessages, category runtime' (@($d.runtimeMessages).Count -eq 7 -and @($d.runtimeMessages | Where-Object { $_.category -ne 'runtime' }).Count -eq 0 -and @($d.runtimeMessages | Where-Object { $_.description -match 'Successful tests: 6' }).Count -eq 1) (J $d.runtimeMessages)
 Check '(a) no runtimeMessageNote, no warningCodes' ($null -eq $d.PSObject.Properties['runtimeMessageNote'] -and $null -eq $d.PSObject.Properties['warningCodes']) (J $d)
 
 # --- (a2) the same rows with LastBuildInfo unreadable: decided by the Error List, still success
@@ -166,9 +192,32 @@ Reset-State
 Set-Scenario (TcUnitRows) @() 1
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
-Check '(b2) BUILD_FAILED, 0 code errors, errorItems empty' (-not $r.success -and $r.error.code -eq 'BUILD_FAILED' -and @($d.errorItems).Count -eq 0 -and $r.error.message -match '0 code error') (J $r)
-Check '(b2) message: no code error listed + 7 log rows left out (data.runtimeMessages)' ($r.error.message -match 'no code error listed' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -match 'data\.runtimeMessages' -and $r.error.message -notmatch 'Successful tests') $r.error.message
+Check '(b2) BUILD_FAILED, errorItems empty' (-not $r.success -and $r.error.code -eq 'BUILD_FAILED' -and @($d.errorItems).Count -eq 0) (J $r)
 Check '(b2) project status unknown (no build row names it)' (@($d.projects)[0].status -eq 'unknown') (J $d.projects)
+# O9 (實測 2026-11-06): PLC logged in -> XAE did not compile; the message must not read "0 code error(s)"
+Check '(b2/O9) plcOnlineSuspected, message says XAE did not compile (no "0 code error"), names the log rows' ($d.plcOnlineSuspected -eq $true -and $r.error.message -match 'PLC is probably logged in, so XAE did not compile' -and $r.error.message -notmatch '0 code error' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -notmatch 'Successful tests') $r.error.message
+Check '(b2/O9) hint: Exit-TcPlcOnline then Build-TcProject' ($r.error.hint -match '^PLC is logged in; XAE did not compile\. Exit-TcPlcOnline then Build-TcProject') $r.error.hint
+Check '(b2/O9) BUILD_REQUIRED still recorded' ($null -ne $d.buildRequired) (J $d)
+
+# --- O9 shape of the real run: 7 TcUnit errors + the Port_851 warning + the 'TwinCAT XAE' failed warning, LastBuildInfo 2
+Reset-State
+Set-Scenario (TcUnitRows) @((& $warnPersist), (& $warnXaeFailed)) 2
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'O9 real shape: BUILD_FAILED, plcOnlineSuspected, failedProjects 2, PLC_ONLINE hint' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $true -and $d.failedProjects -eq 2 -and $r.error.message -match '2 project\(s\) failed' -and $r.error.hint -match 'Exit-TcPlcOnline') (J $r)
+Check "O9 real shape: 8 runtimeMessages (7 errors + Port_851), the 'TwinCAT XAE' row stays in warningItems, not in codeWarnings" (@($d.runtimeMessages).Count -eq 8 -and @($d.warningItems).Count -eq 1 -and $d.warningItems[0].description -match "'TwinCAT XAE'" -and @($d.codeWarnings).Count -eq 0) (J $d)
+
+# --- not O9: a real compiler row listed (after PlcLogout, seq 112) -> the normal BUILD_FAILED message
+Reset-State
+Set-Scenario (@(TcUnitRows) + (Row 'Error' "Identifier 'nPr150Undeclared' not defined" 'MAIN.TcPOU (Impl)' 6 'C0046' 'Untitled1') + (Row 'Error' "'nPr150Undeclared' is no valid assignment target" 'MAIN.TcPOU (Impl)' 6 'C0018' 'Untitled1')) @((& $warnXaeFailed)) 1
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'after Logout (C0046 + C0018 listed) -> no plcOnlineSuspected, "2 code error(s)", compile hint' ((-not $r.success) -and $null -eq $r.data.PSObject.Properties['plcOnlineSuspected'] -and $r.error.message -match '2 code error' -and $r.error.message -match 'C0046' -and $r.error.hint -notmatch 'Exit-TcPlcOnline') (J $r)
+
+# --- not O9: no runtime rows -> the old "no code error listed" message
+Reset-State
+Set-Scenario @() @((& $warnXaeFailed)) 1
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'no runtime rows, no compiler row -> no plcOnlineSuspected, message "no code error listed"' ((-not $r.success) -and $null -eq $r.data.PSObject.Properties['plcOnlineSuspected'] -and $r.error.message -match 'no code error listed') (J $r)
 
 # --- (c) a row that cannot be told apart: log prefix AND file + line -> kept, with a note
 $amb = { Row 'Error' "'PlcTask' (350): Identifier 'x' not defined" 'C:\Demo66\plc\POUs\MAIN.TcPOU' 5 $null 'plc' }

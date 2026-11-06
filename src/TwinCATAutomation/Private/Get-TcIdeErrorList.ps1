@@ -1007,14 +1007,24 @@ function Get-TcErrorItemCategory {
 # the brackets means is not confirmed (it is not always an ADS port: 實測 counter-example
 # "'TwinCAT Measurement' (22:30:40.881): Error creating Archive", which is not matched because the
 # brackets hold no plain number). Other UI languages / XAE versions are not measured.
-$script:TcRuntimeLogPrefixPattern = "^\s*'[^']+'\s*\(\d+\)\s*:"
+# Timestamp prefix (實測 2026-11-06, VS2022 4026 + local UmRT, PR #150 head c35694b, the same TcUnit
+# project): the rows are read as "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6",
+# so the form above is preceded by "<timestamp> | ". The timestamp follows the Windows locale (a zh-TW
+# form such as "2026/11/6 上午 09:11:28 520 毫秒 | " is 推論, not measured), so it is not parsed: the
+# optional prefix is "anything up to the FIRST ' | ' that contains a digit and no ' or |". Trade-off: a
+# compiler message would be taken for a log row only if its text starts with such a digit-run, then
+# ' | ', then "'<name>' (<number>):" as the first quote of the line, AND it has no file, no line, no
+# compiler code and no library message (any of those makes it 'ambiguous', kept as an error); the
+# prefix allows no quote, so a quoted identifier before the first ' | ' never matches.
+$script:TcRuntimeLogPrefixPattern = "^\s*(?:[^'|]*\d[^'|]*\s\|\s+)?'[^']+'\s*\(\d+\)\s*:"
 
 function Get-TcRuntimeLogKind {
     <#
     .SYNOPSIS
         'runtime' / 'ambiguous' / $null for one Error List row (#66).
     .DESCRIPTION
-        runtime    the description starts with "'<source>' (<number>):" ($script:TcRuntimeLogPrefixPattern)
+        runtime    the description starts with "'<source>' (<number>):", optionally after a
+                   "<timestamp> | " prefix ($script:TcRuntimeLogPrefixPattern)
                    AND the row has no file, no line (> 0), no compiler code and no library message: a
                    runtime / system log row (TcUnit, ADSLOGSTR, 'TCOM Server', 'TwinCAT System'), not a
                    build message.
