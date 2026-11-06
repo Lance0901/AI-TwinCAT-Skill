@@ -1,14 +1,11 @@
-# Short commit id of the checkout the module runs from, read from the .git files (no subprocess).
-# Only when the repository root two levels above ModuleBase really contains this module as
+# Short commit id of the checkout the module runs from (ReportIssue commit line, #78). Only when the
+# repository root two levels above ModuleBase really contains this module as
 # <root>\src\TwinCATAutomation; otherwise (installed copy, unrelated parent repository) $null.
+# The .git files are read by Read-TcGitCommit (Private/InstallManifest.ps1, #148): UTF-8 (#140),
+# worktree .git file + commondir, loose ref / packed-refs / detached HEAD, SHA-1 and SHA-256.
 function Get-TcModuleCommit {
     [CmdletBinding()]
     param([string]$ModuleBase)
-
-    # #140: git writes the .git file of a linked worktree ("gitdir: <path>"), commondir and refs as
-    # UTF-8 without BOM. Windows PowerShell 5.1 Get-Content reads such a file as ANSI, so a
-    # non-ASCII checkout path (e.g. OneDrive\<CJK folder>) came back garbled and no commit was found.
-    $firstLine = { param([string]$File) ((Read-TcInstallText -Path $File) -split "`r?`n", 2)[0].Trim() }
 
     try {
         if ([string]::IsNullOrWhiteSpace($ModuleBase)) { return $null }
@@ -16,49 +13,8 @@ function Get-TcModuleCommit {
         $root = [System.IO.Path]::GetFullPath((Join-Path $mb '..\..')).TrimEnd('\')
         $expected = [System.IO.Path]::GetFullPath((Join-Path $root 'src\TwinCATAutomation')).TrimEnd('\')
         if ($expected -ine $mb) { return $null }
-        $dot = Join-Path $root '.git'
-        $gitDir = $null
-        if (Test-Path -LiteralPath $dot -PathType Container) { $gitDir = $dot }
-        elseif (Test-Path -LiteralPath $dot -PathType Leaf) {
-            $line = & $firstLine $dot
-            if ($line -match '^gitdir:\s*(.+)$') {
-                $g = $Matches[1].Trim()
-                if (-not [System.IO.Path]::IsPathRooted($g)) { $g = Join-Path $root $g }
-                $gitDir = [System.IO.Path]::GetFullPath($g)
-            }
-        }
-        if (-not $gitDir) { return $null }
-        $head = & $firstLine (Join-Path $gitDir 'HEAD')
-        $sha = $null
-        if ($head -match '^[0-9a-f]{40}$') { $sha = $head }
-        elseif ($head -match '^ref:\s*(refs/\S+)$' -and $head -notmatch '\.\.') {
-            $ref = $Matches[1]
-            $dirs = @($gitDir)
-            $cd = Join-Path $gitDir 'commondir'
-            if (Test-Path -LiteralPath $cd -PathType Leaf) {
-                $c = & $firstLine $cd
-                if (-not [System.IO.Path]::IsPathRooted($c)) { $c = Join-Path $gitDir $c }
-                $dirs += [System.IO.Path]::GetFullPath($c)
-            }
-            foreach ($d in $dirs) {
-                $rf = Join-Path $d ($ref -replace '/', '\')
-                if (Test-Path -LiteralPath $rf -PathType Leaf) {
-                    $v = & $firstLine $rf
-                    if ($v -match '^[0-9a-f]{40}$') { $sha = $v; break }
-                }
-            }
-            if (-not $sha) {
-                foreach ($d in $dirs) {
-                    $pr = Join-Path $d 'packed-refs'
-                    if (-not (Test-Path -LiteralPath $pr -PathType Leaf)) { continue }
-                    foreach ($l in ((Read-TcInstallText -Path $pr) -split "`r?`n")) {
-                        if ($l -match ('^([0-9a-f]{40}) ' + [regex]::Escape($ref) + '$')) { $sha = $Matches[1]; break }
-                    }
-                    if ($sha) { break }
-                }
-            }
-        }
-        if ($sha) { return $sha.Substring(0, 7) }
+        $git = Read-TcGitCommit -RepoRoot $root
+        if ($null -ne $git -and $git.commit) { return ([string]$git.commit).Substring(0, 7) }
     }
     catch { return $null }
     return $null

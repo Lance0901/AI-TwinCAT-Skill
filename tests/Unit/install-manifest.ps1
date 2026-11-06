@@ -71,18 +71,18 @@ try {
     $r1 = Join-Path $tmpRoot 'repo-branch'
     Write-File "$r1\.git\HEAD" "ref: refs/heads/main`n"
     Write-File "$r1\.git\refs\heads\main" "$shaA`n"
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r1
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r1
     Check 'git: branch ref file' ($g.commit -eq $shaA -and $g.ref -eq 'refs/heads/main') "$($g.commit) $($g.ref)"
 
     $r2 = Join-Path $tmpRoot 'repo-packed'
     Write-File "$r2\.git\HEAD" "ref: refs/heads/feat/x`n"
     Write-File "$r2\.git\packed-refs" "# pack-refs with: peeled fully-peeled sorted`n$shaC refs/heads/other`n$shaB refs/heads/feat/x`n^$shaC`n"
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r2
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r2
     Check 'git: packed-refs' ($g.commit -eq $shaB -and $g.ref -eq 'refs/heads/feat/x') "$($g.commit)"
 
     $r3 = Join-Path $tmpRoot 'repo-detached'
     Write-File "$r3\.git\HEAD" "$($shaB.ToUpperInvariant())`n"
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r3
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r3
     Check 'git: detached HEAD (normalized to lower case)' ($g.commit -eq $shaB -and $null -eq $g.ref) "$($g.commit)"
 
     # linked worktree: <wt>\.git is a file; HEAD in .git\worktrees\wt, the branch in the common dir
@@ -93,17 +93,17 @@ try {
     Write-File "$main\.git\worktrees\wt\HEAD" "ref: refs/heads/wtbranch`n"
     Write-File "$main\.git\worktrees\wt\commondir" "../..`n"
     Write-File "$wt\.git" ("gitdir: " + ("$main\.git\worktrees\wt" -replace '\\', '/') + "`n")
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $wt
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $wt
     Check 'git: linked worktree (gitdir file + commondir + packed-refs)' ($g.commit -eq $shaC -and $g.ref -eq 'refs/heads/wtbranch') "$($g.commit) $($g.ref)"
 
     $r5 = Join-Path $tmpRoot 'repo-unborn'
     Write-File "$r5\.git\HEAD" "ref: refs/heads/main`n"
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r5
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r5
     Check 'git: unborn branch -> commit null, ref kept' ($null -ne $g -and $null -eq $g.commit -and $g.ref -eq 'refs/heads/main') ''
 
     $r6 = Join-Path $tmpRoot 'no-git'
     $null = New-Item -ItemType Directory -Path $r6 -Force
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r6
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r6
     Check 'git: no .git -> $null' ($null -eq $g) ''
 
     $srcModuleDir = Join-Path $repoRoot 'src\TwinCATAutomation'
@@ -138,12 +138,12 @@ try {
     Write-File "$r8\.git\HEAD" "ref: refs/heads/alias`n"
     Write-File "$r8\.git\refs\heads\alias" "ref: refs/heads/main`n"
     Write-File "$r8\.git\refs\heads\main" "$shaA`n"
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r8
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r8
     Check 'git: symbolic ref chain -> commit null + note' ($null -eq $g.commit -and $g.note -like '*symbolic*') "$($g.note)"
     $r9 = Join-Path $tmpRoot 'repo-reftable30'
     Write-File "$r9\.git\HEAD" "ref: refs/heads/.invalid`n"
     $null = New-Item -ItemType Directory -Path "$r9\.git\reftable" -Force
-    $g = & $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $r9
+    $g = & $mod { param($p) Read-TcGitCommit -RepoRoot $p } $r9
     Check 'git: reftable -> commit null + note' ($null -eq $g.commit -and $g.note -like '*reftable*') "$($g.note)"
 
     # SKILL.md name only from the frontmatter
@@ -173,7 +173,7 @@ try {
     Check 'read manifest: traversal path -> throws' $threw ''
 
     # ------------------------------------------------------------------ 2. installers
-    $expectedCommit = (& $mod { param($p) Get-TcGitHeadInfo -RepoRoot $p } $repoRoot)
+    $expectedCommit = (& $mod { param($p) Read-TcGitCommit -RepoRoot $p } $repoRoot)
     $expectedKeys = 'schemaVersion,name,module,sourceUrl,version,release,commit,ref,commitSource,installer,installedAt,sourcePath,hashAlgorithm,warnings,files'
     $installs = @(
         @{ Name = 'claude-code'; Script = 'TwinCATSetup-Claude.ps1'; Extra = @() },
