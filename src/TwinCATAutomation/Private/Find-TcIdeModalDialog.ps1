@@ -802,6 +802,41 @@ function Find-TcIdeModalDialog {
     }
 }
 
+function Find-TcIdeModalDialogWithin {
+    <#
+    .SYNOPSIS
+        Find-TcIdeModalDialog whose prepare + scan caps together fit in -BudgetSec (#153).
+    .DESCRIPTION
+        Find-TcIdeModalDialog alone may take up to 60 s (prepare cap, cold UIA load + Add-Type)
+        + -TimeoutSec: a caller polling inside its own deadline would overrun it (#153 CI: a 3 s
+        ACTIVATE deadline returned after 29 s). Here the whole seconds of -BudgetSec are split:
+        scan = min(-MaxScanSec, half), prepare = the rest (at most 60). Less than 2 whole seconds:
+        no scan, the incomplete marker (Reason 'timeout') is returned, never $null ("no dialog").
+        Only the runspace setup / teardown (well under 1 s) is outside the caps. Never throws.
+    .PARAMETER BudgetSec
+        Seconds the caller can spend on the scan.
+    .PARAMETER ProcessId
+        IDE process id. Default: $script:TcIdeProcessId.
+    .PARAMETER MaxScanSec
+        Upper limit of the scan phase. Default 5 (= Find-TcIdeModalDialog default).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][double]$BudgetSec,
+        [Parameter()][int]$ProcessId = 0,
+        [Parameter()][ValidateRange(1, 60)][int]$MaxScanSec = 5
+    )
+    $whole = 0
+    if ($BudgetSec -gt 0) { $whole = [int][Math]::Floor($BudgetSec) }
+    if ($whole -lt 2) {
+        return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'timeout' -Message ("no time left for a dialog scan (budget {0:N1} s)" -f $BudgetSec))
+    }
+    $scanSec = [Math]::Min($MaxScanSec, [Math]::Max(1, [int][Math]::Floor($whole / 2)))
+    $prepSec = [Math]::Min(60, $whole - $scanSec)
+    try { return (Find-TcIdeModalDialog -ProcessId $ProcessId -TimeoutSec $scanSec -PrepareTimeoutSec $prepSec) }
+    catch { return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -Message $_.Exception.Message) }
+}
+
 function Initialize-TcUiaScanTypes {
     <#
     .SYNOPSIS
