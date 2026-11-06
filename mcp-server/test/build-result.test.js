@@ -13,6 +13,30 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { START_TIMEOUT_MS } from '../lib/bridge.js';
+
+// Client-side timeout of every tool call (#160). The first call to a fresh server waits for the
+// bridge start (index.js gives up after START_TIMEOUT_MS with BRIDGE_START_TIMEOUT) and then runs
+// the call itself; the SDK default request timeout (60 s) equals START_TIMEOUT_MS, so under load
+// the client gave up first (MCP -32001 Request timed out) and hid the server's own result
+// (measured 2026-11-06, 16 busy loops on 16 cores: index.js needed 13-20 s to start, 4 of 6 runs
+// timed out). Twice START_TIMEOUT_MS leaves room for the start plus the call.
+const CALL_TIMEOUT_MS = 2 * START_TIMEOUT_MS;
+
+/**
+ * The parsed result of a tool call. Every call made here reaches PowerShell, and a dispatched call
+ * always carries data (bridge stampOrder adds it); an error result without data never got there
+ * (bridge start failed, BRIDGE_DIED while queued, INTERNAL_ERROR). Fail with that original result
+ * instead of a TypeError on body.data / body.error further down (#160).
+ */
+function bodyOf(res) {
+  const body = JSON.parse(res.content[0].text);
+  assert.ok(
+    body.success === true || (body.error && body.data !== undefined),
+    `result of a call that did not reach PowerShell: ${JSON.stringify(body)}`
+  );
+  return body;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', 'index.js');
@@ -98,6 +122,8 @@ async function startServer(scenario, extraEnv = {}) {
   }
   diag.pid = transport.pid;
   note(`connected (server pid ${transport.pid})`);
+  const callTool = client.callTool.bind(client);
+  client.callTool = (params, resultSchema, options) => callTool(params, resultSchema, { timeout: CALL_TIMEOUT_MS, ...options });
   // exit code / signal of index.js (SDK-internal ChildProcess; diagnostics only)
   transport._process?.once?.('exit', (code, signal) => note(`index.js exited (code ${code}, signal ${signal})`));
   return client;
@@ -109,7 +135,7 @@ let shared = null;
 let scenarioFile = null;
 async function build(scenario, args = {}) {
   if (!shared) {
-    scenarioFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-build-')), 'scenario.txt');
+    scenarioFile ??= path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-build-')), 'scenario.txt');
     fs.writeFileSync(scenarioFile, scenario);
     shared = await startServer(scenario, { TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile });
   }
@@ -119,8 +145,32 @@ async function build(scenario, args = {}) {
 /** Any tool on the shared server (started by the first build()). */
 async function callShared(name, args = {}) {
   if (!shared) await build('clean');
-  const res = await shared.callTool({ name, arguments: args });
-  return { res, body: JSON.parse(res.content[0].text) };
+  const server = shared;
+  const res = await dropOnThrow(
+    () => server.callTool({ name, arguments: args }),
+    () => {
+      if (shared === server) shared = null;
+      return server;
+    }
+  );
+  return { res, body: bodyOf(res) };
+}
+
+/**
+ * Run a call on a shared server; when it throws (MCP timeout, connection closed) the server is
+ * closed and forgotten, so the next test starts a fresh one (#160). The bridge of a timed-out call
+ * is still busy with it: the next test on that server got its leftovers instead of its own result
+ * (TypeError on b.data), which hid the first failure behind a chain of follow-up failures.
+ * forget() unsets the shared reference and returns the client to close.
+ */
+async function dropOnThrow(fn, forget) {
+  try {
+    return await fn();
+  } catch (err) {
+    const client = forget();
+    await client?.close().catch(() => {});
+    throw err;
+  }
 }
 after(async () => {
   if (shared) await shared.close();
@@ -493,7 +543,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
     const scenarioFile = path.join(newStateDir(), 'scenario.txt');
     fs.writeFileSync(scenarioFile, 'library-only');
     const client = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_BUILD_SCENARIO_FILE: scenarioFile });
-    const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
+    const call = async (name, args = {}) => bodyOf(await client.callTool({ name, arguments: args }));
     try {
       // 1. target says TwinCAT OS (x64), solution is TwinCAT RT (x64): platform-fix, then the build fails
       const first = await call('EnableConfig', { Force: true });
@@ -514,7 +564,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
       // 2b. the state survives a new server / bridge / module import (already switched platform)
       const other = await startServer('library-only', { TCAUTO_STATE_DIR: stateDir, TCAUTO_TEST_PLATFORM: 'TwinCAT OS (x64)' });
       try {
-        const again = JSON.parse((await other.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        const again = bodyOf(await other.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
         assert.equal(again.error.code, 'BUILD_REQUIRED', JSON.stringify(again.error));
       } finally {
         await other.close();
@@ -546,7 +596,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
   test('RunLifecycle stops at BuildProject LIBRARY_UNRESOLVED with the install-the-library hint (#61)', async () => {
     const client = await startServer('library-only');
     try {
-      const r = JSON.parse((await client.callTool({ name: 'RunLifecycle', arguments: {} })).content[0].text);
+      const r = bodyOf(await client.callTool({ name: 'RunLifecycle', arguments: {} }));
       assert.equal(r.success, false);
       assert.equal(r.data.failedStep, 'BuildProject');
       assert.equal(r.error.code, 'LIBRARY_UNRESOLVED');
@@ -562,14 +612,14 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
     const client = await startServer('skipped');
     try {
       // the platform-fix-build succeeds, but plc2 is skipped: its output is still the old platform's
-      const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      const r = bodyOf(await client.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
       assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
       // #61: the incomplete platform-fix-build itself stops the cycle, before set-config
       assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
-      const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
+      const b = bodyOf(await client.callTool({ name: 'BuildProject', arguments: {} }));
       assert.equal(b.success, true);
       assert.equal(b.data.warningCode, 'PROJECT_SKIPPED_BY_CONFIGURATION');
-      const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      const again = bodyOf(await client.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
       assert.equal(again.error.code, 'BUILD_REQUIRED');
     } finally {
       await client.close();
@@ -588,7 +638,7 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
     test(`a successful build with ${scenario} (codeVerified not true) does not clear BUILD_REQUIRED and says why`, async () => {
       const client = await startServer(scenario);
       try {
-        const r = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        const r = bodyOf(await client.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
         assert.equal(r.error.code, 'BUILD_REQUIRED', JSON.stringify(r.error));
         // #61: the incomplete platform-fix-build stops the cycle itself (BUILD_REQUIRED, before set-config)
         assert.deepEqual(r.data.steps.map((s) => [s.step, s.ok]), [['platform-fix', true], ['platform-fix-build', false]]);
@@ -597,12 +647,12 @@ describe('EnableConfig after a platform switch whose build stops at LIBRARY_UNRE
         assert.match(r.error.message, verdict[scenario]);
         assert.match(r.error.hint, /data\.completeBuild = true/);
         assert.match(r.error.hint, /build-required\.json/, 'hint names the manual release');
-        const b = JSON.parse((await client.callTool({ name: 'BuildProject', arguments: {} })).content[0].text);
+        const b = bodyOf(await client.callTool({ name: 'BuildProject', arguments: {} }));
         assert.equal(b.success, true);
         assert.notEqual(b.data.codeVerified, true);
         assert.equal(b.data.completeBuild, false);
         assert.ok(b.data.warningCodes.includes('CODE_NOT_VERIFIED'));
-        const again = JSON.parse((await client.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+        const again = bodyOf(await client.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
         assert.equal(again.error.code, 'BUILD_REQUIRED');
         assert.match(again.error.message, verdict[scenario], 'a separate BuildProject is reported too');
       } finally {
@@ -638,7 +688,7 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
       ...extraEnv,
       TCAUTO_STATE_DIR: stateDir
     });
-    const call = async (name, args = {}) => JSON.parse((await client.callTool({ name, arguments: args })).content[0].text);
+    const call = async (name, args = {}) => bodyOf(await client.callTool({ name, arguments: args }));
     return { client, call, stateDir, scenarioFile };
   }
 
@@ -713,7 +763,19 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
   // (complete) clears the entry before the next scenario.
   let shared56 = null;
   async function s56(scenario) {
-    if (!shared56) shared56 = await serverWithoutSwitch(scenario);
+    if (!shared56) {
+      const s = await serverWithoutSwitch(scenario);
+      const call = s.call;
+      s.call = (name, args) =>
+        dropOnThrow(
+          () => call(name, args),
+          () => {
+            if (shared56 === s) shared56 = null;
+            return s.client;
+          }
+        );
+      shared56 = s;
+    }
     fs.writeFileSync(shared56.scenarioFile, scenario);
     return shared56;
   }
@@ -850,10 +912,10 @@ describe('BUILD_REQUIRED after a build that was not a complete success (#56)', {
     // a. platform switch (fixture default RT -> target OS): EnableConfig data.warning
     const a = await startServer('library-only', { TCAUTO_STATE_DIR: unwritable });
     try {
-      const r = JSON.parse((await a.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      const r = bodyOf(await a.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
       assert.equal(r.error.code, 'LIBRARY_UNRESOLVED', JSON.stringify(r.error));
       assert.match(r.data.warning, /BUILD_REQUIRED was recorded in this process only/);
-      const again = JSON.parse((await a.callTool({ name: 'EnableConfig', arguments: { Force: true } })).content[0].text);
+      const again = bodyOf(await a.callTool({ name: 'EnableConfig', arguments: { Force: true } }));
       assert.equal(again.error.code, 'BUILD_REQUIRED', 'in-memory entry still enforced');
     } finally {
       await a.close();
