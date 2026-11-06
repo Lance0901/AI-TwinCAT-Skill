@@ -110,12 +110,15 @@ function Test-TcGitRefName {
     # isGitRefName in mcp-server/lib/module-source.js (#148).
     param([AllowEmptyString()][string]$Ref)
     if (-not $Ref.StartsWith('refs/', [System.StringComparison]::Ordinal)) { return $false }
-    if ($Ref.EndsWith('.') -or $Ref.EndsWith('/') -or $Ref.Contains('..') -or $Ref.Contains('@{')) { return $false }
+    # Ordinal everywhere: .NET Framework compares by culture by default, which skips soft hyphens /
+    # zero-width characters and folds a combining mark into the previous character (#154); JS is code unit exact.
+    $ord = [System.StringComparison]::Ordinal
+    if ($Ref.EndsWith('.', $ord) -or $Ref.EndsWith('/', $ord) -or $Ref.IndexOf('..', $ord) -ge 0 -or $Ref.IndexOf('@{', $ord) -ge 0) { return $false }
     foreach ($ch in $Ref.ToCharArray()) {
         if ([int]$ch -lt 0x20 -or [int]$ch -eq 0x7F -or ' ~^:?*[\'.IndexOf($ch) -ge 0) { return $false }
     }
     foreach ($part in $Ref.Split('/')) {
-        if ($part.Length -eq 0 -or $part.StartsWith('.') -or $part.EndsWith('.lock', [System.StringComparison]::Ordinal)) { return $false }
+        if ($part.Length -eq 0 -or $part.StartsWith('.', $ord) -or $part.EndsWith('.lock', $ord)) { return $false }
     }
     return $true
 }
@@ -222,7 +225,8 @@ function Read-TcGitCommit {
         return (& $result $commit.ToLowerInvariant() $ref $null)
     }
     catch {
-        if ($PSBoundParameters.ContainsKey('Failure')) { $Failure.Value = $_.Exception.Message }
+        # the inner exception names the file; the outer one is the localized "Exception calling ReadAllBytes" wrapper
+        if ($PSBoundParameters.ContainsKey('Failure')) { $Failure.Value = if ($null -ne $_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
         return $null
     }
 }

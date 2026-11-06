@@ -91,7 +91,7 @@ try {
     $s = & $mod { param($p, $m) Get-TcSourceInfo -SourceRoot $p -ModuleDir $m } $lockDir $srcModuleDir
 }
 finally { $lock.Dispose() }
-Check 'locked loose ref -> $null (not the packed-refs sha), no throw, -Failure has the reason' ($null -eq $g.g -and "$($g.why)" -like '*heads\main*') "commit=$(Show $g.g.commit) why=$(Show $g.why)"
+Check 'locked loose ref -> $null (not the packed-refs sha), no throw, -Failure has the reason' ($null -eq $g.g -and "$($g.why)" -like '*heads\main*' -and "$($g.why)" -notlike '*ReadAllBytes*') "commit=$(Show $g.g.commit) why=$(Show $g.why)"
 $w = @($s.warnings) -join '; '
 Check 'review 4: Get-TcSourceInfo warning carries the read failure' ($null -eq $s.commit -and $w -like '*.git cannot be read: *' -and $w -like '*heads\main*') $w
 
