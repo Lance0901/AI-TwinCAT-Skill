@@ -211,6 +211,12 @@ try {
     Reset-Mock; $global:A.Mode = 'ok'
     $r = Save-TcArchive -FilePath $tn
     Check 'Archive (S3): nothing truncated, no unclassified -> success' ($r.success) (J $r.error)
+    # review #150 F1: a new row in the runtime / system log form "'<source>' (<number>): ..." is still a
+    # new error row for the archive check (Save-TcArchive does not use -SplitRuntimeLog)
+    Reset-Mock; $global:A.Mode = 'scope-error'; $global:A.ScopeRow = "'TwinCAT System' (10000): Error creating Archive -> x"
+    $r = Save-TcArchive -FilePath $tn
+    Check 'Archive (#66 F1): new log-form row "''TwinCAT System'' (10000): ..." -> ARCHIVE_INCOMPLETE, row in errorItems' ($r.error.code -eq 'ARCHIVE_INCOMPLETE' -and @($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].description -match "^'TwinCAT System' \(10000\)") (J $r)
+    $global:A.ScopeRow = $scopeRow
 
     # ===== N6
     & $mod { function script:Assert-TcConnection { throw 'Not connected to TwinCAT IDE (mock)' } }

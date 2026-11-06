@@ -2,7 +2,9 @@ function Get-TcErrorListSummary {
     <#
     .SYNOPSIS
         Reads the IDE Error List once (Get-TcBuildErrors -IncludeWarnings) and classifies its rows
-        the way Build-TcProject reports them; shared by Build-TcProject and Test-TcPlcProject.
+        the way Build-TcProject reports them; shared by Build-TcProject, Test-TcPlcProject,
+        Save-TcArchive and New-TcBootProject (only the first two split off runtime log rows,
+        -SplitRuntimeLog, #66).
     .DESCRIPTION
         Every error row gets a 'category' (Get-TcErrorItemCategory: code / library / other, #23), so
         errorItems has the same shape in both cmdlets:
@@ -33,6 +35,13 @@ function Get-TcErrorListSummary {
           warningsIncomplete $true when only warnings (or messages) were read short: errorListError stays
                              $null (the error rows are complete), Build-TcProject adds WARNINGS_INCOMPLETE
           errorListNote      text for that non-blocking case, else $null
+          runtimeMessages    only with -SplitRuntimeLog (else @()): runtime / system log rows ("'<source>' (<n>): ...",
+                             e.g. TcUnit / ADSLOGSTR output, 'TCOM Server', 'TwinCAT System'; Get-TcRuntimeLogKind
+                             'runtime', #66), error and warning rows, category 'runtime'; they are then NOT in
+                             errorItems / warningItems and never count as build errors
+          ambiguousRows      only with -SplitRuntimeLog: rows with that prefix that also have a file, line,
+                             compiler code or a library message: kept in errorItems / warningItems (fail closed),
+                             each with a 'note'
         errorListError = ERRORLIST_INCOMPLETE only when the ERROR rows are not proven complete
         (Get-TcErrorListReadState: errors / total shortfall, Errors total unreadable, or a filtered
         scope with a shortfall); callers then treat the code as not verified (codeVerified = $null).
@@ -40,6 +49,10 @@ function Get-TcErrorListSummary {
         3.7); Build-TcProject keeps its own success decision.
     .PARAMETER TimeoutSec
         Get-TcBuildErrors -TimeoutSec; 0 (default) = its own default.
+    .PARAMETER SplitRuntimeLog
+        Move runtime / system log rows to runtimeMessages (#66). Opt-in: only Build-TcProject and
+        Test-TcPlcProject use it. Save-TcArchive compares the error rows before / after and must see
+        every new row, so it (and New-TcBootProject) keep every row in errorItems (review #150 F1).
     .PARAMETER FallbackErrorCount
         errorCount when the Error List cannot be read (Build-TcProject: LastBuildInfo).
     .PARAMETER FallbackWarningCount
@@ -49,7 +62,8 @@ function Get-TcErrorListSummary {
     param(
         [Parameter()][int]$TimeoutSec = 0,
         [Parameter()][int]$FallbackErrorCount = 0,
-        [Parameter()][int]$FallbackWarningCount = 0
+        [Parameter()][int]$FallbackWarningCount = 0,
+        [Parameter()][switch]$SplitRuntimeLog
     )
     $errorCount = $FallbackErrorCount
     $warningCount = $FallbackWarningCount
@@ -83,6 +97,39 @@ function Get-TcErrorListSummary {
     else {
         $errorListError = [string]$el.error.code
         $errorListMessage = [string]$el.error.message
+    }
+
+    # Runtime / system log rows (#66, Get-TcRuntimeLogKind), only with -SplitRuntimeLog: TcUnit /
+    # ADSLOGSTR output or a 'TCOM Server' / 'TwinCAT System' row is not a build message, so it leaves
+    # errorItems / warningItems for runtimeMessages (category 'runtime') and never counts as a build
+    # error. A row with the log prefix that also has a file, line, code or library message cannot be
+    # told apart: it stays where it was (fail closed) and gets a 'note'.
+    $runtimeMessages = @()
+    $ambiguousRows = @()
+    $ambiguousNote = "looks like a runtime / system log row ('<source>' (<n>): ...) but has a file, line, compiler code or library message, so it is kept as a build row (#66)"
+    $splitRuntime = {
+        param([object[]]$Rows)
+        $kept = @()
+        foreach ($r in @($Rows)) {
+            if ($null -eq $r) { continue }
+            $kind = Get-TcRuntimeLogKind $r
+            if ($kind -eq 'runtime') {
+                $r | Add-Member -NotePropertyName 'category' -NotePropertyValue 'runtime' -Force
+                Set-Variable -Name runtimeMessages -Value (@($runtimeMessages) + $r) -Scope 1
+            }
+            else {
+                if ($kind -eq 'ambiguous') {
+                    $r | Add-Member -NotePropertyName 'note' -NotePropertyValue $ambiguousNote -Force
+                    Set-Variable -Name ambiguousRows -Value (@($ambiguousRows) + $r) -Scope 1
+                }
+                $kept += $r
+            }
+        }
+        $kept
+    }
+    if ($SplitRuntimeLog) {
+        $errorItems = @(& $splitRuntime $errorItems)
+        $warningItems = @(& $splitRuntime $warningItems)
     }
 
     # Category per item (#23): "Library Manager" rows are missing / unresolved libraries, not PLC
@@ -131,5 +178,7 @@ function Get-TcErrorListSummary {
         scope              = $rs.scope
         warningsIncomplete = [bool]($rs.incomplete -and $rs.errorsComplete -and $rs.warningsIncomplete)
         errorListNote      = $errorListNote
+        runtimeMessages    = @($runtimeMessages)
+        ambiguousRows      = @($ambiguousRows)
     }
 }

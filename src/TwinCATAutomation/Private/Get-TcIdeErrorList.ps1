@@ -990,6 +990,70 @@ function Get-TcErrorItemCategory {
     return 'other'
 }
 
+# Runtime / system log rows in the Error List (#66). Messages that the PLC application writes with
+# ADSLOGSTR & co. are shown in TwinCAT XAE > Error List (InfoSys TF6500 "Debug messages in
+# TwinCAT->Error List": the PLC application writes them "using the ADSLOGSTR ... functions",
+# https://infosys.beckhoff.com/content/1033/tf6500_tc3_iec60870_5_10x/984578315.html).
+# ADSLOGSTR has ADSLOG_MSGTYPE_ERROR / _WARN ("Message type is error / warning", InfoSys Tc2_System,
+# https://infosys.beckhoff.com/content/1033/tcplclib_tc2_system/31033611.html); that this type is the
+# Error / Warning severity of the Error List row is 推論 (not stated there), consistent with #66 where
+# the TcUnit rows were read as Error rows. A compiler message names the File and Line that contain the
+# problem (Microsoft Learn, Error List columns File / Line,
+# https://learn.microsoft.com/en-us/visualstudio/ide/error-list-window); a log row has none.
+# The row text form "'<source>' (<number>): <message>" is 實測 (issue #66, 2026-10-27, VS2022 4026,
+# local UmRT, RobustSolutionFrameworkDemo with TcUnit: "'PlcTask' (350): | Successful tests: 6",
+# no file, category other). The same form is used by system rows such as 'TCOM Server' (10): or
+# 'TwinCAT System' (10000): (review #150 F2), which are not build messages either. What the number in
+# the brackets means is not confirmed (it is not always an ADS port: 實測 counter-example
+# "'TwinCAT Measurement' (22:30:40.881): Error creating Archive", which is not matched because the
+# brackets hold no plain number). Other UI languages / XAE versions are not measured.
+# Timestamp prefix (實測 2026-11-06, VS2022 4026 + local UmRT, PR #150 head c35694b, the same TcUnit
+# project): the rows are read as "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6",
+# so the form above is preceded by "<timestamp> | ". 實測: with UI language zh-TW and regional format
+# en-US the timestamp is in the en-US form. That it follows the regional format (not the UI language) is
+# 推論, so is a zh-TW form such as "2026/11/6 上午 09:11:28 520 毫秒 | "; the timestamp is therefore not
+# parsed: the optional prefix is "up to the FIRST ' | ', containing a digit and no ' or |". Trade-off: a
+# compiler message would be taken for a log row only if its text starts with such a digit-run, then
+# ' | ', then "'<name>' (<number>):" as the first quote of the line, AND it has no file, no line, no
+# compiler code and no library message (any of those makes it 'ambiguous', kept as an error); the
+# prefix allows no quote, so a quoted identifier before the first ' | ' never matches. Bounded (review
+# #150 n2): at most 40 non-digit characters before the first digit, 60 after it, so the match is
+# linear (the first class has no digit, the first digit position is fixed).
+$script:TcRuntimeLogPrefixPattern = "^\s*(?:[^'|\d]{0,40}\d[^'|]{0,60}\s\|\s+)?'[^']+'\s*\(\d+\)\s*:"
+
+function Get-TcRuntimeLogKind {
+    <#
+    .SYNOPSIS
+        'runtime' / 'ambiguous' / $null for one Error List row (#66).
+    .DESCRIPTION
+        runtime    the description starts with "'<source>' (<number>):", optionally after a
+                   "<timestamp> | " prefix ($script:TcRuntimeLogPrefixPattern)
+                   AND the row has no file, no line (> 0), no compiler code and no library message: a
+                   runtime / system log row (TcUnit, ADSLOGSTR, 'TCOM Server', 'TwinCAT System'), not a
+                   build message.
+        ambiguous  the description has that prefix but the row ALSO has a file, a line, a compiler code
+                   or a library message ($script:TcLibraryErrorPattern, review #150 F4): it cannot be told
+                   apart, so it stays a build row (fail closed) and gets a note.
+        $null      anything else (no prefix): the row is classified as before (Get-TcErrorItemCategory).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Item
+    )
+    if ($null -eq $Item) { return $null }
+    $desc = [string]$Item.description
+    if ($desc -notmatch $script:TcRuntimeLogPrefixPattern) { return $null }
+    $n = 0
+    $hasLine = [int]::TryParse(([string]$Item.line).Trim(), [ref]$n) -and $n -gt 0
+    $hasFile = -not [string]::IsNullOrWhiteSpace([string]$Item.file)
+    $hasCode = -not [string]::IsNullOrWhiteSpace([string]$Item.code)
+    $libraryText = $desc -match $script:TcLibraryErrorPattern
+    if ($hasFile -or $hasLine -or $hasCode -or $libraryText) { return 'ambiguous' }
+    return 'runtime'
+}
+
 # Abandoned UIA scans (timed out; the STA thread may still be stuck inside UIA).
 # Invoke-TcUiaScan parks them here with BeginStop issued; Clear-TcUiaAbandonedScans
 # disposes the ones that have since stopped. $script:TcErrorListScanBusy stays $true

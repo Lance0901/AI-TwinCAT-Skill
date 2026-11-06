@@ -1,4 +1,4 @@
-# Unit: task 3.7 (complete-automation-interface phase 2): Test-TcPlcProject (MCP CheckAllObjects) and
+﻿# Unit: task 3.7 (complete-automation-interface phase 2): Test-TcPlcProject (MCP CheckAllObjects) and
 # the Error List summary it shares with Build-TcProject (Get-TcErrorListSummary).
 # No IDE / runtime: a mock '<Plc> Project' node whose CheckAllObjects() returns what XAE returned in the
 # probe (verification/phase2-probe.md 3.7: True, or False without an exception), and a mocked
@@ -107,6 +107,19 @@ try {
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowCodeNoFile, $rowStale)
     $r = Test-TcPlcProject
     Check 'False: a row with a code but no file stays in errorItems; only the no-file no-code row is stale' (@($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].code -eq 'C0077' -and $r.data.errorItems[0].category -eq 'other' -and @($r.data.staleErrorItems).Count -eq 1 -and [string]::IsNullOrEmpty($r.data.staleErrorItems[0].code) -and $r.error.message -match 'C0077') (J $r.data)
+
+    # ===== #66: runtime / system log rows ("'<source>' (<number>): ...", no file / line / code) go to
+    # data.runtimeMessages, not errorItems / staleErrorItems (Test-TcPlcProject uses -SplitRuntimeLog)
+    $rowTcUnit = { New-Row '' "11/6/2026 9:11:28 AM 520 ms | 'PlcTask' (350): | Successful tests: 6" '' $null }   # real row (實測 2026-11-06, PR #150)
+    $rowTcom = { New-Row '' "'TCOM Server' (10): NtpType Register ExternalTime failed, HR=98110708" '' $null }
+    Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowTcUnit, $rowTcom, $rowStale)
+    $r = Test-TcPlcProject
+    Check '#66 False: log rows in runtimeMessages, errorItems = C0007, the Measurement row stays stale' ($r.error.code -eq 'CHECK_FAILED' -and @($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].code -eq 'C0007' -and @($r.data.runtimeMessages).Count -eq 2 -and @($r.data.runtimeMessages | Where-Object { $_.category -ne 'runtime' }).Count -eq 0 -and @($r.data.staleErrorItems).Count -eq 1 -and $r.data.staleErrorItems[0].description -match 'TwinCAT Measurement' -and $r.error.message -notmatch 'Successful tests') (J $r.data)
+    Reset-Mock; $global:C.Rows = @($rowTcUnit)
+    $r = Test-TcPlcProject
+    Check '#66 True: a log row is no stale error row, it is in runtimeMessages' ($r.success -and @($r.data.staleErrorItems).Count -eq 0 -and @($r.data.runtimeMessages).Count -eq 1 -and $null -eq $r.data.PSObject.Properties['warningTexts']) (J $r.data)
+    $s = & $mod { Get-TcErrorListSummary }
+    Check '#66 summary without -SplitRuntimeLog keeps the log row in errorItems (Save-TcArchive / New-TcBootProject)' (@($s.errorItems).Count -eq 1 -and $s.errorItems[0].category -eq 'other' -and @($s.runtimeMessages).Count -eq 0) (J $s)
 
     # ===== errorItems: the same shape and category rule as Build-TcProject (Get-TcErrorListSummary)
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowTask, $rowLib)
