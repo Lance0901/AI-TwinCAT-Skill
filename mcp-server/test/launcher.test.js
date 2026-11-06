@@ -71,6 +71,17 @@ function received(root, version) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
+/** received() once it holds at least n messages (the mock runtime appends them asynchronously); 5 s max. */
+async function receivedAtLeast(root, version, n) {
+  const deadline = Date.now() + 5000;
+  let got = received(root, version);
+  while (got.length < n && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+    got = received(root, version);
+  }
+  return got;
+}
+
 /** In-process launcher + a tiny JSON-RPC client over PassThrough streams. */
 function harness(root, opts = {}) {
   const input = new PassThrough();
@@ -196,9 +207,13 @@ describe('launcher with mock runtimes', () => {
     assert.equal(b.data.reconnectRequired, true);
     assert.match(b.data.note, /ConnectIde/);
     assert.equal(b.data.retired.retired, true);
+    // sent right after the reply; do not assume it was parsed in the same tick
+    for (let i = 0; i < 250 && !h.notifications.some((n) => n.method === 'notifications/tools/list_changed'); i++) await new Promise((r) => setTimeout(r, 20));
     assert.ok(h.notifications.some((n) => n.method === 'notifications/tools/list_changed'), 'list_changed sent');
 
-    const gotB = received(root, VER_B);
+    // notifications/initialized is written to the new runtime before the tool reply, but the runtime
+    // logs it asynchronously: wait for it instead of assuming it is already in received.jsonl
+    const gotB = await receivedAtLeast(root, VER_B, 2);
     assert.equal(gotB[0].method, 'initialize');
     assert.deepEqual(gotB[0].params, h.initParams, 'the client initialize is replayed unchanged');
     assert.equal(gotB[1].method, 'notifications/initialized');
