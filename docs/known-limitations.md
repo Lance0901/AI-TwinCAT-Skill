@@ -52,6 +52,7 @@
 
 - **現象**:`IDE_MODAL_DIALOG` 或逾時讓 MCP bridge 重啟後,本 session 啟動的 IDE 的 `data.ownedBySession` 可能變成 false。
 - **影響**:`DisconnectIde Quit=true Kill=true` 會回 `IDE_NOT_OWNED`,不會殺掉自己啟動的 IDE。
+- **現況**:launch 紀錄已持久化到 `launched-ides.json`(troubleshooting「啟動紀錄持久化(#73 / #149)」),目前只有 mock 驗證，還沒有真機驗證。紀錄檔讀不到或壞掉時仍會回 false(fail closed)。
 - **繞過**:自己記下 `ConnectIde` 回傳的 `ideProcessId`;收尾時用這個 pid 確認要關的是自己啟動的 IDE,再 `DisconnectIde Quit=true`。不要關別人的 IDE。
 - **Issue**:[#73](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/73)
 

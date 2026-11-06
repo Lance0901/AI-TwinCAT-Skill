@@ -269,7 +269,9 @@ function Resolve-TcLaunchProgId {
 # while it is alive, so Connect-TcIde waits for / attaches to it instead of launching a second IDE
 # for the same .sln. A pid that could only be guessed from the start time is never recorded: the
 # record stays 'unconfirmed' until the ROT shows the identical DTE object.
-# Per module instance only (a new PowerShell / MCP bridge does not know it).
+# #149: also persisted (TcLaunchRecordStore.ps1, launched-ides.json), so a new PowerShell / MCP
+# bridge / ReloadModule finds it again: a confirmed record by pid + start time + image name, an
+# unconfirmed one (no DTE object to compare across processes) only blocks a second launch.
 
 function Test-TcSameComObject {
     [CmdletBinding()]
@@ -306,36 +308,50 @@ function Find-TcRotEntryForDte {
 
 function Register-TcSessionLaunch {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Solution, [Parameter(Mandatory)][string]$ProgId, [AllowNull()][object]$Dte, [int]$ProcessId = 0, [AllowNull()][object]$LaunchTime)
+    param([Parameter(Mandatory)][string]$Solution, [Parameter(Mandatory)][string]$ProgId, [AllowNull()][object]$Dte, [int]$ProcessId = 0, [AllowNull()][object]$LaunchTime, [string]$LaunchId, [switch]$Restored)
     if ($null -eq $script:TcLaunchedIdeSolutions) { $script:TcLaunchedIdeSolutions = @{} }
     $key = if ($ProcessId -gt 0) { Get-TcIdeProcessKey -ProcessId $ProcessId } else { $null }
-    $script:TcLaunchedIdeSolutions[$Solution.ToLowerInvariant()] = [PSCustomObject]@{
+    if ([string]::IsNullOrWhiteSpace($LaunchId)) { $LaunchId = [guid]::NewGuid().ToString('N') }
+    $rec = [PSCustomObject]@{
         solution = $Solution; progId = $ProgId; dte = $Dte; launchTime = $LaunchTime
         processId = $(if ($null -ne $key) { $ProcessId } else { 0 }); processKey = $key
+        launchId = $LaunchId; restored = [bool]$Restored; guessedRecord = $null; otherSession = $null
     }
+    $script:TcLaunchedIdeSolutions[$Solution.ToLowerInvariant()] = $rec
+    $rec
 }
 
 function Clear-TcSessionLaunchedIde {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Solution)
     if ($null -ne $script:TcLaunchedIdeSolutions) { $script:TcLaunchedIdeSolutions.Remove($Solution.ToLowerInvariant()) }
+    # #149: the persisted record too (a confirmed one keeps its ownership, without the solution)
+    $null = Clear-TcLaunchRecordSolution -Solution $Solution
 }
 
 # Disconnect-TcIde -ForgetPendingLaunch (#147 m-b): drops every launch record whose pid is NOT
 # confirmed (pid-unconfirmed), so the next Connect-TcIde for that solution may launch again. The
-# IDE itself is not touched (it is not known to be ours). Returns what was dropped.
+# IDE itself is not touched (it is not known to be ours). Returns @{ Dropped; Failure }: the
+# module records and (#149) the persisted unconfirmed records (one entry per launch); Failure =
+# why the file could not be updated, or $null.
 function Clear-TcUnconfirmedLaunches {
     [CmdletBinding()]
     param()
-    if ($null -eq $script:TcLaunchedIdeSolutions -or $script:TcLaunchedIdeSolutions.Count -eq 0) { return @() }
     $dropped = @()
-    foreach ($k in @($script:TcLaunchedIdeSolutions.Keys)) {
-        $r = $script:TcLaunchedIdeSolutions[$k]
-        if ($null -ne $r.processKey) { continue }
-        $dropped += [PSCustomObject]@{ solution = $r.solution; progId = $r.progId; launchTime = $(if ($null -ne $r.launchTime) { ([DateTime]$r.launchTime).ToString('o') } else { $null }) }
-        $script:TcLaunchedIdeSolutions.Remove($k)
+    if ($null -ne $script:TcLaunchedIdeSolutions) {
+        foreach ($k in @($script:TcLaunchedIdeSolutions.Keys)) {
+            $r = $script:TcLaunchedIdeSolutions[$k]
+            if ($null -ne $r.processKey) { continue }
+            $dropped += [PSCustomObject]@{ solution = $r.solution; progId = $r.progId; launchTime = $(if ($null -ne $r.launchTime) { ([DateTime]$r.launchTime).ToUniversalTime().ToString('o') } else { $null }); launchId = $r.launchId; processId = 0; persisted = $false }
+            $script:TcLaunchedIdeSolutions.Remove($k)
+        }
     }
-    $dropped
+    $file = Clear-TcUnconfirmedLaunchRecords
+    foreach ($d in @($file.Dropped)) {
+        $same = @($dropped | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.launchId) -and [string]$_.launchId -eq [string]$d.launchId })
+        if ($same.Count -gt 0) { $same[0].persisted = $true; $same[0].processId = $d.processId } else { $dropped += $d }
+    }
+    @{ Dropped = @($dropped); Kept = @($file.Kept); Failure = $file.Failure }
 }
 
 # The launch record of -Solution while that IDE can still be alive, else $null (record dropped).
@@ -345,9 +361,45 @@ function Clear-TcUnconfirmedLaunches {
 function Find-TcSessionLaunchedIde {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Solution)
-    if ($null -eq $script:TcLaunchedIdeSolutions) { return $null }
-    $rec = $script:TcLaunchedIdeSolutions[$Solution.ToLowerInvariant()]
-    if ($null -eq $rec) { return $null }
+    $rec = $null
+    if ($null -ne $script:TcLaunchedIdeSolutions) { $rec = $script:TcLaunchedIdeSolutions[$Solution.ToLowerInvariant()] }
+    if ($null -eq $rec) {
+        # #149: launched by an earlier module instance (bridge restart / ReloadModule)? Only a
+        # VALID persisted record counts (pid + start time + image name); an unreadable / corrupt
+        # file gives nothing, so it never blocks a launch or makes an IDE owned.
+        $p = Find-TcLaunchRecordForSolution -Solution $Solution
+        if ($null -eq $p) { return $null }
+        $confirmed = Test-TcLaunchRecordConfirmed -Record $p
+        $lt = $null; try { $lt = (ConvertTo-TcUtcDate $p.launchedAt).ToLocalTime() } catch { $lt = $null }
+        if (-not (Request-TcLaunchRecordOwnership -Record $p)) {
+            # #152 M1: launched by another LIVE TcAuto session: it still blocks a second launch for
+            # this .sln (#149), but is never attached or owned here, and not cached (that session
+            # may end; the next lookup reads the file again)
+            Write-Verbose "Launch record of '$Solution' belongs to another TcAuto session (host pid $($p.hostPid)); not owned"
+            return [PSCustomObject]@{
+                solution = $Solution; progId = [string]$p.progId; dte = $null; launchTime = $lt
+                processId = 0; processKey = $null; launchId = [string]$p.launchId; restored = $true
+                otherSession = [PSCustomObject]@{ hostPid = $p.hostPid; hostState = (Get-TcLaunchRecordHostState -Record $p); moduleInstanceId = $p.moduleInstanceId; processId = [int]$p.pid; pidSource = [string]$p.pidSource }
+                guessedRecord = $null
+            }
+        }
+        $rec = Register-TcSessionLaunch -Solution $Solution -ProgId ([string]$p.progId) -Dte $null -ProcessId $(if ($confirmed) { [int]$p.pid } else { 0 }) -LaunchTime $lt -LaunchId ([string]$p.launchId) -Restored
+        if ($confirmed) {
+            if ($null -eq $rec.processKey) { Clear-TcSessionLaunchedIde -Solution $Solution; return $null }
+            Add-TcLaunchedIde -ProcessId ([int]$p.pid)
+        }
+        else {
+            # m2: no DTE object to compare across processes; expiry is decided by the guessed
+            # pid + start time of the file record
+            $rec.guessedRecord = $p
+        }
+        Write-Verbose "Launch record of '$Solution' restored from the state file (pid $($p.pid), $($p.pidSource), module instance $($p.moduleInstanceId))"
+        return $rec
+    }
+    if ($null -ne $rec.guessedRecord) {
+        if (-not (Test-TcLaunchRecordValid -Record $rec.guessedRecord)) { Clear-TcSessionLaunchedIde -Solution $Solution; return $null }   # guessed process gone / recycled
+        return $rec
+    }
     if ($null -ne $rec.processKey) {
         if ((Get-TcIdeProcessKey -ProcessId $rec.processId) -ne $rec.processKey) { Clear-TcSessionLaunchedIde -Solution $Solution; return $null }   # gone / pid recycled
         return $rec
@@ -356,7 +408,11 @@ function Find-TcSessionLaunchedIde {
     if ($null -ne $e -and [int]$e['ProcessId'] -gt 0) {
         $p = [int]$e['ProcessId']
         $rec.processKey = Get-TcIdeProcessKey -ProcessId $p
-        if ($null -ne $rec.processKey) { $rec.processId = $p; Add-TcLaunchedIde -ProcessId $p; return $rec }
+        if ($null -ne $rec.processKey) {
+            $rec.processId = $p; Add-TcLaunchedIde -ProcessId $p
+            $null = Save-TcLaunchRecord -LaunchId $rec.launchId -ProcessId $p -PidSource 'rot-identity' -ProgId $rec.progId -Solution $rec.solution -LaunchTime $rec.launchTime
+            return $rec
+        }
         Clear-TcSessionLaunchedIde -Solution $Solution; return $null
     }
     $since = $null; try { $since = ([DateTime]$rec.launchTime).AddSeconds(-2) } catch { $since = $null }
@@ -385,7 +441,11 @@ function Wait-TcSessionLaunchedIde {
     while ($true) {
         $rec = Find-TcSessionLaunchedIde -Solution $Record.solution
         if ($null -eq $rec) { $state = 'gone'; $entry = $null; break }
-        if ($null -eq $rec.processKey) { $state = 'pid-unconfirmed'; $entry = $null }
+        if ($null -eq $rec.processKey) {
+            $state = 'pid-unconfirmed'; $entry = $null
+            # m2: a record restored from the file has no DTE object: it can never be confirmed here, no wait
+            if ($null -eq $rec.dte) { break }
+        }
         else {
             $procId = [int]$rec.processId
             $entry = @(Get-AllComObjects -IncludeDisplayName | Where-Object { $null -ne $_ -and $null -ne $_['Object'] -and [int]$_['ProcessId'] -eq $procId }) | Select-Object -First 1

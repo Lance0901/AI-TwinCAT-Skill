@@ -71,6 +71,7 @@ All variables are read in `lib/config.js`.
 | `TWINCAT_MODULE_PATH` | `<repo>/src/TwinCATAutomation/TwinCATAutomation.psm1` | Module imported by the PowerShell bridge |
 | `TWINCAT_MCP_POWERSHELL` | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` | PowerShell 5.1 executable to spawn |
 | `TWINCAT_MCP_VERBOSE` | unset | `1` forwards `Write-Verbose` output as `debug` log notifications and echoes bridge stderr to the server's stderr |
+| `TCAUTO_OWNER_ID` | set by the server | not read from the server's own environment: the server creates one GUID at start and passes it to every PowerShell bridge it spawns (first start, restart, ReloadModule), so the module takes over only the IDEs its own earlier bridges launched (#152, `docs/troubleshooting.md` "啟動紀錄持久化(#73 / #149)"). A server restart (client reconnect, crash) makes a new id: earlier IDEs then count as another session's. **Never set it yourself** (user / system environment, a manual PowerShell): that lets different sessions claim each other's IDEs - a forbidden workaround, like editing `launched-ides.json` by hand |
 | `TWINCAT_MCP_EAGER` | unset | `1` starts the PowerShell bridge at server start instead of on the first tool call |
 | `TWINCAT_MCP_TOOLS_JSON` | `<mcp-server>/tools.json` | Alternate tool catalog |
 | `TWINCAT_MCP_PROGRESS_INTERVAL_MS` | `10000` | How often `notifications/progress` is sent during a tool call when the client supplied a `progressToken` (see [Client request timeout](#client-request-timeout)) |

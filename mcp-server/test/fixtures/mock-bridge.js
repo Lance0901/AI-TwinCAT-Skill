@@ -20,6 +20,7 @@
 //   unparseable request line      answered with {id:null, event:'result', INVALID_REQUEST} like bridge.ps1
 //   env MOCK_BRIDGE_READY_FAIL=1   writes ready ok:false and exits 2
 //   env MOCK_BRIDGE_ARGS_ECHO=1    includes process.argv in the ready line (spawn arg tests)
+//   env MOCK_BRIDGE_OWNER_ECHO=1   includes env TCAUTO_OWNER_ID in the ready line (#152 N1)
 //   ready.modulePath               env TWINCAT_MCP_BRIDGE_MODULE_PATH (set by PowerShellBridge), else 'mock'
 //   env MOCK_BRIDGE_FAIL_MODULE=x  ready ok:false (MODULE_IMPORT_FAILED) when the module path contains x (#41)
 //   cmdlet Set-TcSystemState + params.Fail  records an in-memory lifecycle block (like
@@ -91,6 +92,7 @@ if (failMarkers.some((m) => MODULE_PATH.includes(m))) {
 
 const readyLine = { event: 'ready', ok: true, cmdlets: CMDLETS, psVersion: 'mock', apartment: 'STA', modulePath: MODULE_PATH };
 if (process.env.MOCK_BRIDGE_ARGS_ECHO === '1') readyLine.argv = process.argv.slice(2);
+if (process.env.MOCK_BRIDGE_OWNER_ECHO === '1') readyLine.ownerId = process.env.TCAUTO_OWNER_ID ?? null;
 write(readyLine);
 if (process.env.MOCK_BRIDGE_EARLY_LOG === '1') {
   // Log line in the same chunk as ready, with no request id (must not crash the parser).
