@@ -22,6 +22,13 @@
          (<file>.bak-<yyyyMMddTHHmmss>). An existing tcauto is overwritten and its old value is listed
          in data.clients[].previous. A client whose config file (Claude Code) or config folder (Claude
          Desktop, Codex) does not exist is skipped and reported.
+         Claude Desktop (#165): the MSIX package reads
+         %LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json, the standard
+         install %APPDATA%\Claude\claude_desktop_config.json (measured 2026-11-07, Windows 11, Claude
+         Desktop MSIX 4.23118.0.0; Anthropic's documentation names only %APPDATA%\Claude). Every
+         existing %LOCALAPPDATA%\Claude-Data\claude_*\ folder is written; %APPDATA%\Claude\ is written
+         when that folder exists or when there is no MSIX folder. One data.clients[] row per file, with
+         variant 'msix' / 'standard' ('override' for -ClaudeDesktopConfig).
       4. Runs the -Verify check (below) unless -NoVerify.
     Restart each client once afterwards. Later versions: install the new zip the same way and call
     the MCP tool ReloadRuntime (no client restart needed).
@@ -53,7 +60,16 @@
     mcpServers, i.e. user scope).
 
 .PARAMETER ClaudeDesktopConfig
-    Claude Desktop config (default %APPDATA%\Claude\claude_desktop_config.json).
+    Claude Desktop config. Given: only this file is used. Default: every
+    <LocalAppDataRoot>\Claude-Data\claude_*\claude_desktop_config.json (MSIX) plus
+    <AppDataRoot>\Claude\claude_desktop_config.json (standard; when that folder exists or no MSIX
+    folder was found).
+
+.PARAMETER LocalAppDataRoot
+    Where the MSIX Claude Desktop folders (Claude-Data\claude_*) are looked for. Default %LOCALAPPDATA%.
+
+.PARAMETER AppDataRoot
+    Where the standard Claude Desktop folder (Claude\) is looked for. Default %APPDATA%.
 
 .PARAMETER CodexConfig
     Codex config (default %CODEX_HOME%\config.toml, else %USERPROFILE%\.codex\config.toml).
@@ -98,6 +114,8 @@ param(
     [string]$ClaudeCodeConfig,
     [string]$ClaudeDesktopConfig,
     [string]$CodexConfig,
+    [string]$LocalAppDataRoot,
+    [string]$AppDataRoot,
     [string]$PackageRoot,
     [ValidateRange(1, 20)][int]$Keep = 3,
     [switch]$Uninstall,
@@ -144,12 +162,60 @@ $installedNode = Join-Path $nodeFolder 'node.exe'
 $launcherPath = Join-Path $launcherFolder 'tcauto-launcher.mjs'
 $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath('UserProfile') }
 if (-not $ClaudeCodeConfig) { $ClaudeCodeConfig = Join-Path $userHome '.claude.json' }
-if (-not $ClaudeDesktopConfig) { $ClaudeDesktopConfig = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json' }
 if (-not $CodexConfig) {
     $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $userHome '.codex' }
     $CodexConfig = Join-Path $codexHome 'config.toml'
 }
-$configFiles = @{ ClaudeCode = $ClaudeCodeConfig; ClaudeDesktop = $ClaudeDesktopConfig; Codex = $CodexConfig }
+if (-not $LocalAppDataRoot) { $LocalAppDataRoot = $env:LOCALAPPDATA }
+if (-not $AppDataRoot) { $AppDataRoot = $env:APPDATA }
+
+function Get-TcDesktopConfigTargets {
+    # Claude Desktop config files (#165): -ClaudeDesktopConfig alone when given; else every MSIX folder
+    # <LocalAppDataRoot>\Claude-Data\claude_<publisherId>\ plus the standard <AppDataRoot>\Claude\ when
+    # that folder exists or no MSIX folder was found (then it is skipped when missing, as before).
+    # Measured 2026-11-07 (Windows 11, Claude Desktop MSIX Claude_4.23118.0.0_x64__pzs8sxrjxfjjc): the
+    # MSIX app reads Claude-Data\claude_pzs8sxrjxfjjc\claude_desktop_config.json, not %APPDATA%\Claude.
+    if ($ClaudeDesktopConfig) { return @([ordered]@{ file = $ClaudeDesktopConfig; variant = 'override' }) }
+    $targets = [System.Collections.Generic.List[object]]::new()
+    if ($LocalAppDataRoot) {
+        $dataDir = Join-Path $LocalAppDataRoot 'Claude-Data'
+        if (Test-Path -LiteralPath $dataDir -PathType Container) {
+            foreach ($d in @(Get-ChildItem -LiteralPath $dataDir -Directory -Force | Where-Object { $_.Name -like 'claude_*' } | Sort-Object Name)) {
+                $targets.Add([ordered]@{ file = (Join-Path $d.FullName 'claude_desktop_config.json'); variant = 'msix' })
+            }
+        }
+    }
+    $standardDir = if ($AppDataRoot) { Join-Path $AppDataRoot 'Claude' } else { $null }
+    if ($standardDir -and ($targets.Count -eq 0 -or (Test-Path -LiteralPath $standardDir -PathType Container))) {
+        $targets.Add([ordered]@{ file = (Join-Path $standardDir 'claude_desktop_config.json'); variant = 'standard' })
+    }
+    return @($targets)
+}
+
+# one entry per config file: name (client), file, variant (Claude Desktop only)
+$configTargets = [System.Collections.Generic.List[object]]::new()
+foreach ($name in $wanted) {
+    if ($name -eq 'ClaudeDesktop') {
+        foreach ($t in @(Get-TcDesktopConfigTargets)) { $configTargets.Add([ordered]@{ name = $name; file = $t.file; variant = $t.variant }) }
+    }
+    elseif ($name -eq 'ClaudeCode') { $configTargets.Add([ordered]@{ name = $name; file = $ClaudeCodeConfig; variant = $null }) }
+    else { $configTargets.Add([ordered]@{ name = $name; file = $CodexConfig; variant = $null }) }
+}
+if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1' -and -not $Verify) {
+    # tests never touch the real Claude Desktop configs (#165); the shell folders, not the environment
+    $realDirs = @(
+        (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Claude-Data'),
+        (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Claude')
+    ) | ForEach-Object { (Get-TcLongPath -Path $_).TrimEnd('\') + '\' }
+    foreach ($t in @($configTargets | Where-Object { $_.name -eq 'ClaudeDesktop' })) {
+        $long = Get-TcLongPath -Path $t.file
+        foreach ($rd in $realDirs) {
+            if ($long.StartsWith($rd, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Stop-Install -Code 'TCAUTO_REAL_STATE_REFUSED' -Message "TCAUTO_TEST_FORBID_REAL_STATE=1: refusing to touch the real Claude Desktop config $($t.file) (#165); pass -ClaudeDesktopConfig or -LocalAppDataRoot and -AppDataRoot."
+            }
+        }
+    }
+}
 $backupStamp = (Get-Date).ToString('yyyyMMddTHHmmss')
 
 if ($env:TCAUTO_RUNTIME_ROOT -and ((Get-TcLongPath -Path $env:TCAUTO_RUNTIME_ROOT) -ine $InstallRoot)) {
@@ -176,9 +242,11 @@ function Get-TcTwinCatInstall {
 
 function Invoke-ClientConfig {
     # one client: set / remove through lib\tcauto-client-config.mjs; returns the result row
-    param([Parameter(Mandatory)][string]$Node, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Action)
-    $file = $configFiles[$Name]
-    $row = [ordered]@{ client = $Name; file = $file; action = $null; previous = $null; backup = $null; reason = $null }
+    param([Parameter(Mandatory)][string]$Node, [Parameter(Mandatory)]$Target, [Parameter(Mandatory)][string]$Action)
+    $Name = $Target.name
+    $file = $Target.file
+    $label = if ($Target.variant) { "$Name ($($Target.variant))" } else { $Name }
+    $row = [ordered]@{ client = $Name; variant = $Target.variant; file = $file; action = $null; previous = $null; backup = $null; reason = $null }
     if ($Name -eq 'ClaudeCode') {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             $row.action = 'skipped'; $row.reason = "$file not found (Claude Code not used by this Windows user yet; start it once, then run this script again)"
@@ -214,7 +282,7 @@ function Invoke-ClientConfig {
         if ($row.action -eq 'shared') { $row.reason = "tcauto runs another command but uses files below $InstallRoot (args); left as it is" }
     }
     $color = if ($row.action -eq 'failed') { 'Red' } elseif ($row.action -in @('skipped', 'foreign', 'shared')) { 'Yellow' } else { 'Gray' }
-    Write-Host "  $Name`: $($row.action)$(if ($row.reason) { " - $($row.reason)" })" -ForegroundColor $color
+    Write-Host "  $label`: $($row.action)$(if ($row.reason) { " - $($row.reason)" })" -ForegroundColor $color
     if ($row.backup) { Write-Host "    backup: $($row.backup)" }
     return $row
 }
@@ -345,9 +413,9 @@ if ($Uninstall) {
     $packageNode = Join-Path $PackageRoot 'node\node.exe'
     $helperNode = if (Test-Path -LiteralPath $packageNode -PathType Leaf) { $packageNode } elseif (Test-Path -LiteralPath $installedNode -PathType Leaf) { $installedNode } else { $null }
     $rows = [System.Collections.Generic.List[object]]::new()
-    foreach ($name in $wanted) {
-        if ($null -eq $helperNode) { $rows.Add([ordered]@{ client = $name; file = $configFiles[$name]; action = 'failed'; previous = $null; backup = $null; reason = 'no node.exe (neither in the release folder nor installed) to run the client config helper' }); continue }
-        $rows.Add((Invoke-ClientConfig -Node $helperNode -Name $name -Action 'remove'))
+    foreach ($t in $configTargets) {
+        if ($null -eq $helperNode) { $rows.Add([ordered]@{ client = $t.name; variant = $t.variant; file = $t.file; action = 'failed'; previous = $null; backup = $null; reason = 'no node.exe (neither in the release folder nor installed) to run the client config helper' }); continue }
+        $rows.Add((Invoke-ClientConfig -Node $helperNode -Target $t -Action 'remove'))
     }
     $folders = [System.Collections.Generic.List[object]]::new()
     $shared = @($rows | Where-Object { $_.action -eq 'shared' })
@@ -457,7 +525,7 @@ $prune = Remove-TcOldRuntimes -RuntimeFolder $runtimeFolder -Keep $Keep -Version
 # ------------------------------------------------------------------ clients
 Write-Host '  MCP clients:'
 $rows = [System.Collections.Generic.List[object]]::new()
-foreach ($name in $wanted) { $rows.Add((Invoke-ClientConfig -Node $installedNode -Name $name -Action 'set')) }
+foreach ($t in $configTargets) { $rows.Add((Invoke-ClientConfig -Node $installedNode -Target $t -Action 'set')) }
 
 $data = [ordered]@{
     installRoot     = $InstallRoot

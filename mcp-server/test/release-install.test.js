@@ -5,7 +5,8 @@
 // Isolation: every folder is below os.tmpdir() and contains "issue20"; every installer run passes
 // -InstallRoot and all three config paths, with TCAUTO_TEST_FORBID_REAL_STATE=1, an empty
 // TCAUTO_RUNTIME_ROOT and its own TCAUTO_STATE_DIR. The real ~/.claude.json, Claude Desktop / Codex
-// configs and %LOCALAPPDATA%\TwinCATAutomation are never read or written.
+// configs and %LOCALAPPDATA%\TwinCATAutomation are never read or written. The Claude Desktop
+// location test (#165) passes fake -LocalAppDataRoot / -AppDataRoot folders (names hold "issue165").
 // node.exe in the zip: a copy of this test's own node plus one byte (never the pinned build,
 // -AllowUnverifiedNode); npm is a
 // stand-in that copies mcp-server\node_modules of this checkout (no registry access).
@@ -295,6 +296,86 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     const bad = runInstaller(['-InstallRoot', root, '-NoVerify', '-Clients', 'Cursor']);
     assert.equal(bad.code, 1);
     assert.equal(bad.result.error.code, 'BAD_ARGUMENT');
+  });
+
+  test('Claude Desktop (#165): MSIX Claude-Data\\claude_*\\ and/or standard %APPDATA%\\Claude\\, one row per file, -Uninstall removes all', () => {
+    // fake LOCALAPPDATA / APPDATA roots (names hold "issue165"), passed with -LocalAppDataRoot / -AppDataRoot
+    const tmp165 = (prefix) => {
+      const d = fs.mkdtempSync(path.join(os.tmpdir(), `tcauto-${prefix}-issue165-`));
+      dirs.push(d);
+      return d;
+    };
+    const root = path.join(tmp165('root'), 'TwinCATAutomation');
+    const longRoot = path.join(longPath(path.dirname(root)), 'TwinCATAutomation');
+    const entry = { command: path.join(longRoot, 'node', 'node.exe'), args: [path.join(longRoot, 'launcher', 'tcauto-launcher.mjs')] };
+    const msixConfig = (local) => path.join(local, 'Claude-Data', 'claude_testhash', 'claude_desktop_config.json');
+    const putMsix = (local) => {
+      const f = msixConfig(local);
+      put(f, JSON.stringify({ preferences: { quickEntryShortcut: 'off', sidebarMode: 'chat' }, coworkUserFilesPath: 'C:\\x', mcpServers: { fs: { command: 'npx', args: ['-y', 'fs'] } } }, null, 2));
+      return f;
+    };
+    const desktopRun = (local, roaming, extra = []) => runInstaller(['-InstallRoot', root, '-NoVerify', '-Clients', 'ClaudeDesktop', '-LocalAppDataRoot', local, '-AppDataRoot', roaming, ...extra]);
+    // files compared in long form (TEMP may be 8.3 on CI runners)
+    const L = (f) => longPath(f).toLowerCase();
+    const rowsOf = (r) => r.result.data.clients.map((x) => [x.client, x.variant, x.action, L(x.file)]);
+
+    // MSIX only: written there, other keys kept, no %APPDATA%\Claude created
+    let local = tmp165('local');
+    let roaming = tmp165('roaming');
+    const m1 = putMsix(local);
+    let r = desktopRun(local, roaming);
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.deepEqual(rowsOf(r), [['ClaudeDesktop', 'msix', 'added', L(m1)]]);
+    let cfg = readJson(m1);
+    assert.deepEqual(cfg.mcpServers.tcauto, entry);
+    assert.deepEqual(cfg.mcpServers.fs, { command: 'npx', args: ['-y', 'fs'] });
+    assert.deepEqual(cfg.preferences, { quickEntryShortcut: 'off', sidebarMode: 'chat' });
+    assert.equal(cfg.coworkUserFilesPath, 'C:\\x');
+    assert.ok(!fs.existsSync(path.join(roaming, 'Claude')), 'no %APPDATA%\\Claude created');
+
+    // standard only (Claude-Data without claude_* does not count): %APPDATA%\Claude written
+    local = tmp165('local');
+    roaming = tmp165('roaming');
+    fs.mkdirSync(path.join(local, 'Claude-Data', 'other'), { recursive: true });
+    const s1 = path.join(roaming, 'Claude', 'claude_desktop_config.json');
+    put(s1, '{"globalShortcut":"Ctrl+Space"}');
+    r = desktopRun(local, roaming);
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.deepEqual(rowsOf(r), [['ClaudeDesktop', 'standard', 'added', L(s1)]]);
+    assert.deepEqual(readJson(s1), { globalShortcut: 'Ctrl+Space', mcpServers: { tcauto: entry } });
+
+    // neither: the standard row is skipped (folder missing), nothing created
+    local = tmp165('local');
+    roaming = tmp165('roaming');
+    r = desktopRun(local, roaming);
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.deepEqual(r.result.data.clients.map((x) => [x.variant, x.action]), [['standard', 'skipped']]);
+    assert.deepEqual(fs.readdirSync(roaming), []);
+
+    // both: both written; -ClaudeDesktopConfig overrides; -Uninstall removes both
+    local = tmp165('local');
+    roaming = tmp165('roaming');
+    const m2 = putMsix(local);
+    const s2 = path.join(roaming, 'Claude', 'claude_desktop_config.json');
+    put(s2, '{"mcpServers":{}}');
+    r = desktopRun(local, roaming);
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.deepEqual(rowsOf(r), [['ClaudeDesktop', 'msix', 'added', L(m2)], ['ClaudeDesktop', 'standard', 'added', L(s2)]]);
+    assert.deepEqual(readJson(m2).mcpServers.tcauto, entry);
+    assert.deepEqual(readJson(s2).mcpServers.tcauto, entry);
+    const override = path.join(tmp165('override'), 'claude_desktop_config.json');
+    r = desktopRun(local, roaming, ['-ClaudeDesktopConfig', override]);
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.deepEqual(rowsOf(r), [['ClaudeDesktop', 'override', 'added', L(override)]]);
+
+    const un = desktopRun(local, roaming, ['-Uninstall']);
+    assert.equal(un.code, 0, JSON.stringify(un.result));
+    assert.deepEqual(rowsOf(un), [['ClaudeDesktop', 'msix', 'removed', L(m2)], ['ClaudeDesktop', 'standard', 'removed', L(s2)]]);
+    assert.ok(!('tcauto' in readJson(m2).mcpServers));
+    assert.ok('fs' in readJson(m2).mcpServers);
+    assert.deepEqual(readJson(m2).preferences, { quickEntryShortcut: 'off', sidebarMode: 'chat' });
+    assert.ok(!('tcauto' in readJson(s2).mcpServers));
+    for (const f of ['node', 'launcher', 'runtime']) assert.ok(!fs.existsSync(path.join(root, f)), `${f} removed`);
   });
 
   test('a broken config file is not changed and fails the install (CLIENT_CONFIG_FAILED)', () => {
