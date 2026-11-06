@@ -582,7 +582,7 @@
         "NoPlatformFix": { "type": "boolean", "description": "true = do not switch the solution platform; a mismatch with the target (or Platform) platform returns PLATFORM_MISMATCH before anything is activated.", "required": false },
         "Platform": { "type": "string", "description": "Reference platform used only when the target does not report one through TARGETINFO (ADS 0x702): 'TwinCAT OS (x64)' for a Usermode Runtime / UmRT or TwinCAT/BSD, 'TwinCAT RT (x64)' for a Windows RT target. A platform the target reports wins.", "required": false },
         "PlcProjectPath": { "type": "array", "items": { "type": "string" }, "description": "PLC project(s) to log in and start, by name ([\"FrameworkUnitTest\"]) or tree path. Default: every PLC project of the solution.", "required": false },
-        "ActivateTimeoutSec": { "type": "integer", "minimum": 10, "maximum": 3600, "description": "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever.", "required": false, "default": 180 }
+        "ActivateTimeoutSec": { "type": "integer", "minimum": 10, "maximum": 3600, "description": "Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, dialogSeenDuringWait, ideAlive, ideResponding, runtimeAlive, runtimeCheck, systemState (may be skipped:), elapsedSec, diagnosticsSec) instead of waiting forever; returns within ActivateTimeoutSec + 10 s diagnostics budget + about 1 s.", "required": false, "default": 180 }
       }
     },
     {

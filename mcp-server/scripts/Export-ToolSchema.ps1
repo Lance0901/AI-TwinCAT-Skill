@@ -234,7 +234,7 @@ $paramDescriptionOverrides = @{
     'AddLibrary.PlcProjectPath'    = 'PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project.'
     'PlcLogin.PlcProjectPath'      = 'PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project.'
     'PlcLogout.PlcProjectPath'     = 'PLC name (FrameworkUnitTest) or tree path (TIPC^FrameworkUnitTest^FrameworkUnitTest Project). Required when the solution has more than one PLC project.'
-    'EnableConfig.ActivateTimeoutSec' = 'Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, ideAlive, ideResponding, runtimeAlive, systemState) instead of waiting forever.'
+    'EnableConfig.ActivateTimeoutSec' = 'Deadline in seconds for ActivateConfiguration() (default 180, also bounded by TimeoutSec with Force). On timeout ACTIVATE_TIMEOUT with data.activateDiagnostics (dialog, dialogSeenDuringWait, ideAlive, ideResponding, runtimeAlive, runtimeCheck, systemState (may be skipped:), elapsedSec, diagnosticsSec) instead of waiting forever; returns within ActivateTimeoutSec + 10 s diagnostics budget + about 1 s.'
     'SetSystemState.SettleSec'     = 'Seconds the reached state must hold before success (sampled every 250 ms, then read back). Default 3; 0 = final readback only.'
 }
 

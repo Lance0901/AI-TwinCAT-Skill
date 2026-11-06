@@ -16,11 +16,15 @@ function Invoke-TcActivateWithDeadline {
         On timeout the background call is abandoned (it cannot be cancelled either; the IDE
         keeps working on it) and an exception "ACTIVATE_TIMEOUT: ..." is thrown; the
         diagnostics are left in $script:TcLastActivateDiagnostics:
-          dialog        modal dialog of the IDE (Title/Text) or $null
+          dialog        modal dialog of the IDE (Title/Text) or $null; when the scan after the
+                        deadline finds none (or is incomplete) the dialog seen during the wait
+          dialogSeenDuringWait $true when dialog comes from the wait, not from the last scan
           ideAlive      IDE process still exists
           ideResponding Process.Responding (Windows "not responding" = $false)
           runtimeAlive  local UmRT: its TcSystemServiceUm.exe process exists ($null when the
-                        target is not a UmRT on this PC)
+                        target is not a UmRT on this PC, or the check did not run: see runtimeCheck)
+          runtimeCheck  'checked' | 'not-local-umrt' | 'skipped: diagnostics budget used up' |
+                        'error: <message>' ($null without -AmsNetId)
           systemState   AdsState of port 10000 (or 'unreachable: <error>', or 'skipped: ...'
                         when the diagnostics budget was used up)
           diagnosticsSec time spent on these diagnostics
@@ -139,13 +143,16 @@ $sm.ActivateConfiguration()
         if ($null -ne $script:TcActivateDiagBudgetSec) { try { $diagBudgetSec = [Math]::Max(0, [int]$script:TcActivateDiagBudgetSec) } catch { $diagBudgetSec = 10 } }
         $diagWatch = [System.Diagnostics.Stopwatch]::StartNew()
         $diagLeft = { $diagBudgetSec - $diagWatch.Elapsed.TotalSeconds }
-        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; ideAlive = $null; ideResponding = $null; runtimeAlive = $null; systemState = $null; elapsedSec = [int]$sw.Elapsed.TotalSeconds }
+        $diag = [ordered]@{ dialog = $null; dialogSeenDuringWait = $false; dialogScanComplete = $true; ideAlive = $null; ideResponding = $null; runtimeAlive = $null; runtimeCheck = $null; systemState = $null; elapsedSec = [int]$sw.Elapsed.TotalSeconds }
+        $dlg = $null
         try {
             $dlg = Find-TcIdeModalDialogWithin -BudgetSec (& $diagLeft) -ProcessId $idePid
             # #42: an incomplete scan is reported (dialogScanComplete false), not read as "no dialog"
-            if (Test-TcModalScanIncomplete $dlg) { $diag['dialogScanComplete'] = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg }
-            elseif ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
-        } catch { $diag['dialogScanComplete'] = $false }
+            if (Test-TcModalScanIncomplete $dlg) { $diag['dialogScanComplete'] = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg; $dlg = $null }
+        } catch { $diag['dialogScanComplete'] = $false; $dlg = $null }
+        # same as Save-TcPlcProject: no dialog now (or unknown) -> the one seen during the wait still counts
+        if ($null -eq $dlg -and $null -ne $script:TcLastModalDialog) { $dlg = $script:TcLastModalDialog; $diag.dialogSeenDuringWait = $true }
+        if ($null -ne $dlg) { $script:TcLastModalDialog = $dlg; $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
         if ($idePid -gt 0) {
             try { $proc = Get-Process -Id $idePid -ErrorAction Stop; $diag.ideAlive = $true; $diag.ideResponding = [bool]$proc.Responding }
             catch { $diag.ideAlive = $false }
@@ -155,19 +162,22 @@ $sm.ActivateConfiguration()
                 $boot = Resolve-TcTargetBootDir -AmsNetId $AmsNetId
                 if ($null -ne $boot -and $boot.Kind -like 'umrt:*') {
                     $left = [int][Math]::Floor((& $diagLeft))
-                    if ($left -ge 1) {
+                    if ($left -lt 1) { $diag.runtimeCheck = 'skipped: diagnostics budget used up' }
+                    else {
                         $name = $boot.Kind.Substring(5)
                         $diag.runtimeAlive = @(Get-CimInstance Win32_Process -Filter "Name='TcSystemServiceUm.exe'" -OperationTimeoutSec ([Math]::Min(3, $left)) -ErrorAction Stop | Where-Object { $_.CommandLine -match [regex]::Escape($name) }).Count -gt 0
+                        $diag.runtimeCheck = 'checked'
                     }
                 }
-            } catch { }
+                else { $diag.runtimeCheck = 'not-local-umrt' }
+            } catch { $diag.runtimeAlive = $null; $diag.runtimeCheck = "error: $($_.Exception.Message)" }
             $left = [int][Math]::Floor((& $diagLeft))
             if ($left -lt 1) { $diag.systemState = 'skipped: diagnostics budget used up' }
             else {
                 $c = $null
                 try {
                     $c = New-TcAdsClient -AmsNetId $AmsNetId -Port 10000
-                    try { $c.Timeout = [Math]::Min(2, $left) * 1000 } catch { }   # ADS timeout in ms (default 5000)
+                    try { $c.Timeout = [Math]::Min(2, $left) * 1000 } catch { }   # ADS communication timeout in ms: https://infosys.beckhoff.com/content/1033/tcadsnetref/7313415307.html
                     $diag.systemState = $c.ReadState().AdsState.ToString()
                 }
                 catch { $diag.systemState = "unreachable: $($_.Exception.Message)" }
