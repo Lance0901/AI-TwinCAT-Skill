@@ -108,17 +108,25 @@
                              all errors of the Error List; category (Get-TcErrorItemCategory):
                              code (has a file), library (file like '*Library Manager' with no
                              line, or "Could not open library" without a line), other (no file)
-                             PLC runtime ADS log rows are NOT in errorItems (#66, see data.runtimeMessages)
+                             Runtime / system log rows are NOT in errorItems (#66, see data.runtimeMessages)
         data.codeErrors      errorItems with category 'code' - the PLC code errors
-        data.runtimeMessages PLC runtime ADS log rows of the Error List (TcUnit, ADSLOGSTR output; #66), same shape
-                             with category 'runtime': description "'<task>' (<ADS port>): ..." and no file, no line,
-                             no compiler code (Get-TcRuntimeLogKind). Error and warning rows; never in errorItems /
-                             warningItems / codeErrors, never part of the success decision; @() when none.
-                             InfoSys: ADSLOGSTR messages from the PLC application are shown in the XAE Error List
+        data.runtimeMessages runtime / system log rows of the Error List (#66): TcUnit / ADSLOGSTR output of the
+                             PLC, also rows such as 'TCOM Server' (10): / 'TwinCAT System' (10000):. Same shape with
+                             category 'runtime': description "'<source>' (<number>): ..." and no file, no line, no
+                             compiler code, no library message (Get-TcRuntimeLogKind). Error and warning rows; never
+                             in errorItems / warningItems / codeErrors; @() when none. InfoSys: ADSLOGSTR messages
+                             from the PLC application are shown in the XAE Error List
                              (https://infosys.beckhoff.com/content/1033/tf6500_tc3_iec60870_5_10x/984578315.html);
-                             the row form is 實測 (#66, 2026-10-27, VS2022 4026, local UmRT, TcUnit project)
-        data.runtimeMessageNote  only when a row has that prefix AND a file, line or code: it cannot be told apart,
-                             so it stays in errorItems / warningItems (fail closed) with a 'note' on the row
+                             the row form is 實測 (#66, 2026-10-27, VS2022 4026, local UmRT, TcUnit project); what
+                             the number in the brackets means is not confirmed.
+                             Such rows mean the PLC (or the system) was running while it was built: #66 measured a
+                             failed build whose compiler error was not in the Error List at all. So when the
+                             Error List decides the result (decidedBy = ErrorList, LastBuildInfo not readable)
+                             and runtimeMessages is not empty, codeVerified = $null and a successful build gets
+                             CODE_NOT_VERIFIED (not complete, BUILD_REQUIRED stays; review #150 F3).
+        data.runtimeMessageNote  only when a row has that prefix AND a file, line, code or library message: it
+                             cannot be told apart, so it stays in errorItems / warningItems (fail closed) with a
+                             'note' on the row
         data.warningItems    same shape as errorItems, the warnings of the Error List (@() when it could not be read)
         data.codeWarnings    warningItems without the "Library Manager" items and without the
                              rows that have no file (XAE build-summary rows such as "Project
@@ -536,7 +544,7 @@
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
         $fallbackWarnings = @($messages | Where-Object { $_ -match 'warning' }).Count
-        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
+        $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount
@@ -644,6 +652,14 @@
         # With accepted library rows (-AllowUnresolvedLibrary) LIBRARY_UNRESOLVED already says the
         # code is not proven; a code row without a line number is a second, independent gap
         # (#56 point 2), so CODE_NOT_VERIFIED is added after LIBRARY_UNRESOLVED in that case.
+        # #66 / review #150 F3: runtime / system log rows mean the PLC was running during the build, and
+        # #66 measured a failed build whose compiler error was missing from the Error List. With
+        # LastBuildInfo unreadable the Error List alone decided the result, so it is not proof.
+        $runtimeWhy = $null
+        if ($decidedBy -eq 'ErrorList' -and @($els.runtimeMessages).Count -gt 0) {
+            $codeVerified = $null
+            $runtimeWhy = "PLC online, runtime log rows present (#66): $(@($els.runtimeMessages).Count) runtime log row(s) are in the Error List (data.runtimeMessages) and LastBuildInfo was not readable, so the Error List alone is not reliable (#66)"
+        }
         $codeNotVerified = ($buildSucceeded -eq $true) -and ($codeVerified -ne $true) -and (-not $libraryUnresolved -or $unlocatedCode.Count -gt 0)
 
         $data = [PSCustomObject]@{
@@ -671,9 +687,9 @@
             buildSec       = $buildSec
             codeVerified   = $codeVerified
         }
-        # #66: rows with the runtime log prefix that also have a file / line / code stay build rows (fail closed)
+        # #66: rows with the log prefix that also have a file / line / code / library message stay build rows (fail closed)
         if (@($els.ambiguousRows).Count -gt 0) {
-            $data | Add-Member -NotePropertyName 'runtimeMessageNote' -NotePropertyValue "$(@($els.ambiguousRows).Count) Error List row(s) look like PLC runtime ADS log output ('<task>' (<port>): ...) but have a file, line or compiler code; they are kept in errorItems / warningItems as build rows (see their 'note')"
+            $data | Add-Member -NotePropertyName 'runtimeMessageNote' -NotePropertyValue "$(@($els.ambiguousRows).Count) Error List row(s) look like runtime / system log output ('<source>' (<number>): ...) but have a file, line, compiler code or library message; they are kept in errorItems / warningItems as build rows (see their 'note')"
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
@@ -724,6 +740,7 @@
         if ($codeNotVerified) {
             $why = if ($null -ne $errorListError -and $els.incomplete) { "the Error List was read only in part ($errorListError, data.missingRows)" }
                    elseif ($null -ne $errorListError) { "the Error List could not be read ($errorListError)" }
+                   elseif ($null -ne $runtimeWhy) { $runtimeWhy }
                    elseif ($unlocatedCode.Count -gt 0) { "the Error List lists $($unlocatedCode.Count) code row(s) without a line number" }
                    else { $coverageWhy }
             Add-TcBuildWarning -Data $data -Code 'CODE_NOT_VERIFIED' -Text "Build-TcProject: build reported success but $why, so it is not confirmed that the PLC code was compiled (CODE_NOT_VERIFIED). $(Get-TcErrorHint -Code 'CODE_NOT_VERIFIED')"
@@ -766,7 +783,7 @@
             }
             # #66: TcUnit / ADSLOGSTR rows are not build errors; say so, so they are not read as the cause
             if (@($els.runtimeMessages).Count -gt 0) {
-                $summary += ". $(@($els.runtimeMessages).Count) PLC runtime log row(s) of the Error List (data.runtimeMessages, e.g. TcUnit / ADSLOGSTR output) are not build errors and were left out"
+                $summary += ". $(@($els.runtimeMessages).Count) runtime / system log row(s) of the Error List (data.runtimeMessages, '<source>' (<number>): ..., e.g. TcUnit / ADSLOGSTR output) are not build errors and were left out"
             }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint (Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE') -Data $data

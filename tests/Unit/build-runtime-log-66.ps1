@@ -6,7 +6,9 @@
 #   (b) TcUnit log rows + a real C0046 -> BUILD_FAILED, errorItems / codeErrors = the C0046 only
 #   (c) a row that cannot be told apart (log prefix AND file / line / code) -> kept as a build row
 #       with a note (fail closed); with LastBuildInfo unreadable it still fails the build
-#   plus: the #66 shape (only log rows, LastBuildInfo 1) names the log rows in the message,
+#   plus: the #66 shape (only log rows, LastBuildInfo 1) names the log rows in the message, (a2) with
+#   LastBuildInfo unreadable is CODE_NOT_VERIFIED / not complete (review #150 F3), system rows, library
+#   rows behind the prefix (F4), the summary without -SplitRuntimeLog (F1),
 #   warning log rows leave warningItems, Get-TcRuntimeLogKind cases.
 #   powershell.exe -NoProfile -File tests/Unit/build-runtime-log-66.ps1
 # Exit code = number of failed checks.
@@ -61,6 +63,14 @@ $kindCases = @(
     @{ Name = 'build-summary row without prefix -> null'; Item = (Row 'Error' "Build of project 'plc' failed"); Want = $null }
     @{ Name = 'quoted name without port -> null'; Item = (Row 'Error' "'PlcTask': x"); Want = $null }
     @{ Name = 'null item -> null'; Item = $null; Want = $null }
+    # review #150 F2: system rows in the same form are runtime / system log rows too (probe rows)
+    @{ Name = 'TCOM Server row -> runtime'; Item = (Row 'Error' "'TCOM Server' (10): NtpType Register ExternalTime failed, HR=98110708"); Want = 'runtime' }
+    @{ Name = 'TwinCAT System row with a project -> runtime'; Item = (Row 'Error' "'TwinCAT System' (10000): Error: >> license not found <<" $null $null $null 'plc'); Want = 'runtime' }
+    # F7: the brackets do not always hold a number ('TwinCAT Measurement' (time)): not matched
+    @{ Name = 'TwinCAT Measurement (22:30:40.881) -> null'; Item = (Row 'Error' "'TwinCAT Measurement' (22:30:40.881): Error creating Archive -> x"); Want = $null }
+    # F4: a library message behind the prefix cannot be told apart
+    @{ Name = 'prefix + Could not open library -> ambiguous'; Item = (Row 'Error' "'PlcTask' (350): Could not open library 'Tc2_Foo'"); Want = 'ambiguous' }
+    @{ Name = 'prefix + has not been installed -> ambiguous'; Item = (Row 'Error' "'plc' (851): Library 'Tc3_Foo' 1.0.0.0 has not been installed"); Want = 'ambiguous' }
 )
 foreach ($c in $kindCases) {
     $got = & $mod { param($i) Get-TcRuntimeLogKind -Item $i } $c.Item
@@ -130,6 +140,8 @@ Reset-State
 Set-Scenario (TcUnitRows) @() $null
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check '(a2) LastBuildInfo unreadable, only log rows -> success decided by ErrorList' ($r.success -and $r.data.decidedBy -eq 'ErrorList' -and @($r.data.errorItems).Count -eq 0 -and @($r.data.runtimeMessages).Count -eq 7) (J $r)
+# review #150 F3: the PLC was online and only the Error List decided -> not verified, not complete
+Check '(a2) codeVerified null, CODE_NOT_VERIFIED (PLC online), completeBuild false, BUILD_REQUIRED recorded' ($null -eq $r.data.codeVerified -and $r.data.completeBuild -eq $false -and @($r.data.warningCodes) -contains 'CODE_NOT_VERIFIED' -and $r.data.warning -match 'PLC online, runtime log rows present \(#66\)' -and $null -ne $r.data.buildRequired) (J $r.data)
 
 # --- (b) TcUnit log rows + a real compiler error
 Reset-State
@@ -139,7 +151,7 @@ $d = $r.data
 Check '(b) BUILD_FAILED' (-not $r.success -and $r.error.code -eq 'BUILD_FAILED' -and $d.buildSucceeded -eq $false) (J $r.error)
 Check '(b) errorItems = codeErrors = the C0046 only, errors 1' (@($d.errorItems).Count -eq 1 -and @($d.codeErrors).Count -eq 1 -and $d.codeErrors[0].code -eq 'C0046' -and $d.errorItems[0].category -eq 'code' -and $d.errors -eq 1) (J $d.errorItems)
 Check '(b) message names the C0046, not the TcUnit rows' ($r.error.message -match '1 code error' -and $r.error.message -match 'C0046' -and $r.error.message -match 'MAIN:12' -and $r.error.message -notmatch 'Successful tests') $r.error.message
-Check '(b) message says the log rows were left out' ($r.error.message -match '7 PLC runtime log row') $r.error.message
+Check '(b) message says the log rows were left out' ($r.error.message -match '7 runtime / system log row') $r.error.message
 Check '(b) runtimeMessages 7, project plc failed' (@($d.runtimeMessages).Count -eq 7 -and @($d.projects)[0].status -eq 'failed') (J $d.projects)
 Check '(b) BUILD_REQUIRED recorded' ($null -ne $d.buildRequired) (J $d)
 
@@ -149,7 +161,7 @@ Set-Scenario (TcUnitRows) @() 1
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check '(b2) BUILD_FAILED, 0 code errors, errorItems empty' (-not $r.success -and $r.error.code -eq 'BUILD_FAILED' -and @($d.errorItems).Count -eq 0 -and $r.error.message -match '0 code error') (J $r)
-Check '(b2) message: no code error listed + 7 log rows left out (data.runtimeMessages)' ($r.error.message -match 'no code error listed' -and $r.error.message -match '7 PLC runtime log row' -and $r.error.message -match 'data\.runtimeMessages' -and $r.error.message -notmatch 'Successful tests') $r.error.message
+Check '(b2) message: no code error listed + 7 log rows left out (data.runtimeMessages)' ($r.error.message -match 'no code error listed' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -match 'data\.runtimeMessages' -and $r.error.message -notmatch 'Successful tests') $r.error.message
 Check '(b2) project status unknown (no build row names it)' (@($d.projects)[0].status -eq 'unknown') (J $d.projects)
 
 # --- (c) a row that cannot be told apart: log prefix AND file + line -> kept, with a note
@@ -188,8 +200,18 @@ Check 'warnings: log row in runtimeMessages, real warning kept' ($r.success -and
 
 # --- Get-TcErrorListSummary directly: shape of runtimeMessages / ambiguousRows
 Set-Scenario (@(TcUnitRows) + (& $amb) + (& $c0046)) @() 0
-$els = & $mod { Get-TcErrorListSummary -TimeoutSec 5 }
+$els = & $mod { Get-TcErrorListSummary -SplitRuntimeLog -TimeoutSec 5 }
 Check 'summary: errorItems 2, codeErrors 2, runtimeMessages 7, ambiguousRows 1' (@($els.errorItems).Count -eq 2 -and @($els.codeErrors).Count -eq 2 -and @($els.runtimeMessages).Count -eq 7 -and @($els.ambiguousRows).Count -eq 1 -and $els.errorCount -eq 2) (J $els)
+
+# without -SplitRuntimeLog (Save-TcArchive, New-TcBootProject; review #150 F1) every row stays in errorItems
+$els = & $mod { Get-TcErrorListSummary -TimeoutSec 5 }
+Check 'summary without -SplitRuntimeLog: all 9 rows in errorItems, runtimeMessages / ambiguousRows empty, no note' (@($els.errorItems).Count -eq 9 -and @($els.runtimeMessages).Count -eq 0 -and @($els.ambiguousRows).Count -eq 0 -and @($els.errorItems | Where-Object { $_.PSObject.Properties['note'] }).Count -eq 0) (J $els.errorItems)
+
+# library prefix row in a build: kept in errorItems with a note (F4), library category unchanged
+Reset-State
+Set-Scenario @((Row 'Error' "'PlcTask' (350): Could not open library 'Tc2_Foo'")) @() 0
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'F4 build: prefix + library message stays in errorItems (library) with a note -> LIBRARY_UNRESOLVED' ($r.error.code -eq 'LIBRARY_UNRESOLVED' -and @($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].category -eq 'library' -and $r.data.errorItems[0].note -match '#66' -and @($r.data.runtimeMessages).Count -eq 0) (J $r)
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 exit [Math]::Min($fail, 255)

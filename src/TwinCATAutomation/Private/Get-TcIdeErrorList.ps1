@@ -990,18 +990,23 @@ function Get-TcErrorItemCategory {
     return 'other'
 }
 
-# PLC runtime ADS log rows in the Error List (#66). Messages that the PLC application writes with
+# Runtime / system log rows in the Error List (#66). Messages that the PLC application writes with
 # ADSLOGSTR & co. are shown in TwinCAT XAE > Error List (InfoSys TF6500 "Debug messages in
 # TwinCAT->Error List": the PLC application writes them "using the ADSLOGSTR ... functions",
-# https://infosys.beckhoff.com/content/1033/tf6500_tc3_iec60870_5_10x/984578315.html), and
-# ADSLOG_MSGTYPE_ERROR / _WARN set their type to error / warning (InfoSys Tc2_System ADSLOGSTR,
-# https://infosys.beckhoff.com/content/1033/tcplclib_tc2_system/31033611.html), so they land among
-# the Error / Warning rows next to the compiler messages. A compiler message names the File and Line
-# that contain the problem (Microsoft Learn, Error List columns File / Line,
-# https://learn.microsoft.com/en-us/visualstudio/ide/error-list-window); a runtime log row has none.
-# The row text form "'<task>' (<ADS port>): <message>" is 實測 (issue #66, 2026-10-27, VS2022 4026,
+# https://infosys.beckhoff.com/content/1033/tf6500_tc3_iec60870_5_10x/984578315.html).
+# ADSLOGSTR has ADSLOG_MSGTYPE_ERROR / _WARN ("Message type is error / warning", InfoSys Tc2_System,
+# https://infosys.beckhoff.com/content/1033/tcplclib_tc2_system/31033611.html); that this type is the
+# Error / Warning severity of the Error List row is 推論 (not stated there), consistent with #66 where
+# the TcUnit rows were read as Error rows. A compiler message names the File and Line that contain the
+# problem (Microsoft Learn, Error List columns File / Line,
+# https://learn.microsoft.com/en-us/visualstudio/ide/error-list-window); a log row has none.
+# The row text form "'<source>' (<number>): <message>" is 實測 (issue #66, 2026-10-27, VS2022 4026,
 # local UmRT, RobustSolutionFrameworkDemo with TcUnit: "'PlcTask' (350): | Successful tests: 6",
-# no file, category other); other UI languages / XAE versions are not measured.
+# no file, category other). The same form is used by system rows such as 'TCOM Server' (10): or
+# 'TwinCAT System' (10000): (review #150 F2), which are not build messages either. What the number in
+# the brackets means is not confirmed (it is not always an ADS port: 實測 counter-example
+# "'TwinCAT Measurement' (22:30:40.881): Error creating Archive", which is not matched because the
+# brackets hold no plain number). Other UI languages / XAE versions are not measured.
 $script:TcRuntimeLogPrefixPattern = "^\s*'[^']+'\s*\(\d+\)\s*:"
 
 function Get-TcRuntimeLogKind {
@@ -1009,11 +1014,13 @@ function Get-TcRuntimeLogKind {
     .SYNOPSIS
         'runtime' / 'ambiguous' / $null for one Error List row (#66).
     .DESCRIPTION
-        runtime    the description starts with "'<task>' (<port>):" ($script:TcRuntimeLogPrefixPattern)
-                   AND the row has no file, no line (> 0) and no compiler code: a PLC runtime ADS log
-                   row (TcUnit, ADSLOGSTR), not a build message.
-        ambiguous  the description has that prefix but the row ALSO has a file, a line or a compiler
-                   code: it cannot be told apart, so it stays a build row (fail closed) and gets a note.
+        runtime    the description starts with "'<source>' (<number>):" ($script:TcRuntimeLogPrefixPattern)
+                   AND the row has no file, no line (> 0), no compiler code and no library message: a
+                   runtime / system log row (TcUnit, ADSLOGSTR, 'TCOM Server', 'TwinCAT System'), not a
+                   build message.
+        ambiguous  the description has that prefix but the row ALSO has a file, a line, a compiler code
+                   or a library message ($script:TcLibraryErrorPattern, review #150 F4): it cannot be told
+                   apart, so it stays a build row (fail closed) and gets a note.
         $null      anything else (no prefix): the row is classified as before (Get-TcErrorItemCategory).
     #>
     [CmdletBinding()]
@@ -1023,12 +1030,14 @@ function Get-TcRuntimeLogKind {
         [object]$Item
     )
     if ($null -eq $Item) { return $null }
-    if (([string]$Item.description) -notmatch $script:TcRuntimeLogPrefixPattern) { return $null }
+    $desc = [string]$Item.description
+    if ($desc -notmatch $script:TcRuntimeLogPrefixPattern) { return $null }
     $n = 0
     $hasLine = [int]::TryParse(([string]$Item.line).Trim(), [ref]$n) -and $n -gt 0
     $hasFile = -not [string]::IsNullOrWhiteSpace([string]$Item.file)
     $hasCode = -not [string]::IsNullOrWhiteSpace([string]$Item.code)
-    if ($hasFile -or $hasLine -or $hasCode) { return 'ambiguous' }
+    $libraryText = $desc -match $script:TcLibraryErrorPattern
+    if ($hasFile -or $hasLine -or $hasCode -or $libraryText) { return 'ambiguous' }
     return 'runtime'
 }
 
