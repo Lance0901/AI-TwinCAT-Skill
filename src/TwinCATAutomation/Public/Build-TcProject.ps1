@@ -658,7 +658,7 @@
         $runtimeWhy = $null
         if ($decidedBy -eq 'ErrorList' -and @($els.runtimeMessages).Count -gt 0) {
             $codeVerified = $null
-            $runtimeWhy = "PLC online, runtime log rows present (#66): $(@($els.runtimeMessages).Count) runtime log row(s) are in the Error List (data.runtimeMessages) and LastBuildInfo was not readable, so the Error List alone is not reliable (#66)"
+            $runtimeWhy = "runtime log rows present (PLC online, or rows left from an earlier online session) (#66): $(@($els.runtimeMessages).Count) runtime / system log row(s) are in the Error List (data.runtimeMessages) and LastBuildInfo was not readable, so the Error List alone is not reliable (#66)"
         }
         $codeNotVerified = ($buildSucceeded -eq $true) -and ($codeVerified -ne $true) -and (-not $libraryUnresolved -or $unlocatedCode.Count -gt 0)
 

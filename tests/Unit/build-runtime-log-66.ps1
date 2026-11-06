@@ -1,4 +1,4 @@
-# Unit: PLC runtime ADS log rows (TcUnit / ADSLOGSTR output) in the Error List are not build errors
+# Unit: runtime / system log rows (TcUnit / ADSLOGSTR output, 'TCOM Server', 'TwinCAT System') in the Error List are not build errors
 # (issue #66), no IDE / runtime needed. The DTE / SolutionContexts / Error List are mocked in the
 # module scope; the real Build-TcProject, Get-TcErrorListSummary, Get-TcRuntimeLogKind and
 # Set/Clear-TcBuildRequired run (state in a temp TCAUTO_STATE_DIR). Covers:
@@ -141,8 +141,14 @@ Set-Scenario (TcUnitRows) @() $null
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check '(a2) LastBuildInfo unreadable, only log rows -> success decided by ErrorList' ($r.success -and $r.data.decidedBy -eq 'ErrorList' -and @($r.data.errorItems).Count -eq 0 -and @($r.data.runtimeMessages).Count -eq 7) (J $r)
 # review #150 F3: the PLC was online and only the Error List decided -> not verified, not complete
-Check '(a2) codeVerified null, CODE_NOT_VERIFIED (PLC online), completeBuild false, BUILD_REQUIRED recorded' ($null -eq $r.data.codeVerified -and $r.data.completeBuild -eq $false -and @($r.data.warningCodes) -contains 'CODE_NOT_VERIFIED' -and $r.data.warning -match 'PLC online, runtime log rows present \(#66\)' -and $null -ne $r.data.buildRequired) (J $r.data)
+Check '(a2) codeVerified null, CODE_NOT_VERIFIED (PLC online), completeBuild false, BUILD_REQUIRED recorded' ($null -eq $r.data.codeVerified -and $r.data.completeBuild -eq $false -and @($r.data.warningCodes) -contains 'CODE_NOT_VERIFIED' -and $r.data.warning -match 'runtime log rows present \(PLC online, or rows left from an earlier online session\) \(#66\)' -and $null -ne $r.data.buildRequired) (J $r.data)
 
+# (a2) end to end (review #150 N3): the recorded BUILD_REQUIRED refuses the next PLC login. The
+# Enable-TcConfig refusal from the same state entry is covered by platform-project-mismatch.ps1
+# (br-held-enable-blocked) and code-changed-build-required.ps1 (Enter-TcPlcOnline / Send-TcPlcProgram);
+# a full Enable-TcConfig mock here would need the whole lifecycle preamble.
+$l = Enter-TcPlcOnline -LoginMode Regular
+Check '(a2) end to end: Enter-TcPlcOnline after that build -> BUILD_REQUIRED (unverified-build)' ((-not $l.success) -and $l.error.code -eq 'BUILD_REQUIRED' -and $l.error.message -match 'did not prove') (J $l)
 # --- (b) TcUnit log rows + a real compiler error
 Reset-State
 Set-Scenario (@(TcUnitRows) + (& $c0046)) @() 1
