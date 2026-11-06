@@ -46,6 +46,8 @@ function makeRepo() {
   const repo = tmp('instrepo');
   fs.mkdirSync(path.join(repo, 'scripts'));
   fs.copyFileSync(SCRIPT, path.join(repo, 'scripts', 'Install-TcAutoRuntime.ps1'));
+  fs.mkdirSync(path.join(repo, 'scripts', 'lib'));
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'lib', 'TcAutoInstall.ps1'), path.join(repo, 'scripts', 'lib', 'TcAutoInstall.ps1'));
   put(path.join(repo, 'mcp-server', 'launcher', 'tcauto-launcher.mjs'), fs.readFileSync(LAUNCHER, 'utf8'));
   put(path.join(repo, 'mcp-server', 'index.js'), '// fixture index\n');
   put(path.join(repo, 'mcp-server', 'package.json'), '{"name":"fixture","type":"module"}\n');

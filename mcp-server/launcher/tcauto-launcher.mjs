@@ -47,7 +47,7 @@ export const RELOAD_TOOL = Object.freeze({
   name: 'ReloadRuntime',
   description:
     'Switch the TcAuto MCP server to the runtime version runtime\\current.json names now (#162), without reconnecting the MCP client: ' +
-    'install a version first with scripts/Install-TcAutoRuntime.ps1 in the checkout, then call this. ' +
+    'install a version first (customer PC: Install-TcAuto.ps1 of the release zip; developer: scripts/Install-TcAutoRuntime.ps1 in the checkout), then call this. ' +
     'The running runtime retires its PowerShell bridge first (same rules as ReloadModule: refused with RELOAD_LIFECYCLE_BLOCKED / RELOAD_BUILD_REQUIRED and nothing changes while the module holds a lifecycle block or unsaved BUILD_REQUIRED entries in memory; report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed), ' +
     'then the new runtime is started and the tool list is refreshed (notifications/tools/list_changed). ' +
     'Refused with RUNTIME_RELOAD_BUSY while another tool call is still running. Calls made while the reload runs are answered with RUNTIME_RELOADING. ' +
@@ -386,8 +386,8 @@ export class Launcher {
             if (m.id === undefined || m.id === null) continue;
             const hint =
               err.code === 'RUNTIME_NOT_INSTALLED'
-                ? 'Run scripts/Install-TcAutoRuntime.ps1 in the TcAuto checkout, then call again.'
-                : 'Check the launcher stderr (MCP client log); run scripts/Install-TcAutoRuntime.ps1 again if the runtime is damaged. The next call tries to start it again.';
+                ? 'Install the runtime (Customer PC: run Install-TcAuto.ps1 from the extracted release zip again; developer: run scripts/Install-TcAutoRuntime.ps1 in the TcAuto checkout), then call again.'
+                : 'Check the launcher stderr (MCP client log); if the runtime is damaged, install it again (Customer PC: run Install-TcAuto.ps1 from the extracted release zip again; developer: run scripts/Install-TcAutoRuntime.ps1 in the TcAuto checkout). The next call tries to start it again.';
             if (m.method === 'tools/call') this.replyTool(m.id, errorBody(err.code, `${m.params?.name ?? 'tools/call'} NOT RUN: ${err.message}`, hint));
             else this.replyError(m.id, -32000, `${err.code}: ${err.message}. ${hint}`);
           }
@@ -573,7 +573,7 @@ export class Launcher {
     if (!next.ok) {
       this.replyTool(
         id,
-        errorBody('RUNTIME_NOT_INSTALLED', `ReloadRuntime NOT RUN: ${next.reason}. Nothing was changed.`, 'Run scripts/Install-TcAutoRuntime.ps1 in the TcAuto checkout, then ReloadRuntime again.', {
+        errorBody('RUNTIME_NOT_INSTALLED', `ReloadRuntime NOT RUN: ${next.reason}. Nothing was changed.`, 'Install the runtime (Customer PC: run Install-TcAuto.ps1 from the extracted release zip again; developer: run scripts/Install-TcAutoRuntime.ps1 in the TcAuto checkout), then ReloadRuntime again.', {
           installRoot: this.installRoot,
           previous: describe(previous),
           notRun: true
@@ -667,8 +667,8 @@ export class Launcher {
             'RUNTIME_START_FAILED',
             `ReloadRuntime: the old runtime was retired but ${next.version} did not start (${startError.message}).`,
             restored
-              ? 'The previous runtime runs again (data.current). Run scripts/Install-TcAutoRuntime.ps1 again, then ReloadRuntime. Run ConnectIde again either way.'
-              : 'No runtime runs now: the next call starts the runtime current.json names. Check the launcher stderr (MCP client log) and run scripts/Install-TcAutoRuntime.ps1 again.',
+              ? 'The previous runtime runs again (data.current). Install the runtime again (customer PC: Install-TcAuto.ps1 of the release zip; developer: scripts/Install-TcAutoRuntime.ps1), then ReloadRuntime. Run ConnectIde again either way.'
+              : 'No runtime runs now: the next call starts the runtime current.json names. Check the launcher stderr (MCP client log) and install the runtime again (customer PC: Install-TcAuto.ps1 of the release zip; developer: scripts/Install-TcAutoRuntime.ps1).',
             { previous: describe(previous), requested: describe(next), current: restored ? describe(previous) : null, restored, restoreError, retired }
           )
         );

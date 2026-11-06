@@ -1,0 +1,48 @@
+name: release
+
+# #20: a pushed tag v* builds TcAuto-<version>.zip (+ .sha256) with scripts/Build-TcAutoRelease.ps1
+# (node.exe downloaded from nodejs.org and checked against the SHA256 pinned in the script and
+# SHASUMS256.txt) and attaches both to the GitHub Release of that tag (created when missing).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe needs the tags
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: Build-TcAutoRelease
+        id: build
+        shell: powershell
+        run: |
+          $version = '${{ github.ref_name }}' -replace '^v', ''
+          powershell -NoProfile -File scripts/Build-TcAutoRelease.ps1 -OutputDir dist -Version $version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "zip=dist/TcAuto-$version.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Attach to the GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $zip = '${{ steps.build.outputs.zip }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @('release', 'create', $tag, '--title', $tag, '--notes', "TcAuto $tag. Install: docs/setup-mcp.md, section 'Customer install (release zip)'.")
+            if ($tag -match '-') { $createArgs += '--prerelease' }  # v1.2.0-beta
+            gh @createArgs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          gh release upload $tag $zip "$zip.sha256" --clobber
+          exit $LASTEXITCODE
