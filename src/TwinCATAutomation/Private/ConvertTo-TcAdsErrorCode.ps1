@@ -77,8 +77,9 @@ $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / descr
 # #66 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT) and #188 (實測 2026-11-08, 4026 VS2022 + local UmRT):
 # BUILD_FAILED with no error row while the PLC is logged in - XAE did not compile; Build-TcProject sets
 # data.plcOnlineSuspected / plcOnlineEvidence ('login-state': IsLoggedIn / ProduceXml read back logged in;
-# 'runtime-log': only runtime log rows, suspected) and uses this hint.
-$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is logged in (data.plcOnlineEvidence = login-state, read back from the IDE) or probably logged in (runtime-log: suspected from runtime log rows only, no compiler error row); XAE does not compile while logged in. Log out with MCP PlcLogout (cmdlet Exit-TcPlcOnline), then run BuildProject (Build-TcProject) again(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;data.plcLoginState 列出每個 PLC 的 login 狀態;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
+# 'runtime-log': only runtime log rows, suspected) and uses this hint. Cmdlet names only, once each: the MCP
+# server rewrites them to tool names (mcp-server/lib/tools.js rewriteHintCmdletNames -> PlcLogout / BuildProject).
+$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is logged in (data.plcOnlineEvidence = login-state, read back from the IDE) or probably logged in (runtime-log: suspected from runtime log rows only, no compiler error row); XAE does not compile while logged in. Log out with Exit-TcPlcOnline, then run Build-TcProject again(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;data.plcLoginState 列出每個 PLC 的 login 狀態;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
 # Legacy code kept by Read-TcVariable for a missing symbol: same hint as ADS_SYMBOL_NOT_FOUND
 $script:TcErrorHints['SYMBOL_NOT_FOUND'] = $script:TcErrorHints['ADS_SYMBOL_NOT_FOUND']
 # #60: Read-TcVariable with several paths, at least one failed (fail closed)

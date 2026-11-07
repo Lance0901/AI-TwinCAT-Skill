@@ -134,7 +134,8 @@
                              $null, O12) when the Error List was read and lists no error row at all (no code,
                              library or other error row) and either a built PLC project reads back as logged in
                              (data.plcOnlineEvidence 'login-state', #188) or every built PLC project is 'unknown'
-                             and runtime / system log rows are present ('runtime-log', #66 / O9, 實測 2026-11-06) -
+                             and runtime / system log rows are present ('runtime-log', #66 / O9, 實測 2026-11-06;
+                             not when every built PLC project reads back as NOT logged in: the read wins) -
                              XAE did not compile while logged in (hint BUILD_FAILED_PLC_ONLINE)
         data.plcOnlineEvidence  always present: 'login-state' | 'runtime-log' | $null (not suspected)
         data.plcLoginState   always present; $null unless the build failed with a readable Error List without any
@@ -142,7 +143,7 @@
                              @{ plc; loggedIn ($true | $false | $null = unknown); source ('IsLoggedIn' | 'ProduceXml'
                              | $null); error } (Get-TcPlcLoginState: TE1000 ITcPlcOnline.IsLoggedIn, else the
                              "<Plc> Project" ProduceXml IECProjectDef/OnlineSettings/LoggedIn, 實測 2026-11-08 4026
-                             VS2022). Such a BUILD_FAILED always has codeVerified $null, logged in or not (#188:
+                             VS2022: IsLoggedIn of TIPC^<Plc> read back null there, ProduceXml decided). Such a BUILD_FAILED always has codeVerified $null, logged in or not (#188:
                              XAE logged in, no runtime log row, the build failed without listing an error)
         data.runtimeMessageNote  only when a row has that prefix AND a file, line, code or library message: it
                              cannot be told apart, so it stays in errorItems / warningItems (fail closed) with a
@@ -872,6 +873,10 @@
                 }
             }
             $data.plcLoginState = $plcLoginState
+            # every built PLC project read back as NOT logged in: a reliable read wins over the runtime-log
+            # guess (old log rows stay in the Error List after a logout, #66), so no Logout hint
+            $allLoggedOut = ($null -ne $plcLoginState) -and (@($plcLoginState).Count -gt 0) -and
+                (@($plcLoginState | Where-Object { $_.loggedIn -ne $false }).Count -eq 0)
             if ($noErrorRow -and $loggedInPlcs.Count -gt 0) {
                 # appended, the summary above is kept (review #150 round 3 M1)
                 $summary += ". XAE listed no compiler error row at all and PLC project(s) $($loggedInPlcs -join ', ') are logged in (data.plcLoginState): XAE does not compile while the PLC is logged in (#188, 實測 2026-11-08: the real errors appear after PlcLogout)"
@@ -880,8 +885,8 @@
                 $data.plcOnlineEvidence = 'login-state'
                 $data.codeVerified = $null
             }
-            elseif ($noErrorRow -and $allUnknown -and @($els.runtimeMessages).Count -gt 0) {
-                # #66 / O9: the login state was not read as logged in, but runtime / system log rows are present
+            elseif ($noErrorRow -and $allUnknown -and -not $allLoggedOut -and @($els.runtimeMessages).Count -gt 0) {
+                # #66 / O9: the login state was not read (for at least one PLC), but runtime / system log rows are present
                 $summary += ". XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout); no error row names a PLC project"
                 $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
                 $data.plcOnlineSuspected = $true

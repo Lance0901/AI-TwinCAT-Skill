@@ -211,7 +211,7 @@ Check '(b2) BUILD_FAILED, errorItems empty' (-not $r.success -and $r.error.code 
 Check '(b2) project status unknown (no build row names it)' (@($d.projects)[0].status -eq 'unknown') (J $d.projects)
 # O9 (實測 2026-11-06): PLC logged in -> XAE did not compile; the message must not read "0 code error(s)"
 Check '(b2/O9) plcOnlineSuspected, the usual summary kept and the O9 sentence appended, names the log rows' ($d.plcOnlineSuspected -eq $true -and $r.error.message -match '^Build failed: 0 code error\(s\) \(1 project\(s\) failed; no code error listed in the Error List\)' -and $r.error.message -match 'XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile' -and $r.error.message -match '7 runtime / system log row' -and $r.error.message -notmatch 'Successful tests') $r.error.message
-Check '(b2/O9) hint: probably logged in, PlcLogout / Exit-TcPlcOnline then BuildProject' ($r.error.hint -match 'probably logged in \(runtime-log' -and $r.error.hint -match 'MCP PlcLogout \(cmdlet Exit-TcPlcOnline\), then run BuildProject') $r.error.hint
+Check '(b2/O9) hint: probably logged in, Exit-TcPlcOnline then Build-TcProject (cmdlet names once each, the MCP server rewrites them)' ($r.error.hint -match 'probably logged in \(runtime-log' -and $r.error.hint -match 'Log out with Exit-TcPlcOnline, then run Build-TcProject again' -and $r.error.hint -notmatch 'PlcLogout|BuildProject') $r.error.hint
 Check '(b2/#188) login state unknown -> evidence runtime-log, plcLoginState has the plc entry' ($d.plcOnlineEvidence -eq 'runtime-log' -and @($d.plcLoginState).Count -eq 1 -and $d.plcLoginState[0].plc -eq 'plc' -and $null -eq $d.plcLoginState[0].loggedIn) (J $d)
 Check '(b2/O12) plcOnlineSuspected -> codeVerified null (XAE did not compile, the clean Error List proves nothing)' ($null -eq $d.codeVerified -and $null -ne $d.PSObject.Properties['codeVerified']) (J $d)
 Check '(b2/O9) BUILD_REQUIRED still recorded' ($null -ne $d.buildRequired) (J $d)
@@ -257,7 +257,7 @@ $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check '#188 not logged in: BUILD_FAILED, plcOnlineSuspected false, evidence null, message "no code error listed"' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $false -and $null -eq $d.plcOnlineEvidence -and $r.error.message -match 'no code error listed' -and $r.error.message -match 'plc=false') (J $r)
 Check '#188 not logged in: codeVerified null (not true), key present' ($null -eq $d.codeVerified -and $null -ne $d.PSObject.Properties['codeVerified']) (J $d)
-Check '#188 not logged in: plcLoginState = one entry plc / false, compile hint, login state read once' (@($d.plcLoginState).Count -eq 1 -and $d.plcLoginState[0].plc -eq 'plc' -and $d.plcLoginState[0].loggedIn -eq $false -and $r.error.hint -notmatch 'PlcLogout' -and (Get-LoginCalls) -eq 1) (J $d.plcLoginState)
+Check '#188 not logged in: plcLoginState = one entry plc / false, compile hint, login state read once' (@($d.plcLoginState).Count -eq 1 -and $d.plcLoginState[0].plc -eq 'plc' -and $d.plcLoginState[0].loggedIn -eq $false -and $r.error.hint -notmatch 'Exit-TcPlcOnline' -and (Get-LoginCalls) -eq 1) (J $d.plcLoginState)
 # login state unknown -> not suspected (no runtime rows), codeVerified null
 Reset-State
 Set-Scenario @() @((& $warn188)) 2
@@ -270,7 +270,7 @@ Set-Login $true
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
 Check '#188 logged in: plcOnlineSuspected true, evidence login-state, codeVerified null' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $true -and $d.plcOnlineEvidence -eq 'login-state' -and $null -eq $d.codeVerified) (J $d)
-Check '#188 logged in: hint is BUILD_FAILED_PLC_ONLINE (PlcLogout / Exit-TcPlcOnline then BuildProject), message names the logged-in PLC' ($r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE' }) -and $r.error.hint -match 'PlcLogout' -and $r.error.hint -match 'Exit-TcPlcOnline' -and $r.error.message -match '^Build failed: 0 code error\(s\) \(2 project\(s\) failed; no code error listed in the Error List\)' -and $r.error.message -match 'PLC project\(s\) plc are logged in') $r.error.message
+Check '#188 logged in: hint is BUILD_FAILED_PLC_ONLINE (Exit-TcPlcOnline then Build-TcProject), message names the logged-in PLC' ($r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE' }) -and $r.error.hint -match 'Exit-TcPlcOnline' -and $r.error.message -match '^Build failed: 0 code error\(s\) \(2 project\(s\) failed; no code error listed in the Error List\)' -and $r.error.message -match 'PLC project\(s\) plc are logged in') $r.error.message
 Check '#188 logged in: BUILD_REQUIRED recorded' ($null -ne $d.buildRequired) (J $d)
 # logged in AND runtime rows -> the login state wins as evidence
 Reset-State
@@ -278,6 +278,19 @@ Set-Scenario (TcUnitRows) @((& $warn188)) 2
 Set-Login $true
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check '#188 logged in + runtime rows: evidence login-state' ($r.data.plcOnlineSuspected -eq $true -and $r.data.plcOnlineEvidence -eq 'login-state') (J $r.data)
+# read back as NOT logged in + runtime rows (left from an earlier online session): the read wins, no runtime-log suspicion
+Reset-State
+Set-Scenario (TcUnitRows) @((& $warn188)) 2
+Set-Login $false
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check '#188 not logged in + runtime rows: plcOnlineSuspected false, evidence null, compile hint, codeVerified null' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $false -and $null -eq $d.plcOnlineEvidence -and $null -eq $d.codeVerified -and $r.error.hint -notmatch 'Exit-TcPlcOnline' -and $r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE' })) (J $r)
+Check '#188 not logged in + runtime rows: message keeps plc=false, no "probably logged in"' ($r.error.message -match 'plc=false' -and $r.error.message -notmatch 'probably logged in' -and $r.error.message -match '7 runtime / system log row') $r.error.message
+# login state unknown + runtime rows: the runtime-log rule still applies (covered by b2 too)
+Reset-State
+Set-Scenario (TcUnitRows) @((& $warn188)) 2
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check '#188 login unknown + runtime rows: evidence runtime-log' ($r.data.plcOnlineSuspected -eq $true -and $r.data.plcOnlineEvidence -eq 'runtime-log') (J $r.data)
 
 # --- (c) a row that cannot be told apart: log prefix AND file + line -> kept, with a note
 $amb = { Row 'Error' "'PlcTask' (350): Identifier 'x' not defined" 'C:\Demo66\plc\POUs\MAIN.TcPOU' 5 $null 'plc' }
