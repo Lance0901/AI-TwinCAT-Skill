@@ -428,6 +428,27 @@ try {
     $res = Get-TcProjectTree
     Check 'projecttree-186-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY' -and $null -eq $res.data) ($res | ConvertTo-Json -Depth 6 -Compress)
     $global:T.ChildFailLeft = 0; $global:T.NoSleep = $false
+    # #186 review: TIPC fails closed too. A busy Child(i) below TIPC restarts the section read; persistent busy -> IDE_BUSY
+    Reset-Mock
+    $q = 'TIPC^P^P Project^POUs'
+    foreach ($pn in 'FB_B', 'FB_C') { $null = Add-MockNode "$q^$pn" 604 }
+    $global:T.NoSleep = $true
+    $global:T.Nodes[$q] | Add-Member -Force ScriptMethod Child {
+        param($i)
+        if ($i -eq 2 -and $global:T.ChildFailLeft -ne 0) {
+            if ($global:T.ChildFailLeft -gt 0) { $global:T.ChildFailLeft-- }
+            throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))', [int]0x80010001)
+        }
+        $global:T.Nodes[$this.Kids[$i - 1]]
+    }
+    $global:T.ChildFailLeft = 1
+    $res = Get-TcProjectTree -PlcOnly
+    $pous = @(@(@(@($res.data)[0].children)[0].children | Where-Object { $_.name -eq 'P Project' })[0].children)[0]
+    Check 'projecttree-186-tipc-busy-child-retried' ($res.success -and (@($pous.children | ForEach-Object { $_.name }) -join '|') -eq 'MAIN|FB_B|FB_C' -and $global:T.ChildFailLeft -eq 0) ($res | ConvertTo-Json -Depth 8 -Compress)
+    $global:T.ChildFailLeft = -1
+    $res = Get-TcProjectTree -PlcOnly
+    Check 'projecttree-186-tipc-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY' -and $null -eq $res.data) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFailLeft = 0; $global:T.NoSleep = $false
     Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)

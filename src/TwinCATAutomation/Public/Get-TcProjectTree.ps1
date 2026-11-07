@@ -48,9 +48,11 @@ function Get-TcProjectTree {
         returns the terminals below a coupler, so a plain Child(i) walk listed them twice: below the
         coupler and again flattened below the device (measured 2026-11-08, 4024 TcXaeShell 32-bit,
         BFH-1650: Device 1 (EtherCAT) = Term 7 (EK1200) with its 8 terminals plus the same 8 again).
-        A busy / dead-RPC COM error while reading TIID children is retried for the whole section
-        (Invoke-TcComRetry) and then fails the call (IDE_BUSY / IDE_CRASHED ...), never a tree with
-        nodes missing. TIPC / TIRS / TIRC keep the plain Child(i) walk (no flattening observed there).
+        TIPC / TIRS / TIRC keep the plain Child(i) walk: no flattening observed there (measured
+        2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: TIPC tree identical before/after #186).
+        Fail closed in every section: a busy / dead-RPC COM error while reading children is retried
+        for the whole section (Invoke-TcComRetry) and then fails the call (IDE_BUSY / IDE_CRASHED /
+        IDE_MODAL_DIALOG / IDE_TIMEOUT), never a tree with nodes missing.
     .PARAMETER Depth
         Number of levels below each root node (1-10, default 4). 4 reaches the POUs:
         TIPC(0)^plc(1)^plc Project(2)^POUs(3)^<POU>(4).
@@ -136,16 +138,20 @@ function Get-TcProjectTree {
             }
         }
         else {
-            # TIPC / TIRS / TIRC: plain Child(i). No flattening was observed there, and the PathName
-            # parent rule of the TIID branch could drop a real child whose PathName differs from the
-            # walk (e.g. the "<Plc> Project" node that TIPC^<Plc> hides from enumeration).
+            # TIPC / TIRS / TIRC: plain Child(i). No flattening observed there (measured 2026-11-08,
+            # 4024 TcXaeShell 32-bit, BFH-1650: TIPC tree identical before/after #186). The PathName
+            # parent rule of the TIID branch was not measured on these sections, so Child(i) is kept
+            # as the conservative choice. Busy / dead RPC is rethrown (fail closed, as in TIID).
             for ($i = 1; $i -le $childCount; $i++) {
                 try {
                     $child = $item.Child($i)
                     $childNode = Read-TreeItem -item $child -depth ($depth + 1)
                     if ($null -ne $childNode) { $kids += $childNode }
                 }
-                catch { continue }
+                catch {
+                    if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+                    continue
+                }
             }
         }
         $node.children = $kids
