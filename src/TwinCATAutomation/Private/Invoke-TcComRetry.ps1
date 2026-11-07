@@ -1,3 +1,64 @@
+# Busy / dead-RPC classification shared by Invoke-TcComRetry and the code that runs inside its
+# script block and must not swallow these errors (Get-TcTreeItemDirectChild, #184 review).
+$script:TcComBusyPattern = '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER'
+$script:TcComBusyHResults = @([int64]0x80010001, [int64]0x8001010A)
+$script:TcComDeadRpcPattern = '0x800706BE|0x800706BA|0x80010108|RPC_S_CALL_FAILED|RPC_S_SERVER_UNAVAILABLE|RPC_E_DISCONNECTED'
+$script:TcComDeadRpcHResults = @([int64]0x800706BE, [int64]0x800706BA, [int64]0x80010108)
+
+function Get-TcComRpcFailureKind {
+    <#
+    .SYNOPSIS
+        { Busy; DeadRpc } of an exception: RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER (busy) or
+        RPC_S_CALL_FAILED / RPC_S_SERVER_UNAVAILABLE / RPC_E_DISCONNECTED (dead RPC).
+    .DESCRIPTION
+        Walks the whole InnerException chain (MethodInvocationException wraps COMException) and matches
+        the message ($script:TcComBusyPattern / TcComDeadRpcPattern) and the HResult.
+    .PARAMETER Exception
+        The exception to classify.
+    #>
+    [CmdletBinding()]
+    param([Parameter()][AllowNull()][object]$Exception)
+    $busy = $false
+    $dead = $false
+    $ex = $Exception
+    while ($null -ne $ex) {
+        $msg = try { [string]$ex.Message } catch { '' }
+        if ($msg -match $script:TcComBusyPattern) { $busy = $true }
+        if ($msg -match $script:TcComDeadRpcPattern) { $dead = $true }
+        $hr = $ex.PSObject.Properties['HResult']
+        if ($null -ne $hr -and $null -ne $hr.Value) {
+            try {
+                $v = ([int64]$hr.Value -band 0xFFFFFFFF)
+                if ($script:TcComBusyHResults -contains $v) { $busy = $true }
+                if ($script:TcComDeadRpcHResults -contains $v) { $dead = $true }
+            }
+            catch { }
+        }
+        $ex = try { $ex.InnerException } catch { $null }
+    }
+    [PSCustomObject]@{ Busy = $busy; DeadRpc = $dead }
+}
+
+function Test-TcComMustRethrow {
+    <#
+    .SYNOPSIS
+        $true when an error caught inside an Invoke-TcComRetry script block must be rethrown, not skipped.
+    .DESCRIPTION
+        True for a busy or dead-RPC COM error (Get-TcComRpcFailureKind: Invoke-TcComRetry retries it or
+        reports IDE_BUSY / IDE_CRASHED) and for an error Invoke-TcComRetry already classified
+        (IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT).
+    .PARAMETER ErrorRecord
+        The caught error ($_).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$ErrorRecord)
+    $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+    $msg = try { [string]$ex.Message } catch { '' }
+    if ($msg -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { return $true }
+    $k = Get-TcComRpcFailureKind -Exception $ex
+    return ($k.Busy -or $k.DeadRpc)
+}
+
 function Invoke-TcComRetry {
     <#
     .SYNOPSIS
@@ -66,10 +127,6 @@ function Invoke-TcComRetry {
         [int]$TimeoutSec = 120
     )
 
-    $__tcBusyPattern = '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER'
-    $__tcBusyHResults = @([int64]0x80010001, [int64]0x8001010A)
-    $__tcDeadRpcPattern = '0x800706BE|0x800706BA|0x80010108|RPC_S_CALL_FAILED|RPC_S_SERVER_UNAVAILABLE|RPC_E_DISCONNECTED'
-    $__tcDeadRpcHResults = @([int64]0x800706BE, [int64]0x800706BA, [int64]0x80010108)
     $__tcDelaySec = 1
     $__tcStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -146,23 +203,9 @@ while (-not $Sync.Stop) {
             }
             catch {
                 # Inspect the whole exception chain (MethodInvocationException wraps COMException)
-                $__tcIsBusy = $false
-                $__tcIsDeadRpc = $false
-                $__tcEx = $_.Exception
-                while ($null -ne $__tcEx) {
-                    if ($__tcEx.Message -match $__tcBusyPattern) { $__tcIsBusy = $true }
-                    if ($__tcEx.Message -match $__tcDeadRpcPattern) { $__tcIsDeadRpc = $true }
-                    $__tcHr = $__tcEx.PSObject.Properties['HResult']
-                    if ($null -ne $__tcHr -and $null -ne $__tcHr.Value) {
-                        try {
-                            $__tcHrVal = ([int64]$__tcHr.Value -band 0xFFFFFFFF)
-                            if ($__tcBusyHResults -contains $__tcHrVal) { $__tcIsBusy = $true }
-                            if ($__tcDeadRpcHResults -contains $__tcHrVal) { $__tcIsDeadRpc = $true }
-                        }
-                        catch { }
-                    }
-                    $__tcEx = $__tcEx.InnerException
-                }
+                $__tcKind = Get-TcComRpcFailureKind -Exception $_.Exception
+                $__tcIsBusy = $__tcKind.Busy
+                $__tcIsDeadRpc = $__tcKind.DeadRpc
 
                 # IDE process gone after an RPC failure -> the XAE crashed (e.g. 32-bit OutOfMemory).
                 if (($__tcIsDeadRpc -or $__tcIsBusy) -and $__tcIdePid -gt 0) {

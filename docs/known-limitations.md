@@ -189,7 +189,7 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 
 | tool | cmdlet | 狀態 |
 |---|---|---|
-| `LookupTreeItem` | `Get-TcTreeItem` | 已實測。PathName 區分大小寫;找不到時 hint 列出最近的父節點和它的 children |
+| `LookupTreeItem` | `Get-TcTreeItem` | 已實測。PathName 區分大小寫;找不到時 hint 列出最近的父節點和它的 children。`childCount` / `children` / `nearestChildren` 只算直接子節點:EtherCAT device 的 `Child(i)` 會連 coupler 底下的 Term 一起回(實測 2026-11-08,4024 BFH-1650 Device 1 原始 ChildCount 9),模組依 PathName 的父路徑排除(#177 / #182) |
 | `ProduceXml` | `Get-TcTreeItemXml` | 已實測。`Recursive` 在 Task / PLC folder 上輸出相同(參數說明已改成這個實測結果) |
 | `ConsumeXml` | `Set-TcTreeItemXml` | 已實測。改 `TIRT^PlcTask` CycleTime:`verified=true`、備份含 `.TcTTO`、衍生欄位不誤報;錯誤 XML 全部 `XML_MERGE_FAILED` / `TREEITEM_INVALID_VALUE`,沒寫入 |
 | `ExportChild` | `Export-TcTreeItem` | 已實測。TIPC 底下的 PLC folder 要用 `.zip` 檔名,`.xti` 會被 XAE 拒絕(實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測);模組只對 PLC folder(601)先擋(`plc-requires-zip`,hint 給 `.zip` 檔名;重測通過)。POU(`TestCam`,602)給 `.xti` 也被 XAE 拒絕、給 `.zip` 成功(重測 2026-10-30 實測) |
