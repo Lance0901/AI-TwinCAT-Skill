@@ -172,7 +172,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
 | `IoScan` | `Invoke-TcIoScan` | `Apply` | 180 s | Scan I/O devices (target in Config, else IO_SCAN_REQUIRES_CONFIG); Apply=true adds them to the I/O tree |
-| `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON |
+| `GetIoTree` | `Get-TcIoTree` | — | 120 s | Current I/O device tree (TIID) as JSON; each node has `disabled` / `disabledState` (ITcSmTreeItem.Disabled) |
 | `SetVariableLink` | `Set-TcVariableLink` | `PlcVariable`, `IoChannel` | 120 s | Link a PLC variable to an I/O variable (full tree paths; verified via ProduceMappingInfo) |
 | `RemoveVariableLink` | `Remove-TcVariableLink` | `PlcVariable` | 120 s | Remove a variable link (verified via ProduceMappingInfo) |
 
@@ -204,7 +204,7 @@ Prefer the dedicated tools. The modifying ones default to `DryRun=true` and carr
 
 | Tool | Cmdlet | Required params | Timeout | Description |
 |---|---|---|---|---|
-| `LookupTreeItem` | `Get-TcTreeItem` | `Path` | 120 s | Read-only: name, type, children of one tree item; TREEITEM_NOT_FOUND names the nearest parent |
+| `LookupTreeItem` | `Get-TcTreeItem` | `Path` | 120 s | Read-only: name, type, `disabled` / `disabledState`, children of one tree item; TREEITEM_NOT_FOUND names the nearest parent |
 | `ProduceXml` | `Get-TcTreeItemXml` | `Path` | 120 s | Read-only: XML description (`data.xml`) |
 | `CreateChild` | `New-TcTreeItem` | `Path`, `Name` | 120 s | Create a child (`SubType`, `Before`, `VInfo`); dry-run by default |
 | `ConsumeXml` | `Set-TcTreeItemXml` | `Path`, `Xml` | 120 s | Write a `<TreeItem>` fragment; every leaf path must exist (XML_MERGE_FAILED); dry-run by default |

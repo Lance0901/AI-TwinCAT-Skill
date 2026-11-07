@@ -177,6 +177,31 @@ try {
     Check 'lookup-ok' ($res.success -and $res.data.childCount -eq 1 -and $res.data.children[0].name -eq 'PlcTask' -and $res.data.children[0].path -eq 'TIRT^PlcTask') ($res | ConvertTo-Json -Depth 5 -Compress)
     $res = Get-TcTreeItem -Path 'TIPC^P^P Project^POUs^MAIN'
     Check 'lookup-type-name' ($res.success -and $res.data.type -eq 'Program' -and $res.data.itemType -eq 602) ($res | ConvertTo-Json -Depth 5 -Compress)
+    # --- #172 disabled / disabledState (ITcSmTreeItem.Disabled = DISABLED_STATE 0/1/2) ---
+    $d1 = Add-MockNode 'TIID^Device 1 (EtherCAT)'; $d1 | Add-Member NoteProperty Disabled 1
+    $b1 = Add-MockNode 'TIID^Device 1 (EtherCAT)^Box 1'; $b1 | Add-Member NoteProperty Disabled 2
+    $d2 = Add-MockNode 'TIID^Device 2 (EtherCAT)'; $d2 | Add-Member NoteProperty Disabled 0
+    $d3 = Add-MockNode 'TIID^Device 3 (EtherCAT)'; $d3 | Add-Member NoteProperty Disabled 7
+    $d4 = Add-MockNode 'TIID^Device 4 (EtherCAT)'; $d4 | Add-Member ScriptProperty Disabled { throw 'E_NOTIMPL' }
+    $res = Get-TcTreeItem -Path 'TIID'
+    $k = @{}; foreach ($c in @($res.data.children)) { $k[$c.name] = $c }
+    Check 'lookup-disabled-children' ($res.success -and $k['Device 1 (EtherCAT)'].disabled -eq $true -and $k['Device 1 (EtherCAT)'].disabledState -eq 'SMDS_DISABLED' -and
+        $k['Device 2 (EtherCAT)'].disabled -eq $false -and $k['Device 2 (EtherCAT)'].disabledState -eq 'SMDS_NOT_DISABLED' -and
+        $null -eq $k['Device 3 (EtherCAT)'].disabled -and $null -eq $k['Device 3 (EtherCAT)'].disabledState -and
+        $null -eq $k['Device 4 (EtherCAT)'].disabled -and $null -eq $k['Device 4 (EtherCAT)'].disabledState) ($res | ConvertTo-Json -Depth 5 -Compress)
+    $res = Get-TcTreeItem -Path 'TIID^Device 1 (EtherCAT)^Box 1'
+    Check 'lookup-disabled-parent' ($res.success -and $res.data.disabled -eq $true -and $res.data.disabledState -eq 'SMDS_PARENT_DISABLED') ($res | ConvertTo-Json -Depth 5 -Compress)
+    $res = Get-TcTreeItem -Path 'TIRT'
+    Check 'lookup-disabled-unreadable-null' ($res.success -and $null -eq $res.data.disabled -and $null -eq $res.data.disabledState -and
+        @($res.data.PSObject.Properties.Name) -contains 'disabled' -and @($res.data.PSObject.Properties.Name) -contains 'disabledState') ($res | ConvertTo-Json -Depth 5 -Compress)
+    $res = Get-TcIoTree
+    $k = @{}; foreach ($c in @($res.data.children)) { $k[$c.name] = $c }
+    $box = @($k['Device 1 (EtherCAT)'].children)[0]
+    Check 'iotree-disabled' ($res.success -and $res.data.path -eq 'TIID' -and $null -eq $res.data.disabled -and
+        $k['Device 1 (EtherCAT)'].disabled -eq $true -and $k['Device 1 (EtherCAT)'].disabledState -eq 'SMDS_DISABLED' -and
+        $box.disabled -eq $true -and $box.disabledState -eq 'SMDS_PARENT_DISABLED' -and
+        $k['Device 2 (EtherCAT)'].disabled -eq $false -and $null -eq $k['Device 3 (EtherCAT)'].disabled -and $null -eq $k['Device 4 (EtherCAT)'].disabledState) ($res | ConvertTo-Json -Depth 6 -Compress)
+    Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)
     Check 'lookup-not-found-hint-nearest' ($res.error.hint -match "nearest existing parent is 'TIRT'" -and $res.error.hint -match "'PlcTask'" -and $res.data.nearestPath -eq 'TIRT' -and @($res.data.nearestChildren) -contains 'PlcTask') $res.error.hint
