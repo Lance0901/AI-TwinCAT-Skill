@@ -247,7 +247,7 @@ describe('RunLifecycle #27 (no bridge): port decision, readback, fail closed', (
   const run = (f, args) => RunLifecycle.run(f.ctx, args);
   const names = (r) => r.data.steps.map((s) => s.name);
 
-  test('all success: six data fields, steps carry code null, ConnectAds without Port', async () => {
+  test('all success: six data fields, steps carry code null, ConnectAds on the one PLC port', async () => {
     const f = fakeCtx();
     const r = await run(f, {});
     assert.equal(r.success, true);
@@ -261,7 +261,7 @@ describe('RunLifecycle #27 (no bridge): port decision, readback, fail closed', (
     assert.equal(r.data.loggedIn, true);
     assert.deepEqual(r.data.plcProjects, [plc('PLC1', 851)]);
     assert.equal(r.data.lifecycleBlock, null);
-    assert.deepEqual(f.call('ConnectAds').args, {});
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 851 });
     assert.deepEqual(f.call('BuildProject').args, {});
     assert.deepEqual(f.call('GetPlcState').args, {});
   });
@@ -299,45 +299,99 @@ describe('RunLifecycle #27 (no bridge): port decision, readback, fail closed', (
     assert.equal(f.call('ConnectAds'), undefined);
   });
 
-  test('AdsPort differs from the one selected PLC -> PLC_PORT_MISMATCH, ConnectAds not called', async () => {
+  test('AdsPort not a port of the selected PLCs -> PLC_PORT_MISMATCH (allowed ports listed), ConnectAds not called', async () => {
     const f = fakeCtx({ EnableConfig: () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] }) });
     const r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 851 });
     assert.equal(r.success, false);
     assert.equal(r.error.code, 'PLC_PORT_MISMATCH');
-    assert.match(r.error.message, /851/);
-    assert.match(r.error.message, /852/);
-    assert.match(r.error.message, /FrameworkUnitTest/);
-    assert.ok(r.error.hint);
+    assert.match(r.error.message, /AdsPort 851/);
+    assert.match(r.error.message, /allowed: 852/);
+    assert.match(r.error.message, /FrameworkUnitTest:852/);
+    assert.match(r.error.hint, /activated; without NoLogin also logged in \/ Run/);
     assert.equal(r.data.failedStep, 'ConnectAds');
     assert.equal(r.data.steps.at(-1).code, 'PLC_PORT_MISMATCH');
-    assert.deepEqual(r.data.steps.at(-1).result.data, { adsPort: 851, plcAdsPort: 852, plc: 'FrameworkUnitTest', projectPath: 'TIPC^FrameworkUnitTest^FrameworkUnitTest Project' });
+    assert.deepEqual(r.data.steps.at(-1).result.data, { adsPort: 851, allowedPorts: [852], plcs: [{ name: 'FrameworkUnitTest', projectPath: 'TIPC^FrameworkUnitTest^FrameworkUnitTest Project', adsPort: 852 }] });
     assert.equal(f.call('ConnectAds'), undefined);
     assert.equal(r.data.adsPort, null);
     assert.equal(r.data.plcProjects.length, 1);
   });
 
-  test('port: auto from the one selected PLC; AdsPort equal passes; several PLCs / no PlcProjectPath -> no Port', async () => {
+  test('port: one distinct port is the default (with or without PlcProjectPath); several distinct ports -> no Port', async () => {
     const one = () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] });
     const two = () => ok({ loggedIn: true, plcs: [plc('PLC1', 851), plc('FrameworkUnitTest', 852)] });
+    const dup = () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852), plc('FrameworkUnitTest', 852)] });
     let f = fakeCtx({ EnableConfig: one });
     let r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'] });
     assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
     assert.equal(r.data.adsPort, 852);
     f = fakeCtx({ EnableConfig: one });
-    r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 852 });
+    r = await run(f, {});
     assert.equal(r.success, true);
-    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 }, 'no PlcProjectPath, plcs=[FrameworkUnitTest:852] -> 852');
+    f = fakeCtx({ EnableConfig: dup });
+    r = await run(f, { PlcProjectPath: ['FrameworkUnitTest', 'FrameworkUnitTest'] });
+    assert.equal(r.success, true);
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 }, 'same PLC twice = one port');
     f = fakeCtx({ EnableConfig: two });
     r = await run(f, {});
     assert.deepEqual(f.call('ConnectAds').args, {});
+    assert.equal(r.data.adsPort, 851);
+  });
+
+  test('AdsPort with PlcProjectPath: must be one of the selected ports (duplicates count once)', async () => {
+    const one = () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] });
+    const two = () => ok({ loggedIn: true, plcs: [plc('PLC1', 851), plc('FrameworkUnitTest', 852)] });
+    const dup = () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852), plc('FrameworkUnitTest', 852)] });
+    let f = fakeCtx({ EnableConfig: one });
+    let r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 852 });
+    assert.equal(r.success, true);
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
     f = fakeCtx({ EnableConfig: two });
     r = await run(f, { PlcProjectPath: ['PLC1', 'FrameworkUnitTest'], AdsPort: 853 });
-    assert.equal(r.success, true, 'two selected PLCs: no mismatch check');
-    assert.deepEqual(f.call('ConnectAds').args, { Port: 853 });
+    assert.equal(r.error.code, 'PLC_PORT_MISMATCH', 'two selected PLCs, 853 is neither');
+    assert.match(r.error.message, /allowed: 851, 852/);
+    assert.equal(f.call('ConnectAds'), undefined);
+    f = fakeCtx({ EnableConfig: two });
+    r = await run(f, { PlcProjectPath: ['PLC1', 'FrameworkUnitTest'], AdsPort: 852 });
+    assert.equal(r.success, true);
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
+    f = fakeCtx({ EnableConfig: dup });
+    r = await run(f, { PlcProjectPath: ['FrameworkUnitTest', 'FrameworkUnitTest'], AdsPort: 851 });
+    assert.equal(r.error.code, 'PLC_PORT_MISMATCH');
+    assert.deepEqual(r.data.steps.at(-1).result.data.allowedPorts, [852]);
     f = fakeCtx({ EnableConfig: one });
     r = await run(f, { AdsPort: 851 });
     assert.equal(r.success, true, 'no PlcProjectPath: no mismatch check');
     assert.deepEqual(f.call('ConnectAds').args, { Port: 851 });
+  });
+
+  test('EnableConfig ordinary failure: its error, plcProjects / loggedIn still reported', async () => {
+    const err = { code: 'RUNTIME_STATE_MISMATCH', message: 'verify failed', hint: 'h' };
+    const f = fakeCtx({ EnableConfig: () => ({ success: false, error: err, data: { loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] } }) });
+    const r = await run(f, {});
+    assert.equal(r.error, err);
+    assert.equal(r.data.failedStep, 'EnableConfig');
+    assert.deepEqual(r.data.plcProjects, [plc('FrameworkUnitTest', 852)]);
+    assert.equal(r.data.loggedIn, true);
+    assert.equal(r.data.lifecycleBlock, null);
+    assert.equal(f.call('ConnectAds'), undefined);
+  });
+
+  test('a step that throws -> INTERNAL_ERROR at that step, later steps not run', async () => {
+    const f = fakeCtx({ BuildProject: () => { throw new Error('boom'); } });
+    const r = await run(f, {});
+    assert.equal(r.success, false);
+    assert.equal(r.error.code, 'INTERNAL_ERROR');
+    assert.match(r.error.message, /BuildProject threw: boom/);
+    assert.equal(r.data.failedStep, 'BuildProject');
+    assert.equal(r.data.steps.at(-1).code, 'INTERNAL_ERROR');
+    assert.equal(f.call('EnableConfig'), undefined);
+  });
+
+  test('EnableConfig data.plcs null -> plcProjects null', async () => {
+    const r = await run(fakeCtx({ EnableConfig: () => ok({ loggedIn: true, plcs: null }) }), {});
+    assert.equal(r.success, true);
+    assert.equal(r.data.plcProjects, null);
   });
 
   test('readback not Run -> RUNTIME_STATE_MISMATCH at GetPlcState (raw result kept); NoLogin only reports', async () => {

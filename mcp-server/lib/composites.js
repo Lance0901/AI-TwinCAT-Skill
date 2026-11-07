@@ -41,11 +41,11 @@ export const RunLifecycle = {
     'PowerShell equivalent: Start-TcLifecycle (same parameters, steps and data fields; #27). ' +
     'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
     'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is also passed to EnableConfig (same value): it then finds the platforms equal and does not add the "-Platform was not given" warning (a platform the target reports through TARGETINFO still wins there); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
-    'Multi-PLC solutions: PlcProjectPath is passed to EnableConfig (only those PLCs are logged in and started), ExpectedProject to BuildProject (coverage check; not derived from PlcProjectPath), BuildTimeoutSec to BuildProject as TimeoutSec. ADS port of ConnectAds: AdsPort; without it the adsPort of the one PLC in EnableConfig data.plcs when PlcProjectPath selected exactly one; otherwise ConnectAds default 851. AdsPort that differs from the adsPort of that one selected PLC fails the ConnectAds step with PLC_PORT_MISMATCH (nothing connected). Example: PlcProjectPath ["FrameworkUnitTest"], ExpectedProject ["FrameworkUnitTest"], AdsPort 852. ' +
+    'Multi-PLC solutions: PlcProjectPath is passed to EnableConfig (only those PLCs are logged in and started), ExpectedProject to BuildProject (coverage check; not derived from PlcProjectPath), BuildTimeoutSec to BuildProject as TimeoutSec. ADS port of ConnectAds: AdsPort; without it the adsPort of EnableConfig data.plcs when they have exactly one distinct port (with or without PlcProjectPath); otherwise ConnectAds default 851. With PlcProjectPath and a non-empty data.plcs, an AdsPort that is not one of their adsPort values fails the ConnectAds step with PLC_PORT_MISMATCH (allowed ports in the message, nothing connected; EnableConfig already activated and, without NoLogin, logged in / Run). Example: PlcProjectPath ["FrameworkUnitTest"], ExpectedProject ["FrameworkUnitTest"], AdsPort 852. ' +
     'Readback: without NoLogin the GetPlcState state must be Run, otherwise RUNTIME_STATE_MISMATCH; with NoLogin it is only reported. ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
     'Fail closed (#68): while the target has a lifecycle block (an earlier SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed) the EnableConfig step returns LIFECYCLE_BLOCKED (ConnectIde / SetTarget / BuildProject before it still run): stop, report the error and data.steps to the user, never retry through another control channel, and call ClearLifecycleBlock only after the user agreed. ' +
-    'Stops at the first failing step; error is that step\'s error as it is. data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock); fields of steps that did not run are null. ' +
+    'Stops at the first failing step; error is that step\'s error as it is. Error codes, data fields and the meaning of hints match Start-TcLifecycle; hint wording is not guaranteed to be identical (the LIBRARY_UNRESOLVED hint addition below is MCP only). data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock); fields of steps that did not run are null. ' +
     'A project with unresolved libraries stops at BuildProject with LIBRARY_UNRESOLVED (the PLC code may not have been compiled): install the libraries first. There is no AllowUnresolvedLibrary here (#61): code whose build did not prove it compiled (codeVerified not true) is not activated, downloaded or started once the module recorded that build (known limits: BUILD_REQUIRED in docs/troubleshooting.md), so even after BuildProject AllowUnresolvedLibrary=true RunLifecycle SkipBuild=true stops at EnableConfig with BUILD_REQUIRED.',
   annotations: { destructiveHint: true, readOnlyHint: false },
   // Informational upper bound (a composite is not cut off by it: every step has its own catalog
@@ -66,7 +66,7 @@ export const RunLifecycle = {
       NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run. The GetPlcState readback then only reports the state.' },
       PlcProjectPath: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'EnableConfig PlcProjectPath: PLC project(s) to log into and start (name, e.g. "FrameworkUnitTest", or tree path). Default: every enabled PLC project.' },
       ExpectedProject: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'BuildProject ExpectedProject: PLC project(s) that must be part of the build (PROJECT_SKIPPED_BY_CONFIGURATION / EXPECTED_PROJECT_NOT_FOUND otherwise). Not derived from PlcProjectPath.' },
-      AdsPort: { type: 'integer', minimum: 1, maximum: 65535, description: 'ADS port for ConnectAds. Default: the adsPort of the one PLC selected with PlcProjectPath, else 851. Differs from that PLC\'s port -> PLC_PORT_MISMATCH.' },
+      AdsPort: { type: 'integer', minimum: 1, maximum: 65535, description: 'ADS port for ConnectAds. Default: the one distinct adsPort of EnableConfig data.plcs, else 851. With PlcProjectPath it must be the port of a selected PLC, else PLC_PORT_MISMATCH.' },
       BuildTimeoutSec: { type: 'integer', minimum: 5, maximum: 7200, description: 'BuildProject TimeoutSec (5..7200). Default: the BuildProject default.' }
     },
     required: [],
@@ -161,16 +161,16 @@ export const RunLifecycle = {
     }
     if (!step.success) return fail(step);
 
-    // ConnectAds port: AdsPort, else the port of the one PLC selected with PlcProjectPath, else 851
-    let onePlc = null;
-    if (plcPaths.length > 0 && Array.isArray(data.plcProjects) && data.plcProjects.length === 1) {
-      const p = data.plcProjects[0];
-      if (p && p.adsPort !== undefined && p.adsPort !== null) onePlc = p;
-    }
+    // ConnectAds port. Distinct adsPort values of EnableConfig data.plcs (a PLC named twice in
+    // PlcProjectPath counts once). AdsPort: with PlcProjectPath and a non-empty data.plcs it must be
+    // one of them (PLC_PORT_MISMATCH otherwise). Without AdsPort: the port when there is exactly one,
+    // else no Port (ConnectAds default 851).
+    const plcList = Array.isArray(data.plcProjects) ? data.plcProjects.filter((p) => p && p.adsPort !== undefined && p.adsPort !== null) : [];
+    const plcPorts = [...new Set(plcList.map((p) => Number(p.adsPort)))].sort((a, b) => a - b);
     const adsArgs = {};
     if (args.AdsPort !== undefined) {
-      const plcPort = onePlc ? Number(onePlc.adsPort) : null;
-      if (onePlc && plcPort !== args.AdsPort) {
+      if (plcPaths.length > 0 && plcPorts.length > 0 && !plcPorts.includes(args.AdsPort)) {
+        const names = [...new Set(plcList.map((p) => `${p.name}:${Number(p.adsPort)}`))].sort().join(', ');
         step = add({
           name: 'ConnectAds',
           success: false,
@@ -178,17 +178,21 @@ export const RunLifecycle = {
           result: {
             ...errorResult(
               'PLC_PORT_MISMATCH',
-              `AdsPort ${args.AdsPort} differs from ADS port ${plcPort} of PLC project '${onePlc.name}' (PlcProjectPath); ADS was not connected.`,
-              `Drop AdsPort (the port of the selected PLC is used) or pass AdsPort ${plcPort}. EnableConfig already succeeded: ConnectAds Port=${plcPort}, then GetPlcState, continues from here without another lifecycle.`
+              `AdsPort ${args.AdsPort} is not the ADS port of a PLC project selected with PlcProjectPath (allowed: ${plcPorts.join(', ')}; ${names}); ADS was not connected.`,
+              'AdsPort is not the ADS port of a PLC selected with PlcProjectPath (allowed ports in error.message; ConnectAds step result.data allowedPorts / plcs); ADS was not connected. EnableConfig already succeeded: activated; without NoLogin also logged in / Run. No need to rerun the lifecycle: ConnectAds Port=<one of allowedPorts>, then GetPlcState (PowerShell: Connect-TcAds -Port, Get-TcPlcState); next time drop AdsPort or pass an allowed port.'
             ),
-            data: { adsPort: args.AdsPort, plcAdsPort: plcPort, plc: onePlc.name ?? null, projectPath: onePlc.projectPath ?? null }
+            data: {
+              adsPort: args.AdsPort,
+              allowedPorts: plcPorts,
+              plcs: plcList.map((p) => ({ name: p.name ?? null, projectPath: p.projectPath ?? null, adsPort: Number(p.adsPort) }))
+            }
           }
         });
         return fail(step);
       }
       adsArgs.Port = args.AdsPort;
-    } else if (onePlc) {
-      adsArgs.Port = Number(onePlc.adsPort);
+    } else if (plcPorts.length === 1) {
+      adsArgs.Port = plcPorts[0];
     }
     step = add(await timed('ConnectAds', () => ctx.callTool('ConnectAds', adsArgs)));
     if (step.result?.data && step.result.data.port !== undefined) data.adsPort = step.result.data.port;

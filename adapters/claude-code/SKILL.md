@@ -39,7 +39,7 @@ Read-TcVariable -Path "MAIN.nCounter"   # ADS 已連好
 ```
 
 - 參數 = `RunLifecycle` 的參數:`SolutionPath`、`ProgId`、`NoLaunch`、`TargetAmsNetId`、`Platform`、`SkipBuild`、`TimeoutSec`(Enable-TcConfig,預設 120)、`NoLogin`、`PlcProjectPath`、`ExpectedProject`(不會從 `PlcProjectPath` 推導)、`AdsPort`、`BuildTimeoutSec`。
-- ADS port:`-AdsPort`;沒給時 `-PlcProjectPath` 正好選中一個 PLC 就用它的 port,否則 851。`-AdsPort` 與那個 PLC 的 port 不同 → `PLC_PORT_MISMATCH`(不連線)。
+- ADS port:`-AdsPort`;沒給時 `Enable-TcConfig` 的 `data.plcs` 去重後只有一個 port 就用它(不論有沒有 `-PlcProjectPath`),否則 851。有 `-PlcProjectPath` 時 `-AdsPort` 必須是選中 PLC 的 port 之一，否則 `PLC_PORT_MISMATCH`(不連線,message 列出允許的 port;已 activate,沒有 `-NoLogin` 時也已 login / Run)。
 - 讀回:`-NoLogin` 以外 PLC 狀態必須是 Run,否則 `RUNTIME_STATE_MISMATCH`。
 - Fail closed:第一個失敗的步驟就停,error 是該步的 error 原樣(`LIFECYCLE_BLOCKED` 照「Failure contract」停下回報),不重試、不換通道。
 - `data`:`steps[]`(`name` / `success` / `code` / `durationMs` / `result`)、`failedStep`、`plcProjects`、`adsPort`、`loggedIn`、`plcState`、`lifecycleBlock`。

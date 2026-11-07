@@ -1189,7 +1189,7 @@ actions:
         default: 180
 
   - name: StartLifecycle
-    description: "Full PLC lifecycle in one call (#27): ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force) -> ConnectAds -> GetPlcState readback (must be Run unless NoLogin, else RUNTIME_STATE_MISMATCH). Changes the running machine (TwinCAT restarts, PLC program downloaded and started): confirm with the user first. Fail closed (#68): stops at the first failing step, error = that step's error as it is (LIFECYCLE_BLOCKED: stop and report, data.lifecycleBlock), never retry through another channel. ADS port: AdsPort, else the port of the one PLC selected with PlcProjectPath, else 851; AdsPort differing from that PLC's port -> PLC_PORT_MISMATCH (not connected). data: steps[] {name, success, code, durationMs, result}, failedStep, plcProjects, adsPort, loggedIn, plcState, lifecycleBlock. On MCP this is the composite RunLifecycle (same parameters)."
+    description: "Full PLC lifecycle in one call (#27): ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force) -> ConnectAds -> GetPlcState readback (must be Run unless NoLogin, else RUNTIME_STATE_MISMATCH). Changes the running machine (TwinCAT restarts, PLC program downloaded and started): confirm with the user first. Fail closed (#68): stops at the first failing step, error = that step's error as it is (LIFECYCLE_BLOCKED: stop and report, data.lifecycleBlock), never retry through another channel. ADS port: AdsPort, else the adsPort of EnableConfig data.plcs when they have exactly one distinct port, else 851; with PlcProjectPath an AdsPort that is not one of the selected PLC ports -> PLC_PORT_MISMATCH (not connected, allowed ports in the message). data: steps[] {name, success, code, durationMs, result}, failedStep, plcProjects, adsPort, loggedIn, plcState, lifecycleBlock. On MCP this is the composite RunLifecycle (same parameters)."
     parameters:
       SolutionPath:
         type: string
@@ -1242,7 +1242,7 @@ actions:
         type: integer
         minimum: 1
         maximum: 65535
-        description: "ADS port for ConnectAds (default: the port of the one PLC selected with PlcProjectPath, else 851)."
+        description: "ADS port for ConnectAds (default: the one distinct adsPort of EnableConfig data.plcs, else 851). With PlcProjectPath it must be the port of a selected PLC (PLC_PORT_MISMATCH otherwise)."
         required: false
       BuildTimeoutSec:
         type: integer

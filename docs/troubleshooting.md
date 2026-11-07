@@ -12,7 +12,7 @@
 
 ## Lifecycle 正確順序
 
-一鍵版本:`Start-TcLifecycle`(MCP `RunLifecycle`,#27)照下圖順序跑 Connect-TcIde → [Set-TcTarget] → Build-TcProject → Enable-TcConfig -Force → Connect-TcAds → Get-TcPlcState 讀回(沒有 `-NoLogin` 時必須是 Run,否則 `RUNTIME_STATE_MISMATCH`),第一個失敗的步驟就停(fail closed,error 原樣、`data.steps` / `data.failedStep`)。多 PLC:`-PlcProjectPath FrameworkUnitTest -ExpectedProject FrameworkUnitTest -AdsPort 852`(`-AdsPort` 省略時用 `-PlcProjectPath` 選中的那一個 PLC 的 port;不符 → `PLC_PORT_MISMATCH`)。要逐步控制或除錯時用下面的分步 cmdlet。
+一鍵版本:`Start-TcLifecycle`(MCP `RunLifecycle`,#27)照下圖順序跑 Connect-TcIde → [Set-TcTarget] → Build-TcProject → Enable-TcConfig -Force → Connect-TcAds → Get-TcPlcState 讀回(沒有 `-NoLogin` 時必須是 Run,否則 `RUNTIME_STATE_MISMATCH`),第一個失敗的步驟就停(fail closed,error 原樣、`data.steps` / `data.failedStep`)。多 PLC:`-PlcProjectPath FrameworkUnitTest -ExpectedProject FrameworkUnitTest -AdsPort 852`(`-AdsPort` 省略時 `data.plcs` 去重後只有一個 port 就用它，否則 851;有 `-PlcProjectPath` 時 `-AdsPort` 不是選中 PLC 的 port 之一 → `PLC_PORT_MISMATCH`)。要逐步控制或除錯時用下面的分步 cmdlet。
 
 ```
 Connect-TcIde -SolutionPath <sln>
@@ -685,9 +685,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### PLC_PORT_MISMATCH
 
-- **為什麼(#27)**:`Start-TcLifecycle`(MCP `RunLifecycle`)給了 `-AdsPort`,而 `-PlcProjectPath` 只選了一個 PLC,`Enable-TcConfig` 回的 `data.plcs` 裡那個 PLC 的 `adsPort` 不是它(例如 `-PlcProjectPath FrameworkUnitTest -AdsPort 851`,但 FrameworkUnitTest 在 852)。ConnectAds 步驟直接失敗,ADS **沒有連線**;前面的 Enable-TcConfig 已成功(PLC 已 activate / login / Run),不記 lifecycle block。
-- **data**:ConnectAds 步驟的 `result.data`:`adsPort`(給的)、`plcAdsPort`(PLC 的)、`plc`、`projectPath`;整體 `data.plcProjects` 是 `Enable-TcConfig` 的 `data.plcs`。
-- **下一步**:不用重跑整個 lifecycle:`Connect-TcAds -Port <plcAdsPort>`(MCP `ConnectAds Port=<plcAdsPort>`)再 `Get-TcPlcState` 讀回;下次呼叫拿掉 `-AdsPort`(自動用該 PLC 的 port)或改成正確的 port。
+- **為什麼(#27)**:`Start-TcLifecycle`(MCP `RunLifecycle`)同時給了 `-PlcProjectPath` 與 `-AdsPort`,而 `-AdsPort` 不是 `Enable-TcConfig` 回的 `data.plcs` 裡任何一個 PLC 的 `adsPort`(同一個 PLC 寫兩次只算一個 port;例如 `-PlcProjectPath FrameworkUnitTest -AdsPort 851`,但 FrameworkUnitTest 在 852)。ConnectAds 步驟直接失敗,ADS **沒有連線**,message 列出允許的 port。前面的 Enable-TcConfig 已成功：已 activate;沒有 `-NoLogin` 時也已 login / Run。不記 lifecycle block。沒給 `-AdsPort` 時不會有這個碼:`data.plcs` 只有一個 port 就用它，否則 851。
+- **data**:ConnectAds 步驟的 `result.data`:`adsPort`(給的)、`allowedPorts`、`plcs`(name / projectPath / adsPort);整體 `data.plcProjects` 是 `Enable-TcConfig` 的 `data.plcs`。
+- **下一步**:不用重跑整個 lifecycle:`Connect-TcAds -Port <allowedPorts 其中一個>`(MCP `ConnectAds Port=<port>`)再 `Get-TcPlcState`(MCP `GetPlcState`)讀回;下次拿掉 `-AdsPort` 或改成允許的 port。
 
 ### PROJECT_SKIPPED_BY_CONFIGURATION
 

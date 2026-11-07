@@ -19,9 +19,10 @@ function Start-TcLifecycle {
                         EXPECTED_PROJECT_NOT_FOUND, ...) come from Build-TcProject itself.
           EnableConfig  Enable-TcConfig -Force (-TimeoutSec, -NoLogin, -Platform, -PlcProjectPath).
           ConnectAds    Connect-TcAds [-Port]. The port: -AdsPort when given; otherwise the adsPort of
-                        the one PLC in Enable-TcConfig data.plcs when -PlcProjectPath selected exactly
-                        one; otherwise no -Port (Connect-TcAds default 851). -AdsPort that differs from
-                        the adsPort of that one selected PLC: PLC_PORT_MISMATCH, nothing is connected.
+                        Enable-TcConfig data.plcs when all of them have the same one (duplicates count
+                        once); otherwise no -Port (Connect-TcAds default 851). With -PlcProjectPath and
+                        a non-empty data.plcs, -AdsPort must be one of their adsPort values, otherwise
+                        PLC_PORT_MISMATCH (allowed ports in the message), nothing is connected.
           GetPlcState   Get-TcPlcState readback. Without -NoLogin the state must be 'Run', otherwise
                         RUNTIME_STATE_MISMATCH; with -NoLogin the state is only reported.
 
@@ -62,8 +63,9 @@ function Start-TcLifecycle {
         Build-TcProject -ExpectedProject: PLC project(s) that must be part of the build. Not derived
         from -PlcProjectPath; pass both for a multi-PLC solution.
     .PARAMETER AdsPort
-        ADS port for Connect-TcAds (1..65535). Default: the port of the one PLC selected with
-        -PlcProjectPath, else 851.
+        ADS port for Connect-TcAds (1..65535). Default: the one adsPort of Enable-TcConfig data.plcs
+        when there is exactly one distinct port, else 851. With -PlcProjectPath it must be the port of
+        one of the selected PLCs (PLC_PORT_MISMATCH otherwise).
     .PARAMETER BuildTimeoutSec
         Build-TcProject -TimeoutSec (5..7200). Default: the Build-TcProject default.
     .EXAMPLE
@@ -225,31 +227,37 @@ function Start-TcLifecycle {
     $step = & $runStep 'EnableConfig' { Enable-TcConfig @enableArgs }
     $ed = $step.result.data
     if ($null -ne $ed) {
-        if ($null -ne $ed.PSObject.Properties['plcs']) { $data.plcProjects = @($ed.plcs) }
+        if ($null -ne $ed.PSObject.Properties['plcs'] -and $null -ne $ed.plcs) { $data.plcProjects = @($ed.plcs) }
         if ($null -ne $ed.PSObject.Properties['loggedIn']) { $data.loggedIn = $ed.loggedIn }
     }
     if (-not $step.success) { return (& $finish $step) }
 
-    # 5. ConnectAds: -AdsPort, else the port of the one PLC selected with -PlcProjectPath, else 851
-    $onePlc = $null
-    if ($hasPlcPath -and $null -ne $data.plcProjects -and @($data.plcProjects).Count -eq 1) {
-        $p = @($data.plcProjects)[0]
-        if ($null -ne $p -and $null -ne $p.PSObject.Properties['adsPort'] -and $null -ne $p.adsPort) { $onePlc = $p }
+    # 5. ConnectAds port. Distinct adsPort values of Enable-TcConfig data.plcs (a PLC named twice in
+    #    -PlcProjectPath counts once). -AdsPort: with -PlcProjectPath and a non-empty data.plcs it must
+    #    be one of them (PLC_PORT_MISMATCH otherwise). Without -AdsPort: the port when there is exactly
+    #    one, else no -Port (Connect-TcAds default 851).
+    $plcPorts = @()
+    $plcList = @()
+    if ($null -ne $data.plcProjects) {
+        $plcList = @($data.plcProjects | Where-Object { $null -ne $_ -and $null -ne $_.PSObject.Properties['adsPort'] -and $null -ne $_.adsPort })
+        $plcPorts = @($plcList | ForEach-Object { [int]$_.adsPort } | Sort-Object -Unique)
     }
     $adsArgs = @{}
     if ($PSBoundParameters.ContainsKey('AdsPort')) {
-        if ($null -ne $onePlc -and [int]$onePlc.adsPort -ne $AdsPort) {
+        if ($hasPlcPath -and $plcPorts.Count -gt 0 -and $plcPorts -notcontains $AdsPort) {
+            $allowed = $plcPorts -join ', '
+            $names = (@($plcList | ForEach-Object { "$($_.name):$([int]$_.adsPort)" } | Sort-Object -Unique) -join ', ')
             $r = New-TcResult -Success $false -ErrorCode 'PLC_PORT_MISMATCH' `
-                -ErrorMessage "-AdsPort $AdsPort differs from ADS port $([int]$onePlc.adsPort) of PLC project '$($onePlc.name)' (-PlcProjectPath); ADS was not connected." `
+                -ErrorMessage "-AdsPort $AdsPort is not the ADS port of a PLC project selected with -PlcProjectPath (allowed: $allowed; $names); ADS was not connected." `
                 -Hint (Get-TcErrorHint -Code 'PLC_PORT_MISMATCH') `
-                -Data ([PSCustomObject]@{ adsPort = $AdsPort; plcAdsPort = [int]$onePlc.adsPort; plc = $onePlc.name; projectPath = $onePlc.projectPath })
+                -Data ([PSCustomObject]@{ adsPort = $AdsPort; allowedPorts = $plcPorts; plcs = @($plcList | ForEach-Object { [PSCustomObject]@{ name = $_.name; projectPath = $_.projectPath; adsPort = [int]$_.adsPort } }) })
             $step = & $addFailedStep 'ConnectAds' $r
             return (& $finish $step)
         }
         $adsArgs['Port'] = $AdsPort
     }
-    elseif ($null -ne $onePlc) {
-        $adsArgs['Port'] = [int]$onePlc.adsPort
+    elseif ($plcPorts.Count -eq 1) {
+        $adsArgs['Port'] = [int]$plcPorts[0]
     }
     $step = & $runStep 'ConnectAds' { Connect-TcAds @adsArgs }
     if ($null -ne $step.result.data -and $null -ne $step.result.data.PSObject.Properties['port']) { $data.adsPort = $step.result.data.port }

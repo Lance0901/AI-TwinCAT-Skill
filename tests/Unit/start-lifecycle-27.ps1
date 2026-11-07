@@ -79,7 +79,7 @@ Check 'all-success: lifecycleBlock null, no error' ($null -eq $r.data.lifecycleB
 $e = Get-Call 'Enable-TcConfig'
 Check 'all-success: Enable-TcConfig -Force -TimeoutSec 120, nothing else' ($e.params.Force -eq $true -and $e.params.TimeoutSec -eq 120 -and $e.params.Count -eq 2) (J $e.params)
 $a = Get-Call 'Connect-TcAds'
-Check 'all-success: Connect-TcAds without -Port (no PlcProjectPath)' ($a.params.Count -eq 0) (J $a.params)
+Check 'all-success: Connect-TcAds -Port 851 (the one PLC port)' ($a.params.Port -eq 851) (J $a.params)
 $b = Get-Call 'Build-TcProject'
 Check 'all-success: Build-TcProject without parameters' ($b.params.Count -eq 0) (J $b.params)
 Check 'all-success: result raw (step result = mock object)' ($r.data.steps[1].result.data.completeBuild -eq $true) (J $r.data.steps[1])
@@ -149,10 +149,11 @@ Check 'blocked: Enable-TcConfig got -TimeoutSec 300 -NoLogin -PlcProjectPath' ($
 Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))
 $r = Start-TcLifecycle -PlcProjectPath 'FrameworkUnitTest' -AdsPort 851
+$sd = $r.data.steps[-1].result.data
 Check 'port mismatch: PLC_PORT_MISMATCH at ConnectAds' ($r.success -eq $false -and $r.error.code -eq 'PLC_PORT_MISMATCH' -and $r.data.failedStep -eq 'ConnectAds') (J $r)
 Check 'port mismatch: Connect-TcAds not called, adsPort null' ($null -eq (Get-Call 'Connect-TcAds') -and $null -eq $r.data.adsPort) (J (Get-Calls))
-Check 'port mismatch: message names both ports and the PLC' ($r.error.message -match '851' -and $r.error.message -match '852' -and $r.error.message -match 'FrameworkUnitTest') $r.error.message
-Check 'port mismatch: hint set, step data has both ports' (-not [string]::IsNullOrWhiteSpace($r.error.hint) -and $r.data.steps[-1].result.data.plcAdsPort -eq 852 -and $r.data.steps[-1].result.data.adsPort -eq 851) (J $r.data.steps[-1])
+Check 'port mismatch: message names the port, the allowed ports and the PLC' ($r.error.message -match 'AdsPort 851' -and $r.error.message -match 'allowed: 852' -and $r.error.message -match 'FrameworkUnitTest:852') $r.error.message
+Check 'port mismatch: hint = module hint, step data adsPort / allowedPorts / plcs' ($r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'PLC_PORT_MISMATCH' }) -and $sd.adsPort -eq 851 -and (@($sd.allowedPorts) -join ',') -eq '852' -and @($sd.plcs)[0].name -eq 'FrameworkUnitTest') (J $sd)
 Check 'port mismatch: plcProjects / loggedIn reported' (@($r.data.plcProjects).Count -eq 1 -and $r.data.loggedIn -eq $true) (J $r.data)
 
 Reset-Case
@@ -160,6 +161,23 @@ Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((P
 $r = Start-TcLifecycle -PlcProjectPath 'FrameworkUnitTest'
 $a = Get-Call 'Connect-TcAds'
 Check 'port auto: Connect-TcAds -Port 852 from the one selected PLC' ($r.success -and $a.params.Port -eq 852 -and $r.data.adsPort -eq 852) (J $a.params)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))
+$r = Start-TcLifecycle
+$a = Get-Call 'Connect-TcAds'
+Check 'port auto without PlcProjectPath: plcs=[FrameworkUnitTest:852] -> -Port 852' ($r.success -and $a.params.Port -eq 852 -and $r.data.adsPort -eq 852) (J $a.params)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852), (Plc 'FrameworkUnitTest' 852)) }))
+$r = Start-TcLifecycle -PlcProjectPath 'FrameworkUnitTest', 'FrameworkUnitTest'
+$a = Get-Call 'Connect-TcAds'
+Check 'same PLC twice in PlcProjectPath: one port, -Port 852' ($r.success -and $a.params.Port -eq 852) (J $a.params)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852), (Plc 'FrameworkUnitTest' 852)) }))
+$r = Start-TcLifecycle -PlcProjectPath 'FrameworkUnitTest', 'FrameworkUnitTest' -AdsPort 851
+Check 'same PLC twice + wrong AdsPort: PLC_PORT_MISMATCH, allowed 852 once' ($r.error.code -eq 'PLC_PORT_MISMATCH' -and (@($r.data.steps[-1].result.data.allowedPorts) -join ',') -eq '852') (J $r.error)
 
 Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))
@@ -171,19 +189,34 @@ Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'PLC1' 851), (Plc 'FrameworkUnitTest' 852)) }))
 $r = Start-TcLifecycle
 $a = Get-Call 'Connect-TcAds'
-Check 'several PLCs, no PlcProjectPath: no -Port (default 851)' ($r.success -and $a.params.Count -eq 0 -and $r.data.adsPort -eq 851) (J $a.params)
+Check 'several ports, no PlcProjectPath: no -Port (default 851)' ($r.success -and $a.params.Count -eq 0 -and $r.data.adsPort -eq 851) (J $a.params)
 
 Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'PLC1' 851), (Plc 'FrameworkUnitTest' 852)) }))
 $r = Start-TcLifecycle -PlcProjectPath 'PLC1', 'FrameworkUnitTest' -AdsPort 853
+Check 'two selected PLCs + AdsPort 853: PLC_PORT_MISMATCH, allowed 851, 852' ($r.error.code -eq 'PLC_PORT_MISMATCH' -and $r.error.message -match 'allowed: 851, 852' -and $null -eq (Get-Call 'Connect-TcAds')) (J $r.error)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'PLC1' 851), (Plc 'FrameworkUnitTest' 852)) }))
+$r = Start-TcLifecycle -PlcProjectPath 'PLC1', 'FrameworkUnitTest' -AdsPort 852
 $a = Get-Call 'Connect-TcAds'
-Check 'two selected PLCs + AdsPort: no mismatch check, -Port 853' ($r.success -and $a.params.Port -eq 853) (J $a.params)
+Check 'two selected PLCs + AdsPort 852 (one of them): -Port 852' ($r.success -and $a.params.Port -eq 852) (J $a.params)
 
 Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))
 $r = Start-TcLifecycle -AdsPort 851
 $a = Get-Call 'Connect-TcAds'
 Check 'AdsPort without PlcProjectPath: no mismatch check' ($r.success -and $a.params.Port -eq 851) (J $a.params)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = $null }))
+$r = Start-TcLifecycle
+Check 'Enable data.plcs null: plcProjects null (not @($null)), no -Port' ($r.success -and $null -eq $r.data.plcProjects -and (Get-Call 'Connect-TcAds').params.Count -eq 0) (J $r.data.plcProjects)
+
+Reset-Case
+Set-Mock 'Enable-TcConfig' (Err 'RUNTIME_STATE_MISMATCH' 'mock verify' ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))
+$r = Start-TcLifecycle
+Check 'Enable ordinary failure: its error, plcProjects / loggedIn still reported' ($r.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $r.data.failedStep -eq 'EnableConfig' -and @($r.data.plcProjects).Count -eq 1 -and $r.data.loggedIn -eq $true -and $null -eq $r.data.lifecycleBlock -and $null -eq (Get-Call 'Connect-TcAds')) (J $r.data)
 
 Reset-Case
 Set-Mock 'Connect-TcAds' (Err 'ADS_PORT_NOT_FOUND' 'mock no port' $null)

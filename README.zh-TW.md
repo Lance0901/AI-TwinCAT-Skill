@@ -316,7 +316,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP server 參考
 
-同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
+同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86;`Start-TcLifecycle` 由複合 tool `RunLifecycle` 提供,#27)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
 
 ## 更新日誌
 
