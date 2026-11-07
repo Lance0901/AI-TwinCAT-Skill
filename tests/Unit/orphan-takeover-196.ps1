@@ -369,15 +369,39 @@ try {
     [void]$global:ModalQueue73.Add('none')     # Resolve-TcOrphanTakeover: no dialog yet
     [void]$global:ModalQueue73.Add('dialog')   # the check after the attach finds one
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T10 dialog after the attach -> IDE_MODAL_DIALOG, takenOver false, record unchanged, not owned' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.takenOver -eq $false -and $r.data.ownedBySession -eq $false -and (Get-RecordJson) -eq $before -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code) took=$($r.data.takenOver)"
+    Check 'T10 dialog after the attach -> IDE_MODAL_DIALOG, takenOver false, record unchanged, not owned' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.takenOver -eq $false -and $r.data.ownedBySession -eq $false -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code) took=$($r.data.takenOver)"
     $null = Disconnect-TcIde
     $global:SysMgrHook73 = { throw 'IDE_CRASHED: mock - the IDE died during the project scan' }
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T10b IDE_CRASHED in the project scan after the attach -> failure, record unchanged, not owned' (-not $r.success -and $r.error.code -eq 'IDE_CRASHED' -and (Get-RecordJson) -eq $before -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code)"
+    Check 'T10b IDE_CRASHED in the project scan after the attach -> failure, record unchanged, not owned' (-not $r.success -and $r.error.code -eq 'IDE_CRASHED' -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code)"
     $null = Disconnect-TcIde
     $global:SysMgrHook73 = { $global:Procs73[9601] = $global:OtherOwnerStart73 }   # the owner check under the lock sees it alive
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
     Check 'T10c owner alive when the takeover is written (under the lock) -> refused owner-alive, attach released, record unchanged' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-alive' -and $r.data.takenOver -eq $false -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code) reason=$($r.data.reason)"
+
+    $null = Disconnect-TcIde
+    # owner id set, but the start time of this server's process unreadable -> refused before writing
+    $p = New-Orphan
+    $before = Get-RecordJson
+    $savedOwnerPid = $env:TCAUTO_OWNER_PID
+    $env:TCAUTO_OWNER_PID = '9602'   # no such process at import: ownerStartTime $null
+    try {
+        Restart-Module
+        Show-InRot $p $slnL
+        $global:Modal73 = 'none'
+        $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    }
+    finally { $env:TCAUTO_OWNER_PID = $savedOwnerPid }
+    Check 'T10d own owner start time unreadable -> refused owner-start-time-unreadable, record unchanged, not connected' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-start-time-unreadable' -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
+    Restart-Module
+    # #152 R3-1 release: an empty-solution IDE of a restarted bridge whose server still runs keeps blocking
+    $p = New-Orphan -OwnerAlive -RotSolution ''
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'T9g host gone, owner alive, IDE with no solution yet: still IDE_LAUNCH_PENDING other-session, no second IDE' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $global:Launches73.Count -eq 1) "code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
+    $p = New-Orphan -RotSolution ''
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'T9h host and owner gone, IDE with no solution: released as before (a new IDE is launched)' ($global:Launches73.Count -eq 2) "code=$($r.error.code) launches=$($global:Launches73.Count)"
+    $null = Disconnect-TcIde
 
     Check 'E1 nothing real was killed (Stop-Process is the mock)' (@($global:Kills73 | Where-Object { $_ -notlike 'Stop-Process 90*' }).Count -eq 0) ($global:Kills73 -join ', ')
 }

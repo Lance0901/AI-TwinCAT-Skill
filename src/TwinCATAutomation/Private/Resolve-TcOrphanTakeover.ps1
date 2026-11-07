@@ -120,21 +120,14 @@ function Resolve-TcOrphanTakeover {
     @{ Candidate = $c; Record = $rec; OtherSession = $other }
 }
 
-# #196 review M2: Connect-TcIde -TakeOverOrphan attached the IDE, but writing the takeover was refused
-# or failed: release the attach again (SilentMode restored when its original value is known, every
-# COM reference and the IDE identity dropped) so nothing stays attached or owned.
+# #196 review M2: Connect-TcIde -TakeOverOrphan attached the IDE, but a later step failed or writing
+# the takeover was refused / failed: release the attach again (every COM reference and the IDE
+# identity dropped) so nothing stays attached or owned. SilentMode is NOT touched: another session
+# may have taken the IDE over meanwhile (record-changed) and relies on SilentMode = true; the
+# session that launched the IDE had set it to true already.
 function Reset-TcOrphanTakeoverAttach {
     [CmdletBinding()]
     param()
-    if ($null -ne $script:TcAutomationSettings -and $null -ne $script:TcSilentModeOriginal) {
-        $settingsRestore = $script:TcAutomationSettings
-        $silentRestore = [bool]$script:TcSilentModeOriginal
-        try {
-            Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
-            if ($null -ne $script:TcIdeProcessId) { Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }
-        }
-        catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
-    }
     foreach ($name in 'TcAutomationSettings', 'TcSysManager', 'TcDte') {
         $o = Get-Variable -Name $name -Scope Script -ValueOnly -ErrorAction SilentlyContinue
         if ($null -ne $o -and [System.Runtime.InteropServices.Marshal]::IsComObject($o)) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($o) | Out-Null } catch { } }

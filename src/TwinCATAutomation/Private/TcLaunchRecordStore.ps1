@@ -353,7 +353,8 @@ function Request-TcLaunchRecordOwnership {
 # hostStartTime / moduleInstanceId / ownerId = this process, plus one entry in takeovers[]
 # (takenOverAt, reason, previousHostPid / previousHostStartTime / previousModuleInstanceId /
 # previousOwnerId, hostPid / moduleInstanceId of the new owner). Returns @{ TakenOver; Previous;
-# Refusal ('record-changed' | 'host-not-gone' | 'owner-alive' | 'owner-unverifiable' | $null); Failure (write failed, $null = written) }.
+# Refusal ('record-changed' | 'host-not-gone' | 'owner-alive' | 'owner-unverifiable' |
+# 'owned-by-this-session' | 'host-start-time-unreadable' | 'owner-start-time-unreadable' | $null); Failure (write failed, $null = written) }.
 function Set-TcLaunchRecordTakeover {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Record, [string]$Reason = 'orphan-takeover')
@@ -366,6 +367,9 @@ function Set-TcLaunchRecordTakeover {
     $res = @{ TakenOver = $false; Previous = $null; Refusal = 'record-changed'; Failure = $null }
     $myStart = Get-TcLaunchHostStartTime
     if ($null -eq $myStart) { $res.Refusal = 'host-start-time-unreadable'; return $res }
+    # #196 review: an owner id without a readable owner start time would make the new record
+    # 'owner-unverifiable' for good (nobody could take it over later): refused before writing
+    if ($null -ne (Get-TcLaunchOwnerId) -and ($null -eq $script:TcLaunchOwnerPid -or $null -eq $script:TcLaunchOwnerStartTime)) { $res.Refusal = 'owner-start-time-unreadable'; return $res }
     $res.Failure = Update-TcLaunchRecordFile -What 'launch record takeover' -Mutate {
         param($all)
         foreach ($r in $all) {
@@ -376,7 +380,7 @@ function Set-TcLaunchRecordTakeover {
             if ((Get-TcLaunchRecordHostState -Record $r) -ne 'gone') { $res.Refusal = 'host-not-gone'; $r; continue }
             # #196 review B1: the owner (MCP server) must be gone too; a record without ownerId (manual PowerShell) has none
             $ownerState = Get-TcLaunchRecordOwnerState -Record $r
-            if ($ownerState -notin 'none', 'gone') { $res.Refusal = $(if ($ownerState -eq 'alive') { 'owner-alive' } else { 'owner-unverifiable' }); $r; continue }
+            if ($ownerState -notin 'none', 'gone') { $res.Refusal = $(switch ($ownerState) { 'alive' { 'owner-alive' } 'self' { 'owned-by-this-session' } default { 'owner-unverifiable' } }); $r; continue }
             $now = (Get-Date).ToUniversalTime().ToString('o')
             $prevOwner = $null; try { $prevOwner = $r.ownerId } catch { $prevOwner = $null }
             $prevOwnerPid = $null; try { $prevOwnerPid = $r.ownerPid } catch { $prevOwnerPid = $null }

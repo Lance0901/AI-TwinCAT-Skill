@@ -372,7 +372,7 @@ function Connect-TcIde {
             $seen = @($readyCandidates | Where-Object { $op -gt 0 -and [int]$_.pid -eq $op }) | Select-Object -First 1
             if ($null -ne $seen) {
                 $seenSol = [string]$seen.normalizedSolution
-                $release = if (-not [string]::IsNullOrWhiteSpace($seenSol)) { -not [string]::Equals($seenSol, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase) } else { $own.otherSession.hostState -eq 'gone' }
+                $release = if (-not [string]::IsNullOrWhiteSpace($seenSol)) { -not [string]::Equals($seenSol, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase) } else { $own.otherSession.hostState -eq 'gone' -and $own.otherSession.ownerState -in 'none', 'gone' }   # #196 review: a restarted bridge of a running server still blocks
                 if ($release) {
                     Write-Verbose "Launch record of another session (IDE pid $op) does not block '$normalizedSolutionPath': that IDE now has '$seenSol' open"
                     $own = $null
@@ -735,6 +735,7 @@ function Connect-TcIde {
     # DTE call forever (no RPC_E_CALL_REJECTED), so check before Solution.Open / project scan.
     $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
+        if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
         return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
             -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning; takenOver = $false; previousOwner = $null })
     }
@@ -783,6 +784,7 @@ function Connect-TcIde {
                 Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($normalizedSolutionPath) } | Out-Null
             }
             catch {
+            if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'
             }
 
@@ -809,6 +811,7 @@ function Connect-TcIde {
                         $solutionReady = $false
                     }
                     else {
+                    if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution did not become ready'
                     }
                 }
@@ -817,6 +820,7 @@ function Connect-TcIde {
             }
 
             if (-not $solutionReady) {
+            if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcResult -Success $false `
                     -ErrorMessage "Solution '$SolutionPath' did not finish loading within $openTimeoutSec s (Solution.IsOpen / Projects.Count never became ready; IDE busy on $busyPolls poll(s))." `
                     -ErrorCode 'PROJECT_OPEN_TIMEOUT' `
@@ -841,6 +845,7 @@ function Connect-TcIde {
         try { $smProbe = Get-TcSysManager -Refresh }
         catch {
             if ($_.Exception.Message -match 'IDE_CRASHED') {
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'IDE_CRASHED' -MessagePrefix 'Connect-TcIde (ITcSysManager scan)'
             }
             $smProbe = $null
