@@ -71,6 +71,8 @@ $script:TcErrorHints = @{
     'ACTIVATE_TIMEOUT'     = 'ActivateConfiguration() 在 -ActivateTimeoutSec 內沒返回,模組已放棄等待(XAE 內部可能仍在跑)。看 data.activateDiagnostics:dialog 有值 → 處理該視窗(Get-TcIdeModalDialog);ideResponding = false → XAE 卡死,Disconnect-TcIde -Quit -Kill(本 session 啟動的)或手動結束後重新 Connect-TcIde;runtimeAlive = false → UmRT(TcSystemServiceUm)已停,依 docs/troubleshooting.md 重啟後再 Enable-TcConfig -Force;systemState unreachable → target 沒回應'
     'ADS_SYMBOL_VERSION_INVALID' = 'ADS 0x711(1809) ADSERR_DEVICE_SYMBOLVERSIONINVALID「Invalid symbol version」:PLC 的 symbol description 與 application 版本不同(online change 後或 Boot package 不一致)。Read-TcVariable / Write-TcVariable 已自動重開 ADS session 重試過一次(#26),仍失敗就用 Get-TcPlcState 看 PLC 狀態;若是 Activate 後才出現,檢查 Enable-TcConfig 的 data.bootPackage。出處 https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html'
 }
+# #27: Start-TcLifecycle / MCP RunLifecycle, -AdsPort is not the port of a PLC selected with -PlcProjectPath
+$script:TcErrorHints['PLC_PORT_MISMATCH'] = '-AdsPort 不是 -PlcProjectPath 選中的 PLC 的 ADS port(允許的 port 在 error.message;ConnectAds 步驟 result.data 的 allowedPorts / plcs),ADS 沒有連線。Enable-TcConfig 已成功：已 activate;沒有 -NoLogin 時也已 login / Run。不必重跑整個 lifecycle:Connect-TcAds -Port <allowedPorts 其中一個> 再 Get-TcPlcState 讀回(MCP:ConnectAds Port=<port>、GetPlcState);下次拿掉 -AdsPort 或改成允許的 port'
 # Compile errors (Build-TcProject, only when the build really failed): generic BUILD_FAILED
 # from a COM exception keeps no hint, so this one is looked up explicitly.
 $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / description / file / line);修正後重跑 Build-TcProject'

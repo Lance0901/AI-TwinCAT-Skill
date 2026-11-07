@@ -10,6 +10,7 @@
 //                          ReloadModule is derived from its checkout
 //   ctx.onModuleReloaded(p) called after ReloadModule loaded module path p (index.js updates the probe scan script)
 import { checkModulePath, pathKey } from './module-source.js';
+import { MAX_CALL_TIMEOUT_MS } from './config.js';
 
 function errorResult(code, message, hint) {
   const error = { code, message };
@@ -36,15 +37,22 @@ async function timed(name, fn) {
 export const RunLifecycle = {
   name: 'RunLifecycle',
   description:
-    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds. ' +
+    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds -> GetPlcState (readback). ' +
+    'PowerShell equivalent: Start-TcLifecycle (same parameters, steps and data fields; #27). ' +
     'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
     'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is also passed to EnableConfig (same value): it then finds the platforms equal and does not add the "-Platform was not given" warning (a platform the target reports through TARGETINFO still wins there); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
+    'Multi-PLC solutions: PlcProjectPath is passed to EnableConfig (only those PLCs are logged in and started), ExpectedProject to BuildProject (coverage check; not derived from PlcProjectPath), BuildTimeoutSec to BuildProject as TimeoutSec. ADS port of ConnectAds: AdsPort; without it the adsPort of EnableConfig data.plcs when they have exactly one distinct port (with or without PlcProjectPath); otherwise ConnectAds default 851. With PlcProjectPath and a non-empty data.plcs, an AdsPort that is not one of their adsPort values fails the ConnectAds step with PLC_PORT_MISMATCH (allowed ports in the message, nothing connected; EnableConfig already activated and, without NoLogin, logged in / Run). Example: PlcProjectPath ["FrameworkUnitTest"], ExpectedProject ["FrameworkUnitTest"], AdsPort 852. ' +
+    'Readback: without NoLogin the GetPlcState state must be Run, otherwise RUNTIME_STATE_MISMATCH; with NoLogin it is only reported. ' +
     'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
     'Fail closed (#68): while the target has a lifecycle block (an earlier SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed) the EnableConfig step returns LIFECYCLE_BLOCKED (ConnectIde / SetTarget / BuildProject before it still run): stop, report the error and data.steps to the user, never retry through another control channel, and call ClearLifecycleBlock only after the user agreed. ' +
-    'Stops at the first failing step; data.steps lists every step that ran with its duration and raw result, data.failedStep names the failure and error is that step\'s error. ' +
+    'Stops at the first failing step; error is that step\'s error as it is. Error codes, data fields and the meaning of hints match Start-TcLifecycle; hint wording is not guaranteed to be identical (the LIBRARY_UNRESOLVED hint addition below is MCP only). data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock); fields of steps that did not run are null. ' +
     'A project with unresolved libraries stops at BuildProject with LIBRARY_UNRESOLVED (the PLC code may not have been compiled): install the libraries first. There is no AllowUnresolvedLibrary here (#61): code whose build did not prove it compiled (codeVerified not true) is not activated, downloaded or started once the module recorded that build (known limits: BUILD_REQUIRED in docs/troubleshooting.md), so even after BuildProject AllowUnresolvedLibrary=true RunLifecycle SkipBuild=true stops at EnableConfig with BUILD_REQUIRED.',
   annotations: { destructiveHint: true, readOnlyHint: false },
-  timeoutMs: 1500000,
+  // Informational upper bound (a composite is not cut off by it: every step has its own catalog
+  // timeout). The sum of the step maxima (BuildTimeoutSec 7200 s + grace, EnableConfig TimeoutSec
+  // 3600 s + grace, plus ConnectIde / SetTarget / ConnectAds / GetPlcState) is above
+  // MAX_CALL_TIMEOUT_MS (2 h), so it is capped there.
+  timeoutMs: MAX_CALL_TIMEOUT_MS,
   inputSchema: {
     type: 'object',
     properties: {
@@ -55,26 +63,49 @@ export const RunLifecycle = {
       Platform: { type: 'string', description: 'Optional solution platform passed to SetTarget and EnableConfig (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target). Needed only when the target does not report its platform (TARGETINFO, ADS 0x702); omit it and EnableConfig follows the platform the target reports.' },
       SkipBuild: { type: 'boolean', description: 'Skip BuildProject (default false). After a solution platform switch EnableConfig still refuses to activate (BUILD_REQUIRED) until a complete BuildProject (data.completeBuild=true).' },
       TimeoutSec: { type: 'integer', minimum: 10, maximum: 3600, description: 'EnableConfig timeout in seconds (default 120, 10..3600).' },
-      NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run.' }
+      NoLogin: { type: 'boolean', description: 'EnableConfig: activate only, skip PLC login/download/Run. The GetPlcState readback then only reports the state.' },
+      PlcProjectPath: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'EnableConfig PlcProjectPath: PLC project(s) to log into and start (name, e.g. "FrameworkUnitTest", or tree path). Default: every enabled PLC project.' },
+      ExpectedProject: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'BuildProject ExpectedProject: PLC project(s) that must be part of the build (PROJECT_SKIPPED_BY_CONFIGURATION / EXPECTED_PROJECT_NOT_FOUND otherwise). Not derived from PlcProjectPath.' },
+      AdsPort: { type: 'integer', minimum: 1, maximum: 65535, description: 'ADS port for ConnectAds. Default: the one distinct adsPort of EnableConfig data.plcs, else 851. With PlcProjectPath it must be the port of a selected PLC, else PLC_PORT_MISMATCH.' },
+      BuildTimeoutSec: { type: 'integer', minimum: 5, maximum: 7200, description: 'BuildProject TimeoutSec (5..7200). Default: the BuildProject default.' }
     },
     required: [],
     additionalProperties: false
   },
   async run(ctx, args = {}) {
     const steps = [];
-    const fail = (step) => ({
-      success: false,
-      data: { steps, failedStep: step.name },
-      error: step.result.error ?? errorResult('STEP_FAILED', `${step.name} failed`).error
-    });
+    const data = { steps, failedStep: null, plcProjects: null, adsPort: null, loggedIn: null, plcState: null, lifecycleBlock: null };
+    // same key order as Start-TcLifecycle: name, success, code, durationMs, result
+    const add = (step) => {
+      const out = {
+        name: step.name,
+        success: step.success,
+        code: step.success ? null : (step.result?.error?.code ?? 'STEP_FAILED'),
+        durationMs: step.durationMs,
+        result: step.result
+      };
+      steps.push(out);
+      return out;
+    };
+    // error = the step's error as it is (LIFECYCLE_BLOCKED included); errorOverride for a step that
+    // ran but failed its postcondition (RUNTIME_STATE_MISMATCH: result stays the raw GetPlcState result)
+    const fail = (step, errorOverride) => {
+      data.failedStep = step.name;
+      const block = step.result?.data?.lifecycleBlock;
+      if (block !== undefined) data.lifecycleBlock = block;
+      return {
+        success: false,
+        data,
+        error: errorOverride ?? step.result?.error ?? errorResult('STEP_FAILED', `${step.name} failed`).error
+      };
+    };
 
     const connectArgs = {};
     if (args.SolutionPath !== undefined) connectArgs.SolutionPath = args.SolutionPath;
     if (args.ProgId !== undefined) connectArgs.ProgId = args.ProgId;
     if (args.NoLaunch !== undefined) connectArgs.NoLaunch = args.NoLaunch;
 
-    let step = await timed('ConnectIde', () => ctx.callTool('ConnectIde', connectArgs));
-    steps.push(step);
+    let step = add(await timed('ConnectIde', () => ctx.callTool('ConnectIde', connectArgs)));
     if (!step.success) return fail(step);
 
     const hasTarget = typeof args.TargetAmsNetId === 'string' && args.TargetAmsNetId !== '';
@@ -83,13 +114,12 @@ export const RunLifecycle = {
       // SetTarget needs an AmsNetId: without TargetAmsNetId keep the target ConnectIde reported.
       const amsNetId = hasTarget ? args.TargetAmsNetId : step.result?.data?.amsNetId;
       if (typeof amsNetId !== 'string' || amsNetId === '') {
-        step = {
+        step = add({
           name: 'SetTarget',
           success: false,
           durationMs: 0,
           result: errorResult('AMS_NETID_REQUIRED', 'Platform was given without TargetAmsNetId and ConnectIde reported no target AmsNetId.', 'Pass TargetAmsNetId together with Platform.')
-        };
-        steps.push(step);
+        });
         return fail(step);
       }
       const setArgs = { AmsNetId: amsNetId };
@@ -97,14 +127,15 @@ export const RunLifecycle = {
       // runtimes without TARGETINFO; EnableConfig does the platform check (target or skipped + warning).
       if (hasPlatform) setArgs.Platform = args.Platform;
       else setArgs.NoPlatformSwitch = true;
-      step = await timed('SetTarget', () => ctx.callTool('SetTarget', setArgs));
-      steps.push(step);
+      step = add(await timed('SetTarget', () => ctx.callTool('SetTarget', setArgs)));
       if (!step.success) return fail(step);
     }
 
     if (!args.SkipBuild) {
-      step = await timed('BuildProject', () => ctx.callTool('BuildProject', {}));
-      steps.push(step);
+      const buildArgs = {};
+      if (args.ExpectedProject !== undefined) buildArgs.ExpectedProject = args.ExpectedProject;
+      if (args.BuildTimeoutSec !== undefined) buildArgs.TimeoutSec = args.BuildTimeoutSec;
+      step = add(await timed('BuildProject', () => ctx.callTool('BuildProject', buildArgs)));
       if (!step.success) {
         const out = fail(step);
         if (out.error?.code === 'LIBRARY_UNRESOLVED') {
@@ -120,15 +151,71 @@ export const RunLifecycle = {
     // Same Platform as SetTarget: without it EnableConfig skips its platform check on runtimes
     // without TARGETINFO and returns the long "-Platform was not given" data.warning (task 1.8).
     if (hasPlatform) enableArgs.Platform = args.Platform;
-    step = await timed('EnableConfig', () => ctx.callTool('EnableConfig', enableArgs));
-    steps.push(step);
+    const plcPaths = Array.isArray(args.PlcProjectPath) ? args.PlcProjectPath.filter((p) => typeof p === 'string' && p.trim() !== '') : [];
+    if (plcPaths.length > 0) enableArgs.PlcProjectPath = args.PlcProjectPath;
+    step = add(await timed('EnableConfig', () => ctx.callTool('EnableConfig', enableArgs)));
+    const ed = step.result?.data;
+    if (ed && typeof ed === 'object') {
+      if (ed.plcs !== undefined) data.plcProjects = ed.plcs === null ? null : [].concat(ed.plcs);
+      if (ed.loggedIn !== undefined) data.loggedIn = ed.loggedIn;
+    }
     if (!step.success) return fail(step);
 
-    step = await timed('ConnectAds', () => ctx.callTool('ConnectAds', {}));
-    steps.push(step);
+    // ConnectAds port. Distinct adsPort values of EnableConfig data.plcs (a PLC named twice in
+    // PlcProjectPath counts once). AdsPort: with PlcProjectPath and a non-empty data.plcs it must be
+    // one of them (PLC_PORT_MISMATCH otherwise). Without AdsPort: the port when there is exactly one,
+    // else no Port (ConnectAds default 851).
+    const plcList = Array.isArray(data.plcProjects) ? data.plcProjects.filter((p) => p && p.adsPort !== undefined && p.adsPort !== null) : [];
+    const plcPorts = [...new Set(plcList.map((p) => Number(p.adsPort)))].sort((a, b) => a - b);
+    const adsArgs = {};
+    if (args.AdsPort !== undefined) {
+      if (plcPaths.length > 0 && plcPorts.length > 0 && !plcPorts.includes(args.AdsPort)) {
+        const names = [...new Set(plcList.map((p) => `${p.name}:${Number(p.adsPort)}`))].sort().join(', ');
+        step = add({
+          name: 'ConnectAds',
+          success: false,
+          durationMs: 0,
+          result: {
+            ...errorResult(
+              'PLC_PORT_MISMATCH',
+              `AdsPort ${args.AdsPort} is not the ADS port of a PLC project selected with PlcProjectPath (allowed: ${plcPorts.join(', ')}; ${names}); ADS was not connected.`,
+              'AdsPort is not the ADS port of a PLC selected with PlcProjectPath (allowed ports in error.message; ConnectAds step result.data allowedPorts / plcs); ADS was not connected. EnableConfig already succeeded: activated; without NoLogin also logged in / Run. No need to rerun the lifecycle: ConnectAds Port=<one of allowedPorts>, then GetPlcState (PowerShell: Connect-TcAds -Port, Get-TcPlcState); next time drop AdsPort or pass an allowed port.'
+            ),
+            data: {
+              adsPort: args.AdsPort,
+              allowedPorts: plcPorts,
+              plcs: plcList.map((p) => ({ name: p.name ?? null, projectPath: p.projectPath ?? null, adsPort: Number(p.adsPort) }))
+            }
+          }
+        });
+        return fail(step);
+      }
+      adsArgs.Port = args.AdsPort;
+    } else if (plcPorts.length === 1) {
+      adsArgs.Port = plcPorts[0];
+    }
+    step = add(await timed('ConnectAds', () => ctx.callTool('ConnectAds', adsArgs)));
+    if (step.result?.data && step.result.data.port !== undefined) data.adsPort = step.result.data.port;
     if (!step.success) return fail(step);
 
-    return { success: true, data: { steps } };
+    // Readback (CODING_STANDARDS 2): success only after the PLC state was read
+    step = add(await timed('GetPlcState', () => ctx.callTool('GetPlcState', {})));
+    if (step.result?.data && step.result.data.state !== undefined) data.plcState = step.result.data.state;
+    if (!step.success) return fail(step);
+    if (!args.NoLogin && data.plcState !== 'Run') {
+      step.success = false;
+      step.code = 'RUNTIME_STATE_MISMATCH';
+      return fail(
+        step,
+        errorResult(
+          'RUNTIME_STATE_MISMATCH',
+          `PLC state on ADS port ${data.adsPort} is '${data.plcState}' after EnableConfig Force=true, expected 'Run'.`,
+          'Report data.steps to the user; do not retry through another channel. Check the EnableConfig step result (data.finalCheck, data.plcs) and GetIdeModalDialog; with several PLC projects pass PlcProjectPath / AdsPort for the PLC you need.'
+        ).error
+      );
+    }
+
+    return { success: true, data };
   }
 };
 

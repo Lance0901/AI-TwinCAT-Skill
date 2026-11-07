@@ -1,6 +1,6 @@
 # TcAuto MCP Setup
 
-Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Code, Claude Desktop, Codex or any MCP client can call <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets (plus <!-- generated:composite-count -->5<!-- /generated --> composite tools and the launcher's `ReloadRuntime`; `NewProject` is not offered, #70) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
+Run the `TwinCATAutomation` module as the TcAuto MCP server so Claude Code, Claude Desktop, Codex or any MCP client can call <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->82<!-- /generated --> cmdlets (plus <!-- generated:composite-count -->5<!-- /generated --> composite tools and the launcher's `ReloadRuntime`; `NewProject` is not offered, #70; `Start-TcLifecycle` is served by the composite tool `RunLifecycle`, #27) as tools, with IDE and ADS state kept between calls. Full reference: [mcp-server/README.md](../mcp-server/README.md).
 
 Contents: [Customer install](#customer-install-release-zip) · [Developer install](#developer-install-from-a-checkout) · [Register by hand](#register-by-hand-per-client) · [Upgrade](#upgrade) · [Uninstall](#uninstall) · [Verify](#verify) · [Troubleshooting](#troubleshooting)
 

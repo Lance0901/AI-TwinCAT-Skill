@@ -586,6 +586,24 @@
       }
     },
     {
+      "name": "StartLifecycle",
+      "description": "Full PLC lifecycle in one call (#27): ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force) -> ConnectAds -> GetPlcState readback (must be Run unless NoLogin, else RUNTIME_STATE_MISMATCH). Changes the running machine (TwinCAT restarts, PLC program downloaded and started): confirm with the user first. Fail closed (#68): stops at the first failing step, error = that step's error as it is (LIFECYCLE_BLOCKED: stop and report, data.lifecycleBlock), never retry through another channel. ADS port: AdsPort, else the adsPort of EnableConfig data.plcs when they have exactly one distinct port, else 851; with PlcProjectPath an AdsPort that is not one of the selected PLC ports -> PLC_PORT_MISMATCH (not connected, allowed ports in the message). data: steps[] {name, success, code, durationMs, result}, failedStep, plcProjects, adsPort, loggedIn, plcState, lifecycleBlock. On MCP this is the composite RunLifecycle (same parameters).",
+      "parameters": {
+        "SolutionPath": { "type": "string", "description": "Solution (.sln) to open on ConnectIde. Omit to attach to the running XAE.", "required": false },
+        "ProgId": { "type": "string", "description": "Visual Studio / XAE shell ProgId passed to ConnectIde.", "required": false },
+        "NoLaunch": { "type": "boolean", "description": "Do not launch XAE if it is not running.", "required": false },
+        "TargetAmsNetId": { "type": "string", "description": "AmsNetId to select with SetTarget before the build. Omit to keep the target the IDE has.", "required": false },
+        "Platform": { "type": "string", "description": "Solution platform for SetTarget and EnableConfig, e.g. \"TwinCAT OS (x64)\" (UmRT / TwinCAT/BSD) or \"TwinCAT RT (x64)\" (Windows RT). Needed only when the target does not report TARGETINFO (ADS 0x702).", "required": false },
+        "SkipBuild": { "type": "boolean", "description": "Skip BuildProject.", "required": false },
+        "TimeoutSec": { "type": "integer", "minimum": 10, "maximum": 3600, "description": "EnableConfig timeout in seconds (10..3600, default 120).", "required": false, "default": 120 },
+        "NoLogin": { "type": "boolean", "description": "EnableConfig: activate only, no PLC login / download / Run; the readback only reports the PLC state.", "required": false },
+        "PlcProjectPath": { "type": "array", "items": { "type": "string" }, "description": "EnableConfig PlcProjectPath: PLC project(s) to log into and start (name, e.g. \"FrameworkUnitTest\", or tree path). Default: every enabled PLC.", "required": false },
+        "ExpectedProject": { "type": "array", "items": { "type": "string" }, "description": "BuildProject ExpectedProject: PLC project(s) that must be part of the build. Not derived from PlcProjectPath.", "required": false },
+        "AdsPort": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "ADS port for ConnectAds (default: the one distinct adsPort of EnableConfig data.plcs, else 851). With PlcProjectPath it must be the port of a selected PLC (PLC_PORT_MISMATCH otherwise).", "required": false },
+        "BuildTimeoutSec": { "type": "integer", "minimum": 5, "maximum": 7200, "description": "BuildProject TimeoutSec (5..7200; default: the BuildProject default).", "required": false }
+      }
+    },
+    {
       "name": "SendPlcProgram",
       "description": "Download the compiled PLC program to the target (alias of PlcLogin LoginMode=Download: Login+Download without dialogs). Refused with BUILD_REQUIRED like PlcLogin. When the code is unchanged since the running program XAE skips the download: data.downloaded=false (measured 2026-10-28, _AppInfo.AppTimestamp unchanged). After a real download the PLC is left in Stop (data.plcStateAfter): SetPlcState State=Run to start it. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed.",
       "parameters": {

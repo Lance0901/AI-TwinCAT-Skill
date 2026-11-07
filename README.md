@@ -6,7 +6,7 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 ## Why
 
-TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
+TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing <!-- generated:cmdlet-count -->82<!-- /generated --> cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
 ## Install (MCP server)
 
@@ -106,7 +106,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## All Commands (<!-- generated:cmdlet-count -->81<!-- /generated -->)
+## All Commands (<!-- generated:cmdlet-count -->82<!-- /generated -->)
 
 ### Connection
 | Command | Description |
@@ -234,7 +234,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # Core PowerShell module (tool-agnostic)
   TwinCATAutomation.psm1        # Module loader
-  Public/                       # 81 exported cmdlets
+  Public/                       # 82 exported cmdlets
   Private/                      # Internal helpers (COM, ADS, assertions)
 Invoke-TwinCATAutomation.ps1    # Unified CLI entry point (JSON in/out)
 adapters/
@@ -318,7 +318,7 @@ Every install (and re-install) writes `tcauto-install-manifest.json` next to the
 
 ## MCP server reference
 
-The same module is the TcAuto MCP server (stdio) exposing <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls. Install: see "Install (MCP server)" at the top; per-client config files, upgrade, uninstall, logs: [docs/setup-mcp.md](docs/setup-mcp.md); tool table: [mcp-server/README.md](mcp-server/README.md). Unit tests without TwinCAT: `cd mcp-server; npm install; npm test`.
+The same module is the TcAuto MCP server (stdio) exposing <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->82<!-- /generated --> cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86; `Start-TcLifecycle` by the composite tool `RunLifecycle`, #27) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls. Install: see "Install (MCP server)" at the top; per-client config files, upgrade, uninstall, logs: [docs/setup-mcp.md](docs/setup-mcp.md); tool table: [mcp-server/README.md](mcp-server/README.md). Unit tests without TwinCAT: `cd mcp-server; npm install; npm test`.
 
 ## Development
 

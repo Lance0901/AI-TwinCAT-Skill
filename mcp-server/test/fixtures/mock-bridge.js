@@ -4,6 +4,8 @@
 //   params.Hang        never answer (used to test timeouts)
 //   params.Crash       process.exit(3) without answering
 //   params.DelayMs     delay the answer by N ms
+//   cmdlet Enable-TcConfig data.plcs: one entry per params.PlcProjectPath (FrameworkUnitTest port 852, else 851;
+//                          default one PLC1 on 851), data.loggedIn = not NoLogin (#27)
 //   cmdlet Set-TcTarget    echoes data.params; AmsNetId '0.0.0.0.0.0' fails with TARGET_NOT_FOUND
 //   cmdlet Read-TcVariable shape of the real cmdlet: one Path -> data {path, value, type}; several -> data
 //                          is an ARRAY of entries; a path containing 'Missing' is {path, error, code
@@ -186,8 +188,12 @@ function handleCall(req) {
       }
       case 'Build-TcProject':
         return result(id, { success: true, data: { errors: 0, warnings: 0, params } });
-      case 'Enable-TcConfig':
-        return result(id, { success: true, data: { plcState: 'Run', params } });
+      case 'Enable-TcConfig': {
+        // data.plcs like the real cmdlet: one entry per PlcProjectPath ('FrameworkUnitTest' on 852, others 851)
+        const names = Array.isArray(params.PlcProjectPath) ? params.PlcProjectPath : ['PLC1'];
+        const plcs = names.map((n) => ({ name: n, projectPath: `TIPC^${n}^${n} Project`, adsPort: n === 'FrameworkUnitTest' ? 852 : 851, loggedIn: params.NoLogin !== true, state: 'Run' }));
+        return result(id, { success: true, data: { plcState: 'Run', loggedIn: params.NoLogin !== true, plcs, params } });
+      }
       case 'Get-TcSystemState':
         return result(id, { success: true, data: { state: 'Run', amsNetId: params.AmsNetId ?? null } });
       case 'Set-TcTarget':

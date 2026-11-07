@@ -34,7 +34,7 @@
       "timeoutMs": 600000,
       "inputSchema": {
         "type": "object",
-        "properties": { "Hang": { "type": "boolean" }, "Crash": { "type": "boolean" }, "DelayMs": { "type": "integer" }, "AllowUnresolvedLibrary": { "type": "boolean" } },
+        "properties": { "Hang": { "type": "boolean" }, "Crash": { "type": "boolean" }, "DelayMs": { "type": "integer" }, "AllowUnresolvedLibrary": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "ExpectedProject": { "type": "array", "items": { "type": "string" } } },
         "required": [],
         "additionalProperties": false
       }
@@ -46,7 +46,7 @@
       "timeoutMs": 180000,
       "inputSchema": {
         "type": "object",
-        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" }, "NoPlatformFix": { "type": "boolean" }, "Platform": { "type": "string" } },
+        "properties": { "Force": { "type": "boolean" }, "TimeoutSec": { "type": "integer" }, "NoLogin": { "type": "boolean" }, "NoPlatformFix": { "type": "boolean" }, "Platform": { "type": "string" }, "PlcProjectPath": { "type": "array", "items": { "type": "string" } } },
         "required": [],
         "additionalProperties": false
       }
