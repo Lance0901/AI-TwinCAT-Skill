@@ -79,4 +79,16 @@ Reset-Case
 $out = & $mod { $f = $false; $o = Invoke-TcAdsSymbolRetry -Reloaded ([ref]$f) -Action { [ordered]@{ a = 1; b = 2 } }; @{ o = $o; f = $f } }
 Check '7 helper returns the ordered dictionary, Reloaded false' ($out.o -is [System.Collections.Specialized.OrderedDictionary] -and $out.o.b -eq 2 -and $out.f -eq $false) (J $out)
 
+# --- 8: retry fails again -> later entries still say symbolsReloaded (the session WAS reopened)
+Reset-Case; $global:Stale['Main.b'] = 2
+$r = Read-TcVariable -Path @('Main.b', 'Main.c')
+$d = @($r.data)
+Check '8 retry fails -> PARTIAL_READ_FAILED, code on the entry, next entry symbolsReloaded = true' ((-not $r.success) -and $d[0].code -eq 'ADS_SYMBOL_VERSION_INVALID' -and $d[1].symbolsReloaded -eq $true -and $global:Reconnects -eq 1) (J $d)
+
+# --- 9: the reopen itself fails -> NOT_CONNECTED, message names the 0x711
+Reset-Case; $global:Stale['Main.PaperLength'] = 1
+& $mod { function script:Connect-TcAdsSession { param([string]$AmsNetId, [int]$Port) $global:Reconnects++; $global:LastReopen = "$AmsNetId`:$Port"; throw 'Ads-Error 0x7 : Target machine could not be found.' } }
+$r = Read-TcVariable -Path 'Main.PaperLength'
+Check '9 reopen fails -> NOT_CONNECTED, message names 0x711, reopened with the cached NetId:port' ((-not $r.success) -and $r.error.code -eq 'NOT_CONNECTED' -and $r.error.message -match '0x711' -and $global:LastReopen -eq '10.26.0.1.1.1:851') "$($r.error.code) $($r.error.message) reopen=$($global:LastReopen)"
+
 exit $fail

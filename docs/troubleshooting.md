@@ -653,8 +653,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **為什麼**:[InfoSys ADS Return Codes](https://infosys.beckhoff.com/content/1033/tc3_c/374277003.html):0x711 = `ADSERR_DEVICE_SYMBOLVERSIONINVALID`「Invalid symbol version. This can occur due to an online change. Create a new handle.」;Activate 後出現時通常是 PLC application 與 symbol description 不同版(#32)。
 - **重新 download 後(#26,實測 2026-11-08,4026 VS2022 + 本機 UmRT,`AxisInterface` 副本)**:在 `Main` 宣告最前面加 `ARRAY[0..63] OF LREAL` 後 Build + `Enable-TcConfig -Force`,`_AppInfo.AppTimestamp` 03:41:32 → 03:45:44、symbol version(0xF008)50 → 51。download 前建立的 variable handle 讀取回 **0x711**,不是讀到別的變數;同一條 ADS 連線裡對**同一個 symbol 名稱**再 `CreateVariableHandle` 會拿到**同一個 handle 號碼**,所以新 handle 的讀寫也回 0x711;釋放舊 handle(`DeleteVariableHandle` 本身也回 0x711,但之後就正常)或重開連線後恢復,其他 symbol 一直正常(第二次實測 04:21,symbol version 51 → 52)。`Main.PaperLength` 的 indexGroup / indexOffset(0x4040 / 0x694A8)download 前後相同,用舊 offset 直接讀仍是正確值 400。
-- **模組怎麼處理**:`Read-TcVariable` / `Write-TcVariable` 每次呼叫都重新查 symbol(`ADSIGRP_SYM_INFOBYNAMEEX`)並用完即刪 handle,不快取 indexGroup / indexOffset;enum 表以 symbol version 為 key 快取，版本變了就重載。遇到 0x711 會用同一個 AmsNetId / port 重開 ADS session 再讀寫一次(`data.symbolsReloaded = true`);再失敗才回這個錯誤碼。
-- **下一步**:`Connect-TcAds` 重取 handle;Activate 後才出現就看 `Enable-TcConfig` 的 `data.bootPackage` / `diagnostics`。
+- **模組怎麼處理**:`Read-TcVariable` / `Write-TcVariable` 每次呼叫都重新查 symbol(`ADSIGRP_SYM_INFOBYNAMEEX`)並用完即刪 handle,不快取 indexGroup / indexOffset;enum 表以 symbol version 為 key 快取，版本變了就重載。遇到 0x711 會用同一個 AmsNetId / port 重開 ADS session 再讀寫一次(`data.symbolsReloaded = true`);再失敗才回這個錯誤碼。重試這條路徑的真機實測(2026-11-08 04:24)是用 branch 模組的長駐 PowerShell 自己留一個舊 handle 觸發的,經 MCP 的一般呼叫不會留 handle,觸發不到。寫入重試假設被 0x711 拒絕的寫入沒有生效(推論,沒有讀回驗證)。
+- **下一步**:`Read-TcVariable` / `Write-TcVariable` 回這個碼時已經重開過 session 重試一次;用 `Get-TcPlcState` 看 PLC 狀態,Activate 後才出現就看 `Enable-TcConfig` 的 `data.bootPackage` / `diagnostics`。其他 cmdlet 或自己的 ADS client:`Connect-TcAds` 重取 handle。重開 session 失敗時回 `NOT_CONNECTED`,訊息寫明是 0x711 後重開失敗。
 
 ### CYCLE_TIMEOUT
 

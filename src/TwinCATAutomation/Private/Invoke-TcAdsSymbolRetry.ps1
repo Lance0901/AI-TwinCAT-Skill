@@ -16,8 +16,10 @@ function Invoke-TcAdsSymbolRetry {
         A fresh TcAdsClient (Connect-TcAdsSession with the cached AmsNetId / Port) has no old handles,
         so the access is repeated once on it. A second 0x711 is thrown to the caller unchanged.
         Only 0x711 (mapped to ADS_SYMBOL_VERSION_INVALID) triggers the retry; any other error is
-        rethrown as is. The access must not have had an effect when it failed with 0x711 (a handle
-        read / write that the runtime refused), so repeating it is safe.
+        rethrown as is. Repeating a write assumes that a write refused with 0x711 had no effect
+        (inference, not verified by a readback; InfoSys does not say). A failed reopen throws a
+        "Not connected to TwinCAT ADS" message (maps to NOT_CONNECTED) that names the 0x711, and
+        $Reloaded is set before the reopen so the caller knows the old session is gone.
     .PARAMETER Action
         Script block doing the ADS access with $script:TcAdsClient; its output is returned.
     .PARAMETER Reloaded
@@ -37,8 +39,13 @@ function Invoke-TcAdsSymbolRetry {
         $canReconnect = (-not [string]::IsNullOrWhiteSpace([string]$script:TcAdsAmsNetId)) -and ($script:TcAdsPort -gt 0)
         if ($null -eq $mapped -or $mapped.Code -ne 'ADS_SYMBOL_VERSION_INVALID' -or -not $canReconnect) { throw }
         Write-Verbose "Invoke-TcAdsSymbolRetry: ADS 0x711, reopening $($script:TcAdsAmsNetId):$($script:TcAdsPort) and retrying once."
-        $null = Connect-TcAdsSession -AmsNetId $script:TcAdsAmsNetId -Port $script:TcAdsPort
         $Reloaded.Value = $true
+        try {
+            $null = Connect-TcAdsSession -AmsNetId $script:TcAdsAmsNetId -Port $script:TcAdsPort
+        }
+        catch {
+            throw "Not connected to TwinCAT ADS. Call Connect-TcAds first. (reopen of $($script:TcAdsAmsNetId):$($script:TcAdsPort) after ADS 0x711 failed: $($_.Exception.Message))"
+        }
         return (& $Action)
     }
 }

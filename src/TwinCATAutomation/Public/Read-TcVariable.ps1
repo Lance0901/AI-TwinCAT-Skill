@@ -52,6 +52,7 @@ function Read-TcVariable {
                 $results += [PSCustomObject]$entry
             }
             catch {
+                if ($reloaded) { $symbolsReloaded = $true }   # the session was reopened even though the retry failed
                 $lastErrorRecord = $_
                 $entry = [PSCustomObject]@{
                     path  = $varPath

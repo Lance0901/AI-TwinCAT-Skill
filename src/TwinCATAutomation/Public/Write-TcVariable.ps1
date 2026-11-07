@@ -130,9 +130,9 @@ function Write-TcVariable {
 
         # --- Write ---
         # #26: ADS 0x711 (symbol version invalid after a new download) -> reopen the session once and
-        # write again; the refused write had no effect
+        # write again (assumed: a write refused with 0x711 had no effect; not verified by readback)
         $symbolsReloaded = $false
-        Invoke-TcAdsSymbolRetry -Reloaded ([ref]$symbolsReloaded) -Action {
+        $null = Invoke-TcAdsSymbolRetry -Reloaded ([ref]$symbolsReloaded) -Action {
             $handle = $script:TcAdsClient.CreateVariableHandle($Path)
             try {
                 if ($strLen -gt 0) { $script:TcAdsClient.WriteAny($handle, [string]$typed, @([int]$strLen)) }
