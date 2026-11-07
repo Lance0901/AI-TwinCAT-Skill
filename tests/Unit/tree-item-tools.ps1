@@ -206,6 +206,22 @@ try {
         $k['Device 1 (EtherCAT)'].disabled -eq $true -and $k['Device 1 (EtherCAT)'].disabledState -eq 'SMDS_DISABLED' -and
         $box.disabled -eq $true -and $box.disabledState -eq 'SMDS_PARENT_DISABLED' -and
         $k['Device 2 (EtherCAT)'].disabled -eq $false -and $null -eq $k['Device 3 (EtherCAT)'].disabled -and $null -eq $k['Device 4 (EtherCAT)'].disabledState) ($res | ConvertTo-Json -Depth 6 -Compress)
+    # #177: an EtherCAT device's Child(i) also returns the terminals below a coupler (measured 2026-11-08, 4024 BFH-1650)
+    $null = Add-MockNode 'TIID^Device 8 (EtherCAT)'
+    $ek = Add-MockNode 'TIID^Device 8 (EtherCAT)^Term 7 (EK1200)'; $ek | Add-Member NoteProperty Disabled 0
+    $t10 = Add-MockNode 'TIID^Device 8 (EtherCAT)^Term 7 (EK1200)^Term 10 (EL1809)'; $t10 | Add-Member NoteProperty Disabled 2
+    $null = Add-MockNode 'TIID^Device 8 (EtherCAT)^Term 7 (EK1200)^Term 11 (EL1809)'
+    foreach ($termName in 'Term 10 (EL1809)', 'Term 11 (EL1809)') { $null = $global:T.Nodes['TIID^Device 8 (EtherCAT)'].Kids.Add("TIID^Device 8 (EtherCAT)^Term 7 (EK1200)^$termName") }
+    $res = Get-TcIoTree
+    $all = New-Object System.Collections.Generic.List[string]
+    $walk = { param($n) $all.Add($n.path); foreach ($c in @($n.children)) { & $walk $c } }
+    & $walk $res.data
+    $dev8 = @($res.data.children | Where-Object { $_.name -eq 'Device 8 (EtherCAT)' })[0]
+    $cpl = @($dev8.children)
+    Check 'iotree-177-unique-paths' ($res.success -and $all.Count -eq @($all | Sort-Object -Unique).Count) ($all -join ' | ')
+    Check 'iotree-177-hierarchy-kept' ($cpl.Count -eq 1 -and $cpl[0].name -eq 'Term 7 (EK1200)' -and @($cpl[0].children).Count -eq 2 -and
+        @($cpl[0].children)[0].path -eq 'TIID^Device 8 (EtherCAT)^Term 7 (EK1200)^Term 10 (EL1809)' -and
+        @($cpl[0].children)[0].disabledState -eq 'SMDS_PARENT_DISABLED' -and $cpl[0].disabled -eq $false) ($dev8 | ConvertTo-Json -Depth 6 -Compress)
     Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)
