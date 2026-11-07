@@ -116,7 +116,52 @@ function Resolve-TcInstallRoot {
     if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1' -and $real -and $root -ieq $real) {
         Stop-Install -Code 'TCAUTO_REAL_STATE_REFUSED' -Message "TCAUTO_TEST_FORBID_REAL_STATE=1: refusing to install into the real $real (#118); pass -InstallRoot or TCAUTO_RUNTIME_ROOT."
     }
+    # #170: a process with MSIX package identity (e.g. a shell of the Claude Desktop "Code" tab) has
+    # its AppData writes redirected to %LOCALAPPDATA%\Packages\<family>\LocalCache. The install would
+    # "succeed", but every client outside that package (Claude Code in a terminal, Codex) gets a path
+    # that does not exist for it -> CONNECTION_CLOSED. Refuse before anything is written.
+    $package = Get-TcPackageFullName
+    if ($package) {
+        $under = $null
+        foreach ($base in @($env:LOCALAPPDATA, $env:APPDATA)) {
+            if (-not $base) { continue }
+            $b = (Get-TcLongPath -Path $base).TrimEnd('\') + '\'
+            if (($root.TrimEnd('\') + '\').StartsWith($b, [System.StringComparison]::OrdinalIgnoreCase)) { $under = $b; break }
+        }
+        if ($under) {
+            Stop-Install -Code 'INSTALL_PACKAGED_CONTEXT' `
+                -Message "this PowerShell runs inside the MSIX package $package; Windows would redirect the files for $root to that package's LocalCache, where clients outside the package (Claude Code in a terminal, Codex) cannot see them (#170). Nothing was written." `
+                -Hint 'Run the same command again from a normal PowerShell window (Start menu or Windows Terminal), not from a shell inside Claude Desktop.' `
+                -Data ([ordered]@{ installRoot = $root; packageFullName = $package })
+        }
+    }
     return $root
+}
+
+function Get-TcPackageFullName {
+    # Full name of the MSIX package this process runs in, or $null (no package identity, or the API is
+    # missing). GetCurrentPackageFullName returns APPMODEL_ERROR_NO_PACKAGE (15700) without identity:
+    # https://learn.microsoft.com/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefullname
+    # TCAUTO_TEST_PACKAGE_FULL_NAME (tests only) stands in for the API: non-empty = that package.
+    if ($null -ne $env:TCAUTO_TEST_PACKAGE_FULL_NAME) {
+        if ($env:TCAUTO_TEST_PACKAGE_FULL_NAME) { return $env:TCAUTO_TEST_PACKAGE_FULL_NAME }
+        return $null
+    }
+    try {
+        if (-not ('TcAutoInstall.AppModel' -as [type])) {
+            Add-Type -Namespace TcAutoInstall -Name AppModel -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetCurrentPackageFullName(ref uint packageFullNameLength, System.Text.StringBuilder packageFullName);
+'@
+        }
+        [uint32]$len = 0
+        $rc = [TcAutoInstall.AppModel]::GetCurrentPackageFullName([ref]$len, $null)
+        if ($rc -ne 122 -or $len -eq 0) { return $null }   # 122 = ERROR_INSUFFICIENT_BUFFER: has identity
+        $sb = New-Object System.Text.StringBuilder ([int]$len)
+        if ([TcAutoInstall.AppModel]::GetCurrentPackageFullName([ref]$len, $sb) -ne 0) { return $null }
+        return $sb.ToString()
+    }
+    catch { return $null }
 }
 
 function Get-TcGitSource {
