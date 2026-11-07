@@ -341,6 +341,23 @@ try {
         Check "lookup-184-unreadable-child-$mode" ($res.success -and $res.data.childCount -eq 3 -and @($res.data.children).Count -eq 2 -and
             $res.data.childrenTruncated -eq $true -and $res.data.childrenUnreadable -eq 1) ($res.data | ConvertTo-Json -Depth 4 -Compress)
     }
+    # #184 review: GetIoTree fails closed. A busy Child(i) restarts the whole read (no duplicate or
+    # missing node); persistent busy -> IDE_BUSY, never success with the node's children missing.
+    $global:T.ChildFail = 'busy'; $global:T.ChildFailLeft = 1
+    $res = Get-TcIoTree
+    $dev11 = @($res.data.children | Where-Object { $_.path -eq $f })
+    $all = New-Object System.Collections.Generic.List[string]
+    $walk = { param($n) $all.Add($n.path); foreach ($c in @($n.children)) { & $walk $c } }
+    if ($res.success) { & $walk $res.data }
+    Check 'iotree-184-busy-child-retried' ($res.success -and $dev11.Count -eq 1 -and @($dev11[0].children).Count -eq 3 -and $global:T.ChildFailLeft -eq 0 -and
+        $all.Count -eq @($all | Sort-Object -Unique).Count) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFail = 'busy'; $global:T.ChildFailLeft = -1
+    $res = Get-TcIoTree
+    Check 'iotree-184-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY' -and $null -eq $res.data) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFail = 'other'; $global:T.ChildFailLeft = -1
+    $res = Get-TcIoTree
+    $dev11 = @($res.data.children | Where-Object { $_.path -eq $f })
+    Check 'iotree-184-other-error-not-ide-busy' ($res.success -and @($dev11[0].children).Count -eq 2) ($res | ConvertTo-Json -Depth 6 -Compress)
     $global:T.ChildFail = $null; $global:T.ChildFailLeft = 0
     # ChildCount unreadable: PowerShell turns a throwing property getter into $null (also a busy COM
     # error, which therefore cannot be retried) -> reported, never a silent 0 children.

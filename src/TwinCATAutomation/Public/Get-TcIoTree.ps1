@@ -13,6 +13,11 @@ function Get-TcIoTree {
         (PathName without its last '^' segment); a child without a readable PathName is kept. When the
         node's own PathName cannot be read (TIID is assumed for the root), only the children with the
         fewest path segments are kept (Get-TcTreeItemDirectChild rule 3). A path already listed elsewhere in the tree is skipped.
+
+        Fail closed (#184 review): the whole read runs in Invoke-TcComRetry. A busy / dead-RPC COM error
+        (RPC_E_CALL_REJECTED 0x80010001 ...) while reading children restarts the read; when it persists
+        the result is IDE_BUSY / IDE_CRASHED (IDE_MODAL_DIALOG / IDE_TIMEOUT likewise), never a tree
+        with nodes missing.
     #>
     [CmdletBinding()]
     param()
@@ -53,17 +58,29 @@ function Get-TcIoTree {
                 if ($null -ne $childNode) { $node.children += $childNode }
             }
         }
-        catch { }
+        catch {
+            # Busy / dead RPC must reach Invoke-TcComRetry: swallowing it here dropped every child of
+            # the node and still returned success (#184 review).
+            if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+        }
 
         $node
     }
 
     try {
-        $ioDevices = $sm.LookupTreeItem('TIID')
-        $tree = Read-IoItem -item $ioDevices
+        $tree = Invoke-TcComRetry -OperationName 'Read I/O tree (TIID)' -ScriptBlock {
+            # A retry starts the whole read again: forget the paths of the failed attempt.
+            $seenPaths.Clear()
+            $ioDevices = $sm.LookupTreeItem('TIID')
+            Read-IoItem -item $ioDevices
+        }
         New-TcResult -Success $true -Data $tree
     }
     catch {
+        $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
+        if ($null -ne $mapped -and @('IDE_BUSY', 'IDE_CRASHED', 'IDE_MODAL_DIALOG', 'IDE_TIMEOUT') -contains $mapped.Code) {
+            return New-TcResult -Success $false -ErrorMessage "Failed to read I/O tree: $($_.Exception.Message)" -ErrorCode $mapped.Code -Hint $mapped.Hint
+        }
         New-TcResult -Success $false -ErrorMessage "Failed to read I/O tree: $_" -ErrorCode 'IO_TREE_FAILED'
     }
 }
