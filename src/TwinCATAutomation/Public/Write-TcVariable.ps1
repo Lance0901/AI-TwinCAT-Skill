@@ -18,6 +18,8 @@ function Write-TcVariable {
         data.written is the value actually written (converted, not the input echoed): for time types the
         normalized IEC literal (T#6000ms -> T#6s) plus the raw integer in data.ms / data.ns / data.unix;
         enums add data.name.
+        data.symbolsReloaded (#26): $true when the write was refused with ADS 0x711 (symbol version
+        invalid after a new download), the ADS session was reopened and the write repeated once.
         While a lifecycle block exists for the ADS session's AmsNetId (#68, a runtime-changing
         command failed its readback) nothing is written: LIFECYCLE_BLOCKED (data.lifecycleBlock).
     .PARAMETER Path
@@ -127,13 +129,18 @@ function Write-TcVariable {
         }
 
         # --- Write ---
-        $handle = $script:TcAdsClient.CreateVariableHandle($Path)
-        try {
-            if ($strLen -gt 0) { $script:TcAdsClient.WriteAny($handle, [string]$typed, @([int]$strLen)) }
-            else { $script:TcAdsClient.WriteAny($handle, $typed) }
-        }
-        finally {
-            try { $script:TcAdsClient.DeleteVariableHandle($handle) } catch { }
+        # #26: ADS 0x711 (symbol version invalid after a new download) -> reopen the session once and
+        # write again (assumed: a write refused with 0x711 had no effect; not verified by readback)
+        $symbolsReloaded = $false
+        $null = Invoke-TcAdsSymbolRetry -Reloaded ([ref]$symbolsReloaded) -Action {
+            $handle = $script:TcAdsClient.CreateVariableHandle($Path)
+            try {
+                if ($strLen -gt 0) { $script:TcAdsClient.WriteAny($handle, [string]$typed, @([int]$strLen)) }
+                else { $script:TcAdsClient.WriteAny($handle, $typed) }
+            }
+            finally {
+                try { $script:TcAdsClient.DeleteVariableHandle($handle) } catch { }
+            }
         }
 
         $data = [ordered]@{
@@ -144,6 +151,7 @@ function Write-TcVariable {
         if ($null -ne $rawField) { $data[$rawField] = $rawValue }
         if ($null -ne $enumName) { $data.name = $enumName }
         $data.reconnected = $reconnected
+        $data.symbolsReloaded = $symbolsReloaded
         New-TcResult -Success $true -Data ([PSCustomObject]$data)
     }
     catch {

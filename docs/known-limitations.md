@@ -16,7 +16,7 @@
 
 ### UmRT 長時間執行後 task 停止循環,但 ADS 仍回 Run(#26)
 
-- **現象**:本機 Usermode Runtime 跑約 30 分鐘後,PLC task 不再循環,但 `GetPlcState` / `GetSystemState` 仍回 Run(實測紀錄見 #26 與 troubleshooting「已知限制」的 UmRT fake Run)。
+- **現象**:本機 Usermode Runtime 跑約 30 分鐘後,PLC task 不再循環,但 `GetPlcState` / `GetSystemState` 仍回 Run(原始紀錄沒有日期與環境;2026-11-08 在 4026 VS2022 + 本機 UmRT 實測**未重現**:UmRT 行程跑 46 分、Activate 後 31 分,CycleCount 持續遞增,見 #26 留言與 troubleshooting「已知限制」)。
 - **影響**:長時間測試讀到的值不再更新,狀態卻看起來正常。
 - **繞過**:長測試要定期讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount`,確認它有在增加;沒有增加就視為 runtime 異常,重新 `EnableConfig Force=true`(必要時照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`)。
 - **Issue**:[#26](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/26)

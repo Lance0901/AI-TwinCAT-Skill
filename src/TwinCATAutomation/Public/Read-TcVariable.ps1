@@ -15,6 +15,9 @@ function Read-TcVariable {
         when at least one path failed) and failedPaths (the paths that failed, in input order).
         Any failed path makes the result success = false with PARTIAL_READ_FAILED; data still holds
         every entry, including the values that were read.
+        #26: an entry also has symbolsReloaded. A read refused with ADS 0x711 (symbol version invalid,
+        e.g. a handle of this ADS connection that is older than a new download) reopens the ADS
+        session once and reads again; symbolsReloaded is $true from that entry on.
     .PARAMETER Path
         Variable path(s). Single string or array (e.g., "MAIN.nCounter" or @("MAIN.nCounter","MAIN.bRunning")).
     #>
@@ -35,15 +38,21 @@ function Read-TcVariable {
         }
 
         $results = @()
+        $symbolsReloaded = $false
         $lastErrorRecord = $null
 
         foreach ($varPath in $Path) {
             try {
-                $entry = Read-TcAdsSymbolValue -VarPath $varPath
+                # #26: ADS 0x711 after a new download -> reopen the session once and read again
+                $reloaded = $false
+                $entry = Invoke-TcAdsSymbolRetry -Reloaded ([ref]$reloaded) -Action { Read-TcAdsSymbolValue -VarPath $varPath }
+                if ($reloaded) { $symbolsReloaded = $true }
                 $entry.reconnected = $reconnected
+                $entry.symbolsReloaded = $symbolsReloaded
                 $results += [PSCustomObject]$entry
             }
             catch {
+                if ($reloaded) { $symbolsReloaded = $true }   # the session was reopened even though the retry failed
                 $lastErrorRecord = $_
                 $entry = [PSCustomObject]@{
                     path  = $varPath
