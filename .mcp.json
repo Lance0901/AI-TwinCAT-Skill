@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "tcauto": {
-      "command": "node",
-      "args": ["mcp-server/index.js"]
-    }
-  }
-}
