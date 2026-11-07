@@ -69,6 +69,9 @@ function Close-TcReloadPrompt {
     $out.Sent = [bool]$send.Sent
     $out.SendReason = [string]$send.Reason
     try { $out.ControlId = [int]$send.ControlId } catch { $out.ControlId = 0 }
+    # A WPF box answered through UI Automation has no Win32 control id (2026-11-07, 4026 VS2022:
+    # the requested id was reported although UIA_INVOKE clicked the button): report 0.
+    if ([string]$send.Method -like 'UIA_*') { $out.ControlId = 0 }
     $out.BmClick = $send.BmClick
     $out.WmCommand = $send.WmCommand
     if (-not $send.Sent) {
