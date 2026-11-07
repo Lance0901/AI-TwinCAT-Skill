@@ -878,6 +878,12 @@ function Reset-TcSolution {
             }
             Write-Verbose "Reset-TcSolution: reconnect after the Yes reload failed ($probeError); doing the full close / reopen."
             $progress['yesPathError'] = $probeError
+            # PR #185 review A: the reconnect / probe may have failed because a dialog came up (e.g. another
+            # reload prompt, Connect-TcIde IDE_MODAL_DIALOG). The guard below is the next DTE reader: it
+            # must scan FIRST (CODING_STANDARDS section 1: a DTE call blocked by a modal never returns).
+            # A reload prompt found there goes back to step 1 (5-prompt limit, #64), any other dialog ->
+            # IDE_MODAL_DIALOG, an incomplete scan -> keep waiting without a read (Read-TcResetSolutionName).
+            $state.ScanBeforeRead = $true
             $dte = $script:TcDte
             $progId = $script:TcProgId
             if ($null -eq $dte) {
@@ -1140,6 +1146,13 @@ function Reset-TcSolution {
                 }
                 $why = if ($reopenPid -le 0) { 'pid of the IDE unknown, not scanned' } elseif ($null -eq $again) { 'no dialog' } else { [string]$again.Kind }
                 Write-Verbose "Reset-TcSolution: the reconnect after Solution.Open saw a reload prompt, the scan after it did not ($why); failing closed."
+                if ($null -ne $again) {
+                    # PR #185 review B: report what the rescan saw - another dialog -> IDE_MODAL_DIALOG for
+                    # THAT dialog, an incomplete scan -> MODAL_SCAN_INCOMPLETE (New-TcModalDialogResult).
+                    $seen = New-TcModalDialogResult -Dialog $again -Operation 'Reset-TcSolution (reconnect after Solution.Open; the solution was reopened)' `
+                        -Data (Get-ProgressData -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec })
+                    return Register-TcCodeChange -Result $seen -Change $resetChange
+                }
             }
             $failed = New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
             return Register-TcCodeChange -Result $failed -Change $resetChange
