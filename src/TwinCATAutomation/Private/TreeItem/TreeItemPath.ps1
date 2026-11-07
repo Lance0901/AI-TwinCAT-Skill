@@ -86,30 +86,64 @@ function Get-TcTreeItemDirectChild {
            grandchild always has more segments than a direct child, so it is skipped as soon as one
            direct child has a readable PathName. Limit: when no direct child has a readable PathName,
            the shallowest readable paths are grandchildren and they are kept.
-        Child(i) returning $null or throwing is skipped; IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG /
-        IDE_TIMEOUT are rethrown. An unreadable ChildCount gives no children.
+        A busy or dead-RPC COM error (RPC_E_CALL_REJECTED 0x80010001 ...) and IDE_BUSY / IDE_CRASHED /
+        IDE_MODAL_DIALOG / IDE_TIMEOUT from ChildCount, Child(i) or PathName are rethrown
+        (Test-TcComMustRethrow): inside Invoke-TcComRetry the raw COM error is retried or classified,
+        never turned into a missing child (#184 review). Any other failure of Child(i) (throws or
+        returns $null) skips that child and is counted in -Stats.Unreadable. A ChildCount that cannot be
+        read gives no children and sets -Stats.ChildCountUnreadable; a property getter that throws reads
+        as $null in PowerShell, so a busy ChildCount ends up here, not in a retry.
     .PARAMETER Item
         ITcSmTreeItem.
     .PARAMETER ParentPath
         Full tree path of -Item: its PathName, or the path the caller used to reach it when PathName
         cannot be read. Empty = unknown (rule 3).
+    .PARAMETER Stats
+        Optional hashtable; receives Unreadable (number of Child(i) that could not be read) and
+        ChildCountUnreadable ($true when ChildCount could not be read).
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$Item, [Parameter()][AllowNull()][AllowEmptyString()][string]$ParentPath)
+    param(
+        [Parameter(Mandatory)][object]$Item,
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$ParentPath,
+        [Parameter()][hashtable]$Stats
+    )
     $count = 0
-    try { $count = [int]$Item.ChildCount } catch { $count = 0 }
+    $unreadable = 0
+    $countUnreadable = $false
+    # PowerShell (no strict mode) returns $null for a property whose getter throws instead of raising
+    # (PS 5.1, measured 2026-11-08 with a .NET getter), so a $null ChildCount is the unreadable case.
+    try {
+        $raw = $Item.ChildCount
+        if ($null -eq $raw) { $countUnreadable = $true } else { $count = [int]$raw }
+    }
+    catch {
+        if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+        $count = 0
+        $countUnreadable = $true
+    }
     $all = [System.Collections.Generic.List[object]]::new()
     for ($i = 1; $i -le $count; $i++) {
         try {
             $c = $Item.Child($i)
-            if ($null -eq $c) { continue }
-            $p = try { [string]$c.PathName } catch { '' }
+            if ($null -eq $c) { $unreadable++; continue }
+            $p = ''
+            try { $p = [string]$c.PathName }
+            catch {
+                if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+                $p = ''
+            }
             $all.Add([PSCustomObject]@{ Item = $c; Path = $p })
         }
         catch {
-            if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
+            if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+            $unreadable++
             continue
         }
+    }
+    if ($null -ne $Stats) {
+        $Stats['Unreadable'] = $unreadable
+        $Stats['ChildCountUnreadable'] = $countUnreadable
     }
     $minDepth = -1
     if ([string]::IsNullOrEmpty($ParentPath)) {
@@ -148,14 +182,20 @@ function Get-TcTreeItemChildNames {
         Maximum number of names (default $script:TcTreeItemMaxChildNames).
     .PARAMETER DirectOnly
         Leave out the grandchildren that Child(i) of an EtherCAT device returns below a coupler.
+    .PARAMETER ParentPath
+        -DirectOnly only: the path the caller used to reach -Item, used as the parent path when
+        PathName cannot be read (or is empty). Without it an unreadable PathName falls back to
+        Get-TcTreeItemDirectChild rule 3.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$Item, [int]$Max = 0, [switch]$DirectOnly)
+    param([Parameter(Mandatory)][object]$Item, [int]$Max = 0, [switch]$DirectOnly, [Parameter()][AllowNull()][AllowEmptyString()][string]$ParentPath)
     if ($Max -le 0) { $Max = $script:TcTreeItemMaxChildNames }
     $names = [System.Collections.Generic.List[string]]::new()
     if ($DirectOnly) {
-        $parentPath = try { [string]$Item.PathName } catch { '' }
-        foreach ($k in (Get-TcTreeItemDirectChild -Item $Item -ParentPath $parentPath)) {
+        # PowerShell variable names are case-insensitive: $own must not be named $parentPath.
+        $own = try { [string]$Item.PathName } catch { '' }
+        if ([string]::IsNullOrWhiteSpace($own)) { $own = $ParentPath }
+        foreach ($k in (Get-TcTreeItemDirectChild -Item $Item -ParentPath $own)) {
             if ($names.Count -ge $Max) { break }
             try { $names.Add([string]$k.Item.Name) } catch { continue }
         }
@@ -280,7 +320,7 @@ function Get-TcTreeItemNotFoundDetail {
         if ($null -ne $item) {
             return [PSCustomObject]@{
                 nearestPath    = $prefix
-                children       = @(Get-TcTreeItemChildNames -Item $item -DirectOnly)
+                children       = @(Get-TcTreeItemChildNames -Item $item -DirectOnly -ParentPath $prefix)
                 missingSegment = $segments[$n]
             }
         }

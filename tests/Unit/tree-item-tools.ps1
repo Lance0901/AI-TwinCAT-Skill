@@ -284,6 +284,72 @@ try {
     # Rule 3 on a coupler: its direct children (fewest segments) stay, Term 30 below Term 3 (EK1100) is dropped.
     $k = & $mod { param($n) Get-TcTreeItemDirectChild -Item $n -ParentPath '' } $global:T.Nodes["$d^Term 1 (EK1200)"]
     Check 'direct-182-min-depth-only' ((@($k | ForEach-Object { $_.Item.Name }) -join '|') -eq 'Term 10 (EL1809)|Term 3 (EK1100)') (@($k | ForEach-Object { $_.Path }) -join '|')
+    # #184 review: without -DirectOnly Get-TcTreeItemChildNames still returns the raw Child(i) list (grandchildren included)
+    $names = & $mod { param($n) Get-TcTreeItemChildNames -Item $n } $global:T.Nodes[$d]
+    Check 'childnames-184-raw-without-directonly' ((@($names) -join '|') -eq 'Term 10 (EL1809)|Term 30 (EL2809)|Term 1 (EK1200)|Term 3 (EK1100)|Term 10 (EL1809)|Term 2 (EK1200)|Term 5 (EL1008)') (@($names) -join '|')
+    # #184 review: -ParentPath is the parent path when PathName cannot be read. Parent and both couplers
+    # muted: rule 3 would keep the grandchildren (the only readable paths); -ParentPath drops them.
+    Reset-Mock
+    $e = 'TIID^Device 10 (EtherCAT)'
+    $null = Add-MockNode $e
+    $null = Add-MockNode "$e^Term 1 (EK1200)"
+    $null = Add-MockNode "$e^Term 1 (EK1200)^Term 10 (EL1809)"
+    $null = Add-MockNode "$e^Term 2 (EK1200)"
+    $global:T.Nodes[$e].Kids = [System.Collections.ArrayList]::new([string[]]@("$e^Term 1 (EK1200)", "$e^Term 1 (EK1200)^Term 10 (EL1809)", "$e^Term 2 (EK1200)"))
+    foreach ($p in $e, "$e^Term 1 (EK1200)", "$e^Term 2 (EK1200)") { & $mute $p }
+    $names = & $mod { param($n) Get-TcTreeItemChildNames -Item $n -DirectOnly } $global:T.Nodes[$e]
+    Check 'childnames-184-rule3-without-parentpath' ((@($names) -join '|') -eq 'Term 1 (EK1200)|Term 10 (EL1809)|Term 2 (EK1200)') (@($names) -join '|')
+    $names = & $mod { param($n, $p) Get-TcTreeItemChildNames -Item $n -DirectOnly -ParentPath $p } $global:T.Nodes[$e] $e
+    Check 'childnames-184-parentpath' ((@($names) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)') (@($names) -join '|')
+    $res = Get-TcTreeItem -Path "$e^NoSuch"
+    Check 'lookup-184-nearest-children-parentpath' ($res.data.nearestPath -eq $e -and (@($res.data.nearestChildren) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)') (@($res.data.nearestChildren) -join '|')
+
+    # #184 review: a busy Child(i) (RPC_E_CALL_REJECTED 0x80010001) inside Invoke-TcComRetry is retried,
+    # never a silently missing child; persistent busy -> IDE_BUSY. Any other read failure is reported
+    # (childrenUnreadable, childrenTruncated, counted in childCount).
+    Reset-Mock
+    $f = 'TIID^Device 11 (EtherCAT)'
+    $null = Add-MockNode $f
+    foreach ($tn in 'Term 1 (EL1008)', 'Term 2 (EL1008)', 'Term 3 (EL1008)') { $null = Add-MockNode "$f^$tn" }
+    $global:T.ChildFail = $null; $global:T.ChildFailLeft = 0; $global:T.NoSleep = $true
+    $global:T.Nodes[$f] | Add-Member -Force ScriptMethod Child {
+        param($i)
+        if ($i -eq 2 -and $global:T.ChildFailLeft -ne 0) {
+            if ($global:T.ChildFailLeft -gt 0) { $global:T.ChildFailLeft-- }
+            switch ($global:T.ChildFail) {
+                'busy' { throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))', [int]0x80010001) }
+                'other' { throw [System.Runtime.InteropServices.COMException]::new('Unspecified error', -2147467259) }
+                'null' { return $null }
+            }
+        }
+        $global:T.Nodes[$this.Kids[$i - 1]]
+    }
+    & $mod { function script:Start-Sleep { param([int]$Seconds, [int]$Milliseconds) if (-not $global:T.NoSleep) { if ($Milliseconds) { Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds $Milliseconds } else { Microsoft.PowerShell.Utility\Start-Sleep -Seconds $Seconds } } } }
+    $global:T.ChildFail = 'busy'; $global:T.ChildFailLeft = 1
+    $res = Get-TcTreeItem -Path $f
+    Check 'lookup-184-busy-child-retried' ($res.success -and $res.data.childCount -eq 3 -and @($res.data.children).Count -eq 3 -and
+        $res.data.childrenTruncated -eq $false -and $res.data.childrenUnreadable -eq 0 -and $global:T.ChildFailLeft -eq 0) ($res | ConvertTo-Json -Depth 4 -Compress)
+    $global:T.ChildFail = 'busy'; $global:T.ChildFailLeft = -1
+    $res = Get-TcTreeItem -Path $f
+    Check 'lookup-184-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY') ($res | ConvertTo-Json -Depth 4 -Compress)
+    $names = $null; $err = $null
+    try { $names = & $mod { param($n) Get-TcTreeItemDirectChild -Item $n -ParentPath $n.PathName } $global:T.Nodes[$f] } catch { $err = $_.Exception.Message }
+    Check 'direct-184-busy-rethrown' ($null -ne $err -and $err -match '0x80010001') "err=$err names=$(@($names).Count)"
+    foreach ($mode in 'other', 'null') {
+        $global:T.ChildFail = $mode; $global:T.ChildFailLeft = -1
+        $res = Get-TcTreeItem -Path $f
+        Check "lookup-184-unreadable-child-$mode" ($res.success -and $res.data.childCount -eq 3 -and @($res.data.children).Count -eq 2 -and
+            $res.data.childrenTruncated -eq $true -and $res.data.childrenUnreadable -eq 1) ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    }
+    $global:T.ChildFail = $null; $global:T.ChildFailLeft = 0
+    # ChildCount unreadable: PowerShell turns a throwing property getter into $null (also a busy COM
+    # error, which therefore cannot be retried) -> reported, never a silent 0 children.
+    $global:T.Nodes[$f] | Add-Member -Force ScriptProperty ChildCount { throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))', [int]0x80010001) }
+    $res = Get-TcTreeItem -Path $f
+    Check 'lookup-184-childcount-unreadable' ($res.success -and $res.data.childCount -eq 0 -and $res.data.childrenTruncated -eq $true -and $res.data.childrenUnreadable -eq -1) ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    $global:T.NoSleep = $false
+    $res = Get-TcTreeItem -Path 'TIRT'
+    Check 'lookup-184-unreadable-zero' ($res.success -and $res.data.childrenUnreadable -eq 0 -and $res.data.childrenTruncated -eq $false) ($res.data | ConvertTo-Json -Depth 4 -Compress)
     Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)

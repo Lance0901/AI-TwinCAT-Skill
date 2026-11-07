@@ -9,11 +9,15 @@ function Get-TcTreeItem {
         accepted (TREEITEM_PATH_INVALID).
         data: name, path (PathName), itemType, subType, subTypeName, type (readable name for known PLC
         item types), disabled, disabledState, childCount, children[] (name, path, itemType, subType,
-        type, disabled, disabledState), childrenTruncated.
+        type, disabled, disabledState), childrenTruncated, childrenUnreadable.
         childCount and children[] are the DIRECT children only (#182; Get-TcTreeItemDirectChild): Child(i)
         of an EtherCAT device also returns the terminals below a coupler (measured 2026-11-08, 4024
         BFH-1650: ITcSmTreeItem.ChildCount 9 for Device 1 = EK1200 + its 8 terminals; childCount is 1).
-        childrenTruncated: more direct children than -MaxChildren.
+        childrenTruncated: children has fewer entries than childCount (more than -MaxChildren, or a child
+        could not be read). childrenUnreadable: number of Child(i) that could not be read (counted in
+        childCount: they cannot be placed, so they may be direct children); -1 when ChildCount itself
+        could not be read. A busy / dead-RPC COM error of Child(i) is never counted here: it is retried
+        and then reported as IDE_BUSY / IDE_CRASHED (#184 review).
         disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED /
         SMDS_DISABLED / SMDS_PARENT_DISABLED, InfoSys
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842771467.html); disabled is
@@ -54,7 +58,9 @@ function Get-TcTreeItem {
             # Direct children only (#182): Child(i) of an EtherCAT device also returns the terminals below
             # a coupler. The resolved -Path is the parent path when PathName cannot be read.
             $parentPath = if ([string]::IsNullOrWhiteSpace($s.path)) { $Path } else { $s.path }
-            $direct = @(Get-TcTreeItemDirectChild -Item $item -ParentPath $parentPath)
+            $stats = @{}
+            $direct = @(Get-TcTreeItemDirectChild -Item $item -ParentPath $parentPath -Stats $stats)
+            $unreadable = [int]$stats['Unreadable']
             $kids = [System.Collections.Generic.List[object]]::new()
             foreach ($k in $direct) {
                 if ($kids.Count -ge $MaxChildren) { break }
@@ -63,12 +69,13 @@ function Get-TcTreeItem {
                     $kids.Add([PSCustomObject]@{ name = $cs.name; path = $cs.path; itemType = $cs.itemType; subType = $cs.subType; type = $cs.type; disabled = $cs.disabled; disabledState = $cs.disabledState })
                 }
                 catch {
-                    if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
+                    if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
                     continue
                 }
             }
-            $s.childCount = $direct.Count
-            [PSCustomObject]@{ Summary = $s; Children = $kids.ToArray() }
+            $s.childCount = $direct.Count + $unreadable
+            if ($stats['ChildCountUnreadable']) { $unreadable = -1 }
+            [PSCustomObject]@{ Summary = $s; Children = $kids.ToArray(); Unreadable = $unreadable }
         }
         $s = $info.Summary
         $out = [PSCustomObject]@{
@@ -82,7 +89,8 @@ function Get-TcTreeItem {
             disabledState     = $s.disabledState
             childCount        = $s.childCount
             children          = @($info.Children)
-            childrenTruncated = ($s.childCount -gt @($info.Children).Count)
+            childrenTruncated = (($s.childCount -gt @($info.Children).Count) -or ($info.Unreadable -ne 0))
+            childrenUnreadable = $info.Unreadable
         }
         New-TcResult -Success $true -Data $out
     }
