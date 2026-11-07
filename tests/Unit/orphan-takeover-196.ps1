@@ -11,6 +11,11 @@
 #       'has ended' + hint names -TakeOverOrphan; alive -> no such hint
 #   T7  record file cannot be written / read -> LAUNCH_RECORD_UNAVAILABLE (fail closed)
 #   T8  own record (hostState self) / -ProgId mismatch / IDE not in the ROT / busy -> refused
+#   T9  #196 review B1: bridge (host) gone but its MCP server (owner) alive -> owner-alive; owner
+#       not verifiable (no ownerPid / no ownerStartTime / start time unreadable) -> owner-unverifiable;
+#       owner pid recycled -> taken over; a record without ownerId (manual PowerShell) -> host decides
+#   T10 #196 review M2: the takeover is written only after attach + modal check + project scan:
+#       a dialog / IDE_CRASHED after the attach, or an owner that came back -> record unchanged
 #   powershell.exe -NoProfile -File tests/Unit/orphan-takeover-196.ps1
 # Exit code = number of failed checks.
 # Exit code = number of failed checks.
@@ -18,6 +23,8 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 # #152 N1: the MCP server passes its owner id to the bridge; this process plays that bridge
 $env:TCAUTO_OWNER_ID = 'owner-73-A'
+# #196 review B1: ... and its own pid as the owner process (this test process plays that server too)
+$env:TCAUTO_OWNER_PID = [string]$PID
 $modPath = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
@@ -48,6 +55,8 @@ $global:Kills73 = New-Object System.Collections.ArrayList
 $global:Quits73 = 0
 $global:Blocked73 = $false
 $global:NextName73 = $null       # process name of the next launched IDE (default TcXaeShell)
+$global:NoStart73 = @{}           # fake pid -> $true: its StartTime cannot be read (access denied)
+$global:SysMgrHook73 = $null      # scriptblock run by the Get-TcSysManager mock (T10)
 
 function New-FakeDte([string]$Solution = '') {
     $sol = New-Object PSObject
@@ -105,6 +114,11 @@ function Restart-Module {
             if ($Id -ge 9000 -and $Id -lt 10000 -and $Id -ne $PID) {   # fake pids only (the real $PID may be larger)
                 if ($global:Procs73.ContainsKey($Id)) {
                     $n = if ($global:Names73.ContainsKey($Id)) { $global:Names73[$Id] } else { 'TcXaeShell' }
+                    if ($global:NoStart73.ContainsKey($Id)) {
+                        $o = [PSCustomObject]@{ Id = $Id; ProcessName = $n; MainWindowTitle = ''; MainWindowHandle = [IntPtr]::Zero }
+                        $o | Add-Member ScriptProperty StartTime { throw 'Access is denied' }
+                        return $o
+                    }
                     return [PSCustomObject]@{ Id = $Id; ProcessName = $n; MainWindowTitle = ''; MainWindowHandle = [IntPtr]::Zero; StartTime = $global:Procs73[$Id] }
                 }
                 if ($ErrorActionPreference -eq 'SilentlyContinue') { return $null }
@@ -143,7 +157,7 @@ function Restart-Module {
     } ${function:New-FakeDte} ${function:New-RotEntry}
     # #196: a successful attach goes on to the ITcSysManager / platform reads: answered at once
     & $script:mod {
-        function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) $o = New-Object PSObject; $o | Add-Member ScriptMethod GetTargetNetId { '5.6.7.8.1.1' }; $script:TcSysManager = $o; $o }
+        function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) if ($null -ne $global:SysMgrHook73) { & $global:SysMgrHook73 }; $o = New-Object PSObject; $o | Add-Member ScriptMethod GetTargetNetId { '5.6.7.8.1.1' }; $script:TcSysManager = $o; $o }
         function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = 'TwinCAT RT (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT RT (x64)' } }
         function script:Save-TcIdeTargetNetId { param($AmsNetId) }
     }
@@ -151,6 +165,7 @@ function Restart-Module {
 
 function Reset-All {
     $global:Rot73 = @(); $global:Launches73.Clear(); $global:LaunchedDtes73 = @{}; $global:Procs73 = @{}; $global:Names73 = @{}
+    $global:NoStart73 = @{}; $global:SysMgrHook73 = $null
     $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false; $global:NextName73 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Restart-Module
@@ -162,9 +177,17 @@ function Edit-Records([scriptblock]$Change) {
     foreach ($r in $recs) { & $Change $r }
     Set-Content -LiteralPath (Get-RecordFile) -Value (ConvertTo-Json -InputObject @($recs) -Depth 4) -Encoding UTF8
 }
-# The TcAuto session (bridge) that launched the IDE: fake pid 9600, owner id of another MCP server.
+# The TcAuto session (bridge) that launched the IDE: fake pid 9600, owner id of another MCP server
+# whose process (#196 review B1: ownerPid / ownerStartTime) is fake pid 9601.
 $global:OtherHostStart73 = [DateTime]'2026-11-06T08:00:00'
-function Set-OtherOwner { Edit-Records { param($r) $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = 'owner-196-B' } }
+$global:OtherOwnerStart73 = [DateTime]'2026-11-06T07:59:00'
+function Set-OtherOwner {
+    Edit-Records { param($r)
+        $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = 'owner-196-B'
+        $r | Add-Member -NotePropertyName ownerPid -NotePropertyValue 9601 -Force
+        $r | Add-Member -NotePropertyName ownerStartTime -NotePropertyValue $global:OtherOwnerStart73.ToUniversalTime().ToString('o') -Force
+    }
+}
 function Show-InRot([int]$ProcId, [string]$Solution) {
     $o = $global:LaunchedDtes73[$ProcId]; $o.Solution.FullName = $Solution
     $global:Rot73 = @(New-RotEntry $ProcId $o)
@@ -172,12 +195,13 @@ function Show-InRot([int]$ProcId, [string]$Solution) {
 # An IDE launched by this module (cold start, MODAL_SCAN_INCOMPLETE) whose record is then made the
 # record of an ENDED session (host 9600 not running, other ownerId) in a new module instance.
 function New-Orphan {
-    param([switch]$HostAlive, [AllowNull()][string]$RotSolution = $script:slnL, [switch]$NotInRot)
+    param([switch]$HostAlive, [switch]$OwnerAlive, [AllowNull()][string]$RotSolution = $script:slnL, [switch]$NotInRot)
     Reset-All
     $r = Connect-TcIde -SolutionPath $sln
     $p = [int]$r.data.ideProcessId
     Set-OtherOwner
     if ($HostAlive) { $global:Procs73[9600] = $global:OtherHostStart73 } else { $global:Procs73.Remove(9600) }
+    if ($OwnerAlive) { $global:Procs73[9601] = $global:OtherOwnerStart73 } else { $global:Procs73.Remove(9601) }
     Restart-Module
     if ($NotInRot) { $global:Rot73 = @() } else { Show-InRot $p $RotSolution }
     $global:Modal73 = 'none'
@@ -199,7 +223,7 @@ try {
     $recs = @(Read-Records)
     $tk = @($recs[0].takeovers)
     Check 'T1 taken over: success, selectedBy orphan-takeover, takenOver, owned, previousOwner = ended host' ($r.success -and $r.data.selectedBy -eq 'orphan-takeover' -and $r.data.takenOver -eq $true -and $r.data.ownedBySession -eq $true -and [int]$r.data.ideProcessId -eq $p -and [int]$r.data.previousOwner.hostPid -eq 9600 -and $r.data.previousOwner.ownerId -eq 'owner-196-B' -and $r.data.previousOwner.hostState -eq 'gone' -and $global:Launches73.Count -eq 1) "code=$($r.error.code) msg=$($r.error.message) sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
-    Check 'T1b record owner = this process (hostPid, ownerId, moduleInstanceId) + one takeovers[] entry with the previous owner' ($recs.Count -eq 1 -and [int]$recs[0].hostPid -eq $PID -and $recs[0].ownerId -eq 'owner-73-A' -and $recs[0].moduleInstanceId -eq (& $mod { $script:TcModuleInstanceId }) -and $tk.Count -eq 1 -and [int]$tk[0].previousHostPid -eq 9600 -and $tk[0].previousOwnerId -eq 'owner-196-B' -and $tk[0].reason -eq 'orphan-takeover' -and [int]$tk[0].hostPid -eq $PID -and -not [string]::IsNullOrWhiteSpace([string]$tk[0].takenOverAt) -and -not [string]::IsNullOrWhiteSpace([string]$tk[0].previousHostStartTime)) ((Get-RecordJson) -replace '\s+', ' ')
+    Check 'T1b record owner = this process (hostPid, ownerId, ownerPid, moduleInstanceId) + one takeovers[] entry with the previous owner' ($recs.Count -eq 1 -and [int]$recs[0].hostPid -eq $PID -and $recs[0].ownerId -eq 'owner-73-A' -and [int]$recs[0].ownerPid -eq $PID -and -not [string]::IsNullOrWhiteSpace([string]$recs[0].ownerStartTime) -and [int]$tk[0].previousOwnerPid -eq 9601 -and $r.data.previousOwner.ownerState -eq 'gone' -and $recs[0].moduleInstanceId -eq (& $mod { $script:TcModuleInstanceId }) -and $tk.Count -eq 1 -and [int]$tk[0].previousHostPid -eq 9600 -and $tk[0].previousOwnerId -eq 'owner-196-B' -and $tk[0].reason -eq 'orphan-takeover' -and [int]$tk[0].hostPid -eq $PID -and -not [string]::IsNullOrWhiteSpace([string]$tk[0].takenOverAt) -and -not [string]::IsNullOrWhiteSpace([string]$tk[0].previousHostStartTime)) ((Get-RecordJson) -replace '\s+', ' ')
     $global:Modal73 = 'dialog'
     $d = Disconnect-TcIde -Quit -Kill
     Check 'T1c afterwards Disconnect-TcIde -Quit -Kill treats it as owned (killed)' ($d.success -and $d.data.ownedBySession -eq $true -and $d.data.killed -eq $true -and @($global:Kills73 | Where-Object { $_ -eq "Stop-Process $p" }).Count -eq 1) "code=$($d.error.code) owned=$($d.data.ownedBySession) kills=$($global:Kills73 -join ',')"
@@ -208,7 +232,7 @@ try {
     $null = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
     $null = Disconnect-TcIde
     Set-OtherOwner
-    $global:Procs73.Remove(9600)
+    $global:Procs73.Remove(9600); $global:Procs73.Remove(9601)
     Restart-Module
     Show-InRot $p $slnL
     $global:Modal73 = 'none'
@@ -241,7 +265,7 @@ try {
     $global:LaunchInRot73 = $false; $global:GuessPid73 = 9777; $global:Procs73[9777] = [DateTime]::Now
     $null = Connect-TcIde -SolutionPath $sln
     Set-OtherOwner
-    $global:Procs73.Remove(9600)
+    $global:Procs73.Remove(9600); $global:Procs73.Remove(9601)
     Restart-Module
     $o = New-FakeDte $slnL
     $global:Rot73 = @(New-RotEntry 9777 $o)
@@ -304,11 +328,62 @@ try {
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
     Check 'T8d busy IDE without a dialog -> refused ide-busy' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'ide-busy' -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
 
+    # --- T9: #196 review B1 - the owner process (MCP server) decides as well ---
+    $p = New-Orphan -OwnerAlive
+    $before = Get-RecordJson
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T9 bridge restarted (hostPid gone, other ownerId) but its MCP server alive -> refused owner-alive, record unchanged, not connected' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-alive' -and $r.data.otherSession.hostState -eq 'gone' -and $r.data.otherSession.ownerState -eq 'alive' -and [int]$r.data.otherSession.ownerPid -eq 9601 -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and $global:Launches73.Count -eq 1) "code=$($r.error.code) reason=$($r.data.reason)"
+    $global:Rot73 = @()
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'T9a same, without the switch: IDE_LAUNCH_PENDING other-session, message not "has ended", hint does not offer -TakeOverOrphan' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.otherSession.ownerState -eq 'alive' -and $r.error.message -notmatch 'has ended' -and $r.error.hint -notmatch 'TakeOverOrphan' -and (Get-RecordJson) -eq $before) "$($r.error.code) | $($r.error.message)"
+    Show-InRot $p $slnL
+    $global:Procs73[9601] = $global:OtherOwnerStart73.AddHours(2)   # pid 9601 now another process
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T9b owner pid recycled (other start time) counts as gone -> taken over' ($r.success -and $r.data.takenOver -eq $true -and $r.data.previousOwner.ownerState -eq 'gone') "code=$($r.error.code) reason=$($r.data.reason)"
+    $null = Disconnect-TcIde
+    foreach ($case in @(
+            @{ Name = 'T9c record with ownerId but no ownerPid (written before the fix)'; Change = { param($r) $r.PSObject.Properties.Remove('ownerPid'); $r.PSObject.Properties.Remove('ownerStartTime') } },
+            @{ Name = 'T9d record with ownerPid but no ownerStartTime'; Change = { param($r) $r.ownerStartTime = $null } },
+            @{ Name = 'T9e owner pid running, its start time not readable'; Change = { param($r) $global:Procs73[9601] = $global:OtherOwnerStart73; $global:NoStart73[9601] = $true } })) {
+        $p = New-Orphan
+        Edit-Records $case.Change
+        Restart-Module
+        Show-InRot $p $slnL
+        $global:Modal73 = 'none'
+        $before = Get-RecordJson
+        $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+        Check "$($case.Name) -> refused owner-unverifiable, record unchanged, not connected" ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-unverifiable' -and $r.data.otherSession.ownerState -eq 'unverifiable' -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
+    }
+    $p = New-Orphan
+    Edit-Records { param($r) $r.ownerId = $null; $r.ownerPid = $null; $r.ownerStartTime = $null }
+    Restart-Module
+    Show-InRot $p $slnL
+    $global:Modal73 = 'none'
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T9f record without ownerId (manual PowerShell), host gone -> taken over as before (ownerState none)' ($r.success -and $r.data.takenOver -eq $true -and $r.data.previousOwner.ownerState -eq 'none') "code=$($r.error.code) reason=$($r.data.reason)"
+    $null = Disconnect-TcIde
+
+    # --- T10: #196 review M2 - nothing is written before the attach has passed ---
+    $p = New-Orphan
+    $before = Get-RecordJson
+    [void]$global:ModalQueue73.Add('none')     # Resolve-TcOrphanTakeover: no dialog yet
+    [void]$global:ModalQueue73.Add('dialog')   # the check after the attach finds one
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T10 dialog after the attach -> IDE_MODAL_DIALOG, takenOver false, record unchanged, not owned' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.takenOver -eq $false -and $r.data.ownedBySession -eq $false -and (Get-RecordJson) -eq $before -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code) took=$($r.data.takenOver)"
+    $null = Disconnect-TcIde
+    $global:SysMgrHook73 = { throw 'IDE_CRASHED: mock - the IDE died during the project scan' }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T10b IDE_CRASHED in the project scan after the attach -> failure, record unchanged, not owned' (-not $r.success -and $r.error.code -eq 'IDE_CRASHED' -and (Get-RecordJson) -eq $before -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code)"
+    $null = Disconnect-TcIde
+    $global:SysMgrHook73 = { $global:Procs73[9601] = $global:OtherOwnerStart73 }   # the owner check under the lock sees it alive
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T10c owner alive when the takeover is written (under the lock) -> refused owner-alive, attach released, record unchanged' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-alive' -and $r.data.takenOver -eq $false -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and -not (& $mod { param($x) Test-TcLaunchedIde -ProcessId $x } $p)) "code=$($r.error.code) reason=$($r.data.reason)"
+
     Check 'E1 nothing real was killed (Stop-Process is the mock)' (@($global:Kills73 | Where-Object { $_ -notlike 'Stop-Process 90*' }).Count -eq 0) ($global:Kills73 -join ', ')
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Variable -Name Launches73, LaunchedDtes73, NextPid73, Procs73, Names73, Rot73, LaunchInRot73, GuessPid73, Modal73, ModalQueue73, Kills73, Quits73, Blocked73, OtherHostStart73, NextName73 -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name Launches73, LaunchedDtes73, NextPid73, Procs73, Names73, Rot73, LaunchInRot73, GuessPid73, Modal73, ModalQueue73, Kills73, Quits73, Blocked73, OtherHostStart73, OtherOwnerStart73, NextName73, NoStart73, SysMgrHook73 -Scope Global -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"

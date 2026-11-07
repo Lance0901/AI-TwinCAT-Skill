@@ -386,7 +386,8 @@ describe('launch-record owner id (#152 N1)', () => {
 
   test('every child of one bridge gets the same TCAUTO_OWNER_ID (start, ReloadModule retire, stop + start)', async () => {
     const owners = [];
-    const { bridge } = makeBridge({ env: { MOCK_BRIDGE_OWNER_ECHO: '1' }, onReady: (ready) => owners.push(ready.ownerId) });
+    const ownerPids = [];
+    const { bridge } = makeBridge({ env: { MOCK_BRIDGE_OWNER_ECHO: '1' }, onReady: (ready) => { owners.push(ready.ownerId); ownerPids.push(ready.ownerPid); } });
     bridges.push(bridge);
     assert.match(bridge.ownerId, UUID);
     await bridge.start();
@@ -398,6 +399,18 @@ describe('launch-record owner id (#152 N1)', () => {
     await bridge.start();                            // as after BRIDGE_TIMEOUT / a dead child
     assert.equal(owners.length, 3, `ready count ${owners.length}`);
     for (const o of owners) assert.equal(o, bridge.ownerId);
+    // #196 review B1: every child also gets the pid of this MCP server (default) as TCAUTO_OWNER_PID
+    assert.deepEqual(ownerPids, [String(process.pid), String(process.pid), String(process.pid)]);
+  });
+
+  test('an explicit ownerPid is passed as TCAUTO_OWNER_PID; an invalid one falls back to process.pid (#196)', async () => {
+    const pids = [];
+    const { bridge } = makeBridge({ ownerPid: 4242, env: { MOCK_BRIDGE_OWNER_ECHO: '1' }, onReady: (ready) => pids.push(ready.ownerPid) });
+    bridges.push(bridge);
+    await bridge.start();
+    assert.deepEqual(pids, ['4242']);
+    assert.equal(makeBridge({ ownerPid: 0 }).bridge.ownerPid, process.pid);
+    assert.equal(makeBridge({ ownerPid: '12' }).bridge.ownerPid, process.pid);
   });
 
   test('another bridge (another MCP server) gets another owner id; an explicit ownerId is passed as is', async () => {

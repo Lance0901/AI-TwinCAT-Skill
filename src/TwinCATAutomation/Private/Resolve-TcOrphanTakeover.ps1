@@ -6,6 +6,12 @@
 #     Find-TcLaunchRecordForSolution: pid + start time + image name still the same process) exists;
 #   - its host is 'gone' (Get-TcLaunchRecordHostState: hostPid not running, or running with another
 #     start time - a recycled pid never counts as the host);
+#   - #196 review B1: its owner process (the MCP server / launcher, ownerPid + ownerStartTime) is
+#     'gone' too: a gone host alone is only a restarted bridge (BRIDGE_TIMEOUT, IDE_MODAL_DIALOG,
+#     ReloadModule) of a session that may still run. A record with an ownerId but no ownerPid /
+#     ownerStartTime (written before this check), or an owner whose start time cannot be read, is
+#     refused ('owner-unverifiable'). A record without ownerId (a manual PowerShell) has no owner
+#     process: the host decides alone, as before;
 #   - its pid is confirmed (pidSource rot-identity / main-window), -ProgId (when given) is the
 #     ProgID it was launched with;
 #   - the ROT has a READY DTE of that very pid that has this .sln open;
@@ -13,7 +19,7 @@
 # Returns @{ Result = <failed TcResult> } (refused) or @{ Candidate; Record; OtherSession }; the
 # record itself is changed by the caller (Set-TcLaunchRecordTakeover, under the lock).
 # reason: solution-path-required | no-launch-record | owned-by-this-session | host-alive |
-# pid-unconfirmed | progid-mismatch | not-in-rot | solution-mismatch | ide-busy (dialog / incomplete
+# owner-alive | owner-unverifiable | pid-unconfirmed | progid-mismatch | not-in-rot | solution-mismatch | ide-busy (dialog / incomplete
 # scan: IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE; record file unreadable: LAUNCH_RECORD_UNAVAILABLE).
 function Resolve-TcOrphanTakeover {
     [CmdletBinding()]
@@ -64,12 +70,23 @@ function Resolve-TcOrphanTakeover {
         return (& $refuse 'no-launch-record' "no launch record of a still running IDE names '$SolutionPath'" $null $null)
     }
     $hostState = Get-TcLaunchRecordHostState -Record $rec
-    $other = [PSCustomObject]@{ hostPid = $rec.hostPid; hostState = $hostState; moduleInstanceId = $rec.moduleInstanceId; processId = [int]$rec.pid; pidSource = [string]$rec.pidSource }
+    $ownerState = Get-TcLaunchRecordOwnerState -Record $rec
+    $ownerPid = $null; try { if ($null -ne $rec.PSObject.Properties['ownerPid']) { $ownerPid = $rec.ownerPid } } catch { $ownerPid = $null }
+    $other = [PSCustomObject]@{ hostPid = $rec.hostPid; hostState = $hostState; ownerPid = $ownerPid; ownerState = $ownerState; moduleInstanceId = $rec.moduleInstanceId; processId = [int]$rec.pid; pidSource = [string]$rec.pidSource }
     if ($hostState -eq 'self') {
         return (& $refuse 'owned-by-this-session' "the IDE (pid $($rec.pid)) was launched by this session; there is nothing to take over (Connect-TcIde -SolutionPath without -TakeOverOrphan attaches it)" $other $rec)
     }
     if ($hostState -ne 'gone') {
         return (& $refuse 'host-alive' "the TcAuto session that launched the IDE (pid $($rec.pid)) is still running or cannot be verified (host pid $($rec.hostPid), hostState $hostState)" $other $rec)
+    }
+    if ($ownerState -eq 'self') {
+        return (& $refuse 'owned-by-this-session' "the IDE (pid $($rec.pid)) was launched by an earlier bridge of this MCP server (same ownerId); Connect-TcIde -SolutionPath without -TakeOverOrphan attaches it" $other $rec)
+    }
+    if ($ownerState -eq 'alive') {
+        return (& $refuse 'owner-alive' "the bridge that launched the IDE (pid $($rec.pid)) is gone, but its MCP server (owner pid $ownerPid) is still running: that session restarted its bridge (BRIDGE_TIMEOUT / IDE_MODAL_DIALOG / ReloadModule) and still owns the IDE" $other $rec)
+    }
+    if ($ownerState -eq 'unverifiable') {
+        return (& $refuse 'owner-unverifiable' "the bridge that launched the IDE (pid $($rec.pid)) is gone, but whether its MCP server (ownerId $($rec.ownerId), owner pid $(if ($null -ne $ownerPid) { $ownerPid } else { 'not recorded' })) has ended cannot be verified" $other $rec)
     }
     if (-not (Test-TcLaunchRecordConfirmed -Record $rec)) {
         return (& $refuse 'pid-unconfirmed' "the process id of that launch was never confirmed (pidSource '$($rec.pidSource)'), so the IDE cannot be identified" $other $rec)
@@ -101,4 +118,29 @@ function Resolve-TcOrphanTakeover {
         return (& $refuse 'ide-busy' "the IDE (pid $procId) rejects DTE calls ($(if ($c.busy) { 'RPC_E_CALL_REJECTED' } else { 'DTE.Version empty' })) and no modal dialog was found" $other $rec)
     }
     @{ Candidate = $c; Record = $rec; OtherSession = $other }
+}
+
+# #196 review M2: Connect-TcIde -TakeOverOrphan attached the IDE, but writing the takeover was refused
+# or failed: release the attach again (SilentMode restored when its original value is known, every
+# COM reference and the IDE identity dropped) so nothing stays attached or owned.
+function Reset-TcOrphanTakeoverAttach {
+    [CmdletBinding()]
+    param()
+    if ($null -ne $script:TcAutomationSettings -and $null -ne $script:TcSilentModeOriginal) {
+        $settingsRestore = $script:TcAutomationSettings
+        $silentRestore = [bool]$script:TcSilentModeOriginal
+        try {
+            Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
+            if ($null -ne $script:TcIdeProcessId) { Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }
+        }
+        catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
+    }
+    foreach ($name in 'TcAutomationSettings', 'TcSysManager', 'TcDte') {
+        $o = Get-Variable -Name $name -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $o -and [System.Runtime.InteropServices.Marshal]::IsComObject($o)) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($o) | Out-Null } catch { } }
+        Set-Variable -Name $name -Scope Script -Value $null
+    }
+    $script:TcSilentMode = $false; $script:TcSilentModeOriginal = $null
+    $script:TcIdeConnected = $false; $script:TcProgId = $null; $script:TcIdeMainHwnd = 0; $script:TcLastModalDialog = $null
+    $script:TcSolutionPath = $null; $script:TcIdeProcessId = $null; $script:TcIdeStartTime = $null; $script:TcIdeSelectedBy = $null
 }

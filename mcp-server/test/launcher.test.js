@@ -363,6 +363,7 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
   let root;
   let h;
   let ownerFile;
+  let ownerPidFile;
   before(() => {
     root = newRoot();
     installRealCopy(root, VER_A, SHA_A);
@@ -374,6 +375,7 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
     const stateDir = path.join(root, 'state-162');
     fs.mkdirSync(stateDir);
     ownerFile = path.join(root, 'owners-162.txt');
+    ownerPidFile = path.join(root, 'owner-pids-196.txt');
     const env = {
       ...process.env,
       // #162 review: these would make an installed runtime load another catalog / module; the launcher drops them
@@ -384,6 +386,7 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
       TWINCAT_MCP_MODAL_PROBE: '0',
       TWINCAT_MCP_SKIP_PID_CHECK: '1',
       MOCK_BRIDGE_OWNER_FILE: ownerFile,
+      MOCK_BRIDGE_OWNER_PID_FILE: ownerPidFile,
       TCAUTO_STATE_DIR: stateDir,
       TCAUTO_TEST_FORBID_REAL_STATE: '1'
     };
@@ -440,6 +443,10 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
     const owners = fs.readFileSync(ownerFile, 'utf8').split(/\r?\n/).filter(Boolean);
     assert.ok(owners.length >= 2, 'a bridge of each runtime started');
     assert.deepEqual(new Set(owners), new Set([h.launcher.ownerId]), 'every bridge got the launcher owner id');
+    // #196 review B1: the owner pid is the launcher's (it outlives the index.js the reload replaced)
+    const ownerPids = fs.readFileSync(ownerPidFile, 'utf8').split(/\r?\n/).filter(Boolean);
+    assert.ok(ownerPids.length >= 2);
+    assert.deepEqual(new Set(ownerPids), new Set([String(process.pid)]), 'every bridge got the launcher pid (this test process) as owner pid');
   });
 
   test('an in-memory lifecycle block makes ReloadRuntime fail closed (RELOAD_LIFECYCLE_BLOCKED, nothing switched)', async () => {

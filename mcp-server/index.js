@@ -92,6 +92,8 @@ const runtimeInfo = { ...runtimeInfoOf(MCP_SERVER_DIR), launcherPid: fromLaunche
 
 const bridge = new PowerShellBridge({
   ownerId: fromLauncher ? launcher.ownerId : undefined,
+  // #196 review B1: the process the owner id belongs to (the launcher outlives a ReloadRuntime)
+  ownerPid: fromLauncher ? launcher.pid : process.pid,
   modulePath: config.modulePath,
   powershellPath: config.powershellPath,
   bridgeScript: config.bridgeScript,

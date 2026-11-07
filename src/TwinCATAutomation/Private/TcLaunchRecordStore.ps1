@@ -6,14 +6,19 @@
 #       solution (the .sln it was launched for, $null = none / released); pidSource
 #       ('rot-identity' | 'main-window' | 'pid-unconfirmed'); launchedAt (UTC 'o'); createdAt
 #       (UTC 'o'); updatedAt (UTC 'o'); moduleInstanceId; hostPid; hostStartTime (UTC 'o');
-#       ownerId; takeovers (optional, #196: [ { takenOverAt; reason; previousHostPid;
+#       ownerId; ownerPid; ownerStartTime (UTC 'o'; #196 review B1); takeovers (optional, #196: [ { takenOverAt; reason; previousHostPid;
 #       previousHostStartTime; previousModuleInstanceId; previousOwnerId; hostPid;
 #       moduleInstanceId } ], written by Connect-TcIde -TakeOverOrphan) } ]
 # hostPid + hostStartTime = the PowerShell process (MCP bridge) whose module wrote / adopted the
 # record (#152 M1). ownerId = $env:TCAUTO_OWNER_ID, a GUID the MCP server (node) creates once and
 # passes to every bridge child it spawns (first start, BRIDGE_TIMEOUT restart, ReloadModule), so
 # it is the same across those restarts and different for every other MCP server / conversation;
-# a manual PowerShell has none (#152 round 2 N1). Several sessions share the file: a record
+# a manual PowerShell has none (#152 round 2 N1). ownerPid = $env:TCAUTO_OWNER_PID, the process that
+# owns ownerId (the MCP server, or the launcher that outlives a ReloadRuntime), and ownerStartTime its
+# start time, read once when the module is imported (that process is alive then: it just started
+# this bridge). A gone host only means the BRIDGE is gone (restarted after BRIDGE_TIMEOUT /
+# IDE_MODAL_DIALOG / ReloadModule, same ownerId, new pid); the session ended only when the owner
+# process is gone too (Get-TcLaunchRecordOwnerState, Connect-TcIde -TakeOverOrphan). Several sessions share the file: a record
 # restores ownership only in its own host ($PID with the same start time), or when its host
 # process is gone AND its ownerId equals this process's ownerId (adopted under the lock). Anything
 # else - another live session, a session that ended (a later conversation must not take over an
@@ -42,6 +47,24 @@ $script:TcLaunchRecordLockTimeoutMs = 2000
 $script:TcLaunchRecordWarning = $null   # last failed read / write of the file (reported in data.launchRecordWarning)
 $script:TcConfirmedPidSources = @('rot-identity', 'main-window')
 $script:TcLaunchHostStartTime = $null   # UTC 'o' start time of this PowerShell process (Get-TcLaunchHostStartTime)
+
+# #196 review B1: the owner process of this bridge ($env:TCAUTO_OWNER_PID, set by the MCP server)
+# and its start time (UTC 'o'), read at module import; $null when not set / not readable.
+$script:TcLaunchOwnerPid = $null
+$script:TcLaunchOwnerStartTime = $null
+function Initialize-TcLaunchOwnerProcess {
+    $script:TcLaunchOwnerPid = $null; $script:TcLaunchOwnerStartTime = $null
+    $raw = $env:TCAUTO_OWNER_PID
+    $op = 0
+    if ([string]::IsNullOrWhiteSpace($raw) -or -not [int]::TryParse($raw.Trim(), [ref]$op) -or $op -le 0) { return }
+    $script:TcLaunchOwnerPid = $op
+    try {
+        $p = Get-Process -Id $op -ErrorAction Stop
+        if ($null -ne $p.StartTime) { $script:TcLaunchOwnerStartTime = ([DateTime]$p.StartTime).ToUniversalTime().ToString('o') }
+    }
+    catch { $script:TcLaunchOwnerStartTime = $null }
+}
+Initialize-TcLaunchOwnerProcess
 
 function Get-TcLaunchHostStartTime {
     if ($null -eq $script:TcLaunchHostStartTime) {
@@ -136,6 +159,36 @@ function Get-TcLaunchOwnerId {
     $o = $env:TCAUTO_OWNER_ID
     if ([string]::IsNullOrWhiteSpace($o)) { return $null }
     $o.Trim()
+}
+
+# #196 review B1: is the owner process (MCP server / launcher) of -Record still running?
+#   'none'          the record has no ownerId (a manual PowerShell): only the host counts
+#   'self'          its ownerId is this process's ownerId (the same MCP server)
+#   'gone'          ownerPid not running, or running with another start time (recycled pid)
+#   'alive'         ownerPid runs with the recorded start time
+#   'unverifiable'  ownerId but no ownerPid / no parsable ownerStartTime (a record written before
+#                   #196 review B1), or the start time of the running ownerPid cannot be read
+function Get-TcLaunchRecordOwnerState {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Record)
+    $theirs = $null; try { $theirs = [string]$Record.ownerId } catch { $theirs = $null }
+    if ([string]::IsNullOrWhiteSpace($theirs)) { return 'none' }
+    $mine = Get-TcLaunchOwnerId
+    if ($null -ne $mine -and [string]::Equals($theirs.Trim(), $mine, [StringComparison]::OrdinalIgnoreCase)) { return 'self' }
+    $op = 0
+    try { if ($null -ne $Record.PSObject.Properties['ownerPid'] -and $null -ne $Record.ownerPid) { $op = [int]$Record.ownerPid } } catch { $op = 0 }
+    if ($op -le 0) { return 'unverifiable' }
+    $recStart = $null
+    try { if ($null -ne $Record.PSObject.Properties['ownerStartTime'] -and $null -ne $Record.ownerStartTime) { $recStart = ConvertTo-TcUtcDate $Record.ownerStartTime } } catch { $recStart = $null }
+    if ($null -eq $recStart) { return 'unverifiable' }
+    $p = $null
+    try { $p = Get-Process -Id $op -ErrorAction Stop } catch { return 'gone' }
+    if ($null -eq $p) { return 'gone' }
+    $st = $null
+    try { if ($null -ne $p.StartTime) { $st = ([DateTime]$p.StartTime).ToUniversalTime() } } catch { $st = $null }
+    if ($null -eq $st) { return 'unverifiable' }
+    if ($st -ne $recStart) { return 'gone' }
+    'alive'
 }
 
 # May this process own / adopt / forget -Record? Its host is this process ('self'), or its host is
@@ -233,7 +286,7 @@ function Save-TcLaunchRecord {
         solution = $(if ([string]::IsNullOrWhiteSpace($Solution)) { $null } else { $Solution }); pidSource = $src
         launchedAt = $launchedAt; createdAt = $now; updatedAt = $now
         moduleInstanceId = $script:TcModuleInstanceId; hostPid = $PID; hostStartTime = (Get-TcLaunchHostStartTime)
-        ownerId = (Get-TcLaunchOwnerId)
+        ownerId = (Get-TcLaunchOwnerId); ownerPid = $script:TcLaunchOwnerPid; ownerStartTime = $script:TcLaunchOwnerStartTime
     }
     $isConfirmed = ($src -ne 'pid-unconfirmed')
     $res = @{ blocked = $false }
@@ -282,6 +335,8 @@ function Request-TcLaunchRecordOwnership {
         foreach ($r in $all) {
             if ([string]$r.launchId -eq $lid -and (Test-TcLaunchRecordClaimable -Record $r)) {
                 $r.hostPid = $PID; $r.hostStartTime = (Get-TcLaunchHostStartTime); $r.moduleInstanceId = $script:TcModuleInstanceId
+                $r | Add-Member -NotePropertyName 'ownerPid' -NotePropertyValue $script:TcLaunchOwnerPid -Force
+                $r | Add-Member -NotePropertyName 'ownerStartTime' -NotePropertyValue $script:TcLaunchOwnerStartTime -Force
                 $r.updatedAt = (Get-Date).ToUniversalTime().ToString('o')
                 $res.adopted = $true
             }
@@ -294,11 +349,11 @@ function Request-TcLaunchRecordOwnership {
 # #196: Connect-TcIde -TakeOverOrphan. The caller has checked everything else (solution, confirmed
 # pid, ROT, no modal dialog); this re-checks under the lock that the record of -Record.launchId still
 # names the same IDE process (pid + start time) and the same host (hostPid + hostStartTime), that the
-# host is still 'gone' and the pid confirmed, and then makes this process its owner: hostPid /
+# host is still 'gone', its owner process 'gone' (or no ownerId at all) and the pid confirmed, and then makes this process its owner: hostPid /
 # hostStartTime / moduleInstanceId / ownerId = this process, plus one entry in takeovers[]
 # (takenOverAt, reason, previousHostPid / previousHostStartTime / previousModuleInstanceId /
 # previousOwnerId, hostPid / moduleInstanceId of the new owner). Returns @{ TakenOver; Previous;
-# Refusal ('record-changed' | 'host-not-gone' | $null); Failure (write failed, $null = written) }.
+# Refusal ('record-changed' | 'host-not-gone' | 'owner-alive' | 'owner-unverifiable' | $null); Failure (write failed, $null = written) }.
 function Set-TcLaunchRecordTakeover {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Record, [string]$Reason = 'orphan-takeover')
@@ -319,14 +374,20 @@ function Set-TcLaunchRecordTakeover {
             if ($rp -ne $expPid -or (& $norm $r.startTime) -ne $expStart -or [string]$r.hostPid -ne $expHost -or (& $norm $r.hostStartTime) -ne $expHostStart) { $r; continue }   # another writer changed it
             if (-not (Test-TcLaunchRecordConfirmed -Record $r)) { $r; continue }
             if ((Get-TcLaunchRecordHostState -Record $r) -ne 'gone') { $res.Refusal = 'host-not-gone'; $r; continue }
+            # #196 review B1: the owner (MCP server) must be gone too; a record without ownerId (manual PowerShell) has none
+            $ownerState = Get-TcLaunchRecordOwnerState -Record $r
+            if ($ownerState -notin 'none', 'gone') { $res.Refusal = $(if ($ownerState -eq 'alive') { 'owner-alive' } else { 'owner-unverifiable' }); $r; continue }
             $now = (Get-Date).ToUniversalTime().ToString('o')
             $prevOwner = $null; try { $prevOwner = $r.ownerId } catch { $prevOwner = $null }
+            $prevOwnerPid = $null; try { $prevOwnerPid = $r.ownerPid } catch { $prevOwnerPid = $null }
             $prev = [PSCustomObject][ordered]@{
                 hostPid = $r.hostPid; hostStartTime = $r.hostStartTime; moduleInstanceId = $r.moduleInstanceId; ownerId = $prevOwner; hostState = 'gone'
+                ownerPid = $prevOwnerPid; ownerState = $ownerState
             }
             $entry = [PSCustomObject][ordered]@{
                 takenOverAt = $now; reason = $Reason
                 previousHostPid = $r.hostPid; previousHostStartTime = $r.hostStartTime; previousModuleInstanceId = $r.moduleInstanceId; previousOwnerId = $prevOwner
+                previousOwnerPid = $prevOwnerPid
                 hostPid = $PID; moduleInstanceId = $script:TcModuleInstanceId
             }
             $history = @()
@@ -335,6 +396,8 @@ function Set-TcLaunchRecordTakeover {
             $r | Add-Member -NotePropertyName 'hostStartTime' -NotePropertyValue $myStart -Force
             $r | Add-Member -NotePropertyName 'moduleInstanceId' -NotePropertyValue $script:TcModuleInstanceId -Force
             $r | Add-Member -NotePropertyName 'ownerId' -NotePropertyValue (Get-TcLaunchOwnerId) -Force
+            $r | Add-Member -NotePropertyName 'ownerPid' -NotePropertyValue $script:TcLaunchOwnerPid -Force
+            $r | Add-Member -NotePropertyName 'ownerStartTime' -NotePropertyValue $script:TcLaunchOwnerStartTime -Force
             $r | Add-Member -NotePropertyName 'updatedAt' -NotePropertyValue $now -Force
             $r | Add-Member -NotePropertyName 'takeovers' -NotePropertyValue @($history + @($entry)) -Force
             $res.TakenOver = $true; $res.Previous = $prev; $res.Refusal = $null

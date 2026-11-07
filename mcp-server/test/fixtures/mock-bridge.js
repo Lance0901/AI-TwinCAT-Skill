@@ -22,6 +22,7 @@
 //   env MOCK_BRIDGE_ARGS_ECHO=1    includes process.argv in the ready line (spawn arg tests)
 //   env MOCK_BRIDGE_OWNER_ECHO=1   includes env TCAUTO_OWNER_ID in the ready line (#152 N1)
 //   env MOCK_BRIDGE_OWNER_FILE=f   appends env TCAUTO_OWNER_ID as one line to f at every start (#162)
+//   env MOCK_BRIDGE_OWNER_PID_FILE=f  appends env TCAUTO_OWNER_PID as one line to f at every start (#196)
 //   ready.modulePath               env TWINCAT_MCP_BRIDGE_MODULE_PATH (set by PowerShellBridge), else 'mock'
 //   env MOCK_BRIDGE_FAIL_MODULE=x  ready ok:false (MODULE_IMPORT_FAILED) when the module path contains x (#41)
 //   cmdlet Set-TcSystemState + params.Fail  records an in-memory lifecycle block (like
@@ -93,7 +94,11 @@ if (failMarkers.some((m) => MODULE_PATH.includes(m))) {
 
 const readyLine = { event: 'ready', ok: true, cmdlets: CMDLETS, psVersion: 'mock', apartment: 'STA', modulePath: MODULE_PATH };
 if (process.env.MOCK_BRIDGE_ARGS_ECHO === '1') readyLine.argv = process.argv.slice(2);
-if (process.env.MOCK_BRIDGE_OWNER_ECHO === '1') readyLine.ownerId = process.env.TCAUTO_OWNER_ID ?? null;
+if (process.env.MOCK_BRIDGE_OWNER_ECHO === '1') {
+  readyLine.ownerId = process.env.TCAUTO_OWNER_ID ?? null;
+  readyLine.ownerPid = process.env.TCAUTO_OWNER_PID ?? null;
+}
+if (process.env.MOCK_BRIDGE_OWNER_PID_FILE) fs.appendFileSync(process.env.MOCK_BRIDGE_OWNER_PID_FILE, `${process.env.TCAUTO_OWNER_PID ?? ''}\n`);
 // #162: one line "<TCAUTO_OWNER_ID>" per bridge start, so a test can compare the owner id across runtimes
 if (process.env.MOCK_BRIDGE_OWNER_FILE) fs.appendFileSync(process.env.MOCK_BRIDGE_OWNER_FILE, `${process.env.TCAUTO_OWNER_ID ?? ''}\n`);
 write(readyLine);
