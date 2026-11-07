@@ -152,9 +152,15 @@ function Reset-TcSolution {
              Solution.Projects (without Miscellaneous Files) >= 1, Solution.SolutionBuild and its
              ActiveConfiguration are set and (when required) LookupTreeItem('TIPC') answers with
              the expected PLCs below it. A reload prompt seen while a read gets no answer (or in
-             a last scan at the deadline) goes back to step 1 (#176; the 5-prompt limit and
-             -TimeoutSec cover the whole call; after the Yes path or a reopen the full path runs
-             again, data.* keeps accumulating); any other dialog, or a reload prompt with 5 already
+             a last scan at the deadline) goes back to step 1 (#176; the 5-prompt limit covers the
+             whole call; the answers and the Solution.FullName / readback polls share what is left of
+             -TimeoutSec, while Documents.CloseAll, Solution.Close and Solution.Open are each capped
+             by -TimeoutSec on their own, so a rerun can take longer than -TimeoutSec in total.
+             The full guard / 1b / close / reopen path runs again only when NeedReopen (a No /
+             Ignore / WM_CLOSE answer, or the prompt went away by itself) or YesPathDone (the Yes
+             path was done) is set; with neither (e.g. no prompt at first, a project prompt only
+             after the reopen readback, answered Yes) the Yes-only path runs; data.* keeps
+             accumulating); any other dialog, or a reload prompt with 5 already
              handled -> IDE_MODAL_DIALOG; IDE_CRASHED during a read -> IDE_CRASHED
              at once; not loaded in time -> SOLUTION_RELOAD_INCOMPLETE. Every one is recorded as
              code-changed (the files may have been reloaded).
@@ -513,7 +519,12 @@ function Reset-TcSolution {
                         # reloads the project the UI Automation scan runs into its 5 s timeout, and an
                         # incomplete scan here would fail closed). Dialogs that come up later are found
                         # by the next steps: the Yes-path Solution.FullName wait (tolerates an incomplete
-                        # scan), Connect-TcIde, the readback (Test-TcResetLoaded, #176).
+                        # scan), Connect-TcIde, the readback (Test-TcResetLoaded, #176). That holds on the
+                        # Yes-only path. On the full path (NeedReopen / YesPathDone already true) the next
+                        # scans are the guard (tolerates an incomplete scan) and, after a failed
+                        # Documents.CloseAll / Solution.Close, Find-TcResetDialog (does not tolerate one:
+                        # fails closed); if XAE is still reloading then it may answer
+                        # MODAL_SCAN_INCOMPLETE (inference, not measured).
                         return $null
                     }
                     $handled = $true
@@ -708,11 +719,12 @@ function Reset-TcSolution {
     # Steps 1, Yes-only path, guard, 1b, Documents.CloseAll and Solution.Close run again whenever a
     # reload prompt comes up while Solution.FullName is polled or one of these steps fails / reads
     # back incomplete (at most 5 prompts in total, Invoke-TcResetDialogStep; the polls share
-    # -TimeoutSec). XAE notices a disk change with a delay, so the prompt may come up after the
+    # -TimeoutSec: the answers and the polls share what is left of it, Documents.CloseAll /
+    # Solution.Close / Solution.Open are each capped by it, so a rerun can exceed it in total). XAE notices a disk change with a delay, so the prompt may come up after the
     # guard (#87, 2026-11-02). Nothing is closed before Solution.Close succeeds.
     # Solution.Open, the reconnect and the readback run inside the loop too: a reload prompt seen by
     # the readback (either path) sends it back to step 1 (#176). Every pass either returns or
-    # continues on a dialog that step 1 counts, so the loop ends within 5 prompts / -TimeoutSec.
+    # continues on a dialog that step 1 counts, so the loop ends within 5 prompts (or -TimeoutSec running out in a poll).
     while ($true) {
         $stepFail = Invoke-TcResetDialogStep -FirstDialog $pendingDialog
         $pendingDialog = $null
@@ -1045,7 +1057,8 @@ function Reset-TcSolution {
         $loadFail = Test-TcResetLoaded -Where 'Solution.Open'
         if ($loadFail -is [System.Collections.IDictionary]) {
             # #176: a reload prompt came up during the readback after the reopen: back to step 1
-            # (Invoke-TcResetDialogStep: the 5-prompt limit and -TimeoutSec cover the whole call).
+            # (Invoke-TcResetDialogStep: the 5-prompt limit covers the whole call; answers and polls share what
+            # is left of -TimeoutSec, the COM steps are each capped by it on their own).
             # The state stays: NeedReopen / YesPathDone send the loop down the full guard / 1b /
             # close / reopen path again; only when neither is set (no prompt before) can a Yes
             # take the Yes-only path. The loop runs on the IDE Connect-TcIde re-bound.
