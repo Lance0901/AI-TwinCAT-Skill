@@ -689,6 +689,34 @@ try {
         (@($res.data.currentChildren) -join '|') -eq 'Term 7 (EK1200)' -and $res.data.rawChildCount -eq 3) (Json $res)
     $res = New-TcTreeItem -Path $g -Name 'Term 99 (Probe187)' -Before 'Term 7 (EK1200)'
     Check 'create-187-before-direct-child-ok' ($res.success -and $res.data.dryRun -eq $true) (Json $res)
+    # 250 direct children: names cut at 200, childCount not
+    Reset-Mock
+    $h = 'TIID^Device 13 (EtherCAT)'
+    $null = Add-MockNode $h
+    1..250 | ForEach-Object { $null = Add-MockNode ("$h^Term {0} (EL1008)" -f $_) }
+    $res = Remove-TcTreeItem -Path $h -ConfirmName 'Device 13 (EtherCAT)'
+    Check 'delete-187-many-children-truncated' ($res.success -and $res.data.childCount -eq 250 -and @($res.data.children).Count -eq 200 -and
+        $res.data.childrenTruncated -eq $true -and $res.data.childrenUnreadable -eq 0 -and $res.data.rawChildCount -eq 250) ("{0} {1}" -f $res.data.childCount, @($res.data.children).Count)
+    $res = New-TcTreeItem -Path $h -Name 'Term 999 (EL1008)'
+    Check 'create-187-many-children-truncated' ($res.success -and @($res.data.currentChildren).Count -eq 200 -and $res.data.childrenTruncated -eq $true -and $res.data.rawChildCount -eq 250) ("{0}" -f @($res.data.currentChildren).Count)
+    # one Child(i) cannot be read: still counted in childCount, reported in childrenUnreadable
+    Reset-Mock
+    $u = 'TIID^Device 14 (EtherCAT)'
+    $null = Add-MockNode $u
+    foreach ($tn in 'Term 1 (EL1008)', 'Term 2 (EL1008)', 'Term 3 (EL1008)') { $null = Add-MockNode "$u^$tn" }
+    $global:T.Nodes[$u] | Add-Member -Force ScriptMethod Child {
+        param($i)
+        if ($i -eq 2) { throw [System.Runtime.InteropServices.COMException]::new('Unspecified error', -2147467259) }
+        $global:T.Nodes[$this.Kids[$i - 1]]
+    }
+    $res = Remove-TcTreeItem -Path $u -ConfirmName 'Device 14 (EtherCAT)'
+    Check 'delete-187-unreadable-child' ($res.success -and $res.data.childCount -eq 3 -and @($res.data.children).Count -eq 2 -and
+        $res.data.childrenUnreadable -eq 1 -and $res.data.childrenTruncated -eq $true -and $res.data.rawChildCount -eq 3) (Json $res)
+    # ChildCount unreadable: rawChildCount -1
+    $global:T.Nodes[$u].PSObject.Properties.Remove('ChildCount')
+    $global:T.Nodes[$u] | Add-Member ScriptProperty ChildCount { throw 'ChildCount unreadable (mock)' }
+    $res = Remove-TcTreeItem -Path $u -ConfirmName 'Device 14 (EtherCAT)'
+    Check 'delete-187-childcount-unreadable' ($res.success -and $res.data.rawChildCount -eq -1 -and $res.data.childrenUnreadable -eq -1 -and $res.data.childrenTruncated -eq $true) (Json $res)
 
     # extra: DeleteChild checks the item's own parent against the parent derived from -Path
     Reset-Mock

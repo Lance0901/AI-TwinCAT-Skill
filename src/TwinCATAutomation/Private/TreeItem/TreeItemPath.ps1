@@ -166,6 +166,50 @@ function Get-TcTreeItemDirectChild {
     return $out.ToArray()
 }
 
+function Get-TcTreeItemDirectChildInfo {
+    <#
+    .SYNOPSIS
+        { Names; Count; Unreadable; Truncated; RawChildCount } of the direct children of a tree item (#187).
+    .DESCRIPTION
+        Same counting as LookupTreeItem (Get-TcTreeItem): Count = readable direct children + Child(i) that
+        could not be read; Names are cut at -Max (default $script:TcTreeItemMaxChildNames); Truncated when
+        Count > Names.Count or something was unreadable. RawChildCount is ITcSmTreeItem.ChildCount as XAE
+        reports it (an EtherCAT device also counts the terminals below a coupler, measured 2026-11-08,
+        4024 TcXaeShell 32-bit, BFH-1650: Device 1 = 9, 1 direct child); -1 when it cannot be read.
+        Unreadable is -1 when ChildCount cannot be read (as LookupTreeItem's childrenUnreadable). Busy COM
+        errors are rethrown (Get-TcTreeItemDirectChild).
+    .PARAMETER Item
+        ITcSmTreeItem.
+    .PARAMETER Path
+        Path the caller used to reach -Item; the parent path when PathName cannot be read.
+    .PARAMETER Max
+        Maximum number of names.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Item, [Parameter()][AllowNull()][AllowEmptyString()][string]$Path, [int]$Max = 0)
+    if ($Max -le 0) { $Max = $script:TcTreeItemMaxChildNames }
+    $own = try { [string]$Item.PathName } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($own)) { $own = $Path }
+    $stats = @{}
+    $direct = @(Get-TcTreeItemDirectChild -Item $Item -ParentPath $own -Stats $stats)
+    $unreadable = [int]$stats['Unreadable']
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($k in $direct) {
+        if ($names.Count -ge $Max) { break }
+        try { $names.Add([string]$k.Item.Name) } catch { continue }
+    }
+    $raw = -1
+    if (-not $stats['ChildCountUnreadable']) { try { $raw = [int]$Item.ChildCount } catch { $raw = -1 } }
+    $count = $direct.Count + $unreadable
+    [PSCustomObject]@{
+        Names         = $names.ToArray()
+        Count         = $count
+        Unreadable    = $(if ($stats['ChildCountUnreadable']) { -1 } else { $unreadable })
+        Truncated     = (($count -gt $names.Count) -or ($unreadable -ne 0) -or [bool]$stats['ChildCountUnreadable'])
+        RawChildCount = $raw
+    }
+}
+
 function Get-TcTreeItemChildNames {
     <#
     .SYNOPSIS

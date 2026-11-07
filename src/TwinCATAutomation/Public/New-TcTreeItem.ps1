@@ -12,7 +12,7 @@ function New-TcTreeItem {
         parent in error.hint), no child with Name exists (TREEITEM_ALREADY_EXISTS), Before is an
         existing child (LookupTreeItem Path^Before; TREEITEM_NOT_FOUND).
         DryRun (default true): CreateChild is NOT called; data.dryRun=true, data.plannedPath,
-        data.currentChildren (direct children only), data.rawChildCount (ChildCount as XAE reports it; an
+        data.currentChildren (direct children only), data.childrenTruncated, data.rawChildCount (ChildCount as XAE reports it, -1 when unreadable; an
         EtherCAT device also counts the terminals below a coupler, #187).
         data.writeCalled = true once CreateChild is called (absent when the call was never made).
         DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
@@ -87,13 +87,14 @@ function New-TcTreeItem {
         $parent = $r.Item
         # $children = the raw Child(i) list: the before/after comparison (Test-TcTreeItemChildrenAdded) must
         # use the same list on both sides. What is reported (currentChildren, the -Before hint) lists the
-        # direct children only: an EtherCAT device's Child(i) also returns the terminals below a coupler (#187).
+        # direct children only: an EtherCAT device's Child(i) also returns the terminals below a coupler
+        # (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: Device 1 ChildCount 9, 1 direct child) (#187).
         $children = @(Get-TcTreeItemChildNames -Item $parent)
-        $directChildren = @(Get-TcTreeItemChildNames -Item $parent -DirectOnly -ParentPath $Path)
-        $rawChildCount = 0
-        try { $rawChildCount = [int]$parent.ChildCount } catch { if (Test-TcComMustRethrow -ErrorRecord $_) { throw } }
+        $info = Get-TcTreeItemDirectChildInfo -Item $parent -Path $Path
+        $directChildren = @($info.Names)
         $data | Add-Member -NotePropertyName currentChildren -NotePropertyValue $directChildren
-        $data | Add-Member -NotePropertyName rawChildCount -NotePropertyValue $rawChildCount
+        $data | Add-Member -NotePropertyName childrenTruncated -NotePropertyValue $info.Truncated
+        $data | Add-Member -NotePropertyName rawChildCount -NotePropertyValue $info.RawChildCount
 
         $existing = Find-TcTreeItemNoThrow -SysManager $sm -Path $plannedPath
         if ($null -ne $existing) {
