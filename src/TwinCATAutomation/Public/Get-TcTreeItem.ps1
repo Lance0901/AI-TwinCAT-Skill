@@ -8,7 +8,12 @@ function Get-TcTreeItem {
         TIRT^PlcTask, TIPC^MyPlc^MyPlc Project^POUs^MAIN, TIID^Device 1 (EtherCAT). Wildcards are not
         accepted (TREEITEM_PATH_INVALID).
         data: name, path (PathName), itemType, subType, subTypeName, type (readable name for known PLC
-        item types), childCount, children[] (name, path, itemType, subType, type), childrenTruncated.
+        item types), disabled, disabledState, childCount, children[] (name, path, itemType, subType,
+        type, disabled, disabledState), childrenTruncated.
+        disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED /
+        SMDS_DISABLED / SMDS_PARENT_DISABLED, InfoSys
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842771467.html); disabled is
+        $true for the last two. Both $null when Disabled cannot be read (#172).
         A missing path returns TREEITEM_NOT_FOUND; error.hint and data.nearestPath / nearestChildren
         name the nearest existing parent and its children.
         Prefer the dedicated tools (GetProjectTree, GetIoTree, GetPouCode) when they cover the node.
@@ -48,7 +53,7 @@ function Get-TcTreeItem {
                     $c = $item.Child($i)
                     if ($null -eq $c) { continue }
                     $cs = Get-TcTreeItemSummary -Item $c
-                    $kids.Add([PSCustomObject]@{ name = $cs.name; path = $cs.path; itemType = $cs.itemType; subType = $cs.subType; type = $cs.type })
+                    $kids.Add([PSCustomObject]@{ name = $cs.name; path = $cs.path; itemType = $cs.itemType; subType = $cs.subType; type = $cs.type; disabled = $cs.disabled; disabledState = $cs.disabledState })
                 }
                 catch {
                     if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
@@ -65,6 +70,8 @@ function Get-TcTreeItem {
             subType           = $s.subType
             subTypeName       = $s.subTypeName
             type              = $s.type
+            disabled          = $s.disabled
+            disabledState     = $s.disabledState
             childCount        = $s.childCount
             children          = @($info.Children)
             childrenTruncated = ($s.childCount -gt @($info.Children).Count)

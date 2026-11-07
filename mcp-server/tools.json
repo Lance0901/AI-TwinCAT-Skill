@@ -1221,7 +1221,7 @@
                   {
                       "name":  "GetIoTree",
                       "cmdlet":  "Get-TcIoTree",
-                      "description":  "Reads the current I/O device tree (TIID subtree) and returns as JSON.",
+                      "description":  "Reads the current I/O device tree (TIID subtree) and returns as JSON. Every node has name, path, disabled, disabledState and children; disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED / SMDS_DISABLED / SMDS_PARENT_DISABLED), disabled is true for the last two, both null when Disabled cannot be read.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true
@@ -1666,7 +1666,7 @@
                   {
                       "name":  "LookupTreeItem",
                       "cmdlet":  "Get-TcTreeItem",
-                      "description":  "Generic tree tool, read-only: look up ONE tree item by its full path (ITcSysManager.LookupTreeItem, TE1000 v1.7.0 5.1.1.3) and return name, itemType, subType, subTypeName, type, childCount and children[] (name, path, itemType, subType, type). Path is the full tree path separated by ^, e.g. TIRT^PlcTask, TIPC^MyPlc^MyPlc Project^POUs, TIID^Device 1 (EtherCAT); wildcards * ? return TREEITEM_PATH_INVALID. A missing path returns TREEITEM_NOT_FOUND whose error.hint and data.nearestPath / nearestChildren name the nearest existing parent and its children. Prefer GetProjectTree / GetIoTree / GetPouCode when they cover the node.",
+                      "description":  "Generic tree tool, read-only: look up ONE tree item by its full path (ITcSysManager.LookupTreeItem, TE1000 v1.7.0 5.1.1.3) and return name, itemType, subType, subTypeName, type, disabled, disabledState, childCount and children[] (name, path, itemType, subType, type, disabled, disabledState). disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED / SMDS_DISABLED / SMDS_PARENT_DISABLED), disabled is true for the last two, both null when Disabled cannot be read. Path is the full tree path separated by ^, e.g. TIRT^PlcTask, TIPC^MyPlc^MyPlc Project^POUs, TIID^Device 1 (EtherCAT); wildcards * ? return TREEITEM_PATH_INVALID. A missing path returns TREEITEM_NOT_FOUND whose error.hint and data.nearestPath / nearestChildren name the nearest existing parent and its children. Prefer GetProjectTree / GetIoTree / GetPouCode when they cover the node.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true

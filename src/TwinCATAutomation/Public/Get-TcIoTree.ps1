@@ -1,7 +1,10 @@
 function Get-TcIoTree {
     <#
     .SYNOPSIS
-        Reads the current I/O device tree (TIID subtree) and returns as JSON.
+        Reads the current I/O device tree (TIID subtree) and returns as JSON. Every node has name, path, disabled, disabledState and children; disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED / SMDS_DISABLED / SMDS_PARENT_DISABLED), disabled is true for the last two, both null when Disabled cannot be read.
+    .DESCRIPTION
+        disabled / disabledState: Get-TcTreeItemDisabledState (#172). DISABLED_STATE values: InfoSys
+        https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842771467.html.
     #>
     [CmdletBinding()]
     param()
@@ -22,10 +25,14 @@ function Get-TcIoTree {
         $itemName = try { $item.Name } catch { 'unknown' }
         $itemPath = try { $item.PathName } catch { '' }
 
+        $dis = Get-TcTreeItemDisabledState -Item $item
+
         $node = [PSCustomObject]@{
-            name     = $itemName
-            path     = $itemPath
-            children = @()
+            name          = $itemName
+            path          = $itemPath
+            disabled      = $dis.disabled
+            disabledState = $dis.disabledState
+            children      = @()
         }
 
         try {

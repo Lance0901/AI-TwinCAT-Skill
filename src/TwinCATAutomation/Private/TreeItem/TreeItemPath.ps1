@@ -6,6 +6,10 @@
 #   5.1.1.3 ITcSysManager::LookupTreeItem (p.38): path name separated by '^', TSM_E_ITEMNOTFOUND when it
 #           cannot be resolved (numeric value 0x98510001 is measured, see ConvertTo-TcTsmErrorCode).
 #   5.2.1   ITcSmTreeItem (p.56): Name, PathName, ItemType, ItemSubType, ItemSubTypeName, ChildCount, Child.
+#   ITcSmTreeItem.Disabled (RW): a DISABLED_STATE value although the property table says BOOL
+#           (https://infosys.beckhoff.com/content/1033/tcautomationinterface/12425809675.html);
+#           DISABLED_STATE: SMDS_NOT_DISABLED = 0, SMDS_DISABLED = 1, SMDS_PARENT_DISABLED = 2 (read-only,
+#           set when a parent is disabled) (https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842771467.html).
 
 # Top-level abbreviations that are probed when not even the first path segment resolves. Taken from the
 # paths used in TE1000 v1.7.0 samples (TIPC, TIID, TIRC, TIRS, TIRT 6.3.1, TINC 6.3.2); only the ones
@@ -89,13 +93,39 @@ function Get-TcTreeItemChildNames {
     return $names.ToArray()
 }
 
+# DISABLED_STATE value -> name (InfoSys link in the header).
+$script:TcDisabledStateNames = @{ 0 = 'SMDS_NOT_DISABLED'; 1 = 'SMDS_DISABLED'; 2 = 'SMDS_PARENT_DISABLED' }
+
+function Get-TcTreeItemDisabledState {
+    <#
+    .SYNOPSIS
+        { disabled; disabledState } of a tree item from ITcSmTreeItem.Disabled (#172).
+    .DESCRIPTION
+        disabledState: the DISABLED_STATE name (SMDS_NOT_DISABLED / SMDS_DISABLED /
+        SMDS_PARENT_DISABLED); disabled: $true for SMDS_DISABLED and SMDS_PARENT_DISABLED (the item is
+        not active either way), $false for SMDS_NOT_DISABLED. Both $null when Disabled cannot be read
+        or holds a value that is not one of the three: never guessed.
+    .PARAMETER Item
+        ITcSmTreeItem.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Item)
+    $v = $null
+    try { $raw = $Item.Disabled; if ($null -ne $raw) { $v = [int]$raw } } catch { $v = $null }
+    if ($null -eq $v -or -not $script:TcDisabledStateNames.ContainsKey($v)) {
+        return [PSCustomObject]@{ disabled = $null; disabledState = $null }
+    }
+    [PSCustomObject]@{ disabled = ($v -ne 0); disabledState = $script:TcDisabledStateNames[$v] }
+}
+
 function Get-TcTreeItemSummary {
     <#
     .SYNOPSIS
-        { name; path; itemType; subType; subTypeName; type; childCount } of a tree item.
+        { name; path; itemType; subType; subTypeName; type; childCount; disabled; disabledState } of a tree item.
     .DESCRIPTION
         type: name from $script:TcPlcItemTypeNames (Get-TcProjectTree) when the ItemType is known,
-        else the number as text. Unreadable properties are -1 / $null.
+        else the number as text. disabled / disabledState: Get-TcTreeItemDisabledState.
+        Unreadable properties are -1 / $null.
     .PARAMETER Item
         ITcSmTreeItem.
     #>
@@ -109,6 +139,7 @@ function Get-TcTreeItemSummary {
     $childCount = try { [int]$Item.ChildCount } catch { 0 }
     $type = [string]$itemType
     if ($null -ne $script:TcPlcItemTypeNames -and $script:TcPlcItemTypeNames.ContainsKey($itemType)) { $type = $script:TcPlcItemTypeNames[$itemType] }
+    $dis = Get-TcTreeItemDisabledState -Item $Item
     [PSCustomObject]@{
         name        = $name
         path        = $path
@@ -116,7 +147,9 @@ function Get-TcTreeItemSummary {
         subType     = $subType
         subTypeName = $subTypeName
         type        = $type
-        childCount  = $childCount
+        childCount    = $childCount
+        disabled      = $dis.disabled
+        disabledState = $dis.disabledState
     }
 }
 
