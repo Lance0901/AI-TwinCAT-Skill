@@ -11,11 +11,18 @@ function Get-TcSysManager {
         variable is cleared on every scan that completes without an exception.
     .PARAMETER Refresh
         Force re-scan of solution projects, clearing the cached ITcSysManager.
+    .PARAMETER MaxRetries
+        Attempts of the scan (Invoke-TcComRetry -MaxRetries). Default 5; 1 for a caller that
+        polls under its own deadline (Reset-TcSolution readback, #135).
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
-        [switch]$Refresh
+        [switch]$Refresh,
+
+        [Parameter()]
+        [ValidateRange(1, 20)]
+        [int]$MaxRetries = 5
     )
 
     Assert-TcConnection
@@ -34,7 +41,7 @@ function Get-TcSysManager {
 
     try {
         # All DTE/COM access wrapped in Invoke-TcComRetry (IDE busy -> backoff retry)
-        $sysManager = Invoke-TcComRetry -OperationName 'Scan solution projects' -ScriptBlock {
+        $sysManager = Invoke-TcComRetry -OperationName 'Scan solution projects' -MaxRetries $MaxRetries -ScriptBlock {
             $found = $null
             $solution = $script:TcDte.Solution
             if ($null -eq $solution -or $solution.Projects.Count -eq 0) {

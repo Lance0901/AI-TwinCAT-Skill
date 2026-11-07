@@ -9,7 +9,15 @@ function Close-TcReloadPrompt {
         -Answer Close (default, the original behaviour) posts WM_CLOSE: Reset-TcSolution
         closes and reopens the whole solution right afterwards, so the answer does not matter.
         -Answer Yes clicks IDYES by control id (language independent); Reset-TcSolution uses
-        it for the project prompt so XAE reloads the project itself.
+        it for the project prompt so XAE reloads the project itself. -Answer No (IDNO 7) is
+        Reset-TcSolution's fallback for a project prompt whose Yes failed twice: an MB_YESNO box
+        ignores WM_CLOSE (measured 2026-11-07, Windows 11 26200: MB_YESNO stayed open, MB_YESNOCANCEL
+        closed; MessageBox docs: without a Cancel button ESC / close has no effect,
+        https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messagebox).
+        -Answer Ignore clicks control id 1412 of the VS2022 solution reload prompt (ReloadTarget
+        'solution', #106; measured 2026-11-03 VS2022 zh-TW, TcXaeShell / other languages not
+        verified). Reset-TcSolution answers Ignore, not Reload (259): Reload made VS ask at once
+        whether to save the dirty .tsproj (measured 2026-11-07, 4026 VS2022 zh-TW).
         The window must belong to the connected IDE process ($script:TcIdeProcessId); any
         other window is refused (Close-TcMessageBox).
         Measured 2026-10-20 (4024 32-bit XAE): the file prompt is gone ~2 s after WM_CLOSE.
@@ -23,12 +31,14 @@ function Close-TcReloadPrompt {
     .PARAMETER Dialog
         Dialog record from Find-TcIdeModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd }).
     .PARAMETER Answer
-        Yes | No | Ok | Cancel | Close. Default Close.
+        Yes | No | Ok | Cancel | Ignore | Close. Default Close.
     .PARAMETER TimeoutSec
         How long to wait for the dialog to disappear. Default 8.
     .OUTPUTS
-        Hashtable @{ Dismissed = [bool]; Reason = [string]; Method = [string]; Answer = [string];
-        NextDialog = <dialog record or $null> }.
+        Hashtable @{ Dismissed = [bool]; Reason = [string]; Method = [string]; Sent = [bool];
+        Answer = [string]; NextDialog = <dialog record or $null>; ControlId = [int]; BmClick;
+        WmCommand; SendReason }. ControlId / BmClick / WmCommand / SendReason are passed on from
+        Close-TcMessageBox (SendReason = its Reason; see its OUTPUTS).
     #>
     [CmdletBinding()]
     param(
@@ -36,7 +46,7 @@ function Close-TcReloadPrompt {
         [object]$Dialog,
 
         [Parameter()]
-        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Close')]
+        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Ignore', 'Close')]
         [string]$Answer = 'Close',
 
         [Parameter()]
@@ -50,12 +60,20 @@ function Close-TcReloadPrompt {
         else { $hp = $Dialog.PSObject.Properties['Hwnd']; if ($null -ne $hp) { $hwnd = [long]$hp.Value } }
     }
     catch { $hwnd = 0 }
-    $out = @{ Dismissed = $false; Reason = $null; Method = $null; Sent = $false; Answer = $Answer; NextDialog = $null }
+    $out = @{ Dismissed = $false; Reason = $null; Method = $null; Sent = $false; Answer = $Answer; NextDialog = $null
+        ControlId = 0; BmClick = $null; WmCommand = $null; SendReason = $null }
     if ($hwnd -le 0) { $out.Reason = 'dialog window handle unknown'; return $out }
 
     $send = Close-TcMessageBox -Hwnd ([IntPtr]$hwnd) -Answer $Answer
     $out.Method = $send.Method
     $out.Sent = [bool]$send.Sent
+    $out.SendReason = [string]$send.Reason
+    try { $out.ControlId = [int]$send.ControlId } catch { $out.ControlId = 0 }
+    # A WPF box answered through UI Automation has no Win32 control id (2026-11-07, 4026 VS2022:
+    # the requested id was reported although UIA_INVOKE clicked the button): report 0.
+    if ([string]$send.Method -like 'UIA_*') { $out.ControlId = 0 }
+    $out.BmClick = $send.BmClick
+    $out.WmCommand = $send.WmCommand
     if (-not $send.Sent) {
         if ($send.Reason -eq 'dialog already gone') { $out.Dismissed = $true }
         $out.Reason = $send.Reason

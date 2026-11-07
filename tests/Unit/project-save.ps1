@@ -66,6 +66,11 @@ $tsProject = New-Object PSObject
 $tsProject | Add-Member -NotePropertyName FullName -NotePropertyValue $tsproj
 $tsProject | Add-Member -NotePropertyName UniqueName -NotePropertyValue 'Sys\Sys.tsproj'
 $tsProject | Add-Member -MemberType ScriptMethod -Name Save -Value { $global:Mock.Saves++; if ($null -ne $global:Mock.OnSave) { & $global:Mock.OnSave } }
+# .Object of the .tsproj project = ITcSysManager (Reset-TcSolution step 1b uses Get-TcSysManager -Refresh,
+# #106; its readback looks up TIPC, #135 F5)
+$global:TsSm = [PSCustomObject]@{ Mock = $true }
+$global:TsSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) if ($p -eq 'TIPC') { [PSCustomObject]@{ Name = 'TIPC'; ChildCount = 0 } } else { $null } }
+$tsProject | Add-Member -NotePropertyName Object -NotePropertyValue $global:TsSm
 $tsProject2 = [PSCustomObject]@{ FullName = $tsproj2; UniqueName = 'Sys2\Sys2.tsproj' }
 $misc = [PSCustomObject]@{ FullName = ''; UniqueName = '<MiscFiles>' }
 $projects = New-Object PSObject
@@ -74,6 +79,9 @@ $projects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) sw
 $solution = New-Object PSObject
 $solution | Add-Member -NotePropertyName Projects -NotePropertyValue $projects
 $solution | Add-Member -NotePropertyName FullName -NotePropertyValue $sln
+# #135 F5 readback: a loaded solution
+$solution | Add-Member -NotePropertyName IsOpen -NotePropertyValue $true
+$solution | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } })
 $solution | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:Mock.Closed = $true }
 $solution | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:Mock.Opened = $true }
 $docs = New-Object PSObject
@@ -246,7 +254,7 @@ try {
     # --- Reset-TcSolution step 1b (M1) ---
     & $mod {
         function script:Connect-TcIde { [CmdletBinding()] param([string]$SolutionPath, [string]$ProgId, [switch]$NoLaunch)
-            $script:TcSysManager = [PSCustomObject]@{ Mock = $true }   # Reset released it
+            $script:TcSysManager = $global:TsSm   # Reset released it
             [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
         function script:Save-TcPlcProject { [CmdletBinding()] param([string]$PlcName, [string[]]$ExpectFile, [string[]]$ExpectLibrary, [int]$TimeoutSec = 60)
             $global:Mock.GuardSave = @($ExpectFile)

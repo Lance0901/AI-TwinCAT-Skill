@@ -286,6 +286,12 @@ $sol = [PSCustomObject]@{ Mock = $true }
 $sol | Add-Member -MemberType ScriptProperty -Name FullName -Value { if ($global:ResetMode.FullName) { $global:ResetMode.FullName } else { $global:ResetSln } }
 $sol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) if ($global:ResetMode.CloseThrows) { throw 'close failed (mock)' } }
 $sol | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) if ($global:ResetMode.OpenThrows) { throw 'open failed (mock)' } }
+# #135 F5 readback: a loaded solution (1 project whose .Object is $null: the ITcSysManager comes from Connect-TcIde)
+$sol | Add-Member -NotePropertyName IsOpen -NotePropertyValue $true
+$solProjects = [PSCustomObject]@{ Count = 1 }
+$solProjects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ Name = 'Demo'; UniqueName = 'Demo\Demo.tsproj'; Object = $null } }
+$sol | Add-Member -NotePropertyName Projects -NotePropertyValue $solProjects
+$sol | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } })
 $docs = [PSCustomObject]@{ Count = 1 }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) if ($global:ResetMode.CloseAllThrows) { throw 'closeall failed (mock)' } }
 $resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
