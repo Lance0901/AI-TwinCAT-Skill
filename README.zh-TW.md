@@ -8,6 +8,27 @@
 
 TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 <!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
+## 安裝(MCP server)
+
+模組以 **TcAuto MCP server** 的形式提供給 Claude Code、Claude Desktop 與 Codex。需求：Windows 10/11、TwinCAT 3.1 XAE(4024 或 4026);客戶機器**不需要**預先安裝 Node.js 或 git。client 只註冊一次,指向安裝在 `%LOCALAPPDATA%\TwinCATAutomation\` 的小型 launcher;之後換版用 MCP tool `ReloadRuntime`,不必重開 client。完整說明：[docs/setup-mcp.md](docs/setup-mcp.md)。
+
+### 客戶安裝(release zip)
+
+1. 從 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 下載 `TcAuto-<version>.zip` 與 `.sha256`,核對 SHA256。**目前尚未發佈任何 Release**;發佈前請在 checkout 裡用 `powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1` 自行打包(輸出 `dist\TcAuto-<version>.zip`)。
+2. 解除封鎖(Unblock)並解壓縮到本機資料夾;先關閉 Claude Code、Claude Desktop、Codex。
+3. 執行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1`。它會安裝隨 zip 附的 Node.js 24.22.2 `node.exe`(SHA256 已固定)、launcher 與 runtime,並把 `tcauto` 註冊到 Claude Code(user scope,`~/.claude.json`)、Claude Desktop(標準版 `%APPDATA%\Claude\`,MSIX 版 `%LOCALAPPDATA%\Claude-Data\claude_*\`)與 Codex(`~/.codex/config.toml`)。只改 `tcauto` 一項,改之前先備份。選項:`-Clients`、`-Verify`、`-Uninstall`。
+4. 每個 client 重開一次(client 只在 App 啟動時讀 MCP 註冊),然後請它呼叫 `GetStatus`、`ConnectIde`。
+5. **升級**:執行新 zip 的 `Install-TcAuto.ps1`,再呼叫 `ReloadRuntime`;不用重開。
+
+### 開發者安裝(checkout)
+
+1. 在 checkout 裡執行 `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1`(需 Node.js >= 22、npm、git)。它把已 commit 的 runtime 複製到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<commit>\`,並安裝 launcher。
+2. 註冊 launcher 一次:`claude mcp add --scope user tcauto -- node "$env:LOCALAPPDATA\TwinCATAutomation\launcher\tcauto-launcher.mjs"`(Claude Desktop / Codex 見 [docs/setup-mcp.md](docs/setup-mcp.md)「Register by hand」)。
+3. 重開 client 一次。
+4. **升級**:改碼、commit、重跑步驟 1、呼叫 `ReloadRuntime`(只改 PowerShell 模組時用 `ReloadModule` 即可)。`GetStatus` 的 `data.bridge.runtime` 顯示目前執行的 commit。
+
+不再支援直接註冊 `mcp-server/index.js` 或專案 `.mcp.json`。下方的 `TwinCATSetup-*.ps1` 是較早的 **skill** 安裝器(把模組與 `SKILL.md` 裝給用 `Import-Module` 的 AI 工具),不會註冊 MCP server。
+
 ## 功能
 
 | 類別 | 功能 |
@@ -230,7 +251,8 @@ adapters/
 
 - Windows 10/11
 - TwinCAT 3 XAE（Build 4024+）或 Visual Studio 2022 含 TwinCAT 整合
-- PowerShell 5.1+ 或 PowerShell 7+
+- PowerShell 5.1+ 或 PowerShell 7+(MCP server 使用 Windows PowerShell 5.1)
+- MCP 安裝:客戶機器不需其他東西(zip 自帶 `node.exe`);開發者安裝需要 Node.js >= 22、npm、git
 - Windows PowerShell 必須允許執行本機腳本(execution policy `RemoteSigned` 或更寬鬆)。若 repo 是從 zip 或瀏覽器下載的,Windows 會把檔案標成「來自網際網路」(Mark-of-the-Web),要先執行一次 `Get-ChildItem -Recurse <repo> | Unblock-File`,否則 `RemoteSigned` 會拒絕這些腳本。
 - .NET Framework（TwinCAT.Ads.dll 所需）
 
@@ -241,7 +263,11 @@ adapters/
 - **Solution platform** — 平台由目標對象決定:active solution platform 必須等於 target platform（UmRT / Usermode Runtime = `TwinCAT OS (x64)`，Windows RT = `TwinCAT RT (x64)`），否則 `Enable-TcConfig` 回 `ACTIVATE_FAILED`（XAE「Check config failed!」，target 上什麼都沒寫；實測 2026-10-21，4026 XAE）。solution platform 底下的 .tsproj 對到別的 project platform 時,切換前就回 `PLATFORM_PROJECT_MISMATCH`（[InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html)）。`Set-TcTarget` 與 `Enable-TcConfig` 從 target 的 TARGETINFO（ADS port 200、IG 0x700，[InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)）讀 platform 並自動切換（`Enable-TcConfig` 另會重新 Build）；TwinCAT 3.1.4026.21~22 的 runtime 對它回 ADS 0x702，所以要帶 `-Platform 'TwinCAT OS (x64)'`（`Set-TcTarget` 不帶會回 `PLATFORM_UNKNOWN`，`Enable-TcConfig` 警告後照舊 Activate；`-NoPlatformFix` 讓不一致改回 `PLATFORM_MISMATCH`）。MCP：`SetTarget` / `EnableConfig` / `RunLifecycle` 的 `Platform`。見 `docs/troubleshooting.md`。
 - **測試 FB 時寫 MAIN 層級變數** — PLC 每個掃描週期都會覆寫 `VAR_INPUT`（參見 Decision #17）。
 
-## Claude Code 安裝
+## Skill 安裝器(不含 MCP):Claude Code / Codex / Antigravity
+
+這些腳本早於上面的 MCP 安裝:它們為用 `Import-Module` 呼叫模組的 AI 工具複製 PowerShell 模組與 `SKILL.md`,不會註冊 MCP server,也不碰 MCP 設定檔。
+
+### Claude Code 安裝
 
 一行指令將 TwinCAT 技能全域安裝到 Claude Code（安裝後任何專案都可用）：
 
@@ -253,7 +279,7 @@ pwsh ./TwinCATSetup-Claude.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
 
-## Codex 安裝
+### Codex 安裝
 
 一行指令將 TwinCAT 技能全域安裝到 Codex（安裝後任何專案都可用）：
 
@@ -268,7 +294,7 @@ pwsh ./TwinCATSetup-Codex.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
 
-## Antigravity 安裝
+### Antigravity 安裝
 
 一行指令將 TwinCAT 技能全域安裝到 Google Antigravity：
 
@@ -280,7 +306,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
-### 安裝版本(三個 installer 共用)
+#### 安裝版本(三個 installer 共用)
 
 每次安裝(含重新安裝)都會在安裝的 `SKILL.md` 旁寫 `tcauto-install-manifest.json`:來源 repo(canonical:https://github.com/Lance0901/AI-TwinCAT-Skill)、模組版本、commit(從 checkout 的 `.git` 檔案讀，不啟動 git;release zip 則讀它帶的 `tcauto-source.json`)、安裝時間與每個安裝檔案的 SHA256。Claude Code / Codex / Antigravity 同一個 schema。
 
@@ -288,19 +314,9 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 - `pwsh ./TwinCATSetup-<Claude|Codex|Antigravity>.ps1 -Verify` 印出 manifest,並與 manifest 及這份 checkout 比對(exit 0 = 一致)。
 - `-SkillDir <目錄>` 安裝 / 驗證其他目錄(Codex 另有 `-CodexHome`);細節見 `docs/troubleshooting.md`「安裝 manifest(#30)」。
 
-## MCP Server 安裝(Claude Desktop / 任何 MCP client)
+## MCP server 參考
 
-同一個模組也能以 TcAuto MCP server(stdio)提供:<!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。
-
-```powershell
-cd mcp-server
-npm install
-npm test          # 不需要 TwinCAT
-```
-
-Claude Code 會自動讀取 repo 的 `.mcp.json`;Claude Desktop 設定見 [docs/setup-mcp.md](docs/setup-mcp.md) 與 [mcp-server/README.md](mcp-server/README.md)。
-
-**客戶機器(不必裝 Node.js、git)**:從 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 下載 `TcAuto-<version>.zip`,驗 SHA256 後執行裡面的 `Install-TcAuto.ps1`:zip 自帶 `node.exe`,並把 TcAuto 註冊到 Claude Code、Claude Desktop 與 Codex(#20)。步驟見 [docs/setup-mcp.md「Customer install (release zip)」](docs/setup-mcp.md#customer-install-release-zip)。
+同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
 
 ## 更新日誌
 

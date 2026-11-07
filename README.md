@@ -8,6 +8,27 @@ A PowerShell module that lets **any AI coding tool** (Claude Code, Codex, Antigr
 
 TwinCAT 3 has a powerful COM-based Automation Interface, but it's notoriously hard to script: modal dialogs block automation, COM type conflicts crash PowerShell, and the lifecycle has undocumented ordering requirements. This module solves all of that, providing <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets that any AI tool can call to build, deploy, and test PLC programs autonomously.
 
+## Install (MCP server)
+
+The module runs as the **TcAuto MCP server** for Claude Code, Claude Desktop and Codex. Needs Windows 10/11 and TwinCAT 3.1 XAE (4024 or 4026); a customer PC does **not** need Node.js or git. The client is registered once with a small launcher installed in `%LOCALAPPDATA%\TwinCATAutomation\`; new versions are switched in with the MCP tool `ReloadRuntime`, no client restart. Full guide: [docs/setup-mcp.md](docs/setup-mcp.md).
+
+### Customer install (release zip)
+
+1. Download `TcAuto-<version>.zip` and `.sha256` from [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) and check the SHA256. **No Release is published yet**; until then build the zip in a checkout with `powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1` (output `dist\TcAuto-<version>.zip`).
+2. Unblock and extract the zip to a local folder; close Claude Code, Claude Desktop and Codex.
+3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1`. It copies the bundled Node.js 24.22.2 `node.exe` (SHA256-pinned), the launcher and the runtime, and registers `tcauto` in Claude Code (user scope, `~/.claude.json`), Claude Desktop (standard `%APPDATA%\Claude\` and MSIX `%LOCALAPPDATA%\Claude-Data\claude_*\`) and Codex (`~/.codex/config.toml`). Only the `tcauto` entry changes, a backup comes first. Options: `-Clients`, `-Verify`, `-Uninstall`.
+4. Restart each client once (clients read the MCP registration only at app start), then ask it to call `GetStatus` and `ConnectIde`.
+5. **Upgrade:** run the new zip's `Install-TcAuto.ps1`, then call `ReloadRuntime`; no restart.
+
+### Developer install (checkout)
+
+1. `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1` in the checkout (needs Node.js >= 22, npm, git). It copies the committed runtime to `%LOCALAPPDATA%\TwinCATAutomation\runtime\<commit>\` and the launcher.
+2. Register the launcher once: `claude mcp add --scope user tcauto -- node "$env:LOCALAPPDATA\TwinCATAutomation\launcher\tcauto-launcher.mjs"` (Claude Desktop / Codex: [docs/setup-mcp.md](docs/setup-mcp.md) "Register by hand").
+3. Restart the client once.
+4. **Upgrade:** edit, commit, rerun step 1, call `ReloadRuntime` (`ReloadModule` when only the PowerShell module changed). `GetStatus` -> `data.bridge.runtime` shows the running commit.
+
+Registering `mcp-server/index.js` or a project `.mcp.json` directly is no longer supported. The `TwinCATSetup-*.ps1` scripts below are the older **skill** installers (module + `SKILL.md` for tools that use `Import-Module`); they do not register the MCP server.
+
 ## Features
 
 | Category | What You Can Do |
@@ -232,7 +253,8 @@ All commands return structured JSON:
 
 - Windows 10/11
 - TwinCAT 3 XAE (Build 4024+) or Visual Studio 2022 with TwinCAT integration
-- PowerShell 5.1+ or PowerShell 7+
+- PowerShell 5.1+ or PowerShell 7+ (the MCP server uses Windows PowerShell 5.1)
+- MCP install: nothing else on a customer PC (the zip brings `node.exe`); Node.js >= 22 + npm + git for the developer install
 - .NET Framework (for TwinCAT.Ads.dll)
 - Windows PowerShell must be allowed to run local scripts (execution policy `RemoteSigned` or looser). If the repository came from a zip or a browser download, Windows marks the files as downloaded from the internet (Mark-of-the-Web): run `Get-ChildItem -Recurse <repo> | Unblock-File` once, otherwise a `RemoteSigned` policy refuses the scripts.
 
@@ -243,7 +265,11 @@ All commands return structured JSON:
 - **Solution platform** -- the target decides the platform: the active solution platform must equal the target platform (UmRT / Usermode Runtime = `TwinCAT OS (x64)`, Windows RT = `TwinCAT RT (x64)`), otherwise `Enable-TcConfig` returns `ACTIVATE_FAILED` (XAE "Check config failed!", nothing written to the target; measured 2026-10-21 on 4026 XAE). A solution platform whose .tsproj maps to another project platform returns `PLATFORM_PROJECT_MISMATCH` before anything is switched ([InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html)). `Set-TcTarget` and `Enable-TcConfig` read the target platform through TARGETINFO (ADS port 200, IG 0x700, [InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)) and switch automatically (`Enable-TcConfig` also rebuilds); the runtime of TwinCAT 3.1.4026.21-22 answers ADS 0x702 there, so pass `-Platform 'TwinCAT OS (x64)'` (`Set-TcTarget` returns `PLATFORM_UNKNOWN` without it, `Enable-TcConfig` warns and activates as before; `-NoPlatformFix` turns a mismatch into `PLATFORM_MISMATCH`). MCP: `SetTarget` / `EnableConfig` / `RunLifecycle` `Platform`. See `docs/troubleshooting.md`.
 - **Write to MAIN-level vars** when testing FBs -- PLC overwrites `VAR_INPUT` every scan cycle (see Decision #17).
 
-## Claude Code Setup
+## Skill installers (without MCP): Claude Code / Codex / Antigravity
+
+These scripts predate the MCP install above: they copy the PowerShell module and `SKILL.md` for AI tools that call the module with `Import-Module`. They do not register the MCP server and do not touch the MCP config files.
+
+### Claude Code Setup
 
 One command to install the TwinCAT skill globally for Claude Code (works in any project after install):
 
@@ -255,7 +281,7 @@ This checks prerequisites and installs the skill + PowerShell module to `~/.clau
 
 To uninstall: `pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
 
-## Codex Setup
+### Codex Setup
 
 One command to install the TwinCAT skill globally for Codex (works in any project after install):
 
@@ -270,7 +296,7 @@ This checks prerequisites (Windows, TwinCAT, ADS DLL, IDE, module) and installs:
 
 To uninstall: `pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
 
-## Antigravity Setup
+### Antigravity Setup
 
 One command to install the TwinCAT skill globally for Google Antigravity:
 
@@ -282,7 +308,7 @@ This checks prerequisites and installs the skill + PowerShell module to `~/.gemi
 
 To uninstall: `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
 
-### Installed version (all three installers)
+#### Installed version (all three installers)
 
 Every install (and re-install) writes `tcauto-install-manifest.json` next to the installed `SKILL.md`: source repository (canonical: https://github.com/Lance0901/AI-TwinCAT-Skill), module version, commit (read from the checkout's `.git` files without starting git, or from the `tcauto-source.json` stamp a release zip carries), install time and the SHA256 of every installed file. Same schema for Claude Code, Codex and Antigravity.
 
@@ -290,19 +316,9 @@ Every install (and re-install) writes `tcauto-install-manifest.json` next to the
 - `pwsh ./TwinCATSetup-<Claude|Codex|Antigravity>.ps1 -Verify` prints the manifest and compares the install with the manifest and with this checkout (exit 0 = match).
 - `-SkillDir <dir>` installs / verifies another folder (`-CodexHome` for Codex's AGENTS.md); details: `docs/troubleshooting.md` "安裝 manifest(#30)".
 
-## MCP Server Setup (Claude Desktop / any MCP client)
+## MCP server reference
 
-The same module is also available as the TcAuto MCP server (stdio) exposing <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`). One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls.
-
-```powershell
-cd mcp-server
-npm install
-npm test          # no TwinCAT needed
-```
-
-Claude Code picks it up from the repo's `.mcp.json`; for Claude Desktop see [docs/setup-mcp.md](docs/setup-mcp.md) and [mcp-server/README.md](mcp-server/README.md).
-
-**Customer PCs (no Node.js, no git):** download `TcAuto-<version>.zip` from the [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases), check its SHA256 and run `Install-TcAuto.ps1` from it: it brings its own `node.exe` and registers TcAuto in Claude Code, Claude Desktop and Codex (#20). Steps: [docs/setup-mcp.md "Customer install (release zip)"](docs/setup-mcp.md#customer-install-release-zip).
+The same module is the TcAuto MCP server (stdio) exposing <!-- generated:mcp-tool-count -->79<!-- /generated --> of the <!-- generated:cmdlet-count -->81<!-- /generated --> cmdlets (`NewProject` is temporarily not offered over MCP, #70; `Get-TcIdeModalDialog` is served by the `GetIdeModalDialog` composite tool, #86) plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. One long-lived Windows PowerShell 5.1 process keeps the IDE/ADS connection state across tool calls. Install: see "Install (MCP server)" at the top; per-client config files, upgrade, uninstall, logs: [docs/setup-mcp.md](docs/setup-mcp.md); tool table: [mcp-server/README.md](mcp-server/README.md). Unit tests without TwinCAT: `cd mcp-server; npm install; npm test`.
 
 ## Development
 

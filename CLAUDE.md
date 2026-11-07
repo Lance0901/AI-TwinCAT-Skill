@@ -1,6 +1,6 @@
 # TwinCAT Automation — AI Tool Guide
 
-PowerShell module for automating the TwinCAT 3 IDE and PLC runtime, for **any AI coding tool** (Claude Code, Codex, Antigravity, ...). `Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force`, or run it as the TcAuto MCP server (tool names = CLI action names, e.g. `ConnectIde`, `BuildProject`, `EnableConfig`, `ReadVariable`): see `docs/setup-mcp.md`.
+PowerShell module for automating the TwinCAT 3 IDE and PLC runtime, for **any AI coding tool** (Claude Code, Codex, Antigravity, ...). `Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force`, or run it as the TcAuto MCP server (tool names = CLI action names, e.g. `ConnectIde`, `BuildProject`, `EnableConfig`, `ReadVariable`), registered once through the installed launcher (customer: `Install-TcAuto.ps1` of the release zip; developer: `scripts/Install-TcAutoRuntime.ps1`; upgrade with `ReloadRuntime`; never register `mcp-server/index.js` or a project `.mcp.json`): see `docs/setup-mcp.md`. `TwinCATSetup-*.ps1` are the older skill installers and do not register the MCP server.
 
 ## Core Workflow (No Dialogs)
 
