@@ -325,7 +325,10 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
     5. 那個 IDE 沒有 modal dialog,掃描也完成。
   - **成功**:attach 那個 IDE(`data.selectedBy = 'orphan-takeover'`、`data.takenOver = true`、`data.previousOwner = { hostPid; hostStartTime; moduleInstanceId; ownerId; hostState; ownerPid; ownerState }`、`data.ownedBySession = true`),之後 `Disconnect-TcIde -Quit` / `-Quit -Kill` 都可以用。紀錄在 attach、modal 檢查和專案掃描(ITcSysManager)都通過**之後**才改寫(#196 review M2:中途失敗回 `success: false` 時擁有權不會轉移),改寫前在鎖內重新確認(同一個 IDE 行程、同一個舊 host、host 和 owner 仍不在):擁有者換成本行程(`hostPid` / `hostStartTime` / `moduleInstanceId` / `ownerId` / `ownerPid` / `ownerStartTime`),`takeovers[]` 加一筆(`takenOverAt`、`reason = 'orphan-takeover'`、`previousHostPid` / `previousHostStartTime` / `previousModuleInstanceId` / `previousOwnerId` / `previousOwnerPid`、新的 `hostPid` / `moduleInstanceId`)。鎖內確認不過(`record-changed` / `host-not-gone` / `owner-alive` / `owner-unverifiable`)或寫不進去時，剛才的 attach 會放掉(SilentMode 還原),不留連線。
   - **不成立**:不 attach、不改紀錄，回 `ORPHAN_TAKEOVER_REFUSED`(`data.reason`,`data.otherSession` 照帶);有 dialog 回 `IDE_MODAL_DIALOG`、掃描沒完成回 `MODAL_SCAN_INCOMPLETE`;紀錄檔讀不到或寫不進去回 `LAUNCH_RECORD_UNAVAILABLE`(fail closed)。不會退回其他選 IDE 的路徑。
-  - **限制**:ROT 裡看不到那個 IDE(例如權限層級不同)、或它忙碌時，接管被拒(`not-in-rot` / `ide-busy`),只能請使用者自己關。只有單元測試(`tests/Unit/orphan-takeover-196.ps1`),**需真機**。
+  - **限制**:ROT 裡看不到那個 IDE(例如權限層級不同)、或它忙碌時，接管被拒(`not-in-rot` / `ide-busy`),只能請使用者自己關。單元測試:`tests/Unit/orphan-takeover-196.ps1`。
+  - **實測 2026-11-08**(本機 UmRT、4026 副本 `C:\Temp\Verify-4026-axis`、VS2022 `VisualStudio.DTE.17.0`、registered tcauto 跑 branch runtime commit 49276ed):
+    - 接管成功:headless `claude -p` session 用 ConnectIde 啟動 VS2022(pid 49128)後沒 Quit 就結束(host 50692、owner 49808 都不在);另一個 `claude -p` session `ConnectIde TakeOverOrphan=true` → `success`、`selectedBy = 'orphan-takeover'`、`takenOver = true`、`previousOwner.hostState = ownerState = 'gone'`,接著 `DisconnectIde Quit=true` 成功關掉。
+    - 拒絕(bridge 重開、server 還在):session A 啟動 VS2022(pid 1996)後呼叫 `ReloadModule`(舊 bridge 31332 已不在,owner 56904 還在),另一個 `claude -p` session `TakeOverOrphan=true` → `ORPHAN_TAKEOVER_REFUSED (owner-alive)`,紀錄沒變;session A 再 ConnectIde 仍是 `ownedBySession = true`,`DisconnectIde Quit=true` 成功。
 
 ### 啟動紀錄持久化(#73 / #149)
 
