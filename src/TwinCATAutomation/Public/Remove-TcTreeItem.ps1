@@ -13,7 +13,8 @@ function Remove-TcTreeItem {
         The item's own PathName must have the parent derived from Path (exact), else
         TREEITEM_DELETE_FAILED with data.reason parent-mismatch (data.itemParentPath), in dry-run too.
         DryRun (default true): DeleteChild is NOT called; data.dryRun=true, data.nodeName, data.itemType,
-        data.childCount, data.children.
+        data.childCount, data.children (direct children only, like LookupTreeItem), data.childrenTruncated,
+        data.childrenUnreadable, data.rawChildCount (ChildCount as XAE reports it, -1 when unreadable, #187).
         DryRun=false: backup first - ProduceXml(recursive) of the item (data.backupPath), its disk file
         when known (data.backupFiles), and an ExportChild file of the item into the same folder
         (data.exportPath; restore with ImportChild): .zip for every node below TIPC (XAE refuses .xti
@@ -86,13 +87,21 @@ function Remove-TcTreeItem {
         $nodeName = if ([string]::IsNullOrEmpty($s.name)) { Get-TcTreePathLeaf -Path $Path } else { $s.name }
         $data | Add-Member -NotePropertyName nodeName -NotePropertyValue $nodeName
         $data | Add-Member -NotePropertyName itemType -NotePropertyValue $s.itemType
-        $data | Add-Member -NotePropertyName childCount -NotePropertyValue $s.childCount
+        # childCount / children: direct children only, counted like LookupTreeItem; rawChildCount = ChildCount
+        # as XAE reports it (-1 unreadable). An EtherCAT device also counts the terminals below a coupler
+        # (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: Device 1 ChildCount 9, 1 direct child) (#187).
+        $info = Get-TcTreeItemDirectChildInfo -Item $item -Path $Path
+        $directChildren = @($info.Names)
+        $data | Add-Member -NotePropertyName childCount -NotePropertyValue $info.Count
+        $data | Add-Member -NotePropertyName rawChildCount -NotePropertyValue $info.RawChildCount
         if (-not [string]::Equals($ConfirmName, $nodeName, [System.StringComparison]::Ordinal)) {
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_DELETE_NAME_MISMATCH' -Data $data `
                 -ErrorMessage "-ConfirmName '$ConfirmName' does not equal the name of '$Path' ('$nodeName'); nothing was deleted." `
                 -Hint (Get-TcErrorHint -Code 'TREEITEM_DELETE_NAME_MISMATCH')
         }
-        $data | Add-Member -NotePropertyName children -NotePropertyValue @(Get-TcTreeItemChildNames -Item $item)
+        $data | Add-Member -NotePropertyName children -NotePropertyValue $directChildren
+        $data | Add-Member -NotePropertyName childrenTruncated -NotePropertyValue $info.Truncated
+        $data | Add-Member -NotePropertyName childrenUnreadable -NotePropertyValue $info.Unreadable
         # DeleteChild(name) acts on the parent; the parent is derived from -Path. The item must report
         # that same parent (exact, case-sensitive), else the name could hit a child of another node.
         $itemParentPath = if ([string]::IsNullOrEmpty($s.path)) { $null } else { Get-TcTreePathParent -Path $s.path }
