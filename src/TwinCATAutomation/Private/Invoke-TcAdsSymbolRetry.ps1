@@ -8,9 +8,10 @@ function Invoke-TcAdsSymbolRetry {
     .DESCRIPTION
         Measured 2026-11-08 (4026 VS2022, local UmRT, #26): after a new download (AppTimestamp and
         symbol version 0xF008 changed) a variable handle created before the download answers ADS 0x711
-        "Symbol version is invalid", and in the same ADS connection a NEW handle for that same symbol
-        name answers 0x711 too, until the old handle is released or the connection is reopened. Other
-        symbols of the same connection read correctly. No read returned a wrong value: the failure is
+        "Symbol version is invalid", and in the same ADS connection CreateVariableHandle for that same
+        symbol name returns the SAME handle number (855638551 both times), so the new handle answers
+        0x711 too (reads and writes), until the old handle is released or the connection is reopened.
+        Other symbols of the same connection read correctly. No read returned a wrong value: the failure is
         always the 0x711 error, never a misplaced offset.
         A fresh TcAdsClient (Connect-TcAdsSession with the cached AmsNetId / Port) has no old handles,
         so the access is repeated once on it. A second 0x711 is thrown to the caller unchanged.
