@@ -74,7 +74,8 @@ function Get-TcTreeItemDirectChild {
         ITcSmTreeItem.Child(i) (1-based, up to ChildCount) of an EtherCAT device also returns the terminals
         below a coupler (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: Device 1 ChildCount 9 =
         Term 7 (EK1200) + its 8 terminals, whose PathName is TIID^Device 1 (EtherCAT)^Term 7 (EK1200)^...).
-        Shared by Get-TcIoTree, Get-TcTreeItem (LookupTreeItem) and Get-TcTreeItemChildNames.
+        Shared by Get-TcIoTree, Get-TcTreeItem (LookupTreeItem) and Get-TcTreeItemChildNames -DirectOnly
+        (nearestChildren of TREEITEM_NOT_FOUND).
         Rules, in this order:
         1. A child whose PathName cannot be read (or is empty) is kept: it cannot be placed, and dropping
            it would hide a real child.
@@ -134,23 +135,40 @@ function Get-TcTreeItemDirectChild {
 function Get-TcTreeItemChildNames {
     <#
     .SYNOPSIS
-        Names of the direct children of a tree item (Get-TcTreeItemDirectChild).
+        Names of the children of a tree item (ITcSmTreeItem.ChildCount / Child(i), 1-based).
     .DESCRIPTION
-        At most -Max names, in Child(i) order. Grandchildren that Child(i) returns below an EtherCAT
-        coupler are not listed (#182). A child that cannot be read is skipped. Returns a string array.
+        At most -Max names, in Child(i) order. A child that cannot be read is skipped. Returns a string
+        array. Without -DirectOnly every Child(i) is listed as XAE returns it (the CreateChild /
+        ImportChild / task program checks compare the same raw list before and after, and the task
+        program tools rely on their own parent-mismatch check). -DirectOnly lists only the direct
+        children (Get-TcTreeItemDirectChild, #182): used for nearestChildren of TREEITEM_NOT_FOUND.
     .PARAMETER Item
         ITcSmTreeItem.
     .PARAMETER Max
         Maximum number of names (default $script:TcTreeItemMaxChildNames).
+    .PARAMETER DirectOnly
+        Leave out the grandchildren that Child(i) of an EtherCAT device returns below a coupler.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][object]$Item, [int]$Max = 0)
+    param([Parameter(Mandatory)][object]$Item, [int]$Max = 0, [switch]$DirectOnly)
     if ($Max -le 0) { $Max = $script:TcTreeItemMaxChildNames }
     $names = [System.Collections.Generic.List[string]]::new()
-    $parentPath = try { [string]$Item.PathName } catch { '' }
-    foreach ($k in (Get-TcTreeItemDirectChild -Item $Item -ParentPath $parentPath)) {
-        if ($names.Count -ge $Max) { break }
-        try { $names.Add([string]$k.Item.Name) } catch { continue }
+    if ($DirectOnly) {
+        $parentPath = try { [string]$Item.PathName } catch { '' }
+        foreach ($k in (Get-TcTreeItemDirectChild -Item $Item -ParentPath $parentPath)) {
+            if ($names.Count -ge $Max) { break }
+            try { $names.Add([string]$k.Item.Name) } catch { continue }
+        }
+        return $names.ToArray()
+    }
+    $count = 0
+    try { $count = [int]$Item.ChildCount } catch { $count = 0 }
+    for ($i = 1; $i -le $count -and $names.Count -lt $Max; $i++) {
+        try {
+            $c = $Item.Child($i)
+            if ($null -ne $c) { $names.Add([string]$c.Name) }
+        }
+        catch { continue }
     }
     return $names.ToArray()
 }
@@ -262,7 +280,7 @@ function Get-TcTreeItemNotFoundDetail {
         if ($null -ne $item) {
             return [PSCustomObject]@{
                 nearestPath    = $prefix
-                children       = @(Get-TcTreeItemChildNames -Item $item)
+                children       = @(Get-TcTreeItemChildNames -Item $item -DirectOnly)
                 missingSegment = $segments[$n]
             }
         }

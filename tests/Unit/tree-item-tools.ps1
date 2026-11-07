@@ -279,7 +279,7 @@ try {
     $dev9 = @($res.data.children | Where-Object { $_.name -eq 'Device 9 (EtherCAT)' })[0]
     Check 'iotree-182-parent-path-unreadable' ((@($dev9.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)|Term 5 (EL1008)' -and
         @(@($dev9.children)[0].children).Count -eq 2) ($dev9 | ConvertTo-Json -Depth 8 -Compress)
-    $names = & $mod { param($n) Get-TcTreeItemChildNames -Item $n } $global:T.Nodes[$d]
+    $names = & $mod { param($n) Get-TcTreeItemChildNames -Item $n -DirectOnly } $global:T.Nodes[$d]
     Check 'childnames-182-parent-unknown-min-depth' ((@($names) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)|Term 5 (EL1008)') (@($names) -join '|')
     # Rule 3 on a coupler: its direct children (fewest segments) stay, Term 30 below Term 3 (EK1100) is dropped.
     $k = & $mod { param($n) Get-TcTreeItemDirectChild -Item $n -ParentPath '' } $global:T.Nodes["$d^Term 1 (EK1200)"]
