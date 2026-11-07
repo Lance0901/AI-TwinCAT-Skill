@@ -297,7 +297,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `scan-incomplete`:modal 掃描沒完成，所以沒讀 DTE(帶 `data.modalScan`)。
   - `pid-unconfirmed`:pid 無法確認，見下面 M2。
   - `progid-mismatch`:它是用別的 ProgID 啟動的(`data.progIdMismatch = { requested; launched }`)。
-  - `other-session`:是另一個仍在執行的 TcAuto session(bridge)啟動的(`data.otherSession = { hostPid; moduleInstanceId; processId; pidSource }`),不 attach、不算 owned、`data.ideProcessId = 0`,見「啟動紀錄持久化(#73 / #149)」。
+  - `other-session`:是另一個 TcAuto session(bridge)啟動的(`data.otherSession = { hostPid; hostState; moduleInstanceId; processId; pidSource }`),不 attach、不算 owned、`data.ideProcessId = 0`,見「啟動紀錄持久化(#73 / #149)」。`hostState = 'alive'`:那個 session 還在(或無法確認);`'gone'`:那個 session 已結束，訊息寫「has ended」,hint 會提到 `-TakeOverOrphan`(見下面「孤兒 IDE 接管」)。
   - 那個 IDE 有 modal dialog 時改回 `IDE_MODAL_DIALOG`。
 - **為什麼**:VS2022 冷啟動時，第一次 `Connect-TcIde` 可能在開 solution 前就回 `MODAL_SCAN_INCOMPLETE`;舊版重試時找不到「開著這個 .sln 的 IDE」,又多開一個 VS2022。現在模組記下本 session 為哪個 .sln 啟動了哪個 IDE:DTE 物件、ProgID、確認過的 pid + StartTime。重試時:
   - 那個行程還在(pid 與 StartTime 都相同，回收的 pid 不算),就先掃 modal dialog,再讀 DTE,回應了就 attach(`data.selectedBy = 'session-launched'`,`ownedBySession = true`)。
@@ -312,6 +312,19 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看有沒有 dialog,關掉後重跑同一個 `Connect-TcIde`;還在啟動就稍後重跑。
   - 要換 ProgId，或 IDE 卡死:`data.ownedBySession = true` 時 `Disconnect-TcIde -Quit -Kill`(只殺本 session 確認過的這個 pid)後再 `Connect-TcIde`。
   - `pid-unconfirmed` 時模組不殺任何行程：自己確認並關掉那個 IDE(或確定它已不在),再 `Disconnect-TcIde -ForgetPendingLaunch`(MCP `DisconnectIde ForgetPendingLaunch=true`;只清掉 pid 未確認的啟動紀錄，不關 IDE、不動連線，回 `data.forgottenLaunches`),然後重跑 `Connect-TcIde`。
+  - `other-session` 且 `hostState = 'gone'`:見下面「孤兒 IDE 接管」。
+- **孤兒 IDE 接管(#196)**:
+  - **現象**:worker session(例如 headless `claude -p`)用 ConnectIde 啟動 IDE 後沒 Quit 就結束了。之後任何 session 的 `Connect-TcIde -SolutionPath <sln>` 都回 `IDE_LAUNCH_PENDING`(`probe = 'other-session'`、`hostState = 'gone'`),那個 IDE 永遠接不回、也不能用模組關掉(實測 2026-11-08,registered tcauto master d3644b6,本機 VS2022 devenv 與 4024 TcXaeShell 各一,`pidSource = 'rot-identity'`)。
+  - **預設仍 fail closed**:不帶參數時行為不變，不會自動接管(那個 IDE 可能已經有使用者在用、有未存檔的修改)。
+  - **明確接管**:先問使用者那個 IDE 沒人在用，再重跑同一個 `Connect-TcIde -SolutionPath <sln> -TakeOverOrphan`(MCP `ConnectIde TakeOverOrphan=true`)。全部成立才接管:
+    1. 有 `-SolutionPath`,而且 `launched-ides.json` 有這個 sln(同一套路徑正規化比較)的有效紀錄(IDE 的 pid、StartTime、image name 都和紀錄相同);
+    2. 紀錄的 host 已不在(`hostState = 'gone'`:`hostPid` 不存在，或存在但 StartTime 和 `hostStartTime` 不同，所以回收的 pid 不會被當成原 host);
+    3. pid 已確認(`pidSource` 是 `rot-identity` / `main-window`),`-ProgId`(有給的話)和啟動時的相同;
+    4. ROT 裡那個 pid 的 DTE 可以回應，而且開著這個 sln;
+    5. 那個 IDE 沒有 modal dialog,掃描也完成。
+  - **成功**:attach 那個 IDE(`data.selectedBy = 'orphan-takeover'`、`data.takenOver = true`、`data.previousOwner = { hostPid; hostStartTime; moduleInstanceId; ownerId; hostState }`、`data.ownedBySession = true`),之後 `Disconnect-TcIde -Quit` / `-Quit -Kill` 都可以用。紀錄在鎖內重新確認(同一個 IDE 行程、同一個舊 host、host 仍不在)後改寫：擁有者換成本行程(`hostPid` / `hostStartTime` / `moduleInstanceId` / `ownerId`),`takeovers[]` 加一筆(`takenOverAt`、`reason = 'orphan-takeover'`、`previousHostPid` / `previousHostStartTime` / `previousModuleInstanceId` / `previousOwnerId`、新的 `hostPid` / `moduleInstanceId`)。
+  - **不成立**:不 attach、不改紀錄，回 `ORPHAN_TAKEOVER_REFUSED`(`data.reason`,`data.otherSession` 照帶);有 dialog 回 `IDE_MODAL_DIALOG`、掃描沒完成回 `MODAL_SCAN_INCOMPLETE`;紀錄檔讀不到或寫不進去回 `LAUNCH_RECORD_UNAVAILABLE`(fail closed)。不會退回其他選 IDE 的路徑。
+  - **限制**:ROT 裡看不到那個 IDE(例如權限層級不同)、或它忙碌時，接管被拒(`not-in-rot` / `ide-busy`),只能請使用者自己關。只有單元測試(`tests/Unit/orphan-takeover-196.ps1`),**需真機**。
 
 ### 啟動紀錄持久化(#73 / #149)
 
@@ -348,16 +361,32 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - 有設和沒設 `TCAUTO_STATE_DIR` 的行程用不同的檔案，彼此看不到。
   - **只涵蓋同一個 MCP server 內的 bridge 重啟與 `ReloadModule`,以及同一個 launcher 內的 `ReloadRuntime`(#152 R3-2、#162)**。MCP server 本身重啟(Claude Code 重連、server crash、重開 Claude Code)會產生新的 `TCAUTO_OWNER_ID`,之前啟動的 IDE 變成別的 session 的(fail closed):不算 owned、`-Kill` 被拒，仍擋同一個 .sln 的第二次啟動，直到那個 IDE 改開別的 solution 或結束。
   - 舊 bridge 行程在重啟後仍殘留(沒結束)時，新 bridge 不會接手它的紀錄(視為另一個還活著的 session,`hostState = 'alive'`)。**孤兒 bridge 的出路(#152 N3)**:`data.otherSession.hostPid` 是 `powershell.exe`,而且它所屬的 MCP server 已經不在時，請使用者確認後結束那個行程，再重跑 `Connect-TcIde`(之後同一個 MCP server 的 bridge 才能接手;別的 MCP server 仍然不會)。
-  - 別的 MCP server / 已結束的對話啟動的 IDE(`hostState = 'gone'`,`ownerId` 不同)不會被接手：請使用者確認那個 IDE 不再需要後自己關掉，紀錄就會失效。
+  - 別的 MCP server / 已結束的對話啟動的 IDE(`hostState = 'gone'`,`ownerId` 不同)不會被自動接手：請使用者確認那個 IDE 不再需要後自己關掉，紀錄就會失效;或使用者同意後用 `Connect-TcIde -SolutionPath <sln> -TakeOverOrphan` 明確接管(#196,見「IDE_LAUNCH_PENDING」的孤兒 IDE 接管)。
   - 手動開的 PowerShell(沒有 `TCAUTO_OWNER_ID`)只認 host 是自己的紀錄:`Import-Module -Force` 之後仍算 owned,換一個 PowerShell 就不算。
   - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`、`TCAUTO_LAUNCHER_OWNER_ID` / `TCAUTO_LAUNCHER_PID`(#152 R3-3、#162)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
 ### LAUNCH_RECORD_UNAVAILABLE
 
-- **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。
+- **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。`Connect-TcIde -TakeOverOrphan`(#196)讀不到紀錄檔(`data.reason = 'launch-record-unavailable'`)或接管寫不進去(`'launch-record-write-failed'`)時也回這個碼：沒有 attach、沒有接管。
 - **為什麼**:模組記憶體裡 pid 未確認的紀錄已清掉，但 `launched-ides.json` 讀不到或寫不進去。可能原因：鎖被另一個 TcAuto 行程佔用(等待上限 2 s)、權限不足、檔案被其他程式開著。檔案裡的那筆還在，重啟後的 bridge 仍可能因此回 `IDE_LAUNCH_PENDING`。
-- **下一步**:稍後重跑同一個 `Disconnect-TcIde -ForgetPendingLaunch`。不要手動刪改這個檔案。
+- **下一步**:稍後重跑同一個 `Disconnect-TcIde -ForgetPendingLaunch`(或同一個 `Connect-TcIde -TakeOverOrphan`)。不要手動刪改這個檔案。
+
+### ORPHAN_TAKEOVER_REFUSED
+
+- **現象(#196)**:`Connect-TcIde -SolutionPath <sln> -TakeOverOrphan` 沒接管：沒 attach、沒改 `launched-ides.json`,`data.takenOver = false`,`data.otherSession` 照帶(有紀錄時)。
+- **`data.reason`**:
+  - `solution-path-required`:沒給 `-SolutionPath`。
+  - `no-launch-record`:沒有這個 sln、而且 IDE 行程還在的啟動紀錄。不帶 `-TakeOverOrphan` 重跑。
+  - `owned-by-this-session`:本 session 自己啟動的，沒有東西要接管。不帶 `-TakeOverOrphan` 重跑。
+  - `host-alive`:啟動它的 TcAuto session 還在，或無法確認(`hostPid` 存在且 StartTime 相同、紀錄沒有可解析的 `hostStartTime`、沒有 `hostPid`)。不能接管，照「IDE_LAUNCH_PENDING」處理。
+  - `pid-unconfirmed`:那次啟動的 pid 從沒確認過，認不出是哪個 IDE。使用者自己關掉它後 `Disconnect-TcIde -ForgetPendingLaunch`。
+  - `progid-mismatch`:`-ProgId` 和啟動時的不同。拿掉 `-ProgId` 或改成啟動時的。
+  - `not-in-rot` / `solution-mismatch`(`data.rotSolution`)/ `ide-busy`:ROT 裡沒有那個 pid 可回應、開著這個 sln 的 DTE。等它載入完、或關掉 dialog(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`)後重跑。
+  - `record-changed` / `host-not-gone`:在鎖內改寫時，紀錄已被另一個 session 改掉(例如它先接管了)或 host 又被認為還在。重跑同一個 `Connect-TcIde` 看最新狀態。
+  - `host-start-time-unreadable`:讀不到本行程的 StartTime,無法記錄新擁有者(之後也認不出是自己)。重跑一次，還是失敗就回報。
+- **有 dialog 時**不是這個碼：回 `IDE_MODAL_DIALOG` / `MODAL_SCAN_INCOMPLETE`(`data.reason = 'modal-dialog'` / `'modal-scan-incomplete'`),一樣沒有接管。
+- **禁止的繞道**:不要手動改 `launched-ides.json`、不要 `Stop-Process` 別的 session 的 IDE、不要設 `TCAUTO_OWNER_ID` 冒充那個 session。
 
 ### IDE_TIMEOUT
 
