@@ -30,6 +30,19 @@
         data.stateTrace); any sample that differs returns SYSTEM_STATE_MISMATCH
         (success = false) instead of success.
 
+        Stuck in Config (#194): SYSTEM_STATE_TIMEOUT whose last read was Config and
+        SYSTEM_STATE_MISMATCH whose readback / deviation is Config carry data.licenses (license
+        server, ADS port 30, Get-TcLicenseDiagnosis) and data.diagnostics { dialog; dialogScanComplete;
+        errorList; errorListError; bootPackage; modalScan } (Get-TcRuntimeFailureDiagnostics, the
+        same collection as Enable-TcConfig after Activate). Without an IDE connection the dialog
+        and the Error List are not read: dialogScanComplete $false, modalScan.reason 'no-ide',
+        errorListError 'unavailable: no IDE connection'. The code stays as it is. error.hint
+        follows the diagnostics (Get-TcStuckInConfigHint): ADS 1809 / 0x711 / "symbol version" in
+        the dialog or an Error List row -> ADS_SYMBOL_VERSION_INVALID explanation (Build +
+        Enable-TcConfig -Force); another dialog / row -> its text; a license problem only when the
+        license server reported an expired / invalid license. Inside Enable-TcConfig -Force
+        (set-run) nothing is collected here: Enable-TcConfig adds its own data.diagnostics.
+
         When the target is the local Usermode Runtime and its TcSystemServiceUm process
         disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
         returned right away instead of SYSTEM_STATE_TIMEOUT after -TimeoutSec (data.lastError,
@@ -222,6 +235,51 @@
             $data | Add-Member -NotePropertyName 'probeErrorsDropped' -NotePropertyValue ([int]$wait.ProbeErrorsDropped) -Force
             $data | Add-Member -NotePropertyName 'deadlineCheck' -NotePropertyValue $wait.DeadlineCheck -Force
         }
+        # #194: the runtime stays in / fell back to Config: what XAE says about it (modal dialog,
+        # Error List, Boot package; Private/Get-TcRuntimeFailureDiagnostics.ps1). Never throws and
+        # never changes the result code; without an IDE connection dialog / Error List are marked
+        # unavailable. Skipped inside Enable-TcConfig (its set-run failure collects them itself).
+        $getStuckDiagnostics = {
+            try {
+                $ide = $true
+                try { Assert-TcConnection } catch { $ide = $false }
+                $plat = $null; $ports = @(); $variant = $null; $variantError = $null
+                if ($ide) {
+                    try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { }
+                    $smd = $null
+                    try { $smd = Get-TcSysManager } catch { }
+                    if ($null -ne $smd) {
+                        try { $ports = @(Get-TcPlcProjectList -SysManager $smd | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
+                        # #89: a variant project has its package in _Boot\<Variant>\<Platform>; unknown variant -> no comparison
+                        try { $cv = Read-TcCurrentVariant -SysManager $smd; if ($null -eq $cv.Error) { $variant = [string]$cv.Value } else { $variantError = [string]$cv.Error } } catch { $variantError = $_.Exception.Message }
+                    }
+                }
+                $sln = if ($ide) { $script:TcSolutionPath } else { $null }
+                $d = Get-TcRuntimeFailureDiagnostics -NoIde:(-not $ide) -SolutionPath $sln -Platform $(if ($null -eq $variantError) { $plat } else { $null }) -AmsNetId $AmsNetId -AdsPorts $ports -Variant $variant
+                if ($null -ne $variantError -and $null -ne $d.bootPackage) { $d.bootPackage.reason = "CurrentProjectVariant not readable: $variantError" }
+                $d
+            }
+            catch {
+                [PSCustomObject]@{ dialog = $null; dialogScanComplete = $false; errorList = @(); errorListError = "diagnostics failed: $($_.Exception.Message)"; bootPackage = $null }
+            }
+        }
+        # adds data.licenses / data.diagnostics and returns the hint (#194 rules, Get-TcStuckInConfigHint)
+        $stuckHint = {
+            param([string]$Code)
+            $hint = Get-TcErrorHint -Code $Code
+            $lic = Get-TcLicenseDiagnosis -AmsNetId $AmsNetId
+            if ($null -ne $lic) { $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic -Force }
+            if ($script:TcSystemStateSkipDiagnostics -eq $true) {
+                # nested in Enable-TcConfig: hint as before #194 (Enable-TcConfig adds its own diagnostics)
+                if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
+                return $hint
+            }
+            $diag = & $getStuckDiagnostics
+            $data | Add-Member -NotePropertyName 'diagnostics' -NotePropertyValue $diag -Force
+            try { $hint = Get-TcStuckInConfigHint -Code $Code -Diagnostics $diag -License $lic }
+            catch { if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" } }
+            $hint
+        }
         $lastReadFailed = -not [string]::IsNullOrEmpty([string]$wait.LastError)
         $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $stateBefore }
         $shown = if ($lastReadFailed) { 'Unreachable' } else { $wait.State }
@@ -252,12 +310,7 @@
 
         if (-not $wait.Reached) {
             $detail = if ($wait.LastError) { " Last error: $($wait.LastError)" } else { '' }
-            $hint = Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT'
-            $lic = if (-not $lastReadFailed -and $wait.State -eq 'Config') { Get-TcLicenseDiagnosis -AmsNetId $AmsNetId } else { $null }
-            if ($null -ne $lic) {
-                $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
-                if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
-            }
+            $hint = if (-not $lastReadFailed -and $wait.State -eq 'Config') { & $stuckHint 'SYSTEM_STATE_TIMEOUT' } else { Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT' }
             $data | Add-Member -NotePropertyName 'lastState' -NotePropertyValue $seen
             $data | Add-Member -NotePropertyName 'lastError' -NotePropertyValue $wait.LastError
             if (-not [string]::IsNullOrEmpty([string]$wait.RuntimeName)) {
@@ -333,12 +386,7 @@
 
         if ($null -ne $deviated) {
             $traceText = ($data.stateTrace | ForEach-Object { "+$($_.ms)ms $($_.state)" }) -join ', '
-            $hint = Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH'
-            $lic = if ($readback -eq 'Config' -or $deviated -eq 'Config') { Get-TcLicenseDiagnosis -AmsNetId $AmsNetId } else { $null }
-            if ($null -ne $lic) {
-                $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic
-                if (-not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
-            }
+            $hint = if ($readback -eq 'Config' -or $deviated -eq 'Config') { & $stuckHint 'SYSTEM_STATE_MISMATCH' } else { Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH' }
             $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT reached '$State' but did not stay there: readback '$readback' after $SettleSec s (sent AdsState $sentName ($sentCode); trace $traceText)." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `

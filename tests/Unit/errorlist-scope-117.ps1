@@ -397,7 +397,8 @@ try {
         $txt = [IO.File]::ReadAllText((Join-Path $root $f))
         if ($txt -match '\{\s*8\s*\}' -or $txt -notmatch 'Get-TcErrorListSummary\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec') { $bad += $f }
     }
-    $ecTxt = [IO.File]::ReadAllText((Join-Path $root 'Enable-TcConfig.ps1'))
+    # #194: the Enable-TcConfig diagnostics live in the shared Private/Get-TcRuntimeFailureDiagnostics.ps1
+    $ecTxt = [IO.File]::ReadAllText((Join-Path $root 'Enable-TcConfig.ps1')) + [IO.File]::ReadAllText((Join-Path $root '..\Private\Get-TcRuntimeFailureDiagnostics.ps1'))
     $clTxt = [IO.File]::ReadAllText((Join-Path $root 'Clear-TcProject.ps1'))
     if ($ecTxt -match 'Get-TcBuildErrors\s+-TimeoutSec\s+8\b' -or $ecTxt -notmatch 'TcBuildErrorListTimeoutSec') { $bad += 'Enable-TcConfig.ps1' }
     if ($clTxt -notmatch 'Get-TcBuildErrors\s+-TimeoutSec\s+\$script:TcBuildErrorListTimeoutSec') { $bad += 'Clear-TcProject.ps1' }
