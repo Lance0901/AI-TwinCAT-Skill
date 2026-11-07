@@ -10,6 +10,10 @@ function Get-TcTreeItem {
         data: name, path (PathName), itemType, subType, subTypeName, type (readable name for known PLC
         item types), disabled, disabledState, childCount, children[] (name, path, itemType, subType,
         type, disabled, disabledState), childrenTruncated.
+        childCount and children[] are the DIRECT children only (#182; Get-TcTreeItemDirectChild): Child(i)
+        of an EtherCAT device also returns the terminals below a coupler (measured 2026-11-08, 4024
+        BFH-1650: ITcSmTreeItem.ChildCount 9 for Device 1 = EK1200 + its 8 terminals; childCount is 1).
+        childrenTruncated: more direct children than -MaxChildren.
         disabledState is the ITcSmTreeItem.Disabled DISABLED_STATE name (SMDS_NOT_DISABLED /
         SMDS_DISABLED / SMDS_PARENT_DISABLED, InfoSys
         https://infosys.beckhoff.com/content/1033/tc3_automationinterface/21842771467.html); disabled is
@@ -47,12 +51,15 @@ function Get-TcTreeItem {
         $item = $r.Item
         $info = Invoke-TcComRetry -OperationName "Read tree item $Path" -ScriptBlock {
             $s = Get-TcTreeItemSummary -Item $item
+            # Direct children only (#182): Child(i) of an EtherCAT device also returns the terminals below
+            # a coupler. The resolved -Path is the parent path when PathName cannot be read.
+            $parentPath = if ([string]::IsNullOrWhiteSpace($s.path)) { $Path } else { $s.path }
+            $direct = @(Get-TcTreeItemDirectChild -Item $item -ParentPath $parentPath)
             $kids = [System.Collections.Generic.List[object]]::new()
-            for ($i = 1; $i -le $s.childCount -and $kids.Count -lt $MaxChildren; $i++) {
+            foreach ($k in $direct) {
+                if ($kids.Count -ge $MaxChildren) { break }
                 try {
-                    $c = $item.Child($i)
-                    if ($null -eq $c) { continue }
-                    $cs = Get-TcTreeItemSummary -Item $c
+                    $cs = Get-TcTreeItemSummary -Item $k.Item
                     $kids.Add([PSCustomObject]@{ name = $cs.name; path = $cs.path; itemType = $cs.itemType; subType = $cs.subType; type = $cs.type; disabled = $cs.disabled; disabledState = $cs.disabledState })
                 }
                 catch {
@@ -60,6 +67,7 @@ function Get-TcTreeItem {
                     continue
                 }
             }
+            $s.childCount = $direct.Count
             [PSCustomObject]@{ Summary = $s; Children = $kids.ToArray() }
         }
         $s = $info.Summary

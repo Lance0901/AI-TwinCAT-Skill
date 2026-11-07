@@ -222,6 +222,68 @@ try {
     Check 'iotree-177-hierarchy-kept' ($cpl.Count -eq 1 -and $cpl[0].name -eq 'Term 7 (EK1200)' -and @($cpl[0].children).Count -eq 2 -and
         @($cpl[0].children)[0].path -eq 'TIID^Device 8 (EtherCAT)^Term 7 (EK1200)^Term 10 (EL1809)' -and
         @($cpl[0].children)[0].disabledState -eq 'SMDS_PARENT_DISABLED' -and $cpl[0].disabled -eq $false) ($dev8 | ConvertTo-Json -Depth 6 -Compress)
+    # #182: LookupTreeItem / GetIoTree / nearestChildren share Get-TcTreeItemDirectChild. Mock of the
+    # measured XAE behaviour (2026-11-08, 4024 BFH-1650): Child(i) of a device also returns every
+    # terminal below its couplers. Here: two couplers, a coupler below a coupler, the same terminal name
+    # below two couplers, and flattened grandchildren listed BEFORE their coupler.
+    Reset-Mock
+    $d = 'TIID^Device 9 (EtherCAT)'
+    $null = Add-MockNode $d
+    $null = Add-MockNode "$d^Term 1 (EK1200)"
+    $null = Add-MockNode "$d^Term 1 (EK1200)^Term 10 (EL1809)"
+    $null = Add-MockNode "$d^Term 1 (EK1200)^Term 3 (EK1100)"
+    $null = Add-MockNode "$d^Term 1 (EK1200)^Term 3 (EK1100)^Term 30 (EL2809)"
+    $null = Add-MockNode "$d^Term 2 (EK1200)"
+    $null = Add-MockNode "$d^Term 2 (EK1200)^Term 10 (EL1809)"
+    $flat = @("$d^Term 1 (EK1200)^Term 10 (EL1809)", "$d^Term 1 (EK1200)^Term 3 (EK1100)^Term 30 (EL2809)", "$d^Term 1 (EK1200)",
+        "$d^Term 1 (EK1200)^Term 3 (EK1100)", "$d^Term 2 (EK1200)^Term 10 (EL1809)", "$d^Term 2 (EK1200)")
+    $global:T.Nodes[$d].Kids = [System.Collections.ArrayList]::new([string[]]$flat)
+    $global:T.Nodes["$d^Term 1 (EK1200)"].Kids = [System.Collections.ArrayList]::new([string[]]@(
+        "$d^Term 1 (EK1200)^Term 10 (EL1809)", "$d^Term 1 (EK1200)^Term 3 (EK1100)^Term 30 (EL2809)", "$d^Term 1 (EK1200)^Term 3 (EK1100)"))
+    $res = Get-TcTreeItem -Path $d
+    Check 'lookup-182-direct-only' ($res.success -and $res.data.childCount -eq 2 -and @($res.data.children).Count -eq 2 -and
+        @($res.data.children)[0].path -eq "$d^Term 1 (EK1200)" -and @($res.data.children)[1].path -eq "$d^Term 2 (EK1200)" -and
+        $res.data.childrenTruncated -eq $false) ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    $res = Get-TcTreeItem -Path "$d^Term 1 (EK1200)"
+    Check 'lookup-182-multilevel-coupler' ($res.data.childCount -eq 2 -and
+        (@($res.data.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 10 (EL1809)|Term 3 (EK1100)') ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    $res = Get-TcTreeItem -Path $d -MaxChildren 1
+    Check 'lookup-182-truncated-direct' ($res.data.childCount -eq 2 -and @($res.data.children).Count -eq 1 -and $res.data.childrenTruncated -eq $true) ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    $res = Get-TcTreeItem -Path "$d^NoSuch"
+    Check 'lookup-182-nearest-children-direct' ((@($res.data.nearestChildren) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)') (@($res.data.nearestChildren) -join '|')
+    # GetIoTree: same-named Term 10 below two couplers each stays under its own coupler, order kept
+    $res = Get-TcIoTree
+    $all = New-Object System.Collections.Generic.List[string]
+    $walk = { param($n) $all.Add($n.path); foreach ($c in @($n.children)) { & $walk $c } }
+    & $walk $res.data
+    $dev9 = @($res.data.children | Where-Object { $_.path -eq $d })[0]
+    $c1 = @($dev9.children)[0]; $c2 = @($dev9.children)[1]
+    Check 'iotree-182-unique-paths' ($res.success -and $all.Count -eq 8 -and $all.Count -eq @($all | Sort-Object -Unique).Count) ($all -join ' | ')
+    Check 'iotree-182-same-name-term' (@($dev9.children).Count -eq 2 -and (@($c1.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 10 (EL1809)|Term 3 (EK1100)' -and
+        @(@($c1.children)[1].children)[0].path -eq "$d^Term 1 (EK1200)^Term 3 (EK1100)^Term 30 (EL2809)" -and
+        @($c2.children).Count -eq 1 -and @($c2.children)[0].path -eq "$d^Term 2 (EK1200)^Term 10 (EL1809)") ($dev9 | ConvertTo-Json -Depth 8 -Compress)
+
+    # Unreadable PathName. A child: kept and counted (it cannot be placed; dropping it would hide a
+    # real child). The parent: LookupTreeItem uses the resolved -Path; GetIoTree and the nearestChildren
+    # names have no path -> the children with the fewest path segments (Get-TcTreeItemDirectChild rule 3).
+    $mute = { param($p) $n = $global:T.Nodes[$p]; $n.PSObject.Properties.Remove('PathName'); $n | Add-Member ScriptProperty PathName { throw 'PathName unreadable (mock)' } }
+    $null = Add-MockNode "$d^Term 5 (EL1008)"
+    & $mute "$d^Term 5 (EL1008)"
+    $res = Get-TcTreeItem -Path $d
+    Check 'lookup-182-child-path-unreadable-kept' ($res.data.childCount -eq 3 -and @($res.data.children)[2].name -eq 'Term 5 (EL1008)' -and [string]::IsNullOrEmpty(@($res.data.children)[2].path)) (@($res.data.children)[2] | ConvertTo-Json -Compress)
+    & $mute $d
+    $res = Get-TcTreeItem -Path $d
+    Check 'lookup-182-parent-path-unreadable' ($res.data.childCount -eq 3 -and $res.data.path -eq $d -and
+        (@($res.data.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)|Term 5 (EL1008)') ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    $res = Get-TcIoTree
+    $dev9 = @($res.data.children | Where-Object { $_.name -eq 'Device 9 (EtherCAT)' })[0]
+    Check 'iotree-182-parent-path-unreadable' ((@($dev9.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)|Term 5 (EL1008)' -and
+        @(@($dev9.children)[0].children).Count -eq 2) ($dev9 | ConvertTo-Json -Depth 8 -Compress)
+    $names = & $mod { param($n) Get-TcTreeItemChildNames -Item $n } $global:T.Nodes[$d]
+    Check 'childnames-182-parent-unknown-min-depth' ((@($names) -join '|') -eq 'Term 1 (EK1200)|Term 2 (EK1200)|Term 5 (EL1008)') (@($names) -join '|')
+    # Rule 3 on a coupler: its direct children (fewest segments) stay, Term 30 below Term 3 (EK1100) is dropped.
+    $k = & $mod { param($n) Get-TcTreeItemDirectChild -Item $n -ParentPath '' } $global:T.Nodes["$d^Term 1 (EK1200)"]
+    Check 'direct-182-min-depth-only' ((@($k | ForEach-Object { $_.Item.Name }) -join '|') -eq 'Term 10 (EL1809)|Term 3 (EK1100)') (@($k | ForEach-Object { $_.Path }) -join '|')
     Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)

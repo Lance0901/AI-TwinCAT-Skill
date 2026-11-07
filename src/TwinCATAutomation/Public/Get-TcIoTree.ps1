@@ -8,9 +8,11 @@ function Get-TcIoTree {
 
         Every path appears once (#177): an EtherCAT device's Child(i) also returns the terminals
         below a coupler (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: Device 1 ChildCount 9 =
-        EK1200 + its 8 terminals). A child is listed only under the node its PathName names as parent
-        (PathName without its last '^' segment); a child without a readable PathName is kept, and a
-        path already listed elsewhere in the tree is skipped.
+        EK1200 + its 8 terminals). The children of a node are Get-TcTreeItemDirectChild (shared with
+        LookupTreeItem, #182): a child is listed only under the node its PathName names as parent
+        (PathName without its last '^' segment); a child without a readable PathName is kept. When the
+        node's own PathName cannot be read (TIID is assumed for the root), only the children with the
+        fewest path segments are kept (Get-TcTreeItemDirectChild rule 3). A path already listed elsewhere in the tree is skipped.
     #>
     [CmdletBinding()]
     param()
@@ -32,6 +34,7 @@ function Get-TcIoTree {
 
         $itemName = try { $item.Name } catch { 'unknown' }
         $itemPath = try { [string]$item.PathName } catch { '' }
+        $parentPath = if ($itemPath) { $itemPath } elseif ($depth -eq 0) { 'TIID' } else { '' }
         if ($itemPath -and -not $seenPaths.Add($itemPath)) { return $null }
 
         $dis = Get-TcTreeItemDisabledState -Item $item
@@ -45,15 +48,8 @@ function Get-TcIoTree {
         }
 
         try {
-            for ($i = 1; $i -le $item.ChildCount; $i++) {
-                $child = $item.Child($i)
-                $childPath = try { [string]$child.PathName } catch { '' }
-                if ($itemPath -and $childPath) {
-                    $cut = $childPath.LastIndexOf('^')
-                    $childParent = if ($cut -gt 0) { $childPath.Substring(0, $cut) } else { '' }
-                    if ($childParent -ne $itemPath) { continue }
-                }
-                $childNode = Read-IoItem -item $child -depth ($depth + 1)
+            foreach ($k in (Get-TcTreeItemDirectChild -Item $item -ParentPath $parentPath)) {
+                $childNode = Read-IoItem -item $k.Item -depth ($depth + 1)
                 if ($null -ne $childNode) { $node.children += $childNode }
             }
         }

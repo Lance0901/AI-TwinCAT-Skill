@@ -66,12 +66,78 @@ function Get-TcTreePathLeaf {
     return $Path.Substring($i + 1)
 }
 
+function Get-TcTreeItemDirectChild {
+    <#
+    .SYNOPSIS
+        The direct children of a tree item in Child(i) order: [PSCustomObject]@{ Item; Path }[] (#177, #182).
+    .DESCRIPTION
+        ITcSmTreeItem.Child(i) (1-based, up to ChildCount) of an EtherCAT device also returns the terminals
+        below a coupler (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: Device 1 ChildCount 9 =
+        Term 7 (EK1200) + its 8 terminals, whose PathName is TIID^Device 1 (EtherCAT)^Term 7 (EK1200)^...).
+        Shared by Get-TcIoTree, Get-TcTreeItem (LookupTreeItem) and Get-TcTreeItemChildNames.
+        Rules, in this order:
+        1. A child whose PathName cannot be read (or is empty) is kept: it cannot be placed, and dropping
+           it would hide a real child.
+        2. -ParentPath given: a child is kept when its PathName without the last '^' segment equals
+           -ParentPath (case-insensitive); every other child (a grandchild) is skipped.
+        3. -ParentPath empty (the parent's PathName could not be read and the caller has no path for it):
+           a child is kept when its PathName has the fewest '^' segments of all readable child paths. A
+           grandchild always has more segments than a direct child, so it is skipped as soon as one
+           direct child has a readable PathName. Limit: when no direct child has a readable PathName,
+           the shallowest readable paths are grandchildren and they are kept.
+        Child(i) returning $null or throwing is skipped; IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG /
+        IDE_TIMEOUT are rethrown. An unreadable ChildCount gives no children.
+    .PARAMETER Item
+        ITcSmTreeItem.
+    .PARAMETER ParentPath
+        Full tree path of -Item: its PathName, or the path the caller used to reach it when PathName
+        cannot be read. Empty = unknown (rule 3).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Item, [Parameter()][AllowNull()][AllowEmptyString()][string]$ParentPath)
+    $count = 0
+    try { $count = [int]$Item.ChildCount } catch { $count = 0 }
+    $all = [System.Collections.Generic.List[object]]::new()
+    for ($i = 1; $i -le $count; $i++) {
+        try {
+            $c = $Item.Child($i)
+            if ($null -eq $c) { continue }
+            $p = try { [string]$c.PathName } catch { '' }
+            $all.Add([PSCustomObject]@{ Item = $c; Path = $p })
+        }
+        catch {
+            if ($_.Exception.Message -match 'IDE_BUSY|IDE_CRASHED|IDE_MODAL_DIALOG|IDE_TIMEOUT') { throw }
+            continue
+        }
+    }
+    $minDepth = -1
+    if ([string]::IsNullOrEmpty($ParentPath)) {
+        foreach ($k in $all) {
+            if ([string]::IsNullOrEmpty($k.Path)) { continue }
+            $d = $k.Path.Split('^').Count
+            if ($minDepth -lt 0 -or $d -lt $minDepth) { $minDepth = $d }
+        }
+    }
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($k in $all) {
+        if ([string]::IsNullOrEmpty($k.Path)) { $out.Add($k); continue }
+        if ([string]::IsNullOrEmpty($ParentPath)) {
+            if ($k.Path.Split('^').Count -eq $minDepth) { $out.Add($k) }
+            continue
+        }
+        $cut = $k.Path.LastIndexOf('^')
+        if ($cut -gt 0 -and $k.Path.Substring(0, $cut) -ieq $ParentPath) { $out.Add($k) }
+    }
+    return $out.ToArray()
+}
+
 function Get-TcTreeItemChildNames {
     <#
     .SYNOPSIS
-        Names of the direct children of a tree item (ITcSmTreeItem.ChildCount / Child(i), 1-based).
+        Names of the direct children of a tree item (Get-TcTreeItemDirectChild).
     .DESCRIPTION
-        At most -Max names. A child that cannot be read is skipped. Returns a string array.
+        At most -Max names, in Child(i) order. Grandchildren that Child(i) returns below an EtherCAT
+        coupler are not listed (#182). A child that cannot be read is skipped. Returns a string array.
     .PARAMETER Item
         ITcSmTreeItem.
     .PARAMETER Max
@@ -81,14 +147,10 @@ function Get-TcTreeItemChildNames {
     param([Parameter(Mandatory)][object]$Item, [int]$Max = 0)
     if ($Max -le 0) { $Max = $script:TcTreeItemMaxChildNames }
     $names = [System.Collections.Generic.List[string]]::new()
-    $count = 0
-    try { $count = [int]$Item.ChildCount } catch { $count = 0 }
-    for ($i = 1; $i -le $count -and $names.Count -lt $Max; $i++) {
-        try {
-            $c = $Item.Child($i)
-            if ($null -ne $c) { $names.Add([string]$c.Name) }
-        }
-        catch { continue }
+    $parentPath = try { [string]$Item.PathName } catch { '' }
+    foreach ($k in (Get-TcTreeItemDirectChild -Item $Item -ParentPath $parentPath)) {
+        if ($names.Count -ge $Max) { break }
+        try { $names.Add([string]$k.Item.Name) } catch { continue }
     }
     return $names.ToArray()
 }
