@@ -669,6 +669,27 @@ try {
     Check 'review10-import-before-missing' ($res.error.code -eq 'TREEITEM_NOT_FOUND') (Json $res)
     & $mod { $script:TcTreeItemMaxChildNames = 200 }
 
+    # #187: DeleteChild dry-run and CreateChild report the direct children only (like LookupTreeItem);
+    # the raw ChildCount stays visible as rawChildCount. Mock of the measured EtherCAT behaviour
+    # (2026-11-08, 4024 BFH-1650): Device ChildCount 9 = Term 7 (EK1200) + 8 terminals below it.
+    Reset-Mock
+    $g = 'TIID^Device 12 (EtherCAT)'
+    $null = Add-MockNode $g
+    $null = Add-MockNode "$g^Term 7 (EK1200)"
+    foreach ($tn in 'Term 10 (EL1809)', 'Term 11 (EL1809)') { $null = Add-MockNode "$g^Term 7 (EK1200)^$tn" }
+    $global:T.Nodes[$g].Kids = [System.Collections.ArrayList]::new([string[]]@("$g^Term 7 (EK1200)", "$g^Term 7 (EK1200)^Term 10 (EL1809)", "$g^Term 7 (EK1200)^Term 11 (EL1809)"))
+    $res = Remove-TcTreeItem -Path $g -ConfirmName 'Device 12 (EtherCAT)'
+    Check 'delete-187-dryrun-direct-children' ($res.success -and $res.data.dryRun -eq $true -and $res.data.childCount -eq 1 -and
+        (@($res.data.children) -join '|') -eq 'Term 7 (EK1200)' -and $res.data.rawChildCount -eq 3) (Json $res)
+    $res = New-TcTreeItem -Path $g -Name 'Term 99 (Probe187)'
+    Check 'create-187-current-children-direct' ($res.success -and (@($res.data.currentChildren) -join '|') -eq 'Term 7 (EK1200)' -and $res.data.rawChildCount -eq 3) (Json $res)
+    $res = New-TcTreeItem -Path $g -Name 'Term 99 (Probe187)' -Before 'Term 10 (EL1809)'
+    Check 'create-187-before-grandchild-refused' ($res.success -eq $false -and $res.error.code -eq 'TREEITEM_NOT_FOUND' -and
+        $res.error.hint -like "*'Term 7 (EK1200)'*" -and $res.error.hint -notlike '*Term 10 (EL1809)*' -and $res.error.hint -notlike '*Term 11 (EL1809)*' -and
+        (@($res.data.currentChildren) -join '|') -eq 'Term 7 (EK1200)' -and $res.data.rawChildCount -eq 3) (Json $res)
+    $res = New-TcTreeItem -Path $g -Name 'Term 99 (Probe187)' -Before 'Term 7 (EK1200)'
+    Check 'create-187-before-direct-child-ok' ($res.success -and $res.data.dryRun -eq $true) (Json $res)
+
     # extra: DeleteChild checks the item's own parent against the parent derived from -Path
     Reset-Mock
     $odd = Add-MockNode 'TIRT^Odd' 19

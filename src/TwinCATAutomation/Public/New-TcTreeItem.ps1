@@ -12,7 +12,8 @@ function New-TcTreeItem {
         parent in error.hint), no child with Name exists (TREEITEM_ALREADY_EXISTS), Before is an
         existing child (LookupTreeItem Path^Before; TREEITEM_NOT_FOUND).
         DryRun (default true): CreateChild is NOT called; data.dryRun=true, data.plannedPath,
-        data.currentChildren.
+        data.currentChildren (direct children only), data.rawChildCount (ChildCount as XAE reports it; an
+        EtherCAT device also counts the terminals below a coupler, #187).
         data.writeCalled = true once CreateChild is called (absent when the call was never made).
         DryRun=false: ProduceXml backup of the PARENT (data.backupPath), IDE_MODAL_DIALOG when a dialog
         is open (nothing created), CreateChild, then the new item is looked up again and the parent's
@@ -84,8 +85,15 @@ function New-TcTreeItem {
         $r = Resolve-TcTreeItem -SysManager $sm -Path $Path -Data $data
         if ($null -ne $r.Result) { return $r.Result }
         $parent = $r.Item
+        # $children = the raw Child(i) list: the before/after comparison (Test-TcTreeItemChildrenAdded) must
+        # use the same list on both sides. What is reported (currentChildren, the -Before hint) lists the
+        # direct children only: an EtherCAT device's Child(i) also returns the terminals below a coupler (#187).
         $children = @(Get-TcTreeItemChildNames -Item $parent)
-        $data | Add-Member -NotePropertyName currentChildren -NotePropertyValue $children
+        $directChildren = @(Get-TcTreeItemChildNames -Item $parent -DirectOnly -ParentPath $Path)
+        $rawChildCount = 0
+        try { $rawChildCount = [int]$parent.ChildCount } catch { if (Test-TcComMustRethrow -ErrorRecord $_) { throw } }
+        $data | Add-Member -NotePropertyName currentChildren -NotePropertyValue $directChildren
+        $data | Add-Member -NotePropertyName rawChildCount -NotePropertyValue $rawChildCount
 
         $existing = Find-TcTreeItemNoThrow -SysManager $sm -Path $plannedPath
         if ($null -ne $existing) {
@@ -94,7 +102,7 @@ function New-TcTreeItem {
         }
         # -Before is looked up directly: currentChildren is cut at $script:TcTreeItemMaxChildNames.
         if (-not [string]::IsNullOrEmpty($Before) -and $null -eq (Find-TcTreeItemNoThrow -SysManager $sm -Path "$Path^$Before")) {
-            $list = if ($children.Count -gt 0) { ($children | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
+            $list = if ($directChildren.Count -gt 0) { ($directChildren | ForEach-Object { "'$_'" }) -join ', ' } else { '(none)' }
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_NOT_FOUND' -Data $data `
                 -ErrorMessage "-Before '$Before' is not a child of '$Path'; nothing was created." `
                 -Hint "-Before must be the name of an existing child of '$Path': $list. Leave it empty to append."
