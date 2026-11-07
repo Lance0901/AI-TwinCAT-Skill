@@ -75,15 +75,17 @@ function Get-TcSolutionLoadExpectation {
         What the readback expects after the reload / reopen, from DISK first (#135 review S2/S5/S6).
     .DESCRIPTION
         The .tsproj files the .sln references (Get-TcSlnTsProjFiles):
-          none      -> from 'none', requireTipc = $false (a solution without a TwinCAT project
-                       is loaded without TIPC)
+          none      -> the memory baseline when it has PLC names: from 'memory', requireTipc =
+                       $true (PR #173 review); else from 'none', requireTipc = $false (a solution
+                       without a TwinCAT project is loaded without TIPC)
           PLC names in the .tsproj (Get-TcTsprojPlcName) -> from 'disk', every name below TIPC
           no names  -> the memory baseline (PLC names below TIPC before the reset) when it has
                        some: from 'memory'; else from 'none' with requireTipc = $true and
                        minPlcCount = 1 (TIPC answers and has at least one child)
-        Never throws.
+        expectationSource = from ('disk' | 'memory' | 'none'); 'none' tells the caller that no
+        PLC names were expected (the readback is weaker). Never throws.
     .OUTPUTS
-        [PSCustomObject]@{ from; requireTipc; plcs; minPlcCount; tsproj; error }
+        [PSCustomObject]@{ from; requireTipc; plcs; minPlcCount; tsproj; error; expectationSource }
     #>
     [CmdletBinding()]
     param(
@@ -94,10 +96,19 @@ function Get-TcSolutionLoadExpectation {
         [AllowNull()]
         [object]$MemoryBaseline
     )
-    $e = [PSCustomObject]@{ from = 'none'; requireTipc = $false; plcs = @(); minPlcCount = 0; tsproj = @(); error = $null }
+    $e = [PSCustomObject]@{ from = 'none'; requireTipc = $false; plcs = @(); minPlcCount = 0; tsproj = @(); error = $null; expectationSource = 'none' }
+    $mem = @()
+    if ($null -ne $MemoryBaseline -and $MemoryBaseline.known) { $mem = @($MemoryBaseline.plcs | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
     $ts = @(Get-TcSlnTsProjFiles -SolutionFile $SolutionPath)
     $e.tsproj = $ts
-    if ($ts.Count -eq 0) { return $e }
+    if ($ts.Count -eq 0) {
+        # PR #173 review: no .tsproj found from the .sln, but step 0 saw PLCs below TIPC: the
+        # memory baseline still holds (TIPC required), the readback is not weakened.
+        if ($mem.Count -gt 0) {
+            $e.from = 'memory'; $e.expectationSource = 'memory'; $e.requireTipc = $true; $e.plcs = $mem; $e.minPlcCount = $mem.Count
+        }
+        return $e
+    }
     $e.requireTipc = $true
     $names = [System.Collections.Generic.List[string]]::new()
     $errors = [System.Collections.Generic.List[string]]::new()
@@ -107,13 +118,11 @@ function Get-TcSolutionLoadExpectation {
     }
     if ($errors.Count -gt 0) { $e.error = $errors -join '; ' }
     if ($names.Count -gt 0) {
-        $e.from = 'disk'; $e.plcs = $names.ToArray(); $e.minPlcCount = $names.Count
+        $e.from = 'disk'; $e.expectationSource = 'disk'; $e.plcs = $names.ToArray(); $e.minPlcCount = $names.Count
         return $e
     }
-    $mem = @()
-    if ($null -ne $MemoryBaseline -and $MemoryBaseline.known) { $mem = @($MemoryBaseline.plcs | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) }
     if ($mem.Count -gt 0) {
-        $e.from = 'memory'; $e.plcs = $mem; $e.minPlcCount = $mem.Count
+        $e.from = 'memory'; $e.expectationSource = 'memory'; $e.plcs = $mem; $e.minPlcCount = $mem.Count
         return $e
     }
     $e.minPlcCount = 1
@@ -275,7 +284,7 @@ function Wait-TcSolutionLoaded {
     .OUTPUTS
         Hashtable @{ Complete = [bool]; Dialog = <dialog record or $null>; Crashed = <message or
         $null>; LoadCheck = [PSCustomObject]@{ complete; sec; polls; expectedFrom ('disk' |
-        'memory' | 'none'); expected{requireTipc, plcs, minPlcCount, tsproj}; expectationError;
+        'memory' | 'none'); expectationSource (same value; 'none' = no PLC names expected); expected{requireTipc, plcs, minPlcCount, tsproj}; expectationError;
         last{fullName, isOpen, projectCount, solutionBuild, activeConfiguration, tipc, plcs};
         lastError } }.
     #>
@@ -345,6 +354,7 @@ function Wait-TcSolutionLoaded {
         sec              = [math]::Round($wsw.Elapsed.TotalSeconds, 1)
         polls            = $polls
         expectedFrom     = $exp.from
+        expectationSource = $exp.expectationSource
         expected         = [PSCustomObject]@{ requireTipc = [bool]$exp.requireTipc; plcs = @($exp.plcs); minPlcCount = $exp.minPlcCount; tsproj = @($exp.tsproj) }
         expectationError = $exp.error
         last             = [PSCustomObject]@{

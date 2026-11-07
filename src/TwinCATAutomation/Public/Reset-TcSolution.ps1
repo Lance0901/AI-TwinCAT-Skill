@@ -140,9 +140,10 @@ function Reset-TcSolution {
              (also on the Yes path); other codes are not retried. data.reconnectAttempts.
           6. Readback (#135 F5, both paths): Wait-TcSolutionLoaded. Expected from DISK: the
              files (.tsproj) the .sln references and the PLC names they list (<Plc><Project
-             Name>); no .tsproj -> TIPC is not required; a .tsproj without PLC names -> the
-             memory baseline of step 0, else TIPC with at least one child
-             (data.loadCheck.expectedFrom 'disk' | 'memory' | 'none'). Polled every 500 ms
+             Name>); no .tsproj or a .tsproj without PLC names -> the memory baseline of step 0
+             (TIPC required); no .tsproj and no baseline -> TIPC is not required; a .tsproj
+             without names and no baseline -> TIPC with at least one child
+             (data.loadCheck.expectedFrom / expectationSource 'disk' | 'memory' | 'none'). Polled every 500 ms
              (shared -TimeoutSec) until Solution.FullName is this .sln, Solution.IsOpen,
              Solution.Projects (without Miscellaneous Files) >= 1, Solution.SolutionBuild and its
              ActiveConfiguration are set and (when required) LookupTreeItem('TIPC') answers with
@@ -190,7 +191,8 @@ function Reset-TcSolution {
                                    [{step ('reload-path' | 'reopen'), code ('success' or the error
                                    code), sec}]
         data.loadCheck             readback before success (step 6): complete, sec, polls,
-                                   expectedFrom ('disk' | 'memory' | 'none'), expected{requireTipc,
+                                   expectedFrom ('disk' | 'memory' | 'none'), expectationSource
+                                   (same value; 'none' = no PLC names expected), expected{requireTipc,
                                    plcs, minPlcCount, tsproj}, expectationError, last{fullName, isOpen,
                                    projectCount, solutionBuild, activeConfiguration, tipc, plcs},
                                    lastError
@@ -501,6 +503,25 @@ function Reset-TcSolution {
                     break
                 }
                 if ($ans -eq 'Yes') { $state.YesFailed = $true }
+                if ([string]$try.WmCommand -eq 'not-posted-disabled') {
+                    # PR #173 review: the BM_CLICK reached a prompt that is disabled or has a nested
+                    # modal over it (Close-TcMessageBox, #64). The click may still act once the nested
+                    # dialog is gone, so the same hwnd never gets another (opposite) answer: one scan,
+                    # then fail closed.
+                    $nested = Find-TcIdeModalDialog
+                    $nestedHwnd = [long]0; $promptHwnd = [long]0
+                    try { $nestedHwnd = [long]$nested.Hwnd } catch { $nestedHwnd = 0 }
+                    try { $promptHwnd = [long]$dialog.Hwnd } catch { $promptHwnd = 0 }
+                    if ($null -ne $nested -and -not (Test-TcModalScanIncomplete $nested) -and $nestedHwnd -ne $promptHwnd) {
+                        $progress.possiblyReloaded = $true
+                        Write-Verbose "Reset-TcSolution: a nested dialog is up over the $target reload prompt after $ans ($($nested.Title)); no further answer."
+                        return Complete-TcResetFailure -Step 'reload prompt dismissal' -Result (New-TcModalDialogResult -Dialog $nested -Operation "Reset-TcSolution (a dialog is up over the $target reload prompt after answering $ans; no further answer sent)" `
+                            -Data (Get-ProgressData))
+                    }
+                    $last = "$($try.Reason); the prompt is disabled, no further answer sent"
+                    Write-Verbose "Reset-TcSolution: the $target reload prompt is disabled after $ans ($($try.Reason)); no further answer."
+                    break
+                }
                 Write-Verbose "Reset-TcSolution: answering $ans to the $target reload prompt failed ($($try.Reason))."
             }
             if ($handled) { continue }

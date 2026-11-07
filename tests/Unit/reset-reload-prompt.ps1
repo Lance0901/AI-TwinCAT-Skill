@@ -24,6 +24,10 @@
 #       L3 a dialog during the wait; L4 IDE_CRASHED during the wait; L5 no .tsproj, no
 #       ITcSysManager -> TIPC not required; L6-L9 expected PLCs from the .tsproj on disk (missing
 #       for a few polls, never there, no names -> memory baseline, LookupTreeItem throws once)
+#   J4/J5, K6/K7 (PR #173 review) Ignore / Yes reaches a disabled prompt (WmCommand not-posted-disabled):
+#       no further answer to that hwnd; a nested dialog -> IDE_MODAL_DIALOG for it + possiblyReloaded,
+#       none -> IDE_MODAL_DIALOG for the prompt
+#   L10/L11 (PR #173 review) .sln without .tsproj: memory baseline -> TIPC required; none -> expectationSource none
 #   N   step 5 / Yes-path Connect-TcIde answers MODAL_SCAN_INCOMPLETE -> retried at once (at most 3)
 #   M   classification by button control ids 259 + 1412 (language independent)
 #   Every solution mock reports a loaded solution (IsOpen, Projects, SolutionBuild.ActiveConfiguration)
@@ -69,6 +73,8 @@ $slnTsNoName = New-TsSolution 'TsNoName' @()
 $projectDlg = @{ Title = 'TcXaeShell'; Text = "The project file 'Demo.plcproj' has been modified outside of TwinCAT XAE. Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 0; Buttons = @() }
 $fileDlg = @{ Title = 'TcXaeShell'; Text = 'MAIN.TcPOU has been changed outside the environment. Reload the new file?'; Kind = 'reload-prompt'; ReloadTarget = 'file'; Hwnd = 0; Buttons = @() }
 $otherDlg = @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() }
+# a dialog over the reload prompt (own window handle; the prompt mocks have Hwnd 0)
+$nestedDlg = @{ Title = 'TcXaeShell'; Text = 'Nested modal (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 4711; Buttons = @() }
 # #106: the VS2022 zh-TW solution prompt as measured 2026-11-03 (title / text as \u escapes)
 $zhSolTitle = [regex]::Unescape('\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539')
 $zhSolText = [regex]::Unescape("\u65b9\u6848 'Demo' \u5df2\u5728\u74b0\u5883\u5916\u90e8\u4fee\u6539\u3002")
@@ -81,7 +87,7 @@ $global:W = @{}
 function Reset-World {
     param([object]$Dialog, [int]$AppearAtRead = 0, [object]$AppearDialog)
     $global:W = @{ Dialog = $Dialog; AppearAtRead = $AppearAtRead; AppearDialog = $AppearDialog; Reads = 0; Log = [System.Collections.Generic.List[string]]::new(); Closed = $false; Opened = $false
-        NotLoaded = 0; FailAnswers = @{}; DialogAtLoadPoll = $null; FailSleep = $false; CrashOnLoad = $false; LookupThrow = 0; PlcMissing = 0; ConnectScanFail = 0 }
+        NotLoaded = 0; FailAnswers = @{}; DialogAtLoadPoll = $null; FailSleep = $false; CrashOnLoad = $false; LookupThrow = 0; PlcMissing = 0; ConnectScanFail = 0; DisabledAnswers = @{} }
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
     & $mod { $script:TcBuildRequiredLocal = @{} }
 }
@@ -138,6 +144,14 @@ $origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:
         param($Dialog, $Answer, $TimeoutSec)
         $global:W.Log.Add("ClosePrompt:$Answer")
         $key = [string]$Answer
+        # W.DisabledAnswers[<answer>] = @{ Nested = <dialog or $null> }: the BM_CLICK reaches a disabled
+        # prompt (Close-TcMessageBox WmCommand 'not-posted-disabled', #64); Nested comes up over it
+        if ($global:W.DisabledAnswers.ContainsKey($key)) {
+            $nd = $global:W.DisabledAnswers[$key].Nested
+            $global:W.DisabledAnswers.Remove($key)
+            if ($null -ne $nd) { $global:W.Dialog = $nd }
+            return @{ Sent = $true; Dismissed = $false; NextDialog = $null; Reason = 'mock: dialog still shown'; Method = 'BM_CLICK'; ControlId = 6; BmClick = 'processed-still-open'; WmCommand = 'not-posted-disabled'; SendReason = 'mock: dialog disabled / nested modal, WM_COMMAND not posted' }
+        }
         if ($global:W.FailAnswers.ContainsKey($key) -and $global:W.FailAnswers[$key] -gt 0) {
             $global:W.FailAnswers[$key]--
             if ($global:W.FailSleep) { Start-Sleep -Seconds ([int]$TimeoutSec) }
@@ -256,6 +270,19 @@ try {
     $answers = @($r.data.reloadPromptAttempts | ForEach-Object { $_.answer }) -join ','
     Check 'J3 Ignore and WM_CLOSE fail -> IDE_MODAL_DIALOG, nothing closed, not recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $answers -eq 'Ignore,Close' -and -not $global:W.Closed -and -not $global:W.Opened -and $null -eq $r.data.PSObject.Properties['buildRequired']) ("{0} | {1}" -f (Get-LogText), (J $r))
 
+    # --- J4 / J5 (PR #173 review): Ignore reaches a disabled prompt (not-posted-disabled) -> no WM_CLOSE afterwards ---
+    Reset-World -Dialog $solutionDlg
+    $global:W.DisabledAnswers = @{ Ignore = @{ Nested = $nestedDlg } }
+    $r = Start-Reset -ModulePath $sln
+    $prompts = @($global:W.Log | Where-Object { $_ -like 'ClosePrompt:*' })
+    Check 'J4 Ignore -> not-posted-disabled, nested dialog up -> IDE_MODAL_DIALOG (the nested one), no further answer, possiblyReloaded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogText -eq 'Nested modal (mock)' -and $prompts.Count -eq 1 -and $prompts[0] -eq 'ClosePrompt:Ignore' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $r.data.possiblyReloaded -eq $true -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $solutionDlg
+    $global:W.DisabledAnswers = @{ Ignore = @{ Nested = $null } }
+    $r = Start-Reset -ModulePath $sln
+    $prompts = @($global:W.Log | Where-Object { $_ -like 'ClosePrompt:*' })
+    Check 'J5 Ignore -> not-posted-disabled, no nested dialog -> IDE_MODAL_DIALOG (the prompt), no further answer, nothing closed' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogReloadTarget -eq 'solution' -and $prompts.Count -eq 1 -and $prompts[0] -eq 'ClosePrompt:Ignore' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $r.data.possiblyReloaded -eq $false -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
+
     # --- K (#135 F4): project prompt, Yes fails twice -> No, close / reopen, WM_CLOSE never used ---
     Reset-World -Dialog $projectDlg
     $global:W.FailAnswers = @{ Yes = 2 }
@@ -272,6 +299,19 @@ try {
     $answers = @($r.data.reloadPromptAttempts | ForEach-Object { $_.answer }) -join ','
     Check 'K2 Yes x2 and No fail -> IDE_MODAL_DIALOG, no WM_CLOSE, nothing closed' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $answers -eq 'Yes,Yes,No' -and @($global:W.Log) -notcontains 'ClosePrompt:' -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
     Check 'K2 a Yes was sent -> the failure is recorded as code-changed (S7)' ($r.data.possiblyReloaded -eq $true -and [string]$r.data.buildRequired -like '*project reloaded from disk, then reload prompt dismissal failed*') (J $r.data)
+
+    # --- K6 / K7 (PR #173 review): Yes reaches a disabled prompt (not-posted-disabled) -> no second Yes, no No ---
+    Reset-World -Dialog $projectDlg
+    $global:W.DisabledAnswers = @{ Yes = @{ Nested = $nestedDlg } }
+    $r = Start-Reset -ModulePath $sln
+    $prompts = @($global:W.Log | Where-Object { $_ -like 'ClosePrompt:*' })
+    Check 'K6 Yes -> not-posted-disabled, nested dialog up -> IDE_MODAL_DIALOG (the nested one), no further answer, recorded as code-changed' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogText -eq 'Nested modal (mock)' -and $prompts.Count -eq 1 -and $prompts[0] -eq 'ClosePrompt:Yes' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $r.data.possiblyReloaded -eq $true -and [string]$r.data.buildRequired -like '*reload prompt dismissal failed*' -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $projectDlg
+    $global:W.DisabledAnswers = @{ Yes = @{ Nested = $null } }
+    $r = Start-Reset -ModulePath $sln
+    $prompts = @($global:W.Log | Where-Object { $_ -like 'ClosePrompt:*' })
+    Check 'K7 Yes -> not-posted-disabled, no nested dialog -> IDE_MODAL_DIALOG (the prompt), no further answer, nothing closed' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogReloadTarget -eq 'project' -and $prompts.Count -eq 1 -and $prompts[0] -eq 'ClosePrompt:Yes' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
 
     # --- K3: the first Yes fails, the second closes the prompt -> Yes-only path ---
     Reset-World -Dialog $projectDlg
@@ -327,7 +367,16 @@ try {
     $global:OkSm = $null
     try { $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true } }
     finally { $global:OkSm = $keepSm }
-    Check 'L5 .sln without .tsproj and no ITcSysManager -> success, TIPC not required' ($r.success -and $r.data.loadCheck.complete -eq $true -and $r.data.loadCheck.expectedFrom -eq 'none' -and $r.data.loadCheck.last.tipc -eq $false) ("{0} | {1}" -f (Get-LogText), (J $r.data.loadCheck))
+    Check 'L5 .sln without .tsproj and no ITcSysManager -> success, TIPC not required' ($r.success -and $r.data.loadCheck.complete -eq $true -and $r.data.loadCheck.expectedFrom -eq 'none' -and $r.data.loadCheck.expectationSource -eq 'none' -and $r.data.loadCheck.expected.requireTipc -eq $false -and $r.data.loadCheck.last.tipc -eq $false) ("{0} | {1}" -f (Get-LogText), (J $r.data.loadCheck))
+
+    # L11 (PR #173 review): Get-TcSolutionLoadExpectation for a .sln without a .tsproj
+    $eMem = & $mod { param($p) Get-TcSolutionLoadExpectation -SolutionPath $p -MemoryBaseline ([PSCustomObject]@{ known = $true; plcs = @('PLC1', ''); error = $null }) } $sln
+    Check 'L11 no .tsproj + known memory baseline -> from memory, requireTipc, PLC1' ($eMem.from -eq 'memory' -and $eMem.expectationSource -eq 'memory' -and $eMem.requireTipc -eq $true -and (@($eMem.plcs) -join ',') -eq 'PLC1' -and $eMem.minPlcCount -eq 1) (J $eMem)
+    $eUnknown = & $mod { param($p) Get-TcSolutionLoadExpectation -SolutionPath $p -MemoryBaseline ([PSCustomObject]@{ known = $false; plcs = @('PLC1'); error = 'no ITcSysManager' }) } $sln
+    $eNull = & $mod { param($p) Get-TcSolutionLoadExpectation -SolutionPath $p -MemoryBaseline $null } $sln
+    Check 'L11 no .tsproj, memory baseline unknown / missing -> expectationSource none, TIPC not required' ($eUnknown.expectationSource -eq 'none' -and $eUnknown.requireTipc -eq $false -and $eNull.expectationSource -eq 'none' -and $eNull.requireTipc -eq $false -and @($eNull.plcs).Count -eq 0) ("{0} | {1}" -f (J $eUnknown), (J $eNull))
+    $eDisk = & $mod { param($p) Get-TcSolutionLoadExpectation -SolutionPath $p -MemoryBaseline $null } $slnTs
+    Check 'L11 .tsproj with PLC1 -> expectationSource disk' ($eDisk.from -eq 'disk' -and $eDisk.expectationSource -eq 'disk') (J $eDisk)
 
     # --- N (4024, 2026-11-07): step 5 Connect-TcIde answers MODAL_SCAN_INCOMPLETE -> retried at once ---
     Reset-World -Dialog $fileDlg
@@ -486,6 +535,12 @@ try {
             $r = Start-ResetG -Set @{ LookupThrow = 1 } -Sln $slnTs
             $lc = $r.data.loadCheck
             Check 'L9 LookupTreeItem throws once during the readback -> ITcSysManager dropped and taken fresh (Get-TcSysManager -Refresh), success' ($r.success -and $lc.complete -eq $true -and $lc.polls -ge 2 -and (Get-LogText) -match 'LookupTreeItem:throw > .*GetSysManager:Refresh') ("{0} | {1}" -f (Get-LogText), (J $lc))
+
+            # L10 (PR #173 review): .sln without a .tsproj, but step 0 saw PLC1 below TIPC -> memory baseline, TIPC required
+            $global:ResetSln = $sln
+            $r = Start-ResetG -Set @{} -Sln $sln
+            $lc = $r.data.loadCheck
+            Check 'L10 .sln without .tsproj, memory baseline PLC1 -> expectedFrom memory, TIPC required' ($r.success -and $lc.complete -eq $true -and $lc.expectedFrom -eq 'memory' -and $lc.expectationSource -eq 'memory' -and $lc.expected.requireTipc -eq $true -and (@($lc.expected.plcs) -join ',') -eq 'PLC1') ("{0} | {1}" -f (Get-LogText), (J $lc))
         }
         finally { $global:OkSm = $keepSm; $global:ResetSln = $keepSln }
     }
