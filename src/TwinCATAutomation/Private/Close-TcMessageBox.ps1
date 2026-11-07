@@ -222,8 +222,8 @@ function Close-TcMessageBox {
         Answers a Win32 message box (#32770) of the connected IDE by DIALOG CONTROL ID, so it
         works on any UI language.
     .DESCRIPTION
-        -Answer Yes|No|Ok|Cancel|Reload clicks the button with control id IDYES 6 / IDNO 7 / IDOK 1 /
-        IDCANCEL 2 / Reload 259: GetDlgItem(hwnd, id), then BM_CLICK (0x00F5) through SendMessageTimeout
+        -Answer Yes|No|Ok|Cancel|Ignore clicks the button with control id IDYES 6 / IDNO 7 / IDOK 1 /
+        IDCANCEL 2 / Ignore 1412: GetDlgItem(hwnd, id), then BM_CLICK (0x00F5) through SendMessageTimeout
         (SMTO_ABORTIFHUNG, 5000 ms; a plain SendMessage would hang when the dialog thread is
         busy). A processed BM_CLICK is not proof of a click: "If the button is in a dialog box
         and the dialog box is not active, the BM_CLICK message might fail"
@@ -263,10 +263,11 @@ function Close-TcMessageBox {
     .PARAMETER Hwnd
         Native handle of the dialog (Find-TcIdeModalDialog .Hwnd).
     .PARAMETER Answer
-        Yes | No | Ok | Cancel | Reload | Close. Default Close. Reload = control id 259, the
-        Reload (&R) button of the VS2022 solution reload prompt (#106; measured 2026-11-03,
-        VS2022 zh-TW; TcXaeShell and other languages not verified). The UI Automation fallback
-        has no mapping for Reload: a dialog without control 259 gives Sent = false.
+        Yes | No | Ok | Cancel | Ignore | Close. Default Close. Ignore = control id 1412, the
+        Ignore (&I) button of the VS2022 solution reload prompt (#106; measured 2026-11-03,
+        VS2022 zh-TW; TcXaeShell and other languages not verified; not the Win32 IDIGNORE 5).
+        The UI Automation fallback has no mapping for Ignore: a dialog without control 1412
+        gives Sent = false.
     .PARAMETER ProcessId
         Process that must own the window. Default: $script:TcIdeProcessId.
     .OUTPUTS
@@ -286,7 +287,7 @@ function Close-TcMessageBox {
         [IntPtr]$Hwnd,
 
         [Parameter()]
-        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Reload', 'Close')]
+        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Ignore', 'Close')]
         [string]$Answer = 'Close',
 
         [Parameter()]
@@ -333,9 +334,9 @@ function Close-TcMessageBox {
         return $result
     }
 
-    # Reload = 259: the VS2022 solution reload prompt (#106, measured 2026-11-03 VS2022 zh-TW:
+    # Ignore = 1412: the VS2022 solution reload prompt (#106, measured 2026-11-03 VS2022 zh-TW:
     # 259 = Reload (&R), 1412 = Ignore (&I); TcXaeShell / other languages not verified).
-    $ids = @{ Ok = 1; Cancel = 2; Yes = 6; No = 7; Reload = 259 }
+    $ids = @{ Ok = 1; Cancel = 2; Yes = 6; No = 7; Ignore = 1412 }
     $id = [int]$ids[$Answer]
     $result.ControlId = $id
 

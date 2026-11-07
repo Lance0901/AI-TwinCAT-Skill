@@ -14,9 +14,10 @@ function Close-TcReloadPrompt {
         ignores WM_CLOSE (measured 2026-11-07, Windows 11 26200: MB_YESNO stayed open, MB_YESNOCANCEL
         closed; MessageBox docs: without a Cancel button ESC / close has no effect,
         https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-messagebox).
-        -Answer Reload clicks control id 259 of the VS2022 solution reload prompt (ReloadTarget
+        -Answer Ignore clicks control id 1412 of the VS2022 solution reload prompt (ReloadTarget
         'solution', #106; measured 2026-11-03 VS2022 zh-TW, TcXaeShell / other languages not
-        verified).
+        verified). Reset-TcSolution answers Ignore, not Reload (259): Reload made VS ask at once
+        whether to save the dirty .tsproj (measured 2026-11-07, 4026 VS2022 zh-TW).
         The window must belong to the connected IDE process ($script:TcIdeProcessId); any
         other window is refused (Close-TcMessageBox).
         Measured 2026-10-20 (4024 32-bit XAE): the file prompt is gone ~2 s after WM_CLOSE.
@@ -30,7 +31,7 @@ function Close-TcReloadPrompt {
     .PARAMETER Dialog
         Dialog record from Find-TcIdeModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd }).
     .PARAMETER Answer
-        Yes | No | Ok | Cancel | Reload | Close. Default Close.
+        Yes | No | Ok | Cancel | Ignore | Close. Default Close.
     .PARAMETER TimeoutSec
         How long to wait for the dialog to disappear. Default 8.
     .OUTPUTS
@@ -45,7 +46,7 @@ function Close-TcReloadPrompt {
         [object]$Dialog,
 
         [Parameter()]
-        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Reload', 'Close')]
+        [ValidateSet('Yes', 'No', 'Ok', 'Cancel', 'Ignore', 'Close')]
         [string]$Answer = 'Close',
 
         [Parameter()]

@@ -495,7 +495,8 @@ public class UiaScanButtonNative {
 #                  environment" (zh-TW title "\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539"):
 #                  recognised by its button control ids 259 (Reload) + 1412 (Ignore), not by
 #                  text (measured 2026-11-03, VS2022 zh-TW; TcXaeShell and other languages not
-#                  verified); ReloadTarget 'solution'. Reset-TcSolution answers Reload (259).
+#                  verified); ReloadTarget 'solution'. Reset-TcSolution answers Ignore (1412) and
+#                  reopens the solution (Reload made VS ask to save the dirty .tsproj, 2026-11-07).
 #   unknown        everything else (hint IDE_MODAL_DIALOG), ReloadTarget $null.
 # ConvertTo-TcAdsErrorCode uses the same pattern on error messages (the watchdog puts the
 # dialog text into its IDE_MODAL_DIALOG exception).
