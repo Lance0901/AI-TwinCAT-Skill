@@ -3,6 +3,7 @@
 # a hidden STATIC window of this process with a BUTTON child whose control id is 1412. The parent
 # never closes, so the click path runs to its end: BM_CLICK processed but the window still open,
 # then WM_COMMAND posted and the window still open (#135 F4 diagnostics BmClick / WmCommand).
+# #174: Close-TcReloadPrompt -NoFollowUpScan skips the scan once the (fixture) window is gone.
 #   powershell.exe -NoProfile -File tests/Unit/close-messagebox-ignore.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -53,6 +54,30 @@ try {
     Check 'Close-TcReloadPrompt -Answer Reload is rejected by ValidateSet' ($bound -eq 'ParameterBindingValidationException') "$bound"
     $p = & $mod { Close-TcReloadPrompt -Dialog @{ Hwnd = 0 } -Answer Ignore }
     Check 'Close-TcReloadPrompt accepts -Answer Ignore (unknown handle -> not sent)' ($p.Sent -eq $false -and $p.Answer -eq 'Ignore' -and $p.Dismissed -eq $false) ($p | ConvertTo-Json -Compress -Depth 2)
+
+    # #174: -NoFollowUpScan. A fixture window that the (mocked) Close-TcMessageBox destroys, so the
+    # real IsWindow reports it gone; Find-TcIdeModalDialog (mocked) counts the follow-up scans.
+    $orig = & $mod { @{ Mb = ${function:Close-TcMessageBox}; Dlg = ${function:Find-TcIdeModalDialog} } }
+    try {
+        & $mod {
+            Set-Item -Path function:script:Close-TcMessageBox -Value { param($Hwnd, $Answer, $ProcessId) $null = [TcUnitFixture.Win32Fixture]::DestroyWindow($Hwnd); @{ Sent = $true; Method = 'BM_CLICK'; Reason = 'mock: clicked'; ControlId = 6; BmClick = 'closed'; WmCommand = 'not-needed' } }
+            Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:TcUnitScans++; $null }
+        }
+        foreach ($skip in @($true, $false)) {
+            $global:TcUnitScans = 0
+            $w = $fx::CreateWindowEx(0, 'STATIC', 'tcauto unit prompt', $WS_POPUP, 0, 0, 10, 10, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+            $p = & $mod { param($h, $s) Close-TcReloadPrompt -Dialog @{ Hwnd = [long]$h } -Answer Yes -TimeoutSec 3 -NoFollowUpScan:$s } $w $skip
+            if ($skip) {
+                Check 'Close-TcReloadPrompt -NoFollowUpScan: window gone -> Dismissed, NextDialog $null, no follow-up scan' ($w -ne [IntPtr]::Zero -and $p.Dismissed -eq $true -and $p.Sent -eq $true -and $null -eq $p.NextDialog -and $global:TcUnitScans -eq 0 -and [string]$p.Reason -like '*skipped*') ("scans $global:TcUnitScans | " + ($p | ConvertTo-Json -Compress -Depth 2))
+            }
+            else {
+                Check 'Close-TcReloadPrompt without -NoFollowUpScan: window gone -> one follow-up scan (unchanged)' ($w -ne [IntPtr]::Zero -and $p.Dismissed -eq $true -and $null -eq $p.NextDialog -and $global:TcUnitScans -eq 1) ("scans $global:TcUnitScans | " + ($p | ConvertTo-Json -Compress -Depth 2))
+            }
+        }
+    }
+    finally {
+        & $mod { param($f) Set-Item -Path function:script:Close-TcMessageBox -Value $f.Mb; Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f.Dlg } $orig
+    }
 }
 finally {
     if ($button -ne [IntPtr]::Zero) { $null = $fx::DestroyWindow($button) }
