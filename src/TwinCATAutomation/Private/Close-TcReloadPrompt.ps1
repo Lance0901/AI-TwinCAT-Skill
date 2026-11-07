@@ -29,9 +29,10 @@ function Close-TcReloadPrompt {
         (another file / project) is returned as NextDialog with Dismissed = true; any other
         dialog as NextDialog with Dismissed = false. Timeout -> Dismissed = false.
         -NoFollowUpScan: once IsWindow says the dialog is gone, return Dismissed = true and
-        NextDialog = $null without that scan (#174; Reset-TcSolution after a Yes: XAE is reloading
-        the project and its UI thread is busy, the UI Automation scan ran into its 5 s timeout -
-        measured 2026-11-08, 4026 VS2022; the caller's later steps scan for dialogs).
+        NextDialog = $null without that scan (#174; Reset-TcSolution after a Yes: the UI Automation
+        scan ran into its 5 s timeout - measured 2026-11-08, 4026 VS2022; the cause is probably that
+        XAE is still reloading the project - inference, not measured; the caller scans before its
+        next DTE call).
     .PARAMETER Dialog
         Dialog record from Find-TcIdeModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd }).
     .PARAMETER Answer
