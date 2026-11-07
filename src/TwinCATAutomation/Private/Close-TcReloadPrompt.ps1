@@ -28,12 +28,18 @@ function Close-TcReloadPrompt {
         Once it is gone, the scan result is reported: a reload prompt that appears right after
         (another file / project) is returned as NextDialog with Dismissed = true; any other
         dialog as NextDialog with Dismissed = false. Timeout -> Dismissed = false.
+        -NoFollowUpScan: once IsWindow says the dialog is gone, return Dismissed = true and
+        NextDialog = $null without that scan (#174; Reset-TcSolution after a Yes: XAE is reloading
+        the project and its UI thread is busy, the UI Automation scan ran into its 5 s timeout -
+        measured 2026-11-08, 4026 VS2022; the caller's later steps scan for dialogs).
     .PARAMETER Dialog
         Dialog record from Find-TcIdeModalDialog (@{ Title; Text; Kind; ReloadTarget; Hwnd }).
     .PARAMETER Answer
         Yes | No | Ok | Cancel | Ignore | Close. Default Close.
     .PARAMETER TimeoutSec
         How long to wait for the dialog to disappear. Default 8.
+    .PARAMETER NoFollowUpScan
+        Do not scan for a next dialog once this one is gone (NextDialog stays $null; see above).
     .OUTPUTS
         Hashtable @{ Dismissed = [bool]; Reason = [string]; Method = [string]; Sent = [bool];
         Answer = [string]; NextDialog = <dialog record or $null>; ControlId = [int]; BmClick;
@@ -51,7 +57,10 @@ function Close-TcReloadPrompt {
 
         [Parameter()]
         [ValidateRange(1, 60)]
-        [int]$TimeoutSec = 8
+        [int]$TimeoutSec = 8,
+
+        [Parameter()]
+        [switch]$NoFollowUpScan
     )
 
     $hwnd = [long]0
@@ -89,6 +98,7 @@ function Close-TcReloadPrompt {
         $gone = $false
         try { $gone = -not [TcAutomation.MessageBoxNative]::IsWindow($h) } catch { $gone = $false }
         if (-not $gone) { continue }   # IsWindow is the authority; the scan may not complete (#42)
+        if ($NoFollowUpScan) { $out.Dismissed = $true; $out.Reason = 'dialog closed (follow-up scan skipped)'; return $out }   # #174
         $again = Find-TcIdeModalDialog
         if ($null -eq $again) { $out.Dismissed = $true; $out.Reason = 'dialog closed'; return $out }
         if (Test-TcModalScanIncomplete $again) {

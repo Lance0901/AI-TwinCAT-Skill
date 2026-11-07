@@ -29,6 +29,11 @@
 #       none -> IDE_MODAL_DIALOG for the prompt
 #   L10/L11 (PR #173 review) .sln without .tsproj: memory baseline -> TIPC required; none -> expectationSource none
 #   N   step 5 / Yes-path Connect-TcIde answers MODAL_SCAN_INCOMPLETE -> retried at once (at most 3)
+#   O   (#174) a Yes that closed the prompt: Close-TcReloadPrompt -NoFollowUpScan, no modal scan between
+#       the Yes and the reconnect; O2 scans that would not complete right after the Yes do not fail it
+#   P   (#176) a reload prompt during the readback goes back to step 1: P1 Yes path, P2 after Solution.Open,
+#       P3 no prompt before -> Yes-only path after the reopen; P4 / P5 another dialog -> IDE_MODAL_DIALOG;
+#       P6 / P7 5 prompts handled already -> IDE_MODAL_DIALOG (Solution.Open site / Yes-path site)
 #   M   classification by button control ids 259 + 1412 (language independent)
 #   Every solution mock reports a loaded solution (IsOpen, Projects, SolutionBuild.ActiveConfiguration)
 #   unless $global:W.NotLoaded > 0 (readback polls after Solution.Open that see Projects.Count 0 /
@@ -87,7 +92,8 @@ $global:W = @{}
 function Reset-World {
     param([object]$Dialog, [int]$AppearAtRead = 0, [object]$AppearDialog)
     $global:W = @{ Dialog = $Dialog; AppearAtRead = $AppearAtRead; AppearDialog = $AppearDialog; Reads = 0; Log = [System.Collections.Generic.List[string]]::new(); Closed = $false; Opened = $false
-        NotLoaded = 0; FailAnswers = @{}; DialogAtLoadPoll = $null; FailSleep = $false; CrashOnLoad = $false; LookupThrow = 0; PlcMissing = 0; ConnectScanFail = 0; DisabledAnswers = @{} }
+        NotLoaded = 0; FailAnswers = @{}; DialogAtLoadPoll = $null; FailSleep = $false; CrashOnLoad = $false; LookupThrow = 0; PlcMissing = 0; ConnectScanFail = 0; DisabledAnswers = @{}
+        NoScanFlags = [System.Collections.Generic.List[string]]::new(); ScanIncomplete = 0; ScanIncompleteAfterYes = 0; ChainAfterYes = 0; AfterConnect = [System.Collections.Generic.List[object]]::new() }
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
     & $mod { $script:TcBuildRequiredLocal = @{} }
 }
@@ -137,12 +143,16 @@ $global:OkSm = $okSm
 
 $origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
 & $mod {
-    Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
+    # W.ScanIncomplete = n: the next n scans do not complete (#42 record, W.Dialog unchanged; #174)
+    Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec)
+        if ($global:W.ScanIncomplete -gt 0) { $global:W.ScanIncomplete--; $global:W.Log.Add('Modal:scan-incomplete'); return $global:IncompleteScan }
+        $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
     # W.FailAnswers[<answer>] = n: the next n attempts with that answer leave the prompt up ('' = WM_CLOSE);
     # W.FailSleep: such an attempt takes its whole -TimeoutSec (like the real poll, review S1)
     Set-Item -Path function:script:Close-TcReloadPrompt -Value {
-        param($Dialog, $Answer, $TimeoutSec)
+        param($Dialog, $Answer, $TimeoutSec, [switch]$NoFollowUpScan)
         $global:W.Log.Add("ClosePrompt:$Answer")
+        $global:W.NoScanFlags.Add("$($Answer):$([bool]$NoFollowUpScan)")
         $key = [string]$Answer
         # W.DisabledAnswers[<answer>] = @{ Nested = <dialog or $null> }: the BM_CLICK reaches a disabled
         # prompt (Close-TcMessageBox WmCommand 'not-posted-disabled', #64); Nested comes up over it
@@ -158,6 +168,10 @@ $origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:
             return @{ Sent = $true; Dismissed = $false; NextDialog = $null; Reason = 'mock: dialog still shown'; Method = 'WM_COMMAND'; ControlId = 6; BmClick = 'processed-still-open'; WmCommand = 'posted-still-open'; SendReason = 'mock send' }
         }
         $global:W.Dialog = $null
+        # W.ScanIncompleteAfterYes = n (#174): after a Yes the next n scans do not complete (XAE reloading)
+        # W.ChainAfterYes = n: the next n Yes clicks close the prompt and the same prompt is up again at once
+        if ($Answer -eq 'Yes' -and $global:W.ChainAfterYes -gt 0) { $global:W.ChainAfterYes--; $global:W.Dialog = $Dialog }
+        if ($Answer -eq 'Yes' -and $global:W.ScanIncompleteAfterYes -gt 0) { $global:W.ScanIncomplete = $global:W.ScanIncompleteAfterYes; $global:W.ScanIncompleteAfterYes = 0 }
         @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock'; Method = 'BM_CLICK'; ControlId = 0; BmClick = 'closed'; WmCommand = 'not-needed'; SendReason = 'mock send' }
     }
     # W.ConnectScanFail = n: the next n Connect-TcIde calls answer MODAL_SCAN_INCOMPLETE (4024, 2026-11-07)
@@ -166,7 +180,10 @@ $origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:
             $global:W.ConnectScanFail--; $global:W.Log.Add('Connect:scan-incomplete')
             return [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'MODAL_SCAN_INCOMPLETE'; message = 'mock: scan did not finish' }; data = [PSCustomObject]@{ scanComplete = $false } }
         }
-        $global:W.Log.Add('Connect'); $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
+        $global:W.Log.Add('Connect')
+        # W.AfterConnect (#176): the next dialog comes up right after a successful reconnect, i.e. the readback sees it
+        if ($global:W.AfterConnect.Count -gt 0) { $global:W.Dialog = $global:W.AfterConnect[0]; $global:W.AfterConnect.RemoveAt(0) }
+        $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
 }
 function Start-Reset {
     param([string]$ModulePath, [hashtable]$Params = @{}, [int]$TimeoutSec = 10)
@@ -396,6 +413,69 @@ try {
     $r = Start-Reset -ModulePath $sln
     $ra = @($r.data.reconnectAttempts)
     Check 'N3 Yes-path reconnect MODAL_SCAN_INCOMPLETE once -> retried, success without reopen' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reopenedSolution -eq $false -and $ra.Count -eq 2 -and $ra[0].step -eq 'reload-path' -and $ra[1].code -eq 'success') ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $ra))
+
+    # --- O (#174): no modal scan right after a Yes that closed the project prompt ---
+    $global:IncompleteScan = $incompleteScan
+    Reset-World -Dialog $projectDlg
+    $r = Start-Reset -ModulePath $sln
+    $log = @($global:W.Log)
+    $iYes = [array]::IndexOf($log, 'ClosePrompt:Yes'); $iConn = [array]::IndexOf($log, 'Connect')
+    $between = if ($iYes -ge 0 -and $iConn -gt $iYes) { @($log[($iYes + 1)..($iConn - 1)] | Where-Object { $_ -like 'Modal:*' }) } else { @('order?') }
+    Check 'O1 Yes -> Close-TcReloadPrompt -NoFollowUpScan, no modal scan between the Yes and Connect-TcIde, success' ($r.success -and $r.data.answeredYes -eq $true -and (@($global:W.NoScanFlags) -join ',') -eq 'Yes:True' -and $between.Count -eq 0) ("{0} | {1}" -f (Get-LogText), (J $r.data.reloadPromptAttempts))
+
+    Reset-World -Dialog $fileDlg
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    Check 'O1b WM_CLOSE answer -> no -NoFollowUpScan (behaviour unchanged)' ($r.success -and (@($global:W.NoScanFlags) -join ',') -eq ':False') ("{0} | {1}" -f (Get-LogText), (@($global:W.NoScanFlags) -join ','))
+
+    Reset-World -Dialog $projectDlg
+    $global:W.ScanIncompleteAfterYes = 2
+    $r = Start-Reset -ModulePath $sln
+    Check 'O2 scans would not complete right after the Yes (XAE reloading) -> not MODAL_SCAN_INCOMPLETE, Yes-only path success' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reopenedSolution -eq $false -and @($global:W.Log) -notcontains 'Modal:scan-incomplete') ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    # --- P (#176): a reload prompt that comes up during the readback goes back to step 1 ---
+    Reset-World -Dialog $projectDlg
+    $global:W.AfterConnect.Add($projectDlg)
+    $r = Start-Reset -ModulePath $sln
+    $att = @($r.data.reloadPromptAttempts); $ra = @($r.data.reconnectAttempts)
+    Check 'P1 Yes path: project prompt during the readback -> answered Yes, full guard / close / reopen, success' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reopenedSolution -eq $true -and $r.data.loadCheck.complete -eq $true -and $att.Count -eq 2 -and (@($att | ForEach-Object { $_.answer }) -join ',') -eq 'Yes,Yes' -and (@($ra | ForEach-Object { $_.step }) -join ',') -eq 'reload-path,reopen' -and $global:W.Closed -and $global:W.Opened -and -not [string]::IsNullOrWhiteSpace([string]$r.data.buildRequired)) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $fileDlg
+    $global:W.AfterConnect.Add($fileDlg)
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $att = @($r.data.reloadPromptAttempts); $ra = @($r.data.reconnectAttempts)
+    $opens = @($global:W.Log | Where-Object { $_ -eq 'Solution.Open' }).Count
+    Check 'P2 after Solution.Open: file prompt during the readback -> dismissed, closed / reopened again, success' ($r.success -and $r.data.reopenedSolution -eq $true -and $r.data.loadCheck.complete -eq $true -and $att.Count -eq 2 -and (@($ra | ForEach-Object { $_.step }) -join ',') -eq 'reopen,reopen' -and $opens -eq 2 -and [string]$r.data.buildRequired -like '*solution reopened from disk*') ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $null
+    $global:W.AfterConnect.Add($projectDlg)
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $ra = @($r.data.reconnectAttempts)
+    $opens = @($global:W.Log | Where-Object { $_ -eq 'Solution.Open' }).Count
+    Check 'P3 no prompt before, project prompt during the readback after Solution.Open -> Yes, Yes-only path, success' ($r.success -and $r.data.answeredYes -eq $true -and (@($ra | ForEach-Object { $_.step }) -join ',') -eq 'reopen,reload-path' -and $opens -eq 1 -and $r.data.loadCheck.complete -eq $true) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $projectDlg
+    $global:W.AfterConnect.Add($otherDlg)
+    $r = Start-Reset -ModulePath $sln
+    Check 'P4 Yes path: another dialog during the readback -> IDE_MODAL_DIALOG, nothing closed, recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and -not $global:W.Closed -and [string]$r.data.buildRequired -like '*load check failed*') ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $fileDlg
+    $global:W.AfterConnect.Add($otherDlg)
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $opens = @($global:W.Log | Where-Object { $_ -eq 'Solution.Open' }).Count
+    Check 'P5 after Solution.Open: another dialog during the readback -> IDE_MODAL_DIALOG, no second reopen, recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and $opens -eq 1 -and [string]$r.data.buildRequired -like '*solution reopened from disk*') ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    Reset-World -Dialog $fileDlg
+    for ($i = 0; $i -lt 5; $i++) { $global:W.AfterConnect.Add($fileDlg) }
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $opens = @($global:W.Log | Where-Object { $_ -eq 'Solution.Open' }).Count
+    Check 'P6 after Solution.Open: prompt during the 5th readback with 5 handled -> IDE_MODAL_DIALOG (reload prompt), no endless loop' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'reload-prompt' -and @($r.data.reloadPromptAttempts).Count -eq 5 -and $opens -eq 5 -and [string]$r.data.buildRequired -like '*solution reopened from disk*') ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r.error))
+
+    Reset-World -Dialog $projectDlg
+    $global:W.ChainAfterYes = 4
+    $global:W.AfterConnect.Add($projectDlg)
+    $r = Start-Reset -ModulePath $sln
+    $ra = @($r.data.reconnectAttempts)
+    Check 'P7 Yes path: prompt during the readback with 5 handled -> IDE_MODAL_DIALOG, nothing closed, recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'reload-prompt' -and @($r.data.reloadPromptAttempts).Count -eq 5 -and (@($ra | ForEach-Object { $_.step }) -join ',') -eq 'reload-path' -and -not $global:W.Closed -and -not $global:W.Opened -and [string]$r.data.buildRequired -like '*load check failed*') ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
 
     # --- M (#106): classification by button control ids 259 + 1412 ---
     $m = & $mod {

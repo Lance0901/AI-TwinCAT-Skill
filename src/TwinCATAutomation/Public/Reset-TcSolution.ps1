@@ -46,7 +46,11 @@ function Reset-TcSolution {
           1. Find-TcIdeModalDialog, repeated while reload prompts keep coming (at most 5):
              - reloadTarget 'project': Close-TcReloadPrompt -Answer Yes (IDYES clicked by
                control id through Close-TcMessageBox, language independent), waits up to
-               15 s until the prompt is gone; data.answeredYes = true. Yes failed: Yes once
+               15 s until the prompt is gone; data.answeredYes = true. After a Yes that closed
+               the prompt step 1 ends without another dialog scan (#174: while XAE reloads the
+               project the UI Automation scan ran into its 5 s timeout, measured 2026-11-08,
+               4026 VS2022); a later dialog is found by the Yes-path wait, Connect-TcIde or the
+               readback of step 6. Yes failed: Yes once
                more, then -Answer No (IDNO 7; the full close / reopen reads the project from
                disk). No WM_CLOSE (#135 F4): the XAE prompt is an MB_YESNO box, which ignores
                WM_CLOSE - measured 2026-11-07, Windows 11 26200; MessageBox docs: without a
@@ -147,8 +151,11 @@ function Reset-TcSolution {
              (shared -TimeoutSec) until Solution.FullName is this .sln, Solution.IsOpen,
              Solution.Projects (without Miscellaneous Files) >= 1, Solution.SolutionBuild and its
              ActiveConfiguration are set and (when required) LookupTreeItem('TIPC') answers with
-             the expected PLCs below it. A dialog seen while a read gets no answer (or in a last
-             scan at the deadline) -> IDE_MODAL_DIALOG; IDE_CRASHED during a read -> IDE_CRASHED
+             the expected PLCs below it. A reload prompt seen while a read gets no answer (or in
+             a last scan at the deadline) goes back to step 1 (#176; the 5-prompt limit and
+             -TimeoutSec cover the whole call; after the Yes path or a reopen the full path runs
+             again, data.* keeps accumulating); any other dialog, or a reload prompt with 5 already
+             handled -> IDE_MODAL_DIALOG; IDE_CRASHED during a read -> IDE_CRASHED
              at once; not loaded in time -> SOLUTION_RELOAD_INCOMPLETE. Every one is recorded as
              code-changed (the files may have been reloaded).
         The ADS connection is not touched. No dialog, no Start-Sleep beyond the polls.
@@ -238,7 +245,8 @@ function Reset-TcSolution {
         data.possiblyReloaded: modal dialog, reload prompt handling, reconnect, solution check,
         Documents.CloseAll, Solution.Close, Solution.Open, load check);
         PROJECT_OPEN_FAILED in any case (the solution may be half open); a failed reconnect or load check
-        after Solution.Open. Not recorded: a failure before anything was reloaded (NO_SOLUTION,
+        after Solution.Open, and any failure after a reload prompt in that readback sent the call back to
+        step 1 (#176). Not recorded: a failure before anything was reloaded (NO_SOLUTION,
         FILE_NOT_FOUND, a dialog / RESET_SOLUTION_* / close failure without a Yes). This cmdlet is the
         way to pick up files changed ON DISK, which the module cannot see, so Enable-TcConfig
         and Enter-TcPlcOnline refuse until a complete Build-TcProject. A disk edit that XAE
@@ -384,6 +392,11 @@ function Reset-TcSolution {
             $change = "Reset-TcSolution $leafNow (project reloaded from disk, then $Step failed)"
             return Register-TcResetChange -Result $Result -Change $change -Solutions @($path, $startSolution, $ReloadedSolution)
         }
+        if ($progress.reopened) {
+            # #176: a failure in a later round of the main loop (a reload prompt during the readback
+            # sent it back to step 1): the solution was already reopened from disk.
+            return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leafNow (solution reopened from disk, then $Step failed)"
+        }
         if ($Always) {
             return Register-TcCodeChange -Result $Result -SolutionPath $path -Change "Reset-TcSolution $leafNow ($Step failed, solution may be half open)"
         }
@@ -412,7 +425,11 @@ function Reset-TcSolution {
         if ($left -lt 1) { return $null }
         $budget = [math]::Min($default, $left)
         $asw = [System.Diagnostics.Stopwatch]::StartNew()
-        $r = if ($Answer -eq 'Close') { Close-TcReloadPrompt -Dialog $Dialog -TimeoutSec $budget } else { Close-TcReloadPrompt -Dialog $Dialog -Answer $Answer -TimeoutSec $budget }
+        # #174: after Yes XAE reloads the project and its UI thread is busy; the follow-up UI
+        # Automation scan ran into its 5 s timeout (measured 2026-11-08, 4026 VS2022), so it is skipped.
+        $r = if ($Answer -eq 'Close') { Close-TcReloadPrompt -Dialog $Dialog -TimeoutSec $budget }
+             elseif ($Answer -eq 'Yes') { Close-TcReloadPrompt -Dialog $Dialog -Answer $Answer -TimeoutSec $budget -NoFollowUpScan }
+             else { Close-TcReloadPrompt -Dialog $Dialog -Answer $Answer -TimeoutSec $budget }
         $get = { param($n) if ($r -is [System.Collections.IDictionary]) { if ($r.Contains($n)) { $r[$n] } else { $null } } else { $p = $r.PSObject.Properties[$n]; if ($null -ne $p) { $p.Value } else { $null } } }
         $cid = 0
         try { $cid = [int](& $get 'ControlId') } catch { $cid = 0 }
@@ -491,6 +508,14 @@ function Reset-TcSolution {
                     if ($ans -eq 'Yes') { $progress.answeredYes = $true }
                     else { $state.NeedReopen = $true }   # No / Ignore / WM_CLOSE: the reopen reads the disk
                     Write-Verbose "Reset-TcSolution: $target reload prompt answered $ans ($($try.Reason))."
+                    if ($ans -eq 'Yes' -and $null -eq $try.NextDialog) {
+                        # #174: no scan right after a Yes (measured 2026-11-08, 4026 VS2022: while XAE
+                        # reloads the project the UI Automation scan runs into its 5 s timeout, and an
+                        # incomplete scan here would fail closed). Dialogs that come up later are found
+                        # by the next steps: the Yes-path Solution.FullName wait (tolerates an incomplete
+                        # scan), Connect-TcIde, the readback (Test-TcResetLoaded, #176).
+                        return $null
+                    }
                     $handled = $true
                     break
                 }
@@ -653,10 +678,13 @@ function Reset-TcSolution {
         }
     }
 
-    # Readback before success (#135 F5). $null = loaded; else the failed result. A dialog that comes
-    # up meanwhile -> IDE_MODAL_DIALOG; the IDE crashed -> IDE_CRASHED (review S4); not loaded within
-    # -TimeoutSec -> SOLUTION_RELOAD_INCOMPLETE. Every failure is recorded as code-changed by the
-    # caller (the files may have been reloaded).
+    # Readback before success (#135 F5). $null = loaded; @{ ReloadPrompt = <dialog> } = a reload
+    # prompt came up meanwhile and fewer than 5 prompts were handled (#176): the caller hands it to
+    # step 1 (main loop, $pendingDialog; Invoke-TcResetDialogStep keeps the 5-prompt limit and
+    # -TimeoutSec); else the failed result: any other dialog, or a reload prompt past the limit ->
+    # IDE_MODAL_DIALOG; the IDE crashed -> IDE_CRASHED (review S4); not loaded within -TimeoutSec ->
+    # SOLUTION_RELOAD_INCOMPLETE. Every failure is recorded as code-changed by the caller (the files
+    # may have been reloaded).
     function Test-TcResetLoaded {
         param([string]$Where)
         $wait = Wait-TcSolutionLoaded -SolutionPath $path -MemoryBaseline $baseline -Stopwatch $sw -TimeoutSec $TimeoutSec
@@ -667,6 +695,10 @@ function Reset-TcSolution {
                 -ErrorMessage "Reset-TcSolution: the IDE crashed while the solution was read back after $($Where): $($wait.Crashed)"
         }
         if ($null -ne $wait.Dialog) {
+            if ([string]$wait.Dialog.Kind -eq 'reload-prompt' -and $state.Handled -lt 5) {
+                Write-Verbose "Reset-TcSolution: a reload prompt ($($wait.Dialog.ReloadTarget)) came up while the solution was read back after $Where; handling it (#176)."
+                return @{ ReloadPrompt = $wait.Dialog }
+            }
             return New-TcModalDialogResult -Dialog $wait.Dialog -Operation "Reset-TcSolution (waiting for the solution to load after $Where)" -Data (Get-ProgressData)
         }
         New-TcResult -Success $false -ErrorCode 'SOLUTION_RELOAD_INCOMPLETE' -Hint (Get-TcErrorHint -Code 'SOLUTION_RELOAD_INCOMPLETE') -Data (Get-ProgressData) `
@@ -678,6 +710,9 @@ function Reset-TcSolution {
     # back incomplete (at most 5 prompts in total, Invoke-TcResetDialogStep; the polls share
     # -TimeoutSec). XAE notices a disk change with a delay, so the prompt may come up after the
     # guard (#87, 2026-11-02). Nothing is closed before Solution.Close succeeds.
+    # Solution.Open, the reconnect and the readback run inside the loop too: a reload prompt seen by
+    # the readback (either path) sends it back to step 1 (#176). Every pass either returns or
+    # continues on a dialog that step 1 counts, so the loop ends within 5 prompts / -TimeoutSec.
     while ($true) {
         $stepFail = Invoke-TcResetDialogStep -FirstDialog $pendingDialog
         $pendingDialog = $null
@@ -752,6 +787,14 @@ function Reset-TcSolution {
                 }
                 if ($null -eq $probeError) {
                     $loadFail = Test-TcResetLoaded -Where 'the project reload'
+                    if ($loadFail -is [System.Collections.IDictionary]) {
+                        # #176: a reload prompt came up during the readback: step 1 answers it. The
+                        # Yes path was done (YesPathDone), so the loop goes on with the full guard / 1b /
+                        # close / reopen path on the IDE Connect-TcIde re-bound.
+                        $pendingDialog = $loadFail.ReloadPrompt
+                        if ($null -ne $script:TcDte) { $dte = $script:TcDte; $progId = $script:TcProgId }
+                        continue
+                    }
                     if ($null -ne $loadFail) {
                         foreach ($k in @('connectSec')) { $loadFail.data | Add-Member -NotePropertyName $k -NotePropertyValue $connectSec -Force }
                         return Complete-TcResetFailure -Step 'load check' -Result $loadFail
@@ -962,55 +1005,64 @@ function Reset-TcSolution {
         }
         $progress.closed = $true
         $closeSec = [math]::Round($closeSw.Elapsed.TotalSeconds, 1)
-        break
-    }
 
-    # The ITcSysManager of the closed solution is dead; Connect-TcIde acquires the new one.
-    if ($null -ne $script:TcSysManager) {
-        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }
-        $script:TcSysManager = $null
-    }
+        # The ITcSysManager of the closed solution is dead; Connect-TcIde acquires the new one.
+        if ($null -ne $script:TcSysManager) {
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }
+            $script:TcSysManager = $null
+        }
 
-    # --- 4. reopen on the same DTE ---
-    $openSw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-        Invoke-TcComRetry -OperationName 'Solution.Open' -TimeoutSec $TimeoutSec -ScriptBlock { $dte.Solution.Open($path) } | Out-Null
-    }
-    catch {
-        return Complete-TcResetFailure -Step 'Solution.Open' -Always -Result (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution closed but Solution.Open failed' `
-            -Data (Get-ProgressData -Extra @{ closeSec = $closeSec }))
-    }
-    $progress.reopened = $true
-    $progress.reopenedSolution = $true
-    # The IDE has $path open now (maybe another .sln than before): keep the #29 record current
-    # even if the reconnect below fails.
-    $script:TcSolutionPath = $path
-    if ($previousPid -gt 0) { Save-TcIdeSolutionRecord -ProcessId $previousPid -Solution $path }
-    $openSec = [math]::Round($openSw.Elapsed.TotalSeconds, 1)
+        # --- 4. reopen on the same DTE ---
+        $openSw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            Invoke-TcComRetry -OperationName 'Solution.Open' -TimeoutSec $TimeoutSec -ScriptBlock { $dte.Solution.Open($path) } | Out-Null
+        }
+        catch {
+            return Complete-TcResetFailure -Step 'Solution.Open' -Always -Result (New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution closed but Solution.Open failed' `
+                -Data (Get-ProgressData -Extra @{ closeSec = $closeSec }))
+        }
+        $progress.reopened = $true
+        $progress.reopenedSolution = $true
+        # The IDE has $path open now (maybe another .sln than before): keep the #29 record current
+        # even if the reconnect below fails.
+        $script:TcSolutionPath = $path
+        if ($previousPid -gt 0) { Save-TcIdeSolutionRecord -ProcessId $previousPid -Solution $path }
+        $openSec = [math]::Round($openSw.Elapsed.TotalSeconds, 1)
 
-    # --- 5. reconnect: the instance now has the target solution open -> 'solution-match' ---
-    $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
-    if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
-    $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $connect = Invoke-TcResetConnect -Params $connectParams -Step 'reopen'
-    $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
+        # --- 5. reconnect: the instance now has the target solution open -> 'solution-match' ---
+        $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
+        if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
+        $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $connect = Invoke-TcResetConnect -Params $connectParams -Step 'reopen'
+        $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
 
-    $resetChange = "Reset-TcSolution $([IO.Path]::GetFileName([string]$path)) (solution reopened from disk)"
-    if (-not $connect.success) {
-        $failed = New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
-        return Register-TcCodeChange -Result $failed -Change $resetChange
+        $resetChange = "Reset-TcSolution $([IO.Path]::GetFileName([string]$path)) (solution reopened from disk)"
+        if (-not $connect.success) {
+            $failed = New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
+            return Register-TcCodeChange -Result $failed -Change $resetChange
+        }
+
+        $loadFail = Test-TcResetLoaded -Where 'Solution.Open'
+        if ($loadFail -is [System.Collections.IDictionary]) {
+            # #176: a reload prompt came up during the readback after the reopen: back to step 1
+            # (Invoke-TcResetDialogStep: the 5-prompt limit and -TimeoutSec cover the whole call).
+            # The state stays: NeedReopen / YesPathDone send the loop down the full guard / 1b /
+            # close / reopen path again; only when neither is set (no prompt before) can a Yes
+            # take the Yes-only path. The loop runs on the IDE Connect-TcIde re-bound.
+            $pendingDialog = $loadFail.ReloadPrompt
+            if ($null -ne $script:TcDte) { $dte = $script:TcDte; $progId = $script:TcProgId }
+            continue
+        }
+        if ($null -ne $loadFail) {
+            foreach ($kv in @(@('closeSec', $closeSec), @('openSec', $openSec), @('connectSec', $connectSec))) { $loadFail.data | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force }
+            return Register-TcCodeChange -Result $loadFail -Change $resetChange
+        }
+
+        $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Total $sw -Extra ([ordered]@{
+            closeSec   = $closeSec
+            openSec    = $openSec
+            connectSec = $connectSec
+        }))
+        return Register-TcCodeChange -Result $ok -Change $resetChange
     }
-
-    $loadFail = Test-TcResetLoaded -Where 'Solution.Open'
-    if ($null -ne $loadFail) {
-        foreach ($kv in @(@('closeSec', $closeSec), @('openSec', $openSec), @('connectSec', $connectSec))) { $loadFail.data | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force }
-        return Register-TcCodeChange -Result $loadFail -Change $resetChange
-    }
-
-    $ok = New-TcResult -Success $true -Data (New-ReconnectedData -ConnectData $connect.data -Total $sw -Extra ([ordered]@{
-        closeSec   = $closeSec
-        openSec    = $openSec
-        connectSec = $connectSec
-    }))
-    Register-TcCodeChange -Result $ok -Change $resetChange
 }
