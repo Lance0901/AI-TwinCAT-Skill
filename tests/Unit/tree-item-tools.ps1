@@ -183,12 +183,17 @@ try {
     $d2 = Add-MockNode 'TIID^Device 2 (EtherCAT)'; $d2 | Add-Member NoteProperty Disabled 0
     $d3 = Add-MockNode 'TIID^Device 3 (EtherCAT)'; $d3 | Add-Member NoteProperty Disabled 7
     $d4 = Add-MockNode 'TIID^Device 4 (EtherCAT)'; $d4 | Add-Member ScriptProperty Disabled { throw 'E_NOTIMPL' }
+    # InfoSys' property table says BOOL: a bool from COM maps to 1 / 0
+    $d6 = Add-MockNode 'TIID^Device 6 (EtherCAT)'; $d6 | Add-Member NoteProperty Disabled $true
+    $d7 = Add-MockNode 'TIID^Device 7 (EtherCAT)'; $d7 | Add-Member NoteProperty Disabled $false
     $res = Get-TcTreeItem -Path 'TIID'
     $k = @{}; foreach ($c in @($res.data.children)) { $k[$c.name] = $c }
     Check 'lookup-disabled-children' ($res.success -and $k['Device 1 (EtherCAT)'].disabled -eq $true -and $k['Device 1 (EtherCAT)'].disabledState -eq 'SMDS_DISABLED' -and
         $k['Device 2 (EtherCAT)'].disabled -eq $false -and $k['Device 2 (EtherCAT)'].disabledState -eq 'SMDS_NOT_DISABLED' -and
         $null -eq $k['Device 3 (EtherCAT)'].disabled -and $null -eq $k['Device 3 (EtherCAT)'].disabledState -and
         $null -eq $k['Device 4 (EtherCAT)'].disabled -and $null -eq $k['Device 4 (EtherCAT)'].disabledState) ($res | ConvertTo-Json -Depth 5 -Compress)
+    Check 'lookup-disabled-bool' ($k['Device 6 (EtherCAT)'].disabled -eq $true -and $k['Device 6 (EtherCAT)'].disabledState -eq 'SMDS_DISABLED' -and
+        $k['Device 7 (EtherCAT)'].disabled -eq $false -and $k['Device 7 (EtherCAT)'].disabledState -eq 'SMDS_NOT_DISABLED') ($res | ConvertTo-Json -Depth 5 -Compress)
     $res = Get-TcTreeItem -Path 'TIID^Device 1 (EtherCAT)^Box 1'
     Check 'lookup-disabled-parent' ($res.success -and $res.data.disabled -eq $true -and $res.data.disabledState -eq 'SMDS_PARENT_DISABLED') ($res | ConvertTo-Json -Depth 5 -Compress)
     $res = Get-TcTreeItem -Path 'TIRT'
