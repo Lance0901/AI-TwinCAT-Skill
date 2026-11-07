@@ -367,6 +367,88 @@ try {
     $global:T.NoSleep = $false
     $res = Get-TcTreeItem -Path 'TIRT'
     Check 'lookup-184-unreadable-zero' ($res.success -and $res.data.childrenUnreadable -eq 0 -and $res.data.childrenTruncated -eq $false) ($res.data | ConvertTo-Json -Depth 4 -Compress)
+    # #186: GetProjectTree TIID section lists only direct children. Mock of the measured XAE behaviour
+    # (2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650): Child(i) of Device 1 returns the coupler AND its
+    # terminals; Device 5 (no coupler) is plain. TIPC keeps the plain Child(i) walk.
+    Reset-Mock
+    $g = 'TIID^Device 1 (EtherCAT)'
+    $null = Add-MockNode $g
+    $null = Add-MockNode "$g^Term 7 (EK1200)"
+    foreach ($tn in 'Term 10 (EL1809)', 'Term 11 (EL1809)', 'Term 12 (EL2809)') { $null = Add-MockNode "$g^Term 7 (EK1200)^$tn" }
+    $global:T.Nodes[$g].Kids = [System.Collections.ArrayList]::new([string[]]@("$g^Term 7 (EK1200)",
+        "$g^Term 7 (EK1200)^Term 10 (EL1809)", "$g^Term 7 (EK1200)^Term 11 (EL1809)", "$g^Term 7 (EK1200)^Term 12 (EL2809)"))
+    $null = Add-MockNode 'TIID^Device 5 (EtherCAT)'
+    $null = Add-MockNode 'TIID^Device 5 (EtherCAT)^Term 50 (EL1008)'
+    # TIPC: a raw Child(i) entry whose PathName is below a sibling stays listed (plain walk, unchanged)
+    $null = Add-MockNode 'TIPC^P^P Project^POUs^FB_A' 604
+    $null = Add-MockNode 'TIPC^P^P Project^POUs^FB_A^M1' 609
+    $null = $global:T.Nodes['TIPC^P^P Project^POUs'].Kids.Add('TIPC^P^P Project^POUs^FB_A^M1')
+    $res = Get-TcProjectTree
+    $all = New-Object System.Collections.Generic.List[string]
+    $walk = { param($n) $all.Add($n.path); foreach ($c in @($n.children)) { & $walk $c } }
+    $tiid = @($res.data | Where-Object { $_.path -eq 'TIID' })[0]
+    if ($null -ne $tiid) { & $walk $tiid }
+    $dev1 = @($tiid.children | Where-Object { $_.path -eq $g })[0]
+    $dev5 = @($tiid.children | Where-Object { $_.path -eq 'TIID^Device 5 (EtherCAT)' })[0]
+    Check 'projecttree-186-tiid-unique-paths' ($res.success -and $all.Count -eq 8 -and $all.Count -eq @($all | Sort-Object -Unique).Count) ($all -join ' | ')
+    Check 'projecttree-186-coupler-only' (@($dev1.children).Count -eq 1 -and @($dev1.children)[0].path -eq "$g^Term 7 (EK1200)" -and
+        (@(@($dev1.children)[0].children | ForEach-Object { $_.name }) -join '|') -eq 'Term 10 (EL1809)|Term 11 (EL1809)|Term 12 (EL2809)') ($dev1 | ConvertTo-Json -Depth 6 -Compress)
+    Check 'projecttree-186-plain-device' (@($dev5.children).Count -eq 1 -and @($dev5.children)[0].path -eq 'TIID^Device 5 (EtherCAT)^Term 50 (EL1008)') ($dev5 | ConvertTo-Json -Depth 6 -Compress)
+    $pous = @(@(@(@($res.data | Where-Object { $_.path -eq 'TIPC' })[0].children)[0].children | Where-Object { $_.name -eq 'P Project' })[0].children)[0]
+    Check 'projecttree-186-tipc-plain-child-walk' ((@($pous.children | ForEach-Object { $_.name }) -join '|') -eq 'MAIN|FB_A|M1') ($pous | ConvertTo-Json -Depth 4 -Compress)
+    $res = Get-TcProjectTree -Depth 2
+    $tiid = @($res.data | Where-Object { $_.path -eq 'TIID' })[0]
+    $cpl = @(@($tiid.children | Where-Object { $_.path -eq $g })[0].children)
+    Check 'projecttree-186-depth-limit-truncated' ($res.success -and $cpl.Count -eq 1 -and $cpl[0].truncated -eq $true -and @($cpl[0].children).Count -eq 0) ($tiid | ConvertTo-Json -Depth 6 -Compress)
+    # Unreadable device PathName: the walk path is the parent path, the flattened terminals stay out
+    $mute = { param($p) $n = $global:T.Nodes[$p]; $n.PSObject.Properties.Remove('PathName'); $n | Add-Member ScriptProperty PathName { throw 'PathName unreadable (mock)' } }
+    & $mute $g
+    $res = Get-TcProjectTree
+    $dev1 = @(@($res.data | Where-Object { $_.path -eq 'TIID' })[0].children | Where-Object { $_.name -eq 'Device 1 (EtherCAT)' })[0]
+    Check 'projecttree-186-parent-path-unreadable' ((@($dev1.children | ForEach-Object { $_.name }) -join '|') -eq 'Term 7 (EK1200)' -and @(@($dev1.children)[0].children).Count -eq 3) ($dev1 | ConvertTo-Json -Depth 6 -Compress)
+    # Fail closed: a busy Child(i) in TIID restarts the section read; persistent busy -> IDE_BUSY, never success with nodes missing
+    Reset-Mock
+    $f = 'TIID^Device 11 (EtherCAT)'
+    $null = Add-MockNode $f
+    foreach ($tn in 'Term 1 (EL1008)', 'Term 2 (EL1008)', 'Term 3 (EL1008)') { $null = Add-MockNode "$f^$tn" }
+    $global:T.NoSleep = $true
+    $global:T.Nodes[$f] | Add-Member -Force ScriptMethod Child {
+        param($i)
+        if ($i -eq 2 -and $global:T.ChildFailLeft -ne 0) {
+            if ($global:T.ChildFailLeft -gt 0) { $global:T.ChildFailLeft-- }
+            throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))', [int]0x80010001)
+        }
+        $global:T.Nodes[$this.Kids[$i - 1]]
+    }
+    $global:T.ChildFailLeft = 1
+    $res = Get-TcProjectTree
+    $dev11 = @(@(@($res.data | Where-Object { $_.path -eq 'TIID' })[0].children) | Where-Object { $_.path -eq $f })
+    Check 'projecttree-186-busy-child-retried' ($res.success -and $dev11.Count -eq 1 -and @($dev11[0].children).Count -eq 3 -and $global:T.ChildFailLeft -eq 0) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFailLeft = -1
+    $res = Get-TcProjectTree
+    Check 'projecttree-186-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY' -and $null -eq $res.data) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFailLeft = 0; $global:T.NoSleep = $false
+    # #186 review: TIPC fails closed too. A busy Child(i) below TIPC restarts the section read; persistent busy -> IDE_BUSY
+    Reset-Mock
+    $q = 'TIPC^P^P Project^POUs'
+    foreach ($pn in 'FB_B', 'FB_C') { $null = Add-MockNode "$q^$pn" 604 }
+    $global:T.NoSleep = $true
+    $global:T.Nodes[$q] | Add-Member -Force ScriptMethod Child {
+        param($i)
+        if ($i -eq 2 -and $global:T.ChildFailLeft -ne 0) {
+            if ($global:T.ChildFailLeft -gt 0) { $global:T.ChildFailLeft-- }
+            throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (Exception from HRESULT: 0x80010001 (RPC_E_CALL_REJECTED))', [int]0x80010001)
+        }
+        $global:T.Nodes[$this.Kids[$i - 1]]
+    }
+    $global:T.ChildFailLeft = 1
+    $res = Get-TcProjectTree -PlcOnly
+    $pous = @(@(@(@($res.data)[0].children)[0].children | Where-Object { $_.name -eq 'P Project' })[0].children)[0]
+    Check 'projecttree-186-tipc-busy-child-retried' ($res.success -and (@($pous.children | ForEach-Object { $_.name }) -join '|') -eq 'MAIN|FB_B|FB_C' -and $global:T.ChildFailLeft -eq 0) ($res | ConvertTo-Json -Depth 8 -Compress)
+    $global:T.ChildFailLeft = -1
+    $res = Get-TcProjectTree -PlcOnly
+    Check 'projecttree-186-tipc-busy-child-ide-busy' (-not $res.success -and $res.error.code -eq 'IDE_BUSY' -and $null -eq $res.data) ($res | ConvertTo-Json -Depth 6 -Compress)
+    $global:T.ChildFailLeft = 0; $global:T.NoSleep = $false
     Reset-Mock
     $res = Get-TcTreeItem -Path 'TIRT^NoSuchTask'
     Check 'lookup-not-found-code' (-not $res.success -and $res.error.code -eq 'TREEITEM_NOT_FOUND') ($res | ConvertTo-Json -Depth 5 -Compress)

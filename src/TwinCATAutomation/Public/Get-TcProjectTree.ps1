@@ -43,6 +43,16 @@ function Get-TcProjectTree {
         truncated = true (only such nodes carry the truncated property).
         TIPC^<Plc> only enumerates "<Plc> Instance" on 4024/4026; the "<Plc> Project" node
         (with POUs / DUTs / GVLs) is looked up by path and added to the PLC node's children.
+        TIID section (#186): each node lists only its direct children (Get-TcTreeItemDirectChild,
+        shared with GetIoTree / LookupTreeItem). ITcSmTreeItem.Child(i) of an EtherCAT device also
+        returns the terminals below a coupler, so a plain Child(i) walk listed them twice: below the
+        coupler and again flattened below the device (measured 2026-11-08, 4024 TcXaeShell 32-bit,
+        BFH-1650: Device 1 (EtherCAT) = Term 7 (EK1200) with its 8 terminals plus the same 8 again).
+        TIPC / TIRS / TIRC keep the plain Child(i) walk: no flattening observed there (measured
+        2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650: TIPC tree identical before/after #186).
+        Fail closed in every section: a busy / dead-RPC COM error while reading children is retried
+        for the whole section (Invoke-TcComRetry) and then fails the call (IDE_BUSY / IDE_CRASHED /
+        IDE_MODAL_DIALOG / IDE_TIMEOUT), never a tree with nodes missing.
     .PARAMETER Depth
         Number of levels below each root node (1-10, default 4). 4 reaches the POUs:
         TIPC(0)^plc(1)^plc Project(2)^POUs(3)^<POU>(4).
@@ -71,7 +81,9 @@ function Get-TcProjectTree {
     $maxDepth = $Depth
 
     function Read-TreeItem {
-        param($item, [int]$depth = 0)
+        # $walkPath: the path the caller used to reach $item (TIID section only; used as the parent
+        # path when PathName cannot be read). $directOnly: list only the direct children (#186).
+        param($item, [int]$depth = 0, [string]$walkPath = '', [bool]$directOnly = $false)
 
         if ($depth -gt $maxDepth) { return $null }
 
@@ -103,13 +115,44 @@ function Get-TcProjectTree {
         }
 
         $kids = @()
-        for ($i = 1; $i -le $childCount; $i++) {
+        if ($directOnly) {
+            # TIID (#186): Child(i) of an EtherCAT device also returns the terminals below a coupler
+            # (measured 2026-11-08, 4024 TcXaeShell 32-bit, BFH-1650), so keep only the children whose
+            # PathName names this node as parent. Busy / dead RPC must reach Invoke-TcComRetry: a
+            # swallowed error would return success with the node's children missing (#184 review).
+            # PowerShell variable names are case-insensitive: $own must not be named $parentPath.
+            $own = if ($itemPath) { $itemPath } else { $walkPath }
             try {
-                $child = $item.Child($i)
-                $childNode = Read-TreeItem -item $child -depth ($depth + 1)
-                if ($null -ne $childNode) { $kids += $childNode }
+                foreach ($k in (Get-TcTreeItemDirectChild -Item $item -ParentPath $own)) {
+                    $childWalk = [string]$k.Path
+                    if (-not $childWalk -and $own) {
+                        $childName = try { [string]$k.Item.Name } catch { '' }
+                        if ($childName) { $childWalk = "$own^$childName" }
+                    }
+                    $childNode = Read-TreeItem -item $k.Item -depth ($depth + 1) -walkPath $childWalk -directOnly $true
+                    if ($null -ne $childNode) { $kids += $childNode }
+                }
             }
-            catch { continue }
+            catch {
+                if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+            }
+        }
+        else {
+            # TIPC / TIRS / TIRC: plain Child(i). No flattening observed there (measured 2026-11-08,
+            # 4024 TcXaeShell 32-bit, BFH-1650: TIPC tree identical before/after #186). The PathName
+            # parent rule of the TIID branch was not measured on these sections, so Child(i) is kept
+            # as the conservative choice. Busy / dead RPC is rethrown (fail closed, as in TIID).
+            for ($i = 1; $i -le $childCount; $i++) {
+                try {
+                    $child = $item.Child($i)
+                    $childNode = Read-TreeItem -item $child -depth ($depth + 1)
+                    if ($null -ne $childNode) { $kids += $childNode }
+                }
+                catch {
+                    if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
+                    continue
+                }
+            }
         }
         $node.children = $kids
         $node
@@ -125,7 +168,7 @@ function Get-TcProjectTree {
             try {
                 $sectionNode = Invoke-TcComRetry -OperationName "Read tree $section" -ScriptBlock {
                     $sectionItem = $sm.LookupTreeItem($section)
-                    Read-TreeItem -item $sectionItem -depth 0
+                    Read-TreeItem -item $sectionItem -depth 0 -walkPath $section -directOnly ($section -eq 'TIID')
                 }
             }
             catch {
@@ -166,6 +209,11 @@ function Get-TcProjectTree {
         New-TcResult -Success $true -Data (,$tree)
     }
     catch {
+        # IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT keep their own code (as GetIoTree, #186).
+        $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
+        if ($null -ne $mapped -and @('IDE_BUSY', 'IDE_CRASHED', 'IDE_MODAL_DIALOG', 'IDE_TIMEOUT') -contains $mapped.Code) {
+            return New-TcResult -Success $false -ErrorMessage "Failed to read project tree: $($_.Exception.Message)" -ErrorCode $mapped.Code -Hint $mapped.Hint
+        }
         New-TcResult -Success $false -ErrorMessage "Failed to read project tree: $_" -ErrorCode 'TREE_READ_FAILED'
     }
 }
