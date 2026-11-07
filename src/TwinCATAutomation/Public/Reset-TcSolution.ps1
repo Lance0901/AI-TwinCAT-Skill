@@ -145,10 +145,11 @@ function Reset-TcSolution {
              XAE, right after Solution.Open) is retried at once with the same parameters (the
              scan inside takes its own time), at most 3 times, while -TimeoutSec is not used up
              (also on the Yes path); other codes are not retried. data.reconnectAttempts.
-             After Solution.Open, IDE_MODAL_DIALOG with dialogKind 'reload-prompt' (a file
-             changed while the solution was opened, #180) goes back to step 1 while fewer than
-             5 prompts were handled, provided a fresh scan of the IDE that reopened the solution
-             still shows a reload prompt; else (or another dialog) the reconnect failure is returned.
+             After Solution.Open, IDE_MODAL_DIALOG with dialogKind 'reload-prompt' (an outside
+             process rewrote a project file at the end of Solution.Open, #180) goes back to step 1
+             while fewer than 5 prompts were handled, provided a fresh scan of the IDE that reopened
+             the solution (by its pid) still shows a reload prompt; only then is the module IDE
+             identity restored to that IDE. Else (or another dialog) the reconnect failure is returned.
           6. Readback (#135 F5, both paths): Wait-TcSolutionLoaded. Expected from DISK: the
              files (.tsproj) the .sln references and the PLC names they list (<Plc><Project
              Name>); no .tsproj or a .tsproj without PLC names -> the memory baseline of step 0
@@ -727,8 +728,9 @@ function Reset-TcSolution {
         }
     }
 
-    # Module IDE identity around a reconnect: Connect-TcIde drops it when it fails, and the
-    # IDE we hold ($dte) is still the one to act on (Yes path; #180 reopen reconnect).
+    # Module IDE identity around a reconnect: a failed Connect-TcIde leaves it cleared (it drops the
+    # old one first) or bound to the IDE it chose (failure at its modal check), while the IDE we
+    # hold ($dte) is still the one to act on (Yes path; #180 reopen reconnect).
     function Get-TcResetIdeIdentity {
         @{
             Dte = $script:TcDte; ProgId = $script:TcProgId; Pid = $script:TcIdeProcessId; SelectedBy = $script:TcIdeSelectedBy
@@ -1111,26 +1113,33 @@ function Reset-TcSolution {
         $resetChange = "Reset-TcSolution $([IO.Path]::GetFileName([string]$path)) (solution reopened from disk)"
         if (-not $connect.success) {
             # #180: a reload prompt that came up during this reconnect (measured 2026-11-08, 4026 VS2022
-            # zh-TW: .plcproj rewritten at the end of Solution.Open, Connect-TcIde answered IDE_MODAL_DIALOG
+            # zh-TW: an outside process rewrote the .plcproj at the end of Solution.Open (trigger used:
+            # rewrite it with the same bytes in the background); Connect-TcIde answered IDE_MODAL_DIALOG
             # with dialogKind reload-prompt) goes back to step 1 like one seen by the readback (#176),
-            # while fewer than 5 prompts were handled. Connect-TcIde may have dropped the module IDE
-            # state, so the IDE that reopened the solution ($dte) is restored first and scanned again:
-            # step 1 needs that scan's dialog (window handle) to answer it. Only a reload prompt found by
-            # that scan goes back (step 1 counts it, so the loop stays bounded; its answers keep the #64
-            # disabled-prompt rule and the scan-before-read after a Yes, #181 review); a prompt gone by
-            # then, another dialog or an incomplete scan -> the reconnect failure below (fail closed).
+            # while fewer than 5 prompts were handled. Connect-TcIde has bound the IDE it chose by then
+            # (TcDte / TcIdeProcessId, Connect-TcIde.ps1 at its modal check); the IDE that reopened the
+            # solution ($reopenIde, pid taken before the reconnect) is scanned again by its pid: step 1
+            # needs that scan's dialog (window handle) to answer it. Only a reload prompt found by that
+            # scan goes back, and only then is the module IDE identity restored to that IDE (step 1 counts
+            # the prompt, so the loop stays bounded; its answers keep the #64 disabled-prompt rule and the
+            # scan-before-read after a Yes, #181 review). A prompt gone by then, another dialog, an
+            # incomplete scan or an unknown pid -> the reconnect failure below with the module state
+            # Connect-TcIde left (fail closed, the same as any other reconnect failure).
             $cdp = $connect.PSObject.Properties['data']
             $connectKind = if ($null -ne $cdp -and $null -ne $cdp.Value -and $null -ne $cdp.Value.PSObject.Properties['dialogKind']) { [string]$cdp.Value.dialogKind } else { '' }
             if ([string]$connect.error.code -eq 'IDE_MODAL_DIALOG' -and $connectKind -eq 'reload-prompt' -and $state.Handled -lt 5) {
-                Restore-TcResetIdeIdentity $reopenIde
-                $again = Find-TcIdeModalDialog
+                $reopenPid = 0
+                if ($null -ne $reopenIde.Pid) { try { $reopenPid = [int]$reopenIde.Pid } catch { $reopenPid = 0 } }
+                $again = if ($reopenPid -gt 0) { Find-TcIdeModalDialog -ProcessId $reopenPid } else { $null }
                 if ($null -ne $again -and -not (Test-TcModalScanIncomplete $again) -and [string]$again.Kind -eq 'reload-prompt') {
                     Write-Verbose "Reset-TcSolution: a reload prompt ($($again.ReloadTarget)) came up during the reconnect after Solution.Open; handling it (#180)."
+                    Restore-TcResetIdeIdentity $reopenIde
                     $pendingDialog = $again
                     $dte = $script:TcDte; $progId = $script:TcProgId
                     continue
                 }
-                Write-Verbose "Reset-TcSolution: the reconnect after Solution.Open saw a reload prompt, the scan after it did not ($(if ($null -eq $again) { 'no dialog' } else { [string]$again.Kind })); failing closed."
+                $why = if ($reopenPid -le 0) { 'pid of the IDE unknown, not scanned' } elseif ($null -eq $again) { 'no dialog' } else { [string]$again.Kind }
+                Write-Verbose "Reset-TcSolution: the reconnect after Solution.Open saw a reload prompt, the scan after it did not ($why); failing closed."
             }
             $failed = New-ReconnectFailedResult -Connect $connect -Extra @{ closeSec = $closeSec; openSec = $openSec; connectSec = $connectSec } -Where 'Solution reopened'
             return Register-TcCodeChange -Result $failed -Change $resetChange
