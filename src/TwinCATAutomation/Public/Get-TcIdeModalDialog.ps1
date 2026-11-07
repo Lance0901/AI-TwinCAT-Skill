@@ -17,7 +17,7 @@ function Get-TcIdeModalDialog {
         success = true and data.scanComplete = true: the scan finished. data.dialog is then $null
         when no dialog is open (or the process is gone), otherwise
         { title, text, kind, reloadTarget, hwnd, buttons[{ id, name }] }:
-        kind 'reload-prompt' (reloadTarget 'file' | 'project') or 'unknown' (reloadTarget $null).
+        kind 'reload-prompt' (reloadTarget 'file' | 'project' | 'solution'; 'solution' = the VS2022 solution prompt, recognised by its button control ids 259 + 1412, #106) or 'unknown' (reloadTarget $null).
         A scan that did not finish within -TimeoutSec (or failed) is NOT reported as "no dialog"
         (#42): success = false, code MODAL_SCAN_INCOMPLETE, data.scanComplete = false,
         data.dialog = $null, data.modalScan = { reason (timeout | prepare-timeout | error),

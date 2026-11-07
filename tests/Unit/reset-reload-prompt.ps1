@@ -13,6 +13,18 @@
 #   G   the prompt comes up before Solution.Close (DTE.Solution answers $null) -> Yes, success
 #   H   Solution.Close fails with another dialog up -> IDE_MODAL_DIALOG, not SOLUTION_CLOSE_FAILED
 #   I   the modal scan does not complete (#42) -> MODAL_SCAN_INCOMPLETE, nothing closed
+#   J   solution reload prompt (buttons 259 + 1412, #106) -> Reload, reconnect, success, no reopen;
+#       J2 Reload fails -> WM_CLOSE, close / reopen
+#   K   project prompt, Yes fails twice -> No, close / reopen, WM_CLOSE never used (#135 F4);
+#       K2 No fails too -> WM_CLOSE; K3 everything fails -> IDE_MODAL_DIALOG, nothing closed
+#   L   readback before success (#135 F5): not loaded for a few polls -> success after them;
+#       never loaded -> SOLUTION_RELOAD_INCOMPLETE within -TimeoutSec; L3 a dialog during the wait;
+#       L4 a baseline PLC missing from TIPC for a few polls
+#   N   step 5 / reload-path Connect-TcIde answers MODAL_SCAN_INCOMPLETE -> retried (1 s, at most 3)
+#   M   classification by button control ids 259 + 1412 (language independent)
+#   Every solution mock reports a loaded solution (IsOpen, Projects, SolutionBuild.ActiveConfiguration)
+#   unless $global:W.NotLoaded > 0 (readback polls after Solution.Open that see Projects.Count 0 /
+#   SolutionBuild $null).
 #   powershell.exe -NoProfile -File tests/Unit/reset-reload-prompt.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -40,15 +52,44 @@ Set-Content -LiteralPath $sln -Value '' -Encoding ASCII
 $projectDlg = @{ Title = 'TcXaeShell'; Text = "The project file 'Demo.plcproj' has been modified outside of TwinCAT XAE. Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 0; Buttons = @() }
 $fileDlg = @{ Title = 'TcXaeShell'; Text = 'MAIN.TcPOU has been changed outside the environment. Reload the new file?'; Kind = 'reload-prompt'; ReloadTarget = 'file'; Hwnd = 0; Buttons = @() }
 $otherDlg = @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 0; Buttons = @() }
+# #106: the VS2022 zh-TW solution prompt as measured 2026-11-03 (title / text as \u escapes)
+$zhSolTitle = [regex]::Unescape('偵測到檔案修改')
+$zhSolText = [regex]::Unescape("方案 'Demo' 已在環境外部修改。")
+$solButtons = @(@{ Id = 259; Name = 'Reload(&R)' }, @{ Id = 1412; Name = 'Ignore(&I)' })
+$solutionDlg = @{ Title = $zhSolTitle; Text = $zhSolText; Kind = 'reload-prompt'; ReloadTarget = 'solution'; Hwnd = 0; Buttons = $solButtons }
 
 # World: Dialog = the modal that is up ($null = none); AppearAtRead = FullName read count at which
 # AppearDialog comes up; FullName answers $null while a dialog is up. Log = call order.
 $global:W = @{}
 function Reset-World {
     param([object]$Dialog, [int]$AppearAtRead = 0, [object]$AppearDialog)
-    $global:W = @{ Dialog = $Dialog; AppearAtRead = $AppearAtRead; AppearDialog = $AppearDialog; Reads = 0; Log = [System.Collections.Generic.List[string]]::new(); Closed = $false; Opened = $false }
+    $global:W = @{ Dialog = $Dialog; AppearAtRead = $AppearAtRead; AppearDialog = $AppearDialog; Reads = 0; Log = [System.Collections.Generic.List[string]]::new(); Closed = $false; Opened = $false
+        NotLoaded = 0; FailAnswers = @{}; DialogAtLoadPoll = $null }
     Remove-Item -Path (Join-Path $env:TCAUTO_STATE_DIR 'build-required.json*') -Force -ErrorAction SilentlyContinue
     & $mod { $script:TcBuildRequiredLocal = @{} }
+}
+# Load state of a solution mock (#135 F5): IsOpen, Projects (1 project, .Object $null so
+# Get-TcSysManager finds none; Connect-TcIde (mock) sets the ITcSysManager), SolutionBuild with an
+# ActiveConfiguration. After Solution.Open, W.NotLoaded polls see Projects.Count 0 and SolutionBuild
+# $null (SolutionBuild counts the poll down); W.DialogAtLoadPoll comes up at the first of them.
+function Add-LoadState {
+    param([object]$Solution)
+    $Solution | Add-Member -MemberType ScriptProperty -Name IsOpen -Value { $true }
+    $Solution | Add-Member -MemberType ScriptProperty -Name Projects -Value {
+        $n = if ($global:W.Opened -and $global:W.NotLoaded -gt 0) { 0 } else { 1 }
+        $p = [PSCustomObject]@{ Count = $n }
+        $p | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ Name = 'Demo'; UniqueName = 'Demo\Demo.tsproj'; Object = $null } }
+        $p
+    }
+    $Solution | Add-Member -MemberType ScriptProperty -Name SolutionBuild -Value {
+        if ($global:W.Opened -and $global:W.NotLoaded -gt 0) {
+            $global:W.NotLoaded--
+            $global:W.Log.Add('SolutionBuild:null')
+            if ($null -ne $global:W.DialogAtLoadPoll) { $global:W.Dialog = $global:W.DialogAtLoadPoll; $global:W.DialogAtLoadPoll = $null }
+            return $null
+        }
+        [PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } }
+    }
 }
 $sol = [PSCustomObject]@{ Mock = $true }
 $sol | Add-Member -MemberType ScriptProperty -Name FullName -Value {
@@ -61,6 +102,7 @@ $sol | Add-Member -MemberType ScriptProperty -Name FullName -Value {
 }
 $sol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:W.Log.Add('Solution.Close'); $global:W.Closed = $true }
 $sol | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:W.Log.Add('Solution.Open'); $global:W.Opened = $true }
+Add-LoadState $sol
 $docs = [PSCustomObject]@{ Count = 0 }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) $global:W.Log.Add('Documents.CloseAll') }
 $resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
@@ -72,14 +114,31 @@ $global:OkSm = $okSm
 $origFns = & $mod { @{ Dlg = ${function:Find-TcIdeModalDialog}; Rp = ${function:Close-TcReloadPrompt}; Conn = ${function:Connect-TcIde} } }
 & $mod {
     Set-Item -Path function:script:Find-TcIdeModalDialog -Value { param($ProcessId, $TimeoutSec) $global:W.Log.Add("Modal:$(if ($null -ne $global:W.Dialog) { $global:W.Dialog.Kind } else { 'none' })"); $global:W.Dialog }
-    Set-Item -Path function:script:Close-TcReloadPrompt -Value { param($Dialog, $Answer, $TimeoutSec) $global:W.Log.Add("ClosePrompt:$Answer"); $global:W.Dialog = $null; @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock' } }
-    Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch) $global:W.Log.Add('Connect'); $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
+    # W.FailAnswers[<answer>] = n: the next n attempts with that answer leave the prompt up ('' = WM_CLOSE)
+    Set-Item -Path function:script:Close-TcReloadPrompt -Value {
+        param($Dialog, $Answer, $TimeoutSec)
+        $global:W.Log.Add("ClosePrompt:$Answer")
+        $key = [string]$Answer
+        if ($global:W.FailAnswers.ContainsKey($key) -and $global:W.FailAnswers[$key] -gt 0) {
+            $global:W.FailAnswers[$key]--
+            return @{ Sent = $true; Dismissed = $false; NextDialog = $null; Reason = 'mock: dialog still shown'; Method = 'WM_COMMAND'; ControlId = 6; BmClick = 'processed-still-open'; WmCommand = 'posted-still-open'; SendReason = 'mock send' }
+        }
+        $global:W.Dialog = $null
+        @{ Sent = $true; Dismissed = $true; NextDialog = $null; Reason = 'mock'; Method = 'BM_CLICK'; ControlId = 0; BmClick = 'closed'; WmCommand = 'not-needed'; SendReason = 'mock send' }
+    }
+    # W.ConnectScanFail = n: the next n Connect-TcIde calls answer MODAL_SCAN_INCOMPLETE (4024, 2026-11-07)
+    Set-Item -Path function:script:Connect-TcIde -Value { param($SolutionPath, $ProgId, [switch]$NoLaunch)
+        if ($global:W.ConnectScanFail -gt 0) {
+            $global:W.ConnectScanFail--; $global:W.Log.Add('Connect:scan-incomplete')
+            return [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'MODAL_SCAN_INCOMPLETE'; message = 'mock: scan did not finish' }; data = [PSCustomObject]@{ scanComplete = $false } }
+        }
+        $global:W.Log.Add('Connect'); $script:TcSolutionPath = $SolutionPath; $script:TcSysManager = $global:OkSm; [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ideProcessId = 0; selectedBy = 'solution-match'; sysManagerAvailable = $true; silentMode = $true } } }
 }
 function Start-Reset {
-    param([string]$ModulePath, [hashtable]$Params = @{})
+    param([string]$ModulePath, [hashtable]$Params = @{}, [int]$TimeoutSec = 10)
     & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $resetDte $ModulePath
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $r = Reset-TcSolution -TimeoutSec 10 @Params
+    $r = Reset-TcSolution -TimeoutSec $TimeoutSec @Params
     $global:LastSec = $sw.Elapsed.TotalSeconds
     $r
 }
@@ -101,15 +160,16 @@ try {
     Check 'A2 prompt up, no path known -> Yes, success, solution read back, fast' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.solution -eq $sln -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
 
     # --- B: the prompt appears while the guard polls Solution.FullName ---
-    Reset-World -Dialog $null -AppearAtRead 1 -AppearDialog $projectDlg
+    # read 1 = the #135 F5 baseline, read 2 = the guard
+    Reset-World -Dialog $null -AppearAtRead 2 -AppearDialog $projectDlg
     $r = Start-Reset -ModulePath $sln
     Check 'B prompt appears during the guard -> answered Yes in the poll, success, well below -TimeoutSec' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reloadTarget -eq 'project' -and $r.data.reopenedSolution -eq $false -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
     Check 'B nothing closed (Yes-only path)' (-not $global:W.Closed -and -not $global:W.Opened) (Get-LogText)
 
     # --- B2: the prompt appears on the 3rd read (FullName answers $null twice without a dialog first) ---
-    Reset-World -Dialog $null -AppearAtRead 3 -AppearDialog $projectDlg
-    # reads 1..2 answer $null without a dialog: model "busy, $null for a moment"
-    $global:W.NullReads = 2
+    Reset-World -Dialog $null -AppearAtRead 4 -AppearDialog $projectDlg
+    # reads 1..3 (baseline + 2 guard polls) answer $null without a dialog: model "busy, $null for a moment"
+    $global:W.NullReads = 3
     $nullSol = [PSCustomObject]@{ Mock = $true }
     $nullSol | Add-Member -MemberType ScriptProperty -Name FullName -Value {
         $global:W.Reads++
@@ -119,6 +179,7 @@ try {
     }
     $nullSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:W.Closed = $true }
     $nullSol | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:W.Opened = $true }
+    Add-LoadState $nullSol
     $dteB2 = [PSCustomObject]@{ Solution = $nullSol; Documents = $docs }
     & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } $dteB2 $sln
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -127,13 +188,13 @@ try {
     Check 'B2 FullName $null twice, prompt on the 3rd poll -> handled, success, well below -TimeoutSec' ($r.success -and $r.data.answeredYes -eq $true -and $sec -lt 6) ("{0:N1}s {1} | {2}" -f $sec, (Get-LogText), (J $r))
 
     # --- C: another modal appears while the guard polls ---
-    Reset-World -Dialog $null -AppearAtRead 1 -AppearDialog $otherDlg
+    Reset-World -Dialog $null -AppearAtRead 2 -AppearDialog $otherDlg
     $r = Start-Reset -ModulePath $sln
     Check 'C other modal during the guard -> IDE_MODAL_DIALOG, nothing closed, well below -TimeoutSec' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and -not $global:W.Closed -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
     Check 'C nothing recorded as code-changed (no reload happened)' ($null -eq $r.data.PSObject.Properties['buildRequired']) (J $r.data)
 
     # --- D: a file reload prompt appears while the guard polls -> dismissed, close / reopen ---
-    Reset-World -Dialog $null -AppearAtRead 1 -AppearDialog $fileDlg
+    Reset-World -Dialog $null -AppearAtRead 2 -AppearDialog $fileDlg
     $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
     Check 'D file prompt during the guard -> dismissed, closed and reopened, success' ($r.success -and $r.data.dismissedReloadPrompt -eq $true -and $r.data.reloadTarget -eq 'file' -and $r.data.answeredYes -eq $false -and $r.data.reopenedSolution -eq $true -and $global:W.Closed -and $global:W.Opened -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
     Check 'D the prompt was closed without Yes' (@($global:W.Log) -contains 'ClosePrompt:' -and @($global:W.Log) -notcontains 'ClosePrompt:Yes') (Get-LogText)
@@ -152,6 +213,116 @@ try {
     & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } ([PSCustomObject]@{ Solution = $stuck; Documents = $docs }) $sln
     $r = Reset-TcSolution -TimeoutSec 5
     Check 'regression: FullName $null, no dialog -> RESET_SOLUTION_UNVERIFIED, nothing closed, modal checked in the poll' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:W.Closed -and @($global:W.Log | Where-Object { $_ -eq 'Modal:none' }).Count -ge 2) ("{0} | {1}" -f (Get-LogText).Substring(0, [Math]::Min(200, (Get-LogText).Length)), (J $r.error))
+
+    # --- J (#106): solution reload prompt (buttons 259 + 1412) -> Reload, reconnect, no reopen ---
+    Reset-World -Dialog $solutionDlg
+    $r = Start-Reset -ModulePath $sln
+    $att = @($r.data.reloadPromptAttempts)
+    Check 'J solution prompt -> Close-TcReloadPrompt -Answer Reload, success, answeredReload, no reopen, loaded' ($r.success -and $r.data.answeredReload -eq $true -and $r.data.answeredYes -eq $false -and $r.data.reopenedSolution -eq $false -and $r.data.reloadTarget -eq 'solution' -and $r.data.loadCheck.complete -eq $true -and -not $global:W.Closed -and -not $global:W.Opened) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+    Check 'J Reload answered (log), one attempt recorded (target solution, answer Reload, sent, dismissed)' ((@($global:W.Log) -contains 'ClosePrompt:Reload') -and $att.Count -eq 1 -and $att[0].target -eq 'solution' -and $att[0].answer -eq 'Reload' -and $att[0].sent -eq $true -and $att[0].dismissed -eq $true) ("{0} | {1}" -f (Get-LogText), (J $att))
+    Check 'J recorded as code-changed (solution reloaded from disk)' ([string]$r.data.buildRequired -like '*solution reloaded from disk*') (J $r.data)
+
+    # --- J2: Reload fails -> WM_CLOSE, full close / reopen ---
+    Reset-World -Dialog $solutionDlg
+    $global:W.FailAnswers = @{ Reload = 1 }
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $att = @($r.data.reloadPromptAttempts)
+    Check 'J2 Reload fails -> WM_CLOSE, close / reopen, success, answeredReload false' ($r.success -and $r.data.answeredReload -eq $false -and $r.data.reopenedSolution -eq $true -and $global:W.Closed -and $global:W.Opened -and $att.Count -eq 2 -and $att[0].answer -eq 'Reload' -and $att[0].dismissed -eq $false -and $att[0].bmClick -eq 'processed-still-open' -and $att[0].wmCommand -eq 'posted-still-open' -and $att[1].answer -eq 'Close' -and $r.data.loadCheck.complete -eq $true) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    # --- K (#135 F4): project prompt, Yes fails twice -> No, close / reopen, WM_CLOSE never used ---
+    Reset-World -Dialog $projectDlg
+    $global:W.FailAnswers = @{ Yes = 2 }
+    $r = Start-Reset -ModulePath $sln
+    $att = @($r.data.reloadPromptAttempts)
+    $answers = @($att | ForEach-Object { $_.answer }) -join ','
+    Check 'K Yes fails twice -> No, full close / reopen, success' ($r.success -and $r.data.answeredYes -eq $false -and $r.data.reopenedSolution -eq $true -and $r.data.dismissedReloadPrompt -eq $true -and $global:W.Closed -and $global:W.Opened -and $r.data.loadCheck.complete -eq $true) ("{0} | {1}" -f (Get-LogText), (J $r))
+    Check 'K three attempts Yes,Yes,No; WM_CLOSE never used' ($att.Count -eq 3 -and $answers -eq 'Yes,Yes,No' -and $att[0].sent -eq $true -and $att[0].dismissed -eq $false -and $att[2].dismissed -eq $true -and @($global:W.Log) -notcontains 'ClosePrompt:' -and @($global:W.Log) -notcontains 'ClosePrompt:Close') ("{0} | {1}" -f (Get-LogText), (J $att))
+
+    # --- K2: No fails too -> WM_CLOSE, close / reopen ---
+    Reset-World -Dialog $projectDlg
+    $global:W.FailAnswers = @{ Yes = 2; No = 1 }
+    $r = Start-Reset -ModulePath $sln
+    $answers = @($r.data.reloadPromptAttempts | ForEach-Object { $_.answer }) -join ','
+    Check 'K2 Yes x2 and No fail -> WM_CLOSE, close / reopen, success' ($r.success -and $answers -eq 'Yes,Yes,No,Close' -and $r.data.reopenedSolution -eq $true -and (@($global:W.Log) -contains 'ClosePrompt:')) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    # --- K3: every answer fails -> IDE_MODAL_DIALOG, nothing closed, attempts in data ---
+    Reset-World -Dialog $projectDlg
+    $global:W.FailAnswers = @{ Yes = 2; No = 1; '' = 1 }
+    $r = Start-Reset -ModulePath $sln
+    $answers = @($r.data.reloadPromptAttempts | ForEach-Object { $_.answer }) -join ','
+    Check 'K3 nothing closes the prompt -> IDE_MODAL_DIALOG, nothing closed, 4 attempts in data' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $answers -eq 'Yes,Yes,No,Close' -and -not $global:W.Closed -and -not $global:W.Opened) ("{0} | {1}" -f (Get-LogText), (J $r))
+
+    # --- L (#135 F5): readback after the reopen ---
+    Reset-World -Dialog $fileDlg
+    $global:W.NotLoaded = 3
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    Check 'L Projects.Count 0 / SolutionBuild $null for 3 polls -> success only after loaded (polls > 1)' ($r.success -and $r.data.reopenedSolution -eq $true -and $r.data.loadCheck.complete -eq $true -and $r.data.loadCheck.polls -ge 4 -and $global:W.NotLoaded -eq 0 -and $r.data.loadCheck.last.projectCount -eq 1 -and $r.data.loadCheck.last.activeConfiguration -eq $true -and $r.data.loadCheck.last.tipc -eq $true) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r.data.loadCheck))
+
+    Reset-World -Dialog $fileDlg
+    $global:W.NotLoaded = 1000000
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true } -TimeoutSec 5
+    $lc = $r.data.loadCheck
+    Check 'L2 never loaded -> SOLUTION_RELOAD_INCOMPLETE within -TimeoutSec, loadCheck in data' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_RELOAD_INCOMPLETE' -and -not [string]::IsNullOrWhiteSpace([string]$r.error.hint) -and $lc.complete -eq $false -and $lc.polls -gt 1 -and $lc.last.projectCount -eq 0 -and $lc.last.solutionBuild -eq $false -and -not [string]::IsNullOrWhiteSpace([string]$lc.lastError) -and $global:LastSec -lt 6) ("{0:N1}s | {1}" -f $global:LastSec, (J $r))
+    Check 'L2 recorded as code-changed (files may have been reloaded)' ([string]$r.data.buildRequired -like '*solution reopened from disk*') (J $r.data)
+
+    Reset-World -Dialog $projectDlg
+    $global:W.FailAnswers = @{ Yes = 2 }
+    $global:W.NotLoaded = 5
+    $global:W.DialogAtLoadPoll = $otherDlg
+    $r = Start-Reset -ModulePath $sln
+    Check 'L3 a dialog comes up while waiting for the load -> IDE_MODAL_DIALOG, loadCheck incomplete' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and $r.data.loadCheck.complete -eq $false -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+    # --- N (4024, 2026-11-07): step 5 Connect-TcIde answers MODAL_SCAN_INCOMPLETE -> retried ---
+    Reset-World -Dialog $fileDlg
+    $global:W.ConnectScanFail = 1
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true }
+    $ra = @($r.data.reconnectAttempts)
+    Check 'N1 reconnect MODAL_SCAN_INCOMPLETE once, then success -> Reset success, 2 reconnectAttempts' ($r.success -and $ra.Count -eq 2 -and $ra[0].code -eq 'MODAL_SCAN_INCOMPLETE' -and $ra[1].code -eq 'success' -and $ra[0].step -eq 'reopen' -and $r.data.loadCheck.complete -eq $true) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $ra))
+
+    Reset-World -Dialog $fileDlg
+    $global:W.ConnectScanFail = 1000
+    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true } -TimeoutSec 5
+    $ra = @($r.data.reconnectAttempts)
+    Check 'N2 reconnect always MODAL_SCAN_INCOMPLETE -> failure MODAL_SCAN_INCOMPLETE within -TimeoutSec, at most 4 attempts' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $ra.Count -ge 2 -and $ra.Count -le 4 -and @($ra | Where-Object { $_.code -ne 'MODAL_SCAN_INCOMPLETE' }).Count -eq 0 -and $global:LastSec -lt 6) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+    Reset-World -Dialog $solutionDlg
+    $global:W.ConnectScanFail = 1
+    $r = Start-Reset -ModulePath $sln
+    $ra = @($r.data.reconnectAttempts)
+    Check 'N3 reload-path reconnect MODAL_SCAN_INCOMPLETE once -> retried, success without reopen' ($r.success -and $r.data.answeredReload -eq $true -and $r.data.reopenedSolution -eq $false -and $ra.Count -eq 2 -and $ra[0].step -eq 'reload-path' -and $ra[1].code -eq 'success') ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $ra))
+
+    # --- M (#106): classification by button control ids 259 + 1412 ---
+    $m = & $mod {
+        param($t, $x, $b)
+        $plainBtns = @(@{ Id = 1; Name = 'OK' }, @{ Id = 2; Name = 'Cancel' })
+        $objBtns = @([PSCustomObject]@{ Id = 1412; Name = 'i' }, [PSCustomObject]@{ Id = 259; Name = 'r' })
+        $yesNo = @(@{ Id = 6; Name = 'y' }, @{ Id = 7; Name = 'n' })
+        $projText = "The project file 'Demo.plcproj' has been modified outside of TwinCAT XAE. Do you want to reload the project?"
+        $fileText = 'MAIN.TcPOU has been changed outside the environment. Reload the new file?'
+        $raw = Add-TcDialogKind -Dialog ([PSCustomObject]@{ Title = $t; Text = $x; Hwnd = 1; Buttons = $b })
+        @{
+            SolKind    = Get-TcModalDialogKind -Title $t -Text $x -Buttons $b
+            SolTarget  = Get-TcReloadTarget -Title $t -Text $x -Buttons $b
+            ObjKind    = Get-TcModalDialogKind -Title $t -Text $x -Buttons $objBtns
+            ObjTarget  = Get-TcReloadTarget -Title $t -Text $x -Buttons $objBtns
+            NoIdKind   = Get-TcModalDialogKind -Title $t -Text $x -Buttons $plainBtns
+            NoIdTarget = Get-TcReloadTarget -Title $t -Text $x -Buttons $plainBtns
+            OneIdKind  = Get-TcModalDialogKind -Title $t -Text $x -Buttons @(@{ Id = 259; Name = 'r' })
+            NoBtnKind  = Get-TcModalDialogKind -Title $t -Text $x
+            ProjKind   = Get-TcModalDialogKind -Title 'TcXaeShell' -Text $projText -Buttons $yesNo
+            ProjTarget = Get-TcReloadTarget -Title 'TcXaeShell' -Text $projText -Buttons $yesNo
+            FileKind   = Get-TcModalDialogKind -Title 'TcXaeShell' -Text $fileText
+            FileTarget = Get-TcReloadTarget -Title 'TcXaeShell' -Text $fileText
+            RawKind    = $raw.Kind
+            RawTarget  = $raw.ReloadTarget
+            Result     = New-TcModalDialogResult -Dialog $raw -Operation 'unit'
+            ReloadHint = Get-TcErrorHint -Code 'IDE_MODAL_DIALOG_RELOAD'
+        }
+    } $zhSolTitle $zhSolText $solButtons
+    Check 'M 259 + 1412 -> reload-prompt / solution (hashtable and object buttons, raw watchdog record)' ($m.SolKind -eq 'reload-prompt' -and $m.SolTarget -eq 'solution' -and $m.ObjKind -eq 'reload-prompt' -and $m.ObjTarget -eq 'solution' -and $m.RawKind -eq 'reload-prompt' -and $m.RawTarget -eq 'solution') (J $m)
+    Check 'M same text without both ids -> unknown, no reload target' ($m.NoIdKind -eq 'unknown' -and $null -eq $m.NoIdTarget -and $m.OneIdKind -eq 'unknown' -and $m.NoBtnKind -eq 'unknown') (J $m)
+    Check 'M project / file classification unchanged' ($m.ProjKind -eq 'reload-prompt' -and $m.ProjTarget -eq 'project' -and $m.FileKind -eq 'reload-prompt' -and $m.FileTarget -eq 'file') (J $m)
+    Check 'M IDE_MODAL_DIALOG of a solution prompt: data.dialogReloadTarget solution, reload hint' ($m.Result.error.code -eq 'IDE_MODAL_DIALOG' -and $m.Result.data.dialogReloadTarget -eq 'solution' -and $m.Result.data.dialogKind -eq 'reload-prompt' -and $m.Result.error.hint -eq $m.ReloadHint) (J $m.Result)
 
     # --- E-H (#87 retest 2026-11-02): the prompt comes up AFTER the guard ---
     $origFns2 = & $mod { @{ Sm = ${function:Get-TcSysManager}; Up = ${function:Get-TcUnsavedPlcObject} } }
@@ -180,6 +351,7 @@ try {
         $global:W.Log.Add('Solution.Close'); $global:W.Closed = $true
     }
     $solG | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:W.Log.Add('Solution.Open'); $global:W.Opened = $true }
+    Add-LoadState $solG
     $global:SolG = $solG
     $docsG = [PSCustomObject]@{ Count = 1 }
     $docsG | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) $global:W.Log.Add('Documents.CloseAll'); if ($global:W.CloseAllAppear) { $global:W.CloseAllAppear = $false; $global:W.Dialog = $global:W.LaterDialog } }
@@ -211,8 +383,8 @@ try {
         $r = Start-ResetG -Set @{ CloseAllAppear = $true; SolNull = $true; LaterDialog = $projectDlg }
         Check 'G prompt before Solution.Close (DTE.Solution $null) -> Yes, success, not SOLUTION_CLOSE_FAILED' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
 
-        # read 1 = guard, read 2 = the one inside Solution.Close (after the pre-check): $null, prompt up
-        $r = Start-ResetG -Set @{ SolReads = 0; SolAppearAtRead = 2; SolNull = $true; LaterDialog = $projectDlg }
+        # read 1 = #135 F5 baseline, read 2 = guard, read 3 = the one inside Solution.Close (after the pre-check): $null, prompt up
+        $r = Start-ResetG -Set @{ SolReads = 0; SolAppearAtRead = 3; SolNull = $true; LaterDialog = $projectDlg }
         Check 'G1 DTE.Solution $null inside Solution.Close (prompt up) -> no method call on $null, Yes, success' ($r.success -and $r.data.answeredYes -eq $true -and -not $global:W.Closed -and (Get-LogText) -match 'Solution:null > Modal:reload-prompt' -and $global:LastSec -lt 5) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
 
         $r = Start-ResetG -Set @{ CloseAppear = $true; LaterDialog = $projectDlg }
@@ -222,6 +394,22 @@ try {
 
         $r = Start-ResetG -Set @{ CloseAppear = $true; LaterDialog = $otherDlg }
         Check 'H Solution.Close fails, other dialog up -> IDE_MODAL_DIALOG (not SOLUTION_CLOSE_FAILED)' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.dialogKind -eq 'unknown' -and -not $global:W.Closed) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $r))
+
+        # --- L4 (#135 F5): baseline PLC names (TIPC children before the reset) must be back ---
+        $plcSm = [PSCustomObject]@{ Mock = $true }
+        $plcSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value {
+            param($p)
+            $t = [PSCustomObject]@{ Name = 'TIPC' }
+            $t | Add-Member -MemberType ScriptProperty -Name ChildCount -Value { if ($global:W.Opened -and $global:W.PlcMissing -gt 0) { $global:W.PlcMissing--; $global:W.Log.Add('TIPC:empty'); 0 } else { 1 } }
+            $t | Add-Member -MemberType ScriptMethod -Name Child -Value { param($i) [PSCustomObject]@{ Name = 'PLC1' } }
+            $t
+        }
+        $keepSm = $global:OkSm
+        $global:OkSm = $plcSm
+        try { $r = Start-ResetG -Set @{ PlcMissing = 2 } }
+        finally { $global:OkSm = $keepSm }
+        $lc = $r.data.loadCheck
+        Check 'L4 baseline PLC1 missing from TIPC for 2 polls after the reopen -> success only when it is back' ($r.success -and $r.data.reopenedSolution -eq $true -and $lc.complete -eq $true -and $lc.baselineKnown -eq $true -and (@($lc.baseline.plcs) -join ',') -eq 'PLC1' -and $lc.polls -ge 3 -and (@($lc.last.plcs) -join ',') -eq 'PLC1' -and $global:W.PlcMissing -eq 0) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $lc))
     }
     finally {
         & $mod { param($f) Set-Item -Path function:script:Get-TcSysManager -Value $f.Sm; Set-Item -Path function:script:Get-TcUnsavedPlcObject -Value $f.Up } $origFns2

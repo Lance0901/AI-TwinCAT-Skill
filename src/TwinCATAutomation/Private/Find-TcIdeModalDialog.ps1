@@ -491,6 +491,11 @@ public class UiaScanButtonNative {
 #                  .plcproj rewritten on disk, e.g. by a generator, even with identical
 #                  content): same Kind, ReloadTarget 'project'. Reset-TcSolution answers Yes
 #                  to it (Close-TcMessageBox -Answer Yes; XAE reloads the project itself).
+#                  Also the VS2022 solution prompt (#106) "solution 'X' was modified outside the
+#                  environment" (zh-TW title "\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539"):
+#                  recognised by its button control ids 259 (Reload) + 1412 (Ignore), not by
+#                  text (measured 2026-11-03, VS2022 zh-TW; TcXaeShell and other languages not
+#                  verified); ReloadTarget 'solution'. Reset-TcSolution answers Reload (259).
 #   unknown        everything else (hint IDE_MODAL_DIALOG), ReloadTarget $null.
 # ConvertTo-TcAdsErrorCode uses the same pattern on error messages (the watchdog puts the
 # dialog text into its IDE_MODAL_DIALOG exception).
@@ -498,10 +503,47 @@ $script:TcReloadPromptPattern = '(?i)changed outside the (environment|source edi
 # Subset of the pattern above that identifies the PROJECT (.plcproj) prompt.
 $script:TcReloadProjectPattern = '(?i)modified outside of TwinCAT XAE|want to reload the project'
 
+# Solution-level reload prompt (#106): measured 2026-11-03, 4026 VS2022 zh-TW: a #32770 box,
+# title "\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539" (file modification detected), text "solution 'X'
+# was modified outside the environment ...", buttons control id 259 = Reload (&R) and 1412 =
+# Ignore (&I). Identified by those two control ids only (language independent; no text match).
+# TcXaeShell and other UI languages: not verified.
+$script:TcSolutionReloadButtonIds = @(259, 1412)
+
+function Test-TcSolutionReloadButtons {
+    <#
+    .SYNOPSIS
+        $true when the dialog buttons contain BOTH control ids 259 (Reload) and 1412 (Ignore):
+        the VS2022 solution reload prompt (#106; signature measured 2026-11-03, VS2022 zh-TW;
+        TcXaeShell and other languages not verified). Never throws.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object[]]$Buttons
+    )
+    $ids = [System.Collections.Generic.List[int]]::new()
+    foreach ($b in @($Buttons)) {
+        if ($null -eq $b) { continue }
+        try {
+            $id = if ($b -is [System.Collections.IDictionary]) { $b['Id'] } else { $b.Id }
+            if ($null -ne $id) { $ids.Add([int]$id) }
+        }
+        catch { continue }
+    }
+    foreach ($want in $script:TcSolutionReloadButtonIds) { if (-not $ids.Contains([int]$want)) { return $false } }
+    return $true
+}
+
 function Get-TcModalDialogKind {
     <#
     .SYNOPSIS
-        Classifies a dialog by its title and text: 'reload-prompt' or 'unknown'.
+        Classifies a dialog by its buttons, title and text: 'reload-prompt' or 'unknown'.
+    .DESCRIPTION
+        Buttons with control ids 259 and 1412 (Test-TcSolutionReloadButtons) -> 'reload-prompt'
+        (the solution reload prompt, #106; measured 2026-11-03 VS2022 zh-TW, TcXaeShell and other
+        languages not verified); else the English text pattern $script:TcReloadPromptPattern.
     #>
     [CmdletBinding()]
     param(
@@ -509,8 +551,13 @@ function Get-TcModalDialogKind {
         [string]$Title = '',
 
         [Parameter()]
-        [string]$Text = ''
+        [string]$Text = '',
+
+        [Parameter()]
+        [AllowNull()]
+        [object[]]$Buttons
     )
+    if (Test-TcSolutionReloadButtons -Buttons $Buttons) { return 'reload-prompt' }
     if ("$Title $Text" -match $script:TcReloadPromptPattern) { return 'reload-prompt' }
     return 'unknown'
 }
@@ -518,9 +565,12 @@ function Get-TcModalDialogKind {
 function Get-TcReloadTarget {
     <#
     .SYNOPSIS
-        For a reload prompt: 'project' (XAE "project file ... modified outside of TwinCAT
-        XAE. Do you want to reload the project?") or 'file' (VS "File has been changed
-        outside the environment. Reload the new file?"); $null for any other dialog.
+        For a reload prompt: 'solution' (buttons with control ids 259 Reload + 1412 Ignore: the
+        VS2022 "solution 'X' was modified outside the environment" prompt, #106; measured
+        2026-11-03 VS2022 zh-TW, TcXaeShell and other languages not verified), 'project' (XAE
+        "project file ... modified outside of TwinCAT XAE. Do you want to reload the project?")
+        or 'file' (VS "File has been changed outside the environment. Reload the new file?");
+        $null for any other dialog.
     #>
     [CmdletBinding()]
     param(
@@ -528,8 +578,13 @@ function Get-TcReloadTarget {
         [string]$Title = '',
 
         [Parameter()]
-        [string]$Text = ''
+        [string]$Text = '',
+
+        [Parameter()]
+        [AllowNull()]
+        [object[]]$Buttons
     )
+    if (Test-TcSolutionReloadButtons -Buttons $Buttons) { return 'solution' }
     $all = "$Title $Text"
     if ($all -notmatch $script:TcReloadPromptPattern) { return $null }
     if ($all -match $script:TcReloadProjectPattern) { return 'project' }
@@ -564,7 +619,6 @@ function Add-TcDialogKind {
         $kp = $Dialog.PSObject.Properties['Kind']
         if ($null -ne $kp) { $kind = [string]$kp.Value }
     }
-    if ([string]::IsNullOrWhiteSpace($kind)) { $kind = Get-TcModalDialogKind -Title $title -Text $text }
     $hwnd = [long]0
     try {
         if ($Dialog -is [System.Collections.IDictionary]) { if ($Dialog.Contains('Hwnd')) { $hwnd = [long]$Dialog['Hwnd'] } }
@@ -584,8 +638,9 @@ function Add-TcDialogKind {
         }
     }
     catch { $target = $null }
+    if ([string]::IsNullOrWhiteSpace($kind)) { $kind = Get-TcModalDialogKind -Title $title -Text $text -Buttons $buttons }
     if ([string]::IsNullOrWhiteSpace([string]$target)) {
-        $target = if ($kind -eq 'reload-prompt') { Get-TcReloadTarget -Title $title -Text $text } else { $null }
+        $target = if ($kind -eq 'reload-prompt') { Get-TcReloadTarget -Title $title -Text $text -Buttons $buttons } else { $null }
         # Kind 'reload-prompt' given without a matching text (should not happen): assume the file prompt.
         if ($kind -eq 'reload-prompt' -and $null -eq $target) { $target = 'file' }
     }
@@ -785,8 +840,8 @@ function Find-TcIdeModalDialog {
         return @{
             Title        = $title
             Text         = $text
-            Kind         = (Get-TcModalDialogKind -Title $title -Text $text)
-            ReloadTarget = (Get-TcReloadTarget -Title $title -Text $text)
+            Kind         = (Get-TcModalDialogKind -Title $title -Text $text -Buttons $buttons)
+            ReloadTarget = (Get-TcReloadTarget -Title $title -Text $text -Buttons $buttons)
             Hwnd         = $hwnd
             Buttons      = $buttons
         }
