@@ -1,7 +1,8 @@
 ﻿# Integration: lifecycle smoke test against a real runtime (UmRT / local XAR).
 # Steps: Connect IDE -> set target -> Build -> Enable-TcConfig -Force -> ADS -> state/symbols/read
 #        -> P0-2 auto-reconnect after re-activate -> P0-5 error codes -> P0-3 -NoLogin guard
-#        -> restore PLC Run -> close IDE without saving.
+#        -> restore PLC Run -> Start-TcLifecycle one-shot lifecycle (#27, -CycleMode EnableForce only)
+#        -> close IDE without saving.
 # Every step appends one JSON line (step, cmdlet, elapsedMs, pass, code, result) to -LogPath;
 # console prints only "PASS/FAIL <step> [cmdlet] <code> <ms>".
 # Run in a fresh Windows PowerShell 5.1 process (clean COM state):
@@ -570,6 +571,26 @@ try {
     $null = Invoke-Step '11c-plc-run' 'Set-TcPlcState -State Run' { Set-TcPlcState -State Run }
     $null = Invoke-Step '11d-plc-state' 'Get-TcPlcState' { Get-TcPlcState } { param($x) $x.success -and $x.data.state -eq 'Run' }
     $null = Invoke-Step '11e-disconnect-ads' 'Disconnect-TcAds' { Disconnect-TcAds }
+
+    # 12. #27: the whole lifecycle again in one call (Connect-TcIde attaches to the same IDE, then
+    #     target / build / Enable-TcConfig -Force / Connect-TcAds / Get-TcPlcState readback = Run).
+    #     The StartRestart cycle mode exists because Enable-TcConfig -Force is not used there: skip.
+    if ($CycleMode -eq 'EnableForce') {
+        $lcArgs = @{ SolutionPath = $SolutionPath; ProgId = $ProgId; TargetAmsNetId = $AmsNetId; TimeoutSec = 180 }
+        if (-not [string]::IsNullOrWhiteSpace($SolutionPlatform)) { $lcArgs['Platform'] = $SolutionPlatform }
+        if ($PlcProject) { $lcArgs['PlcProjectPath'] = @($PlcProject); $lcArgs['ExpectedProject'] = @($PlcProject) }
+        $r = Invoke-Step '12-start-lifecycle' 'Start-TcLifecycle' {
+            $x = Start-TcLifecycle @lcArgs
+            # build output text dropped from the log, like 03-build
+            $bs = @($x.data.steps | Where-Object { $_.name -eq 'BuildProject' }) | Select-Object -First 1
+            if ($null -ne $bs -and $bs.result.data -and $bs.result.data.PSObject.Properties['messages']) { $bs.result.data.PSObject.Properties.Remove('messages') }
+            $x
+        } { param($x) $x.success -and $x.data.plcState -eq 'Run' -and $null -eq $x.data.failedStep -and @($x.data.steps)[-1].name -eq 'GetPlcState' }
+        $null = Write-UmRt '12-umrt-alive'
+        if (Test-LicenseAbort '12') { return }
+        if (Test-Abort $r '12') { return }
+        $null = Invoke-Step '12b-disconnect-ads' 'Disconnect-TcAds' { Disconnect-TcAds }
+    }
 }
 catch {
     if ("$_" -match 'ABORT_ATTEMPT') {

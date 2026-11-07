@@ -281,7 +281,11 @@ $requiredOverrides = @('ClearLifecycleBlock.Reason', 'ClearLifecycleBlock.Fallba
 # GetIdeModalDialog (#86): the Get-TcIdeModalDialog cmdlet is not a catalog tool because the composite
 # tool of the same name (lib/composites.js) already serves it. The composite must stay: when a modal
 # dialog blocks the bridge, it answers through the out-of-process probe, which a plain cmdlet call cannot.
-$excludedTools = @('NewProject', 'GetIdeModalDialog')
+# StartLifecycle (#27): the Start-TcLifecycle cmdlet is served by the composite RunLifecycle (same
+# parameters, steps and data fields). Only the composite has the modal probe of each step, a timeout
+# per step and the lastIde tracking of its ConnectIde step; one bridge call for the whole lifecycle
+# would have none of these.
+$excludedTools = @('NewProject', 'GetIdeModalDialog', 'StartLifecycle')
 
 $commonParameters = @(
     'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',

@@ -26,8 +26,8 @@
         CLI actions), in file order. Parameters, types, enums, defaults and descriptions come from the
         action's entry in mcp-server/tools.json. Descriptions are taken COMPLETE (whitespace collapsed):
         they carry the safety rules (confirm with the user, fail closed, who may call what); a DryRun
-        default of true is stated if the text does not say it. The three actions that have no tools.json entry (NewProject: not offered on
-        MCP, #70; GetIdeModalDialog: composite; ListOperations: CLI only) are described in
+        default of true is stated if the text does not say it. The four actions that have no tools.json entry (NewProject: not offered on
+        MCP, #70; GetIdeModalDialog: composite; StartLifecycle: composite RunLifecycle on MCP, #27; ListOperations: CLI only) are described in
         $extraActions below. scripts/check.ps1 additionally compares the action names with
         $operationMap ('adapters' rule).
     .agents/skills/twincat/SKILL.md: hand-written lifecycle example and Failure contract; the cmdlet
@@ -78,6 +78,8 @@ $compositeByCmdlet = @{}
 foreach ($cn in $compositeConst) {
     if ($cn -match '^(Get|Set|Add|Remove|Find|Test|Invoke|New|Clear|Enter|Exit|Connect|Disconnect)([A-Z].*)$' -and ($commands.Name -contains ('{0}-Tc{1}' -f $Matches[1], $Matches[2]))) { $compositeByCmdlet['{0}-Tc{1}' -f $Matches[1], $Matches[2]] = $cn }
 }
+# #27: the composite RunLifecycle is the MCP side of Start-TcLifecycle (names do not follow the rule above)
+if ($compositeConst -contains 'RunLifecycle' -and ($commands.Name -contains 'Start-TcLifecycle')) { $compositeByCmdlet['Start-TcLifecycle'] = 'RunLifecycle' }
 
 $common = @([System.Management.Automation.PSCmdlet]::CommonParameters) + @([System.Management.Automation.PSCmdlet]::OptionalCommonParameters)
 # one spelling per type: lower case, Object -> obj (everything else: the .NET name in lower case)
@@ -123,6 +125,22 @@ $extraActions = @{
         Params      = @(
             @{ Name = 'ProcessId'; Type = 'integer'; Required = $false; Description = 'IDE process id (default: the connected IDE)' },
             @{ Name = 'TimeoutSec'; Type = 'integer'; Required = $false; Minimum = 1; Maximum = 60; Default = 5; Description = 'How long to probe for a dialog (1..60, default 5).' })
+    }
+    StartLifecycle   = @{
+        Description = 'Full PLC lifecycle in one call (#27): ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force) -> ConnectAds -> GetPlcState readback (must be Run unless NoLogin, else RUNTIME_STATE_MISMATCH). Changes the running machine (TwinCAT restarts, PLC program downloaded and started): confirm with the user first. Fail closed (#68): stops at the first failing step, error = that step''s error as it is (LIFECYCLE_BLOCKED: stop and report, data.lifecycleBlock), never retry through another channel. ADS port: AdsPort, else the port of the one PLC selected with PlcProjectPath, else 851; AdsPort differing from that PLC''s port -> PLC_PORT_MISMATCH (not connected). data: steps[] {name, success, code, durationMs, result}, failedStep, plcProjects, adsPort, loggedIn, plcState, lifecycleBlock. On MCP this is the composite RunLifecycle (same parameters).'
+        Params      = @(
+            @{ Name = 'SolutionPath'; Type = 'string'; Required = $false; Description = 'Solution (.sln) to open on ConnectIde. Omit to attach to the running XAE.' },
+            @{ Name = 'ProgId'; Type = 'string'; Required = $false; Description = 'Visual Studio / XAE shell ProgId passed to ConnectIde.' },
+            @{ Name = 'NoLaunch'; Type = 'boolean'; Required = $false; Description = 'Do not launch XAE if it is not running.' },
+            @{ Name = 'TargetAmsNetId'; Type = 'string'; Required = $false; Description = 'AmsNetId to select with SetTarget before the build. Omit to keep the target the IDE has.' },
+            @{ Name = 'Platform'; Type = 'string'; Required = $false; Description = 'Solution platform for SetTarget and EnableConfig, e.g. "TwinCAT OS (x64)" (UmRT / TwinCAT/BSD) or "TwinCAT RT (x64)" (Windows RT). Needed only when the target does not report TARGETINFO (ADS 0x702).' },
+            @{ Name = 'SkipBuild'; Type = 'boolean'; Required = $false; Description = 'Skip BuildProject.' },
+            @{ Name = 'TimeoutSec'; Type = 'integer'; Required = $false; Minimum = 10; Maximum = 3600; Default = 120; Description = 'EnableConfig timeout in seconds (10..3600, default 120).' },
+            @{ Name = 'NoLogin'; Type = 'boolean'; Required = $false; Description = 'EnableConfig: activate only, no PLC login / download / Run; the readback only reports the PLC state.' },
+            @{ Name = 'PlcProjectPath'; Type = 'array'; Items = 'string'; Required = $false; Description = 'EnableConfig PlcProjectPath: PLC project(s) to log into and start (name, e.g. "FrameworkUnitTest", or tree path). Default: every enabled PLC.' },
+            @{ Name = 'ExpectedProject'; Type = 'array'; Items = 'string'; Required = $false; Description = 'BuildProject ExpectedProject: PLC project(s) that must be part of the build. Not derived from PlcProjectPath.' },
+            @{ Name = 'AdsPort'; Type = 'integer'; Required = $false; Minimum = 1; Maximum = 65535; Description = 'ADS port for ConnectAds (default: the port of the one PLC selected with PlcProjectPath, else 851).' },
+            @{ Name = 'BuildTimeoutSec'; Type = 'integer'; Required = $false; Minimum = 5; Maximum = 7200; Description = 'BuildProject TimeoutSec (5..7200; default: the BuildProject default).' })
     }
     ListOperations   = @{ Description = 'List all available operations.'; Params = @() }
 }
@@ -200,7 +218,7 @@ foreach ($an in $actionNames) {
     elseif ($extraActions.ContainsKey($an)) {
         $desc = $extraActions[$an].Description
         foreach ($ep in $extraActions[$an].Params) {
-            $ps.Add(@{ Name = $ep.Name; Type = $ep.Type; Enum = $null; Items = $null; Minimum = $ep.Minimum; Maximum = $ep.Maximum; Required = $ep.Required; HasDefault = ($null -ne $ep.Default); Default = $ep.Default; Description = $ep.Description })
+            $ps.Add(@{ Name = $ep.Name; Type = $ep.Type; Enum = $null; Items = $ep.Items; Minimum = $ep.Minimum; Maximum = $ep.Maximum; Required = $ep.Required; HasDefault = ($null -ne $ep.Default); Default = $ep.Default; Description = $ep.Description })
         }
     }
     else { throw "operationMap action '$an' has neither a tools.json entry nor an `$extraActions entry in scripts/Update-GeneratedDocs.ps1" }

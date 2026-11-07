@@ -6,7 +6,7 @@
 
 ## 為什麼需要這個
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 <!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
 
 ## 安裝(MCP server)
 
@@ -105,7 +105,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
     -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（<!-- generated:cmdlet-count -->81<!-- /generated --> 個）
+## 所有指令（<!-- generated:cmdlet-count -->82<!-- /generated --> 個）
 
 ### 連線
 | 指令 | 說明 |
@@ -232,7 +232,7 @@ Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 81 個匯出的 cmdlet
+  Public/                       # 82 個匯出的 cmdlet
   Private/                      # 內部輔助函式（COM、ADS、斷言）
 Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
 adapters/
@@ -316,7 +316,7 @@ pwsh ./TwinCATSetup-Antigravity.ps1
 
 ## MCP server 參考
 
-同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->81<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
+同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
 
 ## 更新日誌
 

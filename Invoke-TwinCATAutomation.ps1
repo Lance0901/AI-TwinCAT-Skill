@@ -107,6 +107,8 @@ $operationMap = @{
     'GetBuildErrors'  = 'Get-TcBuildErrors'
     'SetTarget'       = 'Set-TcTarget'
     'EnableConfig'    = 'Enable-TcConfig'
+    # Full lifecycle in one call; on MCP the composite RunLifecycle serves it (Export-ToolSchema.ps1 $excludedTools)
+    'StartLifecycle'  = 'Start-TcLifecycle'
     'SendPlcProgram'  = 'Send-TcPlcProgram'
     # ADS Communication
     'ConnectAds'      = 'Connect-TcAds'

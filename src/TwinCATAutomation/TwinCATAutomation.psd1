@@ -84,6 +84,7 @@
         'Get-TcBuildErrors',
         'Set-TcTarget',
         'Enable-TcConfig',
+        'Start-TcLifecycle',
         'Send-TcPlcProgram',
         # ADS Communication
         'Connect-TcAds',

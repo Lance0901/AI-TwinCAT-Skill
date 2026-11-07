@@ -140,6 +140,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Set-TcTarget` | `SetTarget` | `-AmsNetId <string> [-Platform <string>] [-Configuration <string>] [-NoPlatformSwitch]` |
 | `Set-TcTreeItemXml` | `ConsumeXml` | `-Path <string> -Xml <string> [-DryRun <bool>]` |
 | `Set-TcVariableLink` | `SetVariableLink` | `-PlcVariable <string> -IoChannel <string>` |
+| `Start-TcLifecycle` | `RunLifecycle` (composite) | `[-SolutionPath <string>] [-ProgId <string>] [-NoLaunch] [-TargetAmsNetId <string>] [-Platform <string>] [-SkipBuild] [-TimeoutSec <int>] [-NoLogin] [-PlcProjectPath <string[]>] [-ExpectedProject <string[]>] [-AdsPort <int>] [-BuildTimeoutSec <int>]` |
 | `Test-TcPlcProject` | `CheckAllObjects` | `[-PlcProjectPath <string>]` |
 | `Uninstall-TcLibrary` | `UninstallLibrary` | `-LibraryName <string> -Version <string> -Distributor <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Watch-TcVariable` | `WatchVariable` | `-Path <string[]> [-IntervalMs <int>] [-DurationMs <int>] [-Until <string>] [-UntilTimeoutMs <int>] [-TimeoutMs <int>] [-KeepLast <int>]` |
