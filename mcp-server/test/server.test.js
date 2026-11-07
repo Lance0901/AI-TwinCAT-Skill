@@ -261,15 +261,17 @@ describe('index.js over stdio (extended fixture, composites)', () => {
   before(async () => ({ client, logs } = await startServer(FIXTURE_EXT, SKIP_PID_CHECK)));
   after(async () => client?.close());
 
-  test('RunLifecycle: ConnectIde -> BuildProject -> EnableConfig -> ConnectAds, all success', async () => {
+  test('RunLifecycle: ConnectIde -> BuildProject -> EnableConfig -> ConnectAds -> GetPlcState, all success', async () => {
     const res = await client.callTool({ name: 'RunLifecycle', arguments: { ProgId: 'X.DTE', TimeoutSec: 30 } });
     assert.equal(res.isError, false);
     const body = parse(res);
     assert.equal(body.success, true);
-    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds']);
-    assert.ok(body.data.steps.every((s) => s.success && typeof s.durationMs === 'number'));
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
+    assert.ok(body.data.steps.every((s) => s.success && s.code === null && typeof s.durationMs === 'number'));
     assert.deepEqual(body.data.steps[2].result.data.params, { Force: true, TimeoutSec: 30 });
-    assert.equal(body.data.failedStep, undefined);
+    assert.equal(body.data.failedStep, null);
+    assert.equal(body.data.plcState, 'Run');
+    assert.equal(body.data.adsPort, 851);
   });
 
   test('GetStatus after lifecycle -> ide error in place, system + plc filled, warning log forwarded', async () => {

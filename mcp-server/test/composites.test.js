@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { QuickRead } from '../lib/composites.js';
+import { QuickRead, RunLifecycle } from '../lib/composites.js';
 
 // #57: QuickRead adds connectedOnDemand without changing the shape of data (same rule as stampOrder).
 describe('QuickRead data shape (no bridge)', () => {
@@ -158,7 +158,7 @@ describe('RunLifecycle TargetAmsNetId', () => {
   test('with TargetAmsNetId: SetTarget runs between ConnectIde and BuildProject', async () => {
     const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { TargetAmsNetId: '5.1.2.3.1.1', TimeoutSec: 30 } }));
     assert.equal(body.success, true);
-    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds']);
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
     // NetId only: no PLATFORM_UNKNOWN on runtimes without TARGETINFO, EnableConfig checks the platform
     assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1', NoPlatformSwitch: true });
     assert.equal(body.data.steps[3].result.data.params.Platform, undefined);
@@ -178,7 +178,7 @@ describe('RunLifecycle TargetAmsNetId', () => {
     for (const args of [{}, { TargetAmsNetId: '' }]) {
       const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: args }));
       assert.equal(body.success, true);
-      assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds']);
+      assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
     }
   });
 
@@ -193,7 +193,7 @@ describe('RunLifecycle TargetAmsNetId', () => {
   test('with TargetAmsNetId and Platform: SetTarget gets both', async () => {
     const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { TargetAmsNetId: '5.1.2.3.1.1', Platform: 'TwinCAT OS (x64)', TimeoutSec: 30 } }));
     assert.equal(body.success, true);
-    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds']);
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'SetTarget', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
     assert.deepEqual(body.data.steps[1].result.data.params, { AmsNetId: '5.1.2.3.1.1', Platform: 'TwinCAT OS (x64)' });
     // task 1.8: EnableConfig gets the same Platform (no "-Platform was not given" warning)
     assert.equal(body.data.steps[3].name, 'EnableConfig');
@@ -218,5 +218,193 @@ describe('RunLifecycle TargetAmsNetId', () => {
     assert.match(rl.description, /SetTarget/);
     assert.match(rl.description, /NoPlatformSwitch/);
     assert.match(rl.description, /TARGETINFO/);
+  });
+});
+
+// #27: RunLifecycle = MCP side of Start-TcLifecycle. Fake ctx (no bridge): every step succeeds unless
+// overridden; ConnectAds echoes the port it got; calls records each step with its arguments.
+describe('RunLifecycle #27 (no bridge): port decision, readback, fail closed', () => {
+  const ok = (data) => ({ success: true, data });
+  const plc = (name, adsPort) => ({ name, projectPath: `TIPC^${name}^${name} Project`, adsPort, loggedIn: true, state: 'Run' });
+  function fakeCtx(over = {}) {
+    const calls = [];
+    const defaults = {
+      ConnectIde: () => ok({ ideProcessId: 4242, amsNetId: '5.1.2.3.1.1' }),
+      SetTarget: (a) => ok({ amsNetId: a.AmsNetId }),
+      BuildProject: () => ok({ completeBuild: true }),
+      EnableConfig: () => ok({ loggedIn: true, plcState: 'Run', plcs: [plc('PLC1', 851)] }),
+      ConnectAds: (a) => ok({ amsNetId: '5.1.2.3.1.1', port: a.Port ?? 851 }),
+      GetPlcState: () => ok({ state: 'Run', adsState: 5 })
+    };
+    const ctx = {
+      callTool: async (name, args) => {
+        calls.push({ name, args });
+        return (over[name] ?? defaults[name])(args);
+      }
+    };
+    return { ctx, calls, call: (n) => calls.find((c) => c.name === n) };
+  }
+  const run = (f, args) => RunLifecycle.run(f.ctx, args);
+  const names = (r) => r.data.steps.map((s) => s.name);
+
+  test('all success: six data fields, steps carry code null, ConnectAds without Port', async () => {
+    const f = fakeCtx();
+    const r = await run(f, {});
+    assert.equal(r.success, true);
+    assert.equal(r.error, undefined);
+    assert.deepEqual(names(r), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
+    assert.deepEqual(Object.keys(r.data.steps[0]), ['name', 'success', 'code', 'durationMs', 'result']);
+    assert.ok(r.data.steps.every((s) => s.success === true && s.code === null));
+    assert.equal(r.data.failedStep, null);
+    assert.equal(r.data.plcState, 'Run');
+    assert.equal(r.data.adsPort, 851);
+    assert.equal(r.data.loggedIn, true);
+    assert.deepEqual(r.data.plcProjects, [plc('PLC1', 851)]);
+    assert.equal(r.data.lifecycleBlock, null);
+    assert.deepEqual(f.call('ConnectAds').args, {});
+    assert.deepEqual(f.call('BuildProject').args, {});
+    assert.deepEqual(f.call('GetPlcState').args, {});
+  });
+
+  test('ExpectedProject / BuildTimeoutSec go to BuildProject, PlcProjectPath / NoLogin / TimeoutSec to EnableConfig', async () => {
+    const f = fakeCtx({ EnableConfig: () => ok({ loggedIn: false, plcs: [plc('FrameworkUnitTest', 852)] }) });
+    const r = await run(f, { ExpectedProject: ['FrameworkUnitTest'], BuildTimeoutSec: 900, PlcProjectPath: ['FrameworkUnitTest'], NoLogin: true, TimeoutSec: 300 });
+    assert.equal(r.success, true);
+    assert.deepEqual(f.call('BuildProject').args, { ExpectedProject: ['FrameworkUnitTest'], TimeoutSec: 900 });
+    assert.deepEqual(f.call('EnableConfig').args, { Force: true, TimeoutSec: 300, NoLogin: true, PlcProjectPath: ['FrameworkUnitTest'] });
+  });
+
+  test('build failure stops at BuildProject: EnableConfig not called, error as it is', async () => {
+    const err = { code: 'PROJECT_SKIPPED_BY_CONFIGURATION', message: 'mock skipped', hint: 'h' };
+    const f = fakeCtx({ BuildProject: () => ({ success: false, error: err }) });
+    const r = await run(f, { ExpectedProject: ['FrameworkUnitTest'] });
+    assert.equal(r.success, false);
+    assert.equal(r.error, err);
+    assert.equal(r.data.failedStep, 'BuildProject');
+    assert.equal(r.data.steps.at(-1).code, 'PROJECT_SKIPPED_BY_CONFIGURATION');
+    assert.equal(f.call('EnableConfig'), undefined);
+    assert.equal(r.data.plcProjects, null);
+    assert.equal(r.data.adsPort, null);
+    assert.equal(r.data.plcState, null);
+  });
+
+  test('LIFECYCLE_BLOCKED: error and data.lifecycleBlock as they are, no ConnectAds', async () => {
+    const block = { amsNetId: '5.1.2.3.1.1', command: 'Set-TcSystemState', errorCode: 'SYSTEM_STATE_TIMEOUT' };
+    const err = { code: 'LIFECYCLE_BLOCKED', message: 'blocked', hint: 'stop and report' };
+    const f = fakeCtx({ EnableConfig: () => ({ success: false, error: err, data: { lifecycleBlock: block, activated: false } }) });
+    const r = await run(f, {});
+    assert.equal(r.error, err);
+    assert.equal(r.data.lifecycleBlock, block);
+    assert.equal(r.data.failedStep, 'EnableConfig');
+    assert.equal(f.call('ConnectAds'), undefined);
+  });
+
+  test('AdsPort differs from the one selected PLC -> PLC_PORT_MISMATCH, ConnectAds not called', async () => {
+    const f = fakeCtx({ EnableConfig: () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] }) });
+    const r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 851 });
+    assert.equal(r.success, false);
+    assert.equal(r.error.code, 'PLC_PORT_MISMATCH');
+    assert.match(r.error.message, /851/);
+    assert.match(r.error.message, /852/);
+    assert.match(r.error.message, /FrameworkUnitTest/);
+    assert.ok(r.error.hint);
+    assert.equal(r.data.failedStep, 'ConnectAds');
+    assert.equal(r.data.steps.at(-1).code, 'PLC_PORT_MISMATCH');
+    assert.deepEqual(r.data.steps.at(-1).result.data, { adsPort: 851, plcAdsPort: 852, plc: 'FrameworkUnitTest', projectPath: 'TIPC^FrameworkUnitTest^FrameworkUnitTest Project' });
+    assert.equal(f.call('ConnectAds'), undefined);
+    assert.equal(r.data.adsPort, null);
+    assert.equal(r.data.plcProjects.length, 1);
+  });
+
+  test('port: auto from the one selected PLC; AdsPort equal passes; several PLCs / no PlcProjectPath -> no Port', async () => {
+    const one = () => ok({ loggedIn: true, plcs: [plc('FrameworkUnitTest', 852)] });
+    const two = () => ok({ loggedIn: true, plcs: [plc('PLC1', 851), plc('FrameworkUnitTest', 852)] });
+    let f = fakeCtx({ EnableConfig: one });
+    let r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'] });
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
+    assert.equal(r.data.adsPort, 852);
+    f = fakeCtx({ EnableConfig: one });
+    r = await run(f, { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 852 });
+    assert.equal(r.success, true);
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 852 });
+    f = fakeCtx({ EnableConfig: two });
+    r = await run(f, {});
+    assert.deepEqual(f.call('ConnectAds').args, {});
+    f = fakeCtx({ EnableConfig: two });
+    r = await run(f, { PlcProjectPath: ['PLC1', 'FrameworkUnitTest'], AdsPort: 853 });
+    assert.equal(r.success, true, 'two selected PLCs: no mismatch check');
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 853 });
+    f = fakeCtx({ EnableConfig: one });
+    r = await run(f, { AdsPort: 851 });
+    assert.equal(r.success, true, 'no PlcProjectPath: no mismatch check');
+    assert.deepEqual(f.call('ConnectAds').args, { Port: 851 });
+  });
+
+  test('readback not Run -> RUNTIME_STATE_MISMATCH at GetPlcState (raw result kept); NoLogin only reports', async () => {
+    const stop = () => ok({ state: 'Stop', adsState: 6 });
+    let r = await run(fakeCtx({ GetPlcState: stop }), {});
+    assert.equal(r.success, false);
+    assert.equal(r.error.code, 'RUNTIME_STATE_MISMATCH');
+    assert.match(r.error.message, /'Stop'/);
+    assert.equal(r.data.failedStep, 'GetPlcState');
+    const last = r.data.steps.at(-1);
+    assert.equal(last.success, false);
+    assert.equal(last.code, 'RUNTIME_STATE_MISMATCH');
+    assert.equal(last.result.success, true);
+    assert.equal(r.data.plcState, 'Stop');
+    r = await run(fakeCtx({ GetPlcState: stop }), { NoLogin: true });
+    assert.equal(r.success, true);
+    assert.equal(r.data.plcState, 'Stop');
+  });
+
+  test('ConnectAds failure: that error, GetPlcState not run', async () => {
+    const err = { code: 'ADS_PORT_NOT_FOUND', message: 'no port' };
+    const f = fakeCtx({ ConnectAds: () => ({ success: false, error: err }) });
+    const r = await run(f, {});
+    assert.equal(r.error, err);
+    assert.equal(r.data.failedStep, 'ConnectAds');
+    assert.equal(f.call('GetPlcState'), undefined);
+  });
+
+  test('schema: PlcProjectPath / ExpectedProject arrays (minItems 1), AdsPort 1..65535, BuildTimeoutSec 5..7200; timeoutMs capped', () => {
+    const p = RunLifecycle.inputSchema.properties;
+    for (const k of ['PlcProjectPath', 'ExpectedProject']) {
+      assert.equal(p[k].type, 'array');
+      assert.equal(p[k].items.type, 'string');
+      assert.equal(p[k].minItems, 1);
+    }
+    assert.deepEqual([p.AdsPort.type, p.AdsPort.minimum, p.AdsPort.maximum], ['integer', 1, 65535]);
+    assert.deepEqual([p.BuildTimeoutSec.type, p.BuildTimeoutSec.minimum, p.BuildTimeoutSec.maximum], ['integer', 5, 7200]);
+    assert.match(RunLifecycle.description, /Start-TcLifecycle/);
+    assert.match(RunLifecycle.description, /PLC_PORT_MISMATCH/);
+    assert.equal(RunLifecycle.timeoutMs, 7200000);
+  });
+});
+
+describe('RunLifecycle #27 over the server (mock bridge)', () => {
+  let client;
+  before(async () => {
+    client = await startServer();
+  });
+  after(async () => client?.close());
+
+  test('PlcProjectPath FrameworkUnitTest: ConnectAds on its port 852, readback Run', async () => {
+    const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { PlcProjectPath: ['FrameworkUnitTest'], ExpectedProject: ['FrameworkUnitTest'], BuildTimeoutSec: 900 } }));
+    assert.equal(body.success, true, JSON.stringify(body.error));
+    assert.deepEqual(body.data.steps.map((s) => s.name), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
+    assert.equal(body.data.adsPort, 852);
+    assert.equal(body.data.plcState, 'Run');
+    assert.deepEqual(body.data.steps[1].result.data.params, { ExpectedProject: ['FrameworkUnitTest'], TimeoutSec: 900 });
+    assert.deepEqual(body.data.steps[2].result.data.params.PlcProjectPath, ['FrameworkUnitTest']);
+  });
+
+  test('AdsPort 851 for FrameworkUnitTest -> PLC_PORT_MISMATCH; invalid AdsPort / BuildTimeoutSec / empty arrays -> INVALID_PARAMS', async () => {
+    const mm = parse(await client.callTool({ name: 'RunLifecycle', arguments: { PlcProjectPath: ['FrameworkUnitTest'], AdsPort: 851 } }));
+    assert.equal(mm.error.code, 'PLC_PORT_MISMATCH');
+    assert.equal(mm.data.failedStep, 'ConnectAds');
+    for (const args of [{ AdsPort: 0 }, { AdsPort: 65536 }, { BuildTimeoutSec: 4 }, { BuildTimeoutSec: 7201 }, { PlcProjectPath: [] }, { ExpectedProject: [] }]) {
+      const bad = parse(await client.callTool({ name: 'RunLifecycle', arguments: args }));
+      assert.equal(bad.error.code, 'INVALID_PARAMS', JSON.stringify(args));
+    }
   });
 });
