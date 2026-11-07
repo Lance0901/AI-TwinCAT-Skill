@@ -29,6 +29,12 @@ function Install-PlcTreeMock {
 }
 Install-PlcTreeMock
 
+# Wait probe (#193): a blind wait is a Start-Sleep call, not wall-clock time (which flakes under load).
+# The module waits with Start-Sleep only; this shadow in the module scope counts calls and requested ms
+# and does not sleep. Reset with Reset-SleepProbe before the code under test.
+function Reset-SleepProbe { & $mod { $script:SleepProbe = [PSCustomObject]@{ Calls = 0; Ms = 0.0 }; function script:Start-Sleep { [CmdletBinding()] param([int]$Seconds, [int]$Milliseconds) $script:SleepProbe.Calls++; $script:SleepProbe.Ms += $Seconds * 1000 + $Milliseconds } } }
+function Get-SleepProbe { & $mod { Remove-Item function:script:Start-Sleep -ErrorAction SilentlyContinue; $script:SleepProbe } }
+
 $OS = 'TwinCAT OS (x64)'
 $RT = 'TwinCAT RT (x64)'
 $ARMT2 = 'TwinCAT OS (ARMT2)'
@@ -140,13 +146,13 @@ try {
         @{ Name = 'Release'; Sol = $RT; Proj = $RT; SB = $true }
     )
     New-MockDte -Rows $robust -Active 3
-    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Reset-SleepProbe
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT OS (x64)' }
-    $ms = $sw.ElapsedMilliseconds
+    $sp = Get-SleepProbe
     Check 'robust-success' ($r.success -and $null -eq $r.error) "$($r.error.code) $($r.error.message)"
     Check 'robust-activated' (($global:MockState.Activations -join ',') -eq '2' -and $global:MockState.Active -eq 2) "activations: $($global:MockState.Activations -join ',')"
     Check 'robust-readback' ($r.platform -eq $OS -and $r.projectPlatform -eq $OS -and $r.previousPlatform -eq $RT -and $r.platformChanged -and $r.projectCheck -eq 'ok' -and $r.platformMatchedBy -eq 'solutionPlatform') ($r | Select-Object platform, projectPlatform, previousPlatform, platformChanged, projectCheck, platformMatchedBy | ConvertTo-Json -Compress)
-    Check 'robust-no-blind-wait' ($ms -lt 900) "$ms ms"
+    Check 'robust-no-blind-wait' ($sp.Calls -eq 0) "Start-Sleep calls: $($sp.Calls), $($sp.Ms) ms"
 
     # --- (c) VS2022: cfg.PlatformName = $null -> solution platform from the .sln by index ---
     $c = @(
@@ -522,13 +528,13 @@ try {
     )
     New-MockDte -Rows $three -Active 2 -NoPlatformName -SlnRows @($three[0])
     $global:MockCfgs[1] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); throw 'boom (mock)' }
-    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Reset-SleepProbe
     $r = & $mod { Set-TcSolutionPlatform -Platform 'TwinCAT RT (x64)' }
-    $ms = $sw.ElapsedMilliseconds
+    $sp = Get-SleepProbe
     $ac = & $mod { $script:TcDte.Solution.Properties.Item('ActiveConfig').Value }
     Check 'throw-2nd-restored' (-not $r.success -and $r.restored -eq $true -and $ac -eq "Release|$CE7" -and $r.platform -eq $CE7 -and -not $r.platformChanged -and ($global:MockState.Activations -join ',') -eq '0,1,2') "code=$($r.error.code) restored=$($r.restored) platform=$($r.platform) ActiveConfig=$ac activations: $($global:MockState.Activations -join ',')"
     Check 'throw-2nd-message' ($r.error.message -match 'boom \(mock\)' -and $r.error.message -match 'tried:' -and $r.error.message -match 're-activated') "$($r.error.message)"
-    Check 'throw-2nd-fast' ($ms -lt 2000) "$ms ms"
+    Check 'throw-2nd-fast' ($sp.Calls -eq 0) "Start-Sleep calls: $($sp.Calls), $($sp.Ms) ms"
 
     New-MockDte -Rows $three -Active 2 -NoPlatformName -SlnRows @($three[0])
     $global:MockCfgs[0] | Add-Member -Force -MemberType ScriptMethod -Name Activate -Value { $null = $global:MockState.Activations.Add($this.MockIndex); throw 'boom first (mock)' }
