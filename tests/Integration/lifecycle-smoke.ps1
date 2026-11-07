@@ -52,7 +52,11 @@ Set-Content -Path $LogPath -Value '' -Encoding UTF8
 $script:failCount = 0
 # IDE processes the user already had open: never attached to, never closed, ignored in checks.
 $script:preIdePids = @(Get-Process TcXaeShell*, devenv -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.Id } | Where-Object { $_ -ne $AttachPid })
+# The IDE this run owns: -AttachPid, the pid 00-prelaunch created, or (without either) the IDE
+# 01-connect-ide launched (data.selectedBy launched / session-launched, #50). Only this pid is
+# watched (Start-UiWatcher), killed by the watchdog and closed / waited for by Close-Ide.
 $script:ownIdePid = if ($AttachPid -gt 0) { $AttachPid } else { $null }
+$script:prelaunchPid = $null   # own pid recorded by 00-prelaunch (Close-Ide: is $script:keepDte the own IDE)
 
 Add-Type -TypeDefinition @'
 using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
@@ -126,16 +130,17 @@ function Test-Abort {
 
 function Close-Ide {
     $sw = [Diagnostics.Stopwatch]::StartNew()
+    # Runs while the UI watcher is still up (finally calls Stop-UiWatcher afterwards): a DTE call
+    # below that blocks on a dialog the pre-check missed is killed by STEP_TIMEOUT (240 s).
+    $script:uiSync.step = '11z-close-ide'; $script:uiSync.stepStart = Get-Date
     $dte = & $mod { $script:TcDte }
     $note = ''
     # Never quit an IDE that is not ours: Connect-TcIde can hold an IDE that was already open
     # (solution-match / solution-blocked, #29), e.g. another agent's copy of the same solution.
-    # Ours = the pid PreLaunch / -AttachPid recorded, or an IDE the module itself launched
-    # (selectedBy launched / ownedBySession). "Not in preIdePids" is not enough: another agent
-    # may have started an IDE during the run.
+    # Ours = $script:ownIdePid only (-AttachPid, 00-prelaunch, or the IDE 01-connect-ide launched,
+    # #50). "Not in preIdePids" is not enough: another agent may have started an IDE during the run.
     $modPid = & $mod { $script:TcIdeProcessId }
-    $modLaunched = [bool](& $mod { $script:TcIdeSelectedBy -eq 'launched' })
-    $isOurs = ($null -ne $modPid) -and ((($script:ownIdePid) -and [int]$modPid -eq $script:ownIdePid) -or $modLaunched)
+    $isOurs = ($null -ne $modPid) -and ($null -ne $script:ownIdePid) -and ([int]$modPid -eq $script:ownIdePid)
     if ($null -ne $dte -and -not $isOurs) {
         $note += "module IDE pid '$modPid' is not proven to be this run's IDE, not closed; "
         $dte = $null
@@ -146,6 +151,29 @@ function Close-Ide {
         Write-StepLog -Step '11y-ide-windows' -Cmdlet 'EnumWindows(own IDE pid)' -ElapsedMs 0 -Pass $true -Result ([PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ pid = $script:ownIdePid; titles = $titles } }) -Note 'visible top-level windows before close (dialogs show up here)'
     }
     try { & $mod { if ($script:TcAdsClient) { try { $script:TcAdsClient.Dispose() } catch { } } } } catch { }
+    if ($null -ne $dte -and $script:ownIdePid) {
+        # A DTE call into an IDE that shows a modal dialog blocks indefinitely (see the watcher
+        # comment below), e.g. after 01-connect-ide returned IDE_MODAL_DIALOG for the IDE it launched.
+        # A dialog -> no DTE call, kill the own IDE. An incomplete scan (#42, Kind 'scan-incomplete')
+        # is no proof of a dialog: go on, the watchdog still covers this step.
+        $dlg = $null
+        try { $dlg = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $script:ownIdePid } catch { $dlg = $null }
+        if ($null -ne $dlg -and [string]$dlg.Kind -ne 'scan-incomplete') {
+            $note += "own IDE $($script:ownIdePid) shows a dialog ('$($dlg.Title)', kind $($dlg.Kind)): no DTE call, own IDE killed; "
+            $p = Get-Process -Id $script:ownIdePid -ErrorAction SilentlyContinue
+            if ($p -and $p.ProcessName -match '^(TcXaeShell|devenv)') { try { Stop-Process -Id $script:ownIdePid -Force -Confirm:$false } catch { $note += "Stop-Process failed: $($_.Exception.Message); " } }
+            $dte = $null
+            $script:keepDte = $null
+        }
+    }
+    # -PreLaunch whose instance never became the own IDE (inRot false): 01-connect-ide may then have
+    # launched and owned another one. The pre-launched instance is still ours (CreateInstance): quit it too.
+    $extraDte = $null
+    if ($null -ne $script:keepDte -and $null -ne $dte -and -not ($null -ne $script:prelaunchPid -and $script:prelaunchPid -eq $script:ownIdePid)) { $extraDte = $script:keepDte }
+    if ($null -ne $extraDte) {
+        try { $extraDte.Solution.Close($false) } catch { }
+        try { $extraDte.Quit(); $note += 'pre-launched IDE (not the own pid) DTE.Quit(); ' } catch { $note += "pre-launched IDE Quit failed: $($_.Exception.Message); " }
+    }
     if ($null -ne $dte) {
         # Close without saving (SetTargetNetId / activate may have dirtied the project)
         try { $dte.Solution.Close($false); $note += 'Solution.Close(false); ' } catch { $note += "Solution.Close failed: $($_.Exception.Message); " }
@@ -156,15 +184,24 @@ function Close-Ide {
     $script:keepDte = $null
     [GC]::Collect(); [GC]::WaitForPendingFinalizers()
     $left = @()
-    for ($i = 0; $i -lt 60; $i++) {
-        # Only our own IDE counts; IDEs the user opens during the run are ignored.
-        $left = @(Get-Process TcXaeShell*, devenv -ErrorAction SilentlyContinue | Where-Object {
-            if ($script:ownIdePid) { [int]$_.Id -eq $script:ownIdePid } else { $script:preIdePids -notcontains [int]$_.Id } })
+    if ($null -eq $script:ownIdePid) {
+        # No own IDE (01-connect-ide attached to an IDE that was already running, or failed before
+        # launching): nothing of ours to wait for. Other IDEs (the user's, another agent's) never count (#50).
+        $note += 'no own IDE pid: nothing closed or waited for; '
+    }
+    for ($i = 0; $null -ne $script:ownIdePid -and $i -lt 60; $i++) {
+        $left = @(Get-Process -Id $script:ownIdePid -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(TcXaeShell|devenv)' })
         if ($left.Count -eq 0) { break }
         Start-Sleep -Milliseconds 500
     }
+    $script:uiSync.stepStart = $null
+    # Informational only (never part of pass): IDEs that started during the run and are not the own
+    # one - another agent's, or one this run left behind without knowing its pid (e.g.
+    # IDE_LAUNCH_PENDING pid-unconfirmed). Check them by hand when they look like this run's.
+    $newIdePids = @(Get-Process TcXaeShell*, devenv -ErrorAction SilentlyContinue | Where-Object { $script:preIdePids -notcontains [int]$_.Id -and [int]$_.Id -ne $script:ownIdePid } | ForEach-Object { [int]$_.Id })
+    if ($newIdePids.Count -gt 0) { $note += "IDEs started during the run that are not the own one (not counted): $($newIdePids -join ', '); " }
     $sw.Stop()
-    $res = [PSCustomObject]@{ success = ($left.Count -eq 0); remaining = @($left | Select-Object Id, ProcessName, MainWindowTitle) }
+    $res = [PSCustomObject]@{ success = ($left.Count -eq 0); ownIdePid = $script:ownIdePid; remaining = @($left | Select-Object Id, ProcessName, MainWindowTitle); newIdePids = $newIdePids }
     Write-StepLog -Step '11z-close-ide' -Cmdlet 'Solution.Close(false)+DTE.Quit' -ElapsedMs ([int]$sw.ElapsedMilliseconds) -Pass $res.success -Result $res -Note $note
 }
 
@@ -185,6 +222,7 @@ $script:uiSync = [hashtable]::Synchronized(@{ license = $false; stop = $false; t
 $script:uiPs = $null
 function Start-UiWatcher {
     if (-not $script:ownIdePid) { return }
+    if ($null -ne $script:uiPs) { return }   # already watching (called again after 01-connect-ide)
     $uiLog = "$LogPath.ui.log"
     $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
     $script:uiPs = [powershell]::Create(); $script:uiPs.Runspace = $rs
@@ -401,10 +439,23 @@ try {
         }
     }
 
+    $script:prelaunchPid = $script:ownIdePid
     Start-UiWatcher
 
     # 1. Connect IDE
+    # Without -PreLaunch / -AttachPid the watcher starts only after this step (the pid is not known
+    # before): a dialog during 01-connect-ide itself is not covered by the watchdog.
     $r = Invoke-Step '01-connect-ide' 'Connect-TcIde' { Connect-TcIde -SolutionPath $SolutionPath -ProgId $ProgId } { param($x) $x.success -and $x.data.sysManagerAvailable }
+    # #50: without -PreLaunch / -AttachPid the IDE Connect-TcIde launched is ours: watch it and close
+    # only it. Also on a failed connect that still names the launched pid (e.g. IDE_MODAL_DIALOG), so
+    # Close-Ide quits it. An IDE that was already running (solution-match, ...) never becomes ours;
+    # neither does a blocked IDE Connect-TcIde only recognised (solution-blocked: no data.selectedBy),
+    # on purpose: it may be someone else's.
+    if ($null -eq $script:ownIdePid -and $null -ne $r -and $null -ne $r.data -and @('launched', 'session-launched') -contains [string]$r.data.selectedBy -and [int]$r.data.ideProcessId -gt 0) {
+        $script:ownIdePid = [int]$r.data.ideProcessId
+        Start-UiWatcher
+        Write-StepLog -Step '01b-own-ide' -Cmdlet '(own IDE pid)' -ElapsedMs 0 -Pass $true -Result ([PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ ownIdePid = $script:ownIdePid; selectedBy = $r.data.selectedBy; watcherStarted = ($null -ne $script:uiPs) } }) -Note 'IDE launched by 01-connect-ide: watched and closed at the end'
+    }
     if (Test-Abort $r '01') { return }
     if (-not $r.success) { return }
     # Known race (4024): sysManagerAvailable=false + 'no TwinCAT project found' warning right after
@@ -529,8 +580,8 @@ catch {
     }
 }
 finally {
-    Stop-UiWatcher
     Close-Ide
+    Stop-UiWatcher
     $null = Write-UmRt '12-umrt-alive-end'
     Write-Host "DONE failures=$script:failCount log=$LogPath"
 }
