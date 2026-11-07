@@ -257,4 +257,30 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
       git(repo, 'checkout', '--', 'mcp-server');
     }
   });
+
+  test('#170 inside an MSIX package: an install root under %LOCALAPPDATA% is refused, nothing written', () => {
+    const local = tmp('pkgroot');
+    // long spellings on both sides (a runner's TEMP may hold 8.3 names such as RUNNER~1)
+    const lad = process.env.LOCALAPPDATA ? fs.realpathSync.native(process.env.LOCALAPPDATA) : null;
+    const below = !!lad && fs.realpathSync.native(local).toLowerCase().startsWith((lad + path.sep).toLowerCase());
+    const old = process.env.TCAUTO_TEST_PACKAGE_FULL_NAME;
+    process.env.TCAUTO_TEST_PACKAGE_FULL_NAME = 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc';
+    try {
+      if (below) {
+        const r = install(repo, local, { npm });
+        assert.equal(r.code, 1);
+        assert.equal(r.result.error.code, 'INSTALL_PACKAGED_CONTEXT');
+        assert.equal(r.result.data.packageFullName, 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc');
+        assert.deepEqual(fs.readdirSync(local), []);
+      }
+      // an explicit root outside AppData is not virtualized: allowed
+      const outside = path.join(path.parse(local).root, `tcauto-pkg170-${process.pid}-${Date.now()}`);
+      dirs.push(outside);
+      const r2 = install(repo, outside, { npm });
+      assert.equal(r2.code, 0, JSON.stringify(r2.result));
+    } finally {
+      if (old === undefined) delete process.env.TCAUTO_TEST_PACKAGE_FULL_NAME;
+      else process.env.TCAUTO_TEST_PACKAGE_FULL_NAME = old;
+    }
+  });
 });
