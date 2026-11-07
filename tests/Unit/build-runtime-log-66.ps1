@@ -116,19 +116,29 @@ foreach ($c in $kindCases) {
     function script:Find-TcIdeModalDialog { $null }
     function script:Get-TcSolutionPlatform { [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT OS (x64)'; platformSource = 'ActiveConfig' } }
     function script:Get-TcBuildCoverage {
+        if ($null -ne $script:UtCoverage) { return @{ configuration = 'Release|TwinCAT OS (x64)'; error = $null; projects = @($script:UtCoverage | ForEach-Object { $_.PSObject.Copy() }) } }
         @{ configuration = 'Release|TwinCAT OS (x64)'; error = $null; projects = @(
             [PSCustomObject]@{ name = 'plc'; uniqueName = 'Demo66\plc\plc.plcproj'; configuration = 'Release'; platform = 'TwinCAT OS (x64)'; shouldBuild = $true; status = 'pending' }
         ) }
     }
-    function script:Get-TcPlcProjectList { param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
+    function script:Get-TcPlcProjectList { param($SysManager) if ($null -ne $script:UtPlcList) { return @($script:UtPlcList) }; @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
     # #188: login state of a built PLC project; $script:UtLoginState = $true | $false | $null (unknown)
+    # $script:UtLoginByPlc: per PLC name, overrides UtLoginState; a string 'IDE_*' is thrown (like the helper's rethrow)
     $script:UtLoginState = $null
+    $script:UtLoginByPlc = @{}
     $script:UtLoginCalls = 0
+    $script:UtLoginPlcs = [System.Collections.Generic.List[string]]::new()
     function script:Get-TcPlcLoginState {
         param($SysManager, $Plc)
         $script:UtLoginCalls++
-        [PSCustomObject]@{ plc = [string]$Plc.name; loggedIn = $script:UtLoginState; source = $(if ($null -eq $script:UtLoginState) { $null } else { 'IsLoggedIn' }); error = $(if ($null -eq $script:UtLoginState) { 'unit: not readable' } else { $null }) }
+        $script:UtLoginPlcs.Add([string]$Plc.name)
+        $v = if ($script:UtLoginByPlc.ContainsKey([string]$Plc.name)) { $script:UtLoginByPlc[[string]$Plc.name] } else { $script:UtLoginState }
+        if ($v -is [string] -and $v -like 'IDE_*') { throw "${v}: unit" }
+        [PSCustomObject]@{ plc = [string]$Plc.name; loggedIn = $v; source = $(if ($null -eq $v) { $null } else { 'IsLoggedIn' }); error = $(if ($null -eq $v) { 'unit: not readable' } else { $null }) }
     }
+    # optional overrides for the multi-PLC cases (#188 review): $null = the single 'plc' project above
+    $script:UtCoverage = $null
+    $script:UtPlcList = $null
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
         param([switch]$IncludeWarnings, [int]$TimeoutSec = 30)
@@ -156,7 +166,8 @@ foreach ($c in $kindCases) {
 function Set-Scenario($Errors, $Warnings, $LastBuildInfo) {
     & $mod { param($e, $w, $l) $script:UtErrors = @($e); $script:UtWarnings = @($w); $script:UtLastBuildInfo = $l } $Errors $Warnings $LastBuildInfo
 }
-function Set-Login($State) { & $mod { param($v) $script:UtLoginState = $v; $script:UtLoginCalls = 0 } $State }
+function Set-Login($State, [hashtable]$ByPlc = @{}) { & $mod { param($v, $b) $script:UtLoginState = $v; $script:UtLoginByPlc = $b; $script:UtLoginCalls = 0; $script:UtLoginPlcs.Clear() } $State $ByPlc }
+function Get-LoginPlcs { & $mod { @($script:UtLoginPlcs) } }
 function Get-LoginCalls { & $mod { $script:UtLoginCalls } }
 function Reset-State {
     Set-Login $null
@@ -278,14 +289,16 @@ Set-Scenario (TcUnitRows) @((& $warn188)) 2
 Set-Login $true
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check '#188 logged in + runtime rows: evidence login-state' ($r.data.plcOnlineSuspected -eq $true -and $r.data.plcOnlineEvidence -eq 'login-state') (J $r.data)
-# read back as NOT logged in + runtime rows (left from an earlier online session): the read wins, no runtime-log suspicion
+# read back as NOT logged in + runtime rows: the runtime-log evidence still holds (#188 review: a false read
+# while logged in was never measured - IsLoggedIn never read back a bool on 4026 VS2022, 4024 logged in not
+# measured - so it is not trusted to drop the Logout hint; fail closed). The false read is only reported.
 Reset-State
 Set-Scenario (TcUnitRows) @((& $warn188)) 2
 Set-Login $false
 $r = Build-TcProject -WarningAction SilentlyContinue
 $d = $r.data
-Check '#188 not logged in + runtime rows: plcOnlineSuspected false, evidence null, compile hint, codeVerified null' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $false -and $null -eq $d.plcOnlineEvidence -and $null -eq $d.codeVerified -and $r.error.hint -notmatch 'Exit-TcPlcOnline' -and $r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE' })) (J $r)
-Check '#188 not logged in + runtime rows: message keeps plc=false, no "probably logged in"' ($r.error.message -match 'plc=false' -and $r.error.message -notmatch 'probably logged in' -and $r.error.message -match '7 runtime / system log row') $r.error.message
+Check '#188 not logged in + runtime rows: runtime-log still holds (suspected, evidence runtime-log, PLC_ONLINE hint, codeVerified null)' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $d.plcOnlineSuspected -eq $true -and $d.plcOnlineEvidence -eq 'runtime-log' -and $null -eq $d.codeVerified -and $r.error.hint -eq (& $mod { Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE' })) (J $r)
+Check '#188 not logged in + runtime rows: message names plc=false next to "probably logged in"' ($r.error.message -match 'plc=false' -and $r.error.message -match 'probably logged in' -and $r.error.message -match '7 runtime / system log row') $r.error.message
 # login state unknown + runtime rows: the runtime-log rule still applies (covered by b2 too)
 Reset-State
 Set-Scenario (TcUnitRows) @((& $warn188)) 2
@@ -340,6 +353,64 @@ Reset-State
 Set-Scenario @((Row 'Error' "'PlcTask' (350): Could not open library 'Tc2_Foo'")) @() 0
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check 'F4 build: prefix + library message stays in errorItems (library) with a note -> LIBRARY_UNRESOLVED' ($r.error.code -eq 'LIBRARY_UNRESOLVED' -and @($r.data.errorItems).Count -eq 1 -and $r.data.errorItems[0].category -eq 'library' -and $r.data.errorItems[0].note -match '#66' -and @($r.data.runtimeMessages).Count -eq 0) (J $r)
+
+# --- #188 review: several PLC projects
+function CovEntry([string]$Name, [string]$Unique, [bool]$ShouldBuild = $true) {
+    [PSCustomObject]@{ name = $Name; uniqueName = $Unique; configuration = 'Release'; platform = 'TwinCAT OS (x64)'; shouldBuild = $ShouldBuild; status = $(if ($ShouldBuild) { 'pending' } else { 'skipped' }) }
+}
+function PlcNode([string]$Name, [bool]$Disabled = $false, [string]$ProjectFile = $null) {
+    [PSCustomObject]@{ name = $Name; nodePath = "TIPC^$Name"; projectPath = "TIPC^$Name^$Name Project"; adsPort = 851; disabled = $Disabled; projectFile = $ProjectFile }
+}
+function Set-Plcs($Coverage, $PlcList) { & $mod { param($c, $l) $script:UtCoverage = $c; $script:UtPlcList = $l } $Coverage $PlcList }
+
+# one logged in, one not, one unknown -> login-state, three entries
+Reset-State
+Set-Plcs @((CovEntry 'plcA' 'Demo66\plcA\plcA.plcproj'), (CovEntry 'plcB' 'Demo66\plcB\plcB.plcproj'), (CovEntry 'plcC' 'Demo66\plcC\plcC.plcproj')) @((PlcNode 'plcA'), (PlcNode 'plcB'), (PlcNode 'plcC'))
+Set-Scenario @() @((& $warn188)) 2
+Set-Login $null @{ plcA = $false; plcB = $true }
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'multi-PLC: one logged in -> login-state, plcLoginState 3 entries (false / true / null), message names plcB only' ($d.plcOnlineEvidence -eq 'login-state' -and $d.plcOnlineSuspected -eq $true -and @($d.plcLoginState).Count -eq 3 -and $d.plcLoginState[0].loggedIn -eq $false -and $d.plcLoginState[1].loggedIn -eq $true -and $null -eq $d.plcLoginState[2].loggedIn -and $r.error.message -match 'PLC project\(s\) plcB are logged in') (J $d.plcLoginState)
+
+# skipped and disabled PLC projects are not read and not listed
+Reset-State
+Set-Plcs @((CovEntry 'plcA' 'Demo66\plcA\plcA.plcproj'), (CovEntry 'plcS' 'Demo66\plcS\plcS.plcproj' $false), (CovEntry 'plcD' 'Demo66\plcD\plcD.plcproj' $false)) @((PlcNode 'plcA'), (PlcNode 'plcS'), (PlcNode 'plcD' $true))
+Set-Scenario @() @((& $warn188)) 2
+Set-Login $true
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+$st = @($d.projects | ForEach-Object { "$($_.name)=$($_.status)" }) -join ','
+Check 'skipped / disabled: statuses unknown / skipped / disabled, only plcA read and listed' ($st -eq 'plcA=unknown,plcS=skipped,plcD=disabled' -and @($d.plcLoginState).Count -eq 1 -and $d.plcLoginState[0].plc -eq 'plcA' -and (@(Get-LoginPlcs) -join ',') -eq 'plcA') "$st | $(J $d.plcLoginState) | calls $((Get-LoginPlcs) -join ',')"
+
+# no one-to-one match (an enabled tree item 'Extra' matches no .plcproj entry) -> no name fallback, every entry null with the match error
+Reset-State
+Set-Plcs @((CovEntry 'plc' 'Demo66\plc\plc.plcproj'), (CovEntry 'plc2' 'Demo66\plc2\plc2.plcproj')) @((PlcNode 'plc'), (PlcNode 'Extra'))
+Set-Scenario @() @((& $warn188)) 2
+Set-Login $true
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'ambiguous match: not read (no name fallback), both entries loggedIn null with the match error, not suspected' ((Get-LoginCalls) -eq 0 -and @($d.plcLoginState).Count -eq 2 -and @($d.plcLoginState | Where-Object { $null -ne $_.loggedIn }).Count -eq 0 -and @($d.plcLoginState | Where-Object { $_.error -match 'cannot be matched one to one' -and $_.error -match 'the login state is not read' -and $_.error -match "enabled PLC 'Extra'" }).Count -eq 2 -and $d.plcOnlineSuspected -eq $false -and $null -eq $d.codeVerified) (J $d.plcLoginState)
+
+# path match leaves an entry without a node: the name fallback must not reuse the node of another entry
+$slnDir = Split-Path -Parent $sln
+$pfA = Join-Path $slnDir 'a\plc.plcproj'
+Reset-State
+Set-Plcs @((CovEntry 'plc' 'a\plc.plcproj'), (CovEntry 'plc' 'b\plc.plcproj')) @((PlcNode 'plc' $false $pfA))
+Set-Scenario @() @((& $warn188)) 2
+Set-Login $true
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'path match + unmatched entry: the PLC is read once, the second entry null (node already matched)' ((Get-LoginCalls) -eq 1 -and @($d.plcLoginState).Count -eq 2 -and $d.plcLoginState[0].loggedIn -eq $true -and $null -eq $d.plcLoginState[1].loggedIn -and $d.plcLoginState[1].error -match 'not already matched' -and $d.plcOnlineEvidence -eq 'login-state') "$(J $d.plcLoginState) | disabledMatchBy $($d.disabledMatchBy)"
+
+# the helper throws IDE_BUSY (rethrown by Get-TcPlcLoginState) -> Build returns IDE_BUSY and records BUILD_REQUIRED
+Reset-State
+Set-Plcs $null $null
+Set-Scenario @() @((& $warn188)) 2
+Set-Login 'IDE_BUSY'
+$r = Build-TcProject -WarningAction SilentlyContinue
+$br = & $mod { Get-TcBuildRequired }
+Check 'helper IDE_BUSY -> Build fails with IDE_BUSY, BUILD_REQUIRED recorded' ((-not $r.success) -and $r.error.code -eq 'IDE_BUSY' -and $null -ne $r.data.buildRequired -and $null -ne $br) "$(J $r) | state $(J $br)"
+Set-Plcs $null $null
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 exit [Math]::Min($fail, 255)

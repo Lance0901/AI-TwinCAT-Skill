@@ -135,7 +135,8 @@
                              library or other error row) and either a built PLC project reads back as logged in
                              (data.plcOnlineEvidence 'login-state', #188) or every built PLC project is 'unknown'
                              and runtime / system log rows are present ('runtime-log', #66 / O9, 實測 2026-11-06;
-                             not when every built PLC project reads back as NOT logged in: the read wins) -
+                             also when a PLC reads back as NOT logged in: that read is not trusted, never measured
+                             while logged in) -
                              XAE did not compile while logged in (hint BUILD_FAILED_PLC_ONLINE)
         data.plcOnlineEvidence  always present: 'login-state' | 'runtime-log' | $null (not suspected)
         data.plcLoginState   always present; $null unless the build failed with a readable Error List without any
@@ -849,10 +850,14 @@
                         }
                     }
                     # entries in the order of $coverage.projects (= $projects): .plcproj path first, then name
+                    # (Resolve-TcPlcCoverageNodes). Not one to one -> no PLC is guessed: every entry gets
+                    # loggedIn $null with the match error (fail closed, never a name fallback then).
                     $loginNodes = $null
+                    $loginMatchError = $null
                     if ($null -ne $loginPlcList) {
                         $lm = Resolve-TcPlcCoverageNodes -Entries @($coverage.projects) -PlcList $loginPlcList -SolutionPath ([string]$script:TcSolutionPath)
                         if ($null -eq $lm.Error) { $loginNodes = $lm.Nodes }
+                        else { $loginMatchError = Get-TcPlcMatchErrorText -Reasons $lm.Error -Consequence 'the login state is not read' }
                     }
                     $states = [System.Collections.Generic.List[object]]::new()
                     for ($i = 0; $i -lt $projects.Count; $i++) {
@@ -860,9 +865,18 @@
                         if ($pj.status -eq 'skipped' -or $pj.status -eq 'disabled') { continue }
                         $node = $null
                         if ($null -ne $loginNodes -and $i -lt $loginNodes.Count) { $node = $loginNodes[$i] }
-                        if ($null -eq $node -and $null -ne $loginPlcList) { $node = Find-TcPlcProject -List $loginPlcList -Spec ([string]$pj.name) }
+                        # an entry the match left without a node: by name, but never a node already
+                        # assigned to another entry (the same PLC would be read twice)
+                        if ($null -eq $node -and $null -ne $loginNodes) {
+                            $free = @($loginPlcList | Where-Object { $n = $_; @($loginNodes | Where-Object { [object]::ReferenceEquals($_, $n) }).Count -eq 0 })
+                            $node = Find-TcPlcProject -List $free -Spec ([string]$pj.name)
+                            # Find-TcPlcProject builds an entry from a 'TIPC^..' spec when the list is empty;
+                            # a bare name never matches that, so $null stays $null
+                        }
                         if ($null -eq $node) {
-                            $why = if ($null -ne $loginListError) { "PLC project list not readable ($loginListError)" } else { "no PLC tree item matches the .plcproj entry '$($pj.uniqueName)'" }
+                            $why = if ($null -ne $loginListError) { "PLC project list not readable ($loginListError)" }
+                                   elseif ($null -ne $loginMatchError) { $loginMatchError }
+                                   else { "no PLC tree item (not already matched to another .plcproj entry) matches the .plcproj entry '$($pj.uniqueName)'" }
                             $states.Add([PSCustomObject]@{ plc = [string]$pj.name; loggedIn = $null; source = $null; error = $why })
                             continue
                         }
@@ -873,10 +887,10 @@
                 }
             }
             $data.plcLoginState = $plcLoginState
-            # every built PLC project read back as NOT logged in: a reliable read wins over the runtime-log
-            # guess (old log rows stay in the Error List after a logout, #66), so no Logout hint
-            $allLoggedOut = ($null -ne $plcLoginState) -and (@($plcLoginState).Count -gt 0) -and
-                (@($plcLoginState | Where-Object { $_.loggedIn -ne $false }).Count -eq 0)
+            # loggedIn $false never rules the runtime-log evidence out: a false read while logged in was never
+            # measured (IsLoggedIn never read back a bool on 4026 VS2022; 4024 logged in not measured), so it
+            # is not trusted enough to drop the Logout hint (fail closed, #188 review). It is only reported.
+            $loginText = if ($null -eq $plcLoginState) { 'not read' } else { (@($plcLoginState | ForEach-Object { "$($_.plc)=$(if ($null -eq $_.loggedIn) { 'unknown' } else { ([string]$_.loggedIn).ToLowerInvariant() })" }) -join ', ') }
             if ($noErrorRow -and $loggedInPlcs.Count -gt 0) {
                 # appended, the summary above is kept (review #150 round 3 M1)
                 $summary += ". XAE listed no compiler error row at all and PLC project(s) $($loggedInPlcs -join ', ') are logged in (data.plcLoginState): XAE does not compile while the PLC is logged in (#188, 實測 2026-11-08: the real errors appear after PlcLogout)"
@@ -885,9 +899,9 @@
                 $data.plcOnlineEvidence = 'login-state'
                 $data.codeVerified = $null
             }
-            elseif ($noErrorRow -and $allUnknown -and -not $allLoggedOut -and @($els.runtimeMessages).Count -gt 0) {
-                # #66 / O9: the login state was not read (for at least one PLC), but runtime / system log rows are present
-                $summary += ". XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout); no error row names a PLC project"
+            elseif ($noErrorRow -and $allUnknown -and @($els.runtimeMessages).Count -gt 0) {
+                # #66 / O9: no PLC read back as logged in, but runtime / system log rows are present
+                $summary += ". XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout); no error row names a PLC project; PLC login state: $loginText (data.plcLoginState)"
                 $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
                 $data.plcOnlineSuspected = $true
                 $data.plcOnlineEvidence = 'runtime-log'
@@ -895,7 +909,7 @@
                 $data.codeVerified = $null
             }
             elseif ($noErrorRow) {
-                $summary += ". XAE listed no error row at all, so it does not show why the build failed and the PLC code is not verified; PLC login state: $(if ($null -eq $plcLoginState) { 'not read' } else { (@($plcLoginState | ForEach-Object { "$($_.plc)=$(if ($null -eq $_.loggedIn) { 'unknown' } else { ([string]$_.loggedIn).ToLowerInvariant() })" }) -join ', ') }) (data.plcLoginState)"
+                $summary += ". XAE listed no error row at all, so it does not show why the build failed and the PLC code is not verified; PLC login state: $loginText (data.plcLoginState)"
             }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint $buildHint -Data $data

@@ -40,6 +40,9 @@
     )
 
     $sm = $SysManager
+    # No deadline (CODING_STANDARDS 1): the same kind of tree reads as Get-TcPlcProjectList (LookupTreeItem,
+    # a property, ProduceXml), called after the build has finished; no long-running operation is started.
+    # Invoke-TcComRetry still classifies busy / modal dialog / crash.
     $fatal = 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_BUSY|IDE_CRASHED'
     $name = [string]$Plc.name
     $nodePath = [string]$Plc.nodePath
