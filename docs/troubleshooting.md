@@ -558,10 +558,36 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:舊 runtime 沒在時間內回應 `tcauto/retire`(`TIMEOUT`,舊 runtime 繼續跑)、不認得這個 request(`UNSUPPORTED`,比 launcher 舊的 runtime),或回了 JSON-RPC 錯誤(`FAILED`)。三者都沒有切換,launcher 也不會硬殺舊 runtime(不能跳過 bridge 的 fail-closed retire)。
 - **下一步**:`TIMEOUT`:先 `GetStatus`,稍後再 `ReloadRuntime`(若之後回 `RUNTIME_RETIRED`,表示 retire 晚到完成，再 `ReloadRuntime` 一次)。`UNSUPPORTED`:重連 MCP client(Claude Code 用 `/mcp` reconnect),bridge 會走正常 shutdown。`FAILED`:回報錯誤內容。
 
-### Install-TcAutoRuntime.ps1 的錯誤(#162)
+### 安裝器錯誤碼(Install-TcAuto.ps1 / Install-TcAutoRuntime.ps1 / Build-TcAutoRelease.ps1,#162 #20 #165)
 
-- `WORKTREE_DIRTY`:`mcp-server\`(不含 `test\`)或 `src\TwinCATAutomation\` 有未 commit 的改動(`data.changes`),什麼都沒寫。commit 後重跑，或加 `-AllowDirty`(版本名 `<commit>-dirty-<UTC 時間>`,`dirty: true`)。
-- `COPY_FAILED`:某個檔案複製失敗，多半是 OneDrive 檔案下載不了(見上方「OneDrive 與 hydration」)。
+三支腳本最後一行都是 `TCAUTO_INSTALL_RESULT {json}`(`success`、`data` 或 `error.code` + `hint`),exit code 0 / 1。這些碼不是模組的 `error.code`,不在 `TcErrorHints`。安裝步驟見 `docs/setup-mcp.md`。
+
+**Install-TcAuto.ps1(客戶 zip)**
+
+- `PACKAGE_INCOMPLETE`:不是完整的 release 資料夾(缺 `tcauto-release.json` / `node\node.exe` / launcher / `lib\tcauto-client-config.mjs`,或 `runtime\` 不是剛好一個版本,或該版本的 `tcauto-source.json` 不符)。整個 zip 重新解壓縮、核對 SHA256 後從解壓縮資料夾執行;在 checkout 裡改用 `scripts\Install-TcAutoRuntime.ps1`。
+- `CLIENT_CONFIG_FAILED`:檔案已裝好,但某個 client 設定檔改不了(JSON 壞掉;Codex 的 `tcauto` 寫成 key 而不是 `[mcp_servers.tcauto]` table;檔案被鎖),原因在 `error.message` 與 `data.clients[]`(該檔案沒被改)。修好那個檔案再執行一次;`-Uninstall` 也可能回這個碼,處理方式相同。
+- `INSTALL_SHARED`:`-Uninstall` 發現某個 client 的 `tcauto` 雖然 command 不在安裝根目錄下,但 args 仍指到安裝根目錄(例如開發者註冊的 `node <root>\launcher\tcauto-launcher.mjs`)。為了不弄壞那個 client,什麼都沒刪。先改掉或移除那個註冊(`claude mcp remove tcauto -s user`)再 `-Uninstall`;確定要一起移除就加 `-Force`。
+- `INSTALL_IN_USE`:`-Uninstall` 時 `runtime\` / `launcher\` / `node\` 有資料夾被使用中(Claude Code、Claude Desktop、Codex 都在跑 launcher)。關掉這些 client 再執行。
+- `NODE_IN_USE`:要換新的 `node.exe`,但舊的被執行中的 client 佔住,舊檔沒動。關掉 client 再執行。
+- `COPY_FAILED`:複製 `node.exe` 或其他檔案失敗(磁碟空間、目錄不可寫,或雲端同步資料夾下載不了)。訊息說明舊 `node.exe` 是否已放回。
+- `RUNTIME_DAMAGED`:複製後 `runtime\<version>\` 不完整(沒有 `node_modules` 或 `index.js`)。重新下載 zip、核對 SHA256 後再執行。
+- `VERIFY_FAILED`:`-Verify`(或安裝最後那一步)啟動安裝的 `node.exe` + launcher、送 `initialize` + `tools/list` 失敗。訊息含 launcher 的 stderr;再跑一次 `-Verify`,仍失敗就回報訊息。
+- `TCAUTO_REAL_STATE_REFUSED`:只在測試環境(`TCAUTO_TEST_FORBID_REAL_STATE=1`)出現。#165 之後 Claude Desktop 的設定檔有兩處(標準版 `%APPDATA%\Claude\`、MSIX 版 `%LOCALAPPDATA%\Claude-Data\claude_*\`),只要目標檔案落在這兩個真實資料夾之下就拒絕寫入(例如測試沒傳 `-ClaudeDesktopConfig`,或沒用 `-LocalAppDataRoot` / `-AppDataRoot` 指到暫存資料夾)。測試要傳其中之一;一般使用者不會碰到(不設該環境變數)。
+- `BAD_ARGUMENT`:`-Clients` 有不認得的名稱(可用 `ClaudeCode`、`ClaudeDesktop`、`Codex`),或 `-Uninstall` 與 `-Verify` 一起用。
+- `INSTALL_FAILED`:其他未預期的錯誤(訊息含出錯的檔案與行號);這一步之後的事都沒做,再執行一次,同樣失敗就回報訊息。
+
+**Build-TcAutoRelease.ps1(打包 zip)**
+
+- `NODE_HASH_MISMATCH`:下載的 `node-v<ver>-win-x64.zip`、zip 裡的 `node.exe`、或 `-NodeExePath` 指定的 `node.exe` 的 SHA256 與腳本固定的值(或該 Node 版本 `SHASUMS256.txt` 那一行)不同,什麼都沒打包。不要改腳本裡的 hash 來繞過;重新下載,檢查網路 / proxy 是否改了內容。
+- `NODE_DOWNLOAD_FAILED` / `NODE_NOT_FOUND`:下載 Node.js 失敗(檢查網路 / proxy,或自己下載後用 `-NodeExePath <node.exe>`);`-NodeExePath` 指到的檔案不存在。
+- `NPM_CI_FAILED`:runtime 暫存複本裡的 `npm ci --omit=dev` 失敗。
+- `GIT_FAILED` / `WORKTREE_DIRTY` / `BAD_ARGUMENT`:git 讀不到、有未 commit 的改動(`-AllowDirty` 才打包,版本名帶 `-dirty`)、`-Version` 含檔名不該有的字元。
+- `BUILD_FAILED`:其他未預期的錯誤。
+
+**Install-TcAutoRuntime.ps1(開發者)**
+
+- `WORKTREE_DIRTY`:`mcp-server\`(不含 `test\`)或 `src\TwinCATAutomation\` 有未 commit 的改動(`data.changes`),什麼都沒寫。commit 後重跑,或加 `-AllowDirty`(版本名 `<commit>-dirty-<UTC 時間>`,`dirty: true`)。
+- `COPY_FAILED`:某個檔案複製失敗,多半是 OneDrive 檔案下載不了(見上方「OneDrive 與 hydration」)。
 - `NPM_CI_FAILED`:暫存複本裡的 `npm ci --omit=dev` 失敗(Node / npm 不在 PATH、registry 連不到)。暫存複本會刪掉,`current.json` 不變。
 - `RUNTIME_DAMAGED` / `RUNTIME_IN_USE`:同名版本資料夾不完整;是 current 就不動它(可能正在跑),否則刪不掉(被使用中)。
 - `GIT_NOT_FOUND` / `GIT_FAILED` / `SOURCE_INCOMPLETE` / `RENAME_FAILED` / `CURRENT_WRITE_FAILED` / `LAUNCHER_WRITE_FAILED`:訊息裡有路徑與原因;`current.json` 只在新版本完整就位後才換。

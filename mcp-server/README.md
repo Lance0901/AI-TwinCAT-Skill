@@ -9,7 +9,7 @@ Exposes the `TwinCATAutomation` module (<!-- generated:mcp-tool-count -->79<!-- 
 | Requirement | Notes |
 |---|---|
 | Windows 10/11 | COM Automation Interface and `TwinCAT.Ads.dll` are Windows-only |
-| Node.js >= 22 | `node --version`. The version CI runs `npm test` on (22 and 24); Node 18 and 20 are end-of-life (https://nodejs.org/en/about/previous-releases), and `npm test` needs >= 21 for the glob in `node --test` |
+| Node.js >= 22 | Developer install only (a customer PC uses the `node.exe` of the release zip). `node --version`. The version CI runs `npm test` on (22 and 24); Node 18 and 20 are end-of-life (https://nodejs.org/en/about/previous-releases), and `npm test` needs >= 21 for the glob in `node --test` |
 | Windows PowerShell 5.1 | `powershell.exe`, **not** `pwsh`. Default path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`; override with `TWINCAT_MCP_POWERSHELL` |
 | TwinCAT 3.1 XAE | Verified on 4026 (32-bit XAE Shell, 64-bit XAE Shell, VS2022 integration); 4024 projects open in a 4026 XAE |
 | Module path | `src/TwinCATAutomation/TwinCATAutomation.psm1`; resolved relative to the server by default, override with `TWINCAT_MODULE_PATH` |
@@ -24,45 +24,12 @@ npm test          # unit tests against a mock bridge, no TwinCAT needed
 
 ## Configure
 
-**Recommended (#162): installed runtime + launcher.** Run `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1` in the checkout, then register `node <install root>\launcher\tcauto-launcher.mjs` once (install root: `%LOCALAPPDATA%\TwinCATAutomation`, or `TCAUTO_RUNTIME_ROOT`). The launcher (`launcher/tcauto-launcher.mjs`, node built-ins only) runs `runtime\<version>\mcp-server\index.js` as a child, forwards JSON-RPC both ways and adds the tool `ReloadRuntime`, which switches to the version `runtime\current.json` names after the next install without a client reconnect. Step by step, client examples (Claude Code, Claude Desktop, Codex) and the one-time switch: [docs/setup-mcp.md](../docs/setup-mcp.md); rules and error codes: `docs/troubleshooting.md` "ReloadRuntime". The sections below run `index.js` straight from the checkout (development), which behaves as before.
+Register the **launcher**, never `index.js` of a checkout (a project `.mcp.json` or `node mcp-server/index.js` is not a supported setup: the client would run whatever branch the checkout has, `ReloadRuntime` cannot switch it, and a project-scope entry conflicts with the user-scope one). The launcher (`launcher/tcauto-launcher.mjs`, node built-ins only) runs `runtime\<version>\mcp-server\index.js` as a child, forwards JSON-RPC both ways and adds the tool `ReloadRuntime`, which switches to the version `runtime\current.json` names after the next install without a client reconnect (#162). Install root: `%LOCALAPPDATA%\TwinCATAutomation`, or `TCAUTO_RUNTIME_ROOT`.
 
-### Claude Desktop
+- **Customer PC (no Node.js, no git):** the release zip's `Install-TcAuto.ps1` installs a pinned `node.exe`, the launcher and the runtime and registers `tcauto` in Claude Code (user scope), Claude Desktop (standard and MSIX) and Codex (#20, #165). No Release is published yet; build the zip with `scripts\Build-TcAutoRelease.ps1`.
+- **Developer:** `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1` in the checkout, then register `node <install root>\launcher\tcauto-launcher.mjs` once, e.g. `claude mcp add --scope user tcauto -- node "$env:LOCALAPPDATA\TwinCATAutomation\launcher\tcauto-launcher.mjs"`. Later: rerun the script, call `ReloadRuntime`.
 
-`%APPDATA%\Claude\claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "tcauto": {
-      "command": "node",
-      "args": ["C:\\path\\to\\2026-AI-TwinCAT-Skill\\mcp-server\\index.js"],
-      "env": {
-        "TWINCAT_MODULE_PATH": "C:\\path\\to\\2026-AI-TwinCAT-Skill\\src\\TwinCATAutomation\\TwinCATAutomation.psm1"
-      }
-    }
-  }
-}
-```
-
-`TWINCAT_MODULE_PATH` can be omitted when the server runs from inside this repo; it then defaults to `../src/TwinCATAutomation/TwinCATAutomation.psm1` relative to `mcp-server/`. Restart Claude Desktop after editing the file.
-
-### Claude Code
-
-Project-level `.mcp.json` at the repo root (already checked in):
-
-```json
-{ "mcpServers": { "tcauto": { "command": "node", "args": ["mcp-server/index.js"] } } }
-```
-
-Or register it from the CLI:
-
-```powershell
-claude mcp add tcauto -- node mcp-server/index.js
-```
-
-### Any other MCP client
-
-Generic stdio launch: command `node`, argument `<repo>/mcp-server/index.js`, optional `env` from the table below. The server speaks MCP over stdin/stdout and logs only to stderr.
+Step by step, the config file locations per client (Claude Desktop MSIX: `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\`, not `%APPDATA%\Claude\`), upgrade, uninstall and log locations: [docs/setup-mcp.md](../docs/setup-mcp.md); rules and error codes: `docs/troubleshooting.md` "ReloadRuntime" and "安裝器錯誤碼". Any other MCP client: command `node`, argument `<install root>\launcher\tcauto-launcher.mjs`, optional `env` from the table below. The server speaks MCP over stdin/stdout and logs only to stderr.
 
 ## Environment variables
 
@@ -353,7 +320,7 @@ Do not add waits between calls: `EnableConfig`, `SetSystemState`, `SetPlcState` 
 | `Write-Information` | level `info` |
 | bridge stderr | level `error` |
 
-Log lines never end up inside the result object. The server itself logs to its own stderr only (Claude Desktop writes it to `%APPDATA%\Claude\logs\mcp-server-tcauto.log`).
+Log lines never end up inside the result object. The server itself logs to its own stderr only (Claude Desktop writes it to `mcp-server-tcauto.log`: `%LOCALAPPDATA%\Claude\Logs\` for the MSIX package, `%APPDATA%\Claude\logs\` for the standard install; see [docs/setup-mcp.md](../docs/setup-mcp.md)).
 
 ## Known limits
 
