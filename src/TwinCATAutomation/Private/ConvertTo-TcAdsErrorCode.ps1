@@ -74,9 +74,11 @@ $script:TcErrorHints = @{
 # Compile errors (Build-TcProject, only when the build really failed): generic BUILD_FAILED
 # from a COM exception keeps no hint, so this one is looked up explicitly.
 $script:TcErrorHints['BUILD_FAILED_COMPILE'] = '看 data.errorItems(code / description / file / line);修正後重跑 Build-TcProject'
-# #66 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT): BUILD_FAILED with no compiler row while the PLC is
-# logged in - XAE did not compile; Build-TcProject sets data.plcOnlineSuspected and uses this hint.
-$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is probably logged in; XAE probably did not compile (suspected: no compiler error row, only runtime log rows). Exit-TcPlcOnline then Build-TcProject(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
+# #66 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT) and #188 (實測 2026-11-08, 4026 VS2022 + local UmRT):
+# BUILD_FAILED with no error row while the PLC is logged in - XAE did not compile; Build-TcProject sets
+# data.plcOnlineSuspected / plcOnlineEvidence ('login-state': IsLoggedIn / ProduceXml read back logged in;
+# 'runtime-log': only runtime log rows, suspected) and uses this hint.
+$script:TcErrorHints['BUILD_FAILED_PLC_ONLINE'] = 'PLC is logged in (data.plcOnlineEvidence = login-state, read back from the IDE) or probably logged in (runtime-log: suspected from runtime log rows only, no compiler error row); XAE does not compile while logged in. Log out with MCP PlcLogout (cmdlet Exit-TcPlcOnline), then run BuildProject (Build-TcProject) again(PLC login 中 XAE 不編譯，真的編譯錯誤要 Logout 後重新 Build 才會出現在 Error List;data.plcLoginState 列出每個 PLC 的 login 狀態;Logout 後舊的 TcUnit / runtime log 列仍會留在 Error List,可在 XAE 手動清掉)'
 # Legacy code kept by Read-TcVariable for a missing symbol: same hint as ADS_SYMBOL_NOT_FOUND
 $script:TcErrorHints['SYMBOL_NOT_FOUND'] = $script:TcErrorHints['ADS_SYMBOL_NOT_FOUND']
 # #60: Read-TcVariable with several paths, at least one failed (fail closed)

@@ -40,7 +40,9 @@
                              PLC project was skipped by the configuration or the solution has no
                              PLC project, #58); $null when the Error List or the PLC project list
                              (coverageError) is not readable. This applies to BUILD_FAILED results
-                             too (a failed build with a skipped PLC project has codeVerified $false)
+                             too (a failed build with a skipped PLC project has codeVerified $false), except a
+                             BUILD_FAILED whose Error List lists no error row at all: $null instead of
+                             $true (#188; $null also when the PLC is found logged in)
         data.solutionConfiguration  '<configuration>|<solution platform>' of the active solution
                              configuration, read like Get-TcIdeInfo (Solution.Properties
                              ('ActiveConfig')); data.solutionPlatform is its platform (same value
@@ -129,9 +131,19 @@
                              and runtimeMessages is not empty, codeVerified = $null and a successful build gets
                              CODE_NOT_VERIFIED (not complete, BUILD_REQUIRED stays; review #150 F3).
         data.plcOnlineSuspected  always present ($false unless set, O13); $true (BUILD_FAILED only, codeVerified then
-                             $null, O12) when no code / library error row was listed, every built PLC
-                             project is 'unknown' and runtime / system log rows are present - the PLC is probably
-                             logged in and XAE did not compile (#66 / O9, 實測 2026-11-06; hint BUILD_FAILED_PLC_ONLINE)
+                             $null, O12) when the Error List was read and lists no error row at all (no code,
+                             library or other error row) and either a built PLC project reads back as logged in
+                             (data.plcOnlineEvidence 'login-state', #188) or every built PLC project is 'unknown'
+                             and runtime / system log rows are present ('runtime-log', #66 / O9, 實測 2026-11-06) -
+                             XAE did not compile while logged in (hint BUILD_FAILED_PLC_ONLINE)
+        data.plcOnlineEvidence  always present: 'login-state' | 'runtime-log' | $null (not suspected)
+        data.plcLoginState   always present; $null unless the build failed with a readable Error List without any
+                             error row: then one entry per built (not skipped / disabled) PLC project
+                             @{ plc; loggedIn ($true | $false | $null = unknown); source ('IsLoggedIn' | 'ProduceXml'
+                             | $null); error } (Get-TcPlcLoginState: TE1000 ITcPlcOnline.IsLoggedIn, else the
+                             "<Plc> Project" ProduceXml IECProjectDef/OnlineSettings/LoggedIn, 實測 2026-11-08 4026
+                             VS2022). Such a BUILD_FAILED always has codeVerified $null, logged in or not (#188:
+                             XAE logged in, no runtime log row, the build failed without listing an error)
         data.runtimeMessageNote  only when a row has that prefix AND a file, line, code or library message: it
                              cannot be told apart, so it stays in errorItems / warningItems (fail closed) with a
                              'note' on the row
@@ -287,6 +299,8 @@
     $disabledCheckError = $null
     # 'path' | 'name' | $null (no disabled tree item, list not readable, or no one-to-one match)
     $disabledMatchBy = $null
+    # also used for the login state of a BUILD_FAILED without error rows (#188)
+    $plcList = $null
     foreach ($p in @($coverage.projects)) { $p | Add-Member -NotePropertyName 'disabled' -NotePropertyValue $false -Force }
     if ($null -eq $coverage.error -and @($coverage.projects).Count -gt 0) {
         $plcList = $null
@@ -694,7 +708,10 @@
             runtimeMessages = @($els.runtimeMessages)
             # O13: always present; $true only on the BUILD_FAILED path below (#66 / O9)
             plcOnlineSuspected = $false
-            buildSec       = $buildSec
+            # #188: always present; set only on a BUILD_FAILED without any error row (below)
+            plcOnlineEvidence  = $null
+            plcLoginState      = $null
+            buildSec      = $buildSec
             codeVerified   = $codeVerified
         }
         # #66: rows with the log prefix that also have a file / line / code / library message stay build rows (fail closed)
@@ -797,23 +814,83 @@
             }
             # #66 problem 2 / O9 (實測 2026-11-06, VS2022 4026 + local UmRT; InfoSys: no source found): with
             # the PLC logged in XAE does not compile at all (0.8 s, LastBuildInfo > 0, the real C0046 is not
-            # in the Error List; after PlcLogout the build lists C0046 / C0018). Decided from data already
-            # read, no extra COM call: no code / library / located error row, no PLC project named by an
-            # error row (every built project 'unknown') and runtime / system log rows present.
+            # in the Error List; after PlcLogout the build lists C0046 / C0018). Two kinds of evidence, both
+            # only when the Error List lists no error row at all: the login state read back (#188, below) or,
+            # from data already read, every built project 'unknown' and runtime / system log rows present.
             $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_COMPILE'
             $activeStatus = @($projects | Where-Object { $_.status -ne 'skipped' -and $_.status -ne 'disabled' } | ForEach-Object { $_.status })
             # review #150 round 3 M1: ANY other error row (code without a file, an XAE error without a code)
             # rules it out - it may be the real cause, and old log rows stay after a logout
-            $plcOnlineSuspected = ($null -eq $errorListError) -and ($codeErrors.Count -eq 0) -and ($libraryErrorItems.Count -eq 0) -and ($nonLibraryErrors.Count -eq 0) -and
-                (@($els.runtimeMessages).Count -gt 0) -and ($activeStatus.Count -gt 0) -and (@($activeStatus | Where-Object { $_ -ne 'unknown' }).Count -eq 0)
-            if ($plcOnlineSuspected) {
+            $noErrorRow = ($null -eq $errorListError) -and ($codeErrors.Count -eq 0) -and ($libraryErrorItems.Count -eq 0) -and ($nonLibraryErrors.Count -eq 0)
+            $allUnknown = ($activeStatus.Count -gt 0) -and (@($activeStatus | Where-Object { $_ -ne 'unknown' }).Count -eq 0)
+            # #188 (實測 2026-11-08, 4026 VS2022 + local UmRT): logged in after Enable-TcConfig, no runtime
+            # log row at all - only the 'TwinCAT XAE' ... failed warning - so the runtime-log rule below
+            # did not fire and codeVerified stayed $true. A failed build without any error row proves
+            # nothing about the code: codeVerified $null, and the login state of each built PLC project
+            # is read (Get-TcPlcLoginState: ITcPlcOnline.IsLoggedIn, else ProduceXml OnlineSettings/
+            # LoggedIn). Only on this path: a normal build does not pay for the extra COM calls.
+            $plcLoginState = $null
+            $loggedInPlcs = @()
+            if ($noErrorRow) {
+                # $false (skipped project, no PLC project, #58) is kept: it is already "not verified"
+                if ($data.codeVerified -eq $true) { $data.codeVerified = $null }
+                if ($activeStatus.Count -gt 0) {
+                    # PLC tree item per built project: the list read for the disabled check, else read now
+                    # (IDE_* exceptions end in the outer catch like any other COM failure of the build)
+                    $loginPlcList = $null
+                    $loginListError = $null
+                    if ($null -ne $plcList) { $loginPlcList = @($plcList) }
+                    else {
+                        try { $loginPlcList = @(Get-TcPlcProjectList -SysManager $sm) }
+                        catch {
+                            if ($_.Exception.Message -match 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_BUSY|IDE_CRASHED') { throw }
+                            $loginListError = $_.Exception.Message
+                        }
+                    }
+                    # entries in the order of $coverage.projects (= $projects): .plcproj path first, then name
+                    $loginNodes = $null
+                    if ($null -ne $loginPlcList) {
+                        $lm = Resolve-TcPlcCoverageNodes -Entries @($coverage.projects) -PlcList $loginPlcList -SolutionPath ([string]$script:TcSolutionPath)
+                        if ($null -eq $lm.Error) { $loginNodes = $lm.Nodes }
+                    }
+                    $states = [System.Collections.Generic.List[object]]::new()
+                    for ($i = 0; $i -lt $projects.Count; $i++) {
+                        $pj = $projects[$i]
+                        if ($pj.status -eq 'skipped' -or $pj.status -eq 'disabled') { continue }
+                        $node = $null
+                        if ($null -ne $loginNodes -and $i -lt $loginNodes.Count) { $node = $loginNodes[$i] }
+                        if ($null -eq $node -and $null -ne $loginPlcList) { $node = Find-TcPlcProject -List $loginPlcList -Spec ([string]$pj.name) }
+                        if ($null -eq $node) {
+                            $why = if ($null -ne $loginListError) { "PLC project list not readable ($loginListError)" } else { "no PLC tree item matches the .plcproj entry '$($pj.uniqueName)'" }
+                            $states.Add([PSCustomObject]@{ plc = [string]$pj.name; loggedIn = $null; source = $null; error = $why })
+                            continue
+                        }
+                        $states.Add((Get-TcPlcLoginState -SysManager $sm -Plc $node))
+                    }
+                    $plcLoginState = @($states)
+                    $loggedInPlcs = @($plcLoginState | Where-Object { $_.loggedIn -eq $true } | ForEach-Object { $_.plc })
+                }
+            }
+            $data.plcLoginState = $plcLoginState
+            if ($noErrorRow -and $loggedInPlcs.Count -gt 0) {
                 # appended, the summary above is kept (review #150 round 3 M1)
+                $summary += ". XAE listed no compiler error row at all and PLC project(s) $($loggedInPlcs -join ', ') are logged in (data.plcLoginState): XAE does not compile while the PLC is logged in (#188, 實測 2026-11-08: the real errors appear after PlcLogout)"
+                $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
+                $data.plcOnlineSuspected = $true
+                $data.plcOnlineEvidence = 'login-state'
+                $data.codeVerified = $null
+            }
+            elseif ($noErrorRow -and $allUnknown -and @($els.runtimeMessages).Count -gt 0) {
+                # #66 / O9: the login state was not read as logged in, but runtime / system log rows are present
                 $summary += ". XAE listed no compiler error row at all: the PLC is probably logged in, so XAE probably did not compile (#66, 實測 2026-11-06: no compile while logged in, the real errors appear after PlcLogout); no error row names a PLC project"
                 $buildHint = Get-TcErrorHint -Code 'BUILD_FAILED_PLC_ONLINE'
                 $data.plcOnlineSuspected = $true
-                # O12: XAE did not compile, so a clean Error List proves nothing (codeVerified was $true
-                # when the Error List had no code row): not verified
+                $data.plcOnlineEvidence = 'runtime-log'
+                # O12: XAE did not compile, so a clean Error List proves nothing
                 $data.codeVerified = $null
+            }
+            elseif ($noErrorRow) {
+                $summary += ". XAE listed no error row at all, so it does not show why the build failed and the PLC code is not verified; PLC login state: $(if ($null -eq $plcLoginState) { 'not read' } else { (@($plcLoginState | ForEach-Object { "$($_.plc)=$(if ($null -eq $_.loggedIn) { 'unknown' } else { ([string]$_.loggedIn).ToLowerInvariant() })" }) -join ', ') }) (data.plcLoginState)"
             }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint $buildHint -Data $data
