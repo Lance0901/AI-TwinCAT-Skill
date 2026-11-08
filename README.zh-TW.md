@@ -2,66 +2,204 @@
 
 # AI TwinCAT Skill
 
-一個 PowerShell 模組，讓**任何 AI 編碼工具**（Claude Code、Codex、Antigravity 等）都能完整自動化 TwinCAT 3 IDE 和 PLC 運行時 — 從專案建立到即時測試 — 全程零對話框。
+讓 AI 編碼工具(Claude Code、Codex、Claude Desktop 或任何 MCP client)在 Windows 電腦上操作 TwinCAT 3 IDE 與 PLC runtime:開啟 solution、修改 PLC 程式碼、建置、啟動組態、下載、執行,並透過 ADS 讀寫變數,全程不跳對話框。本專案是一個 PowerShell 模組,提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet,安裝後以 **TcAuto MCP server** 的形式使用;也可以直接匯入模組呼叫。
 
-## 為什麼需要這個
+狀態:beta。已知限制見[已知限制](#已知限制)與 [docs/known-limitations.md](docs/known-limitations.md)。
 
-TwinCAT 3 有強大的 COM 自動化介面，但要寫腳本卻出了名的困難：模態對話框會阻擋自動化、COM 型別衝突會導致 PowerShell 當掉、而且生命週期有未文件化的順序要求。這個模組解決了所有問題，提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet，讓任何 AI 工具都能自主建置、部署和測試 PLC 程式。
+目錄:[需求](#需求) · [客戶安裝](#客戶安裝) · [第一次使用](#第一次使用) · [支援的 client](#支援的-client-與驗證狀態) · [升級與移除](#升級與移除) · [疑難排解](#疑難排解) · [v0.6.0-beta 的變更](#v060-beta-的變更) · [已知限制](#已知限制) · [開發者安裝](#開發者安裝checkout) · [直接使用 PowerShell 模組](#直接使用-powershell-模組) · [文件索引](#文件索引) · [舊版 skill 安裝器](#舊版-skill-安裝器不含-mcp)
 
-## 安裝(MCP server)
+## 需求
 
-模組以 **TcAuto MCP server** 的形式提供給 Claude Code、Claude Desktop 與 Codex。需求：Windows 10/11、TwinCAT 3.1 XAE(4024 或 4026);客戶機器**不需要**預先安裝 Node.js 或 git。client 只註冊一次,指向安裝在 `%LOCALAPPDATA%\TwinCATAutomation\` 的小型 launcher;之後換版用 MCP tool `ReloadRuntime`,不必重開 client。完整說明：[docs/setup-mcp.md](docs/setup-mcp.md)。
+- Windows 10 或 11,以及 Windows PowerShell 5.1(Windows 內建)。MCP server 用 `powershell.exe` 5.1 執行模組。
+- TwinCAT 3.1 XAE,版本 4024 或 4026:獨立的 XAE Shell,或整合 TwinCAT 的 Visual Studio 2022。安裝程式找不到 TwinCAT 時只會警告,仍會安裝;`ConnectIde` 需要它。
+- 要執行的 target:本機 user-mode runtime(UmRT)、本機 Windows runtime,或可用 ADS 連到的遠端控制器。
+- 支援 MCP(stdio)的 AI client:Claude Code、Claude Desktop、Codex 或其他([狀態表](#支援的-client-與驗證狀態))。
+- 客戶電腦不需要其他東西。release zip 內建 Node.js;只有[開發者安裝](#開發者安裝checkout)需要 Node.js、npm 和 git。
 
-### 客戶安裝(release zip)
+## 客戶安裝
 
-1. 從 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 下載 `TcAuto-<version>.zip` 與 `.sha256`,核對 SHA256。**目前尚未發佈任何 Release**;發佈前請在 checkout 裡用 `powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1` 自行打包(輸出 `dist\TcAuto-<version>.zip`)。
-2. 解除封鎖(Unblock)並解壓縮到本機資料夾;先關閉 Claude Code、Claude Desktop、Codex。
-3. 執行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1`。它會安裝隨 zip 附的 Node.js 24.22.2 `node.exe`(SHA256 已固定)、launcher 與 runtime,並把 `tcauto` 註冊到 Claude Code(user scope,`~/.claude.json`)、Claude Desktop(標準版 `%APPDATA%\Claude\`,MSIX 版 `%LOCALAPPDATA%\Claude-Data\claude_*\`)與 Codex(`~/.codex/config.toml`)。只改 `tcauto` 一項,改之前先備份。選項:`-Clients`、`-Verify`、`-Uninstall`。
-4. 每個 client 重開一次(client 只在 App 啟動時讀 MCP 註冊),然後請它呼叫 `GetStatus`、`ConnectIde`。
-5. **升級**:執行新 zip 的 `Install-TcAuto.ps1`,再呼叫 `ReloadRuntime`;不用重開。
+安裝包是 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 頁面上的 `TcAuto-<version>.zip` 與 `TcAuto-<version>.zip.sha256`。推送 `v*` tag 時,`.github/workflows/release.yml` 會產生這兩個檔案並附到該 Release。**v0.6.0-beta 是第一個附 zip 的版本;v0.5.0-beta 以前的版本沒有安裝包。** 如果 Releases 頁面還看不到 zip,請改用[開發者安裝](#開發者安裝checkout)。
 
-### 開發者安裝(checkout)
+zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Build-TcAutoRelease.ps1`)、launcher、`Install-TcAuto.ps1`,以及已經建置好的 runtime(含 `node_modules`,約 40 MB),所以電腦上不需要 Node.js、git 或 npm。
 
-1. 在 checkout 裡執行 `powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1`(需 Node.js >= 22、npm、git)。它把已 commit 的 runtime 複製到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<commit>\`,並安裝 launcher。
-2. 註冊 launcher 一次:`claude mcp add --scope user tcauto -- node "$env:LOCALAPPDATA\TwinCATAutomation\launcher\tcauto-launcher.mjs"`(Claude Desktop / Codex 見 [docs/setup-mcp.md](docs/setup-mcp.md)「Register by hand」)。
+1. 下載 `TcAuto-<version>.zip` 與 `TcAuto-<version>.zip.sha256`,核對雜湊值。在一般 PowerShell 視窗執行(把 `0.6.0-beta` 換成你下載的版本):
+
+   ```powershell
+   cd "$HOME\Downloads"
+   $zip = '.\TcAuto-0.6.0-beta.zip'
+   (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()   # 必須等於下一行輸出的第一個字
+   Get-Content "$zip.sha256"
+   ```
+
+2. 解除封鎖並解壓縮到本機資料夾(不要放在 OneDrive 這類雲端同步資料夾):
+
+   ```powershell
+   Unblock-File $zip
+   Expand-Archive $zip -DestinationPath "$HOME\TcAuto-0.6.0-beta"
+   ```
+
+3. 關閉 Claude Code、Claude Desktop、Codex(Claude Code 執行中會改寫 `~\.claude.json`)。
+4. **從一般 PowerShell 視窗**(開始功能表或 Windows Terminal)在解壓縮的資料夾執行安裝程式:
+
+   ```powershell
+   cd "$HOME\TcAuto-0.6.0-beta"
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1
+   ```
+
+   `-ExecutionPolicy Bypass` 只對這一個 `powershell.exe` 行程有效,不改任何設定;Windows 用戶端電腦的預設 execution policy 是 `Restricted`,連一支 script 都不能跑([about_Execution_Policies](https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_execution_policies)),解除封鎖並不會改變這一點。
+
+   **不要在 Claude Desktop 的「Code」分頁,或任何 MSIX 套件內的 shell 執行安裝。** 套件內的行程寫入 `%LOCALAPPDATA%` 會被 Windows 重導到 `%LOCALAPPDATA%\Packages\<套件>\LocalCache\`,終端機裡的 Claude Code 與 Codex 看不到那些檔案。安裝程式偵測到時會回 `INSTALL_PACKAGED_CONTEXT` 並拒絕安裝,什麼都不寫(#170)。寫到 `%TEMP%` 不會被重導(實測 2026-11-08,Windows 11)。
+
+5. 每個 client 各重開一次。client 只在 App 啟動時讀 MCP 註冊(實測 2026-11-07,Windows 11:Claude Desktop,以及 Claude Desktop「Code」分頁裡的 Claude Code,後者沒有 Reconnect 按鈕)。
+6. 在 client 裡呼叫 `GetStatus`,再呼叫 `ConnectIde`。還沒 `ConnectIde` 之前,`GetStatus` 會回 `success: false`、`error.code` 為 `NOT_CONNECTED`(「IDE not connected」):這代表 Node 已啟動、`powershell.exe` 已啟動、模組已匯入。`data.bridge.runtime` 會顯示正在執行的 runtime(`version`、`commit`)。
+
+安裝程式做的事:
+
+- 把 `node\`、`launcher\`、`runtime\<version>\` 複製到 `%LOCALAPPDATA%\TwinCATAutomation\`,並把 `runtime\current.json` 切到新版本。保留最新的 3 個 runtime。
+- 把一個 MCP server `tcauto` = `<安裝根目錄>\node\node.exe <安裝根目錄>\launcher\tcauto-launcher.mjs` 註冊到 Claude Code(user scope,`%USERPROFILE%\.claude.json`)、Claude Desktop(MSIX 版:`%LOCALAPPDATA%\Claude-Data\claude_*\claude_desktop_config.json`;標準版:`%APPDATA%\Claude\claude_desktop_config.json`)和 Codex(`%USERPROFILE%\.codex\config.toml`,`[mcp_servers.tcauto]` table)。設定檔或資料夾不存在的 client 會跳過並在結果裡回報。
+- 只改 `tcauto` 這一項,改之前把每個設定檔複製成 `<檔名>.bak-<yyyyMMddTHHmmss>`。
+- 最後執行 `-Verify`:用安裝好的 `node.exe` 啟動 launcher,送 MCP `initialize` 與 `tools/list`,回報 tool 數量與 runtime commit。不會連 IDE。
+
+選項:`-Clients ClaudeCode,ClaudeDesktop,Codex`(預設三個都做)、`-Verify`(只檢查,不寫任何東西)、`-Uninstall`、`-NoVerify`、`-Keep <n>`、`-InstallRoot <dir>`,以及各 client 設定檔路徑的覆寫參數。最後一行 stdout 是 `TCAUTO_INSTALL_RESULT {json}`;安裝程式的錯誤碼見 [docs/troubleshooting.md](docs/troubleshooting.md)「安裝器錯誤碼」。完整說明、各 client 細節與 log 位置:[docs/setup-mcp.md](docs/setup-mcp.md)。
+
+## 第一次使用
+
+在 client 開一個新對話,用白話描述要做的 lifecycle,例如:
+
+> 用 `C:\TcProjects\MyProject\MyProject.sln` 連接 TwinCAT IDE。target 是本機 user-mode runtime,platform 用 `TwinCAT OS (x64)`。建置專案,用 Force 啟動組態,然後讀兩次 `MAIN.nCounter`,告訴我它有沒有增加。
+
+請換成你自己的 solution 路徑與 platform(見下表步驟 2)。client 會把這段話轉成 tool 呼叫。典型順序(MCP tool 名稱等於 CLI action 名稱):
+
+| 步驟 | Tool | 做什麼 |
+|---|---|---|
+| 1 | `ConnectIde` | 找出已開啟該 solution 的 IDE,找不到就啟動一個,開啟 solution,啟用 `SilentMode`。回傳 `data.amsNetId` 與 solution platform。冷啟動可能超過一分鐘。 |
+| 2 | `SetTarget` | 設定 target 的 AmsNetId 與 solution platform。platform 由 target 決定:4026 的 UmRT 要用 `TwinCAT OS (x64)`,Windows runtime 要用 `TwinCAT RT (x64)`(實測 2026-10-21;只提供 RT platform 的 4024 專案在 UmRT 上用 `TwinCAT RT (x64)` Activate 成功,見 [docs/troubleshooting.md](docs/troubleshooting.md)「環境矩陣」)。target 回報不出 platform(TwinCAT 3.1.4026.21~22 的 UmRT 對 ADS 0x702 回錯誤)時,不帶 `Platform` 會回 `PLATFORM_UNKNOWN`。 |
+| 3 | `BuildProject` | 建置並等待。`BUILD_FAILED` 會帶 `data.errorItems`(從 XAE Error List 讀出的 description、file、line)。 |
+| 4 | `EnableConfig`,`Force=true` | Config、Activate、等 Run、Login 與 download、等 PLC port、PLC Run,每一步都輪詢到目標狀態。 |
+| 5 | `ConnectAds` | AmsNetId 自動從 IDE target 取得。 |
+| 6 | `ReadVariable` / `WriteVariable` / `WatchVariable` | 透過 ADS 存取 symbol。之後再 Activate 會自動重連(`data.reconnected`)。 |
+
+`RunLifecycle` 一次做完步驟 1 到 5 加上 PLC 狀態讀回,遇到第一個失敗的步驟就停(`data.steps[]`、`data.failedStep`)。solution 有多個 PLC project 時要給 `PlcProjectPath`;這時 `AdsPort` 必須是所選 PLC 的 port,否則回 `PLC_PORT_MISMATCH`。
+
+模組遵守、你也應該要求 AI 遵守的規則:
+
+- 只有目標狀態讀回確認後才會回 `success: true`。`success: false` 時 AI 要停下來,把 `data` 與 `error.hint` 回報給你,不能改走原始 ADS、COM 或 GUI。當機或 Activate 失敗後,模組會替該 target 記錄 lifecycle block,之後都回 `LIFECYCLE_BLOCKED`,直到你同意並用 `ClearLifecycleBlock` 附上原因清除。細節:[adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md)「Failure contract」。
+- 啟動組態(Activate)會重啟 target 的 runtime,輸出會歸零。請在可以接受的 target 上操作。
+- 長時間的呼叫(`ConnectIde`、`BuildProject`、`EnableConfig`、`RunLifecycle`)可能超過 client 自己的 request timeout(SDK 預設 60 秒),但 server 仍會繼續做完。Claude Code:用 `MCP_TOOL_TIMEOUT` 設定毫秒數(例如 `900000`)。細節:[mcp-server/README.md](mcp-server/README.md#client-request-timeout)。
+- Codex 預設每次呼叫 MCP tool 都會先問你是否核准。要無人值守,在 `%USERPROFILE%\.codex\config.toml` 的 `[mcp_servers.tcauto]` table 加一行:
+
+  ```toml
+  default_tools_approval_mode = "approve"
+  ```
+
+  這樣模型呼叫 tcauto 的每個 tool 都不會再問你,包含 `EnableConfig`、`WriteVariable`、`SetPlcState`,下錯指令可能直接在真機上啟動、停止或 Reset PLC。只在測試用 target 上使用。`Install-TcAuto.ps1` 會整個重寫 `[mcp_servers.tcauto]` table(依 `scripts/lib/tcauto-client-config.mjs` 的程式碼判斷,沒有實際執行),所以每次安裝或升級後要重新加上這一行。
+
+## 支援的 client 與驗證狀態
+
+以 0.6.0-beta release candidate zip,在本機 UmRT 上驗證,涵蓋 4026(Visual Studio 2022)與 4024(32-bit XAE Shell),2026-11-08。
+
+| Client | 安裝程式會註冊 | 驗證結果 | 備註 |
+|---|---|---|---|
+| Claude Code | 是,user scope | Opus 5.5 與 Sonnet 5.5:完整 lifecycle。Haiku 5.5:只驗過連線。 | 長時間呼叫要設 `MCP_TOOL_TIMEOUT`。 |
+| Codex | 是,`config.toml` | codex-cli 0.167.0、模型 gpt-6.1-sol:完整 lifecycle。預設 tool timeout 下 `ConnectIde` 花 66 秒,沒有被中斷。 | 預設每次 tool 呼叫都要核准,見「第一次使用」。 |
+| Claude Desktop | 是,寫入 MSIX 版設定檔(標準版資料夾存在時也寫) | 安裝與註冊:重開後 log 出現 `Connected to tcauto (85 tools)`(實測 2026-11-07,MSIX 4.23118.0.0)。在 Desktop 對話裡呼叫 tool **尚未完整驗證**。 | MSIX 版與標準版的設定檔位置不同,見 [docs/setup-mcp.md](docs/setup-mcp.md)。 |
+| Antigravity | 否,不註冊 MCP | **未實測。** `adapters/antigravity/plugin.yaml` 由 tool 定義產生。 | 舊版 skill 安裝器見[下方](#舊版-skill-安裝器不含-mcp)。 |
+| 其他 MCP client | 手動 | 未實測 | stdio server,command 為 `node`,args 為 `["<安裝根目錄>\\launcher\\tcauto-launcher.mjs"]`。 |
+
+「完整 lifecycle」指 `ConnectIde`、`SetTarget`、`BuildProject`、`EnableConfig Force=true`、`ConnectAds`、`ReadVariable`,並且計數器持續增加。
+
+## 升級與移除
+
+**升級。** 下載新版 zip、核對雜湊值、解壓縮,用同樣方式執行新 zip 的 `Install-TcAuto.ps1`。註冊內容不變,所以不用重開 client:呼叫 MCP tool `ReloadRuntime`,再 `ConnectIde` 一次。模組持有 lifecycle block 或尚未存檔的 build-required 狀態時,`ReloadRuntime` 會拒絕(`RELOAD_LIFECYCLE_BLOCKED`、`RELOAD_BUILD_REQUIRED`);另一個呼叫還在跑時回 `RUNTIME_RELOAD_BUSY`。IDE 與 ADS 連線會釋放,IDE 本身繼續執行。新版 `node.exe` 要等 client 下次重開才會用到。之後 `GetStatus` 的 `data.bridge.runtime` 會顯示新的 commit。
+
+**移除。** 關閉 client,然後在解壓縮的資料夾,從一般 PowerShell 視窗執行:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall
+```
+
+它會從 client 設定檔移除 `tcauto`(先備份),再移除安裝根目錄的 `node\`、`launcher\`、`runtime\`。同資料夾的其他檔案(`ide-solutions.json`)會保留。指令指向別處的 `tcauto` 不會動;如果 `tcauto` 是透過參數仍在用這份安裝(例如開發者的註冊),會以 `INSTALL_SHARED` 停下來,加 `-Force` 才會一併移除。
+
+## 疑難排解
+
+最常遇到的五種情況。每個 `error` 都有 `code`、`message`,通常還有 `hint`;完整的原因與下一步在 [docs/troubleshooting.md](docs/troubleshooting.md),安裝問題在 [docs/setup-mcp.md](docs/setup-mcp.md#troubleshooting)。
+
+| 你看到的 | 意思 | 怎麼做 |
+|---|---|---|
+| 安裝程式停在 `INSTALL_PACKAGED_CONTEXT` | 安裝程式跑在 MSIX 套件內,典型是 Claude Desktop 的「Code」分頁。什麼都沒寫。 | 從一般 PowerShell 視窗重跑同一個指令,再重開 client。錯誤碼說明:[docs/troubleshooting.md](docs/troubleshooting.md)「安裝器錯誤碼」。 |
+| client 約 60 秒後回報逾時,server 沒有給 `error.code` | client 自己的 request timeout 比呼叫短;server 仍會做完。 | Claude Code:`MCP_TOOL_TIMEOUT=900000`,再用 `GetStatus` 確認。[mcp-server/README.md](mcp-server/README.md#client-request-timeout) |
+| `PLATFORM_UNKNOWN`,或 `ACTIVATE_FAILED`(「Check config failed」) | solution platform 和 target platform 不同,或 target 回報不出自己的 platform。 | 對 `SetTarget`、`EnableConfig` 或 `RunLifecycle` 帶 `Platform`(4026 的 UmRT 用 `TwinCAT OS (x64)`),再建置、Activate。細節:[docs/troubleshooting.md](docs/troubleshooting.md)「環境矩陣」「PLATFORM_UNKNOWN」「ACTIVATE_FAILED」。 |
+| [`IDE_MODAL_DIALOG`](docs/troubleshooting.md#ide_modal_dialog--ide_modal_dialog_reload) | XAE 裡有對話框擋住呼叫。 | 用 `GetIdeModalDialog` 讀內容,在 IDE 裡處理或照 hint 做,再重試。不要盲目重試。 |
+| [`RUNTIME_CRASHED`](docs/troubleshooting.md#runtime_crashed) 或 [`LIFECYCLE_BLOCKED`](docs/troubleshooting.md#lifecycle_blocked) | 本機 UmRT 的 `TcSystemServiceUm` 在 Config 或 Activate 期間消失(#21),或前一次失敗留下 block。 | 停下來,請 AI 回報 `data`。自己重啟 UmRT,同意後再 `ClearLifecycleBlock`,然後重跑 `EnableConfig Force=true`。 |
+
+## v0.6.0-beta 的變更
+
+- **安裝包。** release zip 內含固定版本的 `node.exe`、launcher 與預先建置好的 runtime;`Install-TcAuto.ps1` 註冊 Claude Code、Claude Desktop(MSIX 與標準版)和 Codex(#20、#162、#165)。`ReloadRuntime` 不用重開 client 就能換版。安裝程式在 MSIX 套件內會拒絕執行(#170)。
+- **`RunLifecycle` / `Start-TcLifecycle`** 支援多個 PLC project:`PlcProjectPath`、`AdsPort`、`PLC_PORT_MISMATCH`(#27)。
+- **`ConnectIde TakeOverOrphan=true`**:確認沒人在用之後,接管已結束的 session 啟動的 IDE(#196)。被拒絕時回 `ORPHAN_TAKEOVER_REFUSED`。
+- **Tree tool。** `GetProjectTree`(I/O 段)、`LookupTreeItem`、`GetIoTree` 只列直接子節點,coupler 底下的 terminal 不再重複出現在 device 底下;節點帶 `disabled` 與 `disabledState` 欄位(#172、#177、#182、#186)。
+- **`ResetSolution`** 會處理 Visual Studio 方案層級的 reload prompt,重開後讀回確認 solution 已載入完成(否則回 `SOLUTION_RELOAD_INCOMPLETE`),也會處理較晚才出現的 prompt(#106、#135、#174、#176、#180)。
+- **`SetSystemState`** 停在 Config 時會附上 `data.diagnostics`(對話框、Error List、boot package),hint 也會指向真正的原因(#194)。
+- **`ReadVariable` / `WriteVariable`** 遇到重新 download 後留下的舊 handle(ADS 0x711)時,會重開 ADS session 重試一次(`data.symbolsReloaded`,#26)。
+- **更正舊說法。** 「UmRT 假 Run」與「Reset 會殺 `TcSystemServiceUm`」在 2026-11-08 實測未重現(#26),見下節。
+
+## 已知限制
+
+完整清單與繞過方式在 [docs/known-limitations.md](docs/known-limitations.md)。對多數使用者有影響的:
+
+- **UmRT 在 Config/Activate 切換時間歇 crash(#21)。** `TcSystemServiceUm` 偶爾結束(faulting module `TcOsSys.dll`,c0000005)。模組回 `RUNTIME_CRASHED`、留下 lifecycle block,不會重試。本機 UmRT:重啟 service、讀回狀態,再用 `ClearLifecycleBlock` 附上原因清除。根因在 runtime 端。
+- **舊版回報、實測未重現(#26)。** 舊紀錄說 UmRT 跑約 30 分鐘後 task 不再循環但 ADS 仍回 Run,以及 PLC Reset 會殺掉 `TcSystemServiceUm`。實測 2026-11-08,4026 Visual Studio 2022 + 本機 UmRT:跑 47 分鐘,cycle counter 每分鐘穩定增加約 25000;Reset 兩次,service 都還在,PLC 停在 Stop,下 `Run` 即恢復。更長時間沒測。
+- **#175:** `ResetSolution` 會丟掉尚未存檔的 `.tsproj` 記憶體變更與 `WritePouCode` 的 editor buffer。先在 XAE 存檔。
+- **#49:** `EnableConfig` 不會先檢查 target 的 license。license 過期時 target 回報 fatal error,所有連到該 target 的 XAE 都會跳出對話框。
+- **#201:** 開著 reload 提示的孤兒 IDE 無法接管(`TakeOverOrphan` 因對話框被拒絕,hint 指向的 `ResetSolution` 又回 `NOT_CONNECTED`)。請在那個 IDE 按 Ignore,或手動關掉它。
+- **#19:** 32-bit XAE 開含 Visu 的專案,在同一個 IDE 連續 Activate 可能記憶體不足。模組只能偵測(`IDE_CRASHED`、記憶體警告),不會自動重開 IDE。
+
+## 開發者安裝(checkout)
+
+需要 `PATH` 裡有 Node.js >= 22、npm 和 git,並在本機 clone 這個 repository。安裝後的目錄結構與客戶安裝相同。
+
+1. 在 checkout 裡,切到要執行的 commit:
+
+   ```powershell
+   powershell -NoProfile -File scripts\Install-TcAutoRuntime.ps1
+   ```
+
+   `mcp-server\` 與 `src\TwinCATAutomation\` 底下有未 commit 的改動時會拒絕(`WORKTREE_DIRTY`;`-AllowDirty` 會裝成 `<commit>-dirty-<UTC 時間>`)。它把已 commit 的 runtime 複製到 `%LOCALAPPDATA%\TwinCATAutomation\runtime\<commit>\` 並執行 `npm ci --omit=dev`,切換 `current.json`,複製 launcher。
+2. 註冊 launcher 一次(Claude Desktop 與 Codex:[docs/setup-mcp.md](docs/setup-mcp.md)「Register by hand」):
+
+   ```powershell
+   claude mcp add --scope user tcauto -- node "$env:LOCALAPPDATA\TwinCATAutomation\launcher\tcauto-launcher.mjs"
+   ```
+
 3. 重開 client 一次。
-4. **升級**:改碼、commit、重跑步驟 1、呼叫 `ReloadRuntime`(只改 PowerShell 模組時用 `ReloadModule` 即可)。`GetStatus` 的 `data.bridge.runtime` 顯示目前執行的 commit。
+4. 升級:改碼、commit、重跑步驟 1、呼叫 `ReloadRuntime`(只改 PowerShell 模組時用 `ReloadModule`)。`GetStatus` 的 `data.bridge.runtime` 顯示目前執行的 commit。
 
-不再支援直接註冊 `mcp-server/index.js` 或專案 `.mcp.json`。下方的 `TwinCATSetup-*.ps1` 是較早的 **skill** 安裝器(把模組與 `SKILL.md` 裝給用 `Import-Module` 的 AI 工具),不會註冊 MCP server。
+不支援直接註冊 `mcp-server/index.js` 或專案的 `.mcp.json`。要打包自己 checkout 的 release zip:`powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1`(輸出 `dist\TcAuto-<version>.zip`,工作目錄要乾淨,或加 `-AllowDirty`)。
 
-## 功能
+檢查:每個 clone 執行一次 `powershell -File scripts/install-hooks.ps1`,之後 pre-commit hook 會跑 `scripts/check.ps1 -Fast`(語法與檔案編碼(PS 5.1)、文件裡的 cmdlet 數量是否一致、禁用字詞、錯誤碼是否有文件、`tools.json` 是否同步)。開 PR 前跑 `scripts/check.ps1`(多一個 `npm test`);CI 在 `windows-latest` 用 `-Strict` 執行。文件裡的數量與 cmdlet 簽章表夾在名為 `generated:KEY` 的 HTML 註解標記之間,不要手改,執行 `scripts/Update-GeneratedDocs.ps1`。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。審查規則:[CODING_STANDARDS.md](CODING_STANDARDS.md)。`scripts/check.ps1` 與 `npm run generate-tools` 不帶 `-ExecutionPolicy Bypass` 執行本機 `.ps1`;policy 是 `Restricted` 或 `AllSigned` 時先執行一次 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`。
 
-| 類別 | 功能 |
-|------|------|
-| **IDE 自動化** | 連接 VS2022 / TwinCAT XAE Shell，支援 `-SolutionPath` 智慧選擇 |
-| **專案管理** | 建立專案、新增 POU / GVL / DUT / 程式庫 |
-| **PLC 程式碼讀寫** | 程式化讀寫任何 POU 的 Structured Text |
-| **建置與部署** | 建置、啟動組態（ADS，無對話框）、登入 + 下載 |
-| **運行控制** | 啟動 / 停止 / 重置 PLC，系統狀態管理 |
-| **ADS 通訊** | 即時讀寫任何 PLC 變數，符號列舉 |
-| **自動化測試** | 定義測試案例，執行完整的 Build-Deploy-Test 循環，產生 JSON 報告 |
-| **I/O 組態** | 掃描 EtherCAT 裝置、讀取 I/O 樹、連結變數到通道 |
+## 直接使用 PowerShell 模組
 
-## 快速開始
+不用 MCP 也行:在 Windows PowerShell 5.1 或 PowerShell 7 匯入模組。如果 repository 是從 zip 或瀏覽器下載的,先執行一次 `Get-ChildItem -Recurse <repo> | Unblock-File`,否則 `RemoteSigned` policy 會拒絕這些 script。
 
 ```powershell
 Import-Module ./src/TwinCATAutomation/TwinCATAutomation.psm1 -Force
 
-# 1. 連接 IDE（有需要會自動開啟解決方案）
+# 1. 連接 IDE(找已開啟該 solution 的 IDE,沒有就啟動一個)
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
-# 1b. 平台由目標對象決定:solution platform 必須等於 target platform(UmRT = Usermode Runtime = 'TwinCAT OS (x64)'),否則 ACTIVATE_FAILED。
-#     不帶 -Platform 時從 target 的 TARGETINFO 讀;runtime 回 ADS 0x702(例如 TwinCAT 3.1.4026.21~22 的 UmRT)會回 PLATFORM_UNKNOWN,所以帶上(或 Enable-TcConfig -Platform ...)
+# 1b. 平台由 target 決定;4026 的 UmRT 要 'TwinCAT OS (x64)',否則 ACTIVATE_FAILED。
+#     不帶 -Platform 時從 target 的 TARGETINFO 讀;runtime 回 ADS 0x702
+#     (TwinCAT 3.1.4026.21~22 的 UmRT)會回 PLATFORM_UNKNOWN,所以要帶。
 Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'
 
 # 2. 建置
 Build-TcProject
 
-# 3. 一步啟動（Config -> Activate -> 等系統 Run -> Login+Download -> PLC Run，零對話框）
-#    已包含 Enter-TcPlcOnline 與 Set-TcPlcState Run；每步輪詢到位，不需要 Start-Sleep
+# 3. 一步完成:Config -> Activate -> 等 Run -> Login+Download -> PLC Run,零對話框,每步都輪詢
 Enable-TcConfig -Force
 
-# 4. 連接 ADS（AmsNetId 從 IDE 自動偵測）
+# 4. 連接 ADS(AmsNetId 從 IDE target 自動取得)
 Connect-TcAds
 
 # 5. 讀寫變數
@@ -69,289 +207,103 @@ Read-TcVariable -Path "MAIN.nCounter"
 Write-TcVariable -Path "MAIN.bEnable" -Value $true
 ```
 
-出錯了？先看 [docs/known-limitations.md](docs/known-limitations.md)(已知問題、繞過方式、真機驗證範圍)與 [docs/troubleshooting.md](docs/troubleshooting.md) — 錯誤碼表（`error.code` / `error.hint`）、Lifecycle 正確順序、環境矩陣、已知限制。需要真機的驗證腳本在 [tests/Integration](tests/Integration/README.md)。
+`Start-TcLifecycle` 一次做完步驟 1 到 4 並讀回狀態。整個 lifecycle 要在同一個常駐的 PowerShell session 裡跑:IDE 與 ADS 的狀態都存在那個 session 裡。所有指令都回傳 JSON:`{"success": true, "data": {...}}` 或 `{"success": false, "error": {"message": "...", "code": "...", "hint": "..."}}`。
 
-### 自動化測試
+自動化測試(Build、Activate、Login、Start、測試、Stop):
 
 ```powershell
-# 定義測試案例
 $test1 = New-TcTestCase -Name "Initial state" -Assertions @(
     @{ Path = "MAIN.bReady"; Operator = "IsTrue"; Expected = $null }
     @{ Path = "MAIN.nCount"; Operator = "Equal"; Expected = [uint16]0 }
 )
-
 $test2 = New-TcTestCase -Name "Trigger and verify" `
     -Setup @( @{ Path = "MAIN.bStart"; Value = $true } ) `
-    -WaitMs 2000 `
-    -Assertions @(
-        @{ Path = "MAIN.bDone"; Operator = "IsTrue"; Expected = $null }
-    ) `
+    -WaitUntil @{ Path = "MAIN.bDone"; Operator = "Equal"; Expected = $true } `
+    -Assertions @( @{ Path = "MAIN.bDone"; Operator = "IsTrue"; Expected = $null } ) `
     -Teardown @( @{ Path = "MAIN.bStart"; Value = $false } )
-
-# 執行完整循環：Build -> Activate -> Login -> Start -> Test -> Stop
 Invoke-TcTestCycle -TestCases @($test1, $test2)
 ```
 
-### 程式化修改 PLC 程式碼
+測 function block 時要寫 `MAIN` 層級的變數:PLC 每個 scan cycle 都會覆寫 `VAR_INPUT`。
+
+修改 PLC 程式碼:
 
 ```powershell
-# 讀取目前程式碼
-$code = Get-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN"
-
-# 修改後寫回
+$code = Get-TcPouCode -PouName "MAIN"
 $newDecl = $code.data.declaration -replace 'END_VAR', "    nCycleCount : UDINT;`nEND_VAR"
 $newImpl = "nCycleCount := nCycleCount + 1;`n" + $code.data.implementation
-Write-TcPouCode -PouName "MAIN" -PouPath "TIPC^MyPLC^MyPLC Project^POUs^MAIN" `
-    -Declaration $newDecl -Implementation $newImpl
+Write-TcPouCode -PouName "MAIN" -Declaration $newDecl -Implementation $newImpl
 ```
 
-## 所有指令（<!-- generated:cmdlet-count -->82<!-- /generated --> 個）
+`-PouPath` 可以省略(模組會依序找 `POUs`、專案根目錄);`Write-TcPouCode` 改的是 COM edit buffer,不需要 `Reset-TcSolution`。如果改成直接改磁碟上的專案檔,寫完要立刻呼叫 `Reset-TcSolution`([docs/troubleshooting.md](docs/troubleshooting.md)「磁碟改檔的正確做法」)。
 
-### 連線
-| 指令 | 說明 |
-|------|------|
-| `Connect-TcIde` | 連接 TwinCAT IDE（可用 `-SolutionPath` 一步連接） |
-| `Disconnect-TcIde` | 斷開 IDE 連線 |
-| `Reset-TcSolution` | 關掉 reload 提示、關閉所有文件（不存檔）、在同一個 IDE 關閉再重開 solution（約 20~25 s），讓 XAE 重新載入磁碟上改過的專案檔；只有改過的 `.TcPOU` 開在 XAE 編輯器時才需要（沒開的話 XAE 約 5 s 自動吃到） |
-| `Connect-TcAds` | 連接 ADS（AmsNetId 從 IDE 自動偵測） |
-| `Disconnect-TcAds` | 斷開 ADS 連線 |
+### 所有指令（<!-- generated:cmdlet-count -->82<!-- /generated --> 個）
 
-### 專案管理
-| 指令 | 說明 |
-|------|------|
-| `New-TcProject` | 建立新 TwinCAT 專案 |
-| `Open-TcProject` | 開啟現有解決方案 |
-| `Add-TcPou` | 新增 POU（Program / FB / Function） |
-| `Add-TcGvl` | 新增全域變數列表 |
-| `Add-TcDut` | 新增資料型別（struct/enum/union） |
-| `Add-TcLibrary` | 新增程式庫參考 |
-| `Add-TcInterface` | 新增 INTERFACE(可給 `-Extends`) |
-| `Add-TcPouMember` | 在 POU 或 interface 底下新增 Method / Property / Action / property 的 Get、Set |
-| `Get-TcLibraries` | 列出 library reference / placeholder(`frozen` 從 .plcproj 讀);`-Repository [-Filter]` 列出本機已安裝的 library(ScanLibraries) |
-| `Add-TcLibraryPlaceholder` | 新增 library placeholder(已存在回 `alreadyPresent`),從 References 與 .plcproj 讀回 |
-| `Remove-TcLibraryReference` | 移除 library reference / placeholder(預設 dry-run,備份 .plcproj,讀回) |
-| `Install-TcLibrary` | 把 .library / .compiled-library 安裝到本機 repository(預設 dry-run,ScanLibraries 讀回) |
-| `Uninstall-TcLibrary` | 從 repository 移除一個完全符合的 library 版本(預設 dry-run,ScanLibraries 讀回) |
-| `Lock-TcLibraryPlaceholder` | 把一個 placeholder 或 `-All` 鎖在目前版本(預設 dry-run,備份 .plcproj,從 .plcproj 讀回) |
-| `Add-TcPlcTask` | 新增 PLC task:TIRT task(`-CycleTimeUs`、`-Priority`)加 `<Plc> Project` 底下連到它的 task 物件;預設 dry-run,讀回驗證，中途失敗會回滾(`TASK_CREATE_FAILED` / `TASK_VERIFY_FAILED`) |
-| `Add-TcTaskProgram` | 把 PROGRAM 掛到 PLC task(CreateChild 650);XAE 什麼名稱都收，模組先檢查(`TASK_PROGRAM_INVALID` not-found / not-a-program / case-mismatch、`TASK_PROGRAM_ALREADY_LINKED`、`TASK_NOT_FOUND`);預設 dry-run,備份 .TcTTO |
-| `Remove-TcTaskProgram` | 把 program 呼叫從 PLC task 拿掉(預設 dry-run;先備份 .TcTTO 並把該呼叫 ExportChild 成 .zip,讀回確認) |
-| `Export-TcPlcOpen` | 把物件 / 資料夾(`-Selection 'POUs.FB_A'`,資料夾層級用 `.`)或整個 PLC project 匯出成 PLCopen XML;`^` 和單獨的子物件先擋下;`-Overwrite` 把舊檔留成 `.bak`;讀回檔案(`data.objects`) |
-| `Import-TcPlcOpen` | 匯入 PLCopen XML;預設 dry-run:列出 `data.conflicts` 與 `-Option None\|Replace\|Rename\|Skip` 會怎麼處理(Replace 會刪掉哪些子物件);Replace 先備份;讀回(`data.renamed`、`data.skipped`) |
-| `Save-TcPlcLibrary` | 把 PLC 專案存成 `.library` / `.compiled-library`(`SaveAsLibrary(path, $false)`:不安裝，要裝用 `Install-TcLibrary`;不提供加密);`-Overwrite` 把舊檔留成 `.bak`;讀回檔案 |
-| `Save-TcArchive` | 把 solution(`-Kind Solution`,`.tnzip`)或 TwinCAT 專案(`-Kind Configuration`,`.tszip`)存成 archive,內容是 XAE 記憶體裡的狀態;少了專案時只有 Error List 會報，所以會讀 Error List(`ARCHIVE_INCOMPLETE`);`data.entries`(最多 200 筆) |
+參數與 MCP tool 名稱:見 [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md) 自動產生的表、[mcp-server/README.md](mcp-server/README.md),或匯入模組後用 `Get-Help <cmdlet>`。會改動專案或系統的 cmdlet,凡是該 cmdlet 說明有寫的,預設都是 dry-run。
 
-### 程式碼操作
-| 指令 | 說明 |
-|------|------|
-| `Get-TcPouCode` | 讀取 POU 的宣告 + 實作 |
-| `Write-TcPouCode` | 寫入 POU 的宣告 + 實作 |
-| `Get-TcProjectTree` | 取得專案樹狀結構 |
+| 分類 | Cmdlet |
+|---|---|
+| 連線 | `Connect-TcIde`, `Disconnect-TcIde`, `Reset-TcSolution`, `Connect-TcAds`, `Disconnect-TcAds`, `Get-TcIdeInfo`, `Get-TcIdeModalDialog`, `Get-TcAutomationVersion` |
+| 專案 | `New-TcProject`, `Open-TcProject`, `Get-TcProjectTree`, `Add-TcPou`, `Add-TcGvl`, `Add-TcDut`, `Add-TcInterface`, `Add-TcPouMember` |
+| 程式碼 | `Get-TcPouCode`, `Write-TcPouCode` |
+| 程式庫 | `Get-TcLibraries`, `Add-TcLibrary`, `Add-TcLibraryPlaceholder`, `Remove-TcLibraryReference`, `Lock-TcLibraryPlaceholder`, `Install-TcLibrary`, `Uninstall-TcLibrary` |
+| Task | `Add-TcPlcTask`, `Add-TcTaskProgram`, `Remove-TcTaskProgram` |
+| 匯入 / 匯出 | `Export-TcPlcOpen`, `Import-TcPlcOpen`, `Save-TcPlcLibrary`, `Save-TcArchive` |
+| 建置與部署 | `Build-TcProject`, `Clear-TcProject`, `Test-TcPlcProject`, `New-TcBootProject`, `Get-TcBuildErrors`, `Enable-TcConfig`, `Enter-TcPlcOnline`, `Exit-TcPlcOnline`, `Send-TcPlcProgram`, `Start-TcLifecycle` |
+| 運行控制 | `Set-TcPlcState`, `Get-TcPlcState`, `Set-TcSystemState`, `Get-TcSystemState`, `Set-TcTarget`, `Clear-TcLifecycleBlock`, `New-TcIssueReport` |
+| ADS 變數 | `Read-TcVariable`, `Write-TcVariable`, `Watch-TcVariable`, `Get-TcSymbols` |
+| I/O | `Invoke-TcIoScan`, `Get-TcIoTree`, `Set-TcVariableLink`, `Remove-TcVariableLink` |
+| 系統組態(預設 dry-run;只有單元測試,真機驗證待做) | `Add-TcNcTask`, `Add-TcNcAxis`, `Set-TcNcAxisParameter`, `Connect-TcNcAxisToPlc`, `Add-TcComModule`, `Get-TcComModuleParameter`, `Set-TcComModuleParameter`, `Set-TcComModuleContext`, `Get-TcProjectVariants`, `Set-TcProjectVariantConfig`, `Set-TcCurrentVariant`, `Set-TcIndependentFile`, `Get-TcAdsRoutes`, `Find-TcAdsTarget`, `Add-TcAdsRoute` |
+| 通用 tree 操作(先 dry-run,有專用 cmdlet 就用專用的) | `Get-TcTreeItem`, `Get-TcTreeItemXml`, `New-TcTreeItem`, `Set-TcTreeItemXml`, `Remove-TcTreeItem`, `Export-TcTreeItem`, `Import-TcTreeItem` |
+| 測試 | `New-TcTestCase`, `Invoke-TcTest`, `Invoke-TcTestCycle` |
 
-### 建置與部署
-| 指令 | 說明 |
-|------|------|
-| `Build-TcProject` | 建置（RPC 忙碌時自動重試；輪詢 `BuildState`，`-TimeoutSec` 預設 600，逾時 `BUILD_TIMEOUT`）；`data.errorItems[]` 為 Error List 的錯誤明細（description/file/line/category）；`data.errors` 只算 code error（#23，不再含 Library Manager 列）；缺 library 回 `LIBRARY_UNRESOLVED`，除非 `-AllowUnresolvedLibrary`（#45；這種 build 不算完整，Activate / Login 仍被擋，#61） |
-| `Clear-TcProject` | Clean 整個 solution（`Clean($false)` + 輪詢 `BuildState`，`-TimeoutSec` 預設 300，逾時 `CLEAN_TIMEOUT`）；DTE 回 `$null` 的 `Solution` / `SolutionBuild` 會先等它出現（`data.nullReads`；#18，原因未確認）；只有 library 解析失敗時回 `LIBRARY_UNRESOLVED`（`-AllowUnresolvedLibrary` 才放行成 success + `data.warningCode`），LastBuildInfo 讀不到 `CLEAN_UNVERIFIED`，其他錯誤 `CLEAN_FAILED` |
-| `Test-TcPlcProject` | 檢查 PLC 專案的所有物件(`CheckAllObjects`,連 build 不會編譯、沒被引用的物件也檢查);`data.errorItems[]` 格式同 `Build-TcProject`;回 `False` 時 `CHECK_FAILED`;不產生 code,不記也不清 BUILD_REQUIRED |
-| `New-TcBootProject` | 產生本機 boot project(在 `TIPC^<Plc>` 呼叫 `GenerateBootProject($false)`):只寫專案的 `_Boot\<platform>\Plc\Port_<port>.*`,不寫 target;**會存專案檔**;編譯錯誤回 `BOOTPROJECT_FAILED` 加 `data.errorItems`;讀回 boot 檔(`data.bootFiles`) |
-| `Get-TcBuildErrors` | 用 UI Automation 讀 XAE Error List（錯誤、`-IncludeWarnings`、`-IncludeMessages`） |
-| `Enable-TcConfig` | 透過 ADS 啟動組態（`-Force` 無對話框） |
-| `Enter-TcPlcOnline` | 登入 + 下載程式（`-LoginMode Regular|Download|OnlineChange` = 1/4/2；提示框由全域 `SilentMode` 處理，預設不加 `SILENT` 旗標，`-SilentFlag` 才加） |
-| `Exit-TcPlcOnline` | 登出 PLC |
-| `Send-TcPlcProgram` | 上傳程式到 PLC |
-
-### 運行控制
-| 指令 | 說明 |
-|------|------|
-| `Set-TcPlcState` | 啟動 / 停止 / 重置 PLC |
-| `Get-TcPlcState` | 讀取 PLC 狀態 |
-| `Set-TcSystemState` | 設定 TwinCAT 系統狀態（Config/Run） |
-| `Clear-TcLifecycleBlock` | 使用者同意後移除某個 target 的 LIFECYCLE_BLOCKED 紀錄(#68 fail-closed guard) |
-| `Get-TcSystemState` | 讀取系統狀態 |
-| `Set-TcTarget` | 設定目標系統（本機/遠端）；solution platform 跟著 target(TARGETINFO)或 `-Platform`（UmRT：`'TwinCAT OS (x64)'`）；`-NoPlatformSwitch` 只設 NetId |
-| `Get-TcIdeInfo` | 取得 IDE 版本與連線資訊 |
-| `Get-TcAutomationVersion [-Verify]` | 從安裝 manifest 讀模組版本、來源 repo、commit 與安裝時間(#30);`-Verify` 比對安裝檔案的 SHA256 |
-| `Get-TcIdeModalDialog` | 回報擋住 IDE 的 modal dialog(標題、內文、種類、按鈕);不走 COM,DTE 被擋時也能用 |
-
-### ADS 變數
-| 指令 | 說明 |
-|------|------|
-| `Read-TcVariable` | 依符號路徑讀取變數 |
-| `Write-TcVariable` | 依符號路徑寫入變數 |
-| `Watch-TcVariable` | 條件式監控變數 |
-| `Get-TcSymbols` | 列舉所有 PLC 符號（支援萬用字元） |
-
-### I/O
-| 指令 | 說明 |
-|------|------|
-| `Invoke-TcIoScan` | 掃描 EtherCAT 裝置 |
-| `Get-TcIoTree` | 讀取 I/O 裝置樹 |
-| `Set-TcVariableLink` | 連結 PLC 變數到 I/O 變數(完整 tree path,ProduceMappingInfo 讀回確認) |
-| `Remove-TcVariableLink` | 移除 PLC 與 I/O 變數的 link(讀回確認) |
-
-### 系統組態(預設 dry-run;只有單元測試，真機驗證待 task 4.6)
-| 指令 | 說明 |
-|------|------|
-| `Add-TcNcTask` | 在 TINC 建 NC task(一個 TINC 只能有一個:`NC_TASK_ALREADY_EXISTS`) |
-| `Add-TcNcAxis` | 建 NC 軸(預設就是模擬軸，讀回確認);同名先擋 |
-| `Set-TcNcAxisParameter` | 設最大速度 / 加減速 / jerk / encoder、drive、controller 型別;送出前驗證、寫入後讀回 |
-| `Connect-TcNcAxisToPlc` | NC 軸 link 到 PLC 的 AXIS_REF(NcToPlc / PlcToNc 整個 struct,ProduceMappingInfo 讀回) |
-| `Add-TcComModule` | 用 class GUID 或型別名稱建 TcCOM 實例，回傳 XAE 實際給的名稱 |
-| `Get-TcComModuleParameter` | 列出 TcCOM module 的參數，或讀一個(專案值，或 `-Online` 讀執行中的 object) |
-| `Set-TcComModuleParameter` | 寫一個 TcCOM 參數(專案，或 `-Online` 只改執行中的 object);檢查大小 / 範圍、讀回 |
-| `Set-TcComModuleContext` | 把 task 指派給 TcCOM module 的 context(TMC Context Id),讀回 |
-| `Get-TcProjectVariants` | 讀專案 variant:current、variants、groups(唯讀) |
-| `Set-TcProjectVariantConfig` | 新增 / 移除 variant(整份覆蓋：讀出、修改、寫回、讀回) |
-| `Set-TcCurrentVariant` | 切換目前的 variant(大小寫敏感;group 可以設但不能 Activate) |
-| `Set-TcIndependentFile` | 讓 tree item 獨立存成 .xti(或關掉):先備份、存檔、確認磁碟上的 .xti |
-| `Get-TcAdsRoutes` | 列出目前 target 的 ADS route(TIRR;唯讀) |
-| `Find-TcAdsTarget` | 廣播 / 指定位址搜尋 ADS target(target 要是本機 system) |
-| `Add-TcAdsRoute` | 新增 ADS route 或 project route;密碼只收環境變數或 SecureString,不會回傳(未實測：沒有第二台 target)。不支援刪除 route |
-
-### 通用 tree 操作(先 dry-run,有專用指令就用專用的)
-| 指令 | 說明 |
-|------|------|
-| `Get-TcTreeItem` | LookupTreeItem:一個 tree item 的名稱、類型、子節點(唯讀) |
-| `Get-TcTreeItemXml` | ProduceXml:一個 tree item 的 XML(唯讀) |
-| `New-TcTreeItem` | CreateChild:預設 dry-run;備份父節點、建立、讀回 |
-| `Set-TcTreeItemXml` | ConsumeXml:送 `<TreeItem>` 片段;預設 dry-run,檢查路徑、備份、讀回比對 |
-| `Remove-TcTreeItem` | DeleteChild:要帶 `-ConfirmName`;預設 dry-run;備份(XML + .xti)、讀回 |
-| `Export-TcTreeItem` | ExportChild:把 tree item 匯出成 .xti |
-| `Import-TcTreeItem` | ImportChild:匯入 .xti;預設 dry-run;備份、讀回 |
-
-### 測試
-| 指令 | 說明 |
-|------|------|
-| `New-TcTestCase` | 定義測試案例（setup / assertions / teardown） |
-| `Invoke-TcTest` | 執行單一測試 |
-| `Invoke-TcTestCycle` | 完整循環：Build -> Deploy -> Test -> Report |
-
-## 架構
+### 架構
 
 ```
-src/TwinCATAutomation/          # 核心 PowerShell 模組（工具無關）
+src/TwinCATAutomation/          # 核心 PowerShell 模組(與 AI 工具無關)
   TwinCATAutomation.psm1        # 模組載入器
   Public/                       # 82 個匯出的 cmdlet
-  Private/                      # 內部輔助函式（COM、ADS、斷言）
-Invoke-TwinCATAutomation.ps1    # 統一 CLI 進入點（JSON 輸入/輸出）
+  Private/                      # 內部 helper(COM、ADS、assertion)
+Invoke-TwinCATAutomation.ps1    # 統一的 CLI 入口(JSON 進、JSON 出)
+mcp-server/                     # TcAuto MCP server、launcher、tools.json
+scripts/                        # Install-TcAuto.ps1、Install-TcAutoRuntime.ps1、Build-TcAutoRelease.ps1、check.ps1
 adapters/
-  claude-code/                  # Claude Code SKILL.md 適配器
+  claude-code/                  # Claude Code SKILL.md adapter
   codex/                        # OpenAI Codex tools.json
   antigravity/                  # Antigravity plugin.yaml
 ```
 
-所有指令回傳結構化 JSON：
-```json
-{ "success": true, "data": { "path": "MAIN.nCounter", "value": 42, "type": "UDINT" } }
-{ "success": false, "error": { "message": "Build failed", "code": "BUILD_FAILED" } }
-```
+MCP server(stdio)從 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中提供 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個以 tool 形式使用,再加上 <!-- generated:composite-count -->5<!-- /generated --> 個 composite tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)以及 launcher 的 `ReloadRuntime`。`NewProject` 暫時不透過 MCP 提供(#70);`Start-TcLifecycle` 對應 composite tool `RunLifecycle`(#27)。一個長駐的 Windows PowerShell 5.1 行程在多次 tool 呼叫之間保留 IDE 與 ADS 狀態。
 
-## 先決條件
+## 文件索引
 
-- Windows 10/11
-- TwinCAT 3 XAE（Build 4024+）或 Visual Studio 2022 含 TwinCAT 整合
-- PowerShell 5.1+ 或 PowerShell 7+(MCP server 使用 Windows PowerShell 5.1)
-- MCP 安裝:客戶機器不需其他東西(zip 自帶 `node.exe`);開發者安裝需要 Node.js >= 22、npm、git
-- Windows PowerShell 必須允許執行本機腳本(execution policy `RemoteSigned` 或更寬鬆)。若 repo 是從 zip 或瀏覽器下載的,Windows 會把檔案標成「來自網際網路」(Mark-of-the-Web),要先執行一次 `Get-ChildItem -Recurse <repo> | Unblock-File`,否則 `RemoteSigned` 會拒絕這些腳本。
-- .NET Framework（TwinCAT.Ads.dll 所需）
+| 文件 | 用途 |
+|---|---|
+| [docs/setup-mcp.md](docs/setup-mcp.md) | 客戶與開發者安裝、各 client 設定檔、升級、移除、驗證、log |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 錯誤碼表(`error.code` / `error.hint`)、正確的 lifecycle 順序、環境矩陣、安裝器錯誤碼 |
+| [docs/known-limitations.md](docs/known-limitations.md) | 已知問題、繞過方式、真機驗證範圍 |
+| [mcp-server/README.md](mcp-server/README.md) | MCP tool 表、環境變數、client request timeout |
+| [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md) | Claude Code 的 skill 文字:lifecycle、failure contract、cmdlet 簽章表 |
+| [docs/getting-started.md](docs/getting-started.md)、[docs/operations.md](docs/operations.md) | 模組層級的入門與操作參考 |
+| [docs/testing-guide.md](docs/testing-guide.md)、[tests/Integration](tests/Integration/README.md) | 測試框架與 hardware-in-the-loop 檢查 |
+| [docs/agent-brief-realmachine.md](docs/agent-brief-realmachine.md) | 在真機上測試的 agent 要遵守的規則 |
+| [CODING_STANDARDS.md](CODING_STANDARDS.md)、[AGENTS.md](AGENTS.md)、[CLAUDE.md](CLAUDE.md) | 審查規則,以及在這個 repository 工作的 AI 工具指引 |
 
-## 重要注意事項
+## 舊版 skill 安裝器(不含 MCP)
 
-- **AmsNetId 是動態的** — 不要寫死。`Connect-TcAds` 會從 IDE 目標自動偵測。
-- **零對話框** — `Enable-TcConfig -Force` 使用 ADS WriteControl，`Connect-TcIde` 開啟全域 `ITcAutomationSettings.SilentMode`（XAE 用預設答案回應提示）。`Enter-TcPlcOnline` 的 Login 旗標**預設不** OR SILENT：空 runtime 實測 `Login(257)` 會跳過建 app 而不是答 Yes；`-SilentFlag` 才加。
-- **Solution platform** — 平台由目標對象決定:active solution platform 必須等於 target platform（UmRT / Usermode Runtime = `TwinCAT OS (x64)`，Windows RT = `TwinCAT RT (x64)`），否則 `Enable-TcConfig` 回 `ACTIVATE_FAILED`（XAE「Check config failed!」，target 上什麼都沒寫；實測 2026-10-21，4026 XAE）。solution platform 底下的 .tsproj 對到別的 project platform 時,切換前就回 `PLATFORM_PROJECT_MISMATCH`（[InfoSys](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html)）。`Set-TcTarget` 與 `Enable-TcConfig` 從 target 的 TARGETINFO（ADS port 200、IG 0x700，[InfoSys](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)）讀 platform 並自動切換（`Enable-TcConfig` 另會重新 Build）；TwinCAT 3.1.4026.21~22 的 runtime 對它回 ADS 0x702，所以要帶 `-Platform 'TwinCAT OS (x64)'`（`Set-TcTarget` 不帶會回 `PLATFORM_UNKNOWN`，`Enable-TcConfig` 警告後照舊 Activate；`-NoPlatformFix` 讓不一致改回 `PLATFORM_MISMATCH`）。MCP：`SetTarget` / `EnableConfig` / `RunLifecycle` 的 `Platform`。見 `docs/troubleshooting.md`。
-- **測試 FB 時寫 MAIN 層級變數** — PLC 每個掃描週期都會覆寫 `VAR_INPUT`（參見 Decision #17）。
+這些 script 早於 MCP 安裝:它們把 PowerShell 模組與 `SKILL.md` 複製給用 `Import-Module` 呼叫模組的 AI 工具。它們**不會**註冊 MCP server,也不會動任何 MCP 設定檔。要用 MCP 請走[客戶安裝](#客戶安裝)。這些 script 要在 checkout 裡執行。
 
-## Skill 安裝器(不含 MCP):Claude Code / Codex / Antigravity
+| 工具 | 安裝 | 移除 | 安裝位置 |
+|---|---|---|---|
+| Claude Code | `pwsh ./TwinCATSetup-Claude.ps1` | `pwsh ./TwinCATSetup-Claude.ps1 -Uninstall` | `~/.claude/skills/twincat-automation/` |
+| Codex | `pwsh ./TwinCATSetup-Codex.ps1` | `pwsh ./TwinCATSetup-Codex.ps1 -Uninstall` | `~/.agents/skills/twincat/`(模組與 `SKILL.md`)與 `~/.codex/AGENTS.md` |
+| Antigravity | `pwsh ./TwinCATSetup-Antigravity.ps1` | `pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall` | `~/.gemini/antigravity/skills/twincat-automation/` |
 
-這些腳本早於上面的 MCP 安裝:它們為用 `Import-Module` 呼叫模組的 AI 工具複製 PowerShell 模組與 `SKILL.md`,不會註冊 MCP server,也不碰 MCP 設定檔。
+每次安裝都會在安裝好的 `SKILL.md` 旁寫入 `tcauto-install-manifest.json`:來源 repository、模組版本、commit(或 release zip 的 `tcauto-source.json` 戳記)、安裝時間,以及每個安裝檔案的 SHA256。`Get-TcAutomationVersion`(MCP `GetAutomationVersion`)離線回報這些內容;`-Verify` 會用記錄的雜湊值檢查安裝的檔案(`INSTALL_MANIFEST_MISMATCH`)。`pwsh ./TwinCATSetup-<Claude|Codex|Antigravity>.ps1 -Verify` 會印出 manifest,並和 manifest 及這個 checkout 比對(exit 0 = 一致)。`-SkillDir <dir>` 安裝或驗證其他資料夾(Codex 的 `AGENTS.md` 用 `-CodexHome`);細節:[docs/troubleshooting.md](docs/troubleshooting.md)「安裝 manifest(#30)」。
 
-### Claude Code 安裝
+## 版本之間的變更
 
-一行指令將 TwinCAT 技能全域安裝到 Claude Code（安裝後任何專案都可用）：
-
-```powershell
-pwsh ./TwinCATSetup-Claude.ps1
-```
-
-檢查先決條件後安裝技能 + PowerShell 模組到 `~/.claude/skills/twincat-automation/`。
-
-解除安裝：`pwsh ./TwinCATSetup-Claude.ps1 -Uninstall`
-
-### Codex 安裝
-
-一行指令將 TwinCAT 技能全域安裝到 Codex（安裝後任何專案都可用）：
-
-```powershell
-pwsh ./TwinCATSetup-Codex.ps1
-```
-
-會檢查先決條件（Windows、TwinCAT、ADS DLL、IDE、模組）並安裝：
-- `~/.agents/skills/twincat/TwinCATAutomation/` — PowerShell 模組（所有 cmdlet）
-- `~/.agents/skills/twincat/SKILL.md` — Codex 技能：lifecycle 範例、fail-closed 規則與自動產生的 cmdlet 簽章表
-- `~/.codex/AGENTS.md` — 全域專案指引
-
-解除安裝：`pwsh ./TwinCATSetup-Codex.ps1 -Uninstall`
-
-### Antigravity 安裝
-
-一行指令將 TwinCAT 技能全域安裝到 Google Antigravity：
-
-```powershell
-pwsh ./TwinCATSetup-Antigravity.ps1
-```
-
-檢查先決條件後安裝技能 + PowerShell 模組到 `~/.gemini/antigravity/skills/twincat-automation/`。
-
-解除安裝：`pwsh ./TwinCATSetup-Antigravity.ps1 -Uninstall`
-
-#### 安裝版本(三個 installer 共用)
-
-每次安裝(含重新安裝)都會在安裝的 `SKILL.md` 旁寫 `tcauto-install-manifest.json`:來源 repo(canonical:https://github.com/Lance0901/AI-TwinCAT-Skill)、模組版本、commit(從 checkout 的 `.git` 檔案讀，不啟動 git;release zip 則讀它帶的 `tcauto-source.json`)、安裝時間與每個安裝檔案的 SHA256。Claude Code / Codex / Antigravity 同一個 schema。
-
-- `Get-TcAutomationVersion`(MCP `GetAutomationVersion`)離線查詢;`-Verify` 比對安裝檔案與記錄的 hash(`INSTALL_MANIFEST_MISMATCH`)。
-- `pwsh ./TwinCATSetup-<Claude|Codex|Antigravity>.ps1 -Verify` 印出 manifest,並與 manifest 及這份 checkout 比對(exit 0 = 一致)。
-- `-SkillDir <目錄>` 安裝 / 驗證其他目錄(Codex 另有 `-CodexHome`);細節見 `docs/troubleshooting.md`「安裝 manifest(#30)」。
-
-## MCP server 參考
-
-同一個模組也是 TcAuto MCP server(stdio),提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中的 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個(`NewProject` 暫時不在 MCP 提供,#70;`Get-TcIdeModalDialog` 由複合 tool `GetIdeModalDialog` 提供,#86;`Start-TcLifecycle` 由複合 tool `RunLifecycle` 提供,#27)加 <!-- generated:composite-count -->5<!-- /generated --> 個複合 tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)與 launcher 的 `ReloadRuntime`。單一常駐的 Windows PowerShell 5.1 子程序保存 IDE/ADS 連線狀態,跨 tool 呼叫不用重連。安裝見開頭「安裝(MCP server)」;各 client 設定檔、升級、解除安裝、log 位置見 [docs/setup-mcp.md](docs/setup-mcp.md);tool 表見 [mcp-server/README.md](mcp-server/README.md)。不需 TwinCAT 的單元測試:`cd mcp-server; npm install; npm test`。
-
-## 更新日誌
-
-### 2026-04-02
-
-- **修復安裝腳本**：三個安裝器（Claude、Codex、Antigravity）現在會將完整的 `TwinCATAutomation` PowerShell 模組連同 SKILL.md 一起複製。之前只安裝了技能說明文件，導致 AI 工具在其他專案中找不到實際模組。
-- **多實例 IDE 偵測**：`Connect-TcIde` 現在透過 Running Object Table (ROT) 列舉所有運行中的 VS2022/XAE Shell 實例，取代只能回傳一個的 `GetActiveObject`。當多個 IDE 同時開啟時，能正確找到已開啟目標 solution 的實例，避免不必要地啟動新 IDE。
-- **修復 TcAdsHelper 載入**：重寫 `Initialize-TcAdsHelper`，使用 3 種回退策略（明確路徑 → 已載入組件 → 常見安裝路徑）確保 C# helper 可靠編譯。在 `Get-TcSymbols`、`Read-TcVariable`、`Write-TcVariable` 加入懶載入保護。`Connect-TcAds` 現在會在 helper 編譯失敗時發出警告。
-
-### 2026-03-29
-
-- **Codex 桌面版整合**：`TwinCATSetup-Codex.ps1` 安裝器 — 檢查先決條件並將 skill + AGENTS.md 安裝到使用者層級（`~/.agents/skills/`、`~/.codex/`），讓 Codex 在任何專案都能使用 TwinCAT 自動化
-- **AGENTS.md**：Codex 專案指引（在 repo 和使用者層級自動發現）
-- **.agents/skills/twincat/SKILL.md**：lifecycle 範例、fail-closed 規則與自動產生的 cmdlet 簽章表，作為 Codex 技能
-- **修復 Test 2 根本原因**：ADS 寫入 FB `VAR_INPUT` 會被 PLC 每個掃描週期覆寫。必須改寫 MAIN 層級的獨立變數（Decision #17）
-- **修復完整自動化測試循環**：正確的生命週期順序是 Build -> Activate -> Login -> ADS -> Start -> Test（ADS 連線必須在 Login+Download 之後）
-- **修復 `Enter-TcPlcOnline`**：使用 `LookupTreeItem` 搭配建構的路徑，取代子項列舉（TwinCAT 重啟後 Project 子項會隱藏）
-- **修復 `Build-TcProject`**：新增重試迴圈（5 次）處理 `RPC_E_CALL_REJECTED`
-- **修復 `Invoke-TcTestCycle`**：在 Activate 前快取 AmsNetId；重啟後不重新連接 IDE（原始 COM 參考在 XAR 重啟後仍然有效）
-
-### 2026-03-28
-
-- **智慧 IDE 連線**：`Connect-TcIde -SolutionPath` 一步連接 — 尋找或啟動 IDE、開啟解決方案、回傳 AmsNetId
-- **修復 `Write-TcVariable`**：C# 輔助程式（`TcAdsHelper`）繞過 PowerShell CLS 合規性問題
-
-### 2026-03-27
-
-- **零對話框生命週期**：`Enable-TcConfig -Force`（ADS）、`Enter-TcPlcOnline -LoginMode`（提示框由全域 `SilentMode` 處理；2026-10-19 起預設拿掉 `SILENT` 旗標，因 `Login(257)` 會跳過建 app） — 完整 Build->Activate->Login->Run->Read 循環，零彈窗
-- **跨工具適配器**：Claude Code SKILL.md、Codex tools.json、Antigravity plugin.yaml
-- **CLAUDE.md**：AI 工具專案指南
-
-### 2026-03-26
-
-- **初始發布**：34 個 PowerShell cmdlet，涵蓋 IDE 自動化、專案管理、程式碼讀寫、建置部署、ADS 通訊、運行控制、I/O 組態、自動化測試
-- **OpenSpec 開發流程**：完整設計文件與架構決策
+見 [GitHub Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) 頁面與已 merge 的 pull request。本檔案原本的更新日誌停在 2026-04。
 
 ## 授權
 
