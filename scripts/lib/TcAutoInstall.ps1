@@ -116,7 +116,130 @@ function Resolve-TcInstallRoot {
     if ($env:TCAUTO_TEST_FORBID_REAL_STATE -eq '1' -and $real -and $root -ieq $real) {
         Stop-Install -Code 'TCAUTO_REAL_STATE_REFUSED' -Message "TCAUTO_TEST_FORBID_REAL_STATE=1: refusing to install into the real $real (#118); pass -InstallRoot or TCAUTO_RUNTIME_ROOT."
     }
+    # #170: a process inside an MSIX package (e.g. a shell of the Claude Desktop "Code" tab) has its
+    # AppData writes redirected to %LOCALAPPDATA%\Packages\<family>\LocalCache\{Local,Roaming}. The
+    # install would "succeed", but every client outside that package (Claude Code in a terminal,
+    # Codex) gets a path that does not exist for it -> CONNECTION_CLOSED. Refuse before anything is
+    # written. Two checks, only for an install root below %LOCALAPPDATA% / %APPDATA%:
+    #  1. package identity (GetCurrentPackageFullName): fast, but NOT enough. Real machine 2026-11-08,
+    #     Windows 11, Claude Desktop MSIX Claude_pzs8sxrjxfjjc, a Code tab shell running powershell.exe:
+    #     no identity was detected, the install ran and its files landed only in
+    #     Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\TwinCATAutomation (PR #171 comment).
+    #  2. a probe: write a GUID-named file next to the install root and look for it below
+    #     %LOCALAPPDATA%\Packages\*\LocalCache\{Local,Roaming}\. Found there = redirected. This tests
+    #     the redirection itself instead of inferring it from the process. Only the install location
+    #     is probed: in the same environment on the same day, writes to %TEMP% were NOT redirected.
+    # A probe that cannot be written, checked or removed stops the install (INSTALL_PROBE_FAILED).
+    $under = Get-TcAppDataBase -Path $root
+    if ($under) {
+        $package = Get-TcPackageFullName
+        if ($package) {
+            Stop-Install -Code 'INSTALL_PACKAGED_CONTEXT' `
+                -Message "this PowerShell runs inside the MSIX package $package; Windows would redirect the files for $root to that package's LocalCache, where clients outside the package (Claude Code in a terminal, Codex) cannot see them (#170). Nothing was written." `
+                -Hint 'Run the same command again from a normal PowerShell window (Start menu or Windows Terminal), not from a shell inside Claude Desktop.' `
+                -Data ([ordered]@{ installRoot = $root; packageFullName = $package; detectedBy = 'packageIdentity' })
+        }
+        $redirected = Test-TcAppDataRedirect -Root $root -Base $under
+        if ($redirected) {
+            Stop-Install -Code 'INSTALL_PACKAGED_CONTEXT' `
+                -Message "writes below $($under.Path) are redirected to $($redirected.redirectedTo) (MSIX package folder $($redirected.packageFolder)): the files for $root would only be visible inside that package, not to Claude Code in a terminal or Codex (#170). Nothing was written." `
+                -Hint 'Run the same command again from a normal PowerShell window (Start menu or Windows Terminal), not from a shell inside Claude Desktop (its Code tab).' `
+                -Data ([ordered]@{ installRoot = $root; packageFolder = $redirected.packageFolder; redirectedTo = $redirected.redirectedTo; detectedBy = 'probe' })
+        }
+    }
     return $root
+}
+
+function Get-TcAppDataBase {
+    # @{ Path; Kind } when Path lies below %LOCALAPPDATA% (Kind 'Local') or %APPDATA% (Kind 'Roaming'),
+    # else $null. Kind is the LocalCache subfolder MSIX redirects that AppData folder to.
+    param([Parameter(Mandatory)][string]$Path)
+    $p = $Path.TrimEnd('\') + '\'
+    foreach ($e in @(@{ Var = $env:LOCALAPPDATA; Kind = 'Local' }, @{ Var = $env:APPDATA; Kind = 'Roaming' })) {
+        if (-not $e.Var) { continue }
+        $b = (Get-TcLongPath -Path $e.Var).TrimEnd('\')
+        if ($p.StartsWith($b + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return @{ Path = $b; Kind = $e.Kind } }
+    }
+    return $null
+}
+
+function Test-TcAppDataRedirect {
+    # #170 probe (why: Resolve-TcInstallRoot). Writes <dir>\.tcauto-probe-<guid>, <dir> = the parent of
+    # Root (the AppData base itself when that parent does not exist yet), and returns
+    # @{ packageFolder; redirectedTo } when the file shows up as
+    # %LOCALAPPDATA%\Packages\<pkg>\LocalCache\<Kind>\<dir relative to the base>\<probe>, else $null.
+    # Both copies are removed before it returns. Any write / check / removal failure ->
+    # Stop-Install INSTALL_PROBE_FAILED (fail closed: where the files would go is unknown).
+    # TCAUTO_TEST_PROBE_REDIRECT_PACKAGE (tests only): a package folder name below
+    # %LOCALAPPDATA%\Packages; the probe is moved into its LocalCache right after it is written, as
+    # the MSIX file system redirection would have placed it.
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][hashtable]$Base)
+    $dir = Split-Path -Parent $Root
+    if (-not $dir -or -not [System.IO.Directory]::Exists($dir)) { $dir = $Base.Path }
+    $dir = (Get-TcLongPath -Path $dir).TrimEnd('\')
+    $rel = ''
+    if ($dir.Length -gt $Base.Path.Length) { $rel = $dir.Substring($Base.Path.Length).TrimStart('\') }
+    $name = '.tcauto-probe-' + [guid]::NewGuid().ToString('N')
+    $probe = Join-Path $dir $name
+    $packages = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Packages' } else { $null }
+    $found = $null
+    $copies = [System.Collections.Generic.List[string]]::new()
+    $failure = $null
+    try {
+        [System.IO.File]::WriteAllText($probe, 'tcauto #170 redirection probe, safe to delete', $script:TcUtf8NoBom)
+        if ($env:TCAUTO_TEST_PROBE_REDIRECT_PACKAGE) {
+            [System.IO.File]::Move($probe, [System.IO.Path]::Combine($packages, $env:TCAUTO_TEST_PROBE_REDIRECT_PACKAGE, 'LocalCache', $Base.Kind, $rel, $name))
+        }
+        if ($packages -and [System.IO.Directory]::Exists($packages)) {
+            foreach ($pkg in [System.IO.Directory]::GetDirectories($packages)) {
+                $c = [System.IO.Path]::Combine($pkg, 'LocalCache', $Base.Kind, $rel, $name)
+                if ([System.IO.File]::Exists($c)) {
+                    $copies.Add($c)
+                    if (-not $found) { $found = [ordered]@{ packageFolder = [System.IO.Path]::GetFileName($pkg); redirectedTo = Split-Path -Parent $c } }
+                }
+            }
+        }
+    }
+    catch { $failure = "probe $probe`: $($_.Exception.Message)" }
+    # remove both sides (inside the package, deleting $probe removes the redirected copy), then verify
+    foreach ($f in @(@($probe) + @($copies))) {
+        try { if ([System.IO.File]::Exists($f)) { [System.IO.File]::Delete($f) } }
+        catch { if (-not $failure) { $failure = "cannot remove the probe $f`: $($_.Exception.Message)" } }
+        if (-not $failure -and [System.IO.File]::Exists($f)) { $failure = "the probe $f is still there after removing it" }
+    }
+    if ($failure) {
+        Stop-Install -Code 'INSTALL_PROBE_FAILED' `
+            -Message "cannot check whether writes below $($Base.Path) are redirected into an MSIX package (#170): $failure. Nothing was installed." `
+            -Hint 'Make sure the folder above the install root exists and is writable, delete any .tcauto-probe-* file named above, then run the installer again from a normal PowerShell window.' `
+            -Data ([ordered]@{ installRoot = $Root; probe = $probe; leftover = @(@(@($probe) + @($copies)) | Where-Object { [System.IO.File]::Exists($_) }) })
+    }
+    return $found
+}
+
+function Get-TcPackageFullName {
+    # Full name of the MSIX package this process runs in, or $null (no package identity, or the API is
+    # missing). GetCurrentPackageFullName returns APPMODEL_ERROR_NO_PACKAGE (15700) without identity:
+    # https://learn.microsoft.com/windows/win32/api/appmodel/nf-appmodel-getcurrentpackagefullname
+    # TCAUTO_TEST_PACKAGE_FULL_NAME (tests only) stands in for the API: non-empty = that package.
+    if ($null -ne $env:TCAUTO_TEST_PACKAGE_FULL_NAME) {
+        if ($env:TCAUTO_TEST_PACKAGE_FULL_NAME) { return $env:TCAUTO_TEST_PACKAGE_FULL_NAME }
+        return $null
+    }
+    try {
+        if (-not ('TcAutoInstall.AppModel' -as [type])) {
+            Add-Type -Namespace TcAutoInstall -Name AppModel -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetCurrentPackageFullName(ref uint packageFullNameLength, System.Text.StringBuilder packageFullName);
+'@
+        }
+        [uint32]$len = 0
+        $rc = [TcAutoInstall.AppModel]::GetCurrentPackageFullName([ref]$len, $null)
+        if ($rc -ne 122 -or $len -eq 0) { return $null }   # 122 = ERROR_INSUFFICIENT_BUFFER: has identity
+        $sb = New-Object System.Text.StringBuilder ([int]$len)
+        if ([TcAutoInstall.AppModel]::GetCurrentPackageFullName([ref]$len, $sb) -ne 0) { return $null }
+        return $sb.ToString()
+    }
+    catch { return $null }
 }
 
 function Get-TcGitSource {

@@ -81,10 +81,10 @@ function npmStub(exitCode = 0) {
   return f;
 }
 
-function install(repo, root, { npm, extra = [] } = {}) {
+function install(repo, root, { npm, extra = [], env = {} } = {}) {
   const r = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-File', path.join(repo, 'scripts', 'Install-TcAutoRuntime.ps1'), '-InstallRoot', root, '-NpmPath', npm, ...extra], {
     encoding: 'utf8',
-    env: { ...process.env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_RUNTIME_ROOT: '' },
+    env: { ...process.env, ...env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_RUNTIME_ROOT: '' },
     timeout: 120000
   });
   const line = (r.stdout ?? '').split(/\r?\n/).reverse().find((l) => l.startsWith('TCAUTO_INSTALL_RESULT '));
@@ -256,5 +256,121 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     } finally {
       git(repo, 'checkout', '--', 'mcp-server');
     }
+  });
+
+  test('#170 inside an MSIX package: an install root under %LOCALAPPDATA% or %APPDATA% is refused, nothing written', () => {
+    // LOCALAPPDATA / APPDATA point at isolated fixture folders for the child, so the refusal is asserted
+    // on every machine (wherever TEMP lives) and the real AppData is never touched
+    const lad = tmp('pkglad');
+    const appdata = tmp('pkgappdata');
+    const package170 = 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc';
+    const env = { LOCALAPPDATA: lad, APPDATA: appdata, TCAUTO_TEST_PACKAGE_FULL_NAME: package170 };
+    // powershell.exe itself caches under %LOCALAPPDATA%\Microsoft (StartupProfileData): not the install
+    const written = (base) => fs.readdirSync(base).filter((n) => n !== 'Microsoft');
+    for (const base of [lad, appdata]) {
+      // not <base>\TwinCATAutomation: under LOCALAPPDATA that is TCAUTO_REAL_STATE_REFUSED, checked first
+      const root = path.join(base, 'tcauto-pkg170');
+      const r = install(repo, root, { npm, env });
+      assert.equal(r.code, 1, JSON.stringify(r.result));
+      assert.equal(r.result.success, false);
+      assert.equal(r.result.error.code, 'INSTALL_PACKAGED_CONTEXT');
+      assert.match(r.result.error.hint, /normal PowerShell window/);
+      assert.equal(r.result.data.packageFullName, package170);
+      assert.equal(r.result.data.detectedBy, 'packageIdentity');
+      assert.equal(path.basename(r.result.data.installRoot), 'tcauto-pkg170');
+      assert.ok(!fs.existsSync(root), `nothing written: ${root}`);
+      assert.deepEqual(written(base), [], `nothing written under ${base}`);
+    }
+    // an explicit root outside AppData is not virtualized: allowed
+    const outside = tmp('pkgoutside');
+    const r2 = install(repo, outside, { npm, env });
+    assert.equal(r2.code, 0, JSON.stringify(r2.result));
+    assert.equal(r2.result.success, true);
+    assert.deepEqual(written(lad), [], 'the allowed install wrote nothing under LOCALAPPDATA');
+  });
+
+  // #170 probe: package identity is not visible in a Claude Desktop "Code" tab shell (real machine
+  // 2026-11-08), so the installers also probe whether a write next to the install root is redirected
+  // to %LOCALAPPDATA%\Packages\<pkg>\LocalCache\{Local,Roaming}. LOCALAPPDATA / APPDATA are fixture
+  // folders; TCAUTO_TEST_PROBE_REDIRECT_PACKAGE makes the script move its probe into that package's
+  // LocalCache, as the redirection would. TCAUTO_TEST_PACKAGE_FULL_NAME='' = no package identity.
+  const pkgFolder = 'Claude_pzs8sxrjxfjjc';
+  /** Every file and folder below base (relative), without powershell.exe's own %LOCALAPPDATA%\Microsoft cache. */
+  function tree(base) {
+    const out = [];
+    const walk = (d, rel) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const r = rel ? `${rel}\\${e.name}` : e.name;
+        if (!rel && e.name === 'Microsoft') continue;
+        out.push(r);
+        if (e.isDirectory()) walk(path.join(d, e.name), r);
+      }
+    };
+    walk(base, '');
+    return out.sort();
+  }
+  function appDataFixture() {
+    const lad = tmp('probelad');
+    const appdata = tmp('probeappdata');
+    for (const kind of ['Local', 'Roaming', 'Local\\sub170']) fs.mkdirSync(path.join(lad, 'Packages', pkgFolder, 'LocalCache', kind), { recursive: true });
+    fs.mkdirSync(path.join(lad, 'sub170'));
+    return { lad, appdata, env: { LOCALAPPDATA: lad, APPDATA: appdata, TCAUTO_TEST_PACKAGE_FULL_NAME: '' } };
+  }
+
+  test('#170 probe: writes next to the install root redirected into a package LocalCache -> INSTALL_PACKAGED_CONTEXT, nothing left behind', () => {
+    const { lad, appdata, env } = appDataFixture();
+    const before = { lad: tree(lad), appdata: tree(appdata) };
+    const cases = [
+      { root: path.join(lad, 'tcauto-probe170'), kind: 'Local', rel: '' },
+      { root: path.join(lad, 'sub170', 'tcauto-probe170'), kind: 'Local', rel: 'sub170' },
+      { root: path.join(appdata, 'tcauto-probe170'), kind: 'Roaming', rel: '' }
+    ];
+    for (const c of cases) {
+      const r = install(repo, c.root, { npm, env: { ...env, TCAUTO_TEST_PROBE_REDIRECT_PACKAGE: pkgFolder } });
+      assert.equal(r.code, 1, JSON.stringify(r.result));
+      assert.equal(r.result.success, false);
+      assert.equal(r.result.error.code, 'INSTALL_PACKAGED_CONTEXT');
+      assert.match(r.result.error.hint, /normal PowerShell window/);
+      assert.equal(r.result.data.detectedBy, 'probe');
+      assert.equal(r.result.data.packageFolder, pkgFolder);
+      assert.equal(r.result.data.redirectedTo.toLowerCase(), path.join(lad, 'Packages', pkgFolder, 'LocalCache', c.kind, c.rel).toLowerCase());
+      assert.ok(!fs.existsSync(c.root), `nothing installed: ${c.root}`);
+    }
+    // the probe is gone on both sides and nothing else was created
+    assert.deepEqual(tree(lad), before.lad, 'LOCALAPPDATA (incl. Packages\\...\\LocalCache) unchanged');
+    assert.deepEqual(tree(appdata), before.appdata, 'APPDATA unchanged');
+  });
+
+  test('#170 probe: no redirection -> installs as usual and removes the probe', () => {
+    const { lad, env } = appDataFixture();
+    const root = path.join(lad, 'tcauto-probe170');
+    const r = install(repo, root, { npm, env });
+    assert.equal(r.code, 0, JSON.stringify(r.result));
+    assert.equal(r.result.success, true);
+    assert.ok(fs.existsSync(path.join(root, 'runtime', 'current.json')), 'installed');
+    assert.deepEqual(
+      tree(lad).filter((n) => n.includes('.tcauto-probe-')),
+      [],
+      'no probe left'
+    );
+  });
+
+  test('#170 probe fails closed: probe cannot be written / moved -> INSTALL_PROBE_FAILED, nothing installed, no probe left', () => {
+    // LOCALAPPDATA is a file, not a folder: the probe cannot be written
+    const notDir = path.join(tmp('probenotdir'), 'localappdata-is-a-file');
+    fs.writeFileSync(notDir, 'x');
+    const r1 = install(repo, path.join(notDir, 'tcauto-probe170'), { npm, env: { LOCALAPPDATA: notDir, TCAUTO_TEST_PACKAGE_FULL_NAME: '' } });
+    assert.equal(r1.code, 1, JSON.stringify(r1.result));
+    assert.equal(r1.result.error.code, 'INSTALL_PROBE_FAILED');
+    assert.deepEqual(fs.readdirSync(path.dirname(notDir)), ['localappdata-is-a-file'], 'nothing written next to it');
+    // the probe is written but the check step fails (the stand-in package has no LocalCache): removed again
+    const { lad, env } = appDataFixture();
+    const before = tree(lad);
+    const root2 = path.join(lad, 'tcauto-probe170');
+    const r2 = install(repo, root2, { npm, env: { ...env, TCAUTO_TEST_PROBE_REDIRECT_PACKAGE: 'NoLocalCache_x' } });
+    assert.equal(r2.code, 1, JSON.stringify(r2.result));
+    assert.equal(r2.result.error.code, 'INSTALL_PROBE_FAILED');
+    assert.deepEqual(r2.result.data.leftover, [], 'the probe was removed');
+    assert.deepEqual(tree(lad), before, 'nothing left under LOCALAPPDATA');
   });
 });

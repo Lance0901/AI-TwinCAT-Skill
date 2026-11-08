@@ -599,6 +599,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 三支腳本最後一行都是 `TCAUTO_INSTALL_RESULT {json}`(`success`、`data` 或 `error.code` + `hint`),exit code 0 / 1。這些碼不是模組的 `error.code`,不在 `TcErrorHints`。安裝步驟見 `docs/setup-mcp.md`。
 
+**兩支安裝腳本共用**
+
+- `INSTALL_PACKAGED_CONTEXT`(#170):安裝根目錄在 `%LOCALAPPDATA%` / `%APPDATA%` 之下,而執行安裝的 PowerShell 跑在 MSIX 套件裡(典型:在 Claude Desktop 的「Code」分頁裡執行安裝)。套件內程序寫 AppData 會被 Windows 重導到 `%LOCALAPPDATA%\Packages\<套件>\LocalCache\{Local,Roaming}\`([MSIX: Behind the scenes](https://learn.microsoft.com/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)),只有該套件看得到;套件外的 Claude Code / Codex 拿到的路徑不存在,啟動時 `CONNECTION_CLOSED`(實測 2026-11-07,Windows 11,Claude Desktop MSIX `Claude_pzs8sxrjxfjjc`:檔案只在 `Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\TwinCATAutomation\`,Claude Code 的 `node.exe` spawn `ENOENT`)。偵測兩道:先看 package identity(`data.detectedBy = 'packageIdentity'`、`data.packageFullName`);沒有 identity 時,在安裝根目錄的上一層寫一個 GUID 命名的探針檔,看它有沒有出現在 `Packages\*\LocalCache\{Local,Roaming}\` 底下(`data.detectedBy = 'probe'`、`data.packageFolder`、`data.redirectedTo`),兩邊的探針都會刪掉。只靠 identity 不夠:實測 2026-11-08 同一環境,Code 分頁 shell 的 `powershell.exe` 沒被判出 identity,照常安裝且檔案被重導。同一次實測,寫到 `%TEMP%`(`AppData\Local\Temp`)不受影響,落在真實路徑。什麼都沒寫。請改從一般的 PowerShell 視窗(開始功能表 / Windows Terminal)重跑同一指令。之前已在套件內裝過的,Claude Desktop 仍用 LocalCache 那份;套件外重裝一次後 Claude Code 就連得上。
+- `INSTALL_PROBE_FAILED`(#170):上面的探針寫不進去、檢查失敗或刪不掉,無法判斷檔案會不會被重導,fail closed 不安裝。`data.leftover` 列出沒刪掉的探針(`.tcauto-probe-*`,可手動刪)。確認安裝根目錄的上一層存在且可寫,從一般 PowerShell 視窗重跑。
+
 **Install-TcAuto.ps1(客戶 zip)**
 
 - `PACKAGE_INCOMPLETE`:不是完整的 release 資料夾(缺 `tcauto-release.json` / `node\node.exe` / launcher / `lib\tcauto-client-config.mjs`,或 `runtime\` 不是剛好一個版本,或該版本的 `tcauto-source.json` 不符)。整個 zip 重新解壓縮、核對 SHA256 後從解壓縮資料夾執行;在 checkout 裡改用 `scripts\Install-TcAutoRuntime.ps1`。
