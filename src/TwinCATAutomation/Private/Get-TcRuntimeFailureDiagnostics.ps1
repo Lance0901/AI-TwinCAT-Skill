@@ -12,7 +12,9 @@
                               dialog is up; #138: the rows of an incomplete read are listed too)
           errorListError      why the list is missing / partial ($null when read completely);
                               a dialog is up -> 'unavailable: not read while a modal dialog is up
-                              ...' (#198: an empty list then never reads as "no errors")
+                              ...' (#198: an empty list then never reads as "no errors");
+                              scan incomplete -> 'unavailable: modal scan incomplete' (state
+                              unknown, no DTE call incl. View.ErrorList; CODING_STANDARDS 1, #181)
           bootPackage         Get-TcBootPackageDiff (status match / mismatch / unavailable), $null
                               when the comparison threw
           modalScan           only when dialogScanComplete is $false (ConvertTo-TcModalScanInfo shape)
@@ -67,6 +69,11 @@
             # #198: deliberately not read (the Error List is opened through DTE, which the dialog blocks);
             # say so instead of an empty list with errorListError $null (reads as "no errors")
             $diag.errorListError = 'unavailable: not read while a modal dialog is up (the Error List is opened through the IDE, which the dialog blocks); see data.diagnostics.dialog'
+        }
+        elseif ($diag.dialogScanComplete -eq $false) {
+            # CODING_STANDARDS section 1 / #181 (Reset-TcSolution): an incomplete scan means the IDE state is
+            # unknown - a dialog may be up - so no DTE call, View.ErrorList of Get-TcBuildErrors included
+            $diag.errorListError = 'unavailable: modal scan incomplete'
         }
         elseif ($null -ne $Deadline -and $elBudget -lt 5) {
             $diag.errorListError = 'skipped: -TimeoutSec budget exhausted'

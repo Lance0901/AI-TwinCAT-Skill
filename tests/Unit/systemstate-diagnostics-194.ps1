@@ -187,7 +187,13 @@ $global:Dlg = & $mod { New-TcModalScanIncomplete -Reason 'timeout' -Message 'moc
 $r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
 $d = $r.data.diagnostics
 Check 'K scan incomplete: no DTE call, dialogScanComplete false, modalScan reported, warning names the incomplete scan' ($global:DteCalls -eq 0 -and $d.dialogScanComplete -eq $false -and $null -ne $d.modalScan -and (@($d.bootPackage.warnings) -join ' ') -match 'scan did not complete') "dte=$($global:DteCalls) $($d | ConvertTo-Json -Compress -Depth 4)"
+Check 'K scan incomplete: Error List not read (no View.ErrorList / DTE), errorListError unavailable: modal scan incomplete' ($global:ElCalls -eq 0 -and @($d.errorList).Count -eq 0 -and $d.errorListError -eq 'unavailable: modal scan incomplete') "el=$($global:ElCalls) $($d.errorListError)"
 Clear-Block
+# same rule on the Enable-TcConfig path (New-TcRuntimeFailure passes its scan as -DialogScan)
+Reset-Case; Set-Ide $true
+$inc = & $mod { New-TcModalScanIncomplete -Reason 'timeout' -Message 'mock: scan timed out' }
+$d = & $mod { param($s, $n) Get-TcRuntimeFailureDiagnostics -DialogScan $s -Deadline ((Get-Date).AddSeconds(60)) -SolutionPath 'C:\Demo\Fallback.sln' -Platform 'TwinCAT OS (x64)' -AmsNetId $n } $inc $net
+Check 'K helper with an incomplete -DialogScan (Enable-TcConfig path): no Error List call, no scan, errorListError unavailable: modal scan incomplete' ($global:ElCalls -eq 0 -and $global:DlgCalls -eq 0 -and $d.dialogScanComplete -eq $false -and $d.errorListError -eq 'unavailable: modal scan incomplete') "el=$($global:ElCalls) dlg=$($global:DlgCalls) $($d.errorListError)"
 
 # --- L: fail closed first (#68): the lifecycle block exists before the collection starts; slow
 # scan / Error List stay within request start + -TimeoutSec + $script:TcSystemStateDiagCapSec
