@@ -57,6 +57,8 @@ $global:BootThrows = $false
 $global:DlgCalls = 0
 $global:ElCalls = 0
 $global:BootArgs = $null
+$global:BootStatus = 'mismatch'
+$global:DteCalls = 0
 & $mod {
     function script:Find-TcAdsAssembly { $true }
     function script:Get-TcLocalUmRtProcess { param([string]$AmsNetId) $null }
@@ -73,17 +75,19 @@ $global:BootArgs = $null
         if ($global:BootThrows) { throw 'boot mock failure' }
         $global:BootArgs = [PSCustomObject]@{ SolutionPath = $SolutionPath; Platform = $Platform; AmsNetId = $AmsNetId; AdsPorts = @($AdsPorts); Variant = $Variant }
         if ([string]::IsNullOrWhiteSpace($Platform)) { return [PSCustomObject]@{ status = 'unavailable'; reason = 'solution platform unknown'; mismatches = @() } }
-        [PSCustomObject]@{ status = 'mismatch'; reason = $null; mismatches = @('CurrentConfig.xml'); files = @() }
+        [PSCustomObject]@{ status = $global:BootStatus; reason = $null; mismatches = $(if ($global:BootStatus -eq 'mismatch') { @('CurrentConfig.xml') } else { @() }); files = @(); warnings = @() }
     }
-    function script:Get-TcSolutionPlatform { [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; projectPlatform = 'TwinCAT OS (x64)'; configuration = 'Release' } }
-    function script:Get-TcSysManager { param([switch]$Refresh) [PSCustomObject]@{ mock = $true } }
-    function script:Get-TcPlcProjectList { param($SysManager) @([PSCustomObject]@{ name = 'P1'; adsPort = 851; disabled = $false }, [PSCustomObject]@{ name = 'P2'; adsPort = 852; disabled = $false }) }
-    function script:Read-TcCurrentVariant { param($SysManager) @{ Value = ''; Error = $null; Supported = $false } }
+    # DTE readers: counted (PR #200 review: never called while a dialog is up / the scan is incomplete)
+    function script:Get-TcSolutionPlatform { $global:DteCalls++; [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; projectPlatform = 'TwinCAT OS (x64)'; configuration = 'Release' } }
+    function script:Get-TcSysManager { param([switch]$Refresh) $global:DteCalls++; [PSCustomObject]@{ mock = $true } }
+    function script:Get-TcPlcProjectList { param($SysManager) $global:DteCalls++; @([PSCustomObject]@{ name = 'P1'; adsPort = 851; disabled = $false }, [PSCustomObject]@{ name = 'P2'; adsPort = 852; disabled = $false }) }
+    function script:Read-TcCurrentVariant { param($SysManager) $global:DteCalls++; @{ Value = ''; Error = $null; Supported = $false } }
 }
+# connected IDE + the platform cache an earlier Connect-TcIde / Set-TcTarget left (Get-TcSolutionPlatform)
 function Set-Ide([bool]$On) {
-    & $mod { param($o) if ($o) { $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ mock = $true }; $script:TcSolutionPath = 'C:\Demo\Fallback.sln' } else { $script:TcIdeConnected = $false; $script:TcDte = $null } } $On
+    & $mod { param($o) if ($o) { $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ mock = $true }; $script:TcSolutionPath = 'C:\Demo\Fallback.sln'; $script:TcLastSolutionPlatform = [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; projectPlatform = 'TwinCAT OS (x64)'; solutionPath = 'C:\Demo\Fallback.sln'; readAt = (Get-Date) } } else { $script:TcIdeConnected = $false; $script:TcDte = $null } } $On
 }
-function Reset-Case { $global:DlgCalls = 0; $global:ElCalls = 0; $global:BootArgs = $null; $global:ElThrows = $false; $global:BootThrows = $false; $global:ElRows = @(); $global:Dlg = $null; $global:Lic = $validLic }
+function Reset-Case { $global:DlgCalls = 0; $global:ElCalls = 0; $global:DteCalls = 0; $global:BootArgs = $null; $global:BootStatus = 'mismatch'; $global:ElThrows = $false; $global:BootThrows = $false; $global:ElRows = @(); $global:Dlg = $null; $global:Lic = $validLic }
 function Clear-Block { $null = Clear-TcLifecycleBlock -AmsNetId $net -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None }
 $baseTimeout = & $mod { Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT' }
 $baseMismatch = & $mod { Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH' }
@@ -97,7 +101,8 @@ $d = $r.data.diagnostics
 Check 'A 1809 dialog: code SYSTEM_STATE_TIMEOUT kept, success false, lifecycle block recorded' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT') "code=$($r.error.code)"
 Check 'A data.diagnostics carries the dialog (title / text), dialogScanComplete true' ($null -ne $d -and $d.dialog.text -match '0x711' -and $d.dialog.title -eq 'TwinCAT XAE' -and $d.dialogScanComplete -eq $true) ($d | ConvertTo-Json -Compress -Depth 4)
 Check 'A shape: dialog, dialogScanComplete, errorList, errorListError, bootPackage' ((@($d.PSObject.Properties.Name) -join ',') -eq 'dialog,dialogScanComplete,errorList,errorListError,bootPackage') (@($d.PSObject.Properties.Name) -join ',')
-Check 'A Error List not read while a dialog is up; Boot compared with IDE platform / ports / solution' ($global:ElCalls -eq 0 -and $d.bootPackage.status -eq 'mismatch' -and $global:BootArgs.Platform -eq 'TwinCAT OS (x64)' -and (@($global:BootArgs.AdsPorts) -join ',') -eq '851,852' -and $global:BootArgs.SolutionPath -eq 'C:\Demo\Fallback.sln' -and $global:BootArgs.AmsNetId -eq $net) ($global:BootArgs | ConvertTo-Json -Compress)
+Check 'A Error List not read while a dialog is up, errorListError says so (#198: never [] + null)' ($global:ElCalls -eq 0 -and @($d.errorList).Count -eq 0 -and $d.errorListError -match '^unavailable: not read while a modal dialog is up') "$($d.errorListError)"
+Check 'A dialog up: no DTE call (platform / PLC list / variant), Boot compared with the cached platform, warning says so' ($global:DteCalls -eq 0 -and $d.bootPackage.status -eq 'mismatch' -and $global:BootArgs.Platform -eq 'TwinCAT OS (x64)' -and @($global:BootArgs.AdsPorts).Count -eq 0 -and $global:BootArgs.SolutionPath -eq 'C:\Demo\Fallback.sln' -and $global:BootArgs.AmsNetId -eq $net -and (@($d.bootPackage.warnings) -join ' ') -match 'IDE not read \(a modal dialog is up\)') "dte=$($global:DteCalls) $($global:BootArgs | ConvertTo-Json -Compress) $(@($d.bootPackage.warnings) -join ' ')"
 Check 'A hint: ADS 1809 / symbol version explanation with the dialog text, Build + Enable-TcConfig -Force, troubleshooting section' ($r.error.hint -match 'ADS 1809' -and $r.error.hint -match 'ADS_SYMBOL_VERSION_INVALID' -and $r.error.hint -match 'Enable-TcConfig -Force' -and $r.error.hint -match 'Build-TcProject' -and $r.error.hint -match [regex]::Escape('AdsError: 1809') -and $r.error.hint -match 'CurrentConfig.xml') "$($r.error.hint)"
 Check 'A hint does not blame a missing license, licenses kept in data.licenses' ($r.error.hint -notmatch $noLicenseClaim -and $r.error.hint -notmatch 'License 節點' -and $null -ne $r.data.licenses -and $null -eq $r.data.licenses.text) "$($r.error.hint)"
 Clear-Block
@@ -106,6 +111,8 @@ Clear-Block
 Reset-Case; Set-Ide $true; Set-Ads 'config'
 $r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
 Check 'B licenses valid, no dialog: code kept, Error List read, diagnostics present' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $global:DlgCalls -eq 1 -and $global:ElCalls -eq 1 -and $null -ne $r.data.diagnostics -and $null -eq $r.data.diagnostics.dialog -and @($r.data.diagnostics.errorList).Count -eq 0) ($r.data.diagnostics | ConvertTo-Json -Compress -Depth 4)
+Check 'B no dialog: DTE read after the scan (platform / ports from the IDE)' ($global:DteCalls -gt 0 -and (@($global:BootArgs.AdsPorts) -join ',') -eq '851,852') "dte=$($global:DteCalls)"
+Check 'B hint: "已讀到的 1 個授權都有效", unlisted TF licenses not judged' ($r.error.hint -match '已讀到的 1 個授權都有效' -and $r.error.hint -match '沒列出的 TF 授權不在這次判斷範圍內') "$($r.error.hint)"
 Check 'B hint: no "license missing", says licenses are valid, points at data.diagnostics' ($r.error.hint -notmatch $noLicenseClaim -and $r.error.hint -notmatch 'License 節點' -and $r.error.hint -match '授權都有效' -and $r.error.hint -match 'data.diagnostics' -and $r.error.hint -notmatch [regex]::Escape($baseTimeout)) "$($r.error.hint)"
 Clear-Block
 
@@ -167,8 +174,78 @@ Clear-Block
 
 # --- J: Enable-TcConfig passes the skip flag to its set-run and still builds data.diagnostics itself
 $src = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Public\Enable-TcConfig.ps1') -Raw
-Check 'J Enable-TcConfig: set-run wrapped in the skip flag, New-TcRuntimeFailure uses the shared helper' ($src -match '(?s)\$script:TcSystemStateSkipDiagnostics = \$true\s*try \{ \$r = Set-TcSystemState -State Run' -and $src -match 'Get-TcRuntimeFailureDiagnostics -DialogScan \$DialogScan -Deadline \$deadline') ''
+Check 'J Enable-TcConfig: set-run wrapped in the skip flag, New-TcRuntimeFailure uses the shared helper' ($src -match '(?s)\$script:TcSystemStateSkipDiagnostics = \$true\s*try \{ \$r = Set-TcSystemState -State Run' -and $src -match 'Get-TcRuntimeFailureDiagnostics -DialogScan \$scan -Deadline \$deadline') ''
+# PR #200 review: New-TcRuntimeFailure scans first; the DTE platform read only when the scan found no dialog
+$nrf = [regex]::Match($src, '(?s)function New-TcRuntimeFailure \{.*?Get-TcRuntimeFailureDiagnostics -DialogScan').Value
+Check 'J New-TcRuntimeFailure: scan before the DTE platform read, DTE only when clear, cached platform otherwise' ($nrf.IndexOf('Get-TcDiagnosticsDialogScan') -ge 0 -and $nrf.IndexOf('Get-TcDiagnosticsDialogScan') -lt $nrf.IndexOf('Get-TcSolutionPlatform') -and $nrf -match 'if \(Test-TcDiagnosticsDialogClear \$scan\) \{ try \{ \$cur = Get-TcSolutionPlatform' -and $nrf -match 'Get-TcCachedSolutionPlatform') ''
+Check 'J Enable-TcConfig uses the shared 1809 pattern' ($src -match '\$_ -match \$script:TcSymbolVersionPattern' -and $src -notmatch "symbol description does not match\|1809") ''
 Check 'J the skip flag is off after import' ((& $mod { $script:TcSystemStateSkipDiagnostics }) -eq $false) ''
+
+# --- K: dialog scan incomplete -> no DTE call either; Error List still read (bounded), scan reported
+Reset-Case; Set-Ide $true; Set-Ads 'config'
+$global:Dlg = & $mod { New-TcModalScanIncomplete -Reason 'timeout' -Message 'mock: scan timed out' }
+$r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
+$d = $r.data.diagnostics
+Check 'K scan incomplete: no DTE call, dialogScanComplete false, modalScan reported, warning names the incomplete scan' ($global:DteCalls -eq 0 -and $d.dialogScanComplete -eq $false -and $null -ne $d.modalScan -and (@($d.bootPackage.warnings) -join ' ') -match 'scan did not complete') "dte=$($global:DteCalls) $($d | ConvertTo-Json -Compress -Depth 4)"
+Clear-Block
+
+# --- L: fail closed first (#68): the lifecycle block exists before the collection starts; slow
+# scan / Error List stay within request start + -TimeoutSec + $script:TcSystemStateDiagCapSec
+Reset-Case; Set-Ide $true; Set-Ads 'config'
+$global:BlockAtScan = $null; $global:BlockAtLicense = $null; $global:ElBudget = $null
+& $mod {
+    $script:TcSystemStateDiagCapSec = 4
+    function script:Test-UnitBlockWritten { param([string]$NetId) $f = Get-TcLifecycleBlockFile; (Test-Path -LiteralPath $f) -and ([IO.File]::ReadAllText($f) -match [regex]::Escape($NetId)) }
+    function script:Get-TcLicenseDiagnosis { param([string]$AmsNetId) $global:BlockAtLicense = Test-UnitBlockWritten $AmsNetId; $global:Lic }
+    # every scan blocks for its whole prepare + scan cap, then "no dialog"
+    function script:Find-TcIdeModalDialog {
+        param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
+        $global:DlgCalls++
+        $global:BlockAtScan = Test-UnitBlockWritten '5.6.7.8.1.1'
+        $p = if ($PrepareTimeoutSec -gt 0) { $PrepareTimeoutSec } else { 60 }
+        Start-Sleep -Seconds ($p + $TimeoutSec)
+        $null
+    }
+    function script:Get-TcBuildErrors { param($TimeoutSec) $global:ElCalls++; $global:ElBudget = $TimeoutSec; Start-Sleep -Seconds $TimeoutSec; New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @() }) }
+}
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
+$sec = $sw.Elapsed.TotalSeconds
+Check 'L block written before the license read and the dialog scan' ($global:BlockAtLicense -eq $true -and $global:BlockAtScan -eq $true -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT') "license=$($global:BlockAtLicense) scan=$($global:BlockAtScan)"
+# bound: -TimeoutSec 2 + cap 4 = 6 s after the request; +1.5 s runspace / CI slack
+Check 'L collection ends by the deadline (TimeoutSec + cap), Error List skipped when < 5 s are left' ($sec -lt 7.5 -and $global:ElCalls -eq 0 -and $r.data.diagnostics.errorListError -eq 'skipped: -TimeoutSec budget exhausted') ("{0:N1} s, el={1} {2}" -f $sec, $global:ElCalls, $r.data.diagnostics.errorListError)
+Check 'L hint keeps the stop text in front, #194 hint after it' ($r.error.hint -match '授權都有效' -and $r.error.hint -notmatch [regex]::Escape($baseTimeout) -and $r.error.hint.IndexOf('授權都有效') -gt 0) "$($r.error.hint)"
+Clear-Block
+& $mod {
+    $script:TcSystemStateDiagCapSec = 10
+    function script:Get-TcLicenseDiagnosis { param([string]$AmsNetId) $global:Lic }
+    function script:Find-TcIdeModalDialog { $global:DlgCalls++; $global:Dlg }
+    function script:Get-TcBuildErrors {
+        param($TimeoutSec)
+        $global:ElCalls++
+        if ($global:ElThrows) { throw 'Error List mock failure' }
+        New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @($global:ElRows | ForEach-Object { [PSCustomObject]@{ description = $_ } }) })
+    }
+}
+
+# --- M: hint rules (PR #200 review items 3-5, 9), Get-TcStuckInConfigHint directly
+$dlg1809 = [PSCustomObject]@{ title = 'TwinCAT XAE'; text = $fatal }
+function Hint($Code, $Boot, $Lic, $Rows = @(), $Dialog = $dlg1809) { & $mod { param($c, $b, $l, $rw, $dg) Get-TcStuckInConfigHint -Code $c -License $l -Diagnostics ([PSCustomObject]@{ dialog = $dg; errorList = @($rw); bootPackage = $b }) } $Code $Boot $Lic $Rows $Dialog }
+$h = Hint 'SYSTEM_STATE_TIMEOUT' ([PSCustomObject]@{ status = 'match'; mismatches = @() }) $validLic
+Check 'M 1809 + bootPackage match: says Boot is consistent, no stale-CurrentConfig claim' ($h -match '比對一致' -and $h -match '不是 target 上 CurrentConfig 舊版造成' -and $h -notmatch '可能是') "$h"
+$h = Hint 'SYSTEM_STATE_TIMEOUT' ([PSCustomObject]@{ status = 'unavailable'; reason = 'solution platform unknown'; mismatches = @() }) $validLic
+Check 'M 1809 + bootPackage unavailable: only "可能是", reason named' ($h -match '可能是 target Boot' -and $h -match 'solution platform unknown' -and $h -notmatch '比出不一致') "$h"
+$h = Hint 'SYSTEM_STATE_TIMEOUT' ([PSCustomObject]@{ status = 'mismatch'; mismatches = @('CurrentConfig.xml') }) $validLic
+Check 'M 1809 + bootPackage mismatch: stated, files listed' ($h -match '比出不一致的檔案 CurrentConfig.xml' -and $h -notmatch '可能是') "$h"
+$noLic = [PSCustomObject]@{ licenses = @(); expired = @(); invalid = @(); text = $null }
+$h = Hint 'SYSTEM_STATE_TIMEOUT' $null $noLic @() $null
+Check 'M no license read at all: never "授權都有效", generic hint' ($h -notmatch '授權都有效' -and $h -eq $baseTimeout) "$h"
+$h = Hint 'SYSTEM_STATE_MISMATCH' $null $validLic @() $null
+Check 'M mismatch, nothing found: no "通常是", measured example dated' ($h -notmatch '通常是' -and $h -match '2026-11-08' -and $h -match '已讀到的 1 個授權都有效') "$h"
+$h = Hint 'SYSTEM_STATE_TIMEOUT' $null $validLic @('C0032: line 1809 of MAIN: type mismatch') $null
+Check 'M a bare 1809 (line number) is not ADS 1809' ($h -notmatch 'ADS 1809' -and $h -match 'XAE Error List') "$h"
+$h = Hint 'SYSTEM_STATE_TIMEOUT' $null $validLic @('Init4: AdsError: 1809 failed') $null
+Check 'M "AdsError: 1809" in an Error List row is ADS 1809' ($h -match 'XAE Error List 回報 ADS 1809') "$h"
 
 "failed: $fail"
 exit [Math]::Min($fail, 255)

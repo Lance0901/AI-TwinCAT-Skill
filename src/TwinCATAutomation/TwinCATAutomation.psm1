@@ -33,6 +33,8 @@ $script:TcAdsEnumCacheFailedAt = $null   # UTC time of the last failed load (10 
 $script:TcAdsEnumIndex = $null           # @{ Full = name -> desc (case-insensitive); Short = unqualified name -> [desc] }
 $script:TcLastBuildVerdict = $null       # last SUCCESSFUL Build-TcProject: solution, at, completeBuild, codeVerified, coverageComplete, warningCodes (BUILD_REQUIRED message)
 $script:TcSystemStateSkipDiagnostics = $false  # #194: set by Enable-TcConfig around its set-run: the nested Set-TcSystemState collects no data.diagnostics
+$script:TcSystemStateDiagCapSec = 10     # PR #200: Set-TcSystemState stuck-in-Config diagnostics end by request start + -TimeoutSec + this
+$script:TcLastSolutionPlatform = $null   # #198: last Get-TcSolutionPlatform read { platform; projectPlatform; solutionPath; readAt } (diagnostics without DTE)
 
 # Import private functions
 $privatePath = Join-Path $PSScriptRoot 'Private'

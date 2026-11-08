@@ -404,11 +404,17 @@ function Enable-TcConfig {
         # record, or 'none' = scanned, no dialog); then no second scan is made (#42).
         param([string]$Message, [string]$Code, [string]$Hint, [object]$DialogScan)
         # #194: collection shared with Set-TcSystemState (Private/Get-TcRuntimeFailureDiagnostics.ps1)
+        # PR #200 review: the modal scan first (unbounded as before: after a timeout the dialog is what
+        # explains it); the DTE platform read only when it found no dialog, else the cached platform
+        $scan = if ($null -ne $DialogScan) { $DialogScan } else { Get-TcDiagnosticsDialogScan }
         $plat = $projectPlatform
         if ([string]::IsNullOrWhiteSpace($plat)) { $plat = $solutionPlatform }
-        if ([string]::IsNullOrWhiteSpace($plat)) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
+        if ([string]::IsNullOrWhiteSpace($plat)) {
+            if (Test-TcDiagnosticsDialogClear $scan) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
+            else { $plat = Get-TcCachedSolutionPlatform }
+        }
         $ports = @($plcs | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort })
-        $diag = Get-TcRuntimeFailureDiagnostics -DialogScan $DialogScan -Deadline $deadline -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $currentVariant
+        $diag = Get-TcRuntimeFailureDiagnostics -DialogScan $scan -Deadline $deadline -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $currentVariant
         Set-Variable -Name diagnostics -Value $diag -Scope 1
         $extra = @()
         if ($null -ne $diag.dialog) { $extra += "dialog: $($diag.dialog.title) | $(([string]$diag.dialog.text) -replace '\s+', ' ')" }
@@ -421,7 +427,7 @@ function Enable-TcConfig {
                 $Hint = $null
             }
         }
-        elseif (@($diag.errorList | Where-Object { $_ -match '(?i)symbol description does not match|1809|0x711|symbol version' }).Count -gt 0 -and $Code -ne 'IDE_MODAL_DIALOG') {
+        elseif (@($diag.errorList | Where-Object { $_ -match $script:TcSymbolVersionPattern }).Count -gt 0 -and $Code -ne 'IDE_MODAL_DIALOG') {
             $extra += 'symbol description / application mismatch (ADS 1809)'
         }
         if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
@@ -904,6 +910,7 @@ function Enable-TcConfig {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
     $blockRequested = 'Config'
+    # -State Config: Set-TcSystemState collects no stuck-in-Config diagnostics (#194, -State Run only)
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     $reachedNote = Get-TcReadbackNote -StateResult $r

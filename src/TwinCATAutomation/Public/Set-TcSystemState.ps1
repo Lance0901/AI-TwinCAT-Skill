@@ -30,7 +30,7 @@
         data.stateTrace); any sample that differs returns SYSTEM_STATE_MISMATCH
         (success = false) instead of success.
 
-        Stuck in Config (#194): SYSTEM_STATE_TIMEOUT whose last read was Config and
+        Stuck in Config (#194, -State Run only): SYSTEM_STATE_TIMEOUT whose last read was Config and
         SYSTEM_STATE_MISMATCH whose readback / deviation is Config carry data.licenses (license
         server, ADS port 30, Get-TcLicenseDiagnosis) and data.diagnostics { dialog; dialogScanComplete;
         errorList; errorListError; bootPackage; modalScan } (Get-TcRuntimeFailureDiagnostics, the
@@ -42,6 +42,11 @@
         Enable-TcConfig -Force); another dialog / row -> its text; a license problem only when the
         license server reported an expired / invalid license. Inside Enable-TcConfig -Force
         (set-run) nothing is collected here: Enable-TcConfig adds its own data.diagnostics.
+        Order (PR #200 review): the lifecycle block is written first, then licenses / diagnostics /
+        hint are added. The modal dialog is scanned before any DTE read; with a dialog up or an
+        incomplete scan DTE is not read (platform from the last Connect-TcIde / Set-TcTarget read,
+        bootPackage.warnings says so; errorListError says why the Error List was not read). The
+        collection ends by request start + -TimeoutSec + 10 s ($script:TcSystemStateDiagCapSec).
 
         When the target is the local Usermode Runtime and its TcSystemServiceUm process
         disappears during the wait (process gone and ADS 0x7 for >= 10 s), RUNTIME_CRASHED is
@@ -151,6 +156,11 @@
         $sentName = $newState.AdsState.ToString()
         $newState.DeviceState = 0
         $requestWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        # PR #200 review: diagnostics of a stuck-in-Config failure end by request start + -TimeoutSec +
+        # $script:TcSystemStateDiagCapSec (default 10 s), inside the MCP budget max(180 s, -TimeoutSec + 30 s)
+        $diagCapSec = 10
+        if ($null -ne $script:TcSystemStateDiagCapSec) { try { $diagCapSec = [Math]::Max(0, [int]$script:TcSystemStateDiagCapSec) } catch { $diagCapSec = 10 } }
+        $diagDeadline = (Get-Date).AddSeconds($TimeoutSec + $diagCapSec)
         $sent = $true
         $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
@@ -239,46 +249,72 @@
         # Error List, Boot package; Private/Get-TcRuntimeFailureDiagnostics.ps1). Never throws and
         # never changes the result code; without an IDE connection dialog / Error List are marked
         # unavailable. Skipped inside Enable-TcConfig (its set-run failure collects them itself).
+        # PR #200 review: the modal scan comes FIRST; DTE (platform, PLC list, variant) is read only when
+        # it found no dialog (a DTE call blocked by a dialog may never return). Otherwise the platform is
+        # the cached one (Get-TcCachedSolutionPlatform) and the scan goes to the helper (-DialogScan).
+        # Everything ends by $diagDeadline.
         $getStuckDiagnostics = {
             try {
                 $ide = $true
                 try { Assert-TcConnection } catch { $ide = $false }
-                $plat = $null; $ports = @(); $variant = $null; $variantError = $null
+                $plat = $null; $ports = @(); $variant = $null; $variantError = $null; $scan = $null; $dteNote = $null
                 if ($ide) {
-                    try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { }
-                    $smd = $null
-                    try { $smd = Get-TcSysManager } catch { }
-                    if ($null -ne $smd) {
-                        try { $ports = @(Get-TcPlcProjectList -SysManager $smd | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
-                        # #89: a variant project has its package in _Boot\<Variant>\<Platform>; unknown variant -> no comparison
-                        try { $cv = Read-TcCurrentVariant -SysManager $smd; if ($null -eq $cv.Error) { $variant = [string]$cv.Value } else { $variantError = [string]$cv.Error } } catch { $variantError = $_.Exception.Message }
+                    $scan = Get-TcDiagnosticsDialogScan -Deadline $diagDeadline
+                    if ((Test-TcDiagnosticsDialogClear $scan) -and (Get-Date) -lt $diagDeadline) {
+                        try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { }
+                        $smd = $null
+                        try { $smd = Get-TcSysManager } catch { }
+                        if ($null -ne $smd) {
+                            try { $ports = @(Get-TcPlcProjectList -SysManager $smd | Where-Object { -not $_.disabled -and $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort }) } catch { $ports = @() }
+                            # #89: a variant project has its package in _Boot\<Variant>\<Platform>; unknown variant -> no comparison
+                            try { $cv = Read-TcCurrentVariant -SysManager $smd; if ($null -eq $cv.Error) { $variant = [string]$cv.Value } else { $variantError = [string]$cv.Error } } catch { $variantError = $_.Exception.Message }
+                        }
+                    }
+                    else {
+                        $plat = Get-TcCachedSolutionPlatform
+                        $why = if (Test-TcDiagnosticsDialogClear $scan) { 'the diagnostics deadline was reached' } elseif (Test-TcModalScanIncomplete $scan) { 'the modal dialog scan did not complete' } else { 'a modal dialog is up' }
+                        $dteNote = "IDE not read ($why): platform $(if ($null -eq $plat) { 'unknown (no Connect-TcIde / Set-TcTarget read of this solution)' } else { "'$plat' from the last Connect-TcIde / Set-TcTarget read" }); PLC ADS ports and CurrentProjectVariant not read (every Port_*.app of the project package compared, base _Boot\<platform> folder)"
                     }
                 }
                 $sln = if ($ide) { $script:TcSolutionPath } else { $null }
-                $d = Get-TcRuntimeFailureDiagnostics -NoIde:(-not $ide) -SolutionPath $sln -Platform $(if ($null -eq $variantError) { $plat } else { $null }) -AmsNetId $AmsNetId -AdsPorts $ports -Variant $variant
+                $d = Get-TcRuntimeFailureDiagnostics -NoIde:(-not $ide) -DialogScan $scan -Deadline $diagDeadline -SolutionPath $sln -Platform $(if ($null -eq $variantError) { $plat } else { $null }) -AmsNetId $AmsNetId -AdsPorts $ports -Variant $variant
                 if ($null -ne $variantError -and $null -ne $d.bootPackage) { $d.bootPackage.reason = "CurrentProjectVariant not readable: $variantError" }
+                if ($null -ne $dteNote -and $null -ne $d.bootPackage) {
+                    $wp = $d.bootPackage.PSObject.Properties['warnings']
+                    $w = if ($null -ne $wp) { @($wp.Value | Where-Object { $null -ne $_ }) } else { @() }
+                    $d.bootPackage | Add-Member -NotePropertyName 'warnings' -NotePropertyValue @($w + $dteNote) -Force
+                }
                 $d
             }
             catch {
                 [PSCustomObject]@{ dialog = $null; dialogScanComplete = $false; errorList = @(); errorListError = "diagnostics failed: $($_.Exception.Message)"; bootPackage = $null }
             }
         }
-        # adds data.licenses / data.diagnostics and returns the hint (#194 rules, Get-TcStuckInConfigHint)
-        $stuckHint = {
-            param([string]$Code)
-            $hint = Get-TcErrorHint -Code $Code
-            $lic = Get-TcLicenseDiagnosis -AmsNetId $AmsNetId
-            if ($null -ne $lic) { $data | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic -Force }
-            if ($script:TcSystemStateSkipDiagnostics -eq $true) {
-                # nested in Enable-TcConfig: hint as before #194 (Enable-TcConfig adds its own diagnostics)
-                if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" }
-                return $hint
+        # #194 / PR #200 review (fail closed first): called AFTER Add-TcLifecycleBlockResult wrote the block.
+        # Adds data.licenses / data.diagnostics and replaces the generic hint by the #194 one
+        # (Get-TcStuckInConfigHint), behind the stop text. Never throws.
+        $addStuckDiagnostics = {
+            param([object]$Res, [string]$Code)
+            try {
+                $base = Get-TcErrorHint -Code $Code
+                $rd = $Res.data
+                $lic = $null
+                try { $lic = Get-TcLicenseDiagnosis -AmsNetId $AmsNetId } catch { }
+                if ($null -ne $lic) { $rd | Add-Member -NotePropertyName 'licenses' -NotePropertyValue $lic -Force }
+                $hint = $base
+                if ($script:TcSystemStateSkipDiagnostics -eq $true) {
+                    # nested in Enable-TcConfig: hint as before #194 (Enable-TcConfig adds its own diagnostics)
+                    if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $base" }
+                }
+                else {
+                    $diag = & $getStuckDiagnostics
+                    $rd | Add-Member -NotePropertyName 'diagnostics' -NotePropertyValue $diag -Force
+                    try { $hint = Get-TcStuckInConfigHint -Code $Code -Diagnostics $diag -License $lic }
+                    catch { if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $base" } }
+                }
+                Set-TcHintAfterStopText -Result $Res -OldHint $base -NewHint $hint
             }
-            $diag = & $getStuckDiagnostics
-            $data | Add-Member -NotePropertyName 'diagnostics' -NotePropertyValue $diag -Force
-            try { $hint = Get-TcStuckInConfigHint -Code $Code -Diagnostics $diag -License $lic }
-            catch { if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $hint" } }
-            $hint
+            catch { Write-Verbose "Set-TcSystemState: stuck-in-Config diagnostics failed ($($_.Exception.Message))" }
         }
         $lastReadFailed = -not [string]::IsNullOrEmpty([string]$wait.LastError)
         $seen = if (-not [string]::IsNullOrWhiteSpace([string]$wait.State)) { [string]$wait.State } else { $stateBefore }
@@ -310,7 +346,8 @@
 
         if (-not $wait.Reached) {
             $detail = if ($wait.LastError) { " Last error: $($wait.LastError)" } else { '' }
-            $hint = if (-not $lastReadFailed -and $wait.State -eq 'Config') { & $stuckHint 'SYSTEM_STATE_TIMEOUT' } else { Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT' }
+            # #194: only a Run request that stays in Config (PR #200 review: never for -State Config)
+            $stuck = ($State -eq 'Run' -and -not $lastReadFailed -and $wait.State -eq 'Config')
             $data | Add-Member -NotePropertyName 'lastState' -NotePropertyValue $seen
             $data | Add-Member -NotePropertyName 'lastError' -NotePropertyValue $wait.LastError
             if (-not [string]::IsNullOrEmpty([string]$wait.RuntimeName)) {
@@ -324,14 +361,17 @@
             $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT did not reach state '$State' within $TimeoutSec s (last state: $last).$detail" `
                 -ErrorCode 'SYSTEM_STATE_TIMEOUT' `
-                -Hint $hint `
+                -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT') `
                 -Data $data
             # #114: nothing was read back at the end: reachedState empty like the crash record, the
             # last value read before goes to the step text
             $reachedRb = if ($lastReadFailed) { $null } else { [string]$wait.State }
             $step = if ($lastReadFailed) { "wait: port 10000 unreachable at the deadline; last state read before: $seen" } else { 'wait' }
             $note = if ($lastReadFailed) { 'unreachable' } else { $null }
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step)
+            # #68 / PR #200 review: the block is written before the (slower) diagnostics
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step
+            if ($stuck) { & $addStuckDiagnostics $res 'SYSTEM_STATE_TIMEOUT' }
+            return $res
         }
         $data.reached = $true
         $data.latencyMs = [int]$requestWatch.ElapsedMilliseconds
@@ -386,18 +426,22 @@
 
         if ($null -ne $deviated) {
             $traceText = ($data.stateTrace | ForEach-Object { "+$($_.ms)ms $($_.state)" }) -join ', '
-            $hint = if ($readback -eq 'Config' -or $deviated -eq 'Config') { & $stuckHint 'SYSTEM_STATE_MISMATCH' } else { Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH' }
+            # #194: only a Run request that fell back to Config (PR #200 review: never for -State Config)
+            $stuck = ($State -eq 'Run' -and ($readback -eq 'Config' -or $deviated -eq 'Config'))
             $res = New-TcResult -Success $false `
                 -ErrorMessage "TwinCAT reached '$State' but did not stay there: readback '$readback' after $SettleSec s (sent AdsState $sentName ($sentCode); trace $traceText)." `
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
-                -Hint $hint `
+                -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH') `
                 -Data $data
             # #114: an unreachable final readback is not a state (reachedState empty, see the wait branch)
             $reachedRb = if ([string]$readback -eq 'Unreachable') { $null } else { [string]$readback }
             $step = if ($null -eq $reachedRb) { 'settle: port 10000 unreachable at the final readback' } else { 'settle' }
             $note = if ($null -eq $reachedRb) { 'unreachable' } else { $null }
             & $addProbeData
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step)
+            # #68 / PR #200 review: the block is written before the (slower) diagnostics
+            $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step
+            if ($stuck) { & $addStuckDiagnostics $res 'SYSTEM_STATE_MISMATCH' }
+            return $res
         }
 
         New-TcResult -Success $true -Data $data
