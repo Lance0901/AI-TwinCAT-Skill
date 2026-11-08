@@ -22,6 +22,8 @@
 
 zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Build-TcAutoRelease.ps1`)、launcher、`Install-TcAuto.ps1`,以及已經建置好的 runtime(含 `node_modules`,約 40 MB),所以電腦上不需要 Node.js、git 或 npm。
 
+步驟 1 到 4 請在同一個 PowerShell 視窗做,因為 `$zip` 變數會沿用。
+
 1. 下載 `TcAuto-<version>.zip` 與 `TcAuto-<version>.zip.sha256`,核對雜湊值。在一般 PowerShell 視窗執行(把 `0.6.0-beta` 換成你下載的版本):
 
    ```powershell
@@ -85,14 +87,18 @@ zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Bu
 
 - 只有目標狀態讀回確認後才會回 `success: true`。`success: false` 時 AI 要停下來,把 `data` 與 `error.hint` 回報給你,不能改走原始 ADS、COM 或 GUI。當機或 Activate 失敗後,模組會替該 target 記錄 lifecycle block,之後都回 `LIFECYCLE_BLOCKED`,直到你同意並用 `ClearLifecycleBlock` 附上原因清除。細節:[adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md)「Failure contract」。
 - 啟動組態(Activate)會重啟 target 的 runtime,輸出會歸零。請在可以接受的 target 上操作。
-- 長時間的呼叫(`ConnectIde`、`BuildProject`、`EnableConfig`、`RunLifecycle`)可能超過 client 自己的 request timeout(SDK 預設 60 秒),但 server 仍會繼續做完。Claude Code:用 `MCP_TOOL_TIMEOUT` 設定毫秒數(例如 `900000`)。細節:[mcp-server/README.md](mcp-server/README.md#client-request-timeout)。
-- Codex 預設每次呼叫 MCP tool 都會先問你是否核准。要無人值守,在 `%USERPROFILE%\.codex\config.toml` 的 `[mcp_servers.tcauto]` table 加一行:
+- 長時間的呼叫(`ConnectIde`、`BuildProject`、`EnableConfig`、`RunLifecycle`)可能超過 client 自己的 request timeout(SDK 預設 60 秒),但 server 仍會繼續做完。Claude Code:設定環境變數 `MCP_TOOL_TIMEOUT`,單位是毫秒(例如 `900000`),設在啟動 `claude` 的環境,或 `settings.json` 的 `env`,設完重開 Claude Code。細節:[mcp-server/README.md](mcp-server/README.md#client-request-timeout)。
+- Codex 預設每次呼叫 MCP tool 都會先問你是否核准(實測 2026-11-08,codex-cli 0.167.0)。要無人值守,`%USERPROFILE%\.codex\config.toml` 的 `[mcp_servers.tcauto]` table 裡加下面這個設定,應該能做到:
 
   ```toml
   default_tools_approval_mode = "approve"
   ```
 
-  這樣模型呼叫 tcauto 的每個 tool 都不會再問你,包含 `EnableConfig`、`WriteVariable`、`SetPlcState`,下錯指令可能直接在真機上啟動、停止或 Reset PLC。只在測試用 target 上使用。`Install-TcAuto.ps1` 會整個重寫 `[mcp_servers.tcauto]` table(依 `scripts/lib/tcauto-client-config.mjs` 的程式碼判斷,沒有實際執行),所以每次安裝或升級後要重新加上這一行。
+  這樣模型呼叫 tcauto 的每個 tool 都不會再問你,包含 `EnableConfig`、`WriteVariable`、`SetPlcState`,下錯指令可能直接在真機上啟動、停止或 Reset PLC。只在測試用 target 上使用。
+
+  鍵名為實測 2026-11-08,codex-cli 0.167.0,以 `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"` 驗證有效;未查到 Codex 官方文件。寫進 `config.toml` 的形式(上面的 toml 區塊)**還沒有實測**。
+
+  **每次**執行 `Install-TcAuto.ps1` 之後都要把那行加回去:`scripts/lib/tcauto-client-config.mjs` 的 `setToml` 只要 table 內容和安裝程式要寫的不同,就會整個重寫 `[mcp_servers.tcauto]`,多了你自加的 key 就算不同(reviewer 在記憶體裡呼叫該函式驗證過,沒有動到真的設定檔)。由 [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204) 追蹤。
 
 ## 支援的 client 與驗證狀態
 
@@ -104,15 +110,15 @@ zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Bu
 | Codex | 是,`config.toml` | codex-cli 0.167.0、模型 gpt-6.1-sol:完整 lifecycle。預設 tool timeout 下 `ConnectIde` 花 66 秒,沒有被中斷。 | 預設每次 tool 呼叫都要核准,見「第一次使用」。 |
 | Claude Desktop | 是,寫入 MSIX 版設定檔(標準版資料夾存在時也寫) | 安裝與註冊:重開後 log 出現 `Connected to tcauto (85 tools)`(實測 2026-11-07,MSIX 4.23118.0.0)。在 Desktop 對話裡呼叫 tool **尚未完整驗證**。 | MSIX 版與標準版的設定檔位置不同,見 [docs/setup-mcp.md](docs/setup-mcp.md)。 |
 | Antigravity | 否,不註冊 MCP | **未實測。** `adapters/antigravity/plugin.yaml` 由 tool 定義產生。 | 舊版 skill 安裝器見[下方](#舊版-skill-安裝器不含-mcp)。 |
-| 其他 MCP client | 手動 | 未實測 | stdio server,command 為 `node`,args 為 `["<安裝根目錄>\\launcher\\tcauto-launcher.mjs"]`。 |
+| 其他 MCP client | 手動 | 未實測 | stdio server。command 為 `<安裝根目錄>\node\node.exe`(客戶安裝)或 `node`(開發者安裝);args 為 `["<安裝根目錄>\\launcher\\tcauto-launcher.mjs"]`。 |
 
 「完整 lifecycle」指 `ConnectIde`、`SetTarget`、`BuildProject`、`EnableConfig Force=true`、`ConnectAds`、`ReadVariable`,並且計數器持續增加。
 
 ## 升級與移除
 
-**升級。** 下載新版 zip、核對雜湊值、解壓縮,用同樣方式執行新 zip 的 `Install-TcAuto.ps1`。註冊內容不變,所以不用重開 client:呼叫 MCP tool `ReloadRuntime`,再 `ConnectIde` 一次。模組持有 lifecycle block 或尚未存檔的 build-required 狀態時,`ReloadRuntime` 會拒絕(`RELOAD_LIFECYCLE_BLOCKED`、`RELOAD_BUILD_REQUIRED`);另一個呼叫還在跑時回 `RUNTIME_RELOAD_BUSY`。IDE 與 ADS 連線會釋放,IDE 本身繼續執行。新版 `node.exe` 要等 client 下次重開才會用到。之後 `GetStatus` 的 `data.bridge.runtime` 會顯示新的 commit。
+**升級。** 用新版 zip 做安裝的步驟 1、2、4(下載並核對雜湊值、解壓縮、執行 `Install-TcAuto.ps1`);不用做步驟 3,也不用重開 client。client 可以保持開著,因為註冊內容沒有變:之後呼叫 MCP tool `ReloadRuntime`,再 `ConnectIde` 一次。模組持有 lifecycle block 或尚未存檔的 build-required 狀態時,`ReloadRuntime` 會拒絕(`RELOAD_LIFECYCLE_BLOCKED`、`RELOAD_BUILD_REQUIRED`);另一個呼叫還在跑時回 `RUNTIME_RELOAD_BUSY`。IDE 與 ADS 連線會釋放,IDE 本身繼續執行。新版 `node.exe` 要等 client 下次重開才會用到。之後 `GetStatus` 的 `data.bridge.runtime` 會顯示新的 commit。
 
-**移除。** 關閉 client,然後在解壓縮的資料夾,從一般 PowerShell 視窗執行:
+**移除。** 關閉 client,然後從一般 PowerShell 視窗,**在解壓縮後的資料夾**執行(所以那個資料夾要留著,或重新解壓縮一次):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall
@@ -127,7 +133,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninst
 | 你看到的 | 意思 | 怎麼做 |
 |---|---|---|
 | 安裝程式停在 `INSTALL_PACKAGED_CONTEXT` | 安裝程式跑在 MSIX 套件內,典型是 Claude Desktop 的「Code」分頁。什麼都沒寫。 | 從一般 PowerShell 視窗重跑同一個指令,再重開 client。錯誤碼說明:[docs/troubleshooting.md](docs/troubleshooting.md)「安裝器錯誤碼」。 |
-| client 約 60 秒後回報逾時,server 沒有給 `error.code` | client 自己的 request timeout 比呼叫短;server 仍會做完。 | Claude Code:`MCP_TOOL_TIMEOUT=900000`,再用 `GetStatus` 確認。[mcp-server/README.md](mcp-server/README.md#client-request-timeout) |
+| client 約 60 秒後回報逾時,server 沒有給 `error.code` | client 自己的 request timeout 比呼叫短;server 仍會做完。 | Claude Code:設定 `MCP_TOOL_TIMEOUT=900000`(毫秒;設在啟動 `claude` 的環境或 `settings.json` 的 `env`,設完重開 Claude Code),再用 `GetStatus` 確認。[mcp-server/README.md](mcp-server/README.md#client-request-timeout) |
 | `PLATFORM_UNKNOWN`,或 `ACTIVATE_FAILED`(「Check config failed」) | solution platform 和 target platform 不同,或 target 回報不出自己的 platform。 | 對 `SetTarget`、`EnableConfig` 或 `RunLifecycle` 帶 `Platform`(4026 的 UmRT 用 `TwinCAT OS (x64)`),再建置、Activate。細節:[docs/troubleshooting.md](docs/troubleshooting.md)「環境矩陣」「PLATFORM_UNKNOWN」「ACTIVATE_FAILED」。 |
 | [`IDE_MODAL_DIALOG`](docs/troubleshooting.md#ide_modal_dialog--ide_modal_dialog_reload) | XAE 裡有對話框擋住呼叫。 | 用 `GetIdeModalDialog` 讀內容,在 IDE 裡處理或照 hint 做,再重試。不要盲目重試。 |
 | [`RUNTIME_CRASHED`](docs/troubleshooting.md#runtime_crashed) 或 [`LIFECYCLE_BLOCKED`](docs/troubleshooting.md#lifecycle_blocked) | 本機 UmRT 的 `TcSystemServiceUm` 在 Config 或 Activate 期間消失(#21),或前一次失敗留下 block。 | 停下來,請 AI 回報 `data`。自己重啟 UmRT,同意後再 `ClearLifecycleBlock`,然後重跑 `EnableConfig Force=true`。 |

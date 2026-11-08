@@ -22,6 +22,8 @@ The install package is the release zip `TcAuto-<version>.zip` with `TcAuto-<vers
 
 The zip contains the official Node.js 24.22.2 `node.exe` (win-x64, SHA256 pinned in `scripts/Build-TcAutoRelease.ps1`), the launcher, `Install-TcAuto.ps1` and the runtime already built (with `node_modules`, about 40 MB), so the PC needs no Node.js, git or npm.
 
+Do steps 1 to 4 in the same PowerShell window, because the `$zip` variable is reused.
+
 1. Download `TcAuto-<version>.zip` and `TcAuto-<version>.zip.sha256`, then check the hash. In a normal PowerShell window (replace `0.6.0-beta` with the version you downloaded):
 
    ```powershell
@@ -85,14 +87,18 @@ Rules the tools follow, and that you should expect from the AI:
 
 - `success: true` only after the target state was read back. On `success: false` the AI stops and reports `data` and `error.hint`; it does not fall back to raw ADS, COM or GUI. After a crash or a failed activation the module records a lifecycle block for that target and answers `LIFECYCLE_BLOCKED` until you agree and `ClearLifecycleBlock` is called with a reason. Details: [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md) "Failure contract".
 - Activating restarts the target runtime and outputs go to zero. Use a target where that is acceptable.
-- Long calls (`ConnectIde`, `BuildProject`, `EnableConfig`, `RunLifecycle`) can outlast a client's own request timeout (SDK default 60 s) while the server keeps working. Claude Code: set `MCP_TOOL_TIMEOUT` in milliseconds (for example `900000`). Details: [mcp-server/README.md](mcp-server/README.md#client-request-timeout).
-- Codex asks you to approve every MCP tool call by default. To run unattended, add one line to the `[mcp_servers.tcauto]` table of `%USERPROFILE%\.codex\config.toml`:
+- Long calls (`ConnectIde`, `BuildProject`, `EnableConfig`, `RunLifecycle`) can outlast a client's own request timeout (SDK default 60 s) while the server keeps working. Claude Code: set the environment variable `MCP_TOOL_TIMEOUT` in milliseconds (for example `900000`), in the environment that starts `claude` or in the `env` block of `settings.json`, then restart Claude Code. Details: [mcp-server/README.md](mcp-server/README.md#client-request-timeout).
+- Codex asks you to approve every MCP tool call by default (實測 2026-11-08, codex-cli 0.167.0). To run unattended, the setting below in the `[mcp_servers.tcauto]` table of `%USERPROFILE%\.codex\config.toml` is meant to do it:
 
   ```toml
   default_tools_approval_mode = "approve"
   ```
 
-  This lets the model call every tcauto tool, including `EnableConfig`, `WriteVariable` and `SetPlcState`, without asking you, so a wrong prompt can start, stop or reset a PLC on a real machine. Use it on a test target only. `Install-TcAuto.ps1` rewrites the whole `[mcp_servers.tcauto]` table (read from `scripts/lib/tcauto-client-config.mjs`, not run), so add the line again after every install or upgrade that changes the table.
+  This lets the model call every tcauto tool, including `EnableConfig`, `WriteVariable` and `SetPlcState`, without asking you, so a wrong prompt can start, stop or reset a PLC on a real machine. Use it on a test target only.
+
+  The key name is 實測 2026-11-08, codex-cli 0.167.0: it took effect when passed as `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"`. No Codex documentation for it was found. The form written into `config.toml` (the toml block above) has **not been tested yet**.
+
+  Add the line again after **every** run of `Install-TcAuto.ps1`: `setToml` in `scripts/lib/tcauto-client-config.mjs` rewrites the whole `[mcp_servers.tcauto]` table whenever its content differs, and a table with your extra key differs from the one the installer writes (a reviewer called the function in memory; no real config was touched). Tracked in [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204).
 
 ## Supported clients and verification status
 
@@ -104,15 +110,15 @@ Verified with the 0.6.0-beta release candidate zip on the local UmRT, with 4026 
 | Codex | yes, `config.toml` | codex-cli 0.167.0, model gpt-6.1-sol: full lifecycle. `ConnectIde` took 66 s with the default tool timeout and was not interrupted. | Asks for approval on each tool call by default, see "First use". |
 | Claude Desktop | yes, writes the MSIX config file (and the standard one when that folder exists) | Install and registration: after a restart the log showed `Connected to tcauto (85 tools)` (實測 2026-11-07, MSIX 4.23118.0.0). Tool calls inside a Desktop conversation are **not fully verified**. | Config location differs between the MSIX and the standard install, see [docs/setup-mcp.md](docs/setup-mcp.md). |
 | Antigravity | no MCP registration | **Not tested.** The adapter `adapters/antigravity/plugin.yaml` is generated from the tool definitions. | The old skill installer is [below](#legacy-skill-installers-without-mcp). |
-| Other MCP clients | by hand | Not tested | stdio server, command `node`, args `["<install root>\\launcher\\tcauto-launcher.mjs"]`. |
+| Other MCP clients | by hand | Not tested | stdio server. Command `<install root>\node\node.exe` (customer install) or `node` (developer install); args `["<install root>\\launcher\\tcauto-launcher.mjs"]`. |
 
 "Full lifecycle" = `ConnectIde`, `SetTarget`, `BuildProject`, `EnableConfig Force=true`, `ConnectAds`, `ReadVariable` with a counter that increases.
 
 ## Upgrade and remove
 
-**Upgrade.** Download the new zip, check the hash, extract it, and run its `Install-TcAuto.ps1` the same way. The registration does not change, so no client restart is needed: call the MCP tool `ReloadRuntime`, then `ConnectIde` again. `ReloadRuntime` is refused (`RELOAD_LIFECYCLE_BLOCKED`, `RELOAD_BUILD_REQUIRED`) while the module holds a lifecycle block or unsaved build-required state, and with `RUNTIME_RELOAD_BUSY` while another call runs. The IDE and ADS connections are released; the IDE keeps running. A newer `node.exe` is used only after the next client restart. `GetStatus` then shows the new commit in `data.bridge.runtime`.
+**Upgrade.** Do steps 1, 2 and 4 of the install with the new zip (download and check the hash, extract, run `Install-TcAuto.ps1`); step 3 and a client restart are not needed. The clients can stay open because the registration does not change: afterwards call the MCP tool `ReloadRuntime`, then `ConnectIde` again. `ReloadRuntime` is refused (`RELOAD_LIFECYCLE_BLOCKED`, `RELOAD_BUILD_REQUIRED`) while the module holds a lifecycle block or unsaved build-required state, and with `RUNTIME_RELOAD_BUSY` while another call runs. The IDE and ADS connections are released; the IDE keeps running. A newer `node.exe` is used only after the next client restart. `GetStatus` then shows the new commit in `data.bridge.runtime`.
 
-**Remove.** Close the clients, then from a normal PowerShell window in the extracted folder:
+**Remove.** Close the clients, then run this from a normal PowerShell window **in the extracted folder** (keep that folder, or extract the zip again):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall
@@ -127,7 +133,7 @@ The five codes you are most likely to meet. Every `error` has `code`, `message` 
 | You see | Meaning | Do |
 |---|---|---|
 | Installer stops with `INSTALL_PACKAGED_CONTEXT` | The installer ran inside an MSIX package, typically the Claude Desktop "Code" tab. Nothing was written. | Run the same command from a normal PowerShell window, then restart the clients. Installer error codes: [docs/troubleshooting.md](docs/troubleshooting.md), section "安裝器錯誤碼". |
-| The client reports a timeout after about 60 s, no `error.code` from the server | The client's own request timeout is shorter than the call; the server finishes the call anyway. | Claude Code: `MCP_TOOL_TIMEOUT=900000`. Check `GetStatus`. [mcp-server/README.md](mcp-server/README.md#client-request-timeout) |
+| The client reports a timeout after about 60 s, no `error.code` from the server | The client's own request timeout is shorter than the call; the server finishes the call anyway. | Claude Code: set `MCP_TOOL_TIMEOUT=900000` (milliseconds; in the environment that starts `claude` or in `settings.json` `env`, then restart Claude Code). Check `GetStatus`. [mcp-server/README.md](mcp-server/README.md#client-request-timeout) |
 | `PLATFORM_UNKNOWN`, or `ACTIVATE_FAILED` ("Check config failed") | The solution platform differs from the target platform, or the target cannot report its platform. | Pass `Platform` (`TwinCAT OS (x64)` for a UmRT on 4026) to `SetTarget`, `EnableConfig` or `RunLifecycle`, then build and activate again. Details: [docs/troubleshooting.md](docs/troubleshooting.md), sections "環境矩陣", "PLATFORM_UNKNOWN" and "ACTIVATE_FAILED". |
 | [`IDE_MODAL_DIALOG`](docs/troubleshooting.md#ide_modal_dialog--ide_modal_dialog_reload) | A dialog in XAE blocks the call. | Read it with `GetIdeModalDialog`, answer it in the IDE or as the hint says, then repeat. Do not retry blindly. |
 | [`RUNTIME_CRASHED`](docs/troubleshooting.md#runtime_crashed) or [`LIFECYCLE_BLOCKED`](docs/troubleshooting.md#lifecycle_blocked) | The local UmRT service `TcSystemServiceUm` disappeared during Config or Activate (#21), or an earlier failure left a block. | Stop; let the AI report `data`. Restart the UmRT yourself, then agree to `ClearLifecycleBlock`, then run `EnableConfig Force=true` again. |
@@ -188,7 +194,7 @@ Import-Module ./src/TwinCATAutomation/TwinCATAutomation.psm1 -Force
 # 1. Connect to the IDE (finds a running one for the solution, else launches one)
 Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
 
-# 1b. The target decides the platform; a UmRT needs 'TwinCAT OS (x64)', else ACTIVATE_FAILED.
+# 1b. The target decides the platform; on 4026 a UmRT needs 'TwinCAT OS (x64)', else ACTIVATE_FAILED.
 #     Without -Platform it is read from the target (TARGETINFO); a runtime that answers ADS 0x702
 #     (the UmRT of TwinCAT 3.1.4026.21-22) gives PLATFORM_UNKNOWN, so pass it.
 Set-TcTarget -AmsNetId <data.amsNetId> -Platform 'TwinCAT OS (x64)'

@@ -39,13 +39,9 @@ Clients read their MCP registration **only when the app starts** (實測 2026-11
 
 ### Where the zip comes from
 
-`TcAuto-<version>.zip` and `TcAuto-<version>.zip.sha256` are built by `scripts\Build-TcAutoRelease.ps1` (#20). `.github/workflows/release.yml` runs it on `windows-latest` when a `v*` tag is pushed and attaches both files to the GitHub Release of that tag (a tag with a `-` such as `v0.6.0-beta` becomes a pre-release). Download them from the repository's [Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) page.
+`TcAuto-<version>.zip` and `TcAuto-<version>.zip.sha256` are built by `scripts\Build-TcAutoRelease.ps1` (#20). `.github/workflows/release.yml` runs it on `windows-latest` when a `v*` tag is pushed and attaches both files to the GitHub Release of that tag (when the workflow itself creates the Release, a tag with a `-` such as `v0.6.0-beta` makes it a pre-release; an existing Release keeps its flag). Download them from the repository's [Releases](https://github.com/Lance0901/AI-TwinCAT-Skill/releases) page.
 
-**v0.6.0-beta is the first release with the zip.** v0.5.0-beta and earlier releases have no install package. If the Releases page does not list a zip yet, use the developer install, or build the zip yourself in a clean checkout (needs git and Node.js/npm; `-AllowDirty` for a dirty tree, `-NodeExePath <node.exe>` for a downloaded `node.exe`, which must have the pinned SHA256):
-
-```powershell
-powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1      # -> dist\TcAuto-<git describe>.zip + .sha256 (about 40 MB)
-```
+**v0.6.0-beta is the first release with the zip.** v0.5.0-beta and earlier releases have no install package. If the Releases page does not list a zip yet, use the [developer install](#developer-install-from-a-checkout); building the zip yourself is described there.
 
 What is in the zip (about 40 MB):
 
@@ -61,7 +57,9 @@ The client runs that `node.exe`, so the PC needs no Node.js. A single executable
 
 ### Steps
 
-Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE (4024 or 4026) for `ConnectIde`. The installer warns when it finds neither `TWINCAT3DIR` nor the registry value `HKLM\SOFTWARE\WOW6432Node\Beckhoff\TwinCAT3\TwinCATDir`, and installs anyway.
+Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE (4024 or 4026) for `ConnectIde`. The installer warns when it finds neither `TWINCAT3DIR` nor the registry value `HKLM\SOFTWARE\[WOW6432Node\]Beckhoff\TwinCAT3\TwinCATDir` (both locations), and installs anyway.
+
+Do steps 1 to 4 in the same PowerShell window, because the `$zip` variable is reused.
 
 1. Download the zip and its `.sha256`, then compare the hash (in a normal PowerShell window; replace the version):
 
@@ -103,7 +101,7 @@ Needed on the PC: Windows 10/11, Windows PowerShell 5.1, TwinCAT 3.1 XAE (4024 o
    | Claude Desktop | MSIX package (Microsoft Store / winget): `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json`; standard install: `%APPDATA%\Claude\claude_desktop_config.json` (see below) | `mcpServers.tcauto` (`command`, `args`) |
    | Codex | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | table `[mcp_servers.tcauto]` (`command`, `args`) |
 
-   Only the `tcauto` entry changes; other servers and settings stay as they are. Each file is copied to `<file>.bak-<yyyyMMddTHHmmss>` before it changes. An existing `tcauto` (for example a developer registration) is overwritten, and its old value is in the result (`data.clients[].previous`). For Codex the whole `[mcp_servers.tcauto]` table and its sub-tables are replaced, so keys you added there (for example `default_tools_approval_mode`) are dropped: add them again after the install (from `scripts/lib/tcauto-client-config.mjs`; not run). A client is skipped (and reported) when its file (Claude Code) or folder (Claude Desktop, Codex) does not exist. A config file that is not valid JSON, or a Codex `tcauto` written as a key instead of a `[mcp_servers.tcauto]` table, is left unchanged (`CLIENT_CONFIG_FAILED`).
+   Only the `tcauto` entry changes; other servers and settings stay as they are. Each file is copied to `<file>.bak-<yyyyMMddTHHmmss>` before it changes. An existing `tcauto` (for example a developer registration) is overwritten, and its old value is in the result (`data.clients[].previous`). For Codex the whole `[mcp_servers.tcauto]` table and its sub-tables are replaced, so keys you added there (for example `default_tools_approval_mode`) are dropped: add them again after **every** run of `Install-TcAuto.ps1`. `setToml` in `scripts/lib/tcauto-client-config.mjs` rewrites the table whenever its content differs (a reviewer called it in memory; no real config was touched); tracked in [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204). A client is skipped (and reported) when its file (Claude Code) or folder (Claude Desktop, Codex) does not exist. A config file that is not valid JSON, or a Codex `tcauto` written as a key instead of a `[mcp_servers.tcauto]` table, is left unchanged (`CLIENT_CONFIG_FAILED`).
 3. Runs the same check as `-Verify`: starts the installed `node.exe` with the launcher, sends MCP `initialize` + `tools/list` and reports the tool count (<!-- generated:mcp-tool-count -->79<!-- /generated --> cmdlet tools + <!-- generated:composite-count -->5<!-- /generated --> composite tools + the launcher's `ReloadRuntime`) and the runtime commit. It does not connect to an IDE.
 
 **Claude Desktop has two config locations (#165).** The MSIX package reads `%LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json` (the folder that also holds its `preferences`), not `%APPDATA%\Claude\` (實測 2026-11-07, Windows 11, Claude Desktop MSIX 4.23118.0.0, package `Claude_4.23118.0.0_x64__pzs8sxrjxfjjc`, folder `claude_pzs8sxrjxfjjc`; Anthropic's documentation names only `%APPDATA%\Claude`). Evidence: with tcauto only in `%APPDATA%\Claude\claude_desktop_config.json` a restart loaded no tcauto; after the entry was added to the `Claude-Data` file, the next restart logged `Connected to tcauto (85 tools)`. Desktop reads the file only at start. The installer writes every existing `%LOCALAPPDATA%\Claude-Data\claude_*\` folder, and `%APPDATA%\Claude\` when that folder exists or no MSIX folder was found; when both exist both get the entry. `data.clients[]` has one row per file with `variant` = `msix` / `standard`.
@@ -142,6 +140,16 @@ Parameters: `-InstallRoot`, `-AllowDirty`, `-Keep <1..20>` (default 3), `-NpmPat
 3. Writes `runtime\<version>\tcauto-source.json` (`commit`, `ref`, `branch`, `dirty`, `installedAt`, `sourcePath`, `version`) and switches `runtime\current.json` to the new version atomically (temp file + replace).
 4. Copies `mcp-server\launcher\tcauto-launcher.mjs` to `%LOCALAPPDATA%\TwinCATAutomation\launcher\` only when its content changed (a running launcher keeps the file it was started from).
 5. Keeps the 3 newest versions. An older one is removed only when it is not the current one and no running launcher uses it (a folder that cannot be renamed is reported in `pruneSkipped` and kept).
+
+### Building the release zip
+
+To build the zip of your checkout (clean working tree; needs git and Node.js/npm; `-AllowDirty` for a dirty tree, `-NodeExePath <node.exe>` for a downloaded `node.exe`, which must have the pinned SHA256):
+
+```powershell
+powershell -NoProfile -File scripts\Build-TcAutoRelease.ps1      # -> dist\TcAuto-<git describe>.zip + .sha256 (about 40 MB)
+```
+
+The zip layout is described under "Customer install".
 
 The script writes only below `runtime\` and `launcher\`. The last stdout line is `TCAUTO_INSTALL_RESULT {json}`. Error codes: `docs/troubleshooting.md` "安裝器錯誤碼".
 
@@ -186,7 +194,7 @@ args = ['C:\Users\<you>\AppData\Local\TwinCATAutomation\launcher\tcauto-launcher
 
 ### Other MCP clients
 
-Any client that launches stdio servers: command `node`, args `["<install root>\\launcher\\tcauto-launcher.mjs"]`.
+Any client that launches stdio servers: command `<install root>\node\node.exe` (customer install) or `node` (developer install), args `["<install root>\\launcher\\tcauto-launcher.mjs"]`.
 
 ## First call and client settings
 
@@ -201,21 +209,21 @@ Verified with the 0.6.0-beta release candidate zip on the local UmRT, 4026 (Visu
 
 Settings worth knowing:
 
-- **Codex asks for approval of every MCP tool call by default.** To run unattended, add to the `[mcp_servers.tcauto]` table:
+- **Codex asks for approval of every MCP tool call by default** (實測 2026-11-08, codex-cli 0.167.0). To run unattended, the setting below in the `[mcp_servers.tcauto]` table is meant to do it:
 
   ```toml
   default_tools_approval_mode = "approve"
   ```
 
-  Risk: the model can then call every tcauto tool without asking you, including `EnableConfig` (restarts the target runtime, outputs go to zero), `WriteVariable` and `SetPlcState` (Run / Stop / Reset). A wrong prompt acts on the real machine. Use it for a test target only. Re-add the line after each `Install-TcAuto.ps1` run (see "What the installer does").
-- **Claude Code:** set `MCP_TOOL_TIMEOUT` (milliseconds, for example `900000`) so long calls are not cut by the client ([Troubleshooting](#troubleshooting)).
+  Risk: the model can then call every tcauto tool without asking you, including `EnableConfig` (restarts the target runtime, outputs go to zero), `WriteVariable` and `SetPlcState` (Run / Stop / Reset). A wrong prompt acts on the real machine. Use it for a test target only. The key name is 實測 2026-11-08, codex-cli 0.167.0: it took effect when passed as `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"`; no Codex documentation for it was found, and the form written into `config.toml` has **not been tested yet**. Re-add the line after **every** run of `Install-TcAuto.ps1` (see "What the installer does"; tracked in [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204)).
+- **Claude Code:** set the environment variable `MCP_TOOL_TIMEOUT` (milliseconds, for example `900000`; in the environment that starts `claude` or in the `env` block of `settings.json`, then restart Claude Code) so long calls are not cut by the client ([Troubleshooting](#troubleshooting)).
 - **Platform:** the target decides the solution platform; pass `Platform` to `SetTarget` / `EnableConfig` / `RunLifecycle` where the target cannot report it (`docs/troubleshooting.md` "環境矩陣").
 
 ## Upgrade
 
 | Installed with | New version |
 |---|---|
-| Release zip | Download and check the new zip, extract it, run its `Install-TcAuto.ps1` the same way (normal PowerShell window). The registration does not change: no client restart, call `ReloadRuntime`, then `ConnectIde` again. Only a new `node.exe` (another Node.js version in the zip) is used after the next client restart; a `node.exe` that a running client holds is renamed aside, not overwritten. |
+| Release zip | Do steps 1, 2 and 4 of the customer install with the new zip (download and check, extract, run `Install-TcAuto.ps1` from a normal PowerShell window); step 3 and a client restart are not needed. The clients can stay open because the registration does not change: afterwards call `ReloadRuntime`, then `ConnectIde` again. Only a new `node.exe` (another Node.js version in the zip) is used after the next client restart; a `node.exe` that a running client holds is renamed aside, not overwritten. |
 | Checkout | Check out / pull the commit, rerun `scripts\Install-TcAutoRuntime.ps1`, call `ReloadRuntime`, then `ConnectIde` again. |
 
 `ReloadRuntime` belongs to the launcher (it is not in `tools.json`). It re-reads `current.json`, lets the running runtime retire its PowerShell bridge the way `ReloadModule` does (refused with `RELOAD_LIFECYCLE_BLOCKED` / `RELOAD_BUILD_REQUIRED` and nothing changes while the module holds a lifecycle block or unsaved BUILD_REQUIRED entries in memory), starts the new runtime, replays the client's `initialize` and sends `notifications/tools/list_changed`. It is refused with `RUNTIME_RELOAD_BUSY` while another tool call runs, and calls made during the reload get `RUNTIME_RELOADING`. The IDE and ADS connections are released (the IDE keeps running); IDEs this session launched stay owned by it, because the launcher passes the same owner id to every runtime (`docs/troubleshooting.md` "ReloadRuntime"). `GetStatus` -> `data.bridge.runtime` shows the version and commit that run now.
@@ -224,7 +232,7 @@ Whether a client re-reads the tool list after `notifications/tools/list_changed`
 
 ## Uninstall
 
-- **Customer install:** close Claude Code, Claude Desktop and Codex, then in the extracted folder:
+- **Customer install:** close Claude Code, Claude Desktop and Codex, then run this **in the extracted folder** (keep that folder, or extract the zip again):
 
   ```powershell
   powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Uninstall
@@ -235,7 +243,7 @@ Whether a client re-reads the tool list after `notifications/tools/list_changed`
 
 ## Verify
 
-Without TwinCAT: `npm test` in `mcp-server/` must pass. A customer PC: `Install-TcAuto.ps1 -Verify`.
+Without TwinCAT: `npm test` in `mcp-server/` must pass. A customer PC, in the extracted folder: `powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-TcAuto.ps1 -Verify`.
 
 With the client connected, ask it to call `GetStatus`. Before any `ConnectIde` the expected answer is:
 
@@ -264,7 +272,7 @@ Install problems first, then problems after the first call.
 | Call returns `BRIDGE_TIMEOUT` | A DTE call was blocked (usually a modal dialog in XAE) longer than the tool timeout; the bridge was killed and all IDE/ADS state is lost. The XAE process keeps running | Follow `error.hint`: it names the IDE from `data.lastIde` (`ideProcessId`, `selectedBy`). An IDE the server launched: `taskkill /PID <pid> /T /F`; one you opened: dismiss the dialog. Then `ConnectIde` again and `GetIdeModalDialog` before retrying `BuildProject` / `EnableConfig` |
 | Call returns `BRIDGE_DIED` | The PowerShell child exited | Next call restarts it; `ConnectIde` again (`data.lastIde` / hint as for `BRIDGE_TIMEOUT`). Check the log for the stderr line |
 | Client reports a timeout (often around 60 s) on `ConnectIde`, `BuildProject`, `EnableConfig` or `RunLifecycle`, no `error.code` from the server | The MCP client's own request timeout (SDK default 60 s) is shorter than the call; the server keeps running and finishes the call anyway | Claude Code: set `MCP_TOOL_TIMEOUT` in milliseconds (e.g. `MCP_TOOL_TIMEOUT=900000`). SDK clients: pass `onprogress` + `resetTimeoutOnProgress: true` so the server's `notifications/progress` (every 10 s) keeps the request alive. Codex: `ConnectIde` of 66 s was not interrupted with the default timeout (實測 2026-11-08, codex-cli 0.167.0). Claude Desktop: not configurable as of this writing; use the fine-grained tools instead of `RunLifecycle` and check `GetStatus` afterwards. Details: [mcp-server/README.md](../mcp-server/README.md#client-request-timeout) |
-| Codex asks for approval on every tool call | Default behavior of Codex | See "First call and client settings" for `default_tools_approval_mode` and its risk |
+| Codex asks for approval on every tool call | Default behavior of Codex (實測 2026-11-08, codex-cli 0.167.0) | See "First call and client settings" for `default_tools_approval_mode` and its risk |
 | `RunLifecycle` / `EnableConfig` returns `ACTIVATE_FAILED` (target without TARGETINFO) | XAE's Check config failed: the solution platform differs from the target platform (a UmRT / Usermode Runtime needs `TwinCAT OS (x64)` on 4026; measured 2026-10-21 on 4026 XAE). `EnableConfig` compares the platforms first, but a target that answers TARGETINFO with ADS 0x702 (the runtime of TwinCAT 3.1.4026.21-22) reports none, so without `Platform` the check is skipped (`data.platformCheck` = `skipped`, `data.warning`) | `EnableConfig {"Force": true, "Platform": "TwinCAT OS (x64)"}` (switches + rebuilds), or `SetTarget {"AmsNetId": "<id>", "Platform": "TwinCAT OS (x64)"}` / `RunLifecycle` with `Platform`, then `BuildProject` + `EnableConfig` |
 | `RUNTIME_CRASHED` or `LIFECYCLE_BLOCKED` | The local UmRT service `TcSystemServiceUm` disappeared during Config/Activate (#21), or an earlier failure left a block | Stop and report `data`; restart the UmRT, then `ClearLifecycleBlock` with a reason after the user agreed (`docs/troubleshooting.md` "RUNTIME_CRASHED", "LIFECYCLE_BLOCKED") |
 | Any other `error.code` | Module error, passed through unchanged | Follow `error.hint`; code table in [troubleshooting.md](troubleshooting.md) |
