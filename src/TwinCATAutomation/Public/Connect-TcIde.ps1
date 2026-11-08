@@ -79,6 +79,19 @@ function Connect-TcIde {
         (matchedBy 'window-title', i.e. a same-named solution that may be someone else's) and
         go on as if it were not there (launch unless -NoLaunch). A blocked IDE recognised by
         strong evidence (module-state, session-record, dialog-path) is still reported.
+    .PARAMETER TakeOverOrphan
+        With -SolutionPath (#196): take over the IDE that another TcAuto session launched for that
+        solution after that session ended (IDE_LAUNCH_PENDING probe 'other-session', hostState
+        'gone'), so this session owns it (Disconnect-TcIde -Quit / -Kill). Only when the launch record
+        of that .sln names a host process (bridge) that is gone AND an owner process (MCP server,
+        ownerPid) that is gone too - a restarted bridge of a running session is refused
+        (owner-alive / owner-unverifiable) -, its pid is confirmed, the ROT has that pid's
+        DTE with this .sln open and no modal dialog is up; otherwise nothing is attached
+        (ORPHAN_TAKEOVER_REFUSED with data.reason, IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE, or
+        LAUNCH_RECORD_UNAVAILABLE). Only after the attach, the modal check and the project scan have
+        passed does the record get this process as owner plus a takeovers[] entry;
+        data.takenOver = true, data.previousOwner. Use it only after the user confirmed nobody still
+        works in that IDE.
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
@@ -98,6 +111,8 @@ function Connect-TcIde {
         data.launchSec    seconds from starting a new IDE until its DTE answered (only when selectedBy = 'launched')
         data.ownedBySession  this session (or an earlier module instance / bridge, launched-ides.json) launched the IDE
         data.launchRecordWarning  launched-ides.json could not be read / written (only when that happened)
+        data.takenOver / data.previousOwner  -TakeOverOrphan only (#196): true, and the ended owner
+                          { hostPid; hostStartTime; moduleInstanceId; ownerId; hostState; ownerPid; ownerState } (selectedBy 'orphan-takeover')
     #>
     [CmdletBinding()]
     param(
@@ -111,7 +126,10 @@ function Connect-TcIde {
         [switch]$NoLaunch,
 
         [Parameter()]
-        [switch]$LaunchIfBlocked
+        [switch]$LaunchIfBlocked,
+
+        [Parameter()]
+        [switch]$TakeOverOrphan
     )
 
     $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
@@ -313,6 +331,26 @@ function Connect-TcIde {
         Write-Verbose "Connected to DTE pid=$($chosen.pid) progId=$usedProgId solution='$($chosen.solution)' ($selectionReason)"
     }
 
+    # --- #196: explicit takeover of an IDE whose launching TcAuto session has ended ---
+    # Every condition is checked by Resolve-TcOrphanTakeover; any failure is returned as it is
+    # (never another selection path). The record is rewritten under the lock (fail closed) only
+    # after the attach, the modal check and the project scan below have passed (#196 review M2):
+    # a Connect-TcIde that fails on the way never moves the ownership.
+    $takeover = $null
+    $orphan = $null
+    if ($TakeOverOrphan) {
+        $orphan = Resolve-TcOrphanTakeover -SolutionPath $normalizedSolutionPath -ProgId $ProgId -Candidates $candidates -UnreadableCandidates $unreadableCandidates
+        if ($null -ne $orphan.Result) { return $orphan.Result }
+        $oc = $orphan.Candidate
+        $chosen = $oc
+        $dte = $oc.Object
+        $usedProgId = $oc.progId
+        if ([string]::IsNullOrWhiteSpace($usedProgId)) { $usedProgId = [string]$orphan.Record.progId }
+        $selectionReason = 'orphan-takeover'
+        $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId)) { 'explicit' } else { 'running-instance' }
+        Write-Verbose "Taking over IDE pid $($oc.pid) for '$normalizedSolutionPath' from the ended TcAuto session (host pid $($orphan.Record.hostPid)) once the attach has passed (#196)"
+    }
+
     # --- #136: this session already launched an IDE for -SolutionPath and it can still be alive ---
     # (cold VS2022 start: the first Connect-TcIde answered MODAL_SCAN_INCOMPLETE before the
     # solution was opened, so neither solution-match nor the session record knows it). Checked
@@ -334,7 +372,7 @@ function Connect-TcIde {
             $seen = @($readyCandidates | Where-Object { $op -gt 0 -and [int]$_.pid -eq $op }) | Select-Object -First 1
             if ($null -ne $seen) {
                 $seenSol = [string]$seen.normalizedSolution
-                $release = if (-not [string]::IsNullOrWhiteSpace($seenSol)) { -not [string]::Equals($seenSol, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase) } else { $own.otherSession.hostState -eq 'gone' }
+                $release = if (-not [string]::IsNullOrWhiteSpace($seenSol)) { -not [string]::Equals($seenSol, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase) } else { $own.otherSession.hostState -eq 'gone' -and $own.otherSession.ownerState -in 'none', 'gone' }   # #196 review: a restarted bridge of a running server still blocks
                 if ($release) {
                     Write-Verbose "Launch record of another session (IDE pid $op) does not block '$normalizedSolutionPath': that IDE now has '$seenSol' open"
                     $own = $null
@@ -401,12 +439,18 @@ function Connect-TcIde {
                 $why = switch ($probe) {
                     'progid-mismatch' { "it was launched as $($own.progId), not the requested -ProgId $ProgId; it is not attached" }
                     'pid-unconfirmed' { 'its process id is not confirmed (the ROT has no entry with that DTE object yet), so no IDE is attached' }
-                    'other-session' { "it was launched by another TcAuto session that is still running (host pid $($other.hostPid)); it is not attached and not owned here" }
+                    'other-session' {
+                        if ($other.hostState -eq 'gone' -and $other.ownerState -in 'none', 'gone') { "it was launched by another TcAuto session that has ended (host pid $($other.hostPid) is gone); it is not attached and not owned here (Connect-TcIde -TakeOverOrphan can take it over)" }
+                        elseif ($other.hostState -eq 'gone') { "it was launched by another TcAuto session whose bridge (host pid $($other.hostPid)) is gone but whose MCP server is still running or cannot be verified (owner pid $($other.ownerPid), ownerState $($other.ownerState)); it is not attached and not owned here" }
+                        else { "it was launched by another TcAuto session that is still running or cannot be verified (host pid $($other.hostPid), hostState $($other.hostState)); it is not attached and not owned here" }
+                    }
                     default { "its DTE did not answer within $($wait.waitedSec) s ($probe)" }
                 }
                 # N5: <pid> = the process the caller should look at (own pid, the other session's IDE, or the guessed pid)
                 $hintPid = if ($ownPid -gt 0) { [string]$ownPid } elseif ($null -ne $other) { [string]$other.processId } elseif ($null -ne $own.guessedRecord) { [string]([int]$own.guessedRecord.pid) } else { '<data.ideProcessId>' }
                 $hint = ([string](Get-TcErrorHint -Code 'IDE_LAUNCH_PENDING')).Replace('<pid>', $hintPid)
+                # #196: an ended session's IDE can be taken over explicitly
+                if ($null -ne $other -and $other.hostState -eq 'gone' -and $other.ownerState -in 'none', 'gone') { $hint = ([string]$script:TcHintFragments['IDE_LAUNCH_PENDING_ORPHAN']).Replace('<pid>', $hintPid) + $hint }
                 if ($null -ne $script:TcLaunchRecordWarning) { $pendingData | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning -Force }
                 return New-TcResult -Success $false `
                     -ErrorMessage "IDE_LAUNCH_PENDING: $(if ($null -ne $other) { 'another TcAuto session' } else { 'this session' }) launched an IDE$(if ($ownPid -gt 0) { " (pid $ownPid)" }) for '$normalizedSolutionPath' that may still be running, but $why. No second IDE was launched." `
@@ -691,8 +735,9 @@ function Connect-TcIde {
     # DTE call forever (no RPC_E_CALL_REJECTED), so check before Solution.Open / project scan.
     $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
+        if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
         return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
-            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning })
+            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning; takenOver = $false; previousOwner = $null })
     }
 
     # Automation Interface silent mode: ITcAutomationSettings.SilentMode = true makes XAE answer
@@ -739,6 +784,7 @@ function Connect-TcIde {
                 Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($normalizedSolutionPath) } | Out-Null
             }
             catch {
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'
             }
 
@@ -765,6 +811,7 @@ function Connect-TcIde {
                         $solutionReady = $false
                     }
                     else {
+                        if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution did not become ready'
                     }
                 }
@@ -773,6 +820,7 @@ function Connect-TcIde {
             }
 
             if (-not $solutionReady) {
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcResult -Success $false `
                     -ErrorMessage "Solution '$SolutionPath' did not finish loading within $openTimeoutSec s (Solution.IsOpen / Projects.Count never became ready; IDE busy on $busyPolls poll(s))." `
                     -ErrorCode 'PROJECT_OPEN_TIMEOUT' `
@@ -797,6 +845,7 @@ function Connect-TcIde {
         try { $smProbe = Get-TcSysManager -Refresh }
         catch {
             if ($_.Exception.Message -match 'IDE_CRASHED') {
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'IDE_CRASHED' -MessagePrefix 'Connect-TcIde (ITcSysManager scan)'
             }
             $smProbe = $null
@@ -834,6 +883,37 @@ function Connect-TcIde {
         if ($ideProcessId -gt 0) { Save-TcIdeSolutionRecord -ProcessId $ideProcessId -Solution $script:TcSolutionPath }
     }
 
+    # #196 review M2: -TakeOverOrphan writes the new owner only now - attach, modal check and project
+    # scan have passed. A refusal / failed write releases the connection (nothing attached or owned).
+    if ($null -ne $orphan) {
+        $oc = $orphan.Candidate
+        $tk = Set-TcLaunchRecordTakeover -Record $orphan.Record -Reason 'orphan-takeover'
+        if ($null -ne $tk.Failure -or -not $tk.TakenOver) {
+            Reset-TcOrphanTakeoverAttach
+            $tkData = [PSCustomObject]@{
+                takenOver = $false; attached = $false; ownedBySession = $false; launched = $false; solution = $normalizedSolutionPath
+                ideProcessId = [int]$oc.pid; launchId = [string]$orphan.Record.launchId; otherSession = $orphan.OtherSession
+                candidates = $candidateSummary
+            }
+            if ($null -ne $tk.Failure) {
+                $tkData | Add-Member -NotePropertyName 'reason' -NotePropertyValue 'launch-record-write-failed'
+                $tkData | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $tk.Failure
+                return New-TcResult -Success $false `
+                    -ErrorMessage "LAUNCH_RECORD_UNAVAILABLE: the takeover of IDE pid $($oc.pid) could not be written to the launch records ($($tk.Failure)); nothing was attached or taken over." `
+                    -ErrorCode 'LAUNCH_RECORD_UNAVAILABLE' -Hint (Get-TcErrorHint -Code 'LAUNCH_RECORD_UNAVAILABLE') -Data $tkData
+            }
+            $tkData | Add-Member -NotePropertyName 'reason' -NotePropertyValue ([string]$tk.Refusal)
+            return New-TcResult -Success $false `
+                -ErrorMessage "ORPHAN_TAKEOVER_REFUSED ($($tk.Refusal)): the launch record of IDE pid $($oc.pid) changed, or its host / owner process is no longer gone, when it was rewritten. No launch record was changed (the IDE's SilentMode stays true)." `
+                -ErrorCode 'ORPHAN_TAKEOVER_REFUSED' -Hint (Get-TcErrorHint -Code 'ORPHAN_TAKEOVER_REFUSED') -Data $tkData
+        }
+        $takeover = $tk.Previous
+        Add-TcLaunchedIde -ProcessId ([int]$oc.pid)
+        $null = Register-TcSessionLaunch -Solution $normalizedSolutionPath -ProgId ([string]$orphan.Record.progId) -Dte $oc.Object -ProcessId ([int]$oc.pid) -LaunchId ([string]$orphan.Record.launchId) -Restored
+        $script:TcIdeSelectedBy = 'launched'
+        Write-Verbose "Took over IDE pid $($oc.pid) for '$normalizedSolutionPath' from the ended TcAuto session (host pid $($takeover.hostPid)) (#196)"
+    }
+
     $data = [PSCustomObject]@{
         progId              = $usedProgId
         progIdSelectedBy    = $progIdSelectedBy
@@ -852,6 +932,11 @@ function Connect-TcIde {
     if ($null -ne $recWarn) { $data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
     # #73: the launch record file could not be read / written during this call (ownership may not survive a bridge restart)
     if ($null -ne $script:TcLaunchRecordWarning) { $data | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning }
+    # #196: -TakeOverOrphan took the IDE over from an ended TcAuto session
+    if ($null -ne $takeover) {
+        $data | Add-Member -NotePropertyName 'takenOver' -NotePropertyValue $true
+        $data | Add-Member -NotePropertyName 'previousOwner' -NotePropertyValue $takeover
+    }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec
     }

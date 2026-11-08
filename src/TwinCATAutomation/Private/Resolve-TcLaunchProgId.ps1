@@ -379,7 +379,7 @@ function Find-TcSessionLaunchedIde {
             return [PSCustomObject]@{
                 solution = $Solution; progId = [string]$p.progId; dte = $null; launchTime = $lt
                 processId = 0; processKey = $null; launchId = [string]$p.launchId; restored = $true
-                otherSession = [PSCustomObject]@{ hostPid = $p.hostPid; hostState = (Get-TcLaunchRecordHostState -Record $p); moduleInstanceId = $p.moduleInstanceId; processId = [int]$p.pid; pidSource = [string]$p.pidSource }
+                otherSession = [PSCustomObject]@{ hostPid = $p.hostPid; hostState = (Get-TcLaunchRecordHostState -Record $p); ownerPid = $(if ($null -ne $p.PSObject.Properties['ownerPid']) { $p.ownerPid } else { $null }); ownerState = (Get-TcLaunchRecordOwnerState -Record $p); moduleInstanceId = $p.moduleInstanceId; processId = [int]$p.pid; pidSource = [string]$p.pidSource }
                 guessedRecord = $null
             }
         }

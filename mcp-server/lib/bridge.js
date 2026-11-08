@@ -80,6 +80,9 @@ export class PowerShellBridge {
    * @param {object} [options.env]           extra environment for the child (merged over process.env)
    * @param {string} [options.ownerId]       launch-record owner id passed to every child as TCAUTO_OWNER_ID
    *   (#152 N1); default: a new GUID per bridge object, i.e. per MCP server process
+   * @param {number} [options.ownerPid]      pid of the process that owns ownerId, passed to every child as
+   *   TCAUTO_OWNER_PID (#196 review B1); default: process.pid (this MCP server). index.js passes the
+   *   launcher pid when the owner id is the launcher's (it outlives a ReloadRuntime of index.js)
    * @param {{command:string,args:string[]}} [options.spawnSpec]  replaces the powershell.exe command line entirely (tests)
    * @param {(level:string,message:string,meta:object)=>void} [options.onLog]
    * @param {(line:string)=>void} [options.onStderr]
@@ -95,6 +98,10 @@ export class PowerShellBridge {
     // IDE_MODAL_DIALOG, ReloadModule) gets the same TCAUTO_OWNER_ID, so the module can take over
     // the IDEs its earlier child launched - and never those of another MCP server / conversation.
     this.ownerId = options.ownerId ?? randomUUID();
+    // #196 review B1: a new bridge pid does not mean the session ended (BRIDGE_TIMEOUT / modal
+    // restart / ReloadModule keep the server). The module records this pid (and reads its start
+    // time) as ownerPid / ownerStartTime; Connect-TcIde -TakeOverOrphan needs it gone as well.
+    this.ownerPid = Number.isInteger(options.ownerPid) && options.ownerPid > 0 ? options.ownerPid : process.pid;
     this.spawnSpec = options.spawnSpec ?? null;
     this.onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
     this.onStderr = typeof options.onStderr === 'function' ? options.onStderr : () => {};
@@ -176,7 +183,7 @@ export class PowerShellBridge {
         windowsHide: true,
         // TWINCAT_MCP_BRIDGE_MODULE_PATH: the module path of this child also for a spawnSpec override
         // (the mock bridge reports it as ready.modulePath); bridge.ps1 reads -ModulePath instead.
-        env: { ...process.env, ...this.env, TWINCAT_MCP_BRIDGE_MODULE_PATH: this.modulePath, TCAUTO_OWNER_ID: this.ownerId }
+        env: { ...process.env, ...this.env, TWINCAT_MCP_BRIDGE_MODULE_PATH: this.modulePath, TCAUTO_OWNER_ID: this.ownerId, TCAUTO_OWNER_PID: String(this.ownerPid) }
       });
     } catch (err) {
       this.lastStartError = new BridgeStartError('MODULE_IMPORT_FAILED', `Failed to spawn bridge: ${err.message}`, HINTS.MODULE_IMPORT_FAILED, err);

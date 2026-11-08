@@ -402,7 +402,14 @@ try {
             @{ Name = 'Y4 other session alive, its IDE has no solution open (may be cold-starting)'; Gone = $false; Sol = ''; Launch = $false })) {
         Reset-All
         $first = Start-OwnIde
-        if ($case.Gone) { Edit-Records { param($r) $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = 'owner-73-B' } }
+        # #196 review: an ended session = bridge (host) AND its MCP server (owner, fake pid 9601, not running) gone
+        if ($case.Gone) {
+            Edit-Records { param($r)
+                $r.hostPid = 9600; $r.hostStartTime = $global:OtherHostStart73.ToUniversalTime().ToString('o'); $r.ownerId = 'owner-73-B'
+                $r | Add-Member -NotePropertyName ownerPid -NotePropertyValue 9601 -Force
+                $r | Add-Member -NotePropertyName ownerStartTime -NotePropertyValue $global:OtherHostStart73.AddMinutes(-1).ToUniversalTime().ToString('o') -Force
+            }
+        }
         else { Set-OtherHost }
         Restart-Module
         Show-OwnInRot $first.Pid $case.Sol
