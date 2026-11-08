@@ -81,10 +81,10 @@ function npmStub(exitCode = 0) {
   return f;
 }
 
-function install(repo, root, { npm, extra = [] } = {}) {
+function install(repo, root, { npm, extra = [], env = {} } = {}) {
   const r = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-File', path.join(repo, 'scripts', 'Install-TcAutoRuntime.ps1'), '-InstallRoot', root, '-NpmPath', npm, ...extra], {
     encoding: 'utf8',
-    env: { ...process.env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_RUNTIME_ROOT: '' },
+    env: { ...process.env, ...env, TCAUTO_TEST_FORBID_REAL_STATE: '1', TCAUTO_RUNTIME_ROOT: '' },
     timeout: 120000
   });
   const line = (r.stdout ?? '').split(/\r?\n/).reverse().find((l) => l.startsWith('TCAUTO_INSTALL_RESULT '));
@@ -258,29 +258,33 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     }
   });
 
-  test('#170 inside an MSIX package: an install root under %LOCALAPPDATA% is refused, nothing written', () => {
-    const local = tmp('pkgroot');
-    // long spellings on both sides (a runner's TEMP may hold 8.3 names such as RUNNER~1)
-    const lad = process.env.LOCALAPPDATA ? fs.realpathSync.native(process.env.LOCALAPPDATA) : null;
-    const below = !!lad && fs.realpathSync.native(local).toLowerCase().startsWith((lad + path.sep).toLowerCase());
-    const old = process.env.TCAUTO_TEST_PACKAGE_FULL_NAME;
-    process.env.TCAUTO_TEST_PACKAGE_FULL_NAME = 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc';
-    try {
-      if (below) {
-        const r = install(repo, local, { npm });
-        assert.equal(r.code, 1);
-        assert.equal(r.result.error.code, 'INSTALL_PACKAGED_CONTEXT');
-        assert.equal(r.result.data.packageFullName, 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc');
-        assert.deepEqual(fs.readdirSync(local), []);
-      }
-      // an explicit root outside AppData is not virtualized: allowed
-      const outside = path.join(path.parse(local).root, `tcauto-pkg170-${process.pid}-${Date.now()}`);
-      dirs.push(outside);
-      const r2 = install(repo, outside, { npm });
-      assert.equal(r2.code, 0, JSON.stringify(r2.result));
-    } finally {
-      if (old === undefined) delete process.env.TCAUTO_TEST_PACKAGE_FULL_NAME;
-      else process.env.TCAUTO_TEST_PACKAGE_FULL_NAME = old;
+  test('#170 inside an MSIX package: an install root under %LOCALAPPDATA% or %APPDATA% is refused, nothing written', () => {
+    // LOCALAPPDATA / APPDATA point at isolated fixture folders for the child, so the refusal is asserted
+    // on every machine (wherever TEMP lives) and the real AppData is never touched
+    const lad = tmp('pkglad');
+    const appdata = tmp('pkgappdata');
+    const package170 = 'Claude_1.0.0.0_x64__pzs8sxrjxfjjc';
+    const env = { LOCALAPPDATA: lad, APPDATA: appdata, TCAUTO_TEST_PACKAGE_FULL_NAME: package170 };
+    // powershell.exe itself caches under %LOCALAPPDATA%\Microsoft (StartupProfileData): not the install
+    const written = (base) => fs.readdirSync(base).filter((n) => n !== 'Microsoft');
+    for (const base of [lad, appdata]) {
+      // not <base>\TwinCATAutomation: under LOCALAPPDATA that is TCAUTO_REAL_STATE_REFUSED, checked first
+      const root = path.join(base, 'tcauto-pkg170');
+      const r = install(repo, root, { npm, env });
+      assert.equal(r.code, 1, JSON.stringify(r.result));
+      assert.equal(r.result.success, false);
+      assert.equal(r.result.error.code, 'INSTALL_PACKAGED_CONTEXT');
+      assert.match(r.result.error.hint, /normal PowerShell window/);
+      assert.equal(r.result.data.packageFullName, package170);
+      assert.equal(path.basename(r.result.data.installRoot), 'tcauto-pkg170');
+      assert.ok(!fs.existsSync(root), `nothing written: ${root}`);
+      assert.deepEqual(written(base), [], `nothing written under ${base}`);
     }
+    // an explicit root outside AppData is not virtualized: allowed
+    const outside = tmp('pkgoutside');
+    const r2 = install(repo, outside, { npm, env });
+    assert.equal(r2.code, 0, JSON.stringify(r2.result));
+    assert.equal(r2.result.success, true);
+    assert.deepEqual(written(lad), [], 'the allowed install wrote nothing under LOCALAPPDATA');
   });
 });
