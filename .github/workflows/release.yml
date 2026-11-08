@@ -37,6 +37,11 @@ jobs:
         run: |
           $tag = '${{ github.ref_name }}'
           $zip = '${{ steps.build.outputs.zip }}'
+          # Actions prepends $ErrorActionPreference='stop' to the powershell (5.1) shell. Under 'stop',
+          # any native stderr line (gh writes 'release not found' / progress to stderr) is wrapped as
+          # NativeCommandError and terminates the step, so the create branch below never ran
+          # (run 42477566734, 2026-11-08, v0.6.0-beta). Success is judged by $LASTEXITCODE only.
+          $ErrorActionPreference = 'Continue'
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             $createArgs = @('release', 'create', $tag, '--title', $tag, '--notes', "TcAuto $tag. Install: docs/setup-mcp.md, section 'Customer install (release zip)'.")
