@@ -403,36 +403,19 @@ function Enable-TcConfig {
         # -DialogScan: a scan result the caller already has (a dialog record, an incomplete-scan
         # record, or 'none' = scanned, no dialog); then no second scan is made (#42).
         param([string]$Message, [string]$Code, [string]$Hint, [object]$DialogScan)
-        $diag = [ordered]@{ dialog = $null; dialogScanComplete = $true; errorList = @(); errorListError = $null; bootPackage = $null }
-        try {
-            $dlg = if ($null -ne $DialogScan) { if ($DialogScan -is [string] -and $DialogScan -eq 'none') { $null } else { $DialogScan } } else { Find-TcIdeModalDialog }
-            # #42: an incomplete scan is reported as such (dialogScanComplete false), never as "no dialog"
-            if (Test-TcModalScanIncomplete $dlg) { $diag.dialogScanComplete = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg }
-            elseif ($null -ne $dlg) { $diag.dialog = [PSCustomObject]@{ title = [string]$dlg.Title; text = [string]$dlg.Text } }
-        } catch { $diag.dialogScanComplete = $false }
-        if ($null -ne $deadline -and (Get-Date) -ge $deadline) {
-            $diag.errorListError = 'skipped: -TimeoutSec budget exhausted'
-        }
-        elseif ($null -eq $diag.dialog) {
-            try {
-                # #107: the Error List budget of the build paths, capped by what is left of -TimeoutSec
-                # (Get-TcBuildErrors accepts 5..600 s); an upper bound, the scan returns when done.
-                $elBudget = [int]$script:TcBuildErrorListTimeoutSec
-                if ($null -ne $deadline) { $elBudget = [int][Math]::Min($elBudget, [Math]::Floor(($deadline - (Get-Date)).TotalSeconds)) }
-                $elBudget = [Math]::Max(5, $elBudget)
-                $el = Get-TcBuildErrors -TimeoutSec $elBudget
-                $elState = Get-TcErrorListReadState -Result $el
-                # #138: the rows of an incomplete read are listed too; errorListError still says it was partial
-                if ($elState.usable) { $diag.errorList = @(@($el.data.errors) | Select-Object -First 10 | ForEach-Object { [string]$_.description }) }
-                if (-not $el.success -and -not $elState.errorsComplete) { $diag.errorListError = [string]$el.error.code }
-            } catch { $diag.errorListError = $_.Exception.Message }
-        }
+        # #194: collection shared with Set-TcSystemState (Private/Get-TcRuntimeFailureDiagnostics.ps1)
+        # PR #200 review: the modal scan first (unbounded as before: after a timeout the dialog is what
+        # explains it); the DTE platform read only when it found no dialog, else the cached platform
+        $scan = if ($null -ne $DialogScan) { $DialogScan } else { Get-TcDiagnosticsDialogScan }
         $plat = $projectPlatform
         if ([string]::IsNullOrWhiteSpace($plat)) { $plat = $solutionPlatform }
-        if ([string]::IsNullOrWhiteSpace($plat)) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
+        if ([string]::IsNullOrWhiteSpace($plat)) {
+            if (Test-TcDiagnosticsDialogClear $scan) { try { $cur = Get-TcSolutionPlatform; $plat = if ([string]::IsNullOrWhiteSpace($cur.projectPlatform)) { $cur.platform } else { $cur.projectPlatform } } catch { } }
+            else { $plat = Get-TcCachedSolutionPlatform }
+        }
         $ports = @($plcs | Where-Object { $null -ne $_.adsPort } | ForEach-Object { [int]$_.adsPort })
-        try { $diag.bootPackage = Get-TcBootPackageDiff -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $currentVariant } catch { }
-        Set-Variable -Name diagnostics -Value ([PSCustomObject]$diag) -Scope 1
+        $diag = Get-TcRuntimeFailureDiagnostics -DialogScan $scan -Deadline $deadline -SolutionPath $script:TcSolutionPath -Platform $plat -AmsNetId $netId -AdsPorts $ports -Variant $currentVariant
+        Set-Variable -Name diagnostics -Value $diag -Scope 1
         $extra = @()
         if ($null -ne $diag.dialog) { $extra += "dialog: $($diag.dialog.title) | $(([string]$diag.dialog.text) -replace '\s+', ' ')" }
         if (@($diag.errorList).Count -gt 0) { $extra += "Error List: $(@($diag.errorList | Select-Object -First 3) -join ' / ')" }
@@ -444,7 +427,7 @@ function Enable-TcConfig {
                 $Hint = $null
             }
         }
-        elseif (@($diag.errorList | Where-Object { $_ -match '(?i)symbol description does not match|1809|0x711|symbol version' }).Count -gt 0 -and $Code -ne 'IDE_MODAL_DIALOG') {
+        elseif (@($diag.errorList | Where-Object { $_ -match $script:TcSymbolVersionPattern }).Count -gt 0 -and $Code -ne 'IDE_MODAL_DIALOG') {
             $extra += 'symbol description / application mismatch (ADS 1809)'
         }
         if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
@@ -927,6 +910,7 @@ function Enable-TcConfig {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runtimeChangeSent = $true
     $blockRequested = 'Config'
+    # -State Config: Set-TcSystemState collects no stuck-in-Config diagnostics (#194, -State Run only)
     $r = Set-TcSystemState -State Config -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
     $reachedState = Get-TcReadbackState -StateResult $r
     $reachedNote = Get-TcReadbackNote -StateResult $r
@@ -985,7 +969,11 @@ function Enable-TcConfig {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $runSent = $true
     $blockRequested = 'Run'
-    $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec)
+    # #194: the set-run failure gets data.diagnostics from New-TcRuntimeFailure below; the nested
+    # Set-TcSystemState must not collect (and time) them a second time or change the hint
+    $script:TcSystemStateSkipDiagnostics = $true
+    try { $r = Set-TcSystemState -State Run -AmsNetId $netId -TimeoutSec (Get-TcRemainingSec) }
+    finally { $script:TcSystemStateSkipDiagnostics = $false }
     $reachedState = Get-TcReadbackState -StateResult $r
     $reachedNote = Get-TcReadbackNote -StateResult $r
     if (-not $r.success) {

@@ -88,5 +88,10 @@
     catch {
         Write-Verbose "Get-TcSolutionPlatform: $($_.Exception.Message)"
     }
+    # PR #200 / #198: last platform read (Connect-TcIde, Set-TcTarget, Build ...) for failure diagnostics
+    # that must not call DTE while a modal dialog may be up (Get-TcCachedSolutionPlatform)
+    if (-not [string]::IsNullOrWhiteSpace($out.platform)) {
+        $script:TcLastSolutionPlatform = [PSCustomObject]@{ platform = $out.platform; projectPlatform = $out.projectPlatform; solutionPath = $script:TcSolutionPath; readAt = (Get-Date) }
+    }
     return $out
 }
