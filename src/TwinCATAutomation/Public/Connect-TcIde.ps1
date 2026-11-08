@@ -784,7 +784,7 @@ function Connect-TcIde {
                 Invoke-TcComRetry -OperationName 'Solution.Open' -ScriptBlock { $dte.Solution.Open($normalizedSolutionPath) } | Out-Null
             }
             catch {
-            if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'
             }
 
@@ -811,7 +811,7 @@ function Connect-TcIde {
                         $solutionReady = $false
                     }
                     else {
-                    if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
+                        if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                         return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution did not become ready'
                     }
                 }
@@ -820,7 +820,7 @@ function Connect-TcIde {
             }
 
             if (-not $solutionReady) {
-            if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
+                if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
                 return New-TcResult -Success $false `
                     -ErrorMessage "Solution '$SolutionPath' did not finish loading within $openTimeoutSec s (Solution.IsOpen / Projects.Count never became ready; IDE busy on $busyPolls poll(s))." `
                     -ErrorCode 'PROJECT_OPEN_TIMEOUT' `
@@ -904,7 +904,7 @@ function Connect-TcIde {
             }
             $tkData | Add-Member -NotePropertyName 'reason' -NotePropertyValue ([string]$tk.Refusal)
             return New-TcResult -Success $false `
-                -ErrorMessage "ORPHAN_TAKEOVER_REFUSED ($($tk.Refusal)): the launch record of IDE pid $($oc.pid) changed, or its host / owner process is no longer gone, when it was rewritten. Nothing was attached, owned or changed." `
+                -ErrorMessage "ORPHAN_TAKEOVER_REFUSED ($($tk.Refusal)): the launch record of IDE pid $($oc.pid) changed, or its host / owner process is no longer gone, when it was rewritten. No launch record was changed (the IDE's SilentMode stays true)." `
                 -ErrorCode 'ORPHAN_TAKEOVER_REFUSED' -Hint (Get-TcErrorHint -Code 'ORPHAN_TAKEOVER_REFUSED') -Data $tkData
         }
         $takeover = $tk.Previous

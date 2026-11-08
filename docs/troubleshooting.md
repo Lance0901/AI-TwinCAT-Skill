@@ -312,7 +312,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看有沒有 dialog,關掉後重跑同一個 `Connect-TcIde`;還在啟動就稍後重跑。
   - 要換 ProgId，或 IDE 卡死:`data.ownedBySession = true` 時 `Disconnect-TcIde -Quit -Kill`(只殺本 session 確認過的這個 pid)後再 `Connect-TcIde`。
   - `pid-unconfirmed` 時模組不殺任何行程：自己確認並關掉那個 IDE(或確定它已不在),再 `Disconnect-TcIde -ForgetPendingLaunch`(MCP `DisconnectIde ForgetPendingLaunch=true`;只清掉 pid 未確認的啟動紀錄，不關 IDE、不動連線，回 `data.forgottenLaunches`),然後重跑 `Connect-TcIde`。
-  - `other-session` 且 `hostState = 'gone'`:見下面「孤兒 IDE 接管」。
+  - `other-session` 且 `hostState = 'gone'`:`gone` 只代表 bridge 不在了，session 有沒有結束要看 `data.otherSession.ownerState`。只有 `ownerState` 是 `gone` 或 `none` 才代表那個 session 已結束，見下面「孤兒 IDE 接管」(使用者確認沒人在用後才加 `-TakeOverOrphan`);`ownerState` 是 `alive` 或 `unverifiable` 時，那個 session 只是 bridge 重開過，可能還在用，不要接管。
 - **孤兒 IDE 接管(#196)**:
   - **現象**:worker session(例如 headless `claude -p`)用 ConnectIde 啟動 IDE 後沒 Quit 就結束了。之後其他 session 的 `Connect-TcIde -SolutionPath <sln>`:IDE 有 dialog 時回 `IDE_LAUNCH_PENDING`(`probe = 'other-session'`、`hostState = 'gone'`);dialog 關掉之後,solution-match 會以 not owned 的身分 attach(未實測),但不能用模組 `-Quit -Kill` 關掉它。`-TakeOverOrphan` 是用來取得它的 ownership 的(`IDE_LAUNCH_PENDING` 部分實測 2026-11-08,registered tcauto master d3644b6,本機 VS2022 devenv 與 4024 TcXaeShell 各一,`pidSource = 'rot-identity'`)。
   - **預設仍 fail closed**:不帶參數時行為不變，不會自動接管(那個 IDE 可能已經有使用者在用、有未存檔的修改)。

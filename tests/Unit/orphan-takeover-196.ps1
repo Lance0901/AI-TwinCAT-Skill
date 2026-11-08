@@ -353,6 +353,9 @@ try {
         $before = Get-RecordJson
         $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
         Check "$($case.Name) -> refused owner-unverifiable, record unchanged, not connected" ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'owner-unverifiable' -and $r.data.otherSession.ownerState -eq 'unverifiable' -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
+    $global:Rot73 = @()
+    $r = Connect-TcIde -SolutionPath $sln
+    Check "$($case.Name) -> without the switch the hint does not suggest taking over (ownerState unverifiable)" ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.otherSession.ownerState -eq 'unverifiable' -and $r.error.hint -notmatch 'TakeOverOrphan' -and $r.error.hint -match 'ownerState') "$($r.error.code) | $($r.error.hint)"
     }
     $p = New-Orphan
     Edit-Records { param($r) $r.ownerId = $null; $r.ownerPid = $null; $r.ownerStartTime = $null }
