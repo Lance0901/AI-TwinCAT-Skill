@@ -14,11 +14,12 @@
 - **已修**:`ReadVariable` / `QuickRead` 多路徑已改成 fail closed(任一路徑失敗回 `PARTIAL_READ_FAILED`,頂層有 `partial` / `failedPaths`),見 [troubleshooting.md「PARTIAL_READ_FAILED」](troubleshooting.md#partial_read_failed)。`WatchVariable` 在 #139 的修正裡也改成 fail closed(任一輪讀不到回 `WATCH_READ_FAILED`,sample 帶 error、頂層 `partial` / `failedPaths`),見 [troubleshooting.md「WATCH_READ_FAILED」](troubleshooting.md#watch_read_failed);**尚待真機驗證**,驗過之後這條移除。
 - **Issue**:[#139](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/139)(來源 [#60](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/60))
 
-### UmRT 長時間執行後 task 停止循環,但 ADS 仍回 Run(#26)
+### 舊版回報、2026-11-08 實測未重現:UmRT 假 Run、Reset 殺 `TcSystemServiceUm`(#26)
 
-- **現象**:本機 Usermode Runtime 跑約 30 分鐘後,PLC task 不再循環,但 `GetPlcState` / `GetSystemState` 仍回 Run(原始紀錄沒有日期與環境;2026-11-08 在 4026 VS2022 + 本機 UmRT 實測**未重現**:UmRT 行程跑 46 分、Activate 後 31 分,CycleCount 持續遞增,見 #26 留言與 troubleshooting「已知限制」)。
-- **影響**:長時間測試讀到的值不再更新,狀態卻看起來正常。
-- **繞過**:長測試要定期讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount`,確認它有在增加;沒有增加就視為 runtime 異常,重新 `EnableConfig Force=true`(必要時照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`)。
+- **舊版說法**:(1) 本機 Usermode Runtime 跑約 30 分鐘後 PLC task 不再循環,但 `GetPlcState` / `GetSystemState` 仍回 Run;(2) 對 UmRT 送 `SetPlcState State=Reset` 會結束 `TcSystemServiceUm`。兩條原始紀錄都沒有日期與環境。
+- **實測 2026-11-08**(4026 VS2022 + 本機 UmRT,registered tcauto 534f1d2,細節見 [#26](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/26) 留言與 [troubleshooting.md「已知限制」](troubleshooting.md#已知限制)):(1) `TcSystemServiceUm` 行程跑 47 分、Activate 後 32 分,`_TaskInfo[1].CycleCount` 每分鐘穩定增加約 25000,state 一直是 Run;(2) port 851 Reset 兩次都回 `currentState = Stop`,`TcSystemServiceUm` 同一個 pid 持續存在,system 仍 Run,`SetPlcState State=Run` 可恢復。兩條都沒有重現,所以沒有加防護。
+- **影響**:沒有已確認的影響。測試只涵蓋約 47 分鐘與兩次 Reset,更長時間、其他 runtime build 沒測。
+- **建議**:長時間測試可以定期讀 `TwinCAT_SystemInfoVarList._TaskInfo[n].CycleCount` 確認有在增加;沒增加就當 runtime 異常,重新 `EnableConfig Force=true`(必要時照 [agent-brief-realmachine.md](agent-brief-realmachine.md)「UmRT 復原」重啟 `TcSystemServiceUm`)。UmRT 真的消失請看下面 crash 那一條(#21)。
 - **Issue**:[#26](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/26)
 
 ## 專案 / 程式碼

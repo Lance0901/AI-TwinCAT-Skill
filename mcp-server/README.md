@@ -156,7 +156,7 @@ Tools carry MCP `annotations` (`readOnlyHint`, `destructiveHint`, …) in `tools
 | `GetSystemState` | `Get-TcSystemState` | — | 120 s | TwinCAT Run/Config over port 10000; pass the `AmsNetId` from `ConnectIde` for a non-local target |
 | `SetSystemState` | `Set-TcSystemState` | `State` | 180 s | Switch Run/Config via ADS WriteControl and poll until reached |
 | `GetPlcState` | `Get-TcPlcState` | — | 120 s | PLC runtime state on the connected ADS port |
-| `SetPlcState` | `Set-TcPlcState` | `State` | 180 s | Run / Stop / Reset and wait; **Reset kills `TcSystemServiceUm` on UmRT** |
+| `SetPlcState` | `Set-TcPlcState` | `State` | 180 s | Run / Stop / Reset and wait; Reset leaves the PLC in Stop, `Run` recovers it (an older report that Reset kills `TcSystemServiceUm` on a UmRT did not reproduce: 實測 2026-11-08, 4026 VS2022 + local UmRT, #26) |
 
 ### ADS variables
 
