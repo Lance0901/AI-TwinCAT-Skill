@@ -20,8 +20,11 @@
          server tcauto in each of -Clients (lib\tcauto-client-config.mjs): only the tcauto entry is
          changed, every other server and setting is kept, the file is backed up first
          (<file>.bak-<yyyyMMddTHHmmss>). In an existing tcauto only command / args (Claude Code: also
-         type) are set; other keys and sub-tables the user added there are kept (#204). Its old value
-         is listed in data.clients[].previous. A client whose config file (Claude Code) or config folder (Claude
+         type) are set; other keys and sub-tables the user added there are kept (#204,
+         data.clients[].keptKeys), except env TCAUTO_RUNTIME_ROOT, which would point the launcher at
+         another install root and is removed (data.clients[].removedKeys). A kept cwd or Codex
+         enabled = false is reported in data.clients[].warnings and left as it is. Its old value is
+         listed in data.clients[].previous. A client whose config file (Claude Code) or config folder (Claude
          Desktop, Codex) does not exist is skipped and reported.
          Claude Desktop (#165): the MSIX package reads
          %LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json, the standard
@@ -247,7 +250,7 @@ function Invoke-ClientConfig {
     $Name = $Target.name
     $file = $Target.file
     $label = if ($Target.variant) { "$Name ($($Target.variant))" } else { $Name }
-    $row = [ordered]@{ client = $Name; variant = $Target.variant; file = $file; action = $null; previous = $null; backup = $null; reason = $null }
+    $row = [ordered]@{ client = $Name; variant = $Target.variant; file = $file; action = $null; previous = $null; backup = $null; reason = $null; keptKeys = @(); removedKeys = @(); warnings = @() }
     if ($Name -eq 'ClaudeCode') {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             $row.action = 'skipped'; $row.reason = "$file not found (Claude Code not used by this Windows user yet; start it once, then run this script again)"
@@ -279,12 +282,18 @@ function Invoke-ClientConfig {
     }
     else {
         $row.action = [string]$res.data.action; $row.previous = $res.data.previous; $row.backup = $res.data.backup
+        # #204: user keys kept under tcauto, keys removed (env TCAUTO_RUNTIME_ROOT), kept keys that change how tcauto starts
+        foreach ($k in @('keptKeys', 'removedKeys', 'warnings')) {
+            if ($null -ne $res.data.$k) { $row[$k] = @($res.data.$k | ForEach-Object { [string]$_ }) }
+        }
         if ($row.action -eq 'foreign') { $row.reason = "tcauto points outside $InstallRoot; left as it is" }
         if ($row.action -eq 'shared') { $row.reason = "tcauto runs another command but uses files below $InstallRoot (args); left as it is" }
     }
     $color = if ($row.action -eq 'failed') { 'Red' } elseif ($row.action -in @('skipped', 'foreign', 'shared')) { 'Yellow' } else { 'Gray' }
     Write-Host "  $label`: $($row.action)$(if ($row.reason) { " - $($row.reason)" })" -ForegroundColor $color
     if ($row.backup) { Write-Host "    backup: $($row.backup)" }
+    if (@($row.removedKeys).Count) { Write-Host "    removed: $(@($row.removedKeys) -join ', ')" }
+    foreach ($w in @($row.warnings)) { Write-Host "    warning: $w" -ForegroundColor Yellow }
     return $row
 }
 
@@ -415,7 +424,7 @@ if ($Uninstall) {
     $helperNode = if (Test-Path -LiteralPath $packageNode -PathType Leaf) { $packageNode } elseif (Test-Path -LiteralPath $installedNode -PathType Leaf) { $installedNode } else { $null }
     $rows = [System.Collections.Generic.List[object]]::new()
     foreach ($t in $configTargets) {
-        if ($null -eq $helperNode) { $rows.Add([ordered]@{ client = $t.name; variant = $t.variant; file = $t.file; action = 'failed'; previous = $null; backup = $null; reason = 'no node.exe (neither in the release folder nor installed) to run the client config helper' }); continue }
+        if ($null -eq $helperNode) { $rows.Add([ordered]@{ client = $t.name; variant = $t.variant; file = $t.file; action = 'failed'; previous = $null; backup = $null; reason = 'no node.exe (neither in the release folder nor installed) to run the client config helper'; keptKeys = @(); removedKeys = @(); warnings = @() }); continue }
         $rows.Add((Invoke-ClientConfig -Node $helperNode -Target $t -Action 'remove'))
     }
     $folders = [System.Collections.Generic.List[object]]::new()

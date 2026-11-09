@@ -93,7 +93,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
       JSON.stringify(
         {
           numStartups: 7,
-          mcpServers: { other: { type: 'stdio', command: 'other.exe', args: ['-x'], env: { A: '1' } }, tcauto: { type: 'stdio', command: 'node', args: ['C:\\dev\\repo\\mcp-server\\index.js'], env: { MCP_TOOL_TIMEOUT: '900000' } } },
+          mcpServers: { other: { type: 'stdio', command: 'other.exe', args: ['-x'], env: { A: '1' } }, tcauto: { type: 'stdio', command: 'node', args: ['C:\\dev\\repo\\mcp-server\\index.js'], env: { MCP_TOOL_TIMEOUT: '900000', TCAUTO_RUNTIME_ROOT: 'C:\\elsewhere' } } },
           projects: { 'C:/work/p': { mcpServers: { tcauto: { command: 'project-scope-stays' } }, allowedTools: [] } }
         },
         null,
@@ -103,7 +103,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     put(files.desktop, '{\r\n    "mcpServers": {\r\n        "fs": { "command": "npx", "args": ["-y", "fs"] }\r\n    },\r\n    "globalShortcut": "Ctrl+Space"\r\n}\r\n');
     put(
       files.codex,
-      "model = 'o3'\n\n[mcp_servers.other]\ncommand = 'other.exe'\nargs = ['-x']\n\n[mcp_servers.tcauto]\ncommand = 'node'\nargs = ['C:\\dev\\old.js']\ndefault_tools_approval_mode = 'approve'\n\n[mcp_servers.tcauto.tools.ReadVariable]\napproval_mode = 'approve'\n\n[mcp_servers.tcauto.env]\nA = '1'\n\n[profiles.fast]\nmodel = 'mini'\n"
+      "model = 'o3'\n\n[mcp_servers.other]\ncommand = 'other.exe'\nargs = ['-x']\n\n[mcp_servers.tcauto]\ncommand = 'node'\nargs = ['C:\\dev\\old.js']\ncwd = 'C:\\work'\ndefault_tools_approval_mode = 'approve'\n\n[mcp_servers.tcauto.tools.ReadVariable]\napproval_mode = 'approve'\n\n[mcp_servers.tcauto.env]\nA = '1'\nTCAUTO_RUNTIME_ROOT = 'C:\\elsewhere'\n\n[profiles.fast]\nmodel = 'mini'\n"
     );
     const original = Object.fromEntries(Object.entries(files).map(([k, f]) => [k, fs.readFileSync(f, 'utf8')]));
     return { home, files, original, args: ['-ClaudeCodeConfig', files.code, '-ClaudeDesktopConfig', files.desktop, '-CodexConfig', files.codex] };
@@ -186,7 +186,16 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
 
     const byClient = Object.fromEntries(d.clients.map((r) => [r.client, r]));
     assert.equal(byClient.ClaudeCode.action, 'updated');
-    assert.deepEqual(byClient.ClaudeCode.previous, { type: 'stdio', command: 'node', args: ['C:\\dev\\repo\\mcp-server\\index.js'], env: { MCP_TOOL_TIMEOUT: '900000' } });
+    assert.deepEqual(byClient.ClaudeCode.previous, { type: 'stdio', command: 'node', args: ['C:\\dev\\repo\\mcp-server\\index.js'], env: { MCP_TOOL_TIMEOUT: '900000', TCAUTO_RUNTIME_ROOT: 'C:\\elsewhere' } });
+    // #204: kept / removed keys and start warnings per client
+    assert.deepEqual(byClient.ClaudeCode.keptKeys, ['env']);
+    assert.deepEqual(byClient.ClaudeCode.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    assert.deepEqual(byClient.ClaudeCode.warnings, []);
+    assert.deepEqual(byClient.ClaudeDesktop.keptKeys, []);
+    assert.deepEqual(byClient.Codex.keptKeys, ['cwd', 'default_tools_approval_mode', 'tools.ReadVariable', 'env']);
+    assert.deepEqual(byClient.Codex.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    assert.equal(byClient.Codex.warnings.length, 1);
+    assert.ok(byClient.Codex.warnings[0].includes("cwd = 'C:\\work'") && byClient.Codex.warnings[0].includes('affects how tcauto starts'), byClient.Codex.warnings[0]);
     assert.equal(byClient.ClaudeDesktop.action, 'added');
     assert.equal(byClient.Codex.action, 'updated');
     assert.match(byClient.Codex.previous, /\[mcp_servers\.tcauto\][\s\S]*old\.js[\s\S]*\[mcp_servers\.tcauto\.env\]/);
@@ -215,7 +224,7 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     const toml = fs.readFileSync(c.files.codex, 'utf8');
     assert.equal(
       toml,
-      `model = 'o3'\n\n[mcp_servers.other]\ncommand = 'other.exe'\nargs = ['-x']\n\n[mcp_servers.tcauto]\ncommand = '${nodeExe}'\nargs = ['${launcher}']\ndefault_tools_approval_mode = 'approve'\n\n[mcp_servers.tcauto.tools.ReadVariable]\napproval_mode = 'approve'\n\n[mcp_servers.tcauto.env]\nA = '1'\n\n[profiles.fast]\nmodel = 'mini'\n`
+      `model = 'o3'\n\n[mcp_servers.other]\ncommand = 'other.exe'\nargs = ['-x']\n\n[mcp_servers.tcauto]\ncommand = '${nodeExe}'\nargs = ['${launcher}']\ncwd = 'C:\\work'\ndefault_tools_approval_mode = 'approve'\n\n[mcp_servers.tcauto.tools.ReadVariable]\napproval_mode = 'approve'\n\n[mcp_servers.tcauto.env]\nA = '1'\n\n[profiles.fast]\nmodel = 'mini'\n`
     );
 
     // reinstall of the same zip: runtime reused, configs unchanged, no new backup
@@ -557,6 +566,95 @@ describe('tcauto-client-config.mjs (#20)', () => {
     } finally {
       fs.rmSync(d, { recursive: true, force: true });
     }
+  });
+
+  test('#204 env TCAUTO_RUNTIME_ROOT is removed (JSON env, TOML env table, dotted key, inline table); other env stays', () => {
+    const j = setJson(JSON.stringify({ mcpServers: { tcauto: { command: CMD, args: [ARG], env: { A: '1', TCAUTO_RUNTIME_ROOT: 'D:\\x' } } } }), 'f', 'claude-desktop', CMD, [ARG]);
+    assert.equal(j.action, 'updated', 'only the dropped env differs');
+    assert.deepEqual(JSON.parse(j.text).mcpServers.tcauto.env, { A: '1' });
+    assert.deepEqual(j.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    assert.deepEqual(j.keptKeys, ['env']);
+    const head = `[mcp_servers.tcauto]\ncommand = '${CMD}'\nargs = ['${ARG}']\n`;
+    const table = setToml(`${head}\n[mcp_servers.tcauto.env]\nA = '1'\nTCAUTO_RUNTIME_ROOT = 'D:\\x'\nB = '2'\n`, 'f', CMD, [ARG]);
+    assert.equal(table.action, 'updated');
+    assert.equal(table.text, `${head}\n[mcp_servers.tcauto.env]\nA = '1'\nB = '2'\n`);
+    assert.deepEqual(table.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    assert.deepEqual(table.keptKeys, ['env']);
+    const dotted = setToml(`${head}env.TCAUTO_RUNTIME_ROOT = 'D:\\x'\nenv.A = '1'\n`, 'f', CMD, [ARG]);
+    assert.equal(dotted.text, `${head}env.A = '1'\n`);
+    assert.deepEqual(dotted.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    const inline = setToml(`${head}env = { A = "1", TCAUTO_RUNTIME_ROOT = 'D:\\x', B = { c = 1 } } # mine\n`, 'f', CMD, [ARG]);
+    assert.equal(inline.text, `${head}env = { A = "1", B = { c = 1 } }\n`);
+    assert.deepEqual(inline.removedKeys, ['env.TCAUTO_RUNTIME_ROOT']);
+    assert.equal(setToml(`${head}env = { TCAUTO_RUNTIME_ROOT = 'D:\\x' }\n`, 'f', CMD, [ARG]).text, `${head}env = {}\n`);
+    assert.equal(setToml(`${head}env = { A = "1" }\n`, 'f', CMD, [ARG]).action, 'unchanged', 'an env without it is not rewritten');
+  });
+
+  test('#204 cwd / Codex enabled = false: kept, reported as a warning', () => {
+    const t = setToml(`[mcp_servers.tcauto]\ncommand = '${CMD}'\nargs = ['${ARG}']\ncwd = 'D:\\w'\nenabled = false\n`, 'f', CMD, [ARG]);
+    assert.equal(t.action, 'unchanged');
+    assert.deepEqual(t.keptKeys, ['cwd', 'enabled']);
+    assert.equal(t.warnings.length, 2);
+    assert.match(t.warnings[0], /cwd = 'D:\\w'; this key affects how tcauto starts or whether it is enabled/);
+    assert.match(t.warnings[1], /enabled = false/);
+    assert.deepEqual(setToml(`[mcp_servers.tcauto]\ncommand = '${CMD}'\nargs = ['${ARG}']\nenabled = true\n`, 'f', CMD, [ARG]).warnings, []);
+    const j = setJson(JSON.stringify({ mcpServers: { tcauto: { command: 'old', args: [], cwd: 'D:\\w' } } }), 'f', 'claude-desktop', CMD, [ARG]);
+    assert.equal(JSON.parse(j.text).mcpServers.tcauto.cwd, 'D:\\w', 'value not changed');
+    assert.equal(j.warnings.length, 1);
+    assert.match(j.warnings[0], /cwd = "D:\\\\w"; this key affects how tcauto starts/);
+  });
+
+  test('#204 multi-line strings of other keys are never read as command / args / a header (review inputs A, B, C)', () => {
+    // A: a description string with a command line in it
+    const a = `[mcp_servers.tcauto]\ndescription = '''\ncommand = 'not-this'\n'''\ncommand = 'node'\nargs = ['C:\\dev\\old.js']\n`;
+    const ra = setToml(a, 'f', CMD, [ARG]);
+    assert.equal(ra.text, `[mcp_servers.tcauto]\ndescription = '''\ncommand = 'not-this'\n'''\ncommand = '${CMD}'\nargs = ['${ARG}']\n`);
+    assert.equal(setToml(ra.text, 'f', CMD, [ARG]).action, 'unchanged');
+    // B: a note string with an args line in it (basic multi-line string, with an escaped quote)
+    const b = `[mcp_servers.tcauto]\ncommand = '${CMD}'\nnote = """\nargs = ['${ARG}'] \\"\n"""\nargs = ['C:\\dev\\old.js']\n`;
+    const rb = setToml(b, 'f', CMD, [ARG]);
+    assert.equal(rb.action, 'updated');
+    assert.equal(rb.text, `[mcp_servers.tcauto]\ncommand = '${CMD}'\nnote = """\nargs = ['${ARG}'] \\"\n"""\nargs = ['${ARG}']\n`);
+    // C: a note string with a table header in it: the table does not end there
+    const c = `[mcp_servers.tcauto]\nnote = '''\n[profiles.x]\n'''\ncommand = 'node'\nargs = ['C:\\dev\\old.js']\n\n[profiles.y]\nk = 1\n`;
+    const rc = setToml(c, 'f', CMD, [ARG]);
+    assert.equal(rc.text, `[mcp_servers.tcauto]\nnote = '''\n[profiles.x]\n'''\ncommand = '${CMD}'\nargs = ['${ARG}']\n\n[profiles.y]\nk = 1\n`);
+    assert.ok(rc.previous.includes("note = '''") && !rc.previous.includes('profiles.y'));
+    assert.equal(removeToml(rc.text, 'f', ROOT).text, '[profiles.y]\nk = 1\n', 'remove also skips the string');
+  });
+
+  test('#204 read-back check: duplicate command / args or a second tcauto header is refused, nothing written', () => {
+    assert.throws(() => setToml(`[mcp_servers.tcauto]\ncommand = 'a'\ncommand = 'b'\nargs = []\n`, 'f', CMD, [ARG]), { code: 'CONFIG_UNSUPPORTED', message: /2 command and 1 args/ });
+    assert.throws(() => setToml(`[mcp_servers.tcauto]\ncommand = 'a'\n[mcp_servers.tcauto]\nargs = []\n`, 'f', CMD, [ARG]), { code: 'CONFIG_UNSUPPORTED', message: /2 \[mcp_servers\.tcauto\] headers/ });
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-cfg-issue204-'));
+    try {
+      const f = path.join(d, 'config.toml');
+      const bad = `[mcp_servers.tcauto]\ncommand = 'a'\ncommand = 'b'\n`;
+      fs.writeFileSync(f, bad);
+      assert.throws(() => applyToFile({ action: 'set', client: 'codex', file: f, command: CMD, args: [ARG], stamp: 's1' }), { code: 'CONFIG_UNSUPPORTED' });
+      assert.equal(fs.readFileSync(f, 'utf8'), bad);
+      assert.deepEqual(fs.readdirSync(d), ['config.toml'], 'no backup, no temp file');
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('#204 [[mcp_servers.tcauto]] / [[mcp_servers.tcauto.*]] (array of tables) is refused', () => {
+    assert.throws(() => setToml("[[mcp_servers.tcauto]]\ncommand = 'a'\n", 'f', CMD, [ARG]), { code: 'CONFIG_UNSUPPORTED', message: /array of tables/ });
+    assert.throws(() => setToml(`[mcp_servers.tcauto]\ncommand = 'a'\n[[mcp_servers.tcauto.hooks]]\nx = 1\n`, 'f', CMD, [ARG]), { code: 'CONFIG_UNSUPPORTED' });
+    assert.throws(() => removeToml("[[mcp_servers.tcauto]]\ncommand = 'a'\n", 'f', ROOT), { code: 'CONFIG_UNSUPPORTED' });
+    assert.equal(setToml("[[profiles]]\nname = 'a'\n", 'f', CMD, [ARG]).action, 'added', 'other arrays of tables are fine');
+  });
+
+  test('#204 line endings: untouched lines keep theirs, new / rewritten lines get the one most lines use', () => {
+    // mostly LF with one CRLF line: stays mixed, the rewritten lines get LF
+    const mixed = `model = 'x'\r\n[mcp_servers.tcauto]\ncommand = 'old'\nargs = ['old']\nk = 1\n`;
+    assert.equal(setToml(mixed, 'f', CMD, [ARG]).text, `model = 'x'\r\n[mcp_servers.tcauto]\ncommand = '${CMD}'\nargs = ['${ARG}']\nk = 1\n`);
+    // mostly CRLF with one LF line: the LF line stays LF
+    const crlf = `[mcp_servers.tcauto]\r\ncommand = 'old'\r\nk = 1\n[other]\r\nv = 2\r\n`;
+    assert.equal(setToml(crlf, 'f', CMD, [ARG]).text, `[mcp_servers.tcauto]\r\ncommand = '${CMD}'\r\nargs = ['${ARG}']\r\nk = 1\n[other]\r\nv = 2\r\n`);
+    // no line break at the end of the file: kept that way when the last line is not changed
+    assert.equal(setToml(`[mcp_servers.tcauto]\ncommand = 'old'\nargs = ['${ARG}']`, 'f', CMD, [ARG]).text, `[mcp_servers.tcauto]\ncommand = '${CMD}'\nargs = ['${ARG}']`);
   });
 
   test("tomlString / isOwned: literal string for paths, basic string when a ' is in it", () => {
