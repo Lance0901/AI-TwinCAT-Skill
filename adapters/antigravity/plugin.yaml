@@ -1350,12 +1350,12 @@ actions:
     description: "Read the PLC runtime state (Run/Stop/...) on the connected ADS port."
 
   - name: SetPlcState
-    description: "Switch the PLC runtime to Run, Stop or Reset and wait for the state. WARNING: on a UmRT (user-mode runtime) target, Reset kills TcSystemServiceUm and you must EnableConfig again. Prefer Run/Stop. Run/Stop (#131): when the last read of the PLC port failed (e.g. runtime crash) data.currentState / finalState is 'Unreachable', the last state read before is data.lastState and the error data.lastError; data.leftOriginal is true only when a read returned a state other than data.originalState, failed reads are data.unreachableSeen. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
+    description: "Switch the PLC runtime to Run, Stop or Reset and wait for the state. Reset leaves the PLC in Stop; call Run to recover. An older report that Reset kills TcSystemServiceUm on a UmRT target did not reproduce (實測 2026-11-08, 4026 VS2022 + local UmRT, #26). Run/Stop (#131): when the last read of the PLC port failed (e.g. runtime crash) data.currentState / finalState is 'Unreachable', the last state read before is data.lastState and the error data.lastError; data.leftOriginal is true only when a read returned a state other than data.originalState, failed reads are data.unreachableSeen. Fail closed (#68): success=true only after the readback reached the requested state. While the target has a lifecycle block (recorded when SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed: data.lifecycleBlock) this tool returns LIFECYCLE_BLOCKED and does nothing: stop, report data.lifecycleBlock to the user, do not switch to another control channel (raw ADS, COM, DTE, GUI, console), and call ClearLifecycleBlock only after the user agreed."
     parameters:
       State:
         type: string
         enum: ["Run", "Stop", "Reset"]
-        description: "Run, Stop or Reset. Reset kills TcSystemServiceUm on a UmRT target."
+        description: "Run, Stop or Reset. Reset leaves the PLC in Stop (an older report that it kills TcSystemServiceUm on a UmRT did not reproduce: 實測 2026-11-08, #26)."
         required: true
       TimeoutSec:
         type: integer
