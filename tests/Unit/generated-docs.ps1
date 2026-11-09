@@ -130,7 +130,7 @@ $must = [ordered]@{
     WriteVariable       = @('Confirm with the user first')
     RunTestCycle        = @('Confirm with the user first')
     SetSystemState      = @('all outputs go to zero', 'call ClearLifecycleBlock only after the user agreed')
-    SetPlcState         = @('Reset kills TcSystemServiceUm', 'call ClearLifecycleBlock only after the user agreed')
+    SetPlcState         = @('Reset leaves the PLC in Stop', 'call ClearLifecycleBlock only after the user agreed')
     ReportIssue         = @('ONLY THE USER opens')
 }
 $yamlBlocks = @{}

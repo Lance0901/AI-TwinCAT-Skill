@@ -286,7 +286,7 @@ See the ``twincat`` skill for full command reference. Installed version / source
 - success: true only after the readback reached the target state. On success: false, error.code LIFECYCLE_BLOCKED, or data.lifecycleBlock: STOP every step that changes the runtime, mark the rest NOT RUN, and report the result (data.lifecycleBlock, data.steps) to the user.
 - Never fall back to raw ADS WriteControl, StartRestartTwinCAT, DTE.ExecuteCommand, the GUI, the TcSystemServiceUm console, or a re-Connect-TcIde after Activate.
 - Clear-TcLifecycleBlock (MCP ClearLifecycleBlock) only after the user has seen the block and agreed (receipt: -Reason, -FallbackMethod, -AllowedSideEffects, -MaxVerifyLevel). Never to get past LIFECYCLE_BLOCKED on your own.
-- Confirm with the user before Enable-TcConfig, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset kills TcSystemServiceUm on a UmRT target) and Invoke-TcTestCycle.
+- Confirm with the user before Enable-TcConfig, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset leaves the PLC in Stop; Run recovers it. An older report that it kills TcSystemServiceUm on a UmRT did not reproduce, measured 2026-11-08 #26) and Invoke-TcTestCycle.
 "@
 
 # Check if existing AGENTS.md belongs to us or to another project

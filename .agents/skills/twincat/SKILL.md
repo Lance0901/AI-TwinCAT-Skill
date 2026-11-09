@@ -51,7 +51,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true   # confirm with the user fir
 2. **Report** the result (`data.lifecycleBlock`, `data.steps`, `data.finalCheck`) to the user as it is. Read-only diagnosis is fine.
 3. **Do not fall back** to raw ADS `WriteControl`, `StartRestartTwinCAT`, `DTE.ExecuteCommand`, the GUI, the `TcSystemServiceUm` console, or a re-`Connect-TcIde` after Activate.
 4. `Clear-TcLifecycleBlock` (MCP `ClearLifecycleBlock`) **only after the user has seen the block and agreed**, with the receipt fields `-Reason`, `-FallbackMethod`, `-AllowedSideEffects`, `-MaxVerifyLevel`. Never to get past `LIFECYCLE_BLOCKED` on your own.
-5. Confirm with the user before `Enable-TcConfig`, `Write-TcVariable`, `Set-TcSystemState` (Config stops the runtime, outputs go to zero), `Set-TcPlcState` (Reset kills `TcSystemServiceUm` on a UmRT target) and `Invoke-TcTestCycle`.
+5. Confirm with the user before `Enable-TcConfig`, `Write-TcVariable`, `Set-TcSystemState` (Config stops the runtime, outputs go to zero), `Set-TcPlcState` (Reset leaves the PLC in Stop; `Run` recovers it. An older report that it kills `TcSystemServiceUm` on a UmRT did not reproduce, 實測 2026-11-08 #26) and `Invoke-TcTestCycle`.
 
 Details: https://github.com/Lance0901/AI-TwinCAT-Skill/blob/master/adapters/claude-code/SKILL.md ("Failure contract") and docs/troubleshooting.md "LIFECYCLE_BLOCKED".
 
