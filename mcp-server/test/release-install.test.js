@@ -57,6 +57,14 @@ function resultOf(r) {
   return { code: r.status, result: JSON.parse(line.slice('TCAUTO_INSTALL_RESULT '.length)), stdout: r.stdout };
 }
 
+/** process ids of running processes whose executable is exe (Win32_Process.ExecutablePath) */
+function processesOf(exe) {
+  const ps = `@(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ExecutablePath | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $env:T208EXE } | ForEach-Object { $_.ProcessId }) -join ','`;
+  const r = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', env: { ...process.env, T208EXE: exe } });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim().split(',').filter(Boolean);
+}
+
 /** PATH without any folder that holds node.exe (System32 + Windows PowerShell only) */
 function pathWithoutNode() {
   const p = [path.join(SYS, 'System32'), SYS, path.join(SYS, 'System32', 'WindowsPowerShell', 'v1.0')];
@@ -241,6 +249,9 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     assert.equal(v.code, 0, JSON.stringify(v.result));
     assert.equal(v.result.data.verify.toolCount, d.verify.toolCount);
     assert.equal(v.result.data.verify.runtime.version, build.runtimeVersion);
+    // #208: -Verify returns only after its launcher and runtime node.exe have exited, so the
+    // -Uninstall below needs no wait (a node.exe still exiting held node\ -> INSTALL_IN_USE)
+    assert.deepEqual(processesOf(nodeExe), [], 'no node.exe of the -Verify run is still running');
 
     // -Uninstall: a foreign tcauto (Desktop, pointing elsewhere) stays; state files in the root stay
     const deskNow = readJson(c.files.desktop);

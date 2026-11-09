@@ -374,3 +374,71 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     assert.deepEqual(tree(lad), before, 'nothing left under LOCALAPPDATA');
   });
 });
+
+// #208 scripts/lib/TcAutoInstall.ps1 Remove-TcInstallFolder (Install-TcAuto.ps1 -Uninstall): a
+// folder that cannot be renamed is retried for a few seconds, then reported 'in-use'. The folders
+// are temp folders (names hold 208); the rename is injected (-Move) or held by a real process.
+describe('Remove-TcInstallFolder retries an in-use rename (#208)', { skip: !isWin && 'Windows only' }, () => {
+  const LIB = path.join(path.dirname(SCRIPT), 'lib', 'TcAutoInstall.ps1');
+  /** dot-sources the lib, runs body (it sets $out), returns $out as JSON plus the wall time */
+  function runLib(body, env = {}) {
+    const ps = `$ErrorActionPreference = 'Stop'; . '${LIB.replace(/'/g, "''")}'; $out = $null; ${body}; Write-Output ('RESULT ' + (ConvertTo-Json -InputObject $out -Depth 5 -Compress))`;
+    const t0 = Date.now();
+    const r = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 60000 });
+    const ms = Date.now() - t0;
+    const line = (r.stdout ?? '').split(/\r?\n/).find((l) => l.startsWith('RESULT '));
+    assert.ok(line, `exit ${r.status}\nstdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    return { out: JSON.parse(line.slice(7)), ms };
+  }
+  function folder() {
+    const d = path.join(tmp('rm208'), 'node');
+    put(path.join(d, 'node.exe'), 'fake');
+    return d;
+  }
+  // what [System.IO.Directory]::Move throws for a folder another process holds (.NET Framework)
+  const DENIED = "throw [System.IO.IOException]::new('Access to the path is denied.', -2147024891)";
+
+  test('the rename fails twice with access denied, the third try works: removed', () => {
+    const d = folder();
+    const { out } = runLib(
+      `$n = @{ c = 0 }; $out = Remove-TcInstallFolder -Path $env:T208 -Move { param($f, $t) $n.c++; if ($n.c -le 2) { ${DENIED} }; [System.IO.Directory]::Move($f, $t) }`,
+      { T208: d }
+    );
+    assert.equal(out.action, 'removed', JSON.stringify(out));
+    assert.equal(out.attempts, 3);
+    assert.ok(!fs.existsSync(d), 'folder removed');
+    assert.deepEqual(fs.readdirSync(path.dirname(d)), [], 'no .trash-* left');
+  });
+
+  test('the rename always fails with access denied: in-use within the 5 s limit, same reason text', () => {
+    const d = folder();
+    const { out, ms } = runLib(`$out = Remove-TcInstallFolder -Path $env:T208 -Move { param($f, $t) ${DENIED} }`, { T208: d });
+    assert.equal(out.action, 'in-use', JSON.stringify(out));
+    assert.ok(out.attempts > 2, `retried: ${out.attempts}`);
+    assert.ok(out.elapsedMs >= 5000 && out.elapsedMs < 6500, `elapsedMs ${out.elapsedMs}`);
+    assert.ok(ms < 15000, `wall time ${ms} ms`);
+    assert.match(out.reason, /Access to the path is denied\..*\(close the MCP clients that run TcAuto, then run -Uninstall again\)$/);
+    assert.ok(fs.existsSync(path.join(d, 'node.exe')), 'folder untouched');
+  });
+
+  test('an error that is not in-use (not found) is not retried', () => {
+    const d = folder();
+    const { out } = runLib(`$out = Remove-TcInstallFolder -Path $env:T208 -Move { param($f, $t) throw [System.IO.DirectoryNotFoundException]::new('gone') }`, { T208: d });
+    assert.equal(out.action, 'in-use');
+    assert.equal(out.attempts, 1);
+    assert.ok(out.elapsedMs < 1000, `elapsedMs ${out.elapsedMs}`);
+  });
+
+  test('a real process holds the folder (working directory) for about 1 s: retried, then removed', () => {
+    const d = folder();
+    // started by the PowerShell process itself: the working directory is held from process creation on, before the first rename
+    const { out } = runLib(
+      `$h = Start-Process -FilePath $env:T208NODE -ArgumentList '-e', 'setTimeout(() => {}, 1200)' -WorkingDirectory $env:T208 -WindowStyle Hidden -PassThru; ` +
+        `$out = Remove-TcInstallFolder -Path $env:T208; $h.WaitForExit()`,
+      { T208: d, T208NODE: process.execPath }
+    );
+    assert.equal(out.action, 'removed', JSON.stringify(out));
+    assert.ok(out.attempts > 1, `the held folder needed a retry: ${out.attempts}`);
+    assert.ok(!fs.existsSync(d));
+  });
+});

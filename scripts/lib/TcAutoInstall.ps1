@@ -472,3 +472,109 @@ function Remove-TcOldRuntimes {
     foreach ($s in $skipped) { Write-Host "  kept $($s.version): $($s.reason)" -ForegroundColor Yellow }
     return @{ Pruned = $pruned; Skipped = $skipped }
 }
+
+function Test-TcFileInUseError {
+    # Access denied, sharing violation or lock violation (HRESULT 0x80070005 / 0x80070020 / 0x80070021):
+    # another process holds a handle - a running client, a node.exe that is still exiting, an
+    # anti-virus scan (#208). Other errors (not found, path too long, ...) are not in-use errors.
+    param($Exception)
+    $e = $Exception
+    while ($null -ne $e) {
+        if ($e -is [System.UnauthorizedAccessException]) { return $true }
+        if ($e -is [System.IO.IOException]) { return (($e.HResult -band 0xFFFF) -in @(5, 32, 33)) }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
+function Invoke-TcInUseRetry {
+    # Runs Action; an in-use error (Test-TcFileInUseError) is retried after 100, 200, 400, 800,
+    # 1000, 1000 ... ms until TimeoutMs have passed since the first try, then the last error is
+    # thrown as it was. Any other error is thrown at once. Returns the number of attempts (#208).
+    param([Parameter(Mandatory)][scriptblock]$Action, [ValidateRange(0, 600000)][int]$TimeoutMs = 5000)
+    $retrySw = [System.Diagnostics.Stopwatch]::StartNew()
+    $retryDelay = 100
+    $retryAttempt = 0
+    while ($true) {
+        $retryAttempt++
+        try {
+            $null = & $Action
+            return $retryAttempt
+        }
+        catch {
+            $retryLeft = $TimeoutMs - $retrySw.ElapsedMilliseconds
+            if ($retryLeft -le 0 -or -not (Test-TcFileInUseError $_.Exception)) { throw }
+            Start-Sleep -Milliseconds ([int][Math]::Min($retryDelay, $retryLeft))
+            $retryDelay = [Math]::Min($retryDelay * 2, 1000)
+        }
+    }
+}
+
+function Remove-TcInstallFolder {
+    # -Uninstall of Install-TcAuto.ps1: rename aside, then delete. A folder that cannot be renamed
+    # is retried for RetryMs (a node.exe of a -Verify run that is still exiting, an anti-virus scan
+    # of node.exe, #208) and reported 'in-use' after that (a running client holds it). Move is the
+    # rename (parameters: from, to); tests pass one that fails on purpose.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(0, 600000)][int]$RetryMs = 5000,
+        [scriptblock]$Move = { param($From, $To) [System.IO.Directory]::Move($From, $To) }
+    )
+    if (-not (Test-Path -LiteralPath $Path)) { return [ordered]@{ path = $Path; action = 'absent'; reason = $null; attempts = 0 } }
+    $trash = Join-Path (Split-Path -Parent $Path) ('.trash-' + (Split-Path -Leaf $Path) + '-' + [guid]::NewGuid().ToString('N'))
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $state = @{ attempts = 0 }
+    try { $null = Invoke-TcInUseRetry -TimeoutMs $RetryMs -Action { $state.attempts++; & $Move $Path $trash } }
+    catch {
+        return [ordered]@{ path = $Path; action = 'in-use'; reason = "$($_.Exception.Message) (close the MCP clients that run TcAuto, then run -Uninstall again)"; attempts = $state.attempts; elapsedMs = $sw.ElapsedMilliseconds }
+    }
+    try { $null = Invoke-TcInUseRetry -TimeoutMs $RetryMs -Action { Remove-Item -LiteralPath $trash -Recurse -Force -ErrorAction Stop } }
+    catch { $script:TcInstallWarnings.Add("$Path was renamed to $trash but not deleted completely: $($_.Exception.Message)") }
+    return [ordered]@{ path = $Path; action = 'removed'; reason = $null; attempts = $state.attempts }
+}
+
+function Get-TcProcessTree {
+    # The live descendants of process RootId (Win32_Process.ParentProcessId), each as a Process
+    # object, so it keeps a handle and a reused PID cannot be mixed up later; only processes created
+    # after NotBefore (a stale ParentProcessId can point at a reused PID). Empty when the process
+    # list cannot be read.
+    param([Parameter(Mandatory)][int]$RootId, [DateTime]$NotBefore = [DateTime]::MinValue)
+    $result = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+    try { $all = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, CreationDate -ErrorAction Stop) }
+    catch { return , $result }
+    $parents = @($RootId)
+    $seen = @{ $RootId = $true }
+    while ($parents.Count -gt 0) {
+        $next = @()
+        foreach ($p in $all) {
+            if ($seen.ContainsKey([int]$p.ProcessId) -or ([int]$p.ParentProcessId -notin $parents)) { continue }
+            if ($null -ne $p.CreationDate -and $p.CreationDate -lt $NotBefore) { continue }
+            $seen[[int]$p.ProcessId] = $true
+            $next += [int]$p.ProcessId
+            try { $result.Add([System.Diagnostics.Process]::GetProcessById([int]$p.ProcessId)) } catch { }
+        }
+        $parents = $next
+    }
+    return , $result
+}
+
+function Wait-TcProcessesExit {
+    # Waits up to TimeoutMs (in all) for each process to exit; one still running then is killed
+    # (taskkill /T /F, with its own children) and waited for 5 s. Returns the number killed.
+    param([System.Diagnostics.Process[]]$Processes = @(), [int]$TimeoutMs = 10000)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $killed = 0
+    foreach ($p in @($Processes)) {
+        try {
+            $left = [int][Math]::Max(0, $TimeoutMs - $sw.ElapsedMilliseconds)
+            if (-not $p.WaitForExit($left)) {
+                $null = Invoke-Native -File 'taskkill.exe' -Arguments @('/PID', "$($p.Id)", '/T', '/F')
+                $killed++
+                $null = $p.WaitForExit(5000)
+            }
+        }
+        catch { }
+        finally { $p.Dispose() }
+    }
+    return $killed
+}
