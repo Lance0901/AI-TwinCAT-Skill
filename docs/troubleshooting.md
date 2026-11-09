@@ -609,7 +609,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - `PACKAGE_INCOMPLETE`:不是完整的 release 資料夾(缺 `tcauto-release.json` / `node\node.exe` / launcher / `lib\tcauto-client-config.mjs`,或 `runtime\` 不是剛好一個版本,或該版本的 `tcauto-source.json` 不符)。整個 zip 重新解壓縮、核對 SHA256 後從解壓縮資料夾執行;在 checkout 裡改用 `scripts\Install-TcAutoRuntime.ps1`。
 - `CLIENT_CONFIG_FAILED`:檔案已裝好,但某個 client 設定檔改不了(JSON 壞掉;Codex 的 `tcauto` 寫成 key 或 `[[mcp_servers.tcauto]]` array of tables,而不是一個 `[mcp_servers.tcauto]` table;改完讀回不對，例如 table 裡有兩個 `command`(#204);檔案被鎖),原因在 `error.message` 與 `data.clients[]`(該檔案沒被改)。修好那個檔案再執行一次;`-Uninstall` 也可能回這個碼,處理方式相同。
 - `INSTALL_SHARED`:`-Uninstall` 發現某個 client 的 `tcauto` 雖然 command 不在安裝根目錄下,但 args 仍指到安裝根目錄(例如開發者註冊的 `node <root>\launcher\tcauto-launcher.mjs`)。為了不弄壞那個 client,什麼都沒刪。先改掉或移除那個註冊(`claude mcp remove tcauto -s user`)再 `-Uninstall`;確定要一起移除就加 `-Force`。
-- `INSTALL_IN_USE`:`-Uninstall` 時 `runtime\` / `launcher\` / `node\` 有資料夾被使用中(Claude Code、Claude Desktop、Codex 都在跑 launcher)。關掉這些 client 再執行。
+- `INSTALL_IN_USE`:`-Uninstall` 時 `runtime\` / `launcher\` / `node\` 有資料夾被使用中(Claude Code、Claude Desktop、Codex 都在跑 launcher)。改名失敗(Access denied、sharing violation)會先重試數秒(`runtime\`、`launcher\`、`node\` 三個資料夾共用約 5 秒，間隔逐步拉長;client 真的佔著時約 5 秒後回錯),例如剛跑完 `-Verify` 的 node.exe 還在結束、或防毒還握著 handle 時會自己過;仍失敗才回這個碼(#208)。關掉這些 client 再執行。
 - `NODE_IN_USE`:要換新的 `node.exe`,但舊的被執行中的 client 佔住,舊檔沒動。關掉 client 再執行。
 - `COPY_FAILED`:複製 `node.exe` 或其他檔案失敗(磁碟空間、目錄不可寫,或雲端同步資料夾下載不了)。訊息說明舊 `node.exe` 是否已放回。
 - `RUNTIME_DAMAGED`:複製後 `runtime\<version>\` 不完整(沒有 `node_modules` 或 `index.js`)。重新下載 zip、核對 SHA256 後再執行。

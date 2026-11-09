@@ -40,6 +40,7 @@
     -Verify: starts <InstallRoot>\node\node.exe with the launcher (as a client would; PATH is not
     used), sends MCP initialize + tools/list and reports the tool count and the runtime version /
     commit. It does not connect to an IDE and does not start the PowerShell bridge. Nothing is written.
+    It returns only after the launcher and every process it started have exited (#208).
 
     -Uninstall: removes the tcauto entry from each of -Clients whose command is below InstallRoot
     (backup first), then removes <InstallRoot>\node, launcher and runtime. An entry whose command is
@@ -48,7 +49,8 @@
     no folder is removed (INSTALL_SHARED) unless -Force, which removes that entry too. Any other entry
     (e.g. a developer checkout) is left ('foreign'). Other files in InstallRoot (ide-solutions.json,
     ...) stay; InstallRoot itself is removed only when it is empty then. The backups stay next to the
-    config files.
+    config files. A folder that cannot be renamed (access denied, sharing violation) is retried before
+    it counts as in use (INSTALL_IN_USE, #208); the three folders share one 5 s retry time.
 
     The last stdout line is "TCAUTO_INSTALL_RESULT <json>" ({success, data | error}); exit code 0 on
     success, 1 otherwise.
@@ -329,8 +331,12 @@ function Invoke-TcVerify {
     $deadline = [DateTime]::UtcNow.AddSeconds($VerifyTimeoutSec)
     $proc = $null
     $errTask = $null
+    $tree = $null
+    $rootStart = [DateTime]::MaxValue
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
+        # its children are created after it: an older process with a reused parent PID is not one of them
+        $rootStart = $proc.StartTime
         $errTask = $proc.StandardError.ReadToEndAsync()
         $in = $proc.StandardInput.BaseStream
         # .NET Framework writes the preamble of Console.InputEncoding (a UTF-8 BOM under code page
@@ -372,6 +378,7 @@ function Invoke-TcVerify {
     catch {
         $data.durationMs = $sw.ElapsedMilliseconds
         $msg = $_.Exception.Message
+        if ($null -ne $proc -and $null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $rootStart }
         if ($null -ne $proc -and $null -ne $errTask) {
             try { $proc.StandardInput.Close() } catch { }
             if ($errTask.Wait(3000)) { $tail = @(($errTask.Result -split "`r?`n") | Where-Object { $_ } | Select-Object -Last 6) -join ' | '; if ($tail) { $msg += " (stderr: $tail)" } }
@@ -380,6 +387,8 @@ function Invoke-TcVerify {
     }
     finally {
         if ($null -ne $proc) {
+            # the launcher's children (the runtime node.exe, ...), listed while the launcher still runs
+            if ($null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $rootStart }
             try { $proc.StandardInput.Close() } catch { }
             if (-not $proc.WaitForExit(15000)) {
                 # only this check's own launcher and its runtime child
@@ -387,20 +396,11 @@ function Invoke-TcVerify {
                 $null = $proc.WaitForExit(5000)
             }
             $proc.Dispose()
+            # the whole tree has exited before -Verify returns: a -Uninstall right after it finds no
+            # node.exe of this check still holding node\ or runtime\ (#208)
+            $null = Wait-TcProcessesExit -Processes @($tree) -TimeoutMs 10000
         }
     }
-}
-
-function Remove-TcInstallFolder {
-    # rename aside, then delete (a folder a running client holds cannot be renamed: reported)
-    param([Parameter(Mandatory)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return [ordered]@{ path = $Path; action = 'absent'; reason = $null } }
-    $trash = Join-Path (Split-Path -Parent $Path) ('.trash-' + (Split-Path -Leaf $Path) + '-' + [guid]::NewGuid().ToString('N'))
-    try { [System.IO.Directory]::Move($Path, $trash) }
-    catch { return [ordered]@{ path = $Path; action = 'in-use'; reason = "$($_.Exception.Message) (close the MCP clients that run TcAuto, then run -Uninstall again)" } }
-    try { Remove-Item -LiteralPath $trash -Recurse -Force -ErrorAction Stop }
-    catch { $script:TcInstallWarnings.Add("$Path was renamed to $trash but not deleted completely: $($_.Exception.Message)") }
-    return [ordered]@{ path = $Path; action = 'removed'; reason = $null }
 }
 
 $twincat = Get-TcTwinCatInstall
@@ -435,7 +435,13 @@ if ($Uninstall) {
         Stop-Install -Code 'INSTALL_SHARED' -Message "$($shared.Count) client registration(s) still use files below $InstallRoot through their args: $(@($shared | ForEach-Object { "$($_.client) ($($_.file))" }) -join '; '); no installed file was removed." `
             -Hint 'Change or remove that tcauto registration first (e.g. claude mcp remove tcauto -s user), then run Install-TcAuto.ps1 -Uninstall again; or run it with -Uninstall -Force to remove that registration and the files too.' -Data $data
     }
-    foreach ($f in @($runtimeFolder, $launcherFolder, $nodeFolder)) { $folders.Add((Remove-TcInstallFolder -Path $f)) }
+    # one retry deadline for all three folders (#208): a client that really holds them gives
+    # INSTALL_IN_USE after about 5 s, not 5 s per folder
+    $retryUntil = [DateTime]::UtcNow.AddMilliseconds(5000)
+    foreach ($f in @($runtimeFolder, $launcherFolder, $nodeFolder)) {
+        $retryLeft = [int][Math]::Max(0, ($retryUntil - [DateTime]::UtcNow).TotalMilliseconds)
+        $folders.Add((Remove-TcInstallFolder -Path $f -RetryMs $retryLeft))
+    }
     $rootRemoved = $false
     if ((Test-Path -LiteralPath $InstallRoot) -and @(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -eq 0) {
         try { Remove-Item -LiteralPath $InstallRoot -Force -ErrorAction Stop; $rootRemoved = $true } catch { }
