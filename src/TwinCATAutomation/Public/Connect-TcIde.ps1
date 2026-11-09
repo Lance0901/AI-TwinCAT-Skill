@@ -89,10 +89,16 @@ function Connect-TcIde {
         DTE with this .sln open and no modal dialog is up; otherwise nothing is attached
         (ORPHAN_TAKEOVER_REFUSED with data.reason, IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE, or
         LAUNCH_RECORD_UNAVAILABLE). #201: a known reload prompt (kind reload-prompt) of that IDE
-        is answered without reloading once every other condition has passed (solution: Ignore,
-        project: No, file: WM_CLOSE; at most 5 prompts), then the DTE is read again; on success
-        data.reloadPromptAttempts, data.diskChangesNotLoaded = true and data.nextStep (run
-        Reset-TcSolution before Build-TcProject). Any other dialog, or a prompt that stays up:
+        is answered without reloading (solution: Ignore, project: No, file: WM_CLOSE; at most 5
+        prompts) only when: -SolutionPath given, a launch record of that .sln, its host and owner
+        processes gone, its pid confirmed, -ProgId (when given) the launch ProgID, the pid's DTE in
+        the ROT, and either that DTE answered with this .sln open or - DTE blocked - the dialog
+        text names a file inside the solution folder or the solution name. Then the DTE is read
+        again and BUILD_REQUIRED kind reset-required is recorded for the .sln (Build-TcProject,
+        Enable-TcConfig, Enter-TcPlcOnline, New-TcBootProject, Save-TcPlcLibrary refuse with
+        RESET_REQUIRED until Reset-TcSolution reopened it from disk); on success
+        data.reloadPromptAttempts, data.diskChangesNotLoaded = true, data.resetRequired and
+        data.nextStep. Any other dialog, a prompt without that evidence or one that stays up:
         IDE_MODAL_DIALOG with the IDE_MODAL_DIALOG_ORPHAN hint (nothing attached, so not
         Reset-TcSolution / Disconnect-TcIde). Only after the attach, the modal check and the project scan have
         passed does the record get this process as owner plus a takeovers[] entry;
@@ -945,10 +951,15 @@ function Connect-TcIde {
         # #201: reload prompts of the orphan were answered without reloading: the IDE still has the
         # old in-memory state while the files on disk changed
         $answeredPrompts = @($orphan.ReloadPrompts)
-        if ($answeredPrompts.Count -gt 0) {
-            $data | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue $answeredPrompts
+        if ($answeredPrompts.Count -gt 0) { $data | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue $answeredPrompts }
+        # PR #209 review M2: the reset-required record is persistent, so a takeover that is retried
+        # after a failure (the prompt answered by the earlier call) still reports it
+        $rg = Get-TcResetRequiredGuard -SolutionPath $normalizedSolutionPath
+        if ($answeredPrompts.Count -gt 0 -or $null -ne $rg) {
             $data | Add-Member -NotePropertyName 'diskChangesNotLoaded' -NotePropertyValue $true
-            $data | Add-Member -NotePropertyName 'nextStep' -NotePropertyValue 'The reload prompt(s) of the taken-over IDE were answered without reloading (data.reloadPromptAttempts): the IDE keeps its in-memory solution while files on disk changed. Load the disk state with Reset-TcSolution (MCP: ResetSolution) before Build-TcProject, or quit the IDE with Disconnect-TcIde -Quit (-Kill) if it is no longer needed.'
+            if ($null -ne $rg) { $data | Add-Member -NotePropertyName 'resetRequired' -NotePropertyValue $rg }
+            if (-not [string]::IsNullOrWhiteSpace([string]$orphan.ResetRequiredWarning)) { $data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$orphan.ResetRequiredWarning) -Force }
+            $data | Add-Member -NotePropertyName 'nextStep' -NotePropertyValue 'A reload prompt of the taken-over IDE was answered without reloading (data.reloadPromptAttempts, now or by an earlier takeover attempt): the IDE keeps its in-memory solution while files on disk changed. Build-TcProject, Enable-TcConfig, PLC login, boot project and library save refuse with RESET_REQUIRED until Reset-TcSolution (MCP: ResetSolution, without -SaveProjectChanges) reopened the solution from disk; or quit the IDE with Disconnect-TcIde -Quit (-Kill) if it is no longer needed.'
         }
     }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {

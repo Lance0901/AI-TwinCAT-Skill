@@ -26,7 +26,8 @@ function Reset-TcSolution {
             outside the environment" (zh-TW title "file modification detected"; #32770 with
             button control ids 259 Reload / 1412 Ignore: Kind 'reload-prompt', reloadTarget
             'solution', recognised by those ids only; measured 2026-11-03 VS2022 zh-TW,
-            TcXaeShell / other languages not verified). It is answered Ignore (control id 1412,
+            4024 TcXaeShell en-US the same ids, measured 2026-11-09 #201; other languages not
+            verified). It is answered Ignore (control id 1412,
             #106) and the solution is closed and reopened from disk. Not Reload (259): measured
             2026-11-07 (4026 VS2022 zh-TW), Reload made VS ask at once "Save changes to the
             following items? X.sln X.tsproj*" (Save / Don't Save / Cancel) because Set-TcTarget
@@ -198,7 +199,15 @@ function Reset-TcSolution {
         Reset-TcSolution     # answers Yes, reconnects, data.answeredYes = true, reopenedSolution = false
     .OUTPUTS
         data.solution              path that was reopened
-        data.dismissedReloadPrompt a reload prompt was up and was closed by this cmdlet
+        data.dismissedReloadPrompt a reload prompt was up and was closed by this cmdlet, or (PR #209)
+                                   Connect-TcIde -TakeOverOrphan answered one without reloading
+                                   (BUILD_REQUIRED kind reset-required, data.resetRequired): the full
+                                   close / reopen runs and -SaveProjectChanges is refused as after
+                                   a prompt handled here
+        data.resetRequiredCleared  (only with a reset-required record) true = the reopen succeeded
+                                   without saving and the record was removed; false = kept (a save,
+                                   another .sln, or the state file could not be written:
+                                   data.stateWarning)
         data.reloadTarget          'solution' | 'project' | 'file' | $null: which reload prompt was
                                    seen (several: 'solution' wins over 'project' over 'file')
         data.answeredYes           the project reload prompt was answered Yes (our click was sent)
@@ -427,7 +436,20 @@ function Reset-TcSolution {
         YesFailed   = $false   # a Yes click on a project prompt failed: later project prompts start at No
         Handled     = 0
         YesPathDone = $false   # the Yes-only reconnect was attempted (it failed: full path from now on)
+        ResetRequiredSolution = $null   # PR #209 review M1: the .sln whose reset-required record this reset may clear
         ScanBeforeRead = $false   # a Yes was answered and no complete scan has shown "no modal" since (#181 review)
+    }
+    # PR #209 review M1: Connect-TcIde -TakeOverOrphan answered a reload prompt of this solution
+    # 'do not reload' (BUILD_REQUIRED kind reset-required): that counts as a handled reload prompt
+    # (-SaveProjectChanges is refused like after a prompt handled here) and forces the full close /
+    # reopen (never the Yes-only path); the record is removed only after that reopen succeeded
+    # without saving anything (end of this function).
+    $resetGuard = Get-TcResetRequiredGuard -SolutionPath $path
+    if ($null -ne $resetGuard) {
+        $progress.dismissedReloadPrompt = $true
+        $progress['resetRequired'] = $resetGuard
+        $state.NeedReopen = $true
+        $state.ResetRequiredSolution = $(if (-not [string]::IsNullOrWhiteSpace([string]$path)) { [string]$path } else { [string]$resetGuard.solution })
     }
     # One answer to a reload prompt (Close = Close-TcReloadPrompt's default WM_CLOSE), recorded in
     # data.reloadPromptAttempts (#135 F4: every attempt and how BM_CLICK / WM_COMMAND ended).
@@ -975,7 +997,10 @@ function Reset-TcSolution {
                     }
                     # -SaveProjectChanges: still refuse when the disk shows signs of a deliberate change.
                     $refused = [System.Collections.Generic.List[object]]::new()
-                    if ($progress.dismissedReloadPrompt) {
+                    if ($null -ne $resetGuard) {
+                        $refused.Add([PSCustomObject]@{ plc = '*'; reason = "a reload prompt was answered without reloading by Connect-TcIde -TakeOverOrphan (reset-required: $($resetGuard.reason)): files were changed on disk while the solution was open" })
+                    }
+                    elseif ($progress.dismissedReloadPrompt) {
                         $refused.Add([PSCustomObject]@{ plc = '*'; reason = "a reload prompt ($($progress.reloadTarget)) was handled in step 1: files were changed on disk while the solution was open" })
                     }
                     foreach ($d in $diffs) {
@@ -1180,6 +1205,22 @@ function Reset-TcSolution {
             openSec    = $openSec
             connectSec = $connectSec
         }))
-        return Register-TcCodeChange -Result $ok -Change $resetChange
+        $ok = Register-TcCodeChange -Result $ok -Change $resetChange
+        # PR #209 review M1: the solution was reopened from disk and nothing was saved -> the
+        # reset-required record of the takeover is removed (a save, or another .sln reopened, keeps it)
+        if ($null -ne $state.ResetRequiredSolution) {
+            $savedAny = @($progress['savedProjects']).Count -gt 0
+            $samePath = [string]::Equals((ConvertTo-TcSolutionKey $state.ResetRequiredSolution), (ConvertTo-TcSolutionKey $path), [StringComparison]::OrdinalIgnoreCase)
+            if (-not $savedAny -and $samePath) {
+                $cw = Clear-TcResetRequired -SolutionPath $state.ResetRequiredSolution
+                $ok.data | Add-Member -NotePropertyName 'resetRequiredCleared' -NotePropertyValue ($null -eq $cw) -Force
+                if ($null -ne $cw) {
+                    $prev = $ok.data.PSObject.Properties['stateWarning']
+                    $ok.data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue $(if ($null -ne $prev -and -not [string]::IsNullOrWhiteSpace([string]$prev.Value)) { "$($prev.Value); $cw" } else { $cw }) -Force
+                }
+            }
+            else { $ok.data | Add-Member -NotePropertyName 'resetRequiredCleared' -NotePropertyValue $false -Force }
+        }
+        return $ok
     }
 }

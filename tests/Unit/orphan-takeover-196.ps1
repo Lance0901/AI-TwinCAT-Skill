@@ -139,7 +139,10 @@ function Restart-Module {
                 'dialog' { return @{ Title = 'Microsoft Visual Studio'; Text = 'mock dialog'; Hwnd = 0; Buttons = @() } }
                 # #201: reload prompts (Kind / ReloadTarget as Find-TcIdeModalDialog reports them)
                 'reload-solution' { return @{ Title = 'File Modification Detected'; Text = "The solution 's4026' has been modified outside the environment."; Kind = 'reload-prompt'; ReloadTarget = 'solution'; Hwnd = 201; Buttons = @() } }
-                'reload-project' { return @{ Title = 'TcXaeShell'; Text = "The project file 'P1.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 202; Buttons = @() } }
+                'reload-project' { return @{ Title = 'TcXaeShell'; Text = "The project file '$($global:SlnDir201)\P1\P1.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 202; Buttons = @() } }
+                # PR #209 review m1: prompts that give no evidence for the solution
+                'reload-project-outside' { return @{ Title = 'TcXaeShell'; Text = "The project file 'C:\Elsewhere201\Q\Q.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 204; Buttons = @() } }
+                'reload-solution-other' { return @{ Title = 'File Modification Detected'; Text = "The solution 'OtherSolution201' has been modified outside the environment."; Kind = 'reload-prompt'; ReloadTarget = 'solution'; Hwnd = 205; Buttons = @() } }
                 'reload-file' { return @{ Title = 'Microsoft Visual Studio'; Text = 'File has been changed outside the environment. Reload the new file?'; Kind = 'reload-prompt'; ReloadTarget = 'file'; Hwnd = 203; Buttons = @() } }
                 default { return $null }
             }
@@ -175,6 +178,7 @@ function Reset-All {
     $global:NoStart73 = @{}; $global:SysMgrHook73 = $null
     $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false; $global:NextName73 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'build-required.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Restart-Module
 }
 function Get-RecordFile { Join-Path $env:TCAUTO_STATE_DIR 'launched-ides.json' }
@@ -432,6 +436,8 @@ try {
             }
         }
     }
+    $global:SlnDir201 = $slnDir
+    function Get-ResetGuard { & $script:mod { param($x) Get-TcResetRequiredGuard -SolutionPath $x } $slnL }
     function New-ReloadOrphan([string[]]$Queue) {
         $pp = New-Orphan
         Install-ReloadMock
@@ -446,6 +452,9 @@ try {
     $att = @($r.data.reloadPromptAttempts)
     Check 'T11 solution reload prompt -> answered Ignore on the orphan pid (no follow-up scan), then taken over' ($r.success -and $r.data.takenOver -eq $true -and $r.data.ownedBySession -eq $true -and ($global:Answers201 -join ',') -eq "Ignore|$p|True" -and $att.Count -eq 1 -and $att[0].target -eq 'solution' -and $att[0].answer -eq 'Ignore' -and $att[0].dismissed -eq $true) "code=$($r.error.code) answers=$($global:Answers201 -join ',') hint=$($r.error.hint)"
     Check 'T11a success says the disk changes are not loaded and names Reset-TcSolution as next step' ($r.data.diskChangesNotLoaded -eq $true -and [string]$r.data.nextStep -match 'Reset-TcSolution') "nextStep=$($r.data.nextStep)"
+    Check 'T11a2 success carries data.resetRequired and the reset-required record exists (M1)' ($null -ne $r.data.resetRequired -and $null -ne (Get-ResetGuard) -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'dte-solution') "resetRequired=$($r.data.resetRequired | ConvertTo-Json -Compress)"
+    $bt = Build-TcProject
+    Check 'T11a3 Build-TcProject right after the takeover -> RESET_REQUIRED, hint names Reset-TcSolution (M1)' (-not $bt.success -and $bt.error.code -eq 'RESET_REQUIRED' -and $bt.error.hint -match 'Reset-TcSolution') "code=$($bt.error.code)"
     Check 'T11b record owner rewritten (taken over)' ([int]@(Read-Records)[0].hostPid -eq $PID -and @(@(Read-Records)[0].takeovers).Count -eq 1) ((Get-RecordJson) -replace '\s+', ' ')
     $null = Disconnect-TcIde
 
@@ -474,12 +483,35 @@ try {
     $before = Get-RecordJson
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
     Check 'T11f prompt not dismissed -> IDE_MODAL_DIALOG, not taken over, record unchanged, not connected, both attempts reported' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.takenOver -eq $false -and $r.data.attached -eq $false -and $r.data.dialog.kind -eq 'reload-prompt' -and @($r.data.reloadPromptAttempts).Count -eq 2 -and ($global:Answers201 -join ',') -eq "Ignore|$p|True,Close|$p|True" -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    Check 'T11f2 failed takeover after an answer still records reset-required and reports it (M2)' ($null -ne $r.data.resetRequired -and $null -ne (Get-ResetGuard)) "resetRequired=$($r.data.resetRequired)"
     Check 'T11g its hint says nothing is attached and does NOT send the caller to Reset-TcSolution (the #201 dead end)' ($r.error.hint -match 'NOT_CONNECTED' -and $r.error.hint -match 'TakeOverOrphan' -and $r.error.hint -notmatch '直接呼叫 Reset-TcSolution') "$($r.error.hint)"
+
+    # M2: the prompt was closed by the user afterwards; the retried takeover still reports the record
+    $global:CloseFail201 = @(); $global:ModalQueue73.Clear()
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11r retried takeover (prompt answered by the earlier call) -> success, diskChangesNotLoaded + resetRequired from the persisted record (M2)' ($r.success -and $r.data.takenOver -eq $true -and $r.data.diskChangesNotLoaded -eq $true -and $null -ne $r.data.resetRequired -and $global:Answers201.Count -eq 2 -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts']) "code=$($r.error.code) disk=$($r.data.diskChangesNotLoaded)"
+    $null = Disconnect-TcIde
+
+    # m1: DTE blocked (busy) and the prompt gives no evidence for this .sln -> nothing clicked
+    $p = New-ReloadOrphan @('reload-project-outside')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11p busy DTE + project prompt naming a file outside the solution folder -> IDE_MODAL_DIALOG, nothing answered, no reset-required (m1)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $r.data.reloadPromptEvidence -eq 'none' -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts'] -and $null -eq (Get-ResetGuard) -and $r.error.hint -match 'NOT_CONNECTED' -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',') ev=$($r.data.reloadPromptEvidence)"
+    $p = New-ReloadOrphan @('reload-solution-other')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11q busy DTE + solution prompt naming another solution -> nothing answered (m1)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $r.data.reloadPromptEvidence -eq 'none') "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $global:P201 = $p; $global:CloseHook201 = { $global:LaunchedDtes73[$global:P201].Busy = $false }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11s busy DTE + solution prompt naming this solution -> answered (evidence solution-name), taken over' ($r.success -and $r.data.takenOver -eq $true -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'solution-name') "code=$($r.error.code) ev=$(@($r.data.reloadPromptAttempts)[0].evidence)"
+    $null = Disconnect-TcIde
 
     # an unknown dialog is never answered
     $p = New-ReloadOrphan @('dialog')
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T11h unknown dialog -> IDE_MODAL_DIALOG with the orphan hint, nothing answered, not connected' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $r.error.hint -match 'NOT_CONNECTED' -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts'] -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    Check 'T11h unknown dialog -> IDE_MODAL_DIALOG with the orphan hint, nothing answered, not connected' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $null -eq (Get-ResetGuard) -and $r.error.hint -match 'NOT_CONNECTED' -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts'] -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
 
     # prompts keep coming: at most 5 answered
     $p = New-ReloadOrphan @('reload-file', 'reload-file', 'reload-file', 'reload-file', 'reload-file', 'reload-file')
@@ -501,14 +533,14 @@ try {
     $global:P201 = $p; $global:SlnY201 = $slnYL; $global:CloseHook201 = { $global:LaunchedDtes73[$global:P201].Busy = $false; $global:LaunchedDtes73[$global:P201].Solution.FullName = $global:SlnY201 }
     $before = Get-RecordJson
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T11l DTE read after the answer shows another .sln -> ORPHAN_TAKEOVER_REFUSED solution-mismatch, attempts reported, record unchanged' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'solution-mismatch' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
+    Check 'T11l busy DTE, project prompt naming a file in the solution folder (evidence dialog-path) answered; the DTE read afterwards shows another .sln -> ORPHAN_TAKEOVER_REFUSED solution-mismatch, attempts + resetRequired reported, record unchanged' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'solution-mismatch' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'dialog-path' -and $null -ne $r.data.resetRequired -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
 
     # a host that is alive: the prompt is never touched (ownership checks come first)
     $p = New-Orphan -HostAlive
     Install-ReloadMock
     $global:Answers201.Clear(); $global:ModalQueue73.Clear(); [void]$global:ModalQueue73.Add('reload-solution')
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T11m host alive + reload prompt -> refused host-alive, the prompt is not answered' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'host-alive' -and $global:Answers201.Count -eq 0) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    Check 'T11m host alive + reload prompt -> refused host-alive, the prompt is not answered, no reset-required' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'host-alive' -and $global:Answers201.Count -eq 0 -and $null -eq (Get-ResetGuard)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
 
     # Close-TcReloadPrompt passes -ProcessId on to Close-TcMessageBox (the orphan is not connected)
     Restart-Module
@@ -518,7 +550,7 @@ try {
     Check 'T11n Close-TcReloadPrompt -ProcessId reaches Close-TcMessageBox' ($global:MsgBoxPid201 -eq 4242 -and $cr.Dismissed -eq $true) "pid=$($global:MsgBoxPid201)"
     $cr = & $mod { Close-TcReloadPrompt -Dialog @{ Hwnd = 77 } -Answer Ignore }
     Check 'T11o without -ProcessId: 0 (Close-TcMessageBox falls back to the connected IDE, unchanged)' ($global:MsgBoxPid201 -eq 0) "pid=$($global:MsgBoxPid201)"
-    Remove-Variable -Name Answers201, CloseFail201, CloseHook201, MsgBoxPid201, P201, SlnY201 -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name Answers201, CloseFail201, CloseHook201, MsgBoxPid201, P201, SlnY201, SlnDir201 -Scope Global -ErrorAction SilentlyContinue
     Restart-Module
 
     Check 'E1 nothing real was killed (Stop-Process is the mock)' (@($global:Kills73 | Where-Object { $_ -notlike 'Stop-Process 90*' }).Count -eq 0) ($global:Kills73 -join ', ')

@@ -494,9 +494,12 @@ public class UiaScanButtonNative {
 #                  Also the VS2022 solution prompt (#106) "solution 'X' was modified outside the
 #                  environment" (zh-TW title "\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539"):
 #                  recognised by its button control ids 259 (Reload) + 1412 (Ignore), not by
-#                  text (measured 2026-11-03, VS2022 zh-TW; TcXaeShell and other languages not
-#                  verified); ReloadTarget 'solution'. Reset-TcSolution answers Ignore (1412) and
-#                  reopens the solution (Reload made VS ask to save the dirty .tsproj, 2026-11-07).
+#                  text (measured 2026-11-03, VS2022 zh-TW; measured 2026-11-08 / 2026-11-09, 4024
+#                  TcXaeShell en-US UI: title 'File Modification Detected', the same ids 259 &Reload /
+#                  1412 &Ignore, #201; other languages not verified); ReloadTarget 'solution'.
+#                  Reset-TcSolution answers Ignore (1412) and reopens the solution (Reload made VS ask
+#                  to save the dirty .tsproj, 2026-11-07); Connect-TcIde -TakeOverOrphan answers Ignore
+#                  too (#201; measured 2026-11-09, 4024 TcXaeShell: the prompt closed, BM_CLICK).
 #   unknown        everything else (hint IDE_MODAL_DIALOG), ReloadTarget $null.
 # ConvertTo-TcAdsErrorCode uses the same pattern on error messages (the watchdog puts the
 # dialog text into its IDE_MODAL_DIALOG exception).
@@ -508,7 +511,9 @@ $script:TcReloadProjectPattern = '(?i)modified outside of TwinCAT XAE|want to re
 # title "\u5075\u6e2c\u5230\u6a94\u6848\u4fee\u6539" (file modification detected), text "solution 'X'
 # was modified outside the environment ...", buttons control id 259 = Reload (&R) and 1412 =
 # Ignore (&I). Identified by those two control ids only (language independent; no text match).
-# TcXaeShell and other UI languages: not verified.
+# 4024 TcXaeShell en-US UI: the same ids (measured 2026-11-08 / 2026-11-09, #201: title 'File
+# Modification Detected', text "The solution 'BFH-1650' has been modified outside the environment"
+# ...). Other UI languages: not verified.
 $script:TcSolutionReloadButtonIds = @(259, 1412)
 
 function Test-TcSolutionReloadButtons {
@@ -516,7 +521,7 @@ function Test-TcSolutionReloadButtons {
     .SYNOPSIS
         $true when the dialog buttons contain BOTH control ids 259 (Reload) and 1412 (Ignore):
         the VS2022 solution reload prompt (#106; signature measured 2026-11-03, VS2022 zh-TW;
-        TcXaeShell and other languages not verified). Never throws.
+        4024 TcXaeShell en-US the same, measured 2026-11-08 / 2026-11-09 #201; other languages not verified). Never throws.
     #>
     [CmdletBinding()]
     param(
@@ -568,7 +573,7 @@ function Get-TcReloadTarget {
     .SYNOPSIS
         For a reload prompt: 'solution' (buttons with control ids 259 Reload + 1412 Ignore: the
         VS2022 "solution 'X' was modified outside the environment" prompt, #106; measured
-        2026-11-03 VS2022 zh-TW, TcXaeShell and other languages not verified), 'project' (XAE
+        2026-11-03 VS2022 zh-TW, 2026-11-09 4024 TcXaeShell en-US #201; other languages not verified), 'project' (XAE
         "project file ... modified outside of TwinCAT XAE. Do you want to reload the project?")
         or 'file' (VS "File has been changed outside the environment. Reload the new file?");
         $null for any other dialog.

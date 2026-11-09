@@ -16,8 +16,11 @@
 #     ProgID it was launched with;
 #   - the ROT has a READY DTE of that very pid that has this .sln open;
 #   - no modal dialog and a completed scan (Find-TcIdeModalDialog -ProcessId). #201: a known reload
-#     prompt is answered without reloading (Invoke-TcOrphanReloadPromptAnswer, at most 5), then the
-#     DTE is read again (ide-busy / solution-mismatch when it does not answer / has another .sln);
+#     prompt is answered without reloading (Invoke-TcOrphanReloadPromptAnswer, at most 5) when every
+#     condition above holds AND the IDE is known to have this .sln open (its DTE answered with it, or
+#     the blocked DTE's dialog names a file in the solution folder / the solution name,
+#     Get-TcOrphanDialogEvidence); the first answer records reset-required (Set-TcResetRequired).
+#     Then the DTE is read again (ide-busy / solution-mismatch when it does not answer / has another .sln);
 #     any other dialog or a prompt that stays up -> IDE_MODAL_DIALOG with the IDE_MODAL_DIALOG_ORPHAN
 #     hint (nothing is attached: Reset-TcSolution / Disconnect-TcIde would answer NOT_CONNECTED).
 # Returns @{ Result = <failed TcResult> } (refused) or @{ Candidate; Record; OtherSession;
@@ -118,24 +121,47 @@ function Resolve-TcOrphanTakeover {
     # #201: a known reload prompt is answered "do not reload" (every ownership condition above has
     # passed); the IDE keeps what it has in memory - unsaved work of the ended session is not
     # thrown away - and the caller loads the disk state with Reset-TcSolution once it owns the IDE.
+    # PR #209 review m1: a prompt is answered only when this IDE is known to have THIS .sln open:
+    # its DTE answered with it (isReady, checked above), or - DTE blocked by the prompt - the dialog
+    # text names a file inside the solution folder or the solution name (Get-TcOrphanDialogEvidence,
+    # the #29 dialog-path rule). No evidence -> nothing is clicked (IDE_MODAL_DIALOG_ORPHAN).
+    # PR #209 review M1 / M2: the first answer sent records BUILD_REQUIRED kind reset-required for
+    # this .sln (Set-TcResetRequired) whatever happens next: Build / Enable / Login / boot project /
+    # library save refuse with RESET_REQUIRED until a Reset-TcSolution reopened it from disk.
     $prompts = [System.Collections.Generic.List[object]]::new()
     $handled = 0
+    $evidence = $null
+    $resetReason = $null; $resetWarning = $null
     while ($null -ne $dialog -and -not (Test-TcModalScanIncomplete $dialog) -and [string]$dialog.Kind -eq 'reload-prompt' -and $handled -lt 5) {
+        $evidence = if ($isReady) { 'dte-solution' } else { Get-TcOrphanDialogEvidence -Dialog $dialog -SolutionPath $SolutionPath }
+        if ($null -eq $evidence) { break }
         $handled++
         $step = Invoke-TcOrphanReloadPromptAnswer -Dialog $dialog -ProcessId $procId
-        foreach ($a in $step.Attempts) { $prompts.Add($a) }
+        foreach ($a in $step.Attempts) { $a | Add-Member -NotePropertyName 'evidence' -NotePropertyValue $evidence -Force; $prompts.Add($a) }
+        if ($null -eq $resetReason -and @($step.Attempts | Where-Object { $_.sent -or $_.dismissed }).Count -gt 0) {
+            $resetReason = "Connect-TcIde -TakeOverOrphan answered the $([string]$dialog.ReloadTarget) reload prompt of IDE pid $procId without reloading ($(@($step.Attempts | ForEach-Object { $_.answer }) -join ' / ')): the IDE keeps the solution as it was in memory"
+            $resetWarning = Set-TcResetRequired -SolutionPath $SolutionPath -Reason $resetReason
+        }
         if (-not $step.Dismissed) { break }
         $dialog = Find-TcOrphanDialogAfterAnswer -ProcessId $procId
     }
     $withPrompts = {
         param([object]$D)
         if ($prompts.Count -gt 0) { $D | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue @($prompts.ToArray()) -Force }
+        if ($null -ne $resetReason) { $D | Add-Member -NotePropertyName 'resetRequired' -NotePropertyValue $resetReason -Force }
+        if (-not [string]::IsNullOrWhiteSpace([string]$resetWarning)) { $D | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$resetWarning) -Force }
         $D
     }
     if ($null -ne $dialog) {
         $reason = if (Test-TcModalScanIncomplete $dialog) { 'modal-scan-incomplete' } else { 'modal-dialog' }
         $op = if ($prompts.Count -gt 0) { "Connect-TcIde -TakeOverOrphan (IDE pid $procId; $($prompts.Count) answer(s) sent to its reload prompt(s), not taken over)" } else { "Connect-TcIde -TakeOverOrphan (IDE pid $procId; not taken over)" }
-        return @{ Result = (New-TcModalDialogResult -Dialog $dialog -Operation $op -HintCode 'IDE_MODAL_DIALOG_ORPHAN' -Data (& $withPrompts (& $newData $reason $other $rec))) }
+        $md = & $withPrompts (& $newData $reason $other $rec)
+        if ([string]$dialog.Kind -eq 'reload-prompt' -and $reason -eq 'modal-dialog' -and -not $isReady -and $null -eq $evidence) {
+            # m1: not answered - the blocked DTE could not show which .sln this IDE has open
+            $md | Add-Member -NotePropertyName 'reloadPromptEvidence' -NotePropertyValue 'none' -Force
+            $op = "Connect-TcIde -TakeOverOrphan (IDE pid $procId; its DTE is blocked and the reload prompt does not name '$([IO.Path]::GetFileNameWithoutExtension($SolutionPath))' or a file in its folder: not answered, not taken over)"
+        }
+        return @{ Result = (New-TcModalDialogResult -Dialog $dialog -Operation $op -HintCode 'IDE_MODAL_DIALOG_ORPHAN' -Data $md) }
     }
     if ($prompts.Count -gt 0) {
         # The DTE was blocked while the prompt was up: read it again (busy / unreadable / solution)
@@ -170,7 +196,31 @@ function Resolve-TcOrphanTakeover {
     if (-not $isReady) {
         return (& $refuse 'ide-busy' "the IDE (pid $procId) rejects DTE calls ($(if ($c.busy) { 'RPC_E_CALL_REJECTED' } else { 'DTE.Version empty' })) and no modal dialog was found" $other $rec)
     }
-    @{ Candidate = $c; Record = $rec; OtherSession = $other; ReloadPrompts = @($prompts.ToArray()) }
+    @{ Candidate = $c; Record = $rec; OtherSession = $other; ReloadPrompts = @($prompts.ToArray()); ResetRequired = $resetReason; ResetRequiredWarning = $resetWarning }
+}
+
+# PR #209 review m1: evidence that a reload prompt of an IDE whose DTE is blocked belongs to
+# -SolutionPath (the #29 dialog-path rule, Find-TcBlockedSolutionIde): 'dialog-path' = the text names
+# a project file inside the solution folder (no other .sln in between, Test-TcPathInSolution);
+# 'solution-name' = the text names no path at all but the solution name as a whole word (the
+# solution prompt: "The solution 'BFH-1650' has been modified outside the environment", measured
+# 2026-11-08 / 2026-11-09, 4024 TcXaeShell en-US). Any path outside the folder, or neither -> $null.
+function Get-TcOrphanDialogEvidence {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Dialog, [Parameter(Mandatory)][string]$SolutionPath)
+    $text = [string]$Dialog.Text
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    $paths = @(Get-TcDialogProjectPaths -Text $text)
+    if ($paths.Count -gt 0) {
+        $slnDir = [IO.Path]::GetDirectoryName($SolutionPath).TrimEnd('\') + '\'
+        $outside = @($paths | Where-Object { -not (Test-TcPathInSolution -Path $_ -SolutionDir $slnDir) })
+        if ($outside.Count -eq 0) { return 'dialog-path' }
+        return $null
+    }
+    $name = [IO.Path]::GetFileNameWithoutExtension($SolutionPath)
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+    if ($text -match ('(?i)(?<![\w.\-])' + [regex]::Escape($name) + '(?![\w.\-])')) { return 'solution-name' }
+    $null
 }
 
 # #201: one reload prompt of an orphan IDE (not attached yet), answered without reloading, the way
@@ -178,8 +228,19 @@ function Resolve-TcOrphanTakeover {
 #   solution: Ignore (control id 1412; then WM_CLOSE) - measured 2026-11-08, 4024 TcXaeShell en-US,
 #             buttons 259 &Reload / 1412 &Ignore (#201); VS2022 zh-TW 2026-11-03 (#106)
 #   project:  No (IDNO 7) - the XAE prompt is MB_YESNO, WM_CLOSE has no effect on it (see
-#             Close-TcReloadPrompt); No keeps the project in memory
-#   file:     WM_CLOSE (= No: the editor keeps its buffer)
+#             Close-TcReloadPrompt)
+#   file:     WM_CLOSE (the VS prompt has Yes / No / Cancel: WM_CLOSE = Cancel)
+# What the IDE does after that answer (measured 2026-11-09, 4024 32-bit TcXaeShell, copy
+# C:\Temp\Verify-4024-bfh, local UmRT, an XML comment appended to the file on disk to make the
+# prompt; isolated TCAUTO_STATE_DIR): project prompt -> No (BM_CLICK, id 7) closed it; file prompt
+# (MAIN.TcPOU opened through ItemOperations.OpenFile, i.e. in the Miscellaneous Files project, not
+# through the PLC project tree) -> WM_CLOSE closed it. In both cases DTE Solution.Saved, every
+# top-level Project.Saved and the Document.Saved of MAIN.TcPOU stayed True (not dirty), and a raw
+# SolutionBuild.Build($false) (Build-TcProject itself is refused: RESET_REQUIRED) finished with
+# LastBuildInfo 0 and did NOT write the file back (the marker stayed on disk, mtime unchanged).
+# So the measured risk is compiling the in-memory version, not overwriting the disk; dirty state of
+# the nested .plcproj and of a POU opened in the PLC editor was not measured. Either way the
+# reset-required record blocks Build / Activate / Login until Reset-TcSolution.
 # Returns @{ Dismissed = [bool]; Attempts = [object[]] }. Stops after an answer that reached a
 # disabled prompt (nested dialog): the caller's next scan reports that dialog.
 function Invoke-TcOrphanReloadPromptAnswer {

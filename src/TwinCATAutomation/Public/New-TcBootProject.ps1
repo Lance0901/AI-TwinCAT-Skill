@@ -69,6 +69,10 @@ function New-TcBootProject {
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED' -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED_IDE')
     }
+    # #201: TakeOverOrphan answered a reload prompt 'do not reload': the IDE holds the old in-memory
+    # solution; building / downloading it (or saving it back) is refused until Reset-TcSolution
+    $resetGuard = Get-TcResetRequiredGuard
+    if ($null -ne $resetGuard) { return New-TcResetRequiredResult -Guard $resetGuard -Operation 'New-TcBootProject' }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 

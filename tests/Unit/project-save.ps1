@@ -1,4 +1,4 @@
-# Unit: project file save after Add-* and the Reset-TcSolution guard (#76), no IDE needed.
+﻿# Unit: project file save after Add-* and the Reset-TcSolution guard (#76), no IDE needed.
 # A mock DTE whose .tsproj project Save() writes a .plcproj in a temp folder; Reset-TcSolution runs
 # with Get-TcUnsavedPlcObject / Save-TcPlcProject / Connect-TcIde replaced inside the module scope;
 # Get-TcUnsavedPlcObject itself runs on a mock tree (ChildCount / Child / ItemType / Name / PathName).
@@ -328,6 +328,40 @@ try {
     Set-Unsaved -Missing @('FB_Guard') -Extra @('POUs\FB_Disk.TcPOU')
     $r = Reset-TcSolution -DiscardProjectChanges
     Check 'reset-discard' ($r.success -and $global:Mock.Closed -and $null -eq $global:Mock.GuardSave -and -not $r.data.projectCheck.checked) "success=$($r.success)"
+
+    # --- PR #209 review M1: reset-required (Connect-TcIde -TakeOverOrphan answered a reload prompt
+    # 'do not reload' in an earlier call) ---
+    $setReset = { & $mod { $null = Set-TcResetRequired -SolutionPath ([string]$script:TcSolutionPath) -Reason 'unit: TakeOverOrphan answered the solution reload prompt Ignore' } }
+    $getReset = { & $mod { Get-TcResetRequiredGuard } }
+    & $setReset
+    Set-Unsaved -Missing @()
+    $b = Build-TcProject
+    Check 'reset-required-build-refused' (-not $b.success -and $b.error.code -eq 'RESET_REQUIRED' -and $b.error.hint -match 'Reset-TcSolution' -and $null -ne $b.data.resetRequired) "code=$($b.error.code) msg=$($b.error.message)"
+    $e = Enter-TcPlcOnline
+    Check 'reset-required-login-refused' (-not $e.success -and $e.error.code -eq 'RESET_REQUIRED') "code=$($e.error.code) msg=$($e.error.message)"
+    $en = Enable-TcConfig -Force
+    Check 'reset-required-enable-refused' (-not $en.success -and $en.error.code -eq 'RESET_REQUIRED' -and $en.data.activated -eq $false) "code=$($en.error.code) msg=$($en.error.message)"
+    $bp = New-TcBootProject
+    Check 'reset-required-boot-project-refused' (-not $bp.success -and $bp.error.code -eq 'RESET_REQUIRED') "code=$($bp.error.code)"
+    $lib = Save-TcPlcLibrary -FilePath (Join-Path $root 'x.library')
+    Check 'reset-required-library-save-refused' (-not $lib.success -and $lib.error.code -eq 'RESET_REQUIRED') "code=$($lib.error.code)"
+    $null = & $mod { Clear-TcBuildRequired }
+    Check 'reset-required-survives-clear-build-required' ($null -ne (& $getReset)) 'a complete build (Clear-TcBuildRequired) must not remove it'
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -SaveProjectChanges
+    Check 'reset-required-save-refused' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $r.data.dismissedReloadPrompt -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and @($r.data.saveRefused)[0].plc -eq '*' -and @($r.data.saveRefused)[0].reason -match 'TakeOverOrphan' -and $null -ne (& $getReset)) "code=$($r.error.code) refused=$($r.data.saveRefused | ConvertTo-Json -Compress)"
+    Set-Unsaved -Missing @()
+    $r = Reset-TcSolution
+    Check 'reset-required-cleared-after-reopen' ($r.success -and $global:Mock.Closed -and $global:Mock.Opened -and $r.data.dismissedReloadPrompt -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) cleared=$($r.data.resetRequiredCleared) err=$($r.error.message)"
+    & $setReset
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -SaveProjectChanges
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution
+    Check 'reset-required-kept-after-failed-reset' (-not $r.success -and $null -ne (& $getReset)) "code=$($r.error.code)"
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -DiscardProjectChanges
+    Check 'reset-required-cleared-after-discard' ($r.success -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) cleared=$($r.data.resetRequiredCleared)"
 
     Set-Unsaved -Missing @('FB_Guard')
     $r = Reset-TcSolution -SaveProjectChanges -DiscardProjectChanges
