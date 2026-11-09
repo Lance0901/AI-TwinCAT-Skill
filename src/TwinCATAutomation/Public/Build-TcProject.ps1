@@ -108,15 +108,14 @@
                              the same capped list as data.buildPaneMessages; @() when the pane was not read,
                              see data.buildPaneStatus). Both fields are capped to the LAST 400 lines or 32000
                              characters (whichever is reached first); when capped, data.buildPaneTruncated = true
-                             and data.buildPaneLineCount = the line count before the cap
+                             and data.buildPaneLineCount = the line count before the cap (both appear ONLY when capped, absent otherwise; same for warningLinesTruncated / warningLinesCount)
         data.buildPaneStatus read | not-found | unreadable (#219): the build pane is found by its GUID
                              {1BD8A850-02D1-11D1-BEE7-00A0C913D1F8} (VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid),
                              never by its localized name; not-found / unreadable add data.buildPaneError
                              (and data.buildPanes = the panes seen) and leave buildPaneMessages / warningLines @()
         data.buildPaneName   the pane's name as the IDE shows it ("Build", zh-TW "建置"); $null when not read
         data.buildPaneMessages  non-empty lines of the build pane (#218)
-        data.warningLines    lines of the FULL build pane with a compiler / MSBuild warning (": warning" and a
-                             compiler code), then capped to 200 (data.warningLinesTruncated = true,
+        data.warningLines    lines of the FULL build pane with a compiler / MSBuild warning (": warning" after a file / location, or at the line start), then capped to 200 (data.warningLinesTruncated = true,
                              data.warningLinesCount = the total); the structured warnings are data.warningItems
                              (Error List). 實測 2026-11-09: zh-TW VS2022 and English XAE 4024 print the English
                              "warning:"; other UI languages are not verified
@@ -583,7 +582,8 @@
             }
         }
         $warningLinesTruncated = $allWarningLines.Count -gt $warnMaxLines
-        $warningLines = if ($warningLinesTruncated) { @($allWarningLines | Select-Object -First $warnMaxLines) } else { $allWarningLines }
+        # @() around the if: an if-expression unrolls its output (0 items -> AutomationNull -> JSON {}, 1 item -> a string)
+        $warningLines = @(if ($warningLinesTruncated) { $allWarningLines | Select-Object -First $warnMaxLines } else { $allWarningLines })
 
         # Error List (UI Automation): the PLC compiler does not report through DTE.
         # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):

@@ -196,6 +196,31 @@ Set-Dte (New-Dte @() -WindowThrows)
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check 'Build unreadable: status unreadable with buildPaneError' ($r.data.buildPaneStatus -eq 'unreadable' -and $r.data.buildPaneError -match 'not readable' -and @($r.data.buildPaneMessages).Count -eq 0) (J $r.data)
 
+# --- real samples (2026-11-09): 4026 VS2022 zh-TW has a code, 4024 XAE English has none
+$s4026 = "C:\temp\Verify-4026-axis\AxisInterface\Main.TcPOU@LiftingPendulumCurveTest(17) : warning: C0139: The code 'arAxisCtrl_gb[1].SyncMode.SyncProfile.CamProfile;"
+$s4024 = "MAIN.TcPOU(41) : warning: The code 'LT_Read;"
+$lines = @(& $mod { param($a, $b) Get-TcBuildWarningLines -Lines @($a, $b, 'Generate code...', 'x: warning levels') } $s4026 $s4024)
+Check 'warningLines: 4026 sample (C0139) and 4024 sample (no code) both match' (@($lines).Count -eq 2 -and $lines[0] -eq $s4026 -and $lines[1] -eq $s4024) (J $lines)
+$lines = @(& $mod { Get-TcBuildWarningLines -Lines @('warning: The code x') })
+Check 'warningLines: warning at line start matches' (@($lines).Count -eq 1) (J $lines)
+
+# --- JSON shape: warningLines / messages / buildPaneMessages are always arrays (an if-expression used to unroll them)
+foreach ($case in @(
+    @{ n = 0; text = "a`r`nb"; wl = '[]' },
+    @{ n = 1; text = "a`r`n$s4024"; wl = $null })) {
+    Set-Dte (New-Dte @((New-Pane 'Build' $buildGuid $case.text)))
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    $json = $r.data | ConvertTo-Json -Depth 6 -Compress
+    $back = $json | ConvertFrom-Json
+    $isArr = { param($v) $v -is [object[]] }
+    $okShape = (& $isArr $back.warningLines) -and (& $isArr $back.messages) -and (& $isArr $back.buildPaneMessages) -and @($back.warningLines).Count -eq $case.n
+    Check ("Build JSON: $($case.n) warning line(s) -> warningLines is an array of $($case.n)") ($okShape -and $json -match '"warningLines":\[' ) ($json.Substring([Math]::Max(0, $json.IndexOf('"warningLines"')), 60))
+}
+Set-Dte (New-Dte @($tfs, $general))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$json = $r.data | ConvertTo-Json -Depth 6 -Compress
+Check 'Build JSON: not-found pane -> empty lists are [] not {}' ($json -match '"messages":\[\]' -and $json -match '"buildPaneMessages":\[\]' -and $json -match '"warningLines":\[\]') ''
+
 # --- truncation: 1000 lines (500 warnings) -> last 400 lines kept, warnings filtered from the FULL text then capped at 200
 $bigLines = @(1..1000 | ForEach-Object { if ($_ % 2 -eq 0) { "f$_.TcPOU($_) : warning: C0139: w$_" } else { "line $_" } })
 Set-Dte (New-Dte @((New-Pane 'Build' $buildGuid ($bigLines -join "`r`n"))))

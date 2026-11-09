@@ -266,5 +266,5 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 
 ### Build 窗格的 `warning:` 只驗過英文(zh-TW VS2022、英文 XAE 4024)
 
-- **現象**:`BuildProject` 的 `data.warningLines` 靠 compiler 輸出的英文 `warning:` 加上同一行的編譯代碼(`C0139`、MSBuild `CS0168` 等)比對。實測 2026-11-09:zh-TW VS2022(4026)與英文 XAE 4024 都輸出英文 `warning:`,周圍的 UI 行(`組建: 成功或已更新`)才有翻譯;其他語言沒驗證過,可能漏抓。
+- **現象**:`BuildProject` 的 `data.warningLines` 靠 compiler 輸出的英文 `warning:` 比對(在行首、`)` + `:` 之後、或 ` :` 之後;不要求編譯代碼,4024 XAE 的 `MAIN.TcPOU(41) : warning: The code 'LT_Read;` 沒有代碼)。實測 2026-11-09:zh-TW VS2022(4026)與英文 XAE 4024 都輸出英文 `warning:`,周圍的 UI 行(`組建: 成功或已更新`)才有翻譯;其他語言沒驗證過,可能漏抓。
 - **繞過**:警告數量以 `data.warnings` / `data.warningItems`(Error List)為準,`warningLines` 當補充;`data.buildPaneMessages` 有整份窗格(最後 400 行 / 32000 字元)可自己看。

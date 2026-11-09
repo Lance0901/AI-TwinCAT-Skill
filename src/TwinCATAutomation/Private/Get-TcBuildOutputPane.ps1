@@ -140,11 +140,12 @@ function Get-TcBuildWarningLines {
         compiler, not by the VS UI: it stayed English in a zh-TW VS2022 (實測 2026-11-09, 4026), while the
         UI lines around it ("已開始建置", "組建: 成功或已更新") were localized. 實測 2026-11-09: zh-TW VS2022
         and English XAE 4024 both print the English "warning:"; other languages are not verified. A line matches
-        when "warning" follows a ':' AND the same line has a compiler / MSBuild code (C\d{4}, or
-        CS/MSB/BC/NU/LNK + digits), so a description that only contains the word does not count.
+        when "warning" starts the line, or follows ")" + ":" (MSBuild) or " :" (compiler "<file> : warning:"); a
+        compiler code is NOT required: the 4024 XAE (English, 實測 2026-11-09) writes
+        "MAIN.TcPOU(41) : warning: The code 'LT_Read;" without one. "see docs: warning levels" does not count.
     #>
     param([string[]]$Lines)
-    @($Lines | Where-Object { $_ -match '(?i):\s*warning\b' -and $_ -match '(?i)\b(C|CS|MSB|BC|NU|LNK|CA)\d{4}\b' })
+    @($Lines | Where-Object { $_ -match '(?i)(^\s*warning\b|\)\s*:\s*warning\b|\s:\s*warning\b)' })
 }
 
 # vsWindowKindOutput, https://learn.microsoft.com/en-us/dotnet/api/envdte.constants.vswindowkindoutput
