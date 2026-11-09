@@ -88,7 +88,13 @@ function Connect-TcIde {
         (owner-alive / owner-unverifiable) -, its pid is confirmed, the ROT has that pid's
         DTE with this .sln open and no modal dialog is up; otherwise nothing is attached
         (ORPHAN_TAKEOVER_REFUSED with data.reason, IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE, or
-        LAUNCH_RECORD_UNAVAILABLE). Only after the attach, the modal check and the project scan have
+        LAUNCH_RECORD_UNAVAILABLE). #201: a known reload prompt (kind reload-prompt) of that IDE
+        is answered without reloading once every other condition has passed (solution: Ignore,
+        project: No, file: WM_CLOSE; at most 5 prompts), then the DTE is read again; on success
+        data.reloadPromptAttempts, data.diskChangesNotLoaded = true and data.nextStep (run
+        Reset-TcSolution before Build-TcProject). Any other dialog, or a prompt that stays up:
+        IDE_MODAL_DIALOG with the IDE_MODAL_DIALOG_ORPHAN hint (nothing attached, so not
+        Reset-TcSolution / Disconnect-TcIde). Only after the attach, the modal check and the project scan have
         passed does the record get this process as owner plus a takeovers[] entry;
         data.takenOver = true, data.previousOwner. Use it only after the user confirmed nobody still
         works in that IDE.
@@ -936,6 +942,14 @@ function Connect-TcIde {
     if ($null -ne $takeover) {
         $data | Add-Member -NotePropertyName 'takenOver' -NotePropertyValue $true
         $data | Add-Member -NotePropertyName 'previousOwner' -NotePropertyValue $takeover
+        # #201: reload prompts of the orphan were answered without reloading: the IDE still has the
+        # old in-memory state while the files on disk changed
+        $answeredPrompts = @($orphan.ReloadPrompts)
+        if ($answeredPrompts.Count -gt 0) {
+            $data | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue $answeredPrompts
+            $data | Add-Member -NotePropertyName 'diskChangesNotLoaded' -NotePropertyValue $true
+            $data | Add-Member -NotePropertyName 'nextStep' -NotePropertyValue 'The reload prompt(s) of the taken-over IDE were answered without reloading (data.reloadPromptAttempts): the IDE keeps its in-memory solution while files on disk changed. Load the disk state with Reset-TcSolution (MCP: ResetSolution) before Build-TcProject, or quit the IDE with Disconnect-TcIde -Quit (-Kill) if it is no longer needed.'
+        }
     }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec

@@ -391,8 +391,15 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - `not-in-rot` / `solution-mismatch`(`data.rotSolution`)/ `ide-busy`:ROT 裡沒有那個 pid 可回應、開著這個 sln 的 DTE。等它載入完、或關掉 dialog(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>`)後重跑。
   - `record-changed` / `host-not-gone`:在鎖內改寫時，紀錄已被另一個 session 改掉(例如它先接管了)或 host 又被認為還在。重跑同一個 `Connect-TcIde` 看最新狀態。
   - `host-start-time-unreadable`:讀不到本行程的 StartTime,無法記錄新擁有者(之後也認不出是自己)。重跑一次，還是失敗就回報。
-- **有 dialog 時**不是這個碼：回 `IDE_MODAL_DIALOG` / `MODAL_SCAN_INCOMPLETE`(`data.reason = 'modal-dialog'` / `'modal-scan-incomplete'`),一樣沒有接管。
+- **有 dialog 時**不是這個碼：已知的 reload 提示先由模組回答(見下一節 `IDE_MODAL_DIALOG_ORPHAN`);其他 dialog 或回答後還在，回 `IDE_MODAL_DIALOG`(hint key `IDE_MODAL_DIALOG_ORPHAN`)/ `MODAL_SCAN_INCOMPLETE`(`data.reason = 'modal-dialog'` / `'modal-scan-incomplete'`),一樣沒有接管。
 - **禁止的繞道**:不要手動改 `launched-ides.json`、不要 `Stop-Process` 別的 session 的 IDE、不要設 `TCAUTO_OWNER_ID` 冒充那個 session。
+
+### IDE_MODAL_DIALOG_ORPHAN
+
+- **碼與 hint**:錯誤碼仍是 `IDE_MODAL_DIALOG`;`IDE_MODAL_DIALOG_ORPHAN` 是 `Connect-TcIde -TakeOverOrphan` 停在 dialog 時用的 hint key(#201)。
+- **現象(#201,修正前)**:孤兒 IDE(啟動它的 session 已結束)開著 reload 提示時,`-TakeOverOrphan` 回 `IDE_MODAL_DIALOG`,hint 卻叫你直接 `Reset-TcSolution`;但 `-TakeOverOrphan` 沒有 attach,`Reset-TcSolution` 回 `NOT_CONNECTED`,`Disconnect-TcIde -Quit` 也不適用，形成死循環(實測 2026-11-08 / 2026-11-09,4024 32-bit TcXaeShell 英文 UI,方案提示 `File Modification Detected` 按鈕 `259 &Reload` / `1412 &Ignore`)。
+- **現在的行為**:所有接管條件(host / owner 已結束、pid 已確認、ROT 有那個 pid 的 DTE)都成立後，已知的 reload 提示(`kind = reload-prompt`)由模組依 control id 回答「不重新載入」,最多 5 個：solution → 忽略(1412,不行再 WM_CLOSE);project → No(IDNO 7;XAE 的 MB_YESNO 不吃 WM_CLOSE);file → WM_CLOSE。之後重新讀 DTE(`DTE.Version` / `Solution.FullName`;讀不到 → `ORPHAN_TAKEOVER_REFUSED` `ide-busy`,不是這個 .sln → `solution-mismatch`)再照原本流程接管。成功時 `data.reloadPromptAttempts`(每次的 target / answer / method / controlId / dismissed)、`data.diskChangesNotLoaded = true`、`data.nextStep`:IDE 仍是記憶體裡的舊版本，磁碟已被改過，接著 `Reset-TcSolution` 從磁碟重新載入再 Build,或不需要就 `Disconnect-TcIde -Quit`。不按 Reload / Yes 的原因：接管不該丟掉那個已結束 session 留在 IDE 裡的未存檔內容;要不要用磁碟版本交給接下來的 `Reset-TcSolution`(它會做 project check,`PROJECT_UNSAVED_CHANGES` 時讓你選)。實測 2026-11-09(4024 32-bit TcXaeShell,`TcXaeShell.DTE.15.0`,`C:\Temp\Verify-4024-bfh` 複本):solution 提示 → Ignore(1412)關閉 → 接管 → `Reset-TcSolution` → `Disconnect-TcIde -Quit` 全部成功;project 提示 → No(7,BM_CLICK)關閉 → 接管 → `Reset-TcSolution` → Quit 成功。
+- **還是回這個 hint 時**:`data.attached = false`,沒有任何東西 attach,所以 `Reset-TcSolution` / `Disconnect-TcIde` / `Get-TcIdeInfo` 都會回 `NOT_CONNECTED`。(a) `kind = reload-prompt` 但回答後還在(看 `data.reloadPromptAttempts` 的 `reason`)或連續超過 5 個 → 請使用者在 XAE 按 Ignore / No 或關掉那個 IDE;(b) 其他 dialog(`kind = unknown`)→ 模組不自動按(license / security code 視窗一律由使用者處理),請使用者手動處理。處理完 `Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 確認沒有 dialog,再重跑同一個 `Connect-TcIde -TakeOverOrphan`。不要 `Stop-Process` 那個 IDE:接管成功前它不屬於本 session。
 
 ### IDE_TIMEOUT
 

@@ -1058,6 +1058,9 @@ function New-TcModalDialogResult {
         data.dialog = @{ title; text; kind; reloadTarget; buttons } (same shape as the MCP
         GetIdeModalDialog data.dialog).
         The hint is IDE_MODAL_DIALOG_RELOAD for Kind 'reload-prompt', else IDE_MODAL_DIALOG.
+    .PARAMETER HintCode
+        Hint key to use instead (#201: IDE_MODAL_DIALOG_ORPHAN for Connect-TcIde -TakeOverOrphan,
+        which attaches nothing). Not used for an incomplete scan.
     #>
     [CmdletBinding()]
     param(
@@ -1068,7 +1071,12 @@ function New-TcModalDialogResult {
         [string]$Operation = 'COM call',
 
         [Parameter()]
-        [object]$Data
+        [object]$Data,
+
+        # #201: replaces the hint key chosen from the dialog kind (Connect-TcIde -TakeOverOrphan:
+        # nothing is attached, so the Reset-TcSolution / Disconnect-TcIde next steps do not apply)
+        [Parameter()]
+        [string]$HintCode
     )
 
     # An incomplete scan (#42) is not a dialog and not "no dialog": MODAL_SCAN_INCOMPLETE.
@@ -1083,7 +1091,7 @@ function New-TcModalDialogResult {
     $short = if ($text.Length -gt 200) { $text.Substring(0, 200) } else { $text }
 
     $Data = Add-TcModalDialogData -Dialog $rec -Data $Data
-    $hintCode = if ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
+    $hintCode = if (-not [string]::IsNullOrWhiteSpace($HintCode)) { $HintCode } elseif ($kind -eq 'reload-prompt') { 'IDE_MODAL_DIALOG_RELOAD' } else { 'IDE_MODAL_DIALOG' }
     New-TcResult -Success $false `
         -ErrorMessage "IDE_MODAL_DIALOG: '$Operation' not attempted - the IDE shows a modal dialog ($kind): $title | $short" `
         -ErrorCode 'IDE_MODAL_DIALOG' `

@@ -15,8 +15,13 @@
 #   - its pid is confirmed (pidSource rot-identity / main-window), -ProgId (when given) is the
 #     ProgID it was launched with;
 #   - the ROT has a READY DTE of that very pid that has this .sln open;
-#   - no modal dialog and a completed scan (Find-TcIdeModalDialog -ProcessId).
-# Returns @{ Result = <failed TcResult> } (refused) or @{ Candidate; Record; OtherSession }; the
+#   - no modal dialog and a completed scan (Find-TcIdeModalDialog -ProcessId). #201: a known reload
+#     prompt is answered without reloading (Invoke-TcOrphanReloadPromptAnswer, at most 5), then the
+#     DTE is read again (ide-busy / solution-mismatch when it does not answer / has another .sln);
+#     any other dialog or a prompt that stays up -> IDE_MODAL_DIALOG with the IDE_MODAL_DIALOG_ORPHAN
+#     hint (nothing is attached: Reset-TcSolution / Disconnect-TcIde would answer NOT_CONNECTED).
+# Returns @{ Result = <failed TcResult> } (refused) or @{ Candidate; Record; OtherSession;
+# ReloadPrompts (answers sent, [] when none) }; the
 # record itself is changed by the caller (Set-TcLaunchRecordTakeover, under the lock).
 # reason: solution-path-required | no-launch-record | owned-by-this-session | host-alive |
 # owner-alive | owner-unverifiable | pid-unconfirmed | progid-mismatch | not-in-rot | solution-mismatch | ide-busy (dialog / incomplete
@@ -110,14 +115,111 @@ function Resolve-TcOrphanTakeover {
     }
     # A dialog makes every DTE call block: checked before anything is taken over (busy IDEs too)
     $dialog = Find-TcIdeModalDialog -ProcessId $procId
+    # #201: a known reload prompt is answered "do not reload" (every ownership condition above has
+    # passed); the IDE keeps what it has in memory - unsaved work of the ended session is not
+    # thrown away - and the caller loads the disk state with Reset-TcSolution once it owns the IDE.
+    $prompts = [System.Collections.Generic.List[object]]::new()
+    $handled = 0
+    while ($null -ne $dialog -and -not (Test-TcModalScanIncomplete $dialog) -and [string]$dialog.Kind -eq 'reload-prompt' -and $handled -lt 5) {
+        $handled++
+        $step = Invoke-TcOrphanReloadPromptAnswer -Dialog $dialog -ProcessId $procId
+        foreach ($a in $step.Attempts) { $prompts.Add($a) }
+        if (-not $step.Dismissed) { break }
+        $dialog = Find-TcOrphanDialogAfterAnswer -ProcessId $procId
+    }
+    $withPrompts = {
+        param([object]$D)
+        if ($prompts.Count -gt 0) { $D | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue @($prompts.ToArray()) -Force }
+        $D
+    }
     if ($null -ne $dialog) {
         $reason = if (Test-TcModalScanIncomplete $dialog) { 'modal-scan-incomplete' } else { 'modal-dialog' }
-        return @{ Result = (New-TcModalDialogResult -Dialog $dialog -Operation "Connect-TcIde -TakeOverOrphan (IDE pid $procId; not taken over)" -Data (& $newData $reason $other $rec)) }
+        $op = if ($prompts.Count -gt 0) { "Connect-TcIde -TakeOverOrphan (IDE pid $procId; $($prompts.Count) answer(s) sent to its reload prompt(s), not taken over)" } else { "Connect-TcIde -TakeOverOrphan (IDE pid $procId; not taken over)" }
+        return @{ Result = (New-TcModalDialogResult -Dialog $dialog -Operation $op -HintCode 'IDE_MODAL_DIALOG_ORPHAN' -Data (& $withPrompts (& $newData $reason $other $rec))) }
+    }
+    if ($prompts.Count -gt 0) {
+        # The DTE was blocked while the prompt was up: read it again (busy / unreadable / solution)
+        $seen = $null; $readError = $null
+        try {
+            $seen = Invoke-TcComRetry -MaxRetries 5 -TimeoutSec 30 -OperationName 'Orphan takeover: DTE.Version / Solution.FullName after the reload prompt' -ScriptBlock {
+                $ver = [string]$c.Object.Version
+                if ([string]::IsNullOrWhiteSpace($ver)) { throw 'DTE.Version is empty' }
+                $sol = $c.Object.Solution
+                if ($null -ne $sol) { [string]$sol.FullName } else { '' }
+            }
+        }
+        catch { $seen = $null; $readError = $_.Exception.Message }
+        if ($null -eq $seen) {
+            $r = & $refuse 'ide-busy' "the reload prompt of the IDE (pid $procId) was answered, but its DTE still does not answer ($readError)" $other $rec
+            $null = & $withPrompts $r.Result.data
+            return $r
+        }
+        $seenL = if ([string]::IsNullOrWhiteSpace($seen)) { '' } else { try { Get-TcLongPath $seen } catch { $seen } }
+        if (-not [string]::Equals($seenL, $SolutionPath, [StringComparison]::OrdinalIgnoreCase)) {
+            $r = & $refuse 'solution-mismatch' "the IDE (pid $procId) has '$seenL' open, not '$SolutionPath' (read after its reload prompt was answered)" $other $rec
+            $r.Result.data | Add-Member -NotePropertyName 'rotSolution' -NotePropertyValue $seenL
+            $null = & $withPrompts $r.Result.data
+            return $r
+        }
+        $c = [PSCustomObject]@{
+            progId = $c.progId; solution = $seen; pid = $c.pid; hasTcProject = $false; normalizedSolution = $seenL
+            busy = $false; displayName = [string]$c.displayName; Object = $c.Object
+        }
+        $isReady = $true
     }
     if (-not $isReady) {
         return (& $refuse 'ide-busy' "the IDE (pid $procId) rejects DTE calls ($(if ($c.busy) { 'RPC_E_CALL_REJECTED' } else { 'DTE.Version empty' })) and no modal dialog was found" $other $rec)
     }
-    @{ Candidate = $c; Record = $rec; OtherSession = $other }
+    @{ Candidate = $c; Record = $rec; OtherSession = $other; ReloadPrompts = @($prompts.ToArray()) }
+}
+
+# #201: one reload prompt of an orphan IDE (not attached yet), answered without reloading, the way
+# Reset-TcSolution already answers these prompts (control ids, any UI language):
+#   solution: Ignore (control id 1412; then WM_CLOSE) - measured 2026-11-08, 4024 TcXaeShell en-US,
+#             buttons 259 &Reload / 1412 &Ignore (#201); VS2022 zh-TW 2026-11-03 (#106)
+#   project:  No (IDNO 7) - the XAE prompt is MB_YESNO, WM_CLOSE has no effect on it (see
+#             Close-TcReloadPrompt); No keeps the project in memory
+#   file:     WM_CLOSE (= No: the editor keeps its buffer)
+# Returns @{ Dismissed = [bool]; Attempts = [object[]] }. Stops after an answer that reached a
+# disabled prompt (nested dialog): the caller's next scan reports that dialog.
+function Invoke-TcOrphanReloadPromptAnswer {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Dialog, [Parameter(Mandatory)][int]$ProcessId)
+    $target = [string]$Dialog.ReloadTarget
+    $answers = if ($target -eq 'project') { @('No') } elseif ($target -eq 'solution') { @('Ignore', 'Close') } else { @('Close') }
+    $attempts = [System.Collections.Generic.List[object]]::new()
+    $dismissed = $false
+    foreach ($ans in $answers) {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $try = Close-TcReloadPrompt -Dialog $Dialog -Answer $ans -TimeoutSec 8 -NoFollowUpScan -ProcessId $ProcessId
+        $cid = 0; try { $cid = [int]$try.ControlId } catch { $cid = 0 }
+        $attempts.Add([PSCustomObject][ordered]@{
+                target    = $target
+                answer    = $ans
+                sent      = [bool]$try.Sent
+                method    = $try.Method
+                controlId = $cid
+                dismissed = [bool]$try.Dismissed
+                reason    = [string]$try.Reason
+                sec       = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            })
+        if ($try.Dismissed) { $dismissed = $true; break }
+        if ([string]$try.WmCommand -eq 'not-posted-disabled') { break }
+    }
+    @{ Dismissed = $dismissed; Attempts = @($attempts.ToArray()) }
+}
+
+# #201: the scan right after a prompt closed may not complete while the IDE settles (#174): up to 3
+# scans; still incomplete -> that record (the caller fails closed with MODAL_SCAN_INCOMPLETE).
+function Find-TcOrphanDialogAfterAnswer {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    $d = $null
+    for ($i = 0; $i -lt 3; $i++) {
+        $d = Find-TcIdeModalDialog -ProcessId $ProcessId
+        if ($null -eq $d -or -not (Test-TcModalScanIncomplete $d)) { return $d }
+    }
+    $d
 }
 
 # #196 review M2: Connect-TcIde -TakeOverOrphan attached the IDE, but a later step failed or writing
