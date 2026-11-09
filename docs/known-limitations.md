@@ -263,3 +263,8 @@ registered tcauto 實測 2026-10-31 本機，離線(沒有 Activate / Login):**4
 | 刪除 ADS route | — | **不支援**:AI 不能刪 route,要改 StaticRoutes.xml 並重啟 TwinCAT service(會停掉本機 UmRT)。路徑:XAR `C:\Program Files (x86)\Beckhoff\TwinCAT\3.1\Target\StaticRoutes.xml`(要 admin);UmRT `C:\ProgramData\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\Target\StaticRoutes.xml`(probe 第 26 題)。做法見 troubleshooting「ADS route」 |
 | 密碼遮罩 | 通用 tree tool / 備份 | 只有單元測試。比對元素 / attribute 名稱 `*Password` / `*Pwd`;`TISY`(LogonPassword)在 4026.22 / 4024.71 都 `TREEITEM_NOT_FOUND`(4.6 N5),真機的密碼欄位在哪個節點不知道;AddRoute 之後 TIRR 會不會讀回密碼沒實測 |
 | `EnableConfig` / `GenerateBootProject` 的 variant boot 目錄(#89) | `Enable-TcConfig` / `New-TcBootProject` | registered 實測(4026 / 4024):Variant1 → Build → `EnableConfig Force=true` → Run,bootPackage 比對 `_Boot\Variant1\<platform>`;`GenerateBootProject` 讀回 `_Boot\Variant1\<platform>\Plc` |
+
+### Build 窗格的 `warning:` 只驗過英文(zh-TW VS2022、英文 XAE 4024)
+
+- **現象**:`BuildProject` 的 `data.warningLines` 靠 compiler 輸出的英文 `warning:` 比對(在行首、`)` + `:` 之後、或 ` :` 之後;不要求編譯代碼,4024 XAE 的 `MAIN.TcPOU(41) : warning: The code 'LT_Read;` 沒有代碼)。實測 2026-11-09:zh-TW VS2022(4026)與英文 XAE 4024 都輸出英文 `warning:`,周圍的 UI 行(`組建: 成功或已更新`)才有翻譯;其他語言沒驗證過,可能漏抓。
+- **繞過**:警告數量以 `data.warnings` / `data.warningItems`(Error List)為準,`warningLines` 當補充;`data.buildPaneMessages` 有整份窗格(最後 400 行 / 32000 字元)可自己看。
