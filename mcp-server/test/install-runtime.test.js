@@ -395,7 +395,7 @@ describe('Remove-TcInstallFolder retries an in-use rename (#208)', { skip: !isWi
     put(path.join(d, 'node.exe'), 'fake');
     return d;
   }
-  // what [System.IO.Directory]::Move throws for a folder another process holds (.NET Framework)
+  // 0x80070005 或 0x80070020,依佔用方式而定(實測 2026-11-09,Win11、PS 5.1)
   const DENIED = "throw [System.IO.IOException]::new('Access to the path is denied.', -2147024891)";
 
   test('the rename fails twice with access denied, the third try works: removed', () => {
@@ -427,6 +427,47 @@ describe('Remove-TcInstallFolder retries an in-use rename (#208)', { skip: !isWi
     assert.equal(out.action, 'in-use');
     assert.equal(out.attempts, 1);
     assert.ok(out.elapsedMs < 1000, `elapsedMs ${out.elapsedMs}`);
+  });
+
+  // a node.exe (root, no console window) that starts a child node.exe running for 60 s and prints
+  // the child's PID; the root stays until stdin closes. $root, $kid in PowerShell.
+  const TREE =
+    "$psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName = $env:T208NODE; " +
+    "$psi.Arguments = '-e \"const c = require(''child_process'').spawn(process.execPath, [''-e'', ''setTimeout(() => {}, 60000)''], { stdio: ''ignore'', windowsHide: true }); console.log(c.pid); process.stdin.resume(); process.stdin.on(''end'', () => process.exit(0))\"'; " +
+    '$psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; ' +
+    '$root = [System.Diagnostics.Process]::Start($psi); $kid = [int]$root.StandardOutput.ReadLine(); ';
+  const STOP_TREE = "; try { $root.StandardInput.Close(); $null = $root.WaitForExit(5000) } catch { }; try { Stop-Process -Id $kid -Force -ErrorAction Stop } catch { }";
+
+  test('Wait-TcProcessesExit: a child that does not exit is killed through its handle after TimeoutMs, returns 1, writes a warning', () => {
+    const { out } = runLib(
+      TREE +
+        '$tree = Get-TcProcessTree -RootId $root.Id -NotBefore $root.StartTime; $nodes = @($tree | Where-Object { $_.Id -eq $kid }); ' +
+        '$h = [System.Diagnostics.Process]::GetProcessById($kid); $sw = [System.Diagnostics.Stopwatch]::StartNew(); ' +
+        '$killed = Wait-TcProcessesExit -Processes $nodes -TimeoutMs 300; ' +
+        '$out = @{ inTree = $nodes.Count; killed = $killed; exited = $h.WaitForExit(3000); ms = $sw.ElapsedMilliseconds; rootAlive = -not $root.HasExited; warnings = @($script:TcInstallWarnings) }' +
+        STOP_TREE,
+      { T208NODE: process.execPath }
+    );
+    assert.equal(out.inTree, 1, JSON.stringify(out));
+    assert.equal(out.killed, 1);
+    assert.equal(out.exited, true, 'the child was killed');
+    assert.ok(out.ms < 5000, `ms ${out.ms}`);
+    assert.equal(out.rootAlive, true, 'only the given process is killed, not its parent');
+    assert.equal(out.warnings.length, 1);
+    assert.match(out.warnings[0], /did not exit within 300 ms and was killed/);
+  });
+
+  test('Get-TcProcessTree: a child created before NotBefore is not part of the tree', () => {
+    const { out } = runLib(
+      TREE +
+        '$after = Get-TcProcessTree -RootId $root.Id -NotBefore ([DateTime]::Now.AddSeconds(1)); ' +
+        '$before = Get-TcProcessTree -RootId $root.Id -NotBefore $root.StartTime; ' +
+        '$out = @{ late = @($after | ForEach-Object { $_.Id }); early = @($before | ForEach-Object { $_.Id }); kid = $kid }' +
+        STOP_TREE,
+      { T208NODE: process.execPath }
+    );
+    assert.ok(!out.late.includes(out.kid), JSON.stringify(out));
+    assert.ok(out.early.includes(out.kid), `with NotBefore = root start the child is found: ${JSON.stringify(out)}`);
   });
 
   test('a real process holds the folder (working directory) for about 1 s: retried, then removed', () => {

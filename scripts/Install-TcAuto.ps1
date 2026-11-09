@@ -49,8 +49,8 @@
     no folder is removed (INSTALL_SHARED) unless -Force, which removes that entry too. Any other entry
     (e.g. a developer checkout) is left ('foreign'). Other files in InstallRoot (ide-solutions.json,
     ...) stay; InstallRoot itself is removed only when it is empty then. The backups stay next to the
-    config files. A folder that cannot be renamed (access denied, sharing violation) is retried for up
-    to 5 s before it counts as in use (INSTALL_IN_USE, #208).
+    config files. A folder that cannot be renamed (access denied, sharing violation) is retried before
+    it counts as in use (INSTALL_IN_USE, #208); the three folders share one 5 s retry time.
 
     The last stdout line is "TCAUTO_INSTALL_RESULT <json>" ({success, data | error}); exit code 0 on
     success, 1 otherwise.
@@ -332,9 +332,11 @@ function Invoke-TcVerify {
     $proc = $null
     $errTask = $null
     $tree = $null
-    $startedAt = [DateTime]::Now.AddSeconds(-1)
+    $rootStart = [DateTime]::MaxValue
     try {
         $proc = [System.Diagnostics.Process]::Start($psi)
+        # its children are created after it: an older process with a reused parent PID is not one of them
+        $rootStart = $proc.StartTime
         $errTask = $proc.StandardError.ReadToEndAsync()
         $in = $proc.StandardInput.BaseStream
         # .NET Framework writes the preamble of Console.InputEncoding (a UTF-8 BOM under code page
@@ -376,7 +378,7 @@ function Invoke-TcVerify {
     catch {
         $data.durationMs = $sw.ElapsedMilliseconds
         $msg = $_.Exception.Message
-        if ($null -ne $proc -and $null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $startedAt }
+        if ($null -ne $proc -and $null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $rootStart }
         if ($null -ne $proc -and $null -ne $errTask) {
             try { $proc.StandardInput.Close() } catch { }
             if ($errTask.Wait(3000)) { $tail = @(($errTask.Result -split "`r?`n") | Where-Object { $_ } | Select-Object -Last 6) -join ' | '; if ($tail) { $msg += " (stderr: $tail)" } }
@@ -386,7 +388,7 @@ function Invoke-TcVerify {
     finally {
         if ($null -ne $proc) {
             # the launcher's children (the runtime node.exe, ...), listed while the launcher still runs
-            if ($null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $startedAt }
+            if ($null -eq $tree) { $tree = Get-TcProcessTree -RootId $proc.Id -NotBefore $rootStart }
             try { $proc.StandardInput.Close() } catch { }
             if (-not $proc.WaitForExit(15000)) {
                 # only this check's own launcher and its runtime child
@@ -433,7 +435,13 @@ if ($Uninstall) {
         Stop-Install -Code 'INSTALL_SHARED' -Message "$($shared.Count) client registration(s) still use files below $InstallRoot through their args: $(@($shared | ForEach-Object { "$($_.client) ($($_.file))" }) -join '; '); no installed file was removed." `
             -Hint 'Change or remove that tcauto registration first (e.g. claude mcp remove tcauto -s user), then run Install-TcAuto.ps1 -Uninstall again; or run it with -Uninstall -Force to remove that registration and the files too.' -Data $data
     }
-    foreach ($f in @($runtimeFolder, $launcherFolder, $nodeFolder)) { $folders.Add((Remove-TcInstallFolder -Path $f)) }
+    # one retry deadline for all three folders (#208): a client that really holds them gives
+    # INSTALL_IN_USE after about 5 s, not 5 s per folder
+    $retryUntil = [DateTime]::UtcNow.AddMilliseconds(5000)
+    foreach ($f in @($runtimeFolder, $launcherFolder, $nodeFolder)) {
+        $retryLeft = [int][Math]::Max(0, ($retryUntil - [DateTime]::UtcNow).TotalMilliseconds)
+        $folders.Add((Remove-TcInstallFolder -Path $f -RetryMs $retryLeft))
+    }
     $rootRemoved = $false
     if ((Test-Path -LiteralPath $InstallRoot) -and @(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -eq 0) {
         try { Remove-Item -LiteralPath $InstallRoot -Force -ErrorAction Stop; $rootRemoved = $true } catch { }
