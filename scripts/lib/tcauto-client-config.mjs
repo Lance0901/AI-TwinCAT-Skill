@@ -6,13 +6,16 @@
 //   node tcauto-client-config.mjs set    --client <claude-code|claude-desktop|codex> --file <path> --command <exe> --arg <a> [--arg <b> ...] [--stamp <s>]
 //   node tcauto-client-config.mjs remove --client <...> --file <path> --owned-root <install root> [--force] [--stamp <s>]
 //
-// Only the tcauto entry changes; every other server, key and table is kept:
-//   claude-code     ~/.claude.json, top-level mcpServers.tcauto = {type: 'stdio', command, args, env: {}}
-//                   (user scope; projects[*].mcpServers are not touched)
-//   claude-desktop  claude_desktop_config.json, mcpServers.tcauto = {command, args}; which file(s) -
+// Only the keys the installer owns in the tcauto entry change; every other server, key and table -
+// and every other key / sub-table the user put under tcauto (env, default_tools_approval_mode, ...) -
+// is kept with its value and position (#204):
+//   claude-code     ~/.claude.json, top-level mcpServers.tcauto: type = 'stdio', command, args set;
+//                   env = {} only when there is none (user scope; projects[*].mcpServers not touched)
+//   claude-desktop  claude_desktop_config.json, mcpServers.tcauto: command, args set; which file(s) -
 //                   %LOCALAPPDATA%\Claude-Data\claude_*\ (MSIX) and/or %APPDATA%\Claude\ (standard) -
 //                   Install-TcAuto.ps1 decides (#165); this helper changes the one --file it gets
-//   codex           ~/.codex/config.toml, table [mcp_servers.tcauto] (and its sub-tables) with command / args
+//   codex           ~/.codex/config.toml, table [mcp_servers.tcauto]: the command / args lines are
+//                   replaced in place; `remove` drops the table with all its sub-tables
 // Before a file is changed it is copied to <file>.bak-<stamp>. JSON is written as UTF-8 without BOM,
 // with the indent and line ending of the original. The new file is written to a temp file next to
 // it and renamed over it. `remove` removes the entry when its command is below --owned-root. An entry
@@ -41,6 +44,24 @@ const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArr
 export function entryFor(client, command, args) {
   if (client === 'claude-code') return { type: 'stdio', command, args: [...args], env: {} };
   return { command, args: [...args] };
+}
+
+/**
+ * The keys of the tcauto entry the installer owns (#204): they are set on every run. Every other key
+ * of an existing entry (env, a setting the user added) keeps its value and position; the rest of
+ * entryFor() (claude-code: env = {}) is only a default for an entry that does not have the key yet.
+ */
+const OWNED_KEYS = Object.freeze({ 'claude-code': ['type', 'command', 'args'], 'claude-desktop': ['command', 'args'] });
+
+/** previous entry + the owned keys of entryFor(); a previous that is not an object is replaced */
+export function mergeEntry(client, previous, command, args) {
+  const entry = entryFor(client, command, args);
+  if (!isPlainObject(previous)) return entry;
+  const next = { ...previous };
+  for (const [k, v] of Object.entries(entry)) {
+    if ((OWNED_KEYS[client] ?? []).includes(k) || !(k in next)) next[k] = v;
+  }
+  return next;
 }
 
 function sameValue(a, b) {
@@ -120,7 +141,7 @@ export function setJson(text, file, client, command, args) {
   }
   const servers = obj.mcpServers ?? {};
   const previous = servers[SERVER_NAME] ?? null;
-  const entry = entryFor(client, command, args);
+  const entry = mergeEntry(client, previous, command, args);
   if (previous !== null && sameValue(previous, entry)) return { text, action: 'unchanged', previous };
   servers[SERVER_NAME] = entry;
   obj.mcpServers = servers;
@@ -232,16 +253,108 @@ function joinLines(lines, eol) {
   return out.length ? out.join(eol) + eol : '';
 }
 
-/** -> { text, action, previous } (previous: the removed section text, or null) */
+/**
+ * Index of the line on which the value that starts at lines[i] (column col) ends: a value that is not
+ * an array ends on its line, an array on the line of its closing ']' (strings, '#' comments and nested
+ * arrays are skipped). An array that is never closed ends at the last line (not valid TOML then).
+ */
+function valueEnd(lines, i, col) {
+  let depth = 0;
+  let str = null; // ', ", ''' or """ while inside a string
+  for (let l = i; l < lines.length; l++) {
+    const line = lines[l];
+    for (let c = l === i ? col : 0; c < line.length; c++) {
+      const ch = line[c];
+      if (str) {
+        if (str[0] === '"' && ch === '\\') c++;
+        else if (line.startsWith(str, c)) {
+          c += str.length - 1;
+          str = null;
+        }
+        continue;
+      }
+      if (ch === '#') break;
+      if (ch === "'" || ch === '"') {
+        str = line.startsWith(ch.repeat(3), c) ? ch.repeat(3) : ch;
+        c += str.length - 1;
+      } else if (ch === '[') depth++;
+      else if (ch === ']' && --depth <= 0) return l;
+    }
+    if (str && str.length === 1) str = null; // a one-line string does not go on
+    if (depth <= 0 && !str) return l; // not an array
+  }
+  return lines.length - 1;
+}
+
+const OWNED_TOML_KEY_RE = /^(\s*)(command|args|"command"|"args"|'command'|'args')\s*=\s*/;
+
+/**
+ * -> { text, action, previous } (previous: the tcauto sections before the change, or null).
+ * Only `command` and `args` of [mcp_servers.tcauto] are set (#204): each is replaced where it is (a
+ * missing one is added below the header, one with the wanted value is left as written); every other
+ * key, comment and sub-table of tcauto keeps its text and position, and the rest of the file is not
+ * touched. A file without the table gets it appended.
+ */
 export function setToml(text, file, command, args) {
   const src = (text ?? '').replace(/^\uFEFF/, '');
   const eol = /\r\n/.test(src) ? '\r\n' : '\n';
   const { keep, removed } = splitToml(src, file);
-  const previous = removed.length ? joinLines(removed, eol) : null;
   const section = tomlSection(command, args, eol);
-  if (previous !== null && previous === section) return { text, action: 'unchanged', previous };
-  const rest = joinLines(keep, eol);
-  return { text: (rest ? rest + eol : '') + section, action: previous === null ? 'added' : 'updated', previous };
+  if (!removed.length) {
+    const rest = joinLines(keep, eol);
+    return { text: (rest ? rest + eol : '') + section, action: 'added', previous: null };
+  }
+  const previous = joinLines(removed, eol);
+  const lines = src.split(/\r?\n/);
+  const isHeader = (line) => HEADER_RE.test(line) || ARRAY_HEADER_RE.test(line);
+  const header = lines.findIndex((line) => {
+    const hdr = ARRAY_HEADER_RE.test(line) ? null : HEADER_RE.exec(line);
+    const parts = hdr ? keyParts(hdr[1]) : null;
+    return parts !== null && parts.length === 2 && parts[0] === 'mcp_servers' && parts[1] === SERVER_NAME;
+  });
+  let out;
+  if (header < 0) {
+    // only sub-tables (e.g. [mcp_servers.tcauto.env]): the table itself is appended (valid TOML)
+    const rest = joinLines(lines, eol);
+    out = (rest ? rest + eol : '') + section;
+  } else {
+    let end = header + 1;
+    while (end < lines.length && !isHeader(lines[end])) end++;
+    const want = { command: `command = ${tomlString(command)}`, args: `args = [${args.map(tomlString).join(', ')}]` };
+    const found = {}; // key -> { first, last, indent } of its first definition in the table
+    for (let i = header + 1; i < end; i++) {
+      const m = OWNED_TOML_KEY_RE.exec(lines[i]);
+      if (!m) continue;
+      const key = m[2].replace(/["']/g, '');
+      const last = Math.min(valueEnd(lines, i, m[0].length), end - 1);
+      if (!found[key]) found[key] = { first: i, last, indent: m[1] };
+      i = last;
+    }
+    const valueText = (r) => lines.slice(r.first, r.last + 1).join('\n');
+    const keepAsIs = {
+      command: found.command !== undefined && tomlCommandOf(valueText(found.command)) === command,
+      args: found.args !== undefined && sameValue(tomlArgsOf(valueText(found.args)), args)
+    };
+    // a missing key goes next to the other one (command before args), both below the header
+    const res = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!found.command && found.args?.first === i) res.push(found.args.indent + want.command);
+      res.push(lines[i]);
+      if (i === header) {
+        if (!found.command && !found.args) res.push(want.command, want.args);
+        continue;
+      }
+      const key = ['command', 'args'].find((k) => found[k]?.first === i);
+      if (!key) continue;
+      if (keepAsIs[key]) res.push(...lines.slice(i + 1, found[key].last + 1));
+      else res[res.length - 1] = found[key].indent + want[key];
+      i = found[key].last;
+      if (key === 'command' && !found.args) res.push(found.command.indent + want.args);
+    }
+    out = res.join(eol);
+  }
+  if (out === src) return { text, action: 'unchanged', previous };
+  return { text: out, action: 'updated', previous };
 }
 
 /** -> { text, action: 'removed' | 'absent' | 'shared' | 'foreign', previous } */

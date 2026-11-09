@@ -98,7 +98,7 @@ Rules the tools follow, and that you should expect from the AI:
 
   The key name is 實測 2026-11-08, codex-cli 0.167.0: it took effect when passed as `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"`. No Codex documentation for it was found. The form written into `config.toml` (the toml block above) has **not been tested yet**.
 
-  Add the line again after **every** run of `Install-TcAuto.ps1`: `setToml` in `scripts/lib/tcauto-client-config.mjs` rewrites the whole `[mcp_servers.tcauto]` table whenever its content differs, and a table with your extra key differs from the one the installer writes (a reviewer called the function in memory; no real config was touched). Tracked in [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204).
+  The line survives a re-run of `Install-TcAuto.ps1`: in `[mcp_servers.tcauto]` the installer sets only `command` and `args` and keeps every key and sub-table you added ([#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204); verified by unit tests and an install test on temp folders, no real config was touched). `-Uninstall` still removes the whole table with its sub-tables.
 
 ## Supported clients and verification status
 

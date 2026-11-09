@@ -19,8 +19,9 @@
       3. Registers "<InstallRoot>\node\node.exe <InstallRoot>\launcher\tcauto-launcher.mjs" as the MCP
          server tcauto in each of -Clients (lib\tcauto-client-config.mjs): only the tcauto entry is
          changed, every other server and setting is kept, the file is backed up first
-         (<file>.bak-<yyyyMMddTHHmmss>). An existing tcauto is overwritten and its old value is listed
-         in data.clients[].previous. A client whose config file (Claude Code) or config folder (Claude
+         (<file>.bak-<yyyyMMddTHHmmss>). In an existing tcauto only command / args (Claude Code: also
+         type) are set; other keys and sub-tables the user added there are kept (#204). Its old value
+         is listed in data.clients[].previous. A client whose config file (Claude Code) or config folder (Claude
          Desktop, Codex) does not exist is skipped and reported.
          Claude Desktop (#165): the MSIX package reads
          %LOCALAPPDATA%\Claude-Data\claude_<publisherId>\claude_desktop_config.json, the standard

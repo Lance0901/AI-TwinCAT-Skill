@@ -98,7 +98,7 @@ zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Bu
 
   鍵名為實測 2026-11-08,codex-cli 0.167.0,以 `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"` 驗證有效;未查到 Codex 官方文件。寫進 `config.toml` 的形式(上面的 toml 區塊)**還沒有實測**。
 
-  **每次**執行 `Install-TcAuto.ps1` 之後都要把那行加回去:`scripts/lib/tcauto-client-config.mjs` 的 `setToml` 只要 table 內容和安裝程式要寫的不同,就會整個重寫 `[mcp_servers.tcauto]`,多了你自加的 key 就算不同(reviewer 在記憶體裡呼叫該函式驗證過,沒有動到真的設定檔)。由 [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204) 追蹤。
+  重跑 `Install-TcAuto.ps1` 時，這行會保留:安裝程式在 `[mcp_servers.tcauto]` 裡只改 `command` / `args`,你自加的 key 與子 table 原樣留著([#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204),以單元測試與暫存資料夾的安裝測試驗證，沒有動到真的設定檔)。`-Uninstall` 仍會移除整個 table 及其子 table。
 
 ## 支援的 client 與驗證狀態
 
