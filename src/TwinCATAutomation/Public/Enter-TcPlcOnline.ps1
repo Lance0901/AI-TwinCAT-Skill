@@ -121,6 +121,10 @@
     # SilentMode XAE's own "log in without loading?" question on compile errors is presumably
     # answered with its default button (inferred, not measured). Every LoginMode is refused:
     # Regular downloads too when XAE decides to.
+    # #201: TakeOverOrphan answered a reload prompt 'do not reload': the IDE holds the old in-memory
+    # solution; building / downloading it (or saving it back) is refused until Reset-TcSolution
+    $resetGuard = Get-TcResetRequiredGuard
+    if ($null -ne $resetGuard) { return New-TcResetRequiredResult -Guard $resetGuard -Operation 'Enter-TcPlcOnline' }
     $req = Get-TcBuildRequired
     if ($null -ne $req) {
         $at = if ([string]::IsNullOrWhiteSpace([string]$req.at)) { '' } else { " at $($req.at)" }

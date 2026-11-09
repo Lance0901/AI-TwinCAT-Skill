@@ -1,8 +1,12 @@
-# Unit: project file save after Add-* and the Reset-TcSolution guard (#76), no IDE needed.
+﻿# Unit: project file save after Add-* and the Reset-TcSolution guard (#76), no IDE needed.
 # A mock DTE whose .tsproj project Save() writes a .plcproj in a temp folder; Reset-TcSolution runs
 # with Get-TcUnsavedPlcObject / Save-TcPlcProject / Connect-TcIde replaced inside the module scope;
 # Get-TcUnsavedPlcObject itself runs on a mock tree (ChildCount / Child / ItemType / Name / PathName).
 # The state file goes to a temp TCAUTO_STATE_DIR.
+# PR #209 review (B1 / M1 / m1): reset-required blocks every project-file save path before XAE is
+# changed (sample cmdlets + Invoke-TcPlcObjectSave + Invoke-TcProjectSaveWithDeadline), Reset-TcSolution
+# refuses unsaved documents (data.dirtyDocuments / dirtyDocumentsError) unless -DiscardProjectChanges,
+# Get-TcResetRequiredGuard fails closed on a corrupt / locked state and sees the in-memory record.
 #   powershell.exe -NoProfile -File tests/Unit/project-save.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -85,7 +89,10 @@ $solution | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCu
 $solution | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:Mock.Closed = $true }
 $solution | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) $global:Mock.Opened = $true }
 $docs = New-Object PSObject
-$docs | Add-Member -NotePropertyName Count -NotePropertyValue 0
+# PR #209 review M1: $global:Mock.Docs = the open documents ({ FullName; Saved })
+$global:Mock.Docs = @()
+$docs | Add-Member -MemberType ScriptProperty -Name Count -Value { @($global:Mock.Docs).Count }
+$docs | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) @($global:Mock.Docs)[$i - 1] }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:Mock.ClosedAll = $true }
 $dte = [PSCustomObject]@{ Solution = $solution; Documents = $docs }
 
@@ -124,6 +131,16 @@ try {
     Check 'deadline-timeout' ($msg -match '^PROJECT_SAVE_TIMEOUT' -and $sec -lt 8 -and (@($diag.readOnlyFiles) -contains $plcproj)) ("{0:N1} s {1} diag={2}" -f $sec, $msg, ($diag | ConvertTo-Json -Compress))
     $mapped = & $mod { param($m) New-TcAdsErrorResult -ErrorRecord $m -DefaultCode 'PROJECT_SAVE_FAILED' } $msg
     Check 'deadline-timeout-code' ($mapped.error.code -eq 'PROJECT_SAVE_TIMEOUT' -and -not [string]::IsNullOrWhiteSpace($mapped.error.hint)) "code=$($mapped.error.code)"
+
+    # PR #209 review B1: the last line of defence - no Project.Save while reset-required applies
+    & $mod { $null = Set-TcResetRequired -SolutionPath ([string]$script:TcSolutionPath) -Reason 'unit: B1 low-level guard' }
+    $global:SaveRan209 = $false
+    $msg = $null
+    try { & $mod { Invoke-TcProjectSaveWithDeadline -TsProjFile 'x.tsproj' -TimeoutSec 10 -SaveScript '$global:SaveRan209 = $true; ''done''' } } catch { $msg = $_.Exception.Message }
+    $mapped = & $mod { param($m) New-TcAdsErrorResult -ErrorRecord $m -DefaultCode 'PROJECT_SAVE_FAILED' } $msg
+    Check 'b1-deadline-save-refused' ($msg -match '^RESET_REQUIRED:' -and -not $global:SaveRan209 -and $mapped.error.code -eq 'RESET_REQUIRED' -and $mapped.error.hint -match 'Reset-TcSolution') "msg=$msg code=$($mapped.error.code)"
+    $null = & $mod { Clear-TcResetRequired -SolutionPath ([string]$script:TcSolutionPath) }
+    Remove-Variable -Name SaveRan209 -Scope Global -ErrorAction SilentlyContinue
 
     # From here on the save runs synchronously on the mock project (no ROT / IDE pid in a unit test).
     & $mod {
@@ -328,6 +345,139 @@ try {
     Set-Unsaved -Missing @('FB_Guard') -Extra @('POUs\FB_Disk.TcPOU')
     $r = Reset-TcSolution -DiscardProjectChanges
     Check 'reset-discard' ($r.success -and $global:Mock.Closed -and $null -eq $global:Mock.GuardSave -and -not $r.data.projectCheck.checked) "success=$($r.success)"
+
+    # --- PR #209 review M1: reset-required (Connect-TcIde -TakeOverOrphan answered a reload prompt
+    # 'do not reload' in an earlier call) ---
+    $setReset = { & $mod { $null = Set-TcResetRequired -SolutionPath ([string]$script:TcSolutionPath) -Reason 'unit: TakeOverOrphan answered the solution reload prompt Ignore' } }
+    $getReset = { & $mod { Get-TcResetRequiredGuard } }
+    & $setReset
+    Set-Unsaved -Missing @()
+    $b = Build-TcProject
+    Check 'reset-required-build-refused' (-not $b.success -and $b.error.code -eq 'RESET_REQUIRED' -and $b.error.hint -match 'Reset-TcSolution' -and $null -ne $b.data.resetRequired) "code=$($b.error.code) msg=$($b.error.message)"
+    $e = Enter-TcPlcOnline
+    Check 'reset-required-login-refused' (-not $e.success -and $e.error.code -eq 'RESET_REQUIRED') "code=$($e.error.code) msg=$($e.error.message)"
+    $en = Enable-TcConfig -Force
+    Check 'reset-required-enable-refused' (-not $en.success -and $en.error.code -eq 'RESET_REQUIRED' -and $en.data.activated -eq $false) "code=$($en.error.code) msg=$($en.error.message)"
+    $bp = New-TcBootProject
+    Check 'reset-required-boot-project-refused' (-not $bp.success -and $bp.error.code -eq 'RESET_REQUIRED') "code=$($bp.error.code)"
+    $lib = Save-TcPlcLibrary -FilePath (Join-Path $root 'x.library')
+    Check 'reset-required-library-save-refused' (-not $lib.success -and $lib.error.code -eq 'RESET_REQUIRED') "code=$($lib.error.code)"
+    $null = & $mod { Clear-TcBuildRequired }
+    Check 'reset-required-survives-clear-build-required' ($null -ne (& $getReset)) 'a complete build (Clear-TcBuildRequired) must not remove it'
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -SaveProjectChanges
+    Check 'reset-required-save-refused' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $r.data.dismissedReloadPrompt -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed -and @($r.data.saveRefused)[0].plc -eq '*' -and @($r.data.saveRefused)[0].reason -match 'TakeOverOrphan' -and $null -ne (& $getReset)) "code=$($r.error.code) refused=$($r.data.saveRefused | ConvertTo-Json -Compress)"
+    Set-Unsaved -Missing @()
+    $r = Reset-TcSolution
+    Check 'reset-required-cleared-after-reopen' ($r.success -and $global:Mock.Closed -and $global:Mock.Opened -and $r.data.dismissedReloadPrompt -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) cleared=$($r.data.resetRequiredCleared) err=$($r.error.message)"
+    & $setReset
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -SaveProjectChanges
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution
+    Check 'reset-required-kept-after-failed-reset' (-not $r.success -and $null -ne (& $getReset)) "code=$($r.error.code)"
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -DiscardProjectChanges
+    Check 'reset-required-cleared-after-discard' ($r.success -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) cleared=$($r.data.resetRequiredCleared)"
+
+    # --- PR #209 review B1: every project-file save path refuses BEFORE XAE is changed ---
+    & $mod {
+        $script:UnitOrigSm209 = ${function:Get-TcSysManager}
+        function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) $global:Mock.SmCalls++; & $script:UnitOrigSm209 @PSBoundParameters }
+    }
+    & $setReset
+    $global:Mock.SmCalls = 0
+    $savesBefore = $global:Mock.Saves
+    $samples = [ordered]@{
+        'Add-TcPou'                           = { Add-TcPou -Name 'FB_B1' -Type FunctionBlock }
+        'Add-TcDut'                           = { Add-TcDut -Name 'ST_B1' -DutType Struct }
+        'Add-TcGvl'                           = { Add-TcGvl -Name 'GVL_B1' }
+        'Add-TcInterface'                     = { Add-TcInterface -Name 'I_B1' }
+        'Add-TcLibrary'                       = { Add-TcLibrary -Name 'Tc2_Utilities' }
+        'Add-TcLibraryPlaceholder'            = { Add-TcLibraryPlaceholder -Placeholder 'Tc2_Utilities' }
+        'Add-TcPlcTask -DryRun $false'        = { Add-TcPlcTask -Name 'TaskB1' -CycleTimeUs 1000 -DryRun $false }
+        'Lock-TcLibraryPlaceholder -DryRun $false' = { Lock-TcLibraryPlaceholder -All -DryRun $false }
+        'Remove-TcLibraryReference -DryRun $false' = { Remove-TcLibraryReference -Name 'Tc2_Standard' -DryRun $false }
+        'Set-TcIndependentFile -DryRun $false' = { Set-TcIndependentFile -Path 'TIPC^Plc' -Enabled $true -DryRun $false }
+    }
+    foreach ($k in $samples.Keys) {
+        $res = $null
+        try { $res = & $samples[$k] } catch { $res = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = "exception: $($_.Exception.Message)" } } }
+        Check "b1-refused $k" (-not $res.success -and $res.error.code -eq 'RESET_REQUIRED' -and $null -ne $res.data.resetRequired -and $res.error.hint -match 'Reset-TcSolution') "code=$($res.error.code) msg=$($res.error.message)"
+    }
+    Check 'b1-nothing-touched (no Get-TcSysManager, no Project.Save)' ($global:Mock.SmCalls -eq 0 -and $global:Mock.Saves -eq $savesBefore) "smCalls=$($global:Mock.SmCalls) saves=$($global:Mock.Saves - $savesBefore)"
+    $res = $null
+    try { $res = Remove-TcLibraryReference -Name 'Tc2_Standard' } catch { $res = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'exception (past the guard)' } } }
+    Check 'b1-dry-run-not-refused' ($res.error.code -ne 'RESET_REQUIRED') "code=$($res.error.code)"
+    # the common save entry point (a record written after the cmdlet's own check): no Save(), data says why
+    $r = & $mod { Invoke-TcPlcObjectSave -ObjectPath 'TIPC^Plc^Plc Project^POUs^FB_B1' -ExpectFile 'FB_B1.TcPOU' -What "POU 'FB_B1'" }
+    Check 'b1-object-save-refused' ($null -eq $r.Saved -and $r.Error.error.code -eq 'RESET_REQUIRED' -and $r.Error.data.savedToDisk -eq $false -and $r.Error.data.createdInMemory -eq $true -and $r.Error.error.message -match 'Project\.Save was NOT called' -and $global:Mock.Saves -eq $savesBefore) "code=$($r.Error.error.code) msg=$($r.Error.error.message)"
+
+    # --- PR #209 review M1: Reset-TcSolution and unsaved editor documents while reset-required applies ---
+    Set-Unsaved -Missing @()
+    $global:Mock.ClosedAll = $false
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false }, [PSCustomObject]@{ FullName = 'C:\x\GVL.TcGVL'; Saved = $true })
+    $r = Reset-TcSolution
+    Check 'm1-dirty-documents-refused' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed -and $r.error.hint -match 'dirtyDocuments' -and $null -ne (& $getReset)) "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',') closedAll=$($global:Mock.ClosedAll)"
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $null })
+    $r = Reset-TcSolution
+    Check 'm1-documents-unreadable-fail-closed' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and -not [string]::IsNullOrWhiteSpace([string]$r.data.dirtyDocumentsError) -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code) err=$($r.data.dirtyDocumentsError)"
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false })
+    $r = Reset-TcSolution -DiscardProjectChanges
+    Check 'm1-dirty-documents-discard-goes-on' ($r.success -and $global:Mock.ClosedAll -and $global:Mock.Closed -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) err=$($r.error.message)"
+    # without reset-required the behaviour is unchanged: dirty documents are closed as before
+    Set-Unsaved -Missing @()
+    $global:Mock.ClosedAll = $false
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false })
+    $r = Reset-TcSolution
+    Check 'm1-no-reset-required-unchanged' ($r.success -and $global:Mock.ClosedAll -and $null -eq $r.data.PSObject.Properties['dirtyDocuments']) "success=$($r.success) err=$($r.error.message)"
+    $global:Mock.Docs = @()
+
+    # --- PR #209 review m1: Get-TcResetRequiredGuard fails closed and sees the in-memory record ---
+    $stateFile = Join-Path $env:TCAUTO_STATE_DIR 'build-required.json'
+    Set-Content -LiteralPath $stateFile -Value '{ not json' -Encoding ascii
+    $g = & $getReset
+    Check 'm1-guard-corrupt-state-fails-closed' ($null -ne $g -and $g.stateUnreadable -eq $true -and $g.reason -match '^state unreadable') ($g | ConvertTo-Json -Compress)
+    $b = Build-TcProject
+    Check 'm1-build-refused-on-corrupt-state' (-not $b.success -and $b.error.code -eq 'RESET_REQUIRED' -and $b.data.resetRequired.stateUnreadable -eq $true -and $b.error.message -match 'could not be checked') "code=$($b.error.code) msg=$($b.error.message)"
+    $res = Add-TcGvl -Name 'GVL_M1'
+    Check 'm1-save-path-refused-on-corrupt-state' ($res.error.code -eq 'RESET_REQUIRED') "code=$($res.error.code)"
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -SaveProjectChanges
+    Check 'm1-reset-save-refused-on-corrupt-state' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and $null -eq $global:Mock.GuardSave -and -not $global:Mock.Closed) "code=$($r.error.code)"
+    Set-Unsaved -Missing @()
+    $r = Reset-TcSolution
+    Check 'm1-reset-default-not-blocked-on-corrupt-state' ($r.success -and $global:Mock.Closed -and $r.data.resetRequiredCleared -eq $false -and -not $r.data.dismissedReloadPrompt) "success=$($r.success) cleared=$($r.data.resetRequiredCleared) err=$($r.error.message)"
+    Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'build-required.json*' | Remove-Item -Force
+    Check 'm1-guard-clean-state' ($null -eq (& $getReset)) ''
+    # the state file is locked by another thread: fail closed; a record of this process (memory) still counts
+    $mx = & $mod { Get-TcBuildRequiredMutexName }
+    $ready = New-Object System.Threading.ManualResetEvent($false)
+    $done = New-Object System.Threading.ManualResetEvent($false)
+    $holder = [PowerShell]::Create()
+    $null = $holder.AddScript('param($n, $ready, $done) $m = New-Object System.Threading.Mutex($false, $n); $null = $m.WaitOne(); $null = $ready.Set(); $null = $done.WaitOne(20000); $m.ReleaseMutex(); $m.Dispose()').AddArgument($mx).AddArgument($ready).AddArgument($done)
+    $hh = $holder.BeginInvoke()
+    try {
+        $null = $ready.WaitOne(10000)
+        & $mod { $script:TcBuildRequiredLockTimeoutMs = 200 }
+        $g = & $getReset
+        Check 'm1-guard-locked-state-fails-closed' ($null -ne $g -and $g.stateUnreadable -eq $true -and $g.reason -match 'lock not acquired') ($g | ConvertTo-Json -Compress)
+        & $mod {
+            $k = ConvertTo-TcSolutionKey $script:TcSolutionPath
+            $rs = [ordered]@{}; $rs['reset-required'] = 'unit: memory only'
+            $script:TcBuildRequiredLocal[$k] = New-TcBuildRequiredEntry -Solution ([string]$script:TcSolutionPath) -Reasons $rs -Kind 'reset-required' -At 'now'
+        }
+        $g = & $getReset
+        Check 'm1-guard-in-memory-record-counts' ($null -ne $g -and $g.stateUnreadable -eq $false -and $g.reason -eq 'unit: memory only') ($g | ConvertTo-Json -Compress)
+    }
+    finally {
+        $null = $done.Set()
+        try { $null = $holder.EndInvoke($hh) } catch { }
+        $holder.Dispose()
+        & $mod { $script:TcBuildRequiredLockTimeoutMs = 3000; $script:TcBuildRequiredLocal.Clear() }
+    }
+    $g = & $mod { param($o) Get-TcResetRequiredGuard -SolutionPath $o } (Join-Path $root 'Other.sln')
+    Check 'm1-guard-other-sln-not-blocked' ($null -eq $g) ($g | ConvertTo-Json -Compress)
 
     Set-Unsaved -Missing @('FB_Guard')
     $r = Reset-TcSolution -SaveProjectChanges -DiscardProjectChanges

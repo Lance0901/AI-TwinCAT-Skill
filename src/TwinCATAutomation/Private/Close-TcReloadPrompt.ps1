@@ -18,7 +18,8 @@ function Close-TcReloadPrompt {
         'solution', #106; measured 2026-11-03 VS2022 zh-TW, TcXaeShell / other languages not
         verified). Reset-TcSolution answers Ignore, not Reload (259): Reload made VS ask at once
         whether to save the dirty .tsproj (measured 2026-11-07, 4026 VS2022 zh-TW).
-        The window must belong to the connected IDE process ($script:TcIdeProcessId); any
+        The window must belong to the connected IDE process ($script:TcIdeProcessId, or -ProcessId
+        when given: #201, Connect-TcIde -TakeOverOrphan before anything is attached); any
         other window is refused (Close-TcMessageBox).
         Measured 2026-10-20 (4024 32-bit XAE): the file prompt is gone ~2 s after WM_CLOSE.
 
@@ -41,6 +42,9 @@ function Close-TcReloadPrompt {
         How long to wait for the dialog to disappear. Default 8.
     .PARAMETER NoFollowUpScan
         Do not scan for a next dialog once this one is gone (NextDialog stays $null; see above).
+    .PARAMETER ProcessId
+        IDE process that must own the dialog (passed to Close-TcMessageBox and the follow-up
+        scan). Default 0 = $script:TcIdeProcessId.
     .OUTPUTS
         Hashtable @{ Dismissed = [bool]; Reason = [string]; Method = [string]; Sent = [bool];
         Answer = [string]; NextDialog = <dialog record or $null>; ControlId = [int]; BmClick;
@@ -61,7 +65,12 @@ function Close-TcReloadPrompt {
         [int]$TimeoutSec = 8,
 
         [Parameter()]
-        [switch]$NoFollowUpScan
+        [switch]$NoFollowUpScan,
+
+        # #201: the IDE process that must own the dialog when no IDE is connected yet
+        # (Connect-TcIde -TakeOverOrphan); 0 = $script:TcIdeProcessId as before
+        [Parameter()]
+        [int]$ProcessId = 0
     )
 
     $hwnd = [long]0
@@ -74,7 +83,7 @@ function Close-TcReloadPrompt {
         ControlId = 0; BmClick = $null; WmCommand = $null; SendReason = $null }
     if ($hwnd -le 0) { $out.Reason = 'dialog window handle unknown'; return $out }
 
-    $send = Close-TcMessageBox -Hwnd ([IntPtr]$hwnd) -Answer $Answer
+    $send = Close-TcMessageBox -Hwnd ([IntPtr]$hwnd) -Answer $Answer -ProcessId $ProcessId
     $out.Method = $send.Method
     $out.Sent = [bool]$send.Sent
     $out.SendReason = [string]$send.Reason
@@ -100,7 +109,7 @@ function Close-TcReloadPrompt {
         try { $gone = -not [TcAutomation.MessageBoxNative]::IsWindow($h) } catch { $gone = $false }
         if (-not $gone) { continue }   # IsWindow is the authority; the scan may not complete (#42)
         if ($NoFollowUpScan) { $out.Dismissed = $true; $out.Reason = 'dialog closed (follow-up scan skipped)'; return $out }   # #174
-        $again = Find-TcIdeModalDialog
+        $again = if ($ProcessId -gt 0) { Find-TcIdeModalDialog -ProcessId $ProcessId } else { Find-TcIdeModalDialog }
         if ($null -eq $again) { $out.Dismissed = $true; $out.Reason = 'dialog closed'; return $out }
         if (Test-TcModalScanIncomplete $again) {
             # #42: our dialog is gone (IsWindow); what is up now is unknown. NextDialog stays

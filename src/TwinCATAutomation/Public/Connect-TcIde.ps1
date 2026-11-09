@@ -88,7 +88,26 @@ function Connect-TcIde {
         (owner-alive / owner-unverifiable) -, its pid is confirmed, the ROT has that pid's
         DTE with this .sln open and no modal dialog is up; otherwise nothing is attached
         (ORPHAN_TAKEOVER_REFUSED with data.reason, IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE, or
-        LAUNCH_RECORD_UNAVAILABLE). Only after the attach, the modal check and the project scan have
+        LAUNCH_RECORD_UNAVAILABLE). #201: a known reload prompt (kind reload-prompt) of that IDE
+        is answered without reloading (solution: Ignore only, project: No, file: WM_CLOSE; at most
+        5 prompts) only when: -SolutionPath given, a launch record of that .sln, its host and owner
+        processes gone, its pid confirmed, -ProgId (when given) the launch ProgID, the pid's DTE in
+        the ROT, and either that DTE answered with this .sln open or - DTE blocked - the dialog
+        text names only files inside the solution folder, or (no drive path in the text at all)
+        the solution name in quotes ('<name>'). Then the DTE is read again and BUILD_REQUIRED
+        kind reset-required is recorded for the .sln (Build-TcProject, Enable-TcConfig,
+        Enter-TcPlcOnline, New-TcBootProject, Save-TcPlcLibrary and every project-file save
+        refuse with RESET_REQUIRED until Reset-TcSolution reopened it from disk). On success
+        data.reloadPromptAttempts, data.diskChangesNotLoaded = true, data.resetRequired (the
+        record: the field that says a prompt of this .sln was answered, now or by an earlier
+        takeover) and data.nextStep; every takeover also lists unsaved editor documents
+        (data.dirtyDocuments, Document.Saved = false; data.dirtyDocumentsError when unreadable):
+        Reset-TcSolution would close them without saving and refuses while any exists unless
+        -DiscardProjectChanges. Any other dialog (also one found after the attach), a prompt
+        without that evidence or one that stays up: IDE_MODAL_DIALOG with the
+        IDE_MODAL_DIALOG_ORPHAN hint (nothing attached, so not Reset-TcSolution /
+        Disconnect-TcIde); every failed exit carries data.reloadPromptAttempts /
+        data.resetRequired like the success. Only after the attach, the modal check and the project scan have
         passed does the record get this process as owner plus a takeovers[] entry;
         data.takenOver = true, data.previousOwner. Use it only after the user confirmed nobody still
         works in that IDE.
@@ -730,14 +749,33 @@ function Connect-TcIde {
     Write-Verbose "IDE process id $ideProcessId, main HWND $($ideInfo.MainHwnd)"
 
     $candidateSummary = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
+    # PR #209 review M2: data of every failed -TakeOverOrphan exit after the attach (the attach is
+    # released there: nothing attached / taken over), with the same reloadPromptAttempts /
+    # resetRequired / stateWarning fields as the exits in Resolve-TcOrphanTakeover; $null without
+    # -TakeOverOrphan (those exits keep their data). -Data: extra fields to start from.
+    $orphanFailData = {
+        param([object]$Data)
+        if ($null -eq $orphan) { return $Data }
+        if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+        foreach ($kv in @(@('takenOver', $false), @('attached', $false), @('ownedBySession', $false), @('ideProcessId', [int]$orphan.Candidate.pid), @('launchId', [string]$orphan.Record.launchId), @('otherSession', $orphan.OtherSession))) {
+            $Data | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force
+        }
+        Add-TcOrphanResetData -Data $Data -Prompts @($orphan.ReloadPrompts) -SolutionPath $normalizedSolutionPath -StateWarning ([string]$orphan.ResetRequiredWarning)
+    }
 
     # A modal dialog (Assertion Failed, VS account settings, fatal error ...) blocks every
     # DTE call forever (no RPC_E_CALL_REJECTED), so check before Solution.Open / project scan.
     $dialog = Find-TcIdeModalDialog
     if ($null -ne $dialog) {
-        if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
-        return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' `
-            -Data ([PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning; takenOver = $false; previousOwner = $null })
+        $dlgData = [PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning; takenOver = $false; previousOwner = $null }
+        if ($null -ne $orphan) {
+            # #196 review: nothing stays attached. PR #209 review M2: so the hint must not send the caller
+            # to Reset-TcSolution (IDE_MODAL_DIALOG_RELOAD -> NOT_CONNECTED, the #201 dead end)
+            Reset-TcOrphanTakeoverAttach
+            return New-TcModalDialogResult -Dialog $dialog -Operation "Connect-TcIde -TakeOverOrphan (IDE pid $ideProcessId; dialog after the attach, attach released, not taken over)" `
+                -HintCode 'IDE_MODAL_DIALOG_ORPHAN' -Data (& $orphanFailData $dlgData)
+        }
+        return New-TcModalDialogResult -Dialog $dialog -Operation 'Connect-TcIde (Solution.Open / project scan)' -Data $dlgData
     }
 
     # Automation Interface silent mode: ITcAutomationSettings.SilentMode = true makes XAE answer
@@ -785,7 +823,7 @@ function Connect-TcIde {
             }
             catch {
                 if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
-                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution'
+                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Failed to open solution' -Data (& $orphanFailData $null)
             }
 
             # Poll until the solution is open and has projects (max 60 s, 500 ms interval).
@@ -812,7 +850,7 @@ function Connect-TcIde {
                     }
                     else {
                         if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
-                        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution did not become ready'
+                        return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'PROJECT_OPEN_FAILED' -MessagePrefix 'Solution did not become ready' -Data (& $orphanFailData $null)
                     }
                 }
                 if ($solutionReady) { break }
@@ -824,7 +862,7 @@ function Connect-TcIde {
                 return New-TcResult -Success $false `
                     -ErrorMessage "Solution '$SolutionPath' did not finish loading within $openTimeoutSec s (Solution.IsOpen / Projects.Count never became ready; IDE busy on $busyPolls poll(s))." `
                     -ErrorCode 'PROJECT_OPEN_TIMEOUT' `
-                    -Hint (Get-TcErrorHint -Code 'PROJECT_OPEN_TIMEOUT')
+                    -Hint (Get-TcErrorHint -Code 'PROJECT_OPEN_TIMEOUT') -Data (& $orphanFailData $null)
             }
             # The IDE has this solution open from now on: record it right away (#29), so a later
             # Connect-TcIde recognises it even if the steps below fail or a dialog comes up.
@@ -846,7 +884,7 @@ function Connect-TcIde {
         catch {
             if ($_.Exception.Message -match 'IDE_CRASHED') {
                 if ($null -ne $orphan) { Reset-TcOrphanTakeoverAttach }   # #196 review: nothing stays attached
-                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'IDE_CRASHED' -MessagePrefix 'Connect-TcIde (ITcSysManager scan)'
+                return New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'IDE_CRASHED' -MessagePrefix 'Connect-TcIde (ITcSysManager scan)' -Data (& $orphanFailData $null)
             }
             $smProbe = $null
         }
@@ -890,11 +928,11 @@ function Connect-TcIde {
         $tk = Set-TcLaunchRecordTakeover -Record $orphan.Record -Reason 'orphan-takeover'
         if ($null -ne $tk.Failure -or -not $tk.TakenOver) {
             Reset-TcOrphanTakeoverAttach
-            $tkData = [PSCustomObject]@{
+            $tkData = & $orphanFailData ([PSCustomObject]@{
                 takenOver = $false; attached = $false; ownedBySession = $false; launched = $false; solution = $normalizedSolutionPath
                 ideProcessId = [int]$oc.pid; launchId = [string]$orphan.Record.launchId; otherSession = $orphan.OtherSession
                 candidates = $candidateSummary
-            }
+            })
             if ($null -ne $tk.Failure) {
                 $tkData | Add-Member -NotePropertyName 'reason' -NotePropertyValue 'launch-record-write-failed'
                 $tkData | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $tk.Failure
@@ -936,6 +974,24 @@ function Connect-TcIde {
     if ($null -ne $takeover) {
         $data | Add-Member -NotePropertyName 'takenOver' -NotePropertyValue $true
         $data | Add-Member -NotePropertyName 'previousOwner' -NotePropertyValue $takeover
+        # #201: reload prompts of the orphan were answered without reloading: the IDE still has the
+        # old in-memory state while the files on disk changed. PR #209 review M2 / m4: the
+        # reset-required record is persistent, so a takeover that is retried after a failure (the
+        # prompt answered by the earlier call) still reports it (data.resetRequired: the field that
+        # says "answered"; data.reloadPromptAttempts lists this call's attempts only)
+        $data = Add-TcOrphanResetData -Data $data -Prompts @($orphan.ReloadPrompts) -SolutionPath $normalizedSolutionPath -StateWarning ([string]$orphan.ResetRequiredWarning)
+        # PR #209 review M1: the ended session may have left unsaved editor content in the IDE; the
+        # Reset-TcSolution that loads the disk state closes every document WITHOUT saving
+        # (Documents.CloseAll(vsSaveChangesNo)), so they are listed here and Reset-TcSolution refuses
+        # while any exists (PROJECT_UNSAVED_CHANGES) unless -DiscardProjectChanges. Read after the
+        # modal check above passed; a read failure never fails the takeover (dirtyDocumentsError).
+        $dirty = Get-TcDirtyDocuments -Dte $oc.Object
+        if ($null -ne $dirty.Error) { $data | Add-Member -NotePropertyName 'dirtyDocumentsError' -NotePropertyValue $dirty.Error }
+        else { $data | Add-Member -NotePropertyName 'dirtyDocuments' -NotePropertyValue @($dirty.Documents) }
+        if ($null -ne $data.PSObject.Properties['resetRequired']) {
+            $data | Add-Member -NotePropertyName 'diskChangesNotLoaded' -NotePropertyValue $true
+            $data | Add-Member -NotePropertyName 'nextStep' -NotePropertyValue 'A reload prompt of the taken-over IDE was answered without reloading (data.resetRequired, now or by an earlier takeover attempt; data.reloadPromptAttempts lists the attempts of this call only): the IDE keeps its in-memory solution while files on disk changed. Build-TcProject, Enable-TcConfig, PLC login, boot project, library save and every project-file save refuse with RESET_REQUIRED until Reset-TcSolution (MCP: ResetSolution, without -SaveProjectChanges) reopened the solution from disk; or quit the IDE with Disconnect-TcIde -Quit (-Kill) if it is no longer needed. Reset-TcSolution closes every document without saving: while data.dirtyDocuments is not empty (or data.dirtyDocumentsError is set) it refuses with PROJECT_UNSAVED_CHANGES; have the user look at those documents in XAE first, then -DiscardProjectChanges.'
+        }
     }
     if ($selectionReason -eq 'launched' -and $null -ne $launchSec) {
         $data | Add-Member -NotePropertyName 'launchSec' -NotePropertyValue $launchSec

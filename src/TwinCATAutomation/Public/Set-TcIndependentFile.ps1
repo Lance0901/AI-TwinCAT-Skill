@@ -58,6 +58,12 @@ function Set-TcIndependentFile {
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
+    # PR #209 review B1: -DryRun $false saves the project file (DTE Project.Save, which writes the
+    # in-memory .tsproj / .plcproj): refused BEFORE anything is changed in XAE while reset-required applies
+    if (-not $DryRun) {
+        $resetRefusal = Get-TcResetRequiredSaveRefusal -Operation 'Set-TcIndependentFile'
+        if ($null -ne $resetRefusal) { return $resetRefusal }
+    }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 

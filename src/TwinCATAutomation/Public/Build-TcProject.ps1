@@ -273,6 +273,10 @@
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
 
+    # #201: TakeOverOrphan answered a reload prompt 'do not reload': the IDE holds the old in-memory
+    # solution; building / downloading it (or saving it back) is refused until Reset-TcSolution
+    $resetGuard = Get-TcResetRequiredGuard
+    if ($null -ne $resetGuard) { return New-TcResetRequiredResult -Guard $resetGuard -Operation 'Build-TcProject' }
     # #67: a platform switch left a changed PLC build selection that could not be undone
     $selGuard = Get-TcBuildSelectionGuard
     if ($null -ne $selGuard) { return New-TcBuildSelectionGuardResult -Guard $selGuard -Operation 'Build-TcProject' }

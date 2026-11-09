@@ -1,4 +1,4 @@
-# Unit: #196 Connect-TcIde -TakeOverOrphan - an IDE launched by another TcAuto session whose host
+﻿# Unit: #196 Connect-TcIde -TakeOverOrphan - an IDE launched by another TcAuto session whose host
 # process is gone can be taken over explicitly, and only when every condition holds. No IDE needed.
 # The mocks are those of launch-record-persist-73.ps1 (ROT, launch, pid lookup, Get-Process of the
 # fake pids, modal scan, Stop-Process); nothing real is launched, touched or killed.
@@ -16,6 +16,12 @@
 #       owner pid recycled -> taken over; a record without ownerId (manual PowerShell) -> host decides
 #   T10 #196 review M2: the takeover is written only after attach + modal check + project scan:
 #       a dialog / IDE_CRASHED after the attach, or an owner that came back -> record unchanged
+#   T11 #201: a reload prompt of the orphan is answered without reloading (solution Ignore, project
+#       No, file Close, on the orphan pid), the DTE is read again, then taken over; a prompt that stays
+#       up / an unknown dialog -> IDE_MODAL_DIALOG with a hint that does not point at Reset-TcSolution
+#   T12 PR #209 review: M2 failed exits after the attach carry the orphan hint / reloadPromptAttempts /
+#       resetRequired; M1 data.dirtyDocuments (dirtyDocumentsError when unreadable); m2 solution-name
+#       evidence only for a quoted name in a text without any drive path; m3 no WM_CLOSE fallback
 #   powershell.exe -NoProfile -File tests/Unit/orphan-takeover-196.ps1
 # Exit code = number of failed checks.
 # Exit code = number of failed checks.
@@ -134,6 +140,13 @@ function Restart-Module {
             switch ($mode) {
                 'incomplete' { return (New-TcModalScanIncomplete -ProcessId $p -Reason 'timeout' -TimeoutSec 5 -Message 'mock: cold start') }
                 'dialog' { return @{ Title = 'Microsoft Visual Studio'; Text = 'mock dialog'; Hwnd = 0; Buttons = @() } }
+                # #201: reload prompts (Kind / ReloadTarget as Find-TcIdeModalDialog reports them)
+                'reload-solution' { return @{ Title = 'File Modification Detected'; Text = "The solution 's4026' has been modified outside the environment."; Kind = 'reload-prompt'; ReloadTarget = 'solution'; Hwnd = 201; Buttons = @() } }
+                'reload-project' { return @{ Title = 'TcXaeShell'; Text = "The project file '$($global:SlnDir201)\P1\P1.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 202; Buttons = @() } }
+                # PR #209 review m1: prompts that give no evidence for the solution
+                'reload-project-outside' { return @{ Title = 'TcXaeShell'; Text = "The project file 'C:\Elsewhere201\Q\Q.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the project?"; Kind = 'reload-prompt'; ReloadTarget = 'project'; Hwnd = 204; Buttons = @() } }
+                'reload-solution-other' { return @{ Title = 'File Modification Detected'; Text = "The solution 'OtherSolution201' has been modified outside the environment."; Kind = 'reload-prompt'; ReloadTarget = 'solution'; Hwnd = 205; Buttons = @() } }
+                'reload-file' { return @{ Title = 'Microsoft Visual Studio'; Text = 'File has been changed outside the environment. Reload the new file?'; Kind = 'reload-prompt'; ReloadTarget = 'file'; Hwnd = 203; Buttons = @() } }
                 default { return $null }
             }
         }
@@ -168,6 +181,7 @@ function Reset-All {
     $global:NoStart73 = @{}; $global:SysMgrHook73 = $null
     $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false; $global:NextName73 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'build-required.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Restart-Module
 }
 function Get-RecordFile { Join-Path $env:TCAUTO_STATE_DIR 'launched-ides.json' }
@@ -405,6 +419,191 @@ try {
     $r = Connect-TcIde -SolutionPath $sln
     Check 'T9h host and owner gone, IDE with no solution: released as before (a new IDE is launched)' ($global:Launches73.Count -eq 2) "code=$($r.error.code) launches=$($global:Launches73.Count)"
     $null = Disconnect-TcIde
+
+    # --- T11 (#201): a reload prompt of the orphan is answered "do not reload", then taken over ---
+    # Close-TcReloadPrompt is mocked: logs "<answer>|<pid>"; $global:CloseFail201 = answers that fail;
+    # $global:CloseHook201 runs after a successful answer (e.g. the DTE stops being busy)
+    $global:Answers201 = New-Object System.Collections.ArrayList
+    $global:CloseFail201 = @()
+    $global:CloseHook201 = $null
+    function Install-ReloadMock {
+        & $script:mod {
+            function script:Close-TcReloadPrompt {
+                [CmdletBinding()] param([object]$Dialog, [string]$Answer = 'Close', [int]$TimeoutSec = 8, [switch]$NoFollowUpScan, [int]$ProcessId = 0)
+                [void]$global:Answers201.Add("$Answer|$ProcessId|$NoFollowUpScan")
+                if ($global:CloseFail201 -contains $Answer) {
+                    return @{ Dismissed = $false; Sent = $true; Method = 'BM_CLICK'; ControlId = 0; Reason = "mock: still shown after $TimeoutSec s"; WmCommand = 'posted-still-open'; NextDialog = $null }
+                }
+                if ($null -ne $global:CloseHook201) { & $global:CloseHook201 }
+                @{ Dismissed = $true; Sent = $true; Method = 'BM_CLICK'; ControlId = 1412; Reason = 'dialog closed (follow-up scan skipped)'; WmCommand = 'not-needed'; NextDialog = $null }
+            }
+        }
+    }
+    $global:SlnDir201 = $slnDir
+    function Get-ResetGuard { & $script:mod { param($x) Get-TcResetRequiredGuard -SolutionPath $x } $slnL }
+    function New-ReloadOrphan([string[]]$Queue) {
+        $pp = New-Orphan
+        Install-ReloadMock
+        $global:Answers201.Clear(); $global:CloseFail201 = @(); $global:CloseHook201 = $null
+        $global:ModalQueue73.Clear(); foreach ($q in $Queue) { [void]$global:ModalQueue73.Add($q) }
+        $global:Modal73 = 'none'
+        $pp
+    }
+
+    $p = New-ReloadOrphan @('reload-solution')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    $att = @($r.data.reloadPromptAttempts)
+    Check 'T11 solution reload prompt -> answered Ignore on the orphan pid (no follow-up scan), then taken over' ($r.success -and $r.data.takenOver -eq $true -and $r.data.ownedBySession -eq $true -and ($global:Answers201 -join ',') -eq "Ignore|$p|True" -and $att.Count -eq 1 -and $att[0].target -eq 'solution' -and $att[0].answer -eq 'Ignore' -and $att[0].dismissed -eq $true) "code=$($r.error.code) answers=$($global:Answers201 -join ',') hint=$($r.error.hint)"
+    Check 'T11a success says the disk changes are not loaded and names Reset-TcSolution as next step' ($r.data.diskChangesNotLoaded -eq $true -and [string]$r.data.nextStep -match 'Reset-TcSolution') "nextStep=$($r.data.nextStep)"
+    Check 'T11a2 success carries data.resetRequired and the reset-required record exists (M1)' ($null -ne $r.data.resetRequired -and $null -ne (Get-ResetGuard) -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'dte-solution') "resetRequired=$($r.data.resetRequired | ConvertTo-Json -Compress)"
+    $bt = Build-TcProject
+    Check 'T11a3 Build-TcProject right after the takeover -> RESET_REQUIRED, hint names Reset-TcSolution (M1)' (-not $bt.success -and $bt.error.code -eq 'RESET_REQUIRED' -and $bt.error.hint -match 'Reset-TcSolution') "code=$($bt.error.code)"
+    Check 'T11b record owner rewritten (taken over)' ([int]@(Read-Records)[0].hostPid -eq $PID -and @(@(Read-Records)[0].takeovers).Count -eq 1) ((Get-RecordJson) -replace '\s+', ' ')
+    $null = Disconnect-TcIde
+
+    # project prompt while the DTE is busy (the prompt blocks it); No, then the DTE is read again
+    $p = New-ReloadOrphan @('reload-project')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $global:P201 = $p; $global:CloseHook201 = { $global:LaunchedDtes73[$global:P201].Busy = $false }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11c project prompt on a busy DTE -> answered No (never Yes / WM_CLOSE), DTE read again, taken over' ($r.success -and $r.data.takenOver -eq $true -and ($global:Answers201 -join ',') -eq "No|$p|True" -and @($r.data.reloadPromptAttempts)[0].answer -eq 'No') "code=$($r.error.code) reason=$($r.data.reason) answers=$($global:Answers201 -join ',')"
+    $null = Disconnect-TcIde
+
+    $p = New-ReloadOrphan @('reload-file')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11d file prompt -> WM_CLOSE (Close), taken over' ($r.success -and $r.data.takenOver -eq $true -and ($global:Answers201 -join ',') -eq "Close|$p|True") "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    $null = Disconnect-TcIde
+
+    # two prompts in a row (solution, then project) -> both answered
+    $p = New-ReloadOrphan @('reload-solution', 'reload-project')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11e two prompts in a row -> Ignore then No, taken over, two attempts reported' ($r.success -and ($global:Answers201 -join ',') -eq "Ignore|$p|True,No|$p|True" -and @($r.data.reloadPromptAttempts).Count -eq 2) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    $null = Disconnect-TcIde
+
+    # the prompt stays up (Ignore fails; m3: no WM_CLOSE fallback) -> fail closed, truthful hint
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:CloseFail201 = @('Ignore', 'Close')
+    $before = Get-RecordJson
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11f prompt not dismissed -> IDE_MODAL_DIALOG, not taken over, record unchanged, not connected, only Ignore tried (m3: no WM_CLOSE)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.takenOver -eq $false -and $r.data.attached -eq $false -and $r.data.dialog.kind -eq 'reload-prompt' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and ($global:Answers201 -join ',') -eq "Ignore|$p|True" -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    Check 'T11f2 failed takeover after an answer still records reset-required and reports it (M2)' ($null -ne $r.data.resetRequired -and $null -ne (Get-ResetGuard)) "resetRequired=$($r.data.resetRequired)"
+    Check 'T11g its hint says nothing is attached and does NOT send the caller to Reset-TcSolution (the #201 dead end)' ($r.error.hint -match 'NOT_CONNECTED' -and $r.error.hint -match 'TakeOverOrphan' -and $r.error.hint -notmatch '直接呼叫 Reset-TcSolution') "$($r.error.hint)"
+
+    # M2: the prompt was closed by the user afterwards; the retried takeover still reports the record
+    $global:CloseFail201 = @(); $global:ModalQueue73.Clear()
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11r retried takeover (prompt answered by the earlier call) -> success, diskChangesNotLoaded + resetRequired from the persisted record (M2)' ($r.success -and $r.data.takenOver -eq $true -and $r.data.diskChangesNotLoaded -eq $true -and $null -ne $r.data.resetRequired -and $global:Answers201.Count -eq 1 -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts']) "code=$($r.error.code) disk=$($r.data.diskChangesNotLoaded)"
+    $null = Disconnect-TcIde
+
+    # m1: DTE blocked (busy) and the prompt gives no evidence for this .sln -> nothing clicked
+    $p = New-ReloadOrphan @('reload-project-outside')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11p busy DTE + project prompt naming a file outside the solution folder -> IDE_MODAL_DIALOG, nothing answered, no reset-required (m1)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $r.data.reloadPromptEvidence -eq 'none' -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts'] -and $null -eq (Get-ResetGuard) -and $r.error.hint -match 'NOT_CONNECTED' -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',') ev=$($r.data.reloadPromptEvidence)"
+    $p = New-ReloadOrphan @('reload-solution-other')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11q busy DTE + solution prompt naming another solution -> nothing answered (m1)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $r.data.reloadPromptEvidence -eq 'none') "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $global:P201 = $p; $global:CloseHook201 = { $global:LaunchedDtes73[$global:P201].Busy = $false }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11s busy DTE + solution prompt naming this solution -> answered (evidence solution-name), taken over' ($r.success -and $r.data.takenOver -eq $true -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'solution-name') "code=$($r.error.code) ev=$(@($r.data.reloadPromptAttempts)[0].evidence)"
+    $null = Disconnect-TcIde
+
+    # an unknown dialog is never answered
+    $p = New-ReloadOrphan @('dialog')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11h unknown dialog -> IDE_MODAL_DIALOG with the orphan hint, nothing answered, not connected' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 0 -and $null -eq (Get-ResetGuard) -and $r.error.hint -match 'NOT_CONNECTED' -and $null -eq $r.data.PSObject.Properties['reloadPromptAttempts'] -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+
+    # prompts keep coming: at most 5 answered
+    $p = New-ReloadOrphan @('reload-file', 'reload-file', 'reload-file', 'reload-file', 'reload-file', 'reload-file')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11i a sixth prompt -> IDE_MODAL_DIALOG after 5 answers, not taken over' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $global:Answers201.Count -eq 5 -and $r.data.takenOver -eq $false -and (Test-NotConnected)) "code=$($r.error.code) answers=$($global:Answers201.Count)"
+
+    # the scan after the answer is incomplete 3 times -> MODAL_SCAN_INCOMPLETE (fail closed)
+    $p = New-ReloadOrphan @('reload-solution', 'incomplete', 'incomplete', 'incomplete')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11j scan after the answer never completes -> MODAL_SCAN_INCOMPLETE, not taken over' ($r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.takenOver -eq $false -and (Test-NotConnected)) "code=$($r.error.code)"
+    $p = New-ReloadOrphan @('reload-solution', 'incomplete')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11k one incomplete scan after the answer, then a complete one -> taken over' ($r.success -and $r.data.takenOver -eq $true) "code=$($r.error.code)"
+    $null = Disconnect-TcIde
+
+    # after the answer the IDE turns out to have another solution open -> solution-mismatch
+    $p = New-ReloadOrphan @('reload-project')
+    $global:LaunchedDtes73[$p].Busy = $true
+    $global:P201 = $p; $global:SlnY201 = $slnYL; $global:CloseHook201 = { $global:LaunchedDtes73[$global:P201].Busy = $false; $global:LaunchedDtes73[$global:P201].Solution.FullName = $global:SlnY201 }
+    $before = Get-RecordJson
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11l busy DTE, project prompt naming a file in the solution folder (evidence dialog-path) answered; the DTE read afterwards shows another .sln -> ORPHAN_TAKEOVER_REFUSED solution-mismatch, attempts + resetRequired reported, record unchanged' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'solution-mismatch' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and @($r.data.reloadPromptAttempts)[0].evidence -eq 'dialog-path' -and $null -ne $r.data.resetRequired -and (Get-RecordJson) -eq $before -and (Test-NotConnected)) "code=$($r.error.code) reason=$($r.data.reason)"
+
+    # a host that is alive: the prompt is never touched (ownership checks come first)
+    $p = New-Orphan -HostAlive
+    Install-ReloadMock
+    $global:Answers201.Clear(); $global:ModalQueue73.Clear(); [void]$global:ModalQueue73.Add('reload-solution')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T11m host alive + reload prompt -> refused host-alive, the prompt is not answered, no reset-required' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and $r.data.reason -eq 'host-alive' -and $global:Answers201.Count -eq 0 -and $null -eq (Get-ResetGuard)) "code=$($r.error.code) answers=$($global:Answers201 -join ',')"
+
+    # Close-TcReloadPrompt passes -ProcessId on to Close-TcMessageBox (the orphan is not connected)
+    Restart-Module
+    $global:MsgBoxPid201 = $null
+    & $mod { function script:Close-TcMessageBox { [CmdletBinding()] param([IntPtr]$Hwnd, [string]$Answer = 'Close', [int]$ProcessId = 0) $global:MsgBoxPid201 = $ProcessId; @{ Sent = $false; Method = $null; ControlId = 0; Reason = 'dialog already gone' } } }
+    $cr = & $mod { Close-TcReloadPrompt -Dialog @{ Hwnd = 77 } -Answer Ignore -ProcessId 4242 }
+    Check 'T11n Close-TcReloadPrompt -ProcessId reaches Close-TcMessageBox' ($global:MsgBoxPid201 -eq 4242 -and $cr.Dismissed -eq $true) "pid=$($global:MsgBoxPid201)"
+    $cr = & $mod { Close-TcReloadPrompt -Dialog @{ Hwnd = 77 } -Answer Ignore }
+    Check 'T11o without -ProcessId: 0 (Close-TcMessageBox falls back to the connected IDE, unchanged)' ($global:MsgBoxPid201 -eq 0) "pid=$($global:MsgBoxPid201)"
+
+    # --- T12: PR #209 review ---
+    Install-ReloadMock
+    # M2: a dialog found by the check AFTER the attach (prompt answered before) -> orphan hint, not the
+    # reload hint (that one sends the caller to Reset-TcSolution -> NOT_CONNECTED, #201), same fields
+    $p = New-ReloadOrphan @('reload-solution', 'none', 'dialog')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T12a M2 dialog after the attach -> IDE_MODAL_DIALOG with the orphan hint, attempts + resetRequired, not connected' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.error.hint -match 'NOT_CONNECTED' -and $r.error.hint -notmatch '直接呼叫 Reset-TcSolution' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $null -ne $r.data.resetRequired -and $r.data.takenOver -eq $false -and $r.data.attached -eq $false -and (Test-NotConnected)) "code=$($r.error.code) hint=$($r.error.hint)"
+    $null = Disconnect-TcIde
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:SysMgrHook73 = { throw 'IDE_CRASHED: mock - the IDE died during the project scan' }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    $global:SysMgrHook73 = $null
+    Check 'T12b M2 IDE_CRASHED after the attach (prompt answered) -> reloadPromptAttempts + resetRequired carried' ($r.error.code -eq 'IDE_CRASHED' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $null -ne $r.data.resetRequired -and $r.data.takenOver -eq $false -and (Test-NotConnected)) "code=$($r.error.code) data=$($r.data | ConvertTo-Json -Compress -Depth 2)"
+    $null = Disconnect-TcIde
+    # M2: a takeover refused at the write after an earlier call answered the prompt -> resetRequired from the record
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:SysMgrHook73 = { $global:Procs73[9601] = $global:OtherOwnerStart73 }
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    $global:SysMgrHook73 = $null; $global:Procs73.Remove(9601)
+    Check 'T12c M2 takeover write refused (owner back) -> ORPHAN_TAKEOVER_REFUSED with attempts + resetRequired' ($r.error.code -eq 'ORPHAN_TAKEOVER_REFUSED' -and @($r.data.reloadPromptAttempts).Count -eq 1 -and $null -ne $r.data.resetRequired) "code=$($r.error.code) reason=$($r.data.reason)"
+    $null = Disconnect-TcIde
+
+    # M1: unsaved editor documents of the orphan are listed; unreadable -> dirtyDocumentsError, takeover still succeeds
+    $p = New-ReloadOrphan @('reload-solution')
+    $global:Docs209 = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false }, [PSCustomObject]@{ FullName = 'C:\x\GVL.TcGVL'; Saved = $true })
+    $dd = New-Object PSObject
+    $dd | Add-Member -MemberType ScriptProperty -Name Count -Value { @($global:Docs209).Count }
+    $dd | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) @($global:Docs209)[$i - 1] }
+    $global:LaunchedDtes73[$p] | Add-Member -NotePropertyName Documents -NotePropertyValue $dd -Force
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T12d M1 success lists the unsaved documents (data.dirtyDocuments) and nextStep names -DiscardProjectChanges' ($r.success -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and $null -eq $r.data.PSObject.Properties['dirtyDocumentsError'] -and [string]$r.data.nextStep -match 'DiscardProjectChanges') "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',')"
+    $null = Disconnect-TcIde
+    Remove-Variable -Name Docs209 -Scope Global -ErrorAction SilentlyContinue
+    $p = New-ReloadOrphan @('reload-solution')
+    $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
+    Check 'T12e M1 Documents not readable -> dirtyDocumentsError, the takeover still succeeds' ($r.success -and -not [string]::IsNullOrWhiteSpace([string]$r.data.dirtyDocumentsError) -and $null -eq $r.data.PSObject.Properties['dirtyDocuments']) "code=$($r.error.code) err=$($r.data.dirtyDocumentsError)"
+    $null = Disconnect-TcIde
+
+    # m2: solution-name evidence only for a quoted name in a text without any drive path
+    $bfh = 'C:\Proj\BFH-1650\BFH-1650.sln'
+    $ev = { param($t) & $mod { param($x, $y) Get-TcOrphanDialogEvidence -Dialog @{ Text = $x } -SolutionPath $y } $t $bfh }
+    Check 'T12f m2 quoted name, no path -> solution-name' ((& $ev "The solution 'BFH-1650' has been modified outside the environment.") -eq 'solution-name') ''
+    Check 'T12g m2 unquoted name -> no evidence' ($null -eq (& $ev 'The solution BFH-1650 has been modified outside the environment.')) ''
+    Check 'T12h m2 a non-project path that contains the name -> no evidence' ($null -eq (& $ev 'File C:\Other\BFH-1650\notes.txt has been changed outside the environment.')) ''
+    Check 'T12i m2 quoted name next to a non-project path -> no evidence' ($null -eq (& $ev "The solution 'BFH-1650': C:\Other\BFH-1650\notes.txt was modified.")) ''
+    Check 'T12j m2 a truncated path -> no evidence' ($null -eq (& $ev "The project file 'C:\Proj\BFH-1650\PLC1\PLC1.plcpr...' of 'BFH-1650' has been modified.")) ''
+    Check 'T12k m2 a project file inside the solution folder -> dialog-path (unchanged)' ((& $ev "The project file 'C:\Proj\BFH-1650\PLC1\PLC1.plcproj' has been modified outside of TwinCAT XAE.") -eq 'dialog-path') ''
+
+    Remove-Variable -Name Answers201, CloseFail201, CloseHook201, MsgBoxPid201, P201, SlnY201, SlnDir201 -Scope Global -ErrorAction SilentlyContinue
+    Restart-Module
 
     Check 'E1 nothing real was killed (Stop-Process is the mock)' (@($global:Kills73 | Where-Object { $_ -notlike 'Stop-Process 90*' }).Count -eq 0) ($global:Kills73 -join ', ')
 }

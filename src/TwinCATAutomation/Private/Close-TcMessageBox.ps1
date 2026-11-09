@@ -265,7 +265,7 @@ function Close-TcMessageBox {
     .PARAMETER Answer
         Yes | No | Ok | Cancel | Ignore | Close. Default Close. Ignore = control id 1412, the
         Ignore (&I) button of the VS2022 solution reload prompt (#106; measured 2026-11-03,
-        VS2022 zh-TW; TcXaeShell and other languages not verified; not the Win32 IDIGNORE 5).
+        VS2022 zh-TW; 4024 TcXaeShell en-US UI the same id, measured 2026-11-09, #201; other languages not verified; not the Win32 IDIGNORE 5).
         The UI Automation fallback has no mapping for Ignore: a dialog without control 1412
         gives Sent = false.
     .PARAMETER ProcessId
@@ -335,7 +335,7 @@ function Close-TcMessageBox {
     }
 
     # Ignore = 1412: the VS2022 solution reload prompt (#106, measured 2026-11-03 VS2022 zh-TW:
-    # 259 = Reload (&R), 1412 = Ignore (&I); TcXaeShell / other languages not verified).
+    # 259 = Reload (&R), 1412 = Ignore (&I); 4024 TcXaeShell en-US: same ids, measured 2026-11-09 #201; other languages not verified).
     $ids = @{ Ok = 1; Cancel = 2; Yes = 6; No = 7; Ignore = 1412 }
     $id = [int]$ids[$Answer]
     $result.ControlId = $id
