@@ -177,11 +177,17 @@ try {
     $qsol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:M.Closed = $true }
     $qdte = [PSCustomObject]@{ Solution = $qsol }
     $qdte | Add-Member -MemberType ScriptMethod -Name Quit -Value { $global:M.Quit = $true }
-    & $mod { param($d) $script:TcDte = $d; $script:TcIdeConnected = $true; $script:TcIdeProcessId = 4242; $script:TcIdeSelectedBy = 'solution-match' } $qdte
+    & $mod { param($d) $script:TcDte = $d; $script:TcIdeConnected = $true; $script:TcIdeProcessId = 4242; $script:TcIdeSelectedBy = 'launched' } $qdte
     $r = Disconnect-TcIde -Quit
     $still = & $mod { $null -ne $script:TcDte -and $script:TcIdeConnected }
     Check 'E3 Disconnect-TcIde -Quit, incomplete scan -> MODAL_SCAN_INCOMPLETE, nothing attempted, connection kept' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and -not $global:M.Closed -and -not $global:M.Quit -and $r.data.disconnected -eq $false -and $r.data.modalScan.reason -eq 'timeout' -and $still) (J $r)
     Check 'E3 hint names the Disconnect fallbacks' ($r.error.hint -match 'Get-TcIdeModalDialog -TimeoutSec 15' -and $r.error.hint -match 'data\.ownedBySession = true' -and $r.error.hint -match 'Disconnect-TcIde -Quit -Kill') "$($r.error.hint)"
+    # E3b #227: the same IDE NOT launched by this session -> IDE_NOT_OWNED before the scan, nothing attempted, connection kept
+    $global:M.Scans = 0
+    & $mod { param($d) $script:TcDte = $d; $script:TcIdeConnected = $true; $script:TcIdeProcessId = 4242; $script:TcIdeSelectedBy = 'solution-match' } $qdte
+    $r = Disconnect-TcIde -Quit -Kill
+    $still = & $mod { $null -ne $script:TcDte -and $script:TcIdeConnected }
+    Check 'E3b #227 Disconnect-TcIde -Quit -Kill on a not-owned IDE -> IDE_NOT_OWNED, no scan / close / quit, connection kept' ((-not $r.success) -and $r.error.code -eq 'IDE_NOT_OWNED' -and $global:M.Scans -eq 0 -and -not $global:M.Closed -and -not $global:M.Quit -and $r.data.disconnected -eq $false -and $r.data.ownedBySession -eq $false -and $still) (J $r)
     & $mod { $script:TcIdeProcessId = $null; $script:TcIdeSelectedBy = $null }
 
     # E4

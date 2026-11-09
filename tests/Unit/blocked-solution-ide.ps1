@@ -257,14 +257,14 @@ try {
     $hits = @(& $mod { param($c, $s) Find-TcBlockedSolutionIde -Candidates $c -SolutionPath $s } @([PSCustomObject]@{ pid = 921; busy = $true }) $sln)
     Check 'two-paths-inside' ($hits.Count -eq 1 -and $hits[0].MatchedBy -eq 'dialog-path' -and $hits[0].Strong) "hits=$(@($hits | ForEach-Object { "$($_.MatchedBy):$($_.Strong)" }) -join ',')"
 
-    # --- after an attach, Disconnect-TcIde -Quit acts on THAT pid only (modal up -> IDE_QUIT_FAILED, nothing quit) ---
+    # --- after an attach, Disconnect-TcIde -Quit acts on THAT pid only; #227: not launched by this session -> IDE_NOT_OWNED, nothing quit ---
     $global:FakeIde = @{ 931 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
     Set-Rot @(@{ Pid = 931; Mode = 'unreadable' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     $global:QuitCalled = $false
     & $mod { $script:TcDte | Add-Member -MemberType ScriptMethod -Name Quit -Value { $global:QuitCalled = $true } -Force }
     $q = Disconnect-TcIde -Quit
-    Check 'attached-quit-targets-pid' ($r.data.attached -and -not $q.success -and $q.error.code -eq 'IDE_QUIT_FAILED' -and $q.data.ideProcessId -eq 931 -and -not $global:QuitCalled) "code=$($q.error.code) pid=$($q.data.ideProcessId) quit=$global:QuitCalled"
+    Check 'attached-quit-targets-pid' ($r.data.attached -and -not $q.success -and $q.error.code -eq 'IDE_NOT_OWNED' -and $q.data.ideProcessId -eq 931 -and $q.data.ownedBySession -eq $false -and $q.data.disconnected -eq $false -and -not $global:QuitCalled) "code=$($q.error.code) pid=$($q.data.ideProcessId) quit=$global:QuitCalled"
     # --- F1: record says THIS solution, but no current fact (title empty, no dialog) -> not attached ---
     $global:FakeIde = @{ 941 = @{ Title = ''; Dialog = $null } }
     & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 941 -Solution $s } $sln

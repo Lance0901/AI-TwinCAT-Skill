@@ -278,7 +278,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Clear-TcLifecycleBlock` | `ClearLifecycleBlock` | `[-AmsNetId <string>] [-Reason <string>] [-FallbackMethod <string>] [-AllowedSideEffects <string[]>] [-MaxVerifyLevel <string>]` |
 | `Clear-TcProject` | `CleanProject` | `[-TimeoutSec <int>] [-AllowUnresolvedLibrary]` |
 | `Connect-TcAds` | `ConnectAds` | `[-AmsNetId <string>] [-Port <int>]` |
-| `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked] [-TakeOverOrphan]` |
+| `Connect-TcIde` | `ConnectIde` | `[-ProgId <string>] [-SolutionPath <string>] [-NoLaunch] [-LaunchIfBlocked] [-TakeOverOrphan] [-ProcessId <int>]` |
 | `Connect-TcNcAxisToPlc` | `LinkNcAxis` | `-Axis <string> -PlcVariable <string> [-PlcProjectPath <string>] [-DryRun <bool>]` |
 | `Disconnect-TcAds` | `DisconnectAds` | - |
 | `Disconnect-TcIde` | `DisconnectIde` | `[-Quit] [-Kill] [-ForgetPendingLaunch]` |
