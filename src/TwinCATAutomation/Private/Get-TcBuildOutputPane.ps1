@@ -1,0 +1,145 @@
+﻿function Get-TcComMember {
+    <#
+    .SYNOPSIS
+        Read a property or call a method of a DTE object through IDispatch (#219).
+    .DESCRIPTION
+        The PowerShell COM adapter does not see every DTE member out of process: measured 2026-11-09
+        (VS2022 VisualStudio.DTE.17.0 zh-TW + TwinCAT 4026), $dte.ToolWindows is $null (a DTE2 member,
+        IDispatch answers DISP_E_UNKNOWNNAME) and Window.Caption / Window.Object read back empty / $null,
+        while Type.InvokeMember on the same objects returns them. A real COM object is therefore read
+        with InvokeMember; any other object (unit-test mocks) with ordinary member access. The leading
+        comma keeps a returned COM collection from being unrolled by the pipeline.
+    #>
+    param(
+        [Parameter(Mandatory)] $Object,
+        [Parameter(Mandatory)] [string]$Name,
+        [object[]]$Arguments,
+        [switch]$Method
+    )
+    if ($Object -is [System.__ComObject]) {
+        $flags = if ($Method) { [Reflection.BindingFlags]::InvokeMethod } else { [Reflection.BindingFlags]::GetProperty }
+        return , ([System.__ComObject].InvokeMember($Name, $flags, $null, $Object, $Arguments))
+    }
+    if ($Method) {
+        return , ($Object.$Name.Invoke($Arguments))
+    }
+    return , ($Object.$Name)
+}
+
+function Get-TcBuildOutputPane {
+    <#
+    .SYNOPSIS
+        Find the build pane of the Output window by its GUID and read its text (#219 / #218).
+    .DESCRIPTION
+        The pane is identified by its GUID, never by its name: the name is localized (English "Build",
+        zh-TW "建置", 實測 2026-11-09 VS2022 zh-TW). Output window = DTE.Windows.Item(vsWindowKindOutput).Object
+        (vsWindowKindOutput = {34E76E81-EE4A-11D0-AE2E-00A0C90FFFC3},
+        https://learn.microsoft.com/en-us/dotnet/api/envdte.constants.vswindowkindoutput); build pane =
+        OutputWindowPane.Guid {1BD8A850-02D1-11D1-BEE7-00A0C913D1F8} (VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid,
+        https://learn.microsoft.com/en-us/dotnet/api/microsoft.visualstudio.vsconstants.outputwindowpaneguid.buildoutputpane_guid;
+        the page gives no literal value, the value is 實測 2026-11-09 on VS2022 zh-TW).
+        No fallback by pane index: the panes are not in a fixed order (measured: sorted by GUID, with
+        "Source Control - Team Foundation" before the build pane), so an index would pick another pane.
+        Returns status:
+          read        the build pane was found and its text read (text, name, guid, index, matchedBy 'guid')
+          not-found   the Output window was read but no pane has the build pane GUID (panes = what was seen)
+          unreadable  the Output window, its panes or the build pane text could not be read (error)
+    #>
+    param($Dte = $script:TcDte)
+
+    $result = [PSCustomObject]@{
+        status    = 'unreadable'
+        name      = $null
+        guid      = $null
+        index     = $null
+        matchedBy = $null
+        text      = ''
+        panes     = @()
+        error     = $null
+    }
+    if ($null -eq $Dte) { $result.error = 'no DTE connection'; return $result }
+
+    try {
+        $windows = Get-TcComMember -Object $Dte -Name 'Windows'
+        $window = Get-TcComMember -Object $windows -Name 'Item' -Arguments @($script:TcVsWindowKindOutput) -Method
+        $outputWindow = Get-TcComMember -Object $window -Name 'Object'
+        if ($null -eq $outputWindow) { throw 'Output window object is null' }
+        $panes = Get-TcComMember -Object $outputWindow -Name 'OutputWindowPanes'
+        $count = [int](Get-TcComMember -Object $panes -Name 'Count')
+    }
+    catch {
+        $result.error = "Output window not readable: $($_.Exception.Message)"
+        return $result
+    }
+
+    $seen = [System.Collections.Generic.List[object]]::new()
+    $buildPane = $null
+    for ($i = 1; $i -le $count; $i++) {
+        $pane = $null; $paneName = $null; $paneGuid = $null
+        try {
+            $pane = Get-TcComMember -Object $panes -Name 'Item' -Arguments @([object]$i) -Method
+            $paneGuid = [string](Get-TcComMember -Object $pane -Name 'Guid')
+            try { $paneName = [string](Get-TcComMember -Object $pane -Name 'Name') } catch { $paneName = $null }
+            if ([string]::IsNullOrWhiteSpace($paneGuid)) { throw 'Guid read back empty' }
+        }
+        catch {
+            $seen.Add([PSCustomObject]@{ index = $i; name = $paneName; guid = $null; error = $_.Exception.Message })
+            continue
+        }
+        $seen.Add([PSCustomObject]@{ index = $i; name = $paneName; guid = $paneGuid; error = $null })
+        $normalized = $paneGuid.Trim().Trim('{', '}')
+        if ($null -eq $buildPane -and $normalized -ieq $script:TcBuildOutputPaneGuid.Trim('{', '}')) {
+            $buildPane = $pane
+            $result.name = $paneName
+            $result.guid = $paneGuid
+            $result.index = $i
+            $result.matchedBy = 'guid'
+        }
+    }
+    $result.panes = @($seen.ToArray())
+
+    if ($null -eq $buildPane) {
+        $guidsRead = @($seen | Where-Object { $null -ne $_.guid }).Count
+        if ($count -gt 0 -and $guidsRead -eq 0) {
+            $result.error = "none of the $count Output window panes returned its Guid"
+        }
+        else {
+            $result.status = 'not-found'
+            $result.error = "no Output window pane has the build pane Guid $script:TcBuildOutputPaneGuid ($count pane(s) read)"
+        }
+        return $result
+    }
+
+    try {
+        $textDoc = Get-TcComMember -Object $buildPane -Name 'TextDocument'
+        $start = Get-TcComMember -Object $textDoc -Name 'StartPoint'
+        $end = Get-TcComMember -Object $textDoc -Name 'EndPoint'
+        $editPoint = Get-TcComMember -Object $start -Name 'CreateEditPoint' -Arguments @() -Method
+        $result.text = [string](Get-TcComMember -Object $editPoint -Name 'GetText' -Arguments @($end) -Method)
+        $result.status = 'read'
+    }
+    catch {
+        $result.error = "build pane '$($result.name)' found but its text is not readable: $($_.Exception.Message)"
+    }
+    return $result
+}
+
+function Get-TcBuildWarningLines {
+    <#
+    .SYNOPSIS
+        The warning lines of the build pane text (#218).
+    .DESCRIPTION
+        Compiler / build messages are "<file>(<line>) : warning: <code>: <text>" (TwinCAT PLC compiler) or
+        "<file>(<line>,<col>): warning <code>: <text>" (MSBuild). The word "warning" there is written by the
+        compiler, not by the VS UI: it stayed English in a zh-TW VS2022 (實測 2026-11-09, 4026), while the
+        UI lines around it ("已開始建置", "組建: 成功或已更新") were localized. A line matches when "warning"
+        follows a ':' (so a description that only contains the word does not count).
+    #>
+    param([string[]]$Lines)
+    @($Lines | Where-Object { $_ -match '(?i):\s*warning\b' })
+}
+
+# vsWindowKindOutput, https://learn.microsoft.com/en-us/dotnet/api/envdte.constants.vswindowkindoutput
+$script:TcVsWindowKindOutput = '{34E76E81-EE4A-11D0-AE2E-00A0C90FFFC3}'
+# VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid (value 實測 2026-11-09, VS2022 zh-TW)
+$script:TcBuildOutputPaneGuid = '{1BD8A850-02D1-11D1-BEE7-00A0C913D1F8}'

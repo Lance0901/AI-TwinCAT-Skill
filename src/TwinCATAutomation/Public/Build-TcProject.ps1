@@ -103,8 +103,17 @@
                              List is not readable) - missing / unresolved libraries, they do not
                              decide buildSucceeded
         data.libraryErrorItems  errorItems with category 'library'
-        data.warnings        warning count (Error List; fallback: warning lines of the build output)
-        data.messages        lines of the DTE build output pane (usually empty)
+        data.warnings        warning count (Error List; fallback: data.warningLines.Count)
+        data.messages        lines of the build pane of the Output window (same as data.buildPaneMessages, kept
+                             for compatibility; @() when the pane was not read, see data.buildPaneStatus)
+        data.buildPaneStatus read | not-found | unreadable (#219): the build pane is found by its GUID
+                             {1BD8A850-02D1-11D1-BEE7-00A0C913D1F8} (VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid),
+                             never by its localized name; not-found / unreadable add data.buildPaneError
+                             (and data.buildPanes = the panes seen) and leave buildPaneMessages / warningLines @()
+        data.buildPaneName   the pane's name as the IDE shows it ("Build", zh-TW "建置"); $null when not read
+        data.buildPaneMessages  non-empty lines of the build pane (#218)
+        data.warningLines    lines of buildPaneMessages with a compiler / MSBuild warning (": warning"); the
+                             structured warnings are data.warningItems (Error List)
         data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read): the number of projects
                              of the SOLUTION that failed, not only PLC projects - the TwinCAT project (.tsproj) counts
                              too (實測 2026-11-06, #66 O12: 2 with one PLC project while the PLC was logged in;
@@ -529,33 +538,21 @@
             $failedProjects = $null
         }
 
-        $buildOutput = ''
+        # Build pane of the Output window (#219): found by its GUID, never by the localized name ("Build",
+        # zh-TW "建置"), and read through IDispatch - $dte.ToolWindows is $null out of process on VS2022, so
+        # the old 'Build' name loop never saw a pane at all (實測 2026-11-09, VS2022 zh-TW + 4026).
+        $buildPaneRead = $null
         try {
-            $buildOutput = Invoke-TcComRetry -MaxRetries 3 -OperationName 'Read build output' -ScriptBlock {
-                $text = ''
-                $outputWindow = $script:TcDte.ToolWindows.OutputWindow
-                $buildPane = $null
-                for ($i = 1; $i -le $outputWindow.OutputWindowPanes.Count; $i++) {
-                    $pane = $outputWindow.OutputWindowPanes.Item($i)
-                    if ($pane.Name -eq 'Build') {
-                        $buildPane = $pane
-                        break
-                    }
-                }
-
-                if ($null -ne $buildPane) {
-                    $textDoc = $buildPane.TextDocument
-                    $editPoint = $textDoc.StartPoint.CreateEditPoint()
-                    $text = $editPoint.GetText($textDoc.EndPoint)
-                }
-                $text
-            }
+            $buildPaneRead = Invoke-TcComRetry -MaxRetries 3 -OperationName 'Read build output' -ScriptBlock { Get-TcBuildOutputPane }
         }
         catch {
             Write-Verbose "Could not read build output: $_"
         }
-
-        $messages = @($buildOutput -split "`n" | Where-Object { $_.Trim() -ne '' })
+        if ($null -eq $buildPaneRead) {
+            $buildPaneRead = [PSCustomObject]@{ status = 'unreadable'; name = $null; guid = $null; index = $null; matchedBy = $null; text = ''; panes = @(); error = 'Get-TcBuildOutputPane failed' }
+        }
+        $messages = @([string]$buildPaneRead.text -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_.Trim() -ne '' })
+        $warningLines = @(Get-TcBuildWarningLines -Lines $messages)
 
         # Error List (UI Automation): the PLC compiler does not report through DTE.
         # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):
@@ -567,7 +564,7 @@
         # every error row gets a category (#23); "Library Manager" rows are missing / unresolved
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
-        $fallbackWarnings = @($messages | Where-Object { $_ -match 'warning' }).Count
+        $fallbackWarnings = $warningLines.Count
         $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
@@ -701,6 +698,10 @@
             libraryErrors  = $libraryErrorCount
             warnings       = $warningCount
             messages       = $messages
+            buildPaneStatus   = $buildPaneRead.status
+            buildPaneName     = $buildPaneRead.name
+            buildPaneMessages = $messages
+            warningLines      = $warningLines
             failedProjects = $failedProjects
             errorItems     = $errorItems
             codeErrors     = $codeErrors
@@ -722,6 +723,11 @@
         }
         if ($null -ne $decidedBy) {
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
+        }
+        # #219: a build pane that was not read is stated, never an empty list that looks like "no output"
+        if ($buildPaneRead.status -ne 'read') {
+            $data | Add-Member -NotePropertyName 'buildPaneError' -NotePropertyValue ([string]$buildPaneRead.error)
+            $data | Add-Member -NotePropertyName 'buildPanes' -NotePropertyValue @($buildPaneRead.panes | ForEach-Object { [PSCustomObject]@{ index = $_.index; name = $_.name; guid = $_.guid } })
         }
         if ($null -ne $errorListError) {
             $data | Add-Member -NotePropertyName 'errorListError' -NotePropertyValue $errorListError
