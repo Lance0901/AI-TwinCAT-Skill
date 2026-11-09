@@ -94,6 +94,17 @@ function ConvertTo-TcBuildNumber {
     $null
 }
 
+# Numeric parts of a '3.1.<build>.<rev>' TcVersion for Get-TcProjectVersion (#214): @{ major; minor;
+# build; revision } (revision $null when the string has only three parts), or $null when the first
+# three parts are not numbers. The build is the same number ConvertTo-TcBuildNumber returns.
+function ConvertFrom-TcVersionString {
+    param([AllowNull()][string]$Version)
+    if ($null -ne $Version -and $Version.Trim() -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
+        return @{ major = [int]$Matches[1]; minor = [int]$Matches[2]; build = [int]$Matches[3]; revision = $(if ($Matches[4]) { [int]$Matches[4] } else { $null }) }
+    }
+    $null
+}
+
 # What the registry and the install folder say about the IDE behind -ProgId (see the file header).
 # Returns $null when the ProgID is not registered, else [PSCustomObject]@{ progId; exePath;
 # installRoot; xaeVersion; xaeBuild } (xae* $null when the XAE Base manifest is not readable).
@@ -192,14 +203,16 @@ function Get-TcSolutionTcVersion {
 
 # Picks the ProgID to launch. Returns [PSCustomObject]@{ progId; selectedBy ('explicit' |
 # 'tsproj-version' | 'only-one-registered'); registered; evidence; ide (Get-TcProgIdIdeInfo of the
-# considered ProgIDs); errorCode; errorMessage }. errorCode set = nothing may be launched:
+# considered ProgIDs); wantedProgIds + matchingProgIds (#214: set once the project build is known,
+# else empty; matching = registered ProgIDs from wanted whose XAE version equals the project
+# TcVersion, the only ones that may be launched); errorCode; errorMessage }. errorCode set = nothing may be launched:
 # TWINCAT_NOT_FOUND (nothing registered), IDE_VERSION_NOT_REGISTERED (the project's build is known,
 # no registered IDE is confirmed for it), PROGID_REQUIRED (build not determinable, or not decidable
 # which IDE is meant). Never guesses.
 function Resolve-TcLaunchProgId {
     [CmdletBinding()]
     param([string]$ProgId, [string]$SolutionPath)
-    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); errorCode = $null; errorMessage = $null }
+    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); wantedProgIds = @(); matchingProgIds = @(); errorCode = $null; errorMessage = $null }
     if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
         $out.registered = @($ProgId | Where-Object { Test-TcProgIdRegistered -ProgId $_ })
         if ($out.registered.Count -eq 0) {
@@ -246,6 +259,7 @@ function Resolve-TcLaunchProgId {
     # Manager is not measured yet.
     $untested = 'XAE build differs from the project build; whether the Automation Interface loads the project with the Remote Manager of that build is not measured yet'
     $wanted = if ($build -ge 4026) { @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0') } else { @('TcXaeShell.DTE.15.0') }
+    $out.wantedProgIds = @($wanted)
     $present = @($wanted | ForEach-Object { & $info $_ } | Where-Object { $null -ne $_ })
     if ($build -ge 4026) { $present = @($present | Where-Object { $null -ne $_.xaeBuild -and $_.xaeBuild -ge 4026 }) }   # VS2022 only with the XAE integrated
     if ($present.Count -eq 0) {
@@ -253,6 +267,7 @@ function Resolve-TcLaunchProgId {
         $out.errorMessage = "The solution's TwinCAT project was saved with TcVersion $tcv, which needs $($wanted -join ' or ')$(if ($build -ge 4026) { ' with the TwinCAT XAE >= 4026 integrated' }); none is registered / confirmed (registered: $($out.registered -join ', '); XAE Base: $xaeList). No IDE was launched; pass -ProgId to choose one."
         return $out
     }
+    $out.matchingProgIds = @($present | Where-Object { [string]$_.xaeVersion -eq $tcv } | ForEach-Object { $_.progId })
     $exact = @($present | Where-Object { [string]$_.xaeVersion -eq $tcv }) | Select-Object -First 1
     if ($null -ne $exact) { $out.progId = $exact.progId; $out.selectedBy = 'tsproj-version'; return $out }
     $inst = Get-TcXaeInstallInfo

@@ -165,7 +165,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(<!-- generated:cmdlet-count -->82<!-- /generated -->)
+## Cmdlet 清單(<!-- generated:cmdlet-count -->83<!-- /generated -->)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -300,6 +300,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Get-TcPouCode` | `GetPouCode` | `-PouName <string> [-PouPath <string>]` |
 | `Get-TcProjectTree` | `GetProjectTree` | `[-Depth <int>] [-PlcOnly]` |
 | `Get-TcProjectVariants` | `GetVariants` | - |
+| `Get-TcProjectVersion` | `GetProjectVersion` | `-SolutionPath <string>` |
 | `Get-TcSymbols` | `GetSymbols` | `[-Filter <string>]` |
 | `Get-TcSystemState` | `GetSystemState` | `[-AmsNetId <string>]` |
 | `Get-TcTreeItem` | `LookupTreeItem` | `-Path <string> [-MaxChildren <int>]` |

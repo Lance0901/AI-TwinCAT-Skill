@@ -124,7 +124,7 @@
 
 ## 真機驗證範圍(實測 2026-10-28 ~ 2026-10-31)
 
-MCP 共 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個 `mcp-server/tools.json` tool 加 <!-- generated:composite-count -->5<!-- /generated --> 個 `mcp-server/lib/composites.js` 匯出的複合 tool,兩份名稱沒有重複(數字由 `scripts/Update-GeneratedDocs.ps1` 產生,清單看這兩個檔)。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
+MCP 共 <!-- generated:mcp-tool-count -->80<!-- /generated --> 個 `mcp-server/tools.json` tool 加 <!-- generated:composite-count -->5<!-- /generated --> 個 `mcp-server/lib/composites.js` 匯出的複合 tool,兩份名稱沒有重複(數字由 `scripts/Update-GeneratedDocs.ps1` 產生,清單看這兩個檔)。`RunTestCycle` 在 `tools.json`(不是 composite)。`NewProject` 不在 MCP 上(見上方 #70)。
 
 測試方式分兩種,下表分開標示:
 

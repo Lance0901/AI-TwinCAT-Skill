@@ -101,6 +101,20 @@ describe('tools.json (generated catalog)', () => {
     assert.equal(validateParams(t, { Title: 'x', MaxUrlLength: 1999 }).ok, false, 'MaxUrlLength minimum 2000');
   });
 
+  // #214: GetProjectVersion only reads the .sln / .tsproj files: read-only, SolutionPath is the only required parameter.
+  test('GetProjectVersion is read-only and needs only SolutionPath', () => {
+    const t = catalog.get('GetProjectVersion');
+    assert.ok(t, 'GetProjectVersion is in the catalog');
+    assert.equal(t.cmdlet, 'Get-TcProjectVersion');
+    assert.deepEqual(t.annotations, { readOnlyHint: true });
+    assert.deepEqual(t.inputSchema.required, ['SolutionPath']);
+    for (const w of ['offline', 'matchingProgIds', 'TSPROJ_NOT_FOUND', 'TCVERSION_UNKNOWN']) {
+      assert.ok(t.description.includes(w), `GetProjectVersion description lacks ${w}`);
+    }
+    assert.equal(validateParams(t, { SolutionPath: 'C:/x/a.sln' }).ok, true);
+    assert.equal(validateParams(t, {}).ok, false, 'SolutionPath is required');
+  });
+
   // #70: NewProject is not offered over MCP (the cmdlet New-TcProject stays).
   test('NewProject is not in the MCP catalog', () => {
     assert.equal(catalog.get('NewProject'), undefined);

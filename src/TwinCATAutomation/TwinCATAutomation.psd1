@@ -13,6 +13,7 @@
         'Get-TcIdeInfo',
         'Get-TcIdeModalDialog',
         'Get-TcAutomationVersion',
+        'Get-TcProjectVersion',
         # Project Management
         'New-TcProject',
         'Open-TcProject',

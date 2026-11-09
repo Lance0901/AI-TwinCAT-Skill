@@ -290,6 +290,23 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:用別的版本的 XAE 開，專案可能被改寫或降版(#72),所以不自動換一個。
 - **下一步**:確定要用某個 IDE 就帶 `-ProgId` 重跑;否則先安裝對應 build 的 XAE。見「啟動哪個 IDE(#72)」的已知限制。
 
+### SOLUTION_NOT_FOUND
+
+- **現象(#214)**:`Get-TcProjectVersion`(MCP `GetProjectVersion`)回 `SOLUTION_NOT_FOUND`:`-SolutionPath` 不存在、是資料夾,或 .sln 讀不了(訊息有原因)。
+- **為什麼**:這個 cmdlet 只讀 .sln / .tsproj 檔,沒有 IDE 可以問。
+- **下一步**:確認 `-SolutionPath` 是 .sln 的路徑(相對路徑從目前工作目錄解析)再重跑。
+
+### TSPROJ_NOT_FOUND
+
+- **現象(#214)**:`Get-TcProjectVersion` 回 `TSPROJ_NOT_FOUND`:.sln 裡沒有任何 `Project(...)` 行引用 .tsproj,所以沒有 `TcVersion` 可讀(只看 .tsproj,見「啟動哪個 IDE(#72)」)。
+- **下一步**:確認 `-SolutionPath` 指到 TwinCAT 的 .sln,不是只含 PLC 專案(.plcproj)或其他類型的 solution。
+
+### TCVERSION_UNKNOWN
+
+- **現象(#214)**:`Get-TcProjectVersion` 回 `TCVERSION_UNKNOWN`:至少一個被引用的 .tsproj 的版本讀不到。`data.projects[].error` 是原因:`file not found`、`unreadable`(不是 XML)、`no TcVersion attribute on the root element`,或 `TcVersion` 不是 `3.1.<build>.<revision>` 格式(`error` 為空但 `build` 為 null)。能讀的專案照樣列在 `data.projects`。
+- **為什麼**:`Connect-TcIde` 對同樣的專案也無法依版本選 IDE,會回 `PROGID_REQUIRED`(#72)。
+- **下一步**:用 XAE 開並存檔一次專案,讓它寫入 `TcVersion`;在那之前 `Connect-TcIde` 要帶 `-ProgId`。
+
 ### IDE_LAUNCH_PENDING
 
 - **現象(#136)**:`Connect-TcIde` 回 `IDE_LAUNCH_PENDING`,沒有啟動第二個 IDE。`data.ideProcessId` / `data.ideStartTime` 是本 session 為同一個 .sln 啟動的 IDE(`data.pidConfirmed = false` 時是 0),`data.waitedSec` 是這次等了多久(最多 60 s,`-NoLaunch` 也會等)。`data.probe` 是原因:

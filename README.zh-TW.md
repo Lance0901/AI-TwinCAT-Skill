@@ -2,7 +2,7 @@
 
 # AI TwinCAT Skill
 
-讓 AI 編碼工具(Claude Code、Codex、Claude Desktop 或任何 MCP client)在 Windows 電腦上操作 TwinCAT 3 IDE 與 PLC runtime:開啟 solution、修改 PLC 程式碼、建置、啟動組態、下載、執行,並透過 ADS 讀寫變數,全程不跳對話框。本專案是一個 PowerShell 模組,提供 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet,安裝後以 **TcAuto MCP server** 的形式使用;也可以直接匯入模組呼叫。
+讓 AI 編碼工具(Claude Code、Codex、Claude Desktop 或任何 MCP client)在 Windows 電腦上操作 TwinCAT 3 IDE 與 PLC runtime:開啟 solution、修改 PLC 程式碼、建置、啟動組態、下載、執行,並透過 ADS 讀寫變數,全程不跳對話框。本專案是一個 PowerShell 模組,提供 <!-- generated:cmdlet-count -->83<!-- /generated --> 個 cmdlet,安裝後以 **TcAuto MCP server** 的形式使用;也可以直接匯入模組呼叫。
 
 狀態:beta。已知限制見[已知限制](#已知限制)與 [docs/known-limitations.md](docs/known-limitations.md)。
 
@@ -243,7 +243,7 @@ Write-TcPouCode -PouName "MAIN" -Declaration $newDecl -Implementation $newImpl
 
 `-PouPath` 可以省略(模組會依序找 `POUs`、專案根目錄);`Write-TcPouCode` 改的是 COM edit buffer,不需要 `Reset-TcSolution`。如果改成直接改磁碟上的專案檔,寫完要立刻呼叫 `Reset-TcSolution`([docs/troubleshooting.md](docs/troubleshooting.md)「磁碟改檔的正確做法」)。
 
-### 所有指令（<!-- generated:cmdlet-count -->82<!-- /generated --> 個）
+### 所有指令（<!-- generated:cmdlet-count -->83<!-- /generated --> 個）
 
 參數與 MCP tool 名稱:見 [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md) 自動產生的表、[mcp-server/README.md](mcp-server/README.md),或匯入模組後用 `Get-Help <cmdlet>`。會改動專案或系統的 cmdlet,凡是該 cmdlet 說明有寫的,預設都是 dry-run。
 
@@ -268,7 +268,7 @@ Write-TcPouCode -PouName "MAIN" -Declaration $newDecl -Implementation $newImpl
 ```
 src/TwinCATAutomation/          # 核心 PowerShell 模組(與 AI 工具無關)
   TwinCATAutomation.psm1        # 模組載入器
-  Public/                       # 82 個匯出的 cmdlet
+  Public/                       # 83 個匯出的 cmdlet
   Private/                      # 內部 helper(COM、ADS、assertion)
 Invoke-TwinCATAutomation.ps1    # 統一的 CLI 入口(JSON 進、JSON 出)
 mcp-server/                     # TcAuto MCP server、launcher、tools.json
@@ -279,7 +279,7 @@ adapters/
   antigravity/                  # Antigravity plugin.yaml
 ```
 
-MCP server(stdio)從 <!-- generated:cmdlet-count -->82<!-- /generated --> 個 cmdlet 中提供 <!-- generated:mcp-tool-count -->79<!-- /generated --> 個以 tool 形式使用,再加上 <!-- generated:composite-count -->5<!-- /generated --> 個 composite tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)以及 launcher 的 `ReloadRuntime`。`NewProject` 暫時不透過 MCP 提供(#70);`Start-TcLifecycle` 對應 composite tool `RunLifecycle`(#27)。一個長駐的 Windows PowerShell 5.1 行程在多次 tool 呼叫之間保留 IDE 與 ADS 狀態。
+MCP server(stdio)從 <!-- generated:cmdlet-count -->83<!-- /generated --> 個 cmdlet 中提供 <!-- generated:mcp-tool-count -->80<!-- /generated --> 個以 tool 形式使用,再加上 <!-- generated:composite-count -->5<!-- /generated --> 個 composite tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)以及 launcher 的 `ReloadRuntime`。`NewProject` 暫時不透過 MCP 提供(#70);`Start-TcLifecycle` 對應 composite tool `RunLifecycle`(#27)。一個長駐的 Windows PowerShell 5.1 行程在多次 tool 呼叫之間保留 IDE 與 ADS 狀態。
 
 ## 文件索引
 
