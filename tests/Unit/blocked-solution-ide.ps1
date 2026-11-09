@@ -287,6 +287,11 @@ try {
     Set-Rot @(@{ Pid = 961; Mode = 'unreadable' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'ownership-kept' ($r.data.attached -and $r.data.ownedBySession -and (& $mod { $script:TcIdeSelectedBy }) -eq 'launched') "attached=$($r.data.attached) owned=$($r.data.ownedBySession)"
+    # PR #228 review: an OWN blocked IDE still gets the modal check of -Quit on that pid (IDE_QUIT_FAILED, nothing quit)
+    $global:QuitCalled = $false
+    & $mod { $script:TcDte | Add-Member -MemberType ScriptMethod -Name Quit -Value { $global:QuitCalled = $true } -Force }
+    $q = Disconnect-TcIde -Quit
+    Check 'attached-own-quit-modal' (-not $q.success -and $q.error.code -eq 'IDE_QUIT_FAILED' -and $q.data.ideProcessId -eq 961 -and $q.data.ownedBySession -eq $true -and $null -ne $q.data.dialog -and -not $global:QuitCalled) "code=$($q.error.code) pid=$($q.data.ideProcessId) quit=$global:QuitCalled"
 
     # --- SilentMode original is kept per process across a Connect-TcIde that clears the state ---
     & $mod { Set-TcIdeSilentOriginal -ProcessId 961 -Value $false }

@@ -122,7 +122,8 @@ function Connect-TcIde {
         or IDE_BUSY with data.attached = false; close the dialog and call again. Ownership is not
         changed: an IDE this session did not launch stays data.ownedBySession = false, and
         Disconnect-TcIde -Quit refuses to quit it (IDE_NOT_OWNED). Not with -TakeOverOrphan
-        (INVALID_PARAMS); -NoLaunch / -LaunchIfBlocked have no effect.
+        (INVALID_PARAMS); -NoLaunch / -LaunchIfBlocked have no effect. Reset-TcSolution reconnects
+        with the same -ProcessId (never to another IDE that has the same .sln open).
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
@@ -842,7 +843,8 @@ function Connect-TcIde {
                 })
         }
     }
-    if ($ideProcessId -gt 0 -and (Test-TcLaunchedIde -ProcessId $ideProcessId)) { $script:TcIdeSelectedBy = 'launched' }    # Start time of that process: Disconnect-TcIde -Kill compares it so a recycled pid is never killed.
+    if ($ideProcessId -gt 0 -and (Test-TcLaunchedIde -ProcessId $ideProcessId)) { $script:TcIdeSelectedBy = 'launched' }
+    # Start time of that process: Disconnect-TcIde -Kill compares it so a recycled pid is never killed.
     $script:TcIdeStartTime = $null
     if ($ideProcessId -gt 0) { try { $script:TcIdeStartTime = (Get-Process -Id $ideProcessId -ErrorAction Stop).StartTime } catch { $script:TcIdeStartTime = $null } }
     Write-Verbose "IDE process id $ideProcessId, main HWND $($ideInfo.MainHwnd)"

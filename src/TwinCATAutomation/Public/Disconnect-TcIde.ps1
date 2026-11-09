@@ -158,6 +158,8 @@ function Disconnect-TcIde {
     if ($Quit -and $hasIde -and -not $ownedBySession) {
         $data = New-QuitData -QuitResult @{ solutionClosed = $false; quit = $false; error = $null; reason = 'not launched by this session' } -Dialog $null -Disconnected $false
         $data.message = "NOT disconnected; IDE NOT quit: it was not launched by this session (selectedBy '$selectedBy'). The connection is kept; Disconnect-TcIde without -Quit releases it."
+        # PR #228 review: an unreadable launched-ides.json also makes an own IDE 'not owned' (fail closed): say so
+        $data = Add-LaunchRecordWarning $data
         return New-TcResult -Success $false `
             -ErrorMessage "IDE_NOT_OWNED: the IDE (pid $ideProcessId, selectedBy '$selectedBy') was not launched by this session; -Quit$(if ($Kill) { ' -Kill' }) refused, nothing was closed." `
             -ErrorCode 'IDE_NOT_OWNED' -Hint (Get-TcErrorHint -Code 'IDE_NOT_OWNED') -Data $data

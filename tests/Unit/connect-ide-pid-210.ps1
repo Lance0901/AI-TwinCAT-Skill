@@ -146,7 +146,8 @@ try {
 
     $r = Connect-TcIde -ProcessId 9002 -SolutionPath $slnB -ProgId 'VisualStudio.DTE.17.0'
     $c = Get-Conn
-    Check 'P6 matching pid + solution -> attached, selectedBy process-id, not owned (user IDE)' ($r.success -and $r.data.selectedBy -eq 'process-id' -and $r.data.ideProcessId -eq 9002 -and $r.data.ownedBySession -eq $false -and $c.connected -and $c.pid -eq 9002 -and $global:Opens210.Count -eq 0) (J $r)
+    $noRec = & $mod { (-not (Test-Path -LiteralPath (Get-TcLaunchRecordPath))) -and $script:TcLaunchedIdes.Count -eq 0 -and -not (Test-TcLaunchedIde -ProcessId 9002) }
+    Check 'P6 matching pid + solution -> attached, selectedBy process-id, not owned (user IDE), no launch record written' ($r.success -and $r.data.selectedBy -eq 'process-id' -and $r.data.ideProcessId -eq 9002 -and $r.data.ownedBySession -eq $false -and $c.connected -and $c.pid -eq 9002 -and $global:Opens210.Count -eq 0 -and $noRec) "$(J $r) noRecord=$noRec"
     $q = Disconnect-TcIde -Quit
     $c = Get-Conn
     Check 'Q1 #227 Disconnect-TcIde -Quit on that IDE -> IDE_NOT_OWNED, not quit, connection kept' ((-not $q.success) -and $q.error.code -eq 'IDE_NOT_OWNED' -and $q.data.quit -eq $false -and $q.data.disconnected -eq $false -and $global:Quits210.Count -eq 0 -and $c.connected -and $c.pid -eq 9002) (J $q)
@@ -159,7 +160,8 @@ try {
     Check 'P7 pid without -SolutionPath -> that IDE (not the first / another one)' ($r.success -and $r.data.ideProcessId -eq 9001 -and $r.data.selectedBy -eq 'process-id') (J $r)
 
     $r = Connect-TcIde -ProcessId 9003 -SolutionPath $slnA
-    Check 'P8 empty IDE -> -SolutionPath opened there (not in 9001 that has it open), not owned' ($r.success -and $r.data.ideProcessId -eq 9003 -and $global:Opens210.Count -eq 1 -and $global:Opens210[0] -eq "9003|$slnA" -and $r.data.ownedBySession -eq $false) "$(J $r) opens=$($global:Opens210 -join ',')"
+    $noRec = & $mod { (-not (Test-Path -LiteralPath (Get-TcLaunchRecordPath))) -and $script:TcLaunchedIdes.Count -eq 0 -and -not (Test-TcLaunchedIde -ProcessId 9003) }
+    Check 'P8 empty IDE -> -SolutionPath opened there (not in 9001 that has it open), not owned, no launch record' ($r.success -and $r.data.ideProcessId -eq 9003 -and $global:Opens210.Count -eq 1 -and $global:Opens210[0] -eq "9003|$slnA" -and $r.data.ownedBySession -eq $false -and $noRec) "$(J $r) opens=$($global:Opens210 -join ',') noRecord=$noRec"
 
     Set-Desktop
     $null = Add-Ide 9004 '' 'VisualStudio.DTE.17.0' $true

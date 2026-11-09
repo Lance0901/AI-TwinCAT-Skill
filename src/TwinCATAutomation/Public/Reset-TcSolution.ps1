@@ -310,6 +310,9 @@ function Reset-TcSolution {
     $progId = $script:TcProgId
     $previousPid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $previousPid = [int]$script:TcIdeProcessId } catch { $previousPid = 0 } }
+    # #210: an IDE bound with Connect-TcIde -ProcessId is reconnected by that pid, never by solution-match
+    # (another IDE with the same .sln open must not take its place)
+    $reconnectByPid = ($script:TcIdeSelectedBy -eq 'process-id' -and $previousPid -gt 0)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     $path = $SolutionPath
@@ -867,6 +870,7 @@ function Reset-TcSolution {
             }
             $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
             if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
+            if ($reconnectByPid) { $connectParams['ProcessId'] = $previousPid }
             $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
             $connect = Invoke-TcResetConnect -Params $connectParams -Step 'reload-path'
             $connectSec = [math]::Round($connectSw.Elapsed.TotalSeconds, 1)
@@ -1168,6 +1172,7 @@ function Reset-TcSolution {
         # --- 5. reconnect: the instance now has the target solution open -> 'solution-match' ---
         $connectParams = @{ SolutionPath = $path; NoLaunch = $true }
         if (-not [string]::IsNullOrWhiteSpace($progId)) { $connectParams['ProgId'] = $progId }
+        if ($reconnectByPid) { $connectParams['ProcessId'] = $previousPid }
         $connectSw = [System.Diagnostics.Stopwatch]::StartNew()
         $reopenIde = Get-TcResetIdeIdentity
         $connect = Invoke-TcResetConnect -Params $connectParams -Step 'reopen'
