@@ -144,10 +144,36 @@ Push-Location (Split-Path -Parent $sln26)
 try { $r = Get-TcProjectVersion -SolutionPath '.\s4026.sln' } finally { Pop-Location }
 Check 'D relative path resolved' ($r.success -and $r.data.projects[0].build -eq 4026) ($r | ConvertTo-Json -Depth 3 -Compress)
 
+# F review of #223: own launch hint, connectIdeWouldLaunch, per-error TCVERSION_UNKNOWN hint, one file read
+Set-Machine $all3 $dev
+$r = Get-TcProjectVersion -SolutionPath $sln26
+Check 'F1 connectIdeWouldLaunch true when ConnectIde would launch' ($r.data.launch.connectIdeWouldLaunch -eq $true -and $null -eq $r.data.launch.hint) ''
+$r = Get-TcProjectVersion -SolutionPath $sln24
+Check 'F2 connectIdeWouldLaunch false when it would refuse' ($r.data.launch.connectIdeWouldLaunch -eq $false) ''
+Check 'F3 launch hint names fields of THIS response, not ConnectIde ones' ($r.data.launch.hint -match 'data\.launch\.errorCode' -and $r.data.launch.hint -match 'data\.launch\.ide\[\]\.xaeVersion' -and $r.data.launch.hint -notmatch 'solutionVersion' -and $r.data.launch.hint -notmatch 'registeredProgIds' -and $r.data.launch.hint -notmatch '^Connect-TcIde') $r.data.launch.hint
+Set-Machine @() @{}
+$r = Get-TcProjectVersion -SolutionPath $sln26
+Check 'F4 no IDE registered: connectIdeWouldLaunch false, projects still read' ($r.data.launch.connectIdeWouldLaunch -eq $false -and $r.data.projects[0].build -eq 4026) ''
+Set-Machine $all3 $dev
+$h = (Get-TcProjectVersion -SolutionPath $slnMissing).error.hint
+Check 'F5 TCVERSION_UNKNOWN hint: file not found -> fix the .sln reference' ($h -match 'file not found' -and $h -match '\.sln') $h
+Check 'F6 TCVERSION_UNKNOWN hint: broken XML -> restore the broken XML' ($h -match 'unreadable' -and $h -match 'XML') ''
+Check 'F7 TCVERSION_UNKNOWN hint: hint points to #72 and says the save-writes-TcVersion behavior is unverified' ($h -match '#72' -and $h -match 'InfoSys' -and $h -match 'TcVersion') ''
+$global:Reads214 = 0
+& $mod { $script:UnitOrigGet = ${function:Get-TcSolutionTcVersion}; function script:Get-TcSolutionTcVersion { [CmdletBinding()] param([string]$SolutionPath) $global:Reads214++; & $script:UnitOrigGet -SolutionPath $SolutionPath } }
+$null = Get-TcProjectVersion -SolutionPath $sln26
+Check 'F8 the .sln / .tsproj are read once (IDE registered)' ($global:Reads214 -eq 1) "$global:Reads214"
+$global:Reads214 = 0; Set-Machine @() @{}
+$null = Get-TcProjectVersion -SolutionPath $sln26
+Check 'F9 the .sln / .tsproj are read once (no IDE registered)' ($global:Reads214 -eq 1) "$global:Reads214"
+Set-Machine $all3 $dev
+$r = Get-TcProjectVersion -SolutionPath $sln26
+Check 'F10 tsproj path is a full path without .. segments' ([IO.Path]::IsPathRooted($r.data.projects[0].path) -and -not $r.data.projects[0].path.Contains('..')) ''
+
 # E read-only: the fixture folder is unchanged
 Check 'E nothing written next to the solution' (((@(Get-ChildItem -LiteralPath (Split-Path -Parent $sln26) -Recurse -File | ForEach-Object { $_.Name }) | Sort-Object) -join ',') -eq 'P1.tsproj,s4026.sln') ''
 
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Variable -Name Reg214, Ide214 -Scope Global -ErrorAction SilentlyContinue
+Remove-Variable -Name Reads214, Reg214, Ide214 -Scope Global -ErrorAction SilentlyContinue
 "failed: $fail"
 exit [Math]::Min($fail, 255)

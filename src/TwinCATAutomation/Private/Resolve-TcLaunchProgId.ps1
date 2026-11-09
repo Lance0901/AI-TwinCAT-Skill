@@ -99,7 +99,7 @@ function ConvertTo-TcBuildNumber {
 # three parts are not numbers. The build is the same number ConvertTo-TcBuildNumber returns.
 function ConvertFrom-TcVersionString {
     param([AllowNull()][string]$Version)
-    if ($null -ne $Version -and $Version.Trim() -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
+    if ($null -ne $Version -and $Version -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?') {
         return @{ major = [int]$Matches[1]; minor = [int]$Matches[2]; build = [int]$Matches[3]; revision = $(if ($Matches[4]) { [int]$Matches[4] } else { $null }) }
     }
     $null

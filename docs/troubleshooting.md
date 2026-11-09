@@ -303,9 +303,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TCVERSION_UNKNOWN
 
-- **現象(#214)**:`Get-TcProjectVersion` 回 `TCVERSION_UNKNOWN`:至少一個被引用的 .tsproj 的版本讀不到。`data.projects[].error` 是原因:`file not found`、`unreadable`(不是 XML)、`no TcVersion attribute on the root element`,或 `TcVersion` 不是 `3.1.<build>.<revision>` 格式(`error` 為空但 `build` 為 null)。能讀的專案照樣列在 `data.projects`。
+- **現象(#214)**:`Get-TcProjectVersion` 回 `TCVERSION_UNKNOWN`:至少一個被引用的 .tsproj 的版本讀不到。能讀的專案照樣列在 `data.projects`,讀不到的看 `data.projects[].error`。
 - **為什麼**:`Connect-TcIde` 對同樣的專案也無法依版本選 IDE,會回 `PROGID_REQUIRED`(#72)。
-- **下一步**:用 XAE 開並存檔一次專案,讓它寫入 `TcVersion`;在那之前 `Connect-TcIde` 要帶 `-ProgId`。
+- **下一步(依 `data.projects[].error`)**:
+  - `file not found`:.sln 的 `Project(...)` 引用路徑不對或檔案被移走,修正 .sln 裡的引用。
+  - `unreadable`:.tsproj 不是合法 XML(壞掉或被截斷),從版控還原。
+  - `no TcVersion attribute on the root element`,或 `TcVersion` 不是 `3.1.<build>.<revision>`(`error` 為 null、`build` 為 null):不要猜版本。要用專案原本 build 的 XAE 開啟(#72)。「用 XAE 開啟並存檔會補上 `TcVersion`」沒有 InfoSys 說明也沒實測過,所以這裡不建議。在那之前 `Connect-TcIde` 要帶 `-ProgId`,先問使用者。
 
 ### IDE_LAUNCH_PENDING
 

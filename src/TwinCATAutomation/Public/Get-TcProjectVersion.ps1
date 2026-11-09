@@ -13,8 +13,9 @@ function Get-TcProjectVersion {
         data: solutionPath, visualStudioVersion (from the .sln), builds (distinct build numbers),
         projects[] { path, tcVersion (raw string), major, minor, build, revision (null when the
         string cannot be parsed), error }, launch { selectedBy, progId (the IDE Connect-TcIde would
-        launch, null when it would refuse), wantedProgIds (build >= 4026: TcXaeShell.DTE.17.0 /
-        VisualStudio.DTE.17.0, else TcXaeShell.DTE.15.0), matchingProgIds (registered ProgIDs among
+        launch, null when it would refuse), connectIdeWouldLaunch (bool; false = do not pick a ProgId
+        yourself and call Connect-TcIde, ask the user), wantedProgIds (build >= 4026: TcXaeShell.DTE.17.0 /
+        VisualStudio.DTE.17.0, else TcXaeShell.DTE.15.0; empty when the build is not decidable), matchingProgIds (registered ProgIDs among
         those whose XAE version equals the project TcVersion exactly, revision included),
         registeredProgIds, ide[] { progId, xaeVersion, xaeBuild, exePath }, errorCode / errorMessage /
         hint (what Connect-TcIde would answer: TWINCAT_NOT_FOUND, IDE_VERSION_NOT_REGISTERED or
@@ -38,13 +39,21 @@ function Get-TcProjectVersion {
         return New-TcResult -Success $false -ErrorCode 'SOLUTION_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'SOLUTION_NOT_FOUND') `
             -ErrorMessage "Solution file not found: $SolutionPath"
     }
-    $full = Get-TcLongPath ((Resolve-Path -LiteralPath $SolutionPath).ProviderPath)   # same normalisation as Connect-TcIde (#63)
+    # 8.3 short names expanded like Connect-TcIde (#63). Unlike Connect-TcIde (Test-Path / Resolve-Path
+    # without -LiteralPath, #224) a path with [ ] is taken literally here.
+    $full = Get-TcLongPath ((Resolve-Path -LiteralPath $SolutionPath).ProviderPath)
 
-    $ev = Get-TcSolutionTcVersion -SolutionPath $full
+    # One read of the files: Resolve-TcLaunchProgId (the decision Connect-TcIde makes, no -ProgId) reads
+    # the .sln / .tsproj itself and hands it back as .evidence. Only when it returns before reading
+    # (no IDE registered: TWINCAT_NOT_FOUND) is Get-TcSolutionTcVersion called here. Connect-TcIde's own
+    # path is not touched.
+    $pick = Resolve-TcLaunchProgId -SolutionPath $full
+    $ev = if ($null -ne $pick.evidence) { $pick.evidence } else { Get-TcSolutionTcVersion -SolutionPath $full }
     $projects = @($ev.tsprojects | ForEach-Object {
             $v = ConvertFrom-TcVersionString $_.tcVersion
+            $path = try { [System.IO.Path]::GetFullPath($_.path) } catch { $_.path }   # collapses .. segments of the .sln's relative reference
             [ordered]@{
-                path      = $_.path
+                path      = $path
                 tcVersion = $_.tcVersion
                 major     = $(if ($null -ne $v) { $v.major } else { $null })
                 minor     = $(if ($null -ne $v) { $v.minor } else { $null })
@@ -72,18 +81,17 @@ function Get-TcProjectVersion {
             -ErrorMessage "The TwinCAT version of $($unknown.Count) of $($projects.Count) referenced .tsproj file(s) is unknown: $(@($unknown | ForEach-Object { "$($_.path): $(if ($_.error) { $_.error } else { "TcVersion '$($_.tcVersion)' is not 3.1.<build>.<revision>" })" }) -join '; ')" -Data $data
     }
 
-    # The decision is Connect-TcIde's own (no -ProgId): never a second implementation here.
-    $pick = Resolve-TcLaunchProgId -SolutionPath $full
     $data.launch = [ordered]@{
-        selectedBy        = $pick.selectedBy
-        progId            = $pick.progId
-        wantedProgIds     = @($pick.wantedProgIds)
-        matchingProgIds   = @($pick.matchingProgIds)
-        registeredProgIds = @($pick.registered)
-        ide               = @($pick.ide | ForEach-Object { [ordered]@{ progId = $_.progId; xaeVersion = $_.xaeVersion; xaeBuild = $_.xaeBuild; exePath = $_.exePath } })
-        errorCode         = $pick.errorCode
-        errorMessage      = $pick.errorMessage
-        hint              = $(if ($null -ne $pick.errorCode) { Get-TcErrorHint -Code $pick.errorCode } else { $null })
+        selectedBy            = $pick.selectedBy
+        progId                = $pick.progId
+        connectIdeWouldLaunch = ($null -ne $pick.progId -and $null -eq $pick.errorCode)
+        wantedProgIds         = @($pick.wantedProgIds)
+        matchingProgIds       = @($pick.matchingProgIds)
+        registeredProgIds     = @($pick.registered)
+        ide                   = @($pick.ide | ForEach-Object { [ordered]@{ progId = $_.progId; xaeVersion = $_.xaeVersion; xaeBuild = $_.xaeBuild; exePath = $_.exePath } })
+        errorCode             = $pick.errorCode
+        errorMessage          = $pick.errorMessage
+        hint                  = $(if ($null -ne $pick.errorCode) { $script:TcProjectVersionLaunchHint } else { $null })
     }
     return New-TcResult -Success $true -Data $data
 }
