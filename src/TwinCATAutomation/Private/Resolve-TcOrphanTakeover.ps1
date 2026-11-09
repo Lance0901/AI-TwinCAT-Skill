@@ -18,7 +18,7 @@
 #   - no modal dialog and a completed scan (Find-TcIdeModalDialog -ProcessId). #201: a known reload
 #     prompt is answered without reloading (Invoke-TcOrphanReloadPromptAnswer, at most 5) when every
 #     condition above holds AND the IDE is known to have this .sln open (its DTE answered with it, or
-#     the blocked DTE's dialog names a file in the solution folder / the solution name,
+#     the blocked DTE's dialog names a file in the solution folder / the quoted solution name,
 #     Get-TcOrphanDialogEvidence); the first answer records reset-required (Set-TcResetRequired).
 #     Then the DTE is read again (ide-busy / solution-mismatch when it does not answer / has another .sln);
 #     any other dialog or a prompt that stays up -> IDE_MODAL_DIALOG with the IDE_MODAL_DIALOG_ORPHAN
@@ -119,12 +119,15 @@ function Resolve-TcOrphanTakeover {
     # A dialog makes every DTE call block: checked before anything is taken over (busy IDEs too)
     $dialog = Find-TcIdeModalDialog -ProcessId $procId
     # #201: a known reload prompt is answered "do not reload" (every ownership condition above has
-    # passed); the IDE keeps what it has in memory - unsaved work of the ended session is not
-    # thrown away - and the caller loads the disk state with Reset-TcSolution once it owns the IDE.
+    # passed): the takeover itself throws nothing away, the IDE keeps what it has in memory. The disk
+    # state is loaded later by Reset-TcSolution, whose Documents.CloseAll(vsSaveChangesNo) DOES drop
+    # unsaved editor content: Connect-TcIde reports such documents (data.dirtyDocuments) and
+    # Reset-TcSolution refuses while any exists unless -DiscardProjectChanges (PR #209 review M1).
     # PR #209 review m1: a prompt is answered only when this IDE is known to have THIS .sln open:
     # its DTE answered with it (isReady, checked above), or - DTE blocked by the prompt - the dialog
-    # text names a file inside the solution folder or the solution name (Get-TcOrphanDialogEvidence,
-    # the #29 dialog-path rule). No evidence -> nothing is clicked (IDE_MODAL_DIALOG_ORPHAN).
+    # text names a file inside the solution folder or the quoted solution name
+    # (Get-TcOrphanDialogEvidence, the #29 dialog-path rule). No evidence -> nothing is clicked
+    # (IDE_MODAL_DIALOG_ORPHAN).
     # PR #209 review M1 / M2: the first answer sent records BUILD_REQUIRED kind reset-required for
     # this .sln (Set-TcResetRequired) whatever happens next: Build / Enable / Login / boot project /
     # library save refuse with RESET_REQUIRED until a Reset-TcSolution reopened it from disk.
@@ -147,10 +150,7 @@ function Resolve-TcOrphanTakeover {
     }
     $withPrompts = {
         param([object]$D)
-        if ($prompts.Count -gt 0) { $D | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue @($prompts.ToArray()) -Force }
-        if ($null -ne $resetReason) { $D | Add-Member -NotePropertyName 'resetRequired' -NotePropertyValue $resetReason -Force }
-        if (-not [string]::IsNullOrWhiteSpace([string]$resetWarning)) { $D | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue ([string]$resetWarning) -Force }
-        $D
+        Add-TcOrphanResetData -Data $D -Prompts @($prompts.ToArray()) -SolutionPath $SolutionPath -StateWarning $resetWarning
     }
     if ($null -ne $dialog) {
         $reason = if (Test-TcModalScanIncomplete $dialog) { 'modal-scan-incomplete' } else { 'modal-dialog' }
@@ -166,6 +166,12 @@ function Resolve-TcOrphanTakeover {
     if ($prompts.Count -gt 0) {
         # The DTE was blocked while the prompt was up: read it again (busy / unreadable / solution)
         $seen = $null; $readError = $null
+        # PR #209 review m6: Invoke-TcComRetry -TimeoutSec only bounds the retries of calls that RETURN
+        # (RPC_E_CALL_REJECTED); it cannot interrupt a call that never returns (CODING_STANDARDS 1).
+        # Accepted here without a background runspace: the follow-up scan above
+        # (Find-TcOrphanDialogAfterAnswer) found no modal dialog right before this read - a modal is
+        # what makes a DTE call hang - and both reads are plain property gets. The remaining risk is a
+        # dialog that comes up between that scan and this read; it is not measured.
         try {
             $seen = Invoke-TcComRetry -MaxRetries 5 -TimeoutSec 30 -OperationName 'Orphan takeover: DTE.Version / Solution.FullName after the reload prompt' -ScriptBlock {
                 $ver = [string]$c.Object.Version
@@ -199,12 +205,16 @@ function Resolve-TcOrphanTakeover {
     @{ Candidate = $c; Record = $rec; OtherSession = $other; ReloadPrompts = @($prompts.ToArray()); ResetRequired = $resetReason; ResetRequiredWarning = $resetWarning }
 }
 
-# PR #209 review m1: evidence that a reload prompt of an IDE whose DTE is blocked belongs to
-# -SolutionPath (the #29 dialog-path rule, Find-TcBlockedSolutionIde): 'dialog-path' = the text names
-# a project file inside the solution folder (no other .sln in between, Test-TcPathInSolution);
-# 'solution-name' = the text names no path at all but the solution name as a whole word (the
-# solution prompt: "The solution 'BFH-1650' has been modified outside the environment", measured
-# 2026-11-08 / 2026-11-09, 4024 TcXaeShell en-US). Any path outside the folder, or neither -> $null.
+# PR #209 review m1 / m2: evidence that a reload prompt of an IDE whose DTE is blocked belongs to
+# -SolutionPath (the #29 dialog-path rule, Find-TcBlockedSolutionIde):
+#   'dialog-path'   the text names project files (Get-TcDialogProjectPaths) and all lie inside the
+#                   solution folder (no other .sln in between, Test-TcPathInSolution);
+#   'solution-name' the text has NO drive path at all ('X:\' anywhere: a path that is no project file,
+#                   or one cut short by the dialog, rules the name out) and names the solution in
+#                   quotes, 'BFH-1650' (the VS solution prompt "The solution 'BFH-1650' has been
+#                   modified outside the environment", measured 2026-11-08 / 2026-11-09, 4024
+#                   TcXaeShell en-US). An unquoted name is no evidence.
+# Anything else -> $null.
 function Get-TcOrphanDialogEvidence {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Dialog, [Parameter(Mandatory)][string]$SolutionPath)
@@ -217,16 +227,71 @@ function Get-TcOrphanDialogEvidence {
         if ($outside.Count -eq 0) { return 'dialog-path' }
         return $null
     }
+    if ($text -match '[A-Za-z]:\\') { return $null }
     $name = [IO.Path]::GetFileNameWithoutExtension($SolutionPath)
     if ([string]::IsNullOrWhiteSpace($name)) { return $null }
-    if ($text -match ('(?i)(?<![\w.\-])' + [regex]::Escape($name) + '(?![\w.\-])')) { return 'solution-name' }
+    if ($text.IndexOf("'$name'", [StringComparison]::OrdinalIgnoreCase) -ge 0) { return 'solution-name' }
     $null
+}
+
+# PR #209 review M2: every failed exit of Connect-TcIde -TakeOverOrphan (here and in Connect-TcIde
+# after the attach) and its success carry the same fields: data.reloadPromptAttempts (this call's
+# attempts, including answers that were not sent), data.resetRequired (the reset-required record of
+# -SolutionPath exists, Get-TcResetRequiredGuard: a reload prompt of this .sln was answered 'do not
+# reload' by this call or an earlier one - the field to test, PR #209 review m4; an unreadable state is
+# not reported as such a record) and data.stateWarning. Returns -Data (a new object when $null).
+function Add-TcOrphanResetData {
+    [CmdletBinding()]
+    param([object]$Data, [object[]]$Prompts = @(), [string]$SolutionPath, [string]$StateWarning)
+    if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
+    $list = @($Prompts | Where-Object { $null -ne $_ })
+    if ($list.Count -gt 0) { $Data | Add-Member -NotePropertyName 'reloadPromptAttempts' -NotePropertyValue $list -Force }
+    $g = $null
+    if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) { try { $g = Get-TcResetRequiredGuard -SolutionPath $SolutionPath } catch { $g = $null } }
+    if ($null -ne $g -and -not $g.stateUnreadable) { $Data | Add-Member -NotePropertyName 'resetRequired' -NotePropertyValue $g -Force }
+    if (-not [string]::IsNullOrWhiteSpace($StateWarning)) { $Data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue $StateWarning -Force }
+    $Data
+}
+
+# PR #209 review M1: FullName of every document of -Dte whose Document.Saved is $false (unsaved editor
+# content; EnvDTE Document.Saved / FullName, https://learn.microsoft.com/en-us/dotnet/api/envdte.document.saved),
+# for Connect-TcIde -TakeOverOrphan (data.dirtyDocuments) and Reset-TcSolution (refused while
+# reset-required applies: its Documents.CloseAll(vsSaveChangesNo) drops that content). Both callers
+# read it right after a complete modal scan found no dialog (a modal is what makes a DTE call hang;
+# Invoke-TcComRetry -TimeoutSec cannot interrupt a call that never returns, CODING_STANDARDS 1: the
+# same accepted risk as the other plain property reads there). A document whose Saved cannot be read
+# makes the whole read an error (the callers fail closed / report dirtyDocumentsError).
+# Returns @{ Documents = [string[]]; Count = <documents>; Error = $null | text }; never throws.
+function Get-TcDirtyDocuments {
+    [CmdletBinding()]
+    param([object]$Dte, [int]$TimeoutSec = 30)
+    if ($null -eq $Dte) { return @{ Documents = @(); Count = 0; Error = 'no DTE' } }
+    try {
+        $r = Invoke-TcComRetry -MaxRetries 5 -TimeoutSec $TimeoutSec -OperationName 'DTE.Documents (Document.Saved)' -ScriptBlock {
+            $docs = $Dte.Documents
+            if ($null -eq $docs) { throw 'DTE.Documents answered $null' }
+            $n = [int]$docs.Count
+            $dirty = [System.Collections.Generic.List[string]]::new()
+            for ($i = 1; $i -le $n; $i++) {
+                $d = $docs.Item($i)
+                $saved = $d.Saved
+                if ($null -eq $saved) { throw "Document.Saved of document $i could not be read" }
+                if (-not [bool]$saved) { $dirty.Add([string]$d.FullName) }
+            }
+            @{ Count = $n; Dirty = $dirty.ToArray() }
+        }
+        return @{ Documents = @($r.Dirty); Count = [int]$r.Count; Error = $null }
+    }
+    catch { return @{ Documents = @(); Count = 0; Error = $_.Exception.Message } }
 }
 
 # #201: one reload prompt of an orphan IDE (not attached yet), answered without reloading, the way
 # Reset-TcSolution already answers these prompts (control ids, any UI language):
-#   solution: Ignore (control id 1412; then WM_CLOSE) - measured 2026-11-08, 4024 TcXaeShell en-US,
-#             buttons 259 &Reload / 1412 &Ignore (#201); VS2022 zh-TW 2026-11-03 (#106)
+#   solution: Ignore (control id 1412) only - measured 2026-11-08, 4024 TcXaeShell en-US, buttons
+#             259 &Reload / 1412 &Ignore (#201); VS2022 zh-TW 2026-11-03 (#106). PR #209 review m3: no
+#             WM_CLOSE fallback here (what WM_CLOSE does to this prompt is not measured): Ignore
+#             failing -> the prompt stays, the caller fails closed (IDE_MODAL_DIALOG_ORPHAN).
+#             Reset-TcSolution keeps its own Ignore -> WM_CLOSE order.
 #   project:  No (IDNO 7) - the XAE prompt is MB_YESNO, WM_CLOSE has no effect on it (see
 #             Close-TcReloadPrompt)
 #   file:     WM_CLOSE (the VS prompt has Yes / No / Cancel: WM_CLOSE = Cancel)
@@ -247,7 +312,7 @@ function Invoke-TcOrphanReloadPromptAnswer {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Dialog, [Parameter(Mandatory)][int]$ProcessId)
     $target = [string]$Dialog.ReloadTarget
-    $answers = if ($target -eq 'project') { @('No') } elseif ($target -eq 'solution') { @('Ignore', 'Close') } else { @('Close') }
+    $answers = if ($target -eq 'project') { @('No') } elseif ($target -eq 'solution') { @('Ignore') } else { @('Close') }
     $attempts = [System.Collections.Generic.List[object]]::new()
     $dismissed = $false
     foreach ($ans in $answers) {

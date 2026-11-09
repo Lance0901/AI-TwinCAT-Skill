@@ -33,13 +33,17 @@
 #   reset-required    (#201) Connect-TcIde -TakeOverOrphan answered a reload prompt of the orphan IDE
 #                     'do not reload' (Ignore / No / WM_CLOSE): the IDE keeps its in-memory solution
 #                     while files on disk changed. Like build-selection it is not about the build
-#                     output: Build-TcProject, Enable-TcConfig, Enter-TcPlcOnline, New-TcBootProject and
-#                     Save-TcPlcLibrary refuse with RESET_REQUIRED while it is recorded
-#                     (Get-TcResetRequiredGuard; a build would compile - and may write back - the old
-#                     in-memory content), Clear-TcBuildRequired keeps it, Reset-TcSolution treats it as
-#                     a handled reload prompt (no -SaveProjectChanges) and removes it
-#                     (Clear-TcResetRequired) only after a reset that reopened the solution from disk
-#                     without saving anything.
+#                     output: Build-TcProject, Enable-TcConfig, Enter-TcPlcOnline, New-TcBootProject,
+#                     Save-TcPlcLibrary and every cmdlet that saves a project file (DTE Project.Save,
+#                     Get-TcResetRequiredSaveRefusal / Invoke-TcProjectSaveWithDeadline, PR #209 review
+#                     B1) refuse with RESET_REQUIRED while it is recorded (Get-TcResetRequiredGuard; a
+#                     build would compile the old in-memory content, a Project.Save would write the old
+#                     in-memory .tsproj / .plcproj over the files changed on disk), Clear-TcBuildRequired
+#                     keeps it, Reset-TcSolution treats it as a handled reload prompt (no
+#                     -SaveProjectChanges; unsaved documents -> PROJECT_UNSAVED_CHANGES unless
+#                     -DiscardProjectChanges) and removes it (Clear-TcResetRequired) only after a reset
+#                     that reopened the solution from disk without saving anything. Keyed by the .sln,
+#                     not by the IDE pid (only ever blocks more).
 # The kinds of one entry are kept side by side (reasons); the entry's 'kind' is the first of
 # $script:TcBuildRequiredKinds that it has, so a later code-changed never hides a platform switch
 # or an unverified build.
@@ -712,27 +716,44 @@ function Set-TcResetRequired {
     }
 }
 
-# The reset-required record of -SolutionPath (default: the current solution), or $null:
-# @{ reason; solution; at; stateFile }. The current solution goes through Get-TcBuildRequired
-# ('<corrupt>' / '<unknown>' / no known path rules included); another path reads that solution's
-# entry only. A state that cannot be read is not a guard here (Get-TcBuildRequired still blocks
-# Enable-TcConfig / Enter-TcPlcOnline): the same rule as Get-TcBuildSelectionGuard.
+# The reset-required record of -SolutionPath (default: the current solution, $script:TcSolutionPath),
+# or $null: @{ reason; solution; at; stateFile; stateUnreadable }. PR #209 review m1: only that .sln's
+# own entry counts (file and in-memory copy $script:TcBuildRequiredLocal merged, the same key as every
+# other kind); no known solution path -> any entry with a reset-required reason. The key is the .sln,
+# not the IDE pid: a second IDE with the same .sln is blocked too (only ever blocks more, never less).
+# Fail closed: a state file that cannot be locked / read, or the '<corrupt>' entry, is a guard as well
+# (stateUnreadable = $true, reason 'state unreadable: ...'): Build-TcProject, the project-file save
+# paths (Get-TcResetRequiredSaveRefusal, Invoke-TcProjectSaveWithDeadline) and
+# Reset-TcSolution -SaveProjectChanges refuse. Reset-TcSolution without -SaveProjectChanges is never
+# refused by it: it is the way out (it only treats the guard as a handled reload prompt).
 function Get-TcResetRequiredGuard {
     param([string]$SolutionPath)
-    $e = $null
-    if ([string]::IsNullOrWhiteSpace($SolutionPath) -or (ConvertTo-TcSolutionKey $SolutionPath) -eq (ConvertTo-TcSolutionKey $script:TcSolutionPath)) {
-        try { $e = Get-TcBuildRequired } catch { $e = $null }
-    }
+    $sln = if ([string]::IsNullOrWhiteSpace($SolutionPath)) { [string]$script:TcSolutionPath } else { $SolutionPath }
+    $key = ConvertTo-TcSolutionKey $sln
+    $label = Get-TcStateFileLabel 'build-required.json'
+    $r = $null
+    try { $r = Invoke-TcBuildRequiredLocked -Body { (Read-TcBuildRequiredState).Entries } }
+    catch { $r = @{ Locked = $false; Result = $null; Error = $_.Exception.Message } }
+    $entries = @{}
+    $unreadable = $null
+    if (-not $r.Locked -or $null -ne $r.Error) { $unreadable = "the BUILD_REQUIRED state file could not be read ($($r.Error))" }
     else {
-        $key = ConvertTo-TcSolutionKey $SolutionPath
-        $r = Invoke-TcBuildRequiredLocked -Body { (Read-TcBuildRequiredState).Entries }
-        if ($r.Locked -and $null -eq $r.Error -and $r.Result.ContainsKey($key)) { $e = $r.Result[$key] }
-        if ($script:TcBuildRequiredLocal.ContainsKey($key)) { $e = Merge-TcBuildRequiredEntry -Older $e -Newer $script:TcBuildRequiredLocal[$key] }
+        foreach ($k in $r.Result.Keys) { $entries[$k] = $r.Result[$k] }
+        if ($entries.ContainsKey($script:TcCorruptStateKey)) { $unreadable = [string]$entries[$script:TcCorruptStateKey].reason }
     }
-    if ($null -eq $e) { return $null }
-    $rs = Get-TcBuildRequiredReasons $e
-    if (-not $rs.Contains('reset-required')) { return $null }
-    [PSCustomObject]@{ reason = [string]$rs['reset-required']; solution = [string]$e.solution; at = [string]$e.at; stateFile = (Get-TcStateFileLabel 'build-required.json') }
+    foreach ($k in @($script:TcBuildRequiredLocal.Keys)) { $entries[$k] = Merge-TcBuildRequiredEntry -Older $entries[$k] -Newer $script:TcBuildRequiredLocal[$k] }
+    $hit = $null
+    if ($key -eq $script:TcUnknownSolutionKey) {
+        foreach ($k in @($entries.Keys)) { if ((Get-TcBuildRequiredReasons $entries[$k]).Contains('reset-required')) { $hit = $entries[$k]; break } }
+    }
+    elseif ($entries.ContainsKey($key) -and (Get-TcBuildRequiredReasons $entries[$key]).Contains('reset-required')) { $hit = $entries[$key] }
+    if ($null -ne $hit) {
+        return [PSCustomObject]@{ reason = [string](Get-TcBuildRequiredReasons $hit)['reset-required']; solution = [string]$hit.solution; at = [string]$hit.at; stateFile = $label; stateUnreadable = $false }
+    }
+    if ($null -ne $unreadable) {
+        return [PSCustomObject]@{ reason = "state unreadable: whether this solution needs Reset-TcSolution cannot be checked ($unreadable)"; solution = $sln; at = $null; stateFile = $label; stateUnreadable = $true }
+    }
+    $null
 }
 
 # Removes only the reset-required kind of -SolutionPath's entry (memory and file); the other kinds
@@ -768,10 +789,28 @@ function Clear-TcResetRequired {
 }
 
 # The RESET_REQUIRED refusal (-Guard from Get-TcResetRequiredGuard); -Data gets resetRequired.
+# -Done: what the caller already did before the refusal (default: nothing was done).
 function New-TcResetRequiredResult {
-    param($Guard, [string]$Operation, [object]$Data)
+    param($Guard, [string]$Operation, [object]$Data, [string]$Done)
     if ($null -eq $Data) { $Data = [PSCustomObject]@{} }
     $Data | Add-Member -NotePropertyName 'resetRequired' -NotePropertyValue $Guard -Force
+    $what = if ([string]::IsNullOrWhiteSpace($Done)) { 'nothing was done' } else { $Done }
+    $why = if ($Guard.stateUnreadable) { "the reset-required state of '$($Guard.solution)' could not be checked ($($Guard.reason)); fail closed" }
+           else { "the IDE still holds the solution '$($Guard.solution)' as it was in memory while files on disk changed ($($Guard.reason))" }
     New-TcResult -Success $false -ErrorCode 'RESET_REQUIRED' -Hint (Get-TcErrorHint -Code 'RESET_REQUIRED') -Data $Data `
-        -ErrorMessage "${Operation} refused: the IDE still holds the solution '$($Guard.solution)' as it was in memory while files on disk changed ($($Guard.reason)); nothing was done."
+        -ErrorMessage "${Operation} refused: ${why}; $what."
+}
+
+# PR #209 review B1: the project-file save paths (Add-TcPou / Dut / Gvl / Interface / Library /
+# LibraryPlaceholder, Lock-TcLibraryPlaceholder, Remove-TcLibraryReference, Add-TcPlcTask,
+# Import-TcPlcOpen, Set-TcIndependentFile; Invoke-TcPlcObjectSave) refuse while reset-required (or an
+# unreadable state, Get-TcResetRequiredGuard) applies to the current solution: DTE Project.Save of the
+# .tsproj writes the .tsproj and every .plcproj below it from XAE memory, i.e. the old in-memory
+# project over the files that were changed on disk. The cmdlets call this BEFORE they change anything
+# in XAE. Returns the RESET_REQUIRED result or $null.
+function Get-TcResetRequiredSaveRefusal {
+    param([Parameter(Mandatory)][string]$Operation, [object]$Data, [string]$Done)
+    $g = Get-TcResetRequiredGuard
+    if ($null -eq $g) { return $null }
+    New-TcResetRequiredResult -Guard $g -Operation $Operation -Data $Data -Done $Done
 }

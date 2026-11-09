@@ -246,7 +246,8 @@ function Invoke-TcProjectSaveWithDeadline {
         working on it) and "PROJECT_SAVE_TIMEOUT: ..." is thrown; diagnostics in
         $script:TcLastProjectSaveDiagnostics: dialog (Title/Text), ideAlive, ideResponding,
         readOnlyFiles (-TsProjFile / -PlcProjFile with the ReadOnly attribute), elapsedSec.
-        Errors of the call: IDE_CRASHED when the IDE process is gone, IDE_MODAL_DIALOG when a
+        Throws 'RESET_REQUIRED: ...' without calling Save() while Get-TcResetRequiredGuard reports a
+        guard (PR #209 review B1). Errors of the call: IDE_CRASHED when the IDE process is gone, IDE_MODAL_DIALOG when a
         dialog is still up when the call returned (scanned again then; a dialog that is gone is
         only mentioned), otherwise "save: Project.Save of '<tsproj>' failed (<message>)".
     .PARAMETER TsProjFile
@@ -269,6 +270,13 @@ function Invoke-TcProjectSaveWithDeadline {
 
     $script:TcLastProjectSaveDiagnostics = $null
     $script:TcLastModalDialog = $null
+    # PR #209 review B1: Project.Save writes the .tsproj and every .plcproj below it from XAE memory;
+    # while reset-required applies (Connect-TcIde -TakeOverOrphan answered a reload prompt 'do not
+    # reload', or the state cannot be read: Get-TcResetRequiredGuard fails closed) that would be the
+    # old in-memory project over the files changed on disk. The last line of defence: the cmdlets
+    # refuse before they change anything (Get-TcResetRequiredSaveRefusal).
+    $resetGuard = Get-TcResetRequiredGuard
+    if ($null -ne $resetGuard) { throw "RESET_REQUIRED: Project.Save of '$TsProjFile' refused, not called ($($resetGuard.reason)); run Reset-TcSolution first." }
     $idePid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
 
@@ -694,7 +702,8 @@ function Invoke-TcPlcObjectSave {
         so the <Compile Include> is checked with its folder.
         Returns @{ Saved = <Save-TcPlcProject result>; Error = $null } or
         @{ Saved = $null; Error = <failed New-TcResult> }: IDE_MODAL_DIALOG (a dialog was up, nothing
-        saved), PROJECT_SAVE_TIMEOUT (data.saveDiagnostics), PROJECT_SAVE_FAILED (save, locate or
+        saved), RESET_REQUIRED (PR #209 review B1: reset-required applies, Save not called),
+        PROJECT_SAVE_TIMEOUT (data.saveDiagnostics), PROJECT_SAVE_FAILED (save, locate or
         readback failed; a .plcproj that cannot be located gets its own hint), or the IDE_* code of
         the COM call. Error data: objectPath, plc, createdInMemory = $true, savedToDisk = $false.
     .PARAMETER ObjectPath
@@ -755,6 +764,11 @@ function Invoke-TcPlcObjectSave {
     $more = @($ExpectFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($more.Count -gt 0) { $saveParams['ExpectFile'] = @(@($saveParams['ExpectFile'] | Where-Object { $null -ne $_ }) + $more) }
     if (-not [string]::IsNullOrWhiteSpace($ExpectLibrary)) { $saveParams['ExpectLibrary'] = @($ExpectLibrary) }
+    # PR #209 review B1: never Project.Save while reset-required applies (the callers refuse before
+    # changing XAE already; this covers a record written meanwhile). Error data as for a failed save.
+    $resetRefusal = Get-TcResetRequiredSaveRefusal -Operation "Project.Save after $What" -Data $errData `
+        -Done "$What was $Done in XAE ('$ObjectPath') but Project.Save was NOT called: the project file (.plcproj) on disk is unchanged"
+    if ($null -ne $resetRefusal) { return @{ Saved = $null; Error = $resetRefusal } }
     try {
         $saved = Save-TcPlcProject @saveParams
         if ($saved.Contains('ModalDialog')) {

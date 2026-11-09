@@ -56,6 +56,10 @@ function Add-TcInterface {
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
+    # PR #209 review B1: this cmdlet saves the project file (DTE Project.Save, which writes the in-memory
+    # .tsproj / .plcproj): refused BEFORE anything is changed in XAE while reset-required applies
+    $resetRefusal = Get-TcResetRequiredSaveRefusal -Operation 'Add-TcInterface'
+    if ($null -ne $resetRefusal) { return $resetRefusal }
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 

@@ -203,7 +203,12 @@ function Reset-TcSolution {
                                    Connect-TcIde -TakeOverOrphan answered one without reloading
                                    (BUILD_REQUIRED kind reset-required, data.resetRequired): the full
                                    close / reopen runs and -SaveProjectChanges is refused as after
-                                   a prompt handled here
+                                   a prompt handled here. With reset-required (also an unreadable
+                                   state, data.resetRequired.stateUnreadable) and without
+                                   -DiscardProjectChanges, documents with Document.Saved = false
+                                   (data.dirtyDocuments) or an unreadable DTE.Documents
+                                   (data.dirtyDocumentsError) refuse with PROJECT_UNSAVED_CHANGES
+                                   before anything is closed (Documents.CloseAll would drop them)
         data.resetRequiredCleared  (only with a reset-required record) true = the reopen succeeded
                                    without saving and the record was removed; false = kept (a save,
                                    another .sln, or the state file could not be written:
@@ -444,9 +449,12 @@ function Reset-TcSolution {
     # (-SaveProjectChanges is refused like after a prompt handled here) and forces the full close /
     # reopen (never the Yes-only path); the record is removed only after that reopen succeeded
     # without saving anything (end of this function).
+    # PR #209 review m1: an unreadable state is a guard too (stateUnreadable, fail closed): no
+    # -SaveProjectChanges, the unsaved-documents check below; the default path still runs (it is the
+    # way out) but is not reported as a handled prompt.
     $resetGuard = Get-TcResetRequiredGuard -SolutionPath $path
     if ($null -ne $resetGuard) {
-        $progress.dismissedReloadPrompt = $true
+        if (-not $resetGuard.stateUnreadable) { $progress.dismissedReloadPrompt = $true }
         $progress['resetRequired'] = $resetGuard
         $state.NeedReopen = $true
         $state.ResetRequiredSolution = $(if (-not [string]::IsNullOrWhiteSpace([string]$path)) { [string]$path } else { [string]$resetGuard.solution })
@@ -947,6 +955,30 @@ function Reset-TcSolution {
             }
         }
 
+        # --- PR #209 review M1: unsaved editor documents while reset-required applies ---
+        # Documents.CloseAll(vsSaveChangesNo) (step 2) drops unsaved editor content. After
+        # Connect-TcIde -TakeOverOrphan the IDE may hold work of the ended session that nobody has seen:
+        # refused (PROJECT_UNSAVED_CHANGES, data.dirtyDocuments, nothing saved or closed) while any
+        # document has Saved = $false, or when that cannot be read (data.dirtyDocumentsError, fail
+        # closed); -DiscardProjectChanges goes on. Without reset-required nothing changes here.
+        if ($null -ne $resetGuard -and -not $DiscardProjectChanges) {
+            $dirty = Get-TcDirtyDocuments -Dte $dte -TimeoutSec $TimeoutSec
+            if ($null -ne $dirty.Error) {
+                # a reload prompt that came up after the guard blocks the read (#87): handle it first
+                $found = Find-TcResetDialog -Operation 'reading DTE.Documents (unsaved documents); nothing closed'
+                if ($null -ne $found -and $null -ne $found.Failure) { return $found.Failure }
+                if ($null -ne $found) { $pendingDialog = $found.Dialog; continue }
+            }
+            if ($null -ne $dirty.Error -or @($dirty.Documents).Count -gt 0) {
+                $extra = if ($null -ne $dirty.Error) { @{ dirtyDocumentsError = [string]$dirty.Error } } else { @{ dirtyDocuments = @($dirty.Documents) } }
+                $what = if ($null -ne $dirty.Error) { "whether the IDE holds unsaved documents could not be read ($($dirty.Error))" }
+                        else { "the IDE holds $(@($dirty.Documents).Count) unsaved document(s): $(@($dirty.Documents) -join ', ')" }
+                return Complete-TcResetFailure -Step 'unsaved documents check' -Result (New-TcResult -Success $false -ErrorCode 'PROJECT_UNSAVED_CHANGES' -Hint (Get-TcErrorHint -Code 'PROJECT_UNSAVED_CHANGES') `
+                    -Data (Get-ProgressData -Extra $extra) `
+                    -ErrorMessage "Reset-TcSolution not attempted: reset-required applies to this solution ($($resetGuard.reason)) and $what. Documents.CloseAll would close them WITHOUT saving; nothing was saved or closed. Look at them in XAE first; -DiscardProjectChanges drops them.")
+            }
+        }
+
         # --- 1b. unsaved project structure (#76): never save by default, never save editor documents ---
         # "XAE has it, the .plcproj on disk does not" cannot be told apart from "someone deleted it on
         # disk", so a difference stops the reset (PROJECT_UNSAVED_CHANGES) unless the caller chose a side.
@@ -1213,7 +1245,9 @@ function Reset-TcSolution {
             $samePath = [string]::Equals((ConvertTo-TcSolutionKey $state.ResetRequiredSolution), (ConvertTo-TcSolutionKey $path), [StringComparison]::OrdinalIgnoreCase)
             if (-not $savedAny -and $samePath) {
                 $cw = Clear-TcResetRequired -SolutionPath $state.ResetRequiredSolution
-                $ok.data | Add-Member -NotePropertyName 'resetRequiredCleared' -NotePropertyValue ($null -eq $cw) -Force
+                # read back (m1: an unreadable / '<corrupt>' state is still a guard after the clear)
+                $still = Get-TcResetRequiredGuard -SolutionPath $state.ResetRequiredSolution
+                $ok.data | Add-Member -NotePropertyName 'resetRequiredCleared' -NotePropertyValue ($null -eq $cw -and $null -eq $still) -Force
                 if ($null -ne $cw) {
                     $prev = $ok.data.PSObject.Properties['stateWarning']
                     $ok.data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue $(if ($null -ne $prev -and -not [string]::IsNullOrWhiteSpace([string]$prev.Value)) { "$($prev.Value); $cw" } else { $cw }) -Force
