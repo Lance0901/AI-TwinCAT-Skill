@@ -29,6 +29,6 @@ Read-TcVariable -Path "MAIN.nCounter"; Write-TcVariable -Path "MAIN.bEnable" -Va
 - **Reviews** follow `CODING_STANDARDS.md`; mechanical checks: `scripts/check.ps1` (pre-commit runs `-Fast`, install with `scripts/install-hooks.ps1`); counts of cmdlets / tools / composites and the SKILL.md signature table sit between HTML comment markers named `generated:KEY` - never edit them by hand, run `scripts/Update-GeneratedDocs.ps1` (check.ps1 fails when stale, #25)
 - **Real-machine test agents**: shared rules in `docs/agent-brief-realmachine.md`.
 
-## Available Commands (<!-- generated:cmdlet-count -->82<!-- /generated -->)
+## Available Commands (<!-- generated:cmdlet-count -->83<!-- /generated -->)
 
 Full list with parameters: `.agents/skills/twincat/SKILL.md` (Codex skill), `adapters/claude-code/SKILL.md`, `adapters/codex/tools.json`, or `Get-Command -Module TwinCATAutomation` after importing the module.

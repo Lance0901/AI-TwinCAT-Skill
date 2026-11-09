@@ -1346,6 +1346,28 @@
                                       }
                   },
                   {
+                      "name":  "GetProjectVersion",
+                      "cmdlet":  "Get-TcProjectVersion",
+                      "description":  "Read-only and offline (reads the .sln and .tsproj files, needs no IDE, ADS or connection): the TwinCAT version a solution was saved with (#214). data.projects[] lists every .tsproj referenced by the .sln with tcVersion (the raw TcVersion attribute of its root element, e.g. 3.1.4026.22) and major / minor / build / revision (null when not parseable). data.launch is the answer of the SAME selection ConnectIde uses when no ProgId is given: wantedProgIds (build >= 4026: TcXaeShell.DTE.17.0 or VisualStudio.DTE.17.0; older: TcXaeShell.DTE.15.0; empty when the build is not decidable), matchingProgIds (installed IDEs among them whose XAE version equals the project TcVersion exactly, revision included; empty when the build is not decidable or no IDE matches), progId (what ConnectIde would launch, null when it would refuse), connectIdeWouldLaunch (true only when ConnectIde without ProgId would launch progId; when false do NOT pick a ProgId yourself and call ConnectIde: opening a project with another XAE version may upgrade or downgrade it, ask the user first), registeredProgIds, ide[] (XAE version of each registered IDE) and errorCode / errorMessage / hint when ConnectIde would refuse (TWINCAT_NOT_FOUND, IDE_VERSION_NOT_REGISTERED, PROGID_REQUIRED): that is part of the answer, success stays true. Use it before ConnectIde to see which IDE a solution needs. Errors: SOLUTION_NOT_FOUND, TSPROJ_NOT_FOUND (no .tsproj in the .sln), TCVERSION_UNKNOWN (a .tsproj has no readable TcVersion; data.projects[].error), each with error.hint.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "SolutionPath":  {
+                                                                                  "type":  "string",
+                                                                                  "description":  "The TwinCAT .sln (relative paths are resolved from the current directory)."
+                                                                              }
+                                                         },
+                                          "required":  [
+                                                           "SolutionPath"
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "GetSymbols",
                       "cmdlet":  "Get-TcSymbols",
                       "description":  "List the PLC symbols of the connected runtime, optionally filtered by a substring (Filter): data is an array (empty when nothing matches) of {path, type, size, comment}, plus enumValues (member name -> value) for enum types; the execution order is in the top-level order field. Use it to find exact variable paths and types before ReadVariable/WriteVariable.",

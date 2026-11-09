@@ -103,6 +103,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Get-TcPouCode` | `GetPouCode` | `-PouName <string> [-PouPath <string>]` |
 | `Get-TcProjectTree` | `GetProjectTree` | `[-Depth <int>] [-PlcOnly]` |
 | `Get-TcProjectVariants` | `GetVariants` | - |
+| `Get-TcProjectVersion` | `GetProjectVersion` | `-SolutionPath <string>` |
 | `Get-TcSymbols` | `GetSymbols` | `[-Filter <string>]` |
 | `Get-TcSystemState` | `GetSystemState` | `[-AmsNetId <string>]` |
 | `Get-TcTreeItem` | `LookupTreeItem` | `-Path <string> [-MaxChildren <int>]` |
