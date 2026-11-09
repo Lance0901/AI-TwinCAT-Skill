@@ -15,7 +15,7 @@ function Open-TcProject {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
 
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         return New-TcResult -Success $false -ErrorMessage "File not found: $Path" -ErrorCode 'FILE_NOT_FOUND'
     }
 

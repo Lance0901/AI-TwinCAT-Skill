@@ -486,7 +486,7 @@ function Enable-TcConfig {
         if ($null -eq $mem) { return }
         Set-Variable -Name ideMemoryMB -Value $mem.MemoryMB -Scope 1
         if ($mem.Is32Bit -and $mem.MemoryMB -gt 1500) {
-            Write-Warning "Enable-TcConfig: the 32-bit XAE uses $($mem.MemoryMB) MB (limit ~2-4 GB); ActivateConfiguration() may crash it with OutOfMemoryException. Consider Disconnect-TcIde -Quit and a fresh Connect-TcIde first."
+            Write-Warning "Enable-TcConfig: the 32-bit XAE uses $($mem.MemoryMB) MB (limit ~2-4 GB); ActivateConfiguration() may crash it with OutOfMemoryException. Consider quitting the IDE first (Disconnect-TcIde -Quit for an IDE this session launched; otherwise ask the user) and a fresh Connect-TcIde."
         }
     }
 

@@ -6,6 +6,12 @@ function Disconnect-TcIde {
         Without -Quit only the COM references are released; the IDE keeps running.
 
         With -Quit:
+          0. #227: only for an IDE this session launched (data.ownedBySession). Any other IDE
+             (Connect-TcIde selectedBy solution-match / first-instance / process-id ... on an IDE
+             the user opened) is refused BEFORE anything else - with or without -Kill: success =
+             false, code IDE_NOT_OWNED, data.quit = false, data.disconnected = false, data.reason
+             'not launched by this session'; nothing is closed and the connection is kept
+             (Disconnect-TcIde without -Quit releases it). The user closes that IDE.
           1. Find-TcIdeModalDialog first. A modal dialog blocks Solution.Close / DTE.Quit
              forever, so with a dialog up (and no -Kill) nothing is attempted (no 60 s
              retries) and NOTHING is released: the connection stays usable. Result:
@@ -42,8 +48,8 @@ function Disconnect-TcIde {
         process id goes straight to the kill path; -Quit alone then reports 'not connected'.
     .PARAMETER Quit
         Also close the solution (without saving) and quit the IDE instance this
-        session is connected to. Use this to clean up an IDE that Connect-TcIde
-        launched; do not use it on an IDE the user opened themselves.
+        session is connected to. Only for an IDE that Connect-TcIde launched in this session
+        (data.ownedBySession); any other IDE -> IDE_NOT_OWNED, nothing closed (#227).
     .PARAMETER Kill
         Only with -Quit: if the IDE cannot be quit (modal dialog, DTE.Quit failed, or an
         earlier -Quit already failed), kill the IDE process. Refused with IDE_NOT_OWNED
@@ -142,6 +148,21 @@ function Disconnect-TcIde {
     function Add-LaunchRecordWarning([object]$D) {
         if ($null -ne $script:TcLaunchRecordWarning) { $D | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning -Force }
         $D
+    }
+
+    # #227: -Quit (with or without -Kill) only for an IDE this session launched. Any other IDE
+    # (solution-match / first-instance / process-id #210 ... on an IDE the user opened) is refused
+    # before the modal check, Solution.Close or DTE.Quit: nothing is closed, the connection is kept.
+    # Not connected and no pid kept: nothing to quit (the 'not connected' success below).
+    $hasIde = ($null -ne $script:TcDte -and $script:TcIdeConnected) -or $ideProcessId -gt 0
+    if ($Quit -and $hasIde -and -not $ownedBySession) {
+        $data = New-QuitData -QuitResult @{ solutionClosed = $false; quit = $false; error = $null; reason = 'not launched by this session' } -Dialog $null -Disconnected $false
+        $data.message = "NOT disconnected; IDE NOT quit: it was not launched by this session (selectedBy '$selectedBy'). The connection is kept; Disconnect-TcIde without -Quit releases it."
+        # PR #228 review: an unreadable launched-ides.json also makes an own IDE 'not owned' (fail closed): say so
+        $data = Add-LaunchRecordWarning $data
+        return New-TcResult -Success $false `
+            -ErrorMessage "IDE_NOT_OWNED: the IDE (pid $ideProcessId, selectedBy '$selectedBy') was not launched by this session; -Quit$(if ($Kill) { ' -Kill' }) refused, nothing was closed." `
+            -ErrorCode 'IDE_NOT_OWNED' -Hint (Get-TcErrorHint -Code 'IDE_NOT_OWNED') -Data $data
     }
 
     $quitResult = $null

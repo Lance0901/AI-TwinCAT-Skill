@@ -111,10 +111,24 @@ function Connect-TcIde {
         passed does the record get this process as owner plus a takeovers[] entry;
         data.takenOver = true, data.previousOwner. Use it only after the user confirmed nobody still
         works in that IDE.
+    .PARAMETER ProcessId
+        #210: bind ONLY the IDE with this process id (selectedBy 'process-id'). Nothing is ever
+        launched and no other instance is used: the pid must be a running process with a DTE in
+        the ROT (else IDE_PID_NOT_FOUND, data.reason process-not-found / not-in-rot / invalid-pid).
+        -ProgId given and the ROT entry of that pid has another ProgID, or -SolutionPath given and
+        that IDE has another solution open: IDE_PID_MISMATCH (data.reason progid / solution);
+        an IDE with no solution open gets -SolutionPath opened. A busy DTE (RPC_E_CALL_REJECTED or
+        an empty Version) is not attached: IDE_MODAL_DIALOG (dialog found), MODAL_SCAN_INCOMPLETE
+        or IDE_BUSY with data.attached = false; close the dialog and call again. Ownership is not
+        changed: an IDE this session did not launch stays data.ownedBySession = false, and
+        Disconnect-TcIde -Quit refuses to quit it (IDE_NOT_OWNED). Not with -TakeOverOrphan
+        (INVALID_PARAMS); -NoLaunch / -LaunchIfBlocked have no effect. Reset-TcSolution reconnects
+        with the same -ProcessId (never to another IDE that has the same .sln open).
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
         Connect-TcIde -SolutionPath "C:\Projects\MyProject.sln"
+        Connect-TcIde -ProcessId 12345 -SolutionPath "C:\Projects\MyProject.sln"
     .OUTPUTS
         data.progId       ProgID actually used (parsed from the ROT moniker, else DTE.RegistryRoot)
         data.progIdSelectedBy  explicit | running-instance | tsproj-version | only-one-registered
@@ -148,7 +162,10 @@ function Connect-TcIde {
         [switch]$LaunchIfBlocked,
 
         [Parameter()]
-        [switch]$TakeOverOrphan
+        [switch]$TakeOverOrphan,
+
+        [Parameter()]
+        [int]$ProcessId
     )
 
     $swTotal = [System.Diagnostics.Stopwatch]::StartNew()
@@ -189,13 +206,20 @@ function Connect-TcIde {
     $script:TcSilentMode = $false
     $script:TcSilentModeOriginal = $null
 
-    # Validate SolutionPath if provided
+    # #210: -ProcessId binds exactly one IDE process; a takeover picks its IDE from the launch record
+    $byProcessId = $PSBoundParameters.ContainsKey('ProcessId')
+    if ($byProcessId -and $TakeOverOrphan) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' `
+            -ErrorMessage '-ProcessId and -TakeOverOrphan exclude each other (a takeover finds its IDE from the launch record); nothing was attached.'
+    }
+
+    # Validate SolutionPath if provided. -LiteralPath (#224): [ ] in a folder name are not wildcards.
     $normalizedSolutionPath = $null
     if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {
-        if (-not (Test-Path $SolutionPath)) {
+        if (-not (Test-Path -LiteralPath $SolutionPath -PathType Leaf)) {
             return New-TcResult -Success $false -ErrorMessage "Solution file not found: $SolutionPath" -ErrorCode 'FILE_NOT_FOUND'
         }
-        $SolutionPath = (Resolve-Path $SolutionPath).Path
+        $SolutionPath = (Resolve-Path -LiteralPath $SolutionPath).ProviderPath
         $normalizedSolutionPath = Get-TcLongPath $SolutionPath   # 8.3 short names expanded (#63)
     }
 
@@ -319,7 +343,84 @@ function Connect-TcIde {
     }
 
     $chosen = $null
-    if ($pool.Count -gt 0) {
+    if ($byProcessId) {
+        # --- #210: -ProcessId: exactly this IDE process or a failure; never a launch, never another
+        # instance (every exit below returns, so the #136 / #29 / launch paths are not reached).
+        # Ownership is not touched here: selectedBy 'process-id' becomes 'launched' below only when
+        # this session launched that pid (Test-TcLaunchedIde), as for solution-match.
+        $pidCandidates = @(@($readyCandidates) + @($busyCandidates) + @($unreadableCandidates))
+        $pidSummary = @($pidCandidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
+        $pidFail = {
+            param([string]$Code, [string]$Reason, [string]$Message, [hashtable]$Extra)
+            $d = [PSCustomObject]@{
+                requestedProcessId = $ProcessId
+                reason             = $Reason
+                attached           = $false
+                launched           = $false
+                ownedBySession     = $false
+                candidates         = $pidSummary
+                connectSec         = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+            }
+            if ($null -ne $Extra) { foreach ($k in $Extra.Keys) { $d | Add-Member -NotePropertyName $k -NotePropertyValue $Extra[$k] -Force } }
+            New-TcResult -Success $false -ErrorMessage "${Code}: $Message Nothing was launched or attached." `
+                -ErrorCode $Code -Hint (Get-TcErrorHint -Code $Code) -Data $d
+        }
+        if ($ProcessId -le 0) {
+            return & $pidFail 'IDE_PID_NOT_FOUND' 'invalid-pid' "-ProcessId $ProcessId is not a process id." $null
+        }
+        $pidProc = $null
+        try { $pidProc = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $pidProc = $null }
+        if ($null -eq $pidProc) {
+            return & $pidFail 'IDE_PID_NOT_FOUND' 'process-not-found' "no process with id $ProcessId is running." $null
+        }
+        $pidProcName = [string]$pidProc.Name
+        $hit = @($pidCandidates | Where-Object { $null -ne $_.pid -and [int]$_.pid -eq $ProcessId }) | Select-Object -First 1
+        if ($null -eq $hit) {
+            return & $pidFail 'IDE_PID_NOT_FOUND' 'not-in-rot' "process $ProcessId ($pidProcName) has no DTE in the Running Object Table (not a Visual Studio / XAE IDE, or still starting)." @{ processName = $pidProcName }
+        }
+        $hitProgId = [string]$hit.progId
+        $pidFacts = @{ processName = $pidProcName; ideProcessId = $ProcessId; progId = $hitProgId; solution = $hit.solution; launchedBySession = (Test-TcLaunchedIde -ProcessId $ProcessId) }
+        if (-not [string]::IsNullOrWhiteSpace($ProgId) -and -not ($hitProgId -ieq $ProgId)) {
+            return & $pidFail 'IDE_PID_MISMATCH' 'progid' "IDE pid $ProcessId is registered as '$hitProgId', not the requested -ProgId '$ProgId'." $pidFacts
+        }
+        if ($hit.busy -or ($null -ne $hit.PSObject.Properties['unreadable'] -and $hit.unreadable)) {
+            # Blocked DTE: its solution is unknown, so it is not attached (data.attached = false).
+            $pidData = [PSCustomObject]@{
+                requestedProcessId = $ProcessId
+                ideProcessId       = $ProcessId
+                processName        = $pidProcName
+                progId             = $hitProgId
+                rotDisplayName     = $hit.displayName
+                probe              = $(if ($hit.busy) { 'busy (RPC_E_CALL_REJECTED after 3 attempts)' } else { 'unreadable (DTE.Version empty)' })
+                attached           = $false
+                launched           = $false
+                launchedBySession  = $pidFacts.launchedBySession
+                ownedBySession     = $false
+                solution           = $normalizedSolutionPath
+                candidates         = $pidSummary
+                connectSec         = [math]::Round($swTotal.Elapsed.TotalSeconds, 1)
+            }
+            $pidDialog = Find-TcIdeModalDialog -ProcessId $ProcessId
+            if (Test-TcModalScanIncomplete $pidDialog) {
+                return New-TcModalScanIncompleteResult -Scan $pidDialog -Operation "Connect-TcIde -ProcessId $ProcessId (DTE blocked; not attached)" -Data $pidData `
+                    -HintSuffix ([string](Get-TcErrorHint -Code 'IDE_PID_BLOCKED')).Replace('<pid>', [string]$ProcessId)
+            }
+            if ($null -ne $pidDialog) {
+                return New-TcModalDialogResult -Dialog $pidDialog -Operation "Connect-TcIde -ProcessId $ProcessId (not attached)" -HintCode 'IDE_PID_BLOCKED' -Data $pidData
+            }
+            return New-TcResult -Success $false `
+                -ErrorMessage "IDE_BUSY: IDE pid $ProcessId rejects every DTE call (RPC_E_CALL_REJECTED or an empty Version) and no modal dialog was found; not attached." `
+                -ErrorCode 'IDE_BUSY' -Hint (Get-TcErrorHint -Code 'IDE_PID_BLOCKED') -Data $pidData
+        }
+        if ($null -ne $normalizedSolutionPath -and -not [string]::IsNullOrWhiteSpace([string]$hit.normalizedSolution) -and
+            -not [string]::Equals([string]$hit.normalizedSolution, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase)) {
+            $pidFacts['requestedSolution'] = $normalizedSolutionPath
+            return & $pidFail 'IDE_PID_MISMATCH' 'solution' "IDE pid $ProcessId has '$($hit.solution)' open, not '$normalizedSolutionPath'; the open solution is never replaced." $pidFacts
+        }
+        $chosen = $hit
+        $selectionReason = 'process-id'
+    }
+    elseif ($pool.Count -gt 0) {
         if ($null -ne $normalizedSolutionPath) {
             # With -SolutionPath only the instance that already has THAT solution open is reused.
             # An empty IDE, one with another solution, or a busy one (solution unknown) belongs to

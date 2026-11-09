@@ -114,7 +114,7 @@ function Get-TcBootPackageDiff {
         mismatches = @()
         files      = @()
     }
-    if ([string]::IsNullOrWhiteSpace($SolutionPath) -or -not (Test-Path $SolutionPath)) { $res.reason = 'solution path unknown'; return $res }
+    if ([string]::IsNullOrWhiteSpace($SolutionPath) -or -not (Test-Path -LiteralPath $SolutionPath)) { $res.reason = 'solution path unknown'; return $res }
     if ([string]::IsNullOrWhiteSpace($Platform)) { $res.reason = 'solution platform unknown'; return $res }
 
     # _Boot next to a .tsproj (the TwinCAT project folder); with several, the most recently
@@ -122,8 +122,8 @@ function Get-TcBootPackageDiff {
     $slnDir = Split-Path -Parent $SolutionPath
     $local = $null
     $cands = @()
-    foreach ($b in @(Get-ChildItem -Path $slnDir -Directory -Filter '_Boot' -Recurse -Depth 2 -ErrorAction SilentlyContinue)) {
-        $tsprojs = @(Get-ChildItem -Path $b.Parent.FullName -Filter '*.tsproj' -File -ErrorAction SilentlyContinue)
+    foreach ($b in @(Get-ChildItem -LiteralPath $slnDir -Directory -Filter '_Boot' -Recurse -Depth 2 -ErrorAction SilentlyContinue)) {
+        $tsprojs = @(Get-ChildItem -LiteralPath $b.Parent.FullName -Filter '*.tsproj' -File -ErrorAction SilentlyContinue)
         if ($tsprojs.Count -eq 0) { continue }
         $dirs = @(Join-Path $b.FullName $Platform)
         # #89: a variant project writes _Boot\<Variant>\<Platform>

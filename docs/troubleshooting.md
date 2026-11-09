@@ -84,7 +84,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - 4024 組:`TcXaeShell.DTE.15.0`,`C:\Temp\Verify-4024-bfh\BFH-1650.sln`。solution platform 只有 `CE7 (ARMV7)` / `OS (ARMT2)` / `RT (x64)` / `RT (x86)`,`-Platform 'TwinCAT OS (x64)'` → `PLATFORM_NOT_FOUND`,不帶 `-Platform` → `PLATFORM_UNKNOWN`。把 EtherCAT Device 1 / 5 設成 Disabled 後(2026-10-28 11:16),`-NoPlatformSwitch`(平台維持 `TwinCAT RT (x64)`)全 lifecycle PASS:Build → `Enable-TcConfig -Force`(851 Run、bootPackage match、platformCheck skipped 0x702)→ `Connect-TcAds` → `Read-TcVariable`,`_TaskInfo[1].CycleCount` 持續增加。**觀察(實測,未查到 InfoSys 出處,只是這個 4024 專案,不是通則):** 4024 的 `TwinCAT RT (x64)` 在 UmRT 上 Activate 成功、沒有 `ACTIVATE_FAILED`,與 4026 要用 `TwinCAT OS (x64)` 不同。歷史:Device 未 Disabled 時 `Enable-TcConfig` 在 IO 階段被 CCAT PCI INIT→PREOP 0x98110700 擋下(`IDE_MODAL_DIALOG`、bridge 重啟)。(實測 2026-10-28)
   - 4026 組:`TcXaeShell.DTE.17.0` 與 `VisualStudio.DTE.17.0` 輪流用 `C:\Temp\Verify-4026-axis\AxisInterface_Type01_Library.sln`,`'TwinCAT OS (x64)'` 全 lifecycle PASS(Build → `Enable-TcConfig -Force` → `Connect-TcAds` → `Read-TcVariable`)。(實測 2026-10-28,本機 UmRT)
 - **Solution platform ≠ project platform**(專案設定,與 XAE 版本無關):平台由目標對象決定(UmRT / TwinCAT/BSD = `TwinCAT OS (x64)`,Windows RT = `TwinCAT RT (x64)`,CX ARM = 對應的 ARM 平台;[InfoSys TARGETINFO](https://infosys.beckhoff.com/content/1033/tc170x_tc3_usermode_runtime/11687997963.html)),但 solution platform 名稱可以對到別的 project platform。A 組 Festo .sln 的 solution `Release|TwinCAT OS (x64)` 底下 .tsproj 與 .plcproj 都對到 project platform `TwinCAT OS (ARMT2)` 且沒有 `Build.0`(ShouldBuild=False),選它什麼都不 build(實測:Build 1.4 s「成功」、Activate 不回 `ACTIVATE_FAILED`,851 維持 Invalid `PLC_NOT_LOADED`)。target platform 決定 configuration 編給哪種 target,Configuration Manager 決定子專案是否參與 build([InfoSys「Setting the TwinCAT target platform」](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/650882187.html))。模組切換前檢查 .tsproj 的 project platform,不符就回 `PLATFORM_PROJECT_MISMATCH`(`data.platformMap`),見該節。
-- `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;多實例時依 `-SolutionPath` 挑:只接已開該 sln 的實例(`data.selectedBy=solution-match`),沒有就啟動新實例(`launched`);別人開的空 IDE 或開著其他 sln 的 IDE 一律不碰,`Disconnect-TcIde -Quit` 也只關自己連上的那個 pid。`data.candidates[]` 列出所有看到的實例,`data.ideProcessId` 是連上的 IDE pid(`Get-TcIdeModalDialog` 只掃這個 pid 的視窗)。真機驗證:`tests/Integration/multi-ide.ps1`。ROT 裡正在關閉的舊實例(讀 `Version` / `Solution` 回 0x800706BA / 0x80004005)會被跳過。
+- `Connect-TcIde` 嘗試順序:`TcXaeShell.DTE.15.0` → `TcXaeShell.DTE.17.0` → `VisualStudio.DTE.17.0`;多實例時依 `-SolutionPath` 挑:只接已開該 sln 的實例(`data.selectedBy=solution-match`),沒有就啟動新實例(`launched`);別人開的空 IDE 或開著其他 sln 的 IDE 一律不碰,`Disconnect-TcIde -Quit` 只關本 session 啟動的那個 pid,其他 IDE 回 `IDE_NOT_OWNED`(#227)。`data.candidates[]` 列出所有看到的實例,`data.ideProcessId` 是連上的 IDE pid(`Get-TcIdeModalDialog` 只掃這個 pid 的視窗)。真機驗證:`tests/Integration/multi-ide.ps1`。ROT 裡正在關閉的舊實例(讀 `Version` / `Solution` 回 0x800706BA / 0x80004005)會被跳過。
 - `Connect-TcIde` 自行啟動 IDE 時:`CreateInstance` 後**不碰** `MainWindow.Visible`(此時會丟 property not found),改輪詢 `Version` + `Solution`(500 ms,最長 60 s),就緒後設 `UserControl = $true` 讓 IDE 可見且不隨 COM 釋放關閉;逾時則 `Quit()` 並 kill 啟動時刻之後出現的 `TcXaeShell.exe` / `devenv.exe`,回 `IDE_LAUNCH_FAILED`。
 - `Connect-TcAds` 的 `data.adsBackend` 顯示實際載入的 ADS 後端(DLL 路徑 / 反射 fallback)。
 - `Enable-TcConfig -Force` 在 UmRT 上第一次需要 license 齊全(trial 要涵蓋專案用到的 TF),否則系統停在 Config 直到 `SYSTEM_STATE_TIMEOUT`。
@@ -230,16 +230,34 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Disconnect-TcIde -Quit` 回 `success: false`、`IDE_QUIT_FAILED`;`data.quit = false`,`data.quitError` 是原因(`modal dialog is up: <title>`,或 `DTE.Quit: ... RPC_E_CALL_REJECTED`);有 modal 時 `data.dialog = {title, text, kind, reloadTarget}`,`data.solutionClosed`、`data.ideProcessId`、`data.selectedBy`、`data.ownedBySession` 照給。**IDE 行程還活著**。
 - **為什麼**:IDE 被 modal dialog 擋住或忙碌,`Solution.Close` / `DTE.Quit` 失敗。以前這種情況回 `success: true`,AI 以為 IDE 已關,下一個 `Connect-TcIde` 又以 solution-match 黏回同一個被擋住的 IDE(2026-10-20 dogfooding B3)。
-- **下一步**:有 modal(`data.dialog`)時連線仍在:`kind = reload-prompt` → `Reset-TcSolution`,再 `Disconnect-TcIde -Quit`;其他 dialog 或 DTE.Quit 失敗 → 這個 IDE 是本 session 啟動的(`data.ownedBySession = true`)就 `Disconnect-TcIde -Quit -Kill`(`Stop-Process -Force` 後等最多 10 s,`data.killed = true`);否則自己 `Stop-Process -Id <data.ideProcessId>`。`-Kill` 之後 10 s 行程還在也回這個碼(`killed = false`)。
+- **下一步**:有 modal(`data.dialog`)時連線仍在:`kind = reload-prompt` → `Reset-TcSolution`,再 `Disconnect-TcIde -Quit`;其他 dialog 或 DTE.Quit 失敗 → `Disconnect-TcIde -Quit -Kill`(`Stop-Process -Force` 後等最多 10 s,`data.killed = true`)。不是本 session 啟動的 IDE 不會走到這裡:`-Quit` 一開始就回 `IDE_NOT_OWNED`(#227)。`-Kill` 之後 10 s 行程還在也回這個碼(`killed = false`)。
 - 呼叫 `-Quit` 前若已偵測到 modal dialog,模組不會白跑 60 s 的 `Solution.Close` retry,直接回 `IDE_QUIT_FAILED`(`data.dialog`、`data.quit = false`、`data.disconnected = false`),而且**什麼都不釋放**:DTE / `ITcSysManager` / 連線狀態原封不動(quit 根本沒嘗試,DTE 仍有效),所以可以接 `Reset-TcSolution` 再 `-Quit`,或 `-Quit -Kill`;加 `-Kill` 則直接走 kill。
 - **狀態保留**:真的嘗試過 quit(或走 kill)的路徑會釋放 COM 參考,但失敗時(`IDE_QUIT_FAILED`、`IDE_NOT_OWNED`)模組保留 IDE 的 pid / `selectedBy` / solution 路徑,所以可以**直接**接 `Disconnect-TcIde -Quit -Kill`,不用(也沒辦法,modal 還在)重新 `Connect-TcIde`。成功 quit / kill、不帶 `-Quit` 的 disconnect、或下一次 `Connect-TcIde` 才會清掉。kill 前會確認該 pid 仍是 `TcXaeShell` / `devenv`,且啟動時間與 `Connect-TcIde` 記下的相同(±2 s);不是(pid 被回收)就不殺、忘掉該 pid,回 `IDE_QUIT_FAILED`(`killed = false`)。pid 已經不存在(IDE 自己結束了)則回 `success: true`、`killed = false`、`alreadyExited = true`。
 - `-Kill` 看的是 `data.ownedBySession`(本 session 啟動的 IDE),`Reset-TcSolution` 內部重連後 `selectedBy` 會變成 `solution-match`,但 `ownedBySession` 仍為 true,`-Kill` 照樣允許。
 
 ### IDE_NOT_OWNED
 
-- **現象**:`Disconnect-TcIde -Quit -Kill` 回 `IDE_NOT_OWNED`,`data.ownedBySession = false`(`data.selectedBy` 例如 `solution-match`)。
-- **為什麼**:`-Kill` 只殺本 session 用 `Connect-TcIde` 啟動的 IDE,不殺使用者自己開的 IDE。`Reset-TcSolution` 重連到同一個 pid 時仍算 launched;bridge 重啟、`ReloadModule`、`Import-Module -Force` 之後也仍算(#73,見「啟動紀錄持久化(#73 / #149)」)。啟動紀錄檔讀不到或壞掉時一律不算 owned,這時也會回這個碼。
-- **下一步**:確定要關就自己 `Stop-Process -Id <data.ideProcessId>`,再重新 `Connect-TcIde -SolutionPath <sln>`。`data.quitError` 說明 quit 為什麼失敗。再呼叫一次 `-Quit -Kill` 結果不變(仍 `IDE_NOT_OWNED`)。
+- **現象**:`Disconnect-TcIde -Quit`(帶不帶 `-Kill` 都一樣)回 `IDE_NOT_OWNED`,`data.ownedBySession = false`(`data.selectedBy` 例如 `solution-match`、`process-id`),`data.quit = false`、`data.disconnected = false`、`data.reason = 'not launched by this session'`。
+- **為什麼**:`-Quit` / `-Kill` 只對本 session 用 `Connect-TcIde` 啟動的 IDE,不關也不殺使用者自己開的 IDE。#227 之前只有 `-Kill` 會檢查,單純 `-Quit` 會對 solution-match 接到的使用者 IDE 跑 `Solution.Close($false)` + `DTE.Quit()`;現在在 modal 檢查、`Solution.Close`、`DTE.Quit` 之前就拒絕,什麼都不關,連線保留。`Reset-TcSolution` 重連到同一個 pid 時仍算 launched;bridge 重啟、`ReloadModule`、`Import-Module -Force` 之後也仍算(#73,見「啟動紀錄持久化(#73 / #149)」)。啟動紀錄檔讀不到或壞掉時一律不算 owned,這時也會回這個碼。
+- **下一步**:不再需要連線就 `Disconnect-TcIde`(不帶 `-Quit`)放開;那個 IDE 由使用者自己決定要不要關。再呼叫一次 `-Quit` / `-Quit -Kill` 結果不變(仍 `IDE_NOT_OWNED`)。
+
+### IDE_PID_NOT_FOUND
+
+- **現象**:`Connect-TcIde -ProcessId <pid>`(#210)回 `IDE_PID_NOT_FOUND`,`data.reason`:`process-not-found`(沒有這個行程)、`not-in-rot`(行程在,`data.processName`,但 ROT 沒有它的 DTE,例如 notepad 或還在啟動的 IDE)、`invalid-pid`(≤ 0)。`data.attached = false`、`data.launched = false`,`data.candidates` 是 ROT 裡所有 DTE。
+- **為什麼**:`-ProcessId` 只綁定那一個 IDE 行程:不啟動新 IDE,也不改接其他實例。
+- **下一步**:從 `data.candidates` 找正確的 pid 再呼叫;不確定就問使用者。不要拿掉 `-ProcessId` 重跑(會依 solution-match 選別的實例或啟動新的)。
+
+### IDE_PID_MISMATCH
+
+- **現象**:`Connect-TcIde -ProcessId <pid>` 回 `IDE_PID_MISMATCH`,`data.reason = 'progid'`(ROT 登記的 `data.progId` 不是 `-ProgId`)或 `'solution'`(那個 IDE 開著 `data.solution`,不是 `-SolutionPath` = `data.requestedSolution`)。沒有 attach,沒有改它開的 solution。
+- **為什麼**:`-ProcessId` 連同 `-ProgId` / `-SolutionPath` 一起給時,條件全部要符合。那個 IDE 沒開任何 solution 時,`-SolutionPath` 會照一般規則開進去;已經開著別的 solution 就不替使用者換。
+- **下一步**:確認 pid 是否選錯;要在那個 IDE 換 solution 先問使用者。
+
+### IDE_PID_BLOCKED
+
+- 不是錯誤碼,是 hint key:`Connect-TcIde -ProcessId` 找到的 IDE 的 DTE 被擋住(`RPC_E_CALL_REJECTED` 或空的 Version)時,錯誤碼照一般規則是 `IDE_MODAL_DIALOG`(有 dialog)、`MODAL_SCAN_INCOMPLETE` 或 `IDE_BUSY`,hint 用這一節。
+- solution 讀不到,所以**不 attach**(`data.attached = false`、`data.ownedBySession = false`),跟不帶 `-ProcessId` 時 strong evidence 會 attach 的 #29 路徑不同。
+- **下一步**:請使用者在那個 IDE 關掉 dialog(`Get-TcIdeModalDialog -ProcessId <data.ideProcessId>` 看內容),或等它忙完,再重跑同一個 `Connect-TcIde -ProcessId`。
 
 ### IDE_LAUNCH_FAILED
 

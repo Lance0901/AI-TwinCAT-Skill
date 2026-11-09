@@ -39,8 +39,8 @@ function Get-TcProjectVersion {
         return New-TcResult -Success $false -ErrorCode 'SOLUTION_NOT_FOUND' -Hint (Get-TcErrorHint -Code 'SOLUTION_NOT_FOUND') `
             -ErrorMessage "Solution file not found: $SolutionPath"
     }
-    # 8.3 short names expanded like Connect-TcIde (#63). Unlike Connect-TcIde (Test-Path / Resolve-Path
-    # without -LiteralPath, #224) a path with [ ] is taken literally here.
+    # 8.3 short names expanded like Connect-TcIde (#63); -LiteralPath like Connect-TcIde (#224): a
+    # path with [ ] is taken literally.
     $full = Get-TcLongPath ((Resolve-Path -LiteralPath $SolutionPath).ProviderPath)
 
     # One read of the files: Resolve-TcLaunchProgId (the decision Connect-TcIde makes, no -ProgId) reads
