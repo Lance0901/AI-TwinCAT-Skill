@@ -104,16 +104,22 @@
                              decide buildSucceeded
         data.libraryErrorItems  errorItems with category 'library'
         data.warnings        warning count (Error List; fallback: data.warningLines.Count)
-        data.messages        lines of the build pane of the Output window (same as data.buildPaneMessages, kept
-                             for compatibility; @() when the pane was not read, see data.buildPaneStatus)
+        data.messages        lines of the build pane of the Output window (the old field, kept for compatibility;
+                             the same capped list as data.buildPaneMessages; @() when the pane was not read,
+                             see data.buildPaneStatus). Both fields are capped to the LAST 400 lines or 32000
+                             characters (whichever is reached first); when capped, data.buildPaneTruncated = true
+                             and data.buildPaneLineCount = the line count before the cap
         data.buildPaneStatus read | not-found | unreadable (#219): the build pane is found by its GUID
                              {1BD8A850-02D1-11D1-BEE7-00A0C913D1F8} (VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid),
                              never by its localized name; not-found / unreadable add data.buildPaneError
                              (and data.buildPanes = the panes seen) and leave buildPaneMessages / warningLines @()
         data.buildPaneName   the pane's name as the IDE shows it ("Build", zh-TW "建置"); $null when not read
         data.buildPaneMessages  non-empty lines of the build pane (#218)
-        data.warningLines    lines of buildPaneMessages with a compiler / MSBuild warning (": warning"); the
-                             structured warnings are data.warningItems (Error List)
+        data.warningLines    lines of the FULL build pane with a compiler / MSBuild warning (": warning" and a
+                             compiler code), then capped to 200 (data.warningLinesTruncated = true,
+                             data.warningLinesCount = the total); the structured warnings are data.warningItems
+                             (Error List). 實測 2026-11-09: zh-TW VS2022 and English XAE 4024 print the English
+                             "warning:"; other UI languages are not verified
         data.failedProjects  SolutionBuild.LastBuildInfo ($null when it could not be read): the number of projects
                              of the SOLUTION that failed, not only PLC projects - the TwinCAT project (.tsproj) counts
                              too (實測 2026-11-06, #66 O12: 2 with one PLC project while the PLC was logged in;
@@ -541,6 +547,9 @@
         # Build pane of the Output window (#219): found by its GUID, never by the localized name ("Build",
         # zh-TW "建置"), and read through IDispatch - $dte.ToolWindows is $null out of process on VS2022, so
         # the old 'Build' name loop never saw a pane at all (實測 2026-11-09, VS2022 zh-TW + 4026).
+        # No deadline here on purpose: this runs after BuildState is Done (the build is over), only reads
+        # properties (no build / no UI action), and Invoke-TcComRetry already runs its modal-dialog watchdog
+        # and bounds the retries (-MaxRetries 3), so a stuck read ends in IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG.
         $buildPaneRead = $null
         try {
             $buildPaneRead = Invoke-TcComRetry -MaxRetries 3 -OperationName 'Read build output' -ScriptBlock { Get-TcBuildOutputPane }
@@ -551,8 +560,30 @@
         if ($null -eq $buildPaneRead) {
             $buildPaneRead = [PSCustomObject]@{ status = 'unreadable'; name = $null; guid = $null; index = $null; matchedBy = $null; text = ''; panes = @(); error = 'Get-TcBuildOutputPane failed' }
         }
-        $messages = @([string]$buildPaneRead.text -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_.Trim() -ne '' })
-        $warningLines = @(Get-TcBuildWarningLines -Lines $messages)
+        $allMessages = @([string]$buildPaneRead.text -split "`n" | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_.Trim() -ne '' })
+        # warning lines are filtered from the FULL pane first, then capped on their own (a long build log must
+        # not push the warnings out of the kept tail)
+        $allWarningLines = @(Get-TcBuildWarningLines -Lines $allMessages)
+        $buildPaneLineCount = $allMessages.Count
+        # cap: keep the LAST 400 lines or 32000 characters, whichever is reached first (the end of the log has the result)
+        $paneMaxLines = 400; $paneMaxChars = 32000; $warnMaxLines = 200
+        $messages = $allMessages
+        $buildPaneTruncated = $false
+        if ($allMessages.Count -gt 0) {
+            $kept = [System.Collections.Generic.List[string]]::new()
+            $chars = 0
+            for ($mi = $allMessages.Count - 1; $mi -ge 0 -and $kept.Count -lt $paneMaxLines; $mi--) {
+                $chars += $allMessages[$mi].Length + 1
+                if ($chars -gt $paneMaxChars -and $kept.Count -gt 0) { break }
+                $kept.Insert(0, $allMessages[$mi])
+            }
+            if ($kept.Count -lt $allMessages.Count) {
+                $buildPaneTruncated = $true
+                $messages = @($kept.ToArray())
+            }
+        }
+        $warningLinesTruncated = $allWarningLines.Count -gt $warnMaxLines
+        $warningLines = if ($warningLinesTruncated) { @($allWarningLines | Select-Object -First $warnMaxLines) } else { $allWarningLines }
 
         # Error List (UI Automation): the PLC compiler does not report through DTE.
         # Every build gets the full Error List budget ($script:TcBuildErrorListTimeoutSec, 30 s):
@@ -564,7 +595,7 @@
         # every error row gets a category (#23); "Library Manager" rows are missing / unresolved
         # libraries, not PLC code errors, so data.errors counts the code errors only.
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
-        $fallbackWarnings = $warningLines.Count
+        $fallbackWarnings = $allWarningLines.Count
         $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
@@ -725,6 +756,14 @@
             $data | Add-Member -NotePropertyName 'decidedBy' -NotePropertyValue $decidedBy
         }
         # #219: a build pane that was not read is stated, never an empty list that looks like "no output"
+        if ($buildPaneTruncated) {
+            $data | Add-Member -NotePropertyName 'buildPaneTruncated' -NotePropertyValue $true
+            $data | Add-Member -NotePropertyName 'buildPaneLineCount' -NotePropertyValue $buildPaneLineCount
+        }
+        if ($warningLinesTruncated) {
+            $data | Add-Member -NotePropertyName 'warningLinesTruncated' -NotePropertyValue $true
+            $data | Add-Member -NotePropertyName 'warningLinesCount' -NotePropertyValue $allWarningLines.Count
+        }
         if ($buildPaneRead.status -ne 'read') {
             $data | Add-Member -NotePropertyName 'buildPaneError' -NotePropertyValue ([string]$buildPaneRead.error)
             $data | Add-Member -NotePropertyName 'buildPanes' -NotePropertyValue @($buildPaneRead.panes | ForEach-Object { [PSCustomObject]@{ index = $_.index; name = $_.name; guid = $_.guid } })

@@ -68,6 +68,8 @@ function Get-TcBuildOutputPane {
         $count = [int](Get-TcComMember -Object $panes -Name 'Count')
     }
     catch {
+        # busy / dead RPC must reach Invoke-TcComRetry (retry, IDE_BUSY / IDE_CRASHED), not become 'unreadable' (#184 helper)
+        if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
         $result.error = "Output window not readable: $($_.Exception.Message)"
         return $result
     }
@@ -79,10 +81,11 @@ function Get-TcBuildOutputPane {
         try {
             $pane = Get-TcComMember -Object $panes -Name 'Item' -Arguments @([object]$i) -Method
             $paneGuid = [string](Get-TcComMember -Object $pane -Name 'Guid')
-            try { $paneName = [string](Get-TcComMember -Object $pane -Name 'Name') } catch { $paneName = $null }
+            try { $paneName = [string](Get-TcComMember -Object $pane -Name 'Name') } catch { if (Test-TcComMustRethrow -ErrorRecord $_) { throw }; $paneName = $null }
             if ([string]::IsNullOrWhiteSpace($paneGuid)) { throw 'Guid read back empty' }
         }
         catch {
+            if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
             $seen.Add([PSCustomObject]@{ index = $i; name = $paneName; guid = $null; error = $_.Exception.Message })
             continue
         }
@@ -100,8 +103,10 @@ function Get-TcBuildOutputPane {
 
     if ($null -eq $buildPane) {
         $guidsRead = @($seen | Where-Object { $null -ne $_.guid }).Count
-        if ($count -gt 0 -and $guidsRead -eq 0) {
-            $result.error = "none of the $count Output window panes returned its Guid"
+        $unread = $count - $guidsRead
+        if ($unread -gt 0) {
+            # a pane whose Guid cannot be read may be the build pane: not 'not-found' (no fallback by index)
+            $result.error = "$unread of $count Output window pane(s) returned no Guid, so the build pane cannot be ruled out ($guidsRead read, none has $script:TcBuildOutputPaneGuid)"
         }
         else {
             $result.status = 'not-found'
@@ -119,6 +124,7 @@ function Get-TcBuildOutputPane {
         $result.status = 'read'
     }
     catch {
+        if (Test-TcComMustRethrow -ErrorRecord $_) { throw }
         $result.error = "build pane '$($result.name)' found but its text is not readable: $($_.Exception.Message)"
     }
     return $result
@@ -132,14 +138,16 @@ function Get-TcBuildWarningLines {
         Compiler / build messages are "<file>(<line>) : warning: <code>: <text>" (TwinCAT PLC compiler) or
         "<file>(<line>,<col>): warning <code>: <text>" (MSBuild). The word "warning" there is written by the
         compiler, not by the VS UI: it stayed English in a zh-TW VS2022 (實測 2026-11-09, 4026), while the
-        UI lines around it ("已開始建置", "組建: 成功或已更新") were localized. A line matches when "warning"
-        follows a ':' (so a description that only contains the word does not count).
+        UI lines around it ("已開始建置", "組建: 成功或已更新") were localized. 實測 2026-11-09: zh-TW VS2022
+        and English XAE 4024 both print the English "warning:"; other languages are not verified. A line matches
+        when "warning" follows a ':' AND the same line has a compiler / MSBuild code (C\d{4}, or
+        CS/MSB/BC/NU/LNK + digits), so a description that only contains the word does not count.
     #>
     param([string[]]$Lines)
-    @($Lines | Where-Object { $_ -match '(?i):\s*warning\b' })
+    @($Lines | Where-Object { $_ -match '(?i):\s*warning\b' -and $_ -match '(?i)\b(C|CS|MSB|BC|NU|LNK|CA)\d{4}\b' })
 }
 
 # vsWindowKindOutput, https://learn.microsoft.com/en-us/dotnet/api/envdte.constants.vswindowkindoutput
 $script:TcVsWindowKindOutput = '{34E76E81-EE4A-11D0-AE2E-00A0C90FFFC3}'
-# VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid (value 實測 2026-11-09, VS2022 zh-TW)
+# VSConstants.OutputWindowPaneGuid.BuildOutputPane_guid (value 實測 2026-11-09, VS2022 zh-TW; 英文 XAE 4024 32-bit 同值,實測 2026-11-09)
 $script:TcBuildOutputPaneGuid = '{1BD8A850-02D1-11D1-BEE7-00A0C913D1F8}'

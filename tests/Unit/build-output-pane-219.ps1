@@ -109,11 +109,38 @@ Check 'unreadable: build pane text throws' ($r.status -eq 'unreadable' -and $r.n
 $r = & $mod { Get-TcBuildOutputPane -Dte $null }
 Check 'unreadable: no DTE' ($r.status -eq 'unreadable') (J $r)
 
+# (4e) a pane whose Guid is unreadable while others are read and none matches: unreadable, not not-found
+$r = Read-Pane (New-Dte @($tfs, (New-Pane 'Build' $buildGuid 't' -GuidThrows), $general))
+Check 'unreadable: some Guid null, no match -> not "not-found", error counts the panes' ($r.status -eq 'unreadable' -and $r.error -match '^1 of 3 ') (J $r)
+
+# (4f) mixed: the build pane is among the unreadable ones but another pane matches -> read
+$r = Read-Pane (New-Dte @((New-Pane 'x' $buildGuid 't' -GuidThrows), (New-Pane '建置' $buildGuid 'ok')))
+Check 'mixed: one Guid null, the build pane readable -> read' ($r.status -eq 'read' -and $r.name -eq '建置' -and $r.text -eq 'ok') (J $r)
+
+# (4g) all Guids read, none matches -> not-found (unchanged)
+$r = Read-Pane (New-Dte @($general, $tfs))
+Check 'not-found only when every Guid was read' ($r.status -eq 'not-found') (J $r)
+
+# (4h) busy / dead RPC is rethrown so Invoke-TcComRetry can retry: first call 0x80010001, second succeeds
+$script:UtBusyCalls = 0
+$busyDte = New-Dte @((New-Pane 'Build' $buildGuid 'after retry'))
+$busyDte.Windows | Add-Member -MemberType ScriptMethod -Name Item -Force -Value {
+    param($kind)
+    $global:UtBusyCalls++
+    if ($global:UtBusyCalls -eq 1) { throw [System.Runtime.InteropServices.COMException]::new('unit: call rejected', [int]0x80010001) }
+    $this.Win
+}
+$global:UtBusyCalls = 0
+$r = & $mod { param($d) Invoke-TcComRetry -MaxRetries 3 -OperationName 'unit read pane' -ScriptBlock { Get-TcBuildOutputPane -Dte $d } } $busyDte
+Check 'busy COM error is rethrown, retried by Invoke-TcComRetry, then read' ($r.status -eq 'read' -and $r.text -eq 'after retry' -and $global:UtBusyCalls -eq 2) ("calls=$global:UtBusyCalls " + (J $r))
+
 # --- Get-TcBuildWarningLines
 $lines = & $mod { param($t) Get-TcBuildWarningLines -Lines @($t -split "`r`n") } $zhText
 Check 'warningLines: the two compiler warning lines' (@($lines).Count -eq 2 -and $lines[0] -match 'C0139' -and $lines[1] -match 'C0297') (J $lines)
 $lines = @(& $mod { Get-TcBuildWarningLines -Lines @('Main.cs(3,5): warning CS0168: x', 'The word warning in a description', 'C:\p\MAIN.TcPOU(4) : error: C0046: x') })
 Check 'warningLines: MSBuild form yes, bare word / error no' (@($lines).Count -eq 1 -and $lines[0] -match 'CS0168') (J $lines)
+$lines = @(& $mod { Get-TcBuildWarningLines -Lines @('see the docs: warning levels are configurable', 'x.TcPOU(1) : warning: C0139: real') })
+Check 'warningLines: ": warning" without a compiler code is not a warning line' (@($lines).Count -eq 1 -and $lines[0] -match 'C0139') (J $lines)
 
 # --- Build-TcProject end to end with the mocked pane
 $sln = Join-Path $stateRoot 'Demo219\Demo219.sln'
@@ -156,7 +183,7 @@ Check 'Build zh-TW: buildPaneMessages = messages, 6 non-empty lines without CR' 
 Check 'Build zh-TW: warningLines = the 2 compiler warnings, no buildPaneError' (@($d.warningLines).Count -eq 2 -and $null -eq $d.PSObject.Properties['buildPaneError']) (J $d.warningLines)
 Check 'Build zh-TW: fallback warning count from warningLines (Error List mocked empty -> 0 rows read)' ($null -ne $d.PSObject.Properties['warnings']) (J $d.warnings)
 
-Set-Dte (New-Dte @($tfs, (New-Pane 'Build' $buildGuid "a`r`nb : warning: C1: x"), $general))
+Set-Dte (New-Dte @($tfs, (New-Pane 'Build' $buildGuid "a`r`nb : warning: C0001: x"), $general))
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check 'Build English: buildPaneName Build, 1 warning line' ($r.data.buildPaneStatus -eq 'read' -and $r.data.buildPaneName -eq 'Build' -and @($r.data.warningLines).Count -eq 1) (J $r.data)
 
@@ -168,6 +195,27 @@ Check 'Build not-found: status not-found, buildPaneError + buildPanes, empty lis
 Set-Dte (New-Dte @() -WindowThrows)
 $r = Build-TcProject -WarningAction SilentlyContinue
 Check 'Build unreadable: status unreadable with buildPaneError' ($r.data.buildPaneStatus -eq 'unreadable' -and $r.data.buildPaneError -match 'not readable' -and @($r.data.buildPaneMessages).Count -eq 0) (J $r.data)
+
+# --- truncation: 1000 lines (500 warnings) -> last 400 lines kept, warnings filtered from the FULL text then capped at 200
+$bigLines = @(1..1000 | ForEach-Object { if ($_ % 2 -eq 0) { "f$_.TcPOU($_) : warning: C0139: w$_" } else { "line $_" } })
+Set-Dte (New-Dte @((New-Pane 'Build' $buildGuid ($bigLines -join "`r`n"))))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+Check 'Build long: 400 last lines kept, flags + line count before the cap' ($d.buildPaneTruncated -eq $true -and $d.buildPaneLineCount -eq 1000 -and @($d.buildPaneMessages).Count -eq 400 -and $d.buildPaneMessages[-1] -eq 'f1000.TcPOU(1000) : warning: C0139: w1000' -and $d.buildPaneMessages[0] -eq 'line 601' -and @($d.messages).Count -eq 400) ("trunc=$($d.buildPaneTruncated) count=$($d.buildPaneLineCount) n=$(@($d.buildPaneMessages).Count)")
+Check 'Build long: warningLines from the full pane (500), capped at 200 with flags' ($d.warningLinesTruncated -eq $true -and $d.warningLinesCount -eq 500 -and @($d.warningLines).Count -eq 200 -and $d.warningLines[0] -match 'w2$') ("n=$(@($d.warningLines).Count) total=$($d.warningLinesCount)")
+
+# the character cap: 100 lines of 1000 chars -> 31 lines fit in 32000 chars
+$wide = @(1..100 | ForEach-Object { ('{0:D3}' -f $_) + ('x' * 997) })
+Set-Dte (New-Dte @((New-Pane 'Build' $buildGuid ($wide -join "`r`n"))))
+$r = Build-TcProject -WarningAction SilentlyContinue
+$d = $r.data
+$chars = (@($d.buildPaneMessages) | ForEach-Object { $_.Length + 1 } | Measure-Object -Sum).Sum
+Check 'Build wide: 32000-character cap reached first, last line kept' ($d.buildPaneTruncated -eq $true -and $d.buildPaneLineCount -eq 100 -and @($d.buildPaneMessages).Count -eq 31 -and $chars -le 32000 -and $d.buildPaneMessages[-1].StartsWith('100')) ("n=$(@($d.buildPaneMessages).Count) chars=$chars")
+
+# a short pane is not flagged
+Set-Dte (New-Dte @((New-Pane 'Build' $buildGuid "a`r`nb")))
+$r = Build-TcProject -WarningAction SilentlyContinue
+Check 'Build short: no truncation flags' ($null -eq $r.data.PSObject.Properties['buildPaneTruncated'] -and $null -eq $r.data.PSObject.Properties['warningLinesTruncated']) (J $r.data.buildPaneMessages)
 
 Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 exit [Math]::Min($fail, 255)
