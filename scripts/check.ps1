@@ -51,6 +51,9 @@
       unit        every tests/Unit/*.ps1 in its own powershell.exe (no IDE / runtime needed):
                   PASS when each exits 0 (and its "failed: N" line, if any, says 0); a script
                   that runs longer than 300 s is killed and fails. Skipped with -Fast (#43).
+                  #240: up to -UnitParallel scripts run at the same time (default = CPU count, max 4);
+                  the timing-sensitive ones (list $unitSerial) run alone afterwards. Each script's
+                  output is collected separately and printed as one block, in file order.
                   #118: each script runs with its own empty TCAUTO_STATE_DIR (removed afterwards)
                   and TCAUTO_TEST_FORBID_REAL_STATE=1, must dot-source tests/Unit/lib/UnitIsolation.ps1
                   before its first Import-Module, and fails when the module printed
@@ -66,6 +69,9 @@
     Skip unit and npm test (used by the pre-commit hook).
 .PARAMETER Strict
     Treat SKIP as a failure (used by CI).
+.PARAMETER UnitParallel
+    #240: how many tests/Unit scripts run at the same time. 0 (default) = env TCAUTO_CHECK_UNIT_PARALLEL
+    when set, else the CPU count, at most 4. 1 = the old sequential run.
 
 .EXAMPLE
     powershell.exe -NoProfile -File scripts/check.ps1 -Strict
@@ -79,7 +85,8 @@
 [CmdletBinding()]
 param(
     [switch]$Fast,
-    [switch]$Strict
+    [switch]$Strict,
+    [int]$UnitParallel = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -721,11 +728,41 @@ else {
         $savedForbid = $env:TCAUTO_TEST_FORBID_REAL_STATE
         $env:TCAUTO_TEST_FORBID_REAL_STATE = '1'
         try {
-            foreach ($uf in $unitFiles) {
+            # #240: parallel width. -UnitParallel, else env TCAUTO_CHECK_UNIT_PARALLEL, else CPU count (max 4).
+            $unitWidth = $UnitParallel
+            if ($unitWidth -le 0 -and $env:TCAUTO_CHECK_UNIT_PARALLEL -match '^\d+$') { $unitWidth = [int]$env:TCAUTO_CHECK_UNIT_PARALLEL }
+            if ($unitWidth -le 0) { $unitWidth = [Math]::Min(4, [Environment]::ProcessorCount) }
+            $unitWidth = [Math]::Max(1, $unitWidth)
+            # #240: scripts that assert a wall-clock bound (elapsed < N s, "answers at once", a real wait
+            # >= N s) or poll a real file / process with a short deadline. Under busy siblings they can
+            # miss the bound, so they run alone after the parallel group. Found 2026-11-12 by grepping
+            # Stopwatch / $sec -lt / ElapsedMs assertions in tests/Unit.
+            $unitSerial = @(
+                'activate-timeout.ps1'               # timeout-at-deadline 3 s <= t < 14 s, worst-case bound
+                'blocked-solution-ide.ps1'           # reset guard times out within 7 s / 12 s
+                'ide-solutions-lock.ps1'             # held mutex waited >= 1.5 s and < 30 s
+                'issue-report-121.ps1'               # 15000-token regex < 2 s
+                'launch-record-persist-73.ps1'       # restored record answers in < 5 s
+                'lifecycle-receipt-113.ps1'          # 3000-line history check < 5 s
+                'modal-scan-incomplete.ps1'          # UIA scan ms bounds, CLEAN_TIMEOUT < 15 s
+                'platform-project-mismatch.ps1'      # waits up to 20 s for a helper process
+                'project-save.ps1'                   # PROJECT_SAVE_TIMEOUT < 8 s
+                'reset-reload-prompt.ps1'            # "fast" / "well below -TimeoutSec" bounds of 5 - 6.5 s
+                'runtime-crashed.ps1'                # RuntimeCrashed < 4 s, timeout waits >= 1.9 s
+            )
+            $unitResult = @{}
+            # slowest first inside the parallel group so the long ones do not start last (the printed
+            # result stays in file order).
+            $unitSlowFirst = @('orphan-takeover-196.ps1', 'issue-report-78.ps1', 'install-manifest.ps1', 'connect-ide-pid-210.ps1', 'generated-docs.ps1', 'systemstate-diagnostics-194.ps1')
+            $parallelFiles = @($unitFiles | Where-Object { $unitSerial -cnotcontains $_.Name } | Sort-Object { $i = [array]::IndexOf($unitSlowFirst, $_.Name); if ($i -lt 0) { 99 } else { $i } }, Name)
+            $serialFiles = @($unitFiles | Where-Object { $unitSerial -ccontains $_.Name })
+
+            # Starts one script; returns a job. Own process per file (each imports the module with its own
+            # mocks). Output goes to files: reading redirected pipes synchronously can dead-lock on a full buffer.
+            function Start-UnitJob {
+                param($uf)
                 $env:TCAUTO_STATE_DIR = Join-Path $unitStateRoot $uf.BaseName
                 $null = New-Item -ItemType Directory -Path $env:TCAUTO_STATE_DIR -Force
-                # Own process per file (each imports the module with its own mocks). Output goes to
-                # files: reading redirected pipes synchronously can dead-lock on a full buffer.
                 $outFile = Join-Path ([IO.Path]::GetTempPath()) ("unit-{0}.out" -f [guid]::NewGuid().ToString('N'))
                 $errFile = "$outFile.err"
                 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -735,8 +772,15 @@ else {
                 # Windows PowerShell 5.1: without a handle taken while the process runs, ExitCode of a
                 # Start-Process -PassThru object reads back as $null after the exit.
                 $null = $p.Handle
+                return @{ File = $uf; Proc = $p; Sw = $sw; Out = $outFile; Err = $errFile }
+            }
+
+            # Collects the result of a finished (or timed-out) job into $unitResult[name] (lines) and $unitFailed.
+            function Complete-UnitJob {
+                param($job, [bool]$done)
+                $uf = $job.File; $p = $job.Proc
+                $lines = [System.Collections.Generic.List[string]]::new()
                 try {
-                    $done = $p.WaitForExit($unitTimeoutMs)
                     $killed = $true
                     if (-not $done) {
                         try { $p.Kill() } catch { }
@@ -744,35 +788,69 @@ else {
                         $killed = $p.WaitForExit(10000)
                     }
                     $code = if ($done) { $p.ExitCode } else { -1 }
-                    if (-not $killed) { $unitLines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
+                    if (-not $killed) { $lines.Add("$($uf.Name): still running 10 s after Kill (pid $($p.Id))") }
                     $out = @()
-                    foreach ($f in @($outFile, $errFile)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
+                    foreach ($f in @($job.Out, $job.Err)) { if (Test-Path -LiteralPath $f) { $out += @(Get-Content -LiteralPath $f) } }
                     # "failed: N" is printed by most of them; exit 0 is what counts
                     $failLine = @($out | Where-Object { $_ -match '^failed:\s*\d+' } | Select-Object -Last 1)
-                    $secs = [int]$sw.Elapsed.TotalSeconds
+                    $secs = [int]$job.Sw.Elapsed.TotalSeconds
                     # #118: the module printed this when the script tried to use the real state folder
                     $realState = @($out | Where-Object { $_ -match 'TCAUTO_REAL_STATE_REFUSED' } | Select-Object -First 3)
                     if ($realState.Count -gt 0) {
                         $unitFailed.Add($uf.Name)
-                        $unitLines.Add("$($uf.Name): tried to use the real TcAuto state folder (#118)")
-                        foreach ($l in $realState) { $unitLines.Add("  | $l") }
+                        $lines.Add("$($uf.Name): tried to use the real TcAuto state folder (#118)")
+                        foreach ($l in $realState) { $lines.Add("  | $l") }
                     }
                     elseif ($code -eq 0 -and -not ($failLine.Count -gt 0 -and $failLine[0] -notmatch '^failed:\s*0\s*$')) {
-                        $unitLines.Add("$($uf.Name): ok ($secs s)")
+                        $lines.Add("$($uf.Name): ok ($secs s)")
                     }
                     else {
                         $why = if (-not $done) { "timeout after $($unitTimeoutMs / 1000) s" } else { "exit $code" }
                         $unitFailed.Add($uf.Name)
-                        $unitLines.Add("$($uf.Name): $why ($secs s)")
-                        foreach ($l in @($out | Where-Object { $_ -match '^\s*FAIL\b' } | Select-Object -First 10)) { $unitLines.Add("  $l") }
-                        foreach ($l in @($out | Select-Object -Last 5)) { $unitLines.Add("  | $l") }
+                        $lines.Add("$($uf.Name): $why ($secs s)")
+                        foreach ($l in @($out | Where-Object { $_ -match '^\s*FAIL\b' } | Select-Object -First 10)) { $lines.Add("  $l") }
+                        foreach ($l in @($out | Select-Object -Last 5)) { $lines.Add("  | $l") }
                     }
                 }
                 finally {
                     $p.Dispose()
-                    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $job.Out, $job.Err -Force -ErrorAction SilentlyContinue
+                }
+                $unitResult[$uf.Name] = $lines
+            }
+
+            # Runs $files with at most $width processes at once.
+            function Invoke-UnitPool {
+                param($files, [int]$width)
+                $pending = [System.Collections.Generic.Queue[object]]::new()
+                foreach ($f in $files) { $pending.Enqueue($f) }
+                $running = [System.Collections.Generic.List[object]]::new()
+                try {
+                    while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+                        while ($pending.Count -gt 0 -and $running.Count -lt $width) { $running.Add((Start-UnitJob $pending.Dequeue())) }
+                        $progressed = $false
+                        foreach ($job in @($running)) {
+                            $exited = $job.Proc.HasExited
+                            if ($exited -or $job.Sw.ElapsedMilliseconds -gt $unitTimeoutMs) {
+                                $null = $running.Remove($job)
+                                Complete-UnitJob $job $exited
+                                $progressed = $true
+                            }
+                        }
+                        if (-not $progressed) { Start-Sleep -Milliseconds 200 }
+                    }
+                }
+                finally {
+                    # a crash of the check itself must not leave test processes behind
+                    foreach ($job in @($running)) { try { $job.Proc.Kill() } catch { }; try { $job.Proc.Dispose() } catch { }; Remove-Item -LiteralPath $job.Out, $job.Err -Force -ErrorAction SilentlyContinue }
                 }
             }
+
+            Invoke-UnitPool $parallelFiles $unitWidth
+            Invoke-UnitPool $serialFiles 1
+            # one block per script, in file order (never interleaved)
+            foreach ($uf in $unitFiles) { foreach ($l in @($unitResult[$uf.Name])) { $unitLines.Add($l) } }
+            $unitLines.Add("(unit: $($parallelFiles.Count) scripts up to $unitWidth at a time, then $($serialFiles.Count) timing-sensitive scripts alone)")
         }
         finally {
             if ($null -eq $savedStateDir) { Remove-Item Env:\TCAUTO_STATE_DIR -ErrorAction SilentlyContinue } else { $env:TCAUTO_STATE_DIR = $savedStateDir }
