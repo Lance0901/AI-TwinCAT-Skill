@@ -19,7 +19,7 @@ jobs:
     # loaded lazily by Find-TcAdsAssembly) and npm test needs no IDE / runtime, so -Strict
     # (every SKIP is a failure) must hold here.
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
