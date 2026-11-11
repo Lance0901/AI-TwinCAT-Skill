@@ -8,18 +8,25 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR cancels that PR's older run; master pushes always run to completion.
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     # No TwinCAT on the runner: the module loads no TwinCAT DLL at import (TwinCAT.Ads.dll is
     # loaded lazily by Find-TcAdsAssembly) and npm test needs no IDE / runtime, so -Strict
     # (every SKIP is a failure) must hold here.
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         # 22 = the minimum in mcp-server/package.json "engines" (#39); 24 = current LTS.
         # Raise the first entry together with "engines".
-        node: [22, 24]
+        # PRs run Node 22 only; the push to master runs both (saves a ~17 min Windows job per PR run).
+        node: ${{ github.event_name == 'pull_request' && fromJSON('[22]') || fromJSON('[22, 24]') }}
     name: check (Node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4
