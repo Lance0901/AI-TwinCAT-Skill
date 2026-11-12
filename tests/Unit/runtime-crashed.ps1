@@ -115,8 +115,68 @@ $v = & $mod { [PSCustomObject]@{ Delay = $script:TcComRetryDelayMs; SysMgr = $sc
 Check '#241 default TcComRetryDelayMs 1000 (busy backoff 1, 2, 4, 8 s)' ($v.Delay -is [int] -and $v.Delay -eq 1000) "$($v.Delay)"
 Check '#241 default TcSysManagerRetryMs 1000 (Connect-TcIde ITcSysManager probes 1 s apart)' ($v.SysMgr -is [int] -and $v.SysMgr -eq 1000) "$($v.SysMgr)"
 Check '#241 default TcAdsWaitTimeScale / TcResetTimeScale 1.0' ($v.Ads -is [double] -and $v.Ads -eq 1.0 -and $v.Reset -is [double] -and $v.Reset -eq 1.0) "$($v.Ads) / $($v.Reset)"
-$setters = @(Select-String -Path (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\*\*.ps1') -Pattern '\$script:(TcComRetryDelayMs|TcSysManagerRetryMs|TcAdsWaitTimeScale|TcResetTimeScale)\s*=')
-Check '#241 only the .psm1 assigns the knobs (no code path in src changes them)' ($setters.Count -eq 0) (@($setters | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', ')
+# #251: the "only the .psm1 assigns the knobs" guard parses every .ps1 / .psm1 below src/ and
+# mcp-server/ (recursive) with the PowerShell AST, so it also sees compound assignments (*=, ++),
+# typed assignments, Set-Variable / New-Variable (and the aliases sv / nv) naming a knob, and a knob
+# passed as [ref]. The self-test below plants each form in a temp folder first.
+$knobNames = @('TcComRetryDelayMs', 'TcSysManagerRetryMs', 'TcAdsWaitTimeScale', 'TcResetTimeScale')
+function Test-KnobVariable($Ast, [string[]]$Names) {
+    while ($Ast -is [System.Management.Automation.Language.AttributedExpressionAst]) { $Ast = $Ast.Child }   # [double]$x, [ref]$x
+    $Ast -is [System.Management.Automation.Language.VariableExpressionAst] -and $Names -contains ($Ast.VariablePath.UserPath -replace '^(script|global|local|private):', '')
+}
+function Find-KnobSetter([string[]]$Files, [string[]]$Names) {
+    foreach ($file in $Files) {
+        $tokens = $null; $errs = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errs)
+        $hits = $ast.FindAll({
+                param($n)
+                if ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) { return (Test-KnobVariable $n.Left $Names) }
+                if ($n -is [System.Management.Automation.Language.UnaryExpressionAst]) {
+                    return (@('PlusPlus', 'MinusMinus', 'PostfixPlusPlus', 'PostfixMinusMinus') -contains [string]$n.TokenKind) -and (Test-KnobVariable $n.Child $Names)
+                }
+                if ($n -is [System.Management.Automation.Language.ConvertExpressionAst] -and $n.Parent -isnot [System.Management.Automation.Language.AssignmentStatementAst]) {
+                    return ($n.Type.TypeName.Name -eq 'ref') -and (Test-KnobVariable $n.Child $Names)
+                }
+                if ($n -is [System.Management.Automation.Language.CommandAst]) {
+                    if (@('Set-Variable', 'New-Variable', 'sv', 'nv') -notcontains $n.GetCommandName()) { return $false }
+                    foreach ($e in $n.CommandElements) {
+                        if ($e -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $Names -contains $e.Value) { return $true }
+                    }
+                }
+                $false
+            }, $true)
+        foreach ($h in $hits) { [PSCustomObject]@{ File = $file; Line = $h.Extent.StartLineNumber; Text = $h.Extent.Text } }
+    }
+}
+$knobDir = Join-Path $env:TEMP ("knob-scan-{0}" -f [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path (Join-Path $knobDir 'a\b') -Force
+$knobForms = [ordered]@{
+    'plain.ps1'      = '$script:TcComRetryDelayMs = 5'
+    'a\b\deep.ps1'   = 'function f { $script:TcResetTimeScale = 0.1 }'
+    'compound.ps1'   = '$script:TcAdsWaitTimeScale *= 2'
+    'incr.ps1'       = '$script:TcSysManagerRetryMs++'
+    'setvar.ps1'     = 'Set-Variable -Name TcComRetryDelayMs -Scope Script -Value 1'
+    'setvarpos.psm1' = 'Set-Variable TcResetTimeScale 0.5 -Scope Script'
+    'newvar.ps1'     = "New-Variable -Name 'TcAdsWaitTimeScale' -Scope Script -Value 1 -Force"
+    'sv.ps1'         = 'sv TcSysManagerRetryMs 3'
+    'ref.ps1'        = 'function g([ref]$x) { $x.Value = 1 }; g ([ref]$script:TcComRetryDelayMs)'
+    'typed.ps1'      = '[double]$script:TcResetTimeScale = 0.5'
+}
+foreach ($k in $knobForms.Keys) { Set-Content -LiteralPath (Join-Path $knobDir $k) -Value $knobForms[$k] -Encoding UTF8 }
+Set-Content -LiteralPath (Join-Path $knobDir 'a\b\read.ps1') -Value '$x = $script:TcComRetryDelayMs; $script:TcComRetryDelayMsX = 1; Get-Variable TcResetTimeScale' -Encoding UTF8
+$knobFiles = @(Get-ChildItem -LiteralPath $knobDir -Recurse -File | Where-Object { @('.ps1', '.psm1') -contains $_.Extension } | ForEach-Object FullName)
+$selfHits = @(Find-KnobSetter -Files $knobFiles -Names $knobNames)
+$selfMissed = @($knobForms.Keys | Where-Object { $f = Join-Path $knobDir $_; @($selfHits | Where-Object { $_.File -eq $f }).Count -eq 0 })
+$selfFalse = @($selfHits | Where-Object { $_.File -like '*read.ps1' })
+Check '#251 knob guard self-test: =, nested folder, *=, ++, typed, Set-/New-Variable, sv, [ref] found; reads not' ($selfMissed.Count -eq 0 -and $selfFalse.Count -eq 0) ("missed: {0} | false: {1}" -f ($selfMissed -join ', '), (@($selfFalse | ForEach-Object Text) -join ', '))
+Remove-Item -LiteralPath $knobDir -Recurse -Force -ErrorAction SilentlyContinue
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$scanFiles = @(foreach ($d in 'src', 'mcp-server') { Get-ChildItem -LiteralPath (Join-Path $repoRoot $d) -Recurse -File | Where-Object { @('.ps1', '.psm1') -contains $_.Extension -and $_.FullName -notmatch '\\node_modules\\' } | ForEach-Object FullName })
+$psm1 = Join-Path $repoRoot 'src\TwinCATAutomation\TwinCATAutomation.psm1'
+$allSetters = @(Find-KnobSetter -Files $scanFiles -Names $knobNames)
+$setters = @($allSetters | Where-Object { $_.File -ne $psm1 })
+$psm1Setters = @($allSetters | Where-Object { $_.File -eq $psm1 })
+Check '#241/#251 only the .psm1 assigns the knobs, once each (src/ and mcp-server/, recursive, AST)' ($scanFiles.Count -gt 50 -and $setters.Count -eq 0 -and $psm1Setters.Count -eq $knobNames.Count) ("files {0}; outside: {1}; psm1 lines: {2}" -f $scanFiles.Count, (@($setters | ForEach-Object { "$($_.File):$($_.Line)" }) -join ', '), (@($psm1Setters | ForEach-Object { $_.Line }) -join ','))
 $scaleCases = @(@{ In = $null; Out = 1.0 }, @{ In = 1; Out = 1.0 }, @{ In = 0.25; Out = 0.25 }, @{ In = '0.5'; Out = 0.5 }, @{ In = 0; Out = 1.0 }, @{ In = -0.5; Out = 1.0 }, @{ In = 4; Out = 1.0 }, @{ In = 'x'; Out = 1.0 }, @{ In = [double]::NaN; Out = 1.0 })
 $scaleBad = @($scaleCases | Where-Object { (& $mod { param($x) Get-TcTimeScale -Value $x } $_.In) -ne $_.Out } | ForEach-Object { "$($_.In)" })
 Check '#241 Get-TcTimeScale: (0, 1] kept, $null / 0 / < 0 / > 1 / NaN / text -> 1.0' ($scaleBad.Count -eq 0) ($scaleBad -join ', ')
