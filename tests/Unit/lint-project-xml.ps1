@@ -19,6 +19,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
 
 $root = Join-Path $env:TEMP ("tcauto-unit-lintxml-{0}" -f [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
+$root = & (Get-Module TwinCATAutomation) { param($p) Get-TcLongPath $p } $root   # CI %TEMP% is an 8.3 short path (RUNNER~1); the engine reports long paths
 $n = 0
 function New-Case { $script:n++; return (New-LintFixture (Join-Path $root ("c{0:D2}" -f $script:n))) }
 function Ids($r) { return @($r.data.diagnostics | ForEach-Object { $_.ruleId } | Sort-Object -Unique) }

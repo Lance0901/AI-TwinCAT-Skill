@@ -31,6 +31,7 @@ function HasPassed($r) { return ($null -ne $r.data -and $r.data -is [System.Coll
 
 $root = Join-Path $env:TEMP ("tcauto-unit-lintcontract-{0}" -f [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
+$root = & (Get-Module TwinCATAutomation) { param($p) Get-TcLongPath $p } $root   # CI %TEMP% is an 8.3 short path (RUNNER~1); the engine reports long paths
 $n = 0
 function New-Fx([switch]$Reverse) { $script:n++; return (New-LintFixture (Join-Path $root ("c{0:D2}" -f $script:n)) -ReverseWriteOrder:$Reverse) }
 function Set-Profile($Fx, [string]$Json, [string]$Name = 'lint-profile.json') {
