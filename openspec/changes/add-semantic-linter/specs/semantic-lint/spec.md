@@ -53,8 +53,13 @@ IDE 已連線且目標 `.plcproj` 屬於連線中的 solution 時,`LintProject` 
 | baseline 無效或 profile 要求卻找不到 | `LINT_BASELINE_INVALID` |
 | 參數錯 / 檔案找不到 | `LINT_INPUT_INVALID` |
 | 引擎例外 | `LINT_ENGINE_ERROR` |
+| Constrained Language Mode、`Add-Type` 被擋 | `LINT_ENGINE_UNAVAILABLE` |
 
 多種同時發生時依 design.md D4 的優先序選 code,diagnostics 全部保留。
+
+#### Scenario: 受限環境
+- **WHEN** PowerShell 在 Constrained Language Mode
+- **THEN** 回 `LINT_ENGINE_UNAVAILABLE`,`data.languageMode` 帶實際值,hint 指向環境設定;MUST NOT 回 `LINT_ENGINE_ERROR`
 
 #### Scenario: 只有 warning
 - **WHEN** 分析完成,只有一筆 SCAN-TIMER-001 warning
@@ -87,8 +92,27 @@ IDE 已連線且目標 `.plcproj` 屬於連線中的 solution 時,`LintProject` 
 - **WHEN** profile `exclude` 列了 `FB_AxisControl.A90_Cyclic` 並附理由
 - **THEN** 它出現在 `coverage.excluded`(含理由)與 `data.profile.overrides`,不算 `notAnalyzed`;`FB_AxisControl` 的 SCAN 規則仍不評估;沒有附理由的 exclude MUST 讓 profile 載入失敗(`LINT_PROFILE_INVALID`)
 
+### Requirement: 合法程式不得被判解析失敗
+Parser SHALL 依 `research/st-syntax-inventory.md` 把每個語法構造分成「支援」、「不支援但安全略過」、「不支援即 parse fail」。含有「安全略過」構造的 section MUST 記入 `coverage.notAnalyzed`,MUST NOT 產生 `LINT_PARSE_FAILED`;同一 section 的後續結構錯誤也 MUST 降級為 `notAnalyzed`。`LINT_PARSE_FAILED` 只能用於確定非法的輸入。
+
+#### Scenario: 條件編譯 pragma
+- **WHEN** 實作含 `{IF defined (SIMULATION)} IF bSim THEN {ELSE} IF bReal THEN {END_IF} … END_IF`
+- **THEN** 該 section 記 `notAnalyzed`(reason `conditional-pragma`),MUST NOT 回 `LINT_PARSE_FAILED`
+
+#### Scenario: 例外處理區塊
+- **WHEN** 實作是 `__TRY fbAxis(Enable := TRUE); __CATCH(exc) … __ENDTRY`
+- **THEN** `fbAxis` 的呼叫被認出;CATCH 分支內的呼叫算條件呼叫
+
+#### Scenario: assignment attempt
+- **WHEN** 實作含 `itfBrake ?= fbBase;`
+- **THEN** tokenizer 不丟例外
+
+#### Scenario: typed literal 不吞後面的運算式
+- **WHEN** `IF tonA.ET > T#1S-tonB.ET THEN`
+- **THEN** `tonB` 出現在識別字引用中
+
 ### Requirement: 規則 metadata
-每條規則 SHALL 宣告穩定的 `id`、`version`、`category`、預設 `severity`、`confidence`、`blockable`、`requires`(前置條件)、已知限制,以及對應的 TE1200 規則與編譯器是否會報(未知就寫 unknown)。每筆 diagnostic MUST 帶 `ruleId` 與 `ruleVersion`。
+每條規則 SHALL 宣告穩定的 `id`、`version`、`category`、預設 `severity`、`confidence`、`blockable`(`true` / `false` / `pending`)、`requires`(前置條件)、已知限制、對應的 TE1200 規則與版別(Light / Full)、`compilerCatches`(`yes` / `no` / `unknown` / `measured:<日期>`)與 `machineImpact`(`none` / `project-integrity` / `behavior` / `crash`)。每筆 diagnostic MUST 帶 `ruleId`、`ruleVersion` 與 `machineImpact`。判斷確定的規則預設 `blockable: true`;依賴未實測 XAE 行為的規則 MUST 是 `pending`。
 
 #### Scenario: 規則邏輯改變
 - **WHEN** 某規則的偵測邏輯改變
@@ -103,7 +127,25 @@ IDE 已連線且目標 `.plcproj` 屬於連線中的 solution 時,`LintProject` 
 
 #### Scenario: heuristic 規則預設不擋
 - **WHEN** default profile 下出現 SCAN-TIMER-001
-- **THEN** 它是 warning,`blocking: false`
+- **THEN** 它是 warning,`blocking: false`,並列在 `data.unresolved`
+
+### Requirement: 影響機台行為的 warning 必須處置
+未被 suppress、`machineImpact` 為 `behavior` 或 `crash` 的 finding SHALL 列入 `data.unresolved`;非空時 `data.requiresDisposition` MUST 為 true,`success` 維持依 verdict 決定。`compilerCatches` 為 `yes` 的規則 MUST NOT 進 `unresolved`,也 MUST NOT 進 `coverage.blockingRulesSkipped`。`data.newSuppressions` MUST 列出本次新增、磁碟版本沒有的 suppression。SKILL.md 的 Failure contract MUST 規定 `requiresDisposition` 為 true 時 agent 不得呼叫 `EnableConfig` / `RunLifecycle` 或回報完成,並把 `newSuppressions` 逐條列給使用者。
+
+#### Scenario: warning 未處置
+- **WHEN** 只有一筆 SCAN-TIMER-005 warning(behavior),沒有 suppression
+- **THEN** `success: true`、`data.passed: true`、`data.requiresDisposition: true`,`data.unresolved` 有這一筆
+
+#### Scenario: 帶理由 suppress 後
+- **WHEN** agent 在該行上方加 `// tcauto-lint-disable-next-line SCAN-TIMER-005: 離開狀態時由外層 FB 重置`
+- **THEN** `data.unresolved` 為空、`requiresDisposition: false`,`data.newSuppressions` 列出這一行與理由
+
+### Requirement: EnableConfig 的 lint 摘要先不擋
+在 stale 偵測真機驗證之前,`EnableConfig` / `RunLifecycle` 的 lint 整合 SHALL 只在結果附 `data.lint` 摘要(verdict、unresolved 數、newSuppressions、ideChecked),MUST NOT 因 lint 結果改變 EnableConfig 的成功與否。blocking 模式(`LINT_GATE_BLOCKED`)只能在 stale 偵測真機驗證通過後、以明確參數開啟。
+
+#### Scenario: advisory
+- **WHEN** advisory 模式下 `EnableConfig`,lint 有 2 筆 unresolved
+- **THEN** EnableConfig 照常執行,`data.lint.unresolved` 為 2
 
 ### Requirement: Suppression 必須有理由
 Suppression SHALL 寫成 ST 註解 `tcauto-lint-disable-next-line|disable-line|disable-object <RULE-ID>[, ...]: <理由>`,或 profile `suppressions[]`(精確 `objectPath` + `ruleId` + `reason`)。沒有理由或理由少於 8 字的 suppression MUST NOT 生效,並產生 `LINT-SUPPRESS-001`;未知 rule id 產生 `LINT-SUPPRESS-002`。`blockable` 為 true 或 pending 的規則 MUST NOT 接受 inline suppression,只能用 profile `suppressions[]`;inline 寫了 MUST NOT 生效並產生 `LINT-SUPPRESS-004`。`LintCandidate` MUST 在 `data.newSuppressions` 列出候選新增、磁碟版本沒有的 inline suppression。被壓掉的 finding MUST 仍出現在 diagnostics,帶 `suppressed: true` 與理由,且不計入 errors / warnings。
@@ -145,8 +187,42 @@ Rule profile SHALL 是 JSON 資料(schema `tcauto-lint-profile/1`),只能設定�
 - **WHEN** 同一輸入在 en-US 與 zh-TW culture 的 PowerShell 各跑兩次
 - **THEN** 四次的 JSON 輸出 byte 相同
 
-### Requirement: MVP 規則
-系統 SHALL 提供下列規則,行為依 design.md D6:PROJECT-COMPILE-001/002/003、PROJECT-GUID-001、PROJECT-KIND-001、PROJECT-NAME-001、CONTRACT-ITF-001/002、SCAN-FBCALL-001/002、SCAN-TIMER-001/002、CONTRACT-ENUM-001/002、CONTRACT-DUT-001、POLICY-SYMBOL-001、POLICY-NAME-001/002、POLICY-CALL-001、POLICY-RETVAL-001。default profile 中 SCAN-* 與 PROJECT-COMPILE-003、PROJECT-NAME-001 MUST NOT 是 blocking;POLICY-* MUST 預設關閉。CONTRACT-ITF-002 的每一種差異只有在實測確認 TwinCAT 編譯器會擋時才能是 blocking,其餘 MUST 是 warning。
+### Requirement: AI 改磁碟檔造成的專案損毀
+系統 SHALL 在 Phase 1a 提供 `rule-catalog.md` 第 1 節的 PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC 規則。結構檢查 MUST 以 `research/tc-xml-schema-observed.md`(XAE 實際產生的檔案)為依據;語料沒觀察到的物件種類 MUST 記 `rulesNotRun`(reason `schema-not-observed`),不得猜測結構。XAE 實際行為未實測的規則 MUST 是 `blockable: pending`。XAE 原樣產生的檔案 MUST NOT 產生任何 PROJECT-* finding。
+
+#### Scenario: CDATA 被切開
+- **WHEN** agent 手寫的 `.TcPOU` 程式碼含 `]]>`,`<ST>` 變成兩段 CDATA
+- **THEN** 報 PROJECT-XML-003(blocking)
+
+#### Scenario: 複製檔案沒換 Id
+- **WHEN** `FB_B.TcPOU` 是複製 `FB_A.TcPOU` 改名而來,POU `Id` 相同
+- **THEN** 報 PROJECT-GUID-003,`blockableBasis: "pending-measurement"`(實測前)
+
+#### Scenario: XAE 原樣檔案
+- **WHEN** 對未修改的 4024 與 4026 測試專案跑 `LintProject`
+- **THEN** 沒有任何 PROJECT-XML / GUID / KIND / COMPILE / TSPROJ finding
+
+### Requirement: 判斷確定的機台行為規則預設 blocking
+SCAN-TEMPFB-001、PROJECT-TASK-002、SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001 SHALL 在 default profile 為 blocking(依 `rule-catalog.md`;規則依據的 TwinCAT 行為在取得 InfoSys 出處或實測前 MUST 是 `pending`)。heuristic 規則 MUST NOT 預設 blocking。
+
+#### Scenario: Timer 宣告在 METHOD VAR
+- **WHEN** `METHOD M_Wait : BOOL VAR ton : TON; END_VAR ton(IN := TRUE, PT := T#2S); M_Wait := ton.Q;`
+- **THEN** 報 SCAN-TEMPFB-001(blocking);改成 `VAR_INST` 後不報
+
+#### Scenario: busy-wait
+- **WHEN** `WHILE NOT bSensor DO END_WHILE`,`bSensor` 是 `AT %I*` 變數
+- **THEN** 報 SCAN-LOOP-001(blocking)
+
+#### Scenario: FOR 溢位
+- **WHEN** `i : BYTE; FOR i := 0 TO 255 DO … END_FOR`
+- **THEN** 報 SCAN-FOR-001(blocking)
+
+#### Scenario: PROGRAM 沒掛 task
+- **WHEN** PROGRAM `TestCam` 沒在任何 `.TcTTO` 的 `PouCall`,也沒被可達的 POU 呼叫
+- **THEN** 報 PROJECT-TASK-001(warning),列入 `data.unresolved`
+
+### Requirement: 其他規則
+系統 SHALL 依 `rule-catalog.md` 的 phase 提供其餘規則(SCAN-FBCALL、SCAN-TIMER、SAFETY、SCAN-SM / MC / REF / FBVAL / OUT / FLOAT / INTDIV、CONTRACT-*、POLICY-*)。default profile 中 POLICY-* MUST 預設關閉。CONTRACT-ITF-002 的每一種差異只有在實測確認 TwinCAT 編譯器會擋時才能是 blocking,其餘 MUST 是 warning。POLICY-INTERLOCK-001 的訊息與文件 MUST 寫明「不取代 TwinSAFE / 安全評估」。
 
 #### Scenario: Timer 只在 IF 內呼叫
 - **WHEN** `IF state = 3 THEN tonWebBreak(IN := x, PT := T#500MS); END_IF`,且 `tonWebBreak` 沒有其他呼叫

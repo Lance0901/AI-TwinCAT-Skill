@@ -39,7 +39,7 @@
 prototype 撞到、已在 prototype 修掉的 parser 坑(產品 parser 要有 fixture):
 
 1. `END_IF` / `END_CASE` 後面**不接分號**直接寫下一句(語料常見)。第一版把 `END_IF` 之後當成非陳述式起點,導致後面的 FB 呼叫沒被認出來,造成 SCAN-FBCALL 大量誤報。
-2. 一個 Action 的 `<Implementation>` 底下有多個 `<ST>` 元素(bfh `FB_MachineCtrl`,其中一個是空的)。prototype 只取最後一個;產品要定義清楚(全部串接或回報異常),未驗證 XAE 的語意。
+2. ~~一個 Action 的 `<Implementation>` 底下有多個 `<ST>` 元素(bfh `FB_MachineCtrl`)~~ **更正(2026-11-13 第二輪)**:語料沒有這種結構,是我用 `sed` 看範圍時把相鄰兩個 Action 的 `<ST>` 看成同一個(`tc-xml-schema-observed.md` 第 3 節逐一核對過)。產品版仍對這種結構做防禦性處理(design.md D3)。
 3. 中文註解、UTF-8 BOM、Tab 混用都沒問題。
 
 ## 3. 效能(同一台機器,單次量測,未做多次統計)
@@ -150,4 +150,4 @@ v1 3 筆、v2 1 筆,**全部誤報**:`FB_ThicknessAverage` 的 `rt` 在 `IF rese
 3. **型別知識是 SCAN 規則的誤報主因**:必須有明確的 FB 型別目錄;未知型別 = coverage 缺口,要回報,不能猜。
 4. **SCAN 規則只能 warning**;PROJECT 結構規則與有 baseline 的 CONTRACT 規則可以 blocking。
 5. **fail-closed 的單位是物件**:一個物件解析失敗時,其他物件照跑,但整體 `passed` 必須是 false(見 design.md D4)。
-6. **多 `<ST>` 元素、END_IF 不接分號** 這類真實語料的格式要寫進 parser fixture。
+6. **END_IF 不接分號** 這類真實語料的格式要寫進 parser fixture(多 `<ST>` 元素已更正為語料沒有,見第 2 節)。

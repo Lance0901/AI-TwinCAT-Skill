@@ -1,20 +1,38 @@
+## 每個 Phase 做完時,部署前能擋下的真 bug
+
+依 owner 決定(#252 留言「Owner 決定(Lance,2026-11-13)」)排序:Build 抓不到、會讓機台行為出錯的規則優先;AI 改磁碟檔造成的專案完整性問題留在 Phase 1a;相容性契約最後。規則細節見 `rule-catalog.md`。
+
+| Phase 做完 | 新增能擋下(blocking)的 | 新增必須處置的(warning,進 `unresolved[]`) | 編譯器本來就會擋? |
+|---|---|---|---|
+| 1a | AI 手改 XML 造成的損毀:not well-formed、CDATA 被切開;GUID 缺 / 錯 / 重複、種類與名稱不一致、Compile / tsproj / task 參照錯(實測前 `pending`,照 error 擋) | 專案目錄下的新 POU 沒列入 Compile(不會被編譯) | 多數未驗證;Build 會不會失敗正是 Phase 1a 的 IDE 實測項目 |
+| 1b | Timer / Trigger / Counter 宣告在 METHOD / FUNCTION 的 VAR(永遠不計時、每次都觸發);PROGRAM 每 cycle 執行兩次 | PROGRAM 沒掛 task 也沒被呼叫(永遠不跑) | 否 |
+| 2 | busy-wait(task 卡死)、FOR 計數器溢位(無窮迴圈)、迴圈變數 index 越界(0-based 習慣)、除以常數 0 | Timer 條件呼叫、狀態 timer 離開沒歸零、PT 未設、FB 讀取但沒呼叫、變數除數沒檢查 | 否;FOR 溢位編譯器只出 warning C0266(Build 照過);常數 index 越界編譯器會擋(InfoSys),所以只做寫入前;除以常數 0 待實測 |
+| 3 | 依驗證結果升級(誤報率低於事先寫明的門檻者) | 狀態機卡在未處理狀態、MC FB 條件呼叫 / Execute 不歸零 / 離開狀態沒停軸、REFERENCE 未初始化、FB 傳值、輸出多處寫入、浮點 `=` 比較、整數除法後轉 REAL | 否 |
+| 4 | 有 baseline 時 enum 值 / STRUCT layout 改變;profile 定義的 POLICY | Interface 簽章(寫入前加速) | Interface:是(待實測) |
+
+衡量指標:「`compilerCatches = no` 且 `machineImpact ∈ behavior / crash`」的規則數,以及在凍結的錯誤清單上量到的召回率(D7)。
+
 ## Context
 
 - #252(owner 開的):在 TcAuto 加一個 TwinCAT Semantic Linter,目標是**在 Activate / Download 之前**抓到 Build 抓不到、或 Build 之前就該擋下的問題。評分標準是「對真實 PLC 程式抓到多少真 bug、誤報多低、結果是否 deterministic」。
 - 現有工具:`Build-TcProject`(XAE Error List)、`Test-TcPlcProject`(CheckAllObjects)、repo 自己的 forbidden-pattern lint(只掃 TcAuto 原始碼,不掃 PLC 程式)。repo 內沒有任何 ST tokenizer(`src/` 與 `mcp-server/` 搜過)。
 - 限制:PowerShell 模組是核心;MCP tool = CLI action = cmdlet(`Invoke-TwinCATAutomation.ps1` 的 `$operationMap`、`mcp-server/scripts/Export-ToolSchema.ps1` 產生 `tools.json`、`scripts/Update-GeneratedDocs.ps1` 產生 adapters)。客戶安裝包只有 bundled node 24 + Windows PowerShell 5.1,沒有 .NET SDK。`src/` 已有 `Add-Type` 編譯的 C#(`Private/TcAdsHelper.cs`、`Private/ComRotHelper.cs`),`scripts/check.ps1` 不禁止 `Add-Type`。
-- 可行性實測:`research/corpus-feasibility.md`(2 個真實專案、throwaway prototype、seeded-bug 18 個)。TE1200 規則清單:`research/te1200-rules.md`。候選規則排序:`research/rule-candidates.md`。
+- 可行性實測:`research/corpus-feasibility.md`(2 個真實專案、throwaway prototype、seeded-bug 18 個)。TE1200 規則清單:`research/te1200-rules.md`。規則目錄:`rule-catalog.md`(取代初稿的 `research/rule-candidates.md` 排序)。XAE 實際產生的 XML 結構:`research/tc-xml-schema-observed.md`。ST 語法與 TwinCAT 行為出處:`research/st-syntax-inventory.md`。
+- Owner 已定案的 6 點(#252 留言,2026-11-13):(1) 先做 Build 抓不到、會讓機台行為出錯的規則,CONTRACT 最後;(2) 判斷確定的規則預設 blocking;(3) 影響機台行為的 warning 必須處置,先 advisory、stale 偵測真機驗證後才擋;(4) 客戶只有 TE1200 Light,Full 版才有的檢查自己做,並量測 Light 結果能否經 `BuildProject` 取得;(5) 更多語料與錯誤清單之後提供,不擋 Phase 1;(6) AI 直接改磁碟檔造成的 XML / GUID / 專案一致性問題必須包含,不延後。
 
 ## Goals / Non-Goals
 
 **Goals:**
+- 在部署前擋下「Build 抓不到、會讓機台行為出錯」的 bug;衡量指標是 `compilerCatches = no` 且 `machineImpact ∈ behavior / crash` 的規則數與在凍結錯誤清單上的召回率,不是功能清單。
+- 擋下 AI 直接改磁碟檔造成的專案檔損毀(XML、GUID、Compile / tsproj 參照)。
 - `LintCandidate`(寫入前,純文字)與 `LintProject`(寫入後,磁碟上的專案)兩個唯讀 tool,回傳 deterministic、可排序的結構化 diagnostics。
 - 不需要 IDE、不需要 runtime 就能跑(見 D2 的範圍表)。
-- fail closed:解析不了、context 不足、profile 壞掉、有東西沒分析到,都不能回 `passed: true`。
-- 能當 blocking 的只有「確定性事實」類規則(PROJECT 結構、有 baseline 的 CONTRACT、profile 明列的 POLICY);heuristic 規則預設只出 warning。
+- fail closed:解析不了、context 不足、profile 壞掉、有東西沒分析到,都不能回 `passed: true`;但**合法程式不得被判 `LINT_PARSE_FAILED`**(不認得的構造降級成 notAnalyzed,D3)。
+- 判斷確定的規則預設 blocking(owner 決定 2);heuristic 規則是 warning,但 `machineImpact ∈ behavior / crash` 的 warning 必須處置(D6)。
 
 **Non-Goals:**
-- 不取代 compiler、`CheckAllObjects`、TE1200。TE1200 已有的規則(未使用變數、除以零、陣列越界、CASE 無 ELSE…)不重做,除非有「寫入前就擋」或「客戶只有 Light 版」的明確價值(見 D6)。
+- 不取代 compiler、`CheckAllObjects`、TE1200。客戶只有 TE1200 Light(owner 決定 4):Full 版才有的檢查(除以零、陣列越界、REFERENCE / POINTER 未檢查、浮點比較…)由本 linter 做;Light 版 7 條的重疊規則仍可做,價值在寫入前擋與客戶沒啟用時(D11)。
+- 不是安全功能:POLICY-INTERLOCK 等規則的輸出明寫「不取代 TwinSAFE / 安全評估」。
 - 不用 LLM 當 gate;不 auto-fix;不碰 Activate / Login / Download / ADS / I/O。
 - MVP 不做控制流 / 資料流分析(RETURN 後的可達性、常數折疊、除以零、陣列 index 流)。
 
@@ -40,7 +58,9 @@
 - **延遲編譯**:不在 `Import-Module` 時編譯(避免每次 import 多 ~1 s),第一次呼叫 lint cmdlet 時編譯;MCP bridge 是常駐 PS session,之後不再付這個成本。
 - **ReloadModule 的陳舊型別**:.NET Framework 無法卸載 `Add-Type` 載入的 assembly。`.cs` 改了之後 `ReloadModule`(`Import-Module -Force`)會拿到舊引擎。做法:編譯前把 namespace 換成 `TcLint_<.cs 內容 SHA256 前 12 碼>`,cmdlet 依 hash 找型別;內容變了就是新型別。`data.engine.sourceHash` 回報實際用的版本(可在測試中斷言)。library 型別目錄等資料檔不放 C# 靜態欄位,每次呼叫由 PowerShell 讀入傳給引擎;`data.engine.catalogHash` 另外回報(review N3)。
 - **相依**:只引用 `System.Xml`、`System.Core`;XML 讀取一律 `DtdProcessing = Prohibit`、`XmlResolver = null`(不讀外部實體)。
-- 否決:預先編譯好的 DLL 隨安裝包發(要多一條 build/簽章流程,下載 zip 解出的 DLL 可能被 Zone.Identifier 擋 — 未驗證);Roslyn(PS 5.1 沒有);純 regex 規則(無法處理註解、字串、巢狀區塊,語料裡 `END_IF` 不接分號就會讓 regex 規則出錯)。
+- **受限環境**(review 第二輪 4-1):編譯前檢查 `$ExecutionContext.SessionState.LanguageMode`;不是 `FullLanguage`、或 `Add-Type` 失敗(csc 被擋、防毒攔截)→ `LINT_ENGINE_UNAVAILABLE`,hint 指向環境問題(AppLocker / WDAC / Constrained Language Mode、防毒),與引擎 bug 的 `LINT_ENGINE_ERROR` 分開。repo 的 `TcAdsHelper` / `ComRotHelper` 本來就依賴 `Add-Type`,lint 沒有增加新的失敗面。
+- **既有載入方式不一致**(review 第二輪 4-3):既有 C# 用固定型別名稱 + `PSTypeName` 檢查,reload 後一樣拿到舊版。抽出共用 `Import-TcCSharpSource` helper、三處一起改,列為後續 task(tasks 5.x),不在 Phase 1 強制。
+- 否決:預先編譯好的 DLL 隨安裝包發 — owner 定案維持 `Add-Type`。初稿的否決理由「DLL 可能被 Zone.Identifier 擋」不成立(`scripts/Build-TcAutoRelease.ps1` 已要求客戶先 `Unblock-File`,review 第二輪 4-2),真正的理由是不想多一條 release 建置路徑與「開發 / 發佈兩種載入方式」。Roslyn(PS 5.1 沒有);純 regex 規則(無法處理註解、字串、巢狀區塊)。
 
 ### D2. 輸入來源與「不需要 IDE」的範圍
 
@@ -63,7 +83,7 @@
 **LintProject**:讀磁碟上的 `.plcproj` 與它 `<Compile>` 列出的所有檔案(`.TcPOU` `.TcDUT` `.TcGVL` `.TcIO` `.TcTTO`,以及存在性檢查用的其他項目)。
 
 - `PlcProjectPath`:`.plcproj` 檔案路徑 → 不需要 IDE。PLC 名稱或省略 → 需要已連線的 IDE,透過 `Get-TcPlcProjectList` 的 `projectFile` 找檔案;非停用的 PLC 多於一個且沒指定 → `PLC_PROJECT_AMBIGUOUS`(沿用 `Resolve-TcPlcProjectPath -RequireSingle` 的語意與 `data.plcProjects`);找不到 → `PLC_PROJECT_NOT_FOUND`。
-- 也接受 `SolutionPath`(`.sln` / `.tsproj`)+ PLC 名稱,從 `.tsproj` 找 `.plcproj`(不需要 IDE;`.tsproj` 內 PLC 專案參照的格式要在 Phase 1 用語料確認,目前**未驗證**)。
+- 也接受 `SolutionPath`(`.sln` / `.tsproj`)+ PLC 名稱,從 `.tsproj` 找 `.plcproj`(不需要 IDE;`.tsproj` 以 `Plc/Project@GUID` 與 `PrjFilePath` 參照 `.plcproj`(兩個語料專案觀察到的格式,`research/tc-xml-schema-observed.md`;多 PLC 未觀察)。
 
 **IDE 編輯器有未存內容時**:
 
@@ -79,7 +99,7 @@
    - 目標 PLC 專案的文件 `Document.Saved == false` → `LINT_SOURCE_STALE`。
    - 有 code-changed 紀錄(`Register-TcCodeChange`)而目前 XAE 是 4024 → `LINT_SOURCE_STALE`(4024 的 .TcPOU 落地時機未確認,保守處理)。
    - 和目標 `.plcproj` 相關的項目讀不到 → `LINT_SOURCE_UNVERIFIED`;與目標無關的項目(例如 Scope 專案 `.tcmproj` 固定回 `Unchecked`,review S6)照 `Reset-TcSolution` 的慣例列出、不拒絕。
-   - IDE 沒連線:照跑,`data.source = { kind: "disk", ideChecked: false }`。之後若把 lint 當 lifecycle gate(D9),gate 只接受 `ideChecked: true`。
+   - IDE 沒連線:照跑,`data.source = { kind: "disk", ideChecked: false }`。之後若把 lint 當 lifecycle gate(D6),gate 只接受 `ideChecked: true`。
 3. **Phase 2 真機量**:4024 上 `WritePouCode` 後 .TcPOU 的落地時機;GUI 新增 POU 後 `projectCheck` 是否抓得到。量完再決定 4024 的保守規則能否拿掉。
 - 否決:`LintProject` 透過 COM 逐一讀所有物件文字(需要 IDE、100+ 個物件逐一 COM 呼叫成本未知、與「不需 IDE」目標衝突);只用 `Get-TcUnsavedChanges`(看不到 `.plcproj` 的記憶體變更 = fail open)。
 
@@ -94,6 +114,25 @@
 | 任何 lint 功能 | — | **永遠不需要**;不呼叫 ADS |
 
 ### D3. 解析深度
+
+**原則:合法程式不得被判 `LINT_PARSE_FAILED`**(review 第二輪 4-5、6-1~6-4)。每個語法構造在 `research/st-syntax-inventory.md` 標成三類之一:
+
+| 類別 | 行為 |
+|---|---|
+| 支援 | 正常解析 |
+| 不支援但安全略過 | 該 section 記 `coverage.notAnalyzed`(reason 例如 `conditional-pragma`、`unsupported-syntax:<項目>`),依 D3 的「按規則計算」影響 verdict;**不是** parse fail |
+| 不支援即 parse fail | 只限確定非法的輸入(例如字串未結束、全部構造都認得但區塊不配對) |
+
+- 任何物件只要含有「不支援但安全略過」的構造,後續的結構錯誤(例如區塊不配對)都視為「可能是我們不懂」,一律降級成 `notAnalyzed`,不報 `LINT-PARSE-*`。
+- 已知必須處理的構造(第二輪 review 的最小反例):
+  - **條件編譯 pragma** `{IF defined(...)}` / `{ELSIF}` / `{ELSE}` / `{END_IF}`:兩個分支都掃會造成區塊不配對(誤擋)或把被排除的呼叫算進來(漏抓);linter 不知道 compile define,沒啟用的分支本來就可能不是合法程式碼(`st-syntax-inventory.md`)。MVP:物件內一出現 `{IF` 就整個物件記 `notAnalyzed`(reason `conditional-pragma`);宣告區的條件 pragma 從 build 4024 起才會被評估(InfoSys)。
+  - **型別位置的非典型語法**:`FB_X<100>`(`VAR_GENERIC CONSTANT`,4026 起)、`fb : FB_X(nComNum := 1);`(FB_init 參數)、`ARRAY[*]`(只在 VAR_IN_OUT)要認得;運算式內允許 `:=`、`=>` 右側可留空。
+  - InfoSys 查不到的 `?=` 與 `**`:InfoSys 沒收錄不代表編譯器不收,lexer 要認得這兩個 token,物件記 `notAnalyzed`(reason `unverified-syntax`),不判 parse fail。
+  - **`__TRY` / `__CATCH` / `__FINALLY` / `__ENDTRY`**:當區塊關鍵字;CATCH 分支算條件區塊。
+  - **`S=`、`R=`、`REF=`**:tokenizer 要認得,不得丟 `unexpected char`;`S=` / `R=` 的左值算寫入。
+  - **`VAR_GENERIC CONSTANT`**:宣告 parser 認得或安全略過。
+  - **typed literal**:依前綴各自定義字元集合,`T#1S-tonB.ET` 不得被吞成一個 token(prototype 的錯誤)。
+- 每項是否合法、版本限制:以 `research/st-syntax-inventory.md` 的 InfoSys 連結為準;查不到的標未驗證,並在 tasks 排實測。
 
 **Tokenizer**(prototype 已實作並在語料 100% 通過):
 - 註解 `//`、`(* *)`(可巢狀)、`/* */`(TwinCAT 3 是否支援 `/* */`:**未驗證**,prototype 有支援,產品版要查 InfoSys 或實測再決定)。
@@ -117,7 +156,7 @@
 - 識別字引用集合、成員存取集合(`fb.Q`)。
 - Phase 3 才加:賦值左值、RETURN/EXIT/CONTINUE 位置與可達性。
 
-**TcPOU XML**:語料實際出現 `<POU>` `<DUT>` `<GVL>` 與子物件 `<Method>` `<Action>`;`<LineIds>` 忽略。**`<Itf>`(.TcIO)、`<Property>`(`<Get>` `<Set>`)、`<Transition>` 的結構未驗證**:語料沒有這些物件,prototype 的 seeded Interface XML 是我自己寫的(review S15:seeded S10/S11 命中是循環論證)。Phase 1 要在本機副本用 `AddInterface` / `AddPouMember` 建出真實物件當 fixture,再寫讀取程式。`<Implementation>` 下有多個 `<ST>` 元素(語料 bfh `FB_MachineCtrl` 有)時的語意**未驗證**:確認前該物件回報 `LINT-XML-002` warning、全部串接分析,但 diagnostics 標 `lineUnreliable: true`(串接會讓行號對不上 `Get-TcPouCode`,review N4)。
+**TcPOU XML**:語料實際出現 `<POU>` `<DUT>` `<GVL>` 與子物件 `<Method>` `<Action>`;`<LineIds>` 忽略。**`<Itf>`(.TcIO)、`<Property>`(`<Get>` `<Set>`)、`<Transition>` 的結構未驗證**:語料沒有這些物件,prototype 的 seeded Interface XML 是我自己寫的(review S15:seeded S10/S11 命中是循環論證)。Phase 1a(tasks 1a.8)要在本機副本用 `AddInterface` / `AddPouMember` 建出真實物件當 fixture,再寫讀取程式。`<Implementation>` 下有多個 `<ST>` 元素:**語料沒有**(初稿誤記 bfh `FB_MachineCtrl` 有,`research/tc-xml-schema-observed.md` 第 3 節更正);XAE 會不會產生這種結構未驗證。防禦性處理:遇到時該物件回報 `LINT-XML-002` warning、全部串接分析,但 diagnostics 標 `lineUnreliable: true`(串接會讓行號對不上 `Get-TcPouCode`,review N4)。
 
 **非 ST 實作(SFC / CFC / LD / FBD / IL / NWL)與 PLCopen XML**:不分析。
 - 該 section 記進 `data.coverage.notAnalyzed[]`,reason `language:CFC` 等。
@@ -129,6 +168,7 @@
 - coverage 缺口**按規則計算**(review S5):非 ST 的 section 只影響「需要該 section 的規則」(SCAN-*、POLICY-CALL/RETVAL);PROJECT-*、CONTRACT-DUT/ENUM、宣告區規則照跑、不受影響。否則一個 CFC Action 會讓整個專案永遠 `incomplete`,逼使用者大量 exclude。
 - 某條**預設 blocking** 的規則對某物件沒評估(例:CONTRACT-ITF 遇到 library 裡的 Interface,review S1)→ 記進 `blockingRulesSkipped[]`,verdict 為 `incomplete`;要接受這種缺口,profile 必須在 `acceptSkips[]` 明列(ruleId + objectPath + 理由),接受的項目列在輸出。
 - 非 blocking 規則的跳過只記 `rulesSkipped[]`,不影響 verdict。
+- **`compilerCatches = yes` 的規則不進 `blockingRulesSkipped[]`**,只記 `rulesSkipped[]`(review 第二輪 1-3):Build 才是這類錯誤的權威;否則專案大量使用 library Interface(Tc3_EventLogger 等)時,CONTRACT-ITF 會讓每次結果都 `incomplete`,agent 會學會忽略 `success: false`。
 - `exclude` 的 section 仍讓父物件算 partially-analyzed(review S4):排除 CFC Action 不會讓 SCAN 規則開始評估那個 FB;`exclude` 只免除 ST 分析,PROJECT-* 照跑。
 
 ### D4. Fail-closed 語意
@@ -137,7 +177,7 @@
 
 | 情境 | verdict | success | passed | error.code | data |
 |---|---|---|---|---|---|
-| 沒有 finding,或只有非 blocking finding | pass | true | true | — | diagnostics 照列 |
+| 沒有 finding,或只有非 blocking finding | pass | true | true | — | diagnostics 照列;有 behavior / crash 類 warning 時 `requiresDisposition: true` + `unresolved[]`(D6) |
 | 有 blocking finding | fail | false | false | `LINT_FAILED` | 完整 diagnostics |
 | 有物件解析失敗(tokenize / 宣告 / 區塊結構) | fail | false | false | `LINT_PARSE_FAILED` | `LINT-PARSE-*` diagnostic(blocking)+ 其他物件照跑的結果 |
 | 有規則需要的 section 沒分析到(非 ST、XML 讀不到但檔案存在),或預設 blocking 規則被跳過且未 `acceptSkips` | incomplete | false | false | `LINT_INCOMPLETE` | `coverage.notAnalyzed[]` / `blockingRulesSkipped[]` |
@@ -150,8 +190,10 @@
 | IDE 已連線且 stale / 讀不到目標專案的狀態 | 不輸出 | false | 不輸出 | `LINT_SOURCE_STALE` / `LINT_SOURCE_UNVERIFIED` | `data.unsaved` |
 | 參數錯(未知 ObjectKind、Implementation 非 ST、overlay 名稱 / 種類不符…) | 不輸出 | false | 不輸出 | `LINT_INPUT_INVALID` | |
 | 引擎內部例外 | 不輸出 | false | 不輸出 | `LINT_ENGINE_ERROR` | 例外放 `data.engineDetail`;**不得**退回「部分結果 + passed」 |
+| Constrained Language Mode、`Add-Type` 被擋 / csc 失敗 | 不輸出 | false | 不輸出 | `LINT_ENGINE_UNAVAILABLE` | `data.languageMode`;hint 指向環境(D1) |
 
-- 處理順序(也是 code 優先序,review S17):先解析輸入與 PLC(`LINT_INPUT_INVALID` / `PLC_PROJECT_*`)→ stale 檢查(`LINT_SOURCE_*`)→ 載入 profile(要知道 solution 目錄才能探索)→ baseline → 分析。分析後多種結果並存時:`LINT_ENGINE_ERROR` > `LINT_PARSE_FAILED` > `LINT_CONTEXT_REQUIRED` > `LINT_INCOMPLETE` > `LINT_FAILED`。diagnostics 一律完整保留。
+- 處理順序(也是 code 優先序,review S17):引擎可用性(`LINT_ENGINE_UNAVAILABLE`)→ 解析輸入與 PLC(`LINT_INPUT_INVALID` / `PLC_PROJECT_*`)→ stale 檢查(`LINT_SOURCE_*`)→ 載入 profile(要知道 solution 目錄才能探索)→ baseline → 分析。分析後多種結果並存時:`LINT_ENGINE_ERROR` > `LINT_PARSE_FAILED` > `LINT_CONTEXT_REQUIRED` > `LINT_INCOMPLETE` > `LINT_FAILED`。diagnostics 一律完整保留。
+- `LINT_PARSE_FAILED` 只用在 D3 的「不支援即 parse fail」類;含任何「安全略過」構造的物件一律降級為 `notAnalyzed`。
 - 「不輸出」= `data.passed` 欄位不存在(不是 false),避免呼叫者只看 `passed` 欄位。
 - **parser 誤擋的出口**:`LINT_PARSE_FAILED` 可能是我們的 parser 不支援某個合法語法。hint 寫明:先 `BuildProject`;若 Build 成功,這是 linter 的限制 → 開 issue,並在 profile `exclude` 中帶理由排除該物件(排除的物件列在 `coverage.excluded[]`,不算 `notAnalyzed`)。不提供「忽略 parse 錯誤」的參數。
 - 每個新 error code 依 `CODING_STANDARDS.md` 第 5 節進 `$script:TcErrorHints` 並在 `docs/troubleshooting.md` 有一節(`scripts/check.ps1` 的 `errorcodes` 會檢查)。
@@ -171,13 +213,17 @@ blockable     能不能當 blocking(heuristic 規則 false;profile 可以明確�
 requires      前置條件:project-context / baseline / ide / type-catalog
 appliesTo     TwinCAT 版本或語言限制;不知道就寫 "unknown"
 limits        已知誤報來源(文字,給 GetLintRule)
-te1200        對應的 SA 規則(有的話)
-compilerCatches  yes / no / unknown(有的話 → 價值只在寫入前)
+te1200        對應的 SA 規則與版別(Light / Full)
+compilerCatches  yes / no / unknown / measured:<日期>(mutation testing 以 BuildProject 實測後填,D7)
+machineImpact none / project-integrity / behavior / crash(owner 決定 1;分期與「必須處置」都依這欄)
+phase         1a / 1b / 2 / 3 / 4(見 rule-catalog.md)
 ```
+
+`blockable` 的預設:判斷確定(偵測不依賴猜測)的規則預設 `true`(owner 決定 2,例:SCAN-TEMPFB-001、SCAN-LOOP-001、SCAN-FOR-001);依賴未實測 XAE 行為的 `pending`;heuristic 的 `false`。
 
 **blocking 的計算**(每筆 finding):`blocking = !suppressed && severity >= FailOn && (confidence == high || profile 對此 rule 明確設 "blocking": true)`,且 `blockable == false` 的規則**不受 `FailOn` 影響**,只有 profile 明確設 `"blocking": true` 才會 blocking(review S17:否則 `-FailOn warning` 會讓 COMPILE-003 擋掉 `_bak` 檔);此時 diagnostic 帶 `blockingSource: "profile"`。`FailOn` 預設 `error`;可設 `warning`;不提供 `never`。參數 `-FailOn` 優先於 profile 的 `failOn`,但只能更嚴、不能更鬆(profile 說 `warning`、參數說 `error` → 用 `warning`)。
 
-`blockable` 有三值:`true`、`false`、`pending`。`pending` = 偵測是確定的,但「這是不是 bug」依賴未實測的 XAE 行為(review S14):severity 照 error,blocking 照算,但 diagnostic 帶 `blockableBasis: "pending-measurement"`,Phase 1 實測完改成 true 或 false。
+`blockable` 有三值:`true`、`false`、`pending`。`pending` = 偵測是確定的,但「這是不是 bug」依賴未實測的 XAE 行為(review S14):severity 照 error,blocking 照算,但 diagnostic 帶 `blockableBasis: "pending-measurement"`,Phase 1a(tasks 1a.7)實測完改成 true 或 false。
 
 **Suppression**:用 ST 註解,不用 pragma(避免任何編譯器副作用;未知 attribute 對編譯器的影響**未驗證**)。
 
@@ -218,7 +264,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 ```
 
 - 載入:`-RuleProfile` 給內建名稱(`default`、之後的 `robust-solution`)或檔案路徑。未給時自動探索(review S3):從 `.plcproj` 所在目錄往上找,遇到第一個含 `.sln` 的目錄、或 git root、或磁碟根就停;途中第一個 `.tcauto\lint-profile.json` 生效。`.tcauto\` 存在但 profile 讀不到 / 壞掉 → `LINT_PROFILE_INVALID`(不退回 default)。text-only 的 LintCandidate 不探索,用 `default` 並在 `data.profile.source` 寫明。
-- `data.profile = { name, source, sha256, overrides[] }` 一律回報。`overrides[]` 列出所有相對 default 變弱的設定:被關掉或降級的預設 blocking 規則、`exclude`、`acceptSkips`、`suppressions`、拿掉的 baseline。agent 偷改 profile 會直接出現在輸出。(是否自動探索 → owner 決定,見 Open Questions 1。)
+- `data.profile = { name, source, sha256, overrides[] }` 一律回報。`overrides[]` 列出所有相對 default 變弱的設定:被關掉或降級的預設 blocking 規則、`exclude`、`acceptSkips`、`suppressions`、拿掉的 baseline。agent 偷改 profile 會直接出現在輸出。(是否自動探索 → 見 Open Questions 2。)
 - 驗證:未知欄位、未知 rule id、型別錯、`extends` 循環、`exclude` / `suppressions` 沒理由 → `LINT_PROFILE_INVALID`,不跑。
 - 樣式比對只支援精確名稱與 glob(`*` `?`),**不支援 regex**(避免 catastrophic backtracking 把 lint 卡死;之後若要 regex,用 .NET `Regex` 的 matchTimeout 並在逾時時 fail closed)。
 - 不可執行:沒有 script、沒有路徑注入(profile 內的路徑一律相對 profile 檔所在目錄,解析後不得跳出 solution 目錄)。
@@ -240,9 +286,9 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 - 探索(review S10):預設位置 `.tcauto\lint-baseline.json` 有檔就一律載入,不需要 profile 指定;profile 要關掉它必須明寫並列進 `overrides[]`。
 - 比對以 **baseline 為主迴圈**(review S8;prototype 是以目前型別為主,會漏):baseline 有、目前沒有 → CONTRACT-*-001(型別刪除或改名);kind 不同(ENUM → ALIAS)→ 報;比對前展開 STRUCT `EXTENDS` 的基底欄位與專案內 alias;`{attribute 'pack_mode'}`、ENUM base type、alias 底層型別都納入比對(都會改 ADS layout)。
 - 數值比對前把 IEC 整數字面值正規化成數值(`16#0A`、`INT#10`、`10` 視為相同,一律 `CultureInfo.InvariantCulture`,review S9);無法求值的 expression 才降為 warning/medium 並比對文字。
-- 產生 baseline 是寫檔動作 → 獨立 cmdlet `New-TcLintBaseline`(Phase 3),顯示內容、不覆寫既有檔(除非 `-Force`)。MVP 只讀 baseline。
-- 放哪:建議 `<solution 目錄>\.tcauto\lint-baseline.json`,進版本控制(見 Open Questions 2)。
-- 隱含 enum 值:無明確值的成員依前一個 +1 計算(IEC 61131-3 慣例;TwinCAT 的實際行為要在 Phase 3 附 InfoSys ENUM 頁或實測,目前**未驗證**);前一個是非整數 expression 時記為未知,該成員只比對名稱,並出 `rulesSkipped`(prototype 的 S12 就是隱含值跟著變:`Manual 0→1` 讓 `Auto 1→2`,兩筆都報)。
+- 產生 baseline 是寫檔動作 → 獨立 cmdlet `New-TcLintBaseline`(Phase 4),顯示內容、不覆寫既有檔(除非 `-Force`)。MVP 只讀 baseline。
+- 放哪:建議 `<solution 目錄>\.tcauto\lint-baseline.json`,進版本控制(見 Open Questions 3)。
+- 隱含 enum 值:無明確值的成員依前一個 +1 計算(IEC 61131-3 慣例;TwinCAT 的實際行為要在 Phase 4 附(見 `research/st-syntax-inventory.md`) InfoSys ENUM 頁或實測,目前**未驗證**);前一個是非整數 expression 時記為未知,該成員只比對名稱,並出 `rulesSkipped`(prototype 的 S12 就是隱含值跟著變:`Manual 0→1` 讓 `Auto 1→2`,兩筆都報)。
 
 **Diagnostic 格式**(issue 的 schema 加上欄位):
 
@@ -263,133 +309,132 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 
 **排序**(穩定、與 culture 無關):`file`(ordinal,先轉小寫 invariant)→ `objectPath` → section 順序(declaration < implementation)→ `line` → `column` → `ruleId`(ordinal)→ `message`(ordinal)。所有比較用 `StringComparer.Ordinal` / `ToLowerInvariant`;不依賴 `Dictionary` 列舉順序;檔案清單先排序再處理。CI 在 en-US 與 zh-TW culture 各跑一次比對 byte(本機 PowerShell tool 是 en-US、Bash 的 powershell.exe 是 zh-TW)。
 
-### D6. 規則目錄
+### D6. Warning 的處置機制(owner 決定 3)
 
-完整候選清單與排序在 `research/rule-candidates.md`;這裡定義 MVP 的 8 項。欄位:偵測演算法 / 預設 severity·confidence / blocking / 誤報來源 / 編譯器或 TE1200 會不會抓 / 實測依據。
+`success: true` 的 warning 會被 LLM agent 直接略過(review 第二輪 1-2)。加一層「必須處置」:
 
-1. **PROJECT-COMPILE-001/002/003**(`.plcproj` `<Compile>`)
-   - 001:`<Compile Include>` 指向不存在的檔(所有項目,不只 PLC 物件副檔名)。error/high,blockable `pending`(XAE 載入 / Build 遇到時的行為未實測)。
-   - 002:同一檔案出現兩次。error/high,blockable `pending`。
-   - 路徑比較前先做 MSBuild unescape(`%20` `%27` 等),再相對 `.plcproj` 目錄 `Path.GetFullPath` 正規化(`.\POUs\X` 與 `POUs\X` 視為同一個),大小寫不敏感(review S13)。TwinCAT 對含空白 / `'` / `%` 檔名實際寫入的格式,Phase 1 實測。
-   - 003:`.plcproj` 目錄底下有 `.TcPOU/.TcDUT/.TcGVL/.TcIO/.TcTTO` 但沒列在 `<Compile>`(不會被編譯)。warning/high,**不** blocking(可能刻意保留)。
-   - 誤報來源:語料複製漏檔(prototype 實際發生一次,見 research 4.1);`_bak` 類目錄在專案目錄內。
-   - 編譯器:001 載入 / Build 時 XAE 的行為**未驗證**;003 編譯器看不到(檔案根本沒被編譯),是本 linter 的獨有價值。
-   - 實測:seeded S01/S02/S03 命中;語料 0 誤報(扣掉複製失誤)。
-2. **PROJECT-GUID-001 / PROJECT-KIND-001 / PROJECT-NAME-001**
-   - GUID-001:同一 `.plcproj` 內兩個物件(含 Method / Action / Property 子物件)`Id` 相同。error/high,blockable `pending`:XAE 遇到重複 Id 的行為**未驗證**(若 XAE 自動重新產生並正常 Build,就改成 warning)。
-   - KIND-001:副檔名與根元素不符(`.TcDUT` 內是 `<POU>`)。error/high,blockable `pending`。
-   - Phase 1 在本機測試副本實測:三種情況下 XAE 開專案與 Build 的行為(只需 IDE、不需 runtime),附實測紀錄後定案。
-   - NAME-001:檔名與物件名不同。warning/high,不 blocking(XAE 是否允許**未驗證**)。
-   - 實測:seeded S04/S05 命中;語料 0 筆。
-3. **CONTRACT-ITF-001/002**(Interface Method / Property 簽章)
-   - 對每個 `IMPLEMENTS I_X`:收集 `I_X`(含 `EXTENDS` 的 Interface 鏈)的 Method / Property;FB(含專案內 `EXTENDS` 的基底 FB 鏈)必須有同名成員;回傳型別、`VAR_INPUT/OUTPUT/IN_OUT` 的順序、名稱、型別文字(正規化空白與大小寫)一致。Property 比對型別與 Get/Set 是否存在。
-   - 001 缺成員、002 簽章不同。**嚴格度依實測決定**(review S12):Phase 3 在本機用 XAE 逐項實測編譯器擋不擋 — 回傳型別不同、參數型別不同、參數名稱不同、VAR_OUTPUT 順序、Property 只有 Get 的介面被實作成 Get+Set、ABSTRACT FB 未實作 — 只有編譯器會擋的差異設 error/high blocking,其餘 warning/medium;每項附實測日期與環境。實測前一律 warning/medium。
-   - Interface 或基底 FB 在 library 裡(專案內找不到)→ 不評估,`rulesSkipped` reason `type-outside-project`。
-   - 誤報來源:型別別名(`ALIAS`)與 qualified 名稱(`Lib.T` vs `T`)— 比對前展開專案內 alias,不同寫法但無法證明相等時降為 warning/medium。
-   - 編譯器:會抓(實作不完整會編譯錯誤 — 依 IEC 語意推論,**未實測**),價值是 `LintCandidate` 在寫入前擋。
-   - 實測:seeded S10/S11 命中;語料沒有 Interface(語料缺口)。
-4. **SCAN-FBCALL-001/002**(FB instance 沒有呼叫點)
-   - 型別判斷只用**型別目錄**:專案內 `FUNCTION_BLOCK` + 內建 library 目錄(版本化資料檔,先放 Tc2_Standard、Tc2_MC2 常用 FB,每個名稱附 InfoSys 來源)+ profile `typeCatalog.functionBlocks`。目錄外的型別 → 不評估(`rulesSkipped` reason `unknown-type`),**不得用名稱前綴猜**(prototype v1 用 `MC_` 前綴猜,56 筆全誤報)。
-   - 只看 `VAR` / `VAR_STAT` / `VAR_INST`(不看 INPUT/OUTPUT/IN_OUT、POINTER、REFERENCE);instance 在同一物件的本體、Method、Action 都沒有 `inst(...)` 也沒有 `inst.Method(...)`。
-   - 標準 FB(TON、R_TRIG… 沒有 Method 的)只算 body 呼叫:`tonX.M_Reset()` 之類只呼叫 Method 而從不呼叫 body,`.Q` 永遠不更新(review N1)。
-   - 專案內有任何 FB `EXTENDS` 該 FB → 它宣告的 instance 不評估,`rulesSkipped` reason `inherited-use`(review S18)。
-   - 001:有被引用(例如讀 `.Q`)但從不呼叫 → warning/medium,不 blocking(讀到的是永遠不更新的輸出)。002:完全沒被引用 → info/high(TE1200 SA0033 同類)。
-   - 物件有任何未分析的 section(CFC Action 等)→ 整個物件不評估。
-   - 誤報來源:instance 透過 `REFERENCE` / 指標 / Interface 交給別的物件呼叫;基底 FB 宣告、衍生 FB 呼叫(MVP 不追繼承,`EXTENDS` 專案外的物件 → 不評估);`{attribute 'call_after_init'}` 之類由系統呼叫的情況(**未驗證**)。
-   - 實測:v2 語料 0 筆誤報(001)、2 筆真的未使用(002);seeded S08/S09 命中。
-5. **SCAN-TIMER-001 / 002**(Timer / Trigger 條件呼叫)
-   - 目標型別:`TON TOF TP LTON LTOF LTP R_TRIG F_TRIG CTU CTD CTUD`(Tc2_Standard)+ profile `typeCatalog.cyclicContract`。
-   - 001:instance 所有本體呼叫點都在 IF / CASE 內,**且**沒有任何一個頂層 IF…ELSE 的所有分支都呼叫它 → warning/medium,不 blocking。
-   - 002:只在 Action / Method 內呼叫,而那個 Action 沒有被本體無條件呼叫(Method 一律無法證明)→ info/low。
-   - 誤報來源:CASE 的每個分支都呼叫(MVP 只處理 IF…ELSE,CASE…ELSE 留到 Phase 2);刻意的「只在某模式更新」(語料 `TestCam.R_14Eng`);狀態機在每個狀態都呼叫同一 timer。
-   - 已知漏抓(寫進 `limits`,review N2):`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫(實際上是條件呼叫);外層 FB instance 本身被條件呼叫(遞移);WHILE 內的呼叫;Method `VAR` 裡宣告的 TON 是每次呼叫重新初始化的暫時 instance(TE1200 SA0167,Light 版也有)— 候選規則 SCAN-TIMER-005。
-   - 編譯器 / TE1200:都沒有對應規則(TE1200 SA0105「多處呼叫」需要 attribute、只部分相關)→ 本 linter 獨有價值。
-   - 實測:v1 3 筆(2 誤報,`FB_BrakeControl` IF/ELSE 兩邊都呼叫)→ v2 1 筆真模式;Action 精化把 7 筆 info 降到 0;seeded S06/S07 命中。**這是在同一份語料上調出來的**,第三個專案驗證前不能宣稱誤報率。
-   - 同一 timer 多次呼叫(prototype 的 SCAN-TIMER-003)**不放 MVP**:語料唯一一筆是正確的 `IF reset THEN rt(CLK:=FALSE); RETURN; END_IF` 寫法,需要 RETURN 控制流才能判斷。
-6. **CONTRACT-ENUM-001/002、CONTRACT-DUT-001**(相對 baseline)
-   - ENUM-001 成員被刪、ENUM-002 數值改變(含隱含值連動);DUT-001 STRUCT 欄位順序 / 名稱 / 型別在第一個不同處報出(後面的欄位位移一併影響 ADS layout)。error/high,blocking。
-   - 新增成員或欄位加在最後:info(ADS layout 尾端變化,呼叫者自行判斷)。
-   - 沒 baseline 不跑。編譯器不會抓(這是相容性契約)→ 獨有價值。
-   - 實測:seeded S12/S13 命中。
-7. **POLICY-***(profile 定義,default profile 全部關閉)
-   - `POLICY-SYMBOL-001` 禁用識別字(精確名或 glob;只比對 token,不比對註解與字串)。
-   - `POLICY-NAME-001` 物件命名前綴 / 後綴(依 ObjectKind);`POLICY-NAME-002` 檔名 = 物件名(Robust Solution NAM-001)。
-   - `POLICY-CALL-001` 「每個 scan 必呼叫」清單(例:`M_UpdateService`,對應 Robust Solution PKML-014 / ARCH-003),重用 SCAN-TIMER 引擎。
-   - `POLICY-RETVAL-001` 回傳值必須使用的 Method 清單(例:`RequestCommand`,對應 PKML-008 與 vault「PackML Service FB 吃掉 Abort」)。
-   - blocking 由 profile 決定;rule 本身 confidence high(比對的是明列的名稱)。
-   - Robust Solution 規格的完整對照與哪些可機械檢查:`research/rule-candidates.md` 第 3 節,做成內建 `robust-solution` profile(Phase 4)。
-8. **統一 diagnostics**:D5 的格式與排序;`LINT-PARSE-*`、`LINT-COVERAGE-*`、`LINT-SUPPRESS-*`、`LINT-XML-*` 也走同一格式。
+- `data.unresolved[]`:未被 suppress、`machineImpact ∈ behavior / crash` 的 finding(含 warning)。每筆帶 diagnostic 的 `ruleId` / `objectPath` / `line`。
+- `data.requiresDisposition: true`:`unresolved[]` 非空時。`success` 仍是 true(issue:warning-only 不得誤報成 tool failure)。
+- 處置只有兩種:**改程式**,或**寫 inline suppression 加理由**。非 blockable 規則才允許 inline(D5),理由留在原始碼 diff 裡給人 review;blockable 規則只能用 profile `suppressions[]`。
+- `data.newSuppressions[]`:本次候選 / 本次變更新增、磁碟版本(或 git HEAD)沒有的 suppression,逐條列出(規則、物件、行、理由)。
+- **SKILL.md Failure contract 要寫明**:`requiresDisposition: true` 時 agent 不得呼叫 `EnableConfig` / `RunLifecycle`,也不得回報完成;必須逐條改程式或 suppress,並把 `newSuppressions[]` 逐條列給使用者。
+- **EnableConfig / RunLifecycle 整合分兩段**:
+  1. **advisory**(Phase 3):Activate 前自動跑 `LintProject`,摘要放 `data.lint`(`verdict`、`unresolved` 數、`newSuppressions`、`ideChecked`),**不擋**。lint 失敗(例如 `LINT_ENGINE_UNAVAILABLE`)也只記在 `data.lint`,不影響 EnableConfig 的結果。
+  2. **blocking**(Phase 4):D2 的 stale 偵測真機驗證後,`-LintGate` 打開時 `unresolved > 0` 或 verdict 不是 pass → `LINT_GATE_BLOCKED`(不記 lifecycle block,runtime 沒動)。只接受 `ideChecked: true` 的結果。
+- `compilerCatches = yes` 的規則不進 `unresolved[]`(Build 會擋)。
 
-**MVP 預設 blocking 的只有**:PROJECT-COMPILE-001/002、PROJECT-GUID-001、PROJECT-KIND-001(以上 `pending`,待 Phase 1 實測)、CONTRACT-ITF-001/002 中實測確認編譯器會擋的差異、CONTRACT-ENUM-*/DUT-001(有 baseline 時)、LINT-PARSE-*。SCAN-* 全部 warning / info;PROJECT-COMPILE-003、PROJECT-NAME-001 是 `blockable: false`(見 Open Questions 3)。
+### D7. 測試與驗證方法
 
-### D7. 測試策略
+**測試層**:
 
 | 層 | 內容 | 跑在 |
 |---|---|---|
-| tokenizer / parser fixture | 每種 token、每種宣告形式各一組正例與反例;真實語料撞過的坑(`END_IF` 不接分號、多個 `<ST>`、巢狀 `(* *)`、`$'` 跳脫、中文註解、BOM) | `tests/Unit/lint-parser.ps1` |
-| 規則 fixture | 每條規則:至少 2 個正例(該報)、2 個反例(不該報,包含已知誤報來源)、1 個 suppression(有理由生效 / 沒理由出 LINT-SUPPRESS-001) | `tests/Unit/lint-rules-<category>.ps1`(依 testing-policy 合併到少數檔,每檔有 2–3 s 固定成本) |
-| 契約 | JSON 形狀、`verdict/passed/success` 對照表(D4 每一列一個 case)、error code 優先序、hint 存在、`passed` 欄位在錯誤時不存在 | `tests/Unit/lint-contract.ps1` |
-| deterministic | 同輸入跑兩次 byte 相同;en-US 與 zh-TW culture 結果相同;檔案列舉順序打亂後結果相同 | 同上 |
-| 語料回歸 | `tests/Fixtures/lint-corpus/`:從語料挑 10–20 個代表檔(需 owner 同意放進 repo,見 Open Questions 4);斷言不 crash、解析 100%、finding 快照(`ruleId+objectPath+line` 清單) | unit |
-| seeded-bug 套件 | `research/prototype/Seed-Bugs.ps1` 的 18 個 seed 改成 fixture:每個 seed 期望的 ruleId;範圍外的 seed 期望「不報」(防止誤以為有涵蓋) | unit |
-| 效能預算 | 單專案(≤ 200 物件)分析 ≤ 2 s(不含首次編譯),超過就 FAIL(放 `check.ps1` 序列組);首次編譯只記錄、不設 FAIL 門檻(CI runner 防毒掃描 `Add-Type` 暫存檔可能偶發變慢,review N5) | unit(牆鐘斷言) |
-| 整合 | `tests/Integration/lint-*.ps1`:對真實 `.TcPOU/.plcproj`(測試副本)跑 `LintProject`;**不需要 runtime**。stale 偵測(D2)需要 IDE → 真機 worker 用 registered tcauto 驗 | 真機,不進 CI |
+| tokenizer / parser fixture | `research/st-syntax-inventory.md` 每一項各一組正例;「安全略過」類斷言結果是 `notAnalyzed` 而不是 `LINT_PARSE_FAILED`;真實語料撞過的坑(`END_IF` 不接分號、多個 `<ST>`、巢狀 `(* *)`、`$'` 跳脫、中文註解、BOM);第二輪 review 6-1~6-4 的最小反例(條件 pragma、`__TRY`、`?=`、`T#1S-tonB.ET`) | `tests/Unit/lint-parser.ps1` |
+| XML fixture | `research/tc-xml-schema-observed.md` 的每種物件:XAE 產生的原樣(反例,不得報)+ 每條 PROJECT-XML / GUID / COMPILE / TSPROJ 規則的破壞版(正例) | `tests/Unit/lint-project-xml.ps1` |
+| 規則 fixture | 每條規則:至少 2 個正例、2 個反例(含已知誤報來源)、1 個 suppression 案例 | `tests/Unit/lint-rules-<category>.ps1` |
+| 契約 | D4 每一列一個 case;`passed` 欄位在未分析時不存在;code 優先序;`unresolved[]` / `requiresDisposition` / `newSuppressions[]` | `tests/Unit/lint-contract.ps1` |
+| deterministic | 同輸入兩次 byte 相同;en-US 與 zh-TW culture 相同;檔案列舉順序打亂後相同 | 同上 |
+| 語料回歸 | 解析 100%、不 crash、finding 快照(語料是否進 repo 見 Open Questions 1) | unit |
+| 效能預算 | ≤ 200 物件的專案 ≤ 2 s(不含首次編譯);首次編譯只記錄 | unit(序列組) |
+| 整合 | 真實 `.TcPOU` / `.plcproj`,不需 runtime;stale 偵測要 IDE → 真機 worker 用 registered tcauto | 真機,不進 CI |
 
-mock 依據照 `docs/testing-policy.md` 第 3 節標註;D2 的 `Saved` 旗標行為在實測前一律標 `[推論]`。
+**驗證方法**(review 第二輪 5-1;現有 seeded 15/15 只證明規則有實作,不證明召回率):
+
+1. **凍結的錯誤分類清單**:先列「LLM / 現場真的犯過的 PLC 錯誤」,凍結後才用它算召回率,避免自己出題自己抓。初版由 issue #252 與知識庫整理(`research/error-taxonomy-draft.md`,標「待 owner 確認」);owner 之後提供的清單(owner 決定 5)併入後凍結。
+2. **LLM 產生語料 + 盲標**:2–3 個模型 × 約 30 個典型任務(輸送帶超時、氣缸回授、MC_Home 流程、PackML 狀態機、警報 latch)。在本機 XAE 只做 `BuildProject`(不碰 runtime),留能編譯的版本;owner 在不看 lint 結果的情況下標出真 bug;算每條規則的 precision / recall,並與 TE1200 Light 跑同一批比較。瓶頸是 owner 標註時間(估數小時)。
+3. **Mutation testing + 以 BuildProject 實測 `compilerCatches`**:依錯誤分類寫 mutation operator(把呼叫包進 IF、刪掉 PT、TON 搬進 METHOD VAR、`[1..N]` 改 0-based 迴圈、加 busy-wait、XML 改壞、GUID 重複…),對語料批次產生變種,每個變種跑 `BuildProject`(只需 IDE)。metadata 的 `compilerCatches` 改成 `measured:<日期>` 實測值,不再是推論。
+4. **Holdout 專案**:owner 之後提供的第三個以上專案不得用來調規則;規則凍結後跑一次報誤報率。**接受門檻事先寫明**(見 tasks 3.x):blocking 規則在 holdout 上誤報 = 0;warning 規則誤報率 ≤ 20%;否則該規則不得升級。
+5. **git 歷史反向植入**(視 owner 專案有無 git 歷史):把 commit message 含 fix 的修正反轉回去當 seed。
+
+mock 依據照 `docs/testing-policy.md` 第 3 節標註;未實測的 XAE 行為一律標 `[推論]`。
 
 ### D8. 效能與資源
 
 - 首次 `Add-Type` 0.7–1.0 s(實測);之後每專案 50–160 ms(實測,2 個專案)。
 - 記憶體:prototype 用 `XmlDocument`,axis 專案 GC heap 增量約 42 MB。產品版改用 `XmlReader` 串流讀 `.TcPOU`,不保留 DOM。
-- 不做跨呼叫的快取(MVP);`Scope=Object` 只解析範圍內物件 + 規則需要的 context(型別目錄需要掃全部宣告區,但不需要實作區)。
+- 不做跨呼叫的快取(MVP);`Scope=Object` 只解析範圍內物件 + 規則需要的 context。
 
 ### D9. Agent 工作流整合
 
-SKILL.md 與 tool description 引導的順序:
+**透過 COM 寫入(主要路徑)**:
 
 ```text
 產生候選程式碼
-  -> LintCandidate -PlcProjectPath <plcproj>   (寫入前;LINT_FAILED 就改,不寫)
+  -> LintCandidate -PlcProjectPath <plcproj>   (寫入前;LINT_FAILED 就改,不寫;requiresDisposition 就處置)
   -> WritePouCode
   -> BuildProject                               (編譯器是最終權威)
-  -> LintProject(存檔後 / 交付前 / CI)          (跨物件與專案層級;LINT_SOURCE_STALE 代表要先存檔)
-  -> Test / EnableConfig
+  -> LintProject                                (跨物件與專案層級)
+  -> 處置 unresolved[] / 列出 newSuppressions[]
+  -> EnableConfig(Phase 3 起附 data.lint 摘要)
 ```
 
-- tool description 要寫清楚:`LINT_PARSE_FAILED` 先 Build 判斷是誰的錯;`passed: true` 不代表程式正確,只代表「列出的規則在分析到的範圍內沒有 blocking finding」;`coverage` 要一起看。
-- **Lifecycle gate(只提方案,MVP 不做)**:`RunLifecycle` / `EnableConfig` 加 `-LintGate <profile>`:在 Activate 前跑 `LintProject`,要求 `ideChecked: true` 且 `verdict == pass`,否則回 `LINT_GATE_BLOCKED`(不記 lifecycle block,因為 runtime 沒動)。前提:D2 的 stale 偵測已真機驗證。預設關閉,owner 決定是否開(Open Questions 6)。
+**直接改磁碟檔(CLAUDE.md「Editing project files on disk」、`docs/troubleshooting.md`「磁碟改檔的正確做法」)**:
+
+```text
+改 .TcPOU / .plcproj / .tsproj
+  -> LintProject(磁碟)        (PROJECT-XML / GUID / COMPILE / TSPROJ 先擋;不需要 IDE)
+  -> 通過才 ResetSolution       (XAE 讀到的是已檢查過的檔案)
+  -> BuildProject
+```
+
+- 這一步要加進 SKILL.md 與 CLAUDE.md 的磁碟改檔段落(tasks 1b)。順序的理由:XAE 載入損毀檔案的行為未驗證(可能跳框、物件消失),先在磁碟擋下比較便宜。
+- tool description 要寫清楚:`passed: true` 不代表程式正確,只代表「列出的規則在分析到的範圍內沒有 blocking finding」;`coverage` 與 `unresolved[]` 要一起看。
 
 ### D10. 分期(每期一個可獨立 review / merge 的 PR,見 tasks.md)
 
-| Phase | 內容 | 可 blocking 的規則 |
+| Phase | 內容 | 預設 blocking |
 |---|---|---|
-| 0 | 本設計(這個 PR) | — |
-| 1 | 引擎骨架:C# tokenizer / 宣告 parser / 結構掃描 / XML 讀取、`LintProject`(磁碟)、diagnostics 契約、排序、PROJECT-* 規則、coverage、error code 全套、profile 載入(只有 default) | PROJECT-COMPILE-001/002、GUID-001、KIND-001、LINT-PARSE-* |
-| 2 | `LintCandidate`(含 overlay)、suppression、SCAN-FBCALL / SCAN-TIMER、型別目錄、stale 偵測(真機驗) | 同上 |
-| 3 | CONTRACT-ITF / ENUM / DUT、baseline 讀取、`New-TcLintBaseline`、`GetLintRule` | + CONTRACT-* |
-| 4 | POLICY 引擎與 `robust-solution` profile、Phase 2 以後的候選規則(依 rule-candidates 排序) | profile 決定 |
+| 0 | 本設計 | — |
+| 1a | 引擎、`LintProject`(磁碟)、契約(verdict / coverage / `unresolved` / `requiresDisposition` / machineImpact metadata)、語法清單的「安全略過」、PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC 整類、IDE 實測(XAE 對每種損毀的行為、TE1200 Light 量測) | PROJECT-XML-001 / 003、LINT-PARSE-*;其餘 PROJECT-* `pending` |
+| 1b | SCAN-TEMPFB-001、PROJECT-TASK-001 / 002、語法清單落實為「支援」、SKILL.md / CLAUDE.md 磁碟改檔工作流 | + SCAN-TEMPFB-001、PROJECT-TASK-002 |
+| 2 | `LintCandidate`、suppression、型別目錄、SCAN-LOOP / FOR / ARR、SAFETY-ARR / DIV、SCAN-FBCALL、SCAN-TIMER-001 / 002 / 004 / 005、stale 偵測(真機)、SKILL.md 處置規定、PROJECT-SA-001(視量測) | + SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001、除以常數 0 |
+| 3 | SCAN-SM / MC / REF / FBVAL / OUT / FLOAT / INTDIV;LLM 語料、mutation、holdout 驗證;EnableConfig advisory `data.lint` | 依驗證結果升級 |
+| 4 | CONTRACT-* + baseline、`GetLintRule`、TE1200 SARIF 合併、POLICY / robust-solution / POLICY-INTERLOCK、`-LintGate` blocking 模式、ST-LLM-001 | profile 決定 |
+
+### D11. TE1200 Light 的整合(owner 決定 4)
+
+- 客戶只有 Light(7 條:SA0004 / 0006 / 0027 / 0028 / 0033 / 0167 / 0175,`research/te1200-rules.md`)。Full 版才有的檢查由本 linter 做(`rule-catalog.md` 的 TE1200 欄)。
+- **Phase 1a IDE 量測**(只需 IDE、不需 runtime),回答:
+  1. 新專案是否預設啟用 Light;
+  2. Light 的結果會不會出現在 `BuildProject` 的 `errorItems`(Error List);
+  3. `.plcproj` 裡怎麼設定才能啟用(哪個元素 / 屬性);
+  4. 4026.20 以上能否經 Automation Interface(`RunStaticAnalysis` / `ExportToSarif`)取得 SARIF,Light 能不能用。
+- 依結果:Phase 2 加 PROJECT-SA-001(專案沒啟用 SA0004 / SA0006 / SA0167);若 Light 結果已進 `errorItems`,`BuildProject` 的結果就已涵蓋,不另做。SARIF 合併放 Phase 4(Full 授權客戶才有意義)。
+- 與 Light 重疊的自有規則(SCAN-TEMPFB-001 ↔ SA0167、SCAN-OUT-001 ↔ SA0004 / 0006)仍做:價值在寫入前擋與客戶沒啟用 Light 時。
 
 ## Risks / Trade-offs
 
-- **語料太少、規則在同一語料上調出來** → SCAN 規則的「v2 零誤報」可能 overfit。緩解:SCAN 全部非 blocking;Phase 2 驗收要加第三個以上真實專案(owner 提供)。
-- **parser 不支援合法語法 → 誤擋**(`LINT_PARSE_FAILED`)。緩解:錯誤碼與 `LINT_FAILED` 分開、hint 先 Build、profile `exclude` 帶理由;語料回歸保證已知語法不退步。TwinCAT 新語法(例如 4026 的新關鍵字)可能未知:**未驗證**有哪些。
-- **型別目錄不完整 → SCAN 規則少評估**(fail 到「不評估」那一側,會列在 `rulesSkipped`,不是靜默)。代價是召回率低。
-- **stale 偵測的盲點**:XAE 樹與磁碟 `<Compile>` 比對抓得到新增 / 刪除物件,但 PLC editor 裡未存的 POU 內容是否會被偵測到**未驗證**(repo 紀錄:不經 GUI 做不出 dirty 的 PLC editor buffer);4024 的 .TcPOU 落地時機未重測 → 4024 以 code-changed 紀錄保守判 stale。
-- **ReloadModule 拿到舊引擎**:用 hash namespace 處理;若失效,`ReloadRuntime`(重啟 PS)是保底。
-- **`Add-Type` 在受限環境失敗**(AppLocker / Constrained Language Mode):`TcAdsHelper.cs` 已有同樣依賴;失敗時回 `LINT_ENGINE_ERROR`,不退回 PowerShell 版本。
-- **agent 把 `passed: true` 當成「程式正確」**:tool description 與 SKILL.md 要寫清楚範圍;diagnostics 帶 coverage。
+- **語料太少、規則在同一語料上調出來** → SCAN 規則的「v2 零誤報」可能 overfit。緩解:holdout 專案 + 事先寫明的接受門檻(D7)。
+- **parser 不支援合法語法 → 誤擋**。緩解:D3 的三類處理,不認得的構造降級為 `notAnalyzed`;語法清單逐項有 fixture。剩餘風險:清單沒列到的新語法造成區塊不配對 → 仍可能 `LINT_PARSE_FAILED`,hint 要求先 Build、Build 成功就開 issue。
+- **判斷確定的 blocking 規則仍可能誤擋**(例如 PROJECT-TASK-002 遇到刻意的雙呼叫):只能用 profile `suppressions[]`(進版控、有人 review)排除。
+- **型別目錄不完整 → SCAN 規則少評估**(列在 `rulesSkipped`,不是靜默)。
+- **stale 偵測的盲點**:PLC editor 裡未存的 POU 內容是否偵測得到未驗證;4024 的 .TcPOU 落地時機未重測 → 4024 以 code-changed 紀錄保守判 stale。blocking 模式的 lifecycle gate 等真機驗證後才開。
+- **ReloadModule 拿到舊引擎**:hash namespace;保底是 `ReloadRuntime`。
+- **`Add-Type` 在受限環境失敗**:`LINT_ENGINE_UNAVAILABLE`,與既有 `TcAdsHelper` 同一個依賴。
+- **agent 把 `passed: true` 當成「程式正確」**:`requiresDisposition` 與 SKILL.md 規定。
+- **把 linter 當安全功能**:POLICY-INTERLOCK 等輸出明寫「不取代 TwinSAFE / 安全評估」。
 
-## Open Questions(需要 owner 決定,附建議)
+## 已定案(owner,#252 留言「Owner 決定(Lance,2026-11-13)」)
 
-1. **profile 自動探索**:未給 `-RuleProfile` 時,要不要自動讀 `<solution 目錄>\.tcauto\lint-profile.json`?建議:要,並在輸出回報 `profile.source` 與 sha256。理由:repo 規則應該對每個 agent 自動生效。
-2. **baseline 放哪、何時產生**:建議 `<solution 目錄>\.tcauto\lint-baseline.json` 進版控,在發佈版本時用 `New-TcLintBaseline` 明確產生。
-3. **default profile 的 blocking 範圍**:建議只有 D6 末段列的確定性規則;SCAN-TIMER-001 在第三個專案驗證誤報率 < 10% 前維持 warning。
-4. **語料進 repo**:建議從兩個測試專案挑 10–20 個檔(去掉客戶資訊)放 `tests/Fixtures/lint-corpus/`。需要 owner 確認這兩個專案可以公開在 repo 裡。
-5. **更多語料**:建議再提供 2–3 個專案,至少一個有 Interface / Property / SFC / 多 PLC,補語料缺口。
-6. **Lifecycle gate**:要不要做 `-LintGate`?建議 Phase 4 之後、stale 偵測真機驗過再做,預設關閉。
-7. **`/* */` 註解與多個 `<ST>` 元素**:要查 InfoSys 或真機確認,決定 tokenizer / XML 讀取的行為。
-8. **library 型別目錄的來源**:手寫版本化清單(建議,MVP)或解析 `_Libraries` 的 compiled-library(格式未知,未驗證)。
-9. **TE1200 整合**:Automation Interface 有 `RunStaticAnalysis`、`ExportToSarif`(4026.20 起,見 `research/te1200-rules.md`);要不要另開 issue 包成 tool,讓 lint 結果與 TE1200 結果合併?建議另開 issue,不放進本 change。
+| 原 Open Question / review 問題 | 決定 | 落實位置 |
+|---|---|---|
+| 分期依據(review 第二輪「需要 owner 決定」1) | Build 抓不到、會讓機台行為出錯的優先;CONTRACT 最後(決定 1) | 本檔開頭表、D10、`rule-catalog.md` |
+| 確定性 SCAN 規則預設 blocking(第二輪 4) | 判斷確定的預設 blocking(決定 2) | D5 `blockable` 預設、`rule-catalog.md` |
+| warning 處置政策與 lifecycle gate(第二輪 2;初稿 Open Question 6) | 必須處置;先 advisory、stale 真機驗證後才擋;newSuppressions 逐條列給使用者(決定 3) | D6 |
+| 客戶的 TE1200 授權(第二輪 3;初稿 Open Question 9) | 只有 Light;Full 才有的自己做;量測 Light 能否經 BuildProject 取得(決定 4) | D11、`rule-catalog.md` |
+| 更多語料、錯誤清單(初稿 Open Question 5;第二輪 5) | 之後提供,不擋 Phase 1(決定 5) | D7、tasks 3.x |
+| AI 改磁碟檔的問題(新增) | 必須包含、不延後(決定 6) | `rule-catalog.md` 第 1 節、Phase 1a、D9 |
+| 引擎發佈方式(第二輪 7) | 維持 `Add-Type`;採納 LanguageMode 檢查與 `LINT_ENGINE_UNAVAILABLE`;共用 helper 列為後續 | D1 |
+| 安全互鎖規則(第二輪 6) | 排後期,輸出明寫不取代 TwinSAFE / 安全評估 | `rule-catalog.md` Phase 4 |
+
+## Open Questions(仍待決定,附建議)
+
+1. **語料進 repo**(初稿 4):建議從兩個測試專案挑 10–20 個檔放 `tests/Fixtures/lint-corpus/`;repo 是 public,需要 owner 確認可以公開。
+2. **profile 自動探索**(初稿 1):建議要(D5 的探索演算法 + `overrides[]`)。
+3. **baseline 位置**(初稿 2):建議 `<solution 目錄>\.tcauto\lint-baseline.json` 進版控,發版時用 `New-TcLintBaseline` 產生(Phase 4)。
+4. **library 型別目錄的來源**(初稿 8):建議手寫版本化清單,每個名稱附 InfoSys 來源。
+5. **錯誤分類清單初版**:`research/error-taxonomy-draft.md` 是否涵蓋 owner 心中的主要錯誤類型?等 owner 補充後凍結(D7)。
+6. **holdout 接受門檻**:建議 blocking 規則誤報 0、warning 規則誤報率 ≤ 20%(D7),跑 holdout 前由 owner 確認。
 
 ## Review 紀錄
 
@@ -425,3 +470,33 @@ SKILL.md 與 tool description 引導的順序:
 | N5 | 首次編譯的牆鐘門檻在 CI 會偶發失敗 | **採納**。只記錄 |
 
 沒有不採納的意見。S14 是部分採納(理由見表)。
+
+### 第二輪(2026-11-13,獨立 reviewer;全文見 PR #262 留言「第二輪獨立設計審查」)與 owner 決定
+
+[必改] 全部採納;[建議] / [可議] / [nit] 逐條如下(owner 沒否決的建議預設採納)。
+
+| # | 等級 | 意見(摘要) | 處理 |
+|---|---|---|---|
+| 1-1 | 必改 | Phase 1–3 的 blocking 規則幾乎都是專案完整性或編譯器本來就擋的,擋機台行為錯誤的能力接近零 | **採納**。Goals 改用 owner 指標;metadata 加 `machineImpact`;分期依 `compilerCatches = no` 且 behavior / crash 排序(本檔開頭表、D10、`rule-catalog.md`) |
+| 1-2 | 必改 | warning 沒有處置機制 | **採納**。D6:`unresolved[]`、`requiresDisposition`、`newSuppressions[]`、SKILL.md Failure contract、EnableConfig 先 advisory 後 blocking(owner 決定 3) |
+| 1-3 | 建議 | compilerCatches=yes 的規則讓結果長期 incomplete,agent 學會忽略 `success:false` | **採納**。不進 `blockingRulesSkipped` 也不進 `unresolved`(D3、D6) |
+| 2-1 | 必改 | 最高價值規則排在 Phase 4 | **採納**。重排分期(tasks.md) |
+| 2-2 | 必改 | 暫時性 FB instance 漏進候選表 | **採納**。SCAN-TEMPFB-001,Phase 1b,blocking(owner 決定 2) |
+| 2-3 | 建議 | ST-LLM-001 排名過高 | **採納**。降到 Phase 4,只保留 `x = 5;` 一項有價值 |
+| 2-4 | 建議 | PROJECT-TASK-001 擴充雙呼叫 | **採納**。拆成 TASK-001(不執行,必須處置)與 TASK-002(雙執行,blocking);依可達性判斷。語料實測:axis `TestCam` 沒被呼叫(PoC 保留程式),因此 TASK-001 不 blocking |
+| 3-a~m | 建議 | 13 條漏掉的高價值規則 | **採納**(owner 指定的全部進目錄,`rule-catalog.md`):TEMPFB、TIMER-005(狀態 timer 沒歸零)、TIMER-004(PT 未設 / IN 常數)、LOOP、FOR、ARR、REF、FBVAL、OUT、MC-002、FLOAT、INTDIV、POLICY-INTERLOCK(Phase 4,不取代 TwinSAFE) |
+| 3 低優先 | 建議 | RETAIN / PERSISTENT、`%Q` 重疊、CASE range 重疊、遞迴不做 | **採納**(`rule-catalog.md` 第 3 節) |
+| 4-1 | 建議 | Add-Type 失敗分不出環境問題 | **採納**。LanguageMode 檢查、`LINT_ENGINE_UNAVAILABLE` |
+| 4-2 | 可議 | 否決預編譯 DLL 的理由不成立 | **理由修正、決定不變**:owner 定案維持 Add-Type;刪掉 Zone.Identifier 的錯誤理由,改寫真正理由(不增加 release 建置路徑) |
+| 4-3 | nit | 與既有載入方式不一致 | **採納為後續 task**(tasks 5.1),不在 Phase 1 強制 |
+| 4-4 | 必改 | 把 TE1200 排除與目標衝突 | **採納**。D11:Phase 1a 量測 Light 四個問題;Phase 2 視結果加 PROJECT-SA-001;SARIF 放 Phase 4 |
+| 4-5 | 建議 | 手寫 parser 遇到不支援語法就 parse fail | **採納**。D3 三類處理 + `research/st-syntax-inventory.md` |
+| 5-1 | 必改 | 15/15 不能當召回率 | **採納**。D7 驗證方法:凍結錯誤清單(`research/error-taxonomy-draft.md` 初版待 owner 確認)、LLM 語料盲標、mutation + BuildProject 實測 compilerCatches、holdout + 事先寫明的門檻、git 歷史反向植入 |
+| 6-1 | 必改 | 條件編譯 pragma 造成誤擋 / 漏抓 | **採納**。整個 section `notAnalyzed`(reason `conditional-pragma`) |
+| 6-2 | 必改 | `__TRY` / `__CATCH` 讓呼叫點漏判 | **採納**。區塊關鍵字,CATCH 算條件區塊 |
+| 6-3 | 必改 | `?=` 讓 lexer 失敗;`S=` / `R=` / `REF=` / `VAR_GENERIC` 待確認 | **採納**。tokenizer / 宣告 parser 認得或安全略過;合法性見語法清單 |
+| 6-4 | 建議 | typed literal 吞掉後面的運算式 | **採納**。依前綴定義文法 |
+| 6-5 | 建議 | Method VAR 的 TON 不會被報 | **採納**。由 SCAN-TEMPFB-001 涵蓋,列為 1b 驗收 fixture |
+| 6-6 | nit | 第三次以上重複不報、INTERFACE EXTENDS 只取第一個 | **採納**。fixture 涵蓋 |
+
+Owner 決定 6(AI 改磁碟檔的問題)是 review 之外的新要求:落實為 `rule-catalog.md` 第 1 節的 PROJECT-XML / GUID / COMPILE / TSPROJ 等整類、`research/tc-xml-schema-observed.md`、Phase 1a 的 IDE 實測與 D9 的磁碟改檔工作流。

@@ -1,28 +1,26 @@
 ## Why
 
-TcAuto 能 Build、能跑 CheckAllObjects,但 coding agent 寫出來的 PLC 程式常常 Build 成功卻在機台上出事:Timer / R_TRIG 只在 IF 裡呼叫、FB instance 宣告了卻沒呼叫、Interface 簽章不一致、`.plcproj` 漏了 Compile entry、公開 DUT / Enum 被改了 layout。這些問題編譯器不報,TE1200 只涵蓋其中一小部分,而且要等寫進 XAE、Build 完才看得到。#252 要在 TcAuto 內加一個 deterministic 的 Semantic Linter,**在寫入 XAE 之前與 Activate / Download 之前**把高信心問題擋下。
+TcAuto 能 Build、能跑 CheckAllObjects,但 coding agent 寫出來的 PLC 程式常常 Build 成功卻在機台上出事:Timer / R_TRIG 只在 IF 裡呼叫、FB instance 宣告了卻沒呼叫、Interface 簽章不一致、`.plcproj` 漏了 Compile entry、公開 DUT / Enum 被改了 layout。這些問題編譯器不報;客戶只有 TE1200 Light(7 條規則),Full 版的檢查也沒有;而且要等寫進 XAE、Build 完才看得到。另外,agent 直接改磁碟上的 `.TcPOU` / `.plcproj` 時,手寫 XML 很容易弄壞檔案(CDATA、GUID、Compile entry),XAE 遇到時的行為大多未實測。#252 要在 TcAuto 內加一個 deterministic 的 Semantic Linter,**在寫入 XAE 之前與 Activate / Download 之前**把高信心問題擋下。
 
 這個 change 是設計階段:可行性已用 throwaway prototype 在兩個真實專案(4024 / 4026)上實測(`research/corpus-feasibility.md`):宣告區 242/242、ST 實作 176/176 解析成功;seeded bug 18 個中範圍內 15/15 命中;同時量到 SCAN 類規則第一版誤報 68/71,所以 SCAN 類只能當 warning。
 
 ## What Changes
 
-分 5 期,每期一個可獨立 review / merge 的 PR(tasks.md)。
+依 owner 決定(#252 留言「Owner 決定(Lance,2026-11-13)」)分期:先做 Build 抓不到、會讓機台行為出錯的規則;AI 直接改磁碟檔造成的專案損毀留在 Phase 1a;相容性契約(CONTRACT-*)最後。每期一個可獨立 review / merge 的 PR(tasks.md),規則定義見 `rule-catalog.md`。
 
-- **Phase 0(本 PR)**:設計、規格、research(prototype、語料量測、TE1200 對照、候選規則排序)。不改產品程式。
-- **Phase 1:引擎與 LintProject**
-  - C# 5 引擎(`src/TwinCATAutomation/Private/Lint/*.cs`,`Add-Type` 延遲編譯):tokenizer、宣告 parser、陳述式結構掃描、TcPOU / plcproj 讀取、diagnostics 排序。
-  - `Invoke-TcLintProject`(MCP `LintProject`):磁碟上的 `.plcproj`,不需要 IDE / runtime。
-  - 規則:PROJECT-COMPILE-001/002/003、PROJECT-GUID-001、PROJECT-KIND-001、PROJECT-NAME-001、LINT-PARSE-*、LINT-COVERAGE-*。
-  - 新錯誤碼:`LINT_FAILED`、`LINT_PARSE_FAILED`、`LINT_INCOMPLETE`、`LINT_PROFILE_INVALID`、`LINT_INPUT_INVALID`、`LINT_ENGINE_ERROR`(沿用 `PLC_PROJECT_AMBIGUOUS` / `PLC_PROJECT_NOT_FOUND`)。
-- **Phase 2:LintCandidate 與 SCAN 規則**
-  - `Invoke-TcLintCandidate`(MCP `LintCandidate`):純文字,可選擇覆蓋到磁碟專案上。
-  - suppression(註解,必含 rule ID 與理由)。
-  - SCAN-FBCALL-001/002、SCAN-TIMER-001/002、FB 型別目錄。
-  - IDE 已連線時的未存檔偵測(`LINT_SOURCE_STALE` / `LINT_SOURCE_UNVERIFIED`,真機驗證)。
-- **Phase 3:CONTRACT 規則**:CONTRACT-ITF-001/002、CONTRACT-ENUM-001/002、CONTRACT-DUT-001、baseline 讀取、`New-TcLintBaseline`、`GetLintRule`。
-- **Phase 4:POLICY 與後續規則**:profile 的 POLICY 引擎、內建 `robust-solution` profile、`research/rule-candidates.md` 排名前段的規則(PROJECT-TASK-001、ST-LLM-001、SCAN-SM-001…)。
+- **Phase 0(本 PR)**:設計、規格、規則目錄、research(prototype、語料量測、TE1200 對照、ST 語法清單、XAE 實際 XML 結構、錯誤分類初版)。不改產品程式。
+- **Phase 1a:引擎 + 契約 + AI 改檔問題整類**
+  - C# 5 引擎(`Add-Type` 延遲編譯,Constrained Language Mode → `LINT_ENGINE_UNAVAILABLE`);不認得的合法語法降級為 notAnalyzed,不判 parse fail。
+  - `Invoke-TcLintProject`(MCP `LintProject`,磁碟,不需要 IDE / runtime)。
+  - 契約:verdict / coverage / `unresolved[]` / `requiresDisposition`;rule metadata 含 `machineImpact`、`compilerCatches`、TE1200 版別。
+  - PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC 規則,以 XAE 實際產生的檔案為依據;XAE 行為未實測的先 `blockable: pending`。
+  - IDE 實測(不需 runtime):XAE 遇到每種損毀的行為、TE1200 Light 能否經 `BuildProject` 取得。
+- **Phase 1b:最確定的機台行為規則**:SCAN-TEMPFB-001(Timer 宣告在 METHOD / FUNCTION VAR)、PROJECT-TASK-001 / 002(PROGRAM 沒掛 task / 每 cycle 跑兩次);SKILL.md / CLAUDE.md 的磁碟改檔工作流加上 `LintProject`。
+- **Phase 2:LintCandidate + 迴圈 / 陣列 / 除法 + Timer 細分**:`Invoke-TcLintCandidate`、suppression、SCAN-LOOP / FOR / ARR(blocking)、SAFETY-ARR / DIV、SCAN-FBCALL、SCAN-TIMER-001 / 002 / 004 / 005、stale 偵測(真機)、SKILL.md 處置規定。
+- **Phase 3:狀態機 / Motion / 記憶體 / 數值 + 驗證**:SCAN-SM / MC / REF / FBVAL / OUT / FLOAT / INTDIV;錯誤清單凍結、LLM 語料盲標、mutation testing、holdout;EnableConfig 附 `data.lint` 摘要(不擋)。
+- **Phase 4:契約 + POLICY + blocking gate**:CONTRACT-ITF / ENUM / DUT + baseline、`GetLintRule`、TE1200 SARIF、POLICY / `robust-solution` / POLICY-INTERLOCK(不取代 TwinSAFE)、`-LintGate` blocking 模式。
 
-不改既有 tool 的參數與回傳格式。lint 不呼叫 Build、WritePouCode 或任何 runtime tool,也不觸發 lifecycle block。
+不改既有 tool 的參數與回傳格式(EnableConfig 只新增 `data.lint`)。lint 不呼叫 Build、WritePouCode 或任何 runtime tool,也不觸發 lifecycle block。
 
 ## Capabilities
 
