@@ -364,6 +364,16 @@ namespace TcLintEngine
 
         private delegate bool TokPred(Token t);
 
+        private static readonly HashSet<string> TypeJoiners = new HashSet<string>(StringComparer.Ordinal) { "OF", "TO", "POINTER", "REFERENCE", "ARRAY" };
+
+        private static bool IsOperand(Token t)
+        {
+            if (t.Kind == TokKind.Number || t.Kind == TokKind.TypedLiteral || t.Kind == TokKind.String || t.Kind == TokKind.WString) return true;
+            if (t.Kind != TokKind.Ident) return false;
+            string u = t.Upper;
+            return u != "AND" && u != "OR" && u != "XOR" && u != "NOT" && u != "MOD" && u != "AND_THEN" && u != "OR_ELSE";
+        }
+
         private static string ReadUntil(Cursor c, TokPred stop)
         {
             StringBuilder sb = new StringBuilder();
@@ -467,6 +477,7 @@ namespace TcLintEngine
                 // type [:= init] ; at depth 0
                 StringBuilder type = new StringBuilder(), init = null;
                 int depth = 0;
+                Token prevType = null;
                 while (true)
                 {
                     Token x = c.Peek();
@@ -482,6 +493,17 @@ namespace TcLintEngine
                     else if (x.IsOp(")") || x.IsOp("]")) depth--;
                     if (depth == 0 && x.IsOp(";")) break;
                     if (depth == 0 && init == null && x.IsOp(":=")) { init = new StringBuilder(); continue; }
+                    if (init == null && depth == 0)
+                    {
+                        // 'INT b BOOL' (missing ';' and ':'): two names in a row are only legal after OF / TO /
+                        // POINTER / REFERENCE (ARRAY[..] OF T, POINTER TO T, REFERENCE TO T)
+                        if (prevType != null && IsOperand(prevType) && IsOperand(x) && !TypeJoiners.Contains(prevType.Upper) && !TypeJoiners.Contains(x.Upper))
+                        {
+                            st.NotAnalyzed("unsupported-syntax:var-type", x.Line, x.Col);
+                            return false;
+                        }
+                        prevType = x;
+                    }
                     StringBuilder target = init ?? type;
                     if (target.Length > 0 && NeedsSpace(target[target.Length - 1], x.Text)) target.Append(' ');
                     target.Append(x.Text);
@@ -528,12 +550,14 @@ namespace TcLintEngine
                     if (c.Peek().IsOp(":="))
                     {
                         c.Next();
-                        int depth = 0; StringBuilder sb = new StringBuilder();
+                        int depth = 0; StringBuilder sb = new StringBuilder(); Token prevVal = null;
                         while (true)
                         {
                             Token x = c.Peek();
                             if (x.Kind == TokKind.EOF) { d.State.Fail("LINT-PARSE-003", "enumeration without ')'", k.Line, k.Col); return; }
                             if (depth == 0 && (x.IsOp(",") || x.IsOp(")"))) break;
+                            if (prevVal != null && IsOperand(prevVal) && IsOperand(x)) { d.State.NotAnalyzed("unsupported-syntax:enum-value", x.Line, x.Col); return; }
+                            if (x.Kind != TokKind.Pragma) prevVal = x;
                             c.Next();
                             if (x.IsOp("(")) depth++; else if (x.IsOp(")")) depth--;
                             if (sb.Length > 0 && NeedsSpace(sb[sb.Length - 1], x.Text)) sb.Append(' ');

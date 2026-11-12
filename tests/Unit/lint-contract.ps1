@@ -116,6 +116,14 @@ Edit-LintFxFile $fx.Gvl { param($t) $t -replace '(?s)<TcPlcObject([^>]*)>.*</TcP
 Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-004":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'should-fix 2: empty <TcPlcObject> + XML-004 disabled -> LINT_INCOMPLETE' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 5) (Js $r.data.coverage)
+foreach ($cut in @(@('MAIN', '(?s)    <Declaration>.*?</Declaration>\r\n'), @('MAIN', '(?s)    <Implementation>.*?</Implementation>\r\n'), @('GVL', '(?s)    <Declaration>.*?</Declaration>\r\n'))) {
+    $fx = New-Fx
+    $file = if ($cut[0] -eq 'MAIN') { $fx.Main } else { $fx.Gvl }
+    Edit-LintFxFile $file { param($t) $t -replace $cut[1], '' }
+    Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-004":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
+    $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+    Check "R4 $($cut[0]) without a required section + XML-004 disabled -> LINT_INCOMPLETE" ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 5) (Js $r.data.coverage)
+}
 $fx = New-Fx
 Edit-LintFxFile $fx.Main { param($t) $t.Replace('// set mode', '// ' + ('x' * 1200000)) }
 Set-Profile $fx '{"schema":"tcauto-lint-profile/1","maxFileSizeMB":1}' | Out-Null

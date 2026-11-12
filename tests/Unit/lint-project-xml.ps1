@@ -85,7 +85,7 @@ Test-Case 'XML-004 member order is a warning only' { param($f) Edit-LintFxFile $
         $t.Replace($a + $m, $m + $a) } } @('PROJECT-XML-004') '' {
     param($r) $d = @(Diag $r 'PROJECT-XML-004'); Check 'XML-004 order: warning, not blocking' ($d[0].variant -eq 'order' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking) ($d | ConvertTo-Json -Compress)
 }
-Test-Case 'XML-004 unobserved ProductVersion downgrades' { param($f) Edit-LintFxFile $f.Main { param($t) $t -replace '(?s)    <Implementation>.*?</Implementation>\r\n', '' -replace '3\.1\.4026\.18', '3.1.4028.1' } } @('PROJECT-XML-004') '' {
+Test-Case 'XML-004 unobserved ProductVersion downgrades' { param($f) Edit-LintFxFile $f.Main { param($t) $t.Replace('Version="1.1.0.1" ProductVersion="3.1.4026.18"', 'ProductVersion="3.1.4028.1"') } } @('PROJECT-XML-004') '' {
     param($r) $d = @(Diag $r 'PROJECT-XML-004'); Check 'XML-004 on 4028 file is a warning + rulesSkipped' ($d[0].severity -eq 'warning' -and -not $d[0].blocking -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'unobserved-product-version' }).Count -eq 1) ($d | ConvertTo-Json -Compress)
 }
 Test-Case 'should-fix 1: Compile with Condition -> XML-004 unobserved-msbuild' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('<Compile Include="PlcTask.TcTTO">', '<Compile Include="PlcTask.TcTTO" Condition="''$(Configuration)'' == ''Debug''">') } } @('PROJECT-XML-004') 'LINT_FAILED' {
@@ -245,6 +245,25 @@ Test-Case 'CFC action: notAnalyzed language:CFC, PROJECT rules still run' { para
 }
 Test-Case 'SFC action with ObjectProperties (as XAE writes it) is accepted' { param($f) Edit-LintFxFile $f.FbA { param($t)
         $t.Replace("<ST><![CDATA[nState := 0;]]></ST>`r`n      </Implementation>", "<SFC>`r`n          <XmlArchive>`r`n            <Data><o xml:space=`"preserve`" t=`"SFCImplementationObject`" /></Data>`r`n          </XmlArchive>`r`n        </SFC>`r`n      </Implementation>`r`n      <ObjectProperties>`r`n        <XmlArchive>`r`n          <Data><o xml:space=`"preserve`" t=`"SFCProperty`" /></Data>`r`n        </XmlArchive>`r`n      </ObjectProperties>").Replace("    <LineIds Name=`"FB_A.A_Reset`">`r`n      <LineId Id=`"1`" Count=`"0`" />`r`n    </LineIds>`r`n", '') } } @() ''
+
+# ---------------------------------------------------------------- verification reviewer round 2 (R1 - R7), all must not pass
+Test-Case 'R1 unknown object element in a .TcPOU: blocking, not counted as analysed' { param($f) Write-LintFxFile $f.Main ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <Foo Name=`"MAIN`" Id=`"$($script:LintFx.MainId)`" />`n</TcPlcObject>") } @('PROJECT-KIND-001', 'PROJECT-XML-004') 'LINT_FAILED' {
+    param($r) Check 'R1: object not analysed, no TSPROJ-003 claim about MAIN' ($r.data.coverage.objectsAnalyzed -eq 5 -and @($r.data.coverage.notAnalyzed | Where-Object { $_.reason -eq 'unknown-object-element' }).Count -eq 1 -and @($r.data.diagnostics | Where-Object { $_.ruleId -eq 'PROJECT-TSPROJ-003' }).Count -eq 0) ($r.data.coverage | ConvertTo-Json -Compress -Depth 4)
+}
+Test-Case 'R2 Transition with ST directly below it is parsed' { param($f) Edit-LintFxFile $f.FbA { param($t) $t.Replace('    <LineIds Name="FB_A">', "    <Transition Name=`"T_Go`" Id=`"{8f04bada-e03b-49d3-990e-da6b67b3912c}`">`r`n      <ST><![CDATA[IF bStart THEN]]></ST>`r`n    </Transition>`r`n    <LineIds Name=`"FB_A`">") } } @('LINT-PARSE-002') 'LINT_PARSE_FAILED'
+Test-Case 'R2 empty Transition (structure not observed): incomplete' { param($f) Edit-LintFxFile $f.FbA { param($t) $t.Replace('    <LineIds Name="FB_A">', "    <Transition Name=`"T_Go`" Id=`"{8f04bada-e03b-49d3-990e-da6b67b3912c}`" />`r`n    <LineIds Name=`"FB_A`">") } } @() 'LINT_INCOMPLETE'
+Test-Case 'R3 unknown implementation language element: incomplete' { param($f) Edit-LintFxFile $f.FbA { param($t) $t.Replace('<ST><![CDATA[M_Do := nValue > 0;]]></ST>', '<Foo><ST><![CDATA[IF x THEN]]></ST></Foo>') -replace '(?s)    <LineIds Name="FB_A\.M_Do">.*?</LineIds>\r\n', '' } } @() 'LINT_INCOMPLETE'
+Test-Case 'R5 Compile Exclude: unobserved-msbuild' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('<Compile Include="POUs\MAIN.TcPOU">', '<Compile Include="POUs\MAIN.TcPOU" Exclude="POUs\MAIN.TcPOU">') } } @('PROJECT-XML-004') 'LINT_FAILED'
+Test-Case 'R5 Include with %(metadata): unobserved-msbuild' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('<Compile Include="POUs\MAIN.TcPOU">', '<Compile Include="%(Foo.Bar)">') } } @('PROJECT-XML-004') 'LINT_FAILED'
+Test-Case 'R5 Project Sdk attribute: unobserved-msbuild' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('<Project DefaultTargets="Build"', '<Project Sdk="Microsoft.NET.Sdk" DefaultTargets="Build"') } } @('PROJECT-XML-004') 'LINT_FAILED'
+Test-Case 'R5 PropertyGroup / SubType with Condition: unobserved-msbuild' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('  <PropertyGroup>', '  <PropertyGroup Condition="false">') } } @('PROJECT-XML-004') 'LINT_FAILED'
+Test-Case 'R6 ENUM member value with a missing comma: incomplete' { param($f) Edit-LintFxFile $f.Dut { param($t) $t.Replace('Manual := 0,', 'Manual := 0 Bad,') } } @() 'LINT_INCOMPLETE'
+Test-Case 'R6 STRUCT member type broken (missing ; and :): incomplete' { param($f) Write-LintFxFile $f.Dut ((Get-LintFxDutText) -replace '(?s)TYPE E_Mode :.*END_TYPE', "TYPE E_Mode :`nSTRUCT`n    a : INT`n    b BOOL;`nEND_STRUCT`nEND_TYPE") } @() 'LINT_INCOMPLETE'
+Test-Case 'R7 U+FEFF inside code: incomplete' { param($f) Edit-LintFxFile $f.Main { param($t) $t.Replace('eMode := E_Mode.Auto;', ('eMode := E_Mode' + [char]0xFEFF + '.Auto;')) } } @() 'LINT_INCOMPLETE'
+Test-Case 'nit .tsproj over maxFileSizeMB: incomplete' { param($f)
+    Edit-LintFxFile $f.Tsproj { param($t) $t.Replace('<Name>PlcTask</Name>' + "`r`n`t`t`t`t</Task>", '<Name>PlcTask</Name>' + "`r`n`t`t`t`t<!--" + ('x' * 1200000) + "-->`r`n`t`t`t`t</Task>") }
+    $dir = Join-Path ([System.IO.Path]::GetDirectoryName($f.Sln)) '.tcauto'; New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'lint-profile.json'), '{"schema":"tcauto-lint-profile/1","maxFileSizeMB":1}') } @() 'LINT_INCOMPLETE'
 
 # ---------------------------------------------------------------- the .plcproj itself, other files
 Test-Case '.plcproj not well-formed -> LINT_PARSE_FAILED' { param($f) Edit-LintFxFile $f.Plcproj { param($t) $t.Replace('</ProjectGuid>', '</ProjectGuidX>') } } @('PROJECT-XML-001') 'LINT_PARSE_FAILED'

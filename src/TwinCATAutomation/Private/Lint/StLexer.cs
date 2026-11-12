@@ -97,7 +97,7 @@ namespace TcLintEngine
                 char c = s[i];
                 if (c == '\n') { i++; line++; col = 1; lineHasCode = false; continue; }
                 if (c == '\r') { i++; if (i < n && s[i] == '\n') { i++; } line++; col = 1; lineHasCode = false; continue; }
-                if (c == ' ' || c == '\t' || c == '\f' || c == '\v' || c == '\uFEFF') { i++; col++; continue; }
+                if (c == ' ' || c == '\t' || c == '\f' || c == '\v' || (c == '\uFEFF' && i == 0)) { i++; col++; continue; }
                 int sl = line, sc = col, st = i;
 
                 // ---- comments

@@ -176,7 +176,8 @@ namespace TcLintEngine
         private int objectsInScope;
         private int objectsAnalyzed;
         private int downgradedSections;
-        private bool msbuildUnobserved;   // the .plcproj uses MSBuild features the linter does not evaluate   // sections not analysed because of a listed legal construct (summary.notAnalyzed)
+        private bool msbuildUnobserved;
+        private bool objOk;               // the current object has the sections the rules analyse (R4)   // the .plcproj uses MSBuild features the linter does not evaluate   // sections not analysed because of a listed legal construct (summary.notAnalyzed)
 
         private static readonly HashSet<string> TcObjectExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".TcPOU", ".TcDUT", ".TcGVL", ".TcIO", ".TcTTO" };
         private static readonly Dictionary<string, string> KindByExt = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
@@ -186,7 +187,9 @@ namespace TcLintEngine
             "POU", "DUT", "GVL", "Method", "Action", "Folder", "Task", "Visu", "VisuManager", "GlobalTextList", "ImagePool" };
         private static readonly HashSet<string> StructuralRules = new HashSet<string>(StringComparer.Ordinal) { "PROJECT-XML-004", "PROJECT-SUB-001" };
         private static readonly Regex GuidRx = new Regex("^\\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\\}$", RegexOptions.CultureInvariant);
-        private static readonly string[] LanguageElements = { "ST", "CFC", "SFC", "FBD", "LD", "IL", "NWL", "UML", "LDFBD", "XmlArchive" };
+        // non-ST implementations XAE stores as XmlArchive (CFC observed in the corpus, SFC in the IDE measurement;
+        // the others are TwinCAT languages not observed): not analysed, the verdict is unaffected
+        private static readonly string[] GraphicalLanguages = { "CFC", "SFC", "FBD", "LD", "IL", "NWL", "UML", "LDFBD" };
 
         private sealed class IdUse
         {
@@ -348,6 +351,10 @@ namespace TcLintEngine
 
         private void CheckMsBuildStructure(XElem root)
         {
+            foreach (string a in new string[] { "Sdk", "InitialTargets", "TreatAsLocalProperty" })
+                if (root.HasAttr(a)) UnobservedMsBuild(root, "<Project " + a + "=...>");
+            foreach (XElem g in root.Children)
+                if (g.Name != "ProjectExtensions") CheckConditions(g);
             foreach (XElem g in root.Children)
             {
                 if (!MsBuildTop.Contains(g.Name))
@@ -356,16 +363,26 @@ namespace TcLintEngine
                     continue;
                 }
                 if (g.Name != "ItemGroup") continue;
-                if (g.HasAttr("Condition")) UnobservedMsBuild(g, "<ItemGroup Condition=...>");
                 foreach (XElem it in g.Children)
                 {
-                    if (it.HasAttr("Condition")) UnobservedMsBuild(it, "<" + it.Name + " Condition=...>");
-                    if (it.HasAttr("Remove") || it.HasAttr("Update")) UnobservedMsBuild(it, "<" + it.Name + "> with Remove / Update");
+                    if (it.HasAttr("Remove") || it.HasAttr("Update") || it.HasAttr("Exclude")) UnobservedMsBuild(it, "<" + it.Name + "> with Remove / Update / Exclude");
                     string inc = it.Attr("Include");
-                    if (inc != null && (inc.IndexOf('*') >= 0 || inc.IndexOf('?') >= 0 || inc.IndexOf(';') >= 0 || inc.IndexOf("$(", StringComparison.Ordinal) >= 0 || inc.IndexOf("@(", StringComparison.Ordinal) >= 0))
-                        UnobservedMsBuild(it, "<" + it.Name + " Include=\"" + inc + "\"> uses a wildcard, list or property");
+                    if (inc != null && IsMsBuildExpression(inc))
+                        UnobservedMsBuild(it, "<" + it.Name + " Include=\"" + inc + "\"> uses a wildcard, list, property or metadata");
                 }
             }
+        }
+
+        private void CheckConditions(XElem e)
+        {
+            if (e.HasAttr("Condition")) UnobservedMsBuild(e, "<" + e.Name + " Condition=...>");
+            foreach (XElem c in e.Children) CheckConditions(c);
+        }
+
+        public static bool IsMsBuildExpression(string inc)
+        {
+            return inc.IndexOf('*') >= 0 || inc.IndexOf('?') >= 0 || inc.IndexOf(';') >= 0 || inc.IndexOf("$(", StringComparison.Ordinal) >= 0
+                || inc.IndexOf("@(", StringComparison.Ordinal) >= 0 || inc.IndexOf("%(", StringComparison.Ordinal) >= 0;
         }
 
         private void UnobservedMsBuild(XElem e, string what)
@@ -410,7 +427,7 @@ namespace TcLintEngine
                     if (!c.HasAttr("Remove") && !c.HasAttr("Update")) Emit("PROJECT-XML-004", plcRel, "", "file", c.Line, 1, "<Compile> item without an Include attribute", null, null, "compile-include", null, "pending", false);
                     continue;
                 }
-                if (inc.IndexOf('*') >= 0 || inc.IndexOf('?') >= 0 || inc.IndexOf(';') >= 0 || inc.IndexOf("$(", StringComparison.Ordinal) >= 0 || inc.IndexOf("@(", StringComparison.Ordinal) >= 0) continue;
+                if (IsMsBuildExpression(inc) || c.HasAttr("Exclude")) continue;
                 bool badEscape;
                 string unesc = MsPath.Unescape(inc, out badEscape);
                 string full = MsPath.Full(plcDir, unesc);
@@ -679,8 +696,6 @@ namespace TcLintEngine
                 notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "no-object-element"));
                 return;
             }
-            // counted as analysed only when the file has the object structure the rules look at (second review should-fix 2)
-            objectsAnalyzed++;
             if (root.Children.Count > 1)
                 Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Children[1].Line, 1, "<TcPlcObject> contains more than one object element (XAE writes exactly one)", "<" + root.Children[1].Name + ">", null, "extra-element", null, "pending", o.Downgrade);
             XElem obj = o.Obj;
@@ -699,6 +714,9 @@ namespace TcLintEngine
             }
             AddId(obj, o, o.ObjectPath, IdObservedKinds.Contains(obj.Name));
 
+            // counted as analysed only for a known object kind that has the sections the rules analyse
+            // (second review should-fix 2, verification round R1 / R4)
+            objOk = true;
             switch (obj.Name)
             {
                 case "POU": CheckPou(o, obj); break;
@@ -706,8 +724,20 @@ namespace TcLintEngine
                 case "GVL": CheckSingleDeclaration(o, obj, "VAR_GLOBAL"); break;
                 case "Itf": CheckItf(o, obj); break;
                 case "Task": CheckTask(o, obj); break;
-                default: break;
+                case "Visu": case "VisuManager": case "GlobalTextList": case "ImagePool": break;   // XmlArchive content, Id / Name only
+                default:
+                    Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", obj.Line, 1, "Unknown object element <" + obj.Name + "> (XAE writes POU, DUT, GVL, Itf, Task or a visualisation object)", null, null, "unknown-object-element", null, null, false);
+                    notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "unknown-object-element"));
+                    objOk = false;
+                    break;
             }
+            if (objOk) objectsAnalyzed++;
+        }
+
+        private void SectionMissing(TcObjectFile o, string path, string what)
+        {
+            notAnalyzed.Add(Cov(null, o.Rel, path, "file", what));
+            objOk = false;
         }
 
         private void CheckLineEndings(TcObjectFile o)
@@ -790,8 +820,8 @@ namespace TcLintEngine
 
             XElem decl = pou.Child("Declaration");
             XElem impl = pou.Child("Implementation");
-            if (decl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Declaration> (XAE then drops the object, measured C09)", null, null, "missing-element", null, null, o.Downgrade);
-            if (impl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Implementation> (XAE then drops the object, measured C10)", null, null, "missing-element", null, null, o.Downgrade);
+            if (decl == null) { Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Declaration> (XAE then drops the object, measured C09)", null, null, "missing-element", null, null, o.Downgrade); SectionMissing(o, o.ObjectPath, "missing-declaration"); }
+            if (impl == null) { Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Implementation> (XAE then drops the object, measured C10)", null, null, "missing-element", null, null, o.Downgrade); SectionMissing(o, o.ObjectPath, "missing-implementation"); }
 
             Dictionary<string, string> stTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (decl != null)
@@ -924,11 +954,23 @@ namespace TcLintEngine
         // are not run, but every Declaration / ST below it is still checked (second review B1)
         private void CheckUnobservedCode(TcObjectFile o, XElem e, string path)
         {
+            bool any = false, directSt = false;
             foreach (XElem c in e.Children)
             {
-                if (c.Name == "Declaration") AnalyzeDeclaration(o, c, path);
-                else if (c.Name == "Implementation") AnalyzeImplementation(o, c, path);
+                if (c.Name == "Declaration") { AnalyzeDeclaration(o, c, path); any = true; }
+                else if (c.Name == "Implementation") { AnalyzeImplementation(o, c, path); any = true; }
+                else if (c.Name == "ST") directSt = true;
+                else if (c.Name != "ObjectProperties") UnanalysedStructure(o, path, "schema-not-observed:" + e.Name + "/" + c.Name);
             }
+            if (directSt) { AnalyzeImplementation(o, e, path); any = true; }
+            if (!any) UnanalysedStructure(o, path, "schema-not-observed:" + e.Name + "-without-code");
+        }
+
+        // structure the linter cannot analyse and has never observed: never a pass (verification round R2 / R3)
+        private void UnanalysedStructure(TcObjectFile o, string path, string reason)
+        {
+            notAnalyzed.Add(Cov(null, o.Rel, path, "implementation", reason));
+            if (Enabled("LINT-PARSE-002")) blockingSkipped.Add(Cov("LINT-PARSE-002", o.Rel, path, null, reason));
         }
 
         private void CheckChildOrder(TcObjectFile o, XElem e, string path, string[] order)
@@ -997,7 +1039,7 @@ namespace TcLintEngine
                 if (c.Name == "Declaration" && decl == null) { decl = c; continue; }
                 Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", c.Line, 1, "Unexpected element <" + c.Name + "> in <" + obj.Name + "> (XAE writes only <Declaration>)", null, null, "unexpected-element", "warning", "false", false);
             }
-            if (decl == null) { Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade); return; }
+            if (decl == null) { Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade); SectionMissing(o, o.ObjectPath, "missing-declaration"); return; }
             DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
             if (header == "TYPE") CheckHeader(o, o.ObjectPath, "DUT", di, new string[] { "TYPE" }, true);
             else CheckHeader(o, o.ObjectPath, "GVL", di, new string[] { "VAR_GLOBAL", "VAR_CONFIG" }, false);
@@ -1008,7 +1050,7 @@ namespace TcLintEngine
         private void CheckItf(TcObjectFile o, XElem itf)
         {
             XElem decl = itf.Child("Declaration");
-            if (decl == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", itf.Line, 1, "<Itf> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade);
+            if (decl == null) { Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", itf.Line, 1, "<Itf> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade); SectionMissing(o, o.ObjectPath, "missing-declaration"); }
             else
             {
                 DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
@@ -1124,7 +1166,8 @@ namespace TcLintEngine
                     return null;
                 }
                 if (Excluded(path, out reason)) excluded.Add(Cov(null, o.Rel, path, "implementation", reason));
-                else notAnalyzed.Add(Cov(null, o.Rel, path, "implementation", "language:" + lang));
+                else if (Array.IndexOf(GraphicalLanguages, lang) >= 0) notAnalyzed.Add(Cov(null, o.Rel, path, "implementation", "language:" + lang));
+                else UnanalysedStructure(o, path, "unknown-implementation-element:" + lang);
                 return null;
             }
             foreach (XElem c in impl.Children)
@@ -1403,7 +1446,13 @@ namespace TcLintEngine
                     E("PROJECT-TSPROJ-001", slnFull == null ? tsRel : MsPath.Relative(plcDir, slnFull), "", "file", 1, "The .sln references a .tsproj that does not exist: " + tsRel, null, null);
                     continue;
                 }
-                FileBytesInfo fi = XmlLoader.ReadBytes(ts);
+                FileBytesInfo fi = XmlLoader.ReadBytes(ts, opt.MaxFileBytes);
+                if (fi.TooLarge)
+                {
+                    notAnalyzed.Add(Cov(null, tsRel, "", "file", "too-large"));
+                    blockingSkipped.Add(Cov("PROJECT-TSPROJ-001", tsRel, "", null, "too-large:" + fi.Length.ToString(CultureInfo.InvariantCulture) + "-bytes"));
+                    continue;
+                }
                 if (fi.ReadFailed) { engineDetail.Add(tsRel + ": " + fi.ReadError); notAnalyzed.Add(Cov(null, tsRel, "", "file", "unreadable")); incompleteByRead = true; continue; }
                 CheckEncoding(tsRel, "", fi, false);
                 XmlLoad x = XmlLoader.Load(ts, fi);
@@ -1540,7 +1589,7 @@ namespace TcLintEngine
                 if (o.Kind == "POU" && !pous.ContainsKey(o.Name)) pous[o.Name] = o;
                 // a .TcPOU that could not be read / parsed: its name is unknown, so a PouCall that
                 // names no known POU cannot be judged (the file already has its own finding)
-                if (o.Obj == null && string.Equals(o.Ext, ".TcPOU", StringComparison.OrdinalIgnoreCase)) unreadablePou = true;
+                if ((o.Obj == null || o.Kind != "POU") && string.Equals(o.Ext, ".TcPOU", StringComparison.OrdinalIgnoreCase)) unreadablePou = true;
             }
             if (msbuildUnobserved && ttos.Count > 0) rulesSkipped.Add(Cov("PROJECT-TSPROJ-003", plcRel, "", null, "unobserved-msbuild"));
             foreach (TcObjectFile t in ttos)
