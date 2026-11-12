@@ -159,6 +159,16 @@ function Invoke-TcLintProject {
     foreach ($e in $prof.excludes) { $opt.AddExclude($e.objectPath, $e.reason) }
     foreach ($e in $prof.suppressions) { $opt.AddSuppression($e.objectPath, $e.ruleId, $e.reason) }
     foreach ($e in $prof.acceptSkips) { $opt.AddAcceptSkip($e.objectPath, $e.ruleId, $e.reason) }
+    # FB type catalog (tasks 1b.1): versioned library list + profile typeCatalog
+    $cat = Get-TcLintTypeCatalog
+    if (-not $cat.ok) { return (& $fail 'LINT_ENGINE_ERROR' 'The lint type catalog is missing or invalid; no result is reported' ([ordered]@{ engineDetail = $cat.message })) }
+    foreach ($e in $cat.entries) { $opt.AddCatalogType($e.name, $e.library, $e.kind, $e.source) }
+    $profSrc = if ($prof.profile.path) { $prof.profile.path } else { 'profile' }
+    foreach ($nme in @($prof.typeCatalog.stateful)) { $opt.AddCatalogType($nme, 'profile', 'stateful', $profSrc) }
+    foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $opt.AddCatalogType($nme, 'profile', 'function-block', $profSrc) }
+    $catInfo = $cat.info
+    $catInfo['profileStateful'] = @($prof.typeCatalog.stateful).Count
+    $catInfo['profileFunctionBlocks'] = @($prof.typeCatalog.functionBlocks).Count
     $analyzeStart = $sw.ElapsedMilliseconds
     try { $res = ("$ns.LintEngine" -as [type])::Run($opt) }
     catch {
@@ -169,6 +179,9 @@ function Invoke-TcLintProject {
         }
         return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
     }
+
+    # newSuppressions[]: against git HEAD (design.md D5); unavailable -> all listed (fail closed)
+    $newSup = Get-TcLintNewSuppressions -Suppressions @($res['suppressions']) -PlcProjectFull $plcFull -ProfilePath $prof.profile.path -EngineType ("$ns.Suppressions" -as [type])
 
     $source = [ordered]@{ kind = 'disk'; plcProjectPath = $res['source']['plcProjectPath']; solutionPath = $res['source']['solutionPath']
         tsprojPaths = @($res['source']['tsprojPaths']); ideChecked = $false }
@@ -188,11 +201,14 @@ function Invoke-TcLintProject {
         unresolved           = @($res['unresolved'])
         requiresDisposition  = [bool]$res['requiresDisposition']
         scope                = $res['scope']
-        newSuppressions      = @()
-        newSuppressionsBasis = 'inline-suppression-not-supported'
+        suppressions         = @($res['suppressions'])
+        newSuppressions      = @($newSup.items)
+        newSuppressionsBasis = $newSup.basis
+        typeCatalog          = $catInfo
         coverage             = $res['coverage']
         rulesRun             = @($res['rulesRun'])
     }
+    if ($newSup.reason) { $data.newSuppressionsBasisReason = $newSup.reason }
     if ($Scope -eq 'Object') { $data.scope['note'] = 'Scope=Object checks only these objects (plus the project files), not the whole project: run Scope=All before Reset-TcSolution / BuildProject' }
     if (@($res['engineDetail']).Count -gt 0) { $data.engineDetail = @($res['engineDetail']) }
     if ($IncludeTiming) { $data.timing = [ordered]@{ engineLoadMs = $compileMs; engineCompiled = [bool]$engine.compiled; analyzeMs = ($sw.ElapsedMilliseconds - $analyzeStart); totalMs = $sw.ElapsedMilliseconds } }

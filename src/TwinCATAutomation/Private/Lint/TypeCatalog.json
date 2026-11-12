@@ -1,0 +1,46 @@
+{
+  "schema": "tcauto-lint-type-catalog/1",
+  "version": 1,
+  "note": "Library function blocks the semantic linter knows (#252 tasks 1b.1). stateful: the instance keeps state between calls (timer elapsed time, edge memory, counter value, flip-flop output); used by SCAN-TEMPFB-001. typeOnly: known as a function block type, no rule evaluates it yet (Tc2_MC2: rules undecided, rule-catalog SCAN-MC-*). A type in no list and not declared in the project is not evaluated (coverage.rulesSkipped unknown-type); names are never guessed from a prefix. Each URL is the InfoSys page of that function block (checked 2026-11-13).",
+  "libraries": [
+    {
+      "name": "Tc2_Standard",
+      "stateful": [
+        { "name": "TON", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html" },
+        { "name": "TOF", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74405003.html" },
+        { "name": "TP", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74408075.html" },
+        { "name": "LTON", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261455883.html" },
+        { "name": "LTOF", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2260730123.html" },
+        { "name": "LTP", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261457803.html" },
+        { "name": "R_TRIG", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/9007199329132555.html" },
+        { "name": "F_TRIG", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74390027.html" },
+        { "name": "CTU", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74400523.html" },
+        { "name": "CTD", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74398987.html" },
+        { "name": "CTUD", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74402059.html" },
+        { "name": "RS", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74394507.html" },
+        { "name": "SR", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74396043.html" }
+      ],
+      "typeOnly": []
+    },
+    {
+      "name": "Tc2_MC2",
+      "stateful": [],
+      "typeOnly": [
+        { "name": "MC_Power", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70049419.html" },
+        { "name": "MC_Reset", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70050955.html" },
+        { "name": "MC_Stop", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70108555.html" },
+        { "name": "MC_Halt", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70107019.html" },
+        { "name": "MC_Home", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70117515.html" },
+        { "name": "MC_MoveAbsolute", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70094731.html" },
+        { "name": "MC_MoveRelative", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70096267.html" },
+        { "name": "MC_MoveVelocity", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70102411.html" },
+        { "name": "MC_MoveModulo", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70099339.html" },
+        { "name": "MC_GearIn", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70123403.html" },
+        { "name": "MC_GearOut", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70126475.html" },
+        { "name": "MC_ReadActualPosition", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70055435.html" },
+        { "name": "MC_ReadStatus", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70066187.html" },
+        { "name": "MC_SetPosition", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70052491.html" }
+      ]
+    }
+  ]
+}

@@ -125,9 +125,26 @@ namespace TcLintEngine
             Add("LINT-PARSE-001", "Code cannot be tokenized (unterminated string, comment or pragma; line break in a string)", "error", "true", "project-integrity", "yes",
                 "downgraded to notAnalyzed when the section contains a construct the parser does not know", "high", null);
             Add("LINT-PARSE-002", "Block keywords do not pair (IF / END_IF, CASE / END_CASE, ...)", "error", "true", "project-integrity", "yes",
-                "downgraded to notAnalyzed when the section contains a construct the parser does not know (conditional pragma, ?=, ...)", "high", null);
+                "downgraded to notAnalyzed when the section contains a construct the parser does not know (conditional pragma, ?=, ...); the 4026.22 compiler rejected ?=, **, /* */, E_Enum#Member, T#-5S and non-ASCII identifiers in the IDE measurement (2026-11-13, verification/st-syntax-measured.md D01-D04 / D06 / D16) - they stay notAnalyzed (pass) because 4024 is not measured and the owner has not decided; the coverage reason names the rejection", "high", null);
             Add("LINT-PARSE-003", "Declaration structure broken (VAR block without END_VAR, TYPE without END_TYPE, ...)", "error", "true", "project-integrity", "yes",
-                "downgraded to notAnalyzed when the declaration contains a construct the parser does not know", "high", null);
+                "downgraded to notAnalyzed when the declaration contains a construct the parser does not know; the 4026.22 compiler rejected ?=, **, /* */, E_Enum#Member, T#-5S and non-ASCII identifiers in the IDE measurement (2026-11-13, verification/st-syntax-measured.md D01-D04 / D06 / D16) - they stay notAnalyzed (pass) because 4024 is not measured and the owner has not decided; the coverage reason names the rejection", "high", null);
+            // ---- Phase 1b (rule-catalog.md section 2; tasks 1b.2 / 1b.3 / 1b.6)
+            Add("SCAN-TEMPFB-001", "Stateful function block (timer / trigger / counter / flip-flop) declared as a temporary instance", "error", "true", "behavior", "unknown",
+                "re-initialized on every call: METHOD VAR (InfoSys tc3_plc_intro/2530307467.html), FUNCTION VAR (2530284939.html), VAR_TEMP (12050023819.html, 2528781963.html); METHOD VAR_INST, FB VAR and VAR_STAT are not reported; variant accessor-var (Property Get / Set VAR) is a warning, no InfoSys statement found; " +
+                "stateful = TypeCatalog.json (Tc2_Standard TON TOF TP LTON LTOF LTP R_TRIG F_TRIG CTU CTD CTUD RS SR) + profile typeCatalog.stateful; project function blocks are not stateful unless the profile lists them; Tc2_MC2 types are type-only (rule undecided) -> rulesSkipped type-only; a type in no catalog -> rulesSkipped unknown-type, never guessed from a name prefix; " +
+                "a declaration with a conditional pragma or other notAnalyzed construct is not evaluated (rulesSkipped)", "high", null);
+            Add("PROJECT-TASK-001", "PROGRAM is called by no task and by no POU reachable from a task (it never runs)", "warning", "false", "behavior", "no",
+                "Build compiles only referenced objects: an uncalled PROGRAM with a syntax error still built (measured 2026-11-13, verification/st-syntax-measured.md section 2); call graph = .TcTTO PouCall + P() / P.Action() / P.Method() calls + FB types declared in reachable POUs, GVLs and DUTs (over-approximation: an FB type counts as reachable when declared); only reading P.x is not a call; " +
+                "a PROGRAM named in a part the linter cannot read (CFC / SFC, conditional pragma, unreadable file, visualisation) -> rulesSkipped call-graph-incomplete; a project without any .TcTTO (library) -> not run (no-task)", "high", null);
+            Add("PROJECT-TASK-002", "PROGRAM runs more than once per cycle (two tasks, task + program, two programs, repeated unconditional call)", "error", "true", "behavior", "no",
+                "counts task PouCalls and calls P() from reachable PROGRAMs (calls in mutually exclusive branches of one program are one source; two unconditional calls in one body = repeated-call); a caller that is a function block or function -> warning fb-or-function-caller (how often it runs is not analysed); " +
+                "callers that are not reachable from a task are ignored (axis TestCam); the consequence (double timer / trigger evaluation, concurrent task access) is inferred from IEC call semantics, not measured", "high", "inferred");
+            Add("LINT-SUPPRESS-001", "Suppression directive not applied (no reason, reason under 8 characters, malformed, object directive after the first VAR)", "warning", "true", "none", "no", "", "high", null);
+            Add("LINT-SUPPRESS-002", "Suppression names an unknown rule id", "warning", "true", "none", "no", "", "high", null);
+            Add("LINT-SUPPRESS-003", "Suppression matches no finding", "info", "false", "none", "no", "", "high", null);
+            Add("LINT-SUPPRESS-004", "Inline suppression of a rule that can block (only the profile suppressions[] may suppress it; review B3)", "warning", "true", "none", "no", "", "high", null);
+            foreach (string id in new string[] { "SCAN-TEMPFB-001", "PROJECT-TASK-001", "PROJECT-TASK-002", "LINT-SUPPRESS-001", "LINT-SUPPRESS-002", "LINT-SUPPRESS-003", "LINT-SUPPRESS-004" }) RuleRegistry.Get(id).Phase = "1b";
+            RuleRegistry.Get("SCAN-TEMPFB-001").Te1200 = "SA0167 (Light, runs after a successful compile)";
             Add("LINT-XML-002", "Implementation has more than one ST element (all are analysed; line numbers unreliable)", "warning", "false", "none", "unknown",
                 "XAE always wrote one <ST> (verification/xae-generated-xml.md); line numbers of the joined text do not match Get-TcPouCode", "high", null);
         }
@@ -305,6 +322,7 @@ namespace TcLintEngine
         public List<ProfileEntry> Excludes = new List<ProfileEntry>();
         public List<ProfileEntry> Suppressions = new List<ProfileEntry>();
         public List<ProfileEntry> AcceptSkips = new List<ProfileEntry>();
+        public List<CatalogType> CatalogTypes = new List<CatalogType>();   // TypeCatalog.json + profile typeCatalog (tasks 1b.1)
         public bool TestFault;
         public long MaxFileBytes = 8L * 1024 * 1024;   // larger files are not read: notAnalyzed too-large, verdict incomplete (should-fix 5)              // tests only: throw inside the engine (LINT_ENGINE_ERROR path)
 
@@ -321,6 +339,7 @@ namespace TcLintEngine
         public void AddExclude(string objectPath, string reason) { ProfileEntry e = new ProfileEntry(); e.ObjectPath = objectPath; e.Reason = reason; Excludes.Add(e); }
         public void AddSuppression(string objectPath, string ruleId, string reason) { ProfileEntry e = new ProfileEntry(); e.ObjectPath = objectPath; e.RuleId = ruleId; e.Reason = reason; Suppressions.Add(e); }
         public void AddAcceptSkip(string objectPath, string ruleId, string reason) { ProfileEntry e = new ProfileEntry(); e.ObjectPath = objectPath; e.RuleId = ruleId; e.Reason = reason; AcceptSkips.Add(e); }
+        public void AddCatalogType(string name, string library, string kind, string source) { CatalogType c = new CatalogType(); c.Name = name; c.Library = library; c.Kind = kind; c.Source = source; CatalogTypes.Add(c); }
         public void AddScopeObject(string name) { if (ScopeObjects == null) ScopeObjects = new List<string>(); ScopeObjects.Add(name); }
     }
 
