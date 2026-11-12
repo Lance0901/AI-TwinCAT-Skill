@@ -1,0 +1,27 @@
+﻿compileMs=758
+=== C:\Temp\lint-corpus\axis\AxisInterface_Type01_Library\AxisInterface\AxisInterface.plcproj
+analyzeMs(cold)=129 analyzeMs(warm)=69 deterministic=True
+heapDeltaBytes=41895168
+stat decl.ok=149
+stat decl.total=149
+stat files.TcDUT=49
+stat files.TcGVL=3
+stat files.TcPOU=20
+stat files.TcTTO=1
+stat impl.lang.CFC=1
+stat impl.lang.ST=124
+stat impl.st.lexok=124
+stat impl.st.structok=124
+stat impl.st.total=124
+stat obj.DUT=49
+stat obj.GVL=3
+stat obj.POU=20
+stat sections.Action=28
+stat sections.DUT=49
+stat sections.GVL=3
+stat sections.Method=77
+stat sections.POU=20
+FINDING LINT-COVERAGE-001 [info/high] AxisInterface\LIB\AxisControl\FB_AxisControl.TcPOU :: FB_AxisControl.A90_Cyclic L0 :: implementation language CFC not analyzed
+FINDING SCAN-FBCALL-002 [info/high] MC_MoveAbsolute_Continue.TcPOU :: MC_MoveAbsolute_Continue L30 :: FB instance 'fbExecute_Rtrig : R_TRIG' is never referenced
+FINDING SCAN-FBCALL-002 [info/high] Main.TcPOU :: Main L13 :: FB instance 'fbWheelThreadCal : FB_CorrugatedWheelThreadCalculate' is never referenced
+FINDING SCAN-TIMER-001 [warning/medium] TestCam.TcPOU :: TestCam L711 :: R_TRIG instance 'R_14Eng' is only called inside IF/CASE (IF@663) in TestCam

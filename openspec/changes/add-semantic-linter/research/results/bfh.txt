@@ -1,0 +1,23 @@
+﻿compileMs=759
+=== C:\Temp\lint-corpus\bfh\LangMang260618\PLC1\PLC1.plcproj
+analyzeMs(cold)=85 analyzeMs(warm)=37 deterministic=True
+heapDeltaBytes=3747968
+stat decl.ok=93
+stat decl.total=93
+stat files.TcDUT=39
+stat files.TcGVL=6
+stat files.TcPOU=45
+stat files.TcTTO=1
+stat impl.lang.ST=52
+stat impl.st.lexok=52
+stat impl.st.structok=52
+stat impl.st.total=52
+stat obj.DUT=39
+stat obj.GVL=6
+stat obj.POU=45
+stat sections.Action=4
+stat sections.DUT=39
+stat sections.GVL=6
+stat sections.Method=3
+stat sections.POU=45
+FINDING SCAN-TIMER-003 [warning/medium] FB_ThicknessAverage.TcPOU :: FB_ThicknessAverage L16 :: R_TRIG instance 'rt' is called 2 times
