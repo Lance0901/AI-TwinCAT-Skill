@@ -29,13 +29,8 @@ function Get-TcIdeInfo {
     # No own deadline (CODING_STANDARDS 1): it is one more synchronous DTE read right after the
     # DTE.Version / Solution reads above, which block first when the IDE is blocked; a COM error
     # (also RPC_E_CALL_REJECTED of a busy IDE) is reported as its text in remoteManagerError.
-    $rmVersion = $null; $rmError = $null
-    try {
-        $rm = $script:TcDte.GetObject('TcRemoteManager')
-        if ($null -eq $rm) { $rmError = "DTE.GetObject('TcRemoteManager') returned null" }
-        else { $rmVersion = [string]$rm.Version; if ([string]::IsNullOrWhiteSpace($rmVersion)) { $rmVersion = $null; $rmError = 'TcRemoteManager.Version is empty' } }
-    }
-    catch { $rmError = $_.Exception.Message }
+    $rmRead = Get-TcRemoteManagerVersion -Dte $script:TcDte
+    $rmVersion = $rmRead.version; $rmError = $rmRead.error
 
     $data = [PSCustomObject]@{
         progId                = $script:TcProgId

@@ -90,12 +90,26 @@ function New-FakeDte([string]$Version = '17.0', [string]$Solution = '', [bool]$B
     $sol = New-Object PSObject
     $sol | Add-Member NoteProperty FullName $Solution
     $sol | Add-Member NoteProperty Projects ([PSCustomObject]@{ Count = 0 })
+    # #225: Connect-TcIde opens -SolutionPath in the launched IDE: loaded at once, one project whose
+    # Object is a fake ITcSysManager (GetTargetNetId only)
+    $sol | Add-Member NoteProperty IsOpen $false
+    $sol | Add-Member ScriptMethod Open {
+        param($p)
+        $this.FullName = $p; $this.IsOpen = $true
+        $sm = New-Object PSObject; $sm | Add-Member ScriptMethod GetTargetNetId { '1.2.3.4.1.1' }
+        $proj = [PSCustomObject]@{ Name = 'P1'; Object = $sm }
+        $projs = New-Object PSObject; $projs | Add-Member NoteProperty Count 1; $projs | Add-Member NoteProperty P $proj; $projs | Add-Member ScriptMethod Item { param($i) $this.P }
+        $this.Projects = $projs
+    }
     $o = New-Object PSObject
     $o | Add-Member NoteProperty Version $Version
     $o | Add-Member NoteProperty Solution $sol
     $o | Add-Member NoteProperty Busy $Busy
+    # #225: DTE.GetObject('TcRemoteManager').Version = $global:RmVersion72 ('<throw>' = not readable)
+    $o | Add-Member ScriptMethod GetObject { param($n) if ($n -eq 'TcAutomationSettings') { return [PSCustomObject]@{ SilentMode = $false } }; if ($n -ne 'TcRemoteManager') { throw "unexpected GetObject('$n')" }; if ($global:RmVersion72 -eq '<throw>') { throw 'Unknown name (0x80020006)' }; [PSCustomObject]@{ Version = $global:RmVersion72 } }
     $o
 }
+$global:RmVersion72 = '3.1.4024.71'
 function New-RotEntry([int]$ProcId, [object]$Object, [string]$ProgId = 'VisualStudio.DTE.17.0') {
     @{ DisplayName = "!${ProgId}:$ProcId"; Object = $Object; ProgId = $ProgId; ProcessId = $ProcId }
 }
@@ -104,6 +118,7 @@ function New-RotEntry([int]$ProcId, [object]$Object, [string]$ProgId = 'VisualSt
     param($NewFakeDte, $NewRotEntry)
     $script:TcLaunchPendingWaitSec = 1
     $script:TcLaunchRotWaitSec = 0
+    $script:TcSysManagerRetryMs = 0
     $script:UnitNewFakeDte = $NewFakeDte; $script:UnitNewRotEntry = $NewRotEntry
     $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
     function script:Test-TcProgIdRegistered { [CmdletBinding()] param([string]$ProgId) $global:Reg72 -contains $ProgId }
@@ -253,6 +268,24 @@ try {
     Reset-State; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.71'
     $r = Connect-TcIde -SolutionPath $sln24
     Check 'B2 4024 sln launches TcXaeShell.DTE.15.0' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.15.0' -and $r.data.progIdSelectedBy -eq 'tsproj-version') "launches=$($global:Launches72 -join ',') by=$($r.data.progIdSelectedBy)"
+    # #225 PR #255 review: after the launch the IDE's TcRemoteManager.Version is read back
+    Reset-State; $global:Modal72 = 'none'; $global:RmVersion72 = '3.1.4024.71'
+    $r = Connect-TcIde -SolutionPath $sln24
+    Check 'B2c #225: remote-manager-match, read back 3.1.4024.71 -> success, remoteManagerVerified true' ($r.success -eq $true -and $r.data.progIdSelectedBy -eq 'remote-manager-match' -and $r.data.remoteManagerVerified -eq $true -and $r.data.remoteManagerVersion -eq '3.1.4024.71' -and $r.data.solutionVersion.remoteManager.build -eq '4024.71' -and $global:Launches72.Count -eq 1) "code=$($r.error.code) $($r.error.message) verified=$($r.data.remoteManagerVerified)"
+    Reset-State; $global:Modal72 = 'none'; $global:RmVersion72 = '3.1.4026.22'
+    $r = Connect-TcIde -SolutionPath $sln24
+    $st = & $mod { "$($script:TcIdeConnected)|$($script:TcIdeSelectedBy)|$($null -eq $script:TcDte)|$($null -eq $script:TcSysManager)|$($script:TcIdeProcessId)" }
+    Check 'B2d #225: read back 3.1.4026.22 -> REMOTE_MANAGER_MISMATCH with expected / actual, hint' ($r.success -eq $false -and $r.error.code -eq 'REMOTE_MANAGER_MISMATCH' -and $r.data.expected -eq '3.1.4024.71' -and $r.data.actual -eq '3.1.4026.22' -and $r.data.remoteManagerVerified -eq $false -and $r.data.ownedBySession -eq $true -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) "code=$($r.error.code) $($r | ConvertTo-Json -Compress -Depth 3)"
+    Check 'B2e #225: after the mismatch the COM link is released, the own IDE is kept by pid only (only Disconnect-TcIde -Quit -Kill can act; no tool can save)' ($st -eq "False|launched|True|True|$($r.data.ideProcessId)" -and [int]$r.data.ideProcessId -ge 9001 -and $global:Kills72.Count -eq 0) $st
+    $g = Get-TcIdeInfo
+    Check 'B2f #225: a file-writing / IDE tool after the mismatch gets NOT_CONNECTED' ($g.success -eq $false -and $g.error.code -eq 'NOT_CONNECTED') "$($g.error.code)"
+    Reset-State; $global:Modal72 = 'none'; $global:RmVersion72 = '<throw>'
+    $r = Connect-TcIde -SolutionPath $sln24
+    Check 'B2g #225: read back fails -> success, remoteManagerVerified false + remoteManagerWarning' ($r.success -eq $true -and $r.data.remoteManagerVerified -eq $false -and $null -eq $r.data.remoteManagerVersion -and $r.data.remoteManagerWarning -match '0x80020006') "code=$($r.error.code) $($r.data.remoteManagerWarning)"
+    Reset-State; $global:Modal72 = 'none'; $global:RmVersion72 = '3.1.4026.22'
+    $r = Connect-TcIde -SolutionPath $sln26
+    Check 'B2h #225: tsproj-version (4026) is not read back / not refused' ($r.success -eq $true -and $r.data.progIdSelectedBy -eq 'tsproj-version' -and $null -eq $r.data.PSObject.Properties['remoteManagerVerified']) "code=$($r.error.code) by=$($r.data.progIdSelectedBy)"
+    $global:RmVersion72 = '3.1.4024.71'
     Reset-State
     $r = Connect-TcIde -SolutionPath $sln24
     Check 'B2b #225: 4024 sln on the dev layout (XAE 4026 + Build_4024.71) launches TcXaeShell.DTE.15.0, remote-manager-match' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.15.0' -and $r.data.progIdSelectedBy -eq 'remote-manager-match') "launches=$($global:Launches72 -join ',') code=$($r.error.code) by=$($r.data.progIdSelectedBy)"
