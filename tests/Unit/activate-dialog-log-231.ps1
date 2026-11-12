@@ -85,7 +85,7 @@ $global:Ut231 = @{ InActivate = $false; Dialog = $null; ActivateScript = 'Start-
         if ($State -eq 'Run') { $null = Invoke-TcComRetry -OperationName 'mock set-run' -ScriptBlock { 'x' }; $global:Ut231.ComRetryAfter++ }
         New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State })
     }
-    function script:Enter-TcPlcOnline { param($LoginMode, $PlcProjectPath, $TimeoutSec) $null = Invoke-TcComRetry -OperationName 'mock login' -ScriptBlock { 'x' }; $global:Ut231.ComRetryAfter++; New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login' }) }
+    function script:Enter-TcPlcOnline { param($LoginMode, $PlcProjectPath, $TimeoutSec) $null = Invoke-TcComRetry -OperationName 'mock login' -ScriptBlock { 'x' }; $global:Ut231.ComRetryAfter++; New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login'; loggedIn = $true }) }
     function script:New-TcAdsClient {
         param($AmsNetId, $Port)
         $o = [PSCustomObject]@{ P = $Port }
