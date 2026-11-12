@@ -150,14 +150,21 @@ $r = Get-TcBuildErrors -TimeoutSec 5
 Check 'may-be-running (list reset): next call scans' ($r.success -and $global:UiaScanCalls -eq $before + 1) "calls=$($global:UiaScanCalls) before=$before"
 
 # 7. an entry that is really still running (Start-Sleep 30): stays tracked, no scan, scanBusy true
+#    The runspace is created and opened here, before BeginInvoke, the way Invoke-TcUiaScan does it
+#    (#245): without one, BeginInvoke creates it on a thread-pool thread and PowerShell.Runspace is
+#    still $null right after BeginInvoke (measured 2026-11-12, PS 5.1: 48 of 50), so reading it
+#    there captured $null whenever the thread pool was slow (CI with 4 unit scripts in parallel).
+$liveRs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+$liveRs.Open()
 $live = [powershell]::Create()
+$live.Runspace = $liveRs
 try {
     $null = $live.AddScript('Start-Sleep 30')
     $handle = $live.BeginInvoke()
-    $liveRs = $live.Runspace
-    # BeginInvoke opens the runspace asynchronously: wait until the script is really running
+    # BeginInvoke starts the pipeline asynchronously: wait (bounded) until the script is really running
     $deadline = (Get-Date).AddSeconds(15)
-    while ((($liveRs.RunspaceStateInfo.State -ne 'Opened') -or ($live.InvocationStateInfo.State -ne 'Running')) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    while (($live.InvocationStateInfo.State -ne 'Running') -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    Check 'running entry: script reached Running' ($live.InvocationStateInfo.State -eq 'Running') "$($live.InvocationStateInfo.State)"
     $before = $global:UiaScanCalls
     Set-Abandoned @([PSCustomObject]@{ PowerShell = $live; Runspace = $liveRs; Started = 'live' })
     $threw = $null
