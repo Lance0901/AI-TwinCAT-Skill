@@ -154,6 +154,15 @@ function Connect-TcIde {
         data.launchRecordWarning  launched-ides.json could not be read / written (only when that happened)
         data.takenOver / data.previousOwner  -TakeOverOrphan only (#196): true, and the ended owner
                           { hostPid; hostStartTime; moduleInstanceId; ownerId; hostState; ownerPid; ownerState } (selectedBy 'orphan-takeover')
+        data.reusedEmptyOrphan / data.previousOwner  #235 (selectedBy 'empty-orphan-reuse'): -SolutionPath
+                          without -TakeOverOrphan found the IDE that an ENDED TcAuto session launched for
+                          this .sln (valid, confirmed launch record; host and owner gone; -ProgId equal)
+                          with no solution and no document open and no dialog: it was attached, the .sln
+                          opened in it and the launch record given this session as owner (takeovers[]
+                          reason 'empty-orphan-reuse'), so ownedBySession = true. A dialog / incomplete
+                          scan there: IDE_MODAL_DIALOG (hint IDE_MODAL_DIALOG_EMPTY_ORPHAN) /
+                          MODAL_SCAN_INCOMPLETE, nothing attached or launched; any other mismatch: a new
+                          IDE is launched as before. An IDE without launch record is never reused.
     #>
     [CmdletBinding()]
     param(
@@ -469,14 +478,7 @@ function Connect-TcIde {
     if ($TakeOverOrphan) {
         $orphan = Resolve-TcOrphanTakeover -SolutionPath $normalizedSolutionPath -ProgId $ProgId -Candidates $candidates -UnreadableCandidates $unreadableCandidates
         if ($null -ne $orphan.Result) { return $orphan.Result }
-        $oc = $orphan.Candidate
-        $chosen = $oc
-        $dte = $oc.Object
-        $usedProgId = $oc.progId
-        if ([string]::IsNullOrWhiteSpace($usedProgId)) { $usedProgId = [string]$orphan.Record.progId }
-        $selectionReason = 'orphan-takeover'
-        $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId)) { 'explicit' } else { 'running-instance' }
-        Write-Verbose "Taking over IDE pid $($oc.pid) for '$normalizedSolutionPath' from the ended TcAuto session (host pid $($orphan.Record.hostPid)) once the attach has passed (#196)"
+        $chosen = $orphan.Candidate   # adopted below (shared with the #235 empty-orphan reuse)
     }
 
     # --- #136: this session already launched an IDE for -SolutionPath and it can still be alive ---
@@ -489,7 +491,7 @@ function Connect-TcIde {
     #    time must never be taken for it (#147 M2);
     #  - -ProgId names another ProgID than the one it was launched with (data.progIdMismatch, M1).
     # Released only when it meanwhile has ANOTHER solution open or its process is gone.
-    if ($null -eq $chosen -and $null -ne $normalizedSolutionPath) {
+    if ($null -eq $chosen -and $null -eq $orphan -and $null -ne $normalizedSolutionPath) {
         $own = Find-TcSessionLaunchedIde -Solution $normalizedSolutionPath
         # #152 R3-1: a record of ANOTHER session no longer blocks this .sln when that IDE (same pid,
         # read above from the ROT - no new COM call) now has another solution open; when its host
@@ -504,6 +506,19 @@ function Connect-TcIde {
                 if ($release) {
                     Write-Verbose "Launch record of another session (IDE pid $op) does not block '$normalizedSolutionPath': that IDE now has '$seenSol' open"
                     $own = $null
+                    # #235: that IDE has NO solution and its session (host + owner) has ended: the
+                    # cold start of that session failed (MODAL_SCAN_INCOMPLETE) before Solution.Open.
+                    # Reuse it instead of launching a second one, with every -TakeOverOrphan check
+                    # (Resolve-TcOrphanTakeover -EmptySolution: valid + confirmed record, -ProgId, ready
+                    # DTE without solution, no dialog after a complete scan, no document). A dialog / an
+                    # incomplete scan is returned (nothing attached, nothing launched); any other refusal
+                    # goes on as before (launch). An IDE without launch record (the user's) never gets here.
+                    if ([string]::IsNullOrWhiteSpace($seenSol)) {
+                        $empty = Resolve-TcOrphanTakeover -SolutionPath $normalizedSolutionPath -ProgId $ProgId -Candidates $candidates -UnreadableCandidates $unreadableCandidates -EmptySolution
+                        if ($null -eq $empty.Result) { $orphan = $empty; $chosen = $empty.Candidate }
+                        elseif ([string]$empty.Result.error.code -in 'IDE_MODAL_DIALOG', 'MODAL_SCAN_INCOMPLETE') { return $empty.Result }
+                        else { Write-Verbose "Empty IDE pid $op of the ended session not reused ($($empty.Result.error.code) $($empty.Result.data.reason)); launching as before (#235)" }
+                    }
                 }
             }
         }
@@ -585,6 +600,21 @@ function Connect-TcIde {
                     -ErrorCode 'IDE_LAUNCH_PENDING' -Hint $hint -Data $pendingData
             }
         }
+    }
+
+    # --- #196 / #235: attach the orphan IDE that Resolve-TcOrphanTakeover accepted ---
+    # The ownership is written only after the attach, the modal check, Solution.Open (#235) and the
+    # project scan below have passed.
+    $emptyReuse = ($null -ne $orphan -and [bool]$orphan.EmptySolution)
+    if ($null -ne $orphan) {
+        $oc = $orphan.Candidate
+        $chosen = $oc
+        $dte = $oc.Object
+        $usedProgId = $oc.progId
+        if ([string]::IsNullOrWhiteSpace($usedProgId)) { $usedProgId = [string]$orphan.Record.progId }
+        $selectionReason = if ($emptyReuse) { 'empty-orphan-reuse' } else { 'orphan-takeover' }
+        $progIdSelectedBy = if (-not [string]::IsNullOrWhiteSpace($ProgId)) { 'explicit' } else { 'running-instance' }
+        Write-Verbose "$(if ($emptyReuse) { 'Reusing the empty' } else { 'Taking over' }) IDE pid $($oc.pid) for '$normalizedSolutionPath' from the ended TcAuto session (host pid $($orphan.Record.hostPid)) once the attach has passed (#196 / #235)"
     }
 
     # --- #29: the IDE that has -SolutionPath open may be blocked (modal dialog / busy) ---
@@ -884,6 +914,16 @@ function Connect-TcIde {
             # #196 review: nothing stays attached. PR #209 review M2: so the hint must not send the caller
             # to Reset-TcSolution (IDE_MODAL_DIALOG_RELOAD -> NOT_CONNECTED, the #201 dead end)
             Reset-TcOrphanTakeoverAttach
+            if ($emptyReuse) {
+                # #235: the empty orphan IDE showed a dialog after the attach: released, not reused
+                $dlgData = & $orphanFailData $dlgData
+                $dlgData | Add-Member -NotePropertyName 'reusedEmptyOrphan' -NotePropertyValue $false -Force
+                $emptyOp = "Connect-TcIde -SolutionPath (empty IDE pid $ideProcessId of an ended TcAuto session; dialog after the attach, attach released, not reused, no second IDE launched)"
+                if (Test-TcModalScanIncomplete $dialog) {
+                    return New-TcModalScanIncompleteResult -Scan $dialog -Operation $emptyOp -Data $dlgData -HintSuffix ([string]$script:TcHintFragments['EMPTY_ORPHAN_SCAN_INCOMPLETE']).Replace('<pid>', [string]$ideProcessId)
+                }
+                return New-TcModalDialogResult -Dialog $dialog -Operation $emptyOp -HintCode 'IDE_MODAL_DIALOG_EMPTY_ORPHAN' -Data $dlgData
+            }
             return New-TcModalDialogResult -Dialog $dialog -Operation "Connect-TcIde -TakeOverOrphan (IDE pid $ideProcessId; dialog after the attach, attach released, not taken over)" `
                 -HintCode 'IDE_MODAL_DIALOG_ORPHAN' -Data (& $orphanFailData $dlgData)
         }
@@ -1040,14 +1080,16 @@ function Connect-TcIde {
     # scan have passed. A refusal / failed write releases the connection (nothing attached or owned).
     if ($null -ne $orphan) {
         $oc = $orphan.Candidate
-        $tk = Set-TcLaunchRecordTakeover -Record $orphan.Record -Reason 'orphan-takeover'
+        $tk = Set-TcLaunchRecordTakeover -Record $orphan.Record -Reason $(if ($emptyReuse) { 'empty-orphan-reuse' } else { 'orphan-takeover' })
         if ($null -ne $tk.Failure -or -not $tk.TakenOver) {
+            # #235: the empty orphan has this .sln open by now, but stays unowned (attach released)
             Reset-TcOrphanTakeoverAttach
             $tkData = & $orphanFailData ([PSCustomObject]@{
                 takenOver = $false; attached = $false; ownedBySession = $false; launched = $false; solution = $normalizedSolutionPath
                 ideProcessId = [int]$oc.pid; launchId = [string]$orphan.Record.launchId; otherSession = $orphan.OtherSession
                 candidates = $candidateSummary
             })
+            if ($emptyReuse) { $tkData | Add-Member -NotePropertyName 'reusedEmptyOrphan' -NotePropertyValue $false -Force }
             if ($null -ne $tk.Failure) {
                 $tkData | Add-Member -NotePropertyName 'reason' -NotePropertyValue 'launch-record-write-failed'
                 $tkData | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $tk.Failure
@@ -1085,8 +1127,13 @@ function Connect-TcIde {
     if ($null -ne $recWarn) { $data | Add-Member -NotePropertyName 'sessionRecordWarning' -NotePropertyValue $recWarn }
     # #73: the launch record file could not be read / written during this call (ownership may not survive a bridge restart)
     if ($null -ne $script:TcLaunchRecordWarning) { $data | Add-Member -NotePropertyName 'launchRecordWarning' -NotePropertyValue $script:TcLaunchRecordWarning }
+    # #235: the empty IDE of an ended TcAuto session was reused (no prompt answered, no document open)
+    if ($null -ne $takeover -and $emptyReuse) {
+        $data | Add-Member -NotePropertyName 'reusedEmptyOrphan' -NotePropertyValue $true
+        $data | Add-Member -NotePropertyName 'previousOwner' -NotePropertyValue $takeover
+    }
     # #196: -TakeOverOrphan took the IDE over from an ended TcAuto session
-    if ($null -ne $takeover) {
+    elseif ($null -ne $takeover) {
         $data | Add-Member -NotePropertyName 'takenOver' -NotePropertyValue $true
         $data | Add-Member -NotePropertyName 'previousOwner' -NotePropertyValue $takeover
         # #201: reload prompts of the orphan were answered without reloading: the IDE still has the
