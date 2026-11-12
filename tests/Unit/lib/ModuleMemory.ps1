@@ -1,7 +1,7 @@
 # #241: "fresh module memory" without a second Import-Module -Force (about 2 s each).
 #   $snap = Save-UnitModuleMemory $mod      right after Import-Module -Force + the mocks
 #   Restore-UnitModuleMemory $mod $snap     later: that module instance is back to the snapshot:
-#     - every $script:Tc* / $script:Unit* variable has its snapshot value (collections copied),
+#     - every $script:Tc* / $script:Unit* variable has its snapshot value (collections deep-copied, #251),
 #       such variables created since are removed;
 #     - every function visible in the module scope is the snapshot one again (a mock a test
 #       installed later with "function script:X" is undone), functions created since are removed.
@@ -11,23 +11,64 @@
 # Use it only where a case needs clean memory. Where the test is about a NEW module instance (bridge
 # restart: a new $script:TcModuleInstanceId, state read back from disk) keep Import-Module -Force.
 
-function Copy-UnitModuleValue([object]$Value) {
+# #251: known containers (hashtable, ordered dictionary, ArrayList, array, PSCustomObject) are copied
+# recursively, so a test that changes an inner value cannot leak into the next case. Nesting deeper
+# than 8 levels throws, and so does a generic collection (List / HashSet / Dictionary, copied shallow)
+# that holds a mutable item: a new module variable of that shape must get its own copy here first.
+# Anything else (strings, numbers, scriptblocks, COM / .NET objects) is kept by reference, as before.
+$script:UnitModuleCopyMaxDepth = 8
+
+function Test-UnitMutableValue([object]$Value) {
+    $null -ne $Value -and $Value -isnot [string] -and (
+        $Value -is [System.Collections.IDictionary] -or $Value -is [System.Collections.IList] -or
+        $Value -is [System.Management.Automation.PSCustomObject])
+}
+
+function Copy-UnitModuleValue([object]$Value, [int]$Depth = 0) {
     if ($null -eq $Value) { return $null }
-    if ($Value -is [hashtable]) { return $Value.Clone() }
+    if ($Depth -gt $script:UnitModuleCopyMaxDepth) {
+        throw "Copy-UnitModuleValue: module value nested deeper than $($script:UnitModuleCopyMaxDepth) levels ($($Value.GetType().FullName)); extend tests/Unit/lib/ModuleMemory.ps1 (#251)"
+    }
+    if ($Value -is [hashtable]) {
+        $h = $Value.Clone()   # keeps the comparer
+        foreach ($k in @($h.Keys)) { $h[$k] = Copy-UnitModuleValue $Value[$k] ($Depth + 1) }
+        return $h
+    }
     if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
         $o = [ordered]@{}
-        foreach ($k in $Value.Keys) { $o[$k] = $Value[$k] }
+        foreach ($k in $Value.Keys) { $o[$k] = Copy-UnitModuleValue $Value[$k] ($Depth + 1) }
         return $o
     }
-    if ($Value -is [System.Collections.ArrayList]) { return $Value.Clone() }
-    if ($Value -is [System.Array]) { return , ($Value.Clone()) }
+    if ($Value -is [System.Collections.ArrayList]) {
+        $l = New-Object System.Collections.ArrayList
+        foreach ($item in $Value) { $null = $l.Add((Copy-UnitModuleValue $item ($Depth + 1))) }
+        return , $l
+    }
+    if ($Value -is [System.Array]) {
+        $a = $Value.Clone()
+        for ($i = 0; $i -lt $a.Length; $i++) { if (Test-UnitMutableValue $a[$i]) { $a[$i] = Copy-UnitModuleValue $a[$i] ($Depth + 1) } }
+        return , $a
+    }
     if ($Value.GetType().IsGenericType -and $Value -is [System.Collections.IEnumerable]) {
-        # List / HashSet / Dictionary: same type, same items, same comparer (when it has one)
+        # List / HashSet / Dictionary: same type, same items, same comparer (when it has one); only
+        # plain items, a mutable one would be shared with the snapshot
+        foreach ($item in $Value) {
+            $iv = if ($null -ne $item -and $item.GetType().IsGenericType -and $item.GetType().Name -like 'KeyValuePair*') { $item.Value } else { $item }
+            if (Test-UnitMutableValue $iv) {
+                throw "Copy-UnitModuleValue: $($Value.GetType().FullName) holds a mutable item ($($iv.GetType().FullName)) that would only be copied shallow; extend tests/Unit/lib/ModuleMemory.ps1 (#251)"
+            }
+        }
         $cmp = $Value.PSObject.Properties['Comparer']
         $ctorArgs = if ($null -ne $cmp) { @($Value, $cmp.Value) } else { @(, $Value) }
         return , ([Activator]::CreateInstance($Value.GetType(), $ctorArgs))
     }
-    if ($Value -is [System.Management.Automation.PSCustomObject]) { return $Value.PSObject.Copy() }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) {
+        $c = $Value.PSObject.Copy()
+        foreach ($p in @($c.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' })) {
+            if (Test-UnitMutableValue $p.Value) { $p.Value = Copy-UnitModuleValue $p.Value ($Depth + 1) }
+        }
+        return $c
+    }
     return $Value
 }
 

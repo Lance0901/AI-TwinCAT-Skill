@@ -195,7 +195,15 @@ function Enable-TcConfig {
         reachedState, lifecycleBlock (only when a block was recorded), plcState (last AdsState seen
         on the first PLC port, 851 in a one-PLC solution), plcs[] (@{ name; projectPath;
         adsPort; loggedIn; state }), bootPackage, finalCheck (@{ systemState; plcs;
-        dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
+        dialog; ok }), diagnostics (only on a failure after Activate), dialogsSeen (#231: modal
+        dialogs the watchdog saw while ActivateConfiguration() ran, also on success: @{ title; text;
+        buttons (names); firstSeen; lastSeen (ISO 8601); durationSec (lastSeen - firstSeen, a
+        lower bound: the scans run every ~2 s, so the dialog may have been up to about two scan
+        intervals (~4 s) longer); scans }, one entry per dialog seen in consecutive scans, @() when
+        none or Activate was not reached, at most 20 entries; the activate step detail then ends
+        with "; dialogs seen during Activate: N ('<title>' <durationSec> s, ..., +M more)" (first 3
+        titles); nothing is clicked), dialogsDropped (#231: dialogs not recorded in dialogsSeen
+        because of the 20-entry cap, int, 0 when none, also on failures), amsNetId,
         ideMemoryMB, solutionPlatform (active solution platform
         at Activate time, after an automatic fix; $null when unreadable), projectPlatform
         (project platform of the ACTIVE .tsproj; $null without .tsproj), platformMap,
@@ -330,6 +338,8 @@ function Enable-TcConfig {
     $bootPackage = $null
     $finalCheck = $null
     $diagnostics = $null
+    $dialogsSeen = @()            # #231: dialogs the Activate watchdog saw (Get-TcActivateDialogsSeen)
+    $dialogsDropped = 0           # #231: entries beyond the cap of 20 (Get-TcActivateDialogsDropped)
     # #68 postcondition facts (kept on failure, where activated / restarted / ... are always $false)
     $runtimeChangeSent = $false   # set-config (-Force) or ActivateConfiguration() was sent
     $activateSent = $false
@@ -349,6 +359,12 @@ function Enable-TcConfig {
             elapsedMs = [int]$Watch.ElapsedMilliseconds
             detail    = $Detail
         })
+    }
+
+    # #231: detail of a successful activate step, with the dialogs the watchdog saw
+    function Get-TcActivateDoneDetail {
+        $sum = Get-TcActivateDialogSummary -Dialogs $dialogsSeen -Dropped $dialogsDropped
+        if ($null -eq $sum) { 'ActivateConfiguration() done' } else { "ActivateConfiguration() done; $sum" }
     }
 
     # -Failed (#68): every "done" field is $false on a failure result; the facts stay in
@@ -391,6 +407,8 @@ function Enable-TcConfig {
             bootPackage = $bootPackage
             finalCheck  = $finalCheck
             diagnostics = $diagnostics
+            dialogsSeen = @($dialogsSeen)
+            dialogsDropped = [int]$dialogsDropped
             steps       = @($steps.ToArray())
         }
     }
@@ -868,8 +886,12 @@ function Enable-TcConfig {
         $activateSent = $true
         try {
             Invoke-TcActivateWithDeadline -TimeoutSec $ActivateTimeoutSec -AmsNetId $netId
+            $dialogsSeen = @(Get-TcActivateDialogsSeen)
+            $dialogsDropped = Get-TcActivateDialogsDropped
         }
         catch {
+            $dialogsSeen = @(Get-TcActivateDialogsSeen)
+            $dialogsDropped = Get-TcActivateDialogsDropped
             Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
             $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
             $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
@@ -886,7 +908,7 @@ function Enable-TcConfig {
             return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
         }
         $activated = $true
-        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
+        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail (Get-TcActivateDoneDetail)
         $fail = Test-TcBootPackage -TargetNetId $netId
         if ($null -ne $fail) { return $fail }
 
@@ -986,8 +1008,12 @@ function Enable-TcConfig {
     $activateSent = $true
     try {
         Invoke-TcActivateWithDeadline -TimeoutSec ([Math]::Min($ActivateTimeoutSec, (Get-TcRemainingSec))) -AmsNetId $netId
+        $dialogsSeen = @(Get-TcActivateDialogsSeen)
+        $dialogsDropped = Get-TcActivateDialogsDropped
     }
     catch {
+        $dialogsSeen = @(Get-TcActivateDialogsSeen)
+        $dialogsDropped = Get-TcActivateDialogsDropped
         Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
         $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
         $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
@@ -1005,7 +1031,7 @@ function Enable-TcConfig {
         return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
     }
     $activated = $true
-    Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
+    Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail (Get-TcActivateDoneDetail)
 
     # 2b. boot-package
     $fail = Test-TcBootPackage -TargetNetId $netId
@@ -1108,6 +1134,16 @@ function Enable-TcConfig {
             if (-not $r.success) {
                 Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail "$($p.name): $([string]$r.error.message)"
                 return New-TcStepFailureFromResult -Result $r -Prefix "PLC login/download of '$($p.name)' (port $($p.adsPort)) failed" -DefaultCode 'LOGIN_FAILED'
+            }
+            # #232: loggedIn is the login state Enter-TcPlcOnline read back, never "Login() did not throw"
+            $lp = if ($null -ne $r.data) { $r.data.PSObject.Properties['loggedIn'] } else { $null }
+            if ($null -eq $lp -or $lp.Value -ne $true) {
+                $lv = if ($null -eq $lp) { 'missing' } elseif ($null -eq $lp.Value) { 'unknown' } else { [string]$lp.Value }
+                $detail = "$($p.name): login returned success but loggedIn read back $lv"
+                Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail $detail
+                # New-TcStepFailure, not New-TcRuntimeFailure: the runtime-failure diagnostics may replace the
+                # code (e.g. BOOT_PACKAGE_MISMATCH); this is a login readback failure and keeps LOGIN_FAILED + hint
+                return New-TcStepFailure -Message "PLC login of '$($p.name)' (port $($p.adsPort)) not verified: $detail" -Code 'LOGIN_FAILED' -Hint (Get-TcErrorHint -Code 'LOGIN_FAILED')
             }
             $p.loggedIn = $true
             $loginDetails += "$($p.name):$($p.adsPort) $([string]$r.data.message)"

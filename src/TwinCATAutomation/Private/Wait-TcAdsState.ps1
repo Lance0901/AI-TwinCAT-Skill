@@ -52,13 +52,15 @@ function Wait-TcAdsState {
     .PARAMETER TargetState
         Run, Config, Stop, or Any. 'Any' succeeds as soon as ReadState() does not throw.
     .PARAMETER TimeoutSec
-        Maximum wait. Default 60.
+        Maximum wait. Default 60. Scaled by Get-TcTimeScale $script:TcAdsWaitTimeScale (1.0 in the
+        product; only unit tests lower it, #241).
     .PARAMETER IntervalMs
-        Poll interval. Default 500.
+        Poll interval. Default 500. Scaled like -TimeoutSec.
     .PARAMETER DetectRuntimeCrash
         End the wait early when the local UmRT process disappeared (see .DESCRIPTION).
     .PARAMETER CrashUnreachableSec
-        How long ADS 0x7 must last before a vanished UmRT counts as crashed. Default 10.
+        How long ADS 0x7 must last before a vanished UmRT counts as crashed. Default 10. Scaled like
+        -TimeoutSec.
     .OUTPUTS
         Hashtable: @{ Reached = [bool]; State = [string] (last state READ, a later failed probe
         keeps it); ElapsedMs = [int]; LastError = [string] ($null when the last probe succeeded);

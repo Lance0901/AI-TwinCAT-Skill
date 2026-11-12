@@ -62,12 +62,15 @@ $mod = Get-Module TwinCATAutomation
 # waits 20, 40, 80, 160 ms instead of 1, 2, 4, 8 s; the retries and the dialog check after them are unchanged.
 & $mod { $script:TcComRetryDelayMs = 20 }
 # #241: the cases that run into -TimeoutSec (regression, K5, L2, O8, L7) run with Reset-TcSolution's
-# deadline and 500 ms polls at $RS of real time (Set-ResetScale $RS ... Set-ResetScale 1). Their
+# deadline and 500 ms polls at $RS of real time (Invoke-WithResetScale $RS { ... }). Their
 # wall-clock bounds are the scaled budget plus the slack of the unscaled check (e.g. 6.5 = 5 + 1.5 ->
 # 5 * $RS + 1.5); the Close-TcReloadPrompt mock waits its -TimeoutSec scaled the same way.
 $RS = 0.25
 $global:ResetScale241 = 1.0
 function Set-ResetScale([double]$Scale) { & $mod { param($x) $script:TcResetTimeScale = $x } $Scale; $global:ResetScale241 = $Scale }
+# #251: the scale is set back to 1 even when the call throws ($ErrorActionPreference = 'Stop'), so a
+# failing case cannot leave every later case running at $RS of real time.
+function Invoke-WithResetScale([double]$Scale, [scriptblock]$ScriptBlock) { Set-ResetScale $Scale; try { & $ScriptBlock } finally { Set-ResetScale 1 } }
 # CI TEMP may be an 8.3 short name (#43): use the long form the module compares with.
 $stateRoot = & $mod { param($p) Get-TcLongPath $p } $stateRoot
 $env:TCAUTO_STATE_DIR = Join-Path $stateRoot 'state'
@@ -325,9 +328,7 @@ try {
     $stuck | Add-Member -MemberType ScriptProperty -Name FullName -Value { $global:W.Log.Add('FullName:null'); $null }
     $stuck | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) $global:W.Closed = $true }
     & $mod { param($d, $s) $script:TcIdeConnected = $true; $script:TcDte = $d; $script:TcSolutionPath = $s; $script:TcIdeProcessId = $null; $script:TcProgId = $null; $script:TcSysManager = $null } ([PSCustomObject]@{ Solution = $stuck; Documents = $docs }) $sln
-    Set-ResetScale $RS
-    $r = Reset-TcSolution -TimeoutSec 5
-    Set-ResetScale 1
+    $r = Invoke-WithResetScale $RS { Reset-TcSolution -TimeoutSec 5 }
     Check 'regression: FullName $null, no dialog -> RESET_SOLUTION_UNVERIFIED, nothing closed, modal checked in the poll' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:W.Closed -and @($global:W.Log | Where-Object { $_ -eq 'Modal:none' }).Count -ge 2) ("{0} | {1}" -f (Get-LogText).Substring(0, [Math]::Min(200, (Get-LogText).Length)), (J $r.error))
 
     # --- J (#106): solution reload prompt (buttons 259 + 1412) -> Ignore (1412), full close / reopen ---
@@ -414,9 +415,7 @@ try {
     Reset-World -Dialog $projectDlg
     $global:W.FailAnswers = @{ Yes = 2; No = 1 }
     $global:W.FailSleep = $true
-    Set-ResetScale $RS
-    $r = Start-Reset -ModulePath $sln -TimeoutSec 5
-    Set-ResetScale 1
+    $r = Invoke-WithResetScale $RS { Start-Reset -ModulePath $sln -TimeoutSec 5 }
     $att = @($r.data.reloadPromptAttempts)
     Check 'K5 answers that wait their -TimeoutSec -> IDE_MODAL_DIALOG within the 5 s budget, attempts in data' ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $att.Count -ge 1 -and @($att | Where-Object { $_.timeoutSec -gt 5 -or $_.timeoutSec -lt 1 }).Count -eq 0 -and $global:LastSec -lt (5 * $RS + 1.5)) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $att))
 
@@ -428,9 +427,7 @@ try {
 
     Reset-World -Dialog $fileDlg
     $global:W.NotLoaded = 1000000
-    Set-ResetScale $RS
-    $r = Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true } -TimeoutSec 5
-    Set-ResetScale 1
+    $r = Invoke-WithResetScale $RS { Start-Reset -ModulePath $sln -Params @{ DiscardProjectChanges = $true } -TimeoutSec 5 }
     $lc = $r.data.loadCheck
     Check 'L2 never loaded -> SOLUTION_RELOAD_INCOMPLETE within -TimeoutSec, loadCheck in data' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_RELOAD_INCOMPLETE' -and -not [string]::IsNullOrWhiteSpace([string]$r.error.hint) -and $lc.complete -eq $false -and $lc.polls -gt 1 -and $lc.last.projectCount -eq 0 -and $lc.last.solutionBuild -eq $false -and -not [string]::IsNullOrWhiteSpace([string]$lc.lastError) -and $global:LastSec -lt (5 * $RS + 1)) ("{0:N1}s | {1}" -f $global:LastSec, (J $r))
     Check 'L2 recorded as code-changed (files may have been reloaded); last dialog scan before giving up (N5)' (([string]$r.data.buildRequired -like '*solution reopened from disk*') -and (Get-LogText) -match 'SolutionBuild:null > Modal:none$') ("{0} | {1}" -f ((Get-LogText) -replace '^.*(.{120})$', '$1'), (J $r.data.buildRequired))
@@ -545,9 +542,7 @@ try {
     Reset-World -Dialog $projectDlg
     $global:W.AfterConnect.Add($projectDlg)
     $global:W.AfterYes.Add(@{}); $global:W.AfterYes.Add(@{ Scans = @(1..100 | ForEach-Object { 'incomplete' }) })
-    Set-ResetScale $RS
-    $r = Start-Reset -ModulePath $sln -TimeoutSec 5
-    Set-ResetScale 1
+    $r = Invoke-WithResetScale $RS { Start-Reset -ModulePath $sln -TimeoutSec 5 }
     $logText = Get-LogText; if ($logText.Length -gt 300) { $logText = $logText.Substring(0, 300) }
     Check 'O8 full path, every scan after the Yes incomplete -> RESET_SOLUTION_UNVERIFIED (no FullName read), nothing closed, recorded' ((-not $r.success) -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:W.Closed -and [string]$r.data.buildRequired -like '*project reloaded from disk*' -and $global:W.Violations.Count -eq 0 -and $global:LastSec -lt (5 * $RS + 2)) ("{0:N1}s {1} | {2}" -f $global:LastSec, $logText, (J $r.error))
 
@@ -839,9 +834,7 @@ try {
             Check 'L6 .tsproj lists PLC1, missing below TIPC for 2 polls after the reopen -> success only when it is back (expectedFrom disk)' ($r.success -and $r.data.reopenedSolution -eq $true -and $lc.complete -eq $true -and $lc.expectedFrom -eq 'disk' -and (@($lc.expected.plcs) -join ',') -eq 'PLC1' -and $lc.expected.requireTipc -eq $true -and $lc.polls -ge 3 -and (@($lc.last.plcs) -join ',') -eq 'PLC1' -and $global:W.PlcMissing -eq 0) ("{0:N1}s {1} | {2}" -f $global:LastSec, (Get-LogText), (J $lc))
 
             $global:ResetSln = $slnTs2
-            Set-ResetScale $RS
-            $r = Start-ResetG -Set @{} -Sln $slnTs2 -TimeoutSec 5
-            Set-ResetScale 1
+            $r = Invoke-WithResetScale $RS { Start-ResetG -Set @{} -Sln $slnTs2 -TimeoutSec 5 }
             $lc = $r.data.loadCheck
             Check 'L7 .tsproj lists PLC2, TIPC only has PLC1 -> SOLUTION_RELOAD_INCOMPLETE' ((-not $r.success) -and $r.error.code -eq 'SOLUTION_RELOAD_INCOMPLETE' -and $lc.expectedFrom -eq 'disk' -and (@($lc.expected.plcs) -join ',') -eq 'PLC2' -and $lc.lastError -match 'PLC2' -and $global:LastSec -lt (5 * $RS + 1.5)) ("{0:N1}s | {1}" -f $global:LastSec, (J $lc))
 

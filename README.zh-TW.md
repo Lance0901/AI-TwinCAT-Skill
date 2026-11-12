@@ -88,17 +88,19 @@ zip 內含官方 Node.js 24.22.2 `node.exe`(win-x64,SHA256 固定在 `scripts/Bu
 - 只有目標狀態讀回確認後才會回 `success: true`。`success: false` 時 AI 要停下來,把 `data` 與 `error.hint` 回報給你,不能改走原始 ADS、COM 或 GUI。當機或 Activate 失敗後,模組會替該 target 記錄 lifecycle block,之後都回 `LIFECYCLE_BLOCKED`,直到你同意並用 `ClearLifecycleBlock` 附上原因清除。細節:[adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md)「Failure contract」。
 - 啟動組態(Activate)會重啟 target 的 runtime,輸出會歸零。請在可以接受的 target 上操作。
 - 長時間的呼叫(`ConnectIde`、`BuildProject`、`EnableConfig`、`RunLifecycle`)可能超過 client 自己的 request timeout(SDK 預設 60 秒),但 server 仍會繼續做完。Claude Code:設定環境變數 `MCP_TOOL_TIMEOUT`,單位是毫秒(例如 `900000`),設在啟動 `claude` 的環境,或 `settings.json` 的 `env`,設完重開 Claude Code。細節:[mcp-server/README.md](mcp-server/README.md#client-request-timeout)。
-- Codex 預設每次呼叫 MCP tool 都會先問你是否核准(實測 2026-11-08,codex-cli 0.167.0)。要無人值守,`%USERPROFILE%\.codex\config.toml` 的 `[mcp_servers.tcauto]` table 裡加下面這個設定,應該能做到:
+- Codex 預設每次呼叫 MCP tool 都會先問你是否核准(實測 2026-11-08,codex-cli 0.167.0)。要無人值守,在 `%USERPROFILE%\.codex\config.toml` 的 `[mcp_servers.tcauto]` table 裡加下面這行(或只核准個別 tool:`[mcp_servers.tcauto.tools.<ToolName>]` 加 `approval_mode = "approve"`):
 
   ```toml
   default_tools_approval_mode = "approve"
   ```
 
-  這樣模型呼叫 tcauto 的每個 tool 都不會再問你,包含 `EnableConfig`、`WriteVariable`、`SetPlcState`,下錯指令可能直接在真機上啟動、停止或 Reset PLC。只在測試用 target 上使用。
+  **Headless(`codex exec` 搭配 `approval_policy="never"`)一定要加:** 這種模式 Codex 無法詢問，只有這樣核准過的 tool 能跑，其他 tcauto 呼叫都回 `MCP tool call requires approval, but approval policy is never`(實測 2026-11-12,codex-cli 0.167.0:只核准 `ConnectIde` 時 `SetTarget` 失敗；加上 `default_tools_approval_mode` 後完整 lifecycle PASS;[#250](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/250))。
 
-  鍵名為實測 2026-11-08,codex-cli 0.167.0,以 `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"` 驗證有效;未查到 Codex 官方文件。寫進 `config.toml` 的形式(上面的 toml 區塊)**還沒有實測**。
+  這樣模型呼叫 tcauto 的每個 tool 都不會再問你，包含 `EnableConfig`、`WriteVariable`、`SetPlcState` 與 `InstallPackage` 的 plan 階段，下錯指令可能直接在真機上啟動、停止或 Reset PLC。`InstallPackage` 仍需要 `Approved=true` 加 `PlanToken` 才會安裝，但 Codex 這時不會擋模型自己帶這兩個參數。只在測試用 target 上使用。
 
-  重跑 `Install-TcAuto.ps1` 時，這行會保留:安裝程式在 `[mcp_servers.tcauto]` 裡只改 `command` / `args`,你自加的 key 與子 table 原樣留著(env 的 `TCAUTO_RUNTIME_ROOT` 例外，會被移除;[#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204),以單元測試與暫存資料夾的安裝測試驗證，沒有動到真的設定檔)。`-Uninstall` 仍會移除整個 table 及其子 table。
+  鍵名為實測(codex-cli 0.167.0),以 `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"` 驗證有效;未查到 Codex 官方文件。寫進 `config.toml` 的形式(上面的 toml 區塊)**還沒有實測**。
+
+  安裝程式不會寫這行；重跑 `Install-TcAuto.ps1` 時，這行會保留:安裝程式在 `[mcp_servers.tcauto]` 裡只改 `command` / `args`,你自加的 key 與子 table 原樣留著(env 的 `TCAUTO_RUNTIME_ROOT` 例外，會被移除;[#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204),以單元測試與暫存資料夾的安裝測試驗證，沒有動到真的設定檔)。`-Uninstall` 仍會移除整個 table 及其子 table。
 
 ## 支援的 client 與驗證狀態
 
