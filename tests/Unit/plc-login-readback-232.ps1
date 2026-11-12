@@ -30,6 +30,8 @@ function J($o) { $o | ConvertTo-Json -Compress -Depth 6 }
     $script:UtStates = [System.Collections.Generic.Queue[object]]::new()
     $script:UtCalls = [System.Collections.Generic.List[string]]::new()
     $script:UtNodeHasLogoff = $false
+    $script:UtLoginThrow = $null      # message thrown by Login() ($null = returns)
+    $script:UtNoTreeLogoff = $false   # the "<Plc> Project" item has no Logoff (every attempt throws)
     function script:Assert-TcConnection { }
     function script:Test-TcLifecycleBlock { param($AmsNetId, $Command) $null }
     function script:Resolve-TcLifecycleNetId { param($SysManager) '1.2.3.4.1.1' }
@@ -47,6 +49,7 @@ function J($o) { $o | ConvertTo-Json -Compress -Depth 6 }
         param($SysManager, $Plc)
         $script:UtCalls.Add("LoginState $($Plc.name)")
         $v = if ($script:UtStates.Count -gt 0) { $script:UtStates.Dequeue() } else { $null }
+        if ($v -is [string] -and $v -like 'IDE_*') { throw "${v}: unit readback" }
         [PSCustomObject]@{ plc = $Plc.name; loggedIn = $v; source = $(if ($null -eq $v) { $null } else { 'ProduceXml' }); error = $(if ($null -eq $v) { 'unit: unreadable' } else { $null }) }
     }
     $script:UtSm = [PSCustomObject]@{ Mock = $true }
@@ -60,16 +63,16 @@ function J($o) { $o | ConvertTo-Json -Compress -Depth 6 }
         }
         if ($p -eq 'TIPC^plc^plc Project') {
             $o = [PSCustomObject]@{ Name = 'plc Project' }
-            $o | Add-Member -MemberType ScriptMethod -Name Logoff -Value { $script:UtCalls.Add('treeItem.Logoff') }
-            $o | Add-Member -MemberType ScriptMethod -Name Login -Value { param($f) $script:UtCalls.Add("Login($f)") }
+            if (-not $script:UtNoTreeLogoff) { $o | Add-Member -MemberType ScriptMethod -Name Logoff -Value { $script:UtCalls.Add('treeItem.Logoff') } }
+            $o | Add-Member -MemberType ScriptMethod -Name Login -Value { param($f) $script:UtCalls.Add("Login($f)"); if ($null -ne $script:UtLoginThrow) { throw $script:UtLoginThrow } }
             return $o
         }
         return $null
     }
     function script:Get-TcSysManager { $script:UtSm }
 }
-function Set-Case([object[]]$States, [bool]$NodeHasLogoff = $false) {
-    & $mod { param($s, $n) $script:UtStates.Clear(); foreach ($x in $s) { $script:UtStates.Enqueue($x) }; $script:UtCalls.Clear(); $script:UtNodeHasLogoff = $n } $States $NodeHasLogoff
+function Set-Case([object[]]$States, [bool]$NodeHasLogoff = $false, [string]$LoginThrow = $null, [bool]$NoTreeLogoff = $false) {
+    & $mod { param($s, $n, $lt, $nt) $script:UtStates.Clear(); foreach ($x in $s) { $script:UtStates.Enqueue($x) }; $script:UtCalls.Clear(); $script:UtNodeHasLogoff = $n; $script:UtLoginThrow = $(if ([string]::IsNullOrEmpty($lt)) { $null } else { $lt }); $script:UtNoTreeLogoff = $nt } $States $NodeHasLogoff $LoginThrow $NoTreeLogoff
 }
 function Get-Calls { & $mod { @($script:UtCalls) } }
 function Has-Prop($o, [string]$n) { $null -ne $o -and $null -ne $o.PSObject.Properties[$n] }
@@ -117,6 +120,35 @@ Check 'Enter: Login(257) returns but read back false -> LOGIN_FAILED, loggedIn f
 Set-Case @($null)
 $r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }
 Check 'Enter: read back unknown -> LOGIN_FAILED (fail closed), loggedIn null' ((-not $r.success) -and $r.error.code -eq 'LOGIN_FAILED' -and (Has-Prop $r.data 'loggedIn') -and $null -eq $r.data.loggedIn -and $r.error.message -match 'unknown|could not be read') (J $r)
+
+# ---------------- review of PR #264
+# S1: XAE answers 'already logged in' (Login throws) -> the state is read back as well
+Set-Case @($true) -LoginThrow 'unit: The application is already logged in.'
+$r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }
+Check "Enter: Login throws 'already logged in', read back true -> success, downloaded false" ($r.success -and $r.data.loggedIn -eq $true -and $r.data.downloaded -eq $false) (J $r)
+Set-Case @($false) -LoginThrow 'unit: The application is already logged in.'
+$r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }
+Check "Enter: 'already logged in' but read back false -> LOGIN_FAILED, message does not claim Login returned" ((-not $r.success) -and $r.error.code -eq 'LOGIN_FAILED' -and $r.data.loggedIn -eq $false -and $r.error.message -match 'already logged in' -and $r.error.message -notmatch 'returned without an error') (J $r)
+Set-Case @('IDE_BUSY') -LoginThrow 'unit: The application is already logged in.'
+$r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }
+Check "Enter: 'already logged in', readback throws IDE_BUSY -> success false" ((-not $r.success) -and $null -ne $r.error.code) (J $r)
+Set-Case @('IDE_BUSY')
+$r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }
+Check 'Enter: readback after Login throws IDE_BUSY -> success false' ((-not $r.success) -and $null -ne $r.error.code) (J $r)
+
+# Nit: every Exit result carries the readback before Logoff (loggedInBefore) and loggedIn
+foreach ($case in @(
+        @{ N = 'success';          S = @($true, $false); T = $true },
+        @{ N = 'still logged in';  S = @($true, $true);  T = $false },
+        @{ N = 'unknown after';    S = @($true, $null);  T = $false },
+        @{ N = 'already out';      S = @($false);        T = $true })) {
+    Set-Case $case.S
+    $r = & $mod { Exit-TcPlcOnline }
+    Check "Exit data shape ($($case.N)): loggedInBefore, loggedIn, alreadyLoggedOut, logoutVia present" ($r.success -eq $case.T -and (Has-Prop $r.data 'loggedInBefore') -and (Has-Prop $r.data 'loggedIn') -and (Has-Prop $r.data 'alreadyLoggedOut') -and (Has-Prop $r.data 'logoutVia') -and $r.data.loggedInBefore -eq $case.S[0]) (J $r)
+}
+Set-Case @($true, $true) -NoTreeLogoff $true
+$r = & $mod { Exit-TcPlcOnline }
+Check 'Exit: every Logoff/Logout attempt throws -> LOGOUT_FAILED with the same data shape (loggedInBefore true, loggedIn read back true, logoutVia null)' ((-not $r.success) -and $r.error.code -eq 'LOGOUT_FAILED' -and (Has-Prop $r.data 'loggedInBefore') -and $r.data.loggedInBefore -eq $true -and $r.data.loggedIn -eq $true -and $null -eq $r.data.logoutVia -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
 
 "FAILED: $fail"
 exit $fail

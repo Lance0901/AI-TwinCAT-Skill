@@ -21,7 +21,9 @@
         without an exception is never taken as proof: Logoff() on a project that is not logged
         in returns without an error as well (實測 2026-11-13, 4026.22 VS2022, local UmRT).
     .OUTPUTS
-        data: online, loggedIn (read back: $false on success; $true / $null on LOGOUT_FAILED),
+        data (the same shape on success and on every LOGOUT_FAILED after the first readback):
+        online, loggedIn (read back: $false on success; $true / $null on LOGOUT_FAILED),
+        loggedInBefore (read back before Logoff),
         loginStateSource (IsLoggedIn | ProduceXml | $null), loginStateError, alreadyLoggedOut,
         plcProjectPath (the project actually logged out), plcName, adsPort (<AdsPort> of the
         PLC node, $null when unknown), logoutVia ($null when nothing was sent), message
@@ -109,20 +111,27 @@
         $plcName = if ($null -ne $plcEntry) { $plcEntry.name } else { $null }
         $adsPort = if ($null -ne $plcEntry) { $plcEntry.adsPort } else { $null }
         $before = Get-TcPlcLoginState -SysManager $sm -Plc $stateEntry
-        if ($before.loggedIn -eq $false) {
-            # idempotent: nothing to log out of, nothing sent
-            return New-TcResult -Success $true -Data ([PSCustomObject]@{
-                online           = $false
-                loggedIn         = $false
-                loginStateSource = $before.source
-                loginStateError  = $before.error
-                alreadyLoggedOut = $true
+        # one data shape for every result after the first readback (success, LOGOUT_FAILED still true /
+        # unknown / every call threw): loggedInBefore is the readback before Logoff
+        function New-TcLogoutData {
+            param($State, [bool]$Already, $Via, [string]$Message)
+            [PSCustomObject]@{
+                online           = ($State.loggedIn -ne $false)
+                loggedIn         = $State.loggedIn
+                loggedInBefore   = $before.loggedIn
+                loginStateSource = $State.source
+                loginStateError  = $State.error
+                alreadyLoggedOut = $Already
                 plcProjectPath   = $PlcProjectPath
                 plcName          = $plcName
                 adsPort          = $adsPort
-                logoutVia        = $null
-                message          = 'Already logged out (login state read back false); nothing sent.'
-            })
+                logoutVia        = $Via
+                message          = $Message
+            }
+        }
+        if ($before.loggedIn -eq $false) {
+            # idempotent: nothing to log out of, nothing sent
+            return New-TcResult -Success $true -Data (New-TcLogoutData -State $before -Already $true -Via $null -Message 'Already logged out (login state read back false); nothing sent.')
         }
 
         $loggedOutVia = $null
@@ -150,23 +159,16 @@
         }
 
         if ($null -eq $loggedOutVia) {
-            if ($null -ne $lastErr) { throw $lastErr }
-            throw "No PLC object exposing Logoff()/Logout() found under '$plcNodePath'."
+            # every call threw: LOGOUT_FAILED with the same data shape (state read back after the attempts)
+            $callErr = if ($null -ne $lastErr) { $lastErr.Exception.Message } else { "no PLC object exposing Logoff()/Logout() found under '$plcNodePath'" }
+            $after = Get-TcPlcLoginState -SysManager $sm -Plc $stateEntry
+            $data = New-TcLogoutData -State $after -Already $false -Via $null -Message "No Logoff()/Logout() call succeeded (last error: $callErr); login state read back $(if ($null -eq $after.loggedIn) { 'unknown' } else { $after.loggedIn })."
+            return New-TcResult -Success $false -ErrorCode 'LOGOUT_FAILED' -Hint (Get-TcErrorHint -Code 'LOGOUT_FAILED') `
+                -ErrorMessage "PLC logout of '$PlcProjectPath' failed: $($data.message)" -Data $data
         }
 
         $after = Get-TcPlcLoginState -SysManager $sm -Plc $stateEntry
-        $data = [PSCustomObject]@{
-            online           = ($after.loggedIn -ne $false)
-            loggedIn         = $after.loggedIn
-            loginStateSource = $after.source
-            loginStateError  = $after.error
-            alreadyLoggedOut = $false
-            plcProjectPath   = $PlcProjectPath
-            plcName          = $plcName
-            adsPort          = $adsPort
-            logoutVia        = $loggedOutVia
-            message          = 'Logged out from PLC runtime (login state read back false).'
-        }
+        $data = New-TcLogoutData -State $after -Already $false -Via $loggedOutVia -Message 'Logged out from PLC runtime (login state read back false).'
         if ($after.loggedIn -eq $false) { return New-TcResult -Success $true -Data $data }
         # fail closed (CODING_STANDARDS 2): still logged in, or no readback at all
         $why = if ($after.loggedIn -eq $true) { 'the login state still reads back true' }

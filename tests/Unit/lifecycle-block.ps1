@@ -412,7 +412,7 @@ try {
     $global:LoginCode = $null
     $global:LoginNoReadback = $true
     $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
-    Check '(14) #232 nested login success without loggedIn = true -> LOGIN_FAILED, loggedIn false, block at login' ((-not $e.success) -and $e.error.code -eq 'LOGIN_FAILED' -and $e.data.loggedIn -eq $false -and $e.data.loginCompleted -eq $false -and $e.data.lifecycleBlock.step -eq 'login') "$($e.error.code) $(J $e.data.lifecycleBlock)"
+    Check '(14) #232 nested login success without loggedIn = true -> LOGIN_FAILED with the LOGIN_FAILED hint, loggedIn false, block at login' ((-not $e.success) -and $e.error.code -eq 'LOGIN_FAILED' -and $e.error.hint -match 'SilentFlag|Get-TcSystemState' -and $e.data.loggedIn -eq $false -and $e.data.loginCompleted -eq $false -and $e.data.lifecycleBlock.step -eq 'login') "$($e.error.code) hint=$($e.error.hint) $(J $e.data.lifecycleBlock)"
     $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) #232 next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     $global:LoginNoReadback = $false
     & $mod { $script:UtSss = 0 }

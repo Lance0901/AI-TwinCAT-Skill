@@ -76,6 +76,9 @@
         2026-11-13, 4026.22 VS2022, local UmRT, PLC already in Run; Login(257) the same in 實測 2026-11-11 by Ming, 4026.27 TcXaeShell 64-bit, local XAR (Windows RT target), #232).
         Read back false -> LOGIN_FAILED (data.loggedIn = $false); not readable -> LOGIN_FAILED
         as well (data.loggedIn = $null, the message says unknown): no readback, no success.
+        The same readback runs when XAE answers Login() with 'already logged in'. The read is made
+        once right after Login() (synchronous; no polling). The readback was measured with
+        -LoginMode Regular only; Download / OnlineChange are read back the same way, not measured.
     .OUTPUTS
         data: online (= loggedIn read back true), loggedIn ($true on success; $false / $null on
               LOGIN_FAILED after Login()), loginStateSource (IsLoggedIn | ProduceXml | $null),
@@ -183,9 +186,10 @@
         try { return ([Enum]::ToObject([TwinCAT.Ads.AdsState], [int]$State)).ToString() } catch { return [string]$State }
     }
 
-    # #232: Login() returned (or reported 'already logged in') -> read the login state back.
-    # success only on a read back true; false or unknown -> LOGIN_FAILED (CODING_STANDARDS 2).
-    # IDE_* exceptions of the readback propagate to the caller's catch.
+    # #232: Login() returned (or reported 'already logged in') -> read the login state back once (the
+    # fail-closed rule is in .DESCRIPTION). No polling, on purpose: Login() is synchronous and the
+    # readback right after it already reads true (實測 2026-11-13, 4026.22 VS2022 and a 4024 project in
+    # the 32-bit TcXaeShell, local UmRT). IDE_* exceptions of the readback propagate to the caller's catch.
     function Get-TcLoginReadbackResult {
         param([string]$Message, [bool]$Downloaded, [object]$StateAfter, [string]$CallNote = 'returned without an error')
         $entry = if ($null -ne $plcEntry) { $plcEntry } else {

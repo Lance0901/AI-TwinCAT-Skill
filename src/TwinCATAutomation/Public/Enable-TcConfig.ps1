@@ -1115,7 +1115,9 @@ function Enable-TcConfig {
                 $lv = if ($null -eq $lp) { 'missing' } elseif ($null -eq $lp.Value) { 'unknown' } else { [string]$lp.Value }
                 $detail = "$($p.name): login returned success but loggedIn read back $lv"
                 Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail $detail
-                return New-TcRuntimeFailure -Message "PLC login of '$($p.name)' (port $($p.adsPort)) not verified: $detail" -Code 'LOGIN_FAILED'
+                # New-TcStepFailure, not New-TcRuntimeFailure: the runtime-failure diagnostics may replace the
+                # code (e.g. BOOT_PACKAGE_MISMATCH); this is a login readback failure and keeps LOGIN_FAILED + hint
+                return New-TcStepFailure -Message "PLC login of '$($p.name)' (port $($p.adsPort)) not verified: $detail" -Code 'LOGIN_FAILED' -Hint (Get-TcErrorHint -Code 'LOGIN_FAILED')
             }
             $p.loggedIn = $true
             $loginDetails += "$($p.name):$($p.adsPort) $([string]$r.data.message)"
