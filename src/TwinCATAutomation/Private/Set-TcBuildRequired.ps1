@@ -1,4 +1,4 @@
-﻿# "A complete build is required before the PLC output is used" (BUILD_REQUIRED, #45 / PR #44 /
+# "A complete build is required before the PLC output is used" (BUILD_REQUIRED, #45 / PR #44 /
 # #56). One entry per solution; an entry carries one reason per KIND:
 #   platform-switch   Set-TcSolutionPlatform: the active solution platform changed (the compiled
 #                     output may still be that of the previous platform; inferred, not measured)

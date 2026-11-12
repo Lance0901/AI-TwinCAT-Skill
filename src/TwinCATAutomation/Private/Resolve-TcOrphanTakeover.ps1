@@ -1,4 +1,4 @@
-﻿# #196: Connect-TcIde -TakeOverOrphan. An IDE launched by another TcAuto session whose host
+# #196: Connect-TcIde -TakeOverOrphan. An IDE launched by another TcAuto session whose host
 # process (MCP bridge / PowerShell) is gone stays blocked forever (IDE_LAUNCH_PENDING probe
 # 'other-session', hostState 'gone'). The caller may explicitly take it over, and only when ALL of
 # these hold (otherwise nothing is attached or changed):

@@ -1,4 +1,4 @@
-﻿# Troubleshooting
+# Troubleshooting
 
 本頁與 `adapters/claude-code/SKILL.md` 的 Troubleshooting 表同源,這裡多了「為什麼會發生」。錯誤碼與 `error.hint` 文字的中央表在 `src/TwinCATAutomation/Private/ConvertTo-TcAdsErrorCode.ps1`(`$script:TcErrorHints`)。
 
@@ -1306,12 +1306,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### UNSAVED_CHANGES
 
-- **現象**:`Reset-TcSolution` 沒有存也沒有關 solution(#175):IDE 有未存的變更,重開 solution(`Documents.CloseAll(vsSaveChangesNo)` + `Solution.Close($false)`)會不存檔丟掉它們。`data.unsavedCheck`:`documents`(`Document.Saved = false` 的文件 FullName)、`projects`(`Project.Saved = false` 的頂層專案 `{name, file}`)、`solution`(`Solution.Saved = false` 時的 .sln)、`unchecked`(模組問不到的專案,不擋)、`error`(讀不到,fail closed)、`forced`、`sec`。
+- **現象**:`Reset-TcSolution` 沒有存也沒有關 solution(#175):IDE 有未存的變更,重開 solution(`Documents.CloseAll(vsSaveChangesNo)` + `Solution.Close($false)`)會不存檔丟掉它們。`data.unsavedCheck`:`documents`(`Document.Saved = false` 的文件 FullName)、`projects`(`Project.Saved = false` 的頂層專案 `{name, file}`)、`solution`(`Solution.Saved = false` 時的 .sln)、`unchecked`(模組問不到的專案,不擋)、`error`(讀不到,fail closed)、`forced`、`forceRequested`、`sec`。只讀到一半就碰到 IDE 忙碌(`IDE_BUSY`)、RPC 斷線(`IDE_CRASHED`)、modal dialog 或逾時時不回此碼,照原樣回那些錯誤碼(`-Force` 也一樣),什麼都沒關(PR #256 review S1)。`Document.Saved`、`Solution.Saved` 或可辨識專案的 `Project.Saved` 讀回 null 都算讀不到(fail closed)。
 - **誰會留下未存變更(實測 2026-11-12,4026 VS2022 `VisualStudio.DTE.17.0`,複本 `C:\Temp\Verify-4026-axis`,registered tcauto + 唯讀 ROT probe)**:`Set-TcTarget`(即使 NetId 沒變)讓 .tsproj 變成 `Project.Saved = False` / `IsDirty = True`;之後 `Build-TcProject` 會把它存回(`Saved = True`)。`Write-TcPouCode` 當下就把物件檔寫到磁碟,之後沒有任何 Document / Project / Solution 報未存。在 XAE 編輯器裡手動改、沒存的文件是 `Document.Saved = false`([EnvDTE Document.Saved](https://learn.microsoft.com/en-us/dotnet/api/envdte.document.saved))。
 - **磁碟改檔流程不會被誤擋**:檔案在磁碟上被改,IDE 那份不會因此變成未存;只有 IDE 自己有未存變更時才擋(典型:`Set-TcTarget` 之後沒 Build 就 `Reset-TcSolution`)。正常 lifecycle(`Set-TcTarget` → `Build-TcProject` → 磁碟改檔 → `Reset-TcSolution`)不會擋(實測 2026-11-12,同上環境)。
-- **unchecked**:4026 測試 solution 裡的 TwinCAT Scope 專案(`A10_Scope.tcmproj`)在 DTE 上 `Kind` / `FullName` / `Saved` 全部讀回 null、不丟例外(實測 2026-11-12),模組問不到它,只列在 `unchecked`、不擋;它開著的 `.tcscopex` 文件仍由 `documents` 檢查。`Solution.Saved` 讀回 null 也只列 `unchecked`。
+- **unchecked**:4026 測試 solution 裡的 TwinCAT Scope 專案(`A10_Scope.tcmproj`)在 DTE 上 `Kind` / `FullName` / `Saved` 全部讀回 null、不丟例外(實測 2026-11-12),模組問不到它,只列在 `unchecked`、不擋;它開著的 `.tcscopex` 文件仍由 `documents` 檢查。成功時 `data.stateWarning` 會點名這些沒檢查的專案;帶 `-Force` 時它們列進 `data.discardedChanges`、標「may have been dropped」。`Solution.Saved` 在同一環境讀回 True(實測 2026-11-12),讀回 null 時 fail closed。
+- **只讀頂層專案(已知限制)**:只讀 `Solution.Projects` 的頂層項目;solution folder 裡的專案(`ProjectItems` 的 `SubProject`)和 .tsproj 底下巢狀的 .plcproj 的 `Saved` 都不讀(巢狀 PLC 專案也不在 `Project.ProjectItems` 裡,見「磁碟改檔的正確做法」的比較表)。
 - **沒涵蓋**:`CreateChild` 建了沒存的物件 DTE 不報(那是 `PROJECT_UNSAVED_CHANGES` 的 project check,#76);XAE 跳 project reload 提示時走 Yes 路徑(XAE 自己 reload),不讀未存狀態(提示擋住 DTE;那時 XAE 會不會先問要不要存未實測)。
-- **下一步**:先問使用者要不要丟掉 `data.unsavedCheck` 列的變更。同意 → `Reset-TcSolution -Force`(MCP `ResetSolution Force=true`),`data.discardedChanges` 列出丟掉的檔案(丟的若是 `Set-TcTarget` 的設定,重開後再 `Set-TcTarget` 一次)。要保留 → 先存檔再跑不帶 `-Force` 的 `Reset-TcSolution`:專案檔可用 `Build-TcProject`(建置前會存 .tsproj,實測同上)或請使用者在 XAE 按 File > Save All;但磁碟上的檔案剛被別的工具改過時,存檔會把 IDE 記憶體裡的舊內容寫回、蓋掉磁碟上的改動,這時請使用者在 XAE 自己決定。`-DiscardProjectChanges` 不算同意(它只決定 project check 以磁碟為準);`-Force` 與 `-SaveProjectChanges` 互斥(`INVALID_PARAMS`)。
+- **下一步**:先問使用者要不要丟掉 `data.unsavedCheck` 列的變更。同意 → `Reset-TcSolution -Force`(MCP `ResetSolution Force=true`),`data.discardedChanges` 列出丟掉的檔案(丟的若是 `Set-TcTarget` 的設定,重開後再 `Set-TcTarget` 一次);讀不到狀態時是 `discardedChanges = null`、`discardedUnknown = true` 加原因,表示不知道丟了什麼。Yes 路徑(XAE 自己 reload project)不讀未存狀態,`data.unsavedCheck.checked = false`、`forced = false`、`forceRequested` = 有沒有帶 `-Force`。要保留 → 先存檔再跑不帶 `-Force` 的 `Reset-TcSolution`:專案檔可用 `Build-TcProject`(建置前會存 .tsproj,實測同上)或請使用者在 XAE 按 File > Save All;但磁碟上的檔案剛被別的工具改過時,存檔會把 IDE 記憶體裡的舊內容寫回、蓋掉磁碟上的改動,這時請使用者在 XAE 自己決定。**reset-required 時**(`Connect-TcIde -TakeOverOrphan` 答過 reload 提示)`Build-TcProject` 與存專案檔都會回 `RESET_REQUIRED`,不能拿來保留:只剩「使用者在 XAE 自己把內容複製出來保留(不要存檔)」或「使用者同意後 `-Force`」。`-DiscardProjectChanges` 不算同意(它只決定 project check 以磁碟為準);`-Force` 與 `-SaveProjectChanges` 互斥(`INVALID_PARAMS`)。
 
 ### PROJECT_OPEN_FAILED
 

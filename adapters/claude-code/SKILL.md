@@ -1,4 +1,4 @@
-﻿---
+---
 name: TwinCAT-AutomationInterface
 description: Control TwinCAT 3 IDE, manage PLC projects, build and deploy programs, read/write PLC variables via ADS, modify Structured Text code, and run automated PLC tests. Requires Windows with TwinCAT 3 XAE installed.
 ---
@@ -461,7 +461,7 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `ERRORLIST_UNAVAILABLE` | `Get-TcBuildErrors` 的 UI Automation 找不到 Error List 視窗或逾時(視窗被 auto-hide / 關閉、IDE pid 未知、UIA 被 modal 卡住) | 確認 XAE 視窗可見、Error List 沒 auto-hide;手動 View > Error List 後重試;加大 `-TimeoutSec` |
 | `PROJECT_SAVE_FAILED` | `Add-TcPou` / `Add-TcDut` / `Add-TcGvl` / `Add-TcLibrary` 建好了,但 .plcproj 沒存到磁碟、讀回沒有新項目或找不到 .plcproj(`data.objectPath`、`savedToDisk=false`;物件只在 XAE 記憶體);`Reset-TcSolution -SaveProjectChanges` 存專案檔失敗(沒關 solution) | 不要 `-DiscardProjectChanges`;`Get-TcIdeModalDialog` 處理 dialog、確認 .plcproj 沒被鎖 / 唯讀,再 `Reset-TcSolution -SaveProjectChanges`;仍失敗請使用者在 XAE 手動存,或 `Build-TcProject`(會一併存 editor buffer);`Get-TcProjectTree -PlcOnly` 確認物件還在 |
 | `PROJECT_SAVE_TIMEOUT` | DTE `Project.Save()` 在期限內沒返回(背景 STA,已放棄等待);`data.saveDiagnostics`(dialog / ideAlive / ideResponding / readOnlyFiles) | dialog → `Get-TcIdeModalDialog` 處理;唯讀 → 解除後 `Reset-TcSolution -SaveProjectChanges`;IDE 卡死 → `Disconnect-TcIde -Quit -Kill`(本 session 啟動的)後重連 |
-| `UNSAVED_CHANGES` | `Reset-TcSolution`(#175):IDE 有未存的文件 / 專案 / solution(`data.unsavedCheck`;例如 `Set-TcTarget` 之後沒 Build 的 .tsproj),或讀不到(`data.unsavedCheck.error`,fail closed),什麼都沒存、沒關 | **先問使用者**要不要丟掉這些變更;同意才 `Reset-TcSolution -Force`(`data.discardedChanges`);要保留就先存(`Build-TcProject` 會存專案檔,或使用者在 XAE Save All)再 Reset。不要自己決定丟掉 |
+| `UNSAVED_CHANGES` | `Reset-TcSolution`(#175):IDE 有未存的文件 / 專案 / solution(`data.unsavedCheck`;例如 `Set-TcTarget` 之後沒 Build 的 .tsproj),或讀不到(`data.unsavedCheck.error`,fail closed),什麼都沒存、沒關 | **先問使用者**要不要丟掉這些變更;同意才 `Reset-TcSolution -Force`(`data.discardedChanges`);要保留就先存(`Build-TcProject` 會存專案檔,或使用者在 XAE Save All)再 Reset;reset-required 時 Build 與存檔都回 `RESET_REQUIRED`,只剩使用者在 XAE 自己複製保留(不要存檔)或同意後 `-Force`。IDE 忙碌 / 當掉時回 `IDE_BUSY` / `IDE_CRASHED`,不是此碼。不要自己決定丟掉 |
 | `PROJECT_UNSAVED_CHANGES` | `Reset-TcSolution`:XAE 有、磁碟 .plcproj 沒列的 PLC 物件(`missingOnDisk`;只有 `extraOnDisk` 不擋),沒存也沒關 solution;帶 `-SaveProjectChanges` 但磁碟有改過的跡象、或同 .tsproj 的其他 PLC 沒比對完整時也回(`data.saveRefused`) | 保留 XAE 版本 → `Reset-TcSolution -SaveProjectChanges`;以磁碟為準 → `Reset-TcSolution -DiscardProjectChanges`;被拒絕就先在磁碟上補回需要的檔案再選。不要用 `Build-TcProject` 解(它不替你選邊;會不會存 PLC editor buffer 是推論、未實測) |
 | `PROJECT_OPEN_FAILED` | .sln 路徑錯、檔案損壞、或該 IDE 沒有 TwinCAT 整合 | 確認路徑;用對應版本的 ProgID(見「環境」) |
 | `POU_NOT_FOUND` | POU 名稱或 `-PouPath` 在 `<Plc> Project` 下找不到;`error.hint` 列出 `<Plc> Project` 第一層子節點,`data.tried[]` 是試過的路徑 | `Get-TcProjectTree -PlcOnly` 查節點 `path` 後給 `-PouPath`;格式 `TIPC^<Plc>^<Plc> Project^POUs^<name>` |

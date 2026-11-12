@@ -1,4 +1,4 @@
-﻿function Connect-TcIde {
+function Connect-TcIde {
     <#
     .SYNOPSIS
         Connects to a running TwinCAT 3 IDE instance via the Running Object Table.
@@ -108,9 +108,10 @@
         data.reloadPromptAttempts, data.diskChangesNotLoaded = true, data.resetRequired (the
         record: the field that says a prompt of this .sln was answered, now or by an earlier
         takeover) and data.nextStep; every takeover also lists unsaved editor documents
-        (data.dirtyDocuments, Document.Saved = false; data.dirtyDocumentsError when unreadable):
-        Reset-TcSolution would close them without saving and refuses (UNSAVED_CHANGES, #175) while
-        any exists unless -Force. Any other dialog (also one found after the attach), a prompt
+        (data.dirtyDocuments, Document.Saved = false; data.dirtyDocumentsError when unreadable;
+        editor documents only - unsaved projects and the .sln are not listed here, Reset-TcSolution
+        reads those too): Reset-TcSolution would close them without saving and refuses
+        (UNSAVED_CHANGES, #175) while anything is unsaved unless -Force. Any other dialog (also one found after the attach), a prompt
         without that evidence or one that stays up: IDE_MODAL_DIALOG with the
         IDE_MODAL_DIALOG_ORPHAN hint (nothing attached, so not Reset-TcSolution /
         Disconnect-TcIde); every failed exit carries data.reloadPromptAttempts /

@@ -1,4 +1,4 @@
-﻿# Unit: Connect-TcIde -SolutionPath with a blocked IDE (issue #29), no IDE / runtime needed.
+# Unit: Connect-TcIde -SolutionPath with a blocked IDE (issue #29), no IDE / runtime needed.
 # Get-AllComObjects, Get-Process and Find-TcIdeModalDialog are replaced inside the module scope;
 # the ProgId is a fake one, so Connect-TcIde can never launch a real IDE.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/blocked-solution-ide.ps1
