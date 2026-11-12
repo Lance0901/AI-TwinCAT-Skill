@@ -166,7 +166,8 @@ foreach ($k in $knobForms.Keys) { Set-Content -LiteralPath (Join-Path $knobDir $
 Set-Content -LiteralPath (Join-Path $knobDir 'a\b\read.ps1') -Value '$x = $script:TcComRetryDelayMs; $script:TcComRetryDelayMsX = 1; Get-Variable TcResetTimeScale' -Encoding UTF8
 $knobFiles = @(Get-ChildItem -LiteralPath $knobDir -Recurse -File | Where-Object { @('.ps1', '.psm1') -contains $_.Extension } | ForEach-Object FullName)
 $selfHits = @(Find-KnobSetter -Files $knobFiles -Names $knobNames)
-$selfMissed = @($knobForms.Keys | Where-Object { $f = Join-Path $knobDir $_; @($selfHits | Where-Object { $_.File -eq $f }).Count -eq 0 })
+# matched by file name (unique here): CI's %TEMP% is an 8.3 short path while Get-ChildItem returns the long one (#43)
+$selfMissed = @($knobForms.Keys | Where-Object { $leaf = Split-Path -Leaf $_; @($selfHits | Where-Object { (Split-Path -Leaf $_.File) -eq $leaf }).Count -eq 0 })
 $selfFalse = @($selfHits | Where-Object { $_.File -like '*read.ps1' })
 Check '#251 knob guard self-test: =, nested folder, *=, ++, typed, Set-/New-Variable, sv, [ref] found; reads not' ($selfMissed.Count -eq 0 -and $selfFalse.Count -eq 0) ("missed: {0} | false: {1}" -f ($selfMissed -join ', '), (@($selfFalse | ForEach-Object Text) -join ', '))
 Remove-Item -LiteralPath $knobDir -Recurse -Force -ErrorAction SilentlyContinue
