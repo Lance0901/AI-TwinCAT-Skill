@@ -87,7 +87,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true
 | `ACTIVATE_FAILED` | `ActivateConfiguration()` 返回後讀 `SolutionBuild.LastBuildInfo`,> 0 = XAE 的 Check config failed(target 上什麼都沒寫,多半 solution platform 與 target platform 不符),`-Force` 流程停在 activate 那一步;hint 給 `Set-TcTarget -Platform` 指令 |
 | `-NoLogin` | 跳過 download / PLC Run;只等 851 最多 10 秒(有 boot project 才會出現),沒有也不算失敗(step detail `skipped (no PLC port, -NoLogin)`)。之後依下方手動順序 |
 | `-TimeoutSec` | 整個流程的總上限(單一 deadline),預設 120;每步等待用剩餘時間,超過 deadline 還沒開始的步驟回 `CYCLE_TIMEOUT` |
-| data | `steps[]`(每步結果)、`plcState`(第一個 PLC)、`plcs[]`、`bootPackage`(status match/mismatch/unavailable、files[] 各自的 size/lastWriteTime/sha256)、`finalCheck`、`diagnostics`(失敗時)、`loggedIn`、`solutionPlatform`、`reconnected`(之前有 ADS 連線時自動重連;PLC Run 時已自動重連則 reconnect 步驟記 `already reconnected in step 6`) |
+| data | `steps[]`(每步結果)、`plcState`(第一個 PLC)、`plcs[]`、`bootPackage`(status match/mismatch/unavailable、files[] 各自的 size/lastWriteTime/sha256)、`finalCheck`、`diagnostics`(失敗時)、`dialogsSeen`(#231:Activate 期間 watchdog 看到的 modal dialog,成功時也有;每筆 `title` / `text` / `buttons` / `firstSeen` / `lastSeen`(ISO 8601)/ `durationSec` / `scans`,沒看到是 `[]`;`durationSec` 是下限,最多少算約兩個掃描間隔(~4 s);最多 20 筆,超過的不記、只計數在 `dialogsDropped`(整數,沒丟是 0,成功與失敗都有);activate 步驟的 detail 附摘要(前 3 個標題,其餘 `+N more`);模組不會按任何按鈕)、`loggedIn`、`solutionPlatform`、`reconnected`(之前有 ADS 連線時自動重連;PLC Run 時已自動重連則 reconnect 步驟記 `already reconnected in step 6`) |
 | 之後 | 若 Activate 前已 `Connect-TcAds`,不用手動重連;`Read/Write/Watch-TcVariable`、`Get/Set-TcPlcState` 也會自動重連,data 有 `reconnected` |
 
 不想一步到位時的手動順序(每步都有 gating,不需 sleep):
