@@ -183,17 +183,25 @@ Check 'K4 PROGRAM variable only read -> not a call, TASK-001' ((Diags $r 'PROJEC
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
 Add-Caller $fx
 $r = Lint $fx
-Check 'K5 PROGRAM called from a method of an FB instantiated by the task program -> reachable, no finding' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and (Diags $r 'PROJECT-TASK-002').Count -eq 0) (Brief $r)
+Check 'K5 PROGRAM called from a method of an FB instantiated by the task program -> reachable (no TASK-001); TASK-002 only the fb-or-function-caller warning' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and (Diags $r 'PROJECT-TASK-002').Count -eq 1 -and (Diags $r 'PROJECT-TASK-002')[0].variant -eq 'fb-or-function-caller' -and $r.success) (Brief $r)
 
 $fx = New-Fx; Add-Task2 $fx 'MAIN'
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
 Check 'K6 same PROGRAM on two tasks -> TASK-002 two-tasks, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'two-tasks' -and $d[0].blocking -and $d[0].objectPath -eq 'MAIN' -and $r.error.code -eq 'LINT_FAILED' -and (Diags $r 'PROJECT-TSPROJ-003').Count -eq 0) (Brief $r)
 
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
-Add-Pou $fx 'PRG_C' "PROGRAM PRG_C`nVAR`nEND_VAR`n" "IF GVL_Main.bRun THEN`n    PRG_B();`nEND_IF"
+Add-Pou $fx 'PRG_C' "PROGRAM PRG_C`nVAR`nEND_VAR`n" 'PRG_B();'
 Set-MainImpl $fx "PRG_B();`nPRG_C();"
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
-Check 'K7 PROGRAM called by two reachable programs (one conditionally) -> TASK-002 two-programs, blocking' ($d.Count -eq 1 -and $d[0].objectPath -eq 'PRG_B' -and $d[0].variant -eq 'two-programs' -and $d[0].blocking) (Brief $r)
+Check 'K7 PROGRAM called unconditionally by two programs that both run every cycle -> TASK-002 two-programs, blocking' ($d.Count -eq 1 -and $d[0].objectPath -eq 'PRG_B' -and $d[0].variant -eq 'two-programs' -and $d[0].blocking) (Brief $r)
+$prgC = Join-Path $fx.PlcDir 'POUs\PRG_C.TcPOU'
+Edit-LintFxFile $prgC { param($t) $t.Replace('<ST><![CDATA[PRG_B();]]>', "<ST><![CDATA[IF GVL_Main.bRun THEN`r`n    PRG_B();`r`nEND_IF]]>") }
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'K7b second caller calls it only inside IF -> possible-double-call warning, not blocking (not certain), unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'possible-double-call' -and -not $d[0].blocking -and $r.success -and $r.data.requiresDisposition) (Brief $r)
+Edit-LintFxFile $prgC { param($t) $t.Replace("<ST><![CDATA[IF GVL_Main.bRun THEN`r`n    PRG_B();`r`nEND_IF]]>", '<ST><![CDATA[PRG_B();]]>') }
+Edit-LintFxFile $fx.Main { param($t) $t.Replace("PRG_B();`r`nPRG_C();", "IF GVL_Main.bRun THEN`r`n    PRG_C();`r`nEND_IF`r`nPRG_B();") }
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'K7c the second caller program itself runs only conditionally -> possible-double-call warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'possible-double-call' -and -not $d[0].blocking) (Brief $r)
 
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
 Write-LintFxFile $fx.Task (TaskWith @('MAIN', 'PRG_B'))
@@ -223,7 +231,7 @@ $r = Lint $fx
 Check 'K12 unreachable caller (axis TestCam) -> TASK-001 on it, no TASK-002 on MAIN' ((Diags $r 'PROJECT-TASK-001').Count -eq 1 -and (Diags $r 'PROJECT-TASK-002').Count -eq 0) (Brief $r)
 Write-LintFxFile $fx.Task (TaskWith @('MAIN', 'TestCam'))
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
-Check 'K12 variant: TestCam put on the task -> TASK-002 task-and-program on MAIN, TASK-001 gone' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and $d.Count -eq 1 -and $d[0].objectPath -eq 'MAIN' -and $d[0].variant -eq 'task-and-program') (Brief $r)
+Check 'K12 variant: TestCam put on the task (calls MAIN inside CASE) -> TASK-002 possible-double-call on MAIN, TASK-001 gone' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and $d.Count -eq 1 -and $d[0].objectPath -eq 'MAIN' -and $d[0].variant -eq 'possible-double-call' -and -not $d[0].blocking) (Brief $r)
 
 # a section the linter cannot read (CFC) mentions the program: TASK-001 cannot be decided
 $fx = New-Fx; Add-Pou $fx 'PRG_Orphan' "PROGRAM PRG_Orphan`nVAR`nEND_VAR`n" ''
@@ -309,6 +317,81 @@ if ($git) {
     Check 'S11 git unavailable -> basis unavailable, all suppressions new (fail closed)' ($r.data.newSuppressionsBasis -eq 'unavailable' -and @($r.data.newSuppressions).Count -eq @($r.data.suppressions).Count -and @($r.data.suppressions).Count -eq 4) (Js $r.data.newSuppressionsBasisReason)
 }
 else { Check 'S10 git available for the newSuppressions tests' $false 'git not found' }
+
+# ================================================================ R  counter-examples from the first review (PR #283)
+# R1 blocker: a rule the profile made blocking cannot be suppressed inline
+$fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: agent says harness only`n"
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-TASK-001":{"blocking":true}}}' | Out-Null
+$r = Lint $fx
+Check 'R1 profile blocking TASK-001 + inline -> LINT-SUPPRESS-004, still LINT_FAILED' ((Diags $r 'LINT-SUPPRESS-004').Count -eq 1 -and -not (Diags $r 'PROJECT-TASK-001')[0].suppressed -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+# R2 non-blocking variants of a blockable rule can be suppressed inline
+$fx = New-Fx
+Edit-LintFxFile $fx.FbA { param($t) $t.Replace("<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`nEND_VAR]]>", "<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`n    // tcauto-lint-disable-next-line SCAN-TEMPFB-001: pulse only evaluated inside this call`r`n    tp1 : TP;`r`nEND_VAR]]>") }
+$r = Lint $fx
+Check 'R2 accessor-var (warning variant) + inline -> suppressed, no LINT-SUPPRESS-004' ((Diags $r 'SCAN-TEMPFB-001')[0].suppressed -and (Diags $r 'LINT-SUPPRESS-004').Count -eq 0 -and -not $r.data.requiresDisposition) (Brief $r)
+# R3 double calls inside one caller that are not mutually exclusive
+foreach ($c in @(
+        @('action of the caller', "PRG_B();`nA1();", 'PRG_B();'),
+        @('IF + unconditional', "IF GVL_Main.bRun THEN`n    PRG_B();`nEND_IF`nPRG_B();", $null),
+        @('FOR loop', "FOR nI := 1 TO 2 DO`n    PRG_B();`nEND_FOR", $null),
+        @('two calls in one IF branch', "IF GVL_Main.bRun THEN`n    PRG_B();`n    PRG_B();`nEND_IF", $null))) {
+    $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
+    Edit-LintFxFile $fx.Main { param($t) $t.Replace("    fbA : FB_A;`r`n", "    fbA : FB_A;`r`n    nI : INT;`r`n") }
+    if ($c[2]) { Edit-LintFxFile $fx.Main { param($t) $t.Replace("    </Implementation>`r`n  </POU>", "    </Implementation>" + ((Action 'A1' $c[2]) -replace "`n", "`r`n") + "`r`n  </POU>") } }
+    Set-MainImpl $fx $c[1]
+    $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+    Check "R3 $($c[0]) -> TASK-002 possible-double-call warning (must be disposed)" ($d.Count -eq 1 -and $d[0].variant -eq 'possible-double-call' -and $r.data.requiresDisposition) (Brief $r)
+}
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
+Set-MainImpl $fx "CASE GVL_Main.nStep OF`n1: PRG_B();`n2: PRG_B();`nELSE`n    PRG_B();`nEND_CASE"
+$r = Lint $fx
+Check 'R3 counter-example: different CASE labels and ELSE -> no TASK-002' ((Diags $r 'PROJECT-TASK-002').Count -eq 0) (Brief $r)
+# R4 a conditional pragma in the caller must not hide its other calls
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
+Write-LintFxFile $fx.Task (TaskWith @('MAIN', 'PRG_B'))
+Set-MainImpl $fx "PRG_B();`n{IF defined (SIM)}`nfbA(bStart := TRUE);`n{END_IF}"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'R4 empty-ish {IF} region in the caller -> still task-and-program, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'task-and-program' -and $d[0].blocking) (Brief $r)
+# R5 a conditional pragma in the declaration must not hide a TON outside it
+$fx = New-Fx; Add-FbM $fx 'FB_Wait' "METHOD M_Wait : BOOL`nVAR`n    ton : TON;`nEND_VAR`n{IF defined (NEVER)}`n{END_IF}`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'R5 TON outside the {IF} region of the declaration -> reported, blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+# R6 project alias / EXTENDS of a stateful type; other project FB -> coverage
+$fx = New-Fx
+Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\T_Timer.TcDUT') ((Get-LintFxDutText).Replace('E_Mode', 'T_Timer').Replace($script:LintFx.DutId, (New-Id)) -replace '(?s)<!\[CDATA\[.*?\]\]>', "<![CDATA[TYPE T_Timer : TON;`r`nEND_TYPE`r`n]]>")
+$fx.Items.Add('DUTs\T_Timer.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray()
+Add-Pou $fx 'FB_MyTon' "FUNCTION_BLOCK FB_MyTon EXTENDS TON`nVAR`nEND_VAR`n" ''
+Add-FbM $fx 'FB_Use' "METHOD M_Wait : BOOL`nVAR`n    t1 : T_Timer;`n    t2 : FB_MyTon;`n    t3 : FB_A;`nEND_VAR`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'R6 alias of TON and FB EXTENDS TON in METHOD VAR -> 2 findings; other project FB -> rulesSkipped project-type' ($d.Count -eq 2 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'project-type:FB_A' }).Count -eq 1) (Brief $r)
+# R7 git that hangs -> unavailable within the deadline
+$fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`n"
+$fake = Join-Path $root 'fake-git.cmd'
+[System.IO.File]::WriteAllText($fake, "@ping -n 40 127.0.0.1 >nul`r`n", (New-Object System.Text.UTF8Encoding($false)))
+& $mod { param($f) $script:TcLintGitExe = $f } $fake
+$sw = [System.Diagnostics.Stopwatch]::StartNew(); $r = Lint $fx; $sw.Stop()
+& $mod { $script:TcLintGitExe = $null }
+Check 'R7 hanging git -> newSuppressionsBasis unavailable, lint returns within ~15 s' ($r.data.newSuppressionsBasis -eq 'unavailable' -and $sw.Elapsed.TotalSeconds -lt 30 -and @($r.data.newSuppressions).Count -eq 1) ("sec=$([int]$sw.Elapsed.TotalSeconds) basis=$($r.data.newSuppressionsBasis)")
+# R8 path given in other upper / lower case -> HEAD comparison still works
+if ($git) {
+    $fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`n"
+    $sol = [System.IO.Path]::GetDirectoryName($fx.Sln)
+    $null = & git -C $sol init -q 2>&1; $null = & git -C $sol add -A 2>&1
+    $null = & git -C $sol -c user.name=unit -c user.email=unit@example.invalid -c commit.gpgsign=false commit -q -m base 2>&1
+    $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj.ToUpperInvariant()
+    Check 'R8 -PlcProjectPath in upper case -> basis git-head, committed suppression not new' ($r.data.newSuppressionsBasis -eq 'git-head' -and @($r.data.newSuppressions).Count -eq 0) (Js $r.data.newSuppressions)
+}
+# R9 array bound naming a program is not a call / type reference
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := 1;'
+Edit-LintFxFile $fx.Main { param($t) $t.Replace("    fbA : FB_A;`r`n", "    fbA : FB_A;`r`n    aB : ARRAY[0..PRG_B.x] OF INT;`r`n") }
+$r = Lint $fx
+Check 'R9 ARRAY[0..PRG_B.x] does not make PRG_B reachable -> TASK-001' ((Diags $r 'PROJECT-TASK-001').Count -eq 1) (Brief $r)
+# R10 program called only from a FUNCTION -> warning (how often the function runs is not analysed)
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := 1;'
+Add-Pou $fx 'F_Call' "FUNCTION F_Call : BOOL`nVAR_INPUT`nEND_VAR`n" 'PRG_B();'
+Set-MainImpl $fx "F_Call();`nF_Call();"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'R10 program called from a FUNCTION -> fb-or-function-caller warning' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-or-function-caller' -and -not $d[0].blocking) (Brief $r)
 
 # ================================================================ Y  syntax the compiler rejects
 foreach ($c in @(@('**', 'nState := 2 ** 3;', 'power-operator'), @('T#-5S', 'tonDelay(IN := bStart, PT := T#-5S);', 'negative-time-literal'), @('?=', 'nState ?= nState;', 'assignment-attempt'))) {

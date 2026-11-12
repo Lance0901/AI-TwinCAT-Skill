@@ -150,7 +150,9 @@ namespace TcLintEngine
         public int Col;
         public bool StatementStart;
         public string Blocks;       // enclosing blocks, outermost first, e.g. "IF:then>CASE:label"
+        public string FramePath;    // same with block identity, e.g. "IF@3:1|elsif#2>CASE@5:5|label#1" (not in the output; mutual exclusion)
         public bool Conditional;    // inside IF / CASE / loop / __CATCH / __FINALLY
+        public bool InPragma;       // inside a {IF ...} ... {END_IF} conditional-compilation region (may not be compiled)
     }
 
     public sealed class ScanResult
@@ -600,6 +602,7 @@ namespace TcLintEngine
             public string Kind;    // IF CASE FOR WHILE REPEAT TRY
             public string Branch;  // then elsif else label case-else body until try catch finally
             public Token Opener;
+            public int Index;      // ELSIF / CASE label number inside this block
         }
 
         private static readonly Dictionary<string, string> Closers = new Dictionary<string, string>(StringComparer.Ordinal) {
@@ -624,10 +627,11 @@ namespace TcLintEngine
             HashSet<string> members = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool stmtStart = true;
             int i = 0;
+            int pragmaDepth = 0;
             while (i < t.Count && t[i].Kind != TokKind.EOF)
             {
                 Token x = t[i];
-                if (x.Kind == TokKind.Pragma) { i++; continue; }
+                if (x.Kind == TokKind.Pragma) { pragmaDepth = PragmaDepth(x.Text, pragmaDepth); i++; continue; }
                 if (x.Kind == TokKind.Ident)
                 {
                     string u = x.Upper;
@@ -637,7 +641,7 @@ namespace TcLintEngine
                         case "THEN": stmtStart = true; i++; continue;
                         case "ELSIF":
                             if (Top(stack) != "IF") { r.State.Fail("LINT-PARSE-002", "ELSIF outside an IF block", x.Line, x.Col); }
-                            else stack[stack.Count - 1].Branch = "elsif";
+                            else { stack[stack.Count - 1].Branch = "elsif"; stack[stack.Count - 1].Index++; }
                             stmtStart = false; i++; continue;
                         case "ELSE":
                             if (Top(stack) == "IF") stack[stack.Count - 1].Branch = "else";
@@ -728,7 +732,7 @@ namespace TcLintEngine
                                     {
                                         CallSite ic = new CallSite();
                                         ic.Target = inner.ToString(); ic.Line = t[k].Line; ic.Col = t[k].Col; ic.StatementStart = false;
-                                        ic.Blocks = BlockPath(stack); ic.Conditional = IsConditional(stack);
+                                        ic.Blocks = BlockPath(stack); ic.Conditional = IsConditional(stack); ic.FramePath = FramePathOf(stack); ic.InPragma = pragmaDepth > 0;
                                         r.Calls.Add(ic);
                                     }
                                     k = m;
@@ -745,7 +749,7 @@ namespace TcLintEngine
                     {
                         CallSite cs = new CallSite();
                         cs.Target = target.ToString(); cs.Line = x.Line; cs.Col = x.Col; cs.StatementStart = stmtStart;
-                        cs.Blocks = BlockPath(stack); cs.Conditional = IsConditional(stack);
+                        cs.Blocks = BlockPath(stack); cs.Conditional = IsConditional(stack); cs.FramePath = FramePathOf(stack); cs.InPragma = pragmaDepth > 0;
                         r.Calls.Add(cs);
                     }
                     stmtStart = false;
@@ -754,6 +758,8 @@ namespace TcLintEngine
                 }
                 if (x.Kind == TokKind.Op)
                 {
+                    // ':' inside CASE ends a label list: the next statements belong to a new label
+                    if (x.Text == ":" && Top(stack) == "CASE") stack[stack.Count - 1].Index++;
                     if (x.Text == ";" || x.Text == ":") stmtStart = true;
                     else stmtStart = false;
                     i++; continue;
@@ -822,6 +828,79 @@ namespace TcLintEngine
             StringBuilder sb = new StringBuilder();
             foreach (Frame f in stack) { if (sb.Length > 0) sb.Append('>'); sb.Append(f.Kind).Append(':').Append(f.Branch); }
             return sb.ToString();
+        }
+
+        // nesting depth of conditional-compilation pragmas ({IF} opens, {END_IF} closes; {ELSIF} / {ELSE} keep the depth)
+        public static int PragmaDepth(string pragma, int depth)
+        {
+            if (!IsConditional(pragma)) return depth;
+            string up = pragma.Substring(1).TrimStart().ToUpperInvariant();
+            if (StartsWord(up, "END_IF")) return Math.Max(0, depth - 1);
+            if (StartsWord(up, "IF")) return depth + 1;
+            return depth;
+        }
+
+        // [line, col] ranges of conditional-compilation regions in a token list (pairs: start, end; end = int.MaxValue when not closed)
+        public static List<int[]> PragmaRegions(List<Token> tokens)
+        {
+            List<int[]> r = new List<int[]>();
+            int depth = 0; int[] open = null;
+            foreach (Token x in tokens)
+            {
+                if (x.Kind != TokKind.Pragma) continue;
+                int d = PragmaDepth(x.Text, depth);
+                if (depth == 0 && d > 0) open = new int[] { x.Line, x.Col, int.MaxValue, int.MaxValue };
+                if (depth > 0 && d == 0 && open != null) { open[2] = x.Line; open[3] = x.Col; r.Add(open); open = null; }
+                depth = d;
+            }
+            if (open != null) r.Add(open);
+            return r;
+        }
+
+        public static bool InRegion(List<int[]> regions, int line, int col)
+        {
+            foreach (int[] g in regions)
+            {
+                bool afterStart = line > g[0] || (line == g[0] && col >= g[1]);
+                bool beforeEnd = line < g[2] || (line == g[2] && col <= g[3]);
+                if (afterStart && beforeEnd) return true;
+            }
+            return false;
+        }
+
+        private static string FramePathOf(List<Frame> stack)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (Frame f in stack)
+            {
+                if (sb.Length > 0) sb.Append('>');
+                sb.Append(f.Kind).Append('@').Append(Inv.S(f.Opener.Line)).Append(':').Append(Inv.S(f.Opener.Col)).Append('|').Append(f.Branch);
+                if (f.Branch == "elsif" || f.Branch == "label") sb.Append('#').Append(Inv.S(f.Index));
+            }
+            return sb.ToString();
+        }
+
+        // two calls of one section are mutually exclusive when they sit in different branches of the same IF / CASE
+        public static bool Exclusive(string a, string b)
+        {
+            string[] pa = (a ?? "").Split('>'), pb = (b ?? "").Split('>');
+            if ((a ?? "").Length == 0 || (b ?? "").Length == 0) return false;
+            int n = Math.Min(pa.Length, pb.Length);
+            for (int i = 0; i < n; i++)
+            {
+                if (pa[i] == pb[i]) continue;
+                int ka = pa[i].IndexOf('|'), kb = pb[i].IndexOf('|');
+                if (ka < 0 || kb < 0 || pa[i].Substring(0, ka) != pb[i].Substring(0, kb)) return false;
+                return pa[i].StartsWith("IF@", StringComparison.Ordinal) || pa[i].StartsWith("CASE@", StringComparison.Ordinal);
+            }
+            return false;
+        }
+
+        public static bool InLoop(string framePath)
+        {
+            foreach (string p in (framePath ?? "").Split('>'))
+                if (p.StartsWith("FOR@", StringComparison.Ordinal) || p.StartsWith("WHILE@", StringComparison.Ordinal) || p.StartsWith("REPEAT@", StringComparison.Ordinal)) return true;
+            return false;
         }
 
         private static bool IsConditional(List<Frame> stack)

@@ -208,7 +208,7 @@ namespace TcLintEngine
                         }
                         break;
                     default:
-                        // visualisations can execute ST code (input configuration); not analysed
+                        // visualisations are not analysed; they may reference programs (inferred: visualisation input actions can run ST code, not checked on InfoSys)
                         AddUncertainFile(o);
                         break;
                 }
@@ -280,6 +280,7 @@ namespace TcLintEngine
             {
                 DeclInfo di = StAnalyzer.ParseDeclaration(decl.InnerText());
                 if (di.HeaderKnown && di.Name != null) { p.Header = di.HeaderKeyword; p.NameLine = di.NameLine; }
+                if (di.Extends.Count > 0) fbExtends[o.Name] = new List<string>(di.Extends);
                 AddDeclRefs(p, di, topLocals);
                 if (di.State.Status != "ok" || excludedObj) AddUncertainText(o, o.ObjectPath, decl.InnerText(), di.Lex);
             }
@@ -340,8 +341,14 @@ namespace TcLintEngine
                 foreach (VarDecl v in b.Vars)
                 {
                     foreach (string n in v.Names) locals.Add(n);
-                    if (v.TypeText != null) foreach (Match m in IdentRx.Matches(v.TypeText)) p.TypeRefs.Add(m.Value);
+                    if (v.TypeText != null) foreach (Match m in IdentRx.Matches(StripBounds(v.TypeText))) p.TypeRefs.Add(m.Value);
                 }
+        }
+
+        // ARRAY[0..PRG_B.x] OF T: identifiers in the bounds are values, not types (review nit 9)
+        private static string StripBounds(string typeText)
+        {
+            return Regex.Replace(typeText, "\\[[^\\]]*\\]", " ", RegexOptions.CultureInvariant);
         }
 
         private static string LastSegment(string s)
@@ -359,8 +366,22 @@ namespace TcLintEngine
             for (int i = 0; i < st.Count; i++) { if (i > 0) sb.Append('\n'); sb.Append(st[i].InnerText()); }
             ScanResult sr = StAnalyzer.ScanImplementation(sb.ToString());
             SecCalls s = new SecCalls(); s.Path = path; s.Body = body; s.Locals = locals; s.Calls = sr.Calls;
-            s.Uncertain = sr.State.Status != "ok" || Excluded(path, out why);
-            if (s.Uncertain) AddUncertainText(o, path, sb.ToString(), sr.Lex);
+            // not-analyzed (conditional pragma, listed syntax): the call sites were still found; only the ones inside a
+            // {IF} region are uncertain (review: an empty {IF}{END_IF} must not hide the other calls). unsupported /
+            // parse-failed / excluded: nothing of the section is trusted
+            s.Uncertain = (sr.State.Status != "ok" && sr.State.Status != "not-analyzed") || Excluded(path, out why);
+            if (s.Uncertain || sr.Lex == null || sr.Lex.Error != null) AddUncertainText(o, path, sb.ToString(), sr.Lex);
+            else if (sr.State.Status == "not-analyzed")
+            {
+                // identifiers inside conditional regions may name a program without a call site the scanner saw
+                List<int[]> regions = StAnalyzer.PragmaRegions(sr.Lex.Tokens);
+                if (regions.Count > 0)
+                {
+                    Uncertain u = new Uncertain(); u.Owner = o.Name; u.File = o.Rel; u.Path = path; u.Idents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (Token t in sr.Lex.Tokens) if (t.Kind == TokKind.Ident && StAnalyzer.InRegion(regions, t.Line, t.Col)) u.Idents.Add(t.Text);
+                    uncertain.Add(u);
+                }
+            }
             p.Sections.Add(s);
         }
 
@@ -375,6 +396,9 @@ namespace TcLintEngine
                     if (v.TypeText != null) foreach (Match m in IdentRx.Matches(v.TypeText)) rootTypeRefs.Add(m.Value);
         }
 
+        private readonly Dictionary<string, string> aliasOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<string>> fbExtends = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
         private void IndexDut(TcObjectFile o)
         {
             typeKinds[o.Name] = "DUT";
@@ -382,6 +406,7 @@ namespace TcLintEngine
             if (decl == null) return;
             DeclInfo di = StAnalyzer.ParseDeclaration(decl.InnerText());
             if (di.Type == null) return;
+            if (di.Type.Kind == "ALIAS" && di.State.Status == "ok" && di.Type.BaseType != null) aliasOf[o.Name] = di.Type.BaseType;
             // FB instances inside a structure: treated as reachable (over-approximation, only makes TASK-001 quieter)
             foreach (VarDecl v in di.Type.Members)
                 if (v.TypeText != null) foreach (Match m in IdentRx.Matches(v.TypeText)) rootTypeRefs.Add(m.Value);
@@ -392,10 +417,15 @@ namespace TcLintEngine
             "BOOL", "BIT", "BYTE", "WORD", "DWORD", "LWORD", "SINT", "USINT", "INT", "UINT", "DINT", "UDINT", "LINT", "ULINT",
             "REAL", "LREAL", "STRING", "WSTRING", "TIME", "LTIME", "DATE", "LDATE", "TIME_OF_DAY", "TOD", "LTOD", "LTIME_OF_DAY",
             "DATE_AND_TIME", "DT", "LDT", "LDATE_AND_TIME", "XINT", "UXINT", "XWORD", "__XINT", "__UXINT", "__XWORD", "PVOID",
-            "ANY", "ANY_NUM", "ANY_INT", "ANY_REAL", "ANY_BIT", "ANY_STRING", "ANY_DATE" };
+            "ANY", "ANY_NUM", "ANY_INT", "ANY_REAL", "ANY_BIT", "ANY_STRING", "ANY_DATE",
+            // TwinCAT system data types (InfoSys tc3_plc_intro "Data types"; HRESULT seen in the bfh corpus): not function blocks
+            "HRESULT" };
 
-        private string Classify(string typeText, out string typeName)
+        private string Classify(string typeText, out string typeName) { return Classify(typeText, out typeName, 0); }
+
+        private string Classify(string typeText, out string typeName, int depth)
         {
+            if (depth > 16) { typeName = typeText; return "unknown"; }
             // returns: stateful / type-only / not-fb / unknown / skip (pointer, reference, interface use)
             typeName = null;
             string t = (typeText ?? "").Trim();
@@ -419,9 +449,22 @@ namespace TcLintEngine
                 string k;
                 if (typeKinds.TryGetValue(name, out k))
                 {
+                    string target;
+                    // a project ALIAS (TYPE T_Timer : TON; END_TYPE) is its base type (review should-fix 5)
+                    if (k == "DUT" && aliasOf.TryGetValue(name, out target)) return Classify(target, out typeName, depth + 1);
                     if (k != "FB") return "not-fb";
                     CatalogType pc = FindCatalog(name, "profile");
-                    return pc != null && pc.Kind == "stateful" ? "stateful" : "not-fb";
+                    if (pc != null && pc.Kind == "stateful") return "stateful";
+                    // FUNCTION_BLOCK FB_MyTon EXTENDS TON inherits the state of its base
+                    List<string> bases;
+                    if (fbExtends.TryGetValue(name, out bases))
+                        foreach (string b in bases)
+                        {
+                            string bn;
+                            if (Classify(b, out bn, depth + 1) == "stateful") return "stateful";
+                        }
+                    typeName = name;
+                    return "project-fb";
                 }
             }
             CatalogType c = FindCatalog(name, ns);
@@ -457,7 +500,15 @@ namespace TcLintEngine
                 string owner = accessor ? "ACCESSOR" : header;
                 if (owner != "METHOD" && owner != "FUNCTION" && owner != "ACCESSOR" && owner != "PROGRAM" && owner != "FUNCTION_BLOCK") continue;
                 if (di.State.Status == "unsupported") { SkipBlocking(R, u.O.Rel, u.Path, "declaration-" + (di.State.Reason ?? "unsupported")); continue; }
-                if (di.State.Status != "ok") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "declaration-" + (di.State.Status == "parse-failed" ? "parse-failed" : (di.State.Reason ?? di.State.Status)))); continue; }
+                List<int[]> regions = null;
+                if (di.State.Status != "ok")
+                {
+                    rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "declaration-" + (di.State.Status == "parse-failed" ? "parse-failed" : (di.State.Reason ?? di.State.Status))));
+                    // conditional pragma only: the parser read the whole declaration; variables outside {IF} regions are certain
+                    // (review should-fix 4: an empty {IF}{END_IF} must not hide a TON in METHOD VAR)
+                    if (di.State.Status != "not-analyzed" || di.State.Reason != "conditional-pragma" || di.Lex == null) continue;
+                    regions = StAnalyzer.PragmaRegions(di.Lex.Tokens);
+                }
                 foreach (VarBlock b in di.VarBlocks)
                 {
                     string variant = null;
@@ -468,10 +519,12 @@ namespace TcLintEngine
                     if (variant == null) continue;
                     foreach (VarDecl v in b.Vars)
                     {
+                        if (regions != null && StAnalyzer.InRegion(regions, v.Line, v.Col)) continue;
                         string tn;
                         string cls = Classify(v.TypeText, out tn);
                         if (cls == "unknown") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "unknown-type:" + tn)); continue; }
                         if (cls == "type-only") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "type-only:" + tn)); continue; }
+                        if (cls == "project-fb") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "project-type:" + tn)); continue; }
                         if (cls != "stateful") continue;
                         string names = string.Join(", ", v.Names.ToArray());
                         string where = variant == "var-temp" ? "VAR_TEMP" : "VAR of " + (owner == "ACCESSOR" ? "the property accessor" : owner);
@@ -516,6 +569,8 @@ namespace TcLintEngine
             public int Line;
             public bool Unconditional;
             public bool Uncertain;
+            public string FramePath;
+            public bool InLoop;
         }
 
         private void CheckTaskGraph()
@@ -545,7 +600,7 @@ namespace TcLintEngine
                 foreach (string t in p.TypeRefs)
                 {
                     PouNode q;
-                    // a PROGRAM used as a type is a compile error (C0035-like); treated as reached so TASK-001 does not add noise
+                    // a PROGRAM used as a type (not legal ST, inferred - not measured): treated as reached so TASK-001 does not add noise
                     if (pouIndex.TryGetValue(t, out q) && q != p) p.Edges.Add(q.Name);
                 }
                 foreach (SecCalls s in p.Sections)
@@ -563,7 +618,8 @@ namespace TcLintEngine
                             {
                                 p.Edges.Add(q.Name);
                                 BodyCall bc = new BodyCall(); bc.Caller = p.Name; bc.CallerHeader = p.Header; bc.Section = s.Path; bc.Line = cs.Line;
-                                bc.Unconditional = cs.StatementStart && !cs.Conditional && s.Body; bc.Uncertain = s.Uncertain;
+                                bc.Unconditional = cs.StatementStart && !cs.Conditional && s.Body && !cs.InPragma; bc.Uncertain = s.Uncertain || cs.InPragma;
+                                bc.FramePath = cs.FramePath; bc.InLoop = StAnalyzer.InLoop(cs.FramePath);
                                 List<BodyCall> l;
                                 if (!bodyCalls.TryGetValue(q.Name, out l)) { l = new List<BodyCall>(); bodyCalls[q.Name] = l; }
                                 l.Add(bc);
@@ -582,6 +638,18 @@ namespace TcLintEngine
                 PouNode p = queue.Dequeue();
                 List<string> next = new List<string>(p.Edges); next.Sort(StringComparer.OrdinalIgnoreCase);
                 foreach (string e in next) Mark(e, queue);
+            }
+            // PROGRAMs that certainly run every cycle: on a task, or called unconditionally (statement level, not in
+            // IF / CASE / loop) from the body of a program that certainly runs. Only these make a double call certain.
+            certain.Clear();
+            foreach (KeyValuePair<string, string> tc in taskCalls) { PouNode q; if (pouIndex.TryGetValue(tc.Value, out q) && q.Header == "PROGRAM") certain.Add(q.Name); }
+            bool grew = true;
+            while (grew)
+            {
+                grew = false;
+                foreach (KeyValuePair<string, List<BodyCall>> kv in bodyCalls)
+                    foreach (BodyCall bc in kv.Value)
+                        if (!certain.Contains(kv.Key) && bc.Unconditional && !bc.Uncertain && bc.CallerHeader == "PROGRAM" && certain.Contains(bc.Caller)) { certain.Add(kv.Key); grew = true; }
             }
             List<PouNode> sorted = new List<PouNode>(pouList);
             sorted.Sort(delegate (PouNode a, PouNode b) { return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase); });
@@ -605,6 +673,8 @@ namespace TcLintEngine
             }
         }
 
+        private readonly HashSet<string> certain = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         private void Mark(string name, Queue<PouNode> queue)
         {
             PouNode q;
@@ -624,31 +694,58 @@ namespace TcLintEngine
             SortedDictionary<string, string> progCallers = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             SortedDictionary<string, string> otherCallers = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             Dictionary<string, int> unconditional = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> sureCallers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, List<BodyCall>> perCaller = new Dictionary<string, List<BodyCall>>(StringComparer.OrdinalIgnoreCase);
+            string multiNote = null;
             bool uncertainCall = false;
             foreach (BodyCall bc in calls)
             {
                 PouNode caller;
                 if (!pouIndex.TryGetValue(bc.Caller, out caller) || !caller.Reachable) continue;   // an unreachable caller never runs (axis TestCam)
                 if (bc.Uncertain) { uncertainCall = true; continue; }
+                List<BodyCall> pc;
+                if (!perCaller.TryGetValue(bc.Caller, out pc)) { pc = new List<BodyCall>(); perCaller[bc.Caller] = pc; }
+                pc.Add(bc);
+                if (bc.InLoop && multiNote == null) multiNote = "call inside a loop in " + bc.Section + ":" + Inv.S(bc.Line);
                 if (bc.CallerHeader == "PROGRAM")
                 {
                     if (!progCallers.ContainsKey(bc.Caller)) progCallers[bc.Caller] = bc.Section + ":" + Inv.S(bc.Line);
                     if (bc.Unconditional)
                     {
                         int k; unconditional.TryGetValue(bc.Section, out k); unconditional[bc.Section] = k + 1;
+                        if (certain.Contains(bc.Caller)) sureCallers.Add(bc.Caller);
                     }
                 }
                 else if (!otherCallers.ContainsKey(bc.Caller)) otherCallers[bc.Caller] = bc.Section + ":" + Inv.S(bc.Line);
             }
+            // sure = runs every cycle for certain (task PouCall, or an unconditional call from a program that certainly runs)
+            int sure = tasks.Count + sureCallers.Count;
             int strong = tasks.Count + progCallers.Count;
             string sources = Describe(tasks, progCallers, otherCallers);
             string variant = null, sev = null, blockable = null;
-            if (strong >= 2) variant = progCallers.Count == 0 ? "two-tasks" : (tasks.Count == 0 ? "two-programs" : "task-and-program");
+            if (sure >= 2) variant = sureCallers.Count == 0 ? "two-tasks" : (tasks.Count == 0 ? "two-programs" : "task-and-program");
             else
             {
                 List<string> secs = new List<string>(unconditional.Keys); secs.Sort(StringComparer.OrdinalIgnoreCase);
                 foreach (string s in secs) if (unconditional[s] >= 2) { variant = "repeated-call"; sources += "; " + Inv.S(unconditional[s]) + " unconditional calls in " + s; break; }
-                if (variant == null && strong + otherCallers.Count >= 2) { variant = "fb-or-function-caller"; sev = "warning"; blockable = "false"; }
+                // one caller with two call sites that are not in different branches of one IF / CASE (other section,
+                // IF + unconditional, two calls in one branch) may run it twice
+                if (multiNote == null)
+                {
+                    List<string> cl = new List<string>(perCaller.Keys); cl.Sort(StringComparer.OrdinalIgnoreCase);
+                    foreach (string c in cl)
+                    {
+                        List<BodyCall> l = perCaller[c];
+                        for (int i = 0; i < l.Count && multiNote == null; i++)
+                            for (int j = i + 1; j < l.Count && multiNote == null; j++)
+                                if (l[i].Section != l[j].Section || !StAnalyzer.Exclusive(l[i].FramePath, l[j].FramePath))
+                                    multiNote = "two calls in " + c + " (" + l[i].Section + ":" + Inv.S(l[i].Line) + ", " + l[j].Section + ":" + Inv.S(l[j].Line) + ")";
+                        if (multiNote != null) break;
+                    }
+                }
+                if (variant == null && multiNote != null) { variant = otherCallers.Count > 0 ? "fb-or-function-caller" : "possible-double-call"; sev = "warning"; blockable = "false"; sources += "; " + multiNote; }
+                // a conditional caller, or a caller that does not run every cycle for certain: it may run twice (warning)
+                if (variant == null && (strong + otherCallers.Count >= 2 || otherCallers.Count >= 1)) { variant = otherCallers.Count > 0 ? "fb-or-function-caller" : "possible-double-call"; sev = "warning"; blockable = "false"; }
             }
             if (variant == null)
             {
@@ -659,6 +756,8 @@ namespace TcLintEngine
             }
             string impact = variant == "fb-or-function-caller"
                 ? "it may run more than once per cycle (a caller is a function block or function: how often it runs is not analysed)"
+                : variant == "possible-double-call"
+                ? "it runs twice (or in a loop) in every cycle in which the conditional calls are made (a call inside IF / CASE / a loop / an action or method, or a caller that does not run every cycle for certain)"
                 : "it can run more than once in one cycle: timers / triggers / counters inside are evaluated twice per cycle (an R_TRIG output is reset by the second call; inferred from IEC call semantics)" + (tasks.Count >= 2 ? ", and two tasks access its data concurrently" : "");
             Emit(R2, p.O.Rel, p.Name, "declaration", p.NameLine, 1,
                 "PROGRAM " + p.Name + " is called from more than one place (" + sources + "): " + impact,
@@ -717,16 +816,17 @@ namespace TcLintEngine
                     RuleMeta r = RuleRegistry.Get(id);
                     if (r == null)
                         Emit("LINT-SUPPRESS-002", d.File, d.ObjectPath, d.Section, d.Line, 1, "Suppression names unknown rule id '" + id + "'", id, "Use a rule id from data.rulesRun", null, null, null, false);
-                    else if (r.Blockable != "false" || id.StartsWith("LINT-SUPPRESS-", StringComparison.Ordinal))
-                        Emit("LINT-SUPPRESS-004", d.File, d.ObjectPath, d.Section, d.Line, 1, "Rule " + id + " can block, so it cannot be suppressed in the code (the checked agent would suppress its own finding); the finding stays", id,
-                            "Fix the code, or ask the owner to add an entry to the profile suppressions[] (version-controlled, reviewed)", null, null, null, false);
+                    else if (id.StartsWith("LINT-SUPPRESS-", StringComparison.Ordinal) || ProfileBlocking(id))
+                        Refuse(d, id);
                     else usable.Add(id);
                 }
                 if (usable.Count == 0) continue;
                 d.Effective = true;
+                HashSet<string> refused = new HashSet<string>(StringComparer.Ordinal);
+                bool anyLocation = false;
                 foreach (Diagnostic x in snapshot)
                 {
-                    if (x.Suppressed || !usable.Contains(x.RuleId) || x.Blockable != "false") continue;
+                    if (x.Suppressed || !usable.Contains(x.RuleId)) continue;
                     bool hit;
                     if (d.Kind == "object") hit = string.Equals(x.ObjectPath, d.ObjectPath, StringComparison.OrdinalIgnoreCase) || x.ObjectPath.StartsWith(d.ObjectPath + ".", StringComparison.OrdinalIgnoreCase);
                     else
@@ -735,11 +835,32 @@ namespace TcLintEngine
                         hit = string.Equals(x.ObjectPath, d.ObjectPath, StringComparison.OrdinalIgnoreCase) && x.Section == d.Section && x.Line == target;
                     }
                     if (!hit) continue;
+                    anyLocation = true;
+                    // the variant decides (accessor-var / fb-or-function-caller are warnings of a blockable rule)
+                    if (x.Blockable != "false") { if (refused.Add(x.RuleId)) Refuse(d, x.RuleId); continue; }
                     x.Suppressed = true; x.SuppressionReason = d.Reason; d.Matched++;
                 }
-                if (d.Matched == 0)
+                if (!anyLocation)
+                    foreach (string id in usable)
+                    {
+                        RuleMeta r = RuleRegistry.Get(id);
+                        if (r.Blockable != "false" && refused.Add(id)) Refuse(d, id);   // nothing here, and the rule can block: refuse as before
+                    }
+                if (d.Matched == 0 && refused.Count == 0)
                     Emit("LINT-SUPPRESS-003", d.File, d.ObjectPath, d.Section, d.Line, 1, "Suppression of " + string.Join(", ", usable.ToArray()) + " matches no finding (remove it)", null, null, null, null, null, false);
             }
+        }
+
+        private bool ProfileBlocking(string id)
+        {
+            RuleOverride ov;
+            return overrides.TryGetValue(id, out ov) && ov.Blocking.HasValue && ov.Blocking.Value;
+        }
+
+        private void Refuse(Directive d, string id)
+        {
+            Emit("LINT-SUPPRESS-004", d.File, d.ObjectPath, d.Section, d.Line, 1, "This " + id + " finding can block (rule, variant or profile), so it cannot be suppressed in the code (the checked agent would suppress its own finding); the finding stays", id,
+                "Fix the code, or ask the owner to add an entry to the profile suppressions[] (version-controlled, reviewed)", null, null, null, false);
         }
 
         private ArrayList SuppressionList(Dictionary<ProfileEntry, int> profileMatches)

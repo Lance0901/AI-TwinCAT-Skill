@@ -244,7 +244,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 - 被壓掉的 finding 仍列在 diagnostics,`suppressed: true` + `suppressionReason`,不計入 summary 的 errors / warnings(另計 `suppressed`)。
 - 不能改原始碼的物件(library、產生的程式)用 profile 的 `suppressions[]`(`objectPath` + `ruleId` + `reason`,不接受 wildcard objectPath)。
 - **被檢查的 LLM 不能自己壓掉 blocking**(review B3):寫 suppression 的通常就是被檢查的 agent,8 字理由擋不住它。
-  - `blockable == true / pending` 的規則(PROJECT-*、CONTRACT-*、LINT-PARSE-*)**不接受 inline suppression**,只能用 profile `suppressions[]`(進版控、有人 review);inline 寫了 → suppression 不生效,另出 `LINT-SUPPRESS-004`。
+  - `blockable == true / pending` 的規則(例如 PROJECT-XML / GUID / COMPILE、CONTRACT-*、LINT-PARSE-*;依每條規則與 variant 的 blockable 判斷,PROJECT-TASK-001 是 false,可以 inline;profile 設 `blocking: true` 的規則也不行)**不接受 inline suppression**,只能用 profile `suppressions[]`(進版控、有人 review);inline 寫了 → suppression 不生效,另出 `LINT-SUPPRESS-004`。
   - `tcauto-lint-disable-object` 只能壓非 blockable 規則。
   - `newSuppressions[]` 的比對基準(review 驗證 7):`LintCandidate` = 候選 vs 磁碟版本;`LintProject` = 磁碟版本 vs solution 目錄所在 git repo 的 HEAD(`git show HEAD:<path>`,只讀)。不是 git repo 或讀不到 HEAD → `data.newSuppressionsBasis: "unavailable"`,並在 `data.suppressions[]` 列出範圍內**所有** suppression,SKILL.md 規定此時全部列給使用者。Phase 1b 實作(保守選擇):`unavailable`(含 git 不在 PATH、沒有 HEAD commit、`git` 逾時)時 `newSuppressions[]` 也等於全部 suppression;檔案不在 HEAD(新檔)→ 它的 suppression 全部算新;比對鍵 = 種類 + rule id + 理由(不含行號);profile 的 `suppressions[]` 也比對 HEAD 版本的 profile。只用 `git rev-parse` / `git show`(`GIT_OPTIONAL_LOCKS=0`)。
   - profile 若是本次工作期間被改動的(sha256 與 git HEAD 不同,或檔案 mtime 晚於 session 開始 — 判斷方式 Phase 2 決定),在 `data.profile.modifiedSinceCommit` 標示。

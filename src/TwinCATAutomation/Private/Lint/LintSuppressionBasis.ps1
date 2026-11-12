@@ -42,7 +42,7 @@ function Invoke-TcLintGit {
         Runs a read-only git command. Returns @{ ok; exit; out } (stdout decoded as UTF-8). Never throws.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$WorkDir, [Parameter(Mandatory)][string[]]$GitArgs)
+    param([Parameter(Mandatory)][string]$WorkDir, [Parameter(Mandatory)][string[]]$GitArgs, [int]$TimeoutMs = 15000)
     $exe = if ($script:TcLintGitExe) { $script:TcLintGitExe } else { 'git' }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -56,13 +56,33 @@ function Invoke-TcLintGit {
         $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
         $psi.EnvironmentVariables['GIT_OPTIONAL_LOCKS'] = '0'   # read-only: no index refresh
         $p = [System.Diagnostics.Process]::Start($psi)
+        # both streams async, then a real deadline (ReadToEnd would block until git exits: review should-fix 7)
         $errTask = $p.StandardError.ReadToEndAsync()
-        $out = $p.StandardOutput.ReadToEnd()
-        if (-not $p.WaitForExit(30000)) { try { $p.Kill() } catch { $null = $_ }; return @{ ok = $false; exit = -1; out = '' } }
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        if (-not $p.WaitForExit($TimeoutMs)) { try { $p.Kill() } catch { $null = $_ }; return @{ ok = $false; exit = -1; out = ''; timedOut = $true } }
+        $p.WaitForExit()
         $null = $errTask.Result
-        return @{ ok = ($p.ExitCode -eq 0); exit = $p.ExitCode; out = $out }
+        return @{ ok = ($p.ExitCode -eq 0); exit = $p.ExitCode; out = $outTask.Result }
     }
     catch { return @{ ok = $false; exit = -1; out = '' } }
+}
+
+function Get-TcLintDiskSpelling {
+    <#
+    .SYNOPSIS
+        The path with the upper / lower case the file system has (git HEAD:<path> is case-sensitive; review should-fix 8).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $cur = $root.ToUpperInvariant()
+    foreach ($part in ($full.Substring($root.Length) -split '\\' | Where-Object { $_ -ne '' })) {
+        $hit = $null
+        try { $hit = @([System.IO.Directory]::GetFileSystemEntries($cur, $part)) | Select-Object -First 1 } catch { $hit = $null }
+        if ($hit) { $cur = $hit } else { $cur = Join-Path $cur $part }
+    }
+    return $cur
 }
 
 function Get-TcLintNewSuppressions {
@@ -86,12 +106,12 @@ function Get-TcLintNewSuppressions {
     $plcDir = [System.IO.Path]::GetDirectoryName($PlcProjectFull)
     $top = Invoke-TcLintGit -WorkDir $plcDir -GitArgs @('rev-parse', '--show-toplevel')
     if (-not $top.ok) { return (& $unavailable 'not a git repository, or git is not available: every suppression is listed as new') }
-    $topDir = [System.IO.Path]::GetFullPath(($top.out.Trim() -replace '/', '\'))
+    $topDir = Get-TcLintDiskSpelling -Path ($top.out.Trim() -replace '/', '\')
     $head = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--verify', '--quiet', 'HEAD')
     if (-not $head.ok) { return (& $unavailable 'the repository has no HEAD commit: every suppression is listed as new') }
     $relOf = {
         param($full)
-        $f = [System.IO.Path]::GetFullPath($full)
+        $f = Get-TcLintDiskSpelling -Path $full
         $t = $topDir.TrimEnd('\') + '\'
         if (-not $f.StartsWith($t, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
         return ($f.Substring($t.Length) -replace '\\', '/')
