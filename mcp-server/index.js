@@ -13,7 +13,7 @@ import { PowerShellBridge, errorResult } from './lib/bridge.js';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
-import { ModalProbe, PROBED_TOOLS } from './lib/modal-probe.js';
+import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-probe.js';
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 
@@ -254,6 +254,27 @@ function modalHint(pid, ide, title, outcome) {
   return `The IDE (pid ${pid}) shows the modal dialog '${title}' and was opened by the user; ${lost}. Dismiss it in the XAE window (or ask the user to), then ConnectIde again. ${after}`;
 }
 
+/**
+ * #49: hint for a license dialog (licenseDialogEvidence). The dialog is never pressed: license
+ * dialogs are the user's. The lifecycle block of a killed runtime-changing request is kept (#236).
+ */
+function licenseHint(pid, title, outcome) {
+  const lost =
+    outcome === 'dequeued'
+      ? 'the call was not sent to PowerShell'
+      : 'the PowerShell bridge was killed and all IDE/ADS state is lost';
+  const block =
+    outcome === 'killed'
+      ? 'If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle) it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check: do not re-run it and do not work around it with raw ADS / COM / GUI. '
+      : '';
+  return (
+    `The target reported a missing license (dialog '${title}' in the IDE pid ${pid}: TwinCAT System error 10000 with a license text; data.licenseMissing.evidence); ${lost}. ` +
+    'The server does not press the dialog. Stop and report to the user: the user closes the fatal error dialog in XAE and renews the 7 day trial (security code) or activates the license (XAE SYSTEM > License). ' +
+    block +
+    'After the user fixed the license: ConnectIde again, GetSystemState to read back, ClearLifecycleBlock only after the user agreed, then EnableConfig Force=true. Never edit license files.'
+  );
+}
+
 /** First `max` chars of `s` without cutting a surrogate pair in half. */
 function truncate(s, max) {
   if (s.length <= max) return s;
@@ -287,12 +308,23 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
     const text = String(dialog.text ?? '');
     const shortText = truncate(text, 200);
     const message = shortText ? `${dialog.title} | ${shortText}` : dialog.title;
+    // #49: a license dialog is LICENSE_MISSING instead of the generic IDE_MODAL_DIALOG (bridge handling unchanged)
+    const lic = licenseDialogEvidence(dialog.title, text);
     const outcome = bridge.abortCall(
       token,
       (o) => ({
         success: false,
-        error: { code: 'IDE_MODAL_DIALOG', message, hint: modalHint(probePid, prevIde ?? ideSnapshot, dialog.title, o) },
-        data: { dialogTitle: dialog.title, dialogText: text, ideProcessId: probePid, lastIde: ideSnapshot, bridgeRestarted: o === 'killed' }
+        error: lic
+          ? { code: 'LICENSE_MISSING', message, hint: licenseHint(probePid, dialog.title, o) }
+          : { code: 'IDE_MODAL_DIALOG', message, hint: modalHint(probePid, prevIde ?? ideSnapshot, dialog.title, o) },
+        data: {
+          dialogTitle: dialog.title,
+          dialogText: text,
+          ideProcessId: probePid,
+          lastIde: ideSnapshot,
+          bridgeRestarted: o === 'killed',
+          ...(lic ? { licenseMissing: { evidence: lic.evidence, originalCode: 'IDE_MODAL_DIALOG' } } : {})
+        }
       }),
       `${tool.cmdlet} is blocked by the IDE modal dialog '${dialog.title}'`
     );

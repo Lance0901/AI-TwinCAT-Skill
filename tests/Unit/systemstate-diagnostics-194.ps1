@@ -238,6 +238,24 @@ Clear-Block
     }
 }
 
+# --- N (#49): the dialog / an Error List row carries the runtime's license failure -> LICENSE_MISSING;
+# the block written before the diagnostics stays (with the original code), the dialog is not touched
+$licFatal = "Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!"
+$licHint49 = & $mod { Get-TcErrorHint -Code 'LICENSE_MISSING' }
+Reset-Case; Set-Ide $true; Set-Ads 'config'
+$global:Dlg = @{ Title = 'Microsoft Visual Studio'; Text = $licFatal; Kind = 'unknown' }
+$r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
+Check 'N license dialog: LICENSE_MISSING, block kept (original code), data.licenseMissing' ((-not $r.success) -and $r.error.code -eq 'LICENSE_MISSING' -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.licenseMissing.originalCode -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.licenseMissing.evidence -match 'license not found') "code=$($r.error.code) $($r.data.licenseMissing | ConvertTo-Json -Compress)"
+Check 'N hint = stop text + LICENSE_MISSING hint' ($r.error.hint.EndsWith($licHint49) -and $r.error.hint -ne $licHint49) "$($r.error.hint)"
+$b = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
+Check 'N next Set-TcSystemState -> LIFECYCLE_BLOCKED' ($b.error.code -eq 'LIFECYCLE_BLOCKED') "$($b.error.code)"
+Clear-Block
+Reset-Case; Set-Ide $true; Set-Ads 'config'
+$global:ElRows = @('Some warning', "'TwinCAT System' (10000): Lizenz nicht gefunden")
+$r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
+Check 'N2 no dialog, Error List row with the license failure -> LICENSE_MISSING' ($r.error.code -eq 'LICENSE_MISSING' -and $r.data.licenseMissing.evidence -match 'Lizenz') "code=$($r.error.code)"
+Clear-Block
+
 # --- M: hint rules (PR #200 review items 3-5, 9), Get-TcStuckInConfigHint directly
 $dlg1809 = [PSCustomObject]@{ title = 'TwinCAT XAE'; text = $fatal }
 function Hint($Code, $Boot, $Lic, $Rows = @(), $Dialog = $dlg1809) { & $mod { param($c, $b, $l, $rw, $dg) Get-TcStuckInConfigHint -Code $c -License $l -Diagnostics ([PSCustomObject]@{ dialog = $dg; errorList = @($rw); bootPackage = $b }) } $Code $Boot $Lic $Rows $Dialog }

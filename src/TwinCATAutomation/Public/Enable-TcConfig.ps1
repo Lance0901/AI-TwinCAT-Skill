@@ -448,7 +448,8 @@ function Enable-TcConfig {
             $extra += 'symbol description / application mismatch (ADS 1809)'
         }
         if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
-        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint
+        # #49: the full dialog text and every Error List row, not only the 3 rows in the message
+        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint -Evidence @(Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag)
     }
 
     # SolutionBuild.LastBuildInfo (number of failed projects), $null when unreadable.
@@ -504,11 +505,21 @@ function Enable-TcConfig {
     }
 
     function New-TcStepFailure {
-        param([string]$Message, [string]$Code, [string]$Hint)
+        # -Evidence: extra texts (e.g. the full dialog text) checked for the #49 license failure
+        param([string]$Message, [string]$Code, [string]$Hint, [string[]]$Evidence)
+        # #49: the runtime reported a missing license (dialog / Error List / step error text):
+        # LICENSE_MISSING replaces the generic code BEFORE the lifecycle block is written, so the
+        # block records it too. The dialog is not touched.
+        $licEvidence = $null
+        if ($Code -ne 'LIFECYCLE_BLOCKED') { $licEvidence = Get-TcLicenseFailureEvidence -Texts (@($Evidence) + $Message) }
+        # a step result already mapped to LICENSE_MISSING (ConvertTo-TcAdsErrorCode) came from a dialog
+        $licOriginal = if ($Code -eq 'LICENSE_MISSING' -and $Message -match 'IDE_MODAL_DIALOG') { 'IDE_MODAL_DIALOG' } else { $Code }
+        if ($null -ne $licEvidence -and $Code -ne 'LICENSE_MISSING') { $Code = 'LICENSE_MISSING'; $Hint = $null }
         $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed); LifecycleNetId = [string]$netId }
         if ([string]::IsNullOrWhiteSpace($Hint)) { $Hint = Get-TcErrorHint -Code $Code }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
         $res = New-TcResult @params
+        if ($Code -eq 'LICENSE_MISSING') { Add-TcLicenseMissingData -Result $res -Evidence $licEvidence -OriginalCode $licOriginal }
         # #68: a failed postcondition after a runtime-changing request blocks the target
         if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })
@@ -536,7 +547,7 @@ function Enable-TcConfig {
         Add-TcStepRecord -Name $Name -Ok $false -Watch ([System.Diagnostics.Stopwatch]::StartNew()) -Detail "not started: IDE shows modal dialog '$($dlg.Title)'"
         $short = [string]$dlg.Text
         if ($short.Length -gt 200) { $short = $short.Substring(0, 200) }
-        $res = New-TcStepFailure -Message "IDE_MODAL_DIALOG: step '$Name' not attempted - the IDE shows a modal dialog: $($dlg.Title) | $short" -Code 'IDE_MODAL_DIALOG'
+        $res = New-TcStepFailure -Message "IDE_MODAL_DIALOG: step '$Name' not attempted - the IDE shows a modal dialog: $($dlg.Title) | $short" -Code 'IDE_MODAL_DIALOG' -Evidence @("$([string]$dlg.Title) | $([string]$dlg.Text)")
         $res.data | Add-Member -NotePropertyName 'dialogTitle' -NotePropertyValue ([string]$dlg.Title) -Force
         $res.data | Add-Member -NotePropertyName 'dialogText' -NotePropertyValue ([string]$dlg.Text) -Force
         return $res

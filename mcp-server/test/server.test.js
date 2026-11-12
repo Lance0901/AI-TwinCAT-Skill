@@ -530,6 +530,26 @@ describe('index.js over stdio (modal probe)', () => {
     assert.equal(again.success, true);
   });
 
+  test('#49: license fatal error dialog during a probed call -> LICENSE_MISSING (bridge restarted, dialog not pressed)', async () => {
+    const connect = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'C:\\x\\Demo.sln' } }));
+    assert.equal(connect.success, true);
+    const LIC = "Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!";
+    pf.setTrigger({ title: 'Microsoft Visual Studio', text: LIC });
+    const body = parse(await client.callTool({ name: 'BuildProject', arguments: { Hang: true } }));
+    assert.equal(body.error.code, 'LICENSE_MISSING', JSON.stringify(body));
+    assert.equal(body.error.message, `Microsoft Visual Studio | ${LIC}`);
+    assert.match(body.error.hint, /does not press the dialog/);
+    assert.match(body.error.hint, /lifecycle block \(errorCode INTERRUPTED, #236\)/);
+    assert.match(body.error.hint, /ClearLifecycleBlock only after the user agreed/);
+    assert.doesNotMatch(body.error.hint, /taskkill/, 'no kill advice for a license dialog');
+    assert.equal(body.data.bridgeRestarted, true);
+    assert.equal(body.data.dialogText, LIC);
+    assert.deepEqual(body.data.licenseMissing, { evidence: `Microsoft Visual Studio | ${LIC}`, originalCode: 'IDE_MODAL_DIALOG' });
+    pf.clearTrigger();
+    const again = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'C:\\x\\Demo.sln' } }));
+    assert.equal(again.success, true);
+  });
+
   test('no dialog: BuildProject DelayMs 2500 succeeds and the probe is killed when the call ends', async () => {
     pf.clearPids();
     const body = parse(await client.callTool({ name: 'BuildProject', arguments: { DelayMs: 2500 } }));

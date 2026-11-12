@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
-import { ModalProbe, PROBED_TOOLS, buildProbeSpawnSpec, DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_SCAN_SCRIPT } from '../lib/modal-probe.js';
+import { ModalProbe, PROBED_TOOLS, buildProbeSpawnSpec, licenseDialogEvidence, DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_SCAN_TIMEOUT_SEC, DEFAULT_SCAN_SCRIPT } from '../lib/modal-probe.js';
 import { PowerShellBridge, errorResult } from '../lib/bridge.js';
 import { loadConfig, defaultPowershellPath, scanScriptFor } from '../lib/config.js';
 
@@ -81,6 +81,21 @@ function mockProbe(triggerContent, extraEnv = {}) {
 }
 
 describe('lib/modal-probe.js', () => {
+  test('#49 licenseDialogEvidence: (10000) + license word in any language; 10000 alone or license alone is not enough', () => {
+    const en = "Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!";
+    assert.deepEqual(licenseDialogEvidence('Microsoft Visual Studio', en), { evidence: `Microsoft Visual Studio | ${en}` });
+    // zh-TW XAE wording, full-width parentheses, runtime text kept
+    assert.ok(licenseDialogEvidence('Microsoft Visual Studio', "目標系統回報嚴重錯誤:'TwinCAT System'（10000）>> license not found <<"));
+    assert.ok(licenseDialogEvidence('TwinCAT XAE', "'TwinCAT System' (10000): 找不到授權"));
+    assert.ok(licenseDialogEvidence('TwinCAT XAE', "'TwinCAT System' (10000): Lizenz nicht gefunden"));
+    assert.equal(licenseDialogEvidence('TwinCAT XAE', "'TwinCAT System' (10000): Sending ams command >> AdsError: 1809 (0x711, ADS ERROR: symbol version invalid) << failed!"), null, '#194 ADS 1809');
+    assert.equal(licenseDialogEvidence('License', 'Your 7 day trial license expires; port 10000'), null, 'bare 10000 is not the error source');
+    assert.equal(licenseDialogEvidence('Assertion Failed', 'x'), null);
+    assert.equal(licenseDialogEvidence(undefined, undefined), null);
+    const long = licenseDialogEvidence('T', `(10000) license ${'y'.repeat(400)}`);
+    assert.equal(long.evidence.length, 300);
+  });
+
   test('PROBED_TOOLS and defaults', () => {
     assert.deepEqual([...PROBED_TOOLS].sort(), ['BuildProject', 'ConnectIde', 'EnableConfig', 'OpenProject', 'PlcLogin', 'RunTestCycle', 'SendPlcProgram']);
     assert.equal(PROBED_TOOLS.has('RunLifecycle'), false, 'covered through its steps');

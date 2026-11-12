@@ -314,6 +314,14 @@
                     $rd | Add-Member -NotePropertyName 'diagnostics' -NotePropertyValue $diag -Force
                     try { $hint = Get-TcStuckInConfigHint -Code $Code -Diagnostics $diag -License $lic }
                     catch { if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $base" } }
+                    # #49: the dialog / Error List carries the runtime's license failure -> LICENSE_MISSING.
+                    # The lifecycle block was already written (with $Code) and stays; the dialog is not touched.
+                    $licEvidence = Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag
+                    if ($null -ne $licEvidence) {
+                        $Res.error.code = 'LICENSE_MISSING'
+                        Add-TcLicenseMissingData -Result $Res -Evidence $licEvidence -OriginalCode $Code
+                        $hint = Get-TcErrorHint -Code 'LICENSE_MISSING'
+                    }
                 }
                 Set-TcHintAfterStopText -Result $Res -OldHint $base -NewHint $hint
             }
