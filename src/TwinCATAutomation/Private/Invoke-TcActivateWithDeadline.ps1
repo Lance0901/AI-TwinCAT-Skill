@@ -12,7 +12,10 @@ function Invoke-TcActivateWithDeadline {
         ("!<ProgId>:<pid>", ComRotHelper) and ITcSysManager from Solution.Projects(i).Object,
         exactly like Get-TcSysManager. The caller's thread waits at most -TimeoutSec and
         meanwhile looks for a modal dialog every 2 s (recorded in $script:TcLastModalDialog,
-        same as the Invoke-TcComRetry watchdog; never touches a window).
+        same as the Invoke-TcComRetry watchdog; never touches a window). #231: every dialog seen
+        is also collected in $script:TcActivateDialogsSeen (Add-TcActivateDialogSeen), which only
+        this function resets - Invoke-TcComRetry clears $script:TcLastModalDialog on every call,
+        so the steps after Activate would lose it; Enable-TcConfig reports it as data.dialogsSeen.
         On timeout the background call is abandoned (it cannot be cancelled either; the IDE
         keeps working on it) and an exception "ACTIVATE_TIMEOUT: ..." is thrown; the
         diagnostics are left in $script:TcLastActivateDiagnostics:
@@ -56,6 +59,8 @@ function Invoke-TcActivateWithDeadline {
 
     $script:TcLastActivateDiagnostics = $null
     $script:TcLastModalDialog = $null
+    $script:TcActivateDialogsSeen = [System.Collections.Generic.List[object]]::new()
+    $prevScanSaw = $false   # #231: the last complete scan saw a dialog (same dialog again = one entry)
     $idePid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
 
@@ -103,7 +108,12 @@ $sm.ActivateConfiguration()
                     # scan made a 3 s deadline return after 29 s on CI)
                     $dlg = Find-TcIdeModalDialogWithin -BudgetSec ($TimeoutSec - $sw.Elapsed.TotalSeconds)
                     # an incomplete scan (#42) is no dialog record: never stored as "seen"
-                    if ($null -ne $dlg -and -not (Test-TcModalScanIncomplete $dlg)) { $script:TcLastModalDialog = $dlg }
+                    if ($null -ne $dlg -and -not (Test-TcModalScanIncomplete $dlg)) {
+                        $script:TcLastModalDialog = $dlg
+                        Add-TcActivateDialogSeen -Dialog $dlg -Continued $prevScanSaw
+                        $prevScanSaw = $true
+                    }
+                    elseif ($null -eq $dlg) { $prevScanSaw = $false }
                 } catch { }
             }
         }
@@ -149,6 +159,7 @@ $sm.ActivateConfiguration()
             $dlg = Find-TcIdeModalDialogWithin -BudgetSec (& $diagLeft) -ProcessId $idePid
             # #42: an incomplete scan is reported (dialogScanComplete false), not read as "no dialog"
             if (Test-TcModalScanIncomplete $dlg) { $diag['dialogScanComplete'] = $false; $diag['modalScan'] = ConvertTo-TcModalScanInfo -Scan $dlg; $dlg = $null }
+            elseif ($null -ne $dlg) { Add-TcActivateDialogSeen -Dialog $dlg -Continued $prevScanSaw }
         } catch { $diag['dialogScanComplete'] = $false; $dlg = $null }
         # same as Save-TcPlcProject: no dialog now (or unknown) -> the one seen during the wait still counts
         if ($null -eq $dlg -and $null -ne $script:TcLastModalDialog) { $dlg = $script:TcLastModalDialog; $diag.dialogSeenDuringWait = $true }
@@ -204,4 +215,64 @@ $sm.ActivateConfiguration()
             try { $null = $ps.BeginStop($null, $null) } catch { }
         }
     }
+}
+
+function Add-TcActivateDialogSeen {
+    <#
+    .SYNOPSIS
+        #231: records a dialog the Activate watchdog saw in $script:TcActivateDialogsSeen.
+    .DESCRIPTION
+        One entry per dialog: [PSCustomObject]@{ title; text; buttons (button names, @() when the
+        scan has none); firstSeen; lastSeen (ISO 8601 with offset); durationSec (lastSeen -
+        firstSeen, 0 after one scan); scans }. -Continued: the previous complete scan saw a dialog
+        too; when it is the same one (title + text) the last entry is updated instead of a new one
+        added. A scan that found nothing in between starts a new entry. The scans run every ~2 s,
+        so durationSec is a lower bound (the dialog may have been up for up to one interval more).
+    #>
+    param([Parameter(Mandatory)][object]$Dialog, [bool]$Continued)
+    if ($null -eq $script:TcActivateDialogsSeen) { $script:TcActivateDialogsSeen = [System.Collections.Generic.List[object]]::new() }
+    $title = [string]$Dialog.Title
+    $text = [string]$Dialog.Text
+    $now = [DateTimeOffset]::Now
+    $list = $script:TcActivateDialogsSeen
+    $last = if ($list.Count -gt 0) { $list[$list.Count - 1] } else { $null }
+    if ($Continued -and $null -ne $last -and $last.title -ceq $title -and $last.text -ceq $text) {
+        $first = [DateTimeOffset]::Parse($last.firstSeen, [Globalization.CultureInfo]::InvariantCulture)
+        $last.lastSeen = $now.ToString('o')
+        $last.durationSec = [Math]::Round(($now - $first).TotalSeconds, 1)
+        $last.scans = $last.scans + 1
+        return
+    }
+    $names = @(@($Dialog.Buttons) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $list.Add([PSCustomObject]@{
+        title       = $title
+        text        = $text
+        buttons     = $names
+        firstSeen   = $now.ToString('o')
+        lastSeen    = $now.ToString('o')
+        durationSec = 0.0
+        scans       = 1
+    })
+}
+
+function Get-TcActivateDialogsSeen {
+    <#
+    .SYNOPSIS
+        #231: the dialogs of the last Invoke-TcActivateWithDeadline call as an array (never $null;
+        wrap the call in @() - an empty or one-element array is unrolled by the pipeline).
+    #>
+    if ($null -eq $script:TcActivateDialogsSeen) { return @() }
+    $script:TcActivateDialogsSeen.ToArray()
+}
+
+function Get-TcActivateDialogSummary {
+    <#
+    .SYNOPSIS
+        #231: "dialogs seen during Activate: N ('<title>' <durationSec> s, ...)" or $null without dialogs.
+    #>
+    param([object[]]$Dialogs)
+    $all = @($Dialogs | Where-Object { $null -ne $_ })
+    if ($all.Count -eq 0) { return $null }
+    $parts = @($all | ForEach-Object { "'{0}' {1} s" -f $_.title, ([double]$_.durationSec).ToString([Globalization.CultureInfo]::InvariantCulture) })
+    "dialogs seen during Activate: $($all.Count) ($($parts -join ', '))"
 }

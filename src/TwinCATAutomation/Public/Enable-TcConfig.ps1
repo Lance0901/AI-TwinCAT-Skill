@@ -195,7 +195,12 @@ function Enable-TcConfig {
         reachedState, lifecycleBlock (only when a block was recorded), plcState (last AdsState seen
         on the first PLC port, 851 in a one-PLC solution), plcs[] (@{ name; projectPath;
         adsPort; loggedIn; state }), bootPackage, finalCheck (@{ systemState; plcs;
-        dialog; ok }), diagnostics (only on a failure after Activate), amsNetId,
+        dialog; ok }), diagnostics (only on a failure after Activate), dialogsSeen (#231: modal
+        dialogs the watchdog saw while ActivateConfiguration() ran, also on success: @{ title; text;
+        buttons (names); firstSeen; lastSeen (ISO 8601); durationSec (lastSeen - firstSeen, scans
+        every ~2 s); scans }, one entry per dialog seen in consecutive scans, @() when none or
+        Activate was not reached; the activate step detail then ends with "; dialogs seen during
+        Activate: N ('<title>' <durationSec> s, ...)"; nothing is clicked), amsNetId,
         ideMemoryMB, solutionPlatform (active solution platform
         at Activate time, after an automatic fix; $null when unreadable), projectPlatform
         (project platform of the ACTIVE .tsproj; $null without .tsproj), platformMap,
@@ -330,6 +335,7 @@ function Enable-TcConfig {
     $bootPackage = $null
     $finalCheck = $null
     $diagnostics = $null
+    $dialogsSeen = @()            # #231: dialogs the Activate watchdog saw (Get-TcActivateDialogsSeen)
     # #68 postcondition facts (kept on failure, where activated / restarted / ... are always $false)
     $runtimeChangeSent = $false   # set-config (-Force) or ActivateConfiguration() was sent
     $activateSent = $false
@@ -349,6 +355,12 @@ function Enable-TcConfig {
             elapsedMs = [int]$Watch.ElapsedMilliseconds
             detail    = $Detail
         })
+    }
+
+    # #231: detail of a successful activate step, with the dialogs the watchdog saw
+    function Get-TcActivateDoneDetail {
+        $sum = Get-TcActivateDialogSummary -Dialogs $dialogsSeen
+        if ($null -eq $sum) { 'ActivateConfiguration() done' } else { "ActivateConfiguration() done; $sum" }
     }
 
     # -Failed (#68): every "done" field is $false on a failure result; the facts stay in
@@ -391,6 +403,7 @@ function Enable-TcConfig {
             bootPackage = $bootPackage
             finalCheck  = $finalCheck
             diagnostics = $diagnostics
+            dialogsSeen = @($dialogsSeen)
             steps       = @($steps.ToArray())
         }
     }
@@ -868,8 +881,10 @@ function Enable-TcConfig {
         $activateSent = $true
         try {
             Invoke-TcActivateWithDeadline -TimeoutSec $ActivateTimeoutSec -AmsNetId $netId
+            $dialogsSeen = @(Get-TcActivateDialogsSeen)
         }
         catch {
+            $dialogsSeen = @(Get-TcActivateDialogsSeen)
             Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
             $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
             $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
@@ -886,7 +901,7 @@ function Enable-TcConfig {
             return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
         }
         $activated = $true
-        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
+        Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail (Get-TcActivateDoneDetail)
         $fail = Test-TcBootPackage -TargetNetId $netId
         if ($null -ne $fail) { return $fail }
 
@@ -986,8 +1001,10 @@ function Enable-TcConfig {
     $activateSent = $true
     try {
         Invoke-TcActivateWithDeadline -TimeoutSec ([Math]::Min($ActivateTimeoutSec, (Get-TcRemainingSec))) -AmsNetId $netId
+        $dialogsSeen = @(Get-TcActivateDialogsSeen)
     }
     catch {
+        $dialogsSeen = @(Get-TcActivateDialogsSeen)
         Add-TcStepRecord -Name 'activate' -Ok $false -Watch $sw -Detail $_.Exception.Message
         $mapped = ConvertTo-TcAdsErrorCode -InputObject $_
         $code = if ($_.Exception.Message -match 'IDE_CRASHED') { 'IDE_CRASHED' } elseif ($_.Exception.Message -match '^ACTIVATE_TIMEOUT') { 'ACTIVATE_TIMEOUT' } elseif ($null -ne $mapped) { $mapped.Code } else { 'ACTIVATION_FAILED' }
@@ -1005,7 +1022,7 @@ function Enable-TcConfig {
         return New-TcStepFailure -Message $checkFail.Message -Code 'ACTIVATE_FAILED' -Hint $checkFail.Hint
     }
     $activated = $true
-    Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail 'ActivateConfiguration() done'
+    Add-TcStepRecord -Name 'activate' -Ok $true -Watch $sw -Detail (Get-TcActivateDoneDetail)
 
     # 2b. boot-package
     $fail = Test-TcBootPackage -TargetNetId $netId
