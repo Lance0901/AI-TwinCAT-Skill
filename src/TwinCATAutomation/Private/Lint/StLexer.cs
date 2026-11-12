@@ -131,12 +131,18 @@ namespace TcLintEngine
                     while (j < n)
                     {
                         char d = s[j];
-                        if (inQ) { if (d == q) inQ = false; }
+                        if (inQ) { if (d == '$') { j += 2; continue; } if (d == q) inQ = false; }
                         else if (d == '\'' || d == '"') { inQ = true; q = d; }
                         else if (d == '}') break;
                         j++;
                     }
-                    if (j >= n) { r.Error = Issue("unterminated pragma", sl, sc); return r; }
+                    if (j >= n)
+                    {
+                        // quote handling inside pragmas is not documented ($ escape?): not certainly illegal -> not analysed
+                        r.Unverified.Add(Issue("unsupported-syntax:unterminated-pragma", sl, sc));
+                        while (i < n) Advance(s, ref i, ref line, ref col);
+                        break;
+                    }
                     string text = s.Substring(i, j - i + 1);
                     while (i <= j) Advance(s, ref i, ref line, ref col);
                     Token pt = new Token(); pt.Kind = TokKind.Pragma; pt.Text = text; pt.Line = pl; pt.Col = pc;

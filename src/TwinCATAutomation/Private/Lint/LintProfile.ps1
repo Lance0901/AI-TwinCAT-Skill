@@ -10,13 +10,15 @@ $script:TcLintMinReasonLength = 8
 function Get-TcLintSearchDirs {
     <#
     .SYNOPSIS
-        Directories from the .plcproj directory upwards, ending with the first one that holds a .sln or .git (or the drive root). Last element = the solution root used for path containment.
+        Directories from the .plcproj directory upwards, ending with the first one that holds a .sln or .git (the drive root itself is never searched). Last element = the solution root used for path containment.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$StartDir)
     $dirs = [System.Collections.Generic.List[string]]::new()
     $d = $StartDir
     while (-not [string]::IsNullOrEmpty($d)) {
+        # never search the drive root: any user may create C:\.tcauto there (review nit 13)
+        if ($dirs.Count -gt 0 -and [string]::IsNullOrEmpty([System.IO.Path]::GetDirectoryName($d))) { break }
         $dirs.Add($d)
         $hasSln = @(Get-ChildItem -LiteralPath $d -Filter '*.sln' -File -ErrorAction SilentlyContinue).Count -gt 0
         $hasGit = Test-Path -LiteralPath (Join-Path $d '.git')
@@ -199,6 +201,7 @@ function Resolve-TcLintProfile {
                 if (-not (Test-TcLintReason $e.reason)) { return (& $fail "$where.reason is required (at least $($script:TcLintMinReasonLength) characters)") }
                 if ($l.needRule) {
                     if ($e.ruleId -isnot [string] -or $null -eq $RuleRegistry::Get($e.ruleId)) { return (& $fail "$where.ruleId '$($e.ruleId)' is not a known rule id") }
+                    if ($l.key -eq 'suppressions' -and $e.ruleId -like 'LINT-PARSE-*') { return (& $fail "${where}: parse failures cannot be suppressed; exclude the object with a reason instead") }
                 }
                 $items.Add(@{ objectPath = $e.objectPath; ruleId = $e.ruleId; reason = $e.reason })
                 $ov = [ordered]@{ kind = $(switch ($l.key) { 'exclude' { 'exclude' } 'suppressions' { 'suppression' } default { 'acceptSkip' } }); objectPath = $e.objectPath }

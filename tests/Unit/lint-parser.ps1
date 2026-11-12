@@ -43,7 +43,8 @@ TokCheck 'conditional pragma is flagged' "{IF defined (A)}x;{END_IF}" @('Pragma:
 TokCheck 'unterminated string' "s := 'abc" @('Ident:s', 'Op::=', 'ERROR:unterminated string literal')
 TokCheck 'line break in a string' "s := 'ab`ncd';" @('Ident:s', 'Op::=', 'ERROR:line break inside a string literal')
 TokCheck 'unterminated (* comment' "x; (* open" @('Ident:x', 'Op:;', 'ERROR:unterminated (* comment')
-TokCheck 'unterminated pragma' "{attribute 'x'" @('ERROR:unterminated pragma')
+TokCheck 'unterminated pragma is unverified, not an error (quoting in pragmas undocumented)' "{attribute 'x'" @('UNVERIFIED:unsupported-syntax:unterminated-pragma')
+TokCheck "pragma with `$' in quotes" "{warning 'don`$'t'} x;" @("Pragma:{warning 'don`$'t'}", 'Ident:x', 'Op:;')
 TokCheck '/* */ is unverified (PLC manual does not list it)' "x /* c */ := 1;" @('Ident:x', 'Op::=', 'Number:1', 'Op:;', 'UNVERIFIED:unverified-syntax:slash-star-comment')
 
 # ---------------------------------------------------------------- 1.3 operators

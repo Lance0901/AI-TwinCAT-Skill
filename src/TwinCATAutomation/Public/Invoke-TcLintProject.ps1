@@ -110,7 +110,7 @@ function Invoke-TcLintProject {
         $cands = $list
         if (-not [string]::IsNullOrWhiteSpace($PlcProjectPath)) {
             if ($PlcProjectPath -match '\.plcproj$') {
-                $want = [System.IO.Path]::GetFullPath($PlcProjectPath)
+                $want = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($PlcProjectPath)
                 $cands = @($list | Where-Object { $_.plcProjectPath -and [string]::Equals($_.plcProjectPath, $want, [System.StringComparison]::OrdinalIgnoreCase) })
             }
             else { $cands = @($list | Where-Object { [string]::Equals([string]$_.name, $PlcProjectPath, [System.StringComparison]::OrdinalIgnoreCase) }) }

@@ -122,6 +122,9 @@ Test-Case 'COMPILE-005 directory without Folder item (info)' { param($f)
     New-Item -ItemType Directory -Path (Join-Path $f.PlcDir 'Extra') | Out-Null; Move-Item $f.Gvl (Join-Path $f.PlcDir 'Extra\GVL_Main.TcGVL')
     Set-LintFxCompile $f @('DUTs\E_Mode.TcDUT', 'Extra\GVL_Main.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'POUs\MAIN.TcPOU') } @('PROJECT-COMPILE-005') ''
 Test-Case 'COMPILE-006 case differs from disk' { param($f) Set-LintFxCompile $f @('DUTs\E_Mode.TcDUT', 'GVLs\GVL_Main.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'pous\Main.TcPOU') } @('PROJECT-COMPILE-006') 'LINT_FAILED' { param($r) & $pending $r 'PROJECT-COMPILE-006' }
+Test-Case 'COMPILE-006 only a directory differs in case (warning)' { param($f) Set-LintFxCompile $f @('DUTs\E_Mode.TcDUT', 'GVLs\GVL_Main.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'pous\MAIN.TcPOU') } @('PROJECT-COMPILE-006') '' {
+    param($r) $d = @(Diag $r 'PROJECT-COMPILE-006'); Check 'COMPILE-006 directory-case: warning, not blocking' ($d[0].variant -eq 'directory-case' -and -not $d[0].blocking) ($d | ConvertTo-Json -Compress)
+}
 Test-Case 'COMPILE-006 % not escaped' { param($f)
     Move-Item $f.Gvl (Join-Path $f.PlcDir 'GVLs\GVL_Main%41.TcGVL')
     Set-LintFxCompile $f @('DUTs\E_Mode.TcDUT', 'GVLs\GVL_Main%41.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'POUs\MAIN.TcPOU') } @('PROJECT-COMPILE-006', 'PROJECT-NAME-002')
@@ -136,6 +139,13 @@ Test-Case 'TSPROJ-002 upper / lower case GUID is the same (no finding)' { param(
 Test-Case 'TSPROJ-003 PouCall names no POU' { param($f) Write-LintFxFile $f.Task (Get-LintFxTaskText -PouCall 'MAIN_X') } @('PROJECT-TSPROJ-003') 'LINT_FAILED' { param($r) & $pending $r 'PROJECT-TSPROJ-003' }
 Test-Case 'TSPROJ-003 PouCall names a FUNCTION_BLOCK' { param($f) Write-LintFxFile $f.Task (Get-LintFxTaskText -PouCall 'FB_A') } @('PROJECT-TSPROJ-003')
 Test-Case 'TSPROJ-003 task context missing' { param($f) Write-LintFxFile $f.Tsproj (Get-LintFxTsprojText -ContextName 'OtherTask') $false } @('PROJECT-TSPROJ-003')
+Test-Case 'XML-004 task without PouCall is a warning only' { param($f) Edit-LintFxFile $f.Task { param($t) $t -replace '(?s)    <PouCall>.*?</PouCall>\r\n', '' } } @('PROJECT-XML-004') '' {
+    param($r) $d = @(Diag $r 'PROJECT-XML-004'); Check 'missing PouCall: warning, not blocking' ($d[0].variant -eq 'missing-pou-call' -and -not $d[0].blocking) ($d | ConvertTo-Json -Compress)
+}
+Test-Case 'GVL starting with VAR_CONFIG is not a KIND finding' { param($f) Edit-LintFxFile $f.Gvl { param($t) $t.Replace('{attribute ''qualified_only''}' + "`r`n" + 'VAR_GLOBAL', "VAR_CONFIG`r`n    MAIN.fbA.bStart AT %IX0.0 : BOOL;`r`nEND_VAR`r`nVAR_GLOBAL") } } @() ''
+Test-Case 'PLC as independent project file (.xti): TSPROJ rules skipped -> incomplete, not a finding' { param($f) Edit-LintFxFile $f.Tsproj { param($t) $t.Replace('PrjFilePath="PLC1\PLC1.plcproj"', 'File="PLC1.xti"') } } @() 'LINT_INCOMPLETE' {
+    param($r) Check 'independent file -> blockingRulesSkipped TSPROJ-001..003' (@($r.data.coverage.blockingRulesSkipped | Where-Object { $_.reason -eq 'independent-project-file-not-observed' }).Count -eq 3) ($r.data.coverage | ConvertTo-Json -Compress -Depth 4)
+}
 Test-Case 'TSPROJ-003 priority differs (warning)' { param($f) Write-LintFxFile $f.Task (Get-LintFxTaskText -Priority '21') } @('PROJECT-TSPROJ-003') '' {
     param($r) $d = @(Diag $r 'PROJECT-TSPROJ-003'); Check 'TSPROJ-003 priority: warning, not blocking' ($d[0].variant -eq 'priority-mismatch' -and -not $d[0].blocking) ($d | ConvertTo-Json -Compress)
 }

@@ -168,6 +168,7 @@ namespace TcLintEngine
         private string plcRel;
         private bool parseFailed;
         private bool incompleteByRead;
+        private bool projectLoaded;      // the .plcproj was read as an MSBuild project (else nothing was analysed)
         private string slnFull;
         private readonly List<string> tsprojFull = new List<string>();
         private int objectsInScope;
@@ -286,9 +287,11 @@ namespace TcLintEngine
             if (px.Root.Name != "Project")
             {
                 E("PROJECT-XML-004", plcRel, "", "file", px.Root.Line, "The .plcproj root element is <" + px.Root.Name + ">, expected the MSBuild <Project>", null, null);
+                notAnalyzed.Add(Cov(null, plcRel, "", "file", "not-an-msbuild-project"));
                 return Finish();
             }
 
+            projectLoaded = true;
             List<XElem> compile = new List<XElem>(), folders = new List<XElem>(), placeholders = new List<XElem>(), resolutions = new List<XElem>(), libs = new List<XElem>();
             string projectGuid = null;
             foreach (XElem g in px.Root.Children)
@@ -412,7 +415,10 @@ namespace TcLintEngine
                 if (disk != null && !string.Equals(disk, unesc.Replace('/', '\\').TrimStart('.', '\\'), StringComparison.Ordinal)
                     && !string.Equals(disk, unesc.Replace('/', '\\'), StringComparison.Ordinal))
                 {
-                    Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include differs in case from the file on disk ('" + disk + "')", inc, null, "case", null, null, false);
+                    bool fileNameDiffers = !string.Equals(Path.GetFileName(disk), Path.GetFileName(unesc.Replace('/', '\\')), StringComparison.Ordinal);
+                    // only the directory part differs (common after a case-only git rename; Windows paths are not case-sensitive): warning until measured
+                    if (fileNameDiffers) Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include differs in case from the file on disk ('" + disk + "')", inc, null, "case", null, null, false);
+                    else Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include differs in directory case from the disk ('" + disk + "')", inc, null, "directory-case", "warning", "false", false);
                 }
                 // Folder items for the directories used
                 string dirPart = Path.GetDirectoryName(unesc.Replace('/', '\\'));
@@ -562,7 +568,7 @@ namespace TcLintEngine
             if (!o.Xml.WellFormed)
             {
                 engineDetail.Add(rel + ": " + o.Xml.ErrorDetail);
-                Emit("PROJECT-XML-001", rel, o.ObjectPath, "file", o.Xml.ErrorLine, o.Xml.ErrorCol, "File is not well-formed XML; XAE cannot load the object",
+                Emit("PROJECT-XML-001", rel, o.ObjectPath, "file", o.Xml.ErrorLine, o.Xml.ErrorCol, "File is not well-formed XML (what XAE does with it is not measured yet, tasks 1a.7)",
                     null, "Fix the XML (usually a broken CDATA section or an unescaped '<' / '&' outside CDATA), or restore the file", null, null, null, false);
                 notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "xml-not-well-formed"));
                 return;
@@ -592,7 +598,7 @@ namespace TcLintEngine
             string expected;
             if (KindByExt.TryGetValue(o.Ext, out expected) && obj.Name != expected)
                 E("PROJECT-KIND-001", rel, o.ObjectPath, "file", obj.Line, "Object element <" + obj.Name + "> does not match the file extension " + o.Ext + " (expected <" + expected + ">)", null,
-                    "Rename the file or fix the element; XAE expects one object kind per extension");
+                    "Rename the file or fix the element (XAE wrote one object kind per extension in every observed file)");
             string name = obj.Attr("Name");
             if (string.IsNullOrEmpty(name)) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no Name attribute", null, null, "attribute", null, null, o.Downgrade);
             else
@@ -623,7 +629,7 @@ namespace TcLintEngine
             if (fi.BareCr > 0) facts.Add(Inv.S(fi.BareCr) + " CR-only line ends");
             if (facts.Count == 0) return;
             E("PROJECT-ENC-001", o.Rel, o.ObjectPath, "file", 1, "File was written outside XAE (" + string.Join("; ", facts.ToArray()) + "); XAE writes UTF-8 with BOM and CRLF", null,
-                "Run Reset-TcSolution so XAE reloads the file; XAE rewrites it in its own format when the object is saved");
+                "Run Reset-TcSolution so XAE reloads the file (whether XAE rewrites the format on save is not measured)");
         }
 
         private void AddId(XElem e, TcObjectFile o, string objectPath, bool required)
@@ -818,7 +824,7 @@ namespace TcLintEngine
             DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
             if (di == null) return;
             if (header == "TYPE") CheckHeader(o, o.ObjectPath, di, new string[] { "TYPE" }, true);
-            else CheckHeader(o, o.ObjectPath, di, new string[] { "VAR_GLOBAL" }, false);
+            else CheckHeader(o, o.ObjectPath, di, new string[] { "VAR_GLOBAL", "VAR_CONFIG" }, false);
         }
 
         private void CheckItf(TcObjectFile o, XElem itf)
@@ -846,10 +852,12 @@ namespace TcLintEngine
         private void CheckTask(TcObjectFile o, XElem task)
         {
             string[] order = { "CycleTime", "Priority", "PouCall", "TaskFBGuid", "Fb_init", "Fb_exit", "CycleUpdate", "PostCycleUpdate", "ObjectProperties" };
-            string[] required = { "CycleTime", "Priority", "PouCall", "TaskFBGuid", "Fb_init", "Fb_exit", "CycleUpdate", "PostCycleUpdate" };
+            string[] required = { "CycleTime", "Priority", "TaskFBGuid", "Fb_init", "Fb_exit", "CycleUpdate", "PostCycleUpdate" };
             o.TaskLine = task.Line;
             foreach (string r in required)
                 if (task.Child(r) == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", task.Line, 1, "<Task> has no <" + r + ">", null, null, "missing-element", null, null, o.Downgrade);
+            // a task without a program (no PouCall) was not observed (2 samples, both with one): warning only
+            if (task.Child("PouCall") == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", task.Line, 1, "<Task> has no <PouCall> (both observed tasks had one)", null, null, "missing-pou-call", "warning", "false", false);
             int last = -1;
             foreach (XElem c in task.Children)
             {
@@ -989,7 +997,7 @@ namespace TcLintEngine
                 int lines = StAnalyzer.CountLines(text);
                 if (sum != lines)
                     E("PROJECT-LINEIDS-001", o.Rel, name, "file", li.Line, "<LineIds> of '" + name + "' cover " + sum.ToString(CultureInfo.InvariantCulture) + " lines, the implementation has " + Inv.S(lines) + " (code changed outside XAE?)", null,
-                        "Run Reset-TcSolution; XAE rewrites LineIds when the object is saved (not measured whether it rebuilds them)");
+                        "Run Reset-TcSolution and save the object in XAE (whether XAE rebuilds LineIds is not measured, tasks 1a.7)");
             }
             List<string> sections = new List<string>(stTexts.Keys);
             sections.Sort(StringComparer.OrdinalIgnoreCase);
@@ -1053,7 +1061,7 @@ namespace TcLintEngine
             int run = 1;
             for (int i = 1; i < hex.Length; i++)
             {
-                if (HexVal(hex[i]) == HexVal(hex[i - 1]) + 1) { run++; if (run >= 5) return "ascending digit run"; }
+                if (HexVal(hex[i]) == HexVal(hex[i - 1]) + 1) { run++; if (run >= 6) return "ascending digit run"; }
                 else run = 1;
             }
             run = 1;
@@ -1151,6 +1159,7 @@ namespace TcLintEngine
                 return;
             }
             PlcRef mine = null;
+            bool independentSeen = false;
             string slnText = null;
             if (slnFull != null) { try { slnText = File.ReadAllText(slnFull); } catch (Exception) { slnText = null; } }
             foreach (string ts in tsprojFull)
@@ -1173,7 +1182,7 @@ namespace TcLintEngine
                 }
                 foreach (PlcRef r in LintEngine.PlcRefsFrom(x.Root, ts))
                 {
-                    if (r.IndependentFile) { rulesNotRun.Add(Cov("PROJECT-TSPROJ-001", tsRel, r.Name ?? "", null, "schema-not-observed:independent-file")); continue; }
+                    if (r.IndependentFile) { independentSeen = true; rulesNotRun.Add(Cov("PROJECT-TSPROJ-001", tsRel, r.Name ?? "", null, "schema-not-observed:independent-file")); continue; }
                     if (r.PrjFilePath == null || r.PlcprojFull == null)
                     {
                         E("PROJECT-TSPROJ-001", tsRel, "", "file", r.Element.Line, "PLC project '" + (r.Name ?? "?") + "' has no PrjFilePath", null, null);
@@ -1207,7 +1216,14 @@ namespace TcLintEngine
                 }
                 if (mine != null && string.Equals(mine.TsprojFull, ts, StringComparison.OrdinalIgnoreCase)) CheckTasks(mine, tsRel);
             }
-            if (mine == null)
+            if (mine == null && independentSeen)
+            {
+                // a PLC stored as independent project file (.xti): its PrjFilePath is not in the .tsproj, structure not observed
+                SkipBlocking("PROJECT-TSPROJ-001", plcRel, "", "independent-project-file-not-observed");
+                SkipBlocking("PROJECT-TSPROJ-002", plcRel, "", "independent-project-file-not-observed");
+                SkipBlocking("PROJECT-TSPROJ-003", plcRel, "", "independent-project-file-not-observed");
+            }
+            else if (mine == null)
             {
                 E("PROJECT-TSPROJ-001", plcRel, "", "file", 1, "No .tsproj " + (slnFull != null ? "of the solution " : "next to the project ") + "references this .plcproj", null,
                     "Check PrjFilePath of Plc/Project in the .tsproj");
@@ -1360,7 +1376,10 @@ namespace TcLintEngine
             }
             string verdict, code;
             if (parseFailed || parseDiag) { verdict = "fail"; code = "LINT_PARSE_FAILED"; }
-            else if (stillBlocking.Count > 0 || incompleteByRead) { verdict = "incomplete"; code = "LINT_INCOMPLETE"; }
+            // nothing (or not every object in scope) analysed and no blocking finding explains it: never pass
+            // (a profile that disables the one rule that reported the broken file must not turn it into a pass)
+            else if (stillBlocking.Count > 0 || incompleteByRead || (blocking == 0 && (!projectLoaded || objectsInScope == 0 || objectsAnalyzed < objectsInScope)))
+            { verdict = "incomplete"; code = "LINT_INCOMPLETE"; }
             else if (blocking > 0) { verdict = "fail"; code = "LINT_FAILED"; }
             else { verdict = "pass"; code = null; }
 

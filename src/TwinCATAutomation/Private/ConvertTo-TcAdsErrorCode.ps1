@@ -346,7 +346,7 @@ $script:TcErrorHints['LINT_ENGINE_ERROR'] = 'lint 引擎內部錯誤(data.engine
 $script:TcErrorHints['LINT_ENGINE_UNAVAILABLE'] = '這台機器的 PowerShell 不能編譯 lint 引擎(data.languageMode 不是 FullLanguage = AppLocker / WDAC 啟用了 Constrained Language Mode,或 Add-Type / csc.exe 被防毒或政策擋住，data.engineDetail)。這是環境問題，不是程式問題:請 IT 讓 TcAuto 的 PowerShell 以 FullLanguage 執行、允許 csc.exe(TcAdsHelper 也需要 Add-Type)。在那之前 lint 無法使用，Build-TcProject 仍是最終把關'
 $script:TcErrorHints['LINT_SOURCE_STALE'] = 'XAE 裡有還沒存到磁碟的內容(data.unsaved),lint 讀的是磁碟，結果不代表 XAE 裡的版本。先在 XAE 存檔(或 Reset-TcSolution -SaveProjectChanges)再重跑 lint。(XAE 與磁碟的比對在 Phase 2 才提供，這個版本不會回這個 code)'
 $script:TcErrorHints['LINT_SOURCE_UNVERIFIED'] = '讀不到 XAE 裡目標 PLC 專案的狀態，無法確認磁碟是最新的:用 Get-TcIdeModalDialog 檢查 XAE 是否被 dialog 擋住，處理後重跑 lint。(Phase 2 才提供，這個版本不會回這個 code)'
-$script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] ='有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
+$script:TcErrorHints['NC_AXIS_ALREADY_LINKED'] = '有一端已經 link 到別處(data.existingLinks):先用 Remove-TcVariableLink 解掉舊的 link,再重跑 Connect-TcNcAxisToPlc'
 
 function Get-TcErrorHint {
     <#

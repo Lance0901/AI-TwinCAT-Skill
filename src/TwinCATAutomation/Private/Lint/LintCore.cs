@@ -89,11 +89,12 @@ namespace TcLintEngine
                 "most common source: a file copied and renamed without a new Id", "high", null);
             Add("PROJECT-GUID-004", "Id is the all-zero GUID", "error", "pending", "project-integrity", "unknown", "", "high", null);
             Add("PROJECT-GUID-005", "Id looks hand-written (ascending / repeated digit patterns)", "warning", "false", "project-integrity", "no",
-                "heuristic: an ascending run of 5 hex digits, a digit repeated 6 times, or a 4-digit group of one digit; a random GUID matches with about 0.1 % probability", "medium", null);
+                "heuristic: an ascending run of 6 hex digits, a digit repeated 6 times, or group 2 / 4 (or the version group when it does not start with 4) of one digit; a random GUID matches with about 0.05 % probability, i.e. about 10 % of projects with 200 Ids show one such warning", "medium", null);
             Add("PROJECT-SUB-001", "Sub-object structure incomplete (Method without Declaration / Implementation, Action without Implementation)", "error", "pending", "project-integrity", "unknown",
                 "Property / Transition structure not observed: schema-not-observed", "high", null);
             Add("PROJECT-SUB-002", "Two sub-objects (Method / Action / Property) of one POU have the same name", "error", "pending", "project-integrity", "unknown",
                 "compiler probably rejects it (not measured); compared case-insensitively", "high", null);
+            RuleRegistry.Get("PROJECT-SUB-002").Te1200 = "SA0027 (Light, duplicate names)";
             Add("PROJECT-LINEIDS-001", "LineIds do not match the implementation (name, count of lines)", "info", "false", "none", "no",
                 "4026 files without LineIds are normal; only present LineIds are checked; whether XAE rebuilds them is not measured", "high", null);
             Add("PROJECT-COMPILE-001", "Compile item points to a file that does not exist", "error", "pending", "project-integrity", "unknown",
@@ -107,7 +108,7 @@ namespace TcLintEngine
             Add("PROJECT-COMPILE-005", "Directory used by Compile items has no Folder item", "info", "false", "none", "no",
                 "Folder items without a directory on disk are normal (XAE keeps empty folders only in the project file)", "high", null);
             Add("PROJECT-COMPILE-006", "Compile Include differs from the disk in case, or its MSBuild escaping is wrong", "error", "pending", "project-integrity", "unknown",
-                "how XAE writes names with blanks / ' / % is not measured (tasks 1a.7)", "high", null);
+                "how XAE writes names with blanks / ' / % is not measured (tasks 1a.7); variant directory-case (only a directory differs in case) is a warning", "high", null);
             Add("PROJECT-LIB-001", "Library reference item lacks a required part", "error", "pending", "project-integrity", "unknown",
                 "PlaceholderReference needs Include + DefaultResolution, PlaceholderResolution needs Include + Resolution, LibraryReference needs Include (corpus observation)", "high", null);
             Add("PROJECT-TSPROJ-001", ".tsproj reference to the .plcproj is missing or wrong", "error", "pending", "project-integrity", "unknown",
@@ -115,7 +116,7 @@ namespace TcLintEngine
             Add("PROJECT-TSPROJ-002", "PLC project GUID differs between .sln, .tsproj and .plcproj", "error", "pending", "project-integrity", "unknown",
                 "compared case-insensitively (.plcproj writes lower case, .tsproj / .sln upper case)", "high", null);
             Add("PROJECT-TSPROJ-003", "Task (.TcTTO) and .tsproj disagree, or PouCall names no PROGRAM", "error", "pending", "behavior", "unknown",
-                "variant priority-mismatch is a warning; cycle time units are not compared (not sourced)", "high", "inferred");
+                "variant priority-mismatch is a warning; cycle time units are not compared (not sourced); a PLC stored as independent project file (.xti) is not checked (structure not observed)", "high", "inferred");
             Add("PROJECT-ENC-001", "Line endings / BOM differ from what XAE writes (file written outside XAE)", "info", "false", "none", "no",
                 "XAE writes Tc* object files as UTF-8 with BOM and CRLF; a difference only means the file was written by another tool", "high", null);
             // ---- LINT-* (engine itself)

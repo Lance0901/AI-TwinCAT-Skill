@@ -81,6 +81,7 @@ $bad = @(
     @('weakening without reason', '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-GUID-003":{"blocking":false}}}'),
     @('baseline outside the solution', '{"schema":"tcauto-lint-profile/1","baseline":"..\\..\\Windows\\x.json"}'),
     @('extends unknown profile', '{"schema":"tcauto-lint-profile/1","extends":"robust-solution"}'),
+    @('LINT-PARSE cannot be suppressed', '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath":"MAIN","ruleId":"LINT-PARSE-002","reason":"parser does not know this"}]}'),
     @('regex-like params', '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-GUID-005":{"params":{"pattern":".*"}}}}'))
 foreach ($b in $bad) {
     $fx = New-Fx; Break-Compile $fx
@@ -91,6 +92,24 @@ foreach ($b in $bad) {
 $fx = New-Fx
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj -RuleProfile (Join-Path $fx.Root 'nope.json')
 Check 'A5 -RuleProfile file missing -> LINT_PROFILE_INVALID' ($r.error.code -eq 'LINT_PROFILE_INVALID' -and -not (HasPassed $r)) $r.error.message
+
+# review must-fix 1 / 2: disabling the one rule that reported a broken file must not give a pass
+$fx = New-Fx
+Write-LintFxFile $fx.Plcproj '<Foo/>' $false
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-004":{"enabled":false,"reason":"trying to hide the broken project"}}}' | Out-Null
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'A10 .plcproj not an MSBuild project + its rule disabled -> LINT_INCOMPLETE, never pass' (-not $r.success -and $r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.passed -eq $false) (Js $r.error)
+$fx = New-Fx
+Edit-LintFxFile $fx.FbA { param($t) $t.Replace('</Method>', '') }
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-001":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'A10 broken object file + XML-001 disabled -> LINT_INCOMPLETE (4 of 5 analysed)' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 4 -and $r.data.coverage.objectsInScope -eq 5) (Js $r.data.coverage)
+$fx = New-Fx
+Set-LintFxCompile $fx @()
+Remove-Item -LiteralPath $fx.Main, $fx.FbA, $fx.Dut, $fx.Gvl, $fx.Task
+Write-LintFxFile $fx.Tsproj ((Get-LintFxTsprojText) -replace '(?s)<Contexts>.*?</Contexts>', '') $false
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'A10 project without any object -> LINT_INCOMPLETE (nothing analysed)' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsInScope -eq 0) (Js $r)
 
 # baseline
 $fx = New-Fx
@@ -134,6 +153,10 @@ $fx = New-Fx
 $r = Invoke-TcLintProject -SolutionPath $fx.Sln
 Check 'A8 -SolutionPath with one PLC -> that PLC' ($r.success -and $r.data.source.plcProjectPath -eq $fx.Plcproj) (Js $r.data.source)
 $r = Invoke-TcLintProject -SolutionPath $fx.Tsproj -PlcProjectPath 'plc1'
+Check 'A8 -SolutionPath .tsproj + PLC name (case-insensitive) ' ($r.success) (Js $r.error)
+Push-Location ([System.IO.Path]::GetDirectoryName($fx.Sln))
+try { $r = Invoke-TcLintProject -SolutionPath 'Sol.sln' -PlcProjectPath 'Sol\PLC1\PLC1.plcproj' } finally { Pop-Location }
+Check 'A8 relative paths resolve against the PowerShell location (not the .NET current directory)' ($r.success -and $r.data.source.plcProjectPath -eq $fx.Plcproj) (Js $r.error)
 Check 'A8 -SolutionPath .tsproj + PLC name (case-insensitive)' ($r.success) (Js $r.error)
 $r = Invoke-TcLintProject -SolutionPath $fx.Sln -PlcProjectPath 'PLC9'
 Check 'A8 unknown PLC name -> PLC_PROJECT_NOT_FOUND with data.plcProjects' ($r.error.code -eq 'PLC_PROJECT_NOT_FOUND' -and @($r.data.plcProjects).Count -eq 1 -and -not (HasPassed $r)) (Js $r.data)
