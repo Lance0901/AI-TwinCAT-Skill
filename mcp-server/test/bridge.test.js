@@ -2,7 +2,9 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PowerShellBridge, errorResult, HINTS, CANCELLED_MESSAGE, stampOrder } from '../lib/bridge.js';
+import { PowerShellBridge, errorResult, HINTS, CANCELLED_MESSAGE, stampOrder, decorateConnectIdeTimeout } from '../lib/bridge.js';
+import fs from 'node:fs';
+import { loadToolCatalog, computeTimeoutMs } from '../lib/tools.js';
 import { MAX_CALL_TIMEOUT_MS } from '../lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -422,5 +424,42 @@ describe('launch-record owner id (#152 N1)', () => {
     bridges.push(bridge);
     await bridge.start();
     assert.deepEqual(owners, ['owner-73-fixed']);
+  });
+});
+
+// #249: ConnectIde budget and its BRIDGE_TIMEOUT hint
+describe('ConnectIde timeout (#249)', () => {
+  test('BRIDGE_TIMEOUT of ConnectIde -> the ConnectIde hint: same call again, never launch an IDE yourself, #235 reuse', () => {
+    const r = errorResult('BRIDGE_TIMEOUT', 'Connect-TcIde did not finish within 360000 ms; PowerShell bridge killed', HINTS.BRIDGE_TIMEOUT);
+    r.data = { lastIde: null, bridgeRestarted: true };
+    const d = decorateConnectIdeTimeout('ConnectIde', r);
+    assert.equal(d.error.code, 'BRIDGE_TIMEOUT');
+    assert.equal(d.error.message, r.error.message);
+    assert.equal(d.error.hint, HINTS.BRIDGE_TIMEOUT_CONNECT_IDE);
+    assert.match(d.error.hint, /do NOT launch an IDE yourself/);
+    assert.match(d.error.hint, /ConnectIde again with the SAME parameters/);
+    assert.match(d.error.hint, /session-launched/);
+    assert.match(d.error.hint, /reusedEmptyOrphan/);
+    assert.deepEqual(d.data, r.data, 'data (lastIde, bridgeRestarted) kept');
+    assert.equal(r.error.hint, HINTS.BRIDGE_TIMEOUT, 'input not mutated');
+  });
+
+  test('other tools, other codes and successes are returned unchanged', () => {
+    const t = errorResult('BRIDGE_TIMEOUT', 'x', HINTS.BRIDGE_TIMEOUT);
+    assert.equal(decorateConnectIdeTimeout('BuildProject', t), t);
+    const died = errorResult('BRIDGE_DIED', 'x', HINTS.BRIDGE_DIED);
+    assert.equal(decorateConnectIdeTimeout('ConnectIde', died), died);
+    const ok = { success: true, data: {} };
+    assert.equal(decorateConnectIdeTimeout('ConnectIde', ok), ok);
+    assert.equal(decorateConnectIdeTimeout('ConnectIde', undefined), undefined);
+  });
+
+  test('tools.json: ConnectIde budget covers the worst case of a cold launch (345 s) and takes no TimeoutSec', () => {
+    const catalog = loadToolCatalog(path.join(__dirname, '..', 'tools.json'));
+    const tool = catalog.get('ConnectIde');
+    assert.ok(tool.timeoutMs >= 345000, `timeoutMs ${tool.timeoutMs}`);
+    assert.equal(tool.timeoutMs, 360000);
+    assert.equal(computeTimeoutMs(tool, { SolutionPath: 'C:/x/Demo.sln' }), 360000);
+    assert.ok(fs.existsSync(path.join(__dirname, '..', 'tools.json')));
   });
 });

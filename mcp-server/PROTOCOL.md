@@ -203,6 +203,11 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   its image name must be `TcXaeShell.exe` or `devenv.exe` (both the 32-bit and the 64-bit TcXaeShell
   are `TcXaeShell.exe`), otherwise `lastIde` is forgotten and the
   generic hint is kept (`TWINCAT_MCP_SKIP_PID_CHECK=1` disables the check for tests with mock pids).
+  #249: the `BRIDGE_TIMEOUT` of a `ConnectIde` call (360 s, the worst case of a cold launch) gets
+  its own hint (`HINTS.BRIDGE_TIMEOUT_CONNECT_IDE`, `decorateConnectIdeTimeout` in `lib/bridge.js`):
+  the IDE may still be starting or already be up; do not launch one yourself, call `ConnectIde`
+  again with the same parameters (it attaches the IDE this server launched, `session-launched`, or
+  reuses the empty IDE an ended session left, #235, `data.reusedEmptyOrphan`).
   When `lastIde` is valid the hint names the pid: `selectedBy == "launched"` → kill it with
   `taskkill /PID N /T /F` then `ConnectIde`, with the warning "Unsaved changes in that IDE will be
   lost; ask the user before killing it."; otherwise → the user opened it, dismiss the dialog then
