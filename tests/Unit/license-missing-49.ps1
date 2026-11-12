@@ -70,7 +70,15 @@ $global:DialogPressed = 0
         if ($null -ne $global:ActivateThrows) { throw $global:ActivateThrows }
     }
     function script:Get-TcPlcProjectList { param($SysManager) @() }
-    function script:Get-TcBootPackageDiff { param($SolutionPath, $Platform, $AmsNetId, $AdsPorts, $Variant) $null }
+    function script:Get-TcBootPackageDiff {
+        param($SolutionPath, $Platform, $AmsNetId, $AdsPorts, $Variant)
+        # $global:BootMismatchFrom = n: the n-th call and later report a mismatch (1st call = boot-package step)
+        $global:BootCalls++
+        if ($global:BootMismatchFrom -gt 0 -and $global:BootCalls -ge $global:BootMismatchFrom) {
+            return [PSCustomObject]@{ status = 'mismatch'; reason = $null; mismatches = @('CurrentConfig.xml'); files = @(); warnings = @(); targetDir = 'T'; localDir = 'L'; targetKind = 'mock' }
+        }
+        $null
+    }
     function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @() }) }
     function script:Set-TcSystemState {
         param([string]$State, [string]$AmsNetId, [int]$TimeoutSec)
@@ -81,10 +89,13 @@ $global:DialogPressed = 0
     $script:TcDte = $null
     $script:TcSolutionPath = 'C:\Demo\License.sln'
 } $net
-function Reset-Case { $global:Dlg = $null; $global:Activated = $false; $global:ActivateThrows = $null; $global:RunResult = 'ok' }
+function Reset-Case { $global:Dlg = $null; $global:Activated = $false; $global:ActivateThrows = $null; $global:RunResult = 'ok'; $global:BootCalls = 0; $global:BootMismatchFrom = 0; $global:ElRows49 = @() }
+$global:ElRows49 = @()
+& $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @($global:ElRows49 | ForEach-Object { [PSCustomObject]@{ description = $_ } }) }) } }
 function Clear-Block { $null = Clear-TcLifecycleBlock -AmsNetId $net -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None }
 function Assert-LicenseResult([string]$Name, $r, [string]$Original) {
     Check "$Name code LICENSE_MISSING, success false" ((-not $r.success) -and $r.error.code -eq 'LICENSE_MISSING') "code=$($r.error.code) msg=$($r.error.message)"
+    Check "$Name message starts with 'LICENSE_MISSING: ' (PR #259 N1)" ([string]$r.error.message).StartsWith('LICENSE_MISSING: ') "$($r.error.message)"
     Check "$Name lifecycle block kept, recorded as LICENSE_MISSING" ($null -ne $r.data.lifecycleBlock -and $r.data.lifecycleBlock.errorCode -eq 'LICENSE_MISSING' -and $r.data.lifecycleBlock.command -eq 'Enable-TcConfig') ($r.data.lifecycleBlock | ConvertTo-Json -Compress)
     Check "$Name hint = stop text + LICENSE_MISSING hint" ($r.error.hint.EndsWith($licHint) -and $r.error.hint -ne $licHint) "$($r.error.hint)"
     Check "$Name data.licenseMissing evidence + originalCode $Original" ($r.data.licenseMissing.originalCode -eq $Original -and (& $mod { param($x) Test-TcLicenseFailureText $x } ([string]$r.data.licenseMissing.evidence))) ($r.data.licenseMissing | ConvertTo-Json -Compress)
@@ -134,7 +145,7 @@ $global:Dlg = $null
 & $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @([PSCustomObject]@{ description = "'TwinCAT System' (10000): AdsError: 1809 (0x711)" }, [PSCustomObject]@{ description = 'PLC log: license check of my own FB failed' }) }) } }
 $r = Enable-TcConfig -Force -WarningAction SilentlyContinue
 Check 'C6 1809 row + unrelated license row: not LICENSE_MISSING' ($r.error.code -ne 'LICENSE_MISSING' -and $null -eq $r.data.PSObject.Properties['licenseMissing']) "code=$($r.error.code) msg=$($r.error.message)"
-& $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @() }) } }
+& $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @($global:ElRows49 | ForEach-Object { [PSCustomObject]@{ description = $_ } }) }) } }
 Clear-Block
 
 # C7: PR review C - IDE_CRASHED keeps its code even when the message carries license text
@@ -142,6 +153,42 @@ Reset-Case
 $global:ActivateThrows = "IDE_CRASHED: the IDE process (pid 1) no longer exists after 'ActivateConfiguration' failed (original error: $licEn)"
 $r = Enable-TcConfig -Force -WarningAction SilentlyContinue
 Check 'C7 IDE_CRASHED with license text keeps IDE_CRASHED, block recorded' ($r.error.code -eq 'IDE_CRASHED' -and $r.data.lifecycleBlock.errorCode -eq 'IDE_CRASHED') "code=$($r.error.code)"
+Clear-Block
+
+# --- PR #259 S1: an Error List row alone (it may be left from an earlier activation) never changes
+# the code; it is only a reference (data.licenseErrorListEvidence + a note after the original hint)
+$staleRow = "11/12/2026 9:00:00 PM | 'TwinCAT System' (10000): >> license not found << checking TwinCAT Licenses!"
+$tsHint = & $mod { Get-TcErrorHint -Code 'SYSTEM_STATE_TIMEOUT' }
+$bootHint = & $mod { Get-TcErrorHint -Code 'BOOT_PACKAGE_MISMATCH' }
+
+# C8: no dialog, stale license row, set-run timeout, Boot mismatch in the diagnostics -> BOOT_PACKAGE_MISMATCH kept
+Reset-Case
+$global:RunResult = 'timeout'
+$global:BootMismatchFrom = 2
+$global:ElRows49 = @($staleRow)
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+Check 'C8 stale license row + Boot mismatch: BOOT_PACKAGE_MISMATCH kept (code, block), no data.licenseMissing' ($r.error.code -eq 'BOOT_PACKAGE_MISMATCH' -and $r.data.lifecycleBlock.errorCode -eq 'BOOT_PACKAGE_MISMATCH' -and $null -eq $r.data.PSObject.Properties['licenseMissing']) "code=$($r.error.code) msg=$($r.error.message)"
+Check 'C8 row kept as reference: data.licenseErrorListEvidence, original hint kept, note after it' ($r.data.licenseErrorListEvidence -match 'license not found' -and (-not [string]::IsNullOrEmpty($bootHint)) -and $r.error.hint.Contains($bootHint) -and $r.error.hint.IndexOf('licenseErrorListEvidence') -gt $r.error.hint.IndexOf($bootHint)) "$($r.error.hint)"
+Clear-Block
+
+# C9: no dialog, stale license row, set-run timeout -> SYSTEM_STATE_TIMEOUT kept with its hint
+Reset-Case
+$global:RunResult = 'timeout'
+$global:ElRows49 = @('Some other row', $staleRow)
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+Check 'C9 stale license row + set-run timeout: SYSTEM_STATE_TIMEOUT kept, its hint kept, row as reference' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.error.hint.Contains($tsHint) -and $r.data.licenseErrorListEvidence -match 'license not found' -and $null -eq $r.data.PSObject.Properties['licenseMissing']) "code=$($r.error.code) hint=$($r.error.hint)"
+Clear-Block
+
+# C10: ADS 1809 dialog + license Error List row in data.diagnostics -> not LICENSE_MISSING
+$origDiag = & $mod { ${function:Get-TcRuntimeFailureDiagnostics} }
+& $mod { param($t1809, $row) $script:TcUnit1809 = $t1809; $script:TcUnitRow = $row
+    function script:Get-TcRuntimeFailureDiagnostics { param($DialogScan, $Deadline, $SolutionPath, $Platform, $AmsNetId, $AdsPorts, $Variant, [switch]$NoIde)
+        [PSCustomObject]@{ dialog = [PSCustomObject]@{ title = 'TwinCAT XAE'; text = $script:TcUnit1809 }; dialogScanComplete = $true; errorList = @($script:TcUnitRow); errorListError = $null; bootPackage = $null } } } $fatal1809 $staleRow
+Reset-Case
+$global:RunResult = 'timeout'
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+Check 'C10 ADS 1809 dialog + license row: not LICENSE_MISSING, code / hint of the failure kept' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['licenseMissing'] -and $r.error.hint.Contains($tsHint) -and $r.data.licenseErrorListEvidence -match 'license not found') "code=$($r.error.code) hint=$($r.error.hint)"
+& $mod { param($f) Set-Item -Path function:script:Get-TcRuntimeFailureDiagnostics -Value $f } $origDiag
 Clear-Block
 
 # C5: license dialog already up BEFORE set-config: nothing sent -> LICENSE_MISSING without a block

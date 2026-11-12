@@ -37,9 +37,11 @@
         same collection as Enable-TcConfig after Activate). Without an IDE connection the dialog
         and the Error List are not read: dialogScanComplete $false, modalScan.reason 'no-ide',
         errorListError 'unavailable: no IDE connection'. The code stays as it is, except #49: a dialog
-        or Error List row with the runtime's license failure ('(10000)' and a license word) turns it
-        into LICENSE_MISSING (data.licenseMissing; the block, already written, keeps the original
-        code; the license hint comes first, a diagnostics hint of its own is kept after it). error.hint
+        that is up with the runtime's license failure ('(10000)' and a license word) turns it into
+        LICENSE_MISSING (data.licenseMissing, error.message starts with 'LICENSE_MISSING: '; the
+        block, already written, keeps the original code; the license hint comes first, a
+        diagnostics hint of its own is kept after it). An Error List row alone (it may be stale)
+        never changes the code: data.licenseErrorListEvidence and a note after the hint. error.hint
         follows the diagnostics (Get-TcStuckInConfigHint): ADS 1809 / 0x711 / "symbol version" in
         the dialog or an Error List row -> ADS_SYMBOL_VERSION_INVALID explanation (Build +
         Enable-TcConfig -Force); another dialog / row -> its text; a license problem only when the
@@ -317,14 +319,19 @@
                     $rd | Add-Member -NotePropertyName 'diagnostics' -NotePropertyValue $diag -Force
                     try { $hint = Get-TcStuckInConfigHint -Code $Code -Diagnostics $diag -License $lic }
                     catch { if ($null -ne $lic -and -not [string]::IsNullOrWhiteSpace($lic.text)) { $hint = "$($lic.text) $base" } }
-                    # #49: the dialog / Error List carries the runtime's license failure -> LICENSE_MISSING.
+                    # #49: the dialog carries the runtime's license failure -> LICENSE_MISSING.
                     # The lifecycle block was already written (with $Code) and stays; the dialog is not touched.
-                    $licEvidence = Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag
+                    # PR #259 S1: an Error List row alone may be stale -> only a reference, code / hint kept.
+                    $licEvidence = Get-TcDialogLicenseEvidence -Diagnostics $diag
+                    $licRow = if ($null -eq $licEvidence) { Get-TcErrorListLicenseEvidence -Diagnostics $diag } else { $null }
+                    if ($null -ne $licRow) {
+                        Add-TcLicenseErrorListReference -Result $Res -Evidence $licRow
+                        $hint = "$hint $script:TcLicenseErrorListNote".Trim()
+                    }
                     if ($null -ne $licEvidence) {
                         $Res.error.code = 'LICENSE_MISSING'
                         Add-TcLicenseMissingData -Result $Res -Evidence $licEvidence -OriginalCode $Code
-                        # PR review: an Error List row may be older than this request; keep the
-                        # diagnostics hint (e.g. ADS 1809) after the license hint instead of dropping it
+                        # keep a diagnostics hint of its own after the license hint instead of dropping it
                         $licHint = Get-TcErrorHint -Code 'LICENSE_MISSING'
                         $hint = if (-not [string]::IsNullOrWhiteSpace($hint) -and $hint -ne $base) { "$licHint Diagnostics hint: $hint" } else { $licHint }
                     }

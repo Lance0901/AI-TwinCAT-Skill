@@ -53,29 +53,69 @@ function Get-TcLicenseFailureEvidence {
     $null
 }
 
-function Get-TcDiagnosticsLicenseEvidence {
+# PR #259 S1: only a dialog that is up now or the error text of this step changes the code. An Error
+# List row may be left from an earlier activation (whether XAE keeps runtime log rows across an
+# Activate is not measured), so a row alone is only a reference: data.licenseErrorListEvidence and
+# this note after the original hint. (While a dialog is up the Error List is not read at all, #198.)
+$script:TcLicenseErrorListNote = 'Reference (#49): the XAE Error List has a license failure row (data.licenseErrorListEvidence). It may be left from an earlier activation, so the code was NOT changed to LICENSE_MISSING: handle the cause above first; if the license really is missing, see LICENSE_MISSING in docs/troubleshooting.md (the user renews / activates it in XAE).'
+
+function Get-TcDialogLicenseEvidence {
     <#
     .SYNOPSIS
-        #49: license evidence from a data.diagnostics record (Get-TcRuntimeFailureDiagnostics):
-        dialog title + text, then the Error List rows. $null when none. Never throws.
+        #49: license evidence from the dialog of a data.diagnostics record
+        (Get-TcRuntimeFailureDiagnostics): title + text. $null when none. Never throws.
     #>
     param([object]$Diagnostics)
     if ($null -eq $Diagnostics) { return $null }
-    $texts = @()
     try {
         $dp = $Diagnostics.PSObject.Properties['dialog']
-        if ($null -ne $dp -and $null -ne $dp.Value) { $texts += "$([string]$dp.Value.title) | $([string]$dp.Value.text)" }
-        $ep = $Diagnostics.PSObject.Properties['errorList']
-        if ($null -ne $ep) { $texts += @($ep.Value | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) }
+        if ($null -eq $dp -or $null -eq $dp.Value) { return $null }
+        Get-TcLicenseFailureEvidence -Texts @("$([string]$dp.Value.title) | $([string]$dp.Value.text)")
     }
-    catch { return $null }
-    Get-TcLicenseFailureEvidence -Texts $texts
+    catch { $null }
+}
+
+function Get-TcErrorListLicenseEvidence {
+    <#
+    .SYNOPSIS
+        #49 / PR #259 S1: the first Error List row of a data.diagnostics record with the license
+        failure (each row on its own), $null when none. A reference only, never a code change.
+        Never throws.
+    #>
+    param([object]$Diagnostics)
+    if ($null -eq $Diagnostics) { return $null }
+    try {
+        $ep = $Diagnostics.PSObject.Properties['errorList']
+        if ($null -eq $ep) { return $null }
+        Get-TcLicenseFailureEvidence -Texts @($ep.Value | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    }
+    catch { $null }
+}
+
+function Add-TcLicenseErrorListReference {
+    <#
+    .SYNOPSIS
+        PR #259 S1: adds data.licenseErrorListEvidence to -Result (no code change). Never throws.
+    #>
+    param([object]$Result, [string]$Evidence)
+    if ($null -eq $Result -or [string]::IsNullOrWhiteSpace($Evidence)) { return }
+    try {
+        $data = $null
+        $dp = $Result.PSObject.Properties['data']
+        if ($null -ne $dp) { $data = $dp.Value }
+        if ($data -is [System.Collections.IDictionary]) { $data = [PSCustomObject]$data }
+        if ($null -eq $data) { $data = [PSCustomObject]@{} }
+        $data | Add-Member -NotePropertyName 'licenseErrorListEvidence' -NotePropertyValue $Evidence -Force
+        $Result | Add-Member -NotePropertyName 'data' -NotePropertyValue $data -Force
+    }
+    catch { Write-Verbose "Add-TcLicenseErrorListReference: $($_.Exception.Message)" }
 }
 
 function Add-TcLicenseMissingData {
     <#
     .SYNOPSIS
-        #49: adds data.licenseMissing { evidence; originalCode } to -Result. Never throws.
+        #49: adds data.licenseMissing { evidence; originalCode } to -Result and puts
+        'LICENSE_MISSING: ' in front of error.message (PR #259 N1; error.code is the code). Never throws.
     #>
     param([object]$Result, [string]$Evidence, [string]$OriginalCode)
     if ($null -eq $Result) { return }
@@ -87,6 +127,10 @@ function Add-TcLicenseMissingData {
         if ($null -eq $data) { $data = [PSCustomObject]@{} }
         $data | Add-Member -NotePropertyName 'licenseMissing' -NotePropertyValue ([PSCustomObject]@{ evidence = $Evidence; originalCode = $OriginalCode }) -Force
         $Result | Add-Member -NotePropertyName 'data' -NotePropertyValue $data -Force
+        if ($null -ne $Result.error) {
+            $m = [string]$Result.error.message
+            if (-not $m.StartsWith('LICENSE_MISSING: ')) { $Result.error | Add-Member -NotePropertyName 'message' -NotePropertyValue "LICENSE_MISSING: $m" -Force }
+        }
     }
     catch { Write-Verbose "Add-TcLicenseMissingData: $($_.Exception.Message)" }
 }

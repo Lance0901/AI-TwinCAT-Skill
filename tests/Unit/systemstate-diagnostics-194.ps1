@@ -246,6 +246,7 @@ Reset-Case; Set-Ide $true; Set-Ads 'config'
 $global:Dlg = @{ Title = 'Microsoft Visual Studio'; Text = $licFatal; Kind = 'unknown' }
 $r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
 Check 'N license dialog: LICENSE_MISSING, block kept (original code), data.licenseMissing' ((-not $r.success) -and $r.error.code -eq 'LICENSE_MISSING' -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.licenseMissing.originalCode -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.licenseMissing.evidence -match 'license not found') "code=$($r.error.code) $($r.data.licenseMissing | ConvertTo-Json -Compress)"
+Check 'N message starts with LICENSE_MISSING: (PR #259 N1)' ([string]$r.error.message).StartsWith('LICENSE_MISSING: ') "$($r.error.message)"
 Check 'N hint = stop text + LICENSE_MISSING hint' ($r.error.hint.Contains($licHint49) -and -not $r.error.hint.StartsWith($licHint49)) "$($r.error.hint)"
 $b = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
 Check 'N next Set-TcSystemState -> LIFECYCLE_BLOCKED' ($b.error.code -eq 'LIFECYCLE_BLOCKED') "$($b.error.code)"
@@ -253,13 +254,14 @@ Clear-Block
 Reset-Case; Set-Ide $true; Set-Ads 'config'
 $global:ElRows = @('Some warning', "'TwinCAT System' (10000): Lizenz nicht gefunden")
 $r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
-Check 'N2 no dialog, Error List row with the license failure -> LICENSE_MISSING' ($r.error.code -eq 'LICENSE_MISSING' -and $r.data.licenseMissing.evidence -match 'Lizenz') "code=$($r.error.code)"
+# PR #259 S1: an Error List row alone may be stale -> code kept, row only as reference
+Check 'N2 no dialog, Error List license row: code SYSTEM_STATE_TIMEOUT kept, data.licenseErrorListEvidence, note in hint' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['licenseMissing'] -and $r.data.licenseErrorListEvidence -match 'Lizenz' -and $r.error.hint -match 'licenseErrorListEvidence') "code=$($r.error.code) hint=$($r.error.hint)"
 Clear-Block
-# N3 (PR review F): license row + ADS 1809 row: LICENSE_MISSING, the 1809 hint is kept after the license hint
+# N3 (PR review F, PR #259 S1): license row + ADS 1809 row: code kept, the ADS 1809 hint kept, row as reference
 Reset-Case; Set-Ide $true; Set-Ads 'config'
 $global:ElRows = @("'TwinCAT System' (10000): license not found", "$fatal")
 $r = Set-TcSystemState -State Run -AmsNetId $net -TimeoutSec 2 -SettleSec 0
-Check 'N3 license + 1809 rows: LICENSE_MISSING, hint keeps the ADS 1809 explanation after the license hint' ($r.error.code -eq 'LICENSE_MISSING' -and $r.error.hint.Contains($licHint49) -and $r.error.hint -match 'Diagnostics hint:.*ADS 1809') "$($r.error.hint)"
+Check 'N3 license + 1809 rows: code kept, ADS 1809 hint kept, license row only as reference' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and -not $r.error.hint.Contains($licHint49) -and $r.error.hint -match 'ADS 1809' -and $r.data.licenseErrorListEvidence -match 'license not found') "$($r.error.hint)"
 Clear-Block
 
 # --- M: hint rules (PR #200 review items 3-5, 9), Get-TcStuckInConfigHint directly

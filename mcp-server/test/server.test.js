@@ -537,7 +537,7 @@ describe('index.js over stdio (modal probe)', () => {
     pf.setTrigger({ title: 'Microsoft Visual Studio', text: LIC });
     const body = parse(await client.callTool({ name: 'BuildProject', arguments: { Hang: true } }));
     assert.equal(body.error.code, 'LICENSE_MISSING', JSON.stringify(body));
-    assert.equal(body.error.message, `Microsoft Visual Studio | ${LIC}`);
+    assert.equal(body.error.message, `LICENSE_MISSING: Microsoft Visual Studio | ${LIC}`, 'PR #259 N1: message prefixed with the code');
     assert.match(body.error.hint, /does not press the dialog/);
     assert.match(body.error.hint, /lifecycle block \(errorCode INTERRUPTED, #236\)/);
     assert.match(body.error.hint, /ClearLifecycleBlock only after the user agreed/);

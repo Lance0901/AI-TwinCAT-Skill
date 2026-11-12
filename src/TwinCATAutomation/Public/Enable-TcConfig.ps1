@@ -456,7 +456,7 @@ function Enable-TcConfig {
         }
         if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
         # #49: the full dialog text and every Error List row, not only the 3 rows in the message
-        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint -Evidence @(Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag) -LicenseMessage $plainMessage
+        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint -Evidence @(Get-TcDialogLicenseEvidence -Diagnostics $diag) -LicenseMessage $plainMessage -ErrorListEvidence (Get-TcErrorListLicenseEvidence -Diagnostics $diag)
     }
 
     # SolutionBuild.LastBuildInfo (number of failed projects), $null when unreadable.
@@ -515,8 +515,10 @@ function Enable-TcConfig {
         # -Evidence: extra texts (e.g. the full dialog text) checked for the #49 license failure.
         # -LicenseMessage: the text checked instead of -Message (New-TcRuntimeFailure: the message
         # BEFORE the diagnostics were appended, so rows of different sources are never joined).
-        param([string]$Message, [string]$Code, [string]$Hint, [string[]]$Evidence, [AllowNull()][string]$LicenseMessage)
-        # #49: the runtime reported a missing license (dialog / Error List / step error text):
+        # -ErrorListEvidence (PR #259 S1): an Error List row with the license failure; it may be
+        # stale, so it never changes the code: data.licenseErrorListEvidence + a note after the hint.
+        param([string]$Message, [string]$Code, [string]$Hint, [string[]]$Evidence, [AllowNull()][string]$LicenseMessage, [AllowNull()][string]$ErrorListEvidence)
+        # #49: the runtime reported a missing license (dialog up now / step error text):
         # LICENSE_MISSING replaces the generic code BEFORE the lifecycle block is written, so the
         # block records it too. The dialog is not touched.
         $licEvidence = $null
@@ -529,9 +531,12 @@ function Enable-TcConfig {
         if ($null -ne $licEvidence -and $Code -ne 'LICENSE_MISSING') { $Code = 'LICENSE_MISSING'; $Hint = $null }
         $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed); LifecycleNetId = [string]$netId }
         if ([string]::IsNullOrWhiteSpace($Hint)) { $Hint = Get-TcErrorHint -Code $Code }
+        $licRow = if ($Code -ne 'LICENSE_MISSING' -and -not [string]::IsNullOrWhiteSpace($ErrorListEvidence)) { $ErrorListEvidence } else { $null }
+        if ($null -ne $licRow) { $Hint = "$Hint $script:TcLicenseErrorListNote".Trim() }
         if (-not [string]::IsNullOrWhiteSpace($Hint)) { $params['Hint'] = $Hint }
         $res = New-TcResult @params
         if ($Code -eq 'LICENSE_MISSING') { Add-TcLicenseMissingData -Result $res -Evidence $licEvidence -OriginalCode $licOriginal }
+        elseif ($null -ne $licRow) { Add-TcLicenseErrorListReference -Result $res -Evidence $licRow }
         # #68: a failed postcondition after a runtime-changing request blocks the target
         if ($runtimeChangeSent -and $Code -ne 'LIFECYCLE_BLOCKED') {
             $failedStep = @($steps | Where-Object { -not $_.ok } | Select-Object -Last 1 | ForEach-Object { [string]$_.step })

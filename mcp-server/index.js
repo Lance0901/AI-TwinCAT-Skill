@@ -269,7 +269,7 @@ function licenseHint(pid, title, outcome) {
       : '';
   return (
     `The target reported a missing license (dialog '${title}' in the IDE pid ${pid}: TwinCAT System error 10000 with a license text; data.licenseMissing.evidence); ${lost}. ` +
-    'The server does not press the dialog. Stop and report to the user: the user closes the fatal error dialog in XAE and renews the trial license or activates the license in XAE (SYSTEM > License; the trial asks for a security code, see docs/troubleshooting.md, known modal dialogs). ' +
+    'The server does not press the dialog. Stop and report to the user: the user closes the fatal error dialog in XAE and renews the trial license or activates the license in XAE (SYSTEM > License, tab Order Information (Runtime), \"7 Days Trial License...\", then the security code shown in that dialog: https://infosys.beckhoff.com/content/1033/tc3_licensing/3510308491.html). ' +
     block +
     'After the user fixed the license: ConnectIde again, GetSystemState to read back, ClearLifecycleBlock only after the user agreed, then EnableConfig Force=true. Never edit license files.'
   );
@@ -315,7 +315,7 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
       (o) => ({
         success: false,
         error: lic
-          ? { code: 'LICENSE_MISSING', message, hint: licenseHint(probePid, dialog.title, o) }
+          ? { code: 'LICENSE_MISSING', message: `LICENSE_MISSING: ${message}`, hint: licenseHint(probePid, dialog.title, o) }
           : { code: 'IDE_MODAL_DIALOG', message, hint: modalHint(probePid, prevIde ?? ideSnapshot, dialog.title, o) },
         data: {
           dialogTitle: dialog.title,
@@ -333,7 +333,15 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
       return;
     }
     console.error(`[tcauto-mcp] modal dialog detected on IDE pid ${probePid} during ${name}: ${dialog.title} (${outcome})`);
-    emitLog('error', { message: `modal dialog detected during ${name}: ${dialog.title}`, tool: name, ideProcessId: probePid, dialogTitle: dialog.title, dialogText: text, outcome });
+    emitLog('error', {
+      message: `${lic ? 'license failure (LICENSE_MISSING)' : 'modal dialog'} detected during ${name}: ${dialog.title}`,
+      tool: name,
+      ideProcessId: probePid,
+      dialogTitle: dialog.title,
+      dialogText: text,
+      outcome,
+      ...(lic ? { licenseMissing: { evidence: lic.evidence } } : {})
+    });
   };
 
   const launch = () => {
