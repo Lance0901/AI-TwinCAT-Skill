@@ -1,0 +1,7 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.16">
+  <DUT Name="T_LintAlias" Id="{3ff34fcb-6ab1-43bd-842c-318285325ff0}">
+    <Declaration><![CDATA[TYPE T_LintAlias : STRING(80);
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

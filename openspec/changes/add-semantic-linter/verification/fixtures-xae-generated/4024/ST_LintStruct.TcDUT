@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.16">
+  <DUT Name="ST_LintStruct" Id="{42b66066-5712-423a-b498-2b06889e710c}">
+    <Declaration><![CDATA[TYPE ST_LintStruct :
+STRUCT
+    bStart : BOOL;
+    nCount : INT := 0; // counter
+END_STRUCT
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

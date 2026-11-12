@@ -1,0 +1,78 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.16">
+  <POU Name="FB_LintTest" Id="{640154ed-84e6-465c-81ba-fb60f6af63e4}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_LintTest EXTENDS FB_LintBase IMPLEMENTS I_LintItf
+VAR_INPUT
+END_VAR
+VAR_OUTPUT
+END_VAR
+VAR
+	nVal : INT;
+	sTxt : STRING(40);
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[nVal := nVal + 1;
+A_Act();]]></ST>
+    </Implementation>
+    <Action Name="A_Act" Id="{7d43ebdd-86bb-4740-94ae-1ddbe750970f}">
+      <Implementation>
+        <ST><![CDATA[sTxt := 'a]]]]><![CDATA[>b'; // CDATA end marker inside code]]></ST>
+      </Implementation>
+    </Action>
+    <Method Name="M_Do" Id="{f5ac9f57-167c-457b-a9c5-522abe0a7fee}">
+      <Declaration><![CDATA[METHOD PUBLIC M_Do : BOOL]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[M_Do := TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="P_Ro" Id="{2efcd368-e92e-4201-9c00-77d6aa7999fd}">
+      <Declaration><![CDATA[PROPERTY PUBLIC P_Ro : INT]]></Declaration>
+      <Get Name="Get" Id="{2853db67-3245-4e9b-9cbe-74851b52738c}">
+        <Declaration><![CDATA[PUBLIC
+VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[P_Ro := 1;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="P_Val" Id="{1da0ba76-ff51-4711-8b40-f592430ffbe3}">
+      <Declaration><![CDATA[PROPERTY PUBLIC P_Val : INT]]></Declaration>
+      <Get Name="Get" Id="{25fdaa24-aa48-46a7-b470-ff71db2e5304}">
+        <Declaration><![CDATA[PUBLIC
+VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[P_Val := nVal;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="{b4773b41-ea67-4819-b3a3-f76bfd5b47d9}">
+        <Declaration><![CDATA[PUBLIC
+VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[nVal := P_Val;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <LineIds Name="FB_LintTest">
+      <LineId Id="17" Count="0" />
+      <LineId Id="8" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_LintTest.A_Act">
+      <LineId Id="1" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_LintTest.M_Do">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_LintTest.P_Ro.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_LintTest.P_Val.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_LintTest.P_Val.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+  </POU>
+</TcPlcObject>
