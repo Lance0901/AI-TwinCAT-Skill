@@ -16,6 +16,8 @@
 #      E3 Disconnect-TcIde -Quit -> MODAL_SCAN_INCOMPLETE, Solution.Close / DTE.Quit not called,
 #         connection kept
 #      E4 tree-item gate (Get-TcTreeItemDialogResult) -> MODAL_SCAN_INCOMPLETE
+#   M  #234 the real scan against WPF fixture windows of a child process: the IDE main window (UIA
+#      AutomationId VisualStudioMainWindow) is never reported, also with a stale MainHwnd (M1-M5)
 #   powershell.exe -NoProfile -File tests/Unit/modal-scan-incomplete.ps1
 # Exit code = number of failed checks. Takes ~20 s.
 $ErrorActionPreference = 'Stop'
@@ -197,6 +199,103 @@ try {
 finally {
     & $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f } $origFind
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
+}
+
+# M  #234: the real scan never reports the IDE main window as a dialog, also with a stale cached main
+#    window handle. A child powershell.exe (STA, started by this test) shows WPF fixture windows; the real
+#    scan ($origScan) runs against that child pid. Before #234 a stale non-zero MainHwnd switched the
+#    title rule off and the main window caption '<sln> - Microsoft Visual Studio' matched the known-dialog
+#    pattern: reported as kind unknown (measured 2026-11-13, VS2022 4026 zh-TW, $script:TcIdeMainHwnd set
+#    to a handle that is no window). Now a non-modal window with UIA AutomationId VisualStudioMainWindow is
+#    the main window. Fixture spec: 'title|automationId|owned' per window; 'owned' = that window opens an
+#    owned ShowDialog child 'Fixture234 Options' (the shape of VS Tools.Options / Help.About).
+#    M1 main window (id), stale MainHwnd -> no dialog        M2 the same, MainHwnd 0 (title rule) -> no dialog
+#    M3 main window + 'TwinCAT XAE' window, stale -> that window, not the main window
+#    M4 solution-title window WITHOUT the id, stale -> still reported (the title alone does not exclude it)
+#    M5 main window (id) with an owned modal child, stale -> the child is reported (before #234 the stale
+#       handle left $mainEl empty and the owned-dialog search never ran)
+$fixtureScript = @'
+param([string]$Spec, [string]$Signal, [string]$Stop)
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+$wins = @()
+$i = 0
+foreach ($item in ($Spec -split ';')) {
+    $parts = $item -split '\|'
+    $w = New-Object System.Windows.Window
+    $w.Title = $parts[0]
+    # UIA Name of a WPF window defaults to its content text; the VS2022 main window exposes its caption
+    [System.Windows.Automation.AutomationProperties]::SetName($w, $parts[0])
+    if ($parts.Count -gt 1 -and $parts[1]) { [System.Windows.Automation.AutomationProperties]::SetAutomationId($w, $parts[1]) }
+    $w.Width = 320; $w.Height = 160; $w.Left = 40 + 30 * $i; $w.Top = 40 + 30 * $i
+    $w.ShowActivated = $false; $w.ShowInTaskbar = $false
+    $w.Content = New-Object System.Windows.Controls.TextBlock -Property @{ Text = 'tcauto #234 fixture' }
+    $w.Show()
+    $wins += $w
+    if ($parts.Count -gt 2 -and $parts[2] -eq 'owned') {
+        $owner = $w
+        $null = $w.Dispatcher.BeginInvoke([Action]{
+            $c = New-Object System.Windows.Window
+            $c.Title = 'Fixture234 Options'
+            [System.Windows.Automation.AutomationProperties]::SetName($c, 'Fixture234 Options')
+            $c.Owner = $owner; $c.Width = 200; $c.Height = 100; $c.ShowInTaskbar = $false
+            $c.Content = New-Object System.Windows.Controls.TextBlock -Property @{ Text = 'owned modal' }
+            $c.Add_Loaded({ Set-Content -LiteralPath $Signal -Value 'ready' })
+            $script:wins += $c
+            $null = $c.ShowDialog()
+        })
+    }
+    $i++
+}
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromMilliseconds(200)
+$deadline = (Get-Date).AddSeconds(60)
+$timer.Add_Tick({ if ((Test-Path -LiteralPath $Stop) -or (Get-Date) -gt $deadline) { foreach ($x in @($script:wins)) { try { $x.Close() } catch { } }; [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() } })
+$timer.Start()
+if ($Spec -notmatch '\|owned') { Set-Content -LiteralPath $Signal -Value 'ready' }
+[System.Windows.Threading.Dispatcher]::Run()
+'@
+$work = Join-Path $env:TEMP ("tcauto-unit-234-{0}" -f [guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $work | Out-Null
+    $fixturePath = Join-Path $work 'fixture.ps1'
+    Set-Content -LiteralPath $fixturePath -Value $fixtureScript -Encoding UTF8
+    function Invoke-WithFixture([string]$Spec, [long[]]$MainHwnds) {
+        $id = [guid]::NewGuid().ToString('N')
+        $signal = Join-Path $work "$id.ready"
+        $stop = Join-Path $work "$id.stop"
+        $p = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-STA', '-File', "`"$fixturePath`"", '-Spec', "`"$Spec`"", '-Signal', "`"$signal`"", '-Stop', "`"$stop`""
+        $out = @{ error = $null }
+        try {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while (-not (Test-Path -LiteralPath $signal) -and $sw.Elapsed.TotalSeconds -lt 45 -and -not $p.HasExited) { [System.Threading.Thread]::Sleep(100) }   # waits for the fixture's signal file, not a blind wait
+            if (-not (Test-Path -LiteralPath $signal)) { $out.error = "fixture not ready (exited $($p.HasExited))"; return $out }
+            foreach ($h in $MainHwnds) { $out[[string]$h] = & $origScan $p.Id $h 2000 }
+        }
+        finally {
+            Set-Content -LiteralPath $stop -Value 'stop'
+            if (-not $p.WaitForExit(10000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }   # only the fixture process this test started
+        }
+        return $out
+    }
+    function Show-Hit($r, [string]$Key) { $h = $r[$Key]; "fixtureError=$($r.error) hit=" + $(if ($null -eq $h) { 'null' } else { ($h | Select-Object Title, Kind, ClassName | ConvertTo-Json -Compress) }) }
+    $stale = [long]99999   # not a window handle: what a stale cached handle looks like to the scan
+    $mainTitle = 'Fixture234 - Microsoft Visual Studio'
+
+    $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow" @($stale, 0)
+    Check 'M1 main window (AutomationId VisualStudioMainWindow), stale MainHwnd -> no dialog' ($null -eq $r.error -and $null -eq $r[[string]$stale]) (Show-Hit $r ([string]$stale))
+    Check 'M2 main window, MainHwnd 0 (title rule) -> no dialog' ($null -eq $r.error -and $null -eq $r['0']) (Show-Hit $r '0')
+
+    $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow;TwinCAT XAE|" @($stale)
+    Check 'M3 main window + TwinCAT XAE window, stale MainHwnd -> the TwinCAT XAE window is reported' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq 'TwinCAT XAE') (Show-Hit $r ([string]$stale))
+
+    $r = Invoke-WithFixture "$mainTitle|" @($stale)
+    Check 'M4 solution-title window without the AutomationId, stale MainHwnd -> still reported (fail closed)' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq $mainTitle) (Show-Hit $r ([string]$stale))
+
+    $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow|owned" @($stale)
+    Check 'M5 main window with an owned modal child, stale MainHwnd -> the child is reported' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq 'Fixture234 Options') (Show-Hit $r ([string]$stale))
+}
+finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Remove-Item -LiteralPath $env:TCAUTO_STATE_DIR -Recurse -Force -ErrorAction SilentlyContinue
