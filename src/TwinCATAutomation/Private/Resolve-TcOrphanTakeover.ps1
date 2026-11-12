@@ -122,7 +122,7 @@ function Resolve-TcOrphanTakeover {
     # passed): the takeover itself throws nothing away, the IDE keeps what it has in memory. The disk
     # state is loaded later by Reset-TcSolution, whose Documents.CloseAll(vsSaveChangesNo) DOES drop
     # unsaved editor content: Connect-TcIde reports such documents (data.dirtyDocuments) and
-    # Reset-TcSolution refuses while any exists unless -DiscardProjectChanges (PR #209 review M1).
+    # Reset-TcSolution refuses while any exists unless -Force (PR #209 review M1, #175 UNSAVED_CHANGES).
     # PR #209 review m1: a prompt is answered only when this IDE is known to have THIS .sln open:
     # its DTE answered with it (isReady, checked above), or - DTE blocked by the prompt - the dialog
     # text names a file inside the solution folder or the quoted solution name
@@ -255,8 +255,9 @@ function Add-TcOrphanResetData {
 
 # PR #209 review M1: FullName of every document of -Dte whose Document.Saved is $false (unsaved editor
 # content; EnvDTE Document.Saved / FullName, https://learn.microsoft.com/en-us/dotnet/api/envdte.document.saved),
-# for Connect-TcIde -TakeOverOrphan (data.dirtyDocuments) and Reset-TcSolution (refused while
-# reset-required applies: its Documents.CloseAll(vsSaveChangesNo) drops that content). Both callers
+# for Connect-TcIde -TakeOverOrphan (data.dirtyDocuments). Reset-TcSolution reads the same plus projects
+# and the solution through Get-TcUnsavedChanges (#175: refused unless -Force, its
+# Documents.CloseAll(vsSaveChangesNo) drops that content). Both callers
 # read it right after a complete modal scan found no dialog (a modal is what makes a DTE call hang;
 # Invoke-TcComRetry -TimeoutSec cannot interrupt a call that never returns, CODING_STANDARDS 1: the
 # same accepted risk as the other plain property reads there). A document whose Saved cannot be read

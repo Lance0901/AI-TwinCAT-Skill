@@ -97,6 +97,31 @@ function Reset-TcSolution {
           restored) or the probe fails, the full path below runs on the old DTE
           (data.yesPathError says why). The reconnect, and the readback of step 6, run before
           success here too.
+          1a. unsaved changes of the IDE (#175; Get-TcUnsavedChanges, read after the guard):
+             open documents with Document.Saved = $false, top-level projects with Project.Saved =
+             $false (Set-TcTarget leaves the .tsproj so, also with the same NetId; Build-TcProject
+             saves it again - measured 2026-11-12, 4026 VisualStudio.DTE.17.0) and the solution with
+             Solution.Saved = $false. The close below drops them, so by default (decision of the user,
+             2026-11-12) any of them -> UNSAVED_CHANGES, nothing saved or closed (data.unsavedCheck:
+             checked, forced, documents, projects [name, file], solution, unchecked [what, reason],
+             error, sec). Cannot be read (a COM call throws, a Document.Saved or the Project.Saved of
+             an identifiable project reads $null) -> UNSAVED_CHANGES too (fail closed,
+             data.unsavedCheck.error). A project object that answers $null to Kind, FullName and Saved
+             (the TwinCAT Scope project of the 4026 test solution, measured 2026-11-12) is only listed
+             in unchecked (named in data.stateWarning on success); a $null Solution.Saved fails closed.
+             A busy IDE, a dead RPC, a modal dialog or a timeout during the read are not "unreadable":
+             IDE_BUSY / IDE_CRASHED / IDE_MODAL_DIALOG / IDE_TIMEOUT, also with -Force (PR #256 review
+             S1; a reload prompt is answered first). Only top-level projects are read (not projects in
+             solution folders, not the nested .plcproj). -Force (the user agreed) goes on and lists what
+             is dropped in data.discardedChanges (unchecked projects as "may have been dropped"; an
+             unreadable state: discardedChanges = $null, discardedUnknown = $true +
+             discardedUnknownReason). -DiscardProjectChanges is NOT consent here.
+             Write-TcPouCode writes the object file on disk at once (no Document / Project reports a
+             change afterwards, measured 2026-11-12), and a file changed on disk does not make the IDE
+             copy unsaved, so the disk-edit flow is refused only when the IDE itself holds unsaved
+             changes (e.g. Set-TcTarget without a Build-TcProject after it).
+             Not read on the Yes-only path (XAE reloads the project itself; whether it asks about
+             unsaved changes of that project first is not measured).
           1b. unsaved project structure (#76; skipped with -DiscardProjectChanges; the
              ITcSysManager is always taken fresh, Get-TcSysManager -Refresh: after a solution
              reload the cached one throws "System Manager already disposed!", #106): DTE
@@ -185,6 +210,10 @@ function Reset-TcSolution {
         Skip step 1b: close without saving even when PLC objects in XAE are missing from
         the .plcproj on disk (they are dropped). Use after PROJECT_UNSAVED_CHANGES when the disk
         version is the one to keep. Not together with -SaveProjectChanges (INVALID_PARAMS).
+    .PARAMETER Force
+        The user agreed to drop the unsaved changes of the IDE (step 1a, UNSAVED_CHANGES): close without
+        saving anyway; data.discardedChanges lists the dropped files. Use only after asking the user.
+        Not together with -SaveProjectChanges (INVALID_PARAMS).
     .PARAMETER SaveProjectChanges
         Step 1b keeps the XAE version: objects that XAE has and the .plcproj on disk does not
         list are saved (project files only) before closing, unless the disk shows a change
@@ -203,12 +232,8 @@ function Reset-TcSolution {
                                    Connect-TcIde -TakeOverOrphan answered one without reloading
                                    (BUILD_REQUIRED kind reset-required, data.resetRequired): the full
                                    close / reopen runs and -SaveProjectChanges is refused as after
-                                   a prompt handled here. With reset-required (also an unreadable
-                                   state, data.resetRequired.stateUnreadable) and without
-                                   -DiscardProjectChanges, documents with Document.Saved = false
-                                   (data.dirtyDocuments) or an unreadable DTE.Documents
-                                   (data.dirtyDocumentsError) refuse with PROJECT_UNSAVED_CHANGES
-                                   before anything is closed (Documents.CloseAll would drop them)
+                                   a prompt handled here. Unsaved changes are refused by step 1a
+                                   (UNSAVED_CHANGES) with or without reset-required
         data.resetRequiredCleared  (only with a reset-required record) true = the reopen succeeded
                                    without saving and the record was removed; false = kept (a save,
                                    another .sln, or the state file could not be written:
@@ -242,6 +267,15 @@ function Reset-TcSolution {
                                    saveSec, warning (empty when nothing was saved)
         data.saveRefused           -SaveProjectChanges refused: [{plc, reason}] (plc '*' = not one
                                    PLC, e.g. a reload prompt handled in step 1)
+        data.unsavedCheck          step 1a (#175): checked, forced, forceRequested, documents, projects
+                                   [name, file], solution, unchecked [what, reason], error, sec; on the
+                                   Yes-only path (or a stop before step 1a): checked = false,
+                                   forced = false, forceRequested, reason
+        data.discardedChanges      -Force only, when something was unsaved, unchecked or unreadable:
+                                   the files whose unsaved changes were dropped plus unchecked projects
+                                   ("may have been dropped"); $null when the state was unreadable
+        data.discardedUnknown      -Force only (with discardedChanges): $true = the unsaved state could
+                                   not be read, what was dropped is unknown (discardedUnknownReason)
         data.closedDocuments       documents closed before Solution.Close
         data.closed                Solution.Close returned
         data.closeSec              seconds for CloseAll + Solution.Close
@@ -255,7 +289,8 @@ function Reset-TcSolution {
                                    as reported by Connect-TcIde
         data.ownedBySession        this session launched the IDE (Disconnect-TcIde -Kill is
                                    allowed), even though selectedBy now says solution-match
-        Errors: INVALID_PARAMS (both -SaveProjectChanges and -DiscardProjectChanges), NOT_CONNECTED, NO_SOLUTION, FILE_NOT_FOUND, IDE_MODAL_DIALOG,
+        Errors: INVALID_PARAMS (both -SaveProjectChanges and -DiscardProjectChanges, or -Force with
+        -SaveProjectChanges), UNSAVED_CHANGES (step 1a, nothing closed), NOT_CONNECTED, NO_SOLUTION, FILE_NOT_FOUND, IDE_MODAL_DIALOG,
         SOLUTION_RELOAD_INCOMPLETE (step 6: not loaded again within -TimeoutSec, data.loadCheck; IDE_CRASHED
         when the IDE died during it), RESET_SOLUTION_MISMATCH
         (the IDE has another solution open than the module expected; nothing closed, #29),
@@ -294,12 +329,19 @@ function Reset-TcSolution {
         [switch]$DiscardProjectChanges,
 
         [Parameter()]
-        [switch]$SaveProjectChanges
+        [switch]$SaveProjectChanges,
+
+        [Parameter()]
+        [switch]$Force
     )
 
     if ($DiscardProjectChanges -and $SaveProjectChanges) {
         return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' `
             -ErrorMessage '-SaveProjectChanges (keep the XAE version) and -DiscardProjectChanges (keep the disk version) exclude each other; nothing was done.'
+    }
+    if ($Force -and $SaveProjectChanges) {
+        return New-TcResult -Success $false -ErrorCode 'INVALID_PARAMS' `
+            -ErrorMessage '-Force (drop the unsaved changes of the IDE) and -SaveProjectChanges (save project files before closing) exclude each other; nothing was done. To keep unsaved changes, save them first (Build-TcProject saves the project files, or File > Save All in XAE), then run Reset-TcSolution again.'
     }
 
     try { Assert-TcConnection } catch {
@@ -338,6 +380,9 @@ function Reset-TcSolution {
         closed                = $false
         reopened              = $false
         previousIdeProcessId  = $previousPid
+        # #175 / PR #256 review N3: replaced by step 1a; stays like this on the Yes-only path (XAE reloaded
+        # the project itself) and when the reset stops before step 1a: -Force was NOT applied there
+        unsavedCheck          = [PSCustomObject]@{ checked = $false; forced = $false; forceRequested = [bool]$Force; reason = 'not read: the Yes-only path (XAE reloaded the project itself) or the reset stopped before the unsaved changes check' }
     }
     function Get-ProgressData { param([hashtable]$Extra) $d = [PSCustomObject]$progress; $d.reloadPromptAttempts = $progress.reloadPromptAttempts.ToArray(); $d.reconnectAttempts = $progress.reconnectAttempts.ToArray(); if ($null -ne $Extra) { foreach ($k in $Extra.Keys) { $d | Add-Member -NotePropertyName $k -NotePropertyValue $Extra[$k] -Force } }; $d }
 
@@ -964,27 +1009,65 @@ function Reset-TcSolution {
             }
         }
 
-        # --- PR #209 review M1: unsaved editor documents while reset-required applies ---
-        # Documents.CloseAll(vsSaveChangesNo) (step 2) drops unsaved editor content. After
-        # Connect-TcIde -TakeOverOrphan the IDE may hold work of the ended session that nobody has seen:
-        # refused (PROJECT_UNSAVED_CHANGES, data.dirtyDocuments, nothing saved or closed) while any
-        # document has Saved = $false, or when that cannot be read (data.dirtyDocumentsError, fail
-        # closed); -DiscardProjectChanges goes on. Without reset-required nothing changes here.
-        if ($null -ne $resetGuard -and -not $DiscardProjectChanges) {
-            $dirty = Get-TcDirtyDocuments -Dte $dte -TimeoutSec $TimeoutSec
-            if ($null -ne $dirty.Error) {
-                # a reload prompt that came up after the guard blocks the read (#87): handle it first
-                $found = Find-TcResetDialog -Operation 'reading DTE.Documents (unsaved documents); nothing closed'
-                if ($null -ne $found -and $null -ne $found.Failure) { return $found.Failure }
-                if ($null -ne $found) { $pendingDialog = $found.Dialog; continue }
+        # --- #175 (and PR #209 review M1): unsaved changes of the IDE ---
+        # Documents.CloseAll(vsSaveChangesNo) and Solution.Close($false) drop whatever the IDE holds
+        # unsaved: editor documents (Document.Saved = $false), projects (Project.Saved = $false, e.g. the
+        # .tsproj after Set-TcTarget, measured 2026-11-12) and the solution (Solution.Saved = $false).
+        # Decision of the user (2026-11-12): refused by default (UNSAVED_CHANGES, data.unsavedCheck,
+        # nothing saved or closed); also when it cannot be read (data.unsavedCheck.error, fail closed).
+        # -Force (the user agreed to drop them) goes on and lists them in data.discardedChanges.
+        # -DiscardProjectChanges is NOT consent here: it only picks the disk side of step 1b.
+        $unsaved = $null
+        try { $unsaved = Get-TcUnsavedChanges -Dte $dte -TimeoutSec $TimeoutSec }
+        catch {
+            # PR #256 review S1: an IDE that is busy (IDE_BUSY), dead (dead RPC -> IDE_CRASHED), blocked by a
+            # dialog or timed out is reported as such, also with -Force; a reload prompt is handled first
+            $readError = $_
+            $found = Find-TcResetDialog -Operation 'reading the unsaved state of the IDE; nothing closed'
+            if ($null -ne $found -and $null -ne $found.Failure) { return $found.Failure }
+            if ($null -ne $found) { $pendingDialog = $found.Dialog; continue }
+            $kind = Get-TcComRpcFailureKind -Exception $readError.Exception
+            $default = if ($kind.DeadRpc) { 'IDE_CRASHED' } else { 'IDE_BUSY' }
+            return Complete-TcResetFailure -Step 'unsaved changes check' -Result (New-TcAdsErrorResult -ErrorRecord $readError -DefaultCode $default `
+                -MessagePrefix 'Reset-TcSolution not attempted: reading the unsaved state of the IDE failed, nothing was saved or closed' -Data (Get-ProgressData))
+        }
+        if ($null -ne $unsaved.Error) {
+            # a reload prompt that came up after the guard blocks the read (#87): handle it first
+            $found = Find-TcResetDialog -Operation 'reading the unsaved state of the IDE; nothing closed'
+            if ($null -ne $found -and $null -ne $found.Failure) { return $found.Failure }
+            if ($null -ne $found) { $pendingDialog = $found.Dialog; continue }
+        }
+        $dirtyItems = @(@($unsaved.Documents) + @($unsaved.Projects | ForEach-Object { $_.file }) + @(if ($null -ne $unsaved.Solution) { $unsaved.Solution }) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+        $progress['unsavedCheck'] = [PSCustomObject]@{
+            checked = ($null -eq $unsaved.Error); forced = [bool]$Force; forceRequested = [bool]$Force
+            documents = @($unsaved.Documents); projects = @($unsaved.Projects); solution = $unsaved.Solution
+            unchecked = @($unsaved.Unchecked); error = $unsaved.Error; sec = $unsaved.Sec
+        }
+        $hasDirty = (@($unsaved.Documents).Count + @($unsaved.Projects).Count -gt 0) -or ($null -ne $unsaved.Solution)
+        if ($null -ne $unsaved.Error -and -not $Force) {
+            return Complete-TcResetFailure -Step 'unsaved changes check' -Result (New-TcResult -Success $false -ErrorCode 'UNSAVED_CHANGES' -Hint (Get-TcErrorHint -Code 'UNSAVED_CHANGES') `
+                -Data (Get-ProgressData) `
+                -ErrorMessage "Reset-TcSolution not attempted: whether the IDE holds unsaved changes could not be read ($($unsaved.Error)). Closing would drop them without saving, so nothing was saved or closed. Ask the user; only with their consent run Reset-TcSolution -Force.")
+        }
+        if ($hasDirty -and -not $Force) {
+            $guardNote = if ($null -ne $resetGuard) { " reset-required applies to this solution ($($resetGuard.reason))." } else { '' }
+            return Complete-TcResetFailure -Step 'unsaved changes check' -Result (New-TcResult -Success $false -ErrorCode 'UNSAVED_CHANGES' -Hint (Get-TcErrorHint -Code 'UNSAVED_CHANGES') `
+                -Data (Get-ProgressData) `
+                -ErrorMessage "Reset-TcSolution not attempted: the IDE holds unsaved changes in $($dirtyItems.Count) file(s): $($dirtyItems -join ', '). Reset closes without saving and would drop them; nothing was saved or closed.$guardNote Ask the user whether to discard them; only with their consent run Reset-TcSolution -Force.")
+        }
+        if ($Force -and ($hasDirty -or $null -ne $unsaved.Error -or @($unsaved.Unchecked).Count -gt 0)) {
+            if ($null -ne $unsaved.Error) {
+                # PR #256 review S2: unreadable -> what was dropped is unknown, not "nothing"
+                $progress['discardedChanges'] = $null
+                $progress['discardedUnknown'] = $true
+                $progress['discardedUnknownReason'] = "the unsaved state of the IDE could not be read ($($unsaved.Error)); whatever it held unsaved was dropped"
             }
-            if ($null -ne $dirty.Error -or @($dirty.Documents).Count -gt 0) {
-                $extra = if ($null -ne $dirty.Error) { @{ dirtyDocumentsError = [string]$dirty.Error } } else { @{ dirtyDocuments = @($dirty.Documents) } }
-                $what = if ($null -ne $dirty.Error) { "whether the IDE holds unsaved documents could not be read ($($dirty.Error))" }
-                        else { "the IDE holds $(@($dirty.Documents).Count) unsaved document(s): $(@($dirty.Documents) -join ', ')" }
-                return Complete-TcResetFailure -Step 'unsaved documents check' -Result (New-TcResult -Success $false -ErrorCode 'PROJECT_UNSAVED_CHANGES' -Hint (Get-TcErrorHint -Code 'PROJECT_UNSAVED_CHANGES') `
-                    -Data (Get-ProgressData -Extra $extra) `
-                    -ErrorMessage "Reset-TcSolution not attempted: reset-required applies to this solution ($($resetGuard.reason)) and $what. Documents.CloseAll would close them WITHOUT saving; nothing was saved or closed. Look at them in XAE first; -DiscardProjectChanges drops them.")
+            else {
+                # PR #256 review S5: projects the module could not ask are listed as "may have been dropped"
+                $maybe = @($unsaved.Unchecked | ForEach-Object { "$($_.what) (not checked: $($_.reason); unsaved changes, if any, may have been dropped)" })
+                $progress['discardedChanges'] = @(@($dirtyItems) + $maybe)
+                $progress['discardedUnknown'] = $false
             }
         }
 
@@ -1264,6 +1347,14 @@ function Reset-TcSolution {
                 }
             }
             else { $ok.data | Add-Member -NotePropertyName 'resetRequiredCleared' -NotePropertyValue $false -Force }
+        }
+        # PR #256 review S5: projects whose unsaved state could not be asked are named in data.stateWarning
+        $uc = $progress['unsavedCheck']
+        if ($null -ne $uc -and @($uc.unchecked).Count -gt 0) {
+            $names = @($uc.unchecked | ForEach-Object { "$($_.what) ($($_.reason))" }) -join '; '
+            $note = "unsaved state not checked for: $names; unsaved changes there, if any, were not looked at before the close"
+            $prev = $ok.data.PSObject.Properties['stateWarning']
+            $ok.data | Add-Member -NotePropertyName 'stateWarning' -NotePropertyValue $(if ($null -ne $prev -and -not [string]::IsNullOrWhiteSpace([string]$prev.Value)) { "$($prev.Value); $note" } else { $note }) -Force
         }
         return $ok
     }
