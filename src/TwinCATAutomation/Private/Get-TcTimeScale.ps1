@@ -5,8 +5,10 @@ function Get-TcTimeScale {
         $script:TcResetTimeScale). 1.0 (real seconds) unless a unit test lowered it.
     .DESCRIPTION
         Only tests/Unit set these variables (& (Get-Module TwinCATAutomation) { $script:<name> = 0.25 })
-        so a mocked timeout does not cost real seconds. Anything that is not a number in (0, 1] gives
-        1.0: the product never waits longer, and a broken value cannot make it wait shorter than 0.
+        so a mocked timeout does not cost real seconds. The value is converted to [double]; a result
+        in (0, 1] is used as is (so also the string '0.5'; $true converts to 1), anything else ($null,
+        unparsable, NaN, <= 0, > 1) gives 1.0. A test value can only shorten a wait, never lengthen
+        it or make it zero (#251).
     .PARAMETER Value
         The value of the module variable ($null when it is not set).
     #>

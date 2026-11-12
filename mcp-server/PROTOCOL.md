@@ -208,10 +208,14 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   the IDE may still be starting or already be up; do not launch one yourself, call `ConnectIde`
   again with the same parameters (it attaches the IDE this server launched, `session-launched`, or
   reuses the empty IDE an ended session left, #235, `data.reusedEmptyOrphan`).
-  When `lastIde` is valid the hint names the pid: `selectedBy == "launched"` → kill it with
-  `taskkill /PID N /T /F` then `ConnectIde`, with the warning "Unsaved changes in that IDE will be
-  lost; ask the user before killing it."; otherwise → the user opened it, dismiss the dialog then
-  `ConnectIde`. Without `lastIde` the generic hint above is kept.
+  When `lastIde` is valid the hint names the pid: `lastIde.ownedBySession === true` (#237; a
+  missing or non-boolean field counts as not owned) → dismiss the dialog or kill it with
+  `taskkill /PID N /T /F` then `ConnectIde`, after confirming with
+  `Get-Process -Id N | Select-Object Name, StartTime` that the pid is still that IDE (the server
+  keeps no start time; `DisconnectIde Quit=true Kill=true` cannot kill it after a bridge restart,
+  #269), with the warning "Unsaved changes in that IDE will be lost; ask the user before killing
+  it."; otherwise → not this session's IDE, dismiss the dialog then `ConnectIde`. Without `lastIde`
+  the generic hint above is kept.
 * **Modal-dialog probe during long calls.** A modal dialog in XAE blocks the DTE call inside the
   bridge forever, so for `BuildProject`, `EnableConfig`, `PlcLogin`, `SendPlcProgram`,
   `RunTestCycle`, `OpenProject` and `ConnectIde` (and therefore the matching steps of
@@ -277,8 +281,9 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   `{"success":false,"error":{"code":"IDE_MODAL_DIALOG","message":"<title> | <first 200 chars of text>","hint":"..."},"data":{"dialogTitle","dialogText","ideProcessId","lastIde","bridgeRestarted"}}`
   (`message` is just the title when the text is empty; `lastIde` is the snapshot at detection time,
   `null` during `ConnectIde`; `bridgeRestarted` is `false` for a dequeued call). The hint names the
-  pid: launched by this server → dismiss the dialog or `taskkill /PID N /T /F` (ask the user first),
-  opened by the user → dismiss it; then `ConnectIde`; it also warns that the interrupted DTE
+  pid: owned by this session (`lastIde.ownedBySession` true, #237) → dismiss the dialog or
+  `taskkill /PID N /T /F` (ask the user first; confirm with `Get-Process -Id N` name and start time
+  that the pid is still that IDE, #269), not owned or unknown → dismiss it; then `ConnectIde`; it also warns that the interrupted DTE
   operation may still complete inside the IDE once the dialog closes (killing PowerShell does not
   cancel it), and for a dequeued call that the call ahead of it may stay blocked until its own
   timeout. `BRIDGE_*` decoration does not touch this

@@ -2,9 +2,12 @@
 .SYNOPSIS
     Manual integration test: Connect-TcIde -> Enter-TcPlcOnline -> Exit-TcPlcOnline -> Enter again.
 .DESCRIPTION
-    Reproduces the 2026-10-18 finding that the "<Plc> Project" tree item exposes Login(nFlags)
-    but not Logout() on TwinCAT 3.1.4026, so Exit-TcPlcOnline must fall back to the
-    ITcPlcProject object. Requires a running IDE-capable machine and a target whose PLC
+    Login / logout round trip. Since #232 both cmdlets read the login state back: check
+    data.loggedIn (true after Enter, false after Exit) and data.logoutVia. Logoff() works on the
+    "<Plc> Project" tree item (data.logoutVia = treeItem.Logoff); calling it on the PLC node
+    TIPC^<Plc> throws (measured 2026-11-13, 4026.22 VS2022 and a 4024 project in the 32-bit
+    TcXaeShell, local UmRT). The 2026-10-18 note that the "<Plc> Project" item has no Logoff came
+    from Get-Member only and was wrong. Requires a running IDE-capable machine and a target whose PLC
     program is already loaded (local UmRT is fine). Prints one JSON result per step.
 .EXAMPLE
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\Integration\login-logout.ps1 `

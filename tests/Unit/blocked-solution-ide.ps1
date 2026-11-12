@@ -320,20 +320,23 @@ try {
     $global:GuardThrows = $true
     # #241: the two guard cases run into -TimeoutSec: Reset-TcSolution's deadline and polls at $RS of real time
     $RS = 0.25
+    # #251: try/finally, so a throw cannot leave the later cases at $RS of real time
     & $mod { param($x) $script:TcResetTimeScale = $x } $RS
-    $r = Reset-TcSolution -TimeoutSec 5
-    $global:GuardThrows = $false
-    Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
+    try {
+        $r = Reset-TcSolution -TimeoutSec 5
+        $global:GuardThrows = $false
+        Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
 
-    # --- #55: guard read answers $null (Solution.FullName $null) and stays so -> UNVERIFIED after -TimeoutSec, nothing closed ---
-    $global:ClosedSolution = $false
-    $nullSol = [PSCustomObject]@{ FullName = $null }
-    $nullSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
-    & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $nullSol $fakeDocs
-    $swNull = [System.Diagnostics.Stopwatch]::StartNew()
-    $r = Reset-TcSolution -TimeoutSec 5   # ValidateRange minimum is 5
-    $swNull.Stop()
-    & $mod { $script:TcResetTimeScale = 1.0 }
+        # --- #55: guard read answers $null (Solution.FullName $null) and stays so -> UNVERIFIED after -TimeoutSec, nothing closed ---
+        $global:ClosedSolution = $false
+        $nullSol = [PSCustomObject]@{ FullName = $null }
+        $nullSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
+        & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $nullSol $fakeDocs
+        $swNull = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Reset-TcSolution -TimeoutSec 5   # ValidateRange minimum is 5
+        $swNull.Stop()
+    }
+    finally { & $mod { $script:TcResetTimeScale = 1.0 } }
     # bounds: the scaled 5 s budget + the slack of the unscaled check (guardSec <= 5 + 2, total < 5 + 7)
     Check 'reset-guard-null-times-out' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'answered \$null' -and $r.data.guardSec -le (5 * $RS + 2) -and $swNull.Elapsed.TotalSeconds -lt (5 * $RS + 7)) "code=$($r.error.code) closed=$global:ClosedSolution err=$($r.data.guardError) guardSec=$($r.data.guardSec) total=$([math]::Round($swNull.Elapsed.TotalSeconds, 1))"
 
@@ -410,7 +413,9 @@ try {
     $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 991 }
     Check 'silent-unknown' ($so -is [string] -and $so -eq 'unknown') "value=$so"
 
-    # --- #55 nit: the SilentMode getter throws on connect -> remembered 'unknown', Disconnect never writes the setter ---
+    # --- #55 nit, changed by PR #266 review 1: the SilentMode getter throws on connect but the setter
+    # sets true -> the original is unknown: remembered 'assumed-false' and Disconnect restores false
+    # (before: 'unknown' and no restore, which left the IDE in SilentMode = true for good) ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null; Set-TcIdeSilentOriginal -ProcessId 995 -Value $null }
     $global:FakeIde = @{ 995 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
     $global:SilentWrites = [System.Collections.Generic.List[string]]::new()
@@ -425,10 +430,10 @@ try {
     $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
     $global:SilentGetterThrows = $false
     $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 995 }
-    Check 'silent-unknown-connect' ($r.success -and $so -eq 'unknown' -and (& $mod { $null -eq $script:TcSilentModeOriginal })) "success=$($r.success) err=$($r.error.message) stored=$so"
+    Check 'silent-unknown-connect' ($r.success -and $so -eq 'assumed-false' -and $r.data.silentModeOriginalUnknown -eq $true -and (& $mod { $false -eq $script:TcSilentModeOriginal })) "success=$($r.success) err=$($r.error.message) stored=$so"
     $global:SilentWrites.Clear()
     $null = Disconnect-TcIde
-    Check 'silent-unknown-disconnect-no-setter' ($global:SilentWrites.Count -eq 0) "writes=$($global:SilentWrites -join ',')"
+    Check 'silent-unknown-disconnect-restores-false' (($global:SilentWrites -join ',') -eq 'False') "writes=$($global:SilentWrites -join ',')"
 }
 finally {
     & $mod { $script:TcDte = $null; $script:TcIdeConnected = $false; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null }

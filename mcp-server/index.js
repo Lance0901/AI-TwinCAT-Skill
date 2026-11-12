@@ -13,6 +13,7 @@ import { PowerShellBridge, errorResult, decorateConnectIdeTimeout } from './lib/
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
+import { ideFromConnectData, ideHint, modalHint } from './lib/ide-hints.js';
 import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-probe.js';
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
@@ -135,19 +136,13 @@ function listTools() {
 // The bridge loses the IDE pid when it is killed after a BRIDGE_TIMEOUT (a DTE call blocked by a
 // modal dialog). Remember the last successful ConnectIde here so the error can still name the IDE.
 
-/** @type {{ideProcessId:number|null, selectedBy:string|null, solution:string|null, ideMainHwnd:number|null}|null} */
+/** @type {import('./lib/ide-hints.js').LastIde|null} */
 let lastIde = null;
 
 async function rememberIde(name, result) {
   if (result?.success !== true) return;
   if (name === 'ConnectIde') {
-    const d = result.data ?? {};
-    const ide = {
-      ideProcessId: Number.isInteger(d.ideProcessId) && d.ideProcessId > 0 ? d.ideProcessId : null,
-      selectedBy: typeof d.selectedBy === 'string' ? d.selectedBy : null,
-      solution: typeof d.solution === 'string' && d.solution.length ? d.solution : null,
-      ideMainHwnd: null
-    };
+    const ide = ideFromConnectData(result.data);
     lastIde = ide;
     // Main window handle for the modal probe (it excludes the main window by handle and checks
     // that it is blocked by a modal). op:"state" makes no COM call, so this costs milliseconds.
@@ -185,18 +180,6 @@ function connectIdeProbeMode(params, prevIde) {
 
 const BRIDGE_LOST_CODES = new Set(['BRIDGE_TIMEOUT', 'BRIDGE_DIED']);
 
-function ideHint(ide) {
-  const pid = ide?.ideProcessId;
-  if (!pid) return null;
-  if (ide.selectedBy === 'launched') {
-    return (
-      `The IDE (pid ${pid}, launched by this server) is probably blocked by a modal dialog. ` +
-      `Kill it with \`taskkill /PID ${pid} /T /F\`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.`
-    );
-  }
-  return `The IDE (pid ${pid}) was opened by the user; check its window for a modal dialog, dismiss it, then ConnectIde again.`;
-}
-
 /**
  * BRIDGE_TIMEOUT / BRIDGE_DIED: attach the last known IDE and a hint that names it. Idempotent.
  * The pid is verified first (tasklist: alive and TcXaeShell.exe / devenv.exe); a stale lastIde is
@@ -224,35 +207,6 @@ async function decorateBridgeLoss(result) {
 
 /** @type {Set<ModalProbe>} */
 const activeProbes = new Set();
-
-/**
- * @param {number} pid   IDE pid the probe watched
- * @param {{selectedBy?:string|null}|null} ide  IDE identity known for that pid (selectedBy decides the advice)
- * @param {string} title dialog title
- * @param {'killed'|'dequeued'} outcome  what happened to the call (bridge.abortCall)
- */
-function modalHint(pid, ide, title, outcome) {
-  // Killing PowerShell does not cancel the DTE operation inside the IDE: once the dialog is
-  // dismissed, XAE may still finish (or half-apply) the activation / download / PLC start.
-  const lost =
-    outcome === 'dequeued'
-      ? 'the call was not sent to PowerShell (the call running in the bridge ahead of it may stay blocked by the same dialog until its own timeout)'
-      : 'the PowerShell bridge was killed and all IDE/ADS state is lost';
-  // #236: only a killed bridge can have left a runtime-changing request half done (a dequeued
-  // call never reached PowerShell)
-  const after =
-    outcome === 'killed'
-      ? 'The interrupted operation may still complete or partly apply after the dialog closes. If it had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle) it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check: do not re-run it; report it to the user, check read-only (GetSystemState / GetPlcState), ClearLifecycleBlock only after the user agreed.'
-      : 'Check GetStatus / GetPlcState before re-running the call.';
-  if (ide?.selectedBy === 'launched') {
-    return (
-      `The IDE (pid ${pid}, launched by this server) shows the modal dialog '${title}'; ${lost}. ` +
-      `Dismiss the dialog in the XAE window, or kill the IDE with \`taskkill /PID ${pid} /T /F\` ` +
-      `(unsaved changes in that IDE will be lost; ask the user before killing it), then ConnectIde again. ${after}`
-    );
-  }
-  return `The IDE (pid ${pid}) shows the modal dialog '${title}' and was opened by the user; ${lost}. Dismiss it in the XAE window (or ask the user to), then ConnectIde again. ${after}`;
-}
 
 /**
  * #49: hint for a license dialog (licenseDialogEvidence). The dialog is never pressed: license

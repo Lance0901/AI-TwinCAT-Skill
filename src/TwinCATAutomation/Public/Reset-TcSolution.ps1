@@ -818,7 +818,7 @@ function Reset-TcSolution {
         @{
             Dte = $script:TcDte; ProgId = $script:TcProgId; Pid = $script:TcIdeProcessId; SelectedBy = $script:TcIdeSelectedBy
             Sln = $script:TcSolutionPath; Start = $script:TcIdeStartTime; MainHwnd = $script:TcIdeMainHwnd
-            Settings = $script:TcAutomationSettings; Silent = $script:TcSilentMode; SilentOriginal = $script:TcSilentModeOriginal
+            Settings = $script:TcAutomationSettings; Silent = $script:TcSilentMode; SilentOriginal = $script:TcSilentModeOriginal; SilentUnknown = $script:TcSilentOriginalUnknown
         }
     }
     function Restore-TcResetIdeIdentity {
@@ -826,7 +826,7 @@ function Reset-TcSolution {
         $script:TcDte = $Saved.Dte; $script:TcProgId = $Saved.ProgId; $script:TcIdeConnected = ($null -ne $Saved.Dte)
         $script:TcIdeProcessId = $Saved.Pid; $script:TcIdeSelectedBy = $Saved.SelectedBy; $script:TcSolutionPath = $Saved.Sln
         $script:TcIdeStartTime = $Saved.Start; $script:TcIdeMainHwnd = $Saved.MainHwnd
-        $script:TcAutomationSettings = $Saved.Settings; $script:TcSilentMode = $Saved.Silent; $script:TcSilentModeOriginal = $Saved.SilentOriginal
+        $script:TcAutomationSettings = $Saved.Settings; $script:TcSilentMode = $Saved.Silent; $script:TcSilentModeOriginal = $Saved.SilentOriginal; $script:TcSilentOriginalUnknown = [bool]$Saved.SilentUnknown
     }
 
     # Readback before success (#135 F5). $null = loaded; @{ ReloadPrompt = <dialog> } = a reload

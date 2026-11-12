@@ -73,6 +73,10 @@ function Disconnect-TcIde {
         data.dialog (when a modal was seen), data.killed / data.alreadyExited (kill path),
         data.reason ('not connected' when there was nothing to quit), data.launchRecordWarning
         (launched-ides.json could not be read / written).
+        Always (#233): data.silentModeRestored (the SilentMode value written back, $null = nothing
+        written: quit / killed / nothing to restore), data.silentModeOriginalUnknown (true = the
+        original was unknown and false was restored), data.silentModeRestoreError (restore failed:
+        the IDE stays in SilentMode = true, the original stays recorded for a later restore).
         Errors: INVALID_PARAMS, IDE_QUIT_FAILED, IDE_NOT_OWNED, MODAL_SCAN_INCOMPLETE,
         LAUNCH_RECORD_UNAVAILABLE (-ForgetPendingLaunch).
     #>
@@ -118,6 +122,15 @@ function Disconnect-TcIde {
     # ReloadModule (launched-ides.json, confirmed pid only; unreadable file = not owned).
     $ownedBySession = ($selectedBy -eq 'launched') -or ($null -ne $script:TcIdeProcessId -and (Test-TcLaunchedIde -ProcessId ([int]$script:TcIdeProcessId)))
 
+    # #233 / PR #266 review 3: SilentMode restore result, added to every result's data
+    $silentRestored = $null; $silentRestoreError = $null
+    $silentUnknown = [bool]$script:TcSilentOriginalUnknown
+    function Add-SilentRestoreData([object]$D) {
+        $D | Add-Member -NotePropertyName 'silentModeRestored' -NotePropertyValue $silentRestored -Force
+        $D | Add-Member -NotePropertyName 'silentModeOriginalUnknown' -NotePropertyValue $silentUnknown -Force
+        if ($null -ne $silentRestoreError) { $D | Add-Member -NotePropertyName 'silentModeRestoreError' -NotePropertyValue $silentRestoreError -Force }
+    }
+
     function New-QuitData {
         param([hashtable]$QuitResult, [object]$Dialog, [bool]$Disconnected)
         $d = [PSCustomObject][ordered]@{
@@ -131,6 +144,7 @@ function Disconnect-TcIde {
             disconnected   = $Disconnected
         }
         if ($null -ne $QuitResult.reason) { $d | Add-Member -NotePropertyName 'reason' -NotePropertyValue $QuitResult.reason }
+        Add-SilentRestoreData $d
         if (Test-TcModalScanIncomplete $Dialog) {
             # #42: the scan did not complete - reported as unknown, not as a dialog
             $d | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
@@ -241,18 +255,27 @@ function Disconnect-TcIde {
         }
     }
 
-    # Restore the SilentMode value Connect-TcIde found, unless the IDE was quit (or is blocked).
-    if (-not $Quit -and $null -ne $script:TcAutomationSettings -and $null -ne $script:TcSilentModeOriginal) {
+    # Restore the SilentMode value Connect-TcIde found (#233). Not when the IDE was quit or is about to
+    # be killed; also after a -Quit whose DTE.Quit failed without -Kill (PR #266 review 5: the IDE
+    # keeps running). A -Quit that found a modal dialog returned above (a setter call would block).
+    # Result in data.silentModeRestored (the value written, $null = nothing written),
+    # data.silentModeRestoreError and data.silentModeOriginalUnknown. A failed restore keeps the
+    # record in silent-originals.json, so the next Connect-TcIde + Disconnect-TcIde restores it.
+    $quitFailedKept = ($null -ne $quitResult -and -not $quitResult.quit -and -not $wantKill -and $quitResult.reason -ne 'not connected')
+    if ((-not $Quit -or $quitFailedKept) -and $null -ne $script:TcAutomationSettings -and $null -ne $script:TcSilentModeOriginal) {
         $settingsRestore = $script:TcAutomationSettings
         $silentRestore = [bool]$script:TcSilentModeOriginal
         try {
             Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
+            $silentRestored = $silentRestore
             # Restored: the next connect reads the (now original) value again.
-            if ($null -ne $script:TcIdeProcessId) { Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }
+            if ($null -ne $script:TcIdeProcessId) { $null = Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }   # #233: also from silent-originals.json
         }
-        catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
+        catch {
+            $silentRestoreError = "SilentMode could not be restored to $silentRestore ($($_.Exception.Message)); the IDE keeps SilentMode = true until a later Connect-TcIde + Disconnect-TcIde restores it (the original stays recorded)"
+            Write-Warning "Disconnect-TcIde: $silentRestoreError"
+        }
     }
-
     # --- release every COM reference; the IDE identity is cleared separately ---
     if ($null -ne $script:TcAutomationSettings) {
         try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcAutomationSettings) | Out-Null } catch { }
@@ -260,6 +283,7 @@ function Disconnect-TcIde {
     $script:TcAutomationSettings = $null
     $script:TcSilentMode = $false
     $script:TcSilentModeOriginal = $null
+    $script:TcSilentOriginalUnknown = $false
 
     if ($null -ne $script:TcSysManager) {
         try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { }
@@ -287,7 +311,9 @@ function Disconnect-TcIde {
 
     if ($null -eq $quitResult) {
         Clear-IdeIdentity
-        return New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'Disconnected from TwinCAT IDE.' })
+        $plain = [PSCustomObject]@{ message = $(if ($null -ne $silentRestoreError) { "Disconnected from TwinCAT IDE; $silentRestoreError." } else { 'Disconnected from TwinCAT IDE.' }) }
+        Add-SilentRestoreData $plain
+        return New-TcResult -Success $true -Data $plain
     }
 
     $data = New-QuitData -QuitResult $quitResult -Dialog $dialog -Disconnected $true
