@@ -35,7 +35,7 @@ $warnRow = [PSCustomObject]@{ severity = 'Warning'; code = 'C0373'; description 
 function Reset-Mock {
     $global:C.Mode = 'true'; $global:C.Dialog = $null; $global:C.Calls = 0; $global:C.ElCalls = [System.Collections.ArrayList]::new()
     $global:C.Rows = @(); $global:C.Warnings = @($warnRow); $global:C.ElFails = $false
-    $global:C.NoMethod = $false
+    $global:C.NoMethod = $false; $global:C.PlcList = $null
 }
 function New-PrjNode {
     $n = [PSCustomObject]@{ Name = 'plc Project'; PathName = $PrjPath; ItemType = 600 }
@@ -65,7 +65,7 @@ $global:C.Sm = $sm
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:C.Sm }
     function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $global:C.Dialog }
-    function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
+    function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) if ($null -ne $global:C.PlcList) { return @($global:C.PlcList) }; @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
     function script:Get-TcBuildErrors {
         [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages)
@@ -103,11 +103,26 @@ try {
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowLoad)
     $r = Test-TcPlcProject
     Check '#275 False + load row -> CHECK_FAILED stays, loadErrorItems 1' ($r.error.code -eq 'CHECK_FAILED' -and @($r.data.loadErrorItems).Count -eq 1 -and @($r.data.errorItems).Count -eq 2) (J $r.data)
-    # review F3: a load row of ANOTHER PLC project does not fail the check of this one
+    # review F3 / S2: only a row that names ANOTHER PLC of the solution is left out
     $rowLoadOther = { [PSCustomObject]@{ severity = 'Error'; code = $null; description = 'Parts of the XML data do not conform to the schema:'; project = 'plc2'; file = 'FB_Other.TcPOU'; line = 1; column = 0 } }
+    $rowLoadOtherNull = { [PSCustomObject]@{ severity = 'Error'; code = $null; description = 'Parts of the XML data do not conform to the schema: ...'; project = $null; file = 'FB_Other.TcPOU'; line = 0; column = 0 } }
+    $twoPlcs = @(
+        [PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851; projectFile = 'C:\mock\plc\plc.plcproj' }
+        [PSCustomObject]@{ name = 'plc2'; nodePath = 'TIPC^plc2'; projectPath = 'TIPC^plc2^plc2 Project'; adsPort = 852; projectFile = 'C:\mock\plc2\plc2.plcproj' }
+    )
+    Reset-Mock; $global:C.PlcList = $twoPlcs; $global:C.Rows = @($rowLoadOther, $rowLoadOtherNull)
+    $r = Test-TcPlcProject
+    Check '#275 two PLCs, load rows of plc2 (and its null-project twin) -> success, otherLoadErrorItems 2 + warning' ($r.success -and $r.data.passed -eq $true -and @($r.data.loadErrorItems).Count -eq 0 -and @($r.data.otherLoadErrorItems).Count -eq 2 -and (@($r.data.warningTexts) -join ' ') -match 'other PLC') (J $r.data)
+    Check '#275 N1: other-PLC load rows are not also in staleErrorItems' (@($r.data.staleErrorItems).Count -eq 0) (J $r.data.staleErrorItems)
+    # S2: single PLC whose node name differs from the Error List project column -> the row is its own (fail closed)
     Reset-Mock; $global:C.Rows = @($rowLoadOther)
     $r = Test-TcPlcProject
-    Check '#275 True + load row of another PLC -> success, row in otherLoadErrorItems + warning' ($r.success -and $r.data.passed -eq $true -and @($r.data.loadErrorItems).Count -eq 0 -and @($r.data.otherLoadErrorItems).Count -eq 1 -and (@($r.data.warningTexts) -join ' ') -match 'other PLC') (J $r.data)
+    Check '#275 S2: one PLC, project column differs from the node name -> PROJECT_LOAD_ERRORS (no false pass)' ((-not $r.success) -and $r.error.code -eq 'PROJECT_LOAD_ERRORS' -and $r.data.passed -eq $false -and @($r.data.loadErrorItems).Count -eq 1) (J $r)
+    # S2: two PLCs, a project column that matches neither -> counts as own
+    $rowLoadUnknown = { [PSCustomObject]@{ severity = 'Error'; code = $null; description = 'x'; project = 'SomethingElse'; file = 'FB_X.TcPOU'; line = 1; column = 0 } }
+    Reset-Mock; $global:C.PlcList = $twoPlcs; $global:C.Rows = @($rowLoadUnknown)
+    $r = Test-TcPlcProject
+    Check '#275 S2: two PLCs, project column matches no PLC -> own, PROJECT_LOAD_ERRORS' ($r.error.code -eq 'PROJECT_LOAD_ERRORS') (J $r.error)
     Reset-Mock
     $r = Test-TcPlcProject
     Check '#275 True without load rows -> loadErrorItems present and empty' ($r.success -and $null -ne $r.data.PSObject.Properties['loadErrorItems'] -and @($r.data.loadErrorItems).Count -eq 0) (J $r.data)

@@ -67,12 +67,15 @@ $sa0033 = { Row 'Error' "SA0033: Unused variable 'nUnused'" 'FB_SaUnused.TcPOU (
     function script:Get-TcSysManager { [PSCustomObject]@{ Mock = $true } }
     function script:Find-TcIdeModalDialog { $null }
     function script:Get-TcSolutionPlatform { [PSCustomObject]@{ platform = 'TwinCAT OS (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT OS (x64)'; platformSource = 'ActiveConfig' } }
+    $script:UtCoverage = $null
+    $script:UtPlcList = $null
     function script:Get-TcBuildCoverage {
+        if ($null -ne $script:UtCoverage) { return @{ configuration = 'Release|TwinCAT OS (x64)'; error = $null; projects = @($script:UtCoverage | ForEach-Object { $_.PSObject.Copy() }) } }
         @{ configuration = 'Release|TwinCAT OS (x64)'; error = $null; projects = @(
             [PSCustomObject]@{ name = 'AxisInterface'; uniqueName = 'Demo275\AxisInterface\AxisInterface.plcproj'; configuration = 'Release'; platform = 'TwinCAT OS (x64)'; shouldBuild = $true; status = 'pending' }
         ) }
     }
-    function script:Get-TcPlcProjectList { param($SysManager) @([PSCustomObject]@{ name = 'AxisInterface'; nodePath = 'TIPC^AxisInterface'; projectPath = 'TIPC^AxisInterface^AxisInterface Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
+    function script:Get-TcPlcProjectList { param($SysManager) if ($null -ne $script:UtPlcList) { return @($script:UtPlcList) }; @([PSCustomObject]@{ name = 'AxisInterface'; nodePath = 'TIPC^AxisInterface'; projectPath = 'TIPC^AxisInterface^AxisInterface Project'; adsPort = 851; disabled = $false; projectFile = $null }) }
     function script:Get-TcPlcLoginState { param($SysManager, $Plc) [PSCustomObject]@{ plc = [string]$Plc.name; loggedIn = $false; source = 'IsLoggedIn'; error = $null } }
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
@@ -97,7 +100,21 @@ function Set-Scenario($Errors, $Warnings, $LastBuildInfo) {
     & $mod { param($e, $w, $l) $script:UtErrors = @($e); $script:UtWarnings = @($w); $script:UtLastBuildInfo = $l } $Errors $Warnings $LastBuildInfo
 }
 function Reset-State {
-    & $mod { $script:TcBuildRequiredLocal = @{}; $null = Clear-TcBuildRequired }
+    & $mod { $script:TcBuildRequiredLocal = @{}; $null = Clear-TcBuildRequired; $script:UtCoverage = $null; $script:UtPlcList = $null }
+}
+# --- 4024 rows (實測 2026-11-13, TcXaeShell.DTE.15.0 XAE 3.1.4026.22 + Remote Manager 4024.71, registered tcauto
+# branch 0771b0f, C:\Temp\b275\bfh = copy of Verify-4024-bfh). The 4024 Error List has no Code column:
+# a compiler row is code null, File a bare 'MAIN.TcPOU', Line = the line in the .TcPOU FILE (44; line 1 of
+# the file is '<?xml ...>'); a load row is code null, File bare, Line 0, and comes twice (project 'PLC1' with
+# the text 'Reading file failed. ...' and project null without it).
+function Rows4024Compile { @((Row 'Error' "Expression expected instead of ';'" 'MAIN.TcPOU' 44 $null 'PLC1'), (Row 'Error' "'axisRewind' is no component of 'GVL_AXES'" 'FB_R2RLineControl.TcPOU' 130 $null 'PLC1')) }
+function Rows4024Load {
+    @(
+        (Row 'Error' "Reading file failed. Tag 'Declaration' is missing in 'C:\temp\b275\bfh\LangMang260618\PLC1\POUs\FB_B275B.TcPOU' at line 10." 'FB_B275B.TcPOU' 0 $null 'PLC1')
+        (Row 'Error' 'Reading file failed. Parts of the XML data do not conform to the schema: ...' 'FB_B275C.TcPOU' 0 $null 'PLC1')
+        (Row 'Error' "Tag 'Declaration' is missing in 'C:\temp\b275\bfh\LangMang260618\PLC1\POUs\FB_B275B.TcPOU' at line 10." 'FB_B275B.TcPOU' 0 $null $null)
+        (Row 'Error' 'Parts of the XML data do not conform to the schema: ...' 'FB_B275C.TcPOU' 0 $null $null)
+    )
 }
 function Get-BuildRequiredReason { & $mod { $e = Get-TcBuildRequired; if ($null -eq $e) { return $null }; [string]$e.reason } }
 function Has([object]$d, [string]$name) { $null -ne $d.PSObject.Properties[$name] }
@@ -109,6 +126,11 @@ try {
         @{ Name = 'Tag Declaration missing'; Item = (LoadRows)[1]; Load = $true }
         @{ Name = 'Id wrong format'; Item = (LoadRows)[3]; Load = $true }
         @{ Name = 'sub-object GUID duplicate'; Item = (GuidRow); Load = $true }
+        @{ Name = '4024 load row (line 0, project PLC1)'; Item = (Rows4024Load)[0]; Load = $true }
+        @{ Name = '4024 load row (line 0, project null)'; Item = (Rows4024Load)[2]; Load = $true }
+        @{ Name = '4024 compiler row: bare MAIN.TcPOU, code null, line 44 is no load row (review S1)'; Item = (Rows4024Compile)[0]; Load = $false }
+        @{ Name = '4024 compiler row of CheckAllObjects (line 130) is no load row'; Item = (Rows4024Compile)[1]; Load = $false }
+        @{ Name = 'bare file, line 2 is no load row (line 1 of a .TcPOU is <?xml>)'; Item = (Row 'Error' 'x' 'FB_A.TcPOU' 2); Load = $false }
         @{ Name = 'bare .TcGVL file, no code (inferred kind)'; Item = (Row 'Error' 'Parts of the XML data do not conform to the schema:' 'GVL_Main.TcGVL' 1); Load = $true }
         @{ Name = 'task row on 4024 whose code was not inferred (PlcTask.TcTTO, line 0) is no load row (review F2)'; Item = (Row 'Error' "Identifier 'MainX' not defined" 'PlcTask.TcTTO' 0); Load = $false }
         @{ Name = 'bare .plcproj / .tsproj error is no load row (not measured)'; Item = (Row 'Error' 'x' 'AxisInterface.plcproj' 1); Load = $false }
@@ -187,6 +209,54 @@ try {
     $d = $r.data
     Check '(5) clean -> success, completeBuild true, no warningCodes' ($r.success -and $d.completeBuild -eq $true -and -not (Has $d 'warningCodes')) (J $d)
     Check '(5) loadErrorItems / staticAnalysisItems present and empty' ((Has $d 'loadErrorItems') -and @($d.loadErrorItems).Count -eq 0 -and (Has $d 'staticAnalysisItems') -and @($d.staticAnalysisItems).Count -eq 0) (J $d)
+
+    # ===== (6) review S1, 4024: a real compiler error (bare file, code null, line 44)
+    Reset-State
+    Set-Scenario @((Rows4024Compile)[0]) @() 2
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check '(6) 4024 compile error -> BUILD_FAILED, loadErrorItems empty' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and @($r.data.loadErrorItems).Count -eq 0) (J $r.data.loadErrorItems)
+    Reset-State
+    Set-Scenario @((Rows4024Compile)[0]) @() $null
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check '(6b) 4024 compile error, LastBuildInfo unreadable -> BUILD_FAILED by ErrorList (not PROJECT_LOAD_ERRORS)' ((-not $r.success) -and $r.error.code -eq 'BUILD_FAILED' -and $r.data.decidedBy -eq 'ErrorList') (J $r.error)
+
+    # ===== (7) 4024 load rows (line 0, doubled) -> PROJECT_LOAD_ERRORS, no extra CODE_NOT_VERIFIED
+    Reset-State
+    Set-Scenario (Rows4024Load) @() 0
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check '(7) 4024 load rows -> PROJECT_LOAD_ERRORS, 2 files' ((-not $r.success) -and $r.error.code -eq 'PROJECT_LOAD_ERRORS' -and @($r.data.loadErrorFiles).Count -eq 2) (J $r.data.loadErrorFiles)
+    Check '(7) line-0 load rows do not add CODE_NOT_VERIFIED' (@($r.data.warningCodes) -notcontains 'CODE_NOT_VERIFIED') (J $r.data.warningCodes)
+
+    # ===== (8) review S5: load rows of a DISABLED PLC (#104) only warn; an enabled PLC still blocks
+    Reset-State
+    & $mod {
+        $script:UtCoverage = @(
+            [PSCustomObject]@{ name = 'PLC1'; uniqueName = 'D\PLC1\PLC1.plcproj'; configuration = 'Release'; platform = 'TwinCAT OS (x64)'; shouldBuild = $true; status = 'pending' }
+            [PSCustomObject]@{ name = 'PLC2'; uniqueName = 'D\PLC2\PLC2.plcproj'; configuration = 'Release'; platform = 'TwinCAT OS (x64)'; shouldBuild = $false; status = 'skipped' }
+        )
+        $script:UtPlcList = @(
+            [PSCustomObject]@{ name = 'PLC1'; nodePath = 'TIPC^PLC1'; projectPath = 'TIPC^PLC1^PLC1 Project'; adsPort = 851; disabled = $false; projectFile = $null }
+            [PSCustomObject]@{ name = 'PLC2'; nodePath = 'TIPC^PLC2'; projectPath = 'TIPC^PLC2^PLC2 Project'; adsPort = 852; disabled = $true; projectFile = $null }
+        )
+    }
+    $dis = @(
+        (Row 'Error' 'Reading file failed. Parts of the XML data do not conform to the schema: ...' 'FB_Old.TcPOU' 0 $null 'PLC2')
+        (Row 'Error' 'Parts of the XML data do not conform to the schema: ...' 'FB_Old.TcPOU' 0 $null $null)
+    )
+    Set-Scenario $dis @() 0
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    $d = $r.data
+    Check '(8) disabled PLC load rows -> success, completeBuild true' ($r.success -and $d.completeBuild -eq $true -and $d.codeVerified -eq $true) (J $r)
+    Check '(8) rows in disabledLoadErrorItems (the null-project twin too), loadErrorItems empty, warningCode PROJECT_LOAD_ERRORS' (@($d.disabledLoadErrorItems).Count -eq 2 -and @($d.loadErrorItems).Count -eq 0 -and @($d.warningCodes) -contains 'PROJECT_LOAD_ERRORS') (J $d)
+    Set-Scenario (@($dis) + (Row 'Error' 'Parts of the XML data do not conform to the schema:' 'FB_New.TcPOU' 1 $null 'PLC1')) @() 0
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check '(8b) + a load row of the enabled PLC -> PROJECT_LOAD_ERRORS for FB_New only' ((-not $r.success) -and $r.error.code -eq 'PROJECT_LOAD_ERRORS' -and (@($r.data.loadErrorFiles) -join ',') -eq 'FB_New.TcPOU' -and @($r.data.disabledLoadErrorItems).Count -eq 2) (J $r.data)
+
+    # ===== (9) review N2: BUILD_FAILED with load rows -> the hint names them
+    Reset-State
+    Set-Scenario (@(LoadRows) + (& $c0046)) @() 1
+    $r = Build-TcProject -WarningAction SilentlyContinue
+    Check '(9) BUILD_FAILED + load rows -> hint mentions PROJECT_LOAD_ERRORS / loadErrorFiles' ($r.error.code -eq 'BUILD_FAILED' -and $r.error.hint -match 'PROJECT_LOAD_ERRORS' -and $r.error.hint -match 'loadErrorFiles') $r.error.hint
 
     # ===== hint table
     $h = & $mod { @{ l = (Get-TcErrorHint -Code 'PROJECT_LOAD_ERRORS'); s = (Get-TcErrorHint -Code 'STATIC_ANALYSIS_ERRORS') } }

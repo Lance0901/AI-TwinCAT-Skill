@@ -137,19 +137,38 @@ function Test-TcPlcProject {
         # #275 (measured 2026-11-13, 4026 VS2022): rows XAE wrote while loading a project file (no compiler
         # code, File = a bare object file name) stay in the Error List while CheckAllObjects returns True.
         # They are current (gone after the file is fixed and the solution reopened), not stale: no pass.
-        # Only rows of THIS PLC project (Error List 'project' column = the PLC name, measured 2026-11-13:
-        # 'AxisInterface'); a broken file of another PLC of the solution is not a result of this check (review #275 F3)
+        # Rows of other PLC projects (review #275 F3 / S2): with ONE PLC project every load row is its own;
+        # with several, a row is left out only when its Error List 'project' column names ANOTHER PLC
+        # (tree name or .plcproj file name; measured 2026-11-13: the column is the PLC name, 'AxisInterface' /
+        # 'PLC1'). A row that matches no PLC, or a PLC list that cannot be read, counts as own (fail closed).
         $plcName = ([string]$prjPath -split '\^')[1]
-        $loadAll = @($els.loadErrorItems)
-        $loadRows = @($loadAll | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.project) -or [string]$_.project -ieq $plcName })
-        $otherLoad = @($loadAll | Where-Object { $loadRows -notcontains $_ })
+        $otherNames = @()
+        try {
+            $plcs = @(Get-TcPlcProjectList -SysManager $sm)
+            if ($plcs.Count -gt 1) {
+                $own = @($plcs | Where-Object { [string]$_.name -ieq $plcName -or [string]$_.projectPath -ieq [string]$prjPath })
+                $ownNames = @($plcName) + @($own | ForEach-Object { [string]$_.name; if (-not [string]::IsNullOrWhiteSpace([string]$_.projectFile)) { [IO.Path]::GetFileNameWithoutExtension([string]$_.projectFile) } })
+                foreach ($pl in @($plcs | Where-Object { $own -notcontains $_ })) {
+                    foreach ($nm in @([string]$pl.name, $(if (-not [string]::IsNullOrWhiteSpace([string]$pl.projectFile)) { [IO.Path]::GetFileNameWithoutExtension([string]$pl.projectFile) }))) {
+                        if (-not [string]::IsNullOrWhiteSpace($nm) -and -not ($ownNames -icontains $nm)) { $otherNames += $nm }
+                    }
+                }
+            }
+        }
+        catch {
+            if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
+            Write-Verbose "Test-TcPlcProject: PLC project list not readable ($($_.Exception.Message)); every load row counts as own"
+        }
+        $loadSplit = Split-TcLoadErrorRows -Rows @($els.loadErrorItems) -ExcludeNames $otherNames
+        $loadRows = @($loadSplit.Kept)
+        $otherLoad = @($loadSplit.Excluded)
         $checkReturned = $passed
         if ($passed -eq $true -and $loadRows.Count -gt 0) {
             $passed = $false
             $data.passed = $false
             $data | Add-Member -NotePropertyName checkReturned -NotePropertyValue $true
             $located = $loadRows
-            $stale = @($els.errorItems | Where-Object { -not (Test-TcProjectLoadErrorItem $_) })
+            $stale = @($els.errorItems | Where-Object { -not (Test-TcProjectLoadErrorItem $_) -and $otherLoad -notcontains $_ })
             if ($stale.Count -gt 0) { $warningTexts += "the Error List also shows $($stale.Count) other error row(s) (data.staleErrorItems) that CheckAllObjects did not report" }
         }
         if ($otherLoad.Count -gt 0) { $warningTexts += "the Error List shows $($otherLoad.Count) project load error row(s) of other PLC project(s) (data.otherLoadErrorItems); they do not count for '$prjPath'" }
@@ -157,7 +176,8 @@ function Test-TcPlcProject {
             $data | Add-Member -NotePropertyName errorItems -NotePropertyValue @()
             $data | Add-Member -NotePropertyName codeErrors -NotePropertyValue @()
             $data | Add-Member -NotePropertyName libraryErrorItems -NotePropertyValue @()
-            $stale = @($els.errorItems)
+            # #275 N1: other-PLC load rows are in otherLoadErrorItems only
+            $stale = @($els.errorItems | Where-Object { $otherLoad -notcontains $_ })
             if ($stale.Count -gt 0) { $warningTexts += "CheckAllObjects returned True, but the Error List still shows $($stale.Count) error row(s) (data.staleErrorItems); they are not results of this check" }
             $data | Add-Member -NotePropertyName errors -NotePropertyValue 0
         }

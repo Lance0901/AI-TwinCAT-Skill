@@ -1016,12 +1016,45 @@ function Test-TcProjectLoadErrorItem {
     if (-not [string]::IsNullOrWhiteSpace([string]$Item.code)) { return $false }
     if (Test-TcLibraryManagerItem $Item) { return $false }
     if ($null -ne $Item.PSObject.Properties['category'] -and [string]$Item.category -eq 'library') { return $false }
+    # Line (review #275 S1, 實測 2026-11-13): load rows had line 1 (4026 VS2022) or 0 (4024 TcXaeShell);
+    # a 4024 compiler row is ALSO code null + bare file, but its Line is the line in the .TcPOU file
+    # (44, 130...), never 1: line 1 of an object file is '<?xml ...>' and line 2 the root element.
+    $n = 0
+    $lineText = ([string]$Item.line).Trim()
+    if ($lineText -ne '' -and [int]::TryParse($lineText, [ref]$n) -and $n -gt 1) { return $false }
     $file = ([string]$Item.file).Trim()
     if ([string]::IsNullOrEmpty($file)) { return $false }
     # Only object kinds XAE loads with the same XML loader (.TcPOU measured; .TcDUT / .TcGVL / .TcIO
     # inferred). NOT .TcTTO: a task row is a compiler row ('PlcTask.TcTTO', line 0, C0046 / C0035 /
     # C0036), and on 4024 (no Code column) its code may not be inferred from the text (review #275 F2).
     return ($file -match '^[^@()\\/:*?"<>|]+\.(TcPOU|TcDUT|TcGVL|TcIO)$')
+}
+
+function Split-TcLoadErrorRows {
+    <#
+    .SYNOPSIS
+        Splits load-error rows (Test-TcProjectLoadErrorItem) into the ones that belong to the PLC
+        projects named in -ExcludeNames (Excluded) and all others (Kept), fail closed (#275 review S2 / S5).
+    .DESCRIPTION
+        A row is Excluded only when its Error List 'project' column equals one of -ExcludeNames
+        (case-insensitive). 4024 TcXaeShell lists every load error twice (實測 2026-11-13): once with
+        project = the PLC name and the text 'Reading file failed. ...', once with project empty; an
+        empty-project row is Excluded only when an Excluded row has the same file and no Kept row
+        with a project does. Every other row, also one whose project matches no PLC, is Kept.
+    #>
+    [CmdletBinding()]
+    param([object[]]$Rows, [string[]]$ExcludeNames)
+    $names = @($ExcludeNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $rows = @($Rows | Where-Object { $null -ne $_ })
+    if ($names.Count -eq 0) { return [PSCustomObject]@{ Kept = $rows; Excluded = @() } }
+    $isNamed = { param($r) -not [string]::IsNullOrWhiteSpace([string]$r.project) }
+    $ex = @($rows | Where-Object { (& $isNamed $_) -and ($names -icontains ([string]$_.project).Trim()) })
+    $keptNamed = @($rows | Where-Object { (& $isNamed $_) -and -not ($names -icontains ([string]$_.project).Trim()) })
+    $exFiles = @($ex | ForEach-Object { ([string]$_.file).Trim() })
+    $keptFiles = @($keptNamed | ForEach-Object { ([string]$_.file).Trim() })
+    $exNull = @($rows | Where-Object { -not (& $isNamed $_) -and ($exFiles -icontains ([string]$_.file).Trim()) -and -not ($keptFiles -icontains ([string]$_.file).Trim()) })
+    $excluded = @($ex) + @($exNull)
+    [PSCustomObject]@{ Kept = @($rows | Where-Object { $excluded -notcontains $_ }); Excluded = $excluded }
 }
 
 function Test-TcStaticAnalysisItem {
