@@ -751,7 +751,7 @@ namespace TcLintEngine
             {
                 string unc = uncertainCall ? p.Name : MentionedIn(p.Name, p.Name);
                 // like other notAnalyzed sections (CFC, conditional pragma; Phase 1a decision) this does not make the verdict incomplete
-                if (unc != null && strong + otherCallers.Count >= 1) rulesSkipped.Add(Cov(R2, p.O.Rel, p.Name, null, "call-graph-incomplete:" + unc));
+                if (unc != null && (uncertainCall || strong + otherCallers.Count >= 1)) rulesSkipped.Add(Cov(R2, p.O.Rel, p.Name, null, "call-graph-incomplete:" + unc));
                 return;
             }
             string impact = variant == "fb-or-function-caller"
