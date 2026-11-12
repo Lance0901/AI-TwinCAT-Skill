@@ -95,7 +95,7 @@ function N([string]$Name, $Disabled, [switch]$Flip, [string]$File) { @{ name = $
     $script:UtOrigCoverage = ${function:Get-TcBuildCoverage}
     $script:UtOrigPlcList = ${function:Get-TcPlcProjectList}
     function script:Assert-TcConnection { }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
     function script:Get-TcSysManager {
         [CmdletBinding()] param([switch]$Refresh)
         $o = [PSCustomObject]@{ Mock = $true }

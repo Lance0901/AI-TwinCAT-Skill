@@ -63,7 +63,7 @@ namespace TwinCAT.Ads {
 $stubs = {
     function script:Find-TcAdsAssembly { $true }
     function script:Assert-TcConnection { }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
     function script:Get-TcIdeMemoryInfo { $null }
     function script:Get-TcLicenseDiagnosis { param($AmsNetId) $null }
     function script:Get-TcLocalUmRtProcess { param($AmsNetId) $null }

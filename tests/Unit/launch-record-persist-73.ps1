@@ -117,7 +117,7 @@ function Restart-Module {
             Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
         }
         function script:Find-TcIdeModalDialog {
-            [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+            [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
             $mode = $global:Modal73
             if ($global:ModalQueue73.Count -gt 0) { $mode = $global:ModalQueue73[0]; $global:ModalQueue73.RemoveAt(0) }
             $p = if ($ProcessId -gt 0) { $ProcessId } else { [int]$script:TcIdeProcessId }

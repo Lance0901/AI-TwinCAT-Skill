@@ -28,7 +28,7 @@ Check 'nopid-fails' ($r.success -eq $false -and $r.error.code -eq 'NOT_CONNECTED
 Check 'nopid-hint' (-not [string]::IsNullOrWhiteSpace($r.error.hint) -and $r.error.hint -match 'Connect-TcIde') "$($r.error.hint)"
 
 # 3. no dialog -> success, data.dialog null, data.ideProcessId
-& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null } }
+& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null } }
 $r = Get-TcIdeModalDialog -ProcessId 4242
 Check 'none-success' ($r.success -eq $true) ''
 Check 'none-dialog-null' ($null -eq $r.data.dialog) ''
@@ -39,7 +39,7 @@ $global:SeenPid = $null; $global:SeenTimeout = $null
 & $mod {
     $script:TcIdeProcessId = 777
     function script:Find-TcIdeModalDialog {
-        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
         $global:SeenPid = $ProcessId; $global:SeenTimeout = $TimeoutSec
         @{ Title = 'Microsoft Visual Studio'; Text = 'File has been changed outside the environment. Reload the new file?'
            Kind = 'reload-prompt'; ReloadTarget = 'file'; Hwnd = [long]66052
@@ -58,24 +58,24 @@ $names = @($d.PSObject.Properties.Name) -join ','
 Check 'dlg-shape' ($names -eq 'title,text,kind,reloadTarget,hwnd,buttons') $names
 
 # an unclassified dialog: kind unknown, reloadTarget null, no buttons
-& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) @{ Title = 'Assertion Failed'; Text = 'boom' } } }
+& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) @{ Title = 'Assertion Failed'; Text = 'boom' } } }
 $r = Get-TcIdeModalDialog -ProcessId 1
 Check 'unknown-kind' ($r.data.dialog.kind -eq 'unknown' -and $null -eq $r.data.dialog.reloadTarget -and $null -eq $r.data.dialog.hwnd -and @($r.data.dialog.buttons).Count -eq 0) ($r.data.dialog | ConvertTo-Json -Compress)
 
 # a throwing scan never throws out of the cmdlet, and is NOT "no dialog" (#42)
-& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) throw 'scan boom' } }
+& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) throw 'scan boom' } }
 $r = Get-TcIdeModalDialog -ProcessId 1
 Check 'throwing-scan' ($r.success -eq $false -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.scanComplete -eq $false -and $r.data.modalScan.reason -eq 'error' -and $null -eq $r.data.dialog) ($r | ConvertTo-Json -Compress -Depth 4)
 
 # #42: a scan that ran out of time -> MODAL_SCAN_INCOMPLETE with a next-step hint, never success + dialog null
-& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'timeout' -TimeoutSec $TimeoutSec -ElapsedMs 5001 -Message 'mock timeout' } }
+& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'timeout' -TimeoutSec $TimeoutSec -ElapsedMs 5001 -Message 'mock timeout' } }
 $r = Get-TcIdeModalDialog -ProcessId 31 -TimeoutSec 5
 Check 'incomplete-fails' ($r.success -eq $false -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE') ($r | ConvertTo-Json -Compress -Depth 4)
 Check 'incomplete-data' ($r.data.scanComplete -eq $false -and $null -eq $r.data.dialog -and $r.data.ideProcessId -eq 31 -and $r.data.modalScan.reason -eq 'timeout' -and $r.data.modalScan.timeoutSec -eq 5) ($r.data | ConvertTo-Json -Compress -Depth 4)
 Check 'incomplete-hint' ($r.error.hint -match 'Get-TcIdeModalDialog -TimeoutSec' -and $r.error.hint -match 'scanComplete') "$($r.error.hint)"
 
 # scanComplete true on the success paths
-& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null } }
+& $mod { function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null } }
 $r = Get-TcIdeModalDialog -ProcessId 31
 Check 'complete-none-flag' ($r.success -eq $true -and $r.data.scanComplete -eq $true -and $null -eq $r.data.dialog) ($r.data | ConvertTo-Json -Compress)
 
