@@ -16,6 +16,9 @@
 - [ ] 1.4 規則:PROJECT-COMPILE-001/002/003、PROJECT-GUID-001、PROJECT-KIND-001、PROJECT-NAME-001、LINT-PARSE-001/002、LINT-XML-001/002、LINT-COVERAGE-001
 - [ ] 1.5 verdict / coverage / error code(`LINT_FAILED`、`LINT_PARSE_FAILED`、`LINT_INCOMPLETE`、`LINT_PROFILE_INVALID`、`LINT_INPUT_INVALID`、`LINT_ENGINE_ERROR`;沿用 `PLC_PROJECT_AMBIGUOUS` / `PLC_PROJECT_NOT_FOUND`)
 - [ ] 1.6 查證並記錄:`/* */` 註解是否合法、`<Implementation>` 多個 `<ST>` 的語意、`.tsproj` 內 `.plcproj` 參照格式(InfoSys 或實測,附出處)
+- [ ] 1.7 **IDE 實測(不需 runtime)**:Compile 指向不存在的檔、重複 Compile、重複物件 Id、副檔名與根元素不符 — XAE 開專案與 Build 的行為;含空白 / `'` / `%` 檔名在 `.plcproj` 的實際寫法。依結果把 `blockable: pending` 定案為 true / false
+- [ ] 1.8 用 `AddInterface` / `AddPouMember` 在本機副本建出真實的 Interface、Property(Get/Set)、Transition,取得 XAE 實際產生的 XML 當 fixture(取代 prototype 自己寫的 seeded XML)
+- [ ] 1.9 profile / baseline 自動探索演算法(D5)、`overrides[]`、`.tcauto/` 存在但讀不到時 fail closed(Phase 1 只有 default profile,但探索與 fail closed 要先做)
 - **驗收**:
   - `tests/Unit/lint-parser.ps1`:每種 token / 宣告形式正反例,含語料撞過的坑(`END_IF` 不接分號、巢狀 `(* *)`、`$'`、BOM、中文註解)
   - `tests/Unit/lint-contract.ps1`:D4 表每一列一個 case;`passed` 欄位在未分析時不存在;code 優先序;en-US / zh-TW byte 相同;檔案列舉順序打亂結果相同
@@ -31,8 +34,10 @@
 - [ ] 2.2 suppression 解析與 LINT-SUPPRESS-001/002/003
 - [ ] 2.3 FB 型別目錄:專案內 FB + 版本化 library 清單(每個名稱附 InfoSys 來源)+ profile `typeCatalog`
 - [ ] 2.4 SCAN-FBCALL-001/002、SCAN-TIMER-001/002(含 IF…ELSE 全分支、Action 呼叫圖;CASE…ELSE 全分支)
-- [ ] 2.5 `LintProject` 在 IDE 已連線時的未存檔偵測:`LINT_SOURCE_STALE` / `LINT_SOURCE_UNVERIFIED`
-- [ ] 2.6 **真機**(registered tcauto,一次一個 worker):`WritePouCode` 後 `Project.Saved` / `Document.Saved` 的實際值(4024 XAE、4026 VS2022);若不會變 false,改成「有 code-changed 紀錄就視為 stale」
+- [ ] 2.5 `LintProject` 在 IDE 已連線時的 stale 偵測(D2):確認 `.plcproj` 屬於連線中的 solution;重用 `Reset-TcSolution` 步驟 (1b) 的樹 / 磁碟 `<Compile>` 比對;目標專案的 `Document.Saved`;4024 以 code-changed 紀錄保守判定;與目標無關的 `Unchecked` 項目不拒絕
+- [ ] 2.6 **真機**(registered tcauto,一次一個 worker):4024 XAE 上 `WritePouCode` 後 .TcPOU 的落地時機;XAE 新增 / 刪除物件後 2.5 的比對是否抓得到;4026 VS2022 重跑一次確認 #69 的結論
+- [ ] 2.8 `LINT_CONTEXT_REQUIRED`(text-only 候選需要 context)、overlay 邊界的 `LINT_INPUT_INVALID`、`data.newSuppressions[]`、blockable 規則拒絕 inline suppression(`LINT-SUPPRESS-004`)
+- [ ] 2.9 呼叫點模型:FB body 呼叫與 Method 呼叫分開,含 expression 內的呼叫(`inExpression`);`inherited-use` 跳過
 - [ ] 2.7 SKILL.md 與 tool description:LintCandidate → WritePouCode → BuildProject → LintProject 的工作流;`passed` 的範圍說明
 - **驗收**:
   - 規則 fixture:每條 ≥2 正例、≥2 反例(含 research 4.2 / 4.4 的已知誤報案例:`MC_Direction` 類型、IF/ELSE 兩邊呼叫、Action 無條件呼叫)、suppression 有理由 / 沒理由
@@ -42,9 +47,10 @@
 
 ## 3. Phase 3:CONTRACT 規則 + baseline
 
-- [ ] 3.1 CONTRACT-ITF-001/002(Interface `EXTENDS` 鏈、專案內基底 FB `EXTENDS` 鏈、Property Get/Set;library 內的型別記 `rulesSkipped`)
-- [ ] 3.2 baseline 讀取(schema `tcauto-lint-baseline/1`)、`LINT_BASELINE_INVALID`
-- [ ] 3.3 CONTRACT-ENUM-001/002(含隱含值)、CONTRACT-DUT-001
+- [ ] 3.0 **IDE 實測(不需 runtime)**:Interface 實作的各種差異(回傳型別、參數型別、參數名稱、VAR_OUTPUT 順序、Property Get vs Get+Set、ABSTRACT FB)編譯器擋不擋;enum 隱含值規則。只有編譯器會擋的差異設 blocking
+- [ ] 3.1 CONTRACT-ITF-001/002(Interface `EXTENDS` 鏈、專案內基底 FB `EXTENDS` 鏈、Property Get/Set;library 內的型別記 `blockingRulesSkipped`)
+- [ ] 3.2 baseline 讀取(schema `tcauto-lint-baseline/1`)、預設位置自動載入、`LINT_BASELINE_INVALID`
+- [ ] 3.3 CONTRACT-ENUM-001/002(baseline 為主迴圈、整數字面值正規化、隱含值)、CONTRACT-DUT-001(展開 EXTENDS 與 alias、pack_mode、base type)
 - [ ] 3.4 `New-TcLintBaseline`(寫檔,不覆寫既有檔除非 `-Force`,回傳內容)
 - [ ] 3.5 `Get-TcLintRule`(MCP `GetLintRule`):metadata、正反例、限制
 - **驗收**:fixture 覆蓋 S10–S13;baseline 缺失時 `rulesNotRun`;baseline 壞掉時 fail closed;CONTRACT-ITF 在型別別名 / qualified 名稱的反例不誤報
