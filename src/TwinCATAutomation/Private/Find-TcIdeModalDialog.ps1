@@ -1164,3 +1164,26 @@ function ConvertTo-TcDialogRecord {
         buttons      = @(ConvertTo-TcDialogButtonList -Buttons $rec.Buttons)
     }
 }
+
+function Find-TcIdeModalDialogColdRetry {
+    <#
+    .SYNOPSIS
+        #230: Find-TcIdeModalDialog with its default -TimeoutSec (5 s); when that scan ran out of
+        time (incomplete, reason 'timeout') it is repeated ONCE with -RetryTimeoutSec (default 15 s).
+        The first UIA scan after the IDE started can take longer than 5 s (measured 2026-11-11 on
+        Windows 11 zh-TW, TwinCAT 3.1.4026: TcXaeShell 64-bit before the first Build-TcProject,
+        5000-5001 ms in 3 of 3 runs; VS2022 right after Connect-TcIde launched it, before
+        Solution.Open, 5008 ms); the second scan took ~3 s and later ones ~0.2 s. Any other
+        incomplete reason, and a retry that is still incomplete, is returned as it is: the caller
+        keeps failing closed with MODAL_SCAN_INCOMPLETE. Used by the one-shot gates before
+        Solution.Open (Connect-TcIde) and before the build (Build-TcProject), not by polling loops.
+    #>
+    [CmdletBinding()]
+    param([ValidateRange(1, 60)][int]$RetryTimeoutSec = 15)
+    $d = Find-TcIdeModalDialog
+    if ((Test-TcModalScanIncomplete $d) -and [string]$d.Reason -eq 'timeout') {
+        Write-Verbose "modal-dialog scan incomplete (timeout); scanning once more with $RetryTimeoutSec s (#230: first scan after an IDE start)"
+        $d = Find-TcIdeModalDialog -TimeoutSec $RetryTimeoutSec
+    }
+    $d
+}

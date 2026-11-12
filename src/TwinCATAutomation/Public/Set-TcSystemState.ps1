@@ -139,6 +139,7 @@
 
     $sysClient = $null
     $sent = $false   # #68: WriteControl went out (a later failure records a lifecycle block)
+    $inflight = $null   # #236: marker while the request is pending (a killed process leaves it -> block)
     try {
         $sysClient = New-Object TwinCAT.Ads.TcAdsClient
         $sysClient.Connect($AmsNetId, 10000)
@@ -161,6 +162,7 @@
         $diagCapSec = 10
         if ($null -ne $script:TcSystemStateDiagCapSec) { try { $diagCapSec = [Math]::Max(0, [int]$script:TcSystemStateDiagCapSec) } catch { $diagCapSec = 10 } }
         $diagDeadline = (Get-Date).AddSeconds($TimeoutSec + $diagCapSec)
+        $inflight = Enter-TcLifecycleInflight -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -Step 'state request (port 10000)'
         $sent = $true
         $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
@@ -459,5 +461,6 @@
         if ($null -ne $sysClient) {
             try { $sysClient.Dispose() } catch { }
         }
+        Exit-TcLifecycleInflight -Token $inflight
     }
 }

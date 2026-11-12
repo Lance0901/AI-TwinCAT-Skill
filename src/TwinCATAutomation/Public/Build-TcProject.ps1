@@ -282,7 +282,7 @@
         return New-TcNoSysManagerResult
     }
 
-    $dialog = Find-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialogColdRetry   # #230: one longer retry when the first scan timed out
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
