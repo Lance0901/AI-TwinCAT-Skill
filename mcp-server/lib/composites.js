@@ -2,7 +2,7 @@
 // Each entry: { name, description, inputSchema, annotations, timeoutMs, run(ctx, args) }
 //   ctx.bridge             PowerShellBridge
 //   ctx.callTool(name, a)  runs a catalog tool through the normal path (validation + timeout) -> result object
-//   ctx.lastIde            {ideProcessId, selectedBy, solution, ideMainHwnd} of the last successful ConnectIde, or null
+//   ctx.lastIde            {ideProcessId, selectedBy, ownedBySession, solution, ideMainHwnd} of the last successful ConnectIde, or null
 //   ctx.signal             AbortSignal of the MCP request (optional); forwarded to bridge calls
 //   ctx.module             {modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt} of the module the bridge has loaded (#41), or null
 //   ctx.runtime            where this server runs from (#162: lib/runtime-info.js runtimeInfoOf + launcherPid, ownerIdFrom), or undefined

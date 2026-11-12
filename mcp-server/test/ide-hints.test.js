@@ -45,6 +45,11 @@ describe('ownership decides the hint (#237)', () => {
           assert.match(h, /taskkill \/PID 4242 \/T \/F/);
           assert.match(h, /ask the user before killing it/);
           assert.doesNotMatch(h, /opened by the user/);
+          // #263 review: a pid alone can be recycled -> confirm name + start time before taskkill;
+          // DisconnectIde Kill cannot do it (the restarted bridge has no IDE state)
+          assert.match(h, /first confirm pid 4242 is still that IDE/);
+          assert.match(h, /Get-Process -Id 4242 \| Select-Object Name, StartTime/);
+          assert.match(h, /DisconnectIde Quit=true Kill=true cannot kill it here/);
         }
         if (c.data.selectedBy === 'launched') assert.match(modal, /launched by this server/);
         else assert.match(modal, new RegExp(`owned by this session, selectedBy '${c.data.selectedBy}'`));
@@ -52,6 +57,7 @@ describe('ownership decides the hint (#237)', () => {
         for (const h of [bridge, modal]) {
           assert.doesNotMatch(h, /taskkill/);
           assert.doesNotMatch(h, /launched by this server/);
+          assert.doesNotMatch(h, /Get-Process/);
           assert.match(h, /not owned by this session/);
         }
       }

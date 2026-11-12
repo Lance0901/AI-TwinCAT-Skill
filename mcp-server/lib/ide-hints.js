@@ -37,6 +37,21 @@ function ownerPhrase(ide) {
   return ide.selectedBy === 'launched' ? 'launched by this server' : `owned by this session, selectedBy '${ide.selectedBy ?? 'unknown'}'`;
 }
 
+/**
+ * #263 review: the server knows only the pid of this session's IDE, and a pid can be reused by an
+ * IDE the user opened since. `DisconnectIde Quit=true Kill=true` (which checks the start time and
+ * ownership) cannot help here: after the bridge was killed the new bridge has no IDE state and
+ * answers "not connected" without killing anything (Disconnect-TcIde, checked 2026-11-13 on a fresh
+ * module instance). So the hint keeps taskkill but asks to confirm name and start time first.
+ */
+function confirmBeforeKill(pid) {
+  return (
+    `first confirm pid ${pid} is still that IDE (a TcXaeShell.exe / devenv.exe started before this session's ConnectIde; ` +
+    `the pid may have been reused by an IDE the user opened since): \`powershell -NoProfile -Command "Get-Process -Id ${pid} | Select-Object Name, StartTime"\`. ` +
+    `DisconnectIde Quit=true Kill=true cannot kill it here: the restarted bridge has no IDE state.`
+  );
+}
+
 /** BRIDGE_TIMEOUT / BRIDGE_DIED hint for the last known IDE, or null when no pid is known. */
 export function ideHint(ide) {
   const pid = ide?.ideProcessId;
@@ -44,7 +59,8 @@ export function ideHint(ide) {
   if (isOwnedBySession(ide)) {
     return (
       `The IDE (pid ${pid}, ${ownerPhrase(ide)}) is probably blocked by a modal dialog. ` +
-      `Kill it with \`taskkill /PID ${pid} /T /F\`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.`
+      `Dismiss the dialog if you can; otherwise kill it with \`taskkill /PID ${pid} /T /F\`, but ${confirmBeforeKill(pid)} ` +
+      `Then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.`
     );
   }
   return `The IDE (pid ${pid}) is not owned by this session (opened by the user or another session); check its window for a modal dialog, dismiss it (or ask the user to), then ConnectIde again.`;
@@ -74,7 +90,7 @@ export function modalHint(pid, ide, title, outcome) {
     return (
       `The IDE (pid ${pid}, ${ownerPhrase(ide)}) shows the modal dialog '${title}'; ${lost}. ` +
       `Dismiss the dialog in the XAE window, or kill the IDE with \`taskkill /PID ${pid} /T /F\` ` +
-      `(unsaved changes in that IDE will be lost; ask the user before killing it), then ConnectIde again. ${after}`
+      `(${confirmBeforeKill(pid)} Unsaved changes in that IDE will be lost; ask the user before killing it), then ConnectIde again. ${after}`
     );
   }
   return `The IDE (pid ${pid}) shows the modal dialog '${title}' and is not owned by this session (opened by the user or another session); ${lost}. Dismiss it in the XAE window (or ask the user to), then ConnectIde again. ${after}`;

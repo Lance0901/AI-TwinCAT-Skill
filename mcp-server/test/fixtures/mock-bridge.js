@@ -135,7 +135,11 @@ function handleCall(req) {
             progId: params.ProgId ?? 'TcXaeShell.DTE.15.0',
             processId: 4242,
             ideProcessId: 4242,
-            // #237: TakeOverOrphan -> an orphan launch record taken over (ours, not 'launched')
+            // #237: TakeOverOrphan -> an orphan launch record taken over (ours, not 'launched').
+            // ownedBySession as Connect-TcIde returns it on success: selectedBy = $selectionReason,
+            // ownedBySession = ($script:TcIdeSelectedBy -eq 'launched') (Connect-TcIde.ps1:1076-1077);
+            // a takeover sets $script:TcIdeSelectedBy = 'launched' (Connect-TcIde.ps1:1066) while
+            // selectedBy stays 'orphan-takeover'; -NoLaunch on a user IDE -> false
             selectedBy: params.NoLaunch === true ? 'first-instance' : params.TakeOverOrphan === true ? 'orphan-takeover' : 'launched',
             ownedBySession: params.NoLaunch !== true,
             solution: params.SolutionPath ?? '',
