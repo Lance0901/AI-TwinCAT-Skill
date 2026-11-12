@@ -1,0 +1,44 @@
+﻿compileMs=718
+=== C:\Temp\lint-corpus-seeded\bfh\LangMang260618\PLC1\PLC1.plcproj
+analyzeMs(cold)=1557 analyzeMs(warm)=32 deterministic=True
+heapDeltaBytes=9761896
+stat decl.lexfail=1
+stat decl.ok=96
+stat decl.total=97
+stat files.TcDUT=40
+stat files.TcGVL=6
+stat files.TcIO=1
+stat files.TcPOU=44
+stat files.TcTTO=1
+stat impl.lang.ST=53
+stat impl.st.lexok=53
+stat impl.st.structok=52
+stat impl.st.total=53
+stat obj.DUT=39
+stat obj.GVL=6
+stat obj.Itf=1
+stat obj.POU=45
+stat sections.Action=4
+stat sections.DUT=39
+stat sections.GVL=6
+stat sections.Itf=1
+stat sections.Method=6
+stat sections.POU=45
+FAIL IMPL 30_RollToRoll\Fb\RollToRoll\FB_ThicknessAverage.TcPOU#FB_ThicknessAverage struct L17: unclosed IF
+FAIL DECL 30_RollToRoll\Fb\RollToRoll\FB_Winder.TcPOU#FB_Winder lex L83: unterminated block comment
+FINDING CONTRACT-DUT-001 [error/high] baseline :: ST_EL1889 L0 :: public struct layout changed at field #0: DI1:BIT -> DI2:BIT
+FINDING CONTRACT-ENUM-002 [error/high] baseline :: E_MachineMode L0 :: enum member Auto value 1 -> 2
+FINDING CONTRACT-ENUM-002 [error/high] baseline :: E_MachineMode L0 :: enum member Manual value 0 -> 1
+FINDING CONTRACT-ITF-001 [error/high] FB_BrakeControl.TcPOU :: FB_BrakeControl L0 :: method M_Apply of I_Brake not implemented (may be inherited - proto does not follow EXTENDS)
+FINDING CONTRACT-ITF-002 [error/high] FB_BrakeControl.TcPOU :: FB_BrakeControl.M_Release L0 :: signature differs from I_Brake: itf=BOOL(VAR_INPUT bForce:BOOL) impl=BOOL(VAR_INPUT nForce:INT)
+FINDING LINT-PARSE-001 [error/high] 30_RollToRoll\Fb\RollToRoll\FB_Winder.TcPOU :: FB_Winder L0 :: declaration not analyzed: lex L83: unterminated block comment
+FINDING LINT-PARSE-002 [error/high] 30_RollToRoll\Fb\RollToRoll\FB_ThicknessAverage.TcPOU :: FB_ThicknessAverage L0 :: implementation not analyzed: struct L17: unclosed IF
+FINDING PROJECT-COMPILE-001 [error/high] C:\Temp\lint-corpus-seeded\bfh\LangMang260618\PLC1\PLC1.plcproj :: POUs\FB_Ghost.TcPOU L0 :: Compile entry points to missing file
+FINDING PROJECT-COMPILE-002 [error/high] C:\Temp\lint-corpus-seeded\bfh\LangMang260618\PLC1\PLC1.plcproj :: 00_Machine\01_DUTs\IO\ST_EL1889.TcDUT L0 :: duplicate Compile entry
+FINDING PROJECT-COMPILE-003 [warning/high] C:\Temp\lint-corpus-seeded\bfh\LangMang260618\PLC1\PLC1.plcproj :: 30_RollToRoll\Fb\RollToRoll\FB_LevelControl.TcPOU L0 :: object file on disk is not in .plcproj Compile list (not compiled)
+FINDING PROJECT-GUID-001 [error/high] 30_RollToRoll\Fb\RollToRoll\FB_Winder.TcPOU :: FB_Winder L0 :: duplicate object Id {5182006f-83a3-4698-894e-82baca23252e} (also 30_RollToRoll\Fb\RollToRoll\FB_BrakeControl.TcPOU#FB_BrakeControl)
+FINDING PROJECT-KIND-001 [error/high] 00_Machine\01_DUTs\FB_Wrong.TcDUT :: FB_Wrong L0 :: file extension .TcDUT holds <POU>
+FINDING SCAN-FBCALL-001 [warning/medium] RollToRoll_Type01.TcPOU :: RollToRoll_Type01 L332 :: FB instance 'tonAutoStart : TON' is referenced but never called (no body or method call)
+FINDING SCAN-FBCALL-002 [info/high] FB_BrakeControl.TcPOU :: FB_BrakeControl L9 :: FB instance 'tonUnusedSeed : TON' is never referenced
+FINDING SCAN-TIMER-001 [warning/medium] FB_LoadcellCalibration.TcPOU :: FB_LoadcellCalibration L10 :: R_TRIG instance 'rZero' is only called inside IF/CASE (CASE@10) in FB_LoadcellCalibration
+FINDING SCAN-TIMER-001 [warning/medium] FB_R2RLineControl.TcPOU :: FB_R2RLineControl L14 :: TON instance 'tonWebBreak' is only called inside IF/CASE (IF@14) in FB_R2RLineControl
