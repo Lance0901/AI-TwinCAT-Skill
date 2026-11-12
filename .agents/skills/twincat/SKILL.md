@@ -126,7 +126,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Remove-TcTaskProgram` | `UnlinkProgramFromTask` | `-ProgramName <string> [-PlcTask <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
 | `Remove-TcTreeItem` | `DeleteChild` | `-Path <string> -ConfirmName <string> [-DryRun <bool>] [-AllowNoExport]` |
 | `Remove-TcVariableLink` | `RemoveVariableLink` | `-PlcVariable <string> [-IoChannel <string>]` |
-| `Reset-TcSolution` | `ResetSolution` | `[-SolutionPath <string>] [-TimeoutSec <int>] [-DiscardProjectChanges] [-SaveProjectChanges]` |
+| `Reset-TcSolution` | `ResetSolution` | `[-SolutionPath <string>] [-TimeoutSec <int>] [-DiscardProjectChanges] [-SaveProjectChanges] [-Force]` |
 | `Save-TcArchive` | `SaveArchive` | `-FilePath <string> [-Kind <string>] [-Overwrite]` |
 | `Save-TcPlcLibrary` | `SaveAsLibrary` | `-FilePath <string> [-PlcProjectPath <string>] [-Overwrite]` |
 | `Send-TcPlcProgram` | `SendPlcProgram` | `[-PlcProjectPath <string>]` |

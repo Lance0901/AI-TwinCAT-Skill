@@ -288,11 +288,14 @@ $sol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($s) if ($g
 $sol | Add-Member -MemberType ScriptMethod -Name Open -Value { param($p) if ($global:ResetMode.OpenThrows) { throw 'open failed (mock)' } }
 # #135 F5 readback: a loaded solution (1 project whose .Object is $null: the ITcSysManager comes from Connect-TcIde)
 $sol | Add-Member -NotePropertyName IsOpen -NotePropertyValue $true
+$sol | Add-Member -NotePropertyName Saved -NotePropertyValue $true   # #175: read by Reset-TcSolution
 $solProjects = [PSCustomObject]@{ Count = 1 }
 $solProjects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ Name = 'Demo'; UniqueName = 'Demo\Demo.tsproj'; Object = $null } }
 $sol | Add-Member -NotePropertyName Projects -NotePropertyValue $solProjects
 $sol | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } })
 $docs = [PSCustomObject]@{ Count = 1 }
+# #175: Reset-TcSolution reads Document.Saved of every open document (all saved here)
+$docs | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ FullName = 'C:\mock\MAIN.TcPOU'; Saved = $true } }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) if ($global:ResetMode.CloseAllThrows) { throw 'closeall failed (mock)' } }
 $resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
 $global:ResetSln = $sln

@@ -69,20 +69,29 @@ $global:Mock = @{ Saves = 0; Closed = $false; OnSave = $null; SecondTsproj = $fa
 $tsProject = New-Object PSObject
 $tsProject | Add-Member -NotePropertyName FullName -NotePropertyValue $tsproj
 $tsProject | Add-Member -NotePropertyName UniqueName -NotePropertyValue 'Sys\Sys.tsproj'
+# #175: Project.Saved / Kind of the .tsproj project ($global:Mock.TsSaved: $true / $false / 'throw' / 'null')
+$tsProject | Add-Member -NotePropertyName Name -NotePropertyValue 'Sys'
+$tsProject | Add-Member -NotePropertyName Kind -NotePropertyValue '{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}'
+$tsProject | Add-Member -MemberType ScriptProperty -Name Saved -Value { switch ($global:Mock.TsSaved) { 'throw' { throw 'RPC_E_DISCONNECTED (mock)' } 'null' { $null } default { [bool]$global:Mock.TsSaved } } }
 $tsProject | Add-Member -MemberType ScriptMethod -Name Save -Value { $global:Mock.Saves++; if ($null -ne $global:Mock.OnSave) { & $global:Mock.OnSave } }
 # .Object of the .tsproj project = ITcSysManager (Reset-TcSolution step 1b uses Get-TcSysManager -Refresh,
 # #106; its readback looks up TIPC, #135 F5)
 $global:TsSm = [PSCustomObject]@{ Mock = $true }
 $global:TsSm | Add-Member -MemberType ScriptMethod -Name LookupTreeItem -Value { param($p) if ($p -eq 'TIPC') { [PSCustomObject]@{ Name = 'TIPC'; ChildCount = 0 } } else { $null } }
 $tsProject | Add-Member -NotePropertyName Object -NotePropertyValue $global:TsSm
-$tsProject2 = [PSCustomObject]@{ FullName = $tsproj2; UniqueName = 'Sys2\Sys2.tsproj' }
+$tsProject2 = [PSCustomObject]@{ FullName = $tsproj2; UniqueName = 'Sys2\Sys2.tsproj'; Kind = '{B1E792BE-AA5F-4E3C-8C82-674BF9C0715B}'; Saved = $true }
 $misc = [PSCustomObject]@{ FullName = ''; UniqueName = '<MiscFiles>' }
+# #175: a project object that answers $null to every DTE property (the TwinCAT Scope project of the 4026
+# test solution, measured 2026-11-12 VS2022): listed as unchecked, not refused
+$scopeProject = New-Object PSObject
+$global:Mock.TsSaved = $true; $global:Mock.SlnSaved = $true; $global:Mock.ScopeProject = $false
 $projects = New-Object PSObject
-$projects | Add-Member -MemberType ScriptProperty -Name Count -Value { if ($global:Mock.SecondTsproj) { 3 } else { 2 } }
-$projects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) switch ($i) { 1 { $misc } 2 { $tsProject } default { $tsProject2 } } }
+$projects | Add-Member -MemberType ScriptProperty -Name Count -Value { if ($global:Mock.SecondTsproj -or $global:Mock.ScopeProject) { 3 } else { 2 } }
+$projects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) switch ($i) { 1 { $misc } 2 { $tsProject } default { if ($global:Mock.ScopeProject) { $scopeProject } else { $tsProject2 } } } }
 $solution = New-Object PSObject
 $solution | Add-Member -NotePropertyName Projects -NotePropertyValue $projects
 $solution | Add-Member -NotePropertyName FullName -NotePropertyValue $sln
+$solution | Add-Member -MemberType ScriptProperty -Name Saved -Value { if ([string]$global:Mock.SlnSaved -eq 'null') { $null } else { [bool]$global:Mock.SlnSaved } }
 # #135 F5 readback: a loaded solution
 $solution | Add-Member -NotePropertyName IsOpen -NotePropertyValue $true
 $solution | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } })
@@ -92,7 +101,8 @@ $docs = New-Object PSObject
 # PR #209 review M1: $global:Mock.Docs = the open documents ({ FullName; Saved })
 $global:Mock.Docs = @()
 $docs | Add-Member -MemberType ScriptProperty -Name Count -Value { @($global:Mock.Docs).Count }
-$docs | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) @($global:Mock.Docs)[$i - 1] }
+# #175 review S1: $global:Mock.DocsThrow = text thrown by Documents.Item (busy / dead RPC)
+$docs | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) if ($global:Mock.DocsThrow) { throw $global:Mock.DocsThrow }; @($global:Mock.Docs)[$i - 1] }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:Mock.ClosedAll = $true }
 $dte = [PSCustomObject]@{ Solution = $solution; Documents = $docs }
 
@@ -413,25 +423,121 @@ try {
     $r = & $mod { Invoke-TcPlcObjectSave -ObjectPath 'TIPC^Plc^Plc Project^POUs^FB_B1' -ExpectFile 'FB_B1.TcPOU' -What "POU 'FB_B1'" }
     Check 'b1-object-save-refused' ($null -eq $r.Saved -and $r.Error.error.code -eq 'RESET_REQUIRED' -and $r.Error.data.savedToDisk -eq $false -and $r.Error.data.createdInMemory -eq $true -and $r.Error.error.message -match 'Project\.Save was NOT called' -and $global:Mock.Saves -eq $savesBefore) "code=$($r.Error.error.code) msg=$($r.Error.error.message)"
 
-    # --- PR #209 review M1: Reset-TcSolution and unsaved editor documents while reset-required applies ---
+    # --- PR #209 review M1 / #175: Reset-TcSolution refuses unsaved changes (UNSAVED_CHANGES) unless -Force ---
     Set-Unsaved -Missing @()
     $global:Mock.ClosedAll = $false
     $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false }, [PSCustomObject]@{ FullName = 'C:\x\GVL.TcGVL'; Saved = $true })
     $r = Reset-TcSolution
-    Check 'm1-dirty-documents-refused' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed -and $r.error.hint -match 'dirtyDocuments' -and $null -ne (& $getReset)) "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',') closedAll=$($global:Mock.ClosedAll)"
+    Check 'm1-dirty-documents-refused' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and (@($r.data.unsavedCheck.documents) -join ',') -eq 'C:\x\MAIN.TcPOU' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed -and $r.error.hint -match 'Force' -and $null -ne (& $getReset)) "code=$($r.error.code) dirty=$(@($r.data.unsavedCheck.documents) -join ',') closedAll=$($global:Mock.ClosedAll)"
     $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $null })
     $r = Reset-TcSolution
-    Check 'm1-documents-unreadable-fail-closed' (-not $r.success -and $r.error.code -eq 'PROJECT_UNSAVED_CHANGES' -and -not [string]::IsNullOrWhiteSpace([string]$r.data.dirtyDocumentsError) -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code) err=$($r.data.dirtyDocumentsError)"
+    Check 'm1-documents-unreadable-fail-closed' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and -not [string]::IsNullOrWhiteSpace([string]$r.data.unsavedCheck.error) -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code) err=$($r.data.unsavedCheck.error)"
     $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false })
     $r = Reset-TcSolution -DiscardProjectChanges
-    Check 'm1-dirty-documents-discard-goes-on' ($r.success -and $global:Mock.ClosedAll -and $global:Mock.Closed -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset)) "success=$($r.success) err=$($r.error.message)"
-    # without reset-required the behaviour is unchanged: dirty documents are closed as before
+    Check '175-discard-project-changes-is-not-consent' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code)"
+    $r = Reset-TcSolution -Force
+    Check 'm1-dirty-documents-force-goes-on' ($r.success -and $global:Mock.ClosedAll -and $global:Mock.Closed -and $r.data.resetRequiredCleared -eq $true -and $null -eq (& $getReset) -and (@($r.data.discardedChanges) -contains 'C:\x\MAIN.TcPOU')) "success=$($r.success) discarded=$(@($r.data.discardedChanges) -join ',') err=$($r.error.message)"
+    # #175: without reset-required a dirty document is refused too (before: closed without a word)
     Set-Unsaved -Missing @()
     $global:Mock.ClosedAll = $false
     $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $false })
     $r = Reset-TcSolution
-    Check 'm1-no-reset-required-unchanged' ($r.success -and $global:Mock.ClosedAll -and $null -eq $r.data.PSObject.Properties['dirtyDocuments']) "success=$($r.success) err=$($r.error.message)"
+    Check '175-dirty-document-refused-without-reset-required' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed -and $r.error.message -match 'MAIN\.TcPOU') "code=$($r.error.code) closedAll=$($global:Mock.ClosedAll)"
     $global:Mock.Docs = @()
+    # #175: a dirty .tsproj (SetTarget leaves Project.Saved = False, measured 2026-11-12 VS2022)
+    Set-Unsaved -Missing @(); $global:Mock.ClosedAll = $false; $global:Mock.TsSaved = $false
+    $r = Reset-TcSolution
+    Check '175-dirty-tsproj-refused' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and (@($r.data.unsavedCheck.projects | ForEach-Object { $_.file }) -join ',') -eq $tsproj -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) "code=$($r.error.code) projects=$(@($r.data.unsavedCheck.projects | ForEach-Object { $_.file }) -join ',')"
+    Set-Unsaved -Missing @(); $global:Mock.ClosedAll = $false
+    $r = Reset-TcSolution -Force
+    Check '175-dirty-tsproj-force-discards' ($r.success -and $global:Mock.Closed -and (@($r.data.discardedChanges) -contains $tsproj) -and $r.data.unsavedCheck.forced -eq $true) "success=$($r.success) discarded=$(@($r.data.discardedChanges) -join ',') err=$($r.error.message)"
+    $global:Mock.TsSaved = $true
+    # dirty solution file (Solution.Saved = False)
+    Set-Unsaved -Missing @(); $global:Mock.SlnSaved = $false
+    $r = Reset-TcSolution
+    Check '175-dirty-solution-refused' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and $r.data.unsavedCheck.solution -eq $sln -and -not $global:Mock.Closed) "code=$($r.error.code) sln=$($r.data.unsavedCheck.solution)"
+    $global:Mock.SlnSaved = $true
+    # Project.Saved throws / reads $null on a DTE project (Kind set): fail closed
+    foreach ($mode in 'throw', 'null') {
+        Set-Unsaved -Missing @(); $global:Mock.TsSaved = $mode
+        $r = Reset-TcSolution
+        Check "175-project-saved-$mode-fail-closed" (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and -not [string]::IsNullOrWhiteSpace([string]$r.data.unsavedCheck.error) -and -not $global:Mock.Closed) "code=$($r.error.code) err=$($r.data.unsavedCheck.error)"
+    }
+    $global:Mock.TsSaved = $true
+    # a project object without any DTE property (Scope project): unchecked, not refused
+    Set-Unsaved -Missing @(); $global:Mock.ScopeProject = $true
+    $r = Reset-TcSolution
+    Check '175-non-dte-project-unchecked' ($r.success -and $global:Mock.Closed -and @($r.data.unsavedCheck.unchecked).Count -eq 1 -and $r.data.unsavedCheck.checked -and $null -eq $r.data.PSObject.Properties['discardedChanges']) "success=$($r.success) unchecked=$(@($r.data.unsavedCheck.unchecked).Count) err=$($r.error.message)"
+    $global:Mock.ScopeProject = $false
+    # clean: goes on, nothing discarded, the misc files project is not listed
+    Set-Unsaved -Missing @()
+    $r = Reset-TcSolution
+    Check '175-clean-goes-on' ($r.success -and $global:Mock.Closed -and $r.data.unsavedCheck.checked -and @($r.data.unsavedCheck.unchecked).Count -eq 0 -and @($r.data.unsavedCheck.projects).Count -eq 0 -and $null -eq $r.data.PSObject.Properties['discardedChanges']) "success=$($r.success) err=$($r.error.message)"
+    Set-Unsaved -Missing @('FB_Guard')
+    $r = Reset-TcSolution -Force -SaveProjectChanges
+    Check '175-force-save-exclusive' (-not $r.success -and $r.error.code -eq 'INVALID_PARAMS' -and -not $global:Mock.Closed -and $null -eq $global:Mock.GuardSave) "code=$($r.error.code)"
+    # --- PR #256 review ---
+    # S1: a busy IDE (the text Invoke-TcComRetry throws once its retries are used up) and a dead RPC are
+    # not "unreadable -> ask the user": IDE_BUSY / IDE_CRASHED, nothing closed
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $true })
+    Set-Unsaved -Missing @(); $global:Mock.ClosedAll = $false
+    $global:Mock.DocsThrow = "IDE_BUSY: 'unsaved changes' failed after 5 attempts - the IDE rejected the call (mock)"
+    $r = Reset-TcSolution
+    Check 'r256-s1-busy-is-ide-busy' (-not $r.success -and $r.error.code -eq 'IDE_BUSY' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code) msg=$($r.error.message)"
+    Set-Unsaved -Missing @(); $global:Mock.ClosedAll = $false
+    $global:Mock.DocsThrow = 'Exception from HRESULT: 0x800706BE (RPC_S_CALL_FAILED) (mock)'
+    $r = Reset-TcSolution
+    Check 'r256-s1-dead-rpc-is-ide-crashed' (-not $r.success -and $r.error.code -eq 'IDE_CRASHED' -and -not $global:Mock.ClosedAll -and -not $global:Mock.Closed) "code=$($r.error.code) msg=$($r.error.message)"
+    Set-Unsaved -Missing @(); $global:Mock.ClosedAll = $false
+    $r = Reset-TcSolution -Force
+    Check 'r256-s1-force-does-not-bypass-dead-rpc' (-not $r.success -and $r.error.code -eq 'IDE_CRASHED' -and -not $global:Mock.Closed) "code=$($r.error.code)"
+    $global:Mock.DocsThrow = $null
+    $global:Mock.Docs = @()
+    # S2: -Force while the state cannot be read: what was dropped is unknown, not "nothing"
+    $global:Mock.Docs = @([PSCustomObject]@{ FullName = 'C:\x\MAIN.TcPOU'; Saved = $null })
+    Set-Unsaved -Missing @()
+    $r = Reset-TcSolution -Force
+    Check 'r256-s2-force-unreadable-unknown' ($r.success -and $global:Mock.Closed -and $null -eq $r.data.discardedChanges -and $r.data.discardedUnknown -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$r.data.discardedUnknownReason)) "success=$($r.success) discarded=$($r.data.discardedChanges | ConvertTo-Json -Compress) unknown=$($r.data.discardedUnknown)"
+    $global:Mock.Docs = @()
+    Set-Unsaved -Missing @(); $global:Mock.TsSaved = $false
+    $r = Reset-TcSolution -Force
+    Check 'r256-s2-force-readable-not-unknown' ($r.success -and $r.data.discardedUnknown -eq $false -and (@($r.data.discardedChanges) -contains $tsproj)) "unknown=$($r.data.discardedUnknown)"
+    $global:Mock.TsSaved = $true
+    # S4: Solution.Saved reading $null fails closed like Document / Project .Saved
+    Set-Unsaved -Missing @(); $global:Mock.SlnSaved = 'null'
+    $r = Reset-TcSolution
+    Check 'r256-s4-solution-saved-null-fail-closed' (-not $r.success -and $r.error.code -eq 'UNSAVED_CHANGES' -and $r.data.unsavedCheck.error -match 'Solution\.Saved' -and -not $global:Mock.Closed) "code=$($r.error.code) err=$($r.data.unsavedCheck.error)"
+    $global:Mock.SlnSaved = $true
+    # S5: unchecked projects -> data.stateWarning on success; with -Force listed as "may have been dropped"
+    Set-Unsaved -Missing @(); $global:Mock.ScopeProject = $true
+    $r = Reset-TcSolution
+    Check 'r256-s5-unchecked-state-warning' ($r.success -and [string]$r.data.stateWarning -match 'project 3' -and [string]$r.data.stateWarning -match 'not checked') "warning=$($r.data.stateWarning)"
+    Set-Unsaved -Missing @(); $global:Mock.TsSaved = $false
+    $r = Reset-TcSolution -Force
+    $maybe = @($r.data.discardedChanges | Where-Object { [string]$_ -match 'project 3' -and [string]$_ -match 'may have' })
+    Check 'r256-s5-force-lists-unchecked' ($r.success -and (@($r.data.discardedChanges) -contains $tsproj) -and $maybe.Count -eq 1) "discarded=$(@($r.data.discardedChanges) -join ' | ')"
+    $global:Mock.TsSaved = $true; $global:Mock.ScopeProject = $false
+    # N5: a reload prompt that comes up while the unsaved state is read: handled, then read again
+    $global:Mock.DialogFired = $false
+    $flaky = New-Object PSObject
+    $flaky | Add-Member -NotePropertyName FullName -NotePropertyValue 'C:\x\MAIN.TcPOU'
+    $flaky | Add-Member -MemberType ScriptProperty -Name Saved -Value {
+        if (-not $global:Mock.DialogFired) {
+            $global:Mock.DialogFired = $true
+            $global:Mock.Dialog = [PSCustomObject]@{ Kind = 'reload-prompt'; ReloadTarget = 'file'; Title = 'Microsoft Visual Studio'; Text = 'File has been changed outside the environment. Reload the new file?' }
+            return $null
+        }
+        $true
+    }
+    Set-Unsaved -Missing @(); $global:Mock.Docs = @($flaky)
+    $r = Reset-TcSolution
+    Check 'r256-n5-prompt-during-read-handled-and-reread' ($r.success -and $r.data.dismissedReloadPrompt -eq $true -and $r.data.unsavedCheck.checked -and $global:Mock.Closed) "success=$($r.success) code=$($r.error.code) dismissed=$($r.data.dismissedReloadPrompt) err=$($r.error.message)"
+    $global:Mock.Docs = @()
+    # S3: the hint names both ways out under reset-required (Build-TcProject is refused there)
+    $hint = & $mod { Get-TcErrorHint -Code 'UNSAVED_CHANGES' }
+    Check 'r256-s3-hint-reset-required' ($hint -match 'reset-required' -and $hint -match 'RESET_REQUIRED') "$hint"
+    $hint = & $mod { Get-TcErrorHint -Code 'UNSAVED_CHANGES' }
+    Check '175-hint' ($hint -match 'Force' -and $hint -match 'data\.unsavedCheck') "$hint"
 
     # --- PR #209 review m1: Get-TcResetRequiredGuard fails closed and sees the in-memory record ---
     $stateFile = Join-Path $env:TCAUTO_STATE_DIR 'build-required.json'

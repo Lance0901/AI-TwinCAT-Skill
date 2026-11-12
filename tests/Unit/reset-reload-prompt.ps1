@@ -126,6 +126,8 @@ function Reset-World {
 function Add-LoadState {
     param([object]$Solution)
     $Solution | Add-Member -MemberType ScriptProperty -Name IsOpen -Value { $true }
+    # #175 (PR #256 review S4): Reset-TcSolution reads Solution.Saved; $null fails closed
+    $Solution | Add-Member -MemberType ScriptProperty -Name Saved -Value { $true }
     $Solution | Add-Member -MemberType ScriptProperty -Name Projects -Value {
         $n = if ($global:W.Opened -and $global:W.NotLoaded -gt 0) { 0 } else { 1 }
         $p = [PSCustomObject]@{ Count = $n }
@@ -253,6 +255,11 @@ function Start-Reset {
 function Get-LogText { $global:W.Log -join ' > ' }
 
 try {
+    # --- PR #256 review N3: on the Yes-only path the unsaved state is not read and -Force is not applied ---
+    Reset-World -Dialog $projectDlg
+    $r = Start-Reset -ModulePath $sln -Params @{ Force = $true }
+    Check 'r256-n3-yes-path-force-not-applied' ($r.success -and $r.data.answeredYes -eq $true -and $r.data.reopenedSolution -eq $false -and $r.data.unsavedCheck.checked -eq $false -and $r.data.unsavedCheck.forced -eq $false -and $r.data.unsavedCheck.forceRequested -eq $true) ("{0} | {1}" -f (Get-LogText), (J $r.data.unsavedCheck))
+
     # --- A1: prompt already up, module path known ---
     Reset-World -Dialog $projectDlg
     $r = Start-Reset -ModulePath $sln
@@ -768,6 +775,8 @@ try {
     Add-LoadState $solG
     $global:SolG = $solG
     $docsG = [PSCustomObject]@{ Count = 1 }
+    # #175: Reset-TcSolution reads Document.Saved of every open document (all saved here)
+    $docsG | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ FullName = 'C:\mock\MAIN.TcPOU'; Saved = $true } }
     $docsG | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) $global:W.Log.Add('Documents.CloseAll'); if ($global:W.CloseAllAppear) { $global:W.CloseAllAppear = $false; $global:W.Dialog = $global:W.LaterDialog } }
     $dteG = [PSCustomObject]@{ Documents = $docsG }
     # DTE.Solution answers $null while a dialog is up (2026-11-02: "cannot call a method on a null-valued expression")
