@@ -362,7 +362,7 @@ function Reset-TcOrphanTakeoverAttach {
         if ($null -ne $o -and [System.Runtime.InteropServices.Marshal]::IsComObject($o)) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($o) | Out-Null } catch { } }
         Set-Variable -Name $name -Scope Script -Value $null
     }
-    $script:TcSilentMode = $false; $script:TcSilentModeOriginal = $null
+    $script:TcSilentMode = $false; $script:TcSilentModeOriginal = $null; $script:TcSilentOriginalUnknown = $false
     $script:TcIdeConnected = $false; $script:TcProgId = $null; $script:TcIdeMainHwnd = 0; $script:TcLastModalDialog = $null
     $script:TcSolutionPath = $null; $script:TcIdeProcessId = $null; $script:TcIdeStartTime = $null; $script:TcIdeSelectedBy = $null
 }

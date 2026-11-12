@@ -214,6 +214,7 @@ function Connect-TcIde {
     $script:TcAutomationSettings = $null
     $script:TcSilentMode = $false
     $script:TcSilentModeOriginal = $null
+    $script:TcSilentOriginalUnknown = $false
 
     # #210: -ProcessId binds exactly one IDE process; a takeover picks its IDE from the launch record
     $byProcessId = $PSBoundParameters.ContainsKey('ProcessId')
@@ -903,11 +904,14 @@ function Connect-TcIde {
     # Without a record a SilentMode that reads TRUE is not taken for the original: it may be the true
     # an earlier TcAuto process set and never restored. It is reported as unknown
     # (data.silentModeOriginalUnknown) and Disconnect-TcIde restores false, the value a newly started
-    # IDE has (InfoSys does not state a default; measured: Connect-TcIde on a freshly launched
-    # 4024 TcXaeShell 32-bit and 4026 VS2022 read false, 2026-11-13). Restoring false is the safe
+    # IDE has (InfoSys does not state a default; measured 2026-11-13 on freshly started IDEs, XAE
+    # 4026: TcXaeShell.DTE.15.0 (32-bit, 4024 project), VisualStudio.DTE.17.0 and TcXaeShell.DTE.17.0
+    # (64-bit) all read false). Restoring false is the safe
     # side: XAE then shows its prompts to the user instead of answering them with the default button.
+    # An original whose getter fails is handled the same way (PR #266 review 1): this call sets true.
     $silentMode = $false
     $script:TcSilentModeOriginal = $null
+    $script:TcSilentOriginalUnknown = $false
     $silentOriginalReport = $null; $silentOriginalSource = $null; $silentOriginalUnknown = $false
     $script:TcSilentOriginalWarning = $null
     try {
@@ -915,16 +919,22 @@ function Connect-TcIde {
         if ($null -ne $settings) {
             # The original is read once per IDE process: on a later connect the IDE already shows
             # the SilentMode = true we set, so the remembered value is used instead.
-            # An original that could not be read is remembered as 'unknown': after we set true,
-            # a later read would wrongly take that true for the original (then nothing is restored).
             $procKey = if ($ideProcessId -gt 0) { Get-TcIdeProcessKey -ProcessId $ideProcessId } else { $null }
-            $inMemory = ($null -ne $procKey -and $null -ne $script:TcSilentOriginals -and $script:TcSilentOriginals.ContainsKey($procKey))
-            $silentOriginal = if ($ideProcessId -gt 0) { Get-TcIdeSilentOriginal -ProcessId $ideProcessId } else { $null }
-            if ($silentOriginal -is [string] -and $silentOriginal -eq 'assumed-false') {
-                # an earlier connect found true without a record: still unknown, still restored to false
-                $silentOriginal = $false; $silentOriginalSource = 'unknown-was-true'; $silentOriginalUnknown = $true
+            if ($null -eq $procKey) {
+                # no pid / start time: the original is kept for this connection only (not persisted)
+                $script:TcSilentOriginalWarning = "SilentMode original kept in memory only: the IDE process $(if ($ideProcessId -gt 0) { "pid $ideProcessId has no readable start time" } else { 'id is unknown' }); a later process cannot restore it"
+                Write-Verbose $script:TcSilentOriginalWarning
             }
-            elseif ($silentOriginal -is [string]) { $silentOriginal = $null; $silentOriginalSource = 'unreadable' }   # 'unknown': the getter failed
+            $inMemory = ($null -ne $procKey -and $null -ne $script:TcSilentOriginals -and $script:TcSilentOriginals.ContainsKey($procKey))
+            $silentOriginal = if ($null -ne $procKey) { Get-TcIdeSilentOriginal -ProcessId $ideProcessId } else { $null }
+            $recordToWrite = $null   # what this call stores before it sets true (written below)
+            if ($silentOriginal -is [string]) {
+                # 'assumed-false': an earlier connect found true without a record. 'unknown' (written
+                # before PR #266 review item 1): its getter failed. Both: still unknown, restored to false.
+                $silentOriginalSource = if ($silentOriginal -eq 'assumed-false') { 'unknown-was-true' } else { 'unreadable' }
+                $silentOriginal = $false; $silentOriginalUnknown = $true
+                if ($silentOriginalSource -eq 'unreadable') { $recordToWrite = 'assumed-false' }
+            }
             elseif ($null -ne $silentOriginal) {
                 $silentOriginalSource = if ($inMemory) { 'memory' } else { 'state-file' }
                 $silentOriginalReport = [bool]$silentOriginal
@@ -933,22 +943,31 @@ function Connect-TcIde {
                 $current = $null
                 try { $current = [bool](Invoke-TcComRetry -OperationName 'SilentMode read (original)' -ScriptBlock { $settings.SilentMode }) }
                 catch { $current = $null; Write-Verbose "SilentMode original value unreadable ($($_.Exception.Message))" }
-                if ($null -eq $current) {
-                    $silentOriginal = $null; $silentOriginalSource = 'unreadable'
-                    if ($ideProcessId -gt 0) { $null = Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value 'unknown' }
-                }
-                elseif ($current) {
-                    # true without a record: unknown, restored to false (see above)
-                    $silentOriginal = $false; $silentOriginalSource = 'unknown-was-true'; $silentOriginalUnknown = $true
-                    if ($ideProcessId -gt 0) { $null = Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value 'assumed-false' }
+                if ($null -eq $current -or $current) {
+                    # PR #266 review 1: unreadable, or true without a record: unknown. This call sets
+                    # true below, so leaving it unrestored would keep the IDE in SilentMode for good:
+                    # restored to false (see above), in every later process too.
+                    $silentOriginal = $false; $silentOriginalUnknown = $true
+                    $silentOriginalSource = if ($null -eq $current) { 'unreadable' } else { 'unknown-was-true' }
+                    $recordToWrite = 'assumed-false'
                 }
                 else {
                     $silentOriginal = $false; $silentOriginalSource = 'read'; $silentOriginalReport = $false
-                    if ($ideProcessId -gt 0) { $null = Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $false }
+                    $recordToWrite = $false
                 }
             }
+            # Stored BEFORE the setter: a process that ends right after setting true still leaves the record.
+            $wroteRecord = $false
+            if ($null -ne $recordToWrite -and $null -ne $procKey) { $null = Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $recordToWrite; $wroteRecord = $true }
+            try { Invoke-TcComRetry -OperationName 'SilentMode' -ScriptBlock { $settings.SilentMode = $true } | Out-Null }
+            catch {
+                # nothing was changed in the IDE: nothing to restore, no record of this call kept
+                if ($wroteRecord) { $null = Set-TcIdeSilentOriginal -ProcessId $ideProcessId -Value $null }
+                $silentOriginal = $null; $silentOriginalReport = $null; $silentOriginalUnknown = $false
+                throw
+            }
             $script:TcSilentModeOriginal = $silentOriginal
-            Invoke-TcComRetry -OperationName 'SilentMode' -ScriptBlock { $settings.SilentMode = $true } | Out-Null
+            $script:TcSilentOriginalUnknown = $silentOriginalUnknown
             $script:TcAutomationSettings = $settings
             $silentMode = [bool](Invoke-TcComRetry -OperationName 'SilentMode read' -ScriptBlock { $settings.SilentMode })
         }

@@ -9,6 +9,15 @@
 #      C1 original false recorded by instance 1, instance 2 sees SilentMode true -> restores false
 #      C2 SilentMode true and NO record -> data.silentModeOriginalUnknown, Disconnect writes false
 #      C3 SilentMode false and no record -> original false, not unknown
+#   R  PR #266 review:
+#      U1 getter fails, setter works -> unknown, record 'assumed-false', Disconnect writes false, record gone
+#      U2 a legacy 'unknown' record -> treated as assumed-false (restored to false)
+#      U3 setter fails -> nothing changed: no record kept, Disconnect writes nothing
+#      W1 state file not writable -> data.silentModeStateWarning, Disconnect restores from memory
+#      M1 two module instances on one IDE: A disconnects first (restores), B is still connected and
+#         restores again on its own Disconnect (documented current behavior, follow-up issue)
+#      F1 restore fails -> data.silentModeRestoreError, record kept for a later restore
+#      Q1 -Quit whose DTE.Quit fails without -Kill -> restored (the IDE keeps running)
 #   powershell.exe -NoProfile -File tests/Unit/silent-original-persist-233.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -33,6 +42,16 @@ function New-Instance([int]$IdePid) {
         $script:Unit233Pid = $p
         function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
         function script:Find-TcIdeModalDialogColdRetry { [CmdletBinding()] param() $script:TcLastModalScanRetried = $false; $null }
+        # a throwing ScriptProperty getter of a mock reads as $null: failures are injected here by OperationName
+        $script:Unit233ComRetry = ${function:Invoke-TcComRetry}
+        function script:Invoke-TcComRetry {
+            [CmdletBinding()] param([Parameter(Position = 0)][scriptblock]$ScriptBlock, [int]$MaxRetries = 5, [string]$OperationName = 'COM call', [int]$TimeoutSec = 120)
+            if ($OperationName -eq 'SilentMode read (original)' -and $global:GetterThrows233) { throw 'RPC_E_SERVERFAULT (mock: SilentMode getter fails)' }
+            if ($OperationName -eq 'SilentMode' -and $global:SetThrows233) { throw 'RPC_E_SERVERFAULT (mock: SilentMode setter fails)' }
+            if ($OperationName -eq 'SilentMode restore' -and $global:RestoreThrows233) { throw 'RPC_E_SERVERFAULT (mock: SilentMode restore fails)' }
+            if ($OperationName -eq 'DTE.Quit' -and $global:QuitThrows233) { throw 'E_FAIL (mock: DTE.Quit fails)' }
+            & $script:Unit233ComRetry @PSBoundParameters
+        }
         function script:Get-AllComObjects {
             [CmdletBinding()] param([switch]$IncludeDisplayName)
             $dte = New-Object PSObject
@@ -79,7 +98,7 @@ try {
     Check 'P4-removed' ($null -eq $n) "value=$n"
 
     # --- P5: the record of a process that is gone is pruned on the next write ---
-    & $mod { param($p) Set-TcIdeSilentOriginal -ProcessId $p -Value $true } $ide2.Id
+    & $mod { param($p) Set-TcIdeSilentOriginal -ProcessId $p -Value 'assumed-false' } $ide2.Id
     Stop-Process -Id $ide2.Id -Force; $ide2.WaitForExit(5000) | Out-Null
     & $mod { param($p) Set-TcIdeSilentOriginal -ProcessId $p -Value $false } $ide.Id
     $recs = @(Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json | ForEach-Object { $_ })
@@ -138,10 +157,97 @@ try {
     $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'C3-false-known' ($r.success -and $r.data.silentModeOriginal -eq $false -and $r.data.silentModeOriginalUnknown -eq $false -and $r.data.silentModeOriginalSource -eq 'read') "orig=$($r.data.silentModeOriginal) unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource)"
     $null = Disconnect-TcIde
+
+    # ================= PR #266 review =================
+    function Get-Rec233([int]$P) { $m = New-Instance $ide.Id; & $m { param($x) Get-TcIdeSilentOriginal -ProcessId $x } $P }
+    $global:GetterThrows233 = $false; $global:SetThrows233 = $false; $global:RestoreThrows233 = $false; $global:QuitThrows233 = $false
+
+    # --- U1: getter fails, setter works -> assumed-false, Disconnect writes false, record removed ---
+    $global:Settings233 = New-Settings $true
+    $mod = New-Instance $ide.Id
+    $global:GetterThrows233 = $true
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:GetterThrows233 = $false
+    $rec = & $mod { param($p) Get-TcIdeSilentOriginal -ProcessId $p } $ide.Id
+    Check 'U1a-unreadable-unknown' ($r.success -and $r.data.silentModeOriginalUnknown -eq $true -and $r.data.silentModeOriginalSource -eq 'unreadable' -and $rec -eq 'assumed-false' -and $global:Settings233.Store -eq $true) "unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource) rec=$rec store=$($global:Settings233.Store)"
+    $global:SilentWrites233.Clear()
+    $d = Disconnect-TcIde
+    Check 'U1b-restored-false' ($d.success -and ($global:SilentWrites233 -join ',') -eq 'False' -and $d.data.silentModeRestored -eq $false -and $null -ne $d.data.silentModeRestored -and $d.data.silentModeOriginalUnknown -eq $true) "writes=$($global:SilentWrites233 -join ',') restored=$($d.data.silentModeRestored) unknown=$($d.data.silentModeOriginalUnknown)"
+    $after = Get-Rec233 $ide.Id
+    Check 'U1c-record-removed' ($null -eq $after) "rec=$after"
+
+    # --- U2: legacy 'unknown' record (before this fix: never restored) -> restored to false ---
+    $global:Settings233 = New-Settings $true
+    $mod = New-Instance $ide.Id
+    & $mod { param($p) Set-TcIdeSilentOriginal -ProcessId $p -Value 'unknown' } $ide.Id
+    $mod = New-Instance $ide.Id
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:SilentWrites233.Clear()
+    $d = Disconnect-TcIde
+    $after = Get-Rec233 $ide.Id
+    Check 'U2-legacy-unknown-restored' ($r.data.silentModeOriginalUnknown -eq $true -and ($global:SilentWrites233 -join ',') -eq 'False' -and $null -eq $after) "unknown=$($r.data.silentModeOriginalUnknown) writes=$($global:SilentWrites233 -join ',') rec=$after"
+
+    # --- U3: setter fails -> nothing changed: no record, Disconnect writes nothing ---
+    $global:Settings233 = New-Settings $false
+    $mod = New-Instance $ide.Id
+    $global:SetThrows233 = $true
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:SetThrows233 = $false
+    $rec = & $mod { param($p) Get-TcIdeSilentOriginal -ProcessId $p } $ide.Id
+    $global:SilentWrites233.Clear()
+    $d = Disconnect-TcIde
+    Check 'U3-setter-fails-nothing-kept' ($r.data.silentMode -eq $false -and $null -eq $rec -and $global:SilentWrites233.Count -eq 0 -and $null -eq $d.data.silentModeRestored) "silentMode=$($r.data.silentMode) rec=$rec writes=$($global:SilentWrites233 -join ',')"
+
+    # --- W1: state file not writable -> warning, Disconnect restores from memory ---
+    $global:Settings233 = New-Settings $false
+    $mod = New-Instance $ide.Id
+    & $mod { function script:Write-TcIdeSolutionRecords { [CmdletBinding()] param([object[]]$Records, [string]$Path) if ($Path -like '*silent-originals.json') { throw 'access denied (mock)' } } }
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:SilentWrites233.Clear()
+    $d = Disconnect-TcIde
+    Check 'W1-write-fails-warning-memory-restore' ($r.success -and -not [string]::IsNullOrWhiteSpace([string]$r.data.silentModeStateWarning) -and ($global:SilentWrites233 -join ',') -eq 'False' -and $d.data.silentModeRestored -eq $false) "warning=$($r.data.silentModeStateWarning) writes=$($global:SilentWrites233 -join ',')"
+    if (Test-Path -LiteralPath $stateFile) { Remove-Item -LiteralPath $stateFile -Force }
+
+    # --- M1: two module instances on the same IDE (A disconnects first) ---
+    $global:Settings233 = New-Settings $false
+    $modA = New-Instance $ide.Id
+    $rA = & $modA { Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch }
+    $modB = New-Instance $ide.Id
+    $rB = & $modB { Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch }
+    $global:SilentWrites233.Clear()
+    $dA = & $modA { Disconnect-TcIde }
+    $afterA = $global:Settings233.Store
+    $bConnected = & $modB { [bool]$script:TcIdeConnected }
+    $dB = & $modB { Disconnect-TcIde }
+    $after = Get-Rec233 $ide.Id
+    Check 'M1-a-first-restores-b-again' ($rA.data.silentModeOriginalSource -eq 'read' -and $rB.data.silentModeOriginalSource -eq 'state-file' -and $afterA -eq $false -and $bConnected -and $dB.data.silentModeRestored -eq $false -and ($global:SilentWrites233 -join ',') -eq 'False,False' -and $null -eq $after) "A=$($rA.data.silentModeOriginalSource) B=$($rB.data.silentModeOriginalSource) afterA=$afterA bConnected=$bConnected writes=$($global:SilentWrites233 -join ',') rec=$after"
+
+    # --- F1: restore fails -> error reported, record kept ---
+    $global:Settings233 = New-Settings $false
+    $mod = New-Instance $ide.Id
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $global:RestoreThrows233 = $true
+    $d = Disconnect-TcIde -WarningAction SilentlyContinue
+    $global:RestoreThrows233 = $false
+    $kept = Get-Rec233 $ide.Id
+    Check 'F1-restore-fails-record-kept' ($d.success -and $null -eq $d.data.silentModeRestored -and -not [string]::IsNullOrWhiteSpace([string]$d.data.silentModeRestoreError) -and $kept -eq $false -and $null -ne $kept -and $global:Settings233.Store -eq $true) "restored=$($d.data.silentModeRestored) error=$($d.data.silentModeRestoreError) kept=$kept"
+    if (Test-Path -LiteralPath $stateFile) { Remove-Item -LiteralPath $stateFile -Force }
+
+    # --- Q1: -Quit, DTE.Quit fails, no -Kill -> SilentMode restored (the IDE keeps running) ---
+    $global:Settings233 = New-Settings $false
+    $mod = New-Instance $ide.Id
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    & $mod { $script:TcIdeSelectedBy = 'launched' }   # owned, so -Quit is attempted
+    $global:QuitThrows233 = $true
+    $global:SilentWrites233.Clear()
+    $q = Disconnect-TcIde -Quit
+    $global:QuitThrows233 = $false
+    Check 'Q1-quit-failed-restores' (-not $q.success -and $q.error.code -eq 'IDE_QUIT_FAILED' -and $q.data.quit -eq $false -and ($global:SilentWrites233 -join ',') -eq 'False' -and $q.data.silentModeRestored -eq $false) "code=$($q.error.code) quit=$($q.data.quit) writes=$($global:SilentWrites233 -join ',') restored=$($q.data.silentModeRestored)"
+    & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcIdeSelectedBy = $null }
 }
 finally {
     foreach ($p in @($ide, $ide2)) { if ($null -ne $p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
-    Remove-Variable -Name Settings233, SilentWrites233 -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name Settings233, SilentWrites233, GetterThrows233, SetThrows233, RestoreThrows233, QuitThrows233 -Scope Global -ErrorAction SilentlyContinue
 }
 
 "failed: $fail"
