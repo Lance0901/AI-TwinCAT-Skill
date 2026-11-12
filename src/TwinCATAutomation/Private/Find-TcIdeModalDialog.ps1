@@ -1180,10 +1180,14 @@ function Find-TcIdeModalDialogColdRetry {
     #>
     [CmdletBinding()]
     param([ValidateRange(1, 60)][int]$RetryTimeoutSec = 15)
+    $script:TcLastModalScanRetried = $false
     $d = Find-TcIdeModalDialog
     if ((Test-TcModalScanIncomplete $d) -and [string]$d.Reason -eq 'timeout') {
         Write-Verbose "modal-dialog scan incomplete (timeout); scanning once more with $RetryTimeoutSec s (#230: first scan after an IDE start)"
-        $d = Find-TcIdeModalDialog -TimeoutSec $RetryTimeoutSec
+        # phase 1 (UIA load, type compile) was done by the first scan: cap it at 5 s so the retry
+        # takes at most RetryTimeoutSec + 5 s (the MCP budgets of ConnectIde / BuildProject keep room)
+        $script:TcLastModalScanRetried = $true
+        $d = Find-TcIdeModalDialog -TimeoutSec $RetryTimeoutSec -PrepareTimeoutSec 5
     }
     $d
 }

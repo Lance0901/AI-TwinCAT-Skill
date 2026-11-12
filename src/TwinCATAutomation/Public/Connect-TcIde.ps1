@@ -867,6 +867,7 @@ function Connect-TcIde {
     # A modal dialog (Assertion Failed, VS account settings, fatal error ...) blocks every
     # DTE call forever (no RPC_E_CALL_REJECTED), so check before Solution.Open / project scan.
     $dialog = Find-TcIdeModalDialogColdRetry   # #230: one longer retry when the first scan timed out
+    $modalScanRetried = [bool]$script:TcLastModalScanRetried
     if ($null -ne $dialog) {
         $dlgData = [PSCustomObject]@{ progId = $usedProgId; progIdSelectedBy = $progIdSelectedBy; selectedBy = $selectionReason; ownedBySession = ($script:TcIdeSelectedBy -eq 'launched'); ideProcessId = $ideProcessId; candidates = $candidateSummary; launchRecordWarning = $script:TcLaunchRecordWarning; takenOver = $false; previousOwner = $null }
         if ($null -ne $orphan) {
@@ -1125,5 +1126,6 @@ function Connect-TcIde {
     }
 
     $data | Add-Member -NotePropertyName 'connectSec' -NotePropertyValue ([math]::Round($swTotal.Elapsed.TotalSeconds, 1))
+    $data | Add-Member -NotePropertyName 'modalScanRetried' -NotePropertyValue ([bool]$modalScanRetried) -Force   # #230
     New-TcResult -Success $true -Data $data
 }
