@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <GVL Name="GVL_Lint" Id="{eeca5d67-1e2e-0cda-1cc0-d8d03086b510}">
+    <Declaration><![CDATA[VAR_GLOBAL
+    bFlag : BOOL;
+    nCnt : DINT := 0; // cnt
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

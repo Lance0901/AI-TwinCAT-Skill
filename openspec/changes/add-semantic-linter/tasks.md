@@ -20,10 +20,10 @@
 - [ ] 1a.4 契約:verdict / coverage(按規則計算)/ `unresolved[]` / `requiresDisposition` / metadata 的 `machineImpact`、`compilerCatches`、`te1200`;error code 全套(D4)
 - [ ] 1a.5 規則:PROJECT-XML-001~004、PROJECT-KIND-001、PROJECT-NAME-001 / 002、PROJECT-GUID-001~004、PROJECT-SUB-001 / 002、PROJECT-LINEIDS-001、PROJECT-COMPILE-001~006、PROJECT-LIB-001、PROJECT-TSPROJ-001~003、PROJECT-ENC-001、LINT-*;結構依據 `research/tc-xml-schema-observed.md`
 - [ ] 1a.6 profile / baseline 自動探索與 fail closed(Phase 1a 只有 default profile)、`overrides[]`
-- [ ] 1a.7 **IDE 實測:XAE 遇到損毀檔案的行為**(每條 PROJECT-* 規則一個案例:植入 → `Reset-TcSolution` → `Get-TcProjectTree` / `BuildProject`,記錄是否跳框、物件是否消失、Build 結果)。依結果把 `blockable: pending` 定案;含空白 / `'` / `%` 檔名在 `.plcproj` 的實際寫法;`<LineIds>` 不一致時 XAE 是否重建;行尾 / 編碼混用的顯示
-- [ ] 1a.8 **IDE 實測:用 XAE 產生 `.TcIO`、Property(Get / Set)、Transition、SFC 物件**,補進 `tc-xml-schema-observed.md` 與 XML fixture(取代 prototype 自己寫的 Interface XML)
-- [ ] 1a.9 **IDE 量測:TE1200 Light**(design.md D11 的四個問題)
-- [ ] 1a.10 **查 InfoSys / IDE 實測**:`st-syntax-inventory.md` 標「未驗證」的語法項目(`?=`、`**`、`/* */`、`E_Enum#Member`、TIME literal 的底線 / 負號 / 小數、`END_IF` 後分號可省、多個 `<ST>` 元素是否存在);每項以最小 POU 跑 `BuildProject` 確認合法性
+- [ ] 1a.7 (4026 VS2022 完成、4024 部分;結果 `verification/xae-corrupt-file-behavior.md`,blockable 已定案) **IDE 實測:XAE 遇到損毀檔案的行為**(每條 PROJECT-* 規則一個案例:植入 → `Reset-TcSolution` → `Get-TcProjectTree` / `BuildProject`,記錄是否跳框、物件是否消失、Build 結果)。依結果把 `blockable: pending` 定案;含空白 / `'` / `%` 檔名在 `.plcproj` 的實際寫法;`<LineIds>` 不一致時 XAE 是否重建;行尾 / 編碼混用的顯示
+- [ ] 1a.8 (Transition / SFC POU 本體 tcauto 建不了,其餘完成;`verification/xae-generated-xml.md`) **IDE 實測:用 XAE 產生 `.TcIO`、Property(Get / Set)、Transition、SFC 物件**,補進 `tc-xml-schema-observed.md` 與 XML fixture(取代 prototype 自己寫的 Interface XML)
+- [ ] 1a.9 (問題 1~3 實測完成、問題 4 只有 InfoSys;`verification/te1200-light.md`) **IDE 量測:TE1200 Light**(design.md D11 的四個問題)
+- [ ] 1a.10 (完成,VAR_GENERIC / subrange 未判定;`verification/st-syntax-measured.md`) **查 InfoSys / IDE 實測**:`st-syntax-inventory.md` 標「未驗證」的語法項目(`?=`、`**`、`/* */`、`E_Enum#Member`、TIME literal 的底線 / 負號 / 小數、`END_IF` 後分號可省、多個 `<ST>` 元素是否存在);每項以最小 POU 跑 `BuildProject` 確認合法性
 - **驗收**:
   - `tests/Unit/lint-parser.ps1`:語法清單每項一個 fixture;第二輪 review 6-1~6-4 的最小反例:條件 pragma → `notAnalyzed`(不是 `LINT_PARSE_FAILED`)、`__TRY` 內的呼叫被認出、`?=` 不丟例外、`T#1S-tonB.ET` 拆成正確 token
   - `tests/Unit/lint-project-xml.ps1`:XAE 原樣檔案(4024 與 4026 各一份,未在 XAE 外修改)零 finding;每條 PROJECT-* 規則至少 1 個破壞版正例;1a.7 加「在 XAE 寫入含 `]]>` 的程式碼」看 XAE 怎麼存
