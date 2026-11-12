@@ -88,17 +88,19 @@ Rules the tools follow, and that you should expect from the AI:
 - `success: true` only after the target state was read back. On `success: false` the AI stops and reports `data` and `error.hint`; it does not fall back to raw ADS, COM or GUI. After a crash or a failed activation the module records a lifecycle block for that target and answers `LIFECYCLE_BLOCKED` until you agree and `ClearLifecycleBlock` is called with a reason. Details: [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md) "Failure contract".
 - Activating restarts the target runtime and outputs go to zero. Use a target where that is acceptable.
 - Long calls (`ConnectIde`, `BuildProject`, `EnableConfig`, `RunLifecycle`) can outlast a client's own request timeout (SDK default 60 s) while the server keeps working. Claude Code: set the environment variable `MCP_TOOL_TIMEOUT` in milliseconds (for example `900000`), in the environment that starts `claude` or in the `env` block of `settings.json`, then restart Claude Code. Details: [mcp-server/README.md](mcp-server/README.md#client-request-timeout).
-- Codex asks you to approve every MCP tool call by default (實測 2026-11-08, codex-cli 0.167.0). To run unattended, the setting below in the `[mcp_servers.tcauto]` table of `%USERPROFILE%\.codex\config.toml` is meant to do it:
+- Codex asks you to approve every MCP tool call by default (實測 2026-11-08, codex-cli 0.167.0). To run unattended, add this to the `[mcp_servers.tcauto]` table of `%USERPROFILE%\.codex\config.toml` (or approve single tools with `[mcp_servers.tcauto.tools.<ToolName>]` `approval_mode = "approve"`):
 
   ```toml
   default_tools_approval_mode = "approve"
   ```
 
-  This lets the model call every tcauto tool, including `EnableConfig`, `WriteVariable` and `SetPlcState`, without asking you, so a wrong prompt can start, stop or reset a PLC on a real machine. Use it on a test target only.
+  **Headless (`codex exec` with `approval_policy="never"`) needs it:** Codex cannot ask there, so only tools approved this way run; any other tcauto call fails with `MCP tool call requires approval, but approval policy is never` (實測 2026-11-12, codex-cli 0.167.0: only `ConnectIde` approved, `SetTarget` failed; with `default_tools_approval_mode` the full lifecycle passed; [#250](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/250)).
 
-  The key name is 實測 2026-11-08, codex-cli 0.167.0: it took effect when passed as `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"`. No Codex documentation for it was found. The form written into `config.toml` (the toml block above) has **not been tested yet**.
+  This lets the model call every tcauto tool, including `EnableConfig`, `WriteVariable`, `SetPlcState` and the plan step of `InstallPackage`, without asking you, so a wrong prompt can start, stop or reset a PLC on a real machine. `InstallPackage` still needs `Approved=true` and a `PlanToken`, but nothing in Codex then stops the model from passing them itself. Use it on a test target only.
 
-  The line survives a re-run of `Install-TcAuto.ps1`: in `[mcp_servers.tcauto]` the installer sets only `command` and `args` and keeps every key and sub-table you added (except env `TCAUTO_RUNTIME_ROOT`, which it removes) ([#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204); verified by unit tests and an install test on temp folders, no real config was touched). `-Uninstall` still removes the whole table with its sub-tables.
+  The key names are 實測 (codex-cli 0.167.0) when passed as `codex exec -c mcp_servers.tcauto.default_tools_approval_mode="approve"`. No Codex documentation for them was found. The form written into `config.toml` (the toml block above) has **not been tested yet**.
+
+  The installer never writes this line, and it survives a re-run of `Install-TcAuto.ps1`: in `[mcp_servers.tcauto]` the installer sets only `command` and `args` and keeps every key and sub-table you added (except env `TCAUTO_RUNTIME_ROOT`, which it removes) ([#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204); verified by unit tests and an install test on temp folders, no real config was touched). `-Uninstall` still removes the whole table with its sub-tables.
 
 ## Supported clients and verification status
 
