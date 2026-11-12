@@ -25,6 +25,25 @@ export { DEFAULT_PROBE_SCRIPT, DEFAULT_PROBE_INTERVAL_SEC, DEFAULT_PROBE_CONFIRM
  */
 export const PROBED_TOOLS = new Set(['BuildProject', 'EnableConfig', 'PlcLogin', 'SendPlcProgram', 'RunTestCycle', 'OpenProject', 'ConnectIde']);
 
+/**
+ * #49: the dialog carries the runtime's license failure, e.g. (measured 2026-11-11, VS2022 4026 + UmRT)
+ *   Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!
+ * Independent of the XAE UI language (only the English runtime text is measured; the non-English
+ * license words are an inference), same rule as the module (Private/LicenseMissing.ps1): '(10000)' (error source
+ * 'TwinCAT System', ASCII or full-width parentheses) AND a license word (license / licence / Lizenz /
+ * zh-TW / zh-CN / ja). '(10000)' alone is not enough: the ADS 1809 fatal error has the same prefix (#194).
+ * @param {string} title
+ * @param {string} text
+ * @returns {{evidence:string}|null}
+ */
+export function licenseDialogEvidence(title, text) {
+  const s = `${String(title ?? '')} | ${String(text ?? '')}`;
+  if (!/[(\uFF08]\s*10000\s*[)\uFF09]/.test(s)) return null;
+  if (!/licen[cs]|lizenz|\u6388\u6B0A|\u6388\u6743|\u30E9\u30A4\u30BB\u30F3\u30B9/i.test(s)) return null;
+  const evidence = s.replace(/\s+/g, ' ').trim();
+  return { evidence: evidence.length > 300 ? evidence.slice(0, 300) : evidence };
+}
+
 const KILL_ESCALATE_MS = 1000;
 
 function isAlive(pid) {

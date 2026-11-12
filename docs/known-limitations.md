@@ -80,6 +80,13 @@
 - **繞過**:同上,照「UmRT 復原」重啟 `TcSystemServiceUm` 後重跑 `EnableConfig Force=true`。
 - **Issue**:追蹤在 [#21](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21),補充說明見 [issuecomment-6487701546](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/21#issuecomment-6487701546),紀錄見 [verification/issue21-umrt-crash-records.md](../openspec/changes/complete-automation-interface/verification/issue21-umrt-crash-records.md)
 
+### Activate 前無法預檢 license(#49)
+
+- **現象**:target 的 license 不足(trial 到期、沒涵蓋專案用到的 TF)時,只有 Activate 之後 runtime 才回報;XAE 的「Target system reports a fatal error ... (10000) >> license not found <<」會跳到所有連這個 target 的 XAE。
+- **影響**:模組回 `LICENSE_MISSING`(dialog 不按、lifecycle block 照記),但 runtime 已被要求 Activate,停在 Config。
+- **繞過**:跑 lifecycle 前請使用者在 XAE 的 License 節點確認;出現 `LICENSE_MISSING` 時由使用者續 trial / 啟用 license,讀回後同意才 `ClearLifecycleBlock`。
+- **為什麼不預檢**:InfoSys 沒有 Activate 前唯讀判定的方法([license check 是 runtime 啟動的一部分](https://infosys.beckhoff.com/content/1033/tc3_security_management/3297369483.html)),細節見 `docs/troubleshooting.md`「LICENSE_MISSING」與 [#49](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/49)。
+
 ### PLC login 中不能新增物件(`PLC_LOGGED_IN`)
 
 - **現象**:PLC 處於 login 狀態時,`AddPou` / `AddGvl` / `AddDut` 會被 XAE 拒絕(「Cannot add an object because it affects a device you are currently logged into」),模組回 `PLC_LOGGED_IN`,不會建立任何物件,也不記 BUILD_REQUIRED(實測 2026-10-29,4026 VS2022,registered tcauto)。`AddLibrary` 在 login 中可以成功(實測 2026-10-29)。
