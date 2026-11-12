@@ -391,7 +391,12 @@ namespace TcLintEngine
                     {
                         Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1,
                             "Compile Include has wrong MSBuild escaping: '%' must be written as %25 (the file on disk is '" + inc + "')", inc, null, "escape", null, null, false);
-                        if (rawFull != null) listed.Add(rawFull);
+                        if (rawFull != null && File.Exists(rawFull))
+                        {
+                            listed.Add(rawFull);
+                            // the object itself is still checked (under the name it has on disk)
+                            if (Path.GetExtension(rawFull).StartsWith(".Tc", StringComparison.OrdinalIgnoreCase)) objectFiles.Add(OnDisk(rawFull));
+                        }
                     }
                     else
                     {
@@ -418,7 +423,7 @@ namespace TcLintEngine
                     dirPart = Path.GetDirectoryName(dirPart);
                 }
                 string ext = Path.GetExtension(full);
-                if (ext.StartsWith(".Tc", StringComparison.OrdinalIgnoreCase)) objectFiles.Add(full);
+                if (ext.StartsWith(".Tc", StringComparison.OrdinalIgnoreCase)) objectFiles.Add(OnDisk(full));
             }
             // object files on disk that are not compiled
             List<string> onDisk = new List<string>();
@@ -433,6 +438,15 @@ namespace TcLintEngine
             }
             objectFiles.Sort(StringComparer.OrdinalIgnoreCase);
             return objectFiles;
+        }
+
+        // the path with the spelling the file system has (the Include may differ in case: COMPILE-006)
+        private string OnDisk(string full)
+        {
+            string rel = MsPath.Relative(plcDir, full);
+            if (rel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(rel)) return full;
+            string disk = MsPath.DiskSpelling(plcDir, rel);
+            return disk == null ? full : Path.Combine(plcDir, disk);
         }
 
         private static void CollectObjectFiles(string dir, List<string> into, int depth)
@@ -1252,13 +1266,22 @@ namespace TcLintEngine
             }
             // PouCall -> PROGRAM
             Dictionary<string, TcObjectFile> pous = new Dictionary<string, TcObjectFile>(StringComparer.OrdinalIgnoreCase);
-            foreach (TcObjectFile o in objects) if (o.Kind == "POU" && !pous.ContainsKey(o.Name)) pous[o.Name] = o;
+            bool unreadablePou = false;
+            foreach (TcObjectFile o in objects)
+            {
+                if (o.Kind == "POU" && !pous.ContainsKey(o.Name)) pous[o.Name] = o;
+                // a .TcPOU that could not be read / parsed: its name is unknown, so a PouCall that
+                // names no known POU cannot be judged (the file already has its own finding)
+                if (o.Obj == null && string.Equals(o.Ext, ".TcPOU", StringComparison.OrdinalIgnoreCase)) unreadablePou = true;
+            }
             foreach (TcObjectFile t in ttos)
             {
                 foreach (string call in t.PouCalls)
                 {
                     TcObjectFile target;
-                    if (!pous.TryGetValue(call, out target))
+                    if (!pous.TryGetValue(call, out target) && unreadablePou)
+                        rulesSkipped.Add(Cov("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, null, "pou-call-target-unreadable"));
+                    else if (target == null)
                         E("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, "Task '" + t.Name + "' calls '" + call + "', which is not a POU of this project", call, null);
                     else if (target.DeclHeader != null && target.DeclHeader.Length > 0 && target.DeclHeader != "PROGRAM")
                         E("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, "Task '" + t.Name + "' calls '" + call + "', which is a " + target.DeclHeader + ", not a PROGRAM", call, null);
