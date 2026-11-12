@@ -47,8 +47,9 @@ $script:TcUiaDialogScan = {
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
 
     # #234: is this top-level window the IDE main window by its UIA AutomationId? The VS2022 main window
-    # carries 'VisualStudioMainWindow' (measured 2026-10-21, see the message box notes below; other hosts:
-    # docs/troubleshooting.md "IDE_QUIT_FAILED"). A stale non-zero $MainHwnd (cached handle that is no
+    # carries 'VisualStudioMainWindow' (measured 2026-10-21, see the message box notes below); so do the
+    # 32-bit (TcXaeShell.DTE.15.0) and 64-bit (TcXaeShell.DTE.17.0) XAE Shell main windows, IsModal = False
+    # (measured 2026-11-13, empty shells, read-only UIA; docs/troubleshooting.md "IDE_QUIT_FAILED"). A stale non-zero $MainHwnd (cached handle that is no
     # longer the main window) switches the title rule of the window loop off, and the main window's
     # caption '<solution> - Microsoft Visual Studio' then matched $knownDialogPattern: reported as kind
     # unknown, which blocked ConnectIde / BuildProject / DisconnectIde -Quit (measured 2026-11-13, VS2022
