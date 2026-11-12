@@ -170,7 +170,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 5. **看結果**:`data.verified=true` 才算成功;`data.backupPath`(`<solution 目錄>\.tcauto-backup\<時間>\`)和 `data.backupFiles` 是寫入前的備份,`data.warnings` 說明沒備份到的磁碟檔。`TREEITEM_VERIFY_FAILED` 不是成功。
 6. TIPC 底下的修改會記 `BUILD_REQUIRED`(code-changed):Activate / Login 前要再完整 `Build-TcProject`。
 
-## Cmdlet 清單(<!-- generated:cmdlet-count -->85<!-- /generated -->)
+## Cmdlet 清單(<!-- generated:cmdlet-count -->86<!-- /generated -->)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -318,6 +318,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Install-TcPackage` | `InstallPackage` | `-PackageId <string> -Version <string> [-Approved] [-PlanToken <string>] [-TimeoutSec <int>]` |
 | `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
+| `Invoke-TcLintProject` | `LintProject` | `[-PlcProjectPath <string>] [-SolutionPath <string>] [-Scope <string>] [-ObjectPaths <string[]>] [-RuleProfile <string>] [-FailOn <string>] [-IncludeTiming]` |
 | `Invoke-TcTest` | `RunTest` | `-TestCase <psobject>` |
 | `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <psobject[]> [-SkipBuild] [-KeepRunning]` |
 | `Lock-TcLibraryPlaceholder` | `FreezePlaceholder` | `[-Placeholder <string>] [-All] [-DryRun <bool>] [-PlcProjectPath <string>]` |

@@ -197,6 +197,10 @@ namespace TcLintEngine
         public LintRun(LintOptions o)
         {
             opt = o;
+            // PowerShell assigns "" (not null) when $null goes into a .NET string field
+            if (string.IsNullOrEmpty(o.SolutionPath)) o.SolutionPath = null;
+            if (string.IsNullOrEmpty(o.TsprojPath)) o.TsprojPath = null;
+            if (string.IsNullOrEmpty(o.FailOn)) o.FailOn = "error";
             foreach (RuleOverride ov in o.RuleOverrides) overrides[ov.RuleId] = ov;
         }
 

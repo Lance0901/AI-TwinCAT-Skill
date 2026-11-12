@@ -114,6 +114,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Install-TcPackage` | `InstallPackage` | `-PackageId <string> -Version <string> [-Approved] [-PlanToken <string>] [-TimeoutSec <int>]` |
 | `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
+| `Invoke-TcLintProject` | `LintProject` | `[-PlcProjectPath <string>] [-SolutionPath <string>] [-Scope <string>] [-ObjectPaths <string[]>] [-RuleProfile <string>] [-FailOn <string>] [-IncludeTiming]` |
 | `Invoke-TcTest` | `RunTest` | `-TestCase <psobject>` |
 | `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <psobject[]> [-SkipBuild] [-KeepRunning]` |
 | `Lock-TcLibraryPlaceholder` | `FreezePlaceholder` | `[-Placeholder <string>] [-All] [-DryRun <bool>] [-PlcProjectPath <string>]` |
