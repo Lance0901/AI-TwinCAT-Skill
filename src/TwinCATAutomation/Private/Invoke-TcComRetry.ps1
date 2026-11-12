@@ -228,6 +228,7 @@ while (-not $Sync.Stop) {
                         $script:TcAutomationSettings = $null
                         $script:TcSilentMode = $false
                         $script:TcSilentModeOriginal = $null
+                        $script:TcSilentOriginalUnknown = $false
                         $script:TcIdeConnected = $false
                         if ($null -ne $script:TcSysManager) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcSysManager) | Out-Null } catch { } }
                         if ($null -ne $script:TcDte) { try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($script:TcDte) | Out-Null } catch { } }

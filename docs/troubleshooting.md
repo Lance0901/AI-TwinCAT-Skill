@@ -499,6 +499,19 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`、`TCAUTO_LAUNCHER_OWNER_ID` / `TCAUTO_LAUNCHER_PID`(#152 R3-3、#162)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
+### SilentMode 原值持久化(#233)
+
+`Connect-TcIde` 把 IDE 的 `TcAutomationSettings.SilentMode` 設成 true 前,先記下原值,`Disconnect-TcIde` 還原。原值除了存在行程記憶體,也在**設 true 之前**寫進 `<TCAUTO_STATE_DIR 或 %TEMP%\TwinCATAutomation>\silent-originals.json`(`[{ pid; startTime; imageName; original; recordedAt }]`,key = IDE pid + 行程啟動時間,pid 重用不會對上;tmp + replace 原子寫入、具名 mutex;IDE 行程已不在的紀錄在每次寫入時清掉;還原成功後刪掉該筆)。所以前一個行程(agent 的上一次工具呼叫、重啟前的 MCP bridge)沒 `Disconnect-TcIde` 就結束時,下一個行程仍還原真正的原值。
+
+- **Connect 的 data**:`silentModeOriginal` = 已知的原值(`true` / `false`);原值未知時是 `null`,這時看 `silentModeOriginalUnknown = true`,Disconnect 會還原成 false。`silentModeOriginalSource`:`read`(這次讀到 false)、`memory` / `state-file`(先前記下的)、`unknown-was-true`(沒有紀錄卻讀到 true)、`unreadable`(getter 失敗)。
+- **原值未知 → 還原成 false**:沒有紀錄卻讀到 true(可能是先前某個 TcAuto 行程設的、沒還原),或 getter 讀不到(PR #266 review 1:setter 仍會設 true,不還原就會永遠停在 true)。紀錄寫成 `assumed-false`,之後每個行程都仍是 unknown。舊版寫的 `unknown` 紀錄也照這條處理。setter 本身失敗時 IDE 沒被改,這次寫的紀錄會撤回,Disconnect 不寫入。
+  - 為什麼是 false:InfoSys 的 [Silent Mode 頁](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/2489025803.html) 沒寫預設值、範圍或是否持久化。新啟動的 IDE 實測都是 false(2026-11-13,XAE 4026:`TcXaeShell.DTE.15.0` 32-bit 開 4024 專案、`VisualStudio.DTE.17.0`、`TcXaeShell.DTE.17.0` 64-bit)。還原成 false 是安全的一邊:XAE 的提示改回給使用者看,不會被自動用預設鈕回答。代價:使用者自己設成 true 的 IDE,Disconnect 後會變 false。
+- **Disconnect 的 data**:`silentModeRestored` = 這次寫入的值(`null` = 沒有寫入),`silentModeOriginalUnknown`,失敗時 `silentModeRestoreError`(另有 Warning,message 也會提到)。還原失敗時紀錄保留,下一次 `Connect-TcIde` + `Disconnect-TcIde` 再還原。
+- **會還原的路徑**:`Disconnect-TcIde`(不帶 `-Quit`);`-Quit` 但 `DTE.Quit` 失敗、又沒有 `-Kill`(IDE 還在跑,PR #266 review 5)。`-Quit` 遇到 modal dialog 時直接回 `IDE_QUIT_FAILED`、什麼都不做(那時 setter 呼叫會被 dialog 卡住)。
+- **不會還原、要等下一次 `Connect-TcIde` + `Disconnect-TcIde` 的路徑**:行程沒 `Disconnect-TcIde` 就結束(紀錄在狀態檔,下一個行程能還原);同一行程直接 `Connect-TcIde` 另一個 IDE(只清變數,#271);#196 takeover 失敗的 `Reset-TcOrphanTakeoverAttach`(刻意不動,別的 session 可能已接管並依賴 true);`IDE_CRASHED` 後(IDE 已不在)。
+- **多個 session 連同一個 IDE(現況,#270)**:紀錄是每個 IDE 一筆、所有 session 共用。先 `Disconnect-TcIde` 的 session 就還原成原值、刪掉紀錄;另一個還連著的 session 之後遇到 XAE 提示時不會被自動回答,可能卡在 modal dialog(`IDE_MODAL_DIALOG`)。它自己 Disconnect 時用記憶體的原值再寫一次(無害)。
+- **狀態檔讀寫失敗(fail closed)**:讀不到 / 損毀 → 當作沒有紀錄(讀到 true 就走 unknown → false),`data.silentModeStateWarning` 說明;損毀檔在下次寫入時改名成 `.corrupt-<時間>` 保留,**檔裡其他 IDE 的紀錄也一起失去**(那些 IDE 下次連線時讀到 true 就成為 unknown → false)。寫不進去 → 本行程記憶體照常還原、`data.silentModeStateWarning`;之後的行程最壞是 unknown → false,不會把 true 當原值。IDE 的 pid 或行程啟動時間讀不到時不寫檔,只留在記憶體,同樣回 `silentModeStateWarning`。
+
 ### LAUNCH_RECORD_UNAVAILABLE
 
 - **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。`Connect-TcIde -TakeOverOrphan`(#196)讀不到紀錄檔(`data.reason = 'launch-record-unavailable'`)或接管寫不進去(`'launch-record-write-failed'`)時也回這個碼：沒有 attach、沒有接管。
