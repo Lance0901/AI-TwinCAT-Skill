@@ -25,16 +25,28 @@ $script:TcPkgInstallablePackageIds = @('TwinCAT.Standard.XAE', 'TwinCAT.Standard
 $script:TcPkgRemoteManagerId = 'TwinCAT.StandardRM.XAE'
 # Process names of the IDEs that host the TwinCAT XAE (Get-TcIdeExeName).
 $script:TcPkgIdeProcessNames = @('TcXaeShell', 'devenv')
+# tcpkg CLI and Package Manager UI (see Get-TcPkgRunningPackageManager)
+$script:TcPkgManagerProcessNames = @('TcPkg', 'TwinCAT.Package.Manager.GUI')
+$script:TcPkgSignerOrganization = 'Beckhoff Automation GmbH & Co. KG'
 
-# Path of TcPkg.exe, or $null. The measured install location first (an elevated install must not
-# run whatever tcpkg a user-writable PATH folder holds first), then PATH, .exe only (no .cmd / .bat).
-# Seam for the unit tests.
-function Get-TcPkgExecutable {
+# %ProgramData%\Beckhoff\TcPkg\TcPkg.exe when it exists, else $null (measured install location,
+# 2026-11-12). The only executable Install-TcPackage runs (PR #257 review). Seam for the unit tests.
+function Get-TcPkgDefaultExecutable {
     [CmdletBinding()]
     param()
     $pd = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { 'C:\ProgramData' } else { $env:ProgramData }
     $default = Join-Path $pd 'Beckhoff\TcPkg\TcPkg.exe'
     if (Test-Path -LiteralPath $default -PathType Leaf) { return $default }
+    $null
+}
+
+# Path of TcPkg.exe for the read-only Get-TcPackageInfo, or $null: the default location first, then
+# PATH, .exe only (no .cmd / .bat). Seam for the unit tests.
+function Get-TcPkgExecutable {
+    [CmdletBinding()]
+    param()
+    $default = Get-TcPkgDefaultExecutable
+    if ($null -ne $default) { return $default }
     $cmd = Get-Command -Name 'tcpkg.exe' -CommandType Application -ErrorAction SilentlyContinue | Where-Object { [string]$_.Source -like '*.exe' } | Select-Object -First 1
     if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) { return [string]$cmd.Source }
     $null
@@ -155,16 +167,92 @@ function Test-TcIsElevated {
     catch { return $false }
 }
 
-# Running IDE processes that host the XAE (TcXaeShell / devenv): @{ processId; name; path; title }.
+# Processes named -Name (without .exe): @{ processId; name; path; title }. THROWS when the process
+# list cannot be read (Install-TcPackage turns that into a blocker: fail closed); no match = @().
+function Get-TcPkgProcessByName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$Name)
+    $list = foreach ($n in $Name) { [System.Diagnostics.Process]::GetProcessesByName($n) }
+    @($list | Where-Object { $null -ne $_ } | Sort-Object Id | ForEach-Object {
+            $path = $null; try { $path = $_.MainModule.FileName } catch { $path = $null }   # other user / elevated: not readable, not an error
+            $title = $null; try { $title = $_.MainWindowTitle } catch { $title = $null }
+            [PSCustomObject]@{ processId = $_.Id; name = $_.ProcessName; path = $path; title = $title }
+        })
+}
+
+# Running IDE processes that host the XAE (TcXaeShell / devenv). Throws when the list cannot be read.
 # Seam for the unit tests.
 function Get-TcPkgRunningIde {
     [CmdletBinding()]
     param()
-    @(Get-Process -Name $script:TcPkgIdeProcessNames -ErrorAction SilentlyContinue | Sort-Object Id | ForEach-Object {
-            $path = $null; try { $path = $_.Path } catch { $path = $null }
-            $title = $null; try { $title = $_.MainWindowTitle } catch { $title = $null }
-            [PSCustomObject]@{ processId = $_.Id; name = $_.ProcessName; path = $path; title = $title }
-        })
+    @(Get-TcPkgProcessByName -Name $script:TcPkgIdeProcessNames)
+}
+
+# Running tcpkg CLI (TcPkg) and Package Manager UI processes. The UI name is the exe the start-menu
+# shortcut 'TwinCAT Package Manager' points to (C:\ProgramData\Beckhoff\TcPkgUi\Gui\
+# TwinCAT.Package.Manager.GUI.exe, read 2026-11-12); a running UI process was not observed (not
+# measured). Throws when the list cannot be read. Seam for the unit tests.
+function Get-TcPkgRunningPackageManager {
+    [CmdletBinding()]
+    param()
+    @(Get-TcPkgProcessByName -Name $script:TcPkgManagerProcessNames)
+}
+
+# Does an X.509 subject name the organisation Beckhoff Automation GmbH & Co. KG (O= exactly)?
+# Measured 2026-11-12: TcPkg.exe 2.4.18 is signed by 'CN=Beckhoff Automation GmbH & Co. KG,
+# O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE', status Valid.
+function Test-TcPkgSignerSubject {
+    param([AllowNull()][string]$Subject)
+    if ([string]::IsNullOrWhiteSpace($Subject)) { return $false }
+    foreach ($m in [regex]::Matches($Subject, '(?:^|,)\s*O=("[^"]*"|[^,]*)')) {
+        if ($m.Groups[1].Value.Trim().Trim('"') -ceq $script:TcPkgSignerOrganization) { return $true }
+    }
+    $false
+}
+
+# Authenticode signature of -Path: [PSCustomObject]@{ ok (Valid and signed by Beckhoff); status;
+# subject; error }. May throw (caller fails closed). Seam for the unit tests.
+function Test-TcPkgSignature {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    $subject = if ($null -ne $sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { $null }
+    $status = [string]$sig.Status
+    [PSCustomObject]@{ ok = ($status -eq 'Valid' -and (Test-TcPkgSignerSubject $subject)); status = $status; subject = $subject; error = $(if ($status -ne 'Valid') { [string]$sig.StatusMessage } else { $null }) }
+}
+
+# --- PR #257 review: one-time plan tokens (consent) ---
+# Install-TcPackage without -Approved stores the plan it showed: token -> @{ command; fingerprint;
+# expiresUtc }. -Approved must present the token: unknown / used / expired / other command / other
+# state = TCPKG_PLAN_REQUIRED. Kept in this module instance only (one MCP bridge process); a bridge
+# restart or ReloadModule drops every token.
+$script:TcPkgPlans = @{}
+$script:TcPkgPlanTtlSec = 600
+
+function New-TcPkgPlanToken {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][string]$Fingerprint)
+    if ($null -eq $script:TcPkgPlans) { $script:TcPkgPlans = @{} }
+    $now = [DateTime]::UtcNow
+    foreach ($k in @($script:TcPkgPlans.Keys)) { if ($script:TcPkgPlans[$k].expiresUtc -lt $now) { $script:TcPkgPlans.Remove($k) } }
+    $token = [guid]::NewGuid().ToString('N')
+    $exp = $now.AddSeconds($script:TcPkgPlanTtlSec)
+    $script:TcPkgPlans[$token] = [PSCustomObject]@{ command = $Command; fingerprint = $Fingerprint; expiresUtc = $exp }
+    [PSCustomObject]@{ token = $token; expiresUtc = $exp }
+}
+
+# Takes the token out of the store (one use, whatever the outcome). Returns @{ ok; reason
+# ('missing' | 'unknown' | 'expired' | 'command'); fingerprint }.
+function Use-TcPkgPlanToken {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Token, [Parameter(Mandatory)][string]$Command)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return [PSCustomObject]@{ ok = $false; reason = 'missing'; fingerprint = $null } }
+    if ($null -eq $script:TcPkgPlans -or -not $script:TcPkgPlans.ContainsKey($Token)) { return [PSCustomObject]@{ ok = $false; reason = 'unknown'; fingerprint = $null } }
+    $p = $script:TcPkgPlans[$Token]
+    $script:TcPkgPlans.Remove($Token)
+    if ($p.expiresUtc -lt [DateTime]::UtcNow) { return [PSCustomObject]@{ ok = $false; reason = 'expired'; fingerprint = $null } }
+    if (-not [string]::Equals([string]$p.command, $Command, [StringComparison]::Ordinal)) { return [PSCustomObject]@{ ok = $false; reason = 'command'; fingerprint = $null } }
+    [PSCustomObject]@{ ok = $true; reason = $null; fingerprint = [string]$p.fingerprint }
 }
 
 # Installed + feed versions of -PackageId. Returns [PSCustomObject]@{ errorCode; message; exe;

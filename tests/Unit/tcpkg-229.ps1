@@ -4,8 +4,11 @@
 #   B  Get-TcPackageInfo with mocked seams (Get-TcPkgExecutable, Invoke-TcPkgProcess, Get-TcXaeInstallInfo):
 #      JSON parsing / filtering, Remote Manager Build_ folder, TCPKG_NOT_FOUND, TCPKG_TIMEOUT,
 #      TCPKG_LIST_FAILED (exit code, not JSON), -NoAvailable
-#   C  Install-TcPackage: plan by default (nothing executed), Approved preconditions
-#      (TCPKG_ELEVATION_REQUIRED, TCPKG_IDE_RUNNING, TCPKG_VERSION_NOT_FOUND), already installed,
+#   C  Install-TcPackage: plan by default (nothing executed) with a one-time PlanToken; Approved
+#      without / with an unknown, foreign, used or expired token or a changed state -> TCPKG_PLAN_REQUIRED;
+#      preconditions (TCPKG_ELEVATION_REQUIRED, TCPKG_IDE_RUNNING, TCPKG_RUNNING, TCPKG_PRECHECK_FAILED,
+#      TCPKG_VERSION_NOT_FOUND); TcPkg.exe only from %ProgramData% with a Beckhoff signature
+#      (TCPKG_NOT_FOUND, TCPKG_SIGNATURE_INVALID, fail closed); already installed,
 #      install + readback (success / TCPKG_INSTALL_UNVERIFIED / TCPKG_INSTALL_FAILED / TCPKG_TIMEOUT).
 #      The real install path is only covered by these mocks (never run against tcpkg).
 #   D  PROGID_REQUIRED hint of Resolve-TcLaunchProgId / Get-TcProjectVersion suggests Install-TcPackage
@@ -50,6 +53,8 @@ try {
     if ($alive) { Stop-Process -Id $r.processId -ErrorAction SilentlyContinue }   # the child this test started
     Check 'A5 Build folder name drops the third part' ((& $mod { ConvertTo-TcPkgBuildFolderName '4024.71.2' }) -eq 'Build_4024.71' -and $null -eq (& $mod { ConvertTo-TcPkgBuildFolderName 'abc' })) ''
 
+    # the real signature check, captured before the mocks replace it (C34)
+    $realSig = & $mod { ${function:Test-TcPkgSignature} }
     # --- mocks ---
     $global:Pkg229 = @{
         exe       = 'C:\fake\TcPkg.exe'
@@ -79,7 +84,10 @@ try {
     & $mod {
         function script:Get-TcPkgExecutable { [CmdletBinding()] param() $global:Pkg229.exe }
         function script:Test-TcIsElevated { [CmdletBinding()] param() $global:Pkg229.elevated }
-        function script:Get-TcPkgRunningIde { [CmdletBinding()] param() @($global:Pkg229.ides) }
+        function script:Get-TcPkgRunningIde { [CmdletBinding()] param() if ($global:Pkg229.ideThrow) { throw 'Access is denied' }; @($global:Pkg229.ides) }
+        function script:Get-TcPkgRunningPackageManager { [CmdletBinding()] param() if ($global:Pkg229.pmThrow) { throw 'Access is denied' }; @($global:Pkg229.pkgProcs) }
+        function script:Get-TcPkgDefaultExecutable { [CmdletBinding()] param() $global:Pkg229.defaultExe }
+        function script:Test-TcPkgSignature { [CmdletBinding()] param([string]$Path) if ($global:Pkg229.sigThrow) { throw 'Get-AuthenticodeSignature is not available' }; [PSCustomObject]$global:Pkg229.sig }
         function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\TwinCAT\3.1\Components\Base'; remoteManagerBuilds = @($global:Pkg229.xaeBuilds); remoteManagerReason = $null; remoteManagerSearched = @() } }
         function script:Invoke-TcPkgProcess {
             [CmdletBinding()] param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60, [switch]$NoKillOnTimeout)
@@ -109,7 +117,7 @@ try {
             $res
         }
     }
-    $reset = { $global:Pkg229.noKill = $null; $global:Pkg229.calls.Clear(); $global:Pkg229.listMode = 'ok'; $global:Pkg229.listFailOn = 'list'; $global:Pkg229.installMode = 'ok'; $global:Pkg229.elevated = $true; $global:Pkg229.ides = @(); $global:Pkg229.exe = 'C:\fake\TcPkg.exe' }
+    $reset = { $global:Pkg229.noKill = $null; $global:Pkg229.calls.Clear(); $global:Pkg229.listMode = 'ok'; $global:Pkg229.listFailOn = 'list'; $global:Pkg229.installMode = 'ok'; $global:Pkg229.elevated = $true; $global:Pkg229.ides = @(); $global:Pkg229.exe = 'C:\fake\TcPkg.exe'; $global:Pkg229.defaultExe = 'C:\fake\TcPkg.exe'; $global:Pkg229.sig = @{ ok = $true; status = 'Valid'; subject = 'CN=Beckhoff Automation GmbH & Co. KG, O=Beckhoff Automation GmbH & Co. KG'; error = $null }; $global:Pkg229.sigThrow = $false; $global:Pkg229.pkgProcs = @(); $global:Pkg229.ideThrow = $false; $global:Pkg229.pmThrow = $false; & $mod { $script:TcPkgPlans = @{} } }
 
     # --- B: Get-TcPackageInfo ---
     & $reset
@@ -151,60 +159,125 @@ try {
     Check 'B15 TimeoutSec above 120 rejected' $bad ''
 
     # --- C: Install-TcPackage ---
+    # #229 PR #257 review: Approved needs the one-time PlanToken of a plan; plan first, clear the calls, then approve
+    $plan = { param($id, $ver) Install-TcPackage -PackageId $id -Version $ver }
+    $approve = { param($id, $ver, $tok) $global:Pkg229.calls.Clear(); Install-TcPackage -PackageId $id -Version $ver -Approved -PlanToken $tok }
+    $installs = { @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count }
     & $reset; $global:Pkg229.elevated = $false; $global:Pkg229.ides = @([PSCustomObject]@{ processId = 4242; name = 'devenv'; path = 'C:\vs\devenv.exe'; title = 'x' })
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5
-    Check 'C1 default = plan: success, executed false, no install call' ($r.success -and $r.data.executed -eq $false -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) ($global:Pkg229.calls -join '|')
-    Check 'C2 plan has the full command, admin need, IDEs, blockers and the ask-first hint' ($r.data.command -eq 'C:\fake\TcPkg.exe install TwinCAT.StandardRM.XAE=4024.71.5 -y' -and $r.data.requiresAdministrator -and $r.data.isAdministrator -eq $false -and $r.data.runningIdes[0].processId -eq 4242 -and (@($r.data.blockers) -join ',') -eq 'not-elevated,ide-running' -and $r.data.hint -match 'Approved=true' -and $r.data.hint -match 'TwinCAT\.StandardRM\.XAE -Version 4024\.71\.5') "$($r.data.command) / $(@($r.data.blockers) -join ',')"
-    Check 'C3 plan: versionInFeed, feed source, Build folder' ($r.data.versionInFeed -and (@($r.data.feedSources) -join ',') -eq 'Beckhoff Outdated Feed' -and $r.data.buildFolder -eq 'Build_4024.71' -and $r.data.buildFolderExists -eq $true -and $r.data.alreadyInstalled -eq $false) ''
+    $r = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    Check 'C1 default = plan: success, executed false, no install call, one-time planToken' ($r.success -and $r.data.executed -eq $false -and (& $installs) -eq 0 -and $r.data.planToken -match '^[0-9a-f]{32}$' -and $null -ne $r.data.planExpiresAtUtc) ($global:Pkg229.calls -join '|')
+    Check 'C2 data.plan: full command, admin need, IDEs, blockers; hint has no ready-to-run Approved command' ($r.data.plan.command -eq 'C:\fake\TcPkg.exe install TwinCAT.StandardRM.XAE=4024.71.5 -y' -and $r.data.plan.requiresAdministrator -and $r.data.plan.isAdministrator -eq $false -and $r.data.plan.runningIdes[0].processId -eq 4242 -and (@($r.data.plan.blockers) -join ',') -eq 'not-elevated,ide-running' -and $r.data.hint -match 'data\.plan' -and $r.data.hint -match 'PlanToken' -and $r.data.hint -notmatch '4024\.71\.5' -and $r.data.hint -notmatch '-Approved\b') "$($r.data.plan.command) / $(@($r.data.plan.blockers) -join ',') / $($r.data.hint)"
+    Check 'C3 plan: versionInFeed, feed source, Build folder, signature' ($r.data.plan.versionInFeed -and (@($r.data.plan.feedSources) -join ',') -eq 'Beckhoff Outdated Feed' -and $r.data.buildFolder -eq 'Build_4024.71' -and $r.data.buildFolderExists -eq $true -and $r.data.plan.alreadyInstalled -eq $false -and $r.data.plan.signature.ok) ''
     & $reset
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.99.1
-    Check 'C4 plan for a version not on the feed -> blocker version-not-in-feed, still only a plan' ($r.success -and $r.data.executed -eq $false -and (@($r.data.blockers) -join ',') -eq 'version-not-in-feed') (@($r.data.blockers) -join ',')
+    $r = & $plan TwinCAT.StandardRM.XAE 4024.99.1
+    Check 'C4 plan for a version not on the feed -> blocker version-not-in-feed, still only a plan' ($r.success -and $r.data.executed -eq $false -and (@($r.data.plan.blockers) -join ',') -eq 'version-not-in-feed') (@($r.data.plan.blockers) -join ',')
+    & $reset
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $null
+    Check 'C5 Approved without PlanToken -> TCPKG_PLAN_REQUIRED, no tcpkg call at all' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and $global:Pkg229.calls.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) "$($r.error.code) calls=$($global:Pkg229.calls.Count)"
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 ('0' * 32)
+    Check 'C6 unknown PlanToken -> TCPKG_PLAN_REQUIRED, no tcpkg call' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and $global:Pkg229.calls.Count -eq 0) "$($r.error.code)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.Standard.XAE 4026.23.1 $t
+    Check 'C7 PlanToken of another command -> TCPKG_PLAN_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0) "$($r.error.code)"
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C8 a token presented once (even for a refused command) is used up -> TCPKG_PLAN_REQUIRED' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0) "$($r.error.code)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    & $mod { foreach ($k in @($script:TcPkgPlans.Keys)) { $script:TcPkgPlans[$k].expiresUtc = [DateTime]::UtcNow.AddSeconds(-1) } }
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C9 expired PlanToken -> TCPKG_PLAN_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0 -and $r.error.message -match 'expired') "$($r.error.message)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $global:Pkg229.ides = @([PSCustomObject]@{ processId = 777; name = 'TcXaeShell'; path = 'C:\x\TcXaeShell.exe'; title = 't' })
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C10 state changed since the plan (an IDE started) -> TCPKG_PLAN_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0 -and $r.error.message -match 'changed') "$($r.error.message)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C11 approved plan with an IDE running -> TCPKG_IDE_RUNNING naming the pid, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_IDE_RUNNING' -and $r.error.message -match '777' -and (& $installs) -eq 0) "$($r.error.message)"
     & $reset; $global:Pkg229.elevated = $false
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C5 Approved, not elevated -> TCPKG_ELEVATION_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_ELEVATION_REQUIRED' -and $r.data.executed -eq $false -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.error.code)"
-    & $reset; $global:Pkg229.ides = @([PSCustomObject]@{ processId = 777; name = 'TcXaeShell'; path = 'C:\x\TcXaeShell.exe'; title = 't' })
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C6 Approved, IDE running -> TCPKG_IDE_RUNNING naming the pid, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_IDE_RUNNING' -and $r.error.message -match '777' -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.error.message)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C12 approved, not elevated -> TCPKG_ELEVATION_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_ELEVATION_REQUIRED' -and $r.data.executed -eq $false -and (& $installs) -eq 0) "$($r.error.code)"
+    & $reset; $global:Pkg229.pkgProcs = @([PSCustomObject]@{ processId = 31; name = 'TcPkg'; path = 'C:\ProgramData\Beckhoff\TcPkg\TcPkg.exe'; title = '' })
+    $p = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $p.data.planToken
+    Check 'C13 tcpkg / Package Manager running -> blocker tcpkg-running, TCPKG_RUNNING, no install' ((@($p.data.plan.blockers) -join ',') -eq 'tcpkg-running' -and -not $r.success -and $r.error.code -eq 'TCPKG_RUNNING' -and $r.error.message -match '31' -and (& $installs) -eq 0) "$(@($p.data.plan.blockers) -join ',') $($r.error.code)"
+    & $reset; $global:Pkg229.ideThrow = $true
+    $p = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $p.data.planToken
+    Check 'C14 IDE scan throws -> blocker process-scan-failed, TCPKG_PRECHECK_FAILED (fail closed)' ((@($p.data.plan.blockers) -join ',') -eq 'process-scan-failed' -and -not $r.success -and $r.error.code -eq 'TCPKG_PRECHECK_FAILED' -and (& $installs) -eq 0) "$(@($p.data.plan.blockers) -join ',') $($r.error.code)"
+    & $reset; $global:Pkg229.pmThrow = $true
+    $p = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    Check 'C15 tcpkg process scan throws -> blocker process-scan-failed' ((@($p.data.plan.blockers) -join ',') -eq 'process-scan-failed') (@($p.data.plan.blockers) -join ',')
     & $reset
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.99.1 -Approved
-    Check 'C7 Approved, version not on the feed -> TCPKG_VERSION_NOT_FOUND with feed versions, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_VERSION_NOT_FOUND' -and (@($r.data.availableVersions) -contains '4024.71.5') -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.error.code)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.99.1).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.99.1 $t
+    Check 'C16 approved, version not on the feed -> TCPKG_VERSION_NOT_FOUND with feed versions, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_VERSION_NOT_FOUND' -and (@($r.data.availableVersions) -contains '4024.71.5') -and (& $installs) -eq 0) "$($r.error.code)"
     & $reset
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.2 -Approved
-    Check 'C8 Approved, already installed -> success, executed false, no install' ($r.success -and $r.data.executed -eq $false -and $r.data.alreadyInstalled -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) ''
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.2).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.2 $t
+    Check 'C17 approved, already installed -> success, executed false, no install' ($r.success -and $r.data.executed -eq $false -and $r.data.alreadyInstalled -and (& $installs) -eq 0) ''
     & $reset
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    $installCalls = @($global:Pkg229.calls | Where-Object { $_ -like 'install*' })
-    Check 'C9 Approved, all ok -> exactly "install <id>=<ver> -y", read back, success' ($r.success -and $r.data.executed -and $installCalls.Count -eq 1 -and $installCalls[0] -eq 'install TwinCAT.StandardRM.XAE=4024.71.5 -y' -and $global:Pkg229.calls[-1] -eq 'list -i --as-json' -and (@($r.data.steps | ForEach-Object { $_.step }) -join ',') -eq 'query,install,readback') ($global:Pkg229.calls -join '|')
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C18 approved, all ok -> exactly "install <id>=<ver> -y", read back, success' ($r.success -and $r.data.executed -and (& $installs) -eq 1 -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' })[0] -eq 'install TwinCAT.StandardRM.XAE=4024.71.5 -y' -and $global:Pkg229.calls[-1] -eq 'list -i --as-json' -and (@($r.data.steps | ForEach-Object { $_.step }) -join ',') -eq 'query,install,readback') ($global:Pkg229.calls -join '|')
+    $r2 = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C19 the same token again after a successful install -> TCPKG_PLAN_REQUIRED' (-not $r2.success -and $r2.error.code -eq 'TCPKG_PLAN_REQUIRED' -and $global:Pkg229.calls.Count -eq 0) "$($r2.error.code)"
     $global:Pkg229.installed = @($global:Pkg229.installed | Where-Object { -not ($_.Id -eq 'TwinCAT.StandardRM.XAE' -and $_.Version -eq '4024.71.5') })
     & $reset; $global:Pkg229.installMode = 'noop'
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C10 install exit 0 but not listed afterwards -> TCPKG_INSTALL_UNVERIFIED (fail closed)' (-not $r.success -and $r.error.code -eq 'TCPKG_INSTALL_UNVERIFIED' -and $r.data.executed) "$($r.error.code)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C20 install exit 0 but not listed afterwards -> TCPKG_INSTALL_UNVERIFIED (fail closed)' (-not $r.success -and $r.error.code -eq 'TCPKG_INSTALL_UNVERIFIED' -and $r.data.executed) "$($r.error.code)"
     & $reset; $global:Pkg229.installMode = 'exit'
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
     $step = @($r.data.steps | Where-Object { $_.step -eq 'install' })[0]
-    Check 'C11 install exit 1 -> TCPKG_INSTALL_FAILED with stderr tail' (-not $r.success -and $r.error.code -eq 'TCPKG_INSTALL_FAILED' -and (@($step.stderrTail) -join ' ') -match 'install failed') "$($r.error.code)"
+    Check 'C21 install exit 1 -> TCPKG_INSTALL_FAILED with stderr tail; message says whether the target is listed' (-not $r.success -and $r.error.code -eq 'TCPKG_INSTALL_FAILED' -and (@($step.stderrTail) -join ' ') -match 'install failed' -and $r.error.message -match 'not listed') "$($r.error.message)"
     & $reset; $global:Pkg229.installMode = 'timeout'
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C12 install timeout -> TCPKG_TIMEOUT, tcpkg not killed (pid), nothing read back' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and $r.error.message -match 'NOT stopped' -and $global:Pkg229.noKill -and $r.data.installProcessId -eq 9999 -and $global:Pkg229.calls[-1] -like 'install*') "$($r.error.code) last=$($global:Pkg229.calls[-1])"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C22 install timeout -> TCPKG_TIMEOUT, tcpkg not killed (pid), nothing read back' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and $r.error.message -match 'NOT stopped' -and $global:Pkg229.noKill -and $r.data.installProcessId -eq 9999 -and $global:Pkg229.calls[-1] -like 'install*') "$($r.error.code) last=$($global:Pkg229.calls[-1])"
+    & $reset
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $global:Pkg229.listMode = 'timeout'; $global:Pkg229.listFailOn = 'StandardRM'
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C23 feed query timeout after a valid token -> TCPKG_TIMEOUT before any install' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and (& $installs) -eq 0) "$($r.error.code)"
     & $reset; $global:Pkg229.listMode = 'timeout'; $global:Pkg229.listFailOn = 'StandardRM'
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C13 feed query timeout -> TCPKG_TIMEOUT before any install' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.error.code)"
+    $r = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    Check 'C24 plan whose feed query failed -> error, no planToken' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and $null -eq $r.data.planToken) "$($r.error.code)"
     $bad = $false; try { $null = Install-TcPackage -PackageId TwinCAT.Standard.XAR -Version 4026.22.0 } catch { $bad = $true }
-    Check 'C14 the runtime package XAR is not installable' $bad ''
+    Check 'C25 the runtime package XAR is not installable' $bad ''
     $bad = $false; try { $null = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version '4024.71.5 --pre' } catch { $bad = $true }
-    Check 'C15 -Version must be a plain dotted number' $bad ''
-    & $reset
-    $r = Install-TcPackage -PackageId twincat.standardrm.xae -Version 4024.71.5
-    Check 'C16 PackageId spelled in any case -> canonical id; plan with NO blocker still runs no install' ($r.data.command -match 'install TwinCAT\.StandardRM\.XAE=4024\.71\.5 -y$' -and @($r.data.blockers).Count -eq 0 -and $r.data.executed -eq $false -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.data.command)"
-    & $reset; $global:Pkg229.installMode = 'okdep'
-    $r = Install-TcPackage -PackageId TwinCAT.Standard.XAE -Version 4026.23.1 -Approved
-    $chg = @($r.data.changedPackages | ForEach-Object { "$($_.id):$(@($_.before) -join '/')>$(@($_.after) -join '/')" }) -join ','
-    Check 'C17 a dependency changed too -> success, changedPackages + unexpectedChanges + warning' ($r.success -and $chg -eq 'TwinCAT.Standard.XAE:4026.22.0>4026.22.0/4026.23.1,TwinCAT.Standard.XAR:>4026.23.1' -and @($r.data.unexpectedChanges).Count -eq 1 -and (@($r.data.warnings) -join ' ') -match 'TwinCAT\.Standard\.XAR') $chg
-    & $reset
-    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.7.37 -Approved
-    Check 'C18 RM installed but Build_4024.7 missing -> success with a warning' ($r.success -and $r.data.buildFolderExists -eq $false -and (@($r.data.warnings) -join ' ') -match 'Build_4024\.7 ') (@($r.data.warnings) -join ' | ')
+    Check 'C26 -Version must be a plain dotted number' $bad ''
     $bad = $false; try { $null = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version "4024.71.5`n" } catch { $bad = $true }
-    Check 'C19 -Version with a trailing newline rejected' $bad ''
+    Check 'C27 -Version with a trailing newline rejected' $bad ''
+    & $reset
+    $r = & $plan twincat.standardrm.xae 4024.71.5
+    Check 'C28 PackageId in any case -> canonical id; plan with NO blocker still runs no install' ($r.data.plan.command -match 'install TwinCAT\.StandardRM\.XAE=4024\.71\.5 -y$' -and @($r.data.plan.blockers).Count -eq 0 -and $r.data.executed -eq $false -and (& $installs) -eq 0) "$($r.data.plan.command)"
+    & $reset; $global:Pkg229.installMode = 'okdep'
+    $t = (& $plan TwinCAT.Standard.XAE 4026.23.1).data.planToken
+    $r = & $approve TwinCAT.Standard.XAE 4026.23.1 $t
+    $chg = @($r.data.changedPackages | ForEach-Object { "$($_.id):$(@($_.before) -join '/')>$(@($_.after) -join '/')" }) -join ','
+    Check 'C29 a dependency changed too -> success, changedPackages + unexpectedChanges + warning' ($r.success -and $chg -eq 'TwinCAT.Standard.XAE:4026.22.0>4026.22.0/4026.23.1,TwinCAT.Standard.XAR:>4026.23.1' -and @($r.data.unexpectedChanges).Count -eq 1 -and (@($r.data.warnings) -join ' ') -match 'TwinCAT\.Standard\.XAR') $chg
+    & $reset
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.7.37).data.planToken
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.7.37 $t
+    Check 'C30 RM installed but Build_4024.7 missing -> success with a warning' ($r.success -and $r.data.buildFolderExists -eq $false -and (@($r.data.warnings) -join ' ') -match 'Build_4024\.7 ') (@($r.data.warnings) -join ' | ')
+    # executable: only %ProgramData%\Beckhoff\TcPkg\TcPkg.exe, Beckhoff Authenticode signature, fail closed
+    & $reset; $global:Pkg229.defaultExe = $null
+    $r = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    $g = Get-TcPackageInfo -NoAvailable
+    Check 'C31 no TcPkg.exe at the default location -> TCPKG_NOT_FOUND for Install (PATH not used), Get-TcPackageInfo still uses PATH' (-not $r.success -and $r.error.code -eq 'TCPKG_NOT_FOUND' -and $null -eq $r.data.planToken -and $g.success) "$($r.error.code) / get=$($g.success)"
+    & $reset; $global:Pkg229.sig = @{ ok = $false; status = 'NotSigned'; subject = $null; error = $null }
+    $r = & $plan TwinCAT.StandardRM.XAE 4024.71.5
+    Check 'C32 TcPkg.exe not signed by Beckhoff -> TCPKG_SIGNATURE_INVALID, no tcpkg call, no token' (-not $r.success -and $r.error.code -eq 'TCPKG_SIGNATURE_INVALID' -and $global:Pkg229.calls.Count -eq 0 -and $null -eq $r.data.planToken) "$($r.error.code)"
+    & $reset; $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
+    $global:Pkg229.sigThrow = $true
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
+    Check 'C33 signature check unavailable at Approved -> TCPKG_SIGNATURE_INVALID (fail closed), no install' (-not $r.success -and $r.error.code -eq 'TCPKG_SIGNATURE_INVALID' -and $global:Pkg229.calls.Count -eq 0) "$($r.error.code)"
+    $real = & $mod { param($sb, $p) & $sb -Path $p } $realSig $big
+    Check 'C34 real Test-TcPkgSignature: an unsigned script is not ok' (-not $real.ok) "$($real.status)"
+    $subj = & $mod { Test-TcPkgSignerSubject 'CN=Beckhoff Automation GmbH & Co. KG, O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE' }
+    $fake = & $mod { Test-TcPkgSignerSubject 'CN=Evil, O=Beckhoff Automation GmbH & Co. KG Fake, C=XX' }
+    Check 'C35 signer subject must have O=Beckhoff Automation GmbH & Co. KG exactly' ($subj -and -not $fake) "$subj/$fake"
 
     # --- D: PROGID_REQUIRED hint ---
     & $mod {

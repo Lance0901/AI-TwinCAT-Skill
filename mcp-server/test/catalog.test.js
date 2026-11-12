@@ -132,10 +132,12 @@ describe('tools.json (generated catalog)', () => {
     assert.equal(i.annotations.destructiveHint, true);
     assert.deepEqual([...i.inputSchema.required].sort(), ['PackageId', 'Version']);
     assert.deepEqual(i.inputSchema.properties.PackageId.enum, ['TwinCAT.Standard.XAE', 'TwinCAT.StandardRM.XAE']);
-    for (const w of ['executed = false', 'TCPKG_ELEVATION_REQUIRED', 'TCPKG_IDE_RUNNING', 'TCPKG_VERSION_NOT_FOUND', 'TCPKG_INSTALL_UNVERIFIED']) {
+    for (const w of ['ASK THE USER FIRST', 'PlanToken', 'TCPKG_PLAN_REQUIRED', 'TCPKG_SIGNATURE_INVALID', 'TCPKG_RUNNING', 'executed = false', 'TCPKG_ELEVATION_REQUIRED', 'TCPKG_IDE_RUNNING', 'TCPKG_VERSION_NOT_FOUND', 'TCPKG_INSTALL_UNVERIFIED']) {
       assert.ok(i.description.includes(w), `InstallPackage description lacks ${w}`);
     }
     assert.equal(validateParams(i, { PackageId: 'TwinCAT.StandardRM.XAE', Version: '4024.71.5' }).ok, true);
+    assert.equal(i.inputSchema.properties.PlanToken.type, 'string');
+    assert.ok(!i.inputSchema.required.includes('PlanToken'), 'PlanToken is optional (a plan call has none)');
     assert.equal(validateParams(i, { PackageId: 'TwinCAT.Standard.XAR', Version: '4026.22.0' }).ok, false, 'XAR is not installable');
   });
 

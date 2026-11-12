@@ -112,7 +112,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Import-TcPlcOpen` | `ImportPlcOpen` | `-FilePath <string> [-Option <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
 | `Import-TcTreeItem` | `ImportChild` | `-Path <string> -FilePath <string> [-Before <string>] [-Reconnect <bool>] [-Name <string>] [-DryRun <bool>]` |
 | `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
-| `Install-TcPackage` | `InstallPackage` | `-PackageId <string> -Version <string> [-Approved] [-TimeoutSec <int>]` |
+| `Install-TcPackage` | `InstallPackage` | `-PackageId <string> -Version <string> [-Approved] [-PlanToken <string>] [-TimeoutSec <int>]` |
 | `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
 | `Invoke-TcTest` | `RunTest` | `-TestCase <psobject>` |
 | `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <psobject[]> [-SkipBuild] [-KeepRunning]` |
