@@ -272,8 +272,8 @@ Common parameters (`Verbose`, `ErrorAction`, …) are not accepted as params.
   `{"success":false,"error":{"code":"IDE_MODAL_DIALOG","message":"<title> | <first 200 chars of text>","hint":"..."},"data":{"dialogTitle","dialogText","ideProcessId","lastIde","bridgeRestarted"}}`
   (`message` is just the title when the text is empty; `lastIde` is the snapshot at detection time,
   `null` during `ConnectIde`; `bridgeRestarted` is `false` for a dequeued call). The hint names the
-  pid: launched by this server → dismiss the dialog or `taskkill /PID N /T /F` (ask the user first),
-  opened by the user → dismiss it; then `ConnectIde`; it also warns that the interrupted DTE
+  pid: owned by this session (`lastIde.ownedBySession` true, #237) → dismiss the dialog or
+  `taskkill /PID N /T /F` (ask the user first), not owned or unknown → dismiss it; then `ConnectIde`; it also warns that the interrupted DTE
   operation may still complete inside the IDE once the dialog closes (killing PowerShell does not
   cancel it), and for a dequeued call that the call ahead of it may stay blocked until its own
   timeout. `BRIDGE_*` decoration does not touch this

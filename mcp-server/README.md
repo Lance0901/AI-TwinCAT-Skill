@@ -252,19 +252,19 @@ Module error codes and `error.hint` pass through (apart from that rewrite); the 
 | `NO_RESULT` | bridge | The cmdlet emitted no object with a `success` property |
 | `INVALID_REQUEST` | bridge | Malformed bridge request (not reachable through the MCP server) |
 
-`BRIDGE_TIMEOUT` and `BRIDGE_DIED` keep the identity of the IDE the bridge was talking to, because the restarted bridge no longer knows it (the IDE itself keeps running, usually behind a modal dialog). The server remembers `data.ideProcessId` / `selectedBy` / `solution` of the last successful `ConnectIde` (also when it ran inside `RunLifecycle`) plus the IDE main window handle (`ideMainHwnd`, read with one `op:"state"` right after it, used by the modal-dialog probe), forgets it as soon as a new `ConnectIde` starts and on a successful `DisconnectIde`. Before the pid goes into a hint it is checked with `tasklist`: it must still be a running `TcXaeShell.exe` / `devenv.exe` (both the 32-bit and the 64-bit TcXaeShell, ProgId `TcXaeShell.DTE.15.0` / `.17.0`, run as `TcXaeShell.exe`; Visual Studio 2022 is `devenv.exe`), otherwise `lastIde` is dropped (`null`) and the generic hint is used, so a recycled pid is never offered for `taskkill`. The hint depends on who opened the IDE:
+`BRIDGE_TIMEOUT` and `BRIDGE_DIED` keep the identity of the IDE the bridge was talking to, because the restarted bridge no longer knows it (the IDE itself keeps running, usually behind a modal dialog). The server remembers `data.ideProcessId` / `selectedBy` / `ownedBySession` / `solution` of the last successful `ConnectIde` (also when it ran inside `RunLifecycle`) plus the IDE main window handle (`ideMainHwnd`, read with one `op:"state"` right after it, used by the modal-dialog probe), forgets it as soon as a new `ConnectIde` starts and on a successful `DisconnectIde`. Before the pid goes into a hint it is checked with `tasklist`: it must still be a running `TcXaeShell.exe` / `devenv.exe` (both the 32-bit and the 64-bit TcXaeShell, ProgId `TcXaeShell.DTE.15.0` / `.17.0`, run as `TcXaeShell.exe`; Visual Studio 2022 is `devenv.exe`), otherwise `lastIde` is dropped (`null`) and the generic hint is used, so a recycled pid is never offered for `taskkill`. The hint depends on whether this session owns the IDE (`ownedBySession` from `ConnectIde`, #237; `selectedBy` alone does not decide it: `orphan-takeover` and `session-launched` IDEs are owned too):
 
 | `data.lastIde` | `error.hint` |
 |---|---|
-| `selectedBy == "launched"` | `The IDE (pid N, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID N /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.` |
-| any other `selectedBy` | `The IDE (pid N) was opened by the user; check its window for a modal dialog, dismiss it, then ConnectIde again.` |
+| `ownedBySession == true` | `The IDE (pid N, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID N /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it.` (for another `selectedBy`, e.g. `orphan-takeover`: `pid N, owned by this session, selectedBy 'orphan-takeover'`) |
+| `ownedBySession` `false` or missing (fail closed) | `The IDE (pid N) is not owned by this session (opened by the user or another session); check its window for a modal dialog, dismiss it (or ask the user to), then ConnectIde again.` |
 | `null` (no `ConnectIde` yet, or the pid is no longer an XAE) | the generic hint: check `GetIdeModalDialog` after `ConnectIde`, then `ConnectIde` again |
 
 ```json
 { "success": false,
   "error": { "code": "BRIDGE_TIMEOUT", "message": "Build-TcProject did not finish within 600000 ms; PowerShell bridge killed",
              "hint": "The IDE (pid 18324, launched by this server) is probably blocked by a modal dialog. Kill it with `taskkill /PID 18324 /T /F`, then ConnectIde again. Unsaved changes in that IDE will be lost; ask the user before killing it." },
-  "data": { "lastIde": { "ideProcessId": 18324, "selectedBy": "launched", "solution": "C:\\path\\to\\MyProject.sln", "ideMainHwnd": 1312048 }, "bridgeRestarted": true } }
+  "data": { "lastIde": { "ideProcessId": 18324, "selectedBy": "launched", "ownedBySession": true, "solution": "C:\\path\\to\\MyProject.sln", "ideMainHwnd": 1312048 }, "bridgeRestarted": true } }
 ```
 
 `GetIdeModalDialog` can inspect that IDE before reconnecting: without `ProcessId` it uses `data.lastIde.ideProcessId` whenever the restarted bridge has no pid of its own.
