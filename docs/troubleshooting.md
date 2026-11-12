@@ -238,6 +238,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - 呼叫 `-Quit` 前若已偵測到 modal dialog,模組不會白跑 60 s 的 `Solution.Close` retry,直接回 `IDE_QUIT_FAILED`(`data.dialog`、`data.quit = false`、`data.disconnected = false`),而且**什麼都不釋放**:DTE / `ITcSysManager` / 連線狀態原封不動(quit 根本沒嘗試,DTE 仍有效),所以可以接 `Reset-TcSolution` 再 `-Quit`,或 `-Quit -Kill`;加 `-Kill` 則直接走 kill。
 - **狀態保留**:真的嘗試過 quit(或走 kill)的路徑會釋放 COM 參考,但失敗時(`IDE_QUIT_FAILED`、`IDE_NOT_OWNED`)模組保留 IDE 的 pid / `selectedBy` / solution 路徑,所以可以**直接**接 `Disconnect-TcIde -Quit -Kill`,不用(也沒辦法,modal 還在)重新 `Connect-TcIde`。成功 quit / kill、不帶 `-Quit` 的 disconnect、或下一次 `Connect-TcIde` 才會清掉。kill 前會確認該 pid 仍是 `TcXaeShell` / `devenv`,且啟動時間與 `Connect-TcIde` 記下的相同(±2 s);不是(pid 被回收)就不殺、忘掉該 pid,回 `IDE_QUIT_FAILED`(`killed = false`)。pid 已經不存在(IDE 自己結束了)則回 `success: true`、`killed = false`、`alreadyExited = true`。
 - `-Kill` 看的是 `data.ownedBySession`(本 session 啟動的 IDE),`Reset-TcSolution` 內部重連後 `selectedBy` 會變成 `solution-match`,但 `ownedBySession` 仍為 true,`-Kill` 照樣允許。
+- **`data.dialog` 是 IDE 主視窗本身(#234,修正前)**:`title` 是 `<solution> - Microsoft Visual Studio`、`kind = unknown`、沒有按鈕、`text` 是 Solution Explorer / Error List 的內容。原因:模組快取的主視窗 handle 失效(不是現在的主視窗)時,掃描不再用標題排除主視窗,主視窗標題又命中已知 dialog 的樣式(實測 2026-11-13,VS2022 4026 zh-TW,把快取 handle 設成非視窗值即重現;真實流程中 handle 何時失效沒有重現出來)。現在 UI Automation `AutomationId = VisualStudioMainWindow` 且不是 modal 的視窗一律當主視窗,不回報;沒有這個 id 的視窗照舊判斷(fail closed)。`Get-TcIdeModalDialog`、`Connect-TcIde` / `Build-TcProject` 的 modal 檢查同一套掃描,一起修正。
 
 ### IDE_NOT_OWNED
 

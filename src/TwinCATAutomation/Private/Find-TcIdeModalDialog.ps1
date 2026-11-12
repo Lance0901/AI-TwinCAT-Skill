@@ -316,7 +316,6 @@ public class UiaScanButtonNative {
             if ($null -eq $mainEl) { $mainEl = $w }
             continue
         }
-        if ($cur.IsOffscreen) { continue }
 
         $isModal = $false
         try {
@@ -326,6 +325,20 @@ public class UiaScanButtonNative {
             }
         }
         catch { }
+
+        # #234: the VS2022 main window carries the UIA AutomationId 'VisualStudioMainWindow'. A stale
+        # non-zero $MainHwnd (cached handle that is no longer the main window) switches the title rule
+        # above off, and the main window's caption '<solution> - Microsoft Visual Studio' then matched
+        # $knownDialogPattern: reported as kind unknown, which blocked ConnectIde / BuildProject /
+        # DisconnectIde -Quit (measured 2026-11-13, VS2022 4026, stale handle). Recognised by the id
+        # only while it is not modal (a real dialog never carries this id; fail closed otherwise).
+        $automationId = ''
+        try { $automationId = [string]$cur.AutomationId } catch { $automationId = '' }
+        if ($automationId -eq 'VisualStudioMainWindow' -and -not $isModal -and $className -ne '#32770') {
+            if ($null -eq $mainEl) { $mainEl = $w }
+            continue
+        }
+        if ($cur.IsOffscreen) { continue }
 
         $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = $hwnd }
         if ($isModal) { $modalHit = $hit; break }
