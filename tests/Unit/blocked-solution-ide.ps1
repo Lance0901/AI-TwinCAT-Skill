@@ -1,4 +1,4 @@
-# Unit: Connect-TcIde -SolutionPath with a blocked IDE (issue #29), no IDE / runtime needed.
+﻿# Unit: Connect-TcIde -SolutionPath with a blocked IDE (issue #29), no IDE / runtime needed.
 # Get-AllComObjects, Get-Process and Find-TcIdeModalDialog are replaced inside the module scope;
 # the ProgId is a fake one, so Connect-TcIde can never launch a real IDE.
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Unit/blocked-solution-ide.ps1
@@ -341,7 +341,8 @@ try {
     # Separate flags for Documents.CloseAll and Solution.Close. The mock has no project / reopen support, so the reset ends in PROJECT_OPEN_FAILED after closing; only the guard is under test.
     $global:SolClosed = $false
     $global:DocsClosed = $false
-    $emptySol = [PSCustomObject]@{ FullName = '' }
+    # #175: no solution open: no projects, nothing unsaved
+    $emptySol = [PSCustomObject]@{ FullName = ''; Saved = $true; Projects = [PSCustomObject]@{ Count = 0 } }
     $emptySol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:SolClosed = $true }
     $emptyDocs = [PSCustomObject]@{ Count = 0 }
     $emptyDocs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($x) $global:DocsClosed = $true }

@@ -768,6 +768,8 @@ try {
     Add-LoadState $solG
     $global:SolG = $solG
     $docsG = [PSCustomObject]@{ Count = 1 }
+    # #175: Reset-TcSolution reads Document.Saved of every open document (all saved here)
+    $docsG | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ FullName = 'C:\mock\MAIN.TcPOU'; Saved = $true } }
     $docsG | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) $global:W.Log.Add('Documents.CloseAll'); if ($global:W.CloseAllAppear) { $global:W.CloseAllAppear = $false; $global:W.Dialog = $global:W.LaterDialog } }
     $dteG = [PSCustomObject]@{ Documents = $docsG }
     # DTE.Solution answers $null while a dialog is up (2026-11-02: "cannot call a method on a null-valued expression")

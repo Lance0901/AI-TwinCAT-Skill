@@ -1,4 +1,4 @@
-# "A complete build is required before the PLC output is used" (BUILD_REQUIRED, #45 / PR #44 /
+﻿# "A complete build is required before the PLC output is used" (BUILD_REQUIRED, #45 / PR #44 /
 # #56). One entry per solution; an entry carries one reason per KIND:
 #   platform-switch   Set-TcSolutionPlatform: the active solution platform changed (the compiled
 #                     output may still be that of the previous platform; inferred, not measured)
@@ -40,8 +40,8 @@
 #                     build would compile the old in-memory content, a Project.Save would write the old
 #                     in-memory .tsproj / .plcproj over the files changed on disk), Clear-TcBuildRequired
 #                     keeps it, Reset-TcSolution treats it as a handled reload prompt (no
-#                     -SaveProjectChanges; unsaved documents -> PROJECT_UNSAVED_CHANGES unless
-#                     -DiscardProjectChanges) and removes it (Clear-TcResetRequired) only after a reset
+#                     -SaveProjectChanges; unsaved documents -> UNSAVED_CHANGES unless
+#                     -Force, #175) and removes it (Clear-TcResetRequired) only after a reset
 #                     that reopened the solution from disk without saving anything. Keyed by the .sln,
 #                     not by the IDE pid (only ever blocks more).
 # The kinds of one entry are kept side by side (reasons); the entry's 'kind' is the first of

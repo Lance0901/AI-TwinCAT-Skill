@@ -1,4 +1,4 @@
-function Connect-TcIde {
+﻿function Connect-TcIde {
     <#
     .SYNOPSIS
         Connects to a running TwinCAT 3 IDE instance via the Running Object Table.
@@ -109,8 +109,8 @@ function Connect-TcIde {
         record: the field that says a prompt of this .sln was answered, now or by an earlier
         takeover) and data.nextStep; every takeover also lists unsaved editor documents
         (data.dirtyDocuments, Document.Saved = false; data.dirtyDocumentsError when unreadable):
-        Reset-TcSolution would close them without saving and refuses while any exists unless
-        -DiscardProjectChanges. Any other dialog (also one found after the attach), a prompt
+        Reset-TcSolution would close them without saving and refuses (UNSAVED_CHANGES, #175) while
+        any exists unless -Force. Any other dialog (also one found after the attach), a prompt
         without that evidence or one that stays up: IDE_MODAL_DIALOG with the
         IDE_MODAL_DIALOG_ORPHAN hint (nothing attached, so not Reset-TcSolution /
         Disconnect-TcIde); every failed exit carries data.reloadPromptAttempts /
@@ -1095,7 +1095,7 @@ function Connect-TcIde {
         # PR #209 review M1: the ended session may have left unsaved editor content in the IDE; the
         # Reset-TcSolution that loads the disk state closes every document WITHOUT saving
         # (Documents.CloseAll(vsSaveChangesNo)), so they are listed here and Reset-TcSolution refuses
-        # while any exists (PROJECT_UNSAVED_CHANGES) unless -DiscardProjectChanges. Read after the
+        # while any exists (UNSAVED_CHANGES, #175) unless -Force. Read after the
         # modal check above passed; a read failure never fails the takeover (dirtyDocumentsError).
         $dirty = Get-TcDirtyDocuments -Dte $oc.Object
         if ($null -ne $dirty.Error) { $data | Add-Member -NotePropertyName 'dirtyDocumentsError' -NotePropertyValue $dirty.Error }

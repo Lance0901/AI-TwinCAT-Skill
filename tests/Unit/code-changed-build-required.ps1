@@ -1,4 +1,4 @@
-# Unit: BUILD_REQUIRED kind 'code-changed' (#65), no IDE needed. The state file goes to a temp
+﻿# Unit: BUILD_REQUIRED kind 'code-changed' (#65), no IDE needed. The state file goes to a temp
 # TCAUTO_STATE_DIR. Covers: the reason / kind merge (a code-changed never hides a platform-switch
 # or unverified-build, the list of changes is capped), the '<unknown>' key, a state file that
 # cannot be written (data.stateWarning, the entry still blocks in this process), the
@@ -293,6 +293,8 @@ $solProjects | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i)
 $sol | Add-Member -NotePropertyName Projects -NotePropertyValue $solProjects
 $sol | Add-Member -NotePropertyName SolutionBuild -NotePropertyValue ([PSCustomObject]@{ ActiveConfiguration = [PSCustomObject]@{ Name = 'Release' } })
 $docs = [PSCustomObject]@{ Count = 1 }
+# #175: Reset-TcSolution reads Document.Saved of every open document (all saved here)
+$docs | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) [PSCustomObject]@{ FullName = 'C:\mock\MAIN.TcPOU'; Saved = $true } }
 $docs | Add-Member -MemberType ScriptMethod -Name CloseAll -Value { param($m) if ($global:ResetMode.CloseAllThrows) { throw 'closeall failed (mock)' } }
 $resetDte = [PSCustomObject]@{ Solution = $sol; Documents = $docs }
 $global:ResetSln = $sln
