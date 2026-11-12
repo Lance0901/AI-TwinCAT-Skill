@@ -7,8 +7,8 @@
              v1.7.0 §5.21.1 ITcPlcOnline p.108: property IsLoggedIn, VARIANT_BOOL, get, "Returns
              VARIANT_FALSE if not connected";
              https://download.beckhoff.com/download/document/automation/twincat3/TC3_Automation_Interface_EN.pdf).
-             On 4026 the online methods (Login / Logoff ...) are exposed by that node (Exit-TcPlcOnline,
-             measured 2026-10-18). Only a real bool counts: a COM property that does not exist reads
+             Get-Member lists Login / Logoff on that node, but calling them fails there; the working
+             Logoff is on the "<Plc> Project" item (Exit-TcPlcOnline, 實測 2026-11-13, #232). Only a real bool counts: a COM property that does not exist reads
              back as $null in PowerShell without an exception, so $null (or anything else) falls
              through to the 2nd source. 實測 2026-11-08, 4026 VS2022 (VisualStudio.DTE.17.0, local UmRT,
              PLC logged in): IsLoggedIn of TIPC^<Plc> read back $null, the 2nd source decided.
@@ -17,8 +17,8 @@
              documents the OnlineSettings / Commands of the PLC project through ProduceXml /
              ConsumeXml; the LoggedIn element itself is 實測 2026-11-08, 4026 VS2022 (local UmRT,
              next to <PlcAppState>Run</PlcAppState>; true while logged in). 4024 TcXaeShell has it too
-             (false while not logged in, 實測 2026-11-08, BFH-1650 copy); 4024 while logged in is not
-             measured.
+             (false while not logged in, 實測 2026-11-08, BFH-1650 copy; true while logged in, 實測
+             2026-11-13, same copy, 32-bit TcXaeShell, local UmRT).
         Neither readable -> loggedIn = $null (unknown, never guessed).
         IDE_MODAL_DIALOG / IDE_TIMEOUT / IDE_BUSY / IDE_CRASHED (Invoke-TcComRetry) are rethrown;
         any other exception is kept in 'error' and the next source is tried.

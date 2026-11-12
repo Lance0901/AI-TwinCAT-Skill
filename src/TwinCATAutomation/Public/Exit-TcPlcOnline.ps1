@@ -86,9 +86,12 @@
         #     contain a method named 'Logoff'"); "<Plc> Project".Logoff() logs out (LoggedIn
         #     true -> false). Get-Member is not proof for these IDispatch objects.
         #   - 4026.27 TcXaeShell 64-bit (Ming, #232): same call path (treeItem.Logoff).
-        #   - @@4024@@
-        #   - Logoff() on a project that is not logged in returns without an error (4026.22 and
-        #     4026.27), so the call result proves nothing: the login state is read back.
+        #   - 實測 2026-11-13, TwinCAT 3.1.4024 project (BFH-1650 copy, 3.1.4024.71) in the 32-bit
+        #     TcXaeShell (TcXaeShell.DTE.15.0, XAE 4026.22), local UmRT: the same - Get-Member lists
+        #     Login / Logoff on TIPC^<Plc> only, TIPC^<Plc>.Logoff() throws, "<Plc> Project".Logoff()
+        #     logs out (LoggedIn true -> false).
+        #   - Logoff() on a project that is not logged in returns without an error (4026.22 VS2022,
+        #     4024 32-bit TcXaeShell, both 2026-11-13; 4026.27), so the call result proves nothing: the login state is read back.
         # The older note (2026-10-18) that the "<Plc> Project" item has no Logoff came from
         # Get-Member only. The order of the attempts does not matter for the result; the method is
         # named Logoff, Logout is kept as a fallback. data.logoutVia names the call that returned.
