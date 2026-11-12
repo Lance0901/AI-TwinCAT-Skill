@@ -56,7 +56,7 @@ Check 'Invoke-TcTest setup failure (Error) -> warning kept' ($r.data.result -eq 
     $script:TcSysManager = $null
     function script:Enable-TcConfig { param([switch]$Force) New-TcResult -Success $true -Data ([PSCustomObject]@{ activated = $true }) }
     function script:Connect-TcIde { New-TcResult -Success $true -Data ([PSCustomObject]@{ amsNetId = $null }) }
-    function script:Enter-TcPlcOnline { New-TcResult -Success $true -Data ([PSCustomObject]@{ online = $true }) }
+    function script:Enter-TcPlcOnline { New-TcResult -Success $true -Data ([PSCustomObject]@{ online = $true; loggedIn = $true }) }
     function script:Connect-TcAds { param($AmsNetId) $script:TcAdsAmsNetId = $null; New-TcResult -Success $true -Data ([PSCustomObject]@{ connected = $true }) }
     function script:Set-TcPlcState { param($State) New-TcResult -Success $true -Data ([PSCustomObject]@{ state = $State }) }
     function script:Start-Sleep { param($Seconds, $Milliseconds) }
