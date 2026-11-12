@@ -499,6 +499,14 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - **禁止的繞道**:不要手動刪改這個檔案;也不要在使用者 / 系統環境變數或手動 PowerShell 裡設 `TCAUTO_OWNER_ID`、`TCAUTO_LAUNCHER_OWNER_ID` / `TCAUTO_LAUNCHER_PID`(#152 R3-3、#162)。這個值只能由 MCP server 產生並傳給它的 bridge,自己設等於讓不同的 session 互相認領對方的 IDE。
 - **需真機**:`ReloadModule` 之後，`Disconnect-TcIde -Quit -Kill` 仍能關掉本 session 啟動的 IDE。目前只有 mock 驗證(`tests/Unit/launch-record-persist-73.ps1`)。
 
+### SilentMode 原值持久化(#233)
+
+`Connect-TcIde` 把 IDE 的 `TcAutomationSettings.SilentMode` 設成 true 前,先記下原值,`Disconnect-TcIde`(不帶 `-Quit`)還原。原值除了存在行程記憶體,也寫進 `<TCAUTO_STATE_DIR 或 %TEMP%\TwinCATAutomation>\silent-originals.json`(`[{ pid; startTime; imageName; original; recordedAt }]`,key = IDE pid + 行程啟動時間,pid 重用不會對上;tmp + replace 原子寫入、具名 mutex;IDE 行程已不在的紀錄在每次寫入時清掉)。所以前一個行程(agent 的上一次工具呼叫、重啟前的 MCP bridge)沒 `Disconnect-TcIde` 就結束時,下一個行程仍還原真正的原值。
+
+- `data.silentModeOriginal`:Disconnect 會還原的值(`null` = 不知道)。`data.silentModeOriginalSource`:`read`(這次讀到 false)、`memory` / `state-file`(先前記下的)、`unknown-was-true`、`unreadable`(getter 失敗:Disconnect 不寫 setter,沿用 #55 的行為)。
+- **沒有紀錄卻讀到 true**:不能把 true 當原值(可能是先前某個 TcAuto 行程設的、沒還原)。回 `data.silentModeOriginalUnknown = true`,紀錄寫成 `assumed-false`,之後每個行程都仍是 unknown,`Disconnect-TcIde` 還原成 **false**。理由:InfoSys 的 [Silent Mode 頁](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/2489025803.html) 沒寫預設值;新啟動的 IDE 讀到 false(實測 2026-11-13,見 #233 PR)。還原成 false 是安全的一邊:XAE 的提示改回給使用者看，而不是被自動用預設鈕回答。代價：使用者自己把 SilentMode 設成 true 的 IDE,Disconnect 後會變 false。
+- **狀態檔讀寫失敗(fail closed)**:讀不到 / 損毀 → 當作沒有紀錄(讀到 true 就走上一條 unknown → false),`data.silentModeStateWarning` 說明;損毀檔在下次寫入時改名成 `.corrupt-<時間>` 保留。寫不進去 → 本行程記憶體仍有原值、照常還原,`data.silentModeStateWarning`;之後的行程看不到紀錄，最壞是 unknown → false,不會把 true 當原值。
+
 ### LAUNCH_RECORD_UNAVAILABLE
 
 - **現象**:`Disconnect-TcIde -ForgetPendingLaunch` 回 `LAUNCH_RECORD_UNAVAILABLE`,帶 `data.launchRecordWarning`。`Connect-TcIde -TakeOverOrphan`(#196)讀不到紀錄檔(`data.reason = 'launch-record-unavailable'`)或接管寫不進去(`'launch-record-write-failed'`)時也回這個碼：沒有 attach、沒有接管。

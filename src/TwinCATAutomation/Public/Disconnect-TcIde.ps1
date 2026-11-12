@@ -248,7 +248,7 @@ function Disconnect-TcIde {
         try {
             Invoke-TcComRetry -OperationName 'SilentMode restore' -ScriptBlock { $settingsRestore.SilentMode = $silentRestore } | Out-Null
             # Restored: the next connect reads the (now original) value again.
-            if ($null -ne $script:TcIdeProcessId) { Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }
+            if ($null -ne $script:TcIdeProcessId) { $null = Set-TcIdeSilentOriginal -ProcessId ([int]$script:TcIdeProcessId) -Value $null }   # #233: also from silent-originals.json
         }
         catch { Write-Verbose "SilentMode could not be restored to $silentRestore ($($_.Exception.Message))" }
     }

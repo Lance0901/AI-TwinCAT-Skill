@@ -406,29 +406,4 @@ function Test-TcLaunchedIde {
     $true
 }
 
-function Get-TcIdeSilentOriginal {
-    <#
-    .SYNOPSIS
-        The ITcAutomationSettings.SilentMode value IDE process -ProcessId had before this module
-        first set it, 'unknown' when it could not be read then, or $null when not recorded.
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId)
-    if ($null -eq $script:TcSilentOriginals) { return $null }
-    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
-    if ($null -eq $key -or -not $script:TcSilentOriginals.ContainsKey($key)) { return $null }
-    $v = $script:TcSilentOriginals[$key]
-    if ($v -is [string]) { return [string]$v }   # 'unknown': the original could not be read
-    [bool]$v
-}
-
-function Set-TcIdeSilentOriginal {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][int]$ProcessId, [Parameter()][AllowNull()][object]$Value)
-    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
-    if ($null -eq $key) { return }
-    if ($null -eq $script:TcSilentOriginals) { $script:TcSilentOriginals = @{} }
-    if ($null -eq $Value) { $script:TcSilentOriginals.Remove($key) }
-    elseif ($Value -is [string]) { $script:TcSilentOriginals[$key] = 'unknown' }
-    else { $script:TcSilentOriginals[$key] = [bool]$Value }
-}
+# Get-TcIdeSilentOriginal / Set-TcIdeSilentOriginal: Private/TcSilentOriginalStore.ps1 (#233: persisted)
