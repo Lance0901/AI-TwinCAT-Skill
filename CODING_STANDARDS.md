@@ -31,3 +31,7 @@ solution platform 依 target 回報的平台(TARGETINFO)或使用者明確給的
 回傳一律 `{success, data}` 或 `{success: false, error: {message, code, hint}}`(`New-TcResult`)。判斷的是 `hint` 的內容:要寫下一步該呼叫什麼(cmdlet / MCP tool 與參數),不是重述錯誤。(每個 hint key 在 `docs/troubleshooting.md` 有沒有一節,由 `scripts/check.ps1` 的 `errorcodes` 檢查。)
 
 正例:`src/TwinCATAutomation/Private/New-TcResult.ps1`、`src/TwinCATAutomation/Private/ConvertTo-TcAdsErrorCode.ps1`(`$script:TcErrorHints`)。
+
+## 6. 測試政策
+
+CI 守什麼、何時加 regression 測試、mock 要標依據、時間預算、哪些只能真機驗:見 `docs/testing-policy.md`。
