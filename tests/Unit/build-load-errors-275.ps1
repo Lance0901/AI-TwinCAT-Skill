@@ -39,6 +39,10 @@ function LoadRows {
         (Row 'Error' "Parts of the XML data do not conform to the schema:`n`r`n`rThe `"Id`" attribute in <POU> element has got a wrong format." 'FB_B275C.TcPOU' 1)
     )
 }
+# Method Id = Property Id in the same FB (same run, branch runtime dfac4f0, 實測 2026-11-13)
+function GuidRow {
+    Row 'Error' "Object 'FB_B275D.M_Do' has same GUID '0c61e8b1-e947-0437-2da9-2a27db7047fe' as object 'FB_B275D.P_Ro'. The GUID  per object has to be unique ! " 'FB_B275D.TcPOU' 1
+}
 # real warnings of the same run (the .plcproj warning has no code and a bare file name: a warning, never a load error)
 function RealWarnings {
     @(
@@ -104,6 +108,7 @@ try {
         @{ Name = 'root element renamed (bare .TcPOU, no code)'; Item = (LoadRows)[0]; Load = $true }
         @{ Name = 'Tag Declaration missing'; Item = (LoadRows)[1]; Load = $true }
         @{ Name = 'Id wrong format'; Item = (LoadRows)[3]; Load = $true }
+        @{ Name = 'sub-object GUID duplicate'; Item = (GuidRow); Load = $true }
         @{ Name = 'bare .TcGVL / .TcDUT / .TcIO / .plcproj file, no code'; Item = (Row 'Error' 'Parts of the XML data do not conform to the schema:' 'GVL_Main.TcGVL' 1); Load = $true }
         @{ Name = 'line null still a load row'; Item = (Row 'Error' 'x' 'I_Itf.TcIO' $null); Load = $true }
         @{ Name = 'compiler row (C0046, (Impl))'; Item = (& $c0046); Load = $false }
