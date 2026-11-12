@@ -1,4 +1,4 @@
-function Exit-TcPlcOnline {
+﻿function Exit-TcPlcOnline {
     <#
     .SYNOPSIS
         Logs out from the PLC runtime.
@@ -11,9 +11,20 @@ function Exit-TcPlcOnline {
         PLC or failed, #32).
     .PARAMETER PlcProjectPath
         PLC name or tree path. Required when the solution has more than one PLC project.
+        Fail closed (#68 / #232, CODING_STANDARDS 2): the login state is read back with
+        Get-TcPlcLoginState (ITcPlcOnline.IsLoggedIn, else ProduceXml
+        IECProjectDef/OnlineSettings/LoggedIn of the "<Plc> Project" item) before and after
+        Logoff. success = true only when the read back after Logoff is false. Still true ->
+        LOGOUT_FAILED; not readable (null) -> LOGOUT_FAILED too: no readback, no success.
+        Already logged out (read back false before Logoff) -> success with
+        data.alreadyLoggedOut = $true and nothing is sent to the IDE (idempotent). A Logoff()
+        without an exception is never taken as proof: Logoff() on a project that is not logged
+        in returns without an error as well (實測 2026-11-13, 4026.22 VS2022, local UmRT).
     .OUTPUTS
-        data: online, plcProjectPath (the project actually logged out), plcName, adsPort
-        (<AdsPort> of the PLC node, $null when unknown), logoutVia, message
+        data: online, loggedIn (read back: $false on success; $true / $null on LOGOUT_FAILED),
+        loginStateSource (IsLoggedIn | ProduceXml | $null), loginStateError, alreadyLoggedOut,
+        plcProjectPath (the project actually logged out), plcName, adsPort (<AdsPort> of the
+        PLC node, $null when unknown), logoutVia ($null when nothing was sent), message
     #>
     [CmdletBinding()]
     param(
@@ -67,19 +78,47 @@ function Exit-TcPlcOnline {
             return New-TcResult -Success $false -ErrorMessage "PLC project tree item '$PlcProjectPath' not found." -ErrorCode 'PLC_PROJECT_NOT_FOUND'
         }
 
-        # Logout() lives on different objects depending on XAE version / node: the
-        # "<Plc> Project" tree item exposes Login(nFlags) but on 4026 not Logout; the
-        # ITcPlcProject behind the PLC node (TIPC^<Plc>) does. Try in order and
-        # remember which one worked.
-        # Verified on TwinCAT 3.1.4026 (2026-10-18, Get-Member on the live objects):
-        # the online methods Login / Logoff / Start / Stop / Reset are exposed by the
-        # PLC node "TIPC^<Plc>" (ITcPlcIECProject via IDispatch). The "<Plc> Project"
-        # tree item has no Logoff/Logout, and .Object is $null on both nodes.
-        # The method is named Logoff; Logout is tried as a fallback for other versions.
+        # Where the logout method is (#232). The call that works is Logoff() on the "<Plc> Project"
+        # tree item (TIPC^<Plc>^<Plc> Project):
+        #   - 實測 2026-11-13, TwinCAT 3.1.4026.22, VS2022 (VisualStudio.DTE.17.0), local UmRT:
+        #     Get-Member lists Login / Logoff on the PLC node TIPC^<Plc> and no Log* method on the
+        #     "<Plc> Project" item, but calling TIPC^<Plc>.Logoff() / .Logout() fails ("does not
+        #     contain a method named 'Logoff'"); "<Plc> Project".Logoff() logs out (LoggedIn
+        #     true -> false). Get-Member is not proof for these IDispatch objects.
+        #   - 4026.27 TcXaeShell 64-bit (Ming, #232): same call path (treeItem.Logoff).
+        #   - @@4024@@
+        #   - Logoff() on a project that is not logged in returns without an error (4026.22 and
+        #     4026.27), so the call result proves nothing: the login state is read back.
+        # The older note (2026-10-18) that the "<Plc> Project" item has no Logoff came from
+        # Get-Member only. The order of the attempts does not matter for the result; the method is
+        # named Logoff, Logout is kept as a fallback. data.logoutVia names the call that returned.
         # No scriptblock indirection: a COM tree item returned through "& { $x }" is
         # unrolled into Object[] (ITcSmTreeItem is enumerable).
         $plcNodePath = ($PlcProjectPath -split '\^')[0..1] -join '^'   # TIPC^<Plc>
         $plcNode = Invoke-TcComRetry -OperationName "LookupTreeItem $plcNodePath" -ScriptBlock { Write-Output -NoEnumerate $sm.LookupTreeItem($plcNodePath) }
+
+        # Login state readback (#232): the entry Get-TcPlcLoginState needs (name, nodePath, projectPath)
+        $stateEntry = if ($null -ne $plcEntry) { $plcEntry } else {
+            [PSCustomObject]@{ name = ($PlcProjectPath -split '\^')[1]; nodePath = $plcNodePath; projectPath = $PlcProjectPath }
+        }
+        $plcName = if ($null -ne $plcEntry) { $plcEntry.name } else { $null }
+        $adsPort = if ($null -ne $plcEntry) { $plcEntry.adsPort } else { $null }
+        $before = Get-TcPlcLoginState -SysManager $sm -Plc $stateEntry
+        if ($before.loggedIn -eq $false) {
+            # idempotent: nothing to log out of, nothing sent
+            return New-TcResult -Success $true -Data ([PSCustomObject]@{
+                online           = $false
+                loggedIn         = $false
+                loginStateSource = $before.source
+                loginStateError  = $before.error
+                alreadyLoggedOut = $true
+                plcProjectPath   = $PlcProjectPath
+                plcName          = $plcName
+                adsPort          = $adsPort
+                logoutVia        = $null
+                message          = 'Already logged out (login state read back false); nothing sent.'
+            })
+        }
 
         $loggedOutVia = $null
         $lastErr = $null
@@ -110,14 +149,26 @@ function Exit-TcPlcOnline {
             throw "No PLC object exposing Logoff()/Logout() found under '$plcNodePath'."
         }
 
-        New-TcResult -Success $true -Data ([PSCustomObject]@{
-            online         = $false
-            plcProjectPath = $PlcProjectPath
-            plcName        = if ($null -ne $plcEntry) { $plcEntry.name } else { $null }
-            adsPort        = if ($null -ne $plcEntry) { $plcEntry.adsPort } else { $null }
-            logoutVia      = $loggedOutVia
-            message        = 'Logged out from PLC runtime.'
-        })
+        $after = Get-TcPlcLoginState -SysManager $sm -Plc $stateEntry
+        $data = [PSCustomObject]@{
+            online           = ($after.loggedIn -ne $false)
+            loggedIn         = $after.loggedIn
+            loginStateSource = $after.source
+            loginStateError  = $after.error
+            alreadyLoggedOut = $false
+            plcProjectPath   = $PlcProjectPath
+            plcName          = $plcName
+            adsPort          = $adsPort
+            logoutVia        = $loggedOutVia
+            message          = 'Logged out from PLC runtime (login state read back false).'
+        }
+        if ($after.loggedIn -eq $false) { return New-TcResult -Success $true -Data $data }
+        # fail closed (CODING_STANDARDS 2): still logged in, or no readback at all
+        $why = if ($after.loggedIn -eq $true) { 'the login state still reads back true' }
+               else { "the login state could not be read back (unknown: $($after.error))" }
+        $data.message = "Logoff() via $loggedOutVia returned without an error, but $why."
+        New-TcResult -Success $false -ErrorCode 'LOGOUT_FAILED' -Hint (Get-TcErrorHint -Code 'LOGOUT_FAILED') `
+            -ErrorMessage "PLC logout of '$PlcProjectPath' not verified: $($data.message)" -Data $data
     }
     catch {
         New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'LOGOUT_FAILED' -MessagePrefix 'PLC logout failed'

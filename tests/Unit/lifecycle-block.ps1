@@ -188,7 +188,7 @@ try {
             if ($State -eq 'Run') { [TwinCAT.Ads.TcAdsClient]::Mode = 'config' }   # falls back right after set-run (#32)
             New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State; sentAdsState = 'x'; readbackState = $State })
         }
-        function script:Enter-TcPlcOnline { param($LoginMode, $PlcProjectPath, $TimeoutSec) $global:Calls.Login++; New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login' }) }
+        function script:Enter-TcPlcOnline { param($LoginMode, $PlcProjectPath, $TimeoutSec) $global:Calls.Login++; New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login'; loggedIn = $true }) }
         function script:New-TcAdsClient {
             param($AmsNetId, $Port)
             $o = [PSCustomObject]@{ P = $Port }
@@ -397,7 +397,9 @@ try {
         function script:Enter-TcPlcOnline {
             param($LoginMode, $PlcProjectPath, $TimeoutSec)
             if ($global:LoginCode) { return New-TcResult -Success $false -ErrorCode $global:LoginCode -ErrorMessage 'login refused (mock)' }
-            New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login' })
+            # #232: a success without loggedIn = true (no readback) must not count as a login
+            if ($global:LoginNoReadback) { return New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login'; loggedIn = $null }) }
+            New-TcResult -Success $true -Data ([PSCustomObject]@{ message = 'mock login'; loggedIn = $true })
         }
     }
     $fake::Mode = 'run'; $global:PlcState = 'Run'
@@ -408,6 +410,11 @@ try {
         $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
     }
     $global:LoginCode = $null
+    $global:LoginNoReadback = $true
+    $e = Enable-TcConfig -Force -WarningAction SilentlyContinue
+    Check '(14) #232 nested login success without loggedIn = true -> LOGIN_FAILED, loggedIn false, block at login' ((-not $e.success) -and $e.error.code -eq 'LOGIN_FAILED' -and $e.data.loggedIn -eq $false -and $e.data.loginCompleted -eq $false -and $e.data.lifecycleBlock.step -eq 'login') "$($e.error.code) $(J $e.data.lifecycleBlock)"
+    $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test (14) #232 next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    $global:LoginNoReadback = $false
     & $mod { $script:UtSss = 0 }
     $e = Enable-TcConfig -Force -PlcProjectPath 'NoSuchPlc' -WarningAction SilentlyContinue
     $sss = & $mod { $script:UtSss }

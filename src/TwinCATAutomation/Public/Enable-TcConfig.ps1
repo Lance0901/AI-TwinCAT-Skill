@@ -1109,6 +1109,14 @@ function Enable-TcConfig {
                 Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail "$($p.name): $([string]$r.error.message)"
                 return New-TcStepFailureFromResult -Result $r -Prefix "PLC login/download of '$($p.name)' (port $($p.adsPort)) failed" -DefaultCode 'LOGIN_FAILED'
             }
+            # #232: loggedIn is the login state Enter-TcPlcOnline read back, never "Login() did not throw"
+            $lp = if ($null -ne $r.data) { $r.data.PSObject.Properties['loggedIn'] } else { $null }
+            if ($null -eq $lp -or $lp.Value -ne $true) {
+                $lv = if ($null -eq $lp) { 'missing' } elseif ($null -eq $lp.Value) { 'unknown' } else { [string]$lp.Value }
+                $detail = "$($p.name): login returned success but loggedIn read back $lv"
+                Add-TcStepRecord -Name 'login' -Ok $false -Watch $sw -Detail $detail
+                return New-TcRuntimeFailure -Message "PLC login of '$($p.name)' (port $($p.adsPort)) not verified: $detail" -Code 'LOGIN_FAILED'
+            }
             $p.loggedIn = $true
             $loginDetails += "$($p.name):$($p.adsPort) $([string]$r.data.message)"
         }
