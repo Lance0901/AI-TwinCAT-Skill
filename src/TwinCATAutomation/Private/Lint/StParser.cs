@@ -755,7 +755,7 @@ namespace TcLintEngine
         {
             foreach (Frame f in stack)
             {
-                if (f.Kind == "TRY" && f.Branch == "try") continue;
+                if (f.Kind == "TRY" && (f.Branch == "try" || f.Branch == "finally")) continue;   // __FINALLY always runs
                 return true;
             }
             return false;

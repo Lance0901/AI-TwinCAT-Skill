@@ -381,8 +381,8 @@ namespace TcLintEngine
             }
             if (DtPrefixes.Contains(prefix))
             {
-                int j = DashGroups(s, i, 4);
-                return ColonGroups(s, j);
+                int j = DashGroups(s, i, 3);
+                return ColonGroups(s, j);   // '-' then hh:mm:ss[.f]
             }
             if (TodPrefixes.Contains(prefix))
             {

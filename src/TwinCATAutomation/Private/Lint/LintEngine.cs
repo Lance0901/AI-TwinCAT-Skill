@@ -249,6 +249,7 @@ namespace TcLintEngine
         // ================================================================ main
         public OrderedDictionary Execute()
         {
+            if (opt.TestFault) throw new InvalidOperationException("test fault");
             foreach (RuleOverride ov in opt.RuleOverrides)
                 if (ov.Enabled.HasValue && !ov.Enabled.Value) rulesNotRun.Add(Cov(ov.RuleId, null, null, null, "disabled-by-profile"));
 

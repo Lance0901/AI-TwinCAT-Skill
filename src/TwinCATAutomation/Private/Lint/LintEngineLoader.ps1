@@ -11,6 +11,7 @@
 $script:TcLintEngine = $null                  # @{ Hash; Type; Namespace } of the loaded engine
 $script:TcLintLanguageModeOverride = $null    # tests only: pretend another LanguageMode
 $script:TcLintAddTypeOverride = $null         # tests only: scriptblock run instead of Add-Type (throw to simulate a failure)
+$script:TcLintTestFault = $false               # tests only: make the engine throw (LINT_ENGINE_ERROR)
 
 function Get-TcLintEngine {
     <#

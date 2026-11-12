@@ -300,6 +300,7 @@ namespace TcLintEngine
         public List<ProfileEntry> Excludes = new List<ProfileEntry>();
         public List<ProfileEntry> Suppressions = new List<ProfileEntry>();
         public List<ProfileEntry> AcceptSkips = new List<ProfileEntry>();
+        public bool TestFault;              // tests only: throw inside the engine (LINT_ENGINE_ERROR path)
 
         public void AddRuleOverride(string id, object enabled, string severity, object blocking)
         {

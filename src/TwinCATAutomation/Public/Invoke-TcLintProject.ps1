@@ -151,6 +151,7 @@ function Invoke-TcLintProject {
     $opt.SolutionPath = $slnFull
     $opt.TsprojPath = $tsprojFull
     $opt.FailOn = $effectiveFailOn
+    if ($script:TcLintTestFault) { $opt.TestFault = $true }
     if ($Scope -eq 'Object') { foreach ($o in $ObjectPaths) { $opt.AddScopeObject($o) } }
     foreach ($r in $prof.rules) { $opt.AddRuleOverride($r.id, $r.enabled, [string]$r.severity, $r.blocking) }
     foreach ($e in $prof.excludes) { $opt.AddExclude($e.objectPath, $e.reason) }
