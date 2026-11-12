@@ -20,40 +20,40 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | ID | 一句話 | machineImpact | compilerCatches(`no` 是推論,待 tasks 3.4 mutation 以 BuildProject 實測) | confidence | blockable | TE1200 | phase |
 |---|---|---|---|---|---|---|---|
 | PROJECT-XML-001 | XML 不是 well-formed | project-integrity | unknown | high | true | — | 1a |
-| PROJECT-XML-002 | 編碼宣告與實際位元組不符 / 非法 UTF-8 / BOM 異常 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-XML-003 | CDATA 內寫了 XML 跳脫 `&lt;` 等(true);程式寫在 CDATA 外(warning,XAE 照常讀);多段 CDATA 是 XAE 自己的寫法,不報(IDE 實測 2026-11-13) | project-integrity → behavior | unknown | high | true / false | — | 1a |
-| PROJECT-XML-004 | 必要元素 / 屬性缺漏、元素順序與 XAE 產生的不同 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-KIND-001 | XML 物件種類 ≠ 宣告關鍵字 ≠ 副檔名 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-NAME-001 | `Name` 屬性 ≠ 宣告區物件名 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-NAME-002 | 檔名 ≠ 物件名 | none(待查:XAE 是否允許未驗證) | unknown | high | false | — | 1a |
-| PROJECT-GUID-001 | 物件 / 子物件缺 `Id` | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-GUID-002 | `Id` 格式不是 `{8-4-4-4-12}` 十六進位 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-GUID-003 | 同專案 `Id` 重複(含子物件;複製檔案沒換 Id) | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-GUID-004 | 全零 GUID | project-integrity | unknown | high | pending | — | 1a |
+| PROJECT-XML-002 | 編碼宣告與實際位元組不符 / 非法 UTF-8 / BOM 異常 | project-integrity | unknown | high | true(宣告與位元組不符、非法 UTF-8:XAE 靜默載入成 itemType 0);無 BOM / 一致的 UTF-16 / 無宣告:false · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-XML-003 | CDATA 被破壞:CDATA 內寫了 XML 跳脫 `&lt;` 等(true,本 PR 第二輪審查 B2);Declaration / ST 有 CDATA 外的一般文字;被拆成多段 CDATA(實測:XAE 自己寫的格式,不報) | project-integrity → behavior | unknown | high | true(CDATA 被提早結束 = 不 well-formed,靜默壞掉);沒包 CDATA 但合法:false(warning);多段 CDATA:**false**(XAE 自己會這樣寫) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-XML-004 | 必要元素 / 屬性缺漏、元素順序與 XAE 產生的不同 | project-integrity | unknown | high | true(缺根元素 / Name / Declaration / Implementation);缺 SpecialFunc:false · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-KIND-001 | XML 物件種類 ≠ 宣告關鍵字 ≠ 副檔名 | project-integrity | unknown | high | true(XML 元素與宣告家族不符);副檔名 ≠ 元素:false(warning) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-NAME-001 | `Name` 屬性 ≠ 宣告區物件名 | project-integrity | unknown | high | true(XAE 以 Name 屬性命名並報 C0243) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-NAME-002 | 檔名 ≠ 物件名 | none | unknown | high | false(實測:XAE 以 XML Name 為準) | — | 1a |
+| PROJECT-GUID-001 | 物件 / 子物件缺 `Id` | project-integrity | unknown | high | false(warning:XAE 載入並警告 Id missing) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-GUID-002 | `Id` 格式不是 `{8-4-4-4-12}` 十六進位 | project-integrity | unknown | high | true(itemType 0 + schema error) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-GUID-003 | 同專案 `Id` 重複(含子物件;複製檔案沒換 Id) | project-integrity | unknown | high | 同 POU 子物件:true(整個 POU 變 itemType 0);跨檔:false(warning,XAE 自動換掉其中一個並改寫檔) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-GUID-004 | 全零 GUID | project-integrity | unknown | high | false(info:XAE 載入時自動重產並改寫檔) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-GUID-005 | 明顯手寫的假 GUID(`a1b2c3d4-e5f6-…`、序列、重複字元) | project-integrity | no | medium | false | — | 1a |
-| PROJECT-SUB-001 | 子物件結構錯(Method 無 Declaration、Property 沒有 Get 也沒有 Set、Transition 無實作) | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-SUB-002 | 同一 POU 內子物件重名(Method / Action / Property) | project-integrity | unknown(推論 yes) | high | pending | SA0027(Light,名稱重複) | 1a |
-| PROJECT-LINEIDS-001 | `<LineIds>` 與實際行數 / 子物件不一致 | none(待查) | no | high | false(info,待查 XAE 是否自動重建) | — | 1a |
-| PROJECT-COMPILE-001 | `<Compile>` 指向不存在的檔 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-COMPILE-002 | `<Compile>` 重複 | project-integrity | unknown | high | pending | — | 1a |
+| PROJECT-SUB-001 | 子物件結構錯(Method 無 Declaration、Property 沒有 Get 也沒有 Set、Transition 無實作) | project-integrity | unknown | high | Method / ITF Method 無 Declaration:true;Property 無 Get / Set:false(C0373 warning);Transition:未測(tcauto 不能建) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-SUB-002 | 同一 POU 內子物件重名(Method / Action / Property) | project-integrity | unknown(推論 yes) | high | true(同名 Method 讓 VS2022 載入時 stack overflow 當機) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | SA0027(Light,名稱重複) | 1a |
+| PROJECT-LINEIDS-001 | `<LineIds>` 與實際行數 / 子物件不一致 | none(待查) | no | high | false(info;4026 XAE 下次存檔整段刪掉,不報錯) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-COMPILE-001 | `<Compile>` 指向不存在的檔 | project-integrity | unknown | high | true(樹上出現 itemType 0 的幽靈物件,無任何錯誤) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-COMPILE-002 | `<Compile>` 重複 | project-integrity | unknown | high | false(warning:XAE 容忍) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-COMPILE-003 | 專案目錄下的物件檔沒列入 `<Compile>`(不會被編譯) | behavior | no | high | false | — | 1a |
-| PROJECT-COMPILE-004 | `<SubType>` 與 XAE 產生的值不同 | project-integrity | unknown | high | pending | — | 1a |
+| PROJECT-COMPILE-004 | `<SubType>` 與 XAE 產生的值不同 | project-integrity | unknown | high | false(warning:Designer / 缺 SubType 都照常載入) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-COMPILE-005 | `<Folder Include>` 與實際目錄 / Compile 路徑不符 | none | no | high | false | — | 1a |
-| PROJECT-COMPILE-006 | Include 路徑大小寫與磁碟不符、MSBuild 跳脫錯 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-LIB-001 | LibraryReference / PlaceholderReference XML 結構缺必要子元素 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-TSPROJ-001 | `.tsproj` 參照的 `.plcproj` 不存在 / 路徑不符 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-TSPROJ-002 | PLC 專案 GUID 在 `.sln` / `.tsproj` / `.plcproj` 不一致 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-TSPROJ-003 | `.TcTTO` ↔ `.tsproj` task 不一致;`PouCall` 指向不存在的 PROGRAM | behavior | unknown | high | pending | — | 1a |
-| PROJECT-ENC-001 | 行尾 / 編碼混用 | none(待查) | no | high | false(info,待查 XAE 顯示) | — | 1a |
+| PROJECT-COMPILE-006 | Include 路徑大小寫與磁碟不符、MSBuild 跳脫錯 | project-integrity | unknown | high | false(warning:大小寫不符、`%20` 都照常載入) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-LIB-001 | LibraryReference / PlaceholderReference XML 結構缺必要子元素 | project-integrity | unknown | high | 缺 Namespace:true(XAE 跳 Assertion Failed 對話框);缺 DefaultResolution:見實測 · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-TSPROJ-001 | `.tsproj` 參照的 `.plcproj` 不存在 / 路徑不符 | project-integrity | unknown | high | true(PrjFilePath 指向不存在的 plcproj → 讀樹時 VS2022 當機) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-TSPROJ-002 | PLC 專案 GUID 在 `.sln` / `.tsproj` / `.plcproj` 不一致 | project-integrity | unknown | high | false(warning:XAE 把 plcproj ProjectGuid 寫回 tsproj 的值) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-TSPROJ-003 | `.TcTTO` ↔ `.tsproj` task 不一致;`PouCall` 指向不存在的 PROGRAM | behavior | unknown | high | false(PouCall 指向不存在的 PROGRAM:編譯器 C0046 / C0035 擋下;task 不一致部分未測) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-ENC-001 | 行尾 / 編碼混用 | none(待查) | no | high | false(info;LF / 混用 / 無 BOM 都照常載入) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | LINT-PARSE-* / LINT-XML-* / LINT-COVERAGE-* / LINT-SUPPRESS-* | 引擎自身 | — | — | high | PARSE: true | — | 1a |
 | SCAN-TEMPFB-001 | 有狀態 FB 宣告在 FUNCTION / METHOD 的 VAR 或 VAR_TEMP | behavior | unknown(SA0167 Light 編譯後自動跑,Build 結果待 1a.9) | high | true(InfoSys 已證實暫時變數語意) | SA0167(Light,編譯成功後自動跑) | 1b |
-| PROJECT-TASK-001 | PROGRAM 沒被任何 task 也沒被任何 POU 呼叫 | behavior | no | high | false(必須處置) | — | 1b |
+| PROJECT-TASK-001 | PROGRAM 沒被任何 task 也沒被任何 POU 呼叫 | behavior | no(實測:沒被呼叫的 PROGRAM 有語法錯 Build 仍成功,只有 CheckAllObjects 報 [實測](verification/st-syntax-measured.md)) | high | false(必須處置) | — | 1b |
 | PROJECT-TASK-002 | 同一 PROGRAM 每 cycle 執行兩次以上(兩個 task / task + POU) | behavior | no | high | true | — | 1b |
 | SCAN-LOOP-001 | busy-wait:WHILE / REPEAT 迴圈內不會改變條件 | crash | no | high | true | 部分相關:SA0041(Full) | 2 |
 | SCAN-FOR-001 | FOR 計數器型別上限 ≤ 常數終值(溢位 → 無窮迴圈);`BY 0`(variant,pending) | crash | warning(C0266,不擋 Build) | high | true(`BY 0`:pending) | — | 2 |
 | SCAN-ARR-001 | 常數範圍 FOR 的 index 超出陣列宣告範圍(0-based 習慣) | crash / behavior | no | high | true | SA0172(Full) | 2 |
-| SAFETY-ARR-001 | 常數 index 超出陣列範圍 | crash / behavior | yes(InfoSys:常數錯誤 index 是編譯錯誤) | high | false(只有寫入前價值) | SA0172(Full) | 2 |
-| SAFETY-DIV-001 | 除以常數 0;除數是變數且同一路徑沒有 `<> 0` 檢查 | crash(推論,runtime 結果未驗證) | 常數:unknown;變數:no | 常數 high / 變數 medium | 常數 true / 變數 false | SA0040(Full) | 2 |
+| SAFETY-ARR-001 | 常數 index 超出陣列範圍 | crash / behavior | yes(InfoSys;measured:2026-11-13 C0049 [實測](verification/st-syntax-measured.md)) | high | false(只有寫入前價值) | SA0172(Full) | 2 |
+| SAFETY-DIV-001 | 除以常數 0;除數是變數且同一路徑沒有 `<> 0` 檢查 | crash(推論,runtime 結果未驗證) | 常數 `/ 0`:measured:2026-11-13 yes(C0374);**`MOD 0`:no**;變數:no [實測](verification/st-syntax-measured.md) | 常數 high / 變數 medium | 常數 true / 變數 false | SA0040(Full) | 2 |
 | SCAN-FBCALL-001 | FB instance 被讀取但從不呼叫 | behavior | no | medium | false | — | 2 |
 | SCAN-FBCALL-002 | FB instance 完全沒被引用 | none | no | high | false(info) | SA0033(Light) | 2 |
 | SCAN-TIMER-001 | Timer / Trigger 只在 IF / CASE 內呼叫(一般型) | behavior | no | medium | false | — | 2 |
@@ -84,6 +84,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 共同規則:
 - 依據:`research/tc-xml-schema-observed.md`(XAE 實際產生的結構)。結構規則只比對「語料中每個樣本都有」的元素與屬性;語料樣本不足的(例如 `.TcIO`、Property、Transition)在 Phase 1a 用 XAE 產生真實檔案後才啟用,啟用前記 `rulesNotRun`(reason `schema-not-observed`)。
+- **1a.7 實測定案(2026-11-13,XAE 4026.22 / VS2022;4024 部分見該檔第 3 節)**:總表 `blockable` 欄已依 `verification/xae-corrupt-file-behavior.md` 改寫,下面各節原本寫「未驗證 / pending」的段落以該檔為準。重點:(1) XAE 的 Build **擋不住**沒被引用物件的壞檔(Build 成功,載入錯誤只在 Error List);(2) 不 well-formed、編碼宣告不符、非法 UTF-8 時物件**靜默**變成 itemType 0,Check / Build 都沒有訊息;(3) 同名 Method、`.tsproj` 指向不存在的 `.plcproj` 會讓 VS2022 當機,PlaceholderReference 缺 `Namespace` 會跳 Assertion Failed;(4) 全零 / 跨檔重複 GUID、`.plcproj` ProjectGuid 不一致、缺 Folder 宣告會被 XAE **自動改寫磁碟檔**。
 - 「XAE 遇到時實際會怎樣」:每條在 tasks 1a 有一個 IDE 實測任務(只需 IDE、不需 runtime;在本機測試副本的副本上做:植入錯誤 → `Reset-TcSolution` → `Get-TcProjectTree` / `BuildProject`,記錄是否跳框、物件是否消失、Build 結果)。實測前 `blockable = pending`。
 - 誤報來源:未來 TwinCAT 版本的 XML 結構變化(`ProductVersion` 不在已觀察範圍 → 結構規則降為 warning 並在 `rulesSkipped` 註明 `unobserved-product-version`)。
 

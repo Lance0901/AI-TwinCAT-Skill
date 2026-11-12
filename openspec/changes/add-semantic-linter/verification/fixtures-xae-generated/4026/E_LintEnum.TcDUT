@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <DUT Name="E_LintEnum" Id="{34c6b074-1324-0205-3517-c6298a411edf}">
+    <Declaration><![CDATA[TYPE E_LintEnum :
+(
+    eIdle := 0,
+    eRun,
+    eErr := 10
+);
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

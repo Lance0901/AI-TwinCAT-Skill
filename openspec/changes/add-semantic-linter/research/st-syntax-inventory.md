@@ -15,6 +15,19 @@ parser 處理建議三選一:
 
 ---
 
+## 0. 1a.10 實測更新(2026-11-13,XAE 4026.22 / VS2022)
+
+原本標「未驗證」的語法已用最小 POU + `BuildProject` 實測,錯誤原文見 `../verification/st-syntax-measured.md`。
+
+| 項目 | 結果 |
+|---|---|
+| `?=`、`**`、`/* */`、`E_Enum#Member`、`T#-5S`、非 ASCII 識別字、變數名 `r` / `s` | **編譯器拒絕** |
+| `T#1_000MS`、`T#1.5S`、`t#1h2m3s4ms`、`LTIME#1US`、`END_IF` 後省略分號、`__TRY` 區塊(64-bit 4026)、`S=` / `R=` / `REF=`、WSTRING `$0041`、REAL `1_000.5`、`;;`、`[3(7), 2(0)]`、巢狀 `(* (* *) *)` | 接受 |
+| 條件 pragma 不成立的分支 | **仍被解析**,放非法 ST 會報錯 |
+| `VAR_GENERIC CONSTANT`、subrange `INT(0..100)` | 未判定(植入失敗 / 變數名衝突) |
+| 除以常數 0 / 常數 index 越界 | Build 失敗(`C0374` / `C0049`);`MOD 0` 不報錯 |
+| 沒被呼叫的 PROGRAM 有語法錯 | Build 成功,只有 `CheckAllObjects` 報 |
+
 ## 第 1 部分:語法清單
 
 ### 1.1 註解、字串、pragma
@@ -23,10 +36,10 @@ parser 處理建議三選一:
 |---|---|---|---|---|---|
 | 單行註解 `//` | `x := 1; // note` | PI/2528329355.html | — | 支援 | "Starts with // and ends at the end of the line." |
 | 區塊註解 `(* *)`,**可巢狀** | `(* a (* b *) c *)` | PI/2528329355.html | — | 支援(lexer 用深度計數) | "Additional (*.... *) comments can be contained within this comment." 頁面沒寫深度上限 → 不設上限 |
-| `/* */` 註解 | `/* x */` | PLC 手冊未收錄。只有 NC I 的 ST 頁有:https://infosys.beckhoff.com/content/1033/tf5100_tc3_nc_i/4184579339.html | — | **未驗證(PLC)**;建議 lexer 認得 `/*...*/` 但遇到時整個物件記 notAnalyzed | NC I 頁寫 "may be nested up to a depth of 3",但那是 TF5100 NC I G-code interpreter 的 ST,**不能**推到 PLC ST。PLC ST 註解頁只列 `//` 與 `(* *)`。`/` 後接 `*` 在合法 PLC ST 幾乎不會出現(除法後接 `*` 不成立),故當註解吃掉風險低 |
+| `/* */` 註解 | `/* x */` | PLC 手冊未收錄。只有 NC I 的 ST 頁有:https://infosys.beckhoff.com/content/1033/tf5100_tc3_nc_i/4184579339.html | — | **未驗證(PLC)**;建議 lexer 認得 `/*...*/` 但遇到時整個物件記 notAnalyzed | NC I 頁寫 "may be nested up to a depth of 3",但那是 TF5100 NC I G-code interpreter 的 ST,**不能**推到 PLC ST。PLC ST 註解頁只列 `//` 與 `(* *)`。`/` 後接 `*` 在合法 PLC ST 幾乎不會出現(除法後接 `*` 不成立),故當註解吃掉風險低;**實測 2026-11-13:編譯器拒絕**(`../verification/st-syntax-measured.md`) |
 | STRING literal `'...'` | `'Hello World!'` | PI/2529327243.html | — | 支援 | "A STRING constant is a string enclosed by single quotation marks."(Windows-1252) |
 | `$` 跳脫 | `'$R$N'`, `'$27'`, `'$$'`, `'$''` | PI/2529327243.html | — | 支援 | "If a STRING constant contains a dollar sign ($), the following two characters are interpreted as hexadecimal code." 列表:`$L $N $P $R $T`(大小寫皆可)、`$$`、`$'`、`$<2 hex>`。lexer 規則:遇 `$` 一律多吃 1 個字元(`$'` 不可結束字串);吃 2 hex 的語意檢查不在 lexer 做 |
-| WSTRING literal `"..."` | `"This is a WString."` | PI/2529437323.html | — | 支援 | "The character string is identified as WSTRING with double quotation marks."(UCS-2)。WSTRING 內 `$` 跳脫的形式(是否 4 hex)頁面**未寫 → 未驗證**;lexer 照 STRING 規則處理 `$"`、`$$` 即可 |
+| WSTRING literal `"..."` | `"This is a WString."` | PI/2529437323.html | — | 支援 | "The character string is identified as WSTRING with double quotation marks."(UCS-2)。WSTRING 內 `$` 跳脫的形式(是否 4 hex)頁面**未寫 → 未驗證**;lexer 照 STRING 規則處理 `$"`、`$$` 即可;**實測 2026-11-13:`$0042` 4 位十六進位跳脫接受**(`../verification/st-syntax-measured.md`) |
 | pragma 通則 `{ ... }` | `{attribute 'strict'}` | PI/2526889867.html | — | 支援(當 token,不進 AST 或掛在宣告上) | "Pragmas unknown to the compiler are read over like a comment."、"The instruction string of a pragma can also be multi-line."、"A pragma cannot be used within an expression."、"Case-sensitivity must be respected." → lexer:`{` 到對應 `}` 整段當 pragma token(要跳過其中的 `'...'`) |
 | attribute pragma | `{attribute 'qualified_only'}`、`{attribute 'TcLinkTo' := '...'}` | PI/2529572491.html、PI/3107974923.html | — | 支援 | 無值形式 "{attribute 'attribute'}";有值形式見 TcLinkTo 頁 "{attribute 'TcLinkTo' := '<I/O point name>'}"。位置:POU/型別宣告前一行、VAR 區內變數前一行;Action/Transition 放實作區開頭(PI/2529567115.html) |
 | 條件編譯 `{IF}` `{ELSIF}` `{ELSE}` `{END_IF}` | `{IF defined (Group1)} ... {ELSIF defined(Group2)} ... {ELSE} ... {END_IF}` | PI/2529795979.html | 宣告區內:**TC3.1 build 4024 起**才評估;"Conditional pragmas are supported in the PLC project, but not in libraries." | **安全略過**(物件內出現 `{IF` → notAnalyzed) | 運算子:`defined(...)`、`defined(variable:/type:/pou: ...)`、`hasvalue`、`hasattribute`、`hastype`,可配 NOT/AND/OR。linter 不知道 compile define,未啟用分支可能是不合法程式碼,若硬解析會誤判 parse fail |
@@ -40,7 +53,7 @@ parser 處理建議三選一:
 |---|---|---|---|---|---|
 | ST 指令總表 | IF / FOR / CASE / WHILE / REPEAT / RETURN / JMP / EXIT / CONTINUE / 註解 / FB 呼叫 | PI/2528270219.html | — | 支援 | 頁面清單即 parser 必須涵蓋的 statement 集合 |
 | IF | `IF c THEN ... ELSIF c2 THEN ... ELSE ... END_IF;` | PI/2528275595.html | — | 支援 | 語法列寫 `END_IF;`,ELSIF `( )*`、ELSE `( )?` |
-| `END_IF` 等後面的分號 | `END_IF` vs `END_IF;` | PI/2528275595.html(只寫有分號的形式) | — | 分號當可選 | 頁面語法都帶 `;`,**沒寫可省 → 未驗證**。保守:parser 接受有/無分號,也接受空敘述 `;;`,避免把合法程式判 fail |
+| `END_IF` 等後面的分號 | `END_IF` vs `END_IF;` | PI/2528275595.html(只寫有分號的形式) | — | 分號當可選 | 頁面語法都帶 `;`,**沒寫可省 → 未驗證**。保守:parser 接受有/無分號,也接受空敘述 `;;`,避免把合法程式判 fail;**實測 2026-11-13:省略分號接受**(`../verification/st-syntax-measured.md`) |
 | FOR | `FOR i := 1 TO 10 BY 2 DO ... END_FOR;` | PI/2528280971.html | — | 支援 | "FOR <counter> := <start value> TO <end value> {BY <increment> } DO";BY 省略時步長 1 |
 | CONTINUE(ExST) | `CONTINUE;` | PI/2528318603.html | — | 支援 | 用於 FOR / WHILE / REPEAT |
 | JMP 與 label | `lblA: nX := nX + 1; ... JMP lblA;` | PI/2528307851.html | — | 支援(或安全略過) | `<label>: <instructions>` 與 `JMP <label>;`;label "a freely selectable, unique identifier, which you place at the beginning of a line"。parser 要能分辨 `ident :` 開頭的 label(ST 實作區內 `ident :` 不會是其他合法構造)。控制流分析若不想處理 JMP,可對含 JMP 的物件只做局部規則 |
@@ -51,12 +64,12 @@ parser 處理建議三選一:
 | 語法項目 | 範例 | InfoSys 連結 | 版本限制 | parser 建議 | 備註 |
 |---|---|---|---|---|---|
 | 運算子優先序 | — | PI/2528237963.html | — | 支援 | 由強到弱:`( )` > 函式呼叫 > `EXPT` > 一元 `-`、`NOT` > `* / MOD` > `+ -` > `< > <= >=` > `= <>` > `AND`、`AND_THEN` > `XOR` > `OR`、`OR_ELSE`;"Operators with the same binding strength are processed from left to right." |
-| `?=`(assignment attempt) | `itfB ?= itfA;` | **InfoSys 找不到**。指派頁 PI/2528243339.html 只列 `:=`、`=>`、`S=`、`R=`、assignment as expression、`REF=`;運算子總表 PI/2528853899.html 也沒有 | — | **未驗證** → lexer 認得 `?=` token,遇到的敘述/物件 **安全略過** | 不可判 parse fail(可能是新版或 CODESYS 衍生語法,手冊未收錄不代表編譯器不收) |
+| `?=`(assignment attempt) | `itfB ?= itfA;` | **InfoSys 找不到**。指派頁 PI/2528243339.html 只列 `:=`、`=>`、`S=`、`R=`、assignment as expression、`REF=`;運算子總表 PI/2528853899.html 也沒有 | — | **未驗證** → lexer 認得 `?=` token,遇到的敘述/物件 **安全略過** | 不可判 parse fail(可能是新版或 CODESYS 衍生語法,手冊未收錄不代表編譯器不收);**實測 2026-11-13:4026.22 編譯器拒絕**(`../verification/st-syntax-measured.md`) |
 | `S=` / `R=`(ExST) | `bOut S= bIn;` | PI/2528254091.html、PI/2528259467.html | — | 支援 | `<variable name> S= <operand name> ;`;同一行多個時 "all assignments refer to the operand at the end of the code line" |
 | `REF=` | `refA REF= stA;` | PI/4978163979.html、PI/2529458827.html | — | 支援 | `<variable name> REF= <variable name>`;`value REF= refA` "leads to a compile error";`refInt REF= 0;` 合法 |
 | `=>`(output 指派) | `fb(IN := x, Q => bQ, ET => );` | PI/3513625739.html | — | 支援 | `<output> => <variable>`;範例 `bFBCompOutput2 => ;` → **右側可空** |
 | assignment as expression(ExST) | `a := b := c + 9;`、`IF b := (i = 1) THEN` | PI/2528264843.html | — | 支援 | "TwinCAT allows the use of assignments as expressions"。parser 的 expression 文法要允許 `:=` 出現在運算式內 |
-| `**`(指數) | `x ** 2` | **InfoSys 未收錄**。指數只有 `EXPT(<base>,<exponent>)`(PI/2529122699.html,return "always LREAL") | — | **未驗證** → lexer 把 `**` 切成 `*` `*` 即會在 parse 失敗;建議改為認得 `**` token,遇到時物件 **安全略過** | 總表 PI/2528853899.html 明確沒有 `**` |
+| `**`(指數) | `x ** 2` | **InfoSys 未收錄**。指數只有 `EXPT(<base>,<exponent>)`(PI/2529122699.html,return "always LREAL") | — | **未驗證** → lexer 把 `**` 切成 `*` `*` 即會在 parse 失敗;建議改為認得 `**` token,遇到時物件 **安全略過** | 總表 PI/2528853899.html 明確沒有 `**`;**實測 2026-11-13:編譯器拒絕**(`../verification/st-syntax-measured.md`) |
 | `AND_THEN` | `IF p <> 0 AND_THEN p^ = 99 THEN` | PI/2528923787.html | — | 支援 | "only allowed for programming in Structured Text";短路 |
 | `OR_ELSE` | `b OR_ELSE fb.M()` | PI/2528929163.html | — | 支援 | "The OR_ELSE operator is only permitted for programming in Structured Text.";短路 |
 | `XOR`、`MOD` | `a XOR b`、`a MOD 3` | PI/2528853899.html、PI/2528237963.html | — | 支援 | 總表列在 Bitstring / Arithmetic |
@@ -115,9 +128,9 @@ parser 處理建議三選一:
 | 進位前綴 `2#` `8#` `16#` | `2#1001_0011`、`8#67`、`16#A` | PI/2529316491.html | — | 支援 | "You can use underscores within a numerical value." 16 進位 `[0-9A-Fa-f_]`,2 進位 `[01_]`,8 進位 `[0-7_]` |
 | 型別前綴 `<Type>#` | `DINT#34`、`DINT#16#A1`、`INT#5` | PI/2529332619.html、PI/2529316491.html | — | 支援 | 頁面:"You have to capitalize the type.";型別清單 BOOL, SINT, USINT, BYTE, INT, UINT, WORD, DINT, UDINT, DWORD, REAL, LREAL。可疊加進位前綴(`DINT#16#A1`)。小寫前綴的合法性由編譯器判,parser 寬鬆接受 |
 | `TRUE` / `FALSE` | `TRUE` | PI/2529289611.html | — | 支援 | "the truth values TRUE (1) and FALSE (0)" |
-| REAL / 指數 | `1.64e+009`、`-1.7976931348623157E+308` | PI/2529321867.html | — | 支援 | `<significand> e \| E <exponent>`,指數可帶正負號;"7,4 with comma returns compiler error"。REAL 內底線**未寫 → 未驗證**,lexer 寬鬆接受 |
+| REAL / 指數 | `1.64e+009`、`-1.7976931348623157E+308` | PI/2529321867.html | — | 支援 | `<significand> e \| E <exponent>`,指數可帶正負號;"7,4 with comma returns compiler error"。REAL 內底線**未寫 → 未驗證**,lexer 寬鬆接受;**實測 2026-11-13:`1_000.5` 接受**(`../verification/st-syntax-measured.md`) |
 | 十進位底線 | `1_000_000` | PI/2529316491.html | — | 支援 | 同上 |
-| `<Enum>#<Member>` 形式 | `E_Color#Red` | 本次**未找到** InfoSys 頁面 | — | **未驗證** → lexer 對 `<ident>#<ident>` 視為 qualified literal,不判 fail | ENUM 頁只寫 `{attribute 'qualified_only'}` 時用 `<enumeration name>.<component name>` |
+| `<Enum>#<Member>` 形式 | `E_Color#Red` | 本次**未找到** InfoSys 頁面 | — | **未驗證** → lexer 對 `<ident>#<ident>` 視為 qualified literal,不判 fail | ENUM 頁只寫 `{attribute 'qualified_only'}` 時用 `<enumeration name>.<component name>`;**實測 2026-11-13:編譯器拒絕**(`../verification/st-syntax-measured.md`) |
 
 ### 1.6 識別字
 
@@ -129,7 +142,7 @@ parser 處理建議三選一:
 | 長度 | — | PI/2529913227.html | — | 支援 | "There is no limit to the length of an identifier." |
 | 大小寫 | `VAR1` = `var1` | PI/2529913227.html | — | 支援(符號表一律 case-insensitive) | "TwinCAT is not case-sensitive" |
 | 關鍵字 | — | PI/2529913227.html | — | 支援 | "An identifier must not be identical to a keyword" |
-| Unicode / 中文 | `變數1` | PI/2529913227.html 只列 ASCII,沒有明文談 Unicode | — | **未驗證** → lexer 遇到非 ASCII 字母**不判 fail**,物件安全略過 | 依頁面清單推論非 ASCII 不合法,但沒明寫;字串與註解內的中文當然合法 |
+| Unicode / 中文 | `變數1` | PI/2529913227.html 只列 ASCII,沒有明文談 Unicode | — | **未驗證** → lexer 遇到非 ASCII 字母**不判 fail**,物件安全略過 | 依頁面清單推論非 ASCII 不合法,但沒明寫;字串與註解內的中文當然合法;**實測 2026-11-13:非 ASCII 識別字編譯器拒絕**(`../verification/st-syntax-measured.md`) |
 | pragma 大小寫 | `{attribute ...}` | PI/2526889867.html | — | 支援 | 與識別字相反:"Case-sensitivity must be respected."(pragma 內) |
 
 ---

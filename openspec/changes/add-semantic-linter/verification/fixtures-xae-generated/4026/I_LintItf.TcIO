@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <Itf Name="I_LintItf" Id="{ac8e03e8-43de-0bdb-16a2-b3b1e4edbb50}">
+    <Declaration><![CDATA[INTERFACE I_LintItf
+]]></Declaration>
+    <Method Name="M_Do" Id="{6293093c-4e24-02ad-2d94-9a0cd8bd4423}">
+      <Declaration><![CDATA[METHOD M_Do : BOOL
+VAR_INPUT
+END_VAR]]></Declaration>
+    </Method>
+    <Property Name="P_Val" Id="{ecf804a7-739a-0437-1a1e-dc5d722bd6ec}">
+      <Declaration><![CDATA[PROPERTY P_Val : INT]]></Declaration>
+    </Property>
+  </Itf>
+</TcPlcObject>

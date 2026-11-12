@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4024.16">
+  <DUT Name="U_LintUnion" Id="{5bae0186-f964-421a-b168-f1eae8279d24}">
+    <Declaration><![CDATA[TYPE U_LintUnion :
+UNION
+    nDword : DWORD;
+    arBytes : ARRAY[0..3] OF BYTE;
+END_UNION
+END_TYPE]]></Declaration>
+  </DUT>
+</TcPlcObject>

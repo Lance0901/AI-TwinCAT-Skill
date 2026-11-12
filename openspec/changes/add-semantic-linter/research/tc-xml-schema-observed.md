@@ -496,3 +496,13 @@ POU
 - Folder 宣告但磁碟沒目錄：XAE 允許(bfh 4 個),不是錯誤；反向(磁碟有目錄沒宣告)語料沒有。
 - CycleTime 單位:TTO = µs 有註解為證；tsproj 的 100 ns / ns 只是由比例推得，寫成規則前要查 InfoSys。
 - 多 PLC 專案、多 task、多 PouCall、程式庫參照(`.library`)錯誤情境：語料沒有。
+
+## 11. 1a.8 XAE 實測補充(2026-11-13)
+
+用 XAE 4026.22(VS2022)與 tcauto 建立真實物件後的修正,細節與原樣檔案見 `../verification/xae-generated-xml.md` 與 `../verification/fixtures-xae-generated/`:
+
+- **§5 / §10.1-6 修正**:程式碼含 `]]>` 時 XAE 自己切成兩段 CDATA(`]]]]><![CDATA[>`)。「一個元素一段 CDATA」只是語料沒遇到,不是規則;引擎必須串接多段 CDATA。
+- **§3.2 補充**:POU 子元素順序觀察到 `Declaration, Implementation, Action*, Method*, Property*`;`<Property>` → `<Declaration>`、`<Get Name="Get">`、`<Set Name="Set">`(各有 Declaration + Implementation)。
+- **§3.8 補充**:`.TcIO` 根下是 `<Itf Name Id>`(無 SpecialFunc),ITF Method / Property 只有 `<Declaration>`。
+- SFC 實作與 CFC 相同,是 `XmlArchive`,另有同層 `<ObjectProperties>`。
+- XAE 4026.22 新建物件的 `ProductVersion` 是 `3.1.4026.18`;新建 / 改寫過的 4026 POU 不寫 `<LineIds>`,而且會把手寫的 LineIds 刪掉(`../verification/xae-corrupt-file-behavior.md` 2.4)。
