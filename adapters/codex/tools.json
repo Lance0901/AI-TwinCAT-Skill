@@ -62,6 +62,25 @@
       }
     },
     {
+      "name": "GetPackageInfo",
+      "description": "Read-only (#229): installed and feed versions of the TwinCAT XAE / XAR / Remote Manager packages through the TwinCAT Package Manager CLI tcpkg (tcpkg list -i --as-json, then tcpkg list <id> -a --as-json per id: a network query of the feeds the user configured; nothing is installed, no credentials are handled). PackageId default: TwinCAT.Standard.XAE, TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE (Remote Manager). NoAvailable=true = installed only (offline). data: installed[] {id, version, installDate, workload}, available[] {id, version, source (feed name, e.g. Beckhoff Outdated Feed), isPreview, installed}; every TwinCAT.StandardRM.XAE entry also has buildFolder (Build_<a>.<b> of version <a>.<b>.<c>, e.g. 4024.71.2 -> Build_4024.71, measured 2026-11-12), buildFolderPath and buildFolderExists (the folder ConnectIde needs for a 4024 project); remoteManagerRoot, remoteManagerBuilds, runs[] (command line, exit code, seconds). Use it when ConnectIde / GetProjectVersion say a Remote Manager version is missing, before InstallPackage. Errors: TCPKG_NOT_FOUND (tcpkg not installed), TCPKG_TIMEOUT (one call exceeded TimeoutSec, default 60 s each, and was stopped), TCPKG_LIST_FAILED (exit code not 0, e.g. unknown id / feed not reachable or not signed in, or output not JSON; data.runs[].stderrTail), each with error.hint.",
+      "parameters": {
+        "PackageId": { "type": "array", "items": { "type": "string" }, "description": "Package ids to report (exact, case-insensitive). Default: TwinCAT.Standard.XAE, TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE.", "required": false },
+        "NoAvailable": { "type": "boolean", "description": "Only the installed packages: no feed query (offline, about 2 s).", "required": false },
+        "TimeoutSec": { "type": "integer", "minimum": 5, "maximum": 1800, "description": "Upper bound in seconds for EACH tcpkg call (default 60); the call is stopped after it.", "required": false, "default": 60 }
+      }
+    },
+    {
+      "name": "InstallPackage",
+      "description": "Install a TwinCAT XAE or Remote Manager version with tcpkg (#229). WITHOUT Approved=true NOTHING is installed: the result is a plan (success=true, data.executed = false) with data.command (the complete command, tcpkg install <PackageId>=<Version> -y), requiresAdministrator, isAdministrator, idesToClose, runningIdes[] {processId, name, path, title}, alreadyInstalled, versionInFeed, feedSources, availableVersions, buildFolder / buildFolderExists (Remote Manager), blockers[] (not-elevated, ide-running, version-not-in-feed) and data.hint. Show the plan to the user and ask; call again with Approved=true ONLY after the user agreed to exactly this command. Never elevate, never close or kill IDEs yourself. With Approved=true: already installed -> success, executed=false; not elevated -> TCPKG_ELEVATION_REQUIRED (no UAC prompt is opened); TcXaeShell / devenv running -> TCPKG_IDE_RUNNING (pids in data.runningIdes); version not on a configured feed -> TCPKG_VERSION_NOT_FOUND (data.availableVersions); then the install runs (TimeoutSec, default 1800) and tcpkg list -i is read back: success only when the version is listed (fail closed); TCPKG_INSTALL_FAILED (exit code not 0), TCPKG_TIMEOUT (stopped, state unknown: read back with GetPackageInfo, do not rerun), TCPKG_INSTALL_UNVERIFIED (exit 0 but not listed). data.steps[] = query, install, readback. Only TwinCAT.Standard.XAE and TwinCAT.StandardRM.XAE (never the runtime XAR); feeds and the myBeckhoff account are the user's business. Version = an exact version from GetPackageInfo data.available[].version (e.g. 4024.71.5; the feed may not have the version that was installed before).",
+      "parameters": {
+        "PackageId": { "type": "string", "enum": ["TwinCAT.Standard.XAE", "TwinCAT.StandardRM.XAE"], "description": "TwinCAT.StandardRM.XAE (a Remote Manager version, e.g. for a 4024 project) or TwinCAT.Standard.XAE.", "required": true },
+        "Version": { "type": "string", "description": "Exact package version as listed by Get-TcPackageInfo data.available[].version, e.g. 4024.71.5.", "required": true },
+        "Approved": { "type": "boolean", "description": "The user saw the plan and agreed: really run the install. Without it only the plan is returned.", "required": false },
+        "TimeoutSec": { "type": "integer", "minimum": 60, "maximum": 7200, "description": "Upper bound in seconds for the install call (default 1800); each read-only tcpkg list call is bounded by 120 s.", "required": false, "default": 1800 }
+      }
+    },
+    {
       "name": "NewProject",
       "description": "Create new TwinCAT project with PLC and MAIN program. #70: only on an IDE with no solution open (otherwise SOLUTION_ALREADY_OPEN, nothing created); not offered on the MCP server.",
       "parameters": {

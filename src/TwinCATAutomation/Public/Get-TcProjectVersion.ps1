@@ -89,12 +89,14 @@ function Get-TcProjectVersion {
         matchingProgIds       = @($pick.matchingProgIds)
         # #225: set when the 32-bit TcXaeShell is picked for a < 4026 project through the Remote
         # Manager folder of exactly the project version (selectedBy remote-manager-match)
+        # #229: the Remote Manager of exactly the project version is missing (Install-TcPackage suggestion in hint)
+        remoteManagerInstall  = $(if ($null -ne $pick.remoteManagerInstall) { [ordered]@{ packageId = $pick.remoteManagerInstall.packageId; build = $pick.remoteManagerInstall.build; buildFolder = $pick.remoteManagerInstall.buildFolder; versionPrefix = $pick.remoteManagerInstall.versionPrefix } } else { $null })
         remoteManager         = $(if ($null -ne $pick.remoteManager) { [ordered]@{ build = $pick.remoteManager.build; path = $pick.remoteManager.path; xaeVersion = $pick.remoteManager.xaeVersion; progId = $pick.remoteManager.progId } } else { $null })
         registeredProgIds     = @($pick.registered)
         ide                   = @($pick.ide | ForEach-Object { [ordered]@{ progId = $_.progId; xaeVersion = $_.xaeVersion; xaeBuild = $_.xaeBuild; exePath = $_.exePath } })
         errorCode             = $pick.errorCode
         errorMessage          = $pick.errorMessage
-        hint                  = $(if ($null -ne $pick.errorCode) { $script:TcProjectVersionLaunchHint } else { $null })
+        hint                  = $(if ($null -ne $pick.errorCode) { Get-TcLaunchHint -Pick $pick -Hint $script:TcProjectVersionLaunchHint } else { $null })
     }
     return New-TcResult -Success $true -Data $data
 }

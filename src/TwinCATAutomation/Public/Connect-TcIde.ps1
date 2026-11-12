@@ -714,9 +714,11 @@ function Connect-TcIde {
                 registeredProgIds = @($pick.registered)
                 solutionVersion   = $pick.evidence
                 candidates        = @($candidates | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
+                # #229: set when only the Remote Manager folder of the project version is missing
+                remoteManagerInstall = $pick.remoteManagerInstall
             }
             return New-TcResult -Success $false -ErrorMessage $pick.errorMessage -ErrorCode $pick.errorCode `
-                -Hint (Get-TcErrorHint -Code $pick.errorCode) -Data $pickData
+                -Hint (Get-TcLaunchHint -Pick $pick -Hint (Get-TcErrorHint -Code $pick.errorCode)) -Data $pickData
         }
         $launchProgId = $pick.progId
         $progIdSelectedBy = $pick.selectedBy

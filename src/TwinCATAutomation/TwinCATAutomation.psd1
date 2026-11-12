@@ -14,6 +14,8 @@
         'Get-TcIdeModalDialog',
         'Get-TcAutomationVersion',
         'Get-TcProjectVersion',
+        'Get-TcPackageInfo',
+        'Install-TcPackage',
         # Project Management
         'New-TcProject',
         'Open-TcProject',

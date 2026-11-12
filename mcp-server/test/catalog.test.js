@@ -115,6 +115,30 @@ describe('tools.json (generated catalog)', () => {
     assert.equal(validateParams(t, {}).ok, false, 'SolutionPath is required');
   });
 
+  // #229: GetPackageInfo is a read-only tcpkg query (network); InstallPackage is destructive, plan by
+  // default, and only installs the IDE side (no XAR).
+  test('GetPackageInfo is read-only, InstallPackage needs PackageId + Version and offers no XAR', () => {
+    const g = catalog.get('GetPackageInfo');
+    assert.ok(g, 'GetPackageInfo is in the catalog');
+    assert.equal(g.cmdlet, 'Get-TcPackageInfo');
+    assert.deepEqual(g.annotations, { readOnlyHint: true, openWorldHint: true });
+    assert.deepEqual(g.inputSchema.required, []);
+    for (const w of ['TCPKG_NOT_FOUND', 'TCPKG_TIMEOUT', 'TCPKG_LIST_FAILED', 'buildFolderExists']) {
+      assert.ok(g.description.includes(w), `GetPackageInfo description lacks ${w}`);
+    }
+    const i = catalog.get('InstallPackage');
+    assert.ok(i, 'InstallPackage is in the catalog');
+    assert.equal(i.cmdlet, 'Install-TcPackage');
+    assert.equal(i.annotations.destructiveHint, true);
+    assert.deepEqual([...i.inputSchema.required].sort(), ['PackageId', 'Version']);
+    assert.deepEqual(i.inputSchema.properties.PackageId.enum, ['TwinCAT.Standard.XAE', 'TwinCAT.StandardRM.XAE']);
+    for (const w of ['executed = false', 'TCPKG_ELEVATION_REQUIRED', 'TCPKG_IDE_RUNNING', 'TCPKG_VERSION_NOT_FOUND', 'TCPKG_INSTALL_UNVERIFIED']) {
+      assert.ok(i.description.includes(w), `InstallPackage description lacks ${w}`);
+    }
+    assert.equal(validateParams(i, { PackageId: 'TwinCAT.StandardRM.XAE', Version: '4024.71.5' }).ok, true);
+    assert.equal(validateParams(i, { PackageId: 'TwinCAT.Standard.XAR', Version: '4026.22.0' }).ok, false, 'XAR is not installable');
+  });
+
   // #70: NewProject is not offered over MCP (the cmdlet New-TcProject stays).
   test('NewProject is not in the MCP catalog', () => {
     assert.equal(catalog.get('NewProject'), undefined);

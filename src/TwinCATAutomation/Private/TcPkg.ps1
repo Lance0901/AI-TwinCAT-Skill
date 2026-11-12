@@ -1,0 +1,224 @@
+# TwinCAT Package Manager CLI (tcpkg) wrapper for Get-TcPackageInfo / Install-TcPackage (#229).
+#
+# Sources:
+#   InfoSys "Working with the command line" (https://infosys.beckhoff.com/content/1033/tc3_installation/15698626059.html)
+#   InfoSys "tcpkg list"    (https://infosys.beckhoff.com/content/1033/tc3_installation/21007205899.html)
+#   InfoSys "tcpkg install" (https://infosys.beckhoff.com/content/1033/tc3_installation/21007208203.html):
+#     'ID=version' pins the version, -y suppresses the confirmation; most actions need administrator
+#     rights and the XAE Shell / Visual Studio may have to be closed during an install.
+#   InfoSys "Managing TwinCAT Remote Manager versions" (https://infosys.beckhoff.com/content/1033/tc3_installation/20646415115.html):
+#     Remote Manager versions are the package TwinCAT.StandardRM.XAE, several versions side by side.
+# Measured 2026-11-12 (Windows 11 zh-TW, TcPkg 2.4.18, read-only list / source list / --help only):
+#   - tcpkg is C:\ProgramData\Beckhoff\TcPkg\TcPkg.exe and on PATH; 'tcpkg --version' prints 2.4.18
+#   - 'tcpkg list -i --as-json' = JSON array of every installed package (676 entries, ~1.7 MB, ~1.4 s):
+#     Id, Version, Source (null when installed), Workload, InstallDate, ...
+#   - 'tcpkg list <id> -a --as-json' = JSON array of every feed version (7-9 s, network): Id, Version,
+#     Source (feed name, e.g. 'Beckhoff Outdated Feed'), IsPreview; one entry per feed and version
+#   - an unknown package id: exit code 144, text 'Error: The package ... was not found' (no JSON)
+#   - TwinCAT.StandardRM.XAE 4024.71.2 <-> <TwinCATDir>\3.1\Components\Base\Build_4024.71 (the folder
+#     drops the third part); the installed 4024.71.2 is not in the feed any more (feed: 4024.71.5)
+#   - 'tcpkg install --help' lists --dry-run; install itself was never run by this module's tests.
+
+$script:TcPkgDefaultPackageIds = @('TwinCAT.Standard.XAE', 'TwinCAT.Standard.XAR', 'TwinCAT.StandardRM.XAE')
+# Install-TcPackage only installs the IDE side (XAE / Remote Manager); never the runtime (XAR).
+$script:TcPkgInstallablePackageIds = @('TwinCAT.Standard.XAE', 'TwinCAT.StandardRM.XAE')
+$script:TcPkgRemoteManagerId = 'TwinCAT.StandardRM.XAE'
+# Process names of the IDEs that host the TwinCAT XAE (Get-TcIdeExeName).
+$script:TcPkgIdeProcessNames = @('TcXaeShell', 'devenv')
+
+# Path of TcPkg.exe, or $null. PATH first, then the measured default location. Seam for the unit tests.
+function Get-TcPkgExecutable {
+    [CmdletBinding()]
+    param()
+    $cmd = Get-Command -Name 'tcpkg' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) { return [string]$cmd.Source }
+    $pd = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { 'C:\ProgramData' } else { $env:ProgramData }
+    $default = Join-Path $pd 'Beckhoff\TcPkg\TcPkg.exe'
+    if (Test-Path -LiteralPath $default -PathType Leaf) { return $default }
+    $null
+}
+
+# One argument for a Windows command line (CommandLineToArgvW rules).
+function ConvertTo-TcPkgArgument {
+    param([AllowEmptyString()][string]$Value)
+    if ($Value -notmatch '[\s"]' -and $Value -ne '') { return $Value }
+    '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
+
+# Runs -Exe with -Arguments, stdout / stderr read asynchronously (list -i writes ~1.7 MB, a
+# synchronous read of one stream can dead-lock on the other), killed after -TimeoutSec.
+# Returns [PSCustomObject]@{ exitCode ($null on timeout / start failure); stdout; stderr; timedOut;
+# startError; elapsedSec; commandLine }. Seam for the unit tests.
+function Invoke-TcPkgProcess {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60)
+    $argLine = (@($Arguments | ForEach-Object { ConvertTo-TcPkgArgument $_ }) -join ' ')
+    $out = [PSCustomObject]@{ exitCode = $null; stdout = ''; stderr = ''; timedOut = $false; startError = $null; elapsedSec = 0; commandLine = ("$(ConvertTo-TcPkgArgument $Exe) $argLine").Trim() }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = $argLine
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true   # tcpkg must never wait for an answer on the console
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { $null = $p.Start() }
+    catch { $out.startError = $_.Exception.Message; $p.Dispose(); return $out }
+    try {
+        $p.StandardInput.Close()
+        $so = $p.StandardOutput.ReadToEndAsync()
+        $se = $p.StandardError.ReadToEndAsync()
+        $ms = [int][math]::Min([double]$TimeoutSec * 1000, [double][int]::MaxValue)
+        if (-not $p.WaitForExit($ms)) {
+            $out.timedOut = $true
+            try { $p.Kill() } catch { Write-Verbose "tcpkg kill failed: $($_.Exception.Message)" }
+            $null = $p.WaitForExit(5000)
+        }
+        else {
+            $p.WaitForExit()   # flushes the async readers
+            $out.exitCode = $p.ExitCode
+        }
+        if ($so.Wait(5000)) { $out.stdout = [string]$so.Result }
+        if ($se.Wait(5000)) { $out.stderr = [string]$se.Result }
+    }
+    finally {
+        $out.elapsedSec = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+        $p.Dispose()
+    }
+    $out
+}
+
+# Last -Lines lines of a text (error details without dumping 1.7 MB into a result).
+function Get-TcPkgTextTail {
+    param([AllowNull()][string]$Text, [int]$Lines = 15)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+    @(($Text -split "`r?`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last $Lines)
+}
+
+# Runs one 'tcpkg list ... --as-json' and parses it. Returns [PSCustomObject]@{ ok; items (parsed
+# array); errorCode ($null | 'TCPKG_TIMEOUT' | 'TCPKG_LIST_FAILED'); message; run (the process
+# result without stdout) }.
+function Invoke-TcPkgList {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$Arguments, [int]$TimeoutSec = 60)
+    $r = Invoke-TcPkgProcess -Exe $Exe -Arguments $Arguments -TimeoutSec $TimeoutSec
+    $run = [PSCustomObject]@{ commandLine = $r.commandLine; exitCode = $r.exitCode; timedOut = $r.timedOut; elapsedSec = $r.elapsedSec; stderrTail = @(Get-TcPkgTextTail $r.stderr); stdoutTail = @() }
+    $res = [PSCustomObject]@{ ok = $false; items = @(); errorCode = $null; message = $null; run = $run }
+    if ($null -ne $r.startError) { $res.errorCode = 'TCPKG_LIST_FAILED'; $res.message = "tcpkg could not be started ($($r.startError)): $($r.commandLine)"; return $res }
+    if ($r.timedOut) { $res.errorCode = 'TCPKG_TIMEOUT'; $res.message = "tcpkg did not finish within $TimeoutSec s and was stopped: $($r.commandLine)"; return $res }
+    if ($r.exitCode -ne 0) {
+        $run.stdoutTail = @(Get-TcPkgTextTail $r.stdout)
+        $res.errorCode = 'TCPKG_LIST_FAILED'; $res.message = "tcpkg exited with code $($r.exitCode): $($r.commandLine)"; return $res
+    }
+    $text = ([string]$r.stdout).Trim()
+    $parsed = $null
+    try {
+        if (-not $text.StartsWith('[')) { throw 'the output is not a JSON array' }
+        $parsed = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+    }
+    catch {
+        $run.stdoutTail = @(Get-TcPkgTextTail $r.stdout 5)
+        $res.errorCode = 'TCPKG_LIST_FAILED'; $res.message = "tcpkg output is not the expected JSON ($($_.Exception.Message)): $($r.commandLine)"; return $res
+    }
+    $res.items = @($parsed | Where-Object { $null -ne $_ })
+    $res.ok = $true
+    $res
+}
+
+# Build_<a>.<b> folder name of a package version '<a>.<b>.<c>' (measured mapping, see header), or $null.
+function ConvertTo-TcPkgBuildFolderName {
+    param([AllowNull()][string]$Version)
+    if ($null -ne $Version -and $Version -match '^(\d+)\.(\d+)(?:\.\d+)*$') { return "Build_$($Matches[1]).$($Matches[2])" }
+    $null
+}
+
+# Is this PowerShell running elevated (administrator token)? Seam for the unit tests.
+function Test-TcIsElevated {
+    [CmdletBinding()]
+    param()
+    try {
+        $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        return ([System.Security.Principal.WindowsPrincipal]::new($id)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch { return $false }
+}
+
+# Running IDE processes that host the XAE (TcXaeShell / devenv): @{ processId; name; path; title }.
+# Seam for the unit tests.
+function Get-TcPkgRunningIde {
+    [CmdletBinding()]
+    param()
+    @(Get-Process -Name $script:TcPkgIdeProcessNames -ErrorAction SilentlyContinue | Sort-Object Id | ForEach-Object {
+            $path = $null; try { $path = $_.Path } catch { $path = $null }
+            $title = $null; try { $title = $_.MainWindowTitle } catch { $title = $null }
+            [PSCustomObject]@{ processId = $_.Id; name = $_.ProcessName; path = $path; title = $title }
+        })
+}
+
+# Installed + feed versions of -PackageId. Returns [PSCustomObject]@{ errorCode; message; exe;
+# installed[]; available[]; runs[]; remoteManagerRoot; remoteManagerBuilds }. errorCode $null = every
+# tcpkg call succeeded. -NoAvailable skips the feed queries (offline).
+function Get-TcPkgState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$PackageId, [int]$TimeoutSec = 60, [switch]$NoAvailable)
+    $out = [PSCustomObject]@{ errorCode = $null; message = $null; exe = $Exe; installed = @(); available = @(); runs = @(); remoteManagerRoot = $null; remoteManagerBuilds = @() }
+    $want = @($PackageId | ForEach-Object { $_.ToLowerInvariant() })
+    $inst = Invoke-TcPkgList -Exe $Exe -Arguments @('list', '-i', '--as-json') -TimeoutSec $TimeoutSec
+    $out.runs += $inst.run
+    if (-not $inst.ok) { $out.errorCode = $inst.errorCode; $out.message = $inst.message; return $out }
+    $installed = @($inst.items | Where-Object { $want -contains ([string]$_.Id).ToLowerInvariant() } | ForEach-Object {
+            [PSCustomObject]@{ id = [string]$_.Id; version = [string]$_.Version; installDate = $(if ($null -ne $_.InstallDate) { [string]$_.InstallDate } else { $null }); workload = $_.Workload }
+        } | Sort-Object id, { Get-TcPkgVersionKey $_.version })
+    $out.installed = $installed
+    if (-not $NoAvailable) {
+        $avail = @()
+        foreach ($id in $PackageId) {
+            $l = Invoke-TcPkgList -Exe $Exe -Arguments @('list', $id, '-a', '--as-json') -TimeoutSec $TimeoutSec
+            $out.runs += $l.run
+            if (-not $l.ok) { $out.errorCode = $l.errorCode; $out.message = $l.message; break }
+            $avail += @($l.items | Where-Object { ([string]$_.Id).ToLowerInvariant() -eq $id.ToLowerInvariant() } | ForEach-Object {
+                    $iid = [string]$_.Id; $iv = [string]$_.Version
+                    [PSCustomObject]@{ id = $iid; version = $iv; source = $(if ($null -ne $_.Source) { [string]$_.Source } else { $null }); isPreview = $(if ($null -ne $_.IsPreview) { [bool]$_.IsPreview } else { $false }); installed = (@($installed | Where-Object { $_.id -eq $iid -and $_.version -eq $iv }).Count -gt 0) }
+                })
+        }
+        $out.available = @($avail | Sort-Object id, { Get-TcPkgVersionKey $_.version }, source)
+    }
+    $rmRelevant = @($want) -contains $script:TcPkgRemoteManagerId.ToLowerInvariant()
+    if ($rmRelevant) {
+        $xi = Get-TcXaeInstallInfo
+        $out.remoteManagerRoot = $xi.remoteManagerRoot
+        $out.remoteManagerBuilds = @($xi.remoteManagerBuilds)
+        foreach ($e in @($out.installed) + @($out.available)) {
+            if ($e.id -ne $script:TcPkgRemoteManagerId) { continue }
+            $folder = ConvertTo-TcPkgBuildFolderName $e.version
+            $b = if ($null -ne $folder) { $folder.Substring(6) } else { $null }
+            $e | Add-Member -NotePropertyName buildFolder -NotePropertyValue $folder -Force
+            $e | Add-Member -NotePropertyName buildFolderPath -NotePropertyValue $(if ($null -ne $folder -and -not [string]::IsNullOrWhiteSpace([string]$xi.remoteManagerRoot)) { Join-Path ([string]$xi.remoteManagerRoot) $folder } else { $null }) -Force
+            $e | Add-Member -NotePropertyName buildFolderExists -NotePropertyValue ($null -ne $b -and @($xi.remoteManagerBuilds | Where-Object { [string]$_ -eq $b }).Count -gt 0) -Force
+        }
+    }
+    $out
+}
+
+# Sort key of a dotted numeric version (zero-padded parts), so 4024.7 sorts before 4024.10.
+function Get-TcPkgVersionKey {
+    param([AllowNull()][string]$Version)
+    @(([string]$Version) -split '\.' | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n.ToString('D10') } else { $_ } }) -join '.'
+}
+
+# #229: -Hint of a launch refusal (Connect-TcIde / Get-TcProjectVersion), plus the Get-TcPackageInfo /
+# Install-TcPackage suggestion when Resolve-TcLaunchProgId found only the Remote Manager folder of the
+# project version missing (.remoteManagerInstall). Only text: nothing is queried or installed here.
+function Get-TcLaunchHint {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Pick, [AllowNull()][string]$Hint)
+    if ($null -eq $Pick -or $null -eq $Pick.PSObject.Properties['remoteManagerInstall'] -or $null -eq $Pick.remoteManagerInstall) { return $Hint }
+    $extra = ([string]$script:TcPkgRemoteManagerInstallHint).Replace('<build>', [string]$Pick.remoteManagerInstall.build)
+    if ([string]::IsNullOrWhiteSpace($Hint)) { return $extra }
+    "$Hint $extra"
+}

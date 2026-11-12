@@ -311,7 +311,8 @@ function Get-TcSolutionTcVersion {
 
 # Picks the ProgID to launch. Returns [PSCustomObject]@{ progId; selectedBy ('explicit' |
 # 'tsproj-version' | 'remote-manager-match' (#225) | 'only-one-registered'); remoteManager (#225:
-# @{ build; path; xaeVersion; progId } when selected by remote-manager-match, else $null); registered; evidence; ide (Get-TcProgIdIdeInfo of the
+# @{ build; path; xaeVersion; progId } when selected by remote-manager-match, else $null); remoteManagerInstall (#229: @{ packageId;
+# build; buildFolder; versionPrefix } when a < 4026 project only lacks its Remote Manager folder, else $null); registered; evidence; ide (Get-TcProgIdIdeInfo of the
 # considered ProgIDs); wantedProgIds + matchingProgIds (#214: set once the project build is known,
 # else empty; matching = registered ProgIDs from wanted whose XAE version equals the project
 # TcVersion, the only ones that may be launched); errorCode; errorMessage }. errorCode set = nothing may be launched:
@@ -321,7 +322,7 @@ function Get-TcSolutionTcVersion {
 function Resolve-TcLaunchProgId {
     [CmdletBinding()]
     param([string]$ProgId, [string]$SolutionPath)
-    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); wantedProgIds = @(); matchingProgIds = @(); remoteManager = $null; errorCode = $null; errorMessage = $null }
+    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); wantedProgIds = @(); matchingProgIds = @(); remoteManager = $null; remoteManagerInstall = $null; errorCode = $null; errorMessage = $null }
     if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
         $out.registered = @($ProgId | Where-Object { Test-TcProgIdRegistered -ProgId $_ })
         if ($out.registered.Count -eq 0) {
@@ -397,6 +398,11 @@ function Resolve-TcLaunchProgId {
             $out.progId = $hosts[0].progId; $out.selectedBy = 'remote-manager-match'; $out.remoteManager = $rmInfo
             $out.evidence | Add-Member -NotePropertyName 'remoteManager' -NotePropertyValue $rmInfo -Force
             return $out
+        }
+        # #229: the 32-bit host is there, only the Remote Manager of exactly this version is missing:
+        # PROGID_REQUIRED stays, the hint suggests Get-TcPackageInfo / Install-TcPackage (never run here)
+        if ($hosts.Count -eq 1 -and $hits.Count -eq 0 -and [string]$inst.remoteManagerReason -ne 'read-failed') {
+            $out.remoteManagerInstall = [PSCustomObject]@{ packageId = 'TwinCAT.StandardRM.XAE'; build = $rmName; buildFolder = "Build_$rmName"; versionPrefix = "$rmName." }
         }
         if ($unknown.Count -ne $present.Count) {
             $why = if ($hosts.Count -eq 0) { 'TcXaeShell.DTE.15.0 has no readable XAE >= 4026 that could load it through a Remote Manager' }
