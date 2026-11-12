@@ -12,6 +12,7 @@
           "ProgId": { "type": "string" },
           "SolutionPath": { "type": "string" },
           "NoLaunch": { "type": "boolean" },
+          "TakeOverOrphan": { "type": "boolean" },
           "DelayMs": { "type": "integer" }
         },
         "required": [],

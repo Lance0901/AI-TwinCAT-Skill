@@ -185,7 +185,7 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.equal(res.isError, true);
     const body = parse(res);
     assert.equal(body.error.code, 'BRIDGE_TIMEOUT');
-    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
+    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', ownedBySession: true, solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
     assert.equal(body.data.bridgeRestarted, true);
     assert.match(body.error.hint, /4242/);
     assert.match(body.error.hint, /taskkill \/PID 4242 \/T \/F/);
@@ -240,7 +240,7 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.equal(logs.filter((l) => l.level === 'error').length, 0, 'no stderr-level logs expected');
   });
 
-  test('ConnectIde NoLaunch then BuildProject Crash -> BRIDGE_DIED hint says the IDE was opened by the user', async () => {
+  test('ConnectIde NoLaunch then BuildProject Crash -> BRIDGE_DIED hint says the IDE is not owned by this session', async () => {
     const connect = parse(await client.callTool({ name: 'ConnectIde', arguments: { NoLaunch: true } }));
     assert.equal(connect.data.selectedBy, 'first-instance');
 
@@ -250,7 +250,7 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.equal(body.data.lastIde.ideProcessId, 4242);
     assert.equal(body.data.lastIde.selectedBy, 'first-instance');
     assert.equal(body.data.bridgeRestarted, true);
-    assert.match(body.error.hint, /pid 4242\) was opened by the user/);
+    assert.match(body.error.hint, /pid 4242\) is not owned by this session/);
     assert.doesNotMatch(body.error.hint, /taskkill/);
   });
 });
@@ -518,7 +518,7 @@ describe('index.js over stdio (modal probe)', () => {
     assert.equal(body.data.dialogTitle, 'TwinCAT PLC Control');
     assert.equal(body.data.dialogText, PLC_TEXT);
     assert.equal(body.data.ideProcessId, 4242);
-    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
+    assert.deepEqual(body.data.lastIde, { ideProcessId: 4242, selectedBy: 'launched', ownedBySession: true, solution: 'C:\\x\\Demo.sln', ideMainHwnd: 16962 });
     assert.equal(body.data.bridgeRestarted, true);
     assert.ok(elapsed < 3500, `probe beat the 4000 ms tool timeout (took ${elapsed} ms)`);
     assert.ok(stderr.some((l) => /modal dialog detected on IDE pid 4242 during BuildProject: TwinCAT PLC Control/.test(l)));
@@ -584,9 +584,34 @@ describe('index.js over stdio (modal probe)', () => {
     const body = parse(await client.callTool({ name: 'BuildProject', arguments: { Hang: true } }));
     assert.equal(body.error.code, 'IDE_MODAL_DIALOG');
     assert.equal(body.error.message, 'Assertion Failed', 'empty text -> title only');
-    assert.match(body.error.hint, /pid 4242\) shows the modal dialog 'Assertion Failed' and was opened by the user/);
+    assert.match(body.error.hint, /pid 4242\) shows the modal dialog 'Assertion Failed' and is not owned by this session/);
     assert.doesNotMatch(body.error.hint, /taskkill/);
     assert.equal(body.data.lastIde.selectedBy, 'first-instance');
+    pf.clearTrigger();
+  });
+
+  test('#237: orphan-takeover IDE (ownedBySession true) -> modal hint offers taskkill, not "opened by the user"', async () => {
+    // the previous test's kill left the bridge down; bring it up so the call is killed in flight
+    assert.equal(parse(await client.callTool({ name: 'GetStatus', arguments: {} })).error.code, 'NOT_CONNECTED');
+    const connect = parse(await client.callTool({ name: 'ConnectIde', arguments: { SolutionPath: 'C:\\x\\Demo.sln', TakeOverOrphan: true } }));
+    assert.equal(connect.success, true, JSON.stringify(connect));
+    assert.equal(connect.data.selectedBy, 'orphan-takeover');
+    assert.equal(connect.data.ownedBySession, true);
+    pf.setTrigger({ title: 'Target system reports a fatal error', text: '' });
+    const body = parse(await client.callTool({ name: 'BuildProject', arguments: { Hang: true } }));
+    assert.equal(body.error.code, 'IDE_MODAL_DIALOG');
+    assert.match(body.error.hint, /pid 4242, owned by this session, selectedBy 'orphan-takeover'\)/);
+    assert.match(body.error.hint, /taskkill \/PID 4242 \/T \/F/);
+    assert.doesNotMatch(body.error.hint, /opened by the user/);
+    assert.equal(body.data.lastIde.ownedBySession, true);
+    pf.clearTrigger();
+    // leave the next test the user's IDE it expects as the previous IDE
+    assert.equal(parse(await client.callTool({ name: 'GetStatus', arguments: {} })).error.code, 'NOT_CONNECTED');
+    pf.setTrigger({ title: 'Assertion Failed', text: '' });
+    const user = parse(await client.callTool({ name: 'ConnectIde', arguments: { NoLaunch: true } }));
+    assert.equal(user.success, true, JSON.stringify(user));
+    const killed = parse(await client.callTool({ name: 'BuildProject', arguments: { Hang: true } }));
+    assert.equal(killed.error.code, 'IDE_MODAL_DIALOG');
     pf.clearTrigger();
   });
 
@@ -601,7 +626,7 @@ describe('index.js over stdio (modal probe)', () => {
     assert.equal(body.data.ideProcessId, 4242);
     assert.equal(body.data.lastIde, null, 'cleared when ConnectIde started');
     assert.equal(body.data.bridgeRestarted, true);
-    assert.match(body.error.hint, /opened by the user/, 'hint uses the identity of the previous IDE');
+    assert.match(body.error.hint, /not owned by this session/, 'hint uses the identity of the previous IDE');
   });
 
   test('no lastIde (cleared by the failed ConnectIde) -> BuildProject Hang ends in BRIDGE_TIMEOUT, no probe', async () => {

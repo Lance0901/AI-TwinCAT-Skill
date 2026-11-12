@@ -16,7 +16,8 @@
 //                          (without '*'); requires Connect-TcAds (#57)
 //   cmdlet Get-TcIdeInfo   writes a warning log line, then NOT_CONNECTED + hint
 //   cmdlet Connect-TcIde   marks the mock IDE as connected (state.ideConnected); returns
-//                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch);
+//                          ideProcessId 4242, selectedBy 'launched' ('first-instance' when params.NoLaunch,
+//                          'orphan-takeover' when params.TakeOverOrphan), ownedBySession !NoLaunch;
 //                          op state then reports ideMainHwnd 16962 (0x4242) until Disconnect-TcIde
 //   op modal + params.ProcessId   probes that pid instead of the connected one (data.ideProcessId echoes it)
 //   unparseable request line      answered with {id:null, event:'result', INVALID_REQUEST} like bridge.ps1
@@ -134,7 +135,9 @@ function handleCall(req) {
             progId: params.ProgId ?? 'TcXaeShell.DTE.15.0',
             processId: 4242,
             ideProcessId: 4242,
-            selectedBy: params.NoLaunch === true ? 'first-instance' : 'launched',
+            // #237: TakeOverOrphan -> an orphan launch record taken over (ours, not 'launched')
+            selectedBy: params.NoLaunch === true ? 'first-instance' : params.TakeOverOrphan === true ? 'orphan-takeover' : 'launched',
+            ownedBySession: params.NoLaunch !== true,
             solution: params.SolutionPath ?? '',
             params
           }
