@@ -69,11 +69,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 | IDE | ProgID | ADS DLL | 備註 |
 |---|---|---|---|
-| 32-bit XAE Shell | `TcXaeShell.DTE.15.0` | 4024:TwinCAT 安裝目錄下 Components\Base;4026:package | TwinCAT 4024 |
+| 32-bit XAE Shell | `TcXaeShell.DTE.15.0` | 4024:TwinCAT 安裝目錄下 Components\Base;4026:package | 用來開 4024 專案(XAE 本身 4026.x + Remote Manager 4024.x) |
 | 64-bit XAE Shell | `TcXaeShell.DTE.17.0` | 4026 package | TwinCAT 4026 |
 | VS2022 + TwinCAT 整合 | `VisualStudio.DTE.17.0` | 4026 package | TwinCAT 4026(與 64-bit XAE Shell 同一套 XAE;需本機已有 VS2022) |
 
-- 版本對應:32-bit XAE Shell(`TcXaeShell.DTE.15.0`)= **TwinCAT 4024**;64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)= 4026,後兩者是同一套 XAE。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(Usermode Runtime;`TcSystemServiceUm.exe` FileVersion 3.1.0.2649 / ProductVersion 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。
+- 分工(使用者 2026-11-12 確認,#225):32-bit XAE Shell(`TcXaeShell.DTE.15.0`)**用來開 4024 專案**(XAE 本身 4026.x + Remote Manager 4024.x;這台三個 IDE 的 XAE Base 都是 3.1.4026.22,4024 靠 `<TwinCATDir>\3.1\Components\Base\Build_4024.71`);64-bit XAE Shell(`TcXaeShell.DTE.17.0`)與 VS2022(`VisualStudio.DTE.17.0`)開 4026 專案,後兩者是同一套 XAE。模組不會自動用 64-bit XAE Shell / VS2022 開 4024 專案(build 4024 以前要整合在 TwinCAT XAE Shell 或 Visual Studio 2017/2019,[Managing TwinCAT Remote Manager versions](https://infosys.beckhoff.com/content/1033/tc3_installation/20646415115.html))。Runtime:本機只有一個 UmRT_Default,三種 IDE 共用;UmRT 本身沒有版本,它是本機安裝的 TwinCAT runtime 跑在 user mode(Usermode Runtime;`TcSystemServiceUm.exe` FileVersion 3.1.0.2649 / ProductVersion 3.1.4026.21 只是識別用;`TCATSysSrv` 4026.22)。
 - Automation Interface(`ITcSysManager`、`EnvDTE`)在各組合完全相同;差別只在 IDE 抓取(ProgID)與 ADS DLL 位置。
 - **4026 與 4024 的差異**(2026-10-20/21 B 組實測):
   - 相同:PLC 樹路徑 `TIPC^<plc>^<plc> Project^POUs`(例 `TIPC^Untitled1^Untitled1 Project`);`Login(1)` + `SilentMode`;ADS DLL(GAC `TwinCAT.Ads.dll` 4.3.32.0);三個 host 的 XAE Base extension 都是 3.1.4026.22。
@@ -275,6 +275,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 | `explicit` | 呼叫端給了 `-ProgId` |
 | `running-instance` | 接上 ROT 裡已在跑的 IDE(沒有啟動) |
 | `tsproj-version` | 從 solution 引用的**每一個** `.tsproj` 根節點 `TcVersion` 判斷(證據在 `data.solutionVersion`:每個 .tsproj 的 `tcVersion` / `build` / `error`、`.sln` 的 `visualStudioVersion` 只當參考、沒選到時的 `xaeInstall`) |
+| `remote-manager-match` | (#225)4026 以前的專案沒有 XAE 版本完全相等的 IDE,但 32-bit TcXaeShell(XAE ≥ 4026)已註冊、本機有**完全等於**專案版本的 Remote Manager 資料夾(資料夾名完全是 `Build_<build>.<revision>`,而且裡面直接有至少一個 `.dll`;空資料夾或 `Build_4024.71_old` 這類名稱不算):開 `TcXaeShell.DTE.15.0`,開完方案後讀回 IDE 的 `TcRemoteManager.Version`(`data.remoteManagerVerified` / `data.remoteManagerVersion`,不符 → `REMOTE_MANAGER_MISMATCH`)。實際找到的資料夾在 `data.solutionVersion.remoteManager`(`build` / `path` / `xaeVersion` / `progId`;`Get-TcProjectVersion` 是 `data.launch.remoteManager`) |
 | `only-one-registered` | 沒給 `-SolutionPath`,或 solution 根本沒引用 .tsproj,而三個已知 ProgID 只註冊了一個 |
 
 - **版本存在哪**:InfoSys 說專案檔記著最後存檔的 TwinCAT 版本([Selection of a TwinCAT 3 version before loading a project](https://infosys.beckhoff.com/content/1033/tc3_remote_manager/3154642571.html)),但沒寫欄位名。實測(2026-11-06,唯讀):`C:\Temp\Verify-4026-axis` 的 `.tsproj` 根節點是 `<TcSmProject ... TcVersion="3.1.4026.22">`,`C:\Temp\Verify-4024-bfh` 的是 `TcVersion="3.1.4024.71"`。只讀 `.tsproj`。有一個 .tsproj 缺檔、XML 壞掉或沒有 `TcVersion`,就不判斷(`PROGID_REQUIRED`)。
@@ -289,11 +290,14 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **規則**:
   - 候選:build ≥ 4026 → `TcXaeShell.DTE.17.0`,其次 `VisualStudio.DTE.17.0`(兩者都要讀得到 XAE Base ≥ 4026,也就是有整合 TwinCAT XAE)。不用 32-bit shell(#72)。build < 4026 → `TcXaeShell.DTE.15.0`。
   - 候選的 XAE Base 版本要**完全等於**專案的 `TcVersion`(含 revision,`3.1.4024.59` ≠ `3.1.4024.71`)才啟動。
-  - 其他情況一律 `PROGID_REQUIRED`:版本不同、XAE Base 讀不到、只有該 build 的 Remote Manager 資料夾。Automation Interface 是否會用對應版本的 Remote Manager 載入，尚未實測(#147 M3-b)。
+  - (#225)build < 4026 的專案沒有完全相等的 XAE 時:`TcXaeShell.DTE.15.0` 已註冊、它的 XAE Base 讀得到且 ≥ 4026、`<TwinCATDir>\3.1\Components\Base\Build_<build>.<revision>` 與專案 `TcVersion` 完全相等(含 revision)→ 開 32-bit TcXaeShell(`remote-manager-match`)。`TcXaeShell.DTE.15.0` 沒註冊 → `IDE_VERSION_NOT_REGISTERED`。64-bit XAE Shell / VS2022 不會被自動選來開 4024 專案。
+  - Remote Manager 資料夾:registry `TwinCATDir` 先看 WOW6432Node、再看 native view,用第一個有 `Build_*` 資料夾的 view。資料夾要名字完全是 `Build_<build>.<revision>`、且直接含 `.dll`(實測 2026-11-12:32-bit TcXaeShell 的原生 DLL 直接從 `Build_4024.71` 載入)。找不到時 `data.solutionVersion.xaeInstall.remoteManagerReason` 說明原因:`dir-not-found`(沒有 `TwinCATDir` 或資料夾不存在)、`no-build-folders`(沒有合格的 `Build_*`)、`read-failed`(registry / 資料夾讀取失敗);`remoteManagerSearched[].ignored` 列出不算的資料夾與原因(`name` / `no-dll` / `read-failed`)。
+  - (PR #255 review,fail closed)資料夾存在不代表 IDE 真的用那個版本(例如 32-bit Shell 在 Remote Manager 被手動切到別的版本)。所以 `remote-manager-match` 開完方案後讀回 `TcRemoteManager.Version`(只讀):等於 `3.1.<build>.<revision>` → `data.remoteManagerVerified = true`;讀不到 → 仍 success,`remoteManagerVerified = false` 加 `data.remoteManagerWarning`;不同 → `REMOTE_MANAGER_MISMATCH`(見下)。`tsproj-version` / `explicit` 不讀回。
+  - 其他情況一律 `PROGID_REQUIRED`:4026 專案版本不同、XAE Base 讀不到、沒有完全相等的 Remote Manager 資料夾(例如只有 `Build_4024.59` 卻是 4024.71 的專案)、找不到 TwinCAT 目錄。hint 寫明上面的分工。
   - 沒有註冊 / 沒整合 XAE 的候選 → `IDE_VERSION_NOT_REGISTERED`。
 - **已知限制**:
   - revision 嚴格比較：查不到 Beckhoff 對「同 build 不同 revision」的相容規則(Remote Manager 頁只說 pin 的專案在原版本沒裝時會「提供」同 release 最新的 revision,要人選)。所以 `3.1.4026.19` 的專案在 XAE `3.1.4026.22` 的機器上也要帶 `-ProgId`。
-  - 這台開發機的 XAE 是 4026.22,4024 專案(`TcVersion="3.1.4024.71"`)不帶 `-ProgId` 一律 `PROGID_REQUIRED`,要帶 `-ProgId 'TcXaeShell.DTE.15.0'`。等真機證明 Remote Manager 行為後再放寬。
+  - XAE 開「沒有 pin 版本」的專案時用哪個 Remote Manager 版本,InfoSys 沒寫([Selection of a TwinCAT 3 version before loading a project](https://infosys.beckhoff.com/content/1033/tc3_remote_manager/3154642571.html) 只講 pin 的專案)。`Get-TcIdeInfo` 的 `data.remoteManagerVersion` 讀 `DTE.GetObject('TcRemoteManager').Version`(只讀,不設;[Accessing TwinCAT Remote Manager](https://infosys.beckhoff.com/content/1033/tc3_automationinterface/2507904267.html)),讀不到時 `data.remoteManagerError` 寫原因。實測 2026-11-12(本機,XAE 3.1.4026.22,registered tcauto,副本 `C:\Temp\Verify-4024-bfh`,`TcVersion="3.1.4024.71"`):`Connect-TcIde` 不帶 `-ProgId` → `TcXaeShell.DTE.15.0`(`remote-manager-match`),`data.remoteManagerVersion = 3.1.4024.71`;IDE 行程載入的原生 DLL 來自 `...\Components\Base\Build_4024.71`(沒有其他 `Build_*` 資料夾);Build 0 error;`.tsproj` 開啟、建置、關閉後 SHA256 不變(沒有被升版)。
   - 只裝 4026 32-bit TcXaeShell 的機器，開 4026 專案會回 `IDE_VERSION_NOT_REGISTERED`,要帶 `-ProgId 'TcXaeShell.DTE.15.0'`。
   - 不帶 `-SolutionPath`、又註冊了多個 IDE 時，現在回 `PROGID_REQUIRED`,不再預設開第一個(多 IDE 的機器要帶 `-ProgId`,或帶 `.tsproj` `TcVersion` 讀得到的 `-SolutionPath`)。
 
@@ -301,7 +305,14 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Connect-TcIde` 沒啟動任何 IDE,回 `PROGID_REQUIRED`。`data.registeredProgIds` 是註冊了的 ProgID,`data.solutionVersion.reason` 是無法決定的原因:沒給 `-SolutionPath`、某個 .tsproj 缺檔 / XML 壞掉 / 沒有 `TcVersion`、多個 .tsproj 的 build 不同，或沒有任何候選 IDE 的 XAE 版本完全等於專案的 `TcVersion`(含 revision;XAE Base 讀不到也算)。
 - **為什麼**:不帶 `-ProgId` 又無法確定該用哪個 IDE 時，模組不猜(#72)。
-- **下一步**:帶 `-ProgId` 重跑:4024 → `TcXaeShell.DTE.15.0`;4026 → `TcXaeShell.DTE.17.0` 或 `VisualStudio.DTE.17.0`。
+- **下一步**:帶 `-ProgId` 重跑:4024 專案 → `TcXaeShell.DTE.15.0`(32-bit XAE Shell,XAE 4026.x + Remote Manager 4024.x);4026 專案 → `TcXaeShell.DTE.17.0` 或 `VisualStudio.DTE.17.0`。4024 專案沒自動選到 32-bit Shell,通常是沒裝完全相同版本的 Remote Manager(`data.solutionVersion.xaeInstall.remoteManagerBuilds`)。
+
+### REMOTE_MANAGER_MISMATCH
+
+- **現象(#225,PR #255 review)**:`Connect-TcIde` 不帶 `-ProgId`,依 Remote Manager 資料夾(`remote-manager-match`)開了 32-bit XAE Shell,但開完方案後讀回的 `TcRemoteManager.Version`(`data.actual`)不等於專案的 `TcVersion`(`data.expected`,`3.1.<build>.<revision>`)。`data.remoteManagerVerified = false`、`data.connected = false`。
+- **為什麼**:選 IDE 只看 `Build_<build>.<revision>` 資料夾在不在;IDE 實際用哪個 Remote Manager 版本開「沒有 pin 版本」的專案,InfoSys 沒寫([Selection of a TwinCAT 3 version before loading a project](https://infosys.beckhoff.com/content/1033/tc3_remote_manager/3154642571.html) 只講 pin 的專案)。版本不同時在這個 IDE 裡 Build / 存檔,專案可能被升版,所以 fail closed。
+- **模組做了什麼**:沒有存檔、沒有任何寫檔動作;立刻釋放 COM 連線(之後的 IDE 工具回 `NOT_CONNECTED`),IDE 還開著，歸本 session(pid 保留，和啟動中的 IDE 一樣)。
+- **下一步**:`Disconnect-TcIde -Quit -Kill`(MCP:`DisconnectIde Quit=true Kill=true`)關掉它(不存檔)。再請使用者在 XAE 的 Remote Manager 工具列確認 / 切到 `data.expected`,或確認要用哪個 IDE 後帶 `-ProgId` 重開。
 
 ### IDE_VERSION_NOT_REGISTERED
 

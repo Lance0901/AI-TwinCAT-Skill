@@ -55,7 +55,7 @@ $slnCorrupt = New-Sln 'scorrupt' @('<corrupt>')
 $slnBadFmt = New-Sln 'sbadfmt' @('abc')
 $slnNoTs = New-Sln 'snots' @()
 
-$global:Reg214 = @(); $global:Ide214 = @{}
+$global:Reg214 = @(); $global:Ide214 = @{}; $global:RmRoot214 = 'C:\fake\TwinCAT\3.1\Components\Base'
 & $mod {
     function script:Test-TcProgIdRegistered { [CmdletBinding()] param([string]$ProgId) $global:Reg214 -contains $ProgId }
     function script:Get-TcProgIdIdeInfo {
@@ -64,7 +64,7 @@ $global:Reg214 = @(); $global:Ide214 = @{}
         $v = $global:Ide214[$ProgId]
         [PSCustomObject]@{ progId = $ProgId; exePath = "C:\fake\$ProgId.exe"; installRoot = "C:\fake\$ProgId"; xaeVersion = $v; xaeBuild = (ConvertTo-TcBuildNumber $v) }
     }
-    function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4024.71', '4026.22') } }
+    function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = $global:RmRoot214; remoteManagerBuilds = @('4024.71', '4026.22') } }
 }
 function Set-Machine([string[]]$Reg, [hashtable]$Ide) { $global:Reg214 = $Reg; $global:Ide214 = $Ide }
 $all3 = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
@@ -92,10 +92,15 @@ Set-Machine @('TcXaeShell.DTE.15.0') @{ 'TcXaeShell.DTE.15.0' = '3.1.4024.71' }
 $r = Get-TcProjectVersion -SolutionPath $sln24
 Check 'A2 4024' ($r.success -and $r.data.projects[0].build -eq 4024 -and $r.data.projects[0].revision -eq 71 -and (@($r.data.launch.wantedProgIds) -join ',') -eq 'TcXaeShell.DTE.15.0' -and (@($r.data.launch.matchingProgIds) -join ',') -eq 'TcXaeShell.DTE.15.0' -and $r.data.launch.progId -eq 'TcXaeShell.DTE.15.0') ($r | ConvertTo-Json -Depth 6 -Compress)
 
-# A3 4024 project on the dev machine (XAE 4026 everywhere): ConnectIde would answer PROGID_REQUIRED; no match, still success
+# A3 4024 project on the dev machine (XAE 4026 everywhere + Remote Manager Build_4024.71): #225
+# ConnectIde would launch the 32-bit TcXaeShell (remote-manager-match); no exact XAE match
 Set-Machine $all3 $dev
 $r = Get-TcProjectVersion -SolutionPath $sln24
-Check 'A3 4024 on 4026 machine: no match, PROGID_REQUIRED as data' ($r.success -and @($r.data.launch.matchingProgIds).Count -eq 0 -and $null -eq $r.data.launch.progId -and $r.data.launch.errorCode -eq 'PROGID_REQUIRED' -and -not [string]::IsNullOrWhiteSpace($r.data.launch.hint) -and (@($r.data.launch.wantedProgIds) -join ',') -eq 'TcXaeShell.DTE.15.0') ($r.data.launch | ConvertTo-Json -Depth 4 -Compress)
+Check 'A3 #225 4024 on 4026 machine + Build_4024.71: connectIdeWouldLaunch TcXaeShell.DTE.15.0 (remote-manager-match)' ($r.success -and @($r.data.launch.matchingProgIds).Count -eq 0 -and $r.data.launch.progId -eq 'TcXaeShell.DTE.15.0' -and $r.data.launch.connectIdeWouldLaunch -eq $true -and $r.data.launch.selectedBy -eq 'remote-manager-match' -and $null -eq $r.data.launch.errorCode -and $r.data.launch.remoteManager.build -eq '4024.71' -and $r.data.launch.remoteManager.path -eq 'C:\fake\TwinCAT\3.1\Components\Base\Build_4024.71' -and (@($r.data.launch.wantedProgIds) -join ',') -eq 'TcXaeShell.DTE.15.0') ($r.data.launch | ConvertTo-Json -Depth 4 -Compress)
+$global:RmRoot214 = $null
+$r = Get-TcProjectVersion -SolutionPath $sln24
+Check 'A3b 4024 on 4026 machine, Remote Manager folder unknown: PROGID_REQUIRED as data' ($r.success -and $null -eq $r.data.launch.progId -and $r.data.launch.connectIdeWouldLaunch -eq $false -and $r.data.launch.errorCode -eq 'PROGID_REQUIRED' -and -not [string]::IsNullOrWhiteSpace($r.data.launch.hint) -and $null -eq $r.data.launch.remoteManager) ($r.data.launch | ConvertTo-Json -Depth 4 -Compress)
+$global:RmRoot214 = 'C:\fake\TwinCAT\3.1\Components\Base'
 
 # A4 4026 project, only the 32-bit TcXaeShell registered
 Set-Machine @('TcXaeShell.DTE.15.0') @{ 'TcXaeShell.DTE.15.0' = '3.1.4024.71' }
@@ -148,7 +153,7 @@ Check 'D relative path resolved' ($r.success -and $r.data.projects[0].build -eq 
 Set-Machine $all3 $dev
 $r = Get-TcProjectVersion -SolutionPath $sln26
 Check 'F1 connectIdeWouldLaunch true when ConnectIde would launch' ($r.data.launch.connectIdeWouldLaunch -eq $true -and $null -eq $r.data.launch.hint) ''
-$r = Get-TcProjectVersion -SolutionPath $sln24
+$r = Get-TcProjectVersion -SolutionPath $slnMixed
 Check 'F2 connectIdeWouldLaunch false when it would refuse' ($r.data.launch.connectIdeWouldLaunch -eq $false) ''
 Check 'F3 launch hint names fields of THIS response, not ConnectIde ones' ($r.data.launch.hint -match 'data\.launch\.errorCode' -and $r.data.launch.hint -match 'data\.launch\.ide\[\]\.xaeVersion' -and $r.data.launch.hint -notmatch 'solutionVersion' -and $r.data.launch.hint -notmatch 'registeredProgIds' -and $r.data.launch.hint -notmatch '^Connect-TcIde') $r.data.launch.hint
 Set-Machine @() @{}

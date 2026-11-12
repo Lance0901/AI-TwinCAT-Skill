@@ -41,7 +41,14 @@ function Connect-TcIde {
         data.solutionVersion): build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0
         (only with the TwinCAT XAE integrated); build < 4026 -> TcXaeShell.DTE.15.0; launched only
         when the TwinCAT XAE Base version found in its install folder (via the ProgID's
-        LocalServer32) EQUALS the TcVersion, revision included. A solution without any .tsproj (or no -SolutionPath)
+        LocalServer32) EQUALS the TcVersion, revision included. #225: a build < 4026 project with no
+        such XAE opens in TcXaeShell.DTE.15.0 (XAE >= 4026) when the Remote Manager folder of exactly
+        the project version (<TwinCATDir>\3.1\Components\Base\Build_<build>.<revision>) is installed
+        ('remote-manager-match', data.solutionVersion.remoteManager; the folder must hold a .dll) and,
+        once the solution is open, the IDE's TcRemoteManager.Version read back equals the TcVersion
+        (data.remoteManagerVerified / remoteManagerVersion; not readable -> remoteManagerVerified
+        false + remoteManagerWarning; different -> REMOTE_MANAGER_MISMATCH: nothing saved, COM
+        released, the IDE kept owned by pid for Disconnect-TcIde -Quit -Kill). A solution without any .tsproj (or no -SolutionPath)
         and a single registered IDE -> 'only-one-registered'. Otherwise nothing is launched:
         IDE_VERSION_NOT_REGISTERED (build known, no IDE confirmed for it) or PROGID_REQUIRED (the
         version of a .tsproj unreadable / conflicting, XAE build not confirmable, several IDEs). #136:
@@ -131,7 +138,7 @@ function Connect-TcIde {
         Connect-TcIde -ProcessId 12345 -SolutionPath "C:\Projects\MyProject.sln"
     .OUTPUTS
         data.progId       ProgID actually used (parsed from the ROT moniker, else DTE.RegistryRoot)
-        data.progIdSelectedBy  explicit | running-instance | tsproj-version | only-one-registered
+        data.progIdSelectedBy  explicit | running-instance | tsproj-version | remote-manager-match | only-one-registered
         data.ideProcessId pid of the connected IDE (0 when it could not be determined)
         data.pidSource    rot-identity | main-window | known-pid | start-time (guess) | ''
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }
@@ -233,7 +240,7 @@ function Connect-TcIde {
     $selectionReason = $null
     $launchTime = $null
     # #72: how the ProgID was chosen: explicit (-ProgId), running-instance (an IDE found in the
-    # ROT), tsproj-version / only-one-registered (launch, Resolve-TcLaunchProgId)
+    # ROT), tsproj-version / remote-manager-match (#225) / only-one-registered (launch, Resolve-TcLaunchProgId)
     $progIdSelectedBy = $null
     $progIdEvidence = $null
 
@@ -1108,6 +1115,31 @@ function Connect-TcIde {
     $data | Add-Member -NotePropertyName 'solutionPlatform' -NotePropertyValue $solPlatform.platform
     $data | Add-Member -NotePropertyName 'solutionConfiguration' -NotePropertyValue $solPlatform.configuration
     $data | Add-Member -NotePropertyName 'projectPlatform' -NotePropertyValue $solPlatform.projectPlatform
+
+    # #225 PR #255 review (fail closed): remote-manager-match chose the 32-bit TcXaeShell only because
+    # the Remote Manager folder of the project version exists. Read back which Remote Manager
+    # version the IDE really uses (TcRemoteManager.Version, read only) now that the solution is
+    # open: equal -> remoteManagerVerified; not readable -> success with remoteManagerVerified
+    # false + remoteManagerWarning; different -> REMOTE_MANAGER_MISMATCH. On a mismatch nothing is
+    # saved or written: the COM references are released at once (every IDE tool answers
+    # NOT_CONNECTED), the IDE this call launched stays owned by pid only (Disconnect-TcIde -Quit
+    # -Kill closes it without saving, like an IDE whose launch is pending).
+    if ($progIdSelectedBy -eq 'remote-manager-match' -and $null -ne $progIdEvidence -and $null -ne $progIdEvidence.PSObject.Properties['remoteManager']) {
+        $rmCheck = Test-TcRemoteManagerMatch -Dte $script:TcDte -RemoteManager $progIdEvidence.remoteManager
+        $data | Add-Member -NotePropertyName 'remoteManagerVerified' -NotePropertyValue ([bool]$rmCheck.verified)
+        $data | Add-Member -NotePropertyName 'remoteManagerVersion' -NotePropertyValue $rmCheck.actual
+        if ($rmCheck.mismatch) {
+            $data | Add-Member -NotePropertyName 'expected' -NotePropertyValue $rmCheck.expected
+            $data | Add-Member -NotePropertyName 'actual' -NotePropertyValue $rmCheck.actual
+            $data | Add-Member -NotePropertyName 'connected' -NotePropertyValue $false
+            $script:TcSysManager = $null; $script:TcDte = $null; $script:TcIdeConnected = $false   # pid / selectedBy 'launched' kept
+            return New-TcResult -Success $false -ErrorCode 'REMOTE_MANAGER_MISMATCH' -Hint (Get-TcErrorHint -Code 'REMOTE_MANAGER_MISMATCH') -Data $data `
+                -ErrorMessage "REMOTE_MANAGER_MISMATCH: '$normalizedSolutionPath' (TcVersion $($rmCheck.expected)) was opened in $usedProgId (pid $ideProcessId) chosen by remote-manager-match ($($progIdEvidence.remoteManager.path)), but the IDE uses Remote Manager $($rmCheck.actual). Nothing was saved; the COM connection was released, the IDE keeps running (owned by this session: Disconnect-TcIde -Quit -Kill closes it without saving)."
+        }
+        if (-not $rmCheck.verified) {
+            $data | Add-Member -NotePropertyName 'remoteManagerWarning' -NotePropertyValue "Remote Manager version of the IDE not readable ($($rmCheck.error)): could not confirm that $usedProgId loaded the project with Remote Manager $($rmCheck.expected). Check Get-TcIdeInfo data.remoteManagerVersion before saving the project."
+        }
+    }
 
     # Add target info if ITcSysManager is available
     if ($sysManagerAvailable) {
