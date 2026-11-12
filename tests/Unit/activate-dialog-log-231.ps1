@@ -10,7 +10,10 @@
 #   (2) the same dialog scanned several times -> still 1 entry (lastSeen / durationSec updated)
 #   (3) no dialog -> data.dialogsSeen is an empty array ('[]' in JSON, not null)
 #   (4) steps after Activate that call Invoke-TcComRetry do not clear the record
-#   (5) ACTIVATE_TIMEOUT: error code, message and lifecycle block unchanged
+#   (5) ACTIVATE_TIMEOUT: error code, message and lifecycle block unchanged (dialogsSeen / dialogsDropped added)
+#   (6) cap: at most 20 entries, the rest counted in data.dialogsDropped; the summary lists 3 titles + "+N more"
+#   (7) the same dialog with a complete scan without it in between -> 2 entries
+#   (8) the same dialog with an incomplete scan (#42) in between -> still 1 entry
 #   powershell.exe -NoProfile -File tests/Unit/activate-dialog-log-231.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -147,6 +150,73 @@ Check '(3) no dialog: success, dialogsSeen present and empty' ($r.success -and $
 Check '(3) JSON: "dialogsSeen":[]' ($json -match '"dialogsSeen":\[\]') ($json.Substring([Math]::Max(0, $json.IndexOf('"dialogsSeen"')), 30))
 Check '(3) activate detail unchanged without dialogs' ([string](Get-Step $r 'activate').detail -eq 'ActivateConfiguration() done') "detail=$((Get-Step $r 'activate').detail)"
 
+Check '(3) dialogsDropped is 0 without dialogs' ($null -ne $r.data.PSObject.Properties['dialogsDropped'] -and $r.data.dialogsDropped -is [int] -and $r.data.dialogsDropped -eq 0) "dialogsDropped=$($r.data.dialogsDropped)"
+
+# --- (6) cap: at most 20 entries, the rest only counted (data.dialogsDropped), summary lists 3 titles ---
+$cap = & $mod {
+    $script:TcActivateDialogsSeen = $null; $script:TcActivateDialogsDropped = 0
+    foreach ($i in 1..25) { Add-TcActivateDialogSeen -Dialog ([PSCustomObject]@{ Title = "Cap dialog $i"; Text = 't'; Buttons = @() }) -Continued $false }
+    $seen = @(Get-TcActivateDialogsSeen)
+    [PSCustomObject]@{ Seen = $seen; Dropped = (Get-TcActivateDialogsDropped); Summary = (Get-TcActivateDialogSummary -Dialogs $seen -Dropped (Get-TcActivateDialogsDropped)) }
+}
+Check '(6) cap: 20 entries kept, 5 dropped' (@($cap.Seen).Count -eq 20 -and $cap.Dropped -eq 5 -and @($cap.Seen)[19].title -eq 'Cap dialog 20') "seen=$(@($cap.Seen).Count) dropped=$($cap.Dropped)"
+Check '(6) summary: total 25, first 3 titles, "+22 more"' ([string]$cap.Summary -match "^dialogs seen during Activate: 25 \('Cap dialog 1' 0 s, 'Cap dialog 2' 0 s, 'Cap dialog 3' 0 s, \+22 more\)$") "summary=$($cap.Summary)"
+$capSmall = & $mod { Get-TcActivateDialogSummary -Dialogs @([PSCustomObject]@{ title = 'A'; durationSec = 1.5 }, [PSCustomObject]@{ title = 'B'; durationSec = 0 }, [PSCustomObject]@{ title = 'C'; durationSec = 2 }) -Dropped 0 }
+Check '(6) summary: 3 dialogs, no "+N more"' ($capSmall -eq "dialogs seen during Activate: 3 ('A' 1.5 s, 'B' 0 s, 'C' 2 s)") "summary=$capSmall"
+$capSame = & $mod {
+    $script:TcActivateDialogsSeen = $null; $script:TcActivateDialogsDropped = 0
+    foreach ($i in 1..20) { Add-TcActivateDialogSeen -Dialog ([PSCustomObject]@{ Title = "D $i"; Text = 't'; Buttons = @() }) -Continued $false }
+    Add-TcActivateDialogSeen -Dialog ([PSCustomObject]@{ Title = 'D 20'; Text = 't'; Buttons = @() }) -Continued $true
+    [PSCustomObject]@{ Seen = @(Get-TcActivateDialogsSeen); Dropped = (Get-TcActivateDialogsDropped) }
+}
+Check '(6) cap full: the same dialog again still updates the last entry (not dropped)' (@($capSame.Seen).Count -eq 20 -and $capSame.Dropped -eq 0 -and @($capSame.Seen)[19].scans -eq 2) "dropped=$($capSame.Dropped) scans=$(@($capSame.Seen)[19].scans)"
+# Enable-TcConfig: 25 different dialogs recorded during Activate -> 20 in dialogsSeen, dialogsDropped 5
+& $mod {
+    $script:Ut231Wrapper = ${function:Invoke-TcActivateWithDeadline}
+    function script:Invoke-TcActivateWithDeadline {
+        param($TimeoutSec, $AmsNetId)
+        & $script:Ut231Wrapper -TimeoutSec $TimeoutSec -AmsNetId $AmsNetId
+        foreach ($i in 1..25) { Add-TcActivateDialogSeen -Dialog ([PSCustomObject]@{ Title = "Many $i"; Text = 't'; Buttons = @() }) -Continued $false }
+    }
+}
+$global:Ut231.Dialog = $null
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+$json = $r | ConvertTo-Json -Depth 8 -Compress
+Check '(6) Enable-TcConfig: 20 entries, dialogsDropped 5' ($r.success -and @($r.data.dialogsSeen).Count -eq 20 -and $r.data.dialogsDropped -eq 5 -and $json -match '"dialogsDropped":5') "code=$($r.error.code) seen=$(@($r.data.dialogsSeen).Count) dropped=$($r.data.dialogsDropped)"
+Check '(6) Enable-TcConfig: activate detail "+22 more"' ([string](Get-Step $r 'activate').detail -match "dialogs seen during Activate: 25 \('Many 1' 0 s, 'Many 2' 0 s, 'Many 3' 0 s, \+22 more\)") "detail=$((Get-Step $r 'activate').detail)"
+& $mod { Set-Item -Path function:script:Invoke-TcActivateWithDeadline -Value $script:Ut231Wrapper }
+
+# --- (7) the same dialog, a complete scan without it in between -> 2 entries ---
+# --- (8) the same dialog, an incomplete scan (#42) in between -> still 1 entry ---
+& $mod {
+    $script:Ut231Find2 = ${function:Find-TcIdeModalDialog}
+    function script:Find-TcIdeModalDialog {
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
+        if (-not $global:Ut231.InActivate) { return $null }
+        $i = $global:Ut231.Scans; $global:Ut231.Scans++
+        $kind = if ($i -lt $global:Ut231.Seq.Count) { $global:Ut231.Seq[$i] } else { 'none' }
+        $d = $global:Ut231.SeqDialog
+        switch ($kind) {
+            'dialog' { [PSCustomObject]@{ Title = $d.Title; Text = $d.Text; ClassName = '#32770'; IsModal = $true; Hwnd = [long]4242; Buttons = @(@{ Id = 0; Name = 'Continue'; AutomationId = '' }) } }
+            'incomplete' { [PSCustomObject]@{ ScanIncomplete = $true; Reason = 'timeout'; Title = $null; Text = $null } }
+            default { $null }
+        }
+    }
+}
+$global:Ut231.SeqDialog = $vmx; $global:Ut231.ActivateScript = 'Start-Sleep -Milliseconds 7500; ''done'''
+$global:Ut231.Seq = @('dialog', 'none', 'dialog'); $global:Ut231.Scans = 0
+$r = Enable-TcConfig -WarningAction SilentlyContinue
+$ds = @($r.data.dialogsSeen)
+Check '(7) dialog / complete scan without it / dialog -> 2 entries' ($r.success -and $global:Ut231.Scans -ge 3 -and $ds.Count -eq 2 -and $ds[0].title -eq $vmx.Title -and $ds[1].title -eq $vmx.Title -and $ds[0].scans -eq 1 -and $ds[1].scans -eq 1) "scans=$($global:Ut231.Scans) seen=$(J $r.data.dialogsSeen)"
+$probe = & $mod { Test-TcModalScanIncomplete ([PSCustomObject]@{ ScanIncomplete = $true; Reason = 'timeout'; Title = $null; Text = $null }) }
+Check '(8) the mock incomplete record is incomplete for Test-TcModalScanIncomplete' ($probe -eq $true) "probe=$probe"
+$global:Ut231.Seq = @('dialog', 'incomplete', 'dialog'); $global:Ut231.Scans = 0
+$r = Enable-TcConfig -WarningAction SilentlyContinue
+$ds = @($r.data.dialogsSeen)
+Check '(8) dialog / incomplete scan / dialog -> still 1 entry (scans 2)' ($r.success -and $global:Ut231.Scans -ge 3 -and $ds.Count -eq 1 -and $ds[0].scans -eq 2) "scans=$($global:Ut231.Scans) seen=$(J $r.data.dialogsSeen)"
+& $mod { Set-Item -Path function:script:Find-TcIdeModalDialog -Value $script:Ut231Find2 }
+$global:Ut231.ActivateScript = 'Start-Sleep -Milliseconds 4500; ''done'''
+
 # --- (5) ACTIVATE_TIMEOUT: code / message / block as before ---
 $global:Ut231.Dialog = $vmx; $global:Ut231.ActivateScript = 'Start-Sleep -Seconds 60'; $global:Ut231.ActivateTimeoutSec = 3
 & $mod { $script:TcActivateDiagBudgetSec = 3 }
@@ -155,6 +225,7 @@ Check '(5) ACTIVATE_TIMEOUT code' ((-not $r.success) -and $r.error.code -eq 'ACT
 Check '(5) message unchanged' ([string]$r.error.message -match '^Activation failed: ACTIVATE_TIMEOUT: ActivateConfiguration\(\) did not return within 3 s; the call was abandoned \(it keeps running inside the IDE\)\. ' -and [string]$r.error.message -match [regex]::Escape("modal dialog '$($vmx.Title)'")) "$($r.error.message)"
 Check '(5) lifecycle block (activate step) and activateDiagnostics as before' ($r.data.lifecycleBlock.command -eq 'Enable-TcConfig' -and $r.data.lifecycleBlock.errorCode -eq 'ACTIVATE_TIMEOUT' -and $r.data.lifecycleBlock.step -eq 'activate' -and [string]$r.data.activateDiagnostics.dialog.title -eq $vmx.Title -and $r.data.activated -eq $false -and $r.data.activateSent) (J $r.data.lifecycleBlock)
 Check '(5) failure result also carries dialogsSeen (additive)' (@($r.data.dialogsSeen).Count -eq 1 -and @($r.data.dialogsSeen)[0].title -eq $vmx.Title) (J $r.data.dialogsSeen)
+Check '(5) failure result also carries dialogsDropped 0' ($null -ne $r.data.PSObject.Properties['dialogsDropped'] -and $r.data.dialogsDropped -is [int] -and $r.data.dialogsDropped -eq 0) "dialogsDropped=$($r.data.dialogsDropped)"
 $null = Clear-TcLifecycleBlock -AmsNetId $A -Reason 'unit test 231 done' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 "failed: $fail"

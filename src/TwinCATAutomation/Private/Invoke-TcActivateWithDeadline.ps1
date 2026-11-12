@@ -1,3 +1,6 @@
+# #231: upper limit of $script:TcActivateDialogsSeen entries per Activate (the rest is only counted)
+$script:TcActivateDialogsMax = 20
+
 function Invoke-TcActivateWithDeadline {
     <#
     .SYNOPSIS
@@ -60,6 +63,7 @@ function Invoke-TcActivateWithDeadline {
     $script:TcLastActivateDiagnostics = $null
     $script:TcLastModalDialog = $null
     $script:TcActivateDialogsSeen = [System.Collections.Generic.List[object]]::new()
+    $script:TcActivateDialogsDropped = 0
     $prevScanSaw = $false   # #231: the last complete scan saw a dialog (same dialog again = one entry)
     $idePid = 0
     if ($null -ne $script:TcIdeProcessId) { try { $idePid = [int]$script:TcIdeProcessId } catch { $idePid = 0 } }
@@ -227,10 +231,15 @@ function Add-TcActivateDialogSeen {
         firstSeen, 0 after one scan); scans }. -Continued: the previous complete scan saw a dialog
         too; when it is the same one (title + text) the last entry is updated instead of a new one
         added. A scan that found nothing in between starts a new entry. The scans run every ~2 s,
-        so durationSec is a lower bound (the dialog may have been up for up to one interval more).
+        so durationSec is a lower bound: the dialog may have been up for up to about two scan
+        intervals (~4 s) more (before the first and after the last scan that saw it).
+        At most $script:TcActivateDialogsMax (20) entries: a new entry beyond that is not added,
+        only counted in $script:TcActivateDialogsDropped (scans every 2 s up to
+        -ActivateTimeoutSec 3600 could otherwise add ~1800). Updating the last entry still works.
     #>
     param([Parameter(Mandatory)][object]$Dialog, [bool]$Continued)
     if ($null -eq $script:TcActivateDialogsSeen) { $script:TcActivateDialogsSeen = [System.Collections.Generic.List[object]]::new() }
+    if ($null -eq $script:TcActivateDialogsDropped) { $script:TcActivateDialogsDropped = 0 }
     $title = [string]$Dialog.Title
     $text = [string]$Dialog.Text
     $now = [DateTimeOffset]::Now
@@ -243,6 +252,7 @@ function Add-TcActivateDialogSeen {
         $last.scans = $last.scans + 1
         return
     }
+    if ($list.Count -ge $script:TcActivateDialogsMax) { $script:TcActivateDialogsDropped = [int]$script:TcActivateDialogsDropped + 1; return }
     $names = @(@($Dialog.Buttons) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.Name } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $list.Add([PSCustomObject]@{
         title       = $title
@@ -265,14 +275,29 @@ function Get-TcActivateDialogsSeen {
     $script:TcActivateDialogsSeen.ToArray()
 }
 
+function Get-TcActivateDialogsDropped {
+    <#
+    .SYNOPSIS
+        #231: number of dialog entries of the last Invoke-TcActivateWithDeadline call not recorded
+        because $script:TcActivateDialogsMax was reached (int, 0 when none).
+    #>
+    if ($null -eq $script:TcActivateDialogsDropped) { return 0 }
+    [int]$script:TcActivateDialogsDropped
+}
+
 function Get-TcActivateDialogSummary {
     <#
     .SYNOPSIS
-        #231: "dialogs seen during Activate: N ('<title>' <durationSec> s, ...)" or $null without dialogs.
+        #231: "dialogs seen during Activate: N ('<title>' <durationSec> s, ..., +M more)" or $null
+        without dialogs. N = entries + -Dropped; only the first 3 titles are listed, M = the rest
+        (including the dropped ones).
     #>
-    param([object[]]$Dialogs)
+    param([object[]]$Dialogs, [int]$Dropped = 0)
     $all = @($Dialogs | Where-Object { $null -ne $_ })
-    if ($all.Count -eq 0) { return $null }
-    $parts = @($all | ForEach-Object { "'{0}' {1} s" -f $_.title, ([double]$_.durationSec).ToString([Globalization.CultureInfo]::InvariantCulture) })
-    "dialogs seen during Activate: $($all.Count) ($($parts -join ', '))"
+    $total = $all.Count + [Math]::Max(0, $Dropped)
+    if ($total -eq 0) { return $null }
+    $parts = @($all | Select-Object -First 3 | ForEach-Object { "'{0}' {1} s" -f $_.title, ([double]$_.durationSec).ToString([Globalization.CultureInfo]::InvariantCulture) })
+    $more = $total - $parts.Count
+    if ($more -gt 0) { $parts += "+$more more" }
+    "dialogs seen during Activate: $total ($($parts -join ', '))"
 }
