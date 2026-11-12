@@ -1602,7 +1602,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LOGOUT_FAILED
 
-- **為什麼**:Logoff COM 呼叫失敗:PLC 不在 online(已 logout)、IDE busy、或 modal dialog。4026 上方法名是 **`Logoff()`**,不是 `Logout()`;`Login / Logoff / Start / Stop / Reset` 由 `TIPC^<Plc>` 與 `<Plc> Project` 節點透過 IDispatch 提供,而兩個節點的 `.Object` 都是 null(2026-10-18 以 `Get-Member` 實測)。`Exit-TcPlcOnline` 依序試 `plcNode.Logoff`、`plcNode.Logout`、`treeItem.Logoff`、`treeItem.Logout`,`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object.Logout()` 因此永遠失敗。
+- **為什麼**:`Exit-TcPlcOnline` 的 Logoff COM 呼叫丟例外(IDE busy、modal dialog),或呼叫返回後讀回的登入狀態(`Get-TcPlcLoginState`:`ITcPlcOnline.IsLoggedIn`,讀不到改用 `<Plc> Project` 的 ProduceXml `IECProjectDef/OnlineSettings/LoggedIn`)仍是 true 或讀不到(`data.loggedIn` = true / null;CODING_STANDARDS §2:沒有讀回就不算成功,#232)。PLC 已登出**不會**造成這個錯誤:先讀回是 false 就直接回 success、`data.alreadyLoggedOut = true`、不送 Logoff;未登入時呼叫 `Logoff()` 本身也不報錯。
+- **方法在哪個節點**:方法名是 `Logoff()`(不是 `Logout()`)。實測 2026-11-13(TwinCAT 3.1.4026.22、VS2022、本機 UmRT):`Get-Member` 在 `TIPC^<Plc>` 列出 Login / Logoff、`<Plc> Project` 沒有 Log* 方法,但實際呼叫 `TIPC^<Plc>.Logoff()` 失敗(does not contain a method named 'Logoff'),`<Plc> Project`.Logoff() 才登出(LoggedIn true → false)。Ming 的結果相同(實測 2026-11-11,4026.27 TcXaeShell 64-bit、本機 XAR(Windows RT target),#232)。2026-10-18 的舊紀錄只看了 `Get-Member`,結論相反,已更正。`data.logoutVia` 說明實際走哪條;舊版 `TIPC.Child(1).Object.Logout()` 永遠失敗。4024 專案(BFH-1650 副本、32-bit TcXaeShell `TcXaeShell.DTE.15.0`、本機 UmRT,實測 2026-11-13)結果相同:`TIPC^<Plc>.Logoff()` 丟例外,`<Plc> Project`.Logoff() 登出;未登入時呼叫 `<Plc> Project`.Logoff() 也不報錯。
 - **下一步**:`Get-TcPlcState` 確認;IDE 有 dialog 就關掉再試;不用重連 IDE。
 
 ### NO_PROJECT
@@ -1613,6 +1614,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### LOGIN_FAILED
 
 - **為什麼**:`Enter-TcPlcOnline` 的 `ITcPlcIECProject::Login(PLC_LOGIN_FLAGS)` 失敗。系統在 Config 模式、上次 build 沒過、target 沒有 PLC license、跳出 dialog、或旗標互斥。
+- **讀回(#232)**:`Login()` 沒丟例外不算登入。返回後用 `Get-TcPlcLoginState` 讀回,`data.loggedIn` = true 才 success;false 或讀不到(null)都回 `LOGIN_FAILED`(fail closed,CODING_STANDARDS §2)。實測 2026-11-13(4026.22 VS2022、本機 UmRT、PLC 已在 Run):`-SilentFlag`(Login 257)回來後 LoggedIn 仍是 false,舊版會回 success。`Enable-TcConfig` 的 login 步驟沿用這個讀回值(`data.plcs[].loggedIn`)。
 - **PLC_LOGIN_FLAGS**(TCatSysManagerLib):NONE=0、REGULAR=1、FORCEONLINECHANGE=2、FORCEDOWNLOAD=4、FORCECOMPILECODE=16、FORCEGENERATECODE=32、SILENT=256。模組:`-LoginMode Regular|Download|OnlineChange` 對應 1/4/2,**預設不 OR SILENT**;提示框靠 `Connect-TcIde` 開的全域 `ITcAutomationSettings.SilentMode`(用預設答案 Yes)處理,`-SilentFlag` 才會 OR 256。`Enable-TcConfig -Force` 的 login 步用 `-LoginMode Regular`(=1,XAE 自行決定是否下載;空 runtime 會建 app 並下載);只有 `Send-TcPlcProgram` 用 Download(=4),已登入且 PLC 在跑時再做 full download。
 - **2026-10-19 實測(4024、32-bit XAE、空 UmRT)**:`Login(3)`=REGULAR|FORCEONLINECHANGE → XAE 回「Login aborted: Conflicting flag settings ('Regular' and 0x00000002)」(舊註解「3 = compile + suppress dialogs」是錯的,以前能跑只因 runtime 已有 app);`Login(1/2/4)` 在全域 SilentMode 沒開時會卡在「Application 'Port_851' does not exist ... create it and proceed with download?」;開 `ITcAutomationSettings.SilentMode` 後自動採預設 Yes,851 `Invalid → Stop`,lifecycle 37/37。
 - **2026-10-19 23:27 旗標 SILENT 對照(全域 SilentMode 皆開)**:
