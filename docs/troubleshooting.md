@@ -1130,6 +1130,20 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼(#138)**:Error List 的 error 列完整(Errors 總數對得上，可隔離 severity),只有 warnings 讀得比按鈕總數少。`data.warningItems` 因此不是整份清單，但程式碼有沒有編譯是看 error 列，所以不影響 `codeVerified` / `completeBuild`,也不會留下 `BUILD_REQUIRED`。`Get-TcBuildErrors` 本身遇到同樣情況仍回 `ERRORLIST_INCOMPLETE`。
 - **下一步**:需要完整的 warning 清單時，照 `ERRORLIST_INCOMPLETE` 的下一步(scope 切 `整個方案`、清空搜尋框)後重跑 `Get-TcBuildErrors`。
 
+### PROJECT_LOAD_ERRORS
+
+- **現象(#275)**:`Build-TcProject` 回 `success: false`、`error.code = PROJECT_LOAD_ERRORS`,`data.buildSucceeded = true`(build 本身沒失敗,build pane 是 `0 errors`)、`codeVerified = false`、`completeBuild = false`;`data.loadErrorItems[]` / `data.loadErrorFiles[]` 列出 XAE 載入失敗的列與檔案。`Test-TcPlcProject`(MCP `CheckAllObjects`)在 `CheckAllObjects()` 回 True 但有這種列時同樣回 `PROJECT_LOAD_ERRORS`,`data.passed = false`、`data.checkReturned = true`、`data.errorItems = data.loadErrorItems`。
+- **為什麼**:PLC 物件檔在磁碟上被改壞(根元素改名、缺 `<Declaration>`、`Id` 格式錯、同一 POU 內子物件 GUID 重複…),XAE 載入時在 Error List 寫一條 Error,物件在樹上變成 itemType 0(無法編輯、不會被編譯)。物件沒被引用時編譯器不需要它,`LastBuildInfo` = 0、pane `0 errors`,以前 `Build-TcProject` 就回 success / `codeVerified` / `completeBuild` = true 但 `data.errors > 0`,`Test-TcPlcProject` 把列歸成 `staleErrorItems` 並 `passed: true`。**實測 2026-11-13**(VS2022 17.14 zh-TW + XAE 3.1.4026.22,registered tcauto master,`Verify-4026-axis` 的副本,三個沒被引用的 FB 由 `AddPou` 建立後在磁碟改壞,`ResetSolution` → `BuildProject` / `CheckAllObjects`):四條列全部 `severity Error`、`code null`、`file = FB_xxx.TcPOU`(只有檔名，沒有 `@<member>` / ` (Impl)`)、`line 1`,例如 `Parts of the XML data do not conform to the schema:`、`Tag 'Declaration' is missing in '...\FB_B275B.TcPOU' at line 7.`。把檔案還原、`ResetSolution` 重新載入後(還沒 build)Error List 就是 0 errors:這些列是**目前**的載入錯誤，不是上一次 build 的殘留。完整案例表:PR #276 `openspec/changes/add-semantic-linter/verification/xae-corrupt-file-behavior.md`。
+- **判定規則**(`Test-TcProjectLoadErrorItem`):Error 等級、沒有編譯碼(`code` 空)、File 欄是單純的專案檔名(`.Tc<種類>` 如 `.TcPOU` / `.TcDUT` / `.TcGVL` / `.TcIO`,或 `.plcproj` / `.tsproj` / `.xti`),沒有 `@` 和括號。編譯器的列都有 `C0xxx` 和 `File.TcPOU@Member (Impl)` / `File.TcPOU (Impl)`;編譯碼沒讀到的編譯器列仍有 ` (Impl)` / ` (Decl)`,不會被當成載入錯誤。沒有 file 也沒有 code 的舊列(`Test-TcPlcProject` 的 `staleErrorItems`,例如 `'TwinCAT Measurement' ... Error creating Archive`)、Library Manager 列、warning 都不算。
+- **與其他碼並存**:有編譯錯(`LastBuildInfo` > 0)時照舊是 `BUILD_FAILED`,`data.loadErrorItems` 一樣列出;有 library 錯誤時先回 `LIBRARY_UNRESOLVED`。`LastBuildInfo` 讀不到、由 Error List 判定時，載入錯誤列(line 1)不算編譯錯，結果仍是 `PROJECT_LOAD_ERRORS`。這次 build 記下 BUILD_REQUIRED(unverified-build),`Enable-TcConfig` / `Enter-TcPlcOnline` 會拒絕。
+- **下一步**:從版本控制還原 `data.loadErrorFiles` 的檔案或修正其 XML(和版本控制比對找出被改壞的地方),改完磁碟檔後 `Reset-TcSolution` 重新載入，再 `Build-TcProject`。**不要**把這些列當成殘留而忽略、也不要繞過去直接 Activate(fail closed,#68)。
+
+### STATIC_ANALYSIS_ERRORS
+
+- **現象(#275 c)**:`Build-TcProject` 回 success,`data.warningCodes` 含 `STATIC_ANALYSIS_ERRORS`,`data.staticAnalysisItems[]` 是 code `SA<nnnn>` 的 Error 列;`codeVerified` / `completeBuild` 不受影響。
+- **為什麼**:TE1200 Static Analysis Light 在編譯成功後才跑，違規以 Error 列進 Error List,但不讓 build 失敗([InfoSys: Static Analysis Light](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2527107467.html);實測 2026-11-13 PR #276 `verification/te1200-light.md`:pane `0 errors`,Error List 192 條 SA0033 / SA0167)。
+- **待決定**:要不要讓 SA Error 列算 build 失敗，由 owner 決定(#275 PR);目前只是 warning。要處理就依 `data.staticAnalysisItems` 的 file / line 修改，或在 PLC 專案屬性 Static Analysis 關掉該規則。
+
 ### SOLUTION_CLOSE_FAILED / NO_SOLUTION
 
 - **現象**:`Reset-TcSolution` 回 `SOLUTION_CLOSE_FAILED`(`Solution.Close` COM 呼叫失敗;被 dialog 擋住時是 `IDE_MODAL_DIALOG` / `IDE_BUSY`)或 `NO_SOLUTION`(沒有開啟的 solution、也沒給 `-SolutionPath`)。

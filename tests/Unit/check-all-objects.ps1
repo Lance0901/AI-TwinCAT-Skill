@@ -92,6 +92,21 @@ try {
     $r = Test-TcPlcProject
     Check 'True with a leftover row -> success, row in staleErrorItems + warning' ($r.success -and @($r.data.errorItems).Count -eq 0 -and @($r.data.staleErrorItems).Count -eq 1 -and @($r.data.warningTexts).Count -eq 1) (J $r.data)
 
+    # ===== #275: XAE load-error rows (bare object file, no compiler code; 實測 2026-11-13 4026 VS2022, see
+    # build-load-errors-275.ps1) are current errors, not stale: CheckAllObjects True is no pass then
+    $rowLoad = { New-Row $null 'Parts of the XML data do not conform to the schema:' 'FB_B275A.TcPOU' 1 }
+    $rowLoad2 = { New-Row $null "Tag 'Declaration' is missing in 'C:\temp\b275\axis\AxisInterface_Type01_Library\AxisInterface\FB_B275B.TcPOU' at line 7." 'FB_B275B.TcPOU' 1 }
+    Reset-Mock; $global:C.Rows = @($rowLoad, $rowLoad2, $rowStale)
+    $r = Test-TcPlcProject
+    Check '#275 True + load rows -> PROJECT_LOAD_ERRORS, passed false, checkReturned true' ((-not $r.success) -and $r.error.code -eq 'PROJECT_LOAD_ERRORS' -and $r.data.passed -eq $false -and $r.data.checkReturned -eq $true) (J $r)
+    Check '#275 True + load rows -> errorItems / loadErrorItems = the 2 load rows, the no-file row stays stale' (@($r.data.errorItems).Count -eq 2 -and @($r.data.loadErrorItems).Count -eq 2 -and @($r.data.staleErrorItems).Count -eq 1 -and $r.error.message -match 'FB_B275A\.TcPOU') (J $r.data)
+    Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowLoad)
+    $r = Test-TcPlcProject
+    Check '#275 False + load row -> CHECK_FAILED stays, loadErrorItems 1' ($r.error.code -eq 'CHECK_FAILED' -and @($r.data.loadErrorItems).Count -eq 1 -and @($r.data.errorItems).Count -eq 2) (J $r.data)
+    Reset-Mock
+    $r = Test-TcPlcProject
+    Check '#275 True without load rows -> loadErrorItems present and empty' ($r.success -and $null -ne $r.data.PSObject.Properties['loadErrorItems'] -and @($r.data.loadErrorItems).Count -eq 0) (J $r.data)
+
     # ===== False: CHECK_FAILED with the error rows
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowStale)
     $r = Test-TcPlcProject

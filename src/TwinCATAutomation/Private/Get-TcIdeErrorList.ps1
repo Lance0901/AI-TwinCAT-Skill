@@ -990,6 +990,51 @@ function Get-TcErrorItemCategory {
     return 'other'
 }
 
+function Test-TcProjectLoadErrorItem {
+    <#
+    .SYNOPSIS
+        $true for an Error List ERROR row that XAE wrote while loading a PLC project file (#275), not a
+        compiler message: no compiler code, and the File column is a bare project file name (an object
+        file .Tc<Kind> such as .TcPOU / .TcDUT / .TcGVL / .TcIO, or a .plcproj / .tsproj / .xti), without
+        the '@<member>' or ' (Impl)' / ' (Decl)' that compiler rows carry.
+    .DESCRIPTION
+        實測 2026-11-13 (VS2022 17.14 zh-TW + XAE 3.1.4026.22, registered tcauto, unreferenced FBs broken
+        on disk, then ResetSolution): "Parts of the XML data do not conform to the schema:" (root element
+        renamed; Id in a wrong format), "Tag 'Declaration' is missing in '...FB.TcPOU' at line 7." - every
+        row: severity Error, code null, file 'FB_B275A.TcPOU', line 1. LastBuildInfo said 0 failed
+        projects and the build pane "0 errors" (the objects are not referenced). After the file was
+        restored and the solution reopened (ResetSolution) the rows were gone before any build, so they
+        are current load errors, not rows left from an earlier build. Compiler rows of the same run all
+        had a code (C0xxx) and 'File.TcPOU@Member (Impl)' / 'File.TcPOU (Impl)'. A compiler row whose
+        code could not be read from the text still has the ' (Impl)' / ' (Decl)' part, so it is not
+        taken for a load row. Library Manager rows (category library) and warnings never are.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Item)
+    if ($null -eq $Item) { return $false }
+    if ([string]$Item.severity -ne 'Error') { return $false }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Item.code)) { return $false }
+    if (Test-TcLibraryManagerItem $Item) { return $false }
+    $file = ([string]$Item.file).Trim()
+    if ([string]::IsNullOrEmpty($file)) { return $false }
+    return ($file -match '^[^@()\\/:*?"<>|]+\.(Tc[A-Za-z]+|plcproj|tsproj|xti)$')
+}
+
+function Test-TcStaticAnalysisItem {
+    <#
+    .SYNOPSIS
+        $true for an Error List row of TE1200 Static Analysis (code SA<4 digits>, #275 point c).
+        實測 2026-11-13 (PR #276 verification/te1200-light.md, 4026 VS2022): with the Light rules active
+        the violations are Error rows (SA0033, SA0167) while the build pane says 0 errors and the build
+        succeeds. InfoSys: Light runs after a successful compile and lists violations as errors
+        (https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2527107467.html).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Item)
+    if ($null -eq $Item) { return $false }
+    return ([string]$Item.code -match '^SA\d{4}$')
+}
+
 # Runtime / system log rows in the Error List (#66). Messages that the PLC application writes with
 # ADSLOGSTR & co. are shown in TwinCAT XAE > Error List (InfoSys TF6500 "Debug messages in
 # TwinCAT->Error List": the PLC application writes them "using the ADSLOGSTR ... functions",
