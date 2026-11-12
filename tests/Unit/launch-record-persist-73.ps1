@@ -84,7 +84,7 @@ function Restart-Module {
         $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
         function script:Test-TcProgIdRegistered { [CmdletBinding()] param([string]$ProgId) $true }
         function script:Get-TcProgIdIdeInfo { [CmdletBinding()] param([string]$ProgId) [PSCustomObject]@{ progId = $ProgId; exePath = "C:\fake\$ProgId.exe"; installRoot = "C:\fake\$ProgId"; xaeVersion = '3.1.4026.22'; xaeBuild = 4026 } }
-        function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4026.22') } }
+        function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = $null; remoteManagerBuilds = @('4026.22') } }   # #225 shape; root $null = Remote Manager rule never applies here
         function script:Get-ComObject { [CmdletBinding()] param([string]$ProgId) $null }
         function script:New-TcIdeInstance {
             [CmdletBinding()] param([string]$ProgId)

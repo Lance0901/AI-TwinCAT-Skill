@@ -25,7 +25,10 @@ function Get-TcIdeInfo {
     # of the .tsproj under it. Both must match the target platform ('TwinCAT OS (x64)' for a
     # local UmRT), see Set-TcTarget -Platform.
     $sol = Get-TcSolutionPlatform
-    # #225: which Remote Manager version the IDE runs (read-only; setting Version switches the XAE)
+    # #225: which Remote Manager version the IDE runs (read-only; setting Version switches the XAE).
+    # No own deadline (CODING_STANDARDS 1): it is one more synchronous DTE read right after the
+    # DTE.Version / Solution reads above, which block first when the IDE is blocked; a COM error
+    # (also RPC_E_CALL_REJECTED of a busy IDE) is reported as its text in remoteManagerError.
     $rmVersion = $null; $rmError = $null
     try {
         $rm = $script:TcDte.GetObject('TcRemoteManager')

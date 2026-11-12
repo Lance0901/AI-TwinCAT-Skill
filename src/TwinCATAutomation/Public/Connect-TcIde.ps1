@@ -236,7 +236,7 @@ function Connect-TcIde {
     $selectionReason = $null
     $launchTime = $null
     # #72: how the ProgID was chosen: explicit (-ProgId), running-instance (an IDE found in the
-    # ROT), tsproj-version / only-one-registered (launch, Resolve-TcLaunchProgId)
+    # ROT), tsproj-version / remote-manager-match (#225) / only-one-registered (launch, Resolve-TcLaunchProgId)
     $progIdSelectedBy = $null
     $progIdEvidence = $null
 

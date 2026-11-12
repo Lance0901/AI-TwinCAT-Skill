@@ -1,6 +1,9 @@
-# Unit: Get-TcIdeInfo reports the Remote Manager version the IDE uses (#225), read-only, no IDE needed.
+﻿# Unit: Get-TcIdeInfo reports the Remote Manager version the IDE uses (#225), read-only, no IDE needed.
 # The DTE is a fake object with GetObject('TcRemoteManager'); Assert-TcConnection and
 # Get-TcSolutionPlatform are mocked.
+# Fake modes: 'ok' (Version '3.1.4024.71') is measured 2026-11-12 (XAE 3.1.4026.22, 32-bit
+# TcXaeShell, C:\Temp\Verify-4024-bfh, registered tcauto, GetIdeInfo); 'null' / 'throw' / 'empty'
+# are [推論] (not observed): they only check that every other answer ends as remoteManagerError.
 #   powershell.exe -NoProfile -File tests/Unit/ide-info-remote-manager-225.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'

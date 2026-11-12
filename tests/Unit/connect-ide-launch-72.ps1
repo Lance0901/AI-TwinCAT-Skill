@@ -62,6 +62,7 @@ $slnNoTs = New-Sln 'snots' @()
 $slnOther = New-Sln 'sother' @('3.1.4026.22')
 $sln26r19 = New-Sln 's4026r19' @('3.1.4026.19')
 $sln24r59 = New-Sln 's4024r59' @('3.1.4024.59')
+$sln24NoRev = New-Sln 's4024norev' @('3.1.4024')
 $slnRevMix = New-Sln 'srevmix' @('3.1.4026.22', '3.1.4026.19')
 $long = { param($p) & $mod { param($x) Get-TcLongPath $x } $p }
 $sln26L = & $long $sln26
@@ -207,8 +208,10 @@ try {
     $r = & $rp '' $sln24;   Check 'A5g #225: 32-bit shell XAE 4024.70 (not a 4026 host) + Build_4024.71 -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     $global:Ide72 = $ideDefault.Clone(); $global:Reg72 = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
     $r = & $rp '' $sln24;   Check 'A5h #225: 4024 project, 32-bit shell not registered -> IDE_VERSION_NOT_REGISTERED (64-bit never auto-picked for 4024)' ($null -eq $r.progId -and $r.errorCode -eq 'IDE_VERSION_NOT_REGISTERED') "$($r.progId)/$($r.errorCode)"
-    $global:Reg72 = $all3
-    $r = & $rp '' $sln26r19; Check 'A5i #225: 4026.19 project + Build_4026.19 does NOT use the Remote Manager rule (4026 unchanged) -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
+    $global:Reg72 = $all3; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\fake\Base'; remoteManagerBuilds = @('4024.71', '4026.19', '4026.22') }
+    $r = & $rp '' $sln26r19; Check 'A5i #225: 4026.19 project WITH Build_4026.19 does NOT use the Remote Manager rule (4026 unchanged) -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED' -and $r.selectedBy -ne 'remote-manager-match' -and $null -eq $r.remoteManager) "$($r.progId)/$($r.selectedBy)/$($r.errorCode)"
+    $r = & $rp '' $sln24NoRev; Check 'A5j #225: TcVersion 3.1.4024 without revision + Build_4024.71 -> PROGID_REQUIRED (never a build-only match)' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED' -and $null -eq $r.remoteManager) "$($r.progId)/$($r.selectedBy)/$($r.errorCode)"
+    $global:Inst72 = $instDefault
     $r = & $rp '' $sln26r19; Check 'A5b m-a: 4026.19 project, XAE 4026.22 -> PROGID_REQUIRED (revision compared strictly)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     $r = & $rp '' $slnRevMix; Check 'A5c two .tsproj, same build, other revision -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'different TwinCAT versions') "$($r.errorCode)"
     $global:Reg72 = @('TcXaeShell.DTE.15.0', 'VisualStudio.DTE.17.0')

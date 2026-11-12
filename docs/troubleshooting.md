@@ -290,7 +290,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **規則**:
   - 候選:build ≥ 4026 → `TcXaeShell.DTE.17.0`,其次 `VisualStudio.DTE.17.0`(兩者都要讀得到 XAE Base ≥ 4026,也就是有整合 TwinCAT XAE)。不用 32-bit shell(#72)。build < 4026 → `TcXaeShell.DTE.15.0`。
   - 候選的 XAE Base 版本要**完全等於**專案的 `TcVersion`(含 revision,`3.1.4024.59` ≠ `3.1.4024.71`)才啟動。
-  - (#225)build < 4026 的專案沒有完全相等的 XAE 時:`TcXaeShell.DTE.15.0` 已註冊、它的 XAE Base 讀得到且 ≥ 4026、`<TwinCATDir>\3.1\Components\Base\Build_<build>.<revision>` 與專案 `TcVersion` 完全相等(含 revision)→ 開 32-bit TcXaeShell(`remote-manager-match`)。64-bit XAE Shell / VS2022 不會被自動選來開 4024 專案。
+  - (#225)build < 4026 的專案沒有完全相等的 XAE 時:`TcXaeShell.DTE.15.0` 已註冊、它的 XAE Base 讀得到且 ≥ 4026、`<TwinCATDir>\3.1\Components\Base\Build_<build>.<revision>` 與專案 `TcVersion` 完全相等(含 revision)→ 開 32-bit TcXaeShell(`remote-manager-match`)。`TcXaeShell.DTE.15.0` 沒註冊 → `IDE_VERSION_NOT_REGISTERED`。64-bit XAE Shell / VS2022 不會被自動選來開 4024 專案。
+  - 選的依據只有「資料夾存在」;選完不會再讀回 IDE 實際用的 Remote Manager 版本(例如 32-bit Shell 在 Remote Manager 被手動切到別的版本,或資料夾是解除安裝後的殘留)。要確認就在 `Connect-TcIde` 之後看 `Get-TcIdeInfo` 的 `data.remoteManagerVersion` 是否等於 `data.solutionVersion.remoteManager.build`(`3.1.` + build)。
   - 其他情況一律 `PROGID_REQUIRED`:4026 專案版本不同、XAE Base 讀不到、沒有完全相等的 Remote Manager 資料夾(例如只有 `Build_4024.59` 卻是 4024.71 的專案)、找不到 TwinCAT 目錄。hint 寫明上面的分工。
   - 沒有註冊 / 沒整合 XAE 的候選 → `IDE_VERSION_NOT_REGISTERED`。
 - **已知限制**:
