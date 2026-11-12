@@ -127,9 +127,9 @@ function Invoke-TcComRetry {
         [int]$TimeoutSec = 120
     )
 
-    # #241: first backoff from $script:TcComRetryDelayMs (1000 = 1 s; only unit tests lower it)
+    # #241: first backoff from $script:TcComRetryDelayMs (1000 = 1 s, clamped to 0..1000 so it never waits longer; only unit tests lower it)
     $__tcDelayMs = 1000
-    if ($null -ne $script:TcComRetryDelayMs) { try { $__tcDelayMs = [Math]::Max(0, [int]$script:TcComRetryDelayMs) } catch { $__tcDelayMs = 1000 } }
+    if ($null -ne $script:TcComRetryDelayMs) { try { $__tcDelayMs = [Math]::Min(1000, [Math]::Max(0, [int]$script:TcComRetryDelayMs)) } catch { $__tcDelayMs = 1000 } }
     $__tcStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     # --- watchdog (only when the IDE pid is known; never fails the call) ---

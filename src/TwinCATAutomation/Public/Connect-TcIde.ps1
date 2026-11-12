@@ -980,9 +980,9 @@ function Connect-TcIde {
     $hasProjects = $false
     try { $hasProjects = [bool]($dte.Solution.Projects.Count -gt 0) } catch { $hasProjects = $false }
     $smAttempts = if ($hasProjects -or -not [string]::IsNullOrWhiteSpace($SolutionPath)) { 10 } else { 1 }
-    # #241: pause from $script:TcSysManagerRetryMs (1000 = 1 s; only unit tests lower it)
+    # #241: pause from $script:TcSysManagerRetryMs (1000 = 1 s, clamped to 0..1000 so it never waits longer; only unit tests lower it)
     $smRetryMs = 1000
-    if ($null -ne $script:TcSysManagerRetryMs) { try { $smRetryMs = [Math]::Max(0, [int]$script:TcSysManagerRetryMs) } catch { $smRetryMs = 1000 } }
+    if ($null -ne $script:TcSysManagerRetryMs) { try { $smRetryMs = [Math]::Min(1000, [Math]::Max(0, [int]$script:TcSysManagerRetryMs)) } catch { $smRetryMs = 1000 } }
     for ($smTry = 1; $smTry -le $smAttempts; $smTry++) {
         $smProbe = $null
         try { $smProbe = Get-TcSysManager -Refresh }
