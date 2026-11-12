@@ -87,6 +87,9 @@ function Get-TcProjectVersion {
         connectIdeWouldLaunch = ($null -ne $pick.progId -and $null -eq $pick.errorCode)
         wantedProgIds         = @($pick.wantedProgIds)
         matchingProgIds       = @($pick.matchingProgIds)
+        # #225: set when the 32-bit TcXaeShell is picked for a < 4026 project through the Remote
+        # Manager folder of exactly the project version (selectedBy remote-manager-match)
+        remoteManager         = $(if ($null -ne $pick.remoteManager) { [ordered]@{ build = $pick.remoteManager.build; path = $pick.remoteManager.path; xaeVersion = $pick.remoteManager.xaeVersion; progId = $pick.remoteManager.progId } } else { $null })
         registeredProgIds     = @($pick.registered)
         ide                   = @($pick.ide | ForEach-Object { [ordered]@{ progId = $_.progId; xaeVersion = $_.xaeVersion; xaeBuild = $_.xaeBuild; exePath = $_.exePath } })
         errorCode             = $pick.errorCode

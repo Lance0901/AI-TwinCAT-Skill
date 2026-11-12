@@ -41,7 +41,10 @@ function Connect-TcIde {
         data.solutionVersion): build >= 4026 -> TcXaeShell.DTE.17.0, else VisualStudio.DTE.17.0
         (only with the TwinCAT XAE integrated); build < 4026 -> TcXaeShell.DTE.15.0; launched only
         when the TwinCAT XAE Base version found in its install folder (via the ProgID's
-        LocalServer32) EQUALS the TcVersion, revision included. A solution without any .tsproj (or no -SolutionPath)
+        LocalServer32) EQUALS the TcVersion, revision included. #225: a build < 4026 project with no
+        such XAE opens in TcXaeShell.DTE.15.0 (XAE >= 4026) when the Remote Manager folder of exactly
+        the project version (<TwinCATDir>\3.1\Components\Base\Build_<build>.<revision>) is installed
+        ('remote-manager-match', data.solutionVersion.remoteManager). A solution without any .tsproj (or no -SolutionPath)
         and a single registered IDE -> 'only-one-registered'. Otherwise nothing is launched:
         IDE_VERSION_NOT_REGISTERED (build known, no IDE confirmed for it) or PROGID_REQUIRED (the
         version of a .tsproj unreadable / conflicting, XAE build not confirmable, several IDEs). #136:
@@ -131,7 +134,7 @@ function Connect-TcIde {
         Connect-TcIde -ProcessId 12345 -SolutionPath "C:\Projects\MyProject.sln"
     .OUTPUTS
         data.progId       ProgID actually used (parsed from the ROT moniker, else DTE.RegistryRoot)
-        data.progIdSelectedBy  explicit | running-instance | tsproj-version | only-one-registered
+        data.progIdSelectedBy  explicit | running-instance | tsproj-version | remote-manager-match | only-one-registered
         data.ideProcessId pid of the connected IDE (0 when it could not be determined)
         data.pidSource    rot-identity | main-window | known-pid | start-time (guess) | ''
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }

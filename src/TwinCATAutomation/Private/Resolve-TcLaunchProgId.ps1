@@ -35,14 +35,24 @@
 #                    solution opened in it left a v15 .suo next to the v17 one, highly correlated with
 #                    the following 64-bit load hang, measured in #72)
 #               build < 4026  -> TcXaeShell.DTE.15.0
-#   a candidate is launched only when its XAE Base version EQUALS the project TcVersion (revision
-#   included). Any other case (other version, unreadable XAE Base, only a Remote Manager folder of
-#   the project build) -> PROGID_REQUIRED; no candidate registered / integrated ->
+#   a candidate is launched when its XAE Base version EQUALS the project TcVersion (revision
+#   included): selectedBy 'tsproj-version'.
+#   #225 (IDE split confirmed by the user 2026-11-12: the 32-bit TcXaeShell opens the 4024
+#   projects, the 64-bit TcXaeShell / VS2022 the 4026 ones; the 64-bit hosts are never picked for a
+#   4024 project automatically): a build < 4026 project with no exact XAE match launches
+#   TcXaeShell.DTE.15.0 when ALL of: it is registered, its XAE Base is readable and >= 4026 (an XAE
+#   that manages Remote Manager versions, InfoSys "Managing TwinCAT Remote Manager versions"), and
+#   the Remote Manager folder of exactly the project version (<TwinCATDir>\3.1\Components\Base\
+#   Build_<build>.<revision>, revision included) is installed: selectedBy 'remote-manager-match',
+#   .remoteManager = @{ build; path; xaeVersion; progId } (also in .evidence).
+#   Any other case (other version, unreadable XAE Base, no Remote Manager folder of exactly that
+#   version, unknown TwinCAT folder) -> PROGID_REQUIRED; no candidate registered / integrated ->
 #   IDE_VERSION_NOT_REGISTERED.
 # Known limits: strict revision compare (no Beckhoff compatibility rule between revisions found);
-# a 4024 project on a machine whose XAE is 4026 (this repo's dev machine) always needs -ProgId until
-# the Remote Manager behaviour of the Automation Interface is measured; a 4026 install whose only
-# shell is the 32-bit TcXaeShell gets IDE_VERSION_NOT_REGISTERED for a 4026 project.
+# which Remote Manager version the shell really loads an unpinned project with is not stated by
+# InfoSys ("Selection of a TwinCAT 3 version before loading a project" only covers pinned
+# projects); a 4026 install whose only shell is the 32-bit TcXaeShell gets
+# IDE_VERSION_NOT_REGISTERED for a 4026 project.
 
 $script:TcKnownIdeProgIds = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
 
@@ -131,12 +141,13 @@ function Get-TcProgIdIdeInfo {
     [PSCustomObject]@{ progId = $ProgId; exePath = $exe; installRoot = $root; xaeVersion = $ver; xaeBuild = (ConvertTo-TcBuildNumber $ver) }
 }
 
-# Installed TwinCAT build (HKLM ...\Beckhoff\TwinCAT3\System Build) and the Remote Manager builds
-# (<TwinCATDir>\3.1\Components\Base\Build_<build>). Seam for the unit tests.
+# Installed TwinCAT build (HKLM ...\Beckhoff\TwinCAT3\System Build), the folder the Remote Manager
+# builds were listed from (remoteManagerRoot = <TwinCATDir>\3.1\Components\Base, $null when unknown)
+# and the builds (<root>\Build_<build>). Seam for the unit tests.
 function Get-TcXaeInstallInfo {
     [CmdletBinding()]
     param()
-    $build = $null; $rm = @()
+    $build = $null; $rm = @(); $rmRoot = $null
     foreach ($k in 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Beckhoff\TwinCAT3', 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Beckhoff\TwinCAT3') {
         if ($null -eq $build) { $build = try { [int](Get-ItemProperty -LiteralPath "$k\System" -ErrorAction Stop).Build } catch { $null } }
         if ($rm.Count -eq 0) {
@@ -144,10 +155,11 @@ function Get-TcXaeInstallInfo {
             if (-not [string]::IsNullOrWhiteSpace($dir)) {
                 $base = Join-Path $dir '3.1\Components\Base'
                 $rm = @(Get-ChildItem -LiteralPath $base -Directory -Filter 'Build_*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.Substring(6) })
+                if ($rm.Count -gt 0) { $rmRoot = $base }
             }
         }
     }
-    [PSCustomObject]@{ installedBuild = $build; remoteManagerBuilds = @($rm) }
+    [PSCustomObject]@{ installedBuild = $build; remoteManagerRoot = $rmRoot; remoteManagerBuilds = @($rm) }
 }
 
 # TcVersion attribute of the root element of one .tsproj. Returns @{ tcVersion; error } (only the
@@ -202,7 +214,8 @@ function Get-TcSolutionTcVersion {
 }
 
 # Picks the ProgID to launch. Returns [PSCustomObject]@{ progId; selectedBy ('explicit' |
-# 'tsproj-version' | 'only-one-registered'); registered; evidence; ide (Get-TcProgIdIdeInfo of the
+# 'tsproj-version' | 'remote-manager-match' (#225) | 'only-one-registered'); remoteManager (#225:
+# @{ build; path; xaeVersion; progId } when selected by remote-manager-match, else $null); registered; evidence; ide (Get-TcProgIdIdeInfo of the
 # considered ProgIDs); wantedProgIds + matchingProgIds (#214: set once the project build is known,
 # else empty; matching = registered ProgIDs from wanted whose XAE version equals the project
 # TcVersion, the only ones that may be launched); errorCode; errorMessage }. errorCode set = nothing may be launched:
@@ -212,7 +225,7 @@ function Get-TcSolutionTcVersion {
 function Resolve-TcLaunchProgId {
     [CmdletBinding()]
     param([string]$ProgId, [string]$SolutionPath)
-    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); wantedProgIds = @(); matchingProgIds = @(); errorCode = $null; errorMessage = $null }
+    $out = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @(); evidence = $null; ide = @(); wantedProgIds = @(); matchingProgIds = @(); remoteManager = $null; errorCode = $null; errorMessage = $null }
     if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
         $out.registered = @($ProgId | Where-Object { Test-TcProgIdRegistered -ProgId $_ })
         if ($out.registered.Count -eq 0) {
@@ -254,10 +267,10 @@ function Resolve-TcLaunchProgId {
     $out.ide = $infos
     $info = { param($p) @($infos | Where-Object { $_.progId -eq $p }) | Select-Object -First 1 }
     $xaeList = (@($infos | ForEach-Object { "$($_.progId)=$(if ($_.xaeVersion) { $_.xaeVersion } else { 'unknown' })" }) -join ', ')
-    # #147 M3-b: an XAE of another version is NOT accepted, not even with a Remote Manager folder
-    # of the project build: whether the Automation Interface loads the project with that Remote
-    # Manager is not measured yet.
-    $untested = 'XAE build differs from the project build; whether the Automation Interface loads the project with the Remote Manager of that build is not measured yet'
+    # #147 M3-b: an XAE of another version is NOT accepted for a 4026 project; for a < 4026 project
+    # only through the Remote Manager rule below (#225).
+    $split = 'IDE split: the 32-bit TcXaeShell (TcXaeShell.DTE.15.0, XAE 4026 + Remote Manager 4024) opens 4024 projects, TcXaeShell.DTE.17.0 / VisualStudio.DTE.17.0 open 4026 projects'
+    $untested = "XAE version differs from the project TcVersion; $split"
     $wanted = if ($build -ge 4026) { @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0') } else { @('TcXaeShell.DTE.15.0') }
     $out.wantedProgIds = @($wanted)
     $present = @($wanted | ForEach-Object { & $info $_ } | Where-Object { $null -ne $_ })
@@ -274,6 +287,28 @@ function Resolve-TcLaunchProgId {
     $out.evidence | Add-Member -NotePropertyName 'xaeInstall' -NotePropertyValue $inst -Force
     $unknown = @($present | Where-Object { [string]::IsNullOrWhiteSpace($_.xaeVersion) })
     $detail = if ($unknown.Count -eq $present.Count) { "the XAE version of $(@($present | ForEach-Object { $_.progId }) -join ' / ') is not readable" } else { $untested }
+    # #225: a < 4026 project opens in the 32-bit TcXaeShell (XAE >= 4026) when the Remote Manager
+    # folder of exactly the project version is installed. Exactly one host and one folder; anything
+    # else stays PROGID_REQUIRED (fail closed).
+    $pv = ConvertFrom-TcVersionString $tcv
+    if ($build -lt 4026 -and $null -ne $pv -and $null -ne $pv.revision) {
+        $rmName = "$($pv.build).$($pv.revision)"
+        $hosts = @($present | Where-Object { $_.progId -eq 'TcXaeShell.DTE.15.0' -and $null -ne $_.xaeBuild -and $_.xaeBuild -ge 4026 })
+        $hits = @($inst.remoteManagerBuilds | Where-Object { [string]$_ -eq $rmName })
+        $rmRoot = [string]$inst.remoteManagerRoot
+        if ($hosts.Count -eq 1 -and $hits.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace($rmRoot)) {
+            $rmInfo = [PSCustomObject]@{ build = $rmName; path = (Join-Path $rmRoot "Build_$rmName"); xaeVersion = $hosts[0].xaeVersion; progId = $hosts[0].progId }
+            $out.progId = $hosts[0].progId; $out.selectedBy = 'remote-manager-match'; $out.remoteManager = $rmInfo
+            $out.evidence | Add-Member -NotePropertyName 'remoteManager' -NotePropertyValue $rmInfo -Force
+            return $out
+        }
+        if ($unknown.Count -ne $present.Count) {
+            $why = if ($hosts.Count -eq 0) { 'TcXaeShell.DTE.15.0 has no readable XAE >= 4026 that could load it through a Remote Manager' }
+            elseif ([string]::IsNullOrWhiteSpace($rmRoot)) { 'the TwinCAT folder with the Remote Manager versions (<TwinCATDir>\3.1\Components\Base) was not found' }
+            else { "no Remote Manager folder Build_$rmName (exactly the project version) under $rmRoot" }
+            $detail = "$why; $split"
+        }
+    }
     return (& $required "the project was saved with TcVersion $tcv, but no IDE has exactly that XAE ($xaeList; Remote Manager builds: $(if ($inst.remoteManagerBuilds.Count) { $inst.remoteManagerBuilds -join ', ' } else { 'none' })): $detail")
 }
 

@@ -46,7 +46,7 @@
 
 - **現象**:電腦上裝了多個 XAE / Visual Studio 時,`ConnectIde` 不給 `ProgId`,可能接到或啟動另一個版本的 IDE 來開 solution。
 - **影響**:solution 被別的 XAE 版本開啟,可能觸發升級提示、Build 結果不同,或接到使用者自己開著的 IDE。
-- **繞過**:**一律明確給 `ProgId`**(例如 4024 32-bit XAE Shell `TcXaeShell.DTE.15.0`、4026 64-bit XAE Shell `TcXaeShell.DTE.17.0`、VS2022 `VisualStudio.DTE.17.0`),並給 `SolutionPath`。
+- **繞過**:**一律明確給 `ProgId`**(例如 4024 專案用 32-bit XAE Shell `TcXaeShell.DTE.15.0`(XAE 4026.x + Remote Manager 4024.x)、4026 專案用 64-bit XAE Shell `TcXaeShell.DTE.17.0` 或 VS2022 `VisualStudio.DTE.17.0`),並給 `SolutionPath`。
 - **Issue**:[#72](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/72)
 
 ### bridge 重啟後 `ownedBySession` 可能誤報 false(#73)
@@ -131,7 +131,7 @@ MCP 共 <!-- generated:mcp-tool-count -->80<!-- /generated --> 個 `mcp-server/t
 - **registered tcauto**:用已註冊的 `mcp__tcauto__*` MCP 呼叫,對**本機 UmRT** 實際跑。
 - **自建 client**:subagent 自己寫的 MCP client,只當輔助證據,不算 registered 驗證。
 
-環境:**4026 VS2022**(`VisualStudio.DTE.17.0`)、**4026 XAE**(64-bit XAE Shell)、**4024 XAE**(32-bit XAE Shell `TcXaeShell.DTE.15.0`)。步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md),逐項紀錄見 [verification/phase0.md](../openspec/changes/complete-automation-interface/verification/phase0.md)。
+環境:**4026 VS2022**(`VisualStudio.DTE.17.0`)、**4026 XAE**(64-bit XAE Shell)、**4024 專案**(32-bit XAE Shell `TcXaeShell.DTE.15.0`,XAE 4026.x + Remote Manager 4024.x)。步驟見 [agent-brief-realmachine.md](agent-brief-realmachine.md),逐項紀錄見 [verification/phase0.md](../openspec/changes/complete-automation-interface/verification/phase0.md)。
 
 ### 已實測(registered tcauto,39 個)
 

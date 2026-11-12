@@ -69,7 +69,7 @@ $sln26L = & $long $sln26
 $all3 = @('TcXaeShell.DTE.15.0', 'TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
 # measured layout of this repo's dev machine (XAE 3.1.4026.22 in all three hosts, Remote Manager 4024.71)
 $ideDefault = @{ 'TcXaeShell.DTE.15.0' = '3.1.4026.22'; 'TcXaeShell.DTE.17.0' = '3.1.4026.22'; 'VisualStudio.DTE.17.0' = '3.1.4026.22' }
-$instDefault = [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4024.59', '4024.71', '4026.22') }
+$instDefault = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\fake\TwinCAT\3.1\Components\Base'; remoteManagerBuilds = @('4024.59', '4024.71', '4026.22') }
 $global:Reg72 = $all3
 $global:Ide72 = $ideDefault.Clone()
 $global:Inst72 = $instDefault
@@ -196,7 +196,19 @@ try {
     $rp = { param($p, $s) & $mod { param($a, $b) Resolve-TcLaunchProgId -ProgId $a -SolutionPath $b } $p $s }
     Reset-State
     $r = & $rp '' $sln26;   Check 'A4 4026 -> TcXaeShell.DTE.17.0' ($r.progId -eq 'TcXaeShell.DTE.17.0' -and $r.selectedBy -eq 'tsproj-version') "$($r.progId)/$($r.selectedBy)"
-    $r = & $rp '' $sln24;   Check 'A5 M3-b: 4024 project, 32-bit shell is XAE 4026 (+ Remote Manager 4024.71) -> PROGID_REQUIRED, untested path' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'not measured yet') "$($r.errorCode) $($r.errorMessage)"
+    # #225: a 4024 project on a 4026 XAE machine opens in the 32-bit TcXaeShell when the Remote Manager of exactly that build is installed
+    $r = & $rp '' $sln24;   Check 'A5 #225: 4024.71 project, 32-bit shell XAE 4026 + Remote Manager Build_4024.71 -> TcXaeShell.DTE.15.0 (remote-manager-match)' ($r.progId -eq 'TcXaeShell.DTE.15.0' -and $r.selectedBy -eq 'remote-manager-match' -and $null -eq $r.errorCode -and $r.remoteManager.build -eq '4024.71' -and $r.remoteManager.path -eq 'C:\fake\TwinCAT\3.1\Components\Base\Build_4024.71' -and $r.remoteManager.xaeVersion -eq '3.1.4026.22' -and @($r.matchingProgIds).Count -eq 0 -and $r.evidence.remoteManager.build -eq '4024.71') "$($r.progId)/$($r.selectedBy)/$($r.errorCode) $($r.errorMessage)"
+    $r = & $rp '' $sln24r59; Check 'A5d #225: 4024.59 project + Build_4024.59 -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0' -and $r.selectedBy -eq 'remote-manager-match' -and $r.remoteManager.build -eq '4024.59') "$($r.progId)/$($r.errorCode)"
+    $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\fake\Base'; remoteManagerBuilds = @('4024.59', '4026.22') }
+    $r = & $rp '' $sln24;   Check 'A5e #225: 4024.71 project, only Build_4024.59 -> PROGID_REQUIRED (revision strict), hint names the IDE split' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'Build_4024\.71' -and $r.errorMessage -match 'TcXaeShell\.DTE\.15\.0') "$($r.errorCode) $($r.errorMessage)"
+    $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = $null; remoteManagerBuilds = @('4024.71') }
+    $r = & $rp '' $sln24;   Check 'A5f #225: Remote Manager folder unknown -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
+    $global:Inst72 = $instDefault; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.70'
+    $r = & $rp '' $sln24;   Check 'A5g #225: 32-bit shell XAE 4024.70 (not a 4026 host) + Build_4024.71 -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
+    $global:Ide72 = $ideDefault.Clone(); $global:Reg72 = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0')
+    $r = & $rp '' $sln24;   Check 'A5h #225: 4024 project, 32-bit shell not registered -> IDE_VERSION_NOT_REGISTERED (64-bit never auto-picked for 4024)' ($null -eq $r.progId -and $r.errorCode -eq 'IDE_VERSION_NOT_REGISTERED') "$($r.progId)/$($r.errorCode)"
+    $global:Reg72 = $all3
+    $r = & $rp '' $sln26r19; Check 'A5i #225: 4026.19 project + Build_4026.19 does NOT use the Remote Manager rule (4026 unchanged) -> PROGID_REQUIRED' ($null -eq $r.progId -and $r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     $r = & $rp '' $sln26r19; Check 'A5b m-a: 4026.19 project, XAE 4026.22 -> PROGID_REQUIRED (revision compared strictly)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
     $r = & $rp '' $slnRevMix; Check 'A5c two .tsproj, same build, other revision -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'different TwinCAT versions') "$($r.errorCode)"
     $global:Reg72 = @('TcXaeShell.DTE.15.0', 'VisualStudio.DTE.17.0')
@@ -219,12 +231,12 @@ try {
     $global:Reg72 = @()
     $r = & $rp '' $sln26;   Check 'A13 nothing registered -> TWINCAT_NOT_FOUND' ($r.errorCode -eq 'TWINCAT_NOT_FOUND') "$($r.errorCode)"
     # M3: which build the 32-bit TcXaeShell (ProgID 15.0) really is
-    Reset-State; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4026.22') }
+    Reset-State; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\fake\Base'; remoteManagerBuilds = @('4026.22') }
     $r = & $rp '' $sln24;   Check 'A14 4024, 32-bit shell is XAE 4026 without Remote Manager 4024 -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED' -and $r.errorMessage -match 'Remote Manager') "$($r.errorCode)"
     Reset-State; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.71'; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4024; remoteManagerBuilds = @() }
     $r = & $rp '' $sln24;   Check 'A15 4024.71 project, 32-bit shell is XAE 4024.71 -> TcXaeShell.DTE.15.0' ($r.progId -eq 'TcXaeShell.DTE.15.0') "$($r.progId)/$($r.errorCode)"
     $r = & $rp '' $sln24r59; Check 'A15b 4024.59 project, XAE 4024.71 -> PROGID_REQUIRED (4024.59 != 4024.71)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
-    $global:Ide72['TcXaeShell.DTE.15.0'] = $null; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerBuilds = @('4024.71') }
+    $global:Ide72['TcXaeShell.DTE.15.0'] = $null; $global:Inst72 = [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\fake\Base'; remoteManagerBuilds = @('4024.71') }
     $r = & $rp '' $sln24;   Check 'A16 4024, XAE build of the 32-bit shell unreadable and 4026 installed -> PROGID_REQUIRED' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.errorCode)"
     $global:Inst72 = [PSCustomObject]@{ installedBuild = 4024; remoteManagerBuilds = @() }
     $r = & $rp '' $sln24;   Check 'A17 4024, XAE unreadable and no 4026 installed -> PROGID_REQUIRED (m-a: only an equal XAE version is accepted)' ($r.errorCode -eq 'PROGID_REQUIRED') "$($r.progId)/$($r.errorCode)"
@@ -238,6 +250,9 @@ try {
     Reset-State; $global:Ide72['TcXaeShell.DTE.15.0'] = '3.1.4024.71'
     $r = Connect-TcIde -SolutionPath $sln24
     Check 'B2 4024 sln launches TcXaeShell.DTE.15.0' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.15.0' -and $r.data.progIdSelectedBy -eq 'tsproj-version') "launches=$($global:Launches72 -join ',') by=$($r.data.progIdSelectedBy)"
+    Reset-State
+    $r = Connect-TcIde -SolutionPath $sln24
+    Check 'B2b #225: 4024 sln on the dev layout (XAE 4026 + Build_4024.71) launches TcXaeShell.DTE.15.0, remote-manager-match' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'TcXaeShell.DTE.15.0' -and $r.data.progIdSelectedBy -eq 'remote-manager-match') "launches=$($global:Launches72 -join ',') code=$($r.error.code) by=$($r.data.progIdSelectedBy)"
     Reset-State
     $r = Connect-TcIde -SolutionPath $slnNoVer
     Check 'B3 undeterminable -> PROGID_REQUIRED, nothing launched' ($r.success -eq $false -and $r.error.code -eq 'PROGID_REQUIRED' -and $global:Launches72.Count -eq 0 -and $r.error.hint -match '-ProgId' -and @($r.data.registeredProgIds).Count -eq 3) "code=$($r.error.code) launches=$($global:Launches72.Count)"

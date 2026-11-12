@@ -2,6 +2,11 @@ function Get-TcIdeInfo {
     <#
     .SYNOPSIS
         Returns information about the connected TwinCAT IDE instance.
+    .DESCRIPTION
+        data.remoteManagerVersion (#225): the TwinCAT Remote Manager version the IDE currently uses,
+        read (never set) as DTE.GetObject('TcRemoteManager').Version (InfoSys "Accessing TwinCAT
+        Remote Manager", https://infosys.beckhoff.com/content/1033/tc3_automationinterface/2507904267.html);
+        $null with data.remoteManagerError when the IDE does not answer it.
     #>
     [CmdletBinding()]
     param()
@@ -20,6 +25,14 @@ function Get-TcIdeInfo {
     # of the .tsproj under it. Both must match the target platform ('TwinCAT OS (x64)' for a
     # local UmRT), see Set-TcTarget -Platform.
     $sol = Get-TcSolutionPlatform
+    # #225: which Remote Manager version the IDE runs (read-only; setting Version switches the XAE)
+    $rmVersion = $null; $rmError = $null
+    try {
+        $rm = $script:TcDte.GetObject('TcRemoteManager')
+        if ($null -eq $rm) { $rmError = "DTE.GetObject('TcRemoteManager') returned null" }
+        else { $rmVersion = [string]$rm.Version; if ([string]::IsNullOrWhiteSpace($rmVersion)) { $rmVersion = $null; $rmError = 'TcRemoteManager.Version is empty' } }
+    }
+    catch { $rmError = $_.Exception.Message }
 
     $data = [PSCustomObject]@{
         progId                = $script:TcProgId
@@ -30,6 +43,8 @@ function Get-TcIdeInfo {
         solutionPlatform      = $sol.platform
         solutionConfiguration = $sol.configuration
         projectPlatform       = $sol.projectPlatform
+        remoteManagerVersion  = $rmVersion
+        remoteManagerError    = $rmError
     }
 
     New-TcResult -Success $true -Data $data
