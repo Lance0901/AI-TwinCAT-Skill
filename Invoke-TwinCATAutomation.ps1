@@ -38,6 +38,8 @@ $operationMap = @{
     'GetIdeModalDialog' = 'Get-TcIdeModalDialog'
     'GetAutomationVersion' = 'Get-TcAutomationVersion'
     'GetProjectVersion' = 'Get-TcProjectVersion'
+    'GetPackageInfo'  = 'Get-TcPackageInfo'
+    'InstallPackage'  = 'Install-TcPackage'
     # Project Management
     'NewProject'      = 'New-TcProject'
     'OpenProject'     = 'Open-TcProject'

@@ -11,7 +11,10 @@ const GRACE_MS = 30000;
 // time instead was not chosen: a long build would get a short Error List budget again and come
 // back CODE_NOT_VERIFIED, the bug #107 fixed.
 // CleanProject reads the Error List (30 s) after a failed clean as well: 30 s more than the default.
-export const TOOL_GRACE_MS = Object.freeze({ BuildProject: 90000, CleanProject: 60000 });
+// #229: GetPackageInfo runs up to 6 tcpkg calls of TimeoutSec each (list -i + list -a per id, at
+// most 5 ids, TimeoutSec <= 120: 6 x 120 = 720 s = 120 s + 600 s, + 30 s margin); InstallPackage runs 3 tcpkg list
+// calls of 120 s around the install of TimeoutSec (<= 6600 s, so the total stays under the 7200 s cap).
+export const TOOL_GRACE_MS = Object.freeze({ BuildProject: 90000, CleanProject: 60000, GetPackageInfo: 630000, InstallPackage: 400000 });
 export { MAX_CALL_TIMEOUT_MS, MIN_CALL_TIMEOUT_MS };
 
 /** Read tools.json and return Map<name, tool>. */
