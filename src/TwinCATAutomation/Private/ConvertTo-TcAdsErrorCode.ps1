@@ -502,3 +502,6 @@ function ConvertTo-TcAdsErrorCode {
         Message = $message
     }
 }
+# #232: Login / Logoff are checked by reading the login state back (Get-TcPlcLoginState)
+$script:TcErrorHints['LOGIN_FAILED'] = '登入沒有被證實(data.loggedIn = false:讀回沒登入;null:讀不到,data.loginStateError 說明原因)或 Login() 失敗。先 Get-TcSystemState 確認系統在 Run、Build-TcProject 完整成功;用了 -SilentFlag(Login 257)就拿掉它再 Enter-TcPlcOnline(SILENT 會跳過要問的步驟、不登入);IDE 有對話框先在 XAE 處理。見 docs/troubleshooting.md LOGIN_FAILED'
+$script:TcErrorHints['LOGOUT_FAILED'] = '登出沒有被證實(data.loggedIn = true:讀回仍在登入;null:讀不到,data.loginStateError 說明原因)或 Logoff() 丟例外。IDE 有對話框先在 XAE 處理,再重跑 Exit-TcPlcOnline;已登出時它會直接回 success(data.alreadyLoggedOut)。見 docs/troubleshooting.md LOGOUT_FAILED'
