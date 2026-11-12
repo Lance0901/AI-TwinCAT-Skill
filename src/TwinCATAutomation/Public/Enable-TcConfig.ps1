@@ -239,6 +239,7 @@ function Enable-TcConfig {
     $inflight = $null
     $runtimeChangeSent = $false
     $netId = $null; $blockRequested = $null; $reachedState = $null; $reachedNote = $null
+    $cycleEnded = $false   # body returned or threw (catch); still $false in finally = pipeline stopped (Ctrl+C)
     try {
         $cycleResult = . {
 
@@ -1285,8 +1286,10 @@ function Enable-TcConfig {
     $data | Add-Member -NotePropertyName 'message' -NotePropertyValue $summary
     New-TcResult -Success $true -Data $data
         }
+        $cycleEnded = $true
     }
     catch {
+        $cycleEnded = $true
         # #236 / #68: the request may have changed the runtime and nothing was read back
         if ($runtimeChangeSent) {
             $null = Set-TcLifecycleBlock -AmsNetId $netId -Command 'Enable-TcConfig' -ErrorCode 'UNHANDLED_EXCEPTION' -Message $_.Exception.Message `
@@ -1295,6 +1298,11 @@ function Enable-TcConfig {
         throw
     }
     finally {
+        # a stopped pipeline (Ctrl+C) skips catch but runs finally: same fail-closed record
+        if (-not $cycleEnded -and $runtimeChangeSent) {
+            $null = Set-TcLifecycleBlock -AmsNetId $netId -Command 'Enable-TcConfig' -ErrorCode 'INTERRUPTED' -Message 'Enable-TcConfig was stopped (pipeline stopped, e.g. Ctrl+C) after its runtime-changing request; nothing was read back.' `
+                -RequestedState $blockRequested -ReachedState $reachedState -ReadbackNote $reachedNote -Step 'stopped after the runtime-changing request'
+        }
         Exit-TcLifecycleInflight -Token $inflight
     }
     $cycleResult

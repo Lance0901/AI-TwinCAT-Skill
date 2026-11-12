@@ -326,7 +326,8 @@ function Test-TcLifecycleClearReceipt {
 function Get-TcLifecycleBlockEntries {
     param([int]$TimeoutMs = 0)
     # #236: in-flight markers of processes that died during their request become blocks first
-    Sync-TcLifecycleInflight
+    # (only on the normal lock wait: the ~300 ms hint path, Get-TcLifecycleBlockAdvice, does not promote)
+    if ($TimeoutMs -le 0) { Sync-TcLifecycleInflight }
     $r = $null
     try { $r = Invoke-TcBuildRequiredLocked -MutexName (Get-TcLifecycleBlockMutexName) -TimeoutMs $TimeoutMs -Body { Read-TcLifecycleBlockState } }
     catch { $r = @{ Locked = $false; Error = $_.Exception.Message } }

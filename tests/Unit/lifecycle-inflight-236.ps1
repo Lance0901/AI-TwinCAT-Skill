@@ -165,6 +165,27 @@ try {
     $b = & $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $B
     Check '(4) corrupt marker -> <unknown> block (every target)' ($null -ne $b -and $b.errorCode -eq 'INTERRUPTED' -and $null -eq $b.amsNetId -and -not (Test-Path -LiteralPath $f)) (J $b)
     $null = Clear-TcLifecycleBlock -AmsNetId '<unknown>' -Reason 'unit test #236 next case' -FallbackMethod 'unit test' -AllowedSideEffects 'none' -MaxVerifyLevel None
+    # review: a restarted bridge can get the killed one's pid -> own pid with another start time is promoted
+    $f = Join-Path $env:TCAUTO_STATE_DIR ("lifecycle-inflight.{0}.{1}.json" -f $PID, [guid]::NewGuid().ToString('N'))
+    $st = (Get-Process -Id $PID).StartTime.ToUniversalTime()
+    [IO.File]::WriteAllText($f, (J ([PSCustomObject]@{ pid = $PID; processStartUtc = $st.AddHours(-1).ToString('o'); command = 'Enable-TcConfig'; amsNetId = $A; requestedState = 'Run'; startedAtUtc = [DateTime]::UtcNow.ToString('o') })))
+    $b = & $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A
+    Check '(4) own pid but other start time (pid reused) is promoted' ($null -ne $b -and $b.errorCode -eq 'INTERRUPTED' -and $b.command -eq 'Enable-TcConfig' -and -not (Test-Path -LiteralPath $f)) (J $b)
+    Clear-Block $A
+    $f = Join-Path $env:TCAUTO_STATE_DIR ("lifecycle-inflight.{0}.{1}.json" -f $PID, [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllText($f, (J ([PSCustomObject]@{ pid = $PID; processStartUtc = $st.ToString('o'); command = 'Enable-TcConfig'; amsNetId = $A; requestedState = 'Run'; startedAtUtc = [DateTime]::UtcNow.ToString('o') })))
+    $b = & $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A
+    $adv = & $mod { param($n) Get-TcLifecycleBlockEntries -TimeoutMs 300 } $A
+    Check '(4) own live request is not promoted' ($null -eq $b -and (Test-Path -LiteralPath $f)) (J $b)
+    [IO.File]::Delete($f)
+    # hint path (short lock) never promotes
+    $f = Join-Path $env:TCAUTO_STATE_DIR ("lifecycle-inflight.{0}.{1}.json" -f 999998, [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllText($f, (J ([PSCustomObject]@{ pid = 999998; processStartUtc = $null; command = 'Set-TcSystemState'; amsNetId = $A; requestedState = 'Run'; startedAtUtc = [DateTime]::UtcNow.ToString('o') })))
+    $adv = & $mod { Get-TcLifecycleBlockEntries -TimeoutMs 300 }
+    Check '(4) short-lock hint path does not promote' ($adv.Entries.Count -eq 0 -and (Test-Path -LiteralPath $f)) "entries=$($adv.Entries.Count)"
+    $b = & $mod { param($n) Get-TcLifecycleBlock -AmsNetId $n } $A
+    Check '(4) the next refusal check promotes it' ($null -ne $b -and $b.errorCode -eq 'INTERRUPTED' -and -not (Test-Path -LiteralPath $f)) (J $b)
+    Clear-Block $A
 
     # --- (5) a newer record of the same target wins ---
     $old = [DateTime]::UtcNow.AddMinutes(-5).ToString('o')
