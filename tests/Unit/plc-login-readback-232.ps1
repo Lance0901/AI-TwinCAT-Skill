@@ -1,4 +1,4 @@
-# Unit: #232 Enter-TcPlcOnline / Exit-TcPlcOnline read the login state back (fail closed, #68,
+﻿# Unit: #232 Enter-TcPlcOnline / Exit-TcPlcOnline read the login state back (fail closed, #68,
 # CODING_STANDARDS 2). No IDE / runtime: the SysManager, the tree items and Get-TcPlcLoginState are mocked.
 # Covers:
 #   Exit:  logged in -> Logoff -> read back false -> success, data.loggedIn false
@@ -83,11 +83,12 @@ Check 'Exit: plcNode without Logoff -> treeItem.Logoff was called once' (@($c | 
 
 Set-Case @($true, $false) $true
 $r = & $mod { Exit-TcPlcOnline }
-Check 'Exit: plcNode with Logoff -> logoutVia plcNode.Logoff' ($r.success -and $r.data.logoutVia -eq 'plcNode.Logoff') (J $r)
+$c = Get-Calls
+Check 'Exit: plcNode also has Logoff -> treeItem.Logoff (the measured call) is tried first, plcNode not called' ($r.success -and $r.data.logoutVia -eq 'treeItem.Logoff' -and ($c -notcontains 'plcNode.Logoff')) ((J $r) + ' calls=' + ($c -join ','))
 
 Set-Case @($true, $true)
 $r = & $mod { Exit-TcPlcOnline }
-Check 'Exit: still logged in after Logoff -> LOGOUT_FAILED, loggedIn true' ((-not $r.success) -and $r.error.code -eq 'LOGOUT_FAILED' -and $r.data.loggedIn -eq $true -and $r.data.online -eq $true) (J $r)
+Check 'Exit: still logged in after Logoff -> LOGOUT_FAILED, loggedIn true, with a hint' ((-not $r.success) -and $r.error.code -eq 'LOGOUT_FAILED' -and $r.data.loggedIn -eq $true -and $r.data.online -eq $true -and -not [string]::IsNullOrWhiteSpace($r.error.hint)) (J $r)
 
 Set-Case @($true, $null)
 $r = & $mod { Exit-TcPlcOnline }
@@ -111,7 +112,7 @@ Check 'Enter: Login, read back true -> success, loggedIn true' ($r.success -and 
 
 Set-Case @($false)
 $r = & $mod { Enter-TcPlcOnline -SilentFlag -WarningAction SilentlyContinue }
-Check 'Enter: Login(257) returns but read back false -> LOGIN_FAILED, loggedIn false, online false' ((-not $r.success) -and $r.error.code -eq 'LOGIN_FAILED' -and $r.data.loggedIn -eq $false -and $r.data.online -eq $false -and $r.data.loginFlags -eq 257) (J $r)
+Check 'Enter: Login(257) returns but read back false -> LOGIN_FAILED, loggedIn false, online false, hint names -SilentFlag' ((-not $r.success) -and $r.error.code -eq 'LOGIN_FAILED' -and $r.data.loggedIn -eq $false -and $r.data.online -eq $false -and $r.data.loginFlags -eq 257 -and $r.error.hint -match 'SilentFlag') (J $r)
 
 Set-Case @($null)
 $r = & $mod { Enter-TcPlcOnline -WarningAction SilentlyContinue }

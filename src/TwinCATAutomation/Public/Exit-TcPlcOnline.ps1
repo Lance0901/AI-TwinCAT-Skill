@@ -85,16 +85,18 @@
         #     "<Plc> Project" item, but calling TIPC^<Plc>.Logoff() / .Logout() fails ("does not
         #     contain a method named 'Logoff'"); "<Plc> Project".Logoff() logs out (LoggedIn
         #     true -> false). Get-Member is not proof for these IDispatch objects.
-        #   - 4026.27 TcXaeShell 64-bit (Ming, #232): same call path (treeItem.Logoff).
+        #   - 實測 2026-11-11 by Ming, 4026.27 TcXaeShell 64-bit, local XAR (Windows RT target), #232: same call path (treeItem.Logoff).
         #   - 實測 2026-11-13, TwinCAT 3.1.4024 project (BFH-1650 copy, 3.1.4024.71) in the 32-bit
         #     TcXaeShell (TcXaeShell.DTE.15.0, XAE 4026.22), local UmRT: the same - Get-Member lists
         #     Login / Logoff on TIPC^<Plc> only, TIPC^<Plc>.Logoff() throws, "<Plc> Project".Logoff()
         #     logs out (LoggedIn true -> false).
         #   - Logoff() on a project that is not logged in returns without an error (4026.22 VS2022,
-        #     4024 32-bit TcXaeShell, both 2026-11-13; 4026.27), so the call result proves nothing: the login state is read back.
+        #     4024 32-bit TcXaeShell, both 2026-11-13; 4026.27 實測 2026-11-11 by Ming, 4026.27 TcXaeShell 64-bit, local XAR (Windows RT target), #232), so the call result proves nothing: the login state is read back.
         # The older note (2026-10-18) that the "<Plc> Project" item has no Logoff came from
-        # Get-Member only. The order of the attempts does not matter for the result; the method is
-        # named Logoff, Logout is kept as a fallback. data.logoutVia names the call that returned.
+        # Get-Member only. The measured call (treeItem.Logoff) is tried first: a call that returns
+        # without logging out (Logoff() is silent when not logged in) would otherwise stop the loop
+        # before it. Logout and the PLC node are kept as fallbacks for other versions (only reached
+        # when the earlier calls throw). data.logoutVia names the call that returned.
         # No scriptblock indirection: a COM tree item returned through "& { $x }" is
         # unrolled into Object[] (ITcSmTreeItem is enumerable).
         $plcNodePath = ($PlcProjectPath -split '\^')[0..1] -join '^'   # TIPC^<Plc>
@@ -127,10 +129,10 @@
         $lastErr = $null
         $fatal = 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_BUSY|IDE_CRASHED'
         $attempts = @(
-            @{ Via = 'plcNode.Logoff';  Run = { $plcNode.Logoff() } },
-            @{ Via = 'plcNode.Logout';  Run = { $plcNode.Logout() } },
             @{ Via = 'treeItem.Logoff'; Run = { $plcProject.Logoff() } },
-            @{ Via = 'treeItem.Logout'; Run = { $plcProject.Logout() } }
+            @{ Via = 'treeItem.Logout'; Run = { $plcProject.Logout() } },
+            @{ Via = 'plcNode.Logoff';  Run = { $plcNode.Logoff() } },
+            @{ Via = 'plcNode.Logout';  Run = { $plcNode.Logout() } }
         )
         foreach ($a in $attempts) {
             if ($null -eq $plcNode -and $a.Via -like 'plcNode.*') { continue }

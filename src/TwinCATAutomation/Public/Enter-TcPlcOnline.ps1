@@ -73,7 +73,7 @@
         IECProjectDef/OnlineSettings/LoggedIn of the "<Plc> Project" item). success = true only
         when it reads back true (data.loggedIn). Login() returning without an exception is not
         a login: Login(257) (REGULAR|SILENT) returns in < 1 s and leaves LoggedIn false (實測
-        2026-11-13, 4026.22 VS2022, local UmRT, PLC already in Run; 4026.27 the same, #232).
+        2026-11-13, 4026.22 VS2022, local UmRT, PLC already in Run; Login(257) the same in 實測 2026-11-11 by Ming, 4026.27 TcXaeShell 64-bit, local XAR (Windows RT target), #232).
         Read back false -> LOGIN_FAILED (data.loggedIn = $false); not readable -> LOGIN_FAILED
         as well (data.loggedIn = $null, the message says unknown): no readback, no success.
     .OUTPUTS
@@ -187,7 +187,7 @@
     # success only on a read back true; false or unknown -> LOGIN_FAILED (CODING_STANDARDS 2).
     # IDE_* exceptions of the readback propagate to the caller's catch.
     function Get-TcLoginReadbackResult {
-        param([string]$Message, [bool]$Downloaded, [object]$StateAfter)
+        param([string]$Message, [bool]$Downloaded, [object]$StateAfter, [string]$CallNote = 'returned without an error')
         $entry = if ($null -ne $plcEntry) { $plcEntry } else {
             [PSCustomObject]@{ name = ($PlcProjectPath -split '\^')[1]; nodePath = (($PlcProjectPath -split '\^')[0..1] -join '^'); projectPath = $PlcProjectPath }
         }
@@ -210,7 +210,7 @@
         if ($ls.loggedIn -eq $true) { return New-TcResult -Success $true -Data $data }
         $why = if ($ls.loggedIn -eq $false) { 'the login state reads back false (not logged in)' }
                else { "the login state could not be read back (unknown: $($ls.error))" }
-        $data.message = "Login($loginFlags) returned without an error, but $why."
+        $data.message = "Login($loginFlags) $CallNote, but $why."
         $data.downloaded = $null
         New-TcResult -Success $false -ErrorCode 'LOGIN_FAILED' -Hint (Get-TcErrorHint -Code 'LOGIN_FAILED') `
             -ErrorMessage "PLC login to '$PlcProjectPath' not verified: $($data.message)" -Data $data
@@ -292,7 +292,7 @@
         if ($_.Exception.Message -match '(?i)already\s+(logged\s*in|online)' -and $_.Exception.Message -notmatch 'IDE_MODAL_DIALOG|IDE_TIMEOUT|IDE_CRASHED|IDE_BUSY') {
             $stateAfterAlready = $null
             try { $stateAfterAlready = Get-TcQuietPlcState -NetId $netId -Port $plcPort } catch { $stateAfterAlready = $null }
-            try { Get-TcLoginReadbackResult -Message 'Already logged into PLC runtime.' -Downloaded $false -StateAfter $stateAfterAlready }
+            try { Get-TcLoginReadbackResult -Message 'Already logged into PLC runtime.' -Downloaded $false -StateAfter $stateAfterAlready -CallNote "reported 'already logged in'" }
             catch { New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'LOGIN_FAILED' -MessagePrefix 'PLC login state readback failed' }
         }
         else {
