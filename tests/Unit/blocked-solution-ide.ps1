@@ -83,7 +83,7 @@ $global:FakeIde = @{}
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
     function script:Find-TcIdeModalDialog {
-        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
         if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) { $ProcessId = [int]$script:TcIdeProcessId }
         if ($global:FakeIde.ContainsKey($ProcessId)) { return $global:FakeIde[$ProcessId].Dialog }
         $null

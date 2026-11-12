@@ -11,7 +11,7 @@ const KILL_ESCALATE_MS = 1000;
 
 export const HINTS = {
   BRIDGE_TIMEOUT:
-    'PowerShell bridge was restarted and all IDE/ADS state is lost. Check for a modal dialog in the XAE window (GetIdeModalDialog after ConnectIde), then ConnectIde again.',
+    'PowerShell bridge was restarted and all IDE/ADS state is lost. Check for a modal dialog in the XAE window (GetIdeModalDialog after ConnectIde), then ConnectIde again. If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle), it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check and the next runtime-changing call returns LIFECYCLE_BLOCKED: report it to the user, only read-only diagnosis, ClearLifecycleBlock only after the user agreed.',
   BRIDGE_DIED:
     'PowerShell bridge process exited and all IDE/ADS state is lost. It restarts on the next call; run ConnectIde again.',
   MODULE_IMPORT_FAILED:

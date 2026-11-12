@@ -72,7 +72,7 @@ Reset-Calls
 & $mod {
     function script:Find-TcAdsAssembly { $true }
     function script:Assert-TcConnection { }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
     function script:Get-TcIdeMemoryInfo { $null }
     function script:Get-TcLicenseDiagnosis { param($AmsNetId) $null }
     function script:Get-TcLocalUmRtProcess { param($AmsNetId) $null }
@@ -222,7 +222,7 @@ try {
     & $mod {
         $script:UtOrigFind42 = ${function:Find-TcIdeModalDialog}
         function script:Find-TcIdeModalDialog {
-            [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+            [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
             if ($global:Scan.From -eq 'start' -or ($global:Scan.From -eq 'verify' -and $global:Calls.Login -gt 0) -or ($global:Scan.From -eq 'after-config' -and $global:Calls.SetSystemState -gt 0)) {
                 $global:Scan.Calls.Add($TimeoutSec)
                 return (New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec $TimeoutSec -Message 'mock: scan did not finish')

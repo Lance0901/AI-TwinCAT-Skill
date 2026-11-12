@@ -141,7 +141,7 @@ Check 'D5 a real dialog is still IDE_MODAL_DIALOG' ($r.error.code -eq 'IDE_MODAL
 $global:M = @{ Scans = 0; FirstIsClear = $false; Cleaned = $false; Closed = $false; Quit = $false }
 & $mod {
     function script:Find-TcIdeModalDialog {
-        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
         $global:M.Scans++
         if ($global:M.FirstIsClear -and $global:M.Scans -eq 1) { return $null }
         New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec $TimeoutSec -Message 'mock: did not finish'

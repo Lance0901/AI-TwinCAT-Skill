@@ -15,6 +15,12 @@
 #                      LIFECYCLE_BLOCKED (a nested command was refused, the block exists already).
 #   Set-TcPlcState     records a block when WriteControl was sent and the port did not reach Run
 #                      / Stop, for example PLC_RUN_TIMEOUT or STATE_SET_FAILED from the readback.
+#   Killed process     (#236) Set-TcSystemState, Set-TcPlcState and Enable-TcConfig keep a marker while
+#                      their request is pending; a marker whose process died (MCP bridge killed on
+#                      IDE_MODAL_DIALOG / BRIDGE_TIMEOUT, crash) becomes a block with errorCode
+#                      INTERRUPTED at the next lifecycle check (Private/LifecycleInflight.ps1).
+#                      An exception escaping Enable-TcConfig after its request records
+#                      UNHANDLED_EXCEPTION.
 # Failures before anything was sent (BUILD_REQUIRED, BUILD_SELECTION_*, PLATFORM_*,
 # AMS_NETID_REQUIRED, PLC_PROJECT_NOT_FOUND of Enable-TcConfig -PlcProjectPath ...) never write
 # one: nothing was changed.
@@ -319,6 +325,14 @@ function Test-TcLifecycleClearReceipt {
 # cleared it (Test-TcLifecycleClearReceipt); otherwise it keeps blocking (fail closed).
 function Get-TcLifecycleBlockEntries {
     param([int]$TimeoutMs = 0)
+    # #236: in-flight markers of processes that died during their request become blocks first
+    # (only on the normal lock wait: the ~300 ms hint path, Get-TcLifecycleBlockAdvice, does not promote)
+    # A dead owner's marker that could not be promoted (or an unlistable directory) blocks every
+    # target like an unreadable state file (state-unreadable, fail closed; PR #244 review).
+    if ($TimeoutMs -le 0) {
+        $syncError = Sync-TcLifecycleInflight
+        if (-not [string]::IsNullOrWhiteSpace([string]$syncError)) { return @{ Error = [string]$syncError; Entries = $null } }
+    }
     $r = $null
     try { $r = Invoke-TcBuildRequiredLocked -MutexName (Get-TcLifecycleBlockMutexName) -TimeoutMs $TimeoutMs -Body { Read-TcLifecycleBlockState } }
     catch { $r = @{ Locked = $false; Error = $_.Exception.Message } }

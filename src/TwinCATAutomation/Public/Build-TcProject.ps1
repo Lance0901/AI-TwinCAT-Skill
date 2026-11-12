@@ -282,7 +282,8 @@
         return New-TcNoSysManagerResult
     }
 
-    $dialog = Find-TcIdeModalDialog
+    $dialog = Find-TcIdeModalDialogColdRetry   # #230: one longer retry when the first scan timed out
+    $modalScanRetried = [bool]$script:TcLastModalScanRetried
     if ($null -ne $dialog) {
         return New-TcModalDialogResult -Dialog $dialog -Operation 'SolutionBuild.Build'
     }
@@ -1002,6 +1003,7 @@
                 coverageComplete = $coverageComplete
                 warningCodes     = @($(if ($null -ne $data.PSObject.Properties['warningCodes']) { $data.warningCodes } else { @() }))
             }
+            $data | Add-Member -NotePropertyName 'modalScanRetried' -NotePropertyValue ([bool]$modalScanRetried) -Force   # #230
             New-TcResult -Success $true -Data $data
         }
     }

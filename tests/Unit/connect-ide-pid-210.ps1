@@ -87,7 +87,7 @@ function Add-Ide([int]$ProcId, [string]$Solution = '', [string]$ProgId = 'Visual
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
     function script:Find-TcIdeModalDialog {
-        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
         $p = if ($ProcessId -gt 0) { $ProcessId } else { [int]$script:TcIdeProcessId }
         switch ($global:Modal210) {
             'incomplete' { return (New-TcModalScanIncomplete -ProcessId $p -Reason 'timeout' -TimeoutSec 5 -Message 'mock') }

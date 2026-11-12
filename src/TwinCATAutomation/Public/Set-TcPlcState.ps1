@@ -73,6 +73,7 @@ function Set-TcPlcState {
         'Reset' = 2   # AdsState.Reset
     }
 
+    $inflight = $null   # #236: marker while the request is pending (a killed process leaves it -> block)
     try {
         # #131: state before the request (data.originalState / leftOriginal); Run reads it below
         $stateBefore = $null
@@ -126,6 +127,8 @@ function Set-TcPlcState {
         $newStateInfo = New-Object TwinCAT.Ads.StateInfo
         $newStateInfo.AdsState = [Enum]::ToObject([TwinCAT.Ads.AdsState], $targetState)
         $newStateInfo.DeviceState = 0
+        # #236 (PR #244 review): RunTestCycle / PlcLogin can be killed by the MCP modal probe while this waits
+        $inflight = Enter-TcLifecycleInflight -Command 'Set-TcPlcState' -AmsNetId ([string]$script:TcAdsAmsNetId) -RequestedState $State -Step "PLC state request (port $($script:TcAdsPort))"
         $script:TcAdsClient.WriteControl($newStateInfo)  # tcauto-allow(writecontrol): Set-TcPlcState itself; Run / Stop polled until reached, failure -> lifecycle block
 
         if ($State -eq 'Run' -or $State -eq 'Stop') {
@@ -192,5 +195,8 @@ function Set-TcPlcState {
     }
     catch {
         New-TcAdsErrorResult -ErrorRecord $_ -DefaultCode 'STATE_SET_FAILED' -MessagePrefix 'Failed to set PLC state'
+    }
+    finally {
+        Exit-TcLifecycleInflight -Token $inflight
     }
 }

@@ -230,6 +230,19 @@ function Enable-TcConfig {
         [int]$ActivateTimeoutSec = 180
     )
 
+    # #236: the body below runs dot-sourced (same scope, its 'return's end the block) so that
+    # (a) the in-flight marker written before the first runtime-changing request ($inflight) is
+    # removed on every way out - a marker left behind by a KILLED process becomes a lifecycle block
+    # (Private/LifecycleInflight.ps1) - and (b) an exception escaping after that request still
+    # records a block (fail closed, #68). The body is not re-indented to keep the diff readable.
+    # Note: $PSBoundParameters is empty inside a dot-sourced script block; the body does not use it.
+    $inflight = $null
+    $runtimeChangeSent = $false
+    $netId = $null; $blockRequested = $null; $reachedState = $null; $reachedNote = $null
+    $cycleEnded = $false   # body returned or threw (catch); still $false in finally = pipeline stopped (Ctrl+C)
+    try {
+        $cycleResult = . {
+
     try { Assert-TcConnection } catch {
         return New-TcResult -Success $false -ErrorMessage $_.Exception.Message -ErrorCode 'NOT_CONNECTED'
     }
@@ -822,6 +835,7 @@ function Enable-TcConfig {
         Read-TcIdeMemoryBeforeActivate
         $failedBefore = Read-TcLastBuildInfo
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $inflight = Enter-TcLifecycleInflight -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState 'Activated' -Step 'activate'
         $runtimeChangeSent = $true
         $activateSent = $true
         try {
@@ -912,6 +926,8 @@ function Enable-TcConfig {
     $fail = Test-TcStepModalDialog -Name 'set-config'
     if ($null -ne $fail) { return $fail }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # #236: one marker for the whole cycle (set-config .. verify); requestedState = the cycle's goal
+    $inflight = Enter-TcLifecycleInflight -Command 'Enable-TcConfig' -AmsNetId $netId -RequestedState $requestedState -Step 'set-config .. verify'
     $runtimeChangeSent = $true
     $blockRequested = 'Config'
     # -State Config: Set-TcSystemState collects no stuck-in-Config diagnostics (#194, -State Run only)
@@ -1269,4 +1285,25 @@ function Enable-TcConfig {
     else { "Configuration activated, TwinCAT restarted, program(s) downloaded, PLC state $plcText (verified by readback)." }
     $data | Add-Member -NotePropertyName 'message' -NotePropertyValue $summary
     New-TcResult -Success $true -Data $data
+        }
+        $cycleEnded = $true
+    }
+    catch {
+        $cycleEnded = $true
+        # #236 / #68: the request may have changed the runtime and nothing was read back
+        if ($runtimeChangeSent) {
+            $null = Set-TcLifecycleBlock -AmsNetId $netId -Command 'Enable-TcConfig' -ErrorCode 'UNHANDLED_EXCEPTION' -Message $_.Exception.Message `
+                -RequestedState $blockRequested -ReachedState $reachedState -ReadbackNote $reachedNote -Step 'after the runtime-changing request (exception)'
+        }
+        throw
+    }
+    finally {
+        # a stopped pipeline (Ctrl+C) skips catch but runs finally: same fail-closed record
+        if (-not $cycleEnded -and $runtimeChangeSent) {
+            $null = Set-TcLifecycleBlock -AmsNetId $netId -Command 'Enable-TcConfig' -ErrorCode 'INTERRUPTED' -Message 'Enable-TcConfig was stopped (pipeline stopped, e.g. Ctrl+C) after its runtime-changing request; nothing was read back.' `
+                -RequestedState $blockRequested -ReachedState $reachedState -ReadbackNote $reachedNote -Step 'stopped after the runtime-changing request'
+        }
+        Exit-TcLifecycleInflight -Token $inflight
+    }
+    $cycleResult
 }

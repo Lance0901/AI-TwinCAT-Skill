@@ -43,7 +43,7 @@ $global:FakeIde123 = @{ 1231 = 'Demo - TcXaeShell'; 1232 = 'Other - TcXaeShell' 
         if ($global:FakeIde123.ContainsKey($Id)) { return [PSCustomObject]@{ Id = $Id; MainWindowTitle = $global:FakeIde123[$Id]; MainWindowHandle = [IntPtr]::Zero; StartTime = [DateTime]'2026-01-01T00:00:00' } }
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $null }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) $null }
 }
 function Get-Rec([int]$Id) { & $mod { param($i) Get-TcIdeSolutionRecord -ProcessId $i } $Id }

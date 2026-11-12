@@ -101,7 +101,7 @@ $dte = [PSCustomObject]@{ Solution = $solution; Documents = $docs }
     $script:TcDte = $d; $script:TcIdeConnected = $true; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $s
     $script:TcSysManager = [PSCustomObject]@{ Mock = $true }
     # Reset tests set $global:Mock.Dialog to make step 1 see (and dismiss) a reload prompt once
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5) $d = $global:Mock.Dialog; $global:Mock.Dialog = $null; $d }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $d = $global:Mock.Dialog; $global:Mock.Dialog = $null; $d }
     function script:Close-TcReloadPrompt { [CmdletBinding()] param($Dialog, [string]$Answer, [int]$TimeoutSec = 15, [switch]$NoFollowUpScan) [PSCustomObject]@{ Dismissed = $true; Sent = $true; Reason = 'mock'; NextDialog = $null } }
 } $dte $sln
 

@@ -238,7 +238,12 @@ function modalHint(pid, ide, title, outcome) {
     outcome === 'dequeued'
       ? 'the call was not sent to PowerShell (the call running in the bridge ahead of it may stay blocked by the same dialog until its own timeout)'
       : 'the PowerShell bridge was killed and all IDE/ADS state is lost';
-  const after = 'The interrupted operation may still complete or partly apply after the dialog closes; check GetStatus / GetPlcState before re-running it.';
+  // #236: only a killed bridge can have left a runtime-changing request half done (a dequeued
+  // call never reached PowerShell)
+  const after =
+    outcome === 'killed'
+      ? 'The interrupted operation may still complete or partly apply after the dialog closes. If it had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle) it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check: do not re-run it; report it to the user, check read-only (GetSystemState / GetPlcState), ClearLifecycleBlock only after the user agreed.'
+      : 'Check GetStatus / GetPlcState before re-running the call.';
   if (ide?.selectedBy === 'launched') {
     return (
       `The IDE (pid ${pid}, launched by this server) shows the modal dialog '${title}'; ${lost}. ` +

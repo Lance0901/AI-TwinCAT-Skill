@@ -139,6 +139,8 @@
 
     $sysClient = $null
     $sent = $false   # #68: WriteControl went out (a later failure records a lifecycle block)
+    $inflight = $null   # #236: marker while the request is pending (a killed process leaves it -> block)
+    $completed = $false   # the try below returned or threw; still $false in finally = pipeline stopped (Ctrl+C)
     try {
         $sysClient = New-Object TwinCAT.Ads.TcAdsClient
         $sysClient.Connect($AmsNetId, 10000)
@@ -161,6 +163,7 @@
         $diagCapSec = 10
         if ($null -ne $script:TcSystemStateDiagCapSec) { try { $diagCapSec = [Math]::Max(0, [int]$script:TcSystemStateDiagCapSec) } catch { $diagCapSec = 10 } }
         $diagDeadline = (Get-Date).AddSeconds($TimeoutSec + $diagCapSec)
+        $inflight = Enter-TcLifecycleInflight -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -Step 'state request (port 10000)'
         $sent = $true
         $sysClient.WriteControl($newState)  # tcauto-allow(writecontrol): Set-TcSystemState itself; leave / wait / settle readback below, failure -> lifecycle block
 
@@ -220,7 +223,7 @@
                 -ErrorCode 'SYSTEM_STATE_MISMATCH' `
                 -Hint (Get-TcErrorHint -Code 'SYSTEM_STATE_MISMATCH') `
                 -Data $data
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $State -Step 'leave-original')
+            $completed = $true; return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $State -Step 'leave-original')
         }
 
         # Poll port 10000 until the target state is reached (replaces fixed sleep)
@@ -341,7 +344,7 @@
                 -ErrorCode 'RUNTIME_CRASHED' `
                 -Hint (Get-TcErrorHint -Code 'RUNTIME_CRASHED') `
                 -Data $data
-            return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -ReadbackNote 'runtime-gone' -Step "wait: runtime gone (RUNTIME_CRASHED); last state seen before it vanished: $seen")
+            $completed = $true; return (Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $null -ReadbackNote 'runtime-gone' -Step "wait: runtime gone (RUNTIME_CRASHED); last state seen before it vanished: $seen")
         }
 
         if (-not $wait.Reached) {
@@ -371,7 +374,7 @@
             # #68 / PR #200 review: the block is written before the (slower) diagnostics
             $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step
             if ($stuck) { & $addStuckDiagnostics $res 'SYSTEM_STATE_TIMEOUT' }
-            return $res
+            $completed = $true; return $res
         }
         $data.reached = $true
         $data.latencyMs = [int]$requestWatch.ElapsedMilliseconds
@@ -441,12 +444,14 @@
             # #68 / PR #200 review: the block is written before the (slower) diagnostics
             $res = Add-TcLifecycleBlockResult -Result $res -Command 'Set-TcSystemState' -AmsNetId $AmsNetId -RequestedState $State -ReachedState $reachedRb -ReadbackNote $note -Step $step
             if ($stuck) { & $addStuckDiagnostics $res 'SYSTEM_STATE_MISMATCH' }
-            return $res
+            $completed = $true; return $res
         }
 
+        $completed = $true
         New-TcResult -Success $true -Data $data
     }
     catch {
+        $completed = $true
         $res = New-TcAdsErrorResult -AmsNetId $AmsNetId -ErrorRecord $_ -DefaultCode 'SYSTEM_STATE_SET_FAILED' -MessagePrefix 'Failed to set system state'
         $rd = $res.PSObject.Properties['data']
         if ($null -eq $rd -or $null -eq $rd.Value) { $res | Add-Member -NotePropertyName 'data' -NotePropertyValue ([PSCustomObject]@{}) -Force }
@@ -459,5 +464,11 @@
         if ($null -ne $sysClient) {
             try { $sysClient.Dispose() } catch { }
         }
+        # PR #244 review: a stopped pipeline (Ctrl+C) skips catch but runs finally: fail closed
+        if ($sent -and -not $completed) {
+            $null = Set-TcLifecycleBlock -AmsNetId $AmsNetId -Command 'Set-TcSystemState' -ErrorCode 'INTERRUPTED' -RequestedState $State `
+                -Message 'Set-TcSystemState was stopped (pipeline stopped, e.g. Ctrl+C) after its state request; nothing was read back.' -Step 'stopped after the state request'
+        }
+        Exit-TcLifecycleInflight -Token $inflight
     }
 }

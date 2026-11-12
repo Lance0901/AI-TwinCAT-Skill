@@ -142,7 +142,7 @@ function New-RotEntry([int]$ProcId, [object]$Object, [string]$ProgId = 'VisualSt
         Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }
     function script:Find-TcIdeModalDialog {
-        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5)
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
         $mode = $global:Modal72
         if ($global:ModalQueue72.Count -gt 0) { $mode = $global:ModalQueue72[0]; $global:ModalQueue72.RemoveAt(0) }
         $p = if ($ProcessId -gt 0) { $ProcessId } else { [int]$script:TcIdeProcessId }
