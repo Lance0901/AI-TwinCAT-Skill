@@ -103,6 +103,11 @@ try {
     Reset-Mock; $global:C.Mode = 'false'; $global:C.Rows = @($rowSyntax, $rowLoad)
     $r = Test-TcPlcProject
     Check '#275 False + load row -> CHECK_FAILED stays, loadErrorItems 1' ($r.error.code -eq 'CHECK_FAILED' -and @($r.data.loadErrorItems).Count -eq 1 -and @($r.data.errorItems).Count -eq 2) (J $r.data)
+    # review F3: a load row of ANOTHER PLC project does not fail the check of this one
+    $rowLoadOther = { [PSCustomObject]@{ severity = 'Error'; code = $null; description = 'Parts of the XML data do not conform to the schema:'; project = 'plc2'; file = 'FB_Other.TcPOU'; line = 1; column = 0 } }
+    Reset-Mock; $global:C.Rows = @($rowLoadOther)
+    $r = Test-TcPlcProject
+    Check '#275 True + load row of another PLC -> success, row in otherLoadErrorItems + warning' ($r.success -and $r.data.passed -eq $true -and @($r.data.loadErrorItems).Count -eq 0 -and @($r.data.otherLoadErrorItems).Count -eq 1 -and (@($r.data.warningTexts) -join ' ') -match 'other PLC') (J $r.data)
     Reset-Mock
     $r = Test-TcPlcProject
     Check '#275 True without load rows -> loadErrorItems present and empty' ($r.success -and $null -ne $r.data.PSObject.Properties['loadErrorItems'] -and @($r.data.loadErrorItems).Count -eq 0) (J $r.data)

@@ -137,7 +137,12 @@ function Test-TcPlcProject {
         # #275 (measured 2026-11-13, 4026 VS2022): rows XAE wrote while loading a project file (no compiler
         # code, File = a bare object file name) stay in the Error List while CheckAllObjects returns True.
         # They are current (gone after the file is fixed and the solution reopened), not stale: no pass.
-        $loadRows = @($els.loadErrorItems)
+        # Only rows of THIS PLC project (Error List 'project' column = the PLC name, measured 2026-11-13:
+        # 'AxisInterface'); a broken file of another PLC of the solution is not a result of this check (review #275 F3)
+        $plcName = ([string]$prjPath -split '\^')[1]
+        $loadAll = @($els.loadErrorItems)
+        $loadRows = @($loadAll | Where-Object { [string]::IsNullOrWhiteSpace([string]$_.project) -or [string]$_.project -ieq $plcName })
+        $otherLoad = @($loadAll | Where-Object { $loadRows -notcontains $_ })
         $checkReturned = $passed
         if ($passed -eq $true -and $loadRows.Count -gt 0) {
             $passed = $false
@@ -147,6 +152,7 @@ function Test-TcPlcProject {
             $stale = @($els.errorItems | Where-Object { -not (Test-TcProjectLoadErrorItem $_) })
             if ($stale.Count -gt 0) { $warningTexts += "the Error List also shows $($stale.Count) other error row(s) (data.staleErrorItems) that CheckAllObjects did not report" }
         }
+        if ($otherLoad.Count -gt 0) { $warningTexts += "the Error List shows $($otherLoad.Count) project load error row(s) of other PLC project(s) (data.otherLoadErrorItems); they do not count for '$prjPath'" }
         if ($passed -eq $true) {
             $data | Add-Member -NotePropertyName errorItems -NotePropertyValue @()
             $data | Add-Member -NotePropertyName codeErrors -NotePropertyValue @()
@@ -170,6 +176,7 @@ function Test-TcPlcProject {
         }
         $data | Add-Member -NotePropertyName staleErrorItems -NotePropertyValue $stale
         $data | Add-Member -NotePropertyName loadErrorItems -NotePropertyValue $loadRows
+        if ($otherLoad.Count -gt 0) { $data | Add-Member -NotePropertyName otherLoadErrorItems -NotePropertyValue $otherLoad }
         # #66: runtime / system log rows ('<source>' (<number>): ..., e.g. TcUnit / ADSLOGSTR) are no check results
         $data | Add-Member -NotePropertyName runtimeMessages -NotePropertyValue @($els.runtimeMessages)
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue $(if ($null -eq $els.errorListError) { $els.warningCount } else { $null })
@@ -196,8 +203,7 @@ function Test-TcPlcProject {
         if ($checkReturned -eq $true) {
             $files = @($loadRows | ForEach-Object { ([string]$_.file).Trim() } | Select-Object -Unique)
             $data | Add-Member -NotePropertyName loadErrorFiles -NotePropertyValue $files
-            $first = @($loadRows | Select-Object -First 2 | ForEach-Object { "$(([string]$_.description -split '[
-]+')[0].Trim()) ($(([string]$_.file).Trim()))" }) -join '; '
+            $first = @($loadRows | Select-Object -First 2 | ForEach-Object { "$(([string]$_.description -split "[`r`n]+")[0].Trim()) ($(([string]$_.file).Trim()))" }) -join '; '
             return New-TcResult -Success $false -ErrorCode 'PROJECT_LOAD_ERRORS' -Hint (Get-TcErrorHint -Code 'PROJECT_LOAD_ERRORS') -Data $data `
                 -ErrorMessage "CheckAllObjects on '$prjPath' returned True, but XAE could not load $($files.Count) project file(s): $($files -join ', ') ($($loadRows.Count) Error List row(s) without a compiler code, data.loadErrorItems); those objects were not checked. $first"
         }

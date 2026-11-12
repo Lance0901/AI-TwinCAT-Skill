@@ -109,7 +109,10 @@ try {
         @{ Name = 'Tag Declaration missing'; Item = (LoadRows)[1]; Load = $true }
         @{ Name = 'Id wrong format'; Item = (LoadRows)[3]; Load = $true }
         @{ Name = 'sub-object GUID duplicate'; Item = (GuidRow); Load = $true }
-        @{ Name = 'bare .TcGVL / .TcDUT / .TcIO / .plcproj file, no code'; Item = (Row 'Error' 'Parts of the XML data do not conform to the schema:' 'GVL_Main.TcGVL' 1); Load = $true }
+        @{ Name = 'bare .TcGVL file, no code (inferred kind)'; Item = (Row 'Error' 'Parts of the XML data do not conform to the schema:' 'GVL_Main.TcGVL' 1); Load = $true }
+        @{ Name = 'task row on 4024 whose code was not inferred (PlcTask.TcTTO, line 0) is no load row (review F2)'; Item = (Row 'Error' "Identifier 'MainX' not defined" 'PlcTask.TcTTO' 0); Load = $false }
+        @{ Name = 'bare .plcproj / .tsproj error is no load row (not measured)'; Item = (Row 'Error' 'x' 'AxisInterface.plcproj' 1); Load = $false }
+        @{ Name = 'category library is no load row (review F6)'; Item = ([PSCustomObject]@{ severity = 'Error'; code = $null; description = "Could not open library 'x'"; project = 'plc'; file = 'FB_A.TcPOU'; line = $null; column = $null; category = 'library' }); Load = $false }
         @{ Name = 'line null still a load row'; Item = (Row 'Error' 'x' 'I_Itf.TcIO' $null); Load = $true }
         @{ Name = 'compiler row (C0046, (Impl))'; Item = (& $c0046); Load = $false }
         @{ Name = 'compiler row whose code was not parsed ((Impl) suffix) is no load row'; Item = (Row 'Error' 'x' 'MAIN.TcPOU (Impl)' 4); Load = $false }

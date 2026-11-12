@@ -994,9 +994,9 @@ function Test-TcProjectLoadErrorItem {
     <#
     .SYNOPSIS
         $true for an Error List ERROR row that XAE wrote while loading a PLC project file (#275), not a
-        compiler message: no compiler code, and the File column is a bare project file name (an object
-        file .Tc<Kind> such as .TcPOU / .TcDUT / .TcGVL / .TcIO, or a .plcproj / .tsproj / .xti), without
-        the '@<member>' or ' (Impl)' / ' (Decl)' that compiler rows carry.
+        compiler message: no compiler code, and the File column is a bare object file name (.TcPOU measured;
+        .TcDUT / .TcGVL / .TcIO inferred; never .TcTTO), without the '@<member>' or ' (Impl)' /
+        ' (Decl)' that the compiler rows of the measured run carried.
     .DESCRIPTION
         實測 2026-11-13 (VS2022 17.14 zh-TW + XAE 3.1.4026.22, registered tcauto, unreferenced FBs broken
         on disk, then ResetSolution): "Parts of the XML data do not conform to the schema:" (root element
@@ -1004,10 +1004,10 @@ function Test-TcProjectLoadErrorItem {
         row: severity Error, code null, file 'FB_B275A.TcPOU', line 1. LastBuildInfo said 0 failed
         projects and the build pane "0 errors" (the objects are not referenced). After the file was
         restored and the solution reopened (ResetSolution) the rows were gone before any build, so they
-        are current load errors, not rows left from an earlier build. Compiler rows of the same run all
-        had a code (C0xxx) and 'File.TcPOU@Member (Impl)' / 'File.TcPOU (Impl)'. A compiler row whose
-        code could not be read from the text still has the ' (Impl)' / ' (Decl)' part, so it is not
-        taken for a load row. Library Manager rows (category library) and warnings never are.
+        are current load errors, not rows left from an earlier build. The compiler rows of the same run (4026 VS2022, which
+        has a Code column) all had a code and 'File.TcPOU@Member (Impl)' / 'File.TcPOU (Impl)'. Task rows
+        ('PlcTask.TcTTO', line 0) are bare file names too, so .TcTTO is excluded. 4024 (TcXaeShell, no
+        Code column) was not measured. Library Manager rows (category library) and warnings never are.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowNull()][object]$Item)
@@ -1015,9 +1015,13 @@ function Test-TcProjectLoadErrorItem {
     if ([string]$Item.severity -ne 'Error') { return $false }
     if (-not [string]::IsNullOrWhiteSpace([string]$Item.code)) { return $false }
     if (Test-TcLibraryManagerItem $Item) { return $false }
+    if ($null -ne $Item.PSObject.Properties['category'] -and [string]$Item.category -eq 'library') { return $false }
     $file = ([string]$Item.file).Trim()
     if ([string]::IsNullOrEmpty($file)) { return $false }
-    return ($file -match '^[^@()\\/:*?"<>|]+\.(Tc[A-Za-z]+|plcproj|tsproj|xti)$')
+    # Only object kinds XAE loads with the same XML loader (.TcPOU measured; .TcDUT / .TcGVL / .TcIO
+    # inferred). NOT .TcTTO: a task row is a compiler row ('PlcTask.TcTTO', line 0, C0046 / C0035 /
+    # C0036), and on 4024 (no Code column) its code may not be inferred from the text (review #275 F2).
+    return ($file -match '^[^@()\\/:*?"<>|]+\.(TcPOU|TcDUT|TcGVL|TcIO)$')
 }
 
 function Test-TcStaticAnalysisItem {

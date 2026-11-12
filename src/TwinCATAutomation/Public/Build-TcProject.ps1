@@ -990,9 +990,9 @@
             # #275: the build succeeded, but XAE could not load project file(s): fail closed (#68), no success
             $data | Add-Member -NotePropertyName 'completeBuild' -NotePropertyValue $false
             $files = @($data.loadErrorFiles)
-            $first = @($loadErrorItems | Select-Object -First 2 | ForEach-Object { "$(([string]$_.description -split "[
-]+")[0].Trim()) ($(([string]$_.file).Trim()))" }) -join '; '
+            $first = @($loadErrorItems | Select-Object -First 2 | ForEach-Object { "$(([string]$_.description -split "[`r`n]+")[0].Trim()) ($(([string]$_.file).Trim()))" }) -join '; '
             & $recordUnverified "PROJECT_LOAD_ERRORS, $($loadErrorItems.Count) project load error(s)" $data
+            $data | Add-Member -NotePropertyName 'modalScanRetried' -NotePropertyValue ([bool]$modalScanRetried) -Force   # #230
             New-TcResult -Success $false -ErrorCode 'PROJECT_LOAD_ERRORS' -Hint (Get-TcErrorHint -Code 'PROJECT_LOAD_ERRORS') -Data $data `
                 -ErrorMessage "Build finished without compiler errors, but XAE could not load $($files.Count) project file(s): $($files -join ', ') ($($loadErrorItems.Count) Error List row(s) without a compiler code, data.loadErrorItems). Those objects were not compiled and are broken in the IDE. $first"
         }
