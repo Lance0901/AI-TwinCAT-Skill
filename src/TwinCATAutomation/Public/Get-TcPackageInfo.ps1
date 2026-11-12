@@ -24,26 +24,27 @@ function Get-TcPackageInfo {
         TCPKG_LIST_FAILED (tcpkg exit code not 0, e.g. unknown package id or feed not reachable /
         not signed in, or output that is not JSON; data.runs[].stderrTail). Each carries error.hint.
     .PARAMETER PackageId
-        Package ids to report (exact, case-insensitive). Default: TwinCAT.Standard.XAE,
-        TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE.
+        Package ids to report (exact, case-insensitive; at most 5, every id is one feed query). Default:
+        TwinCAT.Standard.XAE, TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE.
     .PARAMETER NoAvailable
         Only the installed packages: no feed query (offline, about 2 s).
     .PARAMETER TimeoutSec
-        Upper bound in seconds for EACH tcpkg call (default 60); the call is stopped after it.
+        Upper bound in seconds for EACH tcpkg call (default 60, max 120); the call is stopped after it.
     .EXAMPLE
         Get-TcPackageInfo -PackageId TwinCAT.StandardRM.XAE
     #>
     [CmdletBinding()]
     param(
         [Parameter()]
-        [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+        [ValidateCount(1, 5)]
+        [ValidatePattern('\A[A-Za-z0-9][A-Za-z0-9._-]*\z')]
         [string[]]$PackageId,
 
         [Parameter()]
         [switch]$NoAvailable,
 
         [Parameter()]
-        [ValidateRange(5, 1800)]
+        [ValidateRange(5, 120)]
         [int]$TimeoutSec = 60
     )
 

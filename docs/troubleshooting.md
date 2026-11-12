@@ -344,7 +344,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **兩個 cmdlet**:`Get-TcPackageInfo`(MCP `GetPackageInfo`,唯讀)與 `Install-TcPackage`(MCP `InstallPackage`,預設只回計畫)。都只呼叫 TwinCAT Package Manager 的命令列工具 `tcpkg`([Working with the command line](https://infosys.beckhoff.com/content/1033/tc3_installation/15698626059.html)),feed 與 myBeckhoff 帳號由使用者自己在 Package Manager 設定,模組不讀、不存、不傳帳號密碼。
 - **查詢**:`tcpkg list -i --as-json`(已安裝)與 `tcpkg list <id> -a --as-json`(feed 上所有版本,每個 id 一次,走網路)([tcpkg list](https://infosys.beckhoff.com/content/1033/tc3_installation/21007205899.html))。預設 id:`TwinCAT.Standard.XAE`、`TwinCAT.Standard.XAR`、`TwinCAT.StandardRM.XAE`(Remote Manager)。每個 `TwinCAT.StandardRM.XAE` 版本附 `buildFolder`(`Build_<a>.<b>`)與 `buildFolderExists`(資料夾裡有 .dll,和 `Connect-TcIde` 選 IDE 用的同一個檢查)。
-- **安裝**:`Install-TcPackage -PackageId <id> -Version <ver>` 不帶 `-Approved` 時什麼都不裝,回 `data.executed = false` 與計畫:`data.command`(完整指令 `tcpkg install <id>=<ver> -y`)、需要系統管理員、要關的 IDE(`data.runningIdes` 有 pid)、`data.blockers`。把計畫給使用者看,同意後才帶 `-Approved`(MCP `Approved=true`)。之後讀回 `tcpkg list -i`,列出該版本才算成功(fail closed)。只裝 IDE 端(`TwinCAT.Standard.XAE` / `TwinCAT.StandardRM.XAE`),不裝 runtime(XAR)。`ID=版本`、`-y`、需要系統管理員、XAE Shell / Visual Studio 可能要關:[tcpkg install](https://infosys.beckhoff.com/content/1033/tc3_installation/21007208203.html)。
+- **安裝**:`Install-TcPackage -PackageId <id> -Version <ver>` 不帶 `-Approved` 時什麼都不裝,回 `data.executed = false` 與計畫:`data.command`(完整指令 `tcpkg install <id>=<ver> -y`)、需要系統管理員、要關的 IDE(`data.runningIdes` 有 pid)、`data.blockers`。把計畫給使用者看,同意後才帶 `-Approved`(MCP `Approved=true`)。之後讀回 `tcpkg list -i`,列出該版本才算成功(fail closed)。`-PackageId` 只接受 `TwinCAT.Standard.XAE` / `TwinCAT.StandardRM.XAE`(拒絕 runtime 的 XAR);但 tcpkg 會自己解析相依套件,`-y` 也一併確認,計畫只列目標套件。裝完 `data.changedPackages` 是前後 `list -i` 的差異,目標以外的變動列在 `data.unexpectedChanges` / `data.warnings`。Remote Manager 裝完找不到 `Build_` 資料夾也會進 `data.warnings`。`ID=版本`、`-y`、需要系統管理員、XAE Shell / Visual Studio 可能要關:[tcpkg install](https://infosys.beckhoff.com/content/1033/tc3_installation/21007208203.html)。
 - **實測(2026-11-12,Windows 11 zh-TW,TcPkg 2.4.18,只跑唯讀 list / source list / --help)**:`list -i` 約 1.7 MB、1.4–1.7 s;`list <id> -a` 每次 3–9 s;`TwinCAT.StandardRM.XAE 4024.71.2` 對應 `Build_4024.71`(資料夾去掉第三段);已安裝的 4024.71.2 不在 feed(feed 只有 4024.71.5);不存在的 id 回 exit 144、純文字(不是 JSON)。`install` 本身沒有在真機執行過,只有單元測試的 mock。
 - **`PROGID_REQUIRED` 的安裝建議**:4024 專案只缺「完全相同版本」的 Remote Manager 資料夾時,`Connect-TcIde` / `Get-TcProjectVersion` 的 hint 附上 `Get-TcPackageInfo` / `Install-TcPackage` 的用法,`data.remoteManagerInstall`(`Get-TcProjectVersion` 在 `data.launch.remoteManagerInstall`)有 `build` / `buildFolder` / `versionPrefix`。只是提示,不會自動查或裝。
 
@@ -355,13 +355,13 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TCPKG_TIMEOUT
 
-- **現象**:某個 `tcpkg` 呼叫在 `-TimeoutSec`(查詢預設每次 60 s;`Install-TcPackage` 的安裝預設 1800 s,list 每次 120 s)內沒結束,模組把行程停掉。`data.runs` / `data.steps` 有指令與耗時。
-- **下一步**:查詢 → feed 是網路查詢,先用 `Get-TcPackageInfo -NoAvailable` 看已安裝的,或加大 `-TimeoutSec`。安裝逾時 → 安裝被中斷、狀態未知,不要直接重跑;先 `Get-TcPackageInfo -PackageId <id>` 讀回,把結果給使用者看,請使用者在 Package Manager UI 確認。
+- **現象**:某個 `tcpkg` 呼叫在 `-TimeoutSec`(查詢預設每次 60 s、最多 120 s;`Install-TcPackage` 的安裝預設 1800 s、最多 6600 s,list 每次 120 s)內沒結束。`data.runs` / `data.steps` 有指令與耗時。查詢的 `list` 會被停掉;**安裝不會**:停掉 tcpkg.exe 停不了它可能啟動的安裝程式(.NET Framework 沒有停整個行程樹的 API),半途被殺的安裝比讓它跑完更糟,所以留著它跑,`data.installProcessId` 是它的 pid,不讀回。
+- **下一步**:查詢 → feed 是網路查詢,先用 `Get-TcPackageInfo -NoAvailable` 看已安裝的,或加大 `-TimeoutSec`。安裝逾時 → 可能還在背景安裝、狀態未知,不要重跑;等 `data.installProcessId` 結束後再 `Get-TcPackageInfo -PackageId <id>` 讀回,把結果給使用者看,請使用者在 Package Manager UI 確認。
 
 ### TCPKG_LIST_FAILED
 
 - **現象**:`tcpkg list` 的 exit code 不是 0,或輸出不是 JSON 陣列。`data.runs[].stderrTail` / `stdoutTail` 是 tcpkg 的訊息。
-- **為什麼**:套件名稱要完全相同(不存在的 id:exit 144,實測 2026-11-12);feed 連不到、沒登入 myBeckhoff 也會失敗。
+- **為什麼**:套件名稱要完全相同(不存在的 id:exit 144,實測 2026-11-12)。feed 連不到、沒登入 myBeckhoff 時的行為沒有實測過,看 tcpkg 的訊息。
 - **下一步**:請使用者在 Package Manager 確認 feed(`tcpkg source list`);只需要已安裝清單時用 `-NoAvailable`。
 
 ### TCPKG_ELEVATION_REQUIRED
@@ -372,12 +372,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 ### TCPKG_IDE_RUNNING
 
 - **現象**:`Install-TcPackage -Approved`,但有 `TcXaeShell` / `devenv` 在跑(`data.runningIdes`:pid、路徑、視窗標題)。什麼都沒裝。
-- **下一步**:把清單給使用者看,請使用者自己存檔、關掉(本 session 開的可用 `Disconnect-TcIde -Quit`)。不要 kill 別人的 IDE。都關掉後再帶 `-Approved` 重跑。
+- **下一步**:把清單給使用者看,由使用者自己存檔、關掉;不要自己關或 kill(本 session 開的 IDE 也要先經使用者同意才 `Disconnect-TcIde -Quit`)。都關掉後再帶 `-Approved` 重跑。
 
 ### TCPKG_VERSION_NOT_FOUND
 
 - **現象**:`Install-TcPackage -Approved` 的 `-Version` 不在任何已設定的 feed 上(`data.availableVersions`)。什麼都沒裝。
-- **為什麼**:feed 不一定還有原本那一版(實測 2026-11-12:已安裝的 4024.71.2 不在 feed,只有 4024.71.5);4024 系列在 Beckhoff Outdated Feed。
+- **為什麼**:feed 不一定還有原本那一版(實測 2026-11-12:已安裝的 4024.71.2 不在 feed,只有 4024.71.5;4024.x 的 Remote Manager 版本列在 Beckhoff Outdated Feed)。
 - **下一步**:從 `data.availableVersions` 選版本給使用者確認,再跑 `Install-TcPackage`(先不帶 `-Approved` 看計畫)。沒有 Outdated Feed 時請使用者自己加。
 
 ### TCPKG_INSTALL_FAILED
@@ -387,7 +387,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TCPKG_INSTALL_UNVERIFIED
 
-- **現象**:`tcpkg install` 回 exit 0,但讀回的 `tcpkg list -i` 沒有這個版本(`data.steps` 的 readback 步驟)。不算成功(fail closed)。
+- **現象**:`tcpkg install` 回 exit 0,但讀回的 `tcpkg list -i` 沒有這個版本(`data.steps` 的 readback 步驟)。不算成功(fail closed)。原因未知,沒有實測過。
 - **下一步**:先 `Get-TcPackageInfo -PackageId <id>` 再讀一次,把結果給使用者看;不要直接再裝一次。
 
 ### IDE_LAUNCH_PENDING

@@ -123,7 +123,7 @@ actions:
         type: array
         items:
           type: string
-        description: "Package ids to report (exact, case-insensitive). Default: TwinCAT.Standard.XAE, TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE."
+        description: "Package ids to report (exact, case-insensitive; at most 5, every id is one feed query). Default: TwinCAT.Standard.XAE, TwinCAT.Standard.XAR, TwinCAT.StandardRM.XAE."
         required: false
       NoAvailable:
         type: boolean
@@ -132,13 +132,13 @@ actions:
       TimeoutSec:
         type: integer
         minimum: 5
-        maximum: 1800
-        description: "Upper bound in seconds for EACH tcpkg call (default 60); the call is stopped after it."
+        maximum: 120
+        description: "Upper bound in seconds for EACH tcpkg call (default 60, max 120); the call is stopped after it."
         required: false
         default: 60
 
   - name: InstallPackage
-    description: "Install a TwinCAT XAE or Remote Manager version with tcpkg (#229). WITHOUT Approved=true NOTHING is installed: the result is a plan (success=true, data.executed = false) with data.command (the complete command, tcpkg install <PackageId>=<Version> -y), requiresAdministrator, isAdministrator, idesToClose, runningIdes[] {processId, name, path, title}, alreadyInstalled, versionInFeed, feedSources, availableVersions, buildFolder / buildFolderExists (Remote Manager), blockers[] (not-elevated, ide-running, version-not-in-feed) and data.hint. Show the plan to the user and ask; call again with Approved=true ONLY after the user agreed to exactly this command. Never elevate, never close or kill IDEs yourself. With Approved=true: already installed -> success, executed=false; not elevated -> TCPKG_ELEVATION_REQUIRED (no UAC prompt is opened); TcXaeShell / devenv running -> TCPKG_IDE_RUNNING (pids in data.runningIdes); version not on a configured feed -> TCPKG_VERSION_NOT_FOUND (data.availableVersions); then the install runs (TimeoutSec, default 1800) and tcpkg list -i is read back: success only when the version is listed (fail closed); TCPKG_INSTALL_FAILED (exit code not 0), TCPKG_TIMEOUT (stopped, state unknown: read back with GetPackageInfo, do not rerun), TCPKG_INSTALL_UNVERIFIED (exit 0 but not listed). data.steps[] = query, install, readback. Only TwinCAT.Standard.XAE and TwinCAT.StandardRM.XAE (never the runtime XAR); feeds and the myBeckhoff account are the user's business. Version = an exact version from GetPackageInfo data.available[].version (e.g. 4024.71.5; the feed may not have the version that was installed before)."
+    description: "Install a TwinCAT XAE or Remote Manager version with tcpkg (#229). WITHOUT Approved=true NOTHING is installed: the result is a plan (success=true, data.executed = false) with data.command (the complete command, tcpkg install <PackageId>=<Version> -y), requiresAdministrator, isAdministrator, idesToClose, runningIdes[] {processId, name, path, title}, alreadyInstalled, versionInFeed, feedSources, availableVersions, buildFolder / buildFolderExists (Remote Manager), blockers[] (not-elevated, ide-running, version-not-in-feed) and data.hint. The plan lists the target package only: tcpkg resolves dependencies itself and -y confirms them too (data.dependencyNote). Show the plan to the user and ask; call again with Approved=true ONLY after the user agreed to exactly this command. Never elevate, never close or kill IDEs yourself (an IDE this session opened only after the user agreed). With Approved=true: already installed -> success, executed=false; not elevated -> TCPKG_ELEVATION_REQUIRED (no UAC prompt is opened); TcXaeShell / devenv running -> TCPKG_IDE_RUNNING (pids in data.runningIdes); version not on a configured feed -> TCPKG_VERSION_NOT_FOUND (data.availableVersions); then the install runs (TimeoutSec, default 1800) and tcpkg list -i is read back: success only when the version is listed (fail closed); TCPKG_INSTALL_FAILED (exit code not 0), TCPKG_TIMEOUT (tcpkg is NOT stopped and may still be installing: data.installProcessId; state unknown, nothing read back; wait for that pid to end, then GetPackageInfo; never rerun), TCPKG_INSTALL_UNVERIFIED (exit 0 but not listed). data.changedPackages = packages whose installed versions differ before / after; data.unexpectedChanges / data.warnings = changes other than PackageId (report them to the user), and a missing Build_ folder after a Remote Manager install. data.steps[] = query, install, readback. PackageId accepts only TwinCAT.Standard.XAE and TwinCAT.StandardRM.XAE (the runtime XAR is refused; dependencies are tcpkg's decision); feeds and the myBeckhoff account are the user's business. Version = an exact version from GetPackageInfo data.available[].version (e.g. 4024.71.5; the feed may not have the version that was installed before)."
     parameters:
       PackageId:
         type: string
@@ -156,8 +156,8 @@ actions:
       TimeoutSec:
         type: integer
         minimum: 60
-        maximum: 7200
-        description: "Upper bound in seconds for the install call (default 1800); each read-only tcpkg list call is bounded by 120 s."
+        maximum: 6600
+        description: "Upper bound in seconds for the install call (default 1800, max 6600); each read-only tcpkg list call is bounded by 120 s."
         required: false
         default: 1800
 

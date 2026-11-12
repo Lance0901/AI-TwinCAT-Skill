@@ -26,15 +26,17 @@ $script:TcPkgRemoteManagerId = 'TwinCAT.StandardRM.XAE'
 # Process names of the IDEs that host the TwinCAT XAE (Get-TcIdeExeName).
 $script:TcPkgIdeProcessNames = @('TcXaeShell', 'devenv')
 
-# Path of TcPkg.exe, or $null. PATH first, then the measured default location. Seam for the unit tests.
+# Path of TcPkg.exe, or $null. The measured install location first (an elevated install must not
+# run whatever tcpkg a user-writable PATH folder holds first), then PATH, .exe only (no .cmd / .bat).
+# Seam for the unit tests.
 function Get-TcPkgExecutable {
     [CmdletBinding()]
     param()
-    $cmd = Get-Command -Name 'tcpkg' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) { return [string]$cmd.Source }
     $pd = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { 'C:\ProgramData' } else { $env:ProgramData }
     $default = Join-Path $pd 'Beckhoff\TcPkg\TcPkg.exe'
     if (Test-Path -LiteralPath $default -PathType Leaf) { return $default }
+    $cmd = Get-Command -Name 'tcpkg.exe' -CommandType Application -ErrorAction SilentlyContinue | Where-Object { [string]$_.Source -like '*.exe' } | Select-Object -First 1
+    if ($null -ne $cmd -and -not [string]::IsNullOrWhiteSpace([string]$cmd.Source)) { return [string]$cmd.Source }
     $null
 }
 
@@ -46,14 +48,17 @@ function ConvertTo-TcPkgArgument {
 }
 
 # Runs -Exe with -Arguments, stdout / stderr read asynchronously (list -i writes ~1.7 MB, a
-# synchronous read of one stream can dead-lock on the other), killed after -TimeoutSec.
+# synchronous read of one stream can dead-lock on the other). After -TimeoutSec the process is
+# killed, or with -NoKillOnTimeout left running (install: killing tcpkg would not stop installers it
+# may have started - .NET Framework has no Kill(entireProcessTree) - and a half-killed install is
+# worse than one that finishes; its pid is returned).
 # Returns [PSCustomObject]@{ exitCode ($null on timeout / start failure); stdout; stderr; timedOut;
-# startError; elapsedSec; commandLine }. Seam for the unit tests.
+# killed; processId; startError; elapsedSec; commandLine }. Seam for the unit tests.
 function Invoke-TcPkgProcess {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60)
+    param([Parameter(Mandatory)][string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60, [switch]$NoKillOnTimeout)
     $argLine = (@($Arguments | ForEach-Object { ConvertTo-TcPkgArgument $_ }) -join ' ')
-    $out = [PSCustomObject]@{ exitCode = $null; stdout = ''; stderr = ''; timedOut = $false; startError = $null; elapsedSec = 0; commandLine = ("$(ConvertTo-TcPkgArgument $Exe) $argLine").Trim() }
+    $out = [PSCustomObject]@{ exitCode = $null; stdout = ''; stderr = ''; timedOut = $false; killed = $false; processId = $null; startError = $null; elapsedSec = 0; commandLine = ("$(ConvertTo-TcPkgArgument $Exe) $argLine").Trim() }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = $argLine
@@ -70,13 +75,15 @@ function Invoke-TcPkgProcess {
     try { $null = $p.Start() }
     catch { $out.startError = $_.Exception.Message; $p.Dispose(); return $out }
     try {
+        $out.processId = $p.Id
         $p.StandardInput.Close()
         $so = $p.StandardOutput.ReadToEndAsync()
         $se = $p.StandardError.ReadToEndAsync()
         $ms = [int][math]::Min([double]$TimeoutSec * 1000, [double][int]::MaxValue)
         if (-not $p.WaitForExit($ms)) {
             $out.timedOut = $true
-            try { $p.Kill() } catch { Write-Verbose "tcpkg kill failed: $($_.Exception.Message)" }
+            if ($NoKillOnTimeout) { return $out }   # finally disposes the handle only; the process keeps running
+            try { $p.Kill(); $out.killed = $true } catch { Write-Verbose "tcpkg kill failed: $($_.Exception.Message)" }
             $null = $p.WaitForExit(5000)
         }
         else {
@@ -166,11 +173,12 @@ function Get-TcPkgRunningIde {
 function Get-TcPkgState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$PackageId, [int]$TimeoutSec = 60, [switch]$NoAvailable)
-    $out = [PSCustomObject]@{ errorCode = $null; message = $null; exe = $Exe; installed = @(); available = @(); runs = @(); remoteManagerRoot = $null; remoteManagerBuilds = @() }
+    $out = [PSCustomObject]@{ errorCode = $null; message = $null; exe = $Exe; installed = @(); installedItems = @(); available = @(); runs = @(); remoteManagerRoot = $null; remoteManagerBuilds = @() }
     $want = @($PackageId | ForEach-Object { $_.ToLowerInvariant() })
     $inst = Invoke-TcPkgList -Exe $Exe -Arguments @('list', '-i', '--as-json') -TimeoutSec $TimeoutSec
     $out.runs += $inst.run
     if (-not $inst.ok) { $out.errorCode = $inst.errorCode; $out.message = $inst.message; return $out }
+    $out.installedItems = @($inst.items)
     $installed = @($inst.items | Where-Object { $want -contains ([string]$_.Id).ToLowerInvariant() } | ForEach-Object {
             [PSCustomObject]@{ id = [string]$_.Id; version = [string]$_.Version; installDate = $(if ($null -ne $_.InstallDate) { [string]$_.InstallDate } else { $null }); workload = $_.Workload }
         } | Sort-Object id, { Get-TcPkgVersionKey $_.version })
@@ -203,6 +211,25 @@ function Get-TcPkgState {
         }
     }
     $out
+}
+
+# Packages whose installed versions differ between two 'tcpkg list -i' item lists (#229 review M3:
+# -y also confirms whatever tcpkg resolves as dependencies). Returns @(@{ id; before[]; after[] }).
+function Compare-TcPkgInstalled {
+    param([object[]]$Before = @(), [object[]]$After = @())
+    $map = @{}
+    foreach ($side in @(@{ k = 'before'; items = $Before }, @{ k = 'after'; items = $After })) {
+        foreach ($i in @($side.items)) {
+            if ($null -eq $i) { continue }
+            $id = [string]$i.Id
+            if (-not $map.ContainsKey($id)) { $map[$id] = @{ before = @(); after = @() } }
+            $map[$id][$side.k] += [string]$i.Version
+        }
+    }
+    @($map.Keys | Sort-Object | ForEach-Object {
+            $b = @($map[$_].before | Sort-Object); $a = @($map[$_].after | Sort-Object)
+            if (($b -join ',') -ne ($a -join ',')) { [PSCustomObject]@{ id = $_; before = $b; after = $a } }
+        })
 }
 
 # Sort key of a dotted numeric version (zero-padded parts), so 4024.7 sorts before 4024.10.

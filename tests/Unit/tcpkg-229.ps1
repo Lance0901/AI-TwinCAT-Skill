@@ -44,6 +44,10 @@ try {
     Check 'A3 exe missing -> startError, no exception' ($null -ne $r.startError -and $null -eq $r.exitCode) "$($r.startError)"
     $q = & $mod { ConvertTo-TcPkgArgument 'C:\Program Files\x y\' }
     Check 'A4 argument with spaces quoted, trailing backslash doubled' ($q -eq '"C:\Program Files\x y\\"') $q
+    $r = & $mod { param($e) Invoke-TcPkgProcess -Exe $e -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 60') -TimeoutSec 2 -NoKillOnTimeout } $ps
+    $alive = $null -ne (Get-Process -Id $r.processId -ErrorAction SilentlyContinue)
+    Check 'A6 -NoKillOnTimeout (install): timedOut, process left running, pid returned' ($r.timedOut -and -not $r.killed -and $alive) "pid=$($r.processId) alive=$alive"
+    if ($alive) { Stop-Process -Id $r.processId -ErrorAction SilentlyContinue }   # the child this test started
     Check 'A5 Build folder name drops the third part' ((& $mod { ConvertTo-TcPkgBuildFolderName '4024.71.2' }) -eq 'Build_4024.71' -and $null -eq (& $mod { ConvertTo-TcPkgBuildFolderName 'abc' })) ''
 
     # --- mocks ---
@@ -62,7 +66,7 @@ try {
                 @{ Id = 'TwinCAT.StandardRM.XAE'; Version = '4024.7.37'; Source = 'Beckhoff Outdated Feed'; IsPreview = $null }
                 @{ Id = 'TwinCAT.StandardRM.XAE'; Version = '4026.22.0'; Source = 'Beckhoff Stable Feed'; IsPreview = $null }
             )
-            'TwinCAT.Standard.XAE'   = @(@{ Id = 'TwinCAT.Standard.XAE'; Version = '4026.22.0'; Source = 'Beckhoff Stable Feed'; IsPreview = $null })
+            'TwinCAT.Standard.XAE'   = @(@{ Id = 'TwinCAT.Standard.XAE'; Version = '4026.22.0'; Source = 'Beckhoff Stable Feed'; IsPreview = $null }, @{ Id = 'TwinCAT.Standard.XAE'; Version = '4026.23.1'; Source = 'Beckhoff Stable Feed'; IsPreview = $null })
             'TwinCAT.Standard.XAR'   = @(@{ Id = 'TwinCAT.Standard.XAR'; Version = '4026.22.0'; Source = 'Beckhoff Stable Feed'; IsPreview = $null })
         }
         listMode    = 'ok'        # ok | timeout | exit | notjson
@@ -78,13 +82,14 @@ try {
         function script:Get-TcPkgRunningIde { [CmdletBinding()] param() @($global:Pkg229.ides) }
         function script:Get-TcXaeInstallInfo { [CmdletBinding()] param() [PSCustomObject]@{ installedBuild = 4026; remoteManagerRoot = 'C:\TwinCAT\3.1\Components\Base'; remoteManagerBuilds = @($global:Pkg229.xaeBuilds); remoteManagerReason = $null; remoteManagerSearched = @() } }
         function script:Invoke-TcPkgProcess {
-            [CmdletBinding()] param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60)
+            [CmdletBinding()] param([string]$Exe, [string[]]$Arguments = @(), [int]$TimeoutSec = 60, [switch]$NoKillOnTimeout)
             $m = $global:Pkg229; $m.calls.Add(($Arguments -join ' '))
-            $res = [PSCustomObject]@{ exitCode = 0; stdout = ''; stderr = ''; timedOut = $false; startError = $null; elapsedSec = 0.1; commandLine = "$Exe $($Arguments -join ' ')" }
+            $res = [PSCustomObject]@{ exitCode = 0; stdout = ''; stderr = ''; timedOut = $false; killed = $false; processId = 9999; startError = $null; elapsedSec = 0.1; commandLine = "$Exe $($Arguments -join ' ')" }
             if ($Arguments[0] -eq 'install') {
                 switch ($m.installMode) {
                     'exit' { $res.exitCode = 1; $res.stderr = 'Error: install failed' }
-                    'timeout' { $res.exitCode = $null; $res.timedOut = $true }
+                    'timeout' { $res.exitCode = $null; $res.timedOut = $true; $global:Pkg229.noKill = [bool]$NoKillOnTimeout }
+                    'okdep' { $id, $ver = $Arguments[1] -split '=', 2; $m.installed = @($m.installed) + @(@{ Id = $id; Version = $ver; Source = $null; Workload = $true; InstallDate = $null }, @{ Id = 'TwinCAT.Standard.XAR'; Version = '4026.23.1'; Source = $null; Workload = $true; InstallDate = $null }) }
                     'ok' { $id, $ver = $Arguments[1] -split '=', 2; $m.installed = @($m.installed) + @(@{ Id = $id; Version = $ver; Source = $null; Workload = $true; InstallDate = $null }) }
                     default { }
                 }
@@ -104,7 +109,7 @@ try {
             $res
         }
     }
-    $reset = { $global:Pkg229.calls.Clear(); $global:Pkg229.listMode = 'ok'; $global:Pkg229.listFailOn = 'list'; $global:Pkg229.installMode = 'ok'; $global:Pkg229.elevated = $true; $global:Pkg229.ides = @(); $global:Pkg229.exe = 'C:\fake\TcPkg.exe' }
+    $reset = { $global:Pkg229.noKill = $null; $global:Pkg229.calls.Clear(); $global:Pkg229.listMode = 'ok'; $global:Pkg229.listFailOn = 'list'; $global:Pkg229.installMode = 'ok'; $global:Pkg229.elevated = $true; $global:Pkg229.ides = @(); $global:Pkg229.exe = 'C:\fake\TcPkg.exe' }
 
     # --- B: Get-TcPackageInfo ---
     & $reset
@@ -140,6 +145,10 @@ try {
     Check 'B12 output not JSON -> TCPKG_LIST_FAILED' (-not $r.success -and $r.error.code -eq 'TCPKG_LIST_FAILED' -and $r.error.message -match 'JSON') "$($r.error.message)"
     $bad = $false; try { $null = Get-TcPackageInfo -PackageId 'x; rm -rf' } catch { $bad = $true }
     Check 'B13 -PackageId with spaces / ; rejected by validation' $bad ''
+    $bad = $false; try { $null = Get-TcPackageInfo -PackageId a, b, c, d, e, f } catch { $bad = $true }
+    Check 'B14 more than 5 ids rejected (bounded total time)' $bad ''
+    $bad = $false; try { $null = Get-TcPackageInfo -TimeoutSec 121 } catch { $bad = $true }
+    Check 'B15 TimeoutSec above 120 rejected' $bad ''
 
     # --- C: Install-TcPackage ---
     & $reset; $global:Pkg229.elevated = $false; $global:Pkg229.ides = @([PSCustomObject]@{ processId = 4242; name = 'devenv'; path = 'C:\vs\devenv.exe'; title = 'x' })
@@ -176,7 +185,7 @@ try {
     Check 'C11 install exit 1 -> TCPKG_INSTALL_FAILED with stderr tail' (-not $r.success -and $r.error.code -eq 'TCPKG_INSTALL_FAILED' -and (@($step.stderrTail) -join ' ') -match 'install failed') "$($r.error.code)"
     & $reset; $global:Pkg229.installMode = 'timeout'
     $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
-    Check 'C12 install timeout -> TCPKG_TIMEOUT, state unknown, read back attempted' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and $r.error.message -match 'unknown' -and $global:Pkg229.calls[-1] -eq 'list -i --as-json') "$($r.error.code)"
+    Check 'C12 install timeout -> TCPKG_TIMEOUT, tcpkg not killed (pid), nothing read back' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and $r.error.message -match 'NOT stopped' -and $global:Pkg229.noKill -and $r.data.installProcessId -eq 9999 -and $global:Pkg229.calls[-1] -like 'install*') "$($r.error.code) last=$($global:Pkg229.calls[-1])"
     & $reset; $global:Pkg229.listMode = 'timeout'; $global:Pkg229.listFailOn = 'StandardRM'
     $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.71.5 -Approved
     Check 'C13 feed query timeout -> TCPKG_TIMEOUT before any install' (-not $r.success -and $r.error.code -eq 'TCPKG_TIMEOUT' -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.error.code)"
@@ -186,7 +195,16 @@ try {
     Check 'C15 -Version must be a plain dotted number' $bad ''
     & $reset
     $r = Install-TcPackage -PackageId twincat.standardrm.xae -Version 4024.71.5
-    Check 'C16 PackageId spelled in any case -> canonical id in the command' ($r.data.command -match 'install TwinCAT\.StandardRM\.XAE=4024\.71\.5 -y$') "$($r.data.command)"
+    Check 'C16 PackageId spelled in any case -> canonical id; plan with NO blocker still runs no install' ($r.data.command -match 'install TwinCAT\.StandardRM\.XAE=4024\.71\.5 -y$' -and @($r.data.blockers).Count -eq 0 -and $r.data.executed -eq $false -and @($global:Pkg229.calls | Where-Object { $_ -like 'install*' }).Count -eq 0) "$($r.data.command)"
+    & $reset; $global:Pkg229.installMode = 'okdep'
+    $r = Install-TcPackage -PackageId TwinCAT.Standard.XAE -Version 4026.23.1 -Approved
+    $chg = @($r.data.changedPackages | ForEach-Object { "$($_.id):$(@($_.before) -join '/')>$(@($_.after) -join '/')" }) -join ','
+    Check 'C17 a dependency changed too -> success, changedPackages + unexpectedChanges + warning' ($r.success -and $chg -eq 'TwinCAT.Standard.XAE:4026.22.0>4026.22.0/4026.23.1,TwinCAT.Standard.XAR:>4026.23.1' -and @($r.data.unexpectedChanges).Count -eq 1 -and (@($r.data.warnings) -join ' ') -match 'TwinCAT\.Standard\.XAR') $chg
+    & $reset
+    $r = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version 4024.7.37 -Approved
+    Check 'C18 RM installed but Build_4024.7 missing -> success with a warning' ($r.success -and $r.data.buildFolderExists -eq $false -and (@($r.data.warnings) -join ' ') -match 'Build_4024\.7 ') (@($r.data.warnings) -join ' | ')
+    $bad = $false; try { $null = Install-TcPackage -PackageId TwinCAT.StandardRM.XAE -Version "4024.71.5`n" } catch { $bad = $true }
+    Check 'C19 -Version with a trailing newline rejected' $bad ''
 
     # --- D: PROGID_REQUIRED hint ---
     & $mod {
