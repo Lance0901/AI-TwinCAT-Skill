@@ -68,6 +68,8 @@ function Add-Ide([int]$ProcId, [string]$Solution = '', [string]$ProgId = 'Visual
 & $mod {
     $script:TcLaunchPendingWaitSec = 1
     $script:TcLaunchRotWaitSec = 0
+    # #241: Get-TcSysManager is mocked to $null, so Connect-TcIde probes it 10 times; 20 ms apart instead of 1 s
+    $script:TcSysManagerRetryMs = 20
     $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
     function script:Get-ComObject { [CmdletBinding()] param([string]$ProgId) $null }
     function script:New-TcIdeInstance { [CmdletBinding()] param([string]$ProgId) [void]$global:Launches210.Add($ProgId); throw 'unit: launching is not allowed in this test' }

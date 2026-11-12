@@ -3,6 +3,9 @@
 # RUNTIME_CRASHED; Enable-TcConfig -Force and Invoke-TcTestCycle pass it on.
 # No IDE / ADS / runtime: TwinCAT.Ads.TcAdsClient is a fake type compiled here, Find-TcAdsAssembly,
 # Get-TcLocalUmRtProcess, Test-TcProcessAlive and the IDE helpers are stubbed in module scope.
+# #241: also the test-only wait knobs (defaults = product values, Get-TcTimeScale, wiring); their
+# busy mock is a COMException with RPC_E_CALL_REJECTED (0x80010001), the HResult Invoke-TcComRetry
+# classifies - it asserts our handling, not when XAE really answers busy.
 #   powershell.exe -NoProfile -File tests/Unit/runtime-crashed.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -10,6 +13,12 @@ $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ("tcauto-unit-state-{0}" -f [guid]::
 . (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
+# #241: after the "#241 knobs" block below, Wait-TcAdsState runs at 1/4 of real time
+# ($script:TcAdsWaitTimeScale scales -TimeoutSec, -IntervalMs and the 0x7 window together); every
+# mock delay and lower bound from case A on is scaled by $S; an upper bound is the scaled budget plus
+# the fixed slack of the unscaled check (4000 ms = 1 s window + 3000 -> 1000 * $S + 3000), as in
+# reset-reload-prompt / blocked-solution-ide.
+$S = 0.25
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if ($Detail.Length -gt 400) { $Detail = $Detail.Substring(0, 400) }
@@ -98,41 +107,74 @@ function Invoke-Wait([int]$TimeoutSec, [switch]$Detect) {
     & $mod { param($t, $d) Wait-TcAdsState -AmsNetId '199.5.42.250.1.1' -Port 10000 -TargetState Run -TimeoutSec $t -IntervalMs 100 -CrashUnreachableSec 1 -DetectRuntimeCrash:$d } $TimeoutSec ([bool]$Detect)
 }
 
+# --- #241 knobs: the module variables tests/Unit lower hold the product values after import (the
+# constants they replaced), only the .psm1 assigns them, Get-TcTimeScale gives 1.0 for anything but a
+# number in (0, 1], and the knobs really drive the waits (default = real seconds). The busy mock is the
+# RPC_E_CALL_REJECTED HResult Invoke-TcComRetry already classifies; no TwinCAT behaviour is asserted.
+$v = & $mod { [PSCustomObject]@{ Delay = $script:TcComRetryDelayMs; SysMgr = $script:TcSysManagerRetryMs; Ads = $script:TcAdsWaitTimeScale; Reset = $script:TcResetTimeScale } }
+Check '#241 default TcComRetryDelayMs 1000 (busy backoff 1, 2, 4, 8 s)' ($v.Delay -is [int] -and $v.Delay -eq 1000) "$($v.Delay)"
+Check '#241 default TcSysManagerRetryMs 1000 (Connect-TcIde ITcSysManager probes 1 s apart)' ($v.SysMgr -is [int] -and $v.SysMgr -eq 1000) "$($v.SysMgr)"
+Check '#241 default TcAdsWaitTimeScale / TcResetTimeScale 1.0' ($v.Ads -is [double] -and $v.Ads -eq 1.0 -and $v.Reset -is [double] -and $v.Reset -eq 1.0) "$($v.Ads) / $($v.Reset)"
+$setters = @(Select-String -Path (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\*\*.ps1') -Pattern '\$script:(TcComRetryDelayMs|TcSysManagerRetryMs|TcAdsWaitTimeScale|TcResetTimeScale)\s*=')
+Check '#241 only the .psm1 assigns the knobs (no code path in src changes them)' ($setters.Count -eq 0) (@($setters | ForEach-Object { "$($_.Filename):$($_.LineNumber)" }) -join ', ')
+$scaleCases = @(@{ In = $null; Out = 1.0 }, @{ In = 1; Out = 1.0 }, @{ In = 0.25; Out = 0.25 }, @{ In = '0.5'; Out = 0.5 }, @{ In = 0; Out = 1.0 }, @{ In = -0.5; Out = 1.0 }, @{ In = 4; Out = 1.0 }, @{ In = 'x'; Out = 1.0 }, @{ In = [double]::NaN; Out = 1.0 })
+$scaleBad = @($scaleCases | Where-Object { (& $mod { param($x) Get-TcTimeScale -Value $x } $_.In) -ne $_.Out } | ForEach-Object { "$($_.In)" })
+Check '#241 Get-TcTimeScale: (0, 1] kept, $null / 0 / < 0 / > 1 / NaN / text -> 1.0' ($scaleBad.Count -eq 0) ($scaleBad -join ', ')
+function Measure-BusyOnce {
+    $global:Busy241 = 1
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $r = & $mod { Invoke-TcComRetry -OperationName 'unit busy once' -ScriptBlock { if ($global:Busy241 -gt 0) { $global:Busy241--; throw (New-Object System.Runtime.InteropServices.COMException('busy (mock)', [int]0x80010001)) }; 'done' } }
+    [PSCustomObject]@{ Result = $r; Sec = $sw.Elapsed.TotalSeconds }
+}
+$m = Measure-BusyOnce
+Check '#241 Invoke-TcComRetry default: busy once -> retried after 1 s' ($m.Result -eq 'done' -and $m.Sec -ge 0.95) ("{0:N2} s" -f $m.Sec)
+& $mod { $script:TcComRetryDelayMs = 20 }
+$m = Measure-BusyOnce
+Check '#241 Invoke-TcComRetry TcComRetryDelayMs 20: busy once -> retried after 20 ms' ($m.Result -eq 'done' -and $m.Sec -lt 0.9) ("{0:N2} s" -f $m.Sec)
+& $mod { $script:TcComRetryDelayMs = 1000 }
+Remove-Variable -Name Busy241 -Scope Global -ErrorAction SilentlyContinue
+Set-Ads 'timeout'; $global:UmRt = $null
+$w = Invoke-Wait -TimeoutSec 1
+Check '#241 Wait-TcAdsState default: -TimeoutSec 1 waits 1 s (real seconds)' (-not $w.Reached -and $w.ElapsedMs -ge 950) "$($w.ElapsedMs) ms"
+& $mod { param($s) $script:TcAdsWaitTimeScale = $s } $S
+$w = Invoke-Wait -TimeoutSec 1
+Check '#241 Wait-TcAdsState TcAdsWaitTimeScale 0.25: -TimeoutSec 1 waits 0.25 s' (-not $w.Reached -and $w.ElapsedMs -ge 240 -and $w.ElapsedMs -lt 900) "$($w.ElapsedMs) ms"
+
 # --- A: local UmRT, its pid gone, ADS 0x7 -> early RuntimeCrashed
 Set-Ads 'down7'; $global:UmRt = $localUmRt; $global:AlivePids = @()
 $w = Invoke-Wait -TimeoutSec 20 -Detect
-Check 'local UmRT gone + 0x7 -> RuntimeCrashed early' ($w.RuntimeCrashed -and -not $w.Reached -and $w.ElapsedMs -lt 4000 -and $w.UnreachableMs -ge 1000) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs) unreach=$($w.UnreachableMs)"
+Check 'local UmRT gone + 0x7 -> RuntimeCrashed early' ($w.RuntimeCrashed -and -not $w.Reached -and $w.ElapsedMs -lt (1000 * $S + 3000) -and $w.UnreachableMs -ge (1000 * $S)) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs) unreach=$($w.UnreachableMs)"
 Check 'crash data: servicePidAtStart, runtimeName, lastError 0x7' ((@($w.ServicePidAtStart) -join ',') -eq '4242' -and $w.RuntimeName -eq 'UmRT_Default' -and $w.LastError -match '0x7') "pids=$($w.ServicePidAtStart -join ',') name=$($w.RuntimeName) err=$($w.LastError)"
 
 # --- B: remote target / local XAR (not a local UmRT) -> old behaviour, waits until TimeoutSec
 Set-Ads 'down7'; $global:UmRt = $null
 $w = Invoke-Wait -TimeoutSec 2 -Detect
-Check 'remote target -> no crash detection, waits the timeout' (-not $w.RuntimeCrashed -and -not $w.Reached -and $w.ElapsedMs -ge 1900) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
+Check 'remote target -> no crash detection, waits the timeout' (-not $w.RuntimeCrashed -and -not $w.Reached -and $w.ElapsedMs -ge (1900 * $S)) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
 
 # --- C: local UmRT whose process is still alive (e.g. 0x7 for another reason) -> no early exit
 Set-Ads 'down7'; $global:UmRt = $localUmRt; $global:AlivePids = @(4242)
 $w = Invoke-Wait -TimeoutSec 2 -Detect
-Check 'UmRT process alive -> not crashed, waits the timeout' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge 1900) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
+Check 'UmRT process alive -> not crashed, waits the timeout' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge (1900 * $S)) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
 
 # --- D: local UmRT that was not running at the start -> no detection
 Set-Ads 'down7'; $global:UmRt = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int[]]@(); PidSource = 'commandline' }; $global:AlivePids = @()
 $w = Invoke-Wait -TimeoutSec 2 -Detect
-Check 'no UmRT process at the start -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge 1900 -and @($w.ServicePidAtStart).Count -eq 0) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
+Check 'no UmRT process at the start -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge (1900 * $S) -and @($w.ServicePidAtStart).Count -eq 0) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
 
 # --- E: pid gone but the error is not 0x7 (ADS timeout 0x745) -> not crashed
 Set-Ads 'timeout'; $global:UmRt = $localUmRt; $global:AlivePids = @()
 $w = Invoke-Wait -TimeoutSec 2 -Detect
-Check 'pid gone but ADS 0x745 (not 0x7) -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge 1900) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
+Check 'pid gone but ADS 0x745 (not 0x7) -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge (1900 * $S)) "crashed=$($w.RuntimeCrashed) elapsed=$($w.ElapsedMs)"
 
 # --- F: 0x7 streak interrupted by a real state every 3rd read -> never crashed
 Set-Ads 'flap'; $global:UmRt = $localUmRt; $global:AlivePids = @()
 $w = Invoke-Wait -TimeoutSec 2 -Detect
-Check '0x7 streak reset by a readable state -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge 1900 -and $w.State -eq 'Config') "crashed=$($w.RuntimeCrashed) state=$($w.State) elapsed=$($w.ElapsedMs)"
+Check '0x7 streak reset by a readable state -> not crashed' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge (1900 * $S) -and $w.State -eq 'Config') "crashed=$($w.RuntimeCrashed) state=$($w.State) elapsed=$($w.ElapsedMs)"
 
 # --- G: without -DetectRuntimeCrash nothing changes (Get-TcLocalUmRtProcess not even called)
 Set-Ads 'down7'; $global:UmRt = $localUmRt; $global:AlivePids = @(); $global:UmRtCalls = 0
 $w = Invoke-Wait -TimeoutSec 2
-Check 'no -DetectRuntimeCrash -> old behaviour' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge 1900 -and $global:UmRtCalls -eq 0) "crashed=$($w.RuntimeCrashed) calls=$($global:UmRtCalls)"
+Check 'no -DetectRuntimeCrash -> old behaviour' (-not $w.RuntimeCrashed -and $w.ElapsedMs -ge (1900 * $S) -and $global:UmRtCalls -eq 0) "crashed=$($w.RuntimeCrashed) calls=$($global:UmRtCalls)"
 
 # --- H: target reached -> Reached, no crash fields set
 Set-Ads 'run'; $global:UmRt = $localUmRt; $global:AlivePids = @(4242)
@@ -144,8 +186,8 @@ Set-Ads 'crashAfterWrite'; $global:UmRt = $localUmRt; $global:AlivePids = @()
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 60
 $sw.Stop()
-Check 'Set-TcSystemState -> RUNTIME_CRASHED before -TimeoutSec' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $sw.Elapsed.TotalSeconds -lt 25) "code=$($r.error.code) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
-Check 'RUNTIME_CRASHED data: lastError, lastState, servicePidAtStart' ($r.data.lastError -match '0x7' -and $r.data.lastState -eq 'Run' -and (@($r.data.servicePidAtStart) -join ',') -eq '4242' -and $r.data.runtimeName -eq 'UmRT_Default' -and $r.data.unreachableMs -ge 10000) ($r.data | ConvertTo-Json -Compress -Depth 3)
+Check 'Set-TcSystemState -> RUNTIME_CRASHED before -TimeoutSec' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $sw.Elapsed.TotalSeconds -lt (10 * $S + 15)) "code=$($r.error.code) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
+Check 'RUNTIME_CRASHED data: lastError, lastState, servicePidAtStart' ($r.data.lastError -match '0x7' -and $r.data.lastState -eq 'Run' -and (@($r.data.servicePidAtStart) -join ',') -eq '4242' -and $r.data.runtimeName -eq 'UmRT_Default' -and $r.data.unreachableMs -ge (10000 * $S)) ($r.data | ConvertTo-Json -Compress -Depth 3)
 Check 'RUNTIME_CRASHED hint: restart UmRT, Enable-TcConfig -Force, #21' ($r.error.hint -match 'TcSystemServiceUm' -and $r.error.hint -match 'Enable-TcConfig -Force' -and $r.error.hint -match '#21' -and $r.error.hint -match 'SYSTEM_STATE_TIMEOUT') "$($r.error.hint)"
 # #68 (S2): RUNTIME_CRASHED after WriteControl records a lifecycle block; the hint says to leave the restart to the user
 Check 'RUNTIME_CRASHED recorded a lifecycle block, hint: user decides, no own restart' ($r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.data.lifecycleBlock.amsNetId -eq '199.5.42.250.1.1' -and $r.error.hint -match 'LIFECYCLE_BLOCKED' -and $r.error.hint -match 'Stop-Process' -and $r.error.hint -match 'console') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress)"
@@ -166,11 +208,11 @@ $null = Clear-TcLifecycleBlock -AmsNetId '5.6.7.8.1.1' -Reason 'unit test: next 
 # 10 s window when -TimeoutSec ends (measured 2026-11-04: gone 46 s into a 60 s wait). Old code:
 # SYSTEM_STATE_TIMEOUT, finalState 'Run', block reachedState 'Run', leftOriginal true.
 $noUmRtNow = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int[]]@(); PidSource = 'commandline' }
-Set-Ads 'crashLate'; $fake::DownAfterSec = 1.5; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.5 * $S; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 4 -SettleSec 0
 $sw.Stop()
-Check '#114 crash late (0x7 streak < 10 s at the deadline, no UmRT process left) -> RUNTIME_CRASHED' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and $sw.Elapsed.TotalSeconds -lt 15) "code=$($r.error.code) by=$($r.data.crashDetectedBy) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
+Check '#114 crash late (0x7 streak < 10 s at the deadline, no UmRT process left) -> RUNTIME_CRASHED' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and $sw.Elapsed.TotalSeconds -lt (4 * $S + 11)) "code=$($r.error.code) by=$($r.data.crashDetectedBy) elapsed=$([int]$sw.Elapsed.TotalSeconds)s msg=$($r.error.message)"
 Check '#114 crash late: finalState / currentState Unreachable, lastState Run, leftOriginal false' ($r.data.finalState -eq 'Unreachable' -and $r.data.currentState -eq 'Unreachable' -and $r.data.lastState -eq 'Run' -and $r.data.leftOriginal -eq $false -and $r.data.lastError -match '0x7') ($r.data | ConvertTo-Json -Compress -Depth 3)
 Check '#114 crash late: block reachedState empty, crash hint, message names the deadline' ([string]::IsNullOrEmpty([string]$r.data.lifecycleBlock.reachedState) -and $r.data.lifecycleBlock.errorCode -eq 'RUNTIME_CRASHED' -and $r.error.hint -match 'TcSystemServiceUm' -and $r.error.message -match 'at -TimeoutSec' -and $r.data.lifecycleBlock.readbackNote -eq 'runtime-gone') "$($r.data.lifecycleBlock | ConvertTo-Json -Compress) msg=$($r.error.message)"
 Check '#114 S1 crash late: probeErrors (0x7 mapped, pidAlive false), deadlineCheck, unreachableSeen (S2)' (@($r.data.probeErrors).Count -gt 0 -and @($r.data.probeErrors)[-1].code -eq 'ADS_TARGET_NOT_FOUND' -and @($r.data.probeErrors)[-1].pidAlive -eq $false -and $r.data.deadlineCheck.processListReadable -eq $true -and @($r.data.deadlineCheck.pidsNow).Count -eq 0 -and $r.data.unreachableSeen -eq $true) ($r.data | Select-Object probeErrors, deadlineCheck, unreachableSeen | ConvertTo-Json -Compress -Depth 4)
@@ -185,19 +227,19 @@ $pe = @($w.ProbeErrors)
 Check '#114 R2 probe runs capped at 50 (first 10 + last 40), dropped counted' ($pe.Count -eq 50 -and $w.ProbeErrorsDropped -gt 0 -and $pe[0].fromMs -le $pe[1].fromMs -and $pe[9].toMs -lt $pe[10].fromMs -and ($pe | Measure-Object -Property count -Sum).Sum -lt ($pe.Count + $w.ProbeErrorsDropped + 1)) "runs=$($pe.Count) dropped=$($w.ProbeErrorsDropped)"
 
 # S1 (b): the failure after the crash is not mapped to ADS_TARGET_NOT_FOUND (0x7 streak never starts)
-Set-Ads 'crashLateOther'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
+Set-Ads 'crashLateOther'; $fake::DownAfterSec = 1.0 * $S; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @()
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
 Check '#114 S1(b) unmapped error after the crash, no UmRT process left -> RUNTIME_CRASHED (deadline), probe code null' ($r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and $null -eq @($r.data.probeErrors)[-1].code -and $r.data.unreachableMs -eq 0 -and $r.data.deadlineCheck.lastProbeCode -eq $null) "code=$($r.error.code) $($r.data | Select-Object probeErrors, deadlineCheck | ConvertTo-Json -Compress -Depth 4)"
 $null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 # S1 (c): Test-TcProcessAlive still reports the start pid, but the process list has no process of the runtime
-Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @(4242)
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0 * $S; $global:UmRt = $localUmRt; $global:UmRtLater = $noUmRtNow; $global:UmRtCalls = 0; $global:AlivePids = @(4242)
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
 Check '#114 S1(c) start pid still "alive", process list empty -> RUNTIME_CRASHED (deadline), startPidsAlive / pidAlive recorded' ($r.error.code -eq 'RUNTIME_CRASHED' -and $r.data.crashDetectedBy -eq 'deadline' -and (@($r.data.deadlineCheck.startPidsAlive) -join ',') -eq '4242' -and @($r.data.probeErrors)[-1].pidAlive -eq $true) "code=$($r.error.code) $($r.data | Select-Object probeErrors, deadlineCheck | ConvertTo-Json -Compress -Depth 4)"
 $null = Clear-TcLifecycleBlock -AmsNetId '199.5.42.250.1.1' -Reason 'unit test: next case' -FallbackMethod 'unit test: rerun through tcauto' -AllowedSideEffects 'none' -MaxVerifyLevel None
 
 # S7: the process list cannot be read at the deadline (empty Pids, ProcessListReadable false) -> no crash verdict
-Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtCalls = 0; $global:AlivePids = @()
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0 * $S; $global:UmRt = $localUmRt; $global:UmRtCalls = 0; $global:AlivePids = @()
 $global:UmRtLater = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int[]]@(); PidSource = 'commandline'; ProcessListReadable = $false }
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
 Check '#114 S7 process list unreadable at the deadline -> SYSTEM_STATE_TIMEOUT, deadlineCheck.processListReadable false' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $r.data.deadlineCheck.processListReadable -eq $false -and $r.data.finalState -eq 'Unreachable') "code=$($r.error.code) $($r.data.deadlineCheck | ConvertTo-Json -Compress)"
@@ -206,7 +248,7 @@ $global:UmRtLater = $null
 
 # same, but a TcSystemServiceUm of this runtime runs again under a new pid (restart, not a crash)
 # -> SYSTEM_STATE_TIMEOUT, but still no 'Run' for a target that did not answer
-Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0; $global:UmRt = $localUmRt; $global:UmRtCalls = 0; $global:AlivePids = @()
+Set-Ads 'crashLate'; $fake::DownAfterSec = 1.0 * $S; $global:UmRt = $localUmRt; $global:UmRtCalls = 0; $global:AlivePids = @()
 $global:UmRtLater = [PSCustomObject]@{ RuntimeName = 'UmRT_Default'; Pids = [int[]]@(5151); PidSource = 'commandline' }
 $r = Set-TcSystemState -State Config -AmsNetId '199.5.42.250.1.1' -TimeoutSec 3 -SettleSec 0
 Check '#114 0x7 at the deadline, UmRT runs under a new pid -> SYSTEM_STATE_TIMEOUT (not crashed)' ((-not $r.success) -and $r.error.code -eq 'SYSTEM_STATE_TIMEOUT') "code=$($r.error.code) msg=$($r.error.message)"

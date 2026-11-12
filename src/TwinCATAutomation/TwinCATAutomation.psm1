@@ -35,6 +35,13 @@ $script:TcLastBuildVerdict = $null       # last SUCCESSFUL Build-TcProject: solu
 $script:TcSystemStateSkipDiagnostics = $false  # #194: set by Enable-TcConfig around its set-run: the nested Set-TcSystemState collects no data.diagnostics
 $script:TcSystemStateDiagCapSec = 10     # PR #200: Set-TcSystemState stuck-in-Config diagnostics end by request start + -TimeoutSec + this
 $script:TcLastSolutionPlatform = $null   # #198: last Get-TcSolutionPlatform read { platform; projectPlatform; solutionPath; readAt } (diagnostics without DTE)
+# #241: wait lengths that only tests/Unit change (& (Get-Module TwinCATAutomation) { $script:<name> = <small> })
+# so a mocked busy IDE / unreachable runtime does not cost real seconds. The values below ARE the
+# product behaviour (the constants they replaced); nothing in src/ sets them.
+$script:TcComRetryDelayMs = 1000         # Invoke-TcComRetry: first busy backoff, doubled per retry (1, 2, 4, 8 s)
+$script:TcSysManagerRetryMs = 1000       # Connect-TcIde: pause between the up to 10 ITcSysManager probes
+$script:TcAdsWaitTimeScale = 1.0         # Wait-TcAdsState: factor on -TimeoutSec, -IntervalMs and -CrashUnreachableSec (Get-TcTimeScale)
+$script:TcResetTimeScale = 1.0           # Reset-TcSolution / Wait-TcSolutionLoaded: factor on the -TimeoutSec deadline and the 500 ms polls
 
 # Import private functions
 $privatePath = Join-Path $PSScriptRoot 'Private'

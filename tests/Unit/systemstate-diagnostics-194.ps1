@@ -10,6 +10,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR, never the real state
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $mod = Get-Module TwinCATAutomation
+# #241: the -TimeoutSec waits of Wait-TcAdsState run at 1/4 of real time up to case L (L measures
+# the real diagnostics deadline and goes back to 1.0); the settle window and the mock are not scaled.
+& $mod { $script:TcAdsWaitTimeScale = 0.25 }
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     if ($Detail.Length -gt 500) { $Detail = $Detail.Substring(0, 500) }
@@ -200,6 +203,7 @@ Check 'K helper with an incomplete -DialogScan (Enable-TcConfig path): no Error 
 Reset-Case; Set-Ide $true; Set-Ads 'config'
 $global:BlockAtScan = $null; $global:BlockAtLicense = $null; $global:ElBudget = $null
 & $mod {
+    $script:TcAdsWaitTimeScale = 1.0   # #241: L measures the real deadline (request + -TimeoutSec + cap)
     $script:TcSystemStateDiagCapSec = 4
     function script:Test-UnitBlockWritten { param([string]$NetId) $f = Get-TcLifecycleBlockFile; (Test-Path -LiteralPath $f) -and ([IO.File]::ReadAllText($f) -match [regex]::Escape($NetId)) }
     function script:Get-TcLicenseDiagnosis { param([string]$AmsNetId) $global:BlockAtLicense = Test-UnitBlockWritten $AmsNetId; $global:Lic }

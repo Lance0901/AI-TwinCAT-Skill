@@ -739,7 +739,7 @@ else {
             # Stopwatch / $sec -lt / ElapsedMs assertions in tests/Unit.
             $unitSerial = @(
                 'activate-timeout.ps1'               # timeout-at-deadline 3 s <= t < 14 s, worst-case bound
-                'blocked-solution-ide.ps1'           # reset guard times out within 7 s / 12 s
+                'blocked-solution-ide.ps1'           # reset guard times out within 3.25 s / 8.25 s (#241: 1/4 time scale)
                 'ide-solutions-lock.ps1'             # held mutex waited >= 1.5 s and < 30 s
                 'issue-report-121.ps1'               # 15000-token regex < 2 s
                 'launch-record-persist-73.ps1'       # restored record answers in < 5 s
@@ -747,8 +747,8 @@ else {
                 'modal-scan-incomplete.ps1'          # UIA scan ms bounds, CLEAN_TIMEOUT < 15 s
                 'platform-project-mismatch.ps1'      # waits up to 20 s for a helper process
                 'project-save.ps1'                   # PROJECT_SAVE_TIMEOUT < 8 s
-                'reset-reload-prompt.ps1'            # "fast" / "well below -TimeoutSec" bounds of 5 - 6.5 s
-                'runtime-crashed.ps1'                # RuntimeCrashed < 4 s, timeout waits >= 1.9 s
+                'reset-reload-prompt.ps1'            # "fast" bounds of 5 - 6 s, timeout cases 2.25 - 3.25 s (#241: 1/4 time scale)
+                'runtime-crashed.ps1'                # RuntimeCrashed < 1 s, timeout waits >= 0.475 s (#241: 1/4 time scale)
             )
             $unitResult = @{}
             # slowest first inside the parallel group so the long ones do not start last (the printed

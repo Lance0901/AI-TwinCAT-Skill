@@ -304,6 +304,9 @@ function Wait-TcSolutionLoaded {
         [int]$TimeoutSec
     )
     $wsw = [System.Diagnostics.Stopwatch]::StartNew()
+    # #241: same time scale as the caller Reset-TcSolution ($script:TcResetTimeScale, 1.0 = real seconds)
+    $timeScale = Get-TcTimeScale -Value $script:TcResetTimeScale
+    $pollMs = if ($timeScale -eq 1.0) { 500 } else { [int][math]::Max(1, [math]::Round(500 * $timeScale)) }
     $exp = Get-TcSolutionLoadExpectation -SolutionPath $SolutionPath -MemoryBaseline $MemoryBaseline
     $want = try { Get-TcLongPath $SolutionPath } catch { $SolutionPath }
     $polls = 0
@@ -339,7 +342,7 @@ function Wait-TcSolutionLoaded {
         if ($missing.Count -eq 0) { $complete = $true; $lastError = $null; break }
         $lastError = if ($null -ne $snap.error) { "$($snap.error); $($missing -join '; ')" } else { $missing -join '; ' }
 
-        $timeUp = $Stopwatch.Elapsed.TotalSeconds -ge $TimeoutSec
+        $timeUp = $Stopwatch.Elapsed.TotalSeconds / $timeScale -ge $TimeoutSec
         if ($snap.NoAnswer -or $timeUp) {
             # review N5: also one last scan before giving up
             $d = Find-TcIdeModalDialog
@@ -347,7 +350,7 @@ function Wait-TcSolutionLoaded {
             if ($null -ne $d) { $dialog = $d; break }
         }
         if ($timeUp) { break }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds $pollMs
     }
     $loadCheck = [PSCustomObject]@{
         complete         = $complete
