@@ -46,7 +46,7 @@ function Edit-LintFxFile([string]$Path, [scriptblock]$Change) {
     $bom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
     $text = [System.Text.Encoding]::UTF8.GetString($bytes, $(if ($bom) { 3 } else { 0 }), $bytes.Length - $(if ($bom) { 3 } else { 0 }))
     $new = & $Change $text
-    if ($new -ceq $text) { throw "Edit-LintFxFile: the change did nothing in $Path" }
+    if ([string]::Equals($new, $text, [System.StringComparison]::Ordinal)) { throw "Edit-LintFxFile: the change did nothing in $Path" }
     $enc = New-Object System.Text.UTF8Encoding($false)
     $pre = if ($bom) { [byte[]](0xEF, 0xBB, 0xBF) } else { [byte[]]@() }
     [System.IO.File]::WriteAllBytes($Path, [byte[]]($pre + $enc.GetBytes($new)))

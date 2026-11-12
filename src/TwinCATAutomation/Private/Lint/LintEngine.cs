@@ -1436,6 +1436,7 @@ namespace TcLintEngine
             }
             PlcRef mine = null;
             bool independentSeen = false;
+            bool tsprojSkipped = false;      // a .tsproj could not be read: its references are unknown
             string slnText = null;
             if (slnFull != null) { try { slnText = File.ReadAllText(slnFull); } catch (Exception) { slnText = null; } }
             foreach (string ts in tsprojFull)
@@ -1451,9 +1452,10 @@ namespace TcLintEngine
                 {
                     notAnalyzed.Add(Cov(null, tsRel, "", "file", "too-large"));
                     blockingSkipped.Add(Cov("PROJECT-TSPROJ-001", tsRel, "", null, "too-large:" + fi.Length.ToString(CultureInfo.InvariantCulture) + "-bytes"));
+                    tsprojSkipped = true;
                     continue;
                 }
-                if (fi.ReadFailed) { engineDetail.Add(tsRel + ": " + fi.ReadError); notAnalyzed.Add(Cov(null, tsRel, "", "file", "unreadable")); incompleteByRead = true; continue; }
+                if (fi.ReadFailed) { engineDetail.Add(tsRel + ": " + fi.ReadError); notAnalyzed.Add(Cov(null, tsRel, "", "file", "unreadable")); incompleteByRead = true; tsprojSkipped = true; continue; }
                 CheckEncoding(tsRel, "", fi, false);
                 XmlLoad x = XmlLoader.Load(ts, fi);
                 if (!x.WellFormed)
@@ -1505,7 +1507,7 @@ namespace TcLintEngine
                 SkipBlocking("PROJECT-TSPROJ-002", plcRel, "", "independent-project-file-not-observed");
                 SkipBlocking("PROJECT-TSPROJ-003", plcRel, "", "independent-project-file-not-observed");
             }
-            else if (mine == null)
+            else if (mine == null && !tsprojSkipped)
             {
                 E("PROJECT-TSPROJ-001", plcRel, "", "file", 1, "No .tsproj " + (slnFull != null ? "of the solution " : "next to the project ") + "references this .plcproj", null,
                     "Check PrjFilePath of Plc/Project in the .tsproj");
