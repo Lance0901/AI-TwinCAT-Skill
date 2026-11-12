@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { z } from 'zod';
 
 import { loadConfig, scanScriptFor, MCP_SERVER_DIR } from './lib/config.js';
-import { PowerShellBridge, errorResult } from './lib/bridge.js';
+import { PowerShellBridge, errorResult, decorateConnectIdeTimeout } from './lib/bridge.js';
 import { loadToolCatalog, validateParams, computeTimeoutMs, toToolResult, buildCmdletNameMap, rewriteResultHints } from './lib/tools.js';
 import { composites } from './lib/composites.js';
 import { isIdeProcessAlive } from './lib/ide-process.js';
@@ -371,7 +371,8 @@ async function callCatalogTool(name, args, signal) {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
   await rememberIde(name, result);
-  return decorateBridgeLoss(result);
+  // #249: after decorateBridgeLoss (ConnectIde clears lastIde, so its generic hint would stay)
+  return decorateConnectIdeTimeout(name, await decorateBridgeLoss(result));
 }
 
 /** Per-request context for composite tools (see lib/composites.js header). */

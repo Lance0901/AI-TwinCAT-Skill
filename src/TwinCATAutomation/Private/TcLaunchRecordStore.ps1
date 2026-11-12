@@ -412,6 +412,27 @@ function Set-TcLaunchRecordTakeover {
     $res
 }
 
+# PR #268 review S1: marks the launch record of IDE process -ProcessId (pid + start time) with
+# solutionOpened = true once a solution is really open in it, so a later Connect-TcIde never treats
+# that IDE as an unused empty orphan (#235). Only writes when such a record exists without the flag.
+# Returns $null or the failure reason; never throws.
+function Set-TcLaunchRecordSolutionOpened {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0) { return $null }
+    $need = @((Get-TcLaunchRecords).Records | Where-Object { [int]$_.pid -eq $ProcessId -and -not ($null -ne $_.PSObject.Properties['solutionOpened'] -and [bool]$_.solutionOpened) })
+    if ($need.Count -eq 0) { return $null }
+    Update-TcLaunchRecordFile -What 'launch record solutionOpened' -Mutate {
+        param($all)
+        foreach ($r in $all) {
+            if ([int]$r.pid -eq $ProcessId -and (Test-TcLaunchRecordValid -Record $r)) {
+                $r | Add-Member -NotePropertyName 'solutionOpened' -NotePropertyValue $true -Force
+            }
+            $r
+        }
+    }
+}
+
 # Drops the records of -ProcessId (Disconnect-TcIde: quit, killed or already exited) and the
 # module cache of that pid. Returns $null or the failure reason.
 function Remove-TcLaunchRecord {

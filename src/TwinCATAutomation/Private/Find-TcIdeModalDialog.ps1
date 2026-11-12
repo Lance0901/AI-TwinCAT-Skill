@@ -1177,17 +1177,21 @@ function Find-TcIdeModalDialogColdRetry {
         incomplete reason, and a retry that is still incomplete, is returned as it is: the caller
         keeps failing closed with MODAL_SCAN_INCOMPLETE. Used by the one-shot gates before
         Solution.Open (Connect-TcIde) and before the build (Build-TcProject), not by polling loops.
+        -ProcessId (#235): scan that IDE process instead of the connected one (the empty orphan IDE
+        Connect-TcIde checks before it attaches it); 0 = the connected IDE, as before.
     #>
     [CmdletBinding()]
-    param([ValidateRange(1, 60)][int]$RetryTimeoutSec = 15)
+    param([ValidateRange(1, 60)][int]$RetryTimeoutSec = 15, [int]$ProcessId = 0)
     $script:TcLastModalScanRetried = $false
-    $d = Find-TcIdeModalDialog
+    $pidArg = @{}
+    if ($ProcessId -gt 0) { $pidArg['ProcessId'] = $ProcessId }
+    $d = Find-TcIdeModalDialog @pidArg
     if ((Test-TcModalScanIncomplete $d) -and [string]$d.Reason -eq 'timeout') {
         Write-Verbose "modal-dialog scan incomplete (timeout); scanning once more with $RetryTimeoutSec s (#230: first scan after an IDE start)"
         # phase 1 (UIA load, type compile) was done by the first scan: cap it at 5 s so the retry
         # takes at most RetryTimeoutSec + 5 s (the MCP budgets of ConnectIde / BuildProject keep room)
         $script:TcLastModalScanRetried = $true
-        $d = Find-TcIdeModalDialog -TimeoutSec $RetryTimeoutSec -PrepareTimeoutSec 5
+        $d = Find-TcIdeModalDialog -TimeoutSec $RetryTimeoutSec -PrepareTimeoutSec 5 @pidArg
     }
     $d
 }

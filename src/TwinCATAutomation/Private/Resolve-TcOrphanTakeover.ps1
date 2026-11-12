@@ -28,14 +28,32 @@
 # record itself is changed by the caller (Set-TcLaunchRecordTakeover, under the lock).
 # reason: solution-path-required | no-launch-record | owned-by-this-session | host-alive |
 # owner-alive | owner-unverifiable | pid-unconfirmed | progid-mismatch | not-in-rot | solution-mismatch | ide-busy (dialog / incomplete
-# scan: IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE; record file unreadable: LAUNCH_RECORD_UNAVAILABLE).
+# scan: IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE; record file unreadable: LAUNCH_RECORD_UNAVAILABLE)
+# | documents-open | solution-was-opened (-EmptySolution only).
+# -EmptySolution (#235): the same ownership checks for the IDE that an ended session launched for
+# -SolutionPath and that never got it open (cold start -> MODAL_SCAN_INCOMPLETE -> session over).
+# Connect-TcIde -SolutionPath reuses it WITHOUT -TakeOverOrphan: nobody can have worked in it (no
+# solution, no document). Differences: the ROT DTE of that pid must be READY with NO solution open
+# (busy / unreadable -> ide-busy, another .sln -> solution-mismatch); the dialog scan is
+# Find-TcIdeModalDialogColdRetry -ProcessId (#230: the first scan after an IDE start can need more
+# than 5 s); NO prompt is ever answered (any dialog -> IDE_MODAL_DIALOG with the
+# IDE_MODAL_DIALOG_EMPTY_ORPHAN hint, an incomplete scan -> MODAL_SCAN_INCOMPLETE); then
+# DTE.Documents.Count must read 0 (> 0 or unreadable -> documents-open). Every refusal other than a
+# dialog / incomplete scan / solution-was-opened makes Connect-TcIde go on as before (launch a new IDE).
+# PR #268 review S1: "empty now" is not "never used": a session that OPENED the .sln and ended
+# without -Quit leaves the IDE to the user, who may close the solution and keep working in that
+# window. So an IDE that TcAuto ever opened a solution in is refused ('solution-was-opened', checked
+# before the dialog scan): the launch record says solutionOpened = true, or ide-solutions.json has a
+# record of that pid + start time. Connect-TcIde then answers IDE_LAUNCH_PENDING with the
+# -TakeOverOrphan hint (ask the user first), as before #235.
 function Resolve-TcOrphanTakeover {
     [CmdletBinding()]
     param(
         [AllowNull()][string]$SolutionPath,
         [AllowNull()][string]$ProgId,
         [object[]]$Candidates = @(),
-        [object[]]$UnreadableCandidates = @()
+        [object[]]$UnreadableCandidates = @(),
+        [switch]$EmptySolution
     )
     $summary = @(@($Candidates) + @($UnreadableCandidates) | Where-Object { $null -ne $_ } | ForEach-Object { [PSCustomObject]@{ progId = $_.progId; solution = $_.solution; pid = $_.pid } })
     $newData = {
@@ -108,6 +126,51 @@ function Resolve-TcOrphanTakeover {
         return (& $refuse 'not-in-rot' "the IDE (pid $procId) has no DTE in the Running Object Table, so it cannot be attached" $other $rec)
     }
     $isReady = -not ([bool]$c.busy) -and -not ($c.PSObject.Properties['unreadable'] -and [bool]$c.unreadable)
+    if ($EmptySolution) {
+        # #235: empty orphan - never a prompt answered, no document open
+        if (-not $isReady) {
+            return (& $refuse 'ide-busy' "the IDE (pid $procId) rejects DTE calls, its solution is unknown" $other $rec)
+        }
+        $seen = [string]$c.normalizedSolution
+        if (-not [string]::IsNullOrWhiteSpace($seen)) {
+            $r = & $refuse 'solution-mismatch' "the IDE (pid $procId) has '$seen' open, it is not empty" $other $rec
+            $r.Result.data | Add-Member -NotePropertyName 'rotSolution' -NotePropertyValue $seen
+            return $r
+        }
+        # S1: a solution was opened in it by TcAuto at some time -> maybe the user's window now
+        $openedBy = $null
+        if ($null -ne $rec.PSObject.Properties['solutionOpened'] -and [bool]$rec.solutionOpened) { $openedBy = 'launch record solutionOpened' }
+        else {
+            $recStart = $null; try { $recStart = ConvertTo-TcUtcDate $rec.startTime } catch { $recStart = $null }
+            foreach ($sr in @(Read-TcIdeSolutionRecords)) {
+                try { if ([int]$sr.pid -eq $procId -and $null -ne $recStart -and (ConvertTo-TcUtcDate $sr.startTime) -eq $recStart) { $openedBy = "ide-solutions record ('$($sr.solution)')"; break } } catch { }
+            }
+        }
+        if ($null -ne $openedBy) {
+            return (& $refuse 'solution-was-opened' "the IDE (pid $procId) has no solution open now, but TcAuto opened a solution in it before ($openedBy): it may be the user's window now" $other $rec)
+        }
+        $op = "Connect-TcIde -SolutionPath (empty IDE pid $procId launched for this .sln by an ended TcAuto session; not reused, no second IDE launched)"
+        $md = & $newData 'modal-dialog' $other $rec
+        $md | Add-Member -NotePropertyName 'reusedEmptyOrphan' -NotePropertyValue $false
+        $dialog = Find-TcIdeModalDialogColdRetry -ProcessId $procId
+        if (Test-TcModalScanIncomplete $dialog) {
+            $md.reason = 'modal-scan-incomplete'
+            return @{ Result = (New-TcModalScanIncompleteResult -Scan $dialog -Operation $op -Data $md -HintSuffix ([string]$script:TcHintFragments['EMPTY_ORPHAN_SCAN_INCOMPLETE']).Replace('<pid>', [string]$procId)) }
+        }
+        if ($null -ne $dialog) {
+            return @{ Result = (New-TcModalDialogResult -Dialog $dialog -Operation $op -HintCode 'IDE_MODAL_DIALOG_EMPTY_ORPHAN' -Data $md) }
+        }
+        # No dialog right before this read (a modal is what makes a DTE call hang); a plain property
+        # read like Get-TcDirtyDocuments (same accepted risk, CODING_STANDARDS 1). Unreadable = open.
+        $docs = $null; $docError = $null
+        try { $docs = [int](Invoke-TcComRetry -MaxRetries 5 -TimeoutSec 30 -OperationName 'Empty orphan: DTE.Documents.Count' -ScriptBlock { $d = $c.Object.Documents; if ($null -eq $d) { throw 'DTE.Documents answered $null' }; [int]$d.Count }) }
+        catch { $docs = $null; $docError = $_.Exception.Message }
+        if ($null -eq $docs -or $docs -gt 0) {
+            $r = & $refuse 'documents-open' "the IDE (pid $procId) has $(if ($null -eq $docs) { "documents that cannot be counted ($docError)" } else { "$docs document(s) open" })" $other $rec
+            return $r
+        }
+        return @{ Candidate = $c; Record = $rec; OtherSession = $other; ReloadPrompts = @(); ResetRequired = $null; ResetRequiredWarning = $null; EmptySolution = $true }
+    }
     if ($isReady) {
         $seen = [string]$c.normalizedSolution
         if (-not [string]::Equals($seen, $SolutionPath, [StringComparison]::OrdinalIgnoreCase)) {

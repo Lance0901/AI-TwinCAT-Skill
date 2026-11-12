@@ -12,6 +12,15 @@ const KILL_ESCALATE_MS = 1000;
 export const HINTS = {
   BRIDGE_TIMEOUT:
     'PowerShell bridge was restarted and all IDE/ADS state is lost. Check for a modal dialog in the XAE window (GetIdeModalDialog after ConnectIde), then ConnectIde again. If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle), it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check and the next runtime-changing call returns LIFECYCLE_BLOCKED: report it to the user, only read-only diagnosis, ClearLifecycleBlock only after the user agreed.',
+  // #249: ConnectIde ran out of time. A cold IDE start (launch, first modal-dialog scan, Solution.Open) can
+  // take long on a loaded machine; launching again would leave a second IDE (#235).
+  BRIDGE_TIMEOUT_CONNECT_IDE:
+    'ConnectIde did not finish in time and the PowerShell bridge was restarted (IDE/ADS state of this server is lost). ' +
+    'The IDE it was starting may still be starting, or may already be up: do NOT launch an IDE yourself and do not taskkill it. ' +
+    'Call ConnectIde again with the SAME parameters: it attaches the IDE this server launched for that SolutionPath (selectedBy session-launched, ownedBySession=true; waits up to 60 s while it is still starting), ' +
+    'or reuses the empty IDE that an ended session left for that SolutionPath (#235, data.reusedEmptyOrphan=true). ' +
+    'If that call answers IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE / IDE_LAUNCH_PENDING, follow its hint (GetIdeModalDialog ProcessId=<data.ideProcessId>). ' +
+    'If it launched another IDE anyway, tell the user that the IDE this call was starting may still be running: it was cut off before it was recorded, it is not owned by this server and must not be closed by you (data.candidates alone cannot tell which IDE that is).',
   BRIDGE_DIED:
     'PowerShell bridge process exited and all IDE/ADS state is lost. It restarts on the next call; run ConnectIde again.',
   MODULE_IMPORT_FAILED:
@@ -23,6 +32,15 @@ export const CANCELLED_MESSAGE = 'Request cancelled before it was sent to PowerS
 
 /** Suffix for BRIDGE_DIED results of calls that were still queued (never reached PowerShell). */
 const NOT_EXECUTED = 'this call was not executed; safe to retry after reconnecting';
+
+/**
+ * #249: the BRIDGE_TIMEOUT of a ConnectIde call gets the ConnectIde hint (call it again with the same
+ * parameters, never launch an IDE yourself). Any other tool / result is returned unchanged.
+ */
+export function decorateConnectIdeTimeout(name, result) {
+  if (name !== 'ConnectIde' || !result || result.success === true || result.error?.code !== 'BRIDGE_TIMEOUT') return result;
+  return { ...result, error: { ...result.error, hint: HINTS.BRIDGE_TIMEOUT_CONNECT_IDE } };
+}
 
 export function errorResult(code, message, hint) {
   const error = { code, message };
