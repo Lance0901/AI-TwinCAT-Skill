@@ -318,6 +318,8 @@
     # coverageComplete false. A disabled entry that IS built stays 'built'. When the list cannot be
     # read every entry counts as enabled (data.disabledCheckError).
     $disabledCheckError = $null
+    # #275 review S5: tree names of the disabled PLC projects (their load-error rows only warn)
+    $disabledNodeNames = @()
     # 'path' | 'name' | $null (no disabled tree item, list not readable, or no one-to-one match)
     $disabledMatchBy = $null
     # also used for the login state of a BUILD_FAILED without error rows (#188)
@@ -347,6 +349,7 @@
                 for ($i = 0; $i -lt $entries.Count; $i++) {
                     if ($null -ne $m.Nodes[$i] -and $m.Nodes[$i].disabled -eq $true) {
                         $entries[$i].disabled = $true
+                        $disabledNodeNames += [string]$m.Nodes[$i].name
                         if ($entries[$i].status -eq 'skipped') { $entries[$i].status = 'disabled' }
                     }
                 }
@@ -618,6 +621,16 @@
         $nonLibraryErrors = $els.nonLibraryErrors
         $libraryErrorCount = $els.libraryErrorCount
         $codeWarnings = $els.codeWarnings
+        # #275: rows XAE wrote while loading a project file (no compiler code, bare object file name)
+        $loadErrorItems = @($els.loadErrorItems)
+        # #275 review S5 / #104: a disabled PLC project is not activated, so its load errors only warn
+        # (data.disabledLoadErrorItems, warningCode PROJECT_LOAD_ERRORS); a row that names no disabled
+        # PLC counts (fail closed). Disabled = data.projects[].disabled (tree item Disabled, #104).
+        $disabledNames = @(@($coverage.projects | Where-Object { $_.disabled -eq $true } | ForEach-Object { [string]$_.name }) + $disabledNodeNames | Select-Object -Unique)
+        $loadSplit = Split-TcLoadErrorRows -Rows $loadErrorItems -ExcludeNames $disabledNames
+        $loadErrorItems = @($loadSplit.Kept)
+        $disabledLoadErrorItems = @($loadSplit.Excluded)
+        $staticAnalysisItems = @($els.staticAnalysisItems)
 
         # --- success decision: (a) LastBuildInfo, (b) Error List, (c) unknown ---
         $buildSucceeded = $null
@@ -627,7 +640,8 @@
             $decidedBy = 'LastBuildInfo'
         }
         elseif ($null -eq $errorListError) {
-            $realErrors = @($codeErrors | Where-Object { $null -ne $_.line -and $_.line -gt 0 })
+            # #275: a load-error row (line 1) is no compiler error; it is reported as PROJECT_LOAD_ERRORS below
+            $realErrors = @($codeErrors | Where-Object { $null -ne $_.line -and $_.line -gt 0 -and -not (Test-TcProjectLoadErrorItem $_) })
             if ($realErrors.Count -gt 0) {
                 $buildSucceeded = $false
                 $decidedBy = 'ErrorList'
@@ -646,7 +660,8 @@
         # A code row without a line number is not a located compiler message: it may be a
         # library row in a UI language the category rules do not know (zh-TW file name of the
         # Library Manager not measured), so it does not count as proof that the code compiled.
-        $unlocatedCode = @($codeErrors | Where-Object { $n = 0; -not ([int]::TryParse(([string]$_.line).Trim(), [ref]$n) -and $n -gt 0) })
+        # #275: load-error rows (line 0 on 4024) are reported as PROJECT_LOAD_ERRORS, not as unlocated code
+        $unlocatedCode = @($codeErrors | Where-Object { $n = 0; -not ([int]::TryParse(([string]$_.line).Trim(), [ref]$n) -and $n -gt 0) -and -not (Test-TcProjectLoadErrorItem $_) })
         $codeVerified = $null
         if ($null -eq $errorListError) { $codeVerified = ($libraryErrorItems.Count -eq 0) -and ($unlocatedCode.Count -eq 0) }
         $libraryUnresolved = ($buildSucceeded -eq $true) -and ($libraryErrorItems.Count -gt 0)
@@ -718,6 +733,11 @@
             $runtimeWhy = "runtime log rows present (PLC online, or rows left from an earlier online session) (#66): $(@($els.runtimeMessages).Count) runtime / system log row(s) are in the Error List (data.runtimeMessages) and LastBuildInfo was not readable, so the Error List alone is not reliable (#66)"
         }
         $codeNotVerified = ($buildSucceeded -eq $true) -and ($codeVerified -ne $true) -and (-not $libraryUnresolved -or $unlocatedCode.Count -gt 0)
+        # #275 (實測 2026-11-13, 4026 VS2022): XAE could not load these project files (the objects are
+        # broken in the IDE, itemType 0), yet LastBuildInfo said 0 failed and the pane "0 errors" because
+        # nothing references them. The build proves nothing about those objects: codeVerified $false,
+        # never a complete build; a successful build returns PROJECT_LOAD_ERRORS (below).
+        if ($loadErrorItems.Count -gt 0) { $codeVerified = $false }
 
         $data = [PSCustomObject]@{
             buildSucceeded = $buildSucceeded
@@ -745,6 +765,10 @@
             warningItems   = $warningItems
             codeWarnings   = $codeWarnings
             runtimeMessages = @($els.runtimeMessages)
+            # #275: always present (empty when none)
+            loadErrorItems  = $loadErrorItems
+            disabledLoadErrorItems = $disabledLoadErrorItems
+            staticAnalysisItems = $staticAnalysisItems
             # O13: always present; $true only on the BUILD_FAILED path below (#66 / O9)
             plcOnlineSuspected = $false
             # #188: always present; set only on a BUILD_FAILED without any error row (below)
@@ -827,6 +851,20 @@
         # after the codes that decide completeBuild: WARNINGS_INCOMPLETE never does (#138)
         if ($els.warningsIncomplete) {
             Add-TcBuildWarning -Data $data -Code 'WARNINGS_INCOMPLETE' -Text "Build-TcProject: $($els.errorListNote); data.warningItems is not the whole list (WARNINGS_INCOMPLETE). The error rows are complete, so this does not affect codeVerified. $(Get-TcErrorHint -Code 'WARNINGS_INCOMPLETE')"
+        }
+        # #275 point c: TE1200 Static Analysis rows are Error rows while the build succeeds (實測 2026-11-13,
+        # PR #276 te1200-light.md). Whether they should fail the build is the owner's decision: for now they
+        # are only named (warningCode), codeVerified / completeBuild unchanged.
+        if ($buildSucceeded -eq $true -and $staticAnalysisItems.Count -gt 0) {
+            $saCodes = @($staticAnalysisItems | ForEach-Object { [string]$_.code } | Sort-Object -Unique) -join ', '
+            Add-TcBuildWarning -Data $data -Code 'STATIC_ANALYSIS_ERRORS' -Text "Build-TcProject: the Error List lists $($staticAnalysisItems.Count) TE1200 Static Analysis error row(s) ($saCodes, data.staticAnalysisItems) although the build succeeded (STATIC_ANALYSIS_ERRORS); they do not fail the build. $(Get-TcErrorHint -Code 'STATIC_ANALYSIS_ERRORS')"
+        }
+        if ($disabledLoadErrorItems.Count -gt 0) {
+            $dFiles = @($disabledLoadErrorItems | ForEach-Object { ([string]$_.file).Trim() } | Select-Object -Unique)
+            Add-TcBuildWarning -Data $data -Code 'PROJECT_LOAD_ERRORS' -Text "Build-TcProject: XAE could not load $($dFiles.Count) file(s) of disabled PLC project(s) $($disabledNames -join ', '): $($dFiles -join ', ') (data.disabledLoadErrorItems). A disabled PLC project is not activated (#104), so this does not block; fix the files before enabling it. $(Get-TcErrorHint -Code 'PROJECT_LOAD_ERRORS')"
+        }
+        if ($loadErrorItems.Count -gt 0) {
+            $data | Add-Member -NotePropertyName 'loadErrorFiles' -NotePropertyValue @($loadErrorItems | ForEach-Object { ([string]$_.file).Trim() } | Select-Object -Unique)
         }
 
         if ($null -eq $buildSucceeded) {
@@ -961,8 +999,20 @@
             elseif ($noErrorRow) {
                 $summary += ". XAE listed no error row at all, so it does not show why the build failed and the PLC code is not verified; PLC login state: $loginText (data.plcLoginState)"
             }
+            # #275 review N2: load-error rows next to the compiler errors are a second cause
+            if ($loadErrorItems.Count -gt 0) { $buildHint = "$buildHint. In addition XAE could not load $(@($data.loadErrorFiles).Count) project file(s) (data.loadErrorFiles, data.loadErrorItems; see PROJECT_LOAD_ERRORS): those objects were not compiled either." }
             & $recordUnverified 'BUILD_FAILED' $data
             New-TcResult -Success $false -ErrorMessage $summary -ErrorCode 'BUILD_FAILED' -Hint $buildHint -Data $data
+        }
+        elseif ($loadErrorItems.Count -gt 0) {
+            # #275: the build succeeded, but XAE could not load project file(s): fail closed (#68), no success
+            $data | Add-Member -NotePropertyName 'completeBuild' -NotePropertyValue $false
+            $files = @($data.loadErrorFiles)
+            $first = @($loadErrorItems | Select-Object -First 2 | ForEach-Object { "$(([string]$_.description -split "[`r`n]+")[0].Trim()) ($(([string]$_.file).Trim()))" }) -join '; '
+            & $recordUnverified "PROJECT_LOAD_ERRORS, $($loadErrorItems.Count) project load error(s)" $data
+            $data | Add-Member -NotePropertyName 'modalScanRetried' -NotePropertyValue ([bool]$modalScanRetried) -Force   # #230
+            New-TcResult -Success $false -ErrorCode 'PROJECT_LOAD_ERRORS' -Hint (Get-TcErrorHint -Code 'PROJECT_LOAD_ERRORS') -Data $data `
+                -ErrorMessage "Build finished without compiler errors, but XAE could not load $($files.Count) project file(s): $($files -join ', ') ($($loadErrorItems.Count) Error List row(s) without a compiler code, data.loadErrorItems). Those objects were not compiled and are broken in the IDE. $first"
         }
         else {
             # -ExpectedProject: each one must have been built (skipped was refused before the build)

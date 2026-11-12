@@ -990,6 +990,88 @@ function Get-TcErrorItemCategory {
     return 'other'
 }
 
+function Test-TcProjectLoadErrorItem {
+    <#
+    .SYNOPSIS
+        $true for an Error List ERROR row that XAE wrote while loading a PLC project file (#275), not a
+        compiler message: no compiler code, and the File column is a bare object file name (.TcPOU measured;
+        .TcDUT / .TcGVL / .TcIO inferred; never .TcTTO), without the '@<member>' or ' (Impl)' /
+        ' (Decl)' that the compiler rows of the measured run carried.
+    .DESCRIPTION
+        實測 2026-11-13 (VS2022 17.14 zh-TW + XAE 3.1.4026.22, registered tcauto, unreferenced FBs broken
+        on disk, then ResetSolution): "Parts of the XML data do not conform to the schema:" (root element
+        renamed; Id in a wrong format), "Tag 'Declaration' is missing in '...FB.TcPOU' at line 7." - every
+        row: severity Error, code null, file 'FB_B275A.TcPOU', line 1. LastBuildInfo said 0 failed
+        projects and the build pane "0 errors" (the objects are not referenced). After the file was
+        restored and the solution reopened (ResetSolution) the rows were gone before any build, so they
+        are current load errors, not rows left from an earlier build. The compiler rows of the same run (4026 VS2022, which
+        has a Code column) all had a code and 'File.TcPOU@Member (Impl)' / 'File.TcPOU (Impl)'. Task rows
+        ('PlcTask.TcTTO', line 0) are bare file names too, so .TcTTO is excluded. 4024 (TcXaeShell, no
+        Code column) was not measured. Library Manager rows (category library) and warnings never are.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Item)
+    if ($null -eq $Item) { return $false }
+    if ([string]$Item.severity -ne 'Error') { return $false }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Item.code)) { return $false }
+    if (Test-TcLibraryManagerItem $Item) { return $false }
+    if ($null -ne $Item.PSObject.Properties['category'] -and [string]$Item.category -eq 'library') { return $false }
+    # Line (review #275 S1, 實測 2026-11-13): load rows had line 1 (4026 VS2022) or 0 (4024 TcXaeShell);
+    # a 4024 compiler row is ALSO code null + bare file, but its Line is the line in the .TcPOU file
+    # (44, 130...), never 1: line 1 of an object file is '<?xml ...>' and line 2 the root element.
+    $n = 0
+    $lineText = ([string]$Item.line).Trim()
+    if ($lineText -ne '' -and [int]::TryParse($lineText, [ref]$n) -and $n -gt 1) { return $false }
+    $file = ([string]$Item.file).Trim()
+    if ([string]::IsNullOrEmpty($file)) { return $false }
+    # Only object kinds XAE loads with the same XML loader (.TcPOU measured; .TcDUT / .TcGVL / .TcIO
+    # inferred). NOT .TcTTO: a task row is a compiler row ('PlcTask.TcTTO', line 0, C0046 / C0035 /
+    # C0036), and on 4024 (no Code column) its code may not be inferred from the text (review #275 F2).
+    return ($file -match '^[^@()\\/:*?"<>|]+\.(TcPOU|TcDUT|TcGVL|TcIO)$')
+}
+
+function Split-TcLoadErrorRows {
+    <#
+    .SYNOPSIS
+        Splits load-error rows (Test-TcProjectLoadErrorItem) into the ones that belong to the PLC
+        projects named in -ExcludeNames (Excluded) and all others (Kept), fail closed (#275 review S2 / S5).
+    .DESCRIPTION
+        A row is Excluded only when its Error List 'project' column equals one of -ExcludeNames
+        (case-insensitive). 4024 TcXaeShell lists every load error twice (實測 2026-11-13): once with
+        project = the PLC name and the text 'Reading file failed. ...', once with project empty; an
+        empty-project row is Excluded only when an Excluded row has the same file and no Kept row
+        with a project does. Every other row, also one whose project matches no PLC, is Kept.
+    #>
+    [CmdletBinding()]
+    param([object[]]$Rows, [string[]]$ExcludeNames)
+    $names = @($ExcludeNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $rows = @($Rows | Where-Object { $null -ne $_ })
+    if ($names.Count -eq 0) { return [PSCustomObject]@{ Kept = $rows; Excluded = @() } }
+    $isNamed = { param($r) -not [string]::IsNullOrWhiteSpace([string]$r.project) }
+    $ex = @($rows | Where-Object { (& $isNamed $_) -and ($names -icontains ([string]$_.project).Trim()) })
+    $keptNamed = @($rows | Where-Object { (& $isNamed $_) -and -not ($names -icontains ([string]$_.project).Trim()) })
+    $exFiles = @($ex | ForEach-Object { ([string]$_.file).Trim() })
+    $keptFiles = @($keptNamed | ForEach-Object { ([string]$_.file).Trim() })
+    $exNull = @($rows | Where-Object { -not (& $isNamed $_) -and ($exFiles -icontains ([string]$_.file).Trim()) -and -not ($keptFiles -icontains ([string]$_.file).Trim()) })
+    $excluded = @($ex) + @($exNull)
+    [PSCustomObject]@{ Kept = @($rows | Where-Object { $excluded -notcontains $_ }); Excluded = $excluded }
+}
+
+function Test-TcStaticAnalysisItem {
+    <#
+    .SYNOPSIS
+        $true for an Error List row of TE1200 Static Analysis (code SA<4 digits>, #275 point c).
+        實測 2026-11-13 (PR #276 verification/te1200-light.md, 4026 VS2022): with the Light rules active
+        the violations are Error rows (SA0033, SA0167) while the build pane says 0 errors and the build
+        succeeds. InfoSys: Light runs after a successful compile and lists violations as errors
+        (https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2527107467.html).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Item)
+    if ($null -eq $Item) { return $false }
+    return ([string]$Item.code -match '^SA\d{4}$')
+}
+
 # Runtime / system log rows in the Error List (#66). Messages that the PLC application writes with
 # ADSLOGSTR & co. are shown in TwinCAT XAE > Error List (InfoSys TF6500 "Debug messages in
 # TwinCAT->Error List": the PLC application writes them "using the ADSLOGSTR ... functions",
