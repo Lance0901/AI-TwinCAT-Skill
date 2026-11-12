@@ -42,6 +42,10 @@ function Get-TcErrorListSummary {
           ambiguousRows      only with -SplitRuntimeLog: rows with that prefix that also have a file, line,
                              compiler code or a library message: kept in errorItems / warningItems (fail closed),
                              each with a 'note'
+          loadErrorItems     errorItems that XAE wrote while loading a project file (Test-TcProjectLoadErrorItem,
+                             #275): no compiler code, File = a bare object / project file name. Still in errorItems /
+                             codeErrors (category unchanged); the callers decide what they mean
+          staticAnalysisItems errorItems with a TE1200 Static Analysis code SA<nnnn> (Test-TcStaticAnalysisItem, #275)
         errorListError = ERRORLIST_INCOMPLETE only when the ERROR rows are not proven complete
         (Get-TcErrorListReadState: errors / total shortfall, Errors total unreadable, or a filtered
         scope with a shortfall); callers then treat the code as not verified (codeVerified = $null).
@@ -140,6 +144,8 @@ function Get-TcErrorListSummary {
     $codeErrors = @($errorItems | Where-Object { $_.category -eq 'code' })
     $libraryErrorItems = @($errorItems | Where-Object { $_.category -eq 'library' })
     $nonLibraryErrors = @($errorItems | Where-Object { $_.category -ne 'library' })
+    $loadErrorItems = @($errorItems | Where-Object { Test-TcProjectLoadErrorItem $_ })
+    $staticAnalysisItems = @($errorItems | Where-Object { Test-TcStaticAnalysisItem $_ })
     $libraryErrorCount = $null
     if ($null -eq $errorListError) {
         $errorCount = $codeErrors.Count
@@ -180,5 +186,7 @@ function Get-TcErrorListSummary {
         errorListNote      = $errorListNote
         runtimeMessages    = @($runtimeMessages)
         ambiguousRows      = @($ambiguousRows)
+        loadErrorItems     = $loadErrorItems
+        staticAnalysisItems = $staticAnalysisItems
     }
 }
