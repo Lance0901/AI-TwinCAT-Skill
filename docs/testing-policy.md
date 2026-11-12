@@ -42,5 +42,5 @@ CI 守兩類,兩類都留在 CI:
 
 - `tests/Unit` 共 65 支:契約 27 / 邏輯 23 / regression 10 / 安裝 1 / 文件 1 / 其他 3;`npm test` 402 支。
 - unit 已平行執行(#240 / PR #243)。有牆鐘時間斷言的腳本放在 `scripts/check.ps1` 的序列組;新增有牆鐘時間斷言的測試要加進序列組。
-- CI 單一 job 約 12 分鐘,高於 10 分鐘預算。後續:#241(測試加速)、#242(pre-push 只跑相關 unit)。
+- CI 原為單一 job 約 12 分鐘;#253 把 `npm test` 拆成與 `check` 平行的獨立 job(`check.ps1 -SkipNpmTest`),牆鐘時間約等於較慢的那個 job。後續:#241(測試加速)、#242(pre-push 只跑相關 unit)。
 - 本機 hook 與 CI 分工:pre-commit 跑 `scripts/check.ps1 -Fast`;CI 跑完整 `-Strict`。hook 可被繞過,CI 是唯一保證關卡。

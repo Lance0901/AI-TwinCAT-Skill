@@ -38,6 +38,38 @@ jobs:
       - name: npm ci
         working-directory: mcp-server
         run: npm ci --no-audit --no-fund
-      - name: scripts/check.ps1 -Strict
+      # npm test runs in the parallel npm-test job (#253); -Strict still fails on any SKIP.
+      - name: scripts/check.ps1 -Strict -SkipNpmTest
         shell: powershell
-        run: powershell -NoProfile -File scripts/check.ps1 -Strict
+        run: powershell -NoProfile -File scripts/check.ps1 -Strict -SkipNpmTest
+
+  # #253: npm test (mcp-server) on its own runner, parallel to check (it used to wait for unit).
+  # Same environment as the npm section of scripts/check.ps1: isolated TCAUTO_STATE_DIR and
+  # TCAUTO_TEST_FORBID_REAL_STATE=1 (#118).
+  npm-test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ${{ github.event_name == 'pull_request' && fromJSON('[22]') || fromJSON('[22, 24]') }}
+    name: npm-test (Node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: npm ci
+        working-directory: mcp-server
+        run: npm ci --no-audit --no-fund
+      - name: npm test
+        working-directory: mcp-server
+        shell: powershell
+        run: |
+          $env:TCAUTO_STATE_DIR = Join-Path $env:RUNNER_TEMP 'tcauto-npm-state'
+          $null = New-Item -ItemType Directory -Path $env:TCAUTO_STATE_DIR -Force
+          $env:TCAUTO_TEST_FORBID_REAL_STATE = '1'
+          npm test
+          exit $LASTEXITCODE
