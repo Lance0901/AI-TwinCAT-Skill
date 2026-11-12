@@ -2,6 +2,8 @@
 
 **狀態:待 owner 確認。** 這份清單用來在規則寫好之後計算召回率(design.md D7 第 1 點),所以必須在規則設計之前凍結,不能事後依規則增刪。owner 之後提供的「真實犯過的錯誤清單」(owner 決定 5)併入後凍結,凍結時記日期與 commit。
 
+**注意(review 驗證 12)**:來源為 `[review2]` 的 18 類(E03、E05~E10、E13、E14、E18、E20~E25)是第二輪 review 提出規則時一起提出的,與規則目錄一一對應,**不算獨立的召回率分母**。凍結前以 owner 提供的清單(owner 決定 5)為主,`[review2]` 項目只有在 owner 清單也有對應時才計入分母。
+
 來源標記:`[issue]` = #252 本文;`[KB]` = 知識庫 `D:\ObsidianVault\LanceDateBase-2026\wiki\`(頁名附後);`[RS]` = Robust Solution 審核規格;`[docs]` = repo `docs/`;`[review2]` = PR #262 第二輪 review;`[corpus]` = 本次語料實測。每類只寫「錯誤長什麼樣」與「機台會怎樣」,不寫偵測方法(避免清單被規則牽著走)。
 
 | # | 類別 | 錯誤 | 機台會怎樣 | 來源 |
@@ -24,8 +26,8 @@
 | E16 | 回傳值 | 命令方法的回傳值沒檢查(`RequestCommand`) | 命令被靜默丟掉 | [KB] 同上;[RS] PKML-008 |
 | E17 | 回傳值 | R_TRIG 邊緣已用掉但命令沒送成功,下個 scan 不重送 | 命令遺失 | [KB] 同上 |
 | E18 | 記憶體 | 陣列越界(0-based / 1-based 混淆) | 蓋到相鄰變數或 exception | [review2];TE1200 SA0172(Full) |
-| E19 | 記憶體 | 除以零 | exception / PLC 停機 | TE1200 SA0040(Full) |
-| E20 | 記憶體 | REFERENCE / POINTER 未初始化就解參照 | page fault、PLC 停機 | [review2];TE1200 SA0039 / 0145(Full) |
+| E19 | 記憶體 | 除以零 | exception / PLC 停機(推論,未驗證) | TE1200 SA0040(Full) |
+| E20 | 記憶體 | REFERENCE / POINTER 未初始化就解參照 | page fault、PLC 停機(推論,未驗證) | [review2];TE1200 SA0039 / 0145(Full) |
 | E21 | 資料 | FB 以值傳遞 | 狀態遺失 | [review2] |
 | E22 | 資料 | 同一輸出多處寫入 / 跨 task 寫入 | 前面的條件被覆蓋 | [review2];TE1200 SA0004 / 0006(Light) |
 | E23 | 數值 | 浮點數用 `=` 比較 | 永遠等不到 | [review2] |

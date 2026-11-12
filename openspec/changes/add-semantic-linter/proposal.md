@@ -1,8 +1,8 @@
 ## Why
 
-TcAuto 能 Build、能跑 CheckAllObjects,但 coding agent 寫出來的 PLC 程式常常 Build 成功卻在機台上出事:Timer / R_TRIG 只在 IF 裡呼叫、FB instance 宣告了卻沒呼叫、Interface 簽章不一致、`.plcproj` 漏了 Compile entry、公開 DUT / Enum 被改了 layout。這些問題編譯器不報;客戶只有 TE1200 Light(7 條規則),Full 版的檢查也沒有;而且要等寫進 XAE、Build 完才看得到。另外,agent 直接改磁碟上的 `.TcPOU` / `.plcproj` 時,手寫 XML 很容易弄壞檔案(CDATA、GUID、Compile entry),XAE 遇到時的行為大多未實測。#252 要在 TcAuto 內加一個 deterministic 的 Semantic Linter,**在寫入 XAE 之前與 Activate / Download 之前**把高信心問題擋下。
+TcAuto 能 Build、能跑 CheckAllObjects,但 coding agent 寫出來的 PLC 程式常常 Build 成功卻在機台上出事:Timer / R_TRIG 只在 IF 裡呼叫或宣告在 METHOD 的 VAR、FB instance 宣告了卻沒呼叫、PROGRAM 沒掛 task、busy-wait、`.plcproj` 漏了 Compile entry、公開 DUT / Enum 被改了 layout。這些問題編譯器(推論)不報;客戶只有 TE1200 Light(7 條規則),Full 版的檢查也沒有;而且要等寫進 XAE、Build 完才看得到。另外,agent 直接改磁碟上的 `.TcPOU` / `.plcproj` 時,手寫 XML 很容易弄壞檔案(CDATA、GUID、Compile entry),XAE 遇到時的行為大多未實測。#252 要在 TcAuto 內加一個 deterministic 的 Semantic Linter,**在寫入 XAE 之前與 Activate / Download 之前**把高信心問題擋下。
 
-這個 change 是設計階段:可行性已用 throwaway prototype 在兩個真實專案(4024 / 4026)上實測(`research/corpus-feasibility.md`):宣告區 242/242、ST 實作 176/176 解析成功;seeded bug 18 個中範圍內 15/15 命中;同時量到 SCAN 類規則第一版誤報 68/71,所以 SCAN 類只能當 warning。
+這個 change 是設計階段:可行性已用 throwaway prototype 在兩個真實專案(4024 / 4026)上實測(`research/corpus-feasibility.md`):宣告區 242/242、ST 實作 176/176 解析成功;seeded bug 18 個中範圍內 15/15 命中;同時量到 heuristic SCAN 規則第一版誤報 68/71,所以 heuristic SCAN 規則只能當 warning;判斷確定的規則(Timer 宣告在 METHOD VAR、busy-wait、FOR 溢位…)預設 blocking(owner 決定 2)。
 
 ## What Changes
 

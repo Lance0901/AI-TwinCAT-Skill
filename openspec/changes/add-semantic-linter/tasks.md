@@ -23,20 +23,21 @@
 - [ ] 1a.7 **IDE 實測:XAE 遇到損毀檔案的行為**(每條 PROJECT-* 規則一個案例:植入 → `Reset-TcSolution` → `Get-TcProjectTree` / `BuildProject`,記錄是否跳框、物件是否消失、Build 結果)。依結果把 `blockable: pending` 定案;含空白 / `'` / `%` 檔名在 `.plcproj` 的實際寫法;`<LineIds>` 不一致時 XAE 是否重建;行尾 / 編碼混用的顯示
 - [ ] 1a.8 **IDE 實測:用 XAE 產生 `.TcIO`、Property(Get / Set)、Transition、SFC 物件**,補進 `tc-xml-schema-observed.md` 與 XML fixture(取代 prototype 自己寫的 Interface XML)
 - [ ] 1a.9 **IDE 量測:TE1200 Light**(design.md D11 的四個問題)
-- [ ] 1a.10 **查 InfoSys / IDE 實測**:`st-syntax-inventory.md` 標「未驗證」的語法項目(至少條件 pragma、`__TRY`、`?=`、`S=` / `R=`、`VAR_GENERIC`、`/* */`、多個 `<ST>` 元素的語意);每項以最小 POU 跑 `BuildProject` 確認合法性
+- [ ] 1a.10 **查 InfoSys / IDE 實測**:`st-syntax-inventory.md` 標「未驗證」的語法項目(`?=`、`**`、`/* */`、`E_Enum#Member`、TIME literal 的底線 / 負號 / 小數、`END_IF` 後分號可省、多個 `<ST>` 元素是否存在);每項以最小 POU 跑 `BuildProject` 確認合法性
 - **驗收**:
   - `tests/Unit/lint-parser.ps1`:語法清單每項一個 fixture;第二輪 review 6-1~6-4 的最小反例:條件 pragma → `notAnalyzed`(不是 `LINT_PARSE_FAILED`)、`__TRY` 內的呼叫被認出、`?=` 不丟例外、`T#1S-tonB.ET` 拆成正確 token
-  - `tests/Unit/lint-project-xml.ps1`:XAE 原樣檔案(4024 與 4026 各一份)零 finding;每條 PROJECT-* 規則至少 1 個破壞版正例
+  - `tests/Unit/lint-project-xml.ps1`:XAE 原樣檔案(4024 與 4026 各一份,未在 XAE 外修改)零 finding;每條 PROJECT-* 規則至少 1 個破壞版正例;1a.7 加「在 XAE 寫入含 `]]>` 的程式碼」看 XAE 怎麼存
   - `tests/Unit/lint-contract.ps1`:D4 每一列一個 case(含 `LINT_ENGINE_UNAVAILABLE`);`unresolved[]` / `requiresDisposition`;en-US / zh-TW byte 相同
-  - 兩個語料專案:解析 100%、PROJECT-* 零誤報(扣除已知的 TestCam 類 PROJECT-TASK 不在本期)
+  - 兩個語料專案:解析 100%;axis 的 6 個假 GUID(PROJECT-GUID-005)與 11 個外部寫入檔(PROJECT-ENC-001)是預期正例;其餘 PROJECT-* 零 finding
   - 效能:≤ 200 物件 ≤ 2 s(不含首次編譯)
   - 1a.7~1a.10 的實測紀錄在 `verification/`
 
 ## 1b. Phase 1b:最確定的機台行為規則 + 磁碟改檔工作流
 
 - [ ] 1b.1 FB 型別目錄(專案內 FB + 版本化 library 清單,每個名稱附 InfoSys 來源 + profile `typeCatalog`),含「有狀態 FB」子集
-- [ ] 1b.2 SCAN-TEMPFB-001(blocking;METHOD `VAR` 與 `VAR_TEMP` 的重新初始化已有 InfoSys 出處,FUNCTION `VAR` 未驗證前該情況維持 pending)
-- [ ] 1b.3 PROJECT-TASK-001(必須處置)/ PROJECT-TASK-002(blocking):從 `.TcTTO` `PouCall` 建呼叫圖,依可達性判斷
+- [ ] 1b.2 SCAN-TEMPFB-001(blocking;METHOD `VAR`、FUNCTION `VAR`、`VAR_TEMP` 的重新初始化都有 InfoSys 出處)
+- [ ] 1b.3 PROJECT-TASK-001(必須處置)/ PROJECT-TASK-002(blocking):從 `.TcTTO` `PouCall` 建呼叫圖,依可達性判斷;以 `BuildProject` 實測「沒掛 task 的 PROGRAM 有語法錯時 Build 是否仍成功」(TASK-001 說明的依據)
+- [ ] 1b.6 suppression 提前上線(review 驗證 8:1a / 1b 已輸出 `unresolved[]`,沒有 suppression 就無法處置):inline(非 blockable 規則)與 profile `suppressions[]`、LINT-SUPPRESS-001~004、`newSuppressions[]`(LintProject 以 git HEAD 為基準)
 - [ ] 1b.4 語法清單中「安全略過」的項目,能做的改為「支援」(依 1a.10 結果)
 - [ ] 1b.5 SKILL.md、CLAUDE.md 磁碟改檔段落、`docs/troubleshooting.md`「磁碟改檔的正確做法」加上:改檔 → `LintProject` → 通過才 `ResetSolution` → `BuildProject`(design.md D9)
 - **驗收**:
@@ -47,7 +48,7 @@
 ## 2. Phase 2:LintCandidate + 迴圈 / 陣列 / 除法 + Timer 細分 + stale 偵測
 
 - [ ] 2.1 `Invoke-TcLintCandidate`(overlay、`LINT_CONTEXT_REQUIRED`、overlay 邊界的 `LINT_INPUT_INVALID`)
-- [ ] 2.2 suppression(inline / profile)、LINT-SUPPRESS-001~004、`newSuppressions[]`
+- [ ] 2.2 `LintCandidate` 的 `newSuppressions[]`(相對磁碟版本)
 - [ ] 2.3 呼叫點模型:FB body 呼叫與 Method 呼叫分開,含 expression 內的呼叫;`inherited-use`
 - [ ] 2.4 SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001(blocking);SAFETY-ARR-001、SAFETY-DIV-001
 - [ ] 2.5 SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002 / 004 / 005
@@ -55,7 +56,7 @@
 - [ ] 2.7 **真機**(registered tcauto,一次一個 worker):4024 XAE 上 `WritePouCode` 後 .TcPOU 的落地時機;XAE 新增 / 刪除物件後 2.6 是否抓得到;4026 VS2022 重跑 #69
 - [ ] 2.8 SKILL.md:LintCandidate → WritePouCode → BuildProject → LintProject;Failure contract 加入 `requiresDisposition` 規定(不得 EnableConfig、不得回報完成、`newSuppressions[]` 逐條列給使用者)
 - [ ] 2.9 PROJECT-SA-001(只在 1a.9 量測支持時做)
-- [ ] 2.10 **IDE / UmRT 實測**(`st-syntax-inventory.md` 第 2 部分仍標未驗證的):TON 在 PT = 0 的行為、TON 中途幾個 cycle 沒被呼叫再進入的語意(SCAN-TIMER-004 / 005 的依據)、除以零與越界(未加 CheckBounds)在 runtime 的結果、`FOR … BY 0`;除以常數 0 編譯器擋不擋(`BuildProject`,填 `compilerCatches: measured`);FUNCTION `VAR` 是否每次呼叫重新初始化(SCAN-TEMPFB-001 的 FUNCTION 情況)
+- [ ] 2.10 **IDE / UmRT 實測**(`st-syntax-inventory.md` 第 2 部分仍標未驗證的):TON 在 PT = 0 的行為、TON 中途幾個 cycle 沒被呼叫再進入的語意(SCAN-TIMER-004 / 005 的依據)、除以零與越界(未加 CheckBounds)在 runtime 的結果、未初始化 REFERENCE 解參照的後果、`FOR … BY 0`;除以常數 0 編譯器擋不擋(`BuildProject`,填 `compilerCatches: measured`)
 - **驗收**:每條規則 ≥2 正例、≥2 反例(含 research 4.2 / 4.4 已知誤報案例)、1 個 suppression;seeded S06~S09、S16、S17 命中;stale 偵測真機紀錄
 
 ## 3. Phase 3:狀態機 / Motion / 記憶體 / 數值 + 驗證 + advisory gate

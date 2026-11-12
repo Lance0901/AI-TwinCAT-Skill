@@ -17,15 +17,15 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 ## 總表(依 phase 排序)
 
-| ID | 一句話 | machineImpact | compilerCatches | confidence | blockable | TE1200 | phase |
+| ID | 一句話 | machineImpact | compilerCatches(`no` 是推論,待 tasks 3.4 mutation 以 BuildProject 實測) | confidence | blockable | TE1200 | phase |
 |---|---|---|---|---|---|---|---|
 | PROJECT-XML-001 | XML 不是 well-formed | project-integrity | unknown | high | true | — | 1a |
 | PROJECT-XML-002 | 編碼宣告與實際位元組不符 / 非法 UTF-8 / BOM 異常 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-XML-003 | CDATA 被破壞(程式碼含 `]]>`、Declaration / ST 被拆成多段) | project-integrity → behavior | no | high | true | — | 1a |
+| PROJECT-XML-003 | CDATA 被破壞:Declaration / ST 有 CDATA 外的一般文字(true);被拆成多段 CDATA(pending) | project-integrity → behavior | unknown | high | true / pending | — | 1a |
 | PROJECT-XML-004 | 必要元素 / 屬性缺漏、元素順序與 XAE 產生的不同 | project-integrity | unknown | high | pending | — | 1a |
 | PROJECT-KIND-001 | XML 物件種類 ≠ 宣告關鍵字 ≠ 副檔名 | project-integrity | unknown | high | pending | — | 1a |
 | PROJECT-NAME-001 | `Name` 屬性 ≠ 宣告區物件名 | project-integrity | unknown | high | pending | — | 1a |
-| PROJECT-NAME-002 | 檔名 ≠ 物件名 | none | no | high | false | — | 1a |
+| PROJECT-NAME-002 | 檔名 ≠ 物件名 | none(待查:XAE 是否允許未驗證) | unknown | high | false | — | 1a |
 | PROJECT-GUID-001 | 物件 / 子物件缺 `Id` | project-integrity | unknown | high | pending | — | 1a |
 | PROJECT-GUID-002 | `Id` 格式不是 `{8-4-4-4-12}` 十六進位 | project-integrity | unknown | high | pending | — | 1a |
 | PROJECT-GUID-003 | 同專案 `Id` 重複(含子物件;複製檔案沒換 Id) | project-integrity | unknown | high | pending | — | 1a |
@@ -46,14 +46,14 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | PROJECT-TSPROJ-003 | `.TcTTO` ↔ `.tsproj` task 不一致;`PouCall` 指向不存在的 PROGRAM | behavior | unknown | high | pending | — | 1a |
 | PROJECT-ENC-001 | 行尾 / 編碼混用 | none(待查) | no | high | false(info,待查 XAE 顯示) | — | 1a |
 | LINT-PARSE-* / LINT-XML-* / LINT-COVERAGE-* / LINT-SUPPRESS-* | 引擎自身 | — | — | high | PARSE: true | — | 1a |
-| SCAN-TEMPFB-001 | 有狀態 FB 宣告在 FUNCTION / METHOD 的 VAR 或 VAR_TEMP | behavior | no | high | true(InfoSys 已證實暫時變數語意) | SA0167(Light,編譯成功後自動跑) | 1b |
+| SCAN-TEMPFB-001 | 有狀態 FB 宣告在 FUNCTION / METHOD 的 VAR 或 VAR_TEMP | behavior | unknown(SA0167 Light 編譯後自動跑,Build 結果待 1a.9) | high | true(InfoSys 已證實暫時變數語意) | SA0167(Light,編譯成功後自動跑) | 1b |
 | PROJECT-TASK-001 | PROGRAM 沒被任何 task 也沒被任何 POU 呼叫 | behavior | no | high | false(必須處置) | — | 1b |
 | PROJECT-TASK-002 | 同一 PROGRAM 每 cycle 執行兩次以上(兩個 task / task + POU) | behavior | no | high | true | — | 1b |
 | SCAN-LOOP-001 | busy-wait:WHILE / REPEAT 迴圈內不會改變條件 | crash | no | high | true | 部分相關:SA0041(Full) | 2 |
-| SCAN-FOR-001 | FOR 計數器型別上限 ≤ 常數終值(溢位 → 無窮迴圈)、`BY 0` | crash | warning(C0266,不擋 Build) | high | true | — | 2 |
+| SCAN-FOR-001 | FOR 計數器型別上限 ≤ 常數終值(溢位 → 無窮迴圈);`BY 0`(variant,pending) | crash | warning(C0266,不擋 Build) | high | true(`BY 0`:pending) | — | 2 |
 | SCAN-ARR-001 | 常數範圍 FOR 的 index 超出陣列宣告範圍(0-based 習慣) | crash / behavior | no | high | true | SA0172(Full) | 2 |
 | SAFETY-ARR-001 | 常數 index 超出陣列範圍 | crash / behavior | yes(InfoSys:常數錯誤 index 是編譯錯誤) | high | false(只有寫入前價值) | SA0172(Full) | 2 |
-| SAFETY-DIV-001 | 除以常數 0;除數是變數且同一路徑沒有 `<> 0` 檢查 | crash | 常數:unknown;變數:no | 常數 high / 變數 medium | 常數 true / 變數 false | SA0040(Full) | 2 |
+| SAFETY-DIV-001 | 除以常數 0;除數是變數且同一路徑沒有 `<> 0` 檢查 | crash(推論,runtime 結果未驗證) | 常數:unknown;變數:no | 常數 high / 變數 medium | 常數 true / 變數 false | SA0040(Full) | 2 |
 | SCAN-FBCALL-001 | FB instance 被讀取但從不呼叫 | behavior | no | medium | false | — | 2 |
 | SCAN-FBCALL-002 | FB instance 完全沒被引用 | none | no | high | false(info) | SA0033(Light) | 2 |
 | SCAN-TIMER-001 | Timer / Trigger 只在 IF / CASE 內呼叫(一般型) | behavior | no | medium | false | — | 2 |
@@ -64,17 +64,19 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | SCAN-SM-001 | 狀態被賦值成 CASE 沒有的值,且 CASE 無 ELSE | behavior | no | high | false | 部分相關:SA0076(Full) | 3 |
 | SCAN-MC-001 | MC FB 只在條件內呼叫 / `Execute` 設 TRUE 後從不設 FALSE | behavior | no | medium | false | — | 3 |
 | SCAN-MC-002 | MC_Move* 只在單一狀態呼叫,物件內沒有 MC_Stop / MC_Halt | behavior | no | medium | false | — | 3 |
-| SCAN-REF-001 | REFERENCE / POINTER 可能未初始化就解參照 | crash | no | medium | false | SA0039 / SA0145(Full) | 3 |
+| SCAN-REF-001 | REFERENCE / POINTER 可能未初始化就解參照 | crash(推論,解參照後果未驗證) | no | medium | false | SA0039 / SA0145(Full) | 3 |
 | SCAN-FBVAL-001 | FB 以值傳遞(`VAR_INPUT` 的型別是 FB) | behavior | no | high | false | 部分相關:SA0014(Full) | 3 |
 | SCAN-OUT-001 | 同一輸出多處寫入 / 跨 task 寫入 | behavior | no | medium | false | SA0004 / SA0006(Light) | 3 |
 | SCAN-FLOAT-001 | REAL / LREAL 用 `=` / `<>` 比較 | behavior | no | medium | false | SA0054(Full) | 3 |
 | SCAN-INTDIV-001 | 整數除法結果才轉 REAL | behavior | no | medium | false | SA0020 / SA0057(Full) | 3 |
-| CONTRACT-ITF-001/002 | Interface 成員缺漏 / 簽章不同 | none(編譯器擋) | yes(待實測) | high | 實測後定 | — | 4 |
+| CONTRACT-ITF-001/002 | Interface 成員缺漏 / 簽章不同 | none(推論編譯器擋) | yes(推論,待 4.0 實測) | high | 實測後定 | — | 4 |
 | CONTRACT-ENUM-001/002 | 相對 baseline:enum 成員刪除 / 數值改變 | behavior(HMI / ADS / PERSISTENT 語意) | no | high | true | — | 4 |
 | CONTRACT-DUT-001 | 相對 baseline:STRUCT layout 改變 | behavior | no | high | true | — | 4 |
 | POLICY-* | profile 定義(SYMBOL / NAME / CALL / RETVAL / robust-solution) | 依規則 | no | high | profile 決定 | 部分:命名規則(Full) | 4 |
 | POLICY-INTERLOCK-001 | profile 宣告的互鎖輸出被後面的指派覆蓋 | behavior | no | medium | profile 決定 | — | 4 |
 | ST-LLM-001 | C 語言式語法(`x = 5;` 當陳述式等) | none(多數編譯器擋) | 多數 yes | high | false | — | 4 |
+
+**severity 與 blocking**:總表 `blockable` 為 `true` 或 `pending` 的規則,預設 severity 一律 `error`、confidence `high`(D5 的 blocking 條件因此成立);`false` 的是 `warning` 或 `info`(info 只用在 SCAN-FBCALL-002、SCAN-TIMER-002、PROJECT-LINEIDS-001、PROJECT-ENC-001、PROJECT-COMPILE-005)。`blockable: true` 的意思是「偵測確定」(owner 決定 2);若規則描述的機台後果仍是推論,diagnostic 另帶 `impactBasis: "inferred"`,不影響 blocking。
 
 ## 1. AI 直接改磁碟檔造成的問題(Phase 1a)
 
@@ -97,8 +99,8 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 ### PROJECT-XML-003 CDATA 被破壞
 - 機台行為:程式碼被截斷或混入 XML 片段;若 XAE 照樣載入,編譯的是被改過的程式(行為錯)。
-- 偵測:`<Declaration>` 或 `<ST>` 有多個子節點(CDATA + text / 多段 CDATA = 原程式碼含 `]]>` 被切開);`<Declaration>` / `<ST>` 沒有 CDATA 而是一般文字(語料一律是 CDATA 時才報)。
-- blockable true:多段 CDATA 在 XAE 產生的檔案裡不會出現(語料觀察),出現就代表檔案被手改且內容被切開。
+- 偵測:(a) `<Declaration>` / `<ST>` 有 CDATA 以外的一般文字節點(CDATA 被提早結束後殘留的文字,或根本沒包 CDATA)— blockable true(語料 242 + 176 段一律單段 CDATA);(b) 被拆成多段 CDATA — blockable **pending**:語料裡沒有任何程式碼含 `]]>`(`tc-xml-schema-observed.md` 第 5 節),無法排除 XAE 遇到 `]]>` 時自己就切成多段 CDATA(標準 XmlWriter 的做法);tasks 1a.7 加一個「在 XAE 寫入含 `]]>` 字串」的案例。
+- XAE 載入被切壞的檔案後是否照樣編譯:未驗證(compilerCatches unknown)。
 
 ### PROJECT-XML-004 必要元素 / 屬性 / 順序
 - 偵測:依 `tc-xml-schema-observed.md` 的每種物件樹(`TcPlcObject` → `POU|DUT|GVL|Itf|Task` → `Declaration` → `Implementation/ST` …),必要元素缺漏、必要屬性(`Name`、`Id`、POU 的 `SpecialFunc`)缺漏、子元素順序與觀察不同。
@@ -146,14 +148,14 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 ## 2. 機台行為類
 
 ### SCAN-TEMPFB-001 有狀態 FB 是暫時 instance(Phase 1b,blocking)
-- 機台行為:METHOD 的 `VAR` 每次呼叫重新初始化 — InfoSys:"TwinCAT re-initializes all variables and function blocks, which you have declared in a method, with each call of the method."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530307467.html);`VAR_TEMP` 同樣("TwinCAT reinitializes temporary variables each time the function block is called.",https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528781963.html)。所以 TON 永遠到不了 Q,R_TRIG 只要 CLK 為 TRUE 每次都觸發,CTU 永遠是 0。FUNCTION 的 `VAR` 是否同樣重新初始化:`st-syntax-inventory.md` 第 2 部分,沒有出處前 FUNCTION 的情況維持 pending。
+- 機台行為:METHOD 的 `VAR` 每次呼叫重新初始化 — InfoSys:"TwinCAT re-initializes all variables and function blocks, which you have declared in a method, with each call of the method."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530307467.html);`VAR_TEMP` 同樣("TwinCAT reinitializes temporary variables each time the function block is called.",https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528781963.html)。推得:TON 永遠到不了 Q,R_TRIG 只要 CLK 為 TRUE 每次都觸發,CTU 每次重新從 0 開始、累計不超過 1(以上是依 InfoSys 語意的推論)。FUNCTION 的 `VAR` 同樣:"TwinCAT re-initializes all variables that you have declared in a function each time the function is called."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530284939.html)。
 - 偵測:只看宣告區。型別在 FB 型別目錄的「有狀態」清單(Tc2_Standard 的 TON / TOF / TP / LTON / LTOF / LTP / R_TRIG / F_TRIG / CTU / CTD / CTUD / RS / SR、Tc2_MC2 FB、profile `typeCatalog.stateful`)且宣告在 FUNCTION `VAR`、METHOD `VAR`、任何 `VAR_TEMP`。METHOD 的 `VAR_INST` 不報(那是保留狀態的正確寫法,fixHint 指向它)。
 - 誤報來源:刻意在 Method 內每次重建、只用一次的 FB(極少見);型別目錄把無狀態 FB 列成有狀態。
 - TE1200:SA0167(Light)。InfoSys:Light "automatically executed following the successful compilation process",規則違反以 error 出現在 Error List(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2527107467.html)。所以 Build 成功後 Error List 可能已經有 SA0167 — `BuildProject` 的 `errorItems` 是否包含、Build 結果是否因此變成失敗,由 Phase 1a(tasks 1a.9)量測。本規則的價值:`LintCandidate` 寫入前就擋、磁碟改檔後不需 IDE、Light 結果沒進 `errorItems` 的情況。
 - prototype 漏抓的反例(review 第二輪 6-5):`METHOD M_Wait VAR ton : TON; END_VAR ton(IN:=TRUE, PT:=T#2S);` 舊的 SCAN-TIMER 規則不報,本規則要報。
 
 ### PROJECT-TASK-001 PROGRAM 永遠不執行(Phase 1b,必須處置)
-- 機台行為:PROGRAM 沒掛在任何 task 的 `PouCall`,也沒被任何可達的 POU 呼叫 → 整段邏輯不跑。Build 照樣成功:`Test-TcPlcProject.ps1` 說明未被引用的 POU 不會被編譯(review 第二輪 2-4)。
+- 機台行為:PROGRAM 沒掛在任何 task 的 `PouCall`,也沒被任何可達的 POU 呼叫 → 整段邏輯不跑。Build 照樣成功(推論:依據是 repo `Test-TcPlcProject.ps1` 註解「未被引用的 POU 不會被 Build 編譯」,不是 InfoSys;tasks 1b.3 以 `BuildProject` 實測)。
 - 偵測:從每個 `.TcTTO` 的 `PouCall` 出發建呼叫圖(PROGRAM 呼叫 `P()`、`P.ActionX()`;FB 內呼叫 PROGRAM 也算),不可達的 PROGRAM 報出。只讀取 `P.var` 不算呼叫。
 - 語料實測(2026-11-13):axis 的 `TestCam` PROGRAM 沒被 task 也沒被任何 POU 呼叫 → 會報。它是保留的 PoC 測試程式,不是 bug。因此**不 blocking**,但 `machineImpact: behavior` → 進 `unresolved[]`,agent 必須改程式或寫理由 suppress。
 - 誤報來源:刻意保留的測試程式(語料 1/1 是這種);只在條件編譯分支呼叫(記 notAnalyzed)。
@@ -166,13 +168,13 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 ### SCAN-LOOP-001 busy-wait(Phase 2,blocking)
 - 機台行為:`WHILE NOT bSensor DO END_WHILE`。同一 cycle 內輸入不會更新,迴圈不會結束 → task 卡住、cycle overrun / watchdog(推論,PLC scan 模型;InfoSys 出處待補)。LLM 帶循序程式思維時最典型的錯。
-- 偵測:WHILE / REPEAT 的條件中所有變數在迴圈本體內都沒被寫入,本體內沒有任何呼叫(FB / Method / 函式)、沒有 `EXIT` / `RETURN`、沒有指標 / REFERENCE 寫入。條件含 `AT %I*` 變數或 FB 輸出時 confidence high。
+- 偵測:WHILE / REPEAT 的條件中所有變數在迴圈本體內都沒被寫入,本體內沒有任何呼叫(FB / Method / 函式)、沒有 `EXIT` / `RETURN`、沒有指標 / REFERENCE 寫入。符合以上條件就是 confidence high(與條件變數種類無關;`WHILE NOT x DO END_WHILE` 的 `x` 是一般變數也一樣)。條件含 `AT %I*` 或 FB 輸出只是最常見的形態,寫進 message 方便理解。
 - 誤報來源:另一個 task 在其他 core 改條件變數(仍然是錯誤設計);本體透過指標改條件(上面已排除)。
 - TE1200:沒有直接對應(SA0041「loop-invariant code」不同)。
 
 ### SCAN-FOR-001 FOR 溢位(Phase 2,blocking)
 - 機台行為:`i : BYTE; FOR i := 0 TO 255 DO` 終值等於型別最大值,最後一次遞增溢位回 0 → 無窮迴圈。InfoSys FOR 頁:"The <end value> must not have the same value as the upper bound of the data type of the counter."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528280971.html);編譯器警告 C0266(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/21630340363.html)。**編譯器只出 warning,Build 仍成功**,所以本規則仍擋(blocking)。`BY 0` 的行為未驗證。
-- 偵測:計數器型別(BYTE / USINT / SINT / WORD / UINT / INT / …)的上限 ≤ 常數終值(含 CONSTANT 展開),或 BY 是常數 0;負步長對應下限。
+- 偵測:計數器型別(BYTE / USINT / SINT / WORD / UINT / INT / …)的上限 ≤ 常數終值(含 CONSTANT 展開),負步長對應下限。`BY` 是常數 0 另列 `variant: by-zero`,行為未驗證 → pending(tasks 2.10)。
 - 誤報來源:幾乎沒有(本體內 EXIT 可能讓它結束 → 本體有 EXIT 時降為 warning)。
 
 ### SCAN-ARR-001 常數範圍迴圈越界(Phase 2,blocking)
@@ -183,14 +185,14 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 ### SAFETY-ARR-001 / SAFETY-DIV-001(Phase 2)
 - ARR-001:常數 index 超出宣告範圍(seeded S17)。InfoSys CheckBounds 頁:"A consistently faulty array index results in a compiler error."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html)→ 編譯器擋,只有寫入前價值,不進 `unresolved`;仍以 mutation testing 確認。SCAN-ARR-001(迴圈變數 index)不受影響:"The check is only performed with a variable array index."
-- DIV-001:除以常數 0(seeded S16):blocking(若實測編譯器已擋,價值只剩寫入前);除數是變數且同一 IF 路徑上沒有 `<> 0` / `> 0` 檢查:warning medium,`machineImpact: crash`(除以零在 runtime 的結果見 `st-syntax-inventory.md`)。
+- DIV-001:除以常數 0(seeded S16):blocking(若實測編譯器已擋,價值只剩寫入前);除數是變數且同一 IF 路徑上沒有 `<> 0` / `> 0` 檢查:warning medium,`machineImpact: crash` 是推論 — 除以零在 runtime 的結果 InfoSys 沒寫(`st-syntax-inventory.md` 6a 標未驗證),tasks 2.10 在 UmRT 實測。
 - TE1200:SA0172 / SA0040(Full)— 客戶沒有。
 
 ### SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002(Phase 2)
 沿用 design.md 初稿的定義與 prototype 實測(`research/corpus-feasibility.md`)。002 / TIMER-002 是 info,其餘 warning,`machineImpact: behavior` → 進 `unresolved[]`。
 
 ### SCAN-TIMER-004 PT 未設 / IN 常數(Phase 2)
-- 機台行為:PT 從未設定 → PT = T#0s。TON 頁:"Q is TRUE, if IN = TRUE and ET = PT."(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html),推得 PT = 0 時 Q 跟著 IN 走、延遲失效;PT = 0 的行為頁面沒寫,**未驗證**(tasks 2.10 實測)。IN 是常數 FALSE → timer 永不啟動;IN 常數 TRUE → 只在第一次延遲一次。
+- 機台行為:PT 從未設定 → PT 是 TIME 預設初值 T#0s(推論:TIME 預設初值未附出處)。TON 頁:"Q is TRUE, if IN = TRUE and ET = PT."(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html),推得 PT = 0 時 Q 跟著 IN 走、延遲失效;PT = 0 的行為頁面沒寫,**未驗證**(tasks 2.10 實測)。IN 是常數 FALSE → timer 永不啟動;IN 常數 TRUE → 只在第一次延遲一次。
 - 偵測:`variant: pt-unset`:instance 的所有呼叫都沒傳 PT、沒有 `inst.PT :=`、宣告沒有初值(confidence high);`variant: in-constant`:所有呼叫的 IN 都是常數(confidence medium,`tonStartup(IN := TRUE, PT := T#5S)` 開機延遲是合法寫法)。
 - seeded S18(`IN := TRUE OR …`)目前不報:需要常數折疊,列為 Phase 3 擴充。
 
@@ -209,11 +211,11 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | SCAN-SM-001 | 狀態變數被賦值成 CASE 沒有的值、CASE 無 ELSE → 那個狀態什麼都不做,機台停住 | CASE selector 是單一變數;收集 `sel := <常數 / enum 成員>`;與 CASE 標籤(含範圍)比對 | 刻意的「閒置」狀態(值存在但不需動作) | 不依賴 TwinCAT 特有行為 |
 | SCAN-MC-001 | MC FB 只在條件內呼叫,或 `Execute` 設 TRUE 後全物件沒有設 FALSE → 下一次命令沒有上升沿 | 型別目錄的 Tc2_MC2 FB;同 SCAN-TIMER-001 的條件分析 + Execute 賦值掃描 | 狀態機在單一狀態呼叫 MC FB 是常見寫法 | 上升沿:"The function block can only be triggered by a rising edge at the "Execute" input if the "Busy" output is FALSE."(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70043531.html);Busy 中停止呼叫的後果未驗證 |
 | SCAN-MC-002 | MC_Move* 在某狀態 Execute 後沒等 Done 就離開,也沒 MC_Stop / MC_Halt → 軸繼續動,程式以為停了(推論,未驗證) | MC_Move* 只在單一 CASE 分支呼叫,物件內沒有 MC_Stop / MC_Halt | 由外層 FB 統一停軸 | 同上;離開後軸是否繼續動未驗證(tasks 3.1 先查 InfoSys) |
-| SCAN-REF-001 | 未初始化的 REFERENCE / POINTER 解參照 → page fault,PLC 停機 | `REFERENCE TO` 宣告在 VAR(非 IN_OUT),物件內沒有 `REF=` 也沒有 `__ISVALIDREF`;POINTER 做 `p^` 但沒有 `ADR(` 指派也沒有 `<> 0` 檢查 | 透過 FB_init / 外部指派 | `__ISVALIDREF` 出處見 st-syntax-inventory |
+| SCAN-REF-001 | 未初始化的 REFERENCE / POINTER 解參照 → page fault、PLC 停機(推論;`st-syntax-inventory.md` 7b 標未驗證,tasks 2.10 實測) | `REFERENCE TO` 宣告在 VAR(非 IN_OUT),物件內沒有 `REF=` 也沒有 `__ISVALIDREF`;POINTER 做 `p^` 但沒有 `ADR(` 指派也沒有 `<> 0` 檢查 | 透過 FB_init / 外部指派 | `__ISVALIDREF` 出處見 st-syntax-inventory |
 | SCAN-FBVAL-001 | `VAR_INPUT fb : FB_X` 傳的是複本,呼叫只更新複本,狀態遺失 | VAR_INPUT 的型別在 FB 目錄內 | 刻意傳值只讀輸出 | 推論(IEC 傳值語意) |
 | SCAN-OUT-001 | 同一輸出多處無條件寫入,前面的條件被覆蓋;跨 task 寫入 | 同一 `AT %Q*` / VAR_OUTPUT 有兩處以上無條件指派;或分布在不同 task 可達的 POU | 預設值 + 條件覆寫的寫法 | SA0004 / SA0006(Light) |
 | SCAN-FLOAT-001 | `IF rPos = 100.0` 幾乎不成立,機台卡在等待 | 運算元型別是 REAL / LREAL(MVP 只處理區域變數與 literal) | 與 0.0 比較的初始化判斷 | SA0054(Full) |
-| SCAN-INTDIV-001 | `rRatio := nA / nB` 先截斷再轉換 | 兩個整數運算元相除、結果指派給 REAL / LREAL | 刻意整數除法 | SA0020 / SA0057(Full) |
+| SCAN-INTDIV-001 | `rRatio := nA / nB` 先截斷再轉換(推論,依 IEC 運算型別規則;InfoSys 出處待補) | 兩個整數運算元相除、結果指派給 REAL / LREAL | 刻意整數除法 | SA0020 / SA0057(Full) |
 
 ### Phase 4:CONTRACT-*、POLICY-*、ST-LLM-001
 - CONTRACT-ITF-001 / 002:編譯器擋(待實測),價值只剩寫入前;**compilerCatches = yes 的規則不進 `blockingRulesSkipped`**(review 第二輪 1-3:library Interface 會讓每次結果都 incomplete)。
@@ -267,7 +269,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
    - 001:instance 所有本體呼叫點都在 IF / CASE 內,**且**沒有任何一個頂層 IF…ELSE 的所有分支都呼叫它 → warning/medium,不 blocking。
    - 002:只在 Action / Method 內呼叫,而那個 Action 沒有被本體無條件呼叫(Method 一律無法證明)→ info/low。
    - 誤報來源:CASE 的每個分支都呼叫(MVP 只處理 IF…ELSE,CASE…ELSE 留到 Phase 2);刻意的「只在某模式更新」(語料 `TestCam.R_14Eng`);狀態機在每個狀態都呼叫同一 timer。
-   - 已知漏抓(寫進 `limits`,review N2):`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫(實際上是條件呼叫);外層 FB instance 本身被條件呼叫(遞移);WHILE 內的呼叫;Method `VAR` 裡宣告的 TON 是每次呼叫重新初始化的暫時 instance(TE1200 SA0167,Light 版也有)— 候選規則 SCAN-TIMER-005。
+   - 已知漏抓(寫進 `limits`,review N2):`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫(實際上是條件呼叫);外層 FB instance 本身被條件呼叫(遞移);WHILE 內的呼叫;Method `VAR` 裡宣告的 TON 是每次呼叫重新初始化的暫時 instance(TE1200 SA0167,Light 版也有)— 由 SCAN-TEMPFB-001 涵蓋(舊稿稱 SCAN-TIMER-005;現在 SCAN-TIMER-005 是「狀態 timer 沒歸零」)。
    - 編譯器 / TE1200:都沒有對應規則(TE1200 SA0105「多處呼叫」需要 attribute、只部分相關)→ 本 linter 獨有價值。
    - 實測:v1 3 筆(2 誤報,`FB_BrakeControl` IF/ELSE 兩邊都呼叫)→ v2 1 筆真模式;Action 精化把 7 筆 info 降到 0;seeded S06/S07 命中。**這是在同一份語料上調出來的**,第三個專案驗證前不能宣稱誤報率。
    - 同一 timer 多次呼叫(prototype 的 SCAN-TIMER-003)**不放 MVP**:語料唯一一筆是正確的 `IF reset THEN rt(CLK:=FALSE); RETURN; END_IF` 寫法,需要 RETURN 控制流才能判斷。

@@ -5,10 +5,12 @@
 | Phase 做完 | 新增能擋下(blocking)的 | 新增必須處置的(warning,進 `unresolved[]`) | 編譯器本來就會擋? |
 |---|---|---|---|
 | 1a | AI 手改 XML 造成的損毀:not well-formed、CDATA 被切開;GUID 缺 / 錯 / 重複、種類與名稱不一致、Compile / tsproj / task 參照錯(實測前 `pending`,照 error 擋) | 專案目錄下的新 POU 沒列入 Compile(不會被編譯) | 多數未驗證;Build 會不會失敗正是 Phase 1a 的 IDE 實測項目 |
-| 1b | Timer / Trigger / Counter 宣告在 METHOD / FUNCTION 的 VAR(永遠不計時、每次都觸發);PROGRAM 每 cycle 執行兩次 | PROGRAM 沒掛 task 也沒被呼叫(永遠不跑) | 否 |
+| 1b | Timer / Trigger / Counter 宣告在 METHOD / FUNCTION 的 VAR(永遠不計時、每次都觸發);PROGRAM 每 cycle 執行兩次 | PROGRAM 沒掛 task 也沒被呼叫(永遠不跑) | 推論否;SA0167(Light)編譯後自動跑,Build 是否因此失敗待 1a.9 量測 |
 | 2 | busy-wait(task 卡死)、FOR 計數器溢位(無窮迴圈)、迴圈變數 index 越界(0-based 習慣)、除以常數 0 | Timer 條件呼叫、狀態 timer 離開沒歸零、PT 未設、FB 讀取但沒呼叫、變數除數沒檢查 | 否;FOR 溢位編譯器只出 warning C0266(Build 照過);常數 index 越界編譯器會擋(InfoSys),所以只做寫入前;除以常數 0 待實測 |
 | 3 | 依驗證結果升級(誤報率低於事先寫明的門檻者) | 狀態機卡在未處理狀態、MC FB 條件呼叫 / Execute 不歸零 / 離開狀態沒停軸、REFERENCE 未初始化、FB 傳值、輸出多處寫入、浮點 `=` 比較、整數除法後轉 REAL | 否 |
 | 4 | 有 baseline 時 enum 值 / STRUCT layout 改變;profile 定義的 POLICY | Interface 簽章(寫入前加速) | Interface:是(待實測) |
+
+表中「編譯器本來就會擋?」欄的「否」除了已附出處的項目,都是推論,待 tasks 3.4 的 mutation testing 以 `BuildProject` 實測。
 
 衡量指標:「`compilerCatches = no` 且 `machineImpact ∈ behavior / crash`」的規則數,以及在凍結的錯誤清單上量到的召回率(D7)。
 
@@ -34,7 +36,7 @@
 - 不取代 compiler、`CheckAllObjects`、TE1200。客戶只有 TE1200 Light(owner 決定 4):Full 版才有的檢查(除以零、陣列越界、REFERENCE / POINTER 未檢查、浮點比較…)由本 linter 做;Light 版 7 條的重疊規則仍可做,價值在寫入前擋與客戶沒啟用時(D11)。
 - 不是安全功能:POLICY-INTERLOCK 等規則的輸出明寫「不取代 TwinSAFE / 安全評估」。
 - 不用 LLM 當 gate;不 auto-fix;不碰 Activate / Login / Download / ADS / I/O。
-- MVP 不做控制流 / 資料流分析(RETURN 後的可達性、常數折疊、除以零、陣列 index 流)。
+- Phase 1 不做控制流 / 資料流分析;Phase 2 起只做規則需要的局部分析(同一 IF 路徑的除數檢查、常數範圍迴圈的 index),不做一般性的可達性與常數折疊。
 
 ## Decisions
 
@@ -225,7 +227,7 @@ phase         1a / 1b / 2 / 3 / 4(見 rule-catalog.md)
 
 `blockable` 有三值:`true`、`false`、`pending`。`pending` = 偵測是確定的,但「這是不是 bug」依賴未實測的 XAE 行為(review S14):severity 照 error,blocking 照算,但 diagnostic 帶 `blockableBasis: "pending-measurement"`,Phase 1a(tasks 1a.7)實測完改成 true 或 false。
 
-**Suppression**:用 ST 註解,不用 pragma(避免任何編譯器副作用;未知 attribute 對編譯器的影響**未驗證**)。
+**Suppression**:用 ST 註解,不用 pragma(InfoSys:"Pragmas unknown to the compiler are read over like a comment.",見 `st-syntax-inventory.md`;用註解仍比較單純,不會出現在 attribute 查詢或 TE1200 的 pragma 處理裡)。
 
 ```iecst
 // tcauto-lint-disable-next-line SCAN-TIMER-001: 測試模式切換器,切回時重新 arm 是預期行為
@@ -241,7 +243,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 - **被檢查的 LLM 不能自己壓掉 blocking**(review B3):寫 suppression 的通常就是被檢查的 agent,8 字理由擋不住它。
   - `blockable == true / pending` 的規則(PROJECT-*、CONTRACT-*、LINT-PARSE-*)**不接受 inline suppression**,只能用 profile `suppressions[]`(進版控、有人 review);inline 寫了 → suppression 不生效,另出 `LINT-SUPPRESS-004`。
   - `tcauto-lint-disable-object` 只能壓非 blockable 規則。
-  - `LintCandidate` 輸出 `data.newSuppressions[]`:候選新增、磁碟版本沒有的 inline suppression,讓呼叫者 / 人看得到 agent 自己加了什麼。
+  - `newSuppressions[]` 的比對基準(review 驗證 7):`LintCandidate` = 候選 vs 磁碟版本;`LintProject` = 磁碟版本 vs solution 目錄所在 git repo 的 HEAD(`git show HEAD:<path>`,只讀)。不是 git repo 或讀不到 HEAD → `data.newSuppressionsBasis: "unavailable"`,並在 `data.suppressions[]` 列出範圍內**所有** suppression,SKILL.md 規定此時全部列給使用者。
   - profile 若是本次工作期間被改動的(sha256 與 git HEAD 不同,或檔案 mtime 晚於 session 開始 — 判斷方式 Phase 2 決定),在 `data.profile.modifiedSinceCommit` 標示。
 
 **Profile**(純 JSON 資料,不得含程式):
@@ -288,7 +290,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 - 數值比對前把 IEC 整數字面值正規化成數值(`16#0A`、`INT#10`、`10` 視為相同,一律 `CultureInfo.InvariantCulture`,review S9);無法求值的 expression 才降為 warning/medium 並比對文字。
 - 產生 baseline 是寫檔動作 → 獨立 cmdlet `New-TcLintBaseline`(Phase 4),顯示內容、不覆寫既有檔(除非 `-Force`)。MVP 只讀 baseline。
 - 放哪:建議 `<solution 目錄>\.tcauto\lint-baseline.json`,進版本控制(見 Open Questions 3)。
-- 隱含 enum 值:無明確值的成員依前一個 +1 計算(IEC 61131-3 慣例;TwinCAT 的實際行為要在 Phase 4 附(見 `research/st-syntax-inventory.md`) InfoSys ENUM 頁或實測,目前**未驗證**);前一個是非整數 expression 時記為未知,該成員只比對名稱,並出 `rulesSkipped`(prototype 的 S12 就是隱含值跟著變:`Manual 0→1` 讓 `Auto 1→2`,兩筆都報)。
+- 隱含 enum 值:InfoSys:"starting at 0, the values are incremented consecutively by 1."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529504395.html);**部分成員有明確值時後面成員怎麼接**未驗證(tasks 4.0 實測);前一個是非整數 expression 時記為未知,該成員只比對名稱,並出 `rulesSkipped`(prototype 的 S12 就是隱含值跟著變:`Manual 0→1` 讓 `Auto 1→2`,兩筆都報)。
 
 **Diagnostic 格式**(issue 的 schema 加上欄位):
 
@@ -492,7 +494,7 @@ mock 依據照 `docs/testing-policy.md` 第 3 節標註;未實測的 XAE 行為�
 | 4-4 | 必改 | 把 TE1200 排除與目標衝突 | **採納**。D11:Phase 1a 量測 Light 四個問題;Phase 2 視結果加 PROJECT-SA-001;SARIF 放 Phase 4 |
 | 4-5 | 建議 | 手寫 parser 遇到不支援語法就 parse fail | **採納**。D3 三類處理 + `research/st-syntax-inventory.md` |
 | 5-1 | 必改 | 15/15 不能當召回率 | **採納**。D7 驗證方法:凍結錯誤清單(`research/error-taxonomy-draft.md` 初版待 owner 確認)、LLM 語料盲標、mutation + BuildProject 實測 compilerCatches、holdout + 事先寫明的門檻、git 歷史反向植入 |
-| 6-1 | 必改 | 條件編譯 pragma 造成誤擋 / 漏抓 | **採納**。整個 section `notAnalyzed`(reason `conditional-pragma`) |
+| 6-1 | 必改 | 條件編譯 pragma 造成誤擋 / 漏抓 | **採納**。整個物件 `notAnalyzed`(reason `conditional-pragma`;D3) |
 | 6-2 | 必改 | `__TRY` / `__CATCH` 讓呼叫點漏判 | **採納**。區塊關鍵字,CATCH 算條件區塊 |
 | 6-3 | 必改 | `?=` 讓 lexer 失敗;`S=` / `R=` / `REF=` / `VAR_GENERIC` 待確認 | **採納**。tokenizer / 宣告 parser 認得或安全略過;合法性見語法清單 |
 | 6-4 | 建議 | typed literal 吞掉後面的運算式 | **採納**。依前綴定義文法 |
@@ -500,3 +502,7 @@ mock 依據照 `docs/testing-policy.md` 第 3 節標註;未實測的 XAE 行為�
 | 6-6 | nit | 第三次以上重複不報、INTERFACE EXTENDS 只取第一個 | **採納**。fixture 涵蓋 |
 
 Owner 決定 6(AI 改磁碟檔的問題)是 review 之外的新要求:落實為 `rule-catalog.md` 第 1 節的 PROJECT-XML / GUID / COMPILE / TSPROJ 等整類、`research/tc-xml-schema-observed.md`、Phase 1a 的 IDE 實測與 D9 的磁碟改檔工作流。
+
+### 驗證輪(2026-11-13,reviewer subagent,只查 owner 決定落實、[必改] 處理、未驗證行為)
+
+28 條,全部修正(無不採納):PROJECT-XML-003 的「多段 CDATA」改 pending(語料沒有含 `]]>` 的程式碼,無法排除 XAE 自己切段);驗收改成「XAE 原樣產生的檔案零 finding」,axis 的假 GUID / 外部寫入檔列為預期正例;總表補 severity 規則與 `impactBasis: "inferred"`(偵測確定即 blocking,後果是推論另標);SCAN-LOOP-001 的 confidence 與總表一致;SCAN-TEMPFB-001 的 FUNCTION 情況已有 InfoSys 出處,改 true;`newSuppressions` 在 LintProject 以 git HEAD 為基準,不可得時列出全部;suppression 提前到 1b(否則 1a / 1b 的 `unresolved[]` 無法處置);Non-Goals 舊 MVP 範圍、proposal 的「SCAN 只能 warning」、附錄的 SCAN-TIMER-005 舊 ID 修正;錯誤分類初版註明 `[review2]` 項目不算獨立分母;6-1 的範圍統一為「整個物件」;`?=` scenario 補 notAnalyzed;tasks 1a.10 改成真正未驗證的語法;REF / DIV 的 crash、CTU 推論(原寫「永遠是 0」是錯的)、TASK-001 的 Build 依據、PT 預設值、INTDIV、Interface「編譯器不報」都改標推論或附出處;enum 隱含值與未知 pragma 改用已驗證的 InfoSys 原文。
