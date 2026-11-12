@@ -594,7 +594,10 @@ try {
     $dd | Add-Member -MemberType ScriptMethod -Name Item -Value { param($i) @($global:Docs209)[$i - 1] }
     $global:LaunchedDtes73[$p] | Add-Member -NotePropertyName Documents -NotePropertyValue $dd -Force
     $r = Connect-TcIde -SolutionPath $sln -TakeOverOrphan
-    Check 'T12d M1 success lists the unsaved documents (data.dirtyDocuments) and nextStep names -DiscardProjectChanges' ($r.success -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and $null -eq $r.data.PSObject.Properties['dirtyDocumentsError'] -and [string]$r.data.nextStep -match 'DiscardProjectChanges') "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',')"
+    # #234: nextStep follows #175 - Reset-TcSolution answers UNSAVED_CHANGES (not PROJECT_UNSAVED_CHANGES) and only -Force
+    # (after the user agreed) drops unsaved changes; -DiscardProjectChanges is not that consent
+    $ns = [string]$r.data.nextStep
+    Check 'T12d M1 success lists the unsaved documents (data.dirtyDocuments) and nextStep names UNSAVED_CHANGES + -Force' ($r.success -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and $null -eq $r.data.PSObject.Properties['dirtyDocumentsError'] -and $ns -match '\bUNSAVED_CHANGES' -and $ns -notmatch 'PROJECT_UNSAVED_CHANGES' -and $ns -match '-Force') "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',') nextStep=$ns"
     $null = Disconnect-TcIde
     Remove-Variable -Name Docs209 -Scope Global -ErrorAction SilentlyContinue
     $p = New-ReloadOrphan @('reload-solution')
