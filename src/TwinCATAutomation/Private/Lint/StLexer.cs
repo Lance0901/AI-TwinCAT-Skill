@@ -1,12 +1,18 @@
 // TwinCAT Semantic Linter (#252) - Structured Text tokenizer. C# 5 (see LintCore.cs).
 // Syntax and sources: openspec/changes/add-semantic-linter/research/st-syntax-inventory.md.
-// Three outcomes (design.md D3): supported; not supported but legal -> Unverified (the section is
-// recorded as notAnalyzed, never a parse failure); certainly illegal -> Error (LINT-PARSE-001).
+// Outcomes (design.md D3, second review B2):
+// - supported;
+// - Unverified: only the listed constructs that may be legal (conditional pragma, ?=, **, /* */,
+//   E#Member, non-ASCII identifier) -> the section is notAnalyzed, the verdict can still pass;
+// - Unknown: anything else the lexer does not know -> the section is unsupported, verdict incomplete;
+// - Entities: XML escapes (&lt; ...) inside CDATA code -> PROJECT-XML-003 escaped-entity-in-cdata;
+// - Error: certainly illegal (unterminated string / comment, backtick, typographic quote) -> LINT-PARSE-001.
 namespace TcLintEngine
 {
     using System;
     using System.Collections.Generic;
     using System.Text;
+    using System.Text.RegularExpressions;
 
     public enum TokKind { Ident, Number, TypedLiteral, String, WString, Op, Pragma, Address, EOF }
 
@@ -25,6 +31,7 @@ namespace TcLintEngine
 
     public sealed class LexIssue
     {
+        public bool Certain;    // Error that no surrounding construct can explain (backtick, typographic quote)
         public string Reason;   // for Unverified: notAnalyzed reason; for Error: fixed English text
         public int Line;
         public int Col;
@@ -43,7 +50,9 @@ namespace TcLintEngine
         public List<Token> Tokens = new List<Token>();
         public List<Comment> Comments = new List<Comment>();
         public LexIssue Error;                                   // first certain error (tokenizing stops)
-        public List<LexIssue> Unverified = new List<LexIssue>(); // legal-or-unknown constructs
+        public List<LexIssue> Unverified = new List<LexIssue>(); // listed constructs that may be legal (notAnalyzed, may pass)
+        public List<LexIssue> Unknown = new List<LexIssue>();    // anything else not understood (unsupported -> incomplete)
+        public List<LexIssue> Entities = new List<LexIssue>();   // &lt; &gt; &amp; &quot; &apos; &#..; in code (Reason = the entity text)
         public bool ConditionalPragma;                           // {IF ...} seen
         public int ConditionalPragmaLine;
     }
@@ -52,6 +61,7 @@ namespace TcLintEngine
     {
         private static readonly string[] Ops2 = { ":=", "=>", "<>", "<=", ">=", "..", "**", "?=" };
         private const string Ops1 = "^+-*/=<>()[],;:.";
+        private static readonly Regex EntityRx = new Regex("\\G&(lt|gt|amp|quot|apos|#[0-9]+|#x[0-9A-Fa-f]+);", RegexOptions.CultureInvariant);
 
         private static readonly HashSet<string> TimePrefixes = Set("T", "TIME", "LTIME");
         private static readonly HashSet<string> DatePrefixes = Set("D", "DATE", "LD", "LDATE");
@@ -139,7 +149,7 @@ namespace TcLintEngine
                     if (j >= n)
                     {
                         // quote handling inside pragmas is not documented ($ escape?): not certainly illegal -> not analysed
-                        r.Unverified.Add(Issue("unsupported-syntax:unterminated-pragma", sl, sc));
+                        r.Unknown.Add(Issue("unsupported-syntax:unterminated-pragma", sl, sc));
                         while (i < n) Advance(s, ref i, ref line, ref col);
                         break;
                     }
@@ -196,7 +206,7 @@ namespace TcLintEngine
                     }
                     if (j == i + 1)
                     {
-                        r.Unverified.Add(Issue("unsupported-syntax:direct-address", sl, sc));
+                        r.Unknown.Add(Issue("unsupported-syntax:direct-address", sl, sc));
                         i++; col++;
                         continue;
                     }
@@ -245,7 +255,7 @@ namespace TcLintEngine
                         string allowed = b == "2" ? "01_" : b == "8" ? "01234567_" : b == "16" ? "0123456789ABCDEFabcdef_" : null;
                         if (allowed == null)
                         {
-                            r.Unverified.Add(Issue("unsupported-syntax:number-base", sl, sc));
+                            r.Unknown.Add(Issue("unsupported-syntax:number-base", sl, sc));
                             allowed = "0123456789ABCDEFabcdef_";
                         }
                         while (k < n && allowed.IndexOf(s[k]) >= 0) k++;
@@ -276,8 +286,26 @@ namespace TcLintEngine
                     continue;
                 }
 
-                // anything else: not known to be illegal -> the section is not analysed (D3)
-                r.Unverified.Add(Issue("unsupported-syntax:char-U+" + ((int)c).ToString("X4", System.Globalization.CultureInfo.InvariantCulture), sl, sc));
+                // XML escape written into CDATA by an XML tool (the compiler sees '&lt;', not '<')
+                if (c == '&')
+                {
+                    Match em = EntityRx.Match(s, i);
+                    if (em.Success && em.Index == i)
+                    {
+                        r.Entities.Add(Issue(em.Value, sl, sc));
+                        i += em.Length; col += em.Length;
+                        continue;
+                    }
+                }
+                // characters that are certainly not ST (typical copy / paste from text or Markdown)
+                if (c == '`' || c == '\u2018' || c == '\u2019' || c == '\u201C' || c == '\u201D')
+                {
+                    r.Error = Issue("character U+" + ((int)c).ToString("X4", System.Globalization.CultureInfo.InvariantCulture) + " is not ST", sl, sc);
+                    r.Error.Certain = true;
+                    return r;
+                }
+                // anything else: not known -> the section is unsupported (verdict incomplete, never pass)
+                r.Unknown.Add(Issue("unsupported-syntax:char-U+" + ((int)c).ToString("X4", System.Globalization.CultureInfo.InvariantCulture), sl, sc));
                 Advance(s, ref i, ref line, ref col);
             }
             Token eof = new Token(); eof.Kind = TokKind.EOF; eof.Text = ""; eof.Line = line; eof.Col = col; eof.Upper = "";
@@ -378,7 +406,7 @@ namespace TcLintEngine
                     if (u == d) { if (groups == 0) { j = d; } break; }
                     j = u; groups++;
                 }
-                if (groups == 0 && j == i) r.Unverified.Add(Issue("unsupported-syntax:time-literal", line, col));
+                if (groups == 0 && j == i) r.Unknown.Add(Issue("unsupported-syntax:time-literal", line, col));
                 return j;
             }
             if (DatePrefixes.Contains(prefix))
@@ -415,7 +443,7 @@ namespace TcLintEngine
                     string w = s.Substring(j, k - j).ToUpperInvariant();
                     if (w == "TRUE" || w == "FALSE") return k;
                 }
-                r.Unverified.Add(Issue("unsupported-syntax:typed-literal", line, col));
+                r.Unknown.Add(Issue("unsupported-syntax:typed-literal", line, col));
                 return j;
             }
             // <Enum>#<Member>: no InfoSys page found -> recognised, section not analysed
@@ -426,7 +454,7 @@ namespace TcLintEngine
                 r.Unverified.Add(Issue("unverified-syntax:enum-hash-literal", line, col));
                 return k;
             }
-            r.Unverified.Add(Issue("unsupported-syntax:typed-literal", line, col));
+            r.Unknown.Add(Issue("unsupported-syntax:typed-literal", line, col));
             return i;
         }
 

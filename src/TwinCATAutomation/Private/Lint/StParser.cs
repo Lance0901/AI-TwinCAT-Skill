@@ -12,7 +12,7 @@ namespace TcLintEngine
 
     public sealed class SectionStatus
     {
-        public string Status = "ok";      // ok / not-analyzed / parse-failed
+        public string Status = "ok";      // ok / not-analyzed (listed legal construct) / unsupported (not understood) / parse-failed
         public string Reason;             // not-analyzed reason, e.g. conditional-pragma
         public string ErrorRule;          // LINT-PARSE-00x for parse-failed
         public string ErrorMessage;
@@ -21,10 +21,15 @@ namespace TcLintEngine
         public int ReasonLine;
         public int ReasonCol;
 
+        // "unsupported-syntax:*" = something the parser does not understand -> status unsupported (the verdict
+        // can never be pass); the listed constructs that may be legal (conditional pragma, unverified-syntax:*)
+        // -> not-analyzed. unsupported wins over not-analyzed; both win over a later structure error (D3).
         public void NotAnalyzed(string reason, int line, int col)
         {
-            if (Status == "not-analyzed") return;
-            Status = "not-analyzed"; Reason = reason; ReasonLine = line; ReasonCol = col;
+            bool unsupported = reason.StartsWith("unsupported-syntax:", StringComparison.Ordinal);
+            if (Status == "unsupported") return;
+            if (Status == "not-analyzed" && !unsupported) return;
+            Status = unsupported ? "unsupported" : "not-analyzed"; Reason = reason; ReasonLine = line; ReasonCol = col;
             ErrorRule = null; ErrorMessage = null;
         }
 
@@ -194,9 +199,7 @@ namespace TcLintEngine
             d.Lex = lx;
             if (lx.Error != null)
             {
-                if (lx.ConditionalPragma) d.State.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1);
-                else if (lx.Unverified.Count > 0) d.State.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col);
-                else d.State.Fail("LINT-PARSE-001", lx.Error.Reason, lx.Error.Line, lx.Error.Col);
+                ApplyLexError(d.State, lx);
                 return d;
             }
             Cursor c = new Cursor(lx.Tokens);
@@ -207,11 +210,11 @@ namespace TcLintEngine
             }
             catch (StopParse) { }
             // unknown constructs anywhere: the declaration is not analysed and structural errors are ours (D3)
-            if (lx.ConditionalPragma) d.State.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1);
-            else if (lx.Unverified.Count > 0) d.State.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col);
-            if (d.HeaderKnown && lx.Unverified.Count > 0)
+            ApplyLexIssues(d.State, lx);
+            foreach (List<LexIssue> issues in new List<LexIssue>[] { lx.Unverified, lx.Unknown })
             {
-                LexIssue u = lx.Unverified[0];
+                if (!d.HeaderKnown || issues.Count == 0 || d.Name == null) continue;
+                LexIssue u = issues[0];
                 if (u.Line < d.NameLine || (u.Line == d.NameLine && u.Col <= d.NameCol)) d.HeaderKnown = false;
             }
             return d;
@@ -292,7 +295,7 @@ namespace TcLintEngine
                     if (x.IsOp(":"))
                     {
                         c.Next();
-                        d.ReturnType = ReadUntil(c, delegate (Token y) { return y.Kind == TokKind.EOF || (y.Kind == TokKind.Ident && VarKeywords.Contains(y.Upper)); });
+                        d.ReturnType = ReadUntil(c, delegate (Token y) { return y.Kind == TokKind.EOF || y.IsOp(";") || (y.Kind == TokKind.Ident && VarKeywords.Contains(y.Upper)); });
                         continue;
                     }
                     if (x.IsOp(";")) { c.Next(); continue; }
@@ -317,6 +320,22 @@ namespace TcLintEngine
                     return;
                 }
                 return;
+            }
+            if (Modifiers.Contains(t.Upper))
+            {
+                // Property accessor (Get / Set): access modifier, then only VAR sections (XAE 4024 / 4026,
+                // verification/xae-generated-xml.md)
+                int save = c.Pos;
+                List<string> mods = new List<string>();
+                while (c.Peek().Kind == TokKind.Ident && Modifiers.Contains(c.Peek().Upper)) mods.Add(c.Next().Upper);
+                SkipPragmas(c, d.Attributes);
+                if (c.AtEnd || (c.Peek().Kind == TokKind.Ident && VarKeywords.Contains(c.Peek().Upper)))
+                {
+                    d.HeaderKeyword = "ACCESSOR"; d.Modifiers.AddRange(mods); d.HeaderKnown = headerBeforeConditional;
+                    ParseVarBlocks(c, d);
+                    return;
+                }
+                c.Pos = save;
             }
             if (VarKeywords.Contains(t.Upper))
             {
@@ -570,14 +589,10 @@ namespace TcLintEngine
             r.Lex = lx;
             if (lx.Error != null)
             {
-                bool cond = lx.ConditionalPragma && lx.ConditionalPragmaLine <= lx.Error.Line;
-                if (cond) r.State.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1);
-                else if (lx.Unverified.Count > 0 && Before(lx.Unverified[0], lx.Error)) r.State.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col);
-                else r.State.Fail("LINT-PARSE-001", lx.Error.Reason, lx.Error.Line, lx.Error.Col);
+                ApplyLexError(r.State, lx);
                 return r;
             }
-            if (lx.ConditionalPragma) r.State.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1);
-            else if (lx.Unverified.Count > 0) r.State.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col);
+            ApplyLexIssues(r.State, lx);
 
             List<Token> t = lx.Tokens;
             List<Frame> stack = new List<Frame>();
@@ -673,14 +688,27 @@ namespace TcLintEngine
                         }
                         if (t[i].IsOp("["))
                         {
-                            // index expressions are scanned normally afterwards: only skip the bracket
-                            // here when no call follows; record identifiers inside
+                            // the index expression is consumed here (the designator continues after ']'):
+                            // identifiers inside it are references, 'name(' / 'a.b(' inside it are calls in an expression
                             int depth = 0, k = i;
                             while (k < t.Count && t[k].Kind != TokKind.EOF)
                             {
                                 if (t[k].IsOp("[")) depth++;
                                 else if (t[k].IsOp("]")) { depth--; if (depth == 0) break; }
-                                else if (t[k].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[k].Upper)) refs.Add(t[k].Text);
+                                else if (t[k].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[k].Upper))
+                                {
+                                    refs.Add(t[k].Text);
+                                    int m = k; StringBuilder inner = new StringBuilder(t[k].Text);
+                                    while (m + 2 < t.Count && t[m + 1].IsOp(".") && t[m + 2].Kind == TokKind.Ident) { inner.Append('.').Append(t[m + 2].Text); members.Add(inner.ToString()); m += 2; }
+                                    if (m + 1 < t.Count && t[m + 1].IsOp("("))
+                                    {
+                                        CallSite ic = new CallSite();
+                                        ic.Target = inner.ToString(); ic.Line = t[k].Line; ic.Col = t[k].Col; ic.StatementStart = false;
+                                        ic.Blocks = BlockPath(stack); ic.Conditional = IsConditional(stack);
+                                        r.Calls.Add(ic);
+                                    }
+                                    k = m;
+                                }
                                 k++;
                             }
                             if (k >= t.Count || t[k].Kind == TokKind.EOF) { i = k; break; }
@@ -718,6 +746,27 @@ namespace TcLintEngine
             List<string> memList = new List<string>(members); memList.Sort(StringComparer.OrdinalIgnoreCase);
             r.IdentifierRefs = refList; r.MemberAccesses = memList;
             return r;
+        }
+
+        // A tokenizer error is a parse failure unless a listed construct (conditional pragma, unverified syntax) or
+        // an unknown construct before it can explain it; Certain errors (backtick, typographic quote) never are.
+        private static void ApplyLexError(SectionStatus st, LexResult lx)
+        {
+            LexIssue e = lx.Error;
+            if (!e.Certain)
+            {
+                if (lx.Unknown.Count > 0 && Before(lx.Unknown[0], e)) { st.NotAnalyzed(lx.Unknown[0].Reason, lx.Unknown[0].Line, lx.Unknown[0].Col); return; }
+                if (lx.ConditionalPragma && lx.ConditionalPragmaLine <= e.Line) { st.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1); return; }
+                if (lx.Unverified.Count > 0 && Before(lx.Unverified[0], e)) { st.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col); return; }
+            }
+            st.Fail("LINT-PARSE-001", e.Reason, e.Line, e.Col);
+        }
+
+        private static void ApplyLexIssues(SectionStatus st, LexResult lx)
+        {
+            if (lx.Unknown.Count > 0) st.NotAnalyzed(lx.Unknown[0].Reason, lx.Unknown[0].Line, lx.Unknown[0].Col);
+            else if (lx.ConditionalPragma) st.NotAnalyzed("conditional-pragma", lx.ConditionalPragmaLine, 1);
+            else if (lx.Unverified.Count > 0) st.NotAnalyzed(lx.Unverified[0].Reason, lx.Unverified[0].Line, lx.Unverified[0].Col);
         }
 
         private static bool Before(LexIssue a, LexIssue b)
@@ -776,6 +825,8 @@ namespace TcLintEngine
             }
             if (lx.Error != null) list.Add("ERROR:" + lx.Error.Reason);
             foreach (LexIssue u in lx.Unverified) list.Add("UNVERIFIED:" + u.Reason);
+            foreach (LexIssue u in lx.Unknown) list.Add("UNKNOWN:" + u.Reason);
+            foreach (LexIssue u in lx.Entities) list.Add("ENTITY:" + u.Reason);
             if (lx.ConditionalPragma) list.Add("CONDITIONAL");
             return list;
         }

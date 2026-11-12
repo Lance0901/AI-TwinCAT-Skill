@@ -102,7 +102,7 @@ function Resolve-TcLintProfile {
         if (Test-Path -LiteralPath $b) { $defaultBaseline = $b; break }
     }
     $profileData = [ordered]@{ name = 'default'; source = 'built-in'; sha256 = $null; overrides = @() }
-    $result = @{ ok = $true; profile = $profileData; failOn = 'error'; searchRoot = $searchRoot
+    $result = @{ ok = $true; profile = $profileData; failOn = 'error'; searchRoot = $searchRoot; maxFileSizeMB = 8
         rules = @(); excludes = @(); suppressions = @(); acceptSkips = @(); baselinePath = $defaultBaseline; baselineSource = $(if ($defaultBaseline) { 'discovered' } else { $null }); baselineDisabled = $null }
 
     $file = $null
@@ -131,7 +131,7 @@ function Resolve-TcLintProfile {
     $profileData.path = $file
     $profileData.sha256 = Get-TcLintFileSha256 -Path $file
 
-    $allowedTop = @('schema', 'extends', 'failOn', 'rules', 'typeCatalog', 'exclude', 'suppressions', 'acceptSkips', 'baseline', 'description')
+    $allowedTop = @('schema', 'extends', 'failOn', 'rules', 'typeCatalog', 'exclude', 'suppressions', 'acceptSkips', 'baseline', 'description', 'maxFileSizeMB')
     foreach ($k in (Get-TcLintPropNames $v)) { if ($allowedTop -cnotcontains $k) { return (& $fail "unknown field '$k'") } }
     if ($v.schema -ne $script:TcLintProfileSchema) { return (& $fail "schema must be '$($script:TcLintProfileSchema)'") }
     if ($null -ne $v.extends -and $v.extends -ne 'default') { return (& $fail "extends must be 'default' (the only built-in profile)") }
@@ -139,6 +139,10 @@ function Resolve-TcLintProfile {
     if ($null -ne $v.failOn) {
         if (@('error', 'warning') -cnotcontains $v.failOn) { return (& $fail "failOn must be 'error' or 'warning'") }
         $result.failOn = $v.failOn
+    }
+    if ($null -ne $v.maxFileSizeMB) {
+        if (($v.maxFileSizeMB -isnot [int] -and $v.maxFileSizeMB -isnot [long]) -or $v.maxFileSizeMB -lt 1 -or $v.maxFileSizeMB -gt 256) { return (& $fail 'maxFileSizeMB must be an integer from 1 to 256') }
+        $result.maxFileSizeMB = [int]$v.maxFileSizeMB
     }
     $overrides = [System.Collections.Generic.List[object]]::new()
 

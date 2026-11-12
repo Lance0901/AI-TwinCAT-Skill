@@ -43,8 +43,10 @@ namespace TcLintEngine
         }
     }
 
-    // The single switch point for every "pending" decision (tasks 1a.7): Blockable below.
-    // A rule whose XAE behaviour is measured changes "pending" to "true" or "false" here only.
+    // Blockable below is the rule default; the IDE measurement of tasks 1a.7 (PR #276 table, XAE 3.1.4026.22 /
+    // VS2022, 2026-11-13, openspec/changes/add-semantic-linter/verification/xae-corrupt-file-behavior.md) decided
+    // it per variant, so variants that differ from the default pass their own severity / blockable where they are
+    // emitted (LintEngine.cs). "pending" is left only for variants nothing measured.
     public static class RuleRegistry
     {
         private static readonly List<RuleMeta> rules = new List<RuleMeta>();
@@ -66,68 +68,68 @@ namespace TcLintEngine
         static RuleRegistry()
         {
             // ---- PROJECT-* (rule-catalog.md section 1). blockable "pending" = detection is certain,
-            // whether XAE treats it as an error is not measured yet (tasks 1a.7).
+            // measured per variant in tasks 1a.7 (verification/xae-corrupt-file-behavior.md, measured 2026-11-13).
             Add("PROJECT-XML-001", "XML file is not well-formed", "error", "true", "project-integrity", "unknown",
                 "XML 1.0 well-formedness (any XML parser rejects it); after this finding no other rule evaluates that file", "high", null);
-            Add("PROJECT-XML-002", "Encoding declaration does not match the bytes (BOM, declared encoding, invalid UTF-8)", "error", "pending", "project-integrity", "unknown",
-                "XAE tolerance of encoding mismatches is not measured", "high", null);
+            Add("PROJECT-XML-002", "Encoding declaration does not match the bytes (BOM, declared encoding, invalid UTF-8)", "error", "true", "project-integrity", "unknown",
+                "declaration vs bytes mismatch and invalid UTF-8 made XAE show the object as unknown without any message (C09 / C12, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); no declaration / no BOM loaded normally (info)", "high", null);
             Add("PROJECT-XML-003", "Declaration / ST code is not one single CDATA section", "error", "true", "behavior", "unknown",
-                "variant text-outside-cdata is blockable true (XAE wrote 242 + 176 single CDATA sections); variant multiple-cdata is pending: XAE may split code that contains ]]> itself (tasks 1a.7)", "high", "inferred");
-            Add("PROJECT-XML-004", "Required element / attribute missing, or element order differs from what XAE writes", "error", "pending", "project-integrity", "unknown",
-                "structure observed on 4024 / 4026 files only; variant order is a warning (effect of a different order not measured); Itf / Property / Transition not observed: schema-not-observed", "high", null);
-            Add("PROJECT-KIND-001", "Object element, declaration keyword and file extension disagree", "error", "pending", "project-integrity", "unknown",
-                "skipped when the declaration header cannot be read (conditional pragma before the header)", "high", null);
-            Add("PROJECT-NAME-001", "Name attribute differs from the name in the declaration", "error", "pending", "project-integrity", "unknown",
-                "compared case-insensitively (TwinCAT identifiers are not case-sensitive); which name XAE uses is not measured", "high", null);
+                "variant escaped-entity-in-cdata blocks (the compiler sees the escape text); text-outside-cdata is a warning (XAE read legal text normally, C02 / C05, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); several CDATA sections are what XAE writes for code containing ]]> and are not reported (verification/xae-generated-xml.md)", "high", "inferred");
+            Add("PROJECT-XML-004", "Required element / attribute missing, or element order differs from what XAE writes", "error", "true", "project-integrity", "unknown",
+                "structure observed on 4024 / 4026 files (corpus + XAE-generated Property / Itf, verification/xae-generated-xml.md); missing root / Name / Declaration / Implementation block (C06 / C07 / C09 / C10), missing SpecialFunc and order are warnings, unmeasured variants pending; unobserved-msbuild (conditions, imports, wildcards) pending; Transition not observed: schema-not-observed", "high", null);
+            Add("PROJECT-KIND-001", "Object element, declaration keyword and file extension disagree", "error", "true", "project-integrity", "unknown",
+                "variant declaration (keyword of another family than the XML element) blocks (C14); variant extension is a warning: XAE takes the kind from the element (C13); PROGRAM / FUNCTION_BLOCK / FUNCTION in one POU are not compared (C15, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); skipped when the header cannot be read", "high", null);
+            Add("PROJECT-NAME-001", "Name attribute differs from the name in the declaration", "error", "true", "project-integrity", "unknown",
+                "compared case-insensitively (TwinCAT identifiers are not case-sensitive); XAE names the object after the Name attribute and reports C0243 (C11 / C16, verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
             Add("PROJECT-NAME-002", "File name differs from the object name", "warning", "false", "none", "unknown",
-                "whether XAE accepts it is not measured; Robust Solution NAM-001 can raise it by profile", "high", null);
-            Add("PROJECT-GUID-001", "Object or sub-object has no Id", "error", "pending", "project-integrity", "unknown",
-                "only element kinds observed with an Id (POU, DUT, GVL, Method, Action, Folder, Task, Visu objects)", "high", null);
-            Add("PROJECT-GUID-002", "Id is not a {8-4-4-4-12} hexadecimal GUID", "error", "pending", "project-integrity", "unknown",
-                "upper-case hex digits are accepted (XAE writes lower case; acceptance of upper case not measured)", "high", null);
-            Add("PROJECT-GUID-003", "Id used twice in the project (object or sub-object)", "error", "pending", "project-integrity", "unknown",
-                "most common source: a file copied and renamed without a new Id", "high", null);
-            Add("PROJECT-GUID-004", "Id is the all-zero GUID", "error", "pending", "project-integrity", "unknown", "", "high", null);
+                "XAE takes the name from the XML Name attribute, the file name does not matter (C12, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); Robust Solution NAM-001 can raise it by profile", "high", null);
+            Add("PROJECT-GUID-001", "Object or sub-object has no Id", "warning", "false", "project-integrity", "unknown",
+                "XAE loads an object without Id and warns (1.3, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); only element kinds observed with an Id", "high", null);
+            Add("PROJECT-GUID-002", "Id is not a {8-4-4-4-12} hexadecimal GUID", "error", "true", "project-integrity", "unknown",
+                "a malformed Id made the object unknown to XAE (C17, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); upper-case hex digits are accepted (not measured)", "high", null);
+            Add("PROJECT-GUID-003", "Id used twice in the project (object or sub-object)", "error", "true", "project-integrity", "unknown",
+                "variant same-object blocks (XAE dropped the whole POU); variant cross-file is a warning (XAE gave one of them a new GUID and rewrote the file, 1.3, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); most common source: a file copied without a new Id", "high", null);
+            Add("PROJECT-GUID-004", "Id is the all-zero GUID", "info", "false", "project-integrity", "unknown", "", "high", null);
             Add("PROJECT-GUID-005", "Id looks hand-written (ascending / repeated digit patterns)", "warning", "false", "project-integrity", "no",
                 "heuristic: an ascending run of 6 hex digits, a digit repeated 6 times, or group 2 / 4 (or the version group when it does not start with 4) of one digit; a random GUID matches with about 0.05 % probability, i.e. about 10 % of projects with 200 Ids show one such warning", "medium", null);
-            Add("PROJECT-SUB-001", "Sub-object structure incomplete (Method without Declaration / Implementation, Action without Implementation)", "error", "pending", "project-integrity", "unknown",
-                "Property / Transition structure not observed: schema-not-observed", "high", null);
-            Add("PROJECT-SUB-002", "Two sub-objects (Method / Action / Property) of one POU have the same name", "error", "pending", "project-integrity", "unknown",
-                "compiler probably rejects it (not measured); compared case-insensitively", "high", null);
+            Add("PROJECT-SUB-001", "Sub-object structure incomplete (Method without Declaration / Implementation, Action without Implementation)", "error", "true", "project-integrity", "unknown",
+                "Method / interface method without Declaration blocks (batches 42 / 44); Property without Get / Set is a warning (C0373); other variants pending; ABSTRACT members and Transition not observed (verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
+            Add("PROJECT-SUB-002", "Two sub-objects (Method / Action / Property) of one POU have the same name", "error", "true", "project-integrity", "unknown",
+                "two methods with one name crashed VS2022 when the solution was reopened (batch 43, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); compared case-insensitively", "high", null);
             RuleRegistry.Get("PROJECT-SUB-002").Te1200 = "SA0027 (Light, duplicate names)";
             Add("PROJECT-LINEIDS-001", "LineIds do not match the implementation (name, count of lines)", "info", "false", "none", "no",
-                "4026 files without LineIds are normal; only present LineIds are checked; whether XAE rebuilds them is not measured", "high", null);
-            Add("PROJECT-COMPILE-001", "Compile item points to a file that does not exist", "error", "pending", "project-integrity", "unknown",
-                "MSBuild-unescaped, compared case-insensitively", "high", null);
-            Add("PROJECT-COMPILE-002", "Same file listed twice in Compile", "error", "pending", "project-integrity", "unknown",
+                "4026 files without LineIds are normal; only present LineIds are checked; 4026 XAE deleted inconsistent LineIds on the next save (2.4, verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
+            Add("PROJECT-COMPILE-001", "Compile item points to a file that does not exist", "error", "true", "project-integrity", "unknown",
+                "XAE showed an unusable ghost object without error (5a, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); MSBuild-unescaped, compared case-insensitively", "high", null);
+            Add("PROJECT-COMPILE-002", "Same file listed twice in Compile", "warning", "false", "project-integrity", "unknown",
                 "compared after MSBuild unescape and full-path normalisation, case-insensitively", "high", null);
             Add("PROJECT-COMPILE-003", "Object file under the project directory is not in Compile (it is never compiled)", "warning", "false", "behavior", "no",
                 "a file may be kept on purpose (_bak folders)", "high", null);
-            Add("PROJECT-COMPILE-004", "Compile SubType differs from the value XAE writes (Code)", "error", "pending", "project-integrity", "unknown",
-                "XAE wrote Code for every Compile item of both corpus projects", "high", null);
+            Add("PROJECT-COMPILE-004", "Compile SubType differs from the value XAE writes (Code)", "warning", "false", "project-integrity", "unknown",
+                "XAE wrote Code for every Compile item of both corpus projects; another SubType loaded normally (5d / 5e, verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
             Add("PROJECT-COMPILE-005", "Directory used by Compile items has no Folder item", "info", "false", "none", "no",
-                "Folder items without a directory on disk are normal (XAE keeps empty folders only in the project file)", "high", null);
-            Add("PROJECT-COMPILE-006", "Compile Include differs from the disk in case, or its MSBuild escaping is wrong", "error", "pending", "project-integrity", "unknown",
-                "how XAE writes names with blanks / ' / % is not measured (tasks 1a.7); variant directory-case (only a directory differs in case) is a warning", "high", null);
+                "Folder items without a directory on disk are normal (corpus bfh); XAE added the missing Folder item itself (5h, verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
+            Add("PROJECT-COMPILE-006", "Compile Include differs from the disk in case, or its MSBuild escaping is wrong", "warning", "false", "project-integrity", "unknown",
+                "case differences and %20 loaded normally (5f / 5i, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); outside-project and invalid-path variants are pending (not measured)", "high", null);
             Add("PROJECT-LIB-001", "Library reference item lacks a required part", "error", "pending", "project-integrity", "unknown",
-                "PlaceholderReference needs Include + DefaultResolution, PlaceholderResolution needs Include + Resolution, LibraryReference needs Include (corpus observation)", "high", null);
-            Add("PROJECT-TSPROJ-001", ".tsproj reference to the .plcproj is missing or wrong", "error", "pending", "project-integrity", "unknown",
-                "only PLC projects of .tsproj files referenced by the .sln (or found next to the .plcproj when there is no .sln)", "high", null);
-            Add("PROJECT-TSPROJ-002", "PLC project GUID differs between .sln, .tsproj and .plcproj", "error", "pending", "project-integrity", "unknown",
+                "missing DefaultResolution is a warning (batch 12); missing Namespace is not reported although removing it stopped XAE in an assertion dialog (batch 11, verification/xae-corrupt-file-behavior.md, measured 2026-11-13): XAE itself wrote Tc2_Utilities without Namespace (4024 corpus); other parts pending", "high", null);
+            Add("PROJECT-TSPROJ-001", ".tsproj reference to the .plcproj is missing or wrong", "error", "true", "project-integrity", "unknown",
+                "a PrjFilePath to a missing .plcproj crashed VS2022 (batch 8, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); stand-alone PLC projects (no .tsproj) are skipped", "high", null);
+            Add("PROJECT-TSPROJ-002", "PLC project GUID differs between .sln, .tsproj and .plcproj", "warning", "false", "project-integrity", "unknown",
                 "compared case-insensitively (.plcproj writes lower case, .tsproj / .sln upper case)", "high", null);
             Add("PROJECT-TSPROJ-003", "Task (.TcTTO) and .tsproj disagree, or PouCall names no PROGRAM", "error", "pending", "behavior", "unknown",
-                "variant priority-mismatch is a warning; cycle time units are not compared (not sourced); a PLC stored as independent project file (.xti) is not checked (structure not observed)", "high", "inferred");
-            Add("PROJECT-ENC-001", "Line endings / BOM differ from what XAE writes (file written outside XAE)", "info", "false", "none", "no",
-                "XAE writes Tc* object files as UTF-8 with BOM and CRLF; a difference only means the file was written by another tool", "high", null);
+                "variant pou-call is a warning, the compiler rejects it (C0046 / C0035, batch 10, verification/xae-corrupt-file-behavior.md, measured 2026-11-13); variant priority-mismatch is a warning; cycle time units are not compared (not sourced); a PLC stored as independent project file (.xti) is not checked (structure not observed)", "high", "inferred");
+            Add("PROJECT-ENC-001", "Line endings / BOM differ from what XAE wrote in every observed file", "info", "false", "none", "no",
+                "every Tc* object file XAE wrote (corpus, IDE measurement) is UTF-8 with BOM and CRLF; LF / mixed / no-BOM files loaded normally (2.3, verification/xae-corrupt-file-behavior.md, measured 2026-11-13)", "high", null);
             // ---- LINT-* (engine itself)
-            Add("LINT-PARSE-001", "Code cannot be tokenized (unterminated string, comment or pragma; line break in a string)", "error", "true", "project-integrity", "unknown",
+            Add("LINT-PARSE-001", "Code cannot be tokenized (unterminated string, comment or pragma; line break in a string)", "error", "true", "project-integrity", "yes",
                 "downgraded to notAnalyzed when the section contains a construct the parser does not know", "high", null);
-            Add("LINT-PARSE-002", "Block keywords do not pair (IF / END_IF, CASE / END_CASE, ...)", "error", "true", "project-integrity", "unknown",
+            Add("LINT-PARSE-002", "Block keywords do not pair (IF / END_IF, CASE / END_CASE, ...)", "error", "true", "project-integrity", "yes",
                 "downgraded to notAnalyzed when the section contains a construct the parser does not know (conditional pragma, ?=, ...)", "high", null);
-            Add("LINT-PARSE-003", "Declaration structure broken (VAR block without END_VAR, TYPE without END_TYPE, ...)", "error", "true", "project-integrity", "unknown",
+            Add("LINT-PARSE-003", "Declaration structure broken (VAR block without END_VAR, TYPE without END_TYPE, ...)", "error", "true", "project-integrity", "yes",
                 "downgraded to notAnalyzed when the declaration contains a construct the parser does not know", "high", null);
             Add("LINT-XML-002", "Implementation has more than one ST element (all are analysed; line numbers unreliable)", "warning", "false", "none", "unknown",
-                "not observed in XAE files; line numbers of the joined text do not match Get-TcPouCode", "high", null);
+                "XAE always wrote one <ST> (verification/xae-generated-xml.md); line numbers of the joined text do not match Get-TcPouCode", "high", null);
         }
 
         public static RuleMeta Get(string id)
@@ -154,6 +156,7 @@ namespace TcLintEngine
         public string Confidence;
         public string Blockable;        // effective (variant may override)
         public string Variant;
+        public string CompilerCatches;  // variant value when it differs from the rule (e.g. TSPROJ-003 pou-call: yes)
         public bool Blocking;
         public string BlockingSource;   // null or "profile"
         public bool Suppressed;
@@ -199,6 +202,7 @@ namespace TcLintEngine
             if (Blockable == "pending") d["blockableBasis"] = "pending-measurement";
             if (BlockingSource != null) d["blockingSource"] = BlockingSource;
             if (r != null && r.ImpactBasis != null) d["impactBasis"] = r.ImpactBasis;
+            if (CompilerCatches != null) d["compilerCatches"] = CompilerCatches;
             if (Variant != null) d["variant"] = Variant;
             d["file"] = File;
             d["objectPath"] = ObjectPath;
@@ -301,7 +305,8 @@ namespace TcLintEngine
         public List<ProfileEntry> Excludes = new List<ProfileEntry>();
         public List<ProfileEntry> Suppressions = new List<ProfileEntry>();
         public List<ProfileEntry> AcceptSkips = new List<ProfileEntry>();
-        public bool TestFault;              // tests only: throw inside the engine (LINT_ENGINE_ERROR path)
+        public bool TestFault;
+        public long MaxFileBytes = 8L * 1024 * 1024;   // larger files are not read: notAnalyzed too-large, verdict incomplete (should-fix 5)              // tests only: throw inside the engine (LINT_ENGINE_ERROR path)
 
         public void AddRuleOverride(string id, object enabled, string severity, object blocking)
         {

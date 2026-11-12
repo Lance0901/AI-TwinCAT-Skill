@@ -85,6 +85,9 @@ namespace TcLintEngine
         public bool NonAscii;
         public bool InvalidUtf8;
         public int InvalidUtf8Offset;
+        public bool TooLarge;
+        public long Length;
+        public bool EncodingMismatch;   // BOM and encoding declaration disagree: the file is not parsed
     }
 
     public sealed class XmlLoad
@@ -107,13 +110,23 @@ namespace TcLintEngine
 
         private static readonly Regex DeclRx = new Regex("^<\\?xml[^>]*?encoding\\s*=\\s*[\"']([^\"']+)[\"']", RegexOptions.CultureInvariant);
 
-        public static FileBytesInfo ReadBytes(string path)
+        public static FileBytesInfo ReadBytes(string path) { return ReadBytes(path, long.MaxValue); }
+
+        // maxBytes: larger files are not read (TooLarge); a 50 MB file cost 3.3 GB of memory (second review should-fix 5).
+        // Only I/O errors are caught: anything else (OutOfMemoryException ...) is an engine error.
+        public static FileBytesInfo ReadBytes(string path, long maxBytes)
         {
             FileBytesInfo fi = new FileBytesInfo();
             if (!File.Exists(path)) return fi;
             fi.Exists = true;
-            try { fi.Bytes = File.ReadAllBytes(path); }
-            catch (Exception e) { fi.ReadFailed = true; fi.ReadError = e.GetType().Name + ": " + e.Message; return fi; }
+            try
+            {
+                fi.Length = new FileInfo(path).Length;
+                if (fi.Length > maxBytes) { fi.TooLarge = true; return fi; }
+                fi.Bytes = File.ReadAllBytes(path);
+            }
+            catch (IOException e) { fi.ReadFailed = true; fi.ReadError = e.GetType().Name + ": " + e.Message; return fi; }
+            catch (UnauthorizedAccessException e) { fi.ReadFailed = true; fi.ReadError = e.GetType().Name + ": " + e.Message; return fi; }
             byte[] b = fi.Bytes;
             int start = 0;
             if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) { fi.Bom = "utf-8"; start = 3; }
@@ -138,6 +151,25 @@ namespace TcLintEngine
                 }
                 try { new UTF8Encoding(false, true).GetString(b, start, b.Length - start); }
                 catch (DecoderFallbackException e) { fi.InvalidUtf8 = true; fi.InvalidUtf8Offset = e.Index; }
+            }
+            else
+            {
+                // UTF-16: read the declaration from the decoded start
+                int head = Math.Min(b.Length - start, 800);
+                string prolog = (fi.Bom == "utf-16le" ? Encoding.Unicode : Encoding.BigEndianUnicode).GetString(b, start, head - head % 2);
+                if (prolog.StartsWith("<?xml", StringComparison.Ordinal))
+                {
+                    fi.HasDeclaration = true;
+                    Match m = DeclRx.Match(prolog);
+                    if (m.Success) fi.DeclaredEncoding = m.Groups[1].Value;
+                }
+            }
+            string d = fi.DeclaredEncoding == null ? null : fi.DeclaredEncoding.ToLowerInvariant();
+            if (d != null)
+            {
+                bool utf8 = d == "utf-8" || d == "utf8";
+                bool utf16 = d.StartsWith("utf-16", StringComparison.Ordinal) || d == "unicode";
+                if ((fi.Bom == "utf-8" && !utf8) || ((fi.Bom == "utf-16le" || fi.Bom == "utf-16be") && !utf16)) fi.EncodingMismatch = true;
             }
             return fi;
         }
@@ -212,10 +244,12 @@ namespace TcLintEngine
             {
                 r.WellFormed = false; r.ErrorDetail = "XmlException: " + e.Message; r.ErrorLine = e.LineNumber; r.ErrorCol = e.LinePosition;
             }
-            catch (Exception e)
+            catch (ArgumentException e)
             {
-                r.WellFormed = false; r.ErrorDetail = e.GetType().Name + ": " + e.Message; r.ErrorLine = 0; r.ErrorCol = 0;
+                // unknown encoding name in the XML declaration
+                r.WellFormed = false; r.ErrorDetail = e.GetType().Name + ": " + e.Message; r.ErrorLine = 1; r.ErrorCol = 1;
             }
+            // anything else (OutOfMemoryException ...) is an engine error, never reported as PROJECT-XML-001
             return r;
         }
 

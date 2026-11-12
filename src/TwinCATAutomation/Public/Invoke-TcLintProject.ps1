@@ -35,7 +35,7 @@ function Invoke-TcLintProject {
     .PARAMETER SolutionPath
         A .sln or .tsproj; the .plcproj is found through Plc/Project@PrjFilePath of the .tsproj (no IDE needed).
     .PARAMETER Scope
-        All (default) or Object: with Object only the objects in -ObjectPaths are checked (project-level rules still run).
+        All (default) or Object: with Object only the objects in -ObjectPaths are checked (project-level rules still run). A pass with Scope=Object is not a pass of the whole project: run Scope=All before Reset-TcSolution / Build-TcProject (data.scope).
     .PARAMETER ObjectPaths
         Object names for -Scope Object (FB_X; FB_X.M_Run selects the object FB_X).
     .PARAMETER RuleProfile
@@ -122,6 +122,7 @@ function Invoke-TcLintProject {
             return (& $fail 'PLC_PROJECT_AMBIGUOUS' "$solFull has $($cands.Count) PLC projects; select one with -PlcProjectPath <name>" ([ordered]@{ plcProjects = $cands }))
         }
         $sel = $cands[0]
+        if (-not $sel.error -and [string]::IsNullOrEmpty($sel.plcProjectPath)) { $sel.error = 'no-prjfilepath' }
         if ($sel.error) { return (& $fail 'LINT_INPUT_INVALID' "PLC project '$($sel.name)' cannot be read from $($sel.tsprojPath): $($sel.error)" ([ordered]@{ plcProjects = $list })) }
         $plcFull = $sel.plcProjectPath
         $tsprojFull = $sel.tsprojPath
@@ -151,6 +152,7 @@ function Invoke-TcLintProject {
     $opt.SolutionPath = $slnFull
     $opt.TsprojPath = $tsprojFull
     $opt.FailOn = $effectiveFailOn
+    $opt.MaxFileBytes = [long]$prof.maxFileSizeMB * 1MB
     if ($script:TcLintTestFault) { $opt.TestFault = $true }
     if ($Scope -eq 'Object') { foreach ($o in $ObjectPaths) { $opt.AddScopeObject($o) } }
     foreach ($r in $prof.rules) { $opt.AddRuleOverride($r.id, $r.enabled, [string]$r.severity, $r.blocking) }
@@ -185,11 +187,13 @@ function Invoke-TcLintProject {
         diagnostics          = @($res['diagnostics'])
         unresolved           = @($res['unresolved'])
         requiresDisposition  = [bool]$res['requiresDisposition']
+        scope                = $res['scope']
         newSuppressions      = @()
         newSuppressionsBasis = 'inline-suppression-not-supported'
         coverage             = $res['coverage']
         rulesRun             = @($res['rulesRun'])
     }
+    if ($Scope -eq 'Object') { $data.scope['note'] = 'Scope=Object checks only these objects (plus the project files), not the whole project: run Scope=All before Reset-TcSolution / BuildProject' }
     if (@($res['engineDetail']).Count -gt 0) { $data.engineDetail = @($res['engineDetail']) }
     if ($IncludeTiming) { $data.timing = [ordered]@{ engineLoadMs = $compileMs; engineCompiled = [bool]$engine.compiled; analyzeMs = ($sw.ElapsedMilliseconds - $analyzeStart); totalMs = $sw.ElapsedMilliseconds } }
 

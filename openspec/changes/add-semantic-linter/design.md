@@ -126,6 +126,8 @@
 | 不支援即 parse fail | 只限確定非法的輸入(例如字串未結束、全部構造都認得但區塊不配對) |
 
 - 任何物件只要含有「不支援但安全略過」的構造,後續的結構錯誤(例如區塊不配對)都視為「可能是我們不懂」,一律降級成 `notAnalyzed`,不報 `LINT-PARSE-*`。
+- **「安全略過」只限明列的構造**(PR #274 第二輪審查 B2,2026-11-13 定案):條件 pragma、`?=`、`**`、`/* */`、`E_Enum#Member`、非 ASCII 識別字。這些段落記 `notAnalyzed`,verdict 仍可 pass,但每段加一筆 `coverage.rulesSkipped { ruleId: LINT-PARSE-00x, reason }`,`summary.notAnalyzed` 計數;LINT-PARSE-* 的 `compilerCatches` 標 `yes`(IDE 實測 `verification/st-syntax-measured.md`:4026.22 編譯器拒絕 `?=` `**` `/* */` `E#M` 與非 ASCII 識別字,不成立的條件分支也會被解析)。
+- 清單以外不認得的東西(其他字元、格式不對的 typed literal / 位址、未結束的 pragma、宣告區不認得的結構)→ 段落狀態 `unsupported`,進 `coverage.blockingRulesSkipped`,verdict `incomplete`,**不得 pass**。反引號與 U+2018 / 2019 / 201C / 201D(從文件複製貼上的引號)→ `LINT-PARSE-001`;CDATA 內的 `&lt;` `&gt;` `&amp;` `&quot;` `&apos;` `&#..;` → `PROJECT-XML-003` variant `escaped-entity-in-cdata`(blocking)。
 - 已知必須處理的構造(第二輪 review 的最小反例):
   - **條件編譯 pragma** `{IF defined(...)}` / `{ELSIF}` / `{ELSE}` / `{END_IF}`:兩個分支都掃會造成區塊不配對(誤擋)或把被排除的呼叫算進來(漏抓);linter 不知道 compile define,沒啟用的分支本來就可能不是合法程式碼(`st-syntax-inventory.md`)。MVP:物件內一出現 `{IF` 就整個物件記 `notAnalyzed`(reason `conditional-pragma`);宣告區的條件 pragma 從 build 4024 起才會被評估(InfoSys)。
   - **型別位置的非典型語法**:`FB_X<100>`(`VAR_GENERIC CONSTANT`,4026 起)、`fb : FB_X(nComNum := 1);`(FB_init 參數)、`ARRAY[*]`(只在 VAR_IN_OUT)要認得;運算式內允許 `:=`、`=>` 右側可留空。
@@ -196,6 +198,7 @@
 
 - 處理順序(也是 code 優先序,review S17):引擎可用性(`LINT_ENGINE_UNAVAILABLE`)→ 解析輸入與 PLC(`LINT_INPUT_INVALID` / `PLC_PROJECT_*`)→ stale 檢查(`LINT_SOURCE_*`)→ 載入 profile(要知道 solution 目錄才能探索)→ baseline → 分析。分析後多種結果並存時:`LINT_ENGINE_ERROR` > `LINT_PARSE_FAILED` > `LINT_CONTEXT_REQUIRED` > `LINT_INCOMPLETE` > `LINT_FAILED`。diagnostics 一律完整保留。
 - `LINT_PARSE_FAILED` 只用在 D3 的「不支援即 parse fail」類;含任何「安全略過」構造的物件一律降級為 `notAnalyzed`。
+- `LINT_INCOMPLETE` 與 `LINT_FAILED` 的優先序(第二輪審查 nit,實作與本段一致):`blockingRulesSkipped` 非空(含 `unsupported` 段落、`too-large` 檔)或檔案讀不到 → `LINT_INCOMPLETE`,優先於 `LINT_FAILED`。另外「範圍內物件沒全部分析到、沒有載入專案、或 0 個物件」也是 incomplete,**但只在沒有任何 blocking finding 時**:一個 XML 壞掉的檔本身已有 blocking 的 PROJECT-XML-001,回 `LINT_FAILED` 比 `LINT_INCOMPLETE` 更直接指出要修什麼;若 profile 把那條規則關掉,就沒有 blocking finding,改回 incomplete(不會變 pass)。
 - 「不輸出」= `data.passed` 欄位不存在(不是 false),避免呼叫者只看 `passed` 欄位。
 - **parser 誤擋的出口**:`LINT_PARSE_FAILED` 可能是我們的 parser 不支援某個合法語法。hint 寫明:先 `BuildProject`;若 Build 成功,這是 linter 的限制 → 開 issue,並在 profile `exclude` 中帶理由排除該物件(排除的物件列在 `coverage.excluded[]`,不算 `notAnalyzed`)。不提供「忽略 parse 錯誤」的參數。
 - 每個新 error code 依 `CODING_STANDARDS.md` 第 5 節進 `$script:TcErrorHints` 並在 `docs/troubleshooting.md` 有一節(`scripts/check.ps1` 的 `errorcodes` 會檢查)。

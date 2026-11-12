@@ -178,6 +178,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 - **`passed: true` 的範圍**:只代表 `data.rulesRun` 列出的規則在 `data.coverage` 分析到的範圍內沒有 blocking finding,**不代表程式正確**;這一版沒有機台行為規則(SCAN-*)。Build 仍是最終把關。
 - `data.diagnostics[].blockableBasis = pending-measurement`:XAE 對這種錯誤的實際行為還沒實測,照樣當錯誤擋。`data.unresolved` 非空(`requiresDisposition: true`)= 會影響機台行為的 finding(例如新 POU 沒加進 Compile,永遠不會被編譯),要改或請使用者決定。
 - 失敗時照 `error.hint`:`LINT_FAILED` 修檔案(不准刪 Compile 項目或沿用別人的 GUID 來過關);`LINT_PARSE_FAILED` 先 `Build-TcProject`,Build 成功才是 linter 限制;`LINT_INCOMPLETE` 看 `data.coverage.blockingRulesSkipped`。不准刪改 `.tcauto\lint-profile.json` 讓 lint 通過(放寬一律列在 `data.profile.overrides`)。
+- `-Scope Object` 只檢查列出的物件(`data.scope`),**通過不代表整個專案通過**:`Reset-TcSolution` / `Build-TcProject` 前要跑一次預設的 `-Scope All`。
 - 只給 PLC 名稱要 `-SolutionPath <sln> -PlcProjectPath <名稱>`;XAE 裡未存的內容這一版**不**比對(`data.source.ideChecked = false`),先存檔再 lint。
 
 ## Cmdlet 清單(<!-- generated:cmdlet-count -->86<!-- /generated -->)

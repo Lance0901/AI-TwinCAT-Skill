@@ -43,8 +43,11 @@ TokCheck 'conditional pragma is flagged' "{IF defined (A)}x;{END_IF}" @('Pragma:
 TokCheck 'unterminated string' "s := 'abc" @('Ident:s', 'Op::=', 'ERROR:unterminated string literal')
 TokCheck 'line break in a string' "s := 'ab`ncd';" @('Ident:s', 'Op::=', 'ERROR:line break inside a string literal')
 TokCheck 'unterminated (* comment' "x; (* open" @('Ident:x', 'Op:;', 'ERROR:unterminated (* comment')
-TokCheck 'unterminated pragma is unverified, not an error (quoting in pragmas undocumented)' "{attribute 'x'" @('UNVERIFIED:unsupported-syntax:unterminated-pragma')
+TokCheck 'unterminated pragma is unsupported (incomplete), not an error' "{attribute 'x'" @('UNKNOWN:unsupported-syntax:unterminated-pragma')
 TokCheck "pragma with `$' in quotes" "{warning 'don`$'t'} x;" @("Pragma:{warning 'don`$'t'}", 'Ident:x', 'Op:;')
+TokCheck 'B2 backtick is a certain error' "x := ``a``;" @('Ident:x', 'Op::=', 'ERROR:character U+0060 is not ST')
+TokCheck 'B2 typographic quote is a certain error' ("s := " + [char]0x2018 + 'a' + [char]0x2019 + ';') @('Ident:s', 'Op::=', 'ERROR:character U+2018 is not ST')
+TokCheck 'B2 XML entity in code is reported as such' "IF a &lt; b THEN" @('Ident:IF', 'Ident:a', 'Ident:b', 'Ident:THEN', 'ENTITY:&lt;')
 TokCheck '/* */ is unverified (PLC manual does not list it)' "x /* c */ := 1;" @('Ident:x', 'Op::=', 'Number:1', 'Op:;', 'UNVERIFIED:unverified-syntax:slash-star-comment')
 
 # ---------------------------------------------------------------- 1.3 operators
@@ -69,7 +72,7 @@ TokCheck 'REAL with exponent' "x := 1.5E-3 + 1.64e+009;" @('Ident:x', 'Op::=', '
 TokCheck 'E_Enum#Member is unverified' "e := E_Color#Red;" @('Ident:e', 'Op::=', 'TypedLiteral:E_Color#Red', 'Op:;', 'UNVERIFIED:unverified-syntax:enum-hash-literal')
 TokCheck 'direct addresses' "%IX0.0 %QW2 %I* %MB10" @('Address:%IX0.0', 'Address:%QW2', 'Address:%I*', 'Address:%MB10')
 TokCheck 'non-ASCII identifier is unverified' "變數1 := 1;" @('Ident:變數1', 'Op::=', 'Number:1', 'Op:;', 'UNVERIFIED:unverified-syntax:non-ascii-identifier')
-TokCheck 'unknown character is unverified, not an error' "x := a & b;" @('Ident:x', 'Op::=', 'Ident:a', 'Ident:b', 'Op:;', 'UNVERIFIED:unsupported-syntax:char-U+0026')
+TokCheck 'B2 other unknown character is unsupported (incomplete), not a downgrade' "x := a & b;" @('Ident:x', 'Op::=', 'Ident:a', 'Ident:b', 'Op:;', 'UNKNOWN:unsupported-syntax:char-U+0026')
 
 # ---------------------------------------------------------------- implementation structure
 $r = Impl "IF a THEN b := 1; END_IF c := 2;`nFOR i := 1 TO 10 BY 2 DO x := x + i; END_FOR`nWHILE n < 5 DO n := n + 1; END_WHILE`nREPEAT n := n - 1; UNTIL n = 0 END_REPEAT;`nCASE e OF`n  E.A: fb1();`n  E.B, E.C: fb2();`n  1..5: ;`nELSE fb3();`nEND_CASE;;"
@@ -89,6 +92,11 @@ $byTarget = @{}; foreach ($x in $c) { $byTarget[$x['target']] = $x }
 Check 'method call inside an expression has inExpression' ($byTarget['fb.M_Update']['inExpression'] -and $byTarget['fb.M_Done']['inExpression'] -and $byTarget['fb.M_Done']['conditional'] -and -not $byTarget['fbA']['inExpression']) (($c | ForEach-Object { "$($_['target'])/$($_['inExpression'])" }) -join ' ')
 Check 'THIS^ / SUPER^ / __NEW recorded' ($byTarget.ContainsKey('THIS^.M_Run') -and $byTarget.ContainsKey('SUPER^') -and $byTarget.ContainsKey('__NEW')) (($c | ForEach-Object { $_['target'] }) -join ' ')
 
+$r = Impl "a[fb.M_Get()] := 1;`nx := arr[GetIdx(i)].val;`ny := tab[k[j]];"
+$t = @(@($r['calls']) | ForEach-Object { $_['target'] })
+Check 'should-fix 7: calls inside array indexes are recorded' (($t -contains 'fb.M_Get') -and ($t -contains 'GetIdx') -and (@($r['identifierRefs']) -contains 'j') -and (@($r['identifierRefs']) -contains 'i')) (($t -join ',') + ' / ' + (@($r['identifierRefs']) -join ','))
+StatusCheck 'B2 unknown character in code -> unsupported (incomplete)' (Impl 'x := a @ b;') 'unsupported' 'unsupported-syntax:char-U+0040'
+StatusCheck 'B2 backtick -> LINT-PARSE-001' (Impl 'x := `a`;') 'parse-failed' 'LINT-PARSE-001'
 $r = Impl "IF tonA.ET > T#1S-tonB.ET THEN x := 1; END_IF"
 Check 'review 6-4: tonB is an identifier reference' (@($r['identifierRefs']) -contains 'tonB' -and @($r['memberAccesses']) -contains 'tonB.ET') ((@($r['identifierRefs']) -join ',') + ' / ' + (@($r['memberAccesses']) -join ','))
 
@@ -150,7 +158,11 @@ Check 'Chinese comments and a message pragma in a declaration' ($d['status'] -eq
 StatusCheck 'VAR without END_VAR -> LINT-PARSE-003' (Decl "FUNCTION_BLOCK FB_X`nVAR`n    x : INT;`n") 'parse-failed' 'LINT-PARSE-003'
 StatusCheck 'second VAR before END_VAR -> LINT-PARSE-003' (Decl "PROGRAM P`nVAR`n    x : INT;`nVAR_INPUT`n    y : INT;`nEND_VAR") 'parse-failed' 'LINT-PARSE-003'
 StatusCheck 'TYPE without END_TYPE -> LINT-PARSE-003' (Decl "TYPE ST_X :`nSTRUCT`n    a : INT;`nEND_STRUCT") 'parse-failed' 'LINT-PARSE-003'
-StatusCheck 'missing semicolon -> not analysed (not certainly illegal for us)' (Decl "PROGRAM P`nVAR`n    x : INT`nEND_VAR") 'not-analyzed' 'unsupported-syntax:missing-semicolon'
+StatusCheck 'B2 missing semicolon -> unsupported (incomplete), not a silent downgrade' (Decl "PROGRAM P`nVAR`n    x : INT`nEND_VAR") 'unsupported' 'unsupported-syntax:missing-semicolon'
+$d = Decl "METHOD M : BOOL;`nVAR_INPUT n : INT; END_VAR"
+Check 'nit: METHOD M : BOOL; -> returnType BOOL' ($d['status'] -eq 'ok' -and $d['returnType'] -eq 'BOOL') ($d | ConvertTo-Json -Depth 2 -Compress)
+$d = Decl "PUBLIC`nVAR`nEND_VAR"
+Check 'B1 property accessor declaration (as XAE writes it) parses' ($d['status'] -eq 'ok' -and $d['headerKeyword'] -eq 'ACCESSOR' -and (@($d['modifiers']) -join ',') -eq 'PUBLIC' -and $d['headerKnown']) ($d | ConvertTo-Json -Depth 2 -Compress)
 $d = Decl "PROGRAM MAIN`n{IF defined (SIM)}`nVAR x : INT; END_VAR`n{ELSE}`nVAR x : INT;`n{END_IF}"
 Check 'conditional pragma in the declaration: not analysed, header still known' ($d['status'] -eq 'not-analyzed' -and $d['reason'] -eq 'conditional-pragma' -and $d['headerKnown'] -and $d['name'] -eq 'MAIN') ($d | ConvertTo-Json -Depth 2 -Compress)
 $d = Decl "{IF defined (SIM)}`nPROGRAM MAIN`n{END_IF}`nVAR x : INT; END_VAR"

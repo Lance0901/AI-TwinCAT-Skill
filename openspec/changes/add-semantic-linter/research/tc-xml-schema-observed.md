@@ -16,6 +16,8 @@
   與主檔逐字比較(去掉 CR 後):TcPOU / sln 完全相同；plcproj **唯一差別是主檔多了結尾 CRLF**(備份檔最後一行 `</Project>` 後沒有換行)。
 - `axis\.tcauto-backup\2026103x-*`:4 個 `TIRT_PlcTask.PlcTask.TcTTO`(內容同主檔 PlcTask.TcTTO)與 7 個 `.xti`(task 匯出，tab 縮排、無 BOM、`<?xml version="1.0"?>`)。
 
+**補充(2026-11-13)**:`<Property>`(Get / Set)、`.TcIO`(`<Itf>`)、SFC Action 的實際結構已用 XAE 產生並記錄在 `../verification/xae-generated-xml.md`(含 `]]>` 時 XAE 自己切兩段 CDATA);引擎依該文件檢查這些物件。
+
 **語料缺口(整類沒有)**:`.TcIO`、`<Property>`/`<Get>`/`<Set>`、`<Transition>`、`<Itf>`(INTERFACE)、SFC/FBD/LD/IL 實作、`.TcTLO`、`.TcRMO`、`.TcNCI` 等。只出現 1 個 CFC 實作(axis FB_AxisControl.A90_Cyclic)。sln 參照的 `A10_Scope\A10_Scope.tcmproj` 不在語料內。
 
 **重要背景**:axis 有一批檔案明顯**不是 XAE 寫的**(手寫/AI 寫的 GUID 如 `{a1b2c3d4-e5f6-7890-abcd-ef0123456789}`、無 BOM、LF 行尾，見 §1、§4)。下文凡涉及「XAE 怎麼寫」,以 bfh 全部 + axis 中 CRLF/BOM 正常的檔案為準，例外逐一列出。

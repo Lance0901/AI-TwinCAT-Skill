@@ -83,6 +83,7 @@ $bad = @(
     @('baseline outside the solution', '{"schema":"tcauto-lint-profile/1","baseline":"..\\..\\Windows\\x.json"}'),
     @('extends unknown profile', '{"schema":"tcauto-lint-profile/1","extends":"robust-solution"}'),
     @('LINT-PARSE cannot be suppressed', '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath":"MAIN","ruleId":"LINT-PARSE-002","reason":"parser does not know this"}]}'),
+    @('maxFileSizeMB out of range', '{"schema":"tcauto-lint-profile/1","maxFileSizeMB":0}'),
     @('regex-like params', '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-GUID-005":{"params":{"pattern":".*"}}}}'))
 foreach ($b in $bad) {
     $fx = New-Fx; Break-Compile $fx
@@ -104,7 +105,28 @@ $fx = New-Fx
 Edit-LintFxFile $fx.FbA { param($t) $t.Replace('</Method>', '') }
 Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-001":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
-Check 'A10 broken object file + XML-001 disabled -> LINT_INCOMPLETE (4 of 5 analysed)' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 4 -and $r.data.coverage.objectsInScope -eq 5) (Js $r.data.coverage)
+Check 'A10 broken object file + XML-001 disabled -> LINT_INCOMPLETE (5 of 6 analysed)' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 5 -and $r.data.coverage.objectsInScope -eq 6) (Js $r.data.coverage)
+$fx = New-Fx
+Edit-LintFxFile $fx.Gvl { param($t) $t.Replace('<TcPlcObject ', '<Foo ').Replace('</TcPlcObject>', '</Foo>') }
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-004":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'should-fix 2: root <Foo> + XML-004 disabled -> LINT_INCOMPLETE (not counted as analysed)' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 5) (Js $r.data.coverage)
+$fx = New-Fx
+Edit-LintFxFile $fx.Gvl { param($t) $t -replace '(?s)<TcPlcObject([^>]*)>.*</TcPlcObject>', '<TcPlcObject$1></TcPlcObject>' }
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"PROJECT-XML-004":{"enabled":false,"reason":"trying to hide the broken file"}}}' | Out-Null
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'should-fix 2: empty <TcPlcObject> + XML-004 disabled -> LINT_INCOMPLETE' ($r.error.code -eq 'LINT_INCOMPLETE' -and $r.data.coverage.objectsAnalyzed -eq 5) (Js $r.data.coverage)
+$fx = New-Fx
+Edit-LintFxFile $fx.Main { param($t) $t.Replace('// set mode', '// ' + ('x' * 1200000)) }
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","maxFileSizeMB":1}' | Out-Null
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'should-fix 5: file over maxFileSizeMB -> notAnalyzed too-large, LINT_INCOMPLETE' ($r.error.code -eq 'LINT_INCOMPLETE' -and @($r.data.coverage.notAnalyzed | Where-Object { $_.reason -eq 'too-large' }).Count -eq 1) (Js $r.data.coverage)
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj -RuleProfile default
+Check 'should-fix 5: the default limit (8 MB) reads a 1.2 MB file' ($r.success) (Js $r.error)
+$fx = New-Fx
+Edit-LintFxFile $fx.FbA { param($t) $t.Replace('</Method>', '') }
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'D4 priority: an unanalysed file explained by its own blocking finding is LINT_FAILED, not LINT_INCOMPLETE' ($r.error.code -eq 'LINT_FAILED') (Js $r.error)
 $fx = New-Fx
 Set-LintFxCompile $fx @()
 Remove-Item -LiteralPath $fx.Main, $fx.FbA, $fx.Dut, $fx.Gvl, $fx.Task
@@ -143,9 +165,10 @@ foreach ($c in $cases) {
     $r = Invoke-TcLintProject @p
     Check "A7 input invalid ($($c[0])) -> LINT_INPUT_INVALID" ($r.error.code -eq 'LINT_INPUT_INVALID' -and -not (HasPassed $r) -and $r.error.hint) "$($r.error.code): $($r.error.message)"
 }
-Edit-LintFxFile $fx.Main { param($t) $t.Replace($script:LintFx.MainId, '{00000000-0000-0000-0000-000000000000}') }
+Edit-LintFxFile $fx.Main { param($t) $t.Replace($script:LintFx.MainId, '{570194db-04ab-4683-94d1-7e94b2eca65}') }
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj -Scope Object -ObjectPaths 'FB_A.M_Do'
 Check 'A7 -Scope Object: only that object (MAIN finding out of scope)' ($r.success -and $r.data.coverage.objectsInScope -eq 1 -and @($r.data.diagnostics).Count -eq 0) (Js $r.data.coverage)
+Check 'should-fix 4: data.scope says Object, which objects, and how many the project has' ($r.data.scope.scope -eq 'Object' -and (@($r.data.scope.objectPaths) -join ',') -eq 'FB_A.M_Do' -and $r.data.scope.objectsInProject -eq 6 -and $r.data.scope.note -match 'not the whole project') (Js $r.data.scope)
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj -Scope Object -ObjectPaths 'MAIN'
 Check 'A7 -Scope Object: MAIN finding in scope' ($r.error.code -eq 'LINT_FAILED' -and @($r.data.diagnostics).Count -eq 1) (Js $r.data.summary)
 
@@ -167,6 +190,13 @@ Check 'A8 two PLCs without a name -> PLC_PROJECT_AMBIGUOUS, data.plcProjects lis
 $r = Invoke-TcLintProject -SolutionPath $fx.Sln -PlcProjectPath 'PLC2'
 Check 'A8 the selected PLC .plcproj does not exist -> PROJECT-TSPROJ-001, LINT_FAILED' ($r.error.code -eq 'LINT_FAILED' -and @($r.data.diagnostics)[0].ruleId -eq 'PROJECT-TSPROJ-001') (Js $r.data.diagnostics)
 $r = Invoke-TcLintProject -SolutionPath $fx.Sln -PlcProjectPath 'PLC1'
+$fxp = New-Fx
+Edit-LintFxFile $fxp.Tsproj { param($t) $t.Replace(' PrjFilePath="PLC1\PLC1.plcproj"', '') }
+$rp = Invoke-TcLintProject -SolutionPath $fxp.Sln
+Check 'should-fix 3: Plc/Project without PrjFilePath -> LINT_INPUT_INVALID, no exception' ($rp.error.code -eq 'LINT_INPUT_INVALID' -and -not (HasPassed $rp)) (Js $rp.error)
+Edit-LintFxFile $fxp.Tsproj { param($t) $t.Replace(' Name="PLC1"', ' Name="PLC1" PrjFilePath="PLC1\PL|C1.plcproj"') }
+$rp = Invoke-TcLintProject -SolutionPath $fxp.Sln
+Check 'should-fix 3: PrjFilePath with illegal characters -> LINT_INPUT_INVALID, no exception' ($rp.error.code -eq 'LINT_INPUT_INVALID' -and -not (HasPassed $rp)) (Js $rp.error)
 Check 'A8 PLC1 selected by name: the other PLC (missing .plcproj) is still reported' ($r.error.code -eq 'LINT_FAILED' -and @($r.data.diagnostics | Where-Object { $_.ruleId -eq 'PROJECT-TSPROJ-001' }).Count -eq 1) (Js $r.data.diagnostics)
 
 # engine
@@ -281,7 +311,7 @@ Check 'D5 changed engine source -> new sourceHash, both engines work in one sess
 $big = New-Fx
 $items = [System.Collections.Generic.List[string]]::new()
 foreach ($i in $script:LintFxCompile) { $items.Add($i) }
-for ($i = 1; $i -le 195; $i++) {
+for ($i = 1; $i -le 194; $i++) {
     $name = 'FB_P{0:D3}' -f $i
     $id = '{' + [guid]::NewGuid().ToString() + '}'
     Write-LintFxFile (Join-Path $big.PlcDir "POUs\$name.TcPOU") (Get-LintFxPou -Name $name -Id $id -Decl "FUNCTION_BLOCK $name`nVAR`n    t : TON;`n    n : INT;`nEND_VAR`n" -Impl ("t(IN := n > 0, PT := T#1S);`nIF t.Q THEN`n    n := 0;`nELSE`n    n := n + 1;`nEND_IF`n" * 20))

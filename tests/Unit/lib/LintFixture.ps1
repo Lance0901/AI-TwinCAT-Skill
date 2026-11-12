@@ -5,7 +5,9 @@
 # every Declaration / ST in exactly one CDATA section, lower-case {8-4-4-4-12} Ids; the .plcproj has
 # no XML declaration and no BOM (as the 4024 project); .tsproj tab-indented with upper-case GUIDs;
 # .sln with BOM and the PLC GUID only in ProjectConfigurationPlatforms. FB_A is written the 4024 way
-# (with LineIds), MAIN the 4026 way (without). No customer file is copied.
+# (with LineIds), MAIN the 4026 way (without). Property (Get / Set, accessor declaration 'PUBLIC VAR END_VAR',
+# LineIds '<POU>.<Property>.Get') and the .TcIO interface follow the files XAE generated in the IDE measurement
+# (openspec/changes/add-semantic-linter/verification/xae-generated-xml.md, 2026-11-13, PR #276). No customer file is copied.
 
 $script:LintFx = @{
     PlcGuid   = '{3abfd75b-ae61-4bea-9f5b-12954f0b7f68}'
@@ -17,6 +19,12 @@ $script:LintFx = @{
     DutId     = '{05f871a7-4745-4b28-a4e6-ee5839391f61}'
     GvlId     = '{decf9160-6dac-4c1e-bb53-439b8e497a1a}'
     TaskId    = '{b6046488-bcbd-4405-8aeb-520da86402f5}'
+    FbAProp   = '{722106dd-7639-49f1-8215-188851906d22}'
+    FbAGet    = '{a497c097-793a-4804-aa80-6a57816cc79c}'
+    FbASet    = '{334ad498-c5df-4f59-9c38-e012e9fadc49}'
+    ItfId     = '{00f8759d-d414-4d8e-b74e-54afc04cd3e4}'
+    ItfMethod = '{818a507c-faf2-4912-977d-398090ca1663}'
+    ItfProp   = '{069e7f1a-531c-4a3e-aeee-de9e18034550}'
 }
 
 function ConvertTo-LintFxBytes([string]$Text, [bool]$Bom = $true, [string]$Eol = "`r`n") {
@@ -84,6 +92,25 @@ END_VAR
         <ST><![CDATA[M_Do := nValue > 0;]]></ST>
       </Implementation>
     </Method>
+    <Property Name="P_State" Id="$($script:LintFx.FbAProp)">
+      <Declaration><![CDATA[PROPERTY PUBLIC P_State : INT]]></Declaration>
+      <Get Name="Get" Id="$($script:LintFx.FbAGet)">
+        <Declaration><![CDATA[PUBLIC
+VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[P_State := nState;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set" Id="$($script:LintFx.FbASet)">
+        <Declaration><![CDATA[PUBLIC
+VAR
+END_VAR]]></Declaration>
+        <Implementation>
+          <ST><![CDATA[nState := P_State;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
     <LineIds Name="FB_A">
       <LineId Id="3" Count="3" />
       <LineId Id="2" Count="0" />
@@ -94,8 +121,36 @@ END_VAR
     <LineIds Name="FB_A.M_Do">
       <LineId Id="1" Count="0" />
     </LineIds>
+    <LineIds Name="FB_A.P_State.Get">
+      <LineId Id="2" Count="0" />
+    </LineIds>
+    <LineIds Name="FB_A.P_State.Set">
+      <LineId Id="2" Count="0" />
+    </LineIds>
 "@
     return (Get-LintFxPou -Name 'FB_A' -Id $script:LintFx.FbAId -Decl $decl -Impl $impl -Extra $extra.TrimEnd() -Pv '3.1.4024.16')
+}
+
+# .TcIO as XAE 4026.22 wrote it (verification/fixtures-xae-generated/4026/I_LintItf.TcIO, measured 2026-11-13, PR #276):
+# <Itf> without SpecialFunc, Method with Declaration only, Property with Declaration only
+function Get-LintFxItfText {
+    return @"
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <Itf Name="I_Run" Id="$($script:LintFx.ItfId)">
+    <Declaration><![CDATA[INTERFACE I_Run
+]]></Declaration>
+    <Method Name="M_Run" Id="$($script:LintFx.ItfMethod)">
+      <Declaration><![CDATA[METHOD M_Run : BOOL
+VAR_INPUT
+END_VAR]]></Declaration>
+    </Method>
+    <Property Name="P_Ok" Id="$($script:LintFx.ItfProp)">
+      <Declaration><![CDATA[PROPERTY P_Ok : BOOL]]></Declaration>
+    </Property>
+  </Itf>
+</TcPlcObject>
+"@
 }
 
 function Get-LintFxDutText {
@@ -253,7 +308,7 @@ function Get-LintFxSlnText([string]$PlcGuid = $script:LintFx.PlcGuid.ToUpperInva
     "`tEndGlobalSection`nEndGlobal`n"
 }
 
-$script:LintFxCompile = @('DUTs\E_Mode.TcDUT', 'GVLs\GVL_Main.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'POUs\MAIN.TcPOU')
+$script:LintFxCompile = @('DUTs\E_Mode.TcDUT', 'GVLs\GVL_Main.TcGVL', 'PlcTask.TcTTO', 'POUs\FB_A.TcPOU', 'POUs\I_Run.TcIO', 'POUs\MAIN.TcPOU')
 
 # Writes a complete pristine solution below $Root. Returns the paths.
 function New-LintFixture([string]$Root, [switch]$ReverseWriteOrder) {
@@ -263,7 +318,7 @@ function New-LintFixture([string]$Root, [switch]$ReverseWriteOrder) {
     $fx = [ordered]@{
         Root = $Root; Sln = (Join-Path $sol 'Sol.sln'); Tsproj = (Join-Path $tsDir 'Sol.tsproj'); Plcproj = (Join-Path $plcDir 'PLC1.plcproj'); PlcDir = $plcDir
         Main = (Join-Path $plcDir 'POUs\MAIN.TcPOU'); FbA = (Join-Path $plcDir 'POUs\FB_A.TcPOU'); Dut = (Join-Path $plcDir 'DUTs\E_Mode.TcDUT')
-        Gvl = (Join-Path $plcDir 'GVLs\GVL_Main.TcGVL'); Task = (Join-Path $plcDir 'PlcTask.TcTTO')
+        Gvl = (Join-Path $plcDir 'GVLs\GVL_Main.TcGVL'); Task = (Join-Path $plcDir 'PlcTask.TcTTO'); Itf = (Join-Path $plcDir 'POUs\I_Run.TcIO')
     }
     $writes = @(
         { Write-LintFxFile $fx.Sln (Get-LintFxSlnText) $true },
@@ -273,7 +328,8 @@ function New-LintFixture([string]$Root, [switch]$ReverseWriteOrder) {
         { Write-LintFxFile $fx.FbA (Get-LintFxFbAText) },
         { Write-LintFxFile $fx.Dut (Get-LintFxDutText) },
         { Write-LintFxFile $fx.Gvl (Get-LintFxGvlText) },
-        { Write-LintFxFile $fx.Task (Get-LintFxTaskText) })
+        { Write-LintFxFile $fx.Task (Get-LintFxTaskText) },
+        { Write-LintFxFile $fx.Itf (Get-LintFxItfText) })
     if ($ReverseWriteOrder) { [array]::Reverse($writes) }
     foreach ($w in $writes) { & $w }
     return $fx

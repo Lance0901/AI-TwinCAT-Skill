@@ -89,7 +89,9 @@ namespace TcLintEngine
                     OrderedDictionary e = new OrderedDictionary();
                     e["name"] = p.Name; e["plcProjectPath"] = p.PlcprojFull; e["tsprojPath"] = ts;
                     e["exists"] = p.PlcprojFull != null && File.Exists(p.PlcprojFull);
-                    e["error"] = p.IndependentFile ? "independent-file-not-supported" : null;
+                    e["error"] = p.IndependentFile ? "independent-file-not-supported"
+                        : p.PrjFilePath == null ? "no-prjfilepath"
+                        : p.PlcprojFull == null ? "invalid-prjfilepath" : null;
                     list.Add(e);
                 }
             }
@@ -173,6 +175,8 @@ namespace TcLintEngine
         private readonly List<string> tsprojFull = new List<string>();
         private int objectsInScope;
         private int objectsAnalyzed;
+        private int downgradedSections;
+        private bool msbuildUnobserved;   // the .plcproj uses MSBuild features the linter does not evaluate   // sections not analysed because of a listed legal construct (summary.notAnalyzed)
 
         private static readonly HashSet<string> TcObjectExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".TcPOU", ".TcDUT", ".TcGVL", ".TcIO", ".TcTTO" };
         private static readonly Dictionary<string, string> KindByExt = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
@@ -265,7 +269,7 @@ namespace TcLintEngine
                 return Finish();
             }
 
-            FileBytesInfo pfi = XmlLoader.ReadBytes(plcFull);
+            FileBytesInfo pfi = XmlLoader.ReadBytes(plcFull, opt.MaxFileBytes);
             if (pfi.ReadFailed)
             {
                 engineDetail.Add(plcRel + ": " + pfi.ReadError);
@@ -273,8 +277,13 @@ namespace TcLintEngine
                 incompleteByRead = true;
                 return Finish();
             }
-            CheckEncoding(plcRel, "", pfi, false);
-            if (pfi.InvalidUtf8) { notAnalyzed.Add(Cov(null, plcRel, "", "file", "invalid-encoding")); parseFailed = true; return Finish(); }
+            if (pfi.TooLarge)
+            {
+                notAnalyzed.Add(Cov(null, plcRel, "", "file", "too-large"));
+                blockingSkipped.Add(Cov("PROJECT-XML-001", plcRel, "", null, "too-large:" + pfi.Length.ToString(CultureInfo.InvariantCulture) + "-bytes"));
+                return Finish();
+            }
+            if (!CheckEncoding(plcRel, "", pfi, false)) { notAnalyzed.Add(Cov(null, plcRel, "", "file", "invalid-encoding")); parseFailed = true; return Finish(); }
             XmlLoad px = XmlLoader.Load(plcFull, pfi);
             if (!px.WellFormed)
             {
@@ -292,6 +301,7 @@ namespace TcLintEngine
             }
 
             projectLoaded = true;
+            CheckMsBuildStructure(px.Root);
             List<XElem> compile = new List<XElem>(), folders = new List<XElem>(), placeholders = new List<XElem>(), resolutions = new List<XElem>(), libs = new List<XElem>();
             string projectGuid = null;
             foreach (XElem g in px.Root.Children)
@@ -330,6 +340,41 @@ namespace TcLintEngine
             return Finish();
         }
 
+        // Only the MSBuild subset XAE wrote in both corpus projects is understood (tc-xml-schema-observed.md 6.1):
+        // PropertyGroup / ItemGroup / ProjectExtensions, unconditional items with Include. Conditions, imports,
+        // targets, Remove / Update and wildcards change which files are compiled in ways the linter does not
+        // evaluate -> XML-004 variant unobserved-msbuild (pending: what XAE does with them is not measured).
+        private static readonly HashSet<string> MsBuildTop = new HashSet<string>(StringComparer.Ordinal) { "PropertyGroup", "ItemGroup", "ProjectExtensions" };
+
+        private void CheckMsBuildStructure(XElem root)
+        {
+            foreach (XElem g in root.Children)
+            {
+                if (!MsBuildTop.Contains(g.Name))
+                {
+                    UnobservedMsBuild(g, "<" + g.Name + "> in the .plcproj (XAE writes only PropertyGroup, ItemGroup, ProjectExtensions)");
+                    continue;
+                }
+                if (g.Name != "ItemGroup") continue;
+                if (g.HasAttr("Condition")) UnobservedMsBuild(g, "<ItemGroup Condition=...>");
+                foreach (XElem it in g.Children)
+                {
+                    if (it.HasAttr("Condition")) UnobservedMsBuild(it, "<" + it.Name + " Condition=...>");
+                    if (it.HasAttr("Remove") || it.HasAttr("Update")) UnobservedMsBuild(it, "<" + it.Name + "> with Remove / Update");
+                    string inc = it.Attr("Include");
+                    if (inc != null && (inc.IndexOf('*') >= 0 || inc.IndexOf('?') >= 0 || inc.IndexOf(';') >= 0 || inc.IndexOf("$(", StringComparison.Ordinal) >= 0 || inc.IndexOf("@(", StringComparison.Ordinal) >= 0))
+                        UnobservedMsBuild(it, "<" + it.Name + " Include=\"" + inc + "\"> uses a wildcard, list or property");
+                }
+            }
+        }
+
+        private void UnobservedMsBuild(XElem e, string what)
+        {
+            msbuildUnobserved = true;
+            Emit("PROJECT-XML-004", plcRel, "", "file", e.Line, 1, what + ": MSBuild structure not observed in XAE projects, the linter cannot tell which files are compiled", null,
+                "Write plain <Compile Include=\"path\"> items as XAE does", "unobserved-msbuild", null, "pending", false);
+        }
+
         private static string TopName(string objectPath)
         {
             int i = objectPath.IndexOf('.');
@@ -362,15 +407,24 @@ namespace TcLintEngine
                 string inc = c.Attr("Include");
                 if (string.IsNullOrEmpty(inc))
                 {
-                    E("PROJECT-XML-004", plcRel, "", "file", c.Line, "<Compile> item without an Include attribute", null, null);
+                    if (!c.HasAttr("Remove") && !c.HasAttr("Update")) Emit("PROJECT-XML-004", plcRel, "", "file", c.Line, 1, "<Compile> item without an Include attribute", null, null, "compile-include", null, "pending", false);
                     continue;
                 }
+                if (inc.IndexOf('*') >= 0 || inc.IndexOf('?') >= 0 || inc.IndexOf(';') >= 0 || inc.IndexOf("$(", StringComparison.Ordinal) >= 0 || inc.IndexOf("@(", StringComparison.Ordinal) >= 0) continue;
                 bool badEscape;
                 string unesc = MsPath.Unescape(inc, out badEscape);
                 string full = MsPath.Full(plcDir, unesc);
                 if (full == null)
                 {
-                    Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include is not a valid path", inc, null, "invalid-path", null, null, false);
+                    Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include is not a valid path", inc, null, "invalid-path", "error", "pending", false);
+                    continue;
+                }
+                // outside the project directory: not observed; the file is not read (nit, second review)
+                string relCheck = MsPath.Relative(plcDir, full);
+                if (relCheck.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relCheck))
+                {
+                    Emit("PROJECT-COMPILE-006", plcRel, "", "file", c.Line, 1, "Compile Include points outside the project directory (not observed in XAE projects; the file is not checked)", inc, null, "outside-project", "error", "pending", false);
+                    listed.Add(full);
                     continue;
                 }
                 // SubType
@@ -381,7 +435,7 @@ namespace TcLintEngine
                 XElem first;
                 if (seen.TryGetValue(full, out first))
                 {
-                    E("PROJECT-COMPILE-002", plcRel, "", "file", c.Line, "The same file is listed twice in <Compile> (first at line " + Inv.S(first.Line) + ")", inc,
+                    E("PROJECT-COMPILE-002", plcRel, "", "file", c.Line, "The same file is listed twice in <Compile> (first at line " + Inv.S(first.Line) + "; XAE showed it once, measured 5b)", inc,
                         "Remove one of the two <Compile> items");
                     continue;
                 }
@@ -404,7 +458,7 @@ namespace TcLintEngine
                     }
                     else
                     {
-                        E("PROJECT-COMPILE-001", plcRel, "", "file", c.Line, "<Compile> points to a file that does not exist", inc,
+                        E("PROJECT-COMPILE-001", plcRel, "", "file", c.Line, "<Compile> points to a file that does not exist (XAE shows an unusable ghost object without any error, measured 5a)", inc,
                             "Restore the file, or remove the <Compile> item and run Reset-TcSolution");
                     }
                     continue;
@@ -432,7 +486,13 @@ namespace TcLintEngine
                 string ext = Path.GetExtension(full);
                 if (ext.StartsWith(".Tc", StringComparison.OrdinalIgnoreCase)) objectFiles.Add(OnDisk(full));
             }
-            // object files on disk that are not compiled
+            // object files on disk that are not compiled (unknown when the .plcproj uses conditions / wildcards)
+            if (msbuildUnobserved)
+            {
+                rulesSkipped.Add(Cov("PROJECT-COMPILE-003", plcRel, "", null, "unobserved-msbuild"));
+                objectFiles.Sort(StringComparer.OrdinalIgnoreCase);
+                return objectFiles;
+            }
             List<string> onDisk = new List<string>();
             CollectObjectFiles(plcDir, onDisk, 0);
             onDisk.Sort(StringComparer.OrdinalIgnoreCase);
@@ -481,7 +541,10 @@ namespace TcLintEngine
                 XElem dr = p.Child("DefaultResolution");
                 if (string.IsNullOrEmpty(inc)) E("PROJECT-LIB-001", plcRel, "", "file", p.Line, "<PlaceholderReference> without Include", null, null);
                 if (dr == null || dr.InnerText().Trim().Length == 0)
-                    E("PROJECT-LIB-001", plcRel, "", "file", p.Line, "<PlaceholderReference> without <DefaultResolution>", inc, "Add the reference with Add-TcLibrary instead of editing the .plcproj");
+                    Emit("PROJECT-LIB-001", plcRel, "", "file", p.Line, 1, "<PlaceholderReference> without <DefaultResolution> (XAE loaded it without error, measured 2026-11-13)", inc, "Add the reference with Add-TcLibrary instead of editing the .plcproj", "missing-default-resolution", "warning", "false", false);
+                // A missing <Namespace> made XAE stop in an assertion dialog when it was removed from a loaded
+                // project (measured 2026-11-13), but XAE itself wrote Tc2_Utilities without Namespace in the 4024
+                // corpus: not reported until it is known when XAE requires it.
             }
             foreach (XElem p in resolutions)
             {
@@ -497,19 +560,32 @@ namespace TcLintEngine
         }
 
         // ================================================================ object files
-        private void CheckEncoding(string rel, string objectPath, FileBytesInfo fi, bool objectFile)
+        // blockable per variant follows the IDE measurement of tasks 1a.7 (verification/
+        // xae-corrupt-file-behavior.md, XAE 3.1.4026.22 / VS2022, 2026-11-13, PR #276 table)
+        private bool CheckEncoding(string rel, string objectPath, FileBytesInfo fi, bool objectFile)
         {
             string decl = fi.DeclaredEncoding == null ? null : fi.DeclaredEncoding.ToLowerInvariant();
             bool declUtf8 = decl == "utf-8" || decl == "utf8";
+            const string toUtf8 = "Save the file as UTF-8 with BOM and encoding=\"utf-8\" (what XAE writes)";
             if (fi.Bom == "utf-8" && decl != null && !declUtf8)
-                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "UTF-8 byte order mark but encoding=\"" + fi.DeclaredEncoding + "\"", null, null, "bom-declaration", null, null, false);
-            else if ((fi.Bom == "utf-16le" || fi.Bom == "utf-16be") && decl != null && !decl.StartsWith("utf-16", StringComparison.Ordinal) && decl != "unicode")
-                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "UTF-16 byte order mark but encoding=\"" + fi.DeclaredEncoding + "\"", null, null, "bom-declaration", null, null, false);
-            else if (fi.InvalidUtf8)
-                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "Bytes are not valid UTF-8 (byte offset " + Inv.S(fi.InvalidUtf8Offset) + ")", null,
-                    "Save the file as UTF-8 (XAE writes UTF-8 with BOM)", "invalid-utf8", null, null, false);
-            else if (objectFile && fi.Bom == null && !fi.HasDeclaration && fi.NonAscii)
-                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "No XML declaration and no byte order mark, but non-ASCII content", null, null, "undeclared", null, null, false);
+            {
+                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "UTF-8 byte order mark but encoding=\"" + fi.DeclaredEncoding + "\"", null, toUtf8, "bom-declaration", null, null, false);
+                return false;
+            }
+            if ((fi.Bom == "utf-16le" || fi.Bom == "utf-16be") && decl != null && !decl.StartsWith("utf-16", StringComparison.Ordinal) && decl != "unicode")
+            {
+                // measured C09: XAE loads such a file as an unknown object (itemType 0) without any message
+                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "UTF-16 byte order mark but encoding=\"" + fi.DeclaredEncoding + "\" (the bytes are UTF-16)", null, toUtf8, "bom-declaration", null, null, false);
+                return false;
+            }
+            if (fi.InvalidUtf8)
+            {
+                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "Bytes are not valid UTF-8 (byte offset " + Inv.S(fi.InvalidUtf8Offset) + ")", null, toUtf8, "invalid-utf8", null, null, false);
+                return false;
+            }
+            if (objectFile && fi.Bom == null && !fi.HasDeclaration && fi.NonAscii)
+                Emit("PROJECT-XML-002", rel, objectPath, "file", 1, 1, "No XML declaration and no byte order mark, but non-ASCII content (XAE read such a file normally, measured C13 / C14)", null, toUtf8, "undeclared", "info", "false", false);
+            return true;
         }
 
         private void LoadObject(string full)
@@ -517,8 +593,8 @@ namespace TcLintEngine
             TcObjectFile o = new TcObjectFile();
             o.FullPath = full; o.Rel = MsPath.Relative(plcDir, full); o.Ext = Path.GetExtension(full);
             o.Name = Path.GetFileNameWithoutExtension(full); o.ObjectPath = o.Name;
-            o.Bytes = XmlLoader.ReadBytes(full);
-            if (!o.Bytes.ReadFailed && !o.Bytes.InvalidUtf8)
+            o.Bytes = XmlLoader.ReadBytes(full, opt.MaxFileBytes);
+            if (!o.Bytes.ReadFailed && !o.Bytes.TooLarge && !o.Bytes.InvalidUtf8 && !o.Bytes.EncodingMismatch)
             {
                 o.Xml = XmlLoader.Load(full, o.Bytes);
                 if (o.Xml.WellFormed && o.Xml.Root != null && o.Xml.Root.Name == "TcPlcObject")
@@ -561,23 +637,33 @@ namespace TcLintEngine
                 incompleteByRead = true;
                 return;
             }
-            bool objectFile = TcObjectExts.Contains(o.Ext);
-            CheckEncoding(rel, o.ObjectPath, o.Bytes, true);
+            if (o.Bytes.TooLarge)
+            {
+                notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "too-large"));
+                blockingSkipped.Add(Cov("PROJECT-XML-001", rel, o.ObjectPath, null, "too-large:" + o.Bytes.Length.ToString(CultureInfo.InvariantCulture) + "-bytes"));
+                return;
+            }
+            if (!CheckEncoding(rel, o.ObjectPath, o.Bytes, true))
+            {
+                CheckLineEndings(o);
+                notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "invalid-encoding"));
+                return;
+            }
             CheckLineEndings(o);
-            if (o.Bytes.InvalidUtf8) { notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "invalid-encoding")); return; }
             if (!o.Xml.WellFormed)
             {
                 engineDetail.Add(rel + ": " + o.Xml.ErrorDetail);
-                Emit("PROJECT-XML-001", rel, o.ObjectPath, "file", o.Xml.ErrorLine, o.Xml.ErrorCol, "File is not well-formed XML (what XAE does with it is not measured yet, tasks 1a.7)",
+                Emit("PROJECT-XML-001", rel, o.ObjectPath, "file", o.Xml.ErrorLine, o.Xml.ErrorCol,
+                    "File is not well-formed XML; XAE showed such an object as an unknown item without any error (measured 2026-11-13, C01 / C03 / C04)",
                     null, "Fix the XML (usually a broken CDATA section or an unescaped '<' / '&' outside CDATA), or restore the file", null, null, null, false);
                 notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "xml-not-well-formed"));
                 return;
             }
-            objectsAnalyzed++;
             XElem root = o.Xml.Root;
             if (root.Name != "TcPlcObject")
             {
-                E("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Line, "Root element is <" + root.Name + ">, XAE writes <TcPlcObject>", null, null);
+                E("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Line, "Root element is <" + root.Name + ">, XAE writes <TcPlcObject> (another root made the object unknown to XAE, measured C06)", null, null);
+                notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "unknown-root-element"));
                 return;
             }
             string pv = root.Attr("ProductVersion");
@@ -586,21 +672,25 @@ namespace TcLintEngine
                 o.Downgrade = true;
                 rulesSkipped.Add(Cov("PROJECT-XML-004", rel, o.ObjectPath, null, "unobserved-product-version"));
             }
-            if (!root.HasAttr("Version")) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Line, 1, "<TcPlcObject> has no Version attribute", null, null, "attribute", null, null, o.Downgrade);
+            if (!root.HasAttr("Version")) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Line, 1, "<TcPlcObject> has no Version attribute", null, null, "attribute-version", null, "pending", o.Downgrade);
             if (root.Children.Count == 0)
             {
                 Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Line, 1, "<TcPlcObject> contains no object element", null, null, "missing-element", null, null, o.Downgrade);
+                notAnalyzed.Add(Cov(null, rel, o.ObjectPath, "file", "no-object-element"));
                 return;
             }
+            // counted as analysed only when the file has the object structure the rules look at (second review should-fix 2)
+            objectsAnalyzed++;
             if (root.Children.Count > 1)
-                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Children[1].Line, 1, "<TcPlcObject> contains more than one object element (XAE writes exactly one)", "<" + root.Children[1].Name + ">", null, "extra-element", null, null, o.Downgrade);
+                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", root.Children[1].Line, 1, "<TcPlcObject> contains more than one object element (XAE writes exactly one)", "<" + root.Children[1].Name + ">", null, "extra-element", null, "pending", o.Downgrade);
             XElem obj = o.Obj;
             string expected;
             if (KindByExt.TryGetValue(o.Ext, out expected) && obj.Name != expected)
-                E("PROJECT-KIND-001", rel, o.ObjectPath, "file", obj.Line, "Object element <" + obj.Name + "> does not match the file extension " + o.Ext + " (expected <" + expected + ">)", null,
-                    "Rename the file or fix the element (XAE wrote one object kind per extension in every observed file)");
+                Emit("PROJECT-KIND-001", rel, o.ObjectPath, "file", obj.Line, 1, "Object element <" + obj.Name + "> does not match the file extension " + o.Ext + " (expected <" + expected + ">)", null,
+                    "Rename the file; XAE takes the object kind from the XML element, not from the extension (measured C13)", "extension", "warning", "false", false);
             string name = obj.Attr("Name");
-            if (string.IsNullOrEmpty(name)) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no Name attribute", null, null, "attribute", null, null, o.Downgrade);
+            if (string.IsNullOrEmpty(name))
+                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no Name attribute (XAE then shows the object as 'Untitled', measured C07)", null, null, "attribute-name", null, null, o.Downgrade);
             else
             {
                 string fileBase = Path.GetFileNameWithoutExtension(o.FullPath);
@@ -628,8 +718,9 @@ namespace TcLintEngine
             if (fi.BareLf > 0) facts.Add(Inv.S(fi.BareLf) + " LF-only line ends" + (fi.CrLf > 0 ? " mixed with " + Inv.S(fi.CrLf) + " CRLF" : ""));
             if (fi.BareCr > 0) facts.Add(Inv.S(fi.BareCr) + " CR-only line ends");
             if (facts.Count == 0) return;
-            E("PROJECT-ENC-001", o.Rel, o.ObjectPath, "file", 1, "File was written outside XAE (" + string.Join("; ", facts.ToArray()) + "); XAE writes UTF-8 with BOM and CRLF", null,
-                "Run Reset-TcSolution so XAE reloads the file (whether XAE rewrites the format on save is not measured)");
+            E("PROJECT-ENC-001", o.Rel, o.ObjectPath, "file", 1, "File has " + string.Join("; ", facts.ToArray()) +
+                " (every Tc* object file XAE wrote in the 4024 / 4026 corpus and in the IDE measurement has UTF-8 BOM and CRLF; such files loaded normally, measured 2026-11-13)", null,
+                "Usually the file was edited by another tool: run Reset-TcSolution so XAE reloads it");
         }
 
         private void AddId(XElem e, TcObjectFile o, string objectPath, bool required)
@@ -637,7 +728,7 @@ namespace TcLintEngine
             string id = e.Attr("Id");
             if (id == null)
             {
-                if (required && o.InScope) E("PROJECT-GUID-001", o.Rel, objectPath, "file", e.Line, "<" + e.Name + "> has no Id attribute", null,
+                if (required && o.InScope) E("PROJECT-GUID-001", o.Rel, objectPath, "file", e.Line, "<" + e.Name + "> has no Id attribute (XAE loads it with a warning, measured 2026-11-13)", null,
                     "Give the element a new GUID: '{' + [guid]::NewGuid().ToString() + '}' (lower case, braces)");
                 return;
             }
@@ -662,20 +753,25 @@ namespace TcLintEngine
         }
 
         // ---------------------------------------------------------------- POU
+        // Child order XAE writes (corpus + IDE measurement, xae-generated-xml.md): Declaration, Implementation,
+        // Folder*, Action*, Method*, Property*, LineIds*. ObjectProperties (SFC) is accepted anywhere.
+        private static readonly string[] PouOrder = { "Declaration", "Implementation", "Folder", "Action", "Method", "Property", "LineIds" };
+
         private void CheckPou(TcObjectFile o, XElem pou)
         {
             string rel = o.Rel;
-            if (!pou.HasAttr("SpecialFunc")) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no SpecialFunc attribute (XAE writes SpecialFunc=\"None\")", null, null, "attribute", null, null, o.Downgrade);
-            string[] order = { "Declaration", "Implementation", "Folder", "Action", "Method", "LineIds" };
+            if (!pou.HasAttr("SpecialFunc"))
+                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no SpecialFunc attribute (XAE writes SpecialFunc=\"None\"; it loads without it, measured C08)", null, null, "attribute-specialfunc", "warning", "false", false);
             bool unknownChild = false;
             int lastRank = -1; bool orderOk = true; XElem orderBreak = null;
             foreach (XElem c in pou.Children)
             {
-                int rank = Array.IndexOf(order, c.Name);
+                if (c.Name == "ObjectProperties") continue;
+                int rank = Array.IndexOf(PouOrder, c.Name);
                 if (rank < 0)
                 {
                     unknownChild = true;
-                    if (c.Name == "Property" || c.Name == "Transition")
+                    if (c.Name == "Transition")
                     {
                         rulesNotRun.Add(Cov("PROJECT-XML-004", rel, o.ObjectPath + "." + (c.Attr("Name") ?? "?"), null, "schema-not-observed"));
                         rulesNotRun.Add(Cov("PROJECT-SUB-001", rel, o.ObjectPath + "." + (c.Attr("Name") ?? "?"), null, "schema-not-observed"));
@@ -688,81 +784,151 @@ namespace TcLintEngine
             }
             if (!orderOk && !unknownChild)
                 Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", orderBreak.Line, 1,
-                    "<" + orderBreak.Name + "> is out of the order XAE writes (Declaration, Implementation, Folder, Action, Method, LineIds)", null, null, "order", "warning", "false", false);
+                    "<" + orderBreak.Name + "> is out of the order XAE writes (Declaration, Implementation, Folder, Action, Method, Property, LineIds)", null, null, "order", "warning", "false", false);
             if (pou.All("Declaration").Count > 1 || pou.All("Implementation").Count > 1)
-                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has more than one Declaration or Implementation", null, null, "extra-element", null, null, o.Downgrade);
+                Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has more than one Declaration or Implementation", null, null, "extra-element", null, "pending", o.Downgrade);
 
             XElem decl = pou.Child("Declaration");
             XElem impl = pou.Child("Implementation");
-            if (decl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade);
-            if (impl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Implementation>", null, null, "missing-element", null, null, o.Downgrade);
+            if (decl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Declaration> (XAE then drops the object, measured C09)", null, null, "missing-element", null, null, o.Downgrade);
+            if (impl == null) Emit("PROJECT-XML-004", rel, o.ObjectPath, "file", pou.Line, 1, "<POU> has no <Implementation> (XAE then drops the object, measured C10)", null, null, "missing-element", null, null, o.Downgrade);
 
             Dictionary<string, string> stTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (decl != null)
             {
                 DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
-                if (di != null)
-                {
-                    o.DeclHeader = di.HeaderKeyword;
-                    CheckHeader(o, o.ObjectPath, di, new string[] { "PROGRAM", "FUNCTION_BLOCK", "FUNCTION" }, true);
-                }
+                o.DeclHeader = di.HeaderKeyword;
+                CheckHeader(o, o.ObjectPath, "POU", di, new string[] { "PROGRAM", "FUNCTION_BLOCK", "FUNCTION" }, true);
             }
             if (impl != null)
             {
                 string t = AnalyzeImplementation(o, impl, o.ObjectPath);
                 if (t != null) stTexts[o.ObjectPath] = t;
             }
-            // sub-objects
             Dictionary<string, XElem> memberNames = new Dictionary<string, XElem>(StringComparer.OrdinalIgnoreCase);
             foreach (XElem c in pou.Children)
             {
                 if (c.Name != "Method" && c.Name != "Action" && c.Name != "Property" && c.Name != "Transition" && c.Name != "Folder") continue;
                 string mname = c.Attr("Name");
                 string path = o.ObjectPath + "." + (string.IsNullOrEmpty(mname) ? "?" : mname);
-                bool observed = c.Name != "Property" && c.Name != "Transition";
-                if (string.IsNullOrEmpty(mname) && observed) Emit("PROJECT-XML-004", rel, path, "file", c.Line, 1, "<" + c.Name + "> has no Name attribute", null, null, "attribute", null, null, o.Downgrade);
-                AddId(c, o, path, observed);
-                if (c.Name == "Property")
-                    foreach (XElem acc in c.Children) if (acc.Name == "Get" || acc.Name == "Set") AddId(acc, o, path + "." + acc.Name, false);
+                bool observed = c.Name != "Transition";
+                if (string.IsNullOrEmpty(mname) && observed) Emit("PROJECT-XML-004", rel, path, "file", c.Line, 1, "<" + c.Name + "> has no Name attribute", null, null, "attribute-name", null, null, o.Downgrade);
+                AddId(c, o, path, observed && c.Name != "Property");
                 if (c.Name == "Folder") continue;
                 if (!string.IsNullOrEmpty(mname))
                 {
                     XElem prev;
                     if (memberNames.TryGetValue(mname, out prev))
-                        E("PROJECT-SUB-002", rel, path, "file", c.Line, "Two sub-objects of " + o.ObjectPath + " are named '" + mname + "' (<" + prev.Name + "> at line " + Inv.S(prev.Line) + " and <" + c.Name + ">)", null,
+                        E("PROJECT-SUB-002", rel, path, "file", c.Line, "Two sub-objects of " + o.ObjectPath + " are named '" + mname + "' (<" + prev.Name + "> at line " + Inv.S(prev.Line) + " and <" + c.Name + ">; two methods with one name crashed VS2022 on load, measured 2026-11-13)", null,
                             "Rename one of them");
                     else memberNames[mname] = c;
                 }
-                if (!observed)
+                if (c.Name == "Method") CheckMethod(o, c, path, stTexts, false);
+                else if (c.Name == "Action")
                 {
-                    notAnalyzed.Add(Cov(null, rel, path, "file", "schema-not-observed:" + c.Name));
-                    continue;
-                }
-                XElem md = c.Child("Declaration");
-                XElem mi = c.Child("Implementation");
-                if (c.Name == "Method")
-                {
-                    if (md == null) Emit("PROJECT-SUB-001", rel, path, "file", c.Line, 1, "<Method> has no <Declaration>", null, null, "missing-declaration", null, null, o.Downgrade);
-                    if (mi == null) Emit("PROJECT-SUB-001", rel, path, "file", c.Line, 1, "<Method> has no <Implementation>", null, null, "missing-implementation", null, null, o.Downgrade);
-                    CheckChildOrder(o, c, path, new string[] { "Declaration", "Implementation" });
-                    if (md != null)
-                    {
-                        DeclInfo di = AnalyzeDeclaration(o, md, path);
-                        if (di != null) CheckHeader(o, path, di, new string[] { "METHOD" }, true);
-                    }
-                }
-                else
-                {
-                    if (mi == null) Emit("PROJECT-SUB-001", rel, path, "file", c.Line, 1, "<Action> has no <Implementation>", null, null, "missing-implementation", null, null, o.Downgrade);
+                    XElem mi = c.Child("Implementation");
+                    if (mi == null) Emit("PROJECT-SUB-001", rel, path, "file", c.Line, 1, "<Action> has no <Implementation>", null, null, "missing-implementation", null, "pending", o.Downgrade);
                     CheckChildOrder(o, c, path, new string[] { "Implementation" });
+                    if (mi != null) { string t = AnalyzeImplementation(o, mi, path); if (t != null) stTexts[path] = t; }
                 }
-                if (mi != null)
-                {
-                    string t = AnalyzeImplementation(o, mi, path);
-                    if (t != null) stTexts[path] = t;
-                }
+                else if (c.Name == "Property") CheckProperty(o, c, path, stTexts, false);
+                else CheckUnobservedCode(o, c, path);
             }
             CheckLineIds(o, pou, stTexts);
+        }
+
+        private void CheckMethod(TcObjectFile o, XElem m, string path, Dictionary<string, string> stTexts, bool inInterface)
+        {
+            XElem md = m.Child("Declaration");
+            XElem mi = m.Child("Implementation");
+            if (md == null)
+                Emit("PROJECT-SUB-001", o.Rel, path, "file", m.Line, 1, "<Method> has no <Declaration> (XAE then drops the method, measured 2026-11-13)", null, null, "missing-declaration", null, null, o.Downgrade);
+            DeclInfo di = null;
+            if (md != null)
+            {
+                di = AnalyzeDeclaration(o, md, path);
+                CheckHeader(o, path, "Method", di, new string[] { "METHOD" }, true);
+            }
+            if (inInterface)
+            {
+                // XAE writes interface methods with a Declaration only (xae-generated-xml.md)
+                CheckChildOrder(o, m, path, new string[] { "Declaration" });
+                return;
+            }
+            if (mi == null)
+            {
+                bool isAbstract = di != null && di.Modifiers.Contains("ABSTRACT");
+                if (isAbstract) rulesNotRun.Add(Cov("PROJECT-SUB-001", o.Rel, path, null, "schema-not-observed:abstract-method"));
+                else Emit("PROJECT-SUB-001", o.Rel, path, "file", m.Line, 1, "<Method> has no <Implementation>", null, null, "missing-implementation", null, "pending", o.Downgrade);
+            }
+            CheckChildOrder(o, m, path, new string[] { "Declaration", "Implementation" });
+            if (mi != null) { string t = AnalyzeImplementation(o, mi, path); if (t != null) stTexts[path] = t; }
+        }
+
+        // Property: <Declaration> (PROPERTY ...), then <Get Name="Get"> / <Set Name="Set"> each with
+        // <Declaration> ("PUBLIC VAR END_VAR") and <Implementation><ST>; interface properties have the
+        // Declaration only (XAE 4024 / 4026, verification/xae-generated-xml.md, 2026-11-13)
+        private void CheckProperty(TcObjectFile o, XElem p, string path, Dictionary<string, string> stTexts, bool inInterface)
+        {
+            XElem pd = p.Child("Declaration");
+            DeclInfo di = null;
+            if (pd == null) Emit("PROJECT-SUB-001", o.Rel, path, "file", p.Line, 1, "<Property> has no <Declaration>", null, null, "missing-declaration", null, "pending", o.Downgrade);
+            else
+            {
+                di = AnalyzeDeclaration(o, pd, path);
+                CheckHeader(o, path, "Property", di, new string[] { "PROPERTY" }, true);
+            }
+            List<XElem> accessors = new List<XElem>();
+            foreach (XElem c in p.Children)
+            {
+                if (c.Name == "Declaration" || c.Name == "ObjectProperties") continue;
+                if (c.Name == "Get" || c.Name == "Set") { accessors.Add(c); continue; }
+                Emit("PROJECT-XML-004", o.Rel, path, "file", c.Line, 1, "Unexpected element <" + c.Name + "> in <Property>", null, null, "unexpected-element", "warning", "false", false);
+            }
+            bool isAbstract = di != null && di.Modifiers.Contains("ABSTRACT");
+            if (accessors.Count == 0 && !inInterface && !isAbstract)
+                Emit("PROJECT-SUB-001", o.Rel, path, "file", p.Line, 1, "<Property> has neither <Get> nor <Set> (the compiler only warns C0373, measured 2026-11-13)", null, null, "property-without-accessor", "warning", "false", false);
+            foreach (XElem a in accessors)
+            {
+                string apath = path + "." + a.Name;
+                AddId(a, o, apath, false);
+                if (inInterface)
+                {
+                    // interface accessors could not be generated in the measurement (tcauto refuses them): not observed
+                    rulesNotRun.Add(Cov("PROJECT-SUB-001", o.Rel, apath, null, "schema-not-observed"));
+                    CheckUnobservedCode(o, a, apath);
+                    continue;
+                }
+                string an = a.Attr("Name");
+                if (an != null && an != a.Name)
+                    Emit("PROJECT-XML-004", o.Rel, apath, "file", a.Line, 1, "<" + a.Name + "> has Name=\"" + an + "\" (XAE writes Name=\"" + a.Name + "\")", null, null, "accessor-name", null, "pending", o.Downgrade);
+                XElem ad = a.Child("Declaration");
+                XElem ai = a.Child("Implementation");
+                if (ad == null) Emit("PROJECT-SUB-001", o.Rel, apath, "file", a.Line, 1, "<" + a.Name + "> has no <Declaration>", null, null, "missing-declaration", null, "pending", o.Downgrade);
+                else
+                {
+                    DeclInfo adi = AnalyzeDeclaration(o, ad, apath);
+                    CheckHeader(o, apath, a.Name, adi, new string[] { "ACCESSOR", "VAR" }, false);
+                }
+                if (ai == null)
+                {
+                    if (isAbstract) rulesNotRun.Add(Cov("PROJECT-SUB-001", o.Rel, apath, null, "schema-not-observed:abstract-property"));
+                    else Emit("PROJECT-SUB-001", o.Rel, apath, "file", a.Line, 1, "<" + a.Name + "> has no <Implementation>", null, null, "missing-implementation", null, "pending", o.Downgrade);
+                }
+                CheckChildOrder(o, a, apath, new string[] { "Declaration", "Implementation" });
+                if (ai != null) { string t = AnalyzeImplementation(o, ai, apath); if (t != null) stTexts[apath] = t; }
+            }
+        }
+
+        // An element whose structure was never observed (Transition, interface accessors): XML-004 / SUB-001
+        // are not run, but every Declaration / ST below it is still checked (second review B1)
+        private void CheckUnobservedCode(TcObjectFile o, XElem e, string path)
+        {
+            foreach (XElem c in e.Children)
+            {
+                if (c.Name == "Declaration") AnalyzeDeclaration(o, c, path);
+                else if (c.Name == "Implementation") AnalyzeImplementation(o, c, path);
+            }
         }
 
         private void CheckChildOrder(TcObjectFile o, XElem e, string path, string[] order)
@@ -770,6 +936,8 @@ namespace TcLintEngine
             int last = -1;
             foreach (XElem c in e.Children)
             {
+                if (c.Name == "ObjectProperties") continue;
+                if (c.Name == "Get" || c.Name == "Set") continue;
                 int rank = Array.IndexOf(order, c.Name);
                 if (rank < 0)
                 {
@@ -783,32 +951,41 @@ namespace TcLintEngine
                 }
                 if (rank == last)
                 {
-                    Emit("PROJECT-XML-004", o.Rel, path, "file", c.Line, 1, "<" + e.Name + "> has more than one <" + c.Name + ">", null, null, "extra-element", null, null, o.Downgrade);
+                    Emit("PROJECT-XML-004", o.Rel, path, "file", c.Line, 1, "<" + e.Name + "> has more than one <" + c.Name + ">", null, null, "extra-element", null, "pending", o.Downgrade);
                     return;
                 }
                 last = rank;
             }
         }
 
-        private void CheckHeader(TcObjectFile o, string path, DeclInfo di, string[] allowed, bool checkName)
+        // KIND-001 (measured 1.2): the declaration keyword must belong to the family of the XML element
+        // (blocking); PROGRAM / FUNCTION_BLOCK / FUNCTION inside one <POU> are not compared.
+        private void CheckHeader(TcObjectFile o, string path, string element, DeclInfo di, string[] allowed, bool checkName)
         {
             if (!di.HeaderKnown)
             {
-                SkipBlocking("PROJECT-KIND-001", o.Rel, path, "declaration-header-not-analyzed:" + (di.State.Reason ?? di.State.ErrorRule ?? "unknown"));
-                if (checkName) SkipBlocking("PROJECT-NAME-001", o.Rel, path, "declaration-header-not-analyzed:" + (di.State.Reason ?? di.State.ErrorRule ?? "unknown"));
+                string why = "declaration-header-not-analyzed:" + (di.State.Reason ?? di.State.ErrorRule ?? "unknown");
+                SkipBlocking("PROJECT-KIND-001", o.Rel, path, why);
+                if (checkName) SkipBlocking("PROJECT-NAME-001", o.Rel, path, why);
                 return;
             }
             if (Array.IndexOf(allowed, di.HeaderKeyword) < 0)
             {
+                if (element == "GVL" && di.HeaderKeyword.Length == 0)
+                {
+                    Emit("PROJECT-KIND-001", o.Rel, path, "declaration", 1, 1, "GVL declares no VAR_GLOBAL section (not observed in XAE files; an empty GVL declares nothing)", null, null, "empty-gvl", "warning", "false", false);
+                    return;
+                }
                 string got = di.HeaderKeyword.Length == 0 ? "an empty declaration" : di.HeaderKeyword;
-                E("PROJECT-KIND-001", o.Rel, path, "declaration", di.Name != null ? di.NameLine : 1,
-                    "Declaration starts with " + got + ", but the object is <" + (path == o.ObjectPath ? o.Kind : "Method") + "> (expected " + string.Join(" / ", allowed) + ")", null, null);
+                Emit("PROJECT-KIND-001", o.Rel, path, "declaration", di.Name != null ? di.NameLine : 1, 1,
+                    "Declaration starts with " + got + ", but the object is <" + element + "> (expected " + string.Join(" / ", allowed) + "; XAE turned such an object into another kind with a compile error, measured C14)", null, null,
+                    "declaration", null, null, false);
                 return;
             }
             if (!checkName || di.Name == null) return;
             string attrName = path == o.ObjectPath ? o.Obj.Attr("Name") : path.Substring(path.LastIndexOf('.') + 1);
             if (!string.IsNullOrEmpty(attrName) && attrName != "?" && !string.Equals(attrName, di.Name, StringComparison.OrdinalIgnoreCase))
-                E("PROJECT-NAME-001", o.Rel, path, "declaration", di.NameLine, "Name attribute '" + attrName + "' differs from the declared name '" + di.Name + "'", di.HeaderKeyword + " " + di.Name,
+                E("PROJECT-NAME-001", o.Rel, path, "declaration", di.NameLine, "Name attribute '" + attrName + "' differs from the declared name '" + di.Name + "' (XAE names the object after the attribute and reports C0243, measured 2026-11-13)", di.HeaderKeyword + " " + di.Name,
                     "Make the Name attribute, the declaration and the file name the same");
         }
 
@@ -822,30 +999,44 @@ namespace TcLintEngine
             }
             if (decl == null) { Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", obj.Line, 1, "<" + obj.Name + "> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade); return; }
             DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
-            if (di == null) return;
-            if (header == "TYPE") CheckHeader(o, o.ObjectPath, di, new string[] { "TYPE" }, true);
-            else CheckHeader(o, o.ObjectPath, di, new string[] { "VAR_GLOBAL", "VAR_CONFIG" }, false);
+            if (header == "TYPE") CheckHeader(o, o.ObjectPath, "DUT", di, new string[] { "TYPE" }, true);
+            else CheckHeader(o, o.ObjectPath, "GVL", di, new string[] { "VAR_GLOBAL", "VAR_CONFIG" }, false);
         }
 
+        // <Itf>: Declaration (INTERFACE), Method* (Declaration only), Property* (Declaration only);
+        // no SpecialFunc (XAE 4024 / 4026, verification/xae-generated-xml.md)
         private void CheckItf(TcObjectFile o, XElem itf)
         {
-            rulesNotRun.Add(Cov("PROJECT-XML-004", o.Rel, o.ObjectPath, null, "schema-not-observed"));
-            rulesNotRun.Add(Cov("PROJECT-SUB-001", o.Rel, o.ObjectPath, null, "schema-not-observed"));
             XElem decl = itf.Child("Declaration");
-            if (decl != null)
+            if (decl == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", itf.Line, 1, "<Itf> has no <Declaration>", null, null, "missing-element", null, null, o.Downgrade);
+            else
             {
                 DeclInfo di = AnalyzeDeclaration(o, decl, o.ObjectPath);
-                if (di != null) CheckHeader(o, o.ObjectPath, di, new string[] { "INTERFACE" }, true);
+                CheckHeader(o, o.ObjectPath, "Itf", di, new string[] { "INTERFACE" }, true);
             }
+            Dictionary<string, string> unused = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, XElem> memberNames = new Dictionary<string, XElem>(StringComparer.OrdinalIgnoreCase);
             foreach (XElem c in itf.Children)
             {
-                if (c.Name != "Method" && c.Name != "Property") continue;
-                string path = o.ObjectPath + "." + (c.Attr("Name") ?? "?");
-                AddId(c, o, path, false);
-                if (c.Name == "Property")
-                    foreach (XElem acc in c.Children) if (acc.Name == "Get" || acc.Name == "Set") AddId(acc, o, path + "." + acc.Name, false);
-                XElem md = c.Child("Declaration");
-                if (c.Name == "Method" && md != null) AnalyzeDeclaration(o, md, path);
+                if (c.Name == "Declaration" || c.Name == "Folder" || c.Name == "ObjectProperties") continue;
+                string mname = c.Attr("Name");
+                string path = o.ObjectPath + "." + (string.IsNullOrEmpty(mname) ? "?" : mname);
+                if (c.Name != "Method" && c.Name != "Property")
+                {
+                    Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", c.Line, 1, "Unexpected element <" + c.Name + "> in <Itf>", null, null, "unexpected-element", "warning", "false", false);
+                    continue;
+                }
+                if (string.IsNullOrEmpty(mname)) Emit("PROJECT-XML-004", o.Rel, path, "file", c.Line, 1, "<" + c.Name + "> has no Name attribute", null, null, "attribute-name", null, null, o.Downgrade);
+                AddId(c, o, path, c.Name == "Method");
+                if (!string.IsNullOrEmpty(mname))
+                {
+                    XElem prev;
+                    if (memberNames.TryGetValue(mname, out prev))
+                        E("PROJECT-SUB-002", o.Rel, path, "file", c.Line, "Two members of " + o.ObjectPath + " are named '" + mname + "'", null, "Rename one of them");
+                    else memberNames[mname] = c;
+                }
+                if (c.Name == "Method") CheckMethod(o, c, path, unused, true);
+                else CheckProperty(o, c, path, unused, true);
             }
         }
 
@@ -855,7 +1046,7 @@ namespace TcLintEngine
             string[] required = { "CycleTime", "Priority", "TaskFBGuid", "Fb_init", "Fb_exit", "CycleUpdate", "PostCycleUpdate" };
             o.TaskLine = task.Line;
             foreach (string r in required)
-                if (task.Child(r) == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", task.Line, 1, "<Task> has no <" + r + ">", null, null, "missing-element", null, null, o.Downgrade);
+                if (task.Child(r) == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", task.Line, 1, "<Task> has no <" + r + ">", null, null, "task-element", null, "pending", o.Downgrade);
             // a task without a program (no PouCall) was not observed (2 samples, both with one): warning only
             if (task.Child("PouCall") == null) Emit("PROJECT-XML-004", o.Rel, o.ObjectPath, "file", task.Line, 1, "<Task> has no <PouCall> (both observed tasks had one)", null, null, "missing-pou-call", "warning", "false", false);
             int last = -1;
@@ -876,21 +1067,25 @@ namespace TcLintEngine
         }
 
         // ---------------------------------------------------------------- code sections
-        private bool CheckCData(TcObjectFile o, XElem e, string path)
+        // XAE writes code containing ']]>' as two CDATA sections ('a]]]]><![CDATA[>b', measured 2026-11-13):
+        // several CDATA sections are normal and are joined. Text outside CDATA is read by XAE as code when it
+        // is legal XML (measured C02 / C05): warning only.
+        private void CheckCData(TcObjectFile o, XElem e, string path)
         {
             XText stray = e.StrayText();
             if (stray != null)
-            {
-                Emit("PROJECT-XML-003", o.Rel, path, "file", stray.Line, 1, "<" + e.Name + "> contains text outside the CDATA section (the code is cut or not wrapped in CDATA)",
-                    Short(stray.Value), "Put the whole code in one <![CDATA[ ... ]]> section; code containing ']]>' must be split by XAE, not by hand", "text-outside-cdata", null, "true", false);
-                return false;
-            }
-            if (e.CDataCount() > 1)
-            {
-                Emit("PROJECT-XML-003", o.Rel, path, "file", e.Line, 1, "<" + e.Name + "> has " + Inv.S(e.CDataCount()) + " CDATA sections (XAE wrote one in every observed file)",
-                    null, null, "multiple-cdata", null, "pending", false);
-            }
-            return true;
+                Emit("PROJECT-XML-003", o.Rel, path, "file", stray.Line, 1, "<" + e.Name + "> contains code outside a CDATA section (XAE read such code normally, measured C02 / C05)",
+                    Short(stray.Value), "Put the code in <![CDATA[ ... ]]> as XAE writes it", "text-outside-cdata", "warning", "false", false);
+        }
+
+        // Code that contains '&lt;' / '&amp;' ... was escaped by an XML writer although it sits in CDATA: the
+        // compiler sees the entity text (second review B2)
+        private void ReportEntities(TcObjectFile o, string path, string section, LexResult lx)
+        {
+            if (lx == null) return;
+            foreach (LexIssue x in lx.Entities)
+                Emit("PROJECT-XML-003", o.Rel, path, section, x.Line, x.Col, "XML escape '" + x.Reason + "' inside CDATA code: the compiler sees the escape text, not the character", x.Reason,
+                    "Write the plain character (<, >, &, ', \") inside CDATA; escapes are only for text outside CDATA", "escaped-entity-in-cdata", "error", "true", false);
         }
 
         private static string Short(string s)
@@ -910,6 +1105,7 @@ namespace TcLintEngine
                 excluded.Add(Cov(null, o.Rel, path, "declaration", reason));
                 return di;
             }
+            ReportEntities(o, path, "declaration", di.Lex);
             ReportState(o, path, "declaration", di.State);
             return di;
         }
@@ -924,7 +1120,7 @@ namespace TcLintEngine
                 foreach (XElem c in impl.Children) { lang = c.Name; break; }
                 if (lang == null)
                 {
-                    Emit("PROJECT-XML-004", o.Rel, path, "file", impl.Line, 1, "<Implementation> is empty (XAE writes <ST><![CDATA[]]></ST> for empty code)", null, null, "missing-element", null, null, o.Downgrade);
+                    Emit("PROJECT-XML-004", o.Rel, path, "file", impl.Line, 1, "<Implementation> is empty (XAE writes <ST><![CDATA[]]></ST> for empty code)", null, null, "missing-element", null, "pending", o.Downgrade);
                     return null;
                 }
                 if (Excluded(path, out reason)) excluded.Add(Cov(null, o.Rel, path, "implementation", reason));
@@ -953,15 +1149,30 @@ namespace TcLintEngine
                 return multi ? null : text;
             }
             ScanResult sr = StAnalyzer.ScanImplementation(text);
+            ReportEntities(o, path, "implementation", sr.Lex);
             ReportState(o, path, "implementation", sr.State);
             if (multi)
                 foreach (Diagnostic d in diags) if (d.ObjectPath == path && d.Section == "implementation") d.LineUnreliable = true;
             return multi ? null : text;
         }
 
+        // not-analyzed = a listed construct that may be legal (decision 2026-11-13: pass, but recorded in
+        // rulesSkipped and summary.notAnalyzed); unsupported = not understood -> blockingRulesSkipped (incomplete)
         private void ReportState(TcObjectFile o, string path, string section, SectionStatus s)
         {
-            if (s.Status == "not-analyzed") notAnalyzed.Add(Cov(null, o.Rel, path, section, s.Reason));
+            string rule = section == "declaration" ? "LINT-PARSE-003" : "LINT-PARSE-002";
+            if (s.Status == "not-analyzed")
+            {
+                notAnalyzed.Add(Cov(null, o.Rel, path, section, s.Reason));
+                rulesSkipped.Add(Cov(rule, o.Rel, path, section, s.Reason));
+                downgradedSections++;
+            }
+            else if (s.Status == "unsupported")
+            {
+                notAnalyzed.Add(Cov(null, o.Rel, path, section, s.Reason));
+                CoverageEntry c = Cov(rule, o.Rel, path, null, s.Reason);
+                if (Enabled(rule)) blockingSkipped.Add(c);
+            }
             else if (s.Status == "parse-failed")
             {
                 Emit(s.ErrorRule, o.Rel, path, section, s.ErrorLine, s.ErrorCol, "Cannot parse the " + section + ": " + s.ErrorMessage, null,
@@ -1020,7 +1231,7 @@ namespace TcLintEngine
                 string hex = u.Id.Substring(1, 36).Replace("-", "");
                 if (hex.Trim('0').Length == 0)
                 {
-                    if (u.InScope) E("PROJECT-GUID-004", u.File, u.ObjectPath, "file", u.Line, "Id is the all-zero GUID", u.Id, "Use a new GUID: '{' + [guid]::NewGuid().ToString() + '}'");
+                    if (u.InScope) E("PROJECT-GUID-004", u.File, u.ObjectPath, "file", u.Line, "Id is the all-zero GUID (XAE replaced it with a new GUID and rewrote the file on load, measured C18)", u.Id, "Use a new GUID: '{' + [guid]::NewGuid().ToString() + '}'");
                 }
                 else if (u.InScope)
                 {
@@ -1045,10 +1256,22 @@ namespace TcLintEngine
                 {
                     if (!u.InScope) continue;
                     List<string> others = new List<string>();
-                    foreach (IdUse x in l) if (!ReferenceEquals(x, u)) others.Add(x.ObjectPath + " (" + x.File + ")");
+                    bool sameFile = false;
+                    foreach (IdUse x in l)
+                    {
+                        if (ReferenceEquals(x, u)) continue;
+                        others.Add(x.ObjectPath + " (" + x.File + ")");
+                        if (string.Equals(x.File, u.File, StringComparison.OrdinalIgnoreCase)) sameFile = true;
+                    }
                     others.Sort(StringComparer.Ordinal);
-                    E("PROJECT-GUID-003", u.File, u.ObjectPath, "file", u.Line, "Id " + u.Id + " is also used by " + string.Join(", ", others.ToArray()), u.Id,
-                        "Give the copied object a new GUID ('{' + [guid]::NewGuid().ToString() + '}')");
+                    // measured 1.3: inside one object XAE drops the whole POU (blocking); across files XAE gives one
+                    // of them a new GUID and rewrites that file (warning)
+                    if (sameFile)
+                        Emit("PROJECT-GUID-003", u.File, u.ObjectPath, "file", u.Line, 1, "Id " + u.Id + " is also used by " + string.Join(", ", others.ToArray()) + " in the same object (XAE then drops the whole object)", u.Id,
+                            "Give one of them a new GUID ('{' + [guid]::NewGuid().ToString() + '}')", "same-object", "error", "true", false);
+                    else
+                        Emit("PROJECT-GUID-003", u.File, u.ObjectPath, "file", u.Line, 1, "Id " + u.Id + " is also used by " + string.Join(", ", others.ToArray()) + " (XAE gives one of them a new GUID on load and rewrites that file)", u.Id,
+                            "Give the copied object a new GUID ('{' + [guid]::NewGuid().ToString() + '}')", "cross-file", "warning", "false", false);
                 }
             }
         }
@@ -1151,6 +1374,16 @@ namespace TcLintEngine
         private void CheckTsproj(string projectGuid)
         {
             FindSolution();
+            if (tsprojFull.Count == 0 && slnFull != null && SlnReferencesPlcDirectly())
+            {
+                // stand-alone PLC project (TwinCAT 3.1.4022+, InfoSys "Using a stand-alone PLC project",
+                // https://infosys.beckhoff.com/content/1033/tc3_plc_intro/47020711795124677131.html): no PLC instance in
+                // a .tsproj, so there is nothing to compare; its file structure is not observed (no sample)
+                rulesSkipped.Add(Cov("PROJECT-TSPROJ-001", plcRel, "", null, "standalone-plc-project"));
+                rulesSkipped.Add(Cov("PROJECT-TSPROJ-002", plcRel, "", null, "standalone-plc-project"));
+                rulesSkipped.Add(Cov("PROJECT-TSPROJ-003", plcRel, "", null, "standalone-plc-project"));
+                return;
+            }
             if (tsprojFull.Count == 0)
             {
                 SkipBlocking("PROJECT-TSPROJ-001", plcRel, "", "no-tsproj-found");
@@ -1204,7 +1437,7 @@ namespace TcLintEngine
                         if (projectGuid == null)
                             E("PROJECT-TSPROJ-002", plcRel, "", "file", 1, "The .plcproj has no <ProjectGuid>", null, null);
                         else if (r.Guid == null || !string.Equals(r.Guid.Trim(), projectGuid, StringComparison.OrdinalIgnoreCase))
-                            E("PROJECT-TSPROJ-002", tsRel, "", "file", r.Element.Line, "PLC project GUID in the .tsproj (" + (r.Guid ?? "none") + ") differs from <ProjectGuid> of the .plcproj (" + projectGuid + ")", null,
+                            E("PROJECT-TSPROJ-002", tsRel, "", "file", r.Element.Line, "PLC project GUID in the .tsproj (" + (r.Guid ?? "none") + ") differs from <ProjectGuid> of the .plcproj (" + projectGuid + "); XAE wrote the .tsproj value back into the .plcproj, measured 2026-11-13", null,
                                 "The three places must hold the same GUID (case does not matter): .plcproj ProjectGuid, .tsproj Plc/Project@GUID, .sln ProjectConfigurationPlatforms");
                         if (projectGuid != null && slnText != null && slnFull != null && tsprojFull.Count > 0)
                         {
@@ -1228,6 +1461,24 @@ namespace TcLintEngine
                 E("PROJECT-TSPROJ-001", plcRel, "", "file", 1, "No .tsproj " + (slnFull != null ? "of the solution " : "next to the project ") + "references this .plcproj", null,
                     "Check PrjFilePath of Plc/Project in the .tsproj");
             }
+        }
+
+        private bool SlnReferencesPlcDirectly()
+        {
+            string text;
+            try { text = File.ReadAllText(slnFull); } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
+            string dir = Path.GetDirectoryName(slnFull);
+            foreach (Match m in LintEngine.SlnProjectRx.Matches(text))
+            {
+                string rel = m.Groups[2].Value;
+                if (rel.EndsWith(".tspproj", StringComparison.OrdinalIgnoreCase)) return true;
+                if (rel.EndsWith(".plcproj", StringComparison.OrdinalIgnoreCase))
+                {
+                    string full = MsPath.Full(dir, rel);
+                    if (full != null && string.Equals(full, plcFull, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
         }
 
         private static string SlnSection(string text, string name)
@@ -1291,17 +1542,25 @@ namespace TcLintEngine
                 // names no known POU cannot be judged (the file already has its own finding)
                 if (o.Obj == null && string.Equals(o.Ext, ".TcPOU", StringComparison.OrdinalIgnoreCase)) unreadablePou = true;
             }
+            if (msbuildUnobserved && ttos.Count > 0) rulesSkipped.Add(Cov("PROJECT-TSPROJ-003", plcRel, "", null, "unobserved-msbuild"));
             foreach (TcObjectFile t in ttos)
             {
+                if (msbuildUnobserved) break;
                 foreach (string call in t.PouCalls)
                 {
                     TcObjectFile target;
                     if (!pous.TryGetValue(call, out target) && unreadablePou)
                         rulesSkipped.Add(Cov("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, null, "pou-call-target-unreadable"));
                     else if (target == null)
-                        E("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, "Task '" + t.Name + "' calls '" + call + "', which is not a POU of this project", call, null);
+                    {
+                        Diagnostic d = Emit("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, 1, "Task '" + t.Name + "' calls '" + call + "', which is not a POU of this project (Build fails with C0046 / C0035, measured 2026-11-13)", call, null, "pou-call", "warning", "false", false);
+                        if (d != null) d.CompilerCatches = "yes";
+                    }
                     else if (target.DeclHeader != null && target.DeclHeader.Length > 0 && target.DeclHeader != "PROGRAM")
-                        E("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, "Task '" + t.Name + "' calls '" + call + "', which is a " + target.DeclHeader + ", not a PROGRAM", call, null);
+                    {
+                        Diagnostic d = Emit("PROJECT-TSPROJ-003", t.Rel, t.ObjectPath, "file", t.TaskLine, 1, "Task '" + t.Name + "' calls '" + call + "', which is a " + target.DeclHeader + ", not a PROGRAM (the compiler expects a program: C0035)", call, null, "pou-call", "warning", "false", false);
+                        if (d != null) d.CompilerCatches = "yes";
+                    }
                 }
             }
         }
@@ -1366,7 +1625,9 @@ namespace TcLintEngine
                 if (d.Blocking) blocking++;
                 if (d.RuleId.StartsWith("LINT-PARSE-", StringComparison.Ordinal)) parseDiag = true;
                 RuleMeta r = RuleRegistry.Get(d.RuleId);
-                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && r.CompilerCatches != "yes")
+                string cc = d.CompilerCatches ?? (r == null ? null : r.CompilerCatches);
+                bool compilerCatches = cc == "yes";
+                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && !compilerCatches)
                 {
                     OrderedDictionary u = new OrderedDictionary();
                     u["ruleId"] = d.RuleId; u["severity"] = d.Severity; u["blocking"] = d.Blocking; u["file"] = d.File; u["objectPath"] = d.ObjectPath;
@@ -1389,6 +1650,7 @@ namespace TcLintEngine
             OrderedDictionary summary = new OrderedDictionary();
             summary["errors"] = errors; summary["warnings"] = warnings; summary["infos"] = infos; summary["blocking"] = blocking; summary["suppressed"] = suppressed;
             summary["unresolved"] = unresolved.Count;
+            summary["notAnalyzed"] = downgradedSections;
             res["summary"] = summary;
             res["diagnostics"] = diagList;
             res["unresolved"] = unresolved;
@@ -1413,6 +1675,12 @@ namespace TcLintEngine
             ArrayList rules = new ArrayList();
             foreach (RuleMeta r in RuleRegistry.All()) if (Enabled(r.Id)) rules.Add(r.Id + "@" + Inv.S(r.Version));
             res["rulesRun"] = rules;
+            OrderedDictionary scope = new OrderedDictionary();
+            scope["scope"] = opt.ScopeObjects == null ? "All" : "Object";
+            ArrayList sp = new ArrayList(); if (opt.ScopeObjects != null) foreach (string x in opt.ScopeObjects) sp.Add(x);
+            scope["objectPaths"] = sp;
+            scope["objectsInProject"] = objects.Count;
+            res["scope"] = scope;
             List<string> det = new List<string>(engineDetail); det.Sort(StringComparer.Ordinal);
             res["engineDetail"] = new ArrayList(det);
             return res;
