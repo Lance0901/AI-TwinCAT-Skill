@@ -21,7 +21,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 |---|---|---|---|---|---|---|---|
 | PROJECT-XML-001 | XML 不是 well-formed | project-integrity | unknown | high | true | — | 1a |
 | PROJECT-XML-002 | 編碼宣告與實際位元組不符 / 非法 UTF-8 / BOM 異常 | project-integrity | unknown | high | true(宣告與位元組不符、非法 UTF-8:XAE 靜默載入成 itemType 0);無 BOM / 一致的 UTF-16 / 無宣告:false · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
-| PROJECT-XML-003 | CDATA 被破壞:Declaration / ST 有 CDATA 外的一般文字(true);被拆成多段 CDATA(實測:XAE 自己寫的格式,不報) | project-integrity → behavior | unknown | high | true(CDATA 被提早結束 = 不 well-formed,靜默壞掉);沒包 CDATA 但合法:false(warning);多段 CDATA:**false**(XAE 自己會這樣寫) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
+| PROJECT-XML-003 | CDATA 被破壞:CDATA 內寫了 XML 跳脫 `&lt;` 等(true,本 PR 第二輪審查 B2);Declaration / ST 有 CDATA 外的一般文字;被拆成多段 CDATA(實測:XAE 自己寫的格式,不報) | project-integrity → behavior | unknown | high | true(CDATA 被提早結束 = 不 well-formed,靜默壞掉);沒包 CDATA 但合法:false(warning);多段 CDATA:**false**(XAE 自己會這樣寫) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-XML-004 | 必要元素 / 屬性缺漏、元素順序與 XAE 產生的不同 | project-integrity | unknown | high | true(缺根元素 / Name / Declaration / Implementation);缺 SpecialFunc:false · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-KIND-001 | XML 物件種類 ≠ 宣告關鍵字 ≠ 副檔名 | project-integrity | unknown | high | true(XML 元素與宣告家族不符);副檔名 ≠ 元素:false(warning) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
 | PROJECT-NAME-001 | `Name` 屬性 ≠ 宣告區物件名 | project-integrity | unknown | high | true(XAE 以 Name 屬性命名並報 C0243) · 實測定案 [實測](verification/xae-corrupt-file-behavior.md) | — | 1a |
@@ -100,7 +100,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 ### PROJECT-XML-003 CDATA 被破壞
 - 機台行為:程式碼被截斷或混入 XML 片段;若 XAE 照樣載入,編譯的是被改過的程式(行為錯)。
-- 偵測:(a) `<Declaration>` / `<ST>` 有 CDATA 以外的一般文字節點(CDATA 被提早結束後殘留的文字,或根本沒包 CDATA)— blockable true(語料 242 + 176 段一律單段 CDATA);(b) 被拆成多段 CDATA — blockable **pending**:語料裡沒有任何程式碼含 `]]>`(`tc-xml-schema-observed.md` 第 5 節),無法排除 XAE 遇到 `]]>` 時自己就切成多段 CDATA(標準 XmlWriter 的做法);tasks 1a.7 加一個「在 XAE 寫入含 `]]>` 字串」的案例。
+- 偵測(依 IDE 實測定案,`verification/xae-corrupt-file-behavior.md` C02 / C03 / C05 與 `verification/xae-generated-xml.md`,XAE 3.1.4026.22,2026-11-13):(a) CDATA 內的程式碼含 `&lt;` `&gt;` `&amp;` `&quot;` `&apos;` `&#..;`(被 XML 工具多跳脫一次,編譯器看到的是跳脫文字)— variant `escaped-entity-in-cdata`,blockable true;(b) 程式碼在 CDATA 外但是合法 XML — variant `text-outside-cdata`,warning(XAE 照常讀成程式碼,C02 / C05);CDATA 被提早結束而不 well-formed 的情況是 PROJECT-XML-001(C03,XAE 靜默變成未知物件);(c) 多段 CDATA:XAE 自己存含 `]]>` 的程式碼就是 `'a]]]]><![CDATA[>b'`,**不報**,引擎串接後分析。
 - XAE 載入被切壞的檔案後是否照樣編譯:未驗證(compilerCatches unknown)。
 
 ### PROJECT-XML-004 必要元素 / 屬性 / 順序

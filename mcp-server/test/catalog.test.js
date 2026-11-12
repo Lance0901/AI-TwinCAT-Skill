@@ -115,6 +115,26 @@ describe('tools.json (generated catalog)', () => {
     assert.equal(validateParams(t, {}).ok, false, 'SolutionPath is required');
   });
 
+  // #252: LintProject only reads project files on disk (no IDE / ADS): read-only, nothing required
+  // (PlcProjectPath or SolutionPath, checked by the cmdlet), Scope / FailOn are closed sets, and the
+  // description states what passed=true covers.
+  test('LintProject is read-only, offline and explains the scope of passed', () => {
+    const t = catalog.get('LintProject');
+    assert.ok(t, 'LintProject is in the catalog');
+    assert.equal(t.cmdlet, 'Invoke-TcLintProject');
+    assert.deepEqual(t.annotations, { readOnlyHint: true });
+    assert.deepEqual(t.inputSchema.required ?? [], []);
+    assert.deepEqual(t.inputSchema.properties.Scope.enum, ['All', 'Object']);
+    assert.deepEqual(t.inputSchema.properties.FailOn.enum, ['error', 'warning']);
+    for (const w of ['does NOT mean the program is correct', 'ResetSolution', 'LINT_FAILED', 'LINT_PARSE_FAILED',
+      'LINT_INCOMPLETE', 'LINT_ENGINE_UNAVAILABLE', 'ideChecked=false', 'blockableBasis']) {
+      assert.ok(t.description.includes(w), `LintProject description lacks ${w}`);
+    }
+    assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/PLC1/PLC1.plcproj' }).ok, true);
+    assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/a.plcproj', Scope: 'Some' }).ok, false, 'Scope is All or Object');
+    assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/a.plcproj', FailOn: 'never' }).ok, false, 'FailOn has no never');
+  });
+
   // #229: GetPackageInfo is a read-only tcpkg query (network); InstallPackage is destructive, plan by
   // default, and only installs the IDE side (no XAR).
   test('GetPackageInfo is read-only, InstallPackage needs PackageId + Version and offers no XAR', () => {

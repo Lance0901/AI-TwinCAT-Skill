@@ -1152,7 +1152,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - XAE 載入時**沒有在 Error List 留任何列**的損壞：XML 不 well-formed(少結束標籤、未跳脫的 `<` `&`、CDATA 被提早結束)、宣告的編碼與實際不符(例如 UTF-16 檔宣告 `utf-8`)、檔內有非法 UTF-8 位元組、`.plcproj` 列了磁碟上不存在的檔案。物件在樹上變成 itemType 0,但 Check 與 Build 都 0 error(實測 2026-11-13,4026 VS2022,`xae-corrupt-file-behavior.md` 1.1 / 2.2 / 2.3 節)。這類只能靠寫入前的檢查。
   - Error List 讀不到時(`ERRORLIST_UNAVAILABLE`):`Build-TcProject` 本來就是 `codeVerified = null`、不完整;`Test-TcPlcProject` 仍以 `CheckAllObjects()` 的回傳值為準，可能回 `passed: true`(#279)。
   - 4024 的 `.TcDUT` / `.TcGVL` / `.TcIO` 載入列沒有實測。
-- **下一步**:先把 `data.loadErrorFiles` 回報給使用者(哪些檔案、哪一條訊息)。優先和版本控制比對，找出被改壞的地方並修正 XML;要整個從版本控制還原檔案前**先問使用者**(還原會蓋掉使用者還沒 commit 的改動)。改完磁碟檔後 `Reset-TcSolution` 重新載入，再 `Build-TcProject`。**不要**把這些列當成殘留而忽略、也不要繞過去直接 Activate(fail closed,#68)。
+- **下一步**:先跑 `Invoke-TcLintProject -PlcProjectPath <.plcproj>`(MCP `LintProject`,不開 IDE、唯讀),它會指出是哪個檔的哪種問題(PROJECT-XML / GUID / SUB / KIND… 的 `file`、`objectPath`、`line`、`fixHint`),也抓得到下面「已知限制」裡 Error List 沒留列的損壞(見「Semantic linter(#252 Phase 1a):做法」)。再把 `data.loadErrorFiles` 回報給使用者(哪些檔案、哪一條訊息)。優先和版本控制比對，找出被改壞的地方並修正 XML;要整個從版本控制還原檔案前**先問使用者**(還原會蓋掉使用者還沒 commit 的改動)。改完磁碟檔後 `Reset-TcSolution` 重新載入，再 `Build-TcProject`。**不要**把這些列當成殘留而忽略、也不要繞過去直接 Activate(fail closed,#68)。
 
 ### STATIC_ANALYSIS_ERRORS
 
@@ -2138,6 +2138,74 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:`Get-TcAutomationVersion -Verify` 發現安裝的檔案與 manifest 的 SHA256 不同:`data.verify.mismatched`(內容不同,含 expected / actual)、`missing`(少檔)、`extra`(`TwinCATAutomation/` 底下多出 manifest 沒列的檔)、`unreadable`(檔案在但讀不到，例如被其他行程鎖住或沒有權限,`error` 是原因;讀不到不算通過)。
 - **為什麼**:安裝後有人改過檔案、只複製了一部分,或用舊方式手動覆蓋。
 - **下一步**:把 `data.verify` 回報給使用者;在來源 repo 跑 `TwinCATSetup-<工具>.ps1 -Verify` 看與來源的差異,再重跑 installer。不要自己把檔案改回去。
+
+### Semantic linter(#252 Phase 1a):做法
+
+`Invoke-TcLintProject`(MCP `LintProject`)唯讀檢查磁碟上的 PLC 專案:`.plcproj` 與它 `<Compile>` 列出的每個檔、參照它的 `.tsproj` 與 `.sln`。不需要 IDE、不需要 runtime,不寫任何檔案、不記 lifecycle block。設計:`openspec/changes/add-semantic-linter/design.md`;規則:`rule-catalog.md` 第 1 節。
+
+- **這一版的規則**:AI 直接改磁碟檔最常弄壞的專案完整性問題(PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC)與 ST 解析(LINT-PARSE-*)。機台行為規則(SCAN-*)還沒有。結構規則的依據是兩個真實專案(4024 / 4026)裡 XAE 實際寫出的檔案(`research/tc-xml-schema-observed.md`);語料沒有的物件(Interface `.TcIO`、Property、Transition)只檢查 GUID,其餘記在 `data.coverage.rulesNotRun`(`schema-not-observed`)。
+- **`passed: true` 的範圍**:只代表「`data.rulesRun` 列出的規則,在 `data.coverage` 分析到的範圍內沒有 blocking finding」,不代表程式正確;Build 仍是最終把關。
+- **哪些會擋**:依 IDE 實測(`openspec/changes/add-semantic-linter/verification/xae-corrupt-file-behavior.md`,XAE 3.1.4026.22 / VS2022,2026-11-13)定案:XAE 會讓物件靜默消失 / 變成未知物件 / 當機的(XML 不合法、編碼宣告不符、缺 Name / Declaration / Implementation、GUID 格式錯或同物件內重複、Method 缺宣告、同名 Method、Compile 指向不存在的檔、`.tsproj` PrjFilePath 錯)擋;XAE 自己會修或照常載入的(缺 SpecialFunc / Id、全零 GUID、跨檔重複 GUID、Compile 重複 / SubType / 大小寫、TSPROJ GUID 不一致)只警告。沒實測到的 variant 帶 `blockableBasis: pending-measurement`,照 error 擋。
+- **不認得的程式**:只有明列的合法構造(條件 pragma、`?=`、`**`、`/* */`、`E#M`、非 ASCII 識別字)會記 `notAnalyzed` 後照樣通過(`coverage.rulesSkipped`、`summary.notAnalyzed`);其他不認得的字元或結構 → `LINT_INCOMPLETE`;反引號、彎引號 → `LINT-PARSE-001`;CDATA 裡的 `&lt;` 這類 XML 跳脫 → PROJECT-XML-003(擋)。
+- **`-Scope Object`**:只檢查列出的物件(與專案檔),`data.scope` 會寫明;通過**不代表整個專案通過**,`Reset-TcSolution` / `Build-TcProject` 前要跑一次預設的 `-Scope All`。
+- **大檔**:超過 8 MB(profile `maxFileSizeMB`,1~256)的檔不讀,`notAnalyzed` reason `too-large`,結果 incomplete。
+- **磁碟改檔的順序**:改 `.TcPOU` / `.plcproj` / `.tsproj` → `Invoke-TcLintProject` → 通過才 `Reset-TcSolution` → `Build-TcProject`(XAE 讀到的是已檢查過的檔案)。
+- **profile**:`.tcauto\lint-profile.json`(schema `tcauto-lint-profile/1`)從 `.plcproj` 目錄往上找到第一個含 `.sln` 或 `.git` 的目錄為止;找到就生效,壞掉就 `LINT_PROFILE_INVALID`(不退回 default)。可設 `failOn`、`rules.<id>.{enabled, severity, blocking, reason}`、`exclude[]`、`suppressions[]`、`acceptSkips[]`、`baseline`;每個放寬都要理由(至少 8 字),並列在 `data.profile.overrides`。objectPath 只接受精確名稱;專案層級的 finding(`objectPath` 為空)用 `file` 的值當 objectPath。`.tcauto\lint-baseline.json` 有檔就載入並驗證(CONTRACT 規則是 Phase 4,這版不跑)。
+- **IDE 已連線時**:這一版**不**比對 XAE 與磁碟(`data.source.ideChecked = false`,`data.source.ideCheck` 說明);XAE 裡有未存的內容時,lint 讀到的是磁碟版本。先存檔再 lint。
+
+### LINT_FAILED
+
+- **現象**:`Invoke-TcLintProject` 回 `success: false`,`data.verdict = fail`,`data.diagnostics` 有 `blocking: true` 的項目。
+- **為什麼**:專案檔有確定的損毀,例如 CDATA 被切開(PROJECT-XML-003)、複製檔案沒換 GUID(PROJECT-GUID-003)、`<Compile>` 指向不存在的檔(PROJECT-COMPILE-001)、`.tsproj` 參照錯(PROJECT-TSPROJ-001)。
+- **下一步**:照每筆的 `message` / `fixHint` 修正檔案,重跑 lint,通過才 `Reset-TcSolution` → `Build-TcProject`。確定是誤判又不能改檔時,在 `.tcauto\lint-profile.json` 的 `suppressions[]` 加 `{ objectPath, ruleId, reason }`(進版控、要人 review);inline 註解不能壓掉 blocking 規則(Phase 1b 起支援 inline,也只限非 blocking 規則)。
+
+### LINT_PARSE_FAILED
+
+- **現象**:`data.diagnostics` 有 `LINT-PARSE-001`(字串 / 註解 / pragma 沒結束)、`LINT-PARSE-002`(IF / END_IF 等區塊不配對)、`LINT-PARSE-003`(VAR 沒有 END_VAR、TYPE 沒有 END_TYPE),或 `.plcproj` 本身的 `PROJECT-XML-001`。其他物件的 diagnostics 照常輸出。
+- **為什麼**:程式真的寫壞了,或用了 linter 不認得的合法語法。含任何「不認得但可能合法」構造的段落(條件編譯 pragma `{IF ...}`、`?=`、`**`、`/* */`、非 ASCII 識別字、`E_Enum#Member`)一律只記 `data.coverage.notAnalyzed`,不報 parse 失敗(design.md D3)。
+- **下一步**:`Build-TcProject`。Build 也失敗 → 照 Error List 修。Build 成功 → linter 的限制:開 issue,並在 profile 的 `exclude[]` 帶理由排除該物件(列在 `data.coverage.excluded`)。沒有「忽略 parse 錯誤」的參數,profile 也不能停用 LINT-PARSE-*。
+
+### LINT_INCOMPLETE
+
+- **現象**:`data.verdict = incomplete`,`data.passed = false`。
+- **為什麼**:預設會擋的規則對某物件沒跑成(`data.coverage.blockingRulesSkipped`:例如宣告開頭之前就有條件編譯 pragma,PROJECT-KIND / NAME 讀不到宣告頭;程式裡有 linter 不認得的字元或結構,reason `unsupported-syntax:*`;檔案超過大小上限,reason `too-large`;PLC 存成獨立專案檔 `.xti`;找不到參照這個 `.plcproj` 的 `.tsproj` 也沒有 `.sln`),或檔案存在但讀不到(`notAnalyzed` 的 reason `unreadable`),或範圍內有物件沒分析到又沒有 blocking finding 能解釋(例如 profile 關掉了回報那個壞檔的規則)。非 ST 實作(CFC 等)只影響需要它的規則,不會讓結果變 incomplete。stand-alone PLC 專案(`.sln` 直接參照 `.plcproj`,沒有 `.tsproj`,InfoSys「[Using a stand-alone PLC project](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/47020711795124677131.html)」)的 TSPROJ-* 只記 `rulesSkipped`,不影響結果。
+- **下一步**:處理原因後重跑(關掉鎖住檔案的程式;`.plcproj` 不在 solution 裡時用 `-SolutionPath`)。確定要接受時在 profile 的 `acceptSkips[]` 寫 `{ ruleId, objectPath, reason }`(`objectPath` 為空的項目填 `file`)。
+
+### LINT_CONTEXT_REQUIRED
+
+- **為什麼**:`LintCandidate`(Phase 2)的候選文字需要專案 context(`IMPLEMENTS` / `EXTENDS`、Method / Property / Action、不在內建型別目錄的型別),只看文字不能回報通過。這一版沒有 `LintCandidate`,不會回這個 code。
+- **下一步**:帶 `-PlcProjectPath <.plcproj>` 重跑。
+
+### LINT_PROFILE_INVALID
+
+- **現象**:沒有任何規則被執行,`data.passed` 不存在,`error.message` 寫明哪個欄位錯,`data.profilePath` 是檔案。
+- **為什麼**:找到的(或 `-RuleProfile` 指定的)profile 不合 `tcauto-lint-profile/1`:JSON 錯、未知欄位、未知 rule id、萬用字元 objectPath、放寬規則 / exclude / suppressions / acceptSkips 沒有理由(至少 8 字)、想停用或放寬 LINT-PARSE-*、baseline 指到 solution 目錄外。
+- **下一步**:修正 profile;或 `-RuleProfile default` 明確用內建 profile(輸出 `data.profile.ignoredDiscoveredProfile` 會標出被略過的檔)。不要刪掉 profile 來讓 lint 通過。
+
+### LINT_BASELINE_INVALID
+
+- **為什麼**:`.tcauto\lint-baseline.json`(或 profile `baseline` 指的檔)壞掉、不是 `tcauto-lint-baseline/1`、`types.<name>.kind` 不是 ENUM / STRUCT / UNION / ALIAS,或 profile 要求的 baseline 不存在。
+- **下一步**:修正或從版控還原;真的不要 baseline 時,profile 寫 `"baseline": { "disabled": true, "reason": "..." }`(列在 `data.profile.overrides`)。
+
+### LINT_INPUT_INVALID
+
+- **為什麼**:沒給 `-PlcProjectPath` 也沒給 `-SolutionPath`;`-PlcProjectPath` 不是存在的 `.plcproj`(只給 PLC 名稱要經 IDE 找檔,這一版不支援);`-SolutionPath` 不是 `.sln` / `.tsproj`;`-Scope Object` 沒配 `-ObjectPaths`,或物件不在專案裡。
+- **下一步**:給 `.plcproj` 檔案路徑,或 `-SolutionPath <sln> -PlcProjectPath <PLC 名稱>`。
+
+### LINT_ENGINE_ERROR
+
+- **為什麼**:lint 引擎內部例外或 C# 原始碼編譯失敗(engine bug),`data.engineDetail` 有細節。沒有任何結果可用,不會回「部分結果 + passed」。
+- **下一步**:開 issue 附 `data.engineDetail`;剛改過 `Private/Lint/*.cs` 就先 `ReloadRuntime`。引擎的 namespace 帶原始碼 hash(`data.engine.sourceHash`),改過的 `.cs` 在同一個 session 也會編成新的型別。
+
+### LINT_ENGINE_UNAVAILABLE
+
+- **為什麼**:PowerShell 不是 `FullLanguage`(AppLocker / WDAC 的 Constrained Language Mode,`data.languageMode`),或 `Add-Type` / csc.exe 被防毒、政策擋住(`data.engineDetail`)。環境問題,與 `LINT_ENGINE_ERROR` 分開。
+- **下一步**:請 IT 讓 TcAuto 的 PowerShell 以 FullLanguage 執行、允許 csc.exe(`TcAdsHelper` 也需要 `Add-Type`)。
+
+### LINT_SOURCE_STALE / LINT_SOURCE_UNVERIFIED
+
+- **為什麼**:Phase 2 的 stale 偵測:IDE 已連線且 XAE 裡有還沒存到磁碟的內容(`.plcproj` 的 `<Compile>` 清單、未存的文件),或讀不到目標專案在 XAE 的狀態。這一版不做比對、不會回這兩個 code(`data.source.ideChecked = false`)。
+- **下一步**:STALE → 在 XAE 存檔(或 `Reset-TcSolution -SaveProjectChanges`)再 lint;UNVERIFIED → `Get-TcIdeModalDialog` 檢查 XAE 是否被 dialog 擋住。
 
 ## 已知限制
 
