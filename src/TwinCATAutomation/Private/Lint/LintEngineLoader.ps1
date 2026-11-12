@@ -35,13 +35,13 @@ function Get-TcLintEngine {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hashBytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($src)) } finally { $sha.Dispose() }
     $hash = (-join ($hashBytes | ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
-    if ($null -ne $script:TcLintEngine -and $script:TcLintEngine.Hash -eq $hash) {
+    if ($null -ne $script:TcLintEngine -and $script:TcLintEngine.Hash -eq $hash -and $null -eq $script:TcLintAddTypeOverride) {
         return @{ ok = $true; Type = $script:TcLintEngine.Type; Hash = $hash; Namespace = $script:TcLintEngine.Namespace; compiled = $false; languageMode = $mode }
     }
     $ns = "TcLint_$hash"
     $type = "$ns.LintEngine" -as [type]
     $compiled = $false
-    if ($null -eq $type) {
+    if ($null -eq $type -or $null -ne $script:TcLintAddTypeOverride) {
         $code = [regex]::Replace($src, '\bTcLintEngine\b', $ns)
         try {
             if ($null -ne $script:TcLintAddTypeOverride) { & $script:TcLintAddTypeOverride $code }

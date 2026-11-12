@@ -748,6 +748,7 @@ else {
                 'ide-solutions-lock.ps1'             # held mutex waited >= 1.5 s and < 30 s
                 'issue-report-121.ps1'               # 15000-token regex < 2 s
                 'launch-record-persist-73.ps1'       # restored record answers in < 5 s
+                'lint-contract.ps1'                  # #252: 200 objects analysed in <= 2 s
                 'lifecycle-receipt-113.ps1'          # 3000-line history check < 5 s
                 'modal-scan-incomplete.ps1'          # UIA scan ms bounds, CLEAN_TIMEOUT < 15 s
                 'platform-project-mismatch.ps1'      # waits up to 20 s for a helper process
