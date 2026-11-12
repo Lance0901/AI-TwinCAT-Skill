@@ -20,7 +20,7 @@ export const HINTS = {
     'Call ConnectIde again with the SAME parameters: it attaches the IDE this server launched for that SolutionPath (selectedBy session-launched, ownedBySession=true; waits up to 60 s while it is still starting), ' +
     'or reuses the empty IDE that an ended session left for that SolutionPath (#235, data.reusedEmptyOrphan=true). ' +
     'If that call answers IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE / IDE_LAUNCH_PENDING, follow its hint (GetIdeModalDialog ProcessId=<data.ideProcessId>). ' +
-    'If it launched another IDE anyway (selectedBy launched while data.candidates lists an earlier IDE with no solution), the first IDE was cut off before it was recorded: tell the user, it is not owned by this server.',
+    'If it launched another IDE anyway, tell the user that the IDE this call was starting may still be running: it was cut off before it was recorded, it is not owned by this server and must not be closed by you (data.candidates alone cannot tell which IDE that is).',
   BRIDGE_DIED:
     'PowerShell bridge process exited and all IDE/ADS state is lost. It restarts on the next call; run ConnectIde again.',
   MODULE_IMPORT_FAILED:

@@ -114,7 +114,7 @@ $script:TcHintFragments = @{
     # #196: other-session with hostState gone
     'IDE_LAUNCH_PENDING_ORPHAN'     = 'data.otherSession.hostState = gone:啟動這個 IDE(pid <pid>)的 TcAuto session 已經結束。先問使用者那個 IDE 有沒有人還在用(有沒有未存檔的修改);使用者同意接手後，重跑同一個 Connect-TcIde 加 -TakeOverOrphan(MCP:ConnectIde TakeOverOrphan=true),成功後本 session 擁有它(data.takenOver = true),可以 Disconnect-TcIde -Quit / -Quit -Kill。'
     # #235: the empty orphan IDE (reused without -TakeOverOrphan) could not be scanned for dialogs
-    'EMPTY_ORPHAN_SCAN_INCOMPLETE'  = 'data.ideProcessId(pid <pid>)是另一個已結束的 TcAuto session 為這個 .sln 啟動的空 IDE(#235):沒有重用、沒有 attach,也沒有再開第二個 IDE。重掃 Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15;沒有 dialog 就重跑同一個 Connect-TcIde(MCP:ConnectIde 同參數),會重用它。'
+    'EMPTY_ORPHAN_SCAN_INCOMPLETE'  = 'data.ideProcessId(pid <pid>)是另一個已結束的 TcAuto session 為這個 .sln 啟動的空 IDE(#235):沒有重用、沒有 attach,也沒有再開第二個 IDE。重掃 Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15;沒有 dialog 就重跑同一個 Connect-TcIde(MCP:ConnectIde 同參數),會重用它。重掃仍不完整(一直回 MODAL_SCAN_INCOMPLETE):請使用者看 pid <pid> 那個視窗有沒有 dialog、確認沒人在用,或由使用者手動關掉那個 IDE 後再重跑;模組不會自己關它(它還不屬於本 session),也不會另開第二個 IDE。'
 }
 $script:TcErrorHints['IO_SCAN_FAILED'] = 'TIID.ProduceXml(false) / CreateChild / ConsumeXml 失敗:確認 target 在 Config、硬體已接上並上電、遠端 target 已 Set-TcTarget;用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog'
 $script:TcErrorHints['IO_SCAN_VERIFY_FAILED'] = '-Apply 建立的 device 讀回 I/O tree 時找不到(data.devices[].path):用 Get-TcIoTree 看實際內容,不要把這次掃描當成成功'

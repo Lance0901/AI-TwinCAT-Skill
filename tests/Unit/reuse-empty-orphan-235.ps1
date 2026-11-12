@@ -14,7 +14,18 @@
 #   R7  (f) -ProgId other than the launch ProgID -> not reused (launched with that ProgID)
 #   R8  pid-unconfirmed record -> not reused
 #   R9  writing the new owner fails -> LAUNCH_RECORD_UNAVAILABLE, attach released, not owned
-#   R10 a dialog after the attach (before Solution.Open) -> IDE_MODAL_DIALOG, attach released, not owned
+#   R10 a dialog after the attach (before Solution.Open) -> IDE_MODAL_DIALOG; PR #268 review S3: the
+#       owner was written before the attach, so the IDE is owned by this session (-Quit can close it)
+#   PR #268 review:
+#   S1  the IDE once had a solution opened by TcAuto (ide-solutions record / launch record
+#       solutionOpened) -> never reused: IDE_LAUNCH_PENDING with the -TakeOverOrphan hint
+#   S2  without -ProgId: the ProgID Resolve-TcLaunchProgId picks must equal the record's; the
+#       remote-manager-match readback still runs on the reuse path; a refusal (PROGID_REQUIRED) is returned
+#   S3  the owner is written before Solution.Open: a session that loses the race opens nothing;
+#       Solution.Open failing afterwards leaves an owned IDE (reusedEmptyOrphan in the error, -Quit works)
+#   S4  MODAL_SCAN_INCOMPLETE hint names the way out when the rescan stays incomplete
+#   N3  solutionPlatform read back until it has a value (deadline) on the reuse path
+#   N4  pid reused with another start time / owner unverifiable -> not reused
 #   powershell.exe -NoProfile -File tests/Unit/reuse-empty-orphan-235.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -51,6 +62,11 @@ $global:ModalQueue235 = New-Object System.Collections.ArrayList
 $global:Kills235 = New-Object System.Collections.ArrayList
 $global:Quits235 = New-Object System.Collections.ArrayList
 $global:Opens235 = New-Object System.Collections.ArrayList   # "<pid>|<solution>" of every Solution.Open
+$global:OpenThrows235 = 0          # pid whose Solution.Open throws
+$global:Pick235 = $null            # Resolve-TcLaunchProgId answer ($null = the real function)
+$global:RmCheck235 = $null; $global:RmCalls235 = 0
+$global:OnModalScan235 = $null     # runs once inside the next modal scan (race injection)
+$global:PlatformQueue235 = $null   # Get-TcSolutionPlatform answers ($null item = platform not readable yet)
 
 # Fake DTE: Solution.Open loads the .sln at once (one project whose Object is a fake ITcSysManager);
 # Documents.Count = -Documents ('<throw>' = not readable)
@@ -63,6 +79,7 @@ function New-FakeDte([int]$ProcId = 0, [string]$Solution = '', [object]$Document
     $sol | Add-Member ScriptMethod Close { param($save) }
     $sol | Add-Member ScriptMethod Open {
         param($p)
+        if ($global:OpenThrows235 -gt 0 -and $global:OpenThrows235 -eq $this.ProcId) { throw 'mock: Solution.Open failed (0x80004005)' }
         [void]$global:Opens235.Add("$($this.ProcId)|$p")
         $this.FullName = $p; $this.IsOpen = $true
         $sm = New-Object PSObject; $sm | Add-Member ScriptMethod GetTargetNetId { '1.2.3.4.1.1' }
@@ -130,6 +147,7 @@ function Restart-Module {
         }
         function script:Find-TcIdeModalDialog {
             [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
+            if ($null -ne $global:OnModalScan235) { & $global:OnModalScan235 }
             $mode = $global:Modal235
             if ($global:ModalQueue235.Count -gt 0) { $mode = $global:ModalQueue235[0]; $global:ModalQueue235.RemoveAt(0) }
             $p = if ($ProcessId -gt 0) { $ProcessId } else { [int]$script:TcIdeProcessId }
@@ -152,7 +170,26 @@ function Restart-Module {
         }
         function script:Find-TcBlockedSolutionIde { [CmdletBinding()] param([object[]]$Candidates, [string]$SolutionPath, [int]$PreviousProcessId, [object]$PreviousStartTime, [string]$PreviousSolution, [string[]]$KnownSolutions) @() }
         function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) $o = New-Object PSObject; $o | Add-Member ScriptMethod GetTargetNetId { '5.6.7.8.1.1' }; $script:TcSysManager = $o; $o }
-        function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = 'TwinCAT RT (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT RT (x64)' } }
+        function script:Get-TcSolutionPlatform {
+            [CmdletBinding()] param()
+            if ($null -ne $global:PlatformQueue235 -and $global:PlatformQueue235.Count -gt 0) {
+                $v = $global:PlatformQueue235[0]; $global:PlatformQueue235.RemoveAt(0)
+                if ($null -eq $v) { return [PSCustomObject]@{ platform = $null; configuration = $null; projectPlatform = $null } }
+            }
+            [PSCustomObject]@{ platform = 'TwinCAT RT (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT RT (x64)' }
+        }
+        $script:UnitOrigPick = ${function:Resolve-TcLaunchProgId}
+        function script:Resolve-TcLaunchProgId {
+            [CmdletBinding()] param([string]$ProgId, [string]$SolutionPath)
+            if ($null -ne $global:Pick235) { return $global:Pick235 }
+            & $script:UnitOrigPick @PSBoundParameters
+        }
+        $script:UnitOrigRm = ${function:Test-TcRemoteManagerMatch}
+        function script:Test-TcRemoteManagerMatch {
+            [CmdletBinding()] param([object]$Dte, [object]$RemoteManager)
+            if ($null -ne $global:RmCheck235) { $global:RmCalls235++; return $global:RmCheck235 }
+            & $script:UnitOrigRm @PSBoundParameters
+        }
         function script:Save-TcIdeTargetNetId { param($AmsNetId) }
     } ${function:New-FakeDte} ${function:New-RotEntry}
     $script:modMemory = Save-UnitModuleMemory $script:mod
@@ -162,6 +199,7 @@ function Reset-All {
     $global:Rot235 = @(); $global:Launches235.Clear(); $global:LaunchedDtes235 = @{}; $global:Procs235 = @{}
     $global:Modal235 = 'incomplete'; $global:ModalQueue235.Clear(); $global:LaunchInRot235 = $true; $global:GuessPid235 = 0
     $global:Kills235.Clear(); $global:Quits235.Clear(); $global:Opens235.Clear()
+    $global:OpenThrows235 = 0; $global:Pick235 = $null; $global:RmCheck235 = $null; $global:RmCalls235 = 0; $global:OnModalScan235 = $null; $global:PlatformQueue235 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'ide-solutions.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Restore-UnitModuleMemory $script:mod $script:modMemory
@@ -264,7 +302,11 @@ try {
     [void]$global:ModalQueue235.Add('none')     # Resolve-TcOrphanTakeover: no dialog yet
     [void]$global:ModalQueue235.Add('dialog')   # the scan after the attach finds one
     $r = Connect-TcIde -SolutionPath $sln
-    Check 'R10 dialog after the attach -> IDE_MODAL_DIALOG, attach released, not owned, nothing opened, record unchanged' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Test-NotConnected) -and -not (Test-Owned $p) -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and (Get-RecordJson) -eq $before -and $r.data.ownedBySession -eq $false) "code=$($r.error.code) owned=$($r.data.ownedBySession)"
+    $recs = @(Read-Records)
+    Check 'R10 dialog after the attach -> IDE_MODAL_DIALOG, nothing opened, no second IDE; owned by this session (S3: owner written before the attach), reusedEmptyOrphan' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Test-Owned $p) -and $r.data.ownedBySession -eq $true -and $r.data.reusedEmptyOrphan -eq $true -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and [int]$recs[0].hostPid -eq $PID) "code=$($r.error.code) owned=$($r.data.ownedBySession) reused=$($r.data.reusedEmptyOrphan)"
+    $global:Modal235 = 'none'
+    $d = Disconnect-TcIde -Quit
+    Check 'R10b once the dialog is gone, Disconnect-TcIde -Quit closes it' ($d.success -and @($global:Quits235 | Where-Object { $_ -eq $p }).Count -eq 1) "code=$($d.error.code)"
 
     # --- R6 (e): a document open (or unreadable) -> not reused ---
     $p = New-EmptyOrphan -Documents 1
@@ -302,6 +344,106 @@ try {
     try { $r = Connect-TcIde -SolutionPath $sln }
     finally { $h.Dispose() }
     Check 'R9 owner not writable -> LAUNCH_RECORD_UNAVAILABLE, attach released, not owned, no second IDE, record unchanged' ($r.error.code -eq 'LAUNCH_RECORD_UNAVAILABLE' -and (Test-NotConnected) -and -not (Test-Owned $p) -and $global:Launches235.Count -eq 1 -and (Get-RecordJson) -eq $before -and $r.data.ownedBySession -eq $false) "code=$($r.error.code) reason=$($r.data.reason)"
+
+
+    # ================= PR #268 review =================
+    # --- S1: the IDE once had a solution opened by TcAuto -> never reused (IDE_LAUNCH_PENDING + ORPHAN hint) ---
+    $p = New-EmptyOrphan
+    & $mod { param($x, $s) Save-TcIdeSolutionRecord -ProcessId $x -Solution $s } $p $slnL   # session A had opened it, the user closed it later
+    $before = Get-RecordJson
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S1a IDE with an ide-solutions record (a solution was opened in it) -> not reused: IDE_LAUNCH_PENDING other-session, -TakeOverOrphan hint, nothing opened / launched, record unchanged' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and [string]$r.error.hint -match 'TakeOverOrphan' -and $r.data.notReusedReason -eq 'solution-was-opened' -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and (Get-RecordJson) -eq $before -and -not (Test-Owned $p) -and (Test-NotConnected)) "code=$($r.error.code) probe=$($r.data.probe) why=$($r.data.notReusedReason) opens=$($global:Opens235.Count) launches=$($global:Launches235.Count)"
+    $p = New-EmptyOrphan
+    Edit-Records { param($x) $x | Add-Member -NotePropertyName solutionOpened -NotePropertyValue $true -Force }
+    Restart-Module
+    $global:Rot235 = @(New-RotEntry $p $global:LaunchedDtes235[$p]); $global:Modal235 = 'none'
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S1b launch record solutionOpened = true -> not reused (IDE_LAUNCH_PENDING), nothing opened' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.notReusedReason -eq 'solution-was-opened' -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and -not (Test-Owned $p)) "code=$($r.error.code) why=$($r.data.notReusedReason)"
+    Reset-All
+    $global:Modal235 = 'none'
+    $r = Connect-TcIde -SolutionPath $sln
+    $lp = [int]$r.data.ideProcessId
+    $rec = @(Read-Records | Where-Object { [int]$_.pid -eq $lp })
+    Check 'S1c a successful launch + Solution.Open marks the launch record solutionOpened = true' ($r.success -and $rec.Count -eq 1 -and $null -ne $rec[0].PSObject.Properties['solutionOpened'] -and [bool]$rec[0].solutionOpened) ((Get-RecordJson) -replace '\s+', ' ')
+    $null = Disconnect-TcIde
+
+    # --- S2: without -ProgId the reused IDE must be the one #72 / #225 would launch ---
+    $p = New-EmptyOrphan
+    $global:Pick235 = [PSCustomObject]@{ progId = 'VisualStudio.DTE.17.0'; selectedBy = 'tsproj-version'; registered = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0'); evidence = [PSCustomObject]@{ tsprojects = @() }; errorCode = $null; errorMessage = $null; remoteManagerInstall = $null }
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S2a record ProgID differs from the one Resolve-TcLaunchProgId picks -> not reused, the picked IDE is launched' ($r.success -and $r.data.selectedBy -eq 'launched' -and $global:Launches235[-1] -eq 'VisualStudio.DTE.17.0' -and [int]$r.data.ideProcessId -ne $p -and @($global:Opens235 | Where-Object { $_ -like "$p|*" }).Count -eq 0 -and -not (Test-Owned $p)) "code=$($r.error.code) sel=$($r.data.selectedBy) launches=$($global:Launches235 -join ',')"
+    $null = Disconnect-TcIde
+    $p = New-EmptyOrphan
+    $global:Pick235 = [PSCustomObject]@{ progId = 'TcXaeShell.DTE.17.0'; selectedBy = 'remote-manager-match'; registered = @('TcXaeShell.DTE.17.0'); evidence = [PSCustomObject]@{ tsprojects = @(); remoteManager = [PSCustomObject]@{ path = 'C:\fake\RM\Build_4024.71'; version = '3.1.4024.71' } }; errorCode = $null; errorMessage = $null; remoteManagerInstall = $null }
+    $global:RmCheck235 = [PSCustomObject]@{ verified = $false; mismatch = $true; expected = '3.1.4024.71'; actual = '3.1.4026.22'; error = $null }
+    $global:RmCalls235 = 0
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S2b remote-manager-match pick: the reuse path still reads the Remote Manager back -> REMOTE_MANAGER_MISMATCH, progIdSelectedBy kept' ($r.error.code -eq 'REMOTE_MANAGER_MISMATCH' -and $global:RmCalls235 -eq 1 -and [int]$r.data.ideProcessId -eq $p -and $r.data.progIdSelectedBy -eq 'remote-manager-match' -and $global:Launches235.Count -eq 1) "code=$($r.error.code) rmCalls=$($global:RmCalls235) sel=$($r.data.progIdSelectedBy)"
+    $global:RmCheck235 = $null
+    $p = New-EmptyOrphan
+    $global:Pick235 = [PSCustomObject]@{ progId = $null; selectedBy = $null; registered = @('TcXaeShell.DTE.17.0', 'VisualStudio.DTE.17.0'); evidence = $null; errorCode = 'PROGID_REQUIRED'; errorMessage = 'PROGID_REQUIRED: mock'; remoteManagerInstall = $null }
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S2c Resolve-TcLaunchProgId refuses (PROGID_REQUIRED) -> not reused, that error returned, nothing launched / opened' ($r.error.code -eq 'PROGID_REQUIRED' -and $global:Launches235.Count -eq 1 -and $global:Opens235.Count -eq 0 -and -not (Test-Owned $p)) "code=$($r.error.code)"
+    $global:Pick235 = $null
+
+    # --- S3: two sessions decide to reuse the same IDE: the owner is written BEFORE Solution.Open ---
+    $p = New-EmptyOrphan
+    $global:OnModalScan235 = {
+        # another session wrote itself as owner between our checks and our write
+        $global:Procs235[9700] = [DateTime]'2026-11-13T01:00:00'; $global:Procs235[9701] = [DateTime]'2026-11-13T00:59:00'
+        Edit-Records { param($x)
+            $x.hostPid = 9700; $x.hostStartTime = ([DateTime]'2026-11-13T01:00:00').ToUniversalTime().ToString('o'); $x.ownerId = 'owner-235-C'
+            $x.ownerPid = 9701; $x.ownerStartTime = ([DateTime]'2026-11-13T00:59:00').ToUniversalTime().ToString('o')
+        }
+        $global:OnModalScan235 = $null
+    }
+    $r = Connect-TcIde -SolutionPath $sln
+    $global:OnModalScan235 = $null
+    $recs = @(Read-Records)
+    Check 'S3 the other session owns it first -> not opened here: IDE_LAUNCH_PENDING other-session, not attached / owned, no second IDE, record keeps the other owner' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and (Test-NotConnected) -and -not (Test-Owned $p) -and [int]$recs[0].hostPid -eq 9700) "code=$($r.error.code) probe=$($r.data.probe) opens=$($global:Opens235.Count) host=$($recs[0].hostPid)"
+    $global:Procs235.Remove(9700); $global:Procs235.Remove(9701)
+    $p = New-EmptyOrphan
+    $global:OpenThrows235 = $p
+    $r = Connect-TcIde -SolutionPath $sln
+    $global:OpenThrows235 = 0
+    $recs = @(Read-Records)
+    Check 'S3b / N4 Solution.Open fails after the owner was written -> error with reusedEmptyOrphan, owned by this session, no second IDE' (-not $r.success -and $r.data.reusedEmptyOrphan -eq $true -and $r.data.ownedBySession -eq $true -and (Test-Owned $p) -and $global:Launches235.Count -eq 1 -and [int]$recs[0].hostPid -eq $PID) "code=$($r.error.code) reused=$($r.data.reusedEmptyOrphan) owned=$($r.data.ownedBySession) host=$($recs[0].hostPid)"
+    $d = Disconnect-TcIde -Quit
+    Check 'S3c that IDE can be quit by this session afterwards (Disconnect-TcIde -Quit)' ($d.success -and @($global:Quits235 | Where-Object { $_ -eq $p }).Count -eq 1) "code=$($d.error.code) quits=$($global:Quits235 -join ',')"
+
+    # --- S4: an incomplete scan that keeps coming back: the hint gives a way out ---
+    $p = New-EmptyOrphan
+    $global:Modal235 = 'incomplete'
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'S4 MODAL_SCAN_INCOMPLETE hint: if the rescan stays incomplete, the user checks or closes that IDE by hand' ($r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and [string]$r.error.hint -match '仍不完整' -and [string]$r.error.hint -match "pid $p") "$($r.error.hint)"
+
+    # --- N3: the solution platform is read back until it has a value (deadline) on the reuse path ---
+    $p = New-EmptyOrphan
+    & $mod { $script:TcReusePlatformWaitSec = 2; $script:TcReusePlatformPollMs = 20 }
+    $global:PlatformQueue235 = [System.Collections.ArrayList]@($null, $null)
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'N3a solutionPlatform null right after the reuse Solution.Open -> read again until it has a value' ($r.success -and $r.data.reusedEmptyOrphan -eq $true -and $r.data.solutionPlatform -eq 'TwinCAT RT (x64)' -and $r.data.projectPlatform -eq 'TwinCAT RT (x64)') "platform=$($r.data.solutionPlatform) project=$($r.data.projectPlatform)"
+    $null = Disconnect-TcIde
+    $p = New-EmptyOrphan
+    & $mod { $script:TcReusePlatformWaitSec = 1; $script:TcReusePlatformPollMs = 20 }
+    $global:PlatformQueue235 = [System.Collections.ArrayList]@(1..1000 | ForEach-Object { $null })
+    $r = Connect-TcIde -SolutionPath $sln
+    $global:PlatformQueue235 = $null
+    Check 'N3b still null at the deadline -> success, solutionPlatform null + solutionPlatformWarning' ($r.success -and $null -eq $r.data.solutionPlatform -and -not [string]::IsNullOrWhiteSpace([string]$r.data.solutionPlatformWarning)) "platform=$($r.data.solutionPlatform) warn=$($r.data.solutionPlatformWarning)"
+    $null = Disconnect-TcIde
+
+    # --- N4: pid reused (other start time) / owner unverifiable -> not reused ---
+    $p = New-EmptyOrphan
+    $global:Procs235[$p] = [DateTime]::Now.AddMinutes(30)   # same pid, another process
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'N4a pid reused (start time differs from the record) -> not reused, a new IDE is launched' ($r.success -and $r.data.selectedBy -eq 'launched' -and @($global:Opens235 | Where-Object { $_ -like "$p|*" }).Count -eq 0 -and -not (Test-Owned $p)) "code=$($r.error.code) sel=$($r.data.selectedBy) pid=$($r.data.ideProcessId)"
+    $null = Disconnect-TcIde
+    $p = New-EmptyOrphan
+    Edit-Records { param($x) $x.ownerPid = $null }   # owner id without owner pid: unverifiable
+    Restart-Module
+    $global:Rot235 = @(New-RotEntry $p $global:LaunchedDtes235[$p]); $global:Modal235 = 'none'
+    $r = Connect-TcIde -SolutionPath $sln
+    Check 'N4b ownerState unverifiable -> not reused: IDE_LAUNCH_PENDING, nothing opened / launched' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $global:Opens235.Count -eq 0 -and $global:Launches235.Count -eq 1 -and -not (Test-Owned $p)) "code=$($r.error.code)"
 
     Check 'E1 nothing real was killed (Stop-Process is the mock)' (@($global:Kills235 | Where-Object { $_ -notlike 'Stop-Process 90*' -and $_ -notlike 'Stop-TcLaunchedIde *' }).Count -eq 0) ($global:Kills235 -join ', ')
 }

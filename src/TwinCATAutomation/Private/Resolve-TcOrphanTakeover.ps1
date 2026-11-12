@@ -29,7 +29,7 @@
 # reason: solution-path-required | no-launch-record | owned-by-this-session | host-alive |
 # owner-alive | owner-unverifiable | pid-unconfirmed | progid-mismatch | not-in-rot | solution-mismatch | ide-busy (dialog / incomplete
 # scan: IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE; record file unreadable: LAUNCH_RECORD_UNAVAILABLE)
-# | documents-open (-EmptySolution only).
+# | documents-open | solution-was-opened (-EmptySolution only).
 # -EmptySolution (#235): the same ownership checks for the IDE that an ended session launched for
 # -SolutionPath and that never got it open (cold start -> MODAL_SCAN_INCOMPLETE -> session over).
 # Connect-TcIde -SolutionPath reuses it WITHOUT -TakeOverOrphan: nobody can have worked in it (no
@@ -39,7 +39,13 @@
 # than 5 s); NO prompt is ever answered (any dialog -> IDE_MODAL_DIALOG with the
 # IDE_MODAL_DIALOG_EMPTY_ORPHAN hint, an incomplete scan -> MODAL_SCAN_INCOMPLETE); then
 # DTE.Documents.Count must read 0 (> 0 or unreadable -> documents-open). Every refusal other than a
-# dialog / incomplete scan makes Connect-TcIde go on as before (launch a new IDE).
+# dialog / incomplete scan / solution-was-opened makes Connect-TcIde go on as before (launch a new IDE).
+# PR #268 review S1: "empty now" is not "never used": a session that OPENED the .sln and ended
+# without -Quit leaves the IDE to the user, who may close the solution and keep working in that
+# window. So an IDE that TcAuto ever opened a solution in is refused ('solution-was-opened', checked
+# before the dialog scan): the launch record says solutionOpened = true, or ide-solutions.json has a
+# record of that pid + start time. Connect-TcIde then answers IDE_LAUNCH_PENDING with the
+# -TakeOverOrphan hint (ask the user first), as before #235.
 function Resolve-TcOrphanTakeover {
     [CmdletBinding()]
     param(
@@ -130,6 +136,18 @@ function Resolve-TcOrphanTakeover {
             $r = & $refuse 'solution-mismatch' "the IDE (pid $procId) has '$seen' open, it is not empty" $other $rec
             $r.Result.data | Add-Member -NotePropertyName 'rotSolution' -NotePropertyValue $seen
             return $r
+        }
+        # S1: a solution was opened in it by TcAuto at some time -> maybe the user's window now
+        $openedBy = $null
+        if ($null -ne $rec.PSObject.Properties['solutionOpened'] -and [bool]$rec.solutionOpened) { $openedBy = 'launch record solutionOpened' }
+        else {
+            $recStart = $null; try { $recStart = ConvertTo-TcUtcDate $rec.startTime } catch { $recStart = $null }
+            foreach ($sr in @(Read-TcIdeSolutionRecords)) {
+                try { if ([int]$sr.pid -eq $procId -and $null -ne $recStart -and (ConvertTo-TcUtcDate $sr.startTime) -eq $recStart) { $openedBy = "ide-solutions record ('$($sr.solution)')"; break } } catch { }
+            }
+        }
+        if ($null -ne $openedBy) {
+            return (& $refuse 'solution-was-opened' "the IDE (pid $procId) has no solution open now, but TcAuto opened a solution in it before ($openedBy): it may be the user's window now" $other $rec)
         }
         $op = "Connect-TcIde -SolutionPath (empty IDE pid $procId launched for this .sln by an ended TcAuto session; not reused, no second IDE launched)"
         $md = & $newData 'modal-dialog' $other $rec
