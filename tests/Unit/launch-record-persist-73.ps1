@@ -404,7 +404,7 @@ try {
     foreach ($case in @(
             @{ Name = 'Y1 other session alive, its IDE now has Y open'; Gone = $false; Sol = $slnY; Launch = $true },
             @{ Name = 'Y2 other session gone (other ownerId), its IDE now has Y open'; Gone = $true; Sol = $slnY; Launch = $true },
-            @{ Name = 'Y3 other session gone, its IDE has no solution open'; Gone = $true; Sol = ''; Launch = $true },
+            @{ Name = 'Y3 other session gone, its IDE has no solution open'; Gone = $true; Sol = ''; Launch = $false; EmptyOrphan = $true },
             @{ Name = 'Y4 other session alive, its IDE has no solution open (may be cold-starting)'; Gone = $false; Sol = ''; Launch = $false })) {
         Reset-All
         $first = Start-OwnIde
@@ -421,7 +421,13 @@ try {
         Show-OwnInRot $first.Pid $case.Sol
         $global:Modal73 = 'incomplete'
         $r = Connect-TcIde -SolutionPath $sln
-        if ($case.Launch) {
+        if ($case.EmptyOrphan) {
+            # #235 changed Y3 (it launched a second IDE before): the empty IDE of the ended session is
+            # reused; here its dialog scan never completes -> MODAL_SCAN_INCOMPLETE on THAT IDE, no
+            # second IDE, nothing attached (reuse itself: tests/Unit/reuse-empty-orphan-235.ps1)
+            Check "$($case.Name) -> empty orphan considered for reuse (#235): scan incomplete -> MODAL_SCAN_INCOMPLETE, no second IDE" ($global:Launches73.Count -eq 1 -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.reusedEmptyOrphan -eq $false -and [int]$r.data.ideProcessId -eq [int]$first.Pid -and $global:Kills73.Count -eq 0) "code=$($r.error.code) launches=$($global:Launches73.Count) pid=$($r.data.ideProcessId)"
+        }
+        elseif ($case.Launch) {
             Check "$($case.Name) -> ConnectIde -SolutionPath X launches as usual" ($global:Launches73.Count -eq 2 -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:Kills73.Count -eq 0) "code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
         }
         else {

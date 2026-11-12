@@ -423,7 +423,11 @@ try {
     Check 'T9g host gone, owner alive, IDE with no solution yet: still IDE_LAUNCH_PENDING other-session, no second IDE' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $global:Launches73.Count -eq 1) "code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
     $p = New-Orphan -RotSolution ''
     $r = Connect-TcIde -SolutionPath $sln
-    Check 'T9h host and owner gone, IDE with no solution: released as before (a new IDE is launched)' ($global:Launches73.Count -eq 2) "code=$($r.error.code) launches=$($global:Launches73.Count)"
+    # #235 changed this case: the empty IDE of the ended session is no longer left behind (a second IDE
+    # was launched before); it is reused when it shows no dialog and has no document open
+    # (tests/Unit/reuse-empty-orphan-235.ps1). This fake DTE has no Documents property (read fails ->
+    # counted as open), so here it is NOT reused and a new IDE is launched as before.
+    Check 'T9h host and owner gone, IDE with no solution whose documents cannot be read: not reused (#235), a new IDE is launched' ($global:Launches73.Count -eq 2 -and $r.data.reusedEmptyOrphan -ne $true) "code=$($r.error.code) launches=$($global:Launches73.Count)"
     $null = Disconnect-TcIde
 
     # --- T11 (#201): a reload prompt of the orphan is answered "do not reload", then taken over ---
