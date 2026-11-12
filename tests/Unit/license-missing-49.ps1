@@ -37,11 +37,12 @@ Check 'A ADS 1809 fatal error (same 10000 prefix, #194) -> not a license failure
 Check 'A license word without (10000) -> no' (-not (& $t 'Your 7 day trial license expires soon')) ''
 Check 'A bare 10000 (ADS port 10000) + license -> no' (-not (& $t 'ADS port 10000 stays in Config; license server reports expired')) ''
 Check 'A empty / null -> no' ((-not (& $t '')) -and (-not (& $t $null))) ''
-Check 'A hint names XAE trial / license, ClearLifecycleBlock, never pressing the dialog' ($licHint -match 'ClearLifecycleBlock' -and $licHint -match 'trial' -and $licHint -match 'security code' -and $licHint -match 'data.licenseMissing') $licHint
+Check 'A hint names XAE trial / license, ClearLifecycleBlock, never pressing the dialog' ($licHint -match 'Clear-TcLifecycleBlock' -and $licHint -match 'trial' -and $licHint -match 'security code' -and $licHint -match 'data.licenseMissing') $licHint
 
 # --- B: ConvertTo-TcAdsErrorCode (Invoke-TcComRetry / activation watchdog message)
+# PR review: ConvertTo-TcAdsErrorCode keeps IDE_MODAL_DIALOG (IDE-blocked code lists elsewhere rely on it)
 $m = & $mod { param($x) ConvertTo-TcAdsErrorCode -InputObject $x } "IDE_MODAL_DIALOG: Microsoft Visual Studio | $licEn (operation 'ActivateConfiguration', original error: x)"
-Check 'B IDE_MODAL_DIALOG with a license dialog -> LICENSE_MISSING + its hint' ($m.Code -eq 'LICENSE_MISSING' -and $m.Hint -eq $licHint) "$($m.Code)"
+Check 'B IDE_MODAL_DIALOG with a license dialog stays IDE_MODAL_DIALOG in ConvertTo-TcAdsErrorCode' ($m.Code -eq 'IDE_MODAL_DIALOG') "$($m.Code)"
 $m = & $mod { param($x) ConvertTo-TcAdsErrorCode -InputObject $x } "IDE_MODAL_DIALOG: TwinCAT XAE | $fatal1809"
 Check 'B IDE_MODAL_DIALOG with the ADS 1809 dialog -> IDE_MODAL_DIALOG' ($m.Code -eq 'IDE_MODAL_DIALOG') "$($m.Code)"
 
@@ -123,6 +124,24 @@ $global:RunResult = 'timeout'
 $global:Dlg = @{ Title = 'TwinCAT XAE'; Text = $fatal1809; Kind = 'unknown' }
 $r = Enable-TcConfig -Force -WarningAction SilentlyContinue
 Check 'C4 ADS 1809 dialog: code stays SYSTEM_STATE_TIMEOUT, no data.licenseMissing, block kept' ($r.error.code -eq 'SYSTEM_STATE_TIMEOUT' -and $null -eq $r.data.PSObject.Properties['licenseMissing'] -and $r.data.lifecycleBlock.errorCode -eq 'SYSTEM_STATE_TIMEOUT') "code=$($r.error.code)"
+Clear-Block
+
+# C6: PR review E - Error List rows of different sources are not joined: an ADS 1809 row with (10000)
+# and another row with a license word -> no LICENSE_MISSING
+Reset-Case
+$global:RunResult = 'timeout'
+$global:Dlg = $null
+& $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @([PSCustomObject]@{ description = "'TwinCAT System' (10000): AdsError: 1809 (0x711)" }, [PSCustomObject]@{ description = 'PLC log: license check of my own FB failed' }) }) } }
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+Check 'C6 1809 row + unrelated license row: not LICENSE_MISSING' ($r.error.code -ne 'LICENSE_MISSING' -and $null -eq $r.data.PSObject.Properties['licenseMissing']) "code=$($r.error.code) msg=$($r.error.message)"
+& $mod { function script:Get-TcBuildErrors { param($TimeoutSec) New-TcResult -Success $true -Data ([PSCustomObject]@{ errors = @() }) } }
+Clear-Block
+
+# C7: PR review C - IDE_CRASHED keeps its code even when the message carries license text
+Reset-Case
+$global:ActivateThrows = "IDE_CRASHED: the IDE process (pid 1) no longer exists after 'ActivateConfiguration' failed (original error: $licEn)"
+$r = Enable-TcConfig -Force -WarningAction SilentlyContinue
+Check 'C7 IDE_CRASHED with license text keeps IDE_CRASHED, block recorded' ($r.error.code -eq 'IDE_CRASHED' -and $r.data.lifecycleBlock.errorCode -eq 'IDE_CRASHED') "code=$($r.error.code)"
 Clear-Block
 
 # C5: license dialog already up BEFORE set-config: nothing sent -> LICENSE_MISSING without a block

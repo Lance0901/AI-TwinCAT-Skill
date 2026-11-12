@@ -36,7 +36,10 @@
         errorList; errorListError; bootPackage; modalScan } (Get-TcRuntimeFailureDiagnostics, the
         same collection as Enable-TcConfig after Activate). Without an IDE connection the dialog
         and the Error List are not read: dialogScanComplete $false, modalScan.reason 'no-ide',
-        errorListError 'unavailable: no IDE connection'. The code stays as it is. error.hint
+        errorListError 'unavailable: no IDE connection'. The code stays as it is, except #49: a dialog
+        or Error List row with the runtime's license failure ('(10000)' and a license word) turns it
+        into LICENSE_MISSING (data.licenseMissing; the block, already written, keeps the original
+        code; the license hint comes first, a diagnostics hint of its own is kept after it). error.hint
         follows the diagnostics (Get-TcStuckInConfigHint): ADS 1809 / 0x711 / "symbol version" in
         the dialog or an Error List row -> ADS_SYMBOL_VERSION_INVALID explanation (Build +
         Enable-TcConfig -Force); another dialog / row -> its text; a license problem only when the
@@ -320,7 +323,10 @@
                     if ($null -ne $licEvidence) {
                         $Res.error.code = 'LICENSE_MISSING'
                         Add-TcLicenseMissingData -Result $Res -Evidence $licEvidence -OriginalCode $Code
-                        $hint = Get-TcErrorHint -Code 'LICENSE_MISSING'
+                        # PR review: an Error List row may be older than this request; keep the
+                        # diagnostics hint (e.g. ADS 1809) after the license hint instead of dropping it
+                        $licHint = Get-TcErrorHint -Code 'LICENSE_MISSING'
+                        $hint = if (-not [string]::IsNullOrWhiteSpace($hint) -and $hint -ne $base) { "$licHint Diagnostics hint: $hint" } else { $licHint }
                     }
                 }
                 Set-TcHintAfterStopText -Result $Res -OldHint $base -NewHint $hint

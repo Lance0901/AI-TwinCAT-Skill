@@ -8,16 +8,18 @@
 # request: the XAE fatal error dialog / Error List row / modal-probe report carries the runtime's
 # own text, measured 2026-11-11 (VS2022 4026 + UmRT):
 #   Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!
-# The decision is language independent: the runtime's error source number 10000 ('TwinCAT System')
-# in parentheses AND a license word (license / licence / Lizenz / zh-TW / zh-CN / ja). 10000 alone is not enough:
-# the ADS 1809 fatal error carries the same "'TwinCAT System' (10000)" prefix (#194).
+# The decision does not depend on the XAE UI language: '(10000)' after 'TwinCAT System' in
+# parentheses AND a license word. The number equals the ADS port of the TwinCAT system service; what
+# XAE means by it is NOT confirmed by InfoSys (see Get-TcIdeErrorList). Only the English runtime text
+# above is measured; the German / zh-TW / zh-CN / ja words are an inference. '(10000)' alone is not
+# enough: the ADS 1809 fatal error carries the same "'TwinCAT System' (10000)" prefix (#194).
 # The dialog is never pressed (license dialogs are the user's, worker rules / SKILL.md Failure
 # contract); the lifecycle block of the failed request is kept (#68 / #236).
 #
 # Windows PowerShell 5.1; ASCII source (non-ASCII words as \u escapes).
 
 # '(10000)' in ASCII or full-width parentheses: a bare 10000 (e.g. 'ADS port 10000' in a state
-# message) is not the error source
+# message) does not count
 $script:TcLicenseSourcePattern = '[(\uFF08]\s*10000\s*[)\uFF09]'
 # license / licence / Lizenz / \u6388\u6B0A (zh-TW) / \u6388\u6743 (zh-CN) / \u30E9\u30A4\u30BB\u30F3\u30B9 (ja)
 $script:TcLicenseWordPattern = '(?i)licen[cs]|lizenz|\u6388\u6B0A|\u6388\u6743|\u30E9\u30A4\u30BB\u30F3\u30B9'

@@ -265,11 +265,11 @@ function licenseHint(pid, title, outcome) {
       : 'the PowerShell bridge was killed and all IDE/ADS state is lost';
   const block =
     outcome === 'killed'
-      ? 'If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle) it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check: do not re-run it and do not work around it with raw ADS / COM / GUI. '
+      ? 'The interrupted operation may still complete or partly apply after the dialog closes. If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle) it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check: do not re-run it and do not work around it with raw ADS / COM / GUI. '
       : '';
   return (
     `The target reported a missing license (dialog '${title}' in the IDE pid ${pid}: TwinCAT System error 10000 with a license text; data.licenseMissing.evidence); ${lost}. ` +
-    'The server does not press the dialog. Stop and report to the user: the user closes the fatal error dialog in XAE and renews the 7 day trial (security code) or activates the license (XAE SYSTEM > License). ' +
+    'The server does not press the dialog. Stop and report to the user: the user closes the fatal error dialog in XAE and renews the trial license or activates the license in XAE (SYSTEM > License; the trial asks for a security code, see docs/troubleshooting.md, known modal dialogs). ' +
     block +
     'After the user fixed the license: ConnectIde again, GetSystemState to read back, ClearLifecycleBlock only after the user agreed, then EnableConfig Force=true. Never edit license files.'
   );

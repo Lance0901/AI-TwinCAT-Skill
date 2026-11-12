@@ -132,7 +132,7 @@ function Enable-TcConfig {
         reachedState (last system state read back). Once set-config (a Set-TcSystemState with
         data.requestSent = $true) or ActivateConfiguration() was sent, EVERY failure records a
         lifecycle block for the target (data.lifecycleBlock), for example ACTIVATE_TIMEOUT,
-        ACTIVATE_FAILED, IDE_CRASHED, IDE_MODAL_DIALOG, CYCLE_TIMEOUT, LOGIN_FAILED,
+        ACTIVATE_FAILED, IDE_CRASHED, IDE_MODAL_DIALOG, LICENSE_MISSING, CYCLE_TIMEOUT, LOGIN_FAILED,
         NOT_CONNECTED / BUILD_REQUIRED of the nested login, STATE_SET_FAILED,
         ADS_RECONNECT_FAILED, SYSTEM_STATE_*, RUNTIME_STATE_MISMATCH, BOOT_PACKAGE_MISMATCH,
         PLC_*; only LIFECYCLE_BLOCKED of a nested command is not recorded again. Failures before
@@ -144,6 +144,12 @@ function Enable-TcConfig {
         data.diagnostics is filled: dialog (modal dialog title/text), errorList (first error
         rows of the XAE Error List), bootPackage (fresh comparison). A Boot package
         mismatch turns the code into BOOT_PACKAGE_MISMATCH.
+        LICENSE_MISSING (#49): a modal dialog, an Error List row or the step error text with the
+        runtime's license failure ('(10000)' and a license word, Private/LicenseMissing.ps1)
+        replaces the code (also BOOT_PACKAGE_MISMATCH; not IDE_CRASHED / RUNTIME_CRASHED) before
+        the lifecycle block is written: data.licenseMissing { evidence; originalCode }. The dialog
+        is never pressed. A license dialog already up before set-config: LICENSE_MISSING, nothing
+        sent, no block.
         -TimeoutSec is ONE overall deadline for the whole cycle: every wait gets the
         remaining time (min 1 s), and a step that would start after the deadline
         fails with CYCLE_TIMEOUT.
@@ -420,6 +426,7 @@ function Enable-TcConfig {
         # -DialogScan: a scan result the caller already has (a dialog record, an incomplete-scan
         # record, or 'none' = scanned, no dialog); then no second scan is made (#42).
         param([string]$Message, [string]$Code, [string]$Hint, [object]$DialogScan)
+        $plainMessage = $Message
         # #194: collection shared with Set-TcSystemState (Private/Get-TcRuntimeFailureDiagnostics.ps1)
         # PR #200 review: the modal scan first (unbounded as before: after a timeout the dialog is what
         # explains it); the DTE platform read only when it found no dialog, else the cached platform
@@ -449,7 +456,7 @@ function Enable-TcConfig {
         }
         if ($extra.Count -gt 0) { $Message = "$Message [diagnostics: $($extra -join '; ')]" }
         # #49: the full dialog text and every Error List row, not only the 3 rows in the message
-        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint -Evidence @(Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag)
+        New-TcStepFailure -Message $Message -Code $Code -Hint $Hint -Evidence @(Get-TcDiagnosticsLicenseEvidence -Diagnostics $diag) -LicenseMessage $plainMessage
     }
 
     # SolutionBuild.LastBuildInfo (number of failed projects), $null when unreadable.
@@ -505,15 +512,20 @@ function Enable-TcConfig {
     }
 
     function New-TcStepFailure {
-        # -Evidence: extra texts (e.g. the full dialog text) checked for the #49 license failure
-        param([string]$Message, [string]$Code, [string]$Hint, [string[]]$Evidence)
+        # -Evidence: extra texts (e.g. the full dialog text) checked for the #49 license failure.
+        # -LicenseMessage: the text checked instead of -Message (New-TcRuntimeFailure: the message
+        # BEFORE the diagnostics were appended, so rows of different sources are never joined).
+        param([string]$Message, [string]$Code, [string]$Hint, [string[]]$Evidence, [AllowNull()][string]$LicenseMessage)
         # #49: the runtime reported a missing license (dialog / Error List / step error text):
         # LICENSE_MISSING replaces the generic code BEFORE the lifecycle block is written, so the
         # block records it too. The dialog is not touched.
         $licEvidence = $null
-        if ($Code -ne 'LIFECYCLE_BLOCKED') { $licEvidence = Get-TcLicenseFailureEvidence -Texts (@($Evidence) + $Message) }
-        # a step result already mapped to LICENSE_MISSING (ConvertTo-TcAdsErrorCode) came from a dialog
-        $licOriginal = if ($Code -eq 'LICENSE_MISSING' -and $Message -match 'IDE_MODAL_DIALOG') { 'IDE_MODAL_DIALOG' } else { $Code }
+        # a dead IDE / runtime is not a license problem: IDE_CRASHED / RUNTIME_CRASHED keep their code
+        if ($Code -notin @('LIFECYCLE_BLOCKED', 'IDE_CRASHED', 'RUNTIME_CRASHED')) {
+            $licText = if ($PSBoundParameters.ContainsKey('LicenseMessage')) { $LicenseMessage } else { $Message }
+            $licEvidence = Get-TcLicenseFailureEvidence -Texts (@($Evidence) + $licText)
+        }
+        $licOriginal = $Code
         if ($null -ne $licEvidence -and $Code -ne 'LICENSE_MISSING') { $Code = 'LICENSE_MISSING'; $Hint = $null }
         $params = @{ Success = $false; ErrorMessage = $Message; ErrorCode = $Code; Data = (Get-TcCycleData -Failed); LifecycleNetId = [string]$netId }
         if ([string]::IsNullOrWhiteSpace($Hint)) { $Hint = Get-TcErrorHint -Code $Code }

@@ -28,7 +28,8 @@ export const PROBED_TOOLS = new Set(['BuildProject', 'EnableConfig', 'PlcLogin',
 /**
  * #49: the dialog carries the runtime's license failure, e.g. (measured 2026-11-11, VS2022 4026 + UmRT)
  *   Target system reports a fatal error: 'TwinCAT System' (10000) >> license not found << checking TwinCAT Licenses!
- * Language independent, same rule as the module (Private/LicenseMissing.ps1): '(10000)' (error source
+ * Independent of the XAE UI language (only the English runtime text is measured; the non-English
+ * license words are an inference), same rule as the module (Private/LicenseMissing.ps1): '(10000)' (error source
  * 'TwinCAT System', ASCII or full-width parentheses) AND a license word (license / licence / Lizenz /
  * zh-TW / zh-CN / ja). '(10000)' alone is not enough: the ADS 1809 fatal error has the same prefix (#194).
  * @param {string} title
