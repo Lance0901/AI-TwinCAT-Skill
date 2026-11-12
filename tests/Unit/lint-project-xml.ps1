@@ -68,7 +68,7 @@ Test-Case 'XML-002 UTF-16 BOM but encoding="utf-8" (nit): XML-002 only, not also
 } @('PROJECT-XML-002', 'PROJECT-ENC-001') 'LINT_FAILED' {
     param($r) $d = @(Diag $r 'PROJECT-XML-002'); Check 'UTF-16 / utf-8 mismatch: blocking, fixHint says save as UTF-8' ($d[0].blocking -and $d[0].fixHint -match 'UTF-8') ($d | ConvertTo-Json -Compress)
 }
-Test-Case 'XML-002 no declaration, no BOM, non-ASCII: info only' { param($f) Write-LintFxFile $f.Dut ((Get-LintFxDutText).Replace('<?xml version="1.0" encoding="utf-8"?>' + "`n", '').Replace('Manual := 0,', 'Manual := 0, // 手動')) $false } @('PROJECT-XML-002', 'PROJECT-ENC-001') '' { param($r) & $soft $r 'PROJECT-XML-002' }
+Test-Case 'XML-002 no declaration, no BOM, non-ASCII: info only' { param($f) Write-LintFxFile $f.Dut (((Get-LintFxDutText) -replace '<\?xml[^>]*\?>\r?\n', '').Replace('Manual := 0,', 'Manual := 0, // 手動')) $false } @('PROJECT-XML-002', 'PROJECT-ENC-001') '' { param($r) & $soft $r 'PROJECT-XML-002' }
 Test-Case 'XML-003 code outside CDATA but legal text: warning (XAE reads it, measured C02 / C05)' { param($f) Edit-LintFxFile $f.Main { param($t) $t.Replace('<ST><![CDATA[fbA(bStart := GVL_Main.bRun);', '<ST>fbA(bStart := GVL_Main.bRun);<![CDATA[') } } @('PROJECT-XML-003') '' {
     param($r) $d = @(Diag $r 'PROJECT-XML-003'); Check 'XML-003 text-outside-cdata: warning, measured' ($d[0].variant -eq 'text-outside-cdata' -and -not $d[0].blocking -and $d[0].severity -eq 'warning' -and $null -eq $d[0].blockableBasis) ($d | ConvertTo-Json -Compress)
 }
