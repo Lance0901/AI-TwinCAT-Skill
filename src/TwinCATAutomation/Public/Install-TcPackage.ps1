@@ -14,7 +14,8 @@ function Install-TcPackage {
         data.plan to the user and ask; run again with -Approved -PlanToken <data.planToken> only after
         the user agreed. -Approved without a valid token (missing, unknown, used, expired, made for
         another command, or the state - blockers, running pids, feed, installed - changed since the
-        plan) -> TCPKG_PLAN_REQUIRED, nothing is run. Only %ProgramData%\Beckhoff\TcPkg\TcPkg.exe
+        plan) -> TCPKG_PLAN_REQUIRED with data.reason missing / unknown / expired / command / state,
+        nothing is run. Only %ProgramData%\Beckhoff\TcPkg\TcPkg.exe
         with a valid Authenticode signature of Beckhoff Automation GmbH & Co. KG is run (else
         TCPKG_NOT_FOUND / TCPKG_SIGNATURE_INVALID; a failed signature check fails closed). The plan names the
         target package only: -y also confirms whatever tcpkg resolves as dependencies (not listed
@@ -218,6 +219,7 @@ function Install-TcPackage {
         New-TcResult -Success $false -ErrorCode $code -Hint (Get-TcErrorHint -Code $code) -ErrorMessage $msg -Data $data
     }
     if (-not [string]::Equals($consent.fingerprint, $fingerprint, [StringComparison]::Ordinal)) {
+        $data['reason'] = 'state'   # PR #257 review 2: same data.reason field as the other TCPKG_PLAN_REQUIRED cases
         return (& $fail 'TCPKG_PLAN_REQUIRED' "Install refused: the state changed since the approved plan (plan: $($consent.fingerprint); now: $fingerprint). Nothing was run; make a new plan and ask the user again.")
     }
 

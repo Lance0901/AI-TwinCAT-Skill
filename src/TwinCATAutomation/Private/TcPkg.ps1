@@ -29,12 +29,15 @@ $script:TcPkgIdeProcessNames = @('TcXaeShell', 'devenv')
 $script:TcPkgManagerProcessNames = @('TcPkg', 'TwinCAT.Package.Manager.GUI')
 $script:TcPkgSignerOrganization = 'Beckhoff Automation GmbH & Co. KG'
 
-# %ProgramData%\Beckhoff\TcPkg\TcPkg.exe when it exists, else $null (measured install location,
-# 2026-11-12). The only executable Install-TcPackage runs (PR #257 review). Seam for the unit tests.
+# <CommonApplicationData>\Beckhoff\TcPkg\TcPkg.exe (C:\ProgramData\... on this machine) when it
+# exists, else $null (measured install location, 2026-11-12). The folder comes from
+# [Environment]::GetFolderPath, not from $env:ProgramData, which the calling process can change
+# (PR #257 review 2). The only executable Install-TcPackage runs. Seam for the unit tests.
 function Get-TcPkgDefaultExecutable {
     [CmdletBinding()]
     param()
-    $pd = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { 'C:\ProgramData' } else { $env:ProgramData }
+    $pd = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    if ([string]::IsNullOrWhiteSpace($pd)) { return $null }
     $default = Join-Path $pd 'Beckhoff\TcPkg\TcPkg.exe'
     if (Test-Path -LiteralPath $default -PathType Leaf) { return $default }
     $null
@@ -198,16 +201,80 @@ function Get-TcPkgRunningPackageManager {
     @(Get-TcPkgProcessByName -Name $script:TcPkgManagerProcessNames)
 }
 
-# Does an X.509 subject name the organisation Beckhoff Automation GmbH & Co. KG (O= exactly)?
-# Measured 2026-11-12: TcPkg.exe 2.4.18 is signed by 'CN=Beckhoff Automation GmbH & Co. KG,
-# O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE', status Valid.
-function Test-TcPkgSignerSubject {
-    param([AllowNull()][string]$Subject)
-    if ([string]::IsNullOrWhiteSpace($Subject)) { return $false }
-    foreach ($m in [regex]::Matches($Subject, '(?:^|,)\s*O=("[^"]*"|[^,]*)')) {
-        if ($m.Groups[1].Value.Trim().Trim('"') -ceq $script:TcPkgSignerOrganization) { return $true }
+# One DER TLV at -Offset of -Bytes: @{ tag; start (content offset); length; next }. Throws on a
+# truncated / unsupported encoding (callers fail closed).
+function Read-TcDerTlv {
+    param([byte[]]$Bytes, [int]$Offset, [int]$Limit)
+    if ($Offset + 2 -gt $Limit) { throw 'DER: truncated header' }
+    $tag = [int]$Bytes[$Offset]; $l = [int]$Bytes[$Offset + 1]; $pos = $Offset + 2
+    if ($l -ge 0x80) {
+        $n = $l -band 0x7F
+        if ($n -lt 1 -or $n -gt 3 -or $pos + $n -gt $Limit) { throw 'DER: unsupported length' }
+        $l = 0
+        for ($i = 0; $i -lt $n; $i++) { $l = ($l -shl 8) -bor [int]$Bytes[$pos + $i] }
+        $pos += $n
     }
-    $false
+    if ($pos + $l -gt $Limit) { throw 'DER: truncated content' }
+    @{ tag = $tag; start = $pos; length = $l; next = $pos + $l }
+}
+
+# Values of every organizationName (OID 2.5.4.10) attribute of a DER-encoded X.500 Name, read RDN by
+# RDN from the encoding (not from a display string, so a quoted CN / OU that contains ', O=...' is
+# never taken for an O attribute; .NET Framework has no RDN enumeration API). Throws on malformed DER.
+function Get-TcX500OrganizationName {
+    param([Parameter(Mandatory)][byte[]]$RawData)
+    $b = $RawData
+    $name = Read-TcDerTlv -Bytes $b -Offset 0 -Limit $b.Length
+    if ($name.tag -ne 0x30 -or $name.next -ne $b.Length) { throw 'DER: not a Name SEQUENCE' }
+    $values = @()
+    $p = $name.start
+    while ($p -lt $name.next) {
+        $set = Read-TcDerTlv -Bytes $b -Offset $p -Limit $name.next
+        if ($set.tag -ne 0x31) { throw 'DER: RDN is not a SET' }
+        $q = $set.start
+        while ($q -lt $set.next) {
+            $atv = Read-TcDerTlv -Bytes $b -Offset $q -Limit $set.next
+            if ($atv.tag -ne 0x30) { throw 'DER: attribute is not a SEQUENCE' }
+            $oid = Read-TcDerTlv -Bytes $b -Offset $atv.start -Limit $atv.next
+            if ($oid.tag -ne 0x06) { throw 'DER: attribute type is not an OID' }
+            $val = Read-TcDerTlv -Bytes $b -Offset $oid.next -Limit $atv.next
+            if ($oid.length -eq 3 -and $b[$oid.start] -eq 0x55 -and $b[$oid.start + 1] -eq 0x04 -and $b[$oid.start + 2] -eq 0x0A) {
+                $enc = switch ($val.tag) {
+                    0x0C { [System.Text.Encoding]::UTF8 }              # UTF8String
+                    0x13 { [System.Text.Encoding]::ASCII }             # PrintableString
+                    0x16 { [System.Text.Encoding]::ASCII }             # IA5String
+                    0x14 { [System.Text.Encoding]::GetEncoding(28591) } # TeletexString (read as Latin-1)
+                    0x1E { [System.Text.Encoding]::BigEndianUnicode }  # BMPString
+                    default { $null }
+                }
+                # an O attribute in an unknown string type still counts (as a non-matching value)
+                $values += $(if ($null -ne $enc) { $enc.GetString($b, $val.start, $val.length) } else { "<tag 0x$('{0:X2}' -f $val.tag)>" })
+            }
+            $q = $atv.next
+        }
+        $p = $set.next
+    }
+    , @($values)
+}
+
+# Is the signer the organisation Beckhoff Automation GmbH & Co. KG: exactly one O (organizationName)
+# attribute, equal (case-sensitive) to that name? -Subject: an X500DistinguishedName (the signer
+# certificate's SubjectName) or a subject string (parsed by .NET; unparseable = $false).
+# Measured 2026-11-12: TcPkg.exe 2.4.18 is signed by 'CN=Beckhoff Automation GmbH & Co. KG,
+# O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE', issuer 'CN=DigiCert
+# Trusted G4 Code Signing RSA4096 SHA384 2021 CA1, O="DigiCert, Inc.", C=US', status Valid. The
+# issuer is reported, not pinned: status Valid already requires a chain to a trusted root, and a
+# pinned CA would refuse the next Beckhoff certificate from another CA.
+function Test-TcPkgSignerSubject {
+    param([AllowNull()][object]$Subject)
+    try {
+        $dn = if ($Subject -is [System.Security.Cryptography.X509Certificates.X500DistinguishedName]) { $Subject }
+        elseif ([string]::IsNullOrWhiteSpace([string]$Subject)) { return $false }
+        else { New-Object System.Security.Cryptography.X509Certificates.X500DistinguishedName -ArgumentList ([string]$Subject) }
+        $o = @(Get-TcX500OrganizationName -RawData $dn.RawData)
+        return ($o.Count -eq 1 -and [string]::Equals([string]$o[0], $script:TcPkgSignerOrganization, [StringComparison]::Ordinal))
+    }
+    catch { return $false }
 }
 
 # Authenticode signature of -Path: [PSCustomObject]@{ ok (Valid and signed by Beckhoff); status;
@@ -216,9 +283,11 @@ function Test-TcPkgSignature {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
-    $subject = if ($null -ne $sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { $null }
+    $cert = $sig.SignerCertificate
+    $subject = if ($null -ne $cert) { [string]$cert.Subject } else { $null }
     $status = [string]$sig.Status
-    [PSCustomObject]@{ ok = ($status -eq 'Valid' -and (Test-TcPkgSignerSubject $subject)); status = $status; subject = $subject; error = $(if ($status -ne 'Valid') { [string]$sig.StatusMessage } else { $null }) }
+    $signerOk = ($null -ne $cert -and (Test-TcPkgSignerSubject $cert.SubjectName))
+    [PSCustomObject]@{ ok = ($status -eq 'Valid' -and $signerOk); status = $status; subject = $subject; issuer = $(if ($null -ne $cert) { [string]$cert.Issuer } else { $null }); error = $(if ($status -ne 'Valid') { [string]$sig.StatusMessage } elseif (-not $signerOk) { 'the signer is not O=' + $script:TcPkgSignerOrganization } else { $null }) }
 }
 
 # --- PR #257 review: one-time plan tokens (consent) ---
@@ -233,16 +302,20 @@ function New-TcPkgPlanToken {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][string]$Fingerprint)
     if ($null -eq $script:TcPkgPlans) { $script:TcPkgPlans = @{} }
-    $now = [DateTime]::UtcNow
-    foreach ($k in @($script:TcPkgPlans.Keys)) { if ($script:TcPkgPlans[$k].expiresUtc -lt $now) { $script:TcPkgPlans.Remove($k) } }
+    # PR #257 review 2: expiry on the monotonic Stopwatch counter (a wall-clock change does not extend
+    # or shorten it); expiresUtc is for display only
+    $tick = [System.Diagnostics.Stopwatch]::GetTimestamp()
+    foreach ($k in @($script:TcPkgPlans.Keys)) { if ($script:TcPkgPlans[$k].expiresTick -lt $tick) { $script:TcPkgPlans.Remove($k) } }
     $token = [guid]::NewGuid().ToString('N')
-    $exp = $now.AddSeconds($script:TcPkgPlanTtlSec)
-    $script:TcPkgPlans[$token] = [PSCustomObject]@{ command = $Command; fingerprint = $Fingerprint; expiresUtc = $exp }
+    $expTick = $tick + [long]($script:TcPkgPlanTtlSec * [System.Diagnostics.Stopwatch]::Frequency)
+    $exp = [DateTime]::UtcNow.AddSeconds($script:TcPkgPlanTtlSec)
+    $script:TcPkgPlans[$token] = [PSCustomObject]@{ command = $Command; fingerprint = $Fingerprint; expiresTick = $expTick; expiresUtc = $exp }
     [PSCustomObject]@{ token = $token; expiresUtc = $exp }
 }
 
 # Takes the token out of the store (one use, whatever the outcome). Returns @{ ok; reason
-# ('missing' | 'unknown' | 'expired' | 'command'); fingerprint }.
+# ('missing' | 'unknown' | 'expired' | 'command'); fingerprint }. Install-TcPackage adds 'state' when
+# the token is valid but the preconditions differ from the plan.
 function Use-TcPkgPlanToken {
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$Token, [Parameter(Mandatory)][string]$Command)
@@ -250,7 +323,7 @@ function Use-TcPkgPlanToken {
     if ($null -eq $script:TcPkgPlans -or -not $script:TcPkgPlans.ContainsKey($Token)) { return [PSCustomObject]@{ ok = $false; reason = 'unknown'; fingerprint = $null } }
     $p = $script:TcPkgPlans[$Token]
     $script:TcPkgPlans.Remove($Token)
-    if ($p.expiresUtc -lt [DateTime]::UtcNow) { return [PSCustomObject]@{ ok = $false; reason = 'expired'; fingerprint = $null } }
+    if ([long]$p.expiresTick -lt [System.Diagnostics.Stopwatch]::GetTimestamp()) { return [PSCustomObject]@{ ok = $false; reason = 'expired'; fingerprint = $null } }
     if (-not [string]::Equals([string]$p.command, $Command, [StringComparison]::Ordinal)) { return [PSCustomObject]@{ ok = $false; reason = 'command'; fingerprint = $null } }
     [PSCustomObject]@{ ok = $true; reason = $null; fingerprint = [string]$p.fingerprint }
 }

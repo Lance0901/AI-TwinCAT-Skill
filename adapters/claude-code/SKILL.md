@@ -406,7 +406,7 @@ Assertion / WaitUntil operators:`Equal`(預設)、`NotEqual`、`GreaterThan`、`
 | `IDE_VERSION_NOT_REGISTERED` | .tsproj 的 `TcVersion` 讀得到，但對應的 IDE 沒註冊或沒確認到 TwinCAT XAE 整合;沒有啟動(#72) | 確定要用某個 IDE 就帶 `-ProgId`;否則安裝對應 build 的 XAE |
 | `TCPKG_NOT_FOUND` | 找不到 `tcpkg`(PATH / `%ProgramData%\Beckhoff\TcPkg\TcPkg.exe`)| 請使用者裝 TwinCAT Package Manager,或自己裝需要的版本 |
 | `TCPKG_TIMEOUT` / `TCPKG_LIST_FAILED` | tcpkg 逾時被停掉 / exit code 非 0 或輸出不是 JSON(`data.runs[]`)| 查詢:`-NoAvailable` 或加大 `-TimeoutSec`(最多 120),feed / 登入請使用者確認;安裝逾時:tcpkg 可能還在跑(`data.installProcessId`),等它結束再 `Get-TcPackageInfo` 讀回給使用者看,不要重跑 |
-| `TCPKG_PLAN_REQUIRED` | `Approved=true` 沒有有效的 `PlanToken`(沒帶、用過、過期、別的指令,或計畫後狀態變了),什麼都沒做 | 重新產生計畫,給使用者看,同意後帶新的 token |
+| `TCPKG_PLAN_REQUIRED` | `Approved=true` 沒有有效的 `PlanToken`(`data.reason`:missing / unknown / expired / command / state),什麼都沒做 | 重新產生計畫,給使用者看,同意後帶新的 token |
 | `TCPKG_SIGNATURE_INVALID` | `%ProgramData%\Beckhoff\TcPkg\TcPkg.exe` 沒有 Beckhoff 的有效簽章或檢查失敗(fail closed) | 停下回報使用者,不要改用別的 tcpkg |
 | `TCPKG_ELEVATION_REQUIRED` / `TCPKG_IDE_RUNNING` / `TCPKG_RUNNING` / `TCPKG_PRECHECK_FAILED` / `TCPKG_VERSION_NOT_FOUND` | `Install-TcPackage -Approved` 的前置檢查沒過,什麼都沒裝 | 停下回報使用者:提權、關 IDE(`data.runningIdes`)由使用者自己做;版本從 `data.availableVersions` 選並再問一次 |
 | `TCPKG_INSTALL_FAILED` / `TCPKG_INSTALL_UNVERIFIED` | 安裝 exit code 非 0 / exit 0 但讀回沒有該版本(fail closed)| 停下,把 `data.steps` 給使用者看;不要自己重試 |

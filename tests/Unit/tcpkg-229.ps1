@@ -55,6 +55,17 @@ try {
 
     # the real signature check, captured before the mocks replace it (C34)
     $realSig = & $mod { ${function:Test-TcPkgSignature} }
+    # PR #257 review 2: the default location comes from GetFolderPath(CommonApplicationData), not $env:ProgramData
+    $realDefault = & $mod { ${function:Get-TcPkgDefaultExecutable} }
+    $savedPd = $env:ProgramData
+    try {
+        $env:ProgramData = Join-Path $root 'not-programdata'
+        $got = & $mod { param($sb) & $sb } $realDefault
+        $expect = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Beckhoff\TcPkg\TcPkg.exe'
+        $want = if (Test-Path -LiteralPath $expect -PathType Leaf) { $expect } else { $null }
+        Check 'A7 default TcPkg.exe from GetFolderPath(CommonApplicationData), $env:ProgramData ignored' ($got -eq $want) "got=$got want=$want"
+    }
+    finally { $env:ProgramData = $savedPd }
     # --- mocks ---
     $global:Pkg229 = @{
         exe       = 'C:\fake\TcPkg.exe'
@@ -182,13 +193,18 @@ try {
     $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
     Check 'C8 a token presented once (even for a refused command) is used up -> TCPKG_PLAN_REQUIRED' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0) "$($r.error.code)"
     $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
-    & $mod { foreach ($k in @($script:TcPkgPlans.Keys)) { $script:TcPkgPlans[$k].expiresUtc = [DateTime]::UtcNow.AddSeconds(-1) } }
+    # monotonic clock (PR #257 review 2): only expiresTick decides; the wall-clock time is display only
+    & $mod { foreach ($k in @($script:TcPkgPlans.Keys)) { $script:TcPkgPlans[$k].expiresTick = [System.Diagnostics.Stopwatch]::GetTimestamp() - 1; $script:TcPkgPlans[$k].expiresUtc = [DateTime]::UtcNow.AddDays(1) } }
     $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
-    Check 'C9 expired PlanToken -> TCPKG_PLAN_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0 -and $r.error.message -match 'expired') "$($r.error.message)"
+    Check 'C9 expired PlanToken (monotonic clock) -> TCPKG_PLAN_REQUIRED, reason expired, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0 -and $r.error.message -match 'expired' -and $r.data.reason -eq 'expired') "$($r.error.message)"
+    $t = (& $plan TwinCAT.StandardRM.XAE 4024.99.1).data.planToken
+    & $mod { foreach ($k in @($script:TcPkgPlans.Keys)) { $script:TcPkgPlans[$k].expiresUtc = [DateTime]::UtcNow.AddDays(-1) } }
+    $r = & $approve TwinCAT.StandardRM.XAE 4024.99.1 $t
+    Check 'C9b wall clock moved past expiresUtc, monotonic deadline not reached -> token still valid' ($r.error.code -eq 'TCPKG_VERSION_NOT_FOUND') "$($r.error.code)"
     $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
     $global:Pkg229.ides = @([PSCustomObject]@{ processId = 777; name = 'TcXaeShell'; path = 'C:\x\TcXaeShell.exe'; title = 't' })
     $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
-    Check 'C10 state changed since the plan (an IDE started) -> TCPKG_PLAN_REQUIRED, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and (& $installs) -eq 0 -and $r.error.message -match 'changed') "$($r.error.message)"
+    Check 'C10 state changed since the plan (an IDE started) -> TCPKG_PLAN_REQUIRED, data.reason state, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_PLAN_REQUIRED' -and $r.data.reason -eq 'state' -and (& $installs) -eq 0 -and $r.error.message -match 'changed') "$($r.error.message)"
     $t = (& $plan TwinCAT.StandardRM.XAE 4024.71.5).data.planToken
     $r = & $approve TwinCAT.StandardRM.XAE 4024.71.5 $t
     Check 'C11 approved plan with an IDE running -> TCPKG_IDE_RUNNING naming the pid, no install' (-not $r.success -and $r.error.code -eq 'TCPKG_IDE_RUNNING' -and $r.error.message -match '777' -and (& $installs) -eq 0) "$($r.error.message)"
@@ -278,6 +294,19 @@ try {
     $subj = & $mod { Test-TcPkgSignerSubject 'CN=Beckhoff Automation GmbH & Co. KG, O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE' }
     $fake = & $mod { Test-TcPkgSignerSubject 'CN=Evil, O=Beckhoff Automation GmbH & Co. KG Fake, C=XX' }
     Check 'C35 signer subject must have O=Beckhoff Automation GmbH & Co. KG exactly' ($subj -and -not $fake) "$subj/$fake"
+    $cases = @(
+        , @('quoted CN that contains ", O=Beckhoff...", real O is Evil', 'CN="x, O=Beckhoff Automation GmbH & Co. KG", O=Evil Ltd', $false)
+        , @('O=Beckhoff only inside a quoted OU', 'CN=x, OU="O=Beckhoff Automation GmbH & Co. KG", O=Evil Ltd', $false)
+        , @('two O attributes (Beckhoff + Evil)', 'CN=x, O=Beckhoff Automation GmbH & Co. KG, O=Evil Ltd', $false)
+        , @('no O at all', 'CN=Beckhoff Automation GmbH & Co. KG, C=DE', $false)
+        , @('unparseable subject', 'not a = distinguished, , name ="', $false)
+        , @('quoted O value with the exact name', 'CN=Beckhoff Automation GmbH & Co. KG, O="Beckhoff Automation GmbH & Co. KG", C=DE', $true)
+        , @('case differs', 'CN=x, O=BECKHOFF AUTOMATION GMBH & CO. KG', $false)
+    )
+    foreach ($c in $cases) {
+        $got = & $mod { param($x) Test-TcPkgSignerSubject $x } $c[1]
+        Check "C36 signer O= parsed per RDN: $($c[0])" ($got -eq $c[2]) "got=$got"
+    }
 
     # --- D: PROGID_REQUIRED hint ---
     & $mod {

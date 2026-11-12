@@ -387,15 +387,16 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### TCPKG_PLAN_REQUIRED
 
-- **現象(#229 PR #257 review)**:`Install-TcPackage -Approved`(MCP `Approved=true`)沒有執行任何東西。`data.reason`:`missing`(沒帶 `-PlanToken`)、`unknown`(不認得或已經用過:token 只能用一次,server / bridge 重啟、`ReloadModule` 後全部失效)、`expired`(約 10 分鐘)、`command`(token 是別的套件 / 版本的計畫);或 token 有效但計畫之後狀態變了(權限、blockers、IDE / tcpkg 的 pid、feed、已安裝),訊息會列出計畫與現在的狀態。
+- **現象(#229 PR #257 review)**:`Install-TcPackage -Approved`(MCP `Approved=true`)沒有執行任何東西。`data.reason`:`missing`(沒帶 `-PlanToken`)、`unknown`(不認得或已經用過:token 只能用一次,server / bridge 重啟、`ReloadModule` 後全部失效)、`expired`(約 10 分鐘)、`command`(token 是別的套件 / 版本的計畫)、`state`(token 有效但計畫之後狀態變了:權限、blockers、IDE / tcpkg 的 pid、feed、已安裝;訊息會列出計畫與現在的狀態)。過期用單調時鐘(`Stopwatch.GetTimestamp`)判斷,改系統時間不會延長或縮短;`data.plan.expiresAtUtc` 只是顯示用。
 - **為什麼**:使用者規則是「詢問後,得到許可才安裝」。token 把同意綁在使用者看過的那份計畫上,agent 不能跳過計畫直接帶 `Approved=true`。
 - **下一步**:不帶 `-Approved` 重新產生計畫,把 `data.plan` 給使用者看,使用者同意後才帶 `-Approved -PlanToken <新的 data.planToken>`。
 
 ### TCPKG_SIGNATURE_INVALID
 
 - **現象**:`Install-TcPackage`(計畫或執行)回 `TCPKG_SIGNATURE_INVALID`:`%ProgramData%\Beckhoff\TcPkg\TcPkg.exe` 的 Authenticode 狀態不是 `Valid`、簽署者的 `O=` 不是 `Beckhoff Automation GmbH & Co. KG`,或簽章檢查本身失敗(一律當成不通過,fail closed)。什麼都沒執行,也沒有 token。
-- **為什麼**:安裝要用系統管理員權限跑,只能跑確定是 Beckhoff 的那一個檔案;`Install-TcPackage` 不用 PATH 上的 tcpkg。實測 2026-11-12:TcPkg 2.4.18 的簽章 Valid,簽署者 `CN=Beckhoff Automation GmbH & Co. KG, O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE`。
+- **為什麼**:安裝要用系統管理員權限跑,只能跑確定是 Beckhoff 的那一個檔案;`Install-TcPackage` 不用 PATH 上的 tcpkg,資料夾用 `[Environment]::GetFolderPath('CommonApplicationData')`,不看可被呼叫端改掉的 `$env:ProgramData`。簽署者從憑證 Subject 的 DER 編碼逐個 RDN 讀,必須剛好一個 `O`(organizationName)且完全等於 `Beckhoff Automation GmbH & Co. KG`;不解析顯示字串,所以帶引號的 CN / OU 裡藏 `, O=Beckhoff...` 騙不過。發行者(實測:`CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1, O="DigiCert, Inc.", C=US`)只回報在 `data.signature.issuer`,不鎖定:`Valid` 已要求鏈到受信任的根,鎖 CA 會擋掉 Beckhoff 換 CA 後的下一張憑證。實測 2026-11-12:TcPkg 2.4.18 的簽章 Valid,簽署者 `CN=Beckhoff Automation GmbH & Co. KG, O=Beckhoff Automation GmbH & Co. KG, L=Verl, S=Nordrhein-Westfalen, C=DE`。
 - **下一步**:不要改用別的路徑;把 `error.message`(狀態、簽署者)給使用者看,請使用者確認 TwinCAT Package Manager 的安裝。
+- **已知風險(實測 2026-11-12,`icacls`,未處理,#260)**:`C:\ProgramData\Beckhoff\TcPkg` 繼承了 `BUILTIN\Users:(I)(CI)(WD,AD,WEA,WA)`,一般使用者可以在 `TcPkg.exe` 旁新增檔案。簽章只驗 `TcPkg.exe` 本身,以系統管理員執行時有 DLL 側載的可能(推論,載入順序沒驗證)。是否在安裝前檢查資料夾 ACL 由 #260 評估。
 
 ### TCPKG_RUNNING
 
