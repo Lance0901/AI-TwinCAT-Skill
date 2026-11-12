@@ -69,6 +69,9 @@
     Skip unit and npm test (used by the pre-commit hook).
 .PARAMETER Strict
     Treat SKIP as a failure (used by CI).
+.PARAMETER SkipNpmTest
+    #253: leave out the npm test section (no result line, so -Strict does not fail on it). CI runs
+    npm test in its own parallel job; the default run (and -Fast) is unchanged.
 .PARAMETER UnitParallel
     #240: how many tests/Unit scripts run at the same time. 0 (default) = env TCAUTO_CHECK_UNIT_PARALLEL
     when set, else the CPU count, at most 4. 1 = the old sequential run.
@@ -86,6 +89,7 @@
 param(
     [switch]$Fast,
     [switch]$Strict,
+    [switch]$SkipNpmTest,
     [int]$UnitParallel = 0
 )
 
@@ -114,6 +118,7 @@ if ($PSVersionTable.PSEdition -eq 'Core') {
     $argsList = @('-NoProfile', '-File', $PSCommandPath)
     if ($Fast) { $argsList += '-Fast' }
     if ($Strict) { $argsList += '-Strict' }
+    if ($SkipNpmTest) { $argsList += '-SkipNpmTest' }
     & powershell.exe @argsList
     exit $LASTEXITCODE
 }
@@ -873,7 +878,10 @@ else {
 # ---------------------------------------------------------------------------
 # npm test (mcp-server)
 # ---------------------------------------------------------------------------
-if ($Fast) {
+if ($SkipNpmTest) {
+    Write-Host 'npm test: left out by -SkipNpmTest (CI runs it in the separate npm-test job, #253)'
+}
+elseif ($Fast) {
     Add-CheckResult 'npm test' 'SKIP' '-Fast'
 }
 else {
