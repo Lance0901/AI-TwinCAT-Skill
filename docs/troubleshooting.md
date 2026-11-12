@@ -116,6 +116,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ## 磁碟改檔的正確做法(.TcPOU / .TcGVL / .plcproj 直接改檔案)
 
+**順序:改檔 → `Invoke-TcLintProject`(MCP `LintProject`,不需要 IDE)→ 通過才 `Reset-TcSolution` → `Build-TcProject`。** lint 先在磁碟擋下會讓 XAE 靜默丟物件的損毀(PROJECT-*)與 Build 抓不到的機台行為問題(SCAN-TEMPFB-001、PROJECT-TASK-001 / 002);結果 `requiresDisposition: true` 時,`data.unresolved[]` 每一筆要改程式或寫理由 suppress,`data.newSuppressions[]` 逐條列給使用者,處置完之前不 `Enable-TcConfig`。細節見「Semantic linter(#252 Phase 1a / 1b):做法」。
+
 `Write-TcPouCode` / `Add-TcPou` 走 COM(`ITcSmTreeItem.DeclarationText` / `ImplementationText`)寫進 IDE,**不會**跳框,優先用它。寫入當下 XAE 就把 .TcPOU 寫到磁碟:實測 2026-10-28(4026 VisualStudio.DTE.17.0,`C:\Temp\Verify-repro-axis`)`WritePouCode` 後不 Build,磁碟 .TcPOU 的 LastWriteTime 與 `WritePouCode` 同一秒、檔內已有新內容,開著 editor 時也一樣([#69 實測留言](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/69#issuecomment-6460378071));4024 未測。(早期 2026-10-20 在 4024 32-bit XAE 記錄過「mtime/hash 不變、要到存檔或 Build 才落地」,與 #69 的 4026 實測不同,4024 尚未重測。)新建物件的 `.plcproj` 項目則不會自己落地,見下方「新物件與 .plcproj(#76)」。AI 或其他工具直接改磁碟上的檔案時,決定一切的是「該檔案有沒有開在 XAE 的文件視窗」(2026-10-20 `tests/Integration/reload-experiment.ps1`,4024 32-bit XAE,log 在 `tests/Integration/logs/reload-S*.log`):
 
 | 情境 | XAE 行為 | 正確做法 |
@@ -2139,17 +2141,23 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:安裝後有人改過檔案、只複製了一部分,或用舊方式手動覆蓋。
 - **下一步**:把 `data.verify` 回報給使用者;在來源 repo 跑 `TwinCATSetup-<工具>.ps1 -Verify` 看與來源的差異,再重跑 installer。不要自己把檔案改回去。
 
-### Semantic linter(#252 Phase 1a):做法
+### Semantic linter(#252 Phase 1a / 1b):做法
 
 `Invoke-TcLintProject`(MCP `LintProject`)唯讀檢查磁碟上的 PLC 專案:`.plcproj` 與它 `<Compile>` 列出的每個檔、參照它的 `.tsproj` 與 `.sln`。不需要 IDE、不需要 runtime,不寫任何檔案、不記 lifecycle block。設計:`openspec/changes/add-semantic-linter/design.md`;規則:`rule-catalog.md` 第 1 節。
 
-- **這一版的規則**:AI 直接改磁碟檔最常弄壞的專案完整性問題(PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC)與 ST 解析(LINT-PARSE-*)。機台行為規則(SCAN-*)還沒有。結構規則的依據是兩個真實專案(4024 / 4026)裡 XAE 實際寫出的檔案(`research/tc-xml-schema-observed.md`);語料沒有的物件(Interface `.TcIO`、Property、Transition)只檢查 GUID,其餘記在 `data.coverage.rulesNotRun`(`schema-not-observed`)。
+- **這一版的規則**:AI 直接改磁碟檔最常弄壞的專案完整性問題(PROJECT-XML / KIND / NAME / GUID / SUB / LINEIDS / COMPILE / LIB / TSPROJ / ENC)與 ST 解析(LINT-PARSE-*);Phase 1b 加上 Build 抓不到、會讓機台行為出錯的規則(`rule-catalog.md` 第 2 節):
+  - `SCAN-TEMPFB-001`(blocking):有狀態 FB 宣告成暫時 instance,每次呼叫重新初始化(timer 到不了 Q、R_TRIG 每次觸發、counter 重來)。METHOD `VAR`([InfoSys](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530307467.html))、FUNCTION `VAR`([InfoSys](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530284939.html))、`VAR_TEMP`([InfoSys「Use of function blocks」](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/12050023819.html):"Temporary instances are those that are declared in a method or a function or as VAR_TEMP … reinitialized in each processing cycle or with each block call")擋;Property Get / Set 的 `VAR` 查不到出處,只警告(variant `accessor-var`)。METHOD `VAR_INST`、FB `VAR`、`VAR_STAT` 不報。「有狀態」只認 `data.typeCatalog`:`Private/Lint/TypeCatalog.json`(版本化,每個名稱附 InfoSys 頁;Tc2_Standard 的 TON / TOF / TP / LTON / LTOF / LTP / R_TRIG / F_TRIG / CTU / CTD / CTUD / RS / SR;Tc2_MC2 常用 FB 只列型別,規則另議 → `rulesSkipped` `type-only`)加 profile `typeCatalog.stateful`(專案自己的 FB 預設不算有狀態)。清單外的型別 → `rulesSkipped` `unknown-type:<型別>`,**不用名稱前綴猜**。
+  - `PROJECT-TASK-001`(warning,必須處置):PROGRAM 沒掛在任何 `.TcTTO` 的 `PouCall`,也沒被從 task 可達的 POU 呼叫 → 永遠不執行。Build 抓不到:沒被呼叫的 PROGRAM 有語法錯 Build 仍成功(實測 2026-11-13,`verification/st-syntax-measured.md` 第 2 節)。只讀 `P.x` 不算呼叫;`P.Action()` 算。PROGRAM 名稱出現在 linter 讀不了的地方(CFC / SFC、條件 pragma、壞檔、視覺化)→ `rulesSkipped` `call-graph-incomplete:<物件>`;專案沒有任何 `.TcTTO`(library)→ `rulesNotRun` `no-task`。
+  - `PROJECT-TASK-002`(blocking):同一 PROGRAM 每 cycle 跑兩次以上 —— 兩個 task 的 `PouCall`(`two-tasks`)、task + 另一個可達 PROGRAM 呼叫(`task-and-program`)、兩個可達 PROGRAM 呼叫(`two-programs`)、同一 body 兩次無條件呼叫(`repeated-call`)。同一 program 內 IF / ELSE 兩邊各呼叫一次不報;從 task 不可達的呼叫者不算(axis 語料的 `TestCam`)。呼叫者是 FB / FUNCTION 時無法判斷執行次數,只警告(`fb-or-function-caller`)。「timer / trigger 每 cycle 被評估兩次」是依 IEC 呼叫語意的推論(`impactBasis: inferred`)。結構規則的依據是兩個真實專案(4024 / 4026)裡 XAE 實際寫出的檔案(`research/tc-xml-schema-observed.md`);語料沒有的物件(Interface `.TcIO`、Property、Transition)只檢查 GUID,其餘記在 `data.coverage.rulesNotRun`(`schema-not-observed`)。
 - **`passed: true` 的範圍**:只代表「`data.rulesRun` 列出的規則,在 `data.coverage` 分析到的範圍內沒有 blocking finding」,不代表程式正確;Build 仍是最終把關。
 - **哪些會擋**:依 IDE 實測(`openspec/changes/add-semantic-linter/verification/xae-corrupt-file-behavior.md`,XAE 3.1.4026.22 / VS2022,2026-11-13)定案:XAE 會讓物件靜默消失 / 變成未知物件 / 當機的(XML 不合法、編碼宣告不符、缺 Name / Declaration / Implementation、GUID 格式錯或同物件內重複、Method 缺宣告、同名 Method、Compile 指向不存在的檔、`.tsproj` PrjFilePath 錯)擋;XAE 自己會修或照常載入的(缺 SpecialFunc / Id、全零 GUID、跨檔重複 GUID、Compile 重複 / SubType / 大小寫、TSPROJ GUID 不一致)只警告。沒實測到的 variant 帶 `blockableBasis: pending-measurement`,照 error 擋。
-- **不認得的程式**:只有明列的合法構造(條件 pragma、`?=`、`**`、`/* */`、`E#M`、非 ASCII 識別字)會記 `notAnalyzed` 後照樣通過(`coverage.rulesSkipped`、`summary.notAnalyzed`);其他不認得的字元或結構 → `LINT_INCOMPLETE`;反引號、彎引號 → `LINT-PARSE-001`;CDATA 裡的 `&lt;` 這類 XML 跳脫 → PROJECT-XML-003(擋)。
+- **不認得的程式**:只有明列的構造(條件 pragma、`?=`、`**`、`/* */`、`E#M`、`T#-5S`、非 ASCII 識別字)會記 `notAnalyzed` 後照樣通過;其中除條件 pragma 外,4026.22 編譯器實測都拒絕(2026-11-13,`verification/st-syntax-measured.md` D01~D04 / D06 / D16),coverage 的 reason 會寫「4026.22 compiler rejects it」—— 4024 沒測、owner 未決定前不改成 parse fail,Build 會擋(`coverage.rulesSkipped`、`summary.notAnalyzed`);其他不認得的字元或結構 → `LINT_INCOMPLETE`;反引號、彎引號 → `LINT-PARSE-001`;CDATA 裡的 `&lt;` 這類 XML 跳脫 → PROJECT-XML-003(擋)。
 - **`-Scope Object`**:只檢查列出的物件(與專案檔),`data.scope` 會寫明;通過**不代表整個專案通過**,`Reset-TcSolution` / `Build-TcProject` 前要跑一次預設的 `-Scope All`。
 - **大檔**:超過 8 MB(profile `maxFileSizeMB`,1~256)的檔不讀,`notAnalyzed` reason `too-large`,結果 incomplete。
 - **磁碟改檔的順序**:改 `.TcPOU` / `.plcproj` / `.tsproj` → `Invoke-TcLintProject` → 通過才 `Reset-TcSolution` → `Build-TcProject`(XAE 讀到的是已檢查過的檔案)。
+- **`requiresDisposition: true` 的處置**(`data.unresolved[]` = 未被壓掉、`machineImpact` 是 behavior / crash、編譯器不會擋的 finding,含 warning):不得 `Enable-TcConfig` / `RunLifecycle`、不得回報完成。每筆只有兩種處置:改程式,或寫理由 suppress。
+- **suppression**:inline 用 ST 註解(`//` 或 `(* *)`,只能寫一行):`// tcauto-lint-disable-next-line <RULE-ID>[, <RULE-ID>]: <理由>`(壓下一行)、`… -disable-line …`(壓同一行)、`… -disable-object …`(只能寫在宣告區第一個 VAR 之前,壓整個物件含子物件)。理由至少 8 字。**inline 只對非 blocking 規則有效**(design B3:被檢查的 agent 不能壓掉自己的 blocking finding):寫在 blocking 規則上 → `LINT-SUPPRESS-004`、finding 照擋,只能用 profile `suppressions[]`。沒理由 / 太短 / 格式錯 / object 放錯位置 → `LINT-SUPPRESS-001`;未知 rule id → `LINT-SUPPRESS-002`;沒壓到任何 finding → `LINT-SUPPRESS-003`(info)。被壓掉的 finding 仍在 `diagnostics`(`suppressed: true`、`suppressionReason`),不計入 errors / warnings、不進 `unresolved`。`data.suppressions[]` 列出範圍內所有 inline 與 profile suppression(`effective`、`matched`)。
+- **`data.newSuppressions[]`**:相對 `.plcproj` 所在 git repo 的 HEAD(`git show HEAD:<path>`,唯讀)新加的 suppression,比對規則 + 理由,不比行號(搬動程式不算新增);不在 HEAD 的檔案(新檔)全部算新的;profile 檔同樣比對 HEAD 版本的 `suppressions[]`。不是 git repo、git 不可用、沒有 HEAD → `newSuppressionsBasis = unavailable`(`newSuppressionsBasisReason` 說明)並把**全部** suppression 列進 `newSuppressions[]`(fail closed)。沒有任何 suppression 時是 `no-suppressions`。agent 必須把 `newSuppressions[]` 逐條(規則、物件、行、理由)列給使用者。
 - **profile**:`.tcauto\lint-profile.json`(schema `tcauto-lint-profile/1`)從 `.plcproj` 目錄往上找到第一個含 `.sln` 或 `.git` 的目錄為止;找到就生效,壞掉就 `LINT_PROFILE_INVALID`(不退回 default)。可設 `failOn`、`rules.<id>.{enabled, severity, blocking, reason}`、`exclude[]`、`suppressions[]`、`acceptSkips[]`、`baseline`;每個放寬都要理由(至少 8 字),並列在 `data.profile.overrides`。objectPath 只接受精確名稱;專案層級的 finding(`objectPath` 為空)用 `file` 的值當 objectPath。`.tcauto\lint-baseline.json` 有檔就載入並驗證(CONTRACT 規則是 Phase 4,這版不跑)。
 - **IDE 已連線時**:這一版**不**比對 XAE 與磁碟(`data.source.ideChecked = false`,`data.source.ideCheck` 說明);XAE 裡有未存的內容時,lint 讀到的是磁碟版本。先存檔再 lint。
 
@@ -2157,7 +2165,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Invoke-TcLintProject` 回 `success: false`,`data.verdict = fail`,`data.diagnostics` 有 `blocking: true` 的項目。
 - **為什麼**:專案檔有確定的損毀,例如 CDATA 被切開(PROJECT-XML-003)、複製檔案沒換 GUID(PROJECT-GUID-003)、`<Compile>` 指向不存在的檔(PROJECT-COMPILE-001)、`.tsproj` 參照錯(PROJECT-TSPROJ-001)。
-- **下一步**:照每筆的 `message` / `fixHint` 修正檔案,重跑 lint,通過才 `Reset-TcSolution` → `Build-TcProject`。確定是誤判又不能改檔時,在 `.tcauto\lint-profile.json` 的 `suppressions[]` 加 `{ objectPath, ruleId, reason }`(進版控、要人 review);inline 註解不能壓掉 blocking 規則(Phase 1b 起支援 inline,也只限非 blocking 規則)。
+- **下一步**:照每筆的 `message` / `fixHint` 修正檔案,重跑 lint,通過才 `Reset-TcSolution` → `Build-TcProject`。確定是誤判又不能改檔時,在 `.tcauto\lint-profile.json` 的 `suppressions[]` 加 `{ objectPath, ruleId, reason }`(進版控、要人 review);inline 註解不能壓掉 blocking 規則(會得到 `LINT-SUPPRESS-004`,見上方「suppression」)。
 
 ### LINT_PARSE_FAILED
 

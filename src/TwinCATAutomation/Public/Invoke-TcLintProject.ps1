@@ -1,7 +1,7 @@
 function Invoke-TcLintProject {
     <#
     .SYNOPSIS
-        Read-only semantic lint of a TwinCAT PLC project on disk (#252 Phase 1a): project file integrity (XML, GUID, Compile list, .tsproj references, encoding) and ST parsing. Needs no IDE and no runtime.
+        Read-only semantic lint of a TwinCAT PLC project on disk (#252 Phase 1a / 1b): project file integrity (XML, GUID, Compile list, .tsproj references, encoding), ST parsing and machine-behaviour rules Build does not catch (stateful FB as temporary instance, PROGRAM never / twice called). Needs no IDE and no runtime.
     .DESCRIPTION
         Reads the .plcproj, every file its <Compile> items list, the .tsproj that references it and the
         .sln. Nothing is written, nothing is connected (no IDE, no ADS). The engine is C# compiled on the
@@ -10,8 +10,16 @@ function Invoke-TcLintProject {
         Rules of this version (openspec/changes/add-semantic-linter/rule-catalog.md section 1):
         PROJECT-XML-001..004, PROJECT-KIND-001, PROJECT-NAME-001/002, PROJECT-GUID-001..005,
         PROJECT-SUB-001/002, PROJECT-LINEIDS-001, PROJECT-COMPILE-001..006, PROJECT-LIB-001,
-        PROJECT-TSPROJ-001..003, PROJECT-ENC-001, LINT-PARSE-001..003, LINT-XML-002. No machine-behaviour
-        rule (SCAN-*) runs yet.
+        PROJECT-TSPROJ-001..003, PROJECT-ENC-001, LINT-PARSE-001..003, LINT-XML-002; Phase 1b (section 2):
+        SCAN-TEMPFB-001 (blocking: TON / R_TRIG / CTU ... in METHOD VAR, FUNCTION VAR or VAR_TEMP is
+        re-initialized on every call), PROJECT-TASK-001 (warning, must be disposed: PROGRAM on no task and
+        called by nobody), PROJECT-TASK-002 (blocking: PROGRAM runs twice per cycle), LINT-SUPPRESS-001..004.
+        Types are only judged from data.typeCatalog (versioned list + profile typeCatalog), never guessed.
+
+        Disposition: requiresDisposition = true -> fix each data.unresolved[] entry or suppress it with
+        "// tcauto-lint-disable-next-line <RULE-ID>: <reason>" (non-blocking rules only; a blocking rule needs
+        the profile suppressions[]), and list every data.newSuppressions[] entry to the user (new against git
+        HEAD; newSuppressionsBasis = unavailable lists all). No EnableConfig before that.
 
         data.passed = true does NOT mean the program is correct: only that the listed rules found no
         blocking finding in the analysed part (read data.coverage and data.unresolved with it).
@@ -22,7 +30,9 @@ function Invoke-TcLintProject {
         blockableBasis (pending-measurement: XAE behaviour not measured yet, still blocking), file
         (relative to the .plcproj directory), objectPath, section, line, column, message, evidence,
         fixHint }, unresolved[] (machine-behaviour findings that must be fixed or suppressed),
-        requiresDisposition, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
+        requiresDisposition, suppressions[] { source, kind, ruleIds, file, objectPath, line, reason, effective,
+        matched }, newSuppressions[], newSuppressionsBasis (git-head / unavailable / no-suppressions),
+        typeCatalog { version, sha256, stateful, typeOnly }, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
         rulesSkipped[], blockingRulesSkipped[], acceptedSkips[], rulesNotRun[] }, rulesRun[].
 
         Errors: LINT_FAILED (blocking finding), LINT_PARSE_FAILED (code or .plcproj cannot be parsed),
