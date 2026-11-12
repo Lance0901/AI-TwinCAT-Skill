@@ -31,6 +31,7 @@ $ErrorActionPreference = 'Stop'
 $env:TCAUTO_OWNER_ID = 'owner-73-A'
 # #196 review B1: ... and its own pid as the owner process (this test process plays that server too)
 $env:TCAUTO_OWNER_PID = [string]$PID
+. (Join-Path $PSScriptRoot 'lib\ModuleMemory.ps1')   # #241: Reset-All without Import-Module -Force
 $modPath = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
 $fail = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
@@ -89,6 +90,7 @@ function Restart-Module {
         param($NewFakeDte, $NewRotEntry)
         $script:TcLaunchPendingWaitSec = 1
         $script:TcLaunchRotWaitSec = 0
+        $script:TcSysManagerRetryMs = 20   # #241: an ITcSysManager probe that finds none waits 20 ms, not 1 s
         $script:UnitNewFakeDte = $NewFakeDte; $script:UnitNewRotEntry = $NewRotEntry
         $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
         function script:Test-TcProgIdRegistered { [CmdletBinding()] param([string]$ProgId) $true }
@@ -174,15 +176,19 @@ function Restart-Module {
         function script:Get-TcSolutionPlatform { [CmdletBinding()] param() [PSCustomObject]@{ platform = 'TwinCAT RT (x64)'; configuration = 'Release'; projectPlatform = 'TwinCAT RT (x64)' } }
         function script:Save-TcIdeTargetNetId { param($AmsNetId) }
     }
+    $script:modMemory = Save-UnitModuleMemory $script:mod
 }
 
+# Clean start of a case: mocks and state files reset, module memory (variables and functions) back
+# to just after the last Restart-Module (#241: lib\ModuleMemory.ps1, no Import-Module -Force; the
+# steps that need a NEW module instance still call Restart-Module).
 function Reset-All {
     $global:Rot73 = @(); $global:Launches73.Clear(); $global:LaunchedDtes73 = @{}; $global:Procs73 = @{}; $global:Names73 = @{}
     $global:NoStart73 = @{}; $global:SysMgrHook73 = $null
     $global:Modal73 = 'incomplete'; $global:ModalQueue73.Clear(); $global:LaunchInRot73 = $true; $global:GuessPid73 = 0; $global:Kills73.Clear(); $global:Quits73 = 0; $global:Blocked73 = $false; $global:NextName73 = $null
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'launched-ides.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem -LiteralPath $env:TCAUTO_STATE_DIR -Filter 'build-required.json*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    Restart-Module
+    Restore-UnitModuleMemory $script:mod $script:modMemory
 }
 function Get-RecordFile { Join-Path $env:TCAUTO_STATE_DIR 'launched-ides.json' }
 function Read-Records { $f = Get-RecordFile; if (-not (Test-Path -LiteralPath $f)) { return @() }; @((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json) | ForEach-Object { $_ }) }

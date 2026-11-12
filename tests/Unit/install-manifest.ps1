@@ -217,11 +217,12 @@ try {
     $dir = $installs[0].Dir
     $installedPsm1 = Join-Path $dir 'TwinCATAutomation\TwinCATAutomation.psm1'
     $verCmd = "Import-Module '$installedPsm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion {0} | ConvertTo-Json -Depth 8 -Compress"
-    $c = Invoke-ChildCommand ($verCmd -f '')
-    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
-    Check 'Get-TcAutomationVersion (installed): manifest read' ($null -ne $res -and $res.success -and $res.data.installed -and $res.data.source -eq 'install-manifest' -and $res.data.installer -eq 'claude-code' -and $res.data.version -eq $psd1Version) "$($res.data.source)"
-    $c = Invoke-ChildCommand ($verCmd -f '-Verify')
-    $res = $null; try { $res = $c.Out | ConvertFrom-Json } catch { $c.Out }
+    # #241: both reads of the untouched install in one child (one JSON line each), not two
+    $c = Invoke-ChildCommand ("Import-Module '$installedPsm1' -Force -WarningAction SilentlyContinue; Get-TcAutomationVersion | ConvertTo-Json -Depth 8 -Compress; Get-TcAutomationVersion -Verify | ConvertTo-Json -Depth 8 -Compress")
+    $jsonLines = @($c.Out -split "`n" | Where-Object { $_.TrimStart().StartsWith('{') })
+    $res = $null; try { $res = $jsonLines[0] | ConvertFrom-Json } catch { $c.Out }
+    Check 'Get-TcAutomationVersion (installed): manifest read' ($jsonLines.Count -eq 2 -and $null -ne $res -and $res.success -and $res.data.installed -and $res.data.source -eq 'install-manifest' -and $res.data.installer -eq 'claude-code' -and $res.data.version -eq $psd1Version) "$($res.data.source)"
+    $res = $null; try { $res = $jsonLines[1] | ConvertFrom-Json } catch { $c.Out }
     Check 'Get-TcAutomationVersion -Verify (installed, untouched): ok' ($null -ne $res -and $res.success -and $res.data.verify.ok -and $res.data.verify.matched -eq $res.data.fileCount) "$($res.data.verify.matched)/$($res.data.fileCount)"
 
     # tamper: change one module file, delete another, add an extra one

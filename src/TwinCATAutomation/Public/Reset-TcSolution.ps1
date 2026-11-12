@@ -314,6 +314,11 @@ function Reset-TcSolution {
     # (another IDE with the same .sln open must not take its place)
     $reconnectByPid = ($script:TcIdeSelectedBy -eq 'process-id' -and $previousPid -gt 0)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # #241: $script:TcResetTimeScale (1.0 = real seconds; only unit tests lower it). The -TimeoutSec
+    # deadline is checked against $sw / $timeScale and the 500 ms polls last 500 * $timeScale ms, so a
+    # test sees the same polls in less wall-clock time. Wait-TcSolutionLoaded reads the same variable.
+    $timeScale = Get-TcTimeScale -Value $script:TcResetTimeScale
+    $pollMs = if ($timeScale -eq 1.0) { 500 } else { [int][math]::Max(1, [math]::Round(500 * $timeScale)) }
 
     $path = $SolutionPath
     if ([string]::IsNullOrWhiteSpace($path) -and -not [string]::IsNullOrWhiteSpace($script:TcSolutionPath)) {
@@ -469,7 +474,7 @@ function Reset-TcSolution {
     function Invoke-TcResetPromptAnswer {
         param([object]$Dialog, [string]$Target, [string]$Answer)
         $default = if ($Answer -eq 'Close') { 8 } else { 15 }
-        $left = [int][math]::Floor($TimeoutSec - $sw.Elapsed.TotalSeconds)
+        $left = [int][math]::Floor($TimeoutSec - $sw.Elapsed.TotalSeconds / $timeScale)
         if ($left -lt 1) { return $null }
         $budget = [math]::Min($default, $left)
         $asw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -637,8 +642,8 @@ function Reset-TcSolution {
                 if (Test-TcModalScanIncomplete $d) {
                     $out.Error = 'modal dialog scan did not complete after the Yes reload; Solution.FullName not read'
                     $out.ErrorRecord = $null
-                    if ($sw.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
-                    Start-Sleep -Milliseconds 500
+                    if ($sw.Elapsed.TotalSeconds / $timeScale -ge $TimeoutSec) { break }
+                    Start-Sleep -Milliseconds $pollMs
                     continue
                 }
                 if ($null -ne $d) {
@@ -671,8 +676,8 @@ function Reset-TcSolution {
                 break
             }
             # -TimeoutSec bounds the whole call: every poll shares it (#87, the steps may run again)
-            if ($sw.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
-            Start-Sleep -Milliseconds 500
+            if ($sw.Elapsed.TotalSeconds / $timeScale -ge $TimeoutSec) { break }
+            Start-Sleep -Milliseconds $pollMs
         }
         $out.Sec = [math]::Round($rsw.Elapsed.TotalSeconds, 1)
         $out
@@ -755,7 +760,7 @@ function Reset-TcSolution {
             $code = if ($c.success) { 'success' } else { [string]$c.error.code }
             $progress.reconnectAttempts.Add([PSCustomObject]@{ step = $Step; code = $code; sec = [math]::Round($csw.Elapsed.TotalSeconds, 1) })
             if ($code -ne 'MODAL_SCAN_INCOMPLETE') { return $c }
-            if ($retries -ge 3 -or $sw.Elapsed.TotalSeconds -ge $TimeoutSec) { return $c }
+            if ($retries -ge 3 -or $sw.Elapsed.TotalSeconds / $timeScale -ge $TimeoutSec) { return $c }
             $retries++
             Write-Verbose "Reset-TcSolution: Connect-TcIde answered MODAL_SCAN_INCOMPLETE ($Step); retry $retries of 3."
         }
@@ -834,12 +839,12 @@ function Reset-TcSolution {
             # An incomplete scan (#42; XAE probably still reloading, inference) means "unknown": no read,
             # no failure, keep waiting. Not reloaded within -TimeoutSec -> the reconnect below runs
             # anyway; Connect-TcIde scans before its own DTE calls and fails closed on an incomplete scan.
-            while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+            while ($sw.Elapsed.TotalSeconds / $timeScale -lt $TimeoutSec) {
                 $pendingDialog = Find-TcIdeModalDialog
                 if (Test-TcModalScanIncomplete $pendingDialog) {
                     $pendingDialog = $null
                     $lastRead = 'modal dialog scan did not complete; Solution.FullName not read'
-                    Start-Sleep -Milliseconds 500
+                    Start-Sleep -Milliseconds $pollMs
                     continue
                 }
                 if ($null -ne $pendingDialog) { break }
@@ -851,7 +856,7 @@ function Reset-TcSolution {
                     if (-not [string]::IsNullOrWhiteSpace($full) -and [string]::Equals((Get-TcLongPath $full), $path, [StringComparison]::OrdinalIgnoreCase)) { $reloaded = $true; break }
                 }
                 catch { $lastRead = $_.Exception.Message }
-                Start-Sleep -Milliseconds 500
+                Start-Sleep -Milliseconds $pollMs
             }
             $reloadWaitSec += $waitSw.Elapsed.TotalSeconds
             $progress['reloadWaitSec'] = [math]::Round($reloadWaitSec, 1)

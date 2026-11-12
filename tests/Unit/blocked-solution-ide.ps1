@@ -318,6 +318,9 @@ try {
     $okSol | Add-Member -MemberType ScriptMethod -Name Close -Value { param($save) $global:ClosedSolution = $true }
     & $mod { param($s, $so, $dc) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{ Solution = $so; Documents = $dc }; $script:TcIdeProcessId = 971; $script:TcSolutionPath = $s } $sln $okSol $fakeDocs
     $global:GuardThrows = $true
+    # #241: the two guard cases run into -TimeoutSec: Reset-TcSolution's deadline and polls at $RS of real time
+    $RS = 0.25
+    & $mod { param($x) $script:TcResetTimeScale = $x } $RS
     $r = Reset-TcSolution -TimeoutSec 5
     $global:GuardThrows = $false
     Check 'reset-guard-unreadable-fails-closed' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'RETRYLATER') "code=$($r.error.code) closed=$global:ClosedSolution"
@@ -330,7 +333,9 @@ try {
     $swNull = [System.Diagnostics.Stopwatch]::StartNew()
     $r = Reset-TcSolution -TimeoutSec 5   # ValidateRange minimum is 5
     $swNull.Stop()
-    Check 'reset-guard-null-times-out' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'answered \$null' -and $r.data.guardSec -le 7 -and $swNull.Elapsed.TotalSeconds -lt 12) "code=$($r.error.code) closed=$global:ClosedSolution err=$($r.data.guardError) guardSec=$($r.data.guardSec) total=$([math]::Round($swNull.Elapsed.TotalSeconds, 1))"
+    & $mod { $script:TcResetTimeScale = 1.0 }
+    # bounds: the scaled 5 s budget + the slack of the unscaled check (guardSec <= 5 + 2, total < 5 + 7)
+    Check 'reset-guard-null-times-out' (-not $r.success -and $r.error.code -eq 'RESET_SOLUTION_UNVERIFIED' -and -not $global:ClosedSolution -and $r.data.guardError -match 'answered \$null' -and $r.data.guardSec -le (5 * $RS + 2) -and $swNull.Elapsed.TotalSeconds -lt (5 * $RS + 7)) "code=$($r.error.code) closed=$global:ClosedSolution err=$($r.data.guardError) guardSec=$($r.data.guardSec) total=$([math]::Round($swNull.Elapsed.TotalSeconds, 1))"
 
     # --- #55 nit: guard read '' (no solution open) is an answer: passes the guard (no UNVERIFIED / MISMATCH), the reset goes on to close ---
     # Separate flags for Documents.CloseAll and Solution.Close. The mock has no project / reopen support, so the reset ends in PROJECT_OPEN_FAILED after closing; only the guard is under test.

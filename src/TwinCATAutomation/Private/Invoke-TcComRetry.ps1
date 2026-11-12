@@ -127,7 +127,9 @@ function Invoke-TcComRetry {
         [int]$TimeoutSec = 120
     )
 
-    $__tcDelaySec = 1
+    # #241: first backoff from $script:TcComRetryDelayMs (1000 = 1 s; only unit tests lower it)
+    $__tcDelayMs = 1000
+    if ($null -ne $script:TcComRetryDelayMs) { try { $__tcDelayMs = [Math]::Max(0, [int]$script:TcComRetryDelayMs) } catch { $__tcDelayMs = 1000 } }
     $__tcStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     # --- watchdog (only when the IDE pid is known; never fails the call) ---
@@ -259,9 +261,9 @@ while (-not $Sync.Stop) {
                     throw "IDE_BUSY: '$OperationName' failed after $MaxRetries attempts - the IDE rejected the call (RPC_E_CALL_REJECTED 0x80010001). A modal dialog or license window is probably blocking the XAE. Original error: $($_.Exception.Message)"
                 }
 
-                Write-Verbose "Invoke-TcComRetry [$OperationName] attempt $__tcAttempt/$MaxRetries - IDE busy, retrying in $__tcDelaySec s..."
-                Start-Sleep -Seconds $__tcDelaySec
-                $__tcDelaySec = $__tcDelaySec * 2
+                Write-Verbose "Invoke-TcComRetry [$OperationName] attempt $__tcAttempt/$MaxRetries - IDE busy, retrying in $($__tcDelayMs / 1000) s..."
+                Start-Sleep -Milliseconds $__tcDelayMs
+                $__tcDelayMs = $__tcDelayMs * 2
             }
         }
     }

@@ -94,6 +94,14 @@ function Wait-TcAdsState {
         [int]$CrashUnreachableSec = 10
     )
 
+    # #241: $script:TcAdsWaitTimeScale (1.0 = real seconds; only unit tests lower it) scales the
+    # deadline, the poll interval and the 0x7 window together, so a test sees the same sequence of
+    # probes in less wall-clock time. Elapsed / unreachable times are still reported in real ms.
+    $timeScale = Get-TcTimeScale -Value $script:TcAdsWaitTimeScale
+    $timeoutEff = $TimeoutSec * $timeScale
+    $crashWindowEff = $CrashUnreachableSec * $timeScale
+    $intervalEff = if ($timeScale -eq 1.0) { $IntervalMs } else { [int][Math]::Max(1, [Math]::Round($IntervalMs * $timeScale)) }
+
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $reached = $false
     $lastState = $null
@@ -196,14 +204,14 @@ function Wait-TcAdsState {
                         if ($null -eq $unreachSince) { $unreachSince = $stopwatch.Elapsed.TotalSeconds }
                     }
                     else { $unreachSince = $null }
-                    if ($null -ne $unreachSince -and ($stopwatch.Elapsed.TotalSeconds - $unreachSince) -ge $CrashUnreachableSec) {
+                    if ($null -ne $unreachSince -and ($stopwatch.Elapsed.TotalSeconds - $unreachSince) -ge $crashWindowEff) {
                         if (-not $pidAlive) { $crashed = $true; $crashBy = 'streak'; break }
                     }
                 }
             }
 
-            if ($stopwatch.Elapsed.TotalSeconds -ge $TimeoutSec) { break }
-            Start-Sleep -Milliseconds $IntervalMs
+            if ($stopwatch.Elapsed.TotalSeconds -ge $timeoutEff) { break }
+            Start-Sleep -Milliseconds $intervalEff
         }
         # #114: timed out with the last probe failed (any error, causes (a)-(c) in .DESCRIPTION):
         # the runtime counts as gone when the process list is readable and no TcSystemServiceUm of

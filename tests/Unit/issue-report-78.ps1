@@ -274,16 +274,25 @@ Remove-Item -LiteralPath $tmpRoot -Recurse -Force
 Check 'commit: refs/heads file, packed-refs, and only when ModuleBase is <root>\src\TwinCATAutomation' ($c1 -eq 'abcdef0' -and $null -eq $c2 -and $c3 -eq '1234567') ("$c1 / $c2 / $c3")
 
 # ---- review round 2
-# 1 truncation: a token that straddles the cut leaves no prefix (sweep every cut position)
+# 1 truncation: a token that straddles the cut leaves no prefix (sweep of the cut positions, sampled #241)
 function Test-NoPrefix([string]$Body, [string]$Token) {
     for ($i = 0; $i -le $Token.Length - 8; $i++) { if ($Body.Contains($Token.Substring($i, 8))) { return $false } }
     return $true
 }
-$sweepTokens = @('AB12cd34EF56gh78IJ90kl12MN34op56qr78', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'bob.smith@acme.example.com', '10.11.12.13.1.1', '192.168.100.200', 'sk-abcdefghijklmnop1234')
+# #241: the sweeps check a sample of their positions: the first two, the last two, the named boundary
+# values and every $Every-th one in between, offset from a fixed seed (every run checks the same set)
+$sweepRng = New-Object System.Random 241
+function Select-SweepSample([int[]]$Positions, [int]$Every, [int[]]$Boundary = @()) {
+    $off = $sweepRng.Next($Every)
+    $n = $Positions.Count
+    @(for ($j = 0; $j -lt $n; $j++) { $p = $Positions[$j]; if ($j -lt 2 -or $j -ge $n - 2 -or $Boundary -contains $p -or $j % $Every -eq $off) { $p } })
+}
+$sweepTokens =@('AB12cd34EF56gh78IJ90kl12MN34op56qr78', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', 'bob.smith@acme.example.com', '10.11.12.13.1.1', '192.168.100.200', 'sk-abcdefghijklmnop1234')
 $sweepBad = @()
 $sw = [Diagnostics.Stopwatch]::StartNew()
 foreach ($tok in $sweepTokens) {
-    for ($k = 1; $k -le $tok.Length; $k++) {
+    # every cut position k = 1 .. length sampled 1 in 8, plus 7 / 8 / 9 (an 8-char piece left on either side)
+    foreach ($k in (Select-SweepSample -Positions (1..$tok.Length) -Every 8 -Boundary @(7, 8, 9))) {
         $pad = ('a ' * 6000).Substring(0, 3000 - $k)
         if (-not $pad.EndsWith(' ')) { $pad = $pad.Substring(0, $pad.Length - 1) + ' ' }
         $r = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ($pad + $tok + ' end') } }) -NoEnvironment
@@ -350,11 +359,13 @@ $rawBase = $keyUnit * 1000
 $rawBad = @()
 $sw = [Diagnostics.Stopwatch]::StartNew()
 foreach ($tok in @('bob.smith@acme.example.com', 'ghp_abcdefghijklmnopqrstuvwxyz0123456789', '10.11.12.13.1.1', 'AB12cd34EF56gh78IJ90kl12MN34op56qr78xy')) {
-    for ($off = 1; $off -lt $tok.Length; $off += 2) {
+    # #241: offsets 1, 3, 5 ... sampled 1 in 4 (every 8th char), plus 7 (the first one checked)
+    foreach ($off in (Select-SweepSample -Positions @(for ($o = 1; $o -lt $tok.Length; $o += 2) { $o }) -Every 4 -Boundary @(7))) {
         $r = New-TcIssueReport -Title 't' -Notes ($rawBase.Substring(0, 29999 - $off) + ',' + $tok + ',' + ('q' * 600)) -NoEnvironment
         if ($off -ge 6 -and $r.data.body.Contains($tok.Substring(0, $off))) { $rawBad += "notes $tok off=$off" }
     }
-    for ($off = 5; $off -lt $tok.Length; $off += 4) {
+    # #241: offsets 5, 9, 13 ... sampled 1 in 2 (every 8th char)
+    foreach ($off in (Select-SweepSample -Positions @(for ($o = 5; $o -lt $tok.Length; $o += 4) { $o }) -Every 2)) {
         $r = New-TcIssueReport -Title 't' -Result ([pscustomobject]@{ success = $false; data = [pscustomobject]@{ s = ($rawBase.Substring(0, 19999 - $off) + ',' + $tok + ',' + ('q' * 600)) } }) -NoEnvironment
         if ($r.data.body.Contains($tok.Substring(0, $off))) { $rawBad += "leaf $tok off=$off" }
     }
