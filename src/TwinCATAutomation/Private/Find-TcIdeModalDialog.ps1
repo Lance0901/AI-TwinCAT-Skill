@@ -46,6 +46,42 @@ $script:TcUiaDialogScan = {
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
 
+    # #234: is this top-level window the IDE main window by its UIA AutomationId? The VS2022 main window
+    # carries 'VisualStudioMainWindow' (measured 2026-10-21, see the message box notes below; other hosts:
+    # docs/troubleshooting.md "IDE_QUIT_FAILED"). A stale non-zero $MainHwnd (cached handle that is no
+    # longer the main window) switches the title rule of the window loop off, and the main window's
+    # caption '<solution> - Microsoft Visual Studio' then matched $knownDialogPattern: reported as kind
+    # unknown, which blocked ConnectIde / BuildProject / DisconnectIde -Quit (measured 2026-11-13, VS2022
+    # 4026, stale handle). Main window only when ALL of these were read: the id equals
+    # 'VisualStudioMainWindow', the class is not #32770, and WindowPattern.IsModal was read and is false.
+    # [inference] no dialog with this id has been seen; a modal one is still reported. Trade-off (PR #278
+    # review N2): when the id or IsModal cannot be read (exception, no WindowPattern) the window is NOT
+    # excluded here and goes through the old checks (handle / title rule, then IsModal / known-dialog
+    # pattern), so this rule never hides more than master did. ModalRead / IsModal hand a successful
+    # IsModal read on to the caller so it is not read twice. Measured 2026-11-13 (WPF fixture, unit test
+    # modal-scan-incomplete M6): a WPF window opened with ShowDialog() and NO owner reads IsModal = false
+    # through UIA, so this rule cannot tell such a window apart from the main window if it carried the id
+    # (same residual risk as an owned non-modal WPF dialog, PR #278 review N1).
+    function Test-TcScanVsMainWindow {
+        param([object]$Cur, [object]$Element, [string]$ClassName)
+        $r = @{ IsMain = $false; ModalRead = $false; IsModal = $false }
+        $id = $null
+        try { $id = [string]$Cur.AutomationId } catch { return $r }
+        if ($id -ne 'VisualStudioMainWindow' -or $ClassName -eq '#32770') { return $r }
+        try {
+            $wp = $null
+            if ($Element.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {
+                # A property getter that fails can come back as $null instead of throwing: only a real
+                # [bool] counts as read
+                $raw = $wp.Current.IsModal
+                if ($raw -is [bool]) { $r.IsModal = $raw; $r.ModalRead = $true }
+            }
+        }
+        catch { $r.ModalRead = $false; $r.IsModal = $false }
+        if ($r.ModalRead -and -not $r.IsModal) { $r.IsMain = $true }
+        return $r
+    }
+
     # P/Invoke types (TcAutomation.*), AppDomain-wide: compiled once per process, every missing one
     # in a single Add-Type. Close-TcMessageBox and the Error List scan use UiaScanWindows too.
     $tcTypeSource = [ordered]@{
@@ -317,34 +353,18 @@ public class UiaScanButtonNative {
             continue
         }
 
-        $isModal = $false
-        $modalRead = $false
-        # #234: the VS2022 main window carries the UIA AutomationId 'VisualStudioMainWindow' (measured
-        # 2026-10-21, see the message box notes above). A stale non-zero $MainHwnd (cached handle that is
-        # no longer the main window) switches the title rule above off, and the main window's caption
-        # '<solution> - Microsoft Visual Studio' then matched $knownDialogPattern: reported as kind unknown,
-        # which blocked ConnectIde / BuildProject / DisconnectIde -Quit (measured 2026-11-13, VS2022 4026,
-        # stale handle). [inference] No dialog with this id has been seen; one that is modal would still be
-        # reported, so only a NON-modal window with the id counts as the main window.
-        $automationId = ''
-        try { $automationId = [string]$cur.AutomationId } catch { $automationId = '' }
-        if ($automationId -eq 'VisualStudioMainWindow' -and $className -ne '#32770') {
-            try {
-                $wp = $null
-                if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {
-                    $isModal = [bool]$wp.Current.IsModal
-                }
-            }
-            catch { }
-            $modalRead = $true
-            if (-not $isModal) {
-                if ($null -eq $mainEl) { $mainEl = $w }
-                continue
-            }
+        # #234: a non-modal window with the UIA AutomationId 'VisualStudioMainWindow' is the IDE main
+        # window, also when the cached $MainHwnd is stale (see Test-TcScanVsMainWindow).
+        $idCheck = Test-TcScanVsMainWindow -Cur $cur -Element $w -ClassName $className
+        if ($idCheck.IsMain) {
+            if ($null -eq $mainEl) { $mainEl = $w }
+            continue
         }
         if ($cur.IsOffscreen) { continue }
 
-        if (-not $modalRead) {
+        $isModal = $false
+        if ($idCheck.ModalRead) { $isModal = [bool]$idCheck.IsModal }
+        else {
             try {
                 $wp = $null
                 if ($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$wp) -and $null -ne $wp) {

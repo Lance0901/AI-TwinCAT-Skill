@@ -597,7 +597,8 @@ try {
     # #234: nextStep follows #175 - Reset-TcSolution answers UNSAVED_CHANGES (not PROJECT_UNSAVED_CHANGES) and only -Force
     # (after the user agreed) drops unsaved changes; -DiscardProjectChanges is not that consent
     $ns = [string]$r.data.nextStep
-    Check 'T12d M1 success lists the unsaved documents (data.dirtyDocuments) and nextStep names UNSAVED_CHANGES + -Force' ($r.success -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and $null -eq $r.data.PSObject.Properties['dirtyDocumentsError'] -and $ns -match '\bUNSAVED_CHANGES' -and $ns -notmatch 'PROJECT_UNSAVED_CHANGES' -and $ns -match '-Force') "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',') nextStep=$ns"
+    # PR #278 N3: a PROJECT_UNSAVED_CHANGES that may follow is handled by its own hint (-DiscardProjectChanges / -SaveProjectChanges)
+    Check 'T12d M1 success lists the unsaved documents (data.dirtyDocuments); nextStep: UNSAVED_CHANGES + -Force, then PROJECT_UNSAVED_CHANGES per its hint' ($r.success -and (@($r.data.dirtyDocuments) -join ',') -eq 'C:\x\MAIN.TcPOU' -and $null -eq $r.data.PSObject.Properties['dirtyDocumentsError'] -and $ns -match 'refuses with UNSAVED_CHANGES' -and $ns -notmatch 'refuses with PROJECT_UNSAVED_CHANGES' -and $ns -match 'again with -Force' -and $ns -match 'returns PROJECT_UNSAVED_CHANGES.*-DiscardProjectChanges.*-SaveProjectChanges') "code=$($r.error.code) dirty=$(@($r.data.dirtyDocuments) -join ',') nextStep=$ns"
     $null = Disconnect-TcIde
     Remove-Variable -Name Docs209 -Scope Global -ErrorAction SilentlyContinue
     $p = New-ReloadOrphan @('reload-solution')

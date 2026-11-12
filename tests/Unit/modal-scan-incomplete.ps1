@@ -17,7 +17,7 @@
 #         connection kept
 #      E4 tree-item gate (Get-TcTreeItemDialogResult) -> MODAL_SCAN_INCOMPLETE
 #   M  #234 the real scan against WPF fixture windows of a child process: the IDE main window (UIA
-#      AutomationId VisualStudioMainWindow) is never reported, also with a stale MainHwnd (M1-M5)
+#      AutomationId VisualStudioMainWindow) is never reported, also with a stale MainHwnd (M1-M6); read failures keep the old checks (M7)
 #   powershell.exe -NoProfile -File tests/Unit/modal-scan-incomplete.ps1
 # Exit code = number of failed checks. Takes ~20 s.
 $ErrorActionPreference = 'Stop'
@@ -229,8 +229,16 @@ foreach ($item in ($Spec -split ';')) {
     $w.Width = 320; $w.Height = 160; $w.Left = 40 + 30 * $i; $w.Top = 40 + 30 * $i
     $w.ShowActivated = $false; $w.ShowInTaskbar = $false
     $w.Content = New-Object System.Windows.Controls.TextBlock -Property @{ Text = 'tcauto #234 fixture' }
-    $w.Show()
     $wins += $w
+    if ($parts.Count -gt 2 -and $parts[2] -eq 'dialog') {
+        # PR #278 S2: a top-level modal (ShowDialog, NO Owner) - shown once the dispatcher runs
+        $dlg = $w
+        $dlg.Add_Loaded({ Set-Content -LiteralPath $Signal -Value 'ready' })
+        $null = $w.Dispatcher.BeginInvoke([Action]{ $null = $dlg.ShowDialog() })
+        $i++
+        continue
+    }
+    $w.Show()
     if ($parts.Count -gt 2 -and $parts[2] -eq 'owned') {
         $owner = $w
         $null = $w.Dispatcher.BeginInvoke([Action]{
@@ -251,7 +259,7 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(200)
 $deadline = (Get-Date).AddSeconds(60)
 $timer.Add_Tick({ if ((Test-Path -LiteralPath $Stop) -or (Get-Date) -gt $deadline) { foreach ($x in @($script:wins)) { try { $x.Close() } catch { } }; [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() } })
 $timer.Start()
-if ($Spec -notmatch '\|owned') { Set-Content -LiteralPath $Signal -Value 'ready' }
+if ($Spec -notmatch '\|(owned|dialog)') { Set-Content -LiteralPath $Signal -Value 'ready' }
 [System.Windows.Threading.Dispatcher]::Run()
 '@
 $work = Join-Path $env:TEMP ("tcauto-unit-234-{0}" -f [guid]::NewGuid().ToString('N'))
@@ -293,6 +301,57 @@ try {
 
     $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow|owned" @($stale)
     Check 'M5 main window with an owned modal child, stale MainHwnd -> the child is reported' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq 'Fixture234 Options') (Show-Hit $r ([string]$stale))
+
+    # PR #278 S2: a top-level modal (ShowDialog, no owner) next to the main window with the id is reported. Measured
+    # 2026-11-13 with this fixture: UIA reads IsModal = false for such a WPF window (also with the id), so a window
+    # with the id AND IsModal = true cannot be built with WPF; that branch is covered by M7e (mocked UIA objects).
+    $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow;TwinCAT XAE||dialog" @($stale)
+    Check 'M6 top-level ShowDialog window (TwinCAT XAE) + main window with the id, stale MainHwnd -> the dialog is reported' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq 'TwinCAT XAE') (Show-Hit $r ([string]$stale))
+
+    # PR #278 N2 / S2: Test-TcScanVsMainWindow (defined inside the real scan block) excludes a window only when the
+    # id AND IsModal were read; any read failure leaves the window to the old checks. Mock UIA objects.
+    $fnAst = $origScan.Ast.FindAll({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Test-TcScanVsMainWindow' }, $true) | Select-Object -First 1
+    Check 'M7 Test-TcScanVsMainWindow is defined in the scan block' ($null -ne $fnAst) ''
+    if ($null -ne $fnAst) {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        . ([scriptblock]::Create($fnAst.Extent.Text))
+        function New-MockCur([string]$Id, [switch]$Throw) {
+            $c = New-Object PSObject
+            if ($Throw) { $c | Add-Member -MemberType ScriptProperty -Name AutomationId -Value { throw 'AutomationId (mock)' } }
+            else { $c | Add-Member -MemberType NoteProperty -Name AutomationId -Value $Id }
+            $c
+        }
+        function New-MockEl([string]$Mode) {
+            $e = New-Object PSObject
+            $e | Add-Member -MemberType NoteProperty -Name Mode -Value $Mode
+            $e | Add-Member -MemberType ScriptMethod -Name TryGetCurrentPattern -Value {
+                switch ($this.Mode) {
+                    'throw'      { throw 'TryGetCurrentPattern (mock)' }
+                    'none'       { return $false }
+                    'modalThrow' { $p = New-Object PSObject; $cur = New-Object PSObject; $cur | Add-Member -MemberType ScriptProperty -Name IsModal -Value { throw 'IsModal (mock)' }; $p | Add-Member NoteProperty Current $cur; $args[1].Value = $p; return $true }
+                    default      { $args[1].Value = [PSCustomObject]@{ Current = [PSCustomObject]@{ IsModal = ($this.Mode -eq 'modal') } }; return $true }
+                }
+            }
+            $e
+        }
+        $id = 'VisualStudioMainWindow'
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur -Throw) -Element (New-MockEl 'free') -ClassName 'HwndWrapper'
+        Check 'M7a AutomationId read throws -> not excluded (old path)' (-not $t.IsMain -and -not $t.ModalRead) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'throw') -ClassName 'HwndWrapper'
+        Check 'M7b TryGetCurrentPattern throws -> not excluded, IsModal not handed on' (-not $t.IsMain -and -not $t.ModalRead) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'modalThrow') -ClassName 'HwndWrapper'
+        Check 'M7c IsModal getter fails (PowerShell hands back null) -> not excluded' (-not $t.IsMain -and -not $t.ModalRead) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'none') -ClassName 'HwndWrapper'
+        Check 'M7d no WindowPattern -> not excluded' (-not $t.IsMain -and -not $t.ModalRead) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'modal') -ClassName 'HwndWrapper'
+        Check 'M7e IsModal true -> not excluded, IsModal handed on' (-not $t.IsMain -and $t.ModalRead -and $t.IsModal) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'free') -ClassName '#32770'
+        Check 'M7f #32770 with the id -> not excluded' (-not $t.IsMain) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur 'Other') -Element (New-MockEl 'free') -ClassName 'HwndWrapper'
+        Check 'M7g another id -> not excluded' (-not $t.IsMain -and -not $t.ModalRead) (J $t)
+        $t = Test-TcScanVsMainWindow -Cur (New-MockCur $id) -Element (New-MockEl 'free') -ClassName 'HwndWrapper'
+        Check 'M7h id read, IsModal false -> main window' ($t.IsMain -and $t.ModalRead -and -not $t.IsModal) (J $t)
+    }
 }
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
