@@ -1150,7 +1150,7 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
   - XAE 載入時**沒有在 Error List 留任何列**的損壞：XML 不 well-formed(少結束標籤、未跳脫的 `<` `&`、CDATA 被提早結束)、宣告的編碼與實際不符(例如 UTF-16 檔宣告 `utf-8`)、檔內有非法 UTF-8 位元組、`.plcproj` 列了磁碟上不存在的檔案。物件在樹上變成 itemType 0,但 Check 與 Build 都 0 error(實測 2026-11-13,4026 VS2022,`xae-corrupt-file-behavior.md` 1.1 / 2.2 / 2.3 節)。這類只能靠寫入前的檢查。
   - Error List 讀不到時(`ERRORLIST_UNAVAILABLE`):`Build-TcProject` 本來就是 `codeVerified = null`、不完整;`Test-TcPlcProject` 仍以 `CheckAllObjects()` 的回傳值為準，可能回 `passed: true`(#279)。
   - 4024 的 `.TcDUT` / `.TcGVL` / `.TcIO` 載入列沒有實測。
-- **下一步**:先把 `data.loadErrorFiles` 回報給使用者(哪些檔案、哪一條訊息)。優先和版本控制比對，找出被改壞的地方並修正 XML;要整個從版本控制還原檔案前**先問使用者**(還原會蓋掉使用者還沒 commit 的改動)。改完磁碟檔後 `Reset-TcSolution` 重新載入，再 `Build-TcProject`。**不要**把這些列當成殘留而忽略、也不要繞過去直接 Activate(fail closed,#68)。
+- **下一步**:先跑 `Invoke-TcLintProject -PlcProjectPath <.plcproj>`(MCP `LintProject`,不開 IDE、唯讀),它會指出是哪個檔的哪種問題(PROJECT-XML / GUID / SUB / KIND… 的 `file`、`objectPath`、`line`、`fixHint`),也抓得到下面「已知限制」裡 Error List 沒留列的損壞(見「Semantic linter(#252 Phase 1a):做法」)。再把 `data.loadErrorFiles` 回報給使用者(哪些檔案、哪一條訊息)。優先和版本控制比對，找出被改壞的地方並修正 XML;要整個從版本控制還原檔案前**先問使用者**(還原會蓋掉使用者還沒 commit 的改動)。改完磁碟檔後 `Reset-TcSolution` 重新載入，再 `Build-TcProject`。**不要**把這些列當成殘留而忽略、也不要繞過去直接 Activate(fail closed,#68)。
 
 ### STATIC_ANALYSIS_ERRORS
 
