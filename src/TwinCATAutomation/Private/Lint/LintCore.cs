@@ -156,8 +156,11 @@ namespace TcLintEngine
             // anything else is not evaluated and recorded in coverage.rulesSkipped (never guessed).
             Add("SCAN-LOOP-001", "WHILE / REPEAT loop whose condition cannot change inside the loop (busy-wait)", "error", "true", "crash", "no",
                 "InfoSys WHILE tc3_plc_intro/9007201783032715.html / REPEAT 9007201783038091.html: a condition that never ends the loop repeats the instructions continuously, 'causing a runtime error'. " +
-                "Reported only when every variable of the condition is never written in the body (:=, S=, R=, REF=, =>; any identifier of the written designator counts) and the body has no call of any kind " +
-                "(identifier, ']' or '^' before '('), no EXIT / RETURN / JMP and no pointer write; a call in the condition is not reported; a condition variable that is VAR_IN_OUT / REFERENCE / POINTER, or a written " +
+                "Reported only when no designator of the condition is written in the body (:=, S=, R=, REF=, =>; full member paths are compared: st.PT does not write st.Q, " +
+                "a[2] does not write a[1], a variable index may be the same element -> rulesSkipped written-element-may-be-the-condition) and the body has no call other than IEC standard functions / type conversions " +
+                "(identifier, ']' or '^' before '('), no EXIT of this loop (EXIT in a nested loop does not count), no RETURN / JMP and no pointer write; a call in the condition is not reported; " +
+                "a Property of the POU / base FB / instance type / interface (Get / Set run code), a name that cannot be resolved or a member of a type outside the project and the type catalog -> rulesSkipped " +
+                "property-access / name-unresolved / member-type-unknown (never blocking); a condition variable that is VAR_IN_OUT / REFERENCE / POINTER, or a written " +
                 "REFERENCE / VAR_IN_OUT / THIS^ target, is not reported when the body writes anything (aliasing). WHILE TRUE / REPEAT UNTIL FALSE without EXIT / RETURN / JMP is reported even with calls. " +
                 "Known false-positive source: another task (other core) changes the condition variable (still a design error, rule-catalog.md). Not evaluated: sections with a conditional pragma, unverified or unsupported syntax (rulesSkipped)", "high", null);
             Add("SCAN-FOR-001", "FOR loop never ends: end value at the counter type's limit (overflow), or BY 0", "error", "true", "crash", "warning",
@@ -175,7 +178,9 @@ namespace TcLintEngine
                 "The compiler rejects it: C0049 (measured 2026-11-13, verification/st-syntax-measured.md section 3) and InfoSys 2530356875.html 'A consistently faulty array index results in a compiler error.' - only the value of reporting before the write; " +
                 "constant = literals and VAR CONSTANT expressions; arrays resolved as for SCAN-ARR-001", "high", "inferred");
             Add("SAFETY-DIV-001", "Division / MOD by zero: constant 0, or a variable divisor that no condition on the path tests", "error", "true", "crash", "no",
-                "Variant constant-zero-div (/ 0 literal): compiler error C0374 (measured 2026-11-13 for x / 0 and x / 0.0) -> compilerCatches yes on the finding, not in unresolved; / of a named constant or constant expression that is 0: not measured. " +
+                "Variant constant-zero-div (/ 0 literal): compiler error C0374 (measured 2026-11-13 for x / 0 and x / 0.0) -> compilerCatches yes on the finding, not in unresolved; only the literals 0 / 0.0 directly after '/' are marked; " +
+                "/ 16#0, / (0), / -0, typed literals, a VAR CONSTANT / VAR_GLOBAL CONSTANT that is 0 and the function forms DIV(a, 0) / MOD(a, 0): not measured, blocking, in unresolved. " +
+                "VAR_INPUT CONSTANT / VAR_IN_OUT CONSTANT are not constants (their initial value is a default: CFC parameter InfoSys 2532058763, read-only reference 2528771211; inferred from search-result summaries, not measured). " +
                 "Variant constant-zero-mod (MOD 0): no compiler error or warning (measured 2026-11-13), blocking; InfoSys MOD 2528880779.html: the behaviour 'can vary depending on the target system'. " +
                 "InfoSys DIV 2528875403.html: integer division by zero 'always leads to an exception and the corresponding task is stopped'; REAL division by 0 is not described in the PLC manual (task option 'Floating Point Exception', tc3_system/5210416139.html) - reported anyway. " +
                 "Variant unchecked-variable-divisor: info, medium, never blocking (heuristic; SA0040 is TE1200 Full only): a plain variable / member / element divisor with no enclosing IF / ELSIF / CASE / WHILE condition, earlier IF that leaves or rewrites it, " +

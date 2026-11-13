@@ -76,7 +76,7 @@ namespace TcLintEngine
                     if (x.Is("WHILE") || x.Is("REPEAT")) loop = true;
                     else if (x.Is("FOR")) forl = true;
                     else if (x.IsOp("[")) arr = true;
-                    else if (x.IsOp("/") || x.Is("MOD")) div = true;
+                    else if (x.IsOp("/") || x.Is("MOD") || x.Is("DIV")) div = true;
                 }
             }
             List<string> ids = new List<string>();
@@ -217,7 +217,11 @@ namespace TcLintEngine
                         if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase))
                         {
                             VarRef r = new VarRef(); r.V = v; r.Block = b; r.TypeText = v.TypeText; r.DeclScope = declScope;
-                            r.Constant = b.Qualifiers.Contains("CONSTANT");
+                            // only VAR CONSTANT / VAR_GLOBAL CONSTANT are compile-time constants (InfoSys 2529284235 "The constants are
+                            // replaced with the initial value when the code is compiled"); VAR_INPUT CONSTANT is a parameter set per instance
+                            // (CFC "Edit Parameters", 2532058763) and VAR_IN_OUT CONSTANT a read-only reference (2528771211): their initial
+                            // value is a default, not a constant (search-result summaries of those pages, 2026-11-13; not measured)
+                            r.Constant = b.Qualifiers.Contains("CONSTANT") && (b.Kind == "VAR" || b.Kind == "VAR_GLOBAL");
                             return r;
                         }
             if (di.Name != null && di.ReturnType != null && string.Equals(di.Name, name, StringComparison.OrdinalIgnoreCase)
@@ -511,6 +515,25 @@ namespace TcLintEngine
 
         private static string Num(decimal d) { return d.ToString(CultureInfo.InvariantCulture); }
 
+        private readonly Dictionary<string, HashSet<string>> propsCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        // Property names of a POU / interface and its EXTENDS chain (Property child elements of the project files), upper case
+        private HashSet<string> PropsOf(string name)
+        {
+            HashSet<string> r;
+            if (propsCache.TryGetValue(name, out r)) return r;
+            r = new HashSet<string>(StringComparer.Ordinal);
+            propsCache[name] = r;   // cycle guard
+            foreach (TcObjectFile o in objects)
+            {
+                if (o.Obj == null || !string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase) || (o.Kind != "POU" && o.Kind != "Itf")) continue;
+                foreach (XElem c in o.Obj.Children) if (c.Name == "Property" && !string.IsNullOrEmpty(c.Attr("Name"))) r.Add(c.Attr("Name").ToUpperInvariant());
+            }
+            DeclInfo di = PouDecl(name);
+            if (di != null) foreach (string b in di.Extends) r.UnionWith(PropsOf(b));
+            return r;
+        }
+
         private HashSet<string> writtenAll;
         private HashSet<string> unreadTops;
         private Dictionary<string, HashSet<string>> writtenByTop;
@@ -561,6 +584,7 @@ namespace TcLintEngine
             public HashSet<string> Names = new HashSet<string>(StringComparer.Ordinal);    // upper-case identifiers of written designators
             public HashSet<string> CallArgs = new HashSet<string>(StringComparer.Ordinal); // identifiers passed bare to a call (may be VAR_IN_OUT / ADR)
             public List<string> Roots = new List<string>();                                // first identifier of each written designator
+            public List<List<string>> Paths = new List<List<string>>();                    // full written designators (Section2a.ParseDsg components)
             public bool Any, Deref, Calls;
             public string ExitLike;                                                        // EXIT / RETURN / JMP / CONTINUE seen
         }
@@ -701,13 +725,25 @@ namespace TcLintEngine
             {
                 Writes w = new Writes();
                 List<string> parens = new List<string>();   // callee (upper case, "" = unknown) of a call parenthesis, null = not a call
+                int loops = 0;                              // FOR / WHILE / REPEAT nested inside the range: EXIT / CONTINUE there act on that loop
                 for (int k = from; k < to; k++)
                 {
                     Token x = t[k];
-                    if (x.IsOp("(")) { bool call = IsCallParen(k); parens.Add(call ? (t[k - 1].Kind == TokKind.Ident ? t[k - 1].Upper : "") : null); if (call) w.Calls = true; continue; }
+                    if (x.IsOp("("))
+                    {
+                        bool call = IsCallParen(k);
+                        string callee = call ? (t[k - 1].Kind == TokKind.Ident ? t[k - 1].Upper : "") : null;
+                        parens.Add(callee);
+                        if (call && !ValueOnly(callee)) w.Calls = true;   // IEC standard functions / conversions change nothing (review S3)
+                        continue;
+                    }
                     if (x.IsOp(")")) { if (parens.Count > 0) parens.RemoveAt(parens.Count - 1); continue; }
+                    if (x.Kind == TokKind.Ident && (x.Upper == "FOR" || x.Upper == "WHILE" || x.Upper == "REPEAT")) { loops++; continue; }
+                    if (x.Kind == TokKind.Ident && (x.Upper == "END_FOR" || x.Upper == "END_WHILE" || x.Upper == "END_REPEAT")) { loops--; continue; }
                     if (x.Kind == TokKind.Ident && (x.Upper == "EXIT" || x.Upper == "RETURN" || x.Upper == "JMP" || x.Upper == "CONTINUE"))
                     {
+                        // review B2: EXIT / CONTINUE inside a nested loop do not leave this one; RETURN / JMP always do
+                        if ((x.Upper == "EXIT" || x.Upper == "CONTINUE") && loops > 0) continue;
                         if (w.ExitLike == null || x.Upper != "CONTINUE") w.ExitLike = x.Upper;
                         continue;
                     }
@@ -730,11 +766,12 @@ namespace TcLintEngine
                             }
                             break;
                         }
-                        if (any) { w.Any = true; w.Roots.Add(root); }
+                        if (any) { w.Any = true; w.Roots.Add(root); w.Paths.Add(ParseDsg(j + 1, k).C); }
                         continue;
                     }
                     if (x.IsOp("=>"))
                     {
+                        if (k + 1 < to && t[k + 1].Kind == TokKind.Ident) w.Paths.Add(ParseDsg(k + 1, to).C);
                         int j = k + 1; bool first = true;
                         while (j < to)
                         {
@@ -747,6 +784,93 @@ namespace TcLintEngine
                     }
                 }
                 return w;
+            }
+
+            // ---------------------------------------------------------------- designators (review S2: compare full member paths)
+            private sealed class Dsg { public List<string> C = new List<string>(); public int Start, End; public bool Call; }
+
+            // ident ( . ident | ^ | [ index ] )*; THIS^.x / SUPER^.x -> x; an index is "[<constant>]" or "[*]" (variable)
+            private Dsg ParseDsg(int k, int limit)
+            {
+                Dsg d = new Dsg(); d.Start = k; int j = k;
+                if (j + 3 < limit && (t[j].Is("THIS") || t[j].Is("SUPER")) && t[j + 1].IsOp("^") && t[j + 2].IsOp(".") && t[j + 3].Kind == TokKind.Ident) j += 3;
+                if (j >= limit || t[j].Kind != TokKind.Ident) { d.End = k + 1; return d; }
+                d.C.Add(t[j].Upper); j++;
+                while (j < limit)
+                {
+                    if (t[j].IsOp(".") && j + 1 < limit && t[j + 1].Kind == TokKind.Ident) { d.C.Add(t[j + 1].Upper); j += 2; continue; }
+                    if (t[j].IsOp("^")) { d.C.Add("^"); j++; continue; }
+                    if (t[j].IsOp("["))
+                    {
+                        int m = MatchForward(j, "[", "]", limit);
+                        if (m < 0) break;
+                        decimal? v = Eval(j + 1, m, null, 0, true);
+                        d.C.Add(v.HasValue ? "[" + Num(v.Value) + "]" : "[*]");
+                        j = m + 1; continue;
+                    }
+                    break;
+                }
+                d.End = j; d.Call = j < limit && t[j].IsOp("(");
+                return d;
+            }
+
+            // every designator in [from, to) (identifiers inside an index are designators of their own)
+            private List<Dsg> Dsgs(int from, int to)
+            {
+                List<Dsg> r = new List<Dsg>();
+                for (int k = from; k < to; k++)
+                {
+                    Token x = t[k];
+                    if (x.Kind != TokKind.Ident || (StLexer.Keywords.Contains(x.Upper) && x.Upper != "THIS" && x.Upper != "SUPER")) continue;
+                    if (k > 0 && (t[k - 1].IsOp(".") || (t[k - 1].IsOp("^") && k > 1 && (t[k - 2].Is("THIS") || t[k - 2].Is("SUPER"))))) continue;
+                    Dsg d = ParseDsg(k, to);
+                    if (d.C.Count > 0) r.Add(d);
+                }
+                return r;
+            }
+
+            // 0 = different variables, 1 = same (one is a prefix of the other), 2 = maybe the same (variable index)
+            private static int Conflict(List<string> a, List<string> b)
+            {
+                int n = Math.Min(a.Count, b.Count), maybe = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    if (a[i] == b[i]) { if (a[i] == "[*]") maybe = 2; continue; }
+                    bool ia = a[i].StartsWith("[", StringComparison.Ordinal), ib = b[i].StartsWith("[", StringComparison.Ordinal);
+                    if (ia && ib && (a[i] == "[*]" || b[i] == "[*]")) { maybe = 2; continue; }
+                    return 0;
+                }
+                return maybe == 2 ? 2 : 1;
+            }
+
+            // review B3: a property access is a call (Get / Set run code); names / member types the linter cannot resolve are not guessed
+            private string Unsure(List<string> c)
+            {
+                if (c.Count == 0) return null;
+                string root = c[0];
+                int dot = u.Path.IndexOf('.');
+                string top = dot < 0 ? u.Path : u.Path.Substring(0, dot);
+                if (run.PropsOf(top).Contains(root)) return "property-access";
+                VarRef vr = run.Resolve(Sc, root);
+                if (vr == null)
+                {
+                    if (run.gvlByName.ContainsKey(root))
+                        return c.Count >= 2 && !c[1].StartsWith("[", StringComparison.Ordinal) && c[1] != "^" && run.Resolve(Sc, root + "." + c[1]) == null ? "name-unresolved" : null;
+                    if (run.pouByName.ContainsKey(root)) return c.Count >= 2 && run.PropsOf(root).Contains(c[1]) ? "property-access" : null;
+                    if (run.typeKinds.ContainsKey(root)) return null;   // E_Enum.Member
+                    return "name-unresolved";
+                }
+                if (c.Count < 2) return null;
+                if (c[1].StartsWith("[", StringComparison.Ordinal)) return c.Count > 2 ? "member-type-unknown" : null;
+                if (c[1] == "^") return null;   // pointer deref: handled as aliasing
+                string ty = (vr.TypeText ?? "").Trim();
+                if (ty.StartsWith("REFERENCE TO ", StringComparison.OrdinalIgnoreCase)) ty = ty.Substring(13).Trim();
+                if (run.pouByName.ContainsKey(ty)) return run.PropsOf(ty).Contains(c[1]) ? "property-access" : null;
+                string kind;
+                if (run.typeKinds.TryGetValue(ty, out kind)) return kind == "ITF" ? "property-access" : null;
+                int ld = ty.LastIndexOf('.');
+                if (run.FindCatalog(ld < 0 ? ty : ty.Substring(ld + 1), null) != null) return null;
+                return "member-type-unknown";
             }
 
             // IEC standard functions and type conversions take their arguments by value (InfoSys tc3_plc_intro: operators /
@@ -850,7 +974,7 @@ namespace TcLintEngine
                     for (int k = cf; k < ct; k++)
                     {
                         Token x = t[k];
-                        if (x.IsOp("(") && IsCallParen(k)) condCall = true;
+                        if (x.IsOp("(") && IsCallParen(k) && !ValueOnly(t[k - 1].Kind == TokKind.Ident ? t[k - 1].Upper : "")) condCall = true;
                         if (x.IsOp("^")) condDeref = true;
                         if (x.Kind == TokKind.Address) inputs.Add(x.Text);
                         if (x.Kind != TokKind.Ident || (StLexer.Keywords.Contains(x.Upper) && x.Upper != "THIS" && x.Upper != "SUPER")) continue;
@@ -869,10 +993,16 @@ namespace TcLintEngine
                     else
                     {
                         if (body.Calls || body.Deref) continue;          // a call or a pointer write may change the condition
-                        bool written = false;
-                        foreach (string n in condNames) if (body.Names.Contains(n)) written = true;
-                        if (written) continue;
-                        if (body.Any && (condDeref || AliasRisk(condNames) || AliasRiskRoots(body.Roots))) continue;   // REFERENCE / VAR_IN_OUT / pointer may alias
+                        List<Dsg> cds = Dsgs(cf, ct);
+                        string unsure = null;
+                        foreach (Dsg d in cds) if (unsure == null) unsure = Unsure(d.C);
+                        foreach (List<string> pth in body.Paths) if (unsure == null) unsure = Unsure(pth);
+                        if (unsure != null) { Skip(RLoop, unsure); continue; }
+                        int conflict = 0;
+                        foreach (Dsg d in cds) foreach (List<string> pth in body.Paths) { int cf2 = Conflict(d.C, pth); conflict = Math.Max(conflict, cf2 == 1 ? 3 : cf2); }
+                        if (conflict == 3) continue;   // the body writes the condition
+                        if (conflict == 2) { Skip(RLoop, "written-element-may-be-the-condition"); continue; }
+                        if (body.Any && (condDeref || AliasRisk(condNames) || AliasRiskRoots(body.Roots))) { Skip(RLoop, "possible-alias"); continue; }   // REFERENCE / VAR_IN_OUT / pointer may alias
                         List<string> cn = new List<string>(condNames); cn.Sort(StringComparer.Ordinal);
                         what = "nothing in the body writes " + string.Join(", ", cn.ToArray()) + " and the body has no call, no EXIT / RETURN / JMP and no pointer write";
                         foreach (string n in cn)
@@ -1170,6 +1300,22 @@ namespace TcLintEngine
                 for (int k = 1; k < t.Count - 1; k++)
                 {
                     bool mod = t[k].Is("MOD");
+                    Token pv = t[k - 1];
+                    bool infixPos = (pv.Kind == TokKind.Ident && (!StLexer.Keywords.Contains(pv.Upper) || pv.Upper == "TRUE" || pv.Upper == "FALSE")) || pv.Kind == TokKind.Number || pv.Kind == TokKind.TypedLiteral || pv.IsOp(")") || pv.IsOp("]") || pv.IsOp("^");
+                    if ((t[k].Is("DIV") || mod) && t[k + 1].IsOp("(") && !infixPos)
+                    {
+                        // review S4: function form DIV(a, b) / MOD(a, b); the compiler's reaction to a constant 0 here is not measured
+                        int c = MatchForward(k + 1, "(", ")", t.Count);
+                        if (c < 0) continue;
+                        List<int[]> args = SplitTop(t, k + 2, c);
+                        if (args.Count != 2 || args[1][1] <= args[1][0]) { Skip(RDiv, "div-function-form-not-understood"); continue; }
+                        int a0 = args[1][0], a1 = args[1][1];
+                        decimal? fv = Eval(a0, a1, null, 0, false);
+                        if (fv.HasValue) { if (fv.Value == 0) ZeroDivisor(k, mod, t[k], t[k].Upper + "(..., " + Text(a0, a1) + ")", false); continue; }
+                        Dsg fd = ParseDsg(a0, a1);
+                        if (fd.C.Count > 0 && fd.End == a1 && !fd.Call) VariableDivisor(k, a0, a1, mod);
+                        continue;
+                    }
                     if (!mod && !t[k].IsOp("/")) continue;
                     int j = k + 1;
                     while (j < t.Count && (t[j].IsOp("-") || t[j].IsOp("+"))) j++;
@@ -1179,7 +1325,8 @@ namespace TcLintEngine
                     {
                         bool real;
                         decimal? v = ParseLiteral(x.Text, out real);
-                        if (v.HasValue && v.Value == 0) ZeroDivisor(k, mod, x, op + " " + x.Text, true);
+                        // nit1: only the measured forms x / 0 and x / 0.0 (C0374) are marked compilerCatches yes
+                        if (v.HasValue && v.Value == 0) ZeroDivisor(k, mod, x, op + " " + (j > k + 1 ? Text(k + 1, j + 1) : x.Text), j == k + 1 && (x.Text == "0" || x.Text == "0.0"));
                         continue;
                     }
                     if (x.IsOp("("))
@@ -1215,9 +1362,16 @@ namespace TcLintEngine
                         }
                         if (r != null && FixedNonZero(r, name)) continue;
                     }
+                    VariableDivisor(k, j, e, mod);
+                }
+            }
+
+            private void VariableDivisor(int k, int j, int e, bool mod)
+            {
+                {
                     List<string> seq = new List<string>();
                     for (int q = j; q < e; q++) seq.Add(t[q].Kind == TokKind.Ident ? t[q].Upper : t[q].Text);
-                    if (DivisorChecked(k, seq)) continue;
+                    if (DivisorChecked(k, seq)) return;
                     string dv = Text(j, e);
                     Diagnostic d = Emit(RDiv, t[k], "Divisor " + dv + " is a variable and no IF / CASE / WHILE condition on this path tests it before the " + (mod ? "MOD" : "division") +
                         " (InfoSys 12292258059: 'To prevent runtime errors, a non-zero query should always be made before a division.'; DIV 2528875403: 'In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped.'). " +

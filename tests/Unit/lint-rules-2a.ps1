@@ -213,6 +213,61 @@ Check 'V15 same variable written in the POU -> reported (info)' ((Diags $r 'SAFE
 $r = Fb "    x : LREAL;`n    nFull : INT;`n    nZero : INT;`n    fSpan : LREAL;" "IF nFull <> nZero THEN`n    fSpan := TO_LREAL(nFull - nZero);`n    x := 4.0 / fSpan;`nEND_IF"
 Check 'V16 counter-example: divisor computed in the branch from the values its condition tests (corpus bfh FB_TensionLoadcell) -> no finding' ((Diags $r 'SAFETY-DIV-001').Count -eq 0) (Brief $r)
 
+# ================================================================ R  independent review (B1 B2 B3 S2 S3 S4 nit1)
+# B1 VAR_INPUT CONSTANT / VAR_IN_OUT CONSTANT: the initial value is a default (CFC parameter, read-only reference), not a constant
+$fx = New-Fx; Add-Pou $fx 'F_D' "FUNCTION F_D : INT`nVAR_INPUT CONSTANT`n    d : INT := 0;`nEND_VAR`n" 'F_D := 10 / d;'
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj; $d = Diags $r 'SAFETY-DIV-001'
+Check 'RB1a VAR_INPUT CONSTANT d := 0; 10 / d -> not a constant zero (variable divisor, info), pass' ($d.Count -eq 1 -and $d[0].variant -eq 'unchecked-variable-divisor' -and $r.success) (Brief $r)
+$r = Fb "    k : BYTE;`n    n : INT;`nEND_VAR`nVAR_INPUT CONSTANT`n    nMax : BYTE := 255;" "FOR k := 0 TO nMax DO`n    n := n + 1;`nEND_FOR"
+Check 'RB1b VAR_INPUT CONSTANT nMax := 255 as FOR end -> no finding, rulesSkipped end-not-constant' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-FOR-001' | Where-Object { $_.reason -eq 'end-not-constant' }).Count -eq 1) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    k : INT;`nEND_VAR`nVAR_INPUT CONSTANT`n    nHi : INT := 9;" "FOR k := 0 TO nHi + 1 DO`n    a[k] := 0;`nEND_FOR"
+Check 'RB1c VAR_INPUT CONSTANT nHi in the loop bound -> no SCAN-ARR finding, rulesSkipped loop-bounds-not-constant' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-ARR-001' | Where-Object { $_.reason -eq 'loop-bounds-not-constant' }).Count -eq 1) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    k : INT;`nEND_VAR`nVAR CONSTANT`n    nHi : INT := 9;" "FOR k := 0 TO nHi + 1 DO`n    a[k] := 0;`nEND_FOR"
+Check 'RB1d positive control: the same bound as VAR CONSTANT -> blocking SCAN-ARR-001' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking) (Brief $r)
+# B2 EXIT / CONTINUE of a nested loop do not leave the outer loop
+$r = Fb "    bIn : BOOL;`n    j : INT;" "WHILE NOT bIn DO`n    FOR j := 1 TO 2 DO`n        EXIT;`n    END_FOR`nEND_WHILE"
+Check 'RB2a WHILE NOT bIn with EXIT only in a nested FOR -> blocking busy-wait' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].blocking) (Brief $r)
+$r = Fb "    j : INT;" "WHILE TRUE DO`n    FOR j := 1 TO 2 DO`n        EXIT;`n    END_FOR`nEND_WHILE"
+Check 'RB2b WHILE TRUE with EXIT only in a nested FOR -> blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+$r = Fb "    bIn : BOOL;`n    j : INT;" "WHILE NOT bIn DO`n    FOR j := 1 TO 2 DO`n        RETURN;`n    END_FOR`nEND_WHILE"
+Check 'RB2c counter-example: RETURN inside the nested FOR leaves everything -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$r = Fb "    i : BYTE;`n    n : INT;" "FOR i := 0 TO 255 DO`n    WHILE n < 3 DO`n        n := n + 1;`n        EXIT;`n    END_WHILE`nEND_FOR"
+$d = Diags $r 'SCAN-FOR-001'
+Check 'RB2d FOR overflow with EXIT only in a nested WHILE -> blocking error, not exit-in-body' ($d.Count -eq 1 -and $d[0].blocking -and $null -eq $d[0].variant) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    n : INT;" "FOR i := 0 TO 9 DO`n    WHILE n < 3 DO`n        n := n + 1;`n        CONTINUE;`n    END_WHILE`n    a[i] := 0;`nEND_FOR"
+Check 'RB2e CONTINUE only in a nested WHILE does not make the FOR access guarded -> blocking SCAN-ARR-001' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking) (Brief $r)
+# B3 property access is a call (Get / Set code), unresolved member types are not guessed
+$fx = New-Fx; Edit-LintFxFile $fx.FbA { param($t) $t.Replace('M_Do := nValue > 0;', "WHILE P_State = 0 DO`r`n    nState := 1;`r`nEND_WHILE`r`nWHILE nState = 0 DO`r`n    P_State := 1;`r`nEND_WHILE") }
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'RB3a property P_State read in the condition / written in the body (FB_A.M_Do) -> no finding, rulesSkipped property-access' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'property-access' -and $_.objectPath -eq 'FB_A.M_Do' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$fx = New-Fx; Edit-LintFxFile $fx.Main { param($t) $t.Replace('fbA(bStart := GVL_Main.bRun);', "WHILE fbA.P_State = 0 DO`r`n    eMode := E_Mode.Auto;`r`nEND_WHILE") }
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'RB3b fbA.P_State (property of the instance type) in the condition -> no finding, rulesSkipped property-access' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'property-access' }).Count -eq 1) (Brief $r)
+$r = Fb "    fbX : FB_NotInProject;`n    n : INT;" "WHILE NOT fbX.bDone DO`n    n := 1;`nEND_WHILE"
+Check 'RB3c member of a type outside the project and catalog -> no finding, rulesSkipped member-type-unknown' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'member-type-unknown' }).Count -eq 1) (Brief $r)
+# S2 compare full member paths / constant indexes
+$r = Fb "    st : TON;" "WHILE NOT st.Q DO`n    st.PT := T#1S;`nEND_WHILE"
+Check 'RS2a WHILE NOT st.Q, body writes only st.PT (no call) -> blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+$r = Fb "    arrB : ARRAY[1..2] OF BOOL;" "WHILE arrB[1] DO`n    arrB[2] := TRUE;`nEND_WHILE"
+Check 'RS2b WHILE arrB[1], body writes arrB[2] -> blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+$r = Fb "    arrB : ARRAY[1..2] OF BOOL;`n    i : INT;" "WHILE arrB[i] DO`n    arrB[2] := TRUE;`nEND_WHILE"
+Check 'RS2c variable index may be the written element -> no finding, rulesSkipped written-element-may-be-the-condition' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'written-element-may-be-the-condition' }).Count -eq 1) (Brief $r)
+$r = Fb "    st : TON;" "WHILE NOT st.Q DO`n    st.Q := TRUE;`nEND_WHILE"
+Check 'RS2d counter-example: body writes the same member st.Q -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+# S3 IEC standard functions do not change the condition
+$r = Fb "    bIn : BOOL;`n    x : INT;" "WHILE NOT bIn DO`n    x := ABS(x);`nEND_WHILE"
+Check 'RS3 body only calls ABS -> blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+# S4 DIV / MOD function form
+$r = Fb "    x : INT;`n    y : INT;" "x := DIV(y, 0);`ny := MOD(x, 0);"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'RS4a DIV(y, 0) / MOD(x, 0) -> constant-zero-div / -mod, blocking, compilerCatches not claimed' ($d.Count -eq 2 -and @($d | Where-Object { $_.variant -eq 'constant-zero-div' }).Count -eq 1 -and @($d | Where-Object { $_.variant -eq 'constant-zero-mod' }).Count -eq 1 -and @($d | Where-Object { $null -ne $_.compilerCatches }).Count -eq 0 -and $d[0].blocking) (Brief $r)
+$r = Fb "    x : INT;`n    y : INT;`n    n : INT;" "x := DIV(y, n);"
+Check 'RS4b DIV(y, n) -> unchecked-variable-divisor (info)' ((Diags $r 'SAFETY-DIV-001').Count -eq 1 -and (Diags $r 'SAFETY-DIV-001')[0].variant -eq 'unchecked-variable-divisor') (Brief $r)
+# nit1 compilerCatches yes only for the measured literals 0 / 0.0
+$r = Fb "    x : DINT;" "x := x / 16#0;`nx := x / (0);`nx := x / DINT#0;`nx := x / -0;"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'RN1 / 16#0, / (0), / DINT#0, / -0 -> constant-zero-div, blocking, no compilerCatches yes' ($d.Count -eq 4 -and @($d | Where-Object { $_.compilerCatches -eq 'yes' }).Count -eq 0 -and @($d | Where-Object { $_.blocking }).Count -eq 4) (Brief $r)
+
 # ================================================================ M  metadata
 foreach ($id in 'SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001') {
     $m = @(& $mod { param($i) $t = (Get-TcLintEngine).Namespace; ("$t.RuleRegistry" -as [type])::Get($i) } $id)[0]
