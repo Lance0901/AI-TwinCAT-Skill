@@ -151,6 +151,42 @@ namespace TcLintEngine
             RuleRegistry.Get("SCAN-TEMPFB-001").Te1200 = "SA0167 (Light, runs after a successful compile)";
             Add("LINT-XML-002", "Implementation has more than one ST element (all are analysed; line numbers unreliable)", "warning", "false", "none", "unknown",
                 "XAE always wrote one <ST> (verification/xae-generated-xml.md); line numbers of the joined text do not match Get-TcPouCode", "high", null);
+            // ---- Phase 2a (rule-catalog.md section 3; LintRules2a.cs). Local analysis of one ST section: constants are
+            // literals, VAR CONSTANT of the section / POU / base FB / GVL ({attribute 'qualified_only'} as GVL.c) and + - * / MOD;
+            // anything else is not evaluated and recorded in coverage.rulesSkipped (never guessed).
+            Add("SCAN-LOOP-001", "WHILE / REPEAT loop whose condition cannot change inside the loop (busy-wait)", "error", "true", "crash", "no",
+                "InfoSys WHILE tc3_plc_intro/9007201783032715.html / REPEAT 9007201783038091.html: a condition that never ends the loop repeats the instructions continuously, 'causing a runtime error'. " +
+                "Reported only when every variable of the condition is never written in the body (:=, S=, R=, REF=, =>; any identifier of the written designator counts) and the body has no call of any kind " +
+                "(identifier, ']' or '^' before '('), no EXIT / RETURN / JMP and no pointer write; a call in the condition is not reported; a condition variable that is VAR_IN_OUT / REFERENCE / POINTER, or a written " +
+                "REFERENCE / VAR_IN_OUT / THIS^ target, is not reported when the body writes anything (aliasing). WHILE TRUE / REPEAT UNTIL FALSE without EXIT / RETURN / JMP is reported even with calls. " +
+                "Known false-positive source: another task (other core) changes the condition variable (still a design error, rule-catalog.md). Not evaluated: sections with a conditional pragma, unverified or unsupported syntax (rulesSkipped)", "high", null);
+            Add("SCAN-FOR-001", "FOR loop never ends: end value at the counter type's limit (overflow), or BY 0", "error", "true", "crash", "warning",
+                "InfoSys FOR tc3_plc_intro/2528280971.html: 'The <end value> must not have the same value as the upper bound of the data type of the counter.'; TwinCAT 2 FOR page (tcplccontrol/925251083.html) names the endless loop; " +
+                "the compiler only warns (C0266, InfoSys 21630340363.html), the build succeeds. Counter types SINT..LWORD; end value and step must be constants. Variant step-overflow (start constant, last value + step leaves the type) is a warning: wrap-around with a step other than 1 is inferred, not documented. " +
+                "Variant exit-in-body (EXIT / RETURN / JMP in the body): warning, not blocking. Variant by-zero: behaviour of BY 0 not documented (InfoSys only 'can have any integer value'), pending (tasks 2.10). " +
+                "Not evaluated (rulesSkipped): counter written in the body (incl. passed bare to a call other than IEC standard functions / type conversions: may be VAR_IN_OUT / ADR), counter type unknown or not an integer type, end / step not constant. " +
+                "Corpus 2026-11-13 (axis 4026 / bfh 4024): 0 findings; 17 FOR loops: 10 evaluated, 7 skipped (end not constant 6, counter passed to a method 1)", "high", null);
+            Add("SCAN-ARR-001", "Array index of a constant-range FOR loop leaves the declared array bounds", "error", "true", "crash", "no",
+                "Indexes counter, counter + k, counter - k, k - counter (k constant) per dimension, for the values start..last of a FOR loop with constant start / end / step whose counter is not written in the body; " +
+                "array declared in the section, POU, base FB or a GVL (GVL.a for qualified_only). An access inside an IF / CASE / WHILE that tests the counter, or a body with EXIT / CONTINUE / RETURN / JMP -> variant guarded (warning, not blocking). " +
+                "Not evaluated (rulesSkipped): ARRAY[*] (VAR_IN_OUT only, InfoSys 8825257611.html; loops over LOWER_BOUND / UPPER_BOUND have no constant bounds), bounds not constant, array of a struct member / pointer / not resolvable, " +
+                "ARRAY OF ARRAY second index, other index expressions. CheckBounds is only present when the project adds it (InfoSys 2530356875.html); the runtime effect of an unchecked access is not documented (not verified)", "high", "inferred");
+            Add("SAFETY-ARR-001", "Constant array index outside the declared bounds", "error", "false", "crash", "yes",
+                "The compiler rejects it: C0049 (measured 2026-11-13, verification/st-syntax-measured.md section 3) and InfoSys 2530356875.html 'A consistently faulty array index results in a compiler error.' - only the value of reporting before the write; " +
+                "constant = literals and VAR CONSTANT expressions; arrays resolved as for SCAN-ARR-001", "high", "inferred");
+            Add("SAFETY-DIV-001", "Division / MOD by zero: constant 0, or a variable divisor that no condition on the path tests", "error", "true", "crash", "no",
+                "Variant constant-zero-div (/ 0 literal): compiler error C0374 (measured 2026-11-13 for x / 0 and x / 0.0) -> compilerCatches yes on the finding, not in unresolved; / of a named constant or constant expression that is 0: not measured. " +
+                "Variant constant-zero-mod (MOD 0): no compiler error or warning (measured 2026-11-13), blocking; InfoSys MOD 2528880779.html: the behaviour 'can vary depending on the target system'. " +
+                "InfoSys DIV 2528875403.html: integer division by zero 'always leads to an exception and the corresponding task is stopped'; REAL division by 0 is not described in the PLC manual (task option 'Floating Point Exception', tc3_system/5210416139.html) - reported anyway. " +
+                "Variant unchecked-variable-divisor: info, medium, never blocking (heuristic; SA0040 is TE1200 Full only): a plain variable / member / element divisor with no enclosing IF / ELSIF / CASE / WHILE condition, earlier IF that leaves or rewrites it, " +
+                "same-expression test mentioning it, assignment in the branch from what the branch condition tests, or a VAR / VAR_STAT with a non-zero initial value no analysed section of its POU writes; " +
+                "a divisor that cannot be 0 for other reasons is reported too (no value tracking, no state-machine / caller knowledge); a call result as divisor is not analysed. Info findings are not in unresolved[]. " +
+                "Corpus 2026-11-13: 47 info findings (axis 46, bfh 1): 1 real candidate (latched master velocity), 9 divisors that are 0 when an input is 0 (velocity / function input), 35 derived from non-zero configuration inputs (circumference, area), 2 false (value > 0 by construction, check in an earlier state)", "high", null);
+            foreach (string id in new string[] { "SCAN-LOOP-001", "SCAN-FOR-001", "SCAN-ARR-001", "SAFETY-ARR-001", "SAFETY-DIV-001" }) RuleRegistry.Get(id).Phase = "2";
+            RuleRegistry.Get("SCAN-LOOP-001").Te1200 = "none (SA0041 Full 'loop-invariant code' is a different check)";
+            RuleRegistry.Get("SCAN-ARR-001").Te1200 = "SA0172 (Full)";
+            RuleRegistry.Get("SAFETY-ARR-001").Te1200 = "SA0172 (Full)";
+            RuleRegistry.Get("SAFETY-DIV-001").Te1200 = "SA0040 (Full)";
         }
 
         public static RuleMeta Get(string id)

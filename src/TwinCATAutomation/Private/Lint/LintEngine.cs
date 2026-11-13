@@ -1713,7 +1713,9 @@ namespace TcLintEngine
                 RuleMeta r = RuleRegistry.Get(d.RuleId);
                 string cc = d.CompilerCatches ?? (r == null ? null : r.CompilerCatches);
                 bool compilerCatches = cc == "yes";
-                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && !compilerCatches)
+                // info findings are advisory (Phase 2a: SAFETY-DIV-001 unchecked-variable-divisor, 57 heuristic findings in the
+                // two corpus projects, mostly configuration divisors): not a must-dispose item; a profile severity override can raise it
+                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && !compilerCatches && d.Severity != "info")
                 {
                     OrderedDictionary u = new OrderedDictionary();
                     u["ruleId"] = d.RuleId; u["severity"] = d.Severity; u["blocking"] = d.Blocking; u["file"] = d.File; u["objectPath"] = d.ObjectPath;
