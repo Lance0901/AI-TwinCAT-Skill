@@ -284,7 +284,15 @@ $fn = { param($fx) Add-Pou $fx 'F_Other' "FUNCTION F_Other : BOOL`n" 'F_Other :=
 $r = Fb "    b : BOOL;`n    n : INT;" "WHILE NOT b DO`n    F_Other();`n    n := n + 1;`nEND_WHILE" $fn
 Check 'QB1c project function in the body -> not blocking, rulesSkipped call-in-body (not silent)' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := b);`nEND_WHILE"
-Check 'QB1d condition variable passed to the catalog FB -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+# issue #286 N5: an input (:=) of a Tc2_Standard stateful FB is VAR_INPUT (by value, no VAR_IN_OUT; InfoSys CTUD 74402059 and the
+# TypeCatalog.json source pages): the call cannot write the variable -> the busy-wait is reported (was call-in-body)
+Check 'QB1d / I-N5a condition variable given only to an input of R_TRIG -> blocking busy-wait, no call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].blocking -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 0) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    fbT : TON;" "WHILE NOT b DO`n    fbT(IN := NOT b AND TRUE, PT := T#10MS);`nEND_WHILE"
+Check 'I-N5b condition variable in an input expression of TON -> blocking busy-wait' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 0) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    mc : MC_MoveAbsolute;`n    ax : AXIS_REF;" "WHILE NOT b DO`n    mc(Axis := ax, Execute := b);`nEND_WHILE"
+Check 'I-N5c condition variable given to a Tc2_MC2 FB (parameter directions not in the catalog, Axis is VAR_IN_OUT) -> still call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    rt : R_TRIG;`n    p : POINTER TO BOOL;" "WHILE NOT b DO`n    rt(CLK := b);`n    p := ADR(b);`nEND_WHILE"
+Check 'I-N5d input of R_TRIG plus ADR(b) in the body -> still call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    p : POINTER TO BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    p := ADR(b);`n    rt(CLK := TRUE);`nEND_WHILE"
 Check 'QB1e ADR(condition variable) in the body -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := TRUE, Q => b);`nEND_WHILE"

@@ -1305,6 +1305,15 @@ namespace TcLintEngine
                 return run.FindCatalog(bare, null) != null ? bare : null;
             }
 
+            private bool IsStandardStatefulFb(string name)
+            {
+                string bare = CatalogTypeOf(name);
+                if (bare == null) return false;
+                CatalogType ct = run.FindCatalog(bare, null);
+                return ct != null && string.Equals(ct.Library, "Tc2_Standard", StringComparison.OrdinalIgnoreCase) &&
+                    (ct.Class == "timer" || ct.Class == "edge" || ct.Class == "counter" || ct.Class == "bistable");
+            }
+
             private bool IsFbInstance(string name)
             {
                 if (CatalogTypeOf(name) != null) return true;
@@ -1335,9 +1344,24 @@ namespace TcLintEngine
                     if (member && t[k - 2].IsOp(".") && k >= 3 && t[k - 3].Kind == TokKind.Ident) bc.Passed.Add(t[k - 3].Upper);   // inst.M(): the method may change inst
                     int c = MatchForward(k, "(", ")", to);
                     if (c < 0) { bc.Unknown = true; continue; }
+                    // issue #286 N5: every parameter of a Tc2_Standard stateful FB (TON / TOF / TP / LTON / LTOF / LTP, R_TRIG /
+                    // F_TRIG, CTU / CTD / CTUD, RS / SR) is VAR_INPUT or VAR_OUTPUT, none is VAR_IN_OUT (InfoSys pages in
+                    // TypeCatalog.json, e.g. CTUD 74402059): a variable inside a formal input (name := expr) is read by value and
+                    // not written by the call. An output (name => v), a positional argument and every other FB stay 'passed'.
+                    bool byValueInputs = !adr && !member && p.Kind == TokKind.Ident && IsStandardStatefulFb(p.Text);
+                    bool inInput = false; int dep = 0;
                     for (int q = k + 1; q < c; q++)
                     {
                         Token y = t[q];
+                        if (y.IsOp("(") || y.IsOp("[")) dep++;
+                        else if (y.IsOp(")") || y.IsOp("]")) dep--;
+                        if (dep == 0 && y.Kind == TokKind.Ident && q + 1 < c && (t[q - 1].IsOp("(") || t[q - 1].IsOp(",")))
+                        {
+                            if (t[q + 1].IsOp(":=")) inInput = true;
+                            else if (t[q + 1].IsOp("=>")) inInput = false;
+                        }
+                        if (dep == 0 && y.IsOp(",")) inInput = false;
+                        if (byValueInputs && inInput && !(q + 1 < c && t[q + 1].IsOp(":="))) continue;
                         if (y.Kind != TokKind.Ident || (StLexer.Keywords.Contains(y.Upper) && y.Upper != "THIS" && y.Upper != "SUPER")) continue;
                         if (t[q - 1].IsOp(".")) continue;                                                         // member name
                         if (q + 1 < c && (t[q + 1].IsOp(":=") || t[q + 1].IsOp("=>")) && (t[q - 1].IsOp("(") || t[q - 1].IsOp(","))) continue;   // formal parameter
