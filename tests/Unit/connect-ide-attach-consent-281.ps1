@@ -11,9 +11,10 @@
 #   A  #280: -ProgId X with X and Y running -> X; only Y -> X launched / -NoLaunch IDE_NOT_FOUND;
 #      also with -SolutionPath (Y has the .sln open -> not used)
 #   B  #281: only someone else's IDEs -> IDE_ATTACH_CONSENT_REQUIRED, nothing set / written;
-#      own IDE next to them -> the own one; GetActiveObject fallback gated too; no IDE -> launch path
-#   D  consent memory (-ProcessId), pid reuse, -SolutionPath unchanged, launch record after a bridge
-#      restart, Start-TcLifecycle
+#      the selected IDE (TC project first) decides: user IDE selected next to an own one -> consent
+#      required, own IDE selected -> attached; GetActiveObject fallback gated too; no IDE -> launch
+#   D  consent memory (-ProcessId) until Disconnect-TcIde releases the connection, pid reuse,
+#      -SolutionPath unchanged, launch record after a bridge restart, Start-TcLifecycle
 #   powershell.exe -NoProfile -File tests/Unit/connect-ide-attach-consent-281.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -204,12 +205,22 @@ try {
     $r = Connect-TcIde -ProgId $Y
     Check 'B1i -ProgId Y (user IDE of that ProgID) -> IDE_ATTACH_CONSENT_REQUIRED, requestedProgId Y, only that candidate' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.requestedProgId -eq $Y -and @($r.data.candidates).Count -eq 1 -and @($r.data.candidates)[0].processId -eq 9101 -and $global:Writes281.Count -eq 0 -and $global:Launches281.Count -eq 0) (J $r)
 
+    # Owner spec: the IDE the selection picks (TwinCAT project first, else first, busy last) is not
+    # TcAuto's -> not attached; the pool is not narrowed to own IDEs first (#281 review 1)
     Reset-State
     $null = Add-Ide 9101 $Y $slnA $true
     $null = Add-Ide 9203 $Y ''
     Own 9203
     $r = Connect-TcIde
-    Check 'B2 user IDE with TC project + own empty IDE -> the own one, owned' ($r.success -and $r.data.ideProcessId -eq 9203 -and $r.data.ownedBySession -eq $true -and @($global:Writes281 | Where-Object { $_ -like '* 9101 *' }).Count -eq 0) "$(J $r) writes=$($global:Writes281 -join ',')"
+    $c = Get-Conn
+    Check 'B2a user IDE with TC project + own empty IDE -> the user one is selected -> IDE_ATTACH_CONSENT_REQUIRED, candidates = only the user IDE, nothing set' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and @($r.data.candidates).Count -eq 1 -and @($r.data.candidates)[0].processId -eq 9101 -and $global:Writes281.Count -eq 0 -and $global:Launches281.Count -eq 0 -and -not $c.connected -and $c.dteNull) "$(J $r) writes=$($global:Writes281 -join ',')"
+
+    Reset-State
+    $null = Add-Ide 9101 $Y ''
+    $null = Add-Ide 9203 $Y $slnA $true
+    Own 9203
+    $r = Connect-TcIde
+    Check 'B2b own IDE with TC project + user empty IDE -> the own one selected and attached, user IDE untouched' ($r.success -and $r.data.ideProcessId -eq 9203 -and $r.data.selectedBy -eq 'twincat-project-loaded' -and $r.data.ownedBySession -eq $true -and @($global:Writes281 | Where-Object { $_ -like '* 9101 *' }).Count -eq 0) "$(J $r) writes=$($global:Writes281 -join ',')"
     $null = Disconnect-TcIde
 
     Reset-State
@@ -249,15 +260,39 @@ try {
     $null = Add-Ide 9102 $X '' $false $true
     $r = Connect-TcIde -ProcessId 9101
     Check 'D1 -ProcessId of a user IDE -> attached, selectedBy process-id, not owned' ($r.success -and $r.data.selectedBy -eq 'process-id' -and $r.data.ideProcessId -eq 9101 -and $r.data.ownedBySession -eq $false) (J $r)
-    $null = Disconnect-TcIde
     $global:Writes281.Clear()
     $r = Connect-TcIde
-    Check 'D2a after D1, Connect-TcIde without parameters -> the same IDE (consent memory), not owned' ($r.success -and $r.data.ideProcessId -eq 9101 -and $r.data.ownedBySession -eq $false -and $r.data.selectedBy -ne 'process-id') (J $r)
-    $null = Disconnect-TcIde
+    Check 'D2a after D1 (connection not released), Connect-TcIde without parameters -> the same IDE (consent memory), not owned' ($r.success -and $r.data.ideProcessId -eq 9101 -and $r.data.ownedBySession -eq $false -and $r.data.selectedBy -ne 'process-id') (J $r)
     $global:Procs281[9101].StartTime = [DateTime]'2026-11-13T12:34:56'   # pid recycled by a new process
     $global:Writes281.Clear()
     $r = Connect-TcIde
     Check 'D2b same pid, other start time -> consent does not apply (IDE_ATTACH_CONSENT_REQUIRED, nothing set)' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $global:Writes281.Count -eq 0) (J $r)
+
+    # #281 review 2: Disconnect-TcIde that releases the connection forgets the consent
+    Reset-State
+    $null = Add-Ide 9101 $Y $slnA $true
+    $r = Connect-TcIde -ProcessId 9101
+    $d = Disconnect-TcIde
+    $global:Writes281.Clear()
+    $mem = & $mod { $script:TcIdeConsentedIdes.Count }
+    $r = Connect-TcIde
+    Check 'D2c -ProcessId -> Disconnect-TcIde -> Connect-TcIde without parameters -> IDE_ATTACH_CONSENT_REQUIRED (consent forgotten), nothing set' ($d.success -and $mem -eq 0 -and (-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and @($r.data.candidates)[0].processId -eq 9101 -and $global:Writes281.Count -eq 0 -and -not (Get-Conn).connected) "mem=$mem $(J $r)"
+
+    Reset-State
+    $null = Add-Ide 9101 $Y $slnA $true
+    $r = Connect-TcIde -ProcessId 9101
+    $d = Disconnect-TcIde -Quit
+    $r = Connect-TcIde
+    Check 'D2d Disconnect-TcIde -Quit refused (IDE_NOT_OWNED, connection kept) -> consent kept, Connect-TcIde attaches 9101' ((-not $d.success) -and $d.error.code -eq 'IDE_NOT_OWNED' -and $r.success -and $r.data.ideProcessId -eq 9101) "$(J $d.error) $(J $r)"
+    $null = Disconnect-TcIde
+
+    Reset-State
+    $null = Add-Ide 9101 $Y $slnA $true
+    $r = Connect-TcIde -ProcessId 9101
+    $global:Procs281.Remove(9101)   # process gone: start time unreadable -> removed by pid prefix
+    $d = Disconnect-TcIde
+    $mem = & $mod { $script:TcIdeConsentedIdes.Count }
+    Check 'D2e Disconnect-TcIde after the IDE process is gone -> consent removed by pid' ($d.success -and $mem -eq 0) "mem=$mem $(J $d)"
 
     Reset-State
     $null = Add-Ide 9101 $Y $slnA $true
@@ -285,8 +320,7 @@ try {
     $r = Start-TcLifecycle
     $names = @($r.data.steps | ForEach-Object { $_.name }) -join ','
     Check 'D5a Start-TcLifecycle, only a user IDE -> ConnectIde fails IDE_ATTACH_CONSENT_REQUIRED, no later step' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.failedStep -eq 'ConnectIde' -and $names -eq 'ConnectIde' -and $global:Steps281.Count -eq 0 -and $global:Writes281.Count -eq 0) "names=$names steps=$($global:Steps281 -join ',') $(J $r.error)"
-    $r = Connect-TcIde -ProcessId 9101   # the user agreed
-    $null = Disconnect-TcIde
+    $r = Connect-TcIde -ProcessId 9101   # the user agreed; the connection is not released before the lifecycle
     $global:Steps281.Clear()
     $r = Start-TcLifecycle
     $names = @($r.data.steps | ForEach-Object { $_.name }) -join ','

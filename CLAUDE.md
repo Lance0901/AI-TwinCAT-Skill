@@ -5,7 +5,7 @@ PowerShell module for automating the TwinCAT 3 IDE and PLC runtime, for **any AI
 ## Core Workflow (No Dialogs)
 
 ```powershell
-Connect-TcIde                     # 1. connect to the IDE (without -SolutionPath only an IDE TcAuto launched is attached, else IDE_ATTACH_CONSENT_REQUIRED: ask the user, then -ProcessId; launching with several IDEs installed: pass -ProgId or a -SolutionPath with a .tsproj TcVersion equal to an installed XAE version, else PROGID_REQUIRED)
+Connect-TcIde                     # 1. connect to the IDE (without -SolutionPath the selected IDE is attached only if TcAuto launched it or it is bound with -ProcessId until Disconnect-TcIde, else IDE_ATTACH_CONSENT_REQUIRED: ask the user, then -ProcessId; launching with several IDEs installed: pass -ProgId or a -SolutionPath with a .tsproj TcVersion equal to an installed XAE version, else PROGID_REQUIRED)
 # 1b. target + solution platform: read from the target (TARGETINFO, ADS port 200 IG 0x700) and switched to it.
 #     A target that cannot report it (ADS 0x702, TcSystemServiceUm 3.1.0.2649) -> PLATFORM_UNKNOWN without -Platform
 #     (UmRT / TwinCAT/BSD = 'TwinCAT OS (x64)'); -NoPlatformSwitch only sets the NetId.

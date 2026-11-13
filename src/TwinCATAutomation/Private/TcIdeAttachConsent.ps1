@@ -1,9 +1,13 @@
-# #281: Connect-TcIde without -SolutionPath / -ProcessId / -TakeOverOrphan attaches only to an IDE
-# TcAuto may work in: one this module (or an earlier module instance / bridge, launched-ides.json)
-# launched (Test-TcLaunchedIde), or one the user agreed to - shown by an explicit
-# Connect-TcIde -ProcessId <pid> earlier in this module instance (consent memory). Any other running
-# IDE (the user may have opened it only to look at it) is reported as IDE_ATTACH_CONSENT_REQUIRED:
-# nothing attached, no setter called (SilentMode, UserControl, Solution.Open), no state file written.
+# #281: Connect-TcIde without -SolutionPath / -ProcessId / -TakeOverOrphan attaches the IDE it
+# selects (TwinCAT project loaded first, else the first, busy last) only when TcAuto may work in it:
+# this module (or an earlier module instance / bridge, launched-ides.json) launched it
+# (Test-TcLaunchedIde), or the user agreed to it - shown by an explicit Connect-TcIde -ProcessId <pid>
+# earlier in this module instance that Disconnect-TcIde has not released since (consent memory).
+# Otherwise (the user may have opened that IDE only to look at it) IDE_ATTACH_CONSENT_REQUIRED:
+# nothing attached, no setter called (SilentMode, UserControl, Solution.Open). Nothing is recorded
+# for a user's IDE (no launch record, no silent-originals / ide-solutions entry); the only file
+# consulted is TcAuto's own launch record (launched-ides.json), which Test-TcLaunchedIde may claim
+# for an IDE TcAuto itself launched.
 # The consent memory lives in module memory only ($script:TcIdeConsentedIdes, key pid + start time
 # via Get-TcIdeProcessKey, so a recycled pid never matches); nothing can pre-fill it.
 
@@ -19,6 +23,25 @@ function Add-TcIdeAttachConsent {
     if ($null -eq $key) { return }
     if ($null -eq $script:TcIdeConsentedIdes) { $script:TcIdeConsentedIdes = @{} }
     $script:TcIdeConsentedIdes[$key] = $true
+}
+
+function Remove-TcIdeAttachConsent {
+    <#
+    .SYNOPSIS
+        Forgets the consent for IDE process -ProcessId (Disconnect-TcIde released the connection):
+        the next Connect-TcIde without parameters needs -ProcessId again. The key is pid + start
+        time (Get-TcIdeProcessKey); when the start time is unreadable (process gone) every entry of
+        that pid is removed.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+    if ($ProcessId -le 0 -or $null -eq $script:TcIdeConsentedIdes -or $script:TcIdeConsentedIdes.Count -eq 0) { return }
+    $key = Get-TcIdeProcessKey -ProcessId $ProcessId
+    if ($null -ne $key) { $script:TcIdeConsentedIdes.Remove($key); return }
+    $prefix = "$ProcessId|"
+    foreach ($k in @($script:TcIdeConsentedIdes.Keys)) {
+        if ([string]$k -like "$prefix*") { $script:TcIdeConsentedIdes.Remove($k) }
+    }
 }
 
 function Test-TcIdeAttachAllowed {
@@ -86,5 +109,5 @@ function New-TcAttachConsentResult {
         candidates      = @($list)
     }
     New-TcResult -Success $false -ErrorCode 'IDE_ATTACH_CONSENT_REQUIRED' -Hint (Get-TcErrorHint -Code 'IDE_ATTACH_CONSENT_REQUIRED') -Data $data `
-        -ErrorMessage "IDE_ATTACH_CONSENT_REQUIRED: found $($list.Count) running IDE(s) not started by TcAuto ($pids). Nothing was attached and none of their settings were changed (SilentMode untouched)."
+        -ErrorMessage "IDE_ATTACH_CONSENT_REQUIRED: found $($list.Count) running IDE(s) not launched by this TcAuto session ($pids). Nothing was attached and none of their settings were changed (SilentMode untouched)."
 }
