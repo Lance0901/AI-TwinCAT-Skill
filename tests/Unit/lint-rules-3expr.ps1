@@ -208,6 +208,9 @@ Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR_INPUT`n    fbIn : FB_X;`nEND_VAR`nV
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'ES1 FB input used only in a conditional-pragma section -> rulesSkipped implementation-not-analyzed' ((None3 $r) -and (Sk3 $r 'SCAN-FBVAL-001') -like '*implementation-not-analyzed:fbIn*') (Brief3 $r)
 
+$r = Prg ("    fbR : FB_R;`n" + $pv) "fbR(rIn := (nA + 1) / nB);`nfbR(rIn := st.n / nB);" '' { param($fx) & $stp $fx; Add-Pou $fx 'FB_R' "FUNCTION_BLOCK FB_R`nVAR_INPUT`n    rIn : REAL;`nEND_VAR`n" "" }
+Check 'EN2 call argument with an operand of unknown type -> rulesSkipped in-function-call (second review N2)' ((None3 $r) -and (Sk3 $r 'SCAN-INTDIV-001') -like '*in-function-call*') (Brief3 $r)
+
 # ================================================================ X  suppression / disabled
 $r = P3 "// tcauto-lint-disable-next-line SCAN-FLOAT-001: setpoint is copied 1:1 from the HMI value`nb := rA = 100.0;"
 $d = D3 $r 'SCAN-FLOAT-001'

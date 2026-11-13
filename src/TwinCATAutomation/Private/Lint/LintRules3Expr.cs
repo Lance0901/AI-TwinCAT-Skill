@@ -260,7 +260,9 @@ namespace TcLintEngine
                 int le2 = Expr3OperandStartBack(t, k - 1), re2 = Expr3OperandEndFwd(t, k + 1);
                 Expr3Op L2 = le2 >= 0 && (le2 == 0 || Expr3Boundary(t[le2 - 1]) || t[le2 - 1].IsOp("+") || t[le2 - 1].IsOp("-")) ? Expr3Classify(sc, t, le2, k) : new Expr3Op();
                 Expr3Op R2 = re2 > 0 ? Expr3Classify(sc, t, k + 1, re2) : new Expr3Op();
-                if (L2.Kind == "int" && R2.Kind == "int") Expr3Skip(RIntDiv, u, conv ? "explicit-conversion" : "in-function-call");
+                // second review N2: a division in a call argument is recorded unless an operand is proven REAL / not a number
+                if (L2.Kind == "real" || R2.Kind == "real" || L2.Kind == "other" || R2.Kind == "other" || Expr3RealCallBack(t, k - 1) || Expr3RealCallFwd(t, k + 1)) return;
+                Expr3Skip(RIntDiv, u, conv && L2.Kind == "int" && R2.Kind == "int" ? "explicit-conversion" : "in-function-call");
                 return;
             }
             int le = Expr3OperandStartBack(t, k - 1);

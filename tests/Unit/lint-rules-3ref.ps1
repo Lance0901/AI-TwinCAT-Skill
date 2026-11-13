@@ -177,6 +177,14 @@ Check 'RS3a __ISVALIDREF(r) AND_THEN (b OR r > 0) -> no finding' ((NoSm $r) -and
 $r = Fb "    r : REFERENCE TO INT;`n    b : BOOL;" "b := __ISVALIDREF(r) AND_THEN b OR r > 0;"
 Check 'RS3b __ISVALIDREF(r) AND_THEN b OR r > 0 (r read when the guard is FALSE) -> finding' ((V $r) -eq 'reference-unassigned') ((Brief $r) + ' ' + (SkipText $r))
 
+# ---- second review (PR #304): N1 AND binds tighter than OR_ELSE, N4 p := 0 after ADR
+$r = Fb "    r : REFERENCE TO INT;`n    b : BOOL;" "b := b AND NOT __ISVALIDREF(r) OR_ELSE r = 0;"
+Check 'RN1a b AND NOT __ISVALIDREF(r) OR_ELSE r = 0 -> never silent (finding or guard-not-understood)' (((V $r) -eq 'reference-unassigned') -or (SkipText $r) -like '*guard-not-understood:r*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    b : BOOL;" "b := b AND p = 0 OR_ELSE p^ = 0;"
+Check 'RN1b b AND p = 0 OR_ELSE p^ = 0 -> never silent' (((V $r) -eq 'pointer-unassigned') -or (SkipText $r) -like '*guard-not-understood:p*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    x : INT;`n    n : INT;" "p := ADR(x);`np := 0;`nn := p^;"
+Check 'RN4 p := ADR(x); p := 0; p^ -> never silent' (((V $r) -eq 'pointer-unassigned') -or (SkipText $r) -like '*assigned-elsewhere:p*') ((Brief $r) + ' ' + (SkipText $r))
+
 # ================================================================ X  suppression / unresolved
 $r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "// tcauto-lint-disable-next-line SCAN-REF-001: r is set by the HMI before start`nn := r;"
 $d = Diags $r
