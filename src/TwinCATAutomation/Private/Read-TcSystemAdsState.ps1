@@ -3,11 +3,13 @@
 # AdsState 19 = Exception. Measured 2026-11-13 (XAE 4026.22 / VS2022, local UmRT): after a PLC exception
 # (integer divide by zero 0xc0000094, FPU zero divide 0xc000008e, page fault 0xc0000005) port 851
 # reads Stop and port 10000 reads AdsState 19 'Exception' and stays there; a PLC-level Run / Reset
-# does not recover it (TwinCAT shuts itself down to Config about one second after WriteControl
-# Run), only a new Activate (Enable-TcConfig -Force) does. Source:
+# did not recover it (TwinCAT shut itself down to Config about one second after WriteControl
+# Run), a new Activate (Enable-TcConfig -Force) did. PLC Stop in Exception was not measured. Source:
 # openspec/changes/add-semantic-linter/verification/runtime-semantics-measured.md section 7.
-# The value is compared as an integer: an older TwinCAT.Ads.dll whose AdsState enum has no member
-# 19 prints it as '19', so the name is taken from $script:TcAdsStateNames, not from ToString().
+# The value is compared as an integer and named from $script:TcAdsStateNames, not from ToString():
+# [inference, defensive] a TwinCAT.Ads.dll whose AdsState enum lacked member 19 would print '19'.
+# Names 0-18 follow the AdsState enum of TwinCAT.Ads / ADSSTATE of TcAdsDef.h [inference: not
+# checked against InfoSys here]; only 5 (Run), 15 (Config) and 19 (Exception) were read on a target.
 $script:TcAdsStateRun = 5
 $script:TcAdsStateException = 19
 $script:TcAdsStateNames = @{
@@ -68,9 +70,11 @@ function Read-TcSystemAdsState {
 
 # #287 Run postcondition: after port 851 reached Run, both ports must keep reading Run for a short
 # window before Set-TcPlcState returns success. Measured 2026-11-13 (XAE 4026.22 / VS2022, local
-# UmRT, runtime-semantics-measured.md section 7.1): with port 10000 in Exception, WriteControl Run
-# on 851 read back Run after 26 ms, then TwinCAT shut itself down (851 unreachable within ~0.5 s,
-# 10000 = Config from ~1.5 s). 1500 ms covers that observation; a healthy PLC pays 1.5 s once.
+# UmRT, runtime-semantics-measured.md section 7.1, one case, watcher sampling once per second):
+# with port 10000 in Exception, WriteControl Run on 851 read back Run after 26 ms, then TwinCAT
+# shut itself down (851 unreachable at the next ~1 s sample, 10000 = Config from ~1.5 s). 1500 ms
+# covers that observation; a healthy PLC pays 1.5 s once. The pre-request read is the primary
+# guard against Exception; this window is the second line for a system that leaves Run later.
 # The window is bounded and polled (no blind wait): the first read that is not Run on either port
 # ends it at once. At least $script:TcPlcRunConfirmMinSamples rounds are read even when one round
 # is slow, so a single read is never taken as proof. Scaled by $script:TcAdsWaitTimeScale like

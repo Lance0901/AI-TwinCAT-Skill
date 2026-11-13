@@ -186,7 +186,7 @@ Set-Case $nid 'Stop' @('Run') @('Run', 'Run', 'Config')
 $r = Set-TcPlcState -State Run -TimeoutSec 2
 $d = $r.data
 Check 'N 10000 -> Config after 851 Run: RUNTIME_STATE_MISMATCH, WriteControl sent once' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $fake::Writes -eq 1) "code=$($r.error.code) writes=$($fake::Writes) $(J $d)"
-Check 'N data: systemState Config, runConfirm failedPort 10000, systemStateBefore Run, currentState still the PLC Run' ($d.systemState -eq 'Config' -and $d.systemAdsState -eq 15 -and $d.runConfirm.ok -eq $false -and $d.runConfirm.failedPort -eq 10000 -and $d.systemStateBefore -eq 'Run' -and $d.currentState -eq 'Run') (J $d)
+Check 'N data: systemState Config, runConfirm failedPort 10000, systemStateBefore Run, currentState still the PLC Run, reached false' ($d.reached -eq $false -and $d.systemState -eq 'Config' -and $d.systemAdsState -eq 15 -and $d.runConfirm.ok -eq $false -and $d.runConfirm.failedPort -eq 10000 -and $d.systemStateBefore -eq 'Run' -and $d.currentState -eq 'Run') (J $d)
 $b = Get-Block $nid
 Check 'N lifecycle block recorded: Set-TcPlcState / RUNTIME_STATE_MISMATCH / requested Run / reached Config' ($null -ne $b -and $b.command -eq 'Set-TcPlcState' -and $b.errorCode -eq 'RUNTIME_STATE_MISMATCH' -and $b.requestedState -eq 'Run' -and $b.reachedState -eq 'Config' -and $null -ne $d.lifecycleBlock) (J $b)
 Check 'N hint starts with the stop instruction' ($r.error.hint.StartsWith((& $mod { $script:TcLifecycleStopPrefix }))) "$($r.error.hint)"
@@ -230,7 +230,11 @@ $r = Set-TcPlcState -State Run -TimeoutSec 1
 Check 'Q already Run, system Config -> RUNTIME_STATE_MISMATCH, no WriteControl, no block' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $fake::Writes -eq 0 -and $null -eq (Get-Block $nid) -and $r.data.systemState -eq 'Config' -and $r.data.writeControlSent -eq $false) (J $r)
 Set-Case '10.287.4.2.1.1' 'Run' @('Run') @('Run')
 $r = Set-TcPlcState -State Run -TimeoutSec 1
-Check 'Q2 already Run, system Run -> success alreadyInState with systemState Run' ($r.success -and $r.data.alreadyInState -eq $true -and $r.data.systemState -eq 'Run' -and $fake::Writes -eq 0) (J $r.data)
+Check 'Q2 already Run, system Run -> success alreadyInState with systemState Run after the confirm window' ($r.success -and $r.data.alreadyInState -eq $true -and $r.data.systemState -eq 'Run' -and $r.data.runConfirm.ok -eq $true -and $r.data.runConfirm.samples -ge 3 -and $fake::Writes -eq 0) (J $r.data)
+$nid = '10.287.4.3.1.1'
+Set-Case $nid 'Run' @('Run') @('Run', 'Run', 'Config')
+$r = Set-TcPlcState -State Run -TimeoutSec 1
+Check 'Q3 already Run, system leaves Run in the confirm window -> RUNTIME_STATE_MISMATCH, reached false, no WriteControl, no block' ((-not $r.success) -and $r.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $r.data.reached -eq $false -and $r.data.systemState -eq 'Config' -and $r.data.runConfirm.failedPort -eq 10000 -and $fake::Writes -eq 0 -and $null -eq (Get-Block $nid)) (J $r)
 
 # --- S: Get-TcPlcState reports the system state; a failed port 10000 read does not fail it
 Set-Case '10.287.5.1.1.1' 'Stop' @('Stop') @('Exception')

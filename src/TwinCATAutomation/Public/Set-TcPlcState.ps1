@@ -29,7 +29,8 @@ function Set-TcPlcState {
         only Clear-TcLifecycleBlock (after the user agreed) removes it.
         TwinCAT system state (#287): before any WriteControl (every -State) port 10000 of the same
         target is read once. AdsState 19 Exception -> SYSTEM_EXCEPTION (data.systemState, adsState,
-        readAt; a PLC-level Run / Stop / Reset cannot recover it, Enable-TcConfig -Force can); an
+        readAt; measured 2026-11-13: PLC-level Run and Reset did not recover it, Enable-TcConfig
+        -Force did; Stop is refused as well, conservatively, since nothing PLC-level helps); an
         unreadable port 10000 -> SYSTEM_STATE_FAILED (data.readError, fail closed). Both send
         nothing and record no lifecycle block. Run postcondition: after the PLC port reached Run,
         the PLC port AND port 10000 must both read Run in every round of a short confirm window
@@ -39,7 +40,10 @@ function Set-TcPlcState {
         data.systemState / systemAdsState / systemStateReadAt are the last port 10000 read,
         data.runConfirm the window (ok, samples, elapsedMs, windowMs, minSamples, failedPort,
         plcState, error), data.systemStateBefore the read before the request. A PLC already in Run
-        with port 10000 not in Run is RUNTIME_STATE_MISMATCH too (nothing sent, no block).
+        already in Run (nothing sent) gets the same check: port 10000 not Run, or a confirm round
+        that is not Run, is RUNTIME_STATE_MISMATCH without a block. On a confirm failure
+        data.currentState / finalState stay the last PLC port read (Run when port 10000 failed),
+        data.reached = $false. The confirm window is not part of -TimeoutSec (up to ~1.5 s more).
     .PARAMETER State
         Target state: Run, Stop, or Reset.
     .PARAMETER TimeoutSec
@@ -160,23 +164,34 @@ function Set-TcPlcState {
             # Already running (e.g. boot project autostart): WriteControl Run would answer
             # ADS 0x712 "invalid state", so treat it as done.
             if ([int]$stateBefore.AdsState -eq 5) {
-                # #287: a PLC port in Run is only "Run" when the system is in Run too (nothing sent)
-                if ($sysBefore.adsState -ne $script:TcAdsStateRun) {
+                # #287: a PLC port in Run is only "Run" when the system is in Run too, through the same
+                # confirm window as the polled path (nothing sent: a failure records no block)
+                $confirm = $null
+                if ($sysBefore.adsState -eq $script:TcAdsStateRun) {
+                    $confirm = Confirm-TcPlcRunStable -AmsNetId $netIdNow -Port ([int]$script:TcAdsPort)
+                }
+                if ($null -eq $confirm -or -not $confirm.ok) {
+                    $sysNow = if ($null -ne $confirm) { $confirm } else { [PSCustomObject]@{ systemState = $sysBefore.state; systemAdsState = $sysBefore.adsState; systemStateReadAt = $sysBefore.readAt; error = "port 10000 reads $($sysBefore.state) (adsState $($sysBefore.adsState)), expected Run"; plcState = 'Run'; failedPort = 10000 } }
+                    $plcNow = if ($sysNow.failedPort -eq [int]$script:TcAdsPort) { $sysNow.plcState } else { 'Run' }
+                    $mm = [PSCustomObject]@{
+                        requestedState    = $State
+                        originalState     = 'Run'
+                        currentState      = $plcNow
+                        finalState        = $plcNow
+                        reached           = $false
+                        systemState       = $sysNow.systemState
+                        systemAdsState    = $sysNow.systemAdsState
+                        systemStateReadAt = $sysNow.systemStateReadAt
+                        systemStateBefore = $sysBefore.state
+                        writeControlSent  = $false
+                        reconnected       = $reconnected
+                    }
+                    if ($null -ne $confirm) { $mm | Add-Member -NotePropertyName 'runConfirm' -NotePropertyValue $confirm -Force }
                     return New-TcResult -Success $false `
-                        -ErrorMessage "PLC port $($script:TcAdsPort) reads Run but the TwinCAT system (ADS port 10000) reads $($sysBefore.state) (adsState $($sysBefore.adsState)); nothing was sent." `
+                        -ErrorMessage "PLC port $($script:TcAdsPort) was already in Run, but Run is not confirmed: $($sysNow.error); nothing was sent." `
                         -ErrorCode 'RUNTIME_STATE_MISMATCH' `
                         -Hint $script:TcPlcRunSystemMismatchHint `
-                        -Data ([PSCustomObject]@{
-                            requestedState    = $State
-                            originalState     = 'Run'
-                            currentState      = 'Run'
-                            finalState        = 'Run'
-                            systemState       = $sysBefore.state
-                            systemAdsState    = $sysBefore.adsState
-                            systemStateReadAt = $sysBefore.readAt
-                            writeControlSent  = $false
-                            reconnected       = $reconnected
-                        })
+                        -Data $mm
                 }
                 # #131: same fields as the polled path (nothing sent, the read before is the readback)
                 return New-TcResult -Success $true -Data ([PSCustomObject]@{
@@ -191,9 +206,15 @@ function Set-TcPlcState {
                     reconnected     = $reconnected
                     elapsedMs       = 0
                     alreadyInState  = $true
-                    systemState       = $sysBefore.state
-                    systemAdsState    = $sysBefore.adsState
-                    systemStateReadAt = $sysBefore.readAt
+                    systemState       = $confirm.systemState
+                    systemAdsState    = $confirm.systemAdsState
+                    systemStateReadAt = $confirm.systemStateReadAt
+                    systemStateBefore = $sysBefore.state
+                    runConfirm        = [PSCustomObject]@{
+                        ok = $confirm.ok; samples = $confirm.samples; elapsedMs = $confirm.elapsedMs
+                        windowMs = $confirm.windowMs; minSamples = $confirm.minSamples
+                        failedPort = $confirm.failedPort; plcState = $confirm.plcState; error = $confirm.error
+                    }
                 })
             }
         }
@@ -270,6 +291,7 @@ function Set-TcPlcState {
                         failedPort = $confirm.failedPort; plcState = $confirm.plcState; error = $confirm.error
                     }) -Force
                 if (-not $confirm.ok) {
+                    $data | Add-Member -NotePropertyName 'reached' -NotePropertyValue $false -Force
                     # the PLC state fields describe the last PLC read of the confirm window
                     if ($confirm.failedPort -eq [int]$script:TcAdsPort) {
                         $data.currentState = $confirm.plcState; $data.finalState = $confirm.plcState
