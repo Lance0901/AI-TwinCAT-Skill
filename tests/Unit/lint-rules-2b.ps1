@@ -172,7 +172,7 @@ $r = Fb "    ton1 : TON;`n    b : BOOL;" "b := ton1.Q;" (Method 'M_Wait' "METHOD
 $d = Diags $r 'SCAN-TIMER-002'
 Check 'T10 TON only in a method -> TIMER-002 info, not in unresolved' ((Only $r 'SCAN-TIMER-002') -and $d[0].severity -eq 'info' -and $d[0].objectPath -eq 'FB_T.M_Wait' -and (Unres $r 'SCAN-TIMER-002').Count -eq 0) (Brief $r)
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    A_Cyc();`nEND_IF" (Action 'A_Cyc' 'ton1(IN := b, PT := T#1S);')
-Check 'T11 TON only in an action the body calls under IF -> TIMER-002 info' (Only $r 'SCAN-TIMER-002') (Brief $r)
+Check 'T11 TON only in an action the body calls (only there) under IF -> TIMER-001 at that call (rev289 SF3; was TIMER-002 info)' (Only $r 'SCAN-TIMER-001') (Brief $r)
 $r = Fb "    rt : F_TRIG;`n    b : BOOL;" "M_Edge();" (Method 'M_Edge' "METHOD M_Edge`n" 'rt(CLK := b);')
 Check 'T12 counter-example: method called unconditionally by the body -> no finding' (None2b $r) (Brief $r)
 $r = Fb "    ton1 : TON;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 3 DO`n    IF b THEN ton1(IN := b, PT := T#1S); END_IF`nEND_FOR"
@@ -188,7 +188,7 @@ Check 'T16 counter-example: body -> M_Outer -> M_Inner, all unconditional -> no 
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b AND_THEN M_Wait() THEN`n    b := FALSE;`nEND_IF" $mw
 Check 'T17 IF b AND_THEN M_Wait() (short-circuit) -> TIMER-002 stays' (Only $r 'SCAN-TIMER-002') (Brief $r)
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    b := M_Wait();`nEND_IF" $mw
-Check 'T18 b := M_Wait() inside IF -> TIMER-002 stays' (Only $r 'SCAN-TIMER-002') (Brief $r)
+Check 'T18 b := M_Wait() inside IF (only caller) -> not every cycle; judged at that call -> TIMER-001 (rev289 SF3; was TIMER-002)' (Only $r 'SCAN-TIMER-001') (Brief $r)
 
 # ================================================================ P  SCAN-TIMER-004
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b);"
@@ -295,6 +295,19 @@ $r = Fb "    tmr : TON;`n    n : INT;`n    p : POINTER TO BOOL;" "p := ADR(tmr.I
 Check 'K-P24 ADR(tmr.IN) -> no TIMER-005, rulesSkipped in-passed-or-aliased' ((Diags $r 'SCAN-TIMER-005').Count -eq 0 -and (SkipText $r) -like '*SCAN-TIMER-005=in-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
 $r = Fb "    tmr : TON;`n    p : POINTER TO BOOL;" "p := ADR(tmr.IN);`ntmr(IN := FALSE, PT := T#1S);"
 Check 'K-P25 ADR(tmr.IN) -> no in-constant, rulesSkipped in-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=in-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+# SF3: action / method called only at one place of the body, inside a CASE branch / IF -> judged at that place
+$r = Fb "    tmr : TON;`n    n : INT;" "CASE n OF`n10:`n    A_Wait();`n20:`n    n := 0;`nEND_CASE" (Action 'A_Wait' "tmr(IN := TRUE, PT := T#2S);`nIF tmr.Q THEN n := 20; END_IF")
+$d = Diags $r 'SCAN-TIMER-005'
+Check 'K-U09 state timer in an action called in one CASE branch -> TIMER-005 at the action call' ((Only $r 'SCAN-TIMER-005') -and $d[0].objectPath -eq 'FB_T' -and $d[0].line -eq 3 -and (Unres $r 'SCAN-TIMER-005').Count -eq 1) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "IF b THEN`n    A_Wait();`nEND_IF" (Action 'A_Wait' "tmr(IN := b, PT := T#2S);")
+Check 'K-U10 timer in an action called inside IF -> TIMER-001' (Only $r 'SCAN-TIMER-001') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "IF b THEN`n    M_Wait();`nEND_IF" (Method 'M_Wait' "METHOD M_Wait`n" "tmr(IN := b, PT := T#2S);")
+Check 'K-U11 timer in a method called inside IF (no other caller) -> TIMER-001' (Only $r 'SCAN-TIMER-001') ((Brief $r) + ' ' + (SkipText $r))
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    tmr : TON;`n    n : INT;`nEND_VAR`n" "CASE n OF`n10:`n    A_Wait();`nEND_CASE" (Action 'A_Wait' "tmr(IN := TRUE, PT := T#2S);")
+Add-Pou $fx 'MAIN' "PROGRAM MAIN`nVAR`n    fb : FB_T;`nEND_VAR`n" "fb();`nfb.A_Wait();"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'K-U12 action also called from outside (fb.A_Wait()) -> TIMER-002 info, rulesSkipped member-called-elsewhere' ((Only $r 'SCAN-TIMER-002') -and (SkipText $r) -like '*SCAN-TIMER-005=member-called-elsewhere:tmr*') ((Brief $r) + ' ' + (SkipText $r))
 # Nit 1: constant IF condition
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF TRUE THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
 Check 'K-C1 IF TRUE THEN tmr() -> no TIMER-001 (always runs)' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))

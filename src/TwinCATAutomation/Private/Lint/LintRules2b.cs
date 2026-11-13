@@ -29,6 +29,7 @@ namespace TcLintEngine
             public bool Passed;        // inst.Member handed on: call argument (VAR_IN_OUT / ADR / MEMCPY / =>), REF= source
             public int Line, Col;
             public CallSite Call;      // body-call only
+            public string Via;         // review SF3: the call is judged at the body's call of this action / method
             public Dictionary<string, string> Args;   // body-call: NAME (upper) -> value text; null = positional arguments
         }
 
@@ -559,6 +560,16 @@ namespace TcLintEngine
                 if (c.Call.InPragma) { SkipTimer(x, "call-in-pragma", true, false); return; }
                 if (c.U.Path == top || MemberRunsEveryTime(c.U.Path, top, secs)) level.Add(c); else other.Add(c);
             }
+            // review SF3: an unconditional call in an action / method that the body calls at exactly one place (a statement in
+            // an IF / CASE branch) and nothing else can call -> judged at that place (001 / 005); otherwise 002 + the reason
+            string elsewhere = null;
+            for (int oi = other.Count - 1; oi >= 0; oi--)
+            {
+                string why;
+                InstUse s = AtMemberCallSite(x, other[oi], top, secs, out why);
+                if (s != null) { level.Add(s); other.RemoveAt(oi); }
+                else if (why != null) elsewhere = why;
+            }
             foreach (InstUse c in level) if (!c.Call.Conditional) return;   // unconditional call: 001 / 002 / 005 fine
             // IF TRUE THEN / IF 1 = 1 THEN: always runs; IF FALSE THEN: never runs (the call is dropped)
             bool droppedFalse = false;
@@ -576,6 +587,7 @@ namespace TcLintEngine
                 Emit(RTm2, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
                     "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called in " + where + c0.U.Path + ", which the POU body does not call unconditionally: it is not proven to be updated every cycle",
                     x.Name, "Call the instance (or the member that calls it) unconditionally in the POU body", null, null, null, false);
+                if (elsewhere != null) { Skip2b(RTm1, x, elsewhere); if (OnDelay.Contains(x.TypeName)) Skip2b(RTm5, x, elsewhere); }
                 return;
             }
             if (other.Count > 0) { SkipTimer(x, "also-called-in-member", false, false); return; }
@@ -608,7 +620,7 @@ namespace TcLintEngine
             else if (OnDelay.Contains(x.TypeName) && oneCase && !reset && allInTrue && !positional)
             {
                 Diagnostic d5 = Emit(RTm5, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
-                    "State timer '" + x.Name + " : " + x.TypeName + "' is only called with IN := TRUE inside CASE branches and never with IN := FALSE: after the state is left, IN stays TRUE, " +
+                    "State timer '" + x.Name + " : " + x.TypeName + "' is only called with IN := TRUE inside CASE branches" + (first.Via != null ? " (through " + first.Via + ")" : "") + " and never with IN := FALSE: after the state is left, IN stays TRUE, " +
                     "so the next entry has no rising edge and the elapsed time keeps counting (measured 2026-11-13, XAE 4026.22 / UmRT: a TON not called for 3 s had Q = TRUE in its first call again)",
                     x.Name, "Call " + x.Name + "(IN := FALSE) when the state is left (or in every other state)", null, null, null, false);
                 // inst.IN := FALSE without a later call (not sampled) is inferred from IEC call semantics; LTON is not measured
@@ -617,12 +629,41 @@ namespace TcLintEngine
             }
             if (reset) { Skip2b(RTm1, x, "explicit-reset"); return; }
             Diagnostic d1 = Emit(RTm1, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
-                "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called inside IF / CASE (" + first.Call.Blocks + "): in cycles it is not called its inputs are not sampled " +
+                "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called inside IF / CASE (" + first.Call.Blocks + (first.Via != null ? ", through " + first.Via : "") + "): in cycles it is not called its inputs are not sampled " +
                 (x.Class == "edge" ? "(an edge between two calls is missed)"
                     : string.Equals(x.TypeName, "TON", StringComparison.OrdinalIgnoreCase) ? "(a TON keeps measuring wall-clock time while not called and can be elapsed at once on the next call, measured 2026-11-13, XAE 4026.22 / UmRT)"
                     : "(a " + x.TypeName + " may change its output at once on the next call because its time keeps running while not called - inferred from the measured TON behaviour, only TON was measured)"),
                 x.Name, "Call the instance unconditionally every cycle and put the condition on IN / CLK", null, null, null, false);
             if (d1 != null) d1.ImpactBasis = TimerBasis(x.TypeName);
+        }
+
+        // review SF3: c is an unconditional timer call inside an action / method M of the owner. When the owner's body calls M at
+        // exactly one place, as a statement (not in a loop / {IF} region), no other section calls it, no '.M' appears anywhere in
+        // the project (fb.M() from outside), the owner IMPLEMENTS no interface and no FB EXTENDS it -> a use at that body call
+        // site. why: rulesSkipped reason when M may be called from elsewhere (member-called-elsewhere), null otherwise
+        private InstUse AtMemberCallSite(Inst x, InstUse c, string top, List<ImplUnit> secs, out string why)
+        {
+            why = null;
+            if (c.Call.Conditional || !c.U.Path.StartsWith(top + ".", StringComparison.OrdinalIgnoreCase)) return null;
+            string member = c.U.Path.Substring(top.Length + 1);
+            if (member.IndexOf('.') >= 0) return null;   // property accessor
+            bool impl = false;
+            if (x.Owner.Di.Lex != null) foreach (Token k in x.Owner.Di.Lex.Tokens) if (k.Is("IMPLEMENTS")) { impl = true; break; }
+            if (dotNames.ContainsKey(member) || impl || derivedBases.Contains(x.Owner.O.Name)) { why = "member-called-elsewhere"; return null; }
+            CallSite site = null; ImplUnit at = null; int n = 0;
+            foreach (ImplUnit u in secs)
+                foreach (CallSite cs in u.Scan.Calls)
+                {
+                    string tg = cs.Target ?? "";
+                    if (tg.StartsWith("THIS^.", StringComparison.OrdinalIgnoreCase)) tg = tg.Substring(6);
+                    if (!string.Equals(tg, member, StringComparison.OrdinalIgnoreCase)) continue;
+                    n++; site = cs; at = u;
+                }
+            if (n != 1) { if (n > 1) why = "member-called-elsewhere"; return null; }
+            if (at.Path != top || site.InPragma || !site.Conditional || StAnalyzer.InLoop(site.FramePath) || !StatementStart(site, at.Scan.Lex.Tokens)) return null;
+            InstUse s = new InstUse();
+            s.U = at; s.Kind = "body-call"; s.Line = site.Line; s.Col = site.Col; s.Call = site; s.Args = c.Args; s.Via = member;
+            return s;
         }
 
         // the call's enclosing blocks: true when every one is the THEN branch of an IF whose condition is a constant TRUE
