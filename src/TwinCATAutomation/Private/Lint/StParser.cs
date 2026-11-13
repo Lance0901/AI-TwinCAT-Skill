@@ -520,6 +520,13 @@ namespace TcLintEngine
                     if (target.Length > 0 && NeedsSpace(target[target.Length - 1], x.Text)) target.Append(' ');
                     target.Append(x.Text);
                 }
+                // 'k : ;' / 'k : := 5;' (no type): never legal, the compiler rejects it (issue #286 N4); like 'INT b BOOL' it is
+                // not a declaration the parser accepts -> unsupported (verdict incomplete), never ok
+                if (type.Length == 0)
+                {
+                    st.NotAnalyzed("unsupported-syntax:var-type-missing", v.Line, v.Col);
+                    return false;
+                }
                 v.TypeText = type.ToString();
                 v.InitText = init == null ? null : init.ToString();
                 into.Add(v);

@@ -2191,7 +2191,12 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 - **現象**:`Invoke-TcLintCandidate`(MCP `LintCandidate`)沒給 `-PlcProjectPath`(text-only),`data.verdict = incomplete`,`data.candidate.contextRequired[]` 列出原因(`extends:<型別>`、`implements:<介面>`、`object-kind:Method` / `Action` / `Property`、`type:<型別>`、`identifier:<名稱>`、`var-external`)。不需要 context 的規則照跑,diagnostics 照列。
 - **為什麼**:候選文字需要專案才能判斷:`IMPLEMENTS` / `EXTENDS`、Method / Property / Action(要看所屬 POU)、用到不是基本型別 / 標準函式 / 型別目錄裡的型別或識別字(GVL 變數、DUT、別的 POU、別處的 CONSTANT)。只看文字就回 pass 會漏掉跨物件的問題(design.md D2,review B2),所以不回通過。
-- **下一步**:帶 `-PlcProjectPath <.plcproj>` 重跑(候選覆蓋到磁碟專案上,同名取代、新物件加入,不寫檔)。
+- **project 模式**(有 `-PlcProjectPath`,`data.contextLevel = project`):規則位置(FOR 上下限 / 步長、WHILE / UNTIL 條件、陣列名與 index、除數)的名稱在專案裡解析不到 → `unresolved-identifier:<名稱>`;名稱可能在讀不到的物件裡 → `context-object-broken:<檔>`。專案有 library 參照時,**沒限定**的未知名稱可能是 library 的全域常數(例如 `MAX_STRING_LENGTH`):文字無法求值,不回 `LINT_CONTEXT_REQUIRED`,記 `data.coverage.rulesSkipped` 的 `library-symbol-unresolved:<名稱>`,只有需要那個值的規則跳過該位置(例如 SCAN-FOR-001 `end-not-constant`),其他規則照跑(issue #286 S6);限定名稱 `X.Y` 的 X 不明時記 `library-or-unknown:X`。這些 `rulesSkipped` 項目的 `ruleId` 是讀那個位置的規則(例如 FOR 上限 → `SCAN-FOR-001` 與 `SCAN-ARR-001` 各一筆)。WHILE / UNTIL 條件裡的這種名稱:本體沒有寫入它、也沒有呼叫時,SCAN-LOOP-001 仍報 `unresolved-condition-name` warning(進 `data.unresolved`,要處置):若它不會被其他 task / ADS 改變,迴圈就是 busy-wait。
+- **下一步**:
+  - text-only 的 `extends:` / `implements:` / `object-kind:` / `type:` / `identifier:` / `var-external` → 帶 `-PlcProjectPath <.plcproj>` 重跑(候選覆蓋到磁碟專案上,同名取代、新物件加入,不寫檔)。
+  - `unresolved-identifier:<名稱>`(專案沒引用 library 而名稱哪裡都沒宣告,或 `GVL.x` / `E_Enum.x` 的成員不存在)→ 名稱打錯就改正候選;真的缺宣告,加到它該屬的 GVL / DUT(`Add-TcGvl` / `Write-TcPouCode`)後重跑。
+  - `context-object-broken:<檔>` → `Invoke-TcLintProject -PlcProjectPath <.plcproj>` 看該檔的 `LINT-PARSE-*` / `PROJECT-XML-*`,修好再重跑。
+  - 不要為了讓 lint 通過而宣告 library 已有的名稱:同名的專案宣告會遮蔽 library 的值,改變程式語意。
 
 ### LINT_PROFILE_INVALID
 

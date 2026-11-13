@@ -51,7 +51,7 @@
 - [x] 2.2 `LintCandidate` 的 `newSuppressions[]`(相對磁碟版本)— PR #284;profile 放寬照 git 基準列 `newOverrides[]`
 - [x] 2.3 呼叫點模型:FB body 呼叫與 Method 呼叫分開,含 expression 內的呼叫;`inherited-use` — PR #284:1b 已有 expression / index 內呼叫與 `inExpression`;新增 `form`(body / member)、`returnValueUsed`、`viaSuper`。不經 `SUPER^` 的繼承成員呼叫要 EXTENDS 鏈,留給 2.5
 - [x] 2.4 SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001(blocking);SAFETY-ARR-001、SAFETY-DIV-001 — PR #284(SAFETY-DIV-001 變數除數改為 info、不進 `unresolved[]`,理由見 rule-catalog)
-- [ ] 2.5 SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002 / 004 / 005
+- [x] 2.5 SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002 / 004 / 005 — PR #289(`LintRules2b.cs`,測試 `tests/Unit/lint-rules-2b.ps1`;定義見 rule-catalog 的「Phase 2b」節)
 - [ ] 2.6 stale 偵測(D2):`.plcproj` 屬於連線中的 solution、樹 / 磁碟 `<Compile>` 比對、`Document.Saved`、4024 保守規則
 - [ ] 2.7 **真機**(registered tcauto,一次一個 worker):4024 XAE 上 `WritePouCode` 後 .TcPOU 的落地時機;XAE 新增 / 刪除物件後 2.6 是否抓得到;4026 VS2022 重跑 #69
 - [x] 2.8 SKILL.md:LintCandidate → WritePouCode → BuildProject → LintProject;Failure contract 加入 `requiresDisposition` 規定(不得 EnableConfig、不得回報完成、`newSuppressions[]` 逐條列給使用者)— PR #284(Stop conditions 第 5 條)
