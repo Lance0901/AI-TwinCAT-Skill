@@ -145,6 +145,14 @@ Check 'blocked: data.lifecycleBlock = step data.lifecycleBlock' ([object]::Refer
 Check 'blocked: failedStep EnableConfig, Connect-TcAds not called' ($r.data.failedStep -eq 'EnableConfig' -and $null -eq (Get-Call 'Connect-TcAds')) (J $r.data.failedStep)
 Check 'blocked: Enable-TcConfig got -TimeoutSec 300 -NoLogin -PlcProjectPath' ($e.params.TimeoutSec -eq 300 -and $e.params.NoLogin -eq $true -and (@($e.params.PlcProjectPath) -join ',') -eq 'FrameworkUnitTest' -and $e.params.Force -eq $true) (J $e.params)
 
+# --- 4b. #287: SYSTEM_EXCEPTION from the set-plc-run step of Enable-TcConfig passes through as it is
+Reset-Case
+$block287 = [PSCustomObject]@{ amsNetId = '5.1.2.3.1.1'; command = 'Enable-TcConfig'; errorCode = 'SYSTEM_EXCEPTION' }
+$se = Err 'SYSTEM_EXCEPTION' 'mock system exception' ([PSCustomObject]@{ lifecycleBlock = $block287; systemState = 'Exception'; adsState = 19 })
+Set-Mock 'Enable-TcConfig' $se
+$r = Start-TcLifecycle
+Check '#287 SYSTEM_EXCEPTION: code / hint as they are, failedStep EnableConfig, lifecycleBlock, no later step' ($r.success -eq $false -and $r.error.code -eq 'SYSTEM_EXCEPTION' -and $r.error.hint -eq 'hint of SYSTEM_EXCEPTION' -and $r.data.failedStep -eq 'EnableConfig' -and [object]::ReferenceEquals($r.data.lifecycleBlock, $block287) -and $null -eq (Get-Call 'Connect-TcAds') -and $null -eq (Get-Call 'Get-TcPlcState')) (J $r)
+
 # --- 5. ADS port decision ---------------------------------------------------------------------
 Reset-Case
 Set-Mock 'Enable-TcConfig' (Ok ([PSCustomObject]@{ loggedIn = $true; plcs = @((Plc 'FrameworkUnitTest' 852)) }))

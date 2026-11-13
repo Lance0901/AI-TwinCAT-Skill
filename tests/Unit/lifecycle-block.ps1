@@ -310,7 +310,7 @@ try {
         function script:Set-TcPlcState {
             param($State, $TimeoutSec)
             if ($State -eq $global:PlcFailOn) {
-                $code = if ($State -eq 'Run') { 'PLC_RUN_TIMEOUT' } else { 'STATE_SET_FAILED' }
+                $code = if ($global:PlcFailCode) { $global:PlcFailCode } elseif ($State -eq 'Run') { 'PLC_RUN_TIMEOUT' } else { 'STATE_SET_FAILED' }
                 return New-TcResult -Success $false -ErrorCode $code -ErrorMessage "PLC did not reach '$State' (mock)" -Hint 'mock hint' -Data ([PSCustomObject]@{ lifecycleBlock = $script:UtBlk })
             }
             New-TcResult -Success $true -Data ([PSCustomObject]@{ currentState = $State })
@@ -328,6 +328,19 @@ try {
     $nr = @($cy.data.steps | Where-Object { $_.status -eq 'NOT RUN' } | ForEach-Object { $_.step })
     $ran = & $mod { $script:UtTests }
     Check '(10) S3 Run fails -> returned at once (PLC_RUN_TIMEOUT, lifecycleBlock), Tests + Stop NOT RUN, no test ran' ((-not $cy.success) -and $cy.error.code -eq 'PLC_RUN_TIMEOUT' -and $cy.data.lifecycleBlock.command -eq 'Set-TcPlcState' -and ($nr -join ',') -eq 'Tests,Stop' -and $ran -eq 1) "tests=$ran $(J $cy)"
+    # #287: SYSTEM_EXCEPTION of PLC Run (nothing sent, no block) -> returned at once with its code / hint
+    & $mod { $script:UtBlkSave = $script:UtBlk; $script:UtBlk = $null }
+    $global:PlcFailOn = 'Run'; $global:PlcFailCode = 'SYSTEM_EXCEPTION'
+    & $mod { $script:UtTests = 0 }
+    $cy = Invoke-TcTestCycle -TestCases $tcs -SkipBuild
+    $nr = @($cy.data.steps | Where-Object { $_.status -eq 'NOT RUN' } | ForEach-Object { $_.step })
+    $ran = & $mod { $script:UtTests }
+    Check '(10) #287 Run SYSTEM_EXCEPTION -> cycle fails with SYSTEM_EXCEPTION and its hint, Tests + Stop NOT RUN, no test ran' ((-not $cy.success) -and $cy.error.code -eq 'SYSTEM_EXCEPTION' -and $cy.error.hint -eq 'mock hint' -and ($nr -join ',') -eq 'Tests,Stop' -and $ran -eq 0) "tests=$ran $(J $cy)"
+    $global:PlcFailCode = 'RUNTIME_STATE_MISMATCH'
+    & $mod { $script:UtBlk = $script:UtBlkSave }
+    $cy = Invoke-TcTestCycle -TestCases $tcs -SkipBuild
+    Check '(10) #287 Run RUNTIME_STATE_MISMATCH (system left Run) -> cycle fails with it and data.lifecycleBlock' ((-not $cy.success) -and $cy.error.code -eq 'RUNTIME_STATE_MISMATCH' -and $cy.data.lifecycleBlock.command -eq 'Set-TcPlcState') (J $cy)
+    $global:PlcFailCode = $null
     $global:PlcFailOn = $null
 
     # --- (11) S1: every failure after set-config / Activate records a block ---
