@@ -396,7 +396,8 @@ namespace TcLintEngine
             if (TimePrefixes.Contains(prefix))
             {
                 int j = i;
-                if (j < n && s[j] == '-') j++;   // defensive: T#-1s
+                // T#-5S: the 4026.22 compiler rejected it (st-syntax-measured.md D06): recognised, section not analysed
+                if (j < n && s[j] == '-') { j++; r.Unverified.Add(Issue("unverified-syntax:negative-time-literal", line, col)); }
                 int groups = 0;
                 while (true)
                 {

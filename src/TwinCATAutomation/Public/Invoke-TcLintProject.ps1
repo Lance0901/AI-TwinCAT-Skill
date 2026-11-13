@@ -1,7 +1,7 @@
 function Invoke-TcLintProject {
     <#
     .SYNOPSIS
-        Read-only semantic lint of a TwinCAT PLC project on disk (#252 Phase 1a): project file integrity (XML, GUID, Compile list, .tsproj references, encoding) and ST parsing. Needs no IDE and no runtime.
+        Read-only semantic lint of a TwinCAT PLC project on disk (#252 Phase 1a / 1b): project file integrity (XML, GUID, Compile list, .tsproj references, encoding), ST parsing and machine-behaviour rules Build does not catch (stateful FB as temporary instance, PROGRAM never / twice called). Needs no IDE and no runtime.
     .DESCRIPTION
         Reads the .plcproj, every file its <Compile> items list, the .tsproj that references it and the
         .sln. Nothing is written, nothing is connected (no IDE, no ADS). The engine is C# compiled on the
@@ -10,8 +10,19 @@ function Invoke-TcLintProject {
         Rules of this version (openspec/changes/add-semantic-linter/rule-catalog.md section 1):
         PROJECT-XML-001..004, PROJECT-KIND-001, PROJECT-NAME-001/002, PROJECT-GUID-001..005,
         PROJECT-SUB-001/002, PROJECT-LINEIDS-001, PROJECT-COMPILE-001..006, PROJECT-LIB-001,
-        PROJECT-TSPROJ-001..003, PROJECT-ENC-001, LINT-PARSE-001..003, LINT-XML-002. No machine-behaviour
-        rule (SCAN-*) runs yet.
+        PROJECT-TSPROJ-001..003, PROJECT-ENC-001, LINT-PARSE-001..003, LINT-XML-002; Phase 1b (section 2):
+        SCAN-TEMPFB-001 (timer in METHOD VAR, FUNCTION VAR or VAR_TEMP: blocking, re-initialized on every call;
+        trigger / counter / flip-flop: warning to dispose), PROJECT-TASK-001 (warning, must be disposed: PROGRAM
+        body on no task and called by nobody), PROJECT-TASK-002 (blocking: PROGRAM certainly runs twice per
+        cycle; possible double calls are warnings), LINT-SUPPRESS-001..004.
+        Types are only judged from data.typeCatalog (versioned list + profile typeCatalog), never guessed.
+
+        Disposition: requiresDisposition = true -> fix each data.unresolved[] entry or suppress it with
+        "// tcauto-lint-disable-next-line <RULE-ID>: <reason>" (non-blocking rules only; a blocking rule needs
+        the profile suppressions[]), and list every data.newSuppressions[] and data.newOverrides[] (profile
+        weakenings) entry to the user, new against the git base (merge-base with the origin default branch,
+        else @{upstream}, else HEAD; newSuppressionsBasis = unavailable lists all); do not commit them before the user
+        confirmed. No EnableConfig before that.
 
         data.passed = true does NOT mean the program is correct: only that the listed rules found no
         blocking finding in the analysed part (read data.coverage and data.unresolved with it).
@@ -22,7 +33,11 @@ function Invoke-TcLintProject {
         blockableBasis (pending-measurement: XAE behaviour not measured yet, still blocking), file
         (relative to the .plcproj directory), objectPath, section, line, column, message, evidence,
         fixHint }, unresolved[] (machine-behaviour findings that must be fixed or suppressed),
-        requiresDisposition, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
+        requiresDisposition, suppressions[] { source, kind, ruleIds, file, objectPath, line, reason, effective,
+        matched }, newSuppressions[], newOverrides[] { kind, ruleId, objectPath, detail, reason, change },
+        newSuppressionsBasis (git:merge-base:<ref> / git:head / unavailable / nothing-to-compare),
+        newSuppressionsBase { kind, ref, commit }, dispositionReasons (unresolved, new-overrides, new-suppressions),
+        typeCatalog { version, sha256, stateful, typeOnly }, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
         rulesSkipped[], blockingRulesSkipped[], acceptedSkips[], rulesNotRun[] }, rulesRun[].
 
         Errors: LINT_FAILED (blocking finding), LINT_PARSE_FAILED (code or .plcproj cannot be parsed),
@@ -159,6 +174,16 @@ function Invoke-TcLintProject {
     foreach ($e in $prof.excludes) { $opt.AddExclude($e.objectPath, $e.reason) }
     foreach ($e in $prof.suppressions) { $opt.AddSuppression($e.objectPath, $e.ruleId, $e.reason) }
     foreach ($e in $prof.acceptSkips) { $opt.AddAcceptSkip($e.objectPath, $e.ruleId, $e.reason) }
+    # FB type catalog (tasks 1b.1): versioned library list + profile typeCatalog
+    $cat = Get-TcLintTypeCatalog
+    if (-not $cat.ok) { return (& $fail 'LINT_ENGINE_ERROR' 'The lint type catalog is missing or invalid; no result is reported' ([ordered]@{ engineDetail = $cat.message })) }
+    foreach ($e in $cat.entries) { $opt.AddCatalogType($e.name, $e.library, $e.kind, $e.source, $e.class) }
+    $profSrc = if ($prof.profile.path) { $prof.profile.path } else { 'profile' }
+    foreach ($nme in @($prof.typeCatalog.stateful)) { $opt.AddCatalogType($nme, 'profile', 'stateful', $profSrc, 'profile') }
+    foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $opt.AddCatalogType($nme, 'profile', 'function-block', $profSrc, '') }
+    $catInfo = $cat.info
+    $catInfo['profileStateful'] = @($prof.typeCatalog.stateful).Count
+    $catInfo['profileFunctionBlocks'] = @($prof.typeCatalog.functionBlocks).Count
     $analyzeStart = $sw.ElapsedMilliseconds
     try { $res = ("$ns.LintEngine" -as [type])::Run($opt) }
     catch {
@@ -169,6 +194,15 @@ function Invoke-TcLintProject {
         }
         return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
     }
+
+    # newSuppressions[] / newOverrides[]: against the git base (merge-base with upstream / origin default, else HEAD;
+    # design.md D5, PR #283 review B1 / SF6); unavailable -> all listed (fail closed)
+    $newSup = Get-TcLintNewItems -Suppressions @($res['suppressions']) -Overrides @($prof.profile.overrides) -PlcProjectFull $plcFull -ProfilePath $prof.profile.path -EngineType ("$ns.Suppressions" -as [type]) -RuleRegistry $registry
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if ([bool]$res['requiresDisposition']) { $reasons.Add('unresolved') }
+    if (@($newSup.overrides).Count -gt 0) { $reasons.Add('new-overrides') }
+    # review N4: a new inline / profile suppression also has to be shown to the user before going on
+    if (@($newSup.suppressions).Count -gt 0) { $reasons.Add('new-suppressions') }
 
     $source = [ordered]@{ kind = 'disk'; plcProjectPath = $res['source']['plcProjectPath']; solutionPath = $res['source']['solutionPath']
         tsprojPaths = @($res['source']['tsprojPaths']); ideChecked = $false }
@@ -186,13 +220,19 @@ function Invoke-TcLintProject {
         summary              = $res['summary']
         diagnostics          = @($res['diagnostics'])
         unresolved           = @($res['unresolved'])
-        requiresDisposition  = [bool]$res['requiresDisposition']
+        requiresDisposition  = ($reasons.Count -gt 0)
+        dispositionReasons   = @($reasons)
         scope                = $res['scope']
-        newSuppressions      = @()
-        newSuppressionsBasis = 'inline-suppression-not-supported'
+        suppressions         = @($res['suppressions'])
+        newSuppressions      = @($newSup.suppressions)
+        newOverrides         = @($newSup.overrides)
+        newSuppressionsBasis = $newSup.basis
+        newSuppressionsBase  = $newSup.base
+        typeCatalog          = $catInfo
         coverage             = $res['coverage']
         rulesRun             = @($res['rulesRun'])
     }
+    if ($newSup.reason) { $data.newSuppressionsBasisReason = $newSup.reason }
     if ($Scope -eq 'Object') { $data.scope['note'] = 'Scope=Object checks only these objects (plus the project files), not the whole project: run Scope=All before Reset-TcSolution / BuildProject' }
     if (@($res['engineDetail']).Count -gt 0) { $data.engineDetail = @($res['engineDetail']) }
     if ($IncludeTiming) { $data.timing = [ordered]@{ engineLoadMs = $compileMs; engineCompiled = [bool]$engine.compiled; analyzeMs = ($sw.ElapsedMilliseconds - $analyzeStart); totalMs = $sw.ElapsedMilliseconds } }

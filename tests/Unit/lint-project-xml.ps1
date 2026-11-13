@@ -189,7 +189,8 @@ Test-Case 'TSPROJ-003 PouCall names no POU: warning, compiler catches it (not un
 }
 Test-Case 'TSPROJ-003 PouCall names a FUNCTION_BLOCK' { param($f) Write-LintFxFile $f.Task (Get-LintFxTaskText -PouCall 'FB_A') } @('PROJECT-TSPROJ-003') ''
 Test-Case 'TSPROJ-003 task context missing (still pending)' { param($f) Write-LintFxFile $f.Tsproj (Get-LintFxTsprojText -ContextName 'OtherTask') $false } @('PROJECT-TSPROJ-003') 'LINT_FAILED' { param($r) & $pending $r 'PROJECT-TSPROJ-003' }
-Test-Case 'XML-004 task without PouCall is a warning only' { param($f) Edit-LintFxFile $f.Task { param($t) $t -replace '(?s)    <PouCall>.*?</PouCall>\r\n', '' } } @('PROJECT-XML-004') '' {
+# Phase 1b: the task then calls no program, so MAIN never runs (PROJECT-TASK-001, warning, must be disposed)
+Test-Case 'XML-004 task without PouCall is a warning only' { param($f) Edit-LintFxFile $f.Task { param($t) $t -replace '(?s)    <PouCall>.*?</PouCall>\r\n', '' } } @('PROJECT-TASK-001', 'PROJECT-XML-004') '' {
     param($r) $d = @(Diag $r 'PROJECT-XML-004'); Check 'missing PouCall: warning, not blocking' ($d[0].variant -eq 'missing-pou-call' -and -not $d[0].blocking) ($d | ConvertTo-Json -Compress)
 }
 Test-Case 'GVL starting with VAR_CONFIG is not a KIND finding' { param($f) Edit-LintFxFile $f.Gvl { param($t) $t.Replace('{attribute ''qualified_only''}' + "`r`n" + 'VAR_GLOBAL', "VAR_CONFIG`r`n    MAIN.fbA.bStart AT %IX0.0 : BOOL;`r`nEND_VAR`r`nVAR_GLOBAL") } } @() ''

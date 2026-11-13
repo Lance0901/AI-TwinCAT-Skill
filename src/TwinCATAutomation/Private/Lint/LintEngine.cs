@@ -45,7 +45,7 @@ namespace TcLintEngine
 
     public static class LintEngine
     {
-        public const string EngineVersion = "1a.1";
+        public const string EngineVersion = "1b.1";
 
         public static OrderedDictionary Run(LintOptions options)
         {
@@ -153,7 +153,7 @@ namespace TcLintEngine
         public static ArrayList Rules() { return RuleRegistry.ToList(); }
     }
 
-    internal sealed class LintRun
+    internal sealed partial class LintRun
     {
         private readonly LintOptions opt;
         private readonly List<Diagnostic> diags = new List<Diagnostic>();
@@ -340,6 +340,7 @@ namespace TcLintEngine
             foreach (TcObjectFile o in objects) CheckObject(o);
             CheckGuids();
             CheckTsproj(projectGuid);
+            RunPhase1b();
             return Finish();
         }
 
@@ -1149,6 +1150,7 @@ namespace TcLintEngine
             }
             ReportEntities(o, path, "declaration", di.Lex);
             ReportState(o, path, "declaration", di.State);
+            OnSection(o, path, "declaration", di.Lex, di);
             return di;
         }
 
@@ -1194,6 +1196,7 @@ namespace TcLintEngine
             ScanResult sr = StAnalyzer.ScanImplementation(text);
             ReportEntities(o, path, "implementation", sr.Lex);
             ReportState(o, path, "implementation", sr.State);
+            OnSection(o, path, "implementation", sr.Lex, null);
             if (multi)
                 foreach (Diagnostic d in diags) if (d.ObjectPath == path && d.Section == "implementation") d.LineUnreliable = true;
             return multi ? null : text;
@@ -1206,8 +1209,9 @@ namespace TcLintEngine
             string rule = section == "declaration" ? "LINT-PARSE-003" : "LINT-PARSE-002";
             if (s.Status == "not-analyzed")
             {
-                notAnalyzed.Add(Cov(null, o.Rel, path, section, s.Reason));
-                rulesSkipped.Add(Cov(rule, o.Rel, path, section, s.Reason));
+                string reason = MeasuredNote(s.Reason);
+                notAnalyzed.Add(Cov(null, o.Rel, path, section, reason));
+                rulesSkipped.Add(Cov(rule, o.Rel, path, section, reason));
                 downgradedSections++;
             }
             else if (s.Status == "unsupported")
@@ -1221,6 +1225,19 @@ namespace TcLintEngine
                 Emit(s.ErrorRule, o.Rel, path, section, s.ErrorLine, s.ErrorCol, "Cannot parse the " + section + ": " + s.ErrorMessage, null,
                     "Run BuildProject: if the build succeeds, this is a linter limitation (open an issue and exclude the object in the profile with a reason)", null, null, null, false);
             }
+        }
+
+        // tasks 1b.4: listed constructs the 4026.22 compiler rejected in the IDE measurement stay notAnalyzed (4024 not
+        // measured, owner undecided); the coverage reason says so (verification/st-syntax-measured.md, 2026-11-13)
+        private static readonly Dictionary<string, string> RejectedBy4026 = new Dictionary<string, string>(StringComparer.Ordinal) {
+            { "unverified-syntax:assignment-attempt", "D01" }, { "unverified-syntax:power-operator", "D02" }, { "unverified-syntax:slash-star-comment", "D03" },
+            { "unverified-syntax:enum-hash-literal", "D04" }, { "unverified-syntax:negative-time-literal", "D06" }, { "unverified-syntax:non-ascii-identifier", "D16" } };
+
+        public static string MeasuredNote(string reason)
+        {
+            string id;
+            if (reason == null || !RejectedBy4026.TryGetValue(reason, out id)) return reason;
+            return reason + "; 4026.22 compiler rejects it (measured 2026-11-13, st-syntax-measured.md " + id + "; 4024 not measured)";
         }
 
         // ---------------------------------------------------------------- LineIds
@@ -1619,17 +1636,30 @@ namespace TcLintEngine
         // ================================================================ result
         private OrderedDictionary Finish()
         {
-            // profile suppressions (objectPath + ruleId; objectPath may name the file for project-level findings)
+            // inline suppressions (non-blockable rules only, design.md D5 / review B3), then profile suppressions
+            // (objectPath + ruleId; objectPath may name the file for project-level findings)
+            ApplyInlineSuppressions();
+            Dictionary<ProfileEntry, int> profileMatches = new Dictionary<ProfileEntry, int>();
             foreach (Diagnostic d in diags)
             {
+                if (d.Suppressed) continue;
                 foreach (ProfileEntry s in opt.Suppressions)
                 {
                     if (s.RuleId != d.RuleId) continue;
                     bool match = d.ObjectPath.Length > 0 ? string.Equals(s.ObjectPath, d.ObjectPath, StringComparison.OrdinalIgnoreCase)
                         : string.Equals(s.ObjectPath.Replace('\\', '/'), d.File, StringComparison.OrdinalIgnoreCase);
-                    if (match) { d.Suppressed = true; d.SuppressionReason = s.Reason; break; }
+                    if (match)
+                    {
+                        d.Suppressed = true; d.SuppressionReason = s.Reason;
+                        int m; profileMatches.TryGetValue(s, out m); profileMatches[s] = m + 1;
+                        break;
+                    }
                 }
             }
+            if (opt.ScopeObjects == null && projectLoaded)
+                foreach (ProfileEntry s in opt.Suppressions)
+                    if (!profileMatches.ContainsKey(s))
+                        Emit("LINT-SUPPRESS-003", "", s.ObjectPath, "file", 1, 1, "Profile suppression of " + s.RuleId + " for '" + s.ObjectPath + "' matches no finding (remove it from the profile)", null, null, null, null, null, false);
             int failRank = Diagnostic.SeverityRank(opt.FailOn);
             foreach (Diagnostic d in diags)
             {
@@ -1706,6 +1736,7 @@ namespace TcLintEngine
             res["diagnostics"] = diagList;
             res["unresolved"] = unresolved;
             res["requiresDisposition"] = unresolved.Count > 0;
+            res["suppressions"] = SuppressionList(profileMatches);
             OrderedDictionary cov = new OrderedDictionary();
             cov["objectsInScope"] = objectsInScope;
             cov["objectsAnalyzed"] = objectsAnalyzed;

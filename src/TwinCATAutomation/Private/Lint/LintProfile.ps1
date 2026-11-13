@@ -69,7 +69,12 @@ function Get-TcLintPropNames($Obj) {
 }
 
 function Test-TcLintReason([object]$Reason) {
-    return ($Reason -is [string]) -and ($Reason.Trim().Length -ge $script:TcLintMinReasonLength)
+    # at least 8 characters, a letter (Latin, CJK, ...) and 3 different non-space characters: '........' is no reason
+    if ($Reason -isnot [string]) { return $false }
+    $r = $Reason.Trim()
+    if ($r.Length -lt $script:TcLintMinReasonLength -or $r -notmatch '\p{L}') { return $false }
+    $distinct = @($r.ToLowerInvariant().ToCharArray() | Where-Object { -not [char]::IsWhiteSpace($_) } | Sort-Object -Unique -CaseSensitive)
+    return ($distinct.Count -ge 3)
 }
 
 function Resolve-TcLintProfile {
@@ -103,7 +108,7 @@ function Resolve-TcLintProfile {
     }
     $profileData = [ordered]@{ name = 'default'; source = 'built-in'; sha256 = $null; overrides = @() }
     $result = @{ ok = $true; profile = $profileData; failOn = 'error'; searchRoot = $searchRoot; maxFileSizeMB = 8
-        rules = @(); excludes = @(); suppressions = @(); acceptSkips = @(); baselinePath = $defaultBaseline; baselineSource = $(if ($defaultBaseline) { 'discovered' } else { $null }); baselineDisabled = $null }
+        rules = @(); excludes = @(); suppressions = @(); acceptSkips = @(); typeCatalog = @{ functionBlocks = @(); stateful = @() }; baselinePath = $defaultBaseline; baselineSource = $(if ($defaultBaseline) { 'discovered' } else { $null }); baselineDisabled = $null }
 
     $file = $null
     if ([string]::IsNullOrWhiteSpace($RuleProfile)) {
@@ -181,8 +186,9 @@ function Resolve-TcLintProfile {
         if ($v.typeCatalog -isnot [System.Management.Automation.PSCustomObject]) { return (& $fail 'typeCatalog must be an object') }
         foreach ($k in (Get-TcLintPropNames $v.typeCatalog)) {
             if (@('functionBlocks', 'stateful', 'cyclicContract') -cnotcontains $k) { return (& $fail "typeCatalog has unknown field '$k'") }
-            foreach ($n in @($v.typeCatalog.$k)) { if ($n -isnot [string] -or $n -match '[*?]') { return (& $fail "typeCatalog.$k must be a list of exact names") } }
+            foreach ($n in @($v.typeCatalog.$k)) { if ($n -isnot [string] -or $n -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return (& $fail "typeCatalog.$k must be a list of exact type names (no wildcard, no namespace)") } }
         }
+        $result.typeCatalog = @{ functionBlocks = @($v.typeCatalog.functionBlocks | Where-Object { $null -ne $_ }); stateful = @($v.typeCatalog.stateful | Where-Object { $null -ne $_ }) }
     }
 
     # exclude / suppressions / acceptSkips: exact object paths, reason required

@@ -34,12 +34,12 @@
 
 ## 1b. Phase 1b:最確定的機台行為規則 + 磁碟改檔工作流
 
-- [ ] 1b.1 FB 型別目錄(專案內 FB + 版本化 library 清單,每個名稱附 InfoSys 來源 + profile `typeCatalog`),含「有狀態 FB」子集
-- [ ] 1b.2 SCAN-TEMPFB-001(blocking;METHOD `VAR`、FUNCTION `VAR`、`VAR_TEMP` 的重新初始化都有 InfoSys 出處)
-- [ ] 1b.3 PROJECT-TASK-001(必須處置)/ PROJECT-TASK-002(blocking):從 `.TcTTO` `PouCall` 建呼叫圖,依可達性判斷;以 `BuildProject` 實測「沒掛 task 的 PROGRAM 有語法錯時 Build 是否仍成功」(TASK-001 說明的依據)
-- [ ] 1b.6 suppression 提前上線(review 驗證 8:1a / 1b 已輸出 `unresolved[]`,沒有 suppression 就無法處置):inline(非 blockable 規則)與 profile `suppressions[]`、LINT-SUPPRESS-001~004、`newSuppressions[]`(LintProject 以 git HEAD 為基準)
-- [ ] 1b.4 語法清單中「安全略過」的項目,能做的改為「支援」(依 1a.10 結果)
-- [ ] 1b.5 SKILL.md、CLAUDE.md 磁碟改檔段落、`docs/troubleshooting.md`「磁碟改檔的正確做法」加上:改檔 → `LintProject` → 通過才 `ResetSolution` → `BuildProject`(design.md D9)
+- [x] 1b.1 FB 型別目錄(專案內 FB + 版本化 library 清單,每個名稱附 InfoSys 來源 + profile `typeCatalog`),含「有狀態 FB」子集
+- [x] 1b.2 SCAN-TEMPFB-001(blocking;METHOD `VAR`、FUNCTION `VAR`、`VAR_TEMP` 的重新初始化都有 InfoSys 出處)
+- [x] 1b.3 PROJECT-TASK-001(必須處置)/ PROJECT-TASK-002(blocking):從 `.TcTTO` `PouCall` 建呼叫圖,依可達性判斷;以 `BuildProject` 實測「沒掛 task 的 PROGRAM 有語法錯時 Build 是否仍成功」(TASK-001 說明的依據)
+- [x] 1b.6 suppression 提前上線(review 驗證 8:1a / 1b 已輸出 `unresolved[]`,沒有 suppression 就無法處置):inline(非 blockable 規則)與 profile `suppressions[]`、LINT-SUPPRESS-001~004、`newSuppressions[]`(LintProject 以 git HEAD 為基準)
+- [x] 1b.4 語法清單中「安全略過」的項目,能做的改為「支援」(依 1a.10 結果)— 1a.10 結果是 4026.22 編譯器**拒絕** `?=`、`**`、`/* */`、`E_Enum#Member`、`T#-5S`、非 ASCII 識別字,沒有可改成「支援」的;4024 未測、owner 未決定,維持 notAnalyzed(可 pass),coverage reason 與 LINT-PARSE-002 / 003 的 limits 註明「4026.22 compiler rejects it (measured 2026-11-13)」;`T#-5S` 從「照常解析」改為 notAnalyzed
+- [x] 1b.5 SKILL.md、CLAUDE.md 磁碟改檔段落、`docs/troubleshooting.md`「磁碟改檔的正確做法」加上:改檔 → `LintProject` → 通過才 `ResetSolution` → `BuildProject`(design.md D9)
 - **驗收**:
   - 規則 fixture:SCAN-TEMPFB-001(METHOD VAR / FUNCTION VAR / VAR_TEMP 正例;METHOD VAR_INST、FB VAR 反例;第二輪 review 6-5 的 `M_Wait` 反例必須報)
   - PROJECT-TASK:axis 語料 `TestCam` 報 TASK-001(預期,必須處置);把 `TestCam` 加進 task 的變種報 TASK-002(`AxisInterface_Type01` 被兩處呼叫);bfh 語料零 finding
