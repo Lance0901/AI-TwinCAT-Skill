@@ -1779,9 +1779,81 @@
                                       }
                   },
                   {
+                      "name":  "LintCandidate",
+                      "cmdlet":  "Invoke-TcLintCandidate",
+                      "description":  "Read-only and offline semantic lint of ONE PLC object BEFORE it is written (#252 Phase 2a): the candidate Declaration / Implementation is laid over the .plcproj on disk in memory (same name replaced, new object added) and checked with the LintProject rules, scoped to that object; nothing is written, no IDE, no ADS, no lifecycle block. Workflow: LintCandidate -> fix until it passes and requiresDisposition is false -> WritePouCode (or AddPou + WritePouCode) -> BuildProject -> LintProject. A pass is NOT a pass of the project: findings of other objects and cross-object effects are only seen by LintProject after writing. ObjectKind: Program, FunctionBlock, Function, DUT, GVL, Interface, Method, Property, Action (Transition: LINT_INPUT_INVALID). ObjectName as WritePouCode PouName: FB_X, FB_X.M_Run, FB_X.P (property declaration), FB_X.P.Get (accessor). Implementation only ST. PlcProjectPath = path of the .plcproj (a PLC name needs the IDE: not supported, LINT_INPUT_INVALID); omitted = text-only (default profile): a candidate that needs the project (EXTENDS / IMPLEMENTS, Method / Property / Action, a type or identifier not declared in it and not elementary / standard / in the type catalog) gives LINT_CONTEXT_REQUIRED (data.candidate.contextRequired), never a silent pass. Overlay boundary errors (declaration keyword / name differs from ObjectKind / ObjectName, same name is another kind on disk, Parent missing) -> LINT_INPUT_INVALID. requiresDisposition=true -> fix each data.unresolved[] or suppress it inline with a reason (non-blocking rules only) and list every data.newSuppressions[] (new against the disk version of the object) and data.newOverrides[] to the user; no EnableConfig before that. data: as LintProject plus contextLevel (project / text-only), candidate {objectKind, objectPath, file, overlay replaced / added / text-only, contextRequired[]}, newSuppressionsBasis (candidate-vs-disk / candidate-text-only), newOverridesBasis. Errors: LINT_FAILED, LINT_PARSE_FAILED, LINT_CONTEXT_REQUIRED, LINT_INCOMPLETE, LINT_INPUT_INVALID, LINT_PROFILE_INVALID, LINT_BASELINE_INVALID, LINT_ENGINE_ERROR, LINT_ENGINE_UNAVAILABLE; each with error.hint.",
+                      "timeoutMs":  120000,
+                      "annotations":  {
+                                          "readOnlyHint":  true
+                                      },
+                      "inputSchema":  {
+                                          "type":  "object",
+                                          "properties":  {
+                                                             "ObjectKind":  {
+                                                                                "type":  "string",
+                                                                                "enum":  [
+                                                                                             "Program",
+                                                                                             "FunctionBlock",
+                                                                                             "Function",
+                                                                                             "DUT",
+                                                                                             "GVL",
+                                                                                             "Interface",
+                                                                                             "Method",
+                                                                                             "Property",
+                                                                                             "Action",
+                                                                                             "Transition"
+                                                                                         ],
+                                                                                "description":  "Program, FunctionBlock, Function, DUT, GVL, Interface, Method, Property or Action."
+                                                                            },
+                                                             "ObjectName":  {
+                                                                                "type":  "string",
+                                                                                "description":  "Object name; Method / Property / Action as Parent.Member (Write-TcPouCode -PouName format); a property accessor as Parent.Property.Get / .Set."
+                                                                            },
+                                                             "Declaration":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "Declaration text (empty for an Action; for an accessor the accessor declaration, may be empty).",
+                                                                                 "default":  ""
+                                                                             },
+                                                             "Implementation":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Structured Text implementation (empty for DUT / GVL / Interface / property declaration).",
+                                                                                    "default":  ""
+                                                                                },
+                                                             "PlcProjectPath":  {
+                                                                                    "type":  "string",
+                                                                                    "description":  "Path of the .plcproj to lay the candidate over. Omitted: text-only."
+                                                                                },
+                                                             "RuleProfile":  {
+                                                                                 "type":  "string",
+                                                                                 "description":  "default (built-in), or the path of a tcauto-lint-profile/1 JSON file. Omitted: discovered from the .plcproj directory (text-only: default)."
+                                                                             },
+                                                             "FailOn":  {
+                                                                            "type":  "string",
+                                                                            "enum":  [
+                                                                                         "error",
+                                                                                         "warning"
+                                                                                     ],
+                                                                            "description":  "error (default) or warning: the lowest severity that blocks. Can only make the profile stricter."
+                                                                        },
+                                                             "Baseline":  {
+                                                                              "type":  "string",
+                                                                              "description":  "Path of a tcauto-lint-baseline/1 file (instead of the discovered one); validated, used by CONTRACT-* rules (Phase 4, not run in this version)."
+                                                                          },
+                                                             "IncludeTiming":  {
+                                                                                   "type":  "boolean",
+                                                                                   "description":  "Add data.timing (the output is then no longer byte-identical between runs)."
+                                                                               }
+                                                         },
+                                          "required":  [
+
+                                                       ],
+                                          "additionalProperties":  false
+                                      }
+                  },
+                  {
                       "name":  "LintProject",
                       "cmdlet":  "Invoke-TcLintProject",
-                      "description":  "Read-only and offline semantic lint of a TwinCAT PLC project ON DISK (#252 Phase 1a): reads the .plcproj, every file its <Compile> items list, the .tsproj that references it and the .sln; needs no IDE, no ADS, writes nothing, records no lifecycle block. Rules of this version: project integrity broken by editing files outside XAE (PROJECT-XML not well-formed / encoding / CDATA cut / required elements, PROJECT-KIND, PROJECT-NAME, PROJECT-GUID missing / malformed / duplicated / zero / hand-written, PROJECT-SUB, PROJECT-LINEIDS, PROJECT-COMPILE missing file / duplicate / file not compiled / SubType / Folder / case and escaping, PROJECT-LIB, PROJECT-TSPROJ .tsproj reference / GUID in .sln-.tsproj-.plcproj / tasks and PouCall, PROJECT-ENC) and ST parsing (LINT-PARSE-*); no machine-behaviour (SCAN) rule yet. Use it after changing .TcPOU / .plcproj / .tsproj files directly: LintProject -> only when it passes ResetSolution -> BuildProject. Scope=Object checks only ObjectPaths (data.scope): a pass is NOT a pass of the whole project, run Scope=All before ResetSolution / BuildProject. Code the linter does not understand gives LINT_INCOMPLETE, never a pass. PlcProjectPath = path of the .plcproj file; or SolutionPath (.sln / .tsproj) with PlcProjectPath = the PLC name (several PLCs without a name: PLC_PROJECT_AMBIGUOUS, data.plcProjects). A PLC name without SolutionPath is not supported yet (LINT_INPUT_INVALID). passed=true does NOT mean the program is correct: only that the rules in data.rulesRun found no blocking finding in the analysed part; read data.coverage (notAnalyzed, blockingRulesSkipped, rulesNotRun) and data.unresolved with it. data: verdict (pass / fail / incomplete), passed (absent when nothing was analysed), diagnostics[] (ruleId, severity, blocking, machineImpact, blockableBasis = pending-measurement: XAE behaviour not measured yet but still blocking, file relative to the .plcproj directory, objectPath, section, line, column, message, evidence, fixHint), unresolved[] + requiresDisposition (machine-behaviour findings to fix), summary, coverage, profile {name, source, sha256, overrides[]: every setting weaker than the default}, baseline, source {plcProjectPath, solutionPath, tsprojPaths, ideChecked=false: XAE state is NOT compared with the disk in this version, save in XAE first}, engine {version, sourceHash}. Profile: .tcauto\\lint-profile.json found from the .plcproj directory up to the solution directory (RuleProfile=default ignores it). Errors: LINT_FAILED (blocking finding; fix the files, never delete Compile items or reuse GUIDs to get a pass), LINT_PARSE_FAILED (run BuildProject: build succeeds -> linter limitation, exclude the object in the profile with a reason), LINT_INCOMPLETE, LINT_INPUT_INVALID, PLC_PROJECT_AMBIGUOUS, PLC_PROJECT_NOT_FOUND, LINT_PROFILE_INVALID, LINT_BASELINE_INVALID, LINT_ENGINE_ERROR, LINT_ENGINE_UNAVAILABLE (Constrained Language Mode / Add-Type blocked); each with error.hint.",
+                      "description":  "Read-only and offline semantic lint of a TwinCAT PLC project ON DISK (#252 Phase 1a): reads the .plcproj, every file its <Compile> items list, the .tsproj that references it and the .sln; needs no IDE, no ADS, writes nothing, records no lifecycle block. Rules of this version: project integrity broken by editing files outside XAE (PROJECT-XML not well-formed / encoding / CDATA cut / required elements, PROJECT-KIND, PROJECT-NAME, PROJECT-GUID missing / malformed / duplicated / zero / hand-written, PROJECT-SUB, PROJECT-LINEIDS, PROJECT-COMPILE missing file / duplicate / file not compiled / SubType / Folder / case and escaping, PROJECT-LIB, PROJECT-TSPROJ .tsproj reference / GUID in .sln-.tsproj-.plcproj / tasks and PouCall, PROJECT-ENC) and ST parsing (LINT-PARSE-*); machine behaviour Build does not catch: SCAN-TEMPFB-001 (timer in METHOD / FUNCTION VAR), PROJECT-TASK-001 / 002 (PROGRAM never / twice per cycle), SCAN-LOOP-001 (busy-wait WHILE / REPEAT), SCAN-FOR-001 (FOR end value at the counter type limit), SCAN-ARR-001 (constant FOR range outside the array bounds), SAFETY-ARR-001 (constant index out of bounds), SAFETY-DIV-001 (division / MOD by constant zero). Use it after changing .TcPOU / .plcproj / .tsproj files directly: LintProject -> only when it passes ResetSolution -> BuildProject. Scope=Object checks only ObjectPaths (data.scope): a pass is NOT a pass of the whole project, run Scope=All before ResetSolution / BuildProject. Code the linter does not understand gives LINT_INCOMPLETE, never a pass. PlcProjectPath = path of the .plcproj file; or SolutionPath (.sln / .tsproj) with PlcProjectPath = the PLC name (several PLCs without a name: PLC_PROJECT_AMBIGUOUS, data.plcProjects). A PLC name without SolutionPath is not supported yet (LINT_INPUT_INVALID). passed=true does NOT mean the program is correct: only that the rules in data.rulesRun found no blocking finding in the analysed part; read data.coverage (notAnalyzed, blockingRulesSkipped, rulesNotRun) and data.unresolved with it. data: verdict (pass / fail / incomplete), passed (absent when nothing was analysed), diagnostics[] (ruleId, severity, blocking, machineImpact, blockableBasis = pending-measurement: XAE behaviour not measured yet but still blocking, file relative to the .plcproj directory, objectPath, section, line, column, message, evidence, fixHint), unresolved[] + requiresDisposition (machine-behaviour findings to fix), summary, coverage, profile {name, source, sha256, overrides[]: every setting weaker than the default}, baseline, source {plcProjectPath, solutionPath, tsprojPaths, ideChecked=false: XAE state is NOT compared with the disk in this version, save in XAE first}, engine {version, sourceHash}. Profile: .tcauto\\lint-profile.json found from the .plcproj directory up to the solution directory (RuleProfile=default ignores it). Errors: LINT_FAILED (blocking finding; fix the files, never delete Compile items or reuse GUIDs to get a pass), LINT_PARSE_FAILED (run BuildProject: build succeeds -> linter limitation, exclude the object in the profile with a reason), LINT_INCOMPLETE, LINT_INPUT_INVALID, PLC_PROJECT_AMBIGUOUS, PLC_PROJECT_NOT_FOUND, LINT_PROFILE_INVALID, LINT_BASELINE_INVALID, LINT_ENGINE_ERROR, LINT_ENGINE_UNAVAILABLE (Constrained Language Mode / Add-Type blocked); each with error.hint.",
                       "timeoutMs":  120000,
                       "annotations":  {
                                           "readOnlyHint":  true

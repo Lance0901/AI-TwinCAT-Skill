@@ -186,7 +186,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 - `-Scope Object` 只檢查列出的物件(`data.scope`),**通過不代表整個專案通過**:`Reset-TcSolution` / `Build-TcProject` 前要跑一次預設的 `-Scope All`。
 - 只給 PLC 名稱要 `-SolutionPath <sln> -PlcProjectPath <名稱>`;XAE 裡未存的內容這一版**不**比對(`data.source.ideChecked = false`),先存檔再 lint。
 
-## Cmdlet 清單(<!-- generated:cmdlet-count -->86<!-- /generated -->)
+## Cmdlet 清單(<!-- generated:cmdlet-count -->87<!-- /generated -->)
 
 **清單以外的名字不存在,例如沒有 `Get-TcVariable`,讀 symbol 用 `Get-TcSymbols`。**
 
@@ -335,6 +335,7 @@ Session 或上下文被壓縮後,重新讀這份 SKILL.md 的本段再繼續。
 | `Install-TcLibrary` | `InstallLibrary` | `-LibraryPath <string> [-Repository <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Install-TcPackage` | `InstallPackage` | `-PackageId <string> -Version <string> [-Approved] [-PlanToken <string>] [-TimeoutSec <int>]` |
 | `Invoke-TcIoScan` | `IoScan` | `[-Apply]` |
+| `Invoke-TcLintCandidate` | `LintCandidate` | `[-ObjectKind <string>] [-ObjectName <string>] [-Declaration <string>] [-Implementation <string>] [-PlcProjectPath <string>] [-RuleProfile <string>] [-FailOn <string>] [-Baseline <string>] [-IncludeTiming]` |
 | `Invoke-TcLintProject` | `LintProject` | `[-PlcProjectPath <string>] [-SolutionPath <string>] [-Scope <string>] [-ObjectPaths <string[]>] [-RuleProfile <string>] [-FailOn <string>] [-IncludeTiming]` |
 | `Invoke-TcTest` | `RunTest` | `-TestCase <psobject>` |
 | `Invoke-TcTestCycle` | `RunTestCycle` | `-TestCases <psobject[]> [-SkipBuild] [-KeepRunning]` |

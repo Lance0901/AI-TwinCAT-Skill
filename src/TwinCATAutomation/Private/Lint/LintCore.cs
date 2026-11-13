@@ -345,6 +345,15 @@ namespace TcLintEngine
         public void AddAcceptSkip(string objectPath, string ruleId, string reason) { ProfileEntry e = new ProfileEntry(); e.ObjectPath = objectPath; e.RuleId = ruleId; e.Reason = reason; AcceptSkips.Add(e); }
         public void AddCatalogType(string name, string library, string kind, string source, string cls) { CatalogType c = new CatalogType(); c.Name = name; c.Library = library; c.Kind = kind; c.Source = source; c.Class = string.IsNullOrEmpty(cls) ? null : cls; CatalogTypes.Add(c); }
         public void AddScopeObject(string name) { if (ScopeObjects == null) ScopeObjects = new List<string>(); ScopeObjects.Add(name); }
+
+        // LintCandidate (tasks 2.1, design.md D2): an object that is not written yet, laid over the project on disk
+        // (PlcProjectPath set) or checked alone (CandidateTextOnly). Text is never written anywhere.
+        public bool CandidateMode;
+        public bool CandidateTextOnly;
+        public string CandidateKind;            // Program FunctionBlock Function DUT GVL Interface Method Property Action Transition
+        public string CandidateName;            // FB_X, FB_X.M_Run, FB_X.P, FB_X.P.Get
+        public string CandidateDeclaration;
+        public string CandidateImplementation;
     }
 
     public static class Inv

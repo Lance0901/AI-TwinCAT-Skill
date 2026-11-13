@@ -135,6 +135,23 @@ describe('tools.json (generated catalog)', () => {
     assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/a.plcproj', FailOn: 'never' }).ok, false, 'FailOn has no never');
   });
 
+  // #252 Phase 2a: LintCandidate checks an object before it is written (in memory, no IDE / ADS): read-only,
+  // ObjectKind / FailOn are closed sets, and the description states the workflow and what a pass does not cover.
+  test('LintCandidate is read-only, offline and states the write workflow', () => {
+    const t = catalog.get('LintCandidate');
+    assert.ok(t, 'LintCandidate is in the catalog');
+    assert.equal(t.cmdlet, 'Invoke-TcLintCandidate');
+    assert.deepEqual(t.annotations, { readOnlyHint: true });
+    assert.deepEqual(t.inputSchema.properties.FailOn.enum, ['error', 'warning']);
+    assert.ok(t.inputSchema.properties.ObjectKind.enum.includes('Method'), 'ObjectKind lists Method');
+    for (const w of ['nothing is written', 'WritePouCode', 'BuildProject', 'LintProject', 'NOT a pass of the project',
+      'LINT_CONTEXT_REQUIRED', 'LINT_INPUT_INVALID', 'newSuppressions', 'requiresDisposition']) {
+      assert.ok(t.description.includes(w), `LintCandidate description lacks ${w}`);
+    }
+    assert.equal(validateParams(t, { ObjectKind: 'Function', ObjectName: 'F_X', Declaration: 'FUNCTION F_X : INT' }).ok, true);
+    assert.equal(validateParams(t, { ObjectKind: 'Pou', ObjectName: 'F_X' }).ok, false, 'ObjectKind is a closed set');
+  });
+
   // #229: GetPackageInfo is a read-only tcpkg query (network); InstallPackage is destructive, plan by
   // default, and only installs the IDE side (no XAR).
   test('GetPackageInfo is read-only, InstallPackage needs PackageId + Version and offers no XAR', () => {
