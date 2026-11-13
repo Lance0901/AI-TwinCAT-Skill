@@ -135,7 +135,13 @@ namespace TcLintEngine
             }
             // review 4 blocker 2: X.Y with an unknown X is a library enum / GVL as often as a typo (MC_BufferMode.MC_Aborting):
             // the linter has no symbol list of the libraries, so when the project references libraries such a qualifier is
-            // recorded (rulesSkipped library-or-unknown:X), not required; an unqualified unknown name stays required
+            // recorded (rulesSkipped library-or-unknown:X), not required.
+            // issue #286 S6: the same holds for an unqualified name (a library global constant such as MAX_STRING_LENGTH):
+            // text cannot evaluate it, and declaring it in the project (the only thing an agent could do) would shadow the
+            // library value. It is recorded (rulesSkipped library-symbol-unresolved:<name>); the rule that needs the value
+            // skips that position on its own (e.g. SCAN-FOR-001 end-not-constant), the other rules run. A typo is left to
+            // the compiler (undeclared identifier). Without library references the name cannot come from a library: required.
+            // An unreadable object of the project may declare the unqualified name: then it stays required (context-object-broken).
             if (libraryRefs > 0)
             {
                 HashSet<string> qualifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -146,6 +152,7 @@ namespace TcLintEngine
                 foreach (string n in missing)
                 {
                     if (qualifiers.Contains(n)) rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "library-or-unknown:" + n));
+                    else if (!brokenAny) rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "library-symbol-unresolved:" + n));
                     else still.Add(n);
                 }
                 missing = still;
