@@ -565,6 +565,63 @@ $x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'D1 all five rules fire on one section' (@('SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001' | Where-Object { (Diags $x $_).Count -ge 1 }).Count -eq 5) (Brief $x)
 Check 'D2 two runs and en-US / zh-TW byte-identical' ($outs[0] -ceq $outs[1] -and $outs[0] -ceq $outs[2]) ''
 
+# ================================================================ W  PR #289 independent review (SF4, SF5, nit 7, nit 8)
+# SF4: an unresolved unqualified name in the condition, not written and not passed in the body -> warning, not a skip
+$r = Fb "    n : INT;" "WHILE NOT gLibFlag DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-SF4a G1 WHILE NOT gLibFlag (unresolved) -> unresolved-condition-name warning, in unresolved, requiresDisposition' ($d.Count -eq 1 -and $d[0].variant -eq 'unresolved-condition-name' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition -and $r.success) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    n : INT;" "WHILE NOT gLibFlag DO`n    gLibFlag := TRUE;`nEND_WHILE"
+Check 'W-SF4b the body writes the unresolved name -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$fbP = { param($fx) Add-Pou $fx 'FB_P' "FUNCTION_BLOCK FB_P`nVAR`n    n : INT;`nEND_VAR`n" 'n := n + 1;' }
+$r = Fb "    fbP : FB_P;" "WHILE NOT gLibFlag DO`n    fbP();`nEND_WHILE" $fbP
+Check 'W-SF4c a project FB call in the body -> no finding, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'call-in-body') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    n : INT;`n    bX : BOOL;" "WHILE NOT gLibFlag AND NOT bX DO`n    bX := n > 3;`n    n := n + 1;`nEND_WHILE"
+Check 'W-SF4d another condition variable is written in the body -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# SF5: the counter given to a VAR_IN_OUT / output of a call may be written by the callee
+$io = { param($fx) Add-Pou $fx 'FB_IO' "FUNCTION_BLOCK FB_IO`nVAR_IN_OUT`n    io : INT;`nEND_VAR`n" 'io := 0;' }
+$io2 = { param($fx) Add-Pou $fx 'FB_IO' "FUNCTION_BLOCK FB_IO`nVAR_IN_OUT`n    nIndex : INT;`nEND_VAR`n" 'nIndex := 0;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_IO;" "FOR nIndex := 0 TO 10 DO`n    fbC(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $io2
+Check 'W-SF5a fbC(nIndex := nIndex), formal VAR_IN_OUT -> no SCAN-ARR-001, rulesSkipped counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_IO;" "FOR nIndex := 0 TO 10 DO`n    fbC(io := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $io
+Check 'W-SF5b V1 fbC(io := nIndex), formal VAR_IN_OUT -> no SCAN-ARR-001, counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$ioB = { param($fx) Add-Pou $fx 'FB_IOB' "FUNCTION_BLOCK FB_IOB`nVAR_IN_OUT`n    io : BYTE;`nEND_VAR`n" 'io := 0;' }
+$r = Fb "    i : BYTE;`n    fbC : FB_IOB;" "FOR i := 0 TO 255 DO`n    fbC(io := i);`nEND_FOR" $ioB
+Check 'W-SF5c BYTE 0 TO 255 with fbC(io := i) VAR_IN_OUT -> no SCAN-FOR-001, counter-written-in-body' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and @(SkipR $r 'SCAN-FOR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-FOR-001') -join ','))
+$out = { param($fx) Add-Pou $fx 'FB_O' "FUNCTION_BLOCK FB_O`nVAR_OUTPUT`n    nOut : INT;`nEND_VAR`n" 'nOut := 0;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_O;" "FOR nIndex := 0 TO 10 DO`n    fbC(nOut => nIndex);`n    a[nIndex] := 0;`nEND_FOR" $out
+Check 'W-SF5d fbC(nOut => nIndex) -> counter written, no SCAN-ARR-001' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbL : FB_NotInProject;" "FOR nIndex := 0 TO 10 DO`n    fbL(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR"
+Check 'W-SF5e library / unknown FB, direction of the formal unknown -> no SCAN-ARR-001, counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    ctu1 : CTU;" "FOR nIndex := 0 TO 10 DO`n    ctu1(CU := TRUE, PV := nIndex);`n    a[nIndex] := 0;`nEND_FOR"
+Check 'W-SF5f Tc2_Standard CTU (no VAR_IN_OUT) PV := nIndex -> not a write, SCAN-ARR-001 blocking' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$fnIo = { param($fx) Add-Pou $fx 'F_Io' "FUNCTION F_Io : BOOL`nVAR_IN_OUT`n    io : INT;`nEND_VAR`n" 'io := 0; F_Io := TRUE;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    b : BOOL;" "FOR nIndex := 0 TO 10 DO`n    b := F_Io(io := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $fnIo
+Check 'W-SF5g FUNCTION F_Io(io := nIndex) VAR_IN_OUT -> counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+# nit 7: sources another task / ADS may write (PROGRAM VAR, FB VAR_INPUT) -> warning like a GVL source; FB VAR / method local stay blocking
+$fx = New-Fx
+Add-Pou $fx 'MAIN' "PROGRAM MAIN`nVAR`n    bHmiStart : BOOL;`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bHmiStart;`nEND_WHILE"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7a source = PROGRAM VAR (HMI may write MAIN.bHmiStart over ADS) -> invariant-external-write warning, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-external-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.success) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR_INPUT`n    bStart : BOOL;`nEND_VAR`nVAR`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bStart;`nEND_WHILE"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7b source = FB VAR_INPUT -> invariant-external-write warning' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-external-write' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$r = Fb "    bOk : BOOL;`n    bInt : BOOL;" "WHILE NOT bOk DO`n    bOk := bInt;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7c source = FB internal VAR -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    n : INT;`nEND_VAR`n" 'n := 1;' (Method 'M_Wait' "METHOD M_Wait : BOOL`nVAR_INPUT`n    bIn : BOOL;`nEND_VAR`nVAR`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bIn;`nEND_WHILE")
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7d source = method VAR_INPUT (a value of the call) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+# nit 8: a bit index given by a constant writes the variable; WHILE TRUE OR b says the condition is always TRUE
+$r = Fb "    nW : WORD;`nEND_VAR`nVAR CONSTANT`n    cBit : INT := 3;" "WHILE nW = 0 DO`n    nW.cBit := TRUE;`nEND_WHILE"
+Check 'W-N8a nW.cBit := TRUE (constant bit index) -> writes nW, no finding, no member-type-unknown' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and ((SkipR $r 'SCAN-LOOP-001') -join ',') -eq '') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    b : BOOL;`n    n : INT;" "WHILE TRUE OR b DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N8b WHILE TRUE OR b -> blocking, message says the condition is always TRUE' ($d.Count -eq 1 -and $d[0].blocking -and $d[0].message -like '*always TRUE*') (Brief $r)
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 "failed: $fail"
 exit $fail

@@ -14,6 +14,8 @@ namespace TcLintEngine
         private void FindOverlayContextNeeds()
         {
             HashSet<string> used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // PR #289 nit 9: which rules read each name (the position it was collected from) - a skip names those rules
+            Dictionary<string, SortedSet<string>> needs = new Dictionary<string, SortedSet<string>>(StringComparer.OrdinalIgnoreCase);
             List<Token> t = StLexer.Lex(opt.CandidateImplementation ?? "").Tokens;
             List<Token> dt = StLexer.Lex(opt.CandidateDeclaration ?? "").Tokens;
             // review 3 S2d: the declaration too - array bounds and the initial values of VAR CONSTANT (the values the rules
@@ -30,25 +32,26 @@ namespace TcLintEngine
                     if (dt[k].IsOp("]")) { if (br > 0) br--; continue; }
                     if (dt[k].IsOp(":=")) { init = true; continue; }
                     if (dt[k].IsOp(";")) { init = false; continue; }
-                    if (br > 0 || (init && constBlock)) AddIfRoot(dt, k, used);
+                    if (br > 0) AddIfRoot(dt, k, used, needs, RulesIndex);
+                    else if (init && constBlock) AddIfRoot(dt, k, used, needs, RulesConstant);
                 }
             }
             int i = 0;
             while (i < t.Count && t[i].Kind != TokKind.EOF)
             {
                 Token x = t[i];
-                if (x.Is("FOR")) { CollectUntil(t, i + 1, "DO", used); i++; continue; }
-                if (x.Is("WHILE")) { CollectUntil(t, i + 1, "DO", used); i++; continue; }
-                if (x.Is("UNTIL")) { CollectUntil(t, i + 1, "END_REPEAT", used); i++; continue; }
+                if (x.Is("FOR")) { CollectUntil(t, i + 1, "DO", used, needs, RulesFor); i++; continue; }
+                if (x.Is("WHILE")) { CollectUntil(t, i + 1, "DO", used, needs, RulesLoop); i++; continue; }
+                if (x.Is("UNTIL")) { CollectUntil(t, i + 1, "END_REPEAT", used, needs, RulesLoop); i++; continue; }
                 if (x.IsOp("["))
                 {
-                    if (i > 0 && t[i - 1].Kind == TokKind.Ident) AddRoot(t, i - 1, used);
+                    if (i > 0 && t[i - 1].Kind == TokKind.Ident) AddRoot(t, i - 1, used, needs, RulesIndex);
                     int depth = 0, k = i;
                     for (; k < t.Count && t[k].Kind != TokKind.EOF; k++)
                     {
                         if (t[k].IsOp("[")) depth++;
                         else if (t[k].IsOp("]")) { depth--; if (depth == 0) break; }
-                        else AddIfRoot(t, k, used);
+                        else AddIfRoot(t, k, used, needs, RulesIndex);
                     }
                     i++; continue;
                 }
@@ -56,7 +59,7 @@ namespace TcLintEngine
                 {
                     int k = i + 1;
                     while (k < t.Count && (t[k].IsOp("(") || t[k].IsOp("-"))) k++;
-                    if (k < t.Count) AddIfRoot(t, k, used);
+                    if (k < t.Count) AddIfRoot(t, k, used, needs, RulesDiv);
                     i++; continue;
                 }
                 if ((x.Is("DIV") || x.Is("MOD")) && i + 1 < t.Count && t[i + 1].IsOp("("))
@@ -66,7 +69,7 @@ namespace TcLintEngine
                     {
                         if (t[k].IsOp("(")) depth++;
                         else if (t[k].IsOp(")")) { depth--; if (depth == 0) break; }
-                        else AddIfRoot(t, k, used);
+                        else AddIfRoot(t, k, used, needs, RulesDiv);
                     }
                 }
                 i++;
@@ -151,8 +154,8 @@ namespace TcLintEngine
                 List<string> still = new List<string>();
                 foreach (string n in missing)
                 {
-                    if (qualifiers.Contains(n)) rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "library-or-unknown:" + n));
-                    else if (!brokenAny) rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "library-symbol-unresolved:" + n));
+                    if (qualifiers.Contains(n)) { foreach (string rid in NeedsOf(needs, n)) rulesSkipped.Add(Cov(rid, candFile, candPath, "implementation", "library-or-unknown:" + n)); }
+                    else if (!brokenAny) { foreach (string rid in NeedsOf(needs, n)) rulesSkipped.Add(Cov(rid, candFile, candPath, "implementation", "library-symbol-unresolved:" + n)); }
                     else still.Add(n);
                 }
                 missing = still;
@@ -162,7 +165,7 @@ namespace TcLintEngine
             foreach (string n in missing)
             {
                 AddNeed("unresolved-identifier:" + n);
-                rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "unresolved-identifier:" + n));
+                foreach (string rid in NeedsOf(needs, n)) rulesSkipped.Add(Cov(rid, candFile, candPath, "implementation", "unresolved-identifier:" + n));
             }
             // a name that is not found may be declared in an object the linter could not read
             foreach (TcObjectFile o in objects)
@@ -174,27 +177,51 @@ namespace TcLintEngine
         private static readonly HashSet<string> SystemNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
             "TwinCAT_SystemInfoVarList", "GETCURTASKINDEX", "GETCURTASKINDEXEX" };
 
-        private static void CollectUntil(List<Token> t, int from, string endKeyword, HashSet<string> into)
+        // PR #289 nit 9: the rules that read a name in each position (rule-catalog.md); a context skip lists one entry per rule
+        private static readonly string[] RulesFor = { "SCAN-FOR-001", "SCAN-ARR-001" };          // FOR header: counter range, index range
+        private static readonly string[] RulesLoop = { "SCAN-LOOP-001" };                        // WHILE / UNTIL condition
+        private static readonly string[] RulesIndex = { "SAFETY-ARR-001", "SCAN-ARR-001" };      // array name / index, ARRAY bounds
+        private static readonly string[] RulesDiv = { "SAFETY-DIV-001" };                        // divisor
+        private static readonly string[] RulesConstant = { "SAFETY-ARR-001", "SAFETY-DIV-001", "SCAN-ARR-001", "SCAN-FOR-001" };   // VAR CONSTANT value
+
+        private static IEnumerable<string> NeedsOf(Dictionary<string, SortedSet<string>> needs, string name)
         {
-            for (int k = from; k < t.Count && t[k].Kind != TokKind.EOF && !t[k].Is(endKeyword); k++) AddIfRoot(t, k, into);
+            SortedSet<string> r;
+            if (needs.TryGetValue(name, out r) && r.Count > 0) return r;
+            return RulesConstant;   // not reached: every name in 'used' was collected with its rules
+        }
+
+        private static void CollectUntil(List<Token> t, int from, string endKeyword, HashSet<string> into, Dictionary<string, SortedSet<string>> needs, string[] rules)
+        {
+            for (int k = from; k < t.Count && t[k].Kind != TokKind.EOF && !t[k].Is(endKeyword); k++) AddIfRoot(t, k, into, needs, rules);
         }
 
         // the first identifier of a designator (not after '.', not a keyword, not a named call parameter)
-        private static void AddIfRoot(List<Token> t, int k, HashSet<string> into)
+        private static void AddIfRoot(List<Token> t, int k, HashSet<string> into, Dictionary<string, SortedSet<string>> needs, string[] rules)
+        {
+            string key = AddIfRootName(t, k, into);
+            if (key == null) return;
+            SortedSet<string> r;
+            if (!needs.TryGetValue(key, out r)) { r = new SortedSet<string>(StringComparer.Ordinal); needs[key] = r; }
+            foreach (string id in rules) r.Add(id);
+        }
+
+        private static string AddIfRootName(List<Token> t, int k, HashSet<string> into)
         {
             Token x = t[k];
-            if (x.Kind != TokKind.Ident || StLexer.Keywords.Contains(x.Upper)) return;
-            if (k > 0 && (t[k - 1].IsOp(".") || t[k - 1].IsOp("#"))) return;
-            if (k + 1 < t.Count && (t[k + 1].IsOp(":=") || t[k + 1].IsOp("=>"))) return;
+            if (x.Kind != TokKind.Ident || StLexer.Keywords.Contains(x.Upper)) return null;
+            if (k > 0 && (t[k - 1].IsOp(".") || t[k - 1].IsOp("#"))) return null;
+            if (k + 1 < t.Count && (t[k + 1].IsOp(":=") || t[k + 1].IsOp("=>"))) return null;
             into.Add(x.Text);
+            return x.Text;
         }
 
         // designator ending at k (a[ ... with a.b.c before '['): its first identifier
-        private static void AddRoot(List<Token> t, int k, HashSet<string> into)
+        private static void AddRoot(List<Token> t, int k, HashSet<string> into, Dictionary<string, SortedSet<string>> needs, string[] rules)
         {
             int j = k;
             while (j - 2 >= 0 && t[j - 1].IsOp(".") && t[j - 2].Kind == TokKind.Ident) j -= 2;
-            AddIfRoot(t, j, into);
+            AddIfRoot(t, j, into, needs, rules);
         }
 
         // names a candidate can use: its own declaration, its POU (member candidates) and the EXTENDS chain, every object

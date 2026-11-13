@@ -779,6 +779,7 @@ namespace TcLintEngine
             {
                 Writes w = new Writes();
                 List<string> parens = new List<string>();   // callee (upper case, "" = unknown) of a call parenthesis, null = not a call
+                List<int> parenAt = new List<int>();        // token index of each open parenthesis (PR #289 SF5: direction of a formal)
                 int loops = 0;                              // FOR / WHILE / REPEAT nested inside the range: EXIT / CONTINUE there act on that loop
                 for (int k = from; k < to; k++)
                 {
@@ -787,11 +788,11 @@ namespace TcLintEngine
                     {
                         bool call = IsCallParen(k);
                         string callee = call ? (t[k - 1].Kind == TokKind.Ident ? t[k - 1].Upper : "") : null;
-                        parens.Add(callee);
+                        parens.Add(callee); parenAt.Add(k);
                         if (call && !ValueOnly(callee)) w.Calls = true;   // IEC standard functions / conversions change nothing (review S3)
                         continue;
                     }
-                    if (x.IsOp(")")) { if (parens.Count > 0) parens.RemoveAt(parens.Count - 1); continue; }
+                    if (x.IsOp(")")) { if (parens.Count > 0) { parens.RemoveAt(parens.Count - 1); parenAt.RemoveAt(parenAt.Count - 1); } continue; }
                     if (x.Kind == TokKind.Ident && (x.Upper == "FOR" || x.Upper == "WHILE" || x.Upper == "REPEAT")) { loops++; continue; }
                     if (x.Kind == TokKind.Ident && (x.Upper == "END_FOR" || x.Upper == "END_WHILE" || x.Upper == "END_REPEAT")) { loops--; continue; }
                     if (x.Kind == TokKind.Ident && (x.Upper == "EXIT" || x.Upper == "RETURN" || x.Upper == "JMP" || x.Upper == "CONTINUE"))
@@ -810,6 +811,12 @@ namespace TcLintEngine
                         // #286 S7: kept apart from Names - fbC(nIndex := nIndex) does not write the counter nIndex of this section;
                         // WrittenSomewhere / DivisorChecked still count it (a caller writes the input of that POU)
                         w.Formals.Add(t[k - 1].Upper);
+                        // PR #289 SF5: the actual of a VAR_IN_OUT formal is passed by reference - the callee may write it
+                        // (fbC(nIndex := nIndex) / fbC(io := nIndex) with VAR_IN_OUT). A VAR_INPUT formal is a copy (S7 stays).
+                        // Direction unknown (library / unknown type, method, pointer call) -> may write it (conservative).
+                        if (k + 2 < to && t[k + 1].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[k + 1].Upper) && (t[k + 2].IsOp(",") || t[k + 2].IsOp(")"))
+                            && !ValueOnly(parens[parens.Count - 1]) && !FormalByValue(parenAt[parenAt.Count - 1], t[k - 1].Text))
+                            w.CallArgs.Add(t[k + 1].Upper);
                         continue;
                     }
                     if (x.IsOp(":=") || x.IsOp("S=") || x.IsOp("R=") || x.IsOp("REF="))
@@ -910,6 +917,9 @@ namespace TcLintEngine
                 return maybe == 2 ? 2 : 1;
             }
 
+            private static readonly HashSet<string> BitAddressable = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+                "BYTE", "WORD", "DWORD", "LWORD", "SINT", "USINT", "INT", "UINT", "DINT", "UDINT", "LINT", "ULINT" };
+
             // review B3: a property access is a call (Get / Set run code); names / member types the linter cannot resolve are not guessed
             private string Unsure(List<string> c)
             {
@@ -938,6 +948,12 @@ namespace TcLintEngine
                 if (run.typeKinds.TryGetValue(ty, out kind)) return kind == "ITF" ? "property-access" : null;
                 int ld = ty.LastIndexOf('.');
                 if (run.FindCatalog(ld < 0 ? ty : ty.Substring(ld + 1), null) != null) return null;
+                // PR #289 nit 8: nW.cBit with a constant bit index on an integer / bit-string variable is a bit access like nW.3
+                if (c.Count == 2 && BitAddressable.Contains(ty))
+                {
+                    VarRef bit = run.Resolve(Sc, c[1]);
+                    if (bit != null && bit.Constant) return null;
+                }
                 return "member-type-unknown";
             }
 
@@ -946,6 +962,24 @@ namespace TcLintEngine
             private static readonly HashSet<string> ValueFunctions = new HashSet<string>(StringComparer.Ordinal) {
                 "ABS", "SQRT", "LN", "LOG", "EXP", "EXPT", "SIN", "COS", "TAN", "ASIN", "ACOS", "ATAN", "MIN", "MAX", "LIMIT", "SEL", "MUX",
                 "TRUNC", "TRUNC_INT", "SIZEOF", "SHL", "SHR", "ROL", "ROR", "LOWER_BOUND", "UPPER_BOUND" };
+
+            // PR #289 SF5: true when the formal parameter 'formal' of the call opened at token 'open' is a VAR_INPUT (by value):
+            // a Tc2_Standard stateful FB (no VAR_IN_OUT, #286 N5) or a project FB / FUNCTION whose declaration has the formal in
+            // VAR_INPUT. VAR_IN_OUT, an unknown callee (library FB, method, array element, pointer) or an unknown formal -> false.
+            private bool FormalByValue(int open, string formal)
+            {
+                if (open <= 0) return false;
+                Token p = t[open - 1];
+                if (p.Kind != TokKind.Ident || (open >= 2 && (t[open - 2].IsOp(".") || t[open - 2].IsOp("^")))) return false;
+                if (IsStandardStatefulFb(p.Text)) return true;
+                DeclInfo pd = null;
+                VarRef vr = run.Resolve(Sc, p.Text);
+                if (vr != null) { if (vr.V != null) pd = run.PouDecl((vr.TypeText ?? "").Trim()); }
+                else pd = run.PouDecl(p.Text);
+                if (pd == null || (pd.HeaderKeyword != "FUNCTION_BLOCK" && pd.HeaderKeyword != "FUNCTION")) return false;
+                VarRef f = FindIn(pd, formal, null);
+                return f != null && f.Block != null && f.Block.Kind == "VAR_INPUT";
+            }
 
             private static bool ValueOnly(string callee)
             {
@@ -1194,6 +1228,7 @@ namespace TcLintEngine
                     }
                     if (condCall) { Skip(RLoop, "call-in-condition"); continue; }   // a function / method call may return another value: recorded, not silent (second review B1)
                     string what;
+                    string unresolvedNote = null;   // PR #289 SF4: unresolved-condition-name (warning)
                     if (condNames.Count == 0)
                     {
                         // a constant condition: only WHILE TRUE / REPEAT ... UNTIL FALSE never end
@@ -1210,11 +1245,31 @@ namespace TcLintEngine
                         List<Dsg> cds = new List<Dsg>();
                         foreach (Dsg d in Dsgs(cf, ct)) if (!(d.Call && d.C.Count == 1 && ValueOnly(d.C[0]))) cds.Add(d);   // #286 N1
                         string unsure = null;
-                        foreach (Dsg d in cds) if (unsure == null) unsure = Unsure(d.C);
+                        // PR #289 SF4 (main decision): a busy-wait does not need the value of the condition, only that nothing in
+                        // the loop writes it. An unqualified name the linter cannot resolve (a library global, or undeclared) is
+                        // taken out of the analysis; when the rest proves the busy-wait, the finding is a warning (below).
+                        List<Dsg> unresolvedCond = new List<Dsg>();
+                        foreach (Dsg d in cds)
+                        {
+                            string us = Unsure(d.C);
+                            if (us == "name-unresolved" && !run.gvlByName.ContainsKey(d.C[0])) { unresolvedCond.Add(d); continue; }
+                            if (unsure == null) unsure = us;
+                        }
                         foreach (List<string> pth in body.Paths) if (unsure == null) unsure = Unsure(pth);
                         if (unsure != null) { Skip(RLoop, unsure); continue; }
+                        if (unresolvedCond.Count > 0)
+                        {
+                            bool touched = false;
+                            foreach (Dsg d in unresolvedCond) if (body.Names.Contains(d.C[0]) || body.CallArgs.Contains(d.C[0])) touched = true;
+                            if (touched) { Skip(RLoop, "name-unresolved"); continue; }   // the body writes / passes it: whether that ends the loop is not followed
+                            BodyCalls bcu = CallsIn(r.BodyFrom, r.BodyTo);
+                            foreach (Dsg d in unresolvedCond) if (bcu.Passed.Contains(d.C[0])) touched = true;
+                            if (touched || bcu.Unknown) { Skip(RLoop, "call-in-body"); continue; }
+                            foreach (Dsg d in unresolvedCond) cds.Remove(d);
+                        }
                         int conflict = 0;
                         foreach (Dsg d in cds) foreach (List<string> pth in body.Paths) { int cf2 = Conflict(d.C, pth); conflict = Math.Max(conflict, cf2 == 1 ? 3 : cf2); }
+                        if (unresolvedCond.Count > 0 && conflict != 0) { Skip(RLoop, "name-unresolved"); continue; }   // another condition variable is written: not followed with an unknown name
                         if (conflict == 3)
                         {
                             // review 3 S1 variant: the body writes the condition only from outputs of catalog FBs it calls
@@ -1246,7 +1301,7 @@ namespace TcLintEngine
                         bool pathAlias = false;
                         foreach (List<string> pth in body.Paths) if (PathAliasRisk(pth)) pathAlias = true;
                         if (body.Any && (condDeref || AliasRisk(condNames) || AliasRiskRoots(body.Roots) || pathAlias)) { Skip(RLoop, "possible-alias"); continue; }   // REFERENCE / VAR_IN_OUT / pointer may alias
-                        if (waited.Count > 0) { FbWaitLoop(b, r, cf, ct, waited); continue; }
+                        if (waited.Count > 0) { if (unresolvedCond.Count > 0) { Skip(RLoop, "name-unresolved"); continue; } FbWaitLoop(b, r, cf, ct, waited); continue; }
                         // #286 N2: the variables of the condition (full paths), not enum types / members or member names
                         List<string> cn = new List<string>();
                         foreach (Dsg d in cds)
@@ -1256,6 +1311,15 @@ namespace TcLintEngine
                             if (!cn.Contains(shown)) cn.Add(shown);
                         }
                         cn.Sort(StringComparer.OrdinalIgnoreCase);
+                        if (unresolvedCond.Count > 0)
+                        {
+                            List<string> un = new List<string>();
+                            foreach (Dsg d in unresolvedCond) { string shown = Text(d.Start, d.End); if (!un.Contains(shown)) un.Add(shown); }
+                            un.Sort(StringComparer.OrdinalIgnoreCase);
+                            unresolvedNote = "; the name " + string.Join(", ", un.ToArray()) + " cannot be resolved in the project (possibly a library global variable) and nothing in the body writes it or passes it to a call - if no other task or ADS write changes it, the loop is a busy-wait, so this case is a warning: check what writes it";
+                            foreach (string n in un) if (!cn.Contains(n)) cn.Add(n);
+                            cn.Sort(StringComparer.OrdinalIgnoreCase);
+                        }
                         what = "nothing in the body writes " + string.Join(", ", cn.ToArray()) +
                             (bc.Any ? ", the body calls only function blocks of the type catalog / IEC standard functions that do not receive it" : " and the body has no call") +
                             ", no EXIT / RETURN / JMP and no pointer write";
@@ -1272,13 +1336,45 @@ namespace TcLintEngine
                     List<string> fbOuts = new List<string>();
                     foreach (string m in members) if (IsFbInstance(m.Substring(0, m.IndexOf('.')))) fbOuts.Add(m);
                     if (fbOuts.Count > 0) note += "; the condition reads the function block output " + string.Join(", ", fbOuts.ToArray()) + " - the block is not called in the loop, so its outputs do not change";
+                    // PR #289 nit 8: WHILE TRUE OR b / REPEAT ... UNTIL FALSE AND b - say that the condition is constant
+                    string always = condNames.Count > 0 ? AlwaysByOperand(b.Kind, cf, ct) : null;
+                    if (always != null) note += "; " + always;
+                    if (unresolvedNote != null) note += unresolvedNote;
                     string ev = b.Kind == "WHILE" ? Text(b.Open, r.BodyFrom) : "REPEAT ... UNTIL " + Text(cf, ct);
                     Emit(RLoop, t[b.Open],
                         b.Kind + " loop never ends within the cycle: " + what + note + ". The task stays in the loop (InfoSys " +
                         (b.Kind == "WHILE" ? "WHILE 9007201783032715: 'If the Boolean expression never takes the value FALSE, the instructions are repeated continuously, causing a runtime error.'"
                                            : "REPEAT 9007201783038091: 'If the Boolean expression never takes the value TRUE, the instructions are repeated continuously, causing a runtime error.'") + ")",
-                        ev, "Do not wait inside one cycle: replace the loop by an IF / state machine step that checks the condition once per cycle", null, null, null);
+                        ev, "Do not wait inside one cycle: replace the loop by an IF / state machine step that checks the condition once per cycle",
+                        unresolvedNote != null ? "unresolved-condition-name" : null, unresolvedNote != null ? "warning" : null, unresolvedNote != null ? "false" : null);
                 }
+            }
+
+            // PR #289 nit 8: an operand of the top-level OR (WHILE) / AND (REPEAT ... UNTIL) is a constant TRUE / FALSE -> the
+            // condition is always TRUE / FALSE whatever the variables are; null = not that form
+            private string AlwaysByOperand(string kind, int from, int to)
+            {
+                bool wh = kind == "WHILE";
+                List<int> cuts = new List<int>(); cuts.Add(from - 1);
+                int depth = 0;
+                for (int k = from; k < to; k++)
+                {
+                    if (t[k].IsOp("(") || t[k].IsOp("[")) { depth++; continue; }
+                    if (t[k].IsOp(")") || t[k].IsOp("]")) { depth--; continue; }
+                    if (depth != 0) continue;
+                    if (wh ? (t[k].Is("OR") || t[k].Is("OR_ELSE")) : (t[k].Is("AND") || t[k].Is("AND_THEN") || t[k].IsOp("&"))) cuts.Add(k);
+                    else if (!wh && (t[k].Is("OR") || t[k].Is("OR_ELSE") || t[k].Is("XOR"))) return null;   // AND is not the top level
+                }
+                if (cuts.Count < 2) return null;
+                cuts.Add(to);
+                for (int i = 0; i + 1 < cuts.Count; i++)
+                {
+                    int a = cuts[i] + 1, e = cuts[i + 1];
+                    bool? v = e > a ? ConstBool(a, e) : null;
+                    if (v.HasValue && v.Value == wh)
+                        return "the condition " + Text(from, to) + " is always " + (wh ? "TRUE" : "FALSE") + " (the operand " + Text(a, e) + " of " + (wh ? "OR" : "AND") + " is " + (wh ? "TRUE" : "FALSE") + ")";
+                }
+                return null;
             }
 
             // value of a condition without variables: TRUE / FALSE, NOT, parentheses, AND / OR / XOR, comparisons of constant
@@ -1543,7 +1639,7 @@ namespace TcLintEngine
                 if (condAlias) { why = "possible-alias"; return 2; }
                 foreach (Dsg d in cds) if (bc.Passed.Contains(d.C[0])) { why = "call-in-body"; return 2; }
                 if (bc.Unknown) { why = "call-in-body"; return 2; }
-                int writes = 0; fixedUnknown = false; globalSource = false;
+                int writes = 0; fixedUnknown = false; globalSource = false; externalSource = false;
                 for (int k = from; k < to; k++)
                 {
                     bool assign = t[k].IsOp(":=") || t[k].IsOp("S=") || t[k].IsOp("R=") || t[k].IsOp("REF=");
@@ -1610,6 +1706,25 @@ namespace TcLintEngine
             private bool fixedUnknown;
             // PR #289 review 1: a source is a VAR_GLOBAL variable (not CONSTANT, no AT %I*) - another task or ADS may write it
             private bool globalSource;
+            // PR #289 nit 7: a source is a PROGRAM variable or an input of the function block instance (VAR_INPUT): an HMI / ADS
+            // write (MAIN.bHmiStart) or a task of higher priority may change it while the loop runs - same reason as a VAR_GLOBAL
+            private bool externalSource;
+
+            // PR #289 nit 7: what makes a variable of this section writable from outside while the loop runs; null = only this code
+            // writes it (FB VAR, method / function locals and inputs, VAR_TEMP)
+            private string ExternallyWritable(string name)
+            {
+                Scope s = Sc;
+                if (s.Gvl != null || s.Pou == null) return null;
+                if (s.Local != null && !object.ReferenceEquals(s.Local, s.Pou) && FindIn(s.Local, name, s) != null) return null;   // method / accessor local
+                VarRef vr = FindIn(s.Pou, name, s);
+                if (vr == null) foreach (DeclInfo bd in s.Bases) { vr = FindIn(bd, name, s); if (vr != null) break; }
+                if (vr == null || vr.Block == null) return null;
+                string k = vr.Block.Kind;
+                if (s.Pou.HeaderKeyword == "PROGRAM" && (k == "VAR" || k == "VAR_INPUT" || k == "VAR_OUTPUT")) return "variable of the PROGRAM";
+                if (s.Pou.HeaderKeyword == "FUNCTION_BLOCK" && k == "VAR_INPUT") return "input of the function block";
+                return null;
+            }
 
             private int InvariantSources(int from, int to, Writes body, BodyCalls bc, List<string> srcs, ref bool input, out string why)
             {
@@ -1656,6 +1771,13 @@ namespace TcLintEngine
                         continue;
                     }
                     fixedUnknown = true;
+                    string ext = ExternallyWritable(root);
+                    if (ext != null)
+                    {
+                        externalSource = true;
+                        string xs = shown + " (" + ext + ", not written in the loop)"; if (!srcs.Contains(xs)) srcs.Add(xs);
+                        continue;
+                    }
                     string v = shown + " (not written in the loop)"; if (!srcs.Contains(v)) srcs.Add(v);
                 }
                 return 1;
@@ -1684,6 +1806,13 @@ namespace TcLintEngine
                     // priority that interrupts this one, or over ADS; nothing in the project excludes that -> warning with a disposition
                     msg += "; a source is a global variable (VAR_GLOBAL): a task of higher priority or an ADS write may change it while the loop runs, which the linter cannot exclude, so this case is a warning - check what writes it";
                     Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-global-write", "warning", "false");
+                }
+                else if (externalSource)
+                {
+                    // PR #289 nit 7 (same reason as the VAR_GLOBAL case): a PROGRAM variable / FB input is a symbol an HMI writes
+                    // over ADS (MAIN.bHmiStart) or a task of higher priority may set; nothing in the project excludes that
+                    msg += "; a source is a PROGRAM variable or an input of the function block: an HMI / ADS write or a task of higher priority may change it while the loop runs, which the linter cannot exclude, so this case is a warning - check what writes it";
+                    Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-external-write", "warning", "false");
                 }
                 else Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-write", null, null);
             }
