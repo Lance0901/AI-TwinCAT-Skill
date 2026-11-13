@@ -216,13 +216,13 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | reason | 意思 |
 |---|---|
 | `passed-or-aliased` | instance 被當參數、`ADR(inst)`、`REF=` 來源、指派給 interface 或被整個指派(`f(inst)`、`itf := inst`、`inst := other`)→ 可能在別處被呼叫 |
-| `qualified-access` | 專案任何地方 `.` 後面出現同名(`PRG.inst`、`fb.inst`)|
+| `qualified-access` | 專案任何地方 `q.inst` 的 `q` 可能是 owner:`q` 是 owner 或 EXTENDS 它的 FB 名稱、`q` 不是單純識別字(`p^.inst`、`a[i].inst`、`a.b.inst`)、`q` 在專案裡找不到宣告、或 `q` 的某個宣告型別文字含 owner / 其衍生 FB(PR #289 rev289 nit 6;以前只要 `.` 後面同名就跳過)。`q` 是別的 POU / DUT 名稱,或每個宣告的型別都與 owner 無關(`st.tmr`,`st : ST_Hold`)→ 不算對這個 instance 的存取 |
 | `inherited-use` | 有 FB `EXTENDS` 該 owner,衍生 FB 可能呼叫基底的 instance |
 | `unanalysed-part` | 名稱出現在 linter 讀不了的段落(CFC / SFC 原始 XML、壞檔、視覺化)|
 | `referenced-in-declaration` | 名稱出現在別的宣告初值(`ADR(inst)`、`REFERENCE TO ... := inst`、FB_init 引數)|
 | `shadowed-name` | 同一 POU 的 Method 區域變數同名 |
 | `array-instance` | `ARRAY OF FB` |
-| `type-alias:<型別>` / `unknown-type:<型別>` | 專案 `TYPE T : TON` alias 或 STRUCT / ALIAS 型別、目錄外的型別 |
+| `type-alias:<型別>` / `unknown-type:<型別>` | 專案 `TYPE T : TON` alias 或 STRUCT / ALIAS 型別、目錄外的型別。確定不是 FB 的 library 型別**不記**(PR #289 rev289 nit 5):依名稱列舉的 `T_MaxString` / `T_AmsNetId` / `T_AmsNetIdArr` / `T_AmsPort` / `T_FILETIME` / `TIMESTRUCT` / `T_Arg` / `MC_Direction` / `MC_StartMode` / `MC_BufferMode` / `MC_CamActivationMode` / `MC_CamOperationMode` / `MC_CAM_ID` / `MC_CAM_REF` / `MC_MotionFunctionPoint` / `MC_HomingMode` / `MC_HomingParameter`,以及 Beckhoff 命名慣例 `E_*`(enum)/ `ST_*`(struct)— 命名慣例是**推論**,沒有讀 library。專案 DUT、基本型別、STRING / WSTRING、POINTER / REFERENCE 本來就不是候選。其餘專案外型別照記(語料 axis 172 → 87、bfh 7 → 2 筆 / 規則)|
 | `declaration-not-analyzed`、`call-site-not-found`、`nested-member-access` | 宣告區 / 呼叫點 / `inst.a.b`、`inst.a[...]` 無法分析 |
 | owner 有問題的段落 | 條件 pragma(`{IF}`)、不支援的語法等 → 該物件不評估 |
 
@@ -231,8 +231,9 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 #### SCAN-FBCALL-001 FB instance 被讀取但從不呼叫(warning,`blockable: false`,進 `unresolved[]`)
 - 定義:instance 有被引用(例如讀 `.Q`、寫 `.PT`),但整個 owner 沒有 `inst(...)` 呼叫。機台行為:FB 的輸出只在被呼叫時才更新,讀到的永遠是初值(依 IEC FB 語意推論,`impactBasis: inferred`,未實測);confidence medium。
-- 偵測:專案 FB 還把 EXTENDS 鏈上任何 Method / Action / Property 的呼叫(`inst.M()`、`inst.Prop`)算「有呼叫」(Property accessor 的程式碼會跑);鏈上有 library 基底(讀不到成員)→ 視為有呼叫。owner 自己基底的成員在基底評估。
-- 追加 reason:`member-call-of-library-fb`(型別目錄內的 library FB 只被 `inst.Method()` 呼叫:不知道 Method 會不會執行本體,不報)。
+- 偵測:專案 FB 還把 EXTENDS 鏈上任何 Method / Action / Property 的呼叫(`inst.M()`、`inst.Prop`)算「有呼叫」(Property accessor 的程式碼會跑)。鏈上有 library 基底(讀不到基底成員,PR #289 rev289 B1):`inst.M()` 形式一律算有呼叫;被存取的成員是專案鏈上 FB 宣告的變數(VAR_INPUT / VAR_OUTPUT / VAR 等)→ 只是資料存取,不算呼叫,照常判斷(沒有其他呼叫 → 報 001);被存取的名稱在專案鏈上找不到(可能是 library 基底的 Property)→ rulesSkipped `library-base-members-unknown`,不報、不靜默。owner 自己基底的成員在基底評估。message 的引用位置寫成「<路徑> implementation line N」(diagnostic 本身在 declaration)。
+- 追加 reason:`member-call-of-library-fb`(型別目錄內的 library FB 只被 `inst.Method()` 呼叫:不知道 Method 會不會執行本體,不報)、`library-base-members-unknown`(見上)。
+- 已知風險(推論,未驗證):library 基底若在 `FB_init` 把 instance 註冊到別處、由別處呼叫它的 Method 更新輸出,「只讀自己的 VAR_OUTPUT」也會被報 001。語料 axis 的 `FB_ActionBasic` 衍生 FB 有用到的 6 個 instance(fbExtCC、fbLiftingCal、fbLiftingPendulumCal、Main / TestCam 的 fbWheelTest、FB_AxisControl.fbAxisParaHandler)都由 owner 直接 `inst(...)` 呼叫,沒有看到自行註冊的用法。
 - 已知漏抓:instance 在永遠不會被執行的程式碼裡被呼叫(不檢查可達性);呼叫發生在別的 POU(`qualified-access` / `passed-or-aliased` 一律跳過)。
 - 與 TEMPFB 的差別:本規則不看 instance 宣告在哪個 section 的語意,只看呼叫點有沒有。
 
@@ -245,23 +246,25 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 #### SCAN-TIMER-001 Timer / 邊緣觸發只在 IF / CASE 內呼叫(warning,`blockable: false`,進 `unresolved[]`)
 - 範圍:型別目錄 class `timer`(TON / TOF / TP / LTON / LTOF / LTP)與 `edge`(R_TRIG / F_TRIG)。counter(CTU / CTD / CTUD)與 RS / SR **不檢查**(只在條件下計數是正常設計)。
 - 機台行為出處:TON 沒被呼叫的 cycle,內部時間照牆上時間算 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 5 節):2 ms task 先呼叫 0.5 s(`ET = T#498ms`),跳過 1500 cycle(`TIME()` 差 3002 ms),再呼叫的第一個 cycle `ET = T#3s500ms`,PT 2 s 的 timer `Q = TRUE`。TON 頁 [74406539](https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html) 沒寫沒被呼叫的週期怎麼算。邊緣觸發:兩次呼叫之間的邊緣會漏掉(依 R_TRIG 頁 [74391563](https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74391563.html) "for one cycle" 的語意推論,未實測)。
-- 偵測:所有呼叫點都在 IF / CASE 內,且沒有任何一層 IF…ELSE / CASE…ELSE 的所有分支都呼叫它(巢狀遞迴判斷)。呼叫在 owner 本體,或在「本體以敘述層級、不在 IF / CASE / 迴圈內無條件呼叫」的 Action / Method。有條件呼叫 + 同一個 timer 另有符合 005 條件者只報 005,不報 001。
-- 不報(每種 rulesSkipped reason,追加於共同 reason 之外):`explicit-reset`(任何呼叫有 `IN := FALSE` / `CLK := FALSE`,或有 `inst.IN :=` / `inst.CLK :=` 賦值**且同一路徑之後有呼叫該 instance(呼叫沒帶 IN / CLK 參數)** — 作者有處理離開狀態;只寫 `inst.IN :=` 不呼叫,FB 取樣不到那個值,下次呼叫又傳自己的 IN,不算 reset — 依 IEC FB 呼叫語意推論,未實測)、`input-write-unresolved`(`inst.IN :=` 之後同一段落沒有呼叫,但別的 Action / Method 有呼叫該 instance,或之後的呼叫用位置引數 → 判斷不了是否取樣到,不報)、`call-in-loop`(呼叫在迴圈內)、`call-in-pragma`(呼叫在 `{IF}` 區內)、`also-called-in-member`(另有呼叫在「不確定每次都跑」的 Method / Action 內)、`member-call`(`inst.Method()` 型式)。任何一個無條件呼叫 → 不報。
+- 偵測:所有呼叫點都在 IF / CASE 內,且沒有任何一層 IF…ELSE / CASE…ELSE 的所有分支都呼叫它(巢狀遞迴判斷)。呼叫在 owner 本體,或在「本體以敘述層級、不在 IF / CASE / 迴圈內無條件呼叫」的 Action / Method。有條件呼叫 + 同一個 timer 另有符合 005 條件者只報 005,不報 001。常數條件(PR #289 rev289 nit 1):`IF TRUE THEN` / `IF 1 = 1 THEN`(TRUE / FALSE、NOT、括號、AND / OR / XOR、整數字面值比較)的 THEN 分支視為無條件;`IF FALSE THEN` 內的呼叫不會執行,不算呼叫點,沒有其他呼叫時記 `constant-false-condition`。
+- Action / Method 內的呼叫(PR #289 rev289 SF3):timer 在 Action / Method 內**無條件**呼叫,而 owner 本體只在**一個**地方以敘述呼叫該成員(在 IF / CASE 分支內,不在迴圈 / `{IF}` 內),沒有其他段落呼叫它、專案任何地方沒有 `.成員名`(`fb.A_Wait()`)、owner 沒有 `IMPLEMENTS`、也沒有 FB `EXTENDS` owner → 把呼叫點換成本體那個呼叫的位置,套用 001 / 005(warning,message 註明 through <成員>)。有外部呼叫 / 介面 / 衍生 FB / 多個呼叫點 → 維持 002 info,001 / 005 記 rulesSkipped `member-called-elsewhere`。
+- 不報(每種 rulesSkipped reason,追加於共同 reason 之外):`explicit-reset`(任何呼叫有 `IN := FALSE` / `CLK := FALSE`,或有 `inst.IN := FALSE` / `inst.CLK := FALSE`(**值是常數 FALSE**;PR #289 rev289 SF1 以前任何值都算)賦值**且同一路徑之後有呼叫該 instance(呼叫沒帶 IN / CLK 參數)**。`inst.IN := TRUE; inst();` 算一次 `IN := TRUE` 的呼叫(005 照判斷),`inst.IN := 變數; inst();` 算變數 IN(報 001) — 作者有處理離開狀態;只寫 `inst.IN :=` 不呼叫,FB 取樣不到那個值,下次呼叫又傳自己的 IN,不算 reset — 依 IEC FB 呼叫語意推論,未實測)、`input-write-unresolved`(`inst.IN :=` 之後同一段落沒有呼叫,但別的 Action / Method 有呼叫該 instance,或之後的呼叫用位置引數 → 判斷不了是否取樣到,不報)、`call-in-loop`(呼叫在迴圈內)、`call-in-pragma`(呼叫在 `{IF}` 區內)、`also-called-in-member`(另有呼叫在「不確定每次都跑」的 Method / Action 內)、`member-call`(`inst.Method()` 型式)。任何一個無條件呼叫 → 不報。
 - 已知漏抓(limits):提早 `RETURN`(`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫,實際是條件呼叫)、`JMP` 之後的呼叫、owner instance 本身被條件呼叫(遞移)。
 - TE1200:無對應(SA0105 Full 需要 attribute,只部分相關)。
 - 誤報來源:刻意「只在某模式更新」的 timer(語料 `TestCam.R_14Eng` 類)— 需處置。
-- `impactBasis`(逐筆,依實例型別):TON → 不帶(第 5 節實測);TOF / TP / LTON / LTOF / LTP 與 R_TRIG / F_TRIG → `inferred`(不被呼叫時的語意未實測)。
+- `impactBasis`(逐筆,依實例型別):TON → 不帶(第 5 節實測);TOF / TP / LTON / LTOF / LTP 與 R_TRIG / F_TRIG → `inferred`(不被呼叫時的語意未實測)。message 也依型別:TON 寫實測;TOF / TP / LT* 寫「依實測的 TON 行為推論,只實測 TON」;R_TRIG / F_TRIG 寫邊緣漏掉(PR #289 rev289 nit 4)。
 
 #### SCAN-TIMER-002 Timer / 邊緣觸發只在 Method / Action 內呼叫(info,不進 `unresolved[]`,confidence low)
 - 定義:所有呼叫都在 Method / Action,而 owner 本體沒有「以敘述層級、不在 IF / CASE / 迴圈內」呼叫那個 Action / Method(Method 被別的 POU 呼叫的情況不追,所以無法證明每 cycle 呼叫)。
 - 不報:共同 reason;只要有一個呼叫在本體或每次都跑的成員內即走 001 的判斷。「每次都跑」的成員:本體以敘述層級無條件呼叫、IF…ELSE / CASE…ELSE 的每個分支都以敘述呼叫(與 001 直接呼叫 timer 的「全分支」判斷相同)、回傳值被使用的呼叫(`b := M()`)、最外層 IF / CASE / WHILE / FOR 條件裡的呼叫(`IF M() THEN`),並沿成員呼叫鏈往下追(本體 → `M_Outer` → `M_Inner`);接在 `AND_THEN` / `OR_ELSE` 後面或 IF 分支內的呼叫不算。
-- 已知漏抓 / 誤報:外部 POU 每 cycle 呼叫該 Method 的合法寫法會被報成 info(所以只是 info、low)。出處同 001(實測第 5 節的語意:不被呼叫的 cycle 時間照算)。
+- 本體只在一個 IF / CASE 分支呼叫、且沒有外部呼叫的 Action / Method 不再報 002,改依 001 / 005 判斷(見 SCAN-TIMER-001「Action / Method 內的呼叫」);Property accessor 內的呼叫 message 寫 property accessor(PR #289 rev289 nit 3)。
+- 已知漏抓 / 誤報:外部 POU 每 cycle 呼叫該 Method 的合法寫法會被報成 info(所以只是 info、low);成員內的 timer 呼叫本身在 IF / CASE 內、或本體有多個呼叫點時維持 002。出處同 001(實測第 5 節的語意:不被呼叫的 cycle 時間照算)。
 
 #### SCAN-TIMER-004 PT 未設 / IN 恆為 FALSE(warning,`blockable: false`,進 `unresolved[]`)
 - 範圍:只看 timer(TON / TOF / TP / LTON / LTOF / LTP)。
 - variant `pt-unset`(confidence high):instance 的所有呼叫都沒傳 `PT`、沒有 `inst.PT :=`、宣告沒有初值或初值 `(名稱 := 值, ...)` 裡沒有 `PT :=`(例:`t1 : TON := (IN := FALSE);` 照報);初值解析不了 → rulesSkipped `initialiser-not-parsed`。機台行為:PT 預設 `T#0S`(TIME 預設初值 InfoSys 出處未附,推論),而 TON 在 `PT = T#0S` 時 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 4 節):`IN` 上升緣**當個 cycle** `Q = TRUE`、`ET = T#0ms`,`IN` 落下當個 cycle `Q = FALSE`,延遲完全失效、`Q` 跟著 `IN` 走(TON 頁 74406539 沒寫 PT = 0)。實測對象是 TON;TOF / TP / LT* 在 PT = 0 的行為**未測**,依同一套「PT 為 0 沒有延遲」推論。
 - variant `in-constant`(confidence medium):所有呼叫的 `IN` 都是常數 `FALSE`,且 `IN` 沒有被 `inst.IN :=` 賦值 → timer 永不啟動。**IN 常數 `TRUE` 不報**(開機延遲 `tonStartup(IN := TRUE, PT := T#5S)` 是合法寫法;狀態機形態由 005 處理)。
-- 追加 reason:`positional-arguments`(呼叫用位置引數,讀不到 PT / IN 名稱)。
+- 追加 reason:`positional-arguments`(呼叫用位置引數,讀不到 PT / IN 名稱)、`pt-passed-or-aliased`(`inst.PT` 交給呼叫的參數 / `ADR(inst.PT)` / `MEMCPY(ADR(inst.PT), ...)` / VAR_IN_OUT / `REF=` 來源 → 可能在別處寫入,不報 `pt-unset`)、`in-passed-or-aliased`(`inst.IN` 同樣被交出去 → 不報 `in-constant`;PR #289 rev289 SF2)。被包在任何呼叫的括號內都算交出去(`TIME_TO_DINT(inst.PT)` 也算,保守)。
 - 已知漏抓:`IN := TRUE OR x` 之類需要常數折疊(未做);seeded S18 目前不報。
 - `impactBasis`(逐筆):`pt-unset` 的 TON → 不帶(第 4 節實測),TOF / TP / LT* → `inferred`;`in-constant` 一律 `inferred`(「IN 恆 FALSE → timer 永不啟動」依 IEC 語意推論,未實測)。
 
@@ -269,7 +272,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 範圍:TON / LTON。
 - 機台行為:`CASE eState OF WAIT: ton(IN := TRUE, PT := T#2S); ...`,離開 WAIT 後不再呼叫,`IN` 內部仍是 TRUE;之後再進入 WAIT 沒有上升沿,TON 依牆上時間算 `ET`,跳過的時間 ≥ 剩餘 PT 時重新呼叫的第一個 cycle `Q = TRUE`,超時判斷失效 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 5 節,數據同 TIMER-001)。「Q 可能立刻成立」已由推論改為實測確定(跳過時間超過剩餘 PT 時)。
 - 偵測:所有呼叫都在**同一個 CASE** 的分支內、每個呼叫都是 `IN := TRUE`、沒有 `IN := FALSE`、沒有「之後同一路徑有呼叫(不帶 IN)」的 `inst.IN :=`(只寫 `inst.IN := FALSE` 不呼叫照報:TON 取樣不到 FALSE,下次呼叫又傳 `IN := TRUE` — 依 IEC FB 呼叫語意推論,未實測;判斷不了 → rulesSkipped `input-write-unresolved`),且不是「每個分支都呼叫(含 ELSE)」。`IN` 不是常數 → 改報 001。與 001 不重複報(同一 timer 只報 005)。
-- 不報:用位置引數(`positional`,不報 005,落到 001 / `explicit-reset` 的判斷);其餘 reason 同共同 reason 與 001。
+- 不報:用位置引數(`positional`,不報 005,落到 001 / `explicit-reset` 的判斷);`inst.IN` 被交給呼叫 / `ADR` / `REF=`(`in-passed-or-aliased`,落到 001 的判斷;PR #289 rev289 SF2);其餘 reason 同共同 reason 與 001。成員式 `inst.IN := TRUE; inst();` 算 `IN := TRUE` 的呼叫(rev289 SF1)。
 - 與 001 的差別:001 把正確寫法(離開前 `ton(IN := FALSE)`)和錯誤寫法報成同一個 warning;005 只抓錯的那種,confidence 較高(實作標 medium)。
 - `impactBasis`(逐筆):TON 且沒有「只寫 `inst.IN :=` 不呼叫」→ 不帶(第 5 節實測);有 `inst.IN := FALSE` 寫入但之後沒有呼叫取樣(依 IEC FB 呼叫語意推論)或型別為 LTON(未實測)→ `inferred`。
 
