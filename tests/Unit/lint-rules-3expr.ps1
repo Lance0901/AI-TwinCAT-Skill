@@ -183,6 +183,31 @@ Check 'I8 STRUCT member operand -> no finding, rulesSkipped operand-type-unknown
 $r = P3 "rA := rB / rA;`nnA := DINT_TO_INT(nB / 2);"
 Check 'I9 REAL / REAL, integer target of a conversion -> nothing' ((None3 $r) -and (NoSkip3 $r)) (Brief3 $r)
 
+# ---- review round 1 (PR #304): S4 array target, S5 call argument, S6 unknown operand vs non-zero literal, S7 ARRAY OF FB,
+#      S8 nested member write, S1 conditional pragma
+$r = Prg ("    ar : ARRAY[0..2] OF REAL;`n" + $pv) "ar[1] := nA / nB;" '' $stp
+Check 'ES4 ar[1] := nA / nB -> never silent (finding or target-type-unknown)' (((D3 $r 'SCAN-INTDIV-001').Count -eq 1) -or (Sk3 $r 'SCAN-INTDIV-001') -like '*target-type-unknown*') (Brief3 $r)
+$r = Prg ("    fbR : FB_R;`n" + $pv) "fbR(rIn := nA / nB);" '' { param($fx) & $stp $fx; Add-Pou $fx 'FB_R' "FUNCTION_BLOCK FB_R`nVAR_INPUT`n    rIn : REAL;`nEND_VAR`n" "" }
+Check 'ES5 fbR(rIn := nA / nB) -> rulesSkipped in-function-call' ((None3 $r) -and (Sk3 $r 'SCAN-INTDIV-001') -like '*in-function-call*') (Brief3 $r)
+$r = P3 "IF st.r = 100 THEN`n    b := TRUE;`nEND_IF"
+Check 'ES6a struct member = 100 -> rulesSkipped operand-type-unknown' ((None3 $r) -and (Sk3 $r 'SCAN-FLOAT-001') -like '*operand-type-unknown*') (Brief3 $r)
+$r = P3 "b := ABS(rA) = 5;"
+Check 'ES6b ABS(rA) = 5 -> rulesSkipped operand-type-unknown' ((None3 $r) -and (Sk3 $r 'SCAN-FLOAT-001') -like '*operand-type-unknown*') (Brief3 $r)
+$r = Callee "    aFb : ARRAY[0..1] OF FB_X;" "aFb[0](bIn := TRUE);"
+Check 'ES7a ARRAY[0..1] OF FB_X element called -> copy-called' (Only3 $r 'SCAN-FBVAL-001' 'copy-called') (Brief3 $r)
+$r = Callee "    aFb : ARRAY[0..1] OF FB_X;" "aFb[1].bIn := TRUE;"
+Check 'ES7b ARRAY OF FB element member written -> copy-written' (Only3 $r 'SCAN-FBVAL-001' 'copy-written') (Brief3 $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_Y' "FUNCTION_BLOCK FB_Y`nVAR_INPUT`n    arr : ARRAY[0..2] OF INT;`n    st : ST_P;`nEND_VAR`n" ""
+& $stp $fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR_INPUT`n    fbIn : FB_Y;`n    fbIn2 : FB_Y;`nEND_VAR`n" "fbIn.arr[1] := 3;`nfbIn2.st.n := 4;"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'ES8 fbIn.arr[1] := / fbIn2.st.n := (nested member writes) -> two copy-written' ((D3 $r 'SCAN-FBVAL-001').Count -eq 2 -and @((D3 $r 'SCAN-FBVAL-001') | Where-Object { $_.variant -ne 'copy-written' }).Count -eq 0) (Brief3 $r)
+$fx = New-Fx; & $fbx $fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR_INPUT`n    fbIn : FB_X;`nEND_VAR`nVAR`n    n : INT;`nEND_VAR`n" "n := 1;" (Method 'M_Do' "METHOD M_Do`n" "{IF defined (variable: n)}`nfbIn(bIn := TRUE);`n{END_IF}")
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'ES1 FB input used only in a conditional-pragma section -> rulesSkipped implementation-not-analyzed' ((None3 $r) -and (Sk3 $r 'SCAN-FBVAL-001') -like '*implementation-not-analyzed:fbIn*') (Brief3 $r)
+
 # ================================================================ X  suppression / disabled
 $r = P3 "// tcauto-lint-disable-next-line SCAN-FLOAT-001: setpoint is copied 1:1 from the HMI value`nb := rA = 100.0;"
 $d = D3 $r 'SCAN-FLOAT-001'

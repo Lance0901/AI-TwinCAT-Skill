@@ -153,6 +153,30 @@ Check 'N22 IF NOT __ISVALIDREF(r) OR n < 0 THEN RETURN -> no finding' ((NoSm $r)
 $r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "n := 1;" (Method 'M_Do' "METHOD M_Do`nVAR`n    r : INT;`nEND_VAR`n" "n := r;")
 Check 'N23 method local INT r shadows the FB reference -> no finding' ((NoSm $r) -and (SkipText $r) -eq '') ((Brief $r) + ' ' + (SkipText $r))
 
+# ---- review round 1 (PR #304): B1 comparison with a BOOL, B2 p := 0 / p := q, B3 p[i], S1 conditional pragma, S2 OR_ELSE, S3 OR inside AND_THEN parentheses
+$r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "IF __ISVALIDREF(r) = FALSE THEN`n    n := r;`nEND_IF"
+Check 'RB1a IF __ISVALIDREF(r) = FALSE THEN use -> never a silent pass (finding or guard-not-understood)' (((V $r) -eq 'reference-unassigned') -or (SkipText $r) -like '*guard-not-understood:r*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "IF __ISVALIDREF(r) <> TRUE THEN`n    RETURN;`nEND_IF`nn := r;"
+Check 'RB1b IF __ISVALIDREF(r) <> TRUE THEN RETURN (legal) -> no finding, guard-not-understood' ((NoSm $r) -and (SkipText $r) -like '*guard-not-understood:r*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    n : INT;" "p := 0;`nn := p^;"
+Check 'RB2a p := 0 then p^ -> pointer-unassigned' ((V $r) -eq 'pointer-unassigned') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    q : POINTER TO INT;`n    n : INT;" "p := q;`nn := p^;"
+Check 'RB2b p := q (value unknown) then p^ -> no finding, assigned-elsewhere' ((NoSm $r) -and (SkipText $r) -like '*assigned-elsewhere:p*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    n : INT;" "n := p[0];"
+Check 'RB3a p[0] on an unassigned pointer -> pointer-unassigned' ((V $r) -eq 'pointer-unassigned') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    n : INT;" "IF p <> 0 THEN`n    n := p[0];`nEND_IF`nn := p[1];"
+Check 'RB3b guarded p[0], unguarded p[1] -> finding at line 4' ((V $r) -eq 'pointer-unassigned' -and (Diags $r)[0].line -eq 4) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "n := 1;" (Action 'A_Do' "{IF defined (variable: n)}`nn := r;`n{END_IF}")
+Check 'RS1 use only in a conditional-pragma section -> rulesSkipped implementation-not-analyzed' ((NoSm $r) -and (SkipText $r) -like '*implementation-not-analyzed:r*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "IF NOT __ISVALIDREF(r) OR_ELSE r = 0 THEN`n    RETURN;`nEND_IF`nn := r;"
+Check 'RS2a IF NOT __ISVALIDREF(r) OR_ELSE r = 0 THEN RETURN -> no finding' ((NoSm $r) -and (SkipText $r) -eq '') ((Brief $r) + ' ' + (SkipText $r))
+$r = Prg "    p : POINTER TO INT;`n    n : INT;" "IF p = 0 OR_ELSE p^ = 0 THEN`n    RETURN;`nEND_IF`nn := p^;"
+Check 'RS2b IF p = 0 OR_ELSE p^ = 0 THEN RETURN -> no finding' ((NoSm $r) -and (SkipText $r) -eq '') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    r : REFERENCE TO INT;`n    b : BOOL;" "IF __ISVALIDREF(r) AND_THEN (b OR r > 0) THEN`n    b := FALSE;`nEND_IF"
+Check 'RS3a __ISVALIDREF(r) AND_THEN (b OR r > 0) -> no finding' ((NoSm $r) -and (SkipText $r) -eq '') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    r : REFERENCE TO INT;`n    b : BOOL;" "b := __ISVALIDREF(r) AND_THEN b OR r > 0;"
+Check 'RS3b __ISVALIDREF(r) AND_THEN b OR r > 0 (r read when the guard is FALSE) -> finding' ((V $r) -eq 'reference-unassigned') ((Brief $r) + ' ' + (SkipText $r))
+
 # ================================================================ X  suppression / unresolved
 $r = Fb "    r : REFERENCE TO INT;`n    n : INT;" "// tcauto-lint-disable-next-line SCAN-REF-001: r is set by the HMI before start`nn := r;"
 $d = Diags $r

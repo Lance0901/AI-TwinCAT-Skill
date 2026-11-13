@@ -13,18 +13,18 @@ namespace TcLintEngine
         {
             Add("SCAN-FBVAL-001", "Function block passed by value (VAR_INPUT) is called or changed in the callee", "warning", "false", "behavior", "no",
                 "A VAR_INPUT whose type is a function block (project FUNCTION_BLOCK or TypeCatalog.json; ARRAY OF such an FB too) of a FUNCTION_BLOCK / FUNCTION / METHOD receives a copy ('input and output parameters ... are copied in most cases when the function/method is called', InfoSys 12081345291). " +
-                "Reported at the declaration when the callee changes the copy: calls it (fbIn(...), variant copy-called), calls a method / action (fbIn.M()), or writes a member (fbIn.x := ..., variant copy-written): the caller's instance never sees it and the state is lost after the call. " +
+                "Reported at the declaration when the callee changes the copy: calls it (fbIn(...), variant copy-called), calls a method / action (fbIn.M()), or writes a member (fbIn.x := ..., fbIn.a.b := ..., fbIn.arr[1] := ..., variant copy-written): the caller's instance never sees it and the state is lost after the call. " +
                 "Not reported: only outputs of the copy read (the copy shows the caller's state at call time), VAR_IN_OUT, REFERENCE TO / POINTER TO FB, interface types, STRUCT / basic types. " +
                 "rulesSkipped <reason>:<input>: unknown-type (type outside the project and the catalog, only when it is called / written), implementation-not-analyzed. Basis of the consequence: inferred from the copy semantics, not measured.", "high", "inferred");
             Add("SCAN-FLOAT-001", "REAL / LREAL compared with = or <>", "warning", "false", "behavior", "no",
                 "Variant constant: one operand proven REAL / LREAL (variable, VAR CONSTANT, literal with a fraction / exponent, REAL# / LREAL#) and the other a non-zero literal or constant, or one operand a non-zero REAL literal (the comparison is then a REAL comparison). " +
                 "Not reported: a zero literal / constant on either side (0.0 / 0: initialisation check), two variables (rulesSkipped two-variables: change detection rOld <> rNew, a guard IF x1 = x2 before dividing by x2 - x1, a value clamped with y := in), < > <= >=, integer / other comparisons. " +
                 "Operands: a literal, typed literal, plain variable or GVL.variable between expression boundaries; anything else (struct member, array element, call, sub-expression) is unknown. " +
-                "rulesSkipped operand-type-unknown (one entry per object): a proven REAL variable compared with an unknown operand. Consequence (an exact REAL equality is rarely met, the machine waits) inferred, not measured; SA0054 (Full) checks the same.", "medium", "inferred");
+                "rulesSkipped operand-type-unknown (one entry per object): a proven REAL variable compared with an unknown operand, or an unknown operand (st.rPos, a[1], ABS(r)) compared with a non-zero integer. Consequence (an exact REAL equality is rarely met, the machine waits) inferred, not measured; SA0054 (Full) checks the same.", "medium", "inferred");
             Add("SCAN-INTDIV-001", "Integer division assigned to REAL / LREAL (truncated before the conversion)", "warning", "false", "behavior", "no",
                 "Reported (variant integer-division) for 'target := ...' with a proven REAL / LREAL target where a '/' has two proven integer operands (integer literals, typed integer literals, integer variables / constants), also inside parentheses. " +
                 "Not reported: a REAL operand (INT_TO_REAL(a) / b, a / 2.0), an integer target, '/' in an array index, DIV / MOD, declaration initial values. " +
-                "rulesSkipped (one entry per object and reason): explicit-conversion (TO_REAL(a / b): truncation written explicitly), in-function-call (the division is an argument of another call), operand-type-unknown, target-type-unknown. " +
+                "rulesSkipped (one entry per object and reason): explicit-conversion (TO_REAL(a / b): truncation written explicitly), in-function-call (the division is an argument of another call, fb(rIn := a / b)), operand-type-unknown, target-type-unknown. " +
                 "Basis: IEC 61131-3 operator typing (the result type of a / b with integer operands is an integer type); no InfoSys page for the PLC '/' operator states it (TF5100 NC I DIV: 'If the return type is an integer type, the result is truncated towards zero' is the NC interpreter, not the PLC) - inferred, not measured.", "medium", "inferred");
             foreach (string id in new string[] { "SCAN-FBVAL-001", "SCAN-FLOAT-001", "SCAN-INTDIV-001" }) RuleRegistry.Get(id).Phase = "3";
             RuleRegistry.Get("SCAN-FBVAL-001").Requires = "type-catalog";
@@ -198,6 +198,8 @@ namespace TcLintEngine
                 // clamps y := in, a parameter compared with its limit) -> recorded, not reported
                 if (L.Var && R.Var && (L.Kind == "real" || R.Kind == "real") && (L.Kind == "real" || L.Kind == "int") && (R.Kind == "real" || R.Kind == "int")) { Expr3Skip(RFloat, u, "two-variables"); return; }
                 if ((L.Kind == "real" && R.Kind == "unknown") || (R.Kind == "real" && L.Kind == "unknown")) Expr3Skip(RFloat, u, "operand-type-unknown");
+                // review S6: an operand of unknown type (st.rPos, a[1], ABS(r)) compared with a non-zero number may be a REAL comparison
+                else if ((L.Kind == "unknown" && rnz && R.Kind == "int") || (R.Kind == "unknown" && lnz && L.Kind == "int")) Expr3Skip(RFloat, u, "operand-type-unknown");
                 return;
             }
             string a = Expr3Text(t, ls >= 0 ? ls : k - 1, k), b = Expr3Text(t, k + 1, re > 0 ? re : k + 2);
@@ -243,9 +245,24 @@ namespace TcLintEngine
             }
             if (st < 0) return;
             int asg = -1;
-            for (int q = st; q < k; q++) { if (t[q].IsOp(":=")) { asg = q; break; } if (t[q].IsOp("(") || t[q].IsOp("[")) break; }
-            if (asg < 0) return;   // not 'target := ...' (a condition, a call statement)
-            for (int q = asg + 1; q < k; q++) if (t[q].IsOp(":=") || t[q].IsOp("=>")) return;   // a call argument further in: not this target
+            for (int q = st; q < k; q++)
+            {
+                if (t[q].IsOp(":=")) { asg = q; break; }
+                if (t[q].IsOp("[")) { int d = 0; for (; q < k; q++) { if (t[q].IsOp("[")) d++; else if (t[q].IsOp("]")) { d--; if (d == 0) break; } } continue; }   // review S4: ar[i] := ...
+                if (t[q].IsOp("(")) break;
+            }
+            bool nested = false;
+            if (asg >= 0) for (int q = asg + 1; q < k; q++) if (t[q].IsOp(":=") || t[q].IsOp("=>")) nested = true;   // a named call argument further in
+            if (asg < 0 || nested)
+            {
+                // review S5: the division is (in) a call argument, fb(rIn := a / b): the parameter type is not read -> recorded if both are integers
+                if (!call && !conv) return;   // a condition / an expression statement without target
+                int le2 = Expr3OperandStartBack(t, k - 1), re2 = Expr3OperandEndFwd(t, k + 1);
+                Expr3Op L2 = le2 >= 0 && (le2 == 0 || Expr3Boundary(t[le2 - 1]) || t[le2 - 1].IsOp("+") || t[le2 - 1].IsOp("-")) ? Expr3Classify(sc, t, le2, k) : new Expr3Op();
+                Expr3Op R2 = re2 > 0 ? Expr3Classify(sc, t, k + 1, re2) : new Expr3Op();
+                if (L2.Kind == "int" && R2.Kind == "int") Expr3Skip(RIntDiv, u, conv ? "explicit-conversion" : "in-function-call");
+                return;
+            }
             int le = Expr3OperandStartBack(t, k - 1);
             bool lOk = le >= 0 && le > asg && (le == 0 || Expr3Boundary(t[le - 1]) || t[le - 1].IsOp("+") || t[le - 1].IsOp("-"));
             Expr3Op L = lOk ? Expr3Classify(sc, t, le, k) : new Expr3Op();
@@ -296,9 +313,10 @@ namespace TcLintEngine
             if (up.StartsWith("REFERENCE", StringComparison.Ordinal) || up.StartsWith("POINTER", StringComparison.Ordinal)) return "no";
             if (up.StartsWith("ARRAY", StringComparison.Ordinal))
             {
-                int of = up.LastIndexOf(" OF ", StringComparison.Ordinal);
-                if (of < 0) return "unknown";
-                tt = tt.Substring(of + 4).Trim(); up = tt.ToUpperInvariant();
+                // review S7: the parser may write 'ARRAY[0..1]OF FB_X' (no space before OF)
+                System.Text.RegularExpressions.Match am = System.Text.RegularExpressions.Regex.Match(tt, @"\]\s*OF\s+(.+)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                if (!am.Success) return "unknown";
+                tt = am.Groups[1].Value.Trim(); up = tt.ToUpperInvariant();
                 if (up.StartsWith("REFERENCE", StringComparison.Ordinal) || up.StartsWith("POINTER", StringComparison.Ordinal)) return "no";
             }
             int par = tt.IndexOf('('); if (par >= 0) tt = tt.Substring(0, par).Trim();
@@ -343,7 +361,7 @@ namespace TcLintEngine
             {
                 if (u.O != du.O) continue;
                 if (!(top && h3IsFb(du)) && u.Path != du.Path) continue;
-                if (u.Scan == null || u.Scan.State.Status != "ok" || u.Scan.Lex == null) { problem = "implementation-not-analyzed"; continue; }
+                if (u.Scan == null || u.Scan.State.Status != "ok" || u.Scan.Lex == null) { if (Ref3Mentions(u, name)) problem = "implementation-not-analyzed"; continue; }
                 if (u.Path != du.Path)
                 {
                     Scope sc = ScopeOf(u);
@@ -366,11 +384,23 @@ namespace TcLintEngine
                     int j = i + 1;
                     if (j < t.Count && t[j].IsOp("[")) { int d = 0; for (; j < t.Count; j++) { if (t[j].IsOp("[")) d++; else if (t[j].IsOp("]")) { d--; if (d == 0) { j++; break; } } } }
                     if (j < t.Count && t[j].IsOp("(")) vr = "copy-called";
-                    else if (j + 2 < t.Count && t[j].IsOp(".") && t[j + 1].Kind == TokKind.Ident && t[j + 2].IsOp("(")) vr = "copy-called";
-                    else if (j + 2 < t.Count && t[j].IsOp(".") && t[j + 1].Kind == TokKind.Ident && t[j + 2].IsOp(":=")) vr = "copy-written";
+                    else
+                    {
+                        // review S8: a member path fbIn.a.b / fbIn.arr[1] ending in ':=' (written) or '(' (called)
+                        bool member = false;
+                        while (j < t.Count)
+                        {
+                            if (j + 1 < t.Count && t[j].IsOp(".") && t[j + 1].Kind == TokKind.Ident) { member = true; j += 2; continue; }
+                            if (t[j].IsOp("[")) { int d = 0; for (; j < t.Count; j++) { if (t[j].IsOp("[")) d++; else if (t[j].IsOp("]")) { d--; if (d == 0) { j++; break; } } } continue; }
+                            break;
+                        }
+                        if (member && j < t.Count && t[j].IsOp("(")) vr = "copy-called";
+                        else if (member && j < t.Count && t[j].IsOp(":=")) vr = "copy-written";
+                    }
                     if (vr != null && first == null) { variant = vr; first = t[start]; firstU = u; }
                 }
             }
+            if (first == null && problem != null) { rulesSkipped.Add(Cov(RFbVal, du.O.Rel, du.Path, null, problem + ":" + name)); return; }   // review S1
             if (first == null) return;   // only read (or never used): the copy is legal
             if (problem != null) { rulesSkipped.Add(Cov(RFbVal, du.O.Rel, du.Path, null, problem + ":" + name)); return; }
             if (cls == "unknown") { rulesSkipped.Add(Cov(RFbVal, du.O.Rel, du.Path, null, "unknown-type:" + name)); return; }

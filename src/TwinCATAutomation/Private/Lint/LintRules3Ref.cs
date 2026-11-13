@@ -16,9 +16,9 @@ namespace TcLintEngine
         {
             Add("SCAN-REF-001", "REFERENCE / POINTER may be dereferenced before it is assigned", "warning", "false", "crash", "measured:2026-11-13 no",
                 "Candidates: REFERENCE TO without REF= initial value, POINTER TO without initial value or := 0, declared in VAR / VAR_STAT / VAR_OUTPUT of a FUNCTION_BLOCK / PROGRAM, or VAR / VAR_TEMP of a FUNCTION / METHOD / accessor (re-initialised on every call). " +
-                "Dereference: any use of a reference other than __ISVALIDREF(r) and r REF= ...; p^ for a pointer. Reported (variant reference-unassigned / pointer-unassigned, first unguarded use) when the object assigns it nowhere (no REF= / p := / => p in the body, actions, methods, accessors, FB_init) and the use is not guarded. " +
+                "Dereference: any use of a reference other than __ISVALIDREF(r) and r REF= ...; p^ and p[i] for a pointer (p := 0 is no assignment; only p := ADR(...) earlier at top level proves the use safe, any other p := value -> assigned-elsewhere). Reported (variant reference-unassigned / pointer-unassigned, first unguarded use) when the object assigns it nowhere (no REF= / p := / => p in the body, actions, methods, accessors, FB_init) and the use is not guarded. " +
                 "Guards: inside IF / ELSIF whose condition has __ISVALIDREF(r) / p <> 0 as an AND-ed term (no OR / XOR), ELSE / later ELSIF after a condition NOT __ISVALIDREF(r) / p = 0 (OR-ed terms only), after a top-level IF NOT __ISVALIDREF(r) [OR ...] THEN ... RETURN, " +
-                "after __ISVALIDREF(r) AND_THEN / p <> 0 AND_THEN in the same expression; AND is no guard ('TwinCAT always evaluates all operands if the IEC operator AND is used', InfoSys AND_THEN 2528923787). An unconditional top-level assignment earlier in the same section also makes the use safe. " +
+                "after __ISVALIDREF(r) AND_THEN / p <> 0 AND_THEN or NOT __ISVALIDREF(r) OR_ELSE / p = 0 OR_ELSE in the same expression (an OR at the same parenthesis level breaks it); __ISVALIDREF(r) compared with = / <> (= FALSE) is not a recognised guard; AND is no guard ('TwinCAT always evaluates all operands if the IEC operator AND is used', InfoSys AND_THEN 2528923787). An unconditional top-level assignment earlier in the same section also makes the use safe. " +
                 "rulesSkipped <reason>:<name> (never a finding): caller-provided (VAR_INPUT / VAR_IN_OUT), assigned-elsewhere (assigned only in another section, FB_init, a method / property, or conditionally), qualified-access (x.r anywhere in the project that may be the owner), " +
                 "inherited-use (the FB is EXTENDS-ed), passed-or-aliased (a call argument, ADR, the source of REF=, a declaration initialiser), guard-not-understood (__ISVALIDREF(r) / p compared in another form, e.g. stored in a BOOL), unanalysed-part / implementation-not-analyzed. " +
                 "Known misses: early-return guards that are not top-level IFs, guards in a calling POU, a valid reference that becomes invalid later. " +
@@ -108,7 +108,7 @@ namespace TcLintEngine
             {
                 if (u.O != x.Owner.O) continue;
                 if (!x.OwnerLevel && u.Path != x.Du.Path) continue;
-                if (u.Scan == null || u.Scan.State.Status != "ok" || u.Scan.Lex == null) { problem = "implementation-not-analyzed"; continue; }
+                if (u.Scan == null || u.Scan.State.Status != "ok" || u.Scan.Lex == null) { if (Ref3Mentions(u, x.Name)) problem = "implementation-not-analyzed"; continue; }
                 if (x.OwnerLevel && u.Path != x.Owner.Path)
                 {
                     Scope sc = ScopeOf(u);
@@ -142,8 +142,17 @@ namespace TcLintEngine
                     bool assign = (!x.Ptr && nx != null && nx.IsOp("REF=")) || (x.Ptr && nx != null && nx.IsOp(":=")) || (x.Ptr && prev != null && prev.IsOp("=>"));
                     if (assign)
                     {
+                        bool proof = true;
+                        if (x.Ptr && prev != null && prev.IsOp("=>")) proof = false;
+                        else if (x.Ptr)
+                        {
+                            // review B2: p := 0 leaves it 0 (not an assignment); only p := ADR(...) proves a valid address
+                            int e = StatementEnd(t, i + 2);
+                            if (e == i + 3 && Ref3IsZero(t[i + 2])) continue;
+                            proof = e > i + 4 && t[i + 2].Is("ADR") && t[i + 3].IsOp("(") && t[e - 1].IsOp(")") && Ref3Closes(t, i + 3, e - 1);
+                        }
                         anyAssign = true;
-                        if (!(x.Ptr && prev != null && prev.IsOp("=>")) && Ref3Frames(t, start).Count == 0) topAssign.Add(start);
+                        if (proof && Ref3Frames(t, start).Count == 0) topAssign.Add(start);
                         continue;
                     }
                     // __ISVALIDREF(r) / p compared: a guard mention
@@ -151,7 +160,7 @@ namespace TcLintEngine
                                           : ((nx != null && (nx.IsOp("=") || nx.IsOp("<>"))) || (prev != null && (prev.IsOp("=") || prev.IsOp("<>"))));
                     if (mention) { if (!Ref3MentionRecognized(t, start, i, x)) unrecognized = true; continue; }
                     if (!x.Ptr && prev != null && prev.IsOp("REF=")) { passed = true; unguarded.Add(new object[] { u, t[start] }); continue; }     // y REF= r
-                    bool deref = x.Ptr ? (nx != null && nx.IsOp("^")) : true;
+                    bool deref = x.Ptr ? (nx != null && (nx.IsOp("^") || nx.IsOp("["))) : true;   // review B3: p[i] is an index access through p
                     if (prev != null && (prev.IsOp("(") || prev.IsOp(",") || prev.IsOp(":=")) && nx != null && (nx.IsOp(")") || nx.IsOp(",")) && inCall)
                     {
                         // F(r) / F(x := r) / ADR(r): may be VAR_IN_OUT / an address - an unguarded hand-over is a possible use that
@@ -167,7 +176,7 @@ namespace TcLintEngine
                     if (!safe) unguarded.Add(new object[] { u, t[start] });
                 }
             }
-            if (unguarded.Count == 0) return;
+            if (unguarded.Count == 0 && problem == null) return;   // review S1: a use in a section that is not analysed is never a silent pass
             if (x.Caller) { Ref3Skip(x, "caller-provided"); return; }
             if (problem != null) { Ref3Skip(x, problem); return; }
             foreach (DeclUnit d in declUnits) if (d.O == x.Owner.O && (d.Di == null || d.Di.State.Status != "ok")) { Ref3Skip(x, "member-declaration-not-analyzed"); return; }
@@ -245,7 +254,11 @@ namespace TcLintEngine
         // __ISVALIDREF ( name ) starting at k
         private static bool Ref3ValidAt(List<Token> t, int k, string name)
         {
-            return k + 3 < t.Count && t[k].Upper == "__ISVALIDREF" && t[k + 1].IsOp("(") && Ref3IsName(t, k + 2, name) && t[k + 3].IsOp(")");
+            if (!(k + 3 < t.Count && t[k].Upper == "__ISVALIDREF" && t[k + 1].IsOp("(") && Ref3IsName(t, k + 2, name) && t[k + 3].IsOp(")"))) return false;
+            // review B1: '__ISVALIDREF(r) = FALSE' / '<> TRUE' inverts the meaning -> not a recognised guard term (guard-not-understood)
+            if (k + 4 < t.Count && t[k + 4].Kind == TokKind.Op && (t[k + 4].Text == "=" || t[k + 4].Text == "<>" || t[k + 4].Text == "<" || t[k + 4].Text == ">" || t[k + 4].Text == "<=" || t[k + 4].Text == ">=")) return false;
+            if (k > 0 && t[k - 1].Kind == TokKind.Op && (t[k - 1].Text == "=" || t[k - 1].Text == "<>")) return false;
+            return true;
         }
 
         // condition t[from..to) proves the variable valid when TRUE: an AND-ed term __ISVALIDREF(r) / p <> 0, no OR / XOR / NOT (
@@ -294,11 +307,32 @@ namespace TcLintEngine
             return false;
         }
 
+        // the negated guard term ends right before index k (t[k] is OR_ELSE): NOT __ISVALIDREF(r) / p = 0 / 0 = p
+        private static bool Ref3NegGuardBefore(List<Token> t, int k, Ref3Var x)
+        {
+            if (!x.Ptr) return k >= 5 && t[k - 5].Is("NOT") && Ref3ValidAt(t, k - 4, x.Name);
+            if (k >= 3 && Ref3IsName(t, k - 3, x.Name) && t[k - 2].IsOp("=") && Ref3IsZero(t[k - 1]) && !(k >= 4 && t[k - 4].Is("NOT"))) return true;
+            if (k >= 3 && Ref3IsZero(t[k - 3]) && t[k - 2].IsOp("=") && Ref3IsName(t, k - 1, x.Name) && !(k >= 4 && t[k - 4].Is("NOT"))) return true;
+            return false;
+        }
+
+        private static bool Ref3Closes(List<Token> t, int open, int close)
+        {
+            int d = 0;
+            for (int q = open; q <= close; q++)
+            {
+                if (t[q].IsOp("(")) d++;
+                else if (t[q].IsOp(")")) { d--; if (d == 0) return q == close; }
+            }
+            return false;
+        }
+
         private bool Ref3MentionRecognized(List<Token> t, int start, int i, Ref3Var x)
         {
             // the term followed by AND_THEN / AND
             int after = !x.Ptr ? i + 2 : (t[i + 1].IsOp("=") || t[i + 1].IsOp("<>") ? i + 3 : i + 1);
             if (after < t.Count && (t[after].Is("AND_THEN") || t[after].Is("AND")) && Ref3GuardBefore(t, after, x)) return true;
+            if (after < t.Count && t[after].Is("OR_ELSE") && Ref3NegGuardBefore(t, after, x)) return true;
             // the term in an IF / ELSIF condition that is a recognised guard
             List<Ref3Frame> fr = Ref3Frames(t, start);
             if (fr.Count == 0) return false;
@@ -322,14 +356,16 @@ namespace TcLintEngine
             }
             // 2. guard AND_THEN earlier in the same expression
             int depth = 0;
+            HashSet<int> orDepths = new HashSet<int>();   // review S3: A AND_THEN (b OR r) is guarded, A AND_THEN b OR r is not
             for (int k = at - 1; k >= 0; k--)
             {
                 Token p = t[k];
                 if (p.IsOp(";") || p.Is("THEN") || p.Is("DO") || p.Is("ELSE") || p.Is("IF") || p.Is("ELSIF") || p.Is("WHILE") || p.Is("UNTIL") || p.Is("OF")) break;
                 if (p.IsOp(")")) depth++;
                 else if (p.IsOp("(")) depth--;
-                if (p.Is("OR") || p.Is("OR_ELSE") || p.Is("XOR")) break;
-                if (p.Is("AND_THEN") && depth <= 0 && Ref3GuardBefore(t, k, x)) return true;
+                if (p.Is("OR_ELSE") && depth <= 0 && !orDepths.Contains(depth) && Ref3NegGuardBefore(t, k, x)) return true;   // review S2
+                if (p.Is("OR") || p.Is("OR_ELSE") || p.Is("XOR")) { orDepths.Add(depth); continue; }
+                if (p.Is("AND_THEN") && depth <= 0 && !orDepths.Contains(depth) && Ref3GuardBefore(t, k, x)) return true;
             }
             // 3. top-level IF NOT __ISVALIDREF(r) [OR ...] THEN ... RETURN ... END_IF before the use
             int d = 0;
