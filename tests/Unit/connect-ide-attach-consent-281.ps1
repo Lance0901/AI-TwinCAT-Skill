@@ -8,11 +8,19 @@
 # ITcSysManager, the solution platform read and Stop-Process. Mock basis: the ROT / DTE shapes are
 # the ones of connect-ide-pid-210.ps1 / blocked-solution-ide.ps1; the setters of the fake DTE only
 # record writes [inference: shape of EnvDTE / ITcAutomationSettings as used by Connect-TcIde].
+# The modal-dialog mock ($global:Dialog281, used by C2 / C9) returns the XAE reload prompt "The project
+# file '...\plc\plc.plcproj' has been modified outside of TwinCAT XAE.  Do you want to reload the
+# project?". Basis: docs/troubleshooting.md, #29 entry under IDE_MODAL_DIALOG - measured 2026-10-25
+# (TwinCAT 4024 32-bit XAE Shell, plc.plcproj rewritten on disk): that prompt came up and the blocked
+# IDE answered an empty DTE.Version; the busy (RPC_E_CALL_REJECTED) variant and the dialog record
+# shape (Title / Text / Hwnd / Buttons) follow blocked-solution-ide.ps1 [inference, not re-measured].
 #   A  #280: -ProgId X with X and Y running -> X; only Y -> X launched / -NoLaunch IDE_NOT_FOUND;
-#      also with -SolutionPath (Y has the .sln open -> not used)
+#      also with -SolutionPath (own Y has the .sln open -> not used, X launched; #281 C review: a
+#      user IDE Y with the .sln open -> IDE_ATTACH_CONSENT_REQUIRED, X not launched)
 #   B  #281: only someone else's IDEs -> IDE_ATTACH_CONSENT_REQUIRED, nothing set / written;
 #      the selected IDE (TC project first) decides: user IDE selected next to an own one -> consent
-#      required, own IDE selected -> attached; GetActiveObject fallback gated too; no IDE -> launch
+#      required, own IDE selected -> attached; GetActiveObject fallback gated too (also with
+#      -SolutionPath: S open -> consent, another .sln -> not used, launched); no IDE -> launch
 #   D  consent memory (-ProcessId) until Disconnect-TcIde releases the connection, pid reuse,
 #      launch record after a bridge restart, Start-TcLifecycle
 #   C  #281 C: -SolutionPath already open in an IDE TcAuto did not launch -> IDE_ATTACH_CONSENT_REQUIRED
@@ -197,8 +205,17 @@ try {
 
     Reset-State
     $null = Add-Ide 9202 $Y $slnA $true
+    $before = Get-StateFiles
     $r = Connect-TcIde -ProgId $X -SolutionPath $slnA
-    Check 'A4 -ProgId X -SolutionPath, Y has that .sln open -> not used (no fall back), X launched' ((-not $r.success) -and (@($global:Launches281) -join ',') -eq $X -and -not (Get-Conn).connected -and @($global:Writes281 | Where-Object { $_ -like '* 9202 *' }).Count -eq 0) "$(J $r) launches=$($global:Launches281 -join ',')"
+    Check 'A4b -ProgId X -SolutionPath S, user IDE Y has S open -> IDE_ATTACH_CONSENT_REQUIRED (solution-open-in-non-owned-ide, requestedProgId X, candidate progId Y), nothing launched / set / written' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and $r.data.requestedProgId -eq $X -and $r.data.solution -eq $slnA -and @($r.data.candidates).Count -eq 1 -and @($r.data.candidates)[0].processId -eq 9202 -and @($r.data.candidates)[0].progId -eq $Y -and $r.error.hint -match 'IDE_PID_MISMATCH' -and $global:Launches281.Count -eq 0 -and $global:Resolves281.Count -eq 0 -and $global:Writes281.Count -eq 0 -and -not (Get-Conn).connected -and $before -eq (Get-StateFiles)) "$(J $r) launches=$($global:Launches281 -join ',')"
+    $r = Connect-TcIde -ProgId $X -SolutionPath $slnA -NoLaunch
+    Check 'A4c same with -NoLaunch -> IDE_ATTACH_CONSENT_REQUIRED (not IDE_NOT_FOUND)' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $global:Launches281.Count -eq 0) (J $r)
+
+    Reset-State
+    $null = Add-Ide 9202 $Y $slnA $true
+    Own 9202
+    $r = Connect-TcIde -ProgId $X -SolutionPath $slnA
+    Check 'A4 -ProgId X -SolutionPath, own Y has that .sln open -> not used (no fall back), X launched (current behaviour)' ((-not $r.success) -and (@($global:Launches281) -join ',') -eq $X -and -not (Get-Conn).connected -and @($global:Writes281 | Where-Object { $_ -like '* 9202 *' }).Count -eq 0) "$(J $r) launches=$($global:Launches281 -join ',')"
 
     # ================= B: #281 =================
     Reset-State
@@ -263,6 +280,24 @@ try {
     $r = Connect-TcIde
     Check 'B4c GetActiveObject finds an own IDE -> attached (selectedBy as before)' ($r.success -and $r.data.ideProcessId -eq 9301 -and $r.data.ownedBySession -eq $true) (J $r)
     $null = Disconnect-TcIde
+
+    # #281 C review: GetActiveObject fallback with -SolutionPath goes through the gate too
+    Reset-State
+    Add-Proc 9302 'devenv' 'A - Microsoft Visual Studio'
+    $global:Gao281[$Y] = New-FakeDte 9302 $slnA $true
+    $before = Get-StateFiles
+    $r = Connect-TcIde -SolutionPath $slnFile
+    Check 'B4d ROT empty, GetActiveObject user IDE has S open, -SolutionPath S -> IDE_ATTACH_CONSENT_REQUIRED (solution-open-in-non-owned-ide), nothing set / launched / written' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and $r.data.solution -eq $slnA -and @($r.data.candidates)[0].processId -eq 9302 -and $global:Writes281.Count -eq 0 -and $global:Launches281.Count -eq 0 -and $global:Resolves281.Count -eq 0 -and -not (Get-Conn).connected -and $before -eq (Get-StateFiles)) (J $r)
+    Reset-State
+    Add-Proc 9302 'devenv' 'B - Microsoft Visual Studio'
+    $global:Gao281[$Y] = New-FakeDte 9302 $slnB $true
+    $r = Connect-TcIde -SolutionPath $slnFile -ProgId $X
+    Check 'B4e ROT empty, GetActiveObject user IDE has another .sln, -SolutionPath S -> not used, launch path (mock launch X), nothing set' ((-not $r.success) -and $r.error.code -eq 'IDE_LAUNCH_FAILED' -and (@($global:Launches281) -join ',') -eq $X -and $global:Writes281.Count -eq 0 -and -not (Get-Conn).connected) "$(J $r) launches=$($global:Launches281 -join ',')"
+    Reset-State
+    Add-Proc 9302 'devenv' 'B - Microsoft Visual Studio'
+    $global:Gao281[$Y] = New-FakeDte 9302 $slnB $true
+    $r = Connect-TcIde -SolutionPath $slnFile -NoLaunch
+    Check 'B4f same with -NoLaunch -> IDE_NOT_FOUND, nothing set / launched' ((-not $r.success) -and $r.error.code -eq 'IDE_NOT_FOUND' -and $global:Launches281.Count -eq 0 -and $global:Writes281.Count -eq 0) (J $r)
 
     Reset-State
     $r = Connect-TcIde
@@ -397,6 +432,13 @@ try {
     $null = Add-Ide 9505 $Y '' $false $true 'A - Microsoft Visual Studio'
     $r = Connect-TcIde -SolutionPath $slnFile
     Check 'C2d blocked user IDE with only the window title (weak evidence) -> unchanged: IDE_BUSY (IDE_BLOCKED_SAME_NAME), not attached, nothing launched' ((-not $r.success) -and $r.error.code -eq 'IDE_BUSY' -and $r.error.message -match 'IDE_BLOCKED_SAME_NAME' -and $r.data.attached -eq $false -and $r.data.matchedBy -eq 'window-title' -and -not (Get-Conn).connected -and $global:Launches281.Count -eq 0 -and $global:Resolves281.Count -eq 0) (J $r)
+
+    # C9 (#281 C review): -ProgId X, blocked user IDE Y has S (strong #29 evidence) -> consent, X not launched
+    Reset-State
+    $null = Add-Ide 9505 $Y '' $false $true 'A - Microsoft Visual Studio'
+    $global:Dialog281[9505] = $dlgA
+    $r = Connect-TcIde -SolutionPath $slnFile -ProgId $X
+    Check 'C9 -ProgId X, blocked user IDE Y with S (dialog-path) -> IDE_ATTACH_CONSENT_REQUIRED, candidate progId Y, requestedProgId X, launch 0' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and $r.data.requestedProgId -eq $X -and @($r.data.candidates)[0].progId -eq $Y -and $r.data.matchedBy -eq 'dialog-path' -and $global:Launches281.Count -eq 0 -and $global:Resolves281.Count -eq 0 -and $global:Writes281.Count -eq 0 -and -not (Get-Conn).connected) (J $r)
 
     # C3: the user agreed -> -ProcessId -SolutionPath; later -SolutionPath alone uses the same IDE until Disconnect-TcIde
     Reset-State

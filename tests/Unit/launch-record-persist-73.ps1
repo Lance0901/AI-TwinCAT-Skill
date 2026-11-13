@@ -166,7 +166,13 @@ function Get-RecordFile { Join-Path $env:TCAUTO_STATE_DIR 'launched-ides.json' }
 # (.unitConsentCode), then gives the user's consent (-ProcessId) and connects with -SolutionPath alone,
 # so the solution-match attach of a NOT owned IDE (-Kill refused afterwards) is still covered.
 function Connect-AfterConsent([int]$IdePid) {
+    $launchesBefore = $global:Launches73.Count
     $c0 = Connect-TcIde -SolutionPath $sln
+    if (-not $c0.success -and [string]$c0.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED') {
+        # #281 C review: the consent answer launches nothing and attaches nothing
+        $att = & $mod { [PSCustomObject]@{ connected = [bool]$script:TcIdeConnected; dteNull = ($null -eq $script:TcDte) } }
+        Check "Connect-AfterConsent pid $IdePid consent answer: no launch, not attached" ($global:Launches73.Count -eq $launchesBefore -and -not $att.connected -and $att.dteNull -and $c0.data.attached -eq $false) "launches $launchesBefore -> $($global:Launches73.Count) conn=$($att.connected) dteNull=$($att.dteNull)" | Out-Host
+    }
     $null = Connect-TcIde -ProcessId $IdePid -SolutionPath $sln
     $res = Connect-TcIde -SolutionPath $sln
     $res | Add-Member -NotePropertyName unitConsentCode -NotePropertyValue $(if ($c0.success) { 'success' } else { [string]$c0.error.code }) -Force

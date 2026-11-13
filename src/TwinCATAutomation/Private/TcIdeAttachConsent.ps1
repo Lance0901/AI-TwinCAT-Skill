@@ -11,7 +11,7 @@
 # #281 C: with -SolutionPath (no -ProcessId / -TakeOverOrphan) the same check applies to the IDE
 # that already has that .sln open (solution-match, and the #29 blocked IDE recognised by strong
 # evidence): not allowed -> IDE_ATTACH_CONSENT_REQUIRED (data.reason 'solution-open-in-non-owned-ide')
-# and no second IDE is launched (two IDEs with the same solution overwrite each other's files).
+# and no second IDE is launched (both IDEs could save the same project files and overwrite each other's changes; inference, not measured).
 # The consent memory lives in module memory only ($script:TcIdeConsentedIdes, key pid + start time
 # via Get-TcIdeProcessKey, so a recycled pid never matches); nothing can pre-fill it.
 

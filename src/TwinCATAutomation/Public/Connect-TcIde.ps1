@@ -13,7 +13,7 @@ function Connect-TcIde {
             (selectedBy 'launched'). #281 C: that instance is attached only when TcAuto may work
             in it (launched by TcAuto, or bound with -ProcessId earlier in this module instance and
             not released by Disconnect-TcIde; an own one is preferred); otherwise nothing is
-            attached, changed or launched (two IDEs with the same .sln overwrite each other):
+            attached, changed or launched (both IDEs could save the same project files and overwrite each other's changes; inference, not measured):
             IDE_ATTACH_CONSENT_REQUIRED, data.reason 'solution-open-in-non-owned-ide',
             data.solution, data.candidates; after the user agreed: -ProcessId <pid> -SolutionPath.
             Not with -TakeOverOrphan (its own ownership checks). Exception (#29): an instance whose DTE is blocked (busy
@@ -390,6 +390,56 @@ function Connect-TcIde {
         $pool = @($candidates | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
     }
 
+    # #281 C (review): with -ProgId X the pool above holds only X instances, but the .sln may be open
+    # in an IDE of another ProgID Y. When that IDE is not one TcAuto may work in (Test-TcIdeAttachAllowed)
+    # and no allowed IDE of the pool has it open, launching X would open the same .sln in a second IDE:
+    # IDE_ATTACH_CONSENT_REQUIRED instead (data.requestedProgId = X, candidates show progId Y), before
+    # anything is bound, set, written or launched. Ready IDEs are compared by their solution path; a
+    # blocked / unreadable one (#29) counts only on strong evidence of Find-TcBlockedSolutionIde
+    # (weak evidence: unchanged, handled by #29 below for the pool). An allowed (own / consented) Y
+    # with the .sln open is not changed by this check: X is launched as before.
+    if ($null -ne $normalizedSolutionPath -and -not $byProcessId -and -not $TakeOverOrphan -and -not [string]::IsNullOrWhiteSpace($ProgId)) {
+        $inPool = { param($c) [bool]($c.progId -and ($c.progId -ieq $ProgId)) }
+        $slnOpen = { param($c) [bool]($c.normalizedSolution -and [string]::Equals([string]$c.normalizedSolution, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase)) }
+        $poolAllowed = @($pool | Where-Object { (& $slnOpen $_) -and (Test-TcIdeAttachAllowed -ProcessId $_.pid) })
+        if ($poolAllowed.Count -eq 0) {
+            $otherOpen = @($readyCandidates | Where-Object { -not (& $inPool $_) -and (& $slnOpen $_) -and -not (Test-TcIdeAttachAllowed -ProcessId $_.pid) })
+            if ($otherOpen.Count -gt 0) {
+                return New-TcAttachConsentResult -Candidates $otherOpen -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
+                    -Reason 'solution-open-in-non-owned-ide' -Solution $normalizedSolutionPath -HintCode 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION'
+            }
+            $otherBlocked = @(@($busyCandidates) + @($unreadableCandidates) | Where-Object { -not (& $inPool $_) })
+            if ($otherBlocked.Count -gt 0) {
+                $xBlocked = @(Find-TcBlockedSolutionIde -Candidates $otherBlocked -SolutionPath $normalizedSolutionPath -PreviousProcessId $previousIdePid -PreviousStartTime $previousIdeStart -PreviousSolution $previousSolution -KnownSolutions @($readyCandidates | ForEach-Object { $_.normalizedSolution } | Where-Object { $_ }))
+                $xStrong = @($xBlocked | Where-Object { $_.Strong -and -not (Test-TcIdeAttachAllowed -ProcessId ([int]$_.Candidate.pid)) })
+                if ($xStrong.Count -gt 0) {
+                    $xHit = $xStrong[0]
+                    $xc = $xHit.Candidate
+                    $xScanIncomplete = Test-TcModalScanIncomplete $xHit.Dialog
+                    $xDiag = [PSCustomObject][ordered]@{
+                        ideProcessId      = [int]$xc.pid
+                        rotDisplayName    = $xc.displayName
+                        windowTitle       = $xHit.WindowTitle
+                        matchedBy         = $xHit.MatchedBy
+                        corroboratedBy    = $xHit.CorroboratedBy
+                        probe             = $(if ($xc.busy) { 'busy (RPC_E_CALL_REJECTED after 3 attempts)' } else { 'unreadable (DTE.Version empty)' })
+                        launchedBySession = $false
+                    }
+                    if (-not $xScanIncomplete -and $null -ne $xHit.Dialog) { $xDiag = Add-TcModalDialogData -Dialog $xHit.Dialog -Data $xDiag }
+                    else { $xDiag | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $null }
+                    if ($xScanIncomplete) {
+                        $xDiag | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
+                        $xDiag | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $xHit.Dialog)
+                    }
+                    $xExtra = [ordered]@{}
+                    foreach ($prop in $xDiag.PSObject.Properties) { $xExtra[$prop.Name] = $prop.Value }
+                    return New-TcAttachConsentResult -Candidates @($xStrong | ForEach-Object { $_.Candidate }) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
+                        -Reason 'solution-open-in-non-owned-ide' -Solution $normalizedSolutionPath -HintCode 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION' -Extra $xExtra
+                }
+            }
+        }
+    }
+
     $chosen = $null
     if ($byProcessId) {
         # --- #210: -ProcessId: exactly this IDE process or a failure; never a launch, never another
@@ -491,7 +541,8 @@ function Connect-TcIde {
                     # only when TcAuto may work in it (launched by TcAuto / bound with -ProcessId before,
                     # Test-TcIdeAttachAllowed); an own one is preferred when several have it open.
                     # Otherwise IDE_ATTACH_CONSENT_REQUIRED before anything is bound, set or written,
-                    # and no second IDE is launched (two IDEs with the same .sln overwrite each other).
+                    # and no second IDE is launched (both IDEs could save the same project files and overwrite
+                    # each other's changes; inference, not measured).
                     $chosen = @($solMatches | Where-Object { Test-TcIdeAttachAllowed -ProcessId $_.pid }) | Select-Object -First 1
                     if ($null -eq $chosen) {
                         return New-TcAttachConsentResult -Candidates $solMatches -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
@@ -870,10 +921,10 @@ function Connect-TcIde {
         foreach ($candidateProgId in $progIds) {
             $candidateObj = Get-ComObject -ProgId $candidateProgId
             if ($null -ne $candidateObj) {
-                if ($null -eq $normalizedSolutionPath -and -not $TakeOverOrphan) {
-                    # #281: the same gate as the ROT selection above. The pid comes from the DTE main
-                    # window only (no setter; a start-time guess is never used), before this IDE is
-                    # bound or changed (no COM setter, no state file of that IDE).
+                if (-not $TakeOverOrphan) {
+                    # #281: the same gate as the ROT selection above, with and without -SolutionPath.
+                    # The pid comes from the DTE main window only (no setter; a start-time guess is
+                    # never used), before this IDE is bound or changed (no COM setter, no state file).
                     $gaoInfo = Get-TcIdeProcessId -Dte $candidateObj -ProgId $candidateProgId
                     $gaoPid = 0
                     if ($null -ne $gaoInfo -and [string]$gaoInfo.Source -in 'main-window', 'known-pid') { try { $gaoPid = [int]$gaoInfo.ProcessId } catch { $gaoPid = 0 } }
@@ -881,7 +932,19 @@ function Connect-TcIde {
                         $gaoSol = $null
                         try { $gaoSol = [string](Invoke-TcComRetry -MaxRetries 1 -OperationName 'Solution.FullName (consent candidate)' -ScriptBlock { $s = $candidateObj.Solution; if ($null -ne $s) { [string]$s.FullName } else { '' } }) } catch { $gaoSol = $null }
                         $candidateObj = $null
-                        return New-TcAttachConsentResult -Candidates @([PSCustomObject]@{ pid = $gaoPid; progId = $candidateProgId; solution = $gaoSol; busy = $false }) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds
+                        if ($null -eq $normalizedSolutionPath) {
+                            return New-TcAttachConsentResult -Candidates @([PSCustomObject]@{ pid = $gaoPid; progId = $candidateProgId; solution = $gaoSol; busy = $false }) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds
+                        }
+                        # #281 C: -SolutionPath open in this non-owned IDE -> ask; another / no / unreadable
+                        # solution -> this IDE is not used (it belongs to whoever opened it): launch / -NoLaunch below
+                        $gaoNorm = $null
+                        if (-not [string]::IsNullOrWhiteSpace($gaoSol)) { $gaoNorm = try { Get-TcLongPath $gaoSol } catch { $gaoSol } }
+                        if ($null -ne $gaoNorm -and [string]::Equals([string]$gaoNorm, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase)) {
+                            return New-TcAttachConsentResult -Candidates @([PSCustomObject]@{ pid = $gaoPid; progId = $candidateProgId; solution = $gaoSol; busy = $false }) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
+                                -Reason 'solution-open-in-non-owned-ide' -Solution $normalizedSolutionPath -HintCode 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION'
+                        }
+                        Write-Verbose "Fallback: IDE via GetActiveObject ($candidateProgId, pid $gaoPid) not launched by TcAuto and without '$normalizedSolutionPath' open: not used"
+                        continue
                     }
                 }
                 $dte = $candidateObj
