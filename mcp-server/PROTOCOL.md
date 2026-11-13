@@ -62,8 +62,9 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   (`ideMainHwnd` = module variable `$script:TcIdeMainHwnd`, the IDE main window handle stored by
   `Connect-TcIde`; `null` when unset, 0 or not a number).
 * `targetkind` (#307, used by the `GetStatus` tool) → the module-private `Get-TcTargetKind` for
-  `params.AmsNetId`, else the ADS NetId of the session (`$script:TcAdsAmsNetId`), else the IDE
-  target recorded by `Connect-TcIde` / `Set-TcTarget`:
+  `params.AmsNetId`, else the IDE target recorded by `Connect-TcIde` / `Set-TcTarget`, else the
+  ADS NetId of the session (`$script:TcAdsAmsNetId`); without `params.AmsNetId` an ADS NetId that
+  differs from the IDE target gives `"unknown"` (`targetKindSource` `ads-ide-target-differ`):
   `{"success":true,"data":{"amsNetId":string|null,"targetKind":"local-umrt"|"local-xar"|"remote"|"unknown","targetKindSource":string}}`.
   Never fails: no NetId, a loopback NetId or a module without `Get-TcTargetKind` gives `"unknown"`.
 * `ping`   → `{"success":true,"data":{"pong":true}}`.

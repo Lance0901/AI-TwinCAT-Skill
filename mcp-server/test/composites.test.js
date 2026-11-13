@@ -520,6 +520,12 @@ describe('#307 GetStatus data.targetKind (no bridge)', () => {
     assert.deepEqual(f.ops.find((o) => o.op === 'targetkind').params, { AmsNetId: '199.5.42.250.1.1' });
   });
 
+  test('ADS connected to another NetId, no AmsNetId: the op still gets no params (the bridge decides IDE target vs ADS NetId)', async () => {
+    const f = fakeCtx({ state: { ideConnected: true, amsNetId: '199.5.42.250.1.1', adsConnected: true } });
+    await GetStatus.run(f.ctx, {});
+    assert.deepEqual(f.ops.find((o) => o.op === 'targetkind').params, {});
+  });
+
   test('no AmsNetId and no ADS NetId: the op gets no params (the bridge falls back to the IDE target)', async () => {
     const f = fakeCtx();
     const r = await GetStatus.run(f.ctx, {});

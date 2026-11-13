@@ -463,3 +463,22 @@ describe('ConnectIde timeout (#249)', () => {
     assert.ok(fs.existsSync(path.join(__dirname, '..', 'tools.json')));
   });
 });
+
+// #307: the targetkind op of the REAL bridge.ps1 (Windows PowerShell 5.1, module of this checkout; no
+// TwinCAT needed: only answers that do not depend on the PC are asserted).
+describe('bridge.ps1 targetkind op (real PowerShell)', { skip: process.platform !== 'win32' && 'Windows PowerShell only' }, () => {
+  test('explicit loopback -> unknown/loopback; no NetId at all -> unknown/no-amsnetid; never fails', async () => {
+    const bridge = new PowerShellBridge();
+    bridges.push(bridge);
+    const loop = await bridge.call('targetkind', { params: { AmsNetId: '127.0.0.1.1.1' }, timeoutMs: 60000 });
+    assert.equal(loop.success, true, JSON.stringify(loop));
+    assert.deepEqual(loop.data, { amsNetId: '127.0.0.1.1.1', targetKind: 'unknown', targetKindSource: 'loopback' });
+    const none = await bridge.call('targetkind', { timeoutMs: 60000 });
+    assert.equal(none.success, true, JSON.stringify(none));
+    assert.equal(none.data.amsNetId, null);
+    assert.equal(none.data.targetKind, 'unknown');
+    assert.equal(none.data.targetKindSource, 'no-amsnetid');
+    const bad = await bridge.call('targetkind', { params: { AmsNetId: 'x' }, timeoutMs: 60000 });
+    assert.equal(bad.data.targetKind, 'unknown');
+  });
+});

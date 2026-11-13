@@ -10,7 +10,8 @@ TcAuto drives a TwinCAT 3 IDE (XAE / Visual Studio) and a TwinCAT runtime. On a 
 
 ## UmRT or real machine?
 `ConnectIde`, `SetTarget`, `GetStatus`, `RunLifecycle` report `data.targetKind`.
-- `local-umrt` (user-mode runtime on this PC, no real I/O): build, activate, run, write, test freely; no need to ask.
+- `local-umrt` (the user-mode runtime on this PC): build, activate, run, write, test freely; no need to ask.
+- The kind belongs to one AmsNetId. Before `RunLifecycle TargetAmsNetId=<id>` (or any call on another target) check that id first: `GetStatus AmsNetId=<id>`.
 - Anything else (`local-xar`, `remote`, `unknown`) is a real machine, a Windows XAR on this PC included. Before the FIRST call of this session that changes it (`RunLifecycle`, `EnableConfig`, `RunTestCycle`, `RunTest`, `WriteVariable`, `SetPlcState`, …) tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once. Once agreed, do not ask again for that target this session unless you go beyond what was agreed.
 
 ## Always ask the user before

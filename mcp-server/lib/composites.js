@@ -284,7 +284,7 @@ export const GetStatus = {
     'Snapshot of the whole stack: bridge state (IDE/ADS connected, AmsNetId), IDE info, TwinCAT system state and PLC state. ' +
     'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit, moduleDirty, moduleSource and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). moduleSource "git-checkout": moduleCommit is the 40-character git sha HEAD of that checkout pointed at when the module was loaded, read from the .git files, and moduleDirty is null (uncommitted changes in the working tree cannot be known without running git); moduleSource "installed" (#162, a runtime installed by scripts/Install-TcAutoRuntime.ps1): moduleCommit and moduleDirty come from its tcauto-source.json; any other path: all three are null. ' +
     'data.bridge.runtime says where the MCP server itself runs from (#162): source ("installed" | "git-checkout" | "unknown"), runtimeDir, runtimeRoot (install root of an installed runtime), version, commit, branch, dirty, installedAt, sourcePath, launcherPid (set when the launcher started it: switch versions with ReloadRuntime) and ownerIdFrom ("launcher" | "server"). ' +
-    'data.targetKind (#307) is the kind of the target that data.system was read from (data.targetAmsNetId: AmsNetId, else the ADS NetId, else the IDE target): "local-umrt" (the Usermode Runtime of this PC, matched through its TcRegistry.xml), "local-xar" (the Windows XAR of this PC: a real machine), "remote" or "unknown" (anything uncertain, e.g. a loopback NetId; never reported as local-umrt); data.targetKindSource says what decided it. ' +
+    'data.targetKind (#307) is the kind of data.targetAmsNetId: AmsNetId when given, else the IDE target (what EnableConfig / RunLifecycle change), else the ADS NetId; an ADS NetId that differs from the IDE target gives "unknown" (source ads-ide-target-differ). Values:"local-umrt" (the Usermode Runtime of this PC, matched through its TcRegistry.xml), "local-xar" (the Windows XAR of this PC: a real machine), "remote" or "unknown" (anything uncertain, e.g. a loopback NetId; never reported as local-umrt); data.targetKindSource says what decided it. ' +
     'Fails with NOT_CONNECTED when the IDE is not connected (run ConnectIde first); each sub-query is independent, a failing one is reported in place without aborting the others.',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
@@ -334,11 +334,12 @@ export const GetStatus = {
     const system = await attempt('GetSystemState', systemArgs);
     const plc = state.adsConnected ? await attempt('GetPlcState', {}) : null;
 
-    // #307: kind of the same target GetSystemState was asked about (the bridge falls back to the
-    // IDE target when neither AmsNetId nor an ADS NetId is known). Never fails: unknown otherwise.
+    // #307: kind of AmsNetId when given; else the bridge takes the IDE target (what EnableConfig /
+    // RunLifecycle change), else the ADS NetId, and answers unknown when those two differ.
+    // Never fails: unknown otherwise.
     let kind = null;
     try {
-      const params = amsNetId !== undefined && amsNetId !== null ? { AmsNetId: amsNetId } : {};
+      const params = typeof args.AmsNetId === 'string' && args.AmsNetId !== '' ? { AmsNetId: args.AmsNetId } : {};
       kind = await ctx.bridge.call('targetkind', { params, signal: ctx.signal });
     } catch {
       kind = null;

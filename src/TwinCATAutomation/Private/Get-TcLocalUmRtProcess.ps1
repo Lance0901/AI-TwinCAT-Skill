@@ -77,7 +77,7 @@ function Get-TcTargetKind {
             -> 'local-xar' (source 'system-amsnetid'): a Windows XAR on this PC IS a real machine
           - neither, while the system AmsNetId of this PC was readable -> 'remote' (source 'no-local-match')
         Fail safe: anything uncertain is 'unknown', never 'local-umrt': no / malformed AmsNetId,
-        a loopback 127.x NetId (the IDE default target before a real one is set, cannot be mapped
+        a loopback 127.x NetId (inferred, not measured: a local alias such as the '127.0.0.1.1.1' example of SetTarget; cannot be mapped
         to a runtime), the match throwing, or no readable system AmsNetId (then local XAR and
         remote cannot be told apart). Never throws.
     .PARAMETER AmsNetId
