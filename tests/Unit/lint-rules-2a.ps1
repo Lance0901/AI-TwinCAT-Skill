@@ -288,7 +288,17 @@ Check 'QB1d condition variable passed to the catalog FB -> not blocking, rulesSk
 $r = Fb "    b : BOOL;`n    p : POINTER TO BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    p := ADR(b);`n    rt(CLK := TRUE);`nEND_WHILE"
 Check 'QB1e ADR(condition variable) in the body -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := TRUE, Q => b);`nEND_WHILE"
-Check 'QB1f the catalog FB output is written to the condition (Q => b) -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QB1f / R3-S1b the condition is fed only by the catalog FB it calls (Q => b) -> fb-wait-loop warning (review 3: was silent)' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-wait-loop' -and -not $d[0].blocking) (Brief $r)
+# review 3 S1a / S1h: the condition is written from the FB output in the body
+$r = Fb "    bDone : BOOL;`n    ton1 : TON;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    bDone := ton1.Q;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3S1a bDone := ton1.Q in the body -> fb-wait-loop warning' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-wait-loop' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    ton1 : TON;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    IF ton1.Q THEN`n        bDone := TRUE;`n    END_IF`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3S1h IF ton1.Q THEN bDone := TRUE -> fb-wait-loop warning' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-wait-loop') (Brief $r)
+$r = Fb "    bDone : BOOL;`n    ton1 : TON;`n    n : INT;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    n := n + 1;`n    bDone := n > 10;`nEND_WHILE"
+Check 'R3S1 counter-example: the condition is written from a counter -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
 $fn2 = { param($fx) Add-Pou $fx 'F_Ready' "FUNCTION F_Ready : BOOL`n" 'F_Ready := TRUE;' }
 $r = Fb "    n : INT;" "WHILE NOT F_Ready() DO`n    n := n + 1;`nEND_WHILE" $fn2
 Check 'QB1g call in the condition -> no finding, rulesSkipped call-in-condition' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-condition' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
@@ -317,6 +327,16 @@ Check 'QN1b FB output, FB not called -> message says the block is not called in 
 $r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    b := i > 0;`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
 $d = Diags $r 'SCAN-ARR-001'
 Check 'QB2a b := i > 0; IF b THEN a[i] -> variant guarded, warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$dutG = { param($fx) Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\ST_G.TcDUT') ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"ST_G`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[TYPE ST_G :`nSTRUCT`n    bOk : BOOL;`nEND_STRUCT`nEND_TYPE`n]]></Declaration>`n  </DUT>`n</TcPlcObject>"); $fx.Items.Add('DUTs\ST_G.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray() }
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    st : ST_G;" "FOR i := 0 TO 10 DO`n    st.bOk := i > 0;`n    IF st.bOk THEN`n        a[i] := 0;`n    END_IF`nEND_FOR" $dutG
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R3B2e guard through a structure member computed from i (st.bOk := i > 0) -> not blocking' (@($d | Where-Object { $_.blocking }).Count -eq 0) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;`n    bEn : BOOL;" "FOR i := 0 TO 10 DO`n    b := i > 0;`n    b := bEn;`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R3B2b the guard variable is overwritten unconditionally from an unrelated value -> blocking again' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;`n    bEn : BOOL;" "FOR i := 0 TO 10 DO`n    b := i > 0;`n    IF bEn THEN`n        b := FALSE;`n    END_IF`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R3B2b counter-example: a conditional overwrite keeps the guard -> not blocking' (@($d | Where-Object { $_.blocking }).Count -eq 0) (Brief $r)
 $r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    k : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    k := i * 2;`n    b := k > 1;`n    CASE b OF`n    TRUE: a[i] := 0;`n    END_CASE`nEND_FOR"
 $d = Diags $r 'SCAN-ARR-001'
 Check 'QB2b transitive (k := i * 2; b := k > 1; CASE b) -> guarded, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
@@ -329,6 +349,10 @@ Check 'QB2d b computed from i only after the access -> still blocking' ((Diags $
 $r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "IF d <> 0 AND x / d > 3 THEN`n    b := TRUE;`nEND_IF"
 $d = Diags $r 'SAFETY-DIV-001'
 Check 'QS5a IF d <> 0 AND x / d > 3 -> unchecked-variable-divisor (AND does not short-circuit)' ($d.Count -eq 1 -and $d[0].variant -eq 'unchecked-variable-divisor') (Brief $r)
+$r = Fb "    d : DINT;`n    x : DINT;`n    b : BOOL;`n    y : DINT;" "IF d <> 0 OR_ELSE x / d > 3 THEN`n    b := TRUE;`nEND_IF`ny := SEL(d <> 0, x / d, 0);"
+Check 'R3S5e/f wrong direction: d <> 0 OR_ELSE x / d; SEL(d <> 0, x / d (IN0), 0) -> two findings' ((Diags $r 'SAFETY-DIV-001').Count -eq 2) (Brief $r)
+$r = Fb "    d : DINT;`n    x : DINT;`n    b : BOOL;`n    y : DINT;" "IF d = 0 OR_ELSE x / d > 3 THEN`n    b := TRUE;`nEND_IF`ny := SEL(d <> 0, 0, x / d);`nIF d <> 0 AND_THEN x / d > 1 THEN`n    b := FALSE;`nEND_IF"
+Check 'R3S5 counter-examples: d = 0 OR_ELSE x / d; SEL(d <> 0, 0, x / d (IN1)); d <> 0 AND_THEN -> no finding' ((Diags $r 'SAFETY-DIV-001').Count -eq 0) (Brief $r)
 $r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "b := d <> 0 AND x / d > 3;`nb := d = 0 OR x / d > 3;"
 Check 'QS5b same statement with AND / OR -> two findings' ((Diags $r 'SAFETY-DIV-001').Count -eq 2) (Brief $r)
 $r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "b := d = 0 OR_ELSE x / d > 3;`nx := SEL(d = 0, x / d, 0);`nIF d <> 0 THEN`n    IF x / d > 3 AND b THEN`n        b := FALSE;`n    END_IF`nEND_IF"

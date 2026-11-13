@@ -899,7 +899,21 @@ namespace TcLintEngine
             private bool Mentions(int from, int to, HashSet<string> names)
             {
                 for (int k = Math.Max(0, from); k < to && k < t.Count; k++)
-                    if (t[k].Kind == TokKind.Ident && names.Contains(t[k].Upper)) return true;
+                    if (t[k].Kind == TokKind.Ident && MentionsAt(k, names)) return true;
+                return false;
+            }
+
+            // the identifier at k, or a member path starting at k (ST.BOK), is in names
+            private bool MentionsAt(int k, HashSet<string> names)
+            {
+                if (names.Contains(t[k].Upper)) return true;
+                if (k > 0 && t[k - 1].IsOp(".")) return false;
+                StringBuilder p = new StringBuilder(t[k].Upper);
+                for (int q = k; q + 2 < t.Count && t[q + 1].IsOp(".") && t[q + 2].Kind == TokKind.Ident; q += 2)
+                {
+                    p.Append('.').Append(t[q + 2].Upper);
+                    if (names.Contains(p.ToString())) return true;
+                }
                 return false;
             }
 
@@ -1008,7 +1022,17 @@ namespace TcLintEngine
                         if (unsure != null) { Skip(RLoop, unsure); continue; }
                         int conflict = 0;
                         foreach (Dsg d in cds) foreach (List<string> pth in body.Paths) { int cf2 = Conflict(d.C, pth); conflict = Math.Max(conflict, cf2 == 1 ? 3 : cf2); }
-                        if (conflict == 3) continue;   // the body writes the condition
+                        if (conflict == 3)
+                        {
+                            // review 3 S1 variant: the body writes the condition only from outputs of catalog FBs it calls
+                            // (bDone := ton1.Q; ton1(Q => bDone); IF ton1.Q THEN bDone := TRUE) - still a wait inside one cycle
+                            HashSet<string> roots3 = new HashSet<string>(StringComparer.Ordinal);
+                            foreach (Dsg d in cds) if (d.C.Count > 0) roots3.Add(d.C[0]);
+                            BodyCalls bc3 = CallsIn(r.BodyFrom, r.BodyTo);
+                            List<string> fed = new List<string>();
+                            if (!bc3.Unknown && bc3.Instances.Count > 0 && FedOnlyByFbs(r.BodyFrom, r.BodyTo, roots3, bc3, fed)) FbWaitLoop(b, r, cf, ct, fed);
+                            continue;   // the body writes the condition
+                        }
                         if (conflict == 2) { Skip(RLoop, "written-element-may-be-the-condition"); continue; }
                         // second review B1: a call in the body only hides the busy-wait when it can reach the condition
                         BodyCalls bc = CallsIn(r.BodyFrom, r.BodyTo);
@@ -1138,6 +1162,69 @@ namespace TcLintEngine
                     }
                 }
                 return bc;
+            }
+
+            // every write of a condition root in the body takes its value from a called catalog FB instance: v := inst.Q (only
+            // instance members / literals / boolean operators on the right), inst(... Q => v), or a literal inside an IF whose
+            // condition reads an instance member
+            private bool FedOnlyByFbs(int from, int to, HashSet<string> roots, BodyCalls bc, List<string> fbs)
+            {
+                int writes = 0;
+                for (int k = from; k < to; k++)
+                {
+                    if (t[k].IsOp(":=") && k - 1 >= from && t[k - 1].Kind == TokKind.Ident && !(k - 2 >= from && (t[k - 2].IsOp(".") || t[k - 2].IsOp("^") || t[k - 2].IsOp("]"))))
+                    {
+                        if (!roots.Contains(t[k - 1].Upper)) continue;
+                        if (k - 2 >= from && t[k - 2].IsOp("(")) continue;   // formal parameter of a call
+                        bool comma = k - 2 >= from && t[k - 2].IsOp(",");
+                        if (comma) continue;
+                        writes++;
+                        bool inst = false, literalOnly = true;
+                        int q = k + 1;
+                        for (; q < to && !t[q].IsOp(";") && !IsStmtKeyword(t[q]); q++)
+                        {
+                            Token y = t[q];
+                            if (y.Kind != TokKind.Ident) continue;
+                            if (y.Is("TRUE") || y.Is("FALSE") || y.Is("NOT") || y.Is("AND") || y.Is("OR") || y.Is("XOR") || y.Is("AND_THEN") || y.Is("OR_ELSE")) continue;
+                            if (q > 0 && t[q - 1].IsOp(".")) continue;
+                            if (bc.Instances.Contains(y.Upper) && q + 1 < to && t[q + 1].IsOp(".")) { inst = true; literalOnly = false; if (!fbs.Contains(y.Upper)) fbs.Add(y.Upper); continue; }
+                            return false;   // another variable or call feeds the condition
+                        }
+                        if (inst) continue;
+                        if (!literalOnly) return false;
+                        // literal: the enclosing IF must read an instance member
+                        string fb = EnclosingIfInstance(from, k, bc);
+                        if (fb == null) return false;
+                        if (!fbs.Contains(fb)) fbs.Add(fb);
+                        continue;
+                    }
+                    if (t[k].IsOp("=>") && k + 1 < to && t[k + 1].Kind == TokKind.Ident && roots.Contains(t[k + 1].Upper) && !(k + 2 < to && t[k + 2].IsOp(".")))
+                    {
+                        writes++;
+                        int depth = 0, p = k - 1;
+                        for (; p >= from; p--)
+                        {
+                            if (t[p].IsOp(")")) depth++;
+                            else if (t[p].IsOp("(")) { if (depth == 0) break; depth--; }
+                        }
+                        if (p - 1 < from || t[p - 1].Kind != TokKind.Ident || !bc.Instances.Contains(t[p - 1].Upper)) return false;
+                        if (!fbs.Contains(t[p - 1].Upper)) fbs.Add(t[p - 1].Upper);
+                    }
+                }
+                return writes > 0 && fbs.Count > 0;
+            }
+
+            private string EnclosingIfInstance(int from, int k, BodyCalls bc)
+            {
+                int then = -1;
+                for (int p = k - 1; p >= from; p--) { if (t[p].Is("THEN")) { then = p; break; } if (t[p].Is("END_IF")) return null; }
+                if (then < 0) return null;
+                int ifk = -1;
+                for (int p = then - 1; p >= from; p--) if (t[p].Is("IF") || t[p].Is("ELSIF")) { ifk = p; break; }
+                if (ifk < 0) return null;
+                for (int p = ifk + 1; p < then; p++)
+                    if (t[p].Kind == TokKind.Ident && bc.Instances.Contains(t[p].Upper) && p + 1 < then && t[p + 1].IsOp(".")) return t[p].Upper;
+                return null;
             }
 
             // second review S1: the condition reads an output of a type-catalog FB instance that the body calls
@@ -1284,26 +1371,26 @@ namespace TcLintEngine
             // reads one of them (v := <expression with i>, transitive). Simple taint, no value tracking.
             private HashSet<string> Tainted(int bodyFrom, int idx, string counter)
             {
+                // review 3: the left side may be a member path (st.bOk := i > 0 -> "ST.BOK", B2e); the assignments are taken in
+                // program order, so an unconditional later write from an untainted value removes the taint again (B2b)
                 HashSet<string> set = new HashSet<string>(StringComparer.Ordinal); set.Add(counter);
-                List<int> assigns = new List<int>();
                 int depth = 0;
                 for (int k = bodyFrom; k < idx; k++)
                 {
                     if (t[k].IsOp("(") || t[k].IsOp("[")) { depth++; continue; }
                     if (t[k].IsOp(")") || t[k].IsOp("]")) { depth--; continue; }
-                    if (depth == 0 && t[k].IsOp(":=") && k > bodyFrom && t[k - 1].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[k - 1].Upper) && !t[k - 2].IsOp(".")) assigns.Add(k);
-                }
-                bool grew = true;
-                while (grew)
-                {
-                    grew = false;
-                    foreach (int k in assigns)
-                    {
-                        string lhs = t[k - 1].Upper;
-                        if (set.Contains(lhs)) continue;
-                        for (int q = k + 1; q < idx && !t[q].IsOp(";") && !IsStmtKeyword(t[q]) && !t[q].Is("TO") && !t[q].Is("BY"); q++)
-                            if (t[q].Kind == TokKind.Ident && set.Contains(t[q].Upper) && !t[q - 1].IsOp(".")) { set.Add(lhs); grew = true; break; }
-                    }
+                    if (depth != 0 || !t[k].IsOp(":=") || k <= bodyFrom || t[k - 1].Kind != TokKind.Ident || StLexer.Keywords.Contains(t[k - 1].Upper)) continue;
+                    int s = k - 1;
+                    while (s - 2 >= bodyFrom && t[s - 1].IsOp(".") && t[s - 2].Kind == TokKind.Ident) s -= 2;
+                    if (s - 1 >= bodyFrom && (t[s - 1].IsOp(".") || t[s - 1].IsOp("^") || t[s - 1].IsOp("]"))) continue;
+                    StringBuilder lp = new StringBuilder();
+                    for (int q = s; q < k; q += 2) { if (lp.Length > 0) lp.Append('.'); lp.Append(t[q].Upper); }
+                    string lhs = lp.ToString();
+                    bool tainted = false;
+                    for (int q = k + 1; q < idx && !t[q].IsOp(";") && !IsStmtKeyword(t[q]) && !t[q].Is("TO") && !t[q].Is("BY") && !tainted; q++)
+                        if (t[q].Kind == TokKind.Ident && !t[q - 1].IsOp(".") && MentionsAt(q, set)) tainted = true;
+                    if (tainted) set.Add(lhs);
+                    else if (lhs != counter && set.Contains(lhs) && Enclosing(k, bodyFrom).Count == 0) set.Remove(lhs);
                 }
                 return set;
             }
@@ -1643,6 +1730,17 @@ namespace TcLintEngine
             // evaluation. InfoSys AND_THEN tc3_plc_intro/2528923787.html: 'TwinCAT always evaluates all operands if the IEC
             // operator AND is used' (OR likewise; OR_ELSE short-circuits). SEL tc3_plc_intro/2528956043.html: 'TwinCAT does not
             // compute an expression that precedes IN0 if G = TRUE' / '... IN1 if G = FALSE': a test in G guards IN0 / IN1.
+            private int Polarity(int after, int limit)
+            {
+                if (after + 1 >= limit) return 0;
+                Token op = t[after], v = t[after + 1];
+                bool zero = v.Kind == TokKind.Number && (v.Text == "0" || v.Text == "0.0");
+                if (!zero) return 0;
+                if (op.IsOp("<>") || op.IsOp(">")) return 1;
+                if (op.IsOp("=")) return -1;
+                return 0;
+            }
+
             private bool GuardBefore(int from, int k, List<string> seq)
             {
                 for (int p = Math.Max(0, from); p + seq.Count <= k; p++)
@@ -1650,14 +1748,24 @@ namespace TcLintEngine
                     bool ok = true;
                     for (int q = 0; q < seq.Count && ok; q++) ok = (t[p + q].Kind == TokKind.Ident ? t[p + q].Upper : t[p + q].Text) == seq[q];
                     if (!ok || (p > 0 && t[p - 1].IsOp("."))) continue;
-                    for (int q = p + seq.Count; q < k; q++) if (t[q].Is("AND_THEN") || t[q].Is("OR_ELSE")) return true;
+                    // review 3 S5e / S5f: the direction of the test matters. 'd <> 0' / 'd > 0' is TRUE when d is not 0, 'd = 0'
+                    // is TRUE when it is 0; anything else is not judged (counted as a guard, as before)
+                    int pol = Polarity(p + seq.Count, k);   // 1 = TRUE means non-zero, -1 = TRUE means zero, 0 = unknown
+                    for (int q = p + seq.Count; q < k; q++)
+                    {
+                        if (t[q].Is("AND_THEN")) { if (pol != -1) return true; break; }   // right side runs only when the test is TRUE
+                        if (t[q].Is("OR_ELSE")) { if (pol != 1) return true; break; }    // right side runs only when the test is FALSE
+                    }
                     for (int q = Math.Max(0, from); q < p; q++)
                     {
                         if (!t[q].Is("SEL") || q + 1 >= t.Count || !t[q + 1].IsOp("(")) continue;
                         int c = MatchForward(q + 1, "(", ")", t.Count);
                         if (c < k) continue;
                         List<int[]> args = SplitTop(t, q + 2, c);
-                        if (args.Count == 3 && p >= args[0][0] && p < args[0][1] && k >= args[1][0]) return true;
+                        if (args.Count != 3 || p < args[0][0] || p >= args[0][1]) continue;
+                        // IN0 (args[1]) is computed when G = FALSE, IN1 (args[2]) when G = TRUE (InfoSys SEL 2528956043)
+                        if (k >= args[2][0] && pol != -1) return true;
+                        if (k >= args[1][0] && k < args[1][1] && pol != 1) return true;
                     }
                 }
                 return false;

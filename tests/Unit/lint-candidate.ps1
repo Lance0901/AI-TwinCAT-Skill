@@ -190,6 +190,27 @@ Check 'P5 S2: the constant sits in a GVL whose XML is broken -> not pass (contex
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_L'; Declaration = "FUNCTION F_L : INT`nVAR_INPUT`n    n : INT;`nEND_VAR`n"; Implementation = "F_L := n;`nF_L := F_L + 1;"; PlcProjectPath = $Plc }
 Check 'P6 N2: LF-only candidate text gives no PROJECT-ENC-001' ($r.success -and (Diags $r 'PROJECT-ENC-001').Count -eq 0) (Brief $r)
 
+# review 3 (second batch): S2 variants, system names, a Method candidate does not own its FB's findings, projectBlocking
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO GVL_Main.nNope DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $Plc }
+Check 'P7 S2a: GVL_Main.nNope (qualified name, member not declared) -> LINT_CONTEXT_REQUIRED' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:GVL_Main.nNope')) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "a[E_Mode.Nope] := 0;`r`nF_Q := 1;"; PlcProjectPath = $Plc }
+Check 'P8 S2b: E_Mode.Nope (enum member not declared) as an index -> LINT_CONTEXT_REQUIRED' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:E_Mode.Nope')) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 1 TO 10 DO`r`n    a[i] := 0;`r`nEND_FOR`r`nIF GVL_Main.bRun THEN`r`n    F_Q := E_Mode.Auto;`r`nEND_IF"; PlcProjectPath = $Plc }
+Check 'P9 S2a counter-example: declared GVL_Main.bRun / E_Mode.Auto -> pass' ($r.success) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_D'; Declaration = "FUNCTION F_D : INT`r`nVAR`r`n    a : ARRAY[1..cNope] OF INT;`r`nEND_VAR`r`n"; Implementation = 'F_D := 1;'; PlcProjectPath = $Plc }
+Check 'P10 S2d: array bound in the declaration from a name declared nowhere -> LINT_CONTEXT_REQUIRED (as text-only)' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:cNope')) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_S'; Declaration = "FUNCTION F_S : LREAL`r`n"; Implementation = "F_S := 1000.0 / UDINT_TO_LREAL(TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleTime);"; PlcProjectPath = $Plc }
+Check 'P11 S2e: TwinCAT_SystemInfoVarList / GETCURTASKINDEXEX are known system names -> not LINT_CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED') (Brief $r)
+$fx6 = New-LintFixture (Join-Path $root 's')
+Write-LintFxFile (Join-Path $fx6.PlcDir 'DUTs\ST_W.TcDUT') "<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"ST_W`" Id=`"{3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f}`">`n    <Declaration><![CDATA[TYPE ST_W :`nSTRUCT`n    bOk : BOOL;`nEND_STRUCT`nEND_TYPE]]></Declaration>`n  </DUT>`n</TcPlcObj"
+Set-LintFxCompile $fx6 (@($script:LintFxCompile) + @('DUTs\ST_W.TcDUT'))
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_W'; Declaration = "FUNCTION F_W : INT`r`nVAR`r`n    st : ST_W;`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = "WHILE NOT st.bOk DO`r`n    n := n + 1;`r`nEND_WHILE`r`nF_W := n;"; PlcProjectPath = $fx6.Plcproj }
+Check 'P12 S2f: the type of the condition variable sits in a DUT whose XML is broken -> not pass (context-object-broken)' ($r.success -eq $false -and (@($r.data.candidate.contextRequired) -match '^context-object-broken:').Count -ge 1) (Brief $r)
+$fx7 = New-LintFixture (Join-Path $root 'u')
+Edit-LintFxFile $fx7.FbA { param($t) $t.Replace("    nState : INT;`r`nEND_VAR", "    nState : INT;`r`n    nDiv : INT;`r`nEND_VAR").Replace("    nState := 1;`r`nEND_IF", "    nState := 1;`r`nEND_IF`r`nnState := nState MOD 0;") }
+$r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Do'; Declaration = "METHOD M_Do : BOOL`r`nVAR_INPUT`r`n    nValue : INT;`r`nEND_VAR`r`n"; Implementation = 'M_Do := nValue > 0;'; PlcProjectPath = $fx7.Plcproj }
+Check 'P13 Method candidate: MOD 0 already in the FB body is preExisting, not the method''s; projectVerdict fail with projectBlocking listing it' ($r.success -and (Diags $r 'SAFETY-DIV-001').Count -eq 0 -and @($r.data.preExisting | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' }).Count -eq 1 -and $r.data.projectVerdict -eq 'fail' -and @($r.data.projectBlocking | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' }).Count -eq 1) (Brief $r)
+
 # ================================================================ R  read-only
 Check 'R1 no file of the project changed (content and write time) after every candidate above' ((Hashes) -ceq $before) ''
 

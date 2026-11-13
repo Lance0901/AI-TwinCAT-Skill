@@ -13,9 +13,25 @@ namespace TcLintEngine
         // AXIS_REF) does not make a normal candidate incomplete (review S2: "library identifiers do not count").
         private void FindOverlayContextNeeds()
         {
-            if (string.IsNullOrEmpty(opt.CandidateImplementation)) return;
-            List<Token> t = StLexer.Lex(opt.CandidateImplementation).Tokens;
             HashSet<string> used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<Token> t = StLexer.Lex(opt.CandidateImplementation ?? "").Tokens;
+            List<Token> dt = StLexer.Lex(opt.CandidateDeclaration ?? "").Tokens;
+            // review 3 S2d: the declaration too - array bounds and the initial values of VAR CONSTANT (the values the rules
+            // evaluate); initial values of other variables (library enums, MC_Direction.MC_Shortest_Way) are not needed
+            {
+                bool init = false, constBlock = false; int br = 0;
+                for (int k = 0; k < dt.Count && dt[k].Kind != TokKind.EOF; k++)
+                {
+                    if (dt[k].Kind == TokKind.Ident && dt[k].Upper.StartsWith("VAR", StringComparison.Ordinal) && dt[k].Upper != "VARIANT")
+                    { constBlock = k + 1 < dt.Count && dt[k + 1].Is("CONSTANT"); continue; }
+                    if (dt[k].Is("END_VAR")) { constBlock = false; continue; }
+                    if (dt[k].IsOp("[")) { br++; continue; }
+                    if (dt[k].IsOp("]")) { if (br > 0) br--; continue; }
+                    if (dt[k].IsOp(":=")) { init = true; continue; }
+                    if (dt[k].IsOp(";")) { init = false; continue; }
+                    if (br > 0 || (init && constBlock)) AddIfRoot(dt, k, used);
+                }
+            }
             int i = 0;
             while (i < t.Count && t[i].Kind != TokKind.EOF)
             {
@@ -54,9 +70,48 @@ namespace TcLintEngine
                 }
                 i++;
             }
+            // review 3 S2f: a rule skipped a candidate section because a type / bound / array was unknown, and some object of
+            // the project cannot be read: the unknown part may be declared there
+            bool brokenAny = false;
+            foreach (TcObjectFile o in objects) if (o.Obj == null || o.Xml == null || !o.Xml.WellFormed) brokenAny = true;
+            if (brokenAny)
+            {
+                foreach (CoverageEntry c in rulesSkipped)
+                {
+                    if (c.RuleId == null || c.Reason == null || c.ObjectPath == null) continue;
+                    if (!(c.RuleId.StartsWith("SCAN-LOOP", StringComparison.Ordinal) || c.RuleId.StartsWith("SCAN-FOR", StringComparison.Ordinal) || c.RuleId.StartsWith("SCAN-ARR", StringComparison.Ordinal) || c.RuleId.StartsWith("SAFETY-", StringComparison.Ordinal))) continue;
+                    if (!(string.Equals(c.ObjectPath, candPath, StringComparison.OrdinalIgnoreCase) || c.ObjectPath.StartsWith(candPath + ".", StringComparison.OrdinalIgnoreCase))) continue;
+                    string rs = c.Reason.ToLowerInvariant();
+                    if (rs.Contains("unknown") || rs.Contains("not-constant") || rs.Contains("unresolved"))
+                    {
+                        foreach (TcObjectFile o in objects) if (o.Obj == null || o.Xml == null || !o.Xml.WellFormed) AddNeed("context-object-broken:" + o.Rel);
+                        break;
+                    }
+                }
+            }
             if (used.Count == 0) return;
 
             HashSet<string> known = KnownNamesForCandidate();
+            // review 3 S2a / S2b: GVL.x / E_Enum.x must name a variable of that GVL / a member of that enum
+            List<Token> all = new List<Token>(t); all.AddRange(dt);
+            for (int k = 0; k + 2 < all.Count; k++)
+            {
+                if (all[k].Kind != TokKind.Ident || !all[k + 1].IsOp(".") || all[k + 2].Kind != TokKind.Ident) continue;
+                if (k > 0 && all[k - 1].IsOp(".")) continue;
+                if (!used.Contains(all[k].Text)) continue;
+                foreach (TcObjectFile o in objects)
+                {
+                    if (o.Obj == null || !string.Equals(o.Name, all[k].Text, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (o.Obj.Name != "GVL" && o.Obj.Name != "DUT") break;
+                    DeclInfo di = DeclOf(o.Obj);
+                    if (di == null) break;
+                    if (o.Obj.Name == "DUT" && (di.Type == null || di.Type.Kind != "ENUM")) break;
+                    HashSet<string> members = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    AddDeclNames(di, members);
+                    if (!members.Contains(all[k + 2].Text)) AddNeed("unresolved-identifier:" + all[k].Text + "." + all[k + 2].Text);
+                    break;
+                }
+            }
             // a qualified name (GVL_X.c, E_Mode.Auto) whose object cannot be read: the rule cannot know the value
             foreach (TcObjectFile o in objects)
                 if ((o.Obj == null || o.Xml == null || !o.Xml.WellFormed) && used.Contains(o.Name ?? "")) AddNeed("context-object-broken:" + o.Rel);
@@ -65,6 +120,7 @@ namespace TcLintEngine
             {
                 if (known.Contains(n) || BuiltinNames.Contains(n) || ConversionRx.IsMatch(n) || Elementary.Contains(n)) continue;
                 if (string.Equals(n, "THIS", StringComparison.OrdinalIgnoreCase) || string.Equals(n, "SUPER", StringComparison.OrdinalIgnoreCase)) continue;
+                if (SystemNames.Contains(n)) continue;
                 bool cat = false;
                 foreach (CatalogType c in opt.CatalogTypes) if (string.Equals(c.Name, n, StringComparison.OrdinalIgnoreCase)) { cat = true; break; }
                 if (cat) continue;
@@ -81,6 +137,11 @@ namespace TcLintEngine
             foreach (TcObjectFile o in objects)
                 if (o.Obj == null || o.Xml == null || !o.Xml.WellFormed) AddNeed("context-object-broken:" + o.Rel);
         }
+
+        // implicit / system library names every TwinCAT PLC project has (review 3 S2e): the global list
+        // TwinCAT_SystemInfoVarList (_TaskInfo, _AppInfo) and the Tc2_System task index functions
+        private static readonly HashSet<string> SystemNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "TwinCAT_SystemInfoVarList", "GETCURTASKINDEX", "GETCURTASKINDEXEX" };
 
         private static void CollectUntil(List<Token> t, int from, string endKeyword, HashSet<string> into)
         {

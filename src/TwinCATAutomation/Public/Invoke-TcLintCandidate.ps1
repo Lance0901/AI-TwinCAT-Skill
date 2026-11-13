@@ -257,7 +257,9 @@ function Invoke-TcLintCandidate {
         $keep = [System.Collections.Generic.List[object]]::new(); $pre = [System.Collections.Generic.List[object]]::new()
         foreach ($d in $mainDiags) {
             $p = [string]$d['objectPath']
-            $own = $p -and [string]::Equals(($p -split '\.')[0], $top, [System.StringComparison]::OrdinalIgnoreCase)
+            # the candidate object itself and its own sub-objects (review 3 nit: a Method candidate does not own its FB's findings)
+            $cp = $ObjectName.Trim()
+            $own = $p -and ([string]::Equals($p, $cp, [System.StringComparison]::OrdinalIgnoreCase) -or $p.StartsWith("$cp.", [System.StringComparison]::OrdinalIgnoreCase))
             $k = & $keyOf $d
             if (-not $own -and $left.ContainsKey($k) -and $left[$k] -gt 0) { $left[$k]--; $pre.Add($d) } else { $keep.Add($d) }
         }
@@ -336,6 +338,7 @@ function Invoke-TcLintCandidate {
         diagnostics          = @($mainDiags)
         preExisting          = @($preExisting)
         projectVerdict       = $(if ($textOnly) { $null } else { [string]$diskR['verdict'] })
+        projectBlocking      = $(if ($textOnly) { @() } else { @($diskR['diagnostics'] | Where-Object { $_ -and [bool]$_['blocking'] }) })
         unresolved           = @($mainUnresolved)
         requiresDisposition  = ($reasons.Count -gt 0)
         dispositionReasons   = @($reasons)
