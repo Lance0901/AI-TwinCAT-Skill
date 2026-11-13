@@ -318,7 +318,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 
 `success: true` 的 warning 會被 LLM agent 直接略過(review 第二輪 1-2)。加一層「必須處置」:
 
-- `data.unresolved[]`:未被 suppress、`machineImpact ∈ behavior / crash` 的 finding(含 warning)。每筆帶 diagnostic 的 `ruleId` / `objectPath` / `line`。
+- `data.unresolved[]`:未被 suppress、`machineImpact ∈ behavior / crash` 的 finding(含 warning;**不含 info**,PR #284:SAFETY-DIV-001 變數除數 47 筆語料 finding 只有 1 筆是真問題候選,info 是參考,profile 把 severity 調高才進來)。每筆帶 diagnostic 的 `ruleId` / `objectPath` / `line`。
 - `data.requiresDisposition: true`:`unresolved[]` 非空時。`success` 仍是 true(issue:warning-only 不得誤報成 tool failure)。
 - 處置只有兩種:**改程式**,或**寫 inline suppression 加理由**。非 blockable 規則才允許 inline(D5),理由留在原始碼 diff 裡給人 review;blockable 規則只能用 profile `suppressions[]`。
 - `data.newSuppressions[]`:本次候選 / 本次變更新增、磁碟版本(或 git HEAD)沒有的 suppression,逐條列出(規則、物件、行、理由)。

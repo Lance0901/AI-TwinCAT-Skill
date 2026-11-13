@@ -173,22 +173,29 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 偵測:WHILE / REPEAT 的條件中所有變數在迴圈本體內都沒被寫入,本體內沒有任何呼叫(FB / Method / 函式)、沒有 `EXIT` / `RETURN`、沒有指標 / REFERENCE 寫入。符合以上條件就是 confidence high(與條件變數種類無關;`WHILE NOT x DO END_WHILE` 的 `x` 是一般變數也一樣)。條件含 `AT %I*` 或 FB 輸出只是最常見的形態,寫進 message 方便理解。
 - 誤報來源:另一個 task 在其他 core 改條件變數(仍然是錯誤設計);本體透過指標改條件(上面已排除)。
 - TE1200:沒有直接對應(SA0041「loop-invariant code」不同)。
+- 出處(查 2026-11-13):WHILE 頁 "If the Boolean expression never takes the value FALSE, the instructions are repeated continuously, causing a runtime error."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/9007201783032715.html);REPEAT 頁同義(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/9007201783038091.html)。「同一 cycle 內輸入不更新」InfoSys 沒有專述,是 PLC scan 模型的推論。
+- 實作(PR #284):寫入 = `:=`、`S=`、`R=`、`REF=`、`=>`;條件含呼叫、條件 / 寫入對象可能別名(REFERENCE、VAR_IN_OUT、POINTER、`THIS^`)→ 不報;`WHILE TRUE` / `UNTIL FALSE` 無 EXIT → 報。語料 8 個 WHILE 全部在本體寫入條件變數,0 筆。
 
 ### SCAN-FOR-001 FOR 溢位(Phase 2,blocking)
 - 機台行為:`i : BYTE; FOR i := 0 TO 255 DO` 終值等於型別最大值,最後一次遞增溢位回 0 → 無窮迴圈。InfoSys FOR 頁:"The <end value> must not have the same value as the upper bound of the data type of the counter."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528280971.html);編譯器警告 C0266(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/21630340363.html)。**編譯器只出 warning,Build 仍成功**,所以本規則仍擋(blocking)。`BY 0` 的行為未驗證。
 - 偵測:計數器型別(BYTE / USINT / SINT / WORD / UINT / INT / …)的上限 ≤ 常數終值(含 CONSTANT 展開),負步長對應下限。`BY` 是常數 0 另列 `variant: by-zero`,行為未驗證 → pending(tasks 2.10)。
 - 誤報來源:幾乎沒有(本體內 EXIT 可能讓它結束 → 本體有 EXIT 時降為 warning)。
+- InfoSys 補充(查 2026-11-13):TwinCAT 2 FOR 頁明寫 "if the variable counter is of type SINT, and if <END_VALUE> is 127, you get an endless loop."(https://infosys.beckhoff.com/content/1033/tcplccontrol/925251083.html);`BY 0`、迴圈內改計數器:InfoSys 查無。
+- 實作(PR #284):計數器 SINT~LWORD;終值 / 步長不是常數、計數器在本體被寫入或以 bare 參數傳給非 IEC 標準函式的呼叫 → `rulesSkipped`。步長不是 1 時的跨越溢位(variant `step-overflow`)是推論 → warning。語料 17 個 FOR,評估 10、跳過 7,0 筆。
 
 ### SCAN-ARR-001 常數範圍迴圈越界(Phase 2,blocking)
 - 機台行為:`a : ARRAY[1..10] OF INT; FOR i := 0 TO 9 DO a[i] := 0;`(0-based 習慣)→ 越界存取。CheckBounds 是隱式檢查函式,要專案加入才有(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html);沒加時越界的後果 InfoSys 沒寫 → 「蓋到相鄰變數」是推論,未驗證。
 - 偵測:FOR 上下限是常數(含 CONSTANT),本體內出現 `a[i]` / `a[i ± k]`,本體不改 `i`,與 `a` 的宣告範圍比對。多維陣列逐維比。
 - 誤報來源:`ARRAY[*]`(可變長度,不評估);index 在 IF 守衛內(`IF i >= 1 THEN a[i]`)→ 有守衛就降為 warning。
 - TE1200:SA0172(Full)— 客戶沒有。
+- 實作(PR #284):index `i`、`i ± k`、`k - i`;陣列在 section / POU / 基底 FB / GVL(含 qualified_only)宣告;STRUCT 成員陣列、`ARRAY OF ARRAY` 第二層 → `rulesSkipped`(不猜)。守衛 = 包住存取、條件提到 `i` 的 IF / CASE / WHILE,或本體有 EXIT / CONTINUE / RETURN → variant `guarded`(warning)。IEC 標準函式 / 型別轉換的參數視為傳值。語料常數範圍迴圈全在範圍內,0 筆。
 
 ### SAFETY-ARR-001 / SAFETY-DIV-001(Phase 2)
 - ARR-001:常數 index 超出宣告範圍(seeded S17)。InfoSys CheckBounds 頁:"A consistently faulty array index results in a compiler error."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html)→ 編譯器擋,只有寫入前價值,不進 `unresolved`;仍以 mutation testing 確認。SCAN-ARR-001(迴圈變數 index)不受影響:"The check is only performed with a variable array index."
 - DIV-001:除以常數 0(seeded S16):blocking(若實測編譯器已擋,價值只剩寫入前);除數是變數且同一 IF 路徑上沒有 `<> 0` / `> 0` 檢查:warning medium,`machineImpact: crash` 是推論 — 除以零在 runtime 的結果 InfoSys 沒寫(`st-syntax-inventory.md` 6a 標未驗證),tasks 2.10 在 UmRT 實測。
 - TE1200:SA0172 / SA0040(Full)— 客戶沒有。
+- 除以零的 runtime 出處(查 2026-11-13):DIV 頁 "In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528875403.html);MOD 頁 "The behavior when dividing by zero or MOD 0 can vary depending on the target system!"(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528880779.html)。浮點除以 0 在 TC3 PLC 文件查無;UmRT 實測仍是 tasks 2.10。
+- 實作與決定(PR #284):variant `constant-zero-div`(字面值 `/ 0`:blocking,finding 標 compilerCatches yes,不進 `unresolved`;具名常數 = 0:blocking,編譯器擋不擋未實測)、`constant-zero-mod`(blocking,編譯器不擋 → 進 `unresolved`)、`unchecked-variable-divisor`(**info、永不 blocking、不進 `unresolved`**)。變數除數的語料逐筆判讀(axis 46 + bfh 1 = 47 筆):真問題候選 1、呼叫端輸入為 0 時才發生 9、設定值衍生(直徑 × PI 等)35、誤報 2 —— 「確定是 bug」precision 約 1/47,當必須處置的 warning 會逼 agent 大量 suppress,違反「合法程式不得誤擋」,所以降為 info;profile 把 severity 調成 warning 時重新進 `unresolved`。為此 design.md D6 的 `unresolved[]` 改為不收 info。
 
 ### SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002(Phase 2)
 沿用 design.md 初稿的定義與 prototype 實測(`research/corpus-feasibility.md`)。002 / TIMER-002 是 info,其餘 warning,`machineImpact: behavior` → 進 `unresolved[]`。
