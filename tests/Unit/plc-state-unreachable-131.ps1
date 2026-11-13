@@ -164,6 +164,9 @@ foreach ($st in @('Run', 'Stop', 'Reset')) {
     Check "J$i $st no lifecycle block, no in-flight marker" ($null -eq $d.PSObject.Properties['lifecycleBlock'] -and $null -eq (Get-Block $nid) -and (Get-InflightCount) -eq 0) (J (Get-Block $nid))
     $h = [string]$r.error.hint
     Check "J$i $st hint: Enable-TcConfig -Force, page fault 0xc0000005 restart, no Clear / raw ADS advice" ($h -match 'Enable-TcConfig -Force' -and $h -match '0xc0000005' -and $h -match 'restart the runtime' -and $h -notmatch 'Clear-TcLifecycleBlock' -and $h -notmatch 'WriteControl') $h
+    # #287 follow-up: local UmRT restart after ANY PLC exception (0xc0000094 measured too), UmRT-only scope,
+    # fix the trigger first, and no repeated Activate when the boot project autostart raises it again
+    Check "J$i $st hint: restart after any PLC exception (0xc0000094), local UmRT only, fix trigger, do not repeat the Activate" ($h -match 'after any PLC exception' -and $h -match '0xc0000094' -and $h -match 'verified on local UmRT only' -and $h -match 'trigger condition is gone' -and $h -match 'autostart' -and $h -match 'do not repeat the Activate' -and $h -match 'after the user agreed') $h
 }
 # JSON shape over the MCP bridge
 Set-Case '10.287.0.4.1.1' 'Stop' @('Run') @('Exception')

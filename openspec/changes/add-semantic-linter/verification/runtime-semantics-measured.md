@@ -227,9 +227,26 @@ watcher(`tests/Integration/Watch-Runtime.ps1`,每秒一筆)時間線,案例 71:
 | 52972 | 16:31:51(91,index 0) | 16:32:48 `EnableConfig Force` 成功,watcher 看到 Run 穩定 > 15 s | 16:33:11(Activate 後 23 s,當時沒有任何工具存取) |
 
 - 三次的事件 1000 都一樣:faulting module `TcOsSys.dll` 3.1.0.1、exception `0xc0000005`、**offset `0x0000000000039033`**(和 Activate 時的 #21 crash `0x589534` 不同);dump `%LOCALAPPDATA%\CrashDumps\TcSystemServiceUm.exe.<pid>.dmp`(58916 / 56960 / 52972 各一個)。crash 前約 4 s watcher 都先看到多一個 `TcSystemServiceUm` 子行程(寫 dump),接著兩個一起消失。
-- FPU / 整數除以零的 exception 之後,同一個 UmRT 行程**沒有** crash(第一輪 58916 經過 71 / 73、第二輪 58916 經過 74 都正常)。
+- FPU / 整數除以零的 exception 之後,同一個 UmRT 行程**沒有** crash(第一輪 58916 經過 71 / 73、第二輪 58916 經過 74 都正常)。**已被第 7.3 節推翻**:這幾次都沒有在恢復後再做 set-config;7.3 節整數除以 0 之後同一個行程也 crash 了。
 - 每次 crash 都照 `docs/agent-brief-realmachine.md`「UmRT 復原」重啟 `TcSystemServiceUm` → `GetSystemState` 讀回 Config → `EnableConfig Force`。三次都沒有 lifecycle 工具失敗,所以**沒有產生 lifecycle block,沒有呼叫 `ClearLifecycleBlock`**。
 - 結論:在本機 UmRT 上,PLC 的 page fault 會讓 runtime 行程進入不穩定狀態,重新 Activate 也只能撐幾秒到幾十秒;要恢復必須**重啟 UmRT 行程**再 Activate。實體 TwinCAT RT / CX 上是否相同未測。
+
+### 7.3 整數除以 0 之後 UmRT 行程也會 crash(PR #303 真機驗證)
+
+出處:PR #303 留言「真機驗證 2026-11-13(完成)」。環境 XAE 4026.22 / VS2022,本機 UmRT_Default;`PRG_LintExc` 只有 case 71 `nRes := nNum / nDiv`(DINT,`nDiv = 0`)。
+
+| 時間 | 事件 | UmRT pid |
+|---|---|---|
+| 18:11:34 | `WriteVariable nCase = 71` → Error List `'Port_851' (851): Exception (Exception Code: 0xc0000094, Integer divide by zero)`,port 10000 = Exception | 67248 |
+| 18:12:36 | `EnableConfig Force` 成功(set-config 14.5 s),verify 讀回 system Run、851 Run | 67248 |
+| 18:12:46 | 事件 1000:`TcSystemServiceUm.exe` crash,`TcOsSys.dll` 3.1.0.1、`0xc0000005`、**offset `0x39033`**(與 7.2 節相同),dump `TcSystemServiceUm.exe.67248.dmp`;當時下一個 `RunLifecycle` 的 set-config 回 `ADS_TIMEOUT` | 67248 |
+| 18:13:13 | 照「UmRT 復原」重啟 | 64752 |
+| 18:13:51、18:14:47 | 兩次 Activate(第一次程式**仍含** case 71),之後穩定 Run 約 24 分鐘,沒有 crash | 64752 |
+
+- 從例外算起約 70 s、從恢復到 Run 算起約 10 s crash。只有一個樣本。
+- 區分實驗(是 boot project autostart 再觸發除以 0,還是 UmRT 行程本身?):恢復後 verify 讀回 Run、沒有再進 Exception;Activate 讓 `nCase` 回到 0,case 71 沒有再寫;之後兩次 Build 讀到的 Error List runtime 列只有**一筆** `0xc0000094`;沒遇過 exception 的新行程 64752 跑含同一段 code 的程式穩定。→ **不是 autostart 再觸發,是出過 exception 的 UmRT 行程本身不穩**。
+- 結論(合併 7.2):本機 UmRT 上**任何** PLC exception(page fault、整數除以 0)之後,同一個 runtime 行程都可能在恢復到 Run 後自己 crash;恢復流程是重啟 UmRT → `GetSystemState` 讀回 Config → `EnableConfig Force`。FPU(REAL)除以 0 之後沒有單獨再測,但依同一結論處理。實體 TwinCAT RT / CX 未測。
+- 另:使用者(2026-11-13 告知,**本專案未實測**)指出,觸發條件沒修掉時 boot project 在 Activate 後會自動啟動並再次進 Exception;所以 Activate 前要先修程式或確認觸發條件已不存在,Activate 後又進 Exception 時不要重複 Activate。本次 `nCase` 預設 0,Activate 後不會自己走到 case 71,所以沒有遇到這個情況。
 
 ## 8. 未初始化 REFERENCE / 0 指標的讀取
 
