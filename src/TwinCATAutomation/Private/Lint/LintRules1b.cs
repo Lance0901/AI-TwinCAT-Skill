@@ -732,7 +732,9 @@ namespace TcLintEngine
                         if (first.Length == 0 || string.Equals(first, "THIS", StringComparison.OrdinalIgnoreCase) || string.Equals(first, "SUPER", StringComparison.OrdinalIgnoreCase)) continue;
                         if (s.Locals.Contains(first)) continue;
                         PouNode q;
-                        if (!pouIndex.TryGetValue(first, out q) || q == p) continue;
+                        if (!pouIndex.TryGetValue(first, out q)) continue;
+                        // an action / method of P calling P() runs P's body (final review nit); other self references are ignored
+                        if (q == p && !(q.Header == "PROGRAM" && segs.Length == 1 && !s.Body)) continue;
                         if (q.Header == "PROGRAM")
                         {
                             if (segs.Length == 1)
@@ -865,6 +867,7 @@ namespace TcLintEngine
             foreach (BodyCall bc in calls)
             {
                 if (!CallRuns(bc)) continue;   // an unreachable caller (axis TestCam), or a body that never runs (review N3)
+                if (string.Equals(bc.Caller, p.Name, StringComparison.OrdinalIgnoreCase)) continue;   // an own action calling the body is not a second source
                 if (bc.Uncertain) { uncertainCall = true; continue; }
                 List<BodyCall> pc;
                 if (!perCaller.TryGetValue(bc.Caller, out pc)) { pc = new List<BodyCall>(); perCaller[bc.Caller] = pc; }

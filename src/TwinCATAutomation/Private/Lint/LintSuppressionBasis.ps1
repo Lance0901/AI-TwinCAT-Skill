@@ -124,6 +124,15 @@ function Resolve-TcLintGitBase {
     if ($oh.timedOut) { return (& $no 'git did not answer within the deadline') }
     if ($oh.ok -and $oh.out.Trim() -and $oh.out.Trim() -ne 'origin/HEAD') { $ref = $oh.out.Trim(); $kind = 'origin-default' }
     if (-not $ref) {
+        # any remote's default branch (refs/remotes/<remote>/HEAD), e.g. a remote not called origin
+        $fe = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('for-each-ref', '--format=%(symref:short)', 'refs/remotes') -Clock $Clock
+        if ($fe.timedOut) { return (& $no 'git did not answer within the deadline') }
+        if ($fe.ok) {
+            $sym = @($fe.out -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Sort-Object) | Select-Object -First 1
+            if ($sym) { $ref = $sym; $kind = 'remote-default' }
+        }
+    }
+    if (-not $ref) {
         foreach ($cand in 'origin/master', 'origin/main') {
             $c = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--verify', '--quiet', "refs/remotes/$cand") -Clock $Clock
             if ($c.timedOut) { return (& $no 'git did not answer within the deadline') }
@@ -139,6 +148,13 @@ function Resolve-TcLintGitBase {
         $mb = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('merge-base', 'HEAD', $ref) -Clock $Clock
         if ($mb.timedOut) { return (& $no 'git did not answer within the deadline') }
         if (-not $mb.ok) { return (& $no "no merge-base of HEAD and $ref") }
+        if ($kind -eq 'upstream') {
+            # without a known default branch the upstream is usually the agent's own pushed branch: when it already contains
+            # HEAD, nothing could be compared (final review) -> fail closed
+            $hd = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--verify', '--quiet', 'HEAD') -Clock $Clock
+            if ($hd.timedOut) { return (& $no 'git did not answer within the deadline') }
+            if ($hd.ok -and $hd.out.Trim() -eq $mb.out.Trim()) { return (& $no "no default branch of any remote is known and the upstream $ref already contains HEAD") }
+        }
         return @{ ok = $true; top = $topDir; commit = $mb.out.Trim(); kind = $kind; ref = $ref; basis = "git:merge-base:$ref" }
     }
     $head = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--verify', '--quiet', 'HEAD') -Clock $Clock

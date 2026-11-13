@@ -518,6 +518,29 @@ if ($git) {
     Check 'W1 setup: the agent branch really has an upstream' ($up -eq 'origin/feat/x') "upstream=$up"
     Check 'W1 N1 agent branch pushed with upstream -> base is still origin/master, the exclude is listed' (@($r.data.newOverrides).Count -eq 1 -and $r.data.newSuppressionsBasis -eq 'git:merge-base:origin/master' -and $r.data.requiresDisposition) ("$($r.data.newSuppressionsBasis) $(Js $r.data.newOverrides)")
 }
+if ($git) {
+    # final review: a remote not called origin / a default branch not in the list must not fall back to the agent's own upstream
+    foreach ($withHead in $false, $true) {
+        $fx = New-Fx; Add-FbM $fx 'FB_X' "METHOD M_Wait : BOOL`nVAR`n    t : TON;`nEND_VAR`n"
+        $sol = Git-Init $fx
+        $null = & git -C $sol update-ref refs/remotes/gh/develop HEAD 2>&1
+        if ($withHead) { $null = & git -C $sol symbolic-ref refs/remotes/gh/HEAD refs/remotes/gh/develop 2>&1 }
+        Set-Profile $fx '{"schema":"tcauto-lint-profile/1","rules":{"SCAN-TEMPFB-001":{"enabled":false,"reason":"we know what we do here"}}}' | Out-Null
+        Git-Commit $sol 'agent disables the rule'
+        $null = & git -C $sol checkout -q -b feat/a 2>&1
+        $null = & git -C $sol update-ref refs/remotes/gh/feat/a HEAD 2>&1
+        $null = & git -C $sol remote add gh https://example.invalid/unit.git 2>&1
+        $null = & git -C $sol config branch.feat/a.remote gh 2>&1; $null = & git -C $sol config branch.feat/a.merge refs/heads/feat/a 2>&1
+        $r = Lint $fx
+        if ($withHead) { Check 'W6 remote gh with gh/HEAD -> base gh/develop, the disabled rule is listed' ($r.data.newSuppressionsBasis -eq 'git:merge-base:gh/develop' -and @($r.data.newOverrides).Count -eq 1) ("$($r.data.newSuppressionsBasis) $(Js $r.data.newOverrides)") }
+        else { Check 'W6 no default branch known, upstream = own pushed branch (merge-base = HEAD) -> unavailable, listed (fail closed)' ($r.data.newSuppressionsBasis -eq 'unavailable' -and @($r.data.newOverrides).Count -eq 1 -and $r.data.requiresDisposition) ("$($r.data.newSuppressionsBasis) $(Js $r.data.newOverrides)") }
+    }
+}
+# final review nit: an action of the program calls the program body -> the body runs
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    n : INT;`nEND_VAR`n" 'n := n + 1;' (Action 'A1' 'PRG_B();')
+Set-MainImpl $fx "PRG_B.A1();"
+$r = Lint $fx
+Check 'W7 action calls its own program body -> body runs, no TASK-001, no TASK-002 from the self call' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and (Diags $r 'PROJECT-TASK-002').Count -eq 0) (Brief $r)
 # N2: STRUCT EXTENDS (InfoSys structure page: "the extended structure has the same structure components as the basic structure")
 $fx = New-Fx
 Add-Dut $fx 'ST_Base' "TYPE ST_Base :`nSTRUCT`n    t : TON;`nEND_STRUCT`nEND_TYPE`n"
