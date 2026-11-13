@@ -47,14 +47,14 @@
 
 ## 2. Phase 2:LintCandidate + 迴圈 / 陣列 / 除法 + Timer 細分 + stale 偵測
 
-- [ ] 2.1 `Invoke-TcLintCandidate`(overlay、`LINT_CONTEXT_REQUIRED`、overlay 邊界的 `LINT_INPUT_INVALID`)
-- [ ] 2.2 `LintCandidate` 的 `newSuppressions[]`(相對磁碟版本)
-- [ ] 2.3 呼叫點模型:FB body 呼叫與 Method 呼叫分開,含 expression 內的呼叫;`inherited-use`
-- [ ] 2.4 SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001(blocking);SAFETY-ARR-001、SAFETY-DIV-001
+- [x] 2.1 `Invoke-TcLintCandidate`(overlay、`LINT_CONTEXT_REQUIRED`、overlay 邊界的 `LINT_INPUT_INVALID`)— PR #284;PLC 名稱 / IDE 已連線時省略路徑仍回 `LINT_INPUT_INVALID`(需要 IDE,與 LintProject 1a 一致);Transition 回 `LINT_INPUT_INVALID`(XML 結構未觀察)
+- [x] 2.2 `LintCandidate` 的 `newSuppressions[]`(相對磁碟版本)— PR #284;profile 放寬照 git 基準列 `newOverrides[]`
+- [x] 2.3 呼叫點模型:FB body 呼叫與 Method 呼叫分開,含 expression 內的呼叫;`inherited-use` — PR #284:1b 已有 expression / index 內呼叫與 `inExpression`;新增 `form`(body / member)、`returnValueUsed`、`viaSuper`。不經 `SUPER^` 的繼承成員呼叫要 EXTENDS 鏈,留給 2.5
+- [x] 2.4 SCAN-LOOP-001、SCAN-FOR-001、SCAN-ARR-001(blocking);SAFETY-ARR-001、SAFETY-DIV-001 — PR #284(SAFETY-DIV-001 變數除數改為 info、不進 `unresolved[]`,理由見 rule-catalog)
 - [ ] 2.5 SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002 / 004 / 005
 - [ ] 2.6 stale 偵測(D2):`.plcproj` 屬於連線中的 solution、樹 / 磁碟 `<Compile>` 比對、`Document.Saved`、4024 保守規則
 - [ ] 2.7 **真機**(registered tcauto,一次一個 worker):4024 XAE 上 `WritePouCode` 後 .TcPOU 的落地時機;XAE 新增 / 刪除物件後 2.6 是否抓得到;4026 VS2022 重跑 #69
-- [ ] 2.8 SKILL.md:LintCandidate → WritePouCode → BuildProject → LintProject;Failure contract 加入 `requiresDisposition` 規定(不得 EnableConfig、不得回報完成、`newSuppressions[]` 逐條列給使用者)
+- [x] 2.8 SKILL.md:LintCandidate → WritePouCode → BuildProject → LintProject;Failure contract 加入 `requiresDisposition` 規定(不得 EnableConfig、不得回報完成、`newSuppressions[]` 逐條列給使用者)— PR #284(Stop conditions 第 5 條)
 - [ ] 2.9 PROJECT-SA-001(只在 1a.9 量測支持時做)
 - [ ] 2.10 **IDE / UmRT 實測**(`st-syntax-inventory.md` 第 2 部分仍標未驗證的):TON 在 PT = 0 的行為、TON 中途幾個 cycle 沒被呼叫再進入的語意(SCAN-TIMER-004 / 005 的依據)、除以零與越界(未加 CheckBounds)在 runtime 的結果、未初始化 REFERENCE 解參照的後果、`FOR … BY 0`;除以常數 0 編譯器擋不擋(`BuildProject`,填 `compilerCatches: measured`)
 - **驗收**:每條規則 ≥2 正例、≥2 反例(含 research 4.2 / 4.4 已知誤報案例)、1 個 suppression;seeded S06~S09、S16、S17 命中;stale 偵測真機紀錄

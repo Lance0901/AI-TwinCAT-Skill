@@ -39,6 +39,7 @@ $operationMap = @{
     'GetAutomationVersion' = 'Get-TcAutomationVersion'
     'GetProjectVersion' = 'Get-TcProjectVersion'
     'LintProject'     = 'Invoke-TcLintProject'
+    'LintCandidate'   = 'Invoke-TcLintCandidate'
     'GetPackageInfo'  = 'Get-TcPackageInfo'
     'InstallPackage'  = 'Install-TcPackage'
     # Project Management

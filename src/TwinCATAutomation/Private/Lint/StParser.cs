@@ -153,6 +153,15 @@ namespace TcLintEngine
         public string FramePath;    // same with block identity, e.g. "IF@3:1|elsif#2>CASE@5:5|label#1" (not in the output; mutual exclusion)
         public bool Conditional;    // inside IF / CASE / loop / __CATCH / __FINALLY
         public bool InPragma;       // inside a {IF ...} ... {END_IF} conditional-compilation region (may not be compiled)
+
+        // tasks 2.3 (design.md D3): "body" = name( ... ) - an FB instance body, a function, a PROGRAM or SUPER^( ) (which one
+        // needs the type index, not the scanner); "member" = x.M( ... ) - a method, an action or a property-like member.
+        public string Form { get { return Target != null && Target.IndexOf('.') >= 0 ? "member" : "body"; } }
+        // a call that starts a statement discards a return value; one inside an expression (x := f(), IF fb.M() THEN) uses it
+        public bool ReturnValueUsed { get { return !StatementStart; } }
+        // inherited-use: the call goes to the base FB explicitly (SUPER^( ) / SUPER^.M( )); an inherited member called without
+        // SUPER^ is only known with the EXTENDS chain of the type index (rules of tasks 2.5)
+        public bool ViaSuper { get { return Target != null && Target.StartsWith("SUPER^", StringComparison.OrdinalIgnoreCase); } }
     }
 
     public sealed class ScanResult
@@ -174,6 +183,7 @@ namespace TcLintEngine
                 OrderedDictionary cd = new OrderedDictionary();
                 cd["target"] = c.Target; cd["line"] = c.Line; cd["column"] = c.Col; cd["statementStart"] = c.StatementStart;
                 cd["inExpression"] = !c.StatementStart; cd["blocks"] = c.Blocks; cd["conditional"] = c.Conditional;
+                cd["form"] = c.Form; cd["returnValueUsed"] = c.ReturnValueUsed; cd["viaSuper"] = c.ViaSuper;
                 calls.Add(cd);
             }
             d["calls"] = calls;

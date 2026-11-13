@@ -26,6 +26,7 @@ namespace TcLintEngine
         public int Line;
         public int Col;
         public XElem Parent;
+        public bool Synthetic;     // created by the LintCandidate overlay (not in any file): no Id is expected
 
         public string Attr(string name)
         {
@@ -127,6 +128,19 @@ namespace TcLintEngine
             }
             catch (IOException e) { fi.ReadFailed = true; fi.ReadError = e.GetType().Name + ": " + e.Message; return fi; }
             catch (UnauthorizedAccessException e) { fi.ReadFailed = true; fi.ReadError = e.GetType().Name + ": " + e.Message; return fi; }
+            return Analyze(fi);
+        }
+
+        // LintCandidate: an object file that exists only in memory (overlay of a new object)
+        public static FileBytesInfo FromBytes(byte[] bytes)
+        {
+            FileBytesInfo fi = new FileBytesInfo();
+            fi.Exists = true; fi.Bytes = bytes; fi.Length = bytes.Length;
+            return Analyze(fi);
+        }
+
+        private static FileBytesInfo Analyze(FileBytesInfo fi)
+        {
             byte[] b = fi.Bytes;
             int start = 0;
             if (b.Length >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF) { fi.Bom = "utf-8"; start = 3; }

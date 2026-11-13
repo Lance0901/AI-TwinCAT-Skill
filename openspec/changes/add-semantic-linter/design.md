@@ -76,7 +76,14 @@
 | `PlcProjectPath` | 選填。`.plcproj` 的檔案路徑,或已連 IDE 時的 PLC 名稱。給了就把候選物件**覆蓋**到該專案的磁碟版本上(同名物件被取代、新物件被加入),跑跨物件規則 |
 | `RuleProfile` / `FailOn` / `Baseline` | 見 D5 |
 
-**`PlcProjectPath` 的解析**(與 `Resolve-TcPlcProjectSpec` 一致,review S7):給 `.plcproj` 檔案路徑 → 不需 IDE;給 PLC 名稱 → 需要 IDE;**省略且 IDE 已連線** → 單一 PLC 自動取用、多個回 `PLC_PROJECT_AMBIGUOUS`;省略且 IDE 未連線 → text-only。
+**`PlcProjectPath` 的解析**(與 `Resolve-TcPlcProjectSpec` 一致,review S7):給 `.plcproj` 檔案路徑 → 不需 IDE;給 PLC 名稱 → 需要 IDE;**省略且 IDE 已連線** → 單一 PLC 自動取用、多個回 `PLC_PROJECT_AMBIGUOUS`;省略且 IDE 未連線 → text-only。**Phase 2a 實作(PR #284)**:只做不需要 IDE 的兩條 —— `.plcproj` 路徑與 text-only;PLC 名稱回 `LINT_INPUT_INVALID`,省略時一律 text-only(不看 IDE 是否連線;text-only 不會靜默 pass,所以不是 fail open)。經 IDE 找檔與 stale 偵測一起做(tasks 2.6)。
+
+**範圍與跨物件檢查(PR #284 審查 S1)**:結果的 `diagnostics` 只列候選物件(與 `LintProject -Scope Object` 相同,語料一致性測試的比對基準)。另外把整個專案「有候選」與「磁碟原樣」各跑一次,**其他物件**只在有候選時才出現的 finding 列在 `data.crossObject.newFindings[]`(info 與已 suppress 的不列):其中有 blocking → 候選回 `LINT_FAILED`;非空 → `requiresDisposition`(reason `cross-object-findings`)。例:候選 GVL 把常數改成 0,讓別的 FB 的 `MOD` 變成 `MOD 0`。代價是每次 LintCandidate 跑三次引擎。
+
+**既有 finding 與 context(PR #284 第三輪審查 S2 / S3 / N3)**:
+- 其他物件在磁碟上本來就有的 finding(例:沒被呼叫的 PROGRAM 的 TASK-001,project 層級規則不受 scope 限制)放 `data.preExisting[]`,不算進候選的 verdict / `unresolved` / `requiresDisposition`;`data.projectVerdict` 是沒有候選時磁碟專案的結果。候選物件自己的 finding 一律留在 `diagnostics`:候選就是那個物件的新內容,沿用的問題也是寫入後會存在的問題。
+- 規則需要的名稱(FOR 上下限 / 步長、WHILE / UNTIL 條件、陣列名與 index、除數)在 overlay 後的專案裡解析不到(候選、所屬 POU 與 EXTENDS 鏈、物件名、非 qualified_only 的 GVL 變數、型別目錄、標準函式都找過),或名稱指向檔案讀不到的物件 → `LINT_CONTEXT_REQUIRED`(`contextRequired` 的 `unresolved-identifier:<名稱>` / `context-object-broken:<檔>`)。只看規則位置的名稱:一般位置的 library 函式 / 型別不讓正常候選變 incomplete(語料 162 個物件的一致性測試確認)。
+- 跨物件 blocking 只把 **pass** 改成 `LINT_FAILED`;已經是 `LINT_PARSE_FAILED` / `LINT_CONTEXT_REQUIRED` / `LINT_INCOMPLETE` 的保留原 code(D4 優先序,N3)。
 
 **text-only 不能靜默 PASS**(review B2,issue「context 不足不得回傳 PASS」):候選內容本身需要 context 時 — 有 `IMPLEMENTS` / `EXTENDS`、`ObjectKind` 是 Method / Property / Action / Transition、或引用了不在內建型別目錄裡的型別 — 回 `LINT_CONTEXT_REQUIRED`(verdict `incomplete`),hint 要求帶 `PlcProjectPath`。只有完全自足的候選(例如只用基本型別與 Tc2_Standard FB 的 FUNCTION、STRUCT、ENUM)才能在 text-only 下 pass;`data.contextLevel = "text-only"`。
 
@@ -318,7 +325,7 @@ tonRelease : TON; // tcauto-lint-disable-line SCAN-FBCALL-001: 由 FB_Base.M_Cyc
 
 `success: true` 的 warning 會被 LLM agent 直接略過(review 第二輪 1-2)。加一層「必須處置」:
 
-- `data.unresolved[]`:未被 suppress、`machineImpact ∈ behavior / crash` 的 finding(含 warning)。每筆帶 diagnostic 的 `ruleId` / `objectPath` / `line`。
+- `data.unresolved[]`:未被 suppress、`machineImpact ∈ behavior / crash` 的 finding(含 warning;**不含 info**,PR #284:SAFETY-DIV-001 變數除數 47 筆語料 finding 只有 1 筆是真問題候選,info 是參考,profile 把 severity 調高才進來)。每筆帶 diagnostic 的 `ruleId` / `objectPath` / `line`。
 - `data.requiresDisposition: true`:`unresolved[]` 非空時。`success` 仍是 true(issue:warning-only 不得誤報成 tool failure)。
 - 處置只有兩種:**改程式**,或**寫 inline suppression 加理由**。非 blockable 規則才允許 inline(D5),理由留在原始碼 diff 裡給人 review;blockable 規則只能用 profile `suppressions[]`。
 - `data.newSuppressions[]`:本次候選 / 本次變更新增、磁碟版本(或 git HEAD)沒有的 suppression,逐條列出(規則、物件、行、理由)。
