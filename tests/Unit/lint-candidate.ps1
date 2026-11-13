@@ -178,8 +178,11 @@ Check 'P1 S3: TASK-001 of an uncalled PROGRAM already on disk is preExisting, no
 $r = Cand @{ ObjectKind = 'Program'; ObjectName = 'P_Orphan'; Declaration = "PROGRAM P_Orphan`r`nVAR`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = 'n := n + 2;'; PlcProjectPath = $fx4.Plcproj }
 Check 'P2 S3: a finding of the candidate object itself stays in diagnostics (the candidate is that object''s new text)' ((Diags $r 'PROJECT-TASK-001').Count -eq 1 -and $r.data.requiresDisposition) (Brief $r)
 $sq = "FUNCTION F_Q : INT`r`nVAR`r`n    i : INT;`r`n    a : ARRAY[1..10] OF INT;`r`nEND_VAR`r`n"
-$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO cNotDeclared DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $Plc }
-Check 'P3 S2: FOR bound from a name declared nowhere in the project -> LINT_CONTEXT_REQUIRED, never pass' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and $r.data.passed -eq $false -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:cNotDeclared')) (Brief $r)
+# issue #286 S6: without library references an unqualified unknown name cannot be a library symbol -> still CONTEXT_REQUIRED
+$fxNoLib = New-LintFixture (Join-Path $root 'nl')
+Edit-LintFxFile $fxNoLib.Plcproj { param($t) [regex]::Replace($t, '(?s)\s*<PlaceholderReference Include="Tc2_Standard">.*?</PlaceholderReference>', '') }
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO cNotDeclared DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $fxNoLib.Plcproj }
+Check 'P3 S2: FOR bound from a name declared nowhere in a project without library references -> LINT_CONTEXT_REQUIRED, never pass' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and $r.data.passed -eq $false -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:cNotDeclared')) (Brief $r)
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 1 TO 10 DO`r`n    a[i] := MAX(i, 1) + F_Undeclared(i);`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $Plc }
 Check 'P4 S2: an unknown name outside rule positions (library / project function call) does not make the candidate incomplete' ($r.success) (Brief $r)
 $fx5 = New-LintFixture (Join-Path $root 'q')
@@ -197,7 +200,7 @@ $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Imp
 Check 'P8 S2b: E_Mode.Nope (enum member not declared) as an index -> LINT_CONTEXT_REQUIRED' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:E_Mode.Nope')) (Brief $r)
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 1 TO 10 DO`r`n    a[i] := 0;`r`nEND_FOR`r`nIF GVL_Main.bRun THEN`r`n    F_Q := E_Mode.Auto;`r`nEND_IF"; PlcProjectPath = $Plc }
 Check 'P9 S2a counter-example: declared GVL_Main.bRun / E_Mode.Auto -> pass' ($r.success) (Brief $r)
-$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_D'; Declaration = "FUNCTION F_D : INT`r`nVAR`r`n    a : ARRAY[1..cNope] OF INT;`r`nEND_VAR`r`n"; Implementation = 'F_D := 1;'; PlcProjectPath = $Plc }
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_D'; Declaration = "FUNCTION F_D : INT`r`nVAR`r`n    a : ARRAY[1..cNope] OF INT;`r`nEND_VAR`r`n"; Implementation = 'F_D := 1;'; PlcProjectPath = $fxNoLib.Plcproj }
 Check 'P10 S2d: array bound in the declaration from a name declared nowhere -> LINT_CONTEXT_REQUIRED (as text-only)' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:cNope')) (Brief $r)
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_S'; Declaration = "FUNCTION F_S : LREAL`r`n"; Implementation = "F_S := 1000.0 / UDINT_TO_LREAL(TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleTime);"; PlcProjectPath = $Plc }
 Check 'P11 S2e: TwinCAT_SystemInfoVarList / GETCURTASKINDEXEX are known system names -> not LINT_CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED') (Brief $r)
@@ -224,6 +227,27 @@ $r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Do'; Declaration = "MET
 Check 'P18 projectBlocking with one entry is still an array' (($r | ConvertTo-Json -Depth 30 -Compress) -match '"projectBlocking":\[\{') ''
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_S2'; Declaration = "FUNCTION F_S2 : UDINT`r`n"; Implementation = 'F_S2 := TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleTime;' }
 Check 'P19 text-only: system names are known -> not CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED') (Brief $r)
+
+# issue #286 S6: an unqualified name in a rule position of a project WITH library references may be a library constant
+# (MAX_STRING_LENGTH, PI): text cannot evaluate it, declaring it would shadow the library value -> only the rule that needs
+# the value skips (rulesSkipped library-symbol-unresolved:<name>), the other rules run, no LINT_CONTEXT_REQUIRED
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_N'; Declaration = "FUNCTION_BLOCK FB_N`r`nVAR`r`n    i : INT;`r`n    n : INT;`r`n    a : ARRAY[1..10] OF INT;`r`nEND_VAR`r`n"; Implementation = "FOR i := 1 TO MAX_STRING_LENGTH DO`r`n    n := n + 1;`r`nEND_FOR`r`na[11] := 0;"; PlcProjectPath = $Plc }
+Check 'P20 S6: FOR bound = unqualified library constant -> not CONTEXT_REQUIRED, rulesSkipped library-symbol-unresolved, SCAN-FOR-001 skipped, SAFETY-ARR-001 still runs' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED' -and @($r.data.candidate.contextRequired).Count -eq 0 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'library-symbol-unresolved:MAX_STRING_LENGTH' }).Count -ge 1 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.ruleId -eq 'SCAN-FOR-001' }).Count -ge 1 -and (Diags $r 'SAFETY-ARR-001').Count -eq 1) (Brief $r)
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_N'; Declaration = "FUNCTION_BLOCK FB_N`r`nVAR`r`n    x, y : LREAL;`r`nEND_VAR`r`n"; Implementation = 'x := y / PI;'; PlcProjectPath = $Plc }
+Check 'P21 S6: divisor = unqualified library constant -> pass with rulesSkipped library-symbol-unresolved:PI' ($r.success -and $r.data.verdict -eq 'pass' -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'library-symbol-unresolved:PI' }).Count -ge 1) (Brief $r)
+# PR #289 independent review nit 9: the context-level skip names the rule(s) that need the value, never ruleId null
+$skPi = @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'library-symbol-unresolved:PI' })
+Check 'P21b nit 9: library-symbol-unresolved:PI -> ruleId SAFETY-DIV-001 (the divisor rule), no rulesSkipped entry with ruleId null' (@($skPi | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' }).Count -eq 1 -and @($r.data.coverage.rulesSkipped | Where-Object { [string]::IsNullOrEmpty($_.ruleId) }).Count -eq 0) (($r.data.coverage.rulesSkipped | ForEach-Object { "$($_.ruleId)/$($_.reason)" }) -join ', ')
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_N'; Declaration = "FUNCTION_BLOCK FB_N`r`nVAR`r`n    i : INT;`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = "FOR i := 1 TO MAX_STRING_LENGTH DO`r`n    n := n + 1;`r`nEND_FOR"; PlcProjectPath = $Plc }
+$skMs = @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'library-symbol-unresolved:MAX_STRING_LENGTH' })
+Check 'P21c nit 9: FOR bound library-symbol-unresolved -> one entry per rule that reads the FOR header (SCAN-FOR-001, SCAN-ARR-001), none with ruleId null' (@($skMs | Where-Object { $_.ruleId -eq 'SCAN-FOR-001' }).Count -eq 1 -and @($skMs | Where-Object { $_.ruleId -eq 'SCAN-ARR-001' }).Count -eq 1 -and @($r.data.coverage.rulesSkipped | Where-Object { [string]::IsNullOrEmpty($_.ruleId) }).Count -eq 0) (($r.data.coverage.rulesSkipped | ForEach-Object { "$($_.ruleId)/$($_.reason)" }) -join ', ')
+# PR #289 independent review SF4: an unresolved unqualified name in a WHILE condition that the body neither writes nor passes
+# to a call is still a busy-wait -> SCAN-LOOP-001 unresolved-condition-name warning (requires a disposition), not a silent pass
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_C'; Declaration = "FUNCTION_BLOCK FB_C`r`nVAR`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = "WHILE NOT gLibFlag DO n := n + 1; END_WHILE"; PlcProjectPath = $Plc }
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'P23 SF4 G2: WHILE NOT gLibFlag (unresolved, lib refs) -> SCAN-LOOP-001 unresolved-condition-name warning, requiresDisposition, not CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED' -and $d.Count -eq 1 -and $d[0].variant -eq 'unresolved-condition-name' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and $r.data.requiresDisposition -and @($r.data.unresolved | Where-Object { $_.ruleId -eq 'SCAN-LOOP-001' }).Count -eq 1) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO cNotDeclared DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $fxNoLib.Plcproj }
+Check 'P22 S6: project-mode CONTEXT_REQUIRED message does not tell the agent to declare a name blindly; hint gives the next step per contextRequired reason' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and $r.error.message -notmatch 'declare them' -and $r.error.hint -match 'unresolved-identifier' -and $r.error.hint -match 'context-object-broken' -and $r.error.hint -match 'PlcProjectPath') ($r.error.message + ' / ' + $r.error.hint)
 
 # ================================================================ R  read-only
 Check 'R1 no file of the project changed (content and write time) after every candidate above' ((Hashes) -ceq $before) ''

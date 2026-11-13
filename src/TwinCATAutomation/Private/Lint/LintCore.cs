@@ -171,7 +171,7 @@ namespace TcLintEngine
                 "InfoSys FOR tc3_plc_intro/2528280971.html: 'The <end value> must not have the same value as the upper bound of the data type of the counter.'; TwinCAT 2 FOR page (tcplccontrol/925251083.html) names the endless loop; " +
                 "the compiler only warns (C0266, InfoSys 21630340363.html), the build succeeds. Counter types SINT..LWORD; end value and step must be constants. Variant step-overflow (start constant, the last value <= end plus the step leaves the type, e.g. BYTE 0 TO 254 BY 2): blocking since the second review N5 - " +
                 "FOR 2528280971: 'Whenever the <instructions> have been executed, the <counter> is automatically incremented by the step size' and 'The counter is checked before each loop pass', so the counter cannot pass the end value without leaving the type (the wrap-around itself is inferred from the step-1 case, not measured); 0 TO 253 BY 2 / 0 TO 254 BY 3 are not reported. " +
-                "Variant exit-in-body (EXIT / RETURN / JMP in the body): warning, not blocking. Variant by-zero: behaviour of BY 0 not documented (InfoSys only 'can have any integer value'), pending (tasks 2.10). " +
+                "Variant exit-in-body (EXIT / RETURN / JMP in the body): warning, not blocking. Variant by-zero: BY 0 not documented by InfoSys (only 'can have any integer value'); measured 2026-11-13 (XAE 4026.22 / UmRT, runtime-semantics-measured.md section 6): no compiler error or warning, the counter does not advance and the loop does not end by itself; the level stays pending (owner decision). " +
                 "Not evaluated (rulesSkipped): counter written in the body (incl. passed bare to a call other than IEC standard functions / type conversions: may be VAR_IN_OUT / ADR), counter type unknown or not an integer type, end / step not constant. " +
                 "Corpus 2026-11-13 (axis 4026 / bfh 4024): 0 findings; 17 FOR loops: 10 evaluated, 7 skipped (end not constant 6, counter passed to a method 1)", "high", null);
             Add("SCAN-ARR-001", "Array index of a constant-range FOR loop leaves the declared array bounds", "error", "true", "crash", "no",
@@ -188,8 +188,9 @@ namespace TcLintEngine
                 "Variant constant-zero-div (/ 0 literal): compiler error C0374 (measured 2026-11-13 for x / 0 and x / 0.0) -> compilerCatches yes on the finding, not in unresolved; only the literals 0 / 0.0 directly after '/' are marked; " +
                 "/ 16#0, / (0), / -0, typed literals, a VAR CONSTANT / VAR_GLOBAL CONSTANT that is 0 and the function forms DIV(a, 0) / MOD(a, 0): not measured, blocking, in unresolved. " +
                 "VAR_INPUT CONSTANT / VAR_IN_OUT CONSTANT are not constants (their initial value is a default: CFC parameter InfoSys 2532058763, read-only reference 2528771211; inferred from search-result summaries, not measured). " +
-                "Variant constant-zero-mod (MOD 0): no compiler error or warning (measured 2026-11-13), blocking; InfoSys MOD 2528880779.html: the behaviour 'can vary depending on the target system'. " +
-                "InfoSys DIV 2528875403.html (permitted data types include REAL and LREAL): 'division by zero always leads to an exception and the corresponding task is stopped' (task option 'Floating Point Exception', tc3_system/5210416139.html); runtime result not measured (tasks 2.10). " +
+                "Variant constant-zero-mod (MOD 0): no compiler error or warning (measured 2026-11-13), blocking; InfoSys MOD 2528880779.html: the behaviour 'can vary depending on the target system' (measured on this target: result 0, no exception). " +
+                "InfoSys DIV 2528875403.html (permitted data types include REAL and LREAL): 'division by zero always leads to an exception and the corresponding task is stopped' (task option 'Floating Point Exception', tc3_system/5210416139.html). " +
+                "Measured 2026-11-13 (XAE 4026.22 / VS2022, local UmRT, verification/runtime-semantics-measured.md section 7, default Floating Point Exception setting): DINT / variable 0 -> exception 0xc0000094 Integer divide by zero, REAL / variable 0.0 -> 0xc000008e FPU zero divide; the whole TwinCAT system goes to Exception (PLC stopped, only a re-Activate recovers it); DINT MOD variable 0 -> no exception, result 0 (so for MOD the machine impact is a silent 0, not a stop); LREAL / not run. " +
                 "Variant unchecked-variable-divisor: info, medium, never blocking (heuristic; SA0040 is TE1200 Full only): a plain variable / member / element divisor with no enclosing IF / ELSIF / CASE / WHILE condition, earlier IF that leaves or rewrites it, " +
                 "same-expression test mentioning it only before AND_THEN / OR_ELSE or in the G argument of SEL (InfoSys AND_THEN 2528923787.html: 'TwinCAT always evaluates all operands if the IEC operator AND is used'; SEL 2528956043.html: 'TwinCAT does not compute an expression that precedes IN0 if G = TRUE', same for IN1 if G = FALSE; " +
                 "AND / OR are no guard, second review S5), assignment in the branch from what the branch condition tests, or a VAR / VAR_STAT with a non-zero initial value no analysed section of its POU writes; " +
@@ -200,6 +201,37 @@ namespace TcLintEngine
             RuleRegistry.Get("SCAN-ARR-001").Te1200 = "SA0172 (Full)";
             RuleRegistry.Get("SAFETY-ARR-001").Te1200 = "SA0172 (Full)";
             RuleRegistry.Get("SAFETY-DIV-001").Te1200 = "SA0040 (Full)";
+            // ---- Phase 2b (rule-catalog.md SCAN-FBCALL / SCAN-TIMER; LintRules2b.cs). Instances declared in VAR / VAR_STAT of a
+            // FUNCTION_BLOCK / PROGRAM; any way the instance could be used outside the owner's ST sections -> rulesSkipped, never a finding.
+            const string NotEvaluated2b = "Not evaluated (coverage.rulesSkipped <reason>:<instance>): passed as a parameter / ADR / REF= / assigned / interface (passed-or-aliased), " +
+                "q.inst anywhere in the project where q may be the owner (PRG.inst, fb.inst, p^.inst, an undeclared q: qualified-access; q of a type unrelated to the owner, st.tmr with st : ST_Hold, is no access), an FB that EXTENDS the owner (inherited-use), the name in a part the linter cannot read (unanalysed-part), " +
+                "a declaration initialiser (referenced-in-declaration), a method local of the same name (shadowed-name), ARRAY OF FB (array-instance), STRUCT / ALIAS types, GVL instances (not candidates), " +
+                "a section that is not analysed (conditional pragma, unsupported) and types outside the type catalog / project (unknown-type; library types that are certainly not FBs are not listed: T_MaxString / TIMESTRUCT / MC_Direction ... by name, E_* / ST_* by the Beckhoff naming convention, inferred). One entry per rule that applies to the instance type (FBCALL-001 / 002: every FB; TIMER-001 / 002: timer + edge; TIMER-004: timer; TIMER-005: TON / LTON).";
+            Add("SCAN-FBCALL-001", "Function block instance is read / written but never called", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Called = inst(...) anywhere in the owner (body, action, method, accessor; reachability of that code is not checked), or for a project FB any method / action / property of its EXTENDS chain (property accessor code runs). " +
+                "With a library base in the chain: inst.M() counts as a call, a variable declared by the project part of the chain is data access (reported when there is no call), any other member -> rulesSkipped library-base-members-unknown. " +
+                "Inherited members of the owner's own base are evaluated in the base. Consequence: outputs of an FB are only assigned while it runs (inferred from IEC FB semantics, not measured).", "medium", "inferred");
+            Add("SCAN-FBCALL-002", "Function block instance is never referenced", "info", "false", "none", "no",
+                NotEvaluated2b + " Only catalog FBs (TypeCatalog.json) and project FBs; other unused variables are left to TE1200 SA0033 (Light). Info: not in unresolved[].", "high", null);
+            Add("SCAN-TIMER-001", "Timer / edge trigger is only called inside IF / CASE", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Types: TypeCatalog class timer (TON TOF TP LTON LTOF LTP) and edge (R_TRIG F_TRIG); counters / flip-flops are not checked (counting only under a condition is a normal design). " +
+                "Not reported: any unconditional call in the body (or in an action / method the body calls unconditionally); every branch of a nested IF ... ELSE / CASE ... ELSE calls it; an explicit reset call(IN / CLK := FALSE), or inst.IN / CLK := FALSE (the constant FALSE only; inst.IN := TRUE; inst(); is an IN := TRUE call) followed on the same path by a call without IN / CLK (rulesSkipped explicit-reset; inst.IN := alone is not sampled by the FB and is no reset, inferred from IEC FB call semantics; undecidable -> input-write-unresolved); " +
+                "a call in a loop (call-in-loop), in a {IF} region (call-in-pragma), calls also in a member that does not run every time (also-called-in-member). IF TRUE / IF 1 = 1 THEN is unconditional; a call under IF FALSE THEN never runs (constant-false-condition). " +
+                "A timer called unconditionally in an action / method that the body calls at exactly one place (a statement in an IF / CASE branch), with no '.member' anywhere in the project, no IMPLEMENTS and no derived FB, is judged at that call site (else SCAN-TIMER-002 and rulesSkipped member-called-elsewhere). " +
+                "Known misses: an early RETURN before the call (IF NOT bEnable THEN RETURN; END_IF), the owner instance itself called conditionally (transitive), a call after JMP. " +
+                "Basis: a TON not called for 1500 cycles had ET jump by the wall-clock time on the next call (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 5).", "medium", null);
+            Add("SCAN-TIMER-002", "Timer / edge trigger is only called in a method / action that is not proven to run every cycle", "info", "false", "behavior", "no",
+                NotEvaluated2b + " An action / method counts as every-cycle when the owner's body calls it as a statement outside IF / CASE / loops, or in every branch of an IF ... ELSE / CASE ... ELSE (same rule as SCAN-TIMER-001); methods called from other POUs are not followed. Info: not in unresolved[].", "low", null);
+            Add("SCAN-TIMER-004", "Timer PT never set, or IN always the constant FALSE", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Variant pt-unset (timers only): no call passes PT, no inst.PT :=, no PT := in the declaration initialiser (an initialiser that cannot be parsed -> rulesSkipped initialiser-not-parsed); TON with PT = T#0S gives Q = TRUE in the cycle IN rises (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 4; InfoSys TON page 74406539 does not say). " +
+                "Variant in-constant: every call passes IN := FALSE and IN is never assigned. IN := TRUE constant is not reported (start-up delay idiom; the state-machine form is SCAN-TIMER-005). Positional arguments -> rulesSkipped positional-arguments. inst.PT / inst.IN given to a call, ADR or REF= (may be written there) -> rulesSkipped pt-passed-or-aliased / in-passed-or-aliased instead of pt-unset / in-constant. Constant folding (IN := TRUE OR x) is not done.", "high", null);
+            Add("SCAN-TIMER-005", "State timer is only called with IN := TRUE in CASE branches and never reset", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " TON / LTON whose calls are all inside branches of one CASE (not every branch with ELSE), every call IN := TRUE, no call with IN := FALSE and no inst.IN := FALSE followed on the same path by a call without IN (inst.IN := FALSE alone is not sampled: reported, inferred from IEC FB call semantics; undecidable -> input-write-unresolved). " +
+                "After the state is left IN stays TRUE; the TON measures wall-clock time while not called, so on re-entry it can be elapsed in the first call (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 5). " +
+                "inst.IN := TRUE; inst(); counts as an IN := TRUE call; inst.IN handed to a call / ADR / REF= -> rulesSkipped in-passed-or-aliased. A non-constant IN is reported as SCAN-TIMER-001 instead. Such a timer is reported by 005 only (not also 001).", "medium", null);
+            foreach (string id in new string[] { "SCAN-FBCALL-001", "SCAN-FBCALL-002", "SCAN-TIMER-001", "SCAN-TIMER-002", "SCAN-TIMER-004", "SCAN-TIMER-005" }) { RuleRegistry.Get(id).Phase = "2"; RuleRegistry.Get(id).Requires = "type-catalog"; }
+            RuleRegistry.Get("SCAN-FBCALL-002").Te1200 = "SA0033 (Light, unused variables; FB instances not stated, not verified)";
+            RuleRegistry.Get("SCAN-TIMER-001").Te1200 = "none (SA0105 Full needs an attribute, only related)";
         }
 
         public static RuleMeta Get(string id)
@@ -240,6 +272,7 @@ namespace TcLintEngine
         public string Evidence;
         public string FixHint;
         public bool LineUnreliable;
+        public string ImpactBasis;      // per-diagnostic "inferred"; null -> the rule's registry value
 
         public static int SectionRank(string s)
         {
@@ -271,7 +304,8 @@ namespace TcLintEngine
             d["machineImpact"] = r == null ? "none" : r.MachineImpact;
             if (Blockable == "pending") d["blockableBasis"] = "pending-measurement";
             if (BlockingSource != null) d["blockingSource"] = BlockingSource;
-            if (r != null && r.ImpactBasis != null) d["impactBasis"] = r.ImpactBasis;
+            string basis = ImpactBasis ?? (r == null ? null : r.ImpactBasis);
+            if (basis != null) d["impactBasis"] = basis;
             if (CompilerCatches != null) d["compilerCatches"] = CompilerCatches;
             if (Variant != null) d["variant"] = Variant;
             d["file"] = File;

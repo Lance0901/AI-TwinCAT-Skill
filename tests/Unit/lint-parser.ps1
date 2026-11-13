@@ -164,6 +164,9 @@ StatusCheck 'VAR without END_VAR -> LINT-PARSE-003' (Decl "FUNCTION_BLOCK FB_X`n
 StatusCheck 'second VAR before END_VAR -> LINT-PARSE-003' (Decl "PROGRAM P`nVAR`n    x : INT;`nVAR_INPUT`n    y : INT;`nEND_VAR") 'parse-failed' 'LINT-PARSE-003'
 StatusCheck 'TYPE without END_TYPE -> LINT-PARSE-003' (Decl "TYPE ST_X :`nSTRUCT`n    a : INT;`nEND_STRUCT") 'parse-failed' 'LINT-PARSE-003'
 StatusCheck 'B2 missing semicolon -> unsupported (incomplete), not a silent downgrade' (Decl "PROGRAM P`nVAR`n    x : INT`nEND_VAR") 'unsupported' 'unsupported-syntax:missing-semicolon'
+# issue #286 N4: a declaration without a type is never legal (the compiler rejects it) -> not a declaration the parser accepts
+StatusCheck 'N4 k : ; (no type) -> unsupported (incomplete), not ok' (Decl "METHOD M_X : BOOL`nVAR`n    k : ;`nEND_VAR") 'unsupported' 'unsupported-syntax:var-type-missing'
+StatusCheck 'N4 k : := 5; (initial value, no type) -> unsupported' (Decl "PROGRAM P`nVAR`n    k : := 5;`nEND_VAR") 'unsupported' 'unsupported-syntax:var-type-missing'
 $d = Decl "METHOD M : BOOL;`nVAR_INPUT n : INT; END_VAR"
 Check 'nit: METHOD M : BOOL; -> returnType BOOL' ($d['status'] -eq 'ok' -and $d['returnType'] -eq 'BOOL') ($d | ConvertTo-Json -Depth 2 -Compress)
 $d = Decl "PUBLIC`nVAR`nEND_VAR"

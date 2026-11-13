@@ -35,6 +35,10 @@ function Invoke-TcLintCandidate {
         Findings of OTHER objects that the disk project already has are in data.preExisting, outside verdict /
         unresolved / requiresDisposition (data.projectVerdict = the disk project without the candidate). A name a
         rule needs that the project cannot resolve, or that sits in an unreadable object -> LINT_CONTEXT_REQUIRED.
+        In a project with library references an unqualified unknown name may be a library constant
+        (MAX_STRING_LENGTH): it cannot be evaluated from text and is recorded as coverage.rulesSkipped
+        library-symbol-unresolved:<name> (the rule that needs the value skips that position, the others run), not
+        LINT_CONTEXT_REQUIRED; do not declare it in the project (that would shadow the library value).
 
         data: as Invoke-TcLintProject, plus contextLevel (project / text-only), candidate { objectKind,
         objectPath, file, overlay (replaced / added / text-only), contextRequired[] }, crossObject { checked,
@@ -368,7 +372,7 @@ function Invoke-TcLintCandidate {
         'LINT_PARSE_FAILED' { 'Lint could not parse the candidate (see LINT-PARSE-* in data.diagnostics)' }
         'LINT_CONTEXT_REQUIRED' {
             if ($textOnly) { "The candidate needs the project to be checked ($(@($res['candidate']['contextRequired']) -join ', ')): give -PlcProjectPath" }
-            else { "Names the rules need cannot be resolved in the project ($(@($res['candidate']['contextRequired']) -join ', ')): declare them, or repair the object that cannot be read" }
+            else { "Names the rules need cannot be resolved in the project ($(@($res['candidate']['contextRequired']) -join ', ')): correct a misspelt name or add the missing declaration where it belongs (unresolved-identifier), repair the unreadable file (context-object-broken); see error.hint" }
         }
         'LINT_INCOMPLETE' { 'Lint is incomplete: a default-blocking rule could not run on part of the candidate (data.coverage.blockingRulesSkipped / notAnalyzed)' }
         default { "Lint found $($summary['blocking']) blocking finding(s) in the candidate, $(if ($null -ne $cross) { $cross.blocking } else { 0 }) new blocking finding(s) in other objects (data.crossObject.newFindings)" }

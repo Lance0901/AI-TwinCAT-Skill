@@ -284,7 +284,15 @@ $fn = { param($fx) Add-Pou $fx 'F_Other' "FUNCTION F_Other : BOOL`n" 'F_Other :=
 $r = Fb "    b : BOOL;`n    n : INT;" "WHILE NOT b DO`n    F_Other();`n    n := n + 1;`nEND_WHILE" $fn
 Check 'QB1c project function in the body -> not blocking, rulesSkipped call-in-body (not silent)' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := b);`nEND_WHILE"
-Check 'QB1d condition variable passed to the catalog FB -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+# issue #286 N5: an input (:=) of a Tc2_Standard stateful FB is VAR_INPUT (by value, no VAR_IN_OUT; InfoSys CTUD 74402059 and the
+# TypeCatalog.json source pages): the call cannot write the variable -> the busy-wait is reported (was call-in-body)
+Check 'QB1d / I-N5a condition variable given only to an input of R_TRIG -> blocking busy-wait, no call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].blocking -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 0) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    fbT : TON;" "WHILE NOT b DO`n    fbT(IN := NOT b AND TRUE, PT := T#10MS);`nEND_WHILE"
+Check 'I-N5b condition variable in an input expression of TON -> blocking busy-wait' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 0) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    mc : MC_MoveAbsolute;`n    ax : AXIS_REF;" "WHILE NOT b DO`n    mc(Axis := ax, Execute := b);`nEND_WHILE"
+Check 'I-N5c condition variable given to a Tc2_MC2 FB (parameter directions not in the catalog, Axis is VAR_IN_OUT) -> still call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    rt : R_TRIG;`n    p : POINTER TO BOOL;" "WHILE NOT b DO`n    rt(CLK := b);`n    p := ADR(b);`nEND_WHILE"
+Check 'I-N5d input of R_TRIG plus ADR(b) in the body -> still call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    p : POINTER TO BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    p := ADR(b);`n    rt(CLK := TRUE);`nEND_WHILE"
 Check 'QB1e ADR(condition variable) in the body -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
 $r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := TRUE, Q => b);`nEND_WHILE"
@@ -384,6 +392,158 @@ $r = Fb "    i : BYTE;`n    b : BOOL;" "FOR i := 0 TO 254 BY 2 DO`n    IF b THEN
 $d = Diags $r 'SCAN-FOR-001'
 Check 'QN5c step-overflow with EXIT -> warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow,exit-in-body' -and -not $d[0].blocking) (Brief $r)
 
+# ================================================================ I  issue #286 (fifth review of PR #284: should-fix S1-S9, nits)
+function SkipR($r, [string]$Rule) { return @(Skips $r $Rule | ForEach-Object { $_.reason }) }
+# S1 bit access writes the variable
+$r = Fb "    nW : WORD;" "WHILE nW = 0 DO`n    nW.3 := TRUE;`nEND_WHILE"
+Check 'I-S1a WHILE nW = 0 DO nW.3 := TRUE -> the bit write writes nW, no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success) (Brief $r)
+$r = Fb "    nW : WORD;`n    n : INT;" "WHILE nW = 0 DO`n    n.3 := TRUE;`nEND_WHILE"
+Check 'I-S1b positive control: bit write of another variable -> still blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].blocking) (Brief $r)
+# S3 small non-zero reals are not 0
+$r = Fb "    x : LREAL;`n    y : LREAL;`nEND_VAR`nVAR CONSTANT`n    cEps : LREAL := 1E-30;`n    cS : LREAL := 1E-15 * 1E-15;" "x := y / cEps;`nx := y / 1.0E-30;`nx := y / 1.5E-29;`nx := y / cS;"
+Check 'I-S3 / 1E-30 (constant, literal, 1.5E-29, 1E-15 * 1E-15) -> not a division by 0' (@((Diags $r 'SAFETY-DIV-001') | ForEach-Object { $_ } | Where-Object { $_.variant -like 'constant-zero*' }).Count -eq 0 -and $r.success) (Brief $r)
+# S4 named constant 0 under a test of the constant
+$r = Fb "    x : INT;`n    y : INT;`nEND_VAR`nVAR CONSTANT`n    cFilt : INT := 0;" "IF cFilt <> 0 THEN`n    x := y / cFilt;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'I-S4 IF cFilt <> 0 THEN y / cFilt (cFilt = 0) -> warning guarded-constant-zero, not blocking, pass' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking -and $d[0].severity -eq 'warning' -and $r.success) (Brief $r)
+# S5 SCAN-ARR-001 guards in the same expression follow the short-circuit rules
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    n : INT;" "FOR i := 0 TO 10 DO`n    n := n + SEL(i <= 9, 0, a[i]);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5a SEL(i <= 9, 0, a[i]) -> guarded warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    b := i <= 9 AND_THEN a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5b b := i <= 9 AND_THEN a[i] > 0 -> guarded warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    IF i <= 9 AND a[i] > 0 THEN`n        b := TRUE;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5c IF i <= 9 AND a[i] > 0 (AND evaluates every operand, reads a[10]) -> blocking' ($d.Count -eq 1 -and $d[0].blocking -and $null -eq $d[0].variant) (Brief $r)
+# S7 a formal parameter with the counter's name is not a write of the counter
+$fbc = { param($fx) Add-Pou $fx 'FB_C' "FUNCTION_BLOCK FB_C`nVAR_INPUT`n    nIndex : INT;`nEND_VAR`n" 'nIndex := nIndex;' }
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    nIndex : INT;`n    fbC : FB_C;" "FOR nIndex := 0 TO 10 DO`n    fbC(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $fbc
+Check 'I-S7a fbC(nIndex := nIndex) in FOR nIndex -> SCAN-ARR-001 blocking, no counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written*' }).Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$fbc2 = { param($fx) Add-Pou $fx 'FB_C' "FUNCTION_BLOCK FB_C`nVAR_INPUT`n    nIndex : BYTE;`nEND_VAR`n" 'nIndex := nIndex;' }
+$r = Fb "    nIndex : BYTE;`n    fbC : FB_C;" "FOR nIndex := 0 TO 255 DO`n    fbC(nIndex := nIndex);`nEND_FOR" $fbc2
+Check 'I-S7b BYTE 0 TO 255 with fbC(nIndex := nIndex) -> SCAN-FOR-001 blocking' ((Diags $r 'SCAN-FOR-001').Count -eq 1 -and (Diags $r 'SCAN-FOR-001')[0].blocking) (Brief $r)
+# S9 write through a REFERENCE member of a structure
+$dutR = { param($fx) Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\ST_R.TcDUT') ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"ST_R`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[TYPE ST_R :`nSTRUCT`n    r : REFERENCE TO BOOL;`nEND_STRUCT`nEND_TYPE`n]]></Declaration>`n  </DUT>`n</TcPlcObject>"); $fx.Items.Add('DUTs\ST_R.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray() }
+$r = Fb "    b : BOOL;`n    st : ST_R;" "st.r REF= b;`nWHILE NOT b DO`n    st.r := TRUE;`nEND_WHILE" $dutR
+Check 'I-S9 st.r := TRUE with ST_R.r : REFERENCE TO BOOL -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# S2 the condition is written only from values that do not change in the loop (owner decision in #286)
+$r = Fb "    bSensor : BOOL;`n    bIn AT %IX0.0 : BOOL;" "bSensor := bIn;`nWHILE NOT bSensor DO`n    bSensor := bIn;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2a bSensor := bIn (AT %IX) in the body -> invariant-input-write warning (InfoSys order not stated: not verified), in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-input-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition -and $d[0].message -like '*6828869003*') (Brief $r)
+$r = Fb "    bBusy : BOOL;`n    fbT : TON;" "WHILE NOT bBusy DO`n    bBusy := fbT.Q;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2b bBusy := fbT.Q, fbT not called in the loop -> invariant-write, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+$gvIo = { param($fx) Add-Gvl $fx 'GVL_Io' "VAR_GLOBAL`n    bStart AT %IX1.0 : BOOL;`nEND_VAR`n" }
+$r = Fb "    bOk : BOOL;" "WHILE NOT bOk DO`n    bOk := GVL_Io.bStart;`nEND_WHILE" $gvIo
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2c bOk := GVL_Io.bStart (AT %I in a GVL) -> invariant-input-write warning' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-input-write' -and -not $d[0].blocking) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    bOther : BOOL;`n    n : INT;`nEND_VAR`nVAR CONSTANT`n    cOn : BOOL := FALSE;" "WHILE NOT bDone DO`n    n := n + 1;`n    bDone := cOn OR bOther;`n    IF bOther THEN`n        bDone := TRUE;`n    END_IF`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2d constant / unwritten variable / literal under an invariant IF -> invariant-write, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+# S2 counter-examples: no finding
+$r = Fb "    bFound : BOOL;`n    i : INT;`n    arr : ARRAY[0..9] OF INT;`n    nKey : INT;" "i := 0;`nWHILE NOT bFound DO`n    bFound := arr[i] = nKey;`n    i := i + 1;`nEND_WHILE"
+Check 'I-S2e counter-example: search loop bFound := arr[i] = nKey; i := i + 1 -> no SCAN-LOOP finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    x : INT;" "WHILE NOT bDone DO`n    bDone := x > 5;`n    x := x + 1;`nEND_WHILE"
+Check 'I-S2f counter-example: source written in the loop -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    ton1 : TON;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    bDone := ton1.Q AND bX;`nEND_WHILE"
+Check 'I-S2g counter-example: source is the output of a block the loop calls -> no invariant finding' (@((Diags $r 'SCAN-LOOP-001') | ForEach-Object { $_ } | Where-Object { $_.variant -like 'invariant*' }).Count -eq 0) (Brief $r)
+$fnR = { param($fx) Add-Pou $fx 'F_Ready' "FUNCTION F_Ready : BOOL`n" 'F_Ready := TRUE;' }
+$r = Fb "    bDone : BOOL;" "WHILE NOT bDone DO`n    bDone := F_Ready();`nEND_WHILE" $fnR
+Check 'I-S2h counter-example: source is a function result -> no finding, rulesSkipped' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001').Count -ge 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    refB : REFERENCE TO BOOL;" "refB REF= bX;`nWHILE NOT bDone DO`n    bDone := refB;`nEND_WHILE"
+Check 'I-S2i counter-example: source through a REFERENCE -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    pB : POINTER TO BOOL;" "WHILE NOT bDone DO`n    bDone := pB^;`nEND_WHILE"
+Check 'I-S2j counter-example: source through a POINTER -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# PR #289 review 1 (worker G): guard direction for S4 / S5, GVL source for S2, source written in the loop
+$cfv = "    x : REAL;`n    y : REAL;`nEND_VAR`nVAR CONSTANT`n    cF : REAL := 0.0;"
+$r = Fb $cfv "IF cF = 0 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1a IF cF = 0 THEN y / cF (the test does not exclude 0) -> constant-zero-div blocking' ($d.Count -eq 1 -and $d[0].blocking -and $d[0].variant -ne 'guarded-constant-zero') (Brief $r)
+$r = Fb $cfv "IF cF = 0 THEN`n    y := 0;`nELSE`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1b ELSE of IF cF = 0 -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF NOT (cF = 0) THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1c IF NOT (cF = 0) THEN -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF cF > 0 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1d IF cF > 0 THEN -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF 0 <> cF THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1e IF 0 <> cF (constant on the right) -> not proven, stays blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF cF <> 0 AND x > 1 THEN`n    y := x / cF;`nEND_IF`nIF cF = 0 OR x > 1 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1f cF <> 0 AND x -> warning; cF = 0 OR x -> blocking' ($d.Count -eq 2 -and -not $d[0].blocking -and $d[1].blocking) (Brief $r)
+$av = "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    k : INT;`n    b : BOOL;"
+$r = Fb $av "FOR i := 0 TO 10 DO`n    k := SEL(i > 9, 0, a[i]);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2a SEL(i > 9, 0, a[i]): i = 10 selects a[i] -> blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    k := SEL(i > 9, a[i], 0);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2b SEL(i > 9, a[i], 0): i = 10 selects 0 -> guarded warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    b := i <= 9 OR_ELSE a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2c i <= 9 OR_ELSE a[i]: i = 10 evaluates a[i] -> blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    b := i > 9 OR_ELSE a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2d i > 9 OR_ELSE a[i]: i = 10 stops at the left operand -> guarded warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$av2 = "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    k : INT;`n    bS : BOOL;`n    bF : BOOL;"
+foreach ($c in @(
+    @('R2e', 'bF := i <= 9 AND_THEN bS OR_ELSE a[i] > 0;'),
+    @('R2f', 'bF := (i <= 9 AND_THEN bS) OR_ELSE a[i] > 0;'),
+    @('R2g', 'bF := i <= 9 AND_THEN bS OR a[i] > 0;'),
+    @('R2h', 'bF := i <= 9 AND_THEN bS XOR a[i] > 0;'),
+    @('R2i', 'IF i <= 9 AND_THEN bS OR_ELSE a[i] > 0 THEN k := 1; END_IF'))) {
+    $r = Fb $av2 "FOR i := 0 TO 10 DO`n    $($c[1])`nEND_FOR"
+    $d = Diags $r 'SCAN-ARR-001'
+    Check "$($c[0]) $($c[1]): a[i] is not in the right operand of the short-circuit -> blocking" ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+}
+foreach ($c in @(
+    @('R2j', 'k := SEL(i <= 9, 0, a[i]);'),
+    @('R2k', 'bF := i <= 9 AND_THEN a[i] > 0;'),
+    @('R2l', 'bF := i > 9 OR_ELSE a[i] > 0;'),
+    @('R2m', 'bF := (i <= 9) AND_THEN (a[i] > 0);'),
+    @('R2n', 'bF := bS AND_THEN i <= 9 AND_THEN a[i] > 0;'))) {
+    $r = Fb $av2 "FOR i := 0 TO 10 DO`n    $($c[1])`nEND_FOR"
+    $d = Diags $r 'SCAN-ARR-001'
+    Check "$($c[0]) $($c[1]) -> guarded warning" ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+}
+$gvD = { param($fx) Add-Gvl $fx 'GVL_T' "VAR_GLOBAL`n    gDone : BOOL;`nEND_VAR`nVAR_GLOBAL CONSTANT`n    cDone : BOOL := FALSE;`nEND_VAR`n" }
+$r = Fb "    bS : BOOL;" "WHILE NOT bS DO`n    bS := GVL_T.gDone;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3a bS := GVL_T.gDone (VAR_GLOBAL) -> invariant-global-write warning, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-global-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bL : BOOL;" "WHILE NOT bS DO`n    bS := GVL_T.cDone OR bL;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3b bS := GVL_T.cDone OR bL (VAR_GLOBAL CONSTANT is not a global-write source) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bL : BOOL;" "WHILE NOT bS DO`n    bS := bL;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3c bS := bL (local, never written) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;" "WHILE NOT GVL_T.gDone DO`n    bS := TRUE;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3d WHILE NOT GVL_T.gDone never written (master behaviour) -> still blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bX : BOOL;`n    bIn AT %I* : BOOL;" "WHILE NOT bS DO`n    bS := bX;`n    bX := bIn;`nEND_WHILE"
+Check 'R4 bS := bX; bX := bIn -> not silent: rulesSkipped source-written-in-loop:bX' ((Diags $r 'SCAN-LOOP-001').Count -ge 1 -or (SkipR $r 'SCAN-LOOP-001') -contains 'source-written-in-loop:bX') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# S8 constant conditions, FOR start not constant, divisions in declarations
+$r = Fb "    n : INT;" "WHILE 1 = 1 DO`n    n := n + 1;`nEND_WHILE`nWHILE NOT FALSE DO`n    n := n + 1;`nEND_WHILE"
+Check 'I-S8a WHILE 1 = 1 / WHILE NOT FALSE without EXIT -> two blocking findings' ((Diags $r 'SCAN-LOOP-001').Count -eq 2 -and (Diags $r 'SCAN-LOOP-001')[0].blocking -and (Diags $r 'SCAN-LOOP-001')[1].blocking) (Brief $r)
+$r = Fb "    n : INT;`n    a : INT;" "WHILE a = a DO`n    n := n + 1;`nEND_WHILE`nWHILE 1 = 2 DO`n    n := n + 1;`nEND_WHILE"
+Check 'I-S8a2 counter-example: WHILE 1 = 2 -> no finding' (@((Diags $r 'SCAN-LOOP-001') | ForEach-Object { $_ } | Where-Object { $_.message -like '*1 = 2*' }).Count -eq 0) (Brief $r)
+$r = Fb "    i : BYTE;`n    nStart : BYTE;`n    n : INT;" "FOR i := nStart TO 254 BY 2 DO`n    n := n + 1;`nEND_FOR"
+Check 'I-S8b FOR i := nStart TO 254 BY 2 (BYTE) -> rulesSkipped step-overflow-start-not-constant' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and (SkipR $r 'SCAN-FOR-001') -contains 'step-overflow-start-not-constant') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-FOR-001') -join ','))
+$r = Fb "    x : INT := 7 MOD 0;`n    y : LREAL := 1.0 / 3.0;" "x := 1;"
+Check 'I-S8c MOD 0 in an initial value -> rulesSkipped declaration-initial-value-division (1.0 / 3.0 is evaluated, no record)' (@(SkipR $r 'SAFETY-DIV-001' | Where-Object { $_ -eq 'declaration-initial-value-division' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SAFETY-DIV-001') -join ','))
+# nits
+$r = Fb "    fPos : LREAL;`n    fTarget : LREAL;`n    n : INT;" "WHILE ABS(fPos - fTarget) > 0.1 DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-N1 WHILE ABS(fPos - fTarget) > 0.1 -> evaluated (blocking), not name-unresolved' ($d.Count -eq 1 -and $d[0].blocking -and (SkipR $r 'SCAN-LOOP-001') -notcontains 'name-unresolved') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    eMode : E_Mode;`n    n : INT;" "WHILE eMode <> E_Mode.Auto DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-N2 busy-wait message names eMode only, not the enum type / member' ($d.Count -eq 1 -and $d[0].message -like '*writes eMode and*' -and $d[0].message -notlike '*writes*E_MODE*' -and $d[0].message -notlike '*AUTO,*') (Brief $r)
+$dutA = { param($fx) Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\T_Arr.TcDUT') ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"T_Arr`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[TYPE T_Arr : ARRAY[1..10] OF INT;`nEND_TYPE`n]]></Declaration>`n  </DUT>`n</TcPlcObject>"); $fx.Items.Add('DUTs\T_Arr.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray() }
+$r = Fb "    a : T_Arr;" "a[11] := 0;" $dutA
+Check 'I-N5 constant index on an alias array type -> rulesSkipped (not silent)' ((Diags $r 'SAFETY-ARR-001').Count -eq 0 -and (SkipR $r 'SAFETY-ARR-001').Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SAFETY-ARR-001') -join ','))
+
 # ================================================================ M  metadata
 foreach ($id in 'SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001') {
     $m = @(& $mod { param($i) $t = (Get-TcLintEngine).Namespace; ("$t.RuleRegistry" -as [type])::Get($i) } $id)[0]
@@ -405,6 +565,63 @@ $x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'D1 all five rules fire on one section' (@('SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001' | Where-Object { (Diags $x $_).Count -ge 1 }).Count -eq 5) (Brief $x)
 Check 'D2 two runs and en-US / zh-TW byte-identical' ($outs[0] -ceq $outs[1] -and $outs[0] -ceq $outs[2]) ''
 
+# ================================================================ W  PR #289 independent review (SF4, SF5, nit 7, nit 8)
+# SF4: an unresolved unqualified name in the condition, not written and not passed in the body -> warning, not a skip
+$r = Fb "    n : INT;" "WHILE NOT gLibFlag DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-SF4a G1 WHILE NOT gLibFlag (unresolved) -> unresolved-condition-name warning, in unresolved, requiresDisposition' ($d.Count -eq 1 -and $d[0].variant -eq 'unresolved-condition-name' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition -and $r.success) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    n : INT;" "WHILE NOT gLibFlag DO`n    gLibFlag := TRUE;`nEND_WHILE"
+Check 'W-SF4b the body writes the unresolved name -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$fbP = { param($fx) Add-Pou $fx 'FB_P' "FUNCTION_BLOCK FB_P`nVAR`n    n : INT;`nEND_VAR`n" 'n := n + 1;' }
+$r = Fb "    fbP : FB_P;" "WHILE NOT gLibFlag DO`n    fbP();`nEND_WHILE" $fbP
+Check 'W-SF4c a project FB call in the body -> no finding, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'call-in-body') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    n : INT;`n    bX : BOOL;" "WHILE NOT gLibFlag AND NOT bX DO`n    bX := n > 3;`n    n := n + 1;`nEND_WHILE"
+Check 'W-SF4d another condition variable is written in the body -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# SF5: the counter given to a VAR_IN_OUT / output of a call may be written by the callee
+$io = { param($fx) Add-Pou $fx 'FB_IO' "FUNCTION_BLOCK FB_IO`nVAR_IN_OUT`n    io : INT;`nEND_VAR`n" 'io := 0;' }
+$io2 = { param($fx) Add-Pou $fx 'FB_IO' "FUNCTION_BLOCK FB_IO`nVAR_IN_OUT`n    nIndex : INT;`nEND_VAR`n" 'nIndex := 0;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_IO;" "FOR nIndex := 0 TO 10 DO`n    fbC(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $io2
+Check 'W-SF5a fbC(nIndex := nIndex), formal VAR_IN_OUT -> no SCAN-ARR-001, rulesSkipped counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_IO;" "FOR nIndex := 0 TO 10 DO`n    fbC(io := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $io
+Check 'W-SF5b V1 fbC(io := nIndex), formal VAR_IN_OUT -> no SCAN-ARR-001, counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$ioB = { param($fx) Add-Pou $fx 'FB_IOB' "FUNCTION_BLOCK FB_IOB`nVAR_IN_OUT`n    io : BYTE;`nEND_VAR`n" 'io := 0;' }
+$r = Fb "    i : BYTE;`n    fbC : FB_IOB;" "FOR i := 0 TO 255 DO`n    fbC(io := i);`nEND_FOR" $ioB
+Check 'W-SF5c BYTE 0 TO 255 with fbC(io := i) VAR_IN_OUT -> no SCAN-FOR-001, counter-written-in-body' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and @(SkipR $r 'SCAN-FOR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-FOR-001') -join ','))
+$out = { param($fx) Add-Pou $fx 'FB_O' "FUNCTION_BLOCK FB_O`nVAR_OUTPUT`n    nOut : INT;`nEND_VAR`n" 'nOut := 0;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbC : FB_O;" "FOR nIndex := 0 TO 10 DO`n    fbC(nOut => nIndex);`n    a[nIndex] := 0;`nEND_FOR" $out
+Check 'W-SF5d fbC(nOut => nIndex) -> counter written, no SCAN-ARR-001' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    fbL : FB_NotInProject;" "FOR nIndex := 0 TO 10 DO`n    fbL(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR"
+Check 'W-SF5e library / unknown FB, direction of the formal unknown -> no SCAN-ARR-001, counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    ctu1 : CTU;" "FOR nIndex := 0 TO 10 DO`n    ctu1(CU := TRUE, PV := nIndex);`n    a[nIndex] := 0;`nEND_FOR"
+Check 'W-SF5f Tc2_Standard CTU (no VAR_IN_OUT) PV := nIndex -> not a write, SCAN-ARR-001 blocking' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$fnIo = { param($fx) Add-Pou $fx 'F_Io' "FUNCTION F_Io : BOOL`nVAR_IN_OUT`n    io : INT;`nEND_VAR`n" 'io := 0; F_Io := TRUE;' }
+$r = Fb "    nIndex : INT;`n    a : ARRAY[0..9] OF INT;`n    b : BOOL;" "FOR nIndex := 0 TO 10 DO`n    b := F_Io(io := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $fnIo
+Check 'W-SF5g FUNCTION F_Io(io := nIndex) VAR_IN_OUT -> counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 0 -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written-in-body*' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+# nit 7: sources another task / ADS may write (PROGRAM VAR, FB VAR_INPUT) -> warning like a GVL source; FB VAR / method local stay blocking
+$fx = New-Fx
+Add-Pou $fx 'MAIN' "PROGRAM MAIN`nVAR`n    bHmiStart : BOOL;`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bHmiStart;`nEND_WHILE"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7a source = PROGRAM VAR (HMI may write MAIN.bHmiStart over ADS) -> invariant-external-write warning, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-external-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.success) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR_INPUT`n    bStart : BOOL;`nEND_VAR`nVAR`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bStart;`nEND_WHILE"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7b source = FB VAR_INPUT -> invariant-external-write warning' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-external-write' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$r = Fb "    bOk : BOOL;`n    bInt : BOOL;" "WHILE NOT bOk DO`n    bOk := bInt;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7c source = FB internal VAR -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    n : INT;`nEND_VAR`n" 'n := 1;' (Method 'M_Wait' "METHOD M_Wait : BOOL`nVAR_INPUT`n    bIn : BOOL;`nEND_VAR`nVAR`n    bOk : BOOL;`nEND_VAR`n" "WHILE NOT bOk DO`n    bOk := bIn;`nEND_WHILE")
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N7d source = method VAR_INPUT (a value of the call) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+# nit 8: a bit index given by a constant writes the variable; WHILE TRUE OR b says the condition is always TRUE
+$r = Fb "    nW : WORD;`nEND_VAR`nVAR CONSTANT`n    cBit : INT := 3;" "WHILE nW = 0 DO`n    nW.cBit := TRUE;`nEND_WHILE"
+Check 'W-N8a nW.cBit := TRUE (constant bit index) -> writes nW, no finding, no member-type-unknown' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and ((SkipR $r 'SCAN-LOOP-001') -join ',') -eq '') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    b : BOOL;`n    n : INT;" "WHILE TRUE OR b DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'W-N8b WHILE TRUE OR b -> blocking, message says the condition is always TRUE' ($d.Count -eq 1 -and $d[0].blocking -and $d[0].message -like '*always TRUE*') (Brief $r)
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 "failed: $fail"
 exit $fail
