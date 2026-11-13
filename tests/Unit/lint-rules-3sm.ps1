@@ -78,13 +78,13 @@ $sm3 = "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 20;`n20:`n    
 # ================================================================ P  positives
 $r = Fb "    nState : INT;`n    b : BOOL;" "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 20;`n20:`n    IF b THEN`n        nState := 30;`n    END_IF`nEND_CASE"
 $d = Diags $r
-Check 'P1 nState := 30, labels 0 / 10 / 20, no ELSE -> one warning value-not-handled at the assignment, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'value-not-handled' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and $d[0].section -eq 'implementation' -and $d[0].line -eq 9 -and $d[0].message -like '*30*' -and (Unres $r).Count -eq 1 -and $r.data.requiresDisposition -and $r.success) (Brief $r)
+Check 'P1 nState := 30, labels 0 / 10 / 20, no ELSE -> one warning value-not-handled at the assignment, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'value-not-handled' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and $d[0].section -eq 'implementation' -and $d[0].line -eq 8 -and $d[0].message -like '*30*' -and (Unres $r).Count -eq 1 -and $r.data.requiresDisposition -and $r.success) (Brief $r)
 $r = Fb "    eState : E_St;" "CASE eState OF`nE_St.Idle:`n    eState := E_St.Run;`nE_St.Run:`n    eState := E_St.Done;`nEND_CASE" '' $enum
 $d = Diags $r
 Check 'P2 enum eState := E_St.Done, CASE has no Done -> one finding naming Done' ($d.Count -eq 1 -and $d[0].line -eq 5 -and $d[0].message -like '*Done*') (Brief $r)
-$r = Fb "    nState : INT := 5;" "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 0;`nEND_CASE"
+$r = Fb "    nState : INT := 5;" "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 7;`nEND_CASE`nIF nState = 5 THEN`n    nState := 0;`nEND_IF`nnState := 5;"
 $d = Diags $r
-Check 'P3 declaration initial value 5, CASE has 0 / 10 -> finding at the declaration' ($d.Count -eq 1 -and $d[0].section -eq 'declaration' -and $d[0].line -eq 3 -and $d[0].message -like '*5*') (Brief $r)
+Check 'P3 initial value 5 = idle (not reported, nor nState := 5); 7 not handled -> one finding' ($d.Count -eq 1 -and $d[0].line -eq 5 -and $d[0].message -like '*7*') (Brief $r)
 $r = Fb "    nState : INT;" "CASE nState OF`n0:`n    nState := 15;`n10..19:`n    nState := 25;`nEND_CASE"
 $d = Diags $r
 Check 'P4 25 outside 10..19 -> one finding (15 is inside the range, not reported)' ($d.Count -eq 1 -and $d[0].line -eq 5 -and $d[0].message -like '*25*') (Brief $r)
@@ -137,10 +137,17 @@ $r = Fb "    eState : E_St;" "CASE eState OF`nE_St.Idle:`n    eState := E_St.Run
 Check 'N14 enum: every assigned member handled -> no finding' (NoSm $r) ((Brief $r) + ' ' + (SkipText $r))
 $r = Fb "    eState : E_Lib;" "CASE eState OF`nE_Lib.A:`n    eState := E_Lib.B;`nEND_CASE"
 Check 'N15 selector of a type outside the project -> no finding, rulesSkipped' ((NoSm $r) -and (SkipText $r) -like '*:eState*') ((Brief $r) + ' ' + (SkipText $r))
-$r = Fb "    nState : INT;" "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 20;`nEND_CASE" (Method 'M_Do' "METHOD M_Do`nVAR`n    nState : INT;`nEND_VAR`n" "nState := 99;")
+$r = Fb "    nState : INT;" "CASE nState OF`n0:`n    nState := 10;`n10:`n    nState := 0;`nEND_CASE" (Method 'M_Do' "METHOD M_Do`nVAR`n    nState : INT;`nEND_VAR`n" "nState := 99;")
 Check 'N16 method local nState (shadowing) := 99 is not the FB variable -> no finding' (NoSm $r) ((Brief $r) + ' ' + (SkipText $r))
 $r = Fb "    nState : INT;`n    fbX : FB_X;" "$sm3`nfbX(nOut => nState);" '' { param($fx) Add-Pou $fx 'FB_X' "FUNCTION_BLOCK FB_X`nVAR_OUTPUT`n    nOut : INT;`nEND_VAR`n" "nOut := 1;" }
 Check 'N17 fbX(nOut => nState) -> no finding, value-not-evaluable' ((NoSm $r) -and (SkipText $r) -like '*value-not-evaluable:nState*') ((Brief $r) + ' ' + (SkipText $r))
+
+$r = Fb "    iStep : INT;`n    bStart : BOOL;" "IF bStart THEN`n    iStep := 100;`nEND_IF`nCASE iStep OF`n100:`n    iStep := 200;`n200:`n    iStep := 0;`nEND_CASE"
+Check 'N18 iStep := 0 back to the implicit initial value (idle, no label 0) -> no finding' ((NoSm $r) -and (SkipText $r) -eq '') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    i : INT := 1;`n    b : BOOL;" "CASE i OF`n1:`n    IF b THEN`n        i := 2;`n    END_IF`n2:`n    IF b THEN`n        i := 3;`n    END_IF`n3:`n    i := 1;`nEND_CASE"
+Check 'N19 label right after END_IF without ";" (corpus FB_AdvancedHoming) -> labels 2 / 3 seen, no finding' (NoSm $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    eState : E_St;" "CASE eState OF`nE_St.Run:`n    eState := E_St.Done;`nE_St.Done:`n    eState := E_St.Idle;`nEND_CASE" '' $enum
+Check 'N20 enum without initial value back to its first member (implicit idle, IEC default) -> no finding, rulesSkipped initial-value-implicit' ((NoSm $r) -and (SkipText $r) -like '*initial-value-implicit:eState*') ((Brief $r) + ' ' + (SkipText $r))
 
 # ================================================================ X  suppression / unresolved
 $r = Fb "    nState : INT;" "CASE nState OF`n0:`n    // tcauto-lint-disable-next-line SCAN-SM-001: 30 is a deliberate idle state`n    nState := 30;`nEND_CASE"
@@ -171,7 +178,7 @@ $outs = foreach ($cul in 'en-US', 'zh-TW', 'en-US') {
     $x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj; $x.data.Remove('newSuppressionsBasisReason'); Js $x
 }
 $x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
-Check 'D1 three findings (5, 30, Done) and value-not-evaluable on one FB' ((Diags $x).Count -eq 3 -and (SkipText $x) -like '*value-not-evaluable:nState*') ((Brief $x) + ' ' + (SkipText $x))
+Check 'D1 two findings (30, Done; initial value 5 is idle) and value-not-evaluable on one FB' ((Diags $x).Count -eq 2 -and (SkipText $x) -like '*value-not-evaluable:nState*') ((Brief $x) + ' ' + (SkipText $x))
 Check 'D2 two runs and en-US / zh-TW byte-identical' ($outs[0] -ceq $outs[1] -and $outs[0] -ceq $outs[2]) ''
 
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
