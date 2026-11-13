@@ -2,6 +2,13 @@ function Get-TcPlcState {
     <#
     .SYNOPSIS
         Reads the current PLC runtime state via ADS.
+    .DESCRIPTION
+        data.state / adsState / deviceState are the PLC port of the module ADS session (851 by
+        default). #287: data.systemState / systemAdsState / systemStateReadAt are the TwinCAT system
+        service (port 10000) of the same target, read once more right after; 'Exception' (adsState
+        19) there means a PLC-level Run / Reset cannot recover it (Set-TcPlcState refuses with
+        SYSTEM_EXCEPTION). A failed port 10000 read does not fail this command: systemState is then
+        $null and data.systemStateError has the reason.
     #>
     [CmdletBinding()]
     param()
@@ -14,6 +21,7 @@ function Get-TcPlcState {
         $stateInfo = $script:TcAdsClient.ReadState()
         $adsState = $stateInfo.AdsState
         $deviceState = $stateInfo.DeviceState
+        $sys = Read-TcSystemAdsState -AmsNetId ([string]$script:TcAdsAmsNetId)   # #287, never throws
 
         # Map ADS state to friendly name
         $stateName = switch ([int]$adsState) {
@@ -42,6 +50,10 @@ function Get-TcPlcState {
             adsState    = [int]$adsState
             deviceState = $deviceState
             reconnected = $reconnected
+            systemState       = $sys.state
+            systemAdsState    = $sys.adsState
+            systemStateReadAt = $sys.readAt
+            systemStateError  = $sys.error
         })
     }
     catch {

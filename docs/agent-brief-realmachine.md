@@ -23,7 +23,7 @@
 
 ## 規則
 
-1. **只碰自己的 IDE**:用 `Connect-TcIde -SolutionPath <自己的複本>` 接自己的 IDE;結束時用 `Disconnect-TcIde -Quit` 只關自己的(必要時加 `-Kill`,只限本 session 啟動的)。**絕不** `Stop-Process` 別人的 XAE / VS。`Connect-TcIde` 沒帶 `-SolutionPath` 時不會 attach 使用者的 IDE,回 `IDE_ATTACH_CONSENT_REQUIRED`(#281):測試腳本一律帶 `-SolutionPath` 與 `-ProgId`,收到這個碼就停下回報,不要自己換成 `-ProcessId`。例外只有兩個:自己用 `Start-Process -PassThru` 啟動的 watcher(規則 7,只停記下的那個 pid),以及「UmRT 復原」一節裡卡死的 `TcSystemServiceUm`。
+1. **只碰自己的 IDE**:用 `Connect-TcIde -SolutionPath <自己的複本>` 接自己的 IDE;結束時用 `Disconnect-TcIde -Quit` 只關自己的(必要時加 `-Kill`,只限本 session 啟動的)。**絕不** `Stop-Process` 別人的 XAE / VS。`Connect-TcIde` 沒帶 `-SolutionPath` 時不會 attach 使用者的 IDE,回 `IDE_ATTACH_CONSENT_REQUIRED`(#281);帶了 `-SolutionPath` 而那個 sln 已開在非自有的 IDE 裡也一樣(#281 C,`data.reason = solution-open-in-non-owned-ide`,不另開第二個):測試腳本一律帶 `-SolutionPath` 與 `-ProgId`,收到這個碼就停下回報,不要自己換成 `-ProcessId`。例外只有兩個:自己用 `Start-Process -PassThru` 啟動的 watcher(規則 7,只停記下的那個 pid),以及「UmRT 復原」一節裡卡死的 `TcSystemServiceUm`。
 2. **用複本**:測試前把 solution 複製到本機非 OneDrive 的工作目錄,只對複本操作,不動原專案。
 3. **每步有 timeout,整體有 deadline**:每個 COM / ADS 步驟都帶 `-TimeoutSec`(或用外層 `Start-Process -PassThru` 加等待上限);整個任務另設總 deadline,時間到就收尾並回報。
 4. **回報節奏**:**每完成一步或每 10 分鐘回報一行**(做了什麼、結果、耗時)。**任一步卡 10 分鐘就先停下回報**,不要自己繼續猜。
@@ -53,3 +53,5 @@ Start-Process "$env:TWINCAT3DIR\Runtimes\bin\TcSystemServiceUm.exe" -ArgumentLis
 ```
 
 重啟後 runtime 停在 Config,要重新 `Enable-TcConfig -Force`(實測 2026-10-21,見 troubleshooting「SYSTEM_STATE_TIMEOUT」)。
+
+**PLC exception 之後也要重啟**(#287):本機 UmRT 上任何 PLC exception(page fault `0xc0000005`、整數除以 0 `0xc0000094`)之後,同一個 `TcSystemServiceUm` 行程即使 `Enable-TcConfig -Force` 恢復到 Run,仍會在幾秒到幾十秒內自己 crash(`TcOsSys.dll` offset `0x39033`;實測 2026-11-13,XAE 4026.22 / VS2022,見 troubleshooting「SYSTEM_EXCEPTION」與 runtime-semantics-measured.md 第 7.2、7.3 節)。所以系統進過 Exception 時:經使用者同意後先修掉觸發例外的程式(或確認觸發條件已不存在)→ 照上面重啟 UmRT → `Get-TcSystemState` 讀回 Config → `Enable-TcConfig -Force`。Activate 後馬上又進 Exception(boot project autostart 再觸發;使用者經驗,未實測)就不要重複 Activate,停下回報。實體 TwinCAT RT / CX 未測。

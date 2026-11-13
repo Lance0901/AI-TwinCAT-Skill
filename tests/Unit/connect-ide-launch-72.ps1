@@ -300,6 +300,7 @@ try {
     Check 'B5 explicit -ProgId is launched as given' ($global:Launches72.Count -eq 1 -and $global:Launches72[0] -eq 'VisualStudio.DTE.17.0' -and $r.data.progIdSelectedBy -eq 'explicit') "launches=$($global:Launches72 -join ',') by=$($r.data.progIdSelectedBy)"
     Reset-State
     $global:Rot72 = @(New-RotEntry 9500 (New-FakeDte '17.0' $sln26L)); $global:Procs72[9500] = [DateTime]'2026-11-06T09:00:00'
+    & $mod { Add-TcLaunchedIde -ProcessId 9500 }   # #281 C: solution-match attaches only an IDE TcAuto may work in
     $r = Connect-TcIde -SolutionPath $sln26
     Check 'B6 IDE that has the solution open -> running-instance, nothing launched' ($global:Launches72.Count -eq 0 -and $r.data.progIdSelectedBy -eq 'running-instance' -and $r.data.ideProcessId -eq 9500) "launches=$($global:Launches72.Count) by=$($r.data.progIdSelectedBy) pid=$($r.data.ideProcessId)"
     Reset-State
