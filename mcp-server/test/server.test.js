@@ -77,6 +77,11 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.match(text, /^# TcAuto — how to use these tools/);
     assert.match(text, /local-umrt/);
     assert.doesNotMatch(text, /\r/);
+    // Claude Code cuts server instructions after 4,096 characters (https://code.claude.com/docs/en/mcp.md,
+    // "Tool search for MCP server authors"; 2,048 before v2.1.296): the whole card must fit, and the
+    // consent rule must come before the 2,048 cut of older versions.
+    assert.ok(text.length <= 4096, `instructions.md is ${text.length} characters (> 4096)`);
+    assert.ok(text.indexOf('ask once') > 0 && text.indexOf('ask once') < 2048, 'consent rule within the first 2,048 characters');
   });
 
   test('listTools returns 3 catalog + 5 composite tools with JSON schemas', async () => {
