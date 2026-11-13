@@ -23,7 +23,7 @@
 
 ## 規則
 
-1. **只碰自己的 IDE**:用 `Connect-TcIde -SolutionPath <自己的複本>` 接自己的 IDE;結束時用 `Disconnect-TcIde -Quit` 只關自己的(必要時加 `-Kill`,只限本 session 啟動的)。**絕不** `Stop-Process` 別人的 XAE / VS。例外只有兩個:自己用 `Start-Process -PassThru` 啟動的 watcher(規則 7,只停記下的那個 pid),以及「UmRT 復原」一節裡卡死的 `TcSystemServiceUm`。
+1. **只碰自己的 IDE**:用 `Connect-TcIde -SolutionPath <自己的複本>` 接自己的 IDE;結束時用 `Disconnect-TcIde -Quit` 只關自己的(必要時加 `-Kill`,只限本 session 啟動的)。**絕不** `Stop-Process` 別人的 XAE / VS。`Connect-TcIde` 沒帶 `-SolutionPath` 時不會 attach 使用者的 IDE,回 `IDE_ATTACH_CONSENT_REQUIRED`(#281):測試腳本一律帶 `-SolutionPath` 與 `-ProgId`,收到這個碼就停下回報,不要自己換成 `-ProcessId`。例外只有兩個:自己用 `Start-Process -PassThru` 啟動的 watcher(規則 7,只停記下的那個 pid),以及「UmRT 復原」一節裡卡死的 `TcSystemServiceUm`。
 2. **用複本**:測試前把 solution 複製到本機非 OneDrive 的工作目錄,只對複本操作,不動原專案。
 3. **每步有 timeout,整體有 deadline**:每個 COM / ADS 步驟都帶 `-TimeoutSec`(或用外層 `Start-Process -PassThru` 加等待上限);整個任務另設總 deadline,時間到就收尾並回報。
 4. **回報節奏**:**每完成一步或每 10 分鐘回報一行**(做了什麼、結果、耗時)。**任一步卡 10 分鐘就先停下回報**,不要自己繼續猜。

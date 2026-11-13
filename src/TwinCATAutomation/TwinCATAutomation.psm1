@@ -16,6 +16,7 @@ $script:TcIdeProcessId = $null     # pid of the connected IDE (Connect-TcIde); u
 $script:TcIdeMainHwnd = 0          # main window handle of the connected IDE (excluded from dialog scans)
 $script:TcIdeStartTime = $null     # StartTime of the TcIdeProcessId process (Connect-TcIde); Disconnect-TcIde -Kill refuses a pid whose start time differs (recycled pid)
 $script:TcIdeSelectedBy = $null    # Connect-TcIde data.selectedBy ('launched' | 'solution-match' | ...); Disconnect-TcIde -Kill only kills 'launched'
+$script:TcIdeConsentedIdes = @{}   # #281: IDEs bound with Connect-TcIde -ProcessId (key Get-TcIdeProcessKey, memory only): a later Connect-TcIde without parameters may attach them
 $script:TcLastModalDialog = $null  # last dialog seen by the Invoke-TcComRetry watchdog: @{ Title; Text; Kind; ReloadTarget; Hwnd; Buttons }
 $script:TcSolutionPath = $null     # full path of the .sln opened by Connect-TcIde / Open-TcProject; Reset-TcSolution reopens it
 $script:TcAutomationSettings = $null  # ITcAutomationSettings (DTE.GetObject('TcAutomationSettings')), SilentMode enabled by Connect-TcIde

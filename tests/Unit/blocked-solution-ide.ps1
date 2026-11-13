@@ -427,7 +427,7 @@ try {
     $readyDte | Add-Member -MemberType ScriptMethod -Name GetObject -Value { param($n) , $settings }.GetNewClosure()
     $global:FakeRot = @(@{ DisplayName = '!Fake.DTE.1:995'; Object = $readyDte; ProgId = 'Fake.DTE.1'; ProcessId = 995 })
     $global:SilentGetterThrows = $true
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId 995   # #281: a user IDE is attached only by its pid
     $global:SilentGetterThrows = $false
     $so = & $mod { Get-TcIdeSilentOriginal -ProcessId 995 }
     Check 'silent-unknown-connect' ($r.success -and $so -eq 'assumed-false' -and $r.data.silentModeOriginalUnknown -eq $true -and (& $mod { $false -eq $script:TcSilentModeOriginal })) "success=$($r.success) err=$($r.error.message) stored=$so"

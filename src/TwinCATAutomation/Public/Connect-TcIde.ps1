@@ -28,8 +28,13 @@ function Connect-TcIde {
             connection (TcDte / TcIdeConnected / TcSysManager) is cleared first, so a call that
             fails before an IDE is chosen leaves no connection at all; a failure after that
             (modal check, Solution.Open) leaves the chosen IDE connected;
-          - without -SolutionPath: an instance that has a TwinCAT project loaded,
-            otherwise the first instance (busy ones last).
+          - without -SolutionPath (and without -ProcessId / -TakeOverOrphan, #281): only an IDE
+            TcAuto may work in - launched by TcAuto (also by an earlier bridge, launched-ides.json)
+            or bound with -ProcessId earlier in this module instance -; among those one with a
+            TwinCAT project loaded, otherwise the first (busy ones last). Running IDEs that are
+            all someone else's (also one found only by GetActiveObject) are not attached and not
+            changed: IDE_ATTACH_CONSENT_REQUIRED, data.candidates { processId; progId;
+            solutionPath; startTime; mainWindowTitle }. No IDE running: launched as before.
         For every ROT entry DTE.Version and Solution.FullName are read: an instance
         that stays busy (RPC_E_CALL_REJECTED) after a short retry is kept as a
         last-resort candidate (solution '<busy>', only used without -SolutionPath); an
@@ -67,8 +72,10 @@ function Connect-TcIde {
         Before touching the solution the IDE process is checked for a modal dialog
         (Find-TcIdeModalDialog); if one is open IDE_MODAL_DIALOG is returned.
     .PARAMETER ProgId
-        COM ProgID to connect to / launch. When given, running instances with this
-        ProgID are preferred and only this ProgID is used for launching. Without it the IDE to
+        COM ProgID to connect to / launch. When given, only running instances with this ProgID
+        are candidates (#280: none -> this ProgID is launched, -NoLaunch: IDE_NOT_FOUND with
+        data.requestedProgId; an instance of another ProgID is never used) and only this ProgID
+        is used for launching. Without it the IDE to
         launch is derived from the .tsproj TcVersion of -SolutionPath; on a machine with several
         IDEs pass -SolutionPath or -ProgId (else PROGID_REQUIRED). An IDE this session launched
         for the same solution with another ProgID is not attached (IDE_LAUNCH_PENDING,
@@ -131,7 +138,10 @@ function Connect-TcIde {
         changed: an IDE this session did not launch stays data.ownedBySession = false, and
         Disconnect-TcIde -Quit refuses to quit it (IDE_NOT_OWNED). Not with -TakeOverOrphan
         (INVALID_PARAMS); -NoLaunch / -LaunchIfBlocked have no effect. Reset-TcSolution reconnects
-        with the same -ProcessId (never to another IDE that has the same .sln open).
+        with the same -ProcessId (never to another IDE that has the same .sln open). #281: also
+        the way to give consent after IDE_ATTACH_CONSENT_REQUIRED (only once the user agreed):
+        the IDE bound by -ProcessId is remembered in module memory, so a later Connect-TcIde
+        without parameters (Start-TcLifecycle) attaches it as well.
     .EXAMPLE
         Connect-TcIde
         Connect-TcIde -ProgId "VisualStudio.DTE.17.0"
@@ -361,11 +371,11 @@ function Connect-TcIde {
     # Busy instances are sorted last: only chosen when no readable instance exists.
     $candidates = @($readyCandidates) + @($busyCandidates)
 
-    # When -ProgId is given, prefer instances of that ProgID (fall back to all if none match)
+    # #280: with -ProgId ONLY instances of that ProgID are candidates; none -> an empty pool (that
+    # ProgID is launched, -NoLaunch: IDE_NOT_FOUND), never an instance of another ProgID.
     $pool = $candidates
-    if (-not [string]::IsNullOrWhiteSpace($ProgId) -and $candidates.Count -gt 0) {
-        $matching = @($candidates | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
-        if ($matching.Count -gt 0) { $pool = $matching }
+    if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
+        $pool = @($candidates | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
     }
 
     $chosen = $null
@@ -445,6 +455,9 @@ function Connect-TcIde {
         }
         $chosen = $hit
         $selectionReason = 'process-id'
+        # #281: an explicit -ProcessId is the user's consent to work in that IDE: a later
+        # Connect-TcIde without parameters (Start-TcLifecycle) may attach it (module memory only)
+        Add-TcIdeAttachConsent -ProcessId $ProcessId
     }
     elseif ($pool.Count -gt 0) {
         if ($null -ne $normalizedSolutionPath) {
@@ -459,12 +472,23 @@ function Connect-TcIde {
             if ($null -ne $chosen) { $selectionReason = 'solution-match' }
         }
         else {
+            # #281: without -SolutionPath / -ProcessId / -TakeOverOrphan only an IDE TcAuto may work
+            # in is attached: launched by TcAuto (Test-TcLaunchedIde) or chosen before with
+            # -ProcessId (consent memory). Only other IDEs -> IDE_ATTACH_CONSENT_REQUIRED, returned
+            # before any connection variable, COM setter or state file is touched.
+            $allowedPool = $pool
+            if (-not $TakeOverOrphan) {
+                $allowedPool = @($pool | Where-Object { Test-TcIdeAttachAllowed -ProcessId $_.pid })
+                if ($allowedPool.Count -eq 0) {
+                    return New-TcAttachConsentResult -Candidates @($pool) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds
+                }
+            }
             # No SolutionPath: prefer an instance that already has a TwinCAT project,
             # otherwise the first usable instance (busy ones last).
-            $chosen = $pool | Where-Object { $_.hasTcProject } | Select-Object -First 1
+            $chosen = $allowedPool | Where-Object { $_.hasTcProject } | Select-Object -First 1
             if ($null -ne $chosen) { $selectionReason = 'twincat-project-loaded' }
             if ($null -eq $chosen) {
-                $chosen = $pool | Select-Object -First 1
+                $chosen = $allowedPool | Select-Object -First 1
                 $selectionReason = if ($chosen.busy) { 'busy-instance' } else { 'first-instance' }
             }
         }
@@ -706,8 +730,8 @@ function Connect-TcIde {
         $busyPool = @($pool | Where-Object { $_.busy })
         $unreadablePool = @($unreadableCandidates)
         if (-not [string]::IsNullOrWhiteSpace($ProgId)) {
-            $unreadableMatching = @($unreadablePool | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
-            if ($unreadableMatching.Count -gt 0) { $unreadablePool = $unreadableMatching }
+            # #280: as $pool - only that ProgID, no fall back to the others
+            $unreadablePool = @($unreadablePool | Where-Object { $_.progId -and ($_.progId -ieq $ProgId) })
         }
         $busyPool = @($busyPool) + @($unreadablePool)
         if ($busyPool.Count -gt 0) {
@@ -791,6 +815,20 @@ function Connect-TcIde {
         foreach ($candidateProgId in $progIds) {
             $candidateObj = Get-ComObject -ProgId $candidateProgId
             if ($null -ne $candidateObj) {
+                if ($null -eq $normalizedSolutionPath -and -not $TakeOverOrphan) {
+                    # #281: the same gate as the ROT selection above. The pid comes from the DTE main
+                    # window only (no setter; a start-time guess is never used), before any
+                    # connection variable is set.
+                    $gaoInfo = Get-TcIdeProcessId -Dte $candidateObj -ProgId $candidateProgId
+                    $gaoPid = 0
+                    if ($null -ne $gaoInfo -and [string]$gaoInfo.Source -in 'main-window', 'known-pid') { try { $gaoPid = [int]$gaoInfo.ProcessId } catch { $gaoPid = 0 } }
+                    if (-not (Test-TcIdeAttachAllowed -ProcessId $gaoPid)) {
+                        $gaoSol = $null
+                        try { $gaoSol = [string](Invoke-TcComRetry -MaxRetries 1 -OperationName 'Solution.FullName (consent candidate)' -ScriptBlock { $s = $candidateObj.Solution; if ($null -ne $s) { [string]$s.FullName } else { '' } }) } catch { $gaoSol = $null }
+                        $candidateObj = $null
+                        return New-TcAttachConsentResult -Candidates @([PSCustomObject]@{ pid = $gaoPid; progId = $candidateProgId; solution = $gaoSol; busy = $false }) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds
+                    }
+                }
                 $dte = $candidateObj
                 $usedProgId = $candidateProgId
                 $selectionReason = 'get-active-object'
@@ -804,8 +842,10 @@ function Connect-TcIde {
     # --- Strategy 4: Launch new instance if not found ---
     if ($null -eq $dte) {
         if ($NoLaunch) {
-            return New-TcResult -Success $false -ErrorMessage 'No running TwinCAT IDE instance found.' -ErrorCode 'IDE_NOT_FOUND' `
-                -Data ([PSCustomObject]@{ candidates = @($candidates | Select-Object progId, solution, pid) })
+            # #280: with -ProgId, instances of other ProgIDs are not used (data.candidates lists them)
+            $nfMessage = if ([string]::IsNullOrWhiteSpace($ProgId)) { 'No running TwinCAT IDE instance found.' } else { "No running TwinCAT IDE instance with ProgID '$ProgId' found (instances of other ProgIDs are not used)." }
+            return New-TcResult -Success $false -ErrorMessage $nfMessage -ErrorCode 'IDE_NOT_FOUND' `
+                -Data ([PSCustomObject]@{ requestedProgId = $(if ([string]::IsNullOrWhiteSpace($ProgId)) { $null } else { $ProgId }); candidates = @($candidates | Select-Object progId, solution, pid) })
         }
 
         # #72: -ProgId, else the IDE of the TwinCAT build the solution's .tsproj was saved with
