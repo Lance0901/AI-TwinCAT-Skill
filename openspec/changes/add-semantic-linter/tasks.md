@@ -56,7 +56,7 @@
 - [ ] 2.7 **真機**(registered tcauto,一次一個 worker):4024 XAE 上 `WritePouCode` 後 .TcPOU 的落地時機;XAE 新增 / 刪除物件後 2.6 是否抓得到;4026 VS2022 重跑 #69
 - [ ] 2.8 SKILL.md:LintCandidate → WritePouCode → BuildProject → LintProject;Failure contract 加入 `requiresDisposition` 規定(不得 EnableConfig、不得回報完成、`newSuppressions[]` 逐條列給使用者)
 - [ ] 2.9 PROJECT-SA-001(只在 1a.9 量測支持時做)
-- [ ] 2.10 **IDE / UmRT 實測**(`st-syntax-inventory.md` 第 2 部分仍標未驗證的):TON 在 PT = 0 的行為、TON 中途幾個 cycle 沒被呼叫再進入的語意(SCAN-TIMER-004 / 005 的依據)、除以零與越界(未加 CheckBounds)在 runtime 的結果、未初始化 REFERENCE 解參照的後果、`FOR … BY 0`;除以常數 0 編譯器擋不擋(`BuildProject`,填 `compilerCatches: measured`)
+- [ ] 2.10 **IDE / UmRT 實測**(`st-syntax-inventory.md` 第 2 部分仍標未驗證的):TON 在 PT = 0 的行為、TON 中途幾個 cycle 沒被呼叫再進入的語意(SCAN-TIMER-004 / 005 的依據)、除以零與越界(未加 CheckBounds)在 runtime 的結果、未初始化 REFERENCE 解參照的後果、`FOR … BY 0`;除以常數 0 編譯器擋不擋(`BuildProject`,填 `compilerCatches: measured`) — 實測紀錄 [verification/runtime-semantics-measured.md](verification/runtime-semantics-measured.md)(2026-11-13:PT = 0、未呼叫 cycle、BY 0、整數 / REAL 除以零、MOD 0 已測;LREAL 除以零、REFERENCE / POINTER 讀取、變數索引越界的 runtime 部分因 lifecycle block 未跑,所以未勾)
 - **驗收**:每條規則 ≥2 正例、≥2 反例(含 research 4.2 / 4.4 已知誤報案例)、1 個 suppression;seeded S06~S09、S16、S17 命中;stale 偵測真機紀錄
 
 ## 3. Phase 3:狀態機 / Motion / 記憶體 / 數值 + 驗證 + advisory gate
