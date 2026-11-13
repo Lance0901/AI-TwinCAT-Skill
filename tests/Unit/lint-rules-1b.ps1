@@ -265,7 +265,7 @@ function Orphan($Fx, [string]$DeclPrefix, [string]$Body = 'x := 1;') {
 }
 $fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`n"
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-001'
-Check 'S1 inline next-line with reason -> suppressed, still listed, not unresolved, requiresDisposition false' ($d.Count -eq 1 -and $d[0].suppressed -and $d[0].suppressionReason -eq 'PoC harness kept for manual tests' -and -not $r.data.requiresDisposition -and $r.data.summary.suppressed -eq 1 -and $r.success) (Brief $r)
+Check 'S1 inline next-line with reason -> suppressed, still listed, not unresolved; requiresDisposition only for the new suppression (list it to the user)' ($d.Count -eq 1 -and $d[0].suppressed -and $d[0].suppressionReason -eq 'PoC harness kept for manual tests' -and @($r.data.unresolved).Count -eq 0 -and (@($r.data.dispositionReasons) -join ',') -eq 'new-suppressions' -and $r.data.summary.suppressed -eq 1 -and $r.success) (Brief $r)
 $s = @($r.data.suppressions)
 Check 'S1 data.suppressions lists it (inline, effective, matched 1)' ($s.Count -eq 1 -and $s[0].source -eq 'inline' -and $s[0].kind -eq 'next-line' -and $s[0].effective -and $s[0].matched -eq 1 -and $s[0].objectPath -eq 'PRG_Orphan') (Js $s)
 Check 'S1 not a git repository -> newSuppressionsBasis unavailable and every suppression listed as new' ($r.data.newSuppressionsBasis -eq 'unavailable' -and @($r.data.newSuppressions).Count -eq 1 -and $r.data.newSuppressionsBasisReason) (Js $r.data.newSuppressions)
@@ -342,7 +342,7 @@ Check 'R1 profile blocking TASK-001 + inline -> LINT-SUPPRESS-004, still LINT_FA
 $fx = New-Fx
 Edit-LintFxFile $fx.FbA { param($t) $t.Replace("<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`nEND_VAR]]>", "<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`n    // tcauto-lint-disable-next-line SCAN-TEMPFB-001: pulse only evaluated inside this call`r`n    tp1 : TP;`r`nEND_VAR]]>") }
 $r = Lint $fx
-Check 'R2 accessor-var (warning variant) + inline -> suppressed, no LINT-SUPPRESS-004' ((Diags $r 'SCAN-TEMPFB-001')[0].suppressed -and (Diags $r 'LINT-SUPPRESS-004').Count -eq 0 -and -not $r.data.requiresDisposition) (Brief $r)
+Check 'R2 accessor-var (warning variant) + inline -> suppressed, no LINT-SUPPRESS-004' ((Diags $r 'SCAN-TEMPFB-001')[0].suppressed -and (Diags $r 'LINT-SUPPRESS-004').Count -eq 0 -and @($r.data.unresolved).Count -eq 0 -and (@($r.data.dispositionReasons) -join ',') -eq 'new-suppressions') (Brief $r)
 # R3 double calls inside one caller that are not mutually exclusive
 foreach ($c in @(
         @('action of the caller', "PRG_B();`nA1();", 'PRG_B();'),
@@ -500,6 +500,54 @@ Set-Profile $fx '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath"
 $r = Lint $fx
 Check 'V6 nit: profile reason of dots only -> LINT_PROFILE_INVALID' ($r.error.code -eq 'LINT_PROFILE_INVALID') (Js $r.error)
 Check 'V7 nit: TypeCatalog R_TRIG link is the real page' ((Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Private\Lint\TypeCatalog.json') -Raw) -match '74391563\.html') ''
+
+# ================================================================ W  verification review of the PR #283 fixes (N1~N5)
+if ($git) {
+    # N1: the agent pushed its own branch with an upstream; the base stays the origin default branch
+    $fx = New-Fx; Add-FbM $fx 'FB_X' "METHOD M_Wait : BOOL`nVAR`n    t : TON;`nEND_VAR`n"
+    $sol = Git-Init $fx
+    $null = & git -C $sol update-ref refs/remotes/origin/master HEAD 2>&1
+    Set-Profile $fx '{"schema":"tcauto-lint-profile/1","exclude":[{"objectPath":"FB_X","reason":"generated code here"}]}' | Out-Null
+    Git-Commit $sol 'agent adds an exclude'
+    $null = & git -C $sol checkout -q -b feat/x 2>&1
+    $null = & git -C $sol update-ref refs/remotes/origin/feat/x HEAD 2>&1
+    $null = & git -C $sol remote add origin https://example.invalid/unit.git 2>&1   # never contacted: rev-parse / merge-base are local
+    $null = & git -C $sol config branch.feat/x.remote origin 2>&1; $null = & git -C $sol config branch.feat/x.merge refs/heads/feat/x 2>&1
+    $up = (& git -C $sol rev-parse --abbrev-ref '@{upstream}' 2>$null)
+    $r = Lint $fx
+    Check 'W1 setup: the agent branch really has an upstream' ($up -eq 'origin/feat/x') "upstream=$up"
+    Check 'W1 N1 agent branch pushed with upstream -> base is still origin/master, the exclude is listed' (@($r.data.newOverrides).Count -eq 1 -and $r.data.newSuppressionsBasis -eq 'git:merge-base:origin/master' -and $r.data.requiresDisposition) ("$($r.data.newSuppressionsBasis) $(Js $r.data.newOverrides)")
+}
+# N2: STRUCT EXTENDS (InfoSys structure page: "the extended structure has the same structure components as the basic structure")
+$fx = New-Fx
+Add-Dut $fx 'ST_Base' "TYPE ST_Base :`nSTRUCT`n    t : TON;`nEND_STRUCT`nEND_TYPE`n"
+Add-Dut $fx 'ST_Ext' "TYPE ST_Ext EXTENDS ST_Base :`nSTRUCT`n    n : INT;`nEND_STRUCT`nEND_TYPE`n"
+Add-FbM $fx 'FB_S2' "METHOD M_Wait : BOOL`nVAR`n    s : ST_Ext;`nEND_VAR`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'W2 N2 STRUCT EXTENDS a struct holding a TON -> finding (warning, STRUCT member)' ($d.Count -eq 1 -and -not $d[0].blocking) (Brief $r)
+# N3: a program reached only through an action does not run its body, so programs called from that body do not run either
+$fx = New-Fx
+Add-Pou $fx 'PRG_C' "PROGRAM PRG_C`nVAR`nEND_VAR`n" ''
+Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    n : INT;`nEND_VAR`n" 'PRG_C();' (Action 'A1' 'n := 0;')
+Set-MainImpl $fx "PRG_B.A1();"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-001'
+Check 'W3 N3 PRG_B reached only via its action, PRG_C called only from PRG_B body -> TASK-001 on both' (@($d | Where-Object { $_.objectPath -eq 'PRG_B' -and $_.variant -eq 'action-only' }).Count -eq 1 -and @($d | Where-Object { $_.objectPath -eq 'PRG_C' }).Count -eq 1) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'PRG_C' "PROGRAM PRG_C`nVAR`nEND_VAR`n" ''
+Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    n : INT;`nEND_VAR`n" '' (Action 'A1' 'PRG_C();')
+Set-MainImpl $fx "PRG_B.A1();"
+$r = Lint $fx
+Check 'W3 counter-example: PRG_C called from the action that runs -> no TASK-001 on PRG_C' (@(Diags $r 'PROJECT-TASK-001' | Where-Object { $_.objectPath -eq 'PRG_C' }).Count -eq 0) (Brief $r)
+# N4: an inline suppression of a must-dispose warning keeps requiresDisposition until the user saw it
+$fx = New-Fx; Add-Pou $fx 'F_Edge' "FUNCTION F_Edge : BOOL`nVAR`n    // tcauto-lint-disable-next-line SCAN-TEMPFB-001: used within one call only`n    rt : R_TRIG;`nEND_VAR`n" 'F_Edge := rt.Q;'
+$r = Lint $fx
+Check 'W4 N4 inline suppression of a warning -> requiresDisposition true, reason new-suppressions' ((Diags $r 'SCAN-TEMPFB-001')[0].suppressed -and $r.data.requiresDisposition -and @($r.data.dispositionReasons) -contains 'new-suppressions') (Js $r.data.dispositionReasons)
+# N5: METHOD VAR_INST is instance data of the FB
+$fx = New-Fx
+Add-Pou $fx 'FB_Deb' "FUNCTION_BLOCK FB_Deb`nVAR`nEND_VAR`n" '' (Method 'M_In' "METHOD M_In : BOOL`nVAR_INST`n    t : TON;`nEND_VAR`n" 't(IN := TRUE, PT := T#1S);')
+Add-FbM $fx 'FB_U2' "METHOD M_Wait : BOOL`nVAR`n    d : FB_Deb;`nEND_VAR`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'W5 N5 FB whose method keeps a TON in VAR_INST is stateful -> blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
 
 # ================================================================ Y  syntax the compiler rejects
 foreach ($c in @(@('**', 'nState := 2 ** 3;', 'power-operator'), @('T#-5S', 'tonDelay(IN := bStart, PT := T#-5S);', 'negative-time-literal'), @('?=', 'nState ?= nState;', 'assignment-attempt'))) {

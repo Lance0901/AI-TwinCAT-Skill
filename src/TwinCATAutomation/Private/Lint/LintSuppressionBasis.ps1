@@ -1,6 +1,6 @@
 # Semantic linter (#252 tasks 1b.1 / 1b.6): the versioned FB type catalog (TypeCatalog.json) and the base for
 # newSuppressions[] / newOverrides[] (design.md D5, PR #283 review B1 / SF6). The base is the merge-base with the
-# upstream branch (or the origin default branch), so a suppression or profile change the agent commits itself is still
+# origin default branch (or the upstream branch when no default branch is known), so a suppression or profile change the agent commits itself is still
 # new; only without any remote ref HEAD is used. Read-only git commands only, one overall deadline. When git or the
 # base cannot be read, everything is reported as new (fail closed: the user sees all of it).
 
@@ -107,8 +107,8 @@ function Get-TcLintDiskSpelling {
 function Resolve-TcLintGitBase {
     <#
     .SYNOPSIS
-        Finds the base commit: merge-base with @{upstream}, else with the origin default branch (origin/HEAD, origin/master,
-        origin/main), else HEAD. Returns @{ ok; reason; top; commit; kind; ref; basis }.
+        Finds the base commit: merge-base with the origin default branch (origin/HEAD, origin/master, origin/main), else with
+        @{upstream}, else HEAD. Returns @{ ok; reason; top; commit; kind; ref; basis }.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Dir, [Parameter(Mandatory)][System.Diagnostics.Stopwatch]$Clock)
@@ -117,21 +117,23 @@ function Resolve-TcLintGitBase {
     if ($top.timedOut) { return (& $no 'git did not answer within the deadline') }
     if (-not $top.ok) { return (& $no 'not a git repository, or git is not available') }
     $topDir = Get-TcLintDiskSpelling -Path ($top.out.Trim() -replace '/', '\')
+    # origin default branch first (review N1: after `git push -u` the agent's own branch is @{upstream} and would hide its
+    # own commits), then @{upstream} (no default branch known), then HEAD
     $ref = $null; $kind = $null
-    $up = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}') -Clock $Clock
-    if ($up.timedOut) { return (& $no 'git did not answer within the deadline') }
-    if ($up.ok -and $up.out.Trim()) { $ref = $up.out.Trim(); $kind = 'upstream' }
-    if (-not $ref) {
-        $oh = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--abbrev-ref', 'origin/HEAD') -Clock $Clock
-        if ($oh.timedOut) { return (& $no 'git did not answer within the deadline') }
-        if ($oh.ok -and $oh.out.Trim() -and $oh.out.Trim() -ne 'origin/HEAD') { $ref = $oh.out.Trim(); $kind = 'origin-default' }
-    }
+    $oh = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--abbrev-ref', 'origin/HEAD') -Clock $Clock
+    if ($oh.timedOut) { return (& $no 'git did not answer within the deadline') }
+    if ($oh.ok -and $oh.out.Trim() -and $oh.out.Trim() -ne 'origin/HEAD') { $ref = $oh.out.Trim(); $kind = 'origin-default' }
     if (-not $ref) {
         foreach ($cand in 'origin/master', 'origin/main') {
             $c = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--verify', '--quiet', "refs/remotes/$cand") -Clock $Clock
             if ($c.timedOut) { return (& $no 'git did not answer within the deadline') }
             if ($c.ok) { $ref = $cand; $kind = 'origin-default'; break }
         }
+    }
+    if (-not $ref) {
+        $up = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}') -Clock $Clock
+        if ($up.timedOut) { return (& $no 'git did not answer within the deadline') }
+        if ($up.ok -and $up.out.Trim()) { $ref = $up.out.Trim(); $kind = 'upstream' }
     }
     if ($ref) {
         $mb = Invoke-TcLintGit -WorkDir $topDir -GitArgs @('merge-base', 'HEAD', $ref) -Clock $Clock

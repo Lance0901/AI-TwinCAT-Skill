@@ -205,8 +205,11 @@ namespace TcLintEngine
             public HashSet<string> Members = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public List<SecCalls> Sections = new List<SecCalls>();
             public HashSet<string> TypeRefs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            public HashSet<string> Edges = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            public bool Reachable;
+            public HashSet<string> Edges = new HashSet<string>(StringComparer.OrdinalIgnoreCase);        // all (HoldsState)
+            public HashSet<string> BodyEdges = new HashSet<string>(StringComparer.OrdinalIgnoreCase);    // from the POU's own implementation
+            public HashSet<string> MemberEdges = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // from actions / methods / accessors + declared types
+            public bool Reachable;       // some part runs
+            public bool BodyRuns;        // the implementation itself runs (always true for FB / FUNCTION once reachable)
         }
 
         // a part of the project the linter could not read as ST: a call to a PROGRAM may hide in it
@@ -391,6 +394,10 @@ namespace TcLintEngine
             {
                 DeclInfo di = StAnalyzer.ParseDeclaration(md.InnerText());
                 AddDeclRefs(p, di, locals);
+                // METHOD VAR_INST lives in the FB instance (InfoSys 2528798091): it is state of the FB (review N5)
+                List<string> st;
+                if (di.State.Status == "ok" && fbStateTypes.TryGetValue(p.Name, out st))
+                    foreach (VarBlock b in di.VarBlocks) if (b.Kind == "VAR_INST") foreach (VarDecl v in b.Vars) st.Add(v.TypeText ?? "");
                 if (di.State.Status != "ok") AddUncertainText(o, path, md.InnerText(), di.Lex);
             }
             XElem mi = m.Child("Implementation");
@@ -475,6 +482,9 @@ namespace TcLintEngine
             if ((di.Type.Kind == "STRUCT" || di.Type.Kind == "UNION") && di.State.Status == "ok")
             {
                 List<string> m = new List<string>();
+                // TYPE ST EXTENDS ST_Base: "the extended structure has the same structure components as the basic structure"
+                // (InfoSys tc3_plc_intro/36028799548445323.html) -> the base is checked like a member (cycle-safe in Classify)
+                if (di.Type.Extends != null) m.Add(di.Type.Extends);
                 foreach (VarDecl v in di.Type.Members) m.Add(v.TypeText ?? "");
                 structMembers[o.Name] = m;
             }
@@ -680,6 +690,7 @@ namespace TcLintEngine
             public bool Uncertain;
             public string FramePath;
             public bool InLoop;
+            public bool FromBody;   // the call sits in the caller's own implementation (runs only when the caller's body runs)
         }
 
         private void CheckTaskGraph()
@@ -711,7 +722,7 @@ namespace TcLintEngine
                 {
                     PouNode q;
                     // a PROGRAM used as a type (not legal ST, inferred - not measured): treated as reached so TASK-001 does not add noise
-                    if (pouIndex.TryGetValue(t, out q) && q != p) { p.Edges.Add(q.Name); if (q.Header == "PROGRAM") usedAsType.Add(q.Name); }
+                    if (pouIndex.TryGetValue(t, out q) && q != p) { p.Edges.Add(q.Name); p.MemberEdges.Add(q.Name); if (q.Header == "PROGRAM") usedAsType.Add(q.Name); }
                 }
                 foreach (SecCalls s in p.Sections)
                     foreach (CallSite cs in s.Calls)
@@ -726,28 +737,37 @@ namespace TcLintEngine
                         {
                             if (segs.Length == 1)
                             {
-                                p.Edges.Add(q.Name);
-                                BodyCall bc = new BodyCall(); bc.Caller = p.Name; bc.CallerHeader = p.Header; bc.Section = s.Path; bc.Line = cs.Line;
+                                p.Edges.Add(q.Name); (s.Body ? p.BodyEdges : p.MemberEdges).Add("body:" + q.Name);
+                                BodyCall bc = new BodyCall(); bc.Caller = p.Name; bc.CallerHeader = p.Header; bc.Section = s.Path; bc.Line = cs.Line; bc.FromBody = s.Body;
                                 bc.Unconditional = cs.StatementStart && !cs.Conditional && s.Body && !cs.InPragma; bc.Uncertain = s.Uncertain || cs.InPragma;
                                 bc.FramePath = cs.FramePath; bc.InLoop = StAnalyzer.InLoop(cs.FramePath);
                                 List<BodyCall> l;
                                 if (!bodyCalls.TryGetValue(q.Name, out l)) { l = new List<BodyCall>(); bodyCalls[q.Name] = l; }
                                 l.Add(bc);
                             }
-                            else if (q.Members.Contains(segs[1])) p.Edges.Add(q.Name);
+                            else if (q.Members.Contains(segs[1])) { p.Edges.Add(q.Name); (s.Body ? p.BodyEdges : p.MemberEdges).Add("member:" + q.Name); }
                         }
-                        else p.Edges.Add(q.Name);
+                        else { p.Edges.Add(q.Name); (s.Body ? p.BodyEdges : p.MemberEdges).Add("body:" + q.Name); }
                     }
             }
             // reachability from the tasks (and FB types instantiated in GVL / DUT)
+            // review N3: a PROGRAM reached only through P.Action() runs that code, not its body: only its member sections
+            // (actions / methods, over-approximated as all of them) and declared types propagate; P() / a task runs everything
             Queue<PouNode> queue = new Queue<PouNode>();
-            foreach (KeyValuePair<string, string> tc in taskCalls) Mark(tc.Value, queue);
-            foreach (string t in rootTypeRefs) { PouNode q; if (pouIndex.TryGetValue(t, out q) && q.Header != "PROGRAM") Mark(q.Name, queue); }
+            foreach (KeyValuePair<string, string> tc in taskCalls) Mark(tc.Value, true, queue);
+            foreach (string t in rootTypeRefs) { PouNode q; if (pouIndex.TryGetValue(t, out q) && q.Header != "PROGRAM") Mark(q.Name, true, queue); }
             while (queue.Count > 0)
             {
                 PouNode p = queue.Dequeue();
-                List<string> next = new List<string>(p.Edges); next.Sort(StringComparer.OrdinalIgnoreCase);
-                foreach (string e in next) Mark(e, queue);
+                List<string> next = new List<string>(p.MemberEdges);
+                if (p.BodyRuns) next.AddRange(p.BodyEdges);
+                next.Sort(StringComparer.Ordinal);
+                foreach (string e in next)
+                {
+                    if (e.StartsWith("body:", StringComparison.Ordinal)) Mark(e.Substring(5), true, queue);
+                    else if (e.StartsWith("member:", StringComparison.Ordinal)) Mark(e.Substring(7), false, queue);
+                    else Mark(e, true, queue);   // declared FB types
+                }
             }
             // PROGRAMs that certainly run every cycle: on a task, or called unconditionally (statement level, not in
             // IF / CASE / loop) from the body of a program that certainly runs. Only these make a double call certain.
@@ -766,6 +786,7 @@ namespace TcLintEngine
             foreach (PouNode p in sorted)
             {
                 if (p.Header != "PROGRAM") continue;
+                // a program reached through its actions only, whose body is not called: p.BodyRuns is false
                 // SF4: the body runs only through a task PouCall or a P() call from a reachable POU; calling P.Action() runs the
                 // action only (inferred from the call syntax P.Action, InfoSys 2530340747 does not say whether the body runs)
                 bool onTask = false, bodyCall = false, pragmaCall = false;
@@ -774,8 +795,7 @@ namespace TcLintEngine
                 if (bodyCalls.TryGetValue(p.Name, out bl))
                     foreach (BodyCall bc in bl)
                     {
-                        PouNode caller;
-                        if (!pouIndex.TryGetValue(bc.Caller, out caller) || !caller.Reachable) continue;
+                        if (!CallRuns(bc)) continue;
                         if (bc.Uncertain) pragmaCall = true; else bodyCall = true;
                     }
                 if (!onTask && !bodyCall)
@@ -807,12 +827,23 @@ namespace TcLintEngine
         private readonly HashSet<string> certain = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> usedAsType = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        private void Mark(string name, Queue<PouNode> queue)
+        private void Mark(string name, bool body, Queue<PouNode> queue)
         {
             PouNode q;
-            if (!pouIndex.TryGetValue(name, out q) || q.Reachable) return;
+            if (!pouIndex.TryGetValue(name, out q)) return;
+            bool runsBody = body || q.Header != "PROGRAM";
+            if (q.Reachable && (q.BodyRuns || !runsBody)) return;
             q.Reachable = true;
+            if (runsBody) q.BodyRuns = true;
             queue.Enqueue(q);
+        }
+
+        // the call site actually runs: its caller is reachable, and a call in the caller's own implementation needs the body to run
+        private bool CallRuns(BodyCall bc)
+        {
+            PouNode caller;
+            if (!pouIndex.TryGetValue(bc.Caller, out caller) || !caller.Reachable) return false;
+            return !bc.FromBody || caller.BodyRuns;
         }
 
         private void CheckDoubleCall(PouNode p, Dictionary<string, List<BodyCall>> bodyCalls)
@@ -833,8 +864,7 @@ namespace TcLintEngine
             bool uncertainCall = false;
             foreach (BodyCall bc in calls)
             {
-                PouNode caller;
-                if (!pouIndex.TryGetValue(bc.Caller, out caller) || !caller.Reachable) continue;   // an unreachable caller never runs (axis TestCam)
+                if (!CallRuns(bc)) continue;   // an unreachable caller (axis TestCam), or a body that never runs (review N3)
                 if (bc.Uncertain) { uncertainCall = true; continue; }
                 List<BodyCall> pc;
                 if (!perCaller.TryGetValue(bc.Caller, out pc)) { pc = new List<BodyCall>(); perCaller[bc.Caller] = pc; }

@@ -20,8 +20,8 @@ function Invoke-TcLintProject {
         Disposition: requiresDisposition = true -> fix each data.unresolved[] entry or suppress it with
         "// tcauto-lint-disable-next-line <RULE-ID>: <reason>" (non-blocking rules only; a blocking rule needs
         the profile suppressions[]), and list every data.newSuppressions[] and data.newOverrides[] (profile
-        weakenings) entry to the user, new against the git base (merge-base with upstream / origin default
-        branch, else HEAD; newSuppressionsBasis = unavailable lists all); do not commit them before the user
+        weakenings) entry to the user, new against the git base (merge-base with the origin default branch,
+        else @{upstream}, else HEAD; newSuppressionsBasis = unavailable lists all); do not commit them before the user
         confirmed. No EnableConfig before that.
 
         data.passed = true does NOT mean the program is correct: only that the listed rules found no
@@ -36,7 +36,7 @@ function Invoke-TcLintProject {
         requiresDisposition, suppressions[] { source, kind, ruleIds, file, objectPath, line, reason, effective,
         matched }, newSuppressions[], newOverrides[] { kind, ruleId, objectPath, detail, reason, change },
         newSuppressionsBasis (git:merge-base:<ref> / git:head / unavailable / nothing-to-compare),
-        newSuppressionsBase { kind, ref, commit }, dispositionReasons (unresolved, new-overrides),
+        newSuppressionsBase { kind, ref, commit }, dispositionReasons (unresolved, new-overrides, new-suppressions),
         typeCatalog { version, sha256, stateful, typeOnly }, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
         rulesSkipped[], blockingRulesSkipped[], acceptedSkips[], rulesNotRun[] }, rulesRun[].
 
@@ -201,6 +201,8 @@ function Invoke-TcLintProject {
     $reasons = [System.Collections.Generic.List[string]]::new()
     if ([bool]$res['requiresDisposition']) { $reasons.Add('unresolved') }
     if (@($newSup.overrides).Count -gt 0) { $reasons.Add('new-overrides') }
+    # review N4: a new inline / profile suppression also has to be shown to the user before going on
+    if (@($newSup.suppressions).Count -gt 0) { $reasons.Add('new-suppressions') }
 
     $source = [ordered]@{ kind = 'disk'; plcProjectPath = $res['source']['plcProjectPath']; solutionPath = $res['source']['solutionPath']
         tsprojPaths = @($res['source']['tsprojPaths']); ideChecked = $false }
