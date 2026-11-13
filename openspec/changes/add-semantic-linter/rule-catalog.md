@@ -171,7 +171,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 ### SCAN-LOOP-001 busy-wait(Phase 2,blocking)
 - 機台行為:`WHILE NOT bSensor DO END_WHILE`。同一 cycle 內輸入不會更新,迴圈不會結束 → task 卡住、cycle overrun / watchdog。task 的順序有出處:InfoSys TwinCAT real-time(https://infosys.beckhoff.com/content/1033/tc3_grundlagen/6828869003.html)"This makes the current input values available to the PLC application (input update), followed by processing of the application program (cycle update). Finally the results are written to the outputs (output update)." —「程式執行中輸入不會再更新」是由這個順序推論,未實測。LLM 帶循序程式思維時最典型的錯。
 - 偵測:WHILE / REPEAT 的條件中所有變數在迴圈本體內都沒被寫入、沒有 `EXIT` / `RETURN` / `JMP`、沒有指標 / REFERENCE 寫入,而且本體的呼叫改不到條件:只呼叫型別目錄(`TypeCatalog.json` + profile `typeCatalog`)裡的 FB instance 或 IEC 標準函式 / 型別轉換,且條件變數沒有交給任何呼叫(任何參數、`ADR`、`REF=` 來源)。符合以上條件就是 confidence high(與條件變數種類無關;`WHILE NOT x DO END_WHILE` 的 `x` 是一般變數也一樣)。例:`WHILE NOT bDone DO rt(CLK := TRUE); n := n + 1; END_WHILE` → blocking。條件含 `AT %I*` 或 FB 輸出只是最常見的形態,寫進 message 方便理解(依條件種類:輸入 / FB 輸出 / 其他變數不加說明)。
-- 判斷不了的呼叫(第二輪審查 B1,PR #284):條件變數交給了呼叫,或本體有專案函式 / FB、method、action、陣列元素 / 指標呼叫、未知型別 → 不報,記 `rulesSkipped` reason `call-in-body`;條件本身含呼叫 → `call-in-condition`。不得靜默通過(原定義「本體有呼叫就不報」是 fail open 的來源,已改)。
+- 判斷不了的呼叫(第二輪審查 B1,PR #284):條件變數交給了呼叫(例外(#286 N5):交給 Tc2_Standard 有狀態 FB 的具名輸入參數 `名稱 := 運算式` 只是讀取,不算;輸出 `=>`、位置引數、`ADR` / `REF=`、其他 FB 照舊),或本體有專案函式 / FB、method、action、陣列元素 / 指標呼叫、未知型別 → 不報,記 `rulesSkipped` reason `call-in-body`;條件本身含呼叫 → `call-in-condition`。不得靜默通過(原定義「本體有呼叫就不報」是 fail open 的來源,已改)。
 - 已知限制(PR #284 第四輪驗證 nit 2 / 3,保留):`fb-wait-loop` 不分 FB 種類,CTU / R_TRIG 這類在同一 cycle 內輸出就會變的 FB 也報(warning,必須處置);SAFETY-DIV-001 的守衛方向只認 `d <> 0` / `d > 0` / `d = 0` 寫在左邊,`NOT (d = 0)`、`0 <> d` 與 AND_THEN / OR_ELSE 混用的優先序不判斷,當成有守衛(info,不擋)。
 - variant `fb-wait-loop`(第二輪審查 S1,warning、不擋、進 `unresolved`):條件讀某個型別目錄 FB instance 的輸出,本體又呼叫同一個 instance(`WHILE NOT mc.Done DO mc(Axis := ax, Execute := TRUE); END_WHILE`、`WHILE NOT fb.Q DO fb(IN := TRUE, PT := T#1S); END_WHILE`)= 在同一個 cycle 內等 FB 完成。同一 cycle 內反覆呼叫能不能讓輸出改變,InfoSys 沒寫:AXIS_REF 頁只說 NcToPlc "Data structure which is cyclically exchanged between PLC and NC"、Status "has to be updated through the PLC program"(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70132363.html);TON 頁只說 "the time in milliseconds is counted up in ET"(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html)。未驗證(tasks 2.10 UmRT 實測);不論哪種,結果都是無窮迴圈或整個 task 卡在等待時間。專案 FB 這樣呼叫 → `call-in-body`(可能是合法的逐次計算)。
 - 誤報來源:另一個 task 在其他 core 改條件變數(仍然是錯誤設計);本體透過指標改條件(上面已排除)。
@@ -236,7 +236,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 #### SCAN-FBCALL-002 FB instance 完全沒被引用(info,`machineImpact: none`,不進 `unresolved[]`)
 - 定義:型別目錄的 FB(含只列型別的 Tc2_MC2 `type-only`)或專案 FB 的 instance,在 owner 的任何 ST 段落都沒有任何引用(沒呼叫、沒成員存取、沒傳出去)。confidence high。
 - TE1200 Light SA0033(Unused variables)的關係(`research/te1200-rules.md`):SA0033 是 Light 七條之一,涵蓋「已宣告但未使用的變數」;手冊 Function 欄沒有特別提 FB instance,**FB instance 是否由 SA0033 涵蓋未驗證**。因此本規則只報 FB instance(info),其餘未使用變數留給 SA0033,不重做;價值在寫入前(`LintCandidate`)就看到、以及客戶沒啟用 / 沒跑 Light 時。SA0033 與本規則同時存在不矛盾,也不互相取代。
-- 追加 reason:無(共同 reason 即可)。
+- 追加 reason:`fb-init`(FB 或其 EXTENDS 鏈有 `FB_init` / `FB_reinit` / `FB_exit`、宣告帶建構參數,或 EXTENDS 鏈的 base 在專案外 → 宣告本身可能有作用(例如在 `FB_init` 自行註冊),不報)。
 - 已知漏抓:變數只在註解 / 字串內提到不算引用(正確);instance 只被自己的 Method 內同名區域變數遮蔽 → `shadowed-name` 不報。
 
 #### SCAN-TIMER-001 Timer / 邊緣觸發只在 IF / CASE 內呼叫(warning,`blockable: false`,進 `unresolved[]`)
@@ -250,7 +250,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 
 #### SCAN-TIMER-002 Timer / 邊緣觸發只在 Method / Action 內呼叫(info,不進 `unresolved[]`,confidence low)
 - 定義:所有呼叫都在 Method / Action,而 owner 本體沒有「以敘述層級、不在 IF / CASE / 迴圈內」呼叫那個 Action / Method(Method 被別的 POU 呼叫的情況不追,所以無法證明每 cycle 呼叫)。
-- 不報:共同 reason;只要有一個呼叫在本體或每次都跑的成員內即走 001 的判斷。
+- 不報:共同 reason;只要有一個呼叫在本體或每次都跑的成員內即走 001 的判斷。「每次都跑」的成員:本體以敘述層級無條件呼叫、回傳值被使用的呼叫(`b := M()`)、最外層 IF / CASE / WHILE / FOR 條件裡的呼叫(`IF M() THEN`),並沿成員呼叫鏈往下追(本體 → `M_Outer` → `M_Inner`);接在 `AND_THEN` / `OR_ELSE` 後面或 IF 分支內的呼叫不算。
 - 已知漏抓 / 誤報:外部 POU 每 cycle 呼叫該 Method 的合法寫法會被報成 info(所以只是 info、low)。出處同 001(實測第 5 節的語意:不被呼叫的 cycle 時間照算)。
 
 #### SCAN-TIMER-004 PT 未設 / IN 恆為 FALSE(warning,`blockable: false`,進 `unresolved[]`)
