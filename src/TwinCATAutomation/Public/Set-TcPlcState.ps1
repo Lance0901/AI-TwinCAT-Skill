@@ -30,7 +30,9 @@ function Set-TcPlcState {
         TwinCAT system state (#287): before any WriteControl (every -State) port 10000 of the same
         target is read once. AdsState 19 Exception -> SYSTEM_EXCEPTION (data.systemState, adsState,
         readAt; measured 2026-11-13: PLC-level Run and Reset did not recover it, Enable-TcConfig
-        -Force did; Stop is refused as well, conservatively, since nothing PLC-level helps); an
+        -Force did; Stop is refused as well, conservatively, since nothing PLC-level helps; on a
+        local UmRT the same runtime process crashed after ANY PLC exception even after that
+        Activate, so the hint asks for a runtime restart first); an
         unreadable port 10000 -> SYSTEM_STATE_FAILED (data.readError, fail closed). Both send
         nothing and record no lifecycle block. Run postcondition: after the PLC port reached Run,
         the PLC port AND port 10000 must both read Run in every round of a short confirm window

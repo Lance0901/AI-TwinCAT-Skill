@@ -53,3 +53,5 @@ Start-Process "$env:TWINCAT3DIR\Runtimes\bin\TcSystemServiceUm.exe" -ArgumentLis
 ```
 
 重啟後 runtime 停在 Config,要重新 `Enable-TcConfig -Force`(實測 2026-10-21,見 troubleshooting「SYSTEM_STATE_TIMEOUT」)。
+
+**PLC exception 之後也要重啟**(#287):本機 UmRT 上任何 PLC exception(page fault `0xc0000005`、整數除以 0 `0xc0000094`)之後,同一個 `TcSystemServiceUm` 行程即使 `Enable-TcConfig -Force` 恢復到 Run,仍會在幾秒到幾十秒內自己 crash(`TcOsSys.dll` offset `0x39033`;實測 2026-11-13,XAE 4026.22 / VS2022,見 troubleshooting「SYSTEM_EXCEPTION」與 runtime-semantics-measured.md 第 7.2、7.3 節)。所以系統進過 Exception 時:經使用者同意後先修掉觸發例外的程式(或確認觸發條件已不存在)→ 照上面重啟 UmRT → `Get-TcSystemState` 讀回 Config → `Enable-TcConfig -Force`。Activate 後馬上又進 Exception(boot project autostart 再觸發;使用者經驗,未實測)就不要重複 Activate,停下回報。實體 TwinCAT RT / CX 未測。
