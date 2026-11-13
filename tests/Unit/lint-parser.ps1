@@ -91,6 +91,11 @@ $c = @($r['calls'])
 $byTarget = @{}; foreach ($x in $c) { $byTarget[$x['target']] = $x }
 Check 'method call inside an expression has inExpression' ($byTarget['fb.M_Update']['inExpression'] -and $byTarget['fb.M_Done']['inExpression'] -and $byTarget['fb.M_Done']['conditional'] -and -not $byTarget['fbA']['inExpression']) (($c | ForEach-Object { "$($_['target'])/$($_['inExpression'])" }) -join ' ')
 Check 'THIS^ / SUPER^ / __NEW recorded' ($byTarget.ContainsKey('THIS^.M_Run') -and $byTarget.ContainsKey('SUPER^') -and $byTarget.ContainsKey('__NEW')) (($c | ForEach-Object { $_['target'] }) -join ' ')
+# tasks 2.3: call form, return value used, inherited use through SUPER^
+Check 'call model: form body / member, returnValueUsed, viaSuper' ($byTarget['fb.M_Update']['form'] -eq 'member' -and $byTarget['fb.M_Update']['returnValueUsed'] -and $byTarget['fbA']['form'] -eq 'body' -and -not $byTarget['fbA']['returnValueUsed'] -and $byTarget['THIS^.M_Run']['form'] -eq 'member' -and -not $byTarget['THIS^.M_Run']['returnValueUsed'] -and -not $byTarget['THIS^.M_Run']['viaSuper'] -and $byTarget['SUPER^']['viaSuper'] -and $byTarget['SUPER^']['form'] -eq 'body' -and $byTarget['__NEW']['returnValueUsed']) (($c | ForEach-Object { "$($_['target'])/$($_['form'])/$($_['returnValueUsed'])/$($_['viaSuper'])" }) -join ' ')
+$r2 = Impl "SUPER^.M_Init(n := 1);`nfb.M_Discard();"
+$c2 = @($r2['calls'])
+Check 'call model: SUPER^.M( ) is member + viaSuper; a bare method call discards its return value' ($c2.Count -eq 2 -and $c2[0]['form'] -eq 'member' -and $c2[0]['viaSuper'] -and -not $c2[1]['returnValueUsed'] -and -not $c2[1]['viaSuper']) (($c2 | ForEach-Object { "$($_['target'])/$($_['form'])/$($_['returnValueUsed'])/$($_['viaSuper'])" }) -join ' ')
 
 $r = Impl "a[fb.M_Get()] := 1;`nx := arr[GetIdx(i)].val;`ny := tab[k[j]];"
 $t = @(@($r['calls']) | ForEach-Object { $_['target'] })
