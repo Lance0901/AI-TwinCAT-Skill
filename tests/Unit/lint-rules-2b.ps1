@@ -336,9 +336,15 @@ $r = Fb "    tof1 : TOF;`n    b : BOOL;" "IF b THEN`n    tof1(IN := b, PT := T#1
 $d = Diags $r 'SCAN-TIMER-001'
 Check 'K-N4 TIMER-001 on TOF does not claim a TON measurement' ($d.Count -eq 1 -and $d[0].message -notlike '*a TON keeps*' -and $d[0].message -like '*inferred*') "$($d[0].message)"
 # Nit 5: library types that are certainly not FBs are not listed as unknown-type
-$r = Fb "    s : T_MaxString;`n    e : MC_Direction;`n    st : ST_CamScalingData;`n    fbL : FB_LibThing;" "s := '';"
+$r = Fb "    s : T_MaxString;`n    e : MC_Direction;`n    fbL : FB_LibThing;" "s := '';"
 $st = SkipText $r
-Check 'K-N5 unknown-type lists FB_LibThing but not T_MaxString / MC_Direction / ST_CamScalingData' ($st -like '*unknown-type:FB_LibThing:fbL*' -and $st -notlike '*T_MaxString*' -and $st -notlike '*MC_Direction*' -and $st -notlike '*ST_CamScalingData*') $st
+Check 'K-N5 unknown-type lists FB_LibThing but not T_MaxString / MC_Direction' ($st -like '*unknown-type:FB_LibThing:fbL*' -and $st -notlike '*T_MaxString*' -and $st -notlike '*MC_Direction*') $st
+# Round 3 (review of PR #289 rev3): no naming-convention inference. A library FB called ST_LibFb / E_LibFb is still unknown-type
+$r = Fb "    fbX : ST_LibFb;`n    fbY : E_LibFb;`n    b : BOOL;" "b := fbX.bDone;`nb := fbY.bDone;"
+$st = SkipText $r
+Check 'K-R1 library type ST_LibFb / E_LibFb (not in project) -> rulesSkipped unknown-type, no finding' ((None2b $r) -and $st -like '*unknown-type:ST_LibFb:fbX*' -and $st -like '*unknown-type:E_LibFb:fbY*') ((Brief $r) + ' ' + $st)
+$r = Fb "    d : ST_Data;`n    b : BOOL;" "b := d.x;" '' { param($fx) Add-Dut $fx 'ST_Data' "TYPE ST_Data :`nSTRUCT`n    x : BOOL;`nEND_STRUCT`nEND_TYPE`n" }
+Check 'K-R2 project DUT ST_Data (struct) -> not recorded' ((None2b $r) -and (SkipText $r) -notlike '*ST_Data*') ((Brief $r) + ' ' + (SkipText $r))
 
 # ================================================================ X  suppression
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001: updated only in this mode on purpose`n    ton1(IN := b, PT := T#1S);`nEND_IF"

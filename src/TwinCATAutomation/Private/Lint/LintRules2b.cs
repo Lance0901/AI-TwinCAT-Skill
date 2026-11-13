@@ -242,9 +242,10 @@ namespace TcLintEngine
         }
 
         // a type outside the project that is certainly not a function block, so no FBCALL / TIMER rule applies (rule-catalog
-        // Phase 2b): Tc2_System / Tc2_Utilities / Tc2_MC2 string aliases, enums and structs listed by name, and the Beckhoff
-        // naming convention E_ (enum) / ST_ (struct) of library types (inferred from the naming convention, not read from
-        // the library). Everything else outside the project stays rulesSkipped unknown-type.
+        // Phase 2b): only types listed here by name - Tc2_System / Tc2_Utilities / Tc2_MC2 string aliases, enums and structs
+        // (Beckhoff library documentation lists them as DUTs; the list was compiled from the corpus, no InfoSys page was
+        // re-verified per name, so it is an inference). NO naming-convention inference: a library FB may be called ST_* / E_*
+        // (PR #289 review round 3). Everything else outside the project stays rulesSkipped unknown-type.
         private static readonly HashSet<string> LibNonFb = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "T_MaxString", "T_AmsNetId", "T_AmsNetIdArr", "T_AmsPort", "T_FILETIME", "TIMESTRUCT", "T_Arg",
@@ -256,8 +257,7 @@ namespace TcLintEngine
         {
             if (string.IsNullOrEmpty(typeName)) return false;
             string n = typeName; int dot = n.LastIndexOf('.'); if (dot >= 0) n = n.Substring(dot + 1);
-            if (LibNonFb.Contains(n)) return true;
-            return n.StartsWith("E_", StringComparison.OrdinalIgnoreCase) || n.StartsWith("ST_", StringComparison.OrdinalIgnoreCase);
+            return LibNonFb.Contains(n);
         }
 
         // the name in a declaration other than its own declaration (initialiser of another variable: ADR(inst),

@@ -1,4 +1,4 @@
-# 規則目錄(#252)
+﻿# 規則目錄(#252)
 
 結論:分期依 owner 決定 1 排序:先做 **compilerCatches = no 且 machineImpact ∈ behavior / crash** 的規則,AI 改磁碟檔造成的專案完整性問題(owner 決定 6)同樣留在 Phase 1a;相容性契約(CONTRACT-*)放最後。判斷確定的規則預設 blocking(owner 決定 2);會影響機台行為的 warning 進 `data.unresolved[]`,必須處置(owner 決定 3,design.md D6)。
 
@@ -226,7 +226,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | `referenced-in-declaration` | 名稱出現在別的宣告初值(`ADR(inst)`、`REFERENCE TO ... := inst`、FB_init 引數)|
 | `shadowed-name` | 同一 POU 的 Method 區域變數同名 |
 | `array-instance` | `ARRAY OF FB` |
-| `type-alias:<型別>` / `unknown-type:<型別>` | 專案 `TYPE T : TON` alias 或 STRUCT / ALIAS 型別、目錄外的型別。確定不是 FB 的 library 型別**不記**(PR #289 rev289 nit 5):依名稱列舉的 `T_MaxString` / `T_AmsNetId` / `T_AmsNetIdArr` / `T_AmsPort` / `T_FILETIME` / `TIMESTRUCT` / `T_Arg` / `MC_Direction` / `MC_StartMode` / `MC_BufferMode` / `MC_CamActivationMode` / `MC_CamOperationMode` / `MC_CAM_ID` / `MC_CAM_REF` / `MC_MotionFunctionPoint` / `MC_HomingMode` / `MC_HomingParameter`,以及 Beckhoff 命名慣例 `E_*`(enum)/ `ST_*`(struct)— 命名慣例是**推論**,沒有讀 library。專案 DUT、基本型別、STRING / WSTRING、POINTER / REFERENCE 本來就不是候選。其餘專案外型別照記(語料 axis 172 → 87、bfh 7 → 2 筆 / 規則)|
+| `type-alias:<型別>` / `unknown-type:<型別>` | 專案 `TYPE T : TON` alias 或 STRUCT / ALIAS 型別、目錄外的型別。確定不是 FB 的 library 型別**不記**(PR #289 rev289 nit 5):依名稱列舉的 `T_MaxString` / `T_AmsNetId` / `T_AmsNetIdArr` / `T_AmsPort` / `T_FILETIME` / `TIMESTRUCT` / `T_Arg` / `MC_Direction` / `MC_StartMode` / `MC_BufferMode` / `MC_CamActivationMode` / `MC_CamOperationMode` / `MC_CAM_ID` / `MC_CAM_REF` / `MC_MotionFunctionPoint` / `MC_HomingMode` / `MC_HomingParameter`(依 Beckhoff library 文件所列的 DUT,逐名未對 InfoSys 頁重新驗證,標為**推論**)。**不**用 `E_*` / `ST_*` 命名慣例推論(library FB 也可能叫 `ST_LibFb`,PR #289 第 3 輪審查),這類名稱照記 `unknown-type`。專案 DUT、基本型別、STRING / WSTRING、POINTER / REFERENCE 本來就不是候選。其餘專案外型別照記(語料 axis 172 → 87、bfh 7 → 2 筆 / 規則)|
 | `declaration-not-analyzed`、`call-site-not-found`、`nested-member-access` | 宣告區 / 呼叫點 / `inst.a.b`、`inst.a[...]` 無法分析 |
 | owner 有問題的段落 | 條件 pragma(`{IF}`)、不支援的語法等 → 該物件不評估 |
 
