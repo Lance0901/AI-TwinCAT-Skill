@@ -14,6 +14,7 @@
       2. expected findings (tasks 1a acceptance + manual judgement in PR #274):
          axis: PROJECT-ENC-001 on exactly 11 files, PROJECT-GUID-005 on the hand-written Ids;
          bfh: only PROJECT-LINEIDS-001 on FB_Winder (LineIds 147 lines, code 148: changed outside XAE);
+         Phase 1b: axis PROJECT-TASK-001 TestCam; Phase 2a: SAFETY-DIV-001 info axis 46 / bfh 1 (PR #284);
          no other PROJECT-* finding, verdict pass for both;
       3. deterministic: two runs byte-identical; en-US and zh-TW processes byte-identical;
       4. performance: analyse time per project (budget <= 2 s, design.md D7).
@@ -80,12 +81,19 @@ foreach ($k in $projects.Keys) {
         Check 'axis PROJECT-ENC-001 = the 11 files written outside XAE' (($enc -join ',') -eq (($expectedEnc | Sort-Object) -join ',')) ($enc -join ',')
         $g5 = @($diags | Where-Object { $_.ruleId -eq 'PROJECT-GUID-005' } | ForEach-Object { $_.evidence } | Sort-Object)
         Check 'axis PROJECT-GUID-005 = the hand-written Ids (6 listed in research + 6 more)' (($g5 -join ',') -eq (($expectedGuid5 | Sort-Object) -join ',')) ($g5 -join ',')
-        $other = @($diags | Where-Object { $_.ruleId -ne 'PROJECT-ENC-001' -and $_.ruleId -ne 'PROJECT-GUID-005' })
+        # Phase 1b: TestCam PROJECT-TASK-001 (kept PoC program, PR #283); Phase 2a: SAFETY-DIV-001 unchecked-variable-divisor
+        # info x 46, judged one by one in PR #284 (1 real candidate, 9 input-dependent, 34 configuration-derived, 2 false)
+        $t1 = @($diags | Where-Object { $_.ruleId -eq 'PROJECT-TASK-001' } | ForEach-Object { $_.objectPath })
+        Check 'axis PROJECT-TASK-001 only TestCam (Phase 1b)' (($t1 -join ',') -eq 'TestCam') ($t1 -join ',')
+        $div = @($diags | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' })
+        Check 'axis SAFETY-DIV-001: 46 unchecked-variable-divisor infos, none blocking (Phase 2a)' ($div.Count -eq 46 -and @($div | Where-Object { $_.variant -ne 'unchecked-variable-divisor' -or $_.severity -ne 'info' -or $_.blocking }).Count -eq 0) "$($div.Count)"
+        $other = @($diags | Where-Object { @('PROJECT-ENC-001', 'PROJECT-GUID-005', 'PROJECT-TASK-001', 'SAFETY-DIV-001') -notcontains $_.ruleId })
         Check 'axis no other finding' ($other.Count -eq 0) (($other | ForEach-Object { "$($_.ruleId) $($_.objectPath) $($_.message)" }) -join ' | ')
     }
     else {
-        $ok = $diags.Count -eq 1 -and $diags[0].ruleId -eq 'PROJECT-LINEIDS-001' -and $diags[0].objectPath -eq 'FB_Winder'
-        Check 'bfh only PROJECT-LINEIDS-001 on FB_Winder' $ok (($diags | ForEach-Object { "$($_.ruleId) $($_.objectPath) $($_.message)" }) -join ' | ')
+        $ok = $diags.Count -eq 2 -and @($diags | Where-Object { $_.ruleId -eq 'PROJECT-LINEIDS-001' -and $_.objectPath -eq 'FB_Winder' }).Count -eq 1 -and
+            @($diags | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' -and $_.objectPath -eq 'FB_NipAxleControl' -and $_.severity -eq 'info' -and -not $_.blocking }).Count -eq 1
+        Check 'bfh only PROJECT-LINEIDS-001 on FB_Winder and the SAFETY-DIV-001 info on FB_NipAxleControl (Phase 2a)' $ok (($diags | ForEach-Object { "$($_.ruleId) $($_.objectPath) $($_.message)" }) -join ' | ')
     }
     $a = Invoke-TcLintProject -PlcProjectPath $projects[$k] | ConvertTo-Json -Depth 30 -Compress
     $b = Invoke-TcLintProject -PlcProjectPath $projects[$k] | ConvertTo-Json -Depth 30 -Compress
