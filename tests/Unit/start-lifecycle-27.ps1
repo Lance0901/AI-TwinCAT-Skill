@@ -106,6 +106,20 @@ $r = Start-TcLifecycle -Platform 'TwinCAT OS (x64)'
 $s = Get-Call 'Set-TcTarget'
 Check 'platform only: AmsNetId from Connect-TcIde data.amsNetId' ($r.success -and $s.params.AmsNetId -eq '5.1.2.3.1.1' -and $s.params.Platform -eq 'TwinCAT OS (x64)') (J $s.params)
 
+# #307: data.targetKind / targetKindSource: SetTarget wins when it ran, else ConnectIde; null when neither reports it
+Reset-Case
+Set-Mock 'Connect-TcIde' (Ok ([PSCustomObject]@{ ideProcessId = 4242; amsNetId = '5.1.2.3.1.1'; targetKind = 'remote'; targetKindSource = 'no-local-match' }))
+$r = Start-TcLifecycle
+Check 'targetKind from Connect-TcIde (no SetTarget)' ($r.success -and $r.data.targetKind -eq 'remote' -and $r.data.targetKindSource -eq 'no-local-match') (J $r.data)
+Reset-Case
+Set-Mock 'Connect-TcIde' (Ok ([PSCustomObject]@{ ideProcessId = 4242; amsNetId = '5.1.2.3.1.1'; targetKind = 'remote'; targetKindSource = 'no-local-match' }))
+Set-Mock 'Set-TcTarget' { param($p) [PSCustomObject]@{ success = $true; data = [PSCustomObject]@{ amsNetId = $p.AmsNetId; targetKind = 'local-umrt'; targetKindSource = 'TcRegistry.xml:UmRT_Default' } } }
+$r = Start-TcLifecycle -TargetAmsNetId '199.5.42.250.1.1'
+Check 'targetKind from Set-TcTarget when it ran' ($r.success -and $r.data.targetKind -eq 'local-umrt' -and $r.data.targetKindSource -eq 'TcRegistry.xml:UmRT_Default') (J $r.data)
+Reset-Case
+$r = Start-TcLifecycle
+Check 'targetKind null when no step reports it' ($r.success -and $null -eq $r.data.targetKind -and $null -eq $r.data.targetKindSource -and ($r.data.PSObject.Properties.Name -contains 'targetKind')) (J $r.data)
+
 Reset-Case
 Set-Mock 'Connect-TcIde' (Ok ([PSCustomObject]@{ ideProcessId = 4242 }))
 $r = Start-TcLifecycle -Platform 'TwinCAT OS (x64)'

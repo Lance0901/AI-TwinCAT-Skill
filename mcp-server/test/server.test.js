@@ -69,6 +69,16 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.ok(caps.logging);
   });
 
+  test('#307 initialize carries the flow card (instructions.md) as MCP instructions', () => {
+    const text = client.getInstructions();
+    const file = fs.readFileSync(path.join(__dirname, '..', 'instructions.md'), 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+    assert.equal(typeof text, 'string');
+    assert.equal(text, file);
+    assert.match(text, /^# TcAuto — how to use these tools/);
+    assert.match(text, /local-umrt/);
+    assert.doesNotMatch(text, /\r/);
+  });
+
   test('listTools returns 3 catalog + 5 composite tools with JSON schemas', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -89,7 +99,9 @@ describe('index.js over stdio (3-tool fixture)', () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     assert.equal(byName.RunLifecycle.annotations.destructiveHint, true);
     assert.equal(byName.RunLifecycle.annotations.readOnlyHint, false);
-    assert.match(byName.RunLifecycle.description, /confirm with the user first/);
+    assert.match(byName.RunLifecycle.description, /local-umrt -> no need to ask/);
+    assert.match(byName.RunLifecycle.description, /ask once/);
+    assert.doesNotMatch(byName.RunLifecycle.description, /confirm with the user first/i);
     assert.deepEqual(byName.GetStatus.annotations, { readOnlyHint: true });
     assert.deepEqual(byName.QuickRead.annotations, { readOnlyHint: true });
     assert.deepEqual(byName.GetIdeModalDialog.annotations, { readOnlyHint: true });

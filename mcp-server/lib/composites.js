@@ -43,9 +43,10 @@ export const RunLifecycle = {
     'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is also passed to EnableConfig (same value): it then finds the platforms equal and does not add the "-Platform was not given" warning (a platform the target reports through TARGETINFO still wins there); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
     'Multi-PLC solutions: PlcProjectPath is passed to EnableConfig (only those PLCs are logged in and started), ExpectedProject to BuildProject (coverage check; not derived from PlcProjectPath), BuildTimeoutSec to BuildProject as TimeoutSec. ADS port of ConnectAds: AdsPort; without it the adsPort of EnableConfig data.plcs when they have exactly one distinct port (with or without PlcProjectPath); otherwise ConnectAds default 851. With PlcProjectPath and a non-empty data.plcs, an AdsPort that is not one of their adsPort values fails the ConnectAds step with PLC_PORT_MISMATCH (allowed ports in the message, nothing connected; EnableConfig already activated and, without NoLogin, logged in / Run). Example: PlcProjectPath ["FrameworkUnitTest"], ExpectedProject ["FrameworkUnitTest"], AdsPort 852. ' +
     'Readback: without NoLogin the GetPlcState state must be Run, otherwise RUNTIME_STATE_MISMATCH; with NoLogin it is only reported. ' +
-    'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started); confirm with the user first. ' +
+    'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started). ' +
+    'Runtime-change consent (#307): data.targetKind (ConnectIde / SetTarget / GetStatus) = local-umrt -> no need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the first runtime-changing call of this session to that target, tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after the user agrees, do not ask again for that target in this session unless going beyond what was agreed. ' +
     'Fail closed (#68): while the target has a lifecycle block (an earlier SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed) the EnableConfig step returns LIFECYCLE_BLOCKED (ConnectIde / SetTarget / BuildProject before it still run): stop, report the error and data.steps to the user, never retry through another control channel, and call ClearLifecycleBlock only after the user agreed. ' +
-    'Stops at the first failing step; error is that step\'s error as it is. Error codes, data fields and the meaning of hints match Start-TcLifecycle; hint wording is not guaranteed to be identical (the LIBRARY_UNRESOLVED hint addition below is MCP only). data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock); fields of steps that did not run are null. ' +
+    'Stops at the first failing step; error is that step\'s error as it is. Error codes, data fields and the meaning of hints match Start-TcLifecycle; hint wording is not guaranteed to be identical (the LIBRARY_UNRESOLVED hint addition below is MCP only). data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock), targetKind / targetKindSource (#307: SetTarget data.targetKind when that step ran, else ConnectIde data.targetKind); fields of steps that did not run are null. ' +
     'A project with unresolved libraries stops at BuildProject with LIBRARY_UNRESOLVED (the PLC code may not have been compiled): install the libraries first. There is no AllowUnresolvedLibrary here (#61): code whose build did not prove it compiled (codeVerified not true) is not activated, downloaded or started once the module recorded that build (known limits: BUILD_REQUIRED in docs/troubleshooting.md), so even after BuildProject AllowUnresolvedLibrary=true RunLifecycle SkipBuild=true stops at EnableConfig with BUILD_REQUIRED.',
   annotations: { destructiveHint: true, readOnlyHint: false },
   // Informational upper bound (a composite is not cut off by it: every step has its own catalog
@@ -74,7 +75,15 @@ export const RunLifecycle = {
   },
   async run(ctx, args = {}) {
     const steps = [];
-    const data = { steps, failedStep: null, plcProjects: null, adsPort: null, loggedIn: null, plcState: null, lifecycleBlock: null };
+    const data = { steps, failedStep: null, plcProjects: null, adsPort: null, loggedIn: null, plcState: null, lifecycleBlock: null, targetKind: null, targetKindSource: null };
+    // #307: kind of the target (ConnectIde, replaced by SetTarget when that step ran)
+    const takeKind = (result) => {
+      const d = result?.data;
+      if (d && typeof d === 'object' && d.targetKind !== undefined) {
+        data.targetKind = d.targetKind;
+        data.targetKindSource = d.targetKindSource ?? null;
+      }
+    };
     // same key order as Start-TcLifecycle: name, success, code, durationMs, result
     const add = (step) => {
       const out = {
@@ -106,6 +115,7 @@ export const RunLifecycle = {
     if (args.NoLaunch !== undefined) connectArgs.NoLaunch = args.NoLaunch;
 
     let step = add(await timed('ConnectIde', () => ctx.callTool('ConnectIde', connectArgs)));
+    takeKind(step.result);
     if (!step.success) return fail(step);
 
     const hasTarget = typeof args.TargetAmsNetId === 'string' && args.TargetAmsNetId !== '';
@@ -128,6 +138,7 @@ export const RunLifecycle = {
       if (hasPlatform) setArgs.Platform = args.Platform;
       else setArgs.NoPlatformSwitch = true;
       step = add(await timed('SetTarget', () => ctx.callTool('SetTarget', setArgs)));
+      takeKind(step.result);
       if (!step.success) return fail(step);
     }
 
@@ -273,6 +284,7 @@ export const GetStatus = {
     'Snapshot of the whole stack: bridge state (IDE/ADS connected, AmsNetId), IDE info, TwinCAT system state and PLC state. ' +
     'data.bridge also names the loaded PowerShell module: modulePath, moduleCommit, moduleDirty, moduleSource and loadedAt (ISO time the bridge reported ready; changes after a bridge restart or ReloadModule). moduleSource "git-checkout": moduleCommit is the 40-character git sha HEAD of that checkout pointed at when the module was loaded, read from the .git files, and moduleDirty is null (uncommitted changes in the working tree cannot be known without running git); moduleSource "installed" (#162, a runtime installed by scripts/Install-TcAutoRuntime.ps1): moduleCommit and moduleDirty come from its tcauto-source.json; any other path: all three are null. ' +
     'data.bridge.runtime says where the MCP server itself runs from (#162): source ("installed" | "git-checkout" | "unknown"), runtimeDir, runtimeRoot (install root of an installed runtime), version, commit, branch, dirty, installedAt, sourcePath, launcherPid (set when the launcher started it: switch versions with ReloadRuntime) and ownerIdFrom ("launcher" | "server"). ' +
+    'data.targetKind (#307) is the kind of the target that data.system was read from (data.targetAmsNetId: AmsNetId, else the ADS NetId, else the IDE target): "local-umrt" (the Usermode Runtime of this PC, matched through its TcRegistry.xml), "local-xar" (the Windows XAR of this PC: a real machine), "remote" or "unknown" (anything uncertain, e.g. a loopback NetId; never reported as local-umrt); data.targetKindSource says what decided it. ' +
     'Fails with NOT_CONNECTED when the IDE is not connected (run ConnectIde first); each sub-query is independent, a failing one is reported in place without aborting the others.',
   annotations: { readOnlyHint: true },
   timeoutMs: 120000,
@@ -322,7 +334,23 @@ export const GetStatus = {
     const system = await attempt('GetSystemState', systemArgs);
     const plc = state.adsConnected ? await attempt('GetPlcState', {}) : null;
 
-    return { success: true, data: { bridge: state, ide, system, plc } };
+    // #307: kind of the same target GetSystemState was asked about (the bridge falls back to the
+    // IDE target when neither AmsNetId nor an ADS NetId is known). Never fails: unknown otherwise.
+    let kind = null;
+    try {
+      const params = amsNetId !== undefined && amsNetId !== null ? { AmsNetId: amsNetId } : {};
+      kind = await ctx.bridge.call('targetkind', { params, signal: ctx.signal });
+    } catch {
+      kind = null;
+    }
+    const kd = kind?.success === true && kind.data && typeof kind.data === 'object' ? kind.data : null;
+    const targetKind = typeof kd?.targetKind === 'string' && kd.targetKind !== '' ? kd.targetKind : 'unknown';
+    const targetKindSource = targetKind === 'unknown' && !kd ? 'unavailable' : (kd?.targetKindSource ?? null);
+
+    return {
+      success: true,
+      data: { bridge: state, ide, system, plc, targetAmsNetId: kd?.amsNetId ?? null, targetKind, targetKindSource }
+    };
   }
 };
 

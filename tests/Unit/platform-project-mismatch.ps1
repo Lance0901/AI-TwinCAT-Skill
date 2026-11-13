@@ -610,6 +610,12 @@ try {
     New-MockDte -Rows $dirty -Active 0 -NoPlatformName
     $r = & $mod { Set-TcTarget -AmsNetId '1.2.3.4.1.1' -Platform 'TwinCAT RT (x64)' -WarningAction SilentlyContinue }
     Check 'settarget-saved-fields' ($r.success -and $r.data.platformMapReliable -eq $true -and $null -eq $r.data.platformMapReason -and $r.data.PSObject.Properties.Name -contains 'platformMapReason') "success=$($r.success) code=$($r.error.code) reliable=$($r.data.platformMapReliable)"
+    # #307: data.targetKind / targetKindSource of the new target (real Get-TcTargetKind: never local-umrt for 1.2.3.4.1.1)
+    Check 'settarget-targetkind-real' (@('remote', 'unknown') -contains [string]$r.data.targetKind -and -not [string]::IsNullOrWhiteSpace([string]$r.data.targetKindSource)) "kind=$($r.data.targetKind) source=$($r.data.targetKindSource)"
+    & $mod { $script:UnitOrigTargetKind = ${function:Get-TcTargetKind}; function script:Get-TcTargetKind { param($AmsNetId) [PSCustomObject]@{ targetKind = 'local-umrt'; targetKindSource = "unit:$AmsNetId" } } }
+    $r = & $mod { Set-TcTarget -AmsNetId '1.2.3.4.1.1' -Platform 'TwinCAT RT (x64)' -WarningAction SilentlyContinue }
+    Check 'settarget-targetkind-wired' ($r.data.targetKind -eq 'local-umrt' -and $r.data.targetKindSource -eq 'unit:1.2.3.4.1.1') "kind=$($r.data.targetKind) source=$($r.data.targetKindSource)"
+    & $mod { Set-Item -Path function:script:Get-TcTargetKind -Value $script:UnitOrigTargetKind }
     $null = & $mod { Clear-TcBuildRequired }
 
     # --- state file not writable (held open with FileShare.Read, like a reader / virus scanner):

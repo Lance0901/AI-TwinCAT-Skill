@@ -735,6 +735,40 @@ function Invoke-OpState {
     })
 }
 
+function Invoke-OpTargetKind {
+    # #307 (GetStatus data.targetKind): kind of a target AmsNetId through the module's
+    # Get-TcTargetKind. params.AmsNetId wins; else the ADS NetId of the session, else the IDE
+    # target recorded by Connect-TcIde / Set-TcTarget. Never fails: no NetId gives 'unknown'.
+    param($Request)
+    $id = $null
+    $pp = $Request.PSObject.Properties['params']
+    if ($null -ne $pp -and $null -ne $pp.Value -and ($pp.Value -is [System.Management.Automation.PSCustomObject])) {
+        $a = $pp.Value.PSObject.Properties['AmsNetId']
+        if ($null -ne $a -and -not [string]::IsNullOrWhiteSpace([string]$a.Value)) { $id = [string]$a.Value }
+    }
+    if ($null -eq $id) {
+        $ads = Get-ModuleVar 'TcAdsAmsNetId'
+        if (-not [string]::IsNullOrWhiteSpace([string]$ads)) { $id = [string]$ads }
+    }
+    if ($null -eq $id) {
+        $ide = $null
+        try { $ide = Invoke-InModule { Resolve-TcLifecycleIdeNetId } } catch { $ide = $null }
+        if (-not [string]::IsNullOrWhiteSpace([string]$ide)) { $id = [string]$ide }
+    }
+    # A module without Get-TcTargetKind (older than #307, loaded by ReloadModule) -> 'unknown'.
+    $kind = 'unknown'; $source = 'match-failed'
+    try {
+        $k = Invoke-InModule { param($n) Get-TcTargetKind -AmsNetId $n } @([string]$id)
+        if ($null -ne $k -and -not [string]::IsNullOrWhiteSpace([string]$k.targetKind)) { $kind = [string]$k.targetKind; $source = [string]$k.targetKindSource }
+    }
+    catch { Write-Stderr "[bridge] targetkind: $($_.Exception.Message)" }
+    return New-SuccessResult -Data ([ordered]@{
+        amsNetId         = $id
+        targetKind       = $kind
+        targetKindSource = $source
+    })
+}
+
 function Get-BridgeModuleVariable {
     # @{ Exists; Value } of a $script: variable of the module. Unlike Get-ModuleVar this tells
     # "not defined" apart from "defined as $null" (#41 review: a missing variable must fail closed).
@@ -994,6 +1028,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             'state' {
                 Write-Result -Id $id -Result (Invoke-OpState)
             }
+            'targetkind' {
+                Write-Result -Id $id -Result (Invoke-OpTargetKind -Request $request)
+            }
             'ping' {
                 Write-Result -Id $id -Result (New-SuccessResult -Data ([ordered]@{ pong = $true }))
             }
@@ -1008,7 +1045,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 $shutdown = $true
             }
             default {
-                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, retire, shutdown.')
+                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, targetkind, ping, retire, shutdown.')
             }
         }
     }

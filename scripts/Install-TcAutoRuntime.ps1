@@ -69,7 +69,7 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderP
 $srcMcp = Join-Path $repoRoot 'mcp-server'
 $srcModule = Join-Path $repoRoot 'src\TwinCATAutomation'
 $srcLauncher = Join-Path $srcMcp 'launcher\tcauto-launcher.mjs'
-foreach ($p in @((Join-Path $srcMcp 'index.js'), (Join-Path $srcMcp 'package-lock.json'), (Join-Path $srcModule 'TwinCATAutomation.psd1'), $srcLauncher)) {
+foreach ($p in @((Join-Path $srcMcp 'index.js'), (Join-Path $srcMcp 'instructions.md'), (Join-Path $srcMcp 'package-lock.json'), (Join-Path $srcModule 'TwinCATAutomation.psd1'), $srcLauncher)) {
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Stop-Install -Code 'SOURCE_INCOMPLETE' -Message "$p not found; run this script from a TcAuto checkout (scripts\Install-TcAutoRuntime.ps1)." }
 }
 

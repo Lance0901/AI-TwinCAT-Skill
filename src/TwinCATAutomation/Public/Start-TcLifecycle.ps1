@@ -6,7 +6,12 @@ function Start-TcLifecycle {
     .DESCRIPTION
         PowerShell counterpart of the MCP composite tool RunLifecycle (#27): same parameters, same
         step order, same data fields. Changes the running machine (TwinCAT restarts, the PLC program
-        is downloaded and started): confirm with the user first.
+        is downloaded and started). Runtime-change consent (#307): data.targetKind = local-umrt -> no
+        need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the
+        first runtime-changing call of this session to that target, tell the user what can happen
+        (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after
+        the user agrees, do not ask again for that target in this session unless going beyond what
+        was agreed.
 
         Steps (each one only after the previous one returned success = $true):
           ConnectIde    Connect-TcIde (-SolutionPath, -ProgId, -NoLaunch).
@@ -34,7 +39,9 @@ function Start-TcLifecycle {
         data: steps[] ({name, success, code, durationMs, result}; code = error code of a failed step,
         else $null; result = the raw result of the step's cmdlet), failedStep (step name or $null),
         plcProjects (Enable-TcConfig data.plcs), adsPort (Connect-TcAds data.port), loggedIn
-        (Enable-TcConfig data.loggedIn), plcState (Get-TcPlcState data.state), lifecycleBlock;
+        (Enable-TcConfig data.loggedIn), plcState (Get-TcPlcState data.state), lifecycleBlock,
+        targetKind / targetKindSource (#307: Set-TcTarget data.targetKind when that step ran, else
+        Connect-TcIde data.targetKind; local-umrt | local-xar | remote | unknown);
         fields of steps that did not run are $null.
     .PARAMETER SolutionPath
         Solution (.sln) to open on Connect-TcIde. Omit to attach to the running XAE.
@@ -133,6 +140,15 @@ function Start-TcLifecycle {
         loggedIn       = $null
         plcState       = $null
         lifecycleBlock = $null
+        targetKind       = $null   # #307: from the ConnectIde step, replaced by the SetTarget step when it ran
+        targetKindSource = $null
+    }
+    $takeKind = {
+        param([object]$Result)
+        if ($null -ne $Result -and $null -ne $Result.PSObject.Properties['data'] -and $null -ne $Result.data -and $null -ne $Result.data.PSObject.Properties['targetKind']) {
+            $data.targetKind = $Result.data.targetKind
+            $data.targetKindSource = if ($null -ne $Result.data.PSObject.Properties['targetKindSource']) { $Result.data.targetKindSource } else { $null }
+        }
     }
 
     # Runs one step: the last object with a 'success' property is its result; a throw or no result
@@ -186,6 +202,7 @@ function Start-TcLifecycle {
     if ($PSBoundParameters.ContainsKey('ProgId')) { $connectArgs['ProgId'] = $ProgId }
     if ($NoLaunch) { $connectArgs['NoLaunch'] = $true }
     $step = & $runStep 'ConnectIde' { Connect-TcIde @connectArgs }
+    & $takeKind $step.result
     if (-not $step.success) { return (& $finish $step) }
 
     # 2. SetTarget (only with -TargetAmsNetId or -Platform)
@@ -206,6 +223,7 @@ function Start-TcLifecycle {
         # runtimes without TARGETINFO; Enable-TcConfig does the platform check.
         if ($hasPlatform) { $setArgs['Platform'] = $Platform } else { $setArgs['NoPlatformSwitch'] = $true }
         $step = & $runStep 'SetTarget' { Set-TcTarget @setArgs }
+        & $takeKind $step.result
         if (-not $step.success) { return (& $finish $step) }
     }
 

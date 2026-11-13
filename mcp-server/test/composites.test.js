@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { QuickRead, RunLifecycle } from '../lib/composites.js';
+import { QuickRead, RunLifecycle, GetStatus } from '../lib/composites.js';
 
 // #57: QuickRead adds connectedOnDemand without changing the shape of data (same rule as stampOrder).
 describe('QuickRead data shape (no bridge)', () => {
@@ -266,6 +266,32 @@ describe('RunLifecycle #27 (no bridge): port decision, readback, fail closed', (
     assert.deepEqual(f.call('GetPlcState').args, {});
   });
 
+  test('#307 data.targetKind: SetTarget wins when it ran, else ConnectIde, null when neither reports it', async () => {
+    const none = await run(fakeCtx(), {});
+    assert.equal(none.data.targetKind, null);
+    assert.equal(none.data.targetKindSource, null);
+    assert.ok('targetKind' in none.data && 'targetKindSource' in none.data);
+    const ide = fakeCtx({ ConnectIde: () => ok({ ideProcessId: 4242, amsNetId: '5.1.2.3.1.1', targetKind: 'remote', targetKindSource: 'no-local-match' }) });
+    const r1 = await run(ide, {});
+    assert.equal(r1.data.targetKind, 'remote');
+    assert.equal(r1.data.targetKindSource, 'no-local-match');
+    const both = fakeCtx({
+      ConnectIde: () => ok({ ideProcessId: 4242, amsNetId: '5.1.2.3.1.1', targetKind: 'remote', targetKindSource: 'no-local-match' }),
+      SetTarget: (a) => ok({ amsNetId: a.AmsNetId, targetKind: 'local-umrt', targetKindSource: 'TcRegistry.xml:UmRT_Default' })
+    });
+    const r2 = await run(both, { TargetAmsNetId: '199.5.42.250.1.1' });
+    assert.equal(r2.data.targetKind, 'local-umrt');
+    assert.equal(r2.data.targetKindSource, 'TcRegistry.xml:UmRT_Default');
+    // a failing step still reports the kind it saw (the SetTarget data of a PLATFORM_UNKNOWN keeps targetKind)
+    const failSet = fakeCtx({
+      ConnectIde: () => ok({ ideProcessId: 4242, amsNetId: '5.1.2.3.1.1', targetKind: 'remote', targetKindSource: 'no-local-match' }),
+      SetTarget: () => ({ success: false, error: { code: 'PLATFORM_UNKNOWN', message: 'x' }, data: { targetKind: 'local-xar', targetKindSource: 'system-amsnetid' } })
+    });
+    const r3 = await run(failSet, { TargetAmsNetId: '192.168.1.1.1.1', Platform: 'TwinCAT RT (x64)' });
+    assert.equal(r3.success, false);
+    assert.equal(r3.data.targetKind, 'local-xar');
+  });
+
   test('ExpectedProject / BuildTimeoutSec go to BuildProject, PlcProjectPath / NoLogin / TimeoutSec to EnableConfig', async () => {
     const f = fakeCtx({ EnableConfig: () => ok({ loggedIn: false, plcs: [plc('FrameworkUnitTest', 852)] }) });
     const r = await run(f, { ExpectedProject: ['FrameworkUnitTest'], BuildTimeoutSec: 900, PlcProjectPath: ['FrameworkUnitTest'], NoLogin: true, TimeoutSec: 300 });
@@ -460,5 +486,61 @@ describe('RunLifecycle #27 over the server (mock bridge)', () => {
       const bad = parse(await client.callTool({ name: 'RunLifecycle', arguments: args }));
       assert.equal(bad.error.code, 'INVALID_PARAMS', JSON.stringify(args));
     }
+  });
+});
+
+describe('#307 GetStatus data.targetKind (no bridge)', () => {
+  const ok = (data) => ({ success: true, data });
+  function fakeCtx({ state = { ideConnected: true, amsNetId: null, adsConnected: false }, kind } = {}) {
+    const ops = [];
+    const ctx = {
+      bridge: {
+        call: async (op, opts) => {
+          ops.push({ op, params: opts?.params });
+          if (op === 'state') return ok(state);
+          if (op === 'targetkind') {
+            if (kind instanceof Error) throw kind;
+            return kind ?? ok({ amsNetId: opts?.params?.AmsNetId ?? '5.1.2.3.1.1', targetKind: 'remote', targetKindSource: 'no-local-match' });
+          }
+          throw new Error(`unexpected op ${op}`);
+        }
+      },
+      callTool: async () => ok({})
+    };
+    return { ctx, ops };
+  }
+
+  test('kind of the same target GetSystemState was asked about; AmsNetId passed to the targetkind op', async () => {
+    const f = fakeCtx({ kind: ok({ amsNetId: '199.5.42.250.1.1', targetKind: 'local-umrt', targetKindSource: 'TcRegistry.xml:UmRT_Default' }) });
+    const r = await GetStatus.run(f.ctx, { AmsNetId: '199.5.42.250.1.1' });
+    assert.equal(r.success, true);
+    assert.equal(r.data.targetKind, 'local-umrt');
+    assert.equal(r.data.targetKindSource, 'TcRegistry.xml:UmRT_Default');
+    assert.equal(r.data.targetAmsNetId, '199.5.42.250.1.1');
+    assert.deepEqual(f.ops.find((o) => o.op === 'targetkind').params, { AmsNetId: '199.5.42.250.1.1' });
+  });
+
+  test('no AmsNetId and no ADS NetId: the op gets no params (the bridge falls back to the IDE target)', async () => {
+    const f = fakeCtx();
+    const r = await GetStatus.run(f.ctx, {});
+    assert.deepEqual(f.ops.find((o) => o.op === 'targetkind').params, {});
+    assert.equal(r.data.targetKind, 'remote');
+  });
+
+  test('fail safe: op failure or throw -> unknown / unavailable, GetStatus still succeeds', async () => {
+    for (const kind of [{ success: false, error: { code: 'INVALID_OP', message: 'old bridge' } }, new Error('boom')]) {
+      const r = await GetStatus.run(fakeCtx({ kind }).ctx, {});
+      assert.equal(r.success, true);
+      assert.equal(r.data.targetKind, 'unknown');
+      assert.equal(r.data.targetKindSource, 'unavailable');
+      assert.equal(r.data.targetAmsNetId, null);
+    }
+  });
+
+  test('IDE not connected: NOT_CONNECTED as before, targetkind not asked', async () => {
+    const f = fakeCtx({ state: { ideConnected: false } });
+    const r = await GetStatus.run(f.ctx, {});
+    assert.equal(r.error.code, 'NOT_CONNECTED');
+    assert.ok(!f.ops.some((o) => o.op === 'targetkind'));
   });
 });

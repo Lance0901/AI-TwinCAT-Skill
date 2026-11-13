@@ -7,6 +7,8 @@ description: Control TwinCAT 3 IDE, manage PLC projects, build and deploy progra
 
 用 TwinCATAutomation PowerShell 模組控制 TwinCAT 3 IDE(XAE)與 PLC runtime。全程無 dialog。
 
+**先看流程卡**:`mcp-server/instructions.md`(英文一頁:黃金規則、各任務的工具順序、何時問使用者、失敗怎麼做;TcAuto MCP server 在 initialize 時以 `instructions` 送給 client,#307)。本頁是細節;兩者衝突時以流程卡為準並回報。
+
 已知限制(beta)與真機驗證範圍:`docs/known-limitations.md`。遇到問題請開 GitHub issue(https://github.com/Lance0901/AI-TwinCAT-Skill/issues),附 tool 名稱、參數、回傳 JSON,以及 `Get-TcAutomationVersion`(MCP `GetAutomationVersion`)回的 version / commit。Canonical repository:https://github.com/Lance0901/AI-TwinCAT-Skill;安裝來源與 commit 記在 skill 目錄的 `tcauto-install-manifest.json`(#30)。
 
 ## Setup
@@ -26,7 +28,7 @@ Import-Module "<module-path>" -Force
 
 ### Quick Start:一鍵 lifecycle(`Start-TcLifecycle`,MCP `RunLifecycle`,#27)
 
-會重啟 TwinCAT、下載並啟動 PLC 程式:先問使用者。
+會重啟 TwinCAT、下載並啟動 PLC 程式。Runtime-change consent (#307): data.targetKind (ConnectIde / SetTarget / GetStatus) = local-umrt -> no need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the first runtime-changing call of this session to that target, tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after the user agrees, do not ask again for that target in this session unless going beyond what was agreed. `data.targetKind`(`local-umrt` / `local-xar` / `remote` / `unknown`,`data.targetKindSource` 是判斷依據)由 `Connect-TcIde` / `Set-TcTarget` / `Start-TcLifecycle`(MCP `ConnectIde` / `SetTarget` / `GetStatus` / `RunLifecycle`)回傳;讀不到或不確定一律不是 `local-umrt`。這條規則目前靠 AI 遵守,工具本身不會跳確認(#258)。
 
 ```powershell
 # Connect-TcIde -> [Set-TcTarget] -> Build-TcProject -> Enable-TcConfig -Force -> Connect-TcAds -> Get-TcPlcState 讀回(必須 Run)

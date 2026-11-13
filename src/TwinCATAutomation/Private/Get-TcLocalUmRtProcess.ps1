@@ -61,3 +61,62 @@ function Test-TcProcessAlive {
     param([Parameter(Mandatory)][int]$Id)
     try { $null = Get-Process -Id $Id -ErrorAction Stop; return $true } catch { return $false }
 }
+
+function Get-TcTargetKind {
+    <#
+    .SYNOPSIS
+        What kind of runtime an AmsNetId is (#307): 'local-umrt' | 'local-xar' | 'remote' | 'unknown'.
+    .DESCRIPTION
+        Reported as data.targetKind / data.targetKindSource by Connect-TcIde, Set-TcTarget,
+        Start-TcLifecycle and the MCP GetStatus / RunLifecycle tools, so an AI can tell the
+        user-mode runtime of this PC (no real I/O) from a real machine without guessing.
+        Uses the same match as Get-TcLocalUmRtProcess (Resolve-TcTargetBootDir):
+          - the AmsNetId of a %ProgramData%\Beckhoff\TwinCAT\3.1\Runtimes\<name>\3.1\TcRegistry.xml
+            -> 'local-umrt' (source 'TcRegistry.xml:<name>'; measured 2026-10-21, UmRT_Default)
+          - the system AmsNetId of this PC (HKLM ...\Beckhoff\TwinCAT3\System AmsNetId)
+            -> 'local-xar' (source 'system-amsnetid'): a Windows XAR on this PC IS a real machine
+          - neither, while the system AmsNetId of this PC was readable -> 'remote' (source 'no-local-match')
+        Fail safe: anything uncertain is 'unknown', never 'local-umrt': no / malformed AmsNetId,
+        a loopback 127.x NetId (the IDE default target before a real one is set, cannot be mapped
+        to a runtime), the match throwing, or no readable system AmsNetId (then local XAR and
+        remote cannot be told apart). Never throws.
+    .PARAMETER AmsNetId
+        Target AMS Net ID (may be empty).
+    .OUTPUTS
+        [PSCustomObject]@{ targetKind; targetKindSource }
+    #>
+    [CmdletBinding()]
+    param([AllowEmptyString()][AllowNull()][string]$AmsNetId)
+
+    $out = { param($k, $s) [PSCustomObject]@{ targetKind = $k; targetKindSource = $s } }
+    $id = if ($null -eq $AmsNetId) { '' } else { $AmsNetId.Trim() }
+    if ($id -eq '') { return (& $out 'unknown' 'no-amsnetid') }
+    $parts = $id.Split('.')
+    $valid = ($parts.Count -eq 6)
+    if ($valid) { foreach ($p in $parts) { $n = 0; if (-not [int]::TryParse($p, [ref]$n) -or $n -lt 0 -or $n -gt 255 -or $p -notmatch '^\d{1,3}$') { $valid = $false } } }
+    if (-not $valid) { return (& $out 'unknown' 'invalid-amsnetid') }
+    if ($parts[0] -eq '127') { return (& $out 'unknown' 'loopback') }
+
+    $boot = $null
+    try { $boot = Resolve-TcTargetBootDir -AmsNetId $id }
+    catch { return (& $out 'unknown' 'match-failed') }
+    if ($null -ne $boot) {
+        $kind = [string]$boot.Kind
+        if ($kind -like 'umrt:?*') { return (& $out 'local-umrt' ("TcRegistry.xml:" + $kind.Substring(5))) }
+        if ($kind -eq 'local-xar') { return (& $out 'local-xar' 'system-amsnetid') }
+        return (& $out 'unknown' 'match-failed')
+    }
+
+    # Not local: 'remote' only when this PC's system AmsNetId could be read (else a local XAR
+    # whose registry value was unreadable would be reported as remote).
+    $systemReadable = $false
+    foreach ($key in 'HKLM:\SOFTWARE\WOW6432Node\Beckhoff\TwinCAT3\System', 'HKLM:\SOFTWARE\Beckhoff\TwinCAT3\System') {
+        try {
+            $v = (Get-ItemProperty -Path $key -Name AmsNetId -ErrorAction Stop).AmsNetId
+            if ($null -ne $v -and $v.Length -eq 6) { $systemReadable = $true; break }
+        }
+        catch { }
+    }
+    if ($systemReadable) { return (& $out 'remote' 'no-local-match') }
+    return (& $out 'unknown' 'system-amsnetid-unreadable')
+}

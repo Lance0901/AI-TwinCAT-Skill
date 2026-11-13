@@ -38,7 +38,7 @@ Connect-TcAds
 
 # 5. Read / write
 Read-TcVariable -Path "MAIN.nCounter"
-Write-TcVariable -Path "MAIN.bEnable" -Value $true   # confirm with the user first
+Write-TcVariable -Path "MAIN.bEnable" -Value $true   # real machine: ask once first (rule 5 below)
 ```
 
 `Enable-TcConfig -Force` includes Login and PLC Run; `-NoLogin` skips download / Run. Separate steps (`Enter-TcPlcOnline`, `Set-TcPlcState`) are only needed for finer control.
@@ -51,7 +51,7 @@ Write-TcVariable -Path "MAIN.bEnable" -Value $true   # confirm with the user fir
 2. **Report** the result (`data.lifecycleBlock`, `data.steps`, `data.finalCheck`) to the user as it is. Read-only diagnosis is fine.
 3. **Do not fall back** to raw ADS `WriteControl`, `StartRestartTwinCAT`, `DTE.ExecuteCommand`, the GUI, the `TcSystemServiceUm` console, or a re-`Connect-TcIde` after Activate.
 4. `Clear-TcLifecycleBlock` (MCP `ClearLifecycleBlock`) **only after the user has seen the block and agreed**, with the receipt fields `-Reason`, `-FallbackMethod`, `-AllowedSideEffects`, `-MaxVerifyLevel`. Never to get past `LIFECYCLE_BLOCKED` on your own.
-5. Confirm with the user before `Enable-TcConfig`, `Write-TcVariable`, `Set-TcSystemState` (Config stops the runtime, outputs go to zero), `Set-TcPlcState` (Reset leaves the PLC in Stop; `Run` recovers it. An older report that it kills `TcSystemServiceUm` on a UmRT did not reproduce, 實測 2026-11-08 #26) and `Invoke-TcTestCycle`.
+5. Runtime-changing calls (`Enable-TcConfig`, `Start-TcLifecycle`, `Write-TcVariable`, `Set-TcSystemState` (Config stops the runtime, outputs go to zero), `Set-TcPlcState` (Reset leaves the PLC in Stop; `Run` recovers it. An older report that it kills `TcSystemServiceUm` on a UmRT did not reproduce, 實測 2026-11-08 #26) and `Invoke-TcTestCycle`), Runtime-change consent (#307): data.targetKind (ConnectIde / SetTarget / GetStatus) = local-umrt -> no need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the first runtime-changing call of this session to that target, tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after the user agrees, do not ask again for that target in this session unless going beyond what was agreed.
 
 Details: https://github.com/Lance0901/AI-TwinCAT-Skill/blob/master/adapters/claude-code/SKILL.md ("Failure contract") and docs/troubleshooting.md "LIFECYCLE_BLOCKED".
 
