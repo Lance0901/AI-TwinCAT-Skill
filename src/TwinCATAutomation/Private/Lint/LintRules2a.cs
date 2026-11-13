@@ -750,6 +750,13 @@ namespace TcLintEngine
                     if (x.Kind == TokKind.Ident && !StLexer.Keywords.Contains(x.Upper) && parens.Count > 0 && parens[parens.Count - 1] != null
                         && !ValueOnly(parens[parens.Count - 1]) && (t[k - 1].IsOp("(") || t[k - 1].IsOp(",")) && (t[k + 1].IsOp(",") || t[k + 1].IsOp(")")))
                         w.CallArgs.Add(x.Upper);
+                    if (x.IsOp(":=") && parens.Count > 0 && parens[parens.Count - 1] != null && k >= 2 && t[k - 1].Kind == TokKind.Ident && (t[k - 2].IsOp("(") || t[k - 2].IsOp(",")))
+                    {
+                        // formal parameter of a call (fb(IN := x)): it names an input of the callee, not a designator of this section;
+                        // kept in Names only (a caller writes the input of that POU: WrittenSomewhere / FixedNonZero / counter checks unchanged)
+                        w.Names.Add(t[k - 1].Upper);
+                        continue;
+                    }
                     if (x.IsOp(":=") || x.IsOp("S=") || x.IsOp("R=") || x.IsOp("REF="))
                     {
                         // left-hand designator, read backwards: ident ( . ident | ^ | [ ... ] )*
@@ -982,7 +989,7 @@ namespace TcLintEngine
                         condNames.Add(x.Upper);
                         if (k + 2 < ct && t[k + 1].IsOp(".") && t[k + 2].Kind == TokKind.Ident && !(k > cf && t[k - 1].IsOp("."))) members.Add(x.Text + "." + t[k + 2].Text);
                     }
-                    if (condCall) continue;   // a function / method / property-like call may return another value
+                    if (condCall) { Skip(RLoop, "call-in-condition"); continue; }   // a function / method call may return another value: recorded, not silent (second review B1)
                     string what;
                     if (condNames.Count == 0)
                     {
@@ -993,7 +1000,6 @@ namespace TcLintEngine
                     }
                     else
                     {
-                        if (body.Calls) continue;                        // a call may change the condition
                         if (body.Deref) { Skip(RLoop, "pointer-write"); continue; }   // a pointer write may change it: recorded, not silent
                         List<Dsg> cds = Dsgs(cf, ct);
                         string unsure = null;
@@ -1004,9 +1010,23 @@ namespace TcLintEngine
                         foreach (Dsg d in cds) foreach (List<string> pth in body.Paths) { int cf2 = Conflict(d.C, pth); conflict = Math.Max(conflict, cf2 == 1 ? 3 : cf2); }
                         if (conflict == 3) continue;   // the body writes the condition
                         if (conflict == 2) { Skip(RLoop, "written-element-may-be-the-condition"); continue; }
+                        // second review B1: a call in the body only hides the busy-wait when it can reach the condition
+                        BodyCalls bc = CallsIn(r.BodyFrom, r.BodyTo);
+                        HashSet<string> condRoots = new HashSet<string>(StringComparer.Ordinal);
+                        foreach (Dsg d in cds) if (d.C.Count > 0) condRoots.Add(d.C[0]);
+                        bool passed = false;
+                        foreach (string root in condRoots) if (bc.Passed.Contains(root)) passed = true;
+                        if (passed) { Skip(RLoop, "call-in-body"); continue; }   // a condition variable is given to a call (VAR_IN_OUT / ADR / REF= may write it)
+                        List<string> waited = new List<string>();
+                        bool otherRoots = false;
+                        foreach (string root in condRoots) { if (bc.Instances.Contains(root)) waited.Add(root); else otherRoots = true; }
+                        if (bc.Unknown && (waited.Count == 0 || otherRoots)) { Skip(RLoop, "call-in-body"); continue; }   // project function / method / action / unknown type: cannot tell
                         if (body.Any && (condDeref || AliasRisk(condNames) || AliasRiskRoots(body.Roots))) { Skip(RLoop, "possible-alias"); continue; }   // REFERENCE / VAR_IN_OUT / pointer may alias
+                        if (waited.Count > 0) { FbWaitLoop(b, r, cf, ct, waited); continue; }
                         List<string> cn = new List<string>(condNames); cn.Sort(StringComparer.Ordinal);
-                        what = "nothing in the body writes " + string.Join(", ", cn.ToArray()) + " and the body has no call, no EXIT / RETURN / JMP and no pointer write";
+                        what = "nothing in the body writes " + string.Join(", ", cn.ToArray()) +
+                            (bc.Any ? ", the body calls only function blocks of the type catalog / IEC standard functions that do not receive it" : " and the body has no call") +
+                            ", no EXIT / RETURN / JMP and no pointer write";
                         foreach (string n in cn)
                         {
                             VarRef vr = run.Resolve(Sc, n);
@@ -1014,8 +1034,12 @@ namespace TcLintEngine
                         }
                     }
                     string note = "";
-                    if (inputs.Count > 0) note += "; the condition reads the input " + string.Join(", ", inputs.ToArray()) + " - inputs are updated only between task cycles (process image)";
-                    if (members.Count > 0) note += "; the condition reads " + string.Join(", ", members.ToArray()) + " - a function block output changes only when the block is called";
+                    // second review S4: the order is documented (input update, cycle update, output update); that the input stays the same during the program is inferred from it
+                    if (inputs.Count > 0) note += "; the condition reads the input " + string.Join(", ", inputs.ToArray()) + " - the task updates its inputs before the program runs (InfoSys TwinCAT real-time tc3_grundlagen/6828869003.html: input update, then cycle update, then output update), so the loop never sees a new value (inferred from that order, not measured)";
+                    // second review N1: only an output of a function block instance is described as one
+                    List<string> fbOuts = new List<string>();
+                    foreach (string m in members) if (IsFbInstance(m.Substring(0, m.IndexOf('.')))) fbOuts.Add(m);
+                    if (fbOuts.Count > 0) note += "; the condition reads the function block output " + string.Join(", ", fbOuts.ToArray()) + " - the block is not called in the loop, so its outputs do not change";
                     string ev = b.Kind == "WHILE" ? Text(b.Open, r.BodyFrom) : "REPEAT ... UNTIL " + Text(cf, ct);
                     Emit(RLoop, t[b.Open],
                         b.Kind + " loop never ends within the cycle: " + what + note + ". The task stays in the loop (InfoSys " +
@@ -1051,6 +1075,88 @@ namespace TcLintEngine
             {
                 string ty = (r.TypeText ?? "").TrimStart().ToUpperInvariant();
                 return (r.Block != null && r.Block.Kind == "VAR_IN_OUT") || ty.StartsWith("REFERENCE", StringComparison.Ordinal) || ty.StartsWith("POINTER", StringComparison.Ordinal);
+            }
+
+            // calls of a loop body (second review B1)
+            private sealed class BodyCalls
+            {
+                public bool Any;        // any call other than IEC standard functions / type conversions
+                public bool Unknown;    // a call the linter cannot judge: project function / FB, method, action, array element, pointer, unknown type
+                public HashSet<string> Instances = new HashSet<string>(StringComparer.Ordinal);   // called instances of a type-catalog FB (upper case)
+                public HashSet<string> Passed = new HashSet<string>(StringComparer.Ordinal);      // roots given to a call (any argument), to ADR or as REF= source
+            }
+
+            private string CatalogTypeOf(string name)
+            {
+                VarRef vr = run.Resolve(Sc, name);
+                if (vr == null || vr.V == null) return null;
+                string ty = (vr.TypeText ?? "").Trim();
+                if (ty.IndexOf(' ') >= 0 || ty.IndexOf('[') >= 0) return null;   // REFERENCE TO / POINTER TO / ARRAY: not a plain instance
+                int ld = ty.LastIndexOf('.');
+                string bare = ld < 0 ? ty : ty.Substring(ld + 1);
+                return run.FindCatalog(bare, null) != null ? bare : null;
+            }
+
+            private bool IsFbInstance(string name)
+            {
+                if (CatalogTypeOf(name) != null) return true;
+                VarRef vr = run.Resolve(Sc, name);
+                if (vr == null || vr.V == null) return false;
+                string ty = (vr.TypeText ?? "").Trim();
+                DeclInfo pd = run.PouDecl(ty);
+                return pd != null && pd.HeaderKeyword == "FUNCTION_BLOCK";
+            }
+
+            private BodyCalls CallsIn(int from, int to)
+            {
+                BodyCalls bc = new BodyCalls();
+                for (int k = from; k < to; k++)
+                {
+                    if (t[k].IsOp("REF=") && k + 1 < to && t[k + 1].Kind == TokKind.Ident) { bc.Passed.Add(t[k + 1].Upper); continue; }
+                    if (!t[k].IsOp("(")) continue;
+                    bool adr = k > 0 && t[k - 1].Is("ADR");
+                    if (!adr && !IsCallParen(k)) continue;
+                    Token p = t[k - 1];
+                    string callee = p.Kind == TokKind.Ident ? p.Upper : "";
+                    if (ValueOnly(callee)) continue;   // arguments by value (InfoSys tc3_plc_intro operators / type conversion)
+                    bc.Any = true;
+                    bool member = k >= 2 && (t[k - 2].IsOp(".") || t[k - 2].IsOp("^"));
+                    if (adr) { }
+                    else if (p.Kind == TokKind.Ident && !member && CatalogTypeOf(p.Text) != null) bc.Instances.Add(callee);
+                    else bc.Unknown = true;
+                    if (member && t[k - 2].IsOp(".") && k >= 3 && t[k - 3].Kind == TokKind.Ident) bc.Passed.Add(t[k - 3].Upper);   // inst.M(): the method may change inst
+                    int c = MatchForward(k, "(", ")", to);
+                    if (c < 0) { bc.Unknown = true; continue; }
+                    for (int q = k + 1; q < c; q++)
+                    {
+                        Token y = t[q];
+                        if (y.Kind != TokKind.Ident || (StLexer.Keywords.Contains(y.Upper) && y.Upper != "THIS" && y.Upper != "SUPER")) continue;
+                        if (t[q - 1].IsOp(".")) continue;                                                         // member name
+                        if (q + 1 < c && (t[q + 1].IsOp(":=") || t[q + 1].IsOp("=>")) && (t[q - 1].IsOp("(") || t[q - 1].IsOp(","))) continue;   // formal parameter
+                        if (q + 1 < c && t[q + 1].IsOp("(")) continue;                                             // nested callee
+                        bc.Passed.Add(y.Upper);
+                    }
+                }
+                return bc;
+            }
+
+            // second review S1: the condition reads an output of a type-catalog FB instance that the body calls
+            private void FbWaitLoop(Blk b, Br r, int cf, int ct, List<string> waited)
+            {
+                List<string> names = new List<string>();
+                foreach (string w in waited)
+                {
+                    string shown = w;
+                    for (int k = cf; k < ct; k++) if (t[k].Kind == TokKind.Ident && t[k].Upper == w) { shown = t[k].Text; break; }
+                    names.Add(shown + " : " + CatalogTypeOf(shown));
+                }
+                string ev = b.Kind == "WHILE" ? Text(b.Open, r.BodyFrom) : "REPEAT ... UNTIL " + Text(cf, ct);
+                Emit(RLoop, t[b.Open],
+                    b.Kind + " loop waits inside one cycle for the function block " + string.Join(", ", names.ToArray()) + ": the condition reads its output and the body calls it again. " +
+                    "Whether repeated calls within one PLC cycle can change that output is not documented: Tc2_MC2 axis data NcToPlc is 'cyclically exchanged between PLC and NC' (InfoSys AXIS_REF tcplclib_tc2_mc2/70132363.html), " +
+                    "the TON page only says 'the time in milliseconds is counted up in ET' (tcplclib_tc2_standard/74406539.html) - not verified (tasks 2.10, UmRT). " +
+                    "Either the loop never ends (InfoSys WHILE 9007201783032715 / REPEAT 9007201783038091: the instructions are repeated continuously, causing a runtime error) or it holds the task for the whole wait",
+                    ev, "Call the block once per cycle and test its output in the next cycle (IF / state machine step), not in a loop", "fb-wait-loop", "warning", "false");
             }
 
             // ================================================================ SCAN-FOR-001
@@ -1126,12 +1232,11 @@ namespace TcLintEngine
                     }
                     if (why == null) continue;
                     string sev = null, blk = null;
-                    if (variant == "step-overflow") { sev = "warning"; blk = "false"; }
                     if (exit) { variant = variant == null ? "exit-in-body" : variant + ",exit-in-body"; sev = "warning"; blk = "false"; }
                     Emit(RFor, t[b.Open], "FOR loop on " + t[b.Counter].Text + " : " + ty + " never ends: " + why +
                         " (InfoSys FOR 2528280971: 'The <end value> must not have the same value as the upper bound of the data type of the counter.'; the compiler only warns C0266, the build succeeds)" +
                         (exit ? "; the body has " + f.Body.ExitLike + ", which may end the loop - check that it always does" : "") +
-                        (variant != null && variant.StartsWith("step-overflow", StringComparison.Ordinal) ? "; with a step other than 1 the wrap-around is inferred from the same rule, not documented" : ""),
+                        (variant != null && variant.StartsWith("step-overflow", StringComparison.Ordinal) ? "; FOR 2528280971: 'Whenever the <instructions> have been executed, the <counter> is automatically incremented by the step size' and 'The counter is checked before each loop pass', so the increment after the last value leaves the type before the end value is passed (the wrap-around itself is inferred from the step-1 case, not measured)" : ""),
                         header, "Use a counter type with a larger range (e.g. INT / DINT for a BYTE range), or an end value below the type's limit", variant, sev, blk);
                 }
             }
@@ -1173,6 +1278,34 @@ namespace TcLintEngine
                     accesses.Add(a);
                 }
                 return accesses;
+            }
+
+            // second review B2: the counter and every variable assigned before idx in the loop body from an expression that
+            // reads one of them (v := <expression with i>, transitive). Simple taint, no value tracking.
+            private HashSet<string> Tainted(int bodyFrom, int idx, string counter)
+            {
+                HashSet<string> set = new HashSet<string>(StringComparer.Ordinal); set.Add(counter);
+                List<int> assigns = new List<int>();
+                int depth = 0;
+                for (int k = bodyFrom; k < idx; k++)
+                {
+                    if (t[k].IsOp("(") || t[k].IsOp("[")) { depth++; continue; }
+                    if (t[k].IsOp(")") || t[k].IsOp("]")) { depth--; continue; }
+                    if (depth == 0 && t[k].IsOp(":=") && k > bodyFrom && t[k - 1].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[k - 1].Upper) && !t[k - 2].IsOp(".")) assigns.Add(k);
+                }
+                bool grew = true;
+                while (grew)
+                {
+                    grew = false;
+                    foreach (int k in assigns)
+                    {
+                        string lhs = t[k - 1].Upper;
+                        if (set.Contains(lhs)) continue;
+                        for (int q = k + 1; q < idx && !t[q].IsOp(";") && !IsStmtKeyword(t[q]) && !t[q].Is("TO") && !t[q].Is("BY"); q++)
+                            if (t[q].Kind == TokKind.Ident && set.Contains(t[q].Upper) && !t[q - 1].IsOp(".")) { set.Add(lhs); grew = true; break; }
+                    }
+                }
+                return set;
             }
 
             private bool ContainsIdent(int from, int to, string upper)
@@ -1254,10 +1387,10 @@ namespace TcLintEngine
                                     bad.Add((dims.Count > 1 ? "dimension " + Inv.S(d + 1) + ": " : "") + "index " + Text(dm[0], dm[1]) + " runs " + Num(mn) + ".." + Num(mx) + ", declared " + Num(bd[0]) + ".." + Num(bd[1]));
                             }
                             if (bad.Count == 0) continue;
-                            bool guarded = GuardedBy(a.Bracket, b.Open, cn) || (f.Body.ExitLike != null);
+                            bool guarded = GuardedBy(a.Bracket, b.Open, Tainted(body.BodyFrom, a.Bracket, f.Counter)) || (f.Body.ExitLike != null);
                             Emit(RArr, a.NameTok, "Array index out of range in the FOR loop on " + t[b.Counter].Text + " (" + Num(s) + " TO " + Num(e) + (st != 1 ? " BY " + Num(st) : "") + "): " + a.Name + "[" + Text(a.Bracket + 1, a.Close) + "]: " +
                                 string.Join("; ", bad.ToArray()) + " (" + ad.Text + "). Without the implicit check CheckBounds (InfoSys 2530356875, only present when added to the project) the access is not checked; its runtime effect is not documented (not verified)" +
-                                (guarded ? "; the access is inside an IF / CASE that tests " + t[b.Counter].Text + ", or the body has EXIT / CONTINUE / RETURN - check that it excludes the out-of-range values" : ""),
+                                (guarded ? "; the access is inside an IF / CASE / WHILE whose condition tests " + t[b.Counter].Text + " (directly or through a variable computed from it earlier in the body), or the body has EXIT / CONTINUE / RETURN - check that it excludes the out-of-range values" : ""),
                                 Text(a.NameTok == null ? a.Bracket : t.IndexOf(a.NameTok), a.Close + 1), "Make the loop bounds match the array bounds (use LOWER_BOUND / UPPER_BOUND or the constants of the declaration)",
                                 guarded ? "guarded" : null, guarded ? "warning" : null, guarded ? "false" : null);
                         }
@@ -1409,7 +1542,7 @@ namespace TcLintEngine
                     ? "MOD by the constant 0: the compiler does not report it (no error or warning, measured 2026-11-13); InfoSys MOD 2528880779: 'The behavior when dividing by zero or MOD 0 can vary depending on the target system!' / 'An exception may occur and the corresponding task may be stopped.'"
                     : "Division by the constant 0" + (literal ? ": the compiler rejects it (C0374 Division by zero, measured 2026-11-13 for x / 0 and x / 0.0), this finding only reports it before the write"
                                                               : ": a constant expression / named constant that is 0 (not measured whether the compiler rejects this form)") +
-                      "; InfoSys DIV 2528875403: 'In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped.' (a REAL division by 0 is not described for the PLC, not verified)";
+                      "; InfoSys DIV 2528875403 (permitted data types include REAL and LREAL): 'In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped.' (runtime result not measured, tasks 2.10)";
                 Diagnostic d = Emit(RDiv, t[k], msg, StatementText(k), "Remove the division by 0", variant, null, null);
                 if (d != null && literal && !mod) d.CompilerCatches = "yes";
             }
@@ -1475,14 +1608,18 @@ namespace TcLintEngine
                             Br r = b.Branches[j];
                             bool inCond = r.CondFrom >= 0 && k >= r.CondFrom && k < r.CondTo;
                             bool inBody = k >= r.BodyFrom && k < r.BodyTo;
-                            if (r.CondFrom >= 0 && SeqIn(r.CondFrom, inCond ? k : r.CondTo, seq)) return true;
+                            if (r.CondFrom >= 0 && (inCond ? GuardBefore(r.CondFrom, k, seq) : SeqIn(r.CondFrom, r.CondTo, seq))) return true;
                             // divisor computed in this branch from what the branch condition tests (corpus: fSpan := full - zero
                             // under IF full <> zero; velocity := product of values tested > 0)
                             if (inBody && r.CondFrom >= 0 && AssignedFromTested(r, k, seq)) return true;
                             if (inCond || inBody) break;
                         }
                     }
-                    else if ((b.Kind == "CASE" || b.Kind == "WHILE") && SeqIn(b.Branches[0].CondFrom, Math.Min(b.Branches[0].CondTo, k), seq)) return true;
+                    else if (b.Kind == "CASE" || b.Kind == "WHILE")
+                    {
+                        Br r0 = b.Branches[0];
+                        if (k < r0.CondTo ? GuardBefore(r0.CondFrom, k, seq) : SeqIn(r0.CondFrom, r0.CondTo, seq)) return true;
+                    }
                 }
                 foreach (Blk b in blocks)
                 {
@@ -1499,7 +1636,31 @@ namespace TcLintEngine
                 while (s > 0 && !t[s - 1].IsOp(";") && !IsStmtKeyword(t[s - 1])) s--;
                 int assign = -1;
                 for (int q = s; q < k; q++) if (t[q].IsOp(":=")) { assign = q; break; }
-                return SeqIn(assign < 0 ? s : assign + 1, k, seq);
+                return GuardBefore(assign < 0 ? s : assign + 1, k, seq);
+            }
+
+            // second review S5: a test in the same expression as the division protects it only through short-circuit
+            // evaluation. InfoSys AND_THEN tc3_plc_intro/2528923787.html: 'TwinCAT always evaluates all operands if the IEC
+            // operator AND is used' (OR likewise; OR_ELSE short-circuits). SEL tc3_plc_intro/2528956043.html: 'TwinCAT does not
+            // compute an expression that precedes IN0 if G = TRUE' / '... IN1 if G = FALSE': a test in G guards IN0 / IN1.
+            private bool GuardBefore(int from, int k, List<string> seq)
+            {
+                for (int p = Math.Max(0, from); p + seq.Count <= k; p++)
+                {
+                    bool ok = true;
+                    for (int q = 0; q < seq.Count && ok; q++) ok = (t[p + q].Kind == TokKind.Ident ? t[p + q].Upper : t[p + q].Text) == seq[q];
+                    if (!ok || (p > 0 && t[p - 1].IsOp("."))) continue;
+                    for (int q = p + seq.Count; q < k; q++) if (t[q].Is("AND_THEN") || t[q].Is("OR_ELSE")) return true;
+                    for (int q = Math.Max(0, from); q < p; q++)
+                    {
+                        if (!t[q].Is("SEL") || q + 1 >= t.Count || !t[q + 1].IsOp("(")) continue;
+                        int c = MatchForward(q + 1, "(", ")", t.Count);
+                        if (c < k) continue;
+                        List<int[]> args = SplitTop(t, q + 2, c);
+                        if (args.Count == 3 && p >= args[0][0] && p < args[0][1] && k >= args[1][0]) return true;
+                    }
+                }
+                return false;
             }
         }
     }

@@ -14,7 +14,7 @@
       2. expected findings (tasks 1a acceptance + manual judgement in PR #274):
          axis: PROJECT-ENC-001 on exactly 11 files, PROJECT-GUID-005 on the hand-written Ids;
          bfh: only PROJECT-LINEIDS-001 on FB_Winder (LineIds 147 lines, code 148: changed outside XAE);
-         Phase 1b: axis PROJECT-TASK-001 TestCam; Phase 2a: SAFETY-DIV-001 info axis 46 / bfh 1 (PR #284);
+         Phase 1b: axis PROJECT-TASK-001 TestCam; Phase 2a: SAFETY-DIV-001 info axis 47 / bfh 1 (PR #284);
          no other PROJECT-* finding, verdict pass for both;
       3. deterministic: two runs byte-identical; en-US and zh-TW processes byte-identical;
       4. performance: analyse time per project (budget <= 2 s, design.md D7).
@@ -29,9 +29,15 @@ param(
     [string]$CorpusRoot = 'C:\Temp\lint-corpus'
 )
 $ErrorActionPreference = 'Stop'
+$ownStateDir = $null   # second review N6: only the state directory this script created is removed at the end
 if ([string]::IsNullOrEmpty($env:TCAUTO_STATE_DIR)) {
     $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ('tcauto-lint-corpus-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $env:TCAUTO_STATE_DIR | Out-Null
+    $ownStateDir = $env:TCAUTO_STATE_DIR
+}
+function Exit-Script([int]$Code) {
+    if ($script:ownStateDir) { Remove-Item -LiteralPath $script:ownStateDir -Recurse -Force -ErrorAction SilentlyContinue }
+    exit $Code
 }
 $modulePath = (Resolve-Path (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1')).ProviderPath
 Import-Module $modulePath -Force -WarningAction SilentlyContinue
@@ -45,7 +51,7 @@ $projects = [ordered]@{
     axis = Join-Path $CorpusRoot 'axis\AxisInterface_Type01_Library\AxisInterface\AxisInterface.plcproj'
     bfh  = Join-Path $CorpusRoot 'bfh\LangMang260618\PLC1\PLC1.plcproj'
 }
-foreach ($k in $projects.Keys) { if (-not (Test-Path -LiteralPath $projects[$k])) { "SKIP corpus $k not found: $($projects[$k])"; exit 1 } }
+foreach ($k in $projects.Keys) { if (-not (Test-Path -LiteralPath $projects[$k])) { "SKIP corpus $k not found: $($projects[$k])"; Exit-Script 1 } }
 
 # expected findings: file (relative to the .plcproj directory) per rule
 $expectedEnc = @('AxisInterface/DUT/Axis_Control/E_SyncProfileEngageMode.TcDUT', 'AxisInterface/DUT/Axis_Control/ST_AXIS_ADMINISTRATION.TcDUT',
@@ -82,11 +88,14 @@ foreach ($k in $projects.Keys) {
         $g5 = @($diags | Where-Object { $_.ruleId -eq 'PROJECT-GUID-005' } | ForEach-Object { $_.evidence } | Sort-Object)
         Check 'axis PROJECT-GUID-005 = the hand-written Ids (6 listed in research + 6 more)' (($g5 -join ',') -eq (($expectedGuid5 | Sort-Object) -join ',')) ($g5 -join ',')
         # Phase 1b: TestCam PROJECT-TASK-001 (kept PoC program, PR #283); Phase 2a: SAFETY-DIV-001 unchecked-variable-divisor
-        # info x 46, judged one by one in PR #284 (1 real candidate, 9 input-dependent, 34 configuration-derived, 2 false)
+        # info x 47, judged one by one in PR #284 (1 real candidate, 10 input-dependent, 34 configuration-derived, 2 false);
+        # 46 -> 47 in the second review (S5): a test in the same expression only counts before AND_THEN / OR_ELSE / in SEL,
+        # so FB_CorrugatedLiftingFixedAccDistance.StartAction 'SyncPrintDistance_deg / SyncPrintDistance_deg' (the dividend
+        # was taken as a test of the divisor) is now reported: 0 when the input SyncPrintDistance is 0
         $t1 = @($diags | Where-Object { $_.ruleId -eq 'PROJECT-TASK-001' } | ForEach-Object { $_.objectPath })
         Check 'axis PROJECT-TASK-001 only TestCam (Phase 1b)' (($t1 -join ',') -eq 'TestCam') ($t1 -join ',')
         $div = @($diags | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' })
-        Check 'axis SAFETY-DIV-001: 46 unchecked-variable-divisor infos, none blocking (Phase 2a)' ($div.Count -eq 46 -and @($div | Where-Object { $_.variant -ne 'unchecked-variable-divisor' -or $_.severity -ne 'info' -or $_.blocking }).Count -eq 0) "$($div.Count)"
+        Check 'axis SAFETY-DIV-001: 47 unchecked-variable-divisor infos, none blocking (Phase 2a)' ($div.Count -eq 47 -and @($div | Where-Object { $_.variant -ne 'unchecked-variable-divisor' -or $_.severity -ne 'info' -or $_.blocking }).Count -eq 0) "$($div.Count)"
         $other = @($diags | Where-Object { @('PROJECT-ENC-001', 'PROJECT-GUID-005', 'PROJECT-TASK-001', 'SAFETY-DIV-001') -notcontains $_.ruleId })
         Check 'axis no other finding' ($other.Count -eq 0) (($other | ForEach-Object { "$($_.ruleId) $($_.objectPath) $($_.message)" }) -join ' | ')
     }
@@ -144,4 +153,4 @@ foreach ($k in $projects.Keys) {
     Check "$k en-US and zh-TW byte-identical" ($en.Length -gt 100 -and $en -ceq $zh) "en $($en.Length) zh $($zh.Length)"
 }
 "failed: $fail"
-exit $fail
+Exit-Script $fail

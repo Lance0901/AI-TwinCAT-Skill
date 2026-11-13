@@ -11,6 +11,9 @@
 #   C  SAFETY-ARR-001 constant index outside the array (compiler C0049): literal / VAR CONSTANT index; counter-examples
 #   V  SAFETY-DIV-001 / 0 (compiler C0374), MOD 0 (not caught), named constant 0, variable divisor (info);
 #      counter-examples: IF <> 0, REAL with > 0.0, ELSE of = 0, early RETURN, constant divisors; suppression
+#   Q  second independent review of PR #284: catalog-FB call in a busy-wait (B1), call-in-body / call-in-condition skips,
+#      fb-wait-loop (S1), notes per condition kind (S4 / N1), guard through a variable computed from the counter (B2),
+#      AND / OR are no guard but AND_THEN / OR_ELSE / SEL are (S5), DIV message (N4), certain step overflow blocks (N5)
 #   M  rule metadata (phase 2, TE1200, compilerCatches)
 #   D  deterministic: two runs and en-US / zh-TW byte-identical
 # Mock basis: tests/Unit/lib/LintFixture.ps1 (XAE format, observed corpus 2026-11-13). The rule expectations follow
@@ -84,11 +87,12 @@ Check 'L5 counter-example: body has EXIT -> no finding' ((Diags $r 'SCAN-LOOP-00
 $r = Fb "    n : INT;" "WHILE TRUE DO`n    n := n + 1;`n    IF n > 10 THEN EXIT; END_IF`nEND_WHILE"
 Check 'L6 counter-example: WHILE TRUE with EXIT -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
 $r = Fb "    fbT : TON;" "WHILE NOT fbT.Q DO`n    fbT(IN := TRUE, PT := T#1S);`nEND_WHILE"
-Check 'L7 counter-example: the body calls the FB whose output is the condition -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+Check 'L7 the body calls the TON whose output is the condition -> fb-wait-loop warning (second review S1)' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].variant -eq 'fb-wait-loop' -and -not (Diags $r 'SCAN-LOOP-001')[0].blocking) (Brief $r)
 $fx = New-Fx
 Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    bDone : BOOL;`n    n : INT;`nEND_VAR`n" "WHILE NOT bDone DO`n    THIS^.M_Step();`nEND_WHILE`nREPEAT`n    n := n + 1;`nUNTIL M_Ready()`nEND_REPEAT" (Method 'M_Step' "METHOD M_Step`n" 'bDone := TRUE;')
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
-Check 'L8 counter-example: method call in the body; call in the UNTIL condition -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$s = @(Skips $r 'SCAN-LOOP-001' | ForEach-Object { $_.reason })
+Check 'L8 counter-example: method call in the body; call in the UNTIL condition -> no finding, both in rulesSkipped' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $s -contains 'call-in-body' -and $s -contains 'call-in-condition') ((Brief $r) + ' ' + ($s -join ','))
 $r = Fb "    bX : BOOL;`n    refX : REFERENCE TO BOOL;" "refX REF= bX;`nWHILE NOT refX DO`n    bX := TRUE;`nEND_WHILE"
 Check 'L9 counter-example: condition is a REFERENCE the body may write through an alias -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
 $r = Fb "    b : BOOL;`n    p : POINTER TO BOOL;" "p := ADR(b);`nWHILE NOT b DO`n    p^ := TRUE;`nEND_WHILE"
@@ -126,7 +130,7 @@ $r = Fb "    i : BYTE;`n    nEnd : BYTE;`n    n : INT;" "FOR i := 0 TO nEnd DO`n
 Check 'F9 end value is a variable -> not evaluated, rulesSkipped end-not-constant' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and @(Skips $r 'SCAN-FOR-001' | Where-Object { $_.reason -eq 'end-not-constant' }).Count -eq 1) (Brief $r)
 $r = Fb "    i : BYTE;`n    n : INT;" "FOR i := 0 TO 254 BY 4 DO`n    n := n + 1;`nEND_FOR"
 $d = Diags $r 'SCAN-FOR-001'
-Check 'F10 BYTE 0 TO 254 BY 4 (252 + 4 wraps) -> variant step-overflow, warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow' -and -not $d[0].blocking) (Brief $r)
+Check 'F10 BYTE 0 TO 254 BY 4 (252 + 4 wraps) -> variant step-overflow, blocking (second review N5)' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow' -and $d[0].blocking) (Brief $r)
 $r = Fb "    i : BYTE;`n    n : INT;" "// tcauto-lint-disable-next-line SCAN-FOR-001: we really want all 256 values here`nFOR i := 0 TO 255 DO`n    n := n + 1;`nEND_FOR"
 Check 'F11 inline suppression of the blocking overflow -> refused (LINT-SUPPRESS-004)' ((Diags $r 'SCAN-FOR-001')[0].blocking -and (Diags $r 'LINT-SUPPRESS-004').Count -eq 1) (Brief $r)
 
@@ -267,6 +271,83 @@ Check 'RS4b DIV(y, n) -> unchecked-variable-divisor (info)' ((Diags $r 'SAFETY-D
 $r = Fb "    x : DINT;" "x := x / 16#0;`nx := x / (0);`nx := x / DINT#0;`nx := x / -0;"
 $d = Diags $r 'SAFETY-DIV-001'
 Check 'RN1 / 16#0, / (0), / DINT#0, / -0 -> constant-zero-div, blocking, no compilerCatches yes' ($d.Count -eq 4 -and @($d | Where-Object { $_.compilerCatches -eq 'yes' }).Count -eq 0 -and @($d | Where-Object { $_.blocking }).Count -eq 4) (Brief $r)
+
+# ================================================================ Q  second independent review of PR #284 (B1 B2 S1 S4 S5 N1 N4 N5)
+# B1 a call in the body no longer hides a busy-wait: catalog FBs / IEC functions that do not get a condition variable cannot change it
+$r = Fb "    bDone : BOOL;`n    rt : R_TRIG;`n    n : INT;" "WHILE NOT bDone DO`n    rt(CLK := TRUE);`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QB1a WHILE NOT bDone, body only calls the catalog FB rt (R_TRIG) -> blocking' ($d.Count -eq 1 -and $d[0].blocking -and $null -eq $d[0].variant -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+$r = Fb "    bIn AT %IX0.0 : BOOL;`n    tonX : TON;" "WHILE NOT bIn DO`n    tonX(IN := TRUE, PT := T#1S);`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QB1b WHILE NOT bIn (AT %IX), body calls TON tonX -> blocking, message cites the task cycle order (InfoSys 6828869003)' ($d.Count -eq 1 -and $d[0].blocking -and $d[0].message -like '*6828869003*') (Brief $r)
+$fn = { param($fx) Add-Pou $fx 'F_Other' "FUNCTION F_Other : BOOL`n" 'F_Other := TRUE;' }
+$r = Fb "    b : BOOL;`n    n : INT;" "WHILE NOT b DO`n    F_Other();`n    n := n + 1;`nEND_WHILE" $fn
+Check 'QB1c project function in the body -> not blocking, rulesSkipped call-in-body (not silent)' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := b);`nEND_WHILE"
+Check 'QB1d condition variable passed to the catalog FB -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    p : POINTER TO BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    p := ADR(b);`n    rt(CLK := TRUE);`nEND_WHILE"
+Check 'QB1e ADR(condition variable) in the body -> not blocking, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    b : BOOL;`n    rt : R_TRIG;" "WHILE NOT b DO`n    rt(CLK := TRUE, Q => b);`nEND_WHILE"
+Check 'QB1f the catalog FB output is written to the condition (Q => b) -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$fn2 = { param($fx) Add-Pou $fx 'F_Ready' "FUNCTION F_Ready : BOOL`n" 'F_Ready := TRUE;' }
+$r = Fb "    n : INT;" "WHILE NOT F_Ready() DO`n    n := n + 1;`nEND_WHILE" $fn2
+Check 'QB1g call in the condition -> no finding, rulesSkipped call-in-condition' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-condition' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    bIn : BOOL;`n    rt : R_TRIG;`n    r : REFERENCE TO BOOL;" "WHILE NOT bIn DO`n    r REF= bIn;`n    rt(CLK := TRUE);`nEND_WHILE"
+Check 'QB1h REF= on the condition variable with a catalog call -> not blocking, recorded in rulesSkipped' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (Skips $r 'SCAN-LOOP-001').Count -ge 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+# S1 waiting for a function block inside one cycle
+$r = Fb "    mc : MC_MoveAbsolute;`n    ax : AXIS_REF;" "WHILE NOT mc.Done DO`n    mc(Axis := ax, Execute := TRUE, Position := 10.0);`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QS1a WHILE NOT mc.Done DO mc(...) (MC_MoveAbsolute) -> variant fb-wait-loop, warning, not blocking, unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-wait-loop' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and $r.success -and $r.data.requiresDisposition -and (Unres $r 'SCAN-LOOP-001').Count -eq 1) (Brief $r)
+$fbp = { param($fx) Add-Pou $fx 'FB_P' "FUNCTION_BLOCK FB_P`nVAR_OUTPUT`n    bDone : BOOL;`nEND_VAR`n" 'bDone := TRUE;' }
+$r = Fb "    fbP : FB_P;" "WHILE NOT fbP.bDone DO`n    fbP();`nEND_WHILE" $fbp
+Check 'QS1b project FB called in the loop that waits for its output -> no finding, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    fbT : TON;`n    pX : POINTER TO TON;" "WHILE NOT fbT.Q DO`n    fbT(IN := TRUE, PT := T#1S);`n    pX^.Q := FALSE;`nEND_WHILE"
+Check 'QS1c fb-wait-loop with a pointer write in the body -> not reported, rulesSkipped pointer-write' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'pointer-write' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+$r = Fb "    fbT : TON;" "WHILE NOT fbT.Q DO`n    fbT(IN := TRUE, PT := T#1S);`n    fbT.M_X();`nEND_WHILE"
+Check 'QS1d a member call on the waited instance (fbT.M_X()) -> not reported, rulesSkipped call-in-body' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and @(Skips $r 'SCAN-LOOP-001' | Where-Object { $_.reason -eq 'call-in-body' }).Count -eq 1) ((Brief $r) + ' ' + (Js (Skips $r 'SCAN-LOOP-001')))
+# N1 the note follows the kind of the condition
+$gv = { param($fx) Add-Gvl $fx 'GVL_X' "VAR_GLOBAL`n    nRun : INT;`nEND_VAR`n" }
+$r = Fb "    n : INT;" "WHILE GVL_X.nRun = 0 DO`n    n := n + 1;`nEND_WHILE" $gv
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QN1 GVL variable in the condition -> blocking, message does not call it a function block output' ($d.Count -eq 1 -and $d[0].message -notlike '*function block*' -and $d[0].message -notlike '*input*') (Brief $r)
+$r = Fb "    fbT : TON;`n    nX : INT;" "WHILE NOT fbT.Q DO`n    nX := 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'QN1b FB output, FB not called -> message says the block is not called in the loop' ($d.Count -eq 1 -and $d[0].message -like '*function block*fbT*') (Brief $r)
+# B2 guard through a variable computed from the counter
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    b := i > 0;`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'QB2a b := i > 0; IF b THEN a[i] -> variant guarded, warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    k : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    k := i * 2;`n    b := k > 1;`n    CASE b OF`n    TRUE: a[i] := 0;`n    END_CASE`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'QB2b transitive (k := i * 2; b := k > 1; CASE b) -> guarded, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    x : INT;" "FOR i := 0 TO 10 DO`n    x := 5;`n    IF x > 0 THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'QB2c IF x > 0 with x not computed from i -> still blocking' ($d.Count -eq 1 -and $d[0].blocking -and $null -eq $d[0].variant) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    IF b THEN`n        a[i] := 0;`n    END_IF`n    b := i > 0;`nEND_FOR"
+Check 'QB2d b computed from i only after the access -> still blocking' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking) (Brief $r)
+# S5 AND / OR evaluate every operand (InfoSys AND_THEN 2528923787)
+$r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "IF d <> 0 AND x / d > 3 THEN`n    b := TRUE;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'QS5a IF d <> 0 AND x / d > 3 -> unchecked-variable-divisor (AND does not short-circuit)' ($d.Count -eq 1 -and $d[0].variant -eq 'unchecked-variable-divisor') (Brief $r)
+$r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "b := d <> 0 AND x / d > 3;`nb := d = 0 OR x / d > 3;"
+Check 'QS5b same statement with AND / OR -> two findings' ((Diags $r 'SAFETY-DIV-001').Count -eq 2) (Brief $r)
+$r = Fb "    x : INT;`n    d : INT;`n    b : BOOL;" "b := d = 0 OR_ELSE x / d > 3;`nx := SEL(d = 0, x / d, 0);`nIF d <> 0 THEN`n    IF x / d > 3 AND b THEN`n        b := FALSE;`n    END_IF`nEND_IF"
+Check 'QS5c counter-examples: OR_ELSE, SEL, nested IF -> no finding' ((Diags $r 'SAFETY-DIV-001').Count -eq 0) (Brief $r)
+$r = Fb "    x : INT;`n    d : INT;" "WHILE d <> 0 AND x / d > 1 DO`n    d := d - 1;`nEND_WHILE"
+Check 'QS5d WHILE d <> 0 AND x / d -> finding' ((Diags $r 'SAFETY-DIV-001').Count -eq 1) (Brief $r)
+# N4 DIV message cites the permitted types
+$r = Fb "    x : INT;" "x := x / 0;"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'QN4 constant-zero-div message: InfoSys DIV lists REAL / LREAL, not "not described"' ($d.Count -eq 1 -and $d[0].message -like '*REAL*LREAL*' -and $d[0].message -notlike '*not described*') (Brief $r)
+# N5 a step that jumps over the type limit overflows for certain (FOR 2528280971: incremented after each pass, checked before)
+$r = Fb "    i : BYTE;`n    n : INT;" "FOR i := 0 TO 254 BY 2 DO`n    n := n + 1;`nEND_FOR"
+$d = Diags $r 'SCAN-FOR-001'
+Check 'QN5a BYTE 0 TO 254 BY 2 -> step-overflow, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow' -and $d[0].blocking -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+$r = Fb "    i : BYTE;`n    n : INT;" "FOR i := 0 TO 253 BY 2 DO`n    n := n + 1;`nEND_FOR`nFOR i := 0 TO 254 BY 3 DO`n    n := n + 1;`nEND_FOR"
+Check 'QN5b counter-examples 0 TO 253 BY 2, 0 TO 254 BY 3 -> no finding' ((Diags $r 'SCAN-FOR-001').Count -eq 0) (Brief $r)
+$r = Fb "    i : BYTE;`n    b : BOOL;" "FOR i := 0 TO 254 BY 2 DO`n    IF b THEN EXIT; END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-FOR-001'
+Check 'QN5c step-overflow with EXIT -> warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow,exit-in-body' -and -not $d[0].blocking) (Brief $r)
 
 # ================================================================ M  metadata
 foreach ($id in 'SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001') {

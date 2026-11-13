@@ -23,20 +23,26 @@
 [CmdletBinding()]
 param([string]$CorpusRoot = 'C:\Temp\lint-corpus')
 $ErrorActionPreference = 'Stop'
+$ownStateDir = $null   # second review N6: only the state directory this script created is removed at the end
 if ([string]::IsNullOrEmpty($env:TCAUTO_STATE_DIR)) {
     $env:TCAUTO_STATE_DIR = Join-Path $env:TEMP ('tcauto-lint-seeded2a-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $env:TCAUTO_STATE_DIR | Out-Null
+    $ownStateDir = $env:TCAUTO_STATE_DIR
+}
+function Exit-Script([int]$Code) {
+    if ($script:ownStateDir) { Remove-Item -LiteralPath $script:ownStateDir -Recurse -Force -ErrorAction SilentlyContinue }
+    exit $Code
 }
 Import-Module (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1') -Force -WarningAction SilentlyContinue
 $src = Join-Path $CorpusRoot 'bfh'
-if (-not (Test-Path -LiteralPath $src)) { "SKIP corpus not found: $src"; exit 1 }
+if (-not (Test-Path -LiteralPath $src)) { "SKIP corpus not found: $src"; Exit-Script 1 }
 $plcproj = Join-Path $src 'LangMang260618\PLC1\PLC1.plcproj'
 $mainFile = Join-Path $src 'LangMang260618\PLC1\POUs\MAIN.TcPOU'
 # raw CDATA text (an XML parser would turn CRLF into LF and the copy could not be edited by text)
 $raw = [System.IO.File]::ReadAllText($mainFile)
 $decl0 = ([regex]::Match($raw, '(?s)<Declaration><!\[CDATA\[(.*?)\]\]></Declaration>')).Groups[1].Value
 $impl0 = ([regex]::Match($raw, '(?s)<Implementation>\s*<ST><!\[CDATA\[(.*?)\]\]></ST>')).Groups[1].Value
-if (-not $decl0 -or -not $impl0) { 'FAIL MAIN.TcPOU layout not as expected'; exit 1 }
+if (-not $decl0 -or -not $impl0) { 'FAIL MAIN.TcPOU layout not as expected'; Exit-Script 1 }
 $work = Join-Path $env:TEMP ('tcauto-lint-seeded2a-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $work | Out-Null
 $fail = 0
@@ -103,4 +109,4 @@ $r = Invoke-TcLintCandidate -ObjectKind Function -ObjectName F_SeedSum -PlcProje
 Check 'candidate: NEG ARRAY[*] in a function with LOWER_BOUND / UPPER_BOUND' (@($r.data.diagnostics | Where-Object { $_.ruleId -match '^(SCAN-LOOP|SCAN-FOR|SCAN-ARR|SAFETY-ARR|SAFETY-DIV)' }).Count -eq 0 -and $r.success) "code=$($r.error.code) $((@($r.data.diagnostics | ForEach-Object { $_.ruleId }) -join ','))"
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 "lint-seeded-2a: $fail failed"
-exit $fail
+Exit-Script $fail
