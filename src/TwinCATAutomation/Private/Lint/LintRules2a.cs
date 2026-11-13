@@ -999,14 +999,14 @@ namespace TcLintEngine
                             bool inCond = r.CondFrom >= 0 && idx >= r.CondFrom && idx < r.CondTo;
                             bool inBody = idx >= r.BodyFrom && idx < r.BodyTo;
                             // #286 S5: inside the condition only a short-circuit test before the access guards it (AND evaluates all operands)
-                            if (r.CondFrom >= 0 && (inCond ? ExprGuard(r.CondFrom, idx, names) : Mentions(r.CondFrom, r.CondTo, names))) return true;
+                            if (r.CondFrom >= 0 && (inCond ? ExprGuard(r.CondFrom, idx, names, true) : Mentions(r.CondFrom, r.CondTo, names))) return true;
                             if (inCond || inBody) break;
                         }
                     }
                     else if (b.Kind == "CASE" || b.Kind == "WHILE")
                     {
                         Br r = b.Branches[0];
-                        if (idx < r.CondTo ? ExprGuard(r.CondFrom, idx, names) : Mentions(r.CondFrom, r.CondTo, names)) return true;
+                        if (idx < r.CondTo ? ExprGuard(r.CondFrom, idx, names, true) : Mentions(r.CondFrom, r.CondTo, names)) return true;
                     }
                 }
                 return false;
@@ -1016,23 +1016,102 @@ namespace TcLintEngine
             // (same rule as SAFETY-DIV-001 GuardBefore): '<test> AND_THEN / OR_ELSE ... idx' or SEL(<test>, IN0, IN1) with idx
             // in IN0 / IN1. InfoSys AND_THEN tc3_plc_intro/2528923787.html: 'TwinCAT always evaluates all operands if the IEC
             // operator AND is used'; SEL 2528956043: 'TwinCAT does not compute an expression that precedes IN0 if G = TRUE'.
-            // The direction of the test is not judged here: a guarded access is a warning, never a pass.
-            private bool ExprGuard(int from, int idx, HashSet<string> names)
+            // PR #289 review 1: the direction is judged by evaluating the test at every counter value that puts the index out of
+            // range (guardCounter / guardBad, set by CheckArrays): the access is guarded only when none of them reaches it
+            // (AND_THEN: test FALSE, OR_ELSE: test TRUE, SEL IN1: G FALSE, SEL IN0: G TRUE). A test that reaches it -> not a guard;
+            // a test that cannot be evaluated -> unknownAs (master: a test in an IF / WHILE condition was a guard, a test in an
+            // assignment was not)
+            private string guardCounter;
+            private List<decimal> guardBad;
+
+            private bool ExprGuard(int from, int idx, HashSet<string> names, bool unknownAs)
             {
+                bool unknown = false;
                 for (int p = Math.Max(0, from); p < idx; p++)
                 {
                     if (t[p].Kind != TokKind.Ident || (p > 0 && t[p - 1].IsOp(".")) || !MentionsAt(p, names)) continue;
-                    for (int q = p + 1; q < idx; q++) if (t[q].Is("AND_THEN") || t[q].Is("OR_ELSE")) return true;
+                    for (int q = p + 1; q < idx; q++)
+                    {
+                        if (!t[q].Is("AND_THEN") && !t[q].Is("OR_ELSE")) continue;
+                        int g = OperandStart(from, q);
+                        int v = GuardVerdict(g, q, !t[q].Is("OR_ELSE"));
+                        if (v == 1) return true;
+                        if (v == 0) unknown = true;
+                        break;
+                    }
                     for (int q = Math.Max(0, from); q < p; q++)
                     {
                         if (!t[q].Is("SEL") || q + 1 >= t.Count || !t[q + 1].IsOp("(")) continue;
                         int c = MatchForward(q + 1, "(", ")", t.Count);
                         if (c < idx) continue;
                         List<int[]> args = SplitTop(t, q + 2, c);
-                        if (args.Count == 3 && p >= args[0][0] && p < args[0][1] && idx >= args[1][0]) return true;
+                        if (args.Count != 3 || p < args[0][0] || p >= args[0][1]) continue;
+                        bool inIn1 = idx >= args[2][0], inIn0 = idx >= args[1][0] && idx < args[1][1];
+                        if (!inIn1 && !inIn0) continue;
+                        int v = GuardVerdict(args[0][0], args[0][1], inIn1);   // IN0 is computed when G = FALSE, IN1 when G = TRUE
+                        if (v == 1) return true;
+                        if (v == 0) unknown = true;
                     }
                 }
-                return false;
+                return unknown && unknownAs;
+            }
+
+            // start of the operand that ends just before the AND_THEN / OR_ELSE at q
+            private int OperandStart(int from, int q)
+            {
+                int depth = 0, g = q;
+                while (g > from)
+                {
+                    Token x = t[g - 1];
+                    if (x.IsOp(")") || x.IsOp("]")) depth++;
+                    else if (x.IsOp("(") || x.IsOp("[")) { if (depth == 0) break; depth--; }
+                    else if (depth == 0 && (x.IsOp(":=") || x.IsOp(",") || x.IsOp(";") || x.Is("AND_THEN") || x.Is("OR_ELSE") || x.Is("OR") || x.Is("XOR") || IsStmtKeyword(x))) break;
+                    g--;
+                }
+                return g;
+            }
+
+            // 1 = the guarded side is never reached at an out-of-range counter value, -1 = it is reached, 0 = not evaluated.
+            // runsWhenTrue: the guarded side runs when the test is TRUE (AND_THEN, SEL IN1), else when it is FALSE (OR_ELSE, SEL IN0)
+            private int GuardVerdict(int from, int to, bool runsWhenTrue)
+            {
+                if (guardCounter == null || guardBad == null || guardBad.Count == 0) return 0;
+                foreach (decimal v in guardBad)
+                {
+                    bool? b = TestAt(from, to, v);
+                    if (!b.HasValue) return 0;
+                    if (b.Value == runsWhenTrue) return -1;
+                }
+                return 1;
+            }
+
+            // value of one comparison (NOT / parentheses allowed) with the counter bound to v; null when not evaluated
+            private bool? TestAt(int from, int to, decimal v)
+            {
+                StripParens(ref from, ref to);
+                if (from >= to) return null;
+                if (t[from].Is("NOT")) { bool? n = TestAt(from + 1, to, v); return n.HasValue ? !n.Value : (bool?)null; }
+                int dp = 0;
+                for (int k = from; k < to; k++)
+                {
+                    if (t[k].IsOp("(") || t[k].IsOp("[")) dp++;
+                    else if (t[k].IsOp(")") || t[k].IsOp("]")) dp--;
+                    else if (dp == 0 && (t[k].Is("AND") || t[k].Is("OR") || t[k].Is("XOR") || t[k].Is("AND_THEN") || t[k].Is("OR_ELSE"))) return null;
+                }
+                dp = 0;
+                for (int k = from; k < to; k++)
+                {
+                    if (t[k].IsOp("(") || t[k].IsOp("[")) dp++;
+                    else if (t[k].IsOp(")") || t[k].IsOp("]")) dp--;
+                    else if (dp == 0 && (t[k].IsOp("=") || t[k].IsOp("<>") || t[k].IsOp("<") || t[k].IsOp(">") || t[k].IsOp("<=") || t[k].IsOp(">=")))
+                    {
+                        decimal? l = Eval(from, k, guardCounter, v, false), r = Eval(k + 1, to, guardCounter, v, false);
+                        if (!l.HasValue || !r.HasValue) return null;
+                        string op = t[k].Text;
+                        return op == "=" ? l == r : op == "<>" ? l != r : op == "<" ? l < r : op == ">" ? l > r : op == "<=" ? l <= r : l >= r;
+                    }
+                }
+                return null;
             }
 
             private int StmtStart(int k)
@@ -1446,7 +1525,7 @@ namespace TcLintEngine
                 if (condAlias) { why = "possible-alias"; return 2; }
                 foreach (Dsg d in cds) if (bc.Passed.Contains(d.C[0])) { why = "call-in-body"; return 2; }
                 if (bc.Unknown) { why = "call-in-body"; return 2; }
-                int writes = 0; fixedUnknown = false;
+                int writes = 0; fixedUnknown = false; globalSource = false;
                 for (int k = from; k < to; k++)
                 {
                     bool assign = t[k].IsOp(":=") || t[k].IsOp("S=") || t[k].IsOp("R=") || t[k].IsOp("REF=");
@@ -1511,6 +1590,8 @@ namespace TcLintEngine
             // set by InvariantSources: a source is a value that is fixed during the loop but not known to the linter (input,
             // unwritten variable, output of a block not called) - the loop runs forever whenever the first pass does not end it
             private bool fixedUnknown;
+            // PR #289 review 1: a source is a VAR_GLOBAL variable (not CONSTANT, no AT %I*) - another task or ADS may write it
+            private bool globalSource;
 
             private int InvariantSources(int from, int to, Writes body, BodyCalls bc, List<string> srcs, ref bool input, out string why)
             {
@@ -1532,7 +1613,8 @@ namespace TcLintEngine
                     if (vr == null && run.gvlByName.ContainsKey(root) && d.C.Count >= 2) vr = run.Resolve(Sc, root + "." + d.C[1]);
                     if (vr == null) { why = "name-unresolved"; return 2; }
                     if (d.C.Contains("^") || IsAliasing(vr) || PathAliasRisk(d.C)) { why = "possible-alias"; return 2; }
-                    foreach (List<string> pth in body.Paths) if (Conflict(d.C, pth) > 0) return 0;   // written in the loop
+                    // written in the loop: whether that write can end the loop is not followed (bS := bX; bX := bIn) - not silent (PR #289 review 1)
+                    foreach (List<string> pth in body.Paths) if (Conflict(d.C, pth) > 0) { why = "source-written-in-loop:" + shown; return 2; }
                     if (body.CallArgs.Contains(root) || bc.Passed.Contains(root)) { why = "call-in-body"; return 2; }
                     if (vr.Constant) { string c = shown + " (constant)"; if (!srcs.Contains(c)) srcs.Add(c); continue; }
                     if (vr.V != null && vr.V.Address != null)
@@ -1540,6 +1622,12 @@ namespace TcLintEngine
                         if (!vr.V.Address.StartsWith("%I", StringComparison.OrdinalIgnoreCase)) { why = "possible-alias"; return 2; }   // %Q / %M may overlap other variables
                         input = true; fixedUnknown = true;
                         string a = shown + " AT " + vr.V.Address; if (!srcs.Contains(a)) srcs.Add(a);
+                        continue;
+                    }
+                    if (vr.Block != null && vr.Block.Kind == "VAR_GLOBAL")
+                    {
+                        globalSource = true; fixedUnknown = true;
+                        string g = shown + " (global variable, not written in the loop)"; if (!srcs.Contains(g)) srcs.Add(g);
                         continue;
                     }
                     if (d.C.Count >= 2 && IsFbInstance(root))
@@ -1571,6 +1659,13 @@ namespace TcLintEngine
                     // -> warning that requires a disposition instead of blocking
                     msg += "; a source is an input AT %I*: InfoSys tc3_grundlagen/6828869003.html: the task starts with 'Copying of the inputs to the process images of the runtime modules called by the task', then executes the program - that the input keeps its value during the program is inferred from that order, not stated there (not verified), so this case is a warning";
                     Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-input-write", "warning", "false");
+                }
+                else if (globalSource)
+                {
+                    // PR #289 review 1 (owner decision): a VAR_GLOBAL variable may be written while the loop runs by a task of higher
+                    // priority that interrupts this one, or over ADS; nothing in the project excludes that -> warning with a disposition
+                    msg += "; a source is a global variable (VAR_GLOBAL): a task of higher priority or an ADS write may change it while the loop runs, which the linter cannot exclude, so this case is a warning - check what writes it";
+                    Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-global-write", "warning", "false");
                 }
                 else Emit(RLoop, t[b.Open], msg, ev, fix, "invariant-write", null, null);
             }
@@ -1790,6 +1885,24 @@ namespace TcLintEngine
                 return a;
             }
 
+            // counter values of the loop s..last BY st that put an index of the access out of the declared range (null: too many to list)
+            private List<decimal> BadCounterValues(List<int[]> dims, ArrayDecl ad, string counter, decimal s, decimal last, decimal st)
+            {
+                List<decimal> bad = new List<decimal>();
+                if (st == 0 || Math.Abs((last - s) / st) > 4096) return null;
+                for (decimal v = s; st > 0 ? v <= last : v >= last; v += st)
+                {
+                    for (int d = 0; d < dims.Count; d++)
+                    {
+                        if (!ContainsIdent(dims[d][0], dims[d][1], counter)) continue;
+                        decimal? x = Eval(dims[d][0], dims[d][1], guardCounter, v, true);
+                        if (!x.HasValue) return null;
+                        if (x.Value < ad.Dims[d][0] || x.Value > ad.Dims[d][1]) { bad.Add(v); break; }
+                    }
+                }
+                return bad;
+            }
+
             public void CheckArrays()
             {
                 AnalyzeFors();
@@ -1836,12 +1949,14 @@ namespace TcLintEngine
                             }
                             if (bad.Count == 0) continue;
                             HashSet<string> taint = Tainted(body.BodyFrom, a.Bracket, f.Counter);
-                            bool guarded = GuardedBy(a.Bracket, b.Open, taint) || ExprGuard(Math.Max(StmtStart(a.Bracket), body.BodyFrom), a.Bracket, taint) || (f.Body.ExitLike != null);
+                            guardCounter = t[b.Counter].Text; guardBad = BadCounterValues(dims, ad, f.Counter, s, last, st);
+                            bool guarded = GuardedBy(a.Bracket, b.Open, taint) || ExprGuard(Math.Max(StmtStart(a.Bracket), body.BodyFrom), a.Bracket, taint, false) || (f.Body.ExitLike != null);
                             Emit(RArr, a.NameTok, "Array index out of range in the FOR loop on " + t[b.Counter].Text + " (" + Num(s) + " TO " + Num(e) + (st != 1 ? " BY " + Num(st) : "") + "): " + a.Name + "[" + Text(a.Bracket + 1, a.Close) + "]: " +
                                 string.Join("; ", bad.ToArray()) + " (" + ad.Text + "). Without the implicit check CheckBounds (InfoSys 2530356875, only present when added to the project) the access is not checked; its runtime effect is not documented (not verified)" +
                                 (guarded ? "; the access is inside an IF / CASE / WHILE whose condition tests " + t[b.Counter].Text + " (directly or through a variable computed from it earlier in the body), or the body has EXIT / CONTINUE / RETURN - check that it excludes the out-of-range values" : ""),
                                 Text(a.NameTok == null ? a.Bracket : t.IndexOf(a.NameTok), a.Close + 1), "Make the loop bounds match the array bounds (use LOWER_BOUND / UPPER_BOUND or the constants of the declaration)",
                                 guarded ? "guarded" : null, guarded ? "warning" : null, guarded ? "false" : null);
+                            guardCounter = null; guardBad = null;
                         }
                     }
                 }
@@ -1953,7 +2068,7 @@ namespace TcLintEngine
                                 // the division never runs: not blocking (warning; whether the compiler reports it is not measured)
                                 List<string> cseq = new List<string>();
                                 for (int q = j; q < e; q++) cseq.Add(t[q].Kind == TokKind.Ident ? t[q].Upper : t[q].Text);
-                                if (DivisorChecked(k, cseq))
+                                if (ConstNonZeroProven(k, cseq))
                                 {
                                     Emit(RDiv, t[k], (mod ? "MOD" : "Division") + " by the named constant " + name + " = 0 inside a test of " + name +
                                         ": the branch only runs when the constant is not 0, so with the current value it is dead code and the " + (mod ? "MOD" : "division") +
@@ -2113,6 +2228,108 @@ namespace TcLintEngine
             // evaluation. InfoSys AND_THEN tc3_plc_intro/2528923787.html: 'TwinCAT always evaluates all operands if the IEC
             // operator AND is used' (OR likewise; OR_ELSE short-circuits). SEL tc3_plc_intro/2528956043.html: 'TwinCAT does not
             // compute an expression that precedes IN0 if G = TRUE' / '... IN1 if G = FALSE': a test in G guards IN0 / IN1.
+            // PR #289 review 1 (#286 S4 direction): a named constant 0 as divisor is only downgraded when the path to the division
+            // proves the constant is not 0 - 'c <> 0' / 'c > 0' / 'c < 0' / 'NOT (c = 0)' as the THEN condition (or a conjunct of it),
+            // an ELSIF / ELSE after 'IF c = 0' (or a disjunction containing it), the body of such a WHILE, or an earlier
+            // 'IF c = 0 THEN RETURN / EXIT'. Anything else (IF c = 0 THEN x / c, '0 <> c', CASE, same-expression tests) is not
+            // judged and stays the blocking constant-zero finding of master
+            private bool ConstNonZeroProven(int k, List<string> seq)
+            {
+                foreach (Blk b in Enclosing(k, -1))
+                {
+                    if (b.Kind == "IF")
+                    {
+                        for (int j = 0; j < b.Branches.Count; j++)
+                        {
+                            Br r = b.Branches[j];
+                            if (r.CondFrom >= 0 && k >= r.CondFrom && k < r.CondTo) break;
+                            if (k < r.BodyFrom || k >= r.BodyTo) continue;
+                            if (r.CondFrom >= 0 && ImpliesNonZero(r.CondFrom, r.CondTo, seq)) return true;
+                            for (int i = 0; i < j; i++)
+                            {
+                                Br p = b.Branches[i];
+                                if (p.CondFrom >= 0 && TrueWhenZero(p.CondFrom, p.CondTo, seq)) return true;   // this branch runs only when that test was FALSE
+                            }
+                            break;
+                        }
+                    }
+                    else if (b.Kind == "WHILE")
+                    {
+                        Br r0 = b.Branches[0];
+                        if (k >= r0.CondTo && ImpliesNonZero(r0.CondFrom, r0.CondTo, seq)) return true;
+                    }
+                }
+                foreach (Blk b in blocks)
+                {
+                    if (b.Kind != "IF" || b.End >= k || b.Branches.Count == 0) continue;
+                    Br r = b.Branches[0];
+                    if (r.CondFrom < 0 || !TrueWhenZero(r.CondFrom, r.CondTo, seq)) continue;
+                    Writes w = WritesIn(r.BodyFrom, r.BodyTo);
+                    if (w.ExitLike == "RETURN" || w.ExitLike == "EXIT" || w.ExitLike == "JMP") return true;
+                }
+                return false;
+            }
+
+            private void StripParens(ref int from, ref int to)
+            {
+                while (to - from >= 2 && t[from].IsOp("(") && MatchForward(from, "(", ")", t.Count) == to - 1) { from++; to--; }
+            }
+
+            // top-level operands of from..to split at any of the given keywords (empty list when a parenthesis is unbalanced)
+            private List<int[]> SplitKw(int from, int to, params string[] kws)
+            {
+                List<int[]> r = new List<int[]>();
+                int s0 = from, depth = 0;
+                for (int q = from; q < to; q++)
+                {
+                    if (t[q].IsOp("(") || t[q].IsOp("[")) depth++;
+                    else if (t[q].IsOp(")") || t[q].IsOp("]")) depth--;
+                    else if (depth == 0 && Array.IndexOf(kws, t[q].Upper) >= 0) { r.Add(new int[] { s0, q }); s0 = q + 1; }
+                    if (depth < 0) return new List<int[]>();
+                }
+                r.Add(new int[] { s0, to });
+                return r;
+            }
+
+            private bool SeqThen(int p, int to, List<string> seq)
+            {
+                if (p + seq.Count > to || (p > 0 && t[p - 1].IsOp("."))) return false;
+                for (int q = 0; q < seq.Count; q++) if ((t[p + q].Kind == TokKind.Ident ? t[p + q].Upper : t[p + q].Text) != seq[q]) return false;
+                return true;
+            }
+
+            private bool ZeroLit(Token v) { return v.Kind == TokKind.Number && (v.Text == "0" || v.Text == "0.0"); }
+
+            // 'seq op 0' exactly (from..to), op returned; null when the range has another shape
+            private string CmpZero(int from, int to, List<string> seq)
+            {
+                StripParens(ref from, ref to);
+                if (to - from != seq.Count + 2 || !SeqThen(from, to, seq) || !ZeroLit(t[to - 1])) return null;
+                Token op = t[from + seq.Count];
+                return op.Kind == TokKind.EOF ? null : op.Text;
+            }
+
+            // the condition from..to is TRUE only when seq is not 0
+            private bool ImpliesNonZero(int from, int to, List<string> seq)
+            {
+                StripParens(ref from, ref to);
+                List<int[]> cj = SplitKw(from, to, "AND", "AND_THEN");
+                if (cj.Count > 1) { foreach (int[] c in cj) if (ImpliesNonZero(c[0], c[1], seq)) return true; return false; }
+                string op = CmpZero(from, to, seq);
+                if (op == "<>" || op == ">" || op == "<") return true;
+                if (to - from >= 2 && t[from].Is("NOT") && t[from + 1].IsOp("(") && MatchForward(from + 1, "(", ")", t.Count) == to - 1) return TrueWhenZero(from + 1, to, seq);
+                return false;
+            }
+
+            // the condition from..to is TRUE whenever seq is 0 ('seq = 0', or a disjunction with such an operand)
+            private bool TrueWhenZero(int from, int to, List<string> seq)
+            {
+                StripParens(ref from, ref to);
+                List<int[]> dj = SplitKw(from, to, "OR", "OR_ELSE");
+                if (dj.Count > 1) { foreach (int[] d in dj) if (TrueWhenZero(d[0], d[1], seq)) return true; return false; }
+                return CmpZero(from, to, seq) == "=";
+            }
+
             private int Polarity(int after, int limit)
             {
                 if (after + 1 >= limit) return 0;

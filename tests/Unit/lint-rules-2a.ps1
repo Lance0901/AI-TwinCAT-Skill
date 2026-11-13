@@ -455,6 +455,54 @@ $r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    refB : REFERENCE TO BOOL;" "refB
 Check 'I-S2i counter-example: source through a REFERENCE -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
 $r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    pB : POINTER TO BOOL;" "WHILE NOT bDone DO`n    bDone := pB^;`nEND_WHILE"
 Check 'I-S2j counter-example: source through a POINTER -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# PR #289 review 1 (worker G): guard direction for S4 / S5, GVL source for S2, source written in the loop
+$cfv = "    x : REAL;`n    y : REAL;`nEND_VAR`nVAR CONSTANT`n    cF : REAL := 0.0;"
+$r = Fb $cfv "IF cF = 0 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1a IF cF = 0 THEN y / cF (the test does not exclude 0) -> constant-zero-div blocking' ($d.Count -eq 1 -and $d[0].blocking -and $d[0].variant -ne 'guarded-constant-zero') (Brief $r)
+$r = Fb $cfv "IF cF = 0 THEN`n    y := 0;`nELSE`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1b ELSE of IF cF = 0 -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF NOT (cF = 0) THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1c IF NOT (cF = 0) THEN -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF cF > 0 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1d IF cF > 0 THEN -> guarded-constant-zero warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF 0 <> cF THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1e IF 0 <> cF (constant on the right) -> not proven, stays blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $cfv "IF cF <> 0 AND x > 1 THEN`n    y := x / cF;`nEND_IF`nIF cF = 0 OR x > 1 THEN`n    y := x / cF;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'R1f cF <> 0 AND x -> warning; cF = 0 OR x -> blocking' ($d.Count -eq 2 -and -not $d[0].blocking -and $d[1].blocking) (Brief $r)
+$av = "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    k : INT;`n    b : BOOL;"
+$r = Fb $av "FOR i := 0 TO 10 DO`n    k := SEL(i > 9, 0, a[i]);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2a SEL(i > 9, 0, a[i]): i = 10 selects a[i] -> blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    k := SEL(i > 9, a[i], 0);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2b SEL(i > 9, a[i], 0): i = 10 selects 0 -> guarded warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    b := i <= 9 OR_ELSE a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2c i <= 9 OR_ELSE a[i]: i = 10 evaluates a[i] -> blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb $av "FOR i := 0 TO 10 DO`n    b := i > 9 OR_ELSE a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R2d i > 9 OR_ELSE a[i]: i = 10 stops at the left operand -> guarded warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$gvD = { param($fx) Add-Gvl $fx 'GVL_T' "VAR_GLOBAL`n    gDone : BOOL;`nEND_VAR`nVAR_GLOBAL CONSTANT`n    cDone : BOOL := FALSE;`nEND_VAR`n" }
+$r = Fb "    bS : BOOL;" "WHILE NOT bS DO`n    bS := GVL_T.gDone;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3a bS := GVL_T.gDone (VAR_GLOBAL) -> invariant-global-write warning, in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-global-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bL : BOOL;" "WHILE NOT bS DO`n    bS := GVL_T.cDone OR bL;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3b bS := GVL_T.cDone OR bL (VAR_GLOBAL CONSTANT is not a global-write source) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bL : BOOL;" "WHILE NOT bS DO`n    bS := bL;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3c bS := bL (local, never written) -> invariant-write blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;" "WHILE NOT GVL_T.gDone DO`n    bS := TRUE;`nEND_WHILE" $gvD
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'R3d WHILE NOT GVL_T.gDone never written (master behaviour) -> still blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb "    bS : BOOL;`n    bX : BOOL;`n    bIn AT %I* : BOOL;" "WHILE NOT bS DO`n    bS := bX;`n    bX := bIn;`nEND_WHILE"
+Check 'R4 bS := bX; bX := bIn -> not silent: rulesSkipped source-written-in-loop:bX' ((Diags $r 'SCAN-LOOP-001').Count -ge 1 -or (SkipR $r 'SCAN-LOOP-001') -contains 'source-written-in-loop:bX') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
 # S8 constant conditions, FOR start not constant, divisions in declarations
 $r = Fb "    n : INT;" "WHILE 1 = 1 DO`n    n := n + 1;`nEND_WHILE`nWHILE NOT FALSE DO`n    n := n + 1;`nEND_WHILE"
 Check 'I-S8a WHILE 1 = 1 / WHILE NOT FALSE without EXIT -> two blocking findings' ((Diags $r 'SCAN-LOOP-001').Count -eq 2 -and (Diags $r 'SCAN-LOOP-001')[0].blocking -and (Diags $r 'SCAN-LOOP-001')[1].blocking) (Brief $r)
