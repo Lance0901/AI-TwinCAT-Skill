@@ -237,7 +237,7 @@ namespace TcLintEngine
                         if (f.IndexOf("_TO_", StringComparison.Ordinal) >= 0 || f.StartsWith("TO_", StringComparison.Ordinal) || f == "TRUNC" || f == "TRUNC_INT") conv = true; else call = true;
                     }
                 }
-                else if (depth == 0 && bdepth == 0 && (p.IsOp(";") || p.Is("THEN") || p.Is("ELSE") || p.Is("DO") || p.Is("REPEAT") || p.Is("OF") || p.IsOp(":")))
+                else if (depth == 0 && bdepth == 0 && (p.IsOp(";") || p.Is("THEN") || p.Is("ELSE") || p.Is("DO") || p.Is("REPEAT") || p.Is("OF") || p.IsOp(":") || p.Is("END_IF") || p.Is("END_CASE") || p.Is("END_FOR") || p.Is("END_WHILE") || p.Is("END_REPEAT")))
                 { st = q + 1; break; }
                 if (q == 0) st = 0;
             }

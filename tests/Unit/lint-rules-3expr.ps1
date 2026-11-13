@@ -166,8 +166,8 @@ Check 'F11 := and arithmetic without = / <> -> nothing' ((None3 $r) -and (NoSkip
 $r = P3 "rA := nA / nB;"
 $d = D3 $r 'SCAN-INTDIV-001'
 Check 'I1 rA := nA / nB (INT / DINT) -> integer-division warning' ((Only3 $r 'SCAN-INTDIV-001' 'integer-division') -and $d[0].line -eq 1 -and $d[0].severity -eq 'warning' -and $r.data.requiresDisposition) (Brief3 $r)
-$r = P3 "lr := 1 / 3;"
-Check 'I2 lr := 1 / 3 (two integer literals) -> integer-division' (Only3 $r 'SCAN-INTDIV-001' 'integer-division') (Brief3 $r)
+$r = P3 "IF b THEN`n    nA := 1;`nEND_IF`nlr := 1 / 3;"
+Check 'I2 lr := 1 / 3 after END_IF without ; (two integer literals) -> integer-division' (Only3 $r 'SCAN-INTDIV-001' 'integer-division') (Brief3 $r)
 $r = P3 "rA := (nA / 4) * 2.0 + rB;"
 Check 'I3 integer division inside parentheses of a REAL expression -> integer-division' (Only3 $r 'SCAN-INTDIV-001' 'integer-division') (Brief3 $r)
 $r = P3 "rA := INT_TO_REAL(nA) / nB;"
