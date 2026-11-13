@@ -192,6 +192,8 @@ command = "node"
 args = ['C:\Users\<you>\AppData\Local\TwinCATAutomation\launcher\tcauto-launcher.mjs']
 ```
 
+**Flow card (MCP `instructions`, #307):** the server sends `mcp-server/instructions.md` (one page: golden rules, tool order per task, when to ask the user, what to do on a failure) as the `instructions` of its `initialize` result. Claude Code puts it into the model context (實測 2026-11-13, Claude Code 2.1.319: `claude -p` quoted it verbatim) and cuts server instructions after 4,096 characters (2,048 before v2.1.296; [code.claude.com/docs/en/mcp](https://code.claude.com/docs/en/mcp), "Tool search for MCP server authors"), so the card stays below that (`npm test` checks it). **Codex does not show it to the model** (實測 2026-11-13, codex-cli 0.167.0: `codex exec` with the registered tcauto could not quote any line of it). For Codex, add the content of `mcp-server/instructions.md` to `%USERPROFILE%\.codex\AGENTS.md`: `TwinCATSetup-Codex.ps1` appends it there; `Install-TcAuto.ps1` does not write AGENTS.md.
+
 ### Other MCP clients
 
 Any client that launches stdio servers: command `<install root>\node\node.exe` (customer install) or `node` (developer install), args `["<install root>\\launcher\\tcauto-launcher.mjs"]`.
