@@ -144,6 +144,10 @@ try {
 
     # --- Connect-TcIde -NoLaunch: unreadable IDE with the reload prompt of THIS solution ---
     $global:FakeIde = @{ 201 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
+    # #281 C: a blocked IDE is attached only when TcAuto may work in it; here the user agreed earlier
+    # (consent memory, as left by Connect-TcIde -ProcessId while its DTE still answered). Without it:
+    # IDE_ATTACH_CONSENT_REQUIRED (connect-ide-attach-consent-281.ps1 C2)
+    & $mod { Add-TcIdeAttachConsent -ProcessId 201 }
     Set-Rot @(@{ Pid = 201; Mode = 'unreadable' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'connect-modal-code' (-not $r.success -and $r.error.code -eq 'IDE_MODAL_DIALOG') "code=$($r.error.code) msg=$($r.error.message)"
@@ -178,7 +182,7 @@ try {
     # --- session record of this very process (busy, consistent title, no dialog) -> strong, attached ---
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
     $global:FakeIde = @{ 601 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null }; 602 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
-    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Other.sln' } $sln   # not a same-named Demo.sln: that would make the title useless (same-name-elsewhere-weak)
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 601 -Solution $s; Save-TcIdeSolutionRecord -ProcessId 602 -Solution 'C:\Elsewhere\Other.sln'; Add-TcIdeAttachConsent -ProcessId 601 } $sln   # #281 C: consent as for 201   # not a same-named Demo.sln: that would make the title useless (same-name-elsewhere-weak)
     Set-Rot @(@{ Pid = 602; Mode = 'busy' }, @{ Pid = 601; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     Check 'connect-record-strong' (-not $r.success -and $r.error.code -eq 'IDE_BUSY' -and $r.data.ideProcessId -eq 601 -and $r.data.matchedBy -eq 'session-record' -and $r.data.attached) "code=$($r.error.code) pid=$($r.data.ideProcessId) by=$($r.data.matchedBy)"
@@ -210,6 +214,7 @@ try {
     # --- module-state: the IDE this module was connected to (pid + start time), same solution, no record ---
     & $mod { param($s) $script:TcIdeConnected = $true; $script:TcDte = [PSCustomObject]@{}; $script:TcIdeProcessId = 801; $script:TcIdeStartTime = [DateTime]'2026-01-01T00:00:00'; $script:TcSolutionPath = $s } $sln
     $global:FakeIde = @{ 801 = @{ Title = 'Demo - TcXaeShell'; Dialog = $null } }
+    & $mod { Add-TcIdeAttachConsent -ProcessId 801 }   # #281 C: consent as for 201
     Set-Rot @(@{ Pid = 801; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
 
@@ -259,6 +264,7 @@ try {
 
     # --- after an attach, Disconnect-TcIde -Quit acts on THAT pid only; #227: not launched by this session -> IDE_NOT_OWNED, nothing quit ---
     $global:FakeIde = @{ 931 = @{ Title = 'Demo - TcXaeShell'; Dialog = $reload } }
+    & $mod { Add-TcIdeAttachConsent -ProcessId 931 }   # #281 C: consent as for 201 (still not owned)
     Set-Rot @(@{ Pid = 931; Mode = 'unreadable' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     $global:QuitCalled = $false
@@ -400,7 +406,7 @@ try {
     # strong (session record + title): attached, MODAL_SCAN_INCOMPLETE, the marker is not stored as "dialog seen"
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null; $script:TcLastModalDialog = $null }
     $global:FakeIde = @{ 911 = @{ Title = 'Demo - TcXaeShell'; Dialog = $incomplete } }
-    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 911 -Solution $s } $sln
+    & $mod { param($s) Save-TcIdeSolutionRecord -ProcessId 911 -Solution $s; Add-TcIdeAttachConsent -ProcessId 911 } $sln   # #281 C: consent as for 201
     Set-Rot @(@{ Pid = 911; Mode = 'busy' })
     $r = Connect-TcIde -SolutionPath $sln -ProgId 'Fake.DTE.1' -NoLaunch
     $last = & $mod { $script:TcLastModalDialog }

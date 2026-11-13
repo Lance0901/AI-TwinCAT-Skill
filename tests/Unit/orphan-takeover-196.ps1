@@ -314,8 +314,12 @@ try {
     $r = Connect-TcIde -SolutionPath $sln
     Check 'T6c alive: message says still running, hint does not offer -TakeOverOrphan' ($r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.error.message -match 'still running' -and $r.error.hint -notmatch 'TakeOverOrphan') "$($r.error.message)"
     $p = New-Orphan
+    $before = Get-RecordJson
     $r = Connect-TcIde -SolutionPath $sln
-    Check 'T6d no switch, IDE in the ROT with the solution: solution-match attach, not owned (unchanged)' ($r.success -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $null -eq $r.data.PSObject.Properties['takenOver'] -and [int]@(Read-Records)[0].hostPid -eq 9600) "code=$($r.error.code) sel=$($r.data.selectedBy)"
+    # #281 C: before, solution-match attached this IDE (not owned); now it is an IDE TcAuto may not work
+    # in (launched by another, ended session) -> IDE_ATTACH_CONSENT_REQUIRED, nothing attached, record
+    # unchanged; the hint does not offer -TakeOverOrphan (owner decision pending, PR body)
+    Check 'T6d no switch, IDE in the ROT with the solution (ended other session): IDE_ATTACH_CONSENT_REQUIRED, not attached, record unchanged' ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and @($r.data.candidates)[0].processId -eq $p -and $r.error.hint -notmatch 'TakeOverOrphan' -and (Get-RecordJson) -eq $before -and (Test-NotConnected) -and $global:Launches73.Count -eq 1) "code=$($r.error.code) sel=$($r.data.selectedBy)"
     $null = Disconnect-TcIde
 
     # --- T7: record file not writable / not readable -> fail closed ---
