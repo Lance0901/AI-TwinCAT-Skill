@@ -1,0 +1,238 @@
+﻿# Unit: semantic linter (#252) Phase 2b rules, no IDE.
+#   B  SCAN-FBCALL-001 / 002: read but never called (TON .Q, project FB output, R_TRIG), never referenced (info);
+#      counter-examples for every "may be called elsewhere" path: body call, VAR_IN_OUT / ADR / REF= / interface
+#      assignment, PRG.fb() from another POU, GVL instance, ARRAY OF FB, method / property of a project FB,
+#      derived FB (EXTENDS) calling the inherited instance, STRUCT member, type outside the catalog
+#   T  SCAN-TIMER-001 / 002: only in IF / CASE (warning), only in a method / action (info); legal guards: unconditional,
+#      IF / ELSE both, CASE every label + ELSE, outer unconditional call, explicit reset, action called every cycle
+#   P  SCAN-TIMER-004: PT never set, IN constant FALSE; counter-examples PT in call / inst.PT := / declaration init
+#   S  SCAN-TIMER-005: state timer IN := TRUE in one CASE branch without reset; counter-examples reset, IF, variable IN
+#   X  suppression (inline / profile), unresolved: warnings in, infos out; M metadata; D determinism
+# Mock basis: tests/Unit/lib/LintFixture.ps1 (XAE format, observed corpus 2026-11-13); the rule expectations follow
+# rule-catalog.md; TON semantics measured 2026-11-13 (XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md
+# sections 4 / 5). Every check looks at the result object, never at localised PowerShell text.
+#   powershell.exe -NoProfile -File tests/Unit/lint-rules-2b.ps1
+# Exit code = number of failed checks.
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\UnitIsolation.ps1') -Caller $PSCommandPath -CallerArgs $PSBoundParameters; if ($null -ne $TcUnitChildExit) { exit $TcUnitChildExit }   # #118: own TCAUTO_STATE_DIR
+$modulePath = Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1'
+Import-Module $modulePath -Force -WarningAction SilentlyContinue
+. (Join-Path $PSScriptRoot 'lib\LintFixture.ps1')
+$mod = Get-Module TwinCATAutomation
+$fail = 0
+function Check([string]$Name, [bool]$Ok, [string]$Detail) {
+    if ($Detail.Length -gt 900) { $Detail = $Detail.Substring(0, 900) }
+    "{0} {1} {2}" -f $(if ($Ok) { 'PASS' } else { 'FAIL' }), $Name, $Detail
+    if (-not $Ok) { $script:fail++ }
+}
+function Js($o) { return ($o | ConvertTo-Json -Depth 30 -Compress) }
+function Diags($r, [string]$Rule) { return , @($r.data.diagnostics | Where-Object { $_.ruleId -eq $Rule }) }
+function Brief($r) { return ((@($r.data.diagnostics | ForEach-Object { "$($_.ruleId)/$($_.variant)@$($_.objectPath):$($_.line) $($_.severity) b=$($_.blocking) s=$($_.suppressed)" }) -join '; ') + " code=$($r.error.code)") }
+function Skips($r, [string]$Rule) { return , @($r.data.coverage.rulesSkipped | Where-Object { $_.ruleId -eq $Rule }) }
+function SkipText($r) { return ((@($r.data.coverage.rulesSkipped | Where-Object { $_.ruleId -like 'SCAN-FBCALL*' -or $_.ruleId -like 'SCAN-TIMER*' } | ForEach-Object { "$($_.ruleId)=$($_.reason)" })) -join ',') }
+function Unres($r, [string]$Rule) { return , @($r.data.unresolved | Where-Object { $_.ruleId -eq $Rule }) }
+$R2b = 'SCAN-FBCALL-001', 'SCAN-FBCALL-002', 'SCAN-TIMER-001', 'SCAN-TIMER-002', 'SCAN-TIMER-004', 'SCAN-TIMER-005'
+function None2b($r) { return (@($r.data.diagnostics | Where-Object { $R2b -contains $_.ruleId }).Count -eq 0) }
+function Only($r, [string]$Rule) { return (@($r.data.diagnostics | Where-Object { $R2b -contains $_.ruleId }).Count -eq 1 -and (Diags $r $Rule).Count -eq 1) }
+
+$root = Join-Path $env:TEMP ("tcauto-unit-lint2b-{0}" -f [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $root | Out-Null
+$root = & $mod { param($p) Get-TcLongPath $p } $root   # CI %TEMP% is an 8.3 short path
+$n = 0
+function New-Fx {
+    $script:n++
+    $fx = New-LintFixture (Join-Path $root ("f{0:D2}" -f $script:n))
+    $fx.Items = [System.Collections.Generic.List[string]]::new([string[]]$script:LintFxCompile)
+    return $fx
+}
+function New-Id { return '{' + [guid]::NewGuid().ToString() + '}' }
+function Add-Pou($Fx, [string]$Name, [string]$Decl, [string]$Impl, [string]$Extra = '') {
+    Write-LintFxFile (Join-Path $Fx.PlcDir "POUs\$Name.TcPOU") (Get-LintFxPou -Name $Name -Id (New-Id) -Decl $Decl -Impl $Impl -Extra $Extra)
+    $Fx.Items.Add("POUs\$Name.TcPOU")
+    Set-LintFxCompile $Fx $Fx.Items.ToArray()
+}
+function Method([string]$Name, [string]$Decl, [string]$Impl) {
+    return "`n    <Method Name=`"$Name`" Id=`"$(New-Id)`">`n      <Declaration><![CDATA[$Decl]]></Declaration>`n      <Implementation>`n        <ST><![CDATA[$Impl]]></ST>`n      </Implementation>`n    </Method>"
+}
+function Action([string]$Name, [string]$Impl) {
+    return "`n    <Action Name=`"$Name`" Id=`"$(New-Id)`">`n      <Implementation>`n        <ST><![CDATA[$Impl]]></ST>`n      </Implementation>`n    </Action>"
+}
+function Add-Gvl($Fx, [string]$Name, [string]$Decl) {
+    Write-LintFxFile (Join-Path $Fx.PlcDir "GVLs\$Name.TcGVL") ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <GVL Name=`"$Name`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[$Decl]]></Declaration>`n  </GVL>`n</TcPlcObject>")
+    $Fx.Items.Add("GVLs\$Name.TcGVL"); Set-LintFxCompile $Fx $Fx.Items.ToArray()
+}
+function Add-Dut($Fx, [string]$Name, [string]$Decl) {
+    Write-LintFxFile (Join-Path $Fx.PlcDir "DUTs\$Name.TcDUT") ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"$Name`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[$Decl]]></Declaration>`n  </DUT>`n</TcPlcObject>")
+    $Fx.Items.Add("DUTs\$Name.TcDUT"); Set-LintFxCompile $Fx $Fx.Items.ToArray()
+}
+function Set-Profile($Fx, [string]$Json) {
+    $dir = Join-Path ([System.IO.Path]::GetDirectoryName($Fx.Sln)) '.tcauto'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dir 'lint-profile.json'), $Json, (New-Object System.Text.UTF8Encoding($false)))
+}
+# FB_T with the given VAR lines, body and extra members; $Before adds other objects first
+function Fb([string]$Vars, [string]$Impl, [string]$Extra = '', [scriptblock]$Before) {
+    $fx = New-Fx
+    if ($Before) { & $Before $fx }
+    Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n$Vars`nEND_VAR`n" $Impl $Extra
+    return (Invoke-TcLintProject -PlcProjectPath $fx.Plcproj)
+}
+$sub = { param($fx) Add-Pou $fx 'FB_Sub' "FUNCTION_BLOCK FB_Sub`nVAR_INPUT`n    bIn : BOOL;`nEND_VAR`nVAR_OUTPUT`n    bOut : BOOL;`nEND_VAR`n" "bOut := bIn;" ((Method 'M_Run' "METHOD M_Run`n" 'bOut := TRUE;') + "`n    <Property Name=`"P_State`" Id=`"$(New-Id)`">`n      <Declaration><![CDATA[PROPERTY P_State : BOOL`n]]></Declaration>`n      <Get Name=`"Get`" Id=`"$(New-Id)`">`n        <Declaration><![CDATA[VAR`nEND_VAR`n]]></Declaration>`n        <Implementation>`n          <ST><![CDATA[P_State := bOut;]]></ST>`n        </Implementation>`n      </Get>`n    </Property>") }
+
+# ================================================================ B  SCAN-FBCALL-001 / 002
+$r = Fb "    fbT : TON;`n    bQ : BOOL;" "bQ := fbT.Q;"
+$d = Diags $r 'SCAN-FBCALL-001'
+Check 'B1 TON .Q read, never called -> FBCALL-001 warning at the declaration, not blocking, in unresolved' ((Only $r 'SCAN-FBCALL-001') -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and $d[0].section -eq 'declaration' -and $d[0].line -eq 3 -and (Unres $r 'SCAN-FBCALL-001').Count -eq 1 -and $r.success -and $r.data.requiresDisposition) (Brief $r)
+$r = Fb "    fbS : FB_Sub;`n    b : BOOL;" "fbS.bIn := TRUE;`nb := fbS.bOut;" '' $sub
+Check 'B2 project FB: input written, output read, never called -> FBCALL-001' (Only $r 'SCAN-FBCALL-001') (Brief $r)
+$r = Fb "    rt : R_TRIG;`n    b : BOOL;" "rt.CLK := b;`nIF rt.Q THEN b := FALSE; END_IF"
+Check 'B3 R_TRIG CLK written, Q read, never called -> FBCALL-001' (Only $r 'SCAN-FBCALL-001') (Brief $r)
+$r = Fb "    fbUnused : TON;`n    n : INT;" "n := 1;"
+$d = Diags $r 'SCAN-FBCALL-002'
+Check 'B4 TON never referenced -> FBCALL-002 info, not in unresolved' ((Only $r 'SCAN-FBCALL-002') -and $d[0].severity -eq 'info' -and (Unres $r 'SCAN-FBCALL-002').Count -eq 0 -and -not $r.data.requiresDisposition) (Brief $r)
+$r = Fb "    fbT : TON;`n    bQ : BOOL;" "fbT(IN := TRUE, PT := T#1S);`nbQ := fbT.Q;"
+Check 'B5 counter-example: body call -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    fbT : TON;`n    bQ : BOOL;" "F_Use(t := fbT);`nbQ := fbT.Q;" '' { param($fx) Add-Pou $fx 'F_Use' "FUNCTION F_Use : BOOL`nVAR_IN_OUT`n    t : TON;`nEND_VAR`n" "t(IN := TRUE, PT := T#1S);" }
+Check 'B6 counter-example: passed to VAR_IN_OUT -> no finding, rulesSkipped passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-FBCALL-001=passed-or-aliased:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbT : TON;`n    p : POINTER TO TON;`n    bQ : BOOL;" "p := ADR(fbT);`nbQ := fbT.Q;"
+Check 'B7 counter-example: ADR(fbT) -> no finding (skipped)' ((None2b $r) -and (SkipText $r) -like '*passed-or-aliased:fbT*') (Brief $r)
+$r = Fb "    fbT : TON;`n    rT : REFERENCE TO TON;`n    bQ : BOOL;" "rT REF= fbT;`nbQ := fbT.Q;"
+Check 'B8 counter-example: REF= alias -> no finding (skipped)' ((None2b $r) -and (SkipText $r) -like '*passed-or-aliased:fbT*') (Brief $r)
+$r = Fb "    fbS : FB_Sub;`n    itf : I_Run;`n    b : BOOL;" "itf := fbS;`nb := fbS.bOut;" '' $sub
+Check 'B9 counter-example: interface variable assignment -> no finding (skipped)' ((None2b $r) -and (SkipText $r) -like '*passed-or-aliased:fbS*') (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'PRG_A' "PROGRAM PRG_A`nVAR`n    fbT : TON;`n    bQ : BOOL;`nEND_VAR`n" "bQ := fbT.Q;"
+Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`nEND_VAR`n" "PRG_A.fbT(IN := TRUE, PT := T#1S);"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'B10 counter-example: PRG_A.fbT() called from another program -> no finding, qualified-access' ((None2b $r) -and (SkipText $r) -like '*qualified-access:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+$fx = New-Fx
+Add-Gvl $fx 'GVL_T' "VAR_GLOBAL`n    gT : TON;`nEND_VAR`n"
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    b : BOOL;`nEND_VAR`n" "b := GVL_T.gT.Q;"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'B11 counter-example: GVL instance read without call -> not a candidate, no finding' (None2b $r) (Brief $r)
+$r = Fb "    arT : ARRAY[0..3] OF TON;`n    b : BOOL;" "b := arT[0].Q;"
+Check 'B12 counter-example: ARRAY OF TON -> no finding, array-instance' ((None2b $r) -and (SkipText $r) -like '*array-instance:arT*') (Brief $r)
+$r = Fb "    fbS : FB_Sub;`n    b : BOOL;" "fbS.M_Run();`nb := fbS.bOut;" '' $sub
+Check 'B13 counter-example: method call of a project FB -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    fbS : FB_Sub;`n    b : BOOL;" "b := fbS.P_State;" '' $sub
+Check 'B14 counter-example: property read of a project FB (accessor runs) -> no finding' (None2b $r) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_Base' "FUNCTION_BLOCK FB_Base`nVAR`n    fbT : TON;`n    bQ : BOOL;`nEND_VAR`n" "bQ := fbT.Q;"
+Add-Pou $fx 'FB_Der' "FUNCTION_BLOCK FB_Der EXTENDS FB_Base`nVAR`nEND_VAR`n" "fbT(IN := TRUE, PT := T#1S);`nSUPER^();"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'B15 counter-example: derived FB calls the inherited instance without SUPER^ -> no finding, inherited-use' ((None2b $r) -and (SkipText $r) -like '*inherited-use:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+$fx = New-Fx
+Add-Dut $fx 'ST_Hold' "TYPE ST_Hold :`nSTRUCT`n    tmr : TON;`nEND_STRUCT`nEND_TYPE`n"
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    st : ST_Hold;`n    b : BOOL;`nEND_VAR`n" "b := st.tmr.Q;"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'B16 counter-example: TON as STRUCT member -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    fbL : FB_LibThing;`n    b : BOOL;" "b := fbL.bDone;"
+Check 'B17 counter-example: type outside catalog and project -> no finding, rulesSkipped unknown-type' ((None2b $r) -and (SkipText $r) -like '*unknown-type:FB_LibThing:fbL*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbT : TON;`n    b : BOOL;" "b := fbT.Q;" (Method 'M_X' "METHOD M_X`nVAR`n    fbT : INT;`nEND_VAR`n" 'fbT := 1;')
+Check 'B18 counter-example: method local with the same name -> no finding, shadowed-name' ((None2b $r) -and (SkipText $r) -like '*shadowed-name:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    fbT : TON;`n    b : BOOL;`nEND_VAR`n" "b := fbT.Q;"
+Add-Pou $fx 'PRG_X' "PROGRAM PRG_X`nVAR`n    o : FB_T;`nEND_VAR`n" "o();`no.fbT(IN := TRUE, PT := T#1S);"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'B19 counter-example: o.fbT() from the owner instance outside -> no finding (qualified-access)' ((None2b $r) -and (SkipText $r) -like '*qualified-access:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+
+# ================================================================ T  SCAN-TIMER-001 / 002
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+$d = Diags $r 'SCAN-TIMER-001'
+Check 'T1 TON only inside IF -> TIMER-001 warning at the call, in unresolved' ((Only $r 'SCAN-TIMER-001') -and $d[0].line -eq 2 -and $d[0].severity -eq 'warning' -and (Unres $r 'SCAN-TIMER-001').Count -eq 1) (Brief $r)
+$r = Fb "    rt : R_TRIG;`n    b, c : BOOL;" "IF b THEN`n    rt(CLK := c);`nEND_IF"
+Check 'T2 R_TRIG only inside IF -> TIMER-001' (Only $r 'SCAN-TIMER-001') (Brief $r)
+$r = Fb "    ton1 : TON;`n    n : INT;`n    b : BOOL;" "CASE n OF`n1:`n    ton1(IN := b, PT := T#1S);`n2:`n    n := 0;`nEND_CASE"
+Check 'T3 TON in one CASE label with a variable IN -> TIMER-001 (not 005)' (Only $r 'SCAN-TIMER-001') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b, PT := T#1S);"
+Check 'T4 counter-example: unconditional call -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    ton1(IN := TRUE, PT := T#1S);`nELSE`n    ton1(IN := FALSE, PT := T#1S);`nEND_IF"
+Check 'T5 counter-example: IF / ELSE both call -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    n : INT;`n    b : BOOL;" "CASE n OF`n1:`n    IF b THEN ton1(IN := b, PT := T#1S); ELSE ton1(IN := FALSE, PT := T#1S); END_IF`n2, 3:`n    ton1(IN := b, PT := T#2S);`nELSE`n    ton1(IN := FALSE, PT := T#1S);`nEND_CASE"
+Check 'T6 counter-example: every CASE label (nested IF / ELSE) and ELSE call -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b, PT := T#1S);`nIF b THEN`n    ton1(IN := FALSE);`nEND_IF"
+Check 'T7 counter-example: outer unconditional call plus one in IF -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b, c : BOOL;" "IF b THEN`n    ton1(IN := c, PT := T#1S);`nELSIF c THEN`n    ton1(IN := FALSE);`nEND_IF"
+Check 'T8 counter-example: explicit reset call IN := FALSE -> no finding, rulesSkipped explicit-reset' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-001=explicit-reset:ton1*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "A_Cyc();" (Action 'A_Cyc' 'ton1(IN := b, PT := T#1S);')
+Check 'T9 counter-example: call in an action the body calls unconditionally -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "b := ton1.Q;" (Method 'M_Wait' "METHOD M_Wait : BOOL`n" 'ton1(IN := TRUE, PT := T#2S);')
+$d = Diags $r 'SCAN-TIMER-002'
+Check 'T10 TON only in a method -> TIMER-002 info, not in unresolved' ((Only $r 'SCAN-TIMER-002') -and $d[0].severity -eq 'info' -and $d[0].objectPath -eq 'FB_T.M_Wait' -and (Unres $r 'SCAN-TIMER-002').Count -eq 0) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    A_Cyc();`nEND_IF" (Action 'A_Cyc' 'ton1(IN := b, PT := T#1S);')
+Check 'T11 TON only in an action the body calls under IF -> TIMER-002 info' (Only $r 'SCAN-TIMER-002') (Brief $r)
+$r = Fb "    rt : F_TRIG;`n    b : BOOL;" "M_Edge();" (Method 'M_Edge' "METHOD M_Edge`n" 'rt(CLK := b);')
+Check 'T12 counter-example: method called unconditionally by the body -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 3 DO`n    IF b THEN ton1(IN := b, PT := T#1S); END_IF`nEND_FOR"
+Check 'T13 call in a loop -> not evaluated (call-in-loop)' ((None2b $r) -and (SkipText $r) -like '*call-in-loop:ton1*') (Brief $r)
+
+# ================================================================ P  SCAN-TIMER-004
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b);"
+$d = Diags $r 'SCAN-TIMER-004'
+Check 'P1 TON without PT anywhere -> TIMER-004 pt-unset warning, in unresolved' ((Only $r 'SCAN-TIMER-004') -and $d[0].variant -eq 'pt-unset' -and (Unres $r 'SCAN-TIMER-004').Count -eq 1) (Brief $r)
+$r = Fb "    tof1 : TOF;`n    b : BOOL;" "tof1(IN := b);`nb := tof1.Q;"
+Check 'P2 TOF without PT -> pt-unset' ((Only $r 'SCAN-TIMER-004') -and (Diags $r 'SCAN-TIMER-004')[0].variant -eq 'pt-unset') (Brief $r)
+$r = Fb "    ton1 : TON;" "ton1(IN := FALSE, PT := T#1S);"
+Check 'P3 IN := FALSE in every call -> in-constant' ((Only $r 'SCAN-TIMER-004') -and (Diags $r 'SCAN-TIMER-004')[0].variant -eq 'in-constant') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1.PT := T#3S;`nton1(IN := b);"
+Check 'P4 counter-example: ton1.PT := T#3S -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON := (PT := T#3S);`n    b : BOOL;" "ton1(IN := b);"
+Check 'P5 counter-example: PT in the declaration initialiser -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;" "ton1(IN := TRUE, PT := T#5S);"
+Check 'P6 counter-example: IN := TRUE start-up delay -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(b, T#1S);"
+Check 'P7 positional arguments -> not evaluated (positional-arguments)' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=positional-arguments:ton1*') ((Brief $r) + ' ' + (SkipText $r))
+
+# ================================================================ S  SCAN-TIMER-005
+$st = "    tonWait : TON;`n    eState : INT;"
+$r = Fb $st "CASE eState OF`n0:`n    eState := 10;`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`n20:`n    eState := 0;`nEND_CASE"
+$d = Diags $r 'SCAN-TIMER-005'
+Check 'S1 state timer IN := TRUE in one CASE branch, never reset -> TIMER-005 only (no 001), in unresolved' ((Only $r 'SCAN-TIMER-005') -and $d[0].line -eq 5 -and (Unres $r 'SCAN-TIMER-005').Count -eq 1) (Brief $r)
+$r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`n20:`n    tonWait(IN := TRUE, PT := T#5S);`n    IF tonWait.Q THEN eState := 0; END_IF`nEND_CASE"
+Check 'S2 one timer in two CASE branches, IN := TRUE, never reset -> TIMER-005' (Only $r 'SCAN-TIMER-005') (Brief $r)
+$r = Fb "    tonWait : LTON;`n    eState : INT;" "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := LTIME#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE"
+Check 'S3 LTON state timer -> TIMER-005' (Only $r 'SCAN-TIMER-005') (Brief $r)
+$r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN`n        tonWait(IN := FALSE);`n        eState := 20;`n    END_IF`nEND_CASE"
+Check 'S4 counter-example: tonWait(IN := FALSE) before leaving -> no finding' (None2b $r) (Brief $r)
+$r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE`nIF eState <> 10 THEN tonWait.IN := FALSE; END_IF"
+Check 'S5 counter-example: tonWait.IN := FALSE outside -> no TIMER-005' ((Diags $r 'SCAN-TIMER-005').Count -eq 0 -and (Diags $r 'SCAN-TIMER-001').Count -eq 0) (Brief $r)
+$r = Fb $st "tonWait(IN := eState = 10, PT := T#2S);`nCASE eState OF`n10:`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE"
+Check 'S6 counter-example: timer called every cycle with IN := eState = 10 -> no finding' (None2b $r) (Brief $r)
+$r = Fb $st "IF eState = 10 THEN`n    tonWait(IN := TRUE, PT := T#2S);`nEND_IF"
+Check 'S7 IN := TRUE under IF (not CASE) -> TIMER-001, not 005' (Only $r 'SCAN-TIMER-001') (Brief $r)
+
+# ================================================================ X  suppression
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001: updated only in this mode on purpose`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+$d = Diags $r 'SCAN-TIMER-001'
+Check 'X1 inline suppression of TIMER-001 -> suppressed, not in unresolved' ($d.Count -eq 1 -and $d[0].suppressed -and (Unres $r 'SCAN-TIMER-001').Count -eq 0 -and $r.success) (Brief $r)
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    fbT : TON;`n    bQ : BOOL;`nEND_VAR`n" "bQ := fbT.Q;"
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath":"FB_T","ruleId":"SCAN-FBCALL-001","reason":"reviewed: output read for diagnostics only"}]}'
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+$d = Diags $r 'SCAN-FBCALL-001'
+Check 'X2 profile suppression of FBCALL-001 -> suppressed, not in unresolved, listed in suppressions[]' ($d.Count -eq 1 -and $d[0].suppressed -and (Unres $r 'SCAN-FBCALL-001').Count -eq 0 -and @($r.data.suppressions | Where-Object { $_.source -eq 'profile' -and $_.matched -eq 1 }).Count -eq 1) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'X3 inline suppression without a reason -> not applied (LINT-SUPPRESS-001), finding stays' (-not (Diags $r 'SCAN-TIMER-001')[0].suppressed -and (Diags $r 'LINT-SUPPRESS-001').Count -eq 1) (Brief $r)
+
+# ================================================================ M  metadata
+foreach ($id in $R2b) {
+    $m = @(& $mod { param($i) $t = (Get-TcLintEngine).Namespace; ("$t.RuleRegistry" -as [type])::Get($i) } $id)[0]
+    Check "M $id registered, phase 2, not blockable, limits written" ($null -ne $m -and $m.Phase -eq '2' -and $m.Blockable -eq 'false' -and $m.Limits.Length -gt 200) "$($m.Phase) $($m.Blockable) $($m.Severity)"
+}
+$sev = @($R2b | ForEach-Object { $i = $_; @(& $mod { param($i) $t = (Get-TcLintEngine).Namespace; ("$t.RuleRegistry" -as [type])::Get($i) } $i)[0].Severity }) -join ','
+Check 'M severities follow rule-catalog: 001 warning, 002 info, TIMER-001 warning, 002 info, 004 / 005 warning' ($sev -eq 'warning,info,warning,info,warning,warning') $sev
+
+# ================================================================ D  determinism
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    fbA : TON;`n    fbU : TON;`n    ton1 : TON;`n    ton2 : TON;`n    tonW : TON;`n    eState : INT;`n    b : BOOL;`nEND_VAR`n" "b := fbA.Q;`nIF b THEN ton1(IN := b, PT := T#1S); END_IF`nton2(IN := b);`nCASE eState OF`n1:`n    tonW(IN := TRUE, PT := T#1S);`nEND_CASE" (Method 'M_W' "METHOD M_W`nVAR_INPUT`n    r : R_TRIG;`nEND_VAR`n" 'b := TRUE;')
+$outs = foreach ($cul in 'en-US', 'zh-TW', 'en-US') {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $cul; [System.Threading.Thread]::CurrentThread.CurrentUICulture = $cul
+    $x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj; $x.data.Remove('newSuppressionsBasisReason'); Js $x
+}
+$x = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'D1 FBCALL-001 / 002, TIMER-001 / 004 / 005 fire on one FB' (@('SCAN-FBCALL-001', 'SCAN-FBCALL-002', 'SCAN-TIMER-001', 'SCAN-TIMER-004', 'SCAN-TIMER-005' | Where-Object { (Diags $x $_).Count -eq 1 }).Count -eq 5) (Brief $x)
+Check 'D2 two runs and en-US / zh-TW byte-identical' ($outs[0] -ceq $outs[1] -and $outs[0] -ceq $outs[2]) ''
+
+Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+"failed: $fail"
+exit $fail

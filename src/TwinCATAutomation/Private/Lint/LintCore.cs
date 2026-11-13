@@ -200,6 +200,35 @@ namespace TcLintEngine
             RuleRegistry.Get("SCAN-ARR-001").Te1200 = "SA0172 (Full)";
             RuleRegistry.Get("SAFETY-ARR-001").Te1200 = "SA0172 (Full)";
             RuleRegistry.Get("SAFETY-DIV-001").Te1200 = "SA0040 (Full)";
+            // ---- Phase 2b (rule-catalog.md SCAN-FBCALL / SCAN-TIMER; LintRules2b.cs). Instances declared in VAR / VAR_STAT of a
+            // FUNCTION_BLOCK / PROGRAM; any way the instance could be used outside the owner's ST sections -> rulesSkipped, never a finding.
+            const string NotEvaluated2b = "Not evaluated (coverage.rulesSkipped <reason>:<instance>): passed as a parameter / ADR / REF= / assigned / interface (passed-or-aliased), " +
+                "the name after '.' anywhere in the project (PRG.inst, fb.inst: qualified-access), an FB that EXTENDS the owner (inherited-use), the name in a part the linter cannot read (unanalysed-part), " +
+                "a declaration initialiser (referenced-in-declaration), a method local of the same name (shadowed-name), ARRAY OF FB (array-instance), STRUCT / ALIAS types, GVL instances (not candidates), " +
+                "a section that is not analysed (conditional pragma, unsupported) and types outside the type catalog / project (unknown-type).";
+            Add("SCAN-FBCALL-001", "Function block instance is read / written but never called", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Called = inst(...) anywhere in the owner (body, action, method, accessor; reachability of that code is not checked), or for a project FB any method / action / property of its EXTENDS chain (property accessor code runs). " +
+                "Inherited members of the owner's own base are evaluated in the base. Consequence: outputs of an FB are only assigned while it runs (inferred from IEC FB semantics, not measured).", "medium", "inferred");
+            Add("SCAN-FBCALL-002", "Function block instance is never referenced", "info", "false", "none", "no",
+                NotEvaluated2b + " Only catalog FBs (TypeCatalog.json) and project FBs; other unused variables are left to TE1200 SA0033 (Light). Info: not in unresolved[].", "high", null);
+            Add("SCAN-TIMER-001", "Timer / edge trigger is only called inside IF / CASE", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Types: TypeCatalog class timer (TON TOF TP LTON LTOF LTP) and edge (R_TRIG F_TRIG); counters / flip-flops are not checked (counting only under a condition is a normal design). " +
+                "Not reported: any unconditional call in the body (or in an action / method the body calls unconditionally); every branch of a nested IF ... ELSE / CASE ... ELSE calls it; an explicit reset call(IN / CLK := FALSE) or inst.IN := (rulesSkipped explicit-reset); " +
+                "a call in a loop (call-in-loop), in a {IF} region (call-in-pragma), calls also in a member that does not run every time (also-called-in-member). " +
+                "Known misses: an early RETURN before the call (IF NOT bEnable THEN RETURN; END_IF), the owner instance itself called conditionally (transitive), a call after JMP. " +
+                "Basis: a TON not called for 1500 cycles had ET jump by the wall-clock time on the next call (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 5).", "medium", null);
+            Add("SCAN-TIMER-002", "Timer / edge trigger is only called in a method / action that is not proven to run every cycle", "info", "false", "behavior", "no",
+                NotEvaluated2b + " An action / method counts as every-cycle when the owner's body calls it as a statement outside IF / CASE / loops; methods called from other POUs are not followed. Info: not in unresolved[].", "low", null);
+            Add("SCAN-TIMER-004", "Timer PT never set, or IN always the constant FALSE", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " Variant pt-unset (timers only): no call passes PT, no inst.PT :=, no initial value in the declaration; TON with PT = T#0S gives Q = TRUE in the cycle IN rises (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 4; InfoSys TON page 74406539 does not say). " +
+                "Variant in-constant: every call passes IN := FALSE and IN is never assigned. IN := TRUE constant is not reported (start-up delay idiom; the state-machine form is SCAN-TIMER-005). Positional arguments -> rulesSkipped positional-arguments. Constant folding (IN := TRUE OR x) is not done.", "high", null);
+            Add("SCAN-TIMER-005", "State timer is only called with IN := TRUE in CASE branches and never reset", "warning", "false", "behavior", "no",
+                NotEvaluated2b + " TON / LTON whose calls are all inside branches of one CASE (not every branch with ELSE), every call IN := TRUE, no call with IN := FALSE and no inst.IN :=. " +
+                "After the state is left IN stays TRUE; the TON measures wall-clock time while not called, so on re-entry it can be elapsed in the first call (measured 2026-11-13, XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md section 5). " +
+                "A non-constant IN is reported as SCAN-TIMER-001 instead. Such a timer is reported by 005 only (not also 001).", "medium", null);
+            foreach (string id in new string[] { "SCAN-FBCALL-001", "SCAN-FBCALL-002", "SCAN-TIMER-001", "SCAN-TIMER-002", "SCAN-TIMER-004", "SCAN-TIMER-005" }) { RuleRegistry.Get(id).Phase = "2"; RuleRegistry.Get(id).Requires = "type-catalog"; }
+            RuleRegistry.Get("SCAN-FBCALL-002").Te1200 = "SA0033 (Light, unused variables; FB instances not stated, not verified)";
+            RuleRegistry.Get("SCAN-TIMER-001").Te1200 = "none (SA0105 Full needs an attribute, only related)";
         }
 
         public static RuleMeta Get(string id)
