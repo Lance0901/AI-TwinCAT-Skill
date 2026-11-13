@@ -32,6 +32,10 @@ function Invoke-TcLintCandidate {
         reason (non-blocking rules only), and list every data.newSuppressions[] (new against the disk version of
         the object) and data.newOverrides[] entry to the user before writing. Do not call EnableConfig.
 
+        Findings of OTHER objects that the disk project already has are in data.preExisting, outside verdict /
+        unresolved / requiresDisposition (data.projectVerdict = the disk project without the candidate). A name a
+        rule needs that the project cannot resolve, or that sits in an unreadable object -> LINT_CONTEXT_REQUIRED.
+
         data: as Invoke-TcLintProject, plus contextLevel (project / text-only), candidate { objectKind,
         objectPath, file, overlay (replaced / added / text-only), contextRequired[] }, crossObject { checked,
         basis, newFindings[], blocking }, dispositionReasons (also cross-object-findings, candidate-not-analyzed), newSuppressionsBasis
@@ -240,6 +244,39 @@ function Invoke-TcLintCandidate {
         $cross = [ordered]@{ checked = $true; basis = 'disk-project'; newFindings = $newOther.ToArray(); blocking = $crossBlocking }
     }
 
+    # review S3 of PR #284: findings of OTHER objects (project-level rules, e.g. TASK-001 of a PROGRAM nobody calls)
+    # that the disk project already has are not the candidate's: data.preExisting[], outside verdict / unresolved /
+    # requiresDisposition; data.projectVerdict says whether the project without the candidate passes. Findings of the
+    # candidate object itself stay in diagnostics (the candidate is the new text of that object).
+    $mainDiags = @($res['diagnostics'])
+    $preExisting = @()
+    $mainUnresolved = @($res['unresolved'])
+    if (-not $textOnly) {
+        $left = @{}; foreach ($k in $diskKeys.Keys) { $left[$k] = 0 }
+        foreach ($d in @($diskR['diagnostics'])) { $left[(& $keyOf $d)]++ }
+        $keep = [System.Collections.Generic.List[object]]::new(); $pre = [System.Collections.Generic.List[object]]::new()
+        foreach ($d in $mainDiags) {
+            $p = [string]$d['objectPath']
+            $own = $p -and [string]::Equals(($p -split '\.')[0], $top, [System.StringComparison]::OrdinalIgnoreCase)
+            $k = & $keyOf $d
+            if (-not $own -and $left.ContainsKey($k) -and $left[$k] -gt 0) { $left[$k]--; $pre.Add($d) } else { $keep.Add($d) }
+        }
+        $mainDiags = $keep.ToArray(); $preExisting = $pre.ToArray()
+        $preKeys = @{}; foreach ($d in $preExisting) { $preKeys["$($d['ruleId'])|$($d['objectPath'])|$($d['section'])|$($d['line'])"] = $true }
+        $mainUnresolved = @($mainUnresolved | Where-Object { $_ -and -not $preKeys.ContainsKey("$($_['ruleId'])|$($_['objectPath'])|$($_['section'])|$($_['line'])") })
+    }
+    $summary = $res['summary']
+    if ($preExisting.Count -gt 0) {
+        $summary = [ordered]@{}; foreach ($k in $res['summary'].Keys) { $summary[$k] = $res['summary'][$k] }
+        $live = @($mainDiags | Where-Object { -not [bool]$_['suppressed'] })
+        $summary['errors'] = @($live | Where-Object { $_['severity'] -eq 'error' }).Count
+        $summary['warnings'] = @($live | Where-Object { $_['severity'] -eq 'warning' }).Count
+        $summary['infos'] = @($live | Where-Object { $_['severity'] -eq 'info' }).Count
+        $summary['blocking'] = @($live | Where-Object { [bool]$_['blocking'] }).Count
+        $summary['unresolved'] = $mainUnresolved.Count
+        $summary['preExisting'] = $preExisting.Count
+    }
+
     # newSuppressions[] (tasks 2.2): inline directives against the disk version of the same file (design.md D5:
     # LintCandidate = candidate vs disk); profile suppressions and other weakenings against the git base as LintProject
     $all = @($res['suppressions'])
@@ -270,7 +307,7 @@ function Invoke-TcLintCandidate {
     $newSup = Get-TcLintNewItems -Suppressions $profileSup -Overrides @($prof.profile.overrides) -PlcProjectFull $gitStart -ProfilePath $prof.profile.path -EngineType $suppType -RuleRegistry $registry
     $newSuppressions = @($newInline.ToArray()) + @($newSup.suppressions)
     $reasons = [System.Collections.Generic.List[string]]::new()
-    if ([bool]$res['requiresDisposition']) { $reasons.Add('unresolved') }
+    if ($mainUnresolved.Count -gt 0) { $reasons.Add('unresolved') }
     if (@($newSup.overrides).Count -gt 0) { $reasons.Add('new-overrides') }
     if ($newSuppressions.Count -gt 0) { $reasons.Add('new-suppressions') }
     if ($null -ne $cross -and @($cross.newFindings).Count -gt 0) { $reasons.Add('cross-object-findings') }
@@ -281,6 +318,9 @@ function Invoke-TcLintCandidate {
 
     $source = [ordered]@{ kind = $res['source']['kind']; plcProjectPath = $res['source']['plcProjectPath']; ideChecked = $false }
     $verdict = [string]$res['verdict']
+    $code = [string]$res['code']
+    # only pre-existing findings of other objects blocked: the candidate itself passes (S3)
+    if ($code -eq 'LINT_FAILED' -and $preExisting.Count -gt 0 -and $summary['blocking'] -eq 0) { $verdict = 'pass'; $code = '' }
     $data = [ordered]@{
         verdict              = $verdict
         passed               = ($verdict -eq 'pass')
@@ -292,9 +332,11 @@ function Invoke-TcLintCandidate {
         profile              = $prof.profile
         baseline             = $base.baseline
         failOn               = $effectiveFailOn
-        summary              = $res['summary']
-        diagnostics          = @($res['diagnostics'])
-        unresolved           = @($res['unresolved'])
+        summary              = $summary
+        diagnostics          = @($mainDiags)
+        preExisting          = @($preExisting)
+        projectVerdict       = $(if ($textOnly) { $null } else { [string]$diskR['verdict'] })
+        unresolved           = @($mainUnresolved)
         requiresDisposition  = ($reasons.Count -gt 0)
         dispositionReasons   = @($reasons)
         scope                = $res['scope']
@@ -313,17 +355,20 @@ function Invoke-TcLintCandidate {
     if (@($res['engineDetail']).Count -gt 0) { $data.engineDetail = @($res['engineDetail']) }
     if ($IncludeTiming) { $data.timing = [ordered]@{ engineLoadMs = $compileMs; engineCompiled = [bool]$engine.compiled; analyzeMs = ($sw.ElapsedMilliseconds - $analyzeStart); totalMs = $sw.ElapsedMilliseconds } }
 
-    $code = [string]$res['code']
-    # a new blocking finding in another object makes the candidate fail (fail closed; parse failure / context keep their code)
-    if ($null -ne $cross -and $cross.blocking -gt 0 -and ($verdict -eq 'pass' -or $code -eq 'LINT_INCOMPLETE')) {
+    # a new blocking finding in another object makes a passing candidate fail (fail closed). Parse failure, context and
+    # LINT_INCOMPLETE keep their code: D4 order ENGINE_ERROR > PARSE_FAILED > CONTEXT_REQUIRED > INCOMPLETE > FAILED (review N3)
+    if ($null -ne $cross -and $cross.blocking -gt 0 -and $verdict -eq 'pass') {
         $verdict = 'fail'; $code = 'LINT_FAILED'; $data.verdict = 'fail'; $data.passed = $false
     }
     if ($verdict -eq 'pass') { return (New-TcResult -Success $true -Data $data) }
     $msg = switch ($code) {
         'LINT_PARSE_FAILED' { 'Lint could not parse the candidate (see LINT-PARSE-* in data.diagnostics)' }
-        'LINT_CONTEXT_REQUIRED' { "The candidate needs the project to be checked ($(@($res['candidate']['contextRequired']) -join ', ')): give -PlcProjectPath" }
+        'LINT_CONTEXT_REQUIRED' {
+            if ($textOnly) { "The candidate needs the project to be checked ($(@($res['candidate']['contextRequired']) -join ', ')): give -PlcProjectPath" }
+            else { "Names the rules need cannot be resolved in the project ($(@($res['candidate']['contextRequired']) -join ', ')): declare them, or repair the object that cannot be read" }
+        }
         'LINT_INCOMPLETE' { 'Lint is incomplete: a default-blocking rule could not run on part of the candidate (data.coverage.blockingRulesSkipped / notAnalyzed)' }
-        default { "Lint found $($res['summary']['blocking']) blocking finding(s) in the candidate, $(if ($null -ne $cross) { $cross.blocking } else { 0 }) new blocking finding(s) in other objects (data.crossObject.newFindings)" }
+        default { "Lint found $($summary['blocking']) blocking finding(s) in the candidate, $(if ($null -ne $cross) { $cross.blocking } else { 0 }) new blocking finding(s) in other objects (data.crossObject.newFindings)" }
     }
     return (& $fail $code $msg $data)
 }

@@ -63,7 +63,9 @@ foreach ($name in $projects.Keys) {
         $pd = @($p.data.diagnostics | Where-Object { -not ($_.ruleId -eq 'PROJECT-LINEIDS-001' -and $_.objectPath -eq $objName) })
         $lineIdsRemoved += @($p.data.diagnostics).Count - $pd.Count
         $pk = @($pd | ForEach-Object { Key $_ }) -join "`n"
-        $ck = @($c.data.diagnostics | ForEach-Object { Key $_ }) -join "`n"
+        # PR #284 review S3: findings of other objects the disk project already has are in data.preExisting
+        $ck = @(@($c.data.diagnostics) + @($c.data.preExisting) | Where-Object { $_ } | Sort-Object { Key $_ } | ForEach-Object { Key $_ }) -join "`n"
+        $pk = @($pd | Sort-Object { Key $_ } | ForEach-Object { Key $_ }) -join "`n"
         $pv = "$($p.data.verdict)/$($p.error.code)"; $cv = "$($c.data.verdict)/$($c.error.code)"
         if ($p.data.verdict -eq 'fail' -and $pd.Count -lt @($p.data.diagnostics).Count -and $pd.Count -eq 0) { $pv = 'pass/' }
         if ($pk -ceq $ck -and $pv -eq $cv -and $c.data.candidate.overlay -eq 'replaced') { $same++ }

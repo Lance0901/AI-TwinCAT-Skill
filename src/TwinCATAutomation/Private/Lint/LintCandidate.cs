@@ -284,7 +284,8 @@ namespace TcLintEngine
         }
 
         // a ']]>' inside the code is written the way XAE writes it: split over two CDATA sections
-        private static string CData(string s) { return (s ?? "").Replace("]]>", "]]]]><![CDATA[>"); }
+        // line ends written as XAE writes them (CRLF): an LF-only candidate (MCP / LLM text) is not a PROJECT-ENC-001 finding (review nit N2)
+        private static string CData(string s) { return (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n").Replace("]]>", "]]]]><![CDATA[>"); }
 
         private static void MarkSynthetic(XElem e)
         {

@@ -343,6 +343,7 @@ namespace TcLintEngine
             CheckGuids();
             CheckTsproj(projectGuid);
             RunPhase1b();
+            if (opt.CandidateMode) FindOverlayContextNeeds();
             return Finish();
         }
 

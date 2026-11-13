@@ -168,6 +168,28 @@ Check 'X11 text-only THIS^.member -> pass' ($r.success) (Brief $r)
 $r = Cand @{ ObjectKind = 'Program'; ObjectName = 'MAIN'; Declaration = $mainDecl; Implementation = "{IF defined(SIM)}`r`nWHILE TRUE DO`r`nEND_WHILE`r`n{END_IF}`r`n" + $mainImpl; PlcProjectPath = $Plc }
 Check 'X12 candidate section with a conditional pragma: pass but requiresDisposition (candidate-not-analyzed)' ($r.success -and $r.data.requiresDisposition -and (@($r.data.dispositionReasons) -contains 'candidate-not-analyzed')) (Brief $r)
 
+# ================================================================ P  pre-existing findings / context in project mode (PR #284 review 3: S2, S3, N2)
+$fx4 = New-LintFixture (Join-Path $root 'p')
+Write-LintFxFile (Join-Path $fx4.PlcDir 'POUs\P_Orphan.TcPOU') (Get-LintFxPou -Name 'P_Orphan' -Id '{5d1e2f3a-4b6c-4d7e-8f90-a1b2c3d4e5f6}' -Decl "PROGRAM P_Orphan`nVAR`n    n : INT;`nEND_VAR`n" -Impl 'n := n + 1;')
+Set-LintFxCompile $fx4 (@($script:LintFxCompile) + @('POUs\P_Orphan.TcPOU'))
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_A'; Declaration = $fbaDecl; Implementation = $fbaImpl; PlcProjectPath = $fx4.Plcproj }
+$pre = @($r.data.preExisting)
+Check 'P1 S3: TASK-001 of an uncalled PROGRAM already on disk is preExisting, not the candidate''s (no requiresDisposition)' ($r.success -and $pre.Count -eq 1 -and $pre[0].ruleId -eq 'PROJECT-TASK-001' -and $pre[0].objectPath -eq 'P_Orphan' -and (Diags $r 'PROJECT-TASK-001').Count -eq 0 -and -not $r.data.requiresDisposition -and $r.data.projectVerdict -eq 'pass') (Brief $r)
+$r = Cand @{ ObjectKind = 'Program'; ObjectName = 'P_Orphan'; Declaration = "PROGRAM P_Orphan`r`nVAR`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = 'n := n + 2;'; PlcProjectPath = $fx4.Plcproj }
+Check 'P2 S3: a finding of the candidate object itself stays in diagnostics (the candidate is that object''s new text)' ((Diags $r 'PROJECT-TASK-001').Count -eq 1 -and $r.data.requiresDisposition) (Brief $r)
+$sq = "FUNCTION F_Q : INT`r`nVAR`r`n    i : INT;`r`n    a : ARRAY[1..10] OF INT;`r`nEND_VAR`r`n"
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO cNotDeclared DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $Plc }
+Check 'P3 S2: FOR bound from a name declared nowhere in the project -> LINT_CONTEXT_REQUIRED, never pass' ($r.error.code -eq 'LINT_CONTEXT_REQUIRED' -and $r.data.passed -eq $false -and (@($r.data.candidate.contextRequired) -contains 'unresolved-identifier:cNotDeclared')) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 1 TO 10 DO`r`n    a[i] := MAX(i, 1) + F_Undeclared(i);`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $Plc }
+Check 'P4 S2: an unknown name outside rule positions (library / project function call) does not make the candidate incomplete' ($r.success) (Brief $r)
+$fx5 = New-LintFixture (Join-Path $root 'q')
+Write-LintFxFile (Join-Path $fx5.PlcDir 'GVLs\GVL_C.TcGVL') "<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <GVL Name=`"GVL_C`" Id=`"{7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d}`">`n    <Declaration><![CDATA[VAR_GLOBAL CONSTANT`n    cTop : INT := 10;`nEND_VAR]]></Declaration>`n  </GVL>`n</TcPlcObject"
+Set-LintFxCompile $fx5 (@($script:LintFxCompile) + @('GVLs\GVL_C.TcGVL'))
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 0 TO cTop DO`r`n    a[i] := 0;`r`nEND_FOR`r`nF_Q := 1;"; PlcProjectPath = $fx5.Plcproj }
+Check 'P5 S2: the constant sits in a GVL whose XML is broken -> not pass (context-object-broken listed)' ($r.success -eq $false -and $r.data.passed -eq $false -and (@($r.data.candidate.contextRequired) -match '^context-object-broken:').Count -ge 1) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_L'; Declaration = "FUNCTION F_L : INT`nVAR_INPUT`n    n : INT;`nEND_VAR`n"; Implementation = "F_L := n;`nF_L := F_L + 1;"; PlcProjectPath = $Plc }
+Check 'P6 N2: LF-only candidate text gives no PROJECT-ENC-001' ($r.success -and (Diags $r 'PROJECT-ENC-001').Count -eq 0) (Brief $r)
+
 # ================================================================ R  read-only
 Check 'R1 no file of the project changed (content and write time) after every candidate above' ((Hashes) -ceq $before) ''
 
