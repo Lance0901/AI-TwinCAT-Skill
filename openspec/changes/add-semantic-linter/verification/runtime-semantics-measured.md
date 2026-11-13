@@ -6,6 +6,7 @@
 - Task:`PlcTask` 2 ms(`_TaskInfo[1].CycleTime` 讀回 20000 × 100 ns)、priority 20;第 3 項另以 `AddPlcTask` 加 `LintTask2` 10 ms、priority 25(`_TaskInfo[2].CycleTime` 讀回 100000)。
 - 「標 InfoSys」= 本次以 WebFetch 打開並引用的頁面;「查不到」= 打開的頁面沒寫。下面所有 runtime 觀察都是「實測 2026-11-13,XAE 4026.22 / VS2022,本機 UmRT(TwinCAT OS x64)」。
 - 例外類案例(7~9)全部放在 `PRG_LintExc` 的 `CASE nCase OF`,`nCase` 預設 0(不執行);每個案例前重新 `EnableConfig Force`(單獨 Activate),用 `WriteVariable PRG_LintExc.nCase` 觸發一次。
+- 第二輪(補測 7d / 8 / 9,同日 16:26~16:36):同一副本、同一環境,host VS2022 由本輪重新啟動(pid 52220);registered tcauto runtime `2773364`(未換);每個例外案例後一律用 `EnableConfig Force` 恢復,不用 `SetPlcState`。開始前主 session 已清掉第一輪留下的 block(16:24:39)。
 
 ## 總表
 
@@ -20,9 +21,9 @@
 | 7a | DINT `/ 變數(= 0)` | "In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped."([DIV 2528875403](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528875403.html)) | **PLC exception**:Error List `Exception Code: 0xc0000094, Integer divide by zero`;port 851 = Stop、port 10000 = **Exception**(adsState 19);整個 PLC(兩個 task)都停 | SAFETY-DIV-001 |
 | 7b | DINT `MOD 變數(= 0)` | 查不到(DIV 頁那句只講 division) | **不 exception**,PLC 照跑,結果 = **0** | SAFETY-DIV-001(MOD 要另列) |
 | 7c | REAL `/ 變數(= 0.0)` | Task tab:Floating point exception "Thus an exception is generated for division by zero and "Invalid Operations""([5210416139](https://infosys.beckhoff.com/content/1033/tc3_system/5210416139.html)) | **PLC exception**:`Exception Code: 0xc000008e, FPU zero divide`;狀態同 7a(本專案 task 用預設設定) | SAFETY-DIV-001 |
-| 7d | LREAL `/ 變數(= 0.0)` | 同 7c | **NOT RUN**(7c 的恢復過程留下 lifecycle block,見第 7 節) | — |
-| 8 | 未初始化 `REFERENCE TO INT` 讀取、`POINTER TO INT := 0` 解參照讀取 | "TwinCAT initializes references (with 0)."([2529458827](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529458827.html));`__ISVALIDREF`([2529165707](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529165707.html)) | **編譯器不擋、沒有 warning**(已 Build 下載);runtime 讀取 **NOT RUN**(同上) | SCAN-REF-001 |
-| 9 | 陣列越界(無 CheckBounds) | "The check is only performed with a variable array index. A consistently faulty array index results in a compiler error."([2530356875](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html)) | 常數索引越界**讀取**也被擋:`C0049`(上界 11、下界 0 都是);變數索引的讀 / 寫 **NOT RUN**(同上) | SAFETY-ARR-001、SCAN-ARR-001 |
+| 7d | LREAL `/ 變數(= 0.0)` | 同 7c | **PLC exception**:`0xc000008e, FPU zero divide`,port 10000 = Exception;`EnableConfig Force` 直接從 Exception 恢復成功 | SAFETY-DIV-001 |
+| 8 | 未初始化 `REFERENCE TO INT` 讀取、`POINTER TO INT := 0` 解參照讀取 | "TwinCAT initializes references (with 0)."([2529458827](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529458827.html));`__ISVALIDREF`([2529165707](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529165707.html)) | 編譯器不擋、沒有 warning;`__ISVALIDREF(未初始化) = FALSE`;兩種讀取都是 **PLC exception `0xc0000005, Page Fault`**,port 10000 = Exception;**發生過 page fault 的 UmRT 行程之後會整個 crash**(見第 7.2 節) | SCAN-REF-001 |
+| 9 | 陣列越界(無 CheckBounds) | "The check is only performed with a variable array index. A consistently faulty array index results in a compiler error."([2530356875](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html)) | 常數索引越界讀取被擋:`C0049`。變數索引:**上界 +1 讀取不 exception,讀到緊接在後的哨兵值**;**上界 +1 寫入靜默蓋掉哨兵**(777 → 12345);**下界 −1(index 0)讀取 = Page Fault** | SAFETY-ARR-001、SCAN-ARR-001 |
 | 10 | 無窮迴圈 / cycle overrun(不測) | TwinCAT real-time([6828869003](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/6828869003.html))、Task tab([5210416139](https://infosys.beckhoff.com/content/1033/tc3_system/5210416139.html)) | 只查文件,見第 10 節 | SCAN-LOOP-001 |
 
 ## 1. STRUCT 成員是 FB instance
@@ -194,7 +195,7 @@ END_IF
 | 71 DINT `/` | `'Port_851' (851): Exception (Exception Code: 0xc0000094, Integer divide by zero) in PLC Application AxisInterface Instance, Task PlcTask (...), Area 1, Offset 0xbda4` | Stop | **Exception**(adsState 19) | `nRes = -1`、`bAfter = FALSE`、`nExecCount = 0`、`nCase = 71`;`LintTask2` 的 CycleCount 也停止增加 |
 | 72 DINT `MOD` | 無 | Run | Run | `nRes = 0`、`bAfter = TRUE`、`nExecCount = 1` |
 | 73 REAL `/` | `'Port_851' (851): Exception (Exception Code: 0xc000008e, FPU zero divide) in PLC Application AxisInterface Instance, Task PlcTask (...), Area 1, Offset 0xbde0` | Stop | **Exception**(adsState 19) | `fRes = fResNeg = fRes00 = -1`(第一個除法就停)、`bAfter = FALSE` |
-| 74 LREAL `/` | NOT RUN | | | |
+| 74 LREAL `/`(第二輪) | `'Port_851' (851): Exception (Exception Code: 0xc000008e, FPU zero divide) in PLC Application AxisInterface Instance, Task PlcTask (...), Area 1, Offset 0xbe82` | Stop | **Exception**(adsState 19) | `lRes = -1`、`bAfter = FALSE`、`nExecCount = 0` |
 
 - 沒有任何 IDE modal dialog(`GetIdeModalDialog` → `dialog: null`);訊息只出現在 Error List。
 - 本專案的 task 沒改過 Floating point exception 設定;InfoSys Task tab:"Enables Floating Point Exception. Thus an exception is generated for division by zero and "Invalid Operations""([5210416139](https://infosys.beckhoff.com/content/1033/tc3_system/5210416139.html))。所以 REAL / LREAL 除以 0 的結果**取決於 task 的這個設定**;關掉時是否得到 INF / NaN 本次沒測。
@@ -213,8 +214,22 @@ watcher(`tests/Integration/Watch-Runtime.ps1`,每秒一筆)時間線,案例 71:
 
 - 案例 71:`SetPlcState Run` 回 `success: true`(851 讀回 Run,26 ms),但 Error List 同時出現 `Shutting down TwinCAT Server` → `TwinCAT System Start: AdsState: 15` → `TwinCAT system start completed. AdsState: >15<`:**TwinCAT 自己整個重啟到 Config**,port 851 消失。UmRT 行程 pid 沒變(不是 crash)。要再 `EnableConfig Force` 才回到 Run(實測成功)。
 - 案例 73:先 `SetPlcState Reset` → `success`,PLC 變數重新初始化(`nCase` 讀回 0),但 port 10000 **仍是 Exception**;接著 `SetPlcState Run` → `PLC_RUN_TIMEOUT`(851 回 0x6,系統同樣自己掉回 Config)→ tcauto 記下 lifecycle block(`Set-TcPlcState` / `PLC_RUN_TIMEOUT`,2026-11-13 13:50:02)。
-- 結論:PLC exception 會讓**整個 TwinCAT system 進入 Exception 狀態**(不只 PLC Stop);PLC 層的 Reset / Run 都救不回來,實際需要的是**重新 Activate(`EnableConfig Force`)**。這個 block 不是 UmRT crash,依規則停止,7d、8、9 的 runtime 部分因此 NOT RUN。
-- 工具面的發現(另開 issue):系統在 Exception 時 `SetPlcState Run` 的 `success: true` 只是 851 的瞬間讀值,系統隨即重啟到 Config。
+- 結論:PLC exception 會讓**整個 TwinCAT system 進入 Exception 狀態**(不只 PLC Stop);PLC 層的 Reset / Run 都救不回來,實際需要的是**重新 Activate(`EnableConfig Force`)**。第一輪的這個 block 不是 UmRT crash,依規則停止;主 session 經使用者同意(「這應該是UMRT exception了,這邊可以清除」)於 2026-11-13 16:24:39 `ClearLifecycleBlock`(清除前 `GetSystemState` 讀回 Config)。
+- 第二輪實測:系統停在 Exception 時**直接** `EnableConfig Force`,4 次(7d、8b、9 的 index 0,以及 8a 之後 UmRT 重啟)全部成功,沒有 block;從 Exception 出發時 set-config 步驟約 14.5 s(從 Run 出發約 4.5 s),之後的 Activate / Run / Login 與平常一樣。Activate 後 PLC 變數重新初始化(`nCase` 讀回 0),不會再觸發同一個例外。
+- 工具面的發現:系統在 Exception 時 `SetPlcState Run` 的 `success: true` 只是 851 的瞬間讀值,系統隨即重啟到 Config(#287)。
+
+### 7.2 Page fault 之後 UmRT 行程會 crash(第二輪實測)
+
+| UmRT pid | Page fault(案例) | 之後做了什麼 | UmRT crash |
+|---|---|---|---|
+| 58916 | 16:28:48(81 REFERENCE 讀取) | 無(系統停在 Exception) | 16:28:52(+4 s) |
+| 56960 | 16:29:44(82 POINTER 讀取) | 16:30:29 `EnableConfig Force` 成功,系統 / PLC 讀回 Run | 16:30:33(Activate 後 4 s) |
+| 52972 | 16:31:51(91,index 0) | 16:32:48 `EnableConfig Force` 成功,watcher 看到 Run 穩定 > 15 s | 16:33:11(Activate 後 23 s,當時沒有任何工具存取) |
+
+- 三次的事件 1000 都一樣:faulting module `TcOsSys.dll` 3.1.0.1、exception `0xc0000005`、**offset `0x0000000000039033`**(和 Activate 時的 #21 crash `0x589534` 不同);dump `%LOCALAPPDATA%\CrashDumps\TcSystemServiceUm.exe.<pid>.dmp`(58916 / 56960 / 52972 各一個)。crash 前約 4 s watcher 都先看到多一個 `TcSystemServiceUm` 子行程(寫 dump),接著兩個一起消失。
+- FPU / 整數除以零的 exception 之後,同一個 UmRT 行程**沒有** crash(第一輪 58916 經過 71 / 73、第二輪 58916 經過 74 都正常)。
+- 每次 crash 都照 `docs/agent-brief-realmachine.md`「UmRT 復原」重啟 `TcSystemServiceUm` → `GetSystemState` 讀回 Config → `EnableConfig Force`。三次都沒有 lifecycle 工具失敗,所以**沒有產生 lifecycle block,沒有呼叫 `ClearLifecycleBlock`**。
+- 結論:在本機 UmRT 上,PLC 的 page fault 會讓 runtime 行程進入不穩定狀態,重新 Activate 也只能撐幾秒到幾十秒;要恢復必須**重啟 UmRT 行程**再 Activate。實體 TwinCAT RT / CX 上是否相同未測。
 
 ## 8. 未初始化 REFERENCE / 0 指標的讀取
 
@@ -227,9 +242,17 @@ bRefValid := __ISVALIDREF(refI);          // 每 cycle
 ```
 
 - Build:成功,**這兩行沒有任何 error / warning**(與第 1~6 項同一次 Build、已下載執行)。
-- Runtime:`bRefValid` 本次沒有讀取(第 7.1 節的 block 之前沒排到),81 / 82 **NOT RUN**。
+- Runtime(第二輪):
+
+| 案例 | 觀察 |
+|---|---|
+| `__ISVALIDREF(refI)`(每 cycle) | `bRefValid` 讀回 **FALSE**(初值 TRUE 被覆寫),`pI` 讀回 8 byte 全 0 |
+| 81 `nRefVal := refI;` | Error List `'Port_851' (851): Exception (Exception Code: 0xc0000005, Page Fault) in PLC Application AxisInterface Instance, Task PlcTask (...), Area 1, Offset 0xbe9b`;port 10000 = Exception;`nRefVal = -1`、`bAfter = FALSE`;約 4 s 後 UmRT 行程 crash(第 7.2 節) |
+| 82 `nPtrVal := pI^;` | `Exception Code: 0xc0000005, Page Fault ... Offset 0xbeae`;port 10000 = Exception;`nPtrVal = -1`、`bAfter = FALSE`;UmRT 當下存活,Activate 恢復後 4 s crash(第 7.2 節) |
+
+- 沒有 IDE modal dialog。
 - InfoSys:"TwinCAT initializes references (with 0)." / "A reference can be invalid (0)."([2529458827](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529458827.html));`__ISVALIDREF` "The check is thus comparable with a check for 'unequal to 0' in the case of a pointer variable."([2529165707](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529165707.html))。讀取無效 reference 的後果頁面沒寫。
-- 結論:編譯器不擋(compilerCatches: measured no);runtime 後果仍未驗證。
+- 結論:編譯器不擋(compilerCatches: measured no);未初始化 REFERENCE 與 0 指標**只讀取**就 page fault,TwinCAT system 進 Exception,本機 UmRT 之後還會 crash。`__ISVALIDREF` 對未初始化 reference 回 FALSE,可以當守衛。
 
 ## 9. 陣列越界(專案沒有 CheckBounds)
 
@@ -250,8 +273,17 @@ VAR  stArr : ST_LintArrSentinel := (arr := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);  nI
 ```
 
   → `BUILD_FAILED`:`C0049 The constant index '11' is not within the range from '1' to '10'`、`C0049 The constant index '0' is not within the range from '1' to '10'`。和 `st-syntax-measured.md` 第 3 節的寫入案例一樣,**讀取**也擋。
-- 變數索引 91 / 92:Build 成功、沒有 warning;runtime **NOT RUN**。
+- 變數索引 91 / 92:Build 成功、沒有 warning。Runtime(第二輪;讀之前 `nSentinel = 777`、`arr[10] = 10`):
+
+| 案例 | 觀察 |
+|---|---|
+| 91,`nIdx = 11`(上界 +1,讀) | 不 exception,系統 Run;`nArrVal = 777` = 緊接在陣列後的 `nSentinel` 值;`bAfter = TRUE` |
+| 91,`nIdx = 0`(下界 −1,讀) | **Page Fault**:`Exception Code: 0xc0000005, Page Fault ... Offset 0xbec3`;port 10000 = Exception;`bAfter = FALSE`、`nCase` 停在 91;之後 UmRT crash(第 7.2 節) |
+| 92,`nIdx = 11`(上界 +1,寫 12345) | 不 exception,系統 Run;**`nSentinel` 777 → 12345**,`arr[1] = 1`、`arr[10] = 10` 不變;`bAfter = TRUE` |
+
+- 為什麼下界 −1 會 page fault 而上界 +1 不會:沒有出處,未查證。可能是索引減下界後以無號數計算位址(−1 變成極大的偏移)—— **推論**,只記錄現象。
 - InfoSys:CheckBounds "The check is only performed with a variable array index. A consistently faulty array index results in a compiler error."([2530356875](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html))。沒加 CheckBounds 時的後果頁面沒寫。
+- 結論:沒有 CheckBounds 時,上界外的變數索引**靜默讀寫相鄰記憶體**(寫入會改掉別的變數,PLC 照跑、沒有任何訊息);下界外(本例 index 0)則 page fault。兩種都是要擋的錯,前者更難發現。
 
 ## 10. 無窮迴圈 / cycle overrun(只查文件,不測)
 
@@ -266,13 +298,12 @@ VAR  stArr : ST_LintArrSentinel := (arr := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);  nI
 
 ## 收尾狀態
 
-- IDE:`DisconnectIde Quit=true` 關掉自己啟動的 pid 25580;使用者的 VS2022(pid 12448)沒碰。
-- UmRT:pid 58916 存活,port 10000 = Config;**留有一個 lifecycle block**(`Set-TcPlcState` `PLC_RUN_TIMEOUT` 13:50:02),需要 owner 同意後 `ClearLifecycleBlock` 再 `EnableConfig Force`。
-- PLC 專案副本:例外碼仍在 `PRG_LintExc`,但全部由 `nCase`(預設 0)關閉;最後一次 Build 成功(0 error)。
+- 第一輪:`DisconnectIde Quit=true` 關掉自己啟動的 pid 25580;UmRT 停在 Config,留有一個 lifecycle block(`Set-TcPlcState` `PLC_RUN_TIMEOUT` 13:50:02),由主 session 經使用者同意於 16:24:39 清除。
+- 第二輪:`PRG_LintExc` 的例外案例全部移除(實作只留 `bRefValid := __ISVALIDREF(refI); nCase := 0;`),`PlcLogout` → `BuildProject`(0 error)→ `EnableConfig Force` 成功;`GetStatus` 讀回 system Run、PLC Run,UmRT pid 2368 穩定 > 20 s;`WriteVariable` 成功(證明沒有 lifecycle block);`DisconnectIde Quit=true` 關掉自己啟動的 pid 52220。使用者的 VS2022(pid 12448)兩輪都沒碰。
 
 ## rule-catalog 與 st-syntax-inventory 要跟著改的地方
 
-(本 PR 不改這兩個檔;PR #284 正在改 rule-catalog。)
+(本檔的 PR 不改這兩個檔;rule-catalog 由其他 PR 修改。第二輪補的三項在表格最後的「第二輪」幾列,與前面同一位置的列衝突時以第二輪為準。)
 
 | 檔案 / 位置 | 現在的字樣 | 建議改成 |
 |---|---|---|
@@ -292,5 +323,11 @@ VAR  stArr : ST_LintArrSentinel := (arr := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);  nI
 | st-syntax-inventory 第 2 部分 6a | 未驗證(只確認有對應 exception code) | 整數 `/`:`0xc0000094 Integer divide by zero`;REAL `/`:`0xc000008e FPU zero divide`;`MOD`:結果 0、不 exception(實測第 7 節);出處補 DIV 頁 2528875403 與 Task tab 5210416139 |
 | st-syntax-inventory 第 2 部分 6b | 無 CheckBounds 時的後果未驗證 | 常數索引讀取也 C0049(實測第 9 節);變數索引仍未驗證 |
 | st-syntax-inventory 第 2 部分 7b | 解參照後果未驗證 | 編譯器不擋(實測第 8 節);runtime 後果仍未驗證 |
+| (第二輪)rule-catalog SAFETY-DIV-001 | 只測了整數 / REAL | LREAL `/` 變數 0.0 同樣 `0xc000008e FPU zero divide`(實測第 7 節 74);REAL / LREAL 的結論都以「task 開著 Floating point exception(預設)」為前提 |
+| (第二輪)rule-catalog SCAN-REF-001 machineImpact「page fault、PLC 停機(推論;… 未驗證)」 | 推論 | 「實測(第 8 節):未初始化 REFERENCE 與 0 指標**只讀取**就 `0xc0000005 Page Fault`,TwinCAT system 進 Exception;本機 UmRT 之後行程 crash,要重啟 runtime(第 7.2 節)」→ machineImpact `crash` 改為 measured;`__ISVALIDREF(未初始化) = FALSE` 實測,可列為合法守衛 |
+| (第二輪)rule-catalog SCAN-ARR-001 / SAFETY-ARR-001「蓋到相鄰變數是推論,未驗證」 | 推論 | 「實測(第 9 節):無 CheckBounds 時,變數索引上界 +1 讀到相鄰變數、寫入**靜默蓋掉相鄰變數**(PLC 照跑、沒有訊息);下界 −1 讀取 page fault」→「蓋到相鄰變數」改為 measured;machineImpact 兩種都要列(silent corruption / crash) |
+| (第二輪)st-syntax-inventory 第 2 部分 6a | (第一輪建議) | 補 LREAL:`0xc000008e FPU zero divide`(實測第 7 節) |
+| (第二輪)st-syntax-inventory 第 2 部分 6b | 變數索引仍未驗證 | 上界 +1:讀到 / 蓋掉相鄰變數;下界 −1:Page Fault(實測第 9 節) |
+| (第二輪)st-syntax-inventory 第 2 部分 7b | runtime 後果仍未驗證 | 讀取即 `0xc0000005 Page Fault`,system Exception,UmRT 之後 crash(實測第 8 節、第 7.2 節) |
 
-還沒做完、要另排一次真機的:7d(LREAL)、8(REFERENCE / POINTER 讀取、`__ISVALIDREF` 讀值)、9(變數索引讀、只超出 1 的寫入與哨兵)。程式碼已在副本裡,只要 `EnableConfig Force` 後依序 `WriteVariable PRG_LintExc.nCase` 74 / 81 / 82 / 91 / 92(91 前把 `nIdx` 設 11 或 0),每個 exception 案例之後用 `EnableConfig Force` 恢復,**不要**用 `SetPlcState Run`。
+第一輪留下的 7d / 8 / 9 已於第二輪補完,本檔不再有 NOT RUN 項目(第 10 節無窮迴圈依任務指示只查文件)。
