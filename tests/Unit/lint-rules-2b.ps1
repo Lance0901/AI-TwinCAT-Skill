@@ -219,11 +219,37 @@ Check 'S3 LTON state timer -> TIMER-005' (Only $r 'SCAN-TIMER-005') (Brief $r)
 $r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN`n        tonWait(IN := FALSE);`n        eState := 20;`n    END_IF`nEND_CASE"
 Check 'S4 counter-example: tonWait(IN := FALSE) before leaving -> no finding' (None2b $r) (Brief $r)
 $r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE`nIF eState <> 10 THEN tonWait.IN := FALSE; END_IF"
-Check 'S5 counter-example: tonWait.IN := FALSE outside -> no TIMER-005' ((Diags $r 'SCAN-TIMER-005').Count -eq 0 -and (Diags $r 'SCAN-TIMER-001').Count -eq 0) (Brief $r)
+Check 'S5 tonWait.IN := FALSE outside without a following call (IN never sampled FALSE) -> TIMER-005 stays' (Only $r 'SCAN-TIMER-005') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb $st "CASE eState OF`n10:`n    tonWait(IN := TRUE, PT := T#2S);`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE`nIF eState <> 10 THEN`n    tonWait.IN := FALSE;`n    tonWait();`nEND_IF"
+Check 'S5b counter-example: tonWait.IN := FALSE; tonWait(); (call samples FALSE) -> no TIMER-005' ((Diags $r 'SCAN-TIMER-005').Count -eq 0) ((Brief $r) + ' ' + (SkipText $r))
 $r = Fb $st "tonWait(IN := eState = 10, PT := T#2S);`nCASE eState OF`n10:`n    IF tonWait.Q THEN eState := 20; END_IF`nEND_CASE"
 Check 'S6 counter-example: timer called every cycle with IN := eState = 10 -> no finding' (None2b $r) (Brief $r)
 $r = Fb $st "IF eState = 10 THEN`n    tonWait(IN := TRUE, PT := T#2S);`nEND_IF"
 Check 'S7 IN := TRUE under IF (not CASE) -> TIMER-001, not 005' (Only $r 'SCAN-TIMER-001') (Brief $r)
+
+# ================================================================ R  review round 1 (PR #289)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN ton1(IN := b, PT := T#1S); END_IF`nton1.IN := FALSE;"
+Check 'R1 TIMER-001: ton1.IN := FALSE without a following call is no reset -> TIMER-001' (Only $r 'SCAN-TIMER-001') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN ton1(IN := b, PT := T#1S); END_IF`nton1.IN := FALSE;`nton1();"
+Check 'R1b counter-example: ton1.IN := FALSE; ton1(); -> no TIMER-001' ((Diags $r 'SCAN-TIMER-001').Count -eq 0) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    {IF defined(X)}`n    nX : INT;`n    {END_IF}`n    ton1 : TON;`n    b : BOOL;" "ton1(IN := b);`nb := F_Use(t := ton1);" '' { param($fx) Add-Pou $fx 'F_Use' "FUNCTION F_Use : BOOL`nVAR_IN_OUT`n    t : TON;`nEND_VAR`n" "F_Use := t.Q;" }
+$ids = @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -like '*:ton1' } | ForEach-Object { $_.ruleId } | Sort-Object -Unique) -join ','
+Check 'R2 common reason recorded for every applicable rule (FBCALL-001 / 002, TIMER-001 / 002 / 004 / 005)' ((None2b $r) -and $ids -eq 'SCAN-FBCALL-001,SCAN-FBCALL-002,SCAN-TIMER-001,SCAN-TIMER-002,SCAN-TIMER-004,SCAN-TIMER-005') ($ids + ' | ' + (SkipText $r))
+$r = Fb "    rt : R_TRIG;`n    b : BOOL;" "rt(CLK := b);`nb := F_Use(t := rt);" '' { param($fx) Add-Pou $fx 'F_Use' "FUNCTION F_Use : BOOL`nVAR_IN_OUT`n    t : R_TRIG;`nEND_VAR`n" "F_Use := t.Q;" }
+$ids = @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -like '*:rt' } | ForEach-Object { $_.ruleId } | Sort-Object -Unique) -join ','
+Check 'R2b R_TRIG: common reason for FBCALL-001 / 002, TIMER-001 / 002 only (004 / 005 do not apply)' ($ids -eq 'SCAN-FBCALL-001,SCAN-FBCALL-002,SCAN-TIMER-001,SCAN-TIMER-002') $ids
+$r = Fb "    t1 : TON := (IN := FALSE);`n    b : BOOL;" "t1(IN := b);"
+Check 'R3 initialiser without PT -> TIMER-004 pt-unset' ((Only $r 'SCAN-TIMER-004') -and (Diags $r 'SCAN-TIMER-004')[0].variant -eq 'pt-unset') (Brief $r)
+$r = Fb "    t1 : TON := (IN := FALSE, PT := T#2S);`n    b : BOOL;" "t1(IN := b);"
+Check 'R3b counter-example: initialiser with PT -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;" "ton1(IN := FALSE, PT := T#1S);"
+Check 'R4 TIMER-004 in-constant confidence medium' ((Diags $r 'SCAN-TIMER-004')[0].confidence -eq 'medium') (Brief $r)
+$r = Fb "    fbT : TON;`n    bQ : BOOL;" "bQ := fbT.Q;"
+Check 'R5 FBCALL-001 diagnostic carries impactBasis inferred' ((Diags $r 'SCAN-FBCALL-001')[0].impactBasis -eq 'inferred') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    A_T();`nELSE`n    A_T();`nEND_IF" (Action 'A_T' 'ton1(IN := b, PT := T#1S);')
+Check 'R6 counter-example: IF ... ELSE both call the action -> no TIMER-002' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;`n    n : INT;" "CASE n OF`n1:`n    A_T();`nELSE`n    A_T();`nEND_CASE" (Action 'A_T' 'ton1(IN := b, PT := T#1S);')
+Check 'R6b counter-example: CASE label + ELSE both call the action -> no TIMER-002' (None2b $r) (Brief $r)
 
 # ================================================================ X  suppression
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001: updated only in this mode on purpose`n    ton1(IN := b, PT := T#1S);`nEND_IF"

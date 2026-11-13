@@ -224,6 +224,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | `declaration-not-analyzed`、`call-site-not-found`、`nested-member-access` | 宣告區 / 呼叫點 / `inst.a.b`、`inst.a[...]` 無法分析 |
 | owner 有問題的段落 | 條件 pragma(`{IF}`)、不支援的語法等 → 該物件不評估 |
 
+「每條規則各記一筆」= 依規則適用範圍:SCAN-FBCALL-001 / 002 適用所有 FB instance(`unknown-type` / `type-alias` 不知道是不是 timer,只記這兩條);SCAN-TIMER-001 / 002 適用 timer + edge;SCAN-TIMER-004 只適用 timer(TON / TOF / TP / LT*);SCAN-TIMER-005 只適用 TON / LTON。規則各自追加的 reason(`member-call`、`call-in-pragma`、`call-in-loop`、`also-called-in-member`、`input-write-unresolved`)同樣記給該型別適用、且在該處還沒判定完的每條 timer 規則(例:`call-in-loop` 時 004 已判定、002 不適用 → 記 001 / 005)。
 規則各自追加的 reason 見各節。
 
 #### SCAN-FBCALL-001 FB instance 被讀取但從不呼叫(warning,`blockable: false`,進 `unresolved[]`)
@@ -243,19 +244,19 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 範圍:型別目錄 class `timer`(TON / TOF / TP / LTON / LTOF / LTP)與 `edge`(R_TRIG / F_TRIG)。counter(CTU / CTD / CTUD)與 RS / SR **不檢查**(只在條件下計數是正常設計)。
 - 機台行為出處:TON 沒被呼叫的 cycle,內部時間照牆上時間算 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 5 節):2 ms task 先呼叫 0.5 s(`ET = T#498ms`),跳過 1500 cycle(`TIME()` 差 3002 ms),再呼叫的第一個 cycle `ET = T#3s500ms`,PT 2 s 的 timer `Q = TRUE`。TON 頁 [74406539](https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html) 沒寫沒被呼叫的週期怎麼算。邊緣觸發:兩次呼叫之間的邊緣會漏掉(依 R_TRIG 頁 [74391563](https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74391563.html) "for one cycle" 的語意推論,未實測)。
 - 偵測:所有呼叫點都在 IF / CASE 內,且沒有任何一層 IF…ELSE / CASE…ELSE 的所有分支都呼叫它(巢狀遞迴判斷)。呼叫在 owner 本體,或在「本體以敘述層級、不在 IF / CASE / 迴圈內無條件呼叫」的 Action / Method。有條件呼叫 + 同一個 timer 另有符合 005 條件者只報 005,不報 001。
-- 不報(每種 rulesSkipped reason,追加於共同 reason 之外):`explicit-reset`(任何呼叫有 `IN := FALSE` / `CLK := FALSE`,或有 `inst.IN :=` / `inst.CLK :=` 賦值 — 作者有處理離開狀態)、`call-in-loop`(呼叫在迴圈內)、`call-in-pragma`(呼叫在 `{IF}` 區內)、`also-called-in-member`(另有呼叫在「不確定每次都跑」的 Method / Action 內)、`member-call`(`inst.Method()` 型式)。任何一個無條件呼叫 → 不報。
+- 不報(每種 rulesSkipped reason,追加於共同 reason 之外):`explicit-reset`(任何呼叫有 `IN := FALSE` / `CLK := FALSE`,或有 `inst.IN :=` / `inst.CLK :=` 賦值**且同一路徑之後有呼叫該 instance(呼叫沒帶 IN / CLK 參數)** — 作者有處理離開狀態;只寫 `inst.IN :=` 不呼叫,FB 取樣不到那個值,下次呼叫又傳自己的 IN,不算 reset — 依 IEC FB 呼叫語意推論,未實測)、`input-write-unresolved`(`inst.IN :=` 之後同一段落沒有呼叫,但別的 Action / Method 有呼叫該 instance,或之後的呼叫用位置引數 → 判斷不了是否取樣到,不報)、`call-in-loop`(呼叫在迴圈內)、`call-in-pragma`(呼叫在 `{IF}` 區內)、`also-called-in-member`(另有呼叫在「不確定每次都跑」的 Method / Action 內)、`member-call`(`inst.Method()` 型式)。任何一個無條件呼叫 → 不報。
 - 已知漏抓(limits):提早 `RETURN`(`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫,實際是條件呼叫)、`JMP` 之後的呼叫、owner instance 本身被條件呼叫(遞移)。
 - TE1200:無對應(SA0105 Full 需要 attribute,只部分相關)。
 - 誤報來源:刻意「只在某模式更新」的 timer(語料 `TestCam.R_14Eng` 類)— 需處置。
 
 #### SCAN-TIMER-002 Timer / 邊緣觸發只在 Method / Action 內呼叫(info,不進 `unresolved[]`,confidence low)
 - 定義:所有呼叫都在 Method / Action,而 owner 本體沒有「以敘述層級、不在 IF / CASE / 迴圈內」呼叫那個 Action / Method(Method 被別的 POU 呼叫的情況不追,所以無法證明每 cycle 呼叫)。
-- 不報:共同 reason;只要有一個呼叫在本體或每次都跑的成員內即走 001 的判斷。「每次都跑」的成員:本體以敘述層級無條件呼叫、回傳值被使用的呼叫(`b := M()`)、最外層 IF / CASE / WHILE / FOR 條件裡的呼叫(`IF M() THEN`),並沿成員呼叫鏈往下追(本體 → `M_Outer` → `M_Inner`);接在 `AND_THEN` / `OR_ELSE` 後面或 IF 分支內的呼叫不算。
+- 不報:共同 reason;只要有一個呼叫在本體或每次都跑的成員內即走 001 的判斷。「每次都跑」的成員:本體以敘述層級無條件呼叫、IF…ELSE / CASE…ELSE 的每個分支都以敘述呼叫(與 001 直接呼叫 timer 的「全分支」判斷相同)、回傳值被使用的呼叫(`b := M()`)、最外層 IF / CASE / WHILE / FOR 條件裡的呼叫(`IF M() THEN`),並沿成員呼叫鏈往下追(本體 → `M_Outer` → `M_Inner`);接在 `AND_THEN` / `OR_ELSE` 後面或 IF 分支內的呼叫不算。
 - 已知漏抓 / 誤報:外部 POU 每 cycle 呼叫該 Method 的合法寫法會被報成 info(所以只是 info、low)。出處同 001(實測第 5 節的語意:不被呼叫的 cycle 時間照算)。
 
 #### SCAN-TIMER-004 PT 未設 / IN 恆為 FALSE(warning,`blockable: false`,進 `unresolved[]`)
 - 範圍:只看 timer(TON / TOF / TP / LTON / LTOF / LTP)。
-- variant `pt-unset`(confidence high):instance 的所有呼叫都沒傳 `PT`、沒有 `inst.PT :=`、宣告沒有初值。機台行為:PT 預設 `T#0S`(TIME 預設初值 InfoSys 出處未附,推論),而 TON 在 `PT = T#0S` 時 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 4 節):`IN` 上升緣**當個 cycle** `Q = TRUE`、`ET = T#0ms`,`IN` 落下當個 cycle `Q = FALSE`,延遲完全失效、`Q` 跟著 `IN` 走(TON 頁 74406539 沒寫 PT = 0)。實測對象是 TON;TOF / TP / LT* 在 PT = 0 的行為**未測**,依同一套「PT 為 0 沒有延遲」推論。
+- variant `pt-unset`(confidence high):instance 的所有呼叫都沒傳 `PT`、沒有 `inst.PT :=`、宣告沒有初值或初值 `(名稱 := 值, ...)` 裡沒有 `PT :=`(例:`t1 : TON := (IN := FALSE);` 照報);初值解析不了 → rulesSkipped `initialiser-not-parsed`。機台行為:PT 預設 `T#0S`(TIME 預設初值 InfoSys 出處未附,推論),而 TON 在 `PT = T#0S` 時 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 4 節):`IN` 上升緣**當個 cycle** `Q = TRUE`、`ET = T#0ms`,`IN` 落下當個 cycle `Q = FALSE`,延遲完全失效、`Q` 跟著 `IN` 走(TON 頁 74406539 沒寫 PT = 0)。實測對象是 TON;TOF / TP / LT* 在 PT = 0 的行為**未測**,依同一套「PT 為 0 沒有延遲」推論。
 - variant `in-constant`(confidence medium):所有呼叫的 `IN` 都是常數 `FALSE`,且 `IN` 沒有被 `inst.IN :=` 賦值 → timer 永不啟動。**IN 常數 `TRUE` 不報**(開機延遲 `tonStartup(IN := TRUE, PT := T#5S)` 是合法寫法;狀態機形態由 005 處理)。
 - 追加 reason:`positional-arguments`(呼叫用位置引數,讀不到 PT / IN 名稱)。
 - 已知漏抓:`IN := TRUE OR x` 之類需要常數折疊(未做);seeded S18 目前不報。
@@ -263,7 +264,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 #### SCAN-TIMER-005 狀態 timer 離開時沒歸零(warning,`blockable: false`,進 `unresolved[]`)
 - 範圍:TON / LTON。
 - 機台行為:`CASE eState OF WAIT: ton(IN := TRUE, PT := T#2S); ...`,離開 WAIT 後不再呼叫,`IN` 內部仍是 TRUE;之後再進入 WAIT 沒有上升沿,TON 依牆上時間算 `ET`,跳過的時間 ≥ 剩餘 PT 時重新呼叫的第一個 cycle `Q = TRUE`,超時判斷失效 — 實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 5 節,數據同 TIMER-001)。「Q 可能立刻成立」已由推論改為實測確定(跳過時間超過剩餘 PT 時)。
-- 偵測:所有呼叫都在**同一個 CASE** 的分支內、每個呼叫都是 `IN := TRUE`、沒有 `IN := FALSE`、沒有 `inst.IN :=`,且不是「每個分支都呼叫(含 ELSE)」。`IN` 不是常數 → 改報 001。與 001 不重複報(同一 timer 只報 005)。
+- 偵測:所有呼叫都在**同一個 CASE** 的分支內、每個呼叫都是 `IN := TRUE`、沒有 `IN := FALSE`、沒有「之後同一路徑有呼叫(不帶 IN)」的 `inst.IN :=`(只寫 `inst.IN := FALSE` 不呼叫照報:TON 取樣不到 FALSE,下次呼叫又傳 `IN := TRUE` — 依 IEC FB 呼叫語意推論,未實測;判斷不了 → rulesSkipped `input-write-unresolved`),且不是「每個分支都呼叫(含 ELSE)」。`IN` 不是常數 → 改報 001。與 001 不重複報(同一 timer 只報 005)。
 - 不報:用位置引數(`positional`,不報 005,落到 001 / `explicit-reset` 的判斷);其餘 reason 同共同 reason 與 001。
 - 與 001 的差別:001 把正確寫法(離開前 `ton(IN := FALSE)`)和錯誤寫法報成同一個 warning;005 只抓錯的那種,confidence 較高(實作標 medium)。
 
