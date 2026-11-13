@@ -151,6 +151,55 @@ namespace TcLintEngine
             RuleRegistry.Get("SCAN-TEMPFB-001").Te1200 = "SA0167 (Light, runs after a successful compile)";
             Add("LINT-XML-002", "Implementation has more than one ST element (all are analysed; line numbers unreliable)", "warning", "false", "none", "unknown",
                 "XAE always wrote one <ST> (verification/xae-generated-xml.md); line numbers of the joined text do not match Get-TcPouCode", "high", null);
+            // ---- Phase 2a (rule-catalog.md section 3; LintRules2a.cs). Local analysis of one ST section: constants are
+            // literals, VAR CONSTANT of the section / POU / base FB / GVL ({attribute 'qualified_only'} as GVL.c) and + - * / MOD;
+            // anything else is not evaluated and recorded in coverage.rulesSkipped (never guessed).
+            Add("SCAN-LOOP-001", "WHILE / REPEAT loop whose condition cannot change inside the loop (busy-wait)", "error", "true", "crash", "no",
+                "InfoSys WHILE tc3_plc_intro/9007201783032715.html / REPEAT 9007201783038091.html: a condition that never ends the loop repeats the instructions continuously, 'causing a runtime error'. " +
+                "Reported only when no designator of the condition is written in the body (:=, S=, R=, REF=, =>; full member paths are compared: st.PT does not write st.Q, " +
+                "a[2] does not write a[1], a variable index may be the same element -> rulesSkipped written-element-may-be-the-condition), no EXIT of this loop (EXIT in a nested loop does not count), no RETURN / JMP and no pointer write. " +
+                "Calls in the body (second review B1 of PR #284): calls of type-catalog FB instances (TypeCatalog.json + profile typeCatalog) and IEC standard functions / type conversions do not hide the busy-wait when no condition variable is given to any call " +
+                "(any argument, ADR, REF= source); a condition variable given to a call, or any other call (project function / FB, method, action, array element, pointer, unknown type) -> rulesSkipped call-in-body, never silent; " +
+                "a call in the condition -> rulesSkipped call-in-condition. Variant fb-wait-loop (warning, not blocking, in unresolved): the condition reads an output of a type-catalog FB instance that the body calls (WHILE NOT mc.Done DO mc(...)); " +
+                "whether repeated calls within one cycle can change that output is not documented (AXIS_REF tcplclib_tc2_mc2/70132363.html: NcToPlc 'cyclically exchanged between PLC and NC'; TON 74406539.html only 'counted up in ET') - not verified, tasks 2.10 UmRT; a project FB called that way -> call-in-body. " +
+                "Message notes: %I input -> task order input update / cycle update / output update (InfoSys tc3_grundlagen/6828869003.html; that the input stays the same during the program is inferred from that order); member of an FB instance -> the block is not called in the loop; other variables -> no note. " +
+                "a Property of the POU / base FB / instance type / interface (Get / Set run code), a name that cannot be resolved or a member of a type outside the project and the type catalog -> rulesSkipped " +
+                "property-access / name-unresolved / member-type-unknown (never blocking); a condition variable that is VAR_IN_OUT / REFERENCE / POINTER, or a written " +
+                "REFERENCE / VAR_IN_OUT / THIS^ target, is not reported when the body writes anything (aliasing). WHILE TRUE / REPEAT UNTIL FALSE without EXIT / RETURN / JMP is reported even with calls. " +
+                "Known false-positive source: another task (other core) changes the condition variable (still a design error, rule-catalog.md). Not evaluated: sections with a conditional pragma, unverified or unsupported syntax (rulesSkipped)", "high", null);
+            Add("SCAN-FOR-001", "FOR loop never ends: end value at the counter type's limit (overflow), or BY 0", "error", "true", "crash", "warning",
+                "InfoSys FOR tc3_plc_intro/2528280971.html: 'The <end value> must not have the same value as the upper bound of the data type of the counter.'; TwinCAT 2 FOR page (tcplccontrol/925251083.html) names the endless loop; " +
+                "the compiler only warns (C0266, InfoSys 21630340363.html), the build succeeds. Counter types SINT..LWORD; end value and step must be constants. Variant step-overflow (start constant, the last value <= end plus the step leaves the type, e.g. BYTE 0 TO 254 BY 2): blocking since the second review N5 - " +
+                "FOR 2528280971: 'Whenever the <instructions> have been executed, the <counter> is automatically incremented by the step size' and 'The counter is checked before each loop pass', so the counter cannot pass the end value without leaving the type (the wrap-around itself is inferred from the step-1 case, not measured); 0 TO 253 BY 2 / 0 TO 254 BY 3 are not reported. " +
+                "Variant exit-in-body (EXIT / RETURN / JMP in the body): warning, not blocking. Variant by-zero: behaviour of BY 0 not documented (InfoSys only 'can have any integer value'), pending (tasks 2.10). " +
+                "Not evaluated (rulesSkipped): counter written in the body (incl. passed bare to a call other than IEC standard functions / type conversions: may be VAR_IN_OUT / ADR), counter type unknown or not an integer type, end / step not constant. " +
+                "Corpus 2026-11-13 (axis 4026 / bfh 4024): 0 findings; 17 FOR loops: 10 evaluated, 7 skipped (end not constant 6, counter passed to a method 1)", "high", null);
+            Add("SCAN-ARR-001", "Array index of a constant-range FOR loop leaves the declared array bounds", "error", "true", "crash", "no",
+                "Indexes counter, counter + k, counter - k, k - counter (k constant) per dimension, for the values start..last of a FOR loop with constant start / end / step whose counter is not written in the body; " +
+                "array declared in the section, POU, base FB or a GVL (GVL.a for qualified_only). An access inside an IF / CASE / WHILE whose condition tests the counter, directly or through a variable assigned earlier in the loop body from an expression with the counter " +
+                "(b := i > 0; IF b THEN a[i] - transitive, second review B2), or a body with EXIT / CONTINUE / RETURN / JMP -> variant guarded (warning, not blocking, in unresolved): the guard is not evaluated, it may still let an out-of-range value through (b := i < 100), " +
+                "and one look at the condition settles it; as info an agent could ignore a real out-of-range access. A condition on a variable not computed from the counter (IF x > 0 THEN a[i]) stays blocking. " +
+                "Not evaluated (rulesSkipped): ARRAY[*] (VAR_IN_OUT only, InfoSys 8825257611.html; loops over LOWER_BOUND / UPPER_BOUND have no constant bounds), bounds not constant, array of a struct member / pointer / not resolvable, " +
+                "ARRAY OF ARRAY second index, other index expressions. CheckBounds is only present when the project adds it (InfoSys 2530356875.html); the runtime effect of an unchecked access is not documented (not verified)", "high", "inferred");
+            Add("SAFETY-ARR-001", "Constant array index outside the declared bounds", "error", "false", "crash", "yes",
+                "The compiler rejects it: C0049 (measured 2026-11-13, verification/st-syntax-measured.md section 3) and InfoSys 2530356875.html 'A consistently faulty array index results in a compiler error.' - only the value of reporting before the write; " +
+                "constant = literals and VAR CONSTANT expressions; arrays resolved as for SCAN-ARR-001", "high", "inferred");
+            Add("SAFETY-DIV-001", "Division / MOD by zero: constant 0, or a variable divisor that no condition on the path tests", "error", "true", "crash", "no",
+                "Variant constant-zero-div (/ 0 literal): compiler error C0374 (measured 2026-11-13 for x / 0 and x / 0.0) -> compilerCatches yes on the finding, not in unresolved; only the literals 0 / 0.0 directly after '/' are marked; " +
+                "/ 16#0, / (0), / -0, typed literals, a VAR CONSTANT / VAR_GLOBAL CONSTANT that is 0 and the function forms DIV(a, 0) / MOD(a, 0): not measured, blocking, in unresolved. " +
+                "VAR_INPUT CONSTANT / VAR_IN_OUT CONSTANT are not constants (their initial value is a default: CFC parameter InfoSys 2532058763, read-only reference 2528771211; inferred from search-result summaries, not measured). " +
+                "Variant constant-zero-mod (MOD 0): no compiler error or warning (measured 2026-11-13), blocking; InfoSys MOD 2528880779.html: the behaviour 'can vary depending on the target system'. " +
+                "InfoSys DIV 2528875403.html (permitted data types include REAL and LREAL): 'division by zero always leads to an exception and the corresponding task is stopped' (task option 'Floating Point Exception', tc3_system/5210416139.html); runtime result not measured (tasks 2.10). " +
+                "Variant unchecked-variable-divisor: info, medium, never blocking (heuristic; SA0040 is TE1200 Full only): a plain variable / member / element divisor with no enclosing IF / ELSIF / CASE / WHILE condition, earlier IF that leaves or rewrites it, " +
+                "same-expression test mentioning it only before AND_THEN / OR_ELSE or in the G argument of SEL (InfoSys AND_THEN 2528923787.html: 'TwinCAT always evaluates all operands if the IEC operator AND is used'; SEL 2528956043.html: 'TwinCAT does not compute an expression that precedes IN0 if G = TRUE', same for IN1 if G = FALSE; " +
+                "AND / OR are no guard, second review S5), assignment in the branch from what the branch condition tests, or a VAR / VAR_STAT with a non-zero initial value no analysed section of its POU writes; " +
+                "a divisor that cannot be 0 for other reasons is reported too (no value tracking, no state-machine / caller knowledge); a call result as divisor is not analysed. Info findings are not in unresolved[]. " +
+                "Corpus 2026-11-13: 48 info findings (axis 47, bfh 1): 1 real candidate (latched master velocity), 10 divisors that are 0 when an input is 0 (velocity / function input; x / x in FB_CorrugatedLiftingFixedAccDistance.StartAction added by the S5 fix), 35 derived from non-zero configuration inputs (circumference, area), 2 false (value > 0 by construction, check in an earlier state)", "high", null);
+            foreach (string id in new string[] { "SCAN-LOOP-001", "SCAN-FOR-001", "SCAN-ARR-001", "SAFETY-ARR-001", "SAFETY-DIV-001" }) RuleRegistry.Get(id).Phase = "2";
+            RuleRegistry.Get("SCAN-LOOP-001").Te1200 = "none (SA0041 Full 'loop-invariant code' is a different check)";
+            RuleRegistry.Get("SCAN-ARR-001").Te1200 = "SA0172 (Full)";
+            RuleRegistry.Get("SAFETY-ARR-001").Te1200 = "SA0172 (Full)";
+            RuleRegistry.Get("SAFETY-DIV-001").Te1200 = "SA0040 (Full)";
         }
 
         public static RuleMeta Get(string id)
@@ -345,6 +394,16 @@ namespace TcLintEngine
         public void AddAcceptSkip(string objectPath, string ruleId, string reason) { ProfileEntry e = new ProfileEntry(); e.ObjectPath = objectPath; e.RuleId = ruleId; e.Reason = reason; AcceptSkips.Add(e); }
         public void AddCatalogType(string name, string library, string kind, string source, string cls) { CatalogType c = new CatalogType(); c.Name = name; c.Library = library; c.Kind = kind; c.Source = source; c.Class = string.IsNullOrEmpty(cls) ? null : cls; CatalogTypes.Add(c); }
         public void AddScopeObject(string name) { if (ScopeObjects == null) ScopeObjects = new List<string>(); ScopeObjects.Add(name); }
+
+        // LintCandidate (tasks 2.1, design.md D2): an object that is not written yet, laid over the project on disk
+        // (PlcProjectPath set) or checked alone (CandidateTextOnly). Text is never written anywhere.
+        public bool CandidateMode;
+        public bool CandidateTextOnly;
+        public string CandidateKind;            // Program FunctionBlock Function DUT GVL Interface Method Property Action Transition
+        public string CandidateName;            // FB_X, FB_X.M_Run, FB_X.P, FB_X.P.Get
+        public string CandidateDeclaration;
+        public string CandidateImplementation;
+        public bool CandidateFullScope;         // overlay but analyse every object (cross-object check, review S1 of PR #284)
     }
 
     public static class Inv

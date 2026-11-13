@@ -260,6 +260,7 @@ namespace TcLintEngine
             if (opt.TestFault) throw new InvalidOperationException("test fault");
             foreach (RuleOverride ov in opt.RuleOverrides)
                 if (ov.Enabled.HasValue && !ov.Enabled.Value) rulesNotRun.Add(Cov(ov.RuleId, null, null, null, "disabled-by-profile"));
+            if (opt.CandidateMode && opt.CandidateTextOnly) return ExecuteTextOnly();
 
             plcFull = Path.GetFullPath(opt.PlcProjectPath);
             plcDir = Path.GetDirectoryName(plcFull);
@@ -328,6 +329,7 @@ namespace TcLintEngine
             List<string> objectFiles = CheckCompile(compile, folders);
             CheckLibraries(placeholders, resolutions, libs);
             foreach (string f in objectFiles) LoadObject(f);
+            if (opt.CandidateMode) ApplyOverlay();
             if (opt.ScopeObjects != null)
             {
                 foreach (string s in opt.ScopeObjects)
@@ -341,6 +343,7 @@ namespace TcLintEngine
             CheckGuids();
             CheckTsproj(projectGuid);
             RunPhase1b();
+            if (opt.CandidateMode) FindOverlayContextNeeds();
             return Finish();
         }
 
@@ -551,8 +554,11 @@ namespace TcLintEngine
             catch (Exception) { }
         }
 
+        private int libraryRefs;   // library / placeholder references of the .plcproj (LintCandidate: X.Y may be a library name)
+
         private void CheckLibraries(List<XElem> placeholders, List<XElem> resolutions, List<XElem> libs)
         {
+            libraryRefs = placeholders.Count + libs.Count;
             foreach (XElem p in placeholders)
             {
                 string inc = p.Attr("Include");
@@ -756,6 +762,7 @@ namespace TcLintEngine
 
         private void AddId(XElem e, TcObjectFile o, string objectPath, bool required)
         {
+            if (e.Synthetic) return;   // LintCandidate overlay: XAE gives the new object its Id when it is written
             string id = e.Attr("Id");
             if (id == null)
             {
@@ -1197,6 +1204,7 @@ namespace TcLintEngine
             ReportEntities(o, path, "implementation", sr.Lex);
             ReportState(o, path, "implementation", sr.State);
             OnSection(o, path, "implementation", sr.Lex, null);
+            OnImplementation(o, path, sr, multi);
             if (multi)
                 foreach (Diagnostic d in diags) if (d.ObjectPath == path && d.Section == "implementation") d.LineUnreliable = true;
             return multi ? null : text;
@@ -1252,6 +1260,7 @@ namespace TcLintEngine
                 if (string.IsNullOrEmpty(name)) { E("PROJECT-LINEIDS-001", o.Rel, o.ObjectPath, "file", li.Line, "<LineIds> without Name", null, null); continue; }
                 if (!seen.Add(name)) { E("PROJECT-LINEIDS-001", o.Rel, o.ObjectPath, "file", li.Line, "Two <LineIds> for '" + name + "'", null, null); continue; }
                 string text;
+                if (overlayPaths.Contains(name)) continue;   // candidate text: XAE rewrites LineIds when it writes the code
                 if (!stTexts.TryGetValue(name, out text))
                 {
                     E("PROJECT-LINEIDS-001", o.Rel, o.ObjectPath, "file", li.Line, "<LineIds Name=\"" + name + "\"> names no ST implementation of this POU", null, null);
@@ -1273,7 +1282,7 @@ namespace TcLintEngine
             List<string> sections = new List<string>(stTexts.Keys);
             sections.Sort(StringComparer.OrdinalIgnoreCase);
             foreach (string s in sections)
-                if (!seen.Contains(s)) E("PROJECT-LINEIDS-001", o.Rel, s, "file", pou.Line, "ST implementation '" + s + "' has no <LineIds> while other parts of the POU have (member added outside XAE?)", null, null);
+                if (!seen.Contains(s) && !overlayPaths.Contains(s)) E("PROJECT-LINEIDS-001", o.Rel, s, "file", pou.Line, "ST implementation '" + s + "' has no <LineIds> while other parts of the POU have (member added outside XAE?)", null, null);
         }
 
         // ================================================================ GUIDs
@@ -1708,7 +1717,9 @@ namespace TcLintEngine
                 RuleMeta r = RuleRegistry.Get(d.RuleId);
                 string cc = d.CompilerCatches ?? (r == null ? null : r.CompilerCatches);
                 bool compilerCatches = cc == "yes";
-                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && !compilerCatches)
+                // info findings are advisory (Phase 2a: SAFETY-DIV-001 unchecked-variable-divisor, 57 heuristic findings in the
+                // two corpus projects, mostly configuration divisors): not a must-dispose item; a profile severity override can raise it
+                if (r != null && (r.MachineImpact == "behavior" || r.MachineImpact == "crash") && !compilerCatches && d.Severity != "info")
                 {
                     OrderedDictionary u = new OrderedDictionary();
                     u["ruleId"] = d.RuleId; u["severity"] = d.Severity; u["blocking"] = d.Blocking; u["file"] = d.File; u["objectPath"] = d.ObjectPath;
@@ -1718,6 +1729,7 @@ namespace TcLintEngine
             }
             string verdict, code;
             if (parseFailed || parseDiag) { verdict = "fail"; code = "LINT_PARSE_FAILED"; }
+            else if (contextRequired.Count > 0) { verdict = "incomplete"; code = "LINT_CONTEXT_REQUIRED"; }
             // nothing (or not every object in scope) analysed and no blocking finding explains it: never pass
             // (a profile that disables the one rule that reported the broken file must not turn it into a pass)
             else if (stillBlocking.Count > 0 || incompleteByRead || (blocking == 0 && (!projectLoaded || objectsInScope == 0 || objectsAnalyzed < objectsInScope)))
@@ -1748,7 +1760,7 @@ namespace TcLintEngine
             cov["rulesNotRun"] = CoverageSort.ToSortedList(rulesNotRun);
             res["coverage"] = cov;
             OrderedDictionary src = new OrderedDictionary();
-            src["kind"] = "disk";
+            src["kind"] = !opt.CandidateMode ? "disk" : opt.CandidateTextOnly ? "candidate-text-only" : "candidate-overlay";
             src["plcProjectPath"] = plcFull;
             src["solutionPath"] = slnFull;
             ArrayList ts = new ArrayList(); foreach (string t in tsprojFull) ts.Add(t);
@@ -1765,6 +1777,7 @@ namespace TcLintEngine
             res["scope"] = scope;
             List<string> det = new List<string>(engineDetail); det.Sort(StringComparer.Ordinal);
             res["engineDetail"] = new ArrayList(det);
+            if (opt.CandidateMode) res["candidate"] = CandidateInfo();
             return res;
         }
     }

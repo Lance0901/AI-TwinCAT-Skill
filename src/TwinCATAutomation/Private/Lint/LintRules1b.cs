@@ -184,6 +184,7 @@ namespace TcLintEngine
             BuildIndex();
             CheckTempFb();
             CheckTaskGraph();
+            RunPhase2a();
         }
 
         // ================================================================ project index (all objects, in scope or not)

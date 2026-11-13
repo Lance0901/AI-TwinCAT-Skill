@@ -2,7 +2,7 @@
 
 # AI TwinCAT Skill
 
-Lets an AI coding tool (Claude Code, Codex, Claude Desktop, or any MCP client) drive the TwinCAT 3 IDE and PLC runtime on a Windows PC: open a solution, edit PLC code, build, activate, download, run and read or write variables over ADS, without dialog popups. It is a PowerShell module providing <!-- generated:cmdlet-count -->86<!-- /generated --> cmdlets, installed as the **TcAuto MCP server**; it can also be imported and called directly.
+Lets an AI coding tool (Claude Code, Codex, Claude Desktop, or any MCP client) drive the TwinCAT 3 IDE and PLC runtime on a Windows PC: open a solution, edit PLC code, build, activate, download, run and read or write variables over ADS, without dialog popups. It is a PowerShell module providing <!-- generated:cmdlet-count -->87<!-- /generated --> cmdlets, installed as the **TcAuto MCP server**; it can also be imported and called directly.
 
 Status: beta. Known limits are listed in [Known limitations](#known-limitations) and in [docs/known-limitations.md](docs/known-limitations.md).
 
@@ -245,7 +245,7 @@ Write-TcPouCode -PouName "MAIN" -Declaration $newDecl -Implementation $newImpl
 
 `-PouPath` can be left out (the module searches `POUs`, then the project root); `Write-TcPouCode` edits the COM buffer and needs no `Reset-TcSolution`. When you edit project files on disk instead, call `Reset-TcSolution` right after the write ([docs/troubleshooting.md](docs/troubleshooting.md) "磁碟改檔的正確做法").
 
-### All Commands (<!-- generated:cmdlet-count -->86<!-- /generated -->)
+### All Commands (<!-- generated:cmdlet-count -->87<!-- /generated -->)
 
 Parameters and MCP tool names: the generated table in [adapters/claude-code/SKILL.md](adapters/claude-code/SKILL.md), [mcp-server/README.md](mcp-server/README.md), or `Get-Help <cmdlet>` after importing the module. Anything that changes a project or the system is dry-run by default where the cmdlet says so.
 
@@ -270,7 +270,7 @@ Parameters and MCP tool names: the generated table in [adapters/claude-code/SKIL
 ```
 src/TwinCATAutomation/          # Core PowerShell module (tool-agnostic)
   TwinCATAutomation.psm1        # Module loader
-  Public/                       # 86 exported cmdlets
+  Public/                       # 87 exported cmdlets
   Private/                      # Internal helpers (COM, ADS, assertions)
 Invoke-TwinCATAutomation.ps1    # Unified CLI entry point (JSON in/out)
 mcp-server/                     # TcAuto MCP server, launcher, tools.json
@@ -281,7 +281,7 @@ adapters/
   antigravity/                  # Antigravity plugin.yaml
 ```
 
-The MCP server (stdio) exposes <!-- generated:mcp-tool-count -->83<!-- /generated --> of the <!-- generated:cmdlet-count -->86<!-- /generated --> cmdlets plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. `NewProject` is temporarily not offered over MCP (#70); `Start-TcLifecycle` is the composite tool `RunLifecycle` (#27). One long-lived Windows PowerShell 5.1 process keeps the IDE and ADS state across tool calls.
+The MCP server (stdio) exposes <!-- generated:mcp-tool-count -->84<!-- /generated --> of the <!-- generated:cmdlet-count -->87<!-- /generated --> cmdlets plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. `NewProject` is temporarily not offered over MCP (#70); `Start-TcLifecycle` is the composite tool `RunLifecycle` (#27). One long-lived Windows PowerShell 5.1 process keeps the IDE and ADS state across tool calls.
 
 ## Documentation index
 

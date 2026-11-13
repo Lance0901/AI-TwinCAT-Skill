@@ -2189,8 +2189,9 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LINT_CONTEXT_REQUIRED
 
-- **為什麼**:`LintCandidate`(Phase 2)的候選文字需要專案 context(`IMPLEMENTS` / `EXTENDS`、Method / Property / Action、不在內建型別目錄的型別),只看文字不能回報通過。這一版沒有 `LintCandidate`,不會回這個 code。
-- **下一步**:帶 `-PlcProjectPath <.plcproj>` 重跑。
+- **現象**:`Invoke-TcLintCandidate`(MCP `LintCandidate`)沒給 `-PlcProjectPath`(text-only),`data.verdict = incomplete`,`data.candidate.contextRequired[]` 列出原因(`extends:<型別>`、`implements:<介面>`、`object-kind:Method` / `Action` / `Property`、`type:<型別>`、`identifier:<名稱>`、`var-external`)。不需要 context 的規則照跑,diagnostics 照列。
+- **為什麼**:候選文字需要專案才能判斷:`IMPLEMENTS` / `EXTENDS`、Method / Property / Action(要看所屬 POU)、用到不是基本型別 / 標準函式 / 型別目錄裡的型別或識別字(GVL 變數、DUT、別的 POU、別處的 CONSTANT)。只看文字就回 pass 會漏掉跨物件的問題(design.md D2,review B2),所以不回通過。
+- **下一步**:帶 `-PlcProjectPath <.plcproj>` 重跑(候選覆蓋到磁碟專案上,同名取代、新物件加入,不寫檔)。
 
 ### LINT_PROFILE_INVALID
 
@@ -2205,8 +2206,8 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### LINT_INPUT_INVALID
 
-- **為什麼**:沒給 `-PlcProjectPath` 也沒給 `-SolutionPath`;`-PlcProjectPath` 不是存在的 `.plcproj`(只給 PLC 名稱要經 IDE 找檔,這一版不支援);`-SolutionPath` 不是 `.sln` / `.tsproj`;`-Scope Object` 沒配 `-ObjectPaths`,或物件不在專案裡。
-- **下一步**:給 `.plcproj` 檔案路徑,或 `-SolutionPath <sln> -PlcProjectPath <PLC 名稱>`。
+- **為什麼**:沒給 `-PlcProjectPath` 也沒給 `-SolutionPath`;`-PlcProjectPath` 不是存在的 `.plcproj`(只給 PLC 名稱要經 IDE 找檔,這一版不支援);`-SolutionPath` 不是 `.sln` / `.tsproj`;`-Scope Object` 沒配 `-ObjectPaths`,或物件不在專案裡。`LintCandidate` 另外:宣告的關鍵字 / 名稱與 `-ObjectKind` / `-ObjectName` 不符;同名物件在磁碟上是別的種類;Method / Property / Action 的 Parent 不存在(accessor `FB_X.P.Get` 的 Property 不存在);`Transition`(XAE 的 Transition XML 結構沒觀察過);DUT / GVL / Interface / property 宣告給了 Implementation;Action 給了 Declaration;Implementation 不是 ST;候選文字超過 profile 的 `maxFileSizeMB`;磁碟上同名物件的檔案讀不到。
+- **下一步**:給 `.plcproj` 檔案路徑,或 `-SolutionPath <sln> -PlcProjectPath <PLC 名稱>`。`LintCandidate`:照 `error.message` 修正參數(`-ObjectName` 與 `WritePouCode -PouName` 同格式);新的 Method / Action 要先有 Parent。
 
 ### LINT_ENGINE_ERROR
 
