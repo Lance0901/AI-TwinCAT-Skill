@@ -1,10 +1,13 @@
 # Unit (#280 / #281 review 3): Connect-TcIde -ProgId X -SolutionPath S with only a blocked IDE of
 # ANOTHER ProgID Y in the ROT (busy RPC_E_CALL_REJECTED, or unreadable = empty DTE.Version) that the
 # #29 blocked-owner check would recognise as the owner of S (strong evidence: a modal dialog naming
-# a file inside the solution folder, matchedBy dialog-path). -ProgId is strict: Y is not reported
-# (no IDE_MODAL_DIALOG / IDE_BUSY for Y, nothing attached) and X is launched (mocked: the launch
-# records the ProgID and throws). Control cases without -ProgId show the same ROT does produce the
-# #29 answer for Y, so the evidence is effective.
+# a file inside the solution folder, matchedBy dialog-path). -ProgId is strict: when Y is TcAuto's
+# own IDE it is not reported (no IDE_MODAL_DIALOG / IDE_BUSY for Y, nothing attached) and X is
+# launched (mocked: the launch records the ProgID and throws); #281 C review: when Y is NOT TcAuto's
+# (user's IDE) the .sln must not be opened in a second IDE -> IDE_ATTACH_CONSENT_REQUIRED (reason
+# solution-open-in-non-owned-ide, requestedProgId X, candidate progId Y), nothing launched / attached.
+# Control cases without -ProgId show the same ROT does produce the #29 answer for Y, so the evidence
+# is effective.
 # Everything that could reach a real IDE is mocked inside the module: the ROT (Get-AllComObjects),
 # GetActiveObject (Get-ComObject), the launch choice (Resolve-TcLaunchProgId), the launch
 # (New-TcIdeInstance), Get-TcIdeProcessId, Get-Process for the fake pids, the modal-dialog scan and
@@ -109,15 +112,19 @@ function Get-Conn { & $mod { [PSCustomObject]@{ connected = [bool]$script:TcIdeC
 try {
     foreach ($mode in 'unreadable', 'busy') {
         # control: without -ProgId the #29 check recognises Y as the blocked owner of $sln
+        # (#281 C: Y is TcAuto's own IDE here - a blocked IDE TcAuto did not launch would get
+        # IDE_ATTACH_CONSENT_REQUIRED instead, connect-ide-attach-consent-281.ps1 C2)
         Reset-State
         Set-BlockedY 9501 $mode
+        & $mod { Add-TcLaunchedIde -ProcessId 9501 }
         $r = Connect-TcIde -SolutionPath $sln
         Check "C-$mode control: no -ProgId, blocked Y ($mode) with a dialog-path dialog -> #29 IDE_MODAL_DIALOG for Y, nothing launched" ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.ideProcessId -eq 9501 -and $r.data.matchedBy -eq 'dialog-path' -and @($global:Launches280b | Where-Object { $_ -notlike 'GAO:*' }).Count -eq 0) (J $r)
         $null = Disconnect-TcIde
 
-        # -ProgId X: Y is not a candidate, not reported, not attached; X is launched
+        # -ProgId X, Y is TcAuto's own IDE: Y is not a candidate, not reported, not attached; X is launched
         Reset-State
         Set-BlockedY 9501 $mode
+        & $mod { Add-TcLaunchedIde -ProcessId 9501 }
         $r = Connect-TcIde -ProgId $X -SolutionPath $sln
         $c = Get-Conn
         $launched = @($global:Launches280b | Where-Object { $_ -notlike 'GAO:*' })
@@ -125,11 +132,23 @@ try {
         Check "P-$mode Y not attached (no connection, no pid)" (-not $c.connected -and $c.dteNull -and $null -eq $c.pid) (J $c)
         $null = Disconnect-TcIde
 
-        # -ProgId X -NoLaunch: IDE_NOT_FOUND (requestedProgId X), still not Y's dialog
+        # -ProgId X -NoLaunch, own Y: IDE_NOT_FOUND (requestedProgId X), still not Y's dialog
         Reset-State
         Set-BlockedY 9501 $mode
+        & $mod { Add-TcLaunchedIde -ProcessId 9501 }
         $r = Connect-TcIde -ProgId $X -SolutionPath $sln -NoLaunch
         Check "N-$mode -ProgId X -NoLaunch, only blocked Y ($mode) -> IDE_NOT_FOUND, nothing launched or attached" ((-not $r.success) -and $r.error.code -eq 'IDE_NOT_FOUND' -and $r.data.requestedProgId -eq $X -and @($global:Launches280b | Where-Object { $_ -notlike 'GAO:*' }).Count -eq 0 -and -not (Get-Conn).connected) (J $r)
+        $null = Disconnect-TcIde
+
+        # #281 C review: -ProgId X, Y is NOT TcAuto's (strong #29 evidence) -> consent, X not launched
+        foreach ($nl in $false, $true) {
+            Reset-State
+            Set-BlockedY 9501 $mode
+            $r = if ($nl) { Connect-TcIde -ProgId $X -SolutionPath $sln -NoLaunch } else { Connect-TcIde -ProgId $X -SolutionPath $sln }
+            $c = Get-Conn
+            $launched = @($global:Launches280b | Where-Object { $_ -notlike 'GAO:*' })
+            Check "U-$mode-$(if ($nl) { 'nolaunch' } else { 'launch' }) -ProgId X, blocked user IDE Y has S (strong) -> IDE_ATTACH_CONSENT_REQUIRED, candidate progId Y, requestedProgId X, nothing launched / attached" ((-not $r.success) -and $r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and $r.data.requestedProgId -eq $X -and @($r.data.candidates).Count -eq 1 -and @($r.data.candidates)[0].processId -eq 9501 -and @($r.data.candidates)[0].progId -eq $Y -and $r.data.matchedBy -eq 'dialog-path' -and $launched.Count -eq 0 -and -not $c.connected -and $c.dteNull -and $null -eq $c.pid) "$(J $r) launches=$($global:Launches280b -join ',')"
+        }
     }
 }
 finally {

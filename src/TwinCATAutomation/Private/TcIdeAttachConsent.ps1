@@ -8,6 +8,10 @@
 # for a user's IDE (no launch record, no silent-originals / ide-solutions entry); the only file
 # consulted is TcAuto's own launch record (launched-ides.json), which Test-TcLaunchedIde may claim
 # for an IDE TcAuto itself launched.
+# #281 C: with -SolutionPath (no -ProcessId / -TakeOverOrphan) the same check applies to the IDE
+# that already has that .sln open (solution-match, and the #29 blocked IDE recognised by strong
+# evidence): not allowed -> IDE_ATTACH_CONSENT_REQUIRED (data.reason 'solution-open-in-non-owned-ide')
+# and no second IDE is launched (both IDEs could save the same project files and overwrite each other's changes; inference, not measured).
 # The consent memory lives in module memory only ($script:TcIdeConsentedIdes, key pid + start time
 # via Get-TcIdeProcessKey, so a recycled pid never matches); nothing can pre-fill it.
 
@@ -47,8 +51,9 @@ function Remove-TcIdeAttachConsent {
 function Test-TcIdeAttachAllowed {
     <#
     .SYNOPSIS
-        $true when Connect-TcIde without -SolutionPath / -ProcessId may attach IDE process -ProcessId:
-        TcAuto launched it (Test-TcLaunchedIde) or it is in the consent memory. pid <= 0: $false.
+        $true when Connect-TcIde without -ProcessId may attach IDE process -ProcessId (without
+        -SolutionPath, and #281 C the IDE that already has -SolutionPath open): TcAuto launched it
+        (Test-TcLaunchedIde) or it is in the consent memory. pid <= 0: $false.
     #>
     [CmdletBinding()]
     param([AllowNull()][object]$ProcessId)
@@ -65,12 +70,21 @@ function New-TcAttachConsentResult {
     .SYNOPSIS
         IDE_ATTACH_CONSENT_REQUIRED result for the IDEs in -Candidates (objects with pid, progId,
         solution, busy). Reads only Get-Process (start time, main window title): no COM call.
+        -Reason: data.reason ('no-solution-path' = Connect-TcIde without -SolutionPath,
+        'solution-open-in-non-owned-ide' = #281 C, -SolutionPath is open in the candidate(s));
+        -Solution: data.solution (the normalized -SolutionPath, $null without); -HintCode: the hint
+        key (IDE_ATTACH_CONSENT_REQUIRED or IDE_ATTACH_CONSENT_REQUIRED_SOLUTION); -Extra: further
+        data fields (diagnostics such as the #29 dialog / matchedBy), added after the standard ones.
     #>
     [CmdletBinding()]
     param(
         [Parameter()][object[]]$Candidates = @(),
         [Parameter()][AllowNull()][AllowEmptyString()][string]$ProgId,
-        [Parameter()][double]$ConnectSec = 0
+        [Parameter()][double]$ConnectSec = 0,
+        [Parameter()][ValidateSet('no-solution-path', 'solution-open-in-non-owned-ide')][string]$Reason = 'no-solution-path',
+        [Parameter()][AllowNull()][AllowEmptyString()][string]$Solution,
+        [Parameter()][ValidateSet('IDE_ATTACH_CONSENT_REQUIRED', 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION')][string]$HintCode = 'IDE_ATTACH_CONSENT_REQUIRED',
+        [Parameter()][AllowNull()][System.Collections.IDictionary]$Extra
     )
     $list = [System.Collections.Generic.List[object]]::new()
     foreach ($c in @($Candidates)) {
@@ -100,14 +114,27 @@ function New-TcAttachConsentResult {
             })
     }
     $pids = @($list | ForEach-Object { if ($_.processId -gt 0) { "pid $($_.processId)" } else { 'pid unknown' } }) -join ', '
+    $sln = if ([string]::IsNullOrWhiteSpace($Solution)) { $null } else { $Solution }
     $data = [PSCustomObject]@{
         attached        = $false
         launched        = $false
         ownedBySession  = $false
+        reason          = $Reason
+        solution        = $sln
         requestedProgId = $(if ([string]::IsNullOrWhiteSpace($ProgId)) { $null } else { $ProgId })
         connectSec      = [math]::Round($ConnectSec, 1)
         candidates      = @($list)
     }
-    New-TcResult -Success $false -ErrorCode 'IDE_ATTACH_CONSENT_REQUIRED' -Hint (Get-TcErrorHint -Code 'IDE_ATTACH_CONSENT_REQUIRED') -Data $data `
-        -ErrorMessage "IDE_ATTACH_CONSENT_REQUIRED: found $($list.Count) running IDE(s) not launched by this TcAuto session ($pids). Nothing was attached and none of their settings were changed (SilentMode untouched)."
+    if ($null -ne $Extra) {
+        foreach ($k in @($Extra.Keys)) {
+            if ($null -eq $data.PSObject.Properties[[string]$k]) { $data | Add-Member -NotePropertyName ([string]$k) -NotePropertyValue $Extra[$k] }
+        }
+    }
+    $message = if ($Reason -eq 'solution-open-in-non-owned-ide') {
+        "IDE_ATTACH_CONSENT_REQUIRED: '$sln' is already open in $($list.Count) running IDE(s) not launched by this TcAuto session ($pids). Nothing was attached, none of their settings were changed (SilentMode untouched) and no second IDE was launched."
+    }
+    else {
+        "IDE_ATTACH_CONSENT_REQUIRED: found $($list.Count) running IDE(s) not launched by this TcAuto session ($pids). Nothing was attached and none of their settings were changed (SilentMode untouched)."
+    }
+    New-TcResult -Success $false -ErrorCode 'IDE_ATTACH_CONSENT_REQUIRED' -Hint (Get-TcErrorHint -Code $HintCode) -Data $data -ErrorMessage $message
 }
