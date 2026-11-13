@@ -46,6 +46,10 @@ function Disconnect-TcIde {
         after a successful quit or kill, after a plain Disconnect-TcIde (no -Quit), and
         overwritten by Connect-TcIde. A -Quit -Kill call with no COM connection but a kept
         process id goes straight to the kill path; -Quit alone then reports 'not connected'.
+        #281: whenever the COM references are released, the -ProcessId consent for that IDE is
+        forgotten too (a later Connect-TcIde without parameters answers IDE_ATTACH_CONSENT_REQUIRED
+        again); the paths that keep the connection (IDE_NOT_OWNED before anything, modal dialog,
+        incomplete scan) keep the consent.
     .PARAMETER Quit
         Also close the solution (without saving) and quit the IDE instance this
         session is connected to. Only for an IDE that Connect-TcIde launched in this session
@@ -299,6 +303,10 @@ function Disconnect-TcIde {
     $script:TcProgId = $null
     $script:TcIdeMainHwnd = 0
     $script:TcLastModalDialog = $null
+    # #281 review: the connection is released here (every path below), so the -ProcessId consent
+    # for that IDE ends with it: the next Connect-TcIde without parameters asks again
+    # (IDE_ATTACH_CONSENT_REQUIRED). The early returns above keep the connection and the consent.
+    if ($ideProcessId -gt 0) { Remove-TcIdeAttachConsent -ProcessId $ideProcessId }
 
     # Forget the IDE identity. Not done on the failure paths, so a following
     # `Disconnect-TcIde -Quit -Kill` still knows which process to kill.

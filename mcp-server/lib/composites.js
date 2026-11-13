@@ -56,7 +56,7 @@ export const RunLifecycle = {
   inputSchema: {
     type: 'object',
     properties: {
-      SolutionPath: { type: 'string', description: 'Solution (.sln) to open on ConnectIde. Omit to attach to the running XAE.' },
+      SolutionPath: { type: 'string', description: 'Solution (.sln) to open on ConnectIde. Omit: only an IDE TcAuto launched or one already bound with ConnectIde ProcessId (user consent) is attached, else IDE_ATTACH_CONSENT_REQUIRED (ask the user, then ConnectIde ProcessId=<pid>).' },
       ProgId: { type: 'string', description: 'Visual Studio / XAE shell ProgId passed to ConnectIde.' },
       NoLaunch: { type: 'boolean', description: 'Do not launch XAE if it is not running.' },
       TargetAmsNetId: { type: 'string', description: 'AmsNetId to select with SetTarget after ConnectIde and before BuildProject/EnableConfig (e.g. the UmRT or CX you want to activate on). Omit to keep the target the IDE/solution already has (reported as ConnectIde data.amsNetId).' },

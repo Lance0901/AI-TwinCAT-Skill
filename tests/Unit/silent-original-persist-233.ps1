@@ -18,6 +18,8 @@
 #         restores again on its own Disconnect (documented current behavior, follow-up issue)
 #      F1 restore fails -> data.silentModeRestoreError, record kept for a later restore
 #      Q1 -Quit whose DTE.Quit fails without -Kill -> restored (the IDE keeps running)
+#   The fake IDE is not launched by TcAuto: every connect binds it with -ProcessId (#281: the
+#   explicit choice; without it Connect-TcIde answers IDE_ATTACH_CONSENT_REQUIRED).
 #   powershell.exe -NoProfile -File tests/Unit/silent-original-persist-233.ps1
 # Exit code = number of failed checks.
 $ErrorActionPreference = 'Stop'
@@ -127,10 +129,10 @@ try {
     # --- C1: instance 1 connects (SilentMode false) and ends without Disconnect; instance 2 restores false ---
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     Check 'C1a-connect' ($r.success -and $global:Settings233.Store -eq $true -and $r.data.silentModeOriginal -eq $false -and $r.data.silentModeOriginalUnknown -eq $false) "success=$($r.success) err=$($r.error.message) store=$($global:Settings233.Store) orig=$($r.data.silentModeOriginal) unknown=$($r.data.silentModeOriginalUnknown)"
     $mod = New-Instance $ide.Id   # process ended without Disconnect-TcIde
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     Check 'C1b-original-from-file' ($r.success -and $r.data.silentModeOriginal -eq $false -and $r.data.silentModeOriginalUnknown -eq $false -and $r.data.silentModeOriginalSource -eq 'state-file') "orig=$($r.data.silentModeOriginal) unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource)"
     $global:SilentWrites233.Clear()
     $null = Disconnect-TcIde
@@ -142,10 +144,10 @@ try {
     # --- C2: SilentMode true and no record -> unknown, restored to false (the value of a new IDE) ---
     $global:Settings233 = New-Settings $true
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     Check 'C2a-unknown' ($r.success -and $r.data.silentModeOriginalUnknown -eq $true -and $null -eq $r.data.silentModeOriginal -and $r.data.silentModeOriginalSource -eq 'unknown-was-true') "unknown=$($r.data.silentModeOriginalUnknown) orig=$($r.data.silentModeOriginal) source=$($r.data.silentModeOriginalSource)"
     $mod = New-Instance $ide.Id   # and again in a later process: still unknown, never "true"
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     Check 'C2b-unknown-kept' ($r.success -and $r.data.silentModeOriginalUnknown -eq $true) "unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource)"
     $global:SilentWrites233.Clear()
     $d = Disconnect-TcIde
@@ -154,7 +156,7 @@ try {
     # --- C3: SilentMode false, no record -> original false, not unknown ---
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     Check 'C3-false-known' ($r.success -and $r.data.silentModeOriginal -eq $false -and $r.data.silentModeOriginalUnknown -eq $false -and $r.data.silentModeOriginalSource -eq 'read') "orig=$($r.data.silentModeOriginal) unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource)"
     $null = Disconnect-TcIde
 
@@ -166,7 +168,7 @@ try {
     $global:Settings233 = New-Settings $true
     $mod = New-Instance $ide.Id
     $global:GetterThrows233 = $true
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     $global:GetterThrows233 = $false
     $rec = & $mod { param($p) Get-TcIdeSilentOriginal -ProcessId $p } $ide.Id
     Check 'U1a-unreadable-unknown' ($r.success -and $r.data.silentModeOriginalUnknown -eq $true -and $r.data.silentModeOriginalSource -eq 'unreadable' -and $rec -eq 'assumed-false' -and $global:Settings233.Store -eq $true) "unknown=$($r.data.silentModeOriginalUnknown) source=$($r.data.silentModeOriginalSource) rec=$rec store=$($global:Settings233.Store)"
@@ -181,7 +183,7 @@ try {
     $mod = New-Instance $ide.Id
     & $mod { param($p) Set-TcIdeSilentOriginal -ProcessId $p -Value 'unknown' } $ide.Id
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     $global:SilentWrites233.Clear()
     $d = Disconnect-TcIde
     $after = Get-Rec233 $ide.Id
@@ -191,7 +193,7 @@ try {
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
     $global:SetThrows233 = $true
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     $global:SetThrows233 = $false
     $rec = & $mod { param($p) Get-TcIdeSilentOriginal -ProcessId $p } $ide.Id
     $global:SilentWrites233.Clear()
@@ -202,7 +204,7 @@ try {
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
     & $mod { function script:Write-TcIdeSolutionRecords { [CmdletBinding()] param([object[]]$Records, [string]$Path) if ($Path -like '*silent-originals.json') { throw 'access denied (mock)' } } }
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     $global:SilentWrites233.Clear()
     $d = Disconnect-TcIde
     Check 'W1-write-fails-warning-memory-restore' ($r.success -and -not [string]::IsNullOrWhiteSpace([string]$r.data.silentModeStateWarning) -and ($global:SilentWrites233 -join ',') -eq 'False' -and $d.data.silentModeRestored -eq $false) "warning=$($r.data.silentModeStateWarning) writes=$($global:SilentWrites233 -join ',')"
@@ -211,9 +213,9 @@ try {
     # --- M1: two module instances on the same IDE (A disconnects first) ---
     $global:Settings233 = New-Settings $false
     $modA = New-Instance $ide.Id
-    $rA = & $modA { Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch }
+    $rA = & $modA { Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $script:Unit233Pid }
     $modB = New-Instance $ide.Id
-    $rB = & $modB { Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch }
+    $rB = & $modB { Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $script:Unit233Pid }
     $global:SilentWrites233.Clear()
     $dA = & $modA { Disconnect-TcIde }
     $afterA = $global:Settings233.Store
@@ -225,7 +227,7 @@ try {
     # --- F1: restore fails -> error reported, record kept ---
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     $global:RestoreThrows233 = $true
     $d = Disconnect-TcIde -WarningAction SilentlyContinue
     $global:RestoreThrows233 = $false
@@ -236,7 +238,7 @@ try {
     # --- Q1: -Quit, DTE.Quit fails, no -Kill -> SilentMode restored (the IDE keeps running) ---
     $global:Settings233 = New-Settings $false
     $mod = New-Instance $ide.Id
-    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -NoLaunch
+    $r = Connect-TcIde -ProgId 'Fake.DTE.1' -ProcessId $ide.Id
     & $mod { $script:TcIdeSelectedBy = 'launched' }   # owned, so -Quit is attempted
     $global:QuitThrows233 = $true
     $global:SilentWrites233.Clear()

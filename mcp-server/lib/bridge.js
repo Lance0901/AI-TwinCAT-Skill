@@ -11,7 +11,7 @@ const KILL_ESCALATE_MS = 1000;
 
 export const HINTS = {
   BRIDGE_TIMEOUT:
-    'PowerShell bridge was restarted and all IDE/ADS state is lost. Check for a modal dialog in the XAE window (GetIdeModalDialog after ConnectIde), then ConnectIde again. If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle), it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check and the next runtime-changing call returns LIFECYCLE_BLOCKED: report it to the user, only read-only diagnosis, ClearLifecycleBlock only after the user agreed.',
+    'PowerShell bridge was restarted and all IDE/ADS state is lost. Check for a modal dialog in the XAE window (GetIdeModalDialog after ConnectIde), then ConnectIde again. An IDE bound with ProcessId must be reconnected with the same ProcessId (ConnectIde ProcessId=<pid>): that consent is not kept across a bridge restart (#281). If the interrupted call had already sent its runtime-changing request (EnableConfig, SetSystemState, SetPlcState; also inside RunLifecycle / RunTestCycle), it is recorded as a lifecycle block (errorCode INTERRUPTED, #236) at the next lifecycle check and the next runtime-changing call returns LIFECYCLE_BLOCKED: report it to the user, only read-only diagnosis, ClearLifecycleBlock only after the user agreed.',
   // #249: ConnectIde ran out of time. A cold IDE start (launch, first modal-dialog scan, Solution.Open) can
   // take long on a loaded machine; launching again would leave a second IDE (#235).
   BRIDGE_TIMEOUT_CONNECT_IDE:
@@ -22,7 +22,7 @@ export const HINTS = {
     'If that call answers IDE_MODAL_DIALOG / MODAL_SCAN_INCOMPLETE / IDE_LAUNCH_PENDING, follow its hint (GetIdeModalDialog ProcessId=<data.ideProcessId>). ' +
     'If it launched another IDE anyway, tell the user that the IDE this call was starting may still be running: it was cut off before it was recorded, it is not owned by this server and must not be closed by you (data.candidates alone cannot tell which IDE that is).',
   BRIDGE_DIED:
-    'PowerShell bridge process exited and all IDE/ADS state is lost. It restarts on the next call; run ConnectIde again.',
+    'PowerShell bridge process exited and all IDE/ADS state is lost. It restarts on the next call; run ConnectIde again. An IDE bound with ProcessId must be reconnected with the same ProcessId (ConnectIde ProcessId=<pid>): that consent is not kept across a bridge restart (#281).',
   MODULE_IMPORT_FAILED:
     'The PowerShell bridge could not start. Check TWINCAT_MODULE_PATH / TWINCAT_MCP_POWERSHELL and the bridge stderr output.'
 };
