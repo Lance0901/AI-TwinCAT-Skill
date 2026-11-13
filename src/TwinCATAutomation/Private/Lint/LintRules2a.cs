@@ -1033,6 +1033,10 @@ namespace TcLintEngine
                     for (int q = p + 1; q < idx; q++)
                     {
                         if (!t[q].Is("AND_THEN") && !t[q].Is("OR_ELSE")) continue;
+                        // PR #289 review 2: idx must lie in the right operand of this short-circuit operator. A lower-precedence
+                        // operator at q's level (AND_THEN: OR / OR_ELSE / XOR; OR_ELSE: OR / XOR), a ',' / ';' or a closing
+                        // parenthesis before idx ends that operand, so idx is evaluated whatever the test says
+                        if (!InRightOperand(q, idx)) break;
                         int g = OperandStart(from, q);
                         int v = GuardVerdict(g, q, !t[q].Is("OR_ELSE"));
                         if (v == 1) return true;
@@ -1054,6 +1058,20 @@ namespace TcLintEngine
                     }
                 }
                 return unknown && unknownAs;
+            }
+
+            private bool InRightOperand(int q, int idx)
+            {
+                bool andThen = t[q].Is("AND_THEN");
+                int depth = 0;
+                for (int j = q + 1; j < idx; j++)
+                {
+                    Token x = t[j];
+                    if (x.IsOp("(") || x.IsOp("[")) depth++;
+                    else if (x.IsOp(")") || x.IsOp("]")) { if (--depth < 0) return false; }
+                    else if (depth == 0 && (x.IsOp(",") || x.IsOp(";") || x.Is("OR") || x.Is("XOR") || (andThen && x.Is("OR_ELSE")))) return false;
+                }
+                return true;
             }
 
             // start of the operand that ends just before the AND_THEN / OR_ELSE at q

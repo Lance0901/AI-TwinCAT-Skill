@@ -488,6 +488,27 @@ Check 'R2c i <= 9 OR_ELSE a[i]: i = 10 evaluates a[i] -> blocking' ($d.Count -eq
 $r = Fb $av "FOR i := 0 TO 10 DO`n    b := i > 9 OR_ELSE a[i] > 0;`nEND_FOR"
 $d = Diags $r 'SCAN-ARR-001'
 Check 'R2d i > 9 OR_ELSE a[i]: i = 10 stops at the left operand -> guarded warning' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$av2 = "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    k : INT;`n    bS : BOOL;`n    bF : BOOL;"
+foreach ($c in @(
+    @('R2e', 'bF := i <= 9 AND_THEN bS OR_ELSE a[i] > 0;'),
+    @('R2f', 'bF := (i <= 9 AND_THEN bS) OR_ELSE a[i] > 0;'),
+    @('R2g', 'bF := i <= 9 AND_THEN bS OR a[i] > 0;'),
+    @('R2h', 'bF := i <= 9 AND_THEN bS XOR a[i] > 0;'),
+    @('R2i', 'IF i <= 9 AND_THEN bS OR_ELSE a[i] > 0 THEN k := 1; END_IF'))) {
+    $r = Fb $av2 "FOR i := 0 TO 10 DO`n    $($c[1])`nEND_FOR"
+    $d = Diags $r 'SCAN-ARR-001'
+    Check "$($c[0]) $($c[1]): a[i] is not in the right operand of the short-circuit -> blocking" ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+}
+foreach ($c in @(
+    @('R2j', 'k := SEL(i <= 9, 0, a[i]);'),
+    @('R2k', 'bF := i <= 9 AND_THEN a[i] > 0;'),
+    @('R2l', 'bF := i > 9 OR_ELSE a[i] > 0;'),
+    @('R2m', 'bF := (i <= 9) AND_THEN (a[i] > 0);'),
+    @('R2n', 'bF := bS AND_THEN i <= 9 AND_THEN a[i] > 0;'))) {
+    $r = Fb $av2 "FOR i := 0 TO 10 DO`n    $($c[1])`nEND_FOR"
+    $d = Diags $r 'SCAN-ARR-001'
+    Check "$($c[0]) $($c[1]) -> guarded warning" ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+}
 $gvD = { param($fx) Add-Gvl $fx 'GVL_T' "VAR_GLOBAL`n    gDone : BOOL;`nEND_VAR`nVAR_GLOBAL CONSTANT`n    cDone : BOOL := FALSE;`nEND_VAR`n" }
 $r = Fb "    bS : BOOL;" "WHILE NOT bS DO`n    bS := GVL_T.gDone;`nEND_WHILE" $gvD
 $d = Diags $r 'SCAN-LOOP-001'
