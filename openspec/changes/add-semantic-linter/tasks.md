@@ -62,6 +62,8 @@
 ## 3. Phase 3:狀態機 / Motion / 記憶體 / 數值 + 驗證 + advisory gate
 
 - [ ] 3.1 SCAN-SM-001、SCAN-MC-001 / 002(先補 Tc2_MC2「General rules for MC function blocks」InfoSys 出處)、SCAN-REF-001、SCAN-FBVAL-001、SCAN-OUT-001、SCAN-FLOAT-001、SCAN-INTDIV-001
+  - [x] 3.1a(PR #304)SCAN-REF-001、SCAN-SM-001、SCAN-FBVAL-001、SCAN-FLOAT-001、SCAN-INTDIV-001;SCAN-OUT-001 不做(TE1200 Light SA0004 / SA0006 涵蓋,剩餘部分待 Light 實測,rule-catalog Phase 3a 細節)
+  - [ ] 3.1b SCAN-MC-001 / 002(先補 Tc2_MC2 InfoSys 出處)
 - [ ] 3.2 錯誤分類清單凍結(0.7 + owner 提供的清單),記日期與 commit
 - [ ] 3.3 LLM 產生語料(2–3 模型 × 約 30 任務)+ `BuildProject` 篩選 + owner 盲標;算每條規則 precision / recall,與 TE1200 Light 同批比較
 - [ ] 3.4 Mutation testing:依錯誤分類寫 mutation operator,批次產生變種並跑 `BuildProject`,把 `compilerCatches` 改成 `measured:<日期>`
