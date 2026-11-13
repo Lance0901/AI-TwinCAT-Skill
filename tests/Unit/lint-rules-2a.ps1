@@ -384,6 +384,89 @@ $r = Fb "    i : BYTE;`n    b : BOOL;" "FOR i := 0 TO 254 BY 2 DO`n    IF b THEN
 $d = Diags $r 'SCAN-FOR-001'
 Check 'QN5c step-overflow with EXIT -> warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'step-overflow,exit-in-body' -and -not $d[0].blocking) (Brief $r)
 
+# ================================================================ I  issue #286 (fifth review of PR #284: should-fix S1-S9, nits)
+function SkipR($r, [string]$Rule) { return @(Skips $r $Rule | ForEach-Object { $_.reason }) }
+# S1 bit access writes the variable
+$r = Fb "    nW : WORD;" "WHILE nW = 0 DO`n    nW.3 := TRUE;`nEND_WHILE"
+Check 'I-S1a WHILE nW = 0 DO nW.3 := TRUE -> the bit write writes nW, no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success) (Brief $r)
+$r = Fb "    nW : WORD;`n    n : INT;" "WHILE nW = 0 DO`n    n.3 := TRUE;`nEND_WHILE"
+Check 'I-S1b positive control: bit write of another variable -> still blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and (Diags $r 'SCAN-LOOP-001')[0].blocking) (Brief $r)
+# S3 small non-zero reals are not 0
+$r = Fb "    x : LREAL;`n    y : LREAL;`nEND_VAR`nVAR CONSTANT`n    cEps : LREAL := 1E-30;`n    cS : LREAL := 1E-15 * 1E-15;" "x := y / cEps;`nx := y / 1.0E-30;`nx := y / 1.5E-29;`nx := y / cS;"
+Check 'I-S3 / 1E-30 (constant, literal, 1.5E-29, 1E-15 * 1E-15) -> not a division by 0' (@((Diags $r 'SAFETY-DIV-001') | ForEach-Object { $_ } | Where-Object { $_.variant -like 'constant-zero*' }).Count -eq 0 -and $r.success) (Brief $r)
+# S4 named constant 0 under a test of the constant
+$r = Fb "    x : INT;`n    y : INT;`nEND_VAR`nVAR CONSTANT`n    cFilt : INT := 0;" "IF cFilt <> 0 THEN`n    x := y / cFilt;`nEND_IF"
+$d = Diags $r 'SAFETY-DIV-001'
+Check 'I-S4 IF cFilt <> 0 THEN y / cFilt (cFilt = 0) -> warning guarded-constant-zero, not blocking, pass' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded-constant-zero' -and -not $d[0].blocking -and $d[0].severity -eq 'warning' -and $r.success) (Brief $r)
+# S5 SCAN-ARR-001 guards in the same expression follow the short-circuit rules
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    n : INT;" "FOR i := 0 TO 10 DO`n    n := n + SEL(i <= 9, 0, a[i]);`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5a SEL(i <= 9, 0, a[i]) -> guarded warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking -and $r.success) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    b := i <= 9 AND_THEN a[i] > 0;`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5b b := i <= 9 AND_THEN a[i] > 0 -> guarded warning, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    IF i <= 9 AND a[i] > 0 THEN`n        b := TRUE;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'I-S5c IF i <= 9 AND a[i] > 0 (AND evaluates every operand, reads a[10]) -> blocking' ($d.Count -eq 1 -and $d[0].blocking -and $null -eq $d[0].variant) (Brief $r)
+# S7 a formal parameter with the counter's name is not a write of the counter
+$fbc = { param($fx) Add-Pou $fx 'FB_C' "FUNCTION_BLOCK FB_C`nVAR_INPUT`n    nIndex : INT;`nEND_VAR`n" 'nIndex := nIndex;' }
+$r = Fb "    a : ARRAY[0..9] OF INT;`n    nIndex : INT;`n    fbC : FB_C;" "FOR nIndex := 0 TO 10 DO`n    fbC(nIndex := nIndex);`n    a[nIndex] := 0;`nEND_FOR" $fbc
+Check 'I-S7a fbC(nIndex := nIndex) in FOR nIndex -> SCAN-ARR-001 blocking, no counter-written-in-body' ((Diags $r 'SCAN-ARR-001').Count -eq 1 -and (Diags $r 'SCAN-ARR-001')[0].blocking -and @(SkipR $r 'SCAN-ARR-001' | Where-Object { $_ -like 'counter-written*' }).Count -eq 0) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-ARR-001') -join ','))
+$fbc2 = { param($fx) Add-Pou $fx 'FB_C' "FUNCTION_BLOCK FB_C`nVAR_INPUT`n    nIndex : BYTE;`nEND_VAR`n" 'nIndex := nIndex;' }
+$r = Fb "    nIndex : BYTE;`n    fbC : FB_C;" "FOR nIndex := 0 TO 255 DO`n    fbC(nIndex := nIndex);`nEND_FOR" $fbc2
+Check 'I-S7b BYTE 0 TO 255 with fbC(nIndex := nIndex) -> SCAN-FOR-001 blocking' ((Diags $r 'SCAN-FOR-001').Count -eq 1 -and (Diags $r 'SCAN-FOR-001')[0].blocking) (Brief $r)
+# S9 write through a REFERENCE member of a structure
+$dutR = { param($fx) Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\ST_R.TcDUT') ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"ST_R`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[TYPE ST_R :`nSTRUCT`n    r : REFERENCE TO BOOL;`nEND_STRUCT`nEND_TYPE`n]]></Declaration>`n  </DUT>`n</TcPlcObject>"); $fx.Items.Add('DUTs\ST_R.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray() }
+$r = Fb "    b : BOOL;`n    st : ST_R;" "st.r REF= b;`nWHILE NOT b DO`n    st.r := TRUE;`nEND_WHILE" $dutR
+Check 'I-S9 st.r := TRUE with ST_R.r : REFERENCE TO BOOL -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# S2 the condition is written only from values that do not change in the loop (owner decision in #286)
+$r = Fb "    bSensor : BOOL;`n    bIn AT %IX0.0 : BOOL;" "bSensor := bIn;`nWHILE NOT bSensor DO`n    bSensor := bIn;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2a bSensor := bIn (AT %IX) in the body -> invariant-input-write warning (InfoSys order not stated: not verified), in unresolved' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-input-write' -and $d[0].severity -eq 'warning' -and -not $d[0].blocking -and (Unres $r 'SCAN-LOOP-001').Count -eq 1 -and $r.data.requiresDisposition -and $d[0].message -like '*6828869003*') (Brief $r)
+$r = Fb "    bBusy : BOOL;`n    fbT : TON;" "WHILE NOT bBusy DO`n    bBusy := fbT.Q;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2b bBusy := fbT.Q, fbT not called in the loop -> invariant-write, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+$gvIo = { param($fx) Add-Gvl $fx 'GVL_Io' "VAR_GLOBAL`n    bStart AT %IX1.0 : BOOL;`nEND_VAR`n" }
+$r = Fb "    bOk : BOOL;" "WHILE NOT bOk DO`n    bOk := GVL_Io.bStart;`nEND_WHILE" $gvIo
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2c bOk := GVL_Io.bStart (AT %I in a GVL) -> invariant-input-write warning' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-input-write' -and -not $d[0].blocking) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    bOther : BOOL;`n    n : INT;`nEND_VAR`nVAR CONSTANT`n    cOn : BOOL := FALSE;" "WHILE NOT bDone DO`n    n := n + 1;`n    bDone := cOn OR bOther;`n    IF bOther THEN`n        bDone := TRUE;`n    END_IF`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-S2d constant / unwritten variable / literal under an invariant IF -> invariant-write, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'invariant-write' -and $d[0].blocking) (Brief $r)
+# S2 counter-examples: no finding
+$r = Fb "    bFound : BOOL;`n    i : INT;`n    arr : ARRAY[0..9] OF INT;`n    nKey : INT;" "i := 0;`nWHILE NOT bFound DO`n    bFound := arr[i] = nKey;`n    i := i + 1;`nEND_WHILE"
+Check 'I-S2e counter-example: search loop bFound := arr[i] = nKey; i := i + 1 -> no SCAN-LOOP finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    x : INT;" "WHILE NOT bDone DO`n    bDone := x > 5;`n    x := x + 1;`nEND_WHILE"
+Check 'I-S2f counter-example: source written in the loop -> no finding' ((Diags $r 'SCAN-LOOP-001').Count -eq 0) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    ton1 : TON;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    bDone := ton1.Q AND bX;`nEND_WHILE"
+Check 'I-S2g counter-example: source is the output of a block the loop calls -> no invariant finding' (@((Diags $r 'SCAN-LOOP-001') | ForEach-Object { $_ } | Where-Object { $_.variant -like 'invariant*' }).Count -eq 0) (Brief $r)
+$fnR = { param($fx) Add-Pou $fx 'F_Ready' "FUNCTION F_Ready : BOOL`n" 'F_Ready := TRUE;' }
+$r = Fb "    bDone : BOOL;" "WHILE NOT bDone DO`n    bDone := F_Ready();`nEND_WHILE" $fnR
+Check 'I-S2h counter-example: source is a function result -> no finding, rulesSkipped' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001').Count -ge 1) ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    refB : REFERENCE TO BOOL;" "refB REF= bX;`nWHILE NOT bDone DO`n    bDone := refB;`nEND_WHILE"
+Check 'I-S2i counter-example: source through a REFERENCE -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    bDone : BOOL;`n    bX : BOOL;`n    pB : POINTER TO BOOL;" "WHILE NOT bDone DO`n    bDone := pB^;`nEND_WHILE"
+Check 'I-S2j counter-example: source through a POINTER -> no finding, rulesSkipped possible-alias' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and (SkipR $r 'SCAN-LOOP-001') -contains 'possible-alias') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+# S8 constant conditions, FOR start not constant, divisions in declarations
+$r = Fb "    n : INT;" "WHILE 1 = 1 DO`n    n := n + 1;`nEND_WHILE`nWHILE NOT FALSE DO`n    n := n + 1;`nEND_WHILE"
+Check 'I-S8a WHILE 1 = 1 / WHILE NOT FALSE without EXIT -> two blocking findings' ((Diags $r 'SCAN-LOOP-001').Count -eq 2 -and (Diags $r 'SCAN-LOOP-001')[0].blocking -and (Diags $r 'SCAN-LOOP-001')[1].blocking) (Brief $r)
+$r = Fb "    n : INT;`n    a : INT;" "WHILE a = a DO`n    n := n + 1;`nEND_WHILE`nWHILE 1 = 2 DO`n    n := n + 1;`nEND_WHILE"
+Check 'I-S8a2 counter-example: WHILE 1 = 2 -> no finding' (@((Diags $r 'SCAN-LOOP-001') | ForEach-Object { $_ } | Where-Object { $_.message -like '*1 = 2*' }).Count -eq 0) (Brief $r)
+$r = Fb "    i : BYTE;`n    nStart : BYTE;`n    n : INT;" "FOR i := nStart TO 254 BY 2 DO`n    n := n + 1;`nEND_FOR"
+Check 'I-S8b FOR i := nStart TO 254 BY 2 (BYTE) -> rulesSkipped step-overflow-start-not-constant' ((Diags $r 'SCAN-FOR-001').Count -eq 0 -and (SkipR $r 'SCAN-FOR-001') -contains 'step-overflow-start-not-constant') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-FOR-001') -join ','))
+$r = Fb "    x : INT := 7 MOD 0;`n    y : LREAL := 1.0 / 3.0;" "x := 1;"
+Check 'I-S8c MOD 0 in an initial value -> rulesSkipped declaration-initial-value-division (1.0 / 3.0 is evaluated, no record)' (@(SkipR $r 'SAFETY-DIV-001' | Where-Object { $_ -eq 'declaration-initial-value-division' }).Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SAFETY-DIV-001') -join ','))
+# nits
+$r = Fb "    fPos : LREAL;`n    fTarget : LREAL;`n    n : INT;" "WHILE ABS(fPos - fTarget) > 0.1 DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-N1 WHILE ABS(fPos - fTarget) > 0.1 -> evaluated (blocking), not name-unresolved' ($d.Count -eq 1 -and $d[0].blocking -and (SkipR $r 'SCAN-LOOP-001') -notcontains 'name-unresolved') ((Brief $r) + ' ' + ((SkipR $r 'SCAN-LOOP-001') -join ','))
+$r = Fb "    eMode : E_Mode;`n    n : INT;" "WHILE eMode <> E_Mode.Auto DO`n    n := n + 1;`nEND_WHILE"
+$d = Diags $r 'SCAN-LOOP-001'
+Check 'I-N2 busy-wait message names eMode only, not the enum type / member' ($d.Count -eq 1 -and $d[0].message -like '*writes eMode and*' -and $d[0].message -notlike '*writes*E_MODE*' -and $d[0].message -notlike '*AUTO,*') (Brief $r)
+$dutA = { param($fx) Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\T_Arr.TcDUT') ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"T_Arr`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[TYPE T_Arr : ARRAY[1..10] OF INT;`nEND_TYPE`n]]></Declaration>`n  </DUT>`n</TcPlcObject>"); $fx.Items.Add('DUTs\T_Arr.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray() }
+$r = Fb "    a : T_Arr;" "a[11] := 0;" $dutA
+Check 'I-N5 constant index on an alias array type -> rulesSkipped (not silent)' ((Diags $r 'SAFETY-ARR-001').Count -eq 0 -and (SkipR $r 'SAFETY-ARR-001').Count -eq 1) ((Brief $r) + ' ' + ((SkipR $r 'SAFETY-ARR-001') -join ','))
+
 # ================================================================ M  metadata
 foreach ($id in 'SCAN-LOOP-001', 'SCAN-FOR-001', 'SCAN-ARR-001', 'SAFETY-ARR-001', 'SAFETY-DIV-001') {
     $m = @(& $mod { param($i) $t = (Get-TcLintEngine).Namespace; ("$t.RuleRegistry" -as [type])::Get($i) } $id)[0]
