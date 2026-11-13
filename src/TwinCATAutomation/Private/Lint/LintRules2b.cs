@@ -45,6 +45,7 @@ namespace TcLintEngine
         }
 
         private Dictionary<string, HashSet<string>> dotNames;
+        private Dictionary<string, HashSet<string>> dotQual;   // name after '.' -> identifiers before that '.' ("\0": not a plain identifier)
         private HashSet<string> derivedBases;
 
         // ================================================================ entry (called at the end of RunPhase1b)
@@ -70,6 +71,7 @@ namespace TcLintEngine
         private void BuildDotNames()
         {
             dotNames = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            dotQual = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (TcObjectFile o in objects)
             {
                 if (o.Obj == null) continue;
@@ -86,9 +88,48 @@ namespace TcLintEngine
                         HashSet<string> s;
                         if (!dotNames.TryGetValue(t[i].Text, out s)) { s = new HashSet<string>(StringComparer.OrdinalIgnoreCase); dotNames[t[i].Text] = s; }
                         s.Add(o.Name);
+                        HashSet<string> q;
+                        if (!dotQual.TryGetValue(t[i].Text, out q)) { q = new HashSet<string>(StringComparer.OrdinalIgnoreCase); dotQual[t[i].Text] = q; }
+                        bool plain = i >= 2 && t[i - 2].Kind == TokKind.Ident && !StLexer.Keywords.Contains(t[i - 2].Upper) && !(i >= 3 && t[i - 3].IsOp("."));
+                        q.Add(plain ? t[i - 2].Text : "\0");
                     }
                 }
             }
+        }
+
+        // review nit 6: some 'q.name' in the project may reach the owner's instance 'name'. Not when every q is another POU /
+        // DUT name, or a variable whose every declaration in the project has a type that names neither the owner nor an FB
+        // that EXTENDS it (st.tmr with st : ST_Hold). Anything else (p^.name, a[i].name, a.b.name, q not declared) -> true
+        private bool QualifiedMayBeOwn(string name, string owner)
+        {
+            HashSet<string> qs;
+            if (!dotQual.TryGetValue(name, out qs)) return true;
+            HashSet<string> own = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { owner };
+            for (bool grew = true; grew; )
+            {
+                grew = false;
+                foreach (KeyValuePair<string, List<string>> kv in fbExtends)
+                    if (!own.Contains(kv.Key)) foreach (string b in kv.Value) if (own.Contains(LastSegment(b))) { own.Add(kv.Key); grew = true; break; }
+            }
+            foreach (string q in qs)
+            {
+                if (q == "\0" || own.Contains(q)) return true;
+                if (typeKinds.ContainsKey(q)) continue;   // another POU / DUT name: its own member
+                bool found = false;
+                foreach (DeclUnit d in declUnits)
+                    foreach (VarBlock b in d.Di.VarBlocks)
+                        foreach (VarDecl v in b.Vars)
+                        {
+                            bool named = false;
+                            foreach (string n in v.Names) if (string.Equals(n, q, StringComparison.OrdinalIgnoreCase)) named = true;
+                            if (!named) continue;
+                            found = true;
+                            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(v.TypeText ?? "", "[A-Za-z_][A-Za-z0-9_]*", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                                if (own.Contains(m.Value)) return true;
+                        }
+                if (!found) return true;
+            }
+            return false;
         }
 
         private static void CollectCode(XElem e, List<XElem> into)
@@ -179,7 +220,7 @@ namespace TcLintEngine
                 if (x.Skip == null && ownerProblem != null) x.Skip = ownerProblem;
                 if (x.Skip == null && derivedBases.Contains(o.Name)) x.Skip = "inherited-use";
                 HashSet<string> dn;
-                if (x.Skip == null && dotNames.TryGetValue(x.Name, out dn)) x.Skip = "qualified-access";
+                if (x.Skip == null && dotNames.TryGetValue(x.Name, out dn) && QualifiedMayBeOwn(x.Name, o.Name)) x.Skip = "qualified-access";
                 if (x.Skip == null)
                     foreach (Uncertain un in uncertain)
                         if ((un.Idents == null && string.Equals(un.Owner, o.Name, StringComparison.OrdinalIgnoreCase)) || (un.Idents != null && un.Idents.Contains(x.Name))) { x.Skip = "unanalysed-part"; break; }

@@ -308,6 +308,19 @@ Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    tmr : TON;`n    n : INT;`nEND_
 Add-Pou $fx 'MAIN' "PROGRAM MAIN`nVAR`n    fb : FB_T;`nEND_VAR`n" "fb();`nfb.A_Wait();"
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'K-U12 action also called from outside (fb.A_Wait()) -> TIMER-002 info, rulesSkipped member-called-elsewhere' ((Only $r 'SCAN-TIMER-002') -and (SkipText $r) -like '*SCAN-TIMER-005=member-called-elsewhere:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+# Nit 6: '.tmr' of something whose type is certainly not the owner is not an access to the owner's tmr
+$fx = New-Fx
+Add-Dut $fx 'ST_Hold' "TYPE ST_Hold :`nSTRUCT`n    tmr : TON;`nEND_STRUCT`nEND_TYPE`n"
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    tmr : TON;`n    b : BOOL;`nEND_VAR`n" "b := tmr.Q;"
+Add-Pou $fx 'PRG_X' "PROGRAM PRG_X`nVAR`n    st : ST_Hold;`n    o : FB_T;`nEND_VAR`n" "o();`nst.tmr(IN := TRUE, PT := T#1S);"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'K-Q1 st.tmr (st : ST_Hold) elsewhere does not hide FB_T.tmr -> FBCALL-001' ((Diags $r 'SCAN-FBCALL-001').Count -eq 1 -and (Diags $r 'SCAN-FBCALL-001')[0].objectPath -eq 'FB_T') ((Brief $r) + ' ' + (SkipText $r))
+$fx = New-Fx
+Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    tmr : TON;`n    b : BOOL;`nEND_VAR`n" "b := tmr.Q;"
+Add-Pou $fx 'FB_D' "FUNCTION_BLOCK FB_D EXTENDS FB_T`nVAR`nEND_VAR`n" "SUPER^();"
+Add-Pou $fx 'PRG_X' "PROGRAM PRG_X`nVAR`n    d : FB_D;`n    p : POINTER TO FB_T;`nEND_VAR`n" "d();`np^.tmr(IN := TRUE, PT := T#1S);"
+$r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
+Check 'K-Q2 counter-example: p^.tmr (qualifier not resolvable) -> still qualified-access / inherited-use, no finding' ((None2b $r) -and ((SkipText $r) -like '*:tmr*')) ((Brief $r) + ' ' + (SkipText $r))
 # Nit 1: constant IF condition
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF TRUE THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
 Check 'K-C1 IF TRUE THEN tmr() -> no TIMER-001 (always runs)' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
