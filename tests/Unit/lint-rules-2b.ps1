@@ -262,6 +262,58 @@ Check 'R6 counter-example: IF ... ELSE both call the action -> no TIMER-002' (No
 $r = Fb "    ton1 : TON;`n    b : BOOL;`n    n : INT;" "CASE n OF`n1:`n    A_T();`nELSE`n    A_T();`nEND_CASE" (Action 'A_T' 'ton1(IN := b, PT := T#1S);')
 Check 'R6b counter-example: CASE label + ELSE both call the action -> no TIMER-002' (None2b $r) (Brief $r)
 
+# ================================================================ K  PR #289 independent review (rev289)
+# B1: project FB extending a library base: own VAR_INPUT / VAR_OUTPUT accessed -> no call; unknown member -> skip, never silent
+$fbw = { param($fx) Add-Pou $fx 'FB_W' "FUNCTION_BLOCK FB_W EXTENDS FB_ActionBasic`nVAR_INPUT`n    bIn : BOOL;`nEND_VAR`nVAR_OUTPUT`n    bDone : BOOL;`nEND_VAR`n" "bDone := bIn;" }
+$r = Fb "    fbW : FB_W;`n    b : BOOL;" "b := fbW.bDone;" '' $fbw
+$d = Diags $r 'SCAN-FBCALL-001'
+Check 'K-LB1 library base, own output read, never called -> FBCALL-001' ((Only $r 'SCAN-FBCALL-001') -and (Unres $r 'SCAN-FBCALL-001').Count -eq 1) ((Brief $r) + ' ' + (SkipText $r))
+Check 'K-N2 FBCALL-001 message names the implementation section of the line it quotes' ($d.Count -eq 1 -and $d[0].message -like '*FB_T implementation line 1*') "$($d[0].message)"
+$r = Fb "    fbW : FB_W;`n    b : BOOL;" "fbW.bIn := TRUE;`nIF fbW.bDone THEN b := TRUE; END_IF" '' $fbw
+Check 'K-LB3 library base, own input written + output read, never called -> FBCALL-001' (Only $r 'SCAN-FBCALL-001') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbW : FB_W;`n    b : BOOL;" "b := fbW.bDone;`nb := fbW.SomeLibProp;" '' $fbw
+Check 'K-LB4 library base, member not declared in the project chain -> no finding, rulesSkipped library-base-members-unknown' ((None2b $r) -and (SkipText $r) -like '*SCAN-FBCALL-001=library-base-members-unknown:fbW*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbW : FB_W;`n    b : BOOL;" "fbW.M_LibMethod();`nb := fbW.bDone;" '' $fbw
+Check 'K-LB5 library base, method call -> no finding (code of the instance runs)' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbW : FB_W;" "" '' $fbw
+Check 'K-LB6 library base, never referenced -> still rulesSkipped fb-init (B23 unchanged)' ((None2b $r) -and (SkipText $r) -like '*SCAN-FBCALL-002=fb-init:fbW*') ((Brief $r) + ' ' + (SkipText $r))
+# SF1: only inst.IN := FALSE is a reset; inst.IN := TRUE; inst(); is a call with IN := TRUE
+$r = Fb "    tmr : TON;`n    n : INT;" "CASE n OF`n0:`n    tmr.IN := TRUE;`n    tmr.PT := T#1S;`n    tmr();`n    IF tmr.Q THEN n := 1; END_IF`n1:`n    n := 0;`nEND_CASE"
+Check 'K-U01 tmr.IN := TRUE; tmr(); in one CASE branch -> TIMER-005' (Only $r 'SCAN-TIMER-005') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    bStart, b : BOOL;" "IF bStart THEN`n    tmr.IN := b;`n    tmr.PT := T#1S;`n    tmr();`nEND_IF"
+Check 'K-U02 tmr.IN := b; tmr(); inside IF -> TIMER-001 (not a reset)' (Only $r 'SCAN-TIMER-001') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    n : INT;" "CASE n OF`n0:`n    tmr(IN := TRUE, PT := T#1S);`n1:`n    tmr.IN := FALSE;`n    tmr();`nEND_CASE"
+Check 'K-U03 counter-example: tmr.IN := FALSE; tmr(); is still a reset -> no finding, explicit-reset' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-001=explicit-reset:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+# SF2: PT / IN handed out by address or reference -> may be written there: not reported, recorded
+$r = Fb "    tmr : TON;`n    p : POINTER TO TIME;`n    b : BOOL;" "p := ADR(tmr.PT);`np^ := T#1S;`ntmr(IN := b);"
+Check 'K-P21 ADR(tmr.PT) -> no pt-unset, rulesSkipped pt-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=pt-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    t : TIME := T#1S;`n    b : BOOL;" "MEMCPY(ADR(tmr.PT), ADR(t), SIZEOF(t));`ntmr(IN := b);"
+Check 'K-P22 MEMCPY(ADR(tmr.PT), ...) -> no pt-unset, pt-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=pt-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "F_Set(t := tmr.PT);`ntmr(IN := b);" '' { param($fx) Add-Pou $fx 'F_Set' "FUNCTION F_Set : BOOL`nVAR_IN_OUT`n    t : TIME;`nEND_VAR`n" "t := T#1S;" }
+Check 'K-P23 F_Set(t := tmr.PT) (VAR_IN_OUT) -> no pt-unset, pt-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=pt-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    n : INT;`n    p : POINTER TO BOOL;" "p := ADR(tmr.IN);`nCASE n OF`n1:`n    tmr(IN := TRUE, PT := T#1S);`nEND_CASE"
+Check 'K-P24 ADR(tmr.IN) -> no TIMER-005, rulesSkipped in-passed-or-aliased' ((Diags $r 'SCAN-TIMER-005').Count -eq 0 -and (SkipText $r) -like '*SCAN-TIMER-005=in-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    p : POINTER TO BOOL;" "p := ADR(tmr.IN);`ntmr(IN := FALSE, PT := T#1S);"
+Check 'K-P25 ADR(tmr.IN) -> no in-constant, rulesSkipped in-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=in-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+# Nit 1: constant IF condition
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF TRUE THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'K-C1 IF TRUE THEN tmr() -> no TIMER-001 (always runs)' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF 1 = 1 THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'K-C2 IF 1 = 1 THEN tmr() -> no TIMER-001' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF FALSE THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'K-C3 IF FALSE THEN tmr() -> no TIMER-001, rulesSkipped constant-false-condition' ((Diags $r 'SCAN-TIMER-001').Count -eq 0 -and (SkipText $r) -like '*SCAN-TIMER-001=constant-false-condition:ton1*') ((Brief $r) + ' ' + (SkipText $r))
+# Nit 3 / Nit 4: messages
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "b := P_X;" ("`n    <Property Name=`"P_X`" Id=`"$(New-Id)`">`n      <Declaration><![CDATA[PROPERTY P_X : BOOL`n]]></Declaration>`n      <Get Name=`"Get`" Id=`"$(New-Id)`">`n        <Declaration><![CDATA[VAR`nEND_VAR`n]]></Declaration>`n        <Implementation>`n          <ST><![CDATA[ton1(IN := b, PT := T#1S);`nP_X := ton1.Q;]]></ST>`n        </Implementation>`n      </Get>`n    </Property>")
+$d = Diags $r 'SCAN-TIMER-002'
+Check 'K-N3 TIMER-002 in a property accessor says property accessor' ($d.Count -eq 1 -and $d[0].message -like '*property accessor*' -and $d[0].message -notlike '*method / action*') ((Brief $r) + " $($d[0].message)")
+$r = Fb "    tof1 : TOF;`n    b : BOOL;" "IF b THEN`n    tof1(IN := b, PT := T#1S);`nEND_IF"
+$d = Diags $r 'SCAN-TIMER-001'
+Check 'K-N4 TIMER-001 on TOF does not claim a TON measurement' ($d.Count -eq 1 -and $d[0].message -notlike '*a TON keeps*' -and $d[0].message -like '*inferred*') "$($d[0].message)"
+# Nit 5: library types that are certainly not FBs are not listed as unknown-type
+$r = Fb "    s : T_MaxString;`n    e : MC_Direction;`n    st : ST_CamScalingData;`n    fbL : FB_LibThing;" "s := '';"
+$st = SkipText $r
+Check 'K-N5 unknown-type lists FB_LibThing but not T_MaxString / MC_Direction / ST_CamScalingData' ($st -like '*unknown-type:FB_LibThing:fbL*' -and $st -notlike '*T_MaxString*' -and $st -notlike '*MC_Direction*' -and $st -notlike '*ST_CamScalingData*') $st
+
 # ================================================================ X  suppression
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001: updated only in this mode on purpose`n    ton1(IN := b, PT := T#1S);`nEND_IF"
 $d = Diags $r 'SCAN-TIMER-001'

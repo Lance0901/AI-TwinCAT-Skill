@@ -1,4 +1,4 @@
-// TwinCAT Semantic Linter (#252) - Phase 2b rules: SCAN-FBCALL-001 / 002, SCAN-TIMER-001 / 002 / 004 / 005
+﻿// TwinCAT Semantic Linter (#252) - Phase 2b rules: SCAN-FBCALL-001 / 002, SCAN-TIMER-001 / 002 / 004 / 005
 // (rule-catalog.md, tasks 2.5). C# 5. An FB instance declared in VAR / VAR_STAT of a FUNCTION_BLOCK or PROGRAM is
 // evaluated only when every way it could be used is visible in the owner's own ST sections: passed as a parameter,
 // ADR / REF= / assignment, a qualified access from anywhere in the project (PRG.inst, fb.inst), a derived FB (EXTENDS)
@@ -25,6 +25,8 @@ namespace TcLintEngine
             public string Kind;        // body-call / member-call / member / escape
             public string Member;
             public bool Assign;        // inst.Member := ...
+            public bool? AssignConst;  // inst.Member := <constant TRUE / FALSE>; null = not a constant (variable, expression)
+            public bool Passed;        // inst.Member handed on: call argument (VAR_IN_OUT / ADR / MEMCPY / =>), REF= source
             public int Line, Col;
             public CallSite Call;      // body-call only
             public Dictionary<string, string> Args;   // body-call: NAME (upper) -> value text; null = positional arguments
@@ -146,6 +148,7 @@ namespace TcLintEngine
                     foreach (string n in v.Names)
                     {
                         Inst x = new Inst(); x.Owner = du; x.Name = n; x.V = v; x.TypeName = tn;
+                        if (cls == "unknown" && LibraryNotFb(tn)) continue;   // review nit 5: certainly not an FB (enum / struct / alias)
                         if (cls == "unknown") { x.Skip = "unknown-type"; }
                         else if (cls == "struct-unknown") { continue; }
                         else if (array) x.Skip = "array-instance";
@@ -196,6 +199,25 @@ namespace TcLintEngine
             }
         }
 
+        // a type outside the project that is certainly not a function block, so no FBCALL / TIMER rule applies (rule-catalog
+        // Phase 2b): Tc2_System / Tc2_Utilities / Tc2_MC2 string aliases, enums and structs listed by name, and the Beckhoff
+        // naming convention E_ (enum) / ST_ (struct) of library types (inferred from the naming convention, not read from
+        // the library). Everything else outside the project stays rulesSkipped unknown-type.
+        private static readonly HashSet<string> LibNonFb = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "T_MaxString", "T_AmsNetId", "T_AmsNetIdArr", "T_AmsPort", "T_FILETIME", "TIMESTRUCT", "T_Arg",
+            "MC_Direction", "MC_StartMode", "MC_BufferMode", "MC_CamActivationMode", "MC_CamOperationMode",
+            "MC_CAM_ID", "MC_CAM_REF", "MC_MotionFunctionPoint", "MC_HomingMode", "MC_HomingParameter"
+        };
+
+        private static bool LibraryNotFb(string typeName)
+        {
+            if (string.IsNullOrEmpty(typeName)) return false;
+            string n = typeName; int dot = n.LastIndexOf('.'); if (dot >= 0) n = n.Substring(dot + 1);
+            if (LibNonFb.Contains(n)) return true;
+            return n.StartsWith("E_", StringComparison.OrdinalIgnoreCase) || n.StartsWith("ST_", StringComparison.OrdinalIgnoreCase);
+        }
+
         // the name in a declaration other than its own declaration (initialiser of another variable: ADR(inst),
         // REFERENCE TO ... := inst, FB_init argument) -> escape; a local of a method with the same name -> shadowed
         private string DeclarationUse(Inst x, List<DeclUnit> decls)
@@ -244,10 +266,103 @@ namespace TcLintEngine
                     if (n3 != null && n3.IsOp("(")) use.Kind = "member-call";
                     else { use.Kind = "member"; use.Assign = n3 != null && n3.IsOp(":="); }
                     if (n3 != null && (n3.IsOp(".") || n3.IsOp("[") || n3.IsOp("^"))) { x.Skip = "nested-member-access"; return; }
+                    if (use.Assign) use.AssignConst = ConstBool2b(t, i + 4, StatementEnd(t, i + 4));
+                    else if (use.Kind == "member") use.Passed = HandedOn(t, start);
                 }
                 else { x.Skip = "passed-or-aliased"; return; }   // f(inst), ADR(inst), r REF= inst, itf := inst, inst := other
                 x.Uses.Add(use);
             }
+        }
+
+        // index of the ';' (or end) that closes the statement starting at from (depth 0)
+        private static int StatementEnd(List<Token> t, int from)
+        {
+            int depth = 0;
+            for (int k = from; k < t.Count; k++)
+            {
+                if (t[k].Kind == TokKind.EOF) return k;
+                if (t[k].IsOp("(") || t[k].IsOp("[")) depth++;
+                else if (t[k].IsOp(")") || t[k].IsOp("]")) depth--;
+                else if (depth <= 0 && t[k].IsOp(";")) return k;
+            }
+            return t.Count;
+        }
+
+        // inst.Member at index at is handed on, so something else may write it: the source of REF=, or inside the argument
+        // list of a call (F(inst.PT), F(x := inst.PT) with VAR_IN_OUT, ADR(inst.PT), MEMCPY(ADR(inst.PT), ...), fb(Q => inst.IN));
+        // a value-only use (TIME_TO_DINT(inst.PT)) counts too - conservative, recorded as a skip
+        private static bool HandedOn(List<Token> t, int at)
+        {
+            if (at > 0 && t[at - 1].IsOp("REF=")) return true;
+            int depth = 0;
+            for (int k = at - 1; k >= 0; k--)
+            {
+                Token p = t[k];
+                if (p.IsOp(";")) return false;
+                if (p.IsOp(")")) depth++;
+                else if (p.IsOp("("))
+                {
+                    // '(' of a call (any identifier before it, ADR / SIZEOF included) -> handed on; a grouping '(' -> look further out
+                    if (depth == 0) { if (k > 0 && t[k - 1].Kind == TokKind.Ident && (!StLexer.Keywords.Contains(t[k - 1].Upper) || t[k - 1].Upper == "ADR" || t[k - 1].Upper == "REF")) return true; }
+                    else depth--;
+                }
+                else if (depth == 0 && p.Kind == TokKind.Ident && (p.Upper == "THEN" || p.Upper == "ELSE" || p.Upper == "DO" || p.Upper == "OF" || p.Upper == "IF" || p.Upper == "ELSIF")) return false;
+            }
+            return false;
+        }
+
+        // value of a constant boolean expression in t[from, to): TRUE / FALSE, NOT, parentheses, AND / OR / XOR (and the
+        // short-circuit forms), comparisons of integer literals; null = not a constant the linter evaluates
+        private static bool? ConstBool2b(List<Token> t, int from, int to)
+        {
+            while (to > from + 1 && t[from].IsOp("(") && t[to - 1].IsOp(")") && Closes(t, from) == to - 1) { from++; to--; }
+            if (to <= from) return null;
+            string[][] levels = { new string[] { "OR", "OR_ELSE" }, new string[] { "XOR" }, new string[] { "AND", "AND_THEN", "&" } };
+            foreach (string[] ops in levels)
+            {
+                int depth = 0;
+                for (int k = to - 1; k > from; k--)
+                {
+                    if (t[k].IsOp(")")) depth++;
+                    else if (t[k].IsOp("(")) depth--;
+                    else if (depth == 0 && ((t[k].Kind == TokKind.Ident && Array.IndexOf(ops, t[k].Upper) >= 0) || (t[k].Kind == TokKind.Op && Array.IndexOf(ops, t[k].Text) >= 0)))
+                    {
+                        bool? l = ConstBool2b(t, from, k), r = ConstBool2b(t, k + 1, to);
+                        if (!l.HasValue || !r.HasValue) return null;
+                        return ops[0] == "OR" ? l.Value || r.Value : ops[0] == "XOR" ? l.Value != r.Value : l.Value && r.Value;
+                    }
+                }
+            }
+            if (t[from].Is("NOT")) { bool? v = ConstBool2b(t, from + 1, to); return v.HasValue ? !v.Value : (bool?)null; }
+            if (to == from + 1 && t[from].Is("TRUE")) return true;
+            if (to == from + 1 && t[from].Is("FALSE")) return false;
+            if (to == from + 3 && t[from].Kind == TokKind.Number && t[from + 2].Kind == TokKind.Number && t[from + 1].Kind == TokKind.Op)
+            {
+                long l, r;
+                if (!long.TryParse(t[from].Text.Replace("_", ""), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out l) ||
+                    !long.TryParse(t[from + 2].Text.Replace("_", ""), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out r)) return null;
+                switch (t[from + 1].Text)
+                {
+                    case "=": return l == r;
+                    case "<>": return l != r;
+                    case "<": return l < r;
+                    case ">": return l > r;
+                    case "<=": return l <= r;
+                    case ">=": return l >= r;
+                }
+            }
+            return null;
+        }
+
+        private static int Closes(List<Token> t, int open)
+        {
+            int depth = 0;
+            for (int k = open; k < t.Count; k++)
+            {
+                if (t[k].IsOp("(")) depth++;
+                else if (t[k].IsOp(")")) { depth--; if (depth == 0) return k; }
+            }
+            return -1;
         }
 
         // named arguments of a call: '(' at index open; null when an argument is not 'NAME := value' / 'NAME => var'
@@ -284,11 +399,16 @@ namespace TcLintEngine
             bool called = false;
             InstUse first = null;
             HashSet<string> members = x.Class == "project-fb" ? ChainMembers(x.TypeName) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // a library base in the EXTENDS chain (members == null): variables declared by the project part of the chain are
+            // plain data (no code runs); any other name may be a Property / Method of the library base -> skip, never silent
+            HashSet<string> chainVars = x.Class == "project-fb" && members == null ? ChainVars(x.TypeName) : null;
+            bool unknownMember = false;
             foreach (InstUse u in x.Uses)
             {
                 if (first == null) first = u;
                 if (u.Kind == "body-call") called = true;
-                else if (x.Class == "project-fb" && (members == null || u.Kind == "member-call" || members.Contains(u.Member))) called = true;   // method / action / property (accessor code runs)
+                else if (x.Class == "project-fb" && (u.Kind == "member-call" || (members != null && members.Contains(u.Member)))) called = true;   // method / action / property (accessor code runs)
+                else if (x.Class == "project-fb" && members == null) { if (!chainVars.Contains(u.Member)) unknownMember = true; }
                 else if (u.Kind == "member-call") { Skip2b(RFb1, x, "member-call-of-library-fb"); return; }
             }
             string decl = x.Name + " : " + x.V.TypeText;
@@ -307,8 +427,9 @@ namespace TcLintEngine
                 return;
             }
             if (called) return;
+            if (unknownMember) { Skip2b(RFb1, x, "library-base-members-unknown"); return; }
             Emit(RFb1, x.Owner.O.Rel, x.Owner.Path, "declaration", x.V.Line, x.V.Col,
-                "Function block instance '" + decl + "' is used (" + first.U.Path + " line " + Inv.S(first.Line) + ": ." + (first.Member ?? "?") + ") but never called: " +
+                "Function block instance '" + decl + "' is used (" + first.U.Path + " implementation line " + Inv.S(first.Line) + ": ." + (first.Member ?? "?") + ") but never called: " +
                 "its outputs are only computed when the instance is called, so they stay at their initial values",
                 decl, "Call " + x.Name + "(...) every cycle where its outputs are needed (or remove the reads)", null, null, null, false);
         }
@@ -330,6 +451,27 @@ namespace TcLintEngine
             return m;
         }
 
+        // variables declared (any VAR block) by the project FBs of an EXTENDS chain, up to the first base outside the project
+        private HashSet<string> ChainVars(string type)
+        {
+            HashSet<string> v = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string cur = type;
+            while (cur != null && seen.Add(cur))
+            {
+                PouNode p;
+                if (!pouIndex.TryGetValue(cur, out p)) break;
+                foreach (DeclUnit d in declUnits)
+                {
+                    if (d.O != p.O || d.Path != d.O.ObjectPath) continue;
+                    foreach (VarBlock b in d.Di.VarBlocks) foreach (VarDecl vd in b.Vars) foreach (string n in vd.Names) v.Add(n);
+                }
+                List<string> bases;
+                cur = fbExtends.TryGetValue(cur, out bases) && bases.Count > 0 ? LastSegment(bases[0]) : null;
+            }
+            return v;
+        }
+
         // ================================================================ SCAN-TIMER-001 / 002 / 004 / 005
         private static readonly HashSet<string> TimerTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "TON", "TOF", "TP", "LTON", "LTOF", "LTP" };
         // only TON is measured (runtime-semantics-measured.md sections 4 / 5); TOF / TP / LT* and R_TRIG / F_TRIG -> inferred
@@ -346,17 +488,23 @@ namespace TcLintEngine
             bool positional = false, reset = false, allInTrue = true, allInFalse = true, inWritten = false, inWriteUnsampled = false;
             string init = InitHasPt(x.V.InitText);   // set / unset / unknown
             bool ptSet = init == "set";
+            bool ptPassed = false, inPassed = false;   // inst.PT / inst.IN handed to a call, ADR or REF=: may be written there
+            Dictionary<InstUse, bool?> sampledIn = new Dictionary<InstUse, bool?>();   // call without IN argument -> value of the inst.IN := before it
             foreach (InstUse u in x.Uses)
             {
+                if (u.Kind == "member" && u.Passed && string.Equals(u.Member, "PT", StringComparison.OrdinalIgnoreCase)) ptPassed = true;
+                if (u.Kind == "member" && u.Passed && string.Equals(u.Member, input, StringComparison.OrdinalIgnoreCase)) inPassed = true;
                 if (u.Kind == "member" && u.Assign && string.Equals(u.Member, "PT", StringComparison.OrdinalIgnoreCase)) ptSet = true;
                 if (u.Kind == "member" && u.Assign && string.Equals(u.Member, input, StringComparison.OrdinalIgnoreCase))
                 {
                     // inst.IN := v only reaches the FB when a later call without an IN argument runs on the same path;
-                    // otherwise the next call passes its own IN (inferred from IEC FB call semantics, not measured)
-                    string eff = InWriteSampled(x, u, input);
+                    // otherwise the next call passes its own IN (inferred from IEC FB call semantics, not measured).
+                    // Only the constant FALSE is a reset; TRUE makes that call an IN := TRUE call, anything else a variable IN.
+                    InstUse by;
+                    string eff = InWriteSampled(x, u, input, out by);
                     if (eff == "unknown") { SkipTimer(x, "input-write-unresolved", true, true); return; }
-                    if (eff == "yes") { inWritten = true; reset = true; }
-                    else inWriteUnsampled = true;   // inst.IN := written but not sampled by a later call (inferred)
+                    if (eff == "yes") { inWritten = true; if (u.AssignConst == false) reset = true; sampledIn[by] = u.AssignConst; }
+                    else if (u.AssignConst == false) inWriteUnsampled = true;   // inst.IN := FALSE not sampled by a later call (inferred)
                 }
             }
             foreach (InstUse c in calls)
@@ -364,7 +512,12 @@ namespace TcLintEngine
                 if (c.Args == null) { positional = true; continue; }
                 string v;
                 if (c.Args.ContainsKey("PT")) ptSet = true;
-                if (!c.Args.TryGetValue(input, out v)) { allInTrue = false; allInFalse = false; continue; }
+                bool? sv;
+                if (!c.Args.TryGetValue(input, out v))
+                {
+                    if (sampledIn.TryGetValue(c, out sv) && sv.HasValue) v = sv.Value ? "TRUE" : "FALSE";
+                    else { allInTrue = false; allInFalse = false; continue; }
+                }
                 if (v == "FALSE") reset = true; else allInFalse = false;
                 if (v != "TRUE") allInTrue = false;
             }
@@ -377,7 +530,8 @@ namespace TcLintEngine
                 else
                 {
                     InstUse c0 = calls[0];
-                    if (!ptSet)
+                    if (!ptSet && ptPassed) Skip2b(RTm4, x, "pt-passed-or-aliased");
+                    else if (!ptSet)
                     {
                         Diagnostic d = Emit(RTm4, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
                             "Timer '" + x.Name + " : " + x.TypeName + "' never gets PT (no PT := in any call, no " + x.Name + ".PT :=, no initial value): PT stays T#0s and the timer gives no delay " +
@@ -385,6 +539,7 @@ namespace TcLintEngine
                             x.Name, "Pass PT := <time> in the call or initialise PT in the declaration", "pt-unset", null, null, false);
                         if (d != null) d.ImpactBasis = TimerBasis(x.TypeName);
                     }
+                    else if (allInFalse && !inWritten && inPassed) Skip2b(RTm4, x, "in-passed-or-aliased");
                     else if (allInFalse && !inWritten)
                     {
                         Diagnostic d = Emit(RTm4, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
@@ -405,11 +560,21 @@ namespace TcLintEngine
                 if (c.U.Path == top || MemberRunsEveryTime(c.U.Path, top, secs)) level.Add(c); else other.Add(c);
             }
             foreach (InstUse c in level) if (!c.Call.Conditional) return;   // unconditional call: 001 / 002 / 005 fine
+            // IF TRUE THEN / IF 1 = 1 THEN: always runs; IF FALSE THEN: never runs (the call is dropped)
+            bool droppedFalse = false;
+            for (int li = level.Count - 1; li >= 0; li--)
+            {
+                bool? cc = ConstFrames(level[li]);
+                if (cc == true) return;
+                if (cc == false) { level.RemoveAt(li); droppedFalse = true; }
+            }
+            if (level.Count == 0 && other.Count == 0) { if (droppedFalse) Skip2b(RTm1, x, "constant-false-condition"); return; }
             if (level.Count == 0)
             {
                 InstUse c0 = other[0];
+                string where = c0.U.Path.Length > top.Length + 1 && c0.U.Path.Substring(top.Length + 1).IndexOf('.') >= 0 ? "property accessor " : "method / action ";
                 Emit(RTm2, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
-                    "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called in method / action " + c0.U.Path + ", which the POU body does not call unconditionally: it is not proven to be updated every cycle",
+                    "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called in " + where + c0.U.Path + ", which the POU body does not call unconditionally: it is not proven to be updated every cycle",
                     x.Name, "Call the instance (or the member that calls it) unconditionally in the POU body", null, null, null, false);
                 return;
             }
@@ -439,7 +604,8 @@ namespace TcLintEngine
                 if (k == null || (caseKey != null && k != caseKey)) oneCase = false;
                 caseKey = k;
             }
-            if (OnDelay.Contains(x.TypeName) && oneCase && !reset && allInTrue && !positional)
+            if (OnDelay.Contains(x.TypeName) && oneCase && !reset && allInTrue && !positional && inPassed) Skip2b(RTm5, x, "in-passed-or-aliased");
+            else if (OnDelay.Contains(x.TypeName) && oneCase && !reset && allInTrue && !positional)
             {
                 Diagnostic d5 = Emit(RTm5, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
                     "State timer '" + x.Name + " : " + x.TypeName + "' is only called with IN := TRUE inside CASE branches and never with IN := FALSE: after the state is left, IN stays TRUE, " +
@@ -452,9 +618,43 @@ namespace TcLintEngine
             if (reset) { Skip2b(RTm1, x, "explicit-reset"); return; }
             Diagnostic d1 = Emit(RTm1, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
                 "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called inside IF / CASE (" + first.Call.Blocks + "): in cycles it is not called its inputs are not sampled " +
-                (x.Class == "edge" ? "(an edge between two calls is missed)" : "(a TON keeps measuring wall-clock time while not called and can be elapsed at once on the next call, measured 2026-11-13, XAE 4026.22 / UmRT)"),
+                (x.Class == "edge" ? "(an edge between two calls is missed)"
+                    : string.Equals(x.TypeName, "TON", StringComparison.OrdinalIgnoreCase) ? "(a TON keeps measuring wall-clock time while not called and can be elapsed at once on the next call, measured 2026-11-13, XAE 4026.22 / UmRT)"
+                    : "(a " + x.TypeName + " may change its output at once on the next call because its time keeps running while not called - inferred from the measured TON behaviour, only TON was measured)"),
                 x.Name, "Call the instance unconditionally every cycle and put the condition on IN / CLK", null, null, null, false);
             if (d1 != null) d1.ImpactBasis = TimerBasis(x.TypeName);
+        }
+
+        // the call's enclosing blocks: true when every one is the THEN branch of an IF whose condition is a constant TRUE
+        // (IF TRUE THEN, IF 1 = 1 THEN); false when one is the THEN branch of an IF with a constant FALSE condition (never
+        // runs); null otherwise
+        private static bool? ConstFrames(InstUse c)
+        {
+            string fp = c.Call.FramePath ?? "";
+            if (fp.Length == 0) return null;
+            List<Token> t = c.U.Scan.Lex.Tokens;
+            bool allTrue = true;
+            foreach (string seg in fp.Split('>'))
+            {
+                bool? v = null;
+                int atSign = seg.IndexOf('@'), colon = seg.IndexOf(':'), bar = seg.IndexOf('|');
+                int ln, cl;
+                if (seg.StartsWith("IF@", StringComparison.Ordinal) && bar > colon && colon > atSign && seg.Substring(bar + 1) == "then" &&
+                    int.TryParse(seg.Substring(atSign + 1, colon - atSign - 1), out ln) && int.TryParse(seg.Substring(colon + 1, bar - colon - 1), out cl))
+                {
+                    int open = -1;
+                    for (int i = 0; i < t.Count; i++) if (t[i].Line == ln && t[i].Col == cl) { open = i; break; }
+                    if (open >= 0)
+                    {
+                        int end = -1;
+                        for (int i = open + 1; i < t.Count; i++) if (t[i].Is("THEN")) { end = i; break; }
+                        if (end > open + 1) v = ConstBool2b(t, open + 1, end);
+                    }
+                }
+                if (v == false) return false;
+                if (v != true) allTrue = false;
+            }
+            return allTrue ? true : (bool?)null;
         }
 
         // an action / method of the owner that runs every time the owner's body runs: called from the body (or from a member
@@ -538,8 +738,9 @@ namespace TcLintEngine
         // (same block, not inside a nested IF / CASE / loop); "no" when no call in the owner can sample it; "unknown"
         // when another section calls the instance (a member may run between the write and the next call) or the call
         // that follows has positional arguments
-        private string InWriteSampled(Inst x, InstUse w, string input)
+        private string InWriteSampled(Inst x, InstUse w, string input, out InstUse by)
         {
+            by = null;
             List<Token> t = w.U.Scan.Lex.Tokens;
             int at = -1;
             for (int i = 0; i < t.Count; i++) if (t[i].Line == w.Line && t[i].Col == w.Col) { at = i; break; }
@@ -559,7 +760,7 @@ namespace TcLintEngine
                 {
                     if (c.Kind != "body-call" || c.U != w.U || c.Line != k.Line || c.Col != k.Col) continue;
                     if (c.Args == null) return "unknown";
-                    if (!c.Args.ContainsKey(input)) return "yes";
+                    if (!c.Args.ContainsKey(input)) { by = c; return "yes"; }
                 }
             }
             foreach (InstUse c in x.Uses) if (c.Kind == "body-call" && c.U != w.U) return "unknown";
