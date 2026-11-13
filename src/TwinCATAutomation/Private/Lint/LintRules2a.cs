@@ -757,7 +757,8 @@ namespace TcLintEngine
                         while (j >= from)
                         {
                             Token y = t[j];
-                            if (y.IsOp("^")) { w.Deref = true; j--; continue; }
+                            // THIS^ / SUPER^ address the own instance (ParseDsg normalises THIS^.x to x): not a pointer write (review 2 of PR #284)
+                            if (y.IsOp("^")) { if (!(j - 1 >= from && (t[j - 1].Is("THIS") || t[j - 1].Is("SUPER")))) w.Deref = true; j--; continue; }
                             if (y.IsOp("]")) { j = MatchBack(j, "[", "]", from); if (j < 0) break; j--; continue; }
                             if (y.Kind == TokKind.Ident && (!StLexer.Keywords.Contains(y.Upper) || y.Upper == "THIS" || y.Upper == "SUPER"))
                             {
@@ -777,7 +778,7 @@ namespace TcLintEngine
                         {
                             Token y = t[j];
                             if (y.Kind == TokKind.Ident && !StLexer.Keywords.Contains(y.Upper)) { w.Names.Add(y.Upper); if (first) w.Roots.Add(y.Upper); first = false; w.Any = true; j++; if (j < to && t[j].IsOp(".")) { j++; continue; } }
-                            if (j < to && t[j].IsOp("^")) { w.Deref = true; j++; continue; }
+                            if (j < to && t[j].IsOp("^")) { if (!(t[j - 1].Is("THIS") || t[j - 1].Is("SUPER"))) w.Deref = true; j++; continue; }
                             if (j < to && t[j].IsOp("[")) { int m = MatchForward(j, "[", "]", to); if (m < 0) break; j = m + 1; continue; }
                             break;
                         }
@@ -992,7 +993,8 @@ namespace TcLintEngine
                     }
                     else
                     {
-                        if (body.Calls || body.Deref) continue;          // a call or a pointer write may change the condition
+                        if (body.Calls) continue;                        // a call may change the condition
+                        if (body.Deref) { Skip(RLoop, "pointer-write"); continue; }   // a pointer write may change it: recorded, not silent
                         List<Dsg> cds = Dsgs(cf, ct);
                         string unsure = null;
                         foreach (Dsg d in cds) if (unsure == null) unsure = Unsure(d.C);
@@ -1038,7 +1040,7 @@ namespace TcLintEngine
             {
                 foreach (string n in roots)
                 {
-                    if (n == "THIS" || n == "SUPER") return true;
+                    if (n == "THIS" || n == "SUPER") continue;   // own instance: THIS^.x is compared as x by its full path (ParseDsg), no alias
                     VarRef r = run.Resolve(Sc, n);
                     if (r != null && IsAliasing(r)) return true;
                 }

@@ -154,6 +154,12 @@ Check 'C2 GVL constant set to 0 makes MOD 0 in FB_U: candidate fails (LINT_FAILE
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_X'; Declaration = "FUNCTION F_X : INT`r`nVAR_INPUT`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = 'F_X := n;' }
 Check 'C3 text-only: crossObject not checked (reason text-only)' ($r.data.crossObject.checked -eq $false -and $r.data.crossObject.reason -eq 'text-only') (Js $r.data.crossObject)
 
+# review 2 of PR #284: a write through THIS^ is not a pointer write (busy-wait still found), a THIS^ property write is property-access
+$r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Busy'; Declaration = "METHOD M_Busy : BOOL`r`nVAR`r`n    x : INT;`r`nEND_VAR`r`n"; Implementation = "WHILE x = 0 DO`r`n    THIS^.nState := 1;`r`nEND_WHILE"; PlcProjectPath = $Plc }
+Check 'C4 WHILE x = 0 DO THIS^.nState := 1 (x local) -> SCAN-LOOP-001 blocking' ((Diags $r 'SCAN-LOOP-001').Count -eq 1 -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
+$r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Prop'; Declaration = "METHOD M_Prop : BOOL`r`n"; Implementation = "WHILE nState = 0 DO`r`n    THIS^.P_State := 1;`r`nEND_WHILE"; PlcProjectPath = $Plc }
+Check 'C5 WHILE nState = 0 DO THIS^.P_State := 1 (Set writes nState) -> not blocking, rulesSkipped property-access' ((Diags $r 'SCAN-LOOP-001').Count -eq 0 -and $r.success -and @($r.data.coverage.rulesSkipped | Where-Object { $_.ruleId -eq 'SCAN-LOOP-001' -and $_.reason -like '*property-access*' }).Count -ge 1) ((Brief $r) + ' ' + (Js $r.data.coverage.rulesSkipped))
+
 # ================================================================ X  text-only legal constructs (review nit 2) / not analysed (nit 4)
 $r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_J'; Declaration = "FUNCTION F_J : INT`r`nVAR`r`n    x : INT;`r`nEND_VAR`r`n"; Implementation = "lbl: x := x + 1;`r`nIF x < 3 THEN`r`n    JMP lbl;`r`nEND_IF`r`nF_J := x;" }
 Check 'X10 text-only JMP label is not an identifier needing the project -> pass' ($r.success) (Brief $r)

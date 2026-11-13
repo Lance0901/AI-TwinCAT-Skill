@@ -223,7 +223,8 @@ function Invoke-TcLintCandidate {
             return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed in the cross-object check; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
         }
         $top = ($ObjectName.Trim() -split '\.')[0]
-        $keyOf = { param($d) "$($d['ruleId'])|$($d['variant'])|$($d['file'])|$($d['objectPath'])|$($d['section'])|$($d['line'])|$($d['column'])|$($d['message'])" }
+        # no message in the key: a finding that already exists on disk with another text (bounds 0..10 -> 0..11) is not new (review 2 nit)
+        $keyOf = { param($d) "$($d['ruleId'])|$($d['variant'])|$($d['file'])|$($d['objectPath'])|$($d['section'])|$($d['line'])|$($d['column'])" }
         $diskKeys = @{}
         foreach ($d in @($diskR['diagnostics'])) { $k = & $keyOf $d; if ($diskKeys.ContainsKey($k)) { $diskKeys[$k]++ } else { $diskKeys[$k] = 1 } }
         $newOther = [System.Collections.Generic.List[object]]::new()
