@@ -332,6 +332,8 @@ namespace TcLintEngine
 
         // ================================================================ SCAN-TIMER-001 / 002 / 004 / 005
         private static readonly HashSet<string> TimerTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "TON", "TOF", "TP", "LTON", "LTOF", "LTP" };
+        // only TON is measured (runtime-semantics-measured.md sections 4 / 5); TOF / TP / LT* and R_TRIG / F_TRIG -> inferred
+        private static string TimerBasis(string type) { return string.Equals(type, "TON", StringComparison.OrdinalIgnoreCase) ? null : "inferred"; }
         private static readonly HashSet<string> OnDelay = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "TON", "LTON" };
 
         private void CheckTimer(Inst x, List<ImplUnit> secs, Dictionary<string, Dictionary<string, HashSet<string>>> branchMaps)
@@ -341,7 +343,7 @@ namespace TcLintEngine
             if (calls.Count == 0) return;   // SCAN-FBCALL-001 / 002
             foreach (InstUse u in x.Uses) if (u.Kind == "member-call") { SkipTimer(x, "member-call", true, true); return; }
             string input = x.Class == "edge" ? "CLK" : "IN";
-            bool positional = false, reset = false, allInTrue = true, allInFalse = true, inWritten = false;
+            bool positional = false, reset = false, allInTrue = true, allInFalse = true, inWritten = false, inWriteUnsampled = false;
             string init = InitHasPt(x.V.InitText);   // set / unset / unknown
             bool ptSet = init == "set";
             foreach (InstUse u in x.Uses)
@@ -354,6 +356,7 @@ namespace TcLintEngine
                     string eff = InWriteSampled(x, u, input);
                     if (eff == "unknown") { SkipTimer(x, "input-write-unresolved", true, true); return; }
                     if (eff == "yes") { inWritten = true; reset = true; }
+                    else inWriteUnsampled = true;   // inst.IN := written but not sampled by a later call (inferred)
                 }
             }
             foreach (InstUse c in calls)
@@ -375,16 +378,19 @@ namespace TcLintEngine
                 {
                     InstUse c0 = calls[0];
                     if (!ptSet)
-                        Emit(RTm4, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
+                    {
+                        Diagnostic d = Emit(RTm4, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
                             "Timer '" + x.Name + " : " + x.TypeName + "' never gets PT (no PT := in any call, no " + x.Name + ".PT :=, no initial value): PT stays T#0s and the timer gives no delay " +
                             "(measured 2026-11-13, XAE 4026.22 / UmRT: TON with PT = T#0S has Q = TRUE in the cycle IN rises)",
                             x.Name, "Pass PT := <time> in the call or initialise PT in the declaration", "pt-unset", null, null, false);
+                        if (d != null) d.ImpactBasis = TimerBasis(x.TypeName);
+                    }
                     else if (allInFalse && !inWritten)
                     {
                         Diagnostic d = Emit(RTm4, x.Owner.O.Rel, c0.U.Path, "implementation", c0.Line, c0.Col,
                             "Timer '" + x.Name + " : " + x.TypeName + "' is always called with IN := FALSE: it never starts",
                             x.Name, "Connect IN to the start condition", "in-constant", null, null, false);
-                        if (d != null) d.Confidence = "medium";   // rule-catalog: in-constant medium (constant folding not done)
+                        if (d != null) { d.Confidence = "medium"; d.ImpactBasis = "inferred"; }   // rule-catalog: in-constant medium (constant folding not done); "never starts" not measured
                     }
                 }
             }
@@ -435,17 +441,20 @@ namespace TcLintEngine
             }
             if (OnDelay.Contains(x.TypeName) && oneCase && !reset && allInTrue && !positional)
             {
-                Emit(RTm5, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
+                Diagnostic d5 = Emit(RTm5, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
                     "State timer '" + x.Name + " : " + x.TypeName + "' is only called with IN := TRUE inside CASE branches and never with IN := FALSE: after the state is left, IN stays TRUE, " +
                     "so the next entry has no rising edge and the elapsed time keeps counting (measured 2026-11-13, XAE 4026.22 / UmRT: a TON not called for 3 s had Q = TRUE in its first call again)",
                     x.Name, "Call " + x.Name + "(IN := FALSE) when the state is left (or in every other state)", null, null, null, false);
+                // inst.IN := FALSE without a later call (not sampled) is inferred from IEC call semantics; LTON is not measured
+                if (d5 != null && (inWriteUnsampled || TimerBasis(x.TypeName) != null)) d5.ImpactBasis = "inferred";
                 return;
             }
             if (reset) { Skip2b(RTm1, x, "explicit-reset"); return; }
-            Emit(RTm1, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
+            Diagnostic d1 = Emit(RTm1, x.Owner.O.Rel, first.U.Path, "implementation", first.Line, first.Col,
                 "Timer / trigger '" + x.Name + " : " + x.TypeName + "' is only called inside IF / CASE (" + first.Call.Blocks + "): in cycles it is not called its inputs are not sampled " +
                 (x.Class == "edge" ? "(an edge between two calls is missed)" : "(a TON keeps measuring wall-clock time while not called and can be elapsed at once on the next call, measured 2026-11-13, XAE 4026.22 / UmRT)"),
                 x.Name, "Call the instance unconditionally every cycle and put the condition on IN / CLK", null, null, null, false);
+            if (d1 != null) d1.ImpactBasis = TimerBasis(x.TypeName);
         }
 
         // an action / method of the owner that runs every time the owner's body runs: called from the body (or from a member

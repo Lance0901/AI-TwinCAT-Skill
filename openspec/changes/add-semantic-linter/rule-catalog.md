@@ -180,6 +180,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 出處(查 2026-11-13):WHILE 頁 "If the Boolean expression never takes the value FALSE, the instructions are repeated continuously, causing a runtime error."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/9007201783032715.html);REPEAT 頁同義(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/9007201783038091.html)。「同一 cycle 內輸入不更新」InfoSys 沒有專述,是 PLC scan 模型的推論。
 - **loop-invariant 來源(#286 第 2 項,owner 決定;實作 `LintRules2a.cs` `InvariantFed` / `InvariantSources`,測試 `tests/Unit/lint-rules-2a.ps1` `I-S2*`)**:迴圈本體**有**寫入條件變數,但每一個寫入的值只來自「迴圈內每一 pass 都相同」的來源、且包住該寫入的 IF / ELSIF / CASE 條件也只由這類來源組成,本體又沒有 EXIT / RETURN / JMP 與可能改變來源的呼叫 → 每一 pass 算出同一個條件,無窮迴圈。來源清單:(1) 字面值 / 常數(`VAR CONSTANT`、qualified GVL 常數)/ enum 成員;(2) `AT %I*` 輸入(變數本身或 GVL 內);(3) 型別目錄 FB instance 的輸出,而該 instance 在迴圈本體沒被呼叫;(4) 迴圈本體沒寫入、也沒交給呼叫的變數;(5) 只用上述來源的 IEC 標準函式 / 型別轉換。variant:`invariant-write`(blocking,不含 `%I*` 來源)、`invariant-input-write`(含 `%I*` 來源:**warning、不 blocking、進 `unresolved[]`、`requiresDisposition`**;理由是「輸入在程式執行中保持不變」InfoSys 沒有說明,**未驗證**,見下)。只有字面值 / 常數的寫入不報(第一次寫入後的值已知,可能正好結束迴圈,例:`st.Q := TRUE`)。證明不了 → 不報、記 `rulesSkipped`,reason:`possible-alias`(REFERENCE / POINTER / VAR_IN_OUT / `^`、`%Q` / `%M` 位址可能與別的變數重疊)、`call-in-body`(來源交給呼叫)、`call-result-source`(來源是函式呼叫結果)、`written-element-may-be-the-condition`、`condition-write-not-analysed`(寫入在 FOR / TRY 內)、`direct-address-source`(直接位址 `%IX0.0` 當來源)、`name-unresolved` 等。反例不報:搜尋迴圈(`bFound := arr[i] = nKey; i := i + 1`)、來源在迴圈內被寫入、來源是迴圈有呼叫的 FB 的輸出。
 - **`%I*` 來源為何只是 warning**:2026-11-13 以 WebFetch 讀 [6828869003](https://infosys.beckhoff.com/content/1033/tc3_grundlagen/6828869003.html) 與 WebSearch(限 infosys.beckhoff.com)查「process image 在 task cycle 開始時更新、程式執行中不變」:**未找到明文**。該頁只寫 "Copying of the inputs to the process images of the runtime modules called by the task" 與 "This makes the current input values available to the PLC application (input update), followed by processing of the application program (cycle update)",另寫 "The PLC runtime modules independently perform an input and output update."(為與 TwinCAT 2 相容,PLC runtime module 直接更新輸入輸出)。「程式執行中輸入不變」只是順序推論,且 PLC runtime module 有自己的 I/O 更新,**未驗證**,所以 `%I*` 來源降為 warning + 必須處置(message 與 `LintRules2a.cs` 一致)。
+- variant `invariant-global-write`(PR #289 第一輪審查,warning、不 blocking、進 `unresolved[]`、`requiresDisposition`):迴圈本體只從迴圈內不變的值寫入條件,且其中有 VAR_GLOBAL 變數(非 CONSTANT、無 `AT %I*`;含 `%I*` 來源時報 `invariant-input-write`)。這類變數可能在迴圈執行中被較高優先的 task 或 ADS 寫入,linter 無法排除,所以不擋(推論,未實測)。VAR_GLOBAL CONSTANT 仍視為常數來源。條件變數本身從未被寫入(含 GVL 條件)的既有行為不變。另加 rulesSkipped `source-written-in-loop:<name>`:寫入條件所用的來源本身在迴圈內被寫入(例如 `bS := bX; bX := bIn`),不追蹤,記 skip。
 - 實作(PR #284):寫入 = `:=`、`S=`、`R=`、`REF=`、`=>`(呼叫的形式參數 `fb(IN := x)` 不算寫入 `IN`);條件 / 寫入對象可能別名(REFERENCE、VAR_IN_OUT、POINTER、`THIS^`)→ `rulesSkipped possible-alias`;`WHILE TRUE` / `UNTIL FALSE` 無 EXIT → 報。語料 8 個 WHILE 全部在本體寫入條件變數,0 筆,第二輪審查修正後也沒有新增 `rulesSkipped`。
 
 ### SCAN-FOR-001 FOR 溢位(Phase 2,blocking)
@@ -192,7 +193,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 ### SCAN-ARR-001 常數範圍迴圈越界(Phase 2,blocking)
 - 機台行為:`a : ARRAY[1..10] OF INT; FOR i := 0 TO 9 DO a[i] := 0;`(0-based 習慣)→ 越界存取。CheckBounds 是隱式檢查函式,要專案加入才有(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2530356875.html);沒加時越界的後果 InfoSys 沒寫 → 「蓋到相鄰變數」是推論,未驗證:變數索引的越界讀 / 寫在實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT;[verification/runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 9 節)標 NOT RUN(Exception 後 lifecycle block);同節實測常數索引的讀、寫都被編譯器擋(C0049)。
 - 偵測:FOR 上下限是常數(含 CONSTANT),本體內出現 `a[i]` / `a[i ± k]`,本體不改 `i`,與 `a` 的宣告範圍比對。多維陣列逐維比。
-- 誤報來源:`ARRAY[*]`(可變長度,不評估);index 在 IF 守衛內(`IF i >= 1 THEN a[i]`)→ 有守衛就降為 warning。
+- 誤報來源:`ARRAY[*]`(可變長度,不評估);index 在 IF 守衛內(`IF i >= 1 THEN a[i]`)→ 有守衛就降為 warning。同一運算式的守衛(PR #289 第一輪審查):`<test> AND_THEN ...a[i]`、`<test> OR_ELSE ...a[i]`、`SEL(G, IN0, IN1)` 會判斷方向:對每個會讓索引越界的計數器值計算 test / G(AND_THEN 在 TRUE 時、OR_ELSE 在 FALSE 時評估右側;SEL 在 G = FALSE 時取 IN0、G = TRUE 時取 IN1)。所有越界值都不會評估到該存取時才降為 `guarded` warning;任一越界值會評估到時(例如 `SEL(i > 9, 0, a[i])`、`i <= 9 OR_ELSE a[i]`)維持 blocking。test 無法求值時(用到衍生變數、越界值超過 4096 個):在 IF / WHILE 條件中視為守衛(warning),在賦值式中不視為守衛(blocking)。
 - TE1200:SA0172(Full)— 客戶沒有。
 - 實作(PR #284):index `i`、`i ± k`、`k - i`;陣列在 section / POU / 基底 FB / GVL(含 qualified_only)宣告;STRUCT 成員陣列、`ARRAY OF ARRAY` 第二層 → `rulesSkipped`(不猜)。守衛 = 包住存取、條件提到 `i` 的 IF / CASE / WHILE,或條件讀到「迴圈本體內在存取之前由含 `i` 的運算式算出的變數」(`b := i > 0; IF b THEN a[i]`,可遞移,第二輪審查 B2),或本體有 EXIT / CONTINUE / RETURN → variant `guarded`(warning,必須處置)。選 warning 不選 info:守衛沒有被求值,`b := i < 100` 這種守衛照樣放行越界值,看一眼條件就能處置;降成 info 會讓 agent 略過真的越界。條件與 `i` 無關(`IF x > 0 THEN a[i]`,`x` 不由 `i` 算出)仍 blocking。IEC 標準函式 / 型別轉換的參數視為傳值。語料常數範圍迴圈全在範圍內,0 筆。
 
@@ -204,6 +205,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 除以零的 runtime 出處(查 2026-11-13):DIV 頁 "In TwinCAT, division by zero always leads to an exception and the corresponding task is stopped."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528875403.html;同頁 permitted data types 含 REAL / LREAL);MOD 頁 "The behavior when dividing by zero or MOD 0 can vary depending on the target system!"(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528880779.html)。浮點:Task tab "Thus an exception is generated for division by zero and \"Invalid Operations\""(https://infosys.beckhoff.com/content/1033/tc3_system/5210416139.html,Floating Point Exception 選項)。
 - 除以零的 runtime 實測(實測 2026-11-13(XAE 4026.22 / VS2022,本機 UmRT;[verification/runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 7 節,本專案 task 為預設 Floating Point Exception 設定):(a) DINT `/` 變數 0:PLC exception,Error List `Exception Code: 0xc0000094, Integer divide by zero`,port 851 = Stop、port 10000 = **Exception**(adsState 19),兩個 task 都停;(b) REAL `/` 變數 0.0:`Exception Code: 0xc000008e, FPU zero divide`,狀態同 (a);(c) DINT `MOD` 變數 0:**不 exception**,PLC 照跑,結果 0;(d) LREAL `/`:NOT RUN。恢復:`SetPlcState Reset` / `Run` 都救不回來(TwinCAT 自己重啟到 Config),需要重新 Activate(`EnableConfig Force`),第 7.1 節。REAL 的結果取決於 task 的 Floating Point Exception 設定,關掉時是否得 INF / NaN 未測。所以 `constant-zero-div` / `unchecked-variable-divisor` 的後果是整個 TwinCAT system 進 Exception(PLC 全停),`constant-zero-mod` 的後果是靜默得到 0(邏輯錯、不停機)。
 - 實作與決定(PR #284):variant `constant-zero-div`(字面值 `/ 0`:blocking,finding 標 compilerCatches yes,不進 `unresolved`;具名常數 = 0:blocking,編譯器擋不擋未實測)、`constant-zero-mod`(blocking,編譯器不擋 → 進 `unresolved`)、`unchecked-variable-divisor`(**info、永不 blocking、不進 `unresolved`**)。`machineImpact` 欄位目前整條規則都是 `crash`,依實測 `constant-zero-mod` 應為 `behavior`(靜默得 0);本 PR 不改欄位與等級,建議見 PR 回報。變數除數的語料逐筆判讀(axis 46 + bfh 1 = 47 筆;第二輪審查 S5 後 axis 47、共 48 筆,新增的是 `FB_CorrugatedLiftingFixedAccDistance.StartAction` 的 `SyncPrintDistance_deg / SyncPrintDistance_deg`,輸入 SyncPrintDistance 為 0 時除以 0,歸「輸入為 0」類):真問題候選 1、呼叫端輸入為 0 時才發生 10、設定值衍生(直徑 × PI 等)35、誤報 2 —— 「確定是 bug」precision 約 1/48,當必須處置的 warning 會逼 agent 大量 suppress,違反「合法程式不得誤擋」,所以降為 info;profile 把 severity 調成 warning 時重新進 `unresolved`。為此 design.md D6 的 `unresolved[]` 改為不收 info。
+- `guarded-constant-zero`(PR #289 第一輪審查):具名常數 0 作為除數時,只有在路徑能證明該常數不等於 0 時才降為 `guarded-constant-zero`(warning,不擋)。能證明的情況:除法所在 IF 分支的條件是 `c <> 0` / `c > 0` / `c < 0` / `NOT (c = 0)`(或 AND / AND_THEN 的其中一項);前一分支條件為 `c = 0`(或含 `c = 0` 的 OR / OR_ELSE)而除法在其後的 ELSIF / ELSE;WHILE 條件證明非 0 的本體;前面有 `IF c = 0 THEN RETURN / EXIT / JMP`。其他寫法(`IF c = 0 THEN x / c`、常數寫在右邊的 `0 <> c`、CASE、同一運算式的 AND_THEN)不判斷,維持 `constant-zero-div` blocking。
 
 ### Phase 2b:SCAN-FBCALL-001 / 002、SCAN-TIMER-001 / 002 / 004 / 005(PR #289)
 
@@ -248,6 +250,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 已知漏抓(limits):提早 `RETURN`(`IF NOT bEnable THEN RETURN; END_IF` 之後的呼叫,實際是條件呼叫)、`JMP` 之後的呼叫、owner instance 本身被條件呼叫(遞移)。
 - TE1200:無對應(SA0105 Full 需要 attribute,只部分相關)。
 - 誤報來源:刻意「只在某模式更新」的 timer(語料 `TestCam.R_14Eng` 類)— 需處置。
+- `impactBasis`(逐筆,依實例型別):TON → 不帶(第 5 節實測);TOF / TP / LTON / LTOF / LTP 與 R_TRIG / F_TRIG → `inferred`(不被呼叫時的語意未實測)。
 
 #### SCAN-TIMER-002 Timer / 邊緣觸發只在 Method / Action 內呼叫(info,不進 `unresolved[]`,confidence low)
 - 定義:所有呼叫都在 Method / Action,而 owner 本體沒有「以敘述層級、不在 IF / CASE / 迴圈內」呼叫那個 Action / Method(Method 被別的 POU 呼叫的情況不追,所以無法證明每 cycle 呼叫)。
@@ -260,6 +263,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - variant `in-constant`(confidence medium):所有呼叫的 `IN` 都是常數 `FALSE`,且 `IN` 沒有被 `inst.IN :=` 賦值 → timer 永不啟動。**IN 常數 `TRUE` 不報**(開機延遲 `tonStartup(IN := TRUE, PT := T#5S)` 是合法寫法;狀態機形態由 005 處理)。
 - 追加 reason:`positional-arguments`(呼叫用位置引數,讀不到 PT / IN 名稱)。
 - 已知漏抓:`IN := TRUE OR x` 之類需要常數折疊(未做);seeded S18 目前不報。
+- `impactBasis`(逐筆):`pt-unset` 的 TON → 不帶(第 4 節實測),TOF / TP / LT* → `inferred`;`in-constant` 一律 `inferred`(「IN 恆 FALSE → timer 永不啟動」依 IEC 語意推論,未實測)。
 
 #### SCAN-TIMER-005 狀態 timer 離開時沒歸零(warning,`blockable: false`,進 `unresolved[]`)
 - 範圍:TON / LTON。
@@ -267,6 +271,7 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 - 偵測:所有呼叫都在**同一個 CASE** 的分支內、每個呼叫都是 `IN := TRUE`、沒有 `IN := FALSE`、沒有「之後同一路徑有呼叫(不帶 IN)」的 `inst.IN :=`(只寫 `inst.IN := FALSE` 不呼叫照報:TON 取樣不到 FALSE,下次呼叫又傳 `IN := TRUE` — 依 IEC FB 呼叫語意推論,未實測;判斷不了 → rulesSkipped `input-write-unresolved`),且不是「每個分支都呼叫(含 ELSE)」。`IN` 不是常數 → 改報 001。與 001 不重複報(同一 timer 只報 005)。
 - 不報:用位置引數(`positional`,不報 005,落到 001 / `explicit-reset` 的判斷);其餘 reason 同共同 reason 與 001。
 - 與 001 的差別:001 把正確寫法(離開前 `ton(IN := FALSE)`)和錯誤寫法報成同一個 warning;005 只抓錯的那種,confidence 較高(實作標 medium)。
+- `impactBasis`(逐筆):TON 且沒有「只寫 `inst.IN :=` 不呼叫」→ 不帶(第 5 節實測);有 `inst.IN := FALSE` 寫入但之後沒有呼叫取樣(依 IEC FB 呼叫語意推論)或型別為 LTON(未實測)→ `inferred`。
 
 **文件與實作的已知對應**:附錄 D6 舊稿的 4(FBCALL)與 5(TIMER)是 MVP 初稿,與上面實作不同之處以本節為準 — 舊稿 TIMER 範圍含 CTU / CTD / CTUD(實作不含)、舊稿 TIMER-004 含「IN 常數 TRUE」(實作不報)、舊稿 FBCALL 看 `VAR_INST`(實作只看 `VAR` / `VAR_STAT`)。
 

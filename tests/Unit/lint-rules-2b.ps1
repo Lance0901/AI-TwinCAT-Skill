@@ -246,6 +246,17 @@ $r = Fb "    ton1 : TON;" "ton1(IN := FALSE, PT := T#1S);"
 Check 'R4 TIMER-004 in-constant confidence medium' ((Diags $r 'SCAN-TIMER-004')[0].confidence -eq 'medium') (Brief $r)
 $r = Fb "    fbT : TON;`n    bQ : BOOL;" "bQ := fbT.Q;"
 Check 'R5 FBCALL-001 diagnostic carries impactBasis inferred' ((Diags $r 'SCAN-FBCALL-001')[0].impactBasis -eq 'inferred') (Brief $r)
+# per-diagnostic impactBasis (rule-catalog: inferred machine consequence; TON is measured)
+$r = Fb "    rt : R_TRIG;`n    b, c : BOOL;" "IF b THEN`n    rt(CLK := c);`nEND_IF"
+Check 'R5b R_TRIG TIMER-001 carries impactBasis inferred' ((Diags $r 'SCAN-TIMER-001')[0].impactBasis -eq 'inferred') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+$d = Diags $r 'SCAN-TIMER-001'
+Check 'R5c TON TIMER-001 has no impactBasis (measured)' ($d.Count -eq 1 -and $null -eq $d[0].impactBasis) (Brief $r)
+$r = Fb "    tof1 : TOF;`n    b : BOOL;" "tof1(IN := b);`nb := tof1.Q;"
+Check 'R5d TOF pt-unset carries impactBasis inferred' ((Diags $r 'SCAN-TIMER-004')[0].impactBasis -eq 'inferred') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b);"
+$d = Diags $r 'SCAN-TIMER-004'
+Check 'R5e TON pt-unset has no impactBasis (measured)' ($d.Count -eq 1 -and $null -eq $d[0].impactBasis) (Brief $r)
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    A_T();`nELSE`n    A_T();`nEND_IF" (Action 'A_T' 'ton1(IN := b, PT := T#1S);')
 Check 'R6 counter-example: IF ... ELSE both call the action -> no TIMER-002' (None2b $r) (Brief $r)
 $r = Fb "    ton1 : TON;`n    b : BOOL;`n    n : INT;" "CASE n OF`n1:`n    A_T();`nELSE`n    A_T();`nEND_CASE" (Action 'A_T' 'ton1(IN := b, PT := T#1S);')

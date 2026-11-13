@@ -270,6 +270,7 @@ namespace TcLintEngine
         public string Evidence;
         public string FixHint;
         public bool LineUnreliable;
+        public string ImpactBasis;      // per-diagnostic "inferred"; null -> the rule's registry value
 
         public static int SectionRank(string s)
         {
@@ -301,7 +302,8 @@ namespace TcLintEngine
             d["machineImpact"] = r == null ? "none" : r.MachineImpact;
             if (Blockable == "pending") d["blockableBasis"] = "pending-measurement";
             if (BlockingSource != null) d["blockingSource"] = BlockingSource;
-            if (r != null && r.ImpactBasis != null) d["impactBasis"] = r.ImpactBasis;
+            string basis = ImpactBasis ?? (r == null ? null : r.ImpactBasis);
+            if (basis != null) d["impactBasis"] = basis;
             if (CompilerCatches != null) d["compilerCatches"] = CompilerCatches;
             if (Variant != null) d["variant"] = Variant;
             d["file"] = File;
