@@ -281,6 +281,12 @@ namespace TcLintEngine
             string decl = x.Name + " : " + x.V.TypeText;
             if (x.Uses.Count == 0)
             {
+                // FB_init / FB_reinit / FB_exit run without any reference (constructor arguments, registration): not dead
+                if (x.Class == "project-fb")
+                {
+                    HashSet<string> m = members;
+                    if (m == null || m.Contains("FB_init") || m.Contains("FB_reinit") || m.Contains("FB_exit") || (x.V.TypeText ?? "").IndexOf('(') >= 0) { Skip2b(RFb2, x, "fb-init"); return; }
+                }
                 if (x.Class == "project-fb" || x.Class == "timer" || x.Class == "edge" || x.Class == "counter" || x.Class == "bistable" || x.Class == "stateful" || x.Class == "type-only")
                     Emit(RFb2, x.Owner.O.Rel, x.Owner.Path, "declaration", x.V.Line, x.V.Col,
                         "Function block instance '" + decl + "' is declared but never used in " + x.Owner.Path + " (no call, no member access, not passed on)",
@@ -416,23 +422,70 @@ namespace TcLintEngine
                 x.Name, "Call the instance unconditionally every cycle and put the condition on IN / CLK", null, null, null, false);
         }
 
-        // an action / method of the owner that the owner's body calls unconditionally (statement, outside IF / CASE / loop)
+        // an action / method of the owner that runs every time the owner's body runs: called from the body (or from a member
+        // that itself runs every time, e.g. body -> M_Outer -> M_Inner) as a statement or inside an expression (x := M(),
+        // IF M() THEN: a value-returning call is evaluated too), outside IF / CASE / loop branches and not behind AND_THEN /
+        // OR_ELSE; the condition of a top-level IF / CASE / WHILE / FOR counts (it is evaluated every time)
         private bool MemberRunsEveryTime(string path, string top, List<ImplUnit> secs)
+        {
+            return MemberRunsEveryTime(path, top, secs, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        private bool MemberRunsEveryTime(string path, string top, List<ImplUnit> secs, HashSet<string> seen)
         {
             if (!path.StartsWith(top + ".", StringComparison.OrdinalIgnoreCase)) return false;
             string member = path.Substring(top.Length + 1);
             if (member.IndexOf('.') >= 0) return false;   // property accessor
+            if (!seen.Add(member)) return false;
             foreach (ImplUnit u in secs)
             {
-                if (u.Path != top) continue;
+                if (u.Path != top && !MemberRunsEveryTime(u.Path, top, secs, seen)) continue;
                 foreach (CallSite cs in u.Scan.Calls)
                 {
                     string tg = cs.Target ?? "";
                     if (tg.StartsWith("THIS^.", StringComparison.OrdinalIgnoreCase)) tg = tg.Substring(6);
-                    if (string.Equals(tg, member, StringComparison.OrdinalIgnoreCase) && cs.StatementStart && !cs.Conditional && !cs.InPragma) return true;
+                    if (!string.Equals(tg, member, StringComparison.OrdinalIgnoreCase) || cs.InPragma) continue;
+                    if (CallEvaluatedEveryTime(cs, u.Scan.Lex.Tokens)) return true;
                 }
             }
             return false;
+        }
+
+        private static readonly Dictionary<string, string> CondEnd = new Dictionary<string, string>(StringComparer.Ordinal) { { "IF", "THEN" }, { "CASE", "OF" }, { "WHILE", "DO" }, { "FOR", "DO" } };
+
+        // the call is outside every branch (or in the condition of the one enclosing IF / CASE / WHILE / FOR) and no
+        // AND_THEN / OR_ELSE before it in its statement / condition can skip it
+        private static bool CallEvaluatedEveryTime(CallSite cs, List<Token> t)
+        {
+            int at = -1;
+            for (int i = 0; i < t.Count; i++) if (t[i].Line == cs.Line && t[i].Col == cs.Col) { at = i; break; }
+            if (at < 0) return false;
+            int from;
+            if (!cs.Conditional) from = -1;
+            else
+            {
+                string fp = cs.FramePath ?? "";
+                if (fp.Length == 0 || fp.IndexOf('>') >= 0) return false;
+                int atSign = fp.IndexOf('@'), colon = fp.IndexOf(':'), bar = fp.IndexOf('|');
+                if (atSign < 0 || colon < atSign || bar < colon) return false;
+                string kind = fp.Substring(0, atSign);
+                string end;
+                if (!CondEnd.TryGetValue(kind, out end)) return false;
+                int ln, cl;
+                if (!int.TryParse(fp.Substring(atSign + 1, colon - atSign - 1), out ln) || !int.TryParse(fp.Substring(colon + 1, bar - colon - 1), out cl)) return false;
+                int open = -1;
+                for (int i = 0; i < at; i++) if (t[i].Line == ln && t[i].Col == cl) { open = i; break; }
+                if (open < 0) return false;
+                for (int i = open + 1; i < at; i++) if (t[i].Kind == TokKind.Ident && t[i].Upper == end) return false;   // past the condition: in a branch
+                from = open;
+            }
+            for (int i = at - 1; i > from; i--)
+            {
+                if (t[i].IsOp(";")) break;
+                if (t[i].Kind == TokKind.Ident && (t[i].Upper == "AND_THEN" || t[i].Upper == "OR_ELSE")) return false;
+                if (from < 0 && t[i].Kind == TokKind.Ident && (t[i].Upper == "THEN" || t[i].Upper == "ELSE" || t[i].Upper == "DO" || t[i].Upper == "OF" || t[i].Upper.StartsWith("END_", StringComparison.Ordinal))) break;
+            }
+            return true;
         }
 
         // branches of every IF / CASE of a section, keyed like CallSite.FramePath ("IF@3:1" -> then, elsif#1, else);

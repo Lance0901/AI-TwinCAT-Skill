@@ -7,6 +7,8 @@
 #      IF / ELSE both, CASE every label + ELSE, outer unconditional call, explicit reset, action called every cycle
 #   P  SCAN-TIMER-004: PT never set, IN constant FALSE; counter-examples PT in call / inst.PT := / declaration init
 #   S  SCAN-TIMER-005: state timer IN := TRUE in one CASE branch without reset; counter-examples reset, IF, variable IN
+#   F  corpus review 2026-11-13: B20-B23 FB_init / library base (fb-init skip), T14-T18 member run every cycle via
+#      x := M() / IF M() THEN / nested members (AND_THEN / OR_ELSE and calls inside IF still reported)
 #   X  suppression (inline / profile), unresolved: warnings in, infos out; M metadata; D determinism
 # Mock basis: tests/Unit/lib/LintFixture.ps1 (XAE format, observed corpus 2026-11-13); the rule expectations follow
 # rule-catalog.md; TON semantics measured 2026-11-13 (XAE 4026.22 / UmRT, verification/runtime-semantics-measured.md
@@ -135,6 +137,16 @@ Add-Pou $fx 'FB_T' "FUNCTION_BLOCK FB_T`nVAR`n    fbT : TON;`n    b : BOOL;`nEND
 Add-Pou $fx 'PRG_X' "PROGRAM PRG_X`nVAR`n    o : FB_T;`nEND_VAR`n" "o();`no.fbT(IN := TRUE, PT := T#1S);"
 $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj
 Check 'B19 counter-example: o.fbT() from the owner instance outside -> no finding (qualified-access)' ((None2b $r) -and (SkipText $r) -like '*qualified-access:fbT*') ((Brief $r) + ' ' + (SkipText $r))
+# corpus review 2026-11-13 (worker F): FB_init / FB_exit run without any reference, so the instance is not dead
+$fbi = { param($fx) Add-Pou $fx 'FB_Reg' "FUNCTION_BLOCK FB_Reg`nVAR`n    n : INT;`nEND_VAR`n" 'n := n + 1;' (Method 'FB_init' "METHOD FB_init : BOOL`nVAR_INPUT`n    bInitRetains : BOOL;`n    bInCopyCode : BOOL;`n    nId : INT;`nEND_VAR`n" 'n := nId;') }
+$r = Fb "    fbReg : FB_Reg(nId := 3);" "" '' $fbi
+Check 'B20 counter-example: FB_Reg(nId := 3) with FB_init, never referenced -> no FBCALL-002, rulesSkipped fb-init' ((None2b $r) -and (SkipText $r) -like '*SCAN-FBCALL-002=fb-init:fbReg*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbReg : FB_Reg;" "" '' $fbi
+Check 'B21 counter-example: FB with FB_init, no arguments, never referenced -> no FBCALL-002' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbL : FB_LibThing(3);" "" '' $null
+Check 'B22 counter-example: FB_init arguments on a type outside the project -> no finding' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    fbD : FB_Der;" "" '' { param($fx) Add-Pou $fx 'FB_Der' "FUNCTION_BLOCK FB_Der EXTENDS FB_LibBase`nVAR`n    n : INT;`nEND_VAR`n" 'n := 1;' }
+Check 'B23 counter-example: project FB extending a library base (FB_init unknown), never referenced -> no FBCALL-002 (corpus: Main.fbWheelThreadCal)' ((None2b $r) -and (SkipText $r) -like '*SCAN-FBCALL-002=fb-init:fbD*') ((Brief $r) + ' ' + (SkipText $r))
 
 # ================================================================ T  SCAN-TIMER-001 / 002
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
@@ -165,6 +177,18 @@ $r = Fb "    rt : F_TRIG;`n    b : BOOL;" "M_Edge();" (Method 'M_Edge' "METHOD M
 Check 'T12 counter-example: method called unconditionally by the body -> no finding' (None2b $r) (Brief $r)
 $r = Fb "    ton1 : TON;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 3 DO`n    IF b THEN ton1(IN := b, PT := T#1S); END_IF`nEND_FOR"
 Check 'T13 call in a loop -> not evaluated (call-in-loop)' ((None2b $r) -and (SkipText $r) -like '*call-in-loop:ton1*') (Brief $r)
+# corpus review 2026-11-13 (worker F): a method whose return value the body uses still runs every cycle
+$mw = Method 'M_Wait' "METHOD M_Wait : BOOL`n" "ton1(IN := TRUE, PT := T#2S);`nM_Wait := ton1.Q;"
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "b := M_Wait();" $mw
+Check 'T14 counter-example: b := M_Wait() unconditional, the method calls the TON -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF M_Wait() THEN`n    b := TRUE;`nEND_IF" $mw
+Check 'T15 counter-example: IF M_Wait() THEN (condition evaluated every cycle) -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "M_Outer();" ((Method 'M_Outer' "METHOD M_Outer`n" 'M_Inner();') + (Method 'M_Inner' "METHOD M_Inner`n" 'ton1(IN := b, PT := T#2S);'))
+Check 'T16 counter-example: body -> M_Outer -> M_Inner, all unconditional -> no finding' (None2b $r) (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b AND_THEN M_Wait() THEN`n    b := FALSE;`nEND_IF" $mw
+Check 'T17 IF b AND_THEN M_Wait() (short-circuit) -> TIMER-002 stays' (Only $r 'SCAN-TIMER-002') (Brief $r)
+$r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    b := M_Wait();`nEND_IF" $mw
+Check 'T18 b := M_Wait() inside IF -> TIMER-002 stays' (Only $r 'SCAN-TIMER-002') (Brief $r)
 
 # ================================================================ P  SCAN-TIMER-004
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "ton1(IN := b);"
