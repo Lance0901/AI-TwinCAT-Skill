@@ -1217,7 +1217,8 @@ namespace TcLintEngine
             private string EnclosingIfInstance(int from, int k, BodyCalls bc)
             {
                 int then = -1;
-                for (int p = k - 1; p >= from; p--) { if (t[p].Is("THEN")) { then = p; break; } if (t[p].Is("END_IF")) return null; }
+                // an ELSE / ELSIF between the write and THEN: the write is not in the branch the instance test opens (review 4 nit 1)
+                for (int p = k - 1; p >= from; p--) { if (t[p].Is("THEN")) { then = p; break; } if (t[p].Is("END_IF") || t[p].Is("ELSE") || t[p].Is("ELSIF")) return null; }
                 if (then < 0) return null;
                 int ifk = -1;
                 for (int p = then - 1; p >= from; p--) if (t[p].Is("IF") || t[p].Is("ELSIF")) { ifk = p; break; }
@@ -1389,8 +1390,18 @@ namespace TcLintEngine
                     bool tainted = false;
                     for (int q = k + 1; q < idx && !t[q].IsOp(";") && !IsStmtKeyword(t[q]) && !t[q].Is("TO") && !t[q].Is("BY") && !tainted; q++)
                         if (t[q].Kind == TokKind.Ident && !t[q - 1].IsOp(".") && MentionsAt(q, set)) tainted = true;
+                    // review 4 blocker 1: a write inside an IF / CASE whose condition / selector depends on the counter is
+                    // control-dependent on it (IF i > 0 THEN bOk := TRUE; ... IF bOk THEN a[i])
+                    if (!tainted)
+                        foreach (Blk eb in Enclosing(k, bodyFrom - 1))   // a block may open on the first token of the body
+                        {
+                            if (eb.Kind != "IF" && eb.Kind != "CASE") continue;
+                            foreach (Br br in eb.Branches)
+                                if (br.CondFrom >= 0 && br.CondFrom < k && Mentions(br.CondFrom, Math.Min(br.CondTo, k), set)) { tainted = true; break; }
+                            if (tainted) break;
+                        }
                     if (tainted) set.Add(lhs);
-                    else if (lhs != counter && set.Contains(lhs) && Enclosing(k, bodyFrom).Count == 0) set.Remove(lhs);
+                    else if (lhs != counter && set.Contains(lhs) && Enclosing(k, bodyFrom - 1).Count == 0) set.Remove(lhs);
                 }
                 return set;
             }

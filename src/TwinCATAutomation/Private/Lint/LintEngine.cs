@@ -554,8 +554,11 @@ namespace TcLintEngine
             catch (Exception) { }
         }
 
+        private int libraryRefs;   // library / placeholder references of the .plcproj (LintCandidate: X.Y may be a library name)
+
         private void CheckLibraries(List<XElem> placeholders, List<XElem> resolutions, List<XElem> libs)
         {
+            libraryRefs = placeholders.Count + libs.Count;
             foreach (XElem p in placeholders)
             {
                 string inc = p.Attr("Include");

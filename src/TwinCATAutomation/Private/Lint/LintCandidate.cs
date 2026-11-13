@@ -403,6 +403,7 @@ namespace TcLintEngine
         {
             if (local.Contains(name) || BuiltinNames.Contains(name) || ConversionRx.IsMatch(name) || Elementary.Contains(name)) return true;
             if (string.Equals(name, "THIS", StringComparison.OrdinalIgnoreCase)) return true;   // the candidate itself (SUPER needs EXTENDS: reported through extends:)
+            if (SystemNames.Contains(name)) return true;   // TwinCAT_SystemInfoVarList, GETCURTASKINDEX(EX) (review 4 nit 4)
             foreach (CatalogType c in opt.CatalogTypes) if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
         }

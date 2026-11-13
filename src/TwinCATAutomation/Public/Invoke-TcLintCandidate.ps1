@@ -338,7 +338,7 @@ function Invoke-TcLintCandidate {
         diagnostics          = @($mainDiags)
         preExisting          = @($preExisting)
         projectVerdict       = $(if ($textOnly) { $null } else { [string]$diskR['verdict'] })
-        projectBlocking      = $(if ($textOnly) { @() } else { @($diskR['diagnostics'] | Where-Object { $_ -and [bool]$_['blocking'] }) })
+        projectBlocking      = @(if (-not $textOnly) { $diskR['diagnostics'] | Where-Object { $_ -and [bool]$_['blocking'] } })   # always an array (review 4 should-fix 2)
         unresolved           = @($mainUnresolved)
         requiresDisposition  = ($reasons.Count -gt 0)
         dispositionReasons   = @($reasons)

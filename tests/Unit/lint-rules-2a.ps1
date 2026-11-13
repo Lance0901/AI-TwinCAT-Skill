@@ -337,6 +337,17 @@ Check 'R3B2b the guard variable is overwritten unconditionally from an unrelated
 $r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;`n    bEn : BOOL;" "FOR i := 0 TO 10 DO`n    b := i > 0;`n    IF bEn THEN`n        b := FALSE;`n    END_IF`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
 $d = Diags $r 'SCAN-ARR-001'
 Check 'R3B2b counter-example: a conditional overwrite keeps the guard -> not blocking' (@($d | Where-Object { $_.blocking }).Count -eq 0) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    bOk : BOOL;" "FOR i := 0 TO 10 DO`n    bOk := FALSE;`n    IF i > 0 THEN`n        bOk := TRUE;`n    END_IF`n    IF bOk THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R4B2i guard flag set inside IF i > 0 (control dependence) -> not blocking' (@($d | Where-Object { $_.blocking }).Count -eq 0) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    CASE i OF`n        0: b := FALSE;`n    ELSE`n        b := TRUE;`n    END_CASE`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R4B2q guard flag set in CASE i OF -> not blocking' (@($d | Where-Object { $_.blocking }).Count -eq 0) (Brief $r)
+$r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    b : BOOL;`n    x : INT;" "FOR i := 0 TO 10 DO`n    IF x > 0 THEN`n        b := TRUE;`n    END_IF`n    IF b THEN`n        a[i] := 0;`n    END_IF`nEND_FOR"
+$d = Diags $r 'SCAN-ARR-001'
+Check 'R4B2 counter-example: flag set under a condition unrelated to i -> still blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+$r = Fb "    bDone : BOOL;`n    ton1 : TON;`n    n : INT;" "WHILE NOT bDone DO`n    ton1(IN := TRUE, PT := T#1S);`n    IF ton1.Q THEN`n        n := 1;`n    ELSE`n        bDone := TRUE;`n    END_IF`nEND_WHILE"
+Check 'R4nit1 write in the ELSE branch of IF ton1.Q -> no fb-wait-loop' (@(Diags $r 'SCAN-LOOP-001' | Where-Object { $_.variant -eq 'fb-wait-loop' }).Count -eq 0) (Brief $r)
 $r = Fb "    a : ARRAY[1..10] OF INT;`n    i : INT;`n    k : INT;`n    b : BOOL;" "FOR i := 0 TO 10 DO`n    k := i * 2;`n    b := k > 1;`n    CASE b OF`n    TRUE: a[i] := 0;`n    END_CASE`nEND_FOR"
 $d = Diags $r 'SCAN-ARR-001'
 Check 'QB2b transitive (k := i * 2; b := k > 1; CASE b) -> guarded, not blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'guarded' -and -not $d[0].blocking) (Brief $r)

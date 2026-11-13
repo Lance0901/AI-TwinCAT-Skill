@@ -25,7 +25,8 @@ namespace TcLintEngine
                     if (dt[k].Kind == TokKind.Ident && dt[k].Upper.StartsWith("VAR", StringComparison.Ordinal) && dt[k].Upper != "VARIANT")
                     { constBlock = k + 1 < dt.Count && dt[k + 1].Is("CONSTANT"); continue; }
                     if (dt[k].Is("END_VAR")) { constBlock = false; continue; }
-                    if (dt[k].IsOp("[")) { br++; continue; }
+                    // only ARRAY[ ... ] bounds; an array initial value [a, b] is not a bound (review 4 blocker 2, S2n)
+                    if (dt[k].IsOp("[")) { if (br > 0 || (k > 0 && dt[k - 1].Is("ARRAY"))) br++; continue; }
                     if (dt[k].IsOp("]")) { if (br > 0) br--; continue; }
                     if (dt[k].IsOp(":=")) { init = true; continue; }
                     if (dt[k].IsOp(";")) { init = false; continue; }
@@ -82,7 +83,13 @@ namespace TcLintEngine
                     if (!(c.RuleId.StartsWith("SCAN-LOOP", StringComparison.Ordinal) || c.RuleId.StartsWith("SCAN-FOR", StringComparison.Ordinal) || c.RuleId.StartsWith("SCAN-ARR", StringComparison.Ordinal) || c.RuleId.StartsWith("SAFETY-", StringComparison.Ordinal))) continue;
                     if (!(string.Equals(c.ObjectPath, candPath, StringComparison.OrdinalIgnoreCase) || c.ObjectPath.StartsWith(candPath + ".", StringComparison.OrdinalIgnoreCase))) continue;
                     string rs = c.Reason.ToLowerInvariant();
-                    if (rs.Contains("unknown") || rs.Contains("not-constant") || rs.Contains("unresolved"))
+                    // review 4 should-fix 1: 'not-constant' only counts when a name the rules read comes from outside the candidate
+                    // (a local non-constant FOR bound has nothing to do with a broken object)
+                    bool outside = false;
+                    HashSet<string> localNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    AddDeclNames(StAnalyzer.ParseDeclaration(opt.CandidateDeclaration ?? ""), localNames);
+                    foreach (string u in used) if (!localNames.Contains(u)) outside = true;
+                    if (rs.Contains("unknown") || rs.Contains("unresolved") || (rs.Contains("not-constant") && outside))
                     {
                         foreach (TcObjectFile o in objects) if (o.Obj == null || o.Xml == null || !o.Xml.WellFormed) AddNeed("context-object-broken:" + o.Rel);
                         break;
@@ -125,6 +132,23 @@ namespace TcLintEngine
                 foreach (CatalogType c in opt.CatalogTypes) if (string.Equals(c.Name, n, StringComparison.OrdinalIgnoreCase)) { cat = true; break; }
                 if (cat) continue;
                 missing.Add(n);
+            }
+            // review 4 blocker 2: X.Y with an unknown X is a library enum / GVL as often as a typo (MC_BufferMode.MC_Aborting):
+            // the linter has no symbol list of the libraries, so when the project references libraries such a qualifier is
+            // recorded (rulesSkipped library-or-unknown:X), not required; an unqualified unknown name stays required
+            if (libraryRefs > 0)
+            {
+                HashSet<string> qualifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                List<Token> allq = new List<Token>(t); allq.AddRange(dt);
+                for (int k = 0; k + 1 < allq.Count; k++)
+                    if (allq[k].Kind == TokKind.Ident && allq[k + 1].IsOp(".") && !(k > 0 && allq[k - 1].IsOp("."))) qualifiers.Add(allq[k].Text);
+                List<string> still = new List<string>();
+                foreach (string n in missing)
+                {
+                    if (qualifiers.Contains(n)) rulesSkipped.Add(Cov(null, candFile, candPath, "implementation", "library-or-unknown:" + n));
+                    else still.Add(n);
+                }
+                missing = still;
             }
             if (missing.Count == 0) return;
             missing.Sort(StringComparer.OrdinalIgnoreCase);

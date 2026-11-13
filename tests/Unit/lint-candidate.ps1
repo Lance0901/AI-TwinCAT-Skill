@@ -211,6 +211,20 @@ Edit-LintFxFile $fx7.FbA { param($t) $t.Replace("    nState : INT;`r`nEND_VAR", 
 $r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Do'; Declaration = "METHOD M_Do : BOOL`r`nVAR_INPUT`r`n    nValue : INT;`r`nEND_VAR`r`n"; Implementation = 'M_Do := nValue > 0;'; PlcProjectPath = $fx7.Plcproj }
 Check 'P13 Method candidate: MOD 0 already in the FB body is preExisting, not the method''s; projectVerdict fail with projectBlocking listing it' ($r.success -and (Diags $r 'SAFETY-DIV-001').Count -eq 0 -and @($r.data.preExisting | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' }).Count -eq 1 -and $r.data.projectVerdict -eq 'fail' -and @($r.data.projectBlocking | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' }).Count -eq 1) (Brief $r)
 
+# review 4: library enums, array initial values, local bounds with a broken object elsewhere, projectBlocking shape
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_Q'; Declaration = $sq; Implementation = "FOR i := 1 TO 10 DO`r`n    a[i] := MC_BufferMode.MC_Aborting;`r`nEND_FOR`r`na[MC_BufferMode.MC_Aborting] := 0;`r`nF_Q := 10 / MC_BufferMode.MC_Buffered;"; PlcProjectPath = $Plc }
+Check 'P14 library enum (MC_BufferMode.x) as index / divisor in a project with library references -> not CONTEXT_REQUIRED, recorded library-or-unknown' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED' -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'library-or-unknown:MC_BufferMode' }).Count -ge 1) (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_N'; Declaration = "FUNCTION F_N : INT`r`nVAR`r`n    aDir : ARRAY[0..1] OF MC_Direction := [MC_Direction.MC_Positive_Direction, MC_Direction.MC_Negative_Direction];`r`nEND_VAR`r`n"; Implementation = 'F_N := 1;'; PlcProjectPath = $Plc }
+Check 'P15 array initial value [a, b] is not a bound -> not CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED') (Brief $r)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_L2'; Declaration = "FUNCTION F_L2 : INT`r`nVAR_INPUT`r`n    n : INT;`r`nEND_VAR`r`nVAR`r`n    i : INT;`r`n    a : ARRAY[1..10] OF INT;`r`nEND_VAR`r`n"; Implementation = "FOR i := 1 TO n DO`r`n    F_L2 := F_L2 + 1;`r`nEND_FOR"; PlcProjectPath = $fx6.Plcproj }
+Check 'P16 local non-constant FOR bound while an unrelated DUT is broken -> not context-object-broken' ($r.success -and @($r.data.candidate.contextRequired).Count -eq 0) (Brief $r)
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_A'; Declaration = $fbaDecl; Implementation = $fbaImpl; PlcProjectPath = $Plc }
+Check 'P17 projectBlocking is an array even when empty' (($r | ConvertTo-Json -Depth 30 -Compress) -match '"projectBlocking":\[\]') ''
+$r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Do'; Declaration = "METHOD M_Do : BOOL`r`nVAR_INPUT`r`n    nValue : INT;`r`nEND_VAR`r`n"; Implementation = 'M_Do := nValue > 0;'; PlcProjectPath = $fx7.Plcproj }
+Check 'P18 projectBlocking with one entry is still an array' (($r | ConvertTo-Json -Depth 30 -Compress) -match '"projectBlocking":\[\{') ''
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_S2'; Declaration = "FUNCTION F_S2 : UDINT`r`n"; Implementation = 'F_S2 := TwinCAT_SystemInfoVarList._TaskInfo[GETCURTASKINDEXEX()].CycleTime;' }
+Check 'P19 text-only: system names are known -> not CONTEXT_REQUIRED' ($r.error.code -ne 'LINT_CONTEXT_REQUIRED') (Brief $r)
+
 # ================================================================ R  read-only
 Check 'R1 no file of the project changed (content and write time) after every candidate above' ((Hashes) -ceq $before) ''
 
