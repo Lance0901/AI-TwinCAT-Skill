@@ -309,7 +309,7 @@ namespace TcLintEngine
                     else { use.Kind = "member"; use.Assign = n3 != null && n3.IsOp(":="); }
                     if (n3 != null && (n3.IsOp(".") || n3.IsOp("[") || n3.IsOp("^"))) { x.Skip = "nested-member-access"; return; }
                     if (use.Assign) use.AssignConst = ConstBool2b(t, i + 4, StatementEnd(t, i + 4));
-                    else if (use.Kind == "member") use.Passed = HandedOn(t, start);
+                    else if (use.Kind == "member") { use.Passed = HandedOn(t, start); if (use.Passed && ArgByValue(t, start, i + 2, x)) use.Passed = false; }
                 }
                 else { x.Skip = "passed-or-aliased"; return; }   // f(inst), ADR(inst), r REF= inst, itf := inst, inst := other
                 x.Uses.Add(use);
@@ -353,6 +353,55 @@ namespace TcLintEngine
             return false;
         }
 
+        // review round 3 nit B: inst.Member at t[start..end] is the whole argument of a call to a project FUNCTION / FB whose
+        // formal parameter at that place is VAR_INPUT (by value): the callee cannot write it back, so it is not a possible write.
+        // VAR_IN_OUT / VAR_OUTPUT, an unknown callee, a method / qualified callee, ADR / MEMCPY, or the argument being part of a
+        // larger expression -> false (stays "handed on")
+        private bool ArgByValue(List<Token> t, int start, int end, Inst x)
+        {
+            if (start < 2 || end + 1 >= t.Count) return false;
+            // the argument must stand alone: ( or , or NAME := before it, ) or , after it
+            string name = null; int from = start;
+            if (t[start - 1].IsOp(":=") && t[start - 2].Kind == TokKind.Ident) { name = t[start - 2].Text; from = start - 2; }
+            if (!(t[from - 1].IsOp("(") || t[from - 1].IsOp(","))) return false;
+            if (!(t[end + 1].IsOp(")") || t[end + 1].IsOp(","))) return false;
+            // find the call's '(' and the argument position
+            int depth = 0, pos = 0, open = -1;
+            for (int k = from - 1; k >= 0; k--)
+            {
+                if (t[k].IsOp(")")) depth++;
+                else if (t[k].IsOp("(")) { if (depth == 0) { open = k; break; } depth--; }
+                else if (depth == 0 && t[k].IsOp(",")) pos++;
+                else if (depth == 0 && t[k].IsOp(";")) return false;
+            }
+            if (open < 1 || t[open - 1].Kind != TokKind.Ident || StLexer.Keywords.Contains(t[open - 1].Upper)) return false;
+            if (open >= 2 && (t[open - 2].IsOp(".") || t[open - 2].IsOp("^"))) return false;
+            string callee = t[open - 1].Text;
+            PouNode pn;
+            if (!pouIndex.TryGetValue(callee, out pn))
+            {
+                // an instance of a project FB declared in the owner: fbX(IN := inst.PT)
+                string tt = null;
+                foreach (VarBlock b in x.Owner.Di.VarBlocks) foreach (VarDecl vd in b.Vars) foreach (string n in vd.Names) if (string.Equals(n, callee, StringComparison.OrdinalIgnoreCase)) tt = (vd.TypeText ?? "").Trim();
+                if (tt == null || !pouIndex.TryGetValue(tt, out pn)) return false;
+            }
+            if (pn.Header != "FUNCTION" && pn.Header != "FUNCTION_BLOCK") return false;
+            List<KeyValuePair<string, string>> formals = new List<KeyValuePair<string, string>>();   // name -> block kind, textual order
+            foreach (DeclUnit d in declUnits)
+            {
+                if (d.O != pn.O || d.Path != d.O.ObjectPath) continue;
+                foreach (VarBlock b in d.Di.VarBlocks)
+                    if (b.Kind == "VAR_INPUT" || b.Kind == "VAR_IN_OUT")
+                        foreach (VarDecl vd in b.Vars) foreach (string n in vd.Names) formals.Add(new KeyValuePair<string, string>(n, b.Kind));
+            }
+            if (name != null)
+            {
+                foreach (KeyValuePair<string, string> f in formals) if (string.Equals(f.Key, name, StringComparison.OrdinalIgnoreCase)) return f.Value == "VAR_INPUT";
+                return false;
+            }
+            return pos < formals.Count && formals[pos].Value == "VAR_INPUT";
+        }
+
         // value of a constant boolean expression in t[from, to): TRUE / FALSE, NOT, parentheses, AND / OR / XOR (and the
         // short-circuit forms), comparisons of integer literals; null = not a constant the linter evaluates
         private static bool? ConstBool2b(List<Token> t, int from, int to)
@@ -370,6 +419,9 @@ namespace TcLintEngine
                     else if (depth == 0 && ((t[k].Kind == TokKind.Ident && Array.IndexOf(ops, t[k].Upper) >= 0) || (t[k].Kind == TokKind.Op && Array.IndexOf(ops, t[k].Text) >= 0)))
                     {
                         bool? l = ConstBool2b(t, from, k), r = ConstBool2b(t, k + 1, to);
+                        // a constant operand decides the result however the other side evaluates (TRUE OR x, x AND FALSE), as SCAN-LOOP-001 does
+                        if (ops[0] == "OR" && (l == true || r == true)) return true;
+                        if (ops[0] == "AND" && (l == false || r == false)) return false;
                         if (!l.HasValue || !r.HasValue) return null;
                         return ops[0] == "OR" ? l.Value || r.Value : ops[0] == "XOR" ? l.Value != r.Value : l.Value && r.Value;
                     }
@@ -700,7 +752,7 @@ namespace TcLintEngine
                     if (!string.Equals(tg, member, StringComparison.OrdinalIgnoreCase)) continue;
                     n++; site = cs; at = u;
                 }
-            if (n != 1) { if (n > 1) why = "member-called-elsewhere"; return null; }
+            if (n != 1) { if (n > 1) why = "member-called-at-several-sites"; return null; }
             if (at.Path != top || site.InPragma || !site.Conditional || StAnalyzer.InLoop(site.FramePath) || !StatementStart(site, at.Scan.Lex.Tokens)) return null;
             InstUse s = new InstUse();
             s.U = at; s.Kind = "body-call"; s.Line = site.Line; s.Col = site.Col; s.Call = site; s.Args = c.Args; s.Via = member;

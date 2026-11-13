@@ -346,6 +346,29 @@ Check 'K-R1 library type ST_LibFb / E_LibFb (not in project) -> rulesSkipped unk
 $r = Fb "    d : ST_Data;`n    b : BOOL;" "b := d.x;" '' { param($fx) Add-Dut $fx 'ST_Data' "TYPE ST_Data :`nSTRUCT`n    x : BOOL;`nEND_STRUCT`nEND_TYPE`n" }
 Check 'K-R2 project DUT ST_Data (struct) -> not recorded' ((None2b $r) -and (SkipText $r) -notlike '*ST_Data*') ((Brief $r) + ' ' + (SkipText $r))
 
+# Round 3 nit B: a project FUNCTION / FB parameter that is VAR_INPUT (by value) cannot write inst.PT / inst.IN back
+$rd = { param($fx) Add-Pou $fx 'F_Rd' "FUNCTION F_Rd : BOOL`nVAR_INPUT`n    t : TIME;`nEND_VAR`n" "F_Rd := TRUE;" }
+$rdIo = { param($fx) Add-Pou $fx 'F_Rd' "FUNCTION F_Rd : BOOL`nVAR_IN_OUT`n    t : TIME;`nEND_VAR`n" "F_Rd := TRUE;" }
+$rdB = { param($fx) Add-Pou $fx 'F_RdB' "FUNCTION F_RdB : BOOL`nVAR_INPUT`n    b : BOOL;`nEND_VAR`n" "F_RdB := b;" }
+$r = Fb "    tmr : TON;`n    b : BOOL;" "b := F_Rd(tmr.PT);`ntmr(IN := b);" '' $rd
+Check 'K-R3 F_Rd(tmr.PT), formal VAR_INPUT (positional) -> pt-unset still reported' (Only $r 'SCAN-TIMER-004') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "b := F_Rd(t := tmr.PT);`ntmr(IN := b);" '' $rd
+Check 'K-R3b F_Rd(t := tmr.PT), formal VAR_INPUT (named) -> pt-unset still reported' (Only $r 'SCAN-TIMER-004') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "b := F_Rd(tmr.PT);`ntmr(IN := b);" '' $rdIo
+Check 'K-R4 F_Rd(tmr.PT), formal VAR_IN_OUT -> pt-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=pt-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "b := F_Nope(tmr.PT);`ntmr(IN := b);"
+Check 'K-R5 unknown callee F_Nope(tmr.PT) -> pt-passed-or-aliased' ((None2b $r) -and (SkipText $r) -like '*SCAN-TIMER-004=pt-passed-or-aliased:tmr*') ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    tmr : TON;`n    b : BOOL;" "b := F_RdB(tmr.IN);`ntmr(IN := FALSE, PT := T#1S);" '' $rdB
+Check 'K-R6 F_RdB(tmr.IN), formal VAR_INPUT -> in-constant still reported' (Only $r 'SCAN-TIMER-004') ((Brief $r) + ' ' + (SkipText $r))
+# Round 3 nit C: several call sites inside the body is not "called elsewhere"
+$r = Fb "    tmr : TON;`n    n : INT;" "CASE n OF`n10:`n    A_Wait();`n20:`n    A_Wait();`nEND_CASE" (Action 'A_Wait' "tmr(IN := TRUE, PT := T#2S);")
+Check 'K-R7 action called at two body sites -> reason member-called-at-several-sites, not -elsewhere' ((SkipText $r) -like '*SCAN-TIMER-005=member-called-at-several-sites:tmr*' -and (SkipText $r) -notlike '*member-called-elsewhere*') ((Brief $r) + ' ' + (SkipText $r))
+# Round 3 nit D: constant folding as SCAN-LOOP-001 does
+$r = Fb "    ton1 : TON;`n    b, bStart : BOOL;" "IF TRUE OR bStart THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'K-R8 IF TRUE OR bStart THEN tmr() -> always runs, no TIMER-001' (None2b $r) ((Brief $r) + ' ' + (SkipText $r))
+$r = Fb "    ton1 : TON;`n    b, bStart : BOOL;" "IF FALSE AND bStart THEN`n    ton1(IN := b, PT := T#1S);`nEND_IF"
+Check 'K-R9 IF FALSE AND bStart THEN tmr() -> constant-false-condition' ((Diags $r 'SCAN-TIMER-001').Count -eq 0 -and (SkipText $r) -like '*SCAN-TIMER-001=constant-false-condition:ton1*') ((Brief $r) + ' ' + (SkipText $r))
+
 # ================================================================ X  suppression
 $r = Fb "    ton1 : TON;`n    b : BOOL;" "IF b THEN`n    // tcauto-lint-disable-next-line SCAN-TIMER-001: updated only in this mode on purpose`n    ton1(IN := b, PT := T#1S);`nEND_IF"
 $d = Diags $r 'SCAN-TIMER-001'
