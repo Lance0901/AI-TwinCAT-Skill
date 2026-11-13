@@ -109,8 +109,11 @@ function Get-Conn { & $mod { [PSCustomObject]@{ connected = [bool]$script:TcIdeC
 try {
     foreach ($mode in 'unreadable', 'busy') {
         # control: without -ProgId the #29 check recognises Y as the blocked owner of $sln
+        # (#281 C: Y is TcAuto's own IDE here - a blocked IDE TcAuto did not launch would get
+        # IDE_ATTACH_CONSENT_REQUIRED instead, connect-ide-attach-consent-281.ps1 C2)
         Reset-State
         Set-BlockedY 9501 $mode
+        & $mod { Add-TcLaunchedIde -ProcessId 9501 }
         $r = Connect-TcIde -SolutionPath $sln
         Check "C-$mode control: no -ProgId, blocked Y ($mode) with a dialog-path dialog -> #29 IDE_MODAL_DIALOG for Y, nothing launched" ((-not $r.success) -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.ideProcessId -eq 9501 -and $r.data.matchedBy -eq 'dialog-path' -and @($global:Launches280b | Where-Object { $_ -notlike 'GAO:*' }).Count -eq 0) (J $r)
         $null = Disconnect-TcIde

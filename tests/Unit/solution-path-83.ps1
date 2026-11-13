@@ -115,6 +115,8 @@ try {
 
     # --- Connect-TcIde -NoLaunch: blocked IDE, short and long give the same answer, data.solution is the long name ---
     $global:FakeIde = @{ 301 = @{ Title = $title; Dialog = $dlgShort } }
+    # #281 C: a blocked IDE is attached only when TcAuto may work in it: the user agreed earlier (consent memory)
+    & $mod { Add-TcIdeAttachConsent -ProcessId 301 }
     $res = @{}
     foreach ($kv in @(@('long', $sln), @('short', $short))) {
         Reset-Conn

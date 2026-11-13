@@ -160,6 +160,19 @@ function Reset-All {
     Restore-UnitModuleMemory $script:mod $script:modMemory
 }
 function Get-RecordFile { Join-Path $env:TCAUTO_STATE_DIR 'launched-ides.json' }
+# #281 C: an IDE that TcAuto may not work in (not owned by this session, no consent) is no longer
+# attached by solution-match: Connect-TcIde -SolutionPath answers IDE_ATTACH_CONSENT_REQUIRED (which is
+# itself the "not owned" verdict, Test-TcLaunchedIde). Connect-AfterConsent records that answer
+# (.unitConsentCode), then gives the user's consent (-ProcessId) and connects with -SolutionPath alone,
+# so the solution-match attach of a NOT owned IDE (-Kill refused afterwards) is still covered.
+function Connect-AfterConsent([int]$IdePid) {
+    $c0 = Connect-TcIde -SolutionPath $sln
+    $null = Connect-TcIde -ProcessId $IdePid -SolutionPath $sln
+    $res = Connect-TcIde -SolutionPath $sln
+    $res | Add-Member -NotePropertyName unitConsentCode -NotePropertyValue $(if ($c0.success) { 'success' } else { [string]$c0.error.code }) -Force
+    $res | Add-Member -NotePropertyName unitConsentHint -NotePropertyValue ([string]$c0.error.hint) -Force
+    $res
+}
 function Read-Records { $f = Get-RecordFile; if (-not (Test-Path -LiteralPath $f)) { return @() }; @((Get-Content -LiteralPath $f -Raw | ConvertFrom-Json) | ForEach-Object { $_ }) }
 # Rewrites every record of the file with -Change { param($r) ... } (simulates another writer).
 function Edit-Records([scriptblock]$Change) {
@@ -216,8 +229,8 @@ try {
     $global:Procs73[$first.Pid] = [DateTime]'2026-11-06T11:11:11'
     Show-OwnInRot $first.Pid $slnL
     $global:Modal73 = 'dialog'
-    $r = Connect-TcIde -SolutionPath $sln
-    Check 'P1 same pid, other start time -> not owned' ($r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
+    $r = Connect-AfterConsent $first.Pid
+    Check 'P1 same pid, other start time -> not owned (consent required; after consent solution-match, not owned)' ($r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
     $d = Disconnect-TcIde -Quit -Kill
     Check 'P2 -Kill refused for the recycled pid (IDE_NOT_OWNED), nothing killed' ($d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "code=$($d.error.code) kills=$($global:Kills73 -join ',')"
     Reset-All
@@ -244,8 +257,8 @@ try {
     Check 'F1 corrupt file -> the IDE is not owned' ($own -eq $false) "owned=$own"
     Show-OwnInRot $first.Pid $slnL
     $global:Modal73 = 'dialog'
-    $r = Connect-TcIde -SolutionPath $sln
-    Check 'F2 corrupt file does not block the normal attach (solution-match, not owned)' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.selectedBy -eq 'solution-match' -and [int]$r.data.ideProcessId -eq $first.Pid -and $r.data.ownedBySession -eq $false) "code=$($r.error.code) sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
+    $r = Connect-AfterConsent $first.Pid
+    Check 'F2 corrupt file does not block the normal attach (not owned: consent required; after consent solution-match, not owned)' ($r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.error.code -eq 'IDE_MODAL_DIALOG' -and $r.data.selectedBy -eq 'solution-match' -and [int]$r.data.ideProcessId -eq $first.Pid -and $r.data.ownedBySession -eq $false) "code=$($r.error.code) sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
     $d = Disconnect-TcIde -Quit -Kill
     Check 'F3 corrupt file: -Kill refused (IDE_NOT_OWNED), nothing killed' ($d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "code=$($d.error.code)"
     $null = Disconnect-TcIde
@@ -292,8 +305,8 @@ try {
     Restart-Module
     Restart-Module
     $global:Rot73 = @(New-RotEntry 9777 (New-FakeDte $slnL)); $global:Modal73 = 'dialog'
-    $r = Connect-TcIde -SolutionPath $sln
-    Check 'U3 the guessed-pid IDE with the solution is attached by solution-match but not owned' ($r.data.selectedBy -eq 'solution-match' -and [int]$r.data.ideProcessId -eq 9777 -and $r.data.ownedBySession -eq $false) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
+    $r = Connect-AfterConsent 9777
+    Check 'U3 the guessed-pid IDE with the solution is not owned (consent required); after consent attached by solution-match, not owned' ($r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.selectedBy -eq 'solution-match' -and [int]$r.data.ideProcessId -eq 9777 -and $r.data.ownedBySession -eq $false) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession)"
     $d = Disconnect-TcIde -Quit -Kill
     Check 'U4 -Kill refused for it (IDE_NOT_OWNED), nothing killed' ($d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "code=$($d.error.code)"
     $null = Disconnect-TcIde
@@ -344,9 +357,9 @@ try {
     Check 'X2 nothing of the other session is kept for -Kill (not connected, nothing killed)' ($global:Kills73.Count -eq 0 -and $d0.data.reason -eq 'not connected') "code=$($d0.error.code) reason=$($d0.data.reason)"
     Show-OwnInRot $first.Pid $slnL
     $global:Modal73 = 'dialog'
-    $r = Connect-TcIde -SolutionPath $sln
+    $r = Connect-AfterConsent $first.Pid
     $d = Disconnect-TcIde -Quit -Kill
-    Check 'X3 its IDE attached by solution-match is not owned; -Kill refused (IDE_NOT_OWNED), nothing killed' ($r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0 -and $global:Launches73.Count -eq 1) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession) code=$($d.error.code)"
+    Check 'X3 its IDE is not owned (consent required); after consent attached by solution-match, not owned; -Kill refused (IDE_NOT_OWNED), nothing killed' ($r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0 -and $global:Launches73.Count -eq 1) "sel=$($r.data.selectedBy) owned=$($r.data.ownedBySession) code=$($d.error.code)"
     $null = Disconnect-TcIde
     $global:Procs73.Remove(9600)   # that session ended
     Restart-Module
@@ -384,9 +397,12 @@ try {
             Check "$($case.Name) -> second launch blocked, not owned" ($own -eq $false -and $r.error.code -eq 'IDE_LAUNCH_PENDING' -and $r.data.probe -eq 'other-session' -and $r.data.otherSession.hostState -eq 'gone' -and $r.data.ownedBySession -eq $false -and $global:Launches73.Count -eq 1 -and [int]@(Read-Records)[0].hostPid -eq 9600) "owned=$own code=$($r.error.code) probe=$($r.data.probe) launches=$($global:Launches73.Count)"
             Show-OwnInRot $first.Pid $slnL
             $global:Modal73 = 'dialog'
-            $r = Connect-TcIde -SolutionPath $sln
+            # #281 C: before, the ended session's IDE with this .sln open was attached by solution-match
+            # (not owned); now IDE_ATTACH_CONSENT_REQUIRED (not attached; the hint does not offer
+            # -TakeOverOrphan - an owner decision, PR body). After consent: attached, still not owned.
+            $r = Connect-AfterConsent $first.Pid
             $d = Disconnect-TcIde -Quit -Kill
-            Check "$($case.Name) -> solution-match attach not owned, -Kill refused" ($r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "owned=$($r.data.ownedBySession) code=$($d.error.code)"
+            Check "$($case.Name) -> IDE_ATTACH_CONSENT_REQUIRED first; after consent solution-match attach not owned, -Kill refused" ($r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.unitConsentHint -notmatch 'TakeOverOrphan' -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false -and $d.error.code -eq 'IDE_NOT_OWNED' -and $global:Kills73.Count -eq 0) "owned=$($r.data.ownedBySession) code=$($d.error.code)"
             $null = Disconnect-TcIde
         }
         finally { $env:TCAUTO_OWNER_ID = 'owner-73-A' }
@@ -480,8 +496,8 @@ try {
     $own = & $mod { param($p) Test-TcLaunchedIde -ProcessId $p } $first.Pid
     Show-OwnInRot $first.Pid $slnL
     $global:Modal73 = 'dialog'
-    $r = Connect-TcIde -SolutionPath $sln
-    Check 'J1 wrong-shape records restore nothing; the attach works (not owned)' ($own -eq $false -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false) "owned=$own sel=$($r.data.selectedBy)"
+    $r = Connect-AfterConsent $first.Pid
+    Check 'J1 wrong-shape records restore nothing (consent required); the attach after consent works (not owned)' ($own -eq $false -and $r.unitConsentCode -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.selectedBy -eq 'solution-match' -and $r.data.ownedBySession -eq $false) "owned=$own sel=$($r.data.selectedBy)"
     $null = Disconnect-TcIde
     Set-Content -LiteralPath (Get-RecordFile) -Value '{"pid": 1}' -Encoding UTF8
     $null = & $mod { param($g) Update-TcLaunchRecordFile -Mutate { param($all) @($all) + @($g) } } $good
@@ -507,7 +523,8 @@ try {
             Check 'B1 blocked own IDE after a restart (strong #29 evidence) -> attached as launched, owned' ($r.error.code -eq 'IDE_BUSY' -and $r.data.attached -eq $true -and $r.data.launchedBySession -eq $true -and $r.data.ownedBySession -eq $true -and $global:Launches73.Count -eq 1) "code=$($r.error.code) owned=$($r.data.ownedBySession) launched=$($r.data.launchedBySession)"
         }
         else {
-            Check 'B2 blocked IDE of another live session -> solution-blocked, not owned, no second launch' ($r.error.code -eq 'IDE_BUSY' -and $r.data.launchedBySession -eq $false -and $r.data.ownedBySession -eq $false -and $global:Launches73.Count -eq 1 -and (& $mod { $script:TcIdeSelectedBy }) -eq 'solution-blocked') "code=$($r.error.code) owned=$($r.data.ownedBySession)"
+            # #281 C: before, attached as solution-blocked (not owned); a blocked IDE TcAuto may not work in is no longer attached
+            Check 'B2 blocked IDE of another live session (strong evidence) -> IDE_ATTACH_CONSENT_REQUIRED, not attached, not owned, no second launch' ($r.error.code -eq 'IDE_ATTACH_CONSENT_REQUIRED' -and $r.data.reason -eq 'solution-open-in-non-owned-ide' -and $r.data.attached -eq $false -and [int]$r.data.ideProcessId -eq [int]$first.Pid -and $r.data.launchedBySession -eq $false -and $r.data.ownedBySession -eq $false -and $global:Launches73.Count -eq 1 -and -not (& $mod { [bool]$script:TcIdeConnected })) "code=$($r.error.code) owned=$($r.data.ownedBySession)"
         }
         $null = Disconnect-TcIde
     }

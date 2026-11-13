@@ -193,8 +193,10 @@ try {
     $q = Disconnect-TcIde -Quit
     Check 'Q4 own IDE -> -Quit still quits it' ($q.success -and $q.data.quit -eq $true -and @($global:Quits210) -contains 9002) (J $q)
 
-    # #227 without -ProcessId: solution-match on the user's IDE
+    # #227 without -ProcessId: solution-match on the user's IDE (#281 C: only after the user's
+    # consent, i.e. an earlier -ProcessId bind that was not released)
     Set-Desktop
+    $null = Connect-TcIde -ProcessId 9001 -SolutionPath $slnA -NoLaunch
     $r = Connect-TcIde -SolutionPath $slnA -NoLaunch
     $q = Disconnect-TcIde -Quit
     Check 'Q5 #227 solution-match on a user IDE -> -Quit refused (IDE_NOT_OWNED)' ($r.success -and $r.data.selectedBy -eq 'solution-match' -and (-not $q.success) -and $q.error.code -eq 'IDE_NOT_OWNED' -and $global:Quits210.Count -eq 0) "$(J $q)"
@@ -205,6 +207,7 @@ try {
     # --- L: #224 ---
     Set-Desktop
     $null = Add-Ide 9006 $slnBr
+    & $mod { Add-TcLaunchedIde -ProcessId 9006 }   # #281 C: solution-match attaches only an IDE TcAuto may work in
     $r = Connect-TcIde -SolutionPath $slnBr -NoLaunch
     Check 'L1 #224 .sln in a folder with [ ] is found and solution-matched (no FILE_NOT_FOUND)' ($r.success -and $r.data.ideProcessId -eq 9006 -and $r.data.selectedBy -eq 'solution-match') (J $r)
     $r = Connect-TcIde -SolutionPath (Join-Path $root 'Verify [226]\nothere.sln') -NoLaunch

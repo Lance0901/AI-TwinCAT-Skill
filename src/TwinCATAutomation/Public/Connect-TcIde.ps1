@@ -10,12 +10,19 @@ function Connect-TcIde {
             'solution-match'). An empty IDE or one with another solution is never
             reused - it belongs to whoever opened it (opening the target there would
             hijack it and -Quit would close it) - so otherwise a new IDE is launched
-            (selectedBy 'launched'). Exception (#29): an instance whose DTE is blocked (busy
+            (selectedBy 'launched'). #281 C: that instance is attached only when TcAuto may work
+            in it (launched by TcAuto, or bound with -ProcessId earlier in this module instance and
+            not released by Disconnect-TcIde; an own one is preferred); otherwise nothing is
+            attached, changed or launched (two IDEs with the same .sln overwrite each other):
+            IDE_ATTACH_CONSENT_REQUIRED, data.reason 'solution-open-in-non-owned-ide',
+            data.solution, data.candidates; after the user agreed: -ProcessId <pid> -SolutionPath.
+            Not with -TakeOverOrphan (its own ownership checks). Exception (#29): an instance whose DTE is blocked (busy
             RPC_E_CALL_REJECTED, or an empty Version with a modal dialog up) is checked without
             COM (Find-TcBlockedSolutionIde): a session record of that process with this
             solution, or a dialog text naming a path inside the solution folder, is strong
             evidence - nothing is launched, the instance is attached (selectedBy
-            'solution-blocked', ITcSysManager $null, data.attached = true) and Find-TcIdeModalDialog
+            'solution-blocked', ITcSysManager $null, data.attached = true; #281 C: only an instance
+            TcAuto may work in, else IDE_ATTACH_CONSENT_REQUIRED with the #29 fields, attached false) and Find-TcIdeModalDialog
             / Reset-TcSolution work on it right away; a main window title starting with the
             solution name is weak evidence (same-named copies look alike) - nothing is launched
             and nothing is attached (data.attached = false). Either way IDE_MODAL_DIALOG (dialog
@@ -85,7 +92,8 @@ function Connect-TcIde {
     .PARAMETER SolutionPath
         Path to a .sln file. If specified, the IDE will open this solution
         automatically after connecting (or connect to an instance already
-        running this solution).
+        running this solution - #281 C: only one TcAuto launched or the user consented to with
+        -ProcessId, else IDE_ATTACH_CONSENT_REQUIRED).
     .PARAMETER NoLaunch
         If set, do not launch a new IDE instance if none is running. With -SolutionPath an IDE
         this session launched for that solution and that is still starting is still waited for
@@ -143,7 +151,8 @@ function Connect-TcIde {
         with the same -ProcessId (never to another IDE that has the same .sln open). #281: also
         the way to give consent after IDE_ATTACH_CONSENT_REQUIRED (only once the user agreed):
         the IDE bound by -ProcessId is remembered in module memory, so a later Connect-TcIde
-        without parameters (Start-TcLifecycle) attaches it as well, until Disconnect-TcIde
+        without -ProcessId (with or without -SolutionPath, #281 C; Start-TcLifecycle,
+        Reset-TcSolution) attaches it as well, until Disconnect-TcIde
         releases the connection (then -ProcessId is needed again).
     .EXAMPLE
         Connect-TcIde
@@ -469,10 +478,28 @@ function Connect-TcIde {
             # whoever opened it: opening the target solution there would hijack it, and a later
             # Disconnect-TcIde -Quit would close it. When no instance matches, a new IDE is
             # launched (tests/Integration/multi-ide.ps1 covers the three-IDE desktop).
-            $chosen = $pool | Where-Object {
-                $_.normalizedSolution -and ([string]::Equals($_.normalizedSolution, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase))
-            } | Select-Object -First 1
-            if ($null -ne $chosen) { $selectionReason = 'solution-match' }
+            $solMatches = @($pool | Where-Object {
+                    $_.normalizedSolution -and ([string]::Equals($_.normalizedSolution, $normalizedSolutionPath, [StringComparison]::OrdinalIgnoreCase))
+                })
+            if ($solMatches.Count -gt 0) {
+                if ($TakeOverOrphan) {
+                    # replaced by the takeover below (Resolve-TcOrphanTakeover has its own ownership checks)
+                    $chosen = $solMatches[0]
+                }
+                else {
+                    # #281 C (owner 2026-11-13: ask first): the IDE that has this .sln open is attached
+                    # only when TcAuto may work in it (launched by TcAuto / bound with -ProcessId before,
+                    # Test-TcIdeAttachAllowed); an own one is preferred when several have it open.
+                    # Otherwise IDE_ATTACH_CONSENT_REQUIRED before anything is bound, set or written,
+                    # and no second IDE is launched (two IDEs with the same .sln overwrite each other).
+                    $chosen = @($solMatches | Where-Object { Test-TcIdeAttachAllowed -ProcessId $_.pid }) | Select-Object -First 1
+                    if ($null -eq $chosen) {
+                        return New-TcAttachConsentResult -Candidates $solMatches -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
+                            -Reason 'solution-open-in-non-owned-ide' -Solution $normalizedSolutionPath -HintCode 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION'
+                    }
+                }
+                $selectionReason = 'solution-match'
+            }
         }
         else {
             # No SolutionPath: prefer an instance that already has a TwinCAT project,
@@ -751,6 +778,31 @@ function Connect-TcIde {
                 # Two IDEs with strong evidence for the same .sln: ambiguous, attach none.
                 $strongCount = @($blocked | Where-Object { $_.Strong }).Count
                 $attach = [bool]$hit.Strong -and $strongCount -eq 1
+                # #281 C: the blocked IDE that would be attached on strong evidence must be one TcAuto
+                # may work in (Test-TcIdeAttachAllowed); otherwise nothing is attached or launched:
+                # IDE_ATTACH_CONSENT_REQUIRED with the #29 diagnostics (dialog, matchedBy, ...).
+                if ($attach -and -not $TakeOverOrphan -and -not (Test-TcIdeAttachAllowed -ProcessId $blockedPid)) {
+                    $diag = [PSCustomObject][ordered]@{
+                        ideProcessId      = $blockedPid
+                        rotDisplayName    = $bc.displayName
+                        windowTitle       = $hit.WindowTitle
+                        matchedBy         = $hit.MatchedBy
+                        corroboratedBy    = $hit.CorroboratedBy
+                        probe             = $(if ($bc.busy) { 'busy (RPC_E_CALL_REJECTED after 3 attempts)' } else { 'unreadable (DTE.Version empty)' })
+                        launchedBySession = $false
+                    }
+                    # same dialog shape as the other #29 results (Add-TcModalDialogData); #42: an incomplete scan is reported as such
+                    if ($null -ne $hitDialog) { $diag = Add-TcModalDialogData -Dialog $hitDialog -Data $diag }
+                    else { $diag | Add-Member -NotePropertyName 'dialog' -NotePropertyValue $null }
+                    if ($hitScanIncomplete) {
+                        $diag | Add-Member -NotePropertyName 'scanComplete' -NotePropertyValue $false
+                        $diag | Add-Member -NotePropertyName 'modalScan' -NotePropertyValue (ConvertTo-TcModalScanInfo -Scan $hit.Dialog)
+                    }
+                    $consentExtra = [ordered]@{}
+                    foreach ($prop in $diag.PSObject.Properties) { $consentExtra[$prop.Name] = $prop.Value }
+                    return New-TcAttachConsentResult -Candidates @($bc) -ProgId $ProgId -ConnectSec $swTotal.Elapsed.TotalSeconds `
+                        -Reason 'solution-open-in-non-owned-ide' -Solution $normalizedSolutionPath -HintCode 'IDE_ATTACH_CONSENT_REQUIRED_SOLUTION' -Extra $consentExtra
+                }
                 if ($attach) {
                     $script:TcDte = $bc.Object
                     $script:TcProgId = $bc.progId
