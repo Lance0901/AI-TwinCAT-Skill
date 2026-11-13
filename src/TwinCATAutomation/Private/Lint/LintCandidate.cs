@@ -371,8 +371,19 @@ namespace TcLintEngine
             }
             if (k.HasImpl)
             {
-                ScanResult sr = StAnalyzer.ScanImplementation(opt.CandidateImplementation ?? "");
-                foreach (string r in sr.IdentifierRefs) if (!Known(r, local)) AddNeed("identifier:" + r);
+                // every identifier that starts a designator, except a named call parameter (depth > 0 and followed by := / =>)
+                List<Token> toks = StLexer.Lex(opt.CandidateImplementation ?? "").Tokens;
+                int depth = 0;
+                for (int i = 0; i < toks.Count; i++)
+                {
+                    Token t = toks[i];
+                    if (t.IsOp("(")) { depth++; continue; }
+                    if (t.IsOp(")")) { if (depth > 0) depth--; continue; }
+                    if (t.Kind != TokKind.Ident || StLexer.Keywords.Contains(t.Upper)) continue;
+                    if (i > 0 && (toks[i - 1].IsOp(".") || toks[i - 1].IsOp("#"))) continue;
+                    if (depth > 0 && i + 1 < toks.Count && (toks[i + 1].IsOp(":=") || toks[i + 1].IsOp("=>"))) continue;
+                    if (!Known(t.Text, local)) AddNeed("identifier:" + t.Text);
+                }
             }
         }
 
