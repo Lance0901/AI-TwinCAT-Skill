@@ -98,11 +98,14 @@ Check 'T1 unresolved lists it (behavior, compiler does not catch)' (@($r.data.un
 
 $fx = New-Fx; Add-Pou $fx 'F_Edge' "FUNCTION F_Edge : BOOL`nVAR_INPUT`n    bIn : BOOL;`nEND_VAR`nVAR`n    rt : R_TRIG;`nEND_VAR`n" "rt(CLK := bIn);`nF_Edge := rt.Q;"
 $r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
-Check 'T2 R_TRIG in FUNCTION VAR -> function-var, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'function-var' -and $d[0].blocking -and $d[0].objectPath -eq 'F_Edge') (Brief $r)
+Check 'T2 R_TRIG in FUNCTION VAR -> function-var warning (trigger: InfoSys "only rarely useful", not always wrong), must be disposed' ($d.Count -eq 1 -and $d[0].variant -eq 'function-var' -and -not $d[0].blocking -and $d[0].severity -eq 'warning' -and $d[0].objectPath -eq 'F_Edge' -and $r.success -and $r.data.requiresDisposition) (Brief $r)
+$fx = New-Fx; Add-Pou $fx 'F_Wait' "FUNCTION F_Wait : BOOL`nVAR`n    t : TON;`nEND_VAR`n" "t(IN := TRUE, PT := T#1S);`nF_Wait := t.Q;"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'T2b TON in FUNCTION VAR -> function-var, blocking (timer)' ($d.Count -eq 1 -and $d[0].blocking -and $r.error.code -eq 'LINT_FAILED') (Brief $r)
 
 $fx = New-Fx; Add-Pou $fx 'FB_Cnt' "FUNCTION_BLOCK FB_Cnt`nVAR_TEMP`n    ctu1 : CTU;`nEND_VAR`n" "ctu1(CU := TRUE, PV := 10);"
 $r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
-Check 'T3 CTU in FB VAR_TEMP -> var-temp, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'var-temp' -and $d[0].blocking) (Brief $r)
+Check 'T3 CTU in FB VAR_TEMP -> var-temp warning (counter), must be disposed' ($d.Count -eq 1 -and $d[0].variant -eq 'var-temp' -and -not $d[0].blocking -and $r.data.requiresDisposition) (Brief $r)
 
 $fx = New-Fx
 Edit-LintFxFile $fx.Main { param($t) $t.Replace("    sText : STRING(80) := 'it`$'s (* not a comment *)';`r`nEND_VAR", "    sText : STRING(80) := 'it`$'s (* not a comment *)';`r`nEND_VAR`r`nVAR_TEMP`r`n    tonT : TON;`r`nEND_VAR") }
@@ -111,14 +114,15 @@ Check 'T4 TON in PROGRAM VAR_TEMP -> var-temp, blocking (InfoSys 12050023819: VA
 
 $fx = New-Fx; Add-FbM $fx 'FB_Arr' "METHOD M_Wait : BOOL`nVAR`n    aTon : ARRAY[1..2] OF TON;`n    q : Tc2_Standard.F_TRIG;`nEND_VAR`n"
 $r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
-Check 'T5 ARRAY OF TON and qualified Tc2_Standard.F_TRIG in METHOD VAR -> 2 findings' ($d.Count -eq 2 -and @($d | Where-Object { $_.blocking }).Count -eq 2) (Brief $r)
+Check 'T5 ARRAY OF TON (blocking) and qualified Tc2_Standard.F_TRIG (warning) in METHOD VAR -> 2 findings' ($d.Count -eq 2 -and @($d | Where-Object { $_.blocking }).Count -eq 1) (Brief $r)
 
-$fx = New-Fx; Add-FbM $fx 'FB_UsesA' "METHOD M_Wait : BOOL`nVAR`n    fbTmp : FB_A;`nEND_VAR`n"
+$fx = New-Fx; Add-Pou $fx 'FB_NoState' "FUNCTION_BLOCK FB_NoState`nVAR`n    n : INT;`nEND_VAR`n" ''
+Add-FbM $fx 'FB_UsesA' "METHOD M_Wait : BOOL`nVAR`n    fbTmp : FB_NoState;`nEND_VAR`n"
 $r = Lint $fx
 Check 'T6 project FB in METHOD VAR without profile -> no finding (not known as stateful)' ((Diags $r 'SCAN-TEMPFB-001').Count -eq 0 -and $r.success) (Brief $r)
-Set-Profile $fx '{"schema":"tcauto-lint-profile/1","typeCatalog":{"stateful":["FB_A"]}}' | Out-Null
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","typeCatalog":{"stateful":["FB_NoState"]}}' | Out-Null
 $r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
-Check 'T6 profile typeCatalog.stateful FB_A -> reported, blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
+Check 'T6 profile typeCatalog.stateful FB_NoState -> reported, blocking' ($d.Count -eq 1 -and $d[0].blocking) (Brief $r)
 
 $fx = New-Fx
 Edit-LintFxFile $fx.FbA { param($t) $t.Replace("<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`nEND_VAR]]>", "<Get Name=`"Get`" Id=`"$($script:LintFx.FbAGet)`">`r`n        <Declaration><![CDATA[PUBLIC`r`nVAR`r`n    tp1 : TP;`r`nEND_VAR]]>") }
@@ -173,7 +177,8 @@ Check 'K2 PROGRAM called by the task program -> no TASK finding' ((Diags $r 'PRO
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;' (Action 'A_Step' 'x := 0;')
 Set-MainImpl $fx "PRG_B.A_Step();`nfbA(bStart := GVL_Main.bRun);"
 $r = Lint $fx
-Check 'K3 only an action of the PROGRAM is called -> reachable, no TASK-001 (rule-catalog: P.ActionX() counts)' ((Diags $r 'PROJECT-TASK-001').Count -eq 0) (Brief $r)
+$d = Diags $r 'PROJECT-TASK-001'
+Check 'K3 only an action of the PROGRAM is called -> its body never runs: TASK-001 variant action-only' ($d.Count -eq 1 -and $d[0].variant -eq 'action-only' -and $d[0].objectPath -eq 'PRG_B' -and -not $d[0].blocking) (Brief $r)
 
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
 Set-MainImpl $fx "IF PRG_B.x > 0 THEN`n    fbA(bStart := GVL_Main.bRun);`nEND_IF"
@@ -212,7 +217,16 @@ Check 'K8 PROGRAM on the task and called by the task program -> task-and-program
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
 Set-MainImpl $fx "PRG_B();`nfbA(bStart := GVL_Main.bRun);`nPRG_B();"
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
-Check 'K9 two unconditional calls in one program body -> repeated-call, blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'repeated-call' -and $d[0].blocking) (Brief $r)
+Check 'K9 two unconditional calls in one body, PRG_B holds no stateful FB -> repeated-call warning (parameterised calls are legal)' ($d.Count -eq 1 -and $d[0].variant -eq 'repeated-call' -and -not $d[0].blocking -and $r.data.requiresDisposition) (Brief $r)
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    t : TON;`nEND_VAR`n" 't(IN := TRUE, PT := T#1S);'
+Set-MainImpl $fx "PRG_B();`nfbA(bStart := GVL_Main.bRun);`nPRG_B();"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'K9b repeated-call and PRG_B holds a TON -> blocking' ($d.Count -eq 1 -and $d[0].variant -eq 'repeated-call' -and $d[0].blocking) (Brief $r)
+$fx = New-Fx; Add-Pou $fx 'PRG_T' "PROGRAM PRG_T`nVAR`n    t : TON;`nEND_VAR`n" 't(IN := TRUE, PT := T#1S);'
+Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`nEND_VAR`n" 'PRG_T();'
+Set-MainImpl $fx "PRG_B();`nPRG_B();"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'K9c repeated-call, PRG_B calls a program holding a TON (transitive) -> blocking on PRG_B' (@($d | Where-Object { $_.objectPath -eq 'PRG_B' -and $_.variant -eq 'repeated-call' -and $_.blocking }).Count -eq 1) (Brief $r)
 
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := x + 1;'
 Set-MainImpl $fx "IF GVL_Main.bRun THEN`n    PRG_B();`nELSE`n    PRG_B();`nEND_IF`nfbA(bStart := GVL_Main.bRun);"
@@ -305,7 +319,7 @@ if ($git) {
     $null = & git -C $sol init -q 2>&1; $null = & git -C $sol add -A 2>&1
     $null = & git -C $sol -c user.name=unit -c user.email=unit@example.invalid -c commit.gpgsign=false commit -q -m base 2>&1
     $r = Lint $fx
-    Check 'S10 suppression already in git HEAD -> basis git-head, newSuppressions empty' ($r.data.newSuppressionsBasis -eq 'git-head' -and @($r.data.newSuppressions).Count -eq 0 -and @($r.data.suppressions).Count -eq 1) (Js $r.data.newSuppressions)
+    Check 'S10 suppression already in git HEAD (no remote) -> basis git:head, newSuppressions empty' ($r.data.newSuppressionsBasis -eq 'git:head' -and @($r.data.newSuppressions).Count -eq 0 -and @($r.data.suppressions).Count -eq 1) (Js $r.data.newSuppressions)
     Set-MainImpl $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: added after the commit, nothing here`nfbA(bStart := GVL_Main.bRun);"
     Add-Pou $fx 'PRG_New' "// tcauto-lint-disable-next-line PROJECT-TASK-001: new file, not committed yet`nPROGRAM PRG_New`nVAR`nEND_VAR`n" ''
     Set-Profile $fx '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath":"PRG_X","ruleId":"PROJECT-TASK-002","reason":"profile entry added after the commit"}]}' | Out-Null
@@ -361,9 +375,10 @@ $fx = New-Fx
 Write-LintFxFile (Join-Path $fx.PlcDir 'DUTs\T_Timer.TcDUT') ((Get-LintFxDutText).Replace('E_Mode', 'T_Timer').Replace($script:LintFx.DutId, (New-Id)) -replace '(?s)<!\[CDATA\[.*?\]\]>', "<![CDATA[TYPE T_Timer : TON;`r`nEND_TYPE`r`n]]>")
 $fx.Items.Add('DUTs\T_Timer.TcDUT'); Set-LintFxCompile $fx $fx.Items.ToArray()
 Add-Pou $fx 'FB_MyTon' "FUNCTION_BLOCK FB_MyTon EXTENDS TON`nVAR`nEND_VAR`n" ''
-Add-FbM $fx 'FB_Use' "METHOD M_Wait : BOOL`nVAR`n    t1 : T_Timer;`n    t2 : FB_MyTon;`n    t3 : FB_A;`nEND_VAR`n"
+Add-Pou $fx 'FB_NoState' "FUNCTION_BLOCK FB_NoState`nVAR`n    n : INT;`nEND_VAR`n" ''
+Add-FbM $fx 'FB_Use' "METHOD M_Wait : BOOL`nVAR`n    t1 : T_Timer;`n    t2 : FB_MyTon;`n    t3 : FB_NoState;`nEND_VAR`n"
 $r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
-Check 'R6 alias of TON and FB EXTENDS TON in METHOD VAR -> 2 findings; other project FB -> rulesSkipped project-type' ($d.Count -eq 2 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'project-type:FB_A' }).Count -eq 1) (Brief $r)
+Check 'R6 alias of TON and FB EXTENDS TON in METHOD VAR -> 2 findings; other project FB -> rulesSkipped project-type' ($d.Count -eq 2 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'project-type:FB_NoState' }).Count -eq 1) (Brief $r)
 # R7 git that hangs -> unavailable within the deadline
 $fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`n"
 $fake = Join-Path $root 'fake-git.cmd'
@@ -379,7 +394,7 @@ if ($git) {
     $null = & git -C $sol init -q 2>&1; $null = & git -C $sol add -A 2>&1
     $null = & git -C $sol -c user.name=unit -c user.email=unit@example.invalid -c commit.gpgsign=false commit -q -m base 2>&1
     $r = Invoke-TcLintProject -PlcProjectPath $fx.Plcproj.ToUpperInvariant()
-    Check 'R8 -PlcProjectPath in upper case -> basis git-head, committed suppression not new' ($r.data.newSuppressionsBasis -eq 'git-head' -and @($r.data.newSuppressions).Count -eq 0) (Js $r.data.newSuppressions)
+    Check 'R8 -PlcProjectPath in upper case -> basis git:head, committed suppression not new' ($r.data.newSuppressionsBasis -eq 'git:head' -and @($r.data.newSuppressions).Count -eq 0) (Js $r.data.newSuppressions)
 }
 # R9 array bound naming a program is not a call / type reference
 $fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := 1;'
@@ -392,6 +407,99 @@ Add-Pou $fx 'F_Call' "FUNCTION F_Call : BOOL`nVAR_INPUT`nEND_VAR`n" 'PRG_B();'
 Set-MainImpl $fx "F_Call();`nF_Call();"
 $r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
 Check 'R10 program called from a FUNCTION -> fb-or-function-caller warning' ($d.Count -eq 1 -and $d[0].variant -eq 'fb-or-function-caller' -and -not $d[0].blocking) (Brief $r)
+
+# ================================================================ V  independent review of PR #283 (B1, SF1~SF6, nits)
+function Git-Init($Fx) {
+    $sol = [System.IO.Path]::GetDirectoryName($Fx.Sln)
+    $null = & git -C $sol init -q 2>&1; $null = & git -C $sol add -A 2>&1
+    $null = & git -C $sol -c user.name=unit -c user.email=unit@example.invalid -c commit.gpgsign=false commit -q -m base 2>&1
+    return $sol
+}
+function Git-Commit([string]$Sol, [string]$Msg) {
+    $null = & git -C $Sol add -A 2>&1
+    $null = & git -C $Sol -c user.name=unit -c user.email=unit@example.invalid -c commit.gpgsign=false commit -q -m $Msg 2>&1
+}
+$weak = @(
+    @('enabled false', '{"schema":"tcauto-lint-profile/1","rules":{"SCAN-TEMPFB-001":{"enabled":false,"reason":"we know what we do here"}}}', 'rule'),
+    @('severity info', '{"schema":"tcauto-lint-profile/1","rules":{"SCAN-TEMPFB-001":{"severity":"info","reason":"we know what we do here"}}}', 'rule'),
+    @('exclude', '{"schema":"tcauto-lint-profile/1","exclude":[{"objectPath":"FB_X","reason":"generated code here"}]}', 'exclude'))
+foreach ($w in $weak) {
+    $fx = New-Fx; Add-FbM $fx 'FB_X' "METHOD M_Wait : BOOL`nVAR`n    t : TON;`nEND_VAR`n"
+    Set-Profile $fx $w[1] | Out-Null
+    $r = Lint $fx; $no = @($r.data.newOverrides)
+    Check "V1 B1 $($w[0]) (no git) -> listed in newOverrides, requiresDisposition true" ($no.Count -eq 1 -and $no[0].kind -eq $w[2] -and $no[0].change -eq 'added' -and $r.data.requiresDisposition -and @($r.data.dispositionReasons) -contains 'new-overrides') (Js $no)
+    if ($git) {
+        $sol = Git-Init $fx
+        $null = & git -C $sol update-ref refs/remotes/origin/master HEAD 2>&1
+        $r = Lint $fx
+        Check "V1 B1 $($w[0]) committed on the base -> not new" (@($r.data.newOverrides).Count -eq 0 -and $r.data.newSuppressionsBasis -eq 'git:merge-base:origin/master') ("basis=$($r.data.newSuppressionsBasis) $(Js $r.data.newOverrides)")
+        Set-Profile $fx ($w[1].Replace('we know what we do here', 'changed reason after the base').Replace('generated code here', 'changed reason after the base')) | Out-Null
+        Git-Commit $sol 'agent commits its own change'
+        $r = Lint $fx; $no = @($r.data.newOverrides)
+        Check "V1 B1+SF6 $($w[0]) changed and committed by the agent -> still listed (base = merge-base with origin/master), change modified" ($no.Count -eq 1 -and $no[0].change -eq 'modified') (Js $no)
+    }
+}
+if ($git) {
+    $fx = New-Fx; Orphan $fx ''
+    $sol = Git-Init $fx
+    $null = & git -C $sol update-ref refs/remotes/origin/master HEAD 2>&1
+    Edit-LintFxFile (Join-Path $fx.PlcDir 'POUs\PRG_Orphan.TcPOU') { param($t) $t.Replace('<![CDATA[PROGRAM PRG_Orphan', "<![CDATA[// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`r`nPROGRAM PRG_Orphan") }
+    Git-Commit $sol 'agent commits the suppression'
+    $r = Lint $fx
+    Check 'V2 SF6 suppression committed by the agent after origin/master -> still new; basis names the ref' (@($r.data.newSuppressions).Count -eq 1 -and $r.data.newSuppressionsBasis -eq 'git:merge-base:origin/master' -and $r.data.newSuppressionsBase.commit -match '^[0-9a-f]{40}$') ("$($r.data.newSuppressionsBasis) $(Js $r.data.newSuppressionsBase)")
+    # nit: a directive text inside a string literal at the base does not count as an existing suppression
+    $fx = New-Fx; Add-Pou $fx 'PRG_Orphan' "PROGRAM PRG_Orphan`nVAR`n    s : STRING := '// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests';`nEND_VAR`n" ''
+    $sol = Git-Init $fx
+    Edit-LintFxFile (Join-Path $fx.PlcDir 'POUs\PRG_Orphan.TcPOU') { param($t) $t.Replace('<![CDATA[PROGRAM PRG_Orphan', "<![CDATA[// tcauto-lint-disable-next-line PROJECT-TASK-001: PoC harness kept for manual tests`r`nPROGRAM PRG_Orphan") }
+    $r = Lint $fx
+    Check 'V2 nit: same directive text only inside a string at the base -> the real directive is new' (@($r.data.newSuppressions).Count -eq 1) (Js $r.data.newSuppressions)
+}
+# SF1 STRUCT members
+function Add-Dut($Fx, [string]$Name, [string]$Decl) {
+    Write-LintFxFile (Join-Path $Fx.PlcDir "DUTs\$Name.TcDUT") ("<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <DUT Name=`"$Name`" Id=`"$(New-Id)`">`n    <Declaration><![CDATA[$Decl]]></Declaration>`n  </DUT>`n</TcPlcObject>")
+    $Fx.Items.Add("DUTs\$Name.TcDUT"); Set-LintFxCompile $Fx $Fx.Items.ToArray()
+}
+$fx = New-Fx
+Add-Dut $fx 'ST_Tmr' "TYPE ST_Tmr :`nSTRUCT`n    t : TON;`n    b : BOOL;`nEND_STRUCT`nEND_TYPE`n"
+Add-Dut $fx 'ST_Outer' "TYPE ST_Outer :`nSTRUCT`n    a : ARRAY[1..2] OF ST_Tmr;`nEND_STRUCT`nEND_TYPE`n"
+Add-Dut $fx 'ST_Unk' "TYPE ST_Unk :`nSTRUCT`n    x : FB_Nowhere;`nEND_STRUCT`nEND_TYPE`n"
+Add-FbM $fx 'FB_S' "METHOD M_Wait : BOOL`nVAR`n    s1 : ST_Tmr;`n    s2 : ST_Outer;`n    s3 : ST_Unk;`nEND_VAR`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'V3 SF1 STRUCT with TON member, nested via ARRAY OF struct -> 2 warnings (FB as STRUCT member: no InfoSys statement); unknown member type -> rulesSkipped struct-type' ($d.Count -eq 2 -and @($d | Where-Object { $_.blocking }).Count -eq 0 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'struct-type:ST_Unk' }).Count -eq 1) (Brief $r)
+# SF2 project FB holding a stateful FB (VAR / VAR_STAT, EXTENDS chain), cycle safe
+$fx = New-Fx
+Add-Pou $fx 'FB_Deb' "FUNCTION_BLOCK FB_Deb`nVAR`n    t : TON;`nEND_VAR`n" ''
+Add-Pou $fx 'FB_Deb2' "FUNCTION_BLOCK FB_Deb2 EXTENDS FB_Plain`nVAR`nEND_VAR`n" ''
+Add-Pou $fx 'FB_Plain' "FUNCTION_BLOCK FB_Plain`nVAR_STAT`n    d : FB_Deb;`nEND_VAR`n" ''
+Add-Pou $fx 'FB_Free' "FUNCTION_BLOCK FB_Free`nVAR`n    n : INT;`n    p : POINTER TO TON;`nEND_VAR`n" ''
+Add-Pou $fx 'FB_C1' "FUNCTION_BLOCK FB_C1`nVAR`n    c : FB_C2;`nEND_VAR`n" ''
+Add-Pou $fx 'FB_C2' "FUNCTION_BLOCK FB_C2`nVAR`n    c : FB_C1;`nEND_VAR`n" ''
+Add-FbM $fx 'FB_U' "METHOD M_Wait : BOOL`nVAR`n    a : FB_Deb;`n    b : FB_Deb2;`n    c : FB_Free;`n    d : FB_C1;`nEND_VAR`n"
+$r = Lint $fx; $d = Diags $r 'SCAN-TEMPFB-001'
+Check 'V4 SF2 FB holding TON, and EXTENDS of an FB whose VAR_STAT holds one -> 2 findings; FB without state / cyclic -> project-type skip, no hang' ($d.Count -eq 2 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'project-type:FB_Free' }).Count -eq 1 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.reason -eq 'project-type:FB_C1' }).Count -eq 1) (Brief $r)
+# nits on PROJECT-TASK-002 / 001
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := 1;'
+Add-Pou $fx 'F_Call' "FUNCTION F_Call : BOOL`nVAR_INPUT`nEND_VAR`n" 'PRG_B();'
+Set-MainImpl $fx "F_Call();"
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'V5 nit: single call from a FUNCTION -> warning text does not claim "more than one place"' ($d.Count -eq 1 -and $d[0].message -notlike '*more than one place*') (Brief $r)
+$fx = New-Fx; Write-LintFxFile $fx.Task (TaskWith @('MAIN', 'MAIN'))
+$r = Lint $fx; $d = Diags $r 'PROJECT-TASK-002'
+Check 'V5 nit: one task with two PouCalls of MAIN -> variant task-twice (blocking), the task listed once' ($d.Count -eq 1 -and $d[0].variant -eq 'task-twice' -and $d[0].blocking -and ([regex]::Matches($d[0].evidence, 'task PlcTask')).Count -eq 1) (Brief $r)
+$fx = New-Fx; Add-Pou $fx 'PRG_B' "PROGRAM PRG_B`nVAR`n    x : INT;`nEND_VAR`n" 'x := 1;'
+Set-MainImpl $fx "{IF defined (FOO)}`nPRG_B();`n{END_IF}`nfbA(bStart := TRUE);"
+$r = Lint $fx
+Check 'V5 nit: program called only inside {IF} -> TASK-001 not reported, rulesSkipped call-graph-incomplete' ((Diags $r 'PROJECT-TASK-001').Count -eq 0 -and @($r.data.coverage.rulesSkipped | Where-Object { $_.ruleId -eq 'PROJECT-TASK-001' -and $_.reason -like 'call-graph-incomplete:*' }).Count -eq 1) (Brief $r)
+foreach ($bad in @('........', 'aaaaaaaaaa', '!!!! ????')) {
+    $fx = New-Fx; Orphan $fx "// tcauto-lint-disable-next-line PROJECT-TASK-001: $bad`n"
+    $r = Lint $fx
+    Check "V6 nit: reason '$bad' (no letter / one repeated character) -> LINT-SUPPRESS-001" ((Diags $r 'LINT-SUPPRESS-001').Count -eq 1 -and -not (Diags $r 'PROJECT-TASK-001')[0].suppressed) (Brief $r)
+}
+$fx = New-Fx; Orphan $fx ''
+Set-Profile $fx '{"schema":"tcauto-lint-profile/1","suppressions":[{"objectPath":"PRG_Orphan","ruleId":"PROJECT-TASK-001","reason":"........."}]}' | Out-Null
+$r = Lint $fx
+Check 'V6 nit: profile reason of dots only -> LINT_PROFILE_INVALID' ($r.error.code -eq 'LINT_PROFILE_INVALID') (Js $r.error)
+Check 'V7 nit: TypeCatalog R_TRIG link is the real page' ((Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Private\Lint\TypeCatalog.json') -Raw) -match '74391563\.html') ''
 
 # ================================================================ Y  syntax the compiler rejects
 foreach ($c in @(@('**', 'nState := 2 ** 3;', 'power-operator'), @('T#-5S', 'tonDelay(IN := bStart, PT := T#-5S);', 'negative-time-literal'), @('?=', 'nState ?= nState;', 'assignment-attempt'))) {

@@ -16,6 +16,7 @@ namespace TcLintEngine
         public string Name;
         public string Library;   // library name, or "profile"
         public string Kind;      // stateful / type-only / function-block
+        public string Class;     // stateful only: timer / edge / counter / bistable (profile entries: profile)
         public string Source;    // InfoSys URL, or the profile path
     }
 
@@ -49,7 +50,6 @@ namespace TcLintEngine
         private static readonly Regex BodyRx = new Regex(
             "^tcauto-lint-disable-(next-line|line|object)(?=\\s|:|$)\\s*([A-Za-z0-9_-]+(?:\\s*,\\s*[A-Za-z0-9_-]+)*)?\\s*(?::(.*))?$",
             RegexOptions.CultureInvariant | RegexOptions.Singleline);
-        private static readonly Regex RawRx = new Regex("(?://|\\(\\*)[ \\t]*(tcauto-lint-disable-[^\\r\\n]*)", RegexOptions.CultureInvariant);
 
         // body = text from "tcauto-lint-disable-" to the end of its line, without a closing "*)" / "]]>"
         public static Directive ParseBody(string body)
@@ -74,8 +74,19 @@ namespace TcLintEngine
                 }
             d.Reason = m.Groups[3].Success ? m.Groups[3].Value.Trim() : "";
             if (d.Ids.Count == 0) d.Problem = "no rule id";
-            else if (d.Reason.Length < MinReason) d.Problem = "reason missing or shorter than " + Inv.S(MinReason) + " characters";
+            else if (!ReasonOk(d.Reason)) d.Problem = "reason missing, shorter than " + Inv.S(MinReason) + " characters, without any letter, or one repeated character";
             return d;
+        }
+
+        // at least MinReason characters, at least one letter (Latin, CJK, ...: \p{L}) and at least 3 different non-space characters
+        public static bool ReasonOk(string reason)
+        {
+            if (reason == null) return false;
+            string r = reason.Trim();
+            if (r.Length < MinReason || !Regex.IsMatch(r, "\\p{L}", RegexOptions.CultureInvariant)) return false;
+            HashSet<char> distinct = new HashSet<char>();
+            foreach (char c in r) if (!char.IsWhiteSpace(c)) distinct.Add(char.ToLowerInvariant(c));
+            return distinct.Count >= 3;
         }
 
         // a comment token (// ... or (* ... *)) -> directive, or null when the comment is not one
@@ -90,12 +101,48 @@ namespace TcLintEngine
             return ParseBody(body);
         }
 
-        // keys of every directive in a raw file text (the git HEAD version for newSuppressions)
-        public static ArrayList KeysInRawText(string text)
+        // keys of every directive in a Tc* object file text (the base version for newSuppressions), found exactly like the
+        // engine finds them: Declaration / ST text through the ST lexer, directives only in comment tokens (review nit:
+        // a directive text inside a string or a nested comment is not a suppression). null = not a readable object file.
+        public static ArrayList KeysInObjectText(string text)
         {
+            if (text == null) return null;
+            if (text.Length > 0 && text[0] == '\uFEFF') text = text.Substring(1);
             ArrayList keys = new ArrayList();
-            if (text == null) return keys;
-            foreach (Match m in RawRx.Matches(text)) keys.Add(ParseBody(m.Groups[1].Value).Key());
+            try
+            {
+                System.Xml.XmlReaderSettings s = new System.Xml.XmlReaderSettings();
+                s.DtdProcessing = System.Xml.DtdProcessing.Prohibit; s.XmlResolver = null;
+                using (System.IO.StringReader sr = new System.IO.StringReader(text))
+                using (System.Xml.XmlReader xr = System.Xml.XmlReader.Create(sr, s))
+                {
+                    Stack<string> names = new Stack<string>();
+                    StringBuilder cur = null;
+                    while (xr.Read())
+                    {
+                        if (xr.NodeType == System.Xml.XmlNodeType.Element)
+                        {
+                            if (!xr.IsEmptyElement) names.Push(xr.LocalName);
+                            if (xr.LocalName == "Declaration" || xr.LocalName == "ST") cur = new StringBuilder();
+                        }
+                        else if ((xr.NodeType == System.Xml.XmlNodeType.CDATA || xr.NodeType == System.Xml.XmlNodeType.Text) && cur != null) cur.Append(xr.Value);
+                        else if (xr.NodeType == System.Xml.XmlNodeType.EndElement)
+                        {
+                            string n = names.Count > 0 ? names.Pop() : "";
+                            if ((n == "Declaration" || n == "ST") && cur != null)
+                            {
+                                foreach (Comment c in StLexer.Lex(cur.ToString()).Comments)
+                                {
+                                    Directive d = FromComment(c.Text);
+                                    if (d != null) keys.Add(d.Key());
+                                }
+                                cur = null;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (System.Xml.XmlException) { return null; }
             return keys;
         }
     }
@@ -168,8 +215,7 @@ namespace TcLintEngine
             public string Owner;         // top object name
             public string File;
             public string Path;
-            public HashSet<string> Idents;   // identifier tokens (lexer ran), or null
-            public string Raw;               // raw text otherwise; null with Idents null = content unknown
+            public HashSet<string> Idents;   // identifier-like words of the part; null = content unknown (names everything)
         }
 
         private readonly Dictionary<string, PouNode> pouIndex = new Dictionary<string, PouNode>(StringComparer.OrdinalIgnoreCase);
@@ -225,7 +271,7 @@ namespace TcLintEngine
         {
             Uncertain u = new Uncertain(); u.Owner = o.Name; u.File = o.Rel; u.Path = o.ObjectPath;
             if (o.Bytes != null && !o.Bytes.ReadFailed && o.Bytes.Bytes != null)
-                u.Raw = new UTF8Encoding(false, false).GetString(o.Bytes.Bytes);
+                u.Idents = IdentSet(new UTF8Encoding(false, false).GetString(o.Bytes.Bytes));
             uncertain.Add(u);
         }
 
@@ -237,8 +283,16 @@ namespace TcLintEngine
                 u.Idents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (Token t in lx.Tokens) if (t.Kind == TokKind.Ident) u.Idents.Add(t.Text);
             }
-            else u.Raw = raw;   // null = content unknown: treated as naming everything
+            else if (raw != null) u.Idents = IdentSet(raw);   // raw == null: content unknown, treated as naming everything
             uncertain.Add(u);
+        }
+
+        // identifier-like words of a raw text, built once per unit (MentionedIn was regex x program x unit, review nit)
+        private static HashSet<string> IdentSet(string raw)
+        {
+            HashSet<string> s = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Match m in IdentRx.Matches(raw)) s.Add(m.Value);
+            return s;
         }
 
         // The raw file lines from the element up to the next element in document order. The XML loader does not
@@ -281,6 +335,15 @@ namespace TcLintEngine
                 DeclInfo di = StAnalyzer.ParseDeclaration(decl.InnerText());
                 if (di.HeaderKnown && di.Name != null) { p.Header = di.HeaderKeyword; p.NameLine = di.NameLine; }
                 if (di.Extends.Count > 0) fbExtends[o.Name] = new List<string>(di.Extends);
+                // instance data that survives between calls: VAR / VAR_STAT (and the inputs / outputs of an FB / PROGRAM)
+                if (di.State.Status == "ok")
+                {
+                    List<string> st = new List<string>();
+                    foreach (VarBlock b in di.VarBlocks)
+                        if (b.Kind == "VAR" || b.Kind == "VAR_STAT" || b.Kind == "VAR_INPUT" || b.Kind == "VAR_OUTPUT")
+                            foreach (VarDecl v in b.Vars) st.Add(v.TypeText ?? "");
+                    fbStateTypes[o.Name] = st;
+                }
                 AddDeclRefs(p, di, topLocals);
                 if (di.State.Status != "ok" || excludedObj) AddUncertainText(o, o.ObjectPath, decl.InnerText(), di.Lex);
             }
@@ -397,6 +460,8 @@ namespace TcLintEngine
         }
 
         private readonly Dictionary<string, string> aliasOf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<string>> structMembers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<string>> fbStateTypes = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<string>> fbExtends = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 
         private void IndexDut(TcObjectFile o)
@@ -407,6 +472,12 @@ namespace TcLintEngine
             DeclInfo di = StAnalyzer.ParseDeclaration(decl.InnerText());
             if (di.Type == null) return;
             if (di.Type.Kind == "ALIAS" && di.State.Status == "ok" && di.Type.BaseType != null) aliasOf[o.Name] = di.Type.BaseType;
+            if ((di.Type.Kind == "STRUCT" || di.Type.Kind == "UNION") && di.State.Status == "ok")
+            {
+                List<string> m = new List<string>();
+                foreach (VarDecl v in di.Type.Members) m.Add(v.TypeText ?? "");
+                structMembers[o.Name] = m;
+            }
             // FB instances inside a structure: treated as reachable (over-approximation, only makes TASK-001 quieter)
             foreach (VarDecl v in di.Type.Members)
                 if (v.TypeText != null) foreach (Match m in IdentRx.Matches(v.TypeText)) rootTypeRefs.Add(m.Value);
@@ -421,12 +492,17 @@ namespace TcLintEngine
             // TwinCAT system data types (InfoSys tc3_plc_intro "Data types"; HRESULT seen in the bfh corpus): not function blocks
             "HRESULT" };
 
-        private string Classify(string typeText, out string typeName) { return Classify(typeText, out typeName, 0); }
+        // Result of a type: "hard" (timer, or a type the profile lists as stateful: blocking), "soft" (trigger / counter /
+        // flip-flop: re-initialising them is wrong in a cycle but legal inside one call, InfoSys 12050023819 "only rarely
+        // useful": warning), "type-only", "not-fb", "unknown", "skip" (pointer / reference), "project-fb" (no state found),
+        // "struct-unknown". viaStruct = the state sits in a STRUCT member (FB as STRUCT member: no InfoSys statement found).
+        private string Classify(string typeText, out string typeName) { bool vs; return Classify(typeText, out typeName, out vs, new HashSet<string>(StringComparer.OrdinalIgnoreCase)); }
 
-        private string Classify(string typeText, out string typeName, int depth)
+        private string Classify(string typeText, out string typeName, out bool viaStruct) { return Classify(typeText, out typeName, out viaStruct, new HashSet<string>(StringComparer.OrdinalIgnoreCase)); }
+
+        private string Classify(string typeText, out string typeName, out bool viaStruct, HashSet<string> visiting)
         {
-            if (depth > 16) { typeName = typeText; return "unknown"; }
-            // returns: stateful / type-only / not-fb / unknown / skip (pointer, reference, interface use)
+            viaStruct = false;
             typeName = null;
             string t = (typeText ?? "").Trim();
             while (true)
@@ -449,27 +525,54 @@ namespace TcLintEngine
                 string k;
                 if (typeKinds.TryGetValue(name, out k))
                 {
-                    string target;
-                    // a project ALIAS (TYPE T_Timer : TON; END_TYPE) is its base type (review should-fix 5)
-                    if (k == "DUT" && aliasOf.TryGetValue(name, out target)) return Classify(target, out typeName, depth + 1);
-                    if (k != "FB") return "not-fb";
-                    CatalogType pc = FindCatalog(name, "profile");
-                    if (pc != null && pc.Kind == "stateful") return "stateful";
-                    // FUNCTION_BLOCK FB_MyTon EXTENDS TON inherits the state of its base
-                    List<string> bases;
-                    if (fbExtends.TryGetValue(name, out bases))
-                        foreach (string b in bases)
+                    // a type that refers back to itself (illegal, or through a pointer we skipped): no state from the cycle
+                    if (!visiting.Add(name)) return "not-fb";
+                    try
+                    {
+                        string target, bn; bool vs;
+                        // a project ALIAS (TYPE T_Timer : TON; END_TYPE) is its base type
+                        if (k == "DUT" && aliasOf.TryGetValue(name, out target)) { string r = Classify(target, out bn, out vs, visiting); viaStruct = vs; if (r == "hard" || r == "soft") return r; typeName = r == "unknown" ? bn : name; return r; }
+                        List<string> members;
+                        if (k == "DUT" && structMembers.TryGetValue(name, out members))
                         {
-                            string bn;
-                            if (Classify(b, out bn, depth + 1) == "stateful") return "stateful";
+                            // SF1: a STRUCT / UNION holding a stateful FB (also nested, also ARRAY OF)
+                            string best = "not-fb"; bool unknown = false;
+                            foreach (string mt in members)
+                            {
+                                string r = Classify(mt, out bn, out vs, visiting);
+                                if (r == "hard") { best = "hard"; break; }
+                                if (r == "soft") best = "soft";
+                                else if (r == "unknown" || r == "struct-unknown") unknown = true;
+                            }
+                            if (best == "hard" || best == "soft") { viaStruct = true; return best; }
+                            return unknown ? "struct-unknown" : "not-fb";
                         }
-                    typeName = name;
-                    return "project-fb";
+                        if (k != "FB") return "not-fb";
+                        CatalogType pc = FindCatalog(name, "profile");
+                        if (pc != null && pc.Kind == "stateful") return "hard";
+                        // SF2: an FB whose VAR / VAR_STAT (also through EXTENDS) holds a stateful type is stateful itself
+                        string res = "project-fb";
+                        List<string> parts = new List<string>();
+                        List<string> bases;
+                        if (fbExtends.TryGetValue(name, out bases)) parts.AddRange(bases);
+                        List<string> own;
+                        if (fbStateTypes.TryGetValue(name, out own)) parts.AddRange(own);
+                        foreach (string b in parts)
+                        {
+                            string r = Classify(b, out bn, out vs, visiting);
+                            if (r == "hard") { res = "hard"; viaStruct = vs; break; }
+                            if (r == "soft" && res != "soft") { res = "soft"; viaStruct = vs; }
+                        }
+                        typeName = name;
+                        return res;
+                    }
+                    finally { visiting.Remove(name); }
                 }
             }
             CatalogType c = FindCatalog(name, ns);
             if (c == null) { typeName = t; return "unknown"; }
-            return c.Kind == "stateful" ? "stateful" : (c.Kind == "type-only" ? "type-only" : "not-fb");
+            if (c.Kind != "stateful") return c.Kind == "type-only" ? "type-only" : "not-fb";
+            return (c.Class == "timer" || c.Library == "profile") ? "hard" : "soft";
         }
 
         // ns null = any library; "profile" = profile entries only
@@ -520,12 +623,13 @@ namespace TcLintEngine
                     foreach (VarDecl v in b.Vars)
                     {
                         if (regions != null && StAnalyzer.InRegion(regions, v.Line, v.Col)) continue;
-                        string tn;
-                        string cls = Classify(v.TypeText, out tn);
+                        string tn; bool viaStruct;
+                        string cls = Classify(v.TypeText, out tn, out viaStruct);
                         if (cls == "unknown") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "unknown-type:" + tn)); continue; }
+                        if (cls == "struct-unknown") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "struct-type:" + tn)); continue; }
                         if (cls == "type-only") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "type-only:" + tn)); continue; }
                         if (cls == "project-fb") { rulesSkipped.Add(Cov(R, u.O.Rel, u.Path, null, "project-type:" + tn)); continue; }
-                        if (cls != "stateful") continue;
+                        if (cls != "hard" && cls != "soft") continue;
                         string names = string.Join(", ", v.Names.ToArray());
                         string where = variant == "var-temp" ? "VAR_TEMP" : "VAR of " + (owner == "ACCESSOR" ? "the property accessor" : owner);
                         string basis, fix;
@@ -551,9 +655,14 @@ namespace TcLintEngine
                             fix = "Declare the instance in the function block's VAR section";
                             sev = "warning"; blockable = "false";
                         }
+                        string note = "";
+                        // SF3: only timers (and types the profile lists) block; a trigger / counter / flip-flop re-initialised on every
+                        // call is legal when it is only used inside that one call (InfoSys 12050023819: "only rarely useful")
+                        if (cls == "soft") { sev = "warning"; blockable = "false"; note = "; trigger / counter / flip-flop: legal only if used within one call (InfoSys: 'only rarely useful'), so a warning that must be disposed"; }
+                        if (viaStruct) { sev = "warning"; blockable = "false"; note += "; the instance is a STRUCT member (FB instances as STRUCT members: no InfoSys statement found, not measured)"; }
                         Emit(R, u.O.Rel, u.Path, "declaration", v.Line, v.Col,
                             "Stateful function block '" + names + " : " + v.TypeText + "' is declared in " + where + ": " + basis +
-                            ", so it keeps no state between calls (a timer never reaches Q, an edge trigger fires on every call, a counter restarts)",
+                            ", so it keeps no state between calls (a timer never reaches Q, an edge trigger fires on every call, a counter restarts)" + note,
                             names + " : " + v.TypeText, fix, variant, sev, blockable, false);
                     }
                 }
@@ -590,6 +699,7 @@ namespace TcLintEngine
                 rulesSkipped.Add(Cov(R2, plcRel, "", null, "unobserved-msbuild"));
                 return;
             }
+            usedAsType.Clear();
             // a PouCall naming no PROGRAM of the project (PROJECT-TSPROJ-003, the compiler rejects it): the task's real program is unknown
             bool pouCallUnresolved = false;
             foreach (KeyValuePair<string, string> tc in taskCalls) { PouNode q; if (!pouIndex.TryGetValue(tc.Value, out q) || q.Header != "PROGRAM") pouCallUnresolved = true; }
@@ -601,7 +711,7 @@ namespace TcLintEngine
                 {
                     PouNode q;
                     // a PROGRAM used as a type (not legal ST, inferred - not measured): treated as reached so TASK-001 does not add noise
-                    if (pouIndex.TryGetValue(t, out q) && q != p) p.Edges.Add(q.Name);
+                    if (pouIndex.TryGetValue(t, out q) && q != p) { p.Edges.Add(q.Name); if (q.Header == "PROGRAM") usedAsType.Add(q.Name); }
                 }
                 foreach (SecCalls s in p.Sections)
                     foreach (CallSite cs in s.Calls)
@@ -656,16 +766,37 @@ namespace TcLintEngine
             foreach (PouNode p in sorted)
             {
                 if (p.Header != "PROGRAM") continue;
-                if (!p.Reachable)
+                // SF4: the body runs only through a task PouCall or a P() call from a reachable POU; calling P.Action() runs the
+                // action only (inferred from the call syntax P.Action, InfoSys 2530340747 does not say whether the body runs)
+                bool onTask = false, bodyCall = false, pragmaCall = false;
+                foreach (KeyValuePair<string, string> tc in taskCalls) if (string.Equals(tc.Value, p.Name, StringComparison.OrdinalIgnoreCase)) onTask = true;
+                List<BodyCall> bl;
+                if (bodyCalls.TryGetValue(p.Name, out bl))
+                    foreach (BodyCall bc in bl)
+                    {
+                        PouNode caller;
+                        if (!pouIndex.TryGetValue(bc.Caller, out caller) || !caller.Reachable) continue;
+                        if (bc.Uncertain) pragmaCall = true; else bodyCall = true;
+                    }
+                if (!onTask && !bodyCall)
                 {
                     if (!Enabled(R1)) continue;
                     if (pouCallUnresolved) { rulesSkipped.Add(Cov(R1, p.O.Rel, p.Name, null, "pou-call-unresolved")); continue; }
+                    // a PROGRAM used as a variable type (not legal ST, inferred - not measured): the compiler decides, no TASK-001 noise
+                    if (usedAsType.Contains(p.Name)) { rulesSkipped.Add(Cov(R1, p.O.Rel, p.Name, null, "program-used-as-type")); continue; }
+                    if (pragmaCall) { rulesSkipped.Add(Cov(R1, p.O.Rel, p.Name, null, "call-graph-incomplete:" + p.Name + "-called-only-in-conditional-pragma-or-unanalysed-code")); continue; }
                     string unc = MentionedIn(p.Name);
                     if (unc != null) { rulesSkipped.Add(Cov(R1, p.O.Rel, p.Name, null, "call-graph-incomplete:" + unc)); continue; }
-                    Emit(R1, p.O.Rel, p.Name, "declaration", p.NameLine, 1,
-                        "PROGRAM " + p.Name + " is not called by any task (.TcTTO PouCall) nor by any POU reachable from a task: it never runs. Build does not catch this: an uncalled PROGRAM is not even compiled (a syntax error in it still built, measured 2026-11-13, verification/st-syntax-measured.md section 2)",
-                        null, "Call it from a task program or add it to a task (Add-TcPlcTask / LinkProgramToTask); if it is kept on purpose (test harness), suppress with a reason: // tcauto-lint-disable-next-line PROJECT-TASK-001: <reason>",
-                        null, null, null, false);
+                    if (p.Reachable)
+                        Emit(R1, p.O.Rel, p.Name, "declaration", p.NameLine, 1,
+                            "PROGRAM " + p.Name + ": only its actions / methods are called, the program body itself is called by no task and no POU, so the body never runs (inferred from the P.Action() call syntax; InfoSys 2530340747 does not say whether the body runs). Build does not catch this",
+                            null, "Call " + p.Name + "() itself from a task program or add it to a task; if only the actions are meant to run, suppress with a reason: // tcauto-lint-disable-next-line PROJECT-TASK-001: <reason>",
+                            "action-only", null, null, false);
+                    else
+                        Emit(R1, p.O.Rel, p.Name, "declaration", p.NameLine, 1,
+                            "PROGRAM " + p.Name + " is not called by any task (.TcTTO PouCall) nor by any POU reachable from a task: it never runs. Build does not catch this: an uncalled PROGRAM is not even compiled (a syntax error in it still built, measured 2026-11-13, verification/st-syntax-measured.md section 2)",
+                            null, "Call it from a task program or add it to a task (Add-TcPlcTask / LinkProgramToTask); if it is kept on purpose (test harness), suppress with a reason: // tcauto-lint-disable-next-line PROJECT-TASK-001: <reason>",
+                            null, null, null, false);
                     continue;
                 }
                 if (!Enabled(R2)) continue;
@@ -674,6 +805,7 @@ namespace TcLintEngine
         }
 
         private readonly HashSet<string> certain = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> usedAsType = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private void Mark(string name, Queue<PouNode> queue)
         {
@@ -686,9 +818,10 @@ namespace TcLintEngine
         private void CheckDoubleCall(PouNode p, Dictionary<string, List<BodyCall>> bodyCalls)
         {
             const string R2 = "PROJECT-TASK-002";
-            List<string> tasks = new List<string>();
+            List<string> tasks = new List<string>();   // one entry per PouCall (a task may call the program twice)
             foreach (KeyValuePair<string, string> tc in taskCalls) if (string.Equals(tc.Value, p.Name, StringComparison.OrdinalIgnoreCase)) tasks.Add(tc.Key);
             tasks.Sort(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> distinctTasks = new HashSet<string>(tasks, StringComparer.OrdinalIgnoreCase);
             List<BodyCall> calls;
             if (!bodyCalls.TryGetValue(p.Name, out calls)) calls = new List<BodyCall>();
             SortedDictionary<string, string> progCallers = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -723,11 +856,14 @@ namespace TcLintEngine
             int strong = tasks.Count + progCallers.Count;
             string sources = Describe(tasks, progCallers, otherCallers);
             string variant = null, sev = null, blockable = null;
-            if (sure >= 2) variant = sureCallers.Count == 0 ? "two-tasks" : (tasks.Count == 0 ? "two-programs" : "task-and-program");
+            if (sure >= 2) variant = sureCallers.Count == 0 ? (distinctTasks.Count >= 2 ? "two-tasks" : "task-twice") : (tasks.Count == 0 ? "two-programs" : "task-and-program");
             else
             {
                 List<string> secs = new List<string>(unconditional.Keys); secs.Sort(StringComparer.OrdinalIgnoreCase);
                 foreach (string s in secs) if (unconditional[s] >= 2) { variant = "repeated-call"; sources += "; " + Inv.S(unconditional[s]) + " unconditional calls in " + s; break; }
+                // SF5: two calls of one program in one body are a legal, parameterised pattern unless the program (or what it
+                // calls) holds a stateful FB: only then they certainly corrupt state -> blocking, else a warning to dispose
+                if (variant == "repeated-call" && !HoldsState(p.Name, new HashSet<string>(StringComparer.OrdinalIgnoreCase))) { sev = "warning"; blockable = "false"; sources += "; " + p.Name + " holds no stateful function block of the catalog"; }
                 // one caller with two call sites that are not in different branches of one IF / CASE (other section,
                 // IF + unconditional, two calls in one branch) may run it twice
                 if (multiNote == null)
@@ -754,21 +890,44 @@ namespace TcLintEngine
                 if (unc != null && (uncertainCall || strong + otherCallers.Count >= 1)) rulesSkipped.Add(Cov(R2, p.O.Rel, p.Name, null, "call-graph-incomplete:" + unc));
                 return;
             }
+            int sourceCount = distinctTasks.Count + progCallers.Count + otherCallers.Count;
             string impact = variant == "fb-or-function-caller"
-                ? "it may run more than once per cycle (a caller is a function block or function: how often it runs is not analysed)"
+                ? "how often the calling function block / function runs per cycle is not analysed, so the program may run more than once per cycle"
                 : variant == "possible-double-call"
                 ? "it runs twice (or in a loop) in every cycle in which the conditional calls are made (a call inside IF / CASE / a loop / an action or method, or a caller that does not run every cycle for certain)"
-                : "it can run more than once in one cycle: timers / triggers / counters inside are evaluated twice per cycle (an R_TRIG output is reset by the second call; inferred from IEC call semantics)" + (tasks.Count >= 2 ? ", and two tasks access its data concurrently" : "");
+                : "it runs more than once in one cycle (a structural fact of the files); inferred consequence: timers / triggers / counters inside are evaluated twice per cycle (an R_TRIG output is reset by the second call)" + (distinctTasks.Count >= 2 ? ", and two tasks access its data concurrently (InfoSys 12050040971 forbids access to one function block from several task contexts; for a PROGRAM no InfoSys statement was found)" : "");
+            string where = sourceCount <= 1 && variant != "repeated-call" && variant != "task-twice" ? "is called from " + sources : "is called from more than one place or more than once (" + sources + ")";
             Emit(R2, p.O.Rel, p.Name, "declaration", p.NameLine, 1,
-                "PROGRAM " + p.Name + " is called from more than one place (" + sources + "): " + impact,
+                "PROGRAM " + p.Name + " " + where + ": " + impact,
                 sources, "Call the program from exactly one place (one task PouCall or one calling program); if two places are intended, list it in the profile suppressions[] with a reviewed reason",
                 variant, sev, blockable, false);
+        }
+
+        // SF5: the program, its actions / methods and what they call (programs, function blocks, functions) hold a stateful FB
+        private bool HoldsState(string name, HashSet<string> seen)
+        {
+            if (!seen.Add(name)) return false;
+            PouNode p;
+            if (!pouIndex.TryGetValue(name, out p)) return false;
+            List<string> own;
+            if (fbStateTypes.TryGetValue(name, out own))
+                foreach (string t in own)
+                {
+                    string tn; bool vs;
+                    string r = Classify(t, out tn, out vs);
+                    if (r == "hard" || r == "soft") return true;
+                }
+            List<string> next = new List<string>(p.Edges); next.Sort(StringComparer.OrdinalIgnoreCase);
+            foreach (string e in next) if (HoldsState(e, seen)) return true;
+            return false;
         }
 
         private static string Describe(List<string> tasks, SortedDictionary<string, string> prog, SortedDictionary<string, string> other)
         {
             List<string> parts = new List<string>();
-            foreach (string t in tasks) parts.Add("task " + t);
+            SortedDictionary<string, int> perTask = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (string t in tasks) { int n; perTask.TryGetValue(t, out n); perTask[t] = n + 1; }
+            foreach (KeyValuePair<string, int> kv in perTask) parts.Add("task " + kv.Key + (kv.Value > 1 ? " (" + Inv.S(kv.Value) + " PouCalls)" : ""));
             foreach (KeyValuePair<string, string> kv in prog) parts.Add("program " + kv.Key + " (" + kv.Value + ")");
             foreach (KeyValuePair<string, string> kv in other) parts.Add("POU " + kv.Key + " (" + kv.Value + ")");
             return string.Join(", ", parts.ToArray());
@@ -779,7 +938,6 @@ namespace TcLintEngine
 
         private string MentionedIn(string name, string self)
         {
-            Regex word = null;
             List<Uncertain> list = new List<Uncertain>(uncertain);
             list.Sort(delegate (Uncertain a, Uncertain b) { int c = string.CompareOrdinal(a.File ?? "", b.File ?? ""); return c != 0 ? c : string.CompareOrdinal(a.Path ?? "", b.Path ?? ""); });
             foreach (Uncertain u in list)
@@ -787,12 +945,7 @@ namespace TcLintEngine
                 if (string.Equals(u.Owner, self, StringComparison.OrdinalIgnoreCase)) continue;
                 bool hit;
                 if (u.Idents != null) hit = u.Idents.Contains(name);
-                else if (u.Raw == null) hit = true;   // content unknown (file not readable)
-                else
-                {
-                    if (word == null) word = new Regex("(?<![A-Za-z0-9_])" + Regex.Escape(name) + "(?![A-Za-z0-9_])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-                    hit = word.IsMatch(u.Raw);
-                }
+                else hit = true;   // content unknown (file not readable)
                 if (hit) return u.Path ?? u.File;
             }
             return null;

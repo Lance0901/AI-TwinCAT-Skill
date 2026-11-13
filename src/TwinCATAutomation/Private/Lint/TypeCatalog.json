@@ -1,24 +1,24 @@
 {
   "schema": "tcauto-lint-type-catalog/1",
-  "version": 1,
-  "note": "Library function blocks the semantic linter knows (#252 tasks 1b.1). stateful: the instance keeps state between calls (timer elapsed time, edge memory, counter value, flip-flop output); used by SCAN-TEMPFB-001. typeOnly: known as a function block type, no rule evaluates it yet (Tc2_MC2: rules undecided, rule-catalog SCAN-MC-*). A type in no list and not declared in the project is not evaluated (coverage.rulesSkipped unknown-type); names are never guessed from a prefix. Each URL is the InfoSys page of that function block (checked 2026-11-13).",
+  "version": 2,
+  "note": "Library function blocks the semantic linter knows (#252 tasks 1b.1). stateful: the instance keeps state (class timer = blocking in SCAN-TEMPFB-001; edge / counter / bistable = warning, InfoSys 12050023819 'only rarely useful') between calls (timer elapsed time, edge memory, counter value, flip-flop output); used by SCAN-TEMPFB-001. typeOnly: known as a function block type, no rule evaluates it yet (Tc2_MC2: rules undecided, rule-catalog SCAN-MC-*). A type in no list and not declared in the project is not evaluated (coverage.rulesSkipped unknown-type); names are never guessed from a prefix. Each URL is the InfoSys page of that function block (checked 2026-11-13).",
   "libraries": [
     {
       "name": "Tc2_Standard",
       "stateful": [
-        { "name": "TON", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html" },
-        { "name": "TOF", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74405003.html" },
-        { "name": "TP", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74408075.html" },
-        { "name": "LTON", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261455883.html" },
-        { "name": "LTOF", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2260730123.html" },
-        { "name": "LTP", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261457803.html" },
-        { "name": "R_TRIG", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/9007199329132555.html" },
-        { "name": "F_TRIG", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74390027.html" },
-        { "name": "CTU", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74400523.html" },
-        { "name": "CTD", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74398987.html" },
-        { "name": "CTUD", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74402059.html" },
-        { "name": "RS", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74394507.html" },
-        { "name": "SR", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74396043.html" }
+        { "name": "TON", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74406539.html" },
+        { "name": "TOF", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74405003.html" },
+        { "name": "TP", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74408075.html" },
+        { "name": "LTON", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261455883.html" },
+        { "name": "LTOF", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2260730123.html" },
+        { "name": "LTP", "class": "timer", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/2261457803.html" },
+        { "name": "R_TRIG", "class": "edge", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74391563.html" },
+        { "name": "F_TRIG", "class": "edge", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74390027.html" },
+        { "name": "CTU", "class": "counter", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74400523.html" },
+        { "name": "CTD", "class": "counter", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74398987.html" },
+        { "name": "CTUD", "class": "counter", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74402059.html" },
+        { "name": "RS", "class": "bistable", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74394507.html" },
+        { "name": "SR", "class": "bistable", "source": "https://infosys.beckhoff.com/content/1033/tcplclib_tc2_standard/74396043.html" }
       ],
       "typeOnly": []
     },

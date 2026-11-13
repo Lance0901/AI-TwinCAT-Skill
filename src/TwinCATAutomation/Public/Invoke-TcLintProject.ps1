@@ -11,15 +11,18 @@ function Invoke-TcLintProject {
         PROJECT-XML-001..004, PROJECT-KIND-001, PROJECT-NAME-001/002, PROJECT-GUID-001..005,
         PROJECT-SUB-001/002, PROJECT-LINEIDS-001, PROJECT-COMPILE-001..006, PROJECT-LIB-001,
         PROJECT-TSPROJ-001..003, PROJECT-ENC-001, LINT-PARSE-001..003, LINT-XML-002; Phase 1b (section 2):
-        SCAN-TEMPFB-001 (blocking: TON / R_TRIG / CTU ... in METHOD VAR, FUNCTION VAR or VAR_TEMP is
-        re-initialized on every call), PROJECT-TASK-001 (warning, must be disposed: PROGRAM on no task and
-        called by nobody), PROJECT-TASK-002 (blocking: PROGRAM runs twice per cycle), LINT-SUPPRESS-001..004.
+        SCAN-TEMPFB-001 (timer in METHOD VAR, FUNCTION VAR or VAR_TEMP: blocking, re-initialized on every call;
+        trigger / counter / flip-flop: warning to dispose), PROJECT-TASK-001 (warning, must be disposed: PROGRAM
+        body on no task and called by nobody), PROJECT-TASK-002 (blocking: PROGRAM certainly runs twice per
+        cycle; possible double calls are warnings), LINT-SUPPRESS-001..004.
         Types are only judged from data.typeCatalog (versioned list + profile typeCatalog), never guessed.
 
         Disposition: requiresDisposition = true -> fix each data.unresolved[] entry or suppress it with
         "// tcauto-lint-disable-next-line <RULE-ID>: <reason>" (non-blocking rules only; a blocking rule needs
-        the profile suppressions[]), and list every data.newSuppressions[] entry to the user (new against git
-        HEAD; newSuppressionsBasis = unavailable lists all). No EnableConfig before that.
+        the profile suppressions[]), and list every data.newSuppressions[] and data.newOverrides[] (profile
+        weakenings) entry to the user, new against the git base (merge-base with upstream / origin default
+        branch, else HEAD; newSuppressionsBasis = unavailable lists all); do not commit them before the user
+        confirmed. No EnableConfig before that.
 
         data.passed = true does NOT mean the program is correct: only that the listed rules found no
         blocking finding in the analysed part (read data.coverage and data.unresolved with it).
@@ -31,7 +34,9 @@ function Invoke-TcLintProject {
         (relative to the .plcproj directory), objectPath, section, line, column, message, evidence,
         fixHint }, unresolved[] (machine-behaviour findings that must be fixed or suppressed),
         requiresDisposition, suppressions[] { source, kind, ruleIds, file, objectPath, line, reason, effective,
-        matched }, newSuppressions[], newSuppressionsBasis (git-head / unavailable / no-suppressions),
+        matched }, newSuppressions[], newOverrides[] { kind, ruleId, objectPath, detail, reason, change },
+        newSuppressionsBasis (git:merge-base:<ref> / git:head / unavailable / nothing-to-compare),
+        newSuppressionsBase { kind, ref, commit }, dispositionReasons (unresolved, new-overrides),
         typeCatalog { version, sha256, stateful, typeOnly }, coverage { objectsInScope, objectsAnalyzed, notAnalyzed[], excluded[],
         rulesSkipped[], blockingRulesSkipped[], acceptedSkips[], rulesNotRun[] }, rulesRun[].
 
@@ -172,10 +177,10 @@ function Invoke-TcLintProject {
     # FB type catalog (tasks 1b.1): versioned library list + profile typeCatalog
     $cat = Get-TcLintTypeCatalog
     if (-not $cat.ok) { return (& $fail 'LINT_ENGINE_ERROR' 'The lint type catalog is missing or invalid; no result is reported' ([ordered]@{ engineDetail = $cat.message })) }
-    foreach ($e in $cat.entries) { $opt.AddCatalogType($e.name, $e.library, $e.kind, $e.source) }
+    foreach ($e in $cat.entries) { $opt.AddCatalogType($e.name, $e.library, $e.kind, $e.source, $e.class) }
     $profSrc = if ($prof.profile.path) { $prof.profile.path } else { 'profile' }
-    foreach ($nme in @($prof.typeCatalog.stateful)) { $opt.AddCatalogType($nme, 'profile', 'stateful', $profSrc) }
-    foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $opt.AddCatalogType($nme, 'profile', 'function-block', $profSrc) }
+    foreach ($nme in @($prof.typeCatalog.stateful)) { $opt.AddCatalogType($nme, 'profile', 'stateful', $profSrc, 'profile') }
+    foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $opt.AddCatalogType($nme, 'profile', 'function-block', $profSrc, '') }
     $catInfo = $cat.info
     $catInfo['profileStateful'] = @($prof.typeCatalog.stateful).Count
     $catInfo['profileFunctionBlocks'] = @($prof.typeCatalog.functionBlocks).Count
@@ -190,8 +195,12 @@ function Invoke-TcLintProject {
         return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
     }
 
-    # newSuppressions[]: against git HEAD (design.md D5); unavailable -> all listed (fail closed)
-    $newSup = Get-TcLintNewSuppressions -Suppressions @($res['suppressions']) -PlcProjectFull $plcFull -ProfilePath $prof.profile.path -EngineType ("$ns.Suppressions" -as [type])
+    # newSuppressions[] / newOverrides[]: against the git base (merge-base with upstream / origin default, else HEAD;
+    # design.md D5, PR #283 review B1 / SF6); unavailable -> all listed (fail closed)
+    $newSup = Get-TcLintNewItems -Suppressions @($res['suppressions']) -Overrides @($prof.profile.overrides) -PlcProjectFull $plcFull -ProfilePath $prof.profile.path -EngineType ("$ns.Suppressions" -as [type]) -RuleRegistry $registry
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if ([bool]$res['requiresDisposition']) { $reasons.Add('unresolved') }
+    if (@($newSup.overrides).Count -gt 0) { $reasons.Add('new-overrides') }
 
     $source = [ordered]@{ kind = 'disk'; plcProjectPath = $res['source']['plcProjectPath']; solutionPath = $res['source']['solutionPath']
         tsprojPaths = @($res['source']['tsprojPaths']); ideChecked = $false }
@@ -209,11 +218,14 @@ function Invoke-TcLintProject {
         summary              = $res['summary']
         diagnostics          = @($res['diagnostics'])
         unresolved           = @($res['unresolved'])
-        requiresDisposition  = [bool]$res['requiresDisposition']
+        requiresDisposition  = ($reasons.Count -gt 0)
+        dispositionReasons   = @($reasons)
         scope                = $res['scope']
         suppressions         = @($res['suppressions'])
-        newSuppressions      = @($newSup.items)
+        newSuppressions      = @($newSup.suppressions)
+        newOverrides         = @($newSup.overrides)
         newSuppressionsBasis = $newSup.basis
+        newSuppressionsBase  = $newSup.base
         typeCatalog          = $catInfo
         coverage             = $res['coverage']
         rulesRun             = @($res['rulesRun'])

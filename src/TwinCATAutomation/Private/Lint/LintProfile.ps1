@@ -69,7 +69,12 @@ function Get-TcLintPropNames($Obj) {
 }
 
 function Test-TcLintReason([object]$Reason) {
-    return ($Reason -is [string]) -and ($Reason.Trim().Length -ge $script:TcLintMinReasonLength)
+    # at least 8 characters, a letter (Latin, CJK, ...) and 3 different non-space characters: '........' is no reason
+    if ($Reason -isnot [string]) { return $false }
+    $r = $Reason.Trim()
+    if ($r.Length -lt $script:TcLintMinReasonLength -or $r -notmatch '\p{L}') { return $false }
+    $distinct = @($r.ToLowerInvariant().ToCharArray() | Where-Object { -not [char]::IsWhiteSpace($_) } | Sort-Object -Unique -CaseSensitive)
+    return ($distinct.Count -ge 3)
 }
 
 function Resolve-TcLintProfile {
