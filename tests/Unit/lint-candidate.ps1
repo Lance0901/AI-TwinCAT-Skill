@@ -140,6 +140,28 @@ Check 'N3 text-only: every inline suppression is new (basis candidate-text-only)
 $r = Cand @{ ObjectKind = 'Method'; ObjectName = 'FB_A.M_Do'; Declaration = "METHOD M_Do : BOOL`r`nVAR`r`n    // tcauto-lint-disable-next-line SCAN-TEMPFB-001: timer restarts on every call by design`r`n    t : TON;`r`nEND_VAR`r`n"; Implementation = "t(IN := TRUE, PT := T#1S);`r`nM_Do := t.Q;"; PlcProjectPath = $Plc }
 Check 'N4 inline suppression of a blocking finding (TON) is refused (LINT-SUPPRESS-004), still LINT_FAILED' ($r.error.code -eq 'LINT_FAILED' -and (Diags $r 'LINT-SUPPRESS-004').Count -eq 1) (Brief $r)
 
+# ================================================================ C  cross-object (PR #284 review S1)
+$fx3 = New-LintFixture (Join-Path $root 'h')
+$gvlK = "<?xml version=`"1.0`" encoding=`"utf-8`"?>`n<TcPlcObject Version=`"1.1.0.1`" ProductVersion=`"3.1.4026.18`">`n  <GVL Name=`"GVL_K`" Id=`"{6b0f3f43-2a6e-4d55-9a3e-5f1d2c7b9e01}`">`n    <Declaration><![CDATA[{attribute 'qualified_only'}`nVAR_GLOBAL CONSTANT`n    cDiv : DINT := 5;`nEND_VAR]]></Declaration>`n  </GVL>`n</TcPlcObject>"
+Write-LintFxFile (Join-Path $fx3.PlcDir 'GVLs\GVL_K.TcGVL') $gvlK
+Write-LintFxFile (Join-Path $fx3.PlcDir 'POUs\FB_U.TcPOU') (Get-LintFxPou -Name 'FB_U' -Id '{8e2c4d10-5b7a-4f3e-9c21-7d4e6a1b3f52}' -Decl "FUNCTION_BLOCK FB_U`nVAR`n    x : DINT;`nEND_VAR`n" -Impl "x := x MOD GVL_K.cDiv;")
+Set-LintFxCompile $fx3 (@($script:LintFxCompile) + @('GVLs\GVL_K.TcGVL', 'POUs\FB_U.TcPOU'))
+$r = Cand @{ ObjectKind = 'GVL'; ObjectName = 'GVL_K'; Declaration = "{attribute 'qualified_only'}`r`nVAR_GLOBAL CONSTANT`r`n    cDiv : DINT := 5;`r`nEND_VAR"; PlcProjectPath = $fx3.Plcproj }
+Check 'C1 unchanged GVL: crossObject checked, no new finding in other objects, pass' ($r.success -and $r.data.crossObject.checked -and @($r.data.crossObject.newFindings).Count -eq 0) (Brief $r)
+$r = Cand @{ ObjectKind = 'GVL'; ObjectName = 'GVL_K'; Declaration = "{attribute 'qualified_only'}`r`nVAR_GLOBAL CONSTANT`r`n    cDiv : DINT := 0;`r`nEND_VAR"; PlcProjectPath = $fx3.Plcproj }
+$nf = @($r.data.crossObject.newFindings)
+Check 'C2 GVL constant set to 0 makes MOD 0 in FB_U: candidate fails (LINT_FAILED), crossObject lists it, requiresDisposition' ($r.error.code -eq 'LINT_FAILED' -and $r.data.passed -eq $false -and $nf.Count -eq 1 -and $nf[0].ruleId -eq 'SAFETY-DIV-001' -and $nf[0].objectPath -eq 'FB_U' -and $r.data.crossObject.blocking -eq 1 -and (@($r.data.dispositionReasons) -contains 'cross-object-findings')) ((Brief $r) + ' cross=' + (Js $r.data.crossObject))
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_X'; Declaration = "FUNCTION F_X : INT`r`nVAR_INPUT`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = 'F_X := n;' }
+Check 'C3 text-only: crossObject not checked (reason text-only)' ($r.data.crossObject.checked -eq $false -and $r.data.crossObject.reason -eq 'text-only') (Js $r.data.crossObject)
+
+# ================================================================ X  text-only legal constructs (review nit 2) / not analysed (nit 4)
+$r = Cand @{ ObjectKind = 'Function'; ObjectName = 'F_J'; Declaration = "FUNCTION F_J : INT`r`nVAR`r`n    x : INT;`r`nEND_VAR`r`n"; Implementation = "lbl: x := x + 1;`r`nIF x < 3 THEN`r`n    JMP lbl;`r`nEND_IF`r`nF_J := x;" }
+Check 'X10 text-only JMP label is not an identifier needing the project -> pass' ($r.success) (Brief $r)
+$r = Cand @{ ObjectKind = 'FunctionBlock'; ObjectName = 'FB_T2'; Declaration = "FUNCTION_BLOCK FB_T2`r`nVAR`r`n    n : INT;`r`nEND_VAR`r`n"; Implementation = 'THIS^.n := 1;' }
+Check 'X11 text-only THIS^.member -> pass' ($r.success) (Brief $r)
+$r = Cand @{ ObjectKind = 'Program'; ObjectName = 'MAIN'; Declaration = $mainDecl; Implementation = "{IF defined(SIM)}`r`nWHILE TRUE DO`r`nEND_WHILE`r`n{END_IF}`r`n" + $mainImpl; PlcProjectPath = $Plc }
+Check 'X12 candidate section with a conditional pragma: pass but requiresDisposition (candidate-not-analyzed)' ($r.success -and $r.data.requiresDisposition -and (@($r.data.dispositionReasons) -contains 'candidate-not-analyzed')) (Brief $r)
+
 # ================================================================ R  read-only
 Check 'R1 no file of the project changed (content and write time) after every candidate above' ((Hashes) -ceq $before) ''
 

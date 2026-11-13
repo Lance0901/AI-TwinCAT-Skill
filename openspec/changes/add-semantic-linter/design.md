@@ -76,7 +76,9 @@
 | `PlcProjectPath` | 選填。`.plcproj` 的檔案路徑,或已連 IDE 時的 PLC 名稱。給了就把候選物件**覆蓋**到該專案的磁碟版本上(同名物件被取代、新物件被加入),跑跨物件規則 |
 | `RuleProfile` / `FailOn` / `Baseline` | 見 D5 |
 
-**`PlcProjectPath` 的解析**(與 `Resolve-TcPlcProjectSpec` 一致,review S7):給 `.plcproj` 檔案路徑 → 不需 IDE;給 PLC 名稱 → 需要 IDE;**省略且 IDE 已連線** → 單一 PLC 自動取用、多個回 `PLC_PROJECT_AMBIGUOUS`;省略且 IDE 未連線 → text-only。
+**`PlcProjectPath` 的解析**(與 `Resolve-TcPlcProjectSpec` 一致,review S7):給 `.plcproj` 檔案路徑 → 不需 IDE;給 PLC 名稱 → 需要 IDE;**省略且 IDE 已連線** → 單一 PLC 自動取用、多個回 `PLC_PROJECT_AMBIGUOUS`;省略且 IDE 未連線 → text-only。**Phase 2a 實作(PR #284)**:只做不需要 IDE 的兩條 —— `.plcproj` 路徑與 text-only;PLC 名稱回 `LINT_INPUT_INVALID`,省略時一律 text-only(不看 IDE 是否連線;text-only 不會靜默 pass,所以不是 fail open)。經 IDE 找檔與 stale 偵測一起做(tasks 2.6)。
+
+**範圍與跨物件檢查(PR #284 審查 S1)**:結果的 `diagnostics` 只列候選物件(與 `LintProject -Scope Object` 相同,語料一致性測試的比對基準)。另外把整個專案「有候選」與「磁碟原樣」各跑一次,**其他物件**只在有候選時才出現的 finding 列在 `data.crossObject.newFindings[]`(info 與已 suppress 的不列):其中有 blocking → 候選回 `LINT_FAILED`;非空 → `requiresDisposition`(reason `cross-object-findings`)。例:候選 GVL 把常數改成 0,讓別的 FB 的 `MOD` 變成 `MOD 0`。代價是每次 LintCandidate 跑三次引擎。
 
 **text-only 不能靜默 PASS**(review B2,issue「context 不足不得回傳 PASS」):候選內容本身需要 context 時 — 有 `IMPLEMENTS` / `EXTENDS`、`ObjectKind` 是 Method / Property / Action / Transition、或引用了不在內建型別目錄裡的型別 — 回 `LINT_CONTEXT_REQUIRED`(verdict `incomplete`),hint 要求帶 `PlcProjectPath`。只有完全自足的候選(例如只用基本型別與 Tc2_Standard FB 的 FUNCTION、STRUCT、ENUM)才能在 text-only 下 pass;`data.contextLevel = "text-only"`。
 

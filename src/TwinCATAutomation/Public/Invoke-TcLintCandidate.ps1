@@ -4,7 +4,9 @@ function Invoke-TcLintCandidate {
         Read-only semantic lint of a PLC object BEFORE it is written (#252 Phase 2a): the candidate Declaration / Implementation laid over the .plcproj on disk in memory (same name replaced, new object added), or checked alone. Needs no IDE and no runtime; nothing is written.
     .DESCRIPTION
         Same engine, rules, profile and output as Invoke-TcLintProject, scoped to the candidate object (like
-        LintProject -Scope Object: findings of other objects are not reported; project-level rules still run).
+        LintProject -Scope Object; project-level rules still run). Cross-object check: the whole project is also
+        analysed with and without the candidate; findings that appear in OTHER objects only with it are listed in
+        data.crossObject.newFindings (a blocking one -> LINT_FAILED, any -> requiresDisposition).
         Workflow: LintCandidate -> WritePouCode -> BuildProject -> LintProject (a pass here is not a pass of the
         project: other objects and cross-object effects are checked by LintProject after writing).
 
@@ -31,7 +33,8 @@ function Invoke-TcLintCandidate {
         the object) and data.newOverrides[] entry to the user before writing. Do not call EnableConfig.
 
         data: as Invoke-TcLintProject, plus contextLevel (project / text-only), candidate { objectKind,
-        objectPath, file, overlay (replaced / added / text-only), contextRequired[] }, newSuppressionsBasis
+        objectPath, file, overlay (replaced / added / text-only), contextRequired[] }, crossObject { checked,
+        basis, newFindings[], blocking }, dispositionReasons (also cross-object-findings, candidate-not-analyzed), newSuppressionsBasis
         (candidate-vs-disk / candidate-text-only), newOverridesBasis.
 
         Errors: LINT_FAILED, LINT_PARSE_FAILED, LINT_CONTEXT_REQUIRED, LINT_INCOMPLETE, LINT_INPUT_INVALID,
@@ -161,27 +164,36 @@ function Invoke-TcLintCandidate {
     }
 
     # 6. analysis
-    $opt = New-Object "$ns.LintOptions"
-    $opt.PlcProjectPath = $plcFull
-    $opt.FailOn = $effectiveFailOn
-    $opt.MaxFileBytes = $maxBytes
-    $opt.CandidateMode = $true
-    $opt.CandidateTextOnly = $textOnly
-    $opt.CandidateKind = $kindNorm
-    $opt.CandidateName = $ObjectName.Trim()
-    $opt.CandidateDeclaration = $Declaration
-    $opt.CandidateImplementation = $Implementation
-    if ($script:TcLintTestFault) { $opt.TestFault = $true }
-    foreach ($r in $prof.rules) { $opt.AddRuleOverride($r.id, $r.enabled, [string]$r.severity, $r.blocking) }
-    foreach ($e in $prof.excludes) { $opt.AddExclude($e.objectPath, $e.reason) }
-    foreach ($e in $prof.suppressions) { $opt.AddSuppression($e.objectPath, $e.ruleId, $e.reason) }
-    foreach ($e in $prof.acceptSkips) { $opt.AddAcceptSkip($e.objectPath, $e.ruleId, $e.reason) }
     $cat = Get-TcLintTypeCatalog
     if (-not $cat.ok) { return (& $fail 'LINT_ENGINE_ERROR' 'The lint type catalog is missing or invalid; no result is reported' ([ordered]@{ engineDetail = $cat.message })) }
-    foreach ($e in $cat.entries) { $opt.AddCatalogType($e.name, $e.library, $e.kind, $e.source, $e.class) }
     $profSrc = if ($prof.profile.path) { $prof.profile.path } else { 'profile' }
-    foreach ($nme in @($prof.typeCatalog.stateful)) { $opt.AddCatalogType($nme, 'profile', 'stateful', $profSrc, 'profile') }
-    foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $opt.AddCatalogType($nme, 'profile', 'function-block', $profSrc, '') }
+    # mode: candidate (scoped to the candidate object), cross (candidate laid over, every object), disk (no candidate, every object)
+    $newOpt = {
+        param([string]$Mode)
+        $o = New-Object "$ns.LintOptions"
+        $o.PlcProjectPath = $plcFull
+        $o.FailOn = $effectiveFailOn
+        $o.MaxFileBytes = $maxBytes
+        if ($Mode -ne 'disk') {
+            $o.CandidateMode = $true
+            $o.CandidateTextOnly = $textOnly
+            $o.CandidateKind = $kindNorm
+            $o.CandidateName = $ObjectName.Trim()
+            $o.CandidateDeclaration = $Declaration
+            $o.CandidateImplementation = $Implementation
+            $o.CandidateFullScope = ($Mode -eq 'cross')
+        }
+        if ($script:TcLintTestFault) { $o.TestFault = $true }
+        foreach ($r in $prof.rules) { $o.AddRuleOverride($r.id, $r.enabled, [string]$r.severity, $r.blocking) }
+        foreach ($e in $prof.excludes) { $o.AddExclude($e.objectPath, $e.reason) }
+        foreach ($e in $prof.suppressions) { $o.AddSuppression($e.objectPath, $e.ruleId, $e.reason) }
+        foreach ($e in $prof.acceptSkips) { $o.AddAcceptSkip($e.objectPath, $e.ruleId, $e.reason) }
+        foreach ($e in $cat.entries) { $o.AddCatalogType($e.name, $e.library, $e.kind, $e.source, $e.class) }
+        foreach ($nme in @($prof.typeCatalog.stateful)) { $o.AddCatalogType($nme, 'profile', 'stateful', $profSrc, 'profile') }
+        foreach ($nme in @($prof.typeCatalog.functionBlocks)) { $o.AddCatalogType($nme, 'profile', 'function-block', $profSrc, '') }
+        return $o
+    }
+    $opt = & $newOpt 'candidate'
     $catInfo = $cat.info
     $catInfo['profileStateful'] = @($prof.typeCatalog.stateful).Count
     $catInfo['profileFunctionBlocks'] = @($prof.typeCatalog.functionBlocks).Count
@@ -194,6 +206,37 @@ function Invoke-TcLintCandidate {
             return (& $fail 'LINT_INPUT_INVALID' ($inner.Message.Substring(19)) $null)
         }
         return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
+    }
+
+    # cross-object check (PR #284 review S1, design.md D2 "cross-object rules"): the candidate may break OTHER objects
+    # (a GVL constant set to 0 used as a divisor elsewhere, a PROGRAM now called twice). Every object is analysed
+    # with and without the candidate; findings of other objects that exist only with it are reported here.
+    $cross = $null
+    if (-not $textOnly) {
+        try {
+            $withC = ("$ns.LintEngine" -as [type])::Run((& $newOpt 'cross'))
+            $diskR = ("$ns.LintEngine" -as [type])::Run((& $newOpt 'disk'))
+        }
+        catch {
+            $inner = $_.Exception
+            while ($null -ne $inner.InnerException) { $inner = $inner.InnerException }
+            return (& $fail 'LINT_ENGINE_ERROR' 'The lint engine failed in the cross-object check; no result is reported' ([ordered]@{ engineDetail = "$($inner.GetType().FullName): $($inner.Message)" }))
+        }
+        $top = ($ObjectName.Trim() -split '\.')[0]
+        $keyOf = { param($d) "$($d['ruleId'])|$($d['variant'])|$($d['file'])|$($d['objectPath'])|$($d['section'])|$($d['line'])|$($d['column'])|$($d['message'])" }
+        $diskKeys = @{}
+        foreach ($d in @($diskR['diagnostics'])) { $k = & $keyOf $d; if ($diskKeys.ContainsKey($k)) { $diskKeys[$k]++ } else { $diskKeys[$k] = 1 } }
+        $newOther = [System.Collections.Generic.List[object]]::new()
+        foreach ($d in @($withC['diagnostics'])) {
+            $p = [string]$d['objectPath']
+            if ($p -and [string]::Equals(($p -split '\.')[0], $top, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            $k = & $keyOf $d
+            if ($diskKeys.ContainsKey($k) -and $diskKeys[$k] -gt 0) { $diskKeys[$k]--; continue }
+            if ([bool]$d['suppressed'] -or [string]$d['severity'] -eq 'info') { continue }
+            $newOther.Add($d)
+        }
+        $crossBlocking = @($newOther | Where-Object { [bool]$_['blocking'] }).Count
+        $cross = [ordered]@{ checked = $true; basis = 'disk-project'; newFindings = $newOther.ToArray(); blocking = $crossBlocking }
     }
 
     # newSuppressions[] (tasks 2.2): inline directives against the disk version of the same file (design.md D5:
@@ -229,6 +272,11 @@ function Invoke-TcLintCandidate {
     if ([bool]$res['requiresDisposition']) { $reasons.Add('unresolved') }
     if (@($newSup.overrides).Count -gt 0) { $reasons.Add('new-overrides') }
     if ($newSuppressions.Count -gt 0) { $reasons.Add('new-suppressions') }
+    if ($null -ne $cross -and @($cross.newFindings).Count -gt 0) { $reasons.Add('cross-object-findings') }
+    # review nit 4: a section of the candidate the rules could not analyse (conditional pragma, unverified syntax) still
+    # passes (design.md D3), but before writing the user has to know that the machine-behaviour rules did not run on it
+    $candNa = @($res['coverage']['notAnalyzed'] | Where-Object { $_ -and [string]::Equals([string]$_['objectPath'], $ObjectName.Trim(), [System.StringComparison]::OrdinalIgnoreCase) })
+    if ($candNa.Count -gt 0) { $reasons.Add('candidate-not-analyzed') }
 
     $source = [ordered]@{ kind = $res['source']['kind']; plcProjectPath = $res['source']['plcProjectPath']; ideChecked = $false }
     $verdict = [string]$res['verdict']
@@ -237,6 +285,7 @@ function Invoke-TcLintCandidate {
         passed               = ($verdict -eq 'pass')
         contextLevel         = $(if ($textOnly) { 'text-only' } else { 'project' })
         candidate            = $res['candidate']
+        crossObject          = $(if ($null -ne $cross) { $cross } else { [ordered]@{ checked = $false; reason = 'text-only' } })
         source               = $source
         engine               = [ordered]@{ version = ("$ns.LintEngine" -as [type])::EngineVersion; sourceHash = $engine.Hash }
         profile              = $prof.profile
@@ -264,12 +313,16 @@ function Invoke-TcLintCandidate {
     if ($IncludeTiming) { $data.timing = [ordered]@{ engineLoadMs = $compileMs; engineCompiled = [bool]$engine.compiled; analyzeMs = ($sw.ElapsedMilliseconds - $analyzeStart); totalMs = $sw.ElapsedMilliseconds } }
 
     $code = [string]$res['code']
+    # a new blocking finding in another object makes the candidate fail (fail closed; parse failure / context keep their code)
+    if ($null -ne $cross -and $cross.blocking -gt 0 -and ($verdict -eq 'pass' -or $code -eq 'LINT_INCOMPLETE')) {
+        $verdict = 'fail'; $code = 'LINT_FAILED'; $data.verdict = 'fail'; $data.passed = $false
+    }
     if ($verdict -eq 'pass') { return (New-TcResult -Success $true -Data $data) }
     $msg = switch ($code) {
         'LINT_PARSE_FAILED' { 'Lint could not parse the candidate (see LINT-PARSE-* in data.diagnostics)' }
         'LINT_CONTEXT_REQUIRED' { "The candidate needs the project to be checked ($(@($res['candidate']['contextRequired']) -join ', ')): give -PlcProjectPath" }
         'LINT_INCOMPLETE' { 'Lint is incomplete: a default-blocking rule could not run on part of the candidate (data.coverage.blockingRulesSkipped / notAnalyzed)' }
-        default { "Lint found $($res['summary']['blocking']) blocking finding(s) in the candidate" }
+        default { "Lint found $($res['summary']['blocking']) blocking finding(s) in the candidate, $(if ($null -ne $cross) { $cross.blocking } else { 0 }) new blocking finding(s) in other objects (data.crossObject.newFindings)" }
     }
     return (& $fail $code $msg $data)
 }

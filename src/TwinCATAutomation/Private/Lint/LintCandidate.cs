@@ -180,6 +180,7 @@ namespace TcLintEngine
             overlayPaths.Add(candPath);
             // the candidate object is the scope (like LintProject -Scope Object): findings of other objects are not
             // the candidate's (data.scope.note says so); project-level rules still run
+            if (opt.CandidateFullScope) return;   // cross-object run: the PowerShell side diffs it against the disk project
             opt.ScopeObjects = new List<string>();
             opt.ScopeObjects.Add(topName);
             foreach (TcObjectFile o in objects) o.InScope = InScope(o.ObjectPath);
@@ -373,6 +374,14 @@ namespace TcLintEngine
             {
                 // every identifier that starts a designator, except a named call parameter (depth > 0 and followed by := / =>)
                 List<Token> toks = StLexer.Lex(opt.CandidateImplementation ?? "").Tokens;
+                // JMP labels ("lbl:" at a statement start, "JMP lbl") are declared by the code itself (review nit 2)
+                for (int i = 0; i + 1 < toks.Count; i++)
+                {
+                    if (toks[i].Kind != TokKind.Ident) continue;
+                    bool labelDef = toks[i + 1].IsOp(":") && (i == 0 || toks[i - 1].IsOp(";"));
+                    bool jumpTarget = i > 0 && toks[i - 1].Is("JMP");
+                    if (labelDef || jumpTarget) local.Add(toks[i].Text);
+                }
                 int depth = 0;
                 for (int i = 0; i < toks.Count; i++)
                 {
@@ -392,6 +401,7 @@ namespace TcLintEngine
         private bool Known(string name, HashSet<string> local)
         {
             if (local.Contains(name) || BuiltinNames.Contains(name) || ConversionRx.IsMatch(name) || Elementary.Contains(name)) return true;
+            if (string.Equals(name, "THIS", StringComparison.OrdinalIgnoreCase)) return true;   // the candidate itself (SUPER needs EXTENDS: reported through extends:)
             foreach (CatalogType c in opt.CatalogTypes) if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
         }

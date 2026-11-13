@@ -390,6 +390,7 @@ namespace TcLintEngine
         public string CandidateName;            // FB_X, FB_X.M_Run, FB_X.P, FB_X.P.Get
         public string CandidateDeclaration;
         public string CandidateImplementation;
+        public bool CandidateFullScope;         // overlay but analyse every object (cross-object check, review S1 of PR #284)
     }
 
     public static class Inv
