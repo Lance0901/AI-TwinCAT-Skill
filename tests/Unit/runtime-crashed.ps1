@@ -69,6 +69,57 @@ namespace TwinCAT.Ads {
 $fake = [TwinCAT.Ads.TcAdsClient]
 function Set-Ads([string]$Mode) { $fake::Mode = $Mode; $fake::Written = $false; $fake::Reads = 0; $fake::BlipReads = 0 }
 
+# --- #307 Get-TcTargetKind (real Resolve-TcTargetBootDir on a fake %ProgramData%; tested before it is stubbed below)
+# Mock basis: TcRegistry.xml <Value Name="AmsNetId" Type="BIN">C7052AFA0101</Value> as in UmRT_Default
+# (measured 2026-10-21, see Resolve-TcTargetBootDir); HKLM ...\TwinCAT3\System AmsNetId is a 6-byte
+# REG_BINARY (measured 2026-11-13 on the 4026 dev PC: Get-ItemProperty returns byte[6]).
+$realProgramData = $env:ProgramData
+$fakePd = Join-Path $env:TCAUTO_STATE_DIR 'pd'
+$regDir = Join-Path $fakePd 'Beckhoff\TwinCAT\3.1\Runtimes\UmRT_Default\3.1'
+$null = New-Item -ItemType Directory -Force -Path $regDir
+Set-Content -LiteralPath (Join-Path $regDir 'TcRegistry.xml') -Encoding UTF8 -Value '<TcRegistry><Key Name="System"><Value Name="AmsNetId" Type="BIN">C7052AFA0101</Value></Key></TcRegistry>'
+$env:ProgramData = $fakePd
+$global:SysNetId = [byte[]](192, 168, 50, 168, 1, 1)   # $null -> the registry value cannot be read
+& $mod {
+    function script:Get-ItemProperty {
+        param($Path, $Name, $ErrorAction)
+        if ($null -eq $global:SysNetId) { throw 'registry not readable (unit stub)' }
+        [PSCustomObject]@{ AmsNetId = $global:SysNetId }
+    }
+}
+$tkCases = @(
+    @{ Id = '199.5.42.250.1.1'; Kind = 'local-umrt'; Source = 'TcRegistry.xml:UmRT_Default' },
+    @{ Id = ' 199.5.42.250.1.1 '; Kind = 'local-umrt'; Source = 'TcRegistry.xml:UmRT_Default' },
+    @{ Id = '192.168.50.168.1.1'; Kind = 'local-xar'; Source = 'system-amsnetid' },
+    @{ Id = '5.6.7.8.1.1'; Kind = 'remote'; Source = 'no-local-match' },
+    @{ Id = '127.0.0.1.1.1'; Kind = 'unknown'; Source = 'loopback' },
+    @{ Id = ''; Kind = 'unknown'; Source = 'no-amsnetid' },
+    @{ Id = $null; Kind = 'unknown'; Source = 'no-amsnetid' },
+    @{ Id = '199.5.42.250.1'; Kind = 'unknown'; Source = 'invalid-amsnetid' },
+    @{ Id = '199.5.42.256.1.1'; Kind = 'unknown'; Source = 'invalid-amsnetid' },
+    @{ Id = 'abc'; Kind = 'unknown'; Source = 'invalid-amsnetid' })
+foreach ($c in $tkCases) {
+    $k = & $mod { param($i) Get-TcTargetKind -AmsNetId $i } $c.Id
+    Check "Get-TcTargetKind '$($c.Id)' -> $($c.Kind)" ($k.targetKind -eq $c.Kind -and $k.targetKindSource -eq $c.Source) ($k | ConvertTo-Json -Compress)
+}
+# system NetId unreadable: a non-UmRT NetId cannot be told local XAR / remote -> unknown; the UmRT still matches
+$global:SysNetId = $null
+$k = & $mod { Get-TcTargetKind -AmsNetId '192.168.50.168.1.1' }
+Check 'Get-TcTargetKind: system NetId unreadable -> unknown (not remote, not local-umrt)' ($k.targetKind -eq 'unknown' -and $k.targetKindSource -eq 'system-amsnetid-unreadable') ($k | ConvertTo-Json -Compress)
+$k = & $mod { Get-TcTargetKind -AmsNetId '199.5.42.250.1.1' }
+Check 'Get-TcTargetKind: system NetId unreadable, UmRT NetId -> local-umrt' ($k.targetKind -eq 'local-umrt') ($k | ConvertTo-Json -Compress)
+# TcRegistry.xml unreadable (no Runtimes folder): the UmRT NetId is not local-umrt any more (fail safe)
+$global:SysNetId = [byte[]](192, 168, 50, 168, 1, 1)
+Remove-Item -LiteralPath (Join-Path $regDir 'TcRegistry.xml') -Force
+$k = & $mod { Get-TcTargetKind -AmsNetId '199.5.42.250.1.1' }
+Check 'Get-TcTargetKind: no TcRegistry.xml -> never local-umrt' ($k.targetKind -ne 'local-umrt') ($k | ConvertTo-Json -Compress)
+# the match throws -> unknown, Get-TcTargetKind itself does not throw
+& $mod { function script:Resolve-TcTargetBootDir { param([string]$AmsNetId) throw 'boom (unit stub)' } }
+$k = & $mod { Get-TcTargetKind -AmsNetId '199.5.42.250.1.1' }
+Check 'Get-TcTargetKind: match throws -> unknown match-failed' ($k.targetKind -eq 'unknown' -and $k.targetKindSource -eq 'match-failed') ($k | ConvertTo-Json -Compress)
+& $mod { Remove-Item -Path function:script:Get-ItemProperty -ErrorAction SilentlyContinue }
+$env:ProgramData = $realProgramData
+
 # --- Get-TcLocalUmRtProcess: local / UmRT decision (real function: tested before it is stubbed below)
 & $mod {
     function script:Resolve-TcTargetBootDir { param([string]$AmsNetId) $global:BootDir }

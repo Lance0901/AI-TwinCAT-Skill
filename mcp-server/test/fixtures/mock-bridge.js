@@ -253,6 +253,13 @@ rl.on('line', (line) => {
       return result(id, { success: true, data: { pong: true } });
     case 'state':
       return result(id, { success: true, data: { ...state } });
+    case 'targetkind': {
+      // #307: stand-in for our own bridge.ps1 Invoke-OpTargetKind (not TwinCAT behaviour): params.AmsNetId,
+      // else the ADS NetId (the mock keeps no IDE target); the kind is a fixed table here
+      const netId = typeof req.params?.AmsNetId === 'string' && req.params.AmsNetId !== '' ? req.params.AmsNetId : (state.amsNetId ?? null);
+      const kind = netId === null ? ['unknown', 'no-amsnetid'] : netId === '199.5.42.250.1.1' ? ['local-umrt', 'TcRegistry.xml:UmRT_Default'] : ['remote', 'no-local-match'];
+      return result(id, { success: true, data: { amsNetId: netId, targetKind: kind[0], targetKindSource: kind[1] } });
+    }
     case 'modal': {
       // params.ProcessId overrides the pid the mock knows (like bridge.ps1 after a restart)
       const pid = Number.isInteger(req.params?.ProcessId) && req.params.ProcessId > 0 ? req.params.ProcessId : state.ideConnected ? state.ideProcessId : 0;

@@ -174,9 +174,9 @@ Check 'codex-no-stale-enterplconline' (@($codex | Where-Object { $_.name -eq 'En
 # safety rules must survive the generation (#146 review): the adapter text is the COMPLETE tool description
 $must = [ordered]@{
     ClearLifecycleBlock = @('ONLY after the user has seen the block', 'never call it on your own to get past LIFECYCLE_BLOCKED')
-    EnableConfig        = @('Confirm with the user first')
-    WriteVariable       = @('Confirm with the user first')
-    RunTestCycle        = @('Confirm with the user first')
+    EnableConfig        = @('= local-umrt -> no need to ask', 'ask once')
+    WriteVariable       = @('= local-umrt -> no need to ask', 'ask once')
+    RunTestCycle        = @('= local-umrt -> no need to ask', 'ask once')
     SetSystemState      = @('all outputs go to zero', 'call ClearLifecycleBlock only after the user agreed')
     SetPlcState         = @('Reset leaves the PLC in Stop', 'call ClearLifecycleBlock only after the user agreed')
     ReportIssue         = @('ONLY THE USER opens')

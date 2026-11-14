@@ -69,6 +69,21 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.ok(caps.logging);
   });
 
+  test('#307 initialize carries the flow card (instructions.md) as MCP instructions', () => {
+    const text = client.getInstructions();
+    const file = fs.readFileSync(path.join(__dirname, '..', 'instructions.md'), 'utf8').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+    assert.equal(typeof text, 'string');
+    assert.equal(text, file);
+    assert.match(text, /^# TcAuto — how to use these tools/);
+    assert.match(text, /local-umrt/);
+    assert.doesNotMatch(text, /\r/);
+    // Claude Code cuts server instructions after 4,096 characters (https://code.claude.com/docs/en/mcp.md,
+    // "Tool search for MCP server authors"; 2,048 before v2.1.296): the whole card must fit, and the
+    // consent rule must come before the 2,048 cut of older versions.
+    assert.ok(text.length <= 4096, `instructions.md is ${text.length} characters (> 4096)`);
+    assert.ok(text.indexOf('ask once') > 0 && text.indexOf('ask once') < 2048, 'consent rule within the first 2,048 characters');
+  });
+
   test('listTools returns 3 catalog + 5 composite tools with JSON schemas', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
@@ -89,7 +104,9 @@ describe('index.js over stdio (3-tool fixture)', () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     assert.equal(byName.RunLifecycle.annotations.destructiveHint, true);
     assert.equal(byName.RunLifecycle.annotations.readOnlyHint, false);
-    assert.match(byName.RunLifecycle.description, /confirm with the user first/);
+    assert.match(byName.RunLifecycle.description, /local-umrt -> no need to ask/);
+    assert.match(byName.RunLifecycle.description, /ask once/);
+    assert.doesNotMatch(byName.RunLifecycle.description, /confirm with the user first/i);
     assert.deepEqual(byName.GetStatus.annotations, { readOnlyHint: true });
     assert.deepEqual(byName.QuickRead.annotations, { readOnlyHint: true });
     assert.deepEqual(byName.GetIdeModalDialog.annotations, { readOnlyHint: true });

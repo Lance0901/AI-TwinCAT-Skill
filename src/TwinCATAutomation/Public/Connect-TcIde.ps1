@@ -166,6 +166,9 @@ function Connect-TcIde {
         data.pidSource    rot-identity | main-window | known-pid | start-time (guess) | ''
         data.candidates   every DTE instance seen in the ROT: @{ progId; solution; pid }
         data.connectSec   seconds the whole call took (every successful path)
+        data.targetKind   (#307, when ITcSysManager is available) kind of the IDE target data.amsNetId:
+                          local-umrt | local-xar | remote | unknown (uncertain is never local-umrt);
+                          data.targetKindSource says what decided it
         data.solutionPlatform / solutionConfiguration  active solution platform and
                           configuration ($null when unreadable); see Set-TcTarget -Platform
         data.projectPlatform  project platform the .tsproj is built for under the active
@@ -1508,6 +1511,11 @@ function Connect-TcIde {
             $data | Add-Member -NotePropertyName 'amsNetId' -NotePropertyValue $amsNetId
         }
         catch { }
+        # #307: kind of the target the IDE has (local-umrt | local-xar | remote | unknown; never throws)
+        $tkProp = $data.PSObject.Properties['amsNetId']
+        $tk = Get-TcTargetKind -AmsNetId $(if ($null -ne $tkProp) { [string]$tkProp.Value } else { '' })
+        $data | Add-Member -NotePropertyName 'targetKind' -NotePropertyValue $tk.targetKind
+        $data | Add-Member -NotePropertyName 'targetKindSource' -NotePropertyValue $tk.targetKindSource
     }
     else {
         $nextAction = if (-not [string]::IsNullOrWhiteSpace($SolutionPath)) {

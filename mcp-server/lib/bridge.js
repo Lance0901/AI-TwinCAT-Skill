@@ -412,7 +412,7 @@ export class PowerShellBridge {
 
   /**
    * Send one request to the child. Resolves to the result object (id/event removed). Never rejects.
-   * @param {'call'|'modal'|'state'|'ping'|'retire'|'shutdown'} op
+   * @param {'call'|'modal'|'state'|'targetkind'|'ping'|'retire'|'shutdown'} op
    * @param {{cmdlet?:string, params?:object, timeoutMs?:number, signal?:AbortSignal, token?:object}} [opts]
    *   signal: while the call is still queued, an abort removes it from the queue and resolves it with
    *   CANCELLED (nothing was executed). Once the request has been written to PowerShell it cannot be

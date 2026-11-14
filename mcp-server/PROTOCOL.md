@@ -27,9 +27,9 @@ On `ok:false` the child exits with code 2 after writing the line.
 | field | type | notes |
 |---|---|---|
 | `id` | string | opaque, echoed back |
-| `op` | `"call"` \| `"modal"` \| `"state"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
+| `op` | `"call"` \| `"modal"` \| `"state"` \| `"targetkind"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
 | `cmdlet` | string | `op:"call"` only. Must be in the exported list from `ready`; anything else → `{"success":false,"error":{"code":"INVALID_CMDLET"}}`. Never evaluated as script. |
-| `params` | object | `op:"call"` only. Splatted. See conversion rules. |
+| `params` | object | `op:"call"`: splatted, see conversion rules. `op:"modal"` / `op:"targetkind"`: options listed below. |
 
 A line that is not valid JSON (PS 5.1 `ConvertFrom-Json` also rejects objects whose
 keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
@@ -61,6 +61,12 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   same shape as the `modal` op's `dialog`)
   (`ideMainHwnd` = module variable `$script:TcIdeMainHwnd`, the IDE main window handle stored by
   `Connect-TcIde`; `null` when unset, 0 or not a number).
+* `targetkind` (#307, used by the `GetStatus` tool) → the module-private `Get-TcTargetKind` for
+  `params.AmsNetId`, else the IDE target recorded by `Connect-TcIde` / `Set-TcTarget`, else the
+  ADS NetId of the session (`$script:TcAdsAmsNetId`); without `params.AmsNetId` an ADS NetId that
+  differs from the IDE target gives `"unknown"` (`targetKindSource` `ads-ide-target-differ`):
+  `{"success":true,"data":{"amsNetId":string|null,"targetKind":"local-umrt"|"local-xar"|"remote"|"unknown","targetKindSource":string}}`.
+  Never fails: no NetId, a loopback NetId or a module without `Get-TcTargetKind` gives `"unknown"`.
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
 * `shutdown` → child disconnects ADS (ignore errors), releases COM refs via
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
@@ -143,7 +149,7 @@ result has none. Any other `data` is left exactly as the cmdlet returned it (#57
 (`GetSymbols`, `ReadVariable` with several paths, `GetProjectTree`), a scalar or `null`. The
 bridge is strictly FIFO and runs one call at a time, so `seq` order = execution order. Timed-out /
 killed calls carry them too; calls that never left the queue (`CANCELLED`, queued `BRIDGE_DIED`)
-and `ping` / `state` / `modal` do not.
+and `ping` / `state` / `modal` / `targetkind` do not.
 An uncaught exception → `{"success":false,"error":{"code":"EXECUTION_ERROR","message":"<exception message>","hint":"..."}}`;
 if the exception message starts with a known code (`IDE_BUSY`, `IDE_TIMEOUT`,
 `IDE_MODAL_DIALOG`, …) that code is used instead of `EXECUTION_ERROR`.

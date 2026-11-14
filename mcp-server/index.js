@@ -17,6 +17,7 @@ import { ideFromConnectData, ideHint, modalHint } from './lib/ide-hints.js';
 import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-probe.js';
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
+import { loadInstructions } from './lib/instructions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -41,9 +42,13 @@ for (const name of compositeMap.keys()) {
 
 // ---------------------------------------------------------------- logging
 
+// #307: the flow card next to this index.js (installed runtime and git checkout alike)
+const flowCard = loadInstructions(__dirname);
+if (flowCard.error) console.error(`[tcauto-mcp] no MCP instructions: ${flowCard.path}: ${flowCard.error}`);
+
 const server = new Server(
   { name: 'tcauto', version: pkg.version },
-  { capabilities: { tools: {}, logging: {} } }
+  { capabilities: { tools: {}, logging: {} }, ...(flowCard.text ? { instructions: flowCard.text } : {}) }
 );
 
 const LEVELS = new Set(['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency']);

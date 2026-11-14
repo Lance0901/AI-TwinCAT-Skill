@@ -286,8 +286,19 @@ See the ``twincat`` skill for full command reference. Installed version / source
 - success: true only after the readback reached the target state. On success: false, error.code LIFECYCLE_BLOCKED, or data.lifecycleBlock: STOP every step that changes the runtime, mark the rest NOT RUN, and report the result (data.lifecycleBlock, data.steps) to the user.
 - Never fall back to raw ADS WriteControl, StartRestartTwinCAT, DTE.ExecuteCommand, the GUI, the TcSystemServiceUm console, or a re-Connect-TcIde after Activate.
 - Clear-TcLifecycleBlock (MCP ClearLifecycleBlock) only after the user has seen the block and agreed (receipt: -Reason, -FallbackMethod, -AllowedSideEffects, -MaxVerifyLevel). Never to get past LIFECYCLE_BLOCKED on your own.
-- Confirm with the user before Enable-TcConfig, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset leaves the PLC in Stop; Run recovers it. An older report that it kills TcSystemServiceUm on a UmRT did not reproduce, measured 2026-11-08 #26) and Invoke-TcTestCycle.
+- Runtime-changing calls (Enable-TcConfig, Start-TcLifecycle, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset leaves the PLC in Stop; Run recovers it. An older report that it kills TcSystemServiceUm on a UmRT did not reproduce, measured 2026-11-08 #26) and Invoke-TcTestCycle): Runtime-change consent (#307): data.targetKind (Connect-TcIde / Set-TcTarget) = local-umrt -> no need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the first runtime-changing call of this session to that target, tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after the user agrees, do not ask again for that target in this session unless going beyond what was agreed.
 "@
+
+# #307: Codex (codex-cli 0.167.0, measured 2026-11-13) does not put the MCP server instructions into the
+# model context, so the flow card the TcAuto MCP server sends is appended here (one source:
+# mcp-server/instructions.md, never a copy of its text in this script).
+$flowCard = Join-Path $scriptRoot 'mcp-server\instructions.md'
+if (Test-Path -LiteralPath $flowCard) {
+    $agentsContent += "`n`n" + ([IO.File]::ReadAllText($flowCard, [Text.Encoding]::UTF8)).Trim()
+}
+else {
+    Write-Host "  [WARN] $flowCard not found: AGENTS.md without the TcAuto flow card" -ForegroundColor Yellow
+}
 
 # Check if existing AGENTS.md belongs to us or to another project
 if (Test-Path $codexAgentsMd) {

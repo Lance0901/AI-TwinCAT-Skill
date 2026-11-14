@@ -62,6 +62,8 @@ function Set-TcTarget {
         PLATFORM_UNKNOWN (ignored together with -Platform).
     .OUTPUTS
         data.amsNetId, data.targetSet ($true once SetTargetNetId succeeded),
+        data.targetKind ('local-umrt' | 'local-xar' | 'remote' | 'unknown', #307; anything uncertain
+        is 'unknown', never 'local-umrt') and data.targetKindSource (what decided it),
         data.platformCheck ('parameter' | 'target' | 'unknown' | 'disabled'),
         data.targetPlatform ($null when not readable), data.targetPlatformSource
         ('adsTargetInfo' | 'unavailable'), data.adsError (e.g. '0x702'),
@@ -132,6 +134,7 @@ function Set-TcTarget {
 
     # Platform of the target (TARGETINFO only; never throws, never guesses)
     $tp = Get-TcTargetPlatform -AmsNetId $AmsNetId
+    $kind = Get-TcTargetKind -AmsNetId $AmsNetId
     $explicit = -not [string]::IsNullOrWhiteSpace($Platform)
     $readable = -not [string]::IsNullOrWhiteSpace($tp.targetPlatform)
     $check = if ($explicit) { 'parameter' } elseif ($NoPlatformSwitch) { 'disabled' } elseif ($readable) { 'target' } else { 'unknown' }
@@ -143,6 +146,8 @@ function Set-TcTarget {
         targetPlatform       = $tp.targetPlatform
         targetPlatformSource = $tp.source
         adsError             = $tp.adsError
+        targetKind           = $kind.targetKind         # #307: local-umrt | local-xar | remote | unknown
+        targetKindSource     = $kind.targetKindSource
     }
 
     if ($check -eq 'disabled' -or $check -eq 'unknown') {

@@ -84,6 +84,7 @@ $sources = @{
     clientConfig = Join-Path $repoRoot 'scripts\lib\tcauto-client-config.mjs'
     launcher     = Join-Path $repoRoot 'mcp-server\launcher\tcauto-launcher.mjs'
     index        = Join-Path $repoRoot 'mcp-server\index.js'
+    instructions = Join-Path $repoRoot 'mcp-server\instructions.md'   # #307: MCP instructions (flow card)
     lock         = Join-Path $repoRoot 'mcp-server\package-lock.json'
 }
 foreach ($p in $sources.Values) {

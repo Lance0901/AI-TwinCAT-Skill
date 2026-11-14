@@ -735,6 +735,47 @@ function Invoke-OpState {
     })
 }
 
+function Invoke-OpTargetKind {
+    # #307 (GetStatus data.targetKind): kind of a target AmsNetId through the module's
+    # Get-TcTargetKind. params.AmsNetId wins; else the IDE target recorded by Connect-TcIde /
+    # Set-TcTarget (what EnableConfig / RunLifecycle change), else the ADS NetId of the session.
+    # Without params, an ADS NetId that differs from the IDE target gives 'unknown'
+    # (ads-ide-target-differ): one kind cannot speak for two targets. Never fails.
+    param($Request)
+    $id = $null
+    $explicit = $false
+    $pp = $Request.PSObject.Properties['params']
+    if ($null -ne $pp -and $null -ne $pp.Value -and ($pp.Value -is [System.Management.Automation.PSCustomObject])) {
+        $a = $pp.Value.PSObject.Properties['AmsNetId']
+        if ($null -ne $a -and -not [string]::IsNullOrWhiteSpace([string]$a.Value)) { $id = [string]$a.Value; $explicit = $true }
+    }
+    $differ = $false
+    if (-not $explicit) {
+        $ide = $null
+        try { $ide = Invoke-InModule { Resolve-TcLifecycleIdeNetId } } catch { $ide = $null }
+        $ads = Get-ModuleVar 'TcAdsAmsNetId'
+        $ideId = if ([string]::IsNullOrWhiteSpace([string]$ide)) { $null } else { ([string]$ide).Trim() }
+        $adsId = if ([string]::IsNullOrWhiteSpace([string]$ads)) { $null } else { ([string]$ads).Trim() }
+        $id = if ($null -ne $ideId) { $ideId } else { $adsId }
+        $differ = ($null -ne $ideId -and $null -ne $adsId -and $ideId -ne $adsId)
+    }
+    # A module without Get-TcTargetKind (older than #307, loaded by ReloadModule) -> 'unknown'.
+    $kind = 'unknown'; $source = 'match-failed'
+    if ($differ) { $source = 'ads-ide-target-differ' }
+    else {
+        try {
+            $k = Invoke-InModule { param($n) Get-TcTargetKind -AmsNetId $n } @([string]$id)
+            if ($null -ne $k -and -not [string]::IsNullOrWhiteSpace([string]$k.targetKind)) { $kind = [string]$k.targetKind; $source = [string]$k.targetKindSource }
+        }
+        catch { Write-Stderr "[bridge] targetkind: $($_.Exception.Message)" }
+    }
+    return New-SuccessResult -Data ([ordered]@{
+        amsNetId         = $id
+        targetKind       = $kind
+        targetKindSource = $source
+    })
+}
+
 function Get-BridgeModuleVariable {
     # @{ Exists; Value } of a $script: variable of the module. Unlike Get-ModuleVar this tells
     # "not defined" apart from "defined as $null" (#41 review: a missing variable must fail closed).
@@ -994,6 +1035,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             'state' {
                 Write-Result -Id $id -Result (Invoke-OpState)
             }
+            'targetkind' {
+                Write-Result -Id $id -Result (Invoke-OpTargetKind -Request $request)
+            }
             'ping' {
                 Write-Result -Id $id -Result (New-SuccessResult -Data ([ordered]@{ pong = $true }))
             }
@@ -1008,7 +1052,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 $shutdown = $true
             }
             default {
-                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, ping, retire, shutdown.')
+                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, targetkind, ping, retire, shutdown.')
             }
         }
     }
