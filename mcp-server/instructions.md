@@ -35,6 +35,9 @@ Stop runtime-changing calls; report `error.code`, `error.message`, `data.steps` 
 | Libraries | `GetLibraries` → `AddLibrary` / `AddPlaceholder` → `BuildProject` |
 | NC axis | `AddNcTask` → `AddNcAxis` → `SetNcAxisParameter` → `LinkNcAxis` |
 | I/O | `IoScan` (Config mode) → `GetIoTree` → `SetVariableLink` |
+| TcCOM module | `AddTcComModule` → `SetTcComContext` → `GetTcComParameter` / `SetTcComParameter` |
+| Variants | `GetVariants` → `SetVariantConfig` / `SwitchVariant` → `BuildProject` |
+| PLCopen XML | `ExportPlcOpen` / `ImportPlcOpen` |
 | Deploy + run | `RunLifecycle`, or `BuildProject` → `EnableConfig Force=true` → `ConnectAds` |
 | Check PLC | `GetStatus`, `GetPlcState`, `ReadVariable` |
 | Test | `NewTestCase` → `RunTest` / `RunTestCycle` |
