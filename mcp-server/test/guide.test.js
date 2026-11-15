@@ -7,10 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { getGuide, listTopics } from '../lib/guide.js';
 import { composites, GetGuide } from '../lib/composites.js';
 import { RELOAD_TOOL } from '../launcher/tcauto-launcher.mjs';
+const BOM = new RegExp('^' + String.fromCharCode(0xfeff));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP_DIR = path.join(__dirname, '..');
-const norm = (s) => s.replace(/^﻿/, '').replace(/\r\n/g, '\n').trim();
+const norm = (s) => s.replace(BOM, '').replace(/\r\n/g, '\n').trim();
 const card = norm(fs.readFileSync(path.join(MCP_DIR, 'instructions.md'), 'utf8'));
 const catalog = JSON.parse(fs.readFileSync(path.join(MCP_DIR, 'tools.json'), 'utf8')).tools;
 const allTools = [...catalog, ...composites, RELOAD_TOOL];
@@ -119,7 +120,11 @@ describe('slim tool descriptions', () => {
       assert.ok(d.includes('never switch to another control channel (raw ADS, COM, DTE, GUI, console)'), `${name}: no other channel`);
       assert.ok(d.includes('ClearLifecycleBlock only after the user agreed'), `${name}: clear only with consent`);
       // the safety notes come right after the first sentence
-      assert.ok(d.indexOf('Real machine:') < 400, `${name}: consent note at the front`);
+      assert.ok(d.includes('ask once yourself'), `${name}: PowerShell channel rule`);
+      // the safety notes come right after the first sentence, which ends with a full stop
+      const at = d.indexOf(' Confirmation:');
+      assert.ok(at > 0 && at < 400, `${name}: consent note at the front`);
+      assert.ok(d.slice(0, at).endsWith('.'), `${name}: consent note not inside a sentence: ${d.slice(0, at)}`);
     }
   });
 

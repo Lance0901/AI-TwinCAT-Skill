@@ -197,6 +197,8 @@ foreach ($an in $actionNames) {
     if ($toolByName.ContainsKey($an)) {
         $tool = $toolByName[$an]
         $desc = Get-FlatText ([string]$tool.description)
+        # #310: the PowerShell adapters have no GetGuide tool: point to the topic file instead
+        $desc = [regex]::Replace($desc, "GetGuide\('([a-z0-9-]+)'\)", 'mcp-server/guide/$1.md')
         $req = @($tool.inputSchema.required)
         foreach ($prop in $tool.inputSchema.properties.PSObject.Properties) {
             $pv = $prop.Value

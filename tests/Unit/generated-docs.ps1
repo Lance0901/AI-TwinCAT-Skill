@@ -174,9 +174,9 @@ Check 'codex-no-stale-enterplconline' (@($codex | Where-Object { $_.name -eq 'En
 # safety rules must survive the generation (#146 review; #310: the short consent / fail-closed notes): the adapter text is the COMPLETE tool description
 $must = [ordered]@{
     ClearLifecycleBlock = @('ONLY after the user has seen the block', 'never call it on your own to get past LIFECYCLE_BLOCKED')
-    EnableConfig        = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
-    WriteVariable       = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
-    RunTestCycle        = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    EnableConfig        = @('targetKind local-umrt never asks', 'ask once yourself', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    WriteVariable       = @('targetKind local-umrt never asks', 'ask once yourself', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    RunTestCycle        = @('targetKind local-umrt never asks', 'ask once yourself', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
     SetSystemState      = @('all outputs go to zero', 'ClearLifecycleBlock only after the user agreed')
     SetPlcState         = @('Reset leaves the PLC in Stop', 'ClearLifecycleBlock only after the user agreed')
     ReportIssue         = @('ONLY THE USER opens')
@@ -196,6 +196,9 @@ $agentsSkill = [IO.File]::ReadAllText((Join-Path $root '.agents\skills\twincat\S
 Check 'agents-skill-failure-contract' ($agentsSkill -match 'Failure contract' -and $agentsSkill -match 'LIFECYCLE_BLOCKED' -and $agentsSkill -match 'Clear-TcLifecycleBlock' -and $agentsSkill -match 'agreed') ''
 Check 'agents-skill-signature-table' ($agentsSkill -match '<!-- generated:cmdlet-signatures -->' -and $agentsSkill.Contains('| `Enable-TcConfig` |')) ''
 Check 'agents-skill-no-start-sleep' ($agentsSkill -notmatch '(?m)^\s*Start-Sleep') 'a Start-Sleep line is in the lifecycle example'
+# #310: the PowerShell adapters name guide files, never the MCP-only GetGuide tool
+$codexAdapterText = [IO.File]::ReadAllText((Join-Path $root 'adapters\codex\tools.json'), $utf8)
+Check 'adapters-no-getguide-call' (-not $codexAdapterText.Contains("GetGuide('") -and -not $yaml.Contains("GetGuide('")) ''
 $codexSetup = [IO.File]::ReadAllText((Join-Path $root 'TwinCATSetup-Codex.ps1'), $utf8)
 Check 'codex-setup-failure-contract' ($codexSetup -match 'Failure contract \(fail closed' -and $codexSetup -match 'Clear-TcLifecycleBlock \(MCP ClearLifecycleBlock\) only after the user has seen the block') ''
 

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadInstructions } from './instructions.js';
+const BOM = new RegExp('^' + String.fromCharCode(0xfeff));
 
 export const GUIDE_DIR = 'guide';
 export const START_TOPIC = 'start';
@@ -15,7 +16,7 @@ const TOPIC_RE = /^[a-z][a-z0-9-]{0,40}$/;
 const MCP_SERVER_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function readText(file) {
-  return fs.readFileSync(file, 'utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n').trim();
+  return fs.readFileSync(file, 'utf8').replace(BOM, '').replace(/\r\n/g, '\n').trim();
 }
 
 /**
@@ -64,6 +65,9 @@ function errorResult(code, message, hint, data) {
 export function getGuide(topic, dir = MCP_SERVER_DIR) {
   const topics = listTopics(dir);
   const index = topics.map(({ name, summary }) => ({ name, summary }));
+  if (topics.length === 0) {
+    return errorResult('GUIDE_UNAVAILABLE', `No topic files in ${path.join(dir, GUIDE_DIR)}: the runtime is incomplete.`, 'Reinstall the TcAuto runtime (Install-TcAuto.ps1, or scripts/Install-TcAutoRuntime.ps1 in a checkout), then ReloadRuntime.', { topics: [] });
+  }
   const wanted = typeof topic === 'string' && topic.trim() !== '' ? topic.trim().toLowerCase() : START_TOPIC;
   if (wanted === START_TOPIC) {
     const card = loadInstructions(dir);

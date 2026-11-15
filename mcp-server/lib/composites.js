@@ -510,7 +510,7 @@ export const GetGuide = {
     "Read GetGuide('start') before your first TcAuto call. " +
     'Read-only and offline (no IDE, ADS or bridge): returns the TcAuto flow card or one how-to topic as text in data.text. ' +
     "Topic omitted or 'start': the flow card (golden rules, UmRT or real machine, when the tool asks the user, what to do on a failure, which topic to read per task) and data.topics [{name, summary}]. " +
-    "Before a task, read its topic (e.g. 'deploy', 'change-code', 'nc-axis', 'io', 'recovery', 'consent'); a tool description or error.hint names the topic to read when it fails. " +
+    "Before a task, read its topic (e.g. 'deploy', 'change-code', 'nc-axis', 'io', 'recovery', 'consent'); a slim tool description names the topic that holds its details. " +
     'Unknown topic -> GUIDE_TOPIC_UNKNOWN with the available topics in error.message and data.topics.',
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   timeoutMs: 10000,

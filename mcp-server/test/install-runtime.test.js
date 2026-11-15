@@ -52,6 +52,7 @@ function makeRepo() {
   put(path.join(repo, 'mcp-server', 'index.js'), '// fixture index\n');
   put(path.join(repo, 'mcp-server', 'instructions.md'), '# fixture flow card\n'); // #307: required source file
   put(path.join(repo, 'mcp-server', 'guide', 'deploy.md'), '# deploy: fixture topic\n'); // #310: GetGuide topics ship in the runtime
+  put(path.join(repo, 'mcp-server', 'guide', 'recovery.md'), '# recovery: fixture topic\n'); // #310: required source file
   put(path.join(repo, 'mcp-server', 'package.json'), '{"name":"fixture","type":"module"}\n');
   put(path.join(repo, 'mcp-server', 'package-lock.json'), '{}\n');
   put(path.join(repo, 'mcp-server', 'lib', 'a.js'), 'export const a = 1;\n');
