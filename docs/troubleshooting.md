@@ -415,13 +415,11 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 
 ### 確認框(MCP elicitation,#258):共同規則
 
+- **範圍**(owner 決定 2026-11-15:「目標是讓 TcAuto 搭配 LLM 幾乎自動化,只有在有人身危險的時候才會詢問」):只有兩種。`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary`、`ResetSolution Force=true`、`ConnectIde ProcessId` **不跳確認框**,直接送 bridge;模組本身的保護不變(`DryRun` 預設、`UNSAVED_CHANGES` #175、`IDE_ATTACH_CONSENT_REQUIRED` #281),agent 仍要先問使用者(流程卡「Always ask the user before」)。
 - **哪些呼叫**:透過 MCP server 呼叫時,下列呼叫在送進 PowerShell bridge **之前**由 server 跳確認框(MCP `elicitation/create`,form 只有一個必填欄位 `decision` = `approve` / `reject`)問使用者;直接用 PowerShell 模組不受影響。
   | 呼叫 | 何時問 |
   |---|---|
   | `InstallPackage Approved=true` | 每次;確認框內容是本 server 行程記住的那份計畫(plan 呼叫回的 `planToken` → 套件、版本、`command`) |
-  | `AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` `DryRun=false` | 每次 |
-  | `ResetSolution Force=true` | 每次 |
-  | `ConnectIde ProcessId=<pid>`,且該 IDE 不是 TcAuto 啟動的(bridge `ideprocess` op:`Test-TcLaunchedIde`,launch record) | 同 server 行程、同 IDE(pid + 啟動時間)問一次;`DisconnectIde` 後清掉;讀不到行程身分就每次問 |
   | 會改 runtime 的呼叫:`EnableConfig`、`RunLifecycle`(在它的 EnableConfig 步驟前)、`RunTestCycle`、`RunTest`、`WriteVariable`、`SetPlcState`、`SetSystemState`、`PlcLogin`、`SendPlcProgram`、`SetTcComParameter Online=true DryRun=false` | 目標 `targetKind` ≠ `local-umrt`:同 server 行程、同 AmsNetId 第一次問;`local-umrt` 一律不問。目標 = bridge `targetkind` op 的結果(`SetSystemState AmsNetId` 有給就用它,否則 IDE target(即時 `GetTargetNetId`,IDE 連著但讀不到 → `unknown`),否則 ADS NetId;兩者不同、查不到、查詢失敗 → `unknown` → 每次問)。執行時 bridge 在同一個 request 裡、跑 cmdlet 前再解析一次目標,和確認時不同(中間有別的呼叫換了 target)→ `CONSENT_REQUIRED`(`data.consent = target-changed`),不執行 |
 - **只有** `action = accept` 且 `decision = approve` 才執行;decline、cancel、accept 但沒選 approve → `CONSENT_DECLINED`;client 沒宣告 `capabilities.elicitation`、確認框出錯或 10 分鐘(600000 ms)沒回 → `CONSENT_REQUIRED`。兩者都什麼都沒執行(`data.notRun = true`)。
 - **同意只在 server 行程記憶體**:沒有參數、環境變數、設定檔或白名單可以預先放行;server 重啟、`ReloadRuntime` 後要再問。確認框文字由 server 產生(工具名、目標 AmsNetId / targetKind、固定說明句、`Parameter <name>: <value>`,每個值去掉換行 / 控制字元並截到 60 字元),不含 AI 傳的任意文字。

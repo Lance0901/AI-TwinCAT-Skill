@@ -27,9 +27,10 @@ On `ok:false` the child exits with code 2 after writing the line.
 | field | type | notes |
 |---|---|---|
 | `id` | string | opaque, echoed back |
-| `op` | `"call"` \| `"modal"` \| `"state"` \| `"targetkind"` \| `"ideprocess"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
+| `op` | `"call"` \| `"modal"` \| `"state"` \| `"targetkind"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
 | `cmdlet` | string | `op:"call"` only. Must be in the exported list from `ready`; anything else → `{"success":false,"error":{"code":"INVALID_CMDLET"}}`. Never evaluated as script. |
-| `params` | object | `op:"call"`: splatted, see conversion rules. `op:"modal"` / `op:"targetkind"` / `op:"ideprocess"`: options listed below. |
+| `consentTarget` | object | `op:"call"` only, optional (#258, sent by the consent gate for a runtime-changing tool): `{"params":{...},"amsNetId":string|null,"targetKind":string}` as the gate resolved it with `op:"targetkind"`. Before the cmdlet runs, the child resolves the target again with the same `params`; a different `amsNetId` or `targetKind` gives `{"success":false,"error":{"code":"CONSENT_REQUIRED"},"data":{"notRun":true,"consent":"target-changed",...}}` and the cmdlet does not run. |
+| `params` | object | `op:"call"`: splatted, see conversion rules. `op:"modal"` / `op:"targetkind"`: options listed below. |
 
 A line that is not valid JSON (PS 5.1 `ConvertFrom-Json` also rejects objects whose
 keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
@@ -67,10 +68,6 @@ keys differ only in case, e.g. `{"a":1,"A":2}`) or not a JSON object gets
   differs from the IDE target gives `"unknown"` (`targetKindSource` `ads-ide-target-differ`):
   `{"success":true,"data":{"amsNetId":string|null,"targetKind":"local-umrt"|"local-xar"|"remote"|"unknown","targetKindSource":string}}`.
   Never fails: no NetId, a loopback NetId or a module without `Get-TcTargetKind` gives `"unknown"`.
-* `ideprocess` (#258, used by the consent gate of `ConnectIde ProcessId`) → for `params.ProcessId` the
-  module-private `Get-TcIdeProcessKey` (`"<pid>|<start time>"`, `null` when the process is gone) and
-  `Test-TcLaunchedIde` (TcAuto launched it: module memory, else the confirmed launch record):
-  `{"success":true,"data":{"processId":int,"key":string|null,"launchedByTcAuto":bool}}`. Never fails.
 * `ping`   → `{"success":true,"data":{"pong":true}}`.
 * `shutdown` → child disconnects ADS (ignore errors), releases COM refs via
   `Disconnect-TcIde` without `-Quit`, replies `{"success":true}` and exits 0.
@@ -153,7 +150,7 @@ result has none. Any other `data` is left exactly as the cmdlet returned it (#57
 (`GetSymbols`, `ReadVariable` with several paths, `GetProjectTree`), a scalar or `null`. The
 bridge is strictly FIFO and runs one call at a time, so `seq` order = execution order. Timed-out /
 killed calls carry them too; calls that never left the queue (`CANCELLED`, queued `BRIDGE_DIED`)
-and `ping` / `state` / `modal` / `targetkind` / `ideprocess` do not.
+and `ping` / `state` / `modal` / `targetkind` do not.
 An uncaught exception → `{"success":false,"error":{"code":"EXECUTION_ERROR","message":"<exception message>","hint":"..."}}`;
 if the exception message starts with a known code (`IDE_BUSY`, `IDE_TIMEOUT`,
 `IDE_MODAL_DIALOG`, …) that code is used instead of `EXECUTION_ERROR`.

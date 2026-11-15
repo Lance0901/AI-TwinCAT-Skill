@@ -39,8 +39,6 @@
 //   #258 consent gate (stand-ins for our own bridge.ps1 ops and cmdlet results, not TwinCAT behaviour):
 //   env MOCK_BRIDGE_CALL_LOG=f     appends the cmdlet of every op:call as one line to f
 //   env MOCK_BRIDGE_TARGETKIND_FAIL=1  op targetkind answers success:false
-//   op ideprocess          key "<pid>|mock-start" (null for pid 999: process gone); launchedByTcAuto
-//                          for the pids in env MOCK_BRIDGE_IDE_LAUNCHED (comma list)
 //   cmdlet Install-TcPackage  without Approved: a plan (executed false, planToken mock-plan-<n>,
 //                          command 'tcpkg install <PackageId>=<Version> -y'); with Approved: executed true
 import fs from 'node:fs';
@@ -285,12 +283,6 @@ rl.on('line', (line) => {
       return result(id, { success: true, data: { pong: true } });
     case 'state':
       return result(id, { success: true, data: { ...state } });
-    case 'ideprocess': {
-      const pid = Number.isInteger(req.params?.ProcessId) ? req.params.ProcessId : 0;
-      const launched = String(process.env.MOCK_BRIDGE_IDE_LAUNCHED ?? '').split(',').filter(Boolean).map(Number);
-      const key = pid > 0 && pid !== 999 ? `${pid}|mock-start` : null;
-      return result(id, { success: true, data: { processId: pid, key, launchedByTcAuto: key !== null && launched.includes(pid) } });
-    }
     case 'targetkind': {
       if (process.env.MOCK_BRIDGE_TARGETKIND_FAIL === '1') return result(id, { success: false, error: { code: 'EXECUTION_ERROR', message: 'mock: targetkind failed' } });
       return result(id, { success: true, data: mockTargetKind(req.params) });

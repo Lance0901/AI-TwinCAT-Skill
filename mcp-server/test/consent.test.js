@@ -38,12 +38,12 @@ describe('consent.js (pure logic)', () => {
     for (const t of ['AddAdsRoute', 'InstallLibrary', 'UninstallLibrary']) {
       assert.equal(consentKind(t, {}), null, `${t} default DryRun`);
       assert.equal(consentKind(t, { DryRun: true }), null);
-      assert.equal(consentKind(t, { DryRun: false }).kind, 'always');
+      assert.equal(consentKind(t, { DryRun: false }), null, `${t} DryRun=false: not gated (owner decision 2026-11-15)`);
     }
     assert.equal(consentKind('ResetSolution', {}), null);
-    assert.equal(consentKind('ResetSolution', { Force: true }).kind, 'always');
+    assert.equal(consentKind('ResetSolution', { Force: true }), null, 'not gated (module UNSAVED_CHANGES #175 stays)');
     assert.equal(consentKind('ConnectIde', { SolutionPath: 'a.sln' }), null);
-    assert.equal(consentKind('ConnectIde', { ProcessId: 12 }).kind, 'ide');
+    assert.equal(consentKind('ConnectIde', { ProcessId: 12 }), null, 'not gated (module IDE_ATTACH_CONSENT_REQUIRED #281 stays)');
     for (const t of ['EnableConfig', 'RunTestCycle', 'RunTest', 'WriteVariable', 'SetPlcState', 'SetSystemState', 'PlcLogin', 'SendPlcProgram']) {
       assert.equal(consentKind(t, {}).kind, 'runtime', t);
     }
@@ -118,15 +118,10 @@ describe('consent.js (pure logic)', () => {
     m.addTarget('5.1.2.3.1.1');
     assert.equal(m.hasTarget('5.1.2.3.1.1'), true);
     assert.equal(m.hasTarget('5.1.2.3.1.2'), false);
-    m.addIde('12|t');
-    m.clearIdes();
-    assert.equal(m.hasIde('12|t'), false);
   });
 
   test('consentBlockedBy: "consent:<gate kind>"', () => {
     assert.equal(consentBlockedBy(consentKind('WriteVariable', {})), 'consent:runtime');
-    assert.equal(consentBlockedBy(consentKind('ConnectIde', { ProcessId: 1 })), 'consent:ide');
-    assert.equal(consentBlockedBy(consentKind('ResetSolution', { Force: true })), 'consent:always');
     assert.equal(consentBlockedBy(consentKind('InstallPackage', { Approved: true })), 'consent:install');
   });
 
@@ -201,11 +196,6 @@ const answers = {
 
 // each gate: tool, arguments, cmdlet that must not run on a refusal, setup before the call
 const GATES = [
-  { tool: 'AddAdsRoute', args: { Name: 'CX', NetId: '5.9.9.9.1.1', Address: '10.0.0.9', DryRun: false }, cmdlet: 'Add-TcAdsRoute' },
-  { tool: 'InstallLibrary', args: { LibraryPath: 'C:\\x.library', DryRun: false }, cmdlet: 'Install-TcLibrary' },
-  { tool: 'UninstallLibrary', args: { LibraryName: 'Tc2_X', Version: '1.0.0', Distributor: 'Beckhoff', DryRun: false }, cmdlet: 'Uninstall-TcLibrary' },
-  { tool: 'ResetSolution', args: { Force: true }, cmdlet: 'Reset-TcSolution' },
-  { tool: 'ConnectIde', args: { ProcessId: 5555 }, cmdlet: 'Connect-TcIde' },
   { tool: 'WriteVariable', args: { Path: 'MAIN.x', Value: 1 }, cmdlet: 'Write-TcVariable', setup: (h) => h.call('ConnectAds', { AmsNetId: '5.1.2.3.1.1' }) },
   { tool: 'SetSystemState', args: { State: 'Run', AmsNetId: '5.1.2.3.1.1' }, cmdlet: 'Set-TcSystemState' },
   { tool: 'EnableConfig', args: { Force: true }, cmdlet: 'Enable-TcConfig', setup: (h) => h.call('ConnectAds', { AmsNetId: '5.1.2.3.1.1' }) }
@@ -431,34 +421,49 @@ describe('consent gate end to end: RunLifecycle', () => {
   });
 });
 
-describe('consent gate end to end: ConnectIde ProcessId', () => {
-  let h;
-  before(async () => (h = await start({ env: { MOCK_BRIDGE_IDE_LAUNCHED: '4242' } })));
-  after(async () => h?.client.close());
+// Owner decision 2026-11-15 ("ask only where people can get hurt"): these calls are no longer gated
+// by the server; the module keeps its own protections (DryRun defaults, UNSAVED_CHANGES #175,
+// IDE_ATTACH_CONSENT_REQUIRED #281).
+const NOT_GATED = [
+  { tool: 'AddAdsRoute', args: { Name: 'CX', NetId: '5.9.9.9.1.1', Address: '10.0.0.9', DryRun: false }, cmdlet: 'Add-TcAdsRoute' },
+  { tool: 'InstallLibrary', args: { LibraryPath: 'C:\\x.library', DryRun: false }, cmdlet: 'Install-TcLibrary' },
+  { tool: 'UninstallLibrary', args: { LibraryName: 'Tc2_X', Version: '1.0.0', Distributor: 'Beckhoff', DryRun: false }, cmdlet: 'Uninstall-TcLibrary' },
+  { tool: 'ResetSolution', args: { Force: true }, cmdlet: 'Reset-TcSolution' },
+  { tool: 'ConnectIde', args: { ProcessId: 5555 }, cmdlet: 'Connect-TcIde' }
+];
 
-  test('an IDE TcAuto launched (launch record) never asks', async () => {
-    assert.equal((await h.call('ConnectIde', { ProcessId: 4242 })).success, true);
-    assert.equal(h.asked.length, 0);
-  });
+describe('consent gate end to end: calls that are not gated any more', () => {
+  for (const elicitation of [true, false]) {
+    for (const g of NOT_GATED) {
+      test(`${g.tool} (client ${elicitation ? 'with' : 'without'} elicitation): no form, sent straight to the bridge`, async () => {
+        const h = await start({ elicitation });
+        try {
+          // a form would be declined: the call must not ask at all
+          h.answer = answers.decline;
+          const r = await h.call(g.tool, g.args);
+          assert.equal(h.asked.length, 0, 'no confirmation form');
+          assert.notEqual(r.error?.code, 'CONSENT_DECLINED');
+          assert.notEqual(r.error?.code, 'CONSENT_REQUIRED');
+          assert.ok(h.calls().includes(g.cmdlet), `${g.cmdlet} reached the bridge: ${h.calls().join(',')}`);
+        } finally {
+          await h.client.close();
+        }
+      });
+    }
+  }
 
-  test('a user IDE asks once per IDE; DisconnectIde forgets it; another IDE asks', async () => {
-    h.asked.length = 0;
-    assert.equal((await h.call('ConnectIde', { ProcessId: 5555 })).success, true);
-    assert.equal((await h.call('ConnectIde', { ProcessId: 5555 })).success, true);
-    assert.equal(h.asked.length, 1);
-    assert.match(h.asked[0].message, /IDE process id: 5555/);
-    assert.equal((await h.call('ConnectIde', { ProcessId: 6666 })).success, true);
-    assert.equal(h.asked.length, 2);
-    await h.call('DisconnectIde');
-    assert.equal((await h.call('ConnectIde', { ProcessId: 5555 })).success, true);
-    assert.equal(h.asked.length, 3, 'asked again after DisconnectIde');
-  });
-
-  test('a process whose identity cannot be read asks every time', async () => {
-    h.asked.length = 0;
-    await h.call('ConnectIde', { ProcessId: 999 });
-    await h.call('ConnectIde', { ProcessId: 999 });
-    assert.equal(h.asked.length, 2);
+  test('ConnectIde ProcessId twice and after DisconnectIde: never asks', async () => {
+    const h = await start();
+    try {
+      h.answer = answers.decline;
+      await h.call('ConnectIde', { ProcessId: 5555 });
+      await h.call('DisconnectIde');
+      await h.call('ConnectIde', { ProcessId: 5555 });
+      assert.equal(h.asked.length, 0);
+      assert.equal(h.calls().filter((c) => c === 'Connect-TcIde').length, 2);
+    } finally {
+      await h.client.close();
+    }
   });
 });
 
@@ -561,14 +566,18 @@ describe('consent gate end to end: tool-call trace blockedBy', () => {
     assert.doesNotMatch(text, /decision|approve|confirmation form/i, 'no form text or user answer in the trace');
   });
 
-  test('elicitation fails -> blockedBy consent:ide, CONSENT_REQUIRED', async () => {
+  test('elicitation fails -> blockedBy consent:runtime, CONSENT_REQUIRED; a call that is not gated -> null', async () => {
+    await h.call('ConnectAds', { AmsNetId: '5.3.3.3.1.1' });
     h.answer = () => {
       throw new Error('client failure');
     };
-    const r = await h.call('ConnectIde', { ProcessId: 7777 });
+    const r = await h.call('WriteVariable', { Path: 'MAIN.x', Value: 1 });
     assert.equal(r.error.code, 'CONSENT_REQUIRED');
-    const [rec] = lines();
-    assert.deepEqual([rec.tool, rec.success, rec.errorCode, rec.blockedBy], ['ConnectIde', false, 'CONSENT_REQUIRED', 'consent:ide']);
+    await h.call('ResetSolution', { Force: true });
+    const recs = lines();
+    const w = recs.find((x) => x.tool === 'WriteVariable');
+    assert.deepEqual([w.success, w.errorCode, w.blockedBy], [false, 'CONSENT_REQUIRED', 'consent:runtime']);
+    assert.equal(recs.find((x) => x.tool === 'ResetSolution').blockedBy, null);
     h.answer = APPROVE;
   });
 

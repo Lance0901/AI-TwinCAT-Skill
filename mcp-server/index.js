@@ -380,8 +380,8 @@ async function bridgeQuery(op, params, signal) {
  * Runtime changes: the target is what the bridge's targetkind op resolves (SetSystemState AmsNetId
  * when given, else the IDE target, else the ADS NetId; the two differing -> unknown); local-umrt
  * never asks; any other kind asks once per AmsNetId (unknown / no NetId / differing targets ask
- * every time). ConnectIde ProcessId: an IDE TcAuto launched (ideprocess op: launch record) never
- * asks; any other asks once per pid + start time until DisconnectIde.
+ * every time). InstallPackage Approved=true asks every time with the plan this process returned.
+ * Nothing else is gated (owner decision 2026-11-15, lib/consent.js).
  */
 async function consentGate(name, params, signal, pass = {}) {
   const gate = consentKind(name, params);
@@ -392,7 +392,6 @@ async function consentGate(name, params, signal, pass = {}) {
   let shown = params;
   let amsNetId = null;
   let targetKind = null;
-  let ide = null;
   if (gate.kind === 'install') {
     plan = consent.takePlan(params.PlanToken, params.PackageId, params.Version);
     if (!plan) return refuse(consentErrorResult(name, 'unknown-plan'));
@@ -411,15 +410,8 @@ async function consentGate(name, params, signal, pass = {}) {
     const memorable = amsNetId !== null && kd?.targetKindSource !== 'ads-ide-target-differ';
     if (memorable && consent.hasTarget(amsNetId)) return null;
     if (memorable) remember = () => consent.addTarget(amsNetId);
-  } else if (gate.kind === 'ide') {
-    const d = await bridgeQuery('ideprocess', { ProcessId: params.ProcessId }, signal);
-    if (d?.launchedByTcAuto === true) return null;
-    const key = typeof d?.key === 'string' && d.key !== '' ? d.key : null;
-    if (key !== null && consent.hasIde(key)) return null;
-    if (key !== null) remember = () => consent.addIde(key);
-    ide = { processId: params.ProcessId };
   }
-  const request = buildConsentRequest({ tool: name, gate, params: shown, amsNetId, targetKind, ide, plan });
+  const request = buildConsentRequest({ tool: name, gate, params: shown, amsNetId, targetKind, plan });
   const outcome = await askUser(consentClient, request, signal ? { signal } : {});
   if (outcome === 'approved') {
     remember?.();
@@ -465,7 +457,6 @@ async function callCatalogTool(name, args, signal, gateInfo = {}) {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
   await rememberIde(name, result);
-  if (name === 'DisconnectIde') consent.clearIdes();
   if (name === 'InstallPackage' && validation.params.Approved !== true) consent.rememberPlan(result);
   // #249: after decorateBridgeLoss (ConnectIde clears lastIde, so its generic hint would stay)
   return decorateConnectIdeTimeout(name, await decorateBridgeLoss(result));
@@ -501,8 +492,6 @@ function makeContext(signal, parentSeq = null) {
     },
     baseModulePath,
     onModuleReloaded: (modulePath) => {
-      // ReloadModule disconnects the IDE like DisconnectIde (#258 review S4): ask again for an IDE TcAuto did not launch
-      consent.clearIdes();
       // the modal probe dot-sources the UIA scan of the loaded module unless it was set explicitly
       if (!process.env.TWINCAT_MCP_PROBE_SCAN_SCRIPT) config.modalProbe.scanScript = scanScriptFor(modulePath);
     }

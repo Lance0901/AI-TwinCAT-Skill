@@ -8,6 +8,11 @@
 // `decision`: measured for #258 before the implementation (codex-cli 0.167.0, --dangerously-bypass-approvals-and-sandbox)
 // a form without fields is accepted automatically, one with a required enum field is declined;
 // `claude -p` (Claude Code 2.1.319, every permission mode) cancels every elicitation.
+// Scope (owner decision 2026-11-15: "almost fully automatic with an LLM; ask only where people can
+// get hurt"): only two gates. Runtime changes on a target that is not the local UmRT, and
+// InstallPackage Approved=true. AddAdsRoute / InstallLibrary / UninstallLibrary, ResetSolution
+// Force=true and ConnectIde ProcessId are not gated here (the module keeps its own protections:
+// UNSAVED_CHANGES #175, IDE_ATTACH_CONSENT_REQUIRED #281, DryRun defaults).
 // The consent memory lives in this server process only (no file, no parameter, no environment
 // variable can pre-fill it): a new server process (restart, ReloadRuntime) asks again.
 
@@ -35,37 +40,23 @@ export const RUNTIME_TOOLS = new Set([
 // One fixed English sentence per gate (never text from the agent).
 const EFFECT = {
   InstallPackage: 'tcpkg installs or changes TwinCAT software on this PC (IDEs must be closed; the change affects every TwinCAT project on this PC).',
-  // Add-TcAdsRoute.ps1 help (TE1000 AddRoute / AddProjectRoute)
-  AddAdsRoute: 'An ADS route is added: with ProjectRoute=true only into the project; otherwise into the route tables of the systems, using the credentials of the remote system.',
-  InstallLibrary: 'A PLC library is installed into a library repository on this PC.',
-  UninstallLibrary: 'A PLC library is removed from a library repository on this PC; projects that use it may no longer build.',
-  ResetSolution: 'The solution is closed and reopened WITHOUT saving: unsaved changes in the IDE are lost.',
-  ConnectIde: 'TcAuto attaches to an IDE it did not launch (an IDE you opened) and can change its settings, the open solution and its files.',
   runtime: 'This changes the running TwinCAT target: TwinCAT may restart, the PLC may stop and start, outputs may switch and axes may move.'
 };
 
 /**
  * Which consent a call needs before the bridge runs it, or null.
- * kind 'always' = ask every time; 'runtime' = once per target AmsNetId (unless local-umrt);
- * 'ide' = once per IDE process (unless TcAuto launched it); 'install' = InstallPackage Approved=true.
+ * kind 'runtime' = once per target AmsNetId (unless local-umrt); 'install' = InstallPackage
+ * Approved=true, every time. Every other call (AddAdsRoute, InstallLibrary, UninstallLibrary,
+ * ResetSolution, ConnectIde, ...) goes to the bridge without a form.
  * @param {string} name tool name
  * @param {object} params validated parameters
- * @returns {{kind:'always'|'runtime'|'ide'|'install', effect:string}|null}
+ * @returns {{kind:'runtime'|'install', effect:string}|null}
  */
 export function consentKind(name, params = {}) {
   const p = params ?? {};
   switch (name) {
     case 'InstallPackage':
       return p.Approved === true ? { kind: 'install', effect: EFFECT.InstallPackage } : null;
-    case 'AddAdsRoute':
-    case 'InstallLibrary':
-    case 'UninstallLibrary':
-      // DryRun defaults to true in the cmdlet: only an explicit DryRun=false changes anything
-      return p.DryRun === false ? { kind: 'always', effect: EFFECT[name] } : null;
-    case 'ResetSolution':
-      return p.Force === true ? { kind: 'always', effect: EFFECT.ResetSolution } : null;
-    case 'ConnectIde':
-      return Number.isInteger(p.ProcessId) ? { kind: 'ide', effect: EFFECT.ConnectIde } : null;
     case 'SetTcComParameter':
       return p.Online === true && p.DryRun === false ? { kind: 'runtime', effect: EFFECT.runtime } : null;
     default:
@@ -121,10 +112,10 @@ export function consentSchema() {
 
 /**
  * The elicitation/create params. Everything in `message` is produced here: fixed sentences, the
- * tool name, target AmsNetId / kind, the IDE pid, the remembered InstallPackage plan and sanitized
+ * tool name, target AmsNetId / kind, the remembered InstallPackage plan and sanitized
  * parameter values.
  * @param {{tool:string, gate:{kind:string, effect:string}, params?:object, amsNetId?:string|null,
- *   targetKind?:string|null, ide?:{processId:number}|null, plan?:{packageId:string, version:string, command:string}|null}} o
+ *   targetKind?:string|null, plan?:{packageId:string, version:string, command:string}|null}} o
  */
 export function buildConsentRequest(o) {
   const lines = [`TcAuto asks you before it runs ${sanitizeValue(o.tool, 40)}.`, `What happens: ${o.gate.effect}`];
@@ -132,10 +123,6 @@ export function buildConsentRequest(o) {
     lines.push(`Target AmsNetId: ${o.amsNetId ? sanitizeValue(o.amsNetId) : 'unknown'}`);
     lines.push(`Target kind: ${sanitizeValue(o.targetKind ?? 'unknown')} (anything but local-umrt is treated as a real machine)`);
     lines.push('Approving allows runtime changes on this target until this TcAuto server process ends.');
-  }
-  if (o.gate.kind === 'ide' && o.ide) {
-    lines.push(`IDE process id: ${sanitizeValue(o.ide.processId)} (not launched by TcAuto)`);
-    lines.push('Approving allows TcAuto to work in this IDE until DisconnectIde.');
   }
   if (o.gate.kind === 'install' && o.plan) {
     lines.push(`Package: ${sanitizeValue(o.plan.packageId)}`);
@@ -165,7 +152,7 @@ function selfRunHint(tool, plan) {
 
 /**
  * Trace value (lib/trace.js `blockedBy`) for a call this gate refused: "consent:<gate kind>", one of
- * consent:always, consent:runtime, consent:ide, consent:install. Why it was refused is the trace
+ * consent:runtime, consent:install. Why it was refused is the trace
  * line's errorCode (CONSENT_DECLINED / CONSENT_REQUIRED).
  * @param {{kind:string}} gate result of consentKind
  */
@@ -223,13 +210,11 @@ export function consentErrorResult(tool, reason, extra = {}) {
 /**
  * Per-server-process consent memory. Nothing is persisted.
  *  targets: AmsNetIds (lower case) approved for runtime changes
- *  ides:    IDE process keys ("<pid>|<start time>") approved for ConnectIde ProcessId; cleared by DisconnectIde
  *  plans:   InstallPackage planToken -> {packageId, version, command} of plans this process returned
  */
 export class ConsentMemory {
   constructor() {
     this.targets = new Set();
-    this.ides = new Set();
     this.plans = new Map();
   }
 
@@ -239,18 +224,6 @@ export class ConsentMemory {
 
   addTarget(amsNetId) {
     if (typeof amsNetId === 'string' && amsNetId !== '') this.targets.add(amsNetId.toLowerCase());
-  }
-
-  hasIde(key) {
-    return typeof key === 'string' && key !== '' && this.ides.has(key);
-  }
-
-  addIde(key) {
-    if (typeof key === 'string' && key !== '') this.ides.add(key);
-  }
-
-  clearIdes() {
-    this.ides.clear();
   }
 
   /** Remember the plan of an InstallPackage result without Approved (only a plan with a token). */

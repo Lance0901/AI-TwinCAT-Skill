@@ -11,12 +11,14 @@ TcAuto drives a TwinCAT 3 IDE (XAE / Visual Studio) and a TwinCAT runtime. On a 
 ## UmRT or real machine?
 `ConnectIde`, `SetTarget`, `GetStatus`, `RunLifecycle` report `data.targetKind` of one AmsNetId.
 - `local-umrt` (the user-mode runtime on this PC): build, activate, run, write, test freely.
-- Anything else (`local-xar`, `remote`, `unknown`) is a real machine, a Windows XAR on this PC included. The first call of this session that changes it (`RunLifecycle`, `EnableConfig`, `RunTestCycle`, `RunTest`, `WriteVariable`, `SetPlcState`, …) makes the tool ask the user in a confirmation form. You cannot answer it; do not ask in chat instead, a chat answer is not consent. Tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move).
+- Anything else (`local-xar`, `remote`, `unknown`) is a real machine, a Windows XAR on this PC included. The first call of this session that changes it (`RunLifecycle`, `EnableConfig`, `RunTest`, `WriteVariable`, …) makes the tool ask the user in a confirmation form. You cannot answer it; do not ask in chat instead, a chat answer is not consent. Tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move).
 
 ## The tool asks the user (confirmation form)
-`InstallPackage Approved=true` (show the plan first), `AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` with `DryRun=false`, `ResetSolution Force=true`, `ConnectIde ProcessId=<pid>` (an IDE TcAuto did not launch). `CONSENT_DECLINED` / `CONSENT_REQUIRED` = nothing ran: stop, report, do not retry or work around it.
+Only for real-machine changes above and `InstallPackage Approved=true` (show the plan first). `CONSENT_DECLINED` / `CONSENT_REQUIRED` = nothing ran: stop, report, do not retry or work around it.
 
 ## Always ask the user before
+- `AddAdsRoute`, `InstallLibrary` / `UninstallLibrary` (change this PC).
+- `ConnectIde ProcessId=<pid>` after `IDE_ATTACH_CONSENT_REQUIRED` (the user's IDE); `ResetSolution Force=true` (drops unsaved changes).
 - Deleting (`DeleteChild`, `RemoveReference`, `UnlinkProgramFromTask`).
 - `ClearLifecycleBlock`: only after the user saw `data.lifecycleBlock` and agreed.
 - `requiresDisposition: true` lint results; any dialog with more than one button (report it, do not click).

@@ -245,7 +245,7 @@ Calls that need the user's consent are confirmed by the user in a form the TcAut
 | `codex exec --dangerously-bypass-approvals-and-sandbox` | a form without fields is accepted automatically, a form with a required choice is declined (實測 #258 before the implementation, codex-cli 0.167.0): TcAuto forms always have the required choice | `CONSENT_DECLINED` |
 | A client that does not declare `capabilities.elicitation` (Claude Desktop: no official support found; Antigravity: not tested) | no form is sent | `CONSENT_REQUIRED` |
 
-On `CONSENT_DECLINED` / `CONSENT_REQUIRED` nothing ran. Retry in an interactive client that shows forms, or run the operation yourself with the PowerShell module (`InstallPackage` returns the tcpkg command to run in an elevated PowerShell). A form not answered within 10 minutes counts as `CONSENT_REQUIRED`. Headless runs therefore cannot install packages, add routes, install libraries or change a runtime that is not the local UmRT: this is intended.
+On `CONSENT_DECLINED` / `CONSENT_REQUIRED` nothing ran. Retry in an interactive client that shows forms, or run the operation yourself with the PowerShell module (`InstallPackage` returns the tcpkg command to run in an elevated PowerShell). A form not answered within 10 minutes counts as `CONSENT_REQUIRED`. Headless runs therefore cannot install packages or change a runtime that is not the local UmRT: this is intended. Only these two kinds of calls ask (owner decision 2026-11-15: ask only where people can get hurt, plus the tcpkg install rule); `AddAdsRoute`, `InstallLibrary` / `UninstallLibrary`, `ResetSolution Force=true` and `ConnectIde ProcessId` do not show a form.
 
 ## Upgrade
 
@@ -305,7 +305,7 @@ Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.j
 | `errorCode` | 失敗時的 `error.code`,成功為 `null` |
 | `dataKeys` | `data` 是物件時的頂層 key 清單(不存整份 data);陣列或沒有 data 為 `null` |
 | `resultChars` | client 收到的結果文字長度(step 行:該 step 結果以同樣格式序列化的長度) |
-| `blockedBy` | **只出現在被確認閘門(#258)擋下、沒送到 bridge 的那一行**;沒被擋的呼叫是 `null`(每行都有這個欄位)。值是閘門名稱 `consent:<種類>`:`consent:runtime`(改 runtime 狀態的工具)、`consent:ide`(`ConnectIde` 附 `ProcessId`)、`consent:always`(`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` 附 `DryRun=false`、`ResetSolution` 附 `Force=true`)、`consent:install`(`InstallPackage` 附 `Approved=true`)。擋下原因看同一行的 `errorCode`(`CONSENT_DECLINED` 使用者拒絕 / `CONSENT_REQUIRED` client 無法確認)。只記閘門名稱,不記確認框內容與使用者回答 |
+| `blockedBy` | **只出現在被確認閘門(#258)擋下、沒送到 bridge 的那一行**;沒被擋的呼叫是 `null`(每行都有這個欄位)。值是閘門名稱 `consent:<種類>`:`consent:runtime`(改 runtime 狀態的工具,目標不是 local-umrt)、`consent:install`(`InstallPackage` 附 `Approved=true`)。擋下原因看同一行的 `errorCode`(`CONSENT_DECLINED` 使用者拒絕 / `CONSENT_REQUIRED` client 無法確認)。只記閘門名稱,不記確認框內容與使用者回答 |
 
 注意:
 

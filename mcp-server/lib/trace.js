@@ -15,7 +15,7 @@
 //   dataKeys    top-level keys of result.data when it is an object, else null (data itself is not stored)
 //   resultChars length of the result text the client receives (JSON, 2-space indent)
 //   blockedBy   only on a call the server refused before it reached the bridge (#258): the gate,
-//               "consent:<kind>" with kind always | runtime | ide | install (lib/consent.js
+//               "consent:<kind>" with kind runtime | install (lib/consent.js
 //               consentBlockedBy); errorCode then says why (CONSENT_DECLINED / CONSENT_REQUIRED).
 //               A composite step refused by the gate carries it on the step's own line (parentSeq
 //               set); the composite's line does not. Calls not refused have blockedBy null.
