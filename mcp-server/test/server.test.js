@@ -33,6 +33,8 @@ async function startServer(toolsJson, extraEnv = {}) {
       TWINCAT_MCP_BRIDGE_COMMAND: process.execPath,
       TWINCAT_MCP_BRIDGE_ARGS: JSON.stringify([MOCK]),
       TWINCAT_MCP_MODAL_PROBE: '0',
+      // a TCAUTO_TRACE_FILE of the developer's shell (an eval run) must not collect test calls
+      TCAUTO_TRACE_FILE: '',
       ...extraEnv
     },
     stderr: 'pipe'
@@ -791,5 +793,127 @@ describe('index.js over stdio (modal probe: ConnectIde policy, late hits, probe 
     assert.ok(await waitFor(() => !alive(pids[0]), 2000), `probe pid ${pids[0]} is dead`);
     assert.ok(!stderr.slice(from).some((l) => /modal dialog/.test(l)), 'nothing reported');
     pf.clearTrigger();
+  });
+});
+
+// Opt-in tool-call trace (TCAUTO_TRACE_FILE, lib/trace.js): the eval harness reads these lines, so
+// the server writes them itself; the tool results must not change when tracing is on or broken.
+describe('index.js over stdio (tool-call trace, TCAUTO_TRACE_FILE)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-trace-'));
+  const traceFile = path.join(dir, 'trace.jsonl');
+  let client;
+  let stderr;
+  const lines = () => fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  before(async () => ({ client, stderr } = await startServer(FIXTURE_EXT, { ...SKIP_PID_CHECK, TCAUTO_TRACE_FILE: traceFile })));
+  after(async () => {
+    await client?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('startup log names the trace file and the sessionId', () => {
+    assert.ok(stderr.some((l) => l.includes('tool-call trace on') && l.includes(traceFile)), stderr.join('\n'));
+  });
+
+  test('one line per call with every field; success call has dataKeys and no errorCode', async () => {
+    const res = parse(await client.callTool({ name: 'ConnectIde', arguments: { ProgId: 'X.DTE' } }));
+    assert.equal(res.success, true);
+    const [rec] = lines();
+    assert.deepEqual(Object.keys(rec).sort(), ['args', 'blockedBy', 'dataKeys', 'durationMs', 'errorCode', 'parentSeq', 'resultChars', 'seq', 'sessionId', 'success', 'tool', 'truncated', 'ts'].sort());
+    assert.equal(rec.tool, 'ConnectIde');
+    assert.deepEqual(rec.args, { ProgId: 'X.DTE' });
+    assert.equal(rec.truncated, false);
+    assert.equal(rec.seq, 1);
+    assert.equal(rec.parentSeq, null);
+    assert.equal(rec.success, true);
+    assert.equal(rec.errorCode, null);
+    assert.equal(rec.blockedBy, null);
+    assert.deepEqual(rec.dataKeys, Object.keys(res.data));
+    assert.equal(rec.resultChars, JSON.stringify(res, null, 2).length);
+    assert.match(rec.sessionId, /^[0-9a-f-]{36}$/);
+    assert.ok(!Number.isNaN(Date.parse(rec.ts)) && rec.ts.endsWith('Z'));
+    assert.equal(typeof rec.durationMs, 'number');
+  });
+
+  test('error result -> errorCode; a call refused by validation (never reaches the bridge) is traced too', async () => {
+    fs.rmSync(traceFile, { force: true });
+    await client.callTool({ name: 'BuildProject', arguments: { Crash: true } });
+    await client.callTool({ name: 'ReadVariable', arguments: { Nope: 1 } });
+    await client.callTool({ name: 'NoSuchTool', arguments: {} });
+    const recs = lines();
+    assert.deepEqual(recs.map((r) => [r.tool, r.success, r.errorCode]), [
+      ['BuildProject', false, 'BRIDGE_DIED'],
+      ['ReadVariable', false, 'INVALID_PARAMS'],
+      ['NoSuchTool', false, 'UNKNOWN_TOOL']
+    ]);
+    assert.ok(recs.every((r) => r.blockedBy === null && r.parentSeq === null));
+    assert.deepEqual(recs.map((r) => r.seq), [recs[0].seq, recs[0].seq + 1, recs[0].seq + 2]);
+  });
+
+  test('composite: one line per step with parentSeq = seq of the RunLifecycle line', async () => {
+    fs.rmSync(traceFile, { force: true });
+    const body = parse(await client.callTool({ name: 'RunLifecycle', arguments: { ProgId: 'X.DTE', TimeoutSec: 30 } }));
+    assert.equal(body.success, true);
+    const recs = lines();
+    const parent = recs.find((r) => r.tool === 'RunLifecycle');
+    assert.ok(parent, 'composite line written');
+    assert.equal(parent.parentSeq, null);
+    assert.deepEqual(parent.dataKeys, Object.keys(body.data));
+    const steps = recs.filter((r) => r.parentSeq === parent.seq).sort((a, b) => a.seq - b.seq);
+    assert.deepEqual(steps.map((r) => r.tool), ['ConnectIde', 'BuildProject', 'EnableConfig', 'ConnectAds', 'GetPlcState']);
+    assert.ok(steps.every((r) => r.seq > parent.seq && r.sessionId === parent.sessionId && r.success));
+    assert.deepEqual(steps[2].args, { Force: true, TimeoutSec: 30 });
+    assert.equal(recs.length, 6);
+  });
+
+  test('a string argument over 4,000 characters is cut and marked truncated', async () => {
+    fs.rmSync(traceFile, { force: true });
+    const long = 'MAIN.Missing' + 'x'.repeat(5000);
+    await client.callTool({ name: 'ReadVariable', arguments: { Path: long } });
+    const [rec] = lines();
+    assert.equal(rec.truncated, true);
+    assert.ok(rec.args.Path.startsWith(long.slice(0, 4000)));
+    assert.match(rec.args.Path, /\[truncated, 5012 chars\]$/);
+    assert.ok(rec.args.Path.length < 4100);
+  });
+});
+
+describe('index.js over stdio (tool-call trace off or unwritable)', () => {
+  test('TCAUTO_TRACE_FILE unset: no trace line in the log; relative path: refused, no file written', async () => {
+    const env = { ...SKIP_PID_CHECK, TCAUTO_TRACE_FILE: '' };
+    const off = await startServer(FIXTURE, env);
+    try {
+      assert.equal(parse(await off.client.callTool({ name: 'ConnectIde', arguments: {} })).success, true);
+      assert.ok(!off.stderr.some((l) => /tool-call trace/.test(l)), off.stderr.join('\n'));
+    } finally {
+      await off.client.close();
+    }
+    const rel = `tcauto-trace-rel-${process.pid}.jsonl`;
+    const relServer = await startServer(FIXTURE, { ...SKIP_PID_CHECK, TCAUTO_TRACE_FILE: rel });
+    try {
+      assert.equal(parse(await relServer.client.callTool({ name: 'ConnectIde', arguments: {} })).success, true);
+      assert.ok(relServer.stderr.some((l) => /not an absolute path/.test(l)), relServer.stderr.join('\n'));
+      assert.ok(!fs.existsSync(path.resolve(rel)), 'no file in the cwd');
+      assert.ok(!fs.existsSync(path.join(__dirname, '..', rel)), 'no file next to index.js');
+    } finally {
+      await relServer.client.close();
+    }
+  });
+
+  test('write failure (path is a directory): results unchanged, one stderr warning only', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-trace-dir-'));
+    const s = await startServer(FIXTURE, { ...SKIP_PID_CHECK, TCAUTO_TRACE_FILE: dir });
+    try {
+      const a = await s.client.callTool({ name: 'ConnectIde', arguments: {} });
+      assert.equal(a.isError, false);
+      assert.equal(parse(a).success, true);
+      const b = parse(await s.client.callTool({ name: 'ReadVariable', arguments: { Nope: 1 } }));
+      assert.equal(b.error.code, 'INVALID_PARAMS');
+      const warned = () => s.stderr.filter((l) => /TCAUTO_TRACE_FILE .*write failed/.test(l)).length;
+      for (let i = 0; i < 40 && warned() === 0; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(warned(), 1, s.stderr.join('\n'));
+    } finally {
+      await s.client.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

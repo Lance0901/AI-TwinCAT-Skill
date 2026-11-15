@@ -19,11 +19,14 @@ import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 import { loadInstructions } from './lib/instructions.js';
 import { ConsentMemory, consentKind, buildConsentRequest, askUser, consentErrorResult } from './lib/consent.js';
+import { createTracer } from './lib/trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
 
 const config = loadConfig(process.env);
+// opt-in JSONL trace of every tool call (TCAUTO_TRACE_FILE, lib/trace.js; AI behaviour evals)
+const tracer = createTracer(config.traceFile);
 
 let catalog;
 try {
@@ -457,12 +460,24 @@ async function callCatalogTool(name, args, signal) {
   return decorateConnectIdeTimeout(name, await decorateBridgeLoss(result));
 }
 
-/** Per-request context for composite tools (see lib/composites.js header). */
-function makeContext(signal) {
+/** Catalog call made by a composite: traced as its own line with parentSeq (lib/trace.js). */
+async function callStepTool(name, args, signal, parentSeq) {
+  const span = tracer.begin(name, args, parentSeq);
+  let result;
+  try {
+    result = await callCatalogTool(name, args, signal);
+    return result;
+  } finally {
+    span.end(result ?? { success: false, error: { code: 'INTERNAL_ERROR' } });
+  }
+}
+
+/** Per-request context for composite tools (see lib/composites.js header). parentSeq: trace seq of the composite call. */
+function makeContext(signal, parentSeq = null) {
   return {
     bridge,
     signal,
-    callTool: (name, args) => callCatalogTool(name, args, signal),
+    callTool: (name, args) => callStepTool(name, args, signal, parentSeq),
     get lastIde() {
       return lastIde ? { ...lastIde } : null;
     },
@@ -480,12 +495,12 @@ function makeContext(signal) {
   };
 }
 
-async function callAnyTool(name, args, signal) {
+async function callAnyTool(name, args, signal, traceSeq = null) {
   const composite = compositeMap.get(name);
   if (composite) {
     const validation = validateParams(composite, args);
     if (!validation.ok) return { success: false, error: validation.error };
-    return composite.run(makeContext(signal), validation.params);
+    return composite.run(makeContext(signal, traceSeq), validation.params);
   }
   return callCatalogTool(name, args, signal);
 }
@@ -525,28 +540,36 @@ let runtimeRetired = false;
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const name = request.params?.name;
   const args = request.params?.arguments ?? {};
+  // every call is traced, also the ones refused here or by validation before reaching the bridge
+  const span = tracer.begin(name, args);
+  let final;
   if (runtimeRetired) {
-    return toToolResult(
+    final = toToolResult(
       errorResult(
         'RUNTIME_RETIRED',
         `${name} NOT RUN: this runtime process was retired by the launcher (ReloadRuntime) and accepts no more calls.`,
         'Call ReloadRuntime again (the launcher starts the runtime current.json names), then ConnectIde.'
       )
     );
+    span.end(final.structuredContent, { resultChars: final.content[0].text.length });
+    return final;
   }
   activeToolCalls++;
   const stopProgress = startProgress(name, request, extra);
   try {
     // extra.signal fires on notifications/cancelled: a call still waiting in the bridge queue is
     // dropped (CANCELLED); one already handed to PowerShell runs to completion.
-    const result = await callAnyTool(name, args, extra?.signal);
-    return toToolResult(rewriteResultHints(await decorateBridgeLoss(result), cmdletNames));
+    const result = await callAnyTool(name, args, extra?.signal, span.seq);
+    final = toToolResult(rewriteResultHints(await decorateBridgeLoss(result), cmdletNames));
+    return final;
   } catch (err) {
     console.error(`[tcauto-mcp] ${name} failed: ${err?.stack ?? err}`);
-    return toToolResult(errorResult('INTERNAL_ERROR', `${name}: ${err?.message ?? String(err)}`));
+    final = toToolResult(errorResult('INTERNAL_ERROR', `${name}: ${err?.message ?? String(err)}`));
+    return final;
   } finally {
     activeToolCalls--;
     stopProgress();
+    span.end(final?.structuredContent, { resultChars: final?.content?.[0]?.text?.length });
   }
 });
 
@@ -632,6 +655,7 @@ await server.connect(transport);
 connected = true;
 flushPendingLogs();
 console.error(`[tcauto-mcp] ${pkg.name} ${pkg.version}: ${catalog.size} catalog tools + ${composites.length} composite tools (tools.json: ${config.toolsJsonPath}), modal probe ${config.modalProbe.enabled ? 'on' : 'off'} (${config.modalProbe.intervalSec} s)`);
+if (tracer.enabled) console.error(`[tcauto-mcp] tool-call trace on: ${tracer.file} (sessionId ${tracer.sessionId})`);
 
 if (config.eager) {
   bridge.start().then(
