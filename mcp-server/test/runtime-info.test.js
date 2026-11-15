@@ -201,7 +201,7 @@ describe('index.js started by a launcher (TCAUTO_LAUNCHER_PID = parent pid)', ()
       const after = body(await client2.callTool({ name: 'GetStatus', arguments: {} }));
       assert.equal(after.error.code, 'RUNTIME_RETIRED');
       const traced = fs.readFileSync(traceFile, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
-      assert.deepEqual(traced.map((r) => [r.tool, r.errorCode, r.blockedBy]), [['ConnectIde', null, null], ['GetStatus', 'RUNTIME_RETIRED', null]]);
+      assert.deepEqual(traced.map((r) => [r.tool, r.errorCode, 'blockedBy' in r]), [['ConnectIde', null, false], ['GetStatus', 'RUNTIME_RETIRED', false]]);
       assert.deepEqual(owners(ownerFile), [ownerId, ownerId], 'same owner id for both servers (same launcher)');
     } finally {
       await client2.close();

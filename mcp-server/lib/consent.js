@@ -163,6 +163,16 @@ function selfRunHint(tool, plan) {
 }
 
 /**
+ * Trace value (lib/trace.js `blockedBy`) for a call this gate refused: "consent:<gate kind>", one of
+ * consent:always, consent:runtime, consent:ide, consent:install. Why it was refused is the trace
+ * line's errorCode (CONSENT_DECLINED / CONSENT_REQUIRED).
+ * @param {{kind:string}} gate result of consentKind
+ */
+export function consentBlockedBy(gate) {
+  return `consent:${gate.kind}`;
+}
+
+/**
  * Error result for a refused consent. reason 'declined' -> CONSENT_DECLINED (the user said no,
  * dismissed the form, or accepted without choosing approve); anything else -> CONSENT_REQUIRED
  * (no elicitation support, an elicitation error / timeout, or an InstallPackage token this server

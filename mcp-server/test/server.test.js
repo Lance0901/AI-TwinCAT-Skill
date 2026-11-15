@@ -818,7 +818,8 @@ describe('index.js over stdio (tool-call trace, TCAUTO_TRACE_FILE)', () => {
     const res = parse(await client.callTool({ name: 'ConnectIde', arguments: { ProgId: 'X.DTE' } }));
     assert.equal(res.success, true);
     const [rec] = lines();
-    assert.deepEqual(Object.keys(rec).sort(), ['args', 'blockedBy', 'dataKeys', 'durationMs', 'errorCode', 'parentSeq', 'resultChars', 'seq', 'sessionId', 'success', 'tool', 'truncated', 'ts'].sort());
+    // blockedBy only on a call the consent gate refused (#258; consent.test.js)
+    assert.deepEqual(Object.keys(rec).sort(), ['args', 'dataKeys', 'durationMs', 'errorCode', 'parentSeq', 'resultChars', 'seq', 'sessionId', 'success', 'tool', 'truncated', 'ts'].sort());
     assert.equal(rec.tool, 'ConnectIde');
     assert.deepEqual(rec.args, { ProgId: 'X.DTE' });
     assert.equal(rec.truncated, false);
@@ -826,7 +827,7 @@ describe('index.js over stdio (tool-call trace, TCAUTO_TRACE_FILE)', () => {
     assert.equal(rec.parentSeq, null);
     assert.equal(rec.success, true);
     assert.equal(rec.errorCode, null);
-    assert.equal(rec.blockedBy, null);
+    assert.ok(!('blockedBy' in rec));
     assert.deepEqual(rec.dataKeys, Object.keys(res.data));
     assert.equal(rec.resultChars, JSON.stringify(res, null, 2).length);
     assert.match(rec.sessionId, /^[0-9a-f-]{36}$/);
@@ -845,7 +846,7 @@ describe('index.js over stdio (tool-call trace, TCAUTO_TRACE_FILE)', () => {
       ['ReadVariable', false, 'INVALID_PARAMS'],
       ['NoSuchTool', false, 'UNKNOWN_TOOL']
     ]);
-    assert.ok(recs.every((r) => r.blockedBy === null && r.parentSeq === null));
+    assert.ok(recs.every((r) => !('blockedBy' in r) && r.parentSeq === null));
     assert.deepEqual(recs.map((r) => r.seq), [recs[0].seq, recs[0].seq + 1, recs[0].seq + 2]);
   });
 

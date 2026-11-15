@@ -18,7 +18,7 @@ import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-pro
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 import { loadInstructions } from './lib/instructions.js';
-import { ConsentMemory, consentKind, buildConsentRequest, askUser, consentErrorResult } from './lib/consent.js';
+import { ConsentMemory, consentKind, consentBlockedBy, buildConsentRequest, askUser, consentErrorResult } from './lib/consent.js';
 import { createTracer } from './lib/trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -386,6 +386,7 @@ async function bridgeQuery(op, params, signal) {
 async function consentGate(name, params, signal) {
   const gate = consentKind(name, params);
   if (!gate) return null;
+  const refuse = (result) => ({ result, blockedBy: consentBlockedBy(gate) });
   let plan = null;
   let remember = null;
   let shown = params;
@@ -394,7 +395,7 @@ async function consentGate(name, params, signal) {
   let ide = null;
   if (gate.kind === 'install') {
     plan = consent.takePlan(params.PlanToken, params.PackageId, params.Version);
-    if (!plan) return consentErrorResult(name, 'unknown-plan');
+    if (!plan) return refuse(consentErrorResult(name, 'unknown-plan'));
     const { PlanToken, ...rest } = params;
     shown = rest;
   } else if (gate.kind === 'runtime') {
@@ -421,21 +422,26 @@ async function consentGate(name, params, signal) {
     return null;
   }
   const data = gate.kind === 'runtime' ? { amsNetId, targetKind } : gate.kind === 'install' ? { command: plan.command } : {};
-  return consentErrorResult(name, outcome, { plan, data });
+  return refuse(consentErrorResult(name, outcome, { plan, data }));
 }
 
 /**
  * Run a catalog tool: validate -> consent gate -> timeout -> bridge call. Always returns a result object.
  * `signal` (the MCP request's AbortSignal) cancels the call only while it is still queued.
+ * `gateInfo.blockedBy` is set to the gate name (lib/consent.js consentBlockedBy) when the consent
+ * gate refused the call, for the trace line (lib/trace.js).
  */
-async function callCatalogTool(name, args, signal) {
+async function callCatalogTool(name, args, signal, gateInfo = {}) {
   const tool = catalog.get(name);
   if (!tool) return errorResult('UNKNOWN_TOOL', `Unknown tool '${name}'`, 'Use tools/list to see the available tools.');
   const validation = validateParams(tool, args);
   if (!validation.ok) return { success: false, error: validation.error };
   // #258: before anything reaches the bridge (also for the steps of a composite such as RunLifecycle)
   const refused = await consentGate(name, validation.params, signal);
-  if (refused) return refused;
+  if (refused) {
+    gateInfo.blockedBy = refused.blockedBy;
+    return refused.result;
+  }
   const timeoutMs = computeTimeoutMs(tool, validation.params);
   // Probe target: the last known IDE, captured before ConnectIde forgets it (a reconnect after a
   // BRIDGE_TIMEOUT / IDE_MODAL_DIALOG blocks again on the dialog that is still up in that IDE).
@@ -463,12 +469,13 @@ async function callCatalogTool(name, args, signal) {
 /** Catalog call made by a composite: traced as its own line with parentSeq (lib/trace.js). */
 async function callStepTool(name, args, signal, parentSeq) {
   const span = tracer.begin(name, args, parentSeq);
+  const gateInfo = {};
   let result;
   try {
-    result = await callCatalogTool(name, args, signal);
+    result = await callCatalogTool(name, args, signal, gateInfo);
     return result;
   } finally {
-    span.end(result ?? { success: false, error: { code: 'INTERNAL_ERROR' } });
+    span.end(result ?? { success: false, error: { code: 'INTERNAL_ERROR' } }, { blockedBy: gateInfo.blockedBy });
   }
 }
 
@@ -495,14 +502,14 @@ function makeContext(signal, parentSeq = null) {
   };
 }
 
-async function callAnyTool(name, args, signal, traceSeq = null) {
+async function callAnyTool(name, args, signal, traceSeq = null, gateInfo = {}) {
   const composite = compositeMap.get(name);
   if (composite) {
     const validation = validateParams(composite, args);
     if (!validation.ok) return { success: false, error: validation.error };
     return composite.run(makeContext(signal, traceSeq), validation.params);
   }
-  return callCatalogTool(name, args, signal);
+  return callCatalogTool(name, args, signal, gateInfo);
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
@@ -542,6 +549,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const args = request.params?.arguments ?? {};
   // every call is traced, also the ones refused here or by validation before reaching the bridge
   const span = tracer.begin(name, args);
+  // set by the consent gate when it refuses this call itself (a composite's refused step is traced
+  // on the step's own line, callStepTool)
+  const gateInfo = {};
   let final;
   if (runtimeRetired) {
     final = toToolResult(
@@ -559,7 +569,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     // extra.signal fires on notifications/cancelled: a call still waiting in the bridge queue is
     // dropped (CANCELLED); one already handed to PowerShell runs to completion.
-    const result = await callAnyTool(name, args, extra?.signal, span.seq);
+    const result = await callAnyTool(name, args, extra?.signal, span.seq, gateInfo);
     final = toToolResult(rewriteResultHints(await decorateBridgeLoss(result), cmdletNames));
     return final;
   } catch (err) {
@@ -569,7 +579,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   } finally {
     activeToolCalls--;
     stopProgress();
-    span.end(final?.structuredContent, { resultChars: final?.content?.[0]?.text?.length });
+    span.end(final?.structuredContent, { blockedBy: gateInfo.blockedBy, resultChars: final?.content?.[0]?.text?.length });
   }
 });
 

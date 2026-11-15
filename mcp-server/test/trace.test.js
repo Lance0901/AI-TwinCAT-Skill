@@ -61,6 +61,23 @@ test('array data -> dataKeys null; a call ended twice writes one line', () => {
   }
 });
 
+test('blockedBy: written only when end() gets a gate name, no key otherwise (#258)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-trace-'));
+  const file = path.join(dir, 't.jsonl');
+  try {
+    const t = createTracer(file);
+    const refused = { success: false, error: { code: 'CONSENT_DECLINED' }, data: { notRun: true, consent: 'declined' } };
+    t.begin('WriteVariable', { Path: 'MAIN.x', Value: 1 }).end(refused, { blockedBy: 'consent:runtime' });
+    t.begin('ReadVariable', { Path: 'MAIN.x' }).end({ success: true, data: { value: 1 } });
+    t.begin('ReadVariable', { Path: 'MAIN.x' }).end({ success: true, data: { value: 1 } }, { blockedBy: null });
+    const recs = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual([recs[0].success, recs[0].errorCode, recs[0].blockedBy], [false, 'CONSENT_DECLINED', 'consent:runtime']);
+    assert.ok(!('blockedBy' in recs[1]) && !('blockedBy' in recs[2]));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('several processes appending to one file: every line is whole JSON', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-trace-mp-'));
   const file = path.join(dir, 't.jsonl');

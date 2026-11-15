@@ -20,6 +20,7 @@ import {
   askUser,
   ConsentMemory,
   consentErrorResult,
+  consentBlockedBy,
   supportsFormElicitation,
   ELICIT_TIMEOUT_MS
 } from '../lib/consent.js';
@@ -120,6 +121,13 @@ describe('consent.js (pure logic)', () => {
     m.addIde('12|t');
     m.clearIdes();
     assert.equal(m.hasIde('12|t'), false);
+  });
+
+  test('consentBlockedBy: "consent:<gate kind>"', () => {
+    assert.equal(consentBlockedBy(consentKind('WriteVariable', {})), 'consent:runtime');
+    assert.equal(consentBlockedBy(consentKind('ConnectIde', { ProcessId: 1 })), 'consent:ide');
+    assert.equal(consentBlockedBy(consentKind('ResetSolution', { Force: true })), 'consent:always');
+    assert.equal(consentBlockedBy(consentKind('InstallPackage', { Approved: true })), 'consent:install');
   });
 
   test('consentErrorResult codes', () => {
@@ -483,5 +491,67 @@ describe('consent gate end to end: InstallPackage', () => {
     } finally {
       await h2.client.close();
     }
+  });
+});
+
+// TCAUTO_TRACE_FILE (lib/trace.js): a call the gate refused carries blockedBy on its own trace line;
+// a call that passed the gate (or was never gated) has no blockedBy key. Only the gate name is
+// written: neither the form text nor the user's answer.
+describe('consent gate end to end: tool-call trace blockedBy', () => {
+  const traceFile = path.join(tmp, 'trace-consent.jsonl');
+  const lines = () => fs.readFileSync(traceFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  let h;
+  before(async () => (h = await start({ env: { TCAUTO_TRACE_FILE: traceFile } })));
+  beforeEach(() => fs.rmSync(traceFile, { force: true }));
+  after(async () => h?.client.close());
+
+  test('declined -> blockedBy consent:runtime, CONSENT_DECLINED; approved -> no blockedBy key', async () => {
+    await h.call('ConnectAds', { AmsNetId: '5.1.2.3.1.1' });
+    h.answer = answers.decline;
+    const refused = await h.call('WriteVariable', { Path: 'MAIN.x', Value: 1 });
+    assert.equal(refused.error.code, 'CONSENT_DECLINED');
+    h.answer = APPROVE;
+    assert.equal((await h.call('WriteVariable', { Path: 'MAIN.x', Value: 1 })).success, true);
+    const recs = lines();
+    assert.deepEqual(recs.map((r) => [r.tool, r.success, r.errorCode, r.blockedBy]), [
+      ['ConnectAds', true, null, undefined],
+      ['WriteVariable', false, 'CONSENT_DECLINED', 'consent:runtime'],
+      ['WriteVariable', true, null, undefined]
+    ]);
+    assert.ok(!('blockedBy' in recs[0]) && !('blockedBy' in recs[2]));
+    const text = fs.readFileSync(traceFile, 'utf8');
+    assert.doesNotMatch(text, /decision|approve|confirmation form/i, 'no form text or user answer in the trace');
+  });
+
+  test('elicitation fails -> blockedBy consent:ide, CONSENT_REQUIRED', async () => {
+    h.answer = () => {
+      throw new Error('client failure');
+    };
+    const r = await h.call('ConnectIde', { ProcessId: 7777 });
+    assert.equal(r.error.code, 'CONSENT_REQUIRED');
+    const [rec] = lines();
+    assert.deepEqual([rec.tool, rec.success, rec.errorCode, rec.blockedBy], ['ConnectIde', false, 'CONSENT_REQUIRED', 'consent:ide']);
+    h.answer = APPROVE;
+  });
+
+  test('composite: the refused EnableConfig step line has blockedBy, the RunLifecycle line does not', async () => {
+    // a fresh server: the target approved by the first test is remembered in this one
+    const h2 = await start({ env: { TCAUTO_TRACE_FILE: traceFile } });
+    let r;
+    try {
+      h2.answer = answers.decline;
+      r = await h2.call('RunLifecycle', { TargetAmsNetId: '5.1.2.3.1.1', SkipBuild: true });
+    } finally {
+      await h2.client.close();
+    }
+    assert.equal(r.error.code, 'CONSENT_DECLINED', JSON.stringify(r));
+    const recs = lines();
+    const parent = recs.find((x) => x.tool === 'RunLifecycle');
+    const step = recs.find((x) => x.tool === 'EnableConfig');
+    assert.equal(step.parentSeq, parent.seq);
+    assert.deepEqual([step.success, step.errorCode, step.blockedBy], [false, 'CONSENT_DECLINED', 'consent:runtime']);
+    assert.equal(parent.errorCode, 'CONSENT_DECLINED');
+    assert.ok(!('blockedBy' in parent), 'the composite itself was not refused by the gate');
+    assert.ok(recs.filter((x) => x !== step).every((x) => !('blockedBy' in x)));
   });
 });
