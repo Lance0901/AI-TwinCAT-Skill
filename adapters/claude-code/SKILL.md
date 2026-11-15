@@ -7,7 +7,7 @@ description: Control TwinCAT 3 IDE, manage PLC projects, build and deploy progra
 
 用 TwinCATAutomation PowerShell 模組控制 TwinCAT 3 IDE(XAE)與 PLC runtime。全程無 dialog。
 
-**先看流程卡**:`mcp-server/instructions.md`(英文一頁:黃金規則、各任務的工具順序、何時問使用者、失敗怎麼做;TcAuto MCP server 在 initialize 時以 `instructions` 送給 client,#307)。本頁是細節;兩者衝突時以流程卡為準並回報。
+**先看流程卡**:MCP `GetGuide('start')`(= `mcp-server/instructions.md`,英文一頁:黃金規則、UmRT / 實機與確認框、失敗怎麼做、各任務該讀哪個主題;server 也在 initialize 時以 `instructions` 送出,#307)。做某類任務前讀對應主題 `GetGuide('<topic>')`(檔案在 runtime 的 `mcp-server/guide/<topic>.md`,#310,單一來源,本頁不複製)。本頁是 PowerShell 細節;與流程卡 / 主題衝突時以流程卡 / 主題為準並回報。
 
 已知限制(beta)與真機驗證範圍:`docs/known-limitations.md`。遇到問題請開 GitHub issue(https://github.com/Lance0901/AI-TwinCAT-Skill/issues),附 tool 名稱、參數、回傳 JSON,以及 `Get-TcAutomationVersion`(MCP `GetAutomationVersion`)回的 version / commit。Canonical repository:https://github.com/Lance0901/AI-TwinCAT-Skill;安裝來源與 commit 記在 skill 目錄的 `tcauto-install-manifest.json`(#30)。
 

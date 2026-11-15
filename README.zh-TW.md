@@ -281,7 +281,7 @@ adapters/
   antigravity/                  # Antigravity plugin.yaml
 ```
 
-MCP server(stdio)從 <!-- generated:cmdlet-count -->87<!-- /generated --> 個 cmdlet 中提供 <!-- generated:mcp-tool-count -->84<!-- /generated --> 個以 tool 形式使用,再加上 <!-- generated:composite-count -->5<!-- /generated --> 個 composite tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)以及 launcher 的 `ReloadRuntime`。`NewProject` 暫時不透過 MCP 提供(#70);`Start-TcLifecycle` 對應 composite tool `RunLifecycle`(#27)。一個長駐的 Windows PowerShell 5.1 行程在多次 tool 呼叫之間保留 IDE 與 ADS 狀態。
+MCP server(stdio)從 <!-- generated:cmdlet-count -->87<!-- /generated --> 個 cmdlet 中提供 <!-- generated:mcp-tool-count -->84<!-- /generated --> 個以 tool 形式使用,再加上 <!-- generated:composite-count -->6<!-- /generated --> 個 composite tool(`RunLifecycle`、`QuickRead`、`GetStatus`、`GetIdeModalDialog`、`ReloadModule`)以及 launcher 的 `ReloadRuntime`。`NewProject` 暫時不透過 MCP 提供(#70);`Start-TcLifecycle` 對應 composite tool `RunLifecycle`(#27)。一個長駐的 Windows PowerShell 5.1 行程在多次 tool 呼叫之間保留 IDE 與 ADS 狀態。
 
 ## 文件索引
 

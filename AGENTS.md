@@ -2,6 +2,8 @@
 
 PowerShell module for automating the TwinCAT 3 IDE and PLC runtime, for **Codex**, Claude Code and any AI coding tool. `Import-Module "./src/TwinCATAutomation/TwinCATAutomation.psm1" -Force` (setup check: `powershell -File ./TwinCATSetup-Codex.ps1`), or run it as the TcAuto MCP server, registered once through the installed launcher (customer: `Install-TcAuto.ps1` of the release zip; developer: `scripts/Install-TcAutoRuntime.ps1`; upgrade with `ReloadRuntime`; never register `mcp-server/index.js` or a project `.mcp.json`): see `docs/setup-mcp.md`. `TwinCATSetup-*.ps1` are the older skill installers (module + SKILL.md) and do not register the MCP server.
 
+**MCP: read `GetGuide('start')` before the first TcAuto call** (the flow card; per task `GetGuide('<topic>')`, e.g. `deploy`, `change-code`, `recovery`, `consent`). Single source: `mcp-server/instructions.md` and `mcp-server/guide/<topic>.md` of the installed runtime (#310); this file does not copy them.
+
 ## Core Workflow (No Dialogs)
 
 ```powershell

@@ -11,6 +11,7 @@
 //   ctx.onModuleReloaded(p) called after ReloadModule loaded module path p (index.js updates the probe scan script)
 import { checkModulePath, pathKey } from './module-source.js';
 import { MAX_CALL_TIMEOUT_MS } from './config.js';
+import { getGuide } from './guide.js';
 
 function errorResult(code, message, hint) {
   const error = { code, message };
@@ -37,17 +38,7 @@ async function timed(name, fn) {
 export const RunLifecycle = {
   name: 'RunLifecycle',
   description:
-    'Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force, waits for Run, logs in and downloads unless NoLogin) -> ConnectAds -> GetPlcState (readback). ' +
-    'PowerShell equivalent: Start-TcLifecycle (same parameters, steps and data fields; #27). ' +
-    'Pass TargetAmsNetId to select the UmRT/CX to activate on: a .tsproj without a saved target otherwise activates on the IDE default local runtime (ConnectIde data.amsNetId reports the target the IDE has). ' +
-    'Platform is optional: EnableConfig compares the active solution platform with the platform the target reports through TARGETINFO (ADS port 200, IG 0x700) and switches + rebuilds on a mismatch. Runtimes that answer TARGETINFO with ADS 0x702 (e.g. the UmRT of TwinCAT 3.1.4026.21-22) report nothing: then pass Platform (e.g. "TwinCAT OS (x64)" for a Usermode Runtime / UmRT or TwinCAT/BSD, "TwinCAT RT (x64)" for a Windows RT target), which activates that solution platform in the SetTarget step before BuildProject (without TargetAmsNetId the AmsNetId reported by ConnectIde is used for it); without it a mismatch still ends in ACTIVATE_FAILED. Platform is also passed to EnableConfig (same value): it then finds the platforms equal and does not add the "-Platform was not given" warning (a platform the target reports through TARGETINFO still wins there); TargetAmsNetId without Platform calls SetTarget with NoPlatformSwitch=true (NetId only) and leaves the platform check to EnableConfig. ' +
-    'Multi-PLC solutions: PlcProjectPath is passed to EnableConfig (only those PLCs are logged in and started), ExpectedProject to BuildProject (coverage check; not derived from PlcProjectPath), BuildTimeoutSec to BuildProject as TimeoutSec. ADS port of ConnectAds: AdsPort; without it the adsPort of EnableConfig data.plcs when they have exactly one distinct port (with or without PlcProjectPath); otherwise ConnectAds default 851. With PlcProjectPath and a non-empty data.plcs, an AdsPort that is not one of their adsPort values fails the ConnectAds step with PLC_PORT_MISMATCH (allowed ports in the message, nothing connected; EnableConfig already activated and, without NoLogin, logged in / Run). Example: PlcProjectPath ["FrameworkUnitTest"], ExpectedProject ["FrameworkUnitTest"], AdsPort 852. ' +
-    'Readback: without NoLogin the GetPlcState state must be Run, otherwise RUNTIME_STATE_MISMATCH; with NoLogin it is only reported. ' +
-    'Changes the running machine (TwinCAT restarts, PLC program is downloaded and started). ' +
-    'Runtime-change consent (#307 / #258): data.targetKind (ConnectIde / SetTarget / GetStatus) = local-umrt -> no confirmation. Anything else is a real machine (including a Windows XAR on this PC; unknown included): before the EnableConfig step the server asks the user in a confirmation form (MCP elicitation) the first time in this server session for that target; you cannot answer it and do not ask in chat instead. Refused -> the EnableConfig step fails with CONSENT_DECLINED (the user did not approve) or CONSENT_REQUIRED (the client cannot show confirmation forms, the form failed or timed out), nothing activated: stop and report, do not retry or work around it. ' +
-    'Fail closed (#68): while the target has a lifecycle block (an earlier SetSystemState / EnableConfig / SetPlcState sent a runtime-changing request and then failed) the EnableConfig step returns LIFECYCLE_BLOCKED (ConnectIde / SetTarget / BuildProject before it still run): stop, report the error and data.steps to the user, never retry through another control channel, and call ClearLifecycleBlock only after the user agreed. ' +
-    'Stops at the first failing step; error is that step\'s error as it is. Error codes, data fields and the meaning of hints match Start-TcLifecycle; hint wording is not guaranteed to be identical (the LIBRARY_UNRESOLVED hint addition below is MCP only). data: steps[] ({name, success, code (error code of a failed step, else null), durationMs, result (raw step result)}), failedStep (null on success), plcProjects (EnableConfig data.plcs), adsPort (ConnectAds data.port), loggedIn (EnableConfig data.loggedIn), plcState (GetPlcState data.state), lifecycleBlock (the failed step\'s data.lifecycleBlock), targetKind / targetKindSource (#307: SetTarget data.targetKind when that step ran, else ConnectIde data.targetKind); fields of steps that did not run are null. ' +
-    'A project with unresolved libraries stops at BuildProject with LIBRARY_UNRESOLVED (the PLC code may not have been compiled): install the libraries first. There is no AllowUnresolvedLibrary here (#61): code whose build did not prove it compiled (codeVerified not true) is not activated, downloaded or started once the module recorded that build (known limits: BUILD_REQUIRED in docs/troubleshooting.md), so even after BuildProject AllowUnresolvedLibrary=true RunLifecycle SkipBuild=true stops at EnableConfig with BUILD_REQUIRED.',
+    "Full PLC lifecycle in one call: ConnectIde -> SetTarget (only with TargetAmsNetId or Platform) -> BuildProject (unless SkipBuild) -> EnableConfig (Force; logs in and downloads unless NoLogin) -> ConnectAds -> GetPlcState readback (must be Run, else RUNTIME_STATE_MISMATCH; with NoLogin only reported). Changes the running machine (TwinCAT restarts, PLC program is downloaded and started). Consent: data.targetKind local-umrt -> no confirmation. Anything else is a real machine (a Windows XAR on this PC and unknown included): before the EnableConfig step the server asks the user in a confirmation form (MCP elicitation) the first time in this server session for that target; you cannot answer it and do not ask in chat instead. CONSENT_DECLINED / CONSENT_REQUIRED = nothing activated: stop and report, do not retry or work around it. Fail closed: LIFECYCLE_BLOCKED at the EnableConfig step = stop, report the error and data.steps, never retry through another control channel; ClearLifecycleBlock only after the user agreed. Stops at the first failing step; error is that step's error. TargetAmsNetId: the UmRT / CX to activate on (check it with GetStatus AmsNetId=<id> first); without Platform it calls SetTarget NoPlatformSwitch=true. Platform: pass it when the target reports no platform through TARGETINFO ('TwinCAT OS (x64)' for UmRT / BSD, 'TwinCAT RT (x64)' for Windows RT), else a mismatch ends in ACTIVATE_FAILED. Multi-PLC: PlcProjectPath, ExpectedProject, AdsPort (not one of the selected PLC ports -> PLC_PORT_MISMATCH). LIBRARY_UNRESOLVED stops at BuildProject (no AllowUnresolvedLibrary here). PowerShell equivalent: Start-TcLifecycle. data: steps[] {name, success, code, durationMs, result}, failedStep, plcProjects, adsPort, loggedIn, plcState, lifecycleBlock, targetKind, targetKindSource. Details GetGuide('deploy').",
   annotations: { destructiveHint: true, readOnlyHint: false },
   // Informational upper bound (a composite is not cut off by it: every step has its own catalog
   // timeout). The sum of the step maxima (BuildTimeoutSec 7200 s + grace, EnableConfig TimeoutSec
@@ -416,14 +407,7 @@ function moduleSnapshot(m) {
 export const ReloadModule = {
   name: 'ReloadModule',
   description:
-    'Load the TwinCATAutomation PowerShell module again (#41): the bridge process is retired and a new one imports the module from ModulePath (omit it to reload the module path loaded now). ' +
-    "ModulePath must be src\\TwinCATAutomation\\TwinCATAutomation.psm1 of the main checkout the server was started from, or the same file in one of that repository's git worktrees (the entries of `git worktree list`); any other path is refused with RELOAD_PATH_NOT_ALLOWED (data.allowed lists the accepted paths). " +
-    'Fail closed (#68): while the loaded module holds a lifecycle block in memory the reload is refused with RELOAD_LIFECYCLE_BLOCKED and nothing changes; report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed. ' +
-    'BUILD_REQUIRED entries the module holds in memory are written to build-required.json first (data.buildRequiredPersisted lists the ones that were missing there); when that file cannot be read or written the reload is refused with RELOAD_BUILD_REQUIRED and nothing changes. ' +
-    'The IDE and ADS connections are released first (DisconnectIde without Quit: the IDE keeps running; DisconnectAds): run ConnectIde (and ConnectAds) again after the reload. ' +
-    'Returns data.previous and data.current = {modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt} (as GetStatus data.bridge: in a git checkout moduleCommit is the 40-character git sha HEAD pointed at, read from the .git files, and moduleDirty is null because uncommitted working-tree changes are not reflected). A new module that fails to import returns RELOAD_FAILED; the previous module path is then started again (data.restored). ' +
-    'Only the PowerShell module is reloaded: the MCP server (index.js, bridge.ps1) and its tool list (tools.json) stay those of the running server; a cmdlet or parameter the new module adds is not offered until the server restarts. ' +
-    'Installed runtime (#162, GetStatus data.bridge.runtime.source "installed"): only the loaded module can be reloaded (omit ModulePath); to switch to another version run scripts/Install-TcAutoRuntime.ps1 in the checkout, then ReloadRuntime (a tool of the launcher): it replaces the whole runtime (index.js, bridge.ps1, tools.json and the module) and refreshes the tool list.',
+    "Load the TwinCATAutomation PowerShell module again (developer use): the bridge process is retired and a new one imports the module from ModulePath (omit it to reload the module path loaded now; only src\\TwinCATAutomation\\TwinCATAutomation.psm1 of the main checkout or one of its git worktrees, else RELOAD_PATH_NOT_ALLOWED with data.allowed). Fail closed: while the loaded module holds a lifecycle block the reload is refused with RELOAD_LIFECYCLE_BLOCKED and nothing changes: report data.lifecycleBlocks to the user, ClearLifecycleBlock only after the user agreed. BUILD_REQUIRED entries that cannot be written to build-required.json -> RELOAD_BUILD_REQUIRED, nothing changes. The IDE and ADS connections are released first (the IDE keeps running): run ConnectIde (and ConnectAds) again after the reload. Import failure -> RELOAD_FAILED, the previous module is started again (data.restored). Only the module is reloaded, not index.js / bridge.ps1 / tools.json; an installed runtime switches versions with ReloadRuntime. data: previous, current {modulePath, moduleCommit, moduleDirty, moduleSource, loadedAt}, buildRequiredPersisted. Details GetGuide('recovery').",
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
   timeoutMs: 210000, // retire 90 s + start 60 s + restore start 60 s
   inputSchema: {
@@ -519,5 +503,29 @@ export const ReloadModule = {
   }
 };
 
-export const composites = [RunLifecycle, QuickRead, GetStatus, GetIdeModalDialog, ReloadModule];
+// #310: the flow card and the topic files (lib/guide.js); answered by the server itself, no bridge.
+export const GetGuide = {
+  name: 'GetGuide',
+  description:
+    "Read GetGuide('start') before your first TcAuto call. " +
+    'Read-only and offline (no IDE, ADS or bridge): returns the TcAuto flow card or one how-to topic as text in data.text. ' +
+    "Topic omitted or 'start': the flow card (golden rules, UmRT or real machine, when the tool asks the user, what to do on a failure, which topic to read per task) and data.topics [{name, summary}]. " +
+    "Before a task, read its topic (e.g. 'deploy', 'change-code', 'nc-axis', 'io', 'recovery', 'consent'); a slim tool description names the topic that holds its details. " +
+    'Unknown topic -> GUIDE_TOPIC_UNKNOWN with the available topics in error.message and data.topics.',
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  timeoutMs: 10000,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      Topic: { type: 'string', description: "Topic name: 'start' (default), 'open-project', 'change-code', 'deploy', 'testing', 'nc-axis', 'io', 'tccom', 'variants', 'plcopen', 'libraries', 'recovery', 'consent'." }
+    },
+    required: [],
+    additionalProperties: false
+  },
+  async run(_ctx, args) {
+    return getGuide(args?.Topic);
+  }
+};
+
+export const composites = [RunLifecycle, QuickRead, GetStatus, GetIdeModalDialog, ReloadModule, GetGuide];
 export default composites;

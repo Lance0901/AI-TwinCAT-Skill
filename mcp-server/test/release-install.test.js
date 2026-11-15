@@ -164,6 +164,8 @@ describe('release zip + Install-TcAuto.ps1 (#20)', { skip: !isWin && 'Windows on
     assert.equal(stamp.version, build.runtimeVersion);
     assert.equal(stamp.sourcePath, null, 'the build machine path is not in a release');
     assert.ok(fs.existsSync(path.join(rt, 'mcp-server', 'index.js')));
+    // #310: the flow card and the GetGuide topic files ship in the runtime
+    for (const f of [['instructions.md'], ['guide', 'deploy.md'], ['guide', 'recovery.md'], ['guide', 'consent.md']]) assert.ok(fs.existsSync(path.join(rt, 'mcp-server', ...f)), f.join('/'));
     assert.ok(fs.existsSync(path.join(rt, 'mcp-server', 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json')));
     assert.ok(fs.existsSync(path.join(rt, 'src', 'TwinCATAutomation', 'TwinCATAutomation.psm1')));
     assert.ok(!fs.existsSync(path.join(rt, 'mcp-server', 'test')), 'test\\ is not shipped');

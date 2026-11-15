@@ -281,7 +281,7 @@ adapters/
   antigravity/                  # Antigravity plugin.yaml
 ```
 
-The MCP server (stdio) exposes <!-- generated:mcp-tool-count -->84<!-- /generated --> of the <!-- generated:cmdlet-count -->87<!-- /generated --> cmdlets plus <!-- generated:composite-count -->5<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. `NewProject` is temporarily not offered over MCP (#70); `Start-TcLifecycle` is the composite tool `RunLifecycle` (#27). One long-lived Windows PowerShell 5.1 process keeps the IDE and ADS state across tool calls.
+The MCP server (stdio) exposes <!-- generated:mcp-tool-count -->84<!-- /generated --> of the <!-- generated:cmdlet-count -->87<!-- /generated --> cmdlets plus <!-- generated:composite-count -->6<!-- /generated --> composite tools (`RunLifecycle`, `QuickRead`, `GetStatus`, `GetIdeModalDialog`, `ReloadModule`) and the launcher's `ReloadRuntime`. `NewProject` is temporarily not offered over MCP (#70); `Start-TcLifecycle` is the composite tool `RunLifecycle` (#27). One long-lived Windows PowerShell 5.1 process keeps the IDE and ADS state across tool calls.
 
 ## Documentation index
 

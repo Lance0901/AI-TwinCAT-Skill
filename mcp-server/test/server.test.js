@@ -90,10 +90,10 @@ describe('index.js over stdio (3-tool fixture)', () => {
     assert.match(text, /CONSENT_DECLINED/);
   });
 
-  test('listTools returns 3 catalog + 5 composite tools with JSON schemas', async () => {
+  test('listTools returns 3 catalog + 6 composite tools with JSON schemas', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ['BuildProject', 'ConnectIde', 'GetIdeModalDialog', 'GetStatus', 'QuickRead', 'ReadVariable', 'ReloadModule', 'RunLifecycle']);
+    assert.deepEqual(names, ['BuildProject', 'ConnectIde', 'GetGuide', 'GetIdeModalDialog', 'GetStatus', 'QuickRead', 'ReadVariable', 'ReloadModule', 'RunLifecycle']);
     const read = tools.find((t) => t.name === 'ReadVariable');
     assert.equal(read.inputSchema.type, 'object');
     assert.deepEqual(read.inputSchema.required, ['Path']);

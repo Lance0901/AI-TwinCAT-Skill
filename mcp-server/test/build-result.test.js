@@ -183,8 +183,10 @@ test('tools.json BuildProject description names the #23 / #45 fields and the All
   const tools = JSON.parse(fs.readFileSync(TOOLS_JSON, 'utf8'));
   const list = Array.isArray(tools) ? tools : tools.tools;
   const bp = list.find((t) => t.name === 'BuildProject');
+  // #310: details moved to the guide topic the description names (GetGuide('change-code'))
+  const doc = bp.description + fs.readFileSync(path.join(__dirname, '..', 'guide', 'change-code.md'), 'utf8');
   for (const field of ['data.errors', 'data.libraryErrors', 'data.libraryErrorItems', 'category', 'decidedBy', 'LIBRARY_UNRESOLVED', 'codeVerified', 'data.disabledProjects', 'EXPECTED_PROJECT_DISABLED']) {
-    assert.ok(bp.description.includes(field), `BuildProject description mentions ${field}`);
+    assert.ok(doc.includes(field), `BuildProject description / guide mentions ${field}`);
   }
   assert.equal(bp.inputSchema.properties.AllowUnresolvedLibrary.type, 'boolean');
 });
