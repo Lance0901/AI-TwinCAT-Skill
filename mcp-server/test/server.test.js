@@ -33,6 +33,8 @@ async function startServer(toolsJson, extraEnv = {}) {
       TWINCAT_MCP_BRIDGE_COMMAND: process.execPath,
       TWINCAT_MCP_BRIDGE_ARGS: JSON.stringify([MOCK]),
       TWINCAT_MCP_MODAL_PROBE: '0',
+      // a TCAUTO_TRACE_FILE of the developer's shell (an eval run) must not collect test calls
+      TCAUTO_TRACE_FILE: '',
       ...extraEnv
     },
     stderr: 'pipe'
@@ -901,8 +903,9 @@ describe('index.js over stdio (tool-call trace off or unwritable)', () => {
       assert.equal(parse(a).success, true);
       const b = parse(await s.client.callTool({ name: 'ReadVariable', arguments: { Nope: 1 } }));
       assert.equal(b.error.code, 'INVALID_PARAMS');
-      await new Promise((r) => setTimeout(r, 100));
-      assert.equal(s.stderr.filter((l) => /TCAUTO_TRACE_FILE .*write failed/.test(l)).length, 1, s.stderr.join('\n'));
+      const warned = () => s.stderr.filter((l) => /TCAUTO_TRACE_FILE .*write failed/.test(l)).length;
+      for (let i = 0; i < 40 && warned() === 0; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(warned(), 1, s.stderr.join('\n'));
     } finally {
       await s.client.close();
       fs.rmSync(dir, { recursive: true, force: true });

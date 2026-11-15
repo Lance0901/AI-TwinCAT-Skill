@@ -11,20 +11,17 @@ import { createTracer, truncateArgs, MAX_ARG_CHARS } from '../lib/trace.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TRACE_JS = pathToFileURL(path.join(__dirname, '..', 'lib', 'trace.js')).href;
 
-test('unset / empty TCAUTO_TRACE_FILE -> disabled, begin/end write nothing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tcauto-trace-off-'));
-  try {
-    for (const v of [undefined, '', '   ']) {
-      const t = createTracer(v, { warn: () => assert.fail('no warning when off') });
-      assert.equal(t.enabled, false);
-      const span = t.begin('ConnectIde', {});
-      assert.equal(span.seq, null);
-      span.end({ success: true, data: {} });
-    }
-    assert.deepEqual(fs.readdirSync(dir), []);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+test('unset / empty TCAUTO_TRACE_FILE -> disabled, begin/end never touch the file system', (t) => {
+  const append = t.mock.method(fs, 'appendFileSync');
+  for (const v of [undefined, null, '', '   ']) {
+    const tracer = createTracer(v, { warn: () => assert.fail('no warning when off') });
+    assert.equal(tracer.enabled, false);
+    assert.equal(tracer.file, null);
+    const span = tracer.begin('ConnectIde', {});
+    assert.equal(span.seq, null);
+    span.end({ success: true, data: {} });
   }
+  assert.equal(append.mock.callCount(), 0);
 });
 
 test('truncateArgs cuts nested strings over 4,000 characters and keeps the rest', () => {
@@ -36,6 +33,15 @@ test('truncateArgs cuts nested strings over 4,000 characters and keeps the rest'
   assert.equal(args.c.e, null);
   for (const s of [args.b[0], args.c.d]) assert.equal(s, `${'y'.repeat(MAX_ARG_CHARS)}...[truncated, ${MAX_ARG_CHARS + 1} chars]`);
   assert.equal(truncateArgs({ x: 'y'.repeat(MAX_ARG_CHARS) }).truncated, false);
+  // an own "__proto__" key of parsed JSON stays a key; nesting past 20 levels is cut and marked
+  const proto = truncateArgs(JSON.parse('{"__proto__": {"a": 1}}'));
+  assert.deepEqual(Object.keys(proto.args), ['__proto__']);
+  assert.equal(proto.truncated, false);
+  let deep = 'leaf';
+  for (let i = 0; i < 30; i++) deep = { n: deep };
+  const cut = truncateArgs(deep);
+  assert.equal(cut.truncated, true);
+  assert.match(JSON.stringify(cut.args), /nested deeper than 20 levels/);
 });
 
 test('array data -> dataKeys null; a call ended twice writes one line', () => {

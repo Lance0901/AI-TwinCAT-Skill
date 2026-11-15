@@ -474,7 +474,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         'Call ReloadRuntime again (the launcher starts the runtime current.json names), then ConnectIde.'
       )
     );
-    span.end(final.structuredContent);
+    span.end(final.structuredContent, { resultChars: final.content[0].text.length });
     return final;
   }
   activeToolCalls++;
@@ -492,7 +492,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   } finally {
     activeToolCalls--;
     stopProgress();
-    span.end(final?.structuredContent);
+    span.end(final?.structuredContent, { resultChars: final?.content?.[0]?.text?.length });
   }
 });
 

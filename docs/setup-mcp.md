@@ -271,7 +271,7 @@ That proves Node started, `powershell.exe` spawned and the module imported. `dat
 預設關閉。在 client 設定的 `env` 加 `TCAUTO_TRACE_FILE=<絕對路徑>`,server 會在每個 tool call 結束後往該檔 append 一行 JSON(JSONL)。紀錄由 server 自己寫,不靠 AI 回報:用途是 AI 行為 eval(評分程式讀「呼叫了哪些工具、順序、結果」)與除錯。
 
 ```json
-{ "mcpServers": { "tcauto": { "command": "...", "args": ["..."], "env": { "TCAUTO_TRACE_FILE": "C:\Temp\tcauto-trace.jsonl" } } } }
+{ "mcpServers": { "tcauto": { "command": "...", "args": ["..."], "env": { "TCAUTO_TRACE_FILE": "C:\\Temp\\tcauto-trace.jsonl" } } } }
 ```
 
 Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.jsonl`。設定後要重連 client(launcher 把環境變數原樣傳給 runtime;`ReloadRuntime` 後是新的 runtime 行程,`sessionId` 會換)。
@@ -281,7 +281,7 @@ Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.j
 | `ts` | 呼叫開始時間(ISO 8601,UTC) |
 | `durationMs` | 呼叫耗時 |
 | `seq` | 本 server 行程內的呼叫序號(呼叫開始時配號,從 1 起) |
-| `parentSeq` | composite(`RunLifecycle`、`QuickRead`)內部 step 那一行填 composite 那一行的 `seq`;其他為 `null` |
+| `parentSeq` | composite(`RunLifecycle`、`QuickRead`、`GetStatus`)內部 step 那一行填 composite 那一行的 `seq`;client 自己發出的呼叫為 `null`。評分時一律用 `parentSeq === null` 判斷「AI 呼叫了什麼」,不要靠工具名單 |
 | `sessionId` | server 行程啟動時產生的 UUID |
 | `tool` | 工具名稱 |
 | `args` | 收到的參數原樣;超過 4,000 字元的字串截斷,結尾加 `...[truncated, N chars]` |
@@ -298,7 +298,8 @@ Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.j
 - 每行一次 open-append-close(`O_APPEND` 單次寫入),多個 server 行程可以寫同一個檔,用 `sessionId` 分開。
 - 寫檔失敗(路徑是目錄、沒有權限、磁碟滿)不影響工具呼叫結果,只在 server stderr 記一次警告。相對路徑不接受(stderr 警告後關閉):launcher 啟動的 runtime 工作目錄是 runtime 資料夾。
 - `args` 原樣保存:`WritePouCode` 的程式碼、`SolutionPath`、AmsNetId 等都會進檔。不要把 trace 檔放在會同步或分享的資料夾,用完自行刪除;檔案不會自動輪替。
-- launcher 自己的工具(`ReloadRuntime`)不經過 runtime,不會記。
+- 只在 runtime 行程內記錄。launcher 自己回應、沒進 runtime 的呼叫不會記:`ReloadRuntime` 本身、reload 中的 `RUNTIME_RELOADING`、runtime 起不來(`RUNTIME_NOT_INSTALLED` 等)、runtime 在呼叫中途死掉(`RUNTIME_DIED`,進行中那筆不會寫)。
+- 漏行偵測:同一 `sessionId` 內 `seq` 有斷號,代表有行沒寫進去(寫檔失敗,或 runtime 中途死掉);這份 trace 不能拿來判斷「AI 沒呼叫某工具」。
 
 ## Troubleshooting
 

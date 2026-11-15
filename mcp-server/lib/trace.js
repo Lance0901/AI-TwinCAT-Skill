@@ -4,7 +4,8 @@
 //   ts          ISO time the call started
 //   durationMs  wall time of the call
 //   seq         number of the call in this server process (1, 2, ...; assigned when the call starts)
-//   parentSeq   seq of the composite call (RunLifecycle, QuickRead, ...) a step belongs to, else null
+//   parentSeq   seq of the composite call (RunLifecycle, QuickRead, GetStatus) a step belongs to, else
+//               null: parentSeq === null is a call the client made, anything else a server-internal step
 //   sessionId   random id generated when the server process started
 //   tool        tool name as called
 //   args        arguments as received; a string longer than MAX_ARG_CHARS is cut (see truncateArgs)
@@ -34,10 +35,15 @@ export function truncateArgs(args, max = MAX_ARG_CHARS) {
       truncated = true;
       return `${v.slice(0, max)}...[truncated, ${v.length} chars]`;
     }
-    if (v === null || typeof v !== 'object' || depth > 20) return v;
+    if (v === null || typeof v !== 'object') return v;
+    if (depth > 20) {
+      truncated = true;
+      return '[truncated: nested deeper than 20 levels]';
+    }
     if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
     const out = {};
-    for (const [k, x] of Object.entries(v)) out[k] = walk(x, depth + 1);
+    // defineProperty: an own "__proto__" key of the JSON arguments stays a plain key
+    for (const [k, x] of Object.entries(v)) Object.defineProperty(out, k, { value: walk(x, depth + 1), enumerable: true, writable: true, configurable: true });
     return out;
   };
   const out = walk(args ?? {}, 0);
@@ -89,8 +95,9 @@ export function createTracer(traceFile, { warn = (m) => console.error(m), now = 
     file,
     sessionId,
     /**
-     * Start a traced call. Returns { seq, end(result) }; end never throws.
-     * parentSeq: seq of the enclosing composite call, or null.
+     * Start a traced call. Returns { seq, end(result, opts) }; end never throws and writes once.
+     * parentSeq: seq of the enclosing composite call, or null. opts.resultChars: length of the text
+     * the client received when the caller has it (else the result is serialized here).
      */
     begin(tool, args, parentSeq = null) {
       const mySeq = ++seq;
@@ -98,7 +105,7 @@ export function createTracer(traceFile, { warn = (m) => console.error(m), now = 
       let done = false;
       return {
         seq: mySeq,
-        end(result, { blockedBy = null } = {}) {
+        end(result, { blockedBy = null, resultChars: chars } = {}) {
           if (done) return;
           done = true;
           try {
@@ -109,13 +116,13 @@ export function createTracer(traceFile, { warn = (m) => console.error(m), now = 
               seq: mySeq,
               parentSeq,
               sessionId,
-              tool,
+              tool: tool ?? null,
               args: a,
               truncated,
               success: result?.success === true,
               errorCode: result?.success === true ? null : (result?.error?.code ?? null),
               dataKeys: dataKeysOf(result),
-              resultChars: resultChars(result),
+              resultChars: typeof chars === 'number' ? chars : resultChars(result),
               blockedBy
             });
           } catch (err) {
