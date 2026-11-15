@@ -1,0 +1,538 @@
+{
+ "moduleVersion": "0.1.0",
+ "tools": [
+  {
+   "name": "AddAdsRoute",
+   "cmdlet": "Add-TcAdsRoute",
+   "description": "AddAdsRoute (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "Name": {
+      "type": "string"
+     },
+     "NetId": {
+      "type": "string"
+     },
+     "Address": {
+      "type": "string"
+     },
+     "HostName": {
+      "type": "string"
+     },
+     "UserName": {
+      "type": "string"
+     },
+     "PasswordEnv": {
+      "type": "string"
+     },
+     "LocalName": {
+      "type": "string"
+     },
+     "ProjectRoute": {
+      "type": "boolean"
+     },
+     "DryRun": {
+      "type": "boolean",
+      "default": true
+     }
+    },
+    "required": [
+     "Name",
+     "NetId"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "BuildProject",
+   "cmdlet": "Build-TcProject",
+   "description": "BuildProject (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 690000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "TimeoutSec": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 7200,
+      "default": 600
+     },
+     "ExpectedProject": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     },
+     "AllowUnresolvedLibrary": {
+      "type": "boolean"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ConnectAds",
+   "cmdlet": "Connect-TcAds",
+   "description": "ConnectAds (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "AmsNetId": {
+      "type": "string"
+     },
+     "Port": {
+      "type": "integer",
+      "default": 851
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ConnectIde",
+   "cmdlet": "Connect-TcIde",
+   "description": "ConnectIde (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 360000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "ProgId": {
+      "type": "string"
+     },
+     "SolutionPath": {
+      "type": "string"
+     },
+     "NoLaunch": {
+      "type": "boolean"
+     },
+     "LaunchIfBlocked": {
+      "type": "boolean"
+     },
+     "TakeOverOrphan": {
+      "type": "boolean"
+     },
+     "ProcessId": {
+      "type": "integer"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "DisconnectIde",
+   "cmdlet": "Disconnect-TcIde",
+   "description": "DisconnectIde (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "Quit": {
+      "type": "boolean"
+     },
+     "Kill": {
+      "type": "boolean"
+     },
+     "ForgetPendingLaunch": {
+      "type": "boolean"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "EnableConfig",
+   "cmdlet": "Enable-TcConfig",
+   "description": "EnableConfig (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 600000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "Force": {
+      "type": "boolean"
+     },
+     "NoLogin": {
+      "type": "boolean"
+     },
+     "TimeoutSec": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 3600,
+      "default": 120
+     },
+     "NoPlatformFix": {
+      "type": "boolean"
+     },
+     "Platform": {
+      "type": "string"
+     },
+     "PlcProjectPath": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     },
+     "ActivateTimeoutSec": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 3600,
+      "default": 180
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "GetPlcState",
+   "cmdlet": "Get-TcPlcState",
+   "description": "GetPlcState (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "InstallLibrary",
+   "cmdlet": "Install-TcLibrary",
+   "description": "InstallLibrary (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "LibraryPath": {
+      "type": "string"
+     },
+     "Repository": {
+      "type": "string",
+      "default": "System"
+     },
+     "DryRun": {
+      "type": "boolean",
+      "default": true
+     },
+     "PlcProjectPath": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "LibraryPath"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "InstallPackage",
+   "cmdlet": "Install-TcPackage",
+   "description": "InstallPackage (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 2200000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "PackageId": {
+      "type": "string",
+      "enum": [
+       "TwinCAT.Standard.XAE",
+       "TwinCAT.StandardRM.XAE"
+      ]
+     },
+     "Version": {
+      "type": "string"
+     },
+     "Approved": {
+      "type": "boolean"
+     },
+     "PlanToken": {
+      "type": "string"
+     },
+     "TimeoutSec": {
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 6600,
+      "default": 1800
+     }
+    },
+    "required": [
+     "PackageId",
+     "Version"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ReadVariable",
+   "cmdlet": "Read-TcVariable",
+   "description": "ReadVariable (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "Path": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     }
+    },
+    "required": [
+     "Path"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "ResetSolution",
+   "cmdlet": "Reset-TcSolution",
+   "description": "ResetSolution (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 180000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "SolutionPath": {
+      "type": "string"
+     },
+     "TimeoutSec": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 600,
+      "default": 120
+     },
+     "DiscardProjectChanges": {
+      "type": "boolean"
+     },
+     "SaveProjectChanges": {
+      "type": "boolean"
+     },
+     "Force": {
+      "type": "boolean"
+     }
+    },
+    "required": [],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "SetPlcState",
+   "cmdlet": "Set-TcPlcState",
+   "description": "SetPlcState (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 180000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "State": {
+      "type": "string",
+      "enum": [
+       "Run",
+       "Stop",
+       "Reset"
+      ]
+     },
+     "TimeoutSec": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600,
+      "default": 30
+     }
+    },
+    "required": [
+     "State"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "SetSystemState",
+   "cmdlet": "Set-TcSystemState",
+   "description": "SetSystemState (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 180000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "State": {
+      "type": "string",
+      "enum": [
+       "Run",
+       "Config"
+      ]
+     },
+     "AmsNetId": {
+      "type": "string"
+     },
+     "TimeoutSec": {
+      "type": "integer",
+      "default": 60
+     },
+     "SettleSec": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 60,
+      "default": 3
+     }
+    },
+    "required": [
+     "State"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "SetTarget",
+   "cmdlet": "Set-TcTarget",
+   "description": "SetTarget (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "AmsNetId": {
+      "type": "string"
+     },
+     "Platform": {
+      "type": "string"
+     },
+     "Configuration": {
+      "type": "string",
+      "default": "Release"
+     },
+     "NoPlatformSwitch": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "AmsNetId"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "UninstallLibrary",
+   "cmdlet": "Uninstall-TcLibrary",
+   "description": "UninstallLibrary (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "LibraryName": {
+      "type": "string"
+     },
+     "Version": {
+      "type": "string"
+     },
+     "Distributor": {
+      "type": "string"
+     },
+     "Repository": {
+      "type": "string",
+      "default": "System"
+     },
+     "DryRun": {
+      "type": "boolean",
+      "default": true
+     },
+     "PlcProjectPath": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "LibraryName",
+     "Version",
+     "Distributor"
+    ],
+    "additionalProperties": false
+   }
+  },
+  {
+   "name": "WriteVariable",
+   "cmdlet": "Write-TcVariable",
+   "description": "WriteVariable (#258 consent fixture, schema copied from tools.json)",
+   "timeoutMs": 120000,
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true
+   },
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "Path": {
+      "type": "string"
+     },
+     "Value": {}
+    },
+    "required": [
+     "Path",
+     "Value"
+    ],
+    "additionalProperties": false
+   }
+  }
+ ]
+}

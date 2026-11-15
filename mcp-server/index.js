@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { loadConfig, scanScriptFor, MCP_SERVER_DIR } from './lib/config.js';
@@ -18,6 +18,7 @@ import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-pro
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 import { loadInstructions } from './lib/instructions.js';
+import { ConsentMemory, consentKind, buildConsentRequest, askUser, consentErrorResult } from './lib/consent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
@@ -349,8 +350,79 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
   return handle;
 }
 
+// ---------------------------------------------------------------- consent gate (#258)
+//
+// Calls that need the user's consent are confirmed by the user in an MCP elicitation form before
+// the bridge runs them (lib/consent.js). The memory is this process only: a new server asks again.
+
+const consent = new ConsentMemory();
+const consentClient = {
+  getClientCapabilities: () => server.getClientCapabilities(),
+  // raw request: the response is interpreted by lib/consent.js (accept without "approve" = declined)
+  elicit: (params, options) => server.request({ method: 'elicitation/create', params }, ElicitResultSchema, options)
+};
+
+/** Read-only bridge query; the data object or null. */
+async function bridgeQuery(op, params, signal) {
+  try {
+    const r = await bridge.call(op, { params, signal });
+    return r?.success === true && r.data && typeof r.data === 'object' ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Run a catalog tool: validate -> timeout -> bridge call. Always returns a result object.
+ * null = the call may run; else the CONSENT_DECLINED / CONSENT_REQUIRED result (nothing ran).
+ * Runtime changes: the target is what the bridge's targetkind op resolves (SetSystemState AmsNetId
+ * when given, else the IDE target, else the ADS NetId; the two differing -> unknown); local-umrt
+ * never asks; any other kind asks once per AmsNetId (unknown / no NetId / differing targets ask
+ * every time). ConnectIde ProcessId: an IDE TcAuto launched (ideprocess op: launch record) never
+ * asks; any other asks once per pid + start time until DisconnectIde.
+ */
+async function consentGate(name, params, signal) {
+  const gate = consentKind(name, params);
+  if (!gate) return null;
+  let plan = null;
+  let remember = null;
+  let shown = params;
+  let amsNetId = null;
+  let targetKind = null;
+  let ide = null;
+  if (gate.kind === 'install') {
+    plan = consent.takePlan(params.PlanToken, params.PackageId, params.Version);
+    if (!plan) return consentErrorResult(name, 'unknown-plan');
+    const { PlanToken, ...rest } = params;
+    shown = rest;
+  } else if (gate.kind === 'runtime') {
+    const q = name === 'SetSystemState' && typeof params.AmsNetId === 'string' && params.AmsNetId.trim() !== '' ? { AmsNetId: params.AmsNetId } : {};
+    const kd = await bridgeQuery('targetkind', q, signal);
+    targetKind = typeof kd?.targetKind === 'string' && kd.targetKind !== '' ? kd.targetKind : 'unknown';
+    amsNetId = typeof kd?.amsNetId === 'string' && kd.amsNetId.trim() !== '' ? kd.amsNetId.trim() : null;
+    if (targetKind === 'local-umrt') return null;
+    const memorable = amsNetId !== null && kd?.targetKindSource !== 'ads-ide-target-differ';
+    if (memorable && consent.hasTarget(amsNetId)) return null;
+    if (memorable) remember = () => consent.addTarget(amsNetId);
+  } else if (gate.kind === 'ide') {
+    const d = await bridgeQuery('ideprocess', { ProcessId: params.ProcessId }, signal);
+    if (d?.launchedByTcAuto === true) return null;
+    const key = typeof d?.key === 'string' && d.key !== '' ? d.key : null;
+    if (key !== null && consent.hasIde(key)) return null;
+    if (key !== null) remember = () => consent.addIde(key);
+    ide = { processId: params.ProcessId };
+  }
+  const request = buildConsentRequest({ tool: name, gate, params: shown, amsNetId, targetKind, ide, plan });
+  const outcome = await askUser(consentClient, request, signal ? { signal } : {});
+  if (outcome === 'approved') {
+    remember?.();
+    return null;
+  }
+  const data = gate.kind === 'runtime' ? { amsNetId, targetKind } : gate.kind === 'install' ? { command: plan.command } : {};
+  return consentErrorResult(name, outcome, { plan, data });
+}
+
+/**
+ * Run a catalog tool: validate -> consent gate -> timeout -> bridge call. Always returns a result object.
  * `signal` (the MCP request's AbortSignal) cancels the call only while it is still queued.
  */
 async function callCatalogTool(name, args, signal) {
@@ -358,6 +430,9 @@ async function callCatalogTool(name, args, signal) {
   if (!tool) return errorResult('UNKNOWN_TOOL', `Unknown tool '${name}'`, 'Use tools/list to see the available tools.');
   const validation = validateParams(tool, args);
   if (!validation.ok) return { success: false, error: validation.error };
+  // #258: before anything reaches the bridge (also for the steps of a composite such as RunLifecycle)
+  const refused = await consentGate(name, validation.params, signal);
+  if (refused) return refused;
   const timeoutMs = computeTimeoutMs(tool, validation.params);
   // Probe target: the last known IDE, captured before ConnectIde forgets it (a reconnect after a
   // BRIDGE_TIMEOUT / IDE_MODAL_DIALOG blocks again on the dialog that is still up in that IDE).
@@ -376,6 +451,8 @@ async function callCatalogTool(name, args, signal) {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
   await rememberIde(name, result);
+  if (name === 'DisconnectIde') consent.clearIdes();
+  if (name === 'InstallPackage' && validation.params.Approved !== true) consent.rememberPlan(result);
   // #249: after decorateBridgeLoss (ConnectIde clears lastIde, so its generic hint would stay)
   return decorateConnectIdeTimeout(name, await decorateBridgeLoss(result));
 }

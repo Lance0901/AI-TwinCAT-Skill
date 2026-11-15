@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { QuickRead, RunLifecycle, GetStatus } from '../lib/composites.js';
 
 // #57: QuickRead adds connectedOnDemand without changing the shape of data (same rule as stampOrder).
@@ -108,7 +109,9 @@ async function startServer() {
     },
     stderr: 'ignore'
   });
-  const client = new Client({ name: 'test-client', version: '0.0.0' }, { capabilities: {} });
+  // #258: this client shows confirmation forms and the user approves every one (the gate itself: consent.test.js)
+  const client = new Client({ name: 'test-client', version: '0.0.0' }, { capabilities: { elicitation: {} } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { decision: 'approve' } }));
   await client.connect(transport);
   return client;
 }

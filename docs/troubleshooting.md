@@ -413,6 +413,31 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:使用者規則是「詢問後,得到許可才安裝」。token 把同意綁在使用者看過的那份計畫上,agent 不能跳過計畫直接帶 `Approved=true`。
 - **下一步**:不帶 `-Approved` 重新產生計畫,把 `data.plan` 給使用者看,使用者同意後才帶 `-Approved -PlanToken <新的 data.planToken>`。
 
+### 確認框(MCP elicitation,#258):共同規則
+
+- **哪些呼叫**:透過 MCP server 呼叫時,下列呼叫在送進 PowerShell bridge **之前**由 server 跳確認框(MCP `elicitation/create`,form 只有一個必填欄位 `decision` = `approve` / `reject`)問使用者;直接用 PowerShell 模組不受影響。
+  | 呼叫 | 何時問 |
+  |---|---|
+  | `InstallPackage Approved=true` | 每次;確認框內容是本 server 行程記住的那份計畫(plan 呼叫回的 `planToken` → 套件、版本、`command`) |
+  | `AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` `DryRun=false` | 每次 |
+  | `ResetSolution Force=true` | 每次 |
+  | `ConnectIde ProcessId=<pid>`,且該 IDE 不是 TcAuto 啟動的(bridge `ideprocess` op:`Test-TcLaunchedIde`,launch record) | 同 server 行程、同 IDE(pid + 啟動時間)問一次;`DisconnectIde` 後清掉;讀不到行程身分就每次問 |
+  | 會改 runtime 的呼叫:`EnableConfig`、`RunLifecycle`(在它的 EnableConfig 步驟前)、`RunTestCycle`、`RunTest`、`WriteVariable`、`SetPlcState`、`SetSystemState`、`PlcLogin`、`SendPlcProgram`、`SetTcComParameter Online=true DryRun=false` | 目標 `targetKind` ≠ `local-umrt`:同 server 行程、同 AmsNetId 第一次問;`local-umrt` 一律不問。目標 = bridge `targetkind` op 的結果(`SetSystemState AmsNetId` 有給就用它,否則 IDE target,否則 ADS NetId;兩者不同、查不到、查詢失敗 → `unknown` → 每次問) |
+- **只有** `action = accept` 且 `decision = approve` 才執行;decline、cancel、accept 但沒選 approve → `CONSENT_DECLINED`;client 沒宣告 `capabilities.elicitation`、確認框出錯或 10 分鐘(600000 ms)沒回 → `CONSENT_REQUIRED`。兩者都什麼都沒執行(`data.notRun = true`)。
+- **同意只在 server 行程記憶體**:沒有參數、環境變數、設定檔或白名單可以預先放行;server 重啟、`ReloadRuntime` 後要再問。確認框文字由 server 產生(工具名、目標 AmsNetId / targetKind、固定說明句、`Parameter <name>: <value>`,每個值去掉換行 / 控制字元並截到 60 字元),不含 AI 傳的任意文字。
+- 各 client 的實測行為:`docs/setup-mcp.md`「Confirmation forms」。
+
+### CONSENT_DECLINED
+
+- **現象**:MCP 呼叫回 `success:false`、`CONSENT_DECLINED`,`data.notRun = true`:使用者在確認框按了否 / 關掉 / 沒選 approve。什麼都沒執行。
+- **下一步**:不要自己重試,也不要換別的工具繞過。問使用者要怎麼做;使用者要做時再呼叫同一個工具(會再跳確認框),或使用者自己用 PowerShell 模組執行。`InstallPackage`:hint 與 `data.command` 帶 tcpkg 指令,使用者可在系統管理員 PowerShell(IDE 全關)自己執行。
+
+### CONSENT_REQUIRED
+
+- **現象**:MCP 呼叫回 `success:false`、`CONSENT_REQUIRED`,`data.notRun = true`,`data.consent` 說明原因:`unsupported`(client 不支援確認框)、`failed`(確認框出錯或逾時)、`unknown-plan`(`InstallPackage Approved=true` 的 `PlanToken` 不是本 server 行程發的,或套件 / 版本和那份計畫不同,或沒帶)。什麼都沒執行。
+- **為什麼**:headless 模式(`claude -p`、`codex exec`)無法取得人的同意,fail closed(owner 決定,#258)。
+- **下一步**:`unsupported` / `failed` → 告訴使用者;在支援確認框的互動 client(Claude Code、Codex CLI 互動模式)重試,或使用者自己用 PowerShell 模組執行(`InstallPackage` 的 hint 帶 tcpkg 指令)。`unknown-plan` → 先不帶 `Approved` 跑一次 `InstallPackage` 拿計畫,給使用者看,再帶 `Approved=true PlanToken=<data.planToken>`。
+
 ### TCPKG_SIGNATURE_INVALID
 
 - **現象**:`Install-TcPackage`(計畫或執行)回 `TCPKG_SIGNATURE_INVALID`:`%ProgramData%\Beckhoff\TcPkg\TcPkg.exe` 的 Authenticode 狀態不是 `Valid`、簽署者的 `O=` 不是 `Beckhoff Automation GmbH & Co. KG`,或簽章檢查本身失敗(一律當成不通過,fail closed)。什麼都沒執行,也沒有 token。

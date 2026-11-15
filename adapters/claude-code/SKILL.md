@@ -104,6 +104,8 @@ Set-TcPlcState -State Run           # 等 851 = Run 才返回(逾時回 PLC_RUN_
 
 **`success: true` 才代表目標狀態已讀回到達**;`success: false` 時不要把 data 裡任何欄位當成「已完成」(`Enable-TcConfig` 失敗時 `activated` / `restarted` / `loggedIn` / `reconnected` / `platformFixed` 一律是 `false`,實際送了什麼看 `activateSent`、`activateReturned`、`runSent`、`runReached`、`loginCompleted`、`platformSwitched`、`requestedState`、`reachedState`)。
 
+**確認框(MCP,#258)**:透過 MCP server 時,需要人同意的呼叫(`InstallPackage Approved=true`、`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary DryRun=false`、`ResetSolution Force=true`、`ConnectIde ProcessId` 進非 TcAuto 啟動的 IDE、目標不是 `local-umrt` 時第一次改 runtime)由 server 跳確認框直接問使用者,AI 不能代答。`CONSENT_DECLINED`(使用者沒同意)/ `CONSENT_REQUIRED`(client 不支援確認框、確認框失敗或逾時、`PlanToken` 不是本 server 發的)= 什麼都沒執行:停下回報,不要重試或換工具繞過。細節見 `docs/troubleshooting.md`「確認框(MCP elicitation,#258)」。
+
 ### Stop conditions
 
 遇到下列任一情況:**立刻停止所有會改變 runtime 的步驟**,後續步驟一律標示 NOT RUN,把 result(含 `data.lifecycleBlock` / `data.steps` / `data.finalCheck`)原樣回報使用者,只做唯讀診斷。

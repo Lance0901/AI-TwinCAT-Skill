@@ -776,6 +776,34 @@ function Invoke-OpTargetKind {
     })
 }
 
+function Invoke-OpIdeProcess {
+    # #258 (consent gate of ConnectIde ProcessId): identity and ownership of one IDE process, read
+    # only from what Connect-TcIde itself uses: key = Get-TcIdeProcessKey ("<pid>|<start time>", null
+    # when the process is gone) and launchedByTcAuto = Test-TcLaunchedIde (module memory, else the
+    # confirmed launch record of launched-ides.json). Never fails: anything unreadable gives
+    # key null / launchedByTcAuto false (the server then asks the user).
+    param($Request)
+    $procId = 0
+    $pp = $Request.PSObject.Properties['params']
+    if ($null -ne $pp -and $null -ne $pp.Value -and ($pp.Value -is [System.Management.Automation.PSCustomObject])) {
+        $a = $pp.Value.PSObject.Properties['ProcessId']
+        if ($null -ne $a) { try { $procId = [int]$a.Value } catch { $procId = 0 } }
+    }
+    $key = $null; $launched = $false
+    if ($procId -gt 0) {
+        try { $key = Invoke-InModule { param($n) Get-TcIdeProcessKey -ProcessId $n } @($procId) } catch { $key = $null }
+        if ($null -ne $key) {
+            try { $launched = [bool](Invoke-InModule { param($n) Test-TcLaunchedIde -ProcessId $n } @($procId)) }
+            catch { Write-Stderr "[bridge] ideprocess: $($_.Exception.Message)"; $launched = $false }
+        }
+    }
+    return New-SuccessResult -Data ([ordered]@{
+        processId        = $procId
+        key              = $(if ($null -eq $key) { $null } else { [string]$key })
+        launchedByTcAuto = $launched
+    })
+}
+
 function Get-BridgeModuleVariable {
     # @{ Exists; Value } of a $script: variable of the module. Unlike Get-ModuleVar this tells
     # "not defined" apart from "defined as $null" (#41 review: a missing variable must fail closed).
@@ -1038,6 +1066,9 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
             'targetkind' {
                 Write-Result -Id $id -Result (Invoke-OpTargetKind -Request $request)
             }
+            'ideprocess' {
+                Write-Result -Id $id -Result (Invoke-OpIdeProcess -Request $request)
+            }
             'ping' {
                 Write-Result -Id $id -Result (New-SuccessResult -Data ([ordered]@{ pong = $true }))
             }
@@ -1052,7 +1083,7 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
                 $shutdown = $true
             }
             default {
-                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, targetkind, ping, retire, shutdown.')
+                Write-Result -Id $id -Result (New-ErrorResult -Code 'INVALID_REQUEST' -Message "Unknown op '$op'." -Hint 'Valid ops: call, modal, state, targetkind, ideprocess, ping, retire, shutdown.')
             }
         }
     }
