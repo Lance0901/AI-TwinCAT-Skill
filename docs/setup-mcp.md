@@ -305,11 +305,11 @@ Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.j
 | `errorCode` | 失敗時的 `error.code`,成功為 `null` |
 | `dataKeys` | `data` 是物件時的頂層 key 清單(不存整份 data);陣列或沒有 data 為 `null` |
 | `resultChars` | client 收到的結果文字長度(step 行:該 step 結果以同樣格式序列化的長度) |
-| `blockedBy` | **只出現在被確認閘門(#258)擋下、沒送到 bridge 的那一行**;沒被擋的呼叫沒有這個 key。值是閘門名稱 `consent:<種類>`:`consent:runtime`(改 runtime 狀態的工具)、`consent:ide`(`ConnectIde` 附 `ProcessId`)、`consent:always`(`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` 附 `DryRun=false`、`ResetSolution` 附 `Force=true`)、`consent:install`(`InstallPackage` 附 `Approved=true`)。擋下原因看同一行的 `errorCode`(`CONSENT_DECLINED` 使用者拒絕 / `CONSENT_REQUIRED` client 無法確認)。只記閘門名稱,不記確認框內容與使用者回答 |
+| `blockedBy` | **只出現在被確認閘門(#258)擋下、沒送到 bridge 的那一行**;沒被擋的呼叫是 `null`(每行都有這個欄位)。值是閘門名稱 `consent:<種類>`:`consent:runtime`(改 runtime 狀態的工具)、`consent:ide`(`ConnectIde` 附 `ProcessId`)、`consent:always`(`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary` 附 `DryRun=false`、`ResetSolution` 附 `Force=true`)、`consent:install`(`InstallPackage` 附 `Approved=true`)。擋下原因看同一行的 `errorCode`(`CONSENT_DECLINED` 使用者拒絕 / `CONSENT_REQUIRED` client 無法確認)。只記閘門名稱,不記確認框內容與使用者回答 |
 
 注意:
 
-- 一行在呼叫**結束**時寫入,所以 composite 的 step 行排在 composite 本身那一行前面;要還原呼叫順序請依 `seq` 排序。被 server 擋下、沒送到 bridge 的呼叫(`INVALID_PARAMS`、`UNKNOWN_TOOL`、`RUNTIME_RETIRED`)也會記。composite 的 step 被確認閘門擋下(例:`RunLifecycle` 的 `EnableConfig`)時,`blockedBy` 記在該 step 那一行(`parentSeq` 指向 composite);composite 本身那一行只有 `errorCode`,沒有 `blockedBy`。
+- 一行在呼叫**結束**時寫入,所以 composite 的 step 行排在 composite 本身那一行前面;要還原呼叫順序請依 `seq` 排序。被 server 擋下、沒送到 bridge 的呼叫(`INVALID_PARAMS`、`UNKNOWN_TOOL`、`RUNTIME_RETIRED`)也會記。composite 的 step 被確認閘門擋下(例:`RunLifecycle` 的 `EnableConfig`)時,`blockedBy` 記在該 step 那一行(`parentSeq` 指向 composite);composite 本身那一行只有 `errorCode`,`blockedBy` 為 `null`。
 
   範例(使用者在確認框按拒絕):`{"ts":"...","durationMs":5123,"seq":4,"parentSeq":null,"sessionId":"...","tool":"WriteVariable","args":{"Path":"MAIN.x","Value":1},"truncated":false,"success":false,"errorCode":"CONSENT_DECLINED","dataKeys":["notRun","consent","amsNetId","targetKind"],"resultChars":612,"blockedBy":"consent:runtime"}`
 - 每行一次 open-append-close(`O_APPEND` 單次寫入),多個 server 行程可以寫同一個檔,用 `sessionId` 分開。

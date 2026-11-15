@@ -495,7 +495,7 @@ describe('consent gate end to end: InstallPackage', () => {
 });
 
 // TCAUTO_TRACE_FILE (lib/trace.js): a call the gate refused carries blockedBy on its own trace line;
-// a call that passed the gate (or was never gated) has no blockedBy key. Only the gate name is
+// a call that passed the gate (or was never gated) has blockedBy null. Only the gate name is
 // written: neither the form text nor the user's answer.
 describe('consent gate end to end: tool-call trace blockedBy', () => {
   const traceFile = path.join(tmp, 'trace-consent.jsonl');
@@ -505,7 +505,7 @@ describe('consent gate end to end: tool-call trace blockedBy', () => {
   beforeEach(() => fs.rmSync(traceFile, { force: true }));
   after(async () => h?.client.close());
 
-  test('declined -> blockedBy consent:runtime, CONSENT_DECLINED; approved -> no blockedBy key', async () => {
+  test('declined -> blockedBy consent:runtime, CONSENT_DECLINED; approved -> blockedBy null', async () => {
     await h.call('ConnectAds', { AmsNetId: '5.1.2.3.1.1' });
     h.answer = answers.decline;
     const refused = await h.call('WriteVariable', { Path: 'MAIN.x', Value: 1 });
@@ -514,11 +514,11 @@ describe('consent gate end to end: tool-call trace blockedBy', () => {
     assert.equal((await h.call('WriteVariable', { Path: 'MAIN.x', Value: 1 })).success, true);
     const recs = lines();
     assert.deepEqual(recs.map((r) => [r.tool, r.success, r.errorCode, r.blockedBy]), [
-      ['ConnectAds', true, null, undefined],
+      ['ConnectAds', true, null, null],
       ['WriteVariable', false, 'CONSENT_DECLINED', 'consent:runtime'],
-      ['WriteVariable', true, null, undefined]
+      ['WriteVariable', true, null, null]
     ]);
-    assert.ok(!('blockedBy' in recs[0]) && !('blockedBy' in recs[2]));
+    assert.ok(recs[0].blockedBy === null && recs[2].blockedBy === null);
     const text = fs.readFileSync(traceFile, 'utf8');
     assert.doesNotMatch(text, /decision|approve|confirmation form/i, 'no form text or user answer in the trace');
   });
@@ -534,7 +534,7 @@ describe('consent gate end to end: tool-call trace blockedBy', () => {
     h.answer = APPROVE;
   });
 
-  test('composite: the refused EnableConfig step line has blockedBy, the RunLifecycle line does not', async () => {
+  test('composite: the refused EnableConfig step line has blockedBy, the RunLifecycle line has null', async () => {
     // a fresh server: the target approved by the first test is remembered in this one
     const h2 = await start({ env: { TCAUTO_TRACE_FILE: traceFile } });
     let r;
@@ -551,7 +551,7 @@ describe('consent gate end to end: tool-call trace blockedBy', () => {
     assert.equal(step.parentSeq, parent.seq);
     assert.deepEqual([step.success, step.errorCode, step.blockedBy], [false, 'CONSENT_DECLINED', 'consent:runtime']);
     assert.equal(parent.errorCode, 'CONSENT_DECLINED');
-    assert.ok(!('blockedBy' in parent), 'the composite itself was not refused by the gate');
-    assert.ok(recs.filter((x) => x !== step).every((x) => !('blockedBy' in x)));
+    assert.equal(parent.blockedBy, null, 'the composite itself was not refused by the gate');
+    assert.ok(recs.filter((x) => x !== step).every((x) => x.blockedBy === null));
   });
 });

@@ -18,7 +18,7 @@
 //               "consent:<kind>" with kind always | runtime | ide | install (lib/consent.js
 //               consentBlockedBy); errorCode then says why (CONSENT_DECLINED / CONSENT_REQUIRED).
 //               A composite step refused by the gate carries it on the step's own line (parentSeq
-//               set); the composite's line does not. Calls not refused have no blockedBy key.
+//               set); the composite's line does not. Calls not refused have blockedBy null.
 //               Only the gate name is written: not the form text and not the user's answer.
 //
 // Lines are written when a call ENDS, so a composite's step lines come before the composite's own
@@ -128,7 +128,7 @@ export function createTracer(traceFile, { warn = (m) => console.error(m), now = 
               errorCode: result?.success === true ? null : (result?.error?.code ?? null),
               dataKeys: dataKeysOf(result),
               resultChars: typeof chars === 'number' ? chars : resultChars(result),
-              ...(typeof blockedBy === 'string' && blockedBy !== '' ? { blockedBy } : {})
+              blockedBy: typeof blockedBy === 'string' && blockedBy !== '' ? blockedBy : null
             });
           } catch (err) {
             write({ seq: mySeq, sessionId, tool, traceError: String(err?.message ?? err) });
