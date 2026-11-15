@@ -266,6 +266,41 @@ With the client connected, ask it to call `GetStatus`. Before any `ConnectIde` t
 
 That proves Node started, `powershell.exe` spawned and the module imported. `data.bridge.runtime` says which runtime runs: `source` (`installed`), `version`, `commit`, `branch`, `dirty`, `installedAt`, `runtimeRoot`, `launcherPid` (set when the launcher started it) and `ownerIdFrom`. `data.bridge.modulePath` / `moduleCommit` / `moduleDirty` / `moduleSource` / `loadedAt` say which module file the bridge loaded and when (#41). Then: "Connect to the IDE with `C:\path\to\MyProject.sln`, build it, activate with Force and read `MAIN.nCounter`" (or a single `RunLifecycle` call).
 
+## Tool-call trace(TCAUTO_TRACE_FILE)
+
+預設關閉。在 client 設定的 `env` 加 `TCAUTO_TRACE_FILE=<絕對路徑>`,server 會在每個 tool call 結束後往該檔 append 一行 JSON(JSONL)。紀錄由 server 自己寫,不靠 AI 回報:用途是 AI 行為 eval(評分程式讀「呼叫了哪些工具、順序、結果」)與除錯。
+
+```json
+{ "mcpServers": { "tcauto": { "command": "...", "args": ["..."], "env": { "TCAUTO_TRACE_FILE": "C:\\Temp\\tcauto-trace.jsonl" } } } }
+```
+
+Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.jsonl`。設定後要重連 client(launcher 把環境變數原樣傳給 runtime;`ReloadRuntime` 後是新的 runtime 行程,`sessionId` 會換)。
+
+| 欄位 | 內容 |
+|---|---|
+| `ts` | 呼叫開始時間(ISO 8601,UTC) |
+| `durationMs` | 呼叫耗時 |
+| `seq` | 本 server 行程內的呼叫序號(呼叫開始時配號,從 1 起) |
+| `parentSeq` | composite(`RunLifecycle`、`QuickRead`、`GetStatus`)內部 step 那一行填 composite 那一行的 `seq`;client 自己發出的呼叫為 `null`。評分時一律用 `parentSeq === null` 判斷「AI 呼叫了什麼」,不要靠工具名單 |
+| `sessionId` | server 行程啟動時產生的 UUID |
+| `tool` | 工具名稱 |
+| `args` | 收到的參數原樣;超過 4,000 字元的字串截斷,結尾加 `...[truncated, N chars]` |
+| `truncated` | `args` 有字串被截斷時為 `true` |
+| `success` | `result.success === true` |
+| `errorCode` | 失敗時的 `error.code`,成功為 `null` |
+| `dataKeys` | `data` 是物件時的頂層 key 清單(不存整份 data);陣列或沒有 data 為 `null` |
+| `resultChars` | client 收到的結果文字長度(step 行:該 step 結果以同樣格式序列化的長度) |
+| `blockedBy` | 保留給 server 自己擋下、沒送到 bridge 的呼叫(#258 確認閘門);目前一律 `null` |
+
+注意:
+
+- 一行在呼叫**結束**時寫入,所以 composite 的 step 行排在 composite 本身那一行前面;要還原呼叫順序請依 `seq` 排序。被 server 擋下、沒送到 bridge 的呼叫(`INVALID_PARAMS`、`UNKNOWN_TOOL`、`RUNTIME_RETIRED`)也會記。
+- 每行一次 open-append-close(`O_APPEND` 單次寫入),多個 server 行程可以寫同一個檔,用 `sessionId` 分開。
+- 寫檔失敗(路徑是目錄、沒有權限、磁碟滿)不影響工具呼叫結果,只在 server stderr 記一次警告。相對路徑不接受(stderr 警告後關閉):launcher 啟動的 runtime 工作目錄是 runtime 資料夾。
+- `args` 原樣保存:`WritePouCode` 的程式碼、`SolutionPath`、AmsNetId 等都會進檔。不要把 trace 檔放在會同步或分享的資料夾,用完自行刪除;檔案不會自動輪替。
+- 只在 runtime 行程內記錄。launcher 自己回應、沒進 runtime 的呼叫不會記:`ReloadRuntime` 本身、reload 中的 `RUNTIME_RELOADING`、runtime 起不來(`RUNTIME_NOT_INSTALLED` 等)、runtime 在呼叫中途死掉(`RUNTIME_DIED`,進行中那筆不會寫)。
+- 漏行偵測:同一 `sessionId` 內 `seq` 有斷號,代表有行沒寫進去(寫檔失敗,或 runtime 中途死掉);這份 trace 不能拿來判斷「AI 沒呼叫某工具」。
+
 ## Troubleshooting
 
 Install problems first, then problems after the first call.

@@ -5,6 +5,7 @@
 //   TWINCAT_MCP_VERBOSE        "1" -> bridge forwards Write-Verbose as debug log lines
 //   TWINCAT_MCP_EAGER          "1" -> start the PowerShell bridge at server start instead of on first tool call
 //   TWINCAT_MCP_TOOLS_JSON     path to tools.json (default: <mcp-server>/tools.json)
+//   TCAUTO_TRACE_FILE          absolute path -> append one JSON line per tool call (lib/trace.js; AI behaviour evals); unset = off
 //   TWINCAT_MCP_PROGRESS_INTERVAL_MS  interval of notifications/progress during a tool call when the
 //                              client sent a progressToken (default 10000; tests use a small value)
 //   TWINCAT_MCP_SKIP_PID_CHECK "1" -> do not verify with tasklist that data.lastIde.ideProcessId is still a
@@ -111,6 +112,8 @@ export function loadConfig(env = process.env) {
     powershellPath: defaultPowershellPath(env),
     bridgeScript: DEFAULT_BRIDGE_SCRIPT,
     toolsJsonPath: env.TWINCAT_MCP_TOOLS_JSON || DEFAULT_TOOLS_JSON,
+    // opt-in JSONL tool-call trace (lib/trace.js); unset -> off
+    traceFile: env.TCAUTO_TRACE_FILE || null,
     verbose: flag(env.TWINCAT_MCP_VERBOSE),
     eager: flag(env.TWINCAT_MCP_EAGER),
     spawnSpec: parseSpawnOverride(env),

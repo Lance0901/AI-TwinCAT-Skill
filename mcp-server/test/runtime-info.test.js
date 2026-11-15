@@ -136,6 +136,7 @@ async function startServer(extraEnv) {
       TWINCAT_MCP_SKIP_PID_CHECK: '1',
       TCAUTO_STATE_DIR: stateDir,
       TCAUTO_TEST_FORBID_REAL_STATE: '1',
+      TCAUTO_TRACE_FILE: '',
       ...extraEnv
     },
     stderr: 'pipe'
@@ -185,7 +186,9 @@ describe('index.js started by a launcher (TCAUTO_LAUNCHER_PID = parent pid)', ()
     }
 
     // a fresh server without a block: the retire succeeds, later calls are refused
-    const client2 = await startServer({ TCAUTO_LAUNCHER_OWNER_ID: ownerId, TCAUTO_LAUNCHER_PID: String(process.pid), MOCK_BRIDGE_OWNER_FILE: ownerFile });
+    // TCAUTO_TRACE_FILE: a call refused with RUNTIME_RETIRED (never reaches the bridge) is traced too
+    const traceFile = path.join(tmp('rttrace'), 'trace.jsonl');
+    const client2 = await startServer({ TCAUTO_LAUNCHER_OWNER_ID: ownerId, TCAUTO_LAUNCHER_PID: String(process.pid), MOCK_BRIDGE_OWNER_FILE: ownerFile, TCAUTO_TRACE_FILE: traceFile });
     try {
       assert.equal(body(await client2.callTool({ name: 'ConnectIde', arguments: {} })).success, true);
       const ok = await retire(client2);
@@ -194,6 +197,8 @@ describe('index.js started by a launcher (TCAUTO_LAUNCHER_PID = parent pid)', ()
       assert.equal(ok.data.ideWasConnected, true);
       const after = body(await client2.callTool({ name: 'GetStatus', arguments: {} }));
       assert.equal(after.error.code, 'RUNTIME_RETIRED');
+      const traced = fs.readFileSync(traceFile, 'utf8').split(/\r?\n/).filter(Boolean).map((l) => JSON.parse(l));
+      assert.deepEqual(traced.map((r) => [r.tool, r.errorCode, r.blockedBy]), [['ConnectIde', null, null], ['GetStatus', 'RUNTIME_RETIRED', null]]);
       assert.deepEqual(owners(ownerFile), [ownerId, ownerId], 'same owner id for both servers (same launcher)');
     } finally {
       await client2.close();
