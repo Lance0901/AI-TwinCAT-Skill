@@ -12,7 +12,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { LoggingMessageNotificationSchema, ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { START_TIMEOUT_MS } from '../lib/bridge.js';
 
 // Client-side timeout of every tool call (#160). The first call to a fresh server waits for the
@@ -109,7 +109,9 @@ async function startServer(scenario, extraEnv = {}) {
   });
   // Read the piped stderr (it was never read before: the lines were lost, #98).
   if (transport.stderr) readline.createInterface({ input: transport.stderr, crlfDelay: Infinity }).on('line', (l) => note(`stderr: ${l}`));
-  const client = new Client({ name: 'build-result-test', version: '0.0.0' }, { capabilities: {} });
+  // #258: this client shows confirmation forms and the user approves every one (the gate itself: consent.test.js)
+  const client = new Client({ name: 'build-result-test', version: '0.0.0' }, { capabilities: { elicitation: {} } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { decision: 'approve' } }));
   // bridge stderr reaches the client as 'error' log notifications (index.js onStderr)
   client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => note(`log ${n.params.level}: ${JSON.stringify(n.params.data)}`));
   client.onclose = () => note('MCP connection closed');

@@ -29,6 +29,7 @@ On `ok:false` the child exits with code 2 after writing the line.
 | `id` | string | opaque, echoed back |
 | `op` | `"call"` \| `"modal"` \| `"state"` \| `"targetkind"` \| `"ping"` \| `"retire"` \| `"shutdown"` | default `"call"` |
 | `cmdlet` | string | `op:"call"` only. Must be in the exported list from `ready`; anything else → `{"success":false,"error":{"code":"INVALID_CMDLET"}}`. Never evaluated as script. |
+| `consentTarget` | object | `op:"call"` only, optional (#258, sent by the consent gate for a runtime-changing tool): `{"params":{...},"amsNetId":string|null,"targetKind":string}` as the gate resolved it with `op:"targetkind"`. Before the cmdlet runs, the child resolves the target again with the same `params`; a different `amsNetId` or `targetKind` gives `{"success":false,"error":{"code":"CONSENT_REQUIRED"},"data":{"notRun":true,"consent":"target-changed",...}}` and the cmdlet does not run. |
 | `params` | object | `op:"call"`: splatted, see conversion rules. `op:"modal"` / `op:"targetkind"`: options listed below. |
 
 A line that is not valid JSON (PS 5.1 `ConvertFrom-Json` also rejects objects whose

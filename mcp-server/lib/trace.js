@@ -14,7 +14,12 @@
 //   errorCode   result.error.code, else null
 //   dataKeys    top-level keys of result.data when it is an object, else null (data itself is not stored)
 //   resultChars length of the result text the client receives (JSON, 2-space indent)
-//   blockedBy   reserved for calls the server refuses before they reach the bridge (#258); null for now
+//   blockedBy   only on a call the server refused before it reached the bridge (#258): the gate,
+//               "consent:<kind>" with kind runtime | install (lib/consent.js
+//               consentBlockedBy); errorCode then says why (CONSENT_DECLINED / CONSENT_REQUIRED).
+//               A composite step refused by the gate carries it on the step's own line (parentSeq
+//               set); the composite's line does not. Calls not refused have blockedBy null.
+//               Only the gate name is written: not the form text and not the user's answer.
 //
 // Lines are written when a call ENDS, so a composite's step lines come before the composite's own
 // line: sort by seq to get the call order. Each line is one fs.appendFileSync (open with O_APPEND,
@@ -123,7 +128,7 @@ export function createTracer(traceFile, { warn = (m) => console.error(m), now = 
               errorCode: result?.success === true ? null : (result?.error?.code ?? null),
               dataKeys: dataKeysOf(result),
               resultChars: typeof chars === 'number' ? chars : resultChars(result),
-              blockedBy
+              blockedBy: typeof blockedBy === 'string' && blockedBy !== '' ? blockedBy : null
             });
           } catch (err) {
             write({ seq: mySeq, sessionId, tool, traceError: String(err?.message ?? err) });

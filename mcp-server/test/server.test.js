@@ -8,7 +8,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { LoggingMessageNotificationSchema, ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', 'index.js');
@@ -40,7 +40,9 @@ async function startServer(toolsJson, extraEnv = {}) {
     stderr: 'pipe'
   });
   if (transport.stderr) readline.createInterface({ input: transport.stderr, crlfDelay: Infinity }).on('line', (l) => stderr.push(l));
-  const client = new Client({ name: 'test-client', version: '0.0.0' }, { capabilities: {} });
+  // #258: this client shows confirmation forms and the user approves every one (the gate itself: consent.test.js)
+  const client = new Client({ name: 'test-client', version: '0.0.0' }, { capabilities: { elicitation: {} } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { decision: 'approve' } }));
   client.setNotificationHandler(LoggingMessageNotificationSchema, (n) => logs.push(n.params));
   await client.connect(transport);
   return { client, logs, stderr };
@@ -83,7 +85,9 @@ describe('index.js over stdio (3-tool fixture)', () => {
     // "Tool search for MCP server authors"; 2,048 before v2.1.296): the whole card must fit, and the
     // consent rule must come before the 2,048 cut of older versions.
     assert.ok(text.length <= 4096, `instructions.md is ${text.length} characters (> 4096)`);
-    assert.ok(text.indexOf('ask once') > 0 && text.indexOf('ask once') < 2048, 'consent rule within the first 2,048 characters');
+    // #258: the tool asks the user in a confirmation form (the consent rule still within the first 2,048 characters)
+    assert.ok(text.indexOf('confirmation form') > 0 && text.indexOf('confirmation form') < 2048, 'consent rule within the first 2,048 characters');
+    assert.match(text, /CONSENT_DECLINED/);
   });
 
   test('listTools returns 3 catalog + 5 composite tools with JSON schemas', async () => {
@@ -106,8 +110,9 @@ describe('index.js over stdio (3-tool fixture)', () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     assert.equal(byName.RunLifecycle.annotations.destructiveHint, true);
     assert.equal(byName.RunLifecycle.annotations.readOnlyHint, false);
-    assert.match(byName.RunLifecycle.description, /local-umrt -> no need to ask/);
-    assert.match(byName.RunLifecycle.description, /ask once/);
+    assert.match(byName.RunLifecycle.description, /local-umrt -> no confirmation/);
+    assert.match(byName.RunLifecycle.description, /confirmation form \(MCP elicitation\)/);
+    assert.match(byName.RunLifecycle.description, /CONSENT_DECLINED/);
     assert.doesNotMatch(byName.RunLifecycle.description, /confirm with the user first/i);
     assert.deepEqual(byName.GetStatus.annotations, { readOnlyHint: true });
     assert.deepEqual(byName.QuickRead.annotations, { readOnlyHint: true });
@@ -813,6 +818,7 @@ describe('index.js over stdio (tool-call trace, TCAUTO_TRACE_FILE)', () => {
     const res = parse(await client.callTool({ name: 'ConnectIde', arguments: { ProgId: 'X.DTE' } }));
     assert.equal(res.success, true);
     const [rec] = lines();
+    // blockedBy only on a call the consent gate refused (#258; consent.test.js)
     assert.deepEqual(Object.keys(rec).sort(), ['args', 'blockedBy', 'dataKeys', 'durationMs', 'errorCode', 'parentSeq', 'resultChars', 'seq', 'sessionId', 'success', 'tool', 'truncated', 'ts'].sort());
     assert.equal(rec.tool, 'ConnectIde');
     assert.deepEqual(rec.args, { ProgId: 'X.DTE' });

@@ -36,6 +36,11 @@
 //                          in-memory BUILD_REQUIRED entries are written to $TCAUTO_STATE_DIR/build-required.json
 //                          (RELOAD_BUILD_REQUIRED when that is not possible); else disconnects, answers
 //                          {retired, ideWasConnected, adsWasConnected, buildRequiredKeys, buildRequiredPersisted}, exits 0
+//   #258 consent gate (stand-ins for our own bridge.ps1 ops and cmdlet results, not TwinCAT behaviour):
+//   env MOCK_BRIDGE_CALL_LOG=f     appends the cmdlet of every op:call as one line to f
+//   env MOCK_BRIDGE_TARGETKIND_FAIL=1  op targetkind answers success:false
+//   cmdlet Install-TcPackage  without Approved: a plan (executed false, planToken mock-plan-<n>,
+//                          command 'tcpkg install <PackageId>=<Version> -y'); with Approved: executed true
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -44,8 +49,10 @@ const CMDLETS = [
   'Connect-TcIde', 'Disconnect-TcIde', 'Get-TcIdeInfo', 'Build-TcProject', 'Enable-TcConfig',
   'Connect-TcAds', 'Disconnect-TcAds', 'Read-TcVariable', 'Write-TcVariable',
   'Get-TcSystemState', 'Get-TcPlcState', 'Set-TcTarget', 'Get-TcSymbols', 'Set-TcSystemState',
-  'Register-TcCodeChange'
+  'Register-TcCodeChange', 'Install-TcPackage', 'Add-TcAdsRoute', 'Install-TcLibrary', 'Uninstall-TcLibrary',
+  'Reset-TcSolution', 'Set-TcPlcState'
 ];
+let planCount = 0;
 
 const MODULE_PATH = process.env.TWINCAT_MCP_BRIDGE_MODULE_PATH || 'mock';
 const lifecycleBlockLocal = {};
@@ -114,11 +121,27 @@ function result(id, body) {
   write({ id, event: 'result', ...body });
 }
 
+function mockTargetKind(params) {
+  // #307: stand-in for our own bridge.ps1 Resolve-BridgeTargetKind (not TwinCAT behaviour): params.AmsNetId,
+  // else the ADS NetId (the mock keeps no IDE target); the kind is a fixed table here
+  const netId = typeof params?.AmsNetId === 'string' && params.AmsNetId !== '' ? params.AmsNetId : (state.amsNetId ?? null);
+  const kind = netId === null ? ['unknown', 'no-amsnetid'] : netId === '199.5.42.250.1.1' ? ['local-umrt', 'TcRegistry.xml:UmRT_Default'] : ['remote', 'no-local-match'];
+  return { amsNetId: netId, targetKind: kind[0], targetKindSource: kind[1] };
+}
+
 function handleCall(req) {
   const { id, cmdlet, params = {} } = req;
   if (!CMDLETS.includes(cmdlet)) {
     return result(id, { success: false, error: { code: 'INVALID_CMDLET', message: `${cmdlet} is not exported` } });
   }
+  // #258: like bridge.ps1 Invoke-OpCall, re-resolve the consented target before running anything
+  if (req.consentTarget) {
+    const now = mockTargetKind(req.consentTarget.params);
+    if (now.amsNetId !== req.consentTarget.amsNetId || now.targetKind !== req.consentTarget.targetKind) {
+      return result(id, { success: false, error: { code: 'CONSENT_REQUIRED', message: `${cmdlet} NOT RUN: the target changed after the consent check.` }, data: { notRun: true, consent: 'target-changed', amsNetId: now.amsNetId, targetKind: now.targetKind } });
+    }
+  }
+  if (process.env.MOCK_BRIDGE_CALL_LOG) fs.appendFileSync(process.env.MOCK_BRIDGE_CALL_LOG, `${cmdlet}\n`);
   if (params.Hang === true) return; // never answers
   if (params.Crash === true) process.exit(3);
 
@@ -213,6 +236,13 @@ function handleCall(req) {
           return result(id, { success: false, error: { code: 'TARGET_NOT_FOUND', message: 'mock: unknown target', hint: 'pick a route' } });
         }
         return result(id, { success: true, data: { amsNetId: params.AmsNetId, params } });
+      case 'Install-TcPackage': {
+        const command = `tcpkg install ${params.PackageId}=${params.Version} -y`;
+        if (params.Approved === true) return result(id, { success: true, data: { executed: true, packageId: params.PackageId, version: params.Version, command } });
+        planCount += 1;
+        const planToken = `mock-plan-${planCount}`;
+        return result(id, { success: true, data: { executed: false, packageId: params.PackageId, version: params.Version, command, planToken, plan: { command, packageId: params.PackageId, version: params.Version } } });
+      }
       case 'Get-TcPlcState':
         return result(id, { success: true, data: { state: 'Run' } });
       case 'Register-TcCodeChange': {
@@ -254,11 +284,8 @@ rl.on('line', (line) => {
     case 'state':
       return result(id, { success: true, data: { ...state } });
     case 'targetkind': {
-      // #307: stand-in for our own bridge.ps1 Invoke-OpTargetKind (not TwinCAT behaviour): params.AmsNetId,
-      // else the ADS NetId (the mock keeps no IDE target); the kind is a fixed table here
-      const netId = typeof req.params?.AmsNetId === 'string' && req.params.AmsNetId !== '' ? req.params.AmsNetId : (state.amsNetId ?? null);
-      const kind = netId === null ? ['unknown', 'no-amsnetid'] : netId === '199.5.42.250.1.1' ? ['local-umrt', 'TcRegistry.xml:UmRT_Default'] : ['remote', 'no-local-match'];
-      return result(id, { success: true, data: { amsNetId: netId, targetKind: kind[0], targetKindSource: kind[1] } });
+      if (process.env.MOCK_BRIDGE_TARGETKIND_FAIL === '1') return result(id, { success: false, error: { code: 'EXECUTION_ERROR', message: 'mock: targetkind failed' } });
+      return result(id, { success: true, data: mockTargetKind(req.params) });
     }
     case 'modal': {
       // params.ProcessId overrides the pid the mock knows (like bridge.ps1 after a restart)

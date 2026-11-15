@@ -121,6 +121,15 @@ $lifecycleBlockNote = ' Fail closed (#68): success=true only after the readback 
 # Appended in the tool loop below (also to a description that comes from the comment-based help).
 $lifecycleBlockedTools = @('SetSystemState', 'EnableConfig', 'PlcLogin', 'SendPlcProgram', 'SetPlcState', 'WriteVariable', 'RunTest', 'RunTestCycle', 'SetTcComParameter')
 
+# #258: the consent gate of the MCP server (mcp-server/lib/consent.js), appended like the #68 note.
+$consentRefused = ' Refused: CONSENT_DECLINED (the user did not approve) or CONSENT_REQUIRED (the client cannot show confirmation forms, the form failed or timed out); nothing ran: stop and report, do not retry or work around it. The PowerShell module itself does not ask.'
+$consentRuntimeNote = ' Consent (#258, MCP server): through the TcAuto MCP server that question is asked by the server itself: when the target AmsNetId is not local-umrt (targetKind; unknown included), the first such call of this server session to that target makes the server ask the user in a confirmation form (MCP elicitation) before anything runs; local-umrt never asks. The AI cannot answer the form and a chat answer does not replace it.' + $consentRefused
+$consentNotes = @{
+    'InstallPackage'   = ' Consent (#258, MCP): Approved=true makes the server ask the user in a confirmation form (MCP elicitation) every time, showing the plan this server process returned for that PlanToken (a PlanToken this server process did not issue, or another PackageId / Version: CONSENT_REQUIRED without a form; make a new plan). The refusal hint and data.command carry the tcpkg command the user can run in an elevated PowerShell.' + $consentRefused
+}
+foreach ($t in @('EnableConfig', 'RunTestCycle', 'RunTest', 'WriteVariable', 'SetPlcState', 'SetSystemState', 'PlcLogin', 'SendPlcProgram')) { $consentNotes[$t] = $consentRuntimeNote }
+$consentNotes['SetTcComParameter'] = $consentRuntimeNote.Replace('the first such call', 'with Online=true and DryRun=false the first such call')
+
 # Per-tool timeouts in ms (Node side kills and restarts the bridge when exceeded).
 $defaultTimeoutMs = 120000
 $timeoutOverrides = @{
@@ -459,6 +468,7 @@ foreach ($cmd in $commands) {
         if ($toolName -eq 'SetTcComParameter') { $note = $note.Replace('this tool returns', 'this tool (Online=true, DryRun=false) returns') }
         $description = $description + $note
     }
+    if ($consentNotes.ContainsKey($toolName)) { $description = $description + $consentNotes[$toolName] }
 
     # --- parameter help lookup ---
     $paramHelp = @{}

@@ -92,6 +92,9 @@ function harness(root, opts = {}) {
   const launcher = new Launcher({ input, output, stderr, installRoot: root, env: opts.env, initTimeoutMs: 10000, retireTimeoutMs: opts.retireTimeoutMs ?? 10000, exitTimeoutMs: 5000 }).start();
   const waiters = new Map();
   const notifications = [];
+  // #258: requests a runtime sends to the client through the launcher (elicitation/create); answered
+  // with h.elicit(params) (default: the user approves)
+  const clientRequests = [];
   let buf = '';
   output.setEncoding('utf8');
   output.on('data', (chunk) => {
@@ -100,7 +103,15 @@ function harness(root, opts = {}) {
     while ((nl = buf.indexOf('\n')) !== -1) {
       const msg = JSON.parse(buf.slice(0, nl));
       buf = buf.slice(nl + 1);
-      if (msg.method) notifications.push(msg);
+      if (msg.method && msg.id !== undefined && msg.id !== null) {
+        clientRequests.push(msg);
+        Promise.resolve()
+          .then(() => h.elicit(msg.params))
+          .then(
+            (result) => input.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n'),
+            (err) => input.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: String(err?.message ?? err) } }) + '\n')
+          );
+      } else if (msg.method) notifications.push(msg);
       else waiters.get(JSON.stringify(msg.id))?.(msg);
     }
   });
@@ -118,13 +129,14 @@ function harness(root, opts = {}) {
   const notify = (method, params) => input.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
   const call = async (name, args = {}) => (await request('tools/call', { name, arguments: args })).result;
   const body = (r) => JSON.parse(r.content[0].text);
-  const initParams = { protocolVersion: '2025-06-18', capabilities: { roots: {} }, clientInfo: { name: 'launcher-test-162', version: '1.0.0' } };
+  const initParams = { protocolVersion: '2025-06-18', capabilities: { roots: {}, elicitation: {} }, clientInfo: { name: 'launcher-test-162', version: '1.0.0' } };
   const init = async () => {
     const r = await request('initialize', initParams);
     notify('notifications/initialized');
     return r;
   };
-  return { launcher, request, notify, call, body, init, initParams, notifications, errText, close: () => launcher.close('test end') };
+  const h = { launcher, request, notify, call, body, init, initParams, notifications, clientRequests, elicit: () => ({ action: 'accept', content: { decision: 'approve' } }), errText, close: () => launcher.close('test end') };
+  return h;
 }
 
 describe('readCurrent / resolveInstallRoot', () => {
@@ -458,6 +470,21 @@ describe('launcher + real index.js copies (mock PowerShell bridge)', { skip: pro
     assert.equal(r.data.notRun, true);
     const s = h.body(await h.call('GetStatus'));
     assert.equal(s.data.bridge.runtime.commit, SHA_B, 'still the runtime that holds the block');
+  });
+
+  test('#258: elicitation/create of the runtime reaches the client through the launcher and the answer comes back', async () => {
+    const before = h.clientRequests.length;
+    h.elicit = () => ({ action: 'decline' });
+    const no = h.body(await h.call('SetSystemState', { AmsNetId: '5.3.3.3.1.1' }));
+    assert.equal(no.error.code, 'CONSENT_DECLINED');
+    const req = h.clientRequests[before];
+    assert.equal(req.method, 'elicitation/create');
+    assert.match(req.params.message, /Target AmsNetId: 5\.3\.3\.3\.1\.1/);
+    assert.deepEqual(req.params.requestedSchema.required, ['decision']);
+    h.elicit = () => ({ action: 'accept', content: { decision: 'approve' } });
+    const yes = h.body(await h.call('SetSystemState', { AmsNetId: '5.3.3.3.1.1' }));
+    assert.equal(yes.success, true, JSON.stringify(yes));
+    assert.equal(h.clientRequests.length, before + 2);
   });
 });
 

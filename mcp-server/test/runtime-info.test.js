@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { launcherContextFrom, runtimeInfoOf } from '../lib/runtime-info.js';
 import { moduleInfoOf, readSourceStamp, installedRootOf, checkModulePath, MODULE_RELATIVE_PATH, pathKey } from '../lib/module-source.js';
 
@@ -141,7 +142,9 @@ async function startServer(extraEnv) {
     },
     stderr: 'pipe'
   });
-  const client = new Client({ name: 'runtime-info-162', version: '0.0.0' }, { capabilities: {} });
+  // #258: this client shows confirmation forms and the user approves every one (the gate itself: consent.test.js)
+  const client = new Client({ name: 'runtime-info-162', version: '0.0.0' }, { capabilities: { elicitation: {} } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { decision: 'approve' } }));
   await client.connect(transport);
   return client;
 }

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, ElicitResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { loadConfig, scanScriptFor, MCP_SERVER_DIR } from './lib/config.js';
@@ -18,6 +18,7 @@ import { ModalProbe, PROBED_TOOLS, licenseDialogEvidence } from './lib/modal-pro
 import { moduleInfoOf } from './lib/module-source.js';
 import { launcherContextFrom, runtimeInfoOf, LAUNCHER_ENV } from './lib/runtime-info.js';
 import { loadInstructions } from './lib/instructions.js';
+import { ConsentMemory, consentKind, consentBlockedBy, buildConsentRequest, askUser, consentErrorResult } from './lib/consent.js';
 import { createTracer } from './lib/trace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -352,15 +353,92 @@ function startProbeFor(name, tool, token, probePid, prevIde, opts = {}) {
   return handle;
 }
 
+// ---------------------------------------------------------------- consent gate (#258)
+//
+// Calls that need the user's consent are confirmed by the user in an MCP elicitation form before
+// the bridge runs them (lib/consent.js). The memory is this process only: a new server asks again.
+
+const consent = new ConsentMemory();
+const consentClient = {
+  getClientCapabilities: () => server.getClientCapabilities(),
+  // raw request: the response is interpreted by lib/consent.js (accept without "approve" = declined)
+  elicit: (params, options) => server.request({ method: 'elicitation/create', params }, ElicitResultSchema, options)
+};
+
+/** Read-only bridge query; the data object or null. */
+async function bridgeQuery(op, params, signal) {
+  try {
+    const r = await bridge.call(op, { params, signal });
+    return r?.success === true && r.data && typeof r.data === 'object' ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Run a catalog tool: validate -> timeout -> bridge call. Always returns a result object.
- * `signal` (the MCP request's AbortSignal) cancels the call only while it is still queued.
+ * null = the call may run; else the CONSENT_DECLINED / CONSENT_REQUIRED result (nothing ran).
+ * Runtime changes: the target is what the bridge's targetkind op resolves (SetSystemState AmsNetId
+ * when given, else the IDE target, else the ADS NetId; the two differing -> unknown); local-umrt
+ * never asks; any other kind asks once per AmsNetId (unknown / no NetId / differing targets ask
+ * every time). InstallPackage Approved=true asks every time with the plan this process returned.
+ * Nothing else is gated (owner decision 2026-11-15, lib/consent.js).
  */
-async function callCatalogTool(name, args, signal) {
+async function consentGate(name, params, signal, pass = {}) {
+  const gate = consentKind(name, params);
+  if (!gate) return null;
+  const refuse = (result) => ({ result, blockedBy: consentBlockedBy(gate) });
+  let plan = null;
+  let remember = null;
+  let shown = params;
+  let amsNetId = null;
+  let targetKind = null;
+  if (gate.kind === 'install') {
+    plan = consent.takePlan(params.PlanToken, params.PackageId, params.Version);
+    if (!plan) return refuse(consentErrorResult(name, 'unknown-plan'));
+    const { PlanToken, ...rest } = params;
+    shown = rest;
+  } else if (gate.kind === 'runtime') {
+    const q = name === 'SetSystemState' && typeof params.AmsNetId === 'string' && params.AmsNetId.trim() !== '' ? { AmsNetId: params.AmsNetId } : {};
+    const kd = await bridgeQuery('targetkind', q, signal);
+    targetKind = typeof kd?.targetKind === 'string' && kd.targetKind !== '' ? kd.targetKind : 'unknown';
+    amsNetId = typeof kd?.amsNetId === 'string' && kd.amsNetId.trim() !== '' ? kd.amsNetId.trim() : null;
+    // S1 (review): the bridge re-resolves the target in the call request itself and refuses with
+    // CONSENT_REQUIRED when it is no longer this one (a call queued in between changed it). Not for
+    // 'unknown': that form told the user the target is unknown, and a failed query cannot be re-checked.
+    if (targetKind !== 'unknown') pass.consentTarget = { params: q, amsNetId, targetKind };
+    if (targetKind === 'local-umrt') return null;
+    const memorable = amsNetId !== null && kd?.targetKindSource !== 'ads-ide-target-differ';
+    if (memorable && consent.hasTarget(amsNetId)) return null;
+    if (memorable) remember = () => consent.addTarget(amsNetId);
+  }
+  const request = buildConsentRequest({ tool: name, gate, params: shown, amsNetId, targetKind, plan });
+  const outcome = await askUser(consentClient, request, signal ? { signal } : {});
+  if (outcome === 'approved') {
+    remember?.();
+    return null;
+  }
+  const data = gate.kind === 'runtime' ? { amsNetId, targetKind } : gate.kind === 'install' ? { command: plan.command } : {};
+  return refuse(consentErrorResult(name, outcome, { plan, data }));
+}
+
+/**
+ * Run a catalog tool: validate -> consent gate -> timeout -> bridge call. Always returns a result object.
+ * `signal` (the MCP request's AbortSignal) cancels the call only while it is still queued.
+ * `gateInfo.blockedBy` is set to the gate name (lib/consent.js consentBlockedBy) when the consent
+ * gate refused the call, for the trace line (lib/trace.js).
+ */
+async function callCatalogTool(name, args, signal, gateInfo = {}) {
   const tool = catalog.get(name);
   if (!tool) return errorResult('UNKNOWN_TOOL', `Unknown tool '${name}'`, 'Use tools/list to see the available tools.');
   const validation = validateParams(tool, args);
   if (!validation.ok) return { success: false, error: validation.error };
+  // #258: before anything reaches the bridge (also for the steps of a composite such as RunLifecycle)
+  const pass = {};
+  const refused = await consentGate(name, validation.params, signal, pass);
+  if (refused) {
+    gateInfo.blockedBy = refused.blockedBy;
+    return refused.result;
+  }
   const timeoutMs = computeTimeoutMs(tool, validation.params);
   // Probe target: the last known IDE, captured before ConnectIde forgets it (a reconnect after a
   // BRIDGE_TIMEOUT / IDE_MODAL_DIALOG blocks again on the dialog that is still up in that IDE).
@@ -374,11 +452,12 @@ async function callCatalogTool(name, args, signal) {
   const probe = startProbeFor(name, tool, token, probePid, prevIde, { mode, timeoutMs });
   let result;
   try {
-    result = await bridge.call('call', { cmdlet: tool.cmdlet, params: validation.params, timeoutMs, signal, token });
+    result = await bridge.call('call', { cmdlet: tool.cmdlet, params: validation.params, timeoutMs, signal, token, consentTarget: pass.consentTarget });
   } finally {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
   await rememberIde(name, result);
+  if (name === 'InstallPackage' && validation.params.Approved !== true) consent.rememberPlan(result);
   // #249: after decorateBridgeLoss (ConnectIde clears lastIde, so its generic hint would stay)
   return decorateConnectIdeTimeout(name, await decorateBridgeLoss(result));
 }
@@ -386,12 +465,13 @@ async function callCatalogTool(name, args, signal) {
 /** Catalog call made by a composite: traced as its own line with parentSeq (lib/trace.js). */
 async function callStepTool(name, args, signal, parentSeq) {
   const span = tracer.begin(name, args, parentSeq);
+  const gateInfo = {};
   let result;
   try {
-    result = await callCatalogTool(name, args, signal);
+    result = await callCatalogTool(name, args, signal, gateInfo);
     return result;
   } finally {
-    span.end(result ?? { success: false, error: { code: 'INTERNAL_ERROR' } });
+    span.end(result ?? { success: false, error: { code: 'INTERNAL_ERROR' } }, { blockedBy: gateInfo.blockedBy });
   }
 }
 
@@ -418,14 +498,14 @@ function makeContext(signal, parentSeq = null) {
   };
 }
 
-async function callAnyTool(name, args, signal, traceSeq = null) {
+async function callAnyTool(name, args, signal, traceSeq = null, gateInfo = {}) {
   const composite = compositeMap.get(name);
   if (composite) {
     const validation = validateParams(composite, args);
     if (!validation.ok) return { success: false, error: validation.error };
     return composite.run(makeContext(signal, traceSeq), validation.params);
   }
-  return callCatalogTool(name, args, signal);
+  return callCatalogTool(name, args, signal, gateInfo);
 }
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
@@ -465,6 +545,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const args = request.params?.arguments ?? {};
   // every call is traced, also the ones refused here or by validation before reaching the bridge
   const span = tracer.begin(name, args);
+  // set by the consent gate when it refuses this call itself (a composite's refused step is traced
+  // on the step's own line, callStepTool)
+  const gateInfo = {};
   let final;
   if (runtimeRetired) {
     final = toToolResult(
@@ -482,7 +565,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     // extra.signal fires on notifications/cancelled: a call still waiting in the bridge queue is
     // dropped (CANCELLED); one already handed to PowerShell runs to completion.
-    const result = await callAnyTool(name, args, extra?.signal, span.seq);
+    const result = await callAnyTool(name, args, extra?.signal, span.seq, gateInfo);
     final = toToolResult(rewriteResultHints(await decorateBridgeLoss(result), cmdletNames));
     return final;
   } catch (err) {
@@ -492,7 +575,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   } finally {
     activeToolCalls--;
     stopProgress();
-    span.end(final?.structuredContent, { resultChars: final?.content?.[0]?.text?.length });
+    span.end(final?.structuredContent, { blockedBy: gateInfo.blockedBy, resultChars: final?.content?.[0]?.text?.length });
   }
 });
 

@@ -226,11 +226,26 @@ Settings worth knowing:
 
   **Headless runs need it** ([#250](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/250)): `codex exec` with `approval_policy="never"` cannot ask, so only the tools approved this way run. Every other tcauto call fails with `MCP tool call requires approval, but approval policy is never` and the lifecycle stops at the first unapproved tool. 實測 2026-11-12, codex-cli 0.167.0, TcAuto v0.6.1-beta-rc2: with only `tools.ConnectIde.approval_mode` approved, `ConnectIde` ran and `SetTarget` failed with that message; with `-c mcp_servers.tcauto.default_tools_approval_mode=approve` added, the full lifecycle passed. For a headless lifecycle approve at least every tool it calls (`ConnectIde`, `SetTarget`, `BuildProject`, `EnableConfig`, `ConnectAds`, `ReadVariable`, or `RunLifecycle`), or use `default_tools_approval_mode`.
 
-  Risk of `default_tools_approval_mode = "approve"`: the model can then call every tcauto tool without asking you, including `EnableConfig` (restarts the target runtime, outputs go to zero), `WriteVariable`, `SetPlcState` (Run / Stop / Reset) and the plan step of `InstallPackage`. A wrong prompt acts on the real machine. `InstallPackage` still installs nothing without `Approved=true` plus the `PlanToken` of a plan made in the same server process, but with every tool approved nothing in Codex stops the model from passing both itself: that check is only as strong as the instruction to ask the user first. Use it for a test target only, or approve single tools instead. The key names are 實測 (2026-11-08 / 2026-11-12, codex-cli 0.167.0) when passed with `codex exec -c ...`; no Codex documentation for them was found, and the form written into `config.toml` has **not been tested yet**.
+  Risk of `default_tools_approval_mode = "approve"`: the model can then call every tcauto tool without asking you, including `EnableConfig` (restarts the target runtime, outputs go to zero), `WriteVariable`, `SetPlcState` (Run / Stop / Reset) and the plan step of `InstallPackage`. A wrong prompt acts on the real machine. `InstallPackage` still installs nothing without `Approved=true` plus the `PlanToken` of a plan made in the same server process, and since #258 the server also asks you in a confirmation form that the model cannot answer (see "Confirmation forms"); the same form guards routes, libraries, `ResetSolution Force=true`, attaching to your own IDE and the first runtime change of a target that is not the local UmRT. Use it for a test target only, or approve single tools instead. The key names are 實測 (2026-11-08 / 2026-11-12, codex-cli 0.167.0) when passed with `codex exec -c ...`; no Codex documentation for them was found, and the form written into `config.toml` has **not been tested yet**.
 
   The installer never writes these keys. A re-run of `Install-TcAuto.ps1` keeps the ones you added (see "What the installer does"; [#204](https://github.com/Lance0901/AI-TwinCAT-Skill/issues/204)).
 - **Claude Code:** set the environment variable `MCP_TOOL_TIMEOUT` (milliseconds, for example `900000`; in the environment that starts `claude` or in the `env` block of `settings.json`, then restart Claude Code) so long calls are not cut by the client ([Troubleshooting](#troubleshooting)).
 - **Platform:** the target decides the solution platform; pass `Platform` to `SetTarget` / `EnableConfig` / `RunLifecycle` where the target cannot report it (`docs/troubleshooting.md` "環境矩陣").
+
+## Confirmation forms (MCP elicitation, #258)
+
+Calls that need the user's consent are confirmed by the user in a form the TcAuto server sends through the MCP client (MCP `elicitation/create`); the AI cannot answer it. The form has one required choice, `decision` = `approve` / `reject`; only `approve` runs the call. Which calls ask and when: `docs/troubleshooting.md` "確認框(MCP elicitation,#258)". There is no setting, parameter or environment variable that turns the forms off or approves in advance; the PowerShell module itself (not through MCP) does not ask.
+
+| Client / mode | Behaviour with a TcAuto form | Result |
+|---|---|---|
+| Claude Code, interactive | Shows the form (Claude Code v2.1.76 or newer, per its changelog) | runs on `approve` |
+| Claude Code `claude -p`, any permission mode including `bypassPermissions` / `--dangerously-skip-permissions` | cancels every form at once (實測 #258 before the implementation, Claude Code 2.1.319) | `CONSENT_DECLINED` |
+| Codex CLI, interactive | Shows the form (codex-cli 0.119.0 or newer, per its release notes) | runs on `approve` |
+| `codex exec`, default / `approval_policy="never"` | the MCP tool call itself is blocked unless approved in the config; when approved, the form is declined (實測 #258 before the implementation, codex-cli 0.167.0) | `CONSENT_DECLINED` |
+| `codex exec --dangerously-bypass-approvals-and-sandbox` | a form without fields is accepted automatically, a form with a required choice is declined (實測 #258 before the implementation, codex-cli 0.167.0): TcAuto forms always have the required choice | `CONSENT_DECLINED` |
+| A client that does not declare `capabilities.elicitation` (Claude Desktop: no official support found; Antigravity: not tested) | no form is sent | `CONSENT_REQUIRED` |
+
+On `CONSENT_DECLINED` / `CONSENT_REQUIRED` nothing ran. Retry in an interactive client that shows forms, or run the operation yourself with the PowerShell module (`InstallPackage` returns the tcpkg command to run in an elevated PowerShell). A form not answered within 10 minutes counts as `CONSENT_REQUIRED`. Headless runs therefore cannot install packages or change a runtime that is not the local UmRT: this is intended. Only these two kinds of calls ask (owner decision 2026-11-15: ask only where people can get hurt, plus the tcpkg install rule); `AddAdsRoute`, `InstallLibrary` / `UninstallLibrary`, `ResetSolution Force=true` and `ConnectIde ProcessId` do not show a form.
 
 ## Upgrade
 
@@ -290,11 +305,13 @@ Claude Code:`claude mcp add` 時加 `-e TCAUTO_TRACE_FILE=C:\Temp\tcauto-trace.j
 | `errorCode` | 失敗時的 `error.code`,成功為 `null` |
 | `dataKeys` | `data` 是物件時的頂層 key 清單(不存整份 data);陣列或沒有 data 為 `null` |
 | `resultChars` | client 收到的結果文字長度(step 行:該 step 結果以同樣格式序列化的長度) |
-| `blockedBy` | 保留給 server 自己擋下、沒送到 bridge 的呼叫(#258 確認閘門);目前一律 `null` |
+| `blockedBy` | **只出現在被確認閘門(#258)擋下、沒送到 bridge 的那一行**;沒被擋的呼叫是 `null`(每行都有這個欄位)。值是閘門名稱 `consent:<種類>`:`consent:runtime`(改 runtime 狀態的工具,目標不是 local-umrt)、`consent:install`(`InstallPackage` 附 `Approved=true`)。擋下原因看同一行的 `errorCode`(`CONSENT_DECLINED` 使用者拒絕 / `CONSENT_REQUIRED` client 無法確認)。只記閘門名稱,不記確認框內容與使用者回答 |
 
 注意:
 
-- 一行在呼叫**結束**時寫入,所以 composite 的 step 行排在 composite 本身那一行前面;要還原呼叫順序請依 `seq` 排序。被 server 擋下、沒送到 bridge 的呼叫(`INVALID_PARAMS`、`UNKNOWN_TOOL`、`RUNTIME_RETIRED`)也會記。
+- 一行在呼叫**結束**時寫入,所以 composite 的 step 行排在 composite 本身那一行前面;要還原呼叫順序請依 `seq` 排序。被 server 擋下、沒送到 bridge 的呼叫(`INVALID_PARAMS`、`UNKNOWN_TOOL`、`RUNTIME_RETIRED`)也會記。composite 的 step 被確認閘門擋下(例:`RunLifecycle` 的 `EnableConfig`)時,`blockedBy` 記在該 step 那一行(`parentSeq` 指向 composite);composite 本身那一行只有 `errorCode`,`blockedBy` 為 `null`。
+
+  範例(使用者在確認框按拒絕):`{"ts":"...","durationMs":5123,"seq":4,"parentSeq":null,"sessionId":"...","tool":"WriteVariable","args":{"Path":"MAIN.x","Value":1},"truncated":false,"success":false,"errorCode":"CONSENT_DECLINED","dataKeys":["notRun","consent","amsNetId","targetKind"],"resultChars":612,"blockedBy":"consent:runtime"}`
 - 每行一次 open-append-close(`O_APPEND` 單次寫入),多個 server 行程可以寫同一個檔,用 `sessionId` 分開。
 - 寫檔失敗(路徑是目錄、沒有權限、磁碟滿)不影響工具呼叫結果,只在 server stderr 記一次警告。相對路徑不接受(stderr 警告後關閉):launcher 啟動的 runtime 工作目錄是 runtime 資料夾。
 - `args` 原樣保存:`WritePouCode` 的程式碼、`SolutionPath`、AmsNetId 等都會進檔。不要把 trace 檔放在會同步或分享的資料夾,用完自行刪除;檔案不會自動輪替。

@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   MODULE_RELATIVE_PATH,
   checkoutRootOf,
@@ -230,7 +231,9 @@ async function startServer(modulePath, extraEnv = {}) {
     },
     stderr: 'pipe'
   });
-  const client = new Client({ name: 'reload-test', version: '0.0.0' }, { capabilities: {} });
+  // #258: this client shows confirmation forms and the user approves every one (the gate itself: consent.test.js)
+  const client = new Client({ name: 'reload-test', version: '0.0.0' }, { capabilities: { elicitation: {} } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { decision: 'approve' } }));
   await client.connect(transport);
   return client;
 }

@@ -413,6 +413,29 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **為什麼**:使用者規則是「詢問後,得到許可才安裝」。token 把同意綁在使用者看過的那份計畫上,agent 不能跳過計畫直接帶 `Approved=true`。
 - **下一步**:不帶 `-Approved` 重新產生計畫,把 `data.plan` 給使用者看,使用者同意後才帶 `-Approved -PlanToken <新的 data.planToken>`。
 
+### 確認框(MCP elicitation,#258):共同規則
+
+- **範圍**(owner 決定 2026-11-15:「目標是讓 TcAuto 搭配 LLM 幾乎自動化,只有在有人身危險的時候才會詢問」):只有兩種。`AddAdsRoute` / `InstallLibrary` / `UninstallLibrary`、`ResetSolution Force=true`、`ConnectIde ProcessId` **不跳確認框**,直接送 bridge;模組本身的保護不變(`DryRun` 預設、`UNSAVED_CHANGES` #175、`IDE_ATTACH_CONSENT_REQUIRED` #281),agent 仍要先問使用者(流程卡「Always ask the user before」)。
+- **哪些呼叫**:透過 MCP server 呼叫時,下列呼叫在送進 PowerShell bridge **之前**由 server 跳確認框(MCP `elicitation/create`,form 只有一個必填欄位 `decision` = `approve` / `reject`)問使用者;直接用 PowerShell 模組不受影響。
+  | 呼叫 | 何時問 |
+  |---|---|
+  | `InstallPackage Approved=true` | 每次;確認框內容是本 server 行程記住的那份計畫(plan 呼叫回的 `planToken` → 套件、版本、`command`) |
+  | 會改 runtime 的呼叫:`EnableConfig`、`RunLifecycle`(在它的 EnableConfig 步驟前)、`RunTestCycle`、`RunTest`、`WriteVariable`、`SetPlcState`、`SetSystemState`、`PlcLogin`、`SendPlcProgram`、`SetTcComParameter Online=true DryRun=false` | 目標 `targetKind` ≠ `local-umrt`:同 server 行程、同 AmsNetId 第一次問;`local-umrt` 一律不問。目標 = bridge `targetkind` op 的結果(`SetSystemState AmsNetId` 有給就用它,否則 IDE target(即時 `GetTargetNetId`,IDE 連著但讀不到 → `unknown`),否則 ADS NetId;兩者不同、查不到、查詢失敗 → `unknown` → 每次問)。執行時 bridge 在同一個 request 裡、跑 cmdlet 前再解析一次目標,和確認時不同(中間有別的呼叫換了 target)→ `CONSENT_REQUIRED`(`data.consent = target-changed`),不執行 |
+- **只有** `action = accept` 且 `decision = approve` 才執行;decline、cancel、accept 但沒選 approve → `CONSENT_DECLINED`;client 沒宣告 `capabilities.elicitation`、確認框出錯或 10 分鐘(600000 ms)沒回 → `CONSENT_REQUIRED`。兩者都什麼都沒執行(`data.notRun = true`)。
+- **同意只在 server 行程記憶體**:沒有參數、環境變數、設定檔或白名單可以預先放行;server 重啟、`ReloadRuntime` 後要再問。確認框文字由 server 產生(工具名、目標 AmsNetId / targetKind、固定說明句、`Parameter <name>: <value>`,每個值去掉換行 / 控制字元並截到 60 字元),不含 AI 傳的任意文字。
+- 各 client 的實測行為:`docs/setup-mcp.md`「Confirmation forms」。
+
+### CONSENT_DECLINED
+
+- **現象**:MCP 呼叫回 `success:false`、`CONSENT_DECLINED`,`data.notRun = true`:使用者在確認框按了否 / 關掉 / 沒選 approve,或 client 自己取消了確認框(實測:`claude -p` 任何 permission mode 都立刻回 cancel,使用者根本沒看到框)。什麼都沒執行。
+- **下一步**:不要自己重試,也不要換別的工具繞過。問使用者要怎麼做;使用者要做時再呼叫同一個工具(會再跳確認框),或使用者自己用 PowerShell 模組執行。`InstallPackage`:hint 與 `data.command` 帶 tcpkg 指令,使用者可在系統管理員 PowerShell(IDE 全關)自己執行。
+
+### CONSENT_REQUIRED
+
+- **現象**:MCP 呼叫回 `success:false`、`CONSENT_REQUIRED`,`data.notRun = true`,`data.consent` 說明原因:`unsupported`(client 不支援確認框)、`failed`(確認框出錯或逾時)、`unknown-plan`(`InstallPackage Approved=true` 的 `PlanToken` 不是本 server 行程發的,或套件 / 版本和那份計畫不同,或沒帶)、`target-changed`(確認後、執行前目標被別的呼叫換掉)。什麼都沒執行。
+- **為什麼**:無法取得人的同意就 fail closed(owner 決定,#258)。headless client 的確認框多半是被自動 cancel / decline,那會回 `CONSENT_DECLINED`(見上一節);client 沒宣告支援才是本碼。
+- **下一步**:`unsupported` / `failed` → 告訴使用者;在支援確認框的互動 client(Claude Code、Codex CLI 互動模式)重試,或使用者自己用 PowerShell 模組執行(`InstallPackage` 的 hint 帶 tcpkg 指令)。`target-changed` → 用 `GetStatus` 確認目標,再呼叫一次(非 local-umrt 會再問)。`unknown-plan` → 先不帶 `Approved` 跑一次 `InstallPackage` 拿計畫,給使用者看,再帶 `Approved=true PlanToken=<data.planToken>`。
+
 ### TCPKG_SIGNATURE_INVALID
 
 - **現象**:`Install-TcPackage`(計畫或執行)回 `TCPKG_SIGNATURE_INVALID`:`%ProgramData%\Beckhoff\TcPkg\TcPkg.exe` 的 Authenticode 狀態不是 `Valid`、簽署者的 `O=` 不是 `Beckhoff Automation GmbH & Co. KG`,或簽章檢查本身失敗(一律當成不通過,fail closed)。什麼都沒執行,也沒有 token。

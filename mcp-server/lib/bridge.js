@@ -420,7 +420,7 @@ export class PowerShellBridge {
    *   token: any object identifying this call for abortCall() (the modal-dialog probe in index.js).
    */
   call(op = 'call', opts = {}) {
-    const { cmdlet, params, timeoutMs, signal, token, nextModulePath } = opts;
+    const { cmdlet, params, timeoutMs, signal, token, nextModulePath, consentTarget } = opts;
     return new Promise((resolve) => {
       const item = {
         id: String(this._nextId++),
@@ -434,7 +434,9 @@ export class PowerShellBridge {
         onAbort: null,
         settled: false,
         token: token ?? null,
-        nextModulePath: nextModulePath ?? null
+        nextModulePath: nextModulePath ?? null,
+        // #258: target the consent gate resolved; bridge.ps1 re-resolves it in the same request
+        consentTarget: consentTarget ?? null
       };
       if (signal?.aborted) {
         this._settle(item, errorResult('CANCELLED', CANCELLED_MESSAGE));
@@ -478,6 +480,7 @@ export class PowerShellBridge {
     const request = { id: item.id, op: item.op };
     if (item.op === 'call') request.cmdlet = item.cmdlet;
     if (item.params !== undefined) request.params = item.params;
+    if (item.op === 'call' && item.consentTarget) request.consentTarget = item.consentTarget;
 
     item.timer = setTimeout(() => this._onTimeout(item), item.timeoutMs);
     try {
