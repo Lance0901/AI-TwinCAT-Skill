@@ -1,12 +1,16 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadToolCatalog, validateParams } from '../lib/tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The real, generated catalog (npm run generate-tools), not the fixture.
 const catalog = loadToolCatalog(path.join(__dirname, '..', 'tools.json'));
+// #310: a slim description names its guide topic (GetGuide('<topic>')); the details moved there.
+const guideDoc = (tool) =>
+  [tool.description, ...[...tool.description.matchAll(/GetGuide\('([^']+)'\)/g)].map((m) => fs.readFileSync(path.join(__dirname, '..', 'guide', `${m[1]}.md`), 'utf8'))].join('\n');
 
 describe('tools.json (generated catalog)', () => {
   test('GetProjectTree exposes Depth (integer, default 4) and PlcOnly (boolean)', () => {
@@ -128,7 +132,7 @@ describe('tools.json (generated catalog)', () => {
     assert.deepEqual(t.inputSchema.properties.FailOn.enum, ['error', 'warning']);
     for (const w of ['does NOT mean the program is correct', 'ResetSolution', 'LINT_FAILED', 'LINT_PARSE_FAILED',
       'LINT_INCOMPLETE', 'LINT_ENGINE_UNAVAILABLE', 'ideChecked=false', 'blockableBasis']) {
-      assert.ok(t.description.includes(w), `LintProject description lacks ${w}`);
+      assert.ok(guideDoc(t).includes(w), `LintProject description / guide lacks ${w}`);
     }
     assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/PLC1/PLC1.plcproj' }).ok, true);
     assert.equal(validateParams(t, { PlcProjectPath: 'C:/x/a.plcproj', Scope: 'Some' }).ok, false, 'Scope is All or Object');
@@ -170,7 +174,7 @@ describe('tools.json (generated catalog)', () => {
     assert.deepEqual([...i.inputSchema.required].sort(), ['PackageId', 'Version']);
     assert.deepEqual(i.inputSchema.properties.PackageId.enum, ['TwinCAT.Standard.XAE', 'TwinCAT.StandardRM.XAE']);
     for (const w of ['ASK THE USER FIRST', 'PlanToken', 'TCPKG_PLAN_REQUIRED', 'TCPKG_SIGNATURE_INVALID', 'TCPKG_RUNNING', 'executed = false', 'TCPKG_ELEVATION_REQUIRED', 'TCPKG_IDE_RUNNING', 'TCPKG_VERSION_NOT_FOUND', 'TCPKG_INSTALL_UNVERIFIED']) {
-      assert.ok(i.description.includes(w), `InstallPackage description lacks ${w}`);
+      assert.ok(guideDoc(i).includes(w), `InstallPackage description lacks ${w}`);
     }
     assert.equal(validateParams(i, { PackageId: 'TwinCAT.StandardRM.XAE', Version: '4024.71.5' }).ok, true);
     assert.equal(i.inputSchema.properties.PlanToken.type, 'string');

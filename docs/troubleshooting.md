@@ -430,6 +430,16 @@ Set-TcPlcState Stop / Exit-TcPlcOnline / Disconnect-TcAds
 - **現象**:MCP 呼叫回 `success:false`、`CONSENT_DECLINED`,`data.notRun = true`:使用者在確認框按了否 / 關掉 / 沒選 approve,或 client 自己取消了確認框(實測:`claude -p` 任何 permission mode 都立刻回 cancel,使用者根本沒看到框)。什麼都沒執行。
 - **下一步**:不要自己重試,也不要換別的工具繞過。問使用者要怎麼做;使用者要做時再呼叫同一個工具(會再跳確認框),或使用者自己用 PowerShell 模組執行。`InstallPackage`:hint 與 `data.command` 帶 tcpkg 指令,使用者可在系統管理員 PowerShell(IDE 全關)自己執行。
 
+### GUIDE_TOPIC_UNKNOWN
+
+- **為什麼(#310)**:`GetGuide` 的 `Topic` 不是 `start` 或 runtime 內 `mcp-server/guide/<topic>.md` 的任何一個。
+- **下一步**:改用 `error.message` / `data.topics` 列出的主題;不給 Topic 就是流程卡(`start`)。
+
+### GUIDE_UNAVAILABLE
+
+- **為什麼(#310)**:runtime 內的流程卡 `mcp-server/instructions.md` 或主題檔讀不到(安裝不完整)。
+- **下一步**:重新安裝 runtime(客戶:release zip 的 `Install-TcAuto.ps1`;開發:`scripts/Install-TcAutoRuntime.ps1`),再 `ReloadRuntime`。
+
 ### CONSENT_REQUIRED
 
 - **現象**:MCP 呼叫回 `success:false`、`CONSENT_REQUIRED`,`data.notRun = true`,`data.consent` 說明原因:`unsupported`(client 不支援確認框)、`failed`(確認框出錯或逾時)、`unknown-plan`(`InstallPackage Approved=true` 的 `PlanToken` 不是本 server 行程發的,或套件 / 版本和那份計畫不同,或沒帶)、`target-changed`(確認後、執行前目標被別的呼叫換掉)。什麼都沒執行。

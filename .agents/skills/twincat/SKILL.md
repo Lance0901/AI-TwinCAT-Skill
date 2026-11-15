@@ -5,6 +5,8 @@ description: Use when the user asks to automate TwinCAT 3 IDE, build or deploy P
 
 # TwinCAT Automation Skill
 
+**MCP: read `GetGuide('start')` before the first TcAuto call** (the flow card; per task `GetGuide('<topic>')`, e.g. `deploy`, `change-code`, `recovery`, `consent`). Single source: `mcp-server/instructions.md` and `mcp-server/guide/<topic>.md` of the installed runtime (#310); this file does not copy them.
+
 Control TwinCAT 3 IDE and PLC runtime using the TwinCATAutomation PowerShell module.
 
 Canonical repository: https://github.com/Lance0901/AI-TwinCAT-Skill. The installer records the source repo, version and commit in `tcauto-install-manifest.json` next to this file; `Get-TcAutomationVersion` reads it (include its output when reporting an issue).
