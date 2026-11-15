@@ -171,14 +171,14 @@ Check 'codex-actions-equal-operationMap' (($ops -join ',') -ceq (@($codex | ForE
 Check 'antigravity-actions-equal-operationMap' (($ops -join ',') -ceq ($yamlNames -join ',')) "yaml $($yamlNames.Count) vs map $($ops.Count)"
 Check 'codex-no-stale-enterplconline' (@($codex | Where-Object { $_.name -eq 'EnterPlcOnline' }).Count -eq 0) 'EnterPlcOnline is not an operationMap action (PlcLogin is)'
 
-# safety rules must survive the generation (#146 review): the adapter text is the COMPLETE tool description
+# safety rules must survive the generation (#146 review; #310: the short consent / fail-closed notes): the adapter text is the COMPLETE tool description
 $must = [ordered]@{
     ClearLifecycleBlock = @('ONLY after the user has seen the block', 'never call it on your own to get past LIFECYCLE_BLOCKED')
-    EnableConfig        = @('= local-umrt -> no need to ask', 'ask once')
-    WriteVariable       = @('= local-umrt -> no need to ask', 'ask once')
-    RunTestCycle        = @('= local-umrt -> no need to ask', 'ask once')
-    SetSystemState      = @('all outputs go to zero', 'call ClearLifecycleBlock only after the user agreed')
-    SetPlcState         = @('Reset leaves the PLC in Stop', 'call ClearLifecycleBlock only after the user agreed')
+    EnableConfig        = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    WriteVariable       = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    RunTestCycle        = @('targetKind local-umrt never asks', 'a chat answer is not consent', 'ClearLifecycleBlock only after the user agreed')
+    SetSystemState      = @('all outputs go to zero', 'ClearLifecycleBlock only after the user agreed')
+    SetPlcState         = @('Reset leaves the PLC in Stop', 'ClearLifecycleBlock only after the user agreed')
     ReportIssue         = @('ONLY THE USER opens')
 }
 $yamlBlocks = @{}

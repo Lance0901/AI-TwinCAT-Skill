@@ -289,15 +289,14 @@ See the ``twincat`` skill for full command reference. Installed version / source
 - Runtime-changing calls (Enable-TcConfig, Start-TcLifecycle, Write-TcVariable, Set-TcSystemState (Config stops the runtime, outputs go to zero), Set-TcPlcState (Reset leaves the PLC in Stop; Run recovers it. An older report that it kills TcSystemServiceUm on a UmRT did not reproduce, measured 2026-11-08 #26) and Invoke-TcTestCycle): Runtime-change consent (#307): data.targetKind (Connect-TcIde / Set-TcTarget) = local-umrt -> no need to ask. Anything else is a real machine (including a Windows XAR on this PC): before the first runtime-changing call of this session to that target, tell the user what can happen (TwinCAT restarts, the PLC stops and starts, outputs switch, axes can move) and ask once; after the user agrees, do not ask again for that target in this session unless going beyond what was agreed.
 "@
 
-# #307: Codex (codex-cli 0.167.0, measured 2026-11-13) does not put the MCP server instructions into the
-# model context, so the flow card the TcAuto MCP server sends is appended here (one source:
-# mcp-server/instructions.md, never a copy of its text in this script).
+# #310: Codex does not put MCP server instructions into the model context (codex-cli 0.167.0). The flow card
+# and the task topics come from the TcAuto MCP tool GetGuide (its description tells the model to read
+# GetGuide('start') first); without MCP they are the files below. One source: never a copy of their text here.
 $flowCard = Join-Path $scriptRoot 'mcp-server\instructions.md'
-if (Test-Path -LiteralPath $flowCard) {
-    $agentsContent += "`n`n" + ([IO.File]::ReadAllText($flowCard, [Text.Encoding]::UTF8)).Trim()
-}
-else {
-    Write-Host "  [WARN] $flowCard not found: AGENTS.md without the TcAuto flow card" -ForegroundColor Yellow
+$guideDir = Join-Path $scriptRoot 'mcp-server\guide'
+$agentsContent += "`n`n## TcAuto flow card and topics`n- MCP (TcAuto server): call GetGuide('start') before the first TcAuto call; before a task GetGuide('<topic>') (deploy, change-code, recovery, consent, ...).`n- PowerShell module only: read $flowCard and the topic files in $guideDir."
+if (-not (Test-Path -LiteralPath $flowCard)) {
+    Write-Host "  [WARN] $flowCard not found: the flow card pointer in AGENTS.md leads nowhere" -ForegroundColor Yellow
 }
 
 # Check if existing AGENTS.md belongs to us or to another project

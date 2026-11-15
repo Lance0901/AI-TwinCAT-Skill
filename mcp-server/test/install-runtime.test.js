@@ -51,6 +51,7 @@ function makeRepo() {
   put(path.join(repo, 'mcp-server', 'launcher', 'tcauto-launcher.mjs'), fs.readFileSync(LAUNCHER, 'utf8'));
   put(path.join(repo, 'mcp-server', 'index.js'), '// fixture index\n');
   put(path.join(repo, 'mcp-server', 'instructions.md'), '# fixture flow card\n'); // #307: required source file
+  put(path.join(repo, 'mcp-server', 'guide', 'deploy.md'), '# deploy: fixture topic\n'); // #310: GetGuide topics ship in the runtime
   put(path.join(repo, 'mcp-server', 'package.json'), '{"name":"fixture","type":"module"}\n');
   put(path.join(repo, 'mcp-server', 'package-lock.json'), '{}\n');
   put(path.join(repo, 'mcp-server', 'lib', 'a.js'), 'export const a = 1;\n');
@@ -118,7 +119,7 @@ describe('Install-TcAutoRuntime.ps1 (#162)', { skip: !isWin && 'Windows only' },
     const ver = head.slice(0, 12);
     assert.equal(result.data.version, ver);
     const dir = path.join(root, 'runtime', ver);
-    for (const f of ['mcp-server\\index.js', 'mcp-server\\instructions.md', 'mcp-server\\lib\\a.js', 'mcp-server\\launcher\\tcauto-launcher.mjs', 'mcp-server\\package-lock.json', 'src\\TwinCATAutomation\\TwinCATAutomation.psm1', 'src\\TwinCATAutomation\\Private\\p.ps1']) {
+    for (const f of ['mcp-server\\index.js', 'mcp-server\\instructions.md', 'mcp-server\\guide\\deploy.md', 'mcp-server\\lib\\a.js', 'mcp-server\\launcher\\tcauto-launcher.mjs', 'mcp-server\\package-lock.json', 'src\\TwinCATAutomation\\TwinCATAutomation.psm1', 'src\\TwinCATAutomation\\Private\\p.ps1']) {
       assert.ok(fs.existsSync(path.join(dir, f)), f);
     }
     assert.ok(!fs.existsSync(path.join(dir, 'mcp-server', 'test')), 'test/ not installed');
