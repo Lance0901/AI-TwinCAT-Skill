@@ -35,7 +35,8 @@ export const RUNTIME_TOOLS = new Set([
 // One fixed English sentence per gate (never text from the agent).
 const EFFECT = {
   InstallPackage: 'tcpkg installs or changes TwinCAT software on this PC (IDEs must be closed; the change affects every TwinCAT project on this PC).',
-  AddAdsRoute: 'An ADS route is added on this PC (and on the target when it is a project route), so this PC can reach that target.',
+  // Add-TcAdsRoute.ps1 help (TE1000 AddRoute / AddProjectRoute)
+  AddAdsRoute: 'An ADS route is added: with ProjectRoute=true only into the project; otherwise into the route tables of the systems, using the credentials of the remote system.',
   InstallLibrary: 'A PLC library is installed into a library repository on this PC.',
   UninstallLibrary: 'A PLC library is removed from a library repository on this PC; projects that use it may no longer build.',
   ResetSolution: 'The solution is closed and reopened WITHOUT saving: unsaved changes in the IDE are lost.',
@@ -187,7 +188,7 @@ export function consentErrorResult(tool, reason, extra = {}) {
       success: false,
       error: {
         code: 'CONSENT_DECLINED',
-        message: `${t} NOT RUN: the user did not approve it in the confirmation form. Nothing was changed.`,
+        message: `${t} NOT RUN: the confirmation form was not approved (the user declined or closed it, or the client cancelled it on its own, as headless clients such as claude -p do). Nothing was changed.`,
         hint: `Do not retry it on your own and do not work around it with another tool. Ask the user what to do; call ${t} again only when the user wants it (the form will ask again). ${selfRunHint(tool, extra.plan)}`
       },
       data

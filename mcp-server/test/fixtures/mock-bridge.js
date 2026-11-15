@@ -123,10 +123,25 @@ function result(id, body) {
   write({ id, event: 'result', ...body });
 }
 
+function mockTargetKind(params) {
+  // #307: stand-in for our own bridge.ps1 Resolve-BridgeTargetKind (not TwinCAT behaviour): params.AmsNetId,
+  // else the ADS NetId (the mock keeps no IDE target); the kind is a fixed table here
+  const netId = typeof params?.AmsNetId === 'string' && params.AmsNetId !== '' ? params.AmsNetId : (state.amsNetId ?? null);
+  const kind = netId === null ? ['unknown', 'no-amsnetid'] : netId === '199.5.42.250.1.1' ? ['local-umrt', 'TcRegistry.xml:UmRT_Default'] : ['remote', 'no-local-match'];
+  return { amsNetId: netId, targetKind: kind[0], targetKindSource: kind[1] };
+}
+
 function handleCall(req) {
   const { id, cmdlet, params = {} } = req;
   if (!CMDLETS.includes(cmdlet)) {
     return result(id, { success: false, error: { code: 'INVALID_CMDLET', message: `${cmdlet} is not exported` } });
+  }
+  // #258: like bridge.ps1 Invoke-OpCall, re-resolve the consented target before running anything
+  if (req.consentTarget) {
+    const now = mockTargetKind(req.consentTarget.params);
+    if (now.amsNetId !== req.consentTarget.amsNetId || now.targetKind !== req.consentTarget.targetKind) {
+      return result(id, { success: false, error: { code: 'CONSENT_REQUIRED', message: `${cmdlet} NOT RUN: the target changed after the consent check.` }, data: { notRun: true, consent: 'target-changed', amsNetId: now.amsNetId, targetKind: now.targetKind } });
+    }
   }
   if (process.env.MOCK_BRIDGE_CALL_LOG) fs.appendFileSync(process.env.MOCK_BRIDGE_CALL_LOG, `${cmdlet}\n`);
   if (params.Hang === true) return; // never answers
@@ -278,11 +293,7 @@ rl.on('line', (line) => {
     }
     case 'targetkind': {
       if (process.env.MOCK_BRIDGE_TARGETKIND_FAIL === '1') return result(id, { success: false, error: { code: 'EXECUTION_ERROR', message: 'mock: targetkind failed' } });
-      // #307: stand-in for our own bridge.ps1 Invoke-OpTargetKind (not TwinCAT behaviour): params.AmsNetId,
-      // else the ADS NetId (the mock keeps no IDE target); the kind is a fixed table here
-      const netId = typeof req.params?.AmsNetId === 'string' && req.params.AmsNetId !== '' ? req.params.AmsNetId : (state.amsNetId ?? null);
-      const kind = netId === null ? ['unknown', 'no-amsnetid'] : netId === '199.5.42.250.1.1' ? ['local-umrt', 'TcRegistry.xml:UmRT_Default'] : ['remote', 'no-local-match'];
-      return result(id, { success: true, data: { amsNetId: netId, targetKind: kind[0], targetKindSource: kind[1] } });
+      return result(id, { success: true, data: mockTargetKind(req.params) });
     }
     case 'modal': {
       // params.ProcessId overrides the pid the mock knows (like bridge.ps1 after a restart)

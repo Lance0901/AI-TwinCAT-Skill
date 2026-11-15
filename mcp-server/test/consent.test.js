@@ -313,6 +313,44 @@ describe('consent gate end to end: runtime targets', () => {
     assert.equal(h.asked.length, 2);
   });
 
+  test('the target changes while the form is open -> CONSENT_REQUIRED, nothing runs (review S1)', async () => {
+    const h2 = await start();
+    try {
+      await h2.call('ConnectAds', { AmsNetId: '5.4.4.4.1.1' });
+      // another call (not gated) switches the target before the user answers the form for 5.4.4.4.1.1
+      h2.answer = async () => {
+        await h2.call('ConnectAds', { AmsNetId: '5.9.9.9.1.1' });
+        return { action: 'accept', content: { decision: 'approve' } };
+      };
+      h2.clearCalls();
+      const r = await h2.call('WriteVariable', { Path: 'MAIN.x', Value: 1 });
+      assert.equal(r.success, false);
+      assert.equal(r.error.code, 'CONSENT_REQUIRED');
+      assert.equal(r.data.consent, 'target-changed');
+      assert.match(h2.asked[0].message, /5.4.4.4.1.1/);
+      assert.ok(!h2.calls().includes('Write-TcVariable') && !h2.calls().some((c) => /Variable/.test(c)), h2.calls().join(','));
+    } finally {
+      await h2.client.close();
+    }
+  });
+
+  test('UmRT checked, then the target switches to a real machine before the call -> CONSENT_REQUIRED (review B1/S1)', async () => {
+    const h2 = await start();
+    try {
+      await h2.call('ConnectAds', { AmsNetId: '199.5.42.250.1.1' });
+      // the gate sees local-umrt (no form); a parallel call switches the ADS target in between
+      const [w] = await Promise.all([
+        h2.call('WriteVariable', { Path: 'MAIN.x', Value: 1 }),
+        h2.call('ConnectAds', { AmsNetId: '5.6.6.6.1.1' })
+      ]);
+      // either the write ran on the UmRT before the switch, or it was refused: never run on 5.6.6.6.1.1 unasked
+      if (w.success) assert.equal(h2.asked.length, 0);
+      else assert.equal(w.error.code, 'CONSENT_REQUIRED');
+    } finally {
+      await h2.client.close();
+    }
+  });
+
   test('a new server process (restart) asks again for the same target', async () => {
     const h2 = await start();
     try {

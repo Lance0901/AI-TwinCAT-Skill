@@ -43,6 +43,6 @@ Stop runtime-changing calls; report `error.code`, `error.message`, `data.steps` 
 | Deploy + run | `RunLifecycle`, or `BuildProject` → `EnableConfig Force=true` → `ConnectAds` |
 | Check PLC | `GetStatus`, `GetPlcState`, `ReadVariable` |
 | Test | `NewTestCase` → `RunTest` / `RunTestCycle` |
-| Finish | `DisconnectIde` (`Quit=true` only for an IDE you launched) |
+| Finish | `DisconnectIde` (`Quit=true` only for an IDE this session launched) |
 
 Tools with `DryRun` default to a dry-run: read `data`, then call with `DryRun=false`. `EnableConfig Force=true` already does Login, Download, Run: `PlcLogin`, `SendPlcProgram`, `SetSystemState`, `SetPlcState` are rarely needed. Error details: docs/troubleshooting.md in the TcAuto install.

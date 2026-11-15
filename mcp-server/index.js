@@ -383,7 +383,7 @@ async function bridgeQuery(op, params, signal) {
  * every time). ConnectIde ProcessId: an IDE TcAuto launched (ideprocess op: launch record) never
  * asks; any other asks once per pid + start time until DisconnectIde.
  */
-async function consentGate(name, params, signal) {
+async function consentGate(name, params, signal, pass = {}) {
   const gate = consentKind(name, params);
   if (!gate) return null;
   const refuse = (result) => ({ result, blockedBy: consentBlockedBy(gate) });
@@ -403,6 +403,10 @@ async function consentGate(name, params, signal) {
     const kd = await bridgeQuery('targetkind', q, signal);
     targetKind = typeof kd?.targetKind === 'string' && kd.targetKind !== '' ? kd.targetKind : 'unknown';
     amsNetId = typeof kd?.amsNetId === 'string' && kd.amsNetId.trim() !== '' ? kd.amsNetId.trim() : null;
+    // S1 (review): the bridge re-resolves the target in the call request itself and refuses with
+    // CONSENT_REQUIRED when it is no longer this one (a call queued in between changed it). Not for
+    // 'unknown': that form told the user the target is unknown, and a failed query cannot be re-checked.
+    if (targetKind !== 'unknown') pass.consentTarget = { params: q, amsNetId, targetKind };
     if (targetKind === 'local-umrt') return null;
     const memorable = amsNetId !== null && kd?.targetKindSource !== 'ads-ide-target-differ';
     if (memorable && consent.hasTarget(amsNetId)) return null;
@@ -437,7 +441,8 @@ async function callCatalogTool(name, args, signal, gateInfo = {}) {
   const validation = validateParams(tool, args);
   if (!validation.ok) return { success: false, error: validation.error };
   // #258: before anything reaches the bridge (also for the steps of a composite such as RunLifecycle)
-  const refused = await consentGate(name, validation.params, signal);
+  const pass = {};
+  const refused = await consentGate(name, validation.params, signal, pass);
   if (refused) {
     gateInfo.blockedBy = refused.blockedBy;
     return refused.result;
@@ -455,7 +460,7 @@ async function callCatalogTool(name, args, signal, gateInfo = {}) {
   const probe = startProbeFor(name, tool, token, probePid, prevIde, { mode, timeoutMs });
   let result;
   try {
-    result = await bridge.call('call', { cmdlet: tool.cmdlet, params: validation.params, timeoutMs, signal, token });
+    result = await bridge.call('call', { cmdlet: tool.cmdlet, params: validation.params, timeoutMs, signal, token, consentTarget: pass.consentTarget });
   } finally {
     probe.stop(); // fire-and-forget: the result does not wait for the probe process to exit
   }
@@ -496,6 +501,8 @@ function makeContext(signal, parentSeq = null) {
     },
     baseModulePath,
     onModuleReloaded: (modulePath) => {
+      // ReloadModule disconnects the IDE like DisconnectIde (#258 review S4): ask again for an IDE TcAuto did not launch
+      consent.clearIdes();
       // the modal probe dot-sources the UIA scan of the loaded module unless it was set explicitly
       if (!process.env.TWINCAT_MCP_PROBE_SCAN_SCRIPT) config.modalProbe.scanScript = scanScriptFor(modulePath);
     }

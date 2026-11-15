@@ -518,6 +518,23 @@ function Invoke-OpCall {
         return New-ErrorResult -Code 'INVALID_PARAMS' -Message "Parameter conversion failed: $($_.Exception.Message)"
     }
 
+    # #258 review S1: the consent gate resolved the target in an earlier request (op targetkind);
+    # a call queued in between (SetTarget, ConnectAds, OpenProject, ...) may have changed it. Re-resolve
+    # it here, in the same request that runs the cmdlet, and refuse when it is no longer that target.
+    $ctp = $Request.PSObject.Properties['consentTarget']
+    if ($null -ne $ctp -and $null -ne $ctp.Value) {
+        $ct = $ctp.Value
+        $q = $null
+        $qp = $ct.PSObject.Properties['params']
+        if ($null -ne $qp) { $q = $qp.Value }
+        $now = (Invoke-OpTargetKind -Request ([PSCustomObject]@{ params = $q })).data
+        $wantId = [string]$ct.amsNetId
+        $wantKind = [string]$ct.targetKind
+        if ([string]$now.amsNetId -ne $wantId -or [string]$now.targetKind -ne $wantKind) {
+            return New-ErrorResult -Code 'CONSENT_REQUIRED' -Message "$cmdletName NOT RUN: the target changed after the consent check (was $wantId $wantKind, now $([string]$now.amsNetId) $([string]$now.targetKind)). Nothing was changed." -Hint 'Another call changed the target in between. Check the target (GetStatus), then call the tool again: it asks the user when the target is not the local UmRT.' -Data ([ordered]@{ notRun = $true; consent = 'target-changed'; amsNetId = $now.amsNetId; targetKind = $now.targetKind })
+        }
+    }
+
     $objects = $null
     try {
         $objects = Invoke-Captured -Id $Id -Script { param($c, $s) & $c @s } -ArgumentList @($command, $splat)
@@ -750,9 +767,26 @@ function Invoke-OpTargetKind {
         if ($null -ne $a -and -not [string]::IsNullOrWhiteSpace([string]$a.Value)) { $id = [string]$a.Value; $explicit = $true }
     }
     $differ = $false
+    $ideUnreadable = $false
     if (-not $explicit) {
+        # #258 review B1: read the IDE target LIVE (GetTargetNetId, like Enable-TcConfig does), not the
+        # hint-only cache of Resolve-TcLifecycleIdeNetId: that cache is null after OpenProject /
+        # ResetSolution and stale after a target change in the XAE GUI. An IDE that is connected but
+        # whose target cannot be read gives unknown (never the ADS NetId in its place).
         $ide = $null
-        try { $ide = Invoke-InModule { Resolve-TcLifecycleIdeNetId } } catch { $ide = $null }
+        if ([bool](Get-ModuleVar 'TcIdeConnected')) {
+            try {
+                $ide = Invoke-InModule {
+                    $sm = Get-TcSysManager
+                    if ($null -eq $sm) { return $null }
+                    $v = [string](Invoke-TcComRetry -OperationName 'GetTargetNetId' -MaxRetries 2 -ScriptBlock { $sm.GetTargetNetId() })
+                    Save-TcIdeTargetNetId $v
+                    $v
+                }
+            }
+            catch { $ide = $null }
+            if ([string]::IsNullOrWhiteSpace([string]$ide)) { $ideUnreadable = $true }
+        }
         $ads = Get-ModuleVar 'TcAdsAmsNetId'
         $ideId = if ([string]::IsNullOrWhiteSpace([string]$ide)) { $null } else { ([string]$ide).Trim() }
         $adsId = if ([string]::IsNullOrWhiteSpace([string]$ads)) { $null } else { ([string]$ads).Trim() }
@@ -761,7 +795,8 @@ function Invoke-OpTargetKind {
     }
     # A module without Get-TcTargetKind (older than #307, loaded by ReloadModule) -> 'unknown'.
     $kind = 'unknown'; $source = 'match-failed'
-    if ($differ) { $source = 'ads-ide-target-differ' }
+    if ($ideUnreadable) { $source = 'ide-target-unreadable' }
+    elseif ($differ) { $source = 'ads-ide-target-differ' }
     else {
         try {
             $k = Invoke-InModule { param($n) Get-TcTargetKind -AmsNetId $n } @([string]$id)
