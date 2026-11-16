@@ -1,0 +1,18 @@
+{
+  "id": "1.1-fb-axis",
+  "title": "FB_Axis (NC axis PTP / Velocity / Home)",
+  "fixture": "1.1-base",
+  "solution": "AxisInterface_Type01_Library.sln",
+  "runtime": "UmRT_Default",
+  "prompt": "prompt.md",
+  "grade": "grade.ps1",
+  "claimKeywords": {
+    "1": ["bEnable", "bReady", "Enable", "致能", "使能"],
+    "2": ["bHome", "Home", "bHomed", "原點", "回原"],
+    "3": ["bMoveAbs", "PTP", "MoveAbs", "絕對", "定位"],
+    "4": ["bMoveVelo", "Velocity", "MoveVelo", "fVeloSet", "速度模式", "等速"],
+    "5": ["bStop", "Stop", "停止"],
+    "6": ["接手", "打斷", "中途", "override", "Override", "re-trigger", "Buffer", "新指令"],
+    "7": ["bReset", "nErrorId", "超速", "5000", "錯誤", "Reset"]
+  }
+}
