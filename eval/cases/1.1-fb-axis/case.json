@@ -12,7 +12,7 @@
     "3": ["bMoveAbs", "PTP", "MoveAbs", "絕對", "定位"],
     "4": ["bMoveVelo", "Velocity", "MoveVelo", "fVeloSet", "速度模式", "等速"],
     "5": ["bStop", "Stop", "停止"],
-    "6": ["接手", "打斷", "中途", "override", "Override", "re-trigger", "Buffer", "新指令"],
-    "7": ["bReset", "nErrorId", "超速", "5000", "錯誤", "Reset"]
+    "6": [["bMoveAbs", "MoveAbs", "PTP", "定位"], ["接手", "打斷", "中途", "中斷", "override", "Override", "re-trigger", "再下", "新指令", "新目標"]],
+    "7": ["超速", "5000", "超過最大", "超過 max", "max velocity", "最大速度", "Velo/Maximum"]
   }
 }
