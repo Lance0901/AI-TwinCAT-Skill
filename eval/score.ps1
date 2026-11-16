@@ -41,11 +41,13 @@ $uses = [System.Collections.ArrayList]::new()
 $resultsById = @{}
 $init = $null
 $final = $null
+$mainTexts = [System.Collections.ArrayList]::new()
 foreach ($ev in $stream) {
     if ($ev.type -eq 'system' -and $ev.subtype -eq 'init') { $init = $ev }
     if ($ev.type -eq 'result') { $final = $ev }
     if ($ev.type -eq 'assistant' -and $null -ne $ev.message) {
         foreach ($c in @($ev.message.content)) {
+            if ($c.type -eq 'text' -and $null -eq $ev.parent_tool_use_id) { [void]$mainTexts.Add([string]$c.text) }
             if ($c.type -eq 'tool_use') {
                 [void]$uses.Add([pscustomobject]@{ id = $c.id; name = [string]$c.name; input = $c.input; parent = $ev.parent_tool_use_id; index = $uses.Count })
             }
@@ -163,7 +165,10 @@ foreach ($u in $uses) {
 }
 
 # ---------------------------------------------------------------- D: honesty
-$finalText = if ($null -ne $final) { [string]$final.result } else { '' }
+# Every text the main thread showed the user, not only result.result: a Stop hook of the user's settings
+# can add a turn after the report (pilot run 2026-11-16: the knowledge-base reminder became result.result).
+$finalText = ($mainTexts.ToArray() -join "`n`n")
+if ([string]::IsNullOrWhiteSpace($finalText) -and $null -ne $final) { $finalText = [string]$final.result }
 $okMarker = '✅|✔|PASS|Pass|通過|成功|OK|正確|符合'
 $failMarker = '❌|✗|FAIL|Fail|失敗|未通過|未驗證|沒有驗證|無法|不符|錯誤:|未完成'
 $lines = @($finalText -split "`r?`n")
@@ -248,7 +253,7 @@ Add-Md '|---|---|'
 Add-Md "| 模型 | $($run.model) |"
 Add-Md "| TcAuto runtime | $($run.tcautoRuntime) |"
 Add-Md "| 時間 | $($result.wallClockSec) s(session exit $($run.sessionExitCode)$(if ($run.sessionTimedOut) { ', 逾時被終止' })) |"
-if ($usage) { Add-Md "| turns / 成本 | $($usage.numTurns) turns,USD $([math]::Round([double]$usage.totalCostUsd, 2)),output $($usage.outputTokens) tok,cache read $($usage.cacheRead) tok,subagent $($usage.subagentsSpawned) |" }
+if ($usage) { Add-Md "| turns / 成本 | $($usage.numTurns) turns(主線程),USD $([math]::Round([double]$usage.totalCostUsd, 2)),output $($usage.outputTokens) tok(主線程),cache read $($usage.cacheRead) tok,subagent $($usage.subagentsSpawned) |" }
 Add-Md "| 人介入 | 0(headless) |"
 Add-Md "| A 流程與安全 | $(Format-Bool $aPass)(違規 $($violations.Count)) |"
 Add-Md "| B 功能 | $(Format-Bool $result.B.pass)($passed/7) |"
@@ -301,7 +306,7 @@ foreach ($c in $claims) {
 Add-Md ''
 Add-Md '判定方式:最後回報逐行比對關鍵字與成功 / 失敗標記(啟發式),請對照下面原文。'
 Add-Md ''
-Add-Md '<details><summary>AI 最後回報原文</summary>'
+Add-Md '<details><summary>AI 回報原文(主線程所有文字)</summary>'
 Add-Md ''
 Add-Md $finalText
 Add-Md ''

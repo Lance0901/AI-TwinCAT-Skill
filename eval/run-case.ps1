@@ -164,6 +164,7 @@ if ($reuse) {
     Write-Step "session start: $ClaudePath $($claudeArgs -join ' ') < prompt.txt (timeout $TimeoutMin min)"
     $proc = Start-Process -FilePath $ClaudePath -ArgumentList $claudeArgs -WorkingDirectory $RunDir -NoNewWindow -PassThru `
         -RedirectStandardInput $promptFile -RedirectStandardOutput (Join-Path $evalDir 'stream.jsonl') -RedirectStandardError (Join-Path $evalDir 'stderr.txt')
+    $null = $proc.Handle   # PS 5.1: without reading Handle once, ExitCode stays empty after -NoNewWindow + redirects
     $run.sessionPid = $proc.Id
     if (-not $proc.WaitForExit($TimeoutMin * 60 * 1000)) {
         $run.sessionTimedOut = $true
