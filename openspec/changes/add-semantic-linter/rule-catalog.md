@@ -61,14 +61,14 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | SCAN-TIMER-004 | Timer `PT` 從未設定 / `IN` 恆為常數 FALSE | behavior | no | PT:high / IN:medium | false | — | 2 |
 | SCAN-TIMER-005 | 狀態 timer(TON / LTON):只在單一 CASE 的分支內以 `IN := TRUE` 呼叫,離開時沒有 `IN := FALSE` | behavior | no | medium | false | — | 2 |
 | PROJECT-SA-001 | 專案沒啟用 TE1200 Light 的關鍵規則 | behavior | no | high | false | SA0004 / 0006 / 0167 | 2(視 Phase 1a 量測) |
-| SCAN-SM-001 | 狀態被賦值成 CASE 沒有的值,且 CASE 無 ELSE | behavior | no | high | false | 部分相關:SA0076(Full) | 3 |
+| SCAN-SM-001 | 狀態被賦值成 CASE 沒有的值,且 CASE 無 ELSE(等於初值 = 閒置狀態,不報) | behavior | no | high | false | 部分相關:SA0076(Full);SA0075(Full,CASE 無 ELSE) | 3a(PR #304) |
 | SCAN-MC-001 | MC FB 只在條件內呼叫 / `Execute` 設 TRUE 後從不設 FALSE | behavior | no | medium | false | — | 3 |
 | SCAN-MC-002 | MC_Move* 只在單一狀態呼叫,物件內沒有 MC_Stop / MC_Halt | behavior | no | medium | false | — | 3 |
-| SCAN-REF-001 | REFERENCE / POINTER 可能未初始化就解參照 | crash(推論,解參照後果未驗證) | no | medium | false | SA0039 / SA0145(Full) | 3 |
-| SCAN-FBVAL-001 | FB 以值傳遞(`VAR_INPUT` 的型別是 FB) | behavior | no | high | false | 部分相關:SA0014(Full) | 3 |
-| SCAN-OUT-001 | 同一輸出多處寫入 / 跨 task 寫入 | behavior | no | medium | false | SA0004 / SA0006(Light) | 3 |
-| SCAN-FLOAT-001 | REAL / LREAL 用 `=` / `<>` 比較 | behavior | no | medium | false | SA0054(Full) | 3 |
-| SCAN-INTDIV-001 | 整數除法結果才轉 REAL | behavior | no | medium | false | SA0020 / SA0057(Full) | 3 |
+| SCAN-REF-001 | REFERENCE / POINTER 可能未初始化就解參照 | crash(**實測** 2026-11-13:page fault,TwinCAT system 進 Exception,本機 UmRT 行程之後就算重新 Activate 也會 crash,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 7.2 / 8 節) | measured:2026-11-13 no | medium | false | SA0039 / SA0145(Full) | 3a(PR #304) |
+| SCAN-FBVAL-001 | FB 以值傳遞(`VAR_INPUT` 的型別是 FB)且 callee 呼叫 / 改寫這個複本 | behavior | no | high | false | 部分相關:SA0014(Full) | 3a(PR #304) |
+| SCAN-OUT-001 | 同一輸出多處寫入 / 跨 task 寫入 | behavior | no | medium | false | SA0004 / SA0006(Light) | **不做**(Light 涵蓋;剩餘部分延後,見 Phase 3a 細節) |
+| SCAN-FLOAT-001 | REAL / LREAL 用 `=` / `<>` 與非零常數比較 | behavior | no | medium | false | SA0054(Full) | 3a(PR #304) |
+| SCAN-INTDIV-001 | 整數除法結果才轉 REAL | behavior | no | medium | false | SA0020 / SA0057(Full) | 3a(PR #304) |
 | CONTRACT-ITF-001/002 | Interface 成員缺漏 / 簽章不同 | none(推論編譯器擋) | yes(推論,待 4.0 實測) | high | 實測後定 | — | 4 |
 | CONTRACT-ENUM-001/002 | 相對 baseline:enum 成員刪除 / 數值改變 | behavior(HMI / ADS / PERSISTENT 語意) | no | high | true | — | 4 |
 | CONTRACT-DUT-001 | 相對 baseline:STRUCT layout 改變 | behavior | no | high | true | — | 4 |
@@ -292,11 +292,51 @@ TwinCAT 行為沒有 InfoSys 出處的一律標「未驗證」,並在 tasks.md �
 | SCAN-SM-001 | 狀態變數被賦值成 CASE 沒有的值、CASE 無 ELSE → 那個狀態什麼都不做,機台停住 | CASE selector 是單一變數;收集 `sel := <常數 / enum 成員>`;與 CASE 標籤(含範圍)比對 | 刻意的「閒置」狀態(值存在但不需動作) | 不依賴 TwinCAT 特有行為 |
 | SCAN-MC-001 | MC FB 只在條件內呼叫,或 `Execute` 設 TRUE 後全物件沒有設 FALSE → 下一次命令沒有上升沿 | 型別目錄的 Tc2_MC2 FB;同 SCAN-TIMER-001 的條件分析 + Execute 賦值掃描 | 狀態機在單一狀態呼叫 MC FB 是常見寫法 | 上升沿:"The function block can only be triggered by a rising edge at the "Execute" input if the "Busy" output is FALSE."(https://infosys.beckhoff.com/content/1033/tcplclib_tc2_mc2/70043531.html);Busy 中停止呼叫的後果未驗證 |
 | SCAN-MC-002 | MC_Move* 在某狀態 Execute 後沒等 Done 就離開,也沒 MC_Stop / MC_Halt → 軸繼續動,程式以為停了(推論,未驗證) | MC_Move* 只在單一 CASE 分支呼叫,物件內沒有 MC_Stop / MC_Halt | 由外層 FB 統一停軸 | 同上;離開後軸是否繼續動未驗證(tasks 3.1 先查 InfoSys) |
-| SCAN-REF-001 | 未初始化的 REFERENCE / POINTER 解參照 → page fault、PLC 停機(推論;編譯器不擋 — 實測 2026-11-13([runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 8 節,Build 成功、這兩行無 error / warning);runtime 解參照後果 NOT RUN,**未驗證**) | `REFERENCE TO` 宣告在 VAR(非 IN_OUT),物件內沒有 `REF=` 也沒有 `__ISVALIDREF`;POINTER 做 `p^` 但沒有 `ADR(` 指派也沒有 `<> 0` 檢查 | 透過 FB_init / 外部指派 | `__ISVALIDREF` 出處見 st-syntax-inventory |
+| SCAN-REF-001 | 未初始化的 REFERENCE / POINTER 解參照 → page fault、TwinCAT system 進 Exception;本機 UmRT 行程之後就算重新 Activate 也會 crash(**實測** 2026-11-13,[runtime-semantics-measured.md](verification/runtime-semantics-measured.md) 第 7.2 / 8 節);編譯器不擋(同節,Build 成功、無 error / warning) | 見下方 Phase 3a 細節 | FB_init / Method / Property / 呼叫端設定(一律 rulesSkipped) | "TwinCAT initializes references (with 0)."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529458827.html);AND 不是守衛:"In contrast, TwinCAT always evaluates all operands if the IEC operator AND is used."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528923787.html) |
 | SCAN-FBVAL-001 | `VAR_INPUT fb : FB_X` 傳的是複本,呼叫只更新複本,狀態遺失 | VAR_INPUT 的型別在 FB 目錄內 | 刻意傳值只讀輸出 | 推論(IEC 傳值語意) |
 | SCAN-OUT-001 | 同一輸出多處無條件寫入,前面的條件被覆蓋;跨 task 寫入 | 同一 `AT %Q*` / VAR_OUTPUT 有兩處以上無條件指派;或分布在不同 task 可達的 POU | 預設值 + 條件覆寫的寫法 | SA0004 / SA0006(Light) |
 | SCAN-FLOAT-001 | `IF rPos = 100.0` 幾乎不成立,機台卡在等待 | 運算元型別是 REAL / LREAL(MVP 只處理區域變數與 literal) | 與 0.0 比較的初始化判斷 | SA0054(Full) |
 | SCAN-INTDIV-001 | `rRatio := nA / nB` 先截斷再轉換(推論,依 IEC 運算型別規則;InfoSys 出處待補) | 兩個整數運算元相除、結果指派給 REAL / LREAL | 刻意整數除法 | SA0020 / SA0057(Full) |
+
+### Phase 3a 細節(PR #304)
+
+共同原則同 Phase 2b:證明不了就記 `coverage.rulesSkipped`(reason 格式 `<reason>:<名稱>`,或每物件彙總一筆),不靜默 pass、不靠命名慣例猜型別。全部是 warning、`blockable: false`、進 `unresolved[]`(requiresDisposition)。語料逐筆判讀見 PR #304;`tests/Integration/lint-corpus.ps1` 固定逐筆清單,`tests/Integration/lint-seeded-3a.ps1` 植入各規則的典型錯誤與相似的合法寫法。
+
+#### SCAN-REF-001 REFERENCE / POINTER 可能未指派就解參照(warning,`machineImpact: crash`,影響已實測)
+- 候選:`REFERENCE TO`(沒有 `REF=` 初值)、`POINTER TO`(沒有初值或 `:= 0`),宣告在 FB / PROGRAM 的 VAR / VAR_STAT / VAR_OUTPUT(整個物件可見),或 FUNCTION / METHOD / accessor 的 VAR / VAR_TEMP(每次呼叫重新初始化,只看該段)。
+- 解參照:reference 除了 `__ISVALIDREF(r)` 與 `r REF= …` 以外的任何使用(讀、寫、`r.x`);pointer 的 `p^`。物件內(本體、Action、Method、accessor、FB_init)完全沒有指派、且使用沒有守衛 → 報第一個未守衛的使用(variant `reference-unassigned` / `pointer-unassigned`)。
+- 認得的守衛:IF / ELSIF 條件裡以 AND 連接的 `__ISVALIDREF(r)` / `p <> 0`(條件有 OR / XOR 不算);`IF NOT __ISVALIDREF(r) [OR …]` / `IF p = 0` 的 ELSE 與後續 ELSIF;頂層 `IF NOT __ISVALIDREF(r) [OR …] THEN … RETURN … END_IF` 之後;同一運算式 `__ISVALIDREF(r) AND_THEN` / `p <> 0 AND_THEN` 之後;同一段在使用之前的頂層無條件指派。`AND` 不是守衛 → 照報(InfoSys AND_THEN:"In contrast, TwinCAT always evaluates all operands if the IEC operator AND is used.",https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2528923787.html)。
+- rulesSkipped:`caller-provided`(VAR_INPUT / VAR_IN_OUT)、`assigned-elsewhere`(只在別段 / FB_init / Method / Property / 條件內指派)、`qualified-access`(專案任何地方 `x.r` 可能是 owner)、`inherited-use`(FB 被 EXTENDS)、`passed-or-aliased`(交給呼叫、ADR、`y REF= r`、宣告初值引用)、`guard-not-understood`(`__ISVALIDREF(r)` 存進 BOOL 等其他寫法)、`unanalysed-part` / `implementation-not-analyzed`。
+- 已知漏抓:不是頂層 IF 的 early return、呼叫端守衛、有效 reference 之後變無效。
+- 給 owner 決定:FUNCTION / METHOD 區域 VAR 的 REFERENCE 沒有任何 `REF=` 又沒守衛就讀,每次呼叫都必定是 0("TwinCAT initializes references (with 0).",https://infosys.beckhoff.com/content/1033/tc3_plc_intro/2529458827.html),判斷確定,可考慮升 blocking(本 PR 維持 warning)。
+
+#### SCAN-SM-001 狀態值沒有 CASE 標籤、CASE 無 ELSE(warning)
+- 候選:`CASE <單一識別字> OF`,識別字是 FB / PROGRAM 本身的 VAR / VAR_STAT / VAR_OUTPUT,型別是整數或專案內 ENUM。Method 區域變數不是候選;GVL / VAR_INPUT / VAR_IN_OUT → rulesSkipped `written-elsewhere`。
+- 標籤:literal、`a..b`、清單、專案 ENUM 成員(限定或不限定;沒寫值的成員從前一個 +1、第一個 0 —— IEC 規則,未查 InfoSys)、VAR CONSTANT / VAR_GLOBAL CONSTANT。任一標籤求不出 → `label-not-evaluable`,整個 selector 不報。
+- 值:本體 / Action / Method / accessor 的每個 `sel :=`;常數值不在任何 CASE(同 selector 可有多個 CASE)的標籤內、且沒有任何 CASE 帶 ELSE → 在指派處報 `value-not-handled`。
+- 不報:**等於初值的值**(明確初值;沒寫時整數 0、ENUM 第一個成員 —— 後者是 IEC 預設,未查 InfoSys → 記 `initial-value-implicit`)。理由:程式從初值開始,初值就是設計上的閒置狀態,由 CASE 外的程式離開(語料 `iStep := 0`、`IF bStart THEN iStep := 100`)。語料第一版沒有這條例外時 axis 報了 213 筆,幾乎都是回到 0。
+- rulesSkipped:`value-not-evaluable`(`sel := nNext`、`sel := sel + 1`、`fb(out => sel)`;已確定缺的常數值照報)、`qualified-access`、`passed-or-aliased`、`inherited-use`、`declared-in-base`、`selector-unresolved`、`selector-type-unknown`、`case-structure-not-understood`、`unanalysed-part`。
+- 已知漏抓 / 風險:初值本身沒有標籤不報;不可達的指派照報;刻意的「停車」狀態(錯誤後停住、等換 mode)會被報,需 suppression 寫理由。
+- 機台行為依據:CASE 沒有符合的標籤也沒有 ELSE 時不執行任何分支(IEC 61131-3 CASE 語意;InfoSys CASE 頁未逐字查證)。
+
+#### SCAN-FBVAL-001 FB 以值傳遞且 callee 改了複本(warning,impactBasis inferred)
+- VAR_INPUT 的型別是 FB(專案 FUNCTION_BLOCK 或 TypeCatalog.json;`ARRAY OF` 也算),而 callee 呼叫它(`fbIn(...)`、`fbIn.M()`,variant `copy-called`)或寫它的成員(`fbIn.x :=`,`copy-written`)→ 報在宣告處。InfoSys:"input and output parameters ... are copied in most cases when the function/method is called"(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/12081345291.html);「改的是複本、呼叫端看不到」由此推論,未實測。
+- 不報:只讀複本的輸出(複本就是呼叫當下的狀態,合法)、VAR_IN_OUT、`REFERENCE TO` / `POINTER TO`、interface、STRUCT / 基本型別。型別不在專案也不在目錄、且被呼叫 / 寫入 → rulesSkipped `unknown-type`;段落無法分析 → `implementation-not-analyzed`。
+
+#### SCAN-FLOAT-001 REAL / LREAL 與非零常數用 `=` / `<>` 比較(warning,impactBasis inferred)
+- 報(variant `constant`):一邊證明是 REAL / LREAL(變數、常數、帶小數點 / 指數的 literal、`REAL#`),另一邊是非零 literal / 常數;或一邊是非零 REAL literal。運算元只認 literal、typed literal、單純變數 / `GVL.變數`(前後要是運算式邊界),其他都是型別不明。
+- 不報:任一邊是 0 / 0.0 / 值為 0 的常數(初始化判斷)、`<` `>` `<=` `>=`、整數比較。**兩個變數**互比 → rulesSkipped `two-variables`(語料:`IF x1 = x2` 是除以 `x2 - x1` 前的守衛、`y = in` 是 ramp 已 `y := in`、`rOld <> rNew` 變化偵測;證明不了是錯)。REAL 變數與型別不明的運算元比較 → `operand-type-unknown`(每物件一筆)。
+
+#### SCAN-INTDIV-001 整數除法結果指派給 REAL / LREAL(warning,impactBasis inferred,**出處未驗證**)
+- `target := …` 目標證明是 REAL / LREAL,其中 `/` 兩邊都證明是整數(含括號內)→ `integer-division`。
+- 不報:任一邊 REAL(含 `INT_TO_REAL(a)` / `TO_LREAL(b)`)、目標整數、陣列索引內的 `/`、DIV / MOD、宣告初值。rulesSkipped(每物件每 reason 一筆):`explicit-conversion`(`TO_REAL(a / b)`)、`in-function-call`、`operand-type-unknown`、`target-type-unknown`。
+- 出處:PLC `/` 運算子的結果型別在 InfoSys 找不到明文;TF5100 NC I 的 DIV("If the return type is an integer type, the result is truncated towards zero.",https://infosys.beckhoff.com/content/1033/tf5100_tc3_nc_i/4189638667.html)是 NC 直譯器,不是 PLC → 依 IEC 61131-3 運算型別推論,待實測。
+
+#### SCAN-OUT-001 不做(Light 涵蓋)
+- SA0004(Light):"Determines outputs that are written at more than one position."、"No error is issued if an output variable is written in different branches of IF or CASE statements."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/21574443659.html)。
+- SA0006(Light):"Determines variables with write access from more than one task."、"Please note that calls are interpreted as write access."(https://infosys.beckhoff.com/content/1033/tc3_plc_intro/21574456203.html)。Light 規則清單與 "Execution is coupled to the compilation process":https://infosys.beckhoff.com/content/1033/tc3_plc_intro/21574414603.html。
+- 兩個子項(`%Q` 多處寫入、跨 task 寫入)都在 Light;自己做只會重複,而且同樣追不到 pointer / interface。客戶專案沒啟用 Light 的缺口交給 PROJECT-SA-001。
+- 可能的剩餘部分(延後,未證實是缺口):FB 的 VAR_OUTPUT 或沒有 `AT %Q` 的變數「前面的條件寫入被後面的無條件寫入蓋掉」—— InfoSys 沒說 SA0004 是否涵蓋 VAR_OUTPUT。先在有 Light 的環境實測 SA0004 對 VAR_OUTPUT / 無 AT 變數 /「無條件寫 + 另一處 IF 寫」的行為,確認漏報再只做窄版。
 
 ### Phase 4:CONTRACT-*、POLICY-*、ST-LLM-001
 - CONTRACT-ITF-001 / 002:編譯器擋(待實測),價值只剩寫入前;**compilerCatches = yes 的規則不進 `blockingRulesSkipped`**(review 第二輪 1-3:library Interface 會讓每次結果都 incomplete)。

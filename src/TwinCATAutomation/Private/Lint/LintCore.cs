@@ -47,7 +47,7 @@ namespace TcLintEngine
     // VS2022, 2026-11-13, openspec/changes/add-semantic-linter/verification/xae-corrupt-file-behavior.md) decided
     // it per variant, so variants that differ from the default pass their own severity / blockable where they are
     // emitted (LintEngine.cs). "pending" is left only for variants nothing measured.
-    public static class RuleRegistry
+    public static partial class RuleRegistry
     {
         private static readonly List<RuleMeta> rules = new List<RuleMeta>();
         private static readonly Dictionary<string, RuleMeta> byId = new Dictionary<string, RuleMeta>(StringComparer.Ordinal);
@@ -232,6 +232,8 @@ namespace TcLintEngine
             foreach (string id in new string[] { "SCAN-FBCALL-001", "SCAN-FBCALL-002", "SCAN-TIMER-001", "SCAN-TIMER-002", "SCAN-TIMER-004", "SCAN-TIMER-005" }) { RuleRegistry.Get(id).Phase = "2"; RuleRegistry.Get(id).Requires = "type-catalog"; }
             RuleRegistry.Get("SCAN-FBCALL-002").Te1200 = "SA0033 (Light, unused variables; FB instances not stated, not verified)";
             RuleRegistry.Get("SCAN-TIMER-001").Te1200 = "none (SA0105 Full needs an attribute, only related)";
+            // ---- Phase 3a (rule-catalog.md Phase 3): each registration lives next to its rule (LintRules3*.cs)
+            Register3Ref(); Register3Expr(); Register3Sm();
         }
 
         public static RuleMeta Get(string id)

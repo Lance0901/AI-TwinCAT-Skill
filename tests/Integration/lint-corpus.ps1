@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Local corpus regression of the semantic linter (#252 Phase 1a): runs Invoke-TcLintProject on the
     two corpus projects and compares with the expected findings. Read-only. Not in CI (the corpus
@@ -15,6 +15,7 @@
          axis: PROJECT-ENC-001 on exactly 11 files, PROJECT-GUID-005 on the hand-written Ids;
          bfh: only PROJECT-LINEIDS-001 on FB_Winder (LineIds 147 lines, code 148: changed outside XAE);
          Phase 1b: axis PROJECT-TASK-001 TestCam; Phase 2a: SAFETY-DIV-001 info axis 47 / bfh 1 (PR #284);
+         Phase 2b / 3a: the judged axis list of PR #289 / #304 (bfh none);
          no other PROJECT-* finding, verdict pass for both;
       3. deterministic: two runs byte-identical; en-US and zh-TW processes byte-identical;
       4. performance: analyse time per project (budget <= 2 s, design.md D7).
@@ -96,7 +97,17 @@ foreach ($k in $projects.Keys) {
         Check 'axis PROJECT-TASK-001 only TestCam (Phase 1b)' (($t1 -join ',') -eq 'TestCam') ($t1 -join ',')
         $div = @($diags | Where-Object { $_.ruleId -eq 'SAFETY-DIV-001' })
         Check 'axis SAFETY-DIV-001: 47 unchecked-variable-divisor infos, none blocking (Phase 2a)' ($div.Count -eq 47 -and @($div | Where-Object { $_.variant -ne 'unchecked-variable-divisor' -or $_.severity -ne 'info' -or $_.blocking }).Count -eq 0) "$($div.Count)"
-        $other = @($diags | Where-Object { @('PROJECT-ENC-001', 'PROJECT-GUID-005', 'PROJECT-TASK-001', 'SAFETY-DIV-001') -notcontains $_.ruleId })
+        # Phase 2b (PR #289, judged there): 3 unused FB instances, TestCam.R_14Eng only in IF. Phase 3a (PR #304, judged one by one):
+        # SCAN-SM-001 x 6 (FB_AdvancedHoming 10100 = done state without label; A02 error steps 9305 / 9325 / 9335 without handler;
+        # A03 900 / A04 20000 abort states only left by a mode change), SCAN-FLOAT-001 x 1 (lrAxisEncoderReferenceSys = 2: an
+        # NC parameter code in an LREAL, exact in practice - accepted false positive, needs a suppression); no REF / FBVAL / INTDIV
+        $later = @($diags | Where-Object { $_.ruleId -like 'SCAN-FBCALL-*' -or $_.ruleId -like 'SCAN-TIMER-*' -or @('SCAN-SM-001', 'SCAN-FLOAT-001', 'SCAN-REF-001', 'SCAN-FBVAL-001', 'SCAN-INTDIV-001') -contains $_.ruleId } |
+            ForEach-Object { "$($_.ruleId)|$($_.objectPath)|$($_.line)" } | Sort-Object)
+        $expectedLater = @('SCAN-FBCALL-002|FB_AxisControl|59', 'SCAN-FBCALL-002|FB_AxisControl|165', 'SCAN-FBCALL-002|MC_MoveAbsolute_Continue|30', 'SCAN-TIMER-001|TestCam|711',
+            'SCAN-SM-001|FB_AdvancedHoming|197', 'SCAN-SM-001|FB_AxisControl.A02_ModeAdvHoming|191', 'SCAN-SM-001|FB_AxisControl.A02_ModeAdvHoming|238', 'SCAN-SM-001|FB_AxisControl.A02_ModeAdvHoming|248',
+            'SCAN-SM-001|FB_AxisControl.A03_ModePosAbs|102', 'SCAN-SM-001|FB_AxisControl.A04_ModePosRel|61', 'SCAN-FLOAT-001|FB_AxisControl.A02_ModeAdvHoming|201') | Sort-Object
+        Check 'axis Phase 2b / 3a findings = the judged list (PR #289 / #304)' (($later -join ',') -eq ($expectedLater -join ',')) ($later -join ',')
+        $other = @($diags | Where-Object { @('PROJECT-ENC-001', 'PROJECT-GUID-005', 'PROJECT-TASK-001', 'SAFETY-DIV-001') -notcontains $_.ruleId -and $_.ruleId -notlike 'SCAN-FBCALL-*' -and $_.ruleId -notlike 'SCAN-TIMER-*' -and @('SCAN-SM-001', 'SCAN-FLOAT-001', 'SCAN-REF-001', 'SCAN-FBVAL-001', 'SCAN-INTDIV-001') -notcontains $_.ruleId })
         Check 'axis no other finding' ($other.Count -eq 0) (($other | ForEach-Object { "$($_.ruleId) $($_.objectPath) $($_.message)" }) -join ' | ')
     }
     else {
