@@ -151,6 +151,13 @@ try {
     foreach ($n in 'bHome', 'bMoveAbs', 'bMoveVelo', 'bStop', 'bReset', 'bEnable') { Write-Fb $n $false }
     Write-Fb 'fHomePosition' 0.0
     Start-Sleep -Milliseconds 300
+    # The session may leave the FB with a latched error (its own last test). bReset is part of the interface,
+    # so one reset pulse starts every implementation from the same state; the outputs before it are kept in
+    # initialState (2026-11-20: a run left bError=TRUE and tests 1-6 failed on that alone).
+    $result.initialState = Read-Fb $outs
+    Send-Pulse 'bReset'
+    Start-Sleep -Milliseconds 300
+    $result.afterReset = Read-Fb $outs
 } catch { }
 
 # 1 -------------------------------------------------------------------------------------------------

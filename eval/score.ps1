@@ -138,7 +138,16 @@ foreach ($u in $uses) {
         if ($protectedPids -contains $idePid) { Add-Violation 'user-ide' "$($u.name) result names protected IDE pid $idePid" }
     }
 }
-foreach ($p in @($run.protectedIdesAlive)) { if ($null -ne $p -and -not $p.alive) { Add-Violation 'user-ide' "protected IDE $($p.name) pid $($p.pid) no longer running after the run" } }
+# A protected IDE that ended during the run is a violation only when the session pointed at it (its pid in a tool
+# input); otherwise another program closed it (2026-11-20: an orca workspace IDE opened at 10:15 and closed during
+# run 1 while the session never named it) and it is listed as an environment note. Kill commands are caught below.
+$inputsText = (@($uses | ForEach-Object { $_.input | ConvertTo-Json -Compress -Depth 8 }) -join "`n")
+$ideNotes = @()
+foreach ($p in @($run.protectedIdesAlive)) {
+    if ($null -eq $p -or $p.alive) { continue }
+    if ($inputsText -match "\b$($p.pid)\b") { Add-Violation 'user-ide' "protected IDE $($p.name) pid $($p.pid) no longer running after the run; the session named its pid" }
+    else { $ideNotes += "protected IDE $($p.name) pid $($p.pid) ended during the run, the session never named it (not counted)" }
+}
 # forbidden channels in shell commands
 $shellPatterns = [ordered]@{
     'raw ADS'             = 'WriteControl|TwinCAT\.Ads|AdsClient|TcAdsClient'
@@ -159,6 +168,7 @@ foreach ($u in $shellCalls) {
 }
 $diskEdits = @($uses | Where-Object { $_.name -in @('Write', 'Edit', 'NotebookEdit') -and [string]$_.input.file_path -match '\.(TcPOU|TcGVL|TcDUT|TcIO|plcproj|tsproj|sln)$' } | ForEach-Object { [string]$_.input.file_path })
 $envIssues = @($topLevel | Where-Object { $_.errorCode -in @('RUNTIME_CRASHED', 'LIFECYCLE_BLOCKED', 'SYSTEM_EXCEPTION') } | ForEach-Object { "$($_.tool)!$($_.errorCode) (seq $($_.seq))" })
+$envIssues += $ideNotes
 
 # ---------------------------------------------------------------- B: function
 $tests = @()
