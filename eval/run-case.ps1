@@ -17,9 +17,22 @@
     TCAUTO_TRACE_FILE reaches the tcauto server both from the mcp-config "env" and from the environment of
     claude.exe (measured 2026-11-16, Claude Code 2.1.319, launcher runtime d3e8080); the harness sets both.
 
-    The session runs with --strict-mcp-config (no other MCP server) in the run folder, which is outside
-    this repository, so the repository CLAUDE.md is not loaded. The user's global ~/.claude (CLAUDE.md,
-    settings hooks, skills, plugins, output style) still is: run.json records what was there.
+    Isolation (default, owner decision 2026-11-20): the session gets what a team member would have, not the
+    personal setup of whoever runs the eval:
+      --strict-mcp-config --mcp-config _eval\mcp.json   only the tcauto MCP server (no claude.ai connectors,
+                                                        no other user / project MCP server)
+      --setting-sources project,local                   the user source (~/.claude/settings.json: hooks,
+                                                        outputStyle, enabledPlugins; ~/.claude/CLAUDE.md;
+                                                        ~/.claude/skills; ~/.claude/agents) is not loaded
+      <run>\.claude\skills\<TeamSkill>                  copies of the team skills (tcauto-team, st-standards),
+                                                        loaded as project skills
+    Login stays the normal one (no CLAUDE_CONFIG_DIR, no copied credentials; --bare is not usable because it
+    never reads the OAuth login). What --setting-sources user covers is measured (2026-11-20, Claude Code
+    2.1.319: the init event lists no user skill / agent, output_style default, no hook event) - the CLI
+    reference only says "Comma-separated list of setting sources to load (user, project, local)"
+    (https://code.claude.com/docs/en/cli-reference#cli-flags). -NoIsolation gives the pilot setup (the user's
+    ~/.claude loaded; run.json records what was there). Built-in skills / agents / plugins of Claude Code stay.
+    The run folder is outside this repository, so the repository CLAUDE.md is not loaded either way.
 
     Safety: IDE processes running before the session are recorded as protected and never touched. After
     the session, only devenv / TcXaeShell processes that started after the session started are closed.
@@ -39,6 +52,12 @@
     With -RunDir: keep the existing grade.json.
 .PARAMETER ClaudePath
     claude executable (default: claude on PATH).
+.PARAMETER TeamSkill
+    Team skills copied into <run>\.claude\skills (default tcauto-team, st-standards).
+.PARAMETER SkillSource
+    Folder that holds the team skills (default ~/.claude/skills; symbolic links are resolved, only read).
+.PARAMETER NoIsolation
+    Run like the pilot: the user's ~/.claude (CLAUDE.md, skills, hooks, output style) is loaded, no team skill copy.
 #>
 [CmdletBinding()]
 param(
@@ -49,7 +68,10 @@ param(
     [int]$TimeoutMin = 60,
     [string]$RunDir,
     [switch]$SkipGrade,
-    [string]$ClaudePath
+    [string]$ClaudePath,
+    [string[]]$TeamSkill = @('tcauto-team', 'st-standards'),
+    [string]$SkillSource = (Join-Path $env:USERPROFILE '.claude\skills'),
+    [switch]$NoIsolation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,10 +102,23 @@ if ($reuse) {
     if (-not (Test-Path -LiteralPath $fixture)) { throw "fixture not found: $fixture" }
     New-Item -ItemType Directory -Force -Path $evalDir | Out-Null
     Write-Step "copy $fixture -> $RunDir"
-    $null = & robocopy.exe $fixture $RunDir /E /A-:R /XD _Boot _CompileInfo .vs .tcauto-backup /XF '*.~u' /NFL /NDL /NJH /NJS /NP
+    $null = & robocopy.exe $fixture $RunDir /E /A-:R /XD _Boot _CompileInfo .vs .tcauto-backup /XF '*.~u' FIXTURE.txt /NFL /NDL /NJH /NJS /NP
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed with exit code $LASTEXITCODE" }
     Get-ChildItem -LiteralPath $RunDir -Recurse -File | Where-Object { $_.IsReadOnly } | ForEach-Object { $_.IsReadOnly = $false }
     $solution = Join-Path $RunDir $caseDef.solution
+
+    # team skills as project skills of the run folder (copies; the source is only read)
+    $teamSkills = @()
+    if (-not $NoIsolation) {
+        foreach ($name in $TeamSkill) {
+            $src = Get-Item -LiteralPath (Join-Path $SkillSource $name) -ErrorAction Stop
+            if ($src.LinkType -and $src.Target) { $src = Get-Item -LiteralPath @($src.Target)[0] -ErrorAction Stop }
+            $dst = Join-Path $RunDir ".claude\skills\$name"
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            Copy-Item -Path (Join-Path $src.FullName '*') -Destination $dst -Recurse -Force
+            $teamSkills += [ordered]@{ name = $name; source = $src.FullName; sha256 = (Get-FileHash -LiteralPath (Join-Path $dst 'SKILL.md') -Algorithm SHA256).Hash }
+        }
+    }
 
     # --- 2. prompt, MCP config ------------------------------------------------------------------------
     $promptText = [System.IO.File]::ReadAllText((Join-Path $caseDir $caseDef.prompt), [System.Text.Encoding]::UTF8)
@@ -107,7 +142,7 @@ if ($reuse) {
     # --- 3. snapshots before -------------------------------------------------------------------------
     $claudeHome = Join-Path $env:USERPROFILE '.claude'
     $contextFiles = @()
-    foreach ($f in @((Join-Path $claudeHome 'CLAUDE.md'))) {
+    foreach ($f in @($(if ($NoIsolation) { Join-Path $claudeHome 'CLAUDE.md' }))) {
         if (Test-Path -LiteralPath $f) { $contextFiles += [ordered]@{ path = $f; scope = 'user'; bytes = (Get-Item -LiteralPath $f).Length; sha256 = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash } }
     }
     $d = Get-Item -LiteralPath $RunDir
@@ -121,7 +156,7 @@ if ($reuse) {
     $hooks = $null
     try { $hooks = ([System.IO.File]::ReadAllText((Join-Path $claudeHome 'settings.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).hooks } catch { }
     $hookSummary = @()
-    if ($null -ne $hooks) {
+    if ($null -ne $hooks -and $NoIsolation) {
         foreach ($ev in $hooks.PSObject.Properties) {
             foreach ($h in @($ev.Value)) { foreach ($hh in @($h.hooks)) { $hookSummary += ('{0} [{1}] {2}' -f $ev.Name, $h.matcher, $hh.command) } }
         }
@@ -140,6 +175,7 @@ if ($reuse) {
         umrtAmsNetId       = (Get-EvalUmRtAmsNetId -Name $caseDef.runtime)
         protectedIdes      = @(Get-EvalIdeProcesses)
         umrtBefore         = @(Get-Process TcSystemServiceUm -ErrorAction SilentlyContinue | ForEach-Object { [ordered]@{ pid = $_.Id; startTime = $_.StartTime.ToString('o') } })
+        isolation          = $(if ($NoIsolation) { $null } else { [ordered]@{ settingSources = 'project,local'; strictMcpConfig = $true; teamSkills = $teamSkills } })
         contextFiles       = $contextFiles
         userHooks          = $hookSummary
         sessionStartedAt   = $null
@@ -158,6 +194,7 @@ if ($reuse) {
     if (-not $ClaudePath) { $ClaudePath = (Get-Command claude -ErrorAction Stop).Source }
     $claudeArgs = @('-p', '--model', $Model, '--permission-mode', 'bypassPermissions', '--strict-mcp-config',
         '--mcp-config', "`"$mcpFile`"", '--output-format', 'stream-json', '--verbose')
+    if (-not $NoIsolation) { $claudeArgs += @('--setting-sources', 'project,local') }
     $env:TCAUTO_TRACE_FILE = $traceFile
     $run.sessionStartedAt = (Get-Date).ToString('o')
     Write-EvalJson -InputObject $run -Path $runJsonPath

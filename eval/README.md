@@ -8,7 +8,8 @@ the repository); this folder holds the runnable part.
 
 | Path | What |
 |---|---|
-| `run-case.ps1` | One run end to end: fixture copy -> headless `claude -p` with only the tcauto MCP server -> `grade.ps1` -> close the IDEs the session opened -> `score.ps1` |
+| `run-case.ps1` | One run end to end: fixture copy -> headless `claude -p` in an isolated setup (only the tcauto MCP server and the team skills) -> `grade.ps1` -> close the IDEs the session opened -> `score.ps1` |
+| `fixtures/New-CleanProject.ps1` | Test-environment setup: builds the clean start project `clean-4026` from the XAE templates (own `TcXaeShell.DTE.17.0`, Automation Interface) |
 | `score.ps1` | Reads `trace.jsonl` + `stream.jsonl` + `grade.json` + `run.json` of a run, writes `result.json` and `report.md` |
 | `lib/EvalCommon.ps1` | Shared helpers (UmRT AmsNetId from `TcRegistry.xml`, JSONL reader, IDE process snapshot) |
 | `cases/<id>/case.json` | Fixture name, solution, runtime, claim keywords per acceptance test |
@@ -27,6 +28,16 @@ Before a run: the fixture exists below `C:\Temp\eval\fixtures\<fixture>` (read-o
 with the fixture program, no IDE of the eval is open. The registered `tcauto` (user scope in `~/.claude.json`)
 is what the session gets; `run.json` records its runtime commit.
 
+## Fixtures
+
+| Fixture | How it is built | Used by |
+|---|---|---|
+| `clean-4026` | `fixtures\New-CleanProject.ps1 -OutDir C:\Temp\eval\fixtures\clean-4026`: XAE templates, one TwinCAT project + Standard PLC project (empty `MAIN`, `PlcTask`), TcVersion 4026, solution platform `TwinCAT OS (x64)` | start point of every case fixture |
+| `1.1-clean` | `clean-4026` + with TcAuto: `AddNcTask`, `AddNcAxis Axis1` (max velocity 1000, acceleration 5000), `AddLibrary Tc2_MC2` (only for the type `AXIS_REF`; also keeps the ask-first `AddLibrary` out of the session), `AddGvl GVL_Axis` with `{attribute 'linkalways'}` (#316), `LinkNcAxis`, Build, Activate on the local UmRT | case 1.1 |
+| `1.1-base` | copy of `C:\Temp\Verify-4026-axis` (4 axes and `FB_AxisControl` already there: the answer leaks) | not used since 2026-11-20 |
+
+Each fixture folder has a `FIXTURE.txt` (steps, PLC objects, references); the run copy leaves it out.
+
 ## Scoring
 
 | Part | Source | Pass |
@@ -41,8 +52,17 @@ session loaded (`~/.claude/CLAUDE.md`, skills, agents, plugins, hooks, output st
 
 ## Known limits
 
-- The user's global `~/.claude` (CLAUDE.md, skills, hooks, output style) is loaded; the repository CLAUDE.md is
-  not (the run folder is outside the repository). Not isolated yet.
+- Isolation (default): `--strict-mcp-config --mcp-config` (only tcauto), `--setting-sources project,local` (the
+  user source with `~/.claude/CLAUDE.md`, `~/.claude/skills`, `~/.claude/agents`, hooks and output style of
+  `~/.claude/settings.json` is not loaded) and the team skills `tcauto-team`, `st-standards` copied into
+  `<run>\.claude\skills` (project skills, [docs](https://code.claude.com/docs/en/skills#choose-where-skills-load)).
+  The login stays the normal OAuth login: `--bare` would need `ANTHROPIC_API_KEY`
+  ([docs](https://code.claude.com/docs/en/headless#start-faster-with-bare-mode)) and `CLAUDE_CONFIG_DIR` would need
+  the credentials copied. The CLI reference does not say what the `user` source covers
+  ([docs](https://code.claude.com/docs/en/cli-reference#cli-flags)); measured 2026-11-20 (Claude Code 2.1.319): the
+  init event lists no user skill / agent, `output_style` default, no hook event, and the session answers that its
+  context has no personal rule. Built-in skills, agents and plugins of Claude Code stay. `-NoIsolation`
+  reproduces the pilot setup. The repository CLAUDE.md is not loaded (the run folder is outside it).
 - `TCAUTO_TRACE_FILE` reaches the server both from the mcp-config `env` and from the environment of `claude.exe`
   (measured 2026-11-16, Claude Code 2.1.319); the harness sets both.
 - D is a heuristic. A wrong keyword match shows up as `mentioned` / `claimed-pass` in the report; read the final text.

@@ -41,9 +41,11 @@ $uses = [System.Collections.ArrayList]::new()
 $resultsById = @{}
 $init = $null
 $final = $null
+$hookEvents = [System.Collections.ArrayList]::new()
 $mainTexts = [System.Collections.ArrayList]::new()
 foreach ($ev in $stream) {
     if ($ev.type -eq 'system' -and $ev.subtype -eq 'init') { $init = $ev }
+    if ($ev.type -eq 'system' -and $ev.subtype -eq 'hook_started') { [void]$hookEvents.Add([string]$ev.hook_name) }
     if ($ev.type -eq 'result') { $final = $ev }
     if ($ev.type -eq 'assistant' -and $null -ne $ev.message) {
         foreach ($c in @($ev.message.content)) {
@@ -239,6 +241,8 @@ $context = [ordered]@{
     plugins      = $(if ($init) { @($init.plugins | ForEach-Object { $_.name }) } else { @() })
     contextFiles = @($run.contextFiles)
     userHooks    = @($run.userHooks)
+    isolation    = $run.isolation
+    hookEvents   = @($hookEvents)
 }
 
 $aPass = ($violations.Count -eq 0)
@@ -340,12 +344,14 @@ Add-Md '</details>'
 Add-Md ''
 Add-Md '## 載入的環境'
 Add-Md ''
+Add-Md "- 隔離:$(if ($context.isolation) { "--setting-sources $($context.isolation.settingSources)、--strict-mcp-config、團隊 skill $(@($context.isolation.teamSkills | ForEach-Object { $_.name }) -join ', ')" } else { '無(使用者的 ~/.claude 全部載入)' })"
 Add-Md "- output style:$($context.outputStyle);MCP:$($context.mcpServers -join ', ')"
 Add-Md "- CLAUDE.md 類檔案:$(if ($context.contextFiles.Count) { (@($context.contextFiles) | ForEach-Object { "$($_.path)($($_.scope))" }) -join ', ' } else { '無' })"
 Add-Md "- skills($(@($context.skills).Count)):$(@($context.skills) -join ', ')"
 Add-Md "- agents:$(@($context.agents) -join ', ');plugins:$(@($context.plugins) -join ', ')"
 Add-Md "- user hooks:$(if (@($context.userHooks).Count) { '' } else { '無' })"
 foreach ($h in @($context.userHooks)) { Add-Md "  - ``$h``" }
+Add-Md "- stream 裡的 hook 事件:$(if ($context.hookEvents.Count) { $context.hookEvents -join ', ' } else { '無' })"
 Add-Md ''
 Add-Md "檔案:``$evalDir``(trace.jsonl、stream.jsonl、grade.json、result.json)"
 [System.IO.File]::WriteAllText((Join-Path $evalDir 'report.md'), ($md -join "`r`n"), [System.Text.UTF8Encoding]::new($false))

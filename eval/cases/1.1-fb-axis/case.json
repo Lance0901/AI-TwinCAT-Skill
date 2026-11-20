@@ -1,8 +1,9 @@
 {
   "id": "1.1-fb-axis",
   "title": "FB_Axis (NC axis PTP / Velocity / Home)",
-  "fixture": "1.1-base",
-  "solution": "AxisInterface_Type01_Library.sln",
+  "fixture": "1.1-clean",
+  "fixtureNote": "1.1-clean = clean-4026 (XAE templates) + NC task + Axis1 + GVL_Axis; 1.1-base (copy of Verify-4026-axis, has 4 axes and FB_AxisControl) is kept but not used",
+  "solution": "EvalProject.sln",
   "runtime": "UmRT_Default",
   "prompt": "prompt.md",
   "grade": "grade.ps1",
