@@ -33,7 +33,7 @@ is what the session gets; `run.json` records its runtime commit.
 | Fixture | How it is built | Used by |
 |---|---|---|
 | `clean-4026` | `fixtures\New-CleanProject.ps1 -OutDir C:\Temp\eval\fixtures\clean-4026`: XAE templates, one TwinCAT project + Standard PLC project (empty `MAIN`, `PlcTask`), TcVersion 4026, solution platform `TwinCAT OS (x64)` | start point of every case fixture |
-| `1.1-clean` | `clean-4026` + with TcAuto: `AddNcTask`, `AddNcAxis Axis1` (max velocity 1000, acceleration 5000), `AddLibrary Tc2_MC2` (only for the type `AXIS_REF`; also keeps the ask-first `AddLibrary` out of the session), `AddGvl GVL_Axis` with `{attribute 'linkalways'}` (#316), `LinkNcAxis`, Build, Activate on the local UmRT | case 1.1 |
+| `1.1-clean` | `clean-4026` + with TcAuto: `AddNcTask`, `AddNcAxis Axis1` (max velocity 1000, acceleration 5000), `AddLibrary Tc2_MC2` (only for the type `AXIS_REF`), `AddGvl GVL_Axis` with `{attribute 'linkalways'}` (#316), `LinkNcAxis`, Build, Activate on the local UmRT | case 1.1 |
 | `1.1-base` | copy of `C:\Temp\Verify-4026-axis` (4 axes and `FB_AxisControl` already there: the answer leaks) | not used since 2026-11-20 |
 
 Each fixture folder has a `FIXTURE.txt` (steps, PLC objects, references); the run copy leaves it out.
