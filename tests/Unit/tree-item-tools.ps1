@@ -145,6 +145,8 @@ function Reset-Mock {
     $global:T.ConsumeMode = 'apply'; $global:T.CreateMode = 'ok'; $global:T.DeleteMode = 'ok'; $global:T.ExportMode = 'ok'; $global:T.ImportMode = 'ok'
     $global:T.LookupThrows = $null
     $global:T.Produce = [System.Collections.ArrayList]::new(); $global:T.ProduceRecThrows = $null; $global:T.ParentMode = 'none'; $global:T.Dialog = $null
+    # #321: -TimeoutSec of every modal scan, and per-call answers (consumed first, then T.Dialog)
+    $global:T.ScanTimeouts = [System.Collections.ArrayList]::new(); $global:T.DialogSeq = [System.Collections.ArrayList]::new(); $global:T.Answered = [System.Collections.ArrayList]::new()
     foreach ($r in 'TIRT', 'TIPC', 'TIID') { $null = Add-MockNode $r }
     $null = Add-MockNode 'TIRT^PlcTask' 19 $taskXml
     $null = Add-MockNode 'TIPC^P' 56
@@ -167,7 +169,15 @@ Reset-Mock
     $script:TcSolutionPath = $args[0]
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:T.Sm }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $global:T.Dialog }
+    function script:Find-TcIdeModalDialog {
+        [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0)
+        $null = $global:T.ScanTimeouts.Add($TimeoutSec)
+        if ($global:T.DialogSeq.Count -gt 0) { $d = $global:T.DialogSeq[0]; $global:T.DialogSeq.RemoveAt(0); return $d }
+        $global:T.Dialog
+    }
+    # #321 fail closed: nothing may answer a dialog that a gate found
+    function script:Close-TcMessageBox { $null = $global:T.Answered.Add('Close-TcMessageBox'); $true }
+    function script:Close-TcReloadPrompt { $null = $global:T.Answered.Add('Close-TcReloadPrompt'); $true }
 } $sln
 function Backups { @(Get-ChildItem -LiteralPath (Join-Path $work '.tcauto-backup') -Recurse -File -ErrorAction SilentlyContinue) }
 
@@ -709,6 +719,7 @@ try {
         @('export', (Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'review7-out.xti'))),
         @('import', (Import-TcTreeItem -Path 'TIRT' -FilePath $xti7 -Name 'Imp D' -DryRun $false)))
     foreach ($c in $r7) { Check "review7-dialog-before-$($c[0])" ($c[1].error.code -eq 'IDE_MODAL_DIALOG') (Json $c[1]) }
+    Check 'review7-dialog-not-answered' ($global:T.Answered.Count -eq 0) ($global:T.Answered -join ';')
     Check 'review7-dialog-nothing-called' ($global:T.Mods.Count -eq 0 -and $global:T.Exports.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 7') -and $global:T.Nodes['TIRT^PlcTask'].Xml -eq $taskXml) "mods=$($global:T.Mods -join ';') exports=$($global:T.Exports -join ';')"
     $global:T.Dialog = $null
     $comments = @('Set-TcTreeItemXml', 'New-TcTreeItem', 'Remove-TcTreeItem', 'Export-TcTreeItem', 'Import-TcTreeItem') | ForEach-Object {
@@ -949,6 +960,90 @@ try {
     $recHelp = [string](Get-Help Get-TcTreeItemXml -Parameter Recursive | Out-String)
     Check 'v28-6-recursive-help-measured' ($recHelp -notmatch 'excerpt \(5\.2\.1\.8\); not measured' -and $recHelp -match '2026-10-30') $recHelp
 
+    # --- #321: modal scan budget of ExportChild and of the DeleteChild backup ExportChild ---
+    # Mock basis: Find-TcIdeModalDialog is mocked (records -TimeoutSec, answers from T.DialogSeq / T.Dialog);
+    # NB1 2026-11-12 (issue #321): the fixed 5 s scan ran out before ExportChild and before the backup
+    # ExportChild of DeleteChild on an XAE solution with several PLC projects. Wall-clock bounds of the
+    # real scan: tests/Unit/modal-scan-incomplete.ps1 E5-E8.
+    function Scans { @($global:T.ScanTimeouts) -join ',' }
+    Reset-Mock
+    $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 's321-a.xti')
+    Check '321-export-default-30' ($res.success -and (Scans) -eq '30') "scans=$(Scans) $(Json $res)"
+    $global:T.ScanTimeouts.Clear()
+    $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 's321-b.xti') -ModalScanTimeoutSec 45
+    Check '321-export-passes-45' ($res.success -and (Scans) -eq '45') "scans=$(Scans)"
+    foreach ($v in 1, 60) {
+        $global:T.ScanTimeouts.Clear()
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work "s321-edge$v.xti") -ModalScanTimeoutSec $v
+        Check "321-export-edge-$v" ($res.success -and (Scans) -eq "$v") "scans=$(Scans)"
+    }
+    $null = Add-MockNode 'TIRT^Task 21' 19
+    $global:T.ScanTimeouts.Clear()
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 21' -ConfirmName 'Task 21'
+    Check '321-delete-dryrun-no-scan' ($res.success -and $res.data.dryRun -and (Scans) -eq '') "scans=$(Scans)"
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 21' -ConfirmName 'Task 21' -DryRun $false
+    Check '321-delete-default-30-both-gates' ($res.success -and $res.data.verified -and (Scans) -eq '30,30' -and $global:T.Exports.Count -eq 5) "scans=$(Scans) exports=$($global:T.Exports.Count) $(Json $res)"
+    $null = Add-MockNode 'TIRT^Task 22' 19
+    $global:T.ScanTimeouts.Clear()
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 22' -ConfirmName 'Task 22' -DryRun $false -ModalScanTimeoutSec 12
+    Check '321-delete-passes-12-both-gates' ($res.success -and (Scans) -eq '12,12') "scans=$(Scans)"
+    # other tree tools keep the 5 s default of the gate (#321 only changes ExportChild / DeleteChild)
+    $global:T.ScanTimeouts.Clear()
+    $res = Set-TcTreeItemXml -Path 'TIRT^PlcTask' -Xml '<TreeItem><TaskDef><Priority>21</Priority></TaskDef></TreeItem>' -DryRun $false
+    $r = & $mod { Get-TcTreeItemDialogResult -Operation 'x' }
+    Check '321-other-gates-keep-5' ((Scans) -eq '5,5' -and $null -eq $r) "scans=$(Scans)"
+    # range 1..60: the cmdlet refuses before anything is looked up, scanned or exported
+    foreach ($v in 0, 61, -1) {
+        Reset-Mock
+        $null = Add-MockNode 'TIRT^Task 23' 19
+        $e1 = $null; $e2 = $null; $e3 = $null
+        try { $null = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work "s321-r$v.xti") -ModalScanTimeoutSec $v } catch { $e1 = $_ }
+        try { $null = Remove-TcTreeItem -Path 'TIRT^Task 23' -ConfirmName 'Task 23' -DryRun $false -ModalScanTimeoutSec $v } catch { $e2 = $_ }
+        try { $null = & $mod { param($t) Get-TcTreeItemDialogResult -Operation 'x' -TimeoutSec $t } $v } catch { $e3 = $_ }
+        $isRange = { param($e) $null -ne $e -and $e.FullyQualifiedErrorId -like 'ParameterArgumentValidationError*' }
+        Check "321-range-refused-$v" ((& $isRange $e1) -and (& $isRange $e2) -and (& $isRange $e3) -and $global:T.ScanTimeouts.Count -eq 0 -and $global:T.Exports.Count -eq 0 -and $global:T.Mods.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 23')) "$($e1.FullyQualifiedErrorId) | $($e2.FullyQualifiedErrorId) | $($e3.FullyQualifiedErrorId)"
+    }
+    # fail closed: an incomplete scan (every reason) is never "no dialog": nothing exported / deleted
+    foreach ($reason in 'timeout', 'prepare-timeout', 'error') {
+        Reset-Mock
+        $null = Add-MockNode 'TIRT^Task 24' 19
+        $global:T.Dialog = & $mod { param($r) New-TcModalScanIncomplete -ProcessId 4242 -Reason $r -TimeoutSec 30 -ElapsedMs 30002 -Message 'mock' } $reason
+        $f = Join-Path $work "s321-inc-$reason.xti"
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath $f
+        Check "321-export-incomplete-$reason" ((-not $res.success) -and $res.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $res.data.scanComplete -eq $false -and $null -eq $res.data.dialog -and $res.data.modalScan.reason -eq $reason -and $res.data.exported -eq $false -and $global:T.Exports.Count -eq 0 -and -not (Test-Path -LiteralPath $f)) (Json $res)
+        $res = Remove-TcTreeItem -Path 'TIRT^Task 24' -ConfirmName 'Task 24' -DryRun $false
+        Check "321-delete-backup-gate-incomplete-$reason" ((-not $res.success) -and $res.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $res.data.modalScan.reason -eq $reason -and $global:T.Exports.Count -eq 0 -and $global:T.Mods.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 24') -and $null -eq $res.data.PSObject.Properties['writeCalled']) (Json $res)
+    }
+    Check '321-incomplete-not-answered' ($global:T.Answered.Count -eq 0) ($global:T.Answered -join ';')
+    # hint: names the cmdlet and the parameter that raises the budget; at 60 the fragment for the maximum
+    Reset-Mock
+    $global:T.Dialog = & $mod { New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec 30 -Message 'mock' }
+    $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 's321-h1.xti')
+    $h30 = [string]$res.error.hint
+    $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 's321-h2.xti') -ModalScanTimeoutSec 60
+    $h60 = [string]$res.error.hint
+    $frag = & $mod { $script:TcHintFragments }
+    $baseHint = & $mod { Get-TcErrorHint -Code 'MODAL_SCAN_INCOMPLETE' }
+    Check '321-hint-export' ($h30.StartsWith($baseHint) -and $h30.Contains('-ModalScanTimeoutSec 30') -and $h30.Contains('-ModalScanTimeoutSec 60') -and $h30.Contains('Export-TcTreeItem') -and $h30 -notmatch '<cmd>|<sec>') $h30
+    Check '321-hint-export-at-max' ($h60.StartsWith($baseHint) -and $h60.EndsWith($frag['MODAL_SCAN_INCOMPLETE_TREEITEM_MAX'].Replace('<cmd>', 'Export-TcTreeItem'))) $h60
+    $null = Add-MockNode 'TIRT^Task 25' 19
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 25' -ConfirmName 'Task 25' -DryRun $false -ModalScanTimeoutSec 20
+    Check '321-hint-delete' ($res.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $res.error.hint.Contains('Remove-TcTreeItem') -and $res.error.hint.Contains('-ModalScanTimeoutSec 20')) $res.error.hint
+    # the DeleteChild gate: backup export done, then an incomplete scan -> DeleteChild NOT called, node kept
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Task 26' 19
+    $null = $global:T.DialogSeq.Add($null)
+    $null = $global:T.DialogSeq.Add((& $mod { New-TcModalScanIncomplete -ProcessId 4242 -Reason 'timeout' -TimeoutSec 30 -Message 'mock' }))
+    $res = Remove-TcTreeItem -Path 'TIRT^Task 26' -ConfirmName 'Task 26' -DryRun $false
+    Check '321-delete-gate-incomplete-no-delete' ((-not $res.success) -and $res.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $res.error.message -match "DeleteChild 'TIRT\^Task 26'" -and $global:T.Exports.Count -eq 1 -and $null -ne $res.data.exportPath -and $global:T.Mods.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 26') -and $null -eq $res.data.PSObject.Properties['writeCalled'] -and (Scans) -eq '30,30') "scans=$(Scans) $(Json $res)"
+    # a dialog found by the longer scan: IDE_MODAL_DIALOG, not answered, nothing exported / deleted
+    Reset-Mock
+    $null = Add-MockNode 'TIRT^Task 27' 19
+    $global:T.Dialog = @{ Title = 'TcXaeShell'; Text = 'Assertion Failed (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 4242; Buttons = @(@{ Id = 1; Name = 'OK' }) }
+    $r1 = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 's321-d.xti')
+    $r2 = Remove-TcTreeItem -Path 'TIRT^Task 27' -ConfirmName 'Task 27' -DryRun $false
+    Check '321-dialog-refused-not-answered' ($r1.error.code -eq 'IDE_MODAL_DIALOG' -and $r2.error.code -eq 'IDE_MODAL_DIALOG' -and $global:T.Answered.Count -eq 0 -and $global:T.Exports.Count -eq 0 -and $global:T.Mods.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 27')) "$(Json $r1) | $(Json $r2)"
+
     # --- 2.7 hint table and tools.json ---
     $codes = 'TREEITEM_NOT_FOUND', 'TREEITEM_PATH_INVALID', 'TREEITEM_READ_FAILED', 'TREEITEM_ALREADY_EXISTS', 'TREEITEM_CREATE_FAILED', 'TREEITEM_VERIFY_FAILED',
         'TREEITEM_DELETE_NAME_MISMATCH', 'TREEITEM_DELETE_FAILED', 'TREEITEM_INVALID_VALUE', 'TREEITEM_BACKUP_FAILED', 'TREEITEM_EXPORT_FAILED', 'TREEITEM_IMPORT_FAILED', 'XML_MERGE_FAILED'
@@ -969,6 +1064,23 @@ try {
         Check "tools-json-$k" $ok ($t | ConvertTo-Json -Depth 3 -Compress)
     }
     $del = @($tools | Where-Object { $_.name -eq 'DeleteChild' })[0]
+    # #321: ModalScanTimeoutSec in the MCP schema; the node-side timeout covers the worst case at the
+    # schema maximum: per gate the prepare cap (60 s) + the scan, plus 60 s for lookups / backup / COM calls
+    $exp = @($tools | Where-Object { $_.name -eq 'ExportChild' })[0]
+    $prepCap = 60
+    foreach ($pair in @(@($exp, 1), @($del, 2))) {
+        $t = $pair[0]; $gates = $pair[1]
+        $ms = $t.inputSchema.properties.ModalScanTimeoutSec
+        $ok = ($null -ne $ms -and $ms.type -eq 'integer' -and $ms.minimum -eq 1 -and $ms.maximum -eq 60 -and $ms.default -eq 30 -and @($t.inputSchema.required) -notcontains 'ModalScanTimeoutSec')
+        Check "321-tools-json-$($t.name)-schema" $ok ($ms | ConvertTo-Json -Compress)
+        $need = $gates * ($prepCap + [int]$ms.maximum) * 1000 + 60000
+        Check "321-tools-json-$($t.name)-timeout-covers-scans" ([int]$t.timeoutMs -ge $need) "timeoutMs=$($t.timeoutMs) need=$need"
+    }
+    Check '321-tools-json-descriptions' ($exp.description -match 'MODAL_SCAN_INCOMPLETE' -and $exp.description -match 'ModalScanTimeoutSec' -and $del.description -match 'MODAL_SCAN_INCOMPLETE' -and $del.description -match 'ModalScanTimeoutSec') ''
+    # the 60 s prepare cap used above is the one of Find-TcIdeModalDialog (no module override set)
+    $prepDefault = & $mod { $script:TcUiaScanPrepareTimeoutSec }
+    $findSrc = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\Private\Find-TcIdeModalDialog.ps1') -Raw   # (the function itself is mocked here)
+    Check '321-prepare-cap-is-60' ($null -eq $prepDefault -and $findSrc -match '\$prepCapSec = 60') "TcUiaScanPrepareTimeoutSec=$prepDefault"
     Check 'tools-json-deletechild-confirmname-required' (@($del.inputSchema.required) -contains 'ConfirmName' -and @($del.inputSchema.required) -contains 'Path') (@($del.inputSchema.required) -join ',')
 }
 catch {

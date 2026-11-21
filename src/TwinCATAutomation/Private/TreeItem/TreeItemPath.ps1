@@ -550,14 +550,51 @@ function Get-TcTreeItemDialogResult {
         The operation that was NOT attempted (message).
     .PARAMETER Data
         Data attached to the result.
+    .PARAMETER TimeoutSec
+        Upper bound of the UI Automation scan (phase 2 of Find-TcIdeModalDialog), 1..60, default 5
+        (the Find-TcIdeModalDialog default; every caller that does not pass it keeps that). The
+        prepare phase (UIA load, type compile) is NOT part of it: it has its own cap
+        ($script:TcUiaScanPrepareTimeoutSec, default 60 s). A longer value only waits longer for a
+        slow scan; a scan that does not finish in time is still MODAL_SCAN_INCOMPLETE (#321).
+    .PARAMETER ScanIncompleteHint
+        Appended to the MODAL_SCAN_INCOMPLETE hint when the scan did not complete (caller-specific
+        next step, e.g. which parameter raises the scan time). Not used for a dialog.
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Operation, [Parameter()][object]$Data)
-    $dialog = Find-TcIdeModalDialog
+    param(
+        [Parameter(Mandatory)][string]$Operation,
+        [Parameter()][object]$Data,
+        [Parameter()][ValidateRange(1, 60)][int]$TimeoutSec = 5,
+        [Parameter()][string]$ScanIncompleteHint
+    )
+    $dialog = Find-TcIdeModalDialog -TimeoutSec $TimeoutSec
     if ($null -eq $dialog) { return $null }
+    # Incomplete scan (#42): unknown, never "no dialog" -> MODAL_SCAN_INCOMPLETE, nothing attempted.
+    if ((Test-TcModalScanIncomplete $dialog) -and -not [string]::IsNullOrWhiteSpace($ScanIncompleteHint)) {
+        $p = @{ Scan = $dialog; Operation = $Operation; HintSuffix = $ScanIncompleteHint }
+        if ($null -ne $Data) { $p['Data'] = $Data }
+        return New-TcModalScanIncompleteResult @p
+    }
     $p = @{ Dialog = $dialog; Operation = $Operation }
     if ($null -ne $Data) { $p['Data'] = $Data }
     return New-TcModalDialogResult @p
+}
+
+function Get-TcTreeItemScanTimeoutHint {
+    <#
+    .SYNOPSIS
+        MODAL_SCAN_INCOMPLETE hint suffix of the cmdlets with -ModalScanTimeoutSec (#321): the general
+        hint says "rescan, then rerun"; the rerun scans again with this call's budget, so it names the
+        parameter that raises it.
+    .PARAMETER Command
+        The cmdlet to rerun (the MCP server rewrites the name to the tool name).
+    .PARAMETER TimeoutSec
+        The ModalScanTimeoutSec of this call.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][int]$TimeoutSec)
+    $key = if ($TimeoutSec -lt 60) { 'MODAL_SCAN_INCOMPLETE_TREEITEM' } else { 'MODAL_SCAN_INCOMPLETE_TREEITEM_MAX' }
+    ([string]$script:TcHintFragments[$key]).Replace('<cmd>', $Command).Replace('<sec>', [string]$TimeoutSec)
 }
 
 function New-TcTreeItemErrorResult {

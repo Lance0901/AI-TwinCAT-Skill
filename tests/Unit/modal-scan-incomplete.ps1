@@ -1,4 +1,4 @@
-# Unit: #42 modal-dialog scan cold start and incomplete scans, no IDE / runtime needed.
+﻿# Unit: #42 modal-dialog scan cold start and incomplete scans, no IDE / runtime needed.
 #   A  no desktop-wide RootElement.FindAll left in the dialog scan; the Error List scan lists the
 #      IDE windows with EnumWindows (TcAutomation.UiaScanWindows) and keeps FindAll only as fallback
 #   B  the real scan against a pid without top-level windows (this process): complete, $null,
@@ -16,6 +16,7 @@
 #      E3 Disconnect-TcIde -Quit -> MODAL_SCAN_INCOMPLETE, Solution.Close / DTE.Quit not called,
 #         connection kept
 #      E4 tree-item gate (Get-TcTreeItemDialogResult) -> MODAL_SCAN_INCOMPLETE
+#   W  #321 ExportChild / DeleteChild gates with the real scan bounded by -ModalScanTimeoutSec (W1-W5)
 #   M  #234 the real scan against WPF fixture windows of a child process: the IDE main window (UIA
 #      AutomationId VisualStudioMainWindow) is never reported, also with a stale MainHwnd (M1-M6); read failures keep the old checks (M7)
 #   powershell.exe -NoProfile -File tests/Unit/modal-scan-incomplete.ps1
@@ -199,6 +200,101 @@ try {
 finally {
     & $mod { param($f) Set-Item -Path function:script:Find-TcIdeModalDialog -Value $f } $origFind
     & $mod { $script:TcIdeConnected = $false; $script:TcDte = $null; $script:TcIdeProcessId = $null }
+}
+
+# --- W (#321): ExportChild / DeleteChild gates with the REAL Find-TcIdeModalDialog, the scan script
+#     ($script:TcUiaDialogScan) mocked: -ModalScanTimeoutSec bounds the scan phase of each gate, and
+#     a whole DeleteChild call stays within 2 x (prepare + scan) + its COM calls.
+#     [推論] scan durations are chosen, not measured; NB1 2026-11-12 (issue #321) only showed the fixed
+#     5 s scan running out before ExportChild / the DeleteChild backup ExportChild. Each scan sleeps the
+#     next entry of the AppDomain-wide list 'tc321ScanMs' (the scan runs in its own runspace).
+#     W1 Export, scan 3 s, budget 1 s -> MODAL_SCAN_INCOMPLETE at ~1 s, nothing exported
+#     W2 Export, scan 2 s, budget 4 s -> exported (a budget above the scan time passes)
+#     W3 Delete, scans 2 s + 2 s, budget 4 s -> deleted; both gates scanned, total < 2 x 4 s + 3 s
+#     W4 Delete, scan 3 s, budget 1 s -> backup gate incomplete, no export, no delete
+#     W5 Delete, scans 1.5 s + 3 s, budget 2 s -> backup exported, DeleteChild gate incomplete, not
+#        deleted; total < 2 x 2 s + 3 s
+$wWork = Join-Path $env:TEMP ("tcauto-unit-msi321-{0}" -f [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $wWork -Force
+$wSln = Join-Path $wWork 'W.sln'
+Set-Content -LiteralPath $wSln -Value '' -Encoding ASCII
+$global:W = @{ Exports = 0; Deletes = 0; Nodes = @{} }
+function New-WNode([string]$Path) {
+    $n = [PSCustomObject]@{ Name = ($Path -split '\^')[-1]; PathName = $Path; ItemType = 19; ItemSubType = 0; ItemSubTypeName = 'TREEITEMTYPE_MOCK' }
+    $n | Add-Member ScriptProperty ChildCount { 0 }
+    $n | Add-Member ScriptMethod Child { param($i) $null }
+    $n | Add-Member ScriptMethod ProduceXml { param($rec) "<TreeItem><ItemName>$($this.Name)</ItemName><PathName>$($this.PathName)</PathName><ItemType>19</ItemType></TreeItem>" }
+    $n | Add-Member ScriptMethod ExportChild { param($nm, $file) $global:W.Exports++; Set-Content -LiteralPath $file -Value '<TreeItem/>' -Encoding ASCII }
+    $n | Add-Member ScriptMethod DeleteChild { param($nm) $global:W.Deletes++; $global:W.Nodes.Remove("$($this.PathName)^$nm") }
+    $global:W.Nodes[$Path] = $n
+}
+$wSm = New-Object PSObject
+$wSm | Add-Member ScriptMethod LookupTreeItem {
+    param($p)
+    if (-not $global:W.Nodes.ContainsKey($p)) { throw [System.Runtime.InteropServices.COMException]::new("Item '$p' not found", [int]0x98510001) }
+    Write-Output -NoEnumerate $global:W.Nodes[$p]
+}
+$global:W.Sm = $wSm
+function Reset-W([int[]]$ScanMs) {
+    $global:W.Exports = 0; $global:W.Deletes = 0; $global:W.Nodes = @{}
+    New-WNode 'TIRT'; New-WNode 'TIRT^Task W'
+    [AppDomain]::CurrentDomain.SetData('tc321ScanMs', $ScanMs)
+    [AppDomain]::CurrentDomain.SetData('tc321ScanIdx', 0)
+}
+$origAssert = & $mod { ${function:Assert-TcConnection} }
+$origGetSm = & $mod { ${function:Get-TcSysManager} }
+try {
+    & $mod {
+        param($sln)
+        $script:TcIdeProcessId = $PID; $script:TcIdeMainHwnd = 0; $script:TcSolutionPath = $sln
+        function script:Assert-TcConnection { }
+        function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:W.Sm }
+    } $wSln
+    Set-Scan {
+        param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false)
+        if ($PrepareOnly) { return }
+        $q = [int[]][AppDomain]::CurrentDomain.GetData('tc321ScanMs')
+        $i = [int][AppDomain]::CurrentDomain.GetData('tc321ScanIdx')
+        [AppDomain]::CurrentDomain.SetData('tc321ScanIdx', $i + 1)
+        Start-Sleep -Milliseconds $q[[Math]::Min($i, $q.Count - 1)]
+    }
+
+    Reset-W 3000
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Export-TcTreeItem -Path 'TIRT^Task W' -FilePath (Join-Path $wWork 'w1.xti') -ModalScanTimeoutSec 1
+    $ms = $sw.ElapsedMilliseconds
+    Check 'W1 #321 Export: scan over -ModalScanTimeoutSec -> MODAL_SCAN_INCOMPLETE at the budget, nothing exported' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.modalScan.reason -eq 'timeout' -and $r.data.modalScan.timeoutSec -eq 1 -and $global:W.Exports -eq 0 -and $ms -lt 2500) "$ms ms $(J $r)"
+
+    Reset-W 2000
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Export-TcTreeItem -Path 'TIRT^Task W' -FilePath (Join-Path $wWork 'w2.xti') -ModalScanTimeoutSec 4
+    $ms = $sw.ElapsedMilliseconds
+    Check 'W2 #321 Export: scan within -ModalScanTimeoutSec -> exported' ($r.success -and $r.data.exported -and $global:W.Exports -eq 1 -and $ms -ge 1900 -and $ms -lt 6000) "$ms ms $(J $r)"
+
+    Reset-W 2000
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false -ModalScanTimeoutSec 4
+    $ms = $sw.ElapsedMilliseconds
+    $scans = [int][AppDomain]::CurrentDomain.GetData('tc321ScanIdx')
+    Check 'W3 #321 Delete: both gates scan within the budget -> deleted, total < 2 x 4 s + 3 s' ($r.success -and $r.data.verified -and $global:W.Exports -eq 1 -and $global:W.Deletes -eq 1 -and $scans -ge 2 -and $ms -ge 3800 -and $ms -lt 11000) "$ms ms scans=$scans $(J $r)"
+
+    Reset-W 3000
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false -ModalScanTimeoutSec 1
+    $ms = $sw.ElapsedMilliseconds
+    Check 'W4 #321 Delete: backup gate over budget -> MODAL_SCAN_INCOMPLETE, no export, no delete' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.data.modalScan.timeoutSec -eq 1 -and $global:W.Exports -eq 0 -and $global:W.Deletes -eq 0 -and $global:W.Nodes.ContainsKey('TIRT^Task W') -and $ms -lt 4000) "$ms ms $(J $r)"
+
+    Reset-W 1500, 3000
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $r = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false -ModalScanTimeoutSec 2
+    $ms = $sw.ElapsedMilliseconds
+    Check 'W5 #321 Delete: DeleteChild gate over budget -> backup kept, not deleted, total < 2 x 2 s + 3 s' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.error.message -match 'DeleteChild' -and $global:W.Exports -eq 1 -and $null -ne $r.data.exportPath -and $global:W.Deletes -eq 0 -and $global:W.Nodes.ContainsKey('TIRT^Task W') -and $ms -ge 3400 -and $ms -lt 7000) "$ms ms $(J $r)"
+}
+catch { Check 'W unexpected exception' $false "$($_.Exception.Message) at $($_.InvocationInfo.ScriptLineNumber)" }
+finally {
+    & $mod { param($s, $a, $g) $script:TcUiaDialogScan = $s; Set-Item -Path function:script:Assert-TcConnection -Value $a; Set-Item -Path function:script:Get-TcSysManager -Value $g; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null } $origScan $origAssert $origGetSm
+    [AppDomain]::CurrentDomain.SetData('tc321ScanMs', $null)
+    Remove-Item -LiteralPath $wWork -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # M  #234: the real scan never reports the IDE main window as a dialog, also with a stale cached main

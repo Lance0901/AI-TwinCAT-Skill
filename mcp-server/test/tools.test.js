@@ -293,6 +293,27 @@ describe('cmdlet name rewriting in hints', () => {
       );
     });
 
+    // #321: the MODAL_SCAN_INCOMPLETE suffix of ExportChild / DeleteChild names the tool and its parameter
+    test('#321 MODAL_SCAN_INCOMPLETE_TREEITEM: -ModalScanTimeoutSec <n> and the cmdlet become tool syntax', () => {
+      assert.equal(
+        rw('這次的掃描上限是 -ModalScanTimeoutSec 30:用同樣參數加 -ModalScanTimeoutSec 60(上限)重跑 Export-TcTreeItem;reason'),
+        '這次的掃描上限是 ModalScanTimeoutSec=30:用同樣參數加 ModalScanTimeoutSec=60(上限)重跑 ExportChild;reason'
+      );
+      assert.equal(rw('先等機器負載降下來再重跑 Remove-TcTreeItem。'), '先等機器負載降下來再重跑 DeleteChild。');
+    });
+
+    // #321: computeTimeoutMs only reads TimeoutSec; the tools.json budget (worst case at
+    // ModalScanTimeoutSec=60: 1 / 2 gates x (60 s prepare + 60 s scan) + 60 s) is never lowered
+    test('#321 ExportChild / DeleteChild keep their tools.json timeout for any ModalScanTimeoutSec', () => {
+      for (const [name, gates] of [['ExportChild', 1], ['DeleteChild', 2]]) {
+        const t = catalogReal.get(name);
+        const need = gates * (60 + t.inputSchema.properties.ModalScanTimeoutSec.maximum) * 1000 + 60000;
+        assert.ok(t.timeoutMs >= need, `${name} timeoutMs ${t.timeoutMs} < ${need}`);
+        assert.equal(computeTimeoutMs(t, { ModalScanTimeoutSec: 60 }), t.timeoutMs);
+        assert.equal(computeTimeoutMs(t, {}), t.timeoutMs);
+      }
+    });
+
     test('TASK_NOT_FOUND / TASK_PROGRAM_ALREADY_LINKED: -DryRun $false and -DryRun:$false', () => {
       assert.equal(
         rw('用 data.plcTasks 裡的名稱當 -PlcTask 重跑;要新的 task 先 Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false'),

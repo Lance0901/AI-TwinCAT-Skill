@@ -91,7 +91,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Enter-TcPlcOnline` | `PlcLogin` | `[-PlcProjectPath <string>] [-LoginMode <string>] [-SilentFlag] [-TimeoutSec <int>]` |
 | `Exit-TcPlcOnline` | `PlcLogout` | `[-PlcProjectPath <string>]` |
 | `Export-TcPlcOpen` | `ExportPlcOpen` | `[-Selection <string[]>] -FilePath <string> [-PlcProjectPath <string>] [-Overwrite]` |
-| `Export-TcTreeItem` | `ExportChild` | `-Path <string> -FilePath <string>` |
+| `Export-TcTreeItem` | `ExportChild` | `-Path <string> -FilePath <string> [-ModalScanTimeoutSec <int>]` |
 | `Find-TcAdsTarget` | `FindAdsTargets` | `[-Search <string>]` |
 | `Get-TcAdsRoutes` | `GetAdsRoutes` | - |
 | `Get-TcAutomationVersion` | `GetAutomationVersion` | `[-Verify]` |
@@ -130,7 +130,7 @@ Generated from the module (`scripts/Update-GeneratedDocs.ps1`); the table is the
 | `Read-TcVariable` | `ReadVariable` | `-Path <string[]>` |
 | `Remove-TcLibraryReference` | `RemoveReference` | `-Name <string> [-Kind <string>] [-DryRun <bool>] [-PlcProjectPath <string>]` |
 | `Remove-TcTaskProgram` | `UnlinkProgramFromTask` | `-ProgramName <string> [-PlcTask <string>] [-PlcProjectPath <string>] [-DryRun <bool>]` |
-| `Remove-TcTreeItem` | `DeleteChild` | `-Path <string> -ConfirmName <string> [-DryRun <bool>] [-AllowNoExport]` |
+| `Remove-TcTreeItem` | `DeleteChild` | `-Path <string> -ConfirmName <string> [-DryRun <bool>] [-AllowNoExport] [-ModalScanTimeoutSec <int>]` |
 | `Remove-TcVariableLink` | `RemoveVariableLink` | `-PlcVariable <string> [-IoChannel <string>]` |
 | `Reset-TcSolution` | `ResetSolution` | `[-SolutionPath <string>] [-TimeoutSec <int>] [-DiscardProjectChanges] [-SaveProjectChanges] [-Force]` |
 | `Save-TcArchive` | `SaveArchive` | `-FilePath <string> [-Kind <string>] [-Overwrite]` |

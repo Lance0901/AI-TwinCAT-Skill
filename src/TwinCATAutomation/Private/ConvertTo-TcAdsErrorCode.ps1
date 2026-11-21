@@ -127,6 +127,9 @@ $script:TcErrorHints['MODAL_SCAN_INCOMPLETE'] = 'modal dialog 掃描沒有完成
 # one language and in one file (#42 review). <pid> is replaced by the caller.
 $script:TcHintFragments = @{
     'MODAL_SCAN_INCOMPLETE_QUIT'    = 'Disconnect-TcIde 的其他做法：不加 -Quit 只釋放 COM 參考(IDE 繼續開著);本 session 啟動的 IDE(data.ownedBySession = true)可用 Disconnect-TcIde -Quit -Kill 結束。'
+    # #321: Export-TcTreeItem / Remove-TcTreeItem (-ModalScanTimeoutSec); <cmd> and <sec> are replaced by the caller
+    'MODAL_SCAN_INCOMPLETE_TREEITEM'     = '這次的掃描上限是 -ModalScanTimeoutSec <sec>:data.modalScan.reason = timeout 而重掃確認沒有 dialog 時，用同樣參數加 -ModalScanTimeoutSec 60(上限)重跑 <cmd>;reason 是 prepare-timeout / error 時調高沒有用。'
+    'MODAL_SCAN_INCOMPLETE_TREEITEM_MAX' = '這次的掃描已經用上限 -ModalScanTimeoutSec 60:重掃確認沒有 dialog 卻仍逾時，先等機器負載降下來再重跑 <cmd>。'
     'IDE_BLOCKED_SCAN_INCOMPLETE'   = '先重掃:Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15(這個 IDE 的 dialog 掃描沒有完成,data.modalScan)。'
     # #196: other-session with hostState gone
     'IDE_LAUNCH_PENDING_ORPHAN'     = 'data.otherSession.hostState = gone:啟動這個 IDE(pid <pid>)的 TcAuto session 已經結束。先問使用者那個 IDE 有沒有人還在用(有沒有未存檔的修改);使用者同意接手後，重跑同一個 Connect-TcIde 加 -TakeOverOrphan(MCP:ConnectIde TakeOverOrphan=true),成功後本 session 擁有它(data.takenOver = true),可以 Disconnect-TcIde -Quit / -Quit -Kill。'
