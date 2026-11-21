@@ -499,7 +499,9 @@ function Invoke-TcNcAxisRollback {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
     $rr = $null
-    try { $rr = Remove-TcTreeItem -Path $Path -ConfirmName (Get-TcTreePathLeaf -Path $Path) -DryRun $false -AllowNoExport }
+    # -ModalScanTimeoutSec 5: the 5 s gates of master; the 30 s default of the DeleteChild tool would not fit the
+    # 120 s budget of AddNcTask / AddNcAxis (#321 review M2)
+    try { $rr = Remove-TcTreeItem -Path $Path -ConfirmName (Get-TcTreePathLeaf -Path $Path) -DryRun $false -AllowNoExport -ModalScanTimeoutSec 5 }
     catch { $rr = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'TREEITEM_DELETE_FAILED'; message = $_.Exception.Message } } }
     [PSCustomObject]@{
         path    = $Path

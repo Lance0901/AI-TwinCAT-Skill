@@ -111,7 +111,8 @@ function Remove-TcTaskProgram {
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue @($bk.Backup.warnings) -Force
 
         # (2) backup of the call (ExportChild .zip) + DeleteChild + lookup: Remove-TcTreeItem
-        $inner = Remove-TcTreeItem -Path $callPath -ConfirmName $ProgramName -DryRun $false -AllowNoExport:$haveTto
+        # -ModalScanTimeoutSec 5: the 5 s gates of master (UnlinkProgramFromTask budget 120 s, #321 review M2)
+        $inner = Remove-TcTreeItem -Path $callPath -ConfirmName $ProgramName -DryRun $false -AllowNoExport:$haveTto -ModalScanTimeoutSec 5
         $innerData = if ($null -ne $inner.PSObject.Properties['data']) { $inner.data } else { $null }
         # Remove-TcTreeItem's -AllowNoExport warning says only the ProduceXml backup remains, which is
         # wrong here (the .TcTTO copy is the restorable one): replaced by a warning of its own.

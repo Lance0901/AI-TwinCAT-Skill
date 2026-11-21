@@ -41,7 +41,7 @@
 # measurement 2026-10-28 saw 4-6.7 s for the first scan and 0.1-1.2 s for the second). All
 # missing types are compiled in ONE Add-Type (one compiler run) instead of up to three.
 $script:TcUiaDialogScan = {
-    param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false)
+    param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false, [bool]$Strict = $false)
 
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
@@ -111,6 +111,39 @@ public class UiaScanWindows {
     }
 }
 '@
+        # #321 review r2 (B1): the same list as UiaScanWindows.TopLevelOf, plus whether EnumWindows completed
+        # (the strict scan treats an incomplete enumeration as unknown). A separate type: UiaScanWindows may
+        # already be compiled in this process from an older module version.
+        UiaScanWindowsChecked = @'
+public class UiaScanWindowsChecked {
+    public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    public static extern bool EnumWindows(EnumProc callback, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(System.IntPtr hWnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+    public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint targetPid, out bool completed) {
+        var list = new System.Collections.Generic.List<System.IntPtr>();
+        bool ok = false;
+        try {
+            ok = EnumWindows(delegate (System.IntPtr h, System.IntPtr l) {
+                uint p;
+                GetWindowThreadProcessId(h, out p);
+                if (p != targetPid || !IsWindowVisible(h)) { return true; }
+                System.IntPtr owner = GetWindow(h, 4);  // GW_OWNER
+                if (owner == System.IntPtr.Zero || !IsWindowVisible(owner)) { list.Add(h); }
+                return true;
+            }, System.IntPtr.Zero);
+        }
+        catch { ok = false; }
+        completed = ok;
+        return list;
+    }
+}
+'@
         UiaScanPidWindows   = @'
 public class UiaScanPidWindows {
     public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
@@ -165,6 +198,17 @@ public class UiaScanButtonNative {
     }
 
     $ae = [System.Windows.Automation.AutomationElement]
+    # #321 review B1: $Strict (5th argument, default $false) - every UIA read below that fails and would make
+    # the scan skip a window or a search is a gap; with gaps and no dialog found the strict scan returns the
+    # marker @{ ScanIncomplete = $true; Message } instead of nothing ("no dialog"), and a modal / #32770
+    # window without a title is reported with a fallback title instead of being skipped. Without $Strict the
+    # scan behaves as before (the watchdog, the modal probe and the other gates keep their contract).
+    # 'TcUiaScanTestFault' (AppDomain data, unit tests only: tests/Unit/modal-scan-incomplete.ps1 S5) injects
+    # a failed window read ('window-read') or a failed owned-window search ('owned').
+    $tcGaps = New-Object System.Collections.ArrayList
+    $tcFault = ''
+    try { $tcFault = [string][System.AppDomain]::CurrentDomain.GetData('TcUiaScanTestFault') } catch { $tcFault = '' }
+    function Add-TcScanGap([string]$What) { if ($Strict) { $null = $tcGaps.Add($What) } }
     # Top-level windows of the pid: EnumWindows + GetWindowThreadProcessId (no window messages),
     # then AutomationElement.FromHandle per window. RootElement.FindAll(Children, ProcessId)
     # queries every top-level window on the desktop and stalls when a window of ANY other
@@ -177,14 +221,30 @@ public class UiaScanButtonNative {
     # No desktop-wide RootElement.FindAll is left in this scan (#42): the owned-dialog and VS2022
     # message-box searches below start at the IDE's own window elements.
     $windows = New-Object System.Collections.ArrayList
-    foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+    # #321 review r2 (B1): the EnumWindows status and a $null FromHandle are gaps of the strict scan
+    $enumOk = $true
+    $topList = [TcAutomation.UiaScanWindowsChecked]::TopLevelOf([uint32]$TargetPid, [ref]$enumOk)
+    if ($tcFault -eq 'enum') { $enumOk = $false }
+    if (-not $enumOk) { Add-TcScanGap 'EnumWindows did not complete (enum): the window list of the IDE may be incomplete' }
+    foreach ($wh in $topList) {
         try {
-            $we = $ae::FromHandle($wh)
+            $we = $null
+            if ($tcFault -ne 'fromhandle') { $we = $ae::FromHandle($wh) }
             if ($null -ne $we) { $null = $windows.Add($we) }
+            else { Add-TcScanGap ("FromHandle returned no element for top-level window 0x{0:X} (fromhandle)" -f [long]$wh) }
         }
-        catch { }
+        catch { Add-TcScanGap ("top-level window 0x{0:X} not readable: {1}" -f [long]$wh, $_.Exception.Message) }
     }
-    if ($windows.Count -eq 0) { return }
+    if ($windows.Count -eq 0) {
+        # strict: a live IDE without one readable top-level window - its main window was not seen, so nothing
+        # (main window, owned dialogs) was looked at: unknown, not "no dialog" (review r2, measured on a hidden
+        # powershell.exe: TopLevel = 0, process alive)
+        if ($Strict) {
+            Add-TcScanGap "no readable top-level window of pid $TargetPid (the IDE main window was not seen)"
+            return [PSCustomObject]@{ ScanIncomplete = $true; Message = 'strict scan: ' + ($tcGaps -join '; ') }
+        }
+        return
+    }
 
     # Win32 caption of a window (GetWindowText). The UIA Name of a WPF window can be its
     # content text instead of its title, so the caption is used where the title matters.
@@ -276,20 +336,25 @@ public class UiaScanButtonNative {
                     # Full descendant search only while the main window looks blocked (a full
                     # search of the VS2022 tree is slow and this scan runs every 2 s).
                     $vsBlocked = $false
-                    try { $vsBlocked = -not [bool]$vsMain.Current.IsEnabled } catch { }
+                    try {
+                        if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
+                        $vsBlocked = -not [bool]$vsMain.Current.IsEnabled
+                    }
+                    catch { Add-TcScanGap "IsEnabled of the main window not readable (VS message box search not widened): $($_.Exception.Message)" }
                     if (-not $vsBlocked) {
                         try {
+                            if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
                             $vwp = $null
                             if ($vsMain.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$vwp) -and $null -ne $vwp) {
                                 $vsBlocked = ($vwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
                             }
                         }
-                        catch { }
+                        catch { Add-TcScanGap "WindowInteractionState of the main window not readable (VS message box search not widened): $($_.Exception.Message)" }
                     }
                     if ($vsBlocked) { $vsMb = $vsMain.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $vsMbCond) }
                 }
             }
-            catch { $vsMb = $null }
+            catch { $vsMb = $null; Add-TcScanGap "VS message box search under the main window failed: $($_.Exception.Message)" }
         }
     }
     if ($null -ne $vsMb) {
@@ -342,12 +407,21 @@ public class UiaScanButtonNative {
     $mainEl = $null
     foreach ($w in $windows) {
         $cur = $null
-        try { $cur = $w.Current } catch { continue }
+        try {
+            if ($tcFault -eq 'window-read') { throw 'injected fault window-read (unit test)' }
+            $cur = $w.Current
+        }
+        catch { Add-TcScanGap "window-read: $($_.Exception.Message)"; continue }
         $name = [string]$cur.Name
         $className = [string]$cur.ClassName
         $hwnd = [long]$cur.NativeWindowHandle
         if ($cur.ControlType -ne [System.Windows.Automation.ControlType]::Window) { continue }
-        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            if (-not $Strict) { continue }
+            # strict: no UIA Name - the Win32 caption, else a fallback; it only becomes a hit when modal / #32770
+            $name = Get-TcScanCaption $hwnd
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = ('(untitled window, class {0}, hwnd 0x{1:X})' -f $className, $hwnd) }
+        }
         if ($MainHwnd -ne 0 -and $hwnd -eq $MainHwnd) { $mainEl = $w; continue }
         if ($MainHwnd -eq 0 -and $name -match $mainTitlePattern -and $className -ne '#32770') {
             if ($null -eq $mainEl) { $mainEl = $w }
@@ -372,7 +446,7 @@ public class UiaScanButtonNative {
                     $isModal = [bool]$wp.Current.IsModal
                 }
             }
-            catch { }
+            catch { Add-TcScanGap "IsModal of '$name' not readable: $($_.Exception.Message)" }
         }
 
         $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = $hwnd }
@@ -414,25 +488,37 @@ public class UiaScanButtonNative {
         }
         if ($null -ne $mainEl) {
             $mainBlocked = $false
-            try { $mainBlocked = -not [bool]$mainEl.Current.IsEnabled } catch { $mainBlocked = $false }
+            try {
+                if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
+                $mainBlocked = -not [bool]$mainEl.Current.IsEnabled
+            }
+            catch { $mainBlocked = $false; Add-TcScanGap "IsEnabled of the main window not readable (owned-dialog match not widened): $($_.Exception.Message)" }
             if (-not $mainBlocked) {
                 try {
+                    if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
                     $mwp = $null
                     if ($mainEl.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$mwp) -and $null -ne $mwp) {
                         $mainBlocked = ($mwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
                     }
                 }
-                catch { }
+                catch { Add-TcScanGap "WindowInteractionState of the main window not readable (owned-dialog match not widened): $($_.Exception.Message)" }
             }
             try {
+                if ($tcFault -eq 'owned') { throw 'injected fault owned (unit test)' }
                 $winCond = New-Object System.Windows.Automation.PropertyCondition($ae::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
                 $ownedAny = $null
                 foreach ($w in $mainEl.FindAll([System.Windows.Automation.TreeScope]::Children, $winCond)) {
                     $cur = $null
-                    try { $cur = $w.Current } catch { continue }
+                    try { $cur = $w.Current } catch { Add-TcScanGap "owned window not readable: $($_.Exception.Message)"; continue }
                     $name = [string]$cur.Name
                     $className = [string]$cur.ClassName
-                    if ([string]::IsNullOrWhiteSpace($name) -or $cur.IsOffscreen) { continue }
+                    # non-strict: an untitled window is skipped before IsOffscreen is read, as before (review r2 N2)
+                    if ([string]::IsNullOrWhiteSpace($name) -and -not $Strict) { continue }
+                    if ($cur.IsOffscreen) { continue }
+                    if ([string]::IsNullOrWhiteSpace($name)) {
+                        $name = Get-TcScanCaption ([long]$cur.NativeWindowHandle)
+                        if ([string]::IsNullOrWhiteSpace($name)) { $name = ('(untitled window, class {0}, hwnd 0x{1:X})' -f $className, [long]$cur.NativeWindowHandle) }
+                    }
                     $isModal = $false
                     try {
                         $wp = $null
@@ -440,7 +526,7 @@ public class UiaScanButtonNative {
                             $isModal = [bool]$wp.Current.IsModal
                         }
                     }
-                    catch { }
+                    catch { Add-TcScanGap "IsModal of owned window '$name' not readable: $($_.Exception.Message)" }
                     $hit = [PSCustomObject]@{ Element = $w; Title = $name; ClassName = $className; IsModal = $isModal; Hwnd = [long]$cur.NativeWindowHandle }
                     if ($isModal -or $className -eq '#32770') { $chosen = $hit; break }
                     if ($mainBlocked -and $name -match $knownDialogPattern) { $chosen = $hit; break }
@@ -449,10 +535,14 @@ public class UiaScanButtonNative {
                 # The owner is blocked, so any remaining owned window is what blocks it.
                 if ($null -eq $chosen) { $chosen = $ownedAny }
             }
-            catch { }
+            catch { Add-TcScanGap "owned-window search failed: $($_.Exception.Message)" }
         }
+        elseif ($null -eq $chosen) { Add-TcScanGap 'main window not found: owned dialogs were not searched' }
     }
-    if ($null -eq $chosen) { return }
+    if ($null -eq $chosen) {
+        if ($Strict -and $tcGaps.Count -gt 0) { return [PSCustomObject]@{ ScanIncomplete = $true; Message = 'strict scan: ' + ($tcGaps -join '; ') } }
+        return
+    }
 
     # Title: the UIA Name of a WPF window is often its content text, not its caption (XAE
     # Help.About puts the whole About text there), so the Win32 caption is preferred; the
@@ -774,6 +864,11 @@ function Find-TcIdeModalDialog {
         IDE process id. Default: $script:TcIdeProcessId.
     .PARAMETER TimeoutSec
         Maximum time for the UIA scan (phase 2). Default 5.
+    .PARAMETER Strict
+        #321 review B1 (the ExportChild / DeleteChild gates): $null only when the scan looked at every window.
+        Unknown or gone IDE process, a window / search the scan could not read, and a scan error are the
+        incomplete marker (reason 'error'); a modal / #32770 window without a title is a dialog with a fallback
+        title '(untitled window, ... hwnd 0x...)'. Without -Strict nothing changes for the other callers.
     .OUTPUTS
         Hashtable @{ Title = [string]; Text = [string]; Kind = [string]; ReloadTarget = [string|$null];
         Hwnd = [long]; Buttons = @(@{ Id = [int]; Name = [string] }) }, the incomplete marker, or $null
@@ -796,17 +891,24 @@ function Find-TcIdeModalDialog {
         # scan always end before it.
         [Parameter()]
         [ValidateRange(0, 60)]
-        [int]$PrepareTimeoutSec = 0
+        [int]$PrepareTimeoutSec = 0,
+
+        [Parameter()]
+        [switch]$Strict
     )
 
     if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) {
         try { $ProcessId = [int]$script:TcIdeProcessId } catch { $ProcessId = 0 }
     }
-    if ($ProcessId -le 0) { return $null }
+    if ($ProcessId -le 0) {
+        if ($Strict) { return (New-TcModalScanIncomplete -ProcessId 0 -Reason 'error' -TimeoutSec $TimeoutSec -Message 'the IDE process id is unknown, so the IDE process could not be scanned (strict scan)') }
+        return $null
+    }
 
     $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if ($null -eq $proc) {
         Write-Verbose "Find-TcIdeModalDialog: process $ProcessId not found."
+        if ($Strict) { return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -Message "IDE process $ProcessId not found, so it could not be scanned (strict scan)") }
         return $null
     }
 
@@ -821,11 +923,7 @@ function Find-TcIdeModalDialog {
     }
 
     # (local name differs from the parameter: PowerShell variable names are case-insensitive)
-    $prepCapSec = 60
-    if ($PrepareTimeoutSec -gt 0) { $prepCapSec = $PrepareTimeoutSec }
-    elseif ($null -ne $script:TcUiaScanPrepareTimeoutSec) {
-        try { $prepCapSec = [Math]::Max(1, [int]$script:TcUiaScanPrepareTimeoutSec) } catch { $prepCapSec = 60 }
-    }
+    $prepCapSec = Get-TcUiaPrepareCapSec -PrepareTimeoutSec $PrepareTimeoutSec
     $scanText = $script:TcUiaDialogScan.ToString()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $prepareMs = [long]0
@@ -860,7 +958,7 @@ function Find-TcIdeModalDialog {
 
         # --- phase 2: the scan, bounded by -TimeoutSec ---
         $scanWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $null = $ps.AddScript($scanText).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500)
+        $null = $ps.AddScript($scanText).AddArgument($ProcessId).AddArgument($mainHwnd).AddArgument(500).AddArgument($false).AddArgument([bool]$Strict)
         $handle = $ps.BeginInvoke()
         if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutSec * 1000)) {
             Write-Verbose "Find-TcIdeModalDialog: UIA scan of pid $ProcessId did not finish within $TimeoutSec s (preparation took $prepareMs ms)."
@@ -884,11 +982,21 @@ function Find-TcIdeModalDialog {
         }
         if (-not $hasOut) { return $null }
         $first = $out[0]
+        # #321 review B1: the strict scan could not look at every window -> unknown, never "no dialog"
+        $incP = $first.PSObject.Properties['ScanIncomplete']
+        if ($null -ne $incP -and [bool]$incP.Value) {
+            if (-not $Strict) { return $null }
+            return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -TimeoutSec $TimeoutSec -ElapsedMs $scanWatch.ElapsedMilliseconds -PrepareMs $prepareMs `
+                    -Message ([string]$first.Message))
+        }
         $title = [string]$first.Title
-        if ([string]::IsNullOrWhiteSpace($title)) { return $null }
         $text = [string]$first.Text
         $hwnd = [long]0
         try { $hwnd = [long]$first.Hwnd } catch { $hwnd = 0 }
+        if ([string]::IsNullOrWhiteSpace($title)) {
+            if (-not $Strict) { return $null }
+            $title = '(untitled window, hwnd 0x{0:X})' -f $hwnd
+        }
         $buttons = @()
         try { $bp = $first.PSObject.Properties['Buttons']; if ($null -ne $bp -and $null -ne $bp.Value) { $buttons = @($bp.Value) } } catch { $buttons = @() }
         return @{
@@ -911,6 +1019,22 @@ function Find-TcIdeModalDialog {
     }
 }
 
+function Get-TcUiaPrepareCapSec {
+    <#
+    .SYNOPSIS
+        Cap in seconds of phase 1 (prepare) of Find-TcIdeModalDialog: -PrepareTimeoutSec when > 0, else
+        $script:TcUiaScanPrepareTimeoutSec, else 60; never above 60 (#321 review M1: the module override had no
+        upper bound, so the MCP tool budgets that assume 60 s per prepare could be overrun).
+    #>
+    [CmdletBinding()]
+    param([Parameter()][int]$PrepareTimeoutSec = 0)
+    if ($PrepareTimeoutSec -gt 0) { return [Math]::Min(60, $PrepareTimeoutSec) }
+    if ($null -ne $script:TcUiaScanPrepareTimeoutSec) {
+        try { return [Math]::Min(60, [Math]::Max(1, [int]$script:TcUiaScanPrepareTimeoutSec)) } catch { return 60 }
+    }
+    60
+}
+
 function Find-TcIdeModalDialogWithin {
     <#
     .SYNOPSIS
@@ -928,12 +1052,15 @@ function Find-TcIdeModalDialogWithin {
         IDE process id. Default: $script:TcIdeProcessId.
     .PARAMETER MaxScanSec
         Upper limit of the scan phase. Default 5 (= Find-TcIdeModalDialog default).
+    .PARAMETER Strict
+        Passed to Find-TcIdeModalDialog -Strict (#321 review B1).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][double]$BudgetSec,
         [Parameter()][int]$ProcessId = 0,
-        [Parameter()][ValidateRange(1, 60)][int]$MaxScanSec = 5
+        [Parameter()][ValidateRange(1, 60)][int]$MaxScanSec = 5,
+        [Parameter()][switch]$Strict
     )
     if ($ProcessId -le 0 -and $null -ne $script:TcIdeProcessId) { try { $ProcessId = [int]$script:TcIdeProcessId } catch { $ProcessId = 0 } }
     $whole = 0
@@ -943,7 +1070,9 @@ function Find-TcIdeModalDialogWithin {
     }
     $scanSec = [Math]::Min($MaxScanSec, [Math]::Max(1, [int][Math]::Floor($whole / 2)))
     $prepSec = [Math]::Min(60, $whole - $scanSec)
-    try { return (Find-TcIdeModalDialog -ProcessId $ProcessId -TimeoutSec $scanSec -PrepareTimeoutSec $prepSec) }
+    $fp = @{ ProcessId = $ProcessId; TimeoutSec = $scanSec; PrepareTimeoutSec = $prepSec }
+    if ($Strict) { $fp['Strict'] = $true }   # only when set: mocks of Find-TcIdeModalDialog without -Strict keep working
+    try { return (Find-TcIdeModalDialog @fp) }
     catch { return (New-TcModalScanIncomplete -ProcessId $ProcessId -Reason 'error' -Message $_.Exception.Message) }
 }
 

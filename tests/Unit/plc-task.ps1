@@ -144,7 +144,7 @@ $global:T.Sm = $sm
     $script:TcIdeProcessId = $null; $script:TcIdeConnected = $true; $script:TcSolutionPath = $s
     function script:Assert-TcConnection { }
     function script:Get-TcSysManager { [CmdletBinding()] param([switch]$Refresh) , $global:T.Sm }
-    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) if ($global:T.DialogThrows) { throw 'IDE_CRASHED: mock dialog scan' }; $global:T.Dialog }
+    function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0, [switch]$Strict) if ($null -ne $global:ScanLog) { $null = $global:ScanLog.Add($TimeoutSec) }; if ($global:T.DialogThrows) { throw 'IDE_CRASHED: mock dialog scan' }; $global:T.Dialog }
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
     # Project.Save as XAE does it (phase2-3.8.md P4): the .tsproj gets every TIRT task, unless SaveMode says otherwise
@@ -243,7 +243,11 @@ try {
 
     # ===== Add-TcPlcTask: rollback
     Reset-Mock; Reset-BuildRequired; $global:T.Mode = 'plc-fail'
+    $global:ScanLog = [System.Collections.ArrayList]::new()
     $r = Add-TcPlcTask -Name FastTask -CycleTimeUs 1000 -DryRun $false
+    # #321 review M2: the rollback DeleteChild keeps the 5 s scan of master (the tool budget is still 120 s)
+    Check 'M2 AddPlcTask rollback: Remove-TcTreeItem gates scan with 5 s' (@($global:ScanLog).Count -ge 2 -and @($global:ScanLog | Where-Object { $_ -ne 5 }).Count -eq 0) "scans=$(@($global:ScanLog) -join ',')"
+    $global:ScanLog = $null
     Check 'AddPlcTask 621 fails -> TASK_CREATE_FAILED step plc-create' ($r.error.code -eq 'TASK_CREATE_FAILED' -and $r.data.step -eq 'plc-create' -and $null -ne $r.data.stepError) (J $r.error)
     Check 'AddPlcTask 621 fails -> TIRT task rolled back' (-not $global:T.Nodes.ContainsKey('TIRT^FastTask') -and $r.data.rolledBack -and @($r.data.rollback).Count -eq 1 -and $r.data.rollback[0].path -eq 'TIRT^FastTask' -and $r.data.rollback[0].removed) (J $r.data.rollback)
     Check 'AddPlcTask 621 fails -> message says rolled back, BUILD_REQUIRED recorded' ($r.error.message -match 'rolled back' -and (Get-CodeChanged) -match 'Add-TcPlcTask FastTask \[failed at plc-create\]') "$($r.error.message) | $(Get-CodeChanged)"
@@ -361,7 +365,10 @@ try {
     $r = Remove-TcTaskProgram -ProgramName MAIN -PlcTask NoTask
     Check 'Unlink: task missing -> TASK_NOT_FOUND' ($r.error.code -eq 'TASK_NOT_FOUND') (J $r.error)
 
+    $global:ScanLog = [System.Collections.ArrayList]::new()
     $r = Remove-TcTaskProgram -ProgramName MAIN -DryRun $false
+    Check 'M2 Unlink live: Remove-TcTreeItem gates scan with 5 s (#321 review)' (@($global:ScanLog).Count -ge 2 -and @($global:ScanLog | Where-Object { $_ -ne 5 }).Count -eq 0) "scans=$(@($global:ScanLog) -join ',')"
+    $global:ScanLog = $null
     Check 'Unlink live: success, call removed, verified' ($r.success -and $r.data.verified -and -not $global:T.Nodes.ContainsKey("$P^PlcTask^MAIN") -and $r.data.remainingCalls -eq 0) (J $r.data)
     Check 'Unlink live: .TcTTO backed up and the call exported (.zip) before DeleteChild' (@($r.data.taskBackupFiles | Where-Object { $_ -like '*PlcTask.TcTTO' -and (Test-Path -LiteralPath $_) }).Count -eq 1 -and [string]$r.data.exportPath -like '*.zip' -and (Test-Path -LiteralPath ([string]$r.data.exportPath))) (J $r.data)
     Check 'Unlink live: the program itself stays' ($global:T.Nodes.ContainsKey("$P^POUs^MAIN")) ''

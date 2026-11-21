@@ -18,14 +18,24 @@ function Export-TcTreeItem {
         such as < > | " * ?, or no file name such as C:\), folder exists (folder-missing), file does
         not exist (file-exists); after the lookup a PLC folder (601) below TIPC needs .zip
         (plc-requires-zip, data.itemType) -> TREEITEM_EXPORT_FAILED with data.reason. IDE_MODAL_DIALOG when a dialog is
-        open (nothing exported). Read back: the file must exist and not be empty (data.exported=true,
-        data.fileSize).
+        open (nothing exported); MODAL_SCAN_INCOMPLETE when the dialog scan did not finish within
+        ModalScanTimeoutSec, could not look at every IDE window (strict scan), or the call deadline of 145 s
+        left no time for it (reason no-budget) - nothing exported, data.modalScan; never read as "no
+        dialog", no dialog is answered. Read back: the file must exist and not be empty
+        (data.exported=true, data.fileSize).
     .PARAMETER Path
         Full tree path of the item to export, e.g. "TIRT^PlcTask". No wildcards.
     .PARAMETER FilePath
         Absolute path of the file to write: .xti, or .zip for a PLC folder below TIPC (measured
         2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not measured). Its folder must
         exist, the file must not.
+    .PARAMETER ModalScanTimeoutSec
+        Upper bound in seconds (a whole number 1..60, default 30) of the UI Automation scan for a modal
+        dialog right before ExportChild (#321: the 5 s of the other tree tools ran out on a solution with
+        several PLC projects, NB1 2026-11-12). Only a slow scan waits longer; a scan that finds nothing
+        returns as soon as it is done. The scan preparation (UIA load, first call in a process) has its own
+        cap of 60 s on top; both stay within the call deadline of 145 s. A scan that still does not finish
+        -> MODAL_SCAN_INCOMPLETE, nothing exported.
     .EXAMPLE
         Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath 'C:\Temp\PlcTask.xti'
     .EXAMPLE
@@ -38,8 +48,16 @@ function Export-TcTreeItem {
         [string]$Path,
 
         [Parameter(Mandatory)]
-        [string]$FilePath
+        [string]$FilePath,
+
+        # [double] + ValidateScript, not [int] + ValidateRange: [int] rounds 0.9 to 1 before it is validated
+        # (#321 review m1); the MCP schema stays integer 1..60 (Export-ToolSchema.ps1 $schemaOverrides)
+        [Parameter()]
+        [ValidateScript({ Test-TcModalScanTimeoutArg -Value $_ })]
+        [double]$ModalScanTimeoutSec = 30
     )
+    $callWatch = [System.Diagnostics.Stopwatch]::StartNew()   # #321 review M1: call deadline
+    $scanSec = [int]$ModalScanTimeoutSec
 
     $data = [PSCustomObject]@{ path = $Path; filePath = $FilePath; exported = $false }
     # Path checks inside try: an invalid path (bad characters, a root such as C:\) must become
@@ -64,6 +82,8 @@ function Export-TcTreeItem {
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 
+    # #321 review r2 (M1): no COM call of this cmdlet starts after the call deadline (Invoke-TcComRetry)
+    $prevComDeadline = Set-TcComCallDeadline -Command 'Export-TcTreeItem'
     try {
         $r = Resolve-TcTreeItem -SysManager $sm -Path $Path -Data $data
         if ($null -ne $r.Result) { return $r.Result }
@@ -84,7 +104,18 @@ function Export-TcTreeItem {
                 -ErrorMessage "'$Path' is a PLC folder (ItemType 601): XAE only exports it to a .zip file ('$FilePath' would be refused with 'doesn't specify a zip archive', measured 2026-10-30); nothing was exported." `
                 -Hint "A PLC folder is exported to a .zip file (measured 2026-10-30 4026 VS2022): rerun Export-TcTreeItem -Path '$($Path.Replace("'", "''"))' -FilePath '$($zip.Replace("'", "''"))'. Import it again with Import-TcTreeItem (the .zip file)."
         }
-        $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path'" -Data $data
+        # The parent is looked up BEFORE the gate (#321 review r2: a slow parent lookup after the gate let
+        # ExportChild start after the deadline); the gate is the last step before ExportChild.
+        $parent = $null
+        if ($null -ne $parentPath) {
+            $rp = Resolve-TcTreeItem -SysManager $sm -Path $parentPath -Data $data -ParameterName 'Path (parent)'
+            if ($null -ne $rp.Result) { return $rp.Result }
+            $parent = $rp.Item
+        }
+        # strict scan (#321 review B1), prepare + scan within the time left until the call deadline (M1)
+        $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path'" -Data $data -TimeoutSec $scanSec -Strict `
+            -BudgetSec (Get-TcTreeItemCallBudgetSec -Command 'Export-TcTreeItem' -Watch $callWatch) `
+            -ScanIncompleteHint (Get-TcTreeItemScanTimeoutHint -Command 'Export-TcTreeItem' -TimeoutSec $scanSec)
         if ($null -ne $dlg) { return $dlg }
         # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
         # dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode
@@ -93,22 +124,21 @@ function Export-TcTreeItem {
             Invoke-TcComRetry -OperationName "ExportChild $Path" -ScriptBlock { $item.ExportChild('', $FilePath) } | Out-Null
         }
         else {
-            $rp = Resolve-TcTreeItem -SysManager $sm -Path $parentPath -Data $data -ParameterName 'Path (parent)'
-            if ($null -ne $rp.Result) { return $rp.Result }
-            $parent = $rp.Item
             Invoke-TcComRetry -OperationName "ExportChild $Path" -ScriptBlock { $parent.ExportChild($nodeName, $FilePath) } | Out-Null
         }
-        $fi = Get-Item -LiteralPath $FilePath -ErrorAction SilentlyContinue
-        if ($null -eq $fi -or $fi.Length -le 0) {
+        # same check as the DeleteChild backup (#321 review B2); its length is the reported size (one read, r2 N1)
+        $chk = Test-TcTreeItemExportFile -FilePath $FilePath
+        if (-not $chk.Ok) {
             $data | Add-Member -NotePropertyName reason -NotePropertyValue 'file-not-written'
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_EXPORT_FAILED' -Data $data `
-                -ErrorMessage "ExportChild returned, but '$FilePath' does not exist or is empty." -Hint (Get-TcErrorHint -Code 'TREEITEM_EXPORT_FAILED')
+                -ErrorMessage "$($chk.Message)." -Hint (Get-TcErrorHint -Code 'TREEITEM_EXPORT_FAILED')
         }
         $data.exported = $true
-        $data | Add-Member -NotePropertyName fileSize -NotePropertyValue ([long]$fi.Length)
+        $data | Add-Member -NotePropertyName fileSize -NotePropertyValue ([long]$chk.Length)
         New-TcResult -Success $true -Data $data
     }
     catch {
         New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TREEITEM_EXPORT_FAILED' -Data $data -Operation "ExportChild '$Path'"
     }
+    finally { $script:TcComCallDeadline = $prevComDeadline }
 }

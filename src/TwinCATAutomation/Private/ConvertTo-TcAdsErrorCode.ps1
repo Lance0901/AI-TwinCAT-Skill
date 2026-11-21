@@ -127,12 +127,17 @@ $script:TcErrorHints['MODAL_SCAN_INCOMPLETE'] = 'modal dialog 掃描沒有完成
 # one language and in one file (#42 review). <pid> is replaced by the caller.
 $script:TcHintFragments = @{
     'MODAL_SCAN_INCOMPLETE_QUIT'    = 'Disconnect-TcIde 的其他做法：不加 -Quit 只釋放 COM 參考(IDE 繼續開著);本 session 啟動的 IDE(data.ownedBySession = true)可用 Disconnect-TcIde -Quit -Kill 結束。'
+    # #321: Export-TcTreeItem / Remove-TcTreeItem (-ModalScanTimeoutSec); <cmd> and <sec> are replaced by the caller
+    'MODAL_SCAN_INCOMPLETE_TREEITEM'     = '這次的掃描上限是 -ModalScanTimeoutSec <sec>:data.modalScan.reason = timeout 而重掃確認沒有 dialog 時，用同樣參數加 -ModalScanTimeoutSec 60(上限)重跑 <cmd>;reason 是 prepare-timeout / error 時調高沒有用;reason = no-budget 是這次呼叫的時間上限用完了(前面的步驟太慢),什麼都沒做，重掃確認沒有 dialog 後直接重跑 <cmd>。'
+    'MODAL_SCAN_INCOMPLETE_TREEITEM_MAX' = '這次的掃描已經用上限 -ModalScanTimeoutSec 60:重掃確認沒有 dialog 卻仍逾時(或 reason = no-budget),先等機器負載降下來再重跑 <cmd>。'
     'IDE_BLOCKED_SCAN_INCOMPLETE'   = '先重掃:Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15(這個 IDE 的 dialog 掃描沒有完成,data.modalScan)。'
     # #196: other-session with hostState gone
     'IDE_LAUNCH_PENDING_ORPHAN'     = 'data.otherSession.hostState = gone:啟動這個 IDE(pid <pid>)的 TcAuto session 已經結束。先問使用者那個 IDE 有沒有人還在用(有沒有未存檔的修改);使用者同意接手後，重跑同一個 Connect-TcIde 加 -TakeOverOrphan(MCP:ConnectIde TakeOverOrphan=true),成功後本 session 擁有它(data.takenOver = true),可以 Disconnect-TcIde -Quit / -Quit -Kill。'
     # #235: the empty orphan IDE (reused without -TakeOverOrphan) could not be scanned for dialogs
     'EMPTY_ORPHAN_SCAN_INCOMPLETE'  = 'data.ideProcessId(pid <pid>)是另一個已結束的 TcAuto session 為這個 .sln 啟動的空 IDE(#235):沒有重用、沒有 attach,也沒有再開第二個 IDE。重掃 Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15;沒有 dialog 就重跑同一個 Connect-TcIde(MCP:ConnectIde 同參數),會重用它。重掃仍不完整(一直回 MODAL_SCAN_INCOMPLETE):請使用者看 pid <pid> 那個視窗有沒有 dialog、確認沒人在用,或由使用者手動關掉那個 IDE 後再重跑;模組不會自己關它(它還不屬於本 session),也不會另開第二個 IDE。'
 }
+# #321 review r2 (M1): Export-TcTreeItem / Remove-TcTreeItem call deadline
+$script:TcErrorHints['CALL_DEADLINE_EXCEEDED'] = '這次呼叫的時間上限(Export-TcTreeItem 145 s / Remove-TcTreeItem 265 s)用完了，之後的 COM 呼叫(查找、備份、ExportChild、DeleteChild、讀回、忙碌重試)都沒有開始。data.writeCalled = true 時 DeleteChild 已送出但沒有讀回(data.verified = false、data.verificationSkipped = true):先用 Get-TcTreeItem -Path <path> 確認節點還在不在，備份在 data.backupPath / data.exportPath;沒有 writeCalled 就什麼都沒刪。ExportChild 被擋下時檔案可能不完整，先看 FilePath 再重跑。重跑前先用 Get-TcIdeModalDialog 確認 IDE 沒有被 dialog 卡住，機器忙時等負載降下來。見 docs/troubleshooting.md「CALL_DEADLINE_EXCEEDED」'
 $script:TcErrorHints['IO_SCAN_FAILED'] = 'TIID.ProduceXml(false) / CreateChild / ConsumeXml 失敗:確認 target 在 Config、硬體已接上並上電、遠端 target 已 Set-TcTarget;用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog'
 $script:TcErrorHints['IO_SCAN_VERIFY_FAILED'] = '-Apply 建立的 device 讀回 I/O tree 時找不到(data.devices[].path):用 Get-TcIoTree 看實際內容,不要把這次掃描當成成功'
 $script:TcErrorHints['LIBRARY_ADD_FAILED'] = 'ITcPlcLibraryManager.AddLibrary 失敗。data.notInstalled = true:library 沒有安裝(TSM_E_ITEMNOTFOUND,.plcproj 沒被修改),先在 XAE 的 PLC > Library Repository 安裝，確認名稱 / 版本 / 廠商後重跑 Add-TcLibrary;其他情況看 error.message,用 Get-TcIdeModalDialog 檢查 dialog。已有同名 reference 不是錯誤(success + data.alreadyPresent)。見 docs/troubleshooting.md「LIBRARY_ADD_FAILED」'
@@ -147,7 +152,7 @@ $script:TcErrorHints['TREEITEM_VERIFY_FAILED'] = '修改呼叫有返回,但讀�
 $script:TcErrorHints['TREEITEM_DELETE_NAME_MISMATCH'] = 'ConfirmName 和要刪的節點名稱不一致(data.nodeName,大小寫要相同),什麼都沒刪。先用 LookupTreeItem 確認 Path 指到的就是要刪的節點,再把 ConfirmName 設成 data.nodeName 重試(先 dry-run)'
 $script:TcErrorHints['TREEITEM_DELETE_FAILED'] = 'DeleteChild 被 XAE 拒絕(E_NOTIMPL:父節點不支援刪除;E_ACCESSDENIED:檔案不能編輯),節點還在。data.backupPath / exportPath 是刪除前的備份。用 Get-TcIdeModalDialog 檢查 dialog;有專用 tool 就改用它。data.reason = parent-mismatch:節點回報的 PathName 上層和 Path 推算的父節點不同,沒有呼叫 DeleteChild;用 LookupTreeItem 確認實際路徑(data.itemParentPath)後用那個路徑重跑'
 $script:TcErrorHints['TREEITEM_INVALID_VALUE'] = '片段裡已知欄位的值不合法(data.invalidFields:path / value / rule),什麼都沒寫。XAE 自己不檢查(實測 2026-10-30:TaskDef/CycleTime 給 0、負數、文字都會寫入，文字變 0),所以由模組擋。改成合法的值(CycleTime 是大於 0 的整數，單位 100 ns,20000 = 2 ms)再重試'
-$script:TcErrorHints['TREEITEM_BACKUP_FAILED'] = '寫入前的備份沒寫成(solution 路徑不明，或 <solution 目錄>\.tcauto-backup 無法寫入),什麼都沒改。先 Connect-TcIde -SolutionPath <sln>(或 Open-TcProject)讓模組知道 solution,確認該目錄可寫，再重試。DeleteChild 的 data.reason = export-failed / export-missing:刪除前的 ExportChild 備份(.xti;TIPC 底下一律用 .zip,實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測)沒產生，沒有刪除;先用 ExportChild 試匯出同一個節點找原因，確定只靠 ProduceXml(recursive)備份也可以時才加 AllowNoExport=true 重跑'
+$script:TcErrorHints['TREEITEM_BACKUP_FAILED'] = '寫入前的備份沒寫成(solution 路徑不明，或 <solution 目錄>\.tcauto-backup 無法寫入),什麼都沒改。先 Connect-TcIde -SolutionPath <sln>(或 Open-TcProject)讓模組知道 solution,確認該目錄可寫，再重試。DeleteChild 的 data.reason = export-failed / export-missing / export-empty:刪除前的 ExportChild 備份(.xti;TIPC 底下一律用 .zip,實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測)沒產生或是 0 bytes 的空檔，沒有刪除;先用 ExportChild 試匯出同一個節點找原因，確定只靠 ProduceXml(recursive)備份也可以時才加 AllowNoExport=true 重跑'
 $script:TcErrorHints['TREEITEM_EXPORT_FAILED'] = 'ExportChild 沒有產生檔案(data.reason:not-absolute / invalid-path / plc-requires-zip / file-exists / folder-missing / file-not-written,或 XAE 拒絕)。FilePath 要是含檔名的絕對路徑(不能是 C:\ 這種根目錄、不能有 < > | " * ? 等字元)、資料夾要存在、檔案不能已存在(TE1000 5.2.1.4);PLC folder(ItemType 601)要用 .zip 檔名(XAE 對 .xti 回 "doesn''t specify a zip archive",實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測，交給 XAE 回錯),其他節點用 .xti;換一個新檔名重試'
 $script:TcErrorHints['TREEITEM_IMPORT_FAILED'] = 'ImportChild 沒有匯入(data.reason:not-absolute / invalid-path / file-missing,或 XAE 拒絕:NTE_NOT_FOUND 沒有可匯入的項目、E_FAIL 載入 / 類別檢查 / 插入失敗,TE1000 5.2.1.6)。確認檔案是 ExportChild 匯出的 .xti(PLC folder 是 .zip,實測 2026-10-30 4026 VS2022 僅 PLC folder;其他 TIPC 節點未測)、Path 是能放這種節點的父節點(例如 Task 放 TIRT),必要時先 dry-run'
 $script:TcErrorHints['XML_MERGE_FAILED'] = 'ConsumeXml 片段沒有送出或被 XAE 拒絕,什麼都沒寫(送出後失敗時 data.backupPath 有備份)。data.reason:syntax(XML 語法錯)/ root(根元素要是 <TreeItem>)/ empty / paths-not-in-current-xml(data.missingPaths 的元素在目前的 XML 不存在;XAE 對未知元素會靜默忽略，實測 2026-10-30)/ structure-mismatch / repeated-count-mismatch / attributes-not-supported / derived-only(這四種是 XAE 怎麼合併未實測，模組先擋)。先 ProduceXml 看實際結構，只送要改的欄位，路徑照抄，例如 <TreeItem><TaskDef><CycleTime>40000</CycleTime></TaskDef></TreeItem>'
@@ -478,6 +483,11 @@ function ConvertTo-TcAdsErrorCode {
     # Thrown by New-TcPlcObject when XAE refused CreateChild while the PLC is logged in (task 1.8)
     elseif ($text -match '\bPLC_LOGGED_IN:') {
         $code = 'PLC_LOGGED_IN'
+    }
+    # Thrown by Invoke-TcComRetry when the caller's call deadline passed (#321 review r2); before IDE_BUSY:
+    # the message can carry the 0x80010001 text of the previous attempt.
+    elseif ($text -match '\bCALL_DEADLINE_EXCEEDED:') {
+        $code = 'CALL_DEADLINE_EXCEEDED'
     }
     # Thrown by Invoke-TcComRetry; checked before IDE_BUSY because their messages
     # also carry the original 0x80010001 text.
