@@ -316,8 +316,8 @@ describe('cmdlet name rewriting in hints', () => {
 
     // #321 review M1: the module stops starting dialog scans and COM calls at its own call deadline
     // ($script:TcTreeItemCallDeadlineSec, TreeItemPath.ps1); the bridge kill (timeoutMs) comes 35 s later
-    // ($script:TcTreeItemAfterDeadlineSec: last COM call + readback 30 s, bridge / runspace overhead 5 s), so
-    // a refusal at the deadline always reaches the caller before BRIDGE_TIMEOUT.
+    // ($script:TcTreeItemAfterDeadlineSec); no COM call (retries and the readback included) starts after the module
+    // deadline, so a refusal there always reaches the caller before BRIDGE_TIMEOUT (review r2).
     test('#321 review M1: timeoutMs = module call deadline + reserve (read from the module source)', () => {
       const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'Private', 'TreeItem', 'TreeItemPath.ps1'), 'utf8');
       const reserve = Number(/\$script:TcTreeItemAfterDeadlineSec\s*=\s*(\d+)/.exec(src)?.[1]);

@@ -82,6 +82,8 @@ function Export-TcTreeItem {
     $sm = Get-TcSysManager
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 
+    # #321 review r2 (M1): no COM call of this cmdlet starts after the call deadline (Invoke-TcComRetry)
+    $prevComDeadline = Set-TcComCallDeadline -Command 'Export-TcTreeItem'
     try {
         $r = Resolve-TcTreeItem -SysManager $sm -Path $Path -Data $data
         if ($null -ne $r.Result) { return $r.Result }
@@ -102,6 +104,14 @@ function Export-TcTreeItem {
                 -ErrorMessage "'$Path' is a PLC folder (ItemType 601): XAE only exports it to a .zip file ('$FilePath' would be refused with 'doesn't specify a zip archive', measured 2026-10-30); nothing was exported." `
                 -Hint "A PLC folder is exported to a .zip file (measured 2026-10-30 4026 VS2022): rerun Export-TcTreeItem -Path '$($Path.Replace("'", "''"))' -FilePath '$($zip.Replace("'", "''"))'. Import it again with Import-TcTreeItem (the .zip file)."
         }
+        # The parent is looked up BEFORE the gate (#321 review r2: a slow parent lookup after the gate let
+        # ExportChild start after the deadline); the gate is the last step before ExportChild.
+        $parent = $null
+        if ($null -ne $parentPath) {
+            $rp = Resolve-TcTreeItem -SysManager $sm -Path $parentPath -Data $data -ParameterName 'Path (parent)'
+            if ($null -ne $rp.Result) { return $rp.Result }
+            $parent = $rp.Item
+        }
         # strict scan (#321 review B1), prepare + scan within the time left until the call deadline (M1)
         $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path'" -Data $data -TimeoutSec $scanSec -Strict `
             -BudgetSec (Get-TcTreeItemCallBudgetSec -Command 'Export-TcTreeItem' -Watch $callWatch) `
@@ -114,23 +124,21 @@ function Export-TcTreeItem {
             Invoke-TcComRetry -OperationName "ExportChild $Path" -ScriptBlock { $item.ExportChild('', $FilePath) } | Out-Null
         }
         else {
-            $rp = Resolve-TcTreeItem -SysManager $sm -Path $parentPath -Data $data -ParameterName 'Path (parent)'
-            if ($null -ne $rp.Result) { return $rp.Result }
-            $parent = $rp.Item
             Invoke-TcComRetry -OperationName "ExportChild $Path" -ScriptBlock { $parent.ExportChild($nodeName, $FilePath) } | Out-Null
         }
-        $bad = Test-TcTreeItemExportFile -FilePath $FilePath   # same check as the DeleteChild backup (#321 review B2)
-        if ($null -ne $bad) {
+        # same check as the DeleteChild backup (#321 review B2); its length is the reported size (one read, r2 N1)
+        $chk = Test-TcTreeItemExportFile -FilePath $FilePath
+        if (-not $chk.Ok) {
             $data | Add-Member -NotePropertyName reason -NotePropertyValue 'file-not-written'
             return New-TcResult -Success $false -ErrorCode 'TREEITEM_EXPORT_FAILED' -Data $data `
-                -ErrorMessage "$($bad.Message)." -Hint (Get-TcErrorHint -Code 'TREEITEM_EXPORT_FAILED')
+                -ErrorMessage "$($chk.Message)." -Hint (Get-TcErrorHint -Code 'TREEITEM_EXPORT_FAILED')
         }
-        $fi = Get-Item -LiteralPath $FilePath
         $data.exported = $true
-        $data | Add-Member -NotePropertyName fileSize -NotePropertyValue ([long]$fi.Length)
+        $data | Add-Member -NotePropertyName fileSize -NotePropertyValue ([long]$chk.Length)
         New-TcResult -Success $true -Data $data
     }
     catch {
         New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode 'TREEITEM_EXPORT_FAILED' -Data $data -Operation "ExportChild '$Path'"
     }
+    finally { $script:TcComCallDeadline = $prevComDeadline }
 }

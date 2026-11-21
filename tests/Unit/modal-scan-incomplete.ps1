@@ -53,6 +53,10 @@ try {
     $elText = Get-CodeText (& $mod { $script:TcUiaErrorListScan }).ToString()
     $elFindAll = [regex]::Matches($elText, 'RootElement\s*\.\s*FindAll').Count
     Check 'A3 Error List scan: TopLevelOf / VisibleOf, desktop FindAll only as the two fallbacks' ($elText -match 'TopLevelOf' -and $elText -match 'VisibleOf' -and $elFindAll -eq 2) "FindAll count $elFindAll"
+    # #321 review r2 N2: a non-strict scan skips an untitled owned window before it reads IsOffscreen (one UIA read less, as before)
+    $iSkip = $scanText.IndexOf('IsNullOrWhiteSpace ( $name ) -and -not $Strict ) { continue }')
+    $iOff = $scanText.LastIndexOf('if ( $cur . IsOffscreen ) { continue }')   # the owned-window loop (the main loop has one earlier)
+    Check 'A5 owned windows: untitled skipped before IsOffscreen without -Strict' ($iSkip -ge 0 -and $iOff -gt $iSkip) "skip=$iSkip offscreen=$iOff"
 
     # --- A4: Initialize-TcUiaScanTypes is bounded (types not compiled yet in this process) ---
     if (-not ([System.Management.Automation.PSTypeName]'TcAutomation.UiaScanWindows').Type) {
@@ -305,6 +309,26 @@ try {
         Check 'W6 #321 review: gates share the 5 s call deadline -> DeleteChild gate cut to the time left, nothing deleted, returns before the deadline' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.error.message -match 'DeleteChild' -and $r.data.modalScan.timeoutSec -le 2 -and $global:W.Exports -eq 1 -and $global:W.Deletes -eq 0 -and $ms -lt 6500) "$ms ms $(J $r)"
     }
     finally { & $mod { param($d) $script:TcTreeItemCallDeadlineSec = $d } $origDl }
+
+    # S6 (#321 review r2, B1): a live IDE pid without one readable top-level window (a hidden powershell.exe,
+    # as the review measured: TopLevel=0, alive) - the plain scan says "no dialog", the strict scan and the
+    # three gates say unknown: nothing exported, nothing deleted
+    $hidden = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 120'
+    try {
+        & $mod { param($s) $script:TcUiaDialogScan = $s } $origScan
+        $plain = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $hidden.Id
+        $strict = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -Strict } $hidden.Id
+        Check 'S6 live pid without a readable window: plain $null (unchanged), strict incomplete' ($null -eq $plain -and (& $mod { param($d) Test-TcModalScanIncomplete $d } $strict) -and [string]$strict.Message -match 'no readable top-level window') "alive=$(-not $hidden.HasExited) strict=$(J $strict)"
+        & $mod { param($p) $script:TcIdeProcessId = $p } $hidden.Id
+        Reset-W 0
+        $r1 = Export-TcTreeItem -Path 'TIRT^Task W' -FilePath (Join-Path $wWork 's6.xti')
+        $r2 = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false
+        Check 'S6 gates: no readable IDE window -> MODAL_SCAN_INCOMPLETE, nothing exported or deleted' ($r1.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r2.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $global:W.Exports -eq 0 -and $global:W.Deletes -eq 0 -and $global:W.Nodes.ContainsKey('TIRT^Task W')) "$(J $r1) | $(J $r2)"
+    }
+    finally {
+        & $mod { $script:TcIdeProcessId = $PID }
+        if (-not $hidden.HasExited) { Stop-Process -Id $hidden.Id -Force -ErrorAction SilentlyContinue }   # only the process this test started
+    }
 }
 catch { Check 'W unexpected exception' $false "$($_.Exception.Message) at $($_.InvocationInfo.ScriptLineNumber)" }
 finally {
@@ -486,7 +510,7 @@ try {
     $r = Invoke-FixtureBody "$mainTitle|VisualStudioMainWindow" {
         param($fp)
         $o = @{ clean = (& $origScan $fp $stale 2000 $false $true) }
-        foreach ($f in 'window-read', 'owned') {
+        foreach ($f in 'window-read', 'owned', 'enum', 'fromhandle', 'blocked-read') {
             [AppDomain]::CurrentDomain.SetData('TcUiaScanTestFault', $f)
             $o["$f-plain"] = & $origScan $fp $stale 2000
             $o["$f-strict"] = & $origScan $fp $stale 2000 $false $true
@@ -494,7 +518,9 @@ try {
         $o
     }
     Check 'S5b clean window set: strict scan still $null (no false dialog)' ($null -eq $r.error -and $null -eq $r.clean) "error=$($r.error) clean=$(J $r.clean)"
-    foreach ($f in 'window-read', 'owned') {
+    # enum / fromhandle / blocked-read: #321 review r2 (EnumWindows status, FromHandle $null, IsEnabled /
+    # WindowInteractionState that decides how far the owned / VS message box search goes)
+    foreach ($f in 'window-read', 'owned', 'enum', 'fromhandle', 'blocked-read') {
         $sv = $r["$f-strict"]
         Check "S5c injected $f failure: plain scan swallows it, strict scan reports a gap" ($null -eq $r.error -and $null -eq $r["$f-plain"] -and $null -ne $sv -and $sv.ScanIncomplete -eq $true -and [string]$sv.Message -match $f) "plain=$(J $r["$f-plain"]) strict=$(J $sv)"
     }

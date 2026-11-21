@@ -102,6 +102,8 @@ function Remove-TcTreeItem {
     if ($null -eq $sm) { return New-TcNoSysManagerResult }
 
     $stage = 'lookup'
+    # #321 review r2 (M1): no COM call of this cmdlet starts after the call deadline (Invoke-TcComRetry)
+    $prevComDeadline = Set-TcComCallDeadline -Command 'Remove-TcTreeItem'
     try {
         $r = Resolve-TcTreeItem -SysManager $sm -Path $Path -Data $data
         if ($null -ne $r.Result) { return $r.Result }
@@ -164,9 +166,9 @@ function Remove-TcTreeItem {
             # (XAE answers prompts with the default). Not timed yet (task 2.8).
             Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($nodeName, $exportFile) } | Out-Null
             # #321 review B2: the file must exist AND not be empty (same check as Export-TcTreeItem)
-            $bad = Test-TcTreeItemExportFile -FilePath $exportFile
-            if ($null -eq $bad) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $exportFile }
-            else { $exportReason = "export-$($bad.Reason)"; $exportProblem = $bad.Message }
+            $chk = Test-TcTreeItemExportFile -FilePath $exportFile
+            if ($chk.Ok) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $exportFile }
+            else { $exportReason = "export-$($chk.Reason)"; $exportProblem = $chk.Message }
         }
         catch {
             if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
@@ -188,6 +190,9 @@ function Remove-TcTreeItem {
         $dlg = Get-TcTreeItemDialogResult -Operation "DeleteChild '$Path'" -Data $data -TimeoutSec $scanSec -Strict `
             -BudgetSec (Get-TcTreeItemCallBudgetSec -Command 'Remove-TcTreeItem' -Watch $callWatch) -ScanIncompleteHint $scanHint
         if ($null -ne $dlg) { return $dlg }
+        # #321 review r2 (M1): the gate may have used the time up - DeleteChild does not start after the deadline
+        # (thrown before writeCalled: nothing was sent; the backups stay in data)
+        if (Test-TcComCallDeadlinePassed) { throw "CALL_DEADLINE_EXCEEDED: 'DeleteChild $Path' not started - the call deadline passed after the dialog check" }
         # data.writeCalled: DeleteChild is about to be called (wrapping cmdlets record BUILD_REQUIRED by it)
         $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force
         try {
@@ -203,7 +208,23 @@ function Remove-TcTreeItem {
         }
 
         $stage = 'verify'
-        $still = Find-TcTreeItemNoThrow -SysManager $sm -Path $Path
+        # #321 review r2 (M1): no readback after the call deadline - DeleteChild was sent, the result is reported
+        # as not verified (backups in data), never as verified
+        $still = $null
+        $readbackSkipped = Test-TcComCallDeadlinePassed
+        if (-not $readbackSkipped) {
+            try { $still = Find-TcTreeItemNoThrow -SysManager $sm -Path $Path }
+            catch { if ([string]$_.Exception.Message -match '^CALL_DEADLINE_EXCEEDED:') { $readbackSkipped = $true } else { throw } }
+        }
+        if ($readbackSkipped) {
+            $data | Add-Member -NotePropertyName verified -NotePropertyValue $false -Force
+            $data | Add-Member -NotePropertyName verificationSkipped -NotePropertyValue $true -Force
+            $res = New-TcResult -Success $false -ErrorCode 'CALL_DEADLINE_EXCEEDED' -Data $data `
+                -ErrorMessage "CALL_DEADLINE_EXCEEDED: DeleteChild '$Path' was sent, but the call deadline passed before the readback: the deletion is not verified (backups: data.backupPath, data.exportPath)." `
+                -Hint (Get-TcErrorHint -Code 'CALL_DEADLINE_EXCEEDED')
+            if ($isPlc) { $res = Register-TcCodeChange -Result $res -Change "Remove-TcTreeItem $Path [not verified]" }
+            return $res
+        }
         if ($null -ne $still) {
             $data | Add-Member -NotePropertyName verified -NotePropertyValue $false
             $res = New-TcResult -Success $false -ErrorCode 'TREEITEM_VERIFY_FAILED' -Data $data `
@@ -220,4 +241,5 @@ function Remove-TcTreeItem {
         $code = if ($stage -eq 'delete') { 'TREEITEM_DELETE_FAILED' } elseif ($stage -eq 'verify') { 'TREEITEM_VERIFY_FAILED' } else { 'TREEITEM_READ_FAILED' }
         New-TcTreeItemErrorResult -ErrorRecord $_ -DefaultCode $code -Data $data -Operation "DeleteChild '$Path' ($stage)"
     }
+    finally { $script:TcComCallDeadline = $prevComDeadline }
 }

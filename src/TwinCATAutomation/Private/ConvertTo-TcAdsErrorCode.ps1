@@ -136,6 +136,8 @@ $script:TcHintFragments = @{
     # #235: the empty orphan IDE (reused without -TakeOverOrphan) could not be scanned for dialogs
     'EMPTY_ORPHAN_SCAN_INCOMPLETE'  = 'data.ideProcessId(pid <pid>)是另一個已結束的 TcAuto session 為這個 .sln 啟動的空 IDE(#235):沒有重用、沒有 attach,也沒有再開第二個 IDE。重掃 Get-TcIdeModalDialog -ProcessId <pid> -TimeoutSec 15;沒有 dialog 就重跑同一個 Connect-TcIde(MCP:ConnectIde 同參數),會重用它。重掃仍不完整(一直回 MODAL_SCAN_INCOMPLETE):請使用者看 pid <pid> 那個視窗有沒有 dialog、確認沒人在用,或由使用者手動關掉那個 IDE 後再重跑;模組不會自己關它(它還不屬於本 session),也不會另開第二個 IDE。'
 }
+# #321 review r2 (M1): Export-TcTreeItem / Remove-TcTreeItem call deadline
+$script:TcErrorHints['CALL_DEADLINE_EXCEEDED'] = '這次呼叫的時間上限(Export-TcTreeItem 145 s / Remove-TcTreeItem 265 s)用完了，之後的 COM 呼叫(查找、備份、ExportChild、DeleteChild、讀回、忙碌重試)都沒有開始。data.writeCalled = true 時 DeleteChild 已送出但沒有讀回(data.verified = false、data.verificationSkipped = true):先用 Get-TcTreeItem -Path <path> 確認節點還在不在，備份在 data.backupPath / data.exportPath;沒有 writeCalled 就什麼都沒刪。ExportChild 被擋下時檔案可能不完整，先看 FilePath 再重跑。重跑前先用 Get-TcIdeModalDialog 確認 IDE 沒有被 dialog 卡住，機器忙時等負載降下來。見 docs/troubleshooting.md「CALL_DEADLINE_EXCEEDED」'
 $script:TcErrorHints['IO_SCAN_FAILED'] = 'TIID.ProduceXml(false) / CreateChild / ConsumeXml 失敗:確認 target 在 Config、硬體已接上並上電、遠端 target 已 Set-TcTarget;用 Get-TcIdeModalDialog 看 XAE 有沒有 dialog'
 $script:TcErrorHints['IO_SCAN_VERIFY_FAILED'] = '-Apply 建立的 device 讀回 I/O tree 時找不到(data.devices[].path):用 Get-TcIoTree 看實際內容,不要把這次掃描當成成功'
 $script:TcErrorHints['LIBRARY_ADD_FAILED'] = 'ITcPlcLibraryManager.AddLibrary 失敗。data.notInstalled = true:library 沒有安裝(TSM_E_ITEMNOTFOUND,.plcproj 沒被修改),先在 XAE 的 PLC > Library Repository 安裝，確認名稱 / 版本 / 廠商後重跑 Add-TcLibrary;其他情況看 error.message,用 Get-TcIdeModalDialog 檢查 dialog。已有同名 reference 不是錯誤(success + data.alreadyPresent)。見 docs/troubleshooting.md「LIBRARY_ADD_FAILED」'
@@ -481,6 +483,11 @@ function ConvertTo-TcAdsErrorCode {
     # Thrown by New-TcPlcObject when XAE refused CreateChild while the PLC is logged in (task 1.8)
     elseif ($text -match '\bPLC_LOGGED_IN:') {
         $code = 'PLC_LOGGED_IN'
+    }
+    # Thrown by Invoke-TcComRetry when the caller's call deadline passed (#321 review r2); before IDE_BUSY:
+    # the message can carry the 0x80010001 text of the previous attempt.
+    elseif ($text -match '\bCALL_DEADLINE_EXCEEDED:') {
+        $code = 'CALL_DEADLINE_EXCEEDED'
     }
     # Thrown by Invoke-TcComRetry; checked before IDE_BUSY because their messages
     # also carry the original 0x80010001 text.

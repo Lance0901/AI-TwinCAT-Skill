@@ -83,6 +83,8 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
     $n | Add-Member ScriptMethod DeleteChild {
         param($name)
         $global:T.Mods.Add("DeleteChild $($this.PathName)^$name") | Out-Null
+        $global:T.LookupsAtDelete = $global:T.Lookups.Count
+        if ($global:T.DeleteSleepMs -gt 0) { Start-Sleep -Milliseconds $global:T.DeleteSleepMs }
         if ($global:T.DeleteMode -eq 'noop') { return }
         if ($global:T.DeleteMode -eq 'throw') { throw [System.Runtime.InteropServices.COMException]::new('Access denied', -2147024891) }
         $p = "$($this.PathName)^$name"
@@ -95,6 +97,8 @@ function New-MockNode([string]$Path, [int]$ItemType = 0, [string]$Xml = '') {
         if ($global:T.ExportMode -eq 'throw') { throw [System.Runtime.InteropServices.COMException]::new('E_INVALIDARG', -2147024809) }
         if ($global:T.ExportMode -eq 'nofile') { return }
         if ($global:T.ExportSleepMs -gt 0) { Start-Sleep -Milliseconds $global:T.ExportSleepMs }
+        # #321 review r2: the first ExportChild is rejected as busy only after the call deadline passed
+        if ($global:T.ExportMode -eq 'busy-once-slow' -and -not $global:T.BusyDone) { $global:T.BusyDone = $true; Start-Sleep -Milliseconds 3200; throw [System.Runtime.InteropServices.COMException]::new('Call was rejected by callee. (RPC_E_CALL_REJECTED 0x80010001)', -2147418111) }
         # #321 review B2: XAE returns but leaves a 0-byte file [inference: not measured, the shape the review reproduced]
         if ($global:T.ExportMode -eq 'empty') { [System.IO.File]::WriteAllBytes($file, [byte[]]@()); return }
         # XAE refuses a file name other than .zip below TIPC (measured 2026-10-30, phase1-2.8.md #2)
@@ -152,6 +156,8 @@ function Reset-Mock {
     $global:T.ScanTimeouts = [System.Collections.ArrayList]::new(); $global:T.DialogSeq = [System.Collections.ArrayList]::new(); $global:T.Answered = [System.Collections.ArrayList]::new()
     # #321 review: every scan call (TimeoutSec / PrepareTimeoutSec / Strict); ExportChild delay
     $global:T.ScanCalls = [System.Collections.ArrayList]::new(); $global:T.ExportSleepMs = 0
+    # #321 review r2 (M1): per-path lookup delays, DeleteChild delay, per-scan delays, lookups seen before DeleteChild
+    $global:T.LookupSleep = @{}; $global:T.DeleteSleepMs = 0; $global:T.ScanSleepSeq = [System.Collections.ArrayList]::new(); $global:T.LookupsAtDelete = -1; $global:T.BusyDone = $false
     foreach ($r in 'TIRT', 'TIPC', 'TIID') { $null = Add-MockNode $r }
     $null = Add-MockNode 'TIRT^PlcTask' 19 $taskXml
     $null = Add-MockNode 'TIPC^P' 56
@@ -163,6 +169,7 @@ function Reset-Mock {
         param($p)
         $global:T.Lookups.Add($p) | Out-Null
         if ($null -ne $global:T.LookupThrows) { throw $global:T.LookupThrows }
+        if ($null -ne $global:T.LookupSleep -and $global:T.LookupSleep.ContainsKey($p)) { Start-Sleep -Milliseconds $global:T.LookupSleep[$p] }
         if (-not $global:T.Nodes.ContainsKey($p)) { throw [System.Runtime.InteropServices.COMException]::new("Item '$p' not found", [int]0x98510001) }
         Write-Output -NoEnumerate $global:T.Nodes[$p]
     }
@@ -178,6 +185,7 @@ Reset-Mock
         [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0, [switch]$Strict)
         $null = $global:T.ScanTimeouts.Add($TimeoutSec)
         $null = $global:T.ScanCalls.Add([PSCustomObject]@{ TimeoutSec = $TimeoutSec; PrepareTimeoutSec = $PrepareTimeoutSec; Strict = [bool]$Strict })
+        if ($global:T.ScanSleepSeq.Count -gt 0) { $ms = [int]$global:T.ScanSleepSeq[0]; $global:T.ScanSleepSeq.RemoveAt(0); if ($ms -gt 0) { Start-Sleep -Milliseconds $ms } }
         if ($global:T.DialogSeq.Count -gt 0) { $d = $global:T.DialogSeq[0]; $global:T.DialogSeq.RemoveAt(0); return $d }
         $global:T.Dialog
     }
@@ -1078,8 +1086,8 @@ try {
     $f = Join-Path $work 'r321-b2.xti'
     $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath $f
     Check 'r321-B2-export-empty-file-refused' ((-not $res.success) -and $res.error.code -eq 'TREEITEM_EXPORT_FAILED' -and $res.data.reason -eq 'file-not-written' -and $res.data.exported -eq $false) (Json $res)
-    $kinds = & $mod { param($d) @((Test-TcTreeItemExportFile -FilePath (Join-Path $d 'r321-none.xti')).Reason, (Test-TcTreeItemExportFile -FilePath (Join-Path $d 'r321-b2.xti')).Reason, (Test-TcTreeItemExportFile -FilePath (Join-Path $d 's321-a.xti'))) } $work
-    Check 'r321-B2-one-shared-check' ($kinds[0] -eq 'missing' -and $kinds[1] -eq 'empty' -and $null -eq $kinds[2]) ($kinds -join ',')
+    $kinds = & $mod { param($d) @((Test-TcTreeItemExportFile -FilePath (Join-Path $d 'r321-none.xti')).Reason, (Test-TcTreeItemExportFile -FilePath (Join-Path $d 'r321-b2.xti')).Reason, (Test-TcTreeItemExportFile -FilePath (Join-Path $d 's321-a.xti')).Ok, (Test-TcTreeItemExportFile -FilePath (Join-Path $d 's321-a.xti')).Length) } $work
+    Check 'r321-B2-one-shared-check' ($kinds[0] -eq 'missing' -and $kinds[1] -eq 'empty' -and $kinds[2] -eq $true -and $kinds[3] -gt 0) ($kinds -join ',')
 
     # M1: each gate gets the time left until the call deadline (prepare + scan within it); no time left -> no
     # scan, no COM call (MODAL_SCAN_INCOMPLETE reason no-budget); the deadline passing during the backup
@@ -1142,6 +1150,66 @@ try {
     $null = $global:T.DialogSeq.Add(@{ Title = 'TcXaeShell'; Text = 'Assertion Failed (mock)'; Kind = 'unknown'; ReloadTarget = $null; Hwnd = 4242; Buttons = @(@{ Id = 1; Name = 'OK' }) })
     $res = Remove-TcTreeItem -Path 'TIRT^Task 34' -ConfirmName 'Task 34' -DryRun $false
     Check 'r321-m3-dialog-at-delete-gate-backup-kept' ((-not $res.success) -and $res.error.code -eq 'IDE_MODAL_DIALOG' -and $res.error.message -match "DeleteChild 'TIRT\^Task 34'" -and $global:T.Exports.Count -eq 1 -and $null -ne $res.data.exportPath -and (Test-Path -LiteralPath $res.data.exportPath) -and @($global:T.Mods | Where-Object { $_ -like 'DeleteChild*' }).Count -eq 0 -and $global:T.Answered.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 34') -and $null -eq $res.data.PSObject.Properties['writeCalled']) (Json $res)
+
+    # --- #321 review round 2 (codex r2): M1 no COM call starts after the call deadline (lookups, ProduceXml,
+    #     ExportChild incl. busy retries, DeleteChild, the readback), N1 one file read for the Export result.
+    #     Deadline 3 s (scaled); [inference] mock timings, the review reproduced the same orders with mocks.
+    $origDeadline2 = & $mod { $script:TcTreeItemCallDeadlineSec.Clone() }
+    $origDelay = & $mod { $script:TcComRetryDelayMs }
+    try {
+        & $mod { $script:TcTreeItemCallDeadlineSec = @{ 'Export-TcTreeItem' = 3; 'Remove-TcTreeItem' = 3 }; $script:TcComRetryDelayMs = 50 }
+        # (a) slow parent lookup after the gate (review: ExportChild started at 3384 ms): the parent is looked up
+        #     BEFORE the gate now, the gate then has no budget -> no ExportChild
+        Reset-Mock
+        $global:T.LookupSleep['TIRT'] = 3300
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'r3-a.xti')
+        Check 'r3-M1-slow-parent-lookup-no-export' ((-not $res.success) -and $global:T.Exports.Count -eq 0 -and $res.error.code -in 'MODAL_SCAN_INCOMPLETE', 'CALL_DEADLINE_EXCEEDED') (Json $res)
+        # (b) ExportChild busy until after the deadline: the retry is not started
+        Reset-Mock
+        $global:T.ExportMode = 'busy-once-slow'
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'r3-b.xti')
+        Check 'r3-M1-busy-retry-not-started-after-deadline' ((-not $res.success) -and $res.error.code -eq 'CALL_DEADLINE_EXCEEDED' -and $global:T.Exports.Count -eq 1 -and $res.data.exported -eq $false -and $res.error.hint -match 'LookupTreeItem|Get-TcTreeItem') "exports=$($global:T.Exports.Count) $(Json $res)"
+        # (c) DeleteChild gate passes, the deadline passes before DeleteChild: DeleteChild not started, backup kept
+        Reset-Mock
+        $null = Add-MockNode 'TIRT^Task 41' 19
+        $null = $global:T.ScanSleepSeq.Add(0); $null = $global:T.ScanSleepSeq.Add(3300)
+        $res = Remove-TcTreeItem -Path 'TIRT^Task 41' -ConfirmName 'Task 41' -DryRun $false
+        Check 'r3-M1-deadline-between-gate-and-DeleteChild' ((-not $res.success) -and $res.error.code -eq 'CALL_DEADLINE_EXCEEDED' -and @($global:T.Mods | Where-Object { $_ -like 'DeleteChild*' }).Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 41') -and $null -ne $res.data.exportPath -and $null -eq $res.data.PSObject.Properties['writeCalled']) (Json $res)
+        # (d) DeleteChild returns after the deadline: no readback LookupTreeItem; unverified, backup info kept
+        Reset-Mock
+        $null = Add-MockNode 'TIRT^Task 42' 19
+        $global:T.DeleteSleepMs = 3300
+        $res = Remove-TcTreeItem -Path 'TIRT^Task 42' -ConfirmName 'Task 42' -DryRun $false
+        $after = @($global:T.Lookups | Select-Object -Skip $global:T.LookupsAtDelete)
+        Check 'r3-M1-no-readback-after-deadline-unverified' ((-not $res.success) -and $res.error.code -eq 'CALL_DEADLINE_EXCEEDED' -and $res.data.writeCalled -eq $true -and $res.data.verified -eq $false -and $res.data.verificationSkipped -eq $true -and $null -ne $res.data.exportPath -and $null -ne $res.data.backupPath -and $after.Count -eq 0 -and $res.error.message -match 'not verified') "after=$($after -join ';') $(Json $res)"
+        # (e) a lookup runs past the deadline: the next COM call (parent lookup, ProduceXml backup) is not started
+        Reset-Mock
+        $null = Add-MockNode 'TIRT^Task 43' 19
+        $global:T.LookupSleep['TIRT^Task 43'] = 3300
+        $res = Remove-TcTreeItem -Path 'TIRT^Task 43' -ConfirmName 'Task 43' -DryRun $false
+        Check 'r3-M1-no-COM-after-deadline-before-the-gates' ((-not $res.success) -and $res.error.code -eq 'CALL_DEADLINE_EXCEEDED' -and @($global:T.Produce | Where-Object { $_ -like "*|True" }).Count -eq 0 -and $global:T.Exports.Count -eq 0 -and $global:T.ScanCalls.Count -eq 0 -and $global:T.Nodes.ContainsKey('TIRT^Task 43')) "produce=$($global:T.Produce.Count) $(Json $res)"
+    }
+    finally {
+        & $mod { param($d, $r) $script:TcTreeItemCallDeadlineSec = $d; $script:TcComRetryDelayMs = $r } $origDeadline2 $origDelay
+    }
+    # Invoke-TcComRetry itself: a passed call deadline refuses the call before the script block runs; none set -> runs
+    $ran = $false
+    $err = & $mod { $prev = $script:TcComCallDeadline; try { $script:TcComCallDeadline = [DateTime]::UtcNow.AddSeconds(-1); Invoke-TcComRetry -OperationName 'x' -ScriptBlock { $global:RanCom = $true }; 'no-throw' } catch { $_.Exception.Message } finally { $script:TcComCallDeadline = $prev } }
+    $global:RanCom = $false
+    $ok = & $mod { Invoke-TcComRetry -OperationName 'x' -ScriptBlock { 42 } }
+    Check 'r3-M1-Invoke-TcComRetry-refuses-after-deadline' ([string]$err -match '^CALL_DEADLINE_EXCEEDED' -and -not $global:RanCom -and $ok -eq 42 -and $null -eq (& $mod { $script:TcComCallDeadline })) "err=$err ok=$ok"
+    $mapped = & $mod { (ConvertTo-TcAdsErrorCode -InputObject "CALL_DEADLINE_EXCEEDED: 'ExportChild x' not started (mock), original error: RPC_E_CALL_REJECTED 0x80010001").Code }
+    Check 'r3-M1-code-maps-and-passes-through' ($mapped -eq 'CALL_DEADLINE_EXCEEDED' -and (& $mod { $script:TcTreeItemPassThroughCodes }) -contains 'CALL_DEADLINE_EXCEEDED') "mapped=$mapped"
+
+    # N1 (review r2): the Export result uses the size the shared check read (one read), not a second Get-Item
+    Reset-Mock
+    $hold = & $mod { ${function:Test-TcTreeItemExportFile} }
+    try {
+        & $mod { function script:Test-TcTreeItemExportFile { [CmdletBinding()] param([string]$FilePath) @{ Ok = $true; Length = [long]77 } } }
+        $res = Export-TcTreeItem -Path 'TIRT^PlcTask' -FilePath (Join-Path $work 'r3-n1.xti')
+        Check 'r3-N1-export-size-from-the-one-check' ($res.success -and $res.data.fileSize -eq 77) (Json $res)
+    }
+    finally { & $mod { param($f) Set-Item -Path function:script:Test-TcTreeItemExportFile -Value $f } $hold }
 
     # --- 2.7 hint table and tools.json ---
     $codes = 'TREEITEM_NOT_FOUND', 'TREEITEM_PATH_INVALID', 'TREEITEM_READ_FAILED', 'TREEITEM_ALREADY_EXISTS', 'TREEITEM_CREATE_FAILED', 'TREEITEM_VERIFY_FAILED',

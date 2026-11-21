@@ -154,8 +154,9 @@ $timeoutOverrides = @{
     'GetPackageInfo' = 420000   # default: up to 6 tcpkg calls x TimeoutSec 60 (list -i + list -a per id, at most 5 ids) + margin; lib/tools.js TOOL_GRACE_MS covers TimeoutSec up to 120
     'InstallPackage' = 2200000  # default TimeoutSec 1800 for the install + 3 x 120 s tcpkg list + margin; lib/tools.js TOOL_GRACE_MS
     # #321 (review M1): the module's call deadline ($script:TcTreeItemCallDeadlineSec, TreeItemPath.ps1:
-    # Export 145 s, Remove 265 s; no dialog scan or COM call starts after it) + $script:TcTreeItemAfterDeadlineSec
-    # (35 s: the COM call started just before the deadline and its readback 30 s, bridge / runspace 5 s).
+    # Export 145 s, Remove 265 s; no dialog scan or COM call - retries and the readback included - starts after
+    # it, review r2) + $script:TcTreeItemAfterDeadlineSec (35 s). The timeout runs over the whole call: the last
+    # COM call, started before the module deadline, has the rest of it to return; no per-COM-call timeout.
     # The deadlines hold every gate at ModalScanTimeoutSec 60 + the 60 s prepare cap. computeTimeoutMs only
     # reads TimeoutSec, so these stay for any ModalScanTimeoutSec. Checked against the module source by
     # tests/Unit/tree-item-tools.ps1 and mcp-server/test/tools.test.js.

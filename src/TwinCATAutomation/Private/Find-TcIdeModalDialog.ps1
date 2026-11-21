@@ -111,6 +111,39 @@ public class UiaScanWindows {
     }
 }
 '@
+        # #321 review r2 (B1): the same list as UiaScanWindows.TopLevelOf, plus whether EnumWindows completed
+        # (the strict scan treats an incomplete enumeration as unknown). A separate type: UiaScanWindows may
+        # already be compiled in this process from an older module version.
+        UiaScanWindowsChecked = @'
+public class UiaScanWindowsChecked {
+    public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    public static extern bool EnumWindows(EnumProc callback, System.IntPtr lParam);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, out uint processId);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(System.IntPtr hWnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern System.IntPtr GetWindow(System.IntPtr hWnd, uint cmd);
+    public static System.Collections.Generic.List<System.IntPtr> TopLevelOf(uint targetPid, out bool completed) {
+        var list = new System.Collections.Generic.List<System.IntPtr>();
+        bool ok = false;
+        try {
+            ok = EnumWindows(delegate (System.IntPtr h, System.IntPtr l) {
+                uint p;
+                GetWindowThreadProcessId(h, out p);
+                if (p != targetPid || !IsWindowVisible(h)) { return true; }
+                System.IntPtr owner = GetWindow(h, 4);  // GW_OWNER
+                if (owner == System.IntPtr.Zero || !IsWindowVisible(owner)) { list.Add(h); }
+                return true;
+            }, System.IntPtr.Zero);
+        }
+        catch { ok = false; }
+        completed = ok;
+        return list;
+    }
+}
+'@
         UiaScanPidWindows   = @'
 public class UiaScanPidWindows {
     public delegate bool EnumProc(System.IntPtr hWnd, System.IntPtr lParam);
@@ -188,15 +221,28 @@ public class UiaScanButtonNative {
     # No desktop-wide RootElement.FindAll is left in this scan (#42): the owned-dialog and VS2022
     # message-box searches below start at the IDE's own window elements.
     $windows = New-Object System.Collections.ArrayList
-    foreach ($wh in [TcAutomation.UiaScanWindows]::TopLevelOf([uint32]$TargetPid)) {
+    # #321 review r2 (B1): the EnumWindows status and a $null FromHandle are gaps of the strict scan
+    $enumOk = $true
+    $topList = [TcAutomation.UiaScanWindowsChecked]::TopLevelOf([uint32]$TargetPid, [ref]$enumOk)
+    if ($tcFault -eq 'enum') { $enumOk = $false }
+    if (-not $enumOk) { Add-TcScanGap 'EnumWindows did not complete (enum): the window list of the IDE may be incomplete' }
+    foreach ($wh in $topList) {
         try {
-            $we = $ae::FromHandle($wh)
+            $we = $null
+            if ($tcFault -ne 'fromhandle') { $we = $ae::FromHandle($wh) }
             if ($null -ne $we) { $null = $windows.Add($we) }
+            else { Add-TcScanGap ("FromHandle returned no element for top-level window 0x{0:X} (fromhandle)" -f [long]$wh) }
         }
         catch { Add-TcScanGap ("top-level window 0x{0:X} not readable: {1}" -f [long]$wh, $_.Exception.Message) }
     }
     if ($windows.Count -eq 0) {
-        if ($Strict -and $tcGaps.Count -gt 0) { return [PSCustomObject]@{ ScanIncomplete = $true; Message = 'strict scan: ' + ($tcGaps -join '; ') } }
+        # strict: a live IDE without one readable top-level window - its main window was not seen, so nothing
+        # (main window, owned dialogs) was looked at: unknown, not "no dialog" (review r2, measured on a hidden
+        # powershell.exe: TopLevel = 0, process alive)
+        if ($Strict) {
+            Add-TcScanGap "no readable top-level window of pid $TargetPid (the IDE main window was not seen)"
+            return [PSCustomObject]@{ ScanIncomplete = $true; Message = 'strict scan: ' + ($tcGaps -join '; ') }
+        }
         return
     }
 
@@ -290,15 +336,20 @@ public class UiaScanButtonNative {
                     # Full descendant search only while the main window looks blocked (a full
                     # search of the VS2022 tree is slow and this scan runs every 2 s).
                     $vsBlocked = $false
-                    try { $vsBlocked = -not [bool]$vsMain.Current.IsEnabled } catch { }
+                    try {
+                        if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
+                        $vsBlocked = -not [bool]$vsMain.Current.IsEnabled
+                    }
+                    catch { Add-TcScanGap "IsEnabled of the main window not readable (VS message box search not widened): $($_.Exception.Message)" }
                     if (-not $vsBlocked) {
                         try {
+                            if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
                             $vwp = $null
                             if ($vsMain.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$vwp) -and $null -ne $vwp) {
                                 $vsBlocked = ($vwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
                             }
                         }
-                        catch { }
+                        catch { Add-TcScanGap "WindowInteractionState of the main window not readable (VS message box search not widened): $($_.Exception.Message)" }
                     }
                     if ($vsBlocked) { $vsMb = $vsMain.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $vsMbCond) }
                 }
@@ -437,15 +488,20 @@ public class UiaScanButtonNative {
         }
         if ($null -ne $mainEl) {
             $mainBlocked = $false
-            try { $mainBlocked = -not [bool]$mainEl.Current.IsEnabled } catch { $mainBlocked = $false }
+            try {
+                if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
+                $mainBlocked = -not [bool]$mainEl.Current.IsEnabled
+            }
+            catch { $mainBlocked = $false; Add-TcScanGap "IsEnabled of the main window not readable (owned-dialog match not widened): $($_.Exception.Message)" }
             if (-not $mainBlocked) {
                 try {
+                    if ($tcFault -eq 'blocked-read') { throw 'injected fault blocked-read (unit test)' }
                     $mwp = $null
                     if ($mainEl.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$mwp) -and $null -ne $mwp) {
                         $mainBlocked = ($mwp.Current.WindowInteractionState -eq [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)
                     }
                 }
-                catch { }
+                catch { Add-TcScanGap "WindowInteractionState of the main window not readable (owned-dialog match not widened): $($_.Exception.Message)" }
             }
             try {
                 if ($tcFault -eq 'owned') { throw 'injected fault owned (unit test)' }
@@ -456,9 +512,10 @@ public class UiaScanButtonNative {
                     try { $cur = $w.Current } catch { Add-TcScanGap "owned window not readable: $($_.Exception.Message)"; continue }
                     $name = [string]$cur.Name
                     $className = [string]$cur.ClassName
+                    # non-strict: an untitled window is skipped before IsOffscreen is read, as before (review r2 N2)
+                    if ([string]::IsNullOrWhiteSpace($name) -and -not $Strict) { continue }
                     if ($cur.IsOffscreen) { continue }
                     if ([string]::IsNullOrWhiteSpace($name)) {
-                        if (-not $Strict) { continue }
                         $name = Get-TcScanCaption ([long]$cur.NativeWindowHandle)
                         if ([string]::IsNullOrWhiteSpace($name)) { $name = ('(untitled window, class {0}, hwnd 0x{1:X})' -f $className, [long]$cur.NativeWindowHandle) }
                     }

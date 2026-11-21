@@ -23,11 +23,14 @@ $script:TcTreeItemMaxChildNames = 200
 # #321 review M1: call deadline in seconds of Export-TcTreeItem / Remove-TcTreeItem, counted from the start of
 # the cmdlet. Every modal-dialog gate only gets the time left until it (prepare + scan, Find-TcIdeModalDialogWithin);
 # with less than 2 s left the gate does not scan and the operation is refused (MODAL_SCAN_INCOMPLETE reason
-# no-budget), so no ExportChild / DeleteChild starts after the deadline. The MCP tool timeout (tools.json timeoutMs,
-# Export-ToolSchema.ps1) is the deadline + $script:TcTreeItemAfterDeadlineSec: 30 s for the COM call that started
-# just before the deadline and its readback, 5 s for bridge / runspace overhead. ExportChild / DeleteChild
-# themselves cannot be interrupted (synchronous COM, CODING_STANDARDS section 1): one that runs longer than that
-# reserve is cut by the bridge (BRIDGE_TIMEOUT) and its outcome is unknown. Both deadlines hold every gate at the
+# no-budget). The same deadline is set for Invoke-TcComRetry ($script:TcComCallDeadline, review r2): no COM call
+# of the cmdlet - lookup, ProduceXml, ExportChild, DeleteChild, a busy retry, the readback - starts after it
+# (CALL_DEADLINE_EXCEEDED; after DeleteChild was sent: not verified, backups reported). The MCP tool timeout
+# (tools.json timeoutMs, Export-ToolSchema.ps1) runs over the WHOLE call: deadline + $script:TcTreeItemAfterDeadlineSec
+# (35 s), so the last COM call, started before the deadline, has the rest of that time to return (less what the
+# bridge spent before the cmdlet started); there is no separate timeout per COM call. ExportChild / DeleteChild
+# themselves cannot be interrupted (synchronous COM, CODING_STANDARDS section 1): one still running when the
+# bridge timeout ends is cut (BRIDGE_TIMEOUT) and its outcome is unknown. Both deadlines hold every gate at the
 # ModalScanTimeoutSec maximum (60 s) plus the 60 s prepare cap (Export 1 gate = 120 s, Remove 2 gates = 240 s).
 # Unit tests lower them (tests/Unit/tree-item-tools.ps1, modal-scan-incomplete.ps1 W6).
 $script:TcTreeItemCallDeadlineSec = @{ 'Export-TcTreeItem' = 145; 'Remove-TcTreeItem' = 265 }
@@ -500,7 +503,7 @@ function Resolve-TcTreeItem {
 
 # Error codes a tree item cmdlet passes through unchanged (instead of its own default code), and that
 # Invoke-TcTreeItemBackup and the best-effort catches rethrow instead of turning them into a warning.
-$script:TcTreeItemPassThroughCodes = @('IDE_MODAL_DIALOG', 'IDE_CRASHED', 'IDE_TIMEOUT', 'IDE_BUSY', 'PLC_LOGGED_IN')
+$script:TcTreeItemPassThroughCodes = @('IDE_MODAL_DIALOG', 'IDE_CRASHED', 'IDE_TIMEOUT', 'IDE_BUSY', 'PLC_LOGGED_IN', 'CALL_DEADLINE_EXCEEDED')
 
 function Get-TcTreeItemPassThroughError {
     <#
@@ -611,6 +614,33 @@ function Get-TcTreeItemDialogResult {
     return New-TcModalDialogResult @p
 }
 
+function Set-TcComCallDeadline {
+    <#
+    .SYNOPSIS
+        Sets $script:TcComCallDeadline (checked by Invoke-TcComRetry) to now + the call deadline of -Command
+        (#321 review r2, M1) and returns the previous value for the caller's finally block. An earlier deadline
+        already set (an outer caller) is kept.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Command)
+    $prev = $script:TcComCallDeadline
+    $dl = 0
+    if ($null -ne $script:TcTreeItemCallDeadlineSec -and $script:TcTreeItemCallDeadlineSec.ContainsKey($Command)) { $dl = [double]$script:TcTreeItemCallDeadlineSec[$Command] }
+    $mine = [DateTime]::UtcNow.AddSeconds($dl)
+    if ($null -eq $prev -or $mine -lt [DateTime]$prev) { $script:TcComCallDeadline = $mine }
+    return $prev   # a DateTime or $null (not wrapped: @($null) would read as a deadline)
+}
+
+function Test-TcComCallDeadlinePassed {
+    <#
+    .SYNOPSIS
+        $true when a call deadline is set ($script:TcComCallDeadline) and has passed.
+    #>
+    [CmdletBinding()]
+    param()
+    ($null -ne $script:TcComCallDeadline -and [DateTime]::UtcNow -ge [DateTime]$script:TcComCallDeadline)
+}
+
 function Get-TcTreeItemCallBudgetSec {
     <#
     .SYNOPSIS
@@ -627,17 +657,19 @@ function Get-TcTreeItemCallBudgetSec {
 function Test-TcTreeItemExportFile {
     <#
     .SYNOPSIS
-        $null when -FilePath (written by ExportChild) exists and is not empty, else @{ Reason = 'missing' | 'empty';
-        Message }. One check for Export-TcTreeItem and the backup export of Remove-TcTreeItem (#321 review B2: a
-        0-byte backup used to count as a backup and let DeleteChild run).
+        @{ Ok = $true; Length } when -FilePath (written by ExportChild) exists and is not empty, else
+        @{ Ok = $false; Reason = 'missing' | 'empty'; Message }. One check (one file read) for Export-TcTreeItem
+        and the backup export of Remove-TcTreeItem (#321 review B2: a 0-byte backup used to count as a backup;
+        review r2 N1: the reported fileSize is the length read here, not a second read).
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$FilePath)
     $fi = $null
     try { $fi = Get-Item -LiteralPath $FilePath -ErrorAction Stop } catch { $fi = $null }
-    if ($null -eq $fi -or $fi.PSIsContainer) { return @{ Reason = 'missing'; Message = "ExportChild returned but '$FilePath' does not exist" } }
-    if ($fi.Length -le 0) { return @{ Reason = 'empty'; Message = "ExportChild returned but '$FilePath' is empty (0 bytes)" } }
-    return $null
+    if ($null -eq $fi -or $fi.PSIsContainer) { return @{ Ok = $false; Reason = 'missing'; Message = "ExportChild returned but '$FilePath' does not exist" } }
+    $len = [long]$fi.Length
+    if ($len -le 0) { return @{ Ok = $false; Reason = 'empty'; Message = "ExportChild returned but '$FilePath' is empty (0 bytes)" } }
+    return @{ Ok = $true; Length = $len }
 }
 
 function Test-TcModalScanTimeoutArg {

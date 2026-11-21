@@ -1,3 +1,7 @@
+# #321 review r2 (M1): call deadline (UTC DateTime) checked by Invoke-TcComRetry before every attempt; $null = none.
+# Export-TcTreeItem / Remove-TcTreeItem set it for their own run (Set-TcComCallDeadline) and restore the old value.
+$script:TcComCallDeadline = $null
+
 # Busy / dead-RPC classification shared by Invoke-TcComRetry and the code that runs inside its
 # script block and must not swallow these errors (Get-TcTreeItemDirectChild, #184 review).
 $script:TcComBusyPattern = '0x80010001|RPC_E_CALL_REJECTED|0x8001010A|RPC_E_SERVERCALL_RETRYLATER'
@@ -189,7 +193,14 @@ while (-not $Sync.Stop) {
     }
 
     try {
+        $__tcLastError = $null
         for ($__tcAttempt = 1; $__tcAttempt -le $MaxRetries; $__tcAttempt++) {
+            # #321 review r2 (M1): a call deadline set by the caller ($script:TcComCallDeadline, UTC) - no
+            # attempt, first or retry, starts after it (the MCP bridge kills the call a fixed time later)
+            if ($null -ne $script:TcComCallDeadline -and [DateTime]::UtcNow -ge $script:TcComCallDeadline) {
+                $__tcOrig = if ($null -ne $__tcLastError) { ", previous attempt: $__tcLastError" } else { '' }
+                throw "CALL_DEADLINE_EXCEEDED: '$OperationName' not started (attempt $__tcAttempt) - the call deadline passed$__tcOrig"
+            }
             try {
                 # COM tree items (ITcSmTreeItem) expose _NewEnum, so PowerShell would unroll
                 # them into their children on output. Callers emit COM objects with
@@ -263,6 +274,7 @@ while (-not $Sync.Stop) {
                 }
 
                 Write-Verbose "Invoke-TcComRetry [$OperationName] attempt $__tcAttempt/$MaxRetries - IDE busy, retrying in $($__tcDelayMs / 1000) s..."
+                $__tcLastError = $_.Exception.Message
                 Start-Sleep -Milliseconds $__tcDelayMs
                 $__tcDelayMs = $__tcDelayMs * 2
             }
