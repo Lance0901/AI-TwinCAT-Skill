@@ -133,7 +133,8 @@ function Add-TcPlcTask {
                 continue
             }
             $rr = $null
-            try { $rr = Remove-TcTreeItem -Path $p -ConfirmName (Get-TcTreePathLeaf -Path $p) -DryRun $false -AllowNoExport }
+            # -ModalScanTimeoutSec 5: the 5 s gates of master (tool budget 120 s, #321 review M2)
+            try { $rr = Remove-TcTreeItem -Path $p -ConfirmName (Get-TcTreePathLeaf -Path $p) -DryRun $false -AllowNoExport -ModalScanTimeoutSec 5 }
             catch { $rr = [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'TREEITEM_DELETE_FAILED'; message = $_.Exception.Message } } }
             $rb.Add([PSCustomObject]@{
                     path    = $p

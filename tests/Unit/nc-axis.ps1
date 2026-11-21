@@ -142,8 +142,12 @@ try {
     $r = Add-TcNcTask -DryRun $false
     Check 'AddNcTask XAE 0x98510002 -> NC_TASK_ALREADY_EXISTS, recorded (CreateChild was called)' ($r.error.code -eq 'NC_TASK_ALREADY_EXISTS' -and (Get-CodeChanged) -match 'failed') (J $r.error)
     Reset-Mock -NoTask; Reset-BuildRequired; $global:T.Mode = 'task-no-axes'
+    $global:ScanLog = [System.Collections.ArrayList]::new()
     $r = Add-TcNcTask -DryRun $false
     Check 'AddNcTask readback without Axes -> NC_TASK_VERIFY_FAILED, rolled back' ($r.error.code -eq 'NC_TASK_VERIFY_FAILED' -and $r.data.rolledBack -and -not $global:T.Nodes.ContainsKey('TINC^NC-Task 1 SAF')) (J $r)
+    # #321 review M2: the rollback DeleteChild keeps the 5 s scan of master (the tool budget is still 120 s)
+    Check 'M2 AddNcTask rollback: Remove-TcTreeItem gates scan with 5 s' (@($global:ScanLog).Count -ge 2 -and @($global:ScanLog | Where-Object { $_ -ne 5 }).Count -eq 0) "scans=$(@($global:ScanLog) -join ',')"
+    $global:ScanLog = $null
     Reset-Mock -NoTask; Reset-BuildRequired; $global:T.Dialog = New-MockDialog
     $r = Add-TcNcTask -DryRun $false
     Check 'AddNcTask modal dialog -> IDE_MODAL_DIALOG, nothing created, nothing recorded' ($r.error.code -eq 'IDE_MODAL_DIALOG' -and (Get-MockWrites).Count -eq 0 -and $null -eq (Get-CodeChanged)) (J $r.error)

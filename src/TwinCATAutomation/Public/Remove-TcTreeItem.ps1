@@ -19,12 +19,16 @@ function Remove-TcTreeItem {
         when known (data.backupFiles), and an ExportChild file of the item into the same folder
         (data.exportPath; restore with ImportChild): .zip for every node below TIPC (XAE refuses .xti
         for a PLC folder, measured 2026-10-30 4026 VS2022 on a PLC folder only; other TIPC nodes not
-        measured, a failed export deletes nothing), else .xti. When ExportChild fails or its file does
-        not exist nothing is deleted: TREEITEM_BACKUP_FAILED, data.reason export-failed / export-missing, unless
-        AllowNoExport is set (then data.warnings says so). IDE_MODAL_DIALOG when a dialog is open before
-        ExportChild or DeleteChild; MODAL_SCAN_INCOMPLETE when that dialog scan did not finish within
-        ModalScanTimeoutSec (the backup ExportChild / DeleteChild is not called, data.modalScan; never
-        read as "no dialog", no dialog is answered). Then DeleteChild, then LookupTreeItem must no longer find the path:
+        measured, a failed export deletes nothing), else .xti. When ExportChild fails, its file does
+        not exist or is empty (0 bytes) nothing is deleted: TREEITEM_BACKUP_FAILED, data.reason export-failed /
+        export-missing / export-empty, unless AllowNoExport is set (then data.warnings says so; AllowNoExport
+        only covers these three, never a dialog or an incomplete scan). IDE_MODAL_DIALOG when a dialog is open
+        before ExportChild or DeleteChild; MODAL_SCAN_INCOMPLETE when that dialog scan did not finish within
+        ModalScanTimeoutSec, could not look at every IDE window (strict scan) or the call deadline of 265 s
+        left no time for it (reason no-budget), data.modalScan; never read as "no dialog", no dialog is
+        answered. Refused at the backup gate: neither ExportChild nor DeleteChild is called; refused at the
+        DeleteChild gate: the backup files already written stay (data.exportPath), DeleteChild is not
+        called. Then DeleteChild, then LookupTreeItem must no longer find the path:
         data.verified=true, else TREEITEM_VERIFY_FAILED. XAE refusing the call -> TREEITEM_DELETE_FAILED.
         Below TIPC: BUILD_REQUIRED code-changed. data.writeCalled = true once DeleteChild is called.
     .PARAMETER Path
@@ -34,16 +38,18 @@ function Remove-TcTreeItem {
     .PARAMETER DryRun
         Default true: only report what would be deleted. false: back up, delete, read back.
     .PARAMETER AllowNoExport
-        Delete even when the ExportChild backup (.xti, or .zip below TIPC) failed or was not written
-        (only the ProduceXml backup remains, which ImportChild cannot restore); the result keeps a warning. Default off:
-        TREEITEM_BACKUP_FAILED and nothing deleted.
+        Delete even when the ExportChild backup (.xti, or .zip below TIPC) failed, was not written or is
+        empty (only the ProduceXml backup remains, which ImportChild cannot restore); the result keeps a
+        warning. It never skips the dialog checks. Used by the rollbacks of AddPlcTask / AddNcTask /
+        AddNcAxis (objects the same call just created). Default off: TREEITEM_BACKUP_FAILED and nothing deleted.
     .PARAMETER ModalScanTimeoutSec
-        Upper bound in seconds (1..60, default 30) of each UI Automation scan for a modal dialog: one
-        right before the backup ExportChild, one right before DeleteChild (DryRun=false only; a dry run
-        does not scan). #321: the 5 s of the other tree tools ran out before the backup ExportChild on a
-        solution with several PLC projects (NB1 2026-11-12). Only a slow scan waits longer. The scan
-        preparation (UIA load, first call in a process) has its own cap of 60 s on top. A scan that does
-        not finish -> MODAL_SCAN_INCOMPLETE, nothing deleted.
+        Upper bound in seconds (a whole number 1..60, default 30) of each UI Automation scan for a modal
+        dialog: one right before the backup ExportChild, one right before DeleteChild (DryRun=false only; a
+        dry run does not scan). #321: the 5 s of the other tree tools ran out before the backup ExportChild
+        on a solution with several PLC projects (NB1 2026-11-12). Only a slow scan waits longer. The scan
+        preparation (UIA load, first call in a process) has its own cap of 60 s on top; all of it stays
+        within the call deadline of 265 s. A scan that does not finish -> MODAL_SCAN_INCOMPLETE, nothing
+        deleted. Callers inside the module (UnlinkProgramFromTask, the rollbacks) pass 5.
     .EXAMPLE
         Remove-TcTreeItem -Path 'TIRT^Task 2' -ConfirmName 'Task 2'
     .EXAMPLE
@@ -64,10 +70,14 @@ function Remove-TcTreeItem {
         [Parameter()]
         [switch]$AllowNoExport,
 
+        # [double] + ValidateScript, not [int] + ValidateRange: [int] rounds 0.9 to 1 before it is validated
+        # (#321 review m1); the MCP schema stays integer 1..60 (Export-ToolSchema.ps1 $schemaOverrides)
         [Parameter()]
-        [ValidateRange(1, 60)]
-        [int]$ModalScanTimeoutSec = 30
+        [ValidateScript({ Test-TcModalScanTimeoutArg -Value $_ })]
+        [double]$ModalScanTimeoutSec = 30
     )
+    $callWatch = [System.Diagnostics.Stopwatch]::StartNew()   # #321 review M1: call deadline
+    $scanSec = [int]$ModalScanTimeoutSec
 
     $data = [PSCustomObject]@{ path = $Path; confirmName = $ConfirmName; dryRun = $DryRun; allowNoExport = [bool]$AllowNoExport }
     $bad = Test-TcTreePath -Path $Path
@@ -142,17 +152,21 @@ function Remove-TcTreeItem {
         $exportFile = [System.IO.Path]::ChangeExtension($bk.Backup.backupPath, (Get-TcTreeItemExportExtension -Path $Path))
         $exportProblem = $null
         $exportReason = $null
-        # #321: both gates of this call use -ModalScanTimeoutSec (default 30 s, not the 5 s of the other tree tools)
-        $scanHint = Get-TcTreeItemScanTimeoutHint -Command 'Remove-TcTreeItem' -TimeoutSec $ModalScanTimeoutSec
-        $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path' (backup before DeleteChild)" -Data $data -TimeoutSec $ModalScanTimeoutSec -ScanIncompleteHint $scanHint
+        # #321: both gates of this call use -ModalScanTimeoutSec (default 30 s, not the 5 s of the other tree tools),
+        # scan strict (review B1) and get only the time left until the call deadline (review M1)
+        $scanHint = Get-TcTreeItemScanTimeoutHint -Command 'Remove-TcTreeItem' -TimeoutSec $scanSec
+        $dlg = Get-TcTreeItemDialogResult -Operation "ExportChild '$Path' (backup before DeleteChild)" -Data $data -TimeoutSec $scanSec -Strict `
+            -BudgetSec (Get-TcTreeItemCallBudgetSec -Command 'Remove-TcTreeItem' -Watch $callWatch) -ScanIncompleteHint $scanHint
         if ($null -ne $dlg) { return $dlg }
         try {
             # No deadline (CODING_STANDARDS.md section 1), same as CreateChild in New-TcPlcObject: an open
             # dialog was ruled out just above and Connect-TcIde turns on ITcAutomationSettings.SilentMode
             # (XAE answers prompts with the default). Not timed yet (task 2.8).
             Invoke-TcComRetry -OperationName "ExportChild $Path (backup)" -ScriptBlock { $parent.ExportChild($nodeName, $exportFile) } | Out-Null
-            if (Test-Path -LiteralPath $exportFile -PathType Leaf) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $exportFile }
-            else { $exportReason = 'export-missing'; $exportProblem = "ExportChild returned but '$exportFile' does not exist" }
+            # #321 review B2: the file must exist AND not be empty (same check as Export-TcTreeItem)
+            $bad = Test-TcTreeItemExportFile -FilePath $exportFile
+            if ($null -eq $bad) { $data | Add-Member -NotePropertyName exportPath -NotePropertyValue $exportFile }
+            else { $exportReason = "export-$($bad.Reason)"; $exportProblem = $bad.Message }
         }
         catch {
             if ($null -ne (Get-TcTreeItemPassThroughError -ErrorRecord $_)) { throw }
@@ -171,7 +185,8 @@ function Remove-TcTreeItem {
 
         $stage = 'delete'
         $isPlc = Test-TcTreePathIsPlc -Path $Path
-        $dlg = Get-TcTreeItemDialogResult -Operation "DeleteChild '$Path'" -Data $data -TimeoutSec $ModalScanTimeoutSec -ScanIncompleteHint $scanHint
+        $dlg = Get-TcTreeItemDialogResult -Operation "DeleteChild '$Path'" -Data $data -TimeoutSec $scanSec -Strict `
+            -BudgetSec (Get-TcTreeItemCallBudgetSec -Command 'Remove-TcTreeItem' -Watch $callWatch) -ScanIncompleteHint $scanHint
         if ($null -ne $dlg) { return $dlg }
         # data.writeCalled: DeleteChild is about to be called (wrapping cmdlets record BUILD_REQUIRED by it)
         $data | Add-Member -NotePropertyName writeCalled -NotePropertyValue $true -Force

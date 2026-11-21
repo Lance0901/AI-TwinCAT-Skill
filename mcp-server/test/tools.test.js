@@ -314,6 +314,21 @@ describe('cmdlet name rewriting in hints', () => {
       }
     });
 
+    // #321 review M1: the module stops starting dialog scans and COM calls at its own call deadline
+    // ($script:TcTreeItemCallDeadlineSec, TreeItemPath.ps1); the bridge kill (timeoutMs) comes 35 s later
+    // ($script:TcTreeItemAfterDeadlineSec: last COM call + readback 30 s, bridge / runspace overhead 5 s), so
+    // a refusal at the deadline always reaches the caller before BRIDGE_TIMEOUT.
+    test('#321 review M1: timeoutMs = module call deadline + reserve (read from the module source)', () => {
+      const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'TwinCATAutomation', 'Private', 'TreeItem', 'TreeItemPath.ps1'), 'utf8');
+      const reserve = Number(/\$script:TcTreeItemAfterDeadlineSec\s*=\s*(\d+)/.exec(src)?.[1]);
+      assert.equal(reserve, 35);
+      for (const [name, cmdlet] of [['ExportChild', 'Export-TcTreeItem'], ['DeleteChild', 'Remove-TcTreeItem']]) {
+        const m = new RegExp(`'${cmdlet}'\\s*=\\s*(\\d+)`).exec(src);
+        assert.ok(m, `${cmdlet} deadline not found in TreeItemPath.ps1`);
+        assert.equal(catalogReal.get(name).timeoutMs, (Number(m[1]) + reserve) * 1000, name);
+      }
+    });
+
     test('TASK_NOT_FOUND / TASK_PROGRAM_ALREADY_LINKED: -DryRun $false and -DryRun:$false', () => {
       assert.equal(
         rw('用 data.plcTasks 裡的名稱當 -PlcTask 重跑;要新的 task 先 Add-TcPlcTask -Name <Name> -CycleTimeUs <us> -DryRun $false'),

@@ -17,6 +17,8 @@
 #         connection kept
 #      E4 tree-item gate (Get-TcTreeItemDialogResult) -> MODAL_SCAN_INCOMPLETE
 #   W  #321 ExportChild / DeleteChild gates with the real scan bounded by -ModalScanTimeoutSec (W1-W5)
+#      and by the call deadline (W6, #321 review M1)
+#   S  #321 review B1: -Strict scans (no pid / gone process, untitled modal record, scan gaps) -> never "no dialog"
 #   M  #234 the real scan against WPF fixture windows of a child process: the IDE main window (UIA
 #      AutomationId VisualStudioMainWindow) is never reported, also with a stale MainHwnd (M1-M6); read failures keep the old checks (M7)
 #   powershell.exe -NoProfile -File tests/Unit/modal-scan-incomplete.ps1
@@ -289,12 +291,67 @@ try {
     $r = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false -ModalScanTimeoutSec 2
     $ms = $sw.ElapsedMilliseconds
     Check 'W5 #321 Delete: DeleteChild gate over budget -> backup kept, not deleted, total < 2 x 2 s + 3 s' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.error.message -match 'DeleteChild' -and $global:W.Exports -eq 1 -and $null -ne $r.data.exportPath -and $global:W.Deletes -eq 0 -and $global:W.Nodes.ContainsKey('TIRT^Task W') -and $ms -ge 3400 -and $ms -lt 7000) "$ms ms $(J $r)"
+
+    # W6 (#321 review M1): call deadline 5 s instead of 265 s. Gate 1 gets floor(5 - t) s, the 1.5 s scan passes;
+    # gate 2 only gets what is left (scan 1 s), its 3 s scan is cut there: DeleteChild never starts and the whole
+    # call returns before deadline + 1.5 s (the bridge kills at deadline + 35 s)
+    $origDl = & $mod { $script:TcTreeItemCallDeadlineSec.Clone() }
+    try {
+        & $mod { $script:TcTreeItemCallDeadlineSec = @{ 'Export-TcTreeItem' = 5; 'Remove-TcTreeItem' = 5 } }
+        Reset-W 1500, 3000
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = Remove-TcTreeItem -Path 'TIRT^Task W' -ConfirmName 'Task W' -DryRun $false
+        $ms = $sw.ElapsedMilliseconds
+        Check 'W6 #321 review: gates share the 5 s call deadline -> DeleteChild gate cut to the time left, nothing deleted, returns before the deadline' ((-not $r.success) -and $r.error.code -eq 'MODAL_SCAN_INCOMPLETE' -and $r.error.message -match 'DeleteChild' -and $r.data.modalScan.timeoutSec -le 2 -and $global:W.Exports -eq 1 -and $global:W.Deletes -eq 0 -and $ms -lt 6500) "$ms ms $(J $r)"
+    }
+    finally { & $mod { param($d) $script:TcTreeItemCallDeadlineSec = $d } $origDl }
 }
 catch { Check 'W unexpected exception' $false "$($_.Exception.Message) at $($_.InvocationInfo.ScriptLineNumber)" }
 finally {
     & $mod { param($s, $a, $g) $script:TcUiaDialogScan = $s; Set-Item -Path function:script:Assert-TcConnection -Value $a; Set-Item -Path function:script:Get-TcSysManager -Value $g; $script:TcIdeProcessId = $null; $script:TcSolutionPath = $null } $origScan $origAssert $origGetSm
     [AppDomain]::CurrentDomain.SetData('tc321ScanMs', $null)
     Remove-Item -LiteralPath $wWork -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+
+# --- S (#321 review B1): Find-TcIdeModalDialog -Strict, used by the ExportChild / DeleteChild gates. A strict
+#     scan returns $null ("no dialog") only after it looked at every window; anything it could not look at is
+#     MODAL_SCAN_INCOMPLETE, an untitled modal window is a dialog. Without -Strict the old contract stays.
+#     [inference] mocked scan results; the real scan with injected UIA failures is S5 (fixture windows, below).
+try {
+    & $mod { $script:TcIdeProcessId = $null; $script:TcIdeMainHwnd = 0 }
+    $a = & $mod { Find-TcIdeModalDialog }
+    $b = & $mod { Find-TcIdeModalDialog -Strict }
+    Check 'S1 no IDE pid: plain scan $null (unchanged), strict scan incomplete' ($null -eq $a -and (& $mod { param($d) Test-TcModalScanIncomplete $d } $b) -and $b.Reason -eq 'error' -and $b.Message -match 'process') "$(J $b)"
+
+    $gone = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', 'exit 0'
+    $null = $gone.WaitForExit(30000)
+    $a = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $gone.Id
+    $b = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -Strict } $gone.Id
+    Check 'S2 IDE process gone: plain $null (unchanged), strict incomplete' ($null -eq $a -and (& $mod { param($d) Test-TcModalScanIncomplete $d } $b) -and $b.Message -match 'process') "$(J $b)"
+
+    # S3: the scan found a modal window without a title
+    Set-Scan { param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false, [bool]$Strict = $false) if ($PrepareOnly) { return }; [PSCustomObject]@{ Title = ''; Text = ''; ClassName = '#32770'; IsModal = $true; Hwnd = [long]4242; Buttons = @() } }
+    $a = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $PID
+    $b = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -Strict } $PID
+    Check 'S3 untitled modal record: plain $null (unchanged), strict -> dialog with a fallback title' ($null -eq $a -and $null -ne $b -and -not (& $mod { param($d) Test-TcModalScanIncomplete $d } $b) -and [string]$b.Title -match 'untitled' -and [string]$b.Title -match '0x1092' -and $b.Hwnd -eq 4242) "$(J $b)"
+    & $mod { $script:TcIdeProcessId = $PID }
+    $g = & $mod { Get-TcTreeItemDialogResult -Operation 'ExportChild x' -Strict }
+    Check 'S3 gate: untitled modal -> IDE_MODAL_DIALOG' ($null -ne $g -and $g.error.code -eq 'IDE_MODAL_DIALOG' -and [string]$g.data.dialog.title -match 'untitled') "$(J $g)"
+
+    # S4: the strict scan reports a gap (a window or the owned-window search could not be read)
+    Set-Scan { param([int]$TargetPid, [long]$MainHwnd, [int]$MaxText, [bool]$PrepareOnly = $false, [bool]$Strict = $false) if ($PrepareOnly) { return }; if ($Strict) { [PSCustomObject]@{ ScanIncomplete = $true; Message = 'owned-window search failed (mock)' } } }
+    $a = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p } $PID
+    $b = & $mod { param($p) Find-TcIdeModalDialog -ProcessId $p -Strict } $PID
+    Check 'S4 scan gap: strict -> incomplete reason error with the gap, plain unchanged' ($null -eq $a -and (& $mod { param($d) Test-TcModalScanIncomplete $d } $b) -and $b.Reason -eq 'error' -and $b.Message -match 'owned-window search failed') "$(J $b)"
+    $g = & $mod { Get-TcTreeItemDialogResult -Operation 'ExportChild x' -Strict }
+    Check 'S4 gate: scan gap -> MODAL_SCAN_INCOMPLETE' ($null -ne $g -and $g.error.code -eq 'MODAL_SCAN_INCOMPLETE') "$(J $g)"
+    $g = & $mod { Get-TcTreeItemDialogResult -Operation 'ExportChild x' -Strict -BudgetSec 20 -TimeoutSec 5 }
+    Check 'S4 gate with a call budget (Find-TcIdeModalDialogWithin) stays strict' ($null -ne $g -and $g.error.code -eq 'MODAL_SCAN_INCOMPLETE') "$(J $g)"
+}
+catch { Check 'S unexpected exception' $false "$($_.Exception.Message) at $($_.InvocationInfo.ScriptLineNumber)" }
+finally {
+    & $mod { param($s) $script:TcUiaDialogScan = $s; $script:TcIdeProcessId = $null } $origScan
 }
 
 # M  #234: the real scan never reports the IDE main window as a dialog, also with a stale cached main
@@ -335,14 +392,14 @@ foreach ($item in ($Spec -split ';')) {
         continue
     }
     $w.Show()
-    if ($parts.Count -gt 2 -and $parts[2] -eq 'owned') {
+    if ($parts.Count -gt 2 -and ($parts[2] -eq 'owned' -or $parts[2] -eq 'ownednotitle')) {
         $owner = $w
+        $noTitle = ($parts[2] -eq 'ownednotitle')   # #321 review B1: an owned modal without caption / UIA Name
         $null = $w.Dispatcher.BeginInvoke([Action]{
             $c = New-Object System.Windows.Window
-            $c.Title = 'Fixture234 Options'
-            [System.Windows.Automation.AutomationProperties]::SetName($c, 'Fixture234 Options')
+            if ($noTitle) { $c.Title = '' } else { $c.Title = 'Fixture234 Options'; [System.Windows.Automation.AutomationProperties]::SetName($c, 'Fixture234 Options') }
             $c.Owner = $owner; $c.Width = 200; $c.Height = 100; $c.ShowInTaskbar = $false
-            $c.Content = New-Object System.Windows.Controls.TextBlock -Property @{ Text = 'owned modal' }
+            if (-not $noTitle) { $c.Content = New-Object System.Windows.Controls.TextBlock -Property @{ Text = 'owned modal' } }
             $c.Add_Loaded({ Set-Content -LiteralPath $Signal -Value 'ready' })
             $script:wins += $c
             $null = $c.ShowDialog()
@@ -403,6 +460,44 @@ try {
     # with the id AND IsModal = true cannot be built with WPF; that branch is covered by M7e (mocked UIA objects).
     $r = Invoke-WithFixture "$mainTitle|VisualStudioMainWindow;TwinCAT XAE||dialog" @($stale)
     Check 'M6 top-level ShowDialog window (TwinCAT XAE) + main window with the id, stale MainHwnd -> the dialog is reported' ($null -eq $r.error -and $null -ne $r[[string]$stale] -and [string]$r[[string]$stale].Title -eq 'TwinCAT XAE') (Show-Hit $r ([string]$stale))
+
+    # S5 (#321 review B1): the real scan, plain vs -Strict (5th argument). An owned modal child without a title
+    # and injected UIA read failures (AppDomain data 'TcUiaScanTestFault', unit tests only) are skipped by the
+    # plain scan ($null = "no dialog") and reported by the strict scan; a clean window set stays clean in strict.
+    function Invoke-FixtureBody([string]$Spec, [scriptblock]$Body) {
+        $id = [guid]::NewGuid().ToString('N')
+        $signal = Join-Path $work "$id.ready"
+        $stop = Join-Path $work "$id.stop"
+        $p = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-STA', '-File', "`"$fixturePath`"", '-Spec', "`"$Spec`"", '-Signal', "`"$signal`"", '-Stop', "`"$stop`""
+        try {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while (-not (Test-Path -LiteralPath $signal) -and $sw.Elapsed.TotalSeconds -lt 45 -and -not $p.HasExited) { [System.Threading.Thread]::Sleep(100) }   # waits for the fixture's signal file, not a blind wait
+            if (-not (Test-Path -LiteralPath $signal)) { return @{ error = "fixture not ready (exited $($p.HasExited))" } }
+            return (& $Body $p.Id)
+        }
+        finally {
+            [AppDomain]::CurrentDomain.SetData('TcUiaScanTestFault', $null)
+            Set-Content -LiteralPath $stop -Value 'stop'
+            if (-not $p.WaitForExit(10000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }   # only the fixture process this test started
+        }
+    }
+    $r = Invoke-FixtureBody "$mainTitle|VisualStudioMainWindow|ownednotitle" { param($fp) @{ plain = (& $origScan $fp $stale 2000); strict = (& $origScan $fp $stale 2000 $false $true) } }
+    Check 'S5a owned modal child without a title: plain scan misses it, strict reports it (fallback title)' ($null -eq $r.error -and $null -eq $r.plain -and $null -ne $r.strict -and [string]$r.strict.Title -match 'untitled' -and $r.strict.IsModal) "error=$($r.error) plain=$(J $r.plain) strict=$(J $r.strict)"
+    $r = Invoke-FixtureBody "$mainTitle|VisualStudioMainWindow" {
+        param($fp)
+        $o = @{ clean = (& $origScan $fp $stale 2000 $false $true) }
+        foreach ($f in 'window-read', 'owned') {
+            [AppDomain]::CurrentDomain.SetData('TcUiaScanTestFault', $f)
+            $o["$f-plain"] = & $origScan $fp $stale 2000
+            $o["$f-strict"] = & $origScan $fp $stale 2000 $false $true
+        }
+        $o
+    }
+    Check 'S5b clean window set: strict scan still $null (no false dialog)' ($null -eq $r.error -and $null -eq $r.clean) "error=$($r.error) clean=$(J $r.clean)"
+    foreach ($f in 'window-read', 'owned') {
+        $sv = $r["$f-strict"]
+        Check "S5c injected $f failure: plain scan swallows it, strict scan reports a gap" ($null -eq $r.error -and $null -eq $r["$f-plain"] -and $null -ne $sv -and $sv.ScanIncomplete -eq $true -and [string]$sv.Message -match $f) "plain=$(J $r["$f-plain"]) strict=$(J $sv)"
+    }
 
     # PR #278 N2 / S2: Test-TcScanVsMainWindow (defined inside the real scan block) excludes a window only when the
     # id AND IsModal were read; any read failure leaves the window to the old checks. Mock UIA objects.

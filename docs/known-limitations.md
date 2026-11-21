@@ -205,7 +205,7 @@ registered tcauto 實測 2026-10-30 4026 VS2022 XAE 3.1.4026.22,離線(副本 `C
 | `ImportChild` | `Import-TcTreeItem` | 已實測(重測 2026-10-30):改名匯入 `verified=true`;Name 空白且撞名時 dry-run 回 `TREEITEM_ALREADY_EXISTS` 帶 `expectedName`;XAE 用 .xti 寫死的 `<Name>` 當匯入名稱;PLC folder 的 `.zip` 能匯回(#1、#4 修正通過) |
 | `DeleteChild` | `Remove-TcTreeItem` | 已實測(重測 2026-10-30):TIRT 獨立 Task `verified=true`、`.xti` 備份、沒有 `.TcTTO` warning;TIPC PLC folder 預設產生 `.zip` 備份、`verified=true`,該 `.zip` 能用 ImportChild 還原(#2、#3 修正通過) |
 
-#321(待真機驗證):`ExportChild` / `DeleteChild` 的 dialog 掃描上限改成 `ModalScanTimeoutSec`(預設 30 s,原本固定 5 s);只有 mock / 單元測試，還沒在多 PLC Project 的 solution 上用 tcauto MCP 量過實際掃描耗時。
+#321(待真機驗證):`ExportChild` / `DeleteChild` 的 dialog 掃描上限改成 `ModalScanTimeoutSec`(預設 30 s,原本固定 5 s),改用 strict 掃描，整次呼叫有 145 / 265 s 上限;只有 mock / 單元測試(含 WPF fixture 視窗),還沒在多 PLC Project 的 solution 上用 tcauto MCP 量過實際掃描耗時，也還沒確認 strict 掃描在 VS2022 / XAE Shell 上不會把正常狀態誤判成 `MODAL_SCAN_INCOMPLETE`。ExportChild / DeleteChild 本身是同步 COM,超過呼叫上限後 35 s 仍沒回來時 MCP 回 `BRIDGE_TIMEOUT`,結果未知。
 
 沒測到：`PLC_LOGGED_IN`(UmRT 沒在跑，不能 Login)、DeleteChild 的 `parent-mismatch`、ConsumeXml 的 `repeated-count-mismatch`、有 mapping 節點的 `Reconnect`。
 

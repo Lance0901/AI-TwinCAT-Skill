@@ -20,6 +20,19 @@ $script:TcTreeRootCandidates = @('TIPC', 'TIID', 'TIRC', 'TIRS', 'TIRT', 'TINC',
 # Upper bound of child names listed in data / hints (a TIID with hundreds of terminals stays readable).
 $script:TcTreeItemMaxChildNames = 200
 
+# #321 review M1: call deadline in seconds of Export-TcTreeItem / Remove-TcTreeItem, counted from the start of
+# the cmdlet. Every modal-dialog gate only gets the time left until it (prepare + scan, Find-TcIdeModalDialogWithin);
+# with less than 2 s left the gate does not scan and the operation is refused (MODAL_SCAN_INCOMPLETE reason
+# no-budget), so no ExportChild / DeleteChild starts after the deadline. The MCP tool timeout (tools.json timeoutMs,
+# Export-ToolSchema.ps1) is the deadline + $script:TcTreeItemAfterDeadlineSec: 30 s for the COM call that started
+# just before the deadline and its readback, 5 s for bridge / runspace overhead. ExportChild / DeleteChild
+# themselves cannot be interrupted (synchronous COM, CODING_STANDARDS section 1): one that runs longer than that
+# reserve is cut by the bridge (BRIDGE_TIMEOUT) and its outcome is unknown. Both deadlines hold every gate at the
+# ModalScanTimeoutSec maximum (60 s) plus the 60 s prepare cap (Export 1 gate = 120 s, Remove 2 gates = 240 s).
+# Unit tests lower them (tests/Unit/tree-item-tools.ps1, modal-scan-incomplete.ps1 W6).
+$script:TcTreeItemCallDeadlineSec = @{ 'Export-TcTreeItem' = 145; 'Remove-TcTreeItem' = 265 }
+$script:TcTreeItemAfterDeadlineSec = 35
+
 function Test-TcTreePath {
     <#
     .SYNOPSIS
@@ -559,15 +572,33 @@ function Get-TcTreeItemDialogResult {
     .PARAMETER ScanIncompleteHint
         Appended to the MODAL_SCAN_INCOMPLETE hint when the scan did not complete (caller-specific
         next step, e.g. which parameter raises the scan time). Not used for a dialog.
+    .PARAMETER BudgetSec
+        #321 review M1: seconds left until the caller's call deadline. Given: prepare + scan together stay within
+        it (Find-TcIdeModalDialogWithin, scan at most -TimeoutSec); under 2 s nothing is scanned and the result is
+        MODAL_SCAN_INCOMPLETE reason no-budget. Not given: Find-TcIdeModalDialog as before.
+    .PARAMETER Strict
+        #321 review B1: Find-TcIdeModalDialog -Strict (unknown / gone IDE process, unreadable windows -> incomplete;
+        untitled modal -> dialog). Used by the ExportChild / DeleteChild gates.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Operation,
         [Parameter()][object]$Data,
         [Parameter()][ValidateRange(1, 60)][int]$TimeoutSec = 5,
-        [Parameter()][string]$ScanIncompleteHint
+        [Parameter()][string]$ScanIncompleteHint,
+        [Parameter()][double]$BudgetSec,
+        [Parameter()][switch]$Strict
     )
-    $dialog = Find-TcIdeModalDialog -TimeoutSec $TimeoutSec
+    if ($PSBoundParameters.ContainsKey('BudgetSec')) {
+        $wp = @{ BudgetSec = $BudgetSec; MaxScanSec = $TimeoutSec }
+        if ($Strict) { $wp['Strict'] = $true }
+        $dialog = Find-TcIdeModalDialogWithin @wp
+    }
+    else {
+        $fp = @{ TimeoutSec = $TimeoutSec }
+        if ($Strict) { $fp['Strict'] = $true }   # only when set: mocks of Find-TcIdeModalDialog without -Strict keep working
+        $dialog = Find-TcIdeModalDialog @fp
+    }
     if ($null -eq $dialog) { return $null }
     # Incomplete scan (#42): unknown, never "no dialog" -> MODAL_SCAN_INCOMPLETE, nothing attempted.
     if ((Test-TcModalScanIncomplete $dialog) -and -not [string]::IsNullOrWhiteSpace($ScanIncompleteHint)) {
@@ -578,6 +609,53 @@ function Get-TcTreeItemDialogResult {
     $p = @{ Dialog = $dialog; Operation = $Operation }
     if ($null -ne $Data) { $p['Data'] = $Data }
     return New-TcModalDialogResult @p
+}
+
+function Get-TcTreeItemCallBudgetSec {
+    <#
+    .SYNOPSIS
+        Seconds left until the call deadline of -Command ($script:TcTreeItemCallDeadlineSec, #321 review M1),
+        measured by -Watch (started when the cmdlet started). Negative once it has passed.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][System.Diagnostics.Stopwatch]$Watch)
+    $dl = 0
+    if ($null -ne $script:TcTreeItemCallDeadlineSec -and $script:TcTreeItemCallDeadlineSec.ContainsKey($Command)) { $dl = [double]$script:TcTreeItemCallDeadlineSec[$Command] }
+    $dl - $Watch.Elapsed.TotalSeconds
+}
+
+function Test-TcTreeItemExportFile {
+    <#
+    .SYNOPSIS
+        $null when -FilePath (written by ExportChild) exists and is not empty, else @{ Reason = 'missing' | 'empty';
+        Message }. One check for Export-TcTreeItem and the backup export of Remove-TcTreeItem (#321 review B2: a
+        0-byte backup used to count as a backup and let DeleteChild run).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FilePath)
+    $fi = $null
+    try { $fi = Get-Item -LiteralPath $FilePath -ErrorAction Stop } catch { $fi = $null }
+    if ($null -eq $fi -or $fi.PSIsContainer) { return @{ Reason = 'missing'; Message = "ExportChild returned but '$FilePath' does not exist" } }
+    if ($fi.Length -le 0) { return @{ Reason = 'empty'; Message = "ExportChild returned but '$FilePath' is empty (0 bytes)" } }
+    return $null
+}
+
+function Test-TcModalScanTimeoutArg {
+    <#
+    .SYNOPSIS
+        ValidateScript of -ModalScanTimeoutSec (#321 review m1): a whole number 1..60, checked on the value as
+        given (a [int] parameter would round 0.9 to 1 and 60.1 to 60 before ValidateRange runs). Throws with
+        the reason, so the binding error names it.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$Value)
+    $d = [double]::NaN
+    $ok = $false
+    try { $d = [double]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture); $ok = $true } catch { $ok = $false }
+    if (-not $ok -or [double]::IsNaN($d) -or [double]::IsInfinity($d) -or $d -ne [Math]::Floor($d) -or $d -lt 1 -or $d -gt 60) {
+        throw "ModalScanTimeoutSec must be a whole number from 1 to 60 (got '$Value')."
+    }
+    $true
 }
 
 function Get-TcTreeItemScanTimeoutHint {
