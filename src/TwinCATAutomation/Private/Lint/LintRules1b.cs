@@ -186,6 +186,9 @@ namespace TcLintEngine
             CheckTaskGraph();
             RunPhase2a();
             RunPhase2b();
+            RunPhase3Ref();
+            RunPhase3Expr();
+            RunPhase3Sm();
         }
 
         // ================================================================ project index (all objects, in scope or not)
