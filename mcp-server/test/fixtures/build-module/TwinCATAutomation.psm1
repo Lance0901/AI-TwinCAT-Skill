@@ -196,7 +196,7 @@ function Get-TcBuildCoverage {
 
 function Get-TcBuildErrors {
     [CmdletBinding()]
-    param([switch]$IncludeWarnings, [int]$TimeoutSec = 30)
+    param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText)
     $sc = Get-FixtureScenario
     if ($sc.ErrorListFails) {
         return New-TcResult -Success $false -ErrorMessage 'Error List window not found (fixture)' -ErrorCode 'ERRORLIST_UNAVAILABLE'
