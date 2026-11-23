@@ -608,11 +608,14 @@
         $fallbackErrors = if ($null -ne $failedProjects) { [int]$failedProjects } else { 0 }
         $fallbackWarnings = $allWarningLines.Count
         # item 88: the Error List is read through COM first (Get-TcBuildErrors); the build failed (LastBuildInfo > 0) ->
-        # a COM list without an error row is not accepted, and the pane of THIS build is the cross-check / code source
+        # a COM list without an error row is not accepted, and the pane of THIS build is the cross-check / code source.
+        # -RequireBuildSummary (review #332 M1): the result decides success, and COM cannot see the Error List search box or
+        # column filters, so COM is accepted only when the pane of this build has an end summary line; otherwise UIA reads
+        # (button totals vs rows), and when that fails too buildSucceeded stays $null -> BUILD_STATUS_UNKNOWN.
         $elExpectErrors = ($null -ne $failedProjects -and [int]$failedProjects -gt 0)
         $elPaneText = if ([string]$buildPaneRead.status -eq 'read') { [string]$buildPaneRead.text } else { $null }
         $els = Get-TcErrorListSummary -TimeoutSec $script:TcBuildErrorListTimeoutSec -SplitRuntimeLog -FallbackErrorCount $fallbackErrors -FallbackWarningCount $fallbackWarnings `
-            -ExpectErrors:$elExpectErrors -BuildPaneText $elPaneText
+            -ExpectErrors:$elExpectErrors -BuildPaneText $elPaneText -RequireBuildSummary
         $errorItems = $els.errorItems
         $warningItems = $els.warningItems
         $errorCount = $els.errorCount

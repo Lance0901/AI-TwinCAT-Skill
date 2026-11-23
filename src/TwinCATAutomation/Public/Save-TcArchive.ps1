@@ -1,4 +1,4 @@
-function Save-TcArchive {
+﻿function Save-TcArchive {
     <#
     .SYNOPSIS
         Saves the open solution (.tnzip) or the TwinCAT configuration (.tszip) as an archive of the state in XAE memory; checks the Error List, because a missing component is only reported there. Lists the archive entries.
@@ -105,9 +105,7 @@ function Save-TcArchive {
         $data | Add-Member -NotePropertyName warnings -NotePropertyValue $warnings.ToArray() -Force
         New-TcResult -Success $false -ErrorCode 'ARCHIVE_FAILED' -Data $data -ErrorMessage $m -Hint (Get-TcErrorHint -Code 'ARCHIVE_FAILED')
     }
-    # no code in the key: the COM read (item 88) has none unless the build pane gave one, the UIA read may; the same row
-    # must compare equal whichever source read the list before and after
-    $rowKey = { param($i) "$([string]$i.description)|$([string]$i.file)|$([string]$i.project)" }
+    $rowKey = { param($i) "$([string]$i.code)|$([string]$i.description)|$([string]$i.file)|$([string]$i.project)" }
     try {
         $dlg = Get-TcTreeItemDialogResult -Operation "SaveAsArchive '$FilePath'" -Data $data
         if ($null -ne $dlg) { return $dlg }
@@ -124,7 +122,9 @@ function Save-TcArchive {
         else { $target = $sm }
 
         # baseline: error rows already in the Error List (left over from earlier operations)
-        $elBefore = Get-TcErrorListSummary
+        # UIA only (review #332 M1): the before / after comparison must see every new row; COM cannot see an Error List filter.
+        # Both reads use one source, so the row key keeps the code (review N4).
+        $elBefore = Get-TcErrorListSummary -Source UIA
         $baseline = $null
         if ($null -eq $elBefore.errorListError) {
             $baseline = @{}
@@ -171,7 +171,7 @@ function Save-TcArchive {
         $data.saved = $true
 
         # Error List after the call: a missing component is only reported there (measured)
-        $elAfter = Get-TcErrorListSummary
+        $elAfter = Get-TcErrorListSummary -Source UIA
         if ($null -ne $elAfter.errorListError) {
             $data | Add-Member -NotePropertyName errorListError -NotePropertyValue $elAfter.errorListError
             $warnings.Add("the Error List could not be read ($($elAfter.errorListError): $($elAfter.errorListMessage)); the archive file is kept, but whether every project is in it is not known")

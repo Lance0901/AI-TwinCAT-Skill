@@ -7,202 +7,128 @@
 // 529 rows in 0.96 s), without showing the Error List window or taking the foreground.
 // InfoSys / MSDN: ErrorItems is 1-based (https://learn.microsoft.com/en-us/dotnet/api/envdte80.erroritems).
 //
-// The helper only reads and sets the three Show* flags (restored in finally). It never executes a DTE
-// command and never touches the window. Compiled once per process by Initialize-TcErrorListComTypes
-// (Add-Type against the IDE's PublicAssemblies\EnvDTE.dll / EnvDTE80.dll; C# 5 compatible).
+// This file only adapts the IDE's DTE2 to IErrorListSource; the algorithm (flags, baseline, restore, deadline) is in
+// ErrorListComCore.cs. The helper only reads and sets the three Show* flags (restored in finally). It never executes a
+// DTE command and never touches the window. Compiled once per process by Initialize-TcErrorListComTypes
+// (Add-Type -Path ErrorListComCore.cs, ErrorListComReader.cs against the IDE's PublicAssemblies\EnvDTE.dll / EnvDTE80.dll).
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using EnvDTE;
 using EnvDTE80;
 
 namespace TcAutomation
 {
-    public sealed class ErrorListComRow
-    {
-        public int Level;
-        public string Description;
-        public string FileName;
-        public int Line;
-        public int Column;
-        public string Project;
-    }
-
-    public sealed class ErrorListComResult
-    {
-        public bool Ok;
-        public string Reason;        // short machine reason when !Ok (e.g. 'flags-not-set', 'timeout', 'com-error')
-        public string Error;         // exception text when Reason == 'com-error'
-        public int HResult;          // COMException HResult (0 when none)
-        public string Caption;       // Window.Caption of the Error List window, null when the window was not found
-        public bool[] FlagsBefore = new bool[3];   // ShowErrors / ShowWarnings / ShowMessages before
-        public bool FlagsRestored;
-        public bool Isolated;        // severities read one flag at a time
-        public int AllCount;         // ErrorItems.Count with all three flags on
-        public List<ErrorListComRow> All = new List<ErrorListComRow>();        // all flags on (rows of the level-mapped read; empty when Isolated)
-        public List<ErrorListComRow> Errors = new List<ErrorListComRow>();     // Isolated: ShowErrors only
-        public List<ErrorListComRow> Warnings = new List<ErrorListComRow>();   // Isolated: ShowWarnings only
-        public List<ErrorListComRow> Messages = new List<ErrorListComRow>();   // Isolated: ShowMessages only
-        public double Ms;
-    }
-
     public static class ErrorListComReader
     {
         const string ErrorListGuid = "{D78612C7-9962-4B83-95D9-268046DAD23A}";
 
-        sealed class Budget
+        // review #332 N2: every RCW this adapter obtains is released once (Marshal.ReleaseComObject decrements the
+        // reference count of that obtain; the DTE passed in by the caller is not ours and is never released)
+        static void Release(object o)
         {
-            readonly Stopwatch sw = Stopwatch.StartNew();
-            readonly int maxMs;
-            public Budget(int maxMs) { this.maxMs = maxMs; }
-            public bool Over { get { return sw.ElapsedMilliseconds > maxMs; } }
+            try { if (o != null && Marshal.IsComObject(o)) Marshal.ReleaseComObject(o); }
+            catch (Exception) { }
         }
 
-        sealed class ReasonException : Exception
+        // RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER (busy), RPC_S_CALL_FAILED / RPC_S_SERVER_UNAVAILABLE /
+        // RPC_E_DISCONNECTED (dead): never swallowed, the PowerShell caller retries or classifies them
+        static bool IsRpcFailure(int hr)
         {
-            public readonly string Reason;
-            public ReasonException(string reason) : base(reason) { Reason = reason; }
+            uint u = unchecked((uint)hr);
+            return u == 0x80010001u || u == 0x8001010Au || u == 0x800706BEu || u == 0x800706BAu || u == 0x80010108u;
         }
 
-        static string CaptionOf(DTE2 dte)
+        sealed class DteSource : IErrorListSource
         {
-            // enumerate by index: Windows.Item(guid) is not needed, ToolWindows.ErrorList already created the window
-            try
+            readonly object dteObject;
+            Window win;
+            ErrorList el;
+            ErrorItems items;
+
+            public DteSource(object dte) { dteObject = dte; }
+
+            // Finds the Error List window among the IDE's windows WITHOUT creating it (review #332 S7: the first access to
+            // ToolWindows.ErrorList creates the window when it never existed and changes the user's layout).
+            public bool Open(out string caption)
             {
-                int n = dte.Windows.Count;
-                for (int i = 1; i <= n; i++)
+                caption = null;
+                DTE2 d = (DTE2)dteObject;
+                EnvDTE.Windows ws = null;
+                try
                 {
-                    try
+                    ws = d.Windows;
+                    int n = ws.Count;
+                    for (int i = 1; i <= n && win == null; i++)
                     {
-                        Window w = dte.Windows.Item(i);
-                        string kind = w.ObjectKind;
-                        if (kind != null && kind.ToUpperInvariant() == ErrorListGuid) return w.Caption;
+                        Window w = null;
+                        bool keep = false;
+                        try
+                        {
+                            w = ws.Item(i);
+                            string kind = w.ObjectKind;
+                            if (kind != null && kind.ToUpperInvariant() == ErrorListGuid) { win = w; keep = true; }
+                        }
+                        catch (COMException ex) { if (IsRpcFailure(ex.ErrorCode)) throw; }
+                        finally { if (!keep) Release(w); }
                     }
-                    catch (COMException) { }
                 }
+                finally { Release(ws); }
+                if (win == null) return false;
+                caption = win.Caption;
+                el = d.ToolWindows.ErrorList;     // the window exists: this creates nothing
+                return el != null;
             }
-            catch (COMException) { }
-            return null;
-        }
 
-        static void SetFlags(ErrorList el, bool e, bool w, bool m)
-        {
-            // order: switch ON first, OFF last, so the list is never empty by our own doing
-            if (e) el.ShowErrors = true;
-            if (w) el.ShowWarnings = true;
-            if (m) el.ShowMessages = true;
-            if (!e) el.ShowErrors = false;
-            if (!w) el.ShowWarnings = false;
-            if (!m) el.ShowMessages = false;
-            if (el.ShowErrors != e || el.ShowWarnings != w || el.ShowMessages != m) throw new ReasonException("flags-not-set");
-        }
-
-        // Count settles a moment after the flags changed: poll until two reads, settleMs apart, agree.
-        static int StableCount(ErrorList el, int settleMs, Budget b)
-        {
-            int prev = -1;
-            while (true)
+            public bool GetFlag(int index)
             {
-                int c = el.ErrorItems.Count;
-                if (c == prev) return c;
-                prev = c;
-                if (b.Over) throw new ReasonException("timeout");
-                System.Threading.Thread.Sleep(settleMs);
+                if (index == 0) return el.ShowErrors;
+                if (index == 1) return el.ShowWarnings;
+                return el.ShowMessages;
             }
-        }
 
-        static List<ErrorListComRow> ReadRows(ErrorList el, int expected, Budget b)
-        {
-            ErrorItems items = el.ErrorItems;
-            int count = items.Count;
-            if (count != expected) throw new ReasonException("count-changed");
-            var rows = new List<ErrorListComRow>(count);
-            for (int i = 1; i <= count; i++)   // 1-based, inclusive
+            public void SetFlag(int index, bool value)
             {
-                if (b.Over) throw new ReasonException("timeout");
-                ErrorItem it = items.Item(i);
-                var r = new ErrorListComRow();
-                r.Level = (int)it.ErrorLevel;
-                r.Description = it.Description;
-                r.FileName = it.FileName;
-                r.Line = it.Line;
-                r.Column = it.Column;
-                r.Project = it.Project;
-                rows.Add(r);
+                if (index == 0) el.ShowErrors = value;
+                else if (index == 1) el.ShowWarnings = value;
+                else el.ShowMessages = value;
             }
-            // the list must not have changed while it was being read
-            if (el.ErrorItems.Count != count) throw new ReasonException("count-changed");
-            return rows;
-        }
 
-        static List<ErrorListComRow> ReadWithFlags(ErrorList el, bool e, bool w, bool m, int settleMs, Budget b)
-        {
-            SetFlags(el, e, w, m);
-            for (int attempt = 0; attempt < 3; attempt++)
+            public int Count()
             {
-                int c = StableCount(el, settleMs, b);
-                try { return ReadRows(el, c, b); }
-                catch (ReasonException ex) { if (ex.Reason != "count-changed") throw; }
+                Release(items);
+                items = el.ErrorItems;
+                return items.Count;
             }
-            throw new ReasonException("count-unstable");
+
+            public ErrorListComRow RowAt(int index1)
+            {
+                ErrorItem it = items.Item(index1);
+                try
+                {
+                    var r = new ErrorListComRow();
+                    r.Level = (int)it.ErrorLevel;
+                    r.Description = it.Description;
+                    r.FileName = it.FileName;
+                    r.Line = it.Line;
+                    r.Column = it.Column;
+                    r.Project = it.Project;
+                    return r;
+                }
+                finally { Release(it); }
+            }
+
+            public void Dispose()
+            {
+                Release(items); items = null;
+                Release(el); el = null;
+                Release(win); win = null;
+            }
         }
 
         // dte: the IDE's DTE (any COM object that answers EnvDTE80.DTE2).
-        // isolate: read each severity on its own (ShowErrors only / ShowWarnings only / ShowMessages only);
-        //   false: one read with all three flags on (the caller classifies by ErrorLevel).
-        public static ErrorListComResult Read(object dte, bool isolate, int settleMs, int maxMs)
+        public static ErrorListComResult Read(object dte, int settleMs, int maxMs, bool[] originalFlags)
         {
-            var res = new ErrorListComResult();
-            var sw = Stopwatch.StartNew();
-            var budget = new Budget(maxMs);
-            ErrorList el = null;
-            bool haveFlags = false;
-            try
-            {
-                DTE2 d = (DTE2)dte;
-                el = d.ToolWindows.ErrorList;     // the first access creates the window when it never existed
-                if (el == null) { res.Reason = "no-errorlist"; return res; }
-                res.Caption = CaptionOf(d);
-                res.FlagsBefore[0] = el.ShowErrors;
-                res.FlagsBefore[1] = el.ShowWarnings;
-                res.FlagsBefore[2] = el.ShowMessages;
-                haveFlags = true;
-
-                if (isolate)
-                {
-                    res.Isolated = true;
-                    res.Errors = ReadWithFlags(el, true, false, false, settleMs, budget);
-                    res.Warnings = ReadWithFlags(el, false, true, false, settleMs, budget);
-                    res.Messages = ReadWithFlags(el, false, false, true, settleMs, budget);
-                    SetFlags(el, true, true, true);
-                    res.AllCount = StableCount(el, settleMs, budget);
-                }
-                else
-                {
-                    res.All = ReadWithFlags(el, true, true, true, settleMs, budget);
-                    res.AllCount = res.All.Count;
-                }
-                res.Ok = true;
-            }
-            catch (ReasonException ex) { res.Ok = false; res.Reason = ex.Reason; }
-            catch (COMException ex) { res.Ok = false; res.Reason = "com-error"; res.Error = ex.Message; res.HResult = ex.ErrorCode; }
-            catch (InvalidCastException ex) { res.Ok = false; res.Reason = "com-error"; res.Error = ex.Message; res.HResult = ex.HResult; }
-            catch (Exception ex) { res.Ok = false; res.Reason = "com-error"; res.Error = ex.GetType().Name + ": " + ex.Message; res.HResult = ex.HResult; }
-            finally
-            {
-                if (el != null && haveFlags)
-                {
-                    bool ok = true;
-                    try { el.ShowErrors = res.FlagsBefore[0]; } catch (Exception) { ok = false; }
-                    try { el.ShowWarnings = res.FlagsBefore[1]; } catch (Exception) { ok = false; }
-                    try { el.ShowMessages = res.FlagsBefore[2]; } catch (Exception) { ok = false; }
-                    try { ok = ok && el.ShowErrors == res.FlagsBefore[0] && el.ShowWarnings == res.FlagsBefore[1] && el.ShowMessages == res.FlagsBefore[2]; } catch (Exception) { ok = false; }
-                    res.FlagsRestored = ok;
-                }
-                res.Ms = sw.Elapsed.TotalMilliseconds;
-            }
-            return res;
+            using (var s = new DteSource(dte)) return ErrorListComCore.Run(s, settleMs, maxMs, originalFlags);
         }
     }
 }

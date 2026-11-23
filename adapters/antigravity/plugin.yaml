@@ -1287,7 +1287,7 @@ actions:
         type: integer
         minimum: 5
         maximum: 600
-        description: "Hard limit for the whole call: the COM read gets at most a quarter of it (8 s at most), the UI Automation scan what is left (at least 1 s), including the one-time preparation of its helper types (the first call in a process). Default 30."
+        description: "Limit for the whole call: the COM path gets at most a quarter of it (8 s at most; compile, read, pane and codes are checked against it between COM calls), the UI Automation scan what is left (at least 1 s), including the one-time preparation of its helper types (the first call in a process). The UIA scan is hard; one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30."
         required: false
         default: 30
       Source:
@@ -1299,10 +1299,6 @@ actions:
       ExpectErrors:
         type: boolean
         description: "The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list without any error row is then not accepted (falls back to UIA)."
-        required: false
-      BuildPaneText:
-        type: string
-        description: "Internal (Build-TcProject passes it; leave it empty otherwise): the build pane text of the build that was just run. The COM read is cross-checked against its error lines and takes the compiler codes from it. Without it the pane is only used for the codes."
         required: false
 
   - name: SetTarget

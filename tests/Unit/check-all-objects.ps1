@@ -68,7 +68,7 @@ $global:C.Sm = $sm
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) if ($null -ne $global:C.PlcList) { return @($global:C.PlcList) }; @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
     function script:Get-TcBuildErrors {
-        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText)
+        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         $null = $global:C.ElCalls.Add("$TimeoutSec|$IncludeWarnings")
         if ($global:C.ElFails) { return [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'ERRORLIST_UNAVAILABLE'; message = 'Error List window not found (mock)' } } }
         # fresh objects each read (Get-TcErrorListSummary adds 'category' to them)

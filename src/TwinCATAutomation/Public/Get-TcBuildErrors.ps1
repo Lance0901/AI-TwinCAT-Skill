@@ -13,11 +13,17 @@
         list (fail closed: a filtered Error List answers 0 rows without an error):
           - the Error List window caption is the bare title (Entire Solution); 'Error List - Current
             Project (X)' / '- Current Document' / '- Open Documents' or an unknown caption -> UIA
-          - severity: 4024 (TcXaeShell 15.0) from ErrorLevel (error 4 / warning 2 / message 1, 實測
-            2026-11-23); 4026 (VS2022 / 64-bit XAE, ErrorLevel is 2 for every row) by reading one Show*
-            flag at a time, the three reads must add up to the all-flags count
+          - severity: every host by reading one Show* flag at a time (each read after an all-off step that must
+            show 0 rows); the three reads must add up to the all-flags count. 4024 (TcXaeShell 15.0, ErrorLevel
+            error 4 / warning 2 / message 1 = High / Medium / Low, vsBuildErrorLevel) also cross-checks every row's
+            level against its flag; 4026 (ErrorLevel is 2 for every row) has no such table
           - -ExpectErrors (the build / check failed) and no error row read -> UIA
-          - -BuildPaneText (the pane of this build): more error lines there than error rows -> UIA
+          - -BuildPaneText (the pane of this build): more error lines there than error rows, or an error line without a
+            row of the same file and text -> UIA
+          - -RequireBuildSummary (callers that decide success from the list): no end summary line in the pane of this
+            build ('Build complete -- N errors' / MSBuild 'Build: .. failed'), or fewer error rows than it says -> UIA.
+            COM cannot see the Error List search box or column filters; the summary is what rules a filtered list out
+          - the Error List window does not exist yet ('errorlist-not-created'): COM does not create it, UIA shows it
         The compiler code (Cxxxx / SAxxxx) is not in the COM description: it is taken from the build
         pane line with the same file and text, else $null. file / project / line have the UIA form
         (file = base name + ' (Impl)' / ' (Decl)' as the grid shows it, project = project name, line =
@@ -48,9 +54,11 @@
     .PARAMETER IncludeMessages
         Also read message rows (data.messages).
     .PARAMETER TimeoutSec
-        Hard limit for the whole call: the COM read gets at most a quarter of it (8 s at most), the UI
-        Automation scan what is left (at least 1 s), including the one-time preparation of its helper
-        types (the first call in a process). Default 30.
+        Limit for the whole call: the COM path gets at most a quarter of it (8 s at most; compile, read, pane and
+        codes are checked against it between COM calls), the UI Automation scan what is left (at least 1 s),
+        including the one-time preparation of its helper types (the first call in a process). The UIA scan is hard;
+        one COM call that blocks inside the IDE (modal dialog) cannot be interrupted, the same limit as
+        Invoke-TcComRetry (it runs under its modal-dialog watchdog). Default 30.
     .PARAMETER Source
         Auto (default): COM first, UIA when the COM read cannot be accepted. UIA: UI Automation only
         (diagnosis; the COM read is skipped).
@@ -58,9 +66,12 @@
         The caller knows the build / check failed (LastBuildInfo > 0, CheckAllObjects False): a COM list
         without any error row is then not accepted (falls back to UIA).
     .PARAMETER BuildPaneText
-        Internal (Build-TcProject passes it; leave it empty otherwise): the build pane text of the build that was
+        Internal (Build-TcProject passes it; not an MCP parameter): the build pane text of the build that was
         just run. The COM read is cross-checked against its error lines and takes the compiler codes from it.
         Without it the pane is only used for the codes.
+    .PARAMETER RequireBuildSummary
+        Internal (Build-TcProject passes it; not an MCP parameter): the result decides success, so a COM list is
+        accepted only when -BuildPaneText has an end summary line (see .DESCRIPTION). Without it COM is not used.
     .OUTPUTS
         data.counts      @{ errors; warnings; messages } from the summary buttons
         data.errors      [ @{ severity; code; description; project; file; line; column } ]
@@ -70,10 +81,15 @@
         data.source      'ErrorList(COM)' or 'ErrorList(UIA)'
         data.fallbackReason  only on a UIA result after a COM attempt (failures included): why COM was not used, e.g.
                          'scope-not-entire: ...', 'scope-unknown: ...', 'expected-errors-none-read: ...',
-                         'fewer-errors-than-build-pane: ...', 'severity-isolation-mismatch: ...',
-                         'error-level-unmapped: ...', 'com-read-failed:<why>', 'com-helper-unavailable: ...', 'com-error: ...'
-        data.comRead     COM results only: severityBy ('ErrorLevel' | 'ShowFlags'), dteMajor, readMs, rows, flagsRestored,
-                         errorsWithoutCode (error rows whose code the build pane could not give), paneCrossCheck, notes
+                         'build-summary-missing: ...', 'fewer-errors-than-build-summary: ...',
+                         'fewer-errors-than-build-pane: ...', 'build-pane-error-not-in-list: ...',
+                         'severity-isolation-mismatch: ...', 'error-level-mismatch: ...', 'errorlist-not-created',
+                         'com-read-failed:<why>', 'com-helper-unavailable: ...', 'com-budget-exceeded: ...', 'com-error: ...'
+        data.comFlagsRestored  $false (only then present) on a UIA result: the COM read changed the Error List Errors /
+                         Warnings / Messages buttons and could not put them back
+        data.comRead     COM results only: severityBy ('ShowFlags'), levelCheck, levelCounts, dteMajor, readMs, rows,
+                         flagsRestored, errorsWithoutCode (error rows whose code the build pane could not give),
+                         paneCrossCheck, buildSummary, notes
         data.severityUnknown  $true when the rows could not be assigned a severity (the
                          filter buttons were not toggleable and more than one is on);
                          those rows are then in data.unclassified, NOT in data.errors
@@ -113,7 +129,10 @@
         [switch]$ExpectErrors,
 
         [Parameter()]
-        [string]$BuildPaneText
+        [string]$BuildPaneText,
+
+        [Parameter()]
+        [switch]$RequireBuildSummary
     )
 
     try { Assert-TcConnection } catch {
@@ -132,27 +151,16 @@
             -Hint (Get-TcErrorHint -Code 'NOT_CONNECTED')
     }
 
-    # COM first (item 88): needs no window, no foreground, no UIA thread. Anything that is not provably the whole
-    # list falls back to the UIA scan below, with the reason in data.fallbackReason (fail closed).
+    # A previous scan that timed out may still be stuck inside UIA on its STA thread;
+    # a second scan would compete for the same window (and toggle the same buttons). The COM read toggles the same
+    # Show* flags, so this guard comes BEFORE it (review #332 S2).
     $comFallbackReason = $null
-    $uiaTimeoutSec = $TimeoutSec
-    if ($Source -eq 'Auto') {
-        $comWatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
-        $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs `
-            -ExpectErrors:$ExpectErrors -BuildPaneText $BuildPaneText
-        if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
-        $comFallbackReason = [string]$com.reason
-        $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
-        Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
-    }
+    $comFlagsNotRestored = $false
     $addFallback = {
         param($Data)
         if ($null -ne $comFallbackReason) { $Data | Add-Member -NotePropertyName 'fallbackReason' -NotePropertyValue $comFallbackReason -Force }
+        if ($comFlagsNotRestored) { $Data | Add-Member -NotePropertyName 'comFlagsRestored' -NotePropertyValue $false -Force }
     }
-
-    # A previous scan that timed out may still be stuck inside UIA on its STA thread;
-    # a second scan would compete for the same window (and toggle the same buttons).
     $cleanupWarning = $null
     if ($script:TcErrorListScanBusy) {
         $stillRunning = Clear-TcUiaAbandonedScans
@@ -180,6 +188,20 @@
         }
     }
 
+    # COM first (item 88): needs no window, no foreground, no UIA thread. Anything that is not provably the whole
+    # list falls back to the UIA scan below, with the reason in data.fallbackReason (fail closed).
+    $uiaTimeoutSec = $TimeoutSec
+    if ($Source -eq 'Auto') {
+        $comWatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $comMaxMs = [int][Math]::Min(8000, [Math]::Max(1000, $TimeoutSec * 250))
+        $com = Get-TcErrorListViaCom -IncludeWarnings ([bool]$IncludeWarnings) -IncludeMessages ([bool]$IncludeMessages) -MaxMs $comMaxMs `
+            -ExpectErrors:$ExpectErrors -BuildPaneText $BuildPaneText -RequireBuildSummary:$RequireBuildSummary
+        if ($com.accepted) { return (New-TcResult -Success $true -Data $com.data) }
+        $comFallbackReason = [string]$com.reason
+        if ($null -ne $com.PSObject.Properties['flagsRestored'] -and -not [bool]$com.flagsRestored) { $comFlagsNotRestored = $true }
+        $uiaTimeoutSec = [Math]::Max(1, $TimeoutSec - [int][Math]::Ceiling($comWatch.Elapsed.TotalSeconds))
+        Write-Verbose "Get-TcBuildErrors: COM read not used ($comFallbackReason); UI Automation scan."
+    }
     # Make sure the tool window is shown (auto-hidden / closed windows are invisible to UIA).
     try {
         Invoke-TcComRetry -MaxRetries 2 -OperationName 'View.ErrorList' -TimeoutSec 30 -ScriptBlock {

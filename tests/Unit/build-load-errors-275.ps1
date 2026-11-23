@@ -79,7 +79,7 @@ $sa0033 = { Row 'Error' "SA0033: Unused variable 'nUnused'" 'FB_SaUnused.TcPOU (
     function script:Get-TcPlcLoginState { param($SysManager, $Plc) [PSCustomObject]@{ plc = [string]$Plc.name; loggedIn = $false; source = 'IsLoggedIn'; error = $null } }
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
-        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText)
+        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         $e = @($script:UtErrors | ForEach-Object { $_.PSObject.Copy() })
         $w = @($script:UtWarnings | ForEach-Object { $_.PSObject.Copy() })
         New-TcResult -Success $true -Data ([PSCustomObject]@{ counts = [PSCustomObject]@{ errors = $e.Count; warnings = $w.Count; messages = 0 }; errors = $e; warnings = $w })

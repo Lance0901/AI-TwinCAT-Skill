@@ -331,6 +331,9 @@ $requiredOverrides = @('ClearLifecycleBlock.Reason', 'ClearLifecycleBlock.Fallba
 # would have none of these.
 $excludedTools = @('NewProject', 'GetIdeModalDialog', 'StartLifecycle')
 
+# Parameters of a cmdlet that only other cmdlets pass (not part of the tool contract; review #332 N3)
+$internalParameters = @('GetBuildErrors.BuildPaneText', 'GetBuildErrors.RequireBuildSummary')
+
 $commonParameters = @(
     'Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',
     'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable',
@@ -517,6 +520,7 @@ foreach ($cmd in $commands) {
 
     foreach ($pName in $cmd.Parameters.Keys) {
         if ($commonParameters -contains $pName) { continue }
+        if ($internalParameters -contains "$toolName.$pName") { continue }
         $meta = $cmd.Parameters[$pName]
         $schema = if ($schemaOverrides.ContainsKey("$toolName.$pName")) { $schemaOverrides["$toolName.$pName"] } else { Get-TypeSchema -Type $meta.ParameterType }
         if ($null -eq $schema) {

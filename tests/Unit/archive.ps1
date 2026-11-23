@@ -99,7 +99,7 @@ $global:A.Persist = $persist
     function script:Get-TcPlcProjectList { [CmdletBinding()] param($SysManager) @([PSCustomObject]@{ name = 'plc'; nodePath = 'TIPC^plc'; projectPath = 'TIPC^plc^plc Project'; adsPort = 851 }) }
     function script:Resolve-TcPlcProjectPath { [CmdletBinding()] param($SysManager, [switch]$RequireSingle) 'TIPC^plc^plc Project' }
     function script:Get-TcBuildErrors {
-        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText)
+        [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText, [switch]$RequireBuildSummary, [ValidateSet("Auto", "UIA")][string]$Source)
         $global:A.ElReads++
         if (@($global:A.ElFail) -contains $global:A.ElReads) { return [PSCustomObject]@{ success = $false; error = [PSCustomObject]@{ code = 'ERRORLIST_UNAVAILABLE'; message = 'Error List window not found (mock)' } } }
         $errs = @($global:A.Rows | ForEach-Object { [PSCustomObject]@{ severity = $_.severity; code = $_.code; description = $_.description; project = $_.project; file = $_.file; line = $_.line; column = 0 } })

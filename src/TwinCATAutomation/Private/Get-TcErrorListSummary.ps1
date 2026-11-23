@@ -1,4 +1,4 @@
-function Get-TcErrorListSummary {
+﻿function Get-TcErrorListSummary {
     <#
     .SYNOPSIS
         Reads the IDE Error List once (Get-TcBuildErrors -IncludeWarnings) and classifies its rows
@@ -64,6 +64,11 @@ function Get-TcErrorListSummary {
         without an error row is then not accepted (UIA reads instead).
     .PARAMETER BuildPaneText
         Build pane text of the build just run (Build-TcProject), passed to Get-TcBuildErrors for the COM cross-check and codes.
+    .PARAMETER RequireBuildSummary
+        The caller decides success from the list (Build-TcProject): COM only with an end summary in -BuildPaneText (Get-TcBuildErrors).
+    .PARAMETER Source
+        UIA = the UI Automation scan only. Callers that have no build pane of their own to prove the list is not filtered
+        (Save-TcArchive, New-TcBootProject, Clear-TcProject) use it: the UIA readback compares the rows with the button totals.
     .PARAMETER FallbackErrorCount
         errorCount when the Error List cannot be read (Build-TcProject: LastBuildInfo).
     .PARAMETER FallbackWarningCount
@@ -76,7 +81,9 @@ function Get-TcErrorListSummary {
         [Parameter()][int]$FallbackWarningCount = 0,
         [Parameter()][switch]$SplitRuntimeLog,
         [Parameter()][switch]$ExpectErrors,
-        [Parameter()][AllowNull()][string]$BuildPaneText = $null
+        [Parameter()][AllowNull()][string]$BuildPaneText = $null,
+        [Parameter()][switch]$RequireBuildSummary,
+        [Parameter()][ValidateSet('Auto', 'UIA')][string]$Source = 'Auto'
     )
     $errorCount = $FallbackErrorCount
     $warningCount = $FallbackWarningCount
@@ -92,6 +99,8 @@ function Get-TcErrorListSummary {
     if ($TimeoutSec -gt 0) { $elArgs['TimeoutSec'] = $TimeoutSec }
     if ($ExpectErrors) { $elArgs['ExpectErrors'] = $true }
     if (-not [string]::IsNullOrWhiteSpace($BuildPaneText)) { $elArgs['BuildPaneText'] = $BuildPaneText }
+    if ($RequireBuildSummary) { $elArgs['RequireBuildSummary'] = $true }
+    if ($Source -ne 'Auto') { $elArgs['Source'] = $Source }
     $el = Get-TcBuildErrors @elArgs
     $rs = Get-TcErrorListReadState -Result $el
     $errorListNote = $null
