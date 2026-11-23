@@ -295,7 +295,12 @@ function Get-TcErrorListComAssemblyPaths {
     foreach ($dir in $dirs) {
         $a = Join-Path $dir 'EnvDTE.dll'
         $b = Join-Path $dir 'EnvDTE80.dll'
-        if ((Test-Path -LiteralPath $a -PathType Leaf) -and (Test-Path -LiteralPath $b -PathType Leaf)) { return @($a, $b) }
+        if ((Test-Path -LiteralPath $a -PathType Leaf) -and (Test-Path -LiteralPath $b -PathType Leaf)) {
+            # VS2022 EnvDTE80 type-forwards DTE2 / ErrorList to Microsoft.VisualStudio.Interop (same folder): compile and load need it too
+            $c = Join-Path $dir 'Microsoft.VisualStudio.Interop.dll'
+            if (Test-Path -LiteralPath $c -PathType Leaf) { return @($a, $b, $c) }
+            return @($a, $b)
+        }
     }
     return $null
 }
@@ -320,6 +325,9 @@ function Initialize-TcErrorListComTypes {
         if (-not (Test-Path -LiteralPath $csPath -PathType Leaf)) { throw "ErrorListComReader.cs not found next to the module ($csPath)" }
         $src = [IO.File]::ReadAllText($csPath)
         $paths = Get-TcErrorListComAssemblyPaths -IdeProcessId $IdeProcessId
+        # the compiled assembly binds EnvDTE / EnvDTE80 (and Interop) by identity at the first call: they are not in the GAC,
+        # so load them from the IDE folder first (measured 2026-11-23: without this the first Read fails with FileNotFoundException)
+        if ($null -ne $paths) { foreach ($p in $paths) { [void][System.Reflection.Assembly]::LoadFrom($p) } }
         $refs = if ($null -ne $paths) { @($paths) } else { @('EnvDTE', 'EnvDTE80') }
         Add-Type -TypeDefinition $src -ReferencedAssemblies $refs -ErrorAction Stop
         $state.ok = $true

@@ -17,7 +17,7 @@ $global:Mock = @{}
 & $mod {
     $script:TcIdeProcessId = $null   # no watchdog
     function script:Find-TcIdeModalDialog { [CmdletBinding()] param([int]$ProcessId = 0, [int]$TimeoutSec = 5, [int]$PrepareTimeoutSec = 0) $null }
-    function script:Get-TcBuildErrors { [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages) $global:Mock.ErrorList }
+    function script:Get-TcBuildErrors { [CmdletBinding()] param([int]$TimeoutSec = 30, [switch]$IncludeWarnings, [switch]$IncludeMessages, [switch]$ExpectErrors, [string]$BuildPaneText) $global:Mock.ErrorList }
     $script:UnitOrigComRetry = ${function:Invoke-TcComRetry}
     function script:Invoke-TcComRetry {
         [CmdletBinding()] param([Parameter(Position = 0)][scriptblock]$ScriptBlock, [int]$MaxRetries = 5, [string]$OperationName = 'COM call', [int]$TimeoutSec = 120)

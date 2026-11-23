@@ -89,7 +89,7 @@ Check 'Get-TcPlcProjectList projectFile: relative path or no PlcProjectDef -> nu
     }
     function script:Get-TcBuildErrors {
         [CmdletBinding()]
-        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30)
+        param([switch]$IncludeWarnings, [int]$TimeoutSec = 30, [switch]$ExpectErrors, [string]$BuildPaneText)
         New-TcResult -Success $true -Data ([PSCustomObject]@{
             counts = [PSCustomObject]@{ errors = 0; warnings = 0; messages = 0 }; errors = @(); warnings = @()
         })

@@ -279,14 +279,20 @@ try {
         Check 'J3 EnvDTE assemblies not installed on this machine: compile check skipped' $true 'no TcXaeShell / Visual Studio PublicAssemblies found'
     }
     else {
-        $code = @"
-`$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition ([IO.File]::ReadAllText('$($csPath.Replace("'", "''"))')) -ReferencedAssemblies @('$($paths[0].Replace("'", "''"))', '$($paths[1].Replace("'", "''"))')
-`$m = [TcAutomation.ErrorListComReader].GetMethod('Read')
-'{0}|{1}' -f `$m.ReturnType.Name, ((`$m.GetParameters() | ForEach-Object { `$_.ParameterType.Name }) -join ',')
-"@
-        $out = & powershell.exe -NoProfile -NonInteractive -Command $code 2>&1 | Out-String
-        Check 'J3 ErrorListComReader.cs compiles (Add-Type against the IDE EnvDTE assemblies): Read(object, bool, int, int) -> ErrorListComResult' ($out.Trim() -eq 'ErrorListComResult|Object,Boolean,Int32,Int32') $out.Trim()
+        # the real Initialize-TcErrorListComTypes in a child process: compile (references incl. Microsoft.VisualStudio.Interop of
+        # VS2022) AND runtime binding (the assemblies are not in the GAC: without the LoadFrom the first Read throws FileNotFoundException)
+        $child = Join-Path $env:TCAUTO_STATE_DIR 'j3-child.ps1'
+        $modPath = (Resolve-Path (Join-Path $PSScriptRoot '..\..\src\TwinCATAutomation\TwinCATAutomation.psm1')).ProviderPath
+        $lines = @(
+            '$ErrorActionPreference = ''Stop''',
+            "Import-Module '$($modPath.Replace("'", "''"))' -Force -WarningAction SilentlyContinue",
+            '$st = & (Get-Module TwinCATAutomation) { Initialize-TcErrorListComTypes }',
+            'if (-not $st.ok) { "INIT FAIL: " + $st.reason; return }',
+            'try { $r = [TcAutomation.ErrorListComReader]::Read($null, $true, 1, 1); "READ ok=" + $r.Ok + " reason=" + $r.Reason } catch { "RUNTIME FAIL: " + $_.Exception.Message }')
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $child) -Force
+        Set-Content -LiteralPath $child -Value $lines -Encoding UTF8
+        $out = & powershell.exe -NoProfile -NonInteractive -File $child 2>&1 | Out-String
+        Check 'J3 Initialize-TcErrorListComTypes compiles against the IDE EnvDTE assemblies and the first Read call binds them (null DTE -> com-error, not FileNotFoundException)' ($out.Trim() -eq 'READ ok=False reason=com-error') $out.Trim()
     }
 }
 finally {
